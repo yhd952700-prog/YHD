@@ -33,3 +33,15 @@ jobs:
           name: verify-metrics-db
           path: verify_metrics.db
           if-no-files-found: ignore
+mkdir -p /tmp/metrics-verify
+cd /tmp/metrics-verify
+export METRICS_PERSIST=1
+export DATABASE_URL="sqlite:////tmp/metrics-verify/verify_metrics.db"
+python /path/to/repo/scripts/verify_metrics_persist.py
+python - <<'PY'
+import sqlite3
+conn = sqlite3.connect("/tmp/metrics-verify/verify_metrics.db")
+print("COUNT:", conn.execute("SELECT COUNT(*) FROM provider_metric_samples").fetchone()[0])
+print(conn.execute("SELECT provider, model, latency_ms, success_rate FROM provider_metric_samples ORDER BY id DESC LIMIT 5").fetchall())
+conn.close()
+PY
