@@ -23,6 +23,7 @@ except ImportError:
 # Phoenix integration 
 try:
     import phoenix
+    from phoenix.otel import register
     import opentelemetry.sdk
     PHOENIX_AVAILABLE = True
 except ImportError:
@@ -153,10 +154,17 @@ def export_to_phoenix(trace_data: Dict[str, Any]) -> None:
     
     try:
         # Phoenix uses OpenTelemetry - start Phoenix and get tracer
-        # from phoenix.otel import register
-        # tracer_provider = register()
-        # tracer = tracer_provider.get_tracer(__name__)
-        # ... export logic ...
+        tracer_provider = register()
+        tracer = tracer_provider.get_tracer(__name__)
+        
+        # Create a span for the trace
+        with tracer.start_as_current_span(trace_data.get('name', 'unknown')) as span:
+            span.set_attribute("input", str(trace_data.get('input', '')))
+            span.set_attribute("output", str(trace_data.get('output', '')))
+            span.set_attribute("trace_id", trace_data.get('trace_id', ''))
+            if 'model' in trace_data:
+                span.set_attribute("model", trace_data['model'])
+        
         print(f"✓ Exported to Phoenix: {trace_data.get('name', 'unknown')}")
     except Exception as e:
         print(f"✗ Phoenix export error: {e}")
