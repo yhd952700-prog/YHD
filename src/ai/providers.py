@@ -71,18 +71,42 @@ class MockProvider(BaseProvider):
 class OpenAIProvider(BaseProvider):
     """OpenAI API provider integration."""
     
-    def generate(self, prompt: str, **kwargs) -> str:
-        """Generate response via OpenAI API."""
+    def __init__(self, name: str, model: str, api_key: Optional[str] = None, **kwargs):
+        super().__init__(name, model, api_key)
+        # Store proxy config for httpx client
+        self.proxy = kwargs.get("proxy") or os.environ.get("OPENAI_PROXY")
+        self.base_url = kwargs.get("base_url") or os.environ.get("OPENAI_BASE_URL")
+    
+    def _get_client(self):
+        """Get OpenAI client with proper configuration for 1.x SDK."""
         import openai
+        import httpx
         
+        # Build http client with proxy if needed
+        http_client = None
+        if self.proxy:
+            http_client = httpx.Client(proxy=self.proxy)
+        
+        client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            http_client=http_client,
+        )
+        return client
+    
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Generate response via OpenAI API (1.x SDK compatible)."""
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 1000)
         
         try:
-            response = openai.ChatCompletion.create(
+            client = self._get_client()
+            response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
+                max_tokens=max_tokens,
             )
             return response.choices[0].message.content or ""
         except Exception as e:
