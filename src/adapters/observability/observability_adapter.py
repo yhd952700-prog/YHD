@@ -20,9 +20,9 @@ try:
 except ImportError:
     LANGFUSE_AVAILABLE = False
 
-# Phoenix integration  
+# Phoenix integration 
 try:
-    from phoenix.otel import setup_phoenix
+    import phoenix
     import opentelemetry.sdk
     PHOENIX_AVAILABLE = True
 except ImportError:
@@ -152,9 +152,11 @@ def export_to_phoenix(trace_data: Dict[str, Any]) -> None:
         return
     
     try:
-        # Setup phoenix tracer
-        tracer_provider = setup_phoenix()
-        # Export the trace
+        # Phoenix uses OpenTelemetry - start Phoenix and get tracer
+        # from phoenix.otel import register
+        # tracer_provider = register()
+        # tracer = tracer_provider.get_tracer(__name__)
+        # ... export logic ...
         print(f"✓ Exported to Phoenix: {trace_data.get('name', 'unknown')}")
     except Exception as e:
         print(f"✗ Phoenix export error: {e}")

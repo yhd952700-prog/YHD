@@ -375,6 +375,12 @@ class CoordinatorNode(AgentNode):
             return state
 
         # Check goal status transitions
+        if goal.status == GoalStatus.DECOMPOSING:
+            # Planning phase - transition to planning
+            goal.status = GoalStatus.PLANNING
+            state["current_task_id"] = None
+            return state
+
         if goal.status == GoalStatus.PLANNING:
             # Move to executing, find first ready task
             ready = goal.get_ready_tasks(goal.get_completed_tasks())
@@ -391,31 +397,35 @@ class CoordinatorNode(AgentNode):
                     state["current_task_id"] = None
 
         elif goal.status == GoalStatus.EXECUTING:
-            completed = goal.get_completed_tasks()
-            ready = goal.get_ready_tasks(completed)
-
-            if goal.is_complete():
-                goal.status = GoalStatus.COMPLETED
-                goal.completed_at = datetime.now()
-                goal.result = "All tasks completed successfully"
-                state["current_task_id"] = None
-
-            elif not ready and goal.has_failed_tasks():
-                goal.status = GoalStatus.FAILED
-                goal.error = "One or more tasks failed permanently"
-                state["error"] = goal.error
-
-            elif not ready:
-                # Check for blocked tasks
-                blocked = [t for t in goal.tasks if t.status == TaskStatus.BLOCKED]
-                if blocked:
-                    state["error"] = f"Deadlock: {len(blocked)} blocked tasks"
+            current_task_id = state.get("current_task_id")
+            current_task = goal.get_task(current_task_id) if current_task_id else None
+            
+            # Check if current task was just completed by critic
+            if current_task and current_task.status == TaskStatus.COMPLETED:
+                # Check if all tasks are done
+                completed = goal.get_completed_tasks()
+                ready = goal.get_ready_tasks(completed)
+                
+                if goal.is_complete():
+                    goal.status = GoalStatus.COMPLETED
+                    goal.completed_at = datetime.now()
+                    goal.result = "All tasks completed successfully"
+                    state["current_task_id"] = None
+                elif not ready and goal.has_failed_tasks():
                     goal.status = GoalStatus.FAILED
-                # Else: wait for current tasks to complete
-
-            elif ready:
-                state["current_task_id"] = ready[0].id
-                ready[0].status = TaskStatus.READY
+                    goal.error = "One or more tasks failed permanently"
+                    state["error"] = goal.error
+                elif not ready:
+                    # Check for blocked tasks
+                    blocked = [t for t in goal.tasks if t.status == TaskStatus.BLOCKED]
+                    if blocked:
+                        state["error"] = f"Deadlock: {len(blocked)} blocked tasks"
+                        goal.status = GoalStatus.FAILED
+                    # Else: wait for current tasks to complete (shouldn't happen here)
+                elif ready:
+                    # Advance to next ready task
+                    state["current_task_id"] = ready[0].id
+                    ready[0].status = TaskStatus.READY
 
         goal.updated_at = datetime.now()
         state["goal"] = goal
@@ -508,7 +518,7 @@ class LangGraphWorkflowEngine:
         # Define edges
         workflow.add_edge(START, "planner")
         workflow.add_edge("planner", "coordinator")
-        workflow.add_edge("coordinator", "executor")
+        # coordinator -> executor is handled by conditional edges below
         workflow.add_edge("executor", "critic")
         workflow.add_edge("critic", "coordinator")
 
