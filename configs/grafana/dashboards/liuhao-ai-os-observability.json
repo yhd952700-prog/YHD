@@ -1,0 +1,449 @@
+{
+  "dashboard": {
+    "title": "LiuHao AI OS - Observability",
+    "tags": [
+      "liuhao-ai-os",
+      "observability"
+    ],
+    "timezone": "browser",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Service Health",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "targets": [
+          {
+            "expr": "up{job=\"liuhao-ai-os\"}",
+            "legendFormat": "API"
+          },
+          {
+            "expr": "up{job=\"prometheus\"}",
+            "legendFormat": "Prometheus"
+          },
+          {
+            "expr": "up{job=\"alertmanager\"}",
+            "legendFormat": "AlertManager"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "DOWN",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "UP",
+                    "color": "green"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "green",
+                  "value": 1
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Provider Availability",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "targets": [
+          {
+            "expr": "provider_up",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "DOWN",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "UP",
+                    "color": "green"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Active Requests",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "provider_active_requests",
+            "legendFormat": "{{provider}}"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "HTTP Request Rate",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (method, endpoint)",
+            "legendFormat": "{{method}} {{endpoint}}"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "HTTP Latency (p95)",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, endpoint))",
+            "legendFormat": "p95 {{method}} {{endpoint}}"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Provider Request Rate",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 12,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(provider_requests_total[5m])) by (provider, model, status)",
+            "legendFormat": "{{provider}}/{{model}} {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Provider Latency (p95)",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 12,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(provider_request_duration_seconds_bucket[5m])) by (le, provider, model))",
+            "legendFormat": "p95 {{provider}}/{{model}}"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Provider Token Usage",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 20,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(provider_tokens_total[5m])) by (provider, model, type)",
+            "legendFormat": "{{provider}}/{{model}} {{type}}"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Provider Errors",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 20,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(provider_errors_total[5m])) by (provider, model, error_type)",
+            "legendFormat": "{{provider}}/{{model}} {{error_type}}"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Agent Tasks",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 28,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(agent_tasks_total[5m])) by (agent_type, status)",
+            "legendFormat": "{{agent_type}} {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Agent Task Latency (p95)",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 28,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(agent_task_duration_seconds_bucket[5m])) by (le, agent_type))",
+            "legendFormat": "p95 {{agent_type}}"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Agent Coordination",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 36,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(agent_coordination_total[5m])) by (coordination_type, status)",
+            "legendFormat": "{{coordination_type}} {{status}}"
+          },
+          {
+            "expr": "rate(agent_coordination_failures_total[5m])",
+            "legendFormat": "failures"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "title": "Employee KPIs",
+        "type": "table",
+        "gridPos": {
+          "x": 12,
+          "y": 36,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "employee_active_agents",
+            "legendFormat": "Active Agents - {{employee_name}}"
+          },
+          {
+            "expr": "employee_kpi_success_rate",
+            "legendFormat": "Success Rate - {{employee_name}}"
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "title": "Goal Decompositions",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 44,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(goal_decompositions_total[5m])) by (status)",
+            "legendFormat": "{{status}}"
+          }
+        ]
+      },
+      {
+        "id": 15,
+        "title": "Goal Decomposition Latency (p95)",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 44,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(goal_decomposition_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p95"
+          }
+        ]
+      },
+      {
+        "id": 16,
+        "title": "Tasks Generated per Goal",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 52,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "rate(goal_tasks_generated_sum[5m]) / rate(goal_tasks_generated_count[5m])",
+            "legendFormat": "avg tasks/goal"
+          }
+        ]
+      },
+      {
+        "id": 17,
+        "title": "Task Execution Rate",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 52,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(task_execution_total[5m])) by (task_type, status)",
+            "legendFormat": "{{task_type}} {{status}}"
+          }
+        ]
+      },
+      {
+        "id": 18,
+        "title": "Task Queue Depth",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 60,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "task_queue_depth",
+            "legendFormat": "{{queue_name}}"
+          }
+        ]
+      },
+      {
+        "id": 19,
+        "title": "System Resources - CPU",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 60,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "rate(process_cpu_seconds_total[5m])",
+            "legendFormat": "CPU"
+          }
+        ]
+      },
+      {
+        "id": 20,
+        "title": "System Resources - Memory",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 68,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "process_memory_bytes",
+            "legendFormat": "{{type}}"
+          }
+        ]
+      },
+      {
+        "id": 21,
+        "title": "System Resources - FDs & Threads",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 68,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "process_open_fds",
+            "legendFormat": "Open FDs"
+          },
+          {
+            "expr": "process_threads",
+            "legendFormat": "Threads"
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 30,
+    "version": 1,
+    "links": []
+  },
+  "overwrite": true
+}

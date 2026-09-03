@@ -1,0 +1,83 @@
+# LiuHao AI OS - Prometheus Alert Rules
+groups:
+  - name: liuhao-ai-os-alerts
+    interval: 30s
+    rules:
+      # High-level service alerts
+      - alert: ServiceDown
+        expr: up{job="liuhao-ai-os"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiuHao AI OS service is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute."
+
+      # Provider availability
+      - alert: ProviderUnavailable
+        expr: provider_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI Provider {{ $labels.provider }} unavailable"
+          description: "Provider {{ $labels.provider }} has been unavailable for 2 minutes."
+
+      # High latency
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile latency > 5s for {{ $labels.job }}"
+
+      # Error rate
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) by (job) / sum(rate(http_requests_total[5m])) by (job) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate"
+          description: "Error rate > 5% for {{ $labels.job }}"
+
+      # Resource utilization
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Container {{ $labels.container }} memory usage > 85%"
+
+      - alert: HighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total[5m]) / container_spec_cpu_quota/container_spec_cpu_period) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "Container {{ $labels.container }} CPU usage > 80%"
+
+      # Queue depth
+      - alert: TaskQueueBacklog
+        expr: task_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task queue backlog growing"
+          description: "Task queue has {{ $value }} pending tasks"
+
+      # Agent coordination
+      - alert: AgentCoordinationFailure
+        expr: rate(agent_coordination_failures_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent coordination failures"
+          description: "Agent coordination failure rate > 10%"

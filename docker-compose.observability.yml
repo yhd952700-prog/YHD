@@ -1,0 +1,165 @@
+# Docker Compose for LiuHao AI OS Observability Stack
+version: '3.8'
+
+services:
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: liuhao-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/observability/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # AlertManager - Alert routing
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: liuhao-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./configs/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # Grafana - Visualization
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: liuhao-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    restart: unless-stopped
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+
+  # OpenTelemetry Collector - Trace collection
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.88.0
+    container_name: liuhao-otel-collector
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+      - "8889:8889"  # Prometheus metrics
+    volumes:
+      - ./configs/observability/otel-collector.yml:/etc/otel-collector-config.yml
+    command:
+      - '--config=/etc/otel-collector-config.yml'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # Tempo - Trace storage
+  tempo:
+    image: grafana/tempo:2.3.0
+    container_name: liuhao-tempo
+    ports:
+      - "3200:3200"  # Tempo HTTP
+      - "4317:4317"  # OTLP gRPC (if needed)
+    volumes:
+      - tempo_data:/var/tempo
+    command:
+      - '-config.file=/etc/tempo.yaml'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # Loki - Log aggregation
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: liuhao-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./configs/observability/loki.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command:
+      - '-config.file=/etc/loki/local-config.yaml'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # Promtail - Log shipping
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: liuhao-promtail
+    volumes:
+      - ./logs:/var/log/liuhao-ai-os
+      - ./configs/observability/promtail.yml:/etc/promtail/config.yml
+    command:
+      - '-config.file=/etc/promtail/config.yml'
+    restart: unless-stopped
+    networks:
+      - observability
+    depends_on:
+      - loki
+
+  # Node Exporter - System metrics
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: liuhao-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # cAdvisor - Container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: liuhao-cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    restart: unless-stopped
+    networks:
+      - observability
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+  tempo_data:
+  loki_data:

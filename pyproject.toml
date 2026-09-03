@@ -1,0 +1,50 @@
+[project]
+name = "liuhao-ai-os"
+version = "0.1.0"
+description = "LiuHao AI OS (镭灏) - Y1 Implementation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0.0",
+    "anthropic>=0.25.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "structlog>=24.1.0",
+    "python-json-logger>=2.0.7",
+    "prometheus-client>=0.19.0",
+    "opentelemetry-api>=1.22.0",
+    "opentelemetry-sdk>=1.22.0",
+    "opentelemetry-exporter-otlp>=1.22.0",
+    "opentelemetry-instrumentation-fastapi>=0.43b0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pyyaml>=6.0.1",
+    "mem0ai>=2.0.20",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "W", "UP", "B", "C4", "PT", "T20", "SIM", "PIE", "ICN"]
+ignore = ["E501", "SIM102", "SIM103", "SIM113", "SIM115", "T201", "T203", "B008", "B009", "C408", "ICN001"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest-cov>=4.1.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]

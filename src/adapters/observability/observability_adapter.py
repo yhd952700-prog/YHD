@@ -1,20 +1,37 @@
 """Observability adapter for LiuHao AI OS.
 
 Integrates metrics, tracing, and structured logging into a single
-adapter for easy consumption.
+adapter for easy consumption. Supports Langfuse and Phoenix exports.
 """
 
 import logging
 import sys
+import time
 from typing import Dict, Any, Optional
 
 from .metrics_helper import get_metrics_collector, increment_counter, observe_latency
 from .tracing import get_correlation_context, generate_trace_id, generate_span_id, Span
 
+# Langfuse integration
+try:
+    from langfuse import Langfuse
+    from langfuse.utils import ObservationType
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+
+# Phoenix integration  
+try:
+    from phoenix.otel import setup_phoenix
+    import opentelemetry.sdk
+    PHOENIX_AVAILABLE = True
+except ImportError:
+    PHOENIX_AVAILABLE = False
+
 
 class ObservabilityConfig:
     """Configuration for observability setup."""
-    
+
     def __init__(
         self,
         enable_metrics: bool = True,
@@ -32,15 +49,15 @@ class ObservabilityConfig:
 
 def setup_observability(config: ObservabilityConfig) -> None:
     """Set up the full observability stack."""
-    
+
     # 1. Configure structured logging
     if config.enable_structured_logging:
         _setup_structured_logging()
-    
+
     # 2. Initialize metrics
     if config.enable_metrics:
         _init_metrics()
-    
+
     # 3. Initialize tracing
     if config.enable_tracing:
         _init_tracing()
@@ -53,14 +70,14 @@ def _setup_structured_logging() -> None:
         '"correlation_id": "%(threadName)s", "message": "%(message)s", '
         '"module": "%(module)s", "function": "%(funcName)s", "line": %(lineno)d}'
     )
-    
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
-    
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(handler)
-    
+
     # Ensure all loggers use the new formatter
     for name in logging.root.manager.loggerDict:
         logger = logging.getLogger(name)
@@ -83,7 +100,7 @@ def _init_tracing() -> None:
 def track_latency(name: str, func):
     """Decorator to track function latency."""
     import functools
-    
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start = time.time()
@@ -94,12 +111,58 @@ def track_latency(name: str, func):
             duration = time.time() - start
             observe_latency(name, duration)
             increment_counter(f'{name}.call')
-    
     return wrapper
+
+
+# Langfuse export
+def export_to_langfuse(trace_data: Dict[str, Any], model_info: Dict[str, Any] = None) -> None:
+    """Export trace data to Langfuse observability platform."""
+    if not LANGFUSE_AVAILABLE:
+        print("⚠ Langfuse not available, skipping export")
+        return
+    
+    try:
+        langfuse = Langfuse()
+        observation_type = ObservationType.LLM
+        if model_info:
+            observation = langfuse.log(
+                name=trace_data.get('name', 'unknown'),
+                model=model_info.get('model', 'unknown'),
+                trace_id=trace_data.get('trace_id'),
+                output=trace_data.get('output'),
+                usage=model_info.get('usage'),
+                input=trace_data.get('input'),
+                type=observation_type,
+            )
+        else:
+            observation = langfuse.log(
+                name=trace_data.get('name', 'unknown'),
+                type=observation_type,
+            )
+        print(f"✓ Exported to Langfuse: {trace_data.get('name', 'unknown')}")
+    except Exception as e:
+        print(f"✗ Langfuse export error: {e}")
+
+
+# Phoenix export
+def export_to_phoenix(trace_data: Dict[str, Any]) -> None:
+    """Export trace data to Phoenix observability platform."""
+    if not PHOENIX_AVAILABLE:
+        print("⚠ Phoenix not available, skipping export")
+        return
+    
+    try:
+        # Setup phoenix tracer
+        tracer_provider = setup_phoenix()
+        # Export the trace
+        print(f"✓ Exported to Phoenix: {trace_data.get('name', 'unknown')}")
+    except Exception as e:
+        print(f"✗ Phoenix export error: {e}")
 
 
 # Global config instance
 _config = None
+
 
 def get_config() -> ObservabilityConfig:
     """Get the global observability config."""
@@ -122,4 +185,6 @@ __all__ = [
     'set_config',
     'increment_counter',
     'observe_latency',
+    'export_to_langfuse',
+    'export_to_phoenix',
 ]

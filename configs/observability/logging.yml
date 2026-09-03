@@ -1,0 +1,121 @@
+
+# Structured Logging Configuration for LiuHao AI OS
+# Supports JSON output, Correlation ID propagation, and multi-level logging
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    format: "%(timestamp)s %(level)s %(name)s %(message)s"
+    class: pythonjsonlogger.jsonlogger.JsonFormatter
+    timestamp: true
+    json_ensure_ascii: false
+
+  console:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+  # Structured formatter with correlation ID
+  structured:
+    class: pythonjsonlogger.jsonlogger.JsonFormatter
+    format: "%(timestamp)s %(level)s %(name)s %(correlation_id)s %(message)s"
+    timestamp: true
+    json_ensure_ascii: false
+
+filters:
+  correlation_id:
+    (): structlog.stdlib.add_correlation_id
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: console
+    stream: ext://sys.stdout
+    filters: [correlation_id]
+
+  json_file:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: logs/liuhao-ai-os.jsonl
+    maxBytes: 10485760  # 10MB
+    backupCount: 10
+    encoding: utf-8
+    filters: [correlation_id]
+
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: json
+    filename: logs/liuhao-ai-os-error.jsonl
+    maxBytes: 10485760  # 10MB
+    backupCount: 10
+    encoding: utf-8
+    filters: [correlation_id]
+
+  # Structured output for log aggregation
+  structured_file:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: structured
+    filename: logs/liuhao-ai-os-structured.jsonl
+    maxBytes: 10485760
+    backupCount: 30
+    encoding: utf-8
+    filters: [correlation_id]
+
+root:
+  level: INFO
+  handlers: [console, json_file, error_file, structured_file]
+
+loggers:
+  # Application loggers
+  ai:
+    level: DEBUG
+    handlers: [console, json_file, error_file, structured_file]
+    propagate: false
+
+  ai.providers:
+    level: DEBUG
+    handlers: [console, json_file, error_file, structured_file]
+    propagate: false
+
+  ai.employee:
+    level: DEBUG
+    handlers: [console, json_file, error_file, structured_file]
+    propagate: false
+
+  ai.goal_task_graph:
+    level: DEBUG
+    handlers: [console, json_file, error_file, structured_file]
+    propagate: false
+
+  # Third-party loggers
+  openai:
+    level: WARNING
+    handlers: [console, json_file, error_file]
+    propagate: false
+
+  anthropic:
+    level: WARNING
+    handlers: [console, json_file, error_file]
+    propagate: false
+
+  httpx:
+    level: WARNING
+    handlers: [console, json_file, error_file]
+    propagate: false
+
+  urllib3:
+    level: WARNING
+    handlers: [console, json_file, error_file]
+    propagate: false
+
+# Custom logging levels for AI operations
+levels:
+  AI_REQUEST: 25  # Between INFO and WARNING
+  AI_RESPONSE: 25
+  AGENT_TASK: 25
+  CORRELATION: 25

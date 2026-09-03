@@ -5,7 +5,8 @@ Provides Prometheus-format metrics export for production observability.
 
 import time
 import threading
-from collections import defaultdictfrom typing import Dict, Any
+from collections import defaultdict
+from typing import Dict, Any
 
 # Metrics counters and gauges
 _request_count = defaultdict(int)
@@ -36,13 +37,13 @@ def observe_latency(name: str, duration: float, labels: Dict[str, str] = None) -
 def get_metrics() -> str:
     """Export all metrics in Prometheus format."""
     lines = []
-    
+
     # Export counters
     for name, count in _request_count.items():
         lines.append(f'# HELP {name} Request counter')
         lines.append(f'# TYPE {name} counter')
         lines.append(f'{name} {count}')
-    
+
     # Export latency summaries
     for name, latencies in _request_latency.items():
         if latencies:
@@ -56,13 +57,13 @@ def get_metrics() -> str:
             lines.append(f'{name}_avg {avg}')
             lines.append(f'{name}_max {max_lat}')
             lines.append(f'{name}_min {min_lat}')
-    
-    return '
-'.join(lines)
+
+    return '\n'.join(lines)
 
 
 # Singleton access
 _metrics_instance = None
+
 
 def get_metrics_collector() -> 'MetricsCollector':
     """Get the global metrics collector instance."""
@@ -75,12 +76,12 @@ def get_metrics_collector() -> 'MetricsCollector':
 
 class MetricsCollector:
     """Production-ready metrics collector."""
-    
+
     def __init__(self):
         self.counters = defaultdict(int)
         self.latencies = defaultdict(list)
         self._lock = threading.Lock()
-    
+
     def increment(self, name: str, labels: Dict[str, str] = None) -> None:
         with self._lock:
             if labels:
@@ -88,7 +89,7 @@ class MetricsCollector:
             else:
                 key = name
             self.counters[key] += 1
-    
+
     def observe(self, name: str, duration: float, labels: Dict[str, str] = None) -> None:
         with self._lock:
             if labels:
@@ -96,16 +97,16 @@ class MetricsCollector:
             else:
                 key = name
             self.latencies[key].append(duration)
-    
+
     def export_prometheus(self) -> str:
         """Export metrics in Prometheus format."""
         lines = []
-        
+
         for name, count in self.counters.items():
             lines.append(f'# HELP {name} Request counter')
             lines.append(f'# TYPE {name} counter')
             lines.append(f'{name} {count}')
-        
+
         for name, latencies in self.latencies.items():
             if latencies:
                 avg = sum(latencies) / len(latencies)
@@ -118,6 +119,5 @@ class MetricsCollector:
                 lines.append(f'{name}_avg {avg}')
                 lines.append(f'{name}_max {max_lat}')
                 lines.append(f'{name}_min {min_lat}')
-        
-        return '
-'.join(lines)
+
+        return '\n'.join(lines)
