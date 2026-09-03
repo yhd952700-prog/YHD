@@ -82,6 +82,7 @@ services:
       - "3200:3200"  # Tempo HTTP
       - "4317:4317"  # OTLP gRPC (if needed)
     volumes:
+      - ./configs/observability/tempo.yaml:/etc/tempo.yaml
       - tempo_data:/var/tempo
     command:
       - '-config.file=/etc/tempo.yaml'
@@ -153,6 +154,25 @@ services:
     networks:
       - observability
 
+  # Phoenix - LLM Observability & Evaluation
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: liuhao-phoenix
+    ports:
+      - "6006:6006"  # Phoenix UI
+    volumes:
+      - phoenix_data:/data
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    command:
+      - "phoenix"
+      - "serve"
+    restart: unless-stopped
+    networks:
+      - observability
+    depends_on:
+      - otel-collector
+
 networks:
   observability:
     driver: bridge
@@ -163,3 +183,4 @@ volumes:
   grafana_data:
   tempo_data:
   loki_data:
+  phoenix_data:
