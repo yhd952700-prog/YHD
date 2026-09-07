@@ -8,11 +8,9 @@ Provides:
 - Error response formatting
 """
 
-from typing import Optional, List, Dict, Any, Union, Callable, Type
+from typing import Optional, List, Dict, Any, Type
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
-
-from ..config_manager import get_config
+from pydantic import BaseModel, Field
 
 
 class APIError(BaseModel):

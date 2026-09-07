@@ -5,9 +5,9 @@ from .experiment import Experiment
 
 
 class Evaluator:
-    """Evaluator with deterministic metrics such as accuracy, task_success_rate, 
+    """Evaluator with deterministic metrics such as accuracy, task_success_rate,
     human_score, and execution_quality."""
-    
+
     def evaluate(self, experiment: Experiment) -> Dict[str, Any]:
         """Evaluate the experiment and return deterministic metrics."""
         return {

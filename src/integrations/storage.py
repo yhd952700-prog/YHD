@@ -12,25 +12,19 @@ Usage:
     model = storage.get_model("openai", "gpt-4")
 """
 
-from typing import Any, Dict, List, Optional, Type, TypeVar, Generic, Union
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Type, TypeVar, Generic
+from datetime import datetime
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import create_engine, select, func, and_, or_, desc, asc
+from sqlalchemy import select, func, and_, or_, desc
 import logging
 
-logger = logging.getLogger(__name__)
-
 from src.integrations.orm_models import (
-    Base, BaseModel, get_session, SessionLocal,
-    AIModel, APIKey, RBACUser, RBACRole, RBACPermission,
-    RBACUserRole, RBACRolePermission, Plugin, PluginVersion,
-    PluginDependency, PluginConflict, Goal, Task, Span,
-    MemoryItem, Metric, AuditLog, Budget, CostTracking,
-    StorageEntry, ConfigSnapshot, Alert, DeviceAdapter,
-    DeploymentConfig, DeploymentRelease, Deployment,
-    JWTToken, SandboxExecution, SandboxResult,
-    WorkflowExecution, ALL_MODELS, gen_uuid,
+    BaseModel, get_session, AIModel, APIKey, RBACUser, RBACRole, RBACPermission,
+    RBACUserRole, RBACRolePermission, Plugin, Goal, Task, Span,
+    MemoryItem, Metric, AuditLog,
 )
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -60,7 +54,7 @@ class Repository(Generic[T]):
         """Get non-deleted entities."""
         stmt = (
             select(self._model)
-            .where(self._model.is_deleted == False)
+            .where(not self._model.is_deleted)
             .order_by(desc(self._model.created_at))
             .limit(limit)
         )
@@ -212,7 +206,7 @@ class StorageManager:
 
     def get_active_models(self) -> List[AIModel]:
         """Get all active models."""
-        stmt = select(AIModel).where(AIModel.is_active == True)
+        stmt = select(AIModel).where(AIModel.is_active)
         return self._session.execute(stmt).scalars().all()
 
     # --- RBAC Management ---

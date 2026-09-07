@@ -7,7 +7,6 @@ Supports: gVisor (runsc), Docker, subprocess fallback.
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
-from datetime import datetime
 from enum import Enum
 
 
@@ -34,7 +33,7 @@ class ResourceLimits:
         self,
         cpu_limit: Optional[float] = None,        # CPU cores
         memory_limit: Optional[int] = None,        # bytes
-        execution_time_limit: Optional[int] = None, # seconds
+        execution_time_limit: Optional[int] = None,  # seconds
         network_access: bool = False,
         file_system_access: bool = False,
         max_output_size: Optional[int] = None,     # bytes

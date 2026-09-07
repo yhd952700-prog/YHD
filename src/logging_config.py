@@ -88,9 +88,11 @@ LOGGING_CONFIG = {
 }
 
 # 上下文日志记录器
+
+
 class ContextAdapter(logging.LoggerAdapter):
     """带上下文的日志记录器"""
-    
+
     def process(self, msg, kwargs):
         # 添加上下文信息
         context = kwargs.get('extra', {}).get('context', {})
@@ -99,23 +101,23 @@ class ContextAdapter(logging.LoggerAdapter):
             context_str = ' | ' + ' | '.join(f'{k}={v}' for k, v in context.items())
             msg = msg + context_str
         return msg, kwargs
-    
+
     def debug(self, msg, **kwargs):
         kwargs.setdefault('extra', {}).setdefault('context', {})
         return super().debug(msg, **kwargs)
-    
+
     def info(self, msg, **kwargs):
         kwargs.setdefault('extra', {}).setdefault('context', {})
         return super().info(msg, **kwargs)
-    
+
     def warning(self, msg, **kwargs):
         kwargs.setdefault('extra', {}).setdefault('context', {})
         return super().warning(msg, **kwargs)
-    
+
     def error(self, msg, **kwargs):
         kwargs.setdefault('extra', {}).setdefault('context', {})
         return super().error(msg, **kwargs)
-    
+
     def critical(self, msg, **kwargs):
         kwargs.setdefault('extra', {}).setdefault('context', {})
         return super().critical(msg, **kwargs)
@@ -135,6 +137,8 @@ CONTEXT_KEYS = {
 }
 
 # 获取日志记录器的工厂函数
+
+
 def get_logger(name: str = __name__, **context) -> ContextAdapter:
     """获取结构化日志记录器"""
     logger = logging.getLogger(name)

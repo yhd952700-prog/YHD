@@ -17,15 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 import uuid
-from collections import defaultdict
 
 # Import dependencies
-from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel
+from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
 from src.kernels.capability import get_capability_registry, CapabilityScope, check_capability_scope
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
-from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource
+from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
 from src.kernels._crosscutting import kernel_action
 
 
@@ -267,7 +266,7 @@ class PlanBuilder:
         if mode == "sequential":
             # Chain tasks sequentially
             for i in range(1, len(tasks)):
-                tasks[i].dependencies.append(tasks[i-1].id)
+                tasks[i].dependencies.append(tasks[i - 1].id)
         elif mode == "parallel":
             # No dependencies - all can run in parallel
             pass
@@ -445,11 +444,9 @@ class Verifier:
         elif score >= 0.3:
             result = VerifyResult.OFF_TRACK
             feedback = f"Off track: {matches}/{total} criteria"
-            replan_required = True
         else:
             result = VerifyResult.FAILED
             feedback = f"Failed: {matches}/{total} criteria"
-            replan_required = True
 
         return VerificationResult(
             task_id=task.id,

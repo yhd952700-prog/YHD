@@ -14,8 +14,8 @@ policy, and time horizon.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from src.kernels._crosscutting import kernel_action
 
@@ -62,7 +62,7 @@ class ContextCompression:
 class AttentionMechanism(Enum):
     """Available attention/compression strategies."""
     UNIFORM = "uniform"       # Equal weighting
-    IMPORTANCE = "importance" # Importance-based weighting
+    IMPORTANCE = "importance"  # Importance-based weighting
     RECENCY = "recency"       # Recency-based decay
     HYBRID = "hybrid"         # Hybrid importance+recency
 

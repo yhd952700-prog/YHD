@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
+import threading
+from pathlib import Path
 import importlib.util
 import json
 
@@ -37,9 +39,6 @@ def _json_default(obj: Any) -> Any:
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-import os
-import threading
-from pathlib import Path
 
 
 # Valid L0-L7 scopes (same hierarchy as resource/capability/security kernels).

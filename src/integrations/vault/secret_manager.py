@@ -5,13 +5,13 @@ Business logic layer over VaultClient.
 Integrates with the existing api_keys and ai_models database tables.
 """
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
 import hashlib
 import secrets as _secrets
 import logging
 
-from .client import VaultClient, VaultConfig
+from .client import VaultClient
 
 logger = logging.getLogger(__name__)
 

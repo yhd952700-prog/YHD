@@ -8,11 +8,9 @@ Defines the data model for audit events with:
 - Severity classification
 """
 
-import json
 import time
 import uuid
-from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 
 class EventType:
@@ -46,7 +44,7 @@ class Severity:
 
 class AuditEvent:
     """Standard audit event data model."""
-    
+
     def __init__(self, event_id: str, event_type: str, timestamp: float,
                  source: str, user_id: Optional[str] = None,
                  session_id: Optional[str] = None, severity: str = "medium",
@@ -68,7 +66,7 @@ class AuditEvent:
         self.request_id = request_id
         self.trace_id = trace_id
         self.extra = extra if extra is not None else {}
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -86,7 +84,7 @@ class AuditEvent:
             "trace_id": self.trace_id,
             "extra": self.extra,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AuditEvent":
         """Create from dictionary."""
@@ -108,7 +106,7 @@ class AuditEvent:
 
 
 # Convenience functions
-def auth_event(event_type: str, user_id: str, success: bool, 
+def auth_event(event_type: str, user_id: str, success: bool,
                source: str = "auth_module", **kwargs) -> AuditEvent:
     """Create an authentication/authorization event."""
     return AuditEvent(

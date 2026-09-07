@@ -119,7 +119,7 @@ class KnowledgeSecurityPolicy:
         positions = [(m.start(), m.end()) for m in re.finditer(email_pattern, text)]
 
         # Redact emails in text for the return
-        redacted = re.sub(email_pattern, '[REDACTED]', text)
+        re.sub(email_pattern, '[REDACTED]', text)
 
         return PIIMatch(
             pii_type=PIIType.EMAIL,
@@ -136,7 +136,7 @@ class KnowledgeSecurityPolicy:
             clean_matches.append(m.group(0))
         positions = [(m.start(), m.end()) for m in re.finditer(phone_pattern, text)]
 
-        redacted = re.sub(phone_pattern, '[REDACTED]', text)
+        re.sub(phone_pattern, '[REDACTED]', text)
 
         return PIIMatch(
             pii_type=PIIType.PHONE,
@@ -153,7 +153,7 @@ class KnowledgeSecurityPolicy:
         matches = list(matches_iter)
         positions = [(m.start(), m.end()) for m in matches]
 
-        redacted = re.sub(address_pattern, '[REDACTED]', text, flags=re.IGNORECASE)
+        re.sub(address_pattern, '[REDACTED]', text, flags=re.IGNORECASE)
 
         return PIIMatch(
             pii_type=PIIType.ADDRESS,
@@ -173,7 +173,7 @@ class KnowledgeSecurityPolicy:
         common_words = {'The', 'This', 'That', 'With', 'From', 'Have', 'Each', 'Which', 'Would', 'Could', 'Should'}
         filtered_matches = [m for m in matches if m not in common_words]
 
-        redacted = re.sub(name_pattern, '[REDACTED]', text)
+        re.sub(name_pattern, '[REDACTED]', text)
 
         return PIIMatch(
             pii_type=PIIType.NAME,

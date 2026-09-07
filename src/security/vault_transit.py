@@ -10,6 +10,7 @@ Spec items 191-192: Vault Transit integration supports:
 - Hash chaining for audit trails
 - Signing and verification of model gateway requests
 """
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -165,7 +166,7 @@ class VaultTransitIntegration:
             "keys": {},
         }
 
-        resp_body = await self._request(
+        await self._request(
             "PUT",
             f"/{self.transit_path}/key/{key_name}",
             json=body,

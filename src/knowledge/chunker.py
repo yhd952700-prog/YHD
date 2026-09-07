@@ -6,7 +6,7 @@ supporting recursive character-based splitting for general text documents.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 
 def chunk_text(

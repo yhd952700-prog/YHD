@@ -18,7 +18,7 @@ from .models import (
     SandboxStatus,
     ResourceLimits,
 )
-from .store import PluginSandboxStore, get_sandbox_store, create_context, store_result
+from .store import PluginSandboxStore
 
 # Module-level store instance
 _default_store: Optional[PluginSandboxStore] = None
@@ -40,6 +40,7 @@ def create_context(context: SandboxExecutionContext) -> str:
 def store_result(result: SandboxResult) -> str:
     """Store a sandbox result using the default store."""
     return get_sandbox_store().store_result(result)
+
 
 __all__ = [
     "SandboxExecutionContext",

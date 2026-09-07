@@ -15,6 +15,8 @@ import json
 from typing import Optional, Dict, Any
 
 # Provider type enumeration
+
+
 class ProviderType:
     MOCK = "mock"
     OPENAI = "openai"
@@ -25,15 +27,19 @@ class ProviderType:
     DEEPSEEK = "deepseek"
 
 # External framework integration flags
+
+
 class Framework:
     AUTOgen = "autogen"
     AG2 = "ag2"
     LANGGRAPH = "langgraph"
 
 # Provider capability metadata
+
+
 class ProviderCapabilities:
     """Standardized capability metadata for providers"""
-    
+
     def __init__(self, **kwargs):
         self.supports_streaming = kwargs.get("supports_streaming", False)
         self.supports_structured_output = kwargs.get("supports_structured_output", False)
@@ -46,6 +52,8 @@ class ProviderCapabilities:
         self.rate_limit_tpm = kwargs.get("rate_limit_tpm", 10000)
 
 # Base provider class
+
+
 class BaseProvider:
     """Base class for all provider implementations."""
 
@@ -77,7 +85,7 @@ class BaseProvider:
     def generate_with_retry(self, prompt: str, **kwargs) -> str:
         """Generate with automatic retry and error classification."""
         import time
-        from error_types import classify_error, ProviderError, ProviderRateLimitError
+        from error_types import classify_error, ProviderRateLimitError
 
         last_error = None
         for attempt in range(self.max_retries + 1):
@@ -85,7 +93,7 @@ class BaseProvider:
                 return self.generate(prompt, **kwargs)
             except Exception as e:
                 last_error = classify_error(e, self.name)
-                
+
                 # Don't retry on certain errors
                 if isinstance(last_error, ProviderRateLimitError):
                     if attempt < self.max_retries and last_error.retry_after:
@@ -98,7 +106,7 @@ class BaseProvider:
                     if hasattr(last_error, 'status_code') and isinstance(last_error.status_code, int):
                         if 400 <= last_error.status_code < 500:
                             raise
-                
+
                 if attempt < self.max_retries:
                     delay = self.retry_base_delay * (2 ** attempt)
                     time.sleep(delay)
@@ -240,7 +248,7 @@ class OpenAIProvider(BaseProvider):
 
             response = client.chat.completions.create(**create_params)
             return response.choices[0].message.content or ""
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -278,7 +286,7 @@ class AnthropicProvider(BaseProvider):
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -311,7 +319,7 @@ class GoogleProvider(BaseProvider):
             model_obj = genai.GenerativeModel(model)
             response = model_obj.generate_content(prompt)
             return response.text
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -359,7 +367,7 @@ class OllamaProvider(BaseProvider):
                 return result.get("response", str(result))
             else:
                 raise Exception(f"Ollama error {response.status_code}: {response.text}")
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -469,7 +477,7 @@ class MoonshotProvider(BaseProvider):
                 return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
             else:
                 raise Exception(f"Moonshot error {response.status_code}: {response.text}")
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -513,7 +521,7 @@ class DeepSeekProvider(BaseProvider):
                 return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
             else:
                 raise Exception(f"DeepSeek error {response.status_code}: {response.text}")
-        except Exception as e:
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -644,6 +652,7 @@ class ProviderFactory:
 # Global provider instance
 _provider_instance: BaseProvider = None
 
+
 def get_provider() -> BaseProvider:
     """Get the global provider instance, auto-detecting from environment.
 
@@ -686,10 +695,12 @@ def get_provider() -> BaseProvider:
 
     return _provider_instance
 
+
 def set_provider(provider: BaseProvider) -> None:
     """Set the global provider instance explicitly."""
     global _provider_instance
     _provider_instance = provider
+
 
 def reset_provider() -> None:
     """Reset the global provider instance."""
@@ -697,41 +708,43 @@ def reset_provider() -> None:
     _provider_instance = None
 
 # Provider type detection helper
+
+
 def detect_provider_type_from_env() -> str:
     """Detect and return provider type from environment variables."""
     provider_type = os.environ.get("AI_PROVIDER_TYPE", ProviderType.MOCK)
     return provider_type
 
 # Structured output utility functions
+
+
 def apply_structured_output(provider_name: str, schema: dict, response_text: str) -> dict:
     """Apply structured output validation to LLM response text.
-    
+
     Maps Pydantic/JSON schemas to provider-specific structured output formats.
     Supports OpenAI response_format with json_schema, Anthropic structured outputs,
     and falls back to json_object with prompt-level JSON parsing.
-    
+
     Args:
         provider_name: Name of the provider (openai, anthropic, google, etc.)
         schema: Pydantic model or JSON Schema dict to validate against
         response_text: Raw text response from LLM
-    
+
     Returns:
         Parsed and validated dictionary, or raises ValueError if validation fails
-    
+
     Example:
         >>> from pydantic import BaseModel
         >>> class SearchResult(BaseModel):
         >>>     keywords: list[str]
         >>>     summary: str
-        >>> 
+        >>>
         >>> result = apply_structured_output(
         ...     "openai",
         ...     SearchModel.model_json_schema(),
         ...     llm_response_text
         ... )
     """
-    import json
-    
     # Try OpenAI response_format approach first
     if provider_name == "openai":
         try:
@@ -753,7 +766,7 @@ def apply_structured_output(provider_name: str, schema: dict, response_text: str
             return parsed
         except (json.JSONDecodeError, ValueError):
             pass
-    
+
     # Fallback: parse JSON from text (handle markdown fences, etc.)
     try:
         # Remove markdown code fences if present
@@ -767,19 +780,19 @@ def apply_structured_output(provider_name: str, schema: dict, response_text: str
             if lines[-1].strip() == "```":
                 end_idx = len(lines) - 1
             cleaned = "\n".join(lines[start_idx:end_idx]).strip()
-        
+
         # Remove leading/trailing text before first {
         brace_idx = cleaned.find("{")
         if brace_idx >= 0:
             cleaned = cleaned[brace_idx:]
-        
+
         # Try to find closing }
         last_brace = cleaned.rfind("}")
         if last_brace >= 0:
             cleaned = cleaned[:last_brace + 1]
-        
+
         parsed = json.loads(cleaned)
-        
+
         # Basic schema validation
         if isinstance(schema, dict) and "properties" in schema:
             properties = schema.get("properties", {})
@@ -792,6 +805,8 @@ def apply_structured_output(provider_name: str, schema: dict, response_text: str
         return {"raw_response": response_text, "error": str(e)}
 
 # Convenience functions for external framework usage
+
+
 def with_autogen(func):
     """Decorator to wrap functions for AutoGen integration."""
     def wrapper(*args, **kwargs):
@@ -800,6 +815,7 @@ def with_autogen(func):
         return integrator.generate_response(kwargs.get("messages", []), **kwargs)
     return wrapper
 
+
 def with_ag2(func):
     """Decorator to wrap functions for AG2 integration."""
     def wrapper(*args, **kwargs):
@@ -807,6 +823,7 @@ def with_ag2(func):
         integrator = ProviderFactory.create_integrator(Framework.AG2, provider)
         return integrator.dispatch_task(kwargs.get("agent", "default"), str(kwargs.get("task", "")), **kwargs)
     return wrapper
+
 
 def with_langgraph(func):
     """Decorator to wrap functions for LangGraph integration."""

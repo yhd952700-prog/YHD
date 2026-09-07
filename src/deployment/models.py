@@ -7,7 +7,7 @@ Provides standardized interfaces for different deployment targets and strategies
 
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
-from enum import Enum, auto
+from enum import Enum
 from datetime import datetime
 
 
@@ -31,7 +31,7 @@ class DeploymentStatus(Enum):
     """Deployment status enumeration."""
     PENDING = "pending"      # 等待中
     BUILDING = "building"    # 构建中
-    IN_PROGRESS = "in_progress" # 进行中
+    IN_PROGRESS = "in_progress"  # 进行中
     SUCCESS = "success"      # 成功
     FAILED = "failed"        # 失败
     CANCELLED = "cancelled"  # 取消
@@ -152,19 +152,6 @@ def create_deployment_config(
         **kwargs,
     )
     return config
-
-
-def default_docker_config(image_name: str) -> DockerConfig:
-    """Create default Docker config for a given image name."""
-    return DockerConfig(
-        image_name=image_name,
-        tag="latest",
-        port_mapping={"8080": "8080"},
-        health_check=HealthCheckConfig(
-            test="curl -f http://localhost:8080/health || exit 1",
-            start_period="10s",
-        ),
-    )
 
 
 def default_health_check() -> HealthCheckConfig:

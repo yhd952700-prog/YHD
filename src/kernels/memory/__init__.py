@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
 import threading
 import json
@@ -122,17 +122,17 @@ def _tier_ttl(tier: MemoryTier) -> timedelta:
 
 class MemoryTierManager:
     """Manages memory tier lifecycle and TTL enforcement."""
-    
+
     _instance: Optional['MemoryTierManager'] = None
     _lock = threading.Lock()
-    
+
     def __new__(cls) -> 'MemoryTierManager':
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
                 cls._instance._initialized = False
             return cls._instance
-    
+
     def __init__(self) -> None:
         if self._initialized:
             return
@@ -142,42 +142,42 @@ class MemoryTierManager:
         self._persistent: Dict[str, MemoryEntry] = {}
         self._lock = threading.RLock()
         self._initialized = True
-    
-    def _evict_tier(self, tier_dict: Dict[str, MemoryEntry], 
+
+    def _evict_tier(self, tier_dict: Dict[str, MemoryEntry],
                     tier_name: str, max_age: timedelta) -> List[str]:
         """Evict entries exceeding max age from a tier."""
         now = datetime.utcnow()
         evicted = []
         keys_to_remove = []
-        
+
         for key, entry in tier_dict.items():
             if entry.expires_at and entry.expires_at <= now:
                 keys_to_remove.append(key)
                 evicted.append(key)
-        
+
         for key in keys_to_remove:
             tier_dict.pop(key, None)
-        
+
         return evicted
-    
+
     @kernel_action("memory.auto_cleanup")
     def auto_cleanup(self) -> Dict[str, int]:
         """Auto-cleanup expired entries across all tiers."""
-        now = datetime.utcnow()
+        datetime.utcnow()
         results = {}
-        
+
         # Short-term: < 5 minutes
         results['short_term'] = len(self._evict_tier(self._short_term, 'short_term', timedelta(minutes=5)))
-        
+
         # Mid-term: 5 min - 24 hours
         results['mid_term'] = len(self._evict_tier(self._mid_term, 'mid_term', timedelta(hours=1)))
-        
+
         # Long-term: 1 day - 30 days
         results['long_term'] = len(self._evict_tier(self._long_term, 'long_term', timedelta(days=1)))
-        
+
         # Persistent: > 30 days (manual review only)
         # No automatic eviction for persistent
-        
+
         return results
 
 
@@ -247,7 +247,7 @@ class MemoryKernel:
     ``D:/LiuHao-AI-OS/memory_store.db``），跨进程重启保留记忆；传 ``":memory:"``
     为纯内存（测试隔离用）。
     """
-    
+
     _entries: Dict[str, MemoryEntry] = field(default_factory=dict, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock)
     db_path: Optional[str] = None
@@ -289,7 +289,7 @@ class MemoryKernel:
                 expires_at = datetime.utcnow() + timedelta(days=1)
             elif tier == MemoryTier.PERSISTENT:
                 expires_at = datetime.utcnow() + timedelta(days=30)
-            
+
             entry = MemoryEntry(
                 id=str(uuid.uuid4())[:8],
                 key=key,
@@ -300,7 +300,7 @@ class MemoryKernel:
                 expires_at=expires_at,
                 tags=tags or set(),
             )
-            
+
             # Store in appropriate tier
             key_hash = f"{tier.value}:{key}"
             self._entries[key_hash] = entry
@@ -309,7 +309,7 @@ class MemoryKernel:
             self._store.persist(_entry_to_row(entry, key_hash))
 
             return entry
-    
+
     def recall(
         self,
         key: str,
@@ -356,12 +356,12 @@ class MemoryKernel:
             chosen.access_count += 1
             chosen.last_accessed = datetime.utcnow()
             return chosen
-    
+
     def _scope_matches(self, entry_scope: MemoryScope, query_scope: MemoryScope) -> bool:
         """Check if entry scope satisfies query scope constraint."""
         scope_order = {s: i for i, s in enumerate(MemoryScope)}
         return scope_order[entry_scope] >= scope_order[query_scope]
-    
+
     def scope_filter(
         self,
         query_scope: MemoryScope,
@@ -373,41 +373,41 @@ class MemoryKernel:
         with self._lock:
             scope_order = {s: i for i, s in enumerate(MemoryScope)}
             min_idx = scope_order[query_scope]
-            
+
             results = [
                 entry for entry in self._entries.values()
                 if scope_order[entry.scope] >= min_idx
             ]
-            
+
             if max_access_count is not None:
                 results = [e for e in results if e.access_count <= max_access_count]
-            
+
             if min_age is not None:
                 now = datetime.utcnow()
                 results = [e for e in results if e.created_at and e.created_at >= now - min_age]
-            
+
             if max_age is not None:
                 now = datetime.utcnow()
                 results = [e for e in results if e.created_at and e.created_at < now - max_age]
-            
+
             return sorted(results, key=lambda e: e.created_at, reverse=True)
-    
+
     def stats(self) -> Dict[str, Any]:
         """Get memory kernel statistics."""
         with self._lock:
             by_tier = {}
             by_scope = {}
             total_access = 0
-            
+
             for entry in self._entries.values():
                 tier_name = entry.tier.value
                 by_tier[tier_name] = by_tier.get(tier_name, 0) + 1
-                
+
                 scope_name = entry.scope.value
                 by_scope[scope_name] = by_scope.get(scope_name, 0) + 1
-                
+
                 total_access += entry.access_count
-            
+
             return {
                 "total_entries": len(self._entries),
                 "by_tier": by_tier,

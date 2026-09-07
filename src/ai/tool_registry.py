@@ -114,10 +114,10 @@ class ToolRegistry:
         tool = self._tools.get(tool_id)
         if tool is None:
             return ActionResult(action_id=tool_id, success=False,
-                               error=f"unknown tool {tool_id}")
+                                error=f"unknown tool {tool_id}")
         if self._status[tool_id] != ToolStatus.ACTIVE:
             return ActionResult(action_id=tool_id, success=False,
-                               error=f"tool {tool_id} is not active")
+                                error=f"tool {tool_id} is not active")
         try:
             output = tool.fn(**inputs)
             return ActionResult(action_id=tool_id, success=True, output=output)
@@ -139,5 +139,5 @@ class ToolRouter:
         tool = self.route(capability_id)
         if tool is None:
             return ActionResult(action_id="", success=False,
-                               error=f"no active tool for capability {capability_id}")
+                                error=f"no active tool for capability {capability_id}")
         return self.registry.execute(tool.tool_id, inputs)

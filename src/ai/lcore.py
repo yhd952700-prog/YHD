@@ -15,7 +15,7 @@ Context Kernel's typed inputs, and routes *real* tool execution through
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ..kernels.execution import (
     Goal,

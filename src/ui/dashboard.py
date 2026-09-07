@@ -1,7 +1,7 @@
 """CEO Dashboard and system status cards for the product console."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from enum import Enum
 from datetime import datetime
 
@@ -17,7 +17,7 @@ class CardType(Enum):
 @dataclass
 class SystemStatusCard:
     """Card displaying system health and status."""
-    
+
     system_name: str
     status: str = "healthy"
     cpu_percent: float = 0.0
@@ -25,7 +25,7 @@ class SystemStatusCard:
     active_workers: int = 0
     last_check: str = field(default_factory=lambda: datetime.now().isoformat())
     alerts: List[str] = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert card to dictionary for UI rendering."""
         return {
@@ -42,7 +42,7 @@ class SystemStatusCard:
 @dataclass
 class AIWorkerCard:
     """Card displaying AI worker status."""
-    
+
     worker_id: str
     model_name: str = "unknown"
     status: str = "idle"
@@ -50,7 +50,7 @@ class AIWorkerCard:
     monthly_tokens: int = 0
     monthly_cost: float = 0.0
     last_activity: str = field(default_factory=lambda: datetime.now().isoformat())
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert card to dictionary for UI rendering."""
         return {
@@ -67,22 +67,22 @@ class AIWorkerCard:
 @dataclass
 class CEODashboard:
     """CEO dashboard with high-level business and system overview."""
-    
+
     system_cards: Dict[str, SystemStatusCard] = field(default_factory=dict)
     ai_worker_cards: Dict[str, AIWorkerCard] = field(default_factory=dict)
     risk_score: float = 0.0
     overall_health: str = "excellent"
     business_kpis: Dict[str, Any] = field(default_factory=dict)
     last_updated: str = field(default_factory=lambda: datetime.now().isoformat())
-    
+
     def add_system_card(self, card: SystemStatusCard) -> None:
         """Add a system status card."""
         self.system_cards[card.system_name] = card
-    
+
     def add_ai_worker_card(self, card: AIWorkerCard) -> None:
         """Add an AI worker card."""
         self.ai_worker_cards[card.worker_id] = card
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert dashboard to dictionary for UI rendering."""
         return {

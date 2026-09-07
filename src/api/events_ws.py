@@ -25,7 +25,7 @@ _active_connections: Set[WebSocket] = set()
 async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time event streaming.
-    
+
     Protocol:
     - Client connects to ws://host:port/ws/events
     - Server sends events as JSON: {"type", "source", "data", "correlation_id", "timestamp"}
@@ -34,9 +34,9 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     _active_connections.add(websocket)
     logger.info(f"WebSocket client connected. Total: {len(_active_connections)}")
-    
+
     event_bus = get_event_bus()
-    
+
     # Event handler that sends events to this WebSocket
     async def event_handler(event: Event):
         """Send event to WebSocket client."""
@@ -56,11 +56,11 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps(payload))
         except Exception as e:
             logger.error(f"Failed to send event to WebSocket: {e}")
-    
+
     # Subscribe to all events
     subscription_id = event_bus.subscribe("*", lambda e: asyncio.create_task(event_handler(e)))
     logger.info(f"Subscription created: {subscription_id}")
-    
+
     try:
         # Keep connection alive and handle client messages
         while True:
@@ -75,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Error receiving WebSocket message: {e}")
                 break
-                
+
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected normally")
     finally:

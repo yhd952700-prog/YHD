@@ -21,7 +21,6 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone
 import uuid
 
 
@@ -107,7 +106,7 @@ class AuditStore:
         if db_path is None:
             # Default to D:\ drive per user constraint
             db_path = os.environ.get(
-                "AUDIT_DB_PATH", 
+                "AUDIT_DB_PATH",
                 "D:/LiuHao-AI-OS/audit_store.db"
             )
         self._db_path = db_path
@@ -431,8 +430,8 @@ class AuditStore:
     def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
         """Get a single audit event by ID."""
         cursor = self._conn.execute(
-            """SELECT event_id, event_type, principal_id, scope, 
-               timestamp, correlation_id, outcome, details, 
+            """SELECT event_id, event_type, principal_id, scope,
+               timestamp, correlation_id, outcome, details,
                event_hash, prev_event_hash
                FROM audit_events WHERE event_id = ?""",
             (event_id,),

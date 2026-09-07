@@ -4,8 +4,8 @@ Cache Models for LiuHao AI OS
 Defines the data model for cache entries and cache policies.
 """
 
-from typing import Dict, Any, Optional, List, Callable
-from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
 import time
 
 

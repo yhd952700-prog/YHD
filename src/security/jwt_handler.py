@@ -11,11 +11,9 @@ Provides:
 
 import time
 import secrets
-import json
 import uuid
-from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Set, Union
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -55,15 +53,15 @@ class TokenPayload:
     exp: int = 0                                # Expiration timestamp
     iat: int = field(default_factory=lambda: int(time.time()))  # Issued at
     nbf: int = 0                                # Not before
-    jti: str = field(default_factory=lambda: str(uuid.uuid4())) # JWT ID
-    
+    jti: str = field(default_factory=lambda: str(uuid.uuid4()))  # JWT ID
+
     # Custom claims
     token_type: TokenType = TokenType.ACCESS
     scopes: List[str] = field(default_factory=list)
     roles: List[str] = field(default_factory=list)
     permissions: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Device/session info
     device_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -86,7 +84,7 @@ class TokenPayload:
             "permissions": self.permissions,
             "metadata": self.metadata,
         }
-        
+
         if self.device_id:
             data["device_id"] = self.device_id
         if self.session_id:
@@ -95,7 +93,7 @@ class TokenPayload:
             data["ip_address"] = self.ip_address
         if self.user_agent:
             data["user_agent"] = self.user_agent
-            
+
         return data
 
     @classmethod
@@ -162,7 +160,7 @@ class JWTHandler:
     ):
         """
         Initialize JWT handler.
-        
+
         Args:
             algorithm: Signing algorithm (RS256, RS512, HS256, HS512)
             private_key: Private key for signing (PEM format)
@@ -188,7 +186,7 @@ class JWTHandler:
         self.refresh_ttl = refresh_ttl
         self.leeway = leeway
         self.encryption = encryption or get_encryption_manager()
-        
+
         # Token revocation blocklist (in-memory, use Redis for distributed)
         self._revoked_tokens: Set[str] = set()
         self._revoked_refresh_tokens: Set[str] = set()
@@ -256,13 +254,13 @@ class JWTHandler:
             public_exponent=65537,
             key_size=key_size,
         )
-        
+
         self._private_key = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         )
-        
+
         self._public_key = private_key.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -272,7 +270,7 @@ class JWTHandler:
         """Save keys to files"""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-        
+
         if self._private_key:
             (path / "private.pem").write_bytes(self._private_key)
         if self._public_key:
@@ -316,15 +314,15 @@ class JWTHandler:
     ) -> tuple[str, TokenPayload]:
         """
         Create a JWT token.
-        
+
         Returns:
             Tuple of (encoded JWT string, TokenPayload)
         """
         now = int(time.time())
-        
+
         if ttl is None:
             ttl = self.access_ttl if token_type == TokenType.ACCESS else self.refresh_ttl
-            
+
         payload = TokenPayload(
             sub=subject,
             iss=self.issuer,
@@ -371,7 +369,7 @@ class JWTHandler:
     ) -> Dict[str, Any]:
         """
         Create access + refresh token pair.
-        
+
         Returns:
             Dict with access_token, refresh_token, expires_in, token_type
         """
@@ -419,7 +417,7 @@ class JWTHandler:
     ) -> TokenPayload:
         """
         Validate and decode a JWT token.
-        
+
         Raises:
             jwt.ExpiredSignatureError: Token expired
             jwt.InvalidTokenError: Token invalid
@@ -472,11 +470,11 @@ class JWTHandler:
     def validate_refresh_token(self, token: str) -> TokenPayload:
         """Validate refresh token"""
         payload = self.validate_token(token, expected_type=TokenType.REFRESH)
-        
+
         # Check refresh token revocation
         if payload.jti in self._revoked_refresh_tokens:
             raise jwt.InvalidTokenError("Refresh token has been revoked")
-            
+
         return payload
 
     def refresh_access_token(
@@ -486,11 +484,11 @@ class JWTHandler:
     ) -> Dict[str, Any]:
         """
         Use refresh token to get new access token.
-        
+
         Args:
             refresh_token: Refresh token string
             rotate: If True, issue new refresh token and revoke old one
-            
+
         Returns:
             New token pair dict
         """

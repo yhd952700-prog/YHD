@@ -9,7 +9,7 @@ import os
 import json
 import uuid
 from datetime import datetime
-from typing import Any, Optional, List, Dict, Callable, Literal, Annotated
+from typing import Any, Optional, List, Dict, Literal, Annotated
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -20,7 +20,7 @@ try:
     from langgraph.graph.message import add_messages
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.checkpoint.sqlite import SqliteSaver
-    from langgraph.prebuilt import ToolNode
+    from langgraph.prebuilt import ToolNode  # noqa: F401
     from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
     from langchain_core.runnables import RunnableConfig
     from langchain_openai import ChatOpenAI
@@ -36,9 +36,7 @@ except ImportError:
     RunnableConfig = None
 
 # Observability imports
-from ..observability.metrics import track_goal_decomposition, track_task_execution
-from ..observability.tracing import create_span, end_span, AISpanAttributes, track_ai_operation
-from ..knowledge.memory import create_memory_manager, MemoryTier
+from ..knowledge.memory import create_memory_manager
 
 
 class GoalStatus(Enum):
@@ -404,13 +402,13 @@ class CoordinatorNode(AgentNode):
         elif goal.status == GoalStatus.EXECUTING:
             current_task_id = state.get("current_task_id")
             current_task = goal.get_task(current_task_id) if current_task_id else None
-            
+
             # Check if current task was just completed by critic
             if current_task and current_task.status == TaskStatus.COMPLETED:
                 # Check if all tasks are done
                 completed = goal.get_completed_tasks()
                 ready = goal.get_ready_tasks(completed)
-                
+
                 if goal.is_complete():
                     goal.status = GoalStatus.COMPLETED
                     goal.completed_at = datetime.now()

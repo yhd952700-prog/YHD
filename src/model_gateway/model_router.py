@@ -14,16 +14,15 @@ Spec items 181-182: Model Router supports:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from typing import (
     Any,
     Dict,
     List,
     Optional,
-    Tuple,
-    Union,
 )
+
+from .model_registry import ModelRegistry, RegisteredModel
 
 
 class RouteResult:

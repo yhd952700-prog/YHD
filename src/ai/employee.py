@@ -5,16 +5,15 @@ Provides multi-agent coordination framework for complex task execution.
 Supports agent pools, task distribution, result aggregation, and KPI reporting.
 """
 
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
-import uuid
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .providers import BaseProvider, get_provider
 from ..observability.metrics import track_agent_task, track_coordination
-from ..observability.tracing import create_span, end_span, AISpanAttributes, track_ai_operation
+from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
 
 
@@ -342,91 +341,91 @@ class Employee:
         return True
 
     def execute_tasks(self, tasks: Optional[List[str]] = None, max_workers: int = None) -> Dict[str, Any]:
-            """
-            Execute distributed tasks in parallel.
+        """
+        Execute distributed tasks in parallel.
 
-            Args:
-                tasks: Task IDs to execute (defaults to all assigned)
-                max_workers: Maximum parallel workers
+        Args:
+            tasks: Task IDs to execute (defaults to all assigned)
+            max_workers: Maximum parallel workers
 
-            Returns:
-                Aggregated results
-            """
-            if tasks is None:
-                tasks = [t for t in self.task_queue if self.tasks[t].status == TaskStatus.ASSIGNED]
+        Returns:
+            Aggregated results
+        """
+        if tasks is None:
+            tasks = [t for t in self.task_queue if self.tasks[t].status == TaskStatus.ASSIGNED]
 
-            max_workers = max_workers or len(self.agents)
-            results = {}
+        max_workers = max_workers or len(self.agents)
+        results = {}
 
-            # Track coordination start
-            if self.enable_observability:
-                track_coordination("distribute", "started")
+        # Track coordination start
+        if self.enable_observability:
+            track_coordination("distribute", "started")
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_task = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {}
 
-                for task_id in tasks:
+            for task_id in tasks:
+                task = self.tasks[task_id]
+                if task.status != TaskStatus.ASSIGNED:
+                    continue
+
+                agent = self.agents.get(task.assigned_agent)
+                if not agent:
+                    continue
+
+                task.status = TaskStatus.RUNNING
+                task.started_at = time.time()
+
+                future = executor.submit(agent.execute, task.description)
+                future_to_task[future] = (task_id, agent.id)
+
+            for future in as_completed(future_to_task):
+                task_id, agent_id = future_to_task[future]
+                try:
+                    result = future.result()
                     task = self.tasks[task_id]
-                    if task.status != TaskStatus.ASSIGNED:
-                        continue
+                    task.result = result
+                    task.status = TaskStatus.COMPLETED if result["status"] == "completed" else TaskStatus.FAILED
+                    task.completed_at = time.time()
 
-                    agent = self.agents.get(task.assigned_agent)
-                    if not agent:
-                        continue
-
-                    task.status = TaskStatus.RUNNING
-                    task.started_at = time.time()
-
-                    future = executor.submit(agent.execute, task.description)
-                    future_to_task[future] = (task_id, agent.id)
-
-                for future in as_completed(future_to_task):
-                    task_id, agent_id = future_to_task[future]
-                    try:
-                        result = future.result()
-                        task = self.tasks[task_id]
-                        task.result = result
-                        task.status = TaskStatus.COMPLETED if result["status"] == "completed" else TaskStatus.FAILED
-                        task.completed_at = time.time()
-
-                        if task.status == TaskStatus.COMPLETED:
-                            self.completed_tasks.append(task_id)
-                            self.total_tasks_completed += 1
-                        else:
-                            self.failed_tasks.append(task_id)
-                            self.total_tasks_failed += 1
-
-                        results[task_id] = result
-
-                        # Persist to memory
-                        if self.enable_observability and self._memory:
-                            self._memory.remember(
-                                content=f"Task {task_id}: {task.description}",
-                                tier=MemoryTier.EPISODIC,
-                                importance=0.7,
-                                tags=["task", task.status.value],
-                                metadata={"task_id": task_id, "result": str(result)[:500]}
-                            )
-
-                    except Exception as e:
-                        task = self.tasks[task_id]
-                        task.status = TaskStatus.FAILED
-                        task.completed_at = time.time()
+                    if task.status == TaskStatus.COMPLETED:
+                        self.completed_tasks.append(task_id)
+                        self.total_tasks_completed += 1
+                    else:
                         self.failed_tasks.append(task_id)
                         self.total_tasks_failed += 1
-                        results[task_id] = {
-                            "agent_id": agent_id,
-                            "task": task.description,
-                            "result": str(e),
-                            "status": "failed",
-                            "error": str(e),
-                        }
 
-            # Track coordination complete
-            if self.enable_observability:
-                track_coordination("execute", "completed")
+                    results[task_id] = result
 
-            return results
+                    # Persist to memory
+                    if self.enable_observability and self._memory:
+                        self._memory.remember(
+                            content=f"Task {task_id}: {task.description}",
+                            tier=MemoryTier.EPISODIC,
+                            importance=0.7,
+                            tags=["task", task.status.value],
+                            metadata={"task_id": task_id, "result": str(result)[:500]}
+                        )
+
+                except Exception as e:
+                    task = self.tasks[task_id]
+                    task.status = TaskStatus.FAILED
+                    task.completed_at = time.time()
+                    self.failed_tasks.append(task_id)
+                    self.total_tasks_failed += 1
+                    results[task_id] = {
+                        "agent_id": agent_id,
+                        "task": task.description,
+                        "result": str(e),
+                        "status": "failed",
+                        "error": str(e),
+                    }
+
+        # Track coordination complete
+        if self.enable_observability:
+            track_coordination("execute", "completed")
+
+        return results
 
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -628,6 +627,6 @@ class AgentPool:
             "total_completed": total_completed,
             "total_failed": total_failed,
             "overall_success_rate": (total_completed / (total_completed + total_failed) * 100)
-                if (total_completed + total_failed) > 0 else 0,
+            if (total_completed + total_failed) > 0 else 0,
             "employee_kpis": employee_kpis,
         }

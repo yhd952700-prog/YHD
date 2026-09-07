@@ -15,20 +15,20 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from .models import SandboxExecutionContext, SandboxResult, SandboxStatus, ResourceLimits
+from .models import SandboxExecutionContext, SandboxResult
 
 
 class PluginSandboxStore:
     """
     Plugin sandbox execution store with integrity verification.
-    
+
     Features:
     - JSON-based persistent storage
     - Hash chain for tamper evidence
     - Execution context and result tracking
     - Status management
     """
-    
+
     def __init__(self, storage_path: str = "data/plugins/sandbox/executions.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ class PluginSandboxStore:
         self._results: Dict[str, SandboxResult] = {}
         self._hash_chain: Optional[List[str]] = None
         self._load()
-    
+
     def _load(self) -> None:
         """Load existing executions from storage."""
         if self.storage_path.exists():
@@ -62,7 +62,7 @@ class PluginSandboxStore:
             self._contexts = {}
             self._results = {}
             self._hash_chain = None
-    
+
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current contexts."""
         chain: List[str] = []
@@ -76,15 +76,15 @@ class PluginSandboxStore:
             context_hash = hashlib.sha256(context_data.encode()).hexdigest()
             chain.append(context_hash)
             prev_hash = context_hash
-        
+
         self._hash_chain = chain
         self._save()
-    
+
     def _save(self) -> None:
         """Persist contexts and results to storage."""
         if self._hash_chain is None:
             self._build_hash_chain()
-        
+
         data = {
             "version": 1,
             "saved_at": time.time(),
@@ -94,16 +94,16 @@ class PluginSandboxStore:
         }
         with open(self.storage_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-    
+
     # ==================== Context Operations ====================
-    
+
     def create_context(self, context: SandboxExecutionContext) -> str:
         """
         Create (store) a sandbox execution context.
-        
+
         Args:
             context: The context to store
-            
+
         Returns:
             The execution ID
         """
@@ -111,18 +111,18 @@ class PluginSandboxStore:
         self._contexts[eid] = context
         self._save()
         return eid
-    
+
     def get_context(self, execution_id: str) -> Optional[SandboxExecutionContext]:
         """Get a context by execution ID."""
         return self._contexts.get(execution_id)
-    
+
     def list_contexts(self, filters: Optional[Dict[str, Any]] = None) -> List[SandboxExecutionContext]:
         """List contexts with optional filters."""
         contexts = list(self._contexts.values())
-        
+
         if not filters:
             return contexts
-        
+
         result = []
         for ctx in contexts:
             match = True
@@ -138,23 +138,23 @@ class PluginSandboxStore:
             if match:
                 result.append(ctx)
         return result
-    
+
     def update_context(self, context: SandboxExecutionContext) -> str:
         """Update an existing context."""
         eid = context.execution_id
         self._contexts[eid] = context
         self._save()
         return eid
-    
+
     # ==================== Result Operations ====================
-    
+
     def store_result(self, result: SandboxResult) -> str:
         """
         Store a sandbox execution result.
-        
+
         Args:
             result: The result to store
-            
+
         Returns:
             The execution ID
         """
@@ -169,22 +169,22 @@ class PluginSandboxStore:
             self._contexts[eid].end_time = datetime.now()
         self._save()
         return eid
-    
+
     def get_result(self, execution_id: str) -> Optional[SandboxResult]:
         """Get a result by execution ID."""
         return self._results.get(execution_id)
-    
+
     # ==================== Integrity ====================
-    
+
     def verify_integrity(self) -> bool:
         """Verify the hash chain integrity."""
         if not self._contexts or not self._hash_chain:
             return True
-        
+
         chain = self._hash_chain
         if len(chain) != len(self._contexts):
             return False
-        
+
         sorted_ids = sorted(self._contexts.keys())
         prev_hash = "genesis"
         for i, eid in enumerate(sorted_ids):
@@ -193,28 +193,28 @@ class PluginSandboxStore:
             context_dict["prev_hash"] = prev_hash
             context_data = json.dumps(context_dict, sort_keys=True, separators=(",", ":"))
             expected_hash = hashlib.sha256(context_data.encode()).hexdigest()
-            
+
             if expected_hash != chain[i]:
                 return False
-            
+
             prev_hash = expected_hash
-        
+
         return True
-    
+
     # ==================== Statistics ====================
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get sandbox statistics."""
         contexts = list(self._contexts.values())
         results = list(self._results.values())
-        
+
         status_counts: Dict[str, int] = {}
         for ctx in contexts:
             status_counts[ctx.status] = status_counts.get(ctx.status, 0) + 1
-        
+
         success_count = sum(1 for r in results if r.success)
         failure_count = sum(1 for r in results if not r.success)
-        
+
         return {
             "total_executions": len(contexts),
             "by_status": status_counts,

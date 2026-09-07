@@ -10,7 +10,7 @@ import time
 from typing import Dict, Any, Optional
 
 from .metrics_helper import get_metrics_collector, increment_counter, observe_latency
-from .tracing import get_correlation_context, generate_trace_id, generate_span_id, Span
+from .tracing import get_correlation_context
 
 # Langfuse integration
 try:
@@ -20,11 +20,11 @@ try:
 except ImportError:
     LANGFUSE_AVAILABLE = False
 
-# Phoenix integration 
+# Phoenix integration
 try:
-    import phoenix
+    import phoenix  # noqa: F401
     from phoenix.otel import register
-    import opentelemetry.sdk
+    import opentelemetry.sdk  # noqa: F401
     PHOENIX_AVAILABLE = True
 except ImportError:
     PHOENIX_AVAILABLE = False
@@ -88,7 +88,7 @@ def _setup_structured_logging() -> None:
 
 def _init_metrics() -> None:
     """Initialize metrics collection."""
-    collector = get_metrics_collector()
+    get_metrics_collector()
     increment_counter('observability.startup')
 
 
@@ -121,12 +121,12 @@ def export_to_langfuse(trace_data: Dict[str, Any], model_info: Dict[str, Any] = 
     if not LANGFUSE_AVAILABLE:
         print("⚠ Langfuse not available, skipping export")
         return
-    
+
     try:
         langfuse = Langfuse()
         observation_type = ObservationType.LLM
         if model_info:
-            observation = langfuse.log(
+            langfuse.log(
                 name=trace_data.get('name', 'unknown'),
                 model=model_info.get('model', 'unknown'),
                 trace_id=trace_data.get('trace_id'),
@@ -136,7 +136,7 @@ def export_to_langfuse(trace_data: Dict[str, Any], model_info: Dict[str, Any] = 
                 type=observation_type,
             )
         else:
-            observation = langfuse.log(
+            langfuse.log(
                 name=trace_data.get('name', 'unknown'),
                 type=observation_type,
             )
@@ -224,7 +224,6 @@ _config = None
 
 def get_config() -> ObservabilityConfig:
     """Get the global observability config."""
-    global _config
     return _config
 
 

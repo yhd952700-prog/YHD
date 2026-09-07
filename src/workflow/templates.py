@@ -1,6 +1,6 @@
 """Workflow templates for common automation patterns."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 
 # Standard workflow templates

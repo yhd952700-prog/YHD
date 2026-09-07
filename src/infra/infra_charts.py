@@ -92,26 +92,18 @@ gateway_chart = {
     "home": "https://liuhao-ai-os.example.com",
     "icon": app_icon,
     "annotations": app_annotations,
-    
-    "dependencies": [],
-    
+
     "maintainers": [
         {
             "name": "LiuHao AI OS Team",
             "email": "team@liuhao-ai-os.example.com",
         },
     ],
-    
-    "keywords": ["ai", "os", "gateway", "api"],
-    
+
     "sources": [
         "https://charts.liuhao-ai-os.example.com",
     ],
-    
-    "version": chart_version,
-    
-    "appVersion": "1.0.0",
-    
+
     "dependencies": [
         {
             "name": "redis",
@@ -124,32 +116,32 @@ gateway_chart = {
             "repository": "https://charts.bitnami.com/bitnami",
         },
     ],
-    
+
     "values": {
         "replicaCount": 2,
-        
+
         "image": {
             "repository": "liuhao-ai-os/gateway",
             "pullPolicy": "IfNotPresent",
             "tag": "latest",
         },
-        
+
         "service": {
             "type": "LoadBalancer",
             "port": 80,
         },
-        
+
         "resources": {
             "limits": {"cpu": "500m", "memory": "1Gi"},
             "requests": {"cpu": "100m", "memory": "512Mi"},
         },
-        
+
         "nodeSelector": {},
-        
+
         "tolerations": [],
-        
+
         "affinity": {},
-        
+
         "env": {
             "REDIS_HOST": "redis-master",
             "REDIS_PORT": "6379",
@@ -157,9 +149,9 @@ gateway_chart = {
             "JWT_SECRET": "change-me",
             "API_KEY_MANAGER": "true",
         },
-        
+
         "envFrom": [],
-        
+
         "ports": [
             {
                 "name": "http",
@@ -167,7 +159,7 @@ gateway_chart = {
                 "protocol": "TCP",
             },
         ],
-        
+
         "probe": {
             "liveness": {
                 "enabled": True,
@@ -182,7 +174,7 @@ gateway_chart = {
                 "periodSeconds": 5,
             },
         },
-        
+
         "strategy": {
             "type": "RollingUpdate",
             "rollingUpdate": {
@@ -207,7 +199,7 @@ message_bus_chart = {
     "home": "https://liuhao-ai-os.example.com",
     "icon": app_icon,
     "annotations": app_annotations,
-    
+
     "dependencies": [
         {
             "name": "redis",
@@ -215,36 +207,36 @@ message_bus_chart = {
             "repository": "https://charts.bitnami.com/bitnami",
         },
     ],
-    
+
     "values": {
         "replicaCount": 1,
-        
+
         "image": {
             "repository": "bitnami/redis",
             "pullPolicy": "IfNotPresent",
             "tag": "7-alpine",
         },
-        
+
         "auth": {
             "enabled": False,
         },
-        
+
         "master": {
             "enabled": True,
             "rootPassword": "",
         },
-        
+
         "port": 6379,
-        
+
         "resources": {
             "limits": {"cpu": "250m", "memory": "256Mi"},
             "requests": {"cpu": "50m", "memory": "128Mi"},
         },
-        
+
         "nodeSelector": {},
-        
+
         "tolerations": [],
-        
+
         "affinity": {},
     },
 }
@@ -317,7 +309,7 @@ cli_scaffold = {
     "name": "liuhao-init",
     "description": "Initialize a new LiuHao AI OS project",
     "usage": "liuhao-init [options]",
-    
+
     "options": [
         {
             "name": "project-name",
@@ -338,7 +330,7 @@ cli_scaffold = {
             "default": ".",
         },
     ],
-    
+
     "template_minimal": {
         "files": [
             "README.md",
@@ -348,7 +340,7 @@ cli_scaffold = {
         ],
         "description": "Minimal LiuHao AI OS project template",
     },
-    
+
     "template_full": {
         "files": [
             "README.md",
@@ -370,7 +362,7 @@ cli_scaffold = {
         ],
         "description": "Full LiuHao AI OS project template",
     },
-    
+
     "template_plugin": {
         "files": [
             "README.md",
@@ -392,7 +384,7 @@ docsite_config = {
     "description": "LiuHao AI OS Documentation Site",
     "generator": "mkdocs",
     "theme": "mkdocs-material",
-    
+
     "pages": [
         {
             "name": "Home",
@@ -455,17 +447,17 @@ docsite_config = {
             ],
         },
     ],
-    
+
     "plugins": [
         "mkdocs-jupyter",
         "mkdocstrings",
         "search",
     ],
-    
+
     "extra_javascript": [
         "search/js/search.js",
     ],
-    
+
     "extra_css": [
         "stylesheets/extra.css",
     ],

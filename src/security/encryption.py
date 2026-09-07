@@ -8,7 +8,6 @@ Provides:
 - Envelope encryption for key wrapping
 """
 
-import os
 import base64
 import secrets
 import hashlib
@@ -19,7 +18,7 @@ from pathlib import Path
 
 try:
     from cryptography.fernet import Fernet
-    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives import hashes, serialization  # noqa: F401
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -49,7 +48,7 @@ class EncryptionConfig:
 class EncryptionManager:
     """
     Unified encryption manager supporting multiple algorithms.
-    
+
     Features:
     - Fernet (AES-128-CBC + HMAC) - simple, safe default
     - AES-GCM - authenticated encryption with associated data
@@ -66,7 +65,7 @@ class EncryptionManager:
     ):
         """
         Initialize encryption manager.
-        
+
         Args:
             master_key: 32-byte master key (generated if not provided)
             config: EncryptionConfig instance
@@ -78,7 +77,7 @@ class EncryptionManager:
             )
 
         self.config = config or EncryptionConfig()
-        
+
         # Load or generate master key
         if master_key:
             self._master_key = master_key
@@ -96,7 +95,7 @@ class EncryptionManager:
 
         # Initialize Fernet with master key
         self._fernet = Fernet(base64.urlsafe_b64encode(self._master_key[:32]))
-        
+
         # AES-GCM instance
         self._aesgcm = AESGCM(self._master_key[:32])
 
@@ -136,10 +135,10 @@ class EncryptionManager:
         """Derive encryption key from password using PBKDF2 or Argon2"""
         if isinstance(password, str):
             password = password.encode()
-            
+
         if salt is None:
             salt = secrets.token_bytes(16)
-            
+
         if self.config.key_derivation == "argon2" and CRYPTO_AVAILABLE:
             kdf = Argon2id(
                 salt=salt,
@@ -155,7 +154,7 @@ class EncryptionManager:
                 salt=salt,
                 iterations=self.config.pbkdf2_iterations,
             )
-            
+
         return kdf.derive(password)
 
     # ==================== Fernet (High-level) ====================
@@ -163,7 +162,7 @@ class EncryptionManager:
     def encrypt(self, data: Union[str, bytes], metadata: Optional[dict] = None) -> str:
         """
         Encrypt data using Fernet (AES-128-CBC + HMAC).
-        
+
         Returns base64-encoded token containing:
         - Version byte
         - Timestamp
@@ -174,9 +173,9 @@ class EncryptionManager:
         """
         if isinstance(data, str):
             data = data.encode()
-            
+
         token = self._fernet.encrypt(data)
-        
+
         if metadata:
             # Wrap with metadata
             import json
@@ -186,13 +185,13 @@ class EncryptionManager:
                 "meta": metadata,
             }
             return base64.urlsafe_b64encode(json.dumps(wrapper).encode()).decode()
-            
+
         return token.decode()
 
     def decrypt(self, token: str, return_metadata: bool = False) -> Union[bytes, Tuple[bytes, dict]]:
         """
         Decrypt Fernet token.
-        
+
         Returns bytes, or (bytes, metadata) if return_metadata=True
         """
         # Check if wrapped with metadata
@@ -209,7 +208,7 @@ class EncryptionManager:
                 return data
         except Exception:
             pass
-            
+
         # Standard Fernet token
         data = self._fernet.decrypt(token.encode())
         if return_metadata:
@@ -238,17 +237,17 @@ class EncryptionManager:
     ) -> dict:
         """
         Encrypt using AES-GCM with optional associated data.
-        
+
         Returns dict with: nonce, ciphertext, tag (combined in ciphertext for AES-GCM)
         """
         if isinstance(data, str):
             data = data.encode()
-            
+
         if nonce is None:
             nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
-            
+
         ciphertext = self._aesgcm.encrypt(nonce, data, associated_data)
-        
+
         return {
             "nonce": base64.urlsafe_b64encode(nonce).decode(),
             "ciphertext": base64.urlsafe_b64encode(ciphertext).decode(),
@@ -266,7 +265,7 @@ class EncryptionManager:
             nonce = base64.urlsafe_b64decode(nonce)
         if isinstance(ciphertext, str):
             ciphertext = base64.urlsafe_b64decode(ciphertext)
-            
+
         return self._aesgcm.decrypt(nonce, ciphertext, associated_data)
 
     # ==================== Envelope Encryption ====================
@@ -278,7 +277,7 @@ class EncryptionManager:
         """
         # Use Fernet for key wrapping
         wrapped = self._fernet.encrypt(data_key)
-        
+
         return {
             "wrapped_key": base64.urlsafe_b64encode(wrapped).decode(),
             "algorithm": "fernet",
@@ -311,7 +310,7 @@ class EncryptionManager:
         """Hash data with specified algorithm"""
         if isinstance(data, str):
             data = data.encode()
-            
+
         if algorithm == "sha256":
             return hashlib.sha256(data).hexdigest()
         elif algorithm == "sha512":

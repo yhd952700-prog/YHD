@@ -10,9 +10,8 @@ Provides comprehensive benchmarking suites for:
 import time
 import asyncio
 import statistics
-from typing import Dict, Any, List, Callable, Optional, Tuple
-from dataclasses import dataclass, field
-import concurrent.futures
+from typing import Dict, List, Callable, Optional
+from dataclasses import dataclass
 
 
 @dataclass
@@ -35,20 +34,20 @@ class BenchmarkResult:
 
 class BenchmarkSuite:
     """基准测试套件管理器"""
-    
+
     def __init__(self, name: str = "unnamed"):
         self.name = name
         self._benchmarks: List[Callable] = []
         self._results: Dict[str, BenchmarkResult] = {}
-    
+
     def add_benchmark(self, func: Callable) -> None:
         """注册基准测试函数"""
         self._benchmarks.append(func)
-    
+
     async def run_all(self, iterations: int = 100) -> Dict[str, BenchmarkResult]:
         """运行所有已注册的基准测试"""
         self._results = {}
-        
+
         for benchmark_fn in self._benchmarks:
             try:
                 result = await benchmark_fn(iterations)
@@ -69,9 +68,9 @@ class BenchmarkSuite:
                     failure_count=iterations,
                     error_message=str(e)
                 )
-        
+
         return self._results
-    
+
     def get_results(self) -> Dict[str, BenchmarkResult]:
         """获取所有基准测试结果"""
         return self._results.copy()
@@ -79,16 +78,16 @@ class BenchmarkSuite:
 
 class PerfTracker:
     """性能追踪上下文管理器"""
-    
+
     def __init__(self, name: str, tracker_dict: Dict[str, List[float]]):
         self.name = name
         self.tracker_dict = tracker_dict
         self.start_time: Optional[float] = None
-    
+
     def __enter__(self):
         self.start_time = time.time()
         return self
-    
+
     def __exit__(self, *args):
         elapsed_ms = (time.time() - self.start_time) * 1000
         if self.name not in self.tracker_dict:
@@ -114,7 +113,7 @@ async def run_single_benchmark(
     success_count = 0
     failure_count = 0
     error_msg = None
-    
+
     # 同步函数
     if not asyncio.iscoroutinefunction(func):
         for i in range(iterations):
@@ -139,13 +138,13 @@ async def run_single_benchmark(
             except Exception as e:
                 failure_count += 1
                 error_msg = str(e) if error_msg is None else error_msg
-    
+
     if not times:
         times = [0]  # Avoid division by zero
-    
+
     times_sorted = sorted(times)
     n = len(times_sorted)
-    
+
     return BenchmarkResult(
         name=func.__name__,
         iterations=iterations,
@@ -189,18 +188,18 @@ def benchmark_concurrent_requests():
 async def cache_get_benchmark(iterations: int = 100) -> BenchmarkResult:
     """Cache GET 性能基准测试"""
     from src.performance.cache import LRUCache
-    
+
     cache = LRUCache(max_size=1000)
-    
+
     # 预热缓存
     for i in range(100):
         cache.put(f"key_{i}", {"data": i, "nested": {"level": 2}})
-    
+
     # 测试 GET 操作
     times = []
     success_count = 0
     failure_count = 0
-    
+
     for i in range(iterations):
         start = time.time()
         result = cache.get(f"key_{i % 100}")
@@ -210,27 +209,27 @@ async def cache_get_benchmark(iterations: int = 100) -> BenchmarkResult:
             success_count += 1
         else:
             failure_count += 1
-    
+
     return _compute_benchmark_stats("cache_get", iterations, times, success_count, failure_count)
 
 
 async def cache_put_benchmark(iterations: int = 100) -> BenchmarkResult:
     """Cache PUT 性能基准测试"""
     from src.performance.cache import LRUCache
-    
+
     cache = LRUCache(max_size=1000)
-    
+
     times = []
     success_count = 0
     failure_count = 0
-    
+
     for i in range(iterations):
         start = time.time()
         cache.put(f"key_{i}", {"data": i, "ttl": 300})
         elapsed_ms = (time.time() - start) * 1000
         times.append(elapsed_ms)
         success_count += 1
-    
+
     return _compute_benchmark_stats("cache_put", iterations, times, success_count, failure_count)
 
 
@@ -244,10 +243,10 @@ def _compute_benchmark_stats(
     """计算基准统计数据"""
     if not times:
         times = [0]
-    
+
     times_sorted = sorted(times)
     n = len(times_sorted)
-    
+
     return BenchmarkResult(
         name=name,
         iterations=iterations,
@@ -271,7 +270,7 @@ async def model_throughput_benchmark(iterations: int = 50) -> BenchmarkResult:
     times = []
     success_count = 0
     failure_count = 0
-    
+
     for i in range(iterations):
         start = time.time()
         # Simulate model call - small sleep to avoid actual API calls
@@ -279,7 +278,7 @@ async def model_throughput_benchmark(iterations: int = 50) -> BenchmarkResult:
         elapsed_ms = (time.time() - start) * 1000
         times.append(elapsed_ms)
         success_count += 1
-    
+
     return _compute_benchmark_stats("model_throughput", iterations, times, success_count, failure_count)
 
 
@@ -288,7 +287,7 @@ async def api_response_benchmark(iterations: int = 100) -> BenchmarkResult:
     times = []
     success_count = 0
     failure_count = 0
-    
+
     for i in range(iterations):
         start = time.time()
         # Simulate API response
@@ -296,7 +295,7 @@ async def api_response_benchmark(iterations: int = 100) -> BenchmarkResult:
         elapsed_ms = (time.time() - start) * 1000
         times.append(elapsed_ms)
         success_count += 1
-    
+
     return _compute_benchmark_stats("api_response", iterations, times, success_count, failure_count)
 
 

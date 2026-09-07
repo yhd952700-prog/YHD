@@ -1,7 +1,7 @@
 """Lightweight workflow event bus for Phase 3 automation primitives."""
 
 from collections import defaultdict
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class EventBus:

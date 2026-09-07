@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.providers.llm_base import LLMProvider
 
 
@@ -41,7 +43,6 @@ class OpenAIProvider(LLMProvider):
 
     def embeddings(self, texts: list[str], **kwargs: Any) -> dict[str, Any]:
         """OpenAI-compatible embeddings stub."""
-        import numpy as np
         dim = kwargs.get("dimension", 1536)
         return {
             "data": [{"embedding": [0.0] * dim, "index": 0, "object": "embedding"}],

@@ -1,7 +1,7 @@
 """Simple state machine for workflow execution tracking."""
 
 from typing import Tuple
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class StateMachine:

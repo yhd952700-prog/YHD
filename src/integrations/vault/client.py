@@ -8,9 +8,8 @@ Supports local development mode and production Vault clusters.
 from typing import Any, Dict, Optional, List
 import threading
 import os
-import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

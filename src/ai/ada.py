@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 import uuid
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.plugins.sandbox.backends.base import ExecutionResult, ResourceLimits
 from src.plugins.sandbox.backends.subprocess_backend import SubprocessBackend

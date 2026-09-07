@@ -7,8 +7,12 @@ Provides standardized interfaces for different storage types.
 
 from typing import Dict, Any, Optional, List, Generic, TypeVar
 from abc import ABC, abstractmethod
-from datetime import datetime
-import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+import hashlib
+import json
+import time
 
 # Type variable for storage entries
 T = TypeVar('T')
@@ -100,47 +104,47 @@ class StorageStats:
 class StorageBackend(ABC, Generic[T]):
     """
     Abstract base class for storage backends.
-    
+
     All concrete storage backends must implement this interface.
     """
-    
+
     @property
     @abstractmethod
     def storage_type(self) -> StorageType:
         """Return the storage backend type."""
         pass
-    
+
     @property
     @abstractmethod
     def stats(self) -> StorageStats:
         """Return storage statistics."""
         pass
-    
+
     @abstractmethod
     def get(self, key: str) -> Optional[T]:
         """Get a value by key."""
         pass
-    
+
     @abstractmethod
     def put(self, key: str, value: T, ttl: Optional[float] = None) -> None:
         """Put a value with optional TTL."""
         pass
-    
+
     @abstractmethod
     def delete(self, key: str) -> bool:
         """Delete a value by key. Returns True if deleted."""
         pass
-    
+
     @abstractmethod
     def contains(self, key: str) -> bool:
         """Check if key exists and is not expired."""
         pass
-    
+
     @abstractmethod
     def cleanup(self) -> int:
         """Remove expired entries. Returns count of removed entries."""
         pass
-    
+
     @abstractmethod
     def get_stats(self) -> StorageStats:
         """Get storage statistics."""
@@ -152,22 +156,22 @@ class StorageBackend(ABC, Generic[T]):
 class JSONFileBackend(StorageBackend[StorageEntry]):
     """
     JSON file-based storage backend.
-    
+
     Persists data to a JSON file with hash chain integrity verification.
     Suitable for small to medium datasets.
     """
-    
+
     def __init__(self, storage_path: str = "data/storage/entries.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._entries: Dict[str, StorageEntry] = {}
         self._hash_chain: Optional[List[str]] = None
         self._load()
-    
+
     @property
     def storage_type(self) -> StorageType:
         return StorageType.JSON_FILE
-    
+
     @property
     def stats(self) -> StorageStats:
         """Return storage statistics."""
@@ -180,7 +184,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             eviction_count=0,
             expired_count=len([e for e in self._entries.values() if e.is_expired()]),
         )
-    
+
     def _load(self) -> None:
         """Load entries from JSON file."""
         if self.storage_path.exists():
@@ -201,7 +205,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         else:
             self._entries = {}
             self._hash_chain = None
-    
+
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain."""
         chain: List[str] = []
@@ -217,7 +221,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             prev_hash = entry_hash
         self._hash_chain = chain
         self._save()
-    
+
     def _save(self) -> None:
         """Persist entries to JSON file."""
         data = {
@@ -228,7 +232,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         }
         with open(self.storage_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-    
+
     def get(self, key: str) -> Optional[StorageEntry]:
         """Get an entry by key."""
         entry = self._entries.get(key)
@@ -238,7 +242,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             self._save()
             return None
         return entry
-    
+
     def put(self, key: str, value: StorageEntry, ttl: Optional[float] = None) -> None:
         """Put an entry."""
         if ttl is not None:
@@ -260,7 +264,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         # Update value storage
         self._entries[key] = entry
         self._save()
-    
+
     def delete(self, key: str) -> bool:
         """Delete an entry by key."""
         if key in self._entries:
@@ -268,11 +272,11 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             self._save()
             return True
         return False
-    
+
     def contains(self, key: str) -> bool:
         """Check if key exists and is not expired."""
         return key in self._entries and not self._entries[key].is_expired()
-    
+
     def cleanup(self) -> int:
         """Remove expired entries."""
         expired_keys = [k for k, v in self._entries.items() if v.is_expired()]
@@ -280,12 +284,12 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             del self._entries[key]
         self._save()
         return len(expired_keys)
-    
+
     def get_stats(self) -> StorageStats:
         """Get storage statistics."""
         expired = len([e for e in self._entries.values() if e.is_expired()])
         current = len([e for e in self._entries.values() if not e.is_expired()])
-        
+
         return StorageStats(
             total_entries=len(self._entries),
             current_size=current,
@@ -300,20 +304,20 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 class InMemoryBackend(StorageBackend[Any]):
     """
     In-memory storage backend.
-    
+
     High-performance storage for caching and temporary data.
     """
-    
+
     def __init__(self):
         self._entries: Dict[str, Any] = {}
         self._hit_count = 0
         self._miss_count = 0
         self._creation_time = time.time()
-    
+
     @property
     def storage_type(self) -> StorageType:
         return StorageType.IN_MEMORY
-    
+
     @property
     def stats(self) -> StorageStats:
         """Return storage statistics."""
@@ -326,12 +330,12 @@ class InMemoryBackend(StorageBackend[Any]):
             eviction_count=0,
             expired_count=len([e for e in self._entries.values() if self._is_expired(e)]),
         )
-    
+
     def _is_expired(self, entry: Any) -> bool:
         """Check if an entry is expired (simple implementation)."""
         # In-memory backend doesn't enforce TTL by default
         return False
-    
+
     def get(self, key: str) -> Optional[Any]:
         """Get a value by key."""
         if key in self._entries:
@@ -339,7 +343,7 @@ class InMemoryBackend(StorageBackend[Any]):
             return self._entries[key]
         self._miss_count += 1
         return None
-    
+
     def put(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
         """Put a value."""
         # Store TTL info if provided
@@ -350,14 +354,14 @@ class InMemoryBackend(StorageBackend[Any]):
             self._entries[key] = {"value": value, "expiry": expiry}
         else:
             self._entries[key] = value
-    
+
     def delete(self, key: str) -> bool:
         """Delete a value by key."""
         if key in self._entries:
             del self._entries[key]
             return True
         return False
-    
+
     def contains(self, key: str) -> bool:
         """Check if key exists and is not expired."""
         if key in self._entries:
@@ -367,7 +371,7 @@ class InMemoryBackend(StorageBackend[Any]):
                 return time.time() < entry["expiry"]
             return True
         return False
-    
+
     def cleanup(self) -> int:
         """Remove expired entries."""
         expired_keys = []
@@ -375,16 +379,16 @@ class InMemoryBackend(StorageBackend[Any]):
             if isinstance(entry, dict) and "expiry" in entry:
                 if time.time() >= entry["expiry"]:
                     expired_keys.append(key)
-        
+
         for key in expired_keys:
             del self._entries[key]
-        
+
         return len(expired_keys)
-    
+
     def get_stats(self) -> StorageStats:
         """Get storage statistics."""
         expired = len([e for e in self._entries.values() if self._is_expired(e)])
-        
+
         return StorageStats(
             total_entries=len(self._entries),
             current_size=len(self._entries) - expired,
@@ -401,11 +405,11 @@ class InMemoryBackend(StorageBackend[Any]):
 def create_backend(backend_type: str, **kwargs) -> StorageBackend:
     """
     Create a storage backend instance.
-    
+
     Args:
         backend_type: "json_file", "in_memory", or "sqlalchemy"
         **kwargs: Backend-specific configuration options
-    
+
     Returns:
         Configured StorageBackend instance
     """
@@ -422,34 +426,35 @@ def create_backend(backend_type: str, **kwargs) -> StorageBackend:
 
 M = TypeVar('M', bound='StorageEntry')
 
+
 class Repository(Generic[M]):
     """
     Generic Repository pattern for storage operations.
-    
+
     Provides standard CRUD operations and query capabilities
     for working with StorageEntry subclasses.
     """
-    
+
     def __init__(self, backend: StorageBackend[M]):
         self.backend = backend
-    
+
     def get(self, key: str) -> Optional[M]:
         """Get an entry by key."""
         entry = self.backend.get(key)
         return entry
-    
+
     def put(self, key: str, value: M, ttl: Optional[float] = None) -> None:
         """Put an entry."""
-        self.backend.put(key, entry=entry, ttl=ttl)
-    
+        self.backend.put(key, value=value, ttl=ttl)
+
     def delete(self, key: str) -> bool:
         """Delete an entry by key."""
         return self.backend.delete(key)
-    
+
     def find(self, key: str) -> Optional[M]:
         """Find an entry by key (alias for get)."""
         return self.get(key)
-    
+
     def list(self, filters: Optional[Dict[str, Any]] = None) -> List[M]:
         """List entries with optional filters."""
         # Basic implementation - get all entries and filter
@@ -461,16 +466,16 @@ class Repository(Generic[M]):
                 if not entry.is_expired():
                     entries.append(entry)
         return entries
-    
+
     def count(self, filters: Optional[Dict[str, Any]] = None) -> int:
         """Count entries matching filters."""
         entries = self.list(filters)
         return len(entries)
-    
+
     def cleanup(self) -> int:
         """Remove expired entries."""
         return self.backend.cleanup()
-    
+
     def stats(self) -> StorageStats:
         """Get storage statistics."""
         return self.backend.stats

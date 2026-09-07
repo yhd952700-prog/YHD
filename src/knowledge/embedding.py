@@ -6,9 +6,9 @@ and runs an EmbeddingPipeline over chunked text to produce vector embeddings.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import List
 
-from .chunker import chunk_text, chunk_by_sentences
+from .chunker import chunk_text
 
 
 class EmbeddingPipeline:

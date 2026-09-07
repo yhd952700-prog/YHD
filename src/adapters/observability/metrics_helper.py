@@ -3,10 +3,9 @@
 Provides Prometheus-format metrics export for production observability.
 """
 
-import time
 import threading
 from collections import defaultdict
-from typing import Dict, Any
+from typing import Dict
 
 # Metrics counters and gauges
 _request_count = defaultdict(int)

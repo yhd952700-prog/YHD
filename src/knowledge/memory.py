@@ -29,7 +29,7 @@ except ImportError:
     BaseVectorStoreConfig = None
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI  # noqa: F401
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
@@ -339,7 +339,7 @@ class InMemoryBackend(MemoryBackend):
         persist_dir = os.getenv('MEMORY_PERSIST_DIR', 'memory_data')
         os.makedirs(persist_dir, exist_ok=True)
         persist_file = os.path.join(persist_dir, f'{self.user_id}_memories.json')
-        
+
         # 收集所有内存项并保存
         data = []
         for item_id, item in self._store.items():
@@ -358,7 +358,7 @@ class InMemoryBackend(MemoryBackend):
                 'session_id': item.session_id,
                 'agent_id': item.agent_id,
             })
-        
+
         with open(persist_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -366,16 +366,13 @@ class InMemoryBackend(MemoryBackend):
         """从JSON文件加载内存项"""
         persist_dir = os.getenv('MEMORY_PERSIST_DIR', 'memory_data')
         persist_file = os.path.join(persist_dir, f'{self.user_id}_memories.json')
-        
+
         if os.path.exists(persist_file):
             try:
                 with open(persist_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                
+
                 for item_data in data:
-                    from src.knowledge.memory import MemoryItem, MemoryTier
-                    from datetime import datetime
-                    
                     item = MemoryItem(
                         id=item_data.get('id', str(uuid.uuid4())),
                         content=item_data.get('content', ''),
@@ -466,7 +463,7 @@ class MemoryManager:
         # Convert string tier to MemoryTier enum if needed
         if isinstance(tier, str):
             tier = MemoryTier(tier)
-        
+
         item = MemoryItem(
             content=content,
             tier=tier,

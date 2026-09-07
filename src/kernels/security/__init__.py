@@ -14,11 +14,10 @@ policies, Vault Transit integration for crypto operations, and full audit loggin
 from __future__ import annotations
 
 from datetime import datetime
-import json
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
 from src.kernels._crosscutting import kernel_action
@@ -29,15 +28,20 @@ try:
     VAULT_AVAILABLE = True
 except ImportError:
     VAULT_AVAILABLE = False
+
     class VaultClient:
         def __init__(self, *args, **kwargs):
             pass
+
         def read(self, *args, **kwargs):
             return {"data": None}
+
         def write(self, *args, **kwargs):
             pass
+
         def list(self, *args, **kwargs):
             return []
+
         def delete(self, *args, **kwargs):
             pass
     secret_id = None

@@ -8,7 +8,6 @@ Provides basic isolation when gVisor/Docker are unavailable.
 import subprocess
 import os
 import time
-import signal
 from typing import Dict, Any, Optional, List
 
 # Cross-platform resource limit support

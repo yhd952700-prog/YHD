@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from src.knowledge.rag_pipeline import rag_query, RAGPipeline
+from src.knowledge.rag_pipeline import RAGPipeline
 from src.knowledge.retriever import Retriever
 from src.knowledge.vector_store import VectorStore
 from src.knowledge.embedding import EmbeddingPipeline

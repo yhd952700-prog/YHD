@@ -21,9 +21,9 @@ class BackupRecord:
 @dataclass
 class BackupManager:
     """Manages backup creation and restoration."""
-    
+
     backup_dir: str = "./backups"
-    
+
     def create_backup(self, payload: Dict[str, Any], resource_snapshot: Dict[str, Any]) -> BackupRecord:
         """Create a backup record."""
         record = BackupRecord(
@@ -31,10 +31,10 @@ class BackupManager:
             resource_snapshot=resource_snapshot,
             integrity_hash=self._compute_hash(payload, resource_snapshot),
         )
-        
+
         # Ensure backup directory exists
         os.makedirs(self.backup_dir, exist_ok=True)
-        
+
         # Write backup to disk
         backup_path = os.path.join(self.backup_dir, f"backup_{record.backup_id}.json")
         with open(backup_path, "w") as f:
@@ -45,9 +45,9 @@ class BackupManager:
                 "resource_snapshot": record.resource_snapshot,
                 "integrity_hash": record.integrity_hash,
             }, f, indent=2)
-        
+
         return record
-    
+
     def _compute_hash(self, payload: Dict[str, Any], resource_snapshot: Dict[str, Any]) -> str:
         """Compute integrity hash for backup."""
         import hashlib
@@ -71,24 +71,24 @@ class RecoveryRecord:
 @dataclass
 class RecoveryManager:
     """Manages restoration from backups."""
-    
+
     backup_dir: str = "./backups"
-    
+
     def restore(self, backup_id: str) -> RecoveryRecord:
         """Restore from a backup record."""
         backup_path = os.path.join(self.backup_dir, f"backup_{backup_id}.json")
-        
+
         if not os.path.exists(backup_path):
             return RecoveryRecord(
                 backup_id=backup_id,
                 success=False,
                 error=f"Backup file not found: {backup_path}",
             )
-        
+
         try:
             with open(backup_path, "r") as f:
-                data = json.load(f)
-            
+                json.load(f)
+
             return RecoveryRecord(
                 backup_id=backup_id,
                 success=True,

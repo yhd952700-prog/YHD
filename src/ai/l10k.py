@@ -32,9 +32,9 @@ Imports use the real project layout (src.ai.*); no mocks, no singletons.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # Levels ordered from least to most valuable. "trivial" is the anti-cheat red
 # line (S116): work that is trivial is NOT allowed to count as verified output.

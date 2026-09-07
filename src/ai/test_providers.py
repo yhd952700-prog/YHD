@@ -1,8 +1,6 @@
 """Test file for provider configuration."""
 
 import os
-import sys
-import pytest
 
 from ai.providers import (
     get_provider_type,
@@ -14,7 +12,7 @@ from ai.providers import (
 
 class TestProviderConfiguration:
     """Test provider configuration loading."""
-    
+
     def test_mock_provider_default(self):
         """MockProvider should be the default."""
         # Clear any provider type env var
@@ -25,7 +23,7 @@ class TestProviderConfiguration:
         finally:
             if old_value is not None:
                 os.environ["AI_PROVIDER_TYPE"] = old_value
-    
+
     def test_mock_provider_with_env(self):
         """MockProvider can be set via env var."""
         os.environ["AI_PROVIDER_TYPE"] = ProviderType.MOCK
@@ -34,7 +32,7 @@ class TestProviderConfiguration:
             assert provider_type == ProviderType.MOCK
         finally:
             del os.environ["AI_PROVIDER_TYPE"]
-    
+
     def test_openai_provider(self):
         """OpenAI provider can be configured."""
         os.environ["AI_PROVIDER_TYPE"] = ProviderType.OPENAI
@@ -49,7 +47,7 @@ class TestProviderConfiguration:
         finally:
             del os.environ["AI_PROVIDER_TYPE"]
             del os.environ["OPENAI_API_KEY"]
-    
+
     def test_api_key_redacted(self):
         """API keys should not be exposed in logs."""
         os.environ["OPENAI_API_KEY"] = "[REDACTED]"

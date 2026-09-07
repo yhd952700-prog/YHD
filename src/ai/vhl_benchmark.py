@@ -104,7 +104,7 @@ def run_vhl_benchmark(
         # ------------------------------------------------- T1 Organization
         org = Organization("鎏灏研究院", budget=5000.0)
         org.add_policy("外部写盘需经 World 授权")
-        research_dept = org.create_department("研究部")
+        org.create_department("研究部")
         org.create_department("质量部")
         org.create_goal("研究并交付一份 Agent OS 架构现状报告")
         org.spend(1200.0)

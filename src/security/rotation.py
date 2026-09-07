@@ -9,12 +9,11 @@ Provides:
 """
 
 import time
-import secrets
 from typing import Optional, Dict, Any, List, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
-from .api_keys import APIKeyManager, KeyScope, KeyStatus
+from .api_keys import APIKeyManager
 from .jwt_handler import JWTHandler
 
 

@@ -14,7 +14,6 @@ ensuring a verifiable chain of custody for all crypto operations.
 import hashlib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum

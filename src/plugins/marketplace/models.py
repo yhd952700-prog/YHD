@@ -31,7 +31,7 @@ class PluginType:
 
 class PluginMetadata:
     """Metadata for a plugin."""
-    
+
     def __init__(
         self,
         name: str,
@@ -59,7 +59,7 @@ class PluginMetadata:
         self.tags = tags or []
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -77,7 +77,7 @@ class PluginMetadata:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PluginMetadata":
         """Create from dictionary."""
@@ -101,7 +101,7 @@ class PluginMetadata:
 
 class PluginVersion:
     """Version information for a plugin."""
-    
+
     def __init__(
         self,
         version: str,
@@ -123,7 +123,7 @@ class PluginVersion:
         self.released_at = released_at or datetime.now()
         self.file_size = file_size
         self.md5_hash = md5_hash
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -137,7 +137,7 @@ class PluginVersion:
             "file_size": self.file_size,
             "md5_hash": self.md5_hash,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PluginVersion":
         """Create from dictionary."""
@@ -156,7 +156,7 @@ class PluginVersion:
 
 class Plugin:
     """Core plugin model."""
-    
+
     def __init__(
         self,
         plugin_id: str,
@@ -182,7 +182,7 @@ class Plugin:
         self.dependencies = dependencies or []
         self.created_at = created_at or datetime.now()
         self.updated_at = updated_at or datetime.now()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -198,13 +198,13 @@ class Plugin:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Plugin":
         """Create from dictionary."""
         metadata = PluginMetadata.from_dict(data.get("metadata", {}))
         current_version = PluginVersion.from_dict(data.get("current_version", {}))
-        
+
         return cls(
             plugin_id=data.get("plugin_id"),
             name=data.get("name", ""),

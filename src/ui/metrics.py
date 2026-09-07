@@ -19,7 +19,7 @@ class MetricType(Enum):
 @dataclass
 class MetricPoint:
     """A single metric data point with timestamp."""
-    
+
     timestamp: str
     value: float
     metric_type: MetricType
@@ -29,10 +29,10 @@ class MetricPoint:
 @dataclass
 class MetricDashboard:
     """Dashboard for monitoring system metrics."""
-    
+
     metrics: Dict[str, List[MetricPoint]] = field(default_factory=dict)
     metric_labels: Dict[str, str] = field(default_factory=dict)
-    
+
     def add_metric_point(self, metric_type: MetricType, value: float, labels: Dict[str, str] = None) -> None:
         """Add a metric data point."""
         key = metric_type.value
@@ -44,21 +44,21 @@ class MetricDashboard:
             metric_type=metric_type,
             labels=labels or {},
         ))
-    
+
     def get_metric_history(self, metric_type: MetricType, limit: int = 100) -> List[MetricPoint]:
         """Get metric history, limited to most recent N points."""
         key = metric_type.value
         if key in self.metrics:
             return self.metrics[key][-limit:]
         return []
-    
+
     def get_latest(self, metric_type: MetricType) -> Optional[float]:
         """Get the latest value for a metric type."""
         key = metric_type.value
         if key in self.metrics and self.metrics[key]:
             return self.metrics[key][-1].value
         return None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert metric dashboard to dictionary for UI rendering."""
         return {

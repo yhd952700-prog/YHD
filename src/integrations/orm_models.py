@@ -5,22 +5,22 @@ Defines the data model for ORM integration with SQLAlchemy.
 Provides model base classes, session management, and migration utilities.
 """
 
-from typing import Dict, Any, Optional, List, Type, TypeVar, Generic
+from typing import Dict, Any, Optional, List, Type, TypeVar
 from datetime import datetime
 import uuid
 import os
 
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime, Text, JSON, BigInteger,
-    MetaData, Index, ForeignKey
+    ForeignKey,
 )
+from sqlalchemy import create_engine as _create_engine
+from sqlalchemy.orm import sessionmaker as _sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import (
-    DeclarativeBase, Session, declared_attr, 
-    registry as _registry, sessionmaker
+    Session, registry as _registry, sessionmaker
 )
 from sqlalchemy import select, func, text, inspect
-from sqlalchemy.orm import selectinload
 
 # Type variable for generic model operations
 M = TypeVar("M", bound="BaseModel")
@@ -32,7 +32,7 @@ Base = declarative_base()
 class BaseModel:
     """
     Base model providing common fields for all ORM models.
-    
+
     Provides:
     - UUID primary key
     - Created/updated timestamps
@@ -74,39 +74,39 @@ mapper_registry = _registry()
 
 class ModelMixin:
     """Mixin providing common model operations."""
-    
+
     @classmethod
     def create(cls: Type[M], **kwargs) -> M:
         """Create a new model instance and add to session."""
         instance = cls(**kwargs)
         return instance
-    
+
     @classmethod
     def get_by_id(cls: Type[M], session: Session, id_: int) -> Optional[M]:
         """Get a model instance by ID."""
         return session.get(cls, id_)
-    
+
     @classmethod
     def get_by_uuid(cls: Type[M], session: Session, uuid_str: str) -> Optional[M]:
         """Get a model instance by UUID."""
         statement = select(cls).where(cls.uuid == uuid_str)
         result = session.execute(statement).scalar_one_or_none()
         return result
-    
+
     @classmethod
     def filter(
-        cls: Type[M], 
-        session: Session, 
+        cls: Type[M],
+        session: Session,
         **filters
     ) -> List[M]:
         """Filter model instances by criteria."""
         statement = select(cls).filter_by(**filters)
         return list(session.execute(statement).scalars().all())
-    
+
     @classmethod
     def count(
-        cls: Type[M], 
-        session: Session, 
+        cls: Type[M],
+        session: Session,
         **filters
     ) -> int:
         """Count model instances matching filters."""
@@ -119,13 +119,13 @@ class ModelMixin:
 class SessionManager:
     """
     Session management for ORM operations.
-    
+
     Provides:
     - Session lifecycle management
     - Transaction handling
     - Session pooling considerations
     """
-    
+
     def __init__(self, engine, autoflush: bool = True, autocommit: bool = False):
         self.engine = engine
         self.session_factory = sessionmaker(
@@ -133,11 +133,11 @@ class SessionManager:
             autoflush=autoflush,
             autocommit=autocommit,
         )
-    
+
     def get_session(self) -> Session:
         """Get a new session."""
         return self.session_factory()
-    
+
     def commit(self, session: Session) -> None:
         """Commit a session."""
         try:
@@ -145,11 +145,11 @@ class SessionManager:
         except Exception:
             session.rollback()
             raise
-    
+
     def rollback(self, session: Session) -> None:
         """Rollback a session."""
         session.rollback()
-    
+
     def execute(self, session: Session, statement) -> Any:
         """Execute a SQL statement."""
         return session.execute(statement)
@@ -172,7 +172,7 @@ def add_index(model, column_name: str, engine) -> None:
     """Add an index to a model's table."""
     with engine.begin() as conn:
         conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_{model.__tablename__}_{column_name} "
-                         f"ON {model.__tablename__}({column_name})"))
+                          f"ON {model.__tablename__}({column_name})"))
 
 
 # ==================== Common Model Mixins ====================
@@ -185,31 +185,31 @@ class TimestampMixin:
 
 class ActiveQueryMixin:
     """Mixin that provides active (non-deleted) query filtering."""
-    
+
     @classmethod
     def active_query(cls, session: Session):
         """Get query for non-deleted instances."""
-        statement = select(cls).where(cls.is_deleted == False)
+        statement = select(cls).where(not cls.is_deleted)
         return session.execute(statement).scalars().all()
-    
+
     @classmethod
     def active_count(cls, session: Session, **filters) -> int:
         """Count non-deleted instances matching filters."""
         statement = select(func.count()).select_from(cls).where(
-            cls.is_deleted == False
+            not cls.is_deleted
         ).filter_by(**filters)
         return session.execute(statement).scalar_one()
 
 
 class SoftDeleteMixin:
     """Mixin that adds soft delete support with automatic filtering."""
-    
+
     @classmethod
     def deleted_query(cls, session: Session):
         """Get query including soft-deleted instances."""
         statement = select(cls).where(True)  # Return all
         return session.execute(statement).scalars().all()
-    
+
     @classmethod
     def with_soft_delete(
         cls, session: Session, include_deleted: bool = False
@@ -218,7 +218,7 @@ class SoftDeleteMixin:
         if include_deleted:
             statement = select(cls)
         else:
-            statement = select(cls).where(cls.is_deleted == False)
+            statement = select(cls).where(not cls.is_deleted)
         return session.execute(statement).scalars().all()
 
 
@@ -227,11 +227,11 @@ class SoftDeleteMixin:
 def init_models(engine, models: List[Type] = None) -> SessionManager:
     """
     Initialize ORM models with a database engine.
-    
+
     Args:
         engine: SQLAlchemy engine
         models: List of model classes to register (None = auto-discover)
-    
+
     Returns:
         SessionManager instance
     """
@@ -241,7 +241,7 @@ def init_models(engine, models: List[Type] = None) -> SessionManager:
             model.__table__.create(engine, checkfirst=True)
     else:
         Base.metadata.create_all(engine)
-    
+
     return SessionManager(engine)
 
 
@@ -249,13 +249,10 @@ def init_models(engine, models: List[Type] = None) -> SessionManager:
 # Table models matching the alembic migration (001_init_all_tables.py)
 # All use UUID primary keys + BaseModel base class
 
-import uuid as _uuid
-from sqlalchemy import ForeignKey
-
 
 def gen_uuid() -> str:
     """Generate a UUID string."""
-    return str(_uuid.uuid4())
+    return str(uuid.uuid4())
 
 
 # --- Security Models ---
@@ -936,9 +933,6 @@ class AuditTrail(Base):
 
 
 # ==================== Session & Engine Management ====================
-
-from sqlalchemy import create_engine as _create_engine
-from sqlalchemy.orm import sessionmaker as _sessionmaker
 
 _DEFAULT_DB_URL = os.environ.get("DATABASE_URL", "sqlite:///./liuhao_ai_os.db")
 

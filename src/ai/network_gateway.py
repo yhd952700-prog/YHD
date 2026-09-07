@@ -42,7 +42,6 @@ from ..kernels.network import (
     get_network_bus,
 )
 from ..kernels.identity import (
-    IdentityStatus,
     get_identity_manager,
 )
 from ..kernels.trust import (

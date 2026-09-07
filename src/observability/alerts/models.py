@@ -6,7 +6,7 @@ Provides standardized alert types, severity levels, and alert state management.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional
 from enum import Enum, auto
 from datetime import datetime
 
@@ -23,7 +23,7 @@ class AlertState(Enum):
     """Alert lifecycle states."""
     FIRING = auto()    # 正在触发
     RESOLVED = auto()  # 已解决
-    SUPPRESSED = auto() # 已抑制
+    SUPPRESSED = auto()  # 已抑制
 
 
 class AlertType(Enum):
@@ -41,7 +41,7 @@ class AlertThreshold:
     """Threshold configuration for metric alerts."""
     operator: str          # "gt", "gte", "lt", "lte", "eq", "ne"
     value: float           # 阈值
-    duration: float = 0.0 # 持续时长(秒)，阈值必须连续触发多长时间才报警
+    duration: float = 0.0  # 持续时长(秒)，阈值必须连续触发多长时间才报警
     timeout: float = 0.0  # 超时时间(秒)，若长时间未恢复则触发持续告警
 
 
@@ -104,13 +104,13 @@ class AlertThreshold:
     """Threshold configuration for metric alerts."""
     operator: str          # "gt", "gte", "lt", "lte", "eq", "ne"
     value: float           # 阈值
-    duration: float = 0.0 # 持续时长(秒)，阈值必须连续触发多长时间才报警
+    duration: float = 0.0  # 持续时长(秒)，阈值必须连续触发多长时间才报警
     timeout: float = 0.0  # 超时时间(秒)，若长时间未恢复则触发持续告警
 
     def check(self, current_value: float) -> Optional[bool]:
         """
         Check if current value triggers the threshold.
-        
+
         Returns:
             None: value within threshold
             True: value exceeds threshold
@@ -135,8 +135,8 @@ class AlertRule:
     description: str
     alert_type: AlertType
     metric_name: str
-    severity: AlertSeverity = AlertSeverity.MEDIUM
     threshold: AlertThreshold
+    severity: AlertSeverity = AlertSeverity.MEDIUM
     evaluation_interval: float = 60.0  # 评估间隔(秒)
     evaluation_count: int = 1  # 需连续多少次评估才触发
     tags: Dict[str, str] = field(default_factory=dict)
@@ -146,20 +146,20 @@ class AlertRule:
     def evaluate(self, current_metric: float, history: List[float] = None) -> Optional[Alert]:
         """
         Evaluate alert rule against current metric value.
-        
+
         Returns:
             Alert if threshold crossed, None otherwise
         """
         if not self.enabled:
             return None
-        
+
         # Check threshold
         triggered = self.threshold.check(current_metric)
-        
+
         if triggered is None:
             # Within threshold - reset consecutive count conceptually
             return None
-        
+
         if triggered:
             # Value is outside threshold - this is the nth consecutive trigger
             # For simplicity, we just fire on first detection
@@ -177,7 +177,7 @@ class AlertRule:
                 tags=self.tags,
             )
             return alert
-        
+
         # Value returned to normal - could resolve if currently firing
         return None
 
@@ -186,7 +186,7 @@ class AlertRule:
 class AlertManager:
     """
     Central alert management system.
-    
+
     Features:
     - Alert rule management
     - Automatic evaluation against metrics
@@ -194,61 +194,61 @@ class AlertManager:
     - Notification routing
     - Alert deduplication
     """
-    
+
     def __init__(self):
         self.rules: Dict[str, AlertRule] = {}
         self.alerts: Dict[str, Alert] = {}
         self.alert_history: List[Alert] = []
         self._evaluation_count = 0
-    
+
     def add_rule(self, rule: AlertRule) -> None:
         """Add an alert rule."""
         self.rules[rule.id] = rule
-    
+
     def remove_rule(self, rule_id: str) -> bool:
         """Remove an alert rule."""
         if rule_id in self.rules:
             del self.rules[rule_id]
             return True
         return False
-    
+
     def get_rule(self, rule_id: str) -> Optional[AlertRule]:
         """Get an alert rule by ID."""
         return self.rules.get(rule_id)
-    
+
     def list_rules(self) -> List[AlertRule]:
         """List all alert rules."""
         return list(self.rules.values())
-    
+
     def evaluate_all(self, metrics: Dict[str, float]) -> List[Alert]:
         """
         Evaluate all rules against current metrics.
-        
+
         Args:
             metrics: Dict of metric_name -> current_value
-            
+
         Returns:
             List of newly triggered alerts
         """
         new_alerts = []
-        
+
         for rule in self.rules.values():
             if rule.metric_name not in metrics:
                 continue
-            
+
             current_value = metrics[rule.metric_name]
             alert = rule.evaluate(current_value)
-            
+
             if alert is not None:
                 # Store alert
                 self.alerts[alert.id] = alert
                 self.alert_history.append(alert)
-                
+
                 # Update alert state in storage
                 new_alerts.append(alert)
-        
+
         return new_alerts
-    
+
     def resolve_alert(self, alert_id: str) -> bool:
         """Mark an alert as resolved."""
         if alert_id in self.alerts:
@@ -256,11 +256,11 @@ class AlertManager:
             self.alerts[alert_id].resolved_at = datetime.now().timestamp()
             return True
         return False
-    
+
     def get_active_alerts(self) -> List[Alert]:
         """Get all currently firing alerts."""
         return [a for a in self.alerts.values() if a.state == AlertState.FIRING]
-    
+
     def get_alerts_by_severity(self, severity: AlertSeverity) -> List[Alert]:
         """Get alerts by severity level."""
         return [a for a in self.alerts.values() if a.severity == severity]

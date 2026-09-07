@@ -2,8 +2,9 @@
 from dataclasses import field
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from uuid import uuid4
+from enum import Enum
 
 
 @dataclass
@@ -23,7 +24,7 @@ class TaskResult:
     success: bool
     output: Dict[str, Any]
     metadata: Dict[str, Any] = field(default_factory=dict)
-from enum import Enum
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"

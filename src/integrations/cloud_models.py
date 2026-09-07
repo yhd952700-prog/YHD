@@ -8,9 +8,8 @@ Defines the data model and utilities for cloud service integration:
 - Identity and access management
 """
 
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
 from datetime import datetime
-import uuid
 
 
 class CloudProvider:
@@ -44,7 +43,7 @@ class QueueType:
 
 class StorageConfig:
     """Configuration for object storage."""
-    
+
     def __init__(
         self,
         provider: str,
@@ -60,7 +59,7 @@ class StorageConfig:
         self.access_key = access_key
         self.secret_key = secret_key
         self.endpoint = endpoint
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -73,7 +72,7 @@ class StorageConfig:
 
 class StorageObject:
     """Represents an object in object storage."""
-    
+
     def __init__(
         self,
         key: str,
@@ -91,7 +90,7 @@ class StorageObject:
         self.etag = etag
         self.metadata = metadata or {}
         self.owner = owner
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -109,7 +108,7 @@ class StorageObject:
 
 class FunctionConfig:
     """Configuration for cloud function."""
-    
+
     def __init__(
         self,
         provider: str,
@@ -127,7 +126,7 @@ class FunctionConfig:
         self.timeout = timeout
         self.memory = memory
         self.environment = environment or {}
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -143,7 +142,7 @@ class FunctionConfig:
 
 class FunctionInvocation:
     """Represents a cloud function invocation."""
-    
+
     def __init__(
         self,
         invocation_id: str,
@@ -165,7 +164,7 @@ class FunctionInvocation:
         self.logs = logs
         self.output = output
         self.cost_ms = cost_ms
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -185,7 +184,7 @@ class FunctionInvocation:
 
 class QueueConfig:
     """Configuration for message queue."""
-    
+
     def __init__(
         self,
         provider: str,
@@ -201,7 +200,7 @@ class QueueConfig:
         self.access_key = access_key
         self.secret_key = secret_key
         self.endpoint = endpoint
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -214,7 +213,7 @@ class QueueConfig:
 
 class Message:
     """Represents a message in a queue."""
-    
+
     def __init__(
         self,
         message_id: str,
@@ -230,7 +229,7 @@ class Message:
         self.delay_seconds = delay_seconds
         self.expiration = expiration
         self.message_system_timestamp = message_system_timestamp or datetime.utcnow()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -247,7 +246,7 @@ class Message:
 
 class QueueMessageRecord:
     """Record of a sent/received message."""
-    
+
     def __init__(
         self,
         message_id: str,
@@ -263,7 +262,7 @@ class QueueMessageRecord:
         self.sent_time = sent_time or datetime.utcnow()
         self.receive_count = receive_count
         self.failure_reason = failure_reason
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -280,7 +279,7 @@ class QueueMessageRecord:
 
 class Permission:
     """Permission model."""
-    
+
     def __init__(
         self,
         name: str,
@@ -292,7 +291,7 @@ class Permission:
         self.description = description
         self.resource = resource
         self.action = action
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -305,7 +304,7 @@ class Permission:
 
 class Role:
     """Role model."""
-    
+
     def __init__(
         self,
         name: str,
@@ -315,11 +314,11 @@ class Role:
         self.name = name
         self.description = description
         self.permissions = permissions or []
-    
+
     def add_permission(self, permission: Permission) -> None:
         """Add a permission to the role."""
         self.permissions.append(permission)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -331,7 +330,7 @@ class Role:
 
 class User:
     """User model with role-based access."""
-    
+
     def __init__(
         self,
         user_id: str,
@@ -347,18 +346,18 @@ class User:
         self.roles = roles or []
         self.is_active = is_active
         self.is_superuser = is_superuser
-    
+
     def has_permission(self, resource: str, action: str) -> bool:
         """Check if user has a specific permission."""
         if self.is_superuser:
             return True
-        
+
         for role in self.roles:
             for perm in role.permissions:
                 if perm.resource == resource and perm.action == action:
                     return True
         return False
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {

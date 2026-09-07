@@ -7,10 +7,10 @@ Provides:
 - Convenience functions for common audit events
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Optional
 
-from .models import AuditEvent, EventType, EventStatus, Severity, auth_event, system_event, security_violation_event
-from .store import AuditStore, emit_simple
+from .models import AuditEvent, EventType, EventStatus, Severity, auth_event, system_event, security_violation_event  # noqa: F401
+from .store import AuditStore
 
 # Module-level store instance
 _default_store: Optional[AuditStore] = None
@@ -32,9 +32,3 @@ def emit(event: AuditEvent) -> str:
 def emit_simple(event_type: str, source: str, **kwargs) -> str:
     """Simple event emission using the default store."""
     return get_audit_store().emit_simple(event_type, source, **kwargs)
-
-
-# Convenience exports matching the models module
-auth_event = auth_event
-system_event = system_event
-security_violation_event = security_violation_event

@@ -1,6 +1,6 @@
 """Feedback API routes for the Phase 4 feedback and continuous learning pipeline."""
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 
 from ...feedback.feedback_model import Feedback
@@ -54,7 +54,7 @@ async def list_feedback(
 ) -> List[Feedback]:
     """List feedback records with optional filtering."""
     all_feedback = feedback_repository.all()
-    
+
     filtered = []
     for f in all_feedback:
         if agent_id and f.agent_id != agent_id:
@@ -64,7 +64,7 @@ async def list_feedback(
         if workflow_id and f.workflow_id != workflow_id:
             continue
         filtered.append(f)
-    
+
     return filtered
 
 

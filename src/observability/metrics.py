@@ -9,10 +9,8 @@ Provides standardized metrics for:
 - System resources
 """
 
-from prometheus_client import Counter, Histogram, Gauge, Summary, CollectorRegistry
-from typing import Optional
+from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry
 import time
-from functools import wraps
 
 
 # Create custom registry

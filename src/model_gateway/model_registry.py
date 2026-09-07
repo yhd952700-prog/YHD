@@ -20,9 +20,9 @@ from typing import (
     List,
     Optional,
     Set,
-    Tuple,
-    Union,
 )
+
+from .provider_adapter import ProviderCapabilities
 
 
 class RegisteredModel:
@@ -288,7 +288,6 @@ class ModelRegistry:
     def from_dict(cls, data: Dict[str, Any]) -> ModelRegistry:
         """Create registry from dictionary."""
         registry = ModelRegistry()
-        from .provider_adapter import ProviderCapabilities
 
         for md in data.get("models", []):
             model = RegisteredModel.from_dict(md)
@@ -306,7 +305,6 @@ class ModelRegistry:
     def persist(self) -> None:
         """Persist registry to disk if storage_path is set."""
         if self._storage_path and self._dirty:
-            import json
             with open(self._storage_path, "w") as f:
                 json.dump(self.to_dict(), f, indent=2)
             self._dirty = False

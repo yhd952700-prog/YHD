@@ -9,7 +9,7 @@ Provides:
 
 from typing import Optional
 
-from .models import (
+from .models import (  # noqa: F401
     Span,
     SpanContext,
     AttributeValue,
@@ -26,7 +26,7 @@ from .models import (
     Status,
 )
 
-from .store import ObservabilityStore, emit_span, emit_metric, get_observability_store
+from .store import ObservabilityStore
 
 # Module-level store instance
 _default_store: Optional[ObservabilityStore] = None

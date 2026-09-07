@@ -13,7 +13,7 @@ Author: LiuHao OS Security Module
 import hashlib
 import hmac
 import logging
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
 from ..integrations.vault.client import VaultClient
 
@@ -60,7 +60,6 @@ class VaultTransitCrypto:
             return None
         try:
             # Vault Transit HMAC: POST /transit/hmac/{key_name}/sha256
-            path = f"transit/hmac/{key_name}/sha256"
             result = self._vault._client.secrets.transit.generate_hmac(
                 name=key_name,
                 hash_input=data,
@@ -75,7 +74,6 @@ class VaultTransitCrypto:
         if self._offline:
             return False
         try:
-            path = f"transit/verify/{key_name}/sha256"
             self._vault._client.secrets.transit.verify_hmac(
                 name=key_name,
                 hmac=hmac_value,

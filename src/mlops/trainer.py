@@ -6,7 +6,7 @@ from .experiment import Experiment, TrainingJob
 
 class Trainer:
     """Trainer that executes a TrainingJob and returns results."""
-    
+
     def train(self, experiment: Experiment) -> Dict[str, Any]:
         """Run the training job for the given experiment."""
         job = TrainingJob(experiment)

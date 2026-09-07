@@ -7,7 +7,7 @@ integrate RBAC/ABAC with Model Gateway provider adapters and model registry.
 Spec items: RBAC policy propagation, ABAC rule evaluation, capability-based
 access decisions, integration with Model Registry and Provider Adapter.
 """
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set
 
 from datetime import datetime, timezone
 
@@ -450,7 +450,6 @@ class ABACHardening:
         abac_applicable = False
 
         # Get model attributes from model registry if available
-        model_attributes: Dict[str, Any] = {}
         if self.model_registry is not None:
             # Try to get model attributes
             model_attr_method = getattr(self.model_registry, 'get', None)
@@ -468,7 +467,7 @@ class ABACHardening:
             # Extract different attribute categories
             subject_attrs = self._extract_attributes(rule_def, "subject_")
             object_attrs = self._extract_attributes(rule_def, "object_")
-            env_attrs = self._extract_attributes(rule_def, "env_")
+            self._extract_attributes(rule_def, "env_")
 
             # Also check for direct attribute keys (no prefix)
             if "subject" in rule_def:
@@ -532,7 +531,7 @@ class ABACHardening:
 
         # Audit log
         self.audit_log.append({
-            "action": "evaluate",
+            "operation": "evaluate",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_id": user_id,
             "model_id": model_id,

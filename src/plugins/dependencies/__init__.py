@@ -10,13 +10,15 @@ Provides:
 - Convenience functions
 """
 
+from typing import Any, Dict, List, Optional
+
 from .models import (
     DependencySpec,
     DependencyResolution,
     DependencyConflict,
     PluginDependency,
 )
-from .store import PluginDependenciesStore, get_dependencies_store, register_dep, get_deps, list_deps, get_conflict
+from .store import PluginDependenciesStore
 
 # Module-level store instance
 _default_store = None
@@ -48,6 +50,7 @@ def list_deps(filters: Optional[Dict[str, Any]] = None) -> List[PluginDependency
 def get_conflict(plugin_id: str) -> Optional[DependencyConflict]:
     """Get conflict for a plugin using the default store."""
     return get_dependencies_store().get_conflict(plugin_id)
+
 
 __all__ = [
     "DependencySpec",

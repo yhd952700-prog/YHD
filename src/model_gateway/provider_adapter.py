@@ -14,7 +14,6 @@ Spec items 181-182: Provider Adapter supports:
 from __future__ import annotations
 
 import abc
-import json
 import time
 from typing import (
     Any,
@@ -22,9 +21,6 @@ from typing import (
     Dict,
     List,
     Tuple,
-    Union,
-    Callable,
-    Awaitable,
 )
 
 

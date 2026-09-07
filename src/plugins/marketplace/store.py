@@ -12,29 +12,30 @@ from pathlib import Path
 import json
 import hashlib
 import time
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from .models import Plugin, PluginMetadata, PluginVersion, PluginStatus, PluginType
+from .models import Plugin, PluginVersion
 
 
 class PluginMarketplaceStore:
     """
     Plugin marketplace storage with integrity verification.
-    
+
     Features:
     - JSON-based persistent storage
     - Hash chain for tamper evidence
     - Search and filtering
     - Version management
     """
-    
+
     def __init__(self, storage_path: str = "data/plugins/marketplace/plugins.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._plugins: Dict[str, Plugin] = {}
         self._hash_chain: Optional[List[str]] = None
         self._load()
-    
+
     def _load(self) -> None:
         """Load existing plugins from storage."""
         if self.storage_path.exists():
@@ -56,7 +57,7 @@ class PluginMarketplaceStore:
         else:
             self._plugins = {}
             self._hash_chain = None
-    
+
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current plugins."""
         chain: List[str] = []
@@ -70,15 +71,15 @@ class PluginMarketplaceStore:
             plugin_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
             chain.append(plugin_hash)
             prev_hash = plugin_hash
-        
+
         self._hash_chain = chain
         self._save()
-    
+
     def _save(self) -> None:
         """Persist plugins to storage with hash chain."""
         if self._hash_chain is None:
             self._build_hash_chain()
-        
+
         data = {
             "version": 1,
             "saved_at": time.time(),
@@ -87,16 +88,16 @@ class PluginMarketplaceStore:
         }
         with open(self.storage_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-    
+
     # ==================== Plugin Operations ====================
-    
+
     def register(self, plugin: Plugin) -> str:
         """
         Register a new plugin.
-        
+
         Args:
             plugin: The plugin to register
-            
+
         Returns:
             The plugin ID
         """
@@ -104,14 +105,14 @@ class PluginMarketplaceStore:
         self._plugins[eid] = plugin
         self._save()
         return eid
-    
+
     def update(self, plugin: Plugin) -> str:
         """
         Update an existing plugin.
-        
+
         Args:
             plugin: The plugin to update
-            
+
         Returns:
             The plugin ID
         """
@@ -119,15 +120,15 @@ class PluginMarketplaceStore:
         self._plugins[eid] = plugin
         self._save()
         return eid
-    
+
     def get(self, plugin_id: str) -> Optional[Plugin]:
         """Get a plugin by ID."""
         return self._plugins.get(plugin_id)
-    
+
     def list(self, filters: Optional[Dict[str, Any]] = None) -> List[Plugin]:
         """
         List plugins with optional filters.
-        
+
         Supported filter keys:
         - status
         - plugin_type
@@ -136,10 +137,10 @@ class PluginMarketplaceStore:
         - name
         """
         plugins = list(self._plugins.values())
-        
+
         if not filters:
             return plugins
-        
+
         result = []
         for plugin in plugins:
             match = True
@@ -165,33 +166,33 @@ class PluginMarketplaceStore:
             if match:
                 result.append(plugin)
         return result
-    
+
     def filter_by_status(self, status: str) -> List[Plugin]:
         """Filter plugins by status."""
         return [p for p in self._plugins.values() if p.status == status]
-    
+
     def filter_by_type(self, plugin_type: str) -> List[Plugin]:
         """Filter plugins by type."""
         return [p for p in self._plugins.values() if p.metadata.plugin_type == plugin_type]
-    
+
     def filter_by_tag(self, tag: str) -> List[Plugin]:
         """Filter plugins by tag."""
         return [p for p in self._plugins.values() if tag in p.tags]
-    
+
     def filter_by_name(self, name: str) -> List[Plugin]:
         """Filter plugins by name."""
         return [p for p in self._plugins.values() if p.name == name]
-    
+
     # ==================== Version Operations ====================
-    
+
     def add_version(self, plugin_id: str, version: PluginVersion) -> Optional[str]:
         """
         Add a new version to an existing plugin.
-        
+
         Args:
             plugin_id: The plugin ID
             version: The version to add
-            
+
         Returns:
             The plugin ID if successful, None if plugin not found
         """
@@ -202,18 +203,18 @@ class PluginMarketplaceStore:
             self._save()
             return plugin_id
         return None
-    
+
     # ==================== Integrity ====================
-    
+
     def verify_integrity(self) -> bool:
         """Verify the hash chain integrity."""
         if not self._plugins or not self._hash_chain:
             return True
-        
+
         chain = self._hash_chain
         if len(chain) != len(self._plugins):
             return False
-        
+
         sorted_ids = sorted(self._plugins.keys())
         prev_hash = "genesis"
         for i, eid in enumerate(sorted_ids):
@@ -222,26 +223,26 @@ class PluginMarketplaceStore:
             plugin_dict["prev_hash"] = prev_hash
             plugin_data = json.dumps(plugin_dict, sort_keys=True, separators=(",", ":"))
             expected_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
-            
+
             if expected_hash != chain[i]:
                 return False
-            
+
             prev_hash = expected_hash
-        
+
         return True
-    
+
     # ==================== Statistics ====================
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get marketplace statistics."""
         plugins = list(self._plugins.values())
-        
+
         status_counts: Dict[str, int] = {}
         type_counts: Dict[str, int] = {}
         for plugin in plugins:
             status_counts[plugin.status] = status_counts.get(plugin.status, 0) + 1
             type_counts[plugin.metadata.plugin_type] = type_counts.get(plugin.metadata.plugin_type, 0) + 1
-        
+
         return {
             "total_plugins": len(plugins),
             "by_status": status_counts,

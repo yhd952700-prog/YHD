@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 import threading
 import json
@@ -30,7 +30,7 @@ class ProtocolType(str, Enum):
     GRPC = "grpc"         # gRPC
     HTTP = "http"         # HTTP/REST
     WEBSOCKET = "websocket"  # WebSocket
-    INTERNAL = "internal" # In-process
+    INTERNAL = "internal"  # In-process
 
 
 class MessageStatus(str, Enum):

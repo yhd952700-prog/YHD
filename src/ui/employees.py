@@ -1,7 +1,7 @@
 """Employee/agent center for the product console."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from enum import Enum
 from datetime import datetime
 
@@ -17,7 +17,7 @@ class AgentStatus(Enum):
 @dataclass
 class AgentCard:
     """Card displaying agent/employee information."""
-    
+
     agent_id: str
     agent_type: str = "unknown"
     status: AgentStatus = AgentStatus.IDLE
@@ -26,7 +26,7 @@ class AgentCard:
     monthly_uptime: float = 0.0
     avg_response_time: float = 0.0
     last_activity: str = field(default_factory=lambda: datetime.now().isoformat())
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert card to dictionary for UI rendering."""
         return {
@@ -43,25 +43,25 @@ class AgentCard:
 @dataclass
 class AIEmployeeCenter:
     """Center for managing AI employees/agents."""
-    
+
     agents: Dict[str, AgentCard] = field(default_factory=dict)
     agent_types: Dict[str, int] = field(default_factory=lambda: {"total": 0, "active": 0, "idle": 0, "busy": 0, "offline": 0})
-    
+
     def add_agent(self, card: AgentCard) -> None:
         """Add an agent card."""
         self.agents[card.agent_id] = card
         self._update_counts()
-    
+
     def remove_agent(self, agent_id: str) -> None:
         """Remove an agent card."""
         if agent_id in self.agents:
             del self.agents[agent_id]
             self._update_counts()
-    
+
     def get_agent(self, agent_id: str) -> Optional[AgentCard]:
         """Get an agent card by ID."""
         return self.agents.get(agent_id)
-    
+
     def _update_counts(self) -> None:
         """Update agent type counts."""
         total = len(self.agents)
@@ -76,7 +76,7 @@ class AIEmployeeCenter:
             "busy": busy,
             "offline": offline,
         }
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert employee center to dictionary for UI rendering."""
         return {

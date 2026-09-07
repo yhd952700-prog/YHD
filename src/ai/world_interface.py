@@ -152,10 +152,10 @@ class WorldInterface:
         """validate -> authorize -> adapter.execute -> ActionResult."""
         if not self.validate(request):
             return ActionResult(action_id=request.action, success=False,
-                               error=f"unknown {request.adapter}.{request.action}")
+                                error=f"unknown {request.adapter}.{request.action}")
         if not self.authorize(request):
             return ActionResult(action_id=request.action, success=False,
-                               error="denied by policy")
+                                error="denied by policy")
         try:
             output = self.adapters[request.adapter].execute(request)
             return ActionResult(action_id=request.action, success=True, output=output)

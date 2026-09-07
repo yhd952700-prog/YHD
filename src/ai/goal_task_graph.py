@@ -5,7 +5,7 @@ Provides goal decomposition, task chain generation, and execution workflow manag
 Supports dependency resolution, circular dependency detection, and parallel execution.
 """
 
-from typing import Dict, List, Any, Optional, Set, Tuple, Callable
+from typing import Dict, List, Any, Optional, Set, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import uuid
@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 
 from .providers import BaseProvider, get_provider
 from ..observability.metrics import track_goal_decomposition, track_task_execution
-from ..observability.tracing import create_span, end_span, AISpanAttributes, track_ai_operation
+from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
 
 
@@ -162,97 +162,97 @@ Example output format:
         self.goal.status = GoalStatus.PENDING
 
     def decompose_goal(self, goal: Optional[GoalDefinition] = None) -> List[TaskNode]:
-            """
-            Decompose a goal into a list of tasks using AI.
+        """
+        Decompose a goal into a list of tasks using AI.
 
-            Args:
-                goal: Goal to decompose (uses self.goal if not provided)
+        Args:
+            goal: Goal to decompose (uses self.goal if not provided)
 
-            Returns:
-                List of TaskNode objects
-            """
-            if goal:
-                self.set_goal(goal)
+        Returns:
+            List of TaskNode objects
+        """
+        if goal:
+            self.set_goal(goal)
 
-            if not self.goal:
-                raise ValueError("No goal set for decomposition")
+        if not self.goal:
+            raise ValueError("No goal set for decomposition")
 
-            self.goal.status = GoalStatus.DECOMPOSING
+        self.goal.status = GoalStatus.DECOMPOSING
 
-            # Build prompt
-            prompt = self.decomposition_prompt_template.format(
-                goal_description=self.goal.description,
-                priority=self.goal.priority,
-                max_tasks=self.max_tasks_per_goal,
-            )
+        # Build prompt
+        prompt = self.decomposition_prompt_template.format(
+            goal_description=self.goal.description,
+            priority=self.goal.priority,
+            max_tasks=self.max_tasks_per_goal,
+        )
 
-            # Use tracing for decomposition
-            span = create_span(
-                "goal.decompose",
-                attributes={
-                    AISpanAttributes.GOAL_ID: self.goal.id,
-                    "goal.description": self.goal.description[:200],
-                    "goal.priority": self.goal.priority,
-                }
-            )
+        # Use tracing for decomposition
+        span = create_span(
+            "goal.decompose",
+            attributes={
+                AISpanAttributes.GOAL_ID: self.goal.id,
+                "goal.description": self.goal.description[:200],
+                "goal.priority": self.goal.priority,
+            }
+        )
 
-            start_time = time.time()
-            try:
-                # Call AI provider with retry
-                response = self.provider.generate_with_retry(prompt, temperature=0.3)
+        start_time = time.time()
+        try:
+            # Call AI provider with retry
+            response = self.provider.generate_with_retry(prompt, temperature=0.3)
 
-                # Parse response
-                tasks = self._parse_decomposition_response(response)
+            # Parse response
+            tasks = self._parse_decomposition_response(response)
 
-                # Create TaskNodes
-                task_nodes = []
-                for task_data in tasks:
-                    task = TaskNode(
-                        id=task_data.get("id", f"task_{len(task_nodes)}"),
-                        description=task_data.get("description", ""),
-                        task_type=task_data.get("type", "general"),
-                        depends_on=task_data.get("depends_on", []),
-                        priority=task_data.get("priority", 0),
-                    )
-                    task_nodes.append(task)
+            # Create TaskNodes
+            task_nodes = []
+            for task_data in tasks:
+                task = TaskNode(
+                    id=task_data.get("id", f"task_{len(task_nodes)}"),
+                    description=task_data.get("description", ""),
+                    task_type=task_data.get("type", "general"),
+                    depends_on=task_data.get("depends_on", []),
+                    priority=task_data.get("priority", 0),
+                )
+                task_nodes.append(task)
 
-                # Store tasks
-                self._store_tasks(self.goal.id, task_nodes)
+            # Store tasks
+            self._store_tasks(self.goal.id, task_nodes)
 
-                self.goal.status = GoalStatus.DECOMPOSED
-                self.goal.updated_at = time.time()
+            self.goal.status = GoalStatus.DECOMPOSED
+            self.goal.updated_at = time.time()
 
-                # Track metrics
-                duration = time.time() - start_time
-                track_goal_decomposition("success", duration, len(task_nodes))
+            # Track metrics
+            duration = time.time() - start_time
+            track_goal_decomposition("success", duration, len(task_nodes))
 
-                # Persist to memory
-                if self.enable_observability and self._memory:
-                    self._memory.remember(
-                        content=f"Goal decomposed: {self.goal.description}",
-                        tier=MemoryTier.SEMANTIC,
-                        importance=0.9,
-                        tags=["goal", "decomposition"],
-                        metadata={"goal_id": self.goal.id, "task_count": len(task_nodes)}
-                    )
+            # Persist to memory
+            if self.enable_observability and self._memory:
+                self._memory.remember(
+                    content=f"Goal decomposed: {self.goal.description}",
+                    tier=MemoryTier.SEMANTIC,
+                    importance=0.9,
+                    tags=["goal", "decomposition"],
+                    metadata={"goal_id": self.goal.id, "task_count": len(task_nodes)}
+                )
 
-                if span:
-                    end_span(span)
+            if span:
+                end_span(span)
 
-                return task_nodes
+            return task_nodes
 
-            except Exception as e:
-                self.goal.status = GoalStatus.FAILED
-                self.goal.updated_at = time.time()
+        except Exception as e:
+            self.goal.status = GoalStatus.FAILED
+            self.goal.updated_at = time.time()
 
-                # Track metrics
-                duration = time.time() - start_time
-                track_goal_decomposition("failed", duration, 0)
+            # Track metrics
+            duration = time.time() - start_time
+            track_goal_decomposition("failed", duration, 0)
 
-                if span:
-                    end_span(span, error=e)
+            if span:
+                end_span(span, error=e)
 
-                raise RuntimeError(f"Goal decomposition failed: {e}")
+            raise RuntimeError(f"Goal decomposition failed: {e}")
 
     def _parse_decomposition_response(self, response: str) -> List[Dict[str, Any]]:
         """Parse AI response into task list."""
@@ -419,94 +419,94 @@ Example output format:
         return ready
 
     def execute_task(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
-            """
-            Execute a single task using the provided agent executor.
+        """
+        Execute a single task using the provided agent executor.
 
-            Args:
-                task_id: ID of task to execute
-                agent_executor: Function(agent_id, task_description) -> result
+        Args:
+            task_id: ID of task to execute
+            agent_executor: Function(agent_id, task_description) -> result
 
-            Returns:
-                Execution result
-            """
-            if task_id not in self.tasks:
-                return {"task_id": task_id, "status": "failed", "error": "Task not found"}
+        Returns:
+            Execution result
+        """
+        if task_id not in self.tasks:
+            return {"task_id": task_id, "status": "failed", "error": "Task not found"}
 
-            task = self.tasks[task_id]
-            task.status = TaskStatus.RUNNING
-            task.started_at = time.time()
+        task = self.tasks[task_id]
+        task.status = TaskStatus.RUNNING
+        task.started_at = time.time()
 
-            # Use tracing for task execution
-            span = create_span(
-                "task.execute",
-                attributes={
-                    AISpanAttributes.TASK_ID: task_id,
-                    AISpanAttributes.AGENT_TASK: task.description[:200],
-                }
-            )
+        # Use tracing for task execution
+        span = create_span(
+            "task.execute",
+            attributes={
+                AISpanAttributes.TASK_ID: task_id,
+                AISpanAttributes.AGENT_TASK: task.description[:200],
+            }
+        )
 
-            try:
-                # Execute via agent executor
-                result = agent_executor(task.assigned_agent or "default", task.description)
+        try:
+            # Execute via agent executor
+            result = agent_executor(task.assigned_agent or "default", task.description)
 
-                task.result = result
-                task.status = TaskStatus.COMPLETED
-                task.completed_at = time.time()
-                self.completed_tasks.add(task_id)
+            task.result = result
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = time.time()
+            self.completed_tasks.add(task_id)
 
-                # Track metrics
-                latency_ms = (task.completed_at - task.started_at) * 1000
-                track_task_execution(task.task_type, "completed", latency_ms / 1000)
+            # Track metrics
+            latency_ms = (task.completed_at - task.started_at) * 1000
+            track_task_execution(task.task_type, "completed", latency_ms / 1000)
 
-                # Persist to memory
-                if self.enable_observability and self._memory:
-                    self._memory.remember(
-                        content=f"Task executed: {task.description}",
-                        tier=MemoryTier.EPISODIC,
-                        importance=0.7,
-                        tags=["task", task.task_type, "completed"],
-                        metadata={"task_id": task_id, "result": str(result)[:500]}
-                    )
+            # Persist to memory
+            if self.enable_observability and self._memory:
+                self._memory.remember(
+                    content=f"Task executed: {task.description}",
+                    tier=MemoryTier.EPISODIC,
+                    importance=0.7,
+                    tags=["task", task.task_type, "completed"],
+                    metadata={"task_id": task_id, "result": str(result)[:500]}
+                )
 
-                if span:
-                    end_span(span)
+            if span:
+                end_span(span)
 
-                return {
-                    "task_id": task_id,
-                    "status": "completed",
-                    "result": result,
-                    "latency_ms": latency_ms,
-                }
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "result": result,
+                "latency_ms": latency_ms,
+            }
 
-            except Exception as e:
-                task.error = str(e)
-                task.status = TaskStatus.FAILED
-                task.completed_at = time.time()
-                self.failed_tasks.add(task_id)
+        except Exception as e:
+            task.error = str(e)
+            task.status = TaskStatus.FAILED
+            task.completed_at = time.time()
+            self.failed_tasks.add(task_id)
 
-                # Track metrics
-                latency_ms = (task.completed_at - task.started_at) * 1000
-                track_task_execution(task.task_type, "failed", latency_ms / 1000)
+            # Track metrics
+            latency_ms = (task.completed_at - task.started_at) * 1000
+            track_task_execution(task.task_type, "failed", latency_ms / 1000)
 
-                # Persist to memory
-                if self.enable_observability and self._memory:
-                    self._memory.remember(
-                        content=f"Task failed: {task.description}",
-                        tier=MemoryTier.EPISODIC,
-                        importance=0.8,
-                        tags=["task", task.task_type, "failed"],
-                        metadata={"task_id": task_id, "error": str(e)}
-                    )
+            # Persist to memory
+            if self.enable_observability and self._memory:
+                self._memory.remember(
+                    content=f"Task failed: {task.description}",
+                    tier=MemoryTier.EPISODIC,
+                    importance=0.8,
+                    tags=["task", task.task_type, "failed"],
+                    metadata={"task_id": task_id, "error": str(e)}
+                )
 
-                if span:
-                    end_span(span, error=e)
+            if span:
+                end_span(span, error=e)
 
-                return {
-                    "task_id": task_id,
-                    "status": "failed",
-                    "error": str(e),
-                    "latency_ms": latency_ms,
-                }
+            return {
+                "task_id": task_id,
+                "status": "failed",
+                "error": str(e),
+                "latency_ms": latency_ms,
+            }
 
     def execute_graph(
         self,

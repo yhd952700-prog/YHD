@@ -28,7 +28,7 @@ class DependencyStatus:
 
 class DependencySpec:
     """Specification of a plugin dependency."""
-    
+
     def __init__(
         self,
         name: str,
@@ -45,7 +45,7 @@ class DependencySpec:
         self.optional = optional
         self.weak = weak
         self.id = str(uuid.uuid4())
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -57,7 +57,7 @@ class DependencySpec:
             "weak": self.weak,
             "id": self.id,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DependencySpec":
         """Create from dictionary."""
@@ -73,7 +73,7 @@ class DependencySpec:
 
 class DependencyResolution:
     """Result of dependency resolution."""
-    
+
     def __init__(
         self,
         spec: DependencySpec,
@@ -89,7 +89,7 @@ class DependencyResolution:
         self.resolving_plugins = resolving_plugins or []
         self.conflict_reason = conflict_reason
         self.resolved_at = resolved_at or datetime.now()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -100,13 +100,13 @@ class DependencyResolution:
             "conflict_reason": self.conflict_reason,
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DependencyResolution":
         """Create from dictionary."""
         from .models import DependencySpec
         spec = DependencySpec.from_dict(data.get("spec", {}))
-        
+
         return cls(
             spec=spec,
             status=data.get("status", DependencyStatus.PENDING),
@@ -119,7 +119,7 @@ class DependencyResolution:
 
 class DependencyConflict:
     """Represents a dependency conflict."""
-    
+
     def __init__(
         self,
         conflict_id: str,
@@ -135,7 +135,7 @@ class DependencyConflict:
         self.resolution = resolution
         self.description = description
         self.suggested_fix = suggested_fix
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -146,7 +146,7 @@ class DependencyConflict:
             "description": self.description,
             "suggested_fix": self.suggested_fix,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DependencyConflict":
         """Create from dictionary."""
@@ -162,7 +162,7 @@ class DependencyConflict:
 
 class PluginDependency:
     """A plugin's dependency specification."""
-    
+
     def __init__(
         self,
         plugin_id: str,
@@ -172,7 +172,7 @@ class PluginDependency:
         self.plugin_id = plugin_id
         self.dependencies = dependencies or []
         self.conflict = conflict
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -180,15 +180,15 @@ class PluginDependency:
             "dependencies": [d.to_dict() for d in self.dependencies],
             "conflict": self.conflict.to_dict() if self.conflict else None,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PluginDependency":
         """Create from dictionary."""
         from .models import DependencyConflict, DependencySpec
-        
+
         conflict = DependencyConflict.from_dict(data.get("conflict")) if data.get("conflict") else None
         deps = [DependencySpec.from_dict(d) for d in data.get("dependencies", [])]
-        
+
         return cls(
             plugin_id=data.get("plugin_id", ""),
             dependencies=deps,

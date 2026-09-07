@@ -1,7 +1,7 @@
 """Workflow execution primitives and workflow engine for the automation demo."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from src.tasks.models import Task, TaskResult, TaskStatus

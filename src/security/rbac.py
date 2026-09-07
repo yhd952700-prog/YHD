@@ -12,7 +12,7 @@ Provides:
 import json
 import secrets
 import time
-from typing import Optional, Dict, Any, Set, List, Tuple, FrozenSet
+from typing import Optional, Dict, Any, Set, List
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
@@ -52,7 +52,7 @@ class ResourceType(Enum):
 class Permission:
     """
     Permission data model.
-    
+
     Format: {resource_type}:{action}[:{conditions?}]
     Example: memory:read:agent-123
              provider:invoke:gpt-4
@@ -61,10 +61,10 @@ class Permission:
     resource_type: ResourceType
     action: PermissionAction
     target: Optional[str] = None  # Specific target (agent ID, provider name, etc.)
-    
+
     # Conditions for dynamic evaluation
     conditions: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Metadata
     description: Optional[str] = None
     granted_at: Optional[float] = None
@@ -85,11 +85,11 @@ class Permission:
         # Resource type must match
         if self.resource_type != resource_type:
             return False
-        
+
         # Action must match
         if self.action != action:
             return False
-        
+
         # Target matching
         if self.target is not None and self.target != target:
             # Check for wildcard
@@ -97,7 +97,7 @@ class Permission:
                 pass  # Any target matches
             else:
                 return False
-        
+
         # Condition matching
         if extra_conditions and self.conditions:
             for key, value in self.conditions.items():
@@ -105,9 +105,9 @@ class Permission:
                     return False
                 if extra_conditions[key] != value:
                     return False
-        
+
         return True
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "resource_type": self.resource_type.value,
@@ -116,7 +116,7 @@ class Permission:
             "conditions": self.conditions,
             "description": self.description,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Permission":
         return cls(
@@ -134,11 +134,11 @@ class RoleStatus(Enum):
     ARCHIVED = "archived"
 
 
-@dataclass  
+@dataclass
 class Role:
     """
     Role data model with inheritance.
-    
+
     A role can inherit permissions from parent roles.
     Supports recursive inheritance with cycle detection.
     """
@@ -149,32 +149,32 @@ class Role:
     parent_ids: List[str] = field(default_factory=list)  # Parent role IDs
     child_ids: List[str] = field(default_factory=list)   # Child role IDs
     inherited_scopes: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Cached permission set (computed from role + all parents)
     _cached_permissions: Optional[Set[Permission]] = None
     _cached_evaluated_at: float = 0
-    
+
     def add_parent(self, parent_id: str) -> None:
         """Add parent role (with cycle detection)"""
         if parent_id == self.id:
             return  # Don't self-reference
         if parent_id in self.parent_ids:
             return  # Already parent
-        
+
         # Check for cycles
         if self._would_create_cycle(parent_id):
             return
-            
+
         self.parent_ids.append(parent_id)
-        
+
         # Update child's parent reference
         # This would need to update the parent's child_ids list
-    
+
     def _would_create_cycle(self, potential_parent_id: str) -> bool:
         """Check if adding a parent would create a cycle"""
         visited = set()
         to_visit = [potential_parent_id]
-        
+
         while to_visit:
             current = to_visit.pop()
             if current == self.id:
@@ -182,14 +182,14 @@ class Role:
             if current in visited:
                 continue
             visited.add(current)
-            
+
             # Look up this role's parents via the owning manager
             parent_role = self._get_role(current)
             if parent_role:
                 to_visit.extend(parent_role.parent_ids)
-                
+
         return False
-    
+
     def has_permission(
         self,
         resource_type: ResourceType,
@@ -200,14 +200,14 @@ class Role:
         """Check if this role has a permission (including inherited)"""
         # Check cached permissions (refresh after 30 seconds)
         now = time.time()
-        if (self._cached_permissions is not None and 
-            now - self._cached_evaluated_at < 30):
+        if (self._cached_permissions is not None
+                and now - self._cached_evaluated_at < 30):
             perm_set = self._cached_permissions
         else:
             perm_set = self._compute_permissions()
             self._cached_permissions = perm_set
             self._cached_evaluated_at = now
-        
+
         # Check if any permission matches
         for perm in perm_set:
             if perm.matches(
@@ -215,7 +215,7 @@ class Role:
             ):
                 return True
         return False
-    
+
     # Custom permissions assigned via RBACManager.assign_permission
     custom_permissions: Dict[str, Permission] = field(default_factory=dict)
     # Back-reference to owning RBACManager for parent lookups
@@ -246,7 +246,7 @@ class Role:
                 perm_set.update(parent_role._compute_permissions())
 
         return perm_set
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -259,7 +259,7 @@ class Role:
                 k: v.to_dict() for k, v in self.custom_permissions.items()
             },
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any], rbac_store=None) -> "Role":
         role = cls(
@@ -285,7 +285,7 @@ class Role:
 class RBACManager:
     """
     Role-Based Access Control Manager.
-    
+
     Features:
     - Role hierarchy with inheritance
     - Permission evaluation with conditions
@@ -293,11 +293,11 @@ class RBACManager:
     - Dynamic permission granting/revocation
     - Audit trail of access decisions
     """
-    
+
     def __init__(self, store_path: Optional[str] = None):
         """
         Initialize RBAC manager.
-        
+
         Args:
             store_path: Path to JSON store for persistence
         """
@@ -306,12 +306,12 @@ class RBACManager:
         self._permissions_by_user: Dict[str, Set[Permission]] = {}  # user_id -> permissions
         self._audit_log: List[Dict[str, Any]] = []
         self._loaded = False
-        
+
     def _load(self) -> None:
         """Load RBAC data from storage"""
         if self._loaded:
             return
-            
+
         store = Path(self.store_path)
         if store.exists():
             try:
@@ -322,9 +322,9 @@ class RBACManager:
                     self._roles[role.id] = role
             except Exception as e:
                 print(f"Warning: Failed to load RBAC data: {e}")
-        
+
         self._loaded = True
-    
+
     def _save(self) -> None:
         """Persist RBAC data to storage"""
         data = {
@@ -334,9 +334,9 @@ class RBACManager:
         }
         Path(self.store_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self.store_path).write_text(json.dumps(data, indent=2))
-    
+
     # ==================== Role Management ====================
-    
+
     def create_role(
         self,
         name: str,
@@ -346,12 +346,12 @@ class RBACManager:
     ) -> Role:
         """Create a new role"""
         self._load()
-        
+
         role_id = f"role_{secrets.token_urlsafe(12)}"
         # Avoid collision with existing IDs
         while role_id in self._roles:
             role_id = f"role_{secrets.token_urlsafe(12)}"
-        
+
         role = Role(
             id=role_id,
             name=name,
@@ -365,16 +365,16 @@ class RBACManager:
         for parent_id in role.parent_ids:
             if parent_id in self._roles:
                 self._roles[parent_id].child_ids.append(role_id)
-        
+
         self._roles[role_id] = role
         self._save()
         return role
-    
+
     def get_role(self, role_id: str) -> Optional[Role]:
         """Get role by ID"""
         self._load()
         return self._roles.get(role_id)
-    
+
     def list_roles(
         self,
         status: Optional[RoleStatus] = None,
@@ -382,11 +382,11 @@ class RBACManager:
     ) -> List[Role]:
         """List roles, optionally filtered by status"""
         self._load()
-        
+
         roles = list(self._roles.values())
         if status:
             roles = [r for r in roles if r.status == status]
-        
+
         if recursive:
             # Flatten with all descendants
             result = []
@@ -394,9 +394,9 @@ class RBACManager:
                 result.append(role)
                 result.extend(self._get_all_descendants(role))
             return result
-        
+
         return sorted(roles, key=lambda r: r.name)
-    
+
     def _get_all_descendants(self, role: Role) -> List[Role]:
         """Get all descendant roles"""
         result = []
@@ -406,32 +406,32 @@ class RBACManager:
                 result.append(child)
                 result.extend(self._get_all_descendants(child))
         return result
-    
+
     def delete_role(self, role_id: str) -> bool:
         """Delete a role"""
         self._load()
-        
+
         if role_id not in self._roles:
             return False
-        
+
         # Check if role has children (would orphan them)
         role = self._roles[role_id]
         if role.child_ids and len(role.child_ids) > 0:
             # Could reparent children, or prevent deletion
             # For now, prevent deletion if children exist
             return False
-        
+
         # Remove from parents
         for r in self._roles.values():
             if role_id in r.child_ids:
                 r.child_ids.remove(role_id)
-        
+
         del self._roles[role_id]
         self._save()
         return True
-    
+
     # ==================== Permission Management ====================
-    
+
     def assign_permission(
         self,
         role_id: str,
@@ -453,6 +453,7 @@ class RBACManager:
         role._cached_permissions = None
         self._save()
         return True
+
     def revoke_permission(
         self,
         role_id: str,
@@ -460,10 +461,10 @@ class RBACManager:
     ) -> bool:
         """Revoke a permission from a role"""
         self._load()
-        
+
         if role_id not in self._roles:
             return False
-        
+
         role = self._roles[role_id]
         if role.custom_permissions:
             target_str = permission.target if permission.target else ""
@@ -474,7 +475,7 @@ class RBACManager:
         role._cached_permissions = None
         self._save()
         return True
-    
+
     def has_role_permission(
         self,
         role_id: str,
@@ -485,17 +486,17 @@ class RBACManager:
     ) -> bool:
         """Check if a role has a specific permission"""
         self._load()
-        
+
         role = self._roles.get(role_id)
         if not role:
             return False
-        
+
         return role.has_permission(
             resource_type, action, target, extra_conditions
         )
-    
+
     # ==================== User-Based Access ====================
-    
+
     def assign_permissions_to_user(
         self,
         user_id: str,
@@ -503,15 +504,15 @@ class RBACManager:
     ) -> None:
         """Assign permissions directly to a user"""
         self._load()
-        
+
         if user_id not in self._permissions_by_user:
             self._permissions_by_user[user_id] = set()
-        
+
         for perm in permissions:
             self._permissions_by_user[user_id].add(perm)
-        
+
         self._save()
-    
+
     def revoke_permissions_from_user(
         self,
         user_id: str,
@@ -519,21 +520,21 @@ class RBACManager:
     ) -> int:
         """Revoke permissions from a user"""
         self._load()
-        
+
         if user_id not in self._permissions_by_user:
             return 0
-        
+
         if permissions:
             for perm in permissions:
                 self._permissions_by_user[user_id].discard(perm)
         else:
             # Revoke all direct permissions
-            count = len(self._permissions_by_user[user_id])
+            len(self._permissions_by_user[user_id])
             self._permissions_by_user[user_id].clear()
-        
+
         self._save()
         return len(self._permissions_by_user.get(user_id, set()))
-    
+
     def user_has_permission(
         self,
         user_id: str,
@@ -544,24 +545,24 @@ class RBACManager:
     ) -> bool:
         """Check if a user has a permission (own + role-based)"""
         self._load()
-        
+
         # Check direct user permissions
         user_perms = self._permissions_by_user.get(user_id, set())
         for perm in user_perms:
             if perm.matches(resource_type, action, target, extra_conditions):
                 return True
-        
+
         # Check role-based permissions
         # This would require knowing the user's roles
         # For now, check all roles
         for role in self._roles.values():
             if role.has_permission(resource_type, action, target, extra_conditions):
                 return True
-        
+
         return False
-    
+
     # ==================== Access Decision ====================
-    
+
     def check_access(
         self,
         user_id: str,
@@ -573,23 +574,23 @@ class RBACManager:
     ) -> Dict[str, Any]:
         """
         Check access and return decision.
-        
+
         Returns dict with:
         - allowed: bool
         - reason: str (if denied)
         - applicable_permissions: List[Permission]
         """
         self._load()
-        
+
         # Check user permissions
         user_allowed = self.user_has_permission(
             user_id, resource_type, action, target, extra_conditions
         )
-        
+
         # Check role permissions
         role_allowed = False
         applicable_perms: List[Permission] = []
-        
+
         # Get user's roles (would need user-role mapping)
         # For now, check all roles
         for role in self._roles.values():
@@ -600,10 +601,10 @@ class RBACManager:
                     if perm.matches(resource_type, action, target, extra_conditions):
                         if perm not in applicable_perms:
                             applicable_perms.append(perm)
-        
+
         # Determine decision
         allowed = user_allowed or role_allowed
-        
+
         # Build reason
         reason = None
         if not allowed:
@@ -613,7 +614,7 @@ class RBACManager:
                 reason = "Permission denied by policy"
             elif role_allowed:
                 reason = "Role permission conflict"
-        
+
         # Audit log
         self._audit_log.append({
             "timestamp": time.time(),
@@ -624,13 +625,13 @@ class RBACManager:
             "allowed": allowed,
             "applicable_permissions": [p.to_dict() for p in applicable_perms],
         })
-        
+
         # Keep audit log bounded
         if len(self._audit_log) > 10000:
             self._audit_log = self._audit_log[-5000:]
-        
+
         self._save()
-        
+
         return {
             "allowed": allowed,
             "reason": reason,
@@ -639,9 +640,9 @@ class RBACManager:
             "resource_type": resource_type.value,
             "action": action.value,
         }
-    
+
     # ==================== Utility Methods ====================
-    
+
     def export_policy(self) -> Dict[str, Any]:
         """Export RBAC policy for review"""
         self._load()
@@ -653,7 +654,7 @@ class RBACManager:
             },
             "audit_log_count": len(self._audit_log),
         }
-    
+
     def clear_audit_log(self) -> None:
         """Clear audit log"""
         self._audit_log = []

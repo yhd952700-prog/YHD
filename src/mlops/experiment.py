@@ -13,7 +13,7 @@ class Experiment:
     description: str = ""
     version: str = "v1"
     created_at: Optional[str] = None
-    
+
     def __post_init__(self):
         if self.created_at is None:
             from datetime import datetime, timezone
@@ -22,11 +22,11 @@ class Experiment:
 
 class TrainingJob:
     """Simulated training job that returns a completed training marker."""
-    
+
     def __init__(self, experiment: Experiment):
         self.experiment = experiment
         self.status = "pending"
-    
+
     def run(self) -> dict[str, Any]:
         """Run the training job and return completion marker."""
         self.status = "completed"
@@ -36,7 +36,7 @@ class TrainingJob:
             "model_version": f"v{self.experiment.version}",
             "metrics": self._get_metrics(),
         }
-    
+
     def _get_metrics(self) -> dict[str, float]:
         """Return deterministic metrics."""
         return {

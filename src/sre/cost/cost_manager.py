@@ -10,9 +10,9 @@ a load-test baseline and in offline unit tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 class Provider(str, Enum):

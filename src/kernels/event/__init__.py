@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set
 from collections import defaultdict
 import uuid
 import threading
@@ -116,6 +116,7 @@ class Subscription:
 
 class DeadLetterEntry:
     """Failed event for retry/analysis."""
+
     def __init__(
         self,
         event: Event,

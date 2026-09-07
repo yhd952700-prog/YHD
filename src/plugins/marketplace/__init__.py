@@ -9,8 +9,10 @@ Provides:
 - Convenience functions
 """
 
+from typing import Any, Dict, List, Optional
+
 from .models import Plugin, PluginMetadata, PluginVersion, PluginStatus, PluginType
-from .store import PluginMarketplaceStore, get_marketplace_store, register, get, list
+from .store import PluginMarketplaceStore
 
 # Module-level store instance
 _default_store: Optional[PluginMarketplaceStore] = None

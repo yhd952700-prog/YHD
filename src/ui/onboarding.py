@@ -1,9 +1,8 @@
 """Onboarding and demo flow for the product console."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from enum import Enum
-from datetime import datetime
 
 
 class OnboardingStep(Enum):
@@ -18,12 +17,12 @@ class OnboardingStep(Enum):
 @dataclass
 class OnboardingWizard:
     """Wizard for product onboarding and demo flows."""
-    
+
     current_step: OnboardingStep = OnboardingStep.WELCOME
     completed_steps: List[OnboardingStep] = field(default_factory=list)
     user_profile: Dict[str, Any] = field(default_factory=dict)
     demo_data: Dict[str, Any] = field(default_factory=dict)
-    
+
     def advance_step(self) -> OnboardingStep:
         """Advance to the next onboarding step."""
         steps = list(OnboardingStep)
@@ -31,19 +30,19 @@ class OnboardingWizard:
         if current_index < len(steps) - 1:
             self.current_step = steps[current_index + 1]
         return self.current_step
-    
+
     def complete_step(self, step: OnboardingStep) -> None:
         """Mark a step as completed."""
         if step not in self.completed_steps:
             self.completed_steps.append(step)
-    
+
     def reset(self) -> None:
         """Reset the onboarding state."""
         self.current_step = OnboardingStep.WELCOME
         self.completed_steps = []
         self.user_profile = {}
         self.demo_data = {}
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert onboarding wizard to dictionary for UI rendering."""
         return {
@@ -57,27 +56,27 @@ class OnboardingWizard:
 @dataclass
 class DemoFlow:
     """Demo flow configuration and execution state."""
-    
+
     flow_name: str = "default_demo"
     is_running: bool = False
     current_step: int = 0
     total_steps: int = 5
     captured_state: Dict[str, Any] = field(default_factory=dict)
-    
+
     def start(self) -> None:
         """Start the demo flow."""
         self.is_running = True
         self.current_step = 0
-    
+
     def advance(self) -> None:
         """Advance to the next demo step."""
         if self.is_running:
             self.current_step += 1
-    
+
     def stop(self) -> None:
         """Stop the demo flow."""
         self.is_running = False
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert demo flow to dictionary for UI rendering."""
         return {
