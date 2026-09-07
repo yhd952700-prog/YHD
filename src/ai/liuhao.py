@@ -22,6 +22,8 @@ from .employee import Agent
 from .agent_factory import AgentMemory, AgentPolicy
 from .providers import BaseProvider, get_provider
 from .conversation_store import get_conversation_store
+from .tool_registry import ToolRegistry
+from .tools import make_tools, build_tool_prompt, parse_tool_call
 from ..kernels.identity import get_identity_manager
 from ..kernels.audit import log_event, AuditEventType, AuditScope
 from ..kernels.policy import (
@@ -43,6 +45,9 @@ DEFAULT_SYSTEM_PROMPT = (
 
 # 多轮上下文中保留的历史消息条数（user+assistant 各算一条）。
 MAX_HISTORY_MESSAGES = 20
+
+# 单轮对话中最多允许的工具调用轮数（防 LLM 死循环请求工具）。
+MAX_TOOL_ROUNDS = 3
 
 
 class LiuHaoAssistant:
@@ -97,6 +102,17 @@ class LiuHaoAssistant:
             self.principal, MAX_HISTORY_MESSAGES
         )
         self.turn = self._conv_store.get_last_turn(self.principal)
+
+        # 6. 工具注册 — 复用 ToolRegistry（§40 生命周期），暴露真实内核能力。
+        self.tools = ToolRegistry()
+        self._tool_list = make_tools(self.principal, status_fn=self.stats)
+        for tool in self._tool_list:
+            self.tools.register(tool)
+            self.tools.validate(tool.tool_id)
+            self.tools.approve(tool.tool_id)
+            self.tools.activate(tool.tool_id)
+        # system prompt 追加工具描述（提示词约束 + JSON 解析的诚实协议）。
+        self.system_prompt = self.system_prompt + build_tool_prompt(self._tool_list)
 
     @staticmethod
     def _ensure_chat_policy() -> None:
@@ -155,9 +171,9 @@ class LiuHaoAssistant:
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)
 
-        # 3. 生成（真实 LLM / mock）。
+        # 3. 生成（真实 LLM / mock）+ 工具调用 loop。
         try:
-            reply = self.provider.chat(messages)
+            reply = self._generate_with_tools(messages)
             status = "completed"
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             reply = f"[生成失败] {exc}"
@@ -221,6 +237,37 @@ class LiuHaoAssistant:
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
+    def _generate_with_tools(self, messages: List[Dict[str, str]]) -> str:
+        """生成回复，并在 LLM 请求工具时执行真实工具、把结果喂回。
+
+        协议：LLM 需要查询系统信息时输出 ``{"tool": ..., "args": {...}}``，
+        主控解析后执行工具、把结果作为下一条 user 消息喂回，直到 LLM 输出
+        纯文本回复（或达到 ``MAX_TOOL_ROUNDS`` 上限防死循环）。
+        """
+        for _ in range(MAX_TOOL_ROUNDS):
+            reply = self.provider.chat(messages)
+            tool_call = parse_tool_call(reply)
+            if tool_call is None:
+                return reply
+            tool_name, args = tool_call
+            tool_output = self._execute_tool(tool_name, args)
+            # 把工具调用与结果加入上下文，继续生成最终回复。
+            messages.append({"role": "assistant", "content": reply})
+            messages.append(
+                {"role": "user", "content": f"[工具 {tool_name} 结果]\n{tool_output}"}
+            )
+        return reply
+
+    def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """按工具名查找并执行，返回序列化结果（含失败信息，不抛异常）。"""
+        for tool in self._tool_list:
+            if tool.name == tool_name:
+                result = self.tools.execute(tool.tool_id, args)
+                if result.success:
+                    return str(result.output)
+                return f"工具执行失败: {result.error}"
+        return f"未知工具: {tool_name}"
+
     def _commit_turn(
         self, message: str, reply: str, correlation_id: str, status: str
     ) -> None:
