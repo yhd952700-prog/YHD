@@ -1,9 +1,10 @@
-"""reasoning — 十源 packages 层（未实现）.
+"""reasoning — 十源 packages 层 facade.
 
-独立推理引擎尚未落地；推理内嵌于 L-Core（NO-FAKE）
+确定性演绎推理（forward-chaining）+ 可选生成式推理。
 
-诚实标注 NOT_IMPLEMENTED：本包不导出任何伪实现。
+复用 src/ai/reasoning.py 的真实实现（不重写，NO-FAKE）。
 """
 
-NOT_IMPLEMENTED = True
-__all__ = []  # NOT_IMPLEMENTED
+from src.ai.reasoning import Reasoner, ReasoningStep
+
+__all__ = ["Reasoner", "ReasoningStep"]

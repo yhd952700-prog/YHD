@@ -38,9 +38,9 @@ ENV PATH=/home/app/.local/bin:$PATH
 # Expose port
 EXPOSE 8080
 
-# Health check
+# Health check — python:3.11-slim has no curl; use stdlib urllib instead.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD python -c 'import urllib.request; urllib.request.urlopen("http://localhost:8080/health", timeout=5)' || exit 1
 
 # Run application
 CMD ["python", "-m", "uvicorn", "src.gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -4,7 +4,7 @@ services:
   redis-master-1:
     image: redis:7-alpine
     container_name: liuhao-redis-master-1
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
     volumes:
       - redis-master-1-data:/data
     ports:
@@ -29,7 +29,7 @@ services:
   redis-master-2:
     image: redis:7-alpine
     container_name: liuhao-redis-master-2
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
     volumes:
       - redis-master-2-data:/data
     healthcheck:
@@ -52,7 +52,7 @@ services:
   redis-master-3:
     image: redis:7-alpine
     container_name: liuhao-redis-master-3
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes --cluster-config-file nodes.conf
     volumes:
       - redis-master-3-data:/data
     healthcheck:
@@ -75,7 +75,7 @@ services:
   redis-replica-1:
     image: redis:7-alpine
     container_name: liuhao-redis-replica-1
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
     volumes:
       - redis-replica-1-data:/data
     healthcheck:
@@ -98,7 +98,7 @@ services:
   redis-replica-2:
     image: redis:7-alpine
     container_name: liuhao-redis-replica-2
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
     volumes:
       - redis-replica-2-data:/data
     healthcheck:
@@ -121,7 +121,7 @@ services:
   redis-replica-3:
     image: redis:7-alpine
     container_name: liuhao-redis-replica-3
-    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao_dev_redis_pass} --maxmemory 2gb --maxmemory-policy allkeys-lru --cluster-enabled yes
     volumes:
       - redis-replica-3-data:/data
     healthcheck:

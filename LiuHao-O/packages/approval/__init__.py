@@ -1,9 +1,10 @@
-"""approval — 十源 packages 层（未实现）.
+"""approval — 十源 packages 层 facade.
 
-人类审批工作流尚未落地；关联 evolution 的 human-approve 门（NO-FAKE）
+人类审批工作流：submit → pending → approve/reject → audit 留痕。
 
-诚实标注 NOT_IMPLEMENTED：本包不导出任何伪实现。
+复用 src/ai/approval.py 的真实实现（不重写，NO-FAKE）。
 """
 
-NOT_IMPLEMENTED = True
-__all__ = []  # NOT_IMPLEMENTED
+from src.ai.approval import ApprovalWorkflow, ApprovalRequest, ApprovalStatus
+
+__all__ = ["ApprovalWorkflow", "ApprovalRequest", "ApprovalStatus"]

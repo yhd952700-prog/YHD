@@ -8,9 +8,9 @@
 |---|---|---|---|
 | agent | IMPLEMENTED（facade） | src.ai.agent_factory, src.ai.employee | — |
 | analysis | IMPLEMENTED（facade） | src.ai.ada | — |
-| approval | NOT_IMPLEMENTED | — | — |
+| approval | IMPLEMENTED（facade） | src.ai.approval | — |
 | capability | IMPLEMENTED（facade） | src.kernels.capability | — |
-| common | NOT_IMPLEMENTED | — | — |
+| common | IMPLEMENTED（facade） | error_types（根目录）+ 十源常量 | — |
 | context | IMPLEMENTED（facade） | src.kernels.context | — |
 | economy | IMPLEMENTED（facade） | src.ai.economy | — |
 | evolution | IMPLEMENTED（facade） | src.ai.evolution | — |
@@ -28,7 +28,7 @@
 | planning | IMPLEMENTED（facade） | src.kernels.execution, src.ai.goal_task_graph | — |
 | policy | IMPLEMENTED（facade） | src.kernels.policy | — |
 | realtime | IMPLEMENTED（facade） | src.ai.collaboration | — |
-| reasoning | NOT_IMPLEMENTED | — | — |
+| reasoning | IMPLEMENTED（facade） | src.ai.reasoning | — |
 | resource | IMPLEMENTED（facade） | src.kernels.resource | — |
 | runtime | IMPLEMENTED（facade） | src.ai.agent_factory, src.ai.runtime_loop | — |
 | sandbox | IMPLEMENTED（facade） | src.ai.ada | — |
@@ -39,4 +39,4 @@
 | verification | IMPLEMENTED（facade） | src.ai.verification, src.kernels.evaluation | — |
 | world | IMPLEMENTED（facade） | src.ai.world_interface | — |
 
-> 未实现包为诚实标注，不导出伪实现（NO-FAKE）。
+> 全部 33 个包已落地为 facade（复用 src/ 真实实现，无 NOT_IMPLEMENTED 占位）。

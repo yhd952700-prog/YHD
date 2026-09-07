@@ -54,9 +54,12 @@ EXPECTED = {
     "trust": ("src.kernels.trust", "TrustManager"),
     "verification": ("src.ai.verification", "VerificationEngine"),
     "world": ("src.ai.world_interface", "WorldInterface"),
+    "approval": ("src.ai.approval", "ApprovalWorkflow"),
+    "reasoning": ("src.ai.reasoning", "Reasoner"),
+    "common": ("error_types", "classify_error"),
 }
 
-NOT_IMPL = ["approval", "common", "reasoning"]
+NOT_IMPL = []
 
 # 33 个包目录全集（kernel 为已存在的 foundation 实现，不在此映射内）
 ALL_PACKAGES = sorted(set(EXPECTED) | set(NOT_IMPL) | {"kernel"})
@@ -92,6 +95,24 @@ class TestNotImplementedAreHonest:
             assert getattr(facade, "NOT_IMPLEMENTED", False) is True, (
                 "%s 应诚实标注 NOT_IMPLEMENTED" % pkg
             )
+
+
+class TestCommonConstants:
+    def test_ten_sources_are_the_constitutional_ten(self):
+        common = _import_pkg("common")
+        assert len(common.TEN_SOURCES) == 10
+        # 十源 DNA（项目宪法）必须与 MEMORY.md 一致
+        assert common.TEN_SOURCES == [
+            "ULTRON", "VISION", "ADA", "EDITH", "FRIDAY",
+            "JARVIS", "JOCaSTA", "KAREN", "ENOCH", "ZOON",
+        ]
+
+    def test_common_reexports_real_error_types(self):
+        common = _import_pkg("common")
+        import error_types
+        # identity 校验：common.classify_error 就是根目录的真实函数
+        assert common.classify_error is error_types.classify_error
+        assert common.LiuHaoError is error_types.LiuHaoError
 
 
 class TestKernelFoundationPreserved:

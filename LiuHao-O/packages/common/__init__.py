@@ -1,9 +1,44 @@
-"""common — 十源 packages 层（未实现）.
+"""common — 十源 packages 层 facade.
 
-共享工具/常量层尚未拆分（NO-FAKE）
+共享错误类型（复用根目录 error_types.py）+ 项目级常量（十源 / 版本）。
 
-诚实标注 NOT_IMPLEMENTED：本包不导出任何伪实现。
+复用而非重写：错误类型来自已存在的 ``error_types.py``，十源常量是项目宪法。
 """
 
-NOT_IMPLEMENTED = True
-__all__ = []  # NOT_IMPLEMENTED
+from error_types import (
+    LiuHaoError,
+    ProviderError,
+    ProviderAPIError,
+    ProviderRateLimitError,
+    ConfigurationError,
+    MemoryError,
+    classify_error,
+)
+
+# 十源 DNA（项目宪法）：统一形成 LIUHAO X 的十个源。
+TEN_SOURCES = [
+    "ULTRON",
+    "VISION",
+    "ADA",
+    "EDITH",
+    "FRIDAY",
+    "JARVIS",
+    "JOCaSTA",
+    "KAREN",
+    "ENOCH",
+    "ZOON",
+]
+
+__version__ = "3.0.0"
+
+__all__ = [
+    "LiuHaoError",
+    "ProviderError",
+    "ProviderAPIError",
+    "ProviderRateLimitError",
+    "ConfigurationError",
+    "MemoryError",
+    "classify_error",
+    "TEN_SOURCES",
+    "__version__",
+]
