@@ -46,6 +46,9 @@ class AgentSpec:
     sandbox_policy: Optional[str] = None
     evaluation_suite: Optional[str] = None
     name: Optional[str] = None  # optional explicit principal; else auto-generated
+    # 独立 system prompt（默认 None → 回退到 goal）。领域模板（ZOON）用它把
+    # 「领域专家人设」与「具体任务目标」分离，而通用 Agent 仍以 goal 兼作提示。
+    system_prompt: Optional[str] = None
 
 
 @dataclass
@@ -246,7 +249,7 @@ class AgentFactory:
             agent_type=spec.agent_type,
             name=principal,
             provider=provider,
-            system_prompt=spec.goal,
+            system_prompt=spec.system_prompt if spec.system_prompt is not None else spec.goal,
             metadata={
                 "capabilities": list(spec.capabilities),
                 "memory_policy": spec.memory_policy,
