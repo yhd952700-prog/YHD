@@ -11,7 +11,7 @@ import uuid
 import os
 
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, DateTime, Text,
+    Column, Integer, String, Float, Boolean, DateTime, Text, JSON, BigInteger,
     MetaData, Index, ForeignKey
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -265,8 +265,8 @@ class APIKey(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     name = Column(String(255), nullable=False)
     key_hash = Column(String(64), nullable=False, index=True)
-    encrypted_key = Column(Text, nullable=True)
-    scopes = Column("scopes", Text, nullable=False, default="[]")  # JSON stored as text
+    encrypted_key = Column(Text, nullable=False)
+    scopes = Column("scopes", JSON, nullable=False, default="[]")  # JSON stored as text
     status = Column(String(50), nullable=False, default="active")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
@@ -274,7 +274,7 @@ class APIKey(Base):
     usage_count = Column(Integer, nullable=False, default=0)
     rate_limit_rpm = Column(Integer, nullable=False, default=60)
     rate_limit_tpm = Column(Integer, nullable=False, default=10000)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")  # JSON
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")  # JSON
     rotated_from = Column(String(36), ForeignKey("api_keys.id"), nullable=True)
     rotation_count = Column(Integer, nullable=False, default=0)
     is_deleted = Column(Boolean, nullable=False, default=False)
@@ -294,7 +294,7 @@ class JWTToken(Base):
     expires_at = Column(DateTime, nullable=False, index=True)
     revoked_at = Column(DateTime, nullable=True)
     revoked_reason = Column(String(255), nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -304,7 +304,7 @@ class RBACRole(Base):
     name = Column(String(100), nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
     is_system = Column(Boolean, nullable=False, default=False)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_deleted = Column(Boolean, nullable=False, default=False)
@@ -318,7 +318,7 @@ class RBACPermission(Base):
     description = Column(Text, nullable=True)
     resource = Column(String(100), nullable=False, index=True)
     action = Column(String(50), nullable=False)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -338,7 +338,7 @@ class RBACUser(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     is_superuser = Column(Boolean, nullable=False, default=False)
     last_login_at = Column(DateTime, nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_deleted = Column(Boolean, nullable=False, default=False)
@@ -372,7 +372,7 @@ class AuditLog(Base):
     severity = Column(String(20), nullable=False, default="medium")
     status = Column(String(20), nullable=False, default="success")
     message = Column(Text, nullable=True)
-    details = Column(Text, nullable=False, default="{}")
+    details = Column(JSON, nullable=False, default="{}")
     request_id = Column(String(36), nullable=True, index=True)
     trace_id = Column(String(36), nullable=True, index=True)
     ip_address = Column(String(45), nullable=True)
@@ -387,17 +387,17 @@ class Span(Base):
     trace_id = Column(String(36), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     kind = Column(String(20), nullable=False, default="internal")
-    start_time = Column("start_time", Text, nullable=False)  # nanoseconds as int stored as text
-    end_time = Column("end_time", Text, nullable=False)
-    duration_ns = Column(Text, nullable=True)
-    attributes = Column(Text, nullable=False, default="{}")
+    start_time = Column("start_time", BigInteger, nullable=False)  # nanoseconds as int stored as text
+    end_time = Column("end_time", BigInteger, nullable=False)
+    duration_ns = Column(BigInteger, nullable=True)
+    attributes = Column(JSON, nullable=False, default="{}")
     status = Column(String(20), nullable=False, default="unset")
     status_message = Column(Text, nullable=True)
     parent_span_id = Column(String(36), nullable=True, index=True)
     trace_state = Column(Text, nullable=True)
     dropped_attributes_count = Column(Integer, nullable=False, default=0)
-    events = Column(Text, nullable=False, default="[]")
-    links = Column(Text, nullable=False, default="[]")
+    events = Column(JSON, nullable=False, default="[]")
+    links = Column(JSON, nullable=False, default="[]")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -410,7 +410,7 @@ class Metric(Base):
     kind = Column(String(20), nullable=False, default="gauge")
     aggregation_temporality = Column(String(20), nullable=False, default="delta")
     metric_type = Column(String(20), nullable=False, default="double")
-    data_points = Column(Text, nullable=False, default="[]")
+    data_points = Column(JSON, nullable=False, default="[]")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -429,8 +429,8 @@ class Alert(Base):
     state = Column(String(20), nullable=False, default="firing")
     fired_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     resolved_at = Column(DateTime, nullable=True)
-    tags = Column(Text, nullable=False, default="{}")
-    extra = Column(Text, nullable=False, default="{}")
+    tags = Column(JSON, nullable=False, default="{}")
+    extra = Column(JSON, nullable=False, default="{}")
 
 
 # --- Plugin System Models ---
@@ -444,14 +444,14 @@ class Plugin(Base):
     author = Column(String(100), nullable=True)
     homepage = Column(String(255), nullable=True)
     license = Column(String(100), nullable=True)
-    keywords = Column(Text, nullable=False, default="[]")
+    keywords = Column(JSON, nullable=False, default="[]")
     compatibility = Column(String(50), nullable=False, default=">=1.0.0")
-    entry_points = Column(Text, nullable=False, default="{}")
-    tags = Column(Text, nullable=False, default="[]")
+    entry_points = Column(JSON, nullable=False, default="{}")
+    tags = Column(JSON, nullable=False, default="[]")
     status = Column(String(20), nullable=False, default="pending")
     is_active = Column(Boolean, nullable=False, default=False)
     current_version_id = Column(String(36), nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_deleted = Column(Boolean, nullable=False, default=False)
@@ -468,9 +468,9 @@ class PluginVersion(Base):
     upload_url = Column(String(500), nullable=True)
     status = Column(String(20), nullable=False, default="pending")
     released_at = Column(DateTime, nullable=True)
-    file_size = Column("file_size", Text, nullable=False, default="0")
+    file_size = Column("file_size", BigInteger, nullable=False, default=0)
     md5_hash = Column(String(32), nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -480,10 +480,10 @@ class SandboxExecution(Base):
     plugin_id = Column(String(36), ForeignKey("plugins.id", ondelete="CASCADE"), nullable=False, index=True)
     sandbox_id = Column(String(36), nullable=False, index=True)
     entry_point = Column(String(255), nullable=False)
-    arguments = Column(Text, nullable=False, default="[]")
+    arguments = Column(JSON, nullable=False, default="[]")
     working_directory = Column(String(500), nullable=True)
-    environment_variables = Column(Text, nullable=False, default="{}")
-    resource_limits = Column(Text, nullable=False, default="{}")
+    environment_variables = Column(JSON, nullable=False, default="{}")
+    resource_limits = Column(JSON, nullable=False, default="{}")
     timeout = Column(Integer, nullable=False, default=60)
     status = Column(String(20), nullable=False, default="pending")
     start_time = Column(DateTime, nullable=True)
@@ -503,7 +503,7 @@ class SandboxResult(Base):
     output = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     execution_time = Column(Float, nullable=True)
-    resource_usage = Column(Text, nullable=False, default="{}")
+    resource_usage = Column(JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -517,7 +517,7 @@ class PluginDependency(Base):
     dependency_type = Column(String(20), nullable=False, default="hard")
     optional = Column(Boolean, nullable=False, default=False)
     weak = Column(Boolean, nullable=False, default=False)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -526,7 +526,7 @@ class PluginConflict(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     plugin_id = Column(String(36), ForeignKey("plugins.id", ondelete="CASCADE"), nullable=False, index=True)
     dependency_name = Column(String(100), nullable=False)
-    conflicting_versions = Column(Text, nullable=False, default="[]")
+    conflicting_versions = Column(JSON, nullable=False, default="[]")
     resolution = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
     suggested_fix = Column(Text, nullable=True)
@@ -541,7 +541,7 @@ class Goal(Base):
     description = Column(Text, nullable=False)
     priority = Column(String(20), nullable=False, default="medium")
     status = Column(String(20), nullable=False, default="pending")
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -552,13 +552,13 @@ class Task(Base):
     goal_id = Column(String(36), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True)
     description = Column(Text, nullable=False)
     task_type = Column(String(50), nullable=False, default="general")
-    depends_on = Column(Text, nullable=False, default="[]")
+    depends_on = Column(JSON, nullable=False, default="[]")
     status = Column(String(20), nullable=False, default="pending")
     assigned_agent = Column(String(100), nullable=True)
     result = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     priority = Column(Integer, nullable=False, default=0)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
@@ -569,10 +569,10 @@ class WorkflowExecution(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     workflow_name = Column(String(100), nullable=False)
     status = Column(String(20), nullable=False, default="pending")
-    input_data = Column(Text, nullable=False, default="{}")
-    output_data = Column(Text, nullable=True)
+    input_data = Column(JSON, nullable=False, default="{}")
+    output_data = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
-    checkpoint_data = Column(Text, nullable=True)
+    checkpoint_data = Column(JSON, nullable=True)
     thread_id = Column(String(36), nullable=True, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
@@ -587,13 +587,13 @@ class MemoryItem(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     content = Column(Text, nullable=False)
     tier = Column(String(20), nullable=False, default="semantic")
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
-    embedding = Column(Text, nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    embedding = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     access_count = Column(Integer, nullable=False, default=0)
     importance = Column(Float, nullable=False, default=0.5)
-    tags = Column(Text, nullable=False, default="[]")
+    tags = Column(JSON, nullable=False, default="[]")
     user_id = Column(String(36), nullable=False, default="default", index=True)
     session_id = Column(String(36), nullable=True, index=True)
     agent_id = Column(String(36), nullable=True, index=True)
@@ -605,7 +605,7 @@ class StorageEntry(Base):
     value = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    tags = Column(Text, nullable=False, default="{}")
+    tags = Column(JSON, nullable=False, default="{}")
     ttl = Column(Float, nullable=True)
 
 
@@ -615,12 +615,12 @@ class DeploymentConfig(Base):
     name = Column(String(100), nullable=False, unique=True, index=True)
     target = Column(String(50), nullable=False)
     strategy = Column(String(20), nullable=False, default="rolling")
-    docker_config = Column(Text, nullable=False, default="{}")
-    health_check = Column(Text, nullable=True)
-    environment = Column(Text, nullable=False, default="{}")
-    secrets = Column(Text, nullable=False, default="{}")
-    resources = Column(Text, nullable=False, default="{}")
-    autoscaling = Column(Text, nullable=True)
+    docker_config = Column(JSON, nullable=False, default="{}")
+    health_check = Column(JSON, nullable=True)
+    environment = Column(JSON, nullable=False, default="{}")
+    secrets = Column(JSON, nullable=False, default="{}")
+    resources = Column(JSON, nullable=False, default="{}")
+    autoscaling = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -644,11 +644,11 @@ class AIModel(Base):
     name = Column(String(100), nullable=False, unique=True, index=True)
     provider = Column(String(50), nullable=False)
     model = Column(String(100), nullable=False)
-    capabilities = Column(Text, nullable=False, default="{}")
+    capabilities = Column(JSON, nullable=False, default="{}")
     cost_per_1k_tokens = Column(Float, nullable=True)
     max_concurrency = Column(Integer, nullable=False, default=10)
     is_active = Column(Boolean, nullable=False, default=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -668,7 +668,7 @@ class CostTracking(Base):
     total_tokens = Column(Integer, nullable=False, default=0)
     cost_usd = Column(Float, nullable=False, default=0.0)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
 
 
 class DeviceAdapter(Base):
@@ -676,10 +676,10 @@ class DeviceAdapter(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     name = Column(String(100), nullable=False, unique=True, index=True)
     type = Column(String(50), nullable=False)  # filesystem, browser, shell
-    config = Column(Text, nullable=False, default="{}")
+    config = Column(JSON, nullable=False, default="{}")
     status = Column(String(20), nullable=False, default="active")
     last_health_check = Column(DateTime, nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -689,7 +689,7 @@ class ConfigSnapshot(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
-    config_data = Column(Text, nullable=False, default="{}")
+    config_data = Column(JSON, nullable=False, default="{}")
     created_by = Column(String(36), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -705,7 +705,7 @@ class Deployment(Base):
     status = Column(String(20), nullable=False, default="pending")
     rolled_back_from = Column(String(36), nullable=True)
     rollback_reason = Column(Text, nullable=True)
-    meta_data = Column("metadata", Text, nullable=False, default="{}")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
 
 
 class Budget(Base):
@@ -719,6 +719,220 @@ class Budget(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ==================== Extra tables (defined by migrations 003-005) ====================
+# These models mirror the tables created by alembic migrations 003-005 so that
+# Base.metadata fully covers the migrated schema.
+
+class PluginCategory(Base):
+    __tablename__ = "plugin_categories"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    parent_id = Column(String(36), ForeignKey("plugin_categories.id"), nullable=True)
+    status = Column(String(20), nullable=False, default="active")
+    is_active = Column(Boolean, nullable=False, default=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PluginConfiguration(Base):
+    __tablename__ = "plugin_configurations"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    plugin_id = Column(String(36), ForeignKey("plugins.id", ondelete="CASCADE"), nullable=False)
+    category_id = Column(String(36), ForeignKey("plugin_categories.id"), nullable=True)
+    config_key = Column(String(255), nullable=False)
+    config_value = Column(Text, nullable=False)
+    is_default = Column(Boolean, nullable=False, default=False)
+    is_sensitive = Column(Boolean, nullable=False, default=False)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WorkflowDefinition(Base):
+    __tablename__ = "workflow_definitions"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    version = Column(String(50), nullable=False, default="1.0.0")
+    definition = Column(JSON, nullable=False, default="{}")
+    status = Column(String(20), nullable=False, default="draft")
+    is_active = Column(Boolean, nullable=False, default=False)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WorkflowExecutionLog(Base):
+    __tablename__ = "workflow_execution_logs"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    workflow_definition_id = Column(String(36), ForeignKey("workflow_definitions.id"), nullable=False)
+    trigger_type = Column(String(50), nullable=False)
+    input_data = Column(JSON, nullable=False, default="{}")
+    output_data = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False, default="running")
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    agent_id = Column(String(36), nullable=False)
+    session_key = Column(String(255), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, default="active")
+    current_task = Column(String(255), nullable=True)
+    context_data = Column(JSON, nullable=False, default="{}")
+    last_heartbeat = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class AgentTaskQueue(Base):
+    __tablename__ = "agent_task_queue"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    agent_id = Column(String(36), nullable=False)
+    task_id = Column(String(36), nullable=False)
+    task_type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    priority = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    result = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+
+
+class WorkflowStepExecution(Base):
+    __tablename__ = "workflow_step_executions"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    workflow_execution_id = Column(String(36), ForeignKey("workflow_execution_logs.id"), nullable=False)
+    step_name = Column(String(100), nullable=False)
+    step_order = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="running")
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    output_data = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+
+class AgentCapability(Base):
+    __tablename__ = "agent_capabilities"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    agent_id = Column(String(36), ForeignKey("agent_sessions.agent_id"), nullable=False)
+    capability_name = Column(String(100), nullable=False)
+    capability_level = Column(String(20), nullable=False, default="basic")
+    is_active = Column(Boolean, nullable=False, default=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    granted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    revoked_at = Column(DateTime, nullable=True)
+
+
+class AgentAuditLog(Base):
+    __tablename__ = "agent_audit_log"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    agent_id = Column(String(36), nullable=False)
+    action = Column(String(100), nullable=False)
+    details = Column(JSON, nullable=False, default="{}")
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ip_address = Column(String(45), nullable=True)
+
+
+class ResourceConsumption(Base):
+    __tablename__ = "resource_consumption"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    agent_id = Column(String(36), nullable=True)
+    resource_type = Column(String(50), nullable=False)
+    amount = Column(Float, nullable=False)
+    unit = Column(String(20), nullable=False, default="units")
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+
+
+class StatusTransitionLog(Base):
+    __tablename__ = "status_transition_logs"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    entity_type = Column(String(50), nullable=False)
+    entity_id = Column(String(36), nullable=False)
+    from_status = Column(String(20), nullable=False)
+    to_status = Column(String(20), nullable=False)
+    transitioned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    transitioned_by = Column(String(100), nullable=True)
+    reason = Column(Text, nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+
+
+class PluginExecutionHistory(Base):
+    __tablename__ = "plugin_execution_history"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    plugin_id = Column(String(36), ForeignKey("plugins.id"), nullable=False)
+    execution_id = Column(String(36), nullable=False)
+    status = Column(String(20), nullable=False, default="running")
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    output = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    user_id = Column(String(36), nullable=False, unique=True)
+    preference_key = Column(String(100), nullable=False)
+    preference_value = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False, default="general")
+    is_public = Column(Boolean, nullable=False, default=False)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NotificationSetting(Base):
+    __tablename__ = "notification_settings"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    user_id = Column(String(36), nullable=False, unique=True)
+    notification_type = Column(String(50), nullable=False)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    channels = Column(JSON, nullable=False, default="[]")
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SystemConfiguration(Base):
+    __tablename__ = "system_configurations"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    config_key = Column(String(100), nullable=False, unique=True)
+    config_value = Column(Text, nullable=False)
+    config_type = Column(String(20), nullable=False, default="string")
+    is_sensitive = Column(Boolean, nullable=False, default=False)
+    description = Column(Text, nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AuditTrail(Base):
+    __tablename__ = "audit_trail"
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    entity_type = Column(String(50), nullable=False)
+    entity_id = Column(String(36), nullable=True)
+    action = Column(String(20), nullable=False)
+    old_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    changed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    changed_by = Column(String(100), nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    meta_data = Column("metadata", JSON, nullable=False, default="{}")
 
 
 # ==================== Session & Engine Management ====================
@@ -762,6 +976,12 @@ ALL_MODELS = [
     MemoryItem, StorageEntry, DeploymentConfig, DeploymentRelease,
     AIModel, CostTracking, DeviceAdapter, ConfigSnapshot,
     Deployment, Budget,
+    # Tables defined by migrations 003-005
+    PluginCategory, PluginConfiguration, WorkflowDefinition, WorkflowExecutionLog,
+    AgentSession, AgentTaskQueue, WorkflowStepExecution, AgentCapability,
+    AgentAuditLog, ResourceConsumption, StatusTransitionLog,
+    PluginExecutionHistory, UserPreference, NotificationSetting,
+    SystemConfiguration, AuditTrail,
 ]
 
 # Export Base for model inheritance
@@ -809,6 +1029,12 @@ __all__ = [
     "ConfigSnapshot",
     "Deployment",
     "Budget",
+    # Tables defined by migrations 003-005
+    "PluginCategory", "PluginConfiguration", "WorkflowDefinition", "WorkflowExecutionLog",
+    "AgentSession", "AgentTaskQueue", "WorkflowStepExecution", "AgentCapability",
+    "AgentAuditLog", "ResourceConsumption", "StatusTransitionLog",
+    "PluginExecutionHistory", "UserPreference", "NotificationSetting",
+    "SystemConfiguration", "AuditTrail",
     "ALL_MODELS",
     "gen_uuid",
 ]

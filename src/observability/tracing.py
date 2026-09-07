@@ -200,3 +200,65 @@ def track_ai_operation(operation_type: str, model: Optional[str] = None,
             unit="ms",
         )
         model_latency.record(duration_ms, {"operation": operation_type, "model": model or "unknown"})
+
+
+# --- Tracer / Meter / Setup (graceful degradation) ---------------------------
+# These are referenced by observability/__init__.py (get_tracer/get_meter/
+# setup_tracing/setup_metrics) and by src/gateway/main.py, but were never
+# defined in this module — a latent import bug that kept the gateway from
+# booting. Added here with graceful degradation when OTel is unavailable.
+
+
+class _NoopTracer:
+    """No-op tracer used when OpenTelemetry is unavailable."""
+
+    def start_span(self, name, *args, **kwargs):
+        return _NoopSpanContextmanager(name, kwargs.get("attributes", {}))
+
+
+def get_tracer(name: str = "liuhao-ai-os"):
+    """Get a Tracer instance (no-op fallback if OTel is unavailable)."""
+    if not _OTEL_AVAILABLE:
+        logger.debug("OpenTelemetry not available, returning no-op tracer")
+        return _NoopTracer()
+    return trace.get_tracer(name)
+
+
+def get_meter(name: str = "liuhao-ai-os"):
+    """Get a Meter instance (None fallback if OTel is unavailable)."""
+    if not _OTEL_AVAILABLE:
+        logger.debug("OpenTelemetry not available, returning no meter")
+        return None
+    return metrics.get_meter(name)
+
+
+def setup_tracing(
+    service_name: str = "liuhao-ai-os",
+    otlp_endpoint: str = "http://localhost:4317",
+) -> None:
+    """Set up OpenTelemetry tracing (graceful no-op if unavailable)."""
+    if not _OTEL_AVAILABLE:
+        logger.debug("OpenTelemetry not available, skipping tracing setup")
+        return
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Tracing setup failed: %s", e)
+
+
+def setup_metrics(
+    service_name: str = "liuhao-ai-os",
+    otlp_endpoint: str = "http://localhost:4317",
+) -> None:
+    """Set up OpenTelemetry metrics (graceful no-op if unavailable)."""
+    if not _OTEL_AVAILABLE:
+        logger.debug("OpenTelemetry not available, skipping metrics setup")
+        return
+    try:
+        from opentelemetry.sdk.metrics import MeterProvider
+        metrics.set_meter_provider(MeterProvider())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Metrics setup failed: %s", e)

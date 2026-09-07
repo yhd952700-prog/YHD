@@ -318,10 +318,17 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
 
         try:
+            # Bypass any HTTP(S) proxy for the (usually localhost) Ollama
+            # endpoint. requests inherits HTTP_PROXY/HTTPS_PROXY from the
+            # environment, which would route localhost traffic through an
+            # unintended proxy (e.g. Ollama's own app proxy) and fail with
+            # a 502 "upstream connect failed". Passing proxies=None forces a
+            # direct connection.
             response = requests.post(
                 f"{base_url}/api/generate",
-                json={"model": model, "prompt": prompt},
+                json={"model": model, "prompt": prompt, "stream": False},
                 timeout=self.timeout,
+                proxies={"http": None, "https": None},
             )
             if response.status_code == 200:
                 result = response.json()

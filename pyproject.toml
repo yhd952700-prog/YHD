@@ -43,6 +43,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: integration tests (require external services)",
+    "e2e: end-to-end tests",
+    "security: security-focused tests",
+]
 
 [tool.ruff]
 line-length = 100

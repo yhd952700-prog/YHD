@@ -1,8 +1,11 @@
 """Knowledge API routes for Phase 2.3 RAG."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 
-from src.knowledge.rag_pipeline import rag_query
+from src.knowledge.rag_pipeline import rag_query, RAGPipeline
+from src.knowledge.retriever import Retriever
 from src.knowledge.vector_store import VectorStore
 from src.knowledge.embedding import EmbeddingPipeline
 from src.providers import get_provider
@@ -39,7 +42,7 @@ async def knowledge_search(
     Returns:
         Dict with sources, context, and metadata.
     """
-    retriever = __import__("src.knowledge.retriever").Retriever(
+    retriever = Retriever(
         vector_store=vector_store,
         embedding_pipeline=embedding_pipeline,
     )
@@ -63,8 +66,8 @@ async def knowledge_query(
         Dict with query, sources, context, answer, and metadata matching
         the Phase 2.3 RAG contract.
     """
-    rag = __import__("src.knowledge.rag_pipeline").RAGPipeline(
-        retriever=__import__("src.knowledge.retriever").Retriever(
+    rag = RAGPipeline(
+        retriever=Retriever(
             vector_store=vector_store,
             embedding_pipeline=embedding_pipeline,
         ),

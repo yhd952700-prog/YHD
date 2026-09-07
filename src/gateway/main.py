@@ -168,6 +168,10 @@ def get_app() -> FastAPI:
     
     app.include_router(health_router)
     app.include_router(api_router, prefix="/api")
+
+    # Business routers (Phase 2.3 RAG knowledge endpoints).
+    from src.api.routes.knowledge import router as knowledge_router
+    app.include_router(knowledge_router)
     
     return app
 

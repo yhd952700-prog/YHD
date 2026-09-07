@@ -30,7 +30,7 @@ def upgrade() -> None:
     
     op.create_index('ix_status_transition_logs_entity', 'status_transition_logs', ['entity_type', 'entity_id'], unique=False)
     op.create_index('ix_status_transition_logs_from_to', 'status_transition_logs', ['from_status', 'to_status'], unique=False)
-    op.create_index('ix_status_transition_logs_timestamp', 'status_transition_logs', ['timestamp'], unique=False)
+    op.create_index('ix_status_transition_logs_timestamp', 'status_transition_logs', ['transitioned_at'], unique=False)
     
     # Plugin execution history
     op.create_table(
@@ -123,25 +123,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table('audit_trail')
+    # Drop indexes BEFORE the tables that own them (SQLite removes a table's
+    # indexes automatically, so dropping indexes afterwards fails with
+    # "no such index").
     op.drop_index('ix_audit_trail_changed_at', table_name='audit_trail')
     op.drop_index('ix_audit_trail_action', table_name='audit_trail')
     op.drop_index('ix_audit_trail_entity', table_name='audit_trail')
-    op.drop_table('system_configurations')
     op.drop_index('ix_system_configurations_is_sensitive', table_name='system_configurations')
     op.drop_index('ix_system_configurations_config_key', table_name='system_configurations')
-    op.drop_table('notification_settings')
     op.drop_index('ix_notification_settings_notification_type', table_name='notification_settings')
     op.drop_index('ix_notification_settings_user_id', table_name='notification_settings')
-    op.drop_table('user_preferences')
     op.drop_index('ix_user_preferences_preference_key', table_name='user_preferences')
     op.drop_index('ix_user_preferences_category', table_name='user_preferences')
     op.drop_index('ix_user_preferences_user_id', table_name='user_preferences')
-    op.drop_table('plugin_execution_history')
     op.drop_index('ix_plugin_execution_history_started_at', table_name='plugin_execution_history')
     op.drop_index('ix_plugin_execution_history_status', table_name='plugin_execution_history')
     op.drop_index('ix_plugin_execution_history_plugin_id', table_name='plugin_execution_history')
-    op.drop_table('status_transition_logs')
     op.drop_index('ix_status_transition_logs_timestamp', table_name='status_transition_logs')
     op.drop_index('ix_status_transition_logs_from_to', table_name='status_transition_logs')
     op.drop_index('ix_status_transition_logs_entity', table_name='status_transition_logs')
+    op.drop_table('audit_trail')
+    op.drop_table('system_configurations')
+    op.drop_table('notification_settings')
+    op.drop_table('user_preferences')
+    op.drop_table('plugin_execution_history')
+    op.drop_table('status_transition_logs')

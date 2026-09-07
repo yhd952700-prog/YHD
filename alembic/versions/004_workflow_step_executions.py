@@ -79,18 +79,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table('resource_consumption')
     op.drop_index('ix_resource_consumption_timestamp', table_name='resource_consumption')
     op.drop_index('ix_resource_consumption_resource_type', table_name='resource_consumption')
     op.drop_index('ix_resource_consumption_agent_id', table_name='resource_consumption')
-    op.drop_table('agent_audit_log')
     op.drop_index('ix_agent_audit_log_timestamp', table_name='agent_audit_log')
     op.drop_index('ix_agent_audit_log_agent_id', table_name='agent_audit_log')
-    op.drop_table('agent_capabilities')
     op.drop_index('ix_agent_capabilities_is_active', table_name='agent_capabilities')
     op.drop_index('ix_agent_capabilities_capability_name', table_name='agent_capabilities')
     op.drop_index('ix_agent_capabilities_agent_id', table_name='agent_capabilities')
-    op.drop_table('workflow_step_executions')
     op.drop_index('ix_workflow_step_executions_status', table_name='workflow_step_executions')
     op.drop_index('ix_workflow_step_executions_step_name', table_name='workflow_step_executions')
     op.drop_index('ix_workflow_step_executions_workflow_execution_id', table_name='workflow_step_executions')
+    op.drop_table('resource_consumption')
+    op.drop_table('agent_audit_log')
+    op.drop_table('agent_capabilities')
+    op.drop_table('workflow_step_executions')

@@ -11,16 +11,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Enum types
-    op.execute("""
-        CREATE TYPE IF NOT EXISTS rbac_action AS TEXT;
-        CREATE TYPE IF NOT EXISTS span_kind AS TEXT;
-        CREATE TYPE IF NOT EXISTS metric_aggregation AS TEXT;
-        CREATE TYPE IF NOT EXISTS alert_severity AS TEXT;
-        CREATE TYPE IF NOT EXISTS plugin_status AS TEXT;
-        CREATE TYPE IF NOT EXISTS workflow_status AS TEXT;
-    """)
-    
+    # Enum types are expressed as plain TEXT/String columns in the ORM models,
+    # so no native DB enum types are created. (The original migration used
+    # PostgreSQL `CREATE TYPE`, which is not supported by SQLite and broke
+    # `alembic upgrade head` on the project's default SQLite backend.)
+
     # Plugin categories table
     op.create_table(
         'plugin_categories',
@@ -138,31 +133,25 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop tables in reverse order
-    op.drop_table('agent_task_queue')
+    # Drop indexes BEFORE the tables that own them.
     op.drop_index('ix_agent_sessions_session_key', table_name='agent_sessions')
     op.drop_index('ix_agent_sessions_status', table_name='agent_sessions')
     op.drop_index('ix_agent_sessions_agent_id', table_name='agent_sessions')
-    op.drop_table('agent_sessions')
     op.drop_index('ix_workflow_execution_logs_workflow_definition_id', table_name='workflow_execution_logs')
     op.drop_index('ix_workflow_execution_logs_started_at', table_name='workflow_execution_logs')
     op.drop_index('ix_workflow_execution_logs_status', table_name='workflow_execution_logs')
-    op.drop_table('workflow_execution_logs')
     op.drop_index('ix_workflow_definitions_is_active', table_name='workflow_definitions')
     op.drop_index('ix_workflow_definitions_status', table_name='workflow_definitions')
     op.drop_index('ix_workflow_definitions_name', table_name='workflow_definitions')
-    op.drop_table('workflow_definitions')
     op.drop_index('ix_plugin_configurations_config_value', table_name='plugin_configurations')
     op.drop_index('ix_plugin_configurations_config_key', table_name='plugin_configurations')
     op.drop_index('ix_plugin_configurations_plugin_id', table_name='plugin_configurations')
-    op.drop_table('plugin_configurations')
     op.drop_index('ix_plugin_categories_parent_id', table_name='plugin_categories')
     op.drop_index('ix_plugin_categories_status', table_name='plugin_categories')
     op.drop_index('ix_plugin_categories_name', table_name='plugin_categories')
+    op.drop_table('agent_task_queue')
+    op.drop_table('agent_sessions')
+    op.drop_table('workflow_execution_logs')
+    op.drop_table('workflow_definitions')
+    op.drop_table('plugin_configurations')
     op.drop_table('plugin_categories')
-    op.execute("DROP TYPE IF EXISTS rbac_action")
-    op.execute("DROP TYPE IF EXISTS span_kind")
-    op.execute("DROP TYPE IF EXISTS metric_aggregation")
-    op.execute("DROP TYPE IF EXISTS alert_severity")
-    op.execute("DROP TYPE IF EXISTS plugin_status")
-    op.execute("DROP TYPE IF EXISTS workflow_status")

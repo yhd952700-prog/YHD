@@ -1,7 +1,8 @@
 """
 Tests for ORM/Storage integration in LiuHao AI OS
 
-Tests the 30 model classes and StorageManager repository pattern.
+Tests the 46 model classes (30 original + 16 added to mirror migrations 003-005)
+and StorageManager repository pattern.
 All tests use the existing SQLite database (liuhao_ai_os.db) with data cleanup.
 """
 
@@ -56,8 +57,8 @@ class TestModelsImport:
     """Test that all 30 models are properly defined."""
 
     def test_all_models_loadable(self):
-        """All 30 model classes can be imported."""
-        assert len(ALL_MODELS) == 30
+        """All 46 model classes (original 30 + 16 migration-mirrored) can be imported."""
+        assert len(ALL_MODELS) == 46
 
     def test_all_models_have_tablename(self):
         """Every model has a __tablename__."""

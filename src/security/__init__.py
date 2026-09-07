@@ -17,8 +17,8 @@ from __future__ import annotations
 
 # Dependency-free base modules first.
 from .encryption import EncryptionManager
-from .api_keys import APIKeyManager, KeyScope, KeyStatus
-from .jwt_handler import JWTHandler, TokenType
+from .api_keys import APIKeyManager, KeyScope, KeyStatus, get_api_key_manager
+from .jwt_handler import JWTHandler, TokenType, get_jwt_handler
 from .rbac import (
     RBACManager,
     Role,
@@ -26,6 +26,7 @@ from .rbac import (
     PermissionAction,
     ResourceType,
     RoleStatus,
+    get_rbac_manager,
 )
 from .audit_logger import (
     CryptoAuditLogger,
@@ -41,9 +42,11 @@ __all__ = [
     "APIKeyManager",
     "KeyScope",
     "KeyStatus",
+    "get_api_key_manager",
     # JWT
     "JWTHandler",
     "TokenType",
+    "get_jwt_handler",
     # RBAC
     "RBACManager",
     "Role",
@@ -51,6 +54,7 @@ __all__ = [
     "PermissionAction",
     "ResourceType",
     "RoleStatus",
+    "get_rbac_manager",
     # Crypto audit
     "CryptoAuditLogger",
     "CryptoAuditEvent",
