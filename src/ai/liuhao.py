@@ -315,6 +315,7 @@ class LiuHaoAssistant:
             details={"turn": self.turn, "action": "chat", "chars_in": len(message), "chars_out": len(reply)},
             correlation_id=correlation_id,
         )
+
     def _build_messages(self, message: str) -> List[Dict[str, str]]:
         """拼出给 provider 的 messages：system + 截断历史 + 当前输入。"""
         messages: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
