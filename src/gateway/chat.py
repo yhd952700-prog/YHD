@@ -10,7 +10,8 @@ provider 由环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_MODEL 控制（默认 ol
 from __future__ import annotations
 
 import json
-from typing import Dict, Optional
+import threading
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -20,14 +21,34 @@ from ..ai.liuhao import LiuHaoAssistant
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
-# 进程内会话表：session_id -> 鎏灏实例（各自独立历史）。
+# 进程内会话表：session_id -> 鎏灏实例（各自独立历史，principal 即 session 隔离键）。
 _sessions: Dict[str, LiuHaoAssistant] = {}
+_sessions_lock = threading.Lock()
 
 
 def get_assistant(session_id: str) -> LiuHaoAssistant:
-    if session_id not in _sessions:
-        _sessions[session_id] = LiuHaoAssistant(name=f"liuhao-{session_id}")
-    return _sessions[session_id]
+    """获取或创建会话实例（线程安全，多用户并发隔离）。"""
+    with _sessions_lock:
+        if session_id not in _sessions:
+            _sessions[session_id] = LiuHaoAssistant(name=f"liuhao-{session_id}")
+        return _sessions[session_id]
+
+
+def list_sessions() -> List[str]:
+    """返回活跃会话 ID 列表（有序）。"""
+    with _sessions_lock:
+        return sorted(_sessions.keys())
+
+
+def delete_session(session_id: str) -> bool:
+    """删除一个会话：清空其持久化历史并移除实例。返回是否成功。"""
+    with _sessions_lock:
+        assistant = _sessions.pop(session_id, None)
+    if assistant is None:
+        return False
+    # reset 会清空该 principal 的对话历史（conversation store），不影响其它会话。
+    assistant.reset()
+    return True
 
 
 class ChatRequest(BaseModel):
@@ -86,3 +107,16 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
 def chat_stats(session_id: str = "default") -> Dict[str, object]:
     assistant = get_assistant(session_id)
     return assistant.stats()
+
+
+@router.get("/chat/sessions")
+def chat_sessions() -> Dict[str, object]:
+    """列出活跃会话（多用户隔离可见性）。"""
+    return {"sessions": list_sessions(), "count": len(_sessions)}
+
+
+@router.delete("/chat/sessions/{session_id}")
+def chat_delete_session(session_id: str) -> Dict[str, object]:
+    """删除会话（清空历史 + 移除实例）。"""
+    deleted = delete_session(session_id)
+    return {"session_id": session_id, "deleted": deleted}
