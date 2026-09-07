@@ -92,6 +92,26 @@ async def event_loop():
     loop.close()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_memory_kernel(tmp_path_factory):
+    """隔离 memory kernel 全局单例的持久化后端。
+
+    memory kernel 现已支持 SQLite 落盘（默认 ``D:/LiuHao-AI-OS/memory_store.db``），
+    全局单例 ``get_memory_kernel()`` 若连真实库会污染用户记忆数据。本 fixture 把
+    ``MEMORY_DB_PATH`` 重定向到 pytest 临时目录，使测试只读写临时库。
+    """
+    import os
+
+    db = tmp_path_factory.mktemp("lh_memory") / "memory_test.db"
+    previous = os.environ.get("MEMORY_DB_PATH")
+    os.environ["MEMORY_DB_PATH"] = str(db)
+    yield
+    if previous is None:
+        os.environ.pop("MEMORY_DB_PATH", None)
+    else:
+        os.environ["MEMORY_DB_PATH"] = previous
+
+
 # ==================== Test Path Configuration ====================
 
 # Ensure test output directories exist

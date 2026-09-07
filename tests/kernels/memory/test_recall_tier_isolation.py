@@ -12,7 +12,7 @@ from src.kernels.memory import (
 
 
 def test_same_key_different_tiers_coexist():
-    mk = MemoryKernel()
+    mk = MemoryKernel(db_path=":memory:")
     mk.store("k", "short", tier=MemoryTier.SHORT_TERM, scope=MemoryScope.L1)
     mk.store("k", "long", tier=MemoryTier.LONG_TERM, scope=MemoryScope.L1)
     # Both are stored independently (store keys on tier:value).
@@ -20,7 +20,7 @@ def test_same_key_different_tiers_coexist():
 
 
 def test_recall_respects_tier_filter():
-    mk = MemoryKernel()
+    mk = MemoryKernel(db_path=":memory:")
     mk.store("k", "short", tier=MemoryTier.SHORT_TERM, scope=MemoryScope.L1)
     mk.store("k", "long", tier=MemoryTier.LONG_TERM, scope=MemoryScope.L1)
     # Filtering to LONG_TERM must return only the long-term entry.
@@ -36,7 +36,7 @@ def test_recall_respects_tier_filter():
 
 
 def test_recall_without_filter_returns_some_tier():
-    mk = MemoryKernel()
+    mk = MemoryKernel(db_path=":memory:")
     mk.store("k", "short", tier=MemoryTier.SHORT_TERM, scope=MemoryScope.L1)
     mk.store("k", "long", tier=MemoryTier.LONG_TERM, scope=MemoryScope.L1)
     # Without a filter, recall still succeeds (any tier) and is isolated

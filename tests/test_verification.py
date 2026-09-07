@@ -95,7 +95,7 @@ class TestVerificationEngineWithCriteria:
 # ---------------------------------------------------------------------------
 def _fresh_engine():
     """Inject a fresh, isolated MemoryKernel so tests don't pollute state."""
-    return ExperienceEngine(memory_kernel=MemoryKernel())
+    return ExperienceEngine(memory_kernel=MemoryKernel(db_path=":memory:"))
 
 
 class TestExperienceEntry:

@@ -18,8 +18,10 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import uuid
 import threading
+import json
 
 from src.kernels._crosscutting import kernel_action
+from src.kernels.memory.store import MemoryStore
 
 
 class MemoryTier(str, Enum):
@@ -196,13 +198,74 @@ def auto_cleanup() -> Dict[str, int]:
     return get_tier_manager().auto_cleanup()
 
 
+def _entry_to_row(entry: MemoryEntry, key_hash: str) -> Dict[str, Any]:
+    """把一条 MemoryEntry 序列化为持久化字段字典（约定见 store.py docstring）。"""
+    return {
+        "key_hash": key_hash,
+        "entry_id": entry.id,
+        "key": entry.key,
+        "value": json.dumps(entry.value, ensure_ascii=False, default=str),
+        "tier": entry.tier.value,
+        "scope": entry.scope.value,
+        "created_at": entry.created_at.isoformat(),
+        "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
+        "tags": json.dumps(sorted(entry.tags)) if entry.tags else "[]",
+        "correlation_id": entry.correlation_id,
+        "access_count": entry.access_count,
+        "last_accessed": entry.last_accessed.isoformat() if entry.last_accessed else None,
+        "provenance": json.dumps(entry.provenance, default=str) if entry.provenance else None,
+    }
+
+
+def _entry_from_row(row: Dict[str, Any]) -> MemoryEntry:
+    """从持久化字段字典重建一条 MemoryEntry。"""
+    def _load(value: Any) -> Any:
+        return json.loads(value) if isinstance(value, str) and value else None
+
+    tags = _load(row["tags"]) or []
+    return MemoryEntry(
+        id=row["entry_id"],
+        key=row["key"],
+        value=_load(row["value"]),
+        tier=MemoryTier(row["tier"]),
+        scope=MemoryScope(row["scope"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
+        tags=set(tags),
+        correlation_id=row["correlation_id"],
+        access_count=row["access_count"],
+        last_accessed=datetime.fromisoformat(row["last_accessed"]) if row["last_accessed"] else None,
+        provenance=_load(row["provenance"]),
+    )
+
+
 @dataclass
 class MemoryKernel:
-    """Complete Memory Kernel implementation."""
+    """Complete Memory Kernel implementation.
+
+    持久化：``db_path=None`` 时走默认落盘路径（env ``MEMORY_DB_PATH``，兜底
+    ``D:/LiuHao-AI-OS/memory_store.db``），跨进程重启保留记忆；传 ``":memory:"``
+    为纯内存（测试隔离用）。
+    """
     
     _entries: Dict[str, MemoryEntry] = field(default_factory=dict, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock)
-    
+    db_path: Optional[str] = None
+    _store: Optional[MemoryStore] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._store = MemoryStore(db_path=self.db_path)
+        self._load_persisted()
+
+    def _load_persisted(self) -> None:
+        """启动时从持久化后端重建 ``_entries``（坏条目诚实跳过，不拖垮启动）。"""
+        with self._lock:
+            for row in self._store.load_all():
+                try:
+                    self._entries[row["key_hash"]] = _entry_from_row(row)
+                except Exception:
+                    continue
+
     @kernel_action("memory.store")
     def store(
         self,
@@ -241,7 +304,10 @@ class MemoryKernel:
             # Store in appropriate tier
             key_hash = f"{tier.value}:{key}"
             self._entries[key_hash] = entry
-            
+
+            # 写穿落盘（跨进程重启保留记忆）。
+            self._store.persist(_entry_to_row(entry, key_hash))
+
             return entry
     
     def recall(
@@ -420,9 +486,15 @@ class MemoryKernel:
             )
 
             # Store the target, then remove the compressed-away sources.
-            self._entries[f"{target_tier.value}:{key}"] = entry
+            target_key_hash = f"{target_tier.value}:{key}"
+            self._entries[target_key_hash] = entry
             for e in candidates:
                 self._entries.pop(f"{e.tier.value}:{e.key}", None)
+
+            # 落盘：写入合并后的 target，删除被合并的 source。
+            self._store.persist(_entry_to_row(entry, target_key_hash))
+            for e in candidates:
+                self._store.delete(f"{e.tier.value}:{e.key}")
 
             return MemoryCompression(
                 source_ids=source_ids,
@@ -434,16 +506,29 @@ class MemoryKernel:
                 value=value,
             )
 
+    def clear(self) -> None:
+        """清空所有记忆条目（内存 + 持久化后端）。
+
+        供「重置会话」与测试隔离使用；身份/审计等其它 kernel 不受影响。
+        """
+        with self._lock:
+            self._entries.clear()
+            self._store.clear()
+
 
 # Global memory kernel instance
 _global_kernel: Optional[MemoryKernel] = None
 
 
-def get_memory_kernel() -> MemoryKernel:
-    """Get or create the global memory kernel instance."""
+def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
+    """Get or create the global memory kernel instance.
+
+    ``db_path`` 仅在首次创建单例时生效（之后调用幂等忽略）；``None`` 走默认
+    落盘路径。
+    """
     global _global_kernel
     if _global_kernel is None:
-        _global_kernel = MemoryKernel()
+        _global_kernel = MemoryKernel(db_path=db_path)
     return _global_kernel
 
 

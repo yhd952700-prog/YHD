@@ -24,7 +24,7 @@ from src.kernels.memory import (
 
 @pytest.fixture
 def mk() -> MemoryKernel:
-    return MemoryKernel()
+    return MemoryKernel(db_path=":memory:")
 
 
 # =====================================================================
