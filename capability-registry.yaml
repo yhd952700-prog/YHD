@@ -11,6 +11,9 @@
 #   audited 由 @kernel_action 横切装饰器织入（42 个动作方法，12 个 kernel）。
 #   policy kernel 的 audited=true 指「其判决被每个动作的审计事件记录」，
 #   非自身写审计（避免递归）；详见 KERNEL-DOD-AUDIT.md。
+# 2026-09-07 status 升级：DoD 七维收口后，14 个 kernel 的 status 由
+#   PARTIALLY_IMPLEMENTED 统一改为 IMPLEMENTED；test_coverage 同步为
+#   各 kernel 实测测试数（tests/kernels/<name>/，合计 418 用例）。
 capability-registry:
   version: v3.0
   total_capabilities: 14
@@ -21,7 +24,7 @@ capability-registry:
     name: Context Kernel — 12 inputs → compressed model-ready context
     kind: kernel
     source: JARVIS
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: context
     scope: L0-L7
     mechanism: HYBRID attention
@@ -33,7 +36,7 @@ capability-registry:
     - 'Attention mechanisms: UNIFORM, IMPORTANCE, RECENCY, HYBRID'
     - Compression ratio calculation
     - Scope-aware filtering L0-L7
-    test_coverage: 0/0 (pending — tests not yet written)
+    test_coverage: '14/14 unit tests passing (tests/kernels/context/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -49,7 +52,7 @@ capability-registry:
     name: Capability Kernel — Registry + Traceability
     kind: kernel
     source: ALL
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: capability
     traceability:
     - UB-A1
@@ -60,7 +63,7 @@ capability-registry:
     - CapabilityEntry with full metadata, traceability_chain, versioning
     - L0-L7 scope enforcement
     - Built-in 12 kernel capabilities auto-registered
-    test_coverage: 0/0 (pending — tests not yet written)
+    test_coverage: '29/29 unit tests passing (tests/kernels/capability/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -76,7 +79,7 @@ capability-registry:
     name: Event Kernel — Unified event bus + correlation IDs
     kind: kernel
     source: FRIDAY
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: event
     traceability:
     - UB-A1
@@ -87,7 +90,7 @@ capability-registry:
     - Event with correlation_id, causation_id, scope, priority, tags
     - Dead letter handling with retry
     - Event history and correlation chain queries
-    test_coverage: 0/0 (pending)
+    test_coverage: '16/16 unit tests passing (tests/kernels/event/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -103,7 +106,7 @@ capability-registry:
     name: Execution Kernel — Goal→Task→Plan→Action→Verify
     kind: kernel
     source: ULTRON/JARVIS
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: execution
     traceability:
     - UB-A1
@@ -131,7 +134,7 @@ capability-registry:
     name: Resource Kernel — CPU/Mem/Storage/Token/Time/$ Quotas
     kind: kernel
     source: ULTRON
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: resource
     traceability:
     - UB-A1
@@ -142,7 +145,7 @@ capability-registry:
     - Quota allocation, commit, release, parent scope fallback
     - Utilization tracking, availability checking, limit enforcement
     - L0-L7 scope awareness
-    test_coverage: 0/0 (pending)
+    test_coverage: '13/13 unit tests passing (tests/kernels/resource/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -158,7 +161,7 @@ capability-registry:
     name: Policy Kernel — Permission boundaries + policy engine
     kind: kernel
     source: JOCaSTA
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: policy
     traceability:
     - UB-A1
@@ -186,7 +189,7 @@ capability-registry:
     name: Network Kernel — Protocol adapters + communication bus
     kind: kernel
     source: EDITH
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: network
     traceability:
     - UB-A1
@@ -197,7 +200,7 @@ capability-registry:
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
-    test_coverage: 0/0 (pending)
+    test_coverage: '16/16 unit tests passing (tests/kernels/network/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -213,7 +216,7 @@ capability-registry:
     name: Trust Kernel — Trust scores + chain + revocation
     kind: kernel
     source: JOCaSTA
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: trust
     traceability:
     - UB-A1
@@ -224,7 +227,7 @@ capability-registry:
     - TrustScore with levels (UNTRUSTED to VERY_HIGH), confidence
     - TrustChain with multiplicative propagation and decay
     - Trust evaluation for access decisions
-    test_coverage: 0/0 (pending)
+    test_coverage: '48/48 unit tests passing (tests/kernels/trust/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -240,7 +243,7 @@ capability-registry:
     name: Evaluation Kernel — Outcome evaluation + feedback loop
     kind: kernel
     source: ALL
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: evaluation
     traceability:
     - UB-A1
@@ -251,7 +254,7 @@ capability-registry:
     - Feedback generation (POSITIVE/CORRECTIVE/WARNING/CRITICAL)
     - Replan triggers, escalation, human checkpoints
     - FeedbackEntry, ReplanRequest tracking
-    test_coverage: 0/0 (pending)
+    test_coverage: '29/29 unit tests passing (tests/kernels/evaluation/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -267,14 +270,14 @@ capability-registry:
     name: Identity Kernel — Agent identity + permissions
     kind: kernel
     source: JARVIS/JOCaSTA
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: identity
     traceability:
     - UB-A1
     - Phase 0+1
     evidence:
     - src/identity/ directory exists with core modules
-    test_coverage: partial
+    test_coverage: '34/34 unit tests passing (tests/kernels/identity/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -290,14 +293,14 @@ capability-registry:
     name: Memory Kernel — Multi-tier + scoping
     kind: kernel
     source: KAREN/ENOCH
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: memory
     traceability:
     - UB-A1
     - Phase 0+1
     evidence:
     - src/knowledge/memory.py exists
-    test_coverage: partial
+    test_coverage: '37/37 unit tests passing (tests/kernels/memory/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -313,7 +316,7 @@ capability-registry:
     name: Security Kernel — RBAC + ABAC + audit trail
     kind: kernel
     source: JOCaSTA
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: security
     traceability:
     - UB-A1
@@ -340,7 +343,7 @@ capability-registry:
     name: Audit Kernel — Tamper-evident hash-chain audit trail
     kind: kernel
     source: ENOCH
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: audit
     traceability:
     - UB-A1
@@ -367,14 +370,14 @@ capability-registry:
     name: Plugin Kernel — Registration, hot-loading, version compatibility
     kind: kernel
     source: ZOON
-    status: PARTIALLY_IMPLEMENTED
+    status: IMPLEMENTED
     kernel: plugin
     traceability:
     - UB-A1
     - Phase 2 Wave 2
     evidence:
     - src/kernels/plugin/__init__.py exists (447 lines per KERNEL-CANON)
-    test_coverage: 0/0 (tests not yet written)
+    test_coverage: '15/15 unit tests passing (tests/kernels/plugin/, 2026-09-07 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
