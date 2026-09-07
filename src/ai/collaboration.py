@@ -90,6 +90,18 @@ class MessageBus:
             self._mailboxes[agent_id] = []
         return box
 
+    def poll_one(self, agent_id: str) -> Optional[AgentMessage]:
+        """Pop and return a single message (FIFO), leaving the rest queued.
+
+        Unlike ``poll`` (which drains the whole mailbox), this lets a
+        consuming loop process one message per step without dropping any
+        backlog — the behaviour ``RuntimeLoop`` relies on.
+        """
+        box = self._mailboxes.get(agent_id)
+        if not box:
+            return None
+        return box.pop(0)
+
     def pending(self, agent_id: str) -> int:
         return len(self._mailboxes.get(agent_id, []))
 
