@@ -198,3 +198,47 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* 工具调用卡片 */
+.tool-calls {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.tool-summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.tool-summary code {
+  font-family: inherit;
+  font-weight: 600;
+}
+
+.tool-output {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-h);
+  background: var(--code-bg);
+  max-height: 240px;
+  overflow-y: auto;
+}

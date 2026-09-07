@@ -137,3 +137,42 @@ def test_chat_tool_loop_terminates_at_max_rounds():
     # 最终回复是最后一次工具调用 JSON（诚实返回，不伪造成功文本）
     assert result["status"] == "completed"
     assert p.calls == lh_module.MAX_TOOL_ROUNDS
+
+
+# ---------------------------------------------------------------------- #
+# 流式工具事件（chat_stream 应 yield 结构化 tool 事件）
+# ---------------------------------------------------------------------- #
+def test_chat_stream_yields_tool_event():
+    """流式对话命中工具时，应 yield 结构化 tool 事件（含 raw 原文）。"""
+
+    class StreamingToolProvider(BaseProvider):
+        def __init__(self):
+            super().__init__(name="test", model="mock-model")
+            self.calls = 0
+
+        def chat_stream(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield '{"tool": "system_status", "args": {}}'
+            else:
+                yield "系统状态已查询。"
+
+    p = StreamingToolProvider()
+    a = make_assistant(name="tool-stream", provider=p)
+    items = list(a.chat_stream("查状态"))
+
+    tool_events = [i for i in items if isinstance(i, dict)]
+    text_tokens = [i for i in items if isinstance(i, str)]
+
+    assert len(tool_events) == 1
+    assert tool_events[0]["type"] == "tool"
+    assert tool_events[0]["name"] == "system_status"
+    assert tool_events[0]["raw"] == '{"tool": "system_status", "args": {}}'
+    assert isinstance(tool_events[0]["output"], str) and tool_events[0]["output"]
+    # 最终回复 token 存在（工具 JSON 原文也会诚实流出，前端用 raw 剥离）
+    assert "系统状态已查询" in "".join(text_tokens)
+    # 收尾落盘：turn 递增、历史写入两条（user + assistant）
+    assert a.turn == 1
+    assert len(a.history) == 2
+    assert p.calls == 2  # 工具调用一轮 + 最终回复一轮
+

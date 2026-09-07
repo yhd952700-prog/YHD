@@ -193,9 +193,10 @@ class LiuHaoAssistant:
     def chat_stream(self, message: str):
         """流式处理一条消息：逐 token yield，收尾时落盘记忆 + 审计。
 
-        与 ``chat`` 走同一条授权链路（policy → 生成 → 记忆 → 审计），只是
-        生成阶段改为逐 token 产出；落盘/审计在生成器末尾统一执行，保证与
-        非流式落盘语义一致。生成器是惰性的：SSE / CLI 消费时才真正执行。
+        与 ``chat`` 走同一条授权链路（policy → 生成 → 记忆 → 审计），生成阶段
+        改为逐 token 产出。生成器既 yield ``str``（逐 token），也 yield ``dict``
+        （工具调用事件，``{"type": "tool", "name": ..., "args": ..., "output": ...}``），
+        供 SSE / 前端渲染工具卡片。生成器是惰性的：SSE / CLI 消费时才真正执行。
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
@@ -217,22 +218,47 @@ class LiuHaoAssistant:
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)
 
-        # 3. 流式生成（逐 token yield）。
-        chunks: List[str] = []
+        # 3. 流式生成 + 工具调用 loop。每轮逐 token yield；命中工具时 yield
+        #    结构化工具事件（前端据此渲染工具卡片）；最后一轮强制为纯文本
+        #    回复（不再检测工具，防 LLM 死循环）。
+        final_reply = ""
         status = "completed"
         try:
-            for token in self.provider.chat_stream(messages):
-                chunks.append(token)
-                yield token
+            for round_idx in range(MAX_TOOL_ROUNDS + 1):
+                round_chunks: List[str] = []
+                for token in self.provider.chat_stream(messages):
+                    round_chunks.append(token)
+                    yield token
+                round_reply = "".join(round_chunks)
+                final_reply = round_reply
+
+                if round_idx == MAX_TOOL_ROUNDS:
+                    break  # 已达工具轮上限，强制收口为纯文本轮。
+
+                tool_call = parse_tool_call(round_reply)
+                if tool_call is None:
+                    break  # 纯文本回复，结束。
+                tool_name, args = tool_call
+                tool_output = self._execute_tool(tool_name, args)
+                yield {
+                    "type": "tool",
+                    "name": tool_name,
+                    "args": args,
+                    "output": tool_output,
+                    # 工具 JSON 原文：前端据此从流式内容里精确剥离工具调用片段。
+                    "raw": round_reply,
+                }
+                messages.append({"role": "assistant", "content": round_reply})
+                messages.append(
+                    {"role": "user", "content": f"[工具 {tool_name} 结果]\n{tool_output}"}
+                )
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             status = "error"
-            chunks = [f"[生成失败] {exc}"]
-            yield chunks[0]
-
-        reply = "".join(chunks)
+            final_reply = f"[生成失败] {exc}"
+            yield final_reply
 
         # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
-        self._commit_turn(message, reply, correlation_id, status)
+        self._commit_turn(message, final_reply, correlation_id, status)
 
     # ------------------------------------------------------------------ #
     # 内部

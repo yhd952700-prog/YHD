@@ -84,14 +84,19 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     每个事件一行 ``data: {json}``：
 
     - ``{"type": "token", "content": "..."}``  逐 token
+    - ``{"type": "tool", "name": ..., "args": ..., "output": ...}``  工具调用
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
     """
     assistant = get_assistant(req.session_id)
 
     def event_stream():
-        for token in assistant.chat_stream(req.message):
-            payload = {"type": "token", "content": token}
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        for item in assistant.chat_stream(req.message):
+            if isinstance(item, dict):
+                # 工具调用事件：结构化透传（type/name/args/output）。
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            else:
+                payload = {"type": "token", "content": item}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         # 生成器耗尽时 chat_stream 已完成落盘 + 审计，发结束帧。
         done = {
             "type": "done",

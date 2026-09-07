@@ -2,10 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { getSessionId, streamChat } from './lib/chatClient'
 
+interface ToolCall {
+  name: string
+  args: Record<string, unknown>
+  output: string
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  tools?: ToolCall[]
 }
 
 function App() {
@@ -29,17 +36,38 @@ function App() {
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text },
-      { role: 'assistant', content: '', streaming: true },
+      { role: 'assistant', content: '', streaming: true, tools: [] },
     ])
 
     try {
-      for await (const token of streamChat(text, sessionId)) {
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          next[next.length - 1] = { ...last, content: last.content + token }
-          return next
-        })
+      for await (const evt of streamChat(text, sessionId)) {
+        if (evt.type === 'token') {
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            next[next.length - 1] = {
+              ...last,
+              content: last.content + evt.content,
+            }
+            return next
+          })
+        } else if (evt.type === 'tool') {
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            // 从流式内容里剥离工具调用 JSON 原文（诚实：只显示工具结果卡片）。
+            let content = last.content
+            if (evt.raw && content.endsWith(evt.raw)) {
+              content = content.slice(0, content.length - evt.raw.length)
+            }
+            const tools = [
+              ...(last.tools ?? []),
+              { name: evt.name, args: evt.args, output: evt.output },
+            ]
+            next[next.length - 1] = { ...last, content, tools }
+            return next
+          })
+        }
       }
       setMessages((prev) => {
         const next = [...prev]
@@ -93,6 +121,18 @@ function App() {
               <div className="avatar">{m.role === 'user' ? '我' : '鎏'}</div>
               <div className="bubble">
                 {m.content || (m.streaming ? <span className="cursor" /> : '…')}
+                {m.tools && m.tools.length > 0 && (
+                  <div className="tool-calls">
+                    {m.tools.map((t, j) => (
+                      <details key={j} className="tool-card" open>
+                        <summary className="tool-summary">
+                          调用工具 <code>{t.name}</code>
+                        </summary>
+                        <pre className="tool-output">{t.output}</pre>
+                      </details>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))
