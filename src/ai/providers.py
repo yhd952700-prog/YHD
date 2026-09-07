@@ -108,6 +108,21 @@ class BaseProvider:
 
         raise last_error
 
+    def chat(self, messages, **kwargs) -> str:
+        """Chat-style generation over a message list.
+
+        Default implementation collapses ``messages`` (list of
+        ``{"role": ..., "content": ...}`` dicts) into a single text prompt and
+        delegates to ``generate``. Chat-native providers (e.g. Ollama) override
+        this to use their ``/api/chat`` endpoint for higher multi-turn quality.
+        """
+        prompt = "\n".join(
+            f'{m.get("role", "user")}: {m.get("content", "")}'
+            for m in messages
+            if isinstance(m, dict)
+        )
+        return self.generate(prompt, **kwargs)
+
     def get_capabilities(self) -> Dict[str, Any]:
         """Return provider capabilities metadata."""
         return {
@@ -336,6 +351,34 @@ class OllamaProvider(BaseProvider):
             else:
                 raise Exception(f"Ollama error {response.status_code}: {response.text}")
         except Exception as e:
+            # Re-raise to let generate_with_retry handle it
+            raise
+
+    def chat(self, messages, **kwargs) -> str:
+        """Generate a reply via Ollama's native ``/api/chat`` endpoint.
+
+        Uses the official chat interface (``messages`` array) which yields much
+        higher multi-turn quality for chat models like qwen2.5 than the raw
+        ``/api/generate`` completion path. Bypasses any HTTP(S) proxy for the
+        (usually localhost) endpoint, same as ``generate``.
+        """
+        import requests
+
+        model = kwargs.get("model", self.model)
+        base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+
+        try:
+            response = requests.post(
+                f"{base_url}/api/chat",
+                json={"model": model, "messages": messages, "stream": False},
+                timeout=self.timeout,
+                proxies={"http": None, "https": None},
+            )
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("message", {}).get("content", str(result))
+            raise Exception(f"Ollama error {response.status_code}: {response.text}")
+        except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
 

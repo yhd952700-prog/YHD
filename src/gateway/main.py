@@ -172,7 +172,11 @@ def get_app() -> FastAPI:
     # Business routers (Phase 2.3 RAG knowledge endpoints).
     from src.api.routes.knowledge import router as knowledge_router
     app.include_router(knowledge_router)
-    
+
+    # 鎏灏对话端点（真实 LLM 对话闭环）。
+    from .chat import router as chat_router
+    app.include_router(chat_router)
+
     return app
 
 
