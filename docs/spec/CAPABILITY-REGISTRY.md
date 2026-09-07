@@ -105,10 +105,10 @@ Kernel 层之上，十源能力已实现为 `src/ai/` 模块（Phase 3/5/9-21，
 | **JARVIS** | `src/ai/lcore.py`、`tool_registry.py` | L-Core 意图→上下文→目标→规划→委派→综合 | IMPLEMENTED |
 | **JOCaSTA** | `src/ai/organization.py`、`collaboration.py` | 组织、部门、团队、角色、KPI、预算、协作 | IMPLEMENTED |
 | **ENOCH** | `src/ai/enoch.py` | 长时任务、Mission 持久化、调度、历史分析 | IMPLEMENTED |
-| **KAREN** | `src/ai/conversation_store.py`、`src/knowledge/memory.py` | 对话历史持久化、长期记忆（Mem0） | 部分实现（无独立个人画像/偏好模块） |
+| **KAREN** | `src/ai/personal_context.py`、`conversation_store.py`、`src/knowledge/memory.py` | 个人画像聚合（UserProfile/Preferences）、对话历史、长期记忆（Mem0） | IMPLEMENTED |
 | **ZOON** | `src/ai/domain_templates.py` | 领域 Agent 模板框架（Specialized Agent Framework，13 个内置领域模板） | IMPLEMENTED |
 
-> 上表对应 MS:§143 的 FINAL TEN-SOURCE MAPPING。KAREN 的「个人画像/偏好/个性化」是十源中仅存的未闭环项，其余九源已由 `src/ai/` 实现（ZOON 于 2026-09-07 由 `domain_templates.py` 闭环，覆盖 MS §65-67）。
+> 上表对应 MS:§143 的 FINAL TEN-SOURCE MAPPING。**十源 DNA 已全部闭环**——KAREN 于 2026-09-07 由 `personal_context.py`（§22 Personal Intelligence：User Profile / Preferences / Personalization / Continuity / Preference Awareness / Contextual Suggestions）闭环，ZOON 同轮由 `domain_templates.py`（§65-67）闭环，其余八源此前已由 `src/ai/` 实现。
 
 ---
 
