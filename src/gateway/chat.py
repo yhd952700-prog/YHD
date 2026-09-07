@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..ai.liuhao import LiuHaoAssistant
+from ..ai.conversation_store import get_conversation_store
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -118,6 +119,14 @@ def chat_stats(session_id: str = "default") -> Dict[str, object]:
 def chat_sessions() -> Dict[str, object]:
     """列出活跃会话（多用户隔离可见性）。"""
     return {"sessions": list_sessions(), "count": len(_sessions)}
+
+
+@router.get("/chat/history")
+def chat_history(session_id: str = "default") -> Dict[str, object]:
+    """返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。"""
+    principal = f"liuhao-{session_id}"
+    history = get_conversation_store().load(principal)
+    return {"session_id": session_id, "history": history, "count": len(history)}
 
 
 @router.delete("/chat/sessions/{session_id}")

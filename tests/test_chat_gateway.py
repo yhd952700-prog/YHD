@@ -19,6 +19,7 @@ def isolate(monkeypatch, tmp_path):
     chat_module._sessions.clear()
     store = ConversationStore(db_path=str(tmp_path / "conv.db"))
     monkeypatch.setattr(lh_module, "get_conversation_store", lambda: store)
+    monkeypatch.setattr(chat_module, "get_conversation_store", lambda: store)
     monkeypatch.setattr(
         lh_module, "get_provider",
         lambda: MockProvider(name="test", model="mock-model"),
@@ -70,3 +71,21 @@ def test_delete_session_clears_persisted_history():
     a2 = chat_module.get_assistant("temp")
     assert a2.turn == 0
     assert a2.history == []
+
+
+def test_chat_history_endpoint_reads_persisted():
+    """history 端点从持久化 store 读历史（跨后端重启/实例重建有效）。"""
+    a = chat_module.get_assistant("hist")
+    a.chat("第一条")
+    a.chat("第二条")
+
+    # 模拟后端重启：清空进程内会话表，仅靠持久化 store 读历史。
+    chat_module._sessions.clear()
+
+    result = chat_module.chat_history(session_id="hist")
+    assert result["session_id"] == "hist"
+    assert result["count"] == 4  # 2 轮 × (user + assistant)
+    roles = [h["role"] for h in result["history"]]
+    assert roles == ["user", "assistant", "user", "assistant"]
+    assert result["history"][0]["content"] == "第一条"
+

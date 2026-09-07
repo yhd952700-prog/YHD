@@ -81,8 +81,76 @@ export function getSessionId(): string {
   const KEY = 'liuhao.session_id';
   let id = localStorage.getItem(KEY);
   if (!id) {
-    id = `session-${Date.now().toString(36)}`;
+    id = newSessionId();
     localStorage.setItem(KEY, id);
   }
   return id;
+}
+
+/** 持久化当前会话 ID。 */
+export function setSessionId(id: string): void {
+  localStorage.setItem('liuhao.session_id', id);
+}
+
+/** 生成一个新的会话 ID。 */
+export function newSessionId(): string {
+  return `session-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** 会话历史记录。 */
+export interface HistoryEntry {
+  role: string;
+  content: string;
+}
+
+export interface SessionHistory {
+  session_id: string;
+  history: HistoryEntry[];
+  count: number;
+}
+
+/** 加载某会话的历史消息（后端从持久化 store 读，跨后端重启有效）。 */
+export async function loadHistory(sessionId: string): Promise<SessionHistory> {
+  const res = await fetch(
+    `/v1/chat/history?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  if (!res.ok) throw new Error(`加载历史失败（${res.status}）`);
+  return (await res.json()) as SessionHistory;
+}
+
+/** 列出后端活跃会话。 */
+export async function listSessions(): Promise<string[]> {
+  const res = await fetch('/v1/chat/sessions');
+  if (!res.ok) throw new Error(`获取会话列表失败（${res.status}）`);
+  const data = (await res.json()) as { sessions?: string[] };
+  return data.sessions ?? [];
+}
+
+/** 删除一个会话（后端清空历史 + 移除实例）。 */
+export async function deleteSession(sessionId: string): Promise<boolean> {
+  const res = await fetch(
+    `/v1/chat/sessions/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw new Error(`删除会话失败（${res.status}）`);
+  const data = (await res.json()) as { deleted?: boolean };
+  return data.deleted === true;
+}
+
+const SESSIONS_KEY = 'liuhao.sessions';
+
+/** 读取本地维护的会话 ID 清单（跨浏览器会话保留）。 */
+export function getLocalSessions(): string[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    const list = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(list) ? (list as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 持久化本地会话 ID 清单。 */
+export function saveLocalSessions(list: string[]): void {
+  localStorage.setItem(SESSIONS_KEY, JSON.stringify(list));
 }
