@@ -123,6 +123,15 @@ class BaseProvider:
         )
         return self.generate(prompt, **kwargs)
 
+    def chat_stream(self, messages, **kwargs):
+        """Stream chat tokens one at a time.
+
+        Default implementation degrades to non-streaming: it yields the full
+        reply as a single token. Providers with native streaming (e.g. Ollama)
+        override this to yield incremental tokens.
+        """
+        yield self.chat(messages, **kwargs)
+
     def get_capabilities(self) -> Dict[str, Any]:
         """Return provider capabilities metadata."""
         return {
@@ -381,6 +390,44 @@ class OllamaProvider(BaseProvider):
         except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
+
+    def chat_stream(self, messages, **kwargs):
+        """Stream tokens via Ollama's native ``/api/chat`` (NDJSON, stream=True).
+
+        Each response line is a JSON object whose ``message.content`` is the
+        incremental token; the final frame has ``done: true``. Lines are parsed
+        defensively — malformed frames are skipped rather than aborting the
+        stream (an honest best-effort for a local NDJSON source).
+        """
+        import json as _json
+
+        import requests
+
+        model = kwargs.get("model", self.model)
+        base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+
+        response = requests.post(
+            f"{base_url}/api/chat",
+            json={"model": model, "messages": messages, "stream": True},
+            timeout=self.timeout,
+            proxies={"http": None, "https": None},
+            stream=True,
+        )
+        if response.status_code != 200:
+            raise Exception(f"Ollama error {response.status_code}: {response.text}")
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                chunk = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if chunk.get("done"):
+                break
+            content = chunk.get("message", {}).get("content", "")
+            if content:
+                yield content
 
 
 # Moonshot provider

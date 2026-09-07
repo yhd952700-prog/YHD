@@ -123,3 +123,26 @@ def test_restart_isolated_by_principal(isolate_conversation_store):
     b = make_assistant(name="bob")
     assert b.turn == 0
     assert b.history == []
+
+
+def test_chat_stream_yields_tokens_and_commits():
+    """流式对话：mock 降级为单 token，但仍完整走授权+落盘。"""
+    a = make_assistant(name="stream-check")
+    tokens = list(a.chat_stream("hello"))
+    assert len(tokens) == 1
+    assert tokens[0]  # 非空回复
+    assert a.turn == 1
+    assert len(a.history) == 2  # user + assistant
+
+
+def test_chat_stream_commits_like_chat(isolate_conversation_store):
+    """流式与非流式落盘语义一致：记忆 + 会话存储 + 审计都落。"""
+    a = make_assistant(name="stream-commit")
+    before = a.memory.stats()["total_entries"]
+    tokens = list(a.chat_stream("hi there"))
+    after = a.memory.stats()["total_entries"]
+    assert after - before == 1
+    assert isolate_conversation_store.load("stream-commit") == [
+        {"role": "user", "content": "hi there"},
+        {"role": "assistant", "content": tokens[0]},
+    ]

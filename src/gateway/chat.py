@@ -9,9 +9,11 @@ provider 由环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_MODEL 控制（默认 ol
 
 from __future__ import annotations
 
+import json
 from typing import Dict, Optional
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..ai.liuhao import LiuHaoAssistant
@@ -52,6 +54,32 @@ def chat(req: ChatRequest) -> ChatResponse:
         correlation_id=result["correlation_id"],
         agent=result["agent"],
     )
+
+
+@router.post("/chat/stream")
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """流式对话（Server-Sent Events）。
+
+    每个事件一行 ``data: {json}``：
+
+    - ``{"type": "token", "content": "..."}``  逐 token
+    - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
+    """
+    assistant = get_assistant(req.session_id)
+
+    def event_stream():
+        for token in assistant.chat_stream(req.message):
+            payload = {"type": "token", "content": token}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        # 生成器耗尽时 chat_stream 已完成落盘 + 审计，发结束帧。
+        done = {
+            "type": "done",
+            "turn": assistant.turn,
+            "session_id": req.session_id,
+        }
+        yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/chat/stats")

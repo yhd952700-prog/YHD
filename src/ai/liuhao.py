@@ -163,26 +163,8 @@ class LiuHaoAssistant:
             reply = f"[生成失败] {exc}"
             status = "error"
 
-        # 4. 记忆持久化（memory kernel，tier/scope/tags 归属）+ 会话落盘。
-        self.history.append({"role": "user", "content": message})
-        self.history.append({"role": "assistant", "content": reply})
-        self._conv_store.append(self.principal, self.turn, "user", message)
-        self._conv_store.append(self.principal, self.turn, "assistant", reply)
-        self.memory.store(
-            f"turn:{self.principal}:{self.turn}",
-            {"user": message, "assistant": reply},
-            tags={"conversation", "assistant:liuhao"},
-        )
-
-        # 5. 审计（audit kernel，hash-chain 落盘）。
-        log_event(
-            AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.POLICY_EVAL,
-            principal_id=self.principal,
-            scope=AuditScope.L1,
-            outcome="allow" if status == "completed" else "error",
-            details={"turn": self.turn, "action": "chat", "chars_in": len(message), "chars_out": len(reply)},
-            correlation_id=correlation_id,
-        )
+        # 4-5. 记忆 + 会话落盘 + 审计（chat / chat_stream 共用）。
+        self._commit_turn(message, reply, correlation_id, status)
 
         return {
             "reply": reply,
@@ -192,9 +174,74 @@ class LiuHaoAssistant:
             "agent": self.principal,
         }
 
+    def chat_stream(self, message: str):
+        """流式处理一条消息：逐 token yield，收尾时落盘记忆 + 审计。
+
+        与 ``chat`` 走同一条授权链路（policy → 生成 → 记忆 → 审计），只是
+        生成阶段改为逐 token 产出；落盘/审计在生成器末尾统一执行，保证与
+        非流式落盘语义一致。生成器是惰性的：SSE / CLI 消费时才真正执行。
+        """
+        self.turn += 1
+        correlation_id = uuid.uuid4().hex[:16]
+
+        # 1. 授权（policy kernel，default-deny）。
+        decision = self.policy.authorize("chat", risk_level="LOW")
+        if not decision.is_allowed:
+            log_event(
+                AuditEventType.ACCESS_DENIED,
+                principal_id=self.principal,
+                scope=AuditScope.L1,
+                outcome="deny",
+                details={"turn": self.turn, "action": "chat", "reason": str(getattr(decision, "reason", "denied"))},
+                correlation_id=correlation_id,
+            )
+            yield "权限不足：当前主体未被授权执行对话操作。"
+            return
+
+        # 2. 构建 messages（system + 历史 + 当前）。
+        messages = self._build_messages(message)
+
+        # 3. 流式生成（逐 token yield）。
+        chunks: List[str] = []
+        status = "completed"
+        try:
+            for token in self.provider.chat_stream(messages):
+                chunks.append(token)
+                yield token
+        except Exception as exc:  # 真实失败，诚实返回，不伪造
+            status = "error"
+            chunks = [f"[生成失败] {exc}"]
+            yield chunks[0]
+
+        reply = "".join(chunks)
+
+        # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
+        self._commit_turn(message, reply, correlation_id, status)
+
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
+    def _commit_turn(
+        self, message: str, reply: str, correlation_id: str, status: str
+    ) -> None:
+        """落盘一轮对话：记忆 kernel + 会话存储 + 审计 hash-chain。"""
+        self.history.append({"role": "user", "content": message})
+        self.history.append({"role": "assistant", "content": reply})
+        self._conv_store.append(self.principal, self.turn, "user", message)
+        self._conv_store.append(self.principal, self.turn, "assistant", reply)
+        self.memory.store(
+            f"turn:{self.principal}:{self.turn}",
+            {"user": message, "assistant": reply},
+            tags={"conversation", "assistant:liuhao"},
+        )
+        log_event(
+            AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.POLICY_EVAL,
+            principal_id=self.principal,
+            scope=AuditScope.L1,
+            outcome="allow" if status == "completed" else "error",
+            details={"turn": self.turn, "action": "chat", "chars_in": len(message), "chars_out": len(reply)},
+            correlation_id=correlation_id,
+        )
     def _build_messages(self, message: str) -> List[Dict[str, str]]:
         """拼出给 provider 的 messages：system + 截断历史 + 当前输入。"""
         messages: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
