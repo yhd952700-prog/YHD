@@ -6,6 +6,31 @@
 
 ---
 
+> ## ⚠️ 状态横幅（2026-09-07 更新）
+>
+> 本文件「§0 当前定位」及下方的 **21-Phase 状态表（表 2）** 已**过期**，不得作为现状依据。
+> 其结论（"Agent Runtime / L-Core / Organization / Network / World 尚未开始"）与真实代码库**矛盾**：
+> 这些能力已实质落地，只是集中在不同的源路径。真实现状见下：
+>
+> | 能力 | 实际源路径 | 现状 |
+> |---|---|---|
+> | Kernel 层 14 内核 | `src/kernels/` | **DoD 七维 14/14 全过**（`KERNEL-DOD-AUDIT.md`） |
+> | Agent Runtime | `src/ai/runtime_loop.py` + `agent_factory.py` | 已实现（有测试） |
+> | L-Core | `src/ai/lcore.py` | 已实现（有测试） |
+> | Perception / ADA | `src/ai/perception.py` + `ada.py` | 已实现 |
+> | Organization | `src/ai/organization.py` | 已实现 |
+> | World Interface | `src/ai/world_interface.py` | 已实现 |
+> | Long-Horizon / ENOCH | `src/ai/enoch.py` | 已实现 |
+> | 十源 DNA 全部 10 源 | `src/ai/` | **全部闭环**（`CAPABILITY-REGISTRY.md` §4） |
+> | 全量测试 | `tests/` | **1100 passed / 1 skipped / 0 failed** |
+>
+> **根因**：本文件按 `src/agents/`、`src/perception/` 等"预期路径"判断 Phase 进度，但项目采用
+> `src/ai/*` 单层汇聚实现，导致"路径不存在 ⇒ 未开始"的误判。21-Phase 的**逐阶段可信完成度**
+> 仍需一次基于真实源路径的重映射（尚未完成），故**分数不可信**。当前权威状态以
+> [`KERNEL-DOD-AUDIT.md`](KERNEL-DOD-AUDIT.md) + [`CAPABILITY-REGISTRY.md`](CAPABILITY-REGISTRY.md) 为准。
+
+---
+
 ## 0. 三份文档的关系
 
 ```text
