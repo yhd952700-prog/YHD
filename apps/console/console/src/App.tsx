@@ -1,51 +1,124 @@
-import { useState, useEffect } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
-import { eventClient } from './lib/eventClient'
+import { getSessionId, streamChat } from './lib/chatClient'
+
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  streaming?: boolean
+}
 
 function App() {
-  const [connected, setConnected] = useState(false)
-  const [lastEvent, setLastEvent] = useState<any>(null)
-  const [eventCount, setEventCount] = useState(0)
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sessionId] = useState(() => getSessionId())
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    eventClient.connect()
-    const unsubscribe = eventClient.subscribe((state) => {
-      setConnected(state.connected)
-      setLastEvent(state.lastEvent)
-      setEventCount(state.eventCount)
-    })
-    return () => {
-      unsubscribe()
-      eventClient.disconnect()
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const send = useCallback(async () => {
+    const text = input.trim()
+    if (!text || sending) return
+
+    setInput('')
+    setSending(true)
+    // 追加用户消息 + 一个空的 assistant 占位（流式填充）
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text },
+      { role: 'assistant', content: '', streaming: true },
+    ])
+
+    try {
+      for await (const token of streamChat(text, sessionId)) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          next[next.length - 1] = { ...last, content: last.content + token }
+          return next
+        })
+      }
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        next[next.length - 1] = { ...last, streaming: false }
+        return next
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        next[next.length - 1] = {
+          ...last,
+          content: last.content + `\n\n[连接后端失败] ${msg}`,
+          streaming: false,
+        }
+        return next
+      })
+    } finally {
+      setSending(false)
     }
-  }, [])
+  }, [input, sending, sessionId])
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>L-Core Event Dashboard</h1>
-      <div className="card">
-        <p>Connection: {connected ? '✅ Connected' : '❌ Disconnected'}</p>
-        <p>Event Count: {eventCount}</p>
-        {lastEvent && (
-          <pre style={{fontSize: '12px', textAlign: 'left', maxWidth: '600px', overflow: 'auto'}}>
-            {JSON.stringify(lastEvent, null, 2)}
-          </pre>
+    <div className="app">
+      <header className="header">
+        <div className="header-title">
+          <span className="logo">鎏</span>
+          <div>
+            <h1>鎏灏 · LIUHAO X</h1>
+            <p className="subtitle">十源 DNA 统一的 AI 操作系统</p>
+          </div>
+        </div>
+        <div className="session-chip" title="多轮对话独立会话">
+          会话 <code>{sessionId}</code>
+        </div>
+      </header>
+
+      <main className="messages">
+        {messages.length === 0 ? (
+          <div className="empty">
+            <p>开始与鎏灏对话</p>
+            <p className="empty-hint">
+              后端请先启动：<code>.venv\Scripts\python.exe -m uvicorn src.gateway.main:app --port 8080</code>
+            </p>
+          </div>
+        ) : (
+          messages.map((m, i) => (
+            <div key={i} className={`row ${m.role}`}>
+              <div className="avatar">{m.role === 'user' ? '我' : '鎏'}</div>
+              <div className="bubble">
+                {m.content || (m.streaming ? <span className="cursor" /> : '…')}
+              </div>
+            </div>
+          ))
         )}
-      </div>
-      <p className="read-the-docs">
-        L-Core UI now driven by real WebSocket events (P1-7 verified)
-      </p>
-    </>
+        <div ref={bottomRef} />
+      </main>
+
+      <footer className="composer">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              send()
+            }
+          }}
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          rows={2}
+          disabled={sending}
+        />
+        <button onClick={send} disabled={sending || !input.trim()}>
+          {sending ? '生成中…' : '发送'}
+        </button>
+      </footer>
+    </div>
   )
 }
 
