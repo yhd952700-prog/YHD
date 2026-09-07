@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liuhao-x"
+version = "3.0.0"
+description = "LIUHAO X (鎏灏) ten-source packages layer"
+readme = "packages/MAPPING.md"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+# 连字符导入屏障解法：把 packages/ 目录映射为 liuhao_x 包。
+package-dir = {"" = "packages"}
+
+[tool.setuptools.packages.find]
+where = ["packages"]

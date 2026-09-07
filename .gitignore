@@ -76,4 +76,8 @@ build/
 
 # ===== 独立子项目（2026-09-06 并入，含各自的 git/配置，不纳入本仓库版本管理） =====
 LIUHAO_AI_TEAM_V1.0/
-LiuHao-O/
+# 十源 packages 层是本项目核心架构层（三层骨架之二），纳入本仓库；
+# 其余 LiuHao-O 脚手架（docker-compose/infrastructure/migrations 等空壳）仍忽略。
+LiuHao-O/*
+!LiuHao-O/pyproject.toml
+!LiuHao-O/packages/
