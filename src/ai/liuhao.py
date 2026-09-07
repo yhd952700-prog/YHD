@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from .employee import Agent
 from .agent_factory import AgentMemory, AgentPolicy
 from .providers import BaseProvider, get_provider
+from .conversation_store import get_conversation_store
 from ..kernels.identity import get_identity_manager
 from ..kernels.audit import log_event, AuditEventType, AuditScope
 from ..kernels.policy import (
@@ -89,9 +90,13 @@ class LiuHaoAssistant:
         #    "agent 主体可执行低风险动作"的授权规则，鎏灏才能被授权对话。
         self._ensure_chat_policy()
 
-        # 会话状态
-        self.history: List[Dict[str, str]] = []
-        self.turn = 0
+        # 5. 会话历史持久化 — 跨进程重启恢复多轮上下文（memory kernel 是
+        #    内存态不落盘，对话历史走独立 ConversationStore，风格对齐 audit）。
+        self._conv_store = get_conversation_store()
+        self.history: List[Dict[str, str]] = self._conv_store.load_recent(
+            self.principal, MAX_HISTORY_MESSAGES
+        )
+        self.turn = self._conv_store.get_last_turn(self.principal)
 
     @staticmethod
     def _ensure_chat_policy() -> None:
@@ -158,9 +163,11 @@ class LiuHaoAssistant:
             reply = f"[生成失败] {exc}"
             status = "error"
 
-        # 4. 记忆持久化（memory kernel，tier/scope/tags 归属）。
+        # 4. 记忆持久化（memory kernel，tier/scope/tags 归属）+ 会话落盘。
         self.history.append({"role": "user", "content": message})
         self.history.append({"role": "assistant", "content": reply})
+        self._conv_store.append(self.principal, self.turn, "user", message)
+        self._conv_store.append(self.principal, self.turn, "assistant", reply)
         self.memory.store(
             f"turn:{self.principal}:{self.turn}",
             {"user": message, "assistant": reply},
@@ -200,6 +207,7 @@ class LiuHaoAssistant:
         """清空会话历史（记忆与身份保留）。"""
         self.history = []
         self.turn = 0
+        self._conv_store.clear(self.principal)
 
     def stats(self) -> Dict[str, Any]:
         """返回当前会话统计（含 provider / 记忆 / 审计）。"""

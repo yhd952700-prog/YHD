@@ -8,9 +8,19 @@ from __future__ import annotations
 
 import pytest
 
+from src.ai import liuhao as lh_module
+from src.ai.conversation_store import ConversationStore
 from src.ai.providers import MockProvider
 from src.ai.liuhao import LiuHaoAssistant
 from src.kernels.audit import audit_query
+
+
+@pytest.fixture(autouse=True)
+def isolate_conversation_store(tmp_path, monkeypatch):
+    """每个测试用独立临时会话存储，避免污染真实 conversation_store.db。"""
+    store = ConversationStore(db_path=str(tmp_path / "conv.db"))
+    monkeypatch.setattr(lh_module, "get_conversation_store", lambda: store)
+    return store
 
 
 def make_assistant(name: str = "test-liuhao") -> LiuHaoAssistant:
@@ -88,3 +98,28 @@ def test_chat_history_feeds_context():
     roles = [m["role"] for m in msgs]
     assert roles.count("user") == 2
     assert roles.count("assistant") == 1
+
+
+def test_restart_restores_history(isolate_conversation_store):
+    """模拟进程重启：新实例（同一 principal）应恢复上一实例的多轮上下文。"""
+    a1 = make_assistant(name="restart-check")
+    a1.chat("who are you")
+    a1.chat("what can you do")
+
+    # 新实例（重启），共享同一会话存储。
+    a2 = make_assistant(name="restart-check")
+    assert a2.turn == 2
+    assert len(a2.history) == 4  # 2 轮 × (user + assistant)
+    assert a2.history[0] == {"role": "user", "content": "who are you"}
+    # 恢复后的历史应注入后续对话上下文。
+    msgs = a2._build_messages("继续")
+    assert msgs[-1] == {"role": "user", "content": "继续"}
+
+
+def test_restart_isolated_by_principal(isolate_conversation_store):
+    """不同 principal 之间会话历史互不干扰。"""
+    a = make_assistant(name="alice")
+    a.chat("hello")
+    b = make_assistant(name="bob")
+    assert b.turn == 0
+    assert b.history == []
