@@ -1,0 +1,39 @@
+# Tempo configuration for LiuHao AI OS
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+  trace_idle_period: 30s
+
+compactor:
+  compaction:
+    block_retention: 24h
+    compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo
+    pool:
+      max_workers: 100
+      queue_depth: 10000
+
+limits:
+  max_bytes_per_trace: 10485760
+  max_search_bytes_per_query: 104857600
+
+memberlist:
+  join_members:
+    - tempo

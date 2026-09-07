@@ -1,0 +1,213 @@
+# L10K Baseline Data Mapping
+# 版本: v1.1（2026-09-06 修正）
+# 创建日期: 2026-09-06
+# 遵循: Definition Lock v3.0
+# ⚠️ v1.1 修正说明：
+#   原版基于 implementation-status.UNRELIABLE.yaml 的错误声明（audited/tested: 14/14）判定
+#   3 个门禁 PASS 并宣布 production_ready: true。
+#   实测（2026-09-06）：tests/ 下无任何 kernel 层测试（grep "src.kernels" = 0 文件）；
+#   audit_store.db 仅 4 条事件，不足以支撑安全/可靠性门禁。
+#   本版将 verified_value_output 修正为 0，3 个门禁改判 FAIL，关闭生产门禁。
+
+l10k_baseline:
+  version: "v1.0"
+  formula: "L10K = Verified Value Output / Human Active Minutes ≥ 10,000"
+  definition: "Verified Human Leverage (VHL) - 验证人类杠杆率"
+  
+  # 核心指标
+  metrics:
+    # 指标 1: 已验证价值输出
+    verified_value_output:
+      source: "capability-registry.yaml（修正后）"
+      calculation_method: |
+        修正（2026-09-06）：原计算基于 implementation-status.UNRELIABLE.yaml 的
+        audited: 14/14 / tested: 14/14，实测该数据为错误声明。
+        修正后：audited_modules: 0/14, tested_modules: 0/14
+        total_verified_units: 0
+        note: "每个模块通过 audit + test 双重验证计为 2 个已验证单元"
+      current_value: 0
+      data_path: "/d/LiuHao-AI-OS/capability-registry.yaml"
+      fields_used:
+        - "audited: false (all)"
+        - "tested: false (all), test_coverage: 0/0 pending"
+      contradiction_detected: |
+        ✅ 已解决（2026-09-06）：capability-registry.yaml 的 audited/tested: false
+        为可实测验证的事实（tests/ 无 kernel 测试）；implementation-status.UNRELIABLE.yaml
+        的 14/14 为错误声明，已修正为 0/0。
+        数据源策略（修正）：使用 capability-registry.yaml + tests/ 目录实测。
+    
+    # 指标 2: 人类活跃分钟数
+    human_active_minutes:
+      source: "git log + commit history"
+      calculation_method: |
+        total_commits: 130
+        estimated_minutes_per_commit: 30 (保守估计)
+        total_minutes: 130 × 30 = 3900 分钟
+      current_value: 3900
+      data_command: "git log --oneline | wc -l"
+      verification_path: "git log --pretty=format:'%h %ad %s' --date=short"
+      note: "未来可通过 git log 的时间戳精确计算活跃分钟数"
+    
+    # 当前 L10K 计算结果
+    l10k_current_value:
+      calculation: "0 verified_units / 3900 minutes = 0"
+      status: "⚠️ BELOW THRESHOLD (需要 ≥ 10,000)"
+      interpretation: |
+        修正（2026-09-06）：原值 0.00718 基于错误的 28 个验证单元。
+        实际 kernel 层审计与测试均为 0，当前 L10K = 0。
+        提升路径：
+        1. 为 14 个 kernel 补单元测试（P1-1，最高优先级）
+        2. 建立 kernel 层审计覆盖（每 capability 关键操作入 audit log）
+        3. 测试 + 审计双过 → 每模块计 2 个已验证单元（最高 28）
+        4. 再扩展至 capabilities / phases / requirements 验证单元
+      recommendation: "先补 kernel 测试（P1-1），再扩展验证单元定义"
+  
+  # 5 个质量门禁（需通过至少 3 个）
+  quality_gates:
+    # Gate 1: 质量门禁
+    l10k_quality_gate:
+      source: "capability-registry.yaml + tests/ 实测"
+      threshold: "≥ 9/12 capabilities tested (75%)"
+      current_status: "FAIL"
+      calculation: |
+        修正（2026-09-06）：kernel 层单元测试实测 0 个
+        （grep -rl "src.kernels" tests/ = 0 个文件）
+        capability-registry.yaml：全部 tested: false, test_coverage: "0/0 pending"
+        0/12 tested < 9/12 阈值
+      evidence:
+        - "tests/ 目录无任何 kernel 层测试文件"
+        - "capability-registry.yaml: test_coverage 0/0 (pending)"
+      pass_condition: "0/12 < 9/12 → FAIL（补齐 kernel 测试后重评）"
+    
+    # Gate 2: 安全门禁
+    l10k_safety_gate:
+      source: "blueprint-traceability.yaml + workstreams.yaml + audit_store.db"
+      threshold: "SEC_01-06 全部实现 + REQ-Security-112 验证通过"
+      current_status: "FAIL - INSUFFICIENT EVIDENCE"
+      calculation: |
+        修正（2026-09-06）：原判 PASS 的依据不成立：
+        1. workstreams.yaml 的 G=100% 是自相矛盾的声明
+           （同一文件 B 项自认 "All 9 SCAFFOLD kernels" 却标 completed: 100）
+        2. audit_store.db 仅 4 条事件，无法证明 SEC_01-06 全部实现
+        3. Security kernel 447 行代码，0 单元测试
+      evidence:
+        - "audit_store.db: 仅 4 events（样本不足）"
+        - "workstreams.yaml: SCAFFOLD 标记与 completed:100 矛盾"
+        - "src/kernels/security/: 450 行代码，0 测试"
+      pass_condition: "证据不足 → FAIL（需 SEC_01-06 逐项验证 + kernel 测试后重评）"
+    
+    # Gate 3: 可靠性门禁
+    l10k_reliability_gate:
+      source: "audit_store.db"
+      threshold: "≥ 95% audit success rate"
+      current_status: "FAIL - INSUFFICIENT SAMPLE"
+      calculation: |
+        修正（2026-09-06）：4/4 = 100% 的样本量仅为 4 条审计事件，
+        统计上不构成可靠性证明（n=4，任何单条失败即跌至 75%）。
+        需 ≥ 100 条真实审计事件且覆盖 deny/error 路径后重评。
+      evidence:
+        - "audit_store.db: 仅 4 条事件（样本不足）"
+        - "无 outcome='deny' 或 outcome='error' 记录（拒绝路径未验证）"
+      data_path: "/d/LiuHao-AI-OS/audit_store.db"
+      sql_query: "SELECT outcome, COUNT(*) FROM audit_events GROUP BY outcome"
+      pass_condition: "样本 n=4 → FAIL（需更大样本 + 覆盖失败路径）"
+    
+    # Gate 4: 授权门禁
+    l10k_authorization_gate:
+      source: "capability-registry.yaml"
+      threshold: "所有 capabilities 定义了 permissioned 字段"
+      current_status: "TBD - NEEDS VERIFICATION"
+      calculation: |
+        需要检查 capability-registry.yaml 中 12 个 capabilities 的 permissioned 字段
+        预期: 所有 capabilities 有 required_capability 或 permissioned: true
+      evidence_required:
+        - "读取 capability-registry.yaml 中所有 capabilities 的 permissioned 字段"
+        - "验证是否所有操作都有权限控制"
+      next_action: "执行 cat capability-registry.yaml | grep -A 5 'permissioned:'"
+      pass_condition: "12/12 capabilities 有权限定义"
+    
+    # Gate 5: 成本门禁
+    l10k_cost_gate:
+      source: "TBD - 当前无数据源"
+      threshold: "每已验证单元成本 < 预定义阈值"
+      current_status: "NOT DEFINED"
+      calculation: "未定义成本跟踪机制"
+      recommendation: |
+        建议在 implementation-status.UNRELIABLE.yaml 中添加以下字段:
+        - resource_usage: "CPU/内存/存储使用量"
+        - development_cost: "开发时间成本"
+        - maintenance_cost: "维护成本估算"
+      next_steps:
+        - "定义成本单位（如: 美元/小时, CPU核心×小时）"
+        - "采集历史数据建立基线"
+        - "设定合理阈值（如: < $10 per verified unit）"
+      pass_condition: "暂无（需定义阈值后才能评估）"
+  
+  # 门禁通过总结
+  gates_summary:
+    total_gates: 5
+    passed_gates: 0
+    failed_gates: 3
+    undefined_gates: 2
+    failed_gate_names:
+      - "l10k_quality_gate (0/12 tested)"
+      - "l10k_safety_gate (证据不足)"
+      - "l10k_reliability_gate (样本 n=4)"
+    undefined_gate_names:
+      - "l10k_authorization_gate (需验证)"
+      - "l10k_cost_gate (未定义)"
+    production_ready: false
+    reason: "修正（2026-09-06）：原 3 个 PASS 均基于错误数据或不足样本。kernel 层 0 测试，未达生产准入。补齐 kernel 测试与审计证据后重评。"
+  
+  # 数据完整性检查
+  data_integrity:
+    contradictions:
+      - issue: "implementation-status.UNRELIABLE.yaml vs capability-registry.yaml"
+        description: |
+          implementation-status.UNRELIABLE.yaml（原）: audited: 14/14, tested: 14/14
+          capability-registry.yaml: 所有 12 capabilities 显示 audited: false, tested: false
+        resolution: "已解决（2026-09-06）：实测支持 capability-registry 的数据（tests/ 无 kernel 测试）。implementation-status.UNRELIABLE.yaml 的 14/14 已修正为 0/0。"
+        impact: "原决策（采用 14/14）导致 verified_value_output 高估 28、门禁误判 PASS，本版已全部修正。"
+    
+    missing_data:
+      - field: "l10k_authorization_gate 证据"
+        source: "capability-registry.yaml"
+        action: "需读取 permissioned 字段验证"
+      - field: "l10k_cost_gate 数据源"
+        source: "未定义"
+        action: "需创建成本跟踪机制"
+    
+    data_freshness:
+      last_updated: "2026-09-06"
+      audit_store_db_last_event: "需查询 timestamp 字段"
+      git_last_commit: "需执行 git log -1 --format=%cd"
+  
+  # 改进建议
+  recommendations:
+    short_term:
+      - "验证 capability-registry.yaml 中 12 个 capabilities 的 permissioned 字段"
+      - "解决 implementation-status.UNRELIABLE.yaml 与 capability-registry.yaml 的矛盾"
+      - "扩展 verified_value_output 定义，包含更多验证单元（capabilities, requirements）"
+    
+    medium_term:
+      - "建立成本跟踪机制（开发时间、资源使用）"
+      - "精确计算 human_active_minutes（基于 git commit 时间戳，而非估算）"
+      - "定义 L10K 阈值调整策略（如何从 0.007 提升至 10,000）"
+    
+    long_term:
+      - "建立自动化 L10K 计算 pipeline"
+      - "集成 CI/CD，每次 commit 自动更新 L10K 指标"
+      - "建立 L10K 历史趋势监控（时间序列图表）"
+  
+  # 元数据
+  metadata:
+    definition_lock_version: "v3.0"
+    compliant_with: "Definition Lock §5-8"
+    prohibited_violations:
+      - "Mock ≠ Implementation (第 2 项禁止)"
+      - "未经验证不得声称 IMPLEMENTED (第 10 项禁止)"
+      - "必须有 Evidence + Verification + Traceability"
+    verification_standard: "Verified = Evidence + Verification + Traceability"
+    minimum_gates_required: 3
+    current_gates_passed: 0
+    production_gate_status: "CLOSED (修正 2026-09-06：0/5，kernel 层零测试)"

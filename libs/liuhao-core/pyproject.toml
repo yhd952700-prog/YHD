@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "liuhao-core"
+version = "0.1.0"
+description = "Common library for liuhao AI OS"
+requires-python = ">=3.11"
+dependencies = [
+    "tenacity>=8.0.0",
+    "pybreaker>=0.3.0",
+    "prometheus-client>=0.20.0",
+    "structlog>=24.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.scripts]
+liuhao-core = "liuhao_core.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

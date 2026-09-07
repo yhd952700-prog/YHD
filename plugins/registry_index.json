@@ -1,0 +1,132 @@
+{
+  "generated_at": "2026-09-05T21:13:23.894341+00:00",
+  "total_plugins": 7,
+  "active_plugins": 0,
+  "plugins": [
+    {
+      "plugin_id": "identity:identity-impl:1.0.0",
+      "name": "identity-impl",
+      "version": "1.0.0",
+      "kernel_type": "identity",
+      "capabilities": [
+        "create_identity",
+        "grant_permission",
+        "audit_trail"
+      ],
+      "scope": "L0-L7",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "memory:memory-impl:2.0.1",
+      "name": "memory-impl",
+      "version": "2.0.1",
+      "kernel_type": "memory",
+      "capabilities": [
+        "store",
+        "recall",
+        "scope_filter",
+        "multi-tier",
+        "ttl"
+      ],
+      "scope": "L0-L7",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "security:security-impl:1.5.3",
+      "name": "security-impl",
+      "version": "1.5.3",
+      "kernel_type": "security",
+      "capabilities": [
+        "RBAC",
+        "ABAC",
+        "Vault",
+        "Audit enforcement"
+      ],
+      "scope": "L0-L7",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "identity:tenant-A-identity-plugin:1.0.0",
+      "name": "tenant-A-identity-plugin",
+      "version": "1.0.0",
+      "kernel_type": "identity",
+      "capabilities": [
+        "create_identity",
+        "grant_permission"
+      ],
+      "scope": "L0-L7:tenant-A",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "identity:tenant-B-identity-plugin:1.0.0",
+      "name": "tenant-B-identity-plugin",
+      "version": "1.0.0",
+      "kernel_type": "identity",
+      "capabilities": [
+        "create_identity",
+        "grant_permission"
+      ],
+      "scope": "L0-L7:tenant-B",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "identity:tenant-C-identity-plugin:1.0.0",
+      "name": "tenant-C-identity-plugin",
+      "version": "1.0.0",
+      "kernel_type": "identity",
+      "capabilities": [
+        "create_identity",
+        "grant_permission"
+      ],
+      "scope": "L0-L7:tenant-C",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    },
+    {
+      "plugin_id": "identity:tenant-D-identity-plugin:1.0.0",
+      "name": "tenant-D-identity-plugin",
+      "version": "1.0.0",
+      "kernel_type": "identity",
+      "capabilities": [
+        "create_identity",
+        "grant_permission"
+      ],
+      "scope": "L0-L7:tenant-D",
+      "compatibility": {},
+      "status": "registered",
+      "loaded_at": null,
+      "unloaded_at": null,
+      "error": null,
+      "metadata": {}
+    }
+  ]
+}

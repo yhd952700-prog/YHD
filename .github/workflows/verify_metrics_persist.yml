@@ -1,0 +1,66 @@
+name: Verify Metrics Persistence
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      METRICS_PERSIST: '1'
+      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Validate staging secret
+        shell: bash
+        run: |
+          if [ -z "${STAGING_DATABASE_URL}" ]; then
+            echo "STAGING_DATABASE_URL is not configured. Staging validation requires a real PostgreSQL URL."
+            exit 1
+          fi
+          echo "DATABASE_URL=${STAGING_DATABASE_URL}" >> "$GITHUB_ENV"
+          echo "Using STAGING_DATABASE_URL for staging validation."
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install sqlalchemy psycopg2-binary
+      - name: Run verify script
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          python -u scripts/verify_metrics_persist.py
+      - name: Query persisted metrics
+        if: success()
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          db = os.environ['DATABASE_URL']
+          print(f"DATABASE_URL={db}")
+          if not db.startswith('postgres'):
+              raise SystemExit(f"Expected PostgreSQL DATABASE_URL, got: {db}")
+          import psycopg2
+          conn = psycopg2.connect(db)
+          cur = conn.cursor()
+          cur.execute('SELECT COUNT(*) FROM provider_metric_samples;')
+          print('COUNT:', cur.fetchone()[0])
+          cur.execute('SELECT provider, model, latency_ms, success_rate FROM provider_metric_samples ORDER BY id DESC LIMIT 5;')
+          print(cur.fetchall())
+          conn.close()
+          PY
+      - name: Upload verification database artifact
+        if: ${{ always() && hashFiles('verify_metrics.db') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-metrics-db
+          path: verify_metrics.db
+          if-no-files-found: ignore

@@ -1,0 +1,42 @@
+# Prometheus Rules for liuhao AI OS
+
+groups:
+  - name: liuhao_ai_os.rules
+    interval: 30s
+    rules:
+      - alert: HighModelLatency
+        expr: histogram_quantile(0.95, sum(rate(liuhao_model_call_latency_ms_bucket[5m])) by (le) )
+        > 2000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "95th percentile model latency > 2s"
+          description: "Model calls are exceeding 2s latency threshold"
+
+      - alert: HighErrorRate
+        expr: (sum(rate(liuhao_requests_total{status="error"}[5m])) / sum(rate(liuhao_requests_total[5m]))) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error rate > 5%"
+          description: "HTTP error rate exceeds acceptable threshold"
+
+      - alert: HighRequestRate
+        expr: sum(rate(liuhao_requests_total[5m])) > 1000
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "High request rate detected"
+          description: "Request rate exceeds 1000 req/min"
+
+      - alert: VaultSecretAccessFailure
+        expr: increase(vault_secret_access_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault secret access failures detected"
+          description: "Failed attempts to access Vault secrets"

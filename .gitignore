@@ -1,0 +1,79 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# ===== 路径错误创建的目录（Definition Lock OD-005） =====
+D:LiuHao-AI-OSsrc*/
+AppData/
+
+# ===== 敏感信息 =====
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+secrets/
+
+# ===== 数据库 / 临时文件 =====
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+verify_metrics.db
+liuhao_ai_os.db
+
+# ===== 运行时 / 测试产物（测试生成的记忆/审计/密钥数据，不纳入版本管理） =====
+.pytest-tmp/
+tests/_report*.txt
+tests/kernels/_*.txt
+memory_data/*.json
+data/audit/*.json
+data/security/*.json
+data/model_registry.json
+backup_*.sql
+bandit-report.json
+
+# ===== 本地工作数据（记忆 / 诊断截图） =====
+.workbuddy/
+l-core-ui-verification.png
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== 日志 / 临时 =====
+*.log
+*.tmp
+logs/*.log
+
+# ===== CI/CD / 构建产物 =====
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+dist/
+build/
+
+# ===== 错位文件 =====
+=1.0.0
+
+# ===== 独立子项目（2026-09-06 并入，含各自的 git/配置，不纳入本仓库版本管理） =====
+LIUHAO_AI_TEAM_V1.0/
+LiuHao-O/

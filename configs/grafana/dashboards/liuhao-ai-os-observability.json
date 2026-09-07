@@ -1,0 +1,76 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "LiuHao AI OS Observability",
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "type": "stat",
+        "title": "Provider Samples",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "liuhao_provider_samples",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+      },
+      {
+        "type": "stat",
+        "title": "Success Rate",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "liuhao_provider_success_rate",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+      },
+      {
+        "type": "stat",
+        "title": "Avg Latency (ms)",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "liuhao_provider_latency_ms",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 }
+      },
+      {
+        "type": "graph",
+        "title": "Provider Latency Over Time",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(liuhao_provider_latency_ms_total[1m])",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 }
+      },
+      {
+        "type": "graph",
+        "title": "Error Rate per Provider",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(liuhao_provider_errors_total[5m])",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 }
+      }
+    ],
+    "templating": {
+      "list": []
+    }
+  },
+  "overwrite": false
+}

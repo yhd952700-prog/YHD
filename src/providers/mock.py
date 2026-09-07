@@ -1,0 +1,57 @@
+"""MockRiskAssessmentProvider - backward-compatible risk-assessment provider."""
+
+from __future__ import annotations
+
+from src.providers.llm_base import LLMProvider
+
+
+class MockRiskAssessmentProvider(LLMProvider):
+    """Backward-compatible risk-assessment provider that also implements the LLMProvider interface."""
+
+    @property
+    def name(self) -> str:
+        return "mock"
+
+    @property
+    def type(self) -> str:
+        return "mock"
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 1.0,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Mock chat completion returning the last message content."""
+        content = messages[-1].get("content", "") if messages else ""
+        return {
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "model": "mock-model",
+            "usage": {"prompt_tokens": 0, "completion_tokens": len(content.split()), "total_tokens": len(content.split())},
+        }
+
+    def generate(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+        """Mock generation returning the prompt itself."""
+        return {
+            "choices": [{"message": {"role": "assistant", "content": prompt}}],
+            "model": "mock-model",
+            "usage": {"prompt_tokens": len(prompt.split()), "completion_tokens": 0, "total_tokens": len(prompt.split())},
+        }
+
+    def embeddings(self, texts: list[str], **kwargs: Any) -> dict[str, Any]:
+        """Mock embeddings returning zero vectors."""
+        import numpy as np
+        dim = kwargs.get("dimension", 1536)
+        return {
+            "data": [{"embedding": [0.0] * dim, "index": 0, "object": "embedding"}],
+            "model": "mock-model",
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }
+
+    def supports(self, capability: str) -> bool:
+        """All mock capabilities are available."""
+        return True
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "healthy", "provider": "mock"}

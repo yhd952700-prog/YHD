@@ -1,0 +1,283 @@
+openapi: "3.0.0"
+info:
+  title: LiuHao AI OS Gateway API
+  version: "1.0.0"
+  description: Unified API Gateway for LiuHao AI OS (镭灏 AI OS)
+servers:
+  - url: http://localhost:8080/v1
+    description: Development server
+  - url: https://api.liuhao-ai-os.com/v1
+    description: Production server
+tags:
+  - name: health
+    description: Health checks and readiness probes
+  - name: api
+    description: AI model and provider management
+  - name: auth
+    description: Authentication and authorization
+  - name: rbac
+    description: Role-based access control
+  - name: metrics
+    description: System monitoring and metrics
+
+paths:
+  /v1/health:
+    get:
+      summary: Liveness probe
+      tags: [health]
+      responses:
+        '200':
+          description: Container alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  service:
+                    type: string
+                  timestamp:
+                    type: number
+                  version:
+                    type: string
+                    default: "1.0.0"
+
+  /v1/ready:
+    get:
+      summary: Readiness probe
+      tags: [health]
+      responses:
+        '200':
+          description: Service ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready, degraded]
+                  service:
+                    type: string
+                  timestamp:
+                    type: number
+                  checks:
+                    type: object
+                    description: Component health checks
+
+  /v1/metrics:
+    get:
+      summary: System metrics
+      tags: [metrics]
+      responses:
+        '200':
+          description: System metrics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                  version:
+                    type: string
+                  timestamp:
+                    type: number
+                  components:
+                    type: object
+                    properties:
+                      api_key_manager:
+                        type: object
+                      rbac_manager:
+                        type: object
+                      rate_limiter:
+                        type: object
+
+  /v1/auth/token:
+    post:
+      summary: Get JWT access token
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - api_key
+                - scope
+              properties:
+                api_key:
+                  type: string
+                scope:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Token issued successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  expires_in:
+                    type: integer
+                  token_type:
+                    type: string
+                    enum: [Bearer]
+                  scope:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: Invalid API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  detail:
+                    type: string
+
+  /v1/rbac/roles:
+    get:
+      summary: List all roles
+      tags: [rbac]
+      responses:
+        '200':
+          description: Roles list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        status:
+                          type: string
+                          enum: [active, inactive]
+                        description:
+                          type: string
+
+  /v1/api/providers:
+    get:
+      summary: List AI providers
+      tags: [api]
+      responses:
+        '200':
+          description: Providers list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        name:
+                          type: string
+                        cost_per_1k_tokens:
+                          type: number
+                        capabilities:
+                          type: array
+                          items:
+                            type: string
+                        models:
+                          type: array
+                          items:
+                            type: string
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+        trace_id:
+          type: string
+        timestamp:
+          type: number
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+        message:
+          type: string
+
+    TokenPayload:
+      type: object
+      properties:
+        sub:
+          type: string
+        exp:
+          type: integer
+        scopes:
+          type: array
+          items:
+            type: string
+
+    ProviderInfo:
+      type: object
+      properties:
+        type:
+          type: string
+        name:
+          type: string
+        cost_per_1k_tokens:
+          type: number
+        models:
+          type: array
+          items:
+            type: string
+
+    RoleSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+
+    Permission:
+      type: object
+      properties:
+        resource_type:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+
+securitySchemes:
+  bearerAuth:
+    type: http
+    scheme: bearer
+    bearerFormat: JWT

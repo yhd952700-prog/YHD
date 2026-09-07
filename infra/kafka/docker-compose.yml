@@ -1,0 +1,20 @@
+# Kafka/Redpanda configuration for liuhao AI OS - Phase 2 optional
+# This is delivered as configuration + documentation, not required to start in Phase 0
+
+# Redpanda (recommended, lighter than Kafka)
+# See: https://www.redpanda.com/docs/latest/
+
+# Topic configuration (to be run when Phase 2 begins):
+# Topic: liuhao.tasks   -> partition count: 6, replication factor: 3
+# Topic: liuhao.events  -> partition count: 6, replication factor: 3  
+# Topic: liuhao.audit   -> partition count: 6, replication factor: 3
+
+# Broker configuration (when running):
+# - 3 Brokers with replication.factor=3
+# - min.insync.replicas=2
+# - Schema Registry enabled
+
+# Phase 0 Deliverable: Configuration files only
+# - infra/kafka/docker-compose.yml ( commented out / documentation )
+# - infra/kafka/topic-creation.sh
+# - docs/infrastructure/kafka-configuration.md

@@ -1,0 +1,175 @@
+groups:
+  - name: liuhao-ai-os-alerts
+    interval: 30s
+    rules:
+      # High-level alerts
+      - alert: ServiceDown
+        expr: up{job="liuhao-ai-os"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.instance }} is down"
+          description: "{{ $labels.instance }} has been down for more than 1 minute."
+
+      # Resource alerts
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 85% for more than 5 minutes."
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% for more than 5 minutes."
+
+      - alert: HighDiskUsage
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage on {{ $labels.instance }}"
+          description: "Disk usage is above 85% for more than 5 minutes."
+
+      # Application alerts
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) 
+          / sum(rate(http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for more than 2 minutes."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "P95 latency is above 2 seconds for more than 5 minutes."
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Very high P99 latency"
+          description: "P99 latency is above 5 seconds."
+
+      # Security alerts
+      - alert: HighFailedAuthRate
+        expr: |
+          sum(rate(auth_failures_total[5m])) / sum(rate(auth_attempts_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High authentication failure rate"
+          description: "Authentication failure rate is above 10%."
+
+      - alert: SecurityViolationDetected
+        expr: increase(security_violations_total[1m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Security violation detected"
+          description: "A security violation was detected."
+
+      # Plugin alerts
+      - alert: PluginCrashed
+        expr: increase(plugin_crashes_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Plugin crashed"
+          description: "Plugin {{ $labels.plugin }} crashed."
+
+      - alert: PluginHighResourceUsage
+        expr: |
+          plugin_memory_usage_bytes / plugin_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plugin high memory usage"
+          description: "Plugin {{ $labels.plugin }} is using more than 90% of its memory limit."
+
+      # Database alerts
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          db_pool_connections_in_use / db_pool_connections_max > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "More than 90% of database connections are in use."
+
+      - alert: DatabaseSlowQueries
+        expr: |
+          histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database queries detected"
+          description: "P95 database query latency is above 5 seconds."
+
+      # Cache alerts
+      - alert: CacheHitRateLow
+        expr: |
+          cache_hits_total / (cache_hits_total + cache_misses_total) < 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate is low"
+          description: "Cache hit rate is below 80%."
+
+      # Queue alerts
+      - alert: QueueBacklogGrowing
+        expr: |
+          rate(queue_size[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue backlog growing rapidly"
+          description: "Queue size is growing at more than 100 items per second."
+
+      # Deployment alerts
+      - alert: DeploymentFailed
+        expr: increase(deployment_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deployment failed"
+          description: "Deployment {{ $labels.deployment }} failed."
+
+      - alert: RollbackTriggered
+        expr: increase(deployment_rollbacks_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rollback triggered"
+          description: "A rollback was triggered for {{ $labels.deployment }}."

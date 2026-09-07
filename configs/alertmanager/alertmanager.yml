@@ -1,0 +1,59 @@
+# AlertManager Configuration for LiuHao AI OS
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity', 'provider']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  receiver: 'default'
+  routes:
+  - match:
+      severity: 'critical'
+    routes:
+    - match:
+        alertname: 'ProviderFailure'
+    receiver: 'critical-alerts'
+
+receivers:
+- name: 'default'
+  email_config:
+    from: 'alerts@liuhao-ai-os.local'
+    to: 'dev-team@liuhao-ai-os.local'
+- name: 'critical-alerts'
+  email_config:
+    from: 'alerts@liuhao-ai-os.local'
+    to: 'on-call@liuhao-ai-os.local'
+
+# LiuHao AI OS specific alerts
+alerts:
+  # Provider failure alert
+  - alert: ProviderFailure
+    expr: provider_status == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Provider {{ $labels.provider }} failure detected"
+      description: "The {{ $labels.provider }} provider has been unavailable for more than 2 minutes."
+
+  # High latency alert
+  - alert: HighLatency
+    expr: histogram_quantile(0.95, rate(metric_latency_seconds_bucket[5m])) > 5
+    for: 3m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High latency detected"
+      description: "95th percentile latency is above 5s over the last 5 minutes."
+
+  # Error rate alert
+  - alert: ErrorRateHigh
+    expr: rate(provider_errors_total[5m]) > 0.1
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High error rate"
+      description: "Provider error rate is above 10% over the last 5 minutes."

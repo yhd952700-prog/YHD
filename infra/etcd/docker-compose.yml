@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  etcd-0:
+    image: quay.io/coreos/etcd:v3.5.10
+    container_name: liuhao-etcd-0
+    command: etcd
+      --name=liuhao-etcd-0
+      --data-dir=/etcd-data
+      --listen-client-urls=http://0.0.0.0:2379
+      --advertise-client-urls=http://liuhao-etcd-0:2379
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://liuhao-etcd-0:2380
+      --initial-cluster=liuhao-etcd-0=http://liuhao-etcd-0:2380
+      --initial-cluster-token=liuhao-etcd-cluster
+      --initial-cluster-state=new
+      --auto-compaction-mode=periodic
+      --auto-compaction-retention=1h
+      --quota-backend-bytes=2147483648
+    volumes:
+      - etcd-0-data:/etcd-data
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    networks:
+      - liuhao-network
+
+  etcd-1:
+    image: quay.io/coreos/etcd:v3.5.10
+    container_name: liuhao-etcd-1
+    command: etcd
+      --name=liuhao-etcd-1
+      --data-dir=/etcd-data-1
+      --listen-client-urls=http://0.0.0.0:2378
+      --advertise-client-urls=http://liuhao-etcd-1:2378
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://liuhao-etcd-1:2380
+      --initial-cluster=liuhao-etcd-0=http://liuhao-etcd-0:2380,liuhao-etcd-1=http://liuhao-etcd-1:2380,liuhao-etcd-2=http://liuhao-etcd-2:2380
+      --initial-cluster-token=liuhao-etcd-cluster
+      --initial-cluster-state=new
+      --auto-compaction-mode=periodic
+      --auto-compaction-retention=1h
+      --quota-backend-bytes=2147483648
+    volumes:
+      - etcd-1-data:/etcd-data-1
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    networks:
+      - liuhao-network
+
+  etcd-2:
+    image: quay.io/coreos/etcd:v3.5.10
+    container_name: liuhao-etcd-2
+    command: etcd
+      --name=liuhao-etcd-2
+      --data-dir=/etcd-data-2
+      --listen-client-urls=http://0.0.0.0:2379
+      --advertise-client-urls=http://liuhao-etcd-2:2379
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://liuhao-etcd-2:2380
+      --initial-cluster=liuhao-etcd-0=http://liuhao-etcd-0:2380,liuhao-etcd-1=http://liuhao-etcd-1:2380,liuhao-etcd-2=http://liuhao-etcd-2:2380
+      --initial-cluster-token=liuhao-etcd-cluster
+      --initial-cluster-state=new
+      --auto-compaction-mode=periodic
+      --auto-compaction-retention=1h
+      --quota-backend-bytes=2147483648
+    volumes:
+      - etcd-2-data:/etcd-data-2
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    networks:
+      - liuhao-network
+
+volumes:
+  etcd-0-data:
+  etcd-1-data:
+  etcd-2-data:
+
+networks:
+  liuhao-network:
+    driver: bridge

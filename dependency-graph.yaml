@@ -1,0 +1,61 @@
+dependency-graph:
+  phase: "Phase 2"
+  status: "ACTIVE — 9/12 Kernels IMPLEMENTED"
+  nodes:
+    - "Context Kernel (L0-L7, HYBRID attention) — IMPLEMENTED"
+    - "Capability Kernel (registry, traceability) — IMPLEMENTED"
+    - "Event Kernel (unified bus, correlation IDs) — IMPLEMENTED"
+    - "Execution Kernel (Goal→Task→Plan→Action→Verify) — IMPLEMENTED"
+    - "Resource Kernel (quotas, lifecycle) — IMPLEMENTED"
+    - "Policy Kernel (permission boundaries) — IMPLEMENTED"
+    - "Network Kernel (protocol adapters, comm bus) — IMPLEMENTED"
+    - "Trust Kernel (trust scores, chain, revocation) — IMPLEMENTED"
+    - "Evaluation Kernel (outcome evaluation, feedback) — IMPLEMENTED"
+    - "Identity Kernel (agent identity, permissions) — PARTIAL"
+    - "Memory Kernel (multi-tier, scoping) — PARTIAL"
+    - "Audit Kernel (complete audit trail) — PARTIAL"
+    - "Phase 2 Forward Migration (implementation) — IN PROGRESS"
+    - "Phase 3 Intelligence Core (planned) — BLOCKED"
+    - "Phase 4+ World Operating System (planned) — BLOCKED"
+  edges:
+    - ["Context Kernel", "Execution Kernel", "dependency:task_decomposition"]
+    - ["Capability Kernel", "Policy Kernel", "dependency:permission_scoping"]
+    - ["Event Kernel", "All Kernels", "dependency:inter-kernel_communication"]
+    - ["Execution Kernel", "Resource Kernel", "dependency:resource_allocation"]
+    - ["Resource Kernel", "Policy Kernel", "dependency:quota_enforcement"]
+    - ["Policy Kernel", "Trust Kernel", "dependency:trust_enforced_permissions"]
+    - ["Trust Kernel", "Evaluation Kernel", "dependency:trust_based_scoring"]
+    - ["Evaluation Kernel", "Execution Kernel", "dependency:feedback_loop"]
+    - ["Identity Kernel", "Audit Kernel", "dependency:permission_audit"]
+    - ["Memory Kernel", "Context Kernel", "dependency:context_augmentation"]
+    - ["Audit Kernel", "All Kernels", "dependency:traceability_logging"]
+  critical_path:
+    - "Context (IMPLEMENTED) → Execution (IMPLEMENTED) → Resource (IMPLEMENTED) → Policy (IMPLEMENTED) → Trust (IMPLEMENTED) → Evaluation (IMPLEMENTED) → Feedback"
+    - "Identity (PARTIAL) → Audit (PARTIAL) → Compliance → Phase Gate"
+  workstreams:
+    - "A: Kernel Interface Definition — FINALIZED (Interface Freeze Complete)"
+    - "B: Core Runtime — IN PROGRESS (9/9 kernels implemented)"
+    - "C: Intelligence Core — BLOCKED (depends on B)"
+    - "D: Agent/Organization — BLOCKED (depends on C)"
+    - "E: Realtime/Long-Horizon — BLOCKED (depends on B + C)"
+    - "F: Network/World — BLOCKED (depends on C)"
+    - "G: Security/Governance — IN PROGRESS (parallel with B, needs Identity/Security/Audit)"
+    - "H: Data/Infrastructure — IN PROGRESS (parallel with B, alembic + ORM)"
+    - "I: Product/Frontend — BLOCKED (depends on G + H)"
+    - "J: Tutorials/Documentation — ACTIVE (documenting implementations)"
+  critical_path_sequence:
+    - "Context → Execution → Resource → Policy → Trust → Evaluation → Feedback (COMPLETE)"
+    - "Identity → Audit → Compliance → Phase Gate (PENDING)"
+  parallelizable_groups:
+    - "G + H can parallelize with B (no shared unsafe changes)"
+    - "After B: C can start"
+    - "After C: D + F can parallelize"
+    - "After B + C: E can start"
+    - "J can do PREPARATORY work throughout"
+  blocking_dependencies:
+    - "Identity Kernel completion needed for Identity Authority"
+    - "Memory Kernel completion needed for context augmentation"
+    - "Security Kernel full implementation needed for Policy Authority"
+    - "Audit Kernel full implementation needed for Audit Authority"
+    - "Phase 2 exit: Critical Audit Coverage = 100%"
+    - "Phase 3 waits on Phase 2 exit gates"

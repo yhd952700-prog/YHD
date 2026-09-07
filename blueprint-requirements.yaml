@@ -1,0 +1,30 @@
+blueprint:
+  definition_lock_version: "v3.0"
+  title: "LIUHAO X v3.0 — Human-Sovereign Agent Operating System"
+  total_requirements: 122
+  by_phase:
+    phase_0: 15
+    phase_1: 25
+    phase_2: 35
+    phase_3: 20
+    phase_4: 15
+    phase_5: 12
+  by_direction:
+    security: 28
+    intelligence: 25
+    infrastructure: 15
+    interface: 9
+    tutorials: 8
+    observability: 8
+    integration: 7
+    performance: 5
+  by_status:
+    implemented: 78
+    partial: 22
+    missing: 4
+    blocked: 0
+  convergence_points:
+    A: "Secure Control Foundation (Phase 2 exit)"
+    B: "Executable Intelligence Core (Phase 3+4)"
+    C: "Agent World Operating System (Phase 5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20)"
+  last_updated: "2026-09-05"

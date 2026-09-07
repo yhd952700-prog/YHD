@@ -1,0 +1,168 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: liuhao-postgres
+    environment:
+      POSTGRES_DB: liuhao_ai_os
+      POSTGRES_USER: liuhao
+      POSTGRES_PASSWORD: liuhao_secure_pass_2024
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liuhao -d liuhao_ai_os"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    networks:
+      - liuhao-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: liuhao-redis
+    command: redis-server --appendonly yes --requirepass liuhao_redis_pass_2024 --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    networks:
+      - liuhao-network
+
+  qdrant:
+    image: qdrant/qdrant:v1.8.0
+    container_name: liuhao-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    networks:
+      - liuhao-network
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.10
+    container_name: liuhao-etcd
+    command: |
+      etcd
+      --name=liuhao-etcd-0
+      --data-dir=/etcd-data
+      --listen-client-urls=http://0.0.0.0:2379
+      --advertise-client-urls=http://liuhao-etcd:2379
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://liuhao-etcd:2380
+      --initial-cluster=liuhao-etcd-0=http://liuhao-etcd:2380
+      --initial-cluster-token=liuhao-etcd-cluster
+      --initial-cluster-state=new
+      --auto-compaction-mode=periodic
+      --auto-compaction-retention=1h
+      --quota-backend-bytes=2147483648
+    volumes:
+      - etcd_data:/etcd-data
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    networks:
+      - liuhao-network
+
+  # 可选：Kafka/Redpanda (Phase 2 需要)
+  # redpanda:
+  #   image: docker.redpanda.com/redpandadata/redpanda:v23.3.10
+  #   container_name: liuhao-redpanda
+  #   command:
+  #     - redpanda
+  #     - --smp=2
+  #     - --memory=2G
+  #     - --reserve-memory=1G
+  #     - --overprovisioned
+  #     - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+  #     - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+  #     - --pandaproxy-addr=0.0.0.0:8082
+  #     - --advertise-pandaproxy-addr=redpanda:8082
+  #   volumes:
+  #     - redpanda_data:/var/lib/redpanda/data
+  #   ports:
+  #     - "9092:9092"
+  #     - "8082:8082"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "rpk cluster health"]
+  #     interval: 10s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 30s
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 4G
+  #         cpus: '2'
+  #   networks:
+  #     - liuhao-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  etcd_data:
+  # redpanda_data:
+
+networks:
+  liuhao-network:
+    driver: bridge
+    name: liuhao-network

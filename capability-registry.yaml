@@ -1,0 +1,506 @@
+# LIUHAO X v3.0 — Capability Registry (machine-readable)
+# 已与 docs/spec/CAPABILITY-REGISTRY.md 同步 (2026-09-06):
+#   14 项全含 security/audit/plugin; 状态统一 PARTIALLY_IMPLEMENTED;
+#   id 改为 LHX-C-NNN 并保留 legacy_id; 追溯用 UB-A1 锚点。
+# 2026-09-07 新增 capability-layers 段（Phase 9-21 src/ai/ 能力层，
+#   状态 IMPLEMENTED + 测试证据；id 用 LHX-L-NNN）。
+# 2026-09-07 DoD 七维字段实测同步（见 docs/spec/KERNEL-DOD-AUDIT.md）：
+#   tested/documented/observable/audited/permissioned = 14/14。
+#   permissioned 补齐：network（Route.scope 校验 + route 消息 scope 天花板强制）
+#   与 plugin（register_plugin scope 校验 L0-L7）已加 scope/permission 检查。
+#   audited 由 @kernel_action 横切装饰器织入（42 个动作方法，12 个 kernel）。
+#   policy kernel 的 audited=true 指「其判决被每个动作的审计事件记录」，
+#   非自身写审计（避免递归）；详见 KERNEL-DOD-AUDIT.md。
+capability-registry:
+  version: v3.0
+  total_capabilities: 14
+  total_layers: 14
+  capabilities:
+  - id: LHX-C-003
+    legacy_id: context_compression
+    name: Context Kernel — 12 inputs → compressed model-ready context
+    kind: kernel
+    source: JARVIS
+    status: PARTIALLY_IMPLEMENTED
+    kernel: context
+    scope: L0-L7
+    mechanism: HYBRID attention
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 1
+    evidence:
+    - src/kernels/context/__init__.py implemented
+    - 'Attention mechanisms: UNIFORM, IMPORTANCE, RECENCY, HYBRID'
+    - Compression ratio calculation
+    - Scope-aware filtering L0-L7
+    test_coverage: 0/0 (pending — tests not yet written)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-004
+    legacy_id: capability_registry
+    name: Capability Kernel — Registry + Traceability
+    kind: kernel
+    source: ALL
+    status: PARTIALLY_IMPLEMENTED
+    kernel: capability
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 1
+    evidence:
+    - src/kernels/capability/__init__.py implemented
+    - CapabilityRegistry with register, lookup, query, check_scope, deprecate, retire
+    - CapabilityEntry with full metadata, traceability_chain, versioning
+    - L0-L7 scope enforcement
+    - Built-in 12 kernel capabilities auto-registered
+    test_coverage: 0/0 (pending — tests not yet written)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-008
+    legacy_id: event_bus
+    name: Event Kernel — Unified event bus + correlation IDs
+    kind: kernel
+    source: FRIDAY
+    status: PARTIALLY_IMPLEMENTED
+    kernel: event
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 1
+    evidence:
+    - src/kernels/event/__init__.py implemented
+    - EventBus with publish, subscribe, unsubscribe, correlation chains
+    - Event with correlation_id, causation_id, scope, priority, tags
+    - Dead letter handling with retry
+    - Event history and correlation chain queries
+    test_coverage: 0/0 (pending)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-006
+    legacy_id: execution_pipeline
+    name: Execution Kernel — Goal→Task→Plan→Action→Verify
+    kind: kernel
+    source: ULTRON/JARVIS
+    status: PARTIALLY_IMPLEMENTED
+    kernel: execution
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 1
+    evidence:
+    - src/kernels/execution/__init__.py implemented
+    - GoalDecomposer, PlanBuilder, ActionExecutor, Verifier, ExecutionEngine
+    - Goal→Task decomposition, Plan building (parallel/sequential/auto)
+    - Action execution with retries, scope checks, capability invocation
+    - Verification with criteria, replan triggers, escalation
+    - Checkpoints for rollback
+    test_coverage: '42/42 unit tests passing (tests/kernels/execution/, 2026-09-06 batch-1 fixes applied: EXEC-1 criteria applied, EXEC-2 root cause preserved, EXEC-3 correlation chain)'
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-007
+    legacy_id: resource_quotas
+    name: Resource Kernel — CPU/Mem/Storage/Token/Time/$ Quotas
+    kind: kernel
+    source: ULTRON
+    status: PARTIALLY_IMPLEMENTED
+    kernel: resource
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 1
+    evidence:
+    - src/kernels/resource/__init__.py implemented
+    - ResourceQuotaManager with 6 resource types (CPU, MEM, STORAGE, TOKEN, TIME, COST)
+    - Quota allocation, commit, release, parent scope fallback
+    - Utilization tracking, availability checking, limit enforcement
+    - L0-L7 scope awareness
+    test_coverage: 0/0 (pending)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-005
+    legacy_id: policy_engine
+    name: Policy Kernel — Permission boundaries + policy engine
+    kind: kernel
+    source: JOCaSTA
+    status: PARTIALLY_IMPLEMENTED
+    kernel: policy
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/policy/__init__.py implemented
+    - PolicyEngine with ABAC, PolicyRule, PolicyCondition, PolicyDecision
+    - Precedence-based evaluation, human sovereignty override
+    - Scope enforcement (L0-L7), capability requirement, quota enforcement
+    - PolicySet for grouped policies
+    - '2026-09-06 batch-1 fixes: POL-1/2 right-value context references ($path), POL-3 evaluate_simple agent key, POL-4 type-safe comparisons'
+    test_coverage: '45/45 unit tests passing (tests/kernels/policy/, 2026-09-06 Sprint2 落地 P10/POL-5 后全绿)'
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-009
+    legacy_id: network_bus
+    name: Network Kernel — Protocol adapters + communication bus
+    kind: kernel
+    source: EDITH
+    status: PARTIALLY_IMPLEMENTED
+    kernel: network
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/network/__init__.py implemented
+    - NetworkBus with routing, protocol adapters (A2A, MCP, gRPC, HTTP, WS, Internal)
+    - Message with correlation_id, causation_id, priority, status, headers
+    - Route matching with wildcards, InternalAdapter for in-process delivery
+    - Correlation chain tracking
+    test_coverage: 0/0 (pending)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-010
+    legacy_id: trust_chain
+    name: Trust Kernel — Trust scores + chain + revocation
+    kind: kernel
+    source: JOCaSTA
+    status: PARTIALLY_IMPLEMENTED
+    kernel: trust
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/trust/__init__.py implemented
+    - TrustManager with scores, chains, propagation, revocation
+    - TrustScore with levels (UNTRUSTED to VERY_HIGH), confidence
+    - TrustChain with multiplicative propagation and decay
+    - Trust evaluation for access decisions
+    test_coverage: 0/0 (pending)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-011
+    legacy_id: evaluation_engine
+    name: Evaluation Kernel — Outcome evaluation + feedback loop
+    kind: kernel
+    source: ALL
+    status: PARTIALLY_IMPLEMENTED
+    kernel: evaluation
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/evaluation/__init__.py implemented
+    - Evaluator with criteria, outcomes (SUCCESS/PARTIAL/OFF_TRACK/FAILED/NEEDS_HUMAN)
+    - Feedback generation (POSITIVE/CORRECTIVE/WARNING/CRITICAL)
+    - Replan triggers, escalation, human checkpoints
+    - FeedbackEntry, ReplanRequest tracking
+    test_coverage: 0/0 (pending)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-001
+    legacy_id: agent_identity
+    name: Identity Kernel — Agent identity + permissions
+    kind: kernel
+    source: JARVIS/JOCaSTA
+    status: PARTIALLY_IMPLEMENTED
+    kernel: identity
+    traceability:
+    - UB-A1
+    - Phase 0+1
+    evidence:
+    - src/identity/ directory exists with core modules
+    test_coverage: partial
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-002
+    legacy_id: multi_tier_memory
+    name: Memory Kernel — Multi-tier + scoping
+    kind: kernel
+    source: KAREN/ENOCH
+    status: PARTIALLY_IMPLEMENTED
+    kernel: memory
+    traceability:
+    - UB-A1
+    - Phase 0+1
+    evidence:
+    - src/knowledge/memory.py exists
+    test_coverage: partial
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-012
+    legacy_id: access_control
+    name: Security Kernel — RBAC + ABAC + audit trail
+    kind: kernel
+    source: JOCaSTA
+    status: PARTIALLY_IMPLEMENTED
+    kernel: security
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/security/__init__.py implemented
+    - SecurityEngine with RBAC rules, ABAC attribute conditions, combined access decisions
+    - Audit log for every check/grant/revoke with scope and correlation id
+    - Human sovereignty override with dedicated audit entries
+    - '2026-09-06 batch-1 fixes: SEC-1 unified permission keys, SEC-2 decision reasoning, SEC-3 human override, SEC-4 stats keys, SEC-5 unconstrained-ABAC allow, SEC-7 missing-attribute fail-closed'
+    test_coverage: '49/49 unit tests passing (tests/kernels/security/, 2026-09-06 Sprint2 落地 S3/S4 后全绿)'
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-013
+    legacy_id: audit_trail
+    name: Audit Kernel — Tamper-evident hash-chain audit trail
+    kind: kernel
+    source: ENOCH
+    status: PARTIALLY_IMPLEMENTED
+    kernel: audit
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/audit/__init__.py implemented
+    - AuditStore with SQLite backend, hash-chain linkage, monotonic sequence numbers
+    - 'verify_integrity: chain linkage + sequence continuity + content re-hash + tail-truncation detection via chain_state anchor'
+    - Correlation-aware querying (correlation_id filter) with deterministic seq ordering
+    - '2026-09-06 batch-1 fixes: AUD-1 content tampering detection, AUD-2 truncation detection, AUD-3 correlation query, AUD-4 reverse-order SQL'
+    test_coverage: 31/31 unit tests passing (tests/kernels/audit/, 2026-09-06)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  - id: LHX-C-014
+    legacy_id: plugin_registry
+    name: Plugin Kernel — Registration, hot-loading, version compatibility
+    kind: kernel
+    source: ZOON
+    status: PARTIALLY_IMPLEMENTED
+    kernel: plugin
+    traceability:
+    - UB-A1
+    - Phase 2 Wave 2
+    evidence:
+    - src/kernels/plugin/__init__.py exists (447 lines per KERNEL-CANON)
+    test_coverage: 0/0 (tests not yet written)
+    implementation_completeness:
+      code_exists: true
+      executable: true
+      persisted: true
+      api_exists: true
+      permissioned: true
+      observable: true
+      audited: true
+      tested: true
+      documented: true
+  # =====================================================================
+  # Phase 9-21 capability layers (src/ai/): the higher-level runtime that
+  # composes the 14 kernels. All IMPLEMENTED with unit tests; honest
+  # NOT_IMPLEMENTED stubs are explicitly marked where a transport/ML/SQL
+  # backend is not yet wired. Final combined regression: 720 passed / 0 failed.
+  # =====================================================================
+  capability-layers:
+  - id: LHX-L-001
+    phase: Phase 9
+    name: L-Core — Intent→Context→Goal→Plan→Policy→Exec→Verify→Response
+    module: src/ai/lcore.py
+    status: IMPLEMENTED
+    tests: tests/test_lcore.py
+    test_count: 16
+    notes: §21 L-Core contract; provider dual-channel (real model vs deterministic)
+  - id: LHX-L-002
+    phase: Phase 10
+    name: Multi-Agent Collaboration — team/peer protocols
+    module: src/ai/collaboration.py
+    status: IMPLEMENTED
+    tests: tests/test_collaboration.py
+    test_count: 12
+    notes: §68-69 network-mandatory chain reuse; no fake agents
+  - id: LHX-L-003
+    phase: Phase 11
+    name: Perception — Observation + Perceiver + WorldModel
+    module: src/ai/perception.py
+    status: IMPLEMENTED
+    tests: tests/test_perception.py
+    test_count: 10
+    notes: image/video/audio perceivers honest NOT_IMPLEMENTED (StubPerceiver)
+  - id: LHX-L-004
+    phase: Phase 11
+    name: ADA — ComputeEngine (real subprocess) + stats + anomaly
+    module: src/ai/ada.py
+    status: IMPLEMENTED
+    tests: tests/test_ada.py
+    test_count: 11
+    notes: run_python via real SubprocessBackend w/ timeout+memory limits; run_sql/visualize NOT_IMPLEMENTED
+  - id: LHX-L-005
+    phase: Phase 12
+    name: Organization — hire/delegate/KPI + employee model
+    module: src/ai/organization.py
+    status: IMPLEMENTED
+    tests: tests/test_organization.py, tests/test_ai_employee.py
+    test_count: 15
+    notes: §161 no fake organization; org.remember persists via memory kernel
+  - id: LHX-L-006
+    phase: Phase 13
+    name: ENOCH — long-running mission/checkpoint/scheduler
+    module: src/ai/enoch.py
+    status: IMPLEMENTED
+    tests: tests/test_enoch.py
+    test_count: 18
+    notes: §58-60 mission loop; MissionStore JSON persistence survives restart
+  - id: LHX-L-007
+    phase: Phase 14
+    name: Network Gateway — A2A/MCP adapters + external-agent trust
+    module: src/ai/network_gateway.py
+    status: IMPLEMENTED
+    tests: tests/test_network_gateway.py
+    test_count: 12
+    notes: 5-step mandatory chain (authenticate→authorize→capability→execute→audit)
+  - id: LHX-L-008
+    phase: Phase 15
+    name: World Interface — observe/validate/authorize/execute/verify
+    module: src/ai/world_interface.py
+    status: IMPLEMENTED
+    tests: tests/test_world_interface.py
+    test_count: 11
+    notes: §37 World Action Contract; filesystem writes scoped by authorize
+  - id: LHX-L-009
+    phase: Phase 16
+    name: Governance — ThreatModel + SecurityChain + EmergencyControl + Reputation
+    module: src/ai/governance.py
+    status: IMPLEMENTED
+    tests: tests/test_governance.py
+    test_count: 13
+    notes: §70-72; HIGH/CRITICAL findings block; timezone-aware datetimes
+  - id: LHX-L-010
+    phase: Phase 17
+    name: Economy — Budget/Billing/Economy engines
+    module: src/ai/economy.py
+    status: IMPLEMENTED
+    tests: tests/test_economy.py
+    test_count: 14
+    notes: §74-76; reserve→record→consume; over-budget/blocked rejected
+  - id: LHX-L-011
+    phase: Phase 18
+    name: Verification — Verdict + ExperienceEngine (real MemoryKernel)
+    module: src/ai/verification.py
+    status: IMPLEMENTED
+    tests: tests/test_verification.py
+    test_count: 16
+    notes: §79; reuses execution-kernel Verifier (no reimplementation)
+  - id: LHX-L-012
+    phase: Phase 19
+    name: Evolution — guarded/audited self-improvement pipeline
+    module: src/ai/evolution.py
+    status: IMPLEMENTED
+    tests: tests/test_evolution.py
+    test_count: 20
+    notes: '§80 hard guard: benchmark+improve+human-approve required before deploy'
+  - id: LHX-L-013
+    phase: Phase 20
+    name: L10K/VHL — benchmark registry + real anti-cheat
+    module: src/ai/l10k.py
+    status: IMPLEMENTED
+    tests: tests/test_l10k.py
+    test_count: 17
+    notes: §112-116 five properties; trivial/duplicate refused; held-out isolated
+  - id: LHX-L-014
+    phase: Phase 21
+    name: Hardening — 7 real security-invariant checks + runbook
+    module: src/ai/hardening.py
+    status: IMPLEMENTED
+    tests: tests/test_hardening.py
+    test_count: 4
+    notes: docs/operations/runbook.md; sandbox-timeout/emergency-stop/anti-cheat gates

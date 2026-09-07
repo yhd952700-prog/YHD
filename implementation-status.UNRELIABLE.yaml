@@ -1,0 +1,182 @@
+# ⚠️⚠️⚠️ UNRELIABLE — 本文件数据已被证实为假，不可信，禁止作为权威状态源。
+#    2026-09-06 由 implementation-status.yaml 重命名而来（R9：去权威化）。
+#    权威状态源：capability-registry.yaml（已同步 14 项）或直接看 tests/ 实测。
+# ⚠️ 修正说明（2026-09-06 实测核查）：
+# 1. by_status 原声明 audited: 14 / tested: 14 为错误数据 —— tests/ 下无任何
+#    kernel 层测试（grep "src.kernels" tests/ = 0 个文件），实测均为 0。
+# 2. by_kernel 实际列 13 项，缺 plugin（src/kernels/plugin/ 已有 447 行代码）。
+# 3. partial 实际 4 项（identity/memory/security/audit），missing 实际 0 项。
+# 4. 各 kernel 的 audit/test 原值 "minimal"/"basic" 无测试文件佐证，已统一修正为 "none"。
+# 5. 权威状态以 docs/spec/CAPABILITY-REGISTRY.md 与 docs/spec/KERNEL-CANON.md 为准。
+implementation-status:
+  total_modules: 14   # 声明值；by_kernel 实际列 13（plugin 未列入，待补）
+  implemented: 9
+  partial: 4          # 修正（原 3）：identity/memory/security/audit
+  missing: 0          # 修正（原 2）：by_kernel 中无 MISSING 项
+  by_kernel:
+    context:
+      status: "IMPLEMENTED"
+      description: "full code, attention mechanisms, scope filtering"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "monitored via Resource Kernel quotas"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    capability:
+      status: "IMPLEMENTED"
+      description: "registry, traceability, L0-L7 scoping, built-in 12 capabilities"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — registry operations only"
+      development_cost: "0.3 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    event:
+      status: "IMPLEMENTED"
+      description: "bus, correlation IDs, dead letters, scope filtering"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — event bus operations"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    execution:
+      status: "IMPLEMENTED"
+      description: "Goal→Task→Plan→Action→Verify, retries, checkpoints"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "monitored via execution engine metrics"
+      development_cost: "0.3 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    resource:
+      status: "IMPLEMENTED"
+      description: "6 resource types, quotas, allocation, commit/release"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "tracked per quota allocation event"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    policy:
+      status: "IMPLEMENTED"
+      description: "ABAC engine, rules, precedence, human sovereignty"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — policy evaluation only"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    network:
+      status: "IMPLEMENTED"
+      description: "6 protocol adapters, routing, correlation chains"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — network bus operations"
+      development_cost: "0.3 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    trust:
+      status: "IMPLEMENTED"
+      description: "scores, chains, propagation, revocation, access eval"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — trust score operations"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    evaluation:
+      status: "IMPLEMENTED"
+      description: "criteria, outcomes, feedback, replan, escalation"
+      next_steps: "maintain and monitor kernel stability"
+      upgrade_conditions: "continue monitoring and documentation"
+      confidence: 0.85
+      estimation: "stable and complete"
+      audit: "none"
+      test: "none"
+      resource_usage: "minimal — evaluation engine operations"
+      development_cost: "0.2 FTE-weeks (initial implementation)"
+      maintenance_cost: "0.05 FTE-weeks (ongoing)"
+    identity:
+      status: "PARTIAL"
+      description: "src/identity/ exists, needs full implementation"
+      next_steps: "complete identity kernel per Definition Lock §5-8"
+      upgrade_conditions: "all identity kernel fields populated and audited"
+      confidence: 0.95
+      estimation: "can be reliably estimated within 2 weeks"
+      audit: "none"
+      test: "none"
+      resource_usage: "tracked via identity manager operations"
+      development_cost: "0.5 FTE-weeks (remaining implementation)"
+      maintenance_cost: "0.1 FTE-weeks (ongoing)"
+    memory:
+      status: "PARTIAL"
+      description: "src/knowledge/memory.py exists, needs full implementation"
+      next_steps: "complete memory kernel per Definition Lock §5-8"
+      upgrade_conditions: "all memory tiers operational with scope filtering"
+      confidence: 0.9
+      estimation: "can be reliably estimated within 3 weeks"
+      audit: "none"
+      test: "none"
+      resource_usage: "tracked via memory tier operations"
+      development_cost: "0.8 FTE-weeks (remaining implementation)"
+      maintenance_cost: "0.15 FTE-weeks (ongoing)"
+    security:
+      status: "PARTIAL"
+      description: "src/security/ exists, SEC_01-06 verified, needs full"
+      next_steps: "complete security kernel per Definition Lock §5-8"
+      upgrade_conditions: "all SEC_01-06 implemented with policy enforcement"
+      confidence: 0.92
+      estimation: "can be reliably estimated within 2 weeks"
+      audit: "none"
+      test: "none"
+      resource_usage: "monitored via vault transit operations"
+      development_cost: "0.4 FTE-weeks (remaining implementation)"
+      maintenance_cost: "0.1 FTE-weeks (ongoing)"
+    audit:
+      status: "PARTIAL"
+      description: "src/security/audit_policy.py exists, needs full"
+      next_steps: "complete audit kernel per Definition Lock §5-8"
+      upgrade_conditions: "full audit trail implemented"
+      confidence: 0.85
+      estimation: "can be reliably estimated within 2 weeks"
+      audit: "none"
+      test: "none"
+      resource_usage: "monitored via audit chain operations"
+      development_cost: "0.4 FTE-weeks (remaining implementation)"
+      maintenance_cost: "0.1 FTE-weeks (ongoing)"
+  by_status:
+    code_exists: 13        # by_kernel 实际列出数（plugin 未列入）
+    executable: 9
+    persisted: 9
+    api_exists: 9
+    permissioned: 9
+    observable: 9
+    audited: 0             # 修正（原 14 为错误声明）：实测无 kernel 层审计
+    tested: 0              # 修正（原 14 为错误声明）：实测无 kernel 层测试
+    documented: 9
