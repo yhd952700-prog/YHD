@@ -1,8 +1,8 @@
 # OPEN-DECISIONS Register — LIUHAO X v3.0 演进悬而未决登记
 
 > **依据**：DL:§悬而未决登记册规范
-> **日期**：2026-09-05
-> **状态**：INITIALIZED（Phase 1 启动后持续维护）
+> **日期**：2026-09-05（最新关闭 2026-09-07）
+> **状态**：CONVERGED（Phase 0 决策 + kernel 3 项设计级缺陷已全部收敛）
 
 ---
 
@@ -22,6 +22,8 @@
 
 ## 1. 开放决策（OPEN）
 
+> **说明**：本节现为历史记录 —— 下列 OD-001~OD-010 已全部 RESOLVED，权威状态见第 2 节「已决决策」与第 3 节汇总。
+
 ### OD-001 — 演进范围（22 Phase 全做 vs Convergence Point 收敛）
 
 | 字段 | 值 |
@@ -33,7 +35,7 @@
 | Current Leaning | **倾向 B：按 Convergence Point 收敛**（M1+M2 完成后即获得"可演进的 v3.0 内核"，M3 增量推进，避免 9-13 个月单线风险） |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `waiting-on-external-condition` |
 
 ### OD-002 — Y1 Sprint 与 v3.0 Phase 协调
@@ -47,7 +49,7 @@
 | Current Leaning | **倾向 B：并行**（Y1 S1-S3 完成的子模块直接为 v3.0 提供模块基础；Y1 S4-S6 不阻塞 v3.0 Phase 1-2 工作） |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `waiting-on-external-condition` |
 
 ### OD-003 — 工作区未提交代码处理
@@ -61,7 +63,7 @@
 | Current Leaning | **倾向 A：先 commit 到 wip/liuhao-x-evolve 分支**（保留 Y1 当前主线 main/develop 不变，v3.0 演进开新分支 wip/liuhao-x-evolve，避免影响 Y1 Sprint） |
 | Blocked By | 等用户确认分支策略 |
 | Resolves When | 用户答复 + git 操作执行 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `waiting-on-external-condition` |
 
 ### OD-004 — Definition Lock 与 Y1 文档关系
@@ -75,7 +77,7 @@
 | Current Leaning | **倾向 B：Y1 文档保留为历史档案**（Phase 2-8 ACCEPTANCE_REPORT + SEC_01-SEC_05_06 是 v3.0 Phase Entry 的实证依据），Definition Lock 为 v3.0 演进依据 |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `design-decision-to-evaluate` |
 
 ### OD-005 — 路径错误目录清理
@@ -89,7 +91,7 @@
 | Current Leaning | **倾向清理**：这些是误创建（路径前缀 `D:\LiuHao-AI-OS` 被当成目录名），应在 Phase 1 启动前 `git rm` 并 commit |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 + git 操作执行 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `existing-design-boundary` |
 
 ### OD-006 — P1/P3/P4/P6 实跑验证执行方式
@@ -103,7 +105,7 @@
 | Current Leaning | **倾向：Hermes 直接执行**（在 Phase 1 设计阶段同时跑 `python main.py health` + `docker compose up` + `pytest tests/` + `alembic upgrade head` + `tests/security/`） |
 | Blocked By | 等用户确认（是否允许 Hermes 直接执行命令？还是仅做调研？） |
 | Resolves When | 用户答复 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `waiting-on-external-condition` |
 
 ### OD-007 — Definition Lock 22 Phase 执行计划形式
@@ -117,7 +119,7 @@
 | Current Leaning | **倾向：按 Convergence Point 分 4 个里程碑（M1+M2+M3+M4）**，每完成一个里程碑提交用户验收 |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
-| Status | **OPEN** |
+| Status | **RESOLVED 2026-09-05**（详见下方已决区） |
 | Slug | `design-decision-to-evaluate` |
 
 ### OD-008 — Security Kernel ABAC 请求属性可覆盖存储安全属性（S3）
@@ -130,8 +132,8 @@
 | Related Constraints | CODEX-CONTRACT §2.2 规则 11（不允许 Agent 自动扩大权限）；DL:§112 |
 | Current Leaning | 存储属性必须优先于请求属性；请求属性仅允许补充非安全属性或经显式白名单 |
 | Blocked By | 总监裁决属性合并策略（白名单 / 完全禁止覆盖 / 仅补充缺失键） |
-| Resolves When | 裁决后按测试证据修复，TestDesignGapS3 相关红灯转绿 |
-| Status | **OPEN**（证据测试已落盘，修复排第二轮） |
+| Resolves When | 已裁决并修复（2026-09-07），证据测试转绿 |
+| Status | **RESOLVED 2026-09-07**（详见下方已决区） |
 | Slug | `design-decision-to-evaluate` |
 
 ### OD-009 — Security Kernel scope 参数不参与判决（S4）
@@ -144,8 +146,8 @@
 | Related Constraints | CODEX-CONTRACT §2.1 规则 1（不把概念当实现）；DL:§112（scope enforcement） |
 | Current Leaning | 至少校验合法 scope 枚举（L0-L7）拒绝无效值；进一步需定义 principal.scope 与请求 scope 的层级比较语义（与 policy kernel scope_enforcement 对齐） |
 | Blocked By | 总监裁决 scope 比较语义（严格相等 / 允许升级 / 允许降级） |
-| Resolves When | 裁决后按测试证据修复，TestDesignGapS4 相关红灯转绿 |
-| Status | **OPEN**（证据测试已落盘，修复排第二轮） |
+| Resolves When | 已裁决并修复（2026-09-07），证据测试转绿 |
+| Status | **RESOLVED 2026-09-07**（详见下方已决区） |
 | Slug | `design-decision-to-evaluate` |
 
 ### OD-010 — Policy Kernel 人类主权覆盖可被伪造（P10）
@@ -158,8 +160,8 @@
 | Related Constraints | CODEX-CONTRACT §2.2 规则 9（不把 Agent 默认当可信）、规则 16（高风险 Action 必须 Human Approval）；DL:§112 |
 | Current Leaning | human 声明必须经身份核验（联动 identity kernel 已验证身份），未经核验的 actor.type=="human" 不得触发主权覆盖 |
 | Blocked By | 总监裁决核验机制挂接点（identity kernel 的哪个校验接口、核验失败时 DENY 还是 DEFER） |
-| Resolves When | 裁决后按测试证据修复，TestDesignGapP10 相关红灯转绿 |
-| Status | **OPEN**（证据测试已落盘，修复排第二轮） |
+| Resolves When | 已裁决并修复（2026-09-07），证据测试转绿 |
+| Status | **RESOLVED 2026-09-07**（详见下方已决区） |
 | Slug | `design-decision-to-evaluate` |
 
 ---
@@ -242,14 +244,53 @@
 | Status | **RESOLVED 2026-09-05（默认）** |
 | 影响范围 | Y1 文档不动；新增 Definition Lock 演进文档到 docs/architecture/、docs/execution/、docs/capabilities/、docs/security/、docs/risk/ |
 
+### OD-008 — Security Kernel ABAC 请求属性可覆盖存储安全属性（S3）✅ RESOLVED
+
+| 字段 | 值 |
+|------|----|
+| Date | 2026-09-06（裁决+修复 2026-09-07） |
+| Source | 后端预审（贝洛奇）+ QA 证据测试 TestDesignGapS3 |
+| Open Item | check_abac 的请求属性可覆盖存储安全属性（clearance/trust_score 注入越权面） |
+| Resolution | **存储属性优先 + 受保护安全属性白名单**：`SecurityEngine._merge_attributes` 以存储值为权威基线，请求仅可为缺失键补充非安全属性；`_PROTECTED_SECURITY_ATTRS`（trust_score/trust/clearance/role/roles/permission/permissions/scope/identity/identity_id/principal）一律从存储取值，请求提供的同名值被忽略，杜绝伪造安全声明 |
+| Resolved By | 总监（Principal Engineer） |
+| Status | **RESOLVED 2026-09-07** |
+| 影响范围 | `src/kernels/security/__init__.py` `_merge_attributes` + `_PROTECTED_SECURITY_ATTRS` |
+| 证据 | `tests/kernels/security/test_defect_design_gaps.py::TestDesignGapS3` 3 用例全绿 |
+
+### OD-009 — Security Kernel scope 参数不参与判决（S4）✅ RESOLVED
+
+| 字段 | 值 |
+|------|----|
+| Date | 2026-09-06（裁决+修复 2026-09-07） |
+| Source | 后端预审（贝洛奇）+ QA 证据测试 TestDesignGapS4 |
+| Open Item | check_rbac/check_abac/decide_access 从不校验 scope 合法性与层级（L9/global/空串同权） |
+| Resolution | **严格枚举校验 + principal scope 天花板**：`_VALID_SCOPES`（L0-L7）+ `_is_valid_scope` 在 check_rbac/check_abac 入口拒绝无效值（DENY）；另加 `set_principal_scope` 记录 principal 授权层级，`_enforce_principal_scope` 拒绝超出授权层级的请求（scope ceiling 语义为「请求 scope 层级 ≤ principal 授权层级」） |
+| Resolved By | 总监（Principal Engineer） |
+| Status | **RESOLVED 2026-09-07** |
+| 影响范围 | `src/kernels/security/__init__.py` scope 校验 + `_enforce_principal_scope` |
+| 证据 | `tests/kernels/security/test_defect_design_gaps.py::TestDesignGapS4` 4 用例全绿 |
+
+### OD-010 — Policy Kernel 人类主权覆盖可被伪造（P10）✅ RESOLVED
+
+| 字段 | 值 |
+|------|----|
+| Date | 2026-09-06（裁决+修复 2026-09-07） |
+| Source | 后端预审（贝洛奇）+ QA 证据测试 TestDesignGapP10 |
+| Open Item | actor.type=="human" 自填即触发人类主权覆盖（HIGH/CRITICAL 放行） |
+| Resolution | **human 声明必须经 identity kernel 核验**：`human_sovereignty` 规则新增 `actor.verified == True` 条件；`_is_verified_human` 要求 actor 引用已注册且 ACTIVE 的身份（id/identity_id/principal），否则 `verified=False` 不触发覆盖。核验失败时规则不匹配 → `default_deny` 生效（DENY）。`actor.verified` 由引擎从 identity kernel 重算，永不信任调用方自填值 |
+| Resolved By | 总监（Principal Engineer） |
+| Status | **RESOLVED 2026-09-07** |
+| 影响范围 | `src/kernels/policy/__init__.py` `human_sovereignty` 规则 + `_is_verified_human` |
+| 证据 | `tests/kernels/policy/test_defect_design_gaps.py::TestDesignGapP10` 4 用例全绿 |
+
 ---
 
 ## 3. 汇总
 
-- **OPEN 总数**：3（OD-008/009/010，kernel 测试冲刺第一批设计级缺陷，2026-09-06 登记）
-- **RESOLVED 总数**：6（OD-001/002/003/005/006/007 + OD-004 默认）
+- **OPEN 总数**：0（全部收敛）
+- **RESOLVED 总数**：9（OD-001/002/003/005/006/007 + OD-004 默认 + OD-008/009/010 kernel 设计级缺陷）
 
-**Phase 0 决策已全部收敛；kernel 冲刺新增 3 项待裁决。**
+**Phase 0 决策已全部收敛；kernel 冲刺新增的 3 项设计级缺陷（S3/S4/P10）已裁决、修复并验证转绿。**
 
 ---
 
