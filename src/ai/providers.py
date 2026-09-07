@@ -561,8 +561,10 @@ def get_provider() -> BaseProvider:
     global _provider_instance
 
     if _provider_instance is None:
-        # Get provider type from env var, default to openai
-        provider_type = os.environ.get("AI_PROVIDER_TYPE", "openai").lower()
+        # Get provider type from env var, default to mock (safe, no fake-key
+        # network call; consistent with ProviderFactory.create_provider and
+        # detect_provider_type_from_env, which also default to MOCK).
+        provider_type = os.environ.get("AI_PROVIDER_TYPE", ProviderType.MOCK).lower()
 
         # Validate provider type is supported
         if provider_type not in ProviderFactory._providers:
@@ -572,7 +574,7 @@ def get_provider() -> BaseProvider:
         # Required args for all providers: name and model
         # Use sensible defaults; override with env vars if needed
         name = os.environ.get("AI_PROVIDER_NAME", "liuhao-assistant")
-        model = os.environ.get("AI_PROVIDER_MODEL", "[REDACTED]")
+        model = os.environ.get("AI_PROVIDER_MODEL", "mock-model")
         api_key = os.environ.get("AI_PROVIDER_KEY", "[REDACTED]")
 
         _provider_instance = ProviderFactory.create_provider(
