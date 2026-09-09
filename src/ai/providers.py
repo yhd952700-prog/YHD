@@ -653,12 +653,36 @@ class ProviderFactory:
 _provider_instance: BaseProvider = None
 
 
+def _provider_env(key: str, default: str = "") -> str:
+    """Resolve a provider env var: ``os.environ`` first, then ``.env`` file.
+
+    ``ConfigManager`` loads ``.env`` into its own config store (without exporting
+    to ``os.environ``), so reading only ``os.environ`` here silently ignored any
+    ``AI_PROVIDER_*`` values written in ``.env``. Priority:
+    ``os.environ`` > ``.env``（经 ConfigManager，键保留原样大小写）> default。
+    """
+    val = os.environ.get(key)
+    if val:
+        return val
+    try:
+        from ..config_manager import get as _cfg_get
+
+        val = _cfg_get(key)
+        if val:
+            return str(val)
+    except Exception:
+        # ConfigManager 不可用时静默回退默认值（保持 provider 可用性优先）。
+        pass
+    return default
+
+
 def get_provider() -> BaseProvider:
     """Get the global provider instance, auto-detecting from environment.
 
-    The provider type is determined by the AI_PROVIDER_TYPE environment variable.
-    Set this to a valid ProviderType (openai, anthropic, google, ollama,
-    moonshot, deepseek) to use a real provider, or MOCK for development.
+    The provider type is determined by the ``AI_PROVIDER_TYPE`` environment
+    variable or the ``.env`` file (``os.environ`` wins). Set this to a valid
+    ProviderType (openai, anthropic, google, ollama, moonshot, deepseek) to
+    use a real provider, or MOCK for development.
 
     Example:
         export AI_PROVIDER_TYPE=openai
@@ -667,10 +691,10 @@ def get_provider() -> BaseProvider:
     global _provider_instance
 
     if _provider_instance is None:
-        # Get provider type from env var, default to mock (safe, no fake-key
-        # network call; consistent with ProviderFactory.create_provider and
-        # detect_provider_type_from_env, which also default to MOCK).
-        provider_type = os.environ.get("AI_PROVIDER_TYPE", ProviderType.MOCK).lower()
+        # Get provider type from env var / .env, default to mock (safe, no
+        # fake-key network call; consistent with ProviderFactory.create_provider
+        # and detect_provider_type_from_env, which also default to MOCK).
+        provider_type = _provider_env("AI_PROVIDER_TYPE", ProviderType.MOCK).lower()
 
         # Validate provider type is supported
         if provider_type not in ProviderFactory._providers:
@@ -679,9 +703,9 @@ def get_provider() -> BaseProvider:
 
         # Required args for all providers: name and model
         # Use sensible defaults; override with env vars if needed
-        name = os.environ.get("AI_PROVIDER_NAME", "liuhao-assistant")
-        model = os.environ.get("AI_PROVIDER_MODEL", "mock-model")
-        api_key = os.environ.get("AI_PROVIDER_KEY", "[REDACTED]")
+        name = _provider_env("AI_PROVIDER_NAME", "liuhao-assistant")
+        model = _provider_env("AI_PROVIDER_MODEL", "mock-model")
+        api_key = _provider_env("AI_PROVIDER_KEY", "[REDACTED]")
 
         _provider_instance = ProviderFactory.create_provider(
             provider_type,
