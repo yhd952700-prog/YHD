@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import {
-  ACTIVITY,
   AI_TASKS,
   BIZ_REALITY,
   KEY_METRICS,
@@ -40,7 +39,13 @@ export function TodayBrief() {
 
 /** ============ 核心业务数据 ============ */
 type RangeKey = 'd7' | 'd30' | 'd90'
-export function KeyMetrics() {
+export function KeyMetrics({
+  auditTotal,
+  sessions,
+}: {
+  auditTotal?: number
+  sessions?: number
+}) {
   const [range, setRange] = useState<RangeKey>('d30')
   return (
     <div className="panel metrics-panel">
@@ -82,6 +87,11 @@ export function KeyMetrics() {
             </div>
           </div>
         ))}
+      {/* 真实遥测脚注：与上方业务模型数据严格区分（后端真实接口） */}
+      <div className="metrics-live">
+        系统真实遥测 · 审计事件 <b>{(auditTotal ?? 0).toLocaleString()}</b> 条 · 活跃会话{' '}
+        <b>{sessions ?? 0}</b>
+      </div>
       </div>
     </div>
   )
@@ -165,9 +175,10 @@ export function MarketFocus() {
 }
 
 /** ============ AI 任务中心 ============ */
-export function TaskCenter() {
+export function TaskCenter({ sessions }: { sessions?: { id: string; turns: number }[] }) {
   const [filter, setFilter] = useState<'all' | 'running' | 'done' | 'archived'>('all')
   const filtered: TaskItem[] = AI_TASKS.filter((t) => filter === 'all' || t.state === filter)
+  const real = sessions ?? []
   return (
     <div className="panel tasks-panel">
       <div className="panel-title">
@@ -192,6 +203,19 @@ export function TaskCenter() {
           ))}
         </div>
       </div>
+      {/* 真实会话任务（后端 /v1/dashboard/summary 的真实会话 + 轮次） */}
+      <ul className="task-list task-list-live">
+        {real.length === 0 ? (
+          <li className="act-empty">暂无实时会话任务</li>
+        ) : (
+          real.map((s) => (
+            <li key={s.id}>
+              <span className="task-text">会话 {s.id} · 已进行 {s.turns} 轮</span>
+              <span className="task-prio p-mid">进行中</span>
+            </li>
+          ))
+        )}
+      </ul>
       <ul className="task-list">
         {filtered.map((t, i) => (
           <li key={i}>
@@ -207,8 +231,33 @@ export function TaskCenter() {
   )
 }
 
-/** ============ 最近动态 ============ */
-export function Activity() {
+/** ============ 最近动态（真实审计事件） ============ */
+export interface ActivityEvent {
+  type: string
+  outcome: string
+  principal: string
+  timestamp: number
+}
+function fmtClock(ts: number): string {
+  const d = new Date(ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+/** 事件类型 → 中文标签（未知类型原样显示，不编造含义）。 */
+const ACT_LABEL: Record<string, string> = {
+  access_allowed: '授权通过',
+  access_denied: '授权拒绝',
+  policy_eval: '策略评估',
+  security_violation: '安全违规',
+  model_invoke: '模型调用',
+  plugin_execute: '插件执行',
+  system_action: '系统动作',
+  data_access: '数据访问',
+  config_change: '配置变更',
+  error: '错误',
+}
+export function Activity({ items }: { items?: ActivityEvent[] }) {
+  const list = items ?? []
   return (
     <div className="panel activity-panel">
       <div className="panel-title">
@@ -217,13 +266,19 @@ export function Activity() {
         <button className="activity-more">查看全部</button>
       </div>
       <ul className="activity-list">
-        {ACTIVITY.map((a, i) => (
-          <li key={i}>
-            <span className="act-time">{a.time}</span>
-            <span className="act-text">{a.text}</span>
-            <span className="act-tag">{a.tag}</span>
-          </li>
-        ))}
+        {list.length === 0 ? (
+          <li className="act-empty">暂无审计事件</li>
+        ) : (
+          list.map((a, i) => (
+            <li key={i}>
+              <span className="act-time">{fmtClock(a.timestamp)}</span>
+              <span className="act-text">
+                {ACT_LABEL[a.type] ?? a.type} · {a.principal}
+              </span>
+              <span className="act-tag">{a.outcome}</span>
+            </li>
+          ))
+        )}
       </ul>
     </div>
   )
@@ -234,6 +289,8 @@ interface HealthProps {
   ready: boolean | null
   liveSessions: number
   uptime: number
+  provider?: { type: string; model: string }
+  auditTotal?: number
 }
 function fmtDuration(total: number): string {
   if (total < 0) return '—'
@@ -242,7 +299,13 @@ function fmtDuration(total: number): string {
   const m = Math.floor((total % 3600) / 60)
   return d > 0 ? `${d}天 ${h}时` : h > 0 ? `${h}时 ${m}分` : `${m}分`
 }
-export function SystemHealth({ ready, uptime }: HealthProps) {
+export function SystemHealth({
+  ready,
+  uptime,
+  provider,
+  auditTotal,
+  liveSessions,
+}: HealthProps) {
   return (
     <div className="panel health-panel">
       <div className="panel-title">
@@ -255,7 +318,9 @@ export function SystemHealth({ ready, uptime }: HealthProps) {
       <ul className="health-list">
         {SYSTEM_HEALTH.map((h) => {
           let value = h.state === 'ok' ? '正常' : '受控'
-          if (h.liveKey === 'provider') value = ready ? '在线' : '离线'
+          if (h.liveKey === 'provider') {
+            value = ready ? (provider?.model ? provider.model : '在线') : '离线'
+          }
           if (h.liveKey === 'ready') value = ready ? '在线' : '离线'
           return (
             <li key={h.label}>
@@ -265,10 +330,25 @@ export function SystemHealth({ ready, uptime }: HealthProps) {
             </li>
           )
         })}
+        {/* 真实遥测行：审计事件总数 / 模型 / 活跃会话 */}
+        <li>
+          <span className="health-dot" />
+          <span className="health-name">审计事件</span>
+          <span className="health-val">{(auditTotal ?? 0).toLocaleString()} 条</span>
+        </li>
+        <li>
+          <span className="health-dot" />
+          <span className="health-name">模型</span>
+          <span className="health-val">{provider?.type ?? '—'}</span>
+        </li>
       </ul>
       <div className="health-live">
         <span>运行时长</span>
         <b>{fmtDuration(uptime)}</b>
+      </div>
+      <div className="health-live">
+        <span>活跃会话</span>
+        <b>{liveSessions}</b>
       </div>
     </div>
   )

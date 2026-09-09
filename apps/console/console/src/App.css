@@ -1232,3 +1232,30 @@ body {
   .jarvis-panel { flex-direction: column; }
   .jarvis-left { flex-direction: row; gap: 10px; }
 }
+
+/* ===== 真实遥测接入相关 ===== */
+.act-empty {
+  color: var(--text-dim, #7f93b5);
+  font-size: 12px;
+  padding: 6px 2px;
+  list-style: none;
+}
+
+.task-list-live {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(120, 180, 255, 0.25);
+}
+
+.metrics-live {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(120, 180, 255, 0.25);
+  font-size: 11px;
+  color: var(--text-dim, #7f93b5);
+}
+
+.metrics-live b {
+  color: #7fe3ff;
+  font-weight: 600;
+}

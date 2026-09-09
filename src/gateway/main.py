@@ -176,6 +176,10 @@ def get_app() -> FastAPI:
     from .chat import router as chat_router
     app.include_router(chat_router)
 
+    # 驾驶舱遥测端点（console CEO Command Center 的真实数据源）。
+    from .dashboard import router as dashboard_router
+    app.include_router(dashboard_router)
+
     return app
 
 
