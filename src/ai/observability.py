@@ -94,6 +94,10 @@ def _ensure_configured() -> None:
             "%(asctime)s %(levelname)s %(name)s [tid=%(trace_id)s cid=%(correlation_id)s] %(message)s"
         )
     )
+    # 关键：把 _TraceFilter 挂到 handler 上（而不是仅 logger）—— 任何 propagate
+    # 路径走过的 record 都会被注入 trace_id/correlation_id，避免根 Formatter
+    # 在非 liuhao.* logger（如 src.kernels.*）冒泡时抛 Formatting field not found。
+    handler.addFilter(_TraceFilter())
     root = logging.getLogger(_ROOT_NAME)
     if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
         root.addHandler(handler)
