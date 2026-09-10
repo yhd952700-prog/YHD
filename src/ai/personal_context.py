@@ -363,6 +363,23 @@ class PersonalContextManager:
             behavior_patterns=self._list_items(principal_id, "behavior"),
         )
 
+    def has_profile(self, principal_id: str) -> bool:
+        """该主体是否已存在任何画像内容。
+
+        供调用方（如对话链路注入 system prompt）判断「要不要加画像段」——
+        ``summarize()`` 对空画像也会返回兜底说明串，不能直接当判据。
+        """
+        profile = self.get_profile(principal_id)
+        return bool(
+            profile.display_name
+            or profile.facts
+            or profile.preferences
+            or profile.interests
+            or profile.expertise
+            or profile.relationships
+            or profile.behavior_patterns
+        )
+
     def summarize(self, principal_id: str, max_items: int = 8) -> str:
         """生成画像摘要（Personalization —— 可注入 system prompt）。
 

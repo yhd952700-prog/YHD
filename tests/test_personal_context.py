@@ -116,6 +116,16 @@ class TestProfileAggregation:
         summary = manager.summarize("u1")
         assert "暂无个人画像" in summary
 
+    def test_has_profile_false_when_empty(self, manager):
+        """空画像 has_profile=False —— 供对话链路判断要不要注入画像段。"""
+        assert manager.has_profile("u1") is False
+
+    def test_has_profile_true_after_any_write(self, manager):
+        manager.record_fact("u1", "city", "Shanghai")
+        assert manager.has_profile("u1") is True
+        # 另一主体仍为空（隔离）
+        assert manager.has_profile("u2") is False
+
     def test_suggest_context_matches(self, manager):
         manager.set_preference("u1", "language", "Chinese")
         manager.record_fact("u1", "city", "Shanghai")

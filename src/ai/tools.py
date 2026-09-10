@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..kernels.audit import audit_query
 from ..kernels.memory import MemoryScope, filter_memory
+from .personal_context import get_personal_context
 from .tool_registry import Tool
 
 # 宽松解析用：小模型可能输出近似但非法的 JSON（如 ``"args: {...}"`` 缺引号），
@@ -136,6 +137,95 @@ def make_tools(
                 risk="LOW",
             )
         )
+
+    # ============ KAREN 个人画像工具（让 LLM 在对话中主动记住用户偏好） ============
+    pcm = get_personal_context()
+
+    def personal_set_preference(key: str = "", value: str = "", confidence: float = 0.8, **kwargs: Any) -> str:
+        """记录用户偏好（如「回复用简体中文」「喜欢简短回答」）。"""
+        k = key or kwargs.get("name") or ""
+        v = value or kwargs.get("v") or ""
+        if not k or not v:
+            return "请提供 key 与 value 参数。"
+        try:
+            conf = float(confidence)
+        except (TypeError, ValueError):
+            conf = 0.8
+        p = pcm.set_preference(principal, k, v, confidence=conf)
+        return _serialize({"status": "ok", "key": p.key, "value": p.value, "confidence": p.confidence})
+
+    def personal_add_fact(key: str = "", value: str = "", **kwargs: Any) -> str:
+        """记录用户背景事实（如「公司=鎏灏科技」「所在城市=深圳」）。"""
+        k = key or kwargs.get("name") or ""
+        v = value or kwargs.get("v") or ""
+        if not k or not v:
+            return "请提供 key 与 value 参数。"
+        pcm.record_fact(principal, k, v)
+        return _serialize({"status": "ok", "key": k, "value": v})
+
+    def personal_set_display_name(display_name: str = "", **kwargs: Any) -> str:
+        """设置用户称呼（之后回复会按此称呼）。"""
+        n = display_name or kwargs.get("name") or ""
+        if not n:
+            return "请提供 display_name 参数。"
+        pcm.set_display_name(principal, n)
+        return _serialize({"status": "ok", "display_name": n})
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.personal.set_preference",
+            name="personal_set_preference",
+            version="1.0.0",
+            description="记录用户偏好（key/value/confidence）",
+            capability="personal.write",
+            schema={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                    "confidence": {"type": "number", "default": 0.8},
+                },
+                "required": ["key", "value"],
+            },
+            fn=personal_set_preference,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.personal.add_fact",
+            name="personal_add_fact",
+            version="1.0.0",
+            description="记录用户背景事实（key/value）",
+            capability="personal.write",
+            schema={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                "required": ["key", "value"],
+            },
+            fn=personal_add_fact,
+            risk="LOW",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.personal.set_display_name",
+            name="personal_set_display_name",
+            version="1.0.0",
+            description="设置用户称呼",
+            capability="personal.write",
+            schema={
+                "type": "object",
+                "properties": {"display_name": {"type": "string"}},
+                "required": ["display_name"],
+            },
+            fn=personal_set_display_name,
+            risk="LOW",
+        )
+    )
 
     return tools
 

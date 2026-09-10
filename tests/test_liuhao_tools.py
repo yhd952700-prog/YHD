@@ -31,14 +31,22 @@ def make_assistant(name: str = "tool-test", provider=None) -> LiuHaoAssistant:
 # ---------------------------------------------------------------------- #
 # 工具集构建
 # ---------------------------------------------------------------------- #
-def test_make_tools_has_three_builtins():
+def test_make_tools_has_six_builtins():
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
-    assert {t.name for t in tools} == {"search_memory", "query_audit", "system_status"}
+    expected = {
+        "search_memory",
+        "query_audit",
+        "system_status",
+        "personal_set_preference",
+        "personal_add_fact",
+        "personal_set_display_name",
+    }
+    assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    assert len(a._tool_list) == 3
+    assert len(a._tool_list) == 6
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 

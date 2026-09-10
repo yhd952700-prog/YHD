@@ -317,8 +317,25 @@ class LiuHaoAssistant:
         )
 
     def _build_messages(self, message: str) -> List[Dict[str, str]]:
-        """拼出给 provider 的 messages：system + 截断历史 + 当前输入。"""
-        messages: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+        """拼出给 provider 的 messages：system + 截断历史 + 当前输入。
+
+        system 段由三部分组成（按优先级叠加）：
+        1. ``DEFAULT_SYSTEM_PROMPT``（人格 + 能力边界）
+        2. 工具描述段（``build_tool_prompt``）
+        3. KAREN 用户画像摘要（如果存在）—— 让 LLM 按真实偏好/背景个性化回复
+        """
+        from .personal_context import get_personal_context
+
+        system_content = self.system_prompt
+        pcm = get_personal_context()
+        # 仅在真的有画像时注入：summarize() 对空画像也返回兜底说明串，
+        # 直接拼接会给 system prompt 塞入无意义噪声。
+        if pcm.has_profile(self.principal):
+            summary = pcm.summarize(self.principal)
+            system_content += (
+                "\n\n## 用户画像（来自 KAREN Personal Intelligence）\n" + summary
+            )
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
         recent = self.history[-MAX_HISTORY_MESSAGES:]
         messages.extend(recent)
         messages.append({"role": "user", "content": message})
