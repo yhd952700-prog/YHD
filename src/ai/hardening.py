@@ -21,6 +21,7 @@ from .economy import BudgetEngine
 from .world_interface import WorldInterface, FilesystemAdapter, WorldRequest
 from .tool_registry import ToolRegistry, Tool
 from .network_gateway import AgentNetworkGateway
+from .observability import observe
 
 
 @dataclass
@@ -40,6 +41,7 @@ class HardeningSuite:
     observes invariants and reports.
     """
 
+    @observe("hardening.run_checks")
     def run_checks(self) -> List[CheckResult]:
         """Run every check and return the ordered list of results."""
         checks: List[Callable[[], CheckResult]] = [
@@ -53,6 +55,7 @@ class HardeningSuite:
         ]
         return [check() for check in checks]
 
+    @observe("hardening.summary")
     def summary(self) -> Dict[str, Any]:
         """Run all checks and return a pass/fail summary."""
         results = self.run_checks()
@@ -178,6 +181,7 @@ class HardeningSuite:
                            "unregistered external agent denied at authenticate")
 
 
+@observe("hardening.run_hardening_suite")
 def run_hardening_suite() -> Dict[str, Any]:
     """Convenience entry point: run the whole battery and return the summary."""
     return HardeningSuite().summary()
