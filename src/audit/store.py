@@ -15,6 +15,7 @@ import uuid
 from typing import Dict, List, Optional, Any
 
 from .models import AuditEvent
+from ..ai.observability import observe
 
 
 class AuditStore:
@@ -90,6 +91,7 @@ class AuditStore:
 
     # ==================== Event Operations ====================
 
+    @observe("audit.store.emit")
     def emit(self, event: AuditEvent) -> str:
         """
         Emit (store) an audit event.
@@ -204,6 +206,7 @@ class AuditStore:
 
     # ==================== Integrity ====================
 
+    @observe("audit.store.verify_integrity")
     def verify_integrity(self) -> bool:
         """
         Verify the hash chain integrity of stored events.
@@ -263,6 +266,7 @@ class AuditStore:
 _default_store: Optional[AuditStore] = None
 
 
+@observe("audit.store.get_audit_store")
 def get_audit_store() -> AuditStore:
     """Get the default audit store instance."""
     global _default_store
