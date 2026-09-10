@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .observability import observe
+
 DEFAULT_DB_PATH = os.environ.get(
     "PERSONAL_CONTEXT_DB_PATH",
     "D:/LiuHao-AI-OS/personal_context.db",
@@ -185,6 +187,7 @@ class PersonalContextManager:
     # ------------------------------------------------------------------ #
     # Preference Awareness
     # ------------------------------------------------------------------ #
+    @observe("personal.set_preference")
     def set_preference(
         self,
         principal_id: str,
@@ -350,6 +353,7 @@ class PersonalContextManager:
     # ------------------------------------------------------------------ #
     # 聚合：Profile / Summarize / Suggest
     # ------------------------------------------------------------------ #
+    @observe("personal.get_profile")
     def get_profile(self, principal_id: str) -> UserProfile:
         """返回该主体的完整画像快照。"""
         return UserProfile(
@@ -513,6 +517,7 @@ class PersonalContextManager:
 _personal_context: Optional[PersonalContextManager] = None
 
 
+@observe("personal.get_personal_context")
 def get_personal_context() -> PersonalContextManager:
     """获取或创建全局个人画像管理器实例。"""
     global _personal_context
