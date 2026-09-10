@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from .employee import Agent, AgentStatus
 from .providers import get_provider
 from ..kernels.identity import get_identity_manager
+from .observability import observe
 
 
 @dataclass
@@ -60,6 +61,7 @@ class AgentRuntimeService:
 
     agent: Agent
 
+    @observe("agent.start")
     def start(self) -> bool:
         """start(): move an idle/paused agent into RUNNING."""
         if self.agent.status in (AgentStatus.IDLE, AgentStatus.PAUSED):
@@ -84,6 +86,7 @@ class AgentRuntimeService:
         self.agent.current_task = None
         return self.agent.stop()
 
+    @observe("agent.execute")
     def execute(self, task: str, **kwargs) -> Dict[str, Any]:
         """execute(): run a task through the agent's provider."""
         return self.agent.execute(task, **kwargs)
@@ -227,6 +230,7 @@ class AgentFactory:
     memory, no policy-less action path.
     """
 
+    @observe("agent.create")
     def create(self, spec: AgentSpec) -> Dict[str, Any]:
         """Instantiate an agent, its identity, memory, policy and runtime."""
         manager = get_identity_manager()
