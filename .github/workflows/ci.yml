@@ -28,11 +28,15 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          python -m pytest tests/ -v --tb=short 2>&1 || echo "No tests directory or tests found"
+          if [ -d tests/ ]; then
+            python -m pytest tests/ -v --tb=short
+          else
+            echo "No tests directory found - skipping"
+          fi
 
       - name: Verify Code Quality
         run: |
-          python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503 2>&1 || echo "Flake8 check done"
+          python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503
 
       - name: Build Application
         run: |
@@ -158,7 +162,12 @@ jobs:
           pip install -e .
 
       - name: Run Integration Tests
-        run: python -m pytest tests/integration/ -v --tb=short --no-header 2>&1 || echo "No integration tests directory"
+        run: |
+          if [ -d tests/integration/ ]; then
+            python -m pytest tests/integration/ -v --tb=short --no-header
+          else
+            echo "No integration tests directory found - skipping"
+          fi
 
   # Smoke Test
   smoke:
