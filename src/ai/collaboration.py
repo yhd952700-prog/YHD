@@ -29,6 +29,7 @@ import time
 
 from .employee import Agent, AgentStatus
 from .providers import BaseProvider, get_provider
+from .observability import observe, get_logger
 
 
 class Role(Enum):
@@ -160,6 +161,7 @@ class MultiAgentTeam:
         self.bus = MessageBus()
         self.members: Dict[str, Collaborator] = {}
         self._by_role: Dict[Role, List[str]] = {}
+        self._log = get_logger("collaboration")
 
     def hire(self, role: Role, name: Optional[str] = None,
              agent_id: Optional[str] = None,
@@ -188,6 +190,7 @@ class MultiAgentTeam:
                 return agent_id
         return None
 
+    @observe("MultiAgentTeam.delegate")
     def delegate(self, manager_id: str, role: Role, task: str, **kwargs) -> Dict[str, Any]:
         """Manager delegates a task to the first available ``role`` agent.
 
@@ -219,6 +222,7 @@ class MultiAgentTeam:
                     {"task": task, "result": result}, in_reply_to=msg_id)
         return result
 
+    @observe("MultiAgentTeam.pipeline")
     def pipeline(self, stages: List[Role], seed: str, **kwargs) -> Dict[str, Any]:
         """Run a sequential pipeline: each stage's output feeds the next.
 
@@ -255,6 +259,7 @@ class MultiAgentTeam:
 
         return {"status": "completed", "stages": stage_results, "final": current}
 
+    @observe("MultiAgentTeam.broadcast")
     def broadcast(self, sender_id: str, kind: MessageKind, payload: Dict[str, Any]) -> str:
         """Broadcast a message to every member from ``sender_id``."""
         sender = self.members.get(sender_id)

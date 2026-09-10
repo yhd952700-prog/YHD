@@ -27,6 +27,7 @@ from ..kernels.execution import (
 )
 from ..kernels.context import create_context_kernel, ContextInput, ContextInputType
 from .tool_registry import ToolRegistry, ToolRouter
+from .observability import observe, get_logger
 
 
 class LCore:
@@ -48,6 +49,7 @@ class LCore:
         # Optional plan authorizer (policy gate). None = human-sovereignty
         # default allow (L-Core is the human's primary interface).
         self.authorize = authorize
+        self._log = get_logger("lcore")
 
     def register_tool(self, tool) -> str:
         """Register a tool and walk it to ACTIVE (validate -> approve -> activate)."""
@@ -57,6 +59,7 @@ class LCore:
         self.tools.activate(tool_id)
         return tool_id
 
+    @observe("LCore.handle_intent")
     def handle_intent(
         self,
         intent: str,

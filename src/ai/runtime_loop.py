@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from .agent_factory import AgentMemory, AgentPolicy, AgentRuntimeService
 from .collaboration import AgentMessage, MessageBus, MessageKind
 from .employee import AgentStatus
+from .observability import observe, get_logger
 
 
 @dataclass
@@ -55,6 +56,7 @@ class RuntimeLoop:
     def __post_init__(self) -> None:
         # 预建邮箱，确保定向/broadcast 消息都能到达。
         self.bus.register(self.runtime.agent.id)
+        self._log = get_logger("runtime_loop")
 
     @property
     def agent_id(self) -> str:
@@ -81,6 +83,7 @@ class RuntimeLoop:
         return msg.id
 
     # --- 单步 -----------------------------------------------------------------
+    @observe("RuntimeLoop.step")
     def step(self) -> Optional[Dict[str, Any]]:
         """处理一条消息（一轮循环）。无消息返回 ``None``。
 
@@ -132,6 +135,7 @@ class RuntimeLoop:
         return handled
 
     # --- 循环 -----------------------------------------------------------------
+    @observe("RuntimeLoop.run")
     def run(
         self,
         max_steps: Optional[int] = None,

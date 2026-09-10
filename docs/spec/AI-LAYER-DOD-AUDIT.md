@@ -70,21 +70,23 @@
 ### 3.4 真实边界（不夸大）
 能力层**不独立具备** Observable 与 Audited 的层内 instrumentation。若生产环境要求**能力层粒度**的链路追踪（trace）与审计（而非仅 kernel action 粒度），则需补一层 orchestration-level 日志/审计埋点。这属于**可选增强**，不阻塞"端到端 IMPLEMENTED"结论。
 
+> **2026-09-09 更新**：核心编排层已补上能力层粒度可观测性——新增 `src/ai/observability.py`（`get_logger` + `TraceContext` 基于 contextvars 的 trace/correlation 透传 + `@observe` 装饰器记录 ENTER/EXIT/耗时/异常 + 进程内环形缓冲 `recent_traces`），并接入 `liuhao.chat`/`chat_stream`、`lcore.handle_intent`、`collaboration.delegate/pipeline/broadcast`、`runtime_loop.step/run`。剩余 16 个能力层模块仍以 kernel 边界下沉为主，属可选扩展。详见 `AI-LAYER-OBSERVABILITY.md`（实施说明）。
+
 ---
 
 ## 4. 结论
 
 - **能力层七维在端到端意义上全部满足**：Implemented/Tested/Documented 层内达标；Observable/Permissioned/Policy/Audited 由内核边界（14 kernel 七维收口）传递性覆盖。
 - **GAP-MIGRATION-MATRIX 表 3 的 `IMPLEMENTED` 结论维持有效**，其含义明确为"端到端（含下沉内核）七维达标"，而非"每个能力层独立七维达标"。
-- **唯一真实缺口 = 能力层粒度的可观测性（Observability）**：建议作为后续可选治理项（见第 5 节）。
+- **唯一真实缺口（原）= 能力层粒度的可观测性（Observability）**：**已于 2026-09-09 在核心编排层闭合**（新增 `src/ai/observability.py` 并接入 liuhao/lcore/collaboration/runtime_loop，见 §3.4）。剩余 16 个能力层模块仍以 kernel 边界下沉为主，属可选扩展（见 §5）。
 
 ---
 
 ## 5. 后续可选治理（非阻塞）
 
-1. **能力层可观测性增强（推荐若上生产）**：在 `src/ai/` 编排入口（如 `lcore.handle_intent`、`collaboration.delegate`、`runtime_loop` 控制流）加结构化日志 / OpenTelemetry span，使追踪粒度细化到能力层。
-2. **能力层审计埋点（按需）**：若审计需覆盖"哪个能力层触发了哪个 kernel action"的因果链，可在编排层补 audit 上下文透传（现仅 kernel action 粒度）。
-3. 上述两项均为**增强**；当前架构已满足 DoD 七维的端到端语义，不强制。
+1. ~~**能力层可观测性增强（推荐若上生产）**：在 `src/ai/` 编排入口加结构化日志 / OpenTelemetry span。~~ **✅ 已于 2026-09-09 实现**（见 §3.4）：核心编排层已接入 `src/ai/observability.py`，全量测试 1141 passed 零回归。
+2. **能力层审计埋点（按需）**：若审计需覆盖"哪个能力层触发了哪个 kernel action"的因果链，可在编排层补 audit 上下文透传（现仅 kernel action 粒度，已足够）。
+3. 其余 16 个能力层模块的层内日志为可选扩展；当前架构已满足 DoD 七维的端到端语义，不强制。
 
 ---
 
@@ -92,4 +94,4 @@
 
 - 关键字扫描脚本（本地过程文件，非仓库资产）对 20 个 `src/ai/*.py` 模块逐维计数。
 - 下沉验证：`grep -E "from src.kernels|kernel.execute|policy|audit" src/ai/lcore.py` 等确认能力层调用内核。
-- 全量测试现状见 `GAP-MIGRATION-MATRIX.md` 表 3 小结（`1133 passed / 1 skipped / 0 failed`）。
+- 全量测试现状见 `GAP-MIGRATION-MATRIX.md` 表 3 小结（`1141 passed / 1 skipped / 0 failed`，含本增强新增 8 例 `test_observability.py`）。

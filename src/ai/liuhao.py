@@ -34,6 +34,8 @@ from ..kernels.policy import (
     PolicyScope,
     PolicyOperator,
 )
+from .observability import TraceContext, observe, get_logger
+import logging
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是「鎏灏」（LIUHAO X），一个由十源 DNA（ULTRON / VISION / ADA / EDITH / "
@@ -74,6 +76,8 @@ class LiuHaoAssistant:
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.provider = provider or get_provider()
         self.capabilities = list(capabilities or ["chat"])
+        # 能力层可观测性：结构化日志 + trace/correlation 透传（第 12 轮审计增强）。
+        self._log = get_logger("liuhao")
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
         manager = get_identity_manager()
@@ -146,6 +150,7 @@ class LiuHaoAssistant:
     # ------------------------------------------------------------------ #
     # 主入口
     # ------------------------------------------------------------------ #
+    @observe("LiuHaoAssistant.chat")
     def chat(self, message: str) -> Dict[str, Any]:
         """处理一条用户消息，返回结构化结果（回复 + 状态 + 审计）。
 
@@ -153,6 +158,8 @@ class LiuHaoAssistant:
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
+        # 把本轮回话 id 透传到能力层日志（供追踪"哪一轮触发了哪些 kernel action"）。
+        TraceContext.set(correlation_id=correlation_id)
 
         # 1. 授权（policy kernel，default-deny）。
         decision = self.policy.authorize("chat", risk_level="LOW")
@@ -204,6 +211,8 @@ class LiuHaoAssistant:
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
+        TraceContext.set(correlation_id=correlation_id)
+        self._log.debug("ENTER LiuHaoAssistant.chat_stream turn=%s", self.turn)
 
         # 1. 授权（policy kernel，default-deny）。
         decision = self.policy.authorize("chat", risk_level="LOW")
@@ -263,6 +272,7 @@ class LiuHaoAssistant:
 
         # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
         self._commit_turn(message, final_reply, correlation_id, status)
+        self._log.info("EXIT chat_stream status=%s", status)
 
     # ------------------------------------------------------------------ #
     # 内部
