@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from src.plugins.sandbox.backends.base import ExecutionResult, ResourceLimits
 from src.plugins.sandbox.backends.subprocess_backend import SubprocessBackend
+from .observability import observe
 
 # Default sandbox limits for ad-hoc python execution.
 _DEFAULT_TIMEOUT = 30
@@ -40,6 +41,7 @@ class ComputeEngine:
     def __init__(self, backend: Optional[SubprocessBackend] = None):
         self._backend: SubprocessBackend = backend or SubprocessBackend()
 
+    @observe("ada.compute_engine.run_python")
     def run_python(
         self,
         code: str,
@@ -70,6 +72,7 @@ class ComputeEngine:
             timeout=effective_timeout,
         )
 
+    @observe("ada.compute_engine.analyze")
     def analyze(self, data: List[float]) -> Dict[str, float]:
         """Real descriptive statistics (pure Python, no third-party needed).
 
@@ -139,6 +142,7 @@ class ComputeEngine:
                 outliers.append(i)
         return outliers
 
+    @observe("ada.compute_engine.run_sql")
     def run_sql(self, query: str, *args: Any, **kwargs: Any) -> ExecutionResult:
         """SQL execution - NOT implemented. Honest failure, no fabrication."""
         return ExecutionResult(
