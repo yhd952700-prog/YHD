@@ -51,6 +51,7 @@ from ..kernels.trust import (
 from ..kernels.policy import (
     get_policy_engine,
 )
+from .observability import observe
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +207,7 @@ class AgentRegistry:
         self._trust = trust_manager or get_trust_manager()
         self._lock = threading.RLock()
 
+    @observe("agent_registry.register")
     def register(
         self,
         principal: str,
@@ -297,10 +299,12 @@ class AgentNetworkGateway:
         self._audit: List[_AuditStep] = []
         self._lock = threading.RLock()
 
+    @observe("agent_network_gateway.register_handler")
     def register_handler(self, destination: str, handler: Callable[[Message], None]) -> None:
         """Register the target's message handler on the network bus."""
         self._bus.register_internal_handler(destination, handler)
 
+    @observe("agent_network_gateway.delegate")
     def delegate(
         self,
         requesting_principal: str,
