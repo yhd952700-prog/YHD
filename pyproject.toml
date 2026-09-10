@@ -38,6 +38,11 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
+# arize_phoenix_client 注册的 pytest11 插件（入口名 phoenix）会 import
+# phoenix.trace.dsl，在 pydantic>=2.13 下抛 ValueError（mutable default），
+# 导致 pytest 在收集用例之前就崩溃 —— 表现为「零用例执行」的假失败。
+# 本项目不依赖该插件的断言能力，统一禁用；插件未安装时 -p no: 静默生效。
+addopts = "-p no:phoenix"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
