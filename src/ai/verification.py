@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 
 from ..kernels.execution import ActionResult, Task, Verifier
 from ..kernels.memory import MemoryKernel, MemoryScope, MemoryTier, get_memory_kernel
+from .observability import observe
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ class VerificationEngine:
             return not bool(result["failed"])
         return None
 
+    @observe("verification.verify")
     def verify(self, result: Dict[str, Any], criteria: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Verify ``result`` against optional ``criteria``.
 
@@ -206,6 +208,7 @@ class ExperienceEngine:
         # the actual MemoryKernel implementation (never a fake dict).
         self._memory = memory_kernel or get_memory_kernel()
 
+    @observe("experience.extract")
     def extract(
         self, verdict_result: Dict[str, Any], context: Dict[str, Any]
     ) -> ExperienceEntry:
@@ -224,6 +227,7 @@ class ExperienceEngine:
             owner=context.get("owner", "system"),
         )
 
+    @observe("experience.store")
     def store(self, entry: ExperienceEntry, owner: Optional[str] = None, tags: Optional[List[str]] = None) -> bool:
         """Persist an experience to the memory kernel.
 
