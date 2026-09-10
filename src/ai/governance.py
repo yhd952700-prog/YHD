@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.kernels.security import get_security_engine
 from src.kernels.trust import get_trust_manager, TrustScope
+from .observability import observe
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +175,7 @@ class ThreatDetector:
         ],
     }
 
+    @observe("threat_detector.scan")
     def scan(self, request: dict) -> List[ThreatFinding]:
         """Scan *request* and return all detected threats (transparent rules)."""
         findings: List[ThreatFinding] = []
@@ -283,6 +285,7 @@ class SecurityChain:
         self._detector = threat_detector or ThreatDetector()
         self.audit: List[Dict[str, Any]] = []
 
+    @observe("security_chain.evaluate")
     def evaluate(self, request: dict, required_permission: str) -> Dict[str, Any]:
         principal_id = request.get("principal_id") or request.get("principal", "anonymous")
         scope = request.get("scope", "L1")
@@ -357,6 +360,7 @@ class EmergencyControl:
         self._activated_at: Optional[datetime] = None
         self._lock = threading.RLock()
 
+    @observe("emergency_control.activate")
     def activate(self, reason: str = "") -> Dict[str, Any]:
         with self._lock:
             self._active = True
