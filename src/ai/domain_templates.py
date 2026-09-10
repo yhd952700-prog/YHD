@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .agent_factory import AgentFactory, AgentSpec
+from .observability import observe
 
 
 @dataclass
@@ -77,6 +78,7 @@ class DomainTemplateRegistry:
     def __init__(self) -> None:
         self._templates: Dict[str, DomainTemplate] = {}
 
+    @observe("domain_template.register")
     def register(self, template: DomainTemplate) -> None:
         """注册一个模板。重复 ``domain`` 视为错误（拒绝覆盖，避免静默篡改）。"""
         if template.domain in self._templates:
@@ -141,6 +143,7 @@ class SpecializedAgentFactory:
             system_prompt=template.system_prompt,
         )
 
+    @observe("specialized_agent_factory.create_agent")
     def create_agent(
         self,
         domain: str,
@@ -344,6 +347,7 @@ def build_builtin_registry() -> DomainTemplateRegistry:
 _domain_registry: Optional[DomainTemplateRegistry] = None
 
 
+@observe("domain_template.get_domain_registry")
 def get_domain_registry() -> DomainTemplateRegistry:
     """获取或创建全局领域模板注册表（内置 13 个模板）。"""
     global _domain_registry
