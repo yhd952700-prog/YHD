@@ -26,6 +26,8 @@ from __future__ import annotations
 import uuid
 from typing import Dict, Optional, Union
 
+from .observability import observe
+
 # Pricing entry: a float means "cost per 1K tokens (input+output)"; a dict
 # {"input": x, "output": y} gives separate input/output prices per 1K tokens.
 PriceEntry = Union[float, Dict[str, float]]
@@ -48,6 +50,7 @@ class BudgetEngine:
         self._blocked = False
 
     # --- reservation lifecycle ------------------------------------------------
+    @observe("budget.reserve")
     def reserve(self, amount: float) -> Optional[str]:
         """Hold `amount` of budget. Returns a reservation id, or None if refused.
 
@@ -146,6 +149,7 @@ class BillingEngine:
         cost, _ = self._price(model, tokens_in, tokens_out)
         return cost
 
+    @observe("billing.record_usage")
     def record_usage(self, model: str, tokens_in: int, tokens_out: int) -> Dict[str, Union[float, str, bool]]:
         """Record one usage event, aggregate it, and return its cost breakdown."""
         cost, unknown = self._price(model, tokens_in, tokens_out)
@@ -192,6 +196,7 @@ class EconomyEngine:
         self._budget = budget
         self._billing = billing
 
+    @observe("economy.execute")
     def execute(self, model: str, tokens_in: int, tokens_out: int) -> Dict[str, object]:
         """Run one model call through budget + billing.
 
