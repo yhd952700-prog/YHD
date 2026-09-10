@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List
 
+from .observability import observe
+
 # Levels ordered from least to most valuable. "trivial" is the anti-cheat red
 # line (S116): work that is trivial is NOT allowed to count as verified output.
 TRIVIAL_LEVEL = "trivial"
@@ -81,6 +83,7 @@ class L10KRegistry:
         self._audit: List[dict] = []
 
     # --- registration -------------------------------------------------------
+    @observe("l10k.register_task")
     def register_task(
         self,
         name: str,
@@ -131,6 +134,7 @@ class L10KRegistry:
         return task_id
 
     # --- recording verified output (anti-cheat enforced here) ---------------
+    @observe("l10k.record_verified_output")
     def record_verified_output(self, task_id: str, verified_value: float = 1.0) -> bool:
         """Record verified output for a task. Returns True if it counted.
 
@@ -217,6 +221,7 @@ class L10KRegistry:
 
     # --- VHL computation ----------------------------------------------------
     @staticmethod
+    @observe("l10k.compute_vhl")
     def compute_vhl(verified_units: float, human_minutes: float) -> float:
         """VHL = verified_units / human_minutes.
 
