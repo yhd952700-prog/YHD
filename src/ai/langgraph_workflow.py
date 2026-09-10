@@ -37,6 +37,7 @@ except ImportError:
 
 # Observability imports
 from ..knowledge.memory import create_memory_manager
+from .observability import observe
 
 
 class GoalStatus(Enum):
@@ -174,6 +175,7 @@ class PlannerNode(AgentNode):
     def __init__(self, llm: Optional[Any] = None):
         super().__init__(AgentRole.PLANNER, llm)
 
+    @observe("planner.invoke")
     def invoke(self, state: WorkflowState) -> WorkflowState:
         goal = state.get("goal")
         if not goal:
@@ -239,6 +241,7 @@ class ExecutorNode(AgentNode):
         super().__init__(AgentRole.EXECUTOR, llm)
         self.tools = tools or []
 
+    @observe("executor.invoke")
     def invoke(self, state: WorkflowState) -> WorkflowState:
         goal = state.get("goal")
         current_task_id = state.get("current_task_id")
@@ -312,6 +315,7 @@ class CriticNode(AgentNode):
     def __init__(self, llm: Optional[Any] = None):
         super().__init__(AgentRole.CRITIC, llm)
 
+    @observe("critic.invoke")
     def invoke(self, state: WorkflowState) -> WorkflowState:
         goal = state.get("goal")
         current_task_id = state.get("current_task_id")
