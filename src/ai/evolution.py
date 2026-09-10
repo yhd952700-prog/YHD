@@ -47,6 +47,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
+from .observability import observe
+
 
 class ExperimentStatus(Enum):
     """Lifecycle state of an evolution experiment (MASTER-SPEC 80)."""
@@ -134,6 +136,7 @@ class EvolutionEngine:
         exp.history.append(self._event(event, **details))
 
     # --- lifecycle ------------------------------------------------------------
+    @observe("evolution.propose")
     def propose(
         self, description: str, baseline_metric: float, proposed_change: str
     ) -> str:
@@ -161,6 +164,7 @@ class EvolutionEngine:
         self._experiments[exp_id] = exp
         return exp_id
 
+    @observe("evolution.benchmark")
     def benchmark(self, experiment_id: str, observed_metric: float) -> Dict[str, object]:
         """Record the observed metric from running the experiment.
 
@@ -224,6 +228,7 @@ class EvolutionEngine:
         )
         return True
 
+    @observe("evolution.deploy")
     def deploy(self, experiment_id: str) -> bool:
         """Deploy an approved, benchmarked, improved experiment. Status -> APPLIED.
 
