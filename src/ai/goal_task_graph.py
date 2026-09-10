@@ -16,6 +16,7 @@ from .providers import BaseProvider, get_provider
 from ..observability.metrics import track_goal_decomposition, track_task_execution
 from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
+from .observability import observe
 
 
 class GoalStatus(Enum):
@@ -161,6 +162,7 @@ Example output format:
         self.goal = goal
         self.goal.status = GoalStatus.PENDING
 
+    @observe("goal_task_graph.decompose_goal")
     def decompose_goal(self, goal: Optional[GoalDefinition] = None) -> List[TaskNode]:
         """
         Decompose a goal into a list of tasks using AI.
@@ -418,6 +420,7 @@ Example output format:
 
         return ready
 
+    @observe("goal_task_graph.execute_task")
     def execute_task(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
         """
         Execute a single task using the provided agent executor.
@@ -508,6 +511,7 @@ Example output format:
                 "latency_ms": latency_ms,
             }
 
+    @observe("goal_task_graph.execute_graph")
     def execute_graph(
         self,
         goal_id: str,
