@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .employee import Agent
 from .agent_factory import AgentRuntimeService
+from .observability import observe
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +126,14 @@ class MissionStore:
         safe_id = mission_id.replace("/", "_").replace("\\", "_")
         return os.path.join(self.directory, f"{safe_id}.json")
 
+    @observe("enoch.mission_store.save")
     def save(self, mission: Mission) -> None:
         """Persist a mission (overwrites by id)."""
         mission.updated_at = datetime.utcnow()
         with open(self._path(mission.id), "w", encoding="utf-8") as fh:
             json.dump(mission.to_payload(), fh, ensure_ascii=False, indent=2)
 
+    @observe("enoch.mission_store.load")
     def load(self, mission_id: str) -> Optional[Mission]:
         """Load a mission by id, or None if absent."""
         path = self._path(mission_id)
@@ -255,6 +258,7 @@ class MissionRunner:
         self.max_attempts = max_attempts
         self.replanner = replanner
 
+    @observe("enoch.mission_runner.run")
     def run(self, mission_id: str, observation: Any) -> Dict[str, Any]:
         mission = self.store.load(mission_id)
         if mission is None:
