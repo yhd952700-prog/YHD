@@ -35,7 +35,6 @@ from ..kernels.policy import (
     PolicyOperator,
 )
 from .observability import TraceContext, observe, get_logger
-import logging
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是「鎏灏」（LIUHAO X），一个由十源 DNA（ULTRON / VISION / ADA / EDITH / "

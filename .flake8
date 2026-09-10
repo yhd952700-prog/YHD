@@ -1,0 +1,13 @@
+[flake8]
+# 与 CI lint job 的调用完全一致：python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503
+# 目的：让本地 flake8 与 CI 同标准，避免「本地能过、CI 红」的认知错位。
+max-line-length = 100
+select = E,F,W
+ignore = E501,W503
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    node_modules,
+    build,
+    dist
