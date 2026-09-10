@@ -36,6 +36,7 @@ from .organization import Organization
 from .providers import reset_provider, set_provider
 from .tool_registry import Tool
 from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
+from .observability import observe
 
 
 class _DeterministicProvider:
@@ -48,6 +49,7 @@ class _DeterministicProvider:
     def __init__(self) -> None:
         self.calls: list = []
 
+    @observe("e2e_demo._deterministic_provider.generate_with_retry")
     def generate_with_retry(self, prompt: str, **kwargs) -> str:
         self.calls.append(prompt)
         return f"analysis of: {prompt}"
@@ -70,6 +72,7 @@ def _world_authorize(output_dir: str) -> Callable[[WorldRequest], bool]:
     return _allow
 
 
+@observe("e2e_demo.run_e2e_demo")
 def run_e2e_demo(
     output_dir: Optional[str] = None,
     provider: Optional[Any] = None,
@@ -166,6 +169,7 @@ def run_e2e_demo(
         reset_provider()
 
 
+@observe("e2e_demo.main")
 def main() -> None:
     """Print a human-readable run of the scenario."""
     out = run_e2e_demo()
