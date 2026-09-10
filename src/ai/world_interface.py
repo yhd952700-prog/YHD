@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..kernels.execution import ActionResult
+from .observability import observe
 
 
 @dataclass
@@ -66,6 +67,7 @@ class FilesystemAdapter(WorldAdapter):
             return os.listdir(path)
         raise ValueError(f"filesystem has no observe action {action!r}")
 
+    @observe("filesystem_adapter.execute")
     def execute(self, request: WorldRequest) -> Any:
         action = request.action
         path = request.params.get("path")
@@ -135,6 +137,7 @@ class WorldInterface:
             return True  # default allow (governed by injected policy otherwise)
         return self._authorize_fn(request)
 
+    @observe("world_interface.observe")
     def observe(self, request: WorldRequest) -> Dict[str, Any]:
         """validate -> authorize -> adapter.observe."""
         if not self.validate(request):
@@ -148,6 +151,7 @@ class WorldInterface:
         except Exception as exc:  # noqa: BLE001 - surface adapter error
             return {"status": "error", "error": str(exc)}
 
+    @observe("world_interface.execute")
     def execute(self, request: WorldRequest) -> ActionResult:
         """validate -> authorize -> adapter.execute -> ActionResult."""
         if not self.validate(request):
