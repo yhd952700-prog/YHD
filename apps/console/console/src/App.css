@@ -1141,6 +1141,34 @@ body {
   align-items: center;
 }
 
+/* 身份声明（声明后画像跨会话共享） */
+.sess-user {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sess-user-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.sess-user-input {
+  width: 108px;
+  border: 1px solid var(--border);
+  background: rgba(8, 18, 38, 0.7);
+  color: var(--text-hi);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  outline: none;
+}
+
+.sess-user-input:focus {
+  border-color: var(--border-strong);
+}
+
 .sess-select {
   flex: 1;
   border: 1px solid var(--border-strong);

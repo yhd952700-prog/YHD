@@ -28,11 +28,15 @@ export type ChatEvent =
 export async function* streamChat(
   message: string,
   sessionId: string,
+  userId?: string,
 ): AsyncGenerator<ChatEvent> {
+  const body: Record<string, unknown> = { message, session_id: sessionId };
+  // 声明用户身份 → 后端把画像主体绑定为 user-{id}，同一用户跨会话共享画像。
+  if (userId) body.user_id = userId;
   const res = await fetch('/v1/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok || !res.body) {
@@ -97,6 +101,18 @@ export function newSessionId(): string {
   return `session-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/** 读取当前用户 ID（可为空——未声明身份时后端按会话主体记画像）。 */
+export function getUserId(): string {
+  return localStorage.getItem('liuhao.user_id') || '';
+}
+
+/** 持久化当前用户 ID（传空串表示清除身份声明）。 */
+export function setUserId(id: string): void {
+  const v = (id || '').trim();
+  if (v) localStorage.setItem('liuhao.user_id', v);
+  else localStorage.removeItem('liuhao.user_id');
+}
+
 /** 会话历史记录。 */
 export interface HistoryEntry {
   role: string;
@@ -107,13 +123,19 @@ export interface SessionHistory {
   session_id: string;
   history: HistoryEntry[];
   count: number;
+  user_id?: string | null;
+  profile_principal?: string;
 }
 
 /** 加载某会话的历史消息（后端从持久化 store 读，跨后端重启有效）。 */
-export async function loadHistory(sessionId: string): Promise<SessionHistory> {
-  const res = await fetch(
-    `/v1/chat/history?session_id=${encodeURIComponent(sessionId)}`,
-  );
+export async function loadHistory(
+  sessionId: string,
+  userId?: string,
+): Promise<SessionHistory> {
+  const q = `session_id=${encodeURIComponent(sessionId)}${
+    userId ? `&user_id=${encodeURIComponent(userId)}` : ''
+  }`;
+  const res = await fetch(`/v1/chat/history?${q}`);
   if (!res.ok) throw new Error(`加载历史失败（${res.status}）`);
   return (await res.json()) as SessionHistory;
 }

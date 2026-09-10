@@ -3,10 +3,12 @@ import {
   deleteSession,
   getLocalSessions,
   getSessionId,
+  getUserId,
   loadHistory,
   newSessionId,
   saveLocalSessions,
   setSessionId,
+  setUserId,
   streamChat,
 } from '../lib/chatClient'
 
@@ -36,6 +38,8 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [sessionId, setSessionIdState] = useState(() => getSessionId())
+  // 用户身份：声明后画像跨会话共享（未声明则后端按会话主体记画像）。
+  const [userId, setUserIdState] = useState(() => getUserId())
   const [sessions, setSessions] = useState<string[]>(() => {
     const cur = getSessionId()
     const local = getLocalSessions()
@@ -55,7 +59,7 @@ export function ChatPanel() {
       setSessionId(id)
       setMessages([])
       try {
-        const data = await loadHistory(id)
+        const data = await loadHistory(id, userId)
         setMessages(
           data.history.map((h) => ({
             role: h.role === 'user' ? 'user' : ('assistant' as const),
@@ -66,7 +70,7 @@ export function ChatPanel() {
         setMessages([])
       }
     },
-    [sessionId, sending],
+    [sessionId, sending, userId],
   )
 
   const newSession = useCallback(() => {
@@ -111,7 +115,7 @@ export function ChatPanel() {
       ])
       setTimeout(scrollToBottom, 0)
       try {
-        for await (const evt of streamChat(value, sessionId)) {
+        for await (const evt of streamChat(value, sessionId, userId || undefined)) {
           if (evt.type === 'token') {
             setMessages((prev) => {
               const next = [...prev]
@@ -160,7 +164,7 @@ export function ChatPanel() {
         scrollToBottom()
       }
     },
-    [input, sending, sessionId, scrollToBottom],
+    [input, sending, sessionId, userId, scrollToBottom],
   )
 
   return (
@@ -264,6 +268,20 @@ export function ChatPanel() {
             <button className="sess-btn danger" onClick={() => removeSession(sessionId)} title="删除会话">
               删除
             </button>
+            <span className="sess-user">
+              <span className="sess-user-label">身份</span>
+              <input
+                className="sess-user-input"
+                value={userId}
+                onChange={(e) => setUserIdState(e.target.value)}
+                onBlur={(e) => setUserId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') setUserId((e.target as HTMLInputElement).value)
+                }}
+                placeholder="未声明（按会话记画像）"
+                title="声明用户 ID 后，画像跨会话共享（主体 user-{id}）"
+              />
+            </span>
           </div>
         </div>
       </div>

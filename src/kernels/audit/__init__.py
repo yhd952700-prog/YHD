@@ -18,6 +18,7 @@ import hashlib
 import time
 import sqlite3
 import os
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -123,7 +124,12 @@ class AuditStore:
         Legacy databases without the seq column are migrated in place.
         """
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
+        # check_same_thread=False：审计是全局单例，而 FastAPI 的同步端点跑在
+        # 线程池里 —— 连接会被多线程复用（此前缺此参数，导致
+        # "SQLite objects created in a thread can only be used in that same thread"）。
+        # 线程安全由 self._lock 保证（hash-chain 的 seq/prev_hash 必须串行推进）。
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript("""
@@ -198,7 +204,25 @@ class AuditStore:
         details: Optional[Dict[str, Any]] = None,
         correlation_id: Optional[str] = None,
     ) -> AuditEvent:
-        """Log an audit event with hash-chain linkage."""
+        """Log an audit event with hash-chain linkage.
+
+        线程安全：审计 store 是全局单例，而 FastAPI 同步端点跑在线程池里，
+        hash-chain 的 seq / prev_event_hash 必须串行推进，故整个写路径加锁。
+        """
+        with self._lock:
+            return self._log_event_locked(
+                event_type, principal_id, scope, outcome, details, correlation_id
+            )
+
+    def _log_event_locked(
+        self,
+        event_type: AuditEventType,
+        principal_id: str,
+        scope: AuditScope,
+        outcome: str,
+        details: Optional[Dict[str, Any]],
+        correlation_id: Optional[str],
+    ) -> AuditEvent:
         if correlation_id is None:
             correlation_id = str(uuid.uuid4())[:8]
 
@@ -279,6 +303,11 @@ class AuditStore:
         Returns:
             (is_integrity_ok, total_events)
         """
+        # 与写路径同一把锁：校验期间不允许并发写入，避免读到链中间态。
+        with self._lock:
+            return self._verify_integrity_locked()
+
+    def _verify_integrity_locked(self) -> Tuple[bool, int]:
         rows = self._conn.execute(
             "SELECT seq, event_id, event_type, principal_id, scope, timestamp, "
             "correlation_id, outcome, details, event_hash, prev_event_hash "
@@ -365,6 +394,32 @@ class AuditStore:
         dicts ordered by the monotonic sequence number (ascending by
         default, descending when reverse=True).
         """
+        # 与写路径同一把锁：共享的 sqlite3 连接不并发使用。
+        with self._lock:
+            return self._query_events_locked(
+                principal_id=principal_id,
+                scope=scope,
+                start_time=start_time,
+                end_time=end_time,
+                outcome=outcome,
+                event_type=event_type,
+                correlation_id=correlation_id,
+                limit=limit,
+                reverse=reverse,
+            )
+
+    def _query_events_locked(
+        self,
+        principal_id: Optional[str] = None,
+        scope: Optional[AuditScope] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[AuditEventType] = None,
+        correlation_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        reverse: bool = False,
+    ) -> List[Dict[str, Any]]:
         query = """SELECT event_id, event_type, principal_id, scope,
                    timestamp, correlation_id, outcome, details,
                    event_hash, prev_event_hash

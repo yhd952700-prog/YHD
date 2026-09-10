@@ -22,9 +22,11 @@ def client(tmp_path, monkeypatch):
     chat_mod._sessions.clear()
     chat_mod._session_users.clear()
 
-    app = get_app()
-    with TestClient(app) as c:
-        yield c
+    # 注意：不要用 `with TestClient(app)` —— 它会把 lifespan 放到独立线程执行，
+    # 使全局 audit/memory 的 SQLite 连接跨线程创建，进而污染后续测试
+    # （"SQLite objects created in a thread can only be used in that same thread"）。
+    # 直接实例化即可在主线程内完成请求（本测试不依赖 lifespan 初始化）。
+    yield TestClient(get_app())
 
 
 def test_get_empty_profile(client):
