@@ -8,7 +8,7 @@ import asyncio
 import time
 import random
 from typing import Any, Dict, Optional
-from .benchmark import BenchmarkTarget, BenchmarkConfig, create_constant_load_benchmark
+from .benchmark import BenchmarkRunner, BenchmarkTarget, BenchmarkConfig, create_constant_load_benchmark
 
 
 class MockAPITarget(BenchmarkTarget):
