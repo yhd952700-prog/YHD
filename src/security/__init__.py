@@ -16,7 +16,7 @@ dependencies (encryption / vault_client) are imported before dependents
 from __future__ import annotations
 
 # Dependency-free base modules first.
-from .encryption import EncryptionManager
+from .encryption import EncryptionManager, get_encryption_manager
 from .api_keys import APIKeyManager, KeyScope, KeyStatus, get_api_key_manager
 from .jwt_handler import JWTHandler, TokenType, get_jwt_handler
 from .rbac import (
@@ -38,6 +38,7 @@ from .vault_crypto import VaultTransitCrypto
 __all__ = [
     # Encryption
     "EncryptionManager",
+    "get_encryption_manager",
     # API keys
     "APIKeyManager",
     "KeyScope",

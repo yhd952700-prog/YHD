@@ -3,9 +3,9 @@
 from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 
-from ...feedback.feedback_model import Feedback
-from ...feedback.feedback_service import FeedbackService
-from ...feedback.feedback_repository import FeedbackRepository
+from .feedback_model import Feedback
+from .feedback_service import FeedbackService
+from .feedback_repository import FeedbackRepository
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 
