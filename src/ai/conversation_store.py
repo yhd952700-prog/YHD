@@ -18,6 +18,8 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from .observability import observe
+
 DEFAULT_DB_PATH = os.environ.get(
     "CONVERSATION_DB_PATH",
     "D:/LiuHao-AI-OS/conversation_store.db",
@@ -61,6 +63,7 @@ class ConversationStore:
     # ------------------------------------------------------------------ #
     # 写入 / 读取
     # ------------------------------------------------------------------ #
+    @observe("conversation.append")
     def append(self, principal_id: str, turn: int, role: str, content: str) -> None:
         """追加一条对话消息（user 或 assistant）。"""
         with self._lock:
@@ -71,6 +74,7 @@ class ConversationStore:
             )
             self._conn.commit()
 
+    @observe("conversation.load")
     def load(self, principal_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]:
         """按插入顺序返回该主体的历史消息 ``[{role, content}, ...]``。
 
@@ -140,6 +144,7 @@ class ConversationStore:
 _conversation_store: Optional[ConversationStore] = None
 
 
+@observe("conversation.get_conversation_store")
 def get_conversation_store() -> ConversationStore:
     """获取或创建全局会话存储实例。"""
     global _conversation_store
