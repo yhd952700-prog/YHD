@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .observability import observe
+
 
 @dataclass
 class Observation:
@@ -86,6 +88,7 @@ class TextPerceiver(Perceiver):
         # keywords lower-cased once for deterministic, case-insensitive matching
         self.keywords: List[str] = [k.lower() for k in (keywords or [])]
 
+    @observe("text_perceiver.perceive")
     def perceive(self, data: Any) -> Observation:
         text = data if isinstance(data, str) else str(data)
         char_count = len(text)
@@ -148,6 +151,7 @@ class StubPerceiver(Perceiver):
     def __init__(self, modality: str):
         self.modality = modality
 
+    @observe("stub_perceiver.perceive")
     def perceive(self, data: Any) -> Observation:
         return Observation(
             id=str(uuid.uuid4()),
@@ -179,6 +183,7 @@ class WorldModel:
         self._relationships: List[Dict[str, Any]] = []
         self._events: List[Observation] = []
 
+    @observe("world_model.apply")
     def apply(self, observation: Observation) -> None:
         """Ingest an Observation: upsert its entity + record its relations."""
         self._events.append(observation)
