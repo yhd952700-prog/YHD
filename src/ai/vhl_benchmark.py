@@ -34,6 +34,7 @@ from .providers import reset_provider, set_provider
 from .tool_registry import Tool
 from .verification import VerificationEngine, Verdict
 from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
+from .observability import observe
 
 
 class _DeterministicProvider:
@@ -46,6 +47,7 @@ class _DeterministicProvider:
     def __init__(self) -> None:
         self.calls: List[str] = []
 
+    @observe("vhl_benchmark._deterministic_provider.generate_with_retry")
     def generate_with_retry(self, prompt: str, **kwargs) -> str:
         self.calls.append(prompt)
         return f"analysis of: {prompt}"
@@ -69,6 +71,7 @@ def _world_authorize(output_dir: str) -> Callable[[WorldRequest], bool]:
     return _allow
 
 
+@observe("vhl_benchmark.run_vhl_benchmark")
 def run_vhl_benchmark(
     output_dir: Optional[str] = None,
     human_minutes: float = HUMAN_MINUTES_ASSUMPTION,
@@ -226,6 +229,7 @@ def run_vhl_benchmark(
     }
 
 
+@observe("vhl_benchmark.main")
 def main() -> None:
     """Print a human-readable benchmark run."""
     import json
