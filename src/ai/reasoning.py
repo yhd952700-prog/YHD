@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .observability import observe
+
 
 @dataclass
 class ReasoningStep:
@@ -45,6 +47,7 @@ class Reasoner:
     forward-chaining 会持续推导，直到没有新结论产生（闭包）。
     """
 
+    @observe("Reasoner.deduce")
     def deduce(
         self,
         premises: List[str],
@@ -74,6 +77,7 @@ class Reasoner:
 
         return steps
 
+    @observe("Reasoner.reason")
     def reason(
         self,
         question: str,
