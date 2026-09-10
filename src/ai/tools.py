@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..kernels.audit import audit_query
 from ..kernels.memory import MemoryScope, filter_memory
+from .observability import observe
 from .personal_context import get_personal_context
 from .tool_registry import Tool
 
@@ -32,6 +33,7 @@ def _serialize(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+@observe("tools.make_tools")
 def make_tools(
     principal: str,
     status_fn: Optional[Callable[[], Dict[str, Any]]] = None,
@@ -230,6 +232,7 @@ def make_tools(
     return tools
 
 
+@observe("tools.build_tool_prompt")
 def build_tool_prompt(tools: List[Tool]) -> str:
     """生成注入 system prompt 的工具描述段。"""
     if not tools:
@@ -246,6 +249,7 @@ def build_tool_prompt(tools: List[Tool]) -> str:
     return "\n".join(lines)
 
 
+@observe("tools.parse_tool_call")
 def parse_tool_call(text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """从 LLM 输出中提取工具调用，返回 ``(tool_name, args)`` 或 None。
 
