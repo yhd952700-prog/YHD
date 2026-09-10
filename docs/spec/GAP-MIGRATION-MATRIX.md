@@ -162,8 +162,9 @@ MASTER-SPEC-v3.0.md             →  To-Be      目标规格（221 节，零代�
 
 > **判定口径**：状态枚举以 [`CAPABILITY-REGISTRY.md` §5](CAPABILITY-REGISTRY.md) 的 9 枚举为准（此处统一记为 `IMPLEMENTED`）。
 > 旧版"三态简写 + 无任何 Phase 达 IMPLEMENTED"的结论因路径误判已失效，现以真实源路径证据为准。
-> ⚠️ 诚实边界：Phase 层级的 `IMPLEMENTED` 指"代码 + 专项测试 + 真实端到端"达标；14 kernel 已通过完整七维 DoD 审计，
-> 而 `src/ai/` 能力层的独立七维逐项审计（尤其 Audited / Policy Controlled 维度）未逐 Phase 复验，列为后续可选治理项。
+> ⚠️ 诚实边界：Phase 层级的 `IMPLEMENTED` 指"端到端（含下沉内核）七维达标"，非"每个能力层独立七维达标"。
+> 14 kernel 已通过完整七维 DoD 审计（`KERNEL-DOD-AUDIT.md`）；`src/ai/` 能力层为薄编排层，将 Observable / Permissioned / Policy / Audited 下沉到 kernel action 边界（被 `@kernel_action` 装饰器统一满足），层内不独立重实现——属合理分层设计，**非缺陷**。
+> 逐 Phase 复验结论与证据见 **[`AI-LAYER-DOD-AUDIT.md`](AI-LAYER-DOD-AUDIT.md)**：能力层 Implemented/Tested/Documented 层内全达标，其余四维持久化由内核边界传递性覆盖；唯一真实缺口为"能力层粒度可观测性"，列为可选增强（非阻塞）。
 
 ---
 
