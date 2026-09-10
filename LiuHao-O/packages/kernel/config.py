@@ -5,6 +5,8 @@ Settings using Pydantic Settings with environment variable support.
 All configuration loaded from .env file and environment.
 """
 
+from functools import lru_cache
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -71,4 +73,19 @@ class Settings(BaseSettings):
         return v
 
 
-settings = Settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Lazy singleton.
+
+    Validation (fail-fast on missing LHX_* vars) happens on first access,
+    not at import time — importing this module must stay side-effect free.
+    """
+    return Settings()
+
+
+def __getattr__(name: str):
+    # Backward compatibility: `from .config import settings` keeps working,
+    # but the instance is only created (and validated) on attribute access.
+    if name == "settings":
+        return get_settings()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

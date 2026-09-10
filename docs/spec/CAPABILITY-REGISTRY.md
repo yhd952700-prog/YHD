@@ -93,7 +93,7 @@ LHX-C-xxx    ——         十源去重后的统一核心能力（Kernel 层专
 
 ## 4. 十源 DNA → 实现模块映射（已实现于 `src/ai/`）
 
-Kernel 层之上，十源能力已实现为 `src/ai/` 模块（Phase 3/5/9-21，Sprint3-14）。原「目标模块」列的 `packages/*/` 已改由 `src/ai/` 承载，`LiuHao-O/packages/` 为薄 facade 层（29 个 facade 复用 src/ + 3 个诚实 NOT_IMPLEMENTED）：
+Kernel 层之上，十源能力已实现为 `src/ai/` 模块（Phase 3/5/9-21，Sprint3-14）。原「目标模块」列的 `packages/*/` 已改由 `src/ai/` 承载，`LiuHao-O/packages/` 为薄 facade 层（32 个 facade 复用 src/，NOT_IMPLEMENTED 占位为 0；另有 1 个自包含 foundation 包 `kernel/`，非 facade，Round 51 实测确认）：
 
 | DNA | 实现模块 | 关键能力 | 状态 |
 |---|---|---|---|

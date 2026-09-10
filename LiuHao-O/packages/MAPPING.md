@@ -38,5 +38,7 @@
 | trust | IMPLEMENTED（facade） | src.kernels.trust | — |
 | verification | IMPLEMENTED（facade） | src.ai.verification, src.kernels.evaluation | — |
 | world | IMPLEMENTED（facade） | src.ai.world_interface | — |
+| kernel | IMPLEMENTED（自包含 foundation，非 facade） | 自身实现（config/database/logging/health/ready） | — |
 
-> 全部 33 个包已落地为 facade（复用 src/ 真实实现，无 NOT_IMPLEMENTED 占位）。
+> 32 个包为 facade（复用 src/ 真实实现，NOT_IMPLEMENTED 占位为 0）；`kernel` 为
+> 自包含 foundation 包（Phase 1 遗留实现），不走 facade 映射。合计 33 个目录。

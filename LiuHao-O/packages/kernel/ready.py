@@ -59,11 +59,12 @@ async def ready_database() -> bool:
 
 async def ready_services() -> bool:
     """Check if core services are ready."""
-    # Check that we can import all packages
+    # Check that we can import all packages and config validates
     try:
-        from packages.kernel.config import settings
-        from packages.kernel.database import get_engine, get_async_engine
-        from packages.kernel.health import check_health
+        from .config import get_settings
+        from .database import get_engine, get_async_engine
+        from .health import check_health
+        get_settings()  # force config validation (fail-fast)
         return True
     except Exception:
         return False
@@ -72,12 +73,19 @@ async def ready_services() -> bool:
 async def ready_observability() -> bool:
     """Check if observability is ready."""
     # Check that OTel, Prometheus config is in place
-    from packages.kernel.config import settings
-    return True
+    try:
+        from .config import get_settings
+        s = get_settings()
+        return bool(s.otel_endpoint) and s.prometheus_port > 0
+    except Exception:
+        return False
 
 
 async def ready_security() -> bool:
     """Check if security infrastructure is ready."""
-    from packages.kernel.config import settings
-    # Check vault, policies configured
-    return True
+    try:
+        from .config import get_settings
+        s = get_settings()
+        return bool(s.secret_key)
+    except Exception:
+        return False
