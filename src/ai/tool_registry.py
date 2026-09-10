@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from ..kernels.execution import ActionResult
+from .observability import observe
 
 
 class ToolStatus(Enum):
@@ -57,6 +58,7 @@ class ToolRegistry:
         self._status: Dict[str, ToolStatus] = {}
 
     # -------------------------------------------------------------- lifecycle
+    @observe("tool_registry.register")
     def register(self, tool: Tool) -> str:
         self._tools[tool.tool_id] = tool
         self._status[tool.tool_id] = ToolStatus.REGISTERED
@@ -109,6 +111,7 @@ class ToolRegistry:
         ]
 
     # -------------------------------------------------------------- execution
+    @observe("tool_registry.execute")
     def execute(self, tool_id: str, inputs: Dict[str, Any]) -> ActionResult:
         """Execute a tool (only when ACTIVE). Returns an ``ActionResult``."""
         tool = self._tools.get(tool_id)
@@ -135,6 +138,7 @@ class ToolRouter:
         tools = self.registry.list_active_by_capability(capability_id)
         return tools[0] if tools else None
 
+    @observe("tool_router.execute")
     def execute(self, capability_id: str, inputs: Dict[str, Any]) -> ActionResult:
         tool = self.route(capability_id)
         if tool is None:
