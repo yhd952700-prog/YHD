@@ -7,11 +7,18 @@ Manages LangGraph checkpoint persistence with:
 - Checkpoint types (NODE, EDGE, FULL)
 - Versioned checkpoint storage
 - Checkpoint expiration and cleanup
+
+Connection-surface consolidation (round 15): a single SQLite connection is
+created once per CheckpointManager instance and reused for all operations,
+instead of opening (and closing) a fresh connection on every call. A reentrant
+lock serializes access, preserving thread safety (``check_same_thread=False``
+is retained as defense-in-depth).
 """
 
 import json
 import sqlite3
 import time
+import threading
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
@@ -94,13 +101,17 @@ class CheckpointManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.expiration_days = expiration_days
 
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+
         # Initialize database
         self._init_db()
 
     def _init_db(self) -> None:
         """Initialize the SQLite database schema."""
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            conn.execute("""
+        with self._lock:
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     checkpoint_id TEXT PRIMARY KEY,
                     workflow_id TEXT NOT NULL,
@@ -123,22 +134,22 @@ class CheckpointManager:
                 )
             """)
 
-            conn.execute("""
+            self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_workflow_id
                 ON checkpoints(workflow_id)
             """)
 
-            conn.execute("""
+            self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_expires_at
                 ON checkpoints(expires_at)
             """)
 
-            conn.execute("""
+            self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_status
                 ON checkpoints(status)
             """)
 
-            conn.commit()
+            self._conn.commit()
 
     # ==================== Checkpoint Creation ====================
 
@@ -188,8 +199,8 @@ class CheckpointManager:
         # Serialize tags
         tags_json = json.dumps(tags if tags else [], default=self._json_default)
 
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            conn.execute("""
+        with self._lock:
+            self._conn.execute("""
                 INSERT INTO checkpoints
                 (checkpoint_id, workflow_id, node_id, edge_id, checkpoint_type,
                  workflow_state, input_data, output_data, node_stack,
@@ -217,7 +228,7 @@ class CheckpointManager:
                 tags_json,
             ))
 
-            conn.commit()
+            self._conn.commit()
 
         logger.info(f"Checkpoint created: {checkpoint_id} for workflow {workflow_id}")
         return checkpoint_id
@@ -243,9 +254,8 @@ class CheckpointManager:
         Returns:
             CheckpointData object or None if not found/expired
         """
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
+        with self._lock:
+            cursor = self._conn.execute(
                 "SELECT * FROM checkpoints WHERE checkpoint_id = ?",
                 (checkpoint_id,)
             )
@@ -304,9 +314,7 @@ class CheckpointManager:
         Returns:
             List of checkpoint metadata dicts
         """
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            conn.row_factory = sqlite3.Row
-
+        with self._lock:
             query = "SELECT checkpoint_id, workflow_id, node_id, edge_id, checkpoint_type, "
             query += "created_at, expires_at, status, description, tags FROM checkpoints WHERE 1=1"
             params = []
@@ -326,7 +334,7 @@ class CheckpointManager:
             query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
 
-            cursor = conn.execute(query, params)
+            cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
 
         checkpoints = []
@@ -363,12 +371,12 @@ class CheckpointManager:
 
         if ckpt_data:
             # Update status to active
-            with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-                conn.execute(
+            with self._lock:
+                self._conn.execute(
                     "UPDATE checkpoints SET status = ? WHERE checkpoint_id = ?",
                     (CheckpointStatus.ACTIVE, checkpoint_id)
                 )
-                conn.commit()
+                self._conn.commit()
 
         return ckpt_data
 
@@ -376,12 +384,12 @@ class CheckpointManager:
 
     def _mark_expired(self, checkpoint_id: str) -> None:
         """Mark a checkpoint as expired in the database."""
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            conn.execute(
+        with self._lock:
+            self._conn.execute(
                 "UPDATE checkpoints SET status = ? WHERE checkpoint_id = ?",
                 (CheckpointStatus.EXPIRED, checkpoint_id)
             )
-            conn.commit()
+            self._conn.commit()
 
     def cleanup_expired(self) -> int:
         """
@@ -390,9 +398,9 @@ class CheckpointManager:
         Returns:
             Number of checkpoints removed
         """
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
+        with self._lock:
             # Find expired checkpoints
-            cursor = conn.execute(
+            cursor = self._conn.execute(
                 "SELECT checkpoint_id FROM checkpoints "
                 "WHERE expires_at < ? AND status = ?",
                 (time.time(), CheckpointStatus.ACTIVE)
@@ -404,18 +412,18 @@ class CheckpointManager:
 
             # Delete expired checkpoints
             placeholders = ",".join("?" * len(expired_ids))
-            conn.execute(
+            self._conn.execute(
                 f"DELETE FROM checkpoints WHERE checkpoint_id IN ({placeholders})",
                 expired_ids
             )
 
             # Also clean up expired but not yet deleted (status only)
-            conn.execute(
+            self._conn.execute(
                 "UPDATE checkpoints SET status = ? WHERE expires_at < ? AND status = ?",
                 (CheckpointStatus.EXPIRED, time.time(), CheckpointStatus.ACTIVE)
             )
 
-            conn.commit()
+            self._conn.commit()
             deleted_count = len(expired_ids)
 
             logger.info(f"Cleaned up {deleted_count} expired checkpoints")
@@ -425,8 +433,8 @@ class CheckpointManager:
 
     def checkpoint_exists(self, checkpoint_id: str) -> bool:
         """Check if a checkpoint exists and is not expired."""
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            cursor = conn.execute(
+        with self._lock:
+            cursor = self._conn.execute(
                 "SELECT status, expires_at FROM checkpoints WHERE checkpoint_id = ?",
                 (checkpoint_id,)
             )
@@ -443,7 +451,7 @@ class CheckpointManager:
 
     def get_checkpoint_count(self, status: Optional[str] = None) -> int:
         """Get the count of checkpoints, optionally filtered by status."""
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
+        with self._lock:
             query = "SELECT COUNT(*) FROM checkpoints WHERE 1=1"
             params = []
 
@@ -451,13 +459,13 @@ class CheckpointManager:
                 query += " AND status = ?"
                 params.append(status)
 
-            cursor = conn.execute(query, params)
+            cursor = self._conn.execute(query, params)
             return cursor.fetchone()[0]
 
     def get_stats(self) -> Dict[str, Any]:
         """Get checkpoint statistics."""
-        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
-            cursor = conn.execute("""
+        with self._lock:
+            cursor = self._conn.execute("""
                 SELECT
                     status,
                     COUNT(*) as count,
@@ -479,3 +487,24 @@ class CheckpointManager:
                     for row in rows
                 },
             }
+
+    def close(self) -> None:
+        """Close the underlying connection. Safe to call multiple times."""
+        conn = getattr(self, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                self._conn = None
+
+    def __enter__(self) -> "CheckpointManager":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - best-effort cleanup during GC
+            pass

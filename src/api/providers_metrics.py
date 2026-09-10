@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
@@ -18,10 +19,26 @@ class ProviderMetric:
 
 
 class ProviderMetricsRepository:
-    """Small SQLite-backed repository for provider metrics."""
+    """Small SQLite-backed repository for provider metrics.
+
+    Connection-surface consolidation (round 15): a single SQLite connection is
+    created once per repository instance and reused for all operations, instead
+    of opening (and closing) a fresh connection on every call. This (a) removes
+    the per-call open/close overhead, and (b) makes ``:memory:`` URLs work
+    correctly — previously each call opened a *separate* in-memory database, so
+    the table created in ``_initialize`` was invisible to later calls.
+
+    A reentrant lock serializes access to the shared connection, preserving the
+    thread-safety guarantee of the old per-call design (``check_same_thread=False``
+    is still set as a defense-in-depth measure).
+    """
 
     def __init__(self, database_url: str | None = None) -> None:
-        self.database_url = database_url or os.environ.get("DATABASE_URL", "sqlite:///./verify_metrics.db")
+        self.database_url = database_url or os.environ.get(
+            "DATABASE_URL", "sqlite:///./verify_metrics.db"
+        )
+        self._lock = threading.RLock()
+        self._conn = self._connect()
         self._initialize()
 
     @staticmethod
@@ -55,8 +72,8 @@ class ProviderMetricsRepository:
         raise ValueError(f"Unsupported DATABASE_URL scheme: {parsed.scheme!r}")
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
+        with self._lock:
+            self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS provider_metric_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,23 +85,23 @@ class ProviderMetricsRepository:
                 )
                 """
             )
-            connection.commit()
+            self._conn.commit()
 
     def record(self, metric: ProviderMetric) -> ProviderMetric:
-        with self._connect() as connection:
-            connection.execute(
+        with self._lock:
+            self._conn.execute(
                 """
                 INSERT INTO provider_metric_samples (provider, model, timestamp, latency_ms, success_rate)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (metric.provider, metric.model, metric.timestamp, metric.latency_ms, metric.success_rate),
             )
-            connection.commit()
+            self._conn.commit()
         return metric
 
     def list_recent(self, limit: int = 10) -> List[dict[str, Any]]:
-        with self._connect() as connection:
-            rows = connection.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 """
                 SELECT provider, model, timestamp, latency_ms, success_rate
                 FROM provider_metric_samples
@@ -96,6 +113,27 @@ class ProviderMetricsRepository:
         return [dict(row) for row in rows]
 
     def count(self) -> int:
-        with self._connect() as connection:
-            row = connection.execute("SELECT COUNT(*) FROM provider_metric_samples").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM provider_metric_samples").fetchone()
         return int(row[0]) if row is not None else 0
+
+    def close(self) -> None:
+        """Close the underlying connection. Safe to call multiple times."""
+        conn = getattr(self, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                self._conn = None
+
+    def __enter__(self) -> "ProviderMetricsRepository":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - best-effort cleanup during GC
+            pass
