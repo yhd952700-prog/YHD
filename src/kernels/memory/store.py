@@ -21,6 +21,8 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from ...ai.observability import observe
+
 # 默认落盘位置（遵循用户约束：交付物/数据一律 D 盘）。
 DEFAULT_DB_PATH = "D:/LiuHao-AI-OS/memory_store.db"
 
@@ -74,6 +76,7 @@ class MemoryStore:
     # ------------------------------------------------------------------ #
     # 写
     # ------------------------------------------------------------------ #
+    @observe("kernels.memory.store.persist")
     def persist(self, entry: Dict[str, Any]) -> None:
         """写穿落盘一条条目（按 ``key_hash`` 主键 upsert）。
 
@@ -119,6 +122,7 @@ class MemoryStore:
             )
             self._conn.commit()
 
+    @observe("kernels.memory.store.delete")
     def delete(self, key_hash: str) -> None:
         """按 ``key_hash`` 删除一条条目（compress 合并后移除源条目时用）。"""
         with self._lock:
@@ -136,6 +140,7 @@ class MemoryStore:
     # ------------------------------------------------------------------ #
     # 读
     # ------------------------------------------------------------------ #
+    @observe("kernels.memory.store.load_all")
     def load_all(self) -> List[Dict[str, Any]]:
         """返回所有持久化条目的字段字典（供初始化时重建 ``_entries``）。"""
         with self._lock:
