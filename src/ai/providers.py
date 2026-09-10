@@ -14,6 +14,8 @@ import os
 import json
 from typing import Optional, Dict, Any
 
+from .observability import observe
+
 # Provider type enumeration
 
 
@@ -676,6 +678,7 @@ def _provider_env(key: str, default: str = "") -> str:
     return default
 
 
+@observe("provider.get_provider")
 def get_provider() -> BaseProvider:
     """Get the global provider instance, auto-detecting from environment.
 
