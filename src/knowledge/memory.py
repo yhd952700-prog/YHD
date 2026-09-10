@@ -34,6 +34,14 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+try:
+    from ..ai.observability import observe
+except ImportError:
+    def observe(phase):
+        def _decorator(func):
+            return func
+        return _decorator
+
 
 class MemoryTier(Enum):
     """10-layer memory architecture tiers"""
@@ -449,6 +457,7 @@ class MemoryManager:
             MemoryTier.COLLECTIVE: {"ttl_hours": 8760000, "max_items": 100000},
         }
 
+    @observe("memory.remember")
     def remember(
         self,
         content: str,
@@ -476,6 +485,7 @@ class MemoryManager:
         )
         return self.backend.add(item)
 
+    @observe("memory.recall")
     def recall(
         self,
         query: str,
@@ -521,6 +531,7 @@ class MemoryManager:
             stats["total"] += len(items)
         return stats
 
+    @observe("memory.consolidate")
     def consolidate(self) -> Dict[str, int]:
         """
         Memory consolidation: promote important working/episodic memories
