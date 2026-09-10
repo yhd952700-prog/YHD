@@ -24,10 +24,12 @@ import os
 
 from .liuhao import LiuHaoAssistant
 from .providers import ProviderFactory
+from .observability import observe
 
 DEFAULT_MODEL = "qwen2.5:3b"
 
 
+@observe("chat.build_provider")
 def build_provider(provider_type: str, model: str):
     """构造 provider 实例（显式注入，避免全局单例 env 时序问题）。"""
     return ProviderFactory.create_provider(
@@ -57,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@observe("chat.repl")
 def repl(assistant: LiuHaoAssistant) -> int:
     print("=" * 60)
     print("  鎏灏（LIUHAO X）— AI 操作系统")
@@ -92,6 +95,7 @@ def repl(assistant: LiuHaoAssistant) -> int:
     return 0
 
 
+@observe("chat.main")
 def main() -> int:
     args = build_parser().parse_args()
     try:
