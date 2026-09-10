@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from .observability import observe
+
 
 class ApprovalStatus(str, Enum):
     PENDING = "pending"
@@ -66,6 +68,7 @@ class ApprovalWorkflow:
         self._audit = audit_store if audit_store is not None else get_audit_store()
         self._requests: Dict[str, ApprovalRequest] = {}
 
+    @observe("approval.submit")
     def submit(
         self,
         subject: str,
@@ -84,9 +87,11 @@ class ApprovalWorkflow:
         self._requests[req.id] = req
         return req
 
+    @observe("approval.approve")
     def approve(self, request_id: str, approver: str, reason: str = "") -> Optional[ApprovalRequest]:
         return self._decide(request_id, approver, ApprovalStatus.APPROVED, reason, "allow")
 
+    @observe("approval.reject")
     def reject(self, request_id: str, approver: str, reason: str = "") -> Optional[ApprovalRequest]:
         return self._decide(request_id, approver, ApprovalStatus.REJECTED, reason, "deny")
 
