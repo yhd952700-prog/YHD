@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from .employee import Agent
 from .agent_factory import AgentFactory, AgentSpec
 from .collaboration import Role
+from .observability import observe
 
 
 class MemberStatus(Enum):
@@ -122,6 +123,7 @@ class Organization:
         self.audit_log.append({"action": action, "timestamp": time.time(), **details})
 
     # ------------------------------------------------------------ §62 functions
+    @observe("organization.create_goal")
     def create_goal(self, description: str) -> str:
         goal_id = f"goal_{uuid.uuid4().hex[:8]}"
         self.goals[goal_id] = Goal(id=goal_id, description=description)
@@ -140,6 +142,7 @@ class Organization:
         self._audit("create_team", team_id=team_id, name=name)
         return team_id
 
+    @observe("organization.hire")
     def hire(self, role: Role, department_id: str, name: Optional[str] = None,
              capabilities: Optional[List[str]] = None) -> str:
         """Hire a real agent (via AgentFactory) into a department."""
@@ -175,6 +178,7 @@ class Organization:
         self._audit("assign", member_id=member_id, department=department_id)
         return True
 
+    @observe("organization.delegate")
     def delegate(self, manager_id: str, role: Role, task: str) -> Dict[str, Any]:
         """Delegate a task to the first active member of ``role``."""
         member = self._first_active_by_role(role)
