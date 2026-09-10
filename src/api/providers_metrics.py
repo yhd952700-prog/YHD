@@ -48,7 +48,7 @@ class ProviderMetricsRepository:
             database_path = self._resolve_sqlite_path(self.database_url)
             if database_path != Path(":memory:"):
                 database_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(str(database_path))
+            connection = sqlite3.connect(str(database_path), check_same_thread=False)
             connection.row_factory = sqlite3.Row
             return connection
 

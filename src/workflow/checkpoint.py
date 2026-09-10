@@ -99,7 +99,7 @@ class CheckpointManager:
 
     def _init_db(self) -> None:
         """Initialize the SQLite database schema."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS checkpoints (
                     checkpoint_id TEXT PRIMARY KEY,
@@ -188,14 +188,14 @@ class CheckpointManager:
         # Serialize tags
         tags_json = json.dumps(tags if tags else [], default=self._json_default)
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             conn.execute("""
                 INSERT INTO checkpoints
                 (checkpoint_id, workflow_id, node_id, edge_id, checkpoint_type,
                  workflow_state, input_data, output_data, node_stack,
                  current_node, remaining_edges, done, error, created_at,
                  expires_at, status, description, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 checkpoint_id,
                 workflow_id,
@@ -243,7 +243,7 @@ class CheckpointManager:
         Returns:
             CheckpointData object or None if not found/expired
         """
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 "SELECT * FROM checkpoints WHERE checkpoint_id = ?",
@@ -304,7 +304,7 @@ class CheckpointManager:
         Returns:
             List of checkpoint metadata dicts
         """
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             conn.row_factory = sqlite3.Row
 
             query = "SELECT checkpoint_id, workflow_id, node_id, edge_id, checkpoint_type, "
@@ -363,7 +363,7 @@ class CheckpointManager:
 
         if ckpt_data:
             # Update status to active
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
                 conn.execute(
                     "UPDATE checkpoints SET status = ? WHERE checkpoint_id = ?",
                     (CheckpointStatus.ACTIVE, checkpoint_id)
@@ -376,7 +376,7 @@ class CheckpointManager:
 
     def _mark_expired(self, checkpoint_id: str) -> None:
         """Mark a checkpoint as expired in the database."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             conn.execute(
                 "UPDATE checkpoints SET status = ? WHERE checkpoint_id = ?",
                 (CheckpointStatus.EXPIRED, checkpoint_id)
@@ -390,7 +390,7 @@ class CheckpointManager:
         Returns:
             Number of checkpoints removed
         """
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             # Find expired checkpoints
             cursor = conn.execute(
                 "SELECT checkpoint_id FROM checkpoints "
@@ -425,7 +425,7 @@ class CheckpointManager:
 
     def checkpoint_exists(self, checkpoint_id: str) -> bool:
         """Check if a checkpoint exists and is not expired."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             cursor = conn.execute(
                 "SELECT status, expires_at FROM checkpoints WHERE checkpoint_id = ?",
                 (checkpoint_id,)
@@ -443,7 +443,7 @@ class CheckpointManager:
 
     def get_checkpoint_count(self, status: Optional[str] = None) -> int:
         """Get the count of checkpoints, optionally filtered by status."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             query = "SELECT COUNT(*) FROM checkpoints WHERE 1=1"
             params = []
 
@@ -456,7 +456,7 @@ class CheckpointManager:
 
     def get_stats(self) -> Dict[str, Any]:
         """Get checkpoint statistics."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with sqlite3.connect(str(self.db_path), check_same_thread=False) as conn:
             cursor = conn.execute("""
                 SELECT
                     status,
