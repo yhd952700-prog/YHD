@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from .providers_metrics import ProviderMetric, ProviderMetricsRepository
+from ..ai.observability import observe
 
 
 class MetricsApplication:
@@ -13,6 +14,7 @@ class MetricsApplication:
         self.database_url = database_url or os.environ.get("DATABASE_URL", "sqlite:///./verify_metrics.db")
         self.repository = ProviderMetricsRepository(self.database_url)
 
+    @observe("api.metrics_application.health")
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok",
@@ -28,6 +30,7 @@ class MetricsApplication:
             "provider_samples": count,
         }
 
+    @observe("api.metrics_application.record_metric")
     def record_metric(
         self,
         provider: str,
@@ -55,6 +58,7 @@ class MetricsApplication:
             },
         }
 
+    @observe("api.metrics_application.list_metrics")
     def list_metrics(self, limit: int = 10) -> dict[str, Any]:
         rows = self.repository.list_recent(limit=limit)
         return {"count": len(rows), "items": rows}
