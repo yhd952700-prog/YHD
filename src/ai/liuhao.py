@@ -64,9 +64,13 @@ class LiuHaoAssistant:
         system_prompt: Optional[str] = None,
         provider: Optional[BaseProvider] = None,
         capabilities: Optional[List[str]] = None,
+        profile_principal: Optional[str] = None,
     ) -> None:
         self.name = name
         self.principal = name
+        # 画像主体：默认与会话主体一致；传入时同一用户可跨会话共享画像
+        # （会话历史仍按 self.principal 隔离，二者刻意解耦）。
+        self.profile_principal = profile_principal or name
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.provider = provider or get_provider()
         self.capabilities = list(capabilities or ["chat"])
@@ -105,7 +109,7 @@ class LiuHaoAssistant:
 
         # 6. 工具注册 — 复用 ToolRegistry（§40 生命周期），暴露真实内核能力。
         self.tools = ToolRegistry()
-        self._tool_list = make_tools(self.principal, status_fn=self.stats)
+        self._tool_list = make_tools(self.profile_principal, status_fn=self.stats)
         for tool in self._tool_list:
             self.tools.register(tool)
             self.tools.validate(tool.tool_id)
@@ -330,8 +334,8 @@ class LiuHaoAssistant:
         pcm = get_personal_context()
         # 仅在真的有画像时注入：summarize() 对空画像也返回兜底说明串，
         # 直接拼接会给 system prompt 塞入无意义噪声。
-        if pcm.has_profile(self.principal):
-            summary = pcm.summarize(self.principal)
+        if pcm.has_profile(self.profile_principal):
+            summary = pcm.summarize(self.profile_principal)
             system_content += (
                 "\n\n## 用户画像（来自 KAREN Personal Intelligence）\n" + summary
             )

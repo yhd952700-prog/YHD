@@ -180,6 +180,10 @@ def get_app() -> FastAPI:
     from .dashboard import router as dashboard_router
     app.include_router(dashboard_router)
 
+    # 个人画像端点（KAREN Personal Intelligence 的真实读写面）。
+    from .profile import router as profile_router
+    app.include_router(profile_router)
+
     return app
 
 

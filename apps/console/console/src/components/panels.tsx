@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AI_TASKS,
   BIZ_REALITY,
@@ -363,6 +363,169 @@ export function OurGoal() {
         <span className="goal-label">我们的目标</span>
         <span className="goal-main">Build a Global Brand — Achieve 100M</span>
       </div>
+    </div>
+  )
+}
+
+/** ============ 用户画像（KAREN · 真实读写 /v1/profile） ============ */
+interface ProfileData {
+  principal_id: string
+  display_name: string | null
+  preferences: Record<string, { value?: unknown; confidence?: number }>
+  facts: Record<string, unknown>
+  interests: string[]
+  expertise: string[]
+  has_profile: boolean
+}
+
+export function UserProfileCard({ defaultPrincipal = 'default' }: { defaultPrincipal?: string }) {
+  const [principal, setPrincipal] = useState(defaultPrincipal)
+  const [inputPrincipal, setInputPrincipal] = useState(defaultPrincipal)
+  const [data, setData] = useState<ProfileData | null>(null)
+  const [err, setErr] = useState('')
+  const [kind, setKind] = useState<'fact' | 'preference'>('fact')
+  const [key, setKey] = useState('')
+  const [val, setVal] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = async (p: string) => {
+    setErr('')
+    try {
+      const r = await fetch('/v1/profile?principal=' + encodeURIComponent(p), { cache: 'no-store' })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      setData((await r.json()) as ProfileData)
+    } catch (e) {
+      setData(null)
+      setErr(e instanceof Error ? e.message : '读取失败')
+    }
+  }
+
+  useEffect(() => {
+    void load(principal)
+  }, [principal])
+
+  const add = async () => {
+    if (!key.trim() || !val.trim()) return
+    setBusy(true)
+    try {
+      const body =
+        kind === 'fact'
+          ? { principal, fact: { key, value: val } }
+          : { principal, preference: { key, value: val } }
+      const r = await fetch('/v1/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      setKey('')
+      setVal('')
+      await load(principal)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '写入失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clear = async () => {
+    setBusy(true)
+    try {
+      await fetch('/v1/profile?principal=' + encodeURIComponent(principal), { method: 'DELETE' })
+      await load(principal)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '清空失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const prefs = Object.entries(data?.preferences ?? {})
+  const facts = Object.entries(data?.facts ?? {})
+  const lists = (data?.interests ?? []).length + (data?.expertise ?? []).length
+  const isEmpty = !data || !data.has_profile || (prefs.length === 0 && facts.length === 0 && lists === 0)
+
+  return (
+    <div className="panel profile-panel">
+      <div className="panel-title">
+        <span>用户画像</span>
+        <span className="biz-en">KAREN Profile</span>
+        <span className={'health-pill ' + (err ? 'bad' : data?.has_profile ? 'ok' : 'na')}>
+          {err ? '离线' : data?.has_profile ? '已建档' : '空'}
+        </span>
+      </div>
+
+      <div className="profile-switch">
+        <input
+          className="profile-input"
+          value={inputPrincipal}
+          onChange={(e) => setInputPrincipal(e.target.value)}
+          placeholder="画像主体"
+        />
+        <button className="profile-btn" onClick={() => setPrincipal(inputPrincipal || 'default')}>
+          读取
+        </button>
+      </div>
+
+      {data?.display_name && <div className="profile-name">称呼：{data.display_name}</div>}
+
+      {isEmpty ? (
+        <div className="profile-empty">暂无画像（后端 /v1/profile 真实返回为空）</div>
+      ) : (
+        <ul className="health-list">
+          {facts.map(([k, v]) => (
+            <li key={'f-' + k}>
+              <span className="health-dot" />
+              <span className="health-name">{k}</span>
+              <span className="health-val">{String(v)}</span>
+            </li>
+          ))}
+          {prefs.map(([k, p]) => (
+            <li key={'p-' + k}>
+              <span className="health-dot" />
+              <span className="health-name">{k}</span>
+              <span className="health-val">
+                {String(p?.value ?? '')}
+                {typeof p?.confidence === 'number' ? ' (' + p.confidence + ')' : ''}
+              </span>
+            </li>
+          ))}
+          {(data?.interests ?? []).map((i) => (
+            <li key={'i-' + i}>
+              <span className="health-dot" />
+              <span className="health-name">兴趣</span>
+              <span className="health-val">{i}</span>
+            </li>
+          ))}
+          {(data?.expertise ?? []).map((i) => (
+            <li key={'e-' + i}>
+              <span className="health-dot" />
+              <span className="health-name">专长</span>
+              <span className="health-val">{i}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="profile-switch">
+        <select
+          className="profile-select"
+          value={kind}
+          onChange={(e) => setKind(e.target.value as 'fact' | 'preference')}
+        >
+          <option value="fact">事实</option>
+          <option value="preference">偏好</option>
+        </select>
+        <input className="profile-input" value={key} onChange={(e) => setKey(e.target.value)} placeholder="键" />
+        <input className="profile-input" value={val} onChange={(e) => setVal(e.target.value)} placeholder="值" />
+        <button className="profile-btn" onClick={add} disabled={busy || !key.trim() || !val.trim()}>
+          写入
+        </button>
+      </div>
+      <button className="profile-clear" onClick={clear} disabled={busy}>
+        清空该主体画像
+      </button>
+      {err && <div className="profile-empty">错误：{err}</div>}
     </div>
   )
 }

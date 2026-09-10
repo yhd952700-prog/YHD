@@ -1259,3 +1259,79 @@ body {
   color: #7fe3ff;
   font-weight: 600;
 }
+
+/* ============ 用户画像面板（KAREN） ============ */
+.profile-switch {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.profile-input,
+.profile-select {
+  flex: 1;
+  min-width: 0;
+  background: rgba(3, 10, 24, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 4px 7px;
+  outline: none;
+}
+
+.profile-select {
+  flex: 0 0 62px;
+}
+
+.profile-input:focus,
+.profile-select:focus {
+  border-color: var(--border-strong);
+}
+
+.profile-btn {
+  background: rgba(56, 217, 255, 0.14);
+  border: 1px solid rgba(56, 217, 255, 0.4);
+  color: #7fe3ff;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.profile-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.profile-name {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--gold);
+}
+
+.profile-empty {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.profile-clear {
+  margin-top: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid rgba(255, 91, 110, 0.35);
+  color: var(--red);
+  font-size: 11px;
+  padding: 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.profile-clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

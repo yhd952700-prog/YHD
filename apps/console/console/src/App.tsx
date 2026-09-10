@@ -12,6 +12,7 @@ import {
   SystemHealth,
   TaskCenter,
   TodayBrief,
+  UserProfileCard,
 } from './components/panels'
 
 /** 真实遥测（后端 /v1/dashboard/* 聚合的真实运行数据）。 */
@@ -115,6 +116,7 @@ function App() {
                 provider={provider}
                 auditTotal={auditTotal}
               />
+              <UserProfileCard defaultPrincipal="default" />
               <Activity items={activity} />
               <OurGoal />
             </div>
