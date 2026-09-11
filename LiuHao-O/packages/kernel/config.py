@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     model_gateway_url: str = Field(alias="LHX_MODEL_GATEWAY_URL", default="http://localhost:8001")
     
     # Observability
-    otel_endpoint: str = Field(alias="LHX_OTEL_ENDPOINT", default="http://localhost:4317")
+    # 4318 是 OTLP/HTTP 标准端口（4317 是 gRPC，无法用 HTTP 探测连通性）。
+    otel_endpoint: str = Field(alias="LHX_OTEL_ENDPOINT", default="http://localhost:4318")
     prometheus_port: int = Field(default=9090, alias="LHX_PROMETHEUS_PORT")
     grafana_url: str = Field(alias="LHX_GRAFANA_URL", default="http://localhost:3000")
     

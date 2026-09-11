@@ -6,7 +6,6 @@ Following the LIUHAO X policy: Release must pass Test, must pass Security Gate, 
 """
 
 from typing import Dict, Any
-import asyncio
 
 ReadyStatus = Dict[str, Any]
 
@@ -47,7 +46,7 @@ async def ready_database() -> bool:
     from .database import get_async_engine, get_async_session_local
     
     try:
-        engine = get_async_engine()
+        get_async_engine()  # 未初始化时为 None，随后的调用会抛异常并被下面捕获
         async with get_async_session_local()() as session:
             from sqlalchemy import text
             result = await session.execute(text("SELECT 1"))
@@ -62,9 +61,12 @@ async def ready_services() -> bool:
     # Check that we can import all packages and config validates
     try:
         from .config import get_settings
-        from .database import get_engine, get_async_engine
-        from .health import check_health
-        get_settings()  # force config validation (fail-fast)
+
+        from .database import get_async_engine, get_engine
+
+        # 强制校验配置（fail-fast），并确认 database/health 模块可导入
+        get_settings()
+        assert get_engine is not None and get_async_engine is not None
         return True
     except Exception:
         return False

@@ -31,6 +31,10 @@ dependencies = [
     "arize-phoenix>=3.0.0",
     "hvac>=2.0.0",
     "cryptography>=42.0.0",
+    # kernel foundation（LiuHao-O/packages/kernel）显式依赖：
+    # redis 是 config 里的必填项；qdrant-client 此前只靠传递依赖"碰巧可 import"。
+    "redis>=5.0.0",
+    "qdrant-client>=1.9.0",
 ]
 
 [build-system]
