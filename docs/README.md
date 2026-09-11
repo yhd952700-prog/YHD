@@ -166,9 +166,9 @@ docs/
 **2. Kernel 清单多套并存（已收敛）**
 `src/kernels/` 实际有 **14 个** kernel（含 security、audit、plugin）。`capability-registry.yaml` 已于 2026-09-06 同步为 **14 项**（含 security/audit/plugin），状态统一为 `PARTIALLY_IMPLEMENTED`；`spec/KERNEL-CANON.md` 为**唯一权威清单**（旧 K01–K12 编号已废弃）。其余叙事文档若仍出现"12/13 个"旧口径，一律以 KERNEL-CANON 为准。
 
-**3. Kernel 层测试覆盖 7/14（最高优先级技术债）**
-14 个 kernel 共 6,391 行代码。`tests/kernels/` 目前有 **9 个测试文件，覆盖 7 个 kernel**（audit / evaluation / execution / identity / policy / security / trust）；**仍有 7 个 kernel 完全没有测试**：capability、context、event、memory、network、plugin、resource。
-补齐这 7 个是 V3.0 Kernel DoD 的第一优先级；因此 14 项能力状态仍全部为 `PARTIALLY_IMPLEMENTED`（见 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
+**3. ~~Kernel 层测试覆盖 7/14~~ ✅ 已解决（2026-09-11 实测更正）**
+14 个 kernel 共 6,391 行代码。曾记录为"仅 7 个 kernel 有测试"，**该陈述已过时**：`tests/kernels/` 现有 **14 个 kernel 测试目录全部齐全**（audit / capability / context / evaluation / event / execution / identity / memory / network / plugin / policy / resource / security / trust），14 项能力状态已全部为 `IMPLEMENTED`（DoD 七维 14/14，见 [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) 与 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
+**当前 CI 真实基线（run #80）：1138 passed / 14 skipped / 0 failed** —— 此前"1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 用 `|| echo` 吞退出码所致）。
 
 **4. 状态文件假数据已修正（2026-09-06）**
 `implementation-status.UNRELIABLE.yaml` 的 `tested: 14 / audited: 14` 与 `l10k-baseline.yaml` 的 `production_ready: true` 均为基于错误声明的判定，已分别修正为 `0 / 0` 与 `false`。修正前曾导致 L10K 虚报 28 个验证单元、3 个质量门禁误判 PASS。

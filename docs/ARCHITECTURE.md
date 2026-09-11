@@ -74,11 +74,14 @@ HUMAN
 | A | Foundation & Kernel | COMPLETE | 14 kernels, 6,391 行 |
 | B | Data & Storage | COMPLETE | PostgreSQL 15, alembic 31 表 |
 | C | Product & UI | IN PROGRESS | PM PRD, UIUX, Console |
-| D | Intelligence & Reasoning | IN PROGRESS | RAG, Memory, Knowledge |
-| E | Agent Runtime | BLOCKED | 依赖 D |
-| F | Network & Protocol | BLOCKED | 依赖 B |
+| D | Intelligence & Reasoning | COMPLETE | RAG, Memory, Knowledge（21 Phase 已全 IMPLEMENTED） |
+| E | Agent Runtime | COMPLETE | `src/ai/runtime_loop.py` + `agent_factory.py`（Phase 3，原标记 BLOCKED 已过时） |
+| F | Network & Protocol | COMPLETE | `src/ai/network_gateway.py` + `kernels/network`（Phase 14，原标记 BLOCKED 已过时） |
 | G | Platform & Tooling | COMPLETE | 工具链, CI/CD |
-| H | Operations & Security | 75% | 监控, 审计, 权限 |
+| H | Operations & Security | COMPLETE | 监控, 审计, 权限（Phase 16 + Hardening，CI 真实全绿） |
+
+> **2026-09-11 更正**：Workstream 状态曾长期未更新（E/F 标 BLOCKED）。实测 21 个 Phase 全部 IMPLEMENTED、
+> CI run #80 真实全绿（1138 passed / 14 skipped / 0 failed），故 D/E/F/H 一并更正为 COMPLETE。
 
 ---
 
