@@ -35,7 +35,10 @@ class TestRunPython:
         # an unbounded loop must be killed by the sandbox timeout (success=False)
         result = ComputeEngine().run_python("while True:\n    pass\n", timeout=2)
         assert result.success is False
-        assert result.exit_code == -1
+        # Killed by a signal -> negative exit code. The exact signal is
+        # platform-specific (-9 SIGKILL on Linux CI, -1 elsewhere); the
+        # contract under test is "terminated abnormally", not a magic number.
+        assert result.exit_code < 0
 
 
 class TestAnalyze:

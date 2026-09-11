@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 from src.integrations.orm_models import (
-    get_session, ALL_MODELS, gen_uuid,
+    Base, get_engine, get_session, ALL_MODELS, gen_uuid,
     APIKey, JWTToken, RBACRole, RBACPermission,
     RBACUser, RBACRolePermission, RBACUserRole,
     AuditLog, Span, Metric, Alert,
@@ -23,6 +23,18 @@ from src.integrations.orm_models import (
     Deployment, Budget,
 )
 from src.integrations.storage import get_storage, StorageManager, Repository, reset_storage
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_schema():
+    """Create ORM tables before the first test runs.
+
+    Default engine points at ./liuhao_ai_os.db which is gitignored, so on a
+    fresh checkout the file is absent and get_session() never creates the
+    schema -- every CRUD case then fails with "no such table". Tests must be
+    self-sufficient instead of depending on a pre-seeded local database.
+    """
+    Base.metadata.create_all(get_engine())
 
 
 @pytest.fixture(autouse=True)

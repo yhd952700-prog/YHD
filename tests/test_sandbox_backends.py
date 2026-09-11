@@ -25,7 +25,7 @@ from src.plugins.sandbox.backends.base import (
     ResourceLimits,
     ExecutionResult,
 )
-from src.plugins.sandbox.backends.subprocess_backend import SubprocessBackend
+from src.plugins.sandbox.backends.subprocess_backend import SubprocessBackend, IS_UNIX
 from src.plugins.sandbox.backends.manager import SandboxBackendManager
 
 
@@ -96,13 +96,30 @@ class TestSubprocessBackend:
         assert "test input" in result.stdout
 
     def test_execute_with_memory_limit(self):
-        limits = ResourceLimits(memory_limit=1024 * 1024)  # 1MB
+        # 128MB address space: a real cap that still leaves room for the
+        # command. The previous 1MB never worked on Linux CI -- RLIMIT_AS of
+        # 1MB cannot even start a dynamically linked binary. It passed locally
+        # only because IS_UNIX is False on Windows, so no limit was applied.
+        limits = ResourceLimits(memory_limit=128 * 1024 * 1024)
         result = self.backend.execute(
             execution_id="test-006",
             command=["echo", "test"],
             resource_limits=limits,
         )
         assert result.success is True
+
+    @pytest.mark.skipif(not IS_UNIX, reason="RLIMIT_AS is Unix-only")
+    def test_memory_limit_is_actually_enforced(self):
+        # 1MB address space cannot start a dynamically linked binary, so the
+        # child must fail -- this is the positive proof that the limit
+        # actually reaches the process instead of being silently ignored.
+        limits = ResourceLimits(memory_limit=1024 * 1024)
+        result = self.backend.execute(
+            execution_id="test-006-memcap",
+            command=["echo", "test"],
+            resource_limits=limits,
+        )
+        assert result.success is False
 
     def test_execute_with_working_directory(self):
         import tempfile
