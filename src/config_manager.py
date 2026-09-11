@@ -13,9 +13,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-project_dir = r'D:\LiuHao-AI-OS'
-CONFIG_DIR = Path(project_dir) / "configs"
-ENV_FILE = Path(project_dir) / ".env"
+# 项目根由本文件位置推导（src/config_manager.py -> 上级即根），不再写死某一台
+# 机器的绝对路径：写死会让 configs/ 与 .env 在其他机器/CI 上永远读不到，
+# 静默退化为默认值，属于"配置看起来生效其实没有"的隐患。
+project_dir = Path(__file__).resolve().parents[1]
+CONFIG_DIR = project_dir / "configs"
+ENV_FILE = project_dir / ".env"
 
 # 配置优先级（从高到低）
 CONFIG_PRIORITY = [

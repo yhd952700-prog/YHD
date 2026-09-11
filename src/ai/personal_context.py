@@ -36,9 +36,14 @@ from typing import Any, Dict, List, Optional
 
 from .observability import observe
 
+# 默认落在项目根目录，而非写死某台机器的绝对路径（写死会在 CI 工作区造出
+# 名为 "D:" 的目录，导致 upload-artifact 因路径含冒号失败）。
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 DEFAULT_DB_PATH = os.environ.get(
     "PERSONAL_CONTEXT_DB_PATH",
-    "D:/LiuHao-AI-OS/personal_context.db",
+    os.path.join(_PROJECT_ROOT, "personal_context.db"),
 )
 
 

@@ -20,9 +20,15 @@ from typing import Any, Dict, List, Optional
 
 from .observability import observe
 
+# 默认落在项目根目录，而不是写死某一台机器的绝对路径：保留"数据不入库内"
+# 的约定，同时保证在任何机器上 checkout 后都能直接运行（写死路径会在 CI 的
+# 工作区里造出名为 "D:" 的目录，upload-artifact 因路径含冒号而失败）。
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 DEFAULT_DB_PATH = os.environ.get(
     "CONVERSATION_DB_PATH",
-    "D:/LiuHao-AI-OS/conversation_store.db",
+    os.path.join(_PROJECT_ROOT, "conversation_store.db"),
 )
 
 

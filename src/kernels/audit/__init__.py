@@ -105,10 +105,16 @@ class AuditStore:
 
     def __init__(self, db_path: str = None):
         if db_path is None:
-            # Default to D:\ drive per user constraint
+            # 默认落在项目根目录，而非写死某台机器的绝对路径（写死会在 CI
+            # 工作区造出名为 "D:" 的目录，upload-artifact 因含冒号失败）。
+            _project_root = os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+            )
             db_path = os.environ.get(
                 "AUDIT_DB_PATH",
-                "D:/LiuHao-AI-OS/audit_store.db"
+                os.path.join(_project_root, "audit_store.db")
             )
         self._db_path = db_path
         self._init_db()

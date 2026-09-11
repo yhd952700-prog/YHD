@@ -23,8 +23,14 @@ from typing import Any, Dict, List, Optional
 
 from ...ai.observability import observe
 
-# 默认落盘位置（遵循用户约束：交付物/数据一律 D 盘）。
-DEFAULT_DB_PATH = "D:/LiuHao-AI-OS/memory_store.db"
+# 默认落盘位置：项目根目录（非写死某台机器的绝对路径 —— 写死会在 CI 工作区
+# 造出名为 "D:" 的目录，upload-artifact 因路径含冒号失败）。
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+)
+DEFAULT_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
 
 
 class MemoryStore:
