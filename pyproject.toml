@@ -35,6 +35,9 @@ dependencies = [
     # redis 是 config 里的必填项；qdrant-client 此前只靠传递依赖"碰巧可 import"。
     "redis>=5.0.0",
     "qdrant-client>=1.9.0",
+    # 异步引擎回归测试用 sqlite+aiosqlite 驱动；此前只靠 arize-phoenix /
+    # langgraph-checkpoint-sqlite 传递带入，任一上游去掉它测试就会挂。
+    "aiosqlite>=0.20.0",
 ]
 
 [build-system]
