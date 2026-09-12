@@ -166,6 +166,11 @@ jobs:
       - name: Verify AI-layer audit delegation (probe self-validation)
         run: python scripts/verify_ai_layer_audit.py
 
+      # Licenses drift silently (Redis v8 -> AGPLv3, Elasticsearch -> SSPL).
+      # A version pin never tells you that; this does.
+      - name: Verify OSS component licenses against oss-registry.yaml
+        run: python scripts/verify_oss_licenses.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db

@@ -1,0 +1,270 @@
+# 鎏灏 · 开源组件登记册（OSS Component Registry）
+#
+# 用途：记录每个外部开源组件的来源与许可证，供 `scripts/verify_oss_licenses.py`
+# 做机器校验。新增任何第三方依赖都必须先登记在这里，否则护栏会报错。
+#
+# 数据口径：license 字段取自本机 .venv 的 importlib.metadata（真实读取，非人工估计）。
+# 字段说明：
+#   name          PyPI 分发名
+#   import_name   实际 import 名（通常与分发名不同，如 opentelemetry-api -> opentelemetry）
+#   license       实测许可证表达式（来自包元数据）
+#   category      所属技术领域
+#   used          src/ 中是否真实引用（0 = 声明了但没接线，属"假能力"，见报告 §D）
+#   risk          low / review / high（high = 需要 acknowledged 才能过护栏）
+#   acknowledged  对 review/high 项的书面接受理由与约束；缺失则护栏失败
+#   action        下一步处置建议
+
+version: 1
+generated: 2026-09-12
+
+# ---------------------------------------------------------------- 允许的许可证
+# MPL-2.0 是文件级 copyleft：仅使用、不修改其源文件时无传染风险，故列入允许，
+# 但修改 MPL 文件则须公开该文件源码 —— 已在 note 中标注。
+allow_licenses:
+  - MIT
+  - MIT License
+  - Apache-2.0
+  - Apache Software License
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - BSD License
+  - ISC
+  - PSF-2.0
+  - Unlicense
+  - CC0-1.0
+  - MPL-2.0
+
+# ------------------------------------------------------- 受限许可证（必须 acknowledged）
+restricted_licenses:
+  - AGPL-3.0
+  - GPL-3.0
+  - LGPL-3.0
+  - SSPL
+  - Elastic-2.0
+  - BSL
+  - OpenRAIL-M
+  - CC-BY-NC
+
+components:
+  # ---------------- Web / API ----------------
+  - name: fastapi
+    import_name: fastapi
+    license: MIT
+    category: api
+    used: yes
+    risk: low
+    action: 核心框架，保持
+  - name: starlette
+    import_name: starlette
+    license: BSD-3-Clause
+    category: api
+    used: yes
+    risk: low
+    action: FastAPI 底层，保持
+  - name: uvicorn
+    import_name: uvicorn
+    license: BSD-3-Clause
+    category: api
+    used: yes
+    risk: low
+    action: ASGI 服务器，保持
+  - name: pydantic
+    import_name: pydantic
+    license: MIT
+    category: api
+    used: yes
+    risk: low
+    action: 数据契约层，保持
+
+  # ---------------- 数据层 ----------------
+  - name: sqlalchemy
+    import_name: sqlalchemy
+    license: MIT
+    category: database
+    used: yes
+    risk: low
+    action: ORM，保持
+  - name: alembic
+    import_name: alembic
+    license: MIT
+    category: database
+    used: yes
+    risk: low
+    action: 迁移工具，保持
+
+  # ---------------- 可观测性 ----------------
+  - name: structlog
+    import_name: structlog
+    license: MIT OR Apache-2.0
+    category: observability
+    used: yes
+    risk: low
+    action: 结构化日志，保持
+  - name: prometheus-client
+    import_name: prometheus_client
+    license: Apache-2.0
+    category: observability
+    used: yes
+    risk: low
+    action: 指标暴露，保持
+  - name: opentelemetry-api
+    import_name: opentelemetry
+    license: Apache-2.0
+    category: observability
+    used: partial
+    risk: low
+    action: 已装但仅单点引用，建议补齐 trace 导出
+  - name: opentelemetry-sdk
+    import_name: opentelemetry
+    license: Apache-2.0
+    category: observability
+    used: partial
+    risk: low
+    action: 同上
+  - name: opentelemetry-instrumentation-fastapi
+    import_name: opentelemetry
+    license: Apache-2.0
+    category: observability
+    used: partial
+    risk: low
+    action: 建议启用 FastAPI 自动埋点
+  - name: arize-phoenix
+    import_name: phoenix
+    license: Elastic-2.0
+    category: observability
+    used: partial
+    risk: high
+    acknowledged: >-
+      Elastic License 2.0 属 source-available，非 OSI 开源：禁止将 Phoenix
+      作为托管服务提供给第三方，禁止规避其付费功能。当前仅内部自托管、且未作为
+      对外服务转售，故接受。若未来要对外提供托管观测服务，必须替换。
+    action: 高优先：src/ 中几乎未接线却承担许可证约束，建议改用 MIT 的 Langfuse
+      或 Apache-2.0 的 Opik
+
+  # ---------------- LLM / Agent（声明了但未接线） ----------------
+  - name: mem0ai
+    import_name: mem0
+    license: Apache-2.0
+    category: ai-memory
+    used: no
+    risk: low
+    action: 声明了但 src/ 零引用 —— 要么接通为 memory 内核的记忆后端，要么移除
+  - name: langgraph
+    import_name: langgraph
+    license: MIT
+    category: agent
+    used: no
+    risk: low
+    action: 声明了但 src/ 零引用，同上
+  - name: langchain
+    import_name: langchain
+    license: MIT
+    category: agent
+    used: no
+    risk: low
+    action: 声明了但 src/ 零引用，同上
+  - name: langfuse
+    import_name: langfuse
+    license: MIT
+    category: observability
+    used: no
+    risk: low
+    action: 建议用来替代 Elastic-2.0 的 Phoenix
+
+  # ---------------- 存储 / 缓存 ----------------
+  - name: redis
+    import_name: redis
+    license: MIT
+    category: cache
+    used: no
+    risk: review
+    acknowledged: >-
+      Python 客户端为 MIT，但 Redis 服务端自 v8 起改为 AGPLv3（网络 copyleft）。
+      当前 src/ 零引用，未实际连接任何 Redis 服务，故无传染风险。
+      若将来引入 Redis 服务端，必须重新评估 AGPLv3 义务，或改用 Valkey（BSD-3）。
+    action: 未使用，建议移除；若要用缓存优先考虑 Valkey(BSD-3) 或纯内存方案
+  - name: qdrant-client
+    import_name: qdrant_client
+    license: Apache-2.0
+    category: vector-db
+    used: no
+    risk: low
+    action: 声明了但零引用；若要上 RAG，优先评估 sqlite-vec(MIT/Apache-2.0 双许可)
+      或 LanceDB(Apache-2.0) 这类嵌入式方案，避免额外运维
+
+  # ---------------- 安全 ----------------
+  - name: hvac
+    import_name: hvac
+    license: Apache-2.0
+    category: security
+    used: yes
+    risk: low
+    action: HashiCorp Vault 客户端，保持
+  - name: cryptography
+    import_name: cryptography
+    license: Apache-2.0 OR BSD-3-Clause
+    category: security
+    used: yes
+    risk: low
+    action: 保持，并纳入定期 CVE 扫描
+
+  # ---------------- 序列化 / 性能 ----------------
+  - name: orjson
+    import_name: orjson
+    license: MPL-2.0 AND (Apache-2.0 OR MIT)
+    category: performance
+    used: partial
+    risk: review
+    acknowledged: >-
+      含 MPL-2.0 成分（文件级 copyleft）。仅作为未修改的第三方轮子使用，
+      不修改其源码，故不触发 MPL 的源码公开义务。
+    action: 实测在本项目负载下无收益（响应体仅数百字节，耗时由 DB/审计计数主导），
+      已搁置启用；待出现大响应体端点且 profiler 指认序列化为瓶颈时再启用
+
+  # ---------------- LLM 供应商 SDK ----------------
+  - name: openai
+    import_name: openai
+    license: Apache-2.0
+    category: model
+    used: yes
+    risk: low
+    action: 保持
+  - name: anthropic
+    import_name: anthropic
+    license: MIT
+    category: model
+    used: yes
+    risk: low
+    action: 保持
+
+  # ---------------- 测试 ----------------
+  - name: pytest
+    import_name: pytest
+    license: MIT
+    category: testing
+    used: yes
+    risk: low
+    action: 保持
+  - name: pytest-asyncio
+    import_name: pytest_asyncio
+    license: Apache-2.0
+    category: testing
+    used: yes
+    risk: low
+    action: 保持
+
+  # ---------------- 杂项 ----------------
+  - name: pyyaml
+    import_name: yaml
+    license: MIT
+    category: config
+    used: yes
+    risk: low
+    action: 保持；注意始终使用 yaml.safe_load
+  - name: httpx
+    import_name: httpx
+    license: BSD-3-Clause
+    category: api
+    used: yes
+    risk: low
+    action: 保持
