@@ -749,6 +749,37 @@ CI 里跑）。
 清空 `LIUHAO_KERNEL_POLICY_ENFORCE` 并重启即可（无需改代码、无需发版）。
 `GET /v1/policy/enforcement` 与启动日志均可即时确认当前状态。
 
+## 10.10 护栏接入 CI（2026-09-12 Round 74）
+
+**发现**：`scripts/verify_*.py` 共 9 个，CI **一个都没跑**。其中 3 个是实质上的「假护栏」：
+
+| 脚本 | 实测缺陷 |
+|---|---|
+| `verify_orm_vs_db.py` | 缺 `sys.path` 引导 → `ModuleNotFoundError: No module named 'src'`；已算出 `diverged` 却从不返回非零退出码 |
+| `verify_persistence.py` | 同上；另在读回失败时 cleanup 会以 `AttributeError` 崩溃 |
+| `verify_ai_layer_audit.py` | **确有**失败路径（对照探针失效时 `main()` `return 2`），但从未被任何 workflow 调用 |
+
+**处置**
+
+- `verify_orm_vs_db.py` / `verify_persistence.py`：补齐 `sys.path` 引导并给出真实退出码；
+  persistence 的 cleanup 改为容忍读回失败，让退出码承载判定而非抛 `AttributeError`。
+- `ci.yml` 新增 `guardrails` job：**8 个**脚本接入（第 9 个 `verify_metrics_persist.py`
+  本就有独立工作流 `verify_metrics_persist.yml`）。两个 DB 护栏通过
+  `alembic upgrade head` 在 CI 内造 scratch 库后运行。
+- 新增元护栏 `tests/test_guardrail_scripts.py`（31 例）：断言每个 `verify_*.py`
+  （a）有 `sys.path` 引导、（b）AST 层面存在可产生非零退出的路径、（c）被某个
+  workflow 调用。豁免名单 `DIAGNOSTIC_REPORTERS` **当前为空** —— 即不存在无门禁
+  能力的 `verify_*` 脚本。
+
+**双向对照（证明修复有效，而非仅仅「看起来能跑」）**
+
+- `verify_orm_vs_db.py` 对 schema 残缺的库 → `DIVERGENCES FOUND: YES`，exit 1；
+- `verify_persistence.py` 对无表库 → exit 1（响亮失败，不再静默退出 0）；
+- 元护栏自身两组反向对照：删掉失败退出码 → 被抓；把脚本从 CI 摘掉 → 被抓。
+
+**注意**：`sqlalchemy` / `alembic` **不在** `pyproject.dependencies`（只在
+`requirements.txt`），故 `guardrails` job 显式 `pip install alembic sqlalchemy`。
+
 ---
 
 *END OF POLICY-ENFORCEMENT-DESIGN*

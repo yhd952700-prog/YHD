@@ -114,6 +114,66 @@ jobs:
       - name: Run Observability Checks
         run: python scripts/ci_observability_check.py
 
+  # Guardrails: every `scripts/verify_*.py` that carries a pass/fail contract.
+  # These scripts protect the Policy route C invariants (C-1..C-5), the D8 risk
+  # registry, AI-layer audit delegation, and the ORM/migration + cross-session
+  # persistence guarantees.
+  # Each one exits non-zero on violation, so a red job here is a real gate.
+  # All nine `scripts/verify_*.py` are wired somewhere: eight run here and
+  # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
+  guardrails:
+    name: Guardrails (Policy C-1..C-5, ORM, persistence)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install alembic sqlalchemy
+
+      - name: Verify C-1 whitelist adjudication
+        run: python scripts/verify_policy_c1.py
+
+      - name: Verify D8 risk classification wiring
+        run: python scripts/verify_d8_risk_classification.py
+
+      - name: Verify C-2 enforcement switch is not armed by code
+        run: python scripts/verify_c2_enforcement.py
+
+      - name: Verify C-3 sovereignty / DEFER semantics
+        run: python scripts/verify_c3_sovereignty.py
+
+      - name: Verify C-4/C-5 approval channel and arming policy
+        run: python scripts/verify_c4_approval_channel.py
+
+      - name: Verify AI-layer audit delegation (probe self-validation)
+        run: python scripts/verify_ai_layer_audit.py
+
+      - name: Migrate a scratch database
+        run: |
+          rm -f ci_guardrail.db
+          DATABASE_URL="sqlite:///./ci_guardrail.db" python -m alembic upgrade head
+
+      - name: Verify ORM models match the migrated schema
+        env:
+          DATABASE_URL: sqlite:///./ci_guardrail.db
+        run: python scripts/verify_orm_vs_db.py
+
+      - name: Verify cross-session persistence
+        env:
+          DATABASE_URL: sqlite:///./ci_guardrail.db
+        run: python scripts/verify_persistence.py
+
   # Linting job
   lint:
     name: Linting

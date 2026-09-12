@@ -5,9 +5,14 @@ divergences. Uses raw type strings so JSON vs TEXT mismatches are surfaced.
 """
 import os
 import sys
+from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
-from src.integrations.orm_models import Base
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from sqlalchemy import create_engine, inspect  # noqa: E402
+from src.integrations.orm_models import Base  # noqa: E402
 
 DB_URL = os.environ.get("DATABASE_URL", "sqlite:///./liuhao_ai_os.db")
 engine = create_engine(DB_URL)
@@ -56,5 +61,8 @@ for tname in shared:
             print(f"  [{tname}] DB col missing in MODEL: {dcname} ({db_cols[dcname]['type']})")
 
 print()
-print("=== DIVERGENCES FOUND:" , "YES" if diverged else "NONE")
+print("=== DIVERGENCES FOUND:", "YES" if diverged else "NONE")
 print("=== DONE ===")
+# Gate: a divergence must fail the process. Without this, the script reports
+# a problem that CI would never notice (see tests/test_guardrail_scripts.py).
+sys.exit(1 if diverged else 0)

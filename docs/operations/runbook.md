@@ -118,6 +118,29 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
   必须在**同一进程**内于 `grant_window(grant)` 窗口中进行。运维侧若要执行
   `capability.retire`，当前途径是：临时把开关置空 → 执行 → 恢复开关。
 
+### 6.2 安全护栏已接入 CI（Round 74）
+
+安全不变量此前只靠「人记得跑脚本」维持。自 Round 74 起 `scripts/verify_*.py`
+全部作为硬门禁跑在 CI 里（`ci.yml` 的 `guardrails` job）。
+
+| 护栏 | 守住的不变量 |
+|---|---|
+| `verify_policy_c1.py` | 白名单驱动判决；allow / deny 集合不重叠且无陈旧项 |
+| `verify_d8_risk_classification.py` | 43 个内核动作的风险分级注册表与装饰器接线一致 |
+| `verify_c2_enforcement.py` | **无任何生产调用点**自行把 `enforce` 翻为 `True` |
+| `verify_c3_sovereignty.py` | DEFER 语义；主权通道未被生产代码开启 |
+| `verify_c4_approval_channel.py` | 审批主体只来自 JWT；`ApprovalRequest` 不含 `principal` |
+| `verify_ai_layer_audit.py` | AI 层审计下沉的对照探针自校验（探针失效即失败） |
+| `verify_orm_vs_db.py` | ORM 模型与 alembic 迁移后的 schema 无列级分歧 |
+| `verify_persistence.py` | 跨会话（重连）持久化可读回 |
+| `verify_metrics_persist.py` | 指标样本真实落库（自有工作流，不在 `ci.yml` 内） |
+
+- **元护栏**：`tests/test_guardrail_scripts.py` 断言每个 `verify_*.py` 都有
+  `sys.path` 引导、都存在能产生非零退出的路径、且都被某个 workflow 调用。
+  因此「新增一个永远通过的假护栏」在本仓库已不可能 —— CI 会直接红。
+- **手工复跑**：`.venv/Scripts/python.exe scripts/verify_c4_approval_channel.py`。
+  两个 DB 护栏需先建库：`DATABASE_URL=sqlite:///./scratch.db python -m alembic upgrade head`。
+
 ---
 
 ## 7. 已知历史遗留（未在本收口处理，待后续）
