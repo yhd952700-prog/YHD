@@ -133,22 +133,36 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
 `apps/console/console` 的「审批中心」（侧栏 → 审批中心）已接线到上述端点，是**唯一**
 面向操作者的人工授权界面。使用步骤：
 
-1. 签发令牌（**本机**执行，网关没有也不应有 `/v1/auth/login`）：
+1. **登记人类（一次）**。自 Policy C-7（Round 77）起，判据是**正向白名单**：
+   只有 `metadata.kind == "human"` 的主体能持有主权，内置 `system` 已被拒。
+   身份内核是**内存态**，所以登记必须落到种子文件才能活过重启：
    ```bash
-   python scripts/issue_console_token.py --list                 # 看当前门接受哪些主体
+   python scripts/register_human_identity.py --list
+   python scripts/register_human_identity.py --principal xin.hongda --display-name "辛宏达"
+   ```
+   写入 `config/human_identities.json`（已 gitignore，含真实姓名属运维数据；
+   样例见 `config/human_identities.example.json`），并在服务环境设置：
+   ```bash
+   LIUHAO_HUMAN_IDENTITIES_FILE=/app/config/human_identities.json
+   ```
+   **未设置 = 零个已登记人类**（fail-closed，审批通道没有可用主体）。
+   脚本写完会**启动一个全新内核验证闭环**，验证失败则非零退出。
+2. 签发令牌（**本机**执行，网关没有也不应有 `/v1/auth/login`）：
+   ```bash
+   python scripts/issue_console_token.py --list                 # 看当前哪些人可以批
    python scripts/issue_console_token.py --principal <id>       # 打印令牌
    ```
    令牌的信任锚是**本机文件系统访问**——能跑这个脚本的人本就能读 JWT 签名密钥，
    所以登录表单只增加仪式感，不增加安全。
-2. 打开驾驶舱 →「审批中心」→ 粘贴令牌 → 保存（只存 sessionStorage，关标签页即失效）。
-3. 面板显示真实拦截态势（含豁免项）、有效凭据、以及「记录授权 / 撤销」。
+3. 打开驾驶舱 →「审批中心」→ 粘贴令牌 → 保存（只存 sessionStorage，关标签页即失效）。
+4. 面板显示真实拦截态势（含豁免项）、有效凭据、以及「记录授权 / 撤销」。
 
 - ⚠️ **未认证时不显示任何编造状态**：快照会暴露**未受管**的动作集合，因此
   `GET /v1/policy/enforcement` 也要求令牌；未认证时侧栏如实显示 `UNVERIFIED`。
 - ⚠️ **面板按钮是「记录授权」，不是「放行」**——理由见上面的已知边界。
-- ⚠️ **C-7（待裁决）**：内置 `system` 账号不带 `metadata.kind`，会被当作「已核验人类」，
-  可持有主权并在审计中记为「system 批准」。脚本与面板都会就此告警。详见设计文档
-  §10.12.3。
+- ✅ **C-7 已修复（Round 77）**：内置 `system` 不再被当作「已核验人类」
+  （`is_human_identity` = ACTIVE **且** `kind == "human"`），签发凭据会被内核以 400 拒绝。
+  若令牌主体是内置机器身份，面板会明确提示「无法持有主权」。详见设计文档 §10.14。
 
 ### 6.2 安全护栏已接入 CI（Round 74；Round 76 增补前端构建）
 

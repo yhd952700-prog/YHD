@@ -988,23 +988,11 @@ retry inside its window」。**这句话对 HTTP 调用方是假的。** 实测�
 「动作 ← 凭据 ← 授权人」，而这一环可以是一个机器身份，与 OD-010「须由**经核验的人类**授权」
 语义相悖。
 
-**本轮处置（刻意的克制）**：**不改判据**。收紧「什么算已核验人类」是安全语义变更，按本项目
-一贯做法（C-2 机制先建 → C-5 才裁决武装）应由用户主权裁决，不在界面工作里顺手做掉。
-本轮只做三件如实的事：
+**当时（Round 76）的处置：只标注，不改判据。** 收紧「什么算已核验人类」是安全语义变更，
+按本项目一贯做法（C-2 机制先建 → C-5 才裁决武装）应���用户主权裁决，不在界面工作里顺手做掉。
 
-1. `issue_console_token.py` 的 `--list` 标注 `[NOT a registered human]`，并在无任何人类身份
-   时整段警告；
-2. 面板在令牌主体是内置机器身份时显示 C-7 提示（`BUILTIN_MACHINE_PRINCIPALS`，由
-   `tests/test_policy_approval_http.py::test_builtin_machine_principals_match_the_identity_kernel`
-   与身份内核做**跨语言**一致性断言，改一边不改另一边会红）；
-3. 本记录。
-
-**建议的修法（待裁决）**：(b) 把判据从反向排除改为**正向白名单** `metadata.kind == "human"`。
-影响面已实测：`src/` 中**没有任何一处**创建 `kind="human"` 的身份
-（`src/ai/liuhao.py:85`、`src/ai/agent_factory.py:246`、`src/ai/network_gateway.py:221` 均不带该
-metadata），因此改后 `--list` 会**变空** —— 不是因为功能坏了，而是**确实还没有登记过人类
-身份**。这意味着 (b) 同时带来一个前置工作：需要一个登记人类身份的正式路径，否则审批通道
-在生产中没有可用主体。(a) 仅额外排除 `system` 则是治标，下一个未标记身份照样漏。
+> **⚠️ 本节已被 §10.14 取代（2026-09-12 Round 77）。** 用户裁决「需要」→ **C-7 已实施**：
+> 判据改为正向白名单，并配套了人类身份登记路径。**以下为历史记录，不再代表当前状态。**
 
 ### 10.12.4 验证
 
@@ -1054,6 +1042,64 @@ metadata），因此改后 `--list` 会**变空** —— 不是因为功能坏�
 (a) 新增一条绕过能力层硬 gate 的内核动作入口；
 (b) 出现一次「因 scope 为 L7 而未被拦下」的真实事故；
 (c) 能力层硬 gate 数量下降。
+
+---
+
+## 10.14 实施记录（C-7：人类身份正向白名单 + 登记路径，2026-09-12 Round 77）
+
+用户裁决：**需要**（含配套的人类身份登记路径）。本节取代 §10.12.3。
+
+### 10.14.1 改了什么
+
+| 层 | 交付 |
+|---|---|
+| 内核 | `src/kernels/identity/__init__.py`：`HUMAN_KIND` / `METADATA_KIND_KEY` 常量、`is_human_identity()`（**正向白名单**）、`create_human_identity()`（唯一被认可的登记入口） |
+| 内核 | `policy._is_verified_human` 与 `_sovereignty._validated_principal` 两处**反向排除 → 正向白名单**（fail-closed） |
+| 内核 | `IdentityManager` 启动时按 `LIUHAO_HUMAN_IDENTITIES_FILE` 装载已登记人类（**解决内存态无法持久化**） |
+| 脚本 | `scripts/register_human_identity.py`（`--list` / `--principal` / `--revoke`），写入种子文件并**验证闭环** |
+| 测试 | `tests/kernels/identity/test_human_identity_c7.py`（20 项）+ `test_policy.py` 新增 2 项回归 |
+| 配置 | `config/human_identities.example.json`；真实登记表 `config/human_identities.json` 已加入 `.gitignore`（含真实姓名，属运维数据） |
+
+### 10.14.2 为什么必须同时做登记路径（否则就是假修复）
+
+实测：身份内核**纯内存**（`self._identities: Dict`，无 ORM 表、无 load/save），
+运行时只有 2 个身份，`system`（`metadata={}`）与 `liuhao-internal-service`（`kind=service`）。
+**0 个**能通过 `kind=="human"` 白名单。
+
+若只改判据而不给持久化登记路径，结果就是审批通道**没有任何可用主体** ——
+那不是"更安全"，而是把一个能用的（虽然记错人的）通道换成了一个死通道。
+这与 §10.12.2 揭示的 `grant_window` 教训同源：**建了机制但没人调用 = 假能力**。
+
+因此登记路径不是可选项，是 C-7 的前置条件。
+
+### 10.14.3 实测确认（端到端）
+
+| 检查 | 结果 |
+|---|---|
+| `system` 的 `is_human_identity` | **False**（改前 True） |
+| 策略判决 `{"type":"human","id":"system"}` | **deny**（改前 `human_sovereignty:allow`） |
+| `issue_grant("system", [capability.retire])` | **被拒**（改前成功） |
+| 登记真人后 `issue_grant` | 成功 |
+| 在 `grant_window` 内执行 CRITICAL 动作 | 真的执行 → **通道未变砖** |
+
+**反向对照（证明测试有效）**：把种子装载改回 `create_identity` 写法后，进程**挂死**
+（无限递归，直到超时被杀）；当前实现秒回。故 `test_seeded_humans_are_loaded` 确实能抓住该回归。
+
+### 10.14.4 本轮踩到的坑（已入 PITFALLS）
+
+**在 `__init__` 里调 `@kernel_action` 方法 = 无限递归。**
+`IdentityManager.__init__` 调 `create_identity`（带 `@kernel_action`）→ 策略判决 →
+`_is_verified_service` → `get_identity_manager()` → 全局单例此时**尚未赋值**
+（`_global_manager = IdentityManager()` 在构造完成后才赋值）→ 再构造一个 → 无限递归。
+且 `@kernel_action` 的 `except Exception` 会把 `RecursionError` 吞掉，所以表现为**挂死**而非报错。
+修法：种子身份按内置 `system`/service 的方式**直接构造 `AgentIdentity`**，不经过 `create_identity`。
+
+### 10.14.5 未做的事（明确边界）
+
+- **未做 DB 持久化**：种子是 JSON 文件，不是数据库表。够用于单机部署；多副本/集中管理
+  需要独立的身份持久化方案（含 schema 与迁移），已记录为技术债，不在本轮范围。
+- **未新增 HTTP 登记端点**：与不加 `/v1/auth/login` 同理（§10.12.1），登记走本机脚本。
+- **未自动迁移存量身份**：改前不存在任何 `kind="human"` 的身份，无存量可迁。
 
 ---
 

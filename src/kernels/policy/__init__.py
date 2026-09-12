@@ -646,9 +646,18 @@ class PolicyEngine:
         A human sovereignty override is only legitimate for an actor whose
         identity has been verified by the Identity Kernel. The actor must
         reference a known identity (by ``id`` / ``identity_id`` /
-        ``principal``); that identity must exist and be ACTIVE. A bare
-        ``actor.type == "human"`` with no verifiable identity is treated
-        as unverified and cannot trigger the override.
+        ``principal``); that identity must exist, be ACTIVE, and -- since
+        Policy C-7 -- be **positively registered as a human**
+        (``metadata["kind"] == "human"``). A bare ``actor.type == "human"``
+        with no verifiable identity is treated as unverified and cannot
+        trigger the override.
+
+        C-7 changed this from a reverse exclusion ("kind is not service") to
+        a positive allowlist. The old form **failed open**: the built-in
+        ``system`` identity carries no ``kind`` at all, so it counted as a
+        verified human and could hold human sovereignty -- recording a machine
+        as the approver of a CRITICAL action. Merely not being a service is
+        not evidence of being human.
         """
         ref = actor.get("id") or actor.get("identity_id") or actor.get("principal")
         if not ref:
@@ -666,14 +675,15 @@ class PolicyEngine:
             return False
         if ident.status != IdentityStatus.ACTIVE:
             return False
-        # A *service* identity must NEVER satisfy the human verifier. The
-        # actor TYPE selects which verifier runs, but a caller could pass
-        # ``{"type": "human", "principal": <service-id>}`` to smuggle the
-        # internal service principal past the human-sovereignty gate.
-        # Requiring a non-service kind closes that spoofing vector
-        # (Policy C-3 -- the dynamic human-principal channel depends on it).
-        metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
-        return metadata.get("kind") != "service"
+        # Positive allowlist (Policy C-7). A *service* identity must never
+        # satisfy the human verifier: the actor TYPE selects which verifier
+        # runs, but a caller could pass ``{"type": "human", "principal":
+        # <service-id>}`` to smuggle the internal service principal past the
+        # human-sovereignty gate. Requiring kind == "human" closes that
+        # spoofing vector (Policy C-3) *and* the unmarked-machine hole: an
+        # identity with no kind marker is no longer assumed human.
+        from src.kernels.identity import is_human_identity
+        return is_human_identity(ident)
 
     def _compute_verified(self, actor: Dict[str, Any]) -> bool:
         """Dispatch identity verification by actor type.

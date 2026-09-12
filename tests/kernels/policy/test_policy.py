@@ -58,11 +58,16 @@ class TestBuiltins:
     def test_human_sovereignty_allows_human_high_risk(self, engine):
         # P10: a *verified* human (registered + ACTIVE identity) may
         # trigger the sovereignty override for high-risk actions.
+        #
+        # Since Policy C-7 "verified human" is a POSITIVE allowlist: the
+        # identity must be registered through ``create_human_identity``,
+        # which stamps ``metadata["kind"] == "human"``. Registering it with
+        # a bare ``create_identity`` is no longer sufficient -- see the
+        # companion test below.
         import uuid
-        from src.kernels.identity import create_identity, IdentityScope
-        ident = create_identity(
+        from src.kernels.identity import get_identity_manager
+        ident = get_identity_manager().create_human_identity(
             principal=f"human:{uuid.uuid4().hex}",
-            scope=IdentityScope.L0,
             trust_score=1.0,
         )
         decision = engine.evaluate_simple(
@@ -72,6 +77,38 @@ class TestBuiltins:
         assert decision.is_allowed
         assert decision.decision is PolicyEffect.ALLOW
         assert any(r.id == "human_sovereignty" for r in decision.matched_rules)
+
+    def test_an_unmarked_identity_is_not_a_verified_human(self, engine):
+        # Policy C-7. The previous test was ``kind != "service"``, a reverse
+        # exclusion that fails OPEN: the built-in ``system`` identity has no
+        # kind at all and therefore counted as a verified human.
+        #
+        # This is the regression test. If the verifier ever goes back to a
+        # reverse exclusion, this fails.
+        import uuid
+        from src.kernels.identity import IdentityScope, create_identity
+        ident = create_identity(
+            principal=f"unmarked:{uuid.uuid4().hex}",
+            scope=IdentityScope.L0,
+            trust_score=1.0,
+        )
+        decision = engine.evaluate_simple(
+            actor={"type": "human", "id": ident.id},
+            action={"name": "deploy", "risk_level": "CRITICAL"},
+        )
+        assert not any(r.id == "human_sovereignty" for r in decision.matched_rules)
+        assert decision.is_denied
+
+    def test_the_builtin_system_identity_is_not_a_verified_human(self, engine):
+        # The concrete C-7 finding: ``system`` is auto-created with
+        # ``metadata={}``. It must never be able to hold human sovereignty,
+        # or a machine ends up recorded as the approver of a CRITICAL action.
+        decision = engine.evaluate_simple(
+            actor={"type": "human", "id": "system"},
+            action={"name": "capability.retire", "risk_level": "CRITICAL"},
+        )
+        assert not any(r.id == "human_sovereignty" for r in decision.matched_rules)
+        assert decision.is_denied
 
     def test_human_sovereignty_does_not_match_agent(self, engine):
         decision = engine.evaluate_simple(

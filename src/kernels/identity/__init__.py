@@ -16,11 +16,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
+import json
+import logging
+import os
 from typing import Any, Dict, List, Optional, Set
 import uuid
 import threading
 
 from src.kernels._crosscutting import kernel_action
+
+logger = logging.getLogger("liuhao.kernel.identity")
 
 #: Principal / id of the built-in internal service identity.
 #:
@@ -29,6 +34,52 @@ from src.kernels._crosscutting import kernel_action
 #: marker and never needs this name; ``_crosscutting`` imports it lazily to
 #: attribute kernel actions.
 INTERNAL_SERVICE_PRINCIPAL = "liuhao-internal-service"
+
+#: ``metadata`` key holding an identity's kind, and its two sanctioned values.
+#:
+#: These three names are the single source of truth for "is this actor a
+#: human?". Both consumers -- the Policy Kernel's ``_is_verified_human`` and
+#: the sovereignty channel's ``_validated_principal`` -- must ask
+#: ``is_human_identity`` rather than re-deriving the answer from raw metadata.
+METADATA_KIND_KEY = "kind"
+SERVICE_KIND = "service"
+HUMAN_KIND = "human"
+
+#: Where registered human identities are persisted.
+#:
+#: ``IdentityManager`` holds identities in memory only, so a human registered
+#: through a one-off call would vanish on restart -- which would make the
+#: approval channel look wired while having nobody able to approve. Setting
+#: this variable to a JSON seed file is what makes registration durable.
+#: Unset (the default) means **no humans are registered**: fail-closed and
+#: honest, rather than falling back to a machine identity.
+HUMAN_IDENTITIES_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
+
+#: ``metadata`` key for a human-friendly name, shown by operators' tooling.
+METADATA_DISPLAY_NAME_KEY = "display_name"
+
+
+def is_human_identity(identity: Optional[AgentIdentity]) -> bool:
+    """Return True iff ``identity`` is a registered, ACTIVE *human*.
+
+    This is a **positive allowlist**, not a reverse exclusion. An identity
+    qualifies only by carrying ``metadata["kind"] == "human"``; merely *not*
+    being a service is not evidence of being human.
+
+    Why that distinction matters (Policy C-7): the previous test was
+    ``metadata.get("kind") != "service"``, which **fails open** for any
+    identity that simply lacks the marker. The built-in ``system`` identity
+    (auto-created, ``metadata={}``) therefore satisfied "verified human" and
+    could hold human sovereignty -- the audit trail recorded a machine as the
+    approver of a CRITICAL action, defeating the accountability chain that
+    OD-010 exists to establish.
+    """
+    if identity is None:
+        return False
+    if getattr(identity, "status", None) != IdentityStatus.ACTIVE:
+        return False
+    metadata = identity.metadata if isinstance(identity.metadata, dict) else {}
+    return metadata.get(METADATA_KIND_KEY) == HUMAN_KIND
 
 
 class IdentityScope(str, Enum):
@@ -128,6 +179,112 @@ class IdentityManager:
             self._identities[INTERNAL_SERVICE_PRINCIPAL] = service_identity
             self._principal_index[INTERNAL_SERVICE_PRINCIPAL] = INTERNAL_SERVICE_PRINCIPAL
 
+        self._seed_human_identities()
+
+    def _seed_human_identities(self) -> int:
+        """Load registered humans from the file named by the env var.
+
+        Returns how many were loaded. **Unset variable means zero humans** --
+        that is deliberately fail-closed rather than a silent fallback to a
+        machine identity (Policy C-7).
+
+        A malformed or unreadable file is logged loudly and loads nothing.
+        Crashing on it would take down every kernel consumer for a
+        configuration problem; silently ignoring it would leave operators
+        believing a human was registered when none was.
+        """
+        path = (os.environ.get(HUMAN_IDENTITIES_FILE_ENV) or "").strip()
+        if not path:
+            return 0
+        if not os.path.isfile(path):
+            logger.warning(
+                "%s is set to %r but no such file exists -- no human identity "
+                "can approve. Create it with scripts/register_human_identity.py.",
+                HUMAN_IDENTITIES_FILE_ENV, path,
+            )
+            return 0
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:  # noqa: BLE001 - config problem, not a crash
+            logger.error(
+                "could not read %s (%r): %s -- no human identity loaded",
+                HUMAN_IDENTITIES_FILE_ENV, path, exc,
+            )
+            return 0
+
+        if isinstance(payload, dict):
+            entries: List[Dict[str, Any]] = list(payload.get("humans") or [])
+        elif isinstance(payload, list):
+            entries = list(payload)
+        else:
+            logger.error(
+                "%s (%r) must be a JSON list or {'humans': [...]} -- got %s",
+                HUMAN_IDENTITIES_FILE_ENV, path, type(payload).__name__,
+            )
+            return 0
+
+        loaded = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                logger.error("skipping non-object entry in %r: %r", path, entry)
+                continue
+            principal = str(entry.get("principal") or "").strip()
+            if not principal:
+                logger.error("skipping entry without a principal in %r", path)
+                continue
+            with self._lock:
+                if principal in self._principal_index:
+                    logger.warning(
+                        "human identity %r already registered -- skipping", principal,
+                    )
+                    continue
+                # Built directly instead of via create_identity(): that method
+                # is a @kernel_action, whose policy verdict calls back into
+                # IdentityManager. Seeding happens *inside* __init__, before
+                # the global singleton is published, so the callback would
+                # construct another manager and recurse without bound. The
+                # built-in system/service identities are built the same way.
+                metadata: Dict[str, Any] = {
+                    METADATA_KIND_KEY: HUMAN_KIND,
+                    "seeded_from": path,
+                }
+                display_name = entry.get(METADATA_DISPLAY_NAME_KEY)
+                if display_name:
+                    metadata[METADATA_DISPLAY_NAME_KEY] = display_name
+                if isinstance(entry.get("registered_at"), str):
+                    metadata["registered_at"] = entry["registered_at"]
+                else:
+                    metadata["registered_at"] = utc_now().isoformat()
+                try:
+                    scope = IdentityScope(entry.get("scope") or IdentityScope.L0.value)
+                except ValueError:
+                    scope = IdentityScope.L0
+                identity = AgentIdentity(
+                    id=principal,
+                    principal=principal,
+                    permissions=set(entry.get("permissions") or []),
+                    scope=scope,
+                    trust_score=1.0,
+                    metadata=metadata,
+                )
+                self._identities[identity.id] = identity
+                self._principal_index[principal] = identity.id
+                self._audit_log.append(
+                    AuditEntry(
+                        identity_id=identity.id,
+                        operation="create",
+                        permission=None,
+                        scope=identity.scope,
+                        result="allowed",
+                        reason=f"Human identity seeded for principal: {principal}",
+                    )
+                )
+            loaded += 1
+        if loaded:
+            logger.info("loaded %d registered human identities from %r", loaded, path)
+        return loaded
+
     def _get_identity(self, identity_id: str) -> Optional[AgentIdentity]:
         """Get identity by ID."""
         with self._lock:
@@ -184,6 +341,37 @@ class IdentityManager:
             self._audit_log.append(audit)
 
             return identity
+
+    def create_human_identity(
+        self,
+        principal: str,
+        permissions: Optional[Set[str]] = None,
+        trust_score: float = 1.0,
+        display_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[AgentIdentity]:
+        """Register ``principal`` as a human who may hold sovereignty.
+
+        The sanctioned way to create a human identity: it stamps
+        ``metadata["kind"] == "human"`` -- the only marker
+        :func:`is_human_identity` accepts -- so callers cannot forget it.
+        Humans are ``L0`` (the scope the codebase already labels "Human only").
+
+        Returns the identity, or ``None`` if the principal already exists
+        (matching :meth:`create_identity`).
+        """
+        merged: Dict[str, Any] = dict(metadata or {})
+        merged[METADATA_KIND_KEY] = HUMAN_KIND
+        if display_name:
+            merged[METADATA_DISPLAY_NAME_KEY] = display_name
+        merged.setdefault("registered_at", utc_now().isoformat())
+        return self.create_identity(
+            principal=principal,
+            permissions=permissions,
+            scope=IdentityScope.L0,
+            trust_score=trust_score,
+            metadata=merged,
+        )
 
     def get_identity(self, identity_id: str) -> Optional[AgentIdentity]:
         """Get identity by ID."""

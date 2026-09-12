@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "Policy C-7: 只有这里登记的主体才被内核认作「已核验人类」，从而可以持有主权",
+    "（批准 HIGH/CRITICAL 内核动作）。复制为 config/human_identities.json 后编辑，",
+    "并把环境变量 LIUHAO_HUMAN_IDENTITIES_FILE 指向它。",
+    "登记请用 scripts/register_human_identity.py —— 它会写入本文件并验证闭环。"
+  ],
+  "humans": [
+    {
+      "principal": "xin.hongda",
+      "display_name": "辛宏达",
+      "permissions": []
+    }
+  ]
+}

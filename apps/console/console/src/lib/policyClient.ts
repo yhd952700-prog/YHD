@@ -187,9 +187,12 @@ export function fmtRemaining(seconds: number): string {
 /**
  * 身份内核自动创建的内置**机器**身份。
  *
- * 只用于**展示提示**：内核的 `_is_verified_human` 是反向排除
- * （`metadata.kind != "service"`），内置 `system` 不带任何 metadata，因此会被
- * 当作「已核验人类」——用它审批时审计只会记到机器身份上（开放项 C-7）。
+ * 自 Policy C-7 起，内核判据已从反向排除（`kind != "service"`）改为**正向白名单**
+ * （`is_human_identity`：ACTIVE 且 `metadata.kind == "human"`），所以这些身份
+ * **根本无法**持有主权——`POST /v1/policy/approvals` 会直接 400。
+ *
+ * 因此这里的用途只是**提前告知**：让操作者在粘贴令牌后立刻看到「这个主体批不了」，
+ * 而不是等到点签发才收到一个 400。它不是安全检查——安全检查在内核里。
  *
  * 这份清单必须与 `src/kernels/identity/__init__.py` 保持一致；由
  * `tests/test_policy_approval_http.py` 里的跨语言护栏断言，改一边不改另一边会红。

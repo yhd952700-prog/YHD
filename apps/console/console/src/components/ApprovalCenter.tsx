@@ -224,10 +224,14 @@ export function ApprovalCenter({
         <>
           {state.machineIdentity && (
             <div className="approval-warn">
-              当前令牌的主体 <b>{state.machineIdentity}</b> 未被标记为人类
-              （无 <code>metadata.kind == "human"</code>）。内核门当前仍会接受它，
-              但审计只会记到这个机器身份上 —— 这正是 OD-010「须由经核验的人类授权」
-              想避免的。开放项 C-7。
+              当前令牌的主体 <b>{state.machineIdentity}</b> 是内置机器身份，
+              自 Policy C-7 起<b>无法持有主权</b>：内核判据已改为正向白名单
+              （须 <code>metadata.kind == "human"</code>），所以「记录授权」会被
+              内核以 400 拒绝，而不是被记录到机器名下（OD-010）。
+              <br />
+              需要改为已登记的人类主体：
+              <code>scripts/register_human_identity.py --principal &lt;name&gt;</code>，
+              再用 <code>scripts/issue_console_token.py</code> 重新签发。
             </div>
           )}
 

@@ -13,30 +13,27 @@ the honest position is that the token's trust anchor is **access to this
 machine's filesystem**: whoever can run this script can already read the JWT
 signing key, so a login form would add ceremony, not security.
 
-The ``system`` identity (measured 2026-09-12, open item C-7)
------------------------------------------------------------
-``_is_verified_human`` accepts any ACTIVE identity whose metadata kind is not
-``"service"``. The built-in ``system`` account carries **no metadata**, so it
-passes as a *verified human*: ``issue_grant("system", ...)`` succeeds and an
-armed CRITICAL action then runs inside its window. Measured end to end --
-``actor {"type":"human","principal":"system"}`` -> ``allowed=True,
-rule=human_sovereignty:allow``.
+C-7 is fixed: only a *registered human* may approve (since 2026-09-12)
+--------------------------------------------------------------------
+The predicate used to be a reverse exclusion (``kind != "service"``), which
+**fails open** for any identity lacking the marker. The built-in ``system``
+account carries no metadata, so it passed as a *verified human*:
+``issue_grant("system", ...)`` succeeded and an armed CRITICAL action then ran
+inside its window -- with the audit recording a machine as the approver.
 
-That does **not** grant capability beyond local filesystem access (whoever can
-mint this token can also clear the enforcement switch outright), but it does
-break the *accountability* the approval channel exists for: the audit would
-record ``system`` as the approver instead of a person. This script therefore
-warns instead of silently handing you a machine identity to approve with; it
-does not refuse, because tightening the predicate is a security-semantics
-decision (C-7), not a script's call to make.
+Since Policy C-7 the predicate is a **positive allowlist**
+(``is_human_identity``: ACTIVE *and* ``metadata["kind"] == "human"``), so
+``system`` is refused. **The consequence is that a human must be registered
+first** -- see ``scripts/register_human_identity.py``. If nobody is registered
+this script says so and exits non-zero rather than offering a machine identity.
 
 What the guard is for
 ---------------------
 ``_validated_principal`` in ``src/kernels/_sovereignty`` refuses a principal
-that is unknown, inactive, or a *service* identity (OD-010). This script checks
-the same three things up front so the operator is told *before* pasting a token
-that will 400 on first use -- the failure would otherwise surface as an opaque
-``unknown principal for sovereignty grant``.
+that is unknown, inactive, or not a registered human (OD-010). This script
+checks the same things up front so the operator is told *before* pasting a
+token that will 400 on first use -- the failure would otherwise surface as an
+opaque ``unknown principal for sovereignty grant``.
 """
 
 from __future__ import annotations
@@ -52,30 +49,16 @@ sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_TTL_SECONDS = 3600
 
 
-def _is_marked_human(ident) -> bool:
-    """True iff the identity carries the explicit ``kind="human"`` marker."""
-    metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
-    return metadata.get("kind") == "human"
-
-
 def _eligible_principals() -> list:
-    """ACTIVE, non-service identities -- i.e. what the gate currently accepts.
+    """Registered humans -- exactly what the gate accepts since Policy C-7.
 
-    Note this is *not* "registered humans": the gate's predicate is a deny-list
-    (``kind != "service"``), so an unmarked machine identity like the built-in
-    ``system`` account is included. Kept faithful to the gate so the listing
-    never claims to be stricter than reality; ``_is_marked_human`` is what
-    callers use to tell the operator which entries are actually people.
+    Delegates to ``is_human_identity`` rather than restating the predicate, so
+    the listing can never drift from the kernel's actual decision.
     """
-    from src.kernels.identity import IdentityStatus, get_identity_manager
+    from src.kernels.identity import get_identity_manager, is_human_identity
 
     mgr = get_identity_manager()
-    eligible = []
-    for ident in mgr.list_identities():
-        metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
-        if ident.status is IdentityStatus.ACTIVE and metadata.get("kind") != "service":
-            eligible.append(ident)
-    return eligible
+    return [ident for ident in mgr.list_identities() if is_human_identity(ident)]
 
 
 def _resolve_principal(raw: str):
@@ -93,12 +76,17 @@ def _resolve_principal(raw: str):
             f"identity {ident.id!r} is {ident.status.value}, not active -- a "
             "sovereignty grant would be refused (OD-010)."
         )
-    metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
-    if metadata.get("kind") == "service":
+    from src.kernels.identity import is_human_identity
+    if not is_human_identity(ident):
+        kind = (ident.metadata or {}).get("kind") if isinstance(ident.metadata, dict) else None
+        what = "a service account" if kind == "service" else (
+            f"not registered as a human (metadata kind={kind!r})"
+        )
         return None, (
-            f"identity {ident.id!r} is a service account. A service identity may "
-            "never hold human sovereignty -- that is the whole point of the "
-            "gate (OD-010), so this token could approve nothing."
+            f"identity {ident.id!r} is {what}. Since Policy C-7 only a "
+            "registered human may hold sovereignty -- that is the whole point "
+            "of the gate (OD-010), so this token could approve nothing. "
+            "Register a human with scripts/register_human_identity.py."
         )
     return ident, None
 
@@ -125,23 +113,25 @@ def main() -> int:
     if args.list:
         eligible = _eligible_principals()
         if not eligible:
-            print("No identity may currently approve: none is ACTIVE and non-service.")
-            print("The approval channel has no eligible human -- this is a real")
-            print("finding, not an empty list to paper over.")
-            return 1
-        humans = [i for i in eligible if _is_marked_human(i)]
-        print("Identities the approval gate currently ACCEPTS (ACTIVE, non-service):")
-        for ident in eligible:
-            mark = "human" if _is_marked_human(ident) else "NOT a registered human"
-            print(f"  {ident.id}  principal={ident.principal}  "
-                  f"scope={ident.scope.value}  [{mark}]")
-        if not humans:
+            print("No identity may currently approve: no registered human exists.")
             print()
-            print("WARNING: none of these is registered as a human (no identity carries")
-            print("metadata.kind == 'human'). The gate's predicate is a deny-list, so the")
-            print("account(s) above pass anyway -- but an approval made with one is")
-            print("recorded against a machine identity, which is exactly what OD-010's")
-            print("'verified human' requirement is meant to prevent. Open item C-7.")
+            print("Since Policy C-7 the gate is a positive allowlist, so an")
+            print("unmarked or machine identity can no longer approve. Register")
+            print("someone first:")
+            print()
+            print("  python scripts/register_human_identity.py --principal <name>")
+            print()
+            print("(This is fail-closed by design, not a bug -- but the approval")
+            print("channel has no subject until a human is registered.)")
+            return 1
+        print("Principals that may hold sovereignty (registered, ACTIVE humans):")
+        for ident in eligible:
+            name = (ident.metadata or {}).get("display_name") if isinstance(
+                ident.metadata, dict
+            ) else None
+            suffix = f"  name={name}" if name else ""
+            print(f"  {ident.id}  principal={ident.principal}  "
+                  f"scope={ident.scope.value}{suffix}")
         return 0
 
     if not args.principal:
@@ -168,12 +158,6 @@ def main() -> int:
     print(f"expires_at  : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(payload.exp))}"
           f"  ({args.ttl}s from now)")
     print(f"jti         : {payload.jti}")
-    if not _is_marked_human(ident):
-        print()
-        print("WARNING: this identity is NOT registered as a human (no")
-        print("metadata.kind == 'human'). The approval gate accepts it anyway because")
-        print("its predicate is a deny-list, so anything you approve will be recorded")
-        print("against a machine identity rather than a person -- see open item C-7.")
     print()
     print("Paste this into the console's 审批中心 panel (it is stored in")
     print("sessionStorage only, so closing the tab discards it):")

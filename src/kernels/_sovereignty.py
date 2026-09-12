@@ -255,9 +255,27 @@ def _validated_principal(principal: str) -> str:
         raise ValueError(f"unknown principal for sovereignty grant: {pid!r}")
     if ident.status != IdentityStatus.ACTIVE:
         raise ValueError(f"principal is not ACTIVE: {pid!r}")
-    metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
-    if metadata.get("kind") == "service":
-        raise ValueError(f"service identity may not hold human sovereignty: {pid!r}")
+    # Positive allowlist (Policy C-7): only an identity registered as a human
+    # may hold human sovereignty. The old reverse exclusion ("kind is not
+    # service") failed open for any identity lacking the marker -- notably the
+    # built-in ``system`` account -- so a machine could be recorded as the
+    # approver. Register humans with
+    # ``IdentityManager.create_human_identity(...)`` or
+    # ``scripts/register_human_identity.py``.
+    from src.kernels.identity import HUMAN_KIND, METADATA_KIND_KEY, is_human_identity
+    if not is_human_identity(ident):
+        metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
+        kind = metadata.get(METADATA_KIND_KEY)
+        # Name the actual reason: "you are a service" and "you are not
+        # registered as a human" are different problems with different fixes,
+        # and an operator staring at a 400 deserves to know which.
+        if kind == "service":
+            raise ValueError(f"service identity may not hold human sovereignty: {pid!r}")
+        raise ValueError(
+            f"principal is not a registered human "
+            f"(metadata.{METADATA_KIND_KEY} must be {HUMAN_KIND!r}, got {kind!r}), "
+            f"so it may not hold human sovereignty: {pid!r}"
+        )
     return pid
 
 

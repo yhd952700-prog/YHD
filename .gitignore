@@ -83,3 +83,7 @@ LIUHAO_AI_TEAM_V1.0/
 LiuHao-O/*
 !LiuHao-O/pyproject.toml
 !LiuHao-O/packages/
+# ===== 人类身份登记表（Policy C-7）=====
+# 含真实人员姓名，且随部署主机而变 —— 属运维数据，不入库。
+# 样例见 config/human_identities.example.json
+config/human_identities.json
