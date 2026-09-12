@@ -126,8 +126,20 @@ def test_personal_context_delegates_audit_to_memory_kernel(tmp_path):
     assert "memory.store" in _actions_in(_recent_events())
 
 
-def test_lcore_delegation_audits_capability_registration():
-    """P9 L-Core：构造时注册能力 -> capability kernel 写审计事件。"""
+def test_lcore_delegation_audits_capability_registration(monkeypatch):
+    """P9 L-Core：构造时经能力内核注册内置能力 -> ``capability.register`` 审计事件。
+
+    为什么要重置全局注册表：能力注册对 `get_capability_registry()` 的**全局单例**
+    是幂等的——调用方在调 `register()` 之前就查重，所以同一进程里只有**首次**
+    构造才会真正注册并写审计（实测：首次 +12，之后恒为 0）。在全量套件里，前面的
+    能力内核测试早已注册过，若不重置就会观察不到增量。
+
+    `monkeypatch` 会在测试结束时自动还原该全局，不影响其它测试。
+    """
+    import src.kernels.capability as capability_kernel
+
+    monkeypatch.setattr(capability_kernel, "_global_registry", None)
+
     from src.ai.lcore import LCore
 
     before = _total_events()
@@ -178,20 +190,24 @@ def test_economy_operations_produce_no_audit_events():
 
 
 def test_hardening_own_operations_produce_no_audit_events():
-    """P21 Hardening：不 import 任何 kernel，其审计评级不应标为 K。
+    """P21 Hardening：其检查动作自身不写审计（因此不该标 Audited = K）。
 
-    注意：**首次**调用会因内部构造 ``AgentNetworkGateway`` 而附带一条
-    ``network.add_route``（网关路由注册的一次性副作用，非 hardening 自身的
-    检查动作）。因此这里先预热一次，再测增量——使判据与调用顺序无关。
+    hardening 内部会构造 ``AgentNetworkGateway``，首次会附带一条
+    ``network.add_route``（网关路由注册，属一次性副作用，**不是** hardening 的
+    检查动作）。所以本测试不断言"零增量"，而是断言"**新增的审计事件里没有
+    hardening 自己的动作**"——这样对其它测试是否已填充/清空路由表都不敏感。
     """
     from src.ai.hardening import run_hardening_suite
 
-    run_hardening_suite()  # 预热：消化一次性的路由注册副作用
     before = _total_events()
     run_hardening_suite()
-    assert _total_events() == before, (
-        "hardening 的检查动作开始产生审计了 —— 请同步更新 AI-LAYER-DOD-AUDIT.md 的 P21 评级"
-    )
+    added = _total_events() - before
+    if added > 0:
+        new_actions = _actions_in(_recent_events(limit=added + 5))[:added]
+        assert set(new_actions) <= {"network.add_route"}, (
+            f"hardening 产生了自身动作的审计 {new_actions} —— 请同步更新 "
+            "AI-LAYER-DOD-AUDIT.md 的 P21 评级"
+        )
 
 
 def test_perception_pure_operations_produce_no_audit_events():
