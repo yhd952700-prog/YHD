@@ -6,14 +6,17 @@
 
 前置：
     1. 本机 Ollama 已运行且已拉取 `.env` 指定的模型（默认 ``qwen2.5:3b``）。
-    2. gateway 已启动：
-       ``.venv/Scripts/python.exe -m uvicorn src.gateway.main:app --port 8011``
+    2. gateway 已启动（最简单的方式是 ``scripts/start_liuhao.py``）：
+       ``.venv/Scripts/python.exe -m uvicorn src.gateway.main:app --port 8080``
 
 用法：
-    ``.venv/Scripts/python.exe scripts/smoke_mvp.py [--base http://127.0.0.1:8011]``
+    ``.venv/Scripts/python.exe scripts/smoke_mvp.py [--base http://127.0.0.1:8080]``
 
 退出码：0 = 全部通过；1 = 有项失败。真实 LLM 推理较慢（CPU 上约 10–30s），
 故 ``/v1/chat`` 使用较长超时。
+
+注意：本脚本访问的是本机服务，已显式绕开 env 里的 http(s)_proxy —— 不绕会被
+代理拦掉并伪装成「服务没起来」。
 """
 from __future__ import annotations
 
@@ -26,6 +29,18 @@ import urllib.request
 from typing import Any, Optional, Tuple
 
 
+def _no_proxy_opener():
+    """构造不走代理的 opener。
+
+    本机 env 常有活的 http_proxy，直接 urlopen 打 127.0.0.1 会被代理拦掉，
+    报 "upstream connect failed" —— 看起来像服务没起来，实则是代理问题。
+    """
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+_OPENER = _no_proxy_opener()
+
+
 def _req(method: str, base: str, path: str, body: Optional[dict] = None,
          timeout: float = 180.0) -> Tuple[Optional[int], Any]:
     data = json.dumps(body).encode() if body is not None else None
@@ -34,7 +49,7 @@ def _req(method: str, base: str, path: str, body: Optional[dict] = None,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with _OPENER.open(request, timeout=timeout) as resp:
             raw = resp.read().decode()
             return resp.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as exc:  # pragma: no cover - network path
@@ -54,7 +69,7 @@ def _wait_ready(base: str, attempts: int = 40) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="LiuHao MVP end-to-end smoke")
-    parser.add_argument("--base", default="http://127.0.0.1:8011")
+    parser.add_argument("--base", default="http://127.0.0.1:8080")
     args = parser.parse_args()
     base = args.base.rstrip("/")
 
