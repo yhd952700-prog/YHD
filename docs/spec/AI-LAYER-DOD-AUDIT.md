@@ -166,8 +166,15 @@
 但判决值**不携带信息**，实为"记录而非控制"。已在审计事件的 `details` 中显式标注
 `policy_enforced: false`，避免读审计者把 `deny` 误读为"动作被拒绝"。
 
-> 是否需要让它成为真正的控制点（为 system actor 定义可放行规则）属**安全语义变更**，
-> 需单独裁决，本轮未改。
+> ⚠️ **范围更正（2026-09-11，设计提案 §1 实证）**：上述"记录而非控制"**仅适用于内核层**
+> （`@kernel_action` 装饰的 48 个内核动作）。**能力层（`src/ai/`）早已是真拦截**：
+> `LiuHaoAssistant.chat/chat_stream`、`RuntimeLoop.step`、`NetworkGateway`、`WorldInterface`
+> 四处均为 `if not is_allowed: return denied` 的**硬 gate**，且采用 default-deny
+> （实测 `chat` 放行、`msg:*` 拒绝）。详见 `POLICY-ENFORCEMENT-DESIGN.md` §1.1。
+>
+> 是否需要让**内核层**也成为真正的控制点（为内部主体定义可放行规则）属**安全语义变更**，
+> 需单独裁决，本轮未改。完整方案（路线 A/B/C + 7 个决策点）见
+> **`POLICY-ENFORCEMENT-DESIGN.md`**。
 
 ### 3.5.5 复现方式
 
@@ -279,8 +286,12 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
    注意 `economy` 的 docstring 明确声明其预算引擎为**有意独立实现**（不下沉
    `resource` kernel），补审计时不应破坏该设计意图。
 5. **裁决项（需决策，勿擅自改）**：Policy Controlled 是否应从"只记录"升级为"真拦截"。
-   现状恒为 `deny` 且不生效（§3.5.4）。若升级，需为 system actor 定义可放行规则，
-   属安全语义变更；若不升级，建议把 DoD 中该维度的措辞明确为"策略判决已记录"。
+   现状恒为 `deny` 且不生效（§3.5.4）——**仅内核层**；能力层已是真拦截（见 §3.5.4 更正）。
+   若升级，需为内部主体定义可放行规则，属安全语义变更；若不升级，建议把 DoD 中该维度的
+   措辞明确为"策略判决已记录"。
+   > 📄 **方案已出（2026-09-11）**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
+   > （A 维持 / B 全面拦截 / C 分层分级）+ 推荐路线 C 详细设计 + 7 个待裁决决策点
+   > （D1–D7）+ 爆炸半径清单 + 分阶段计划。本轮**未实施任何代码改动**。
 
 ---
 
