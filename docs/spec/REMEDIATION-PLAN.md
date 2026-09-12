@@ -18,11 +18,11 @@
 | R5 | P1 | ✅ **已完成** | `CODEX-CONTRACT.md` §5 已含第 5 项 `Policy Controlled`（7 项 DoD） |
 | R6 | P1 | ✅ **已完成** | `GAP-MIGRATION-MATRIX.md` 表 3 已改用九态枚举（`IMPLEMENTED` 等） |
 | R7 | P1 | ✅ **已完成** | `docs/architecture/` 下 4 份历史分析文档（`existing-codebase-audit` / `gap-analysis` / `kernels-interface` / `migration-matrix`）均已加"Phase 编号口径"说明并指向 21-Phase 表。见下方 §R7 残留 |
-| R8 | P2 | 🟢 **机械部分已收敛，语义歧义项待裁决** | 已执行机械规则「裸 `§N` 且 N>122 必属 MS」（DL 总数 = 122）：6 处跨文档引用加 `MS:` 前缀。剩余为**语义歧义项**（如 `Definition Lock §139`、`DL:§147`），不可机械替换，已列清单。见下方 §R8 残留 |
+| R8 | P2 | ✅ **已完成（2026-09-12 结案）** | 机械部分：已执行规则「裸 `§N` 且 N>122 必属 MS」（DL 总数 = 122），6 处跨文档引用加 `MS:` 前缀。语义歧义部分：**4 处不可判定节号**（`§139`/`§141` ×3 + `§147` ×2）已按「**留档注释 + 权威重定向**」处置完毕，Definition Lock 正式宣告**永久不可考**。见下方 §R8 残留 |
 | R9 | P2 | ✅ **已完成** | 已重命名为 `implementation-status.UNRELIABLE.yaml`（2026-09-06），旧名文件不存在 |
 | R10 | P2 | ✅ **已完成** | `KERNEL-CANON.md` §1 已含 L0–L7 语义锁定防御说明（C11 裁决） |
 
-**净结果：P0 3/3、P1 3/4（R7 主体完成）、P2 2/3（R9/R10 完成，R8 保留）**
+**净结果（2026-09-12 结案）：P0 3/3、P1 4/4（R7 已关闭）、P2 3/3（R8 已关闭）—— 10 项全部关闭，本清单终结。**
 
 ### §R7 残留
 
@@ -69,8 +69,22 @@
 
 > ⚠️ 上表 4 项都指向同一个根本问题：**Definition Lock 原件缺失**
 > （见 [`UNIFIED-BLUEPRINT.md`](UNIFIED-BLUEPRINT.md) §0.3「宪法原件状态（已结案）」）。
-> 在原件找回或被正式宣布"永久不可考"之前，这些引用**无法判定命名空间**，
-> 因此**不做任何机械替换**——改错会比不改更糟。
+> 这些引用**无法判定命名空间**，因此**不做任何机械替换**——改错会比不改更糟。
+>
+> ### ✅ R8 结案（2026-09-12）
+>
+> 处置方式：**留档注释 + 权威重定向**（不是替换、不是删除）。
+>
+> | 文件 | 处置 | 产物 |
+> |---|---|---|
+> | `docs/l10k/test-design.md` | 3 处节号就地加注 + 文末「附录 A · 节号溯源说明」 | 说明 `§139`/`§141` 既非 DL（>122）亦非 MS（语义不符）；Phase 21 Acceptance 重定向至 `GAP-MIGRATION-MATRIX` 表 3 + `MS:§177`–`MS:§198` |
+> | `docs/decisions/OPEN-DECISIONS.md` | 2 处 `DL:§147` 降级为裸注 + 文末「附录 · 节号溯源说明」 | 说明 "Global Final DoD" 全仓无定义、不可反推；约束依据重定向至 `UNIFIED-BLUEPRINT` §7 |
+> | `docs/spec/DEFINITION-LOCK-STATUS.md` | 状态头改为「**原件永久不可考（2026-09-12 结案）**」 | 明示 reopen 条件（仅当用户提供仓库外 122 节原件） |
+> | `docs/archive/EXECUTION_AND_DECISIONS.md` | **保持原样**（R8 规则：历史归档不动） | — |
+>
+> **结论**：全仓活跃文档中**不再存在不可判定的裸节号**；`§N` 命名空间规则由
+> `UNIFIED-BLUEPRINT` §2 唯一裁决（锚点 `UB-A1`，或带前缀 `DL:§N` / `MS:§N`）。
+> **R8 关闭。**
 
 ---
 

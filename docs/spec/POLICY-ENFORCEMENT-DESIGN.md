@@ -251,7 +251,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 | **D4** | 异常时行为 | (a) fail-closed（拒绝）；(b) 维持 fail-open | 安全姿态 |
 | **D5** | 拦截粒度 | (a) 仅 HIGH/CRITICAL；(b) 全部动作 | 爆炸半径 |
 | **D6** | `default_deny` scope | (a) 维持 L7（引擎靠调用方兜底）；(b) 调整为 L0 兜底（引擎自返 DENY） | 是否收紧「忘记检查即放行」 |
-| **D7** | DoD 措辞 | (a) 明确为"判决已记录"（路线 A 口径）；(b) 明确为"判决 + 分级执行"（路线 C 口径） | 文档与代码一致性 |
+| **D7** | DoD 措辞 | (a) 明确为"判决已记录"（路线 A 口径）；(b) **明确为"判决 + 分级执行"（路线 C 口径）** ✅ **已采纳**（2026-09-12） | 文档与代码一致性 → **已解决**：`UNIFIED-BLUEPRINT` §7 确立 **L1/L2 两级判定**，`CODEX-CONTRACT` §5、`KERNEL-DOD-AUDIT`、`AI-LAYER-DOD-AUDIT` 已同步 |
 | **D8** | **动作风险分级（2026-09-11 新发现 → 已实施，选 b）** | (a) 维持全部 `LOW`（**否决**：C-2 永不触发，分级拦截形同虚设）；(b) **逐点标注真实 `risk_level`** ✅ 已实施（权威注册表 + 装饰器接线）；(c) 仅按命名空间推导（**否决**：粒度不够，`network.*` / `trust.*` 混合了 LOW/MEDIUM/HIGH） | 决定 C-2 是否有实际拦截力 → **已解决** |
 
 **D8 实施结论（选 b）**：见 §10.5。核心事实：43 个 `@kernel_action(...)` 调用点此前
@@ -325,7 +325,9 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
   无人类授权 → `PolicyDeferredError`（待人工审批）；有授权 → 正常执行。该翻转本身仍是
   用户主权决策（见 §10.7）。
 
-**待裁决**：① 是否继续走 C-2；② D2/D3/D4/D5/D6/D8 各取哪个选项。
+**待裁决（剩余）**：① **生产是否开启内核层真拦截**（把某个 HIGH/CRITICAL 动作的 `enforce` 翻 `True`；C-3 已解自锁，开启安全）；② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底，涉能力层，影响 `test_runtime_loop` 等既有 default-deny 用例）。
+
+**已解决**：**D1 / D2 / D3 / D4 / D5 / D7** 已随 C-1 / C-2 / C-3 的实施一并确定（见 §4、§10）；**D8** 已于 Round 66 实施；**C-2 机制**（Round 67）与 **C-3 机制**（Round 68）均已实施并验证。
 
 ---
 

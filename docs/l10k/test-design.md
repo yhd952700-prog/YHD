@@ -1,7 +1,7 @@
 # L10K Baseline Test Design — Verified Human Leverage (VHL)
 
 > **Date**: 2026-09-05
-> **Standard**: LIUHAO X v3.0 Definition Lock §141 Phase 21 Acceptance
+> **Standard**: LIUHAO X v3.0 — Phase 21 Acceptance（原文引用 "Definition Lock §141"；该节号**命名空间不可判定**，见文末「附录 A · 节号溯源说明」）
 > **Owner**: Hermes / MVP Development Expert Team PM (大湾区靓仔)
 
 ---
@@ -59,7 +59,7 @@
 | Security Incidents | Policy violations |
 | Reliability | Retry / recovery count |
 
-### 4.2 Verification Gates (Per Definition Lock §139)
+### 4.2 Verification Gates（原文引用 "Definition Lock §139"；节号不可判定，见文末附录 A）
 
 | Gate | Criteria |
 |------|----------|
@@ -74,7 +74,7 @@
 
 ---
 
-## 5. Anti-Gaming Rules (Definition Lock §141)
+## 5. Anti-Gaming Rules（原文引用 "Definition Lock §141"；节号不可判定，见文末附录 A）
 
 **Prohibited manipulation:**
 
@@ -203,6 +203,36 @@ class TestL10KBaseline:
 | Role | Name | Date | Status |
 |------|------|------|--------|
 | L10K Lead | Hermes / MVP Dev Expert Team PM (大湾区靓仔) | 2026-09-05 | DESIGN COMPLETE |
+
+---
+
+## 附录 A — 节号溯源说明（R8 收口，2026-09-12）
+
+本文件正文有 3 处 `Definition Lock` 节号引用，**无法判定所属命名空间**，此处留档说明，
+**不做机械替换**（改错比不改更糟）：
+
+| 位置 | 原引用 | 判定 |
+|---|---|---|
+| 文首 Standard | `Definition Lock §141 Phase 21 Acceptance` | **不可判定** |
+| §4.2 Verification Gates | `Definition Lock §139` | **不可判定** |
+| §5 Anti-Gaming Rules | `Definition Lock §141` | **不可判定** |
+
+**理由**：
+
+1. Definition Lock 原件**不在本仓库，且经全量 git 历史检索从未入库**（不可恢复）——
+   见 [`../spec/DEFINITION-LOCK-STATUS.md`](../spec/DEFINITION-LOCK-STATUS.md)。
+2. 已知 DL 条款总数为 **122** 节（[`../spec/UNIFIED-BLUEPRINT.md`](../spec/UNIFIED-BLUEPRINT.md) 附录 A），
+   故 `§139` / `§141` **不可能是 DL 节号**。
+3. 若按 Master Spec 解读，`MS:§139` = THE HUMAN LOOP、`MS:§141` = THE LONG-HORIZON LOOP，
+   与本文所指的 "Verification Gates" / "Anti-Gaming Rules" **语义不符**。
+
+**结论**：这 3 处是**出处不明的历史注记**，其条款内容不可查证。本文的**实际权威依据**为：
+
+- **Phase 21 Acceptance** → [`../spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md) 表 3
+  与 [`../spec/MASTER-SPEC-v3.0.md`](../spec/MASTER-SPEC-v3.0.md) `MS:§177`–`MS:§198`；
+- **Verification Gates / Anti-Gaming Rules** → 以本文自身表格为准（已独立成文，不依赖 DL）。
+
+> **新写引用请一律用锚点或带前缀节号**（`UB-A1` / `MS:§198`），**禁止裸写 `§N`**。
 
 ---
 

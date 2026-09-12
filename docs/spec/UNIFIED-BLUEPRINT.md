@@ -49,6 +49,12 @@
 
 **因此**：[`DEFINITION-LOCK-STATUS.md`](DEFINITION-LOCK-STATUS.md) §4 的**方案 A（恢复原件）判定为死路**，正式关闭，改走方案 B+C（重建关键条款 + 重定向引用）。本文件即为方案 B+C 的落地。
 
+**2026-09-12 补充（R8 收口）**：原件状态由"缺失"正式升级为「**永久不可考**」——
+全部 git 恢复路径已穷尽，不再以"日后找回"为默认前提（reopen 条件见
+[`DEFINITION-LOCK-STATUS.md`](DEFINITION-LOCK-STATUS.md) §6）。与之绑定的**最后 4 处
+不可判定节号引用**（`docs/l10k/test-design.md` ×3、`docs/decisions/OPEN-DECISIONS.md` ×2）
+已按「**留档注释 + 权威重定向**」处置完毕，**R8 随之关闭**。
+
 ---
 
 ## 1. 文档分层
@@ -404,7 +410,7 @@ Parent Identity → Parent Authorization → Quota → Budget → Resource
 | `docs/spec/MASTER-SPEC-v3.0.md` | ✅ 保留为 221 节真相源，未修改 |
 | `docs/spec/CAPABILITY-REGISTRY.md` | ✅ 保留，未修改 |
 | `docs/spec/GAP-MIGRATION-MATRIX.md` | ✅ 保留，未修改 |
-| `docs/spec/DEFINITION-LOCK-STATUS.md` | ⚠️ 需更新（方案 A 已证伪，见 §0.3） |
+| `docs/spec/DEFINITION-LOCK-STATUS.md` | ✅ **已更新**（方案 A 证伪；2026-09-12 结案为「永久不可考」，见 §0.3） |
 | `incoming/FRAMEWORK-01`（95 节） | 📥 暂存，按 C8 作回填源 |
 | `incoming/FRAMEWORK-02`（94 节） | 📥 暂存，按 C8 作主干候选 |
 | `incoming/FRAMEWORK-03/04/05`（92 节） | 📥 暂存，按 C9/C10/C11 其偏离**不予采纳** |

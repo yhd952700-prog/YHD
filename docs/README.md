@@ -160,15 +160,18 @@ docs/
 
 在读这些文档时，请注意以下四点，否则会被误导：
 
-**1. Definition Lock 本体缺失**
-`LIUHAO-X-V3.0-DEFINITION-LOCK.md` 不在仓库中，但全库有 16 处以上引用其 `§xx` 条款（capability-registry、implementation-status、gap-analysis 均引用）。所有"按 §112 实现"的声明**目前无法验证**。
+**1. Definition Lock 本体缺失** ✅ **已结案（2026-09-12，R8 收口）** —— 原件判定为**永久不可考**，
+引用一律改走 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) 的锚点/带前缀节号；
+最后 4 处不可判定节号已留档重定向，见 [`spec/DEFINITION-LOCK-STATUS.md`](spec/DEFINITION-LOCK-STATUS.md)。
+`LIUHAO-X-V3.0-DEFINITION-LOCK.md` 不在仓库中，全库 16 处以上引用其 `§xx` 条款（capability-registry、implementation-status、gap-analysis 均引用）。
 
 **2. Kernel 清单多套并存（已收敛）**
 `src/kernels/` 实际有 **14 个** kernel（含 security、audit、plugin）。`capability-registry.yaml` 已于 2026-09-06 同步为 **14 项**（含 security/audit/plugin），状态统一为 `PARTIALLY_IMPLEMENTED`；`spec/KERNEL-CANON.md` 为**唯一权威清单**（旧 K01–K12 编号已废弃）。其余叙事文档若仍出现"12/13 个"旧口径，一律以 KERNEL-CANON 为准。
 
 **3. ~~Kernel 层测试覆盖 7/14~~ ✅ 已解决（2026-09-11 实测更正）**
 14 个 kernel 共 6,391 行代码。曾记录为"仅 7 个 kernel 有测试"，**该陈述已过时**：`tests/kernels/` 现有 **14 个 kernel 测试目录全部齐全**（audit / capability / context / evaluation / event / execution / identity / memory / network / plugin / policy / resource / security / trust），14 项能力状态已全部为 `IMPLEMENTED`（DoD 七维 14/14，见 [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) 与 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
-**当前 CI 真实基线（run #88）：1173 passed / 14 skipped / 0 failed** —— 此前"1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 用 `|| echo` 吞退出码所致）。
+**当前 CI 真实基线（run `34690158540`，2026-09-12）：1281 passed / 14 skipped / 0 failed** —— 此前"1173 / 1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 曾用 `|| echo` 吞退出码所致）。
+> ⚠️ 该基线由 **CI 的 Python 3.11** 产出。本机 venv 为 **3.12**，二者存在版本分叉（只在 3.12 暴露的差异本地可见、CI 不可见）—— 见 [`CODEX-CONTRACT.md`](CODEX-CONTRACT.md) 与 `.github/workflows/ci.yml` 的版本说明。
 
 **4. 状态文件假数据已修正（2026-09-06）**
 `implementation-status.UNRELIABLE.yaml` 的 `tested: 14 / audited: 14` 与 `l10k-baseline.yaml` 的 `production_ready: true` 均为基于错误声明的判定，已分别修正为 `0 / 0` 与 `false`。修正前曾导致 L10K 虚报 28 个验证单元、3 个质量门禁误判 PASS。

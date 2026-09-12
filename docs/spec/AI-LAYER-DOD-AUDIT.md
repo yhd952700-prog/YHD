@@ -13,7 +13,7 @@
 本文件即该复验结果。方法：
 1. **逐模块关键字扫描**：对 20 个 `src/ai/*.py` 能力层模块扫描七维证据关键字（logging/trace/metric、scope/permission/authorize、policy、audit/@kernel_action、docstring）。
 2. **架构推理 + 抽样验证**：确认能力层通过调用 kernel action（被 `@kernel_action` 装饰器包裹）将 Observable/Permissioned/Policy/Audited 下沉到内核边界。
-3. **不重跑全量测试**（第 11 轮口径）：测试存在性与全绿已有验证。**当时记录的 `1133 passed / 1 skipped / 0 failed` 是本地口径、已作废**；当前 CI 实证基线为 **`1173 passed / 14 skipped / 0 failed`**（见 [`docs/README.md`](../README.md)）。第 59 轮的复核已改为运行时观测量（审计事件增量），不再依赖数字声明。
+3. **不重跑全量测试**（第 11 轮口径）：测试存在性与全绿已有验证。**当时记录的 `1133 passed / 1 skipped / 0 failed` 是本地口径、已作废**；当前 CI 实证基线为 **`1281 passed / 14 skipped / 0 failed`**（见 [`docs/README.md`](../README.md)）。第 59 轮的复核已改为运行时观测量（审计事件增量），不再依赖数字声明。
 
 评级三态：
 - **L（Layer 层内直接满足）**：模块自身含该维度证据。
@@ -302,8 +302,9 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
   "每个 Phase 的关键操作都被审计"。
   > ✅ **已于 Round 60 补齐**（2026-09-11）：14 个模块 22 个 `@audited` 注入点，
   > 上述 15 项中除 **P17 Economy**（有意独立实现）外全部转为运行时可见的审计。见 §3.6。
-- Policy Controlled 维度存在**结构性空转**：内核动作的判决恒为 `deny`，
-  且从不拦截（见 §3.5.4）。它满足 DoD 的字面要求，但不构成真正的策略控制。
+- Policy Controlled 维度**曾**存在结构性空转：内核动作的判决恒为 `deny` 且从不拦截（见 §3.5.4）。
+  现已按路线 C 修正 —— 判决改为**白名单驱动**（C-1，判决携带信息），拦截机制（C-2/C-3）
+  **已就绪但默认关闭**，即"**L1 已记录、L2 可选开启**"，不再是把 `deny` 当控制的自欺。
 - 因此本条与 §3.4 的"全部满足"应理解为：**维度在架构上已建立、在部分路径上已生效**，
   而非"已均匀覆盖到每个能力层操作"。若要按 Phase 粒度宣称达标，需先补齐上表 ❌ 项。
 
@@ -312,7 +313,7 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
 ## 5. 后续可选治理（非阻塞）
 
 1. ~~**能力层可观测性增强（推荐若上生产）**：在 `src/ai/` 编排入口加结构化日志 / OpenTelemetry span。~~ **✅ 已于 2026-09-09 实现**（见 §3.4）：核心编排层已接入 `src/ai/observability.py`。
-   > ⚠️ **口径更正（2026-09-11）**：此处原写"全量测试 1141 passed 零回归"，该数字是**本地口径且未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，run #52-74 的"全绿"是假象。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1173 passed / 14 skipped / 0 failed**，CI run #88）。
+   > ⚠️ **口径更正（2026-09-11）**：此处原写"全量测试 1141 passed 零回归"，该数字是**本地口径且未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，run #52-74 的"全绿"是假象。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1281 passed / 14 skipped / 0 failed**，CI run `34690158540`）。
 2. **能力层审计埋点（按需）**：若审计需覆盖"哪个能力层触发了哪个 kernel action"的因果链，可在编排层补 audit 上下文透传（现仅 kernel action 粒度，已足够）。
 3. 其余 16 个能力层模块的层内日志为可选扩展；当前架构已满足 DoD 七维的端到端语义，不强制。
 4. **能力层审计下沉补齐（P1，由 §3.5 新增）**：P3/P10/P11/P12/P13/P15/P17/P19/P21 的关键操作
@@ -320,16 +321,20 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
    `src/kernels/audit.log_event` 或调用被 `@kernel_action` 装饰的内核方法。
    注意 `economy` 的 docstring 明确声明其预算引擎为**有意独立实现**（不下沉
    `resource` kernel），补审计时不应破坏该设计意图。
-5. **Policy Controlled：已按路线 C 第一步执行（C-0 + C-1），C-2 待裁决**。
-   内核层判决**已携带信息**（白名单驱动 allow/deny），但**仍未拦截**（§3.5.4 修复记录）。
-   要把内核横切装饰器变成真正的控制点，需实施 **C-2**（`enforce` 开关 +
-   `PolicyDeniedError`，仅 HIGH/CRITICAL 生效）。
-   > 📄 **方案**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
+5. **Policy Controlled：路线 C 的 C-0 → C-3 机制已全部实施；生产默认仍为 L1（记录型）**。
+   内核层判决**已携带信息**（白名单驱动 allow/deny，Round 65），但**仍未拦截**（§3.5.4 修复记录）。
+   > 📄 **方案与实施记录**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
    > （A 维持 / B 全面拦截 / **C 分层分级，已采纳**）+ 决策点 D1–D8 + 爆炸半径清单。
-   > **C-0 + C-1 已实施并验证**（Round 65，`scripts/verify_policy_c1.py` = ALL GREEN）。
-   > **新增决策点 D8（前置阻塞）**：实测 43 个装饰点**全部未设置 `risk_level`**（默认 `LOW`），
-   > 因此"仅对 HIGH/CRITICAL 开拦截"在完成动作风险分级之前**永远不会触发** ——
-   > C-2 之前必须先做动作风险分级。
+   > - **C-0 + C-1 已实施并验证**（Round 65，`scripts/verify_policy_c1.py` = ALL GREEN）。
+   > - **D8 已实施**（Round 66）：43 个动作建立权威风险分级（`src/kernels/_risk_classification.py`），
+   >   解除 C-2 前置阻塞 —— 此前 43 个装饰点**全部未设 `risk_level`**（默认 `LOW`），
+   >   "仅对 HIGH/CRITICAL 开拦截"**永不触发**。
+   > - **C-2 机制已实施**（Round 67）：`enforce` 开关 + `PolicyDeniedError` + 仅 HIGH/CRITICAL
+   >   生效的拦截门 + fail-closed；**默认 `False`**，43 个生产点**无一开启**。
+   > - **C-3 机制已实施**（Round 68）：`PolicyEffect.DEFER` + `PolicyDeferredError` + 动态 human
+   >   主体通道（`src/kernels/_sovereignty.py::human_sovereign`），**解除 C-2 自锁**
+   >   （无人类授权 → 待人工审批；经 OD-010 核验的 human 授权 → 执行）。
+   > - 因此内核层 **L2 机制齐备、生产默认未开启**（仍 L1）。是否在部署侧开启属运维/主权决策。
 
 ---
 
@@ -337,5 +342,5 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
 
 - 关键字扫描脚本（本地过程文件，非仓库资产）对 20 个 `src/ai/*.py` 模块逐维计数。
 - 下沉验证：`grep -E "from src.kernels|kernel.execute|policy|audit" src/ai/lcore.py` 等确认能力层调用内核。
-- 全量测试现状见 `docs/README.md`（**CI 验证口径**：`1173 passed / 14 skipped / 0 failed`，run #88）。
+- 全量测试现状见 `docs/README.md`（**CI 验证口径**：`1281 passed / 14 skipped / 0 failed`，run `34690158540`）。
   > 历史口径说明：本节早期记录的 `1141 passed / 1 skipped / 0 failed`（含本增强新增 8 例 `test_observability.py`）是**本地运行结果，未经 CI 验证**，现已由上述 CI 真实基线取代。

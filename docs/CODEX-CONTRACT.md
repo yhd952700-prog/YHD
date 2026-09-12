@@ -89,6 +89,14 @@
 
 ## 3. 当前真实状态（2026-09-06 实测）
 
+> ⚠️ **本节快照已过期，仅作历史记录**。2026-09-12 复核的真实状态：
+> `tests/kernels/` **已建立**且 14 个 kernel 各有测试；CI 基线
+> **1281 passed / 14 skipped / 0 failed**（run `34690158540`，Python 3.11）；
+> `capability-registry.yaml` 已修正为 **14 项**（`LHX-C-NNN` + `source`）。
+> 因此下方"kernel 层单元测试 0 个""几乎整体未建"等表述**不要用于判断当前状态**，
+> 权威进度见 [`spec/GAP-MIGRATION-MATRIX.md`](spec/GAP-MIGRATION-MATRIX.md) 表 3 与
+> [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md)。
+
 ### 3.1 代码是真的
 
 | 项 | 实测值 |
@@ -169,12 +177,24 @@ apps/console/         ← 前端（L-Core）
 ✅ Tested           有对应测试且通过（unit + 至少一项 integration/e2e）
 ✅ Observable       有 OTel trace / 结构化日志 / 可查询状态
 ✅ Permissioned     经过 Identity + Capability + Policy 检查
-✅ Policy Controlled 通过 policy engine 判决（Every Action needs Policy，最高原则）
+✅ Policy Controlled 通过 policy engine 判决，判定口径分两级（L1 已记录 / L2 已执行，见下方注）
 ✅ Audited          关键操作写入 audit log（含 correlation_id）
 ✅ Documented       更新了对应文档
 ```
 
 > **第 5 项 `Policy Controlled` 为 2026-09-06 依据 C3 裁决新增**（统一蓝图 §3 / §7）。它意味着一个能力**即使通过了权限检查，也必须有明确的策略判决记录**，否则不得标记完成。这项把"权限"与"策略"拆开：Permissioned 是"有没有资格"，Policy Controlled 是"这次动作是否被策略允许"。
+>
+> **⚠️ 判定分两级（D7 收口，2026-09-12）——"过了引擎"≠"受控制"**：
+>
+> - **L1 判决已记录**：动作经 policy engine 判决，且判决写入审计事件（含 `policy_decision` 与 `policy_rule`，可追溯依据规则）。
+> - **L2 判决已执行**：判决对执行有约束力（非 allow 真的会阻止动作）。
+>
+> 只满足 L1 时，**必须在审计事件中标注 `policy_enforced: false`**，避免把 `deny` 误读为"动作被拒绝"。
+> 权威表述见 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) §7。
+>
+> **当前状态**：**能力层** 4 处硬 gate 已达 L2；**内核层** 43 个动作已达 L1，
+> L2 的机制（`enforce` 开关 + 按风险分级执行 + 经核验 human 主权通道）**已就绪但默认关闭**
+> —— 详见 [`spec/POLICY-ENFORCEMENT-DESIGN.md`](spec/POLICY-ENFORCEMENT-DESIGN.md) §10。
 
 **缺任何一项 → 状态写 `PARTIALLY_IMPLEMENTED`。**
 
@@ -188,6 +208,12 @@ Event?   Failure Mode?  Security Model?  Test?  Metric?  Rollback?
 ---
 
 ## 6. 当前任务优先级
+
+> ⚠️ **本节 P0/P1/P2 已于 2026-09-07 ～ 09-12 全部完成**（kernel 测试补齐、
+> `capability-registry.yaml` 修正、Definition Lock 归档结案、模块化 facade 层落地）。
+> 保留作历史记录。**当前任务清单以
+> [`spec/REMEDIATION-PLAN.md`](spec/REMEDIATION-PLAN.md) 与
+> [`spec/POLICY-ENFORCEMENT-DESIGN.md`](spec/POLICY-ENFORCEMENT-DESIGN.md) 为准。**
 
 ### P0 — 立即（阻塞其他一切）
 

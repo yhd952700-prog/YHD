@@ -6,6 +6,10 @@
 
 ## 最新状态（装饰器落地 + Permissioned 补齐 · 2026-09-07 晚）
 
+> ⚠️ **标题中的"最新"是 2026-09-07 的语境**。当前 CI 基线为
+> **1281 passed / 14 skipped / 0 failed**（run `34690158540`，2026-09-12）；
+> 本节 `980 passed` 等数字为当时快照，仅作历史对照。
+
 `@kernel_action` 横切装饰器已落地并接入 12 个 kernel（**42 个动作方法**）；
 `src/security` 导入修复、测试污染修复、policy 可观测日志补齐、**network/plugin
 scope/permission 检查补齐**。全量回归 **980 passed / 1 skipped / 0 failed**
@@ -40,7 +44,20 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 > 新增 `policy_rule` 记录判决依据。
 >
 > **"是否真拦截"仍为否** —— 全部 43 个装饰动作依旧只记录、不拦截
-> （`policy_enforced: false`）。把它变成控制点是 C-2，**阻塞于动作风险分级（D8）**。
+> （`policy_enforced: false`）。把它变成控制点是 C-2。
+>
+> **C-2 / C-3 机制已实施（Round 67 / 68，2026-09-11–12），生产默认关闭**：
+> - **D8 已实施**（Round 66）：43 个动作建立权威风险分级（`src/kernels/_risk_classification.py`），
+>   解除 C-2 前置阻塞 —— 此前 43 个装饰点**全部未设 `risk_level`**（默认 `LOW`），
+>   "仅对 HIGH/CRITICAL 开拦截"**永不触发**。
+> - **C-2 已实施**（Round 67）：`enforce` 开关 + `PolicyDeniedError` + 仅 HIGH/CRITICAL
+>   生效的拦截门 + fail-closed；**默认 `False`**，43 个生产点**无一开启**。
+> - **C-3 已实施**（Round 68）：`PolicyEffect.DEFER` + `PolicyDeferredError` + 动态 human
+>   主体通道（`src/kernels/_sovereignty.py::human_sovereign`），**解除 C-2 自锁**
+>   （无人类授权 → 待人工审批；经 OD-010 核验的 human 授权 → 执行）。
+>
+> 因此内核层 **L2（判决已执行）的机制齐备**，只是**生产默认未开启**（仍 L1／记录型）。
+> 是否在部署侧开启属运维/主权决策，**不是本审计的缺口**。
 >
 > 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10；证据：`scripts/verify_policy_c1.py`。
 

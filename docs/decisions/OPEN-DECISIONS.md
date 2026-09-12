@@ -31,7 +31,7 @@
 | Date | 2026-09-05 |
 | Source | Phase 0 审计 |
 | Open Item | LIUHAO X v3.0 是否按 22 Phase 全量执行，还是按 3 个 Convergence Point 收敛（M1+M2 先做，M3 增量） |
-| Related Constraints | DL:§95-§115 Convergence Point、DL:§22 Ready/Blocked、DL:§147 Global Final DoD |
+| Related Constraints | DL:§95-§115 Convergence Point、DL:§22 Ready/Blocked、§147 Global Final DoD（节号不可判定，见文末附录） |
 | Current Leaning | **倾向 B：按 Convergence Point 收敛**（M1+M2 完成后即获得"可演进的 v3.0 内核"，M3 增量推进，避免 9-13 个月单线风险） |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
@@ -115,7 +115,7 @@
 | Date | 2026-09-05 |
 | Source | Phase 0 审计 |
 | Open Item | 22 Phase 是按"线性 38-58 周一次性完成"还是"按 Convergence Point 分阶段交付"？ |
-| Related Constraints | DL:§22 Ready、DL:§147 Global Final DoD |
+| Related Constraints | DL:§22 Ready、§147 Global Final DoD（节号不可判定，见文末附录） |
 | Current Leaning | **倾向：按 Convergence Point 分 4 个里程碑（M1+M2+M3+M4）**，每完成一个里程碑提交用户验收 |
 | Blocked By | 等用户确认 |
 | Resolves When | 用户答复 |
@@ -299,6 +299,28 @@
 **Owner**：Hermes / MVP 开发专家团项目总监（大湾区靓仔）
 **日期**：2026-09-05
 **下一步**：git 创建 wip/liuhao-x-evolve + 实跑 P1/P3/P4/P6 → 启动 Phase 1
+
+---
+
+## 附录 — 节号溯源说明（R8 收口，2026-09-12）
+
+本登记册 OD-001 / OD-007 的 `Related Constraints` 中曾写作 `DL:§147 Global Final DoD`，
+**该节号命名空间不可判定**，现留档说明并降级为不带前缀的裸注（不做机械替换）：
+
+| 原引用 | 冲突点 | 判定 |
+|---|---|---|
+| `DL:§147 Global Final DoD` | 已知 DL 条款总数为 **122** 节，`§147 > 122` 自相矛盾；而 `MS:§147` = EXAMPLE: 建立一个 AI 公司，语义亦不符 | **不可判定** |
+
+**理由**：Definition Lock 原件**不在本仓库且从未入库**（不可恢复）——
+见 [`../spec/DEFINITION-LOCK-STATUS.md`](../spec/DEFINITION-LOCK-STATUS.md)。
+"Global Final DoD" 这一术语在本仓库中**没有其他出现处**（无定义、无引用点），
+故无法从上下文反推其条款归属。
+
+**处置**：本条约束**不再作为可验证依据**引用。OD-001 / OD-007 的实际约束依据改以
+[`../spec/UNIFIED-BLUEPRINT.md`](../spec/UNIFIED-BLUEPRINT.md) §7（DoD 七项 + L1/L2 两级判定）
+与 [`../spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md)（21-Phase 进度）为准。
+
+> 历史归档 `docs/archive/EXECUTION_AND_DECISIONS.md` 中的同源引用按 R8 规则**保持原样**。
 
 ---
 
