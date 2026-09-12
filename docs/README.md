@@ -168,7 +168,7 @@ docs/
 
 **3. ~~Kernel 层测试覆盖 7/14~~ ✅ 已解决（2026-09-11 实测更正）**
 14 个 kernel 共 6,391 行代码。曾记录为"仅 7 个 kernel 有测试"，**该陈述已过时**：`tests/kernels/` 现有 **14 个 kernel 测试目录全部齐全**（audit / capability / context / evaluation / event / execution / identity / memory / network / plugin / policy / resource / security / trust），14 项能力状态已全部为 `IMPLEMENTED`（DoD 七维 14/14，见 [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) 与 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
-**当前 CI 真实基线（run #80）：1138 passed / 14 skipped / 0 failed** —— 此前"1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 用 `|| echo` 吞退出码所致）。
+**当前 CI 真实基线（run #86）：1165 passed / 14 skipped / 0 failed** —— 此前"1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 用 `|| echo` 吞退出码所致）。
 
 **4. 状态文件假数据已修正（2026-09-06）**
 `implementation-status.UNRELIABLE.yaml` 的 `tested: 14 / audited: 14` 与 `l10k-baseline.yaml` 的 `production_ready: true` 均为基于错误声明的判定，已分别修正为 `0 / 0` 与 `false`。修正前曾导致 L10K 虚报 28 个验证单元、3 个质量门禁误判 PASS。
