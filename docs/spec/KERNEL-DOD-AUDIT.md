@@ -69,7 +69,14 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 
 新增 `src/kernels/_crosscutting.py`，提供一个 `@kernel_action(action, audit=True, policy=True)` 装饰器：
 
-1. **Policy Controlled**：动作执行前调用 `get_policy_engine().evaluate_policy(action, ...)`；无匹配规则时按「默认允许 + 记录判决」处理（避免破坏现有 402 测试）。
+1. **Policy Controlled**：动作执行前调用 `get_policy_engine().evaluate_policy(action, ...)`，并把判决写入审计事件的 `details.policy_decision`。
+   > ⚠️ **实现更正（2026-09-11 实测）**：本节原写"无匹配规则时按「**默认允许** + 记录判决」处理"。实际落地与之不同，实测结论如下：
+   > - `_crosscutting._adjudicate` 以 `{"type": "system", "verified": True}` 调用策略引擎；引擎会用 `_is_verified_human()` **覆盖** `verified`（该 actor 无 `id`/`principal`，结果 False）；
+   > - 内置规则中唯一的 ALLOW 规则 `human_sovereignty` 要求 `actor.type == "human"` 且风险为 HIGH/CRITICAL，因此**内核动作的判决恒为 `deny`**；
+   > - 装饰器是 additive 的、**从不拦截**，故该 `deny` 不产生执行效果。
+   >
+   > 即：Audited 维度实打实生效；Policy Controlled 维度只有"判决记录"这一字面满足，判决值**不携带信息**，属"记录而非控制"。审计事件现已在 `details` 中显式标注 `policy_enforced: false`。
+   > 若要让它成为真正的控制点，需为 system actor 定义可放行的规则——属安全语义变更，须单独裁决。
 2. **Audited**：动作执行后调用 `get_audit_store().log_event(...)`，带 `correlation_id`。
 3. **Observable**：动作前后 `logging` 结构化日志（可选 trace span）。
 

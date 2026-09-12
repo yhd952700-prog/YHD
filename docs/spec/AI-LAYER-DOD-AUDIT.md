@@ -49,6 +49,8 @@
 | 21 Hardening | hardening | ✅ | ✅ | K | L(11) | K | K | ✅ |
 
 > 说明：L 后括号数字为关键字命中计数（相对强度指示，非绝对阈值）。K = 下沉内核边界满足。
+>
+> ⚠️ **重要更正（2026-09-11）**：本表的 `K` 是**架构推理**的结论，**从未验证过**"下沉这条路真的通"。经 21 项**运行时探针**复核（见 §3.5），Audited 维度的 `K` 有 **15/21 不成立**；且部分 `L` 的括号计数来自 **docstring 里的关键字**（例如 P5 的 `L:conv 3` 实为 `conversation_store.py` 注释中提到 "audit kernel" 的次数，该模块**零 kernel import**）。请以 §3.5 的实测矩阵为准。
 
 ---
 
@@ -74,11 +76,121 @@
 
 ---
 
+## 3.5 运行时复核（2026-09-11 · Round 59）
+
+### 3.5.1 方法
+
+原方法（关键字扫描）有两个可证伪的弱点：它无法区分「模块调用了被 `@kernel_action`
+装饰的内核方法」与「模块恰好有个同名方法」，也会把 **docstring 里提到的
+"kernel" 字样**记成证据。本轮改用**运行时观测量**：
+
+- **观测量**：`audit store` 的累计事件数增量（内核动作被装饰后必然写审计事件）。
+- **对照实验**：先直接调用已知被装饰的 `get_memory_kernel().store()`，确认计数 `+1`。
+  **只有对照通过，"增量为 0" 才能解释为"该模块确实不产生审计"**，而不是"测量失灵"。
+- **判据**（`CODEX-CONTRACT` §5）：Audited = 关键操作写入 audit log（含 `correlation_id`）。
+
+### 3.5.2 实测矩阵（21 项探针）
+
+| Phase | 探针操作 | 审计增量 | Audited 下沉是否成立 |
+|---|---|---|---|
+| P3 | `agent_factory.AgentRuntimeService.start()` | 0 | ❌ |
+| P3 | `runtime_loop.RuntimeLoop(...).step()` | 0 | ❌ |
+| P5 | `personal_context.set_preference()` | **+1** | ✅（`memory.store`） |
+| P5 | `conversation_store.append()` | 0 | ❌ |
+| P9 | `lcore.LCore()` | **+12** | ✅（`capability.register`） |
+| P9 | `tool_registry.register(Tool)` | 0 | ❌ |
+| P10 | `collaboration.MessageBus.send()` | 0 | ❌ |
+| P11 | `perception.TextPerceiver.perceive()` | 0 | ❌ |
+| P11 | `ada.ComputeEngine.run_python()` | 0 | ❌ |
+| P12 | `organization.Organization.create_goal/department()` | 0 | ❌ |
+| P13 | `enoch.create_mission()` | 0 | ❌ |
+| P14 | `network_gateway.AgentNetworkGateway()` | **+1** | ✅（`network.add_route`） |
+| P15 | `world_interface.execute(filesystem.read)` | 0 | ❌ |
+| P16 | `governance.SecurityChain.evaluate()` | **+1** | ✅（`security.decide_access`） |
+| P17 | `economy.BudgetEngine.reserve/consume()` | 0 | ❌ |
+| P18 | `verification.VerificationEngine.verify()` | 0 | ❌ |
+| P18 | `verification.ExperienceEngine.store()` | **+1** | ✅（`memory.store`） |
+| P19 | `evolution.EvolutionEngine()` | 0 | ❌ |
+| P20 | `l10k.L10KRegistry.register_task()` | 0 | ❌ |
+| P20 | `vhl_benchmark.run_vhl_benchmark()` | **+3** | ✅ |
+| P21 | `hardening.run_hardening_suite()` | 0（预热后）※ | ❌ |
+
+> ※ `hardening` **首次**调用会因内部构造 `AgentNetworkGateway` 附带 1 条
+> `network.add_route`（一次性路由注册副作用，非其自身检查动作）；预热后恒为 0。
+
+**汇总：6 项确认产生审计 / 15 项确认不产生 / 0 项不确定。**
+
+### 3.5.3 修正后的逐 Phase 结论
+
+| Phase | 模块 | Audited（修正） | 依据 |
+|---|---|---|---|
+| 3 Agent Runtime | runtime_loop / agent_factory | ❌ 仅 policy 侧有直接引用 | `start()`/`step()` 零审计 |
+| 5 Memory | conversation_store / personal_context | 半 ✅ | `personal_context` ✅；`conversation_store` 零 kernel import，原 `L:conv 3` 系 docstring 计数 |
+| 9 L-Core | lcore / tool_registry | 半 ✅ | `lcore` ✅（构造即 +12）；`tool_registry` 零审计 |
+| 10 Multi-Agent | collaboration | ❌ | 零审计 |
+| 11 Perception/ADA | perception / ada | ❌ | 两者零审计 |
+| 12 Organization | organization | ❌ | 零审计 |
+| 13 ENOCH | enoch | ❌ | 仅 import `Goal`/`GoalDecomposer` 两个 dataclass，零审计 |
+| 14 Network | network_gateway | ✅ | `network.add_route` |
+| 15 World | world_interface | ❌ | 仅 import `ActionResult` dataclass；`execute` 是自身方法，零审计 |
+| 16 Governance | governance | ✅ | `security.decide_access` |
+| 17 Economy | economy | ❌ | docstring 明示"self-contained, dependency-free"，**有意不下沉** |
+| 18 Verification | verification | 半 ✅ | `ExperienceEngine.store` ✅；`VerificationEngine.verify` ❌（同模块内不一致） |
+| 19 Evolution | evolution | ❌ | 零审计 |
+| 20 L10K | l10k / vhl_benchmark | 半 ✅ | `vhl_benchmark` ✅；`l10k` ❌ |
+| 21 Hardening | hardening | ❌ | 自身操作零审计 |
+
+### 3.5.4 Policy Controlled 的结构性问题（新发现）
+
+`src/kernels/_crosscutting.py` 的 `_adjudicate` 以
+`actor={"type": "system", "verified": True}` 调用策略引擎，但：
+
+1. 引擎会用 `_is_verified_human()` **覆盖** `verified` 字段；该 actor 无
+   `id`/`principal`，覆盖结果为 `False`；
+2. 内置 5 条规则中唯一的 ALLOW 规则 `human_sovereignty` 要求
+   `actor.type == "human"` 且风险为 HIGH/CRITICAL。
+
+→ **内核动作记录到的判决恒为 `deny`**（实测 19/19 采样事件均为 `deny`，四种风险等级均如此）。
+又因装饰器 additive、从不拦截，该 `deny` **不产生任何执行效果**。
+
+**判定**：Policy Controlled 维度**满足 DoD 字面要求**（"必须有明确的策略判决记录"），
+但判决值**不携带信息**，实为"记录而非控制"。已在审计事件的 `details` 中显式标注
+`policy_enforced: false`，避免读审计者把 `deny` 误读为"动作被拒绝"。
+
+> 是否需要让它成为真正的控制点（为 system actor 定义可放行规则）属**安全语义变更**，
+> 需单独裁决，本轮未改。
+
+### 3.5.5 复现方式
+
+```bash
+.venv/Scripts/python.exe scripts/verify_ai_layer_audit.py
+```
+
+- 脚本：`scripts/verify_ai_layer_audit.py`（含对照实验 + 21 项探针矩阵 + policy 判决采样）。
+  隔离到独立临时 DB，不污染工作区内的 `audit_store.db` / `memory_store.db`。
+- 回归测试（已入库）：`tests/test_ai_layer_dod_delegation.py`（10 例），
+  锁定已验证的下沉路径、`record-only` 契约与"system actor 恒判 deny"的结构性事实。
+  这些测试**故意会在上述任一事实改变时失败**，以强制同步本文档。
+
+---
+
 ## 4. 结论
 
 - **能力层七维在端到端意义上全部满足**：Implemented/Tested/Documented 层内达标；Observable/Permissioned/Policy/Audited 由内核边界（14 kernel 七维收口）传递性覆盖。
 - **GAP-MIGRATION-MATRIX 表 3 的 `IMPLEMENTED` 结论维持有效**，其含义明确为"端到端（含下沉内核）七维达标"，而非"每个能力层独立七维达标"。
 - **唯一真实缺口（原）= 能力层粒度的可观测性（Observability）**：**已于 2026-09-09 在核心编排层闭合**（新增 `src/ai/observability.py` 并接入 liuhao/lcore/collaboration/runtime_loop，见 §3.4）。剩余 16 个能力层模块仍以 kernel 边界下沉为主，属可选扩展（见 §5）。
+
+### 4.1 上述"传递性覆盖"的实证限定（2026-09-11 追加）
+
+§3.5 的运行时复核表明，**"由内核边界传递性覆盖"这一说法对 Audited 维度只在少数模块成立**：
+
+- 15/21 探针显示能力层的关键操作**不产生任何审计事件**（含 P3/P10/P11/P12/P13/P15/P17/P19/P21）。
+  因此"端到端七维达标"的正确读法是"**端到端链路中审计确实存在**"，而非
+  "每个 Phase 的关键操作都被审计"。
+- Policy Controlled 维度存在**结构性空转**：内核动作的判决恒为 `deny`，
+  且从不拦截（见 §3.5.4）。它满足 DoD 的字面要求，但不构成真正的策略控制。
+- 因此本条与 §3.4 的"全部满足"应理解为：**维度在架构上已建立、在部分路径上已生效**，
+  而非"已均匀覆盖到每个能力层操作"。若要按 Phase 粒度宣称达标，需先补齐上表 ❌ 项。
 
 ---
 
@@ -88,6 +200,14 @@
    > ⚠️ **口径更正（2026-09-11）**：此处原写"全量测试 1141 passed 零回归"，该数字是**本地口径且未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，run #52-74 的"全绿"是假象。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1155 passed / 14 skipped / 0 failed**，CI run #82）。
 2. **能力层审计埋点（按需）**：若审计需覆盖"哪个能力层触发了哪个 kernel action"的因果链，可在编排层补 audit 上下文透传（现仅 kernel action 粒度，已足够）。
 3. 其余 16 个能力层模块的层内日志为可选扩展；当前架构已满足 DoD 七维的端到端语义，不强制。
+4. **能力层审计下沉补齐（P1，由 §3.5 新增）**：P3/P10/P11/P12/P13/P15/P17/P19/P21 的关键操作
+   当前不写审计。若要按 Phase 粒度宣称 Audited 达标，需为这些模块显式接线
+   `src/kernels/audit.log_event` 或调用被 `@kernel_action` 装饰的内核方法。
+   注意 `economy` 的 docstring 明确声明其预算引擎为**有意独立实现**（不下沉
+   `resource` kernel），补审计时不应破坏该设计意图。
+5. **裁决项（需决策，勿擅自改）**：Policy Controlled 是否应从"只记录"升级为"真拦截"。
+   现状恒为 `deny` 且不生效（§3.5.4）。若升级，需为 system actor 定义可放行规则，
+   属安全语义变更；若不升级，建议把 DoD 中该维度的措辞明确为"策略判决已记录"。
 
 ---
 
