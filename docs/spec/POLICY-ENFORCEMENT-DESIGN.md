@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **C-0 + C-1 + D8 + C-2(机制) 已实施并验证**（2026-09-11，Round 65/66/67）；**C-2 生产开启 / C-3 待裁决** |
+| 状态 | **C-0 + C-1 + D8 + C-2(机制) + C-3(机制) 已实施并验证**（2026-09-11–09-12，Round 65–68）；**C-2/C-3 生产开启仍待用户主权裁决** |
 | 日期 | 2026-09-11（提案）/ 2026-09-11（C-1 实施） |
 | 提出 | Principal Engineer（承接 `AI-LAYER-DOD-AUDIT.md` §3.5.4 与 §5.5 的裁决项） |
 | 裁决人 | 用户（项目主权）—— 授权 Principal Engineer 按路线 C 第一步自主推进 |
@@ -290,7 +290,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 | **C-0** | 只做文档：D7 定措辞；把 §1 实证写进 `AI-LAYER-DOD-AUDIT` | 零 | — | ✅ **已完成** |
 | **C-1** | 引入 `service` 主体 + 白名单规则；`_adjudicate` 判决变为白名单驱动；**仍 additive（不拦截）** | 低 | `scripts/verify_policy_c1.py` ALL GREEN；内核用例零回归（494 passed） | ✅ **已完成**（Round 65） |
 | **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ✅ **机制已实施（Round 67，默认 off）；生产开启待裁决（阻塞于 C-3 human 主体）** |
-| **C-3**（可选） | 引入 `DEFER` + fail-closed；评估 `default_deny` scope（D6） | 中 | `test_runtime_loop` 等 default-deny 用例复核 | ⏸ 未开始 |
+| **C-3**（可选） | 引入 `DEFER` + 动态 human 主体通道（解 C-2 自锁）+ fail-closed 收紧；评估 `default_deny` scope（D6） | 中 | `tests/kernels/test_sovereignty_c3.py`、`scripts/verify_c3_sovereignty.py` | ✅ **机制已实施（Round 68，2026-09-12，默认 off）；生产开启仍待裁决** |
 
 ---
 
@@ -311,9 +311,19 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
   + 仅 HIGH/CRITICAL 生效的拦截门 + fail-closed；但 `enforce` **默认 `False`** 且
   43 个生产装饰点无一开启 —— 生产行为仍是记录型，拦截力为零。**把某个 HIGH/CRITICAL
   动作的 `enforce` 翻为 `True` 即变成真拦截**，但内部 service 主体对这些动作恒 `deny`
-  （不在 C-1 白名单、须 human 主权 OD-010），若无 C-3 的「动态 human 主体」通道直接翻转
-  = **自锁系统**。该翻转是刻意、独立的用户主权决策（见 §10.6）。
-- C-3 仍待裁决（DEFER + fail-closed + 动态 human 主体，解除生产自锁）。
+  （不在 C-1 白名单、须 human 主权 OD-010），若无人类授权直接翻转 = **自锁系统**。
+  **C-3（Round 68）已提供动态 human 主体通道**：`human_sovereign` 经 OD-010 核验后可将
+  HIGH/CRITICAL 动作放行，故生产翻转 `enforce=True` 现已安全（无授权 → `PolicyDeferredError`
+  待人工审批；有授权 → 执行）。该翻转仍是刻意、独立的用户主权决策（见 §10.7）。
+- C-3 已实施机制（Round 68，2026-09-12）：`PolicyEffect.DEFER` + `PolicyDeferredError` +
+  动态 human 主体通道（`src/kernels/_sovereignty` 的 `human_sovereign` 上下文管理器）+
+  OD-010 核验加固（`_is_verified_human` 增加 `metadata.kind != "service"` 校验，拒绝以
+  human 类型引用 service 身份伪冒）。**生产默认零行为变更**（无 sovereignty 上下文时
+  行为与 C-1/C-2 完全一致；43 个生产点仍 `enforce=False`）。`human_sovereign` 经身份内核
+  核验的 ACTIVE human 授权后，HIGH/CRITICAL 动作裁决 actor 由 service 切为 human，经
+  `human_sovereignty`（precedence 1000）放行 —— 即**生产翻 `enforce=True` 现已安全**：
+  无人类授权 → `PolicyDeferredError`（待人工审批）；有授权 → 正常执行。该翻转本身仍是
+  用户主权决策（见 §10.7）。
 
 **待裁决**：① 是否继续走 C-2；② D2/D3/D4/D5/D6/D8 各取哪个选项。
 
@@ -467,10 +477,68 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 
 ### 10.6.4 未做的事（明确边界）
 
-- **未在生产开启任何 `enforce=True`** —— 内核层生产拦截力仍为零（记录型）。
-- **未引入 `PolicyEffect.DEFER`**（C-3）；未做动态 human 主体（C-3，解除自锁所需）。
+- **未在生产开启任何 `enforce=True`** —— 内核层生产拦截力仍为零（记录型），保留为刻意、独立的用户主权决策（见 §10.7）。
+- **C-3 已实施（Round 68，见 §10.7）**：`PolicyEffect.DEFER` + `PolicyDeferredError` + 动态 human 主体通道（`_sovereignty`）+ OD-010 核验加固；生产默认零行为变更。
 - **未动能力层** —— 它已是真拦截，本方案刻意不越界。
 
 ---
+
+---
+
+## 10.7 实施记录（C-3 机制，2026-09-12 Round 68）
+
+> 授权依据：用户指示"继续按照你的方向去执行，不需要问我，你是这个项目总负责人"，
+> 采纳本方案 §4.3（DEFER）+ §4.4（fail-closed，已在 C-2 落地）+ 「动态 human 主体通道」。
+
+### 10.7.1 改了什么
+
+| 文件 | 变更 | 风险 |
+|---|---|---|
+| `src/kernels/policy/__init__.py` | `PolicyEffect` 枚举新增 `DEFER = "defer"`；`_is_verified_human` 增加 `metadata.get("kind") != "service"` 校验（关闭以 `type:"human"` 引用 service 身份伪冒 OD-010 的向量）。不增删规则，`stats()` 不变 | 低（仅收紧核验，无规则变更） |
+| `src/kernels/_sovereignty.py` | **新增**：`ActiveSovereignty` 数据类 + `contextvars` 通道 + `human_sovereign` 上下文管理器（least-privilege 枚举动作集）。默认无激活上下文 → 生产零行为变更 | 无（纯机制，不自动开启） |
+| `src/kernels/_crosscutting.py` | 新增 `PolicyDeferredError(PolicyDeniedError)`（verdict 固定 `"defer"`）；`_adjudicate` 在 HIGH/CRITICAL 且于授权集合内时把裁决 actor 由 `service` 切为 `human`（使 `human_sovereignty` 放行，解 C-2 自锁）；拦截门 fail-closed→`PolicyDeniedError("error")`，引擎有应答的 HIGH/CRITICAL deny→`PolicyDeferredError("defer")`；模块 docstring 补 C-3 | 低（默认 off，生产零行为变更） |
+| `tests/kernels/test_sovereignty_c3.py` | **新增**（12 例）：上下文管理、无授权仍 deny、真实 human 身份翻 allow、伪装 service 被拒、出域仍 deny、LOW 不升级、enforce 无授权抛 `PolicyDeferredError`、有授权执行、审计 `policy_enforced` | — |
+| `tests/kernels/test_enforcement_c2.py` | 更新：被拦截 HIGH/CRITICAL 的 verdict 由 `"deny"` 演进为 `"defer"`（`PolicyDeferredError`，仍 `PolicyDeniedError` 子类，既有 `PermissionError` 守卫透明捕获） | — |
+| `scripts/verify_c2_enforcement.py` | 更新 HIGH+enforce 断言为 `PolicyDeferredError(defer)`（C-3 语义演进） | — |
+| `scripts/verify_c3_sovereignty.py` | **新增**：15 项可复现验证（机制/枚举/无授权 deny/有授权 allow/伪冒拒绝/出域 deny/LOW 不升级/enforce 无授权 defer/有授权执行/fail-closed error/**AST 安全护栏：无生产点翻 enforce=True、无生产代码开启 sovereignty 通道**） | — |
+
+### 10.7.2 自锁解除机制（核心）
+
+C-2 之所以不能在生产直接翻 `enforce=True`，是因为内部 service 主体对 17 个 HIGH/CRITICAL
+动作**恒 `deny`**（不在 C-1 白名单、须 human 主权 OD-010）—— 直接翻转 = 系统无法执行
+`capability.retire` / `security.set_abac_rule` 等必需动作 → 自锁。
+
+C-3 的 `human_sovereign(principal, actions)` 上下文管理器提供**动态 human 主体通道**：当
+一个经身份内核核验的 ACTIVE 非 service 人类身份，显式授权了某个 HIGH/CRITICAL 动作（且
+该动作在其枚举授权集内）时，该动作的裁决 actor 由 `service` 切为 `human`，于是命中
+`human_sovereignty`（precedence 1000，要求 `risk_level ∈ {HIGH,CRITICAL}` 且 `verified==True`）
+→ **ALLOW**。机制只收窄"哪些动作可以 human 身份裁决"，绝不能凭空制造 allow；OD-010 仍由
+引擎重算 `verified` 守住，伪造主体（含以 human 类型引用 service 身份）必落回 `deny`。
+
+因此生产翻 `enforce=True` 现已安全：
+- **无人类授权** → `PolicyDeferredError`（verdict `"defer"`，待人工审批，非永久拒绝）；
+- **经已核验 human 授权** → 正常执行。
+
+### 10.7.3 验证结果
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | 0 违规 |
+| 2 | importlib 全量导入 `src/` 模块 | FAILED: 0 |
+| 3 | `scripts/verify_c3_sovereignty.py` 15 项断言 | **ALL GREEN**（退出码 0） |
+| 4 | `scripts/verify_c2_enforcement.py` 11 项断言 | **ALL GREEN**（退出码 0） |
+| 5 | `pytest tests/kernels/test_sovereignty_c3.py` | **12 passed** |
+| 6 | `pytest tests/kernels/test_enforcement_c2.py` | **13 passed** |
+| 7 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/` | **635 passed / 1 skipped / 0 failed**（C-3 默认 off，零回归） |
+
+### 10.7.4 未做的事（明确边界）
+
+- **未在生产开启任何 `enforce=True`** —— 内核层生产拦截力仍为零（记录型）。**把某个
+  HIGH/CRITICAL 动作翻 `enforce=True` 现可安全进行**（C-3 已解自锁），但这是用户主权决策，
+  不擅自改执行语义。建议的开启路径：驾驶舱/能力层在用户显式点击"批准"时进入
+  `human_sovereign(<用户身份>, [动作])` 上下文再调用内核动作。
+- **未动能力层** —— 它已是真拦截，本方案刻意不越界。
+- **未评估 D6（`default_deny` scope 调整）** —— 该项涉及能力层 default-deny 语义，影响
+  `test_runtime_loop` 等既有用例，留作独立决策（不在内核层 C-3 范围内）。
 
 *END OF POLICY-ENFORCEMENT-DESIGN*

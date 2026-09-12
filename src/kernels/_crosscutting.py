@@ -53,6 +53,18 @@ package (which has no ``__init__.py``).
    白名单、须 human 主权，OD-010），若无 C-3 的「动态 human 主体」通道而直接翻转，会
    **自锁系统**（capability.retire / security.set_abac_rule 等再也无法执行）。该翻转
    是刻意、独立的决策，此处不做，留待用户主权裁决（C-3）。
+
+   **Policy C-3（2026-09-12 Round 68，已实施机制）**：引入「动态 human 主体通道」
+   （``src.kernels._sovereignty`` 的 :class:`human_sovereign` 上下文管理器）+
+   :class:`PolicyDeferredError` （``PolicyDeniedError`` 子类，verdict 固定为
+   ``"defer"``）+ ``PolicyEffect.DEFER``。当某个 HIGH/CRITICAL 动作被**已核验
+   human**（OD-010，经身份内核核验的 ACTIVE 非 service 身份）显式授权、且处于该
+   授权范围内时，裁决 actor 由 service 切为 human，经 ``human_sovereignty`` 规则
+   （precedence 1000）放行 —— 这正是解除 C-2 自锁的钥匙：翻 ``enforce=True`` 后，
+   无人类授权的 HIGH/CRITICAL 动作抛 ``PolicyDeferredError``（待人工审批），有人类
+   授权则正常执行。机制默认关闭（无 sovereignty 上下文时行为与 C-1/C-2 完全一致）；
+   43 个生产点仍 ``enforce=False``，生产零行为变更。伪造主体（含以 ``type:"human"``
+   引用 service 身份）被 ``_is_verified_human`` 的 kind 校验拒绝，落回 deny。
 """
 
 from __future__ import annotations
@@ -93,6 +105,25 @@ class PolicyDeniedError(PermissionError):
             )
         else:
             super().__init__(f"policy denied action={action!r} verdict={verdict}")
+
+
+class PolicyDeferredError(PolicyDeniedError):
+    """Policy C-3 — an enforced HIGH/CRITICAL action is blocked pending human
+    sovereignty (OD-010).
+
+    Unlike a hard :class:`PolicyDeniedError` (raised on fail-closed when the
+    engine itself is unavailable), a *defer* means the policy engine *answered*
+    with a non-allow verdict for a HIGH/CRITICAL action and the correct remedy
+    is for a verified human to grant authority for it (via the C-3 sovereignty
+    channel) -- not that the action is permanently forbidden.
+
+    Subclasses ``PolicyDeniedError`` (and therefore ``PermissionError``) so
+    existing ``except PermissionError`` / ``except PolicyDeniedError`` guards
+    still catch a deferred action transparently.
+    """
+
+    def __init__(self, action: str, rule_id: Optional[str] = None) -> None:
+        super().__init__(action, "defer", rule_id)
 
 
 # Sentinel distinguishing "caller did not set risk_level" from an explicit
@@ -151,9 +182,27 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
     try:
         from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
         from src.kernels.policy import evaluate_policy_simple
+        from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier
+        from src.kernels._sovereignty import get_active_sovereignty
+
+        # Policy C-3: if a verified human has delegated authority for THIS
+        # action (least-privilege -- only the enumerated actions, and only
+        # when the tier is enforcement-gated), adjudicate as that human so the
+        # human_sovereignty rule (precedence 1000, OD-010) can allow it.
+        # LOW actions stay on the service actor (they are allow-listed there);
+        # MEDIUM is never enforcement-gated, so it is never escalated either.
+        actor = {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
+        sov = get_active_sovereignty()
+        if sov is not None and action in sov.actions:
+            try:
+                tier = RiskTier(risk_level)
+            except ValueError:
+                tier = RiskTier.LOW
+            if tier in ENFORCED_TIERS:
+                actor = {"type": "human", "principal": sov.principal}
 
         decision = evaluate_policy_simple(
-            actor={"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL},
+            actor=actor,
             action={"name": action, "risk_level": risk_level},
             resource=None,
             scope=None,
@@ -252,21 +301,30 @@ def kernel_action(
                 except ValueError:
                     tier = RiskTier.LOW
                 if tier in ENFORCED_TIERS and (decision is None or decision != "allow"):
-                    block_verdict = decision or "error"
                     block_ms = (time.time() - started) * 1000.0
                     if audit:
                         _call_audit(
-                            "kernel", action, "blocked", block_verdict, corr_id,
+                            "kernel", action, "blocked", decision or "error", corr_id,
                             block_ms, rule_id, effective_risk, enforced=True,
                         )
                     if observable:
                         logger.warning(
                             "POLICY ENFORCED kernel_action=%s verdict=%s risk=%s "
                             "rule=%s correlation_id=%s",
-                            action, block_verdict, effective_risk,
+                            action, decision or "error", effective_risk,
                             rule_id or "?", corr_id,
                         )
-                    raise PolicyDeniedError(action, block_verdict, rule_id)
+                    if decision is None:
+                        # fail-closed: the engine was unavailable, so we cannot
+                        # even know the verdict. Hard-deny (never defer) -- we
+                        # must not wait on a human when we don't know the state.
+                        raise PolicyDeniedError(action, "error", rule_id)
+                    # The engine *answered* with a non-allow verdict for this
+                    # HIGH/CRITICAL action: it requires human sovereignty
+                    # (OD-010). Defer it (Policy C-3) so a verified human can
+                    # grant authority via the sovereignty channel, instead of
+                    # permanently forbidding the action.
+                    raise PolicyDeferredError(action, rule_id)
 
             outcome = "success"
             try:

@@ -81,7 +81,10 @@ def main() -> int:
     # --- 2+3+4. gate behaviour through the real decorator -------------------- #
     import pytest  # only used for the raises helper below; fall back if absent
 
-    # HIGH denied + enforce => raises
+    # HIGH denied + enforce => raises (Policy C-3 reclassifies this as DEFER:
+    # the action requires human sovereignty, OD-010, rather than a permanent
+    # denial). PolicyDeferredError subclasses PolicyDeniedError, so the block
+    # still surfaces as a PermissionError to existing guards.
     @xc.kernel_action("identity.grant_permission", enforce=True)
     def high_enforced():
         return "ran"
@@ -91,8 +94,9 @@ def main() -> int:
         high_enforced()
     except xc.PolicyDeniedError as err:
         raised = True
-        check("HIGH+deny+enforce raises PolicyDeniedError",
-              err.action == "identity.grant_permission" and err.verdict == "deny",
+        is_defer = isinstance(err, xc.PolicyDeferredError) and err.verdict == "defer"
+        check("HIGH+deny+enforce raises PolicyDeferredError(defer)",
+              err.action == "identity.grant_permission" and is_defer,
               f"action={err.action} verdict={err.verdict} rule={err.rule_id}")
     check("HIGH denied action was actually blocked", raised)
 

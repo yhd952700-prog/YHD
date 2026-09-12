@@ -35,6 +35,7 @@ class PolicyEffect(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
     NOT_APPLICABLE = "not_applicable"
+    DEFER = "defer"  # Policy C-3: blocked pending human sovereignty (OD-010)
 
 
 class PolicyScope(str, Enum):
@@ -662,7 +663,16 @@ class PolicyEngine:
             return False
         if ident is None:
             return False
-        return ident.status == IdentityStatus.ACTIVE
+        if ident.status != IdentityStatus.ACTIVE:
+            return False
+        # A *service* identity must NEVER satisfy the human verifier. The
+        # actor TYPE selects which verifier runs, but a caller could pass
+        # ``{"type": "human", "principal": <service-id>}`` to smuggle the
+        # internal service principal past the human-sovereignty gate.
+        # Requiring a non-service kind closes that spoofing vector
+        # (Policy C-3 -- the dynamic human-principal channel depends on it).
+        metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
+        return metadata.get("kind") != "service"
 
     def _compute_verified(self, actor: Dict[str, Any]) -> bool:
         """Dispatch identity verification by actor type.

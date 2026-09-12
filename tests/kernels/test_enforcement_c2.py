@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.kernels._crosscutting import PolicyDeniedError, kernel_action
+from src.kernels._crosscutting import PolicyDeniedError, PolicyDeferredError, kernel_action
 from src.kernels._risk_classification import RiskTier
 
 
@@ -51,19 +51,25 @@ class TestDefaultOffIsAdditive:
 
 
 class TestEnforcedHighDenyBlocks:
-    """The real C-2 cut line: HIGH/CRITICAL + deny => PolicyDeniedError."""
+    """The real C-2/C-3 cut line: HIGH/CRITICAL + deny => PolicyDeferredError
+    (deferred pending human sovereignty, Policy C-3)."""
 
     @kernel_action("identity.grant_permission", enforce=True)  # HIGH, service=deny
     def high_enforced(self):
         return "ran-should-not-happen"
 
-    def test_raises_policy_denied(self):
-        with pytest.raises(PolicyDeniedError) as exc:
+    def test_raises_policy_deferred(self):
+        with pytest.raises(PolicyDeferredError) as exc:
             self.high_enforced()
         err = exc.value
+        # A defer IS a PolicyDeniedError (and PermissionError) -- existing
+        # guards keep catching it.
+        assert isinstance(err, PolicyDeniedError)
         assert err.action == "identity.grant_permission"
-        assert err.verdict == "deny"
-        # Verdict traced to the default_deny rule that fired for the service.
+        # C-3 reclassifies the enforced HIGH/CRITICAL block as "defer"
+        # (pending human sovereignty) rather than a permanent "deny".
+        assert err.verdict == "defer"
+        # Verdict still traced to the rule that denied it for the service.
         assert err.rule_id == "default_deny"
 
     def test_is_a_permission_error(self):
@@ -71,10 +77,12 @@ class TestEnforcedHighDenyBlocks:
             self.high_enforced()
 
     def test_blocked_audit_is_enforced(self):
-        with pytest.raises(PolicyDeniedError):
+        with pytest.raises(PolicyDeferredError):
             self.high_enforced()
         det = _audit_details("identity.grant_permission")
         assert det is not None
+        # Audit records the engine's verdict ("deny") plus the enforcement flag
+        # (so "was this actually blocked?" is separately auditable).
         assert det.get("policy_decision") == "deny"
         assert det.get("policy_enforced") is True
         assert det.get("action") == "identity.grant_permission"
@@ -87,7 +95,7 @@ class TestEnforcedHighDenyBlocks:
             called.append(True)
             return "ran"
 
-        with pytest.raises(PolicyDeniedError):
+        with pytest.raises(PolicyDeferredError):
             critical_enforced()
         assert called == [], "被拦截时装饰的函数体不得执行"
 
