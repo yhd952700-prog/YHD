@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **C-0 + C-1 + D8 已实施并验证**（2026-09-11，Round 65/66）；**C-2/C-3 待裁决** |
+| 状态 | **C-0 + C-1 + D8 + C-2(机制) 已实施并验证**（2026-09-11，Round 65/66/67）；**C-2 生产开启 / C-3 待裁决** |
 | 日期 | 2026-09-11（提案）/ 2026-09-11（C-1 实施） |
 | 提出 | Principal Engineer（承接 `AI-LAYER-DOD-AUDIT.md` §3.5.4 与 §5.5 的裁决项） |
 | 裁决人 | 用户（项目主权）—— 授权 Principal Engineer 按路线 C 第一步自主推进 |
@@ -289,7 +289,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 |---|---|---|---|---|
 | **C-0** | 只做文档：D7 定措辞；把 §1 实证写进 `AI-LAYER-DOD-AUDIT` | 零 | — | ✅ **已完成** |
 | **C-1** | 引入 `service` 主体 + 白名单规则；`_adjudicate` 判决变为白名单驱动；**仍 additive（不拦截）** | 低 | `scripts/verify_policy_c1.py` ALL GREEN；内核用例零回归（494 passed） | ✅ **已完成**（Round 65） |
-| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ⏸ **D8 已完成（Round 66），解除阻塞；待裁决是否开启** |
+| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ✅ **机制已实施（Round 67，默认 off）；生产开启待裁决（阻塞于 C-3 human 主体）** |
 | **C-3**（可选） | 引入 `DEFER` + fail-closed；评估 `default_deny` scope（D6） | 中 | `test_runtime_loop` 等 default-deny 用例复核 | ⏸ 未开始 |
 
 ---
@@ -307,8 +307,13 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 - **不建议**路线 B（全面拦截）：在给内部主体合法 ALLOW 路径之前开启全面拦截 = 自锁。
 - **路线 C 分步推进**；**最低成本的第一步 C-0 + C-1 已实施**（只加白名单让判决携带信息，仍不拦截），
   风险极低且已消除"判决无信息"的空转。**实施记录见 §10。**
-- C-2/C-3 仍待裁决；**D8（动作风险分级）是 C-2 的前置阻塞** —— 不先做，C-2 的
-  "仅 HIGH/CRITICAL 拦截"永不触发。
+- C-2 **机制已实施（Round 67，2026-09-11）**：`enforce` 开关 + `PolicyDeniedError`
+  + 仅 HIGH/CRITICAL 生效的拦截门 + fail-closed；但 `enforce` **默认 `False`** 且
+  43 个生产装饰点无一开启 —— 生产行为仍是记录型，拦截力为零。**把某个 HIGH/CRITICAL
+  动作的 `enforce` 翻为 `True` 即变成真拦截**，但内部 service 主体对这些动作恒 `deny`
+  （不在 C-1 白名单、须 human 主权 OD-010），若无 C-3 的「动态 human 主体」通道直接翻转
+  = **自锁系统**。该翻转是刻意、独立的用户主权决策（见 §10.6）。
+- C-3 仍待裁决（DEFER + fail-closed + 动态 human 主体，解除生产自锁）。
 
 **待裁决**：① 是否继续走 C-2；② D2/D3/D4/D5/D6/D8 各取哪个选项。
 
@@ -411,9 +416,59 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 
 ### 10.5.4 未做的事（明确边界）
 
-- **未加 `enforce` 开关、`PolicyDeniedError`**（C-2）—— 内核层拦截力仍为零。
-- **C-2 已解除阻塞**：分级数据就绪，开启只需"加开关 + 仅 HIGH/CRITICAL 抛错"，
-  但**是否开启仍是用户主权裁决项**（不擅自改执行语义）。
+- **C-2 机制已实施（Round 67）**：`enforce` 开关 + `PolicyDeniedError` + 仅
+  HIGH/CRITICAL 拦截门 + fail-closed；但 `enforce` **默认 `False`**、43 个生产点
+  **未开启** —— 内核层生产拦截力仍为零（记录型不变）。详见 §10.6。
+- **C-2 生产开启仍待裁决**：分级数据就绪，把某个 HIGH/CRITICAL 动作的 `enforce`
+  翻为 `True` 即变真拦截，但内部 service 主体对这些动作恒 `deny`（不在 C-1 白名单、
+  须 human 主权 OD-010），若无 C-3「动态 human 主体」通道直接翻转 = **自锁系统**。
+  故生产开启是用户主权决策（不擅自改执行语义）。
+- **未动能力层** —— 它已是真拦截，本方案刻意不越界。
+- **未引入 `PolicyEffect.DEFER`**（C-3）。
+
+---
+
+## 10.6 实施记录（C-2 机制，2026-09-11 Round 67）
+
+> 授权依据：用户指示"继续按照你的方向去执行，不需要问我，你是这个项目总负责人"，
+> 采纳本方案 §4.2（enforce 开关 + `PolicyDeniedError` + 仅 HIGH/CRITICAL）。
+
+### 10.6.1 改了什么
+
+| 文件 | 变更 | 风险 |
+|---|---|---|
+| `src/kernels/_crosscutting.py` | 新增 `PolicyDeniedError(PermissionError)`（携带 `action`/`verdict`/`rule_id`）；`@kernel_action` 新增 `enforce: bool = False` 参数；wrapper 内新增仅 `HIGH`/`CRITICAL` 生效的拦截门（`deny`/`defer`/`error` → 抛 `PolicyDeniedError`，抛前写 `policy_enforced=True` 审计，fail-closed）；`_call_audit` 新增 `enforced` 参数使 `policy_enforced` 字段随实；模块 docstring `.. warning::` 注明 C-2 已实施、默认 off | 低（默认 off，生产零行为变更） |
+| `tests/kernels/test_enforcement_c2.py` | **新增**：默认 off 仍 additive、enforce+HIGH+deny 真抛错（含 action/verdict/rule_id）、enforce+LOW+allow 不抛、enforce+模拟 allow 不抛、fail-closed（adjudication None）抛、被拦截审计 `policy_enforced=True`、cut line 仅 HIGH/CRITICAL | — |
+| `scripts/verify_c2_enforcement.py` | **新增**：11 项可复现验证（机制存在性 / ENFORCED_TIERS / 门逻辑 / fail-closed / **安全护栏：无生产点翻 enforce=True**） | — |
+
+### 10.6.2 安全护栏（关键设计决策）
+
+**43 个生产 `@kernel_action` 调用点全部维持 `enforce=False`。** 原因：内核动作一律以
+内部 service 主体裁决，而 17 个 HIGH/CRITICAL 动作**不在 C-1 白名单内** → 判决恒
+`deny`。若在生产直接翻转 `enforce=True`，内部服务将无法执行
+`capability.retire` / `security.set_abac_rule` / `identity.grant_permission` 等
+系统必需动作 → **自锁**。因此「生产开启真拦截」被刻意留作独立决策，**阻塞于 C-3 的
+动态 human 主体通道**（让经 human 核验的动作以 human 身份裁决、走 `human_sovereignty`
+放行，其余仍 deny）。
+
+`verify_c2_enforcement.py` 内置 AST 护栏：扫描全部生产装饰点，断言**无任何一处传
+`enforce=True`** —— 一旦有人在 Round 67 之后误翻生产开关，验证脚本立即失败，防止静默
+自锁溜进 CI。
+
+### 10.6.3 验证结果
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | 0 违规 |
+| 2 | importlib 全量导入 `src/` 下 **98** 个被测包内模块（含全部 kernels） | FAILED: 0 |
+| 3 | `scripts/verify_c2_enforcement.py` 11 项断言 | **ALL GREEN**（退出码 0） |
+| 4 | `pytest tests/kernels/test_enforcement_c2.py` | **13 passed** |
+| 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/` | **623 passed / 1 skipped / 0 failed**（C-2 默认 off，零回归） |
+
+### 10.6.4 未做的事（明确边界）
+
+- **未在生产开启任何 `enforce=True`** —— 内核层生产拦截力仍为零（记录型）。
+- **未引入 `PolicyEffect.DEFER`**（C-3）；未做动态 human 主体（C-3，解除自锁所需）。
 - **未动能力层** —— 它已是真拦截，本方案刻意不越界。
 
 ---

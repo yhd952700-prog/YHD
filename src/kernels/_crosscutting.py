@@ -41,11 +41,18 @@ package (which has no ``__init__.py``).
    白名单之外的 29 个内核动作（授权/破坏类）继续落回 ``default_deny``。
    于是**判决重新携带信息**（不再是常量）：白名单内 ``allow``、其余 ``deny``。
 
-   **本条仍然成立：装饰器是 additive 的，判决从不产生执行效果。**
-   审计事件继续标注 ``policy_enforced: false``，并新增 ``policy_rule``
-   记录判决依据的规则 id，避免读审计者把 ``deny`` 误读为「动作被拒绝」。
-   把它变成真正的控制点是 Policy C-2（``enforce`` 开关 + 仅 HIGH/CRITICAL），
-   尚未实施。
+   **本条（C-1 阶段）仍然成立**：装饰器默认是 additive 的，判决从不产生执行效果。
+   审计事件继续标注 ``policy_enforced`` 字段（未拦截时为 ``false``），并新增
+   ``policy_rule`` 记录判决依据的规则 id，避免读审计者把 ``deny`` 误读为「动作被拒绝」。
+
+   **Policy C-2（2026-09-11 Round 67，已实施机制）**：新增 ``enforce`` 开关 +
+   :class:`PolicyDeniedError` + 仅 ``HIGH``/``CRITICAL`` 生效的拦截门 + fail-closed。
+   但 ``enforce`` **默认 ``False``**，且 43 个生产装饰点**无一开启** —— 因此生产行为
+   与 C-1 完全一致（仍记录型）。把某个 HIGH/CRITICAL 动作的 ``enforce`` 翻为 ``True``
+   即把它从「记录」变为「真拦截」，但内部 service 主体对这些动作恒 ``deny``（不在 C-1
+   白名单、须 human 主权，OD-010），若无 C-3 的「动态 human 主体」通道而直接翻转，会
+   **自锁系统**（capability.retire / security.set_abac_rule 等再也无法执行）。该翻转
+   是刻意、独立的决策，此处不做，留待用户主权裁决（C-3）。
 """
 
 from __future__ import annotations
@@ -56,9 +63,37 @@ import uuid
 from functools import wraps
 from typing import Any, Callable, Optional
 
-from src.kernels._risk_classification import get_kernel_action_risk
+from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier, get_kernel_action_risk
 
 logger = logging.getLogger("liuhao.kernel.crosscutting")
+
+
+class PolicyDeniedError(PermissionError):
+    """Raised by an *enforced* ``@kernel_action`` when the policy verdict is not allow.
+
+    Carries the action name, the recorded verdict (``"deny"`` / ``"defer"`` /
+    ``"error"``), and the rule id that produced it (when known) so callers and
+    audit logs can trace *why* execution was blocked. It subclasses
+    ``PermissionError`` so existing ``except PermissionError`` guards (e.g. in
+    the capability layer) catch it transparently.
+
+    Policy C-2: enforcement is opt-in via the decorator's ``enforce`` flag and
+    applies only to ``HIGH``/``CRITICAL`` tiers. With ``enforce=False`` (the
+    default) the decorator stays additive and this error is never raised -- the
+    C-1 record-only contract is preserved byte-for-byte.
+    """
+
+    def __init__(self, action: str, verdict: str, rule_id: Optional[str] = None) -> None:
+        self.action = action
+        self.verdict = verdict
+        self.rule_id = rule_id
+        if rule_id:
+            super().__init__(
+                f"policy denied action={action!r} verdict={verdict} rule={rule_id}"
+            )
+        else:
+            super().__init__(f"policy denied action={action!r} verdict={verdict}")
+
 
 # Sentinel distinguishing "caller did not set risk_level" from an explicit
 # "LOW" so the authoritative D8 registry is consulted only when appropriate.
@@ -71,7 +106,7 @@ _POLICY_IMPORT = ("src.kernels.policy", "evaluate_policy_simple")
 
 def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
                 corr_id: str, duration_ms: float, rule_id: Optional[str] = None,
-                risk_level: Optional[str] = None) -> None:
+                risk_level: Optional[str] = None, enforced: bool = False) -> None:
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
         log_event(
@@ -88,10 +123,11 @@ def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
                 # 判决依据的规则 id（如 "internal_service_allow" /
                 # "default_deny"）。没有它，"为什么判 deny" 无从追溯。
                 "policy_rule": rule_id or "unadjudicated",
-                # 诚实标注：本装饰器是 additive 的，只记录判决、从不拦截，
-                # 因此 policy_decision 是「已记录的判决」而非「已执行的处置」。
-                # 缺了这个字段，读审计的人会把 deny 误读成「动作被拒绝」。
-                "policy_enforced": False,
+                # 权威标注：本动作是否真的被策略拦截执行（C-2）。
+                # enforce=False 时恒 False（additive 记录型）；
+                # 被拦截时记 True，使「deny 是否真的阻止了动作」可审计、
+                # 不可再被误读为「记录即阻止」。
+                "policy_enforced": enforced,
                 "duration_ms": round(duration_ms, 3),
             },
             correlation_id=corr_id,
@@ -146,6 +182,7 @@ def kernel_action(
     action: str,
     *,
     risk_level: Any = _RISK_UNSET,
+    enforce: bool = False,
     audit: bool = True,
     policy: bool = True,
     observable: bool = True,
@@ -161,6 +198,16 @@ def kernel_action(
             made the ``risk_level`` parameter carry no signal and would have
             left the future C-2 "HIGH/CRITICAL only" gate permanently inert.
             An explicit ``risk_level`` always wins over the registry.
+        enforce: (Policy C-2) when ``True`` **and** ``risk_level`` is
+            ``HIGH``/``CRITICAL``, a non-allow verdict (``deny``/``defer``)
+            blocks the wrapped call by raising :class:`PolicyDeniedError`
+            (after writing an auditable ``policy_enforced=True`` event).
+            Defaults to ``False`` so the decorator stays additive (record-only)
+            -- turning this on for an action is the explicit, point-by-point
+            decision that flips "Policy Controlled" from *recorded* to
+            *enforced* for that action. See the module warning for why the
+            internal-service principal cannot be the actor that flips it on
+            for HIGH/CRITICAL without the C-3 human-actor path.
         audit: write a hash-chained audit event (default True).
         policy: adjudicate via the policy engine and record the decision
             (default True).
@@ -183,6 +230,43 @@ def kernel_action(
 
             if policy:
                 decision, rule_id = _adjudicate(action, effective_risk)
+
+            # --- Policy C-2 enforcement gate ---------------------------------- #
+            # Opt-in (enforce=True) and HIGH/CRITICAL only. With enforce=False
+            # (the default for all 43 production call sites) this branch is
+            # never taken and behaviour is byte-for-byte the pre-C-2 additive
+            # contract. When enforced, a non-allow verdict blocks the wrapped
+            # call AFTER writing an auditable "blocked" event.
+            #
+            # fail-closed: if adjudication was unavailable (decision is None)
+            # we also block rather than silently execute -- enforcement must
+            # never fail open. The internal-service principal is denied for
+            # every HIGH/CRITICAL action (they are not in the C-1 allow-list
+            # and require human sovereignty, OD-010), so flipping enforce=True
+            # on those actions without the C-3 human-actor plumbing would
+            # self-lock the system; that flip is a deliberate, separate
+            # decision and is NOT made here.
+            if enforce and policy:
+                try:
+                    tier = RiskTier(effective_risk)
+                except ValueError:
+                    tier = RiskTier.LOW
+                if tier in ENFORCED_TIERS and (decision is None or decision != "allow"):
+                    block_verdict = decision or "error"
+                    block_ms = (time.time() - started) * 1000.0
+                    if audit:
+                        _call_audit(
+                            "kernel", action, "blocked", block_verdict, corr_id,
+                            block_ms, rule_id, effective_risk, enforced=True,
+                        )
+                    if observable:
+                        logger.warning(
+                            "POLICY ENFORCED kernel_action=%s verdict=%s risk=%s "
+                            "rule=%s correlation_id=%s",
+                            action, block_verdict, effective_risk,
+                            rule_id or "?", corr_id,
+                        )
+                    raise PolicyDeniedError(action, block_verdict, rule_id)
 
             outcome = "success"
             try:
