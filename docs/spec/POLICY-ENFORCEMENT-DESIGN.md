@@ -345,9 +345,13 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 
 **已裁决（2026-09-12 Round 73，用户授权"剩余的剩余裁决也交给你"）**：
 
-① **生产开启内核层真拦截 = 是，但只开 `CRITICAL` 层。** 落地在**生产部署清单**，而不是代码：
-`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
-实测依据与取舍见 **§10.9**。
+① **生产开启内核层真拦截 = 是。** 落地在**生产部署清单**，而不是代码：
+`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+
+  Round 73 只开了 `CRITICAL`（2 个），前置条件是「HIGH 待调用点审计」。**Round 75（C-6）
+  完成该审计并把武装面扩到 16 个**（全部 HIGH/CRITICAL 减去 1 个实测有活调用点的豁免项
+  `capability.register`）。审计方法、逐动作实测结果与反向对照见 **§10.11**；原 CRITICAL-only
+  的裁决依据与取舍见 **§10.9**。
 
 ② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底）—— **保持现状，本轮不做**。
 理由：它影响的是**能力层**（`test_runtime_loop` 等既有 default-deny 用例），与内核层
@@ -678,6 +682,13 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
    `memory.auto_cleanup`、`event.clear_history`）。未逐个审计调用点就武装，会把正常
    流程变成"待审批"——属**可用性回归**，换不来安全收益。
    → 记为独立裁决项，前置条件写进 `runbook.md` §6.1。
+
+   ⚠️ **Round 75 更正（实测推翻当时推断）**：上句点名了 5 个「启动期/后台强候选」，
+   但逐一实测后**只有 1 个成立** —— 只有 `capability.register` 真有活的启动调用点
+   （`get_capability_registry()` 懒加载 12 个内置能力）；`plugin.register_plugin`、
+   `plugin.activate_plugin`、`memory.auto_cleanup`、`event.clear_history` 在 10 条热路径
+   与应用层套件下**均为惰性**。这条更正本身就是本轮的方法论要点：**候选名单是推断，
+   武装面必须来自实测**。详见 §10.11。
 3. **`MEDIUM` 结构性不可武装（本轮反向验证）。** `identity.create_identity`（MEDIUM）
    是**启动期**动作，若被纳入会直接打断启动 —— 而 `ENFORCED_TIERS` 从一开始就排除
    MEDIUM/LOW。这条设计在本轮得到了实测反向验证。
@@ -740,7 +751,7 @@ CI 里跑）。
 - **未做 HTTP 执行端点**：仍然只有"签发凭据"的入口，没有"用凭据执行某个 CRITICAL 动作"
   的端点（刻意的，见 §10.8.3 决策 1）。执行必须在同进程内于 `grant_window(grant)` 中完成。
   运维侧若确需执行 `capability.retire`，当前途径是：临时置空开关 → 执行 → 恢复开关。
-- **未武装 HIGH**：见 §10.9.2 第 2 条。
+- **未武装 HIGH**：见 §10.9.2 第 2 条。**该边界已于 Round 75（C-6）关闭** —— HIGH 层现已在生产武装（14/15，唯一豁免 `capability.register`），见 §10.11。
 - **未做 D6**：见 §9。
 - **未接驾驶舱 UI**：后端入口早已就绪（`/v1/policy/approvals`），前端"批准"按钮属界面工作。
 
@@ -779,6 +790,126 @@ CI 里跑）。
 
 **注意**：`sqlalchemy` / `alembic` **不在** `pyproject.dependencies`（只在
 `requirements.txt`），故 `guardrails` job 显式 `pip install alembic sqlalchemy`。
+
+---
+
+## 10.11 实施记录（C-6 HIGH 调用点审计与武装面扩展，2026-09-12 Round 75）
+
+> 授权依据：用户在 Round 73 之后的「按顺序执行」—— 第一件事正是 Round 73 亲口留下的
+> 「HIGH 那 15 个不动，**待调用点审计**」。
+
+### 10.11.1 结论
+
+**武装面从 2 个 CRITICAL 扩到 16 个 —— 全部 HIGH/CRITICAL 减去 1 个审计化豁免。**
+
+| 层 | 动作数 | 武装 | 豁免 | 生产状态 |
+|---|---|---|---|---|
+| CRITICAL | 2 | 2 | 0 | **L2（判决已执行）** |
+| HIGH | 15 | 14 | 1（`capability.register`） | **L2** |
+| MEDIUM / LOW | 26 | 0 | — | L1（`ENFORCED_TIERS` 结构性排除） |
+
+### 10.11.2 审计方法（静态 + 动态 + 对抗，四层）
+
+1. **AST 调用点扫描（全仓）**：对 15 个 HIGH 动作的方法名，在 `src/`、`LiuHao-O/`、
+   仓库根、`libs/`、`core/` 做属性调用扫描 → **生产代码外部调用点 = 0**。
+   注意一个陷阱：`src/identity/__init__.py`、`src/plugins/registry.py`、
+   `src/kernels/*/__init__.py` 里确实存在**同名调用**，但它们全在**门面包装函数体内**，
+   而这些门面函数自身**没有任何调用点**（`external calls total: 0`，全仓复核）。
+   `apps/` 是纯前端（0 个 `.py`）；`getattr` 动态派发 0 处；无按字符串的动作派发。
+2. **逐动作动态探测**：17 个候选（15 HIGH + 2 CRITICAL）各自在**全新进程**里**单独武装**，
+   跑 10 条生产热路径（各内核单例引导 + app 工厂）。
+
+   | 结果 | 动作 |
+   |---|---|
+   | **打破热路径** | `capability.register`（`capability.bootstrap` 抛 `PolicyDeferredError`）|
+   | 惰性 | 其余 **16** 个 |
+
+3. **应用层套件对照**（补齐探测覆盖面）：以**完整 spec 武装**运行
+   `tests/test_profile_api.py`、`tests/test_liuhao_assistant.py`、
+   `tests/test_runtime_loop.py`、`tests/test_ai_layer_dod_delegation.py`、`tests/security/`。
+
+   | 组 | 进度字符统计 |
+   |---|---|
+   | 对照（未武装） | `.=111  s=1  F=0  E=0` |
+   | 实验（16 武装） | `.=111  s=1  F=0  E=0` |
+
+   逐字相同。单调性使**一次**运行覆盖所有子集（武装 A 不影响 B 的判决）。
+   （注：两条腿的 `exit code` 都可能是 1 —— 沙箱的 bulk-delete 守卫会拦截 pytest 的
+   tmpdir 清理并吞掉汇总行，所以本仓库一律用**进度字符**而非退出码判定。）
+
+4. **对抗性检查**：确认无动态派发、无字符串派发、无遗漏的生产根目录。
+
+### 10.11.3 关键发现：`capability.register` 是唯一有活调用点的动作
+
+`get_capability_registry()` 首次调用时会**懒加载并注册 12 个内置内核能力**
+（`_register_builtin_capabilities()` → `CapabilityRegistry.register()`）—— 这是**启动热路径**。
+武装它 → `PolicyDeferredError` 从注册表引导逃出 → 所有能力内核消费方失败。
+
+⚠️ **重要教训：它的调用点全在「定义模块内部」，与惰性的门面包装函数在文本上无法区分**
+（一个在 `_register_builtin_capabilities()` 里被真执行，一个在 `register_capability()` 里
+永不被调用）。所以 **「外部调用点 = 0」不等于「没有调用点」**。静态扫描在这件事上会
+把人带到错误结论 —— 这也是本轮最终用手册化的**动态探测**、而不是 grep，来界定武装面的原因。
+
+### 10.11.4 落地：审计化豁免（`EXEMPT_ACTIONS`）
+
+豁免不是政策偏好，是**记录下来的调用点实测结论**。`src/kernels/_enforcement.py`：
+
+- `EXEMPT_ACTIONS: Dict[str, str]` —— 动作 → 理由（含实测日期、现象、复访条件）；
+- 层级展开（`HIGH` / `CRITICAL`）**自动扣除**豁免项；
+- **显式点名**豁免动作 → `ValueError`（fail-loud），错误信息带出理由；
+- `describe()` 增加 `exempt_actions`，因此 `GET /v1/policy/enforcement` 可见。
+
+生产清单：`docker-compose.prod.yml` →
+`LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+
+### 10.11.5 把「惰性」变成 CI 门禁（本轮最重要的交付）
+
+C-5 的把关条件是「该动作无生产调用点」，而这条**静态断言不出来**（见 §10.11.3）。
+新增 `scripts/verify_armed_actions_are_inert.py`（已接入 CI 的 `guardrails` job）：
+
+1. 从**生产清单**读出 spec（跟随部署，而非硬编码），断言其可解析、无豁免泄漏、非空
+   （空集会立刻报错 —— 否则护栏是"真空通过"）；
+2. **广度**：以完整 spec 武装运行应用层套件，进度字符统计必须 0 failed / 0 error；
+3. **逐动作**：每个被武装动作单独在**全新进程**里武装，跑生产热路径 + 未鉴权 GET 路由，
+   失败条件有**两条** —
+   - 任一探测抛异常；**或**
+   - 装饰器打出 `POLICY ENFORCED kernel_action=<该动作>` 日志。
+
+   第二条专门用于捕获**异常被 `except Exception` 吞掉的静默降级**：那种情况下所有探测
+   都是绿的，只有日志能揭示动作其实被拦了。
+
+**反向对照（不做这一步就等于又造了一个假护栏）**
+
+| 对照 | 期望 | 实测 |
+|---|---|---|
+| 在生产代码注入一个**被 `except Exception` 吞掉**的 `memory.auto_cleanup()` 调用点，并武装该动作 | 必须被抓到 | ✅ `failures: []`（无异常）但 `blocks: ["POLICY ENFORCED ..."]` → exit 1 |
+| 同一改动下探测**另一个**动作 | 不得误报 | ✅ exit 0、`blocks` 为空（归因精确）|
+| 把豁免动作写进生产清单 | 必须拒绝 | ✅ exit 1，并把豁免理由整段报出 |
+
+第二行尤其重要：只捕获日志而不区分动作，就会变成一个到处误报的护栏。
+
+### 10.11.6 同步的断言变更
+
+| 位置 | 原断言 | 新断言 |
+|---|---|---|
+| `verify_c4_approval_channel.py` | `parse_spec('HIGH') == 15` | `== 14`；另加「层级扣除豁免」「点名豁免即报错」「理由非空」|
+| 同上 | 武装集 `== CRITICAL`；「不得武装任何 HIGH」 | 武装集 `== (HIGH∪CRITICAL) − EXEMPT`（**不多不少**）|
+| `tests/kernels/test_enforcement_policy.py` | HIGH 展开 15 | 14，另加 6 项豁免契约测试 |
+| `tests/test_policy_enforcement_api.py` | 清单 spec `== "CRITICAL"` | `== "HIGH,CRITICAL"` 且解析 == 审计面；「HIGH 刻意不武装」→「无豁免动作被武装」+ 断言惰性护栏仍在 CI |
+
+规模：`verify_c4` 48 → **52** 项；元护栏 31 → **34** 项（它自动把新脚本纳入
+「必须有引导 / 必须有失败路径 / 必须被某个 workflow 调用」三项检查 —— 新脚本写完后
+它立刻报了红，正是它该有的行为）。
+
+### 10.11.7 边界与未做的事
+
+- **未做 HTTP 执行端点**：仍然只有"签发凭据"入口（§10.8.3 决策 1）。运维要真正执行
+  某个已武装动作，当前途径仍是「临时置空开关 → 执行 → 恢复开关」。
+- **未做驾驶舱 UI**：后端 `/v1/policy/approvals` 就绪，前端"批准"按钮属界面工作。
+- **未做 D6**：见 §9 ②。
+- **惰性护栏的诚实边界**：它证明的是**已测路径**上不可达，不是"数学上不可达"。未被热路径
+  与应用层套件覆盖的**新增**调用点仍可能漏过。这是采样而非证明 —— 已写进脚本 docstring，
+  不做超出证据的宣称。
 
 ---
 

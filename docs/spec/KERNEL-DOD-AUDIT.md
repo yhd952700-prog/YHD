@@ -73,8 +73,19 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 > 落地位置：`docker-compose.prod.yml` 的
 > `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
 >
-> 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10（含 §10.9 C-5 裁决记录）；
-> 证据：`scripts/verify_policy_c1.py`、`scripts/verify_c4_approval_channel.py`。
+> **C-6 裁决已落地（2026-09-12 Round 75）：武装面扩到 16 个，HIGH 层一并达到 L2。**
+> 逐动作实测（全仓 AST 调用点扫描 + 逐动作单独特武装跑 10 条生产热路径 + 应用层套件
+> 以完整 spec 武装做对照）确认：**15 个 HIGH 动作中只有 `capability.register` 有活的
+> 生产调用点**（`get_capability_registry()` 懒加载注册 12 个内置能力），其余 14 个与
+> 2 个 CRITICAL 一样惰性。故本审计现在可以断言：**HIGH 与 CRITICAL 两层均已达
+> L2（判决已执行）**；唯一豁免 `capability.register` 仍为 L1，理由与复访条件记录在
+> `src/kernels/_enforcement.py::EXEMPT_ACTIONS`。
+> 把关条件（「无生产调用点」）已从静态断言升级为 **CI 动态门禁**
+> `scripts/verify_armed_actions_are_inert.py`：给已武装动作新增调用点会让 CI 直接变红。
+>
+> 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10（含 §10.9 C-5 / §10.11 C-6 裁决记录）；
+> 证据：`scripts/verify_policy_c1.py`、`scripts/verify_c4_approval_channel.py`（52 项）、
+> `scripts/verify_armed_actions_are_inert.py`（21 项）。
 
 ---
 

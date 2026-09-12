@@ -18,14 +18,18 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
       - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY}
-      # Policy Controlled (C-5 decision, 2026-09-12): arm the two CRITICAL
-      # kernel actions (capability.retire / security.set_abac_rule). Neither
-      # has any production call site in src/, so this is a zero-behaviour
-      # change today -- but the gate is now live, and a future or compromised
+      # Policy Controlled (C-6 decision, 2026-09-12): arm every HIGH and
+      # CRITICAL kernel action except the audited exemptions recorded in
+      # src/kernels/_enforcement.py (EXEMPT_ACTIONS). The Round 75 call-site
+      # audit measured every armed action as unreachable from production
+      # code, so this is a zero-behaviour change today -- but the gate is now
+      # live across the whole high-risk surface, and a future or compromised
       # caller must obtain a verified human approval first
-      # (POST /v1/policy/approvals). HIGH stays unarmed pending a call-site
-      # audit. Rollback: set this variable to the empty string.
-      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}
+      # (POST /v1/policy/approvals).
+      # scripts/verify_armed_actions_are_inert.py turns CI red if a change
+      # makes an armed action reachable.
+      # Rollback: set this variable to the empty string.
+      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}
     depends_on:
       redis:
         condition: service_healthy

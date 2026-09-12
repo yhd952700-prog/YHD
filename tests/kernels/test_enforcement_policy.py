@@ -1,15 +1,22 @@
-"""Policy C-4 — deployment-side kernel enforcement switch (default OFF).
+"""Policy C-4/C-6 — deployment-side kernel enforcement switch (default OFF).
 
 These tests prove:
 
   * the switch defaults to "nothing enforced" (production stays record-only/L1);
-  * a tier token expands to exactly that tier's kernel actions;
+  * a tier token expands to exactly that tier's kernel actions, **minus the
+    audited exemptions** (C-6) — and naming an exempt action is rejected loudly
+    rather than silently armed or silently ignored;
   * an explicit action name selects exactly that action;
   * unknown tokens, non-gated tiers, and LOW/MEDIUM action names are rejected
     **loudly** -- a typo must never leave the system quietly unenforced;
   * flipping the switch actually ARMS the C-2 gate for *production* call sites
     (which keep ``enforce=False``), and an audited approval grant then lets the
     action through.
+
+Reachability itself is not provable from a unit test (an exempt action's call
+site sits inside its own defining module and looks exactly like an inert one);
+it is measured dynamically by ``scripts/verify_armed_actions_are_inert.py``,
+which runs in CI's ``guardrails`` job.
 """
 
 from __future__ import annotations
@@ -68,8 +75,45 @@ class TestParseSpec:
         assert len(enf.parse_spec("CRITICAL")) == 2
 
     def test_high_tier_expands_to_its_actions(self):
-        assert enf.parse_spec("HIGH") == HIGH_ACTIONS
+        # The HIGH tier holds 15 actions; one of them (capability.register) is
+        # exempted because production reaches it during startup, so a tier token
+        # expands to 14. See EXEMPT_ACTIONS.
         assert len(HIGH_ACTIONS) == 15
+        assert enf.parse_spec("HIGH") == HIGH_ACTIONS - set(enf.EXEMPT_ACTIONS)
+        assert len(enf.parse_spec("HIGH")) == 14
+
+    def test_tier_expansion_never_arms_an_exempt_action(self):
+        for tier in ("HIGH", "CRITICAL", "HIGH,CRITICAL"):
+            assert not (enf.parse_spec(tier) & set(enf.EXEMPT_ACTIONS)), tier
+
+    def test_full_expansion_is_the_gated_surface_minus_exemptions(self):
+        expected = (HIGH_ACTIONS | CRITICAL_ACTIONS) - set(enf.EXEMPT_ACTIONS)
+        assert enf.parse_spec("HIGH,CRITICAL") == expected
+        assert len(expected) == 16
+
+    def test_naming_an_exempt_action_is_rejected_loudly(self):
+        assert enf.EXEMPT_ACTIONS, "expected at least one documented exemption"
+        for exempt in sorted(enf.EXEMPT_ACTIONS):
+            with pytest.raises(ValueError) as err:
+                enf.parse_spec(exempt)
+            # the recorded reason is surfaced, not just a bare rejection
+            assert exempt in str(err.value)
+
+    def test_exempt_action_is_rejected_even_inside_a_tier_list(self):
+        for exempt in sorted(enf.EXEMPT_ACTIONS):
+            with pytest.raises(ValueError):
+                enf.parse_spec("HIGH,CRITICAL,%s" % exempt)
+
+    def test_every_exemption_records_the_call_site_that_forced_it(self):
+        for action, reason in enf.EXEMPT_ACTIONS.items():
+            assert action in KERNEL_ACTION_RISK, action
+            assert isinstance(reason, str)
+            assert "call site" in reason.lower(), reason
+            assert len(reason.strip()) > 80, "reason is too thin to review"
+
+    def test_describe_exposes_the_exemptions(self):
+        snap = enf.describe()
+        assert snap["exempt_actions"] == sorted(enf.EXEMPT_ACTIONS)
 
     def test_explicit_action_name(self):
         assert enf.parse_spec("capability.retire") == frozenset({"capability.retire"})

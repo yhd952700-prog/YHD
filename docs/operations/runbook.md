@@ -83,27 +83,34 @@ engine.rollback(experiment_id)   # 状态 -> ROLLED_BACK，写入 history 审计
 - Release 前 11 道门：Format / Lint / Type / Unit / Integration / Security / E2E / Performance / Agent Evaluation / Benchmark / Regression。
 - **Critical Failure → Block Release**。任一加固检查失败视为 Critical。
 
-### 6.1 内核层策略拦截开关（Policy C-4 / C-5 裁决）
+### 6.1 内核层策略拦截开关（Policy C-4 / C-5 / C-6 裁决）
 
 内核层 43 个 `@kernel_action` 默认**只记录、不拦截**（L1）。把它们变成**真拦截**（L2）
 不需要改代码 —— 用一处运维开关：
 
 ```bash
-# 当前生产默认（已写入 docker-compose.prod.yml）：只武装两个 CRITICAL 动作
-export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL
+# 当前生产默认（已写入 docker-compose.prod.yml）：武装全部 16 个 HIGH/CRITICAL 动作
+export LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL
 # 逐动作精确开启
 export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
 # 整体回滚为记录型（L1）
 export LIUHAO_KERNEL_POLICY_ENFORCE=
 ```
 
-- **当前生产状态（2026-09-12 Round 73 裁决）**：生产清单默认 **`CRITICAL`**。
-  两个 CRITICAL 动作（`capability.retire` / `security.set_abac_rule`）在 `src/`
-  **没有任何生产调用点** —— 该默认值因此是**零行为变更**的，但门已就位：
+- **当前生产状态（2026-09-12 Round 75 / C-6 裁决）**：生产清单默认
+  **`HIGH,CRITICAL`** —— 16 个动作，即全部 HIGH/CRITICAL **减去审计化豁免**。
+  逐动作实测（10 条内核引导热路径 + 应用层套件 + 全仓 AST 调用点扫描）确认这 16 个
+  在 `src/` **没有活的生产调用点**，因此该默认值是**零行为变更**的；门就位后，
   任何后续（或受损）的调用路径都必须先取得经核验的人类审批。
-- **HIGH 暂不开启**（仍为 L1）。原因：HIGH 动作中存在启动期/后台路径的候选
-  （`plugin.*`、`capability.register`、`memory.auto_cleanup`、`event.clear_history`），
-  开启前必须逐个审计调用点，否则会把正常流程变成「待审批」。需单独裁决。
+- **唯一豁免：`capability.register`**（仍为 L1）。原因是它**有活的启动调用点**：
+  `get_capability_registry()` 懒加载时经 `_register_builtin_capabilities()` 注册
+  12 个内置内核能力。武装它会让 `PolicyDeferredError` 从注册表引导里逃出，
+  使所有能力内核消费方失败。豁免理由与复访条件记录在
+  `src/kernels/_enforcement.py` 的 `EXEMPT_ACTIONS`；显式点名该动作会**直接报错**。
+- ⚠️ **武装面的操作含义**：若后续给某个已武装动作新增生产调用点，CI 的
+  `verify_armed_actions_are_inert.py` 会**立刻变红**（它逐个动作单独特武装并跑生产
+  热路径）。此时二选一：把该调用点改为经人工审批，或把该动作加入 `EXEMPT_ACTIONS`
+  并写清理由。**不要**为了让它变绿而清空开关。
 - 开启后，HIGH/CRITICAL 动作无人工审批时抛 `PolicyDeferredError` → HTTP **409**
   （`policy_approval_required`，**待审批，不是永久拒绝**）；fail-closed 的硬拒
   （引擎不可达、判决未知）→ HTTP **403**（`policy_denied`）。
@@ -129,7 +136,8 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
 | `verify_d8_risk_classification.py` | 43 个内核动作的风险分级注册表与装饰器接线一致 |
 | `verify_c2_enforcement.py` | **无任何生产调用点**自行把 `enforce` 翻为 `True` |
 | `verify_c3_sovereignty.py` | DEFER 语义；主权通道未被生产代码开启 |
-| `verify_c4_approval_channel.py` | 审批主体只来自 JWT；`ApprovalRequest` 不含 `principal` |
+| `verify_c4_approval_channel.py` | 审批主体只来自 JWT；`ApprovalRequest` 不含 `principal`；武装面 == 审计许可面 |
+| `verify_armed_actions_are_inert.py` | 每个被武装的动作都**实测**不可从生产路径到达（逐动作单独特武装 + 捕获 `POLICY ENFORCED` 日志）|
 | `verify_ai_layer_audit.py` | AI 层审计下沉的对照探针自校验（探针失效即失败） |
 | `verify_orm_vs_db.py` | ORM 模型与 alembic 迁移后的 schema 无列级分歧 |
 | `verify_persistence.py` | 跨会话（重连）持久化可读回 |
@@ -138,7 +146,9 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
 - **元护栏**：`tests/test_guardrail_scripts.py` 断言每个 `verify_*.py` 都有
   `sys.path` 引导、都存在能产生非零退出的路径、且都被某个 workflow 调用。
   因此「新增一个永远通过的假护栏」在本仓库已不可能 —— CI 会直接红。
-- **手工复跑**：`.venv/Scripts/python.exe scripts/verify_c4_approval_channel.py`。
+- **手工复跑**：`.venv/Scripts/python.exe scripts/verify_c4_approval_channel.py`；
+  惰性护栏：`.venv/Scripts/python.exe scripts/verify_armed_actions_are_inert.py`
+  （约 3 分钟：广度部分跑一次应用层套件，逐动作部分 16 次子进程探测）。
   两个 DB 护栏需先建库：`DATABASE_URL=sqlite:///./scratch.db python -m alembic upgrade head`。
 
 ---

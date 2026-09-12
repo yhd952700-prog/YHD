@@ -17,8 +17,24 @@ What this proves:
      no production kernel code opens a sovereignty channel; the approval request
      model cannot name the approver (the principal is token-only); and exactly one
      file may arm the switch -- the production manifest, with a spec that resolves
-     to the CRITICAL tier and nothing else (C-5). Dev, CI and the Dockerfile must
-     never arm it, so the suite keeps exercising the record-only (L1) contract.
+     to the whole gated surface **minus the audited exemptions** (C-6). Dev, CI
+     and the Dockerfile must never arm it, so the suite keeps exercising the
+     record-only (L1) contract.
+
+C-6 update (2026-09-12, Round 75)
+---------------------------------
+Until Round 75 this file asserted "the production manifest arms CRITICAL exactly"
+and "no HIGH action is armed" -- the correct invariant while the HIGH call-site
+audit was still outstanding. The audit is now done (every HIGH action measured
+unreachable from production, except ``capability.register``), so those two checks
+were replaced by the stronger, more specific pair:
+
+* the armed set must equal ``(HIGH | CRITICAL) - EXEMPT_ACTIONS`` -- i.e. arming
+  nothing extra *and* silently dropping nothing; and
+* no exempt action may be armed, and naming one in the spec must raise.
+
+Reachability itself is not asserted here (a static file cannot see it); it is
+measured dynamically by ``scripts/verify_armed_actions_are_inert.py``.
 """
 
 from __future__ import annotations
@@ -212,11 +228,27 @@ def main() -> int:
     check("enforced_actions() empty by default", enf.enforced_actions() == frozenset())
 
     check("parse_spec('CRITICAL') -> 2 actions", len(enf.parse_spec("CRITICAL")) == 2)
-    check("parse_spec('HIGH') -> 15 actions", len(enf.parse_spec("HIGH")) == 15)
+    check(
+        "parse_spec('HIGH') -> 14 actions (15 minus the audited exemption)",
+        len(enf.parse_spec("HIGH")) == 14,
+        f"got {len(enf.parse_spec('HIGH'))}",
+    )
     check(
         "parse_spec explicit action",
         enf.parse_spec("capability.retire") == frozenset({"capability.retire"}),
     )
+    check(
+        "tier expansion drops every exempt action",
+        not (enf.parse_spec("HIGH,CRITICAL") & set(enf.EXEMPT_ACTIONS)),
+        f"exempt={sorted(enf.EXEMPT_ACTIONS)}",
+    )
+    for exempt in sorted(enf.EXEMPT_ACTIONS):
+        try:
+            enf.parse_spec(exempt)
+            check(f"parse_spec rejects the exempt action {exempt!r}", False,
+                  "no ValueError raised -- arming it would break production")
+        except ValueError:
+            check(f"parse_spec rejects the exempt action {exempt!r}", True)
     for bad in ("NOPE", "capability.reitre", "memory.store", "trust.assign_score", "LOW", "MEDIUM"):
         try:
             enf.parse_spec(bad)
@@ -408,12 +440,27 @@ def main() -> int:
             spec_error = str(exc)
         check("production manifest spec parses (no typo, no inert entry)",
               spec_error is None, spec_error or f"spec={prod_spec!r}")
-        check("production manifest arms the CRITICAL tier exactly",
-              armed_actions == critical_actions,
-              f"armed={sorted(armed_actions)}")
-        check("no HIGH action is armed in production (HIGH soak pending)",
-              not (armed_actions & high_actions),
-              f"high={sorted(armed_actions & high_actions)}")
+
+        # C-6: the armed set must equal the whole gated surface minus the audited
+        # exemptions -- not more (nothing armed by accident) and not less (nothing
+        # silently dropped from a tier expansion).
+        audited_surface = (high_actions | critical_actions) - set(enf.EXEMPT_ACTIONS)
+        check("production manifest arms exactly the audited surface",
+              armed_actions == audited_surface,
+              f"armed={len(armed_actions)} audited={len(audited_surface)} "
+              f"missing={sorted(audited_surface - armed_actions)} "
+              f"extra={sorted(armed_actions - audited_surface)}")
+        check("no exempt action is armed in production",
+              not (armed_actions & set(enf.EXEMPT_ACTIONS)),
+              f"exempt_armed={sorted(armed_actions & set(enf.EXEMPT_ACTIONS))}")
+        check("every exempt action carries a recorded reason",
+              all(
+                  isinstance(reason, str) and len(reason.strip()) > 20
+                  for reason in enf.EXEMPT_ACTIONS.values()
+              ),
+              f"exempt={sorted(enf.EXEMPT_ACTIONS)}")
+        check("reachability is measured by verify_armed_actions_are_inert.py",
+              (REPO_ROOT / "scripts" / "verify_armed_actions_are_inert.py").is_file())
 
     failed = [r for r in RESULTS if not r[0]]
     print()

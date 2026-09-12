@@ -22,10 +22,21 @@ value                        effect
 ===========================  ==========================================
 ``""`` (unset)               nothing enforced -- record-only / L1 (default)
 ``CRITICAL``                 every CRITICAL action
-``HIGH,CRITICAL``            every HIGH and CRITICAL action
+``HIGH,CRITICAL``            every HIGH and CRITICAL action, minus exemptions
 ``capability.retire``        exactly that action
 ``CRITICAL,memory.auto_cleanup``  a mix of tiers and explicit action names
 ===========================  ==========================================
+
+Audited exemptions (C-6)
+------------------------
+A tier name expands to every action of that tier *except* the ones listed in
+:data:`EXEMPT_ACTIONS`. An exemption is not a policy judgement -- it is a
+recorded **call-site measurement**: an action that production code actually
+invokes on a normal path may not be armed, because arming it would convert a
+working flow into a "wait for a human" (an availability regression, not a
+security gain). Each exemption carries its evidence and the condition under
+which it should be revisited. Naming an exempt action explicitly in the spec
+raises (fail-loud) rather than silently arming or silently ignoring it.
 
 Fail-loud, never fail-silent
 ----------------------------
@@ -56,6 +67,26 @@ logger = logging.getLogger("liuhao.kernel.enforcement")
 #: Environment variable holding the enforcement selection.
 ENV_VAR = "LIUHAO_KERNEL_POLICY_ENFORCE"
 
+#: Actions that a tier expansion must NOT arm, with the measurement that put
+#: them here. Keyed by kernel action name; the value is the recorded reason.
+#:
+#: The bar for an entry: production code (``src/``, excluding tests) reaches the
+#: action on a path that runs during normal operation, so arming it would break
+#: a working flow. Speculative future call sites do *not* qualify -- those are
+#: caught by ``scripts/verify_armed_actions_are_inert.py`` in CI at the moment
+#: they are written, which is the intended time to have the conversation.
+EXEMPT_ACTIONS: Dict[str, str] = {
+    "capability.register": (
+        "Live startup call site: get_capability_registry() lazily calls "
+        "_register_builtin_capabilities() -> CapabilityRegistry.register() to "
+        "install the 12 built-in kernel capabilities. Arming it makes "
+        "PolicyDeferredError escape the registry bootstrap, so every consumer of "
+        "the capability kernel fails. Measured 2026-09-12 (Round 75) by arming "
+        "it alone in a fresh process: probe 'capability.bootstrap' raises. "
+        "Revisit if the bootstrap is given an exempt internal path."
+    ),
+}
+
 _lock = threading.RLock()
 _cache: Optional[Tuple[str, FrozenSet[str]]] = None
 
@@ -68,8 +99,9 @@ def parse_spec(spec: str) -> FrozenSet[str]:
             action names. Empty/whitespace means "nothing enforced".
 
     Raises:
-        ValueError: on an unknown token, or an action name that is not
-            enforcement-gated (LOW/MEDIUM).
+        ValueError: on an unknown token, an action name that is not
+            enforcement-gated (LOW/MEDIUM), or an action name listed in
+            :data:`EXEMPT_ACTIONS`.
     """
     from src.kernels._risk_classification import (
         ENFORCED_TIERS,
@@ -97,9 +129,18 @@ def parse_spec(spec: str) -> FrozenSet[str]:
                     f"{ENV_VAR}: tier {upper} is not enforcement-gated "
                     f"(only {sorted(t.value for t in gated_tiers)} can be enforced)"
                 )
-            selected.update(a for a, r in KERNEL_ACTION_RISK.items() if r.tier is tier)
+            selected.update(
+                a
+                for a, r in KERNEL_ACTION_RISK.items()
+                if r.tier is tier and a not in EXEMPT_ACTIONS
+            )
             continue
         if token in KERNEL_ACTION_RISK:
+            if token in EXEMPT_ACTIONS:
+                raise ValueError(
+                    f"{ENV_VAR}: action {token!r} is exempt from enforcement "
+                    f"({EXEMPT_ACTIONS[token]})"
+                )
             tier = KERNEL_ACTION_RISK[token].tier
             if tier not in gated_tiers:
                 raise ValueError(
@@ -165,5 +206,6 @@ def describe() -> Dict[str, object]:
         "enabled": bool(actions),
         "enforced_actions": actions,
         "count": len(actions),
+        "exempt_actions": sorted(EXEMPT_ACTIONS),
         "config_error": error,
     }

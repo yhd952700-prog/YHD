@@ -1,4 +1,4 @@
-"""Policy C-5 — the enforcement decision, pinned at the HTTP boundary.
+"""Policy C-5/C-6 — the enforcement decision, pinned at the HTTP boundary.
 
 The C-2/C-3 gate raises ``PolicyDeferredError`` (needs a verified human's
 approval) or ``PolicyDeniedError`` (fail-closed hard deny). Both subclass
@@ -11,7 +11,13 @@ These tests pin two things:
 * the boundary contract -- deferred is **409** (not forbidden, awaiting
   approval), hard-denied is **403**, and never 500;
 * the deployment decision itself -- exactly one file may arm the switch, and it
-  may arm the CRITICAL tier and nothing else.
+  must arm the whole gated surface **minus the audited exemptions** (C-6):
+  arming nothing extra, and silently dropping nothing.
+
+Reachability of an armed action cannot be asserted from here (it is a runtime
+property, and the dangerous call sites live inside the defining module where
+they are textually indistinguishable from inert ones). That half is measured by
+``scripts/verify_armed_actions_are_inert.py``.
 """
 
 from __future__ import annotations
@@ -175,16 +181,24 @@ class TestArmedGateEndToEndOverHttp:
 
 
 class TestProductionArmingDecision:
-    """C-5: exactly one file arms the switch, and only the CRITICAL tier."""
+    """C-6: exactly one file arms the switch, and it arms the audited surface."""
 
-    def test_production_manifest_arms_critical(self):
+    def test_production_manifest_arms_the_audited_surface(self):
         text = (REPO_ROOT / PROD_MANIFEST).read_text(encoding="utf-8")
         match = re.search(r"LIUHAO_KERNEL_POLICY_ENFORCE=[^\n]*:-([^}]*)\}", text)
         assert match, "the production manifest does not arm the switch"
         spec = match.group(1).strip()
-        assert spec == "CRITICAL"
-        assert enf.parse_spec(spec) == CRITICAL_ACTIONS
+        assert spec == "HIGH,CRITICAL", spec
+
+        expected = (HIGH_ACTIONS | CRITICAL_ACTIONS) - set(enf.EXEMPT_ACTIONS)
+        armed = enf.parse_spec(spec)
+        assert armed == expected, (
+            "missing=%s extra=%s"
+            % (sorted(expected - armed), sorted(armed - expected))
+        )
         assert len(CRITICAL_ACTIONS) == 2
+        assert len(HIGH_ACTIONS) == 15
+        assert len(expected) == 16
 
     def test_no_other_file_arms_the_switch(self):
         config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
@@ -210,14 +224,23 @@ class TestProductionArmingDecision:
             text = path.read_text(encoding="utf-8", errors="ignore")
             assert "LIUHAO_KERNEL_POLICY_ENFORCE" not in text, path.name
 
-    def test_high_tier_is_deliberately_not_armed(self):
-        # HIGH stays record-only until each HIGH action's call sites have been
-        # audited for startup/background use (arming early would turn normal
-        # flows into "awaiting approval"). This test fails the day someone arms
-        # HIGH without revisiting that precondition.
-        armed = enf.parse_spec("CRITICAL")
-        assert not (armed & HIGH_ACTIONS)
-        assert len(HIGH_ACTIONS) == 15
+    def test_no_exempt_action_is_armed(self):
+        # An exemption is a recorded call-site measurement, not a policy taste:
+        # the action is reached by production during normal operation, so arming
+        # it would convert a working flow into "awaiting approval". This test
+        # fails the day someone arms one without first removing the call site.
+        armed = enf.parse_spec("HIGH,CRITICAL")
+        assert not (armed & set(enf.EXEMPT_ACTIONS))
+        assert enf.EXEMPT_ACTIONS, "an empty exemption set would make this vacuous"
+
+    def test_the_inertness_guard_is_wired_into_ci(self):
+        # The static decision above is only half the invariant; the other half
+        # (is an armed action actually reachable?) is measured, not asserted.
+        # If that guard is ever dropped from CI, the decision loses its teeth.
+        guard = REPO_ROOT / "scripts" / "verify_armed_actions_are_inert.py"
+        assert guard.is_file(), "the inertness guard is missing"
+        ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        assert "verify_armed_actions_are_inert.py" in ci
 
     def test_arming_is_a_deployment_decision_not_a_code_edit(self):
         # The whole point of the single switch: all 43 production call sites
