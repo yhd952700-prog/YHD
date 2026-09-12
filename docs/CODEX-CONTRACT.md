@@ -91,7 +91,7 @@
 
 > ⚠️ **本节快照已过期，仅作历史记录**。2026-09-12 复核的真实状态：
 > `tests/kernels/` **已建立**且 14 个 kernel 各有测试；CI 基线
-> **1281 passed / 14 skipped / 0 failed**（run `34690158540`，Python 3.11）；
+> **1343 passed / 14 skipped / 0 failed**（run `34692597622`，Python 3.11.16 与 3.12.14 **双腿同值**）；
 > `capability-registry.yaml` 已修正为 **14 项**（`LHX-C-NNN` + `source`）。
 > 因此下方"kernel 层单元测试 0 个""几乎整体未建"等表述**不要用于判断当前状态**，
 > 权威进度见 [`spec/GAP-MIGRATION-MATRIX.md`](spec/GAP-MIGRATION-MATRIX.md) 表 3 与

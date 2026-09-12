@@ -170,8 +170,8 @@ docs/
 
 **3. ~~Kernel 层测试覆盖 7/14~~ ✅ 已解决（2026-09-11 实测更正）**
 14 个 kernel 共 6,391 行代码。曾记录为"仅 7 个 kernel 有测试"，**该陈述已过时**：`tests/kernels/` 现有 **14 个 kernel 测试目录全部齐全**（audit / capability / context / evaluation / event / execution / identity / memory / network / plugin / policy / resource / security / trust），14 项能力状态已全部为 `IMPLEMENTED`（DoD 七维 14/14，见 [`spec/KERNEL-DOD-AUDIT.md`](spec/KERNEL-DOD-AUDIT.md) 与 [`spec/CAPABILITY-REGISTRY.md`](spec/CAPABILITY-REGISTRY.md)）。
-**当前 CI 真实基线（run `34690158540`，2026-09-12）：1281 passed / 14 skipped / 0 failed** —— 此前"1173 / 1141 passed"及 run #69-74 的"全绿"均不可信（ci.yml 曾用 `|| echo` 吞退出码所致）。
-> ⚠️ 该基线由 **CI 的 Python 3.11** 产出。本机 venv 为 **3.12**，二者存在版本分叉（只在 3.12 暴露的差异本地可见、CI 不可见）—— 见 [`CODEX-CONTRACT.md`](CODEX-CONTRACT.md) 与 `.github/workflows/ci.yml` 的版本说明。
+**当前 CI 真实基线（run `34692597622`，2026-09-12）：1343 passed / 14 skipped / 0 failed**（**Python 3.11.16 与 3.12.14 双腿同值**：test job 自 Round 72 起为 `['3.11','3.12']` 矩阵，见 `.github/workflows/ci.yml`）—— 此前"1173 / 1141 / 1281 passed"及 run #69-74 的"全绿"均不可信（ci.yml 曾用 `|| echo` 吞退出码所致）。
+> ✅ **版本分叉盲区已关闭（2026-09-12，Round 72）**：该基线由 CI 的 test job 矩阵 **Python 3.11.16 与 3.12.14 各自独立跑出，两条腿数值完全相同**（1343 / 14 / 0，21 warnings）。本机 venv 为 3.12.14，与 CI 的 3.12 腿版本一致，故此前「只在 3.12 暴露的差异本地可见、CI 不可见」的盲区不再成立 —— 见 `.github/workflows/ci.yml`。
 
 **4. 状态文件假数据已修正（2026-09-06）**
 `implementation-status.UNRELIABLE.yaml` 的 `tested: 14 / audited: 14` 与 `l10k-baseline.yaml` 的 `production_ready: true` 均为基于错误声明的判定，已分别修正为 `0 / 0` 与 `false`。修正前曾导致 L10K 虚报 28 个验证单元、3 个质量门禁误判 PASS。

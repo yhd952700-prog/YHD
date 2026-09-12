@@ -13,7 +13,7 @@
 本文件即该复验结果。方法：
 1. **逐模块关键字扫描**：对 20 个 `src/ai/*.py` 能力层模块扫描七维证据关键字（logging/trace/metric、scope/permission/authorize、policy、audit/@kernel_action、docstring）。
 2. **架构推理 + 抽样验证**：确认能力层通过调用 kernel action（被 `@kernel_action` 装饰器包裹）将 Observable/Permissioned/Policy/Audited 下沉到内核边界。
-3. **不重跑全量测试**（第 11 轮口径）：测试存在性与全绿已有验证。**当时记录的 `1133 passed / 1 skipped / 0 failed` 是本地口径、已作废**；当前 CI 实证基线为 **`1281 passed / 14 skipped / 0 failed`**（见 [`docs/README.md`](../README.md)）。第 59 轮的复核已改为运行时观测量（审计事件增量），不再依赖数字声明。
+3. **不重跑全量测试**（第 11 轮口径）：测试存在性与全绿已有验证。**当时记录的 `1133 passed / 1 skipped / 0 failed` 是本地口径、已作废**；当前 CI 实证基线为 **`1343 passed / 14 skipped / 0 failed`**（见 [`docs/README.md`](../README.md)）。第 59 轮的复核已改为运行时观测量（审计事件增量），不再依赖数字声明。
 
 评级三态：
 - **L（Layer 层内直接满足）**：模块自身含该维度证据。
@@ -313,7 +313,7 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
 ## 5. 后续可选治理（非阻塞）
 
 1. ~~**能力层可观测性增强（推荐若上生产）**：在 `src/ai/` 编排入口加结构化日志 / OpenTelemetry span。~~ **✅ 已于 2026-09-09 实现**（见 §3.4）：核心编排层已接入 `src/ai/observability.py`。
-   > ⚠️ **口径更正（2026-09-11）**：此处原写"全量测试 1141 passed 零回归"，该数字是**本地口径且未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，run #52-74 的"全绿"是假象。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1281 passed / 14 skipped / 0 failed**，CI run `34690158540`）。
+   > ⚠️ **口径更正（2026-09-11）**：此处原写"全量测试 1141 passed 零回归"，该数字是**本地口径且未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，run #52-74 的"全绿"是假象。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1343 passed / 14 skipped / 0 failed**，CI run `34692597622`）。
 2. **能力层审计埋点（按需）**：若审计需覆盖"哪个能力层触发了哪个 kernel action"的因果链，可在编排层补 audit 上下文透传（现仅 kernel action 粒度，已足够）。
 3. 其余 16 个能力层模块的层内日志为可选扩展；当前架构已满足 DoD 七维的端到端语义，不强制。
 4. **能力层审计下沉补齐（P1，由 §3.5 新增）**：P3/P10/P11/P12/P13/P15/P17/P19/P21 的关键操作
@@ -342,5 +342,5 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
 
 - 关键字扫描脚本（本地过程文件，非仓库资产）对 20 个 `src/ai/*.py` 模块逐维计数。
 - 下沉验证：`grep -E "from src.kernels|kernel.execute|policy|audit" src/ai/lcore.py` 等确认能力层调用内核。
-- 全量测试现状见 `docs/README.md`（**CI 验证口径**：`1281 passed / 14 skipped / 0 failed`，run `34690158540`）。
+- 全量测试现状见 `docs/README.md`（**CI 验证口径**：`1343 passed / 14 skipped / 0 failed`，run `34692597622`）。
   > 历史口径说明：本节早期记录的 `1141 passed / 1 skipped / 0 failed`（含本增强新增 8 例 `test_observability.py`）是**本地运行结果，未经 CI 验证**，现已由上述 CI 真实基线取代。
