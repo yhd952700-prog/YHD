@@ -53,13 +53,28 @@ def test_chat_persists_history_and_memory():
 
 
 def test_chat_audits():
+    """一次 chat 轮次必须在同一条 correlation_id 下留下授权审计。
+
+    注意不要断言全局事件总数：Round 61 给能力层补了审计埋点
+    （``src/ai/audit.py``）后，同一次 chat 还会写下能力层事件
+    （``ConversationStore.append`` 等，principal_id = ``capability``）。
+    精确计数这类断言对"是否有别的东西也开始写审计"天然脆弱，
+    因此这里只筛选真正要证明的那条授权记录。
+    """
     a = make_assistant()
     result = a.chat("hello")
     events = audit_query(correlation_id=result["correlation_id"])
-    assert len(events) == 1
-    assert events[0]["event_type"] == "access_allowed"
-    assert events[0]["outcome"] == "allow"
-    assert events[0]["principal_id"] == "test-liuhao"
+
+    grants = [e for e in events if e["event_type"] == "access_allowed"]
+    assert len(grants) == 1, f"期望恰好一条授权审计，实际 {len(grants)} 条"
+    assert grants[0]["outcome"] == "allow"
+    assert grants[0]["principal_id"] == "test-liuhao"
+
+    # 能力层埋点（Round 61）也应挂到同一条 correlation_id 上，
+    # 使授权审计与能力层审计可对账。
+    assert any(e["principal_id"] == "capability" for e in events), (
+        "同一条 correlation_id 下缺少能力层审计事件"
+    )
 
 
 def test_reset_clears_history():
