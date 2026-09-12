@@ -65,7 +65,16 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 > + 凭据与入口（C-4）。**默认仍为 L1（记录型）** —— 是否开启由运维用
 > `LIUHAO_KERNEL_POLICY_ENFORCE` 决定，**不是本审计的缺口**。
 >
-> 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10；证据：`scripts/verify_policy_c1.py`。
+> **C-5 裁决已落地（2026-09-12 Round 73）：生产清单默认武装 `CRITICAL`。**
+> 实测依据：两个 CRITICAL 动作（`capability.retire` / `security.set_abac_rule`）
+> 在 `src/` **无任何生产调用点**（只有装饰器定义与白名单字符串），故武装后
+> **当前零行为变更**，但门已就位。因此本审计现在可以断言：**CRITICAL 层已达到
+> L2（判决已执行）**；**HIGH 层仍为 L1**（待逐动作调用点审计后单独开启）。
+> 落地位置：`docker-compose.prod.yml` 的
+> `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
+>
+> 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10（含 §10.9 C-5 裁决记录）；
+> 证据：`scripts/verify_policy_c1.py`、`scripts/verify_c4_approval_channel.py`。
 
 ---
 

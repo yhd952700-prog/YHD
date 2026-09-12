@@ -58,6 +58,29 @@ async def lifespan(app: FastAPI):
     get_tracer()
     logger.info("Tracer initialized")
 
+    # Policy Controlled: surface the kernel enforcement selection at boot.
+    # A mistyped selection is fail-loud (parse_spec raises, which would reject
+    # every HIGH/CRITICAL action), so it must never be discovered only at the
+    # first such call -- say it here, at ERROR level, first.
+    from ..kernels._enforcement import describe as _enforcement_snapshot
+    _enf = _enforcement_snapshot()
+    if _enf["config_error"]:
+        logger.error(
+            "KERNEL POLICY ENFORCEMENT CONFIG ERROR -- %s=%r :: %s "
+            "(HIGH/CRITICAL kernel actions will be REJECTED)",
+            _enf["env_var"], _enf["spec"], _enf["config_error"],
+        )
+    elif _enf["enabled"]:
+        logger.warning(
+            "Kernel policy enforcement ARMED: %s=%r -> %s",
+            _enf["env_var"], _enf["spec"], ", ".join(_enf["enforced_actions"]),
+        )
+    else:
+        logger.info(
+            "Kernel policy enforcement off (%s unset) -- record-only / L1",
+            _enf["env_var"],
+        )
+
     # Register health endpoints
     @health_router.get("/health", include_in_schema=False)
     async def health_check():
@@ -86,6 +109,11 @@ def get_app() -> FastAPI:
         Configured FastAPI instance
     """
     settings = get_config()
+
+    # Policy Controlled: an enforced kernel action raises these. Map them to
+    # honest HTTP statuses instead of letting the catch-all handler turn
+    # "needs a human approval" into a 500 internal error.
+    from ..kernels._crosscutting import PolicyDeferredError, PolicyDeniedError
 
     app = FastAPI(
         title="LiuHao AI OS Gateway",
@@ -161,6 +189,48 @@ def get_app() -> FastAPI:
         return JSONResponse(
             status_code=400,
             content={"error": "validation_error", "detail": str(exc)},
+        )
+
+    # Policy Controlled (C-2/C-3). A deferred action is NOT forbidden -- it is
+    # awaiting a verified human approval grant (OD-010), so 409. A hard deny
+    # (fail-closed: the engine could not even be consulted) is 403. Operators
+    # must be able to tell those two apart without reading the audit log.
+    @app.exception_handler(PolicyDeferredError)
+    async def policy_deferred_handler(request: Request, exc: PolicyDeferredError):
+        logger.warning(
+            "policy deferred action=%s rule=%s path=%s",
+            exc.action, exc.rule_id, request.url.path,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "policy_approval_required",
+                "detail": (
+                    "This action requires verified human sovereignty (OD-010). "
+                    "Issue an approval grant via POST /v1/policy/approvals, then "
+                    "retry inside its window."
+                ),
+                "action": exc.action,
+                "verdict": exc.verdict,
+                "rule": exc.rule_id,
+            },
+        )
+
+    @app.exception_handler(PolicyDeniedError)
+    async def policy_denied_handler(request: Request, exc: PolicyDeniedError):
+        logger.warning(
+            "policy denied action=%s verdict=%s rule=%s path=%s",
+            exc.action, exc.verdict, exc.rule_id, request.url.path,
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "policy_denied",
+                "detail": "The kernel policy engine denied this action.",
+                "action": exc.action,
+                "verdict": exc.verdict,
+                "rule": exc.rule_id,
+            },
         )
 
     # ==================== Include routers ====================

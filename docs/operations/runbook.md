@@ -83,23 +83,40 @@ engine.rollback(experiment_id)   # 状态 -> ROLLED_BACK，写入 history 审计
 - Release 前 11 道门：Format / Lint / Type / Unit / Integration / Security / E2E / Performance / Agent Evaluation / Benchmark / Regression。
 - **Critical Failure → Block Release**。任一加固检查失败视为 Critical。
 
-### 6.1 内核层策略拦截开关（Policy C-4）
+### 6.1 内核层策略拦截开关（Policy C-4 / C-5 裁决）
 
 内核层 43 个 `@kernel_action` 默认**只记录、不拦截**（L1）。把它们变成**真拦截**（L2）
 不需要改代码 —— 用一处运维开关：
 
 ```bash
-export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL          # 两个 CRITICAL 动作
-export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire # 精确到单个动作
+# 当前生产默认（已写入 docker-compose.prod.yml）：只武装两个 CRITICAL 动作
+export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL
+# 逐动作精确开启
+export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
+# 整体回滚为记录型（L1）
+export LIUHAO_KERNEL_POLICY_ENFORCE=
 ```
 
-- **默认（不设该变量）= 不拦截**，与历史行为完全一致。
-- 开启后，HIGH/CRITICAL 动作无人工审批时会抛 `PolicyDeferredError`（**待审批，不是永久拒绝**）。
+- **当前生产状态（2026-09-12 Round 73 裁决）**：生产清单默认 **`CRITICAL`**。
+  两个 CRITICAL 动作（`capability.retire` / `security.set_abac_rule`）在 `src/`
+  **没有任何生产调用点** —— 该默认值因此是**零行为变更**的，但门已就位：
+  任何后续（或受损）的调用路径都必须先取得经核验的人类审批。
+- **HIGH 暂不开启**（仍为 L1）。原因：HIGH 动作中存在启动期/后台路径的候选
+  （`plugin.*`、`capability.register`、`memory.auto_cleanup`、`event.clear_history`），
+  开启前必须逐个审计调用点，否则会把正常流程变成「待审批」。需单独裁决。
+- 开启后，HIGH/CRITICAL 动作无人工审批时抛 `PolicyDeferredError` → HTTP **409**
+  （`policy_approval_required`，**待审批，不是永久拒绝**）；fail-closed 的硬拒
+  （引擎不可达、判决未知）→ HTTP **403**（`policy_denied`）。
 - 人工审批入口：`POST /v1/policy/approvals`（需 `Authorization: Bearer <JWT>`），
   列/查/撤：`GET/DELETE /v1/policy/approvals...`，开关快照：`GET /v1/policy/enforcement`。
-- **回滚**：清空该环境变量并重启即可。
+- **回滚**：清空该环境变量并重启即可（无需改代码、无需发版）。
 - ⚠️ 凭据有 TTL（默认 300s，上限 3600s）且可撤销；只接受 HIGH/CRITICAL 动作，
-  拼错的名字 / LOW/MEDIUM 动作会**直接报错**（不会静默不生效）。
+  拼错的名字 / LOW/MEDIUM 动作会**直接报错**（不会静默不生效）；启动日志会显式
+  打印开关状态，配置错误按 ERROR 级别报出。
+- ⚠️ **已知边界**：目前**没有**「用一个审批凭据去执行某个 CRITICAL 动作」的 HTTP
+  端点（这是刻意的，见设计文档 §10.8.3 决策 1：反射式执行会新增攻击面）。执行
+  必须在**同一进程**内于 `grant_window(grant)` 窗口中进行。运维侧若要执行
+  `capability.retire`，当前途径是：临时把开关置空 → 执行 → 恢复开关。
 
 ---
 

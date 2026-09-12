@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **C-0 + C-1 + D8 + C-2(机制) + C-3(机制) + C-4(审批通道) 已实施并验证**（2026-09-11–12，Round 65–71）；**生产开启 = 一处可回滚的运维开关**（env `LIUHAO_KERNEL_POLICY_ENFORCE`，默认空 = 关闭） |
+| 状态 | **C-0 + C-1 + D8 + C-2 + C-3 + C-4 + C-5（生产开启裁决）已实施并验证**（2026-09-11–12，Round 65–73）；**生产已默认武装 `CRITICAL` 层的真拦截**（`docker-compose.prod.yml`；一处可回滚的运维开关）；**`HIGH` 层仍为 L1**，待调用点审计后单独裁决 |
 | 日期 | 2026-09-11（提案）/ 2026-09-11（C-1 实施） |
 | 提出 | Principal Engineer（承接 `AI-LAYER-DOD-AUDIT.md` §3.5.4 与 §5.5 的裁决项） |
 | 裁决人 | 用户（项目主权）—— 授权 Principal Engineer 按路线 C 第一步自主推进 |
@@ -19,7 +19,7 @@
    - **Q1**：要不要把**内核横切装饰器**也变成控制点？
    - **Q2**：要不要给**内部主体**一条合法的 ALLOW 路径（否则一旦开启拦截 = 全部内核动作被拒）？
 4. **路线 C（分层分级）已在推进**：能力层维持现状（已达标，不动）；内核层保留"记录"，但判决**已从恒 deny 改为白名单驱动**（C-1 已实施），并计划**仅对 HIGH/CRITICAL 开启真拦截**（C-2 待做）。详见 §4、§10。
-5. 需裁决 **D1–D7**（§5）。**D8 已实施（2026-09-11 Round 66，选 b）**：43 个动作已建权威分级注册表（`src/kernels/_risk_classification.py`），装饰器现在把真实 `risk_level` 喂给引擎（仍 record-only）。**C-2 现解除阻塞**，但拦截力仍为零，待裁决是否开启。
+5. 需裁决 **D1–D7**（§5）。**D8 已实施（2026-09-11 Round 66，选 b）**：43 个动作已建权威分级注册表（`src/kernels/_risk_classification.py`），装饰器现在把真实 `risk_level` 喂给引擎（仍 record-only）。**C-2/C-3/C-4/C-5 已依次落地**：截至 Round 73，**生产已默认武装 CRITICAL 层的真拦截**（见 §9 与 §10.9），HIGH 层仍为 record-only。
 
 ---
 
@@ -289,9 +289,10 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 |---|---|---|---|---|
 | **C-0** | 只做文档：D7 定措辞；把 §1 实证写进 `AI-LAYER-DOD-AUDIT` | 零 | — | ✅ **已完成** |
 | **C-1** | 引入 `service` 主体 + 白名单规则；`_adjudicate` 判决变为白名单驱动；**仍 additive（不拦截）** | 低 | `scripts/verify_policy_c1.py` ALL GREEN；内核用例零回归（494 passed） | ✅ **已完成**（Round 65） |
-| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ✅ **机制已实施（Round 67，默认 off）；生产开启待裁决（阻塞于 C-3 human 主体）** |
-| **C-3**（可选） | 引入 `DEFER` + 动态 human 主体通道（解 C-2 自锁）+ fail-closed 收紧；评估 `default_deny` scope（D6） | 中 | `tests/kernels/test_sovereignty_c3.py`、`scripts/verify_c3_sovereignty.py` | ✅ **机制已实施（Round 68，2026-09-12，默认 off）；生产开启仍待裁决** |
+| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ✅ **机制已实施（Round 67）；生产开启已由 C-5 裁决（Round 73）落地：CRITICAL 层默认武装** |
+| **C-3**（可选） | 引入 `DEFER` + 动态 human 主体通道（解 C-2 自锁）+ fail-closed 收紧；评估 `default_deny` scope（D6） | 中 | `tests/kernels/test_sovereignty_c3.py`、`scripts/verify_c3_sovereignty.py` | ✅ **机制已实施（Round 68，2026-09-12）；生产开启已由 C-5 落地（Round 73）** |
 | **C-4** | **把"开窗口"变成凭据 + 单一执行开关 + 真实审批入口**：审计化的 `SovereigntyGrant`（TTL/可撤销/动作集受限）、`src/kernels/_enforcement.py`（env 选择开启，默认空）、`src/gateway/policy.py`（JWT 认证的签发/查询/撤销端点） | 低（默认零行为变更） | `tests/kernels/test_sovereignty_grants.py`、`tests/kernels/test_enforcement_policy.py`、`tests/test_policy_approval_api.py`、`scripts/verify_c4_approval_channel.py`（44 项 ALL GREEN） | ✅ **已完成（Round 71，2026-09-12）** |
+| **C-5** | **生产开启裁决 + HTTP 边界语义**：生产清单武装 `CRITICAL` 层；`PolicyDeferredError`→409、`PolicyDeniedError`→403（此前落 500）；启动期打印开关状态（配置错误按 ERROR）；C-4 护栏演进为「仅生产清单可武装、且解析结果恰为 CRITICAL」 | 低（两个 CRITICAL 动作在 `src/` 无生产调用点 → 零行为变更） | `tests/test_policy_enforcement_api.py`（12 例）、`scripts/verify_c4_approval_channel.py`（48 项 ALL GREEN） | ✅ **已完成（Round 73，2026-09-12）** |
 
 ---
 
@@ -342,7 +343,16 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
      这正是 C-3 通道此前唯一的真实缺口。
   默认配置下行为与 C-1/C-2/C-3 **逐字节一致**（生产仍是 L1）。
 
-**待裁决（剩余）**：① **生产是否开启内核层真拦截**（把某个 HIGH/CRITICAL 动作的 `enforce` 翻 `True`；C-3 已解自锁，开启安全）；② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底，涉能力层，影响 `test_runtime_loop` 等既有 default-deny 用例）。
+**已裁决（2026-09-12 Round 73，用户授权"剩余的剩余裁决也交给你"）**：
+
+① **生产开启内核层真拦截 = 是，但只开 `CRITICAL` 层。** 落地在**生产部署清单**，而不是代码：
+`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
+实测依据与取舍见 **§10.9**。
+
+② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底）—— **保持现状，本轮不做**。
+理由：它影响的是**能力层**（`test_runtime_loop` 等既有 default-deny 用例），与内核层
+CRITICAL 开启之间**没有依赖关系**；在能力层已有 4 处硬 gate + default-deny 的前提下，
+收紧 scope 的边际安全收益低而回归面大，**不值得与本次安全语义变更捆绑**。
 
 **已解决**：**D1 / D2 / D3 / D4 / D5 / D7** 已随 C-1 / C-2 / C-3 的实施一并确定（见 §4、§10）；**D8** 已于 Round 66 实施；**C-2 机制**（Round 67）与 **C-3 机制**（Round 68）均已实施并验证。
 
@@ -636,6 +646,108 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
 开启后：无人工审批 → HIGH/CRITICAL 动作抛 `PolicyDeferredError`（待审批）；
 经 `/v1/policy/approvals` 签发凭据、并在其窗口内调用 → 正常执行。
 **回滚 = 清空该环境变量并重启。**
+
+## 10.9 实施记录（C-5 生产开启裁决，2026-09-12 Round 73）
+
+> 授权依据：用户指示「剩余的剩余裁决也交给你，因为我不懂」—— 即把 §9 剩余的
+> ①「生产是否开启」交给我裁决并执行。
+
+### 10.9.1 裁决
+
+**开启，但只开 `CRITICAL` 层；`HIGH` 层继续留在 L1。**
+
+| 层 | 动作数 | 裁决 | 生产状态 |
+|---|---|---|---|
+| CRITICAL | 2（`capability.retire` / `security.set_abac_rule`） | ✅ **武装** | **L2（判决已执行）** |
+| HIGH | 15 | ⛔ **暂不武装** | L1（记录型） |
+| MEDIUM | 12 | — 结构性不可武装（`ENFORCED_TIERS` 排除） | L1 |
+| LOW | 14 | — 同上 | L1 |
+
+### 10.9.2 依据（三条实测，不是推断）
+
+1. **两个 CRITICAL 动作在 `src/` 无任何生产调用点。** 全仓检索结果：
+   `capability.retire` 只出现在装饰器定义（`src/kernels/capability/__init__.py:253`）
+   与策略白名单字符串里；`security.set_abac_rule` 只出现在装饰器定义
+   （`src/kernels/security/__init__.py:488`），而引擎内部写规则走的是
+   `self._abac_rules[permission] = rule`，**不经过**被装饰的 `set_abac_rule`；
+   `src/ai/` 对二者零引用。
+   → **武装后当前行为零变更**，但门就此就位：将来任何新代码路径、或受损的 service
+   主体想退役能力 / 改写 ABAC 边界，都必须先取得经核验的人类审批。
+2. **`HIGH` 层不能一起武装。** HIGH 里存在**启动期/后台**路径的强候选
+   （`plugin.register_plugin`、`plugin.activate_plugin`、`capability.register`、
+   `memory.auto_cleanup`、`event.clear_history`）。未逐个审计调用点就武装，会把正常
+   流程变成"待审批"——属**可用性回归**，换不来安全收益。
+   → 记为独立裁决项，前置条件写进 `runbook.md` §6.1。
+3. **`MEDIUM` 结构性不可武装（本轮反向验证）。** `identity.create_identity`（MEDIUM）
+   是**启动期**动作，若被纳入会直接打断启动 —— 而 `ENFORCED_TIERS` 从一开始就排除
+   MEDIUM/LOW。这条设计在本轮得到了实测反向验证。
+
+### 10.9.3 落地方式（一处运维决策，不是 43 点编辑）
+
+```yaml
+# docker-compose.prod.yml (api service)
+- LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}
+```
+
+- 43 个生产装饰点**一行未改**，`enforce=False` 保持（AST 护栏继续断言）。
+- 用 `:-` 默认值而非硬编码，运维可用 shell 环境覆盖；置空字符串即整体回滚。
+- **未**选择"把 `enforce=True` 写进某个内核模块"：那会让回滚变成一次发版，
+  也让 dev 环境无法继续跑记录型契约。
+
+### 10.9.4 HTTP 边界语义（本轮补齐的真缺口）
+
+`PolicyDeniedError` / `PolicyDeferredError` 都继承 `PermissionError`，而网关**没有**
+对应 handler —— 于是开启拦截后，一个「待人工审批」的动作会以 **500 internal_server_error**
+返回：运维看到的是"内部错误"，既误导人，又会被错误率告警误计。已补：
+
+| 异常 | 状态码 | `error` | 语义 |
+|---|---|---|---|
+| `PolicyDeferredError` | **409 Conflict** | `policy_approval_required` | **不是被禁止**，是等待人类审批 |
+| `PolicyDeniedError` | **403 Forbidden** | `policy_denied` | fail-closed 硬拒（引擎不可达、判决未知） |
+
+409 的响应体同时给出 `action` / `verdict` / `rule` 以及"去哪申请审批"的指引。
+另在**启动期**打印开关状态（配置错误按 ERROR 级别），使拼错的开关变量在**启动时**就暴露，
+而不是等到第一次 CRITICAL 调用才炸。
+
+### 10.9.5 护栏演进（把"决策"编码进去，而不是编码"未决策"）
+
+`scripts/verify_c4_approval_channel.py` 原本断言"仓库任何地方都不得开启" —— 在决策未定
+时正确，但现在会**挡住已被授权的决策**。改为更强、更具体的不变量：
+
+1. **只有生产清单**（`docker-compose.prod.yml`）可以武装；dev / CI / Dockerfile 一律不得武装；
+2. 武装的 spec 必须**能解析**（fail-loud 契约：拒绝拼错与惰性项）；
+3. 解析结果必须**恰为 CRITICAL 集**；
+4. **不得武装任何 HIGH 动作**（soak 前置条件）。
+
+验证规模 44 → **48 项，全绿**。同一不变量同时以 pytest 形式落在
+`tests/test_policy_enforcement_api.py`，因此在 CI 中也被持续守护（verify 脚本本身不在
+CI 里跑）。
+
+### 10.9.6 验证结果
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | compileall（src / tests / scripts） | 通过 |
+| 2 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | **0 违规** |
+| 3 | flake8（新增测试 + 改动脚本） | **0 违规**（顺带修掉 `Optional` 未导入的 F821） |
+| 4 | importlib 全量导入 `src/` 下 **199** 个模块 | **FAILED: 0** |
+| 5 | `scripts/verify_c4_approval_channel.py` | **ALL GREEN（48 项）** |
+| 6 | `pytest tests/test_policy_enforcement_api.py` | **12 passed** |
+| 7 | 权威回归集（见提交说明） | **零回归** |
+
+### 10.9.7 未做的事（明确边界）
+
+- **未做 HTTP 执行端点**：仍然只有"签发凭据"的入口，没有"用凭据执行某个 CRITICAL 动作"
+  的端点（刻意的，见 §10.8.3 决策 1）。执行必须在同进程内于 `grant_window(grant)` 中完成。
+  运维侧若确需执行 `capability.retire`，当前途径是：临时置空开关 → 执行 → 恢复开关。
+- **未武装 HIGH**：见 §10.9.2 第 2 条。
+- **未做 D6**：见 §9。
+- **未接驾驶舱 UI**：后端入口早已就绪（`/v1/policy/approvals`），前端"批准"按钮属界面工作。
+
+### 10.9.8 回滚
+
+清空 `LIUHAO_KERNEL_POLICY_ENFORCE` 并重启即可（无需改代码、无需发版）。
+`GET /v1/policy/enforcement` 与启动日志均可即时确认当前状态。
 
 ---
 

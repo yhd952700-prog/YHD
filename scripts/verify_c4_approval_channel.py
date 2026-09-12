@@ -15,8 +15,10 @@ What this proves:
      executed under a window carries ``sovereignty_grant`` in its own record.
   5. SAFETY GUARDS: no production ``@kernel_action`` flips ``enforce=True``;
      no production kernel code opens a sovereignty channel; the approval request
-     model cannot name the approver (the principal is token-only); and nothing in
-     the repo turns enforcement on by default.
+     model cannot name the approver (the principal is token-only); and exactly one
+     file may arm the switch -- the production manifest, with a spec that resolves
+     to the CRITICAL tier and nothing else (C-5). Dev, CI and the Dockerfile must
+     never arm it, so the suite keeps exercising the record-only (L1) contract.
 """
 
 from __future__ import annotations
@@ -25,14 +27,21 @@ import ast
 import importlib
 import os
 import pathlib
+import re
 import sys
 import time
+from typing import Optional
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 KERNELS_DIR = REPO_ROOT / "src" / "kernels"
 POLICY_ROUTER = REPO_ROOT / "src" / "gateway" / "policy.py"
+
+#: The only file allowed to arm the switch: the production deployment manifest.
+#: Arming is a deliberate, reviewable deployment decision (C-5); dev and CI stay
+#: off so the suite keeps exercising the record-only (L1) contract.
+PROD_MANIFEST = "docker-compose.prod.yml"
 
 RESULTS = []
 
@@ -116,54 +125,75 @@ def _approval_request_fields() -> set:
     return set()
 
 
-def _repo_enables_enforcement() -> list:
-    """Files that *turn enforcement on* (a mention in prose is not a hit).
+def _spec_from_line(line: str, var: str) -> Optional[str]:
+    """Pull the assigned spec value out of a config line.
 
-    Two shapes are treated as enabling:
+    Handles the compose form ``- VAR=${VAR:-CRITICAL}`` (returns the ``:-``
+    default) and the plain ``VAR=CRITICAL`` form. Returns ``None`` when the line
+    only *mentions* the variable without assigning it.
+    """
+    idx = line.find(var)
+    while idx != -1:
+        rest = line[idx + len(var):].lstrip()
+        if rest[:1] in ("=", ":"):
+            value = rest[1:].strip().strip('"').strip("'")
+            default = re.search(r":-([^}]*)\}", value)
+            if default is not None:
+                return default.group(1).strip()
+            if value.startswith("${"):
+                # ${VAR} with no default -> inherits the caller's environment.
+                return ""
+            parts = value.split()
+            return parts[0] if parts else ""
+        idx = line.find(var, idx + len(var))
+    return None
 
-    * a config/deployment file (``*.yml`` / ``*.yaml`` / ``*.env`` / ``*.toml``
-      / ``*.ini`` / ``*.cfg`` / ``*.sh`` / ``Dockerfile*``) that mentions the
-      variable at all -- setting it there is the whole point of such a file;
-    * a Python file that *writes* the environment variable
-      (``os.environ[...] = ...`` / ``putenv`` / ``setdefault``).
 
-    Documentation and docstrings that merely name the variable are deliberately
-    not flagged -- ``_enforcement.py`` and ``_crosscutting.py`` must be able to
-    document the switch.
+def _armed_specs() -> dict:
+    """Map every file that *arms* the switch to the spec it arms it with.
+
+    Arming = assigning the variable in a config/deployment file, or *writing* it
+    from Python (``os.environ[...] =`` / ``putenv`` / ``setdefault``). Prose and
+    docstrings that merely name the variable are deliberately not hits -- the
+    enforcement module and the decorator must be able to document the switch.
     """
     var = "LIUHAO_KERNEL_POLICY_ENFORCE"
     config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
-    hits = []
+    armed = {}
     for path in REPO_ROOT.rglob("*"):
         if not path.is_file():
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
-        if any(rel.startswith(p) for p in (".venv/", ".git/", "node_modules/")):
-            continue
-        if rel.startswith("tests/") or rel.startswith("scripts/"):
+        if any(rel.startswith(p) for p in (".venv/", ".git/", "node_modules/",
+                                           "tests/", "scripts/")):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text_ = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if var not in text:
+        if var not in text_:
             continue
         suffix = path.suffix.lower()
-        if suffix in config_suffixes or path.name.startswith("Dockerfile"):
-            hits.append(rel)
+        is_config = suffix in config_suffixes or path.name.startswith("Dockerfile")
+        if not is_config and suffix != ".py":
             continue
-        if suffix != ".py":
-            continue
-        for line in text.splitlines():
+        for line in text_.splitlines():
             if var not in line:
                 continue
-            if "putenv" in line or "setdefault" in line:
-                hits.append(rel)
-                break
-            if "=" in line and "environ" in line:
-                hits.append(rel)
-                break
-    return hits
+            if is_config:
+                spec = _spec_from_line(line, var)
+                if spec is None:
+                    continue
+            else:
+                writes_env = ("putenv" in line or "setdefault" in line
+                              or ("=" in line and "environ" in line))
+                if not writes_env:
+                    continue
+                # A Python env write is always unexpected, whatever it sets.
+                spec = _spec_from_line(line, var) or "<env-write>"
+            armed[rel] = spec
+            break
+    return armed
 
 
 def main() -> int:
@@ -350,9 +380,40 @@ def main() -> int:
     check("approval request model declares actions/reason/ttl_seconds",
           {"actions", "reason", "ttl_seconds"} <= fields, f"fields={sorted(fields)}")
 
-    enabling = _repo_enables_enforcement()
-    check("nothing in the repo turns enforcement on by default",
-          not enabling, f"hits={enabling}" if enabling else "")
+    from src.kernels._risk_classification import KERNEL_ACTION_RISK, RiskTier
+    critical_actions = frozenset(
+        a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.CRITICAL
+    )
+    high_actions = frozenset(
+        a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.HIGH
+    )
+
+    armed = _armed_specs()
+    unexpected = sorted(k for k in armed if k != PROD_MANIFEST)
+    check("only the production manifest arms enforcement (dev/CI/Dockerfile never)",
+          not unexpected,
+          f"unexpected={unexpected}" if unexpected else f"armed via {PROD_MANIFEST} only")
+
+    prod_spec = armed.get(PROD_MANIFEST)
+    check("production manifest arms the switch explicitly",
+          prod_spec is not None,
+          f"{PROD_MANIFEST} spec={prod_spec!r}")
+
+    if prod_spec is not None:
+        try:
+            armed_actions = enf.parse_spec(prod_spec)
+            spec_error = None
+        except ValueError as exc:
+            armed_actions = frozenset()
+            spec_error = str(exc)
+        check("production manifest spec parses (no typo, no inert entry)",
+              spec_error is None, spec_error or f"spec={prod_spec!r}")
+        check("production manifest arms the CRITICAL tier exactly",
+              armed_actions == critical_actions,
+              f"armed={sorted(armed_actions)}")
+        check("no HIGH action is armed in production (HIGH soak pending)",
+              not (armed_actions & high_actions),
+              f"high={sorted(armed_actions & high_actions)}")
 
     failed = [r for r in RESULTS if not r[0]]
     print()
