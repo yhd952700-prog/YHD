@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional
 import threading
@@ -266,8 +267,8 @@ class PolicyRule:
     precedence: int = 0  # Higher = more important
     effect: PolicyEffect = PolicyEffect.ALLOW
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     enabled: bool = True
 
     def matches(self, context: Dict[str, Any]) -> bool:
@@ -286,7 +287,7 @@ class PolicyDecision:
     abstained_rules: List[PolicyRule]
     traceability: List[str]
     context: Dict[str, Any]
-    evaluated_at: datetime = field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = field(default_factory=utc_now)
 
     @property
     def is_allowed(self) -> bool:
@@ -305,8 +306,8 @@ class PolicySet:
     description: str
     rules: List[PolicyRule] = field(default_factory=list)
     scope: PolicyScope = PolicyScope.L0
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 class PolicyEngine:

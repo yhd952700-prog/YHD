@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 import uuid
@@ -66,7 +67,7 @@ class Message:
     status: MessageStatus = MessageStatus.PENDING
     headers: Dict[str, str] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     sent_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
@@ -210,7 +211,7 @@ class InternalAdapter(ProtocolAdapter):
         handler = self._handlers.get(message.destination)
         if handler:
             message.status = MessageStatus.DELIVERED
-            message.delivered_at = datetime.utcnow()
+            message.delivered_at = utc_now()
             try:
                 handler(message)
                 return True
@@ -236,10 +237,10 @@ class HTTPAdapter(ProtocolAdapter):
         """Send via HTTP POST."""
         # Simulated - in production would make actual HTTP request
         message.status = MessageStatus.SENT
-        message.sent_at = datetime.utcnow()
+        message.sent_at = utc_now()
         # Simulate delivery
         message.status = MessageStatus.DELIVERED
-        message.delivered_at = datetime.utcnow()
+        message.delivered_at = utc_now()
         return True
 
     def receive(self) -> Optional[Message]:
@@ -258,9 +259,9 @@ class WebSocketAdapter(ProtocolAdapter):
         """Send via WebSocket."""
         # Simulated
         message.status = MessageStatus.SENT
-        message.sent_at = datetime.utcnow()
+        message.sent_at = utc_now()
         message.status = MessageStatus.DELIVERED
-        message.delivered_at = datetime.utcnow()
+        message.delivered_at = utc_now()
         return True
 
     def receive(self) -> Optional[Message]:
@@ -412,12 +413,12 @@ class NetworkBus:
 
             # Send via adapter
             message.status = MessageStatus.SENT
-            message.sent_at = datetime.utcnow()
+            message.sent_at = utc_now()
             success = adapter.send(message)
 
             if success:
                 message.status = MessageStatus.DELIVERED
-                message.delivered_at = datetime.utcnow()
+                message.delivered_at = utc_now()
             else:
                 message.status = MessageStatus.FAILED
 

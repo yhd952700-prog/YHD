@@ -7,8 +7,8 @@ convenience helpers.
 Defect-evidence test (``test_defect_*``) asserts scope-required behavior
 that is currently violated; marked ``xfail`` and documented.
 """
-from datetime import datetime as _dt
 from datetime import timedelta
+from src._time import utc_now
 
 import pytest
 
@@ -41,11 +41,11 @@ class TestStore:
     def test_store_mid_term_has_expiry(self, mk):
         e = mk.store("k", "v")
         assert e.expires_at is not None
-        assert e.expires_at > _dt.utcnow()
+        assert e.expires_at > utc_now()
 
     def test_store_ttl_overrides_tier_expiry(self, mk):
         e = mk.store("k", "v", ttl=timedelta(minutes=1))
-        delta = (e.expires_at - _dt.utcnow()).total_seconds()
+        delta = (e.expires_at - utc_now()).total_seconds()
         assert 50 < delta < 70
 
 

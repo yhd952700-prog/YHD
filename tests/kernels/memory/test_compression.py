@@ -4,7 +4,8 @@ Covers ``MemoryKernel.compress``: cross-tier promotion with provenance,
 lossless default summarization, injectable custom summarizer, scope safety
 (no cross-scope merge), and the honest no-op cases (empty tier, terminal tier).
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
+from src._time import utc_now
 
 import pytest
 
@@ -138,7 +139,7 @@ class TestCompressBoundary:
 
     def test_older_than_filter(self, mk):
         old = mk.store("old", "1", tier=MemoryTier.SHORT_TERM)
-        old.created_at = datetime.utcnow() - timedelta(hours=2)
+        old.created_at = utc_now() - timedelta(hours=2)
         mk.store("fresh", "2", tier=MemoryTier.SHORT_TERM)
 
         result = mk.compress(source_tier=MemoryTier.SHORT_TERM, older_than=timedelta(hours=1))

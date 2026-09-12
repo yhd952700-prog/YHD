@@ -32,6 +32,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -167,7 +168,7 @@ class ExperienceEntry:
     verdict: str
     context: Dict[str, Any] = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     owner: str = "system"
 
     def to_payload(self) -> Dict[str, Any]:

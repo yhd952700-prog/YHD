@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 import uuid
@@ -58,8 +59,8 @@ class AgentIdentity:
     scope: IdentityScope = IdentityScope.L1
     trust_score: float = 0.5
     status: IdentityStatus = IdentityStatus.ACTIVE
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    last_modified: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    last_modified: datetime = field(default_factory=utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -74,7 +75,7 @@ class AuditEntry:
     scope: IdentityScope = IdentityScope.L0
     result: str = ""  # "allowed", "denied", "audit"
     reason: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -239,7 +240,7 @@ class IdentityManager:
                 return False
 
             identity.permissions.add(permission)
-            identity.last_modified = datetime.utcnow()
+            identity.last_modified = utc_now()
 
             # Record audit event
             audit = AuditEntry(
@@ -271,7 +272,7 @@ class IdentityManager:
                 return False
 
             identity.permissions.discard(permission)
-            identity.last_modified = datetime.utcnow()
+            identity.last_modified = utc_now()
 
             # Record audit event
             audit = AuditEntry(

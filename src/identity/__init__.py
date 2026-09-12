@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 import uuid
@@ -48,7 +49,7 @@ class Principal:
     type: str  # human, system, service
     email: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     status: IdentityStatus = IdentityStatus.ACTIVE
 
 
@@ -65,8 +66,8 @@ class AgentIdentity:
     trust_score: float = 0.5  # 0.0 - 1.0
     status: IdentityStatus = IdentityStatus.ACTIVE
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     expires_at: Optional[datetime] = None
     last_active: Optional[datetime] = None
 
@@ -74,7 +75,7 @@ class AgentIdentity:
     def is_active(self) -> bool:
         if self.status != IdentityStatus.ACTIVE:
             return False
-        if self.expires_at and datetime.utcnow() > self.expires_at:
+        if self.expires_at and utc_now() > self.expires_at:
             return False
         return True
 
@@ -90,14 +91,14 @@ class Permission:
     resource_pattern: str = "*"  # Pattern for resource matching
     actions: List[str] = field(default_factory=list)  # read, write, execute, admin
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
 class IdentityAuditEntry:
     """Audit trail for identity operations."""
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
     operation: str = ""  # create_identity, grant_permission, revoke, etc.
     actor: str = ""  # principal_id or agent_id performing operation
     target: str = ""  # identity_id or permission_id affected
@@ -314,7 +315,7 @@ class IdentityManager:
             )
 
             if expires_in_days:
-                identity.expires_at = datetime.utcnow() + timedelta(days=expires_in_days)
+                identity.expires_at = utc_now() + timedelta(days=expires_in_days)
 
             self._identities[identity.id] = identity
             self._principal_identities[principal_id].add(identity.id)
@@ -394,7 +395,7 @@ class IdentityManager:
                 return False
 
             identity.permissions.add(permission_id)
-            identity.updated_at = datetime.utcnow()
+            identity.updated_at = utc_now()
 
             self._log_audit(
                 operation="grant_permission",
@@ -420,7 +421,7 @@ class IdentityManager:
                 return False
 
             identity.permissions.discard(permission_id)
-            identity.updated_at = datetime.utcnow()
+            identity.updated_at = utc_now()
 
             self._log_audit(
                 operation="revoke_permission",
@@ -477,7 +478,7 @@ class IdentityManager:
                 return False
 
             identity.capabilities.add(capability_id)
-            identity.updated_at = datetime.utcnow()
+            identity.updated_at = utc_now()
 
             self._log_audit(
                 operation="grant_capability",
@@ -503,7 +504,7 @@ class IdentityManager:
                 return False
 
             identity.status = IdentityStatus.REVOKED
-            identity.updated_at = datetime.utcnow()
+            identity.updated_at = utc_now()
 
             self._log_audit(
                 operation="revoke_identity",

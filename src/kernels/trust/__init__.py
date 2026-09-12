@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 import uuid
@@ -65,7 +66,7 @@ class TrustEvent:
     source_entity: Optional[str] = None  # For propagation events
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -79,8 +80,8 @@ class TrustScore:
     event_count: int = 0
     positive_events: int = 0
     negative_events: int = 0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=utc_now)
+    created_at: datetime = field(default_factory=utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -115,7 +116,7 @@ class TrustChainLink:
     to_entity: str
     trust_score: float  # Trust that from_entity places in to_entity
     scope: TrustScope
-    established_at: datetime = field(default_factory=datetime.utcnow)
+    established_at: datetime = field(default_factory=utc_now)
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     active: bool = True
@@ -124,7 +125,7 @@ class TrustChainLink:
     def is_expired(self) -> bool:
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        return utc_now() > self.expires_at
 
 
 @dataclass
@@ -136,7 +137,7 @@ class TrustChain:
     composite_score: float = 0.0
     scope: TrustScope = TrustScope.L0
     valid: bool = True
-    computed_at: datetime = field(default_factory=datetime.utcnow)
+    computed_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self):
         self._compute_composite()
@@ -218,7 +219,7 @@ class TrustManager:
             trust_score = self._get_score(entity_id, scope)
             trust_score.score = score_val
             trust_score.confidence = confidence
-            trust_score.last_updated = datetime.utcnow()
+            trust_score.last_updated = utc_now()
             trust_score._update_level()
 
             # Record event
@@ -256,7 +257,7 @@ class TrustManager:
             new_score = max(self._min_score, min(self._max_score, old_score + delta))
 
             trust_score.score = new_score
-            trust_score.last_updated = datetime.utcnow()
+            trust_score.last_updated = utc_now()
             trust_score._update_level()
             trust_score.event_count += 1
 
@@ -340,7 +341,7 @@ class TrustManager:
 
             expires_at = None
             if expires_in:
-                expires_at = datetime.utcnow() + expires_in
+                expires_at = utc_now() + expires_in
 
             link = TrustChainLink(
                 from_entity=from_entity,

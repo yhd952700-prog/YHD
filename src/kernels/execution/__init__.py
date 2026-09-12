@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 import uuid
@@ -64,7 +65,7 @@ class Goal:
     natural_language: str
     scope: str = "L1"
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -101,7 +102,7 @@ class ExecutionPlan:
     goal_id: str
     tasks: List[Task] = field(default_factory=list)
     status: PlanStatus = PlanStatus.DRAFT
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -306,7 +307,7 @@ class ActionExecutor:
     @kernel_action("execution.execute")
     def execute(self, action: Action) -> ActionResult:
         """Execute a single action."""
-        start_time = datetime.utcnow()
+        start_time = utc_now()
 
         # Check capability scope
         scope_check = check_capability_scope(
@@ -320,7 +321,7 @@ class ActionExecutor:
                 action_id=action.id,
                 success=False,
                 error=f"Scope check failed: {scope_check.reason}",
-                duration_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                duration_ms=int((utc_now() - start_time).total_seconds() * 1000),
             )
 
         # In production, this would invoke the actual capability
@@ -329,7 +330,7 @@ class ActionExecutor:
             # Simulate capability execution
             output = self._simulate_capability(action.capability_id, action.inputs)
 
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
             # Emit event
             publish_event(
@@ -348,7 +349,7 @@ class ActionExecutor:
             )
 
         except Exception as e:
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
             publish_event(
                 type="action_failed",
@@ -373,7 +374,7 @@ class ActionExecutor:
             "capability": capability_id,
             "status": "simulated",
             "inputs_received": list(inputs.keys()),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
         }
 
 
@@ -507,13 +508,13 @@ class ExecutionEngine:
         plan = self.planner.build(goal, tasks, mode=plan_mode)
         ctx.plan = plan
         plan.status = PlanStatus.ACTIVE
-        plan.started_at = datetime.utcnow()
+        plan.started_at = utc_now()
 
         # Step 3: Execute
         self._execute_plan(ctx, verification_criteria)
 
         # Step 4: Final verification
-        plan.completed_at = datetime.utcnow()
+        plan.completed_at = utc_now()
         if ctx.failed_tasks:
             plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
         else:
@@ -581,7 +582,7 @@ class ExecutionEngine:
     ) -> None:
         """Execute a single task with retries."""
         task.status = TaskStatus.RUNNING
-        task.started_at = datetime.utcnow()
+        task.started_at = utc_now()
         # Join the goal's correlation chain so task lifecycle events are
         # traceable end to end (Definition Lock section 112).
         task.correlation_id = ctx.goal.correlation_id
@@ -614,7 +615,7 @@ class ExecutionEngine:
             if result.success:
                 task.status = TaskStatus.COMPLETED
                 task.result = result.output
-                task.completed_at = datetime.utcnow()
+                task.completed_at = utc_now()
                 ctx.completed_tasks.add(task.id)
 
                 # Verify
@@ -659,7 +660,7 @@ class ExecutionEngine:
                       else "unknown error")
         task.status = TaskStatus.FAILED
         task.error = f"Max retries ({task.max_retries}) exceeded; last error: {root_cause}"
-        task.completed_at = datetime.utcnow()
+        task.completed_at = utc_now()
         ctx.failed_tasks.add(task.id)
 
         publish_event(
@@ -676,7 +677,7 @@ class ExecutionEngine:
         """Create execution checkpoint for rollback."""
         checkpoint = {
             "id": str(uuid.uuid4())[:8],
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "goal_id": ctx.goal.id,
             "plan_id": ctx.plan.id,
             "completed_tasks": list(ctx.completed_tasks),

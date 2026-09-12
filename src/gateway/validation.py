@@ -10,6 +10,7 @@ Provides:
 
 from typing import Optional, List, Dict, Any, Type
 from datetime import datetime
+from src._time import utc_now
 from pydantic import BaseModel, Field
 
 
@@ -19,7 +20,7 @@ class APIError(BaseModel):
     detail: str = Field(..., description="Human-readable error detail")
     code: Optional[str] = Field(None, description="Error code (optional)")
     trace_id: Optional[str] = Field(None, description="Trace ID for debugging")
-    timestamp: float = Field(default_factory=lambda: datetime.utcnow().timestamp())
+    timestamp: float = Field(default_factory=lambda: utc_now().timestamp())
 
     class Config:
         schema_extra = {
@@ -78,7 +79,7 @@ class GatewayHealthCheck(BaseModel):
     service: str = Field(..., description="Service name")
     version: str = Field(..., description="Service version")
     status: str = Field(..., description="Health status: ok, degraded, critical")
-    timestamp: float = Field(default_factory=lambda: datetime.utcnow().timestamp())
+    timestamp: float = Field(default_factory=lambda: utc_now().timestamp())
     latency_ms: Optional[int] = Field(None, description="Response latency in ms")
 
 

@@ -18,6 +18,7 @@ from src.kernels.identity import (
     IdentityStatus,
     get_identity_manager,
 )
+from src._time import utc_now
 
 
 @pytest.fixture
@@ -227,12 +228,12 @@ class TestAuditTrail:
         assert manager.audit_trail(ident.id, scope=IdentityScope.L2) == []
 
     def test_filter_by_since(self, manager):
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         ident = make_identity(manager)
         manager.grant_permission(ident.id, "doc:read")
-        future = datetime.utcnow() + timedelta(hours=1)
+        future = utc_now() + timedelta(hours=1)
         assert manager.audit_trail(ident.id, since=future) == []
-        past = datetime.utcnow() - timedelta(hours=1)
+        past = utc_now() - timedelta(hours=1)
         assert len(manager.audit_trail(ident.id, since=past)) >= 1
 
     def test_trail_sorted_newest_first(self, manager):

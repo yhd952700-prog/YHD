@@ -14,6 +14,7 @@ policies, Vault Transit integration for crypto operations, and full audit loggin
 from __future__ import annotations
 
 from datetime import datetime
+from src._time import utc_now
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -126,7 +127,7 @@ class SecurityPrincipal:
     scope: str = "L1"
     trust_score: float = 0.5
     status: str = "active"
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     last_validated: Optional[datetime] = None
 
 
@@ -264,7 +265,7 @@ class SecurityEngine:
             scope=scope,
             result=result,
             reason=reason,
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
         )
         self._audit_log.append(audit)
 
@@ -284,7 +285,7 @@ class SecurityEngine:
                 scope=principal_id,
                 result="allowed",
                 reason=reason or f"RBAC role {role.value} granted to principal {principal_id}",
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
             )
             self._audit_log.append(audit)
             return True
@@ -304,7 +305,7 @@ class SecurityEngine:
                     scope=principal_id,
                     result="allowed",
                     reason=reason or f"RBAC role {role.value} revoked from principal {principal_id}",
-                    timestamp=datetime.utcnow(),
+                    timestamp=utc_now(),
                 )
                 self._audit_log.append(audit)
                 return True
@@ -344,7 +345,7 @@ class SecurityEngine:
                         scope=scope,
                         result="allowed",
                         reason=f"RBAC check passed: principal {principal_id} has role {rule.role.value} for {permission}",
-                        timestamp=datetime.utcnow(),
+                        timestamp=utc_now(),
                     )
                     self._audit_log.append(audit)
                     return AccessDecision.ALLOW
@@ -357,7 +358,7 @@ class SecurityEngine:
                 scope=scope,
                 result="denied",
                 reason=f"RBAC check failed: principal {principal_id} lacks role {rule.role.value if rule else 'N/A'} for {permission}",
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
             )
             self._audit_log.append(audit)
             return AccessDecision.DENY
@@ -387,7 +388,7 @@ class SecurityEngine:
                     scope=scope,
                     result="denied",
                     reason=f"ABAC check denied: invalid scope {scope!r}",
-                    timestamp=datetime.utcnow(),
+                    timestamp=utc_now(),
                 )
                 self._audit_log.append(audit)
                 return AccessDecision.DENY
@@ -410,7 +411,7 @@ class SecurityEngine:
                         scope=scope,
                         result="allowed",
                         reason=f"ABAC check passed: {rule.condition_attribute} {rule.condition_operator} {rule.condition_value}",
-                        timestamp=datetime.utcnow(),
+                        timestamp=utc_now(),
                     )
                     self._audit_log.append(audit)
                     return AccessDecision.ALLOW
@@ -423,7 +424,7 @@ class SecurityEngine:
                 scope=scope,
                 result="denied",
                 reason=f"ABAC check failed: condition not met for {permission}",
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
             )
             self._audit_log.append(audit)
             return AccessDecision.DENY
@@ -570,7 +571,7 @@ class SecurityEngine:
                     scope=scope,
                     result="allowed",
                     reason="Human sovereignty override converted a non-allow decision to allow",
-                    timestamp=datetime.utcnow(),
+                    timestamp=utc_now(),
                 )
                 self._audit_log.append(override_audit)
 
@@ -594,7 +595,7 @@ class SecurityEngine:
                 scope=scope,
                 result=decision.value,
                 reason=result["reason"],
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
             )
             self._audit_log.append(audit)
 

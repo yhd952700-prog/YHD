@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
@@ -146,7 +147,7 @@ class MemoryTierManager:
     def _evict_tier(self, tier_dict: Dict[str, MemoryEntry],
                     tier_name: str, max_age: timedelta) -> List[str]:
         """Evict entries exceeding max age from a tier."""
-        now = datetime.utcnow()
+        now = utc_now()
         evicted = []
         keys_to_remove = []
 
@@ -163,7 +164,7 @@ class MemoryTierManager:
     @kernel_action("memory.auto_cleanup")
     def auto_cleanup(self) -> Dict[str, int]:
         """Auto-cleanup expired entries across all tiers."""
-        datetime.utcnow()
+        utc_now()
         results = {}
 
         # Short-term: < 5 minutes
@@ -280,15 +281,15 @@ class MemoryKernel:
         with self._lock:
             expires_at = None
             if ttl:
-                expires_at = datetime.utcnow() + ttl
+                expires_at = utc_now() + ttl
             elif tier == MemoryTier.SHORT_TERM:
-                expires_at = datetime.utcnow() + timedelta(minutes=5)
+                expires_at = utc_now() + timedelta(minutes=5)
             elif tier == MemoryTier.MID_TERM:
-                expires_at = datetime.utcnow() + timedelta(hours=1)
+                expires_at = utc_now() + timedelta(hours=1)
             elif tier == MemoryTier.LONG_TERM:
-                expires_at = datetime.utcnow() + timedelta(days=1)
+                expires_at = utc_now() + timedelta(days=1)
             elif tier == MemoryTier.PERSISTENT:
-                expires_at = datetime.utcnow() + timedelta(days=30)
+                expires_at = utc_now() + timedelta(days=30)
 
             entry = MemoryEntry(
                 id=str(uuid.uuid4())[:8],
@@ -296,7 +297,7 @@ class MemoryKernel:
                 value=value,
                 tier=tier,
                 scope=scope,
-                created_at=datetime.utcnow(),
+                created_at=utc_now(),
                 expires_at=expires_at,
                 tags=tags or set(),
             )
@@ -354,7 +355,7 @@ class MemoryKernel:
             # When several tiers match, prefer the most recently created.
             chosen = max(candidates, key=lambda e: e.created_at)
             chosen.access_count += 1
-            chosen.last_accessed = datetime.utcnow()
+            chosen.last_accessed = utc_now()
             return chosen
 
     def _scope_matches(self, entry_scope: MemoryScope, query_scope: MemoryScope) -> bool:
@@ -383,11 +384,11 @@ class MemoryKernel:
                 results = [e for e in results if e.access_count <= max_access_count]
 
             if min_age is not None:
-                now = datetime.utcnow()
+                now = utc_now()
                 results = [e for e in results if e.created_at and e.created_at >= now - min_age]
 
             if max_age is not None:
-                now = datetime.utcnow()
+                now = utc_now()
                 results = [e for e in results if e.created_at and e.created_at < now - max_age]
 
             return sorted(results, key=lambda e: e.created_at, reverse=True)
@@ -448,7 +449,7 @@ class MemoryKernel:
             target_tier = _TIER_ORDER[idx + 1]
 
         with self._lock:
-            now = datetime.utcnow()
+            now = utc_now()
             candidates = [
                 e for e in self._entries.values()
                 if e.tier == source_tier

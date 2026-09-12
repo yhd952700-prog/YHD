@@ -18,6 +18,7 @@ from src.kernels.security import (
     SecurityEngine,
     get_security_engine,
 )
+from src._time import utc_now
 
 
 @pytest.fixture
@@ -269,14 +270,14 @@ class TestAuditTrail:
         assert trail[0].operation == "grant_role"
 
     def test_filter_by_since(self, engine):
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         engine.grant_rbac_role("p1", RBACRole.VIEWER)
         engine.check_rbac("p1", "context:read")
         # far-future cutoff excludes everything
-        future = datetime.utcnow() + timedelta(hours=1)
+        future = utc_now() + timedelta(hours=1)
         assert engine.audit_trail(since=future) == []
         # past cutoff includes everything
-        past = datetime.utcnow() - timedelta(hours=1)
+        past = utc_now() - timedelta(hours=1)
         assert len(engine.audit_trail(since=past)) >= 2
 
     def test_trail_sorted_newest_first(self, engine):

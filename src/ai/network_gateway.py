@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from ..kernels.network import (
@@ -52,6 +51,7 @@ from ..kernels.policy import (
     get_policy_engine,
 )
 from .observability import observe
+from src._time import utc_now
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ class A2AAdapter(ProtocolAdapter):
         try:
             delivered = self.deserialize(raw)
             delivered.status = MessageStatus.DELIVERED
-            delivered.delivered_at = datetime.utcnow()
+            delivered.delivered_at = utc_now()
             handler(delivered)
             message.status = MessageStatus.DELIVERED
             message.delivered_at = delivered.delivered_at
@@ -167,7 +167,7 @@ class MCPAdapter(ProtocolAdapter):
         try:
             delivered = self.deserialize(raw)
             delivered.status = MessageStatus.DELIVERED
-            delivered.delivered_at = datetime.utcnow()
+            delivered.delivered_at = utc_now()
             handler(delivered)
             message.status = MessageStatus.DELIVERED
             message.delivered_at = delivered.delivered_at

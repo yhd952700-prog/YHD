@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from enum import Enum
 from datetime import datetime
+from src._time import utc_now
 
 
 class SandboxStatus(str, Enum):
@@ -49,7 +50,7 @@ class SandboxExecutionContext:
         self.sandbox_id = sandbox_id
         self.limits = limits or ResourceLimits()
         self.metadata = metadata or {}
-        self.created_at = created_at or datetime.utcnow()
+        self.created_at = created_at or utc_now()
 
 
 class SandboxResult:

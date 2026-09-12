@@ -10,6 +10,7 @@ Defines the data model and utilities for cloud service integration:
 
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from src._time import utc_now
 
 
 class CloudProvider:
@@ -228,7 +229,7 @@ class Message:
         self.headers = headers or {}
         self.delay_seconds = delay_seconds
         self.expiration = expiration
-        self.message_system_timestamp = message_system_timestamp or datetime.utcnow()
+        self.message_system_timestamp = message_system_timestamp or utc_now()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -259,7 +260,7 @@ class QueueMessageRecord:
         self.message_id = message_id
         self.queue_name = queue_name
         self.status = status
-        self.sent_time = sent_time or datetime.utcnow()
+        self.sent_time = sent_time or utc_now()
         self.receive_count = receive_count
         self.failure_reason = failure_reason
 

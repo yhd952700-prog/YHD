@@ -9,7 +9,8 @@ Defect-evidence tests (names prefixed with ``test_defect_``) assert the
 behavior REQUIRED BY SPEC (Definition Lock section 112). They are
 expected to fail until the kernel is fixed.
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
+from src._time import utc_now
 
 import pytest
 
@@ -356,7 +357,7 @@ class TestEventsAndStats:
         tm.update_score("e2", -0.1, reason="two")
         tm.update_score("e1", 0.1, reason="three")
         assert len(tm.get_trust_events(entity_id="e1")) == 2
-        future = datetime.utcnow() + timedelta(hours=1)
+        future = utc_now() + timedelta(hours=1)
         assert tm.get_trust_events(since=future) == []
         assert len(tm.get_trust_events(limit=1)) == 1
 

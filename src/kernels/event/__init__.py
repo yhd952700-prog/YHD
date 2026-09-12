@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 from collections import defaultdict
@@ -54,7 +55,7 @@ class Event:
     causation_id: Optional[str] = None  # ID of event that caused this one
     scope: EventScope = EventScope.L0
     priority: EventPriority = EventPriority.NORMAL
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
     tags: Set[str] = field(default_factory=set)
 
@@ -87,7 +88,7 @@ class Subscription:
     scope: EventScope = EventScope.L0
     filters: Dict[str, Any] = field(default_factory=dict)
     correlation_filter: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     active: bool = True
 
     def matches(self, event: Event) -> bool:
@@ -128,7 +129,7 @@ class DeadLetterEntry:
         self.error = error
         self.subscription_id = subscription_id
         self.attempt = attempt
-        self.timestamp = datetime.utcnow()
+        self.timestamp = utc_now()
         self.resolved = False
 
 

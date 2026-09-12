@@ -32,6 +32,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
@@ -73,8 +74,8 @@ class Mission:
     checkpoint: Optional[Dict[str, Any]] = None
     attempts: int = 0
     required_capability: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
     # ---- (de)serialization for file persistence ----
     def to_payload(self) -> Dict[str, Any]:
@@ -130,7 +131,7 @@ class MissionStore:
     @observe("enoch.mission_store.save")
     def save(self, mission: Mission) -> None:
         """Persist a mission (overwrites by id)."""
-        mission.updated_at = datetime.utcnow()
+        mission.updated_at = utc_now()
         with open(self._path(mission.id), "w", encoding="utf-8") as fh:
             json.dump(mission.to_payload(), fh, ensure_ascii=False, indent=2)
 
@@ -276,7 +277,7 @@ class MissionRunner:
             "stage": "running",
             "attempt": mission.attempts + 1,
             "observation": observation,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
         }
         self.store.save(mission)
 
@@ -293,7 +294,7 @@ class MissionRunner:
                 "attempt": mission.attempts,
                 "observation": observation,
                 "result": result,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now().isoformat(),
             }
             self.store.save(mission)
             return self._summary(mission, result, verify_passed, needs_replan=False)
@@ -313,7 +314,7 @@ class MissionRunner:
             "last_result": result,
             "verify_passed": False,
             "replan": replan,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
         }
         self.store.save(mission)
         return self._summary(mission, result, verify_passed, needs_replan=True)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 import threading
@@ -54,8 +55,8 @@ class Quota:
     used: float = 0.0  # Currently used
     reserved: float = 0.0  # Reserved but not yet used
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
     @property
     def available(self) -> float:
@@ -83,7 +84,7 @@ class Allocation:
     amount: float
     owner: str
     purpose: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -100,7 +101,7 @@ class ResourceUsage:
     available: float
     utilization: float
     allocations: List[Allocation]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
 
 
 class ResourceQuotaManager:
@@ -150,7 +151,7 @@ class ResourceQuotaManager:
                 quota = self._quotas[key]
                 quota.limit = limit
                 quota.metadata = metadata or {}
-                quota.updated_at = datetime.utcnow()
+                quota.updated_at = utc_now()
             else:
                 quota = Quota(
                     resource_type=resource_type,
@@ -207,7 +208,7 @@ class ResourceQuotaManager:
         with self._lock:
             # Reserve from quota
             quota.reserved += amount
-            quota.updated_at = datetime.utcnow()
+            quota.updated_at = utc_now()
 
             # Create allocation
             allocation = Allocation(
@@ -263,7 +264,7 @@ class ResourceQuotaManager:
 
             quota.reserved -= allocation.amount
             quota.used += allocation.amount
-            quota.updated_at = datetime.utcnow()
+            quota.updated_at = utc_now()
 
             return True
 
@@ -290,7 +291,7 @@ class ResourceQuotaManager:
                 # Release from used
                 release_amount = min(amount, quota.used)
                 quota.used -= release_amount
-                quota.updated_at = datetime.utcnow()
+                quota.updated_at = utc_now()
 
                 # Remove allocation if fully released
                 if allocation.amount <= release_amount:
@@ -307,7 +308,7 @@ class ResourceQuotaManager:
 
             release_amount = min(amount, quota.used)
             quota.used -= release_amount
-            quota.updated_at = datetime.utcnow()
+            quota.updated_at = utc_now()
 
             return True
 

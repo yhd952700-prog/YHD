@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional
 import uuid
@@ -93,7 +94,7 @@ class EvaluationResult:
     escalation_required: bool = False
     human_checkpoint: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
-    evaluated_at: datetime = field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = field(default_factory=utc_now)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @property
@@ -118,7 +119,7 @@ class FeedbackEntry:
     priority: int = 0  # Higher = more urgent
     applied: bool = False
     applied_at: Optional[datetime] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -132,7 +133,7 @@ class ReplanRequest:
     suggested_changes: List[str] = field(default_factory=list)
     priority: int = 0
     status: str = "pending"  # pending, approved, rejected, executed
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
     executed_at: Optional[datetime] = None
 
 
@@ -501,7 +502,7 @@ class Evaluator:
             for fb in self._feedback_history:
                 if fb.id == feedback_id:
                     fb.applied = True
-                    fb.applied_at = datetime.utcnow()
+                    fb.applied_at = utc_now()
                     return True
         return False
 
@@ -522,7 +523,7 @@ class Evaluator:
             for r in self._replan_requests:
                 if r.id == replan_id:
                     r.status = "executed"
-                    r.executed_at = datetime.utcnow()
+                    r.executed_at = utc_now()
                     return True
         return False
 

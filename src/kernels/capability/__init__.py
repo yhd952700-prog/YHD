@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
@@ -55,8 +56,8 @@ class CapabilityEntry:
     tags: Set[str] = field(default_factory=set)
     dependencies: List[str] = field(default_factory=list)  # other capability IDs
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     deprecated_at: Optional[datetime] = None
     traceability_chain: List[str] = field(default_factory=list)  # [kernel, capability, owner, ...]
 
@@ -135,7 +136,7 @@ class CapabilityRegistry:
                 self._by_tag[tag] = set()
             self._by_tag[tag].add(key)
 
-        capability.updated_at = datetime.utcnow()
+        capability.updated_at = utc_now()
         return is_new
 
     def lookup(
@@ -239,8 +240,8 @@ class CapabilityRegistry:
             return False
 
         cap.status = CapabilityStatus.DEPRECATED
-        cap.deprecated_at = datetime.utcnow()
-        cap.updated_at = datetime.utcnow()
+        cap.deprecated_at = utc_now()
+        cap.updated_at = utc_now()
 
         if replacement_id and replacement_namespace:
             old_key = cap.full_id
@@ -256,7 +257,7 @@ class CapabilityRegistry:
         if not cap:
             return False
         cap.status = CapabilityStatus.RETIRED
-        cap.updated_at = datetime.utcnow()
+        cap.updated_at = utc_now()
         return True
 
     def get_all_by_owner(self, owner: str) -> List[CapabilityEntry]:
