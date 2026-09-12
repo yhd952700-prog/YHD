@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **C-0 + C-1 已实施并验证**（2026-09-11，Round 65）；**C-2/C-3 待裁决** |
+| 状态 | **C-0 + C-1 + D8 已实施并验证**（2026-09-11，Round 65/66）；**C-2/C-3 待裁决** |
 | 日期 | 2026-09-11（提案）/ 2026-09-11（C-1 实施） |
 | 提出 | Principal Engineer（承接 `AI-LAYER-DOD-AUDIT.md` §3.5.4 与 §5.5 的裁决项） |
 | 裁决人 | 用户（项目主权）—— 授权 Principal Engineer 按路线 C 第一步自主推进 |
@@ -19,7 +19,7 @@
    - **Q1**：要不要把**内核横切装饰器**也变成控制点？
    - **Q2**：要不要给**内部主体**一条合法的 ALLOW 路径（否则一旦开启拦截 = 全部内核动作被拒）？
 4. **路线 C（分层分级）已在推进**：能力层维持现状（已达标，不动）；内核层保留"记录"，但判决**已从恒 deny 改为白名单驱动**（C-1 已实施），并计划**仅对 HIGH/CRITICAL 开启真拦截**（C-2 待做）。详见 §4、§10。
-5. 需裁决 **D1–D8**（§5）。**D8 是 C-2 的前置阻塞**：实测全部装饰动作未设 `risk_level`，C-2 按现状永不触发。
+5. 需裁决 **D1–D7**（§5）。**D8 已实施（2026-09-11 Round 66，选 b）**：43 个动作已建权威分级注册表（`src/kernels/_risk_classification.py`），装饰器现在把真实 `risk_level` 喂给引擎（仍 record-only）。**C-2 现解除阻塞**，但拦截力仍为零，待裁决是否开启。
 
 ---
 
@@ -252,12 +252,13 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 | **D5** | 拦截粒度 | (a) 仅 HIGH/CRITICAL；(b) 全部动作 | 爆炸半径 |
 | **D6** | `default_deny` scope | (a) 维持 L7（引擎靠调用方兜底）；(b) 调整为 L0 兜底（引擎自返 DENY） | 是否收紧「忘记检查即放行」 |
 | **D7** | DoD 措辞 | (a) 明确为"判决已记录"（路线 A 口径）；(b) 明确为"判决 + 分级执行"（路线 C 口径） | 文档与代码一致性 |
-| **D8** | **动作风险分级（C-2 前置阻塞，2026-09-11 新发现）** | (a) 维持全部 `LOW`（则 C-2 永不触发，分级拦截形同虚设）；(b) 逐点为 43 个装饰动作标注真实 `risk_level`（授权/破坏类标 HIGH）；(c) 只在装饰器内按**动作命名空间**推导风险（如 `identity.*` / `security.*` / `plugin.*` → HIGH） | 决定 C-2 是否有实际拦截力 |
+| **D8** | **动作风险分级（2026-09-11 新发现 → 已实施，选 b）** | (a) 维持全部 `LOW`（**否决**：C-2 永不触发，分级拦截形同虚设）；(b) **逐点标注真实 `risk_level`** ✅ 已实施（权威注册表 + 装饰器接线）；(c) 仅按命名空间推导（**否决**：粒度不够，`network.*` / `trust.*` 混合了 LOW/MEDIUM/HIGH） | 决定 C-2 是否有实际拦截力 → **已解决** |
 
-**D8 的证据**：实测 43 个 `@kernel_action(...)` 调用点**无一处传入 `risk_level`**，
-全部落在默认值 `LOW`（`grep -rn 'risk_level=' src/` 仅命中 `src/ai/` 的 3 处与
-`approval.py` 的参数传递）。因此 §4.2 的 `risk in {"HIGH","CRITICAL"}` 条件在
-当前代码中**恒为假**。
+**D8 实施结论（选 b）**：见 §10.5。核心事实：43 个 `@kernel_action(...)` 调用点此前
+**无一处传入 `risk_level`**，全部落在默认值 `LOW`（曾使 §4.2 的
+`risk in {"HIGH","CRITICAL"}` 条件恒为假）。现由注册表统一供给真实等级，且该输入对
+内部 service 主体路径**惰性无关**（唯一读 `risk_level` 的 `human_sovereignty` 规则要求
+`actor.type=="human"`），故 D8 零裁决副作用、纯消除死参数。
 
 ---
 
@@ -288,7 +289,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 |---|---|---|---|---|
 | **C-0** | 只做文档：D7 定措辞；把 §1 实证写进 `AI-LAYER-DOD-AUDIT` | 零 | — | ✅ **已完成** |
 | **C-1** | 引入 `service` 主体 + 白名单规则；`_adjudicate` 判决变为白名单驱动；**仍 additive（不拦截）** | 低 | `scripts/verify_policy_c1.py` ALL GREEN；内核用例零回归（494 passed） | ✅ **已完成**（Round 65） |
-| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ⛔ **阻塞于 D8**（风险分级未做，条件恒假） |
+| **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ⏸ **D8 已完成（Round 66），解除阻塞；待裁决是否开启** |
 | **C-3**（可选） | 引入 `DEFER` + fail-closed；评估 `default_deny` scope（D6） | 中 | `test_runtime_loop` 等 default-deny 用例复核 | ⏸ 未开始 |
 
 ---
@@ -356,8 +357,63 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 ### 10.4 未做的事（明确边界）
 
 - **未加 `enforce` 开关、未加 `PolicyDeniedError`**（C-2）—— 拦截力为零。
-- **未引入 `PolicyEffect.DEFER`**（C-3）。
-- **未改 43 个装饰点的 `risk_level`**（D8 待裁决）。
+  - **未引入 `PolicyEffect.DEFER`**（C-3）。
+  - **未加 `enforce` 开关、未加 `PolicyDeniedError`**（C-2）—— 拦截力仍为零；
+    **但 D8 已做**：43 个装饰点现从权威注册表读取真实 `risk_level`（仍只记录、不拦截），
+    `risk_level` 死参数已消除，审计事件新增 `risk_level` 字段。
+  - **未动能力层** —— 它已是真拦截，本方案刻意不越界。
+
+---
+
+---
+
+## 10.5 实施记录（D8，2026-09-11 Round 66）
+
+> 授权依据：用户指示"继续按照你的方向去执行，不需要问我，你是这个项目总负责人"，
+> 采纳本方案 §5 的 D8 选项 (b)——为 43 个内核动作建立权威风险分级，解除 C-2 阻塞。
+
+### 10.5.1 改了什么
+
+| 文件 | 变更 | 风险 |
+|---|---|---|
+| `src/kernels/_risk_classification.py` | **新增**：纯数据注册表。`RiskTier` 枚举、`ActionRisk` 元组、`KERNEL_ACTION_RISK`（43 动作 → 分级）、`get_kernel_action_risk` / `get_action_risk`、`ENFORCED_TIERS={HIGH,CRITICAL}`、`is_enforced_tier`、`discover_kernel_action_names`（AST 完备性扫描）。零执行风险，不依赖策略引擎 | 无（纯数据） |
+| `src/kernels/_crosscutting.py` | 装饰器改用哨兵默认值：未显式设 `risk_level` 时从注册表读取真实等级喂给 `_adjudicate`；显式 `risk_level` 仍优先。审计事件新增 `risk_level` 字段。修正模块 docstring 一处数字（"白名单之外 43"→"29"） | 低（service 主体路径 verdict 与 `risk_level` 惰性无关，已实测） |
+| `tests/kernels/test_risk_classification.py` | **新增**：完备性（AST 对账 43）、tier 合法性、分布（14/12/15/2）、LOW==C-1 白名单交叉校验、C-2 切割线、装饰器真实等级端到端验证 | — |
+| `scripts/verify_d8_risk_classification.py` | **新增**：可复现五重验证（import / decorator / coverage / tiers / wiring） | — |
+
+### 10.5.2 分级表（43 动作）
+
+| 等级 | 数量 | 动作 |
+|---|---|---|
+| **LOW** | 14 | context.compress, context.process, evaluation.evaluate, event.publish, event.subscribe, event.unsubscribe, event.retry_dead_letter, execution.execute, execution.create_checkpoint, memory.store, memory.compress, network.route, resource.release, security.decide_access |
+| **MEDIUM** | 12 | context.set_scope, evaluation.apply_feedback, evaluation.approve_replan, evaluation.execute_replan, identity.create_identity, network.add_route, network.remove_route, resource.create_quota, resource.allocate, resource.commit, trust.assign_score, trust.update_score |
+| **HIGH** | 15 | identity.grant_permission, identity.revoke_permission, capability.register, capability.deprecate, trust.establish_trust, trust.revoke, network.register_adapter, plugin.register_plugin, plugin.unregister_plugin, plugin.activate_plugin, plugin.deactivate_plugin, security.grant_rbac_role, security.revoke_rbac_role, memory.auto_cleanup, event.clear_history |
+| **CRITICAL** | 2 | capability.retire（级联移除能力）, security.set_abac_rule（改写访问控制边界本身） |
+
+**分级口径（机械、可审计，非品味）**：
+- `LOW` = 查询/计算/簿记（不改变权限、不销毁状态）＝ C-1 内部服务白名单；
+- `MEDIUM` = 可逆的操作性权限/状态变更，作用域有界；
+- `HIGH` = 权限变更 或 局部破坏性 或 代码/适配器生命周期；
+- `CRITICAL` = 系统级权限变更 或 不可逆的系统级破坏。
+
+**强交叉校验**：`LOW` 集合 == `INTERNAL_SERVICE_ALLOWED_ACTIONS`（14）——
+两套独立分类（C-1 白名单、D8 分级）对"安全动作"的判定一致，否则测试失败。
+
+### 10.5.3 验证结果
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | 0 违规 |
+| 2 | importlib 全量导入 `src/` 下 **195** 个模块 | FAILED: 0 |
+| 3 | `scripts/verify_d8_risk_classification.py` 五重断言 | **ALL GREEN** |
+| 4 | 装饰器端到端：CRITICAL 动作审计 `risk_level=CRITICAL`、LOW 动作 `=LOW`；verdict 不变（仍 record-only） | 通过 |
+| 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/` | **610 passed / 1 skipped / 0 failed** |
+
+### 10.5.4 未做的事（明确边界）
+
+- **未加 `enforce` 开关、`PolicyDeniedError`**（C-2）—— 内核层拦截力仍为零。
+- **C-2 已解除阻塞**：分级数据就绪，开启只需"加开关 + 仅 HIGH/CRITICAL 抛错"，
+  但**是否开启仍是用户主权裁决项**（不擅自改执行语义）。
 - **未动能力层** —— 它已是真拦截，本方案刻意不越界。
 
 ---

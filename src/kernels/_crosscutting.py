@@ -38,7 +38,7 @@ package (which has no ``__init__.py``).
    3. ``action.name`` 落在 ``INTERNAL_SERVICE_ALLOWED_ACTIONS`` 显式白名单内
       （查询/计算/簿记类动作，禁止通配）。
 
-   白名单之外的 43 个内核动作（授权/破坏类）继续落回 ``default_deny``。
+   白名单之外的 29 个内核动作（授权/破坏类）继续落回 ``default_deny``。
    于是**判决重新携带信息**（不再是常量）：白名单内 ``allow``、其余 ``deny``。
 
    **本条仍然成立：装饰器是 additive 的，判决从不产生执行效果。**
@@ -56,7 +56,13 @@ import uuid
 from functools import wraps
 from typing import Any, Callable, Optional
 
+from src.kernels._risk_classification import get_kernel_action_risk
+
 logger = logging.getLogger("liuhao.kernel.crosscutting")
+
+# Sentinel distinguishing "caller did not set risk_level" from an explicit
+# "LOW" so the authoritative D8 registry is consulted only when appropriate.
+_RISK_UNSET = object()
 
 # Deferred imports to avoid any import-order coupling at module load time.
 _AUDIT_IMPORT = ("src.kernels.audit", "log_event", "AuditEventType", "AuditScope")
@@ -64,7 +70,8 @@ _POLICY_IMPORT = ("src.kernels.policy", "evaluate_policy_simple")
 
 
 def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
-                corr_id: str, duration_ms: float, rule_id: Optional[str] = None) -> None:
+                corr_id: str, duration_ms: float, rule_id: Optional[str] = None,
+                risk_level: Optional[str] = None) -> None:
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
         log_event(
@@ -74,6 +81,9 @@ def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
             outcome=outcome,
             details={
                 "action": action,
+                # D8: 把裁决时使用的真实风险等级一并记入审计，使分级可见、
+                # 可端到端校验（之前 risk_level 恒为死参数 "LOW"）。
+                "risk_level": risk_level or "LOW",
                 "policy_decision": decision or "unadjudicated",
                 # 判决依据的规则 id（如 "internal_service_allow" /
                 # "default_deny"）。没有它，"为什么判 deny" 无从追溯。
@@ -135,7 +145,7 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
 def kernel_action(
     action: str,
     *,
-    risk_level: str = "LOW",
+    risk_level: Any = _RISK_UNSET,
     audit: bool = True,
     policy: bool = True,
     observable: bool = True,
@@ -145,11 +155,23 @@ def kernel_action(
     Args:
         action: logical action name (e.g. ``"event.publish"``).
         risk_level: one of LOW/MEDIUM/HIGH/CRITICAL, fed to the policy engine.
+            When omitted (the normal case), the **authoritative** tier from
+            ``src.kernels._risk_classification`` is used (D8) -- previously
+            every call site fell back to the dead default ``"LOW"``, which
+            made the ``risk_level`` parameter carry no signal and would have
+            left the future C-2 "HIGH/CRITICAL only" gate permanently inert.
+            An explicit ``risk_level`` always wins over the registry.
         audit: write a hash-chained audit event (default True).
         policy: adjudicate via the policy engine and record the decision
             (default True).
         observable: emit a structured log line (default True).
     """
+    # D8: resolve the real tier once at decoration time unless the caller
+    # pinned it. For the internal-service actor path this input is inert
+    # (the only rule that reads risk_level requires actor.type == "human"),
+    # so feeding the real tier changes what the engine is *told* without
+    # changing any *verdict* -- zero enforcement risk.
+    effective_risk = risk_level if risk_level is not _RISK_UNSET else get_kernel_action_risk(action)
 
     def decorator(fn: Callable) -> Callable:
         @wraps(fn)
@@ -160,7 +182,7 @@ def kernel_action(
             rule_id: Optional[str] = None
 
             if policy:
-                decision, rule_id = _adjudicate(action, risk_level)
+                decision, rule_id = _adjudicate(action, effective_risk)
 
             outcome = "success"
             try:
@@ -172,12 +194,12 @@ def kernel_action(
                 duration_ms = (time.time() - started) * 1000.0
                 if audit:
                     _call_audit("kernel", action, outcome, decision, corr_id,
-                                duration_ms, rule_id)
+                                duration_ms, rule_id, effective_risk)
                 if observable:
                     logger.info(
-                        "kernel_action=%s outcome=%s policy=%s duration_ms=%.3f correlation_id=%s",
+                        "kernel_action=%s outcome=%s policy=%s risk=%s duration_ms=%.3f correlation_id=%s",
                         action, outcome, decision or "unadjudicated",
-                        duration_ms, corr_id,
+                        effective_risk, duration_ms, corr_id,
                     )
 
             return result
