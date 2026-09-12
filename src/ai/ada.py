@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from src.plugins.sandbox.backends.base import ExecutionResult, ResourceLimits
 from src.plugins.sandbox.backends.subprocess_backend import SubprocessBackend
 from .observability import observe
+from .audit import audited
 
 # Default sandbox limits for ad-hoc python execution.
 _DEFAULT_TIMEOUT = 30
@@ -42,6 +43,7 @@ class ComputeEngine:
         self._backend: SubprocessBackend = backend or SubprocessBackend()
 
     @observe("ada.compute_engine.run_python")
+    @audited("p11.ada.run_python", module="src.ai.ada")
     def run_python(
         self,
         code: str,

@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 from ..kernels.execution import ActionResult, Task, Verifier
 from ..kernels.memory import MemoryKernel, MemoryScope, MemoryTier, get_memory_kernel
 from .observability import observe
+from .audit import audited
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,7 @@ class VerificationEngine:
         return None
 
     @observe("verification.verify")
+    @audited("p18.verification.verify", module="src.ai.verification")
     def verify(self, result: Dict[str, Any], criteria: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Verify ``result`` against optional ``criteria``.
 

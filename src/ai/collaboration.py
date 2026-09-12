@@ -30,6 +30,7 @@ import time
 from .employee import Agent, AgentStatus
 from .providers import BaseProvider, get_provider
 from .observability import observe, get_logger
+from .audit import audited
 
 
 class Role(Enum):
@@ -77,6 +78,7 @@ class MessageBus:
         """Create a (possibly empty) mailbox so broadcast reaches this agent."""
         self._mailboxes.setdefault(agent_id, [])
 
+    @audited("p10.bus.send", module="src.ai.collaboration")
     def send(self, message: AgentMessage) -> None:
         if message.receiver == "*":
             for box in self._mailboxes.values():

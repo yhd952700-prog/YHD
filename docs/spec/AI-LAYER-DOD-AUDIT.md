@@ -52,6 +52,10 @@
 >
 > ⚠️ **重要更正（2026-09-11）**：本表的 `K` 是**架构推理**的结论，**从未验证过**"下沉这条路真的通"。经 21 项**运行时探针**复核（见 §3.5），Audited 维度的 `K` 有 **15/21 不成立**；且部分 `L` 的括号计数来自 **docstring 里的关键字**（例如 P5 的 `L:conv 3` 实为 `conversation_store.py` 注释中提到 "audit kernel" 的次数，该模块**零 kernel import**）。请以 §3.5 的实测矩阵为准。
 
+> ✅ **补充（Round 60，2026-09-11）**：§3.5 指出的 15 个 ❌ 中，**14 个已补齐**
+> 能力层自身审计埋点并逐点运行时验证（见 §3.6）；仅 **P17 Economy** 因 docstring
+> 明示有意独立实现而保持原样。本表其余 `K` 的架构推断仍未逐项复核。
+
 ---
 
 ## 3. 关键发现
@@ -140,6 +144,11 @@
 | 20 L10K | l10k / vhl_benchmark | 半 ✅ | `vhl_benchmark` ✅；`l10k` ❌ |
 | 21 Hardening | hardening | ❌ | 自身操作零审计 |
 
+> ✅ **本表 9 个 ❌ 已于 Round 60 补齐**（2026-09-11）：新增 `src/ai/audit.py` +
+> 22 个 `@audited` 注入点，除 **P17 Economy**（docstring 明示有意独立实现，保持原样）
+> 外全部转为 ✅。逐项证据与验证见 **§3.6**。
+> 本表保留 Round 59 的原始观测，作为"**修复前**"基线。
+
 ### 3.5.4 Policy Controlled 的结构性问题（新发现）
 
 `src/kernels/_crosscutting.py` 的 `_adjudicate` 以
@@ -168,9 +177,71 @@
 
 - 脚本：`scripts/verify_ai_layer_audit.py`（含对照实验 + 21 项探针矩阵 + policy 判决采样）。
   隔离到独立临时 DB，不污染工作区内的 `audit_store.db` / `memory_store.db`。
-- 回归测试（已入库）：`tests/test_ai_layer_dod_delegation.py`（10 例），
+- **Round 60 后的预期输出**：除 **P17 economy 恒为 0**（有意设计）外，
+  其余探针均应 > 0。P19 的探针已从"只构造 `EvolutionEngine()`"改为跑完整生命周期
+  —— 只构造不写审计是**正确**行为，原探针测不到 `@audited`。
+- 回归测试（已入库）：`tests/test_ai_layer_dod_delegation.py`（14 例），
   锁定已验证的下沉路径、`record-only` 契约与"system actor 恒判 deny"的结构性事实。
   这些测试**故意会在上述任一事实改变时失败**，以强制同步本文档。
+
+---
+
+## 3.6 Round 60 补齐（2026-09-11）：能力层自身审计埋点
+
+**根因**：§3.5 的 15 个 ❌ 并非"设计上不需要审计"，而是
+**"传递性满足"只对真的调用了被装饰内核动作的操作成立** —— 编排/算法类模块
+（collaboration / perception / organization / enoch / world_interface / evolution /
+l10k / hardening / conversation_store / tool_registry）一个内核动作都不调，
+因此在端到端意义上**完全没有审计**。§3.4 早已给出正确方向：
+"需补一层 orchestration-level 审计埋点"。
+
+**处置**：
+
+| 项 | 内容 |
+|---|---|
+| 新增 | `src/ai/audit.py` —— 能力层审计助手（与 `src/ai/observability.py` 同构） |
+| 契约 | **additive**（不改返回值/异常行为）、**fail-loud-not-fatal**（审计失败记 warning 但不阻断业务）、correlation_id 复用 `TraceContext` |
+| 注入 | 14 个模块、**22 个 `@audited` 注入点**（同步与 async 方法均支持） |
+| 职责边界 | **只做审计，不做策略判决** —— 在这里再加一个 record-only 判决只会制造第二条噪音记录（见 §3.5.4） |
+
+注入点清单：
+
+| Phase | 模块 | 注入点 |
+|---|---|---|
+| P3 | `agent_factory` | `AgentRuntimeService.start` / `.stop` |
+| P3 | `runtime_loop` | `RuntimeLoop.step` |
+| P5 | `conversation_store` | `ConversationStore.append` |
+| P9 | `tool_registry` | `register` / `approve` / `activate` / `suspend` / `revoke` |
+| P10 | `collaboration` | `MessageBus.send` |
+| P11 | `perception` | `TextPerceiver.perceive` |
+| P11 | `ada` | `ComputeEngine.run_python` |
+| P12 | `organization` | `create_goal` / `create_department` |
+| P13 | `enoch` | `create_mission` |
+| P15 | `world_interface` | `WorldInterface.execute` |
+| P18 | `verification` | `VerificationEngine.verify` |
+| P19 | `evolution` | `propose` / `approve` / `deploy` |
+| P20 | `l10k` | `L10KRegistry.register_task` |
+| P21 | `hardening` | `HardeningSuite.run_checks` |
+
+**未注入（有意）**：**P17 Economy** —— `economy.py` docstring 明示
+"self-contained, dependency-free"，其预算引擎为**有意独立实现**，不接线。
+（`tests/test_ai_layer_dod_delegation.py::test_economy_still_has_no_capability_layer_audit`
+会在此决定被推翻时失败。）
+
+**验证**（全部是运行时观测量，不是关键字扫描）：
+
+| 手段 | 结果 |
+|---|---|
+| 22 点埋点探针（audit store 事件增量） | 全部出现预期动作 |
+| `tests/test_ai_layer_dod_delegation.py` | **14 passed**（正向锁定 + 埋点契约 + fail-loud 断言） |
+| 受影响模块测试（16 个文件） | **184 passed / 0 failed** |
+| `tests/kernels` + `tests/security` + `tests/governance` | **506 passed / 1 skipped** |
+| `flake8 src/`（CI 口径） | 0 违规 |
+| importlib 全模块扫描 | **194 个模块，FAILED: 0** |
+
+**经验教训**：不要用"某层声称下沉到内核"当作审计达标的证据 ——
+**传递性满足对"没有调用被装饰动作"的操作不成立**。判据必须是
+"该操作**运行时**是否真的产生了 audit 事件"（对照实验先行，见 §3.5.1）。
 
 ---
 
@@ -187,6 +258,8 @@
 - 15/21 探针显示能力层的关键操作**不产生任何审计事件**（含 P3/P10/P11/P12/P13/P15/P17/P19/P21）。
   因此"端到端七维达标"的正确读法是"**端到端链路中审计确实存在**"，而非
   "每个 Phase 的关键操作都被审计"。
+  > ✅ **已于 Round 60 补齐**（2026-09-11）：14 个模块 22 个 `@audited` 注入点，
+  > 上述 15 项中除 **P17 Economy**（有意独立实现）外全部转为运行时可见的审计。见 §3.6。
 - Policy Controlled 维度存在**结构性空转**：内核动作的判决恒为 `deny`，
   且从不拦截（见 §3.5.4）。它满足 DoD 的字面要求，但不构成真正的策略控制。
 - 因此本条与 §3.4 的"全部满足"应理解为：**维度在架构上已建立、在部分路径上已生效**，

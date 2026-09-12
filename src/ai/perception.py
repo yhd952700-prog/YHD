@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .observability import observe
+from .audit import audited
 
 
 @dataclass
@@ -89,6 +90,7 @@ class TextPerceiver(Perceiver):
         self.keywords: List[str] = [k.lower() for k in (keywords or [])]
 
     @observe("text_perceiver.perceive")
+    @audited("p11.perception.perceive", module="src.ai.perception")
     def perceive(self, data: Any) -> Observation:
         text = data if isinstance(data, str) else str(data)
         char_count = len(text)

@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..kernels.execution import ActionResult
 from .observability import observe
+from .audit import audited
 
 
 class ToolStatus(Enum):
@@ -59,6 +60,7 @@ class ToolRegistry:
 
     # -------------------------------------------------------------- lifecycle
     @observe("tool_registry.register")
+    @audited("p9.tool.register", module="src.ai.tool_registry")
     def register(self, tool: Tool) -> str:
         self._tools[tool.tool_id] = tool
         self._status[tool.tool_id] = ToolStatus.REGISTERED
@@ -73,24 +75,28 @@ class ToolRegistry:
         self._status[tool_id] = ToolStatus.VALIDATED
         return True
 
+    @audited("p9.tool.approve", module="src.ai.tool_registry")
     def approve(self, tool_id: str) -> bool:
         if self._status.get(tool_id) != ToolStatus.VALIDATED:
             return False
         self._status[tool_id] = ToolStatus.APPROVED
         return True
 
+    @audited("p9.tool.activate", module="src.ai.tool_registry")
     def activate(self, tool_id: str) -> bool:
         if self._status.get(tool_id) != ToolStatus.APPROVED:
             return False
         self._status[tool_id] = ToolStatus.ACTIVE
         return True
 
+    @audited("p9.tool.suspend", module="src.ai.tool_registry")
     def suspend(self, tool_id: str) -> bool:
         if tool_id not in self._tools:
             return False
         self._status[tool_id] = ToolStatus.SUSPENDED
         return True
 
+    @audited("p9.tool.revoke", module="src.ai.tool_registry")
     def revoke(self, tool_id: str) -> bool:
         if tool_id not in self._tools:
             return False

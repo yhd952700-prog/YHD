@@ -48,6 +48,7 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 from .observability import observe
+from .audit import audited
 
 
 class ExperimentStatus(Enum):
@@ -137,6 +138,7 @@ class EvolutionEngine:
 
     # --- lifecycle ------------------------------------------------------------
     @observe("evolution.propose")
+    @audited("p19.evolution.propose", module="src.ai.evolution")
     def propose(
         self, description: str, baseline_metric: float, proposed_change: str
     ) -> str:
@@ -193,6 +195,7 @@ class EvolutionEngine:
             "improved": exp.is_improved(),
         }
 
+    @audited("p19.evolution.approve", module="src.ai.evolution")
     def approve(self, experiment_id: str, approver: str) -> bool:
         """Approve a benchmarked, improved experiment. Status -> APPROVED.
 
@@ -229,6 +232,7 @@ class EvolutionEngine:
         return True
 
     @observe("evolution.deploy")
+    @audited("p19.evolution.deploy", module="src.ai.evolution")
     def deploy(self, experiment_id: str) -> bool:
         """Deploy an approved, benchmarked, improved experiment. Status -> APPLIED.
 

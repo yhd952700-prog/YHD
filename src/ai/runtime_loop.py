@@ -34,6 +34,7 @@ from .agent_factory import AgentMemory, AgentPolicy, AgentRuntimeService
 from .collaboration import AgentMessage, MessageBus, MessageKind
 from .employee import AgentStatus
 from .observability import observe, get_logger
+from .audit import audited
 
 
 @dataclass
@@ -84,6 +85,7 @@ class RuntimeLoop:
 
     # --- 单步 -----------------------------------------------------------------
     @observe("RuntimeLoop.step")
+    @audited("p3.runtime_loop.step", module="src.ai.runtime_loop")
     def step(self) -> Optional[Dict[str, Any]]:
         """处理一条消息（一轮循环）。无消息返回 ``None``。
 

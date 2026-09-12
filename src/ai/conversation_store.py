@@ -19,6 +19,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from .observability import observe
+from .audit import audited
 
 # 默认落在项目根目录，而不是写死某一台机器的绝对路径：保留"数据不入库内"
 # 的约定，同时保证在任何机器上 checkout 后都能直接运行（写死路径会在 CI 的
@@ -70,6 +71,7 @@ class ConversationStore:
     # 写入 / 读取
     # ------------------------------------------------------------------ #
     @observe("conversation.append")
+    @audited("p5.conversation.append", module="src.ai.conversation_store")
     def append(self, principal_id: str, turn: int, role: str, content: str) -> None:
         """追加一条对话消息（user 或 assistant）。"""
         with self._lock:

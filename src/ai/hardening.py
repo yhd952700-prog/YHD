@@ -22,6 +22,7 @@ from .world_interface import WorldInterface, FilesystemAdapter, WorldRequest
 from .tool_registry import ToolRegistry, Tool
 from .network_gateway import AgentNetworkGateway
 from .observability import observe
+from .audit import audited
 
 
 @dataclass
@@ -42,6 +43,7 @@ class HardeningSuite:
     """
 
     @observe("hardening.run_checks")
+    @audited("p21.hardening.run_checks", module="src.ai.hardening")
     def run_checks(self) -> List[CheckResult]:
         """Run every check and return the ordered list of results."""
         checks: List[Callable[[], CheckResult]] = [

@@ -30,6 +30,7 @@ from .employee import Agent, AgentStatus
 from .providers import get_provider
 from ..kernels.identity import get_identity_manager
 from .observability import observe
+from .audit import audited
 
 
 @dataclass
@@ -62,6 +63,7 @@ class AgentRuntimeService:
     agent: Agent
 
     @observe("agent.start")
+    @audited("p3.agent_runtime.start", module="src.ai.agent_factory")
     def start(self) -> bool:
         """start(): move an idle/paused agent into RUNNING."""
         if self.agent.status in (AgentStatus.IDLE, AgentStatus.PAUSED):
@@ -77,6 +79,7 @@ class AgentRuntimeService:
         """resume(): continue a paused agent."""
         return self.agent.resume()
 
+    @audited("p3.agent_runtime.stop", module="src.ai.agent_factory")
     def stop(self) -> bool:
         """stop(): terminal stop, not resumable."""
         return self.agent.stop()

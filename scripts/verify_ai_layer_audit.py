@@ -197,8 +197,16 @@ def main() -> int:
         ExperienceEngine().store(ExperienceEntry(id="e1", summary="s", verdict="success"))
 
     def p19():
+        # 只构造 EvolutionEngine() 不写审计是**正确**的（构造不是关键操作）；
+        # 因此这里必须真正跑一遍生命周期，才能测到 @audited 是否到位。
         from src.ai.evolution import EvolutionEngine
-        EvolutionEngine()
+
+        engine = EvolutionEngine()
+        exp_id = engine.propose("raise throughput", baseline_metric=1.0,
+                                proposed_change="tune batch size")
+        engine.benchmark(exp_id, observed_metric=1.5)
+        engine.approve(exp_id, approver="dod-verifier")
+        engine.deploy(exp_id)
 
     def p20a():
         from src.ai.l10k import L10KRegistry
@@ -229,7 +237,7 @@ def main() -> int:
     probe("P17", "economy.BudgetEngine.reserve/consume()", p17)
     probe("P18", "verification.VerificationEngine.verify()", p18a)
     probe("P18", "verification.ExperienceEngine.store()", p18b)
-    probe("P19", "evolution.EvolutionEngine()", p19)
+    probe("P19", "evolution.EvolutionEngine().propose/benchmark/approve/deploy()", p19)
     probe("P20", "l10k.L10KRegistry.register_task()", p20a)
     probe("P20", "vhl_benchmark.run_vhl_benchmark()", p20b)
     probe("P21", "hardening.run_hardening_suite()", p21)

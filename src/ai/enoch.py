@@ -38,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .employee import Agent
 from .agent_factory import AgentRuntimeService
 from .observability import observe
+from .audit import audited
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +366,7 @@ class MissionRunner:
         }
 
 
+@audited("p13.enoch.create_mission", module="src.ai.enoch")
 def create_mission(
     description: str,
     required_capability: Optional[str] = None,

@@ -28,6 +28,7 @@ from .employee import Agent
 from .agent_factory import AgentFactory, AgentSpec
 from .collaboration import Role
 from .observability import observe
+from .audit import audited
 
 
 class MemberStatus(Enum):
@@ -124,12 +125,14 @@ class Organization:
 
     # ------------------------------------------------------------ §62 functions
     @observe("organization.create_goal")
+    @audited("p12.organization.create_goal", module="src.ai.organization")
     def create_goal(self, description: str) -> str:
         goal_id = f"goal_{uuid.uuid4().hex[:8]}"
         self.goals[goal_id] = Goal(id=goal_id, description=description)
         self._audit("create_goal", goal_id=goal_id, description=description)
         return goal_id
 
+    @audited("p12.organization.create_department", module="src.ai.organization")
     def create_department(self, name: str) -> str:
         dep_id = f"dept_{uuid.uuid4().hex[:8]}"
         self.departments[dep_id] = Department(id=dep_id, name=name)

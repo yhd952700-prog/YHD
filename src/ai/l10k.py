@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from typing import Dict, List
 
 from .observability import observe
+from .audit import audited
 
 # Levels ordered from least to most valuable. "trivial" is the anti-cheat red
 # line (S116): work that is trivial is NOT allowed to count as verified output.
@@ -84,6 +85,7 @@ class L10KRegistry:
 
     # --- registration -------------------------------------------------------
     @observe("l10k.register_task")
+    @audited("p20.l10k.register_task", module="src.ai.l10k")
     def register_task(
         self,
         name: str,

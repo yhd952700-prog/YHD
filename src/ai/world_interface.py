@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..kernels.execution import ActionResult
 from .observability import observe as _observe
+from .audit import audited
 
 
 @dataclass
@@ -152,6 +153,7 @@ class WorldInterface:
             return {"status": "error", "error": str(exc)}
 
     @_observe("world_interface.execute")
+    @audited("p15.world.execute", module="src.ai.world_interface")
     def execute(self, request: WorldRequest) -> ActionResult:
         """validate -> authorize -> adapter.execute -> ActionResult."""
         if not self.validate(request):
