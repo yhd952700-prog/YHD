@@ -11,6 +11,12 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # 3.11 = declared floor (pyproject: requires-python >=3.11); 3.12 = local dev venv.
+      # Both legs run so a version-specific regression cannot hide in the gap.
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
 
     steps:
       - name: Checkout Code
@@ -19,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Dependencies
         run: |
@@ -98,7 +104,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
@@ -121,7 +127,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
@@ -155,7 +161,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
@@ -183,7 +189,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
@@ -205,7 +211,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
