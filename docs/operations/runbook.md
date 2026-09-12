@@ -83,6 +83,24 @@ engine.rollback(experiment_id)   # 状态 -> ROLLED_BACK，写入 history 审计
 - Release 前 11 道门：Format / Lint / Type / Unit / Integration / Security / E2E / Performance / Agent Evaluation / Benchmark / Regression。
 - **Critical Failure → Block Release**。任一加固检查失败视为 Critical。
 
+### 6.1 内核层策略拦截开关（Policy C-4）
+
+内核层 43 个 `@kernel_action` 默认**只记录、不拦截**（L1）。把它们变成**真拦截**（L2）
+不需要改代码 —— 用一处运维开关：
+
+```bash
+export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL          # 两个 CRITICAL 动作
+export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire # 精确到单个动作
+```
+
+- **默认（不设该变量）= 不拦截**，与历史行为完全一致。
+- 开启后，HIGH/CRITICAL 动作无人工审批时会抛 `PolicyDeferredError`（**待审批，不是永久拒绝**）。
+- 人工审批入口：`POST /v1/policy/approvals`（需 `Authorization: Bearer <JWT>`），
+  列/查/撤：`GET/DELETE /v1/policy/approvals...`，开关快照：`GET /v1/policy/enforcement`。
+- **回滚**：清空该环境变量并重启即可。
+- ⚠️ 凭据有 TTL（默认 300s，上限 3600s）且可撤销；只接受 HIGH/CRITICAL 动作，
+  拼错的名字 / LOW/MEDIUM 动作会**直接报错**（不会静默不生效）。
+
 ---
 
 ## 7. 已知历史遗留（未在本收口处理，待后续）

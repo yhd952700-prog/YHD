@@ -55,9 +55,15 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 > - **C-3 已实施**（Round 68）：`PolicyEffect.DEFER` + `PolicyDeferredError` + 动态 human
 >   主体通道（`src/kernels/_sovereignty.py::human_sovereign`），**解除 C-2 自锁**
 >   （无人类授权 → 待人工审批；经 OD-010 核验的 human 授权 → 执行）。
+> - **C-4 已实施**（Round 71）：把"开窗口"变成**审计化凭据**（`SovereigntyGrant`，
+>   TTL / 可撤销 / 限 HIGH/CRITICAL）+ **单一执行开关** `src/kernels/_enforcement.py`
+>   （env `LIUHAO_KERNEL_POLICY_ENFORCE`，默认空 = 关闭）+ **JWT 认证的真实审批入口**
+>   `POST /v1/policy/approvals`（主体只取自令牌，请求体无法指定）。动作审计新增
+>   `sovereignty_grant` 字段，闭合「动作 ← 凭据 ← 授权人」因果链。
 >
-> 因此内核层 **L2（判决已执行）的机制齐备**，只是**生产默认未开启**（仍 L1／记录型）。
-> 是否在部署侧开启属运维/主权决策，**不是本审计的缺口**。
+> 因此内核层 **L2（判决已执行）已具备完整可运营路径**：机制（C-2）+ 通道（C-3）
+> + 凭据与入口（C-4）。**默认仍为 L1（记录型）** —— 是否开启由运维用
+> `LIUHAO_KERNEL_POLICY_ENFORCE` 决定，**不是本审计的缺口**。
 >
 > 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10；证据：`scripts/verify_policy_c1.py`。
 

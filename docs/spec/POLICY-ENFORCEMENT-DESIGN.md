@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **C-0 + C-1 + D8 + C-2(机制) + C-3(机制) 已实施并验证**（2026-09-11–09-12，Round 65–68）；**C-2/C-3 生产开启仍待用户主权裁决** |
+| 状态 | **C-0 + C-1 + D8 + C-2(机制) + C-3(机制) + C-4(审批通道) 已实施并验证**（2026-09-11–12，Round 65–71）；**生产开启 = 一处可回滚的运维开关**（env `LIUHAO_KERNEL_POLICY_ENFORCE`，默认空 = 关闭） |
 | 日期 | 2026-09-11（提案）/ 2026-09-11（C-1 实施） |
 | 提出 | Principal Engineer（承接 `AI-LAYER-DOD-AUDIT.md` §3.5.4 与 §5.5 的裁决项） |
 | 裁决人 | 用户（项目主权）—— 授权 Principal Engineer 按路线 C 第一步自主推进 |
@@ -291,6 +291,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 | **C-1** | 引入 `service` 主体 + 白名单规则；`_adjudicate` 判决变为白名单驱动；**仍 additive（不拦截）** | 低 | `scripts/verify_policy_c1.py` ALL GREEN；内核用例零回归（494 passed） | ✅ **已完成**（Round 65） |
 | **C-2** | 加 `enforce` 开关 + `PolicyDeniedError`；**仅 HIGH/CRITICAL** 生效 | 中 | 新增针对性用例；`test_ai_layer_dod_delegation` 同步更新 | ✅ **机制已实施（Round 67，默认 off）；生产开启待裁决（阻塞于 C-3 human 主体）** |
 | **C-3**（可选） | 引入 `DEFER` + 动态 human 主体通道（解 C-2 自锁）+ fail-closed 收紧；评估 `default_deny` scope（D6） | 中 | `tests/kernels/test_sovereignty_c3.py`、`scripts/verify_c3_sovereignty.py` | ✅ **机制已实施（Round 68，2026-09-12，默认 off）；生产开启仍待裁决** |
+| **C-4** | **把"开窗口"变成凭据 + 单一执行开关 + 真实审批入口**：审计化的 `SovereigntyGrant`（TTL/可撤销/动作集受限）、`src/kernels/_enforcement.py`（env 选择开启，默认空）、`src/gateway/policy.py`（JWT 认证的签发/查询/撤销端点） | 低（默认零行为变更） | `tests/kernels/test_sovereignty_grants.py`、`tests/kernels/test_enforcement_policy.py`、`tests/test_policy_approval_api.py`、`scripts/verify_c4_approval_channel.py`（44 项 ALL GREEN） | ✅ **已完成（Round 71，2026-09-12）** |
 
 ---
 
@@ -324,6 +325,22 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
   `human_sovereignty`（precedence 1000）放行 —— 即**生产翻 `enforce=True` 现已安全**：
   无人类授权 → `PolicyDeferredError`（待人工审批）；有授权 → 正常执行。该翻转本身仍是
   用户主权决策（见 §10.7）。
+
+- **C-4 已实施（Round 71，2026-09-12）："谁批准、怎么记" 已有答案。** 在此之前
+  `human_sovereign(principal, actions)` 只证明"该 principal 是 ACTIVE 非 service 身份"，
+  **不证明调用方就是那个人** —— 任何能写 Python 的代码路径传一个真实 human id 即可开窗，
+  且事后无法回答"这次是谁批的"。C-4 补上三块：
+  1. **凭据化**：`SovereigntyGrant`（grant_id / principal / 动作集 / 理由 / TTL / 撤销者），
+     签发与撤销各写一条 `HUMAN_SOVEREIGNTY_OVERRIDE` 审计事件；动作执行时的内核审计带
+     `sovereignty_grant` 字段，闭合「内核动作 ← 审批凭据 ← 授权人」因果链。
+  2. **单一开关**：`src/kernels/_enforcement.py`（env `LIUHAO_KERNEL_POLICY_ENFORCE`，
+     默认**空 = 不开启**）—— 43 个生产点依旧 `enforce=False`，"开启真拦截"变成**一处
+     可回滚的运维决策**，而不是编辑 43 个调用点；非法 token（拼错的动作名、LOW/MEDIUM
+     动作、非 gated 层级）**大声报错**，不会静默不生效。
+  3. **真实入口**：`src/gateway/policy.py` 的 `POST/GET/DELETE /v1/policy/approvals`
+     —— **主体只取自 `Authorization: Bearer <JWT>` 的 `sub`，请求体无法指定**，
+     这正是 C-3 通道此前唯一的真实缺口。
+  默认配置下行为与 C-1/C-2/C-3 **逐字节一致**（生产仍是 L1）。
 
 **待裁决（剩余）**：① **生产是否开启内核层真拦截**（把某个 HIGH/CRITICAL 动作的 `enforce` 翻 `True`；C-3 已解自锁，开启安全）；② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底，涉能力层，影响 `test_runtime_loop` 等既有 default-deny 用例）。
 
@@ -542,5 +559,84 @@ C-3 的 `human_sovereign(principal, actions)` 上下文管理器提供**动态 h
 - **未动能力层** —— 它已是真拦截，本方案刻意不越界。
 - **未评估 D6（`default_deny` scope 调整）** —— 该项涉及能力层 default-deny 语义，影响
   `test_runtime_loop` 等既有用例，留作独立决策（不在内核层 C-3 范围内）。
+
+## 10.8 实施记录（C-4 审批通道，2026-09-12 Round 71）
+
+> 授权依据：用户指示「决策门授权给你按照你的方向去执行」—— 采纳 §9 的方案：
+> 不盲目翻转 `enforce=True`，而是先补齐「谁批准、怎么记」，并把"开启"收敛为**一处开关**。
+
+### 10.8.1 发现的真实缺口（本轮的起点）
+
+`human_sovereign(principal, actions)`（C-3）在策略引擎侧只验证
+「该 principal 是身份内核中**存在且 ACTIVE 的非 service 身份**」。
+它**不验证调用方就是那个人**。因此 C-3 之后：
+
+- 任何能执行 Python 的代码路径，只要传一个真实 human 的 id，即可开窗放行
+  HIGH/CRITICAL 内核动作；
+- 且审计里只有 `policy_enforced=True` 与 `policy_rule=human_sovereignty`，
+  **没有任何字段能回答"这次是谁批的"**。
+
+这不是 bug，是 C-3 刻意留出的边界（通道只收窄"哪些动作"，不做调用方鉴权）。
+C-4 的职责就是把它补完。
+
+### 10.8.2 改了什么
+
+| 文件 | 变更 | 风险 |
+|---|---|---|
+| `src/kernels/_sovereignty.py` | 新增 `SovereigntyGrant`（grant_id/principal/actions/reason/issued_by/granted_at/expires_at/revoked_at）+ `issue_grant` / `revoke_grant` / `get_grant` / `list_grants` / `grant_window` / `clear_grants`；`ActiveSovereignty` 增 `grant_id` / `reason`（有默认值，向后兼容）；`human_sovereign` 增 `grant_id` / `reason` / `granted_at` 关键字参数 | 低（纯新增） |
+| `src/kernels/_enforcement.py` | **新增**：单一执行开关。`parse_spec` 把层级名/动作名解析为动作集，非法 token 抛 `ValueError`；`enforced_actions` / `is_enforced` / `describe` / `reload`；env `LIUHAO_KERNEL_POLICY_ENFORCE`，**默认空 = 不开启** | 低（默认关闭） |
+| `src/kernels/_crosscutting.py` | 拦截门条件改为 `enforce or is_enforced(action, risk_level)`；审计 `details` 新增 `sovereignty_grant`；模块 docstring 补 C-4 | 低（默认配置下逐字节一致） |
+| `src/gateway/policy.py` | **新增**：`POST /v1/policy/approvals`（签发）、`GET /v1/policy/approvals`（列表 + 开关快照）、`GET /v1/policy/approvals/{id}`、`DELETE /v1/policy/approvals/{id}`（撤销）、`GET /v1/policy/enforcement`（只读快照）；`require_human_principal` 从 JWT 解主体 | 低（新端点） |
+| `src/gateway/main.py` | 挂载 `policy_router` | 无 |
+| `tests/kernels/test_sovereignty_grants.py` | **新增**（22 例）：生命周期 / 有界性 / 最小权限 / 仅人类 / 审计因果链 | — |
+| `tests/kernels/test_enforcement_policy.py` | **新增**（20 例）：解析与拒绝 / 默认关闭 / 开关真的武装生产调用点 | — |
+| `tests/test_policy_approval_api.py` | **新增**（20 例）：鉴权强制 / **请求体无法指定主体** / 400 与 422 语义 / 签发-列表-撤销 | — |
+| `scripts/verify_c4_approval_channel.py` | **新增**：44 项可复现验证（含 5 项安全护栏） | — |
+
+### 10.8.3 关键设计决策
+
+1. **不做 HTTP 远程执行内核动作。** 内核动作是**进程内**调用；做成"HTTP 传动作名 →
+   服务端反射调用"会**新增攻击面**，且需要一张反射分发表（现不存在，凭空造即违反
+   "不把概念当实现"）。入口的职责是**签发凭据**；执行由**能力层在自身进程内**于凭据
+   窗口中进行。
+2. **主体只能来自令牌。** `ApprovalRequest` 刻意**不含** `principal` / `issued_by`
+   字段，并有专门测试断言"body 里塞 principal 会被忽略"。
+3. **凭据只覆盖被拦截门管辖的动作。** LOW/MEDIUM 动作**拒绝签发**（C-3 通道永不升级
+   它们，签发即为"看起来有权限的空操作"），未知动作名同样拒绝。
+4. **凭据不是能力。** 持有 `SovereigntyGrant` 对象对策略引擎**毫无意义** —— 引擎始终
+   从身份内核重算 `verified`。凭据的价值是**问责**，不是授权。
+5. **开启收敛为一处。** 43 个生产点保持 `enforce=False`（AST 护栏继续断言）；运维通过
+   `LIUHAO_KERNEL_POLICY_ENFORCE` 选择性武装某个动作或某一层，**随时可回滚**。
+
+### 10.8.4 验证结果
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | **0 违规** |
+| 2 | importlib 全量导入 `src/` 下 **199** 个模块 | **FAILED: 0** |
+| 3 | `scripts/verify_c4_approval_channel.py` | **ALL GREEN（44 项）** |
+| 4 | `verify_policy_c1` / `verify_d8_risk_classification` / `verify_c2_enforcement`(11) / `verify_c3_sovereignty`(15) | 全部 **ALL GREEN**（零回归） |
+| 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/ tests/test_policy_approval_api.py` | **697 passed / 1 skipped / 0 failed**（Round 68 基线 635 + 新增 62，零回归） |
+
+### 10.8.5 未做的事（明确边界）
+
+- **未在默认配置开启任何拦截** —— `enforce` 全 False 且 env 为空，生产行为与 C-1/C-2/C-3 逐字节一致。
+- **未做 D6**（`default_deny` scope 收紧）—— 涉能力层，独立决策。
+- **未做驾驶舱 UI 接线** —— 后端入口已就绪（`/v1/policy/approvals`），前端"批准"按钮属界面工作。
+
+### 10.8.6 生产开启路径（运维动作，非代码变更）
+
+```bash
+# 例：只把两个 CRITICAL 动作纳入真拦截
+export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL
+# 或逐动作精确开启
+export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
+```
+
+开启后：无人工审批 → HIGH/CRITICAL 动作抛 `PolicyDeferredError`（待审批）；
+经 `/v1/policy/approvals` 签发凭据、并在其窗口内调用 → 正常执行。
+**回滚 = 清空该环境变量并重启。**
+
+---
 
 *END OF POLICY-ENFORCEMENT-DESIGN*

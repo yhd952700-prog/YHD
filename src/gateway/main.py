@@ -184,6 +184,10 @@ def get_app() -> FastAPI:
     from .profile import router as profile_router
     app.include_router(profile_router)
 
+    # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
+    from .policy import router as policy_router
+    app.include_router(policy_router)
+
     return app
 
 

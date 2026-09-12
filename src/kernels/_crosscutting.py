@@ -65,6 +65,18 @@ package (which has no ``__init__.py``).
    授权则正常执行。机制默认关闭（无 sovereignty 上下文时行为与 C-1/C-2 完全一致）；
    43 个生产点仍 ``enforce=False``，生产零行为变更。伪造主体（含以 ``type:"human"``
    引用 service 身份）被 ``_is_verified_human`` 的 kind 校验拒绝，落回 deny。
+
+   **Policy C-4（2026-09-12 Round 71，已实施）**：把"开窗口"这件事本身变成
+   **可审计、有时限、可撤销、且动作集受限**的凭据 —— ``src.kernels._sovereignty``
+   新增 :class:`SovereigntyGrant` 与 ``issue_grant`` / ``revoke_grant`` /
+   ``list_grants`` / ``grant_window``，签发与撤销各写一条
+   ``HUMAN_SOVEREIGNTY_OVERRIDE`` 审计事件。同时新增**单一执行开关**
+   ``src.kernels._enforcement``（env ``LIUHAO_KERNEL_POLICY_ENFORCE``，默认空
+   = 不开启），使"生产开启真拦截"变成**一处可回滚的运维决策**，而不是改 43 个
+   调用点。本装饰器据此把拦截门条件改为
+   ``enforce or is_enforced(action, risk_level)``，并在审计 ``details`` 中新增
+   ``sovereignty_grant`` 字段，闭合「内核动作 ← 审批凭据 ← 授权人」因果链。
+   **默认配置下行为与 C-1/C-2/C-3 逐字节一致。**
 """
 
 from __future__ import annotations
@@ -75,6 +87,7 @@ import uuid
 from functools import wraps
 from typing import Any, Callable, Optional
 
+from src.kernels._enforcement import is_enforced
 from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier, get_kernel_action_risk
 
 logger = logging.getLogger("liuhao.kernel.crosscutting")
@@ -137,7 +150,8 @@ _POLICY_IMPORT = ("src.kernels.policy", "evaluate_policy_simple")
 
 def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
                 corr_id: str, duration_ms: float, rule_id: Optional[str] = None,
-                risk_level: Optional[str] = None, enforced: bool = False) -> None:
+                risk_level: Optional[str] = None, enforced: bool = False,
+                grant_id: Optional[str] = None) -> None:
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
         log_event(
@@ -159,12 +173,26 @@ def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
                 # 被拦截时记 True，使「deny 是否真的阻止了动作」可审计、
                 # 不可再被误读为「记录即阻止」。
                 "policy_enforced": enforced,
+                # C-4: 若本动作是在某个人工审批授权窗口内执行的，记下凭据 id。
+                # 没有它，一次被放行的 HIGH/CRITICAL 动作无法回答"谁批的"。
+                "sovereignty_grant": grant_id,
                 "duration_ms": round(duration_ms, 3),
             },
             correlation_id=corr_id,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("kernel_action audit failed for %r: %s", action, exc)
+
+
+def _active_grant_id() -> Optional[str]:
+    """The approval-grant id of the currently open sovereignty window, if any."""
+    try:
+        from src.kernels._sovereignty import get_active_sovereignty
+
+        sov = get_active_sovereignty()
+        return sov.grant_id if sov is not None else None
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[str]]:
@@ -276,9 +304,14 @@ def kernel_action(
             started = time.time()
             decision: Optional[str] = None
             rule_id: Optional[str] = None
+            grant_id: Optional[str] = None
 
             if policy:
                 decision, rule_id = _adjudicate(action, effective_risk)
+                # C-4: remember which approval grant (if any) the verdict was
+                # reached under, so the audit event closes the chain
+                # action <- grant <- authorising human.
+                grant_id = _active_grant_id()
 
             # --- Policy C-2 enforcement gate ---------------------------------- #
             # Opt-in (enforce=True) and HIGH/CRITICAL only. With enforce=False
@@ -291,11 +324,18 @@ def kernel_action(
             # we also block rather than silently execute -- enforcement must
             # never fail open. The internal-service principal is denied for
             # every HIGH/CRITICAL action (they are not in the C-1 allow-list
-            # and require human sovereignty, OD-010), so flipping enforce=True
-            # on those actions without the C-3 human-actor plumbing would
-            # self-lock the system; that flip is a deliberate, separate
-            # decision and is NOT made here.
-            if enforce and policy:
+            # and require human sovereignty, OD-010), so arming the gate
+            # without a human-approval channel would self-lock the system; the
+            # C-3 channel plus the C-4 audited grants are what make arming safe.
+            #
+            # C-4: arming is a *deployment* decision with ONE control point --
+            # ``src.kernels._enforcement`` (env ``LIUHAO_KERNEL_POLICY_ENFORCE``).
+            # The 43 production call sites keep ``enforce=False`` (the AST guard
+            # in ``scripts/verify_c2_enforcement.py`` keeps asserting exactly
+            # that) and the switch defaults to "nothing enforced", so production
+            # stays record-only until an operator deliberately selects actions.
+            should_enforce = enforce or is_enforced(action, effective_risk)
+            if should_enforce and policy:
                 try:
                     tier = RiskTier(effective_risk)
                 except ValueError:
@@ -306,6 +346,7 @@ def kernel_action(
                         _call_audit(
                             "kernel", action, "blocked", decision or "error", corr_id,
                             block_ms, rule_id, effective_risk, enforced=True,
+                            grant_id=grant_id,
                         )
                     if observable:
                         logger.warning(
@@ -336,7 +377,8 @@ def kernel_action(
                 duration_ms = (time.time() - started) * 1000.0
                 if audit:
                     _call_audit("kernel", action, outcome, decision, corr_id,
-                                duration_ms, rule_id, effective_risk)
+                                duration_ms, rule_id, effective_risk,
+                                grant_id=grant_id)
                 if observable:
                     logger.info(
                         "kernel_action=%s outcome=%s policy=%s risk=%s duration_ms=%.3f correlation_id=%s",
