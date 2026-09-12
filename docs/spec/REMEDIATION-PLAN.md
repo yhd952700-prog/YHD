@@ -17,8 +17,8 @@
 | R4 | P1 | ✅ **已完成** | `DEFINITION-LOCK-STATUS.md` §4 方案 A 标注 ❌ 已关闭，默认改走 B+C |
 | R5 | P1 | ✅ **已完成** | `CODEX-CONTRACT.md` §5 已含第 5 项 `Policy Controlled`（7 项 DoD） |
 | R6 | P1 | ✅ **已完成** | `GAP-MIGRATION-MATRIX.md` 表 3 已改用九态枚举（`IMPLEMENTED` 等） |
-| R7 | P1 | 🟡 **主体完成，有残留** | 项目自身进度表述已不再挂 "Phase 4" 编号；但 `docs/architecture/` 下 4 份历史分析文档仍按旧编号写作（"Phase 4 = Agent Runtime"），与 21-Phase 口径（Phase 4 = Model Gateway）冲突。见下方 §R7 残留 |
-| R8 | P2 | 🟡 **未完成（保留为技术债）** | 活跃文档仍有大量裸 `§N`：`docs/spec` 590 处、`docs/architecture` 137 处。多数是文档内部章节自引用（`§3.4`），并非跨文档命名空间引用；真正的 DL/MS 歧义引用需逐个语义判断，无法机械替换。见下方 §R8 残留 |
+| R7 | P1 | ✅ **已完成** | `docs/architecture/` 下 4 份历史分析文档（`existing-codebase-audit` / `gap-analysis` / `kernels-interface` / `migration-matrix`）均已加"Phase 编号口径"说明并指向 21-Phase 表。见下方 §R7 残留 |
+| R8 | P2 | 🟢 **机械部分已收敛，语义歧义项待裁决** | 已执行机械规则「裸 `§N` 且 N>122 必属 MS」（DL 总数 = 122）：6 处跨文档引用加 `MS:` 前缀。剩余为**语义歧义项**（如 `Definition Lock §139`、`DL:§147`），不可机械替换，已列清单。见下方 §R8 残留 |
 | R9 | P2 | ✅ **已完成** | 已重命名为 `implementation-status.UNRELIABLE.yaml`（2026-09-06），旧名文件不存在 |
 | R10 | P2 | ✅ **已完成** | `KERNEL-CANON.md` §1 已含 L0–L7 语义锁定防御说明（C11 裁决） |
 
@@ -32,6 +32,11 @@
 
 **处置建议**：不批量改写历史分析结论（会丢失当时的语境），而是在这 4 份文件头部加一行口径说明。
 
+**✅ 已执行（2026-09-11 复核）**：4 份文件头部均已加口径说明，并明确"追溯进度一律以 21-Phase 表为准"。
+本项关闭；后续若新增 `docs/architecture/` 历史文档，照此格式补一行即可。
+（同目录另 4 份 `Architect-Architecture-v3.0` / `dependency-map` / `p7-baseline` / `phase-9-10-12-15-e2e-demo`
+已带 **Kernel 计数漂移** 说明；其中 `phase-9-10-12-15-e2e-demo` 的 Phase 编号与 21-Phase 一致，无需处理。）
+
 ### §R8 残留
 
 原方案"活跃文档全部改为 `DL:§N` / `MS:§N`"的**前提不成立**：统计出的 590 处里，绝大多数是
@@ -41,6 +46,31 @@
 
 **处置建议**：按文件、按引用性质分批收敛，优先处理 `docs/spec/` 下被当作权威依据的文档。
 在收敛完成前，`UNIFIED-BLUEPRINT.md` 附录 A 是唯一裁决口径。
+
+**已执行的机械收敛（2026-09-11）**：唯一可机械判定的是
+**「裸 `§N` 且 N > 122 ⇒ 必属 MS」**（依据：附录 A 记 `DL:§122` 条款总数 = 122）。
+据此对 6 处**跨文档**引用加 `MS:` 前缀（`MASTER-SPEC-v3.0.md` 内的 50 处属文档内部自引用，按 R8 规则不动）：
+
+| 文件 | 原引用 | 改为 |
+|---|---|---|
+| `spec/CAPABILITY-REGISTRY.md` | `MS:§93` / `§155` | `MS:§93` / `MS:§155` |
+| `spec/GAP-MIGRATION-MATRIX.md` | 对应 `§198` Hardening | 对应 `MS:§198` Hardening |
+| `operations/runbook.md` | `§199-213` | `MS:§199`-`MS:§213` |
+| `spec/UNIFIED-BLUEPRINT.md` ×3 | `MS:§157`–`§161`、`MS:§177`–`§198` | 补全尾端为 `MS:§161` / `MS:§198` |
+
+**剩余语义歧义清单（不可机械替换，待人工裁决）**：
+
+| 位置 | 原文 | 冲突点 | 待裁决 |
+|---|---|---|---|
+| `docs/l10k/test-design.md:4` | `Definition Lock §141 Phase 21 Acceptance` | `§141 > 122` ⇒ 不可能是 DL；而 `MS:§141` = THE LONG-HORIZON LOOP，与 "Phase 21 Acceptance" 语义不符 | 所指是否为缺失的 DL 原件（另一版本）？ |
+| `docs/l10k/test-design.md:62` | `(Per Definition Lock §139)` | 同上；`MS:§139` = THE HUMAN LOOP，与 "Verification Gates" 不符 | 同上 |
+| `docs/l10k/test-design.md:77` | `(Definition Lock §141)` | 同上；`MS:§141` = THE LONG-HORIZON LOOP，与 "Anti-Gaming Rules" 不符 | 同上 |
+| `docs/decisions/OPEN-DECISIONS.md:34,118` | `DL:§147 Global Final DoD` | 附录 A 记 DL 总数 = 122，`§147 > 122` 自相矛盾 | DL 实际节数是多少？还是应改 `MS:§147`（= EXAMPLE: 建立一个 AI 公司，语义也不符）？ |
+
+> ⚠️ 上表 4 项都指向同一个根本问题：**Definition Lock 原件缺失**
+> （见 [`UNIFIED-BLUEPRINT.md`](UNIFIED-BLUEPRINT.md) §0.3「宪法原件状态（已结案）」）。
+> 在原件找回或被正式宣布"永久不可考"之前，这些引用**无法判定命名空间**，
+> 因此**不做任何机械替换**——改错会比不改更糟。
 
 ---
 

@@ -13,7 +13,7 @@
 本文件即该复验结果。方法：
 1. **逐模块关键字扫描**：对 20 个 `src/ai/*.py` 能力层模块扫描七维证据关键字（logging/trace/metric、scope/permission/authorize、policy、audit/@kernel_action、docstring）。
 2. **架构推理 + 抽样验证**：确认能力层通过调用 kernel action（被 `@kernel_action` 装饰器包裹）将 Observable/Permissioned/Policy/Audited 下沉到内核边界。
-3. **不重跑全量测试**：测试存在性与全绿已在第 11 轮验证（`1133 passed / 1 skipped / 0 failed`）。
+3. **不重跑全量测试**（第 11 轮口径）：测试存在性与全绿已有验证。**当时记录的 `1133 passed / 1 skipped / 0 failed` 是本地口径、已作废**；当前 CI 实证基线为 **`1173 passed / 14 skipped / 0 failed`**（见 [`docs/README.md`](../README.md)）。第 59 轮的复核已改为运行时观测量（审计事件增量），不再依赖数字声明。
 
 评级三态：
 - **L（Layer 层内直接满足）**：模块自身含该维度证据。

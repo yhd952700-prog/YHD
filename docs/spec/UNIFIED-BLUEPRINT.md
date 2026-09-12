@@ -285,7 +285,7 @@ Parent Identity → Parent Authorization → Quota → Budget → Resource
 | 七、Current Reality & Gap（现状与差距） | [`GAP-MIGRATION-MATRIX.md`](GAP-MIGRATION-MATRIX.md) + [`../architecture/gap-analysis.md`](../architecture/gap-analysis.md) |
 | 八、Dependency & Migration（依赖与迁移） | [`../architecture/dependency-map.md`](../architecture/dependency-map.md) + [`../architecture/migration-matrix.md`](../architecture/migration-matrix.md) |
 | 九、Risk（风险） | [`../architecture/Architect-Architecture-v3.0.md`](../architecture/Architect-Architecture-v3.0.md)（风险章）+ 本文件 §3 |
-| 十、Phase 0–22（实施顺序与验收） | [`GAP-MIGRATION-MATRIX.md`](GAP-MIGRATION-MATRIX.md)（21 Phase 进度，锚点 `UB-A3`）+ `MS:§177`–`§198` |
+| 十、Phase 0–22（实施顺序与验收） | [`GAP-MIGRATION-MATRIX.md`](GAP-MIGRATION-MATRIX.md)（21 Phase 进度，锚点 `UB-A3`）+ `MS:§177`–`MS:§198` |
 | 十一、Testing & Acceptance（测试与验收） | [`../CODEX-CONTRACT.md`](../CODEX-CONTRACT.md) §5（DoD）+ [`../operations/production-runbook.md`](../operations/production-runbook.md) |
 | 十二、Evidence & Rollback（证据与回滚） | [`../operations/production-runbook.md`](../operations/production-runbook.md) + [`../CODEX-CONTRACT.md`](../CODEX-CONTRACT.md) |
 | 十三、Production Readiness（生产就绪） | [`../operations/production-runbook.md`](../operations/production-runbook.md) + [`../operations/health-check-spec.md`](../operations/health-check-spec.md) |
@@ -351,8 +351,8 @@ Parent Identity → Parent Authorization → Quota → Budget → Resource
 | `MS:§101`–`§104` | Capability ID 体系 | — |
 | `MS:§112`–`§116` | L10K / VHL | `UB-A2` |
 | `MS:§117`–`§118` | DoD 与 Release Gates | `UB-A4` |
-| `MS:§157`–`§161` | 反假货五连 | `UB-A5` |
-| `MS:§177`–`§198` | 21 Phase | `UB-A3` |
+| `MS:§157`–`MS:§161` | 反假货五连 | `UB-A5` |
+| `MS:§177`–`MS:§198` | 21 Phase | `UB-A3` |
 | `MS:§220` | 最终工程原则 | — |
 
 > ⚠️ **注意**：`DL:§112`（Kernel）与 `MS:§112`（L10K）**数字相同含义完全不同**。

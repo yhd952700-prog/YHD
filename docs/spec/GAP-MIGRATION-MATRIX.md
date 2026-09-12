@@ -9,7 +9,7 @@
 > ## ⚠️ 状态横幅（2026-09-07 建立 · **2026-09-09 已重映射**）
 >
 > 本文件「§0 当前定位」及下方的 **21-Phase 状态表（表 3）** 曾因按"预期路径"（`src/agents/`、`src/perception/` 等）判断进度而**系统性误判**为"10 未开始 / 10 部分"。
-> **2026-09-09 已基于真实源路径逐 Phase 实测重映射**：21 个 Phase 源码与测试全部存在，全量回归 `1133 passed / 1 skipped / 0 failed`。
+> **2026-09-09 已基于真实源路径逐 Phase 实测重映射**：21 个 Phase 源码与测试全部存在，全量回归 `1133 passed / 1 skipped / 0 failed`（**该数字为 2026-09-09 本地口径，早已作废**；当前 CI 实证基线见 [`docs/README.md`](../README.md)：**1173 passed / 14 skipped / 0 failed**）。
 > 重映射结果见下方 **表 3（已更正）**。权威能力状态另见 [`CAPABILITY-REGISTRY.md`](CAPABILITY-REGISTRY.md) §4。真实现状摘要见下：
 >
 > | 能力 | 实际源路径 | 现状 |
@@ -101,7 +101,7 @@ MASTER-SPEC-v3.0.md             →  To-Be      目标规格（221 节，零代�
 | `src/performance/` | `packages/verification/` | **搬迁** | |
 | `src/pipelines/` | `packages/analysis/` | **合并** | |
 | `src/adapters/` | `packages/network/` + `packages/world/` | **拆分** | 按协议适配 vs 世界接口 |
-| `src/sre/` | `infrastructure/` | **搬迁** | 对应 §198 Hardening |
+| `src/sre/` | `infrastructure/` | **搬迁** | 对应 `MS:§198` Hardening |
 | `src/ui/` | `apps/web/` 或 `apps/lcore/` | **搬迁** | |
 | `src/models/` | 各 domain 的 `models.py` | **拆分** | 按 MS:§10 Domain Contract |
 
@@ -156,7 +156,9 @@ MASTER-SPEC-v3.0.md             →  To-Be      目标规格（221 节，零代�
 | 21 | Production Hardening | `src/ai/hardening.py` + `docs/operations/runbook.md` | 4 | `IMPLEMENTED` |
 
 **小结（2026-09-09 实测）**：
-- **已实现 21 / 21**（`IMPLEMENTED`：源码存在 + 专项测试存在 + 全量回归绿 `1133 passed / 1 skipped / 0 failed`）
+- **已实现 21 / 21**（`IMPLEMENTED`：源码存在 + 专项测试存在 + 全量回归绿）
+  - 当前 CI 实证基线：**`1173 passed / 14 skipped / 0 failed`**（对应 21-Phase 全量口径，见 [`docs/README.md`](../README.md)）
+  - 表格内各测试函数计数为 2026-09-09 快照，此后有增补（如能力层七维复核 +10 例），不影响 `IMPLEMENTED` 判定
 - 14 个 kernel 的 DoD 七维（Implemented / Tested / Observable / Permissioned / Policy Controlled / Audited / Documented）已正式收口（`KERNEL-DOD-AUDIT.md`）
 - `src/ai/` 能力层（Phase 3 / 5 / 9–21）由 Sprint 3–14 实现，均带测试 + 真实 LLM 端到端验证（详见 [`CAPABILITY-REGISTRY.md` §4](CAPABILITY-REGISTRY.md) 十源映射）
 

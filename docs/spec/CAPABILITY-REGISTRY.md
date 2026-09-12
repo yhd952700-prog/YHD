@@ -86,7 +86,7 @@ LHX-C-xxx    ——         十源去重后的统一核心能力（Kernel 层专
 ### 缺失的 3 项为何重要（现已补齐）
 
 - **LHX-C-012 security**：MS:§6 的 12 Kernel 里有它，但旧注册表漏了。这是权限判决的核心。
-- **LHX-C-013 audit**：MS:§93 / §155 要求 "Every Critical Action has Audit"，但 §6 的 Kernel 清单里没有它——**这是 Master Spec 自身的漏洞**，代码里已经补上了。
+- **LHX-C-013 audit**：`MS:§93` / `MS:§155` 要求 "Every Critical Action has Audit"，但 §6 的 Kernel 清单里没有它——**这是 Master Spec 自身的漏洞**，代码里已经补上了。
 - **LHX-C-014 plugin**：所有文档都漏了它。DL:§115 定义，代码 447 行已实现。
 
 ---

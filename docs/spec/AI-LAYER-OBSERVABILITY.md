@@ -62,7 +62,7 @@ for t in recent_traces(limit=20):
 ## 5. 验证
 
 - 单测 `tests/test_observability.py`：8 例全绿（logger 注入 trace/cid、`@observe` EXIT 记录与环形缓冲、异常重抛与 ERROR、嵌套 observe 的 trace 透传、trace 继承）。
-- **全量回归**：`1141 passed / 1 skipped / 0 failed`（相对第 11 轮 1133 +8，零回归）。
+- **全量回归**：`1141 passed / 1 skipped / 0 failed`（相对第 11 轮 1133 +8，零回归）。**该数字为本地口径，已作废**，当前 CI 实证基线见下方口径更正。
   > ⚠️ **口径更正（2026-09-11）**：该数字为**本地口径，未经 CI 验证** —— 当时的 `ci.yml` 用 `|| echo` 吞掉退出码，CI 从未真正执行过测试。经 CI 真实运行验证的基线见 `docs/README.md`（当前：**1173 passed / 14 skipped / 0 failed**，run #88）。
 - flake8：本增强引入的 `src/ai/observability.py` + 4 个接入文件的新增行 **0 新增违规**（仓库既有 E501 行宽债务不在此轮范围）。
 - 行为不变：纯增量埋点，未改任何既有调用语义；生成器路径用手动埋点避免 trace 上下文提前重置。
