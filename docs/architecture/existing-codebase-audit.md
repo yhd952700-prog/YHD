@@ -2,6 +2,8 @@
 
 > ⚠️ **快照提示**：本文为审计时点的现状扫描，§13.1 等处基于 **12 Kernels**。当前权威为 **14 Kernel**（新增 security / audit / plugin），以 [`spec/KERNEL-CANON.md`](../spec/KERNEL-CANON.md) 为准。
 
+> ⚠️ **Phase 编号口径**：本文 Phase 编号沿用撰写时口径，与 [`spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md) 表 3 的 **21-Phase 路线图**不一致（例如本文 "Phase 4 = Agent Runtime"，而 21-Phase 中 Phase 3 = Agent Runtime、Phase 4 = Model Gateway）。追溯进度请一律以 21-Phase 表为准（见 `REMEDIATION-PLAN.md` §R7）。
+
 > **审计范围**：`D:\LiuHao-AI-OS` 全量代码 + 工作区 + 多 worktree 分支
 > **审计依据**：LIUHAO X v3.0 Definition Lock §13-§22 (P0-P8 Preconditions) + §120 (Phase 0 Acceptance)
 > **审计日期**：2026-09-05

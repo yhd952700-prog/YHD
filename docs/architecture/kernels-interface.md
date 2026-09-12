@@ -2,6 +2,8 @@
 
 > ⚠️ **Kernel 计数漂移**：本文撰写时基于 **12 Kernel**。当前权威为 **14 Kernel**（新增 security / audit / plugin），以 [`spec/KERNEL-CANON.md`](../spec/KERNEL-CANON.md) 为准。文中出现的 "12 Kernel" 属历史快照，不作为现状依据。
 
+> ⚠️ **Phase 编号口径**：本文 Phase 编号沿用撰写时口径，与 [`spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md) 表 3 的 **21-Phase 路线图**不一致（例如本文 "Phase 4 = Agent Runtime"，而 21-Phase 中 Phase 3 = Agent Runtime、Phase 4 = Model Gateway）。追溯进度请一律以 21-Phase 表为准（见 `REMEDIATION-PLAN.md` §R7）。
+
 > **依据**：Definition Lock §112, §122 Parallel Workstreams §96
 > **状态**：FINALIZED — Interface Freeze Complete
 > **创建日期**：2026-09-05

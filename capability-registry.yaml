@@ -402,7 +402,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_lcore.py
     test_count: 16
-    notes: §21 L-Core contract; provider dual-channel (real model vs deterministic)
+    notes: MS:§21 L-Core contract; provider dual-channel (real model vs deterministic)
   - id: LHX-L-002
     phase: Phase 10
     name: Multi-Agent Collaboration — team/peer protocols
@@ -410,7 +410,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_collaboration.py
     test_count: 12
-    notes: §68-69 network-mandatory chain reuse; no fake agents
+    notes: MS:§68-69 network-mandatory chain reuse; no fake agents
   - id: LHX-L-003
     phase: Phase 11
     name: Perception — Observation + Perceiver + WorldModel
@@ -434,7 +434,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_organization.py, tests/test_ai_employee.py
     test_count: 15
-    notes: §161 no fake organization; org.remember persists via memory kernel
+    notes: MS:§161 no fake organization; org.remember persists via memory kernel
   - id: LHX-L-006
     phase: Phase 13
     name: ENOCH — long-running mission/checkpoint/scheduler
@@ -442,7 +442,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_enoch.py
     test_count: 18
-    notes: §58-60 mission loop; MissionStore JSON persistence survives restart
+    notes: MS:§58-60 mission loop; MissionStore JSON persistence survives restart
   - id: LHX-L-007
     phase: Phase 14
     name: Network Gateway — A2A/MCP adapters + external-agent trust
@@ -458,7 +458,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_world_interface.py
     test_count: 11
-    notes: §37 World Action Contract; filesystem writes scoped by authorize
+    notes: MS:§37 World Action Contract; filesystem writes scoped by authorize
   - id: LHX-L-009
     phase: Phase 16
     name: Governance — ThreatModel + SecurityChain + EmergencyControl + Reputation
@@ -466,7 +466,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_governance.py
     test_count: 13
-    notes: §70-72; HIGH/CRITICAL findings block; timezone-aware datetimes
+    notes: MS:§70-72; HIGH/CRITICAL findings block; timezone-aware datetimes
   - id: LHX-L-010
     phase: Phase 17
     name: Economy — Budget/Billing/Economy engines
@@ -474,7 +474,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_economy.py
     test_count: 14
-    notes: §74-76; reserve→record→consume; over-budget/blocked rejected
+    notes: MS:§74-76; reserve→record→consume; over-budget/blocked rejected
   - id: LHX-L-011
     phase: Phase 18
     name: Verification — Verdict + ExperienceEngine (real MemoryKernel)
@@ -482,7 +482,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_verification.py
     test_count: 16
-    notes: §79; reuses execution-kernel Verifier (no reimplementation)
+    notes: MS:§79; reuses execution-kernel Verifier (no reimplementation)
   - id: LHX-L-012
     phase: Phase 19
     name: Evolution — guarded/audited self-improvement pipeline
@@ -490,7 +490,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_evolution.py
     test_count: 20
-    notes: '§80 hard guard: benchmark+improve+human-approve required before deploy'
+    notes: 'MS:§80 hard guard: benchmark+improve+human-approve required before deploy'
   - id: LHX-L-013
     phase: Phase 20
     name: L10K/VHL — benchmark registry + real anti-cheat
@@ -498,7 +498,7 @@ capability-registry:
     status: IMPLEMENTED
     tests: tests/test_l10k.py
     test_count: 17
-    notes: §112-116 five properties; trivial/duplicate refused; held-out isolated
+    notes: MS:§112-116 five properties; trivial/duplicate refused; held-out isolated
   - id: LHX-L-014
     phase: Phase 21
     name: Hardening — 7 real security-invariant checks + runbook

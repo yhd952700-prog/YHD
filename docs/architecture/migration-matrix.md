@@ -5,6 +5,8 @@
 > **Source**: `docs/architecture/existing-codebase-audit.md`, `docs/archive/Y1_AUDIT_REPORTS.md`, `docs/architecture/existing-codebase-audit.md` §18.2-18.3
 > **Owner**: Hermes / MVP Development Expert Team PM (大湾区靓仔)
 
+> ⚠️ **Phase 编号口径**：本文 Phase 编号沿用撰写时口径，与 [`spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md) 表 3 的 **21-Phase 路线图**不一致。追溯进度请一律以 21-Phase 表为准（见 `REMEDIATION-PLAN.md` §R7）。
+
 ---
 
 ## Migration Legend

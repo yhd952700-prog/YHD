@@ -3,6 +3,8 @@
 > **生成方式**: 实跑扫描 138 src 文件 + 6 lib 模块
 > **范围**: §75 (PostgreSQL) / §76 (RAG/Memory) / §83 (Frontend) / §84 (Security) / §90 (Traceability)
 
+> ⚠️ **Phase 编号口径**：本文 Phase 编号沿用撰写时口径，与 [`spec/GAP-MIGRATION-MATRIX.md`](../spec/GAP-MIGRATION-MATRIX.md) 表 3 的 **21-Phase 路线图**不一致。追溯进度请一律以 21-Phase 表为准（见 `REMEDIATION-PLAN.md` §R7）。
+
 ---
 
 ## 1. §75 PostgreSQL 15 主从拓扑

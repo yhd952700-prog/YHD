@@ -5,6 +5,45 @@
 
 ---
 
+## 执行状态复核（2026-09-11，逐条实测）
+
+本清单建立后各条目陆续处置，但从未做过一次统一复核。下表为 **2026-09-11 逐条查证结果**（查的是仓库当前实际内容，不是当时的计划）。
+
+| 编号 | 优先级 | 复核结论 | 证据 |
+|---|---|---|---|
+| R1 | P0 | ✅ **已完成** | `capability-registry.yaml` 14 能力状态均为 `IMPLEMENTED`，与 `CAPABILITY-REGISTRY.md` 一致 |
+| R2 | P0 | ✅ **已完成** | capability ID 已带 `LHX-*` 前缀并含 `source` 字段 |
+| R3 | P0 | ✅ **已完成** | 缺失的 3 个 kernel 已补入（现 14 个） |
+| R4 | P1 | ✅ **已完成** | `DEFINITION-LOCK-STATUS.md` §4 方案 A 标注 ❌ 已关闭，默认改走 B+C |
+| R5 | P1 | ✅ **已完成** | `CODEX-CONTRACT.md` §5 已含第 5 项 `Policy Controlled`（7 项 DoD） |
+| R6 | P1 | ✅ **已完成** | `GAP-MIGRATION-MATRIX.md` 表 3 已改用九态枚举（`IMPLEMENTED` 等） |
+| R7 | P1 | 🟡 **主体完成，有残留** | 项目自身进度表述已不再挂 "Phase 4" 编号；但 `docs/architecture/` 下 4 份历史分析文档仍按旧编号写作（"Phase 4 = Agent Runtime"），与 21-Phase 口径（Phase 4 = Model Gateway）冲突。见下方 §R7 残留 |
+| R8 | P2 | 🟡 **未完成（保留为技术债）** | 活跃文档仍有大量裸 `§N`：`docs/spec` 590 处、`docs/architecture` 137 处。多数是文档内部章节自引用（`§3.4`），并非跨文档命名空间引用；真正的 DL/MS 歧义引用需逐个语义判断，无法机械替换。见下方 §R8 残留 |
+| R9 | P2 | ✅ **已完成** | 已重命名为 `implementation-status.UNRELIABLE.yaml`（2026-09-06），旧名文件不存在 |
+| R10 | P2 | ✅ **已完成** | `KERNEL-CANON.md` §1 已含 L0–L7 语义锁定防御说明（C11 裁决） |
+
+**净结果：P0 3/3、P1 3/4（R7 主体完成）、P2 2/3（R9/R10 完成，R8 保留）**
+
+### §R7 残留
+
+`docs/architecture/` 下的 `existing-codebase-audit.md`、`gap-analysis.md`、`kernels-interface.md`、`migration-matrix.md`
+是对**重构前老代码库**的分析记录，其中的 Phase 编号沿用了当时的口径。它们的问题不是"内容错"，
+而是**编号体系与 21-Phase 路线图不一致**，单独阅读时会被误读。
+
+**处置建议**：不批量改写历史分析结论（会丢失当时的语境），而是在这 4 份文件头部加一行口径说明。
+
+### §R8 残留
+
+原方案"活跃文档全部改为 `DL:§N` / `MS:§N`"的**前提不成立**：统计出的 590 处里，绝大多数是
+文档**内部**章节自引用（如"见 §3.4"、"见 §5"），这类引用与 Definition Lock / Master Spec 命名空间无关。
+真正需要消歧的是引用 DL 或 MS 章节号的裸写，而 `§112` 这类编号**在两套文档里都存在且含义不同**，
+只能逐条语义判断，不能机械替换。
+
+**处置建议**：按文件、按引用性质分批收敛，优先处理 `docs/spec/` 下被当作权威依据的文档。
+在收敛完成前，`UNIFIED-BLUEPRINT.md` 附录 A 是唯一裁决口径。
+
+---
+
 ## 评分口径
 
 | 字段 | 含义 |
