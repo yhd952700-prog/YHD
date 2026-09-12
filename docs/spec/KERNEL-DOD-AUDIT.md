@@ -30,6 +30,20 @@ Policy Controlled 与 Audited 达 13/14。剩余唯一缺口是**两个「引擎
 即：**14 个 kernel 全部达到七维合规**，仅 policy/audit 两个引擎各自豁免自身所在的维度，
 这是架构上的正确设计，不是未完成的缺口。
 
+> **Policy Controlled 维度质量更新（2026-09-11，Policy C-1）**
+>
+> 上表的 13/14 只回答了"**是否过了 policy engine**"，未回答"**判决是否携带信息**"。
+> 实测复核发现后者的答案是**否**：`@kernel_action` 的动作判决恒为 `deny`（零信息量），
+> 且装饰器 additive、从不拦截。C-1 已修正前半部分 ——
+> 内核动作改由**经核验的内部 service 主体**归因，判决变为**白名单驱动**
+> （14 项查询/计算/簿记类 → `allow`；29 项授权/破坏类 → `deny`），并在审计事件中
+> 新增 `policy_rule` 记录判决依据。
+>
+> **"是否真拦截"仍为否** —— 全部 43 个装饰动作依旧只记录、不拦截
+> （`policy_enforced: false`）。把它变成控制点是 C-2，**阻塞于动作风险分级（D8）**。
+>
+> 细节：`POLICY-ENFORCEMENT-DESIGN.md` §10；证据：`scripts/verify_policy_c1.py`。
+
 ---
 
 ## 基线：DoD 七维达标 0 / 14（装饰器落地前）

@@ -58,8 +58,12 @@ def test_policy_decision_recorded():
     events = audit_query(principal_id="kernel", limit=50, reverse=True)
     matching = [e for e in events if e.get("details", {}).get("action") == "thing.increment"]
     assert matching
-    decision = matching[0]["details"].get("policy_decision")
+    details = matching[0]["details"]
+    decision = details.get("policy_decision")
     assert decision in ("allow", "deny", "defer")
+    # 判决必须可追溯依据：Policy C-1 起记录命中的规则 id。
+    # （"thing.increment" 不在内核动作白名单内 -> default_deny）
+    assert details.get("policy_rule") == "default_deny"
 
 
 def test_decorator_does_not_mutate_metadata():

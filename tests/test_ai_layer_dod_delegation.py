@@ -101,14 +101,16 @@ def test_kernel_action_records_policy_as_not_enforced():
     assert matching
     details = matching[0].get("details") or {}
     assert details.get("policy_enforced") is False
+    # 判决依据可追溯（"dod_probe.increment" 不在内核动作白名单内）
+    assert details.get("policy_rule") == "default_deny"
 
 
 def test_system_actor_can_never_be_allowed_by_builtin_rules():
-    """锁住结构性事实：装饰器所用的 system actor 恒被判 deny。
+    """锁住结构性事实：未经核验的 ``system`` 裸声明恒被判 deny。
 
-    若将来为 system actor 增补可放行的策略规则（使该维度成为真正的控制点），
-    这个测试会失败——那正是提醒同步更新 AI-LAYER-DOD-AUDIT.md 与
-    ``_crosscutting.py`` 中的告警文字。
+    Policy C-1 起，内核动作改由**内部 service 主体**归因（经 Identity Kernel
+    核验），因此这个测试锁的是「裸声明仍然不行」这一半边界；service 路径的
+    正向行为见 ``tests/kernels/policy/test_internal_service_policy.py``。
     """
     engine = get_policy_engine()
     for risk in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
@@ -119,6 +121,33 @@ def test_system_actor_can_never_be_allowed_by_builtin_rules():
             scope=None,
         )
         assert decision.is_denied, f"risk={risk} 意外未判 deny，策略语义已变更"
+
+
+def test_service_actor_verdict_carries_information():
+    """Policy C-1：内核层判决不再是常量，而是白名单驱动的 allow/deny。
+
+    白名单内（查询/计算/簿记类）-> allow；授权/破坏类 -> deny。
+    """
+    from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
+    from src.kernels.policy import (
+        INTERNAL_SERVICE_ALLOWED_ACTIONS,
+        INTERNAL_SERVICE_DENIED_ACTIONS,
+    )
+
+    engine = get_policy_engine()
+    actor = {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
+
+    allowed = engine.evaluate_simple(
+        actor=dict(actor), action={"name": sorted(INTERNAL_SERVICE_ALLOWED_ACTIONS)[0]},
+    )
+    assert allowed.is_allowed
+    assert "RULE:internal_service_allow:allow" in allowed.traceability
+
+    denied = engine.evaluate_simple(
+        actor=dict(actor), action={"name": sorted(INTERNAL_SERVICE_DENIED_ACTIONS)[0]},
+    )
+    assert denied.is_denied
+    assert "RULE:default_deny:deny" in denied.traceability
 
 
 # --------------------------------------------------------------------------- #

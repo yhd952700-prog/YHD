@@ -303,9 +303,22 @@ Parent Identity → Parent Authorization → Quota → Budget → Resource
 | 2 | **Tested** | 单元测试 + 集成测试通过 |
 | 3 | **Observable** | 有 trace / metric / log 覆盖 |
 | 4 | **Permissioned** | 通过 identity + permission 校验 |
-| 5 | **Policy Controlled** | 通过 policy engine 判决（**C3 新增**） |
+| 5 | **Policy Controlled** | 通过 policy engine 判决（**C3 新增**）。判定分两级——见下方注 |
 | 6 | **Audited** | 写入 audit 链，`audited: true` |
 | 7 | **Documented** | 有对应文档且链接可追溯 |
+
+> **Policy Controlled 的两级判定（2026-09-11 明确，D7 收口）**
+>
+> 本项容易被读成"过了引擎即达标"，但"过引擎"与"受控制"是两件事。判定拆成两级：
+>
+> - **L1 判决已记录**：动作经 policy engine 判决，且判决被写入审计事件（可追溯依据规则）。
+>   *这是当前 43 个内核动作达到的级别。*
+> - **L2 判决已执行**：判决对执行有约束力（`deny` 真的会阻止动作）。
+>   *内核层**尚未**达到；能力层的 4 处硬 gate 已达标。*
+>
+> 只满足 L1 时，**必须在审计事件中标注 `policy_enforced: false`**，避免把 `deny`
+> 误读为"动作被拒绝"。详见 `POLICY-ENFORCEMENT-DESIGN.md` §10 与
+> `AI-LAYER-DOD-AUDIT.md` §3.5.4。
 
 **状态枚举（9 个，CAPABILITY-REGISTRY §5 为准）**：
 `PLANNED` / `IN_PROGRESS` / `IMPLEMENTED` / `PARTIALLY_IMPLEMENTED` / `EXPERIMENTAL` /

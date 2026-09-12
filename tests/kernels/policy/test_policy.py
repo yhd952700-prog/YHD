@@ -47,10 +47,11 @@ def engine() -> PolicyEngine:
 # =====================================================================
 
 class TestBuiltins:
-    def test_five_builtin_rules_registered(self, engine):
+    def test_six_builtin_rules_registered(self, engine):
         stats = engine.stats()
-        assert stats["total_rules"] == 5
-        for rid in ("human_sovereignty", "default_deny", "scope_enforcement",
+        assert stats["total_rules"] == 6
+        for rid in ("human_sovereignty", "internal_service_allow",
+                    "default_deny", "scope_enforcement",
                     "capability_required", "quota_enforcement"):
             assert engine.get_rule(rid) is not None, rid
 
@@ -360,10 +361,11 @@ class TestPolicySets:
 class TestStatsAndSingleton:
     def test_stats_shape(self, engine):
         stats = engine.stats()
-        assert stats["total_rules"] == 5
-        assert stats["enabled_rules"] == 5
+        assert stats["total_rules"] == 6
+        assert stats["enabled_rules"] == 6
         assert stats["policy_sets"] == 0
-        assert stats["by_action"]["allow"] == 1  # human_sovereignty
+        # allow: human_sovereignty + internal_service_allow
+        assert stats["by_action"]["allow"] == 2
         assert stats["by_action"]["deny"] == 4
 
     def test_get_policy_engine_returns_same_instance(self):

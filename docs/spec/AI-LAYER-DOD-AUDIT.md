@@ -149,37 +149,67 @@
 > 外全部转为 ✅。逐项证据与验证见 **§3.6**。
 > 本表保留 Round 59 的原始观测，作为"**修复前**"基线。
 
-### 3.5.4 Policy Controlled 的结构性问题（新发现）
+### 3.5.4 Policy Controlled 的结构性问题（Round 59 发现 → Round 65 已修复）
 
-`src/kernels/_crosscutting.py` 的 `_adjudicate` 以
+> 本节保留 Round 59 的**修复前**观测，随后给出修复记录。
+
+**修复前**：`src/kernels/_crosscutting.py` 的 `_adjudicate` 以
 `actor={"type": "system", "verified": True}` 调用策略引擎，但：
 
 1. 引擎会用 `_is_verified_human()` **覆盖** `verified` 字段；该 actor 无
    `id`/`principal`，覆盖结果为 `False`；
-2. 内置 5 条规则中唯一的 ALLOW 规则 `human_sovereignty` 要求
+2. 内置规则中唯一的 ALLOW 规则 `human_sovereignty` 要求
    `actor.type == "human"` 且风险为 HIGH/CRITICAL。
 
 → **内核动作记录到的判决恒为 `deny`**（实测 19/19 采样事件均为 `deny`，四种风险等级均如此）。
-又因装饰器 additive、从不拦截，该 `deny` **不产生任何执行效果**。
+又因装饰器 additive、从不拦截，该 `deny` **不产生任何执行效果**：
+满足 DoD 字面要求（"有明确的策略判决记录"），但判决值**不携带信息**，实为"记录而非控制"。
 
-**判定**：Policy Controlled 维度**满足 DoD 字面要求**（"必须有明确的策略判决记录"），
-但判决值**不携带信息**，实为"记录而非控制"。已在审计事件的 `details` 中显式标注
-`policy_enforced: false`，避免读审计者把 `deny` 误读为"动作被拒绝"。
-
-> ⚠️ **范围更正（2026-09-11，设计提案 §1 实证）**：上述"记录而非控制"**仅适用于内核层**
-> （`@kernel_action` 装饰的 48 个内核动作）。**能力层（`src/ai/`）早已是真拦截**：
-> `LiuHaoAssistant.chat/chat_stream`、`RuntimeLoop.step`、`NetworkGateway`、`WorldInterface`
-> 四处均为 `if not is_allowed: return denied` 的**硬 gate**，且采用 default-deny
+> ⚠️ **范围更正（2026-09-11，设计提案 §1 实证）**：上述"记录而非控制"**仅适用于内核层**。
+> **能力层（`src/ai/`）早已是真拦截**：`LiuHaoAssistant.chat/chat_stream`、
+> `RuntimeLoop.step`、`NetworkGateway`、`WorldInterface` 四处均为
+> `if not is_allowed: return denied` 的**硬 gate**，且采用 default-deny
 > （实测 `chat` 放行、`msg:*` 拒绝）。详见 `POLICY-ENFORCEMENT-DESIGN.md` §1.1。
->
-> 是否需要让**内核层**也成为真正的控制点（为内部主体定义可放行规则）属**安全语义变更**，
-> 需单独裁决，本轮未改。完整方案（路线 A/B/C + 7 个决策点）见
-> **`POLICY-ENFORCEMENT-DESIGN.md`**。
+
+#### 修复记录（2026-09-11，Policy C-1）
+
+按裁决采纳**路线 C 的第一步（C-0 + C-1）**，只让判决**携带信息**，**仍不拦截**：
+
+| 变更 | 内容 |
+|---|---|
+| 内部主体 | 新增内置身份 `liuhao-internal-service`（`metadata.kind == "service"`，权限集为空），内核动作由它归因，取代 `{"type": "system"}` 裸声明 |
+| 核验 | 新增 `PolicyEngine._compute_verified()` 按 actor 类型分派；`_is_verified_service()` 要求身份**存在 + ACTIVE + kind 标记**三重成立，且 `verified` 一律由引擎重算、绝不采信调用方 |
+| 规则 | 新增内置规则 `internal_service_allow`（precedence 900，低于 `human_sovereignty` 1000、高于各 DENY），条件含 `action.name IN <显式白名单>`，**禁止通配** |
+| 白名单 | `INTERNAL_SERVICE_ALLOWED_ACTIONS` **14** 项（查询/计算/簿记类：`context.process`、`evaluation.evaluate`、`event.publish`、`execution.execute`、`memory.store`、`network.route`、`resource.release`、`security.decide_access` 等）；`INTERNAL_SERVICE_DENIED_ACTIONS` **29** 项（授权/破坏类：`identity.*`、`security.grant_rbac_role`、`plugin.*`、`trust.*`、`capability.register/retire`、`resource.allocate`、`memory.auto_cleanup` 等） |
+| 审计 | 事件新增 `policy_rule` 字段记录判决依据规则 id（如 `internal_service_allow` / `default_deny`），判决从"常量"变为**可追溯** |
+
+**验证后的事实**（非推断，见 §3.5.5 复现命令）：
+
+```
+service actor + 白名单内动作  -> allow  trace=['RULE:internal_service_allow:allow']
+service actor + 白名单外动作  -> deny   trace=['RULE:default_deny:deny']
+裸声明 {"type":"system"}      -> deny   （行为与修复前一致，未回归）
+挂起/停用 service 身份后      -> 全部 allow 立即塌陷为 deny（可撤销）
+```
+
+**本维度当前定性**：内核层判决**已携带信息**、**仍未拦截**。
+`policy_enforced: false` 依旧诚实标注 —— 把它变成真正的控制点是 **C-2**
+（`enforce` 开关 + `PolicyDeniedError`，仅 HIGH/CRITICAL 生效），**尚未实施**。
+
+> **本轮同时纠正设计提案中的两处事实错误**（实测复核）：
+> ① 装饰动作数是 **43** 而非 48；
+> ② 43 个装饰点**全部未设置 `risk_level`**（一律默认 `LOW`），即 `risk_level`
+> 参数此前从未被使用 —— 这使"仅对 HIGH/CRITICAL 开拦截"的 C-2 在当前状态下
+> **永远不会触发**，必须先完成动作风险分级（新增决策点 D8）。
+> 完整方案（路线 A/B/C + 决策点 D1–D8）见 **`POLICY-ENFORCEMENT-DESIGN.md`**。
 
 ### 3.5.5 复现方式
 
 ```bash
+# 能力层审计下沉（Round 60）
 .venv/Scripts/python.exe scripts/verify_ai_layer_audit.py
+# 内核层策略判决（Policy C-1，Round 65）
+.venv/Scripts/python.exe scripts/verify_policy_c1.py
 ```
 
 - 脚本：`scripts/verify_ai_layer_audit.py`（含对照实验 + 21 项探针矩阵 + policy 判决采样）。
@@ -187,8 +217,13 @@
 - **Round 60 后的预期输出**：除 **P17 economy 恒为 0**（有意设计）外，
   其余探针均应 > 0。P19 的探针已从"只构造 `EvolutionEngine()`"改为跑完整生命周期
   —— 只构造不写审计是**正确**行为，原探针测不到 `@audited`。
-- 回归测试（已入库）：`tests/test_ai_layer_dod_delegation.py`（14 例），
-  锁定已验证的下沉路径、`record-only` 契约与"system actor 恒判 deny"的结构性事实。
+- 脚本：`scripts/verify_policy_c1.py`（六重检查：全量 import 194/194、装饰器签名、
+  判决非恒量、伪造主体越权、kill-switch、白名单无漂移），期望输出 `RESULT: ALL GREEN`、退出码 0。
+- 回归测试（已入库）：
+  - `tests/test_ai_layer_dod_delegation.py`（15 例）—— 锁定已验证的下沉路径、
+    `record-only` 契约与"裸声明 system actor 恒判 deny"的结构性事实；
+  - `tests/kernels/policy/test_internal_service_policy.py`（新增）—— 锁定 service
+    主体的核验、白名单、可撤销性与**分类完备性**（新增内核动作若未显式分类则测试失败）。
   这些测试**故意会在上述任一事实改变时失败**，以强制同步本文档。
 
 ---
@@ -285,13 +320,16 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
    `src/kernels/audit.log_event` 或调用被 `@kernel_action` 装饰的内核方法。
    注意 `economy` 的 docstring 明确声明其预算引擎为**有意独立实现**（不下沉
    `resource` kernel），补审计时不应破坏该设计意图。
-5. **裁决项（需决策，勿擅自改）**：Policy Controlled 是否应从"只记录"升级为"真拦截"。
-   现状恒为 `deny` 且不生效（§3.5.4）——**仅内核层**；能力层已是真拦截（见 §3.5.4 更正）。
-   若升级，需为内部主体定义可放行规则，属安全语义变更；若不升级，建议把 DoD 中该维度的
-   措辞明确为"策略判决已记录"。
-   > 📄 **方案已出（2026-09-11）**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
-   > （A 维持 / B 全面拦截 / C 分层分级）+ 推荐路线 C 详细设计 + 7 个待裁决决策点
-   > （D1–D7）+ 爆炸半径清单 + 分阶段计划。本轮**未实施任何代码改动**。
+5. **Policy Controlled：已按路线 C 第一步执行（C-0 + C-1），C-2 待裁决**。
+   内核层判决**已携带信息**（白名单驱动 allow/deny），但**仍未拦截**（§3.5.4 修复记录）。
+   要把内核横切装饰器变成真正的控制点，需实施 **C-2**（`enforce` 开关 +
+   `PolicyDeniedError`，仅 HIGH/CRITICAL 生效）。
+   > 📄 **方案**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
+   > （A 维持 / B 全面拦截 / **C 分层分级，已采纳**）+ 决策点 D1–D8 + 爆炸半径清单。
+   > **C-0 + C-1 已实施并验证**（Round 65，`scripts/verify_policy_c1.py` = ALL GREEN）。
+   > **新增决策点 D8（前置阻塞）**：实测 43 个装饰点**全部未设置 `risk_level`**（默认 `LOW`），
+   > 因此"仅对 HIGH/CRITICAL 开拦截"在完成动作风险分级之前**永远不会触发** ——
+   > C-2 之前必须先做动作风险分级。
 
 ---
 

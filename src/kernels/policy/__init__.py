@@ -65,6 +65,98 @@ class PolicyOperator(str, Enum):
     NOT_EXISTS = "not_exists"
 
 
+#: Kernel actions the internal service principal is PRE-APPROVED to perform.
+#:
+#: Classification rule (deliberately mechanical, so it can be audited):
+#: an action is allow-listed iff it is *query / compute / bookkeeping* --
+#: it neither changes authority (permissions, scopes, roles, trust, quotas,
+#: topology, capability or plugin registry) nor destroys state.
+#:
+#: Explicit enumeration with **no wildcard** is intentional: a newly added
+#: kernel action is NOT pre-approved and must be classified deliberately
+#: (see ``INTERNAL_SERVICE_DENIED_ACTIONS`` and the completeness guard test
+#: ``tests/kernels/policy/test_internal_service_policy.py``). That friction
+#: is the point -- new actions default to "requires human sovereignty".
+INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
+    # context: computation / compaction only (set_scope is an authority
+    # change and is therefore denied).
+    "context.compress",
+    "context.process",
+    # evaluation: read-only scoring (feedback / replan approval mutate
+    # planning state and are treated as authority-like -> denied).
+    "evaluation.evaluate",
+    # event bus mechanics (retry is a redelivery, not a mutation of
+    # authority; clear_history is destructive -> denied).
+    "event.publish",
+    "event.retry_dead_letter",
+    "event.subscribe",
+    "event.unsubscribe",
+    # execution: running a plan / checkpointing are the operational loop.
+    "execution.create_checkpoint",
+    "execution.execute",
+    # memory: persistence and compaction (auto_cleanup destroys -> denied).
+    "memory.compress",
+    "memory.store",
+    # network: routing an existing route (add/remove/register change
+    # topology -> denied).
+    "network.route",
+    # resource: releasing returns capacity (create/allocate/commit move
+    # quota -> denied).
+    "resource.release",
+    # security: reading a decision (grant/revoke/set_abac_rule change
+    # authority -> denied).
+    "security.decide_access",
+})
+
+#: Kernel actions explicitly DENIED for the internal service principal.
+#:
+#: These mutate authority or are destructive, so they keep falling through to
+#: ``default_deny``. Reaching them legitimately requires a *verified human*
+#: actor (``human_sovereignty``), which is the OD-010 boundary.
+INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
+    # capability registry: registering/retiring capability = deploying code.
+    "capability.deprecate",
+    "capability.register",
+    "capability.retire",
+    # context: changing the active scope is a privilege change.
+    "context.set_scope",
+    # evaluation: feedback / replan approval mutate planning authority.
+    "evaluation.apply_feedback",
+    "evaluation.approve_replan",
+    "evaluation.execute_replan",
+    # event: history deletion is destructive.
+    "event.clear_history",
+    # identity: identity and permission lifecycle = authority.
+    "identity.create_identity",
+    "identity.grant_permission",
+    "identity.revoke_permission",
+    # memory: automatic cleanup destroys stored state.
+    "memory.auto_cleanup",
+    # network: topology mutations.
+    "network.add_route",
+    "network.register_adapter",
+    "network.remove_route",
+    # plugin: installing / activating / removing code.
+    "plugin.activate_plugin",
+    "plugin.deactivate_plugin",
+    "plugin.register_plugin",
+    "plugin.unregister_plugin",
+    # resource: quota lifecycle.
+    "resource.allocate",
+    "resource.commit",
+    "resource.create_quota",
+    # security: RBAC/ABAC authority.
+    "security.grant_rbac_role",
+    "security.revoke_rbac_role",
+    "security.set_abac_rule",
+    # trust: trust scores are a security signal.
+    "trust.assign_score",
+    "trust.establish_trust",
+    "trust.revoke",
+    "trust.update_score",
+})
+
+
 @dataclass
 class PolicyCondition:
     """Single policy condition."""
@@ -248,6 +340,42 @@ class PolicyEngine:
                 scope=PolicyScope.L0,
                 precedence=1000,
             ),
+            # Internal service allow.
+            #
+            # The kernel layer's own actions are executed by the system's own
+            # code, attributed to the built-in internal service identity
+            # (Policy C-1). Without this rule the only ALLOW in the built-in
+            # set was human_sovereignty, so every kernel action recorded a
+            # constant `deny` -- a decision that carried no information.
+            #
+            # `verified` is recomputed by the engine from the identity kernel
+            # (see ``_compute_verified``), never trusted from the caller, so a
+            # self-declared ``{"type": "service"}`` actor cannot satisfy this
+            # rule.
+            #
+            # The action list is a plain ``list`` on purpose: the IN operator
+            # only accepts list/set/tuple, and a frozenset is not a ``set``.
+            PolicyRule(
+                id="internal_service_allow",
+                name="Internal Service Allow",
+                description=(
+                    "Verified internal service principals may perform "
+                    "pre-approved (non authority-changing, non destructive) "
+                    "kernel actions"
+                ),
+                conditions=[
+                    PolicyCondition("actor.type", PolicyOperator.EQ, "service"),
+                    PolicyCondition("actor.verified", PolicyOperator.EQ, True),
+                    PolicyCondition(
+                        "action.name",
+                        PolicyOperator.IN,
+                        sorted(INTERNAL_SERVICE_ALLOWED_ACTIONS),
+                    ),
+                ],
+                action=PolicyAction.ALLOW,
+                scope=PolicyScope.L0,
+                precedence=900,
+            ),
             # Default deny for unknown
             PolicyRule(
                 id="default_deny",
@@ -389,7 +517,7 @@ class PolicyEngine:
             actor = context.get("actor")
             if isinstance(actor, dict):
                 actor = dict(actor)
-                verified = self._is_verified_human(actor)
+                verified = self._compute_verified(actor)
                 actor["verified"] = verified
                 context["actor"] = actor
                 agent = context.get("agent")
@@ -493,7 +621,7 @@ class PolicyEngine:
         human/agent distinction.
         """
         actor = dict(actor)
-        actor["verified"] = self._is_verified_human(actor)
+        actor["verified"] = self._compute_verified(actor)
         context = {
             "actor": actor,
             "agent": actor,
@@ -535,6 +663,58 @@ class PolicyEngine:
         if ident is None:
             return False
         return ident.status == IdentityStatus.ACTIVE
+
+    def _compute_verified(self, actor: Dict[str, Any]) -> bool:
+        """Dispatch identity verification by actor type.
+
+        ``human`` actors are verified against a registered ACTIVE human
+        identity; ``service`` actors against a registered ACTIVE identity
+        explicitly marked as a service. Anything else is unverified.
+
+        Type dispatch matters because the two rules that consume ``verified``
+        (``human_sovereignty`` and ``internal_service_allow``) must not be
+        satisfiable by one another's identities: a human identity referenced
+        by a ``service`` actor fails ``_is_verified_service`` (metadata kind
+        mismatch) and vice versa.
+
+        NOTE: only the *type string* selects the verifier. The flag itself is
+        always recomputed here, never read from the caller.
+        """
+        if actor.get("type") == "service":
+            return self._is_verified_service(actor)
+        return self._is_verified_human(actor)
+
+    def _is_verified_service(self, actor: Dict[str, Any]) -> bool:
+        """Return True iff the actor is a registered, ACTIVE *service* identity.
+
+        Same trust model as ``_is_verified_human``: the actor must reference a
+        known identity (by ``id`` / ``identity_id`` / ``principal``), that
+        identity must exist and be ACTIVE, and it must carry
+        ``metadata["kind"] == "service"`` so that a human or agent identity
+        cannot be smuggled in behind a ``type: "service"`` claim.
+
+        Verification is revocable: suspending or deactivating the identity
+        (or clearing its ``kind`` marker) suppresses every allow granted by
+        ``internal_service_allow``.
+        """
+        ref = actor.get("id") or actor.get("identity_id") or actor.get("principal")
+        if not ref:
+            return False
+        try:
+            from src.kernels.identity import get_identity_manager, IdentityStatus
+        except Exception:
+            return False
+        try:
+            mgr = get_identity_manager()
+            ident = mgr.get_identity(ref) or mgr.get_identity_by_principal(ref)
+        except Exception:
+            return False
+        if ident is None:
+            return False
+        if ident.status != IdentityStatus.ACTIVE:
+            return False
+        metadata = ident.metadata if isinstance(ident.metadata, dict) else {}
+        return metadata.get("kind") == "service"
 
     def stats(self) -> Dict[str, Any]:
         """Get engine statistics."""

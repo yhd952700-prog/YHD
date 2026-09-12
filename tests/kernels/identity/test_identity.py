@@ -22,7 +22,7 @@ from src.kernels.identity import (
 
 @pytest.fixture
 def manager() -> IdentityManager:
-    """Fresh manager per test (contains only the default system identity)."""
+    """Fresh manager per test (seeded with the two built-in identities)."""
     return IdentityManager()
 
 
@@ -252,13 +252,15 @@ class TestStatsAndGlobals:
     def test_stats_counts(self, manager):
         make_identity(manager, principal="a", scope=IdentityScope.L2)
         stats = manager.stats()
-        assert stats["total_identities"] == 2  # system + a
-        assert stats["active_identities"] == 2
-        assert stats["identities_by_scope"]["L0"] == 1
+        # Two built-ins are seeded in __init__: "system" and the internal
+        # service principal (Policy C-1), both at scope L0.
+        assert stats["total_identities"] == 3  # system + internal service + a
+        assert stats["active_identities"] == 3
+        assert stats["identities_by_scope"]["L0"] == 2
         assert stats["identities_by_scope"]["L2"] == 1
         # NOTE: only the explicitly created identity is audited; the
-        # default system identity is seeded in __init__ without an
-        # audit entry (recorded as an observation for the backlog).
+        # seeded identities are created in __init__ without an audit
+        # entry (recorded as an observation for the backlog).
         assert stats["total_audit_entries"] == 1
 
     def test_get_identity_manager_singleton(self):

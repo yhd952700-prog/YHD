@@ -21,6 +21,14 @@ import threading
 
 from src.kernels._crosscutting import kernel_action
 
+#: Principal / id of the built-in internal service identity.
+#:
+#: Canonical home: the Identity Kernel owns which identities exist. The
+#: Policy Kernel references the identity only through its ``metadata["kind"]``
+#: marker and never needs this name; ``_crosscutting`` imports it lazily to
+#: attribute kernel actions.
+INTERNAL_SERVICE_PRINCIPAL = "liuhao-internal-service"
+
 
 class IdentityScope(str, Enum):
     """Identity permission scope L0-L7."""
@@ -90,6 +98,34 @@ class IdentityManager:
             )
             self._identities["system"] = system_identity
             self._principal_index["system"] = "system"
+
+        # Built-in internal service identity (Policy C-1).
+        #
+        # Kernel actions are performed by the system's own code. Attributing
+        # them to this principal (instead of an anonymous {"type": "system"}
+        # actor that no built-in rule could ever allow) is what lets the
+        # Policy Kernel record an informative verdict.
+        #
+        # ``metadata["kind"] == "service"`` is the marker the Policy Kernel
+        # requires (``_is_verified_service``): it keeps this identity from
+        # being usable as a human identity and vice versa. Scope is L0 and
+        # ``permissions`` is empty on purpose -- the service holds no
+        # authority of its own; it is only pre-approved for the action
+        # allow-list held in the Policy Kernel.
+        if INTERNAL_SERVICE_PRINCIPAL not in self._identities:
+            service_identity = AgentIdentity(
+                id=INTERNAL_SERVICE_PRINCIPAL,
+                principal=INTERNAL_SERVICE_PRINCIPAL,
+                permissions=set(),
+                scope=IdentityScope.L0,
+                trust_score=1.0,
+                metadata={
+                    "kind": "service",
+                    "description": "Internal kernel service principal",
+                },
+            )
+            self._identities[INTERNAL_SERVICE_PRINCIPAL] = service_identity
+            self._principal_index[INTERNAL_SERVICE_PRINCIPAL] = INTERNAL_SERVICE_PRINCIPAL
 
     def _get_identity(self, identity_id: str) -> Optional[AgentIdentity]:
         """Get identity by ID."""
