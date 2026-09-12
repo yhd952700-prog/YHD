@@ -19,6 +19,11 @@
 
 ## 5 分钟跑起来（Windows 原生，不需要 Docker）
 
+**最简单的办法**：双击仓库根目录的 `start-liuhao.bat`。它会起服务并自动打开浏览器；
+关掉窗口（或在窗口里按 `Ctrl+C`）即停止。
+
+命令行等价：
+
 ```bash
 # 1) 一键启动：网关 8080 + 驾驶舱 5173，并自动打开浏览器
 .venv\Scripts\python.exe scripts\start_liuhao.py

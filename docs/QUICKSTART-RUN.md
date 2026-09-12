@@ -4,6 +4,10 @@
 
 ## 最短路径
 
+**双击**仓库根目录的 `start-liuhao.bat` —— 完事。
+
+命令行等价：
+
 ```bash
 cd D:\LiuHao-AI-OS
 .venv\Scripts\python.exe scripts\start_liuhao.py
