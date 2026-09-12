@@ -1363,3 +1363,257 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ============================================================
+   Policy 审批中心（Approval Gateway）
+   真实数据源：/v1/policy/{enforcement,approvals}（需 Bearer 令牌）
+   ============================================================ */
+
+.layout-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.col-wide {
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.approval-panel {
+  gap: 12px;
+}
+
+.approval-label {
+  font-size: 11px;
+  color: var(--neon);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+/* ---- 令牌行 ---- */
+.approval-token {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px;
+  background: rgba(6, 16, 38, 0.55);
+}
+
+.approval-token-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.approval-token-input {
+  flex: 1;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.approval-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.approval-btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.approval-token-hint {
+  margin-top: 7px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.approval-token-hint code {
+  color: var(--cyan);
+  background: rgba(34, 211, 238, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.approval-token-hint b {
+  color: var(--text-hi);
+}
+
+/* ---- 拦截态势 ---- */
+.approval-posture {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px;
+  background: rgba(6, 16, 38, 0.4);
+}
+
+.approval-posture-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.approval-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.approval-chip {
+  font-size: 9px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  color: var(--neon);
+  background: rgba(56, 217, 255, 0.08);
+  border: 1px solid rgba(56, 217, 255, 0.28);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.approval-exempt {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* ---- 凭据列表 ---- */
+.approval-grants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.approval-grants li {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--green);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(6, 16, 38, 0.45);
+}
+
+.approval-grants li.off {
+  border-left-color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.approval-grant-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.approval-grant-principal {
+  color: var(--text-hi);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.approval-grant-state {
+  font-size: 10px;
+  color: var(--green);
+}
+
+.approval-grant-state.off {
+  color: var(--text-dim);
+}
+
+.approval-grant-actions {
+  margin-top: 4px;
+  font-size: 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  color: var(--neon);
+  word-break: break-all;
+}
+
+.approval-grant-reason {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.approval-grant-foot {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.approval-grant-id {
+  font-size: 9px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  color: var(--text-dim);
+}
+
+/* ---- 签发表单 ---- */
+.approval-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.approval-form .profile-select {
+  flex: 0 1 210px;
+  min-width: 150px;
+}
+
+.approval-form .profile-input {
+  flex: 1 1 150px;
+  min-width: 110px;
+  font-size: 11px;
+}
+
+.approval-ttl {
+  flex: 0 0 74px !important;
+  min-width: 74px !important;
+}
+
+/* ---- 说明与告警 ---- */
+.approval-note {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.7;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.approval-note code {
+  color: var(--cyan);
+}
+
+.approval-warn {
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--yellow);
+  background: rgba(255, 217, 61, 0.07);
+  border: 1px solid rgba(255, 217, 61, 0.3);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+
+.approval-warn code {
+  color: var(--yellow);
+}
+
+.approval-error {
+  font-size: 10px;
+  color: var(--red);
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.approval-busy {
+  font-size: 10px;
+  color: var(--text-dim);
+}

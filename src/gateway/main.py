@@ -195,6 +195,15 @@ def get_app() -> FastAPI:
     # awaiting a verified human approval grant (OD-010), so 409. A hard deny
     # (fail-closed: the engine could not even be consulted) is 403. Operators
     # must be able to tell those two apart without reading the audit log.
+    #
+    # The body must also be *honest about the remedy*. Measured 2026-09-12:
+    # issuing a grant and then retrying over HTTP still yields 409
+    # (no-grant=defer -> after-grant=defer -> inside-window=allow), because
+    # ``_adjudicate`` reads the sovereignty *contextvar* and nothing consumes
+    # the grant store at runtime. Per design decision §10.8.3-1 this gateway
+    # deliberately exposes no route that executes a kernel action, so the copy
+    # names the in-process mechanism instead of promising a retry that cannot
+    # succeed. Pinned by tests/test_policy_approval_http.py.
     @app.exception_handler(PolicyDeferredError)
     async def policy_deferred_handler(request: Request, exc: PolicyDeferredError):
         logger.warning(
@@ -207,8 +216,11 @@ def get_app() -> FastAPI:
                 "error": "policy_approval_required",
                 "detail": (
                     "This action requires verified human sovereignty (OD-010). "
-                    "Issue an approval grant via POST /v1/policy/approvals, then "
-                    "retry inside its window."
+                    "POST /v1/policy/approvals records the authorization (who, "
+                    "for which actions, until when). Recording it does not by "
+                    "itself unblock a retry: the gateway exposes no route that "
+                    "executes a kernel action, so execution must happen "
+                    "in-process inside grant_window(grant)."
                 ),
                 "action": exc.action,
                 "verdict": exc.verdict,

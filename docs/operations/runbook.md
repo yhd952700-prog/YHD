@@ -124,8 +124,33 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
   端点（这是刻意的，见设计文档 §10.8.3 决策 1：反射式执行会新增攻击面）。执行
   必须在**同一进程**内于 `grant_window(grant)` 窗口中进行。运维侧若要执行
   `capability.retire`，当前途径是：临时把开关置空 → 执行 → 恢复开关。
+- ⚠️ **签发凭据 ≠ 放行**（Round 76 实测）：武装后即便经 `/v1/policy/approvals` 签发了
+  凭据，**HTTP 重试同一请求仍会得到 409** —— 凭据是审计化授权记录，解除拦截需要
+  `grant_window`。409 的 `detail` 已改为如实说明这一点。
 
-### 6.2 安全护栏已接入 CI（Round 74）
+### 6.1.1 驾驶舱审批中心（Round 76）
+
+`apps/console/console` 的「审批中心」（侧栏 → 审批中心）已接线到上述端点，是**唯一**
+面向操作者的人工授权界面。使用步骤：
+
+1. 签发令牌（**本机**执行，网关没有也不应有 `/v1/auth/login`）：
+   ```bash
+   python scripts/issue_console_token.py --list                 # 看当前门接受哪些主体
+   python scripts/issue_console_token.py --principal <id>       # 打印令牌
+   ```
+   令牌的信任锚是**本机文件系统访问**——能跑这个脚本的人本就能读 JWT 签名密钥，
+   所以登录表单只增加仪式感，不增加安全。
+2. 打开驾驶舱 →「审批中心」→ 粘贴令牌 → 保存（只存 sessionStorage，关标签页即失效）。
+3. 面板显示真实拦截态势（含豁免项）、有效凭据、以及「记录授权 / 撤销」。
+
+- ⚠️ **未认证时不显示任何编造状态**：快照会暴露**未受管**的动作集合，因此
+  `GET /v1/policy/enforcement` 也要求令牌；未认证时侧栏如实显示 `UNVERIFIED`。
+- ⚠️ **面板按钮是「记录授权」，不是「放行」**——理由见上面的已知边界。
+- ⚠️ **C-7（待裁决）**：内置 `system` 账号不带 `metadata.kind`，会被当作「已核验人类」，
+  可持有主权并在审计中记为「system 批准」。脚本与面板都会就此告警。详见设计文档
+  §10.12.3。
+
+### 6.2 安全护栏已接入 CI（Round 74；Round 76 增补前端构建）
 
 安全不变量此前只靠「人记得跑脚本」维持。自 Round 74 起 `scripts/verify_*.py`
 全部作为硬门禁跑在 CI 里（`ci.yml` 的 `guardrails` job）。
@@ -142,6 +167,7 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
 | `verify_orm_vs_db.py` | ORM 模型与 alembic 迁移后的 schema 无列级分歧 |
 | `verify_persistence.py` | 跨会话（重连）持久化可读回 |
 | `verify_metrics_persist.py` | 指标样本真实落库（自有工作流，不在 `ci.yml` 内） |
+| `npm run build`（`build` job） | 驾驶舱前端**类型检查 + 构建**通过（Round 76 接入；此前前端在 CI 中零覆盖） |
 
 - **元护栏**：`tests/test_guardrail_scripts.py` 断言每个 `verify_*.py` 都有
   `sys.path` 引导、都存在能产生非零退出的路径、且都被某个 workflow 调用。

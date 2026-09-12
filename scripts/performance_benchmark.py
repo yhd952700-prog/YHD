@@ -85,7 +85,12 @@ def benchmark_mcp_servers():
             except Exception as e:
                 elapsed = time.time() - start
                 print(f"  {server_name}: {elapsed*1000:.2f} ms, 错误: {str(e)[:30]}")
-    
+    except Exception as e:
+        # 此前该 try 块没有 except/finally，文件无法通过语法解析（SyntaxError），
+        # 因而整个脚本从未可执行。补上兜底，使 `compileall` 能真实反映仓库状态。
+        print(f"MCP适配器不可用: {str(e)[:60]}")
+        servers = []
+
     print("MCP基准测试完成")
     
     return {"servers_tested": len(servers) if 'servers' in dir() else 0}

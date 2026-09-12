@@ -288,6 +288,29 @@ jobs:
       - name: Quick Import Check
         run: python -c "from src.security import RBACManager, VaultTransitCrypto, CryptoAuditLogger; from src.security.abac import ABACEngine; from src.security.rotation import KeyRotationManager, KeyType; from src.integrations.storage import StorageManager, Repository; from src.integrations.vault import VaultClient; from src.plugins.sandbox.backends import SandboxBackendManager; print('All major modules import successfully')"
 
+      # The console (apps/console/console) was never built in CI, so a broken
+      # TypeScript change could reach main unnoticed. Round 76 wires the
+      # 审批中心 panel into the Policy endpoints; tsc is the only thing that
+      # proves the client contract still type-checks against the JSON it reads.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/console/console/package-lock.json
+
+      - name: Install console dependencies
+        working-directory: apps/console/console
+        run: npm ci
+
+      - name: Type-check and build the console
+        working-directory: apps/console/console
+        run: npm run build
+
+      - name: Lint the console
+        working-directory: apps/console/console
+        run: npm run lint
+
 # Go/No-go gate: Only deploy when P0 gates pass.
 # Actual image build + deploy is owned by ci-cd.yml (the CD pipeline),
 # so ci.yml intentionally contains no deploy jobs to avoid duplicate

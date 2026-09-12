@@ -353,12 +353,24 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
   `capability.register`）。审计方法、逐动作实测结果与反向对照见 **§10.11**；原 CRITICAL-only
   的裁决依据与取舍见 **§10.9**。
 
-② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底）—— **保持现状，本轮不做**。
+② **D6**（`default_deny` scope 是否从 L7 收紧为 L0 兜底）—— **裁决：维持现状**。
 理由：它影响的是**能力层**（`test_runtime_loop` 等既有 default-deny 用例），与内核层
 CRITICAL 开启之间**没有依赖关系**；在能力层已有 4 处硬 gate + default-deny 的前提下，
-收紧 scope 的边际安全收益低而回归面大，**不值得与本次安全语义变更捆绑**。
+收紧 scope 的边际安全收益低而回归面大，**不值得与安全语义变更捆绑**。
+**正式裁决记录与复访条件见 §10.13（Round 76 定稿，自此不再作为待办搬运）。**
 
-**已解决**：**D1 / D2 / D3 / D4 / D5 / D7** 已随 C-1 / C-2 / C-3 的实施一并确定（见 §4、§10）；**D8** 已于 Round 66 实施；**C-2 机制**（Round 67）与 **C-3 机制**（Round 68）均已实施并验证。
+---
+
+**待裁决（新，Round 76 发现）：**
+
+③ **C-7 —— `_is_verified_human` 的判据是否从「反向排除」改为「正向白名单」？**
+实测：内置 `system` 账号（无 `metadata.kind`）被判定为**已核验人类**，可持有主权并放行
+CRITICAL 动作，审计记为「system 批准」。不构成越权（需本机文件系统访问），但污染
+「动作 ← 凭据 ← **人**」问责链。建议改法为 `metadata.kind == "human"`；影响面已实测
+（`src/` 无任何一处登记人类身份 → 改后需先有登记人类身份的正式路径）。
+详见 **§10.12.3**。
+
+**已解决**：**D1 / D2 / D3 / D4 / D5 / D7** 已随 C-1 / C-2 / C-3 的实施一并确定（见 §4、§10）；**D8** 已于 Round 66 实施；**C-2 机制**（Round 67）与 **C-3 机制**（Round 68）均已实施并验证；**D6** 已于 Round 76 正式裁决（§10.13）。
 
 ---
 
@@ -910,6 +922,138 @@ C-5 的把关条件是「该动作无生产调用点」，而这条**静态断�
 - **惰性护栏的诚实边界**：它证明的是**已测路径**上不可达，不是"数学上不可达"。未被热路径
   与应用层套件覆盖的**新增**调用点仍可能漏过。这是采样而非证明 —— 已写进脚本 docstring，
   不做超出证据的宣称。
+
+---
+
+## 10.12 实施记录（驾驶舱审批 UI 接线，2026-09-12 Round 76）
+
+§10.8.5 / §10.9.7 / §10.11.7 三次把「未做驾驶舱 UI」列为待办。本轮关闭它，并在过程中
+发现两处此前未记录的事实。
+
+### 10.12.1 做了什么
+
+| 层 | 交付 | 说明 |
+|---|---|---|
+| 前端 | `apps/console/console/src/lib/policyClient.ts` | 四个 Policy 端点的类型化客户端；令牌存 **sessionStorage**（关标签页即失效） |
+| 前端 | `.../components/ApprovalCenter.tsx` | 审批中心面板：真实拦截态势、凭据列表、签发、撤销 |
+| 前端 | `App.tsx` / `chrome.tsx` | App 单一持有策略状态；**侧栏导航真正切换视图**；「安全运行模式」由硬编码改为真实数据 |
+| 前端 | `dashboardData.ts` | 删除审批导航项写死的 `badge: '1'`（改为由真实凭据数注入） |
+| 脚本 | `scripts/issue_console_token.py` | 本机签发驾驶舱令牌（`--list` / `--principal` / `--ttl`） |
+| 测试 | `tests/test_policy_approval_http.py` | **28 项** HTTP 层契约测试 |
+| CI | `.github/workflows/ci.yml` | Build Verification job 新增 Node + `npm ci` + `npm run build` + `npm run lint` |
+
+**授权面一处未动**：`src/gateway/policy.py` 与 `src/kernels/*` 的生产代码**零改动**（除下述 409 文案）。
+没有新增任何端点。UI 的令牌输入框不是妥协——它把「主体只能来自令牌」这条性质**变成了可见的产品行为**。
+
+### 10.12.2 实测更正：签发凭据 ≠ HTTP 重试放行
+
+409 的 `detail` 原文写着「Issue an approval grant via POST /v1/policy/approvals, then
+retry inside its window」。**这句话对 HTTP 调用方是假的。** 实测（2026-09-12，全新进程）：
+
+| 步骤 | 结果 |
+|---|---|
+| 武装 `CRITICAL`，未签发凭据 | `PolicyDeferredError`（verdict=`defer`） |
+| 经 `issue_grant` 签发一条覆盖该动作的凭据后**再次重试** | **仍然 `defer`** |
+| 在 `grant_window(grant)` 内重试 | `allow` → 动作真的执行 |
+
+原因：`_crosscutting._adjudicate` 读的是 sovereignty **contextvar**（由 `human_sovereign` /
+`grant_window` 设置），而 `grant_window` 在生产代码中**没有任何调用方**——凭据存储只被
+`/v1/policy/approvals` 的读写接口消费。这不是缺陷，是 §10.8.3 决策 1 的必然推论
+（进程内调用，不做 HTTP 反射执行）。
+
+**处置**：改写 409 文案，令其如实指向真正的解锁机制（`grant_window(grant)`），并说明网关
+刻意不提供远程执行入口。断言固定在 `tests/test_policy_approval_http.py`：
+`test_the_409_detail_names_the_real_mechanism` + `test_grant_does_not_open_the_gate_for_an_http_retry`
+（后者断言**当前仍不放行**——若哪天语义变了，它会红，从而强制文案同步改）。
+
+### 10.12.3 新发现：C-7 —— 内置机器身份可冒充「已核验人类」
+
+做 UI 时发现 `--list` 只列出唯一一个「可批准者」：内置 `system` 账号。追下去实测：
+
+| 主体 | 身份 metadata | 以 `type:"human"` 判决 | 规则 |
+|---|---|---|---|
+| `system`（自动创建，L0，`admin`） | `{}`（**无 kind**） | **`allowed=True`** | `human_sovereignty:allow` |
+| `liuhao-internal-service` | `{"kind": "service"}` | `allowed=False` | `default_deny` |
+
+端到端：`issue_grant("system", ["capability.retire"])` **成功**；武装后在该凭据窗口内
+`capability.retire` **真的执行了**。审计会把这次 CRITICAL 放行记成「**system** 批准」。
+
+根因：`_is_verified_human` 的判据是**反向排除**（`metadata.get("kind") != "service"`），
+而 C-3 只关闭了显式标记为 `service` 的那条路径。`system` 与被它排除的身份在语义上同类
+（都是机器），却因为**没有**标记而通过 —— 反向排除对未标记身份**失败开放**。
+`_validated_principal`（凭据层）用的是同一条判据，因此凭据层同样放行。
+
+**影响评估（不过度宣称）**：这**不构成越权**——伪造该令牌需要本机文件系统访问（= 已能读签名
+密钥，也就能直接清空开关）。真实危害是**问责链被污染**：C-4 用整个 Round 71 建立
+「动作 ← 凭据 ← 授权人」，而这一环可以是一个机器身份，与 OD-010「须由**经核验的人类**授权」
+语义相悖。
+
+**本轮处置（刻意的克制）**：**不改判据**。收紧「什么算已核验人类」是安全语义变更，按本项目
+一贯做法（C-2 机制先建 → C-5 才裁决武装）应由用户主权裁决，不在界面工作里顺手做掉。
+本轮只做三件如实的事：
+
+1. `issue_console_token.py` 的 `--list` 标注 `[NOT a registered human]`，并在无任何人类身份
+   时整段警告；
+2. 面板在令牌主体是内置机器身份时显示 C-7 提示（`BUILTIN_MACHINE_PRINCIPALS`，由
+   `tests/test_policy_approval_http.py::test_builtin_machine_principals_match_the_identity_kernel`
+   与身份内核做**跨语言**一致性断言，改一边不改另一边会红）；
+3. 本记录。
+
+**建议的修法（待裁决）**：(b) 把判据从反向排除改为**正向白名单** `metadata.kind == "human"`。
+影响面已实测：`src/` 中**没有任何一处**创建 `kind="human"` 的身份
+（`src/ai/liuhao.py:85`、`src/ai/agent_factory.py:246`、`src/ai/network_gateway.py:221` 均不带该
+metadata），因此改后 `--list` 会**变空** —— 不是因为功能坏了，而是**确实还没有登记过人类
+身份**。这意味着 (b) 同时带来一个前置工作：需要一个登记人类身份的正式路径，否则审批通道
+在生产中没有可用主体。(a) 仅额外排除 `system` 则是治标，下一个未标记身份照样漏。
+
+### 10.12.4 验证
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 1 | `compileall`（src / tests / scripts） | 通过 |
+| 2 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | **0 违规** |
+| 3 | 改动文件 flake8 | **0 违规** |
+| 4 | importlib 全量导入 `src/` 模块 | **FAILED: 0** |
+| 5 | `pytest tests/test_policy_approval_http.py` | **28 passed** |
+| 6 | `npm run build`（tsc + vite） | 通过 |
+| 7 | `npm run lint`（oxlint） | **0 error**（2 warning，与既有 `panels.tsx` 同模式） |
+| 8 | 元护栏 `tests/test_guardrail_scripts.py` | 34 passed |
+| 9 | 权威回归集 | 见提交说明 |
+
+### 10.12.5 未做的事（明确边界）
+
+- **仍未做 HTTP 执行端点**（§10.8.3 决策 1 不变）。面板的按钮因此叫「记录授权」，不叫「放行」。
+- **未收紧 `_is_verified_human`**（C-7，见上）。
+- **未新增登录端点**：网关仍无 `/v1/auth/*`。令牌的信任锚是**本机文件系统访问**；
+  加登录表单只增加仪式感，不增加安全（能跑签发脚本的人本就能读签名密钥）。这是如实描述，
+  不是「暂时没做」。
+- **未给面板加轮询**：策略状态在挂载、令牌变更、签发/撤销后刷新，不做定时轮询
+  （审批不是高频操作，轮询只会增加无谓请求）。
+
+---
+
+## 10.13 裁决记录（D6：`default_deny` scope，2026-09-12 Round 76）
+
+**裁决：维持现状（L7，引擎靠调用方兜底）。不做收紧。**
+
+过去三轮（§10.7 / §10.8.5 / §10.9.7 / §10.11.7）都只留一句「未做 D6」，本次把它正式记下，
+以免这条待办在每次收尾时被反复搬运而始终不结。
+
+**决策依据**
+
+1. **不构成安全缺口**：能力层（`src/ai/`）**早已有 4 处硬 gate + default-deny**，走的不是
+   「忘记检查即放行」的路径；内核层的 43 个动作在 C-5/C-6 之后已由开关统一管辖
+   （生产武装 16 个）。D6 要修的是**引擎自身**在 `default_deny` 作用域上的兜底位置，
+   而当前所有真实入口都已经过能力层或拦截门 —— 边际安全收益低。
+2. **回归面大**：D6 的改动会触及 `test_runtime_loop` 等既有 default-deny 用例的判定预期，
+   属于跨层语义变更；与内核层开启之间**没有依赖关系**，因此没有「必须一起做」的理由。
+3. **风险收益不对称**：低收益 + 高回归面，且可在未来任何时候独立进行（`default_deny` 的 scope
+   是引擎内部常量，不涉及数据迁移、不影响线上格式）。
+
+**复访条件**：若出现下列任一情况，应重新评估 ——
+(a) 新增一条绕过能力层硬 gate 的内核动作入口；
+(b) 出现一次「因 scope 为 L7 而未被拦下」的真实事故；
+(c) 能力层硬 gate 数量下降。
 
 ---
 

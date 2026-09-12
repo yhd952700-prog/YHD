@@ -167,7 +167,9 @@ export const NAV_MAIN: NavItem[] = [
   { key: 'data', label: '业务数据中心', en: 'Business Reality', icon: '💼' },
   { key: 'market', label: '市场研究', en: 'Market Research', icon: '🌏' },
   { key: 'aihub', label: 'AI 决策中枢', en: 'AI Council', icon: '🧠', badge: 'AIR' },
-  { key: 'approval', label: '审批中心', en: 'Approval Gateway', icon: '✅', badge: '1' },
+  // 审批中心的徽标**刻意不在数据里写死**：真实待批数来自 /v1/policy/approvals，
+  // 由 Sidebar 从 App 层的 policy 状态注入（未认证时不显示数字）。
+  { key: 'approval', label: '审批中心', en: 'Approval Gateway', icon: '✅' },
   { key: 'knowledge', label: '知识中心', en: 'Knowledge Center', icon: '📚' },
   { key: 'system', label: '系统状态', en: 'System Health', icon: '🛡️' },
   { key: 'settings', label: '设置', en: 'Settings', icon: '⚙️' },
