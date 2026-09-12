@@ -320,5 +320,73 @@ def audit_verify() -> Tuple[bool, Optional[str]]:
 
 
 def audit_stats() -> Dict[str, Any]:
-    """Convenience function to get audit statistics."""
+    """Get audit kernel statistics."""
     return get_audit_kernel().stats()
+
+
+def export_report(format: str = "json") -> str:
+    """Export audit report in the specified format.
+
+    Args:
+        format: Output format, one of "json" or "csv" (default: "json")
+
+    Returns:
+        String containing the exported audit report
+
+    Raises:
+        ValueError: If format is not "json" or "csv"
+    """
+    ak = get_audit_kernel()
+    entries = ak.query()
+
+    if format == "json":
+        report_data = []
+        for entry in entries:
+            report_data.append({
+                "id": entry.id,
+                "timestamp": entry.timestamp.isoformat() if entry.timestamp else None,
+                "event_type": entry.event_type.value if hasattr(entry.event_type, 'value') else entry.event_type,
+                "principal_id": entry.principal_id,
+                "permission": entry.permission,
+                "scope": entry.scope,
+                "result": entry.result,
+                "reason": entry.reason,
+                "correlation_id": entry.correlation_id,
+                "prev_hash": entry.prev_hash,
+                "hash": entry.hash,
+                "metadata": entry.metadata,
+            })
+        return json.dumps(report_data, indent=2, ensure_ascii=False)
+
+    elif format == "csv":
+        import csv
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header row
+        writer.writerow([
+            "id", "timestamp", "event_type", "principal_id",
+            "permission", "scope", "result", "reason",
+            "correlation_id", "prev_hash", "hash"
+        ])
+
+        # Data rows
+        for entry in entries:
+            writer.writerow([
+                entry.id,
+                entry.timestamp.isoformat() if entry.timestamp else "",
+                entry.event_type.value if hasattr(entry.event_type, 'value') else entry.event_type,
+                entry.principal_id,
+                entry.permission or "",
+                entry.scope,
+                entry.result,
+                entry.reason or "",
+                entry.correlation_id,
+                entry.prev_hash,
+                entry.hash,
+            ])
+        return output.getvalue()
+
+    else:
+        raise ValueError(f"Unsupported export format: {format}. Use 'json' or 'csv'.")
