@@ -77,6 +77,38 @@ def test_chat_audits():
     )
 
 
+class _RaisingProvider:
+    """``chat`` 抛异常，用于触发生成失败路径。"""
+
+    name = "raising"
+    model = "raising-model"
+
+    def chat(self, messages):
+        raise RuntimeError("provider down")
+
+
+def test_failed_generation_is_not_recorded_as_policy_eval():
+    """生成失败必须记为 STATE_CHANGE/error，不得伪装成 policy_eval。
+
+    回归（2026-09-11，MVP 冒烟发现）：``_commit_turn`` 曾把非 completed
+    分支的审计事件类型写成 ``POLICY_EVAL``，导致一次「生成失败」被读成
+    「策略评估失败」，并在驾驶舱 breakdown 里形成虚假的 ``policy_eval:error``
+    计数。生成失败与策略无关，应如实记为状态变更。
+    """
+    a = LiuHaoAssistant(name="test-fail", provider=_RaisingProvider())
+    result = a.chat("hello")
+    assert result["status"] == "error"
+
+    events = audit_query(correlation_id=result["correlation_id"])
+    types = {e["event_type"] for e in events}
+    assert "policy_eval" not in types, f"生成失败被误记为 policy_eval：{types}"
+    failed = [
+        e for e in events
+        if e["event_type"] == "state_change" and e["outcome"] == "error"
+    ]
+    assert failed, f"未找到 STATE_CHANGE/error 审计：{events}"
+
+
 def test_reset_clears_history():
     a = make_assistant()
     a.chat("hello")

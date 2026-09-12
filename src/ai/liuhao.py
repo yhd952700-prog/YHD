@@ -320,8 +320,16 @@ class LiuHaoAssistant:
             {"user": message, "assistant": reply},
             tags={"conversation", "assistant:liuhao"},
         )
+        # 事件类型按结果如实选择：
+        # - completed → ACCESS_ALLOWED（授权通过且本轮成功）
+        # - 否则（生成失败等）→ STATE_CHANGE + outcome="error"
+        #
+        # 修复（2026-09-11）：此前非 completed 分支错误地记为 POLICY_EVAL，
+        # 导致一次「生成失败」被读成「策略评估失败」，并在驾驶舱 breakdown 里
+        # 形成虚假的 `policy_eval:error` 计数。生成失败与策略无关，如实记为
+        # 状态变更即可。
         log_event(
-            AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.POLICY_EVAL,
+            AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.STATE_CHANGE,
             principal_id=self.principal,
             scope=AuditScope.L1,
             outcome="allow" if status == "completed" else "error",
