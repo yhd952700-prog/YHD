@@ -120,31 +120,73 @@ class ContextKernel:
         for inp in inputs:
             type_counts[inp.type] = type_counts.get(inp.type, 0) + 1
 
-        # Apply attention based on mechanism
+        # Apply attention based on mechanism.
+        #
+        # Retention used to be decided by an ABSOLUTE threshold (weight > 0.5),
+        # which is NOT scale-invariant: the weight's magnitude depends on
+        # N_INPUTS and on the raw counts, so for the real N_INPUTS=12 the
+        # default HYBRID/UNIFORM/IMPORTANCE mechanisms discarded *every* present
+        # type — a silent runtime no-op. We now make the decision RELATIVE:
+        #  1) compute a per-mechanism raw weight,
+        #  2) normalize the present types into a distribution summing to 1.0,
+        #  3) retain types strictly above the mean weight (scale-invariant),
+        #  4) never emit an empty retained set — if nothing beats the mean
+        #     (e.g. all weights equal under UNIFORM/RECENCY) keep the
+        #     highest-weight type(s); ties keep every tied type, so the result
+        #     is deterministic and order-independent.
         retained: List[str] = []
         discarded: List[str] = []
         attention_weights: Dict[str, float] = {}
         compressed: Dict[str, Any] = {}
 
-        for itype in ContextInputType:
-            count = type_counts.get(itype, 0)
-            if count > 0:
-                # Determine weight based on mechanism
+        present: List[ContextInputType] = [
+            it for it in ContextInputType if type_counts.get(it, 0) > 0
+        ]
+
+        if present:
+            # 1) raw attention weight per present type (mechanism-specific shape)
+            raw_weights: Dict[ContextInputType, float] = {}
+            for itype in present:
+                count = type_counts[itype]
                 if self.mechanism == AttentionMechanism.UNIFORM:
-                    weight = 1.0 / self.N_INPUTS
+                    weight = 1.0
                 elif self.mechanism == AttentionMechanism.IMPORTANCE:
-                    weight = count / self.N_INPUTS
+                    weight = float(count)
                 elif self.mechanism == AttentionMechanism.RECENCY:
-                    weight = 1.0  # All equal, recency handled at input level
+                    weight = 1.0  # all equal; recency handled at input level
                 elif self.mechanism == AttentionMechanism.HYBRID:
-                    weight = (count + 1) / (self.N_INPUTS + self.N_INPUTS)
+                    weight = float(count + 1)
+                else:  # pragma: no cover - AttentionMechanism is an exhaustive enum
+                    weight = 1.0
+                raw_weights[itype] = weight
 
-                attention_weights[itype.value] = weight
+            # 2) normalize into a distribution summing to 1.0
+            total = sum(raw_weights.values())
+            norm_weights = {t: w / total for t, w in raw_weights.items()}
+            # scale-invariance guarantee: normalized weights must sum to 1
+            assert abs(sum(norm_weights.values()) - 1.0) < 1e-9, (
+                "attention weights must normalize to a distribution summing to 1"
+            )
 
-                if weight > 0.5:
+            # 3) relative retention: keep types strictly above the mean weight
+            mean_norm = 1.0 / len(present)
+            keep: set = {t for t, w in norm_weights.items() if w > mean_norm}
+            # 4) never emit an empty retained set (deterministic tie handling)
+            if not keep:
+                max_w = max(raw_weights.values())
+                keep = {t for t, w in raw_weights.items() if w == max_w}
+
+            # deterministic ordering: descending weight, then enum declaration order
+            ordered = sorted(
+                present,
+                key=lambda t: (-norm_weights[t], list(ContextInputType).index(t)),
+            )
+            for itype in ordered:
+                attention_weights[itype.value] = norm_weights[itype]
+                if itype in keep:
                     retained.append(itype.value)
                     compressed[itype.value] = {
-                        "count": count,
+                        "count": type_counts[itype],
                         "scope": self.scope,
                         "mechanism": self.mechanism.value,
                     }

@@ -75,37 +75,48 @@ class TestCompression:
         assert res.retained_keys == []
         assert res.compression_ratio == 0.0
 
-    def test_uniform_discards_everything(self):
-        # UNIFORM weight = 1/12 < 0.5 -> nothing retained
+    def test_uniform_retains_all_present(self):
+        # Retention is RELATIVE now (normalized weights vs. their mean), not the
+        # old absolute `weight > 0.5` rule. Under UNIFORM every present type has
+        # the same normalized weight (= the mean), so nothing strictly beats the
+        # mean; the kernel's "never emit an empty retained set" fallback keeps
+        # every tied max-weight type -> all present types are retained.
+        #
+        # Pre-fix, the absolute rule (weight = 1/12 < 0.5) retained NOTHING for
+        # the real N_INPUTS=12 -- a silent runtime no-op. See
+        # tests/kernels/context/test_context_retention.py for the guardrail.
         k = ContextKernel(mechanism=AttentionMechanism.UNIFORM)
         data = inputs([(ContextInputType.GOAL, 3), (ContextInputType.TASK, 2)])
         res = k.compress(data)
-        assert res.retained_keys == []
-        assert set(res.discarded_keys) == {"goal", "task"}
-        assert res.compression_ratio == 0.0
+        assert set(res.retained_keys) == {"goal", "task"}
+        assert res.discarded_keys == []
+        assert res.compression_ratio == 2 / 12
 
     def test_recency_retains_all_present(self):
-        # RECENCY weight = 1.0 > 0.5 -> every present type retained
+        # RECENCY gives every present type an equal (tied) weight, so the same
+        # tie fallback as UNIFORM keeps them all.
         k = ContextKernel(mechanism=AttentionMechanism.RECENCY)
         data = inputs([(ContextInputType.GOAL, 1), (ContextInputType.TASK, 1)])
         res = k.compress(data)
         assert set(res.retained_keys) == {"goal", "task"}
         assert res.compression_ratio == 2 / 12
 
-    def test_importance_retains_only_high_count(self):
-        # IMPORTANCE weight = count/12 > 0.5 only when count >= 7
+    def test_importance_retains_only_above_average_count(self):
+        # IMPORTANCE weight ∝ count; normalized, GOAL (8) sits above the mean
+        # (0.5) while TASK (3) sits below it -> only the above-average type is
+        # retained.
         k = ContextKernel(mechanism=AttentionMechanism.IMPORTANCE)
         data = inputs([
-            (ContextInputType.GOAL, 8),     # 8/12 retained
-            (ContextInputType.TASK, 3),     # 3/12 discarded
+            (ContextInputType.GOAL, 8),     # 8/11 > 1/2 -> retained
+            (ContextInputType.TASK, 3),     # 3/11 < 1/2 -> discarded
         ])
         res = k.compress(data)
         assert "goal" in res.retained_keys
         assert "task" in res.discarded_keys
         assert res.compression_ratio == 1 / 12
 
-    def test_hybrid_retains_when_count_ge_twelve(self):
-        # HYBRID weight = (count+1)/24 > 0.5 only when count >= 12
+    def test_hybrid_retains_the_higher_count(self):
+        # HYBRID weight ∝ count + 1; the higher-count type wins outright.
         k = ContextKernel(mechanism=AttentionMechanism.HYBRID)
         data = inputs([
             (ContextInputType.GOAL, 12),    # retained
