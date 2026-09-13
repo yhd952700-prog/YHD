@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
 
 # Import dependencies
@@ -27,6 +27,12 @@ from src.kernels.capability import get_capability_registry, CapabilityScope, che
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
 from src.kernels._crosscutting import kernel_action
+
+
+# Seam for real capability execution. The Execution Kernel must not depend on
+# the ai layer (strict layering: spec -> kernels -> ai -> gateway/console), so
+# the actual executor is injected at assembly time by an upper layer.
+CapabilityExecutor = Callable[[str, Dict[str, Any]], Any]
 
 
 class TaskStatus(str, Enum):
@@ -300,9 +306,19 @@ class PlanBuilder:
 class ActionExecutor:
     """Executes actions via capability registry."""
 
-    def __init__(self):
+    def __init__(self, capability_executor: Optional[CapabilityExecutor] = None) -> None:
         self.capability_registry = get_capability_registry()
         self.event_bus = get_event_bus()
+        self._capability_executor = capability_executor
+
+    def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
+        """Inject (or clear) the real capability executor after construction."""
+        self._capability_executor = capability_executor
+
+    @property
+    def has_capability_executor(self) -> bool:
+        """True when a real capability executor has been injected."""
+        return self._capability_executor is not None
 
     @kernel_action("execution.execute")
     def execute(self, action: Action) -> ActionResult:
@@ -324,11 +340,24 @@ class ActionExecutor:
                 duration_ms=int((utc_now() - start_time).total_seconds() * 1000),
             )
 
-        # In production, this would invoke the actual capability
-        # For now, simulate execution
+        # In production, this would invoke the actual capability.
+        # If a real capability executor was injected at assembly time, use it;
+        # otherwise fall back to the simulated path (status stays "simulated").
         try:
-            # Simulate capability execution
-            output = self._simulate_capability(action.capability_id, action.inputs)
+            if self._capability_executor is not None:
+                raw = self._capability_executor(action.capability_id, action.inputs)
+                if isinstance(raw, dict):
+                    output = dict(raw)
+                    output.setdefault("capability", action.capability_id)
+                    output["status"] = "executed"
+                else:
+                    output = {
+                        "capability": action.capability_id,
+                        "status": "executed",
+                        "result": raw,
+                    }
+            else:
+                output = self._simulate_capability(action.capability_id, action.inputs)
 
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
@@ -476,13 +505,21 @@ class Verifier:
 class ExecutionEngine:
     """Main execution engine orchestrating the full pipeline."""
 
-    def __init__(self, scope: str = "L1"):
+    def __init__(
+        self,
+        scope: str = "L1",
+        capability_executor: Optional[CapabilityExecutor] = None,
+    ) -> None:
         self.scope = scope
         self.decomposer = GoalDecomposer()
         self.planner = PlanBuilder()
-        self.executor = ActionExecutor()
+        self.executor = ActionExecutor(capability_executor=capability_executor)
         self.verifier = Verifier()
         self.context_kernel = create_context_kernel(scope=scope)
+
+    def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
+        """Inject (or clear) the real capability executor used by the pipeline."""
+        self.executor.set_capability_executor(capability_executor)
 
     def execute_goal(
         self,

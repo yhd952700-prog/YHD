@@ -59,6 +59,18 @@ class LCore:
         self.tools.activate(tool_id)
         return tool_id
 
+    def capability_executor(self) -> Callable[[str, Dict[str, Any]], Any]:
+        """Bridge this Core's tool registry into the Execution Kernel.
+
+        The Execution Kernel cannot import this layer (strict layering), so the
+        junction is an injected callable. Wiring both subsystems to one registry:
+
+            engine = ExecutionEngine(capability_executor=lcore.capability_executor())
+
+        Without this, ``ExecutionEngine`` keeps taking its simulated path.
+        """
+        return self.router.as_capability_executor()
+
     @observe("LCore.handle_intent")
     def handle_intent(
         self,

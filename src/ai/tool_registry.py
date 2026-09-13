@@ -7,6 +7,10 @@ execution. The Execution Kernel's ``ActionExecutor`` simulates capability calls
 of concrete tools (each bound to a ``capability``) with a lifecycle, and a
 router that maps a ``capability_id`` to an active tool and executes it.
 
+Assembly: pass ``ToolRouter(registry).as_capability_executor()`` as the
+``capability_executor`` of ``ActionExecutor`` to wire real execution; without it
+the kernel keeps taking the simulated path.
+
 §40 lifecycle: REGISTER -> VALIDATE -> APPROVE -> ACTIVE -> SUSPENDED -> REVOKED.
 Only ACTIVE tools are executable.
 """
@@ -151,3 +155,19 @@ class ToolRouter:
             return ActionResult(action_id="", success=False,
                                 error=f"no active tool for capability {capability_id}")
         return self.registry.execute(tool.tool_id, inputs)
+
+    def as_capability_executor(self) -> Callable[[str, Dict[str, Any]], Any]:
+        """Return a ``CapabilityExecutor``-compatible closure for the kernel.
+
+        The closure raises ``RuntimeError`` on a failed/unrouted tool so that the
+        Execution Kernel's existing ``except Exception`` path turns it into a
+        ``success=False`` action result.
+        """
+
+        def run(capability_id: str, inputs: Dict[str, Any]) -> Any:
+            result = self.execute(capability_id, inputs)
+            if not result.success:
+                raise RuntimeError(result.error)
+            return result.output
+
+        return run
