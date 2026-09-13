@@ -32,20 +32,20 @@
 
     - id: "C"
       name: "External Connectors"
-      status: "COMPLETE"
-      progress: "100% — 5/5 connectors initialized (A2A, MCP, gRPC, HTTP, WS); cross-protocol error mapping operational; connector test harness complete; cross-protocol message routing validated; A2A contract compliance verified; expansion: new Provider adapters (OpenAI, Anthropic) prototype; MCP/gRPC route configuration WIP"
+      status: "IN_PROGRESS"
+      progress: "NOT 5/5. Operational: HTTP ✅ + WS ✅ adapters registered & message routing operational (src/kernels/network/__init__.py:228-297). MCP ⚠️ adapter code present (src/adapters/mcp/mcp_adapter.py) but MCP_WIRING_STATUS='not-wired' — not integrated into runtime. A2A ❌ and gRPC ❌ have no adapter class (only ProtocolType enum at src/kernels/network/__init__.py:29-31) — need route + adapter config. Cross-protocol error mapping: HTTP/WS validated; A2A/MCP/gRPC pending. Provider adapters (OpenAI, Anthropic, ...) belong to Model Gateway workstream GW, separate from external protocol connectors."
       connectors:
-        - "HTTP": "✅ Adapter registered, message routing operational"
-        - "WebSocket": "✅ Adapter registered, message routing operational"
-        - "A2A": "⏳ Needs route + adapter config"
-        - "MCP": "⏳ Needs route + adapter config"
-        - "gRPC": "⏳ Needs route + adapter config"
+        - "HTTP": "✅ Adapter registered & routing operational (src/kernels/network/__init__.py:228-297)"
+        - "WebSocket": "✅ Adapter registered & routing operational (src/kernels/network/__init__.py:251+)"
+        - "A2A": "❌ No adapter class — only ProtocolType enum (src/kernels/network/__init__.py:29); needs route + adapter config"
+        - "MCP": "⚠️ Adapter code exists (src/adapters/mcp/mcp_adapter.py) but MCP_WIRING_STATUS='not-wired' — not integrated into runtime"
+        - "gRPC": "❌ No adapter class — only ProtocolType enum (src/kernels/network/__init__.py:31); needs route + adapter config"
       started: "2026-09-05T08:30:00+08:00"
 
     - id: "F"
       name: "Observability"
-      status: "COMPLETE"
-      progress: "100% — correlation IDs fully mature across all protocols (HTTP, WS); message tracking 100%; Definition Lock §112 compliance verified; metrics and logs exporting operational; Wave 2 correlation foundation stable"
+      status: "IN_PROGRESS"
+      progress: "Framework operational: correlation IDs propagating across HTTP/WS ✅, message tracking ✅, cross-protocol tracing foundation ✅ (network bus routes messages). NOT 100%: 2 of 5 listed capabilities still initializing — Metrics collection framework 🔄 initializing, Log aggregation from 14 kernels 🔄 initializing (see capabilities). Per the review guidance, status downgraded from COMPLETE to IN_PROGRESS rather than overstating the 🔄 items as done."
       capabilities:
         - "Correlation ID propagation (HTTP, WS): ✅ operational"
         - "Message history tracking via bus: ✅ operational"
@@ -106,27 +106,27 @@
     - id: "SH"
       name: "Security Hardening"
       status: "COMPLETE"
-      progress: "100% — Vault Transit Integration + RBAC/ABAC Hardening fully implemented per Hermes overrides #16/#19; Definition Lock §191-§192 compliance verified; critical path connected; exit gates PASS; Workstream H marked complete; consolidating to Phase 4.1 roadmap"
+      progress: "Vault Transit Integration (src/security/vault_transit.py:20 VaultTransitIntegration, 7 methods) + RBAC/ABAC Hardening (src/security/rbac_abac.py:15 RBACHardening / :253 ABACHardening) implemented per Hermes overrides #16/#19; Definition Lock §191-§192 referenced in code docstrings. CAUTION: direct unit tests for VaultTransitIntegration/RBACHardening/ABACHardening NOT found (only VaultTransitCrypto is tested in tests/test_crypto_audit.py) — test coverage of these classes UNVERIFIED."
       critical_path_ref: "H → Security Hardening → Vault Transit → RBAC/ABAC"
       acceptance_evidence:
-        - "VaultTransitIntegration: all 7 methods implemented and tested"
-        - "RBACHardening: policy propagation tested with role-based access checks"
-        - "ABACHardening: capability-based rule evaluation verified"
-      next_step: "Activate Workstream H per Definition Lock §191-§192, implement Hermes overrides #16/#19"
+        - "VaultTransitIntegration: implemented (src/security/vault_transit.py:20; methods: initialize/register_key/encrypt/decrypt/get_audit_log/get_active_keys/close). Direct unit tests: NOT found — UNVERIFIED (VaultTransitCrypto in tests/test_crypto_audit.py is a different class)."
+        - "RBACHardening: implemented (src/security/rbac_abac.py:15). Direct unit tests: NOT found — UNVERIFIED."
+        - "ABACHardening: implemented (src/security/rbac_abac.py:253). Direct unit tests: NOT found — UNVERIFIED."
+      next_step: "None — Workstream H (Security Hardening) implementation complete; VaultTransitIntegration/RBACHardening/ABACHardening implemented in src/security/ (see acceptance_evidence). No further 'activation' gate required."
       started: "2026-09-05T23:00:00+08:00"
 
   critical_path:
     - "C → F → E"  # External Connectors → Observability → Risk Reduction
     - "GW → Phase 4 Model Gateway → Provider Adapter → Model Registry → Model Router"
     - "H → Security Hardening → Vault Transit → RBAC/ABAC"
-    - Current position: "Provider Adapter ✅, Model Registry ✅, Model Router ✅ all complete; Workstream H started: Vault Transit docstring + RBAC/ABAC docstring written; Critical path fully connected; all exit gates PASS; ready for Workstream H activation"
-    - Next: "Activate Workstream H — implement Vault Transit Integration + RBAC/ABAC Hardening per Hermes overrides #16/#19 and Definition Lock §191-§192"
+    - Current position: "Provider Adapter ✅, Model Registry ✅, Model Router ✅ all complete; Workstream H complete: VaultTransitIntegration + RBACHardening/ABACHardening implemented in src/security/; Critical path fully connected; no open activation gate"
+    - Next: "None — Workstream H (Security Hardening) implemented; remaining security work is routine hardening, not a separate activation gate"
 
   ready_tasks:
     - "LHX-P3-T001: Monitor F progress metrics (correlation ID maturity across all protocols)"
     - "LHX-P3-T002: Trigger E full activation when F readiness criteria met"
-    - "LHX-P3-T003: Start Workstream H (Security Hardening: Vault Transit integration, RBAC/ABAC hardening)"
-    - "LHX-P3-T004: Verify Phase 3 exit gates (plugin registry operational, 3+ connectors solid, 100% audit coverage)"
+    - "LHX-P3-T003: Start Workstream H (Security Hardening) — ✅ Complete: VaultTransitIntegration (src/security/vault_transit.py:20) + RBACHardening/ABACHardening (src/security/rbac_abac.py:15/:253) implemented; direct unit tests UNVERIFIED (see workstream SH)"
+    - "LHX-P3-T004: Verify Phase 3 exit gates — plugin registry operational ✅; connectors NOT solid (2/5 operational: HTTP/WS only, see workstream C); audit coverage: 59753 events in audit_store.db (observed 2026-09-13, read-only)"
     - "LHX-P3-T005: Promote to Phase 4 when all exit gates satisfied"
     - "LHX-P4-T001: Initialize Provider Adapter for Model Gateway — ✅ Complete (5 adapters: OpenAI, Anthropic, Moonshot, Deepseek, Mock)"
     - "LHX-P4-T002: Initialize Model Registry with model providers — ✅ Complete (full registry with status tracking, capability filtering)"
@@ -137,8 +137,10 @@
   blocked_tasks:
     - "LHX-P3-T006: E full activation — blocked until F completes observability infrastructure"
     - "LHX-P3-T007: A2A/MCP/gRPC connector initialization — depends on C progress"
-    - "LHX-P4-T004: Provider Adapter initialization — pending model provider configs"
-    - "LHX-P4-T005: Model Registry initialization — pending provider registrations"
+    # Removed 2026-09-13: "LHX-P4-T004: Provider Adapter initialization — pending model provider configs" and
+    # "LHX-P4-T005: Model Registry initialization — pending provider registrations" were stale entries that
+    # contradicted ready_tasks LHX-P4-T001/T002 (both ✅ Complete). Also they reused the P4-T004/T005 ids
+    # already assigned to different tasks in ready_tasks. Removed to eliminate the contradiction.
 
   acceptance_evidence:
     - "Plugin Registry: exit 0 test output 'Plugin Registry ✅ 初始化并测试全部通过'"
@@ -157,14 +159,14 @@
   compliance_metrics:
     - "blueprint_coverage: 95% — Phase 3 workstreams mapped to Definition Lock requirements"
     - "requirement_coverage: 90% — Phase 3 capabilities cover Identity/Permission/Capability"
-    - "capability_coverage: 85% — 3/5 external connectors initialized, Observability maturing"
+    - "capability_coverage: UNVERIFIED — 2/5 external connectors fully operational (HTTP, WS); MCP adapter code present but not wired; A2A/gRPC not implemented; Observability maturing (see workstream F). The prior '3/5' and '85%' were unverified."
     - "implementation_coverage: 100% — all 14 kernels operational"
     - "test_coverage: 75% — core flows tested, integration tests in progress"
-    - "security_coverage: 80% — Vault Transit pending, RBAC/ABAC partially operational"
+    - "security_coverage: UNVERIFIED — Vault Transit (src/security/vault_transit.py:20 VaultTransitIntegration) + RBAC/ABAC (src/security/rbac_abac.py RBACHardening/ABACHardening) ARE implemented in code (this contradicts the prior 'Vault Transit pending' claim, which is removed). Precise coverage % not independently verified."
     - "traceability_coverage: 90% — execution-state.yaml fully documents all workstreams"
     - "acceptance_coverage: 70% — exit gates not yet fully satisfied for Phase 3 promotion"
 
-  next_action: "Phase 4.1 release coordination complete — alpha candidate preview feedback collected; Definition Lock compliance audit validated; release timeline confirmed; stakeholder sign-offs gathered; Phase 4.1 public release ready for deployment"
+  next_action: "Phase 4.1 release coordination complete (alpha candidate preview feedback collected; Definition Lock compliance audit validated; release timeline confirmed; stakeholder sign-offs gathered). Deployment gate NOT yet declared PASSED: integration tests still in progress (test_coverage) and security coverage closure pending verification (security_coverage UNVERIFIED) per compliance_metrics. Do NOT claim 'public release ready for deployment' until those two gates close."
 
   no_unstop_rule: "AUTONOMOUS BY DEFAULT — HUMAN BY EXCEPTION per override #16/#19"
   human_gate_required: "NONE — all ordinary engineering tasks continue automatically per Definition Lock §19/§20 and Hermes override"
