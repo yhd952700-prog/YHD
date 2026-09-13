@@ -11,6 +11,19 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import Tool, Resource, Prompt, CallToolResult, ReadResourceResult, GetPromptResult
 
+# 接线状态（2026-09-13 评审）：本适配器**未接入运行时** —— 全仓只有
+# tests/test_mcp_adapter.py 引用它，没有任何 src/ 运行时模块 import 它。
+#
+# ⚠️ 安全前置条件（接线前必须先满足，缺一不可）：
+#   1. 只允许白名单内的 server 与命令；**禁止**把配置里的 `command` 透传给
+#      StdioServerParameters —— MCP 的 STDIO 传输会直接执行该字符串，即便连接
+#      失败报错，底层命令也已经执行（OX Security 2026 披露的架构级缺陷，
+#      影响 20 万+ 实例；Anthropic 称「行为符合预期」，拒绝修改协议）。
+#   2. 一律在沙箱内执行（候选 gVisor，Apache-2.0）。
+#   3. 工具调用必须走 Policy 执法链（C-2 拦截开关 / C-6 武装调用点）并留审计。
+#   详见 D:\WorkBuddyFiles\LIUHAO-GitHub全量开源技术增强报告-20260913.md 的 G 节。
+MCP_WIRING_STATUS = "not-wired"
+
 
 @dataclass
 class MCPServerConfig:

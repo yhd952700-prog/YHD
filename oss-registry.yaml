@@ -149,6 +149,23 @@ components:
     action: 高优先：src/ 中几乎未接线却承担许可证约束，建议改用 MIT 的 Langfuse
       或 Apache-2.0 的 Opik
 
+  # ---------------- 工具接入 ----------------
+  - name: mcp
+    import_name: mcp
+    license: MIT
+    category: tooling
+    used: "yes"
+    risk: low
+    action: >-
+      顶层导入于 src/adapters/mcp/mcp_adapter.py（硬依赖，故已补进 pyproject.toml）。
+      ⚠️ **该适配器未接入运行时**：模块常量 MCP_WIRING_STATUS=not-wired，全仓仅
+      tests/test_mcp_adapter.py 引用它。且它走 STDIO 传输 —— 会直接执行配置里的
+      command 字符串（即便连接失败命令也已执行；OX Security 2026 披露的架构级缺陷，
+      涉及 20 万+ 实例）。接线前三项前置条件缺一不可：仅白名单命令（禁止透传）、
+      强制沙箱执行、走 Policy 执法链并留审计。许可证 MIT，无约束。
+      遗留：版本漂移 —— 本机 .venv 实测 1.29.1，uv 编译的 requirements.txt 解析为
+      2.1.1，属待收口的锁文件不一致（另见 uv.lock 已陈旧：不含 arize-phoenix/langgraph）。
+
   # ---------------- LLM / Agent ----------------
   # ⚠️ 2026-09-13 更正：以下三项原记为 `used: no`（「声明了但 src/ 零引用」）属**误判** ——
   #    初版扫描只认顶层 import，漏掉了 try/except ImportError 保护块内的受保护导入。

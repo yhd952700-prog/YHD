@@ -91,6 +91,36 @@ jobs:
           path: bandit-results.json
           if-no-files-found: ignore
 
+      # 依赖 CVE 扫描（2026-09-13 新增）。Trivy 扫文件系统/容器层，Bandit 扫自研
+      # 代码 —— 两者都看不到「第三方依赖自身的已知漏洞」，这是此前唯一的空白面。
+      # 实测基线（本机 .venv，mcp 1.29.1 环境）：直接依赖 0 条 CVE；全部命中都来自
+      # venv 自带的旧 pip(25.0.1)，故这里先升级 pip 再审计，以去除无关噪音。
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run pip-audit (dependency CVE scan)
+        run: |
+          # 刻意用独立 venv：被审计环境里只有一个「刚升级过的 pip」，避免 runner
+          # 自带的老 pip 贡献十几条与项目无关的告警（安全扫描的告警疲劳）。
+          python -m venv .audit-venv
+          .audit-venv/bin/python -m pip install --quiet --upgrade pip
+          .audit-venv/bin/python -m pip install --quiet -e .
+          .audit-venv/bin/python -m pip install --quiet pip-audit
+          # 非阻断式：与 Trivy(--exit-code 0) / Bandit(|| true) 口径一致 —— pip-audit
+          # 命中漏洞即 exit 1，故必须兜底。待 CI 连跑两轮稳定为 0 后可去掉 `|| true`。
+          # 注：pip-audit 2.10.1 **没有** --exit-code 参数（实测），不要照搬别的工具写法。
+          .audit-venv/bin/python -m pip_audit --skip-editable --progress-spinner off \
+            | tee pip-audit-results.txt || true
+
+      - name: Upload pip-audit Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.txt
+          if-no-files-found: ignore
+
   # Observability validation job
   observability:
     name: Observability Validation
@@ -212,10 +242,13 @@ jobs:
       - name: Run Bandit
         run: python -m bandit -r src/ -f json -o bandit-results.json || true
 
+      # ⚠️ artifact 名必须与 security job 的不同：upload-artifact@v4 不允许同一
+      # workflow run 内出现两个同名 artifact，两个 job 并发上传同名会 409 冲突，
+      # 谁失败取决于竞态 —— 属真实的 CI 抖动源。故此 job 用 -lint 后缀。
       - name: Upload Bandit Results
         uses: actions/upload-artifact@v4
         with:
-          name: bandit-results
+          name: bandit-results-lint
           path: bandit-results.json
           if-no-files-found: ignore
 

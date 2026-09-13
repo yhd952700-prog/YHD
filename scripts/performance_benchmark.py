@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import json
+import asyncio
 import argparse
 from datetime import datetime
 
@@ -60,43 +61,63 @@ def benchmark_provider_generation():
     }
 
 def benchmark_mcp_servers():
-    """基准测试: MCP服务器响应时间"""
+    """基准测试: MCP服务器响应时间。
+
+    ⚠️ 2026-09-13 重写。原实现有三处运行期错误，导致本函数**永远**走兜底分支
+    （打印「MCP适配器不可用」并返回 0），从未真正测过任何东西：
+      1. import 路径 `src.mcp_adapter` 不存在 —— 真实路径是
+         `src/adapters/mcp/mcp_adapter.py`；
+      2. 调用了 MCPAdapter 上并不存在的 `list_servers()`（真实 API 是 `servers` 字典）；
+      3. `list_tools()` 是 async，未 await 就对协程取 len()。
+    另有 `return` 之后的不可达死代码（含一句重复 return）。
+
+    同时：MCP 走 STDIO 传输会**直接执行**配置里的 command 字符串（即便连接失败命令
+    也已执行），且该适配器尚未接入运行时（MCP_WIRING_STATUS）。因此在「白名单命令 /
+    强制沙箱 / 走 Policy 执法链」三项前置条件满足前，本函数不发起任何真实连接。
+    """
     print("\n" + "=" * 60)
     print("性能基准测试: MCP服务器响应时间")
     print("=" * 60)
-    
-    import json
-    from src.mcp_adapter import MCPAdapter
-    
-    try:
-        adapter = MCPAdapter()
-        
-        # 测试每个服务器的基本可达性
-        servers = adapter.list_servers()
-        print(f"可用MCP服务器: {len(servers)}")
-        
-        for server_name in servers[:3]:  # 只测试前3个
+
+    from src.adapters.mcp.mcp_adapter import MCPAdapter, MCP_WIRING_STATUS
+
+    adapter = MCPAdapter()
+    adapter.load_config()
+    enabled = [name for name, cfg in adapter.servers.items() if cfg.enabled]
+
+    print(f"接线状态: MCP_WIRING_STATUS={MCP_WIRING_STATUS!r}")
+    print(f"配置内服务器: {len(adapter.servers)} 个（启用 {len(enabled)}）")
+    for name in enabled[:3]:
+        print(f"  - {name}")
+
+    if MCP_WIRING_STATUS != "wired":
+        print("未接线：跳过真实连接（三项安全前置条件未满足）")
+        return {
+            "servers_tested": 0,
+            "servers_configured": len(adapter.servers),
+            "wiring_status": MCP_WIRING_STATUS,
+            "note": "未接线，跳过真实探测",
+        }
+
+    async def _probe(names):
+        rows = []
+        for server_name in names[:3]:  # 只测试前3个
             start = time.time()
-            try:
-                # 尝试列出工具
-                tools = adapter.list_tools(server_name)
-                elapsed = time.time() - start
-                print(f"  {server_name}: {elapsed*1000:.2f} ms, 工具数: {len(tools)}")
-            except Exception as e:
-                elapsed = time.time() - start
-                print(f"  {server_name}: {elapsed*1000:.2f} ms, 错误: {str(e)[:30]}")
-    except Exception as e:
-        # 此前该 try 块没有 except/finally，文件无法通过语法解析（SyntaxError），
-        # 因而整个脚本从未可执行。补上兜底，使 `compileall` 能真实反映仓库状态。
-        print(f"MCP适配器不可用: {str(e)[:60]}")
-        servers = []
+            if not await adapter.connect_server(server_name):
+                rows.append((server_name, (time.time() - start) * 1000, None))
+                continue
+            tools = await adapter.list_tools(server_name)
+            rows.append((server_name, (time.time() - start) * 1000, len(tools or [])))
+            await adapter.disconnect_server(server_name)
+        return rows
+
+    results = asyncio.run(_probe(enabled))
+    for server_name, elapsed_ms, tool_count in results:
+        tail = f"工具数: {tool_count}" if tool_count is not None else "连接失败"
+        print(f"  {server_name}: {elapsed_ms:.2f} ms, {tail}")
 
     print("MCP基准测试完成")
-    
-    return {"servers_tested": len(servers) if 'servers' in dir() else 0}
-    
-    # 注意：由于Docker不可用，这里仅作演示
-    return {"servers_tested": 0, "note": "Docker not available for MCP testing"}
+    return {"servers_tested": len(results), "wiring_status": MCP_WIRING_STATUS}
 
 def main():
     """主函数"""

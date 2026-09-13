@@ -29,6 +29,14 @@ dependencies = [
     "langchain-community>=0.3.0",
     "langfuse>=4.0.0",
     "arize-phoenix>=3.0.0",
+    # MCP SDK：src/adapters/mcp/mcp_adapter.py 在**模块顶层**
+    # `from mcp import ClientSession, StdioServerParameters, stdio_client`，
+    # 因此它是硬依赖，不是可选依赖。此前未在此声明，只靠
+    # arize-phoenix → fastmcp-slim[client,server] → mcp 这条**受 extras 控制**的
+    # 传递链"碰巧"带进来：上游一旦取消该 extra，或解析结果换档
+    # （本机实测 1.29.1，而 requirements.txt 锁到 2.1.1），模块就会 ImportError。
+    # 下界 1.24.0 取自 fastmcp-slim 对 mcp 的声明；不设上界，与锁文件解析结果兼容。
+    "mcp>=1.24.0",
     "hvac>=2.0.0",
     "cryptography>=42.0.0",
     # kernel foundation（LiuHao-O/packages/kernel）显式依赖：
