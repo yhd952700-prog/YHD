@@ -1,5 +1,19 @@
-"""Tracing module for LiuHao AI OS.
+"""[LEGACY / NOT WIRED] Tracing module for LiuHao AI OS.
 
+⚠️ 接线状态（2026-09-13 评审核实）：本模块**未接入运行时**。
+全仓没有任何 src/gateway/ 或 src/ai/ 模块 import 它；它只被同目录的
+observability_adapter.py 通过相对 import（``from .tracing import
+get_correlation_context``）引用，而后者本身也未被运行时消费。
+网关与 AI 层实际使用的权威 tracing 实现是顶层 ``src/observability/tracing.py``
+（OpenTelemetry 封装；gateway/main.py:23 即 ``from ..observability.tracing
+import get_tracer``）。
+
+本模块是一套**自定义 correlation-id / Span** 实现，与权威实现**公开接口完全不同**
+（本模块导出 CorrelationID / get_correlation_id / Span 等；权威导出
+create_span / get_tracer / AISpanAttributes 等），二者是**意图重复、已被取代**
+的关系。请勿将其接线进运行时；需要 tracing 能力请改用 src/observability/tracing。
+
+（以下为原 docstring）
 Provides correlation-ID-driven trace exports for distributed systems
 observability.
 """

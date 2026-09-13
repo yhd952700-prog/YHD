@@ -1,5 +1,14 @@
-"""OpenTelemetry adapter for LiuHao AI OS.
+"""[LEGACY / NOT WIRED] OpenTelemetry adapter for LiuHao AI OS.
 
+⚠️ 接线状态（2026-09-13 评审核实）：本模块**未接入运行时**。
+全仓没有任何 src/gateway/ 或 src/ai/ 模块 import 它；同目录内也无其他模块
+引用它。网关与 AI 层实际使用的权威 OpenTelemetry 封装是顶层
+``src/observability/tracing.py``（gateway/main.py:23 即 ``from ..observability
+.tracing import get_tracer``）。
+
+本模块是与权威实现**意图重复、已被取代**的遗留 OTLP 导出实现。请勿将其接线进运行时。
+
+（以下为原 docstring）
 Provides OpenTelemetry Protocol (OTLP) export for metrics and traces.
 This integrates with existing OpenTelemetry infrastructure.
 """
