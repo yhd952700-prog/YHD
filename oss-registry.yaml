@@ -9,7 +9,15 @@
 #   import_name   实际 import 名（通常与分发名不同，如 opentelemetry-api -> opentelemetry）
 #   license       实测许可证表达式（来自包元数据）
 #   category      所属技术领域
-#   used          src/ 中是否真实引用（0 = 声明了但没接线，属"假能力"，见报告 §D）
+#   used          src/ 中是否真实引用。取值：
+#                 yes      —— 有顶层导入（也用于 alembic / pytest 这类经配置或测试链
+#                             使用、不在 src/ 里 import 的项目级依赖）
+#                 partial  —— 人工判断：部分接线
+#                 guarded  —— 有引用，但只写在 try/except ImportError 保护块内
+#                             （可选依赖，缺失时优雅降级）
+#                 no       —— src/ 中确无任何导入（= 声明了却零引用）
+#                 注：`no` 这一方向由 tests/test_oss_registry_used_field.py 机械校验，
+#                 写错会直接变红；这正是初版把受保护导入误判为 no 的防复发措施。
 #   risk          low / review / high（high = 需要 acknowledged 才能过护栏）
 #   acknowledged  对 review/high 项的书面接受理由与约束；缺失则护栏失败
 #   action        下一步处置建议
@@ -51,28 +59,28 @@ components:
     import_name: fastapi
     license: MIT
     category: api
-    used: yes
+    used: "yes"
     risk: low
     action: 核心框架，保持
   - name: starlette
     import_name: starlette
     license: BSD-3-Clause
     category: api
-    used: yes
+    used: "yes"
     risk: low
     action: FastAPI 底层，保持
   - name: uvicorn
     import_name: uvicorn
     license: BSD-3-Clause
     category: api
-    used: yes
+    used: "yes"
     risk: low
     action: ASGI 服务器，保持
   - name: pydantic
     import_name: pydantic
     license: MIT
     category: api
-    used: yes
+    used: "yes"
     risk: low
     action: 数据契约层，保持
 
@@ -81,14 +89,14 @@ components:
     import_name: sqlalchemy
     license: MIT
     category: database
-    used: yes
+    used: "yes"
     risk: low
     action: ORM，保持
   - name: alembic
     import_name: alembic
     license: MIT
     category: database
-    used: yes
+    used: "yes"
     risk: low
     action: 迁移工具，保持
 
@@ -97,42 +105,42 @@ components:
     import_name: structlog
     license: MIT OR Apache-2.0
     category: observability
-    used: yes
+    used: "yes"
     risk: low
     action: 结构化日志，保持
   - name: prometheus-client
     import_name: prometheus_client
     license: Apache-2.0
     category: observability
-    used: yes
+    used: "yes"
     risk: low
     action: 指标暴露，保持
   - name: opentelemetry-api
     import_name: opentelemetry
     license: Apache-2.0
     category: observability
-    used: partial
+    used: "partial"
     risk: low
     action: 已装但仅单点引用，建议补齐 trace 导出
   - name: opentelemetry-sdk
     import_name: opentelemetry
     license: Apache-2.0
     category: observability
-    used: partial
+    used: "partial"
     risk: low
     action: 同上
   - name: opentelemetry-instrumentation-fastapi
     import_name: opentelemetry
     license: Apache-2.0
     category: observability
-    used: partial
+    used: "partial"
     risk: low
     action: 建议启用 FastAPI 自动埋点
   - name: arize-phoenix
     import_name: phoenix
     license: Elastic-2.0
     category: observability
-    used: partial
+    used: "partial"
     risk: high
     acknowledged: >-
       Elastic License 2.0 属 source-available，非 OSI 开源：禁止将 Phoenix
@@ -141,42 +149,50 @@ components:
     action: 高优先：src/ 中几乎未接线却承担许可证约束，建议改用 MIT 的 Langfuse
       或 Apache-2.0 的 Opik
 
-  # ---------------- LLM / Agent（声明了但未接线） ----------------
+  # ---------------- LLM / Agent ----------------
+  # ⚠️ 2026-09-13 更正：以下三项原记为 `used: no`（「声明了但 src/ 零引用」）属**误判** ——
+  #    初版扫描只认顶层 import，漏掉了 try/except ImportError 保护块内的受保护导入。
+  #    已改为 `used: guarded`，并在 action 里写明真实引用位置。
   - name: mem0ai
     import_name: mem0
     license: Apache-2.0
     category: ai-memory
-    used: no
+    used: "guarded"
     risk: low
-    action: 声明了但 src/ 零引用 —— 要么接通为 memory 内核的记忆后端，要么移除
+    action: 受保护导入于 src/knowledge/memory.py（带 MEM0_AVAILABLE 标志，缺失时降级）。
+      是 memory 内核的记忆后端候选；是否升为主线取决于实测收益，勿仅凭"已装"就宣布已接线。
   - name: langgraph
     import_name: langgraph
     license: MIT
     category: agent
-    used: no
+    used: "guarded"
     risk: low
-    action: 声明了但 src/ 零引用，同上
+    action: 受保护导入于 src/ai/langgraph_workflow.py（带 LANGGRAPH_AVAILABLE 标志）。
+      该模块已裁决为「已评估未采纳」（模块常量 ENGINE_AUTHORITY=experimental），
+      SSOT 权威是手写 DAG src/ai/goal_task_graph.py，详见 LiuHao-O/packages/MAPPING.md。
   - name: langchain
     import_name: langchain
     license: MIT
     category: agent
-    used: no
+    used: "no"
     risk: low
-    action: 声明了但 src/ 零引用，同上
+    action: langchain 元包在 src/ 中无直接导入（只用到 langchain_core / langchain_openai，
+      且仅限 langgraph_workflow.py）。去留随 langgraph 一并评估。
   - name: langfuse
     import_name: langfuse
     license: MIT
     category: observability
-    used: no
+    used: "guarded"
     risk: low
-    action: 建议用来替代 Elastic-2.0 的 Phoenix
+    action: 受保护导入于 src/adapters/observability/observability_adapter.py。
+      建议用它替代 Elastic-2.0 的 Phoenix（后者仍在承担许可证约束）。
 
   # ---------------- 存储 / 缓存 ----------------
   - name: redis
     import_name: redis
     license: MIT
     category: cache
-    used: no
+    used: "no"
     risk: review
     acknowledged: >-
       Python 客户端为 MIT，但 Redis 服务端自 v8 起改为 AGPLv3（网络 copyleft）。
@@ -187,7 +203,7 @@ components:
     import_name: qdrant_client
     license: Apache-2.0
     category: vector-db
-    used: no
+    used: "no"
     risk: low
     action: 声明了但零引用；若要上 RAG，优先评估 sqlite-vec(MIT/Apache-2.0 双许可)
       或 LanceDB(Apache-2.0) 这类嵌入式方案，避免额外运维
@@ -197,14 +213,14 @@ components:
     import_name: hvac
     license: Apache-2.0
     category: security
-    used: yes
+    used: "yes"
     risk: low
     action: HashiCorp Vault 客户端，保持
   - name: cryptography
     import_name: cryptography
     license: Apache-2.0 OR BSD-3-Clause
     category: security
-    used: yes
+    used: "yes"
     risk: low
     action: 保持，并纳入定期 CVE 扫描
 
@@ -213,7 +229,7 @@ components:
     import_name: orjson
     license: MPL-2.0 AND (Apache-2.0 OR MIT)
     category: performance
-    used: partial
+    used: "partial"
     risk: review
     acknowledged: >-
       含 MPL-2.0 成分（文件级 copyleft）。仅作为未修改的第三方轮子使用，
@@ -226,14 +242,14 @@ components:
     import_name: openai
     license: Apache-2.0
     category: model
-    used: yes
+    used: "yes"
     risk: low
     action: 保持
   - name: anthropic
     import_name: anthropic
     license: MIT
     category: model
-    used: yes
+    used: "yes"
     risk: low
     action: 保持
 
@@ -242,14 +258,14 @@ components:
     import_name: pytest
     license: MIT
     category: testing
-    used: yes
+    used: "yes"
     risk: low
     action: 保持
   - name: pytest-asyncio
     import_name: pytest_asyncio
     license: Apache-2.0
     category: testing
-    used: yes
+    used: "yes"
     risk: low
     action: 保持
 
@@ -258,13 +274,13 @@ components:
     import_name: yaml
     license: MIT
     category: config
-    used: yes
+    used: "yes"
     risk: low
     action: 保持；注意始终使用 yaml.safe_load
   - name: httpx
     import_name: httpx
     license: BSD-3-Clause
     category: api
-    used: yes
+    used: "yes"
     risk: low
     action: 保持
