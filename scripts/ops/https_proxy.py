@@ -47,9 +47,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             req.add_header(name, self.headers[name])
         try:
             resp = urllib.request.urlopen(req, timeout=60)
-            status, payload, resp_headers = resp.status, resp.read(), resp.headers
+            status, resp_headers = resp.status, resp.headers
         except urllib.error.HTTPError as exc:  # 后端明确错误（4xx/5xx）
-            status, payload, resp_headers = exc.code, exc.read(), exc.headers
+            status, resp_headers = exc.code, exc.headers
+            resp = exc
         except Exception as exc:  # 连不上后端等
             self.send_response(502)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -64,10 +65,26 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if lname in _HOP_BY_HOP:
                 continue
             self.send_header(name, resp_headers[name])
-        self.send_header("Content-Length", str(len(payload)))
+        if self.command == "HEAD" or status in (204, 304):
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        # 流式转发（支持 SSE / 未知长度）：用 chunked 分块写回，避免整段缓冲
+        # 导致手机端 HTTPS 下的流式对话在 EOF/超时前不出字。
+        self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(payload)
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            self.wfile.write(b"%x\r\n" % len(chunk))
+            self.wfile.write(chunk)
+            self.wfile.write(b"\r\n")
+            try:
+                self.wfile.flush()
+            except Exception:
+                break
+        self.wfile.write(b"0\r\n\r\n")
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = _proxy
     do_OPTIONS = _proxy

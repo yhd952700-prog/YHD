@@ -219,6 +219,14 @@ jobs:
           path: bandit-results.json
           if-no-files-found: ignore
 
+      # Keep the ops audit scripts lint-clean so the readability gate itself
+      # cannot silently break on a syntax/style regression.
+      - name: Lint ops audit scripts
+        run: |
+          python -m py_compile scripts/ops/audit_console_readability.py scripts/ops/https_proxy.py
+          python -m flake8 scripts/ops/audit_console_readability.py scripts/ops/https_proxy.py \
+            --max-line-length=100 --select=E,F,W --ignore=E501,W503
+
   # Integration Tests
   integration:
     name: Integration Tests
@@ -315,6 +323,97 @@ jobs:
       - name: Lint the console
         working-directory: apps/console/console
         run: npm run lint
+
+  # Console readability / contrast audit — WCAG 2.1 AA regression gate.
+  # Builds the Vite SPA, serves the static build on a LOOPBACK-ONLY port
+  # (127.0.0.1, never 0.0.0.0), drives a REAL headless Chromium over CDP
+  # across 3 client modes x 9 pages via scripts/ops/audit_console_readability.py,
+  # and FAILS the job when the script exits non-zero (any contrast violation or
+  # runtime error). Loopback + fail-fast keeps this safe and hermetic.
+  console-readability:
+    name: Console Readability Audit (WCAG-AA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # package.json has no `engines` field; pin to 22 to match the Build
+          # Verification job above.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/console/console/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frontend deps
+        working-directory: apps/console/console
+        run: npm ci
+
+      - name: Build console SPA
+        working-directory: apps/console/console
+        run: npm run build
+
+      - name: Install Playwright Chromium (+ system deps)
+        # Ad-hoc fetch of the playwright CLI via npx; --with-deps pulls the
+        # shared libraries Chromium needs on ubuntu-latest.
+        working-directory: apps/console/console
+        run: npx playwright install --with-deps chromium
+
+      - name: Locate Chromium binary
+        id: chromium
+        run: |
+          BIN=$(ls "$HOME/.cache/ms-playwright/chromium-"*/chrome-linux/chrome 2>/dev/null | head -1)
+          echo "path=$BIN" >> "$GITHUB_OUTPUT"
+          test -n "$BIN" || { echo "::error ::playwright chromium binary not found"; exit 1; }
+
+      - name: Install Python audit deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install websockets
+
+      - name: Serve built SPA (loopback only)
+        run: |
+          python -m http.server 8099 --bind 127.0.0.1 --directory apps/console/console/dist &
+          echo $! > /tmp/httpd.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8099/ >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          if ! curl -fsS http://127.0.0.1:8099/ >/dev/null 2>&1; then
+            echo "::error ::static server did not come up on loopback"
+            kill "$(cat /tmp/httpd.pid)" 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Run readability audit (fails on WCAG-AA violation)
+        env:
+          LIUHAO_AUDIT_BASE: http://127.0.0.1:8099/
+          LIUHAO_AUDIT_PRINCIPAL: ceo
+          LIUHAO_AUDIT_SECRET: Boss-Console-Demo-2026
+          LIUHAO_AUDIT_CDP_PORT: "9344"
+          LIUHAO_AUDIT_BROWSER: ${{ steps.chromium.outputs.path }}
+          LIUHAO_AUDIT_OUT: /tmp/audit-out
+          LIUHAO_AUDIT_PROFILE: /tmp/cdp-profile
+        run: python scripts/ops/audit_console_readability.py
+
+      - name: Stop static server
+        if: always()
+        run: kill "$(cat /tmp/httpd.pid)" 2>/dev/null || true
+
+      - name: Upload audit screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-readability-screenshots
+          path: /tmp/audit-out
+          if-no-files-found: ignore
 
 # Go/No-go gate: Only deploy when P0 gates pass.
 # Actual image build + deploy is owned by ci-cd.yml (the CD pipeline),
