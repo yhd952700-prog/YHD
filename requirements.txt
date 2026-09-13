@@ -591,6 +591,8 @@ pyyaml==6.0.3
     #   langchain-core
 qdrant-client==1.19.0
     # via mem0ai
+redis==8.1.0
+    # via liuhao-ai-os (pyproject.toml)
 referencing==0.37.0
     # via
     #   jsonschema
