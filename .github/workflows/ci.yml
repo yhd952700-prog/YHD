@@ -325,11 +325,16 @@ jobs:
         run: npm run lint
 
   # Console readability / contrast audit — WCAG 2.1 AA regression gate.
-  # Builds the Vite SPA, serves the static build on a LOOPBACK-ONLY port
-  # (127.0.0.1, never 0.0.0.0), drives a REAL headless Chromium over CDP
-  # across 3 client modes x 9 pages via scripts/ops/audit_console_readability.py,
-  # and FAILS the job when the script exits non-zero (any contrast violation or
-  # runtime error). Loopback + fail-fast keeps this safe and hermetic.
+  # Builds the Vite SPA, then starts the REAL gateway (uvicorn
+  # src.gateway.main:app) on a LOOPBACK-ONLY port (127.0.0.1, never 0.0.0.0)
+  # with an ephemeral demo credential + human identity, so the audit can
+  # actually LOG IN and walk all 9 AUTHENTICATED pages (not just the login
+  # screen). A REAL headless Chromium over CDP (3 client modes x 9 pages) is
+  # driven via scripts/ops/audit_console_readability.py, and the job FAILS
+  # when the script exits non-zero (any contrast violation or runtime error).
+  # Loopback + fail-fast keeps this safe and hermetic. The demo seed uses the
+  # public demo secret the audit script expects; it is written to $RUNNER_TEMP
+  # and never committed.
   console-readability:
     name: Console Readability Audit (WCAG-AA)
     runs-on: ubuntu-latest
@@ -373,22 +378,48 @@ jobs:
           echo "path=$BIN" >> "$GITHUB_OUTPUT"
           test -n "$BIN" || { echo "::error ::playwright chromium binary not found"; exit 1; }
 
-      - name: Install Python audit deps
+      - name: Install Python deps (gateway + audit)
+        # The gateway is the package itself; install it editable like the other
+        # Python jobs, plus websockets for the audit driver.
         run: |
           python -m pip install --upgrade pip
+          pip install -e .
           pip install websockets
 
-      - name: Serve built SPA (loopback only)
+      - name: Seed ephemeral demo credential + human identity
+        # The audit logs into the REAL gateway and walks all 9 authenticated
+        # pages, so CI must run the backend with a known principal. These seeds
+        # are written to $RUNNER_TEMP (never committed) using the public demo
+        # secret the audit script expects. The script self-verifies a real login.
+        env:
+          LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
+          LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
         run: |
-          python -m http.server 8099 --bind 127.0.0.1 --directory apps/console/console/dist &
-          echo $! > /tmp/httpd.pid
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8099/ >/dev/null 2>&1; then break; fi
-            sleep 0.5
+          mkdir -p "${{ runner.temp }}/liuhao"
+          python scripts/register_human_identity.py \
+            --principal ceo \
+            --display-name "CEO" \
+            --password "Boss-Console-Demo-2026" \
+            --file "${{ runner.temp }}/liuhao/human_identities.json" \
+            --secrets-file "${{ runner.temp }}/liuhao/ci_auth_secrets.json"
+
+      - name: Start gateway (loopback only — serves built SPA + auth API)
+        env:
+          LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
+          LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
+          LIUHAO_CONSOLE_DIST: apps/console/console/dist
+        run: |
+          python -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8099 --log-level warning &
+          echo $! > /tmp/gw.pid
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8099/v1/health >/dev/null 2>&1; then break; fi
+            sleep 1
           done
-          if ! curl -fsS http://127.0.0.1:8099/ >/dev/null 2>&1; then
-            echo "::error ::static server did not come up on loopback"
-            kill "$(cat /tmp/httpd.pid)" 2>/dev/null || true
+          if ! curl -fsS -X POST http://127.0.0.1:8099/v1/auth/login \
+                -H "Content-Type: application/json" \
+                -d '{"principal":"ceo","secret":"Boss-Console-Demo-2026","client":"web"}' >/dev/null 2>&1; then
+            echo "::error ::gateway did not come up / demo login failed"
+            kill "$(cat /tmp/gw.pid)" 2>/dev/null || true
             exit 1
           fi
 
@@ -403,9 +434,9 @@ jobs:
           LIUHAO_AUDIT_PROFILE: /tmp/cdp-profile
         run: python scripts/ops/audit_console_readability.py
 
-      - name: Stop static server
+      - name: Stop gateway
         if: always()
-        run: kill "$(cat /tmp/httpd.pid)" 2>/dev/null || true
+        run: kill "$(cat /tmp/gw.pid)" 2>/dev/null || true
 
       - name: Upload audit screenshots on failure
         if: failure()
