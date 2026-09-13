@@ -92,6 +92,34 @@ async def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_identity_global_manager(monkeypatch):
+    """隔离 identity 全局单例 ``_global_manager`` 的跨测试污染。
+
+    ``src.kernels.identity.get_identity_manager()`` 是一个模块级单例：它只在
+    第一次调用时按*当时*的环境变量（``LIUHAO_HUMAN_IDENTITIES_FILE`` 等）构造
+    一个 ``IdentityManager``，之后永不重新解析这些变量。后果是：如果排在前面
+    的测试（例如 ``tests/kernels/identity`` 下的用例）已经构造过该单例并把它绑定
+    到它们自己的 store，随后跑到的测试即便用 monkeypatch 改了环境变量，拿到的仍是
+    那份陈旧缓存的 manager。
+
+    这会让 ``tests/test_register_human_identity.py`` 这类"真实注册并登录"的断言
+    失败：脚本写入了新主体，但 ``authenticate()`` 走的是陈旧缓存 → 查不到该主体 →
+    报 ``AuthError: 该主体不是可登录的人类身份`` → 脚本返回 1 → ``assert 1 == 0``。
+    它也正是"单独跑该文件是绿的、合在一起才红"的相互污染特征。
+
+    本 fixture 在每个测试开始前把 ``_global_manager`` 戳回 ``None``（与
+    ``tests/test_gateway_auth.py`` 中既有的复位写法一致），使任何测试都无法继承
+    上一个测试的身份 store。identity 模块可能尚未被 import，这里按需 import，
+    避免在 1676 个测试的收集期就硬加载它。
+    """
+    import src.kernels.identity as identity_module
+
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+    yield
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_memory_kernel(tmp_path_factory):
     """隔离 memory kernel 全局单例的持久化后端。

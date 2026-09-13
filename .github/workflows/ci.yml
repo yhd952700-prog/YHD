@@ -407,7 +407,10 @@ jobs:
       - name: Locate Chromium binary
         id: chromium
         run: |
-          BIN=$(ls "$HOME/.cache/ms-playwright/chromium-"*/chrome-linux/chrome 2>/dev/null | head -1)
+          # Playwright >=1.49 (Chrome for Testing) installs the full browser under
+          # chrome-linux64/ (not chrome-linux/). Accept both layouts so the step is
+          # deterministic regardless of which Playwright version `npx` resolves to.
+          BIN=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1)
           echo "path=$BIN" >> "$GITHUB_OUTPUT"
           test -n "$BIN" || { echo "::error ::playwright chromium binary not found"; exit 1; }
 

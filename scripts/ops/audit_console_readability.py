@@ -400,6 +400,17 @@ def find_chromium() -> Path | None:
                       "/usr/bin/chromium", "/usr/bin/google-chrome"):
         if Path(candidate).exists():
             return Path(candidate)
+    # Linux: Playwright-installed Chromium (Chrome for Testing lives under
+    # chrome-linux64/; older builds under chrome-linux/). Covers CI/loopback
+    # runs where LIUHAO_AUDIT_BROWSER is not supplied.
+    base = Path.home() / ".cache" / "ms-playwright"
+    if base.exists():
+        for pattern in ("chromium-*/chrome-linux64/chrome",
+                        "chromium-*/chrome-linux/chrome",
+                        "chromium_headless_shell-*/chrome-headless-shell-linux64/headless_shell"):
+            hits = sorted(base.glob(pattern))
+            if hits:
+                return hits[-1]
     return None
 
 
