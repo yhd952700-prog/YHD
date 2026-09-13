@@ -1,16 +1,33 @@
 """
-Audit Module for LiuHao AI OS
+DEPRECATED — Legacy audit compatibility layer. NOT the runtime audit chain.
 
-Provides:
-- Audit event data models
-- Audit event storage
-- Convenience functions for common audit events
+⚠️  This module (`src.audit`) is a *legacy compatibility shim*. Its events are
+written to a plain JSON file (default `data/audit/events.json`) and are **NOT**
+part of the tamper-evident audit chain.
+
+The authoritative, evidence-grade audit implementation is
+`src.kernels.audit` (SQLite-backed, hash-chain, `chain_state` anchor). That
+store is the **single source of truth** for audit evidence — it backs the
+L10K gate, the dashboard `audit.total_events` metric, and the reliability gate.
+
+`from src.audit import ...` is kept importable ONLY so older documentation and
+the quickstart self-check do not break. New code MUST use `src.kernels.audit`.
+Events emitted through this layer carry no tamper-evident chain.
 """
 
+import warnings
 from typing import Optional
 
 from .models import AuditEvent, EventType, EventStatus, Severity, auth_event, system_event, security_violation_event  # noqa: F401
 from .store import AuditStore
+
+warnings.warn(
+    "src.audit is a deprecated legacy compatibility layer and is NOT the "
+    "tamper-evident audit chain. Use src.kernels.audit (SQLite + hash chain) "
+    "for authoritative, evidence-grade audit logging.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 # Module-level store instance
 _default_store: Optional[AuditStore] = None

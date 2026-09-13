@@ -76,21 +76,25 @@ store.register(knowledge_plugin)
 #### 2. 主要业务流程
 
 ```python
-from src.audit import system_event, AuditStore
+# 权威审计实现：src.kernels.audit（SQLite + 哈希链，防篡改；是 L10K / dashboard
+# 的真实数据源）。旧路径 src.audit 仍可 import，但其事件写入 JSON 文件、不具防篡改链。
+from src.kernels.audit import AuditStore, AuditEventType, AuditScope, log_event
 from src.observability import Span, ObservabilityStore
 
-# 创建审计事件 - 用户咨询
-user_query = system_event(
-    "user_query", 
-    "gateway", 
-    severity="low", 
-    message="用户咨询: 退款政策",
-    request_id="req-12345",
-    trace_id="trace-abcde"
+# 创建审计事件 - 用户咨询（写入防篡改链）
+log_event(
+    AuditEventType.ACCESS_CHECK,
+    principal_id="gateway",
+    scope=AuditScope.L1,
+    outcome="allow",
+    details={
+        "action": "user_query",
+        "message": "用户咨询: 退款政策",
+        "request_id": "req-12345",
+        "trace_id": "trace-abcde",
+    },
 )
-
-store = AuditStore()
-store.emit(user_query)
+# 如需独立 store 实例做实验，用临时库：AuditStore(db_path="<临时文件>")
 
 # 创建追踪Span
 span = Span(
@@ -174,12 +178,15 @@ async def metrics():
 #### 日志分析
 
 ```python
-from src.audit import AuditStore, AuditEvent
+# 权威审计实现：src.kernels.audit（防篡改链）。旧路径 src.audit 仍可 import，
+# 但不具防篡改链。
+from src.kernels.audit import AuditStore
 
-# 查询错误率
-audit_store = AuditStore()
-error_events = audit_store.filter_by_severity("high")
-error_rate = len(error_events) / max(1, audit_store.get_stats()['total'])
+# 查询错误率（outcome=deny 视为失败/高危；链自带完整性）
+audit_store = AuditStore()  # 默认 audit_store.db（防篡改链）
+denied = audit_store.query_events(outcome="deny")
+stats = audit_store.get_stats()
+error_rate = len(denied) / max(1, stats["total_events"])
 
 print(f"错误率: {error_rate:.2%}")
 ```

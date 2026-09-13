@@ -18,7 +18,7 @@
 | **K06 任务图** | `src/ai/goal_task_graph.py` | Goal→Task CRUD | 依赖图 | 重规划 | **P0** | 6-8 |
 | **K07 插件沙箱** | `src/plugins/sandbox/backends/{base,subprocess,docker,gvisor}.py` | 4 后端 | 资源限制 | gVisor 实际执行 | P1 | 9-11 |
 | **K08 RBAC + ABAC** | `src/security/{rbac,rbac_store,abac}.py` | 角色 + 权限 | ABAC 策略 | 分布式同步 | P1 | 12-13 |
-| **K09 审计** | `src/audit/` + `src/security/audit_logger.py` | CryptoAuditLogger | 不可篡改链 | 异地备份 | P2 | 13-14 |
+| **K09 审计** | `src/kernels/audit/`（权威，SQLite+哈希链，防篡改） + `src/audit/`（遗留兼容层，仅 import 可用、不具防篡改链） + `src/security/audit_logger.py` | AuditStore / log_event / CryptoAuditLogger | 不可篡改链 | 异地备份 | P2 | 13-14 |
 | **K10 可观测性** | `src/observability/{tracing,metrics}.py` + `libs/liuhao-core/metrics.py` | Prometheus + OTel | Arize-Phoenix 集成 | 全链路追踪 | P1 | 14-15 |
 | **K11 灾备** | `src/sre/disaster/` | 基础备份 | 异地容灾 | 自动演练 | P2 | 16-17 |
 | **K12 弹性扩展** | `src/sre/scaling/` | 配置 | — | 实际扩缩容 | P2 | 18-19 |
@@ -39,7 +39,7 @@
 | **JARVIS** | 任务 / 计划 | `ai/goal_task_graph.py` | `tasks/` |
 | **JOCaSTA** | 沙箱 / 隔离 | `plugins/sandbox/` | `plugins/dependencies/` |
 | **KAREN** | 权限 / 治理 | `security/{rbac,abac}.py` | `security/rbac_store.py` |
-| **ENOCH** | 审计 / 不可篡改 | `security/audit_logger.py` + `audit/` | `security/rotation.py` |
+| **ENOCH** | 审计 / 不可篡改 | `security/audit_logger.py` + `kernels/audit/`（权威，防篡改链；`src/audit/` 为遗留兼容层，不具防篡改链） | `security/rotation.py` |
 | **ZOON** | 可观测性 / 反馈 | `observability/` + `libs/liuhao-core/metrics.py` | `feedback/` |
 
 **总计**: 10/10 DNA（覆盖 100%）/ 平均实现度 ~35%

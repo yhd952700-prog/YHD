@@ -23,7 +23,10 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # 4. 验证安装
-python -c "from src.audit import AuditEvent; print('Audit module OK')"
+# 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，防篡改，是真实数据源）。
+# 旧路径 src.audit 仍 import 可用，但已弃用、不具防篡改链。
+python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel (authoritative, tamper-evident) OK')"
+python -c "from src.audit import AuditEvent; print('Audit legacy compat layer importable (deprecated: not tamper-evident)')"
 python -c "from src.observability import Span; print('Observability module OK')"
 python -c "from src.performance import create_lru_cache; print('Performance module OK')"
 python -c "from src.integrations import Base, init_models; print('Integration module OK')"
@@ -33,23 +36,24 @@ python -c "from src.plugins.marketplace import Plugin, get_marketplace_store; pr
 ### 基本使用
 
 ```python
-from src.audit import auth_event, security_violation_event, AuditStore
+# 权威审计实现：src.kernels.audit（SQLite + 哈希链，防篡改，是真实证据源）。
+# 旧路径 src.audit 仍可 import，但其事件写入 JSON 文件、不具防篡改链，请勿用于真实审计。
+from src.kernels.audit import AuditStore, AuditEventType, AuditScope
 
-# 创建审计事件
-auth_ok = auth_event("authentication", "user1", True, source="auth_module")
-auth_fail = auth_event("authentication", "user1", False, source="auth_module")
-security = security_violation_event("authentication", "user1", "Failed login attempt")
+# 创建审计事件（示例写入临时库；生产用默认 AuditStore() 落到 audit_store.db 防篡改链）
+store = AuditStore(db_path="examples/audit_example.db")
+store.log_event(AuditEventType.ACCESS_ALLOWED, "user1", AuditScope.L1, "allow",
+                details={"note": "login ok"})
+store.log_event(AuditEventType.ACCESS_DENIED, "user1", AuditScope.L1, "deny",
+                details={"note": "login failed"})
+store.log_event(AuditEventType.HUMAN_SOVEREIGNTY_OVERRIDE, "user1", AuditScope.L1,
+                "conditional", details={"note": "Failed login attempt"})
 
-# 存储事件
-store = AuditStore()
-eid1 = store.emit(auth_ok)
-eid2 = store.emit(auth_fail)
-eid3 = store.emit(security)
-
-# 查看统计
+# 查看统计与链完整性
 stats = store.get_stats()
-print(f"总事件数: {stats['total']}")
-print(f"完整性验证: {store.verify_integrity()}")
+print(f"总事件数: {stats['total_events']}")
+ok, total = store.verify_integrity()
+print(f"完整性验证: {ok} (共 {total} 条)")
 ```
 
 ### 第一个插件
@@ -209,7 +213,7 @@ LiuHao-AI-OS/
 
 | 问题 | 解决方案 |
 |------|----------|
-| 审计事件未持久化 | 检查 `data/audit/events.json` 是否存在且可写 |
+| 审计事件未持久化 | 权威审计落在 `audit_store.db`（SQLite 防篡改链）；`src.audit` 遗留层写入 `data/audit/events.json` 且不具防篡改链，请勿用于真实审计 |
 | 插件注册失败 | 检查插件元数据是否完整，版本是否冲突 |
 | 沙箱超时 | 调整 `ResourceLimits.execution_time_limit` 或优化代码 |
 | 缓存命中率低 | 调整 `max_size` 或�查 key 是否一致 |

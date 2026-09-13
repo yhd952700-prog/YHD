@@ -65,7 +65,7 @@
 | 30 | `src/integrations/vault.py` | Vault client (HVAC) | Security Kernel | **KEEP** | 23 | Critical | Secret data | Vault | Existing tests | N/A | Phase 2 | PLANNED |
 | **OBSERVABILITY / EVENTS** |
 | 31 | `src/adapters/observability/` | OpenTelemetry adapter (traces/metrics/logs) | Event Kernel / Observability | **EXTEND** | 6 | Medium | Trace data | Event Kernel | Existing tests | N/A | Phase 2/14 | PLANNED |
-| 32 | `src/audit/` | Audit logging | Audit Kernel | **EXTEND** | 5 | High | Audit tables | Event Kernel | Existing tests | N/A | Phase 2 | PLANNED |
+| 32 | `src/audit/` | Legacy audit compat layer (JSON file, NOT tamper-evident). Authoritative audit = `src/kernels/audit` (SQLite + hash chain). | Audit Kernel | **EXTEND** | 5 | High | Audit tables | Event Kernel | Existing tests | N/A | Phase 2 | DEPRECATED (legacy compat; authoritative = src/kernels/audit) |
 | **MLOps / ANALYSIS** |
 | 33 | `src/mlops/` | Experiments, training, eval, model registry, A/B | ADA Kernel / Evaluation Kernel | **EXTEND** | 6 | Medium | MLOps tables | ADA Runtime | Existing tests | N/A | Phase 11/19 | PLANNED |
 | **BUSINESS / CRM** |
