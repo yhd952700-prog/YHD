@@ -23,29 +23,30 @@ import uuid
 
 from src.kernels._crosscutting import kernel_action
 
-# Attempt Vault Transit import; graceful fallback if unavailable
+# Vault availability probe.
+#
+# 2026-09-13 实测修正：此处原本是
+#     try: from vault_connect import VaultClient, secret_id
+#     except ImportError: <定义同名桩类>
+# 而 `vault_connect` 在 PyPI 上**根本不存在**（`pip index versions vault_connect`
+# 返回 "No matching distribution found"），也从未出现在 pyproject /
+# requirements.txt / oss-registry.yaml 的任何依赖清单里。后果有两条，
+# 都是这个项目反复吃过的亏：
+#   1. `VAULT_AVAILABLE` 恒为 False —— 这不是"可选依赖没装"，而是一条
+#      **永远走不到的分支**（幻影依赖）；
+#   2. 那个桩类的 `read()` 返回 `{"data": None}`、`write()/delete()` 静默丢弃
+#      —— 即"读密钥"会**静默返回空**而不报错（silent no-op）。
+# 实测该桩类与 `secret_id` 在本模块内外**均无任何消费方**（全仓 grep 零命中，
+# `VAULT_AVAILABLE` 也无人读取），故整体移除，不再保留会撒谎的桩。
+#
+# 真实的 Vault 实现不在本内核，而在 `src/security/vault_client.py`
+# （hvac + AppRole 认证）与 `src/integrations/vault/`（hvac + 单例 + secret_manager）。
+# 本内核只如实报告**客户端库是否可用**；内核层不得反向依赖那两层。
 try:
-    from vault_connect import VaultClient, secret_id
+    import hvac as _hvac  # noqa: F401
     VAULT_AVAILABLE = True
 except ImportError:
     VAULT_AVAILABLE = False
-
-    class VaultClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def read(self, *args, **kwargs):
-            return {"data": None}
-
-        def write(self, *args, **kwargs):
-            pass
-
-        def list(self, *args, **kwargs):
-            return []
-
-        def delete(self, *args, **kwargs):
-            pass
-    secret_id = None
 
 
 # ---------------------------------------------------------------------------
