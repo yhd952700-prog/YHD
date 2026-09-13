@@ -1,4 +1,23 @@
-version: '3.8'
+# 鎏灏（LIUHAO X）生产编排。
+#
+# 一次 `docker compose -f docker-compose.prod.yml up -d` 只起真正需要的东西：
+# api（单端口，同时服务 API + 驾驶舱）+ nginx。
+#
+# 为什么 redis / postgres 被移出默认启动
+# ------------------------------------
+# 它们此前是 api 的**硬依赖**（depends_on + 健康检查门），但代码里根本没有
+# 使用：src/distribution/* 中的 redis 引用全部是注释，SQLAlchemy 引擎默认就是
+# sqlite（见 src/integrations/orm_models.py 的 _DEFAULT_DB_URL）。也就是说，
+# 一次生产部署会先要求两个用不上的外部服务就绪，否则拒绝启动 —— 而且任何
+# 「只给一个端口 / 不给数据库服务」的环境（发布沙箱、单机部署）因此完全无法
+# 部署。现在它们退到 `infra` profile，需要时用 `--profile infra` 显式打开。
+#
+# 身份持久化落在 SQLite 卷里（LIUHAO_HUMAN_IDENTITIES_DB）。这是刻意的选择：
+#   * 内核不引入数据库驱动 —— Identity Kernel 只用标准库 sqlite3，
+#     src.kernels.identity._persistence 里说明了理由（不反转分层）；
+#   * 单机 / 单容器足以承载人类身份登记这种低频写入；
+#   * 需要跨机多副本时，SQLite 不够 —— 那需要一个真正的网络存储适配器，
+#     属于独立决策，不在本次范围内。
 
 services:
   api:
@@ -11,13 +30,17 @@ services:
       - "8080:8080"
     environment:
       - ENVIRONMENT=production
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - PORT=8080
+      # 应用当前不用 Postgres（默认 sqlite）。保留变量只为兼容既有 .env；
+      # 若将来真的切库，驱动与迁移都要一并补上。
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/liuhao_ai_os.db}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
       - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY}
+      # 身份持久化（Policy C-7）：默认 SQLite 后端。
+      # 不用数据库、只想用 JSON 种子文件的话，改为设置
+      # LIUHAO_HUMAN_IDENTITIES_FILE 并挂载该文件即可。
+      - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
       # Policy Controlled (C-6 decision, 2026-09-12): arm every HIGH and
       # CRITICAL kernel action except the audited exemptions recorded in
       # src/kernels/_enforcement.py (EXEMPT_ACTIONS). The Round 75 call-site
@@ -28,13 +51,15 @@ services:
       # (POST /v1/policy/approvals).
       # scripts/verify_armed_actions_are_inert.py turns CI red if a change
       # makes an armed action reachable.
+      #
+      # 注意：武装之后，一旦有 HIGH/CRITICAL 动作真的可达，就必须有人类能批准。
+      # 未登记任何人类 = 无人可批 = fail-closed（刻意默认）。网关启动时会以
+      # WARNING 明确打印这一点；登记用 scripts/register_human_identity.py。
       # Rollback: set this variable to the empty string.
       - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
+    volumes:
+      # 运行期状态：身份库 / SQLite / WAL 文件。
+      - liuhao_data:/app/data
     restart: unless-stopped
     deploy:
       resources:
@@ -45,12 +70,15 @@ services:
           memory: 1G
           cpus: '0.5'
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/v1/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
+    networks:
+      - liuhao-network
 
+  # 反向代理：把 80 转到 api。驾驶舱由 api 自己服务，这里不需要再配置静态目录。
   nginx:
     image: nginx:1.25-alpine
     container_name: liuhao-nginx
@@ -61,100 +89,52 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    networks:
+      - liuhao-network
 
+  # ---- 可选：外部依赖（当前代码未使用，按需开启）----
   postgres:
+    profiles: ["infra"]
     image: postgres:15-alpine
     container_name: liuhao-postgres
     environment:
       - POSTGRES_DB=liuhao_ai_os
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_USER=${POSTGRES_USER:-liuhao}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-liuhao}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d liuhao_ai_os"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-liuhao} -d liuhao_ai_os"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '1'
+    restart: unless-stopped
+    networks:
+      - liuhao-network
 
   redis:
+    profiles: ["infra"]
     image: redis:7-alpine
     container_name: liuhao-redis
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-liuhao}
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 5s
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: liuhao-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./config/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./config/monitoring/prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
     restart: unless-stopped
-
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: liuhao-alertmanager
-    ports:
-      - "9093:9093"
-    volumes:
-      - ./config/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
-      - alertmanager_data:/alertmanager
-    restart: unless-stopped
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: liuhao-grafana
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - ./config/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./config/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - prometheus
-    restart: unless-stopped
+    networks:
+      - liuhao-network
 
 volumes:
+  liuhao_data:
   postgres_data:
   redis_data:
-  prometheus_data:
-  alertmanager_data:
-  grafana_data:
 
 networks:
-  default:
+  # 每个 service 都显式挂到这个网络上，所以它必须是顶层声明过的网络名；
+  # 只写 `default: name:` 的话，service 里引用 liuhao-network 会报未定义。
+  liuhao-network:
     name: liuhao-network

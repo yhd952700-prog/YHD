@@ -16,14 +16,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-import json
 import logging
-import os
 from typing import Any, Dict, List, Optional, Set
 import uuid
 import threading
 
 from src.kernels._crosscutting import kernel_action
+from . import _persistence
 
 logger = logging.getLogger("liuhao.kernel.identity")
 
@@ -47,15 +46,23 @@ HUMAN_KIND = "human"
 
 #: Where registered human identities are persisted.
 #:
-#: ``IdentityManager`` holds identities in memory only, so a human registered
-#: through a one-off call would vanish on restart -- which would make the
-#: approval channel look wired while having nobody able to approve. Setting
-#: this variable to a JSON seed file is what makes registration durable.
-#: Unset (the default) means **no humans are registered**: fail-closed and
-#: honest, rather than falling back to a machine identity.
-HUMAN_IDENTITIES_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
+#: Re-exported from :mod:`._persistence`, which owns the storage layer and
+#: documents each backend. Kept importable from here because operator tooling
+#: (``scripts/register_human_identity.py``) has always resolved the variable
+#: through this module.
+HUMAN_IDENTITIES_FILE_ENV = _persistence.HUMAN_IDENTITIES_FILE_ENV
+
+#: Which persistent backend to use (``"file"`` default, or ``"sqlite"``), and
+#: the SQLite path when that backend is selected. See :mod:`._persistence`.
+HUMAN_IDENTITIES_BACKEND_ENV = _persistence.HUMAN_IDENTITIES_BACKEND_ENV
+HUMAN_IDENTITIES_DB_ENV = _persistence.HUMAN_IDENTITIES_DB_ENV
 
 #: ``metadata`` key for a human-friendly name, shown by operators' tooling.
+#:
+#: Must stay equal to ``_persistence.FIELD_DISPLAY_NAME``: the store serialises
+#: a registration under this exact key and the kernel reads it back out of
+#: ``AgentIdentity.metadata``. ``tests/kernels/identity/test_human_identity_persistence.py``
+#: pins the two together so they cannot drift apart silently.
 METADATA_DISPLAY_NAME_KEY = "display_name"
 
 
@@ -179,59 +186,42 @@ class IdentityManager:
             self._identities[INTERNAL_SERVICE_PRINCIPAL] = service_identity
             self._principal_index[INTERNAL_SERVICE_PRINCIPAL] = INTERNAL_SERVICE_PRINCIPAL
 
+        # Durable registry of humans, resolved once per manager. An
+        # unconfigured store resolves to a JSON store with an empty location,
+        # whose writes are no-ops -- so nothing changes for deployments that
+        # never opted in.
+        self._store = _persistence.resolve_human_identity_store()
         self._seed_human_identities()
 
     def _seed_human_identities(self) -> int:
-        """Load registered humans from the file named by the env var.
+        """Load registered humans from the configured store.
 
-        Returns how many were loaded. **Unset variable means zero humans** --
-        that is deliberately fail-closed rather than a silent fallback to a
-        machine identity (Policy C-7).
+        Returns how many were loaded. **An unconfigured store means zero
+        humans** -- that is deliberately fail-closed rather than a silent
+        fallback to a machine identity (Policy C-7).
 
-        A malformed or unreadable file is logged loudly and loads nothing.
+        A malformed or unreadable store is logged loudly and loads nothing.
         Crashing on it would take down every kernel consumer for a
         configuration problem; silently ignoring it would leave operators
         believing a human was registered when none was.
-        """
-        path = (os.environ.get(HUMAN_IDENTITIES_FILE_ENV) or "").strip()
-        if not path:
-            return 0
-        if not os.path.isfile(path):
-            logger.warning(
-                "%s is set to %r but no such file exists -- no human identity "
-                "can approve. Create it with scripts/register_human_identity.py.",
-                HUMAN_IDENTITIES_FILE_ENV, path,
-            )
-            return 0
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception as exc:  # noqa: BLE001 - config problem, not a crash
-            logger.error(
-                "could not read %s (%r): %s -- no human identity loaded",
-                HUMAN_IDENTITIES_FILE_ENV, path, exc,
-            )
-            return 0
 
-        if isinstance(payload, dict):
-            entries: List[Dict[str, Any]] = list(payload.get("humans") or [])
-        elif isinstance(payload, list):
-            entries = list(payload)
-        else:
-            logger.error(
-                "%s (%r) must be a JSON list or {'humans': [...]} -- got %s",
-                HUMAN_IDENTITIES_FILE_ENV, path, type(payload).__name__,
-            )
+        Which store is in use -- the JSON seed file or SQLite
+        (:mod:`._persistence`) -- is an operational choice this method does not
+        need to know about.
+        """
+        store = self._store
+        entries = store.load_all()
+        if not entries:
             return 0
 
         loaded = 0
         for entry in entries:
-            if not isinstance(entry, dict):
-                logger.error("skipping non-object entry in %r: %r", path, entry)
-                continue
-            principal = str(entry.get("principal") or "").strip()
+            principal = str(entry.get(_persistence.FIELD_PRINCIPAL) or "").strip()
             if not principal:
-                logger.error("skipping entry without a principal in %r", path)
+                logger.error(
+                    "skipping entry without a principal in %r (%s)",
+                    store.location, store.backend_name,
+                )
                 continue
             with self._lock:
                 if principal in self._principal_index:
@@ -247,23 +237,26 @@ class IdentityManager:
                 # built-in system/service identities are built the same way.
                 metadata: Dict[str, Any] = {
                     METADATA_KIND_KEY: HUMAN_KIND,
-                    "seeded_from": path,
+                    "seeded_from": store.location,
                 }
-                display_name = entry.get(METADATA_DISPLAY_NAME_KEY)
+                display_name = entry.get(_persistence.FIELD_DISPLAY_NAME)
                 if display_name:
                     metadata[METADATA_DISPLAY_NAME_KEY] = display_name
-                if isinstance(entry.get("registered_at"), str):
-                    metadata["registered_at"] = entry["registered_at"]
+                registered_at = entry.get(_persistence.FIELD_REGISTERED_AT)
+                if isinstance(registered_at, str) and registered_at.strip():
+                    metadata["registered_at"] = registered_at
                 else:
                     metadata["registered_at"] = utc_now().isoformat()
                 try:
-                    scope = IdentityScope(entry.get("scope") or IdentityScope.L0.value)
+                    scope = IdentityScope(
+                        entry.get(_persistence.FIELD_SCOPE) or IdentityScope.L0.value
+                    )
                 except ValueError:
                     scope = IdentityScope.L0
                 identity = AgentIdentity(
                     id=principal,
                     principal=principal,
-                    permissions=set(entry.get("permissions") or []),
+                    permissions=set(entry.get(_persistence.FIELD_PERMISSIONS) or []),
                     scope=scope,
                     trust_score=1.0,
                     metadata=metadata,
@@ -282,8 +275,44 @@ class IdentityManager:
                 )
             loaded += 1
         if loaded:
-            logger.info("loaded %d registered human identities from %r", loaded, path)
+            logger.info(
+                "loaded %d registered human identities from %s (%s)",
+                loaded, store.location, store.backend_name,
+            )
         return loaded
+
+    def _persist_human_identity(self, identity: AgentIdentity) -> bool:
+        """Write ``identity`` through to the store so it survives a restart.
+
+        ``IdentityManager`` is memory-only. Registering a human without
+        persisting it produces the worst possible failure mode for an approval
+        channel: it *looks* wired for the lifetime of the process, and after
+        the next restart nobody can approve a HIGH/CRITICAL action -- a silent
+        outage that only appears when sovereignty is finally needed.
+
+        Returns True when the store accepted the write. A ``False`` here means
+        the registration is in-memory only, which is the pre-existing behaviour
+        for an unconfigured store rather than an error.
+        """
+        metadata = identity.metadata if isinstance(identity.metadata, dict) else {}
+        return self._store.upsert(
+            {
+                _persistence.FIELD_PRINCIPAL: identity.principal,
+                _persistence.FIELD_DISPLAY_NAME: metadata.get(
+                    METADATA_DISPLAY_NAME_KEY
+                ),
+                _persistence.FIELD_PERMISSIONS: sorted(identity.permissions),
+                _persistence.FIELD_SCOPE: identity.scope.value,
+                _persistence.FIELD_REGISTERED_AT: (
+                    metadata.get("registered_at") or identity.created_at.isoformat()
+                ),
+                _persistence.FIELD_SOURCE: "runtime",
+            }
+        )
+
+    def describe_store(self) -> Dict[str, Any]:
+        """Report the identity store in use -- for boot logs and tooling."""
+        return _persistence.describe_human_identity_store(self._store)
 
     def _get_identity(self, identity_id: str) -> Optional[AgentIdentity]:
         """Get identity by ID."""
@@ -357,6 +386,11 @@ class IdentityManager:
         :func:`is_human_identity` accepts -- so callers cannot forget it.
         Humans are ``L0`` (the scope the codebase already labels "Human only").
 
+        Registration is written through to the configured store, so it survives
+        a process restart. Before that, a human registered at runtime existed
+        only in memory and the approval channel was empty again after the next
+        boot.
+
         Returns the identity, or ``None`` if the principal already exists
         (matching :meth:`create_identity`).
         """
@@ -365,13 +399,16 @@ class IdentityManager:
         if display_name:
             merged[METADATA_DISPLAY_NAME_KEY] = display_name
         merged.setdefault("registered_at", utc_now().isoformat())
-        return self.create_identity(
+        identity = self.create_identity(
             principal=principal,
             permissions=permissions,
             scope=IdentityScope.L0,
             trust_score=trust_score,
             metadata=merged,
         )
+        if identity is not None:
+            self._persist_human_identity(identity)
+        return identity
 
     def get_identity(self, identity_id: str) -> Optional[AgentIdentity]:
         """Get identity by ID."""

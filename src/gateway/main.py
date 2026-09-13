@@ -81,6 +81,36 @@ async def lifespan(app: FastAPI):
             _enf["env_var"],
         )
 
+    # Log at WARNING when nobody can approve, not INFO: uvicorn's default
+    # logging config leaves non-uvicorn loggers at WARNING, so an INFO line
+    # here would be invisible in exactly the deployment that needs it. "Zero
+    # humans" is a legitimate state but never a quiet one -- otherwise it is
+    # discovered only when a HIGH/CRITICAL action is first attempted.
+    from ..kernels.identity import get_identity_manager, is_human_identity
+    _identity_manager = get_identity_manager()
+    _store = _identity_manager.describe_store()
+    _humans = sorted(
+        identity.principal
+        for identity in _identity_manager.list_identities()
+        if is_human_identity(identity)
+    )
+    if _humans:
+        logger.info(
+            "Human identity store: %s @ %s -- %d registered human(s): %s",
+            _store["backend"],
+            _store["location"] or "(unconfigured)",
+            len(_humans),
+            ", ".join(_humans),
+        )
+    else:
+        logger.warning(
+            "Human identity store: %s @ %s -- 0 registered humans, so NOBODY "
+            "CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). "
+            "Register one with scripts/register_human_identity.py",
+            _store["backend"],
+            _store["location"] or "(unconfigured)",
+        )
+
     # Register health endpoints
     @health_router.get("/health", include_in_schema=False)
     async def health_check():
@@ -269,6 +299,13 @@ def get_app() -> FastAPI:
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     from .policy import router as policy_router
     app.include_router(policy_router)
+
+    # 单端口化：把驾驶舱构建产物挂到 /。
+    # 必须在**所有** API 路由之后注册 —— Starlette 按注册顺序匹配，后挂的
+    # "/" 不会遮蔽 /v1、/api、/docs；反过来则会把它们全部吃掉。
+    # 没有构建产物时自动跳过，API-only 部署行为不变。
+    from .console_static import mount_console
+    mount_console(app)
 
     return app
 

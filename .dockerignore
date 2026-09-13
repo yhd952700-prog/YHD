@@ -16,3 +16,15 @@ __pycache__/
 *.pyo
 .mypy_cache/
 .changes/
+
+# The image builds the console itself (node stage), so the local dependency
+# tree and any previous build output are pure weight in the build context.
+apps/console/console/node_modules/
+apps/console/console/dist/
+
+# Runtime state: a baked-in identity database would ship real registrations in
+# the image and be silently reset on every redeploy.
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

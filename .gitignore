@@ -87,3 +87,18 @@ LiuHao-O/*
 # 含真实人员姓名，且随部署主机而变 —— 属运维数据，不入库。
 # 样例见 config/human_identities.example.json
 config/human_identities.json
+
+# ===== 发布包（由 scripts/build_cloud_bundle.py 生成）=====
+# 它是 src/ 与前端 dist 的副本，入库只会带来 200 个必然漂移的冗余文件。
+# 需要时重新生成即可：python scripts/build_cloud_bundle.py
+deploy/cloud/
+
+# ===== 发布工具状态（认领 appId ↔ 本地目录，含本机绝对路径）=====
+# 发布后由工具写入，仅对本机有效：换机器/换目录都会重建。
+.wbapp_*.genie
+
+# ===== 运行期状态（身份库等）=====
+# *.sqlite3 已在上面忽略；补上 SQLite WAL 模式的伴生文件。
+data/
+*.sqlite3-wal
+*.sqlite3-shm

@@ -30,6 +30,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 
+#: 单端口模式下由网关服务的前端构建产物。
+#: 权威实现在 src/gateway/console_static.py；这里重复声明只是为了让启动器
+#: 能在**拉起进程之前**就给出可读的报错，而不是等健康探针超时。
+CONSOLE_DIST_ENV = "LIUHAO_CONSOLE_DIST"
+DEFAULT_CONSOLE_DIST = CONSOLE_DIR / "dist"
+
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8080
 DEFAULT_UI_PORT = 5173
@@ -56,6 +62,15 @@ def _node() -> str:
     if not found:
         raise SystemExit("未找到 node —— 驾驶舱需要 Node.js，请先安装或加进 PATH。")
     return found
+
+
+def _console_dist() -> Path | None:
+    """已构建的驾驶舱产物目录；没有就返回 None。"""
+    raw = (os.environ.get(CONSOLE_DIST_ENV) or "").strip()
+    candidate = Path(raw).expanduser() if raw else DEFAULT_CONSOLE_DIST
+    if not (candidate / "index.html").is_file():
+        return None
+    return candidate
 
 
 def _no_proxy_opener():
@@ -111,13 +126,22 @@ def main() -> int:
     parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT)
     parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT)
     parser.add_argument("--backend-only", action="store_true", help="只起网关")
+    parser.add_argument(
+        "--single-port",
+        action="store_true",
+        help="单端口模式：只起网关，由网关直接服务驾驶舱构建产物（dist）。"
+             "适用于容器 / 只开放一个端口的部署。",
+    )
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
+
+    if args.backend_only and args.single_port:
+        parser.error("--backend-only 与 --single-port 互斥（前者不含驾驶舱）")
 
     atexit.register(_shutdown_all)
 
     api_base = f"http://{args.host}:{args.api_port}"
-    ui_base = f"http://{args.host}:{args.ui_port}"
+    ui_base = api_base if args.single_port else f"http://{args.host}:{args.ui_port}"
 
     print("=" * 62)
     print("鎏灏 LIUHAO X — 启动")
@@ -150,29 +174,44 @@ def main() -> int:
         print("（--backend-only：驾驶舱未启动）")
         return _serve_forever()
 
-    print("[2/2] 驾驶舱（vite）")
-    vite_entry = CONSOLE_DIR / "node_modules" / "vite" / "bin" / "vite.js"
-    if not vite_entry.exists():
-        print(f"  [FAIL] 没找到 {vite_entry}")
-        print("         请先在 apps/console/console 下执行 npm install")
-        _shutdown_all()
-        return 1
-    _spawn(
-        [
-            _node(),
-            str(vite_entry),
-            "--host",
-            args.host,
-            "--port",
-            str(args.ui_port),
-        ],
-        CONSOLE_DIR,
-        "console",
-    )
-    if not _wait_http_ok(ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱"):
-        _shutdown_all()
-        return 1
-    _wait_http_ok(f"{ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
+    if args.single_port:
+        dist = _console_dist()
+        if dist is None:
+            print("  [FAIL] 单端口模式需要驾驶舱构建产物")
+            print(f"         未找到 {os.environ.get(CONSOLE_DIST_ENV) or DEFAULT_CONSOLE_DIST}/index.html")
+            print("         请先在 apps/console/console 下执行 npm run build")
+            _shutdown_all()
+            return 1
+        print("[2/2] 驾驶舱由网关直接服务（单端口）")
+        print(f"      源: {dist}")
+        if not _wait_http_ok(api_base + "/", STARTUP_TIMEOUT_S, "驾驶舱（同端口）"):
+            _shutdown_all()
+            return 1
+    else:
+        print("[2/2] 驾驶舱（vite）")
+        vite_entry = CONSOLE_DIR / "node_modules" / "vite" / "bin" / "vite.js"
+        if not vite_entry.exists():
+            print(f"  [FAIL] 没找到 {vite_entry}")
+            print("         请先在 apps/console/console 下执行 npm install")
+            print("         或用 --single-port 让网关直接服务已构建的 dist")
+            _shutdown_all()
+            return 1
+        _spawn(
+            [
+                _node(),
+                str(vite_entry),
+                "--host",
+                args.host,
+                "--port",
+                str(args.ui_port),
+            ],
+            CONSOLE_DIR,
+            "console",
+        )
+        if not _wait_http_ok(ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱"):
+            _shutdown_all()
+            return 1
+        _wait_http_ok(f"{ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
 
     print()
     print("=" * 62)
