@@ -80,7 +80,9 @@ git checkout legacy/ai-employee-2026-09-03
 
 ## 7. 遗留
 
-- 3 个**僵尸 PR** 属旧线，尚未处置：`#17`（p0/opentelemetry-adapter）、
-  `#5`（patch-2）、`#4`（patch-1）。它们基于旧 `main`，需单独决定是否关闭。
-- 分支 `develop`、`master`、`master`/`main` 多套并存，后续可再清理。
+- ✅ 3 个**僵尸 PR 已全部关闭**（Round 79，已用 GitHub API 核实）：`#17`（p0/opentelemetry-adapter）、
+  `#5`（patch-2）、`#4`（patch-1）均为 `closed` 并附关闭依据；4 个死实验分支已删，
+  SHA 备份在 `D:\WorkBuddyFiles\LIUHAO-旧线分支-SHA备份-20260912.txt`。
+  远端分支现为 3 个：`main` / `feat/mem0-langgraph-integration` / `wip/liuhao-x-evolve`。
+- 保留待裁决：`main`（旧线根）、`feat/mem0-langgraph-integration`（与正线无共同祖先，无法合入）。
 - 根 `README.md` 已重写为鎏灏版本（旧项目的 README 本就不在 wip 上）。

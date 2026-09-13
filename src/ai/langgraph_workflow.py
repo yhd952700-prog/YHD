@@ -39,6 +39,13 @@ except ImportError:
 from ..knowledge.memory import create_memory_manager
 from .observability import observe
 
+# 权威归属（2026-09-13 裁决）：本模块是**已评估、但未采纳**的备选引擎。
+# 能力层 SSOT 是 `LiuHao-O/packages/MAPPING.md`，其中 `goal` / `planning` / `task`
+# 三行均映射到 `src.ai.goal_task_graph`（手写 DAG），本模块**不在 SSOT 路径上**。
+# 保留原因：langgraph 已是核心依赖、本模块有独立测试，可作为未来有实测收益时的迁移候选。
+# 护栏：`tests/test_workflow_engine_authority.py` 钉死该归属，防止被静默翻转。
+ENGINE_AUTHORITY = "experimental"
+
 
 class GoalStatus(Enum):
     PENDING = "pending"

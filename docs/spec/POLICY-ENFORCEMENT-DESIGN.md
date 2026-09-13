@@ -1096,8 +1096,13 @@ retry inside its window」。**这句话对 HTTP 调用方是假的。** 实测�
 
 ### 10.14.5 未做的事（明确边界）
 
-- **未做 DB 持久化**：种子是 JSON 文件，不是数据库表。够用于单机部署；多副本/集中管理
-  需要独立的身份持久化方案（含 schema 与迁移），已记录为技术债，不在本轮范围。
+- ~~**未做 DB 持久化**~~ → **已补齐（Round 79）**：`src/kernels/identity/_persistence.py` 提供
+  双后端 `file`（默认，字节级等价原 JSON）/ `sqlite`（stdlib sqlite3 + WAL + 单语句 upsert，
+  并发安全）。后端选择顺序：显式 `LIUHAO_HUMAN_IDENTITIES_BACKEND` → 仅设
+  `LIUHAO_HUMAN_IDENTITIES_DB` 即选 sqlite → 否则回落到原 `LIUHAO_HUMAN_IDENTITIES_FILE`。
+  运维入口 `scripts/register_human_identity.py`（`--backend` / `--db` / `--list`）。
+  刻意不引 SQLAlchemy（避免反转分层 + 不把 ORM 拖进每个内核消费者）。
+  *（原文：「种子是 JSON 文件，不是数据库表…已记录为技术债」——该债已关闭。）*
 - **未新增 HTTP 登记端点**：与不加 `/v1/auth/login` 同理（§10.12.1），登记走本机脚本。
 - **未自动迁移存量身份**：改前不存在任何 `kind="human"` 的身份，无存量可迁。
 
