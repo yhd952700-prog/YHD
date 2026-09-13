@@ -51,7 +51,16 @@ def console_dist() -> Path:
 
 
 @pytest.fixture
-def client(console_dist):
+def client():
+    """A default gateway app.
+
+    Deliberately does **not** require a console bundle. The "API is not
+    shadowed" assertions below are exactly what must keep working in an
+    API-only deployment, and CI never builds the console -- so hanging this
+    fixture off the bundle would silently skip that coverage in CI, which is
+    precisely how a shadowing regression would slip through. Console-specific
+    tests ask for ``console_dist`` explicitly instead.
+    """
     # `with` runs lifespan; the health endpoints are registered inside it.
     with TestClient(get_app()) as test_client:
         yield test_client
@@ -155,7 +164,7 @@ class TestConsoleIsServed:
         assert response.headers["content-type"].startswith("text/html")
         assert "<!doctype html>" in response.text.lower()
 
-    def test_a_deep_link_falls_back_to_the_shell(self, client):
+    def test_a_deep_link_falls_back_to_the_shell(self, client, console_dist):
         # Client-side routes must survive a reload; otherwise every shareable
         # console URL 404s.
         response = client.get("/approvals")
@@ -170,7 +179,7 @@ class TestConsoleIsServed:
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
 
-    def test_only_navigation_methods_fall_back_to_the_shell(self, client):
+    def test_only_navigation_methods_fall_back_to_the_shell(self, client, console_dist):
         # A POST under an unknown path is an API call that missed, not a page
         # to render: it must keep its JSON 404.
         shell = client.get("/no-such-client-route")
@@ -212,9 +221,11 @@ class TestNoBuildOutputKeepsApiOnlyBehaviour:
         monkeypatch.setenv(CONSOLE_DIST_ENV, str(tmp_path / "absent"))
         assert is_installed(get_app()) is False
 
-    def test_the_fallback_is_installed_with_a_bundle(self):
-        # Guard the guard: the assertions above would pass for the wrong reason
-        # if the handler were never installed at all.
+    def test_the_fallback_is_installed_with_a_bundle(self, console_dist):
+        # Guard the guard: the assertion above would pass for the wrong reason
+        # if the handler were never installed at all. Skips in CI, where the
+        # console is never built -- the same API-only environment the check
+        # above is protecting.
         assert is_installed(get_app()) is True
 
     def test_the_api_still_works_without_a_bundle(self, monkeypatch, tmp_path):
