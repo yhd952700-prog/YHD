@@ -126,7 +126,12 @@ jobs:
     name: Observability Validation
     runs-on: ubuntu-latest
     needs: security
-    if: github.ref == 'refs/heads/main'
+    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
+    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
+    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
+    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
+    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    if: github.ref_name == github.event.repository.default_branch
 
     steps:
       - uses: actions/checkout@v4
@@ -265,7 +270,12 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main'
+    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
+    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
+    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
+    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
+    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    if: github.ref_name == github.event.repository.default_branch
     timeout-minutes: 60
 
     steps:
@@ -294,7 +304,12 @@ jobs:
     name: Smoke Test
     runs-on: ubuntu-latest
     needs: integration
-    if: github.ref == 'refs/heads/main'
+    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
+    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
+    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
+    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
+    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    if: github.ref_name == github.event.repository.default_branch
     timeout-minutes: 15
 
     steps:
@@ -493,7 +508,12 @@ jobs:
     name: P0 Gate Check
     runs-on: ubuntu-latest
     needs: [test, security, observability]
-    if: github.ref == 'refs/heads/main'
+    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
+    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
+    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
+    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
+    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    if: github.ref_name == github.event.repository.default_branch
     steps:
       - name: Check STAGING_DATABASE_URL
         run: |
