@@ -21,6 +21,8 @@ import uuid
 import threading
 import json
 
+import httpx
+
 from src.kernels._crosscutting import kernel_action
 
 
@@ -182,6 +184,15 @@ class ProtocolAdapter:
         """Receive message via this protocol. Override in subclasses."""
         raise NotImplementedError
 
+    def is_available(self) -> bool:
+        """Whether this adapter can actually send/receive in this build.
+
+        Callers may check this up front to avoid attempting a send that is
+        known to be unsupported. Defaults to True; adapters that are present
+        but not functional (e.g. an unimplemented protocol) override this.
+        """
+        return True
+
     def serialize(self, message: Message) -> bytes:
         """Serialize message for transport."""
         return json.dumps(message.to_dict()).encode("utf-8")
@@ -226,46 +237,110 @@ class InternalAdapter(ProtocolAdapter):
 
 
 class HTTPAdapter(ProtocolAdapter):
-    """HTTP/REST protocol adapter."""
+    """HTTP/REST protocol adapter (real synchronous client).
+
+    Performs a genuine synchronous HTTP POST to ``config.endpoint`` using the
+    declared ``httpx`` dependency. A message is reported DELIVERED only when the
+    server answers with a 2xx status. Any failure — connection error, timeout,
+    non-2xx, or serialization error — marks the message FAILED, records the
+    reason in ``message.metadata["error"]`` and returns False. There is no
+    silent-success path: a False return always means the message was NOT
+    delivered.
+
+    This adapter is a client only; it never listens for inbound requests, so
+    ``receive()`` always returns None by design.
+    """
 
     def __init__(self, config: AdapterConfig):
         super().__init__(config)
-        # In production, would use httpx or aiohttp
-        self._client = None
+        # Timeout is configurable via config.config["timeout"] (seconds).
+        self._timeout = float(config.config.get("timeout", 5.0))
+        self._client = httpx.Client(timeout=self._timeout)
 
     def send(self, message: Message) -> bool:
-        """Send via HTTP POST."""
-        # Simulated - in production would make actual HTTP request
-        message.status = MessageStatus.SENT
-        message.sent_at = utc_now()
-        # Simulate delivery
-        message.status = MessageStatus.DELIVERED
-        message.delivered_at = utc_now()
-        return True
+        """POST the message to ``config.endpoint``; return True only on 2xx."""
+        try:
+            payload = self.serialize(message)
+        except Exception as exc:  # Serialization failure must not be silent.
+            message.status = MessageStatus.FAILED
+            message.metadata["error"] = f"serialization failed: {exc}"
+            return False
+
+        try:
+            response = self._client.post(
+                self.config.endpoint,
+                content=payload,
+                headers={"Content-Type": "application/json"},
+            )
+        except Exception as exc:
+            message.status = MessageStatus.FAILED
+            message.metadata["error"] = f"request failed: {exc}"
+            return False
+
+        if 200 <= response.status_code < 300:
+            message.status = MessageStatus.SENT
+            message.sent_at = utc_now()
+            message.status = MessageStatus.DELIVERED
+            message.delivered_at = utc_now()
+            return True
+
+        message.status = MessageStatus.FAILED
+        message.metadata["error"] = f"server returned HTTP {response.status_code}"
+        return False
 
     def receive(self) -> Optional[Message]:
-        """Receive via HTTP (server mode)."""
+        """Not supported — this adapter is an HTTP client, not a server.
+
+        It never listens for inbound requests; callers should not expect to
+        receive messages through this adapter.
+        """
         return None
+
+    def close(self) -> None:
+        """Release the underlying httpx client and its connections."""
+        if self._client is not None:
+            self._client.close()
 
 
 class WebSocketAdapter(ProtocolAdapter):
-    """WebSocket protocol adapter."""
+    """WebSocket protocol adapter (send not implemented — honest refusal).
+
+    The project deliberately ships without a WebSocket client dependency
+    (``websockets`` is not declared, and adding third-party deps is guarded by
+    a four-place sync requirement). Rather than fake a successful send, this
+    adapter reports its unavailability truthfully: ``send()`` always marks the
+    message FAILED with an actionable reason and returns False, and
+    ``is_available()`` returns False so callers can detect the dead end up
+    front instead of discovering it only after a send attempt.
+
+    The adapter is intentionally still registered (see ``_register_builtin_adapters``)
+    so that "WS unsupported" is observable at runtime rather than silently absent.
+    """
+
+    supports_send = False
 
     def __init__(self, config: AdapterConfig):
         super().__init__(config)
         self._connections: Dict[str, Any] = {}
 
+    def is_available(self) -> bool:
+        """WebSocket send is not implemented in this build."""
+        return False
+
     def send(self, message: Message) -> bool:
-        """Send via WebSocket."""
-        # Simulated
-        message.status = MessageStatus.SENT
-        message.sent_at = utc_now()
-        message.status = MessageStatus.DELIVERED
-        message.delivered_at = utc_now()
-        return True
+        """Refuse to send: no WebSocket client dependency is available.
+
+        Marks the message FAILED with an actionable reason and returns False,
+        so callers never receive a false DELIVERED status.
+        """
+        message.status = MessageStatus.FAILED
+        message.metadata["error"] = (
+            "WebSocket send not implemented: missing WS client dependency"
+        )
+        return False
 
     def receive(self) -> Optional[Message]:
-        """Receive via WebSocket."""
+        """Not supported — no WebSocket client/server is available in this build."""
         return None
 
 

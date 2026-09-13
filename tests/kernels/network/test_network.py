@@ -5,16 +5,36 @@ handler, message round-trip (to_dict/from_dict), adapter
 serialize/deserialize, route add/remove and pattern matching, no-route
 failure, message history and correlation chains, and bus stats.
 """
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 from src.kernels.network import (
-    InternalAdapter,
     Message,
     MessageStatus,
     NetworkBus,
     ProtocolType,
     Route,
 )
+
+
+# Local server used to exercise the (now real) HTTP adapter honestly.
+class _TestHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+
+    def log_message(self, *args):
+        pass
+
+
+def _start_server():
+    server = HTTPServer(("127.0.0.1", 0), _TestHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 @pytest.fixture
@@ -91,9 +111,24 @@ class TestRouting:
             id="svc", pattern="svc.*", protocol=ProtocolType.HTTP,
             adapter="http", priority=200,
         ))
-        m = bus.route(Message(type="t", content="x", source="s", destination="svc.foo"))
-        assert m.status == MessageStatus.DELIVERED
-        assert m.protocol == ProtocolType.HTTP
+        # The HTTP adapter now performs a real POST; point it at a live
+        # local server so the DELIVERED assertion reflects genuine delivery
+        # rather than the old simulated success.
+        server = _start_server()
+        try:
+            http_adapter = bus.get_adapter(ProtocolType.HTTP)
+            http_adapter.config.endpoint = "http://127.0.0.1:{}".format(
+                server.server_address[1]
+            )
+            m = bus.route(Message(type="t", content="x", source="s", destination="svc.foo"))
+            assert m.status == MessageStatus.DELIVERED
+            assert m.protocol == ProtocolType.HTTP
+        finally:
+            server.shutdown()
+            server.server_close()
+            http_adapter = bus.get_adapter(ProtocolType.HTTP)
+            if http_adapter is not None:
+                http_adapter.close()
 
     def test_pattern_prefix_match(self, bus):
         bus.remove_route("internal_default")

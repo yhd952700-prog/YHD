@@ -18,6 +18,19 @@ capability-registry:
   version: v3.0
   total_capabilities: 14
   total_layers: 14
+  # ---------------------------------------------------------------------------
+  # 数字说明（防下一人误判「14 vs 12」）：
+  # 1) total_capabilities: 14 = 上方 capabilities: 段登记条目数
+  #    （LHX-C-001..014，一一对应 14 个 OS 内核），与 docs/spec/KERNEL-CANON.md
+  #    权威清单的 14 个内核完全一致（12 §112 + audit §113 + plugin §115）。
+  #    注意：src/kernels/capability/__init__.py 的 _register_builtin_capabilities
+  #    只自动注册 12 个（§112 那 12 个，不含 LHX-C-013 audit 与 LHX-C-014 plugin，
+  #    二者各有自己的注册/存储路径）。「14 vs 12」是「完整内核清单(14)」与
+  #    「内置自动注册子集(12)」在比不同范围，并非矛盾；14 是内核数，正确，勿改。
+  # 2) total_layers: 14 = 下方 capability-layers: 段条目数
+  #    （LHX-L-001..014，更高层 src/ai/ 能力层，组合内核而成），
+  #    是与 capabilities 不同的命名空间（LHX-L-* ≠ LHX-C-*），请勿混淆。
+  # ---------------------------------------------------------------------------
   capabilities:
   - id: LHX-C-003
     legacy_id: context_compression
