@@ -6,11 +6,15 @@
     .venv\\Scripts\\python.exe scripts\\start_liuhao.py          # 全栈
     .venv\\Scripts\\python.exe scripts\\start_liuhao.py --backend-only
     .venv\\Scripts\\python.exe scripts\\start_liuhao.py --no-browser
+    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --single-port --https   # 单端口 + 本地 HTTPS
 
 设计约束：
   * 不依赖 Docker（本机 Docker daemon 常常没起），走原生进程。
   * 本机有 HTTP 代理，所有本机探测必须显式绕代理，否则会误报不通。
   * Ctrl+C 时把子进程一起带走，不留孤儿 uvicorn / vite。
+  * --https 会在控制台之上叠加一个本地 TLS 反向代理（scripts/ops/https_proxy.py），
+    用于让手机端 PWA 处于安全上下文、从而能「安装应用 / 添加到主屏幕」。
+    证书为自签，需放进 deploy/cloud/certs/ 并由手机一次性信任（见交付说明）。
 """
 
 from __future__ import annotations
@@ -100,12 +104,67 @@ def _wait_http_ok(url: str, timeout: float, label: str) -> bool:
     return False
 
 
-def _spawn(cmd: list[str], cwd: Path, label: str) -> subprocess.Popen:
+def _spawn(cmd: list[str], cwd: Path, label: str, env: dict | None = None) -> subprocess.Popen:
     print(f"  [$] ({cwd.name}) {' '.join(cmd)}")
-    popen = subprocess.Popen(cmd, cwd=str(cwd))
+    popen = subprocess.Popen(cmd, cwd=str(cwd), env=env)
     _children.append(popen)
     print(f"       {label} pid={popen.pid}")
     return popen
+
+
+def _wait_https_ok(url: str, timeout: float, label: str) -> bool:
+    """同 _wait_http_ok，但走 TLS 且容忍自签证书（不校验主机名/链）。"""
+    import ssl
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx)
+    )
+    deadline = time.monotonic() + timeout
+    waited = 0.0
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(url, timeout=3) as resp:
+                if 200 <= resp.status < 500:
+                    print(f"  [ok] {label} 就绪（{waited:.1f}s，HTTPS {resp.status}）")
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(POLL_INTERVAL_S)
+        waited += POLL_INTERVAL_S
+    print(f"  [FAIL] {label} 在 {timeout:.0f}s 内没起来，详见上方进程输出")
+    return False
+
+
+def _start_https_proxy(args: argparse.Namespace) -> None:
+    """在控制台之上叠加本地 TLS 反向代理（受管子进程，Ctrl+C 一起带走）。"""
+    https_port = args.https_port
+    backend_port = args.api_port if args.single_port else args.ui_port
+    cert = os.environ.get("LIUHAO_TLS_CERT") or str(
+        ROOT / "deploy" / "cloud" / "certs" / "liuhao-local.pem"
+    )
+    key = os.environ.get("LIUHAO_TLS_KEY") or str(
+        ROOT / "deploy" / "cloud" / "certs" / "liuhao-local.key"
+    )
+    if not (os.path.isfile(cert) and os.path.isfile(key)):
+        print(f"  [skip] HTTPS 代理未启动：缺少证书 {cert}")
+        print("         用 openssl 生成自签证书（SAN 含本机局域网 IP）后重试。")
+        return
+    proxy_env = dict(os.environ)
+    proxy_env["LIUHAO_PROXY_BACKEND_HOST"] = args.host
+    proxy_env["LIUHAO_PROXY_BACKEND_PORT"] = str(backend_port)
+    proxy_env["LIUHAO_TLS_PORT"] = str(https_port)
+    proxy_env["LIUHAO_TLS_CERT"] = cert
+    proxy_env["LIUHAO_TLS_KEY"] = key
+    https_proxy = ROOT / "scripts" / "ops" / "https_proxy.py"
+    if not https_proxy.is_file():
+        print(f"  [skip] HTTPS 代理未启动：找不到 {https_proxy}")
+        return
+    _spawn([_venv_python(), "-u", str(https_proxy)], ROOT, "https-proxy", proxy_env)
+    _wait_https_ok(f"https://{args.host}:{https_port}/", 30.0, "HTTPS 代理")
+    print(f"      手机端安装地址： https://{args.host}:{https_port}/")
 
 
 def _shutdown_all() -> None:
@@ -133,6 +192,12 @@ def main() -> int:
              "适用于容器 / 只开放一个端口的部署。",
     )
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help="叠加本地 HTTPS 反向代理（默认端口 8443），供手机端 PWA 安装。需自签证书。",
+    )
+    parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
     args = parser.parse_args()
 
     if args.backend_only and args.single_port:
@@ -212,6 +277,9 @@ def main() -> int:
             _shutdown_all()
             return 1
         _wait_http_ok(f"{ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
+
+    if args.https:
+        _start_https_proxy(args)
 
     print()
     print("=" * 62)
