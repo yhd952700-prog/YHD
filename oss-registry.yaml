@@ -285,6 +285,15 @@ components:
     used: "yes"
     risk: low
     action: 保持
+  - name: hypothesis
+    import_name: hypothesis
+    license: MPL-2.0
+    category: testing
+    used: "yes"
+    risk: low
+    action: 保持 —— 驱动 Policy 执法链的属性测试（tests/test_policy_properties.py，
+      把「非白名单主体恒不可得 ALLOW」等安全不变量变成可机器搜索反例的门禁）。
+      MPL-2.0 为文件级 copyleft：仅使用、未修改其源文件，无传染风险。
 
   # ---------------- 杂项 ----------------
   - name: pyyaml

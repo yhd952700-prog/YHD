@@ -21,6 +21,10 @@ dependencies = [
     "uvicorn>=0.29.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    # hypothesis 驱动 Policy 执法链的属性测试（tests/test_policy_properties.py）。
+    # 与 pytest 同理放在**运行期依赖**而非 dev 组：CI 的 test job 只执行
+    # `pip install -e .`，dev 依赖不会安装，否则 CI 收集测试时 ModuleNotFoundError。
+    "hypothesis>=6.100",
     "pyyaml>=6.0.1",
     "mem0ai>=2.0.20",
     "langgraph>=0.2.0",
