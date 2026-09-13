@@ -46,6 +46,8 @@ SECRET = os.environ.get("LIUHAO_AUDIT_SECRET", "Boss-Console-Demo-2026")
 CDP_PORT = int(os.environ.get("LIUHAO_AUDIT_CDP_PORT", "9344"))
 OUT = Path(os.environ.get("LIUHAO_AUDIT_OUT", r"D:\WorkBuddyFiles\screenshots\audit"))
 PROFILE = Path(os.environ.get("LIUHAO_AUDIT_PROFILE", r"D:\cache\temp\cdp-audit-profile"))
+# Chrome 启动日志统一落盘（CI 上 /tmp/audit-out，会被 failure 时上传），避免 stdout 被吞。
+CHROME_LOG = OUT / "chrome.log"
 
 MODES: list[tuple[str, int, int, int, bool]] = [
     ("desktop", 1440, 900, 1, False),
@@ -274,19 +276,29 @@ async def run() -> int:
     print(f"页面清单（自 nav.ts 解析，{len(keys)} 页）：{' '.join(keys)}")
     print(f"形态：{'、'.join(m[0] for m in MODES)}")
 
-    chrome = subprocess.Popen(
-        [str(browser), "--headless=new", f"--remote-debugging-port={CDP_PORT}",
-         f"--user-data-dir={PROFILE}", "--no-first-run", "--no-default-browser-check",
-         "--disable-extensions", "--disable-background-networking",
-         "--hide-scrollbars", "--force-device-scale-factor=1", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    chrome_args = [
+        str(browser), "--headless=new", f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={PROFILE}", "--no-first-run", "--no-default-browser-check",
+        "--disable-extensions", "--disable-background-networking",
+        "--hide-scrollbars", "--force-device-scale-factor=1",
+        # 加固：runner 的 /dev/shm 通常很小，headless 审计也不需要 GPU —— 两项均安全。
+        "--disable-dev-shm-usage", "--disable-gpu",
+    ]
+    # 仅在 CI runner（用户命名空间 / AppArmor 受限）上显式解除沙箱；本地默认保留沙箱。
+    if os.environ.get("LIUHAO_AUDIT_NO_SANDBOX") == "1":
+        chrome_args.append("--no-sandbox")
+    chrome_args.append("about:blank")
+    # Chrome stdout/stderr 落盘而非丢弃：连不上 CDP 时可读日志诊断（见 report_cdp_failure）。
+    CHROME_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(CHROME_LOG, "w", encoding="utf-8", errors="replace") as _clog:
+        chrome = subprocess.Popen(chrome_args, stdout=_clog, stderr=subprocess.STDOUT)
     violations: list[tuple[str, str, dict]] = []
     runtime: list[tuple[str, str, str]] = []
     coverage = 0
     try:
-        ws_url = await wait_for_target()
+        ws_url = await wait_for_target(chrome, CHROME_LOG)
         if not ws_url:
-            print("无法连接 CDP", file=sys.stderr)
+            report_cdp_failure(chrome, CHROME_LOG)
             return 2
         async with websockets.connect(ws_url, max_size=256 * 1024 * 1024) as ws:
             asyncio.create_task(pump(ws))
@@ -332,11 +344,13 @@ async def run() -> int:
 
             await evaluate(ws, "localStorage.removeItem('liuhao.mode'); localStorage.removeItem('liuhao.theme')")
     finally:
-        chrome.terminate()
-        try:
-            chrome.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            chrome.kill()
+        # 若 Chrome 已自行退出（如沙箱受限），不要再 terminate，避免 ProcessLookupError。
+        if chrome.poll() is None:
+            chrome.terminate()
+            try:
+                chrome.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                chrome.kill()
         shutil.rmtree(PROFILE, ignore_errors=True)
 
     print("\n" + "=" * 74)
@@ -422,9 +436,35 @@ def reachable(url: str) -> bool:
         return False
 
 
-async def wait_for_target():
+def report_cdp_failure(chrome, log_path):
+    """CDP 连不上时打印诊断：进程是否已退出、退出码，以及 Chrome 输出尾部（约 40 行）。"""
+    print(f"无法连接 CDP（http://127.0.0.1:{CDP_PORT}/json/list）", file=sys.stderr)
+    rc = chrome.poll() if chrome is not None else None
+    if rc is not None:
+        print(f"Chrome 进程已退出，退出码 {rc}（无需等待完整超时，立刻失败）", file=sys.stderr)
+    else:
+        print("Chrome 进程仍在运行，但 /json/list 无响应", file=sys.stderr)
+    log = Path(log_path) if log_path else None
+    if log and log.exists():
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        shown = lines[-40:]
+        print(f"--- Chrome 输出尾部（显示 {len(shown)}/{len(lines)} 行，落盘于 {log}）---",
+              file=sys.stderr)
+        for line in shown:
+            print(line, file=sys.stderr)
+    else:
+        print("（未找到 Chrome 日志文件，无法进一步诊断）", file=sys.stderr)
+
+
+async def wait_for_target(chrome=None, log_path=None):
     deadline = time.time() + 40
     while time.time() < deadline:
+        # Chrome 已在等待期间退出：无需白等满超时，立即让上层诊断退出码。
+        if chrome is not None and chrome.poll() is not None:
+            return None
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/list", timeout=2) as r:
                 targets = json.load(r)

@@ -468,6 +468,9 @@ jobs:
           LIUHAO_AUDIT_BROWSER: ${{ steps.chromium.outputs.path }}
           LIUHAO_AUDIT_OUT: /tmp/audit-out
           LIUHAO_AUDIT_PROFILE: /tmp/cdp-profile
+          # CI runner 上解除沙箱：ubuntu-latest 默认 unprivileged userns 受限，
+          # Chrome 起不来即「无法连接 CDP」。本地默认不加（保持沙箱）。
+          LIUHAO_AUDIT_NO_SANDBOX: "1"
         run: python scripts/ops/audit_console_readability.py
 
       - name: Stop gateway
