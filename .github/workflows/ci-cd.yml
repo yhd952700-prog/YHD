@@ -98,9 +98,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deploy to Staging
         run: |
-          echo "Deploying to staging..."
-          # kubectl set image deployment/liuhao-ai-os api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          echo "Staging deployment simulated"
+          echo "::error::No real staging deployment is configured in this workflow."
+          echo "This step used to end with 'Staging deployment simulated', so the job"
+          echo "reported SUCCESS for a deployment that deployed nothing. It now fails"
+          echo "on purpose: a green pipeline has to mean something actually shipped."
+          echo "The real, verified CD path is .github/workflows/verify_metrics_persist.yml."
+          exit 1
 
   deploy-production:
     needs: deploy-staging
@@ -110,6 +113,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deploy to Production
         run: |
-          echo "Deploying to production..."
-          # kubectl set image deployment/liuhao-ai-os api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          echo "Production deployment simulated"
+          echo "::error::No real production deployment is configured in this workflow."
+          echo "This step used to end with 'Production deployment simulated', so the job"
+          echo "reported SUCCESS for a deployment that deployed nothing. It now fails"
+          echo "on purpose: a green pipeline has to mean something actually shipped."
+          echo "The real, verified CD path is .github/workflows/verify_metrics_persist.yml."
+          exit 1
