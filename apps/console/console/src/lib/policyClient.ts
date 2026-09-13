@@ -14,8 +14,13 @@
  * 因此本模块把令牌作为一等信息对待：没有令牌时不假装「安全运行」，而是如实
  * 报告「未认证」。
  *
- * 令牌只存 sessionStorage —— 关闭标签页即丢弃，不长期驻留在浏览器里。
+ * 令牌不再由本模块自己存储 —— 它委托给 ``lib/auth.ts`` 的会话层。三端共用一个
+ * 会话，若审批面板继续维护第二份令牌副本，就会出现「控制台已登录但审批面板说
+ * 未认证」这类两份真相打架的情况。
  */
+
+import { clearSession, currentToken, decodeToken, saveSession } from './auth';
+
 
 /** 内核层拦截配置快照（GET /v1/policy/enforcement 的真实形状）。 */
 export interface EnforcementSnapshot {
@@ -49,45 +54,52 @@ export interface ApprovalList {
   enforcement: EnforcementSnapshot;
 }
 
-/** 令牌存储键。sessionStorage：关标签页即失效。 */
-const TOKEN_KEY = 'liuhao.approval_token';
-
-/** 读取当前令牌（空串表示未认证）。 */
+/** 读取当前令牌（空串表示未认证）。委托给统一会话层。 */
 export function getToken(): string {
-  try {
-    return sessionStorage.getItem(TOKEN_KEY) || '';
-  } catch {
-    return '';
-  }
+  return currentToken();
 }
 
-/** 写入或清除令牌（传空串即清除）。 */
+/**
+ * 写入或清除令牌（传空串即清除）。
+ *
+ * 手工粘贴令牌的入口仍然保留：粘贴进来的令牌会被还原成一个会话对象（主体
+ * 与有效期从 JWT 载荷解析），后续所有请求走同一条鉴权路径。无法解析的令牌
+ * 一律清除，而不是留着一个永远失败的"令牌"。
+ */
 export function setToken(token: string): void {
   const value = (token || '').trim();
-  try {
-    if (value) sessionStorage.setItem(TOKEN_KEY, value);
-    else sessionStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // sessionStorage 不可用（隐私模式）——不抛错，UI 会如实显示未认证
+  if (!value) {
+    clearSession();
+    return;
   }
+  const decoded = decodeToken(value);
+  if (!decoded) {
+    clearSession();
+    return;
+  }
+  saveSession(
+    {
+      token: value,
+      principal: decoded.subject,
+      displayName: null,
+      scope: null,
+      permissions: [],
+      expiresAt: decoded.expiresAt,
+      client: decoded.client ?? 'web',
+    },
+    false,
+  );
 }
 
 /**
  * 令牌的近似有效期展示用。
  * JWT 载荷只用于**本地显示**，不作为任何授权判断依据（后端始终自行校验签名）。
+ * 解析逻辑统一在会话层，避免这里再实现一遍 base64url 解码而两处走偏。
  */
 export function describeToken(token: string): { subject: string; expiresAt: number } | null {
-  const parts = (token || '').split('.');
-  if (parts.length !== 3) return null;
-  try {
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
-    const payload = JSON.parse(atob(b64 + pad)) as { sub?: string; exp?: number };
-    if (!payload.sub) return null;
-    return { subject: String(payload.sub), expiresAt: Number(payload.exp ?? 0) };
-  } catch {
-    return null;
-  }
+  const decoded = decodeToken(token);
+  if (!decoded) return null;
+  return { subject: decoded.subject, expiresAt: decoded.expiresAt };
 }
 
 export class PolicyAuthError extends Error {}

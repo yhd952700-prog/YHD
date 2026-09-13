@@ -4,6 +4,7 @@
 
 - ``GET /v1/dashboard/summary``   系统摘要（状态 / 运行时长 / provider / 会话 / 审计统计）
 - ``GET /v1/dashboard/activity``  最近动态（真实审计事件）
+- ``GET /v1/dashboard/analytics`` 图表数据（真实审计时序 + 真实事件分布）
 
 设计要点（NO-FAKE）：
 
@@ -149,3 +150,118 @@ def dashboard_activity(limit: int = Query(8, ge=1, le=100)) -> Dict[str, Any]:
     """最近动态：真实审计事件（已过滤 kernel state_change 噪声）。"""
     items = recent_activity(limit=limit)
     return {"activity": items, "count": len(items), "limit": limit}
+
+
+# ---------------------------------------------------------------------------
+# 分析面（时序 + 分布）—— 仅供驾驶舱图表使用
+# ---------------------------------------------------------------------------
+#
+# 与 summary/activity 同一 NO-FAKE 约定：图表的每一点都来自审计存储的真实
+# 事件。**不做**趋势外推、不做平滑填充 —— 某天没有事件就是 0，那是真实的 0，
+# 不是缺失数据。审计不可用时返回 available:false + error，前端必须显示
+# "数据不可用"而不是画一条假曲线。
+
+#: 时序与分布都排除的噪声事件类型（kernel 内部 state_change 占比 >99%）。
+_ANALYTICS_NOISE = frozenset({"state_change"})
+
+#: 单次查询的事件上限。审计量级可达数万条；超过这个数只统计最近的部分，
+#: 并由 ``truncated`` 字段如实告知，避免悄悄给出偏低的数字。
+_ANALYTICS_MAX_EVENTS = 200_000
+
+
+def _day_key(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(timestamp))
+
+
+def event_timeseries(days: int = 14) -> Dict[str, Any]:
+    """按天统计真实审计事件（total / allowed / denied）。"""
+    from ..kernels.audit import audit_query
+
+    days = max(1, min(90, int(days)))
+    now = time.time()
+    # 以"今天"为最后一天，向前取 days 天。
+    start = now - (days - 1) * 86400
+    start = time.mktime(
+        time.strptime(_day_key(start), "%Y-%m-%d")
+    )
+
+    try:
+        events = audit_query(start_time=start, limit=_ANALYTICS_MAX_EVENTS)
+    except Exception as exc:
+        logger.warning("event_timeseries query failed: %s", exc, exc_info=True)
+        return {"available": False, "error": str(exc), "days": []}
+
+    # 预置全部日期：没有事件的日子显示 0 而不是从轴上消失（那会歪曲趋势）。
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for offset in range(days):
+        key = _day_key(start + offset * 86400)
+        buckets[key] = {
+            "date": key,
+            "total": 0,
+            "allowed": 0,
+            "denied": 0,
+            "noise": 0,
+        }
+
+    for event in events:
+        key = _day_key(float(event.get("timestamp") or 0))
+        bucket = buckets.get(key)
+        if bucket is None:
+            continue
+        if event.get("event_type") in _ANALYTICS_NOISE:
+            bucket["noise"] += 1
+            continue
+        bucket["total"] += 1
+        outcome = str(event.get("outcome") or "")
+        if outcome in ("allow", "allowed"):
+            bucket["allowed"] += 1
+        elif outcome in ("deny", "denied"):
+            bucket["denied"] += 1
+
+    return {
+        "available": True,
+        "days": [buckets[key] for key in sorted(buckets)],
+        "sampled_events": len(events),
+        "truncated": len(events) >= _ANALYTICS_MAX_EVENTS,
+    }
+
+
+def event_breakdown() -> Dict[str, Any]:
+    """真实事件分布（event_type × outcome），供环形图使用。"""
+    from ..kernels.audit import audit_stats
+
+    try:
+        stats = audit_stats()
+    except Exception as exc:
+        logger.warning("event_breakdown failed: %s", exc, exc_info=True)
+        return {"available": False, "error": str(exc), "items": []}
+
+    items: List[Dict[str, Any]] = []
+    excluded = 0
+    for key, count in (stats.get("breakdown") or {}).items():
+        event_type, _, outcome = str(key).partition(":")
+        if event_type in _ANALYTICS_NOISE:
+            excluded += int(count or 0)
+            continue
+        items.append(
+            {"type": event_type, "outcome": outcome, "count": int(count or 0)}
+        )
+    items.sort(key=lambda item: item["count"], reverse=True)
+
+    return {
+        "available": True,
+        "items": items,
+        # 如实说明有多少噪声被排除，而不是让总数对不上却不说原因。
+        "excluded_noise_events": excluded,
+        "total_events": int(stats.get("total_events") or 0),
+    }
+
+
+@router.get("/dashboard/analytics")
+def dashboard_analytics(days: int = Query(14, ge=1, le=90)) -> Dict[str, Any]:
+    """驾驶舱图表数据源：真实审计时序 + 真实事件分布。"""
+    return {
+        "generated_at": time.time(),
+        "timeseries": event_timeseries(days=days),
+        "breakdown": event_breakdown(),
+    }

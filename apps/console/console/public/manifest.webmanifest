@@ -1,0 +1,57 @@
+{
+  "id": "/",
+  "name": "LiuHao AI OS · 鎏灏智能中枢",
+  "short_name": "鎏灏 AI",
+  "description": "鎏灏 AI OS 驾驶舱 —— 桌面端 / 网页版 / 手机端统一入口。真实运行态、审批中心与系统状态。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#050912",
+  "theme_color": "#050912",
+  "categories": ["business", "productivity", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "总览",
+      "short_name": "总览",
+      "url": "/?p=overview",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "审批中心",
+      "short_name": "审批",
+      "url": "/?p=approval",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "系统状态",
+      "short_name": "状态",
+      "url": "/?p=status",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

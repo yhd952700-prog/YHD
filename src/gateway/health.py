@@ -19,6 +19,11 @@ from ..gateway.rate_limiter import get_rate_limiter
 
 health_router = APIRouter(prefix="/v1", tags=["health"])
 
+#: 本模块被导入的时刻，用作"/metrics 的运行时长"基准。
+#: 这是一个真实可得的量（进程从加载网关到现在的秒数），
+#: 而不是曾经常用的 ``time.time()`` —— 那是时间戳，冒充不了运行时长。
+_PROCESS_START = time.time()
+
 
 @health_router.get("/health", include_in_schema=False)
 async def liveness_probe(request: Request) -> JSONResponse:
@@ -139,9 +144,18 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
     - 角色统计
     - 速率限制计数
     - 服务运行时长
+
+    ⚠️ 诚实性说明
+    -------------
+    本端点长期不可达（main.py 曾经自建同名 health_router 并覆盖了这里的实现），
+    因此它的两处字段错误一直没被发现：``expired_count`` / ``total_usage`` 在
+    ``APIKeyManager.get_key_stats()`` 里**并不存在**（该函数只返回
+    ``total`` / ``by_status`` / ``by_scope``），一调用就 KeyError 500；
+    ``uptime_seconds`` 也曾直接填 ``time.time()``，是时间戳而不是运行时长。
+    现在按真实可得的数据计算：过期的密钥数从 ``by_status`` 里数出来，
+    运行时长用本模块加载时刻起算。
     """
     trace_id = request.headers.get("X-Trace-ID", "unknown")
-    uptime = time.time()  # Simplified - would track actual start time
 
     # Gather metrics from all components
     key_mgr = get_api_key_manager()
@@ -151,25 +165,26 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
 
     limiter = get_rate_limiter()
 
+    by_status = key_stats.get("by_status") or {}
     metrics_data = {
         "service": "liuhao-gateway",
         "version": "1.0.0",
         "timestamp": time.time(),
         "trace_id": trace_id,
-        "uptime_seconds": uptime,
+        "uptime_seconds": round(time.time() - _PROCESS_START, 1),
         "components": {
             "api_key_manager": {
-                "total_keys": key_stats["total"],
-                "by_status": key_stats["by_status"],
-                "by_scope": key_stats["by_scope"],
-                "expired_count": key_stats["expired_count"],
-                "total_usage": key_stats["total_usage"],
+                "total_keys": key_stats.get("total", 0),
+                "by_status": by_status,
+                "by_scope": key_stats.get("by_scope") or {},
+                # 从真实的状态分布里数出来，而不是假设存在一个预先算好的字段。
+                "expired_count": int(by_status.get("expired", 0)),
             },
             "rbac_manager": {
                 "total_roles": len(rbac_mgr._roles),
             },
             "rate_limiter": {
-                "active_buckets": len(limiter._buckets) if hasattr(limiter, '_buckets') else 0,
+                "active_buckets": len(limiter._buckets) if hasattr(limiter, "_buckets") else 0,
             },
         },
     }

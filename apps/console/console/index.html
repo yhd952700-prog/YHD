@@ -2,9 +2,30 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!-- viewport-fit=cover：手机端需要 env(safe-area-inset-*) 才能避开刘海与手势条 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <title>LiuHao AI OS · 鎏灏智能中枢</title>
+    <meta
+      name="description"
+      content="鎏灏 AI OS 驾驶舱 —— 桌面端 / 网页版 / 手机端统一入口。真实运行态、审批中心与系统状态。"
+    />
+
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>鎏灏 AI · CEO Command Center</title>
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- theme-color 会由 src/lib/mode.ts 依据当前主题动态改写 -->
+    <meta name="theme-color" content="#050912" />
+    <meta name="color-scheme" content="dark light" />
+
+    <!-- 手机端：以独立窗口启动（iOS 认 apple-*，Android 认 mobile-web-app-*） -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="鎏灏 AI" />
+    <meta name="application-name" content="鎏灏 AI" />
+    <meta name="format-detection" content="telephone=no" />
   </head>
   <body>
     <div id="root"></div>

@@ -21,6 +21,17 @@ The kernel reads those variables in ``IdentityManager.__init__``. Neither
 configured means **zero registered humans** -- deliberately fail-closed rather
 than silently falling back to a machine identity.
 
+Two different things, two different stores
+------------------------------------------
+Registering an identity records **who may hold sovereignty**. It does not give
+anyone a way to sign in to the console -- that needs a credential, which lives
+in its own store (``LIUHAO_AUTH_SECRETS_FILE``, see ``src/gateway/auth.py``).
+An identity without a credential can approve nothing from the UI, because it
+cannot log in to get a token.
+
+``--password`` sets both halves in one command, and then *proves* the result by
+performing a real login.
+
 Which backend to use
 --------------------
 ``file`` is the default and keeps the historical behaviour. ``sqlite`` is the
@@ -37,10 +48,20 @@ same store and asserts the new principal passes ``is_human_identity``. If that
 round trip fails the script exits non-zero rather than leaving behind a record
 that looks like a registration but is not.
 
+When a credential is set it goes further and runs the actual login path
+(``src.gateway.auth.authenticate``), so "you can sign in" is demonstrated
+rather than assumed. That call writes one audit event, which is intentional:
+a login is a security-relevant fact.
+
+Secrets are never echoed
+------------------------
+Output reports only *that* a credential exists and its KDF parameters. Salt and
+hash values are never printed, logged, or placed in an error message.
+
 Trust boundary
 --------------
 Same anchor as ``scripts/issue_console_token.py``: **access to this machine's
-filesystem**. Anyone who can run this can already edit the store, so this is
+filesystem**. Anyone who can run this can already edit both stores, so this is
 bookkeeping and audit trail, not an access control.
 
 Usage
@@ -48,6 +69,8 @@ Usage
     python scripts/register_human_identity.py --list
     python scripts/register_human_identity.py --principal xin.hongda \
         --display-name "辛宏达"
+    python scripts/register_human_identity.py --principal xin.hongda \
+        --password-stdin
     python scripts/register_human_identity.py --backend sqlite \
         --db data/human_identities.sqlite3 --principal xin.hongda
     python scripts/register_human_identity.py --revoke xin.hongda
@@ -63,6 +86,13 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.gateway.auth import (  # noqa: E402
+    AUTH_SECRETS_FILE_ENV,
+    DEFAULT_SECRETS_PATH,
+    authenticate,
+    describe_credential,
+    resolve_secret_store,
+)
 from src.kernels.identity import (  # noqa: E402
     HUMAN_IDENTITIES_BACKEND_ENV,
     HUMAN_IDENTITIES_DB_ENV,
@@ -86,9 +116,22 @@ from src.kernels.identity._persistence import (  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FILE = REPO_ROOT / "config" / "human_identities.json"
 
+#: Convenience variable so the credential can be piped in without appearing in
+#: the process list or shell history.
+PASSWORD_ENV = "LIUHAO_NEW_PASSWORD"
+
+#: Refused outright: these are the kernel's own machine identities. Registering
+#: either as human would re-open the C-7 hole this script exists to close.
+MACHINE_PRINCIPALS = ("system", "liuhao-internal-service")
+
+
+# ---------------------------------------------------------------------------
+# store resolution
+# ---------------------------------------------------------------------------
+
 
 def build_store(args: argparse.Namespace):
-    """Resolve the store from CLI flags first, environment second."""
+    """Resolve the identity store from CLI flags first, environment second."""
     if args.file:
         os.environ[HUMAN_IDENTITIES_FILE_ENV] = str(Path(args.file).expanduser())
     if args.backend:
@@ -96,6 +139,13 @@ def build_store(args: argparse.Namespace):
     if args.db:
         os.environ[HUMAN_IDENTITIES_DB_ENV] = str(Path(args.db).expanduser())
     return resolve_human_identity_store()
+
+
+def build_secret_store(args: argparse.Namespace):
+    """Resolve the credential store from CLI flags first, environment second."""
+    if args.secrets_file:
+        os.environ[AUTH_SECRETS_FILE_ENV] = str(Path(args.secrets_file).expanduser())
+    return resolve_secret_store()
 
 
 def env_hint(args: argparse.Namespace) -> str:
@@ -107,8 +157,20 @@ def env_hint(args: argparse.Namespace) -> str:
     return f"({HUMAN_IDENTITIES_FILE_ENV} unset -- kernel will load nobody)"
 
 
-def verify_round_trip(store, principal: str) -> bool:
-    """Boot a fresh manager against the same store and ask the real question."""
+def secrets_hint(secret_store) -> str:
+    """The variable the *service* must set for logins to be possible."""
+    if not secret_store.available():
+        return f"({AUTH_SECRETS_FILE_ENV} unset or missing -- nobody can log in)"
+    return f"{AUTH_SECRETS_FILE_ENV}={secret_store.path}"
+
+
+# ---------------------------------------------------------------------------
+# identity round trip
+# ---------------------------------------------------------------------------
+
+
+def _point_kernel_at(store) -> Dict[str, Optional[str]]:
+    """Point the identity env at ``store``; return the previous values."""
     previous: Dict[str, Optional[str]] = {
         key: os.environ.get(key)
         for key in (
@@ -117,43 +179,38 @@ def verify_round_trip(store, principal: str) -> bool:
             HUMAN_IDENTITIES_FILE_ENV,
         )
     }
-    try:
-        if store.backend_name == BACKEND_SQLITE:
-            os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = BACKEND_SQLITE
-            os.environ[HUMAN_IDENTITIES_DB_ENV] = store.location
-            os.environ.pop(HUMAN_IDENTITIES_FILE_ENV, None)
+    if store.backend_name == BACKEND_SQLITE:
+        os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = BACKEND_SQLITE
+        os.environ[HUMAN_IDENTITIES_DB_ENV] = store.location
+        os.environ.pop(HUMAN_IDENTITIES_FILE_ENV, None)
+    else:
+        os.environ.pop(HUMAN_IDENTITIES_BACKEND_ENV, None)
+        os.environ.pop(HUMAN_IDENTITIES_DB_ENV, None)
+        os.environ[HUMAN_IDENTITIES_FILE_ENV] = store.location
+    return previous
+
+
+def _restore_env(previous: Dict[str, Optional[str]]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
         else:
-            os.environ.pop(HUMAN_IDENTITIES_BACKEND_ENV, None)
-            os.environ.pop(HUMAN_IDENTITIES_DB_ENV, None)
-            os.environ[HUMAN_IDENTITIES_FILE_ENV] = store.location
+            os.environ[key] = value
+
+
+def verify_round_trip(store, principal: str) -> bool:
+    """Boot a fresh manager against the same store and ask the real question."""
+    previous = _point_kernel_at(store)
+    try:
         manager = IdentityManager()
         return is_human_identity(manager.get_identity_by_principal(principal))
     finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        _restore_env(previous)
 
 
 def verify_round_trip_many(store, principals: List[Any]) -> set:
-    previous: Dict[str, Optional[str]] = {
-        key: os.environ.get(key)
-        for key in (
-            HUMAN_IDENTITIES_BACKEND_ENV,
-            HUMAN_IDENTITIES_DB_ENV,
-            HUMAN_IDENTITIES_FILE_ENV,
-        )
-    }
+    previous = _point_kernel_at(store)
     try:
-        if store.backend_name == BACKEND_SQLITE:
-            os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = BACKEND_SQLITE
-            os.environ[HUMAN_IDENTITIES_DB_ENV] = store.location
-            os.environ.pop(HUMAN_IDENTITIES_FILE_ENV, None)
-        else:
-            os.environ.pop(HUMAN_IDENTITIES_BACKEND_ENV, None)
-            os.environ.pop(HUMAN_IDENTITIES_DB_ENV, None)
-            os.environ[HUMAN_IDENTITIES_FILE_ENV] = store.location
         manager = IdentityManager()
         return {
             str(p)
@@ -161,14 +218,56 @@ def verify_round_trip_many(store, principals: List[Any]) -> set:
             if p and is_human_identity(manager.get_identity_by_principal(str(p)))
         }
     finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        _restore_env(previous)
 
 
-def cmd_list(store, args: argparse.Namespace) -> int:
+# ---------------------------------------------------------------------------
+# credential helpers
+# ---------------------------------------------------------------------------
+
+
+def credential_summary(secret_store, principal: str) -> str:
+    """One line describing the login credential. Never includes the secret."""
+    info = describe_credential(secret_store.credential_for(principal))
+    if not info.get("configured"):
+        return "no login credential -- cannot sign in"
+    return (
+        f"login credential set (algo={info.get('algo')}, "
+        f"iterations={info.get('iterations')})"
+    )
+
+
+def resolve_password(args: argparse.Namespace) -> Optional[str]:
+    """Read the credential from a flag, stdin, or the environment.
+
+    ``is not None`` rather than truthiness: ``--password ""`` must be reported
+    as an empty credential and refused, not silently downgraded to "no
+    password was given" (which would register an identity nobody can sign in
+    as, while the operator believes the opposite).
+    """
+    if args.password_stdin:
+        data = sys.stdin.read()
+        return data.rstrip("\r\n")
+    if args.password is not None:
+        return args.password
+    return os.environ.get(PASSWORD_ENV) or None
+
+
+def prove_login(principal: str, password: str) -> Optional[str]:
+    """Run the real login path. Returns an error string, or None on success."""
+    try:
+        result = authenticate(principal, password, client="web")
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        return f"{type(exc).__name__}: {exc}"
+    return None if result.get("access_token") else "no token was issued"
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_list(store, secret_store, args: argparse.Namespace) -> int:
     humans: List[Dict[str, Any]] = store.load_all()
     print(f"Registered humans (store: {store.backend_name} @ {store.location})")
     print("=" * 66)
@@ -183,26 +282,35 @@ def cmd_list(store, args: argparse.Namespace) -> int:
         return 1
 
     ok = verify_round_trip_many(store, [h.get(FIELD_PRINCIPAL) for h in humans])
+    logins = 0
     for entry in humans:
+        principal = entry.get(FIELD_PRINCIPAL)
         name = entry.get(FIELD_DISPLAY_NAME) or "-"
         perms = ", ".join(sorted(entry.get(FIELD_PERMISSIONS) or [])) or "-"
         registered = entry.get(FIELD_REGISTERED_AT) or "-"
-        flag = "OK " if entry.get(FIELD_PRINCIPAL) in ok else "BAD"
-        print(f"  [{flag}] {entry.get(FIELD_PRINCIPAL)}")
+        flag = "OK " if principal in ok else "BAD"
+        summary = credential_summary(secret_store, str(principal))
+        if summary.startswith("login credential"):
+            logins += 1
+        print(f"  [{flag}] {principal}")
         print(f"         display_name={name}  permissions={perms}")
         print(f"         registered_at={registered}")
+        print(f"         {summary}")
     print()
+    print(f"Can sign in: {logins}/{len(humans)}  (needs a login credential)")
     print(f"Kernel reads this store when: {env_hint(args)}")
+    print(f"Console reads credentials from: {secrets_hint(secret_store)}")
     return 0 if len(ok) == len(humans) else 1
 
 
-def cmd_register(store, args: argparse.Namespace, principal: str,
-                 display_name: str | None, permissions: List[str]) -> int:
+def cmd_register(store, secret_store, args: argparse.Namespace, principal: str,
+                 display_name: Optional[str], permissions: List[str],
+                 password: Optional[str]) -> int:
     principal = principal.strip()
     if not principal:
         print("--principal is required", file=sys.stderr)
         return 2
-    if principal in ("system", "liuhao-internal-service"):
+    if principal in MACHINE_PRINCIPALS:
         print(
             f"refusing to register the built-in machine identity {principal!r}.\n"
             "It is a machine -- registering it as human would re-open C-7.",
@@ -257,9 +365,33 @@ def cmd_register(store, args: argparse.Namespace, principal: str,
         return 1
 
     print("verified  : a fresh kernel loads this principal as a human.")
+
+    if password:
+        if not secret_store.set_credential(principal, password):
+            print()
+            print(f"!! could not write the credential to {secret_store.path}.",
+                  file=sys.stderr)
+            return 1
+        print(f"credential: written to {secret_store.path} (salt + hash only; "
+              "the secret is not stored)")
+        failure = prove_login(principal, password)
+        if failure:
+            print()
+            print("!! VERIFICATION FAILED: the credential was written but a real")
+            print(f"   login still fails: {failure}")
+            return 1
+        print("verified  : an actual sign-in with this credential succeeded.")
+
     print()
-    print("To make it live, set this in the service environment:")
+    print("To make it live, set these in the service environment:")
     print(f"  {env_hint(args)}")
+    print(f"  {secrets_hint(secret_store)}")
+    if not password:
+        print()
+        print("No login credential was set, so this principal cannot sign in to")
+        print("the console yet. Add one with:")
+        print(f"  python scripts/register_human_identity.py --principal {principal} "
+              "--password-stdin")
     print()
     print("Undo with:")
     print(f"  python scripts/register_human_identity.py --revoke {principal}")
@@ -270,21 +402,40 @@ def cmd_register(store, args: argparse.Namespace, principal: str,
     return 0
 
 
-def cmd_revoke(store, principal: str) -> int:
-    if not store.remove(principal):
-        print(f"{principal!r} was not registered in "
-              f"{store.backend_name} @ {store.location} -- nothing to revoke.")
+def cmd_clear_credential(secret_store, principal: str) -> int:
+    if not secret_store.remove_credential(principal):
+        print(f"{principal!r} has no login credential in {secret_store.path} "
+              "-- nothing to clear.")
         return 1
-    print(f"revoked: {principal}")
-    print(f"store  : {store.backend_name} @ {store.location}")
+    print(f"credential cleared: {principal}")
+    print(f"store             : {secret_store.path}")
     print()
-    print("Revoking here stops FUTURE approvals by this principal. It does not")
-    print("recall grants already issued -- revoke those with")
-    print("DELETE /v1/policy/approvals/{grant_id}.")
+    print("The identity is untouched: it still counts as a registered human.")
+    print("It simply can no longer obtain a token, so nobody can sign in as it.")
     return 0
 
 
-def main(argv: List[str] | None = None) -> int:
+def cmd_revoke(store, secret_store, principal: str) -> int:
+    removed_identity = store.remove(principal)
+    removed_credential = secret_store.remove_credential(principal)
+    if not removed_identity and not removed_credential:
+        print(f"{principal!r} was not registered in "
+              f"{store.backend_name} @ {store.location} -- nothing to revoke.")
+        return 1
+    print(f"revoked        : {principal}")
+    print(f"identity store : {store.backend_name} @ {store.location} "
+          f"({'removed' if removed_identity else 'not present'})")
+    print(f"credential     : {secret_store.path} "
+          f"({'removed' if removed_credential else 'not present'})")
+    print()
+    print("Revoking here stops FUTURE approvals and sign-ins by this principal.")
+    print("It does not recall grants already issued -- revoke those with")
+    print("DELETE /v1/policy/approvals/{grant_id}. Tokens already issued remain")
+    print("valid until they expire; POST /v1/auth/logout revokes one early.")
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Register human identities that may hold sovereignty.",
     )
@@ -296,6 +447,13 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--permissions", default="",
                         help="comma-separated permissions (optional)")
     parser.add_argument("--revoke", help="remove a registered principal")
+    parser.add_argument("--clear-credential",
+                        help="remove only the login credential for a principal")
+    parser.add_argument("--password",
+                        help="set the console login credential (visible in the "
+                             "process list -- prefer --password-stdin)")
+    parser.add_argument("--password-stdin", action="store_true",
+                        help=f"read the credential from stdin (or ${PASSWORD_ENV})")
     parser.add_argument("--file", dest="file",
                         help=f"JSON seed file (default: ${HUMAN_IDENTITIES_FILE_ENV} "
                              f"or {DEFAULT_FILE})")
@@ -304,17 +462,29 @@ def main(argv: List[str] | None = None) -> int:
                              "implies --backend sqlite)")
     parser.add_argument("--backend", dest="backend", choices=["file", "sqlite"],
                         help="which store to write to (default: inferred from env)")
+    parser.add_argument("--secrets-file", dest="secrets_file",
+                        help=f"credential file (default: ${AUTH_SECRETS_FILE_ENV} "
+                             f"or {DEFAULT_SECRETS_PATH})")
     args = parser.parse_args(argv)
 
     store = build_store(args)
+    secret_store = build_secret_store(args)
 
     if args.list:
-        return cmd_list(store, args)
+        return cmd_list(store, secret_store, args)
     if args.revoke:
-        return cmd_revoke(store, args.revoke.strip())
+        return cmd_revoke(store, secret_store, args.revoke.strip())
+    if args.clear_credential:
+        return cmd_clear_credential(secret_store, args.clear_credential.strip())
     if args.principal:
         perms = [p.strip() for p in args.permissions.split(",") if p.strip()]
-        return cmd_register(store, args, args.principal, args.display_name, perms)
+        password = resolve_password(args)
+        if password == "":
+            print("refusing an empty credential", file=sys.stderr)
+            return 2
+        return cmd_register(
+            store, secret_store, args, args.principal, args.display_name, perms, password
+        )
 
     parser.print_help()
     return 2

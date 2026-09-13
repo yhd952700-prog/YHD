@@ -27,8 +27,17 @@ logger = logging.getLogger(__name__)
 
 # ==================== Routers ====================
 
-# Health router
-health_router = APIRouter(prefix="/v1", tags=["health"])
+# Health router —— 用 health.py 的真实实现，**不要**在这里另建一个同名 router。
+#
+# 这里曾经声明 ``health_router = APIRouter(prefix="/v1")`` 并在 lifespan 里挂两个
+# trivial 端点（``{"status": "ok"}`` / ``{"status": "ready"}``）。由于名字相同，
+# 看起来像"健康检查已接入"，实际上：
+#   * health.py 的 router 从未被 include —— 整份真实实现（/v1/ready 的五项依赖
+#     检查：api_key_manager / jwt_handler / rbac_manager / encryption_manager /
+#     rate_limiter）是彻底不可达的死代码；
+#   * 监控拿到的是一个无论子系统死活都回答 "ready" 的探针。
+# 即"健康检查说谎"那一类缺陷的完整版。现在直接复用权威实现。
+from .health import health_router  # noqa: E402
 
 # API router (will include all service endpoints)
 api_router = APIRouter(prefix="/v1", tags=["api"])
@@ -111,14 +120,19 @@ async def lifespan(app: FastAPI):
             _store["location"] or "(unconfigured)",
         )
 
-    # Register health endpoints
-    @health_router.get("/health", include_in_schema=False)
-    async def health_check():
-        return {"status": "ok", "timestamp": time.time()}
-
-    @health_router.get("/ready", include_in_schema=False)
-    async def readiness_check():
-        return {"status": "ready", "timestamp": time.time()}
+    # 注意：这里**不**再注册 /v1/health 与 /v1/ready。
+    #
+    # 历史上 lifespan 里注册过两个 trivial 版本
+    # （``{"status": "ok"}`` / ``{"status": "ready"}``），它们把 health.py 的
+    # 真实探针整个盖掉了 —— 因为 FastAPI 0.141 的 ``include_router`` 是惰性
+    # 包装（``_IncludedRouter``），后注册的同路径路由会生效。后果是真实的就绪
+    # 检查（api_key_manager / jwt_handler / rbac_manager / encryption_manager /
+    # rate_limiter 五项）成了**永远不可达的死代码**，而所有监控看到的是一个
+    # 无论子系统死活都回答 "ready" 的探针 —— 正是"健康检查说谎"那一类缺陷。
+    #
+    # 现在只保留 health.py 的实现：/v1/health = liveness（恒 200），
+    # /v1/ready = 真实依赖检查（子系统不健康时如实返回 503 + errors）。
+    # 实测健康状态下二者行为与旧实现一致（ready / 200），差别只在真出问题时。
 
     logger.info("Gateway startup complete")
 
@@ -292,6 +306,10 @@ def get_app() -> FastAPI:
     from .dashboard import router as dashboard_router
     app.include_router(dashboard_router)
 
+    # AI 员工名册端点（真实注册表：14 内核 + 14 能力层 + provider 面）。
+    from .roster import router as roster_router
+    app.include_router(roster_router)
+
     # 个人画像端点（KAREN Personal Intelligence 的真实读写面）。
     from .profile import router as profile_router
     app.include_router(profile_router)
@@ -300,10 +318,14 @@ def get_app() -> FastAPI:
     from .policy import router as policy_router
     app.include_router(policy_router)
 
-    # 单端口化：把驾驶舱构建产物挂到 /。
-    # 必须在**所有** API 路由之后注册 —— Starlette 按注册顺序匹配，后挂的
-    # "/" 不会遮蔽 /v1、/api、/docs；反过来则会把它们全部吃掉。
-    # 没有构建产物时自动跳过，API-only 部署行为不变。
+    # 登录端点（凭据 -> JWT）。三端（桌面/网页/手机）共用同一会话。
+    from .auth import router as auth_router
+    app.include_router(auth_router)
+
+    # 单端口化：把驾驶舱构建产物挂到同源根路径，供桌面/网页/手机三端复用。
+    # 机制是 **404 异常处理器**（见 console_static.py）：只在没有任何路由匹配时
+    # 被调用，因此不可能遮蔽任何 API 路由，也与注册时机无关。没有构建产物时
+    # 自动跳过，API-only 部署行为不变。
     from .console_static import mount_console
     mount_console(app)
 

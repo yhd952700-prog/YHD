@@ -46,13 +46,16 @@ from ..kernels._sovereignty import (
 router = APIRouter(prefix="/v1", tags=["policy"])
 
 
-def require_human_principal(authorization: Optional[str] = Header(None)) -> str:
-    """Resolve the authenticated principal from the bearer token, or 401.
+def require_bearer_payload(authorization: Optional[str] = Header(None)):
+    """Validate ``Authorization: Bearer <JWT>`` and return the verified payload.
 
-    Deliberately *only* the token can name the principal -- see the module
-    docstring, point 1. The JWT signature is verified by the existing
-    ``src.security`` handler; this dependency never trusts a caller-supplied
-    identity.
+    This is the **single** implementation of "bearer token -> verified claims"
+    in the gateway. ``/v1/auth/*`` depends on it too, so there is exactly one
+    place where a token is parsed and checked -- two implementations would be
+    two chances to disagree.
+
+    The JWT signature is verified by ``src.security``; a caller-supplied
+    identity is never trusted (see the module docstring, point 1).
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
@@ -62,9 +65,18 @@ def require_human_principal(authorization: Optional[str] = Header(None)) -> str:
     try:
         from ..security import get_jwt_handler
 
-        payload = get_jwt_handler().validate_access_token(token)
+        return get_jwt_handler().validate_access_token(token)
     except Exception as exc:
         raise HTTPException(status_code=401, detail=f"invalid bearer token: {exc}")
+
+
+def require_human_principal(payload=Depends(require_bearer_payload)) -> str:
+    """Resolve the authenticated principal from the bearer token, or 401.
+
+    Deliberately *only* the token can name the principal -- see the module
+    docstring, point 1. This dependency never trusts a caller-supplied
+    identity.
+    """
     subject = getattr(payload, "sub", None)
     if not subject:
         raise HTTPException(status_code=401, detail="token has no subject claim")

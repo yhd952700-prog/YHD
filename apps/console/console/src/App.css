@@ -35,10 +35,18 @@ html, body, #root {
   margin: 0;
 }
 
-body {
-  background: var(--bg-0);
+/* 正文颜色与背景由 os.css 按主题（data-theme）驱动；此处刻意不写 body 的 color /
+   background，否则会覆盖 os.css 的同名规则（App.css 经 App.tsx 晚于 os.css 载入），
+   导致浅色主题下 os- 组件继承淡蓝、白底几乎不可见。旧版审批 / 对话组件靠自身显式
+   设色自管，不受此影响。 */
+
+/* 旧版审批 / 对话组件是「深空驾驶舱」暗色控件：无论在哪种主题下都保持暗底亮字。
+   显式建立暗色文字上下文，避免浅色主题把 --os-text（深色）透传进来造成暗字暗底。
+   组件内部已大多显式设色，这里仅兜底未设色的少数容器。 */
+.approval-panel,
+.jarvis-zone {
   color: var(--text);
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
 }
 
 /* ============ 整体框架 ============ */
