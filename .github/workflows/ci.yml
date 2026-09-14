@@ -154,7 +154,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # All nine `scripts/verify_*.py` are wired somewhere: eight run here and
+  # All twelve `scripts/verify_*.py` are wired somewhere: eleven run here and
   # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
   guardrails:
     name: Guardrails (Policy C-1..C-6, ORM, persistence)
@@ -200,6 +200,12 @@ jobs:
 
       - name: Verify AI-layer audit delegation (probe self-validation)
         run: python scripts/verify_ai_layer_audit.py
+
+      # Real execution + honest failure (WS1): proves a capability genuinely
+      # executes end-to-end, and that neither a sandbox rejection nor an unwired
+      # capability is masked as success by the Execution Kernel.
+      - name: Verify real execution and honest failure (WS1)
+        run: python scripts/verify_real_execution.py
 
       # Licenses drift silently (Redis v8 -> AGPLv3, Elasticsearch -> SSPL).
       # A version pin never tells you that; this does.
