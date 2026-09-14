@@ -44,8 +44,8 @@
 | A3 | 能力状态诚实 | ✅ **通过（WS2，本轮）** | `capability-registry.yaml` 新增 `local-capabilities`（python_compute）与 `known-open-items`（OPEN-001..006）；名册端点 20 项测试通过。 |
 | A4 | 人类主权护栏 | ✅ **通过（WS3，本轮复验）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。默认 OFF 由 AST 护栏锁定（`no production @kernel_action has enforce=True`）。C-7 身份正向白名单测试通过。生产 arm 属**部署决定**（前置：身份表已挂）。 |
 | A5 | 可观测 | ✅ 通过 | 审计哈希链 + 事件总线 + trace（既有实现与测试）。 |
-| A6 | 可复现部署 | ✅ **通过（WS4，本轮）** | 重建发布包 227 文件（src 213 + config 6 + console 10 + 根文件）；本地冒烟：`/v1/ready`→200、`/v1/dashboard/roster`→200（`available=true`，14 内核 + 14 层 = 28 员工）、`/`→200。补 `RestrictedPython` 显式运行时依赖 + `capability-registry.yaml` 入包。 |
-| A7 | 驾驶舱可用 | ✅ 通过 | 外链在线：`https://liuhao-cockpit-26430.app.workbuddy.host/`；发布包名册端点返回真实 28 条目（非占位）。模型仍为 mock（见 §5）。 |
+| A6 | 可复现部署 | ✅ **通过（WS4，本轮）** | 重建发布包 228 文件（src 213 + config 6 + console 10 + 根文件）；本地冒烟：`/v1/ready`→200、`/v1/dashboard/roster`→200（`available=true`，14 内核 + 14 层 = 28 员工）、`/`→200。补 `RestrictedPython` 显式运行时依赖 + `capability-registry.yaml` 入包。 |
+| A7 | 驾驶舱可用 | ✅ **通过（WS5，已上线）** | **新外链在线：`https://liuhao-cockpit-84759.app.workbuddy.host/`**（appId `wbapp_AAy6Aj792OFtebl532XN9S`，`verified=true`）。线上实测 `/`、`/v1/ready`、`/v1/health`、`/v1/dashboard/roster` **全 200**，名册返回真实 28 条目（旧版该端点 404 ⇒ 新版已生效的确证）。**模型仍为 mock（见 §5）**。 |
 | A8 | 测试与门禁 | ✅ 通过 | 历史 6 连全绿 + WS1 CI run（见 §6）。 |
 | A9 | 文档与手册 | ✅ **通过（WS4，本轮）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite；移除 Redis/Postgres/K8s 假设与占位联系方式）。 |
 | A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**。 |
@@ -60,8 +60,11 @@
 2. [x] **WS4-a**：重建云发布包 —— ✅ 已完成（227 文件；`RestrictedPython` + `capability-registry.yaml` 已补入）。
 3. [x] **WS4-b**：重写运行手册为真实单端口架构 —— ✅ 已完成（`production-runbook.md` v2.0）。
 4. [x] **WS4-c**：复验驾驶舱在线且名册返回真实数据 —— ✅ 已完成（冒烟：ready/roster/console 全 200）。
-5. [ ] **提交 + 推送 + CI 全绿**（Git Data API 链条脚本；逐个 SHA 校验 `MATCH`）。
-6. [ ] （**生产**）挂载身份表 + 决策 C-2 是否 arm（arm 前必须确认身份表已挂）。
+5. [x] **提交 + 推送 + CI 全绿** —— ✅ 已完成（`d992de46`/`c123f977`/`85163ce4`/`5a211d2a` 四次均 12/12 `success`；远端 tip = `5a211d2a`）。
+6. [x] **WS5**：线上发布新版 —— ✅ 已完成。原 appId 发布环境不可复用 ⇒ 新建应用上线：
+   `https://liuhao-cockpit-84759.app.workbuddy.host/`（线上四端点全 200、名册真实）。
+7. [ ] （**生产**）挂载身份表 + 决策 C-2 是否 arm（arm 前必须确认身份表已挂）。
+8. [ ] （**生产**）接真实 LLM provider（当前外链对话仍是 mock 模型）。
 
 ---
 
