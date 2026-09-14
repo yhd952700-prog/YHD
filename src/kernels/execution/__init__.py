@@ -489,6 +489,21 @@ class Verifier:
             expected.update(task.expected_outputs)
         actual = action_result.output
 
+        # Root-cause guard (Phase 3): a capability may return None or a
+        # non-dict output (e.g. a real tool failure). The previous code did
+        # `if key in actual` and raised TypeError, crashing the whole run
+        # instead of failing the task gracefully. Treat non-dict output as a
+        # verification failure that triggers replan — consistent with the
+        # `action_result.success is False` branch above.
+        if not isinstance(actual, dict):
+            return VerificationResult(
+                task_id=task.id,
+                result=VerifyResult.FAILED,
+                score=0.0,
+                feedback=f"Action output is not a dict: {type(actual).__name__}",
+                replan_required=True,
+            )
+
         if not expected:
             # No criteria - assume success if action succeeded
             return VerificationResult(

@@ -300,12 +300,18 @@ def get_app() -> FastAPI:
     #   2) 与前端一致：console 的 Login.tsx/auth.ts 早已做了登录墙，
     #      后端此前没跟上 —— 这是"前端有门、后端有洞"的修复。
     #
-    # 公开（**故意不挂**）：health(/v1/health /ready /metrics)、auth(/v1/auth/*)、
+    # 公开（**故意不挂**）：health(/v1/health /ready /metrics)、
+    # 生产化就绪(/v1/metrics/prometheus /v1/ready/subsystems)、auth(/v1/auth/*)、
     # 以及同源静态驾驶舱（登录页本身必须能在未登录时加载）。
     from .policy import require_human_principal as _require_human
 
     app.include_router(health_router)
     app.include_router(api_router, prefix="/api")
+
+    # 生产化就绪端点（Phase 7a）：/v1/metrics/prometheus、/v1/ready/subsystems
+    # 公开；/v1/production/preflight 内部自带 require_human_principal 闸门。
+    from .observability import router as observability_router
+    app.include_router(observability_router)
 
     # Business routers (Phase 2.3 RAG knowledge endpoints).
     from src.api.routes.knowledge import router as knowledge_router

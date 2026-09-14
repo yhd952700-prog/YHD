@@ -216,13 +216,18 @@ components:
     import_name: redis
     license: MIT
     category: cache
-    used: "no"
+    used: "guarded"
     risk: review
     acknowledged: >-
       Python 客户端为 MIT，但 Redis 服务端自 v8 起改为 AGPLv3（网络 copyleft）。
-      当前 src/ 零引用，未实际连接任何 Redis 服务，故无传染风险。
-      若将来引入 Redis 服务端，必须重新评估 AGPLv3 义务，或改用 Valkey（BSD-3）。
-    action: 未使用，建议移除；若要用缓存优先考虑 Valkey(BSD-3) 或纯内存方案
+      Phase 7b（2026-09-14）起 src/distribution/bus_backends.py 在
+      ``try/except ImportError`` 保护块内 import redis —— 因此 used 由 no 改为 guarded。
+      边界要说清：**客户端库本身仍是 MIT，不引入传染**；但该保护块后面的代码在
+      显式配置 ``MessageBus(mode="redis")`` 时**会真正连接 Redis 服务端**，若部署真起
+      Redis 8+ 服务端，则 AGPLv3 的网络 copyleft 义务必须重新评估（或改用 Valkey，BSD-3）。
+      当前事实：默认仍是 memory 模式，测试用注入 client，发布包未启用 redis 模式。
+    action: >-
+      客户端保持；启用生产 Redis 前须先评估服务端 AGPLv3 义务（或改用 Valkey/BSD-3）
   - name: qdrant-client
     import_name: qdrant_client
     license: Apache-2.0

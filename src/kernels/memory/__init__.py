@@ -23,6 +23,12 @@ import json
 
 from src.kernels._crosscutting import kernel_action
 from src.kernels.memory.store import MemoryStore
+from src.kernels.memory.backends import (
+    InMemoryBackend,
+    MemoryBackend,
+    SqliteBackend,
+    get_memory_backend,
+)
 
 
 class MemoryTier(str, Enum):
@@ -43,6 +49,29 @@ class MemoryScope(str, Enum):
     L5 = "L5"
     L6 = "L6"
     L7 = "L7"
+
+
+class MemoryType(str, Enum):
+    """Logical memory types (Phase 4), mapped onto the existing tier model.
+
+    These are a *convention layer* over ``MemoryTier`` + tags — no new storage
+    engine and no new ``MemoryTier`` member (which would break existing callers).
+    """
+    SHORT_TERM = "short_term"
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    PROCEDURAL = "procedural"
+    IDENTITY = "identity"
+
+
+# MemoryType -> (tier, tag). See docs/MEMORY-SYSTEM-DESIGN.md §4.
+_TYPE_MAP: Dict[MemoryType, tuple] = {
+    MemoryType.SHORT_TERM: (MemoryTier.SHORT_TERM, "short_term"),
+    MemoryType.EPISODIC: (MemoryTier.MID_TERM, "episodic"),
+    MemoryType.SEMANTIC: (MemoryTier.LONG_TERM, "semantic"),
+    MemoryType.PROCEDURAL: (MemoryTier.LONG_TERM, "procedural"),
+    MemoryType.IDENTITY: (MemoryTier.PERSISTENT, "identity"),
+}
 
 
 @dataclass
@@ -252,10 +281,14 @@ class MemoryKernel:
     _entries: Dict[str, MemoryEntry] = field(default_factory=dict, init=False)
     _lock: threading.RLock = field(default_factory=threading.RLock)
     db_path: Optional[str] = None
-    _store: Optional[MemoryStore] = field(default=None, init=False, repr=False)
+    backend: Optional[Any] = field(default=None, repr=False)
+    _store: Optional[Any] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._store = MemoryStore(db_path=self.db_path)
+        # Phase 4: injectable backend. When ``backend`` is None (default) this
+        # reproduces historical behaviour byte-for-byte — a SQLite MemoryStore
+        # at ``db_path`` (with the same env/default path resolution).
+        self._store = self.backend if self.backend is not None else MemoryStore(db_path=self.db_path)
         self._load_persisted()
 
     def _load_persisted(self) -> None:
@@ -357,6 +390,36 @@ class MemoryKernel:
             chosen.access_count += 1
             chosen.last_accessed = utc_now()
             return chosen
+
+    # ------------------------------------------------------------------ #
+    # Phase 4 — typed memory convenience layer (additive; design §4)
+    # ------------------------------------------------------------------ #
+    def remember(
+        self,
+        memory_type: MemoryType,
+        key: str,
+        value: Any,
+        scope: MemoryScope = MemoryScope.L1,
+        tags: Optional[Set[str]] = None,
+        ttl: Optional[timedelta] = None,
+    ) -> MemoryEntry:
+        """Store an entry under a logical memory type (tier+tag convention)."""
+        tier, tag = _TYPE_MAP[memory_type]
+        merged = set(tags or ()) | {tag}
+        return self.store(key, value, tier=tier, scope=scope, tags=merged, ttl=ttl)
+
+    def recall_type(
+        self,
+        memory_type: MemoryType,
+        key: str,
+        scope: MemoryScope = MemoryScope.L1,
+    ) -> Optional[MemoryEntry]:
+        """Recall an entry stored via ``remember`` for the same memory type."""
+        tier, tag = _TYPE_MAP[memory_type]
+        entry = self.recall(key, scope=scope, tier_filter=[tier])
+        if entry is None or tag not in entry.tags:
+            return None
+        return entry
 
     def _scope_matches(self, entry_scope: MemoryScope, query_scope: MemoryScope) -> bool:
         """Check if entry scope satisfies query scope constraint."""
