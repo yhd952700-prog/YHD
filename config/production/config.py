@@ -6,7 +6,7 @@ Centralized production configuration with environment-specific overrides.
 
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 

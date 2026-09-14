@@ -1,7 +1,10 @@
 """Prometheus metrics for liuhao AI OS"""
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
+import logging
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 # Counters
 api_requests_total = Counter(
