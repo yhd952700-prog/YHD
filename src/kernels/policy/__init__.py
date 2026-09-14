@@ -102,9 +102,11 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # network: routing an existing route (add/remove/register change
     # topology -> denied).
     "network.route",
-    # resource: releasing returns capacity (create/allocate/commit move
-    # quota -> denied).
+    # resource: releasing returns capacity; account_spend records an *already
+    # incurred* spend (bookkeeping, and it can only reduce availability).
+    # create/allocate/commit move or reserve quota -> denied.
     "resource.release",
+    "resource.account_spend",
     # security: reading a decision (grant/revoke/set_abac_rule change
     # authority -> denied).
     "security.decide_access",

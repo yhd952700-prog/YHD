@@ -45,7 +45,7 @@ def _service_actor() -> dict:
 # Invariant 1 — non-whitelist subject never gets ALLOW
 #
 # The internal service principal is the *only* non-human subject with an ALLOW
-# path, and that path exists exclusively for the 14 whitelisted (LOW) actions.
+# path, and that path exists exclusively for the whitelisted (LOW tier) actions.
 # Therefore for this subject: is_allowed  <=>  action in ALLOWED.  A non-
 # whitelisted action can never be allowed.
 # --------------------------------------------------------------------------- #

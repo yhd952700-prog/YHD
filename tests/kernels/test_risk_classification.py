@@ -1,6 +1,6 @@
 """D8 — kernel action risk classification.
 
-The 43 ``@kernel_action``-decorated kernel actions are now classified in a
+The 44 ``@kernel_action``-decorated kernel actions are now classified in a
 single authoritative registry (``src.kernels._risk_classification``) instead
 of each call site silently defaulting to the dead ``"LOW"`` risk_level.
 
@@ -56,8 +56,8 @@ class TestCompleteness:
         assert not unclassified, f"未分类的内核动作：{unclassified}"
         assert not stale, f"注册表中有已不存在的动作：{stale}"
 
-    def test_total_is_43(self):
-        assert len(KERNEL_ACTION_RISK) == 43
+    def test_total_is_44(self):
+        assert len(KERNEL_ACTION_RISK) == 44
 
 
 # --------------------------------------------------------------------------- #
@@ -77,7 +77,7 @@ class TestTiers:
         for rec in KERNEL_ACTION_RISK.values():
             counts[rec.tier] += 1
         assert counts == {
-            RiskTier.LOW: 14,
+            RiskTier.LOW: 15,
             RiskTier.MEDIUM: 12,
             RiskTier.HIGH: 15,
             RiskTier.CRITICAL: 2,

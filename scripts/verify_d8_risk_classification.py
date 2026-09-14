@@ -131,8 +131,8 @@ if unclassified:
     failures.append(f"COVERAGE: unclassified kernel actions {unclassified}")
 if stale:
     failures.append(f"COVERAGE: stale registry entries {stale}")
-if len(classified) != 43:
-    failures.append(f"COVERAGE: registry size {len(classified)} != 43")
+if len(classified) != 44:
+    failures.append(f"COVERAGE: registry size {len(classified)} != 44")
 
 # --------------------------------------------------------------------------- #
 # 4. TIERS
@@ -147,7 +147,7 @@ for rec in KERNEL_ACTION_RISK.values():
     assert isinstance(rec.tier, RiskTier), "non-enum tier"
     counts[rec.tier] += 1
 print(f"  distribution: { {t.value: c for t, c in counts.items()} }")
-if counts != {RiskTier.LOW: 14, RiskTier.MEDIUM: 12, RiskTier.HIGH: 15, RiskTier.CRITICAL: 2}:
+if counts != {RiskTier.LOW: 15, RiskTier.MEDIUM: 12, RiskTier.HIGH: 15, RiskTier.CRITICAL: 2}:
     failures.append(f"TIERS: unexpected distribution {counts}")
 
 low = {a for a, rec in KERNEL_ACTION_RISK.items() if rec.tier is RiskTier.LOW}

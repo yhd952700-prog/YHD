@@ -160,6 +160,9 @@ class LiuHaoAssistant:
         self.capabilities = list(capabilities or ["chat"])
         # 能力层可观测性：结构化日志 + trace/correlation 透传（第 12 轮审计增强）。
         self._log = get_logger("liuhao")
+        # 本轮被成本护栏评估出来的预估花费（无定价时为 None）——记账时复用同
+        # 一个数，避免"放行时按 A 判、记账时按 B 收"的错位。
+        self._turn_estimated_cost: Optional[float] = None
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
         manager = get_identity_manager()
@@ -250,12 +253,18 @@ class LiuHaoAssistant:
         )
         tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
         tokens_out = _declared_max_output_tokens(self.provider)
-        return economy_inputs(
+        inputs = economy_inputs(
             principal=self.principal,
             model=getattr(self.provider, "model", None),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )
+        # Remember exactly what the guard evaluated so the turn can be charged
+        # the same number once it completes (see ``_commit_turn``). When the
+        # model is unpriced there is no ``estimated_cost`` key, and we then
+        # record nothing rather than inventing a 0.
+        self._turn_estimated_cost = inputs.get("estimated_cost")
+        return inputs
 
     # ------------------------------------------------------------------ #
     # 主入口
@@ -425,7 +434,14 @@ class LiuHaoAssistant:
     def _commit_turn(
         self, message: str, reply: str, correlation_id: str, status: str
     ) -> None:
-        """落盘一轮对话：记忆 kernel + 会话存储 + 审计 hash-chain。"""
+        """落盘一轮对话：记忆 kernel + 会话存储 + 审计 hash-chain。
+
+        顺带把本轮花费记账进 ``COST`` 配额 —— 否则配额的 ``used`` 永远是 0，
+        成本护栏只在配额被人为设紧时才有意义（见
+        ``docs/QUOTA-ACCOUNTING-DESIGN.md``）。
+        """
+        if status == "completed":
+            self._account_turn_spend()
         self.history.append({"role": "user", "content": message})
         self.history.append({"role": "assistant", "content": reply})
         self._conv_store.append(self.principal, self.turn, "user", message)
@@ -451,6 +467,49 @@ class LiuHaoAssistant:
             details={"turn": self.turn, "action": "chat", "chars_in": len(message), "chars_out": len(reply)},
             correlation_id=correlation_id,
         )
+
+    def _account_turn_spend(self) -> None:
+        """Charge the completed turn's spend to the ``COST`` quota.
+
+        Best effort by design: accounting must never break or delay a turn that
+        already succeeded. A failure is warned about (never swallowed silently)
+        and the turn still completes -- the alternative would turn a
+        bookkeeping hiccup into a user-visible outage.
+
+        Nothing is recorded when the model is unpriced: there is no honest
+        number to charge, and recording 0 would be a lie that leaves the guard
+        just as blind as before.
+        """
+        cost = getattr(self, "_turn_estimated_cost", None)
+        if not cost:
+            return
+        try:
+            from ..kernels.resource import ResourceType, get_resource_manager
+
+            manager = get_resource_manager()
+            owner = self.principal
+            own_quotas = [
+                q
+                for q in manager.get_all_quotas(owner)
+                if q.resource_type == ResourceType.COST
+            ]
+            if not own_quotas:
+                owner = "system"
+            if not manager.account_spend(ResourceType.COST, float(cost), owner):
+                _log.warning(
+                    "quota accounting: no COST quota to charge for principal=%r "
+                    "(cost=%.6f); the spend was not recorded",
+                    self.principal,
+                    cost,
+                )
+        except Exception:  # pragma: no cover - defensive
+            _log.warning(
+                "quota accounting failed for principal=%r (cost=%.6f); "
+                "the turn still completed",
+                getattr(self, "principal", "?"),
+                cost,
+                exc_info=True,
+            )
 
     def _build_messages(self, message: str) -> List[Dict[str, str]]:
         """拼出给 provider 的 messages：system + 截断历史 + 当前输入。

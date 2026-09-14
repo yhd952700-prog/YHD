@@ -1,4 +1,4 @@
-"""Canonical risk classification for the 43 kernel-layer ``@kernel_action`` actions.
+"""Canonical risk classification for the 44 kernel-layer ``@kernel_action`` actions.
 
 D8 deliverable (Policy C-2 prerequisite). **This module is PURE DATA** -- it
 imports only the standard library and changing it never alters any policy
@@ -8,7 +8,7 @@ that the ``risk_level`` parameter -- which every ``@kernel_action`` call site
 left at its inert ``"LOW"`` default -- finally carries real signal.
 
 Why a single registry instead of per-call annotations?
-    The 43 call sites live across 12 kernel modules. Scattering the tier into
+    The 44 call sites live across 12 kernel modules. Scattering the tier into
     each decorator call is exactly what let the field drift to a dead default
     (everyone forgets to set it). One auditable table, cross-checked by an AST
     completeness guard (``discover_kernel_action_names``), forces a deliberate
@@ -21,7 +21,7 @@ Zero execution risk:
     input is inert (the only rule that reads ``risk_level`` requires
     ``actor.type == "human"``), so D8 changes what the engine is *told* without
     changing any *verdict*. Once C-2 turns enforcement on, the tiers are
-    already correct -- no second pass over 43 call sites.
+    already correct -- no second pass over 44 call sites.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ class ActionRisk(NamedTuple):
 
 
 # --------------------------------------------------------------------------- #
-# The 43 actions, classified by a single mechanical rubric (so the table is
+# The 44 actions, classified by a single mechanical rubric (so the table is
 # auditable, not a matter of taste):
 #
 #   LOW      = query / compute / bookkeeping: no authority change, no
@@ -160,6 +160,11 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
     "resource.release": ActionRisk(
         RiskTier.LOW, False, False,
         "释放配额：归还容量，簿记。",
+    ),
+    "resource.account_spend": ActionRisk(
+        RiskTier.LOW, False, False,
+        "登记已发生花费：簿记，仅减少可用额度（方向比已放行的 release 更保守），"
+        "不授予权限、不改限额。",
     ),
     "security.decide_access": ActionRisk(
         RiskTier.LOW, False, False,

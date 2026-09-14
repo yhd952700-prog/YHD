@@ -210,12 +210,18 @@ prompt（system + 历史 + 本轮）+ 模型声明的 `max_output_tokens` 估**�
    `estimated_cost` ⇒ 规则不适用（可观测，但不拦）。**把真实价格登记进模型注册表后，
    护栏立刻在生产生效** —— 价格是 boss 才知道的真实数字，我没有编。
    （注：本机 ollama 的真实成本**就是 0**，但"未定价"与"定价为 0"是两回事，代码刻意不混淆。）
-2. **配额目前不会被消耗。** `ResourceQuotaManager` 的 `used/reserved` 没有任何生产调用点
-   在记账（`allocate()` 无调用方；`commit()` 是 `@kernel_action("resource.commit")` 且
-   **不在** internal-service 白名单里）。所以默认系统 `COST` 配额（$100）恒为 `available=100`。
-   ⇒ 现状下护栏**只在配额被真正设得很紧时才拦**（例如给某主体设一条 `COST` 配额，其
-   `limit` 低于单次动作成本 → 直接拒）。**把"实际花费记账进配额"是独立的一轮工作**
-   （牵涉内核横切策略：`resource.commit` 该不该放行给 agent），本轮未做，未擅自改。
+2. **配额的消耗：Round 98 已接上，但记的是"预估最坏成本"，不是"实测用量"。**
+   旧状态（`30df706b` / `d964231a` 时如实记录）：`ResourceQuotaManager` 的 `used/reserved`
+   **没有任何生产调用点**在记账（`allocate()` 无调用方；`commit()` 是
+   `@kernel_action("resource.commit")` 且**不在** internal-service 白名单）⇒ 默认系统 `COST`
+   配额（$100）恒 `available=100` ⇒ 护栏只在配额被人为设紧时才拦。
+   **Round 98 已闭合**：新增 `resource.account_spend`（LOW、进白名单，只把 `used` 往上推，
+   比已放行的 `resource.release` 更保守），由 `LiuHaoAssistant._commit_turn` 在
+   `status == "completed"` 时按**放行时评估的同一个数**记账（`_turn_estimated_cost`），
+   主体自己有 `COST` 配额就记自己的，否则回落系统级。
+   **仍然诚实的边界**：① 记的是**预估**成本（最坏情况输出），不是 provider 回传的真实
+   token 用量 —— 用量回传要新增 provider 接口，未做；② 只覆盖 `chat`/`chat_stream`，
+   §6.5 第 3 条的 `runtime_loop` / `network_gateway.delegate` **依然未接**。
 3. **护栏只覆盖"真花 LLM 钱"的那条路。** 生产链路 `src/gateway/chat.py → LiuHaoAssistant.chat/
    chat_stream` 是用户实际让 OS 花钱的路径，已被覆盖。**未**覆盖：
    `runtime_loop.py:102`（agent 总线循环，`authorize(action="msg:<kind>")` 不传成本）与

@@ -268,6 +268,50 @@ class ResourceQuotaManager:
 
             return True
 
+    @kernel_action("resource.account_spend")
+    def account_spend(
+        self,
+        resource_type: ResourceType,
+        amount: float,
+        owner: str,
+    ) -> int:
+        """Record an *already incurred* spend against ``owner``'s quotas.
+
+        Deliberately narrower than ``allocate`` / ``commit``: it only ever moves
+        ``used`` upwards, so it can never grant capacity. ``resource.release``
+        -- which moves ``used`` *downwards* and therefore *grants* capacity --
+        is already pre-approved for the internal service, so this is the more
+        conservative direction of the two.
+
+        It exists because the cost guard reads ``available``: with no caller
+        recording spend, ``used`` stays at 0 forever and the guard only bites
+        when a quota is set artificially tight (see
+        ``docs/QUOTA-ACCOUNTING-DESIGN.md``).
+
+        Returns the number of quotas charged (0 when none matched), and never
+        raises -- bookkeeping must not be able to break the turn that incurred it.
+        """
+        if amount <= 0:
+            return 0
+
+        try:
+            quotas = [
+                q
+                for q in self.get_all_quotas(owner)
+                if q.resource_type == resource_type
+            ]
+        except Exception:  # pragma: no cover - defensive
+            return 0
+
+        if not quotas:
+            return 0
+
+        with self._lock:
+            for quota in quotas:
+                quota.used += amount
+                quota.updated_at = utc_now()
+        return len(quotas)
+
     @kernel_action("resource.release")
     def release(
         self,

@@ -141,3 +141,34 @@ A→B 切换只是换数据源，不改记账接口。
 - **本轮未实测**：agent 主体（非 internal-service）在 `resource.*` 动作上的实际判决；
   B 方案下 openai 兼容端点是否同样返回 usage（只实测了 ollama 路径）。
 - **不解决**：配额初始值/额度该设多少（属运营决策）。
+
+## 8. 实现状态（Round 98，已落地）
+
+按 §5 清单实现，**采用选项 3**（`resource.account_spend`），未动 `allocate` / `commit`
+的白名单决定。实测结果：
+
+| 清单项 | 状态 |
+|---|---|
+| `src/kernels/policy/__init__.py` 白名单加 `resource.account_spend` | ✅ 已加（注释同步） |
+| `src/kernels/_risk_classification.py` 登记为 LOW | ✅ 已加（LOW 与白名单强交叉校验通过） |
+| `src/kernels/resource/__init__.py` 新增 `account_spend` | ✅ 已加（只把 `used` 往上推；`amount <= 0` 直接返回 0） |
+| `src/ai/liuhao.py` `_commit_turn` 记账 | ✅ 已完成轮次按**放行时评估的同一个数**记账 |
+| `src/ai/providers.py` 真实 usage（B 方案） | ❌ **未做** —— 仍记预估成本，见 §7 |
+| 测试 + 反橡皮图章 | ✅ `tests/test_quota_accounting.py`（14 项） |
+
+同步更新的既有计数（新增第 44 个内核动作带来的连锁）：
+`tests/kernels/test_risk_classification.py`（43→44、LOW 14→15）、
+`scripts/verify_d8_risk_classification.py`（同两处）。
+
+**验收判据的达成情况（对照 §4）**：
+
+1. ✅ 完成的轮次让 `COST` 配额 `used` 单调增长（`TestAccountSpend`）。
+2. ✅ 端到端：`available` 不足 ⇒ `chat` 返回 `status="denied"`（早前 Round 94 已证；
+   本轮补上"被拒的轮次不计费"）。
+3. ✅ 记账路径抛异常 ⇒ 对话仍 `completed` 且 WARNING 出声
+   （`test_a_bookkeeping_failure_cannot_break_the_turn`）。
+4. ✅ 反橡皮图章：关掉 `_commit_turn` 的调用 ⇒ 3 项失败；把 `account_spend` 的
+   `used += amount` 改成 0 ⇒ 6 项失败。
+
+**未做（诚实记录）**：真实 token usage 回传（§7 第一条）；`runtime_loop` 与
+`network_gateway.delegate` 的成本接入。
