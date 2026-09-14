@@ -1,0 +1,274 @@
+# 鎏灏 OSS 候选分级 —— tier1 清单（一次性脚本产出）
+# 生成: 2026-09-13 | 脚本: D:/cache/temp/triage.py | 数据: scan-20260913T210132Z.json
+# 全部 stars / license / last_push 来自 api.github.com/repos/<repo> 二次核实，非凭记忆。
+# ---- 数量漏斗 ----
+#   扫描候选总数 : 705
+#   去重后       : 657  (重复 48)
+#   许可证分区   : allow=467 blocked=33 needs_lawyer=3 noassertion=53 null=85 other=16
+#   二次核实：白名单+github 选 50 个（stars 倒序前 50），成功 49 个；第 50 个请求触发 GitHub 匿名 403 限流，已停（未假装全跑完）。
+#   通过全筛(白名单+核实+active): 48
+#   最终 tier1    : 12
+# 体例照 automation.yaml(entries 列表)。enhances_liuhao/verdict 等已加引号防 YAML1.1 布尔误判。
+# 人工筛选纪律：库而非重型平台；不托管凭证给外部 SaaS；排除 capabilities/*.yaml 已深度分析项目。
+# 注：本批为候选分级（轻量条目），下列按 capability-entry 契约补齐必填字段以满足 entries 层校验；
+#     id 用 01xx 段与 s2-s5-landed 的 00xx/03xx 段区分，避免撞号。
+
+entries:
+- name: facebookresearch/faiss
+  source_platform: github
+  url: https://github.com/facebookresearch/faiss
+  id: LHX-OSS-0101
+  license: MIT
+  stars: 40900
+  last_push: '2026-09-13'
+  solves: Memory 内核缺工业级向量检索；FAISS 是向量索引/相似度搜索的事实标准，可对标检索层。
+  enhances_liuhao: 'yes'
+  target_kernel: memory
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "纯 C++/Python 本地库，无外部依赖，直接补 Memory 检索缺口，已裁定 adopt。"
+  function: "工业级向量索引与相似度检索库（C++/Python），输入向量集输出近邻检索结果。"
+  technical_value: "提供 IVF/PQ 等量化索引，把内存向量检索的吞吐与精度解耦，可直接补 Memory 内核的检索层而非自研。"
+  absorbable: "索引构建与量化编码算法（index_factory + IndexIVF/IndexPQ），不是整个库"
+  needs_refactor: light
+  integration_plan: "作为 memory 内核的向量检索后端，经 ToolRouter 注入；回滚即移除依赖与封装层。"
+  commercial_risk: "low —— MIT，无商业限制；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地计算库，不联网；未做 CVE 扫描，待测。"
+  performance_impact: "待测 —— 索引构建耗时与内存占用未在本仓量化。"
+  why: 纯 C++/Python 库，本地可跑，无外部依赖，直接补 Memory 检索缺口。
+- name: bytecodealliance/wasmtime
+  source_platform: github
+  url: https://github.com/bytecodealliance/wasmtime
+  id: LHX-OSS-0102
+  license: Apache-2.0
+  stars: 18636
+  last_push: '2026-09-13'
+  solves: Security/Execution 缺安全的第二执行面；WASM 沙箱是安全执行性价比最高的路线（intent 46 明指）。
+  enhances_liuhao: 'yes'
+  target_kernel: security
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "WASM 运行时库，可内嵌做受限执行，契合人类主权（不托管外部），已裁定 adopt。"
+  function: "WASM 运行时，输入 WASM 字节码输出隔离的受限执行。"
+  technical_value: "以 WASM 线性内存与能力模型做沙箱，比容器更轻，契合安全受限第二执行面。"
+  absorbable: "WASM 沙箱执行模型与 WASI 能力接口，不是整个运行时"
+  needs_refactor: light
+  integration_plan: "作为 security/execution 内核的受限执行后端接入 sandbox manager；回滚即注销该后端。"
+  commercial_risk: "low —— Apache-2.0，无商业限制；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 沙箱强度依赖 WASI 配置，错误配置可越权；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: WASM 运行时库，可内嵌做受限执行，契合人类主权（不托管外部）。
+- name: apache/arrow
+  source_platform: github
+  url: https://github.com/apache/arrow
+  id: LHX-OSS-0103
+  license: Apache-2.0
+  stars: 17104
+  last_push: '2026-09-12'
+  solves: 跨进程零拷贝数据传递缺标准格式；Arrow 列式内存格式是现成答案。
+  enhances_liuhao: 'yes'
+  target_kernel: resource
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "Apache-2.0 库，单端口内可用，强化 Resource 内核数据搬运，已裁定 adopt。"
+  function: "列式内存数据格式与零拷贝 IPC 库。"
+  technical_value: "以统一内存格式做跨进程零拷贝数据传递，补 resource 内核的数据搬运与配额回收。"
+  absorbable: "Arrow IPC 内存格式与缓冲区协议，不是整个库"
+  needs_refactor: light
+  integration_plan: "作为 resource 内核的数据搬运层；回滚即移除封装。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地数据格式库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: Apache-2.0 库，单端口内可用，强化 Resource 内核的数据搬运与配额回收。
+- name: ggml-org/llama.cpp
+  source_platform: github
+  url: https://github.com/ggml-org/llama.cpp
+  id: LHX-OSS-0104
+  license: MIT
+  stars: 128112
+  last_push: '2026-09-13'
+  solves: Execution 内核需本地推理能力，避免把推理托管给外部 SaaS（人类主权红线）。
+  enhances_liuhao: 'yes'
+  target_kernel: execution
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "C++ 推理引擎 + 绑定，本地跑 LLM，无外部服务依赖，已裁定 adopt。"
+  function: "本地 LLM 推理引擎（C++ + Python 绑定）。"
+  technical_value: "在本地跑 LLM 推理，避免把推理托管给外部 SaaS，守人类主权红线。"
+  absorbable: "GGML 张量执行与量化推理调度，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 execution 内核的本地推理后端；回滚即移除绑定。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理，权重本地加载；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: C++ 推理引擎 + llama-cpp-python 绑定，本地跑 LLM，无外部服务依赖。
+- name: run-llama/llama_index
+  source_platform: github
+  url: https://github.com/run-llama/llama_index
+  id: LHX-OSS-0105
+  license: MIT
+  stars: 52149
+  last_push: '2026-09-11'
+  solves: Context 内核空转，缺分块/重排/节点索引策略。
+  enhances_liuhao: 'partial'
+  target_kernel: context
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "RAG 框架库（分块/重排/节点索引）。"
+  technical_value: "提供分块与重排抽象，可转 Context 输入聚类，不换引擎。"
+  absorbable: "分块与重排策略（node parser + reranker），不是框架整体"
+  needs_refactor: light
+  integration_plan: "取抽象转 Context 内核输入聚类；回滚即移除引用。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: RAG 框架库，取抽象（分块重排）转 Context 输入聚类，不换引擎。
+- name: PaddlePaddle/PaddleOCR
+  source_platform: github
+  url: https://github.com/PaddlePaddle/PaddleOCR
+  id: LHX-OSS-0106
+  license: Apache-2.0
+  stars: 89442
+  last_push: '2026-07-22'
+  solves: Perception/Context 缺文档图像前置解析器（intent 66）。
+  enhances_liuhao: 'yes'
+  target_kernel: perception
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "OCR 库，本地推理，直接补多模态输入的第一道解析，已裁定 adopt。"
+  function: "本地 OCR 库，图像转文本。"
+  technical_value: "本地推理做多模态输入第一道解析，补 Perception/Context 缺的文档图像前置解析器。"
+  absorbable: "OCR 检测+识别推理管线，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 perception 内核的文档图像解析器；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: OCR 库，本地推理，直接补多模态输入的第一道解析。
+- name: SYSTRAN/faster-whisper
+  source_platform: github
+  url: https://github.com/SYSTRAN/faster-whisper
+  id: LHX-OSS-0107
+  license: MIT
+  stars: 25380
+  last_push: '2025-11-19'
+  solves: Perception 缺本地语音识别入口（intent 67），且不依赖外部 ASR SaaS。
+  enhances_liuhao: 'yes'
+  target_kernel: perception
+  verdict: adopt
+  adoption_decision: adopt
+  decision_note: "CTranslate2 推理库，比 openai/whisper 更轻、纯本地，已裁定 adopt。"
+  function: "本地语音识别库（CTranslate2）。"
+  technical_value: "纯本地 ASR，比 openai/whisper 更轻，人类主权友好，补 Perception 缺的本地语音入口。"
+  absorbable: "CTranslate2 推理封装，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 perception 内核的本地 ASR 入口；回滚即移除。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: CTranslate2 推理库，比 openai/whisper 更轻、纯本地，人类主权友好。
+- name: openai/whisper
+  source_platform: github
+  url: https://github.com/openai/whisper
+  id: LHX-OSS-0108
+  license: MIT
+  stars: 109021
+  last_push: '2026-08-31'
+  solves: 同上语音识别，作为 torch 实现的参考基线。
+  enhances_liuhao: 'partial'
+  target_kernel: perception
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "torch 实现的语音识别参考基线。"
+  technical_value: "作为本地 ASR 的参考基线，体量重（torch），列评估对照。"
+  absorbable: "音频特征提取与解码流程，仅作参考"
+  needs_refactor: light
+  integration_plan: "作为 evaluation 对照，不默认依赖；回滚即移除。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 体量重（torch），列为评估对照而非默认依赖。
+- name: vercel-labs/agent-browser
+  source_platform: github
+  url: https://github.com/vercel-labs/agent-browser
+  id: LHX-OSS-0109
+  license: Apache-2.0
+  stars: 42503
+  last_push: '2026-09-13'
+  solves: Execution 缺作用于真实世界的浏览器动作面（intent 53）。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "Playwright 封装的浏览器动作库。"
+  technical_value: "作用于真实世界的浏览器动作面，可并入 ActionExecutor 接缝。"
+  absorbable: "浏览器动作编排封装，不是整个库"
+  needs_refactor: light
+  integration_plan: "并入 ActionExecutor 接缝，需评估与现有沙箱边界；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 操作真实浏览器，越权动作面需沙箱边界；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: Playwright 封装库，可并入 ActionExecutor 接缝，需评估与现有沙箱边界。
+- name: CopilotKit/CopilotKit
+  source_platform: github
+  url: https://github.com/CopilotKit/CopilotKit
+  id: LHX-OSS-0110
+  license: MIT
+  stars: 37336
+  last_push: '2026-09-13'
+  solves: Experience（驾驶舱前端）缺 Copilot 交互范式参考（intent 39）。
+  enhances_liuhao: 'partial'
+  target_kernel: experience
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "React 前端 Copilot 交互库。"
+  technical_value: "仅借鉴交互模式补 Experience 驾驶舱前端，不引入运行期绑定。"
+  absorbable: "Copilot 交互范式（UI 模式），不是运行期绑定"
+  needs_refactor: light
+  integration_plan: "仅借鉴交互模式，不引入依赖；回滚即移除参考。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 前端库，不执行业务逻辑；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: React 前端库，仅借鉴交互模式，不引入运行期绑定。
+- name: bee-san/Ciphey
+  source_platform: github
+  url: https://github.com/bee-san/Ciphey
+  id: LHX-OSS-0111
+  license: MIT
+  stars: 21610
+  last_push: '2026-09-09'
+  solves: Security 缺编码识别/可回退的本地加密工具（intent 55）。
+  enhances_liuhao: 'partial'
+  target_kernel: security
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "本地编码识别/可回退加密工具。"
+  technical_value: "编码识别作 Vault Transit 不可用时的本地回退，不托管外部。"
+  absorbable: "编码检测与可回退解密流程，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 security 内核的回退参考；回滚即移除。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 纯本地库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 纯本地库，作为 Vault Transit 不可用时的回退参考，不托管外部。
+- name: langchain-ai/langgraph
+  source_platform: github
+  url: https://github.com/langchain-ai/langgraph
+  id: LHX-OSS-0112
+  license: MIT
+  stars: 41579
+  last_push: '2026-09-13'
+  solves: Execution 工作流编排参考（intent 47），权威已裁定自研 goal_task_graph 为主。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  function: "工作流编排框架（DAG 状态机）。"
+  technical_value: "只取抽象不换引擎；鎏灏侧 goal_task_graph 已裁定为主，langgraph 标 experimental。"
+  absorbable: "状态机编排抽象，不换引擎"
+  needs_refactor: light
+  integration_plan: "仅评估对照，不引入依赖；回滚即移除。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 编排库，不执行业务代码；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 只取抽象不换引擎；langgraph_workflow 在鎏灏侧标 experimental，故 evaluate。

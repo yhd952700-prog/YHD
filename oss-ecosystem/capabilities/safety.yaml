@@ -1,0 +1,137 @@
+# 《鎏灏全球开源能力数据库》—— 安全能力（权限策略 + 代码扫描）
+# 对应基因：safety-capability
+# 缺口（来自 genebank/GENE-MAP.yaml）：
+#   1) Network 内核改为真实投递后，**出向管控成为新的空白**；
+#   2) 已有 bandit-report.json，但扫描未进入 CI 常态，属事后补扫；
+#   3) Policy 内核为自研 ABAC，需要业界对照物来审视自身完备度。
+#
+# 数据来源：scan-20260913T203529Z.json intent=57/58 + api.github.com/repos/<repo> 二次核实
+# 核实时间：2026-09-13
+
+entries:
+
+  - id: LHX-OSS-0006
+    name: Casbin
+    source_platform: github
+    url: https://github.com/apache/casbin
+    upstream_stars: 20385
+    language: Go
+    function: >
+      访问控制框架。把权限模型抽象成 PERM（Policy / Effect / Request / Matchers）四元组，
+      用配置文件描述模型，而非硬编码 ACL 逻辑。
+    technical_value: >
+      关键在 **policy 与 enforcement 分离**：matcher 是一段可被解释的表达式，
+      因此同一套引擎能表达 ACL、RBAC、ABAC、RESTful 等多种模型，改权限不用改代码。
+      这正好是"策略可被审查"这件事的最小可行形态。
+    enhances_liuhao: "partial"
+    absorbable: >
+      不是引入 casbin 替换 Policy Kernel —— 那会破坏已实现的 ABAC 语义。
+      可吸收的是 **PERM 分层本身**：若鎏灏的策略定义能被表达为「匹配器 + 效应」的配置文件，
+      Policy Controlled 维度（DoD 七维之一）就从"代码里有 if"变成"有一条可列举的规则"。
+    needs_refactor: light
+    integration_plan: >
+      第一步只做对照，不改代码：把现有 Policy Kernel 的规则逐条翻译成 PERM 表达，
+      看有没有翻译不出来的。翻译不出来的那些正是当前策略的表达力缺口 —— 这份清单比任何
+      集成方案都更有价值。第二步再决定是否引入配置层。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— matcher 解释执行比硬编码判断慢；若仅借鉴 schema 则无影响。
+    target_kernels: [policy, security]
+    gene: safety-capability
+    evidence: "scan-20260913T203529Z.json intent=57；二次核实Apache-2.0/20385"
+    adoption_decision: evaluate
+    decision_note: >
+      不替换自研内核，而是用它做**表达力体检**。这也是唯一不触碰 R3 红线的用法。
+
+  - id: LHX-OSS-0007
+    name: Open Policy Agent (OPA)
+    source_platform: github
+    url: https://github.com/open-policy-agent/opa
+    upstream_stars: 12231
+    language: Go
+    function: 通用策略引擎，以 Rego 语言描述策略，可嵌入服务或作为 sidecar 运行。
+    technical_value: >
+      Rego 是声明式、可部分求值的查询语言 —— 同一份策略既能做「允许/拒绝」判断，
+      也能反查「哪些输入会命中某规则」，后者对审计与解释性极有价值。
+    enhances_liuhao: "partial"
+    absorbable: >
+      「策略可反查」的能力。鎏灏当前策略只能正向判定；
+      若能做到"列出满足某策略的所有 agent"，治理层（LHX-L-009）会多出一个真抓手。
+    needs_refactor: heavy
+    integration_plan: >
+      引入 Rego 意味着新增一门 DSL 与运行时，成本高。**建议仅做概念借鉴**：
+      在 EmergencyControl 场景先实现"给定条件反查受影响对象"的最小版本，用 Python 表达。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— Rego 求值开销不容忽视，若引入需单列压测。
+    target_kernels: [policy, governance]
+    gene: safety-capability
+    evidence: "scan-20260913T203529Z.json intent=57"
+    adoption_decision: watch
+    decision_note: 概念价值高于集成价值。当前一轮不投入，记录以备治理层演进时参考。
+
+  - id: LHX-OSS-0008
+    name: Semgrep
+    source_platform: github
+    url: https://github.com/semgrep/semgrep
+    upstream_stars: 16619
+    license: LGPL-2.1
+    function: 跨语言的静态分析工具，以近似源代码的模式匹配语法查找缺陷与违规模式。
+    technical_value: >
+      规则写成"看起来像目标代码"的匹配式，因此规则可读、可版本化、可由安全团队独立维护，
+      不必为每种语言写 AST walker。适合把"本项目禁止哪些写法"固化成可执行规则。
+    enhances_liuhao: "yes"
+    absorbable: >
+      **以外部进程方式调用即可，不要 fork。** 真正要落地的是规则集本身：
+      把鎏灏的架构约束写成 semgrep 规则 —— 例如禁止内核层 import src.ai、
+      禁止新增 API 前缀逃出 RESERVED_PREFIXES、禁止 ExecutionEngine 直连具体工具实现。
+      现有这些约束若只存在于文档里，就不是约束；写成规则才能在 CI 里拦住。
+    needs_refactor: none
+    integration_plan: >
+      独立进程调用（不经由 import），因此 **不触发 LGPL 的同进程分发条款**：
+      在 CI 增加一个 lint job 跑 semgrep --config <鎏灏规则集>，失败即阻断。
+      规则集落 oss-ecosystem/pipeline/semgrep-rules/。首次上线先用 warn 模式跑一轮，
+      统计误报后再转 error，避免一次性 tc 红。
+    license: LGPL-2.1
+    commercial_risk: medium
+    security_risk: low
+    performance_impact: 低 —— CI 阶段一次性开销，不进运行时。
+    target_kernels: [verification, security]
+    gene: safety-capability
+    evidence: "scan-20260913T203529Z.json intent=58；二次核实LGPL-2.1/16619"
+    adoption_decision: adopt
+    decision_note: >
+      **本批唯一 adopt。** 理由是它以独立进程方式接入、不进入产品分发链路，
+      因此 medium 的商业风险可控，而收益是把"文档里的架构纪律"变成"CI 里会红的检查"——
+      这正是本项目多轮修复（网络谎报投递、幻影依赖、CI 谎报成功）真正缺的那道防线。
+      ⚠️ 前提：不得 fork 修改后内置进产品，否则触发 LGPL 开源义务。
+
+  - id: LHX-OSS-0009
+    name: Bandit
+    source_platform: github
+    url: https://github.com/PyCQA/bandit
+    upstream_stars: 8259
+    language: Python
+    function: Python 专用的 AST 安全缺陷扫描器，检测硬编码凭证、eval、不安全反序列化等。
+    technical_value: 针对 Python 标准库危险用法的检测规则库成熟，接入成本低。
+    enhances_liuhao: "yes"
+    absorbable: >
+      无需吸收代码 —— **仓库已有 bandit-report.json，说明跑过但没进 CI**。
+      缺口不在工具而在流程：把 bandit 从"偶尔跑一次"变成"每次提交必跑且失败即阻断"。
+    needs_refactor: none
+    integration_plan: >
+      补一个 CI job。注意本项目硬规则：测试期框架依赖必须声明在 [project] dependencies
+      （CI test job 只 pip install -e .），bandit 作为 lint 依赖需同步到 pyproject/requirements/
+      oss-registry.yaml/uv.lock 四处，缺一即红。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 低 —— CI 阶段。
+    target_kernels: [security]
+    gene: safety-capability
+    evidence: "scan-20260913T203529Z.json intent=58；仓库内已存在 bandit-report.json"
+    adoption_decision: adopt
+    decision_note: >
+      工具已在用，缺的是把"跑过"升级为"守住"。与 LHX-OSS-0008 合并为一个 quality gate job 落地。

@@ -1,0 +1,62 @@
+# 《鎏灏全球开源能力数据库》—— 单条记录的字段契约
+#
+# 目的：让"每个发现的项目都必须分析"变成**可校验**的事，而不是一段随性的散文。
+# 校验器：pipeline/validate_entries.py（缺失必填字段或写成套话即报错）
+#
+# 铁律（与本项目 Round 83/84 一致）：
+#   **不许写无法被证伪的话。** "提升效率""业界领先""值得吸收"这类句子一律判为无效。
+#   每条 Technical Value / Risk 必须能回答："这会导致什么可观察的差异？"
+
+required_fields:
+  - id                # LHX-OSS-####  稳定编号
+  - name              # 项目名称（上游原名）
+  - source_platform   # 来源平台 id，必须存在于 sources.yaml
+  - url               # 地址
+  - function          # 它做什么（≤2 句，说清输入输出）
+  - technical_value   # 技术价值：具体机制，不许空泛
+  - enhances_liuhao   # yes | partial | no  —— 必须给理由
+  - absorbable        # 可吸收部分：要重构/移植的**具体模块或算法**，不是整体
+  - needs_refactor    # none | light | heavy  以及改什么
+  - integration_plan  # 落地路径：进哪个包/内核、怎么接、怎么回滚
+  - license           # SPDX id；非标准则原样字符串 + commercial_risk=high
+  - commercial_risk   # low | medium | high + 原因（copyleft / 非OSI / 权重条款）
+  - security_risk     # low | medium | high + **已知 CVE 数或 trust 结论**
+  - performance_impact # 实测或明确"待测"，不许编数字
+
+recommended_fields:
+  - upstream_stars      # 发现时的热度
+  - last_commit_days    # 距上次提交天数 —— 维护度硬指标
+  - target_kernels      # 命中内核
+  - gene                # 归入基因库哪一类
+  - evidence            # 数据来源：scan file + 拉取时间
+  - adoption_decision   # adopt | evaluate | watch | reject
+  - decision_note       # 为什么这么定
+
+# --------------------------------------------------------------------------
+# 判定口径：四条红线，任意一条命中即 reject
+reject_rules:
+  - id: R1-license-blocklist
+    desc: "License 为 AGPL-3.0 / GPL-3.0 / SSPL / Elastic-2.0 / BUSL / 自定义非OSI，且需链接或与产品同进程分发 —— 直接 reject。作为**独立进程**通过 API 调用（不共享内存空间）时可降级为 watch。"
+  - id: R2-unmaintained-with-cve
+    desc: "last_commit_days > 365 且存在未修复的可远程利用 CVE —— reject。"
+  - id: R3-duplicates-owned-capability
+    desc: "鎏灏已有同等实现且无可观增量（例：工作流引擎已裁定自研 goal_task_graph 为主）—— reject，避免双权威。"
+  - id: R4-sovereignty-conflict
+    desc: "需把决策权、人类审批或凭证托管给外部服务 —— reject。违反 MS:§143 人类主权最高原则。"
+
+# --------------------------------------------------------------------------
+# adoption_decision 的四个取值
+decision_legend:
+  adopt:    "已达成 Evaluated+，进入重构封装阶段，指定 owner 与验收测试"
+  evaluate: "技术价值明确但 Gate 未走完，需在隔离环境实测"
+  watch:    "当前不吸收，但值得跟踪（多为 P2 或 horizon 类）"
+  reject:   "触碰红线或重复造轮子，记录理由后不再跟踪"
+
+# --------------------------------------------------------------------------
+# 吸收后的归属：必须落到鎏灏已有挂载点，不允许新起一套并行实现
+ownership_targets:
+  - { path: "src/kernels/<kernel>/",        use_for: "内核级能力，需过 DoD 七维" }
+  - { path: "LiuHao-O/packages/<pkg>/",     use_for: "对外 facade，仅 re-export" }
+  - { path: "src/ai/",                      use_for: "推理/规划/工作流，注意别绕过引擎权威" }
+  - { path: "src/tools/",                   use_for: "工具路由，经 ToolRouter 注入" }
+  - { path: "oss-ecosystem/pipeline/",      use_for: "扫描与评估工具自身" }

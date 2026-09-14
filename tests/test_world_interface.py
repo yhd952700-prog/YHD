@@ -1,5 +1,6 @@
 """World Interface — MASTER-SPEC Phase 15 tests."""
 import os
+import sys
 
 import pytest
 
@@ -41,10 +42,38 @@ class TestFilesystemAdapter:
 class TestShellAdapter:
     def test_run_echo(self):
         sh = ShellAdapter()
+        # 用 sys.executable 而非 `echo`：`echo` 在 Windows 上不是可执行文件，
+        # 只在 shell 内建存在 —— argv 模式（shell=False）下会 FileNotFoundError。
+        # 本适配器自 2026-09-13 起默认 argv 模式，故测试也须跨平台。
         out = sh.execute(WorldRequest(adapter="shell", action="run",
-                                      params={"command": "echo hello"}))
-        assert out["stdout"].strip() == "hello"
+                                      params={"command": f'"{sys.executable}" -c "print(42)"'}))
+        assert out["stdout"].strip() == "42"
         assert out["returncode"] == 0
+
+    def test_shell_metacharacters_are_not_interpreted(self, tmp_path, monkeypatch):
+        """默认路径必须关掉命令注入面。
+
+        若仍走 ``shell=True``，分号会开启第二个命令并真的在 cwd 落下文件；
+        argv 模式下整串只是 python 的普通实参，副作用不可能发生。
+        """
+        monkeypatch.chdir(tmp_path)
+        sh = ShellAdapter()
+        marker = "pwned_from_injection.txt"
+        out = sh.execute(WorldRequest(
+            adapter="shell", action="run",
+            params={"command": f'"{sys.executable}" -c "print(42)"; touch {marker}'}))
+        assert out["returncode"] == 0
+        # 正面证据：注入命令没有被 shell 解释执行
+        assert not (tmp_path / marker).exists()
+
+    def test_shell_true_requires_explicit_opt_in(self):
+        """`shell=True` 这条危险路径必须显式开启，不能是默认行为。"""
+        sh = ShellAdapter()
+        # 不传 shell -> argv；传 shell=True -> 走 shell（此处只验证两者都能跑出结果）
+        out = sh.execute(WorldRequest(adapter="shell", action="run",
+                                      params={"command": f'"{sys.executable}" -c "print(43)"',
+                                              "shell": True}))
+        assert out["stdout"].strip() == "43"
 
 
 class TestWorldInterface:

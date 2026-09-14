@@ -1,0 +1,269 @@
+# 鎏灏全球开源生态雷达 —— 信号源清单（machine-readable）
+#
+# 定位说明（重要，防止与 oss-registry.yaml 混淆）：
+#   oss-registry.yaml      = **已引入**依赖的许可证登记册（防守：不能违规）
+#   oss-ecosystem/*.yaml   = **未引入**能力的发现库（进攻：值得吸收什么）
+#   两者由 pipeline/oss_radar.py 联动：雷达选中 -> 走 TerraformKit 式评估 -> 落地才进 registry。
+#
+# 字段口径：
+#   id            唯一标识
+#   family        forge(代码托管) / registry(包或模型仓库) / foundation(基金会) /
+#                 advisory(安全与合规情报) / research(论文与榜单)
+#   discover      可直接调用的发现端点。url 支持 {query}/{pkg} 占位符。
+#                 **写 null 表示官方无 API —— 不要为了让表格好看而编造端点。**
+#   item          取单个项目元数据的端点；null = 只能从 discover 的返回里取
+#   auth          none / optional / required
+#   rate_limit    实测或官方口径；unknown 必须在 probe 时退避
+#   verify_note   核实记录（何时、怎么验的），防止后人以为是从记忆里抄的
+#
+# 2026-09-13 初版：端点逐一手检，`null` 项是刻意留白而非遗漏。
+
+version: 1
+updated: 2026-09-13
+
+sources:
+  # ----------------------------------------------------------------- 代码托管
+  - id: github
+    label: GitHub
+    family: forge
+    discover:
+      url: "https://api.github.com/search/repositories"
+      method: GET
+      params: { q: "{query}", sort: "stars", order: "desc", per_page: 30 }
+    item:
+      url: "https://api.github.com/repos/{owner}/{repo}"
+      method: GET
+    auth: none
+    rate_limit: "匿名 10 req/min(search) / 60 req/hr(core)；带 token 30 req/min / 5000 req/hr"
+    verify_note: "2026-09-13 httpx 实测 200。search 的 sort 只支持 stars/forks/updated，不支持 pushed/created —— 找新项目改用 q=pushed:>YYYY-MM-DD。"
+
+  - id: gitlab
+    label: GitLab
+    family: forge
+    discover:
+      url: "https://gitlab.com/api/v4/projects"
+      method: GET
+      params: { search: "{query}", order_by: "star_count", sort: "desc", per_page: 30 }
+    item:
+      url: "https://gitlab.com/api/v4/projects/{id}"
+      method: GET
+    auth: none
+    rate_limit: "匿名按 IP 限流（未公开数值）；带 PRIVATE-TOKEN 约 2000 req/min"
+    verify_note: "2026-09-13 实测 200。匿名只返回公开项目属性子集。"
+
+  - id: bitbucket
+    label: Bitbucket
+    family: forge
+    discover: null
+    item:
+      url: "https://api.bitbucket.org/2.0/repositories/{workspace}/{repo}"
+      method: GET
+    auth: none
+    rate_limit: "匿名按 IP 严格限流（未公开数值）"
+    verify_note: "**2026-09-13 更正：全局 `GET /2.0/repositories?pagelen=N` 已官方废弃，返回 410 Gone**（body: CHANGE-2770 Functionality has been deprecated，见 developer.atlassian.com changelog）。此前误记为 200，属探测记录错误，已修正。现在**必须**先知道 workspace 才能列仓库（`/{workspace}/repositories`），root 端点 404。结论：**无全局发现能力 ⇒ discover 降级为 null，与 SourceForge 同列被动源**。触发条件：别的源提到某项目托管在 bb 时，才查 item 端点。"
+
+  - id: sourceforge
+    label: SourceForge
+    family: forge
+    discover: null
+    item:
+      url: "https://sourceforge.net/rest/p/{project}"
+      method: GET
+    auth: none
+    rate_limit: unknown
+    verify_note: "**官方无全局发现 API**。Allura REST 只能按已知项目名取元数据。发现只能走 HTML 目录 https://sourceforge.net/directory/ 或 RSS。因此在自动发现轮次里它是「被动源」：只有当别的源提到某项目托管在 SF 时才查它的 item 端点。"
+
+  # ----------------------------------------------------------------- 基金会
+  - id: apache
+    label: Apache Software Foundation
+    family: foundation
+    discover: null
+    item:
+      url: "https://projects.apache.org/project.html?{project}"
+      method: GET
+    auth: none
+    rate_limit: n/a
+    verify_note: "requests 手 GET projects.apache.org/projects.json 在 renewSession 之后仍返回 404（疑似反 bot）。**无稳定 JSON 列表 API**——刻意写 null。替代：scrape /projects.html，或用 CNCF/LF landscape 覆盖同名项目。"
+
+  - id: linux_foundation
+    label: Linux Foundation / CNCF
+    family: foundation
+    discover:
+      url: "https://raw.githubusercontent.com/cncf/landscape/master/landscape.yml"
+      method: GET
+      params: {}
+    item: null
+    auth: none
+    rate_limit: "GitHub raw 匿名 60 req/hr/IP"
+    verify_note: "经 GitHub contents API 确认 download_url 存在（master 分支，~1.1MB 的 YAML，含全部 CNCF/LF 项目）。raw 偶发 503，脚本里换 jsdelivr CDN 兜底。这是**唯一**能一次性覆盖 LF+CNCF 的机器可读源，价值最高。"
+
+  # ------------------------------------------------------- 模型 / 数据科学
+  - id: huggingface
+    label: Hugging Face Hub
+    family: registry
+    discover:
+      url: "https://huggingface.co/api/models"
+      method: GET
+      params: { search: "{query}", sort: "downloads", direction: "-1", limit: 30 }
+    item:
+      url: "https://huggingface.co/api/models/{id}"
+      method: GET
+    auth: none
+    rate_limit: "受 HF 全局限流（未公开数值）"
+    verify_note: "2026-09-13 实测 200。models/spaces 都支持 sort=downloads|likes|lastModified。⚠️ **模型 != 代码**： discussing 模型要看卡片里的 license 字段，很多仓库 license 是 Apache-2.0 但权重是 OpenRAIL/CC-BY-NC/自定义条款——必须分开判。"
+
+  - id: modelscope
+    label: ModelScope（魔搭）
+    family: registry
+    discover:
+      url: "https://modelscope.cn/openapi/v1/models"
+      method: GET
+      params: { search: "{query}", sort: "downloads", page_size: 20 }
+    item:
+      url: "https://modelscope.cn/openapi/v1/models/{owner}/{name}"
+      method: GET
+    auth: required
+    rate_limit: unknown
+    verify_note: "**必须 Bearer MODELSCOPE_API_KEY**，无匿名端点。未配 token 时脚本应跳过并明确报告 skipped，而不是假装扫描过了。"
+
+  - id: kaggle
+    label: Kaggle
+    family: registry
+    discover: null
+    item: null
+    auth: required
+    rate_limit: "超限 429"
+    verify_note: "需 kaggle.json token。Kaggle 的价值在 **dataset + notebook 的可运行代码**，不在 API 本身——走 `kagglehub` SDK 拉模型/数据比 REST 稳。自动发现轮次列为可选源。"
+
+  - id: papers_with_code
+    label: Papers with Code
+    family: research
+    discover: null
+    item: null
+    auth: null
+    rate_limit: n/a
+    verify_note: "**已于 2025-07 被 Meta 关停**，域名跳转 HF Trending Papers，旧 /api/v1 失效。不要为它留代码分支。替代：Hugging Face daily_papers、Semantic Scholar API。历史数据快照在 github.com/paperswithcode/paperswithcode-data（冻结，CC-BY-SA）。"
+
+  # ------------------------------------------------------------- 包注册表
+  - id: npm
+    label: npm
+    family: registry
+    discover:
+      url: "https://registry.npmjs.org/-/v1/search"
+      method: GET
+      params: { text: "{query}", size: 30 }
+    item:
+      url: "https://registry.npmjs.org/{pkg}"
+      method: GET
+    auth: none
+    rate_limit: "registry 元数据未公开硬限流；建议带 User-Agent"
+    verify_note: "2026-09-13 实测 200。下载量走 https://api.npmjs.org/downloads/point/last-month/{pkg}（免认证）。"
+
+  - id: pypi
+    label: PyPI
+    family: registry
+    discover: null
+    item:
+      url: "https://pypi.org/pypi/{pkg}/json"
+      method: GET
+    auth: none
+    rate_limit: "无硬限流，但要求合理频率 + User-Agent，滥用 429"
+    verify_note: "**PyPI 没有搜索 API**（/simple 是 HTML 且 3MB+）。它的正确用法是 item 端点做**元数据核实与版本追踪**，发现交给 GitHub。"
+
+  - id: dockerhub
+    label: Docker Hub
+    family: registry
+    discover:
+      url: "https://hub.docker.com/v2/search/repositories/"
+      method: GET
+      params: { query: "{query}", page_size: 25, ordering: "last_updated" }
+    item:
+      url: "https://hub.docker.com/v2/repositories/{namespace}/{repo}/tags"
+      method: GET
+    auth: none
+    rate_limit: "匿名 100 pulls/6h/IP"
+    verify_note: "2026-09-13 实测 200。注意**镜像 license 与代码仓库 license 常常不一致**（Dockerfile 打包进去的东西更多）。"
+
+  - id: mcp_registry
+    label: MCP 官方 Registry
+    family: registry
+    discover:
+      url: "https://registry.modelcontextprotocol.io/v0/servers"
+      method: GET
+      params: { limit: 100 }
+    item:
+      url: "https://registry.modelcontextprotocol.io/v0/servers/{server_id}"
+      method: GET
+    auth: none
+    rate_limit: unknown
+    verify_note: "官方机器可读索引，已取代 modelcontextprotocol/servers README 列表（2026-04 起弃用）。OpenAPI 在 https://registry.modelcontextprotocol.io/openapi.json（实测 200）。⚠️ 独立审计称其中 **52% 已停止维护、仅 17% 达生产级**，且 2026 上半年已披露 30+ CVE（43% 是命令注入）。**进此源 = 默认不可信，必须过 trust gate。**"
+
+  # ------------------------------------------------- 安全与合规情报（哨兵）
+  - id: osv
+    label: OSV.dev
+    family: advisory
+    discover: null
+    item:
+      url: "https://api.osv.dev/v1/query"
+      method: POST
+      params: {}
+    auth: none
+    rate_limit: unknown
+    verify_note: "漏洞查询，非发现源。body = {\"package\":{\"name\":..,\"ecosystem\":..},\"version\":..}。另有 /v1/querybatch 批量——追踪阶段用它一次问几百个包。ecosystem 区分大小写（PyPI / npm / GitHub Actions 等）。"
+
+  - id: deps_dev
+    label: deps.dev (Open Source Insights)
+    family: advisory
+    discover: null
+    item:
+      url: "https://api.deps.dev/v3/systems/{ecosystem}/packages/{pkg}"
+      method: GET
+    auth: none
+    rate_limit: unknown
+    verify_note: "给依赖图、版本、OpenSSF Scorecard 与安全告警。维护风险打分的**主要数据源**。"
+
+  - id: spdx
+    label: SPDX License List
+    family: advisory
+    discover:
+      url: "https://spdx.org/licenses/licenses.json"
+      method: GET
+      params: {}
+    item: null
+    auth: none
+    rate_limit: n/a
+    verify_note: "License 变更追踪的**基准真值**：把它拉下来缓存，任何项目的 license 字段都对这张表校验，不在表里的（如 Elastic-2.0 / Sustainable Use License / OpenRAIL-M）直接标 high-risk。"
+
+  - id: clearlydefined
+    label: ClearlyDefined
+    family: advisory
+    discover: null
+    item:
+      url: "https://api.clearlydefined.io/definitions/{type}/{provider}/{namespace}/{name}/{revision}"
+      method: GET
+    auth: none
+    rate_limit: unknown
+    verify_note: "给 license/copyright/score 的清晰度。SPDX 表的补充：当 package metadata 里的 license 是自由文本时用它消歧。"
+
+# -------------------------------------------------------------------- 扫描查询词
+# query 不是项目名而是**能力意图**，`{query}` 会注入各源的 discover.params。
+# 这一节是整个雷达的"需求侧"：鎏灏缺什么，就往这里加什么词。
+intents:
+  - id: agent-orchestration
+    target_kernels: [execution, capability]
+    queries: ["agent orchestration framework", "multi-agent collaboration", "durable workflow agent"]
+  - id: rag-knowledge
+    target_kernels: [memory, context]
+    queries: ["retrieval augmented generation", "vector search embedded", "reranker inference"]
+  - id: safe-execution
+    target_kernels: [execution, security, policy]
+    queries: ["sandbox code execution", "wasm runtime sandbox", "microvm isolation"]
+  - id: observability
+    target_kernels: [audit, evaluation]
+    queries: ["opentelemetry exporter", "distributed tracing backend"]
+  - id: document-intelligence
+    target_kernels: [context]
+    queries: ["document parsing ocr layout", "pdf to markdown llm"]
+  - id: governance-policy
+    target_kernels: [policy, trust, security]
+    queries: ["authorization policy language", "prompt injection guardrail", "pii anonymization"]

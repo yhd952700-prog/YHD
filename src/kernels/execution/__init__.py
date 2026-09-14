@@ -27,6 +27,7 @@ from src.kernels.capability import get_capability_registry, CapabilityScope, che
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
 from src.kernels._crosscutting import kernel_action
+from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
 
 
 # Seam for real capability execution. The Execution Kernel must not depend on
@@ -509,6 +510,7 @@ class ExecutionEngine:
         self,
         scope: str = "L1",
         capability_executor: Optional[CapabilityExecutor] = None,
+        journal: Optional[ExecutionJournal] = None,
     ) -> None:
         self.scope = scope
         self.decomposer = GoalDecomposer()
@@ -516,10 +518,18 @@ class ExecutionEngine:
         self.executor = ActionExecutor(capability_executor=capability_executor)
         self.verifier = Verifier()
         self.context_kernel = create_context_kernel(scope=scope)
+        # journal=None 时行为与历史完全逐字节一致（不注入即不生效），
+        # 与 capability_executor 那条接缝同一哲学 —— 见 Round 83。
+        self.journal: Optional[ExecutionJournal] = journal
+        self._execution_id: Optional[str] = None
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor used by the pipeline."""
         self.executor.set_capability_executor(capability_executor)
+
+    def set_journal(self, journal: Optional[ExecutionJournal]) -> None:
+        """Attach (or detach) the durable journal that enables crash recovery."""
+        self.journal = journal
 
     def execute_goal(
         self,
@@ -547,6 +557,33 @@ class ExecutionEngine:
         plan.status = PlanStatus.ACTIVE
         plan.started_at = utc_now()
 
+        # Step 2.5: Adopt durable progress (crash recovery)
+        # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
+        # 才能对上上一次执行留下来的那串事件。
+        resumed_count = 0
+        if self.journal is not None:
+            self._execution_id = goal.id
+            self.journal.record(
+                self._execution_id,
+                "execution_started",
+                goal=goal.natural_language,
+                plan_id=plan.id,
+                task_count=len(plan.tasks),
+            )
+            resumed_count = self._adopt_journaled_progress(ctx)
+            if resumed_count:
+                publish_event(
+                    type="execution_resumed",
+                    source="execution_kernel",
+                    data={
+                        "goal_id": goal.id,
+                        "resumed_tasks": resumed_count,
+                        "total_tasks": len(plan.tasks),
+                    },
+                    correlation_id=goal.correlation_id,
+                    scope=EventScope(goal.scope),
+                )
+
         # Step 3: Execute
         self._execute_plan(ctx, verification_criteria)
 
@@ -556,6 +593,17 @@ class ExecutionEngine:
             plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
         else:
             plan.status = PlanStatus.COMPLETED
+
+        if self.journal is not None and self._execution_id is not None:
+            self.journal.record(
+                self._execution_id,
+                "execution_completed",
+                plan_id=plan.id,
+                status=plan.status.value,
+                completed=len(ctx.completed_tasks),
+                failed=len(ctx.failed_tasks),
+                resumed=resumed_count,
+            )
 
         publish_event(
             type="execution_completed",
@@ -611,6 +659,46 @@ class ExecutionEngine:
                     task.error = "Execution timeout"
                     ctx.failed_tasks.add(task.id)
 
+    def _adopt_journaled_progress(self, ctx: ExecutionContext) -> int:
+        """把 journal 里已完成的任务直接标成 COMPLETED —— 崩溃续跑的核心。
+
+        匹配依据是 **task 名字**而不是 id：id 每次都由 uuid4 生成，跨进程必然
+        对不上；而 `GoalDecomposer` 对同一段目标描述是确定性的，名字稳定。
+
+        返回跳过的任务数，并在 ctx 里放一个标明来自 journal 的 ActionResult，
+        使后续 Verifier 看到的形状与真实执行一致（不是空成功，是「已恢复」）。
+        """
+        assert self.journal is not None and self._execution_id is not None
+        done = self.journal.completed_task_names(self._execution_id)
+        if not done:
+            return 0
+
+        resumed = 0
+        for task in ctx.plan.tasks:
+            if task.status != TaskStatus.PENDING or task.name not in done:
+                continue
+            task.status = TaskStatus.COMPLETED
+            task.started_at = task.started_at or utc_now()
+            task.completed_at = utc_now()
+            task.result = {"restored_from_journal": True}
+            ctx.completed_tasks.add(task.id)
+            ctx.task_results[task.id] = ActionResult(
+                action_id=f"restored:{task.id}",
+                success=True,
+                output={"restored_from_journal": True, "task_name": task.name},
+                duration_ms=0,
+            )
+            resumed += 1
+        return resumed
+
+    def _journal_event(
+        self, task: Task, event_type: str, **payload: Any
+    ) -> None:
+        """写一条任务级事件 —— journal 未挂载时必须是彻底的 no-op。"""
+        if self.journal is None or self._execution_id is None:
+            return
+        self.journal.record(self._execution_id, event_type, task_name=task.name, **payload)
+
     def _execute_task(
         self,
         ctx: ExecutionContext,
@@ -623,6 +711,10 @@ class ExecutionEngine:
         # Join the goal's correlation chain so task lifecycle events are
         # traceable end to end (Definition Lock section 112).
         task.correlation_id = ctx.goal.correlation_id
+
+        # 先记 task_started 再动手：崩溃时才能知道「当时正在跑哪个任务」，
+        # 以及区分「从没开始」和「开始了但没完成」——后者可能需要人工看一眼副作用。
+        self._journal_event(task, "task_started", task_id=task.id, goal_id=task.goal_id)
 
         publish_event(
             type="task_started",
@@ -654,6 +746,11 @@ class ExecutionEngine:
                 task.result = result.output
                 task.completed_at = utc_now()
                 ctx.completed_tasks.add(task.id)
+                # 必须在已被正式标记 COMPLETED 之后立刻落盘：崩溃随时可能发生，
+                # 晚一步写就等于这个任务下次还要重跑（副作用执行第二次）。
+                self._journal_event(
+                    task, "task_completed", task_id=task.id, goal_id=task.goal_id
+                )
 
                 # Verify
                 verification = self.verifier.verify(task, result, verification_criteria)
@@ -699,6 +796,9 @@ class ExecutionEngine:
         task.error = f"Max retries ({task.max_retries}) exceeded; last error: {root_cause}"
         task.completed_at = utc_now()
         ctx.failed_tasks.add(task.id)
+        self._journal_event(
+            task, "task_failed", task_id=task.id, goal_id=task.goal_id, error=task.error
+        )
 
         publish_event(
             type="task_failed",
@@ -727,9 +827,12 @@ class ExecutionEngine:
 
 
 # Convenience functions
-def create_execution_engine(scope: str = "L1") -> ExecutionEngine:
+def create_execution_engine(
+    scope: str = "L1",
+    journal: Optional[ExecutionJournal] = None,
+) -> ExecutionEngine:
     """Factory function to create ExecutionEngine."""
-    return ExecutionEngine(scope=scope)
+    return ExecutionEngine(scope=scope, journal=journal)
 
 
 def execute_goal(

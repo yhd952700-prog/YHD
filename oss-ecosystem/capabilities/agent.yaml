@@ -1,0 +1,77 @@
+# 《鎏灏全球开源能力数据库》—— Agent 能力
+# 对应基因：agent-capability
+# 缺口（来自 genebank/GENE-MAP.yaml）：
+#   自研为主且已裁定引擎权威（goal_task_graph.py）。真正缺的不是编排框架，
+#   而是 **planner 与 guardrail 的分离边界** —— 规划能否独立于策略执行被审查。
+#   另外：MCP 生态约 52% 停止维护、已披露 30+ CVE，必须逐个过 Trust Gate。
+#
+# 数据来源：scan-20260913T203529Z.json intent=18/44/57 + api.github.com/repos/<repo> 二次核实
+# 核实时间：2026-09-13
+
+entries:
+
+  - id: LHX-OSS-0014
+    name: Semantic Kernel
+    source_platform: github
+    url: https://github.com/microsoft/semantic-kernel
+    upstream_stars: 28554
+    license: MIT
+    function: >
+      微软的智能体开发框架，提供 planner（把目标拆成步骤）、plugin/function 抽象、
+      以及 filter 机制（在函数调用前后插入拦截逻辑）。
+    technical_value: >
+      最有价值的不是 planner，而是 **filter/拦截器与 planner 的解耦**：
+      拦截点落在"函数调用前 / 后"这两个明确位置，因此安全策略不需要侵入规划逻辑本身。
+      这与把权限检查硬编码进 planner 的常见做法是相反的取向。
+    enhances_liuhao: "partial"
+    absorbable: >
+      拦截点的位置设计。对照鎏灏：Policy Kernel 是独立内核，
+      原则上已经做到了分离，本条的价值是验证"分离是否落在正确粒度上"——
+      若某个策略必须在 plan 生成后才能判定，那拦截点就该在 plan→exec 之间而非更晚。
+    needs_refactor: none
+    integration_plan: >
+      不引入框架本体。仅对照检查 Execution Kernel 的 policy hook 点位置，
+      确认 Policy Controlled 维度覆盖到 plan 生成后、action 执行前这个关键窗口。
+    license: MIT
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 不适用 —— 仅借鉴接口形态，无运行时依赖。
+    target_kernels: [policy, execution]
+    gene: agent-capability
+    evidence: "scan-20260913T203529Z.json intent=18；二次核实 MIT/28554"
+    adoption_decision: evaluate
+    decision_note: >
+      用于给 Policy 内核做一次"拦截点粒度"体检，与 LHX-OSS-0006（Casbin）互补：
+      Casbin 验表达力，本条验切入点位置。
+
+  - id: LHX-OSS-0015
+    name: MCP Server 生态（官方 Registry）
+    source_platform: mcp_registry
+    url: https://registry.modelcontextprotocol.io/v0/servers
+    upstream_stars: null
+    function: 模型上下文协议的官方服务索引，收录第三方 MCP 服务端点。
+    technical_value: >
+      协议本身已成为事实标准，对接成本低。机器可读索引已取代旧的 README 列表方式，
+      便于自动发现与版本追踪。
+    enhances_liuhao: "yes"
+    absorbable: >
+      **协议对接能力可以吸收，但 registry 里的每一个 server 都不可默认可信。**
+      独立审计显示约 52% 已停止维护、仅 17% 达生产级，
+      2026 上半年已披露 30+ 个 CVE，其中约 43% 是命令注入。
+      因此鎏灏侧需要的是 Trust Gate：按维护度、漏洞历史、权限范围三档定级。
+    needs_refactor: light
+    integration_plan: >
+      已在 sources.yaml 标记该源为"默认不可信"。落地时要求：
+      Network Kernel 接入新 MCP server 必须显式登记 + 记录 its CVE 与最后提交时间，
+      且默认走最小权限。禁止一次性批量引入。
+    license: 各 server 自行选择，无统一许可
+    commercial_risk: medium
+    security_risk: high
+    performance_impact: 待测 —— 取决于具体 server；需在隔离环境逐个压测后再定。
+    target_kernels: [network, trust, security]
+    gene: agent-capability
+    evidence: "sources.yaml verify_note 已登记 52%/17%/30+ CVE 的审计口径；registry limit 上限 100 已实测"
+    adoption_decision: watch
+    decision_note: >
+      协议要跟进，但生态整体此刻不构成可直接吸收的能力。
+      列为 watch 并强制走 Trust Gate —— 这是唯一安全的接法。

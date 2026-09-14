@@ -372,6 +372,60 @@ jobs:
         working-directory: apps/console/console
         run: npm run lint
 
+  # Architecture gate (Semgrep) —— 本仓库**唯一会阻断**的静态检查作业。
+  #
+  # 为什么需要它：上面 Security Scan 里的 Trivy / Bandit / pip-audit 全都是
+  # `--exit-code 0` 或 `|| true`，意味着它们从不阻断任何一次推送 ——
+  # "声明了检查" 与 "检查拦得住" 是两件事。本作业刻意严格：任何一条命中都失败。
+  #
+  # 为什么它敢严格：规则集 `.semgrep/liuhao.yml` 在当前代码树上**实测 0 命中**
+  # 并由本作业持续钉住。做不到 0 命中的规则必须放进 advisory 而非这里 ——
+  # 一个从第一天就红着的门禁，等于没有门禁。
+  #
+  # 许可证边界（重要，勿改）：Semgrep 自身是 **LGPL-2.1**。允许**以独立工具
+  # 在 CI 进程里调用**（mere aggregation，不触发 copyleft）；**禁止** fork、
+  # 内置或以任何形式放进鎏灏的分发物 —— 那会让我们的改动承担 LGPL 开源义务。
+  # 因此 semgrep **不写进** pyproject/requirements（它不是运行时依赖，也不是
+  # 测试依赖），只在 CI 这一步临时安装。
+  architecture-gate:
+    name: Architecture Gate (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install semgrep
+
+      # 关键：必须带 --error，否则 semgrep 在命中时仍 exit 0，门禁形同虚设。
+      # 实测：默认 exit 0（即便 4 条 blocking findings），加 --error 后命中即 exit 1。
+      # 这里同时输出 SARIF 便于失败后在 Security 面板里定位。
+      - name: Run Semgrep (blocking)
+        run: |
+          set -o pipefail
+          semgrep --config .semgrep/liuhao.yml \
+                  --metrics=off \
+                  --disable-version-check \
+                  --error \
+                  --sarif --output semgrep-results.sarif \
+                  src/ scripts/
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.sarif
+          if-no-files-found: ignore
+
   # Console readability / contrast audit — WCAG 2.1 AA regression gate.
   # Builds the Vite SPA, then starts the REAL gateway (uvicorn
   # src.gateway.main:app) on a LOOPBACK-ONLY port (127.0.0.1, never 0.0.0.0)

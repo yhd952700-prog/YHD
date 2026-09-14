@@ -180,7 +180,7 @@ class VaultTransitCrypto:
         """
         if self._offline:
             return False
-        try:
+        try:  # nosemgrep: liuhao-swallow-exception-return-success
             self._vault._client.secrets.transit.create_key(
                 name=key_name,
                 type=key_type,
@@ -189,8 +189,28 @@ class VaultTransitCrypto:
             )
             logger.info(f"Created Vault Transit key: {key_name} (type={key_type})")
             return True
-        except Exception:
-            # Key already exists
+        except Exception as exc:
+            # nosemgrep: liuhao-swallow-exception-return-success
+            # 此处的 return True **不是**谎报成功 —— 静态图案识别不出前面那道
+            # read_key 校验，故显式结辩：
+            #   走到下面 return True 的唯一路径 = read_key(key_name) 成功，
+            #   即 Vault 明确回答「这个 key 存在且可读」。这才允许声称 ensure 成功。
+            #   read_key 也失败时则走到 return False。
+            # 若以后有人改动这段，请务必保留「宣称 True 前必须读到 key」这条前提。
+            #
+            # 原实现在此无条件 return True（注释仅写 "Key already exists"），
+            # 会把 Vault 宕机 / 网络错误 / 权限不足**全部**静默成成功，
+            # 调用方随后拿着一个从未被创建的 key 去加密 —— 典型的谎报成功。
+            try:
+                self._vault._client.secrets.transit.read_key(name=key_name)
+            except Exception:
+                logger.error(
+                    "Transit key %r was not created and is not readable: %s",
+                    key_name,
+                    exc,
+                )
+                return False
+            logger.debug(f"Transit key already exists: {key_name}")
             return True
 
     def rotate_transit_key(self, key_name: str) -> bool:

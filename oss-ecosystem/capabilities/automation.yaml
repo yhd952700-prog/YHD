@@ -1,0 +1,151 @@
+# 《鎏灏全球开源能力数据库》—— 自动化 / 持久化工作流
+# 对应基因：automation-capability
+# 缺口（来自 genebank/GENE-MAP.yaml）：ENOCH 有 checkpoint 与调度，
+#   **但无持久化工作流与事件重放 → 进程崩溃后任务无法续跑。**
+#
+# 数据来源：oss-ecosystem/state/scan-20260913T203529Z.json（GitHub API 一次扫描）
+#          + api.github.com/repos/<repo> 二次核实（stars/license/language 逐条对齐）
+# 核实时间：2026-09-13
+
+entries:
+
+  - id: LHX-OSS-0001
+    name: Temporal
+    source_platform: github
+    url: https://github.com/temporalio/temporal
+    upstream_stars: 23002
+    language: Go
+    function: >
+      持久化工作流引擎。把编排逻辑写成确定性 workflow 代码，由集群记录完整事件历史；
+      worker 崩溃后可在别处依据事件历史重放，从中断处继续。
+    technical_value: >
+      核心是 **event sourcing + deterministic replay**：workflow 代码必须是确定性的
+      （不准直接读时钟、随机数、IO），所有外部副作用收敛到 activity。
+      因此"工作流执行到哪一步"这件事变成了可序列化的事件日志，而非进程内存状态。
+      这使「长时间运行、可崩溃、可恢复、可审计」同时成立。
+    enhances_liuhao: "partial"
+    absorbable: >
+      **吸收的是范式，不是这个仓库。** 引入 Temporal 意味着要运维一整套集群 + Cassandra/PostgreSQL，
+      对鎏灏当前部署形态（单端口自服务）过重。真正要拿的是三件事：
+      (1) workflow 确定性约束与其 static-analysis 检查器思路；
+      (2) 「副作用必须走 activity」这条边界，正好对应鎏灏 ActionExecutor 的接缝；
+      (3) 事件历史作为唯一真源的审计语义，可直接并入 Audit Kernel 的 hash-chain。
+    needs_refactor: heavy
+    integration_plan: >
+      不在第一步引入集群。先在 src/ai/goal_task_graph.py 之上加一层 ExecutionJournal：
+      把 Task 状态跃迁按序落盘（复用现有 sqlite 链路），并给 task 加确定性约束检查。
+      验证方式：人为 kill 进程后重启，任务应从断点继续而非重头跑 —— 这是可验收的硬指标。
+      通过后再评估是否换真正的 Temporal。
+    license: MIT
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— 落盘事件历史会增加 IO；预期每个任务状态跃迁写一次，量级可控，需在补上 Load 压测后给出确切数字。
+    target_kernels: [execution, event, audit]
+    gene: automation-capability
+    evidence: "scan-20260913T203529Z.json intent=52；api.github.com/repos/temporalio/temporal 二次核实"
+    adoption_decision: evaluate
+    decision_note: >
+      命中自动化基因最明确的缺口。定为 evaluate 而非 adopt：必须先证明「不加集群也能拿到续跑能力」，
+      否则等于给鎏灏背上运维负担换取一个不是必须的能力。
+
+  - id: LHX-OSS-0002
+    name: Hatchet
+    source_platform: github
+    url: https://github.com/hatchet-dev/hatchet
+    upstream_stars: 7931
+    function: 面向 Go 与 Python worker 的分布式任务队列，支持 DAG 工作流与事件触发。
+    technical_value: >
+      相比 Temporal，它以「任务队列 + DAG」的最小形态提供编排，依赖 Postgres 即可运行，
+      没有重放语义，因而实现复杂度低得多。适合作为**轻量对照实现**而非终极方案。
+    enhances_liuhao: "partial"
+    absorbable: DAG 调度器与 worker 注册/心跳的最小实现；Python worker 侧 SDK 形态。
+    needs_refactor: light
+    integration_plan: >
+      作为 ExecutionJournal 的参考实现来读，不建议直接依赖。
+      若后续证明鎏灏只需 DAG 调度而无需重放，它比 Temporal 更接近目标形态。
+    license: MIT
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— 引入 Postgres 依赖，需评估与现有 sqlite 链路是否冲突。
+    target_kernels: [execution]
+    gene: automation-capability
+    evidence: "scan-20260913T203529Z.json intent=52"
+    adoption_decision: watch
+    decision_note: 轻量对照组。等 LHX-OSS-0001 的验证结论出来再决定走重放路线还是 DAG 路线。
+
+  - id: LHX-OSS-0003
+    name: Netflix Conductor
+    source_platform: github
+    url: https://github.com/conductor-oss/conductor
+    upstream_stars: 32199
+    function: 微服务编排引擎，工作流以 JSON DSL 定义，支持同步/异步任务编排。
+    technical_value: >
+      把工作流定义**外置为 JSON 而非代码**，因此工作流可以在运行时被生成、审查与替换。
+      这与 Temporal 的「代码即工作流」是相反取向 —— 前者更好治理，后者更好表达。
+    enhances_liuhao: "partial"
+    absorbable: >
+      JSON DSL 的 schema 设计经验。这一点对鎏灏有价值在于：
+      Policy Kernel 若要审核「一个 plan 长什么样」，可被解析的 plan 表示形式 >> 代码。
+    needs_refactor: light
+    integration_plan: >
+      不建议引入引擎本体。**真正可取的：为 Goal→Task→Plan 补一个可被 Policy Kernel
+      静态审查的序列化表示**。这与 workflows.yaml / execution-state.yaml 现有结构天然衔接。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 低 —— 仅借鉴 schema，不引入运行时。
+    target_kernels: [execution, policy]
+    gene: automation-capability
+    evidence: "scan-20260913T203529Z.json intent=52"
+    adoption_decision: evaluate
+    decision_note: >
+      命中「策略可审计性」这条真需求 —— 若 Execution Kernel 的 plan 无法逐条被 Policy Kernel 静态审查，
+      Policy Controlled 维度就缺少抓手。这一条比 Temporal 那条更容易先落地。
+
+  - id: LHX-OSS-0004
+    name: Apache Airflow
+    source_platform: github
+    url: https://github.com/apache/airflow
+    upstream_stars: 46843
+    function: 以 DAG 定义的数据流水线编排调度系统。
+    technical_value: 调度器 + executor 分离、backfill/重跑语义成熟，运维生态完整。
+    enhances_liuhao: "no"
+    absorbable: 无可吸收部分 —— 形态与鎏灏的执行内核重复且更重。
+    needs_refactor: none
+    integration_plan: 不集成。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: medium
+    performance_impact: 不适用
+    target_kernels: []
+    gene: automation-capability
+    evidence: "scan-20260913T203529Z.json intent=52"
+    adoption_decision: reject
+    decision_note: >
+      命中红线 R3-duplicates-owned-capability：鎏灏已有自研执行内核与 ENOCH，
+      Airflow 面向的是批处理数据流水线，引入只会制造第二套编排权威。
+
+  - id: LHX-OSS-0005
+    name: Dagster
+    source_platform: github
+    url: https://github.com/dagster-io/dagster
+    upstream_stars: 16144
+    function: 以「软件定义资产」为核心的数据编排器。
+    technical_value: >
+      关键差别：它编排的对象是**资产（Asset）而非任务（Task）** —— 关心的是"产出物该是什么状态"，
+      而非"先跑哪步"。这让增量物化与血缘追溯成为内生能力。
+    enhances_liuhao: "partial"
+    absorbable: >
+      资产视角作为一种建模 Option 记录在案。Resource 内核若要描述「某资源应处于什么状态」而非
+      「执行某动作」，这种声明式表达值得参考。
+    needs_refactor: none
+    integration_plan: 暂不集成，仅登记建模思想。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 不适用
+    target_kernels: [resource]
+    gene: automation-capability
+    evidence: "scan-20260913T203529Z.json intent=52"
+    adoption_decision: watch
+    decision_note: 与鎏灏当前的执行语义不同，属建模层面的长期参考，不占本轮工作量。

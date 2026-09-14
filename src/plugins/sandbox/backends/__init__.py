@@ -13,6 +13,7 @@ Exports:
 """
 
 from .base import (
+    ExecutionStatus,
     SandboxBackendBase,
     SandboxBackendType,
     SandboxBackendStatus,
@@ -21,9 +22,12 @@ from .base import (
 )
 from .gvisor import GVisorBackend
 from .subprocess_backend import SubprocessBackend
+from .monty_backend import MontyBackend, probe_monty
+from .restricted_python_backend import RestrictedPythonBackend, probe_restricted_python
 from .manager import SandboxBackendManager, get_sandbox_manager
 
 __all__ = [
+    "ExecutionStatus",
     "SandboxBackendBase",
     "SandboxBackendType",
     "SandboxBackendStatus",
@@ -31,6 +35,10 @@ __all__ = [
     "ExecutionResult",
     "GVisorBackend",
     "SubprocessBackend",
+    "MontyBackend",
+    "RestrictedPythonBackend",
+    "probe_restricted_python",
+    "probe_monty",
     "SandboxBackendManager",
     "get_sandbox_manager",
 ]

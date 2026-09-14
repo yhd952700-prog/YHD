@@ -128,7 +128,10 @@ class SecretManager:
         created_str = secret.get("created_at")
         if not created_str:
             return True
-        try:
+        # 本方法语义是「是否需要轮换」，返回 True = 判定为需要轮换；
+        # 无法解析 created_at 时取 True 是 **fail-closed**（宁可提前轮换，
+        # 也不让可能已过期的凭证继续服役），不是谎报成功。
+        try:  # nosemgrep: liuhao-swallow-exception-return-success
             created = datetime.fromisoformat(created_str)
             return datetime.now() - created > timedelta(days=max_age_days)
         except (ValueError, TypeError):

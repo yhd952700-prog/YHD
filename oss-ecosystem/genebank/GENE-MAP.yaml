@@ -1,0 +1,118 @@
+# 《鎏灏开源能力基因库》—— 12 类基因的能力地图
+#
+# 这份文件不是"想要的能力清单"，而是**账单**：
+#   每一类都说清楚「今天谁在承担、处在什么水位、缺的到底是什么」。
+# 只有当某个开源项目能填上一个**具体缺口**时，它才有资格被称为"基因"。
+#
+# 判定顺序永远是：先看缺口 → 再找项目。**反过来做就是无目的复制。**
+#
+# 水位标记（诚实口径，不许粉饰）：
+#   SOLID   = 已实现且有测试护栏托底
+#   THIN    = 有骨架，缺关键环节或默认不生效
+#   ABSENT  = 不存在专门实现
+#   UNKNOWN = 本轮未核实，需补一轮代码事实核查才可用其结论
+
+genebank:
+
+  # ---------------------------------------------------------------- 1
+  - slug: ai-capability
+    name: AI 能力
+    carrier: "src/ai/（LocalCore/L-Core）、packages/{reasoning,planning,analysis}/"
+    level: SOLID
+    gap: "推理入口与模型调用集中在 Python 侧；无 GPU/推理调度，无 embedding 与 rerank 环节。"
+    target_sources: [09, 10, 14, 15, 67]
+
+  # ---------------------------------------------------------------- 2
+  - slug: automation-capability
+    name: 自动化能力
+    carrier: "LHX-L-006 ENOCH（长任务/检查点/调度）、packages/{task,execution}/"
+    level: THIN
+    gap: "有 checkpoint 与调度，**无持久化工作流与事件重放**（崩溃后无法续跑）；浏览器/桌面侧执行面为空。"
+    target_sources: [52, 53]
+
+  # ---------------------------------------------------------------- 3
+  - slug: reasoning-capability
+    name: 推理能力
+    carrier: "packages/reasoning/、packages/planning/、LHX-C-011 Evaluation Kernel"
+    level: SOLID
+    gap: "规划与验证链路完整；缺**形式化约束下的推理**（如带资源边界的规划求解）与自我一致性校验。"
+    target_sources: [18, 47, 57]
+
+  # ---------------------------------------------------------------- 4
+  - slug: data-capability
+    name: 数据能力
+    carrier: "运行时 sqlite（liuhao_ai_os.db / memory_store.db / audit_store.db）+ alembic"
+    level: THIN
+    gap: "两套互不相干的链路（业务数据不走 alembic）；audit_store.db 已逾 33MB。缺列式查询与跨进程共享状态层（无 Redis）。"
+    target_sources: [27, 29, 32, 33, 34]
+
+  # ---------------------------------------------------------------- 5
+  - slug: search-capability
+    name: 搜索能力
+    carrier: "UNKNOWN —— capability-registry.yaml 中未见专用搜索条目"
+    level: UNKNOWN
+    gap: "需补一轮代码事实核查确认是否已存在检索实现。**在核定前，不对外声称鎏灏有搜索能力。** 若确为空白，则 BM25+向量的混合检索是 RAG 的必备地基。"
+    target_sources: [30, 16]
+
+  # ---------------------------------------------------------------- 6
+  - slug: knowledge-capability
+    name: 知识库能力
+    carrier: "src/kernels/memory/（多层 + L0-L7 作用域）、src/kernels/context/（12 类输入）"
+    level: THIN
+    gap: "Context 内核在 HYBRID/UNIFORM 权重下典型场景**全部 discarded**（已知开放项）。缺重排、压缩与节点索引策略。"
+    target_sources: [09, 16, 48]
+
+  # ---------------------------------------------------------------- 7
+  - slug: agent-capability
+    name: Agent 能力
+    carrier: "LHX-L-001 L-Core、LHX-L-002 Multi-Agent、LHX-L-005 Organization、LHX-C-009 Network、LHX-L-007 Network Gateway"
+    level: SOLID
+    gap: "自研为主且已裁定引擎权威（goal_task_graph.py）。MCP 生态虽大但**约 52% 停维护、已披露 30+ CVE**，必须逐 server 过 Trust Gate。"
+    target_sources: [17, 18, 19, 47, 49, 51]
+
+  # ---------------------------------------------------------------- 8
+  - slug: coding-capability
+    name: 编程能力
+    carrier: "LHX-L-004 ADA ComputeEngine（真实 subprocess）、packages/tools/"
+    level: THIN
+    gap: "能真实起子进程执行，但**仅 Python 单一执行面**；无 WASM/JS 第二执行面，无资源受限的强隔离。"
+    target_sources: [42, 44, 46]
+
+  # ---------------------------------------------------------------- 9
+  - slug: creation-capability
+    name: 创作能力
+    carrier: "LHX-C-003 Context Kernel、LHX-L-003 Perception（观察/感知/WorldModel）"
+    level: THIN
+    gap: "Perception 面向文本观察，**缺多模态输入**（图像/视频/音频/OCR 前置解析均未见）。"
+    target_sources: [63, 64, 65, 66, 39]
+
+  # ---------------------------------------------------------------- 10
+  - slug: safety-capability
+    name: 安全能力
+    carrier: "LHX-C-012 Security Kernel（RBAC+ABAC）、LHX-C-005 Policy Kernel、LHX-C-013 Audit、LHX-L-009 Governance、LHX-L-014 Hardening"
+    level: SOLID
+    gap: "内核层策略执法默认 OFF（刻意，L1 记录）；Network 内核改为真实投递后**出向管控成为新空白**；Vault Transit 依赖曾因幻影依赖被移除。"
+    target_sources: [54, 55, 56, 57, 58]
+
+  # ---------------------------------------------------------------- 11
+  - slug: deployment-capability
+    name: 部署能力
+    carrier: "scripts/build_cloud_bundle.py、docker-compose.prod.yml、src/gateway/console_static.py（单端口自服务）"
+    level: SOLID
+    gap: "单端口同源已收口且不可回退为绝对地址。缺 GPU/model serving 的部署形态与多集群 reconcile。"
+    target_sources: [08, 20, 22, 26]
+
+  # ---------------------------------------------------------------- 12
+  - slug: self-optimization-capability
+    name: 自我优化能力
+    carrier: "LHX-L-012 Evolution（受护栏的自改进流水线）、LHX-C-011 Evaluation、LHX-L-013 L10K/VHL"
+    level: THIN
+    gap: "有 Evolution 与 L10K 基线（v1.2）。 src/observability/tracing 为**自研**，需裁定是替换还是对齐 OpenTelemetry 语义约定；配额类指标无 Prometheus 导出面。"
+    target_sources: [23, 24, 52]
+
+# ---------------------------------------------------------------------------
+# 使用方式
+#   capabilities/*.yaml 里的每条记录必须写 `gene:`，取值只能是上面的 slug 之一。
+#   写不上 gene 的项目 = 没找到缺口 = 没有吸收理由 = 应判 reject。
+#
+# 统计口径：`--plan` 会按 target_sources 反查，打印每类基因当前挂了哪些来源类。

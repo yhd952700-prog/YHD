@@ -1,0 +1,119 @@
+# 鎏灏架构纪律 —— Semgrep 规则集
+#
+# 设计原则（与本项目长期纪律一致）：
+#   1. **规则必须跑得出来**，写之前先在本仓实测过计数，不做纸面规则。
+#   2. **阻断规则今天必须 0 命中**。做不到 0 的规则放进 advisory.yml，
+#      否则 CI 从第一天就是红的 —— 一个永远红的门禁等于没有门禁。
+#   3. 每条规则要有 `message` 说明「为什么禁」，不是只给个错误码。
+#
+# 许可证边界见同目录 README-LICENSE-NOTE.md：Semgrep 自身是 LGPL-2.1，
+# 本目录只有 YAML 规则文本，不含也不派生 Semgrep 代码。
+
+rules:
+  # ------------------------------------------------------------------
+  # B1 分层：内核层不得反向依赖 AI 应用层
+  # ------------------------------------------------------------------
+  - id: liuhao-kernel-imports-ai-layer
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/src/kernels/"]
+    message: >-
+      内核层不得 import src.ai —— 依赖只能自下而上（ai 层 → kernels 层）。
+      反向依赖会让内核无法单独演进，并把策略判定拖进应用层的调用栈。
+      已有 Python 护栏测试做 AST 级拦截，此规则提供第二层（含动态 import）。
+    patterns:
+      - pattern-either:
+          - pattern: import src.ai.$SUB
+          - pattern: import src.ai
+          - pattern: from src.ai import $X
+          - pattern-regex: 'from\s+src\.ai\.[A-Za-z_]\w*(\.[A-Za-z_]\w*)*\s+import\s+[A-Za-z_*]'
+
+  # ------------------------------------------------------------------
+  # B2 谎报成功家族：吞掉异常后返回「成功」
+  # ------------------------------------------------------------------
+  - id: liuhao-swallow-exception-return-success
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/src/", "**/scripts/"]
+    message: >-
+      except 分支返回 True/成功哨兵 —— 这是本项目反复清剿的「谎报成功」家族：
+      调用方看到成功，实际什么也没做成。捕获异常后必须返回 False 并带上可操作
+      的原因，或者让异常继续冒泡。若此处确属「降级但有意为之」，请把降级事实
+      写进返回值（例如 status=DEGRADED + reason），而不是返回 True。
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: |
+                  try:
+                    ...
+                  except ...:
+                    ...
+                    return True
+          - patterns:
+              - pattern: |
+                  try:
+                    ...
+                  except ...:
+                    ...
+                    return {"success": True, ...}
+          - patterns:
+              - pattern: |
+                  try:
+                    ...
+                  except ...:
+                    ...
+                    return $X(status="success", ...)
+
+  # ------------------------------------------------------------------
+  # B3 谎报成功家族：适配器/工具桩恒定返回成功
+  # ------------------------------------------------------------------
+  - id: liuhao-stub-returns-empty-success
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/src/"]
+    message: >-
+      返回「空但成功」的 dict 字面量（exit_code=0 且 stdout/stderr 全空）。
+      这是空壳实现最典型的形状：接口报告成功，实际什么也没做。
+      真实执行请走后端；未实现请抛出 NotImplementedError 或返回明确的
+      unsupported/unavailable 状态，不要伪造一次成功的执行。
+    # 这些 pattern 必须加引号：dict 字面量里的 `": "` 会被 YAML 当成
+    # 映射分隔符，导致整份配置解析失败（非 semantics 问题，是纯语法坑）。
+    pattern-either:
+      - pattern: 'return {"stdout": "", "stderr": "", "exit_code": 0, ...}'
+      - pattern: 'return {"stdout": "", "stderr": "", "exit_code": 0}'
+      - pattern: 'return {"exit_code": 0, "stdout": "", "stderr": "", ...}'
+
+  # ------------------------------------------------------------------
+  # B4 命令注入面
+  # ------------------------------------------------------------------
+  - id: liuhao-subprocess-shell-true
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/src/", "**/scripts/"]
+    message: >-
+      subprocess 使用 shell=True 会把参数拼进 shell 命令行，构成命令注入面。
+      请改用 argv 列表形式；确需 shell 时必须先做白名单校验，
+      并在注释里写明为什么无法用 argv。
+    pattern-either:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+      - pattern: subprocess.$FUNC($CMD, shell=True, ...)
+
+  # ------------------------------------------------------------------
+  # B5 动态执行任意代码
+  # ------------------------------------------------------------------
+  - id: liuhao-dynamic-code-execution
+    severity: ERROR
+    languages: [python]
+    paths:
+      include: ["**/src/"]
+    message: >-
+      eval/exec 会把任意字符串当代码执行。鎏灏要把 AI 生成的代码跑起来的话，
+      必须走受限执行面（见 src/plugins/sandbox/backends/），不能在解释器里直接 eval。
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: compile(...)

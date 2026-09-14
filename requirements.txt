@@ -781,3 +781,10 @@ yarl==1.24.5
     # via aiohttp
 zstandard==0.25.0
     # via langsmith
+
+# 受限执行面（sandbox restricted_python_backend）。
+# 本文件是 uv pip compile 的产物，此处为**手工最小补齐**，未重跑全量 compile
+# （本机无 Docker，改动 Dockerfile 消费的锁文件无法验证）。
+# 下次在有 Docker 的环境执行 `uv pip compile pyproject.toml -o requirements.txt`。
+restrictedpython==8.5
+    # via liuhao-ai-os (D:/LiuHao-AI-OS)

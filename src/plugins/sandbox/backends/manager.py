@@ -5,17 +5,80 @@ Manages multiple sandbox backends with fallback chain.
 Prioritizes gVisor > Docker > Subprocess.
 """
 
+import logging
 import time
 from typing import Dict, Any, Optional, List
 
 from .base import (
+    ExecutionStatus,
     SandboxBackendBase,
     SandboxBackendType,
+    SandboxBackendStatus,
     ResourceLimits,
     ExecutionResult,
 )
 from .gvisor import GVisorBackend
 from .subprocess_backend import SubprocessBackend
+
+logger = logging.getLogger(__name__)
+
+
+class _BrokenMontyBackend(SandboxBackendBase):
+    """Monty 后端**连构造都没完成**时占位的不可用后端。
+
+    存在的唯一理由：让 manager 里始终有一个 MONTY 键，使
+    `select_backend(MONTY, required=True)` 能报出"为什么不可用"，
+    而不是"没有这个后端"。它保证：
+      - is_available() 恒 False（绝不运行任何东西）
+      - execute() 恒返回 BACKEND_UNAVAILABLE（绝不返回 success）
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        backend_type: SandboxBackendType = SandboxBackendType.MONTY,
+    ) -> None:
+        self._reason = f"backend failed to initialise: {reason}"
+        # 类型必须由调用方传入。硬编码成 MONTY 会让坏掉的**其它**后端
+        # 在 get_backend_info() 里谎报自己是 Monty —— 诊断信息一旦说谎，
+        # 排查方向就被带偏了。
+        self._backend_type = backend_type
+
+    @property
+    def backend_type(self) -> SandboxBackendType:  # type: ignore[override]
+        return self._backend_type
+
+    @property
+    def name(self) -> str:
+        return f"{self._backend_type.value} (broken)"
+
+    def is_available(self) -> bool:
+        return False
+
+    def get_status(self) -> SandboxBackendStatus:
+        return SandboxBackendStatus.UNAVAILABLE
+
+    def get_backend_info(self) -> Dict[str, Any]:
+        return {
+            "backend": self._backend_type.value,
+            "available": False,
+            "reason": self._reason,
+        }
+
+    def execute(self, execution_id: str, *args: Any, **kwargs: Any) -> ExecutionResult:
+        return ExecutionResult(
+            execution_id=execution_id,
+            success=False,
+            error=self._reason,
+            status=ExecutionStatus.BACKEND_UNAVAILABLE,
+            backend_info=self.get_backend_info(),
+        )
+
+    def cleanup(self, execution_id: str) -> bool:
+        return True
+
+    def cleanup_all(self) -> None:
+        return None
 
 
 class SandboxBackendManager:
@@ -79,6 +142,42 @@ class SandboxBackendManager:
             except ImportError:
                 pass  # Docker optional, skip if unavailable
 
+        # Monty (optional, restricted execution surface for AI-generated code)
+        # 与 docker 不同：这里注册**不会因为探测失败而跳过** —— MontyBackend 自身
+        # 会把不可用原因存下来并由 is_available() 诚实回报，这样调用方能够拿到
+        # "为什么没装"，而不是面对一个凭空消失的后端。
+        self._backends[SandboxBackendType.MONTY] = self._try_import_monty()
+
+        # RestrictedPython（可选，受限执行面）。同 Monty：注册失败也保留实例，
+        # 由 is_available() 诚实回报原因。
+        self._backends[SandboxBackendType.RESTRICTED_PYTHON] = (
+            self._try_import_restricted_python()
+        )
+
+    def _try_import_restricted_python(self) -> Any:
+        """构造 RestrictedPython 后端；失败也返回实例（携带原因），不返回 None。"""
+        try:
+            from .restricted_python_backend import RestrictedPythonBackend
+            return RestrictedPythonBackend()
+        except Exception as exc:  # noqa: BLE001 - 必须兜住，但把原因带出去
+            logger.error("RestrictedPython backend failed to load: %s", exc)
+            return _BrokenMontyBackend(
+                str(exc), backend_type=SandboxBackendType.RESTRICTED_PYTHON
+            )
+
+    def _try_import_monty(self) -> Any:
+        """构造 Monty 后端；任何失败都**包装成仍返回实例的不可用后端**，而非 None。
+
+        返回 None 会让 select_backend 认为"压根没这个后端"，调用方从而无法区分
+        "不存在" 与 "装了但坏着/没装" —— 信息就此丢失。
+        """
+        try:
+            from .monty_backend import MontyBackend
+            return MontyBackend()
+        except Exception as exc:  # noqa: BLE001 - 必须兜住，但把原因带出去
+            logger.error("Monty backend failed to load: %s", exc)
+            return _BrokenMontyBackend(str(exc))
+
     def _try_import_docker(self):
         """Attempt to import and initialize Docker backend."""
         try:
@@ -102,18 +201,31 @@ class SandboxBackendManager:
     def select_backend(
         self,
         backend_type: Optional[SandboxBackendType] = None,
+        required: bool = False,
     ) -> SandboxBackendBase:
         """
         Select the best available backend.
 
         Args:
             backend_type: If specified, only use this backend
+            required: 为 True 且**指定后端不可用**时，宁可失败也**不降级**。
+                默认 False 以保持历史行为 —— 但对执行 AI 生成代码的场景，
+                调用方应当传 True，理由见下方 Warning。
 
         Returns:
             The selected (or active) backend
 
         Raises:
-            RuntimeError: If no backend is available
+            RuntimeError: If no backend is available, or if `required` was set
+                and the explicitly requested backend is not usable.
+
+        ⚠️ 这里是本模块历史上最危险的一处（已修）：
+        旧逻辑在"显式指定了某个后端但它不可用"时**没有任何 else / raise**，
+        直接穿透到下面的 preferred_order 兜底 —— 于是
+        `execute(..., backend_type=MONTY)` 在 monty 没装的情况下，会**静默落到
+        subprocess 后端、以宿主完整权限执行本该受限的 AI 生成代码**，然后返回
+        success=True。调用方唯一的线索是 backend_info 里的一行 backend 名字。
+        把"我要隔离"说成"没隔离但我跑通了"，正是本项目清剿的谎报成功。
         """
         if backend_type is not None:
             if backend_type in self._backends:
@@ -121,6 +233,21 @@ class SandboxBackendManager:
                 if backend.is_available():
                     self._active_backend = backend
                     return backend
+
+            if required:
+                requested = backend_type.value
+                if backend_type not in self._backends:
+                    reason = "backend is not registered with this manager"
+                else:
+                    reason = ("backend is registered but reports itself unavailable "
+                              "(see get_availability() for its reason)")
+                raise RuntimeError(
+                    f"Requested sandbox backend {requested!r} is unusable: {reason}. "
+                    "Refusing to silently fall back to a different (potentially "
+                    "less restrictive) backend because the caller asserted this "
+                    "specific isolation guarantee. Pass required=False only if you "
+                    "accept any backend."
+                )
 
         # Try preferred backends in order
         for btype in self._preferred_order:
@@ -161,6 +288,7 @@ class SandboxBackendManager:
         input_data: Optional[str] = None,
         volumes: Optional[Dict[str, str]] = None,
         backend_type: Optional[SandboxBackendType] = None,
+        required: bool = False,
     ) -> ExecutionResult:
         """
         Execute a command in the sandbox.
@@ -175,6 +303,8 @@ class SandboxBackendManager:
             input_data: Stdin
             volumes: Volume mounts {host: guest}
             backend_type: Force specific backend (optional)
+            required: True 时，指定的后端不可用则直接抛错，绝不静默换用别的后端
+                      （语义见 select_backend 的 Warning）
 
         Returns:
             ExecutionResult
@@ -182,7 +312,7 @@ class SandboxBackendManager:
         self._total_executions += 1
         self._start_times[execution_id] = time.time()
 
-        backend = self.select_backend(backend_type)
+        backend = self.select_backend(backend_type, required=required)
 
         result = backend.execute(
             execution_id=execution_id,

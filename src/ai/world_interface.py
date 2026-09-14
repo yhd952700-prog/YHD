@@ -15,6 +15,7 @@ into the same verify/audit path the rest of the system uses.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -82,7 +83,17 @@ class FilesystemAdapter(WorldAdapter):
 
 
 class ShellAdapter(WorldAdapter):
-    """Run a shell command (locally testable)."""
+    """Run a command against the outside world (locally testable).
+
+    执行契约（2026-09-13 收紧）：**默认不经 shell**，入参字符串先走 ``shlex``
+    分词再以 argv 列表执行，从而关闭命令注入面 —— 旧实现把整串command
+    直接拼进 shell 命令行，而该字符串在 autonomous 场景下由上层决策产生，
+    属于真实的命令注入面。
+
+    若确实需要管道 / 重定向 / glob 等必须由 shell 解释的语法，调用方须显式
+    传 ``params={"shell": True}``：这等于明确接管注入风险，因此在 autonomous
+    路径上还应再过一层人工授权（见 ``WorldInterface`` 的 ``authorize`` 回调）。
+    """
 
     name = "shell"
     SUPPORTED_ACTIONS = frozenset({"run"})
@@ -93,9 +104,17 @@ class ShellAdapter(WorldAdapter):
     def execute(self, request: WorldRequest) -> Any:
         if request.action != "run":
             raise ValueError(f"shell has no execute action {request.action!r}")
+        command = request.params.get("command", "")
+        use_shell = bool(request.params.get("shell", False))
+        if use_shell:
+            argv: Any = command
+        else:
+            argv = shlex.split(command)
+            if not argv:
+                raise ValueError("shell run requires a non-empty command")
         completed = subprocess.run(
-            request.params.get("command", ""),
-            shell=True,
+            argv,
+            shell=use_shell,
             capture_output=True,
             text=True,
         )

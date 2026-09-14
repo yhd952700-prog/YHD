@@ -1,0 +1,142 @@
+# 《鎏灏全球开源能力数据库》—— 编程 / 安全执行能力
+# 对应基因：coding-capability
+# 缺口（来自 genebank/GENE-MAP.yaml）：
+#   ADA ComputeEngine 能真实起子进程，但**仅 Python 单一执行面**；
+#   无第二执行面，无资源受限的强隔离。
+#   结合安全要求：执行不可信代码时，当前隔离强度不足。
+#
+# 数据来源：scan-20260913T203529Z.json intent=44 + api.github.com/repos/<repo> 二次核实
+# 核实时间：2026-09-13
+
+entries:
+
+  - id: LHX-OSS-0010
+    name: Monty
+    source_platform: github
+    url: https://github.com/pydantic/monty
+    upstream_stars: 8211
+    language: Rust
+    function: >
+      用 Rust 实现的极简 Python 解释器，只支持 Python 的一个子集，
+      专为在沙箱中安全执行不可信代码片段而设计。
+    technical_value: >
+      取舍非常清晰：放弃 Python 完整兼容性，换取可控性与启动速度。
+      因为是独立实现的解释器，天然没有 CPython 的 C 扩展攻击面，
+      也没有文件系统、网络、系统调用这些隐式能力，宿主可精确授予权限。
+      启动开销远低于容器，适合高频短小的代码片段。
+    enhances_liuhao: "yes"
+    absorbable: >
+      作为第二执行面接入，而非替代 ADA ComputeEngine。
+      分层更合理：受信任且需要完整生态的任务继续走子进程 Python；
+      不可信的、来源外部的片段走受限解释器。这一点对鎏灏尤其重要 ——
+      Network 内核已改为真实投递，意味着外部输入终将增多，
+      执行面不再是纯内部的事。
+    needs_refactor: light
+    integration_plan: >
+      以绑定或外部二进制方式挂在 ActionExecutor 接缝上，
+      复用 Round 83 已建立的 CapabilityExecutor 依赖注入点，不修改内核代码。
+      先做只读、无网络、有指令数上限的最小配置。
+      验收标准：含 import os / open() / socket 的片段必须被拒绝且报错可解释，
+      不能静默返回空或假装执行 —— 这是本项目反复踩过的谎报成功陷阱。
+    license: MIT
+    commercial_risk: low
+    security_risk: medium
+    performance_impact: 待测 —— 预期启动延迟低于子进程与容器，需在真实任务上实测确认。
+    target_kernels: [execution, security]
+    gene: coding-capability
+    evidence: "scan-20260913T203529Z.json intent=44；二次核实 MIT/8211/Rust"
+    adoption_decision: evaluate
+    decision_note: >
+      MIT 许可、轻量、天然无系统调用，是这批里隔离性价比最高的选项。
+      定为 evaluate：必须先验证它对真实任务的语法覆盖率是否够用，
+      否则会出现"能执行但什么都跑不了"的空转能力，
+      这与 Context 内核空转是同一类教训。
+
+  - id: LHX-OSS-0011
+    name: Microsandbox
+    source_platform: github
+    url: https://github.com/superradcompany/microsandbox
+    upstream_stars: 8245
+    language: Rust
+    function: 以 microVM 为单位运行不可信代码的沙箱，提供接近虚拟机的隔离强度。
+    technical_value: >
+      与解释器隔离是不同档位：它隔离的是整台机器而非一个解释器，
+      因而语言无关，可以跑完整 Python、Node 或任意二进制。
+      代价是需要宿主支持虚拟化，且资源占用高于解释器方案。
+    enhances_liuhao: "partial"
+    absorbable: >
+      作为重量档隔离层，与上一条构成两档策略：轻量用解释器，重量用 microVM。
+      真正可吸收的是这套按威胁级别选择隔离档位的决策框架。
+    needs_refactor: heavy
+    integration_plan: >
+      本轮不引入。它要求运行环境具备虚拟化能力，
+      与鎏灏当前的单端口自服务部署形态存在冲突，需先确认宿主支持情况。
+      先登记为备选，待 Resource 内核出现更强隔离需求时启用。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— microVM 冷启动时延与内存占用需实测，短任务可能不划算。
+    target_kernels: [execution, security, resource]
+    gene: coding-capability
+    evidence: "scan-20260913T203529Z.json intent=44；二次核实 Apache-2.0/8245"
+    adoption_decision: watch
+    decision_note: >
+      技术方向正确但与当前部署形态冲突。判为 watch 而非 reject，
+      因为一旦鎏灏走向多租户，它就是必选项。
+
+  - id: LHX-OSS-0012
+    name: deer-flow
+    source_platform: github
+    url: https://github.com/bytedance/deer-flow
+    upstream_stars: 82356
+    language: Python
+    function: 深度研究类智能体，串起检索、规划、编码执行与报告生成。
+    technical_value: >
+      价值不在单点算法，而在把研究流程显式化为可编排的阶段：
+      规划、检索、执行、汇总，每阶段产物都可被检视。
+      这是"智能体不是黑箱"的工程实践范例。
+    enhances_liuhao: "partial"
+    absorbable: >
+      阶段划分与阶段间产物结构。但要注意：鎏灏 L-Core 已有
+      Intent→Context→Goal→Plan→Policy→Exec→Verify→Response 完整链路，
+      本条只在阶段产物格式上有参考价值，不构成能力缺口。
+    needs_refactor: none
+    integration_plan: 不集成，仅作为参照保留。
+    license: MIT
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 不适用
+    target_kernels: []
+    gene: coding-capability
+    evidence: "scan-20260913T203529Z.json intent=44；二次核实 MIT/82356"
+    adoption_decision: watch
+    decision_note: >
+      热度最高但与 L-Core 高度重叠。列为观察而非 reject，
+      是因为将来若要把 Request 阶段的输出格式标准化，它的结构值得参考。
+
+  - id: LHX-OSS-0013
+    name: Composio
+    source_platform: github
+    url: https://github.com/ComposioHQ/composio
+    upstream_stars: 30158
+    language: TypeScript
+    function: 智能体与外部工具、第三方服务的集成层，托管认证与调用。
+    technical_value: >
+      把"接一个外部服务"的成本从写集成代码降为注册一个工具描述。
+      代价是凭证需要托管给平台。
+    enhances_liuhao: "no"
+    absorbable: 无可吸收部分。
+    needs_refactor: none
+    integration_plan: 不集成。
+    license: MIT
+    commercial_risk: low
+    security_risk: high
+    performance_impact: 不适用
+    target_kernels: []
+    gene: agent-capability
+    evidence: "scan-20260913T203529Z.json intent=44；二次核实 MIT/30158"
+    adoption_decision: reject
+    decision_note: >
+      命中红线 R4-sovereignty-conflict：该模式要求将第三方凭证托管在外部平台，
+      违反 MS:§143 人类主权最高原则下对凭证与审批权自主可控的要求。
+      MIT 许可虽无问题，但集成方式与鎏灏的定位冲突。

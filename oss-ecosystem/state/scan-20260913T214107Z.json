@@ -1,0 +1,469 @@
+{
+  "scanned_at": "20260913T214107Z",
+  "elapsed_s": 39.8,
+  "config": {
+    "priorities": [
+      "P2"
+    ],
+    "per_intent": 6,
+    "sleep_s": 6.5
+  },
+  "source_results": [
+    {
+      "source_id": "github",
+      "label": "GitHub",
+      "status": "ok",
+      "count": 6,
+      "detail": "intent 25 (Envoy)",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "github",
+      "label": "GitHub",
+      "status": "ok",
+      "count": 6,
+      "detail": "intent 34 (数据湖 / 数据仓库)",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "github",
+      "label": "GitHub",
+      "status": "ok",
+      "count": 6,
+      "detail": "intent 50 (CrewAI)",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "pypi",
+      "label": "PyPI",
+      "status": "not-discoverable",
+      "count": 0,
+      "detail": "intent 50: 源无发现端点",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "github",
+      "label": "GitHub",
+      "status": "ok",
+      "count": 6,
+      "detail": "intent 59 (ROS 生态)",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "huggingface",
+      "label": "Hugging Face Hub",
+      "status": "unreachable",
+      "count": 0,
+      "detail": "intent 68 query='text to speech': ProxyError: 502 Bad Gateway",
+      "elapsed_ms": 0,
+      "items": []
+    },
+    {
+      "source_id": "huggingface",
+      "label": "Hugging Face Hub",
+      "status": "ok",
+      "count": 0,
+      "detail": "intent 68 (语音合成)",
+      "elapsed_ms": 0,
+      "items": []
+    }
+  ],
+  "skipped_intents": [
+    {
+      "id": "3",
+      "label": "Bitbucket",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "4",
+      "label": "SourceForge",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "5",
+      "label": "Codeberg",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "11",
+      "label": "Papers with Code",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "12",
+      "label": "Kaggle",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "28",
+      "label": "MySQL/MariaDB",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "31",
+      "label": "MongoDB 生态",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "37",
+      "label": "Maven",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "38",
+      "label": "Gradle",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "40",
+      "label": "Vue 生态",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "41",
+      "label": "Angular 生态",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "43",
+      "label": "Java 开源生态",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "60",
+      "label": "嵌入式开源",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "61",
+      "label": "IoT 平台",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "62",
+      "label": "边缘计算",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "69",
+      "label": "游戏引擎开源",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "70",
+      "label": "3D 渲染",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "71",
+      "label": "图形算法",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    },
+    {
+      "id": "72",
+      "label": "WebGPU / OpenGL",
+      "reason": "kind=horizon 或无可用查询/源，本轮不扫描"
+    }
+  ],
+  "candidates": [
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "envoyproxy/envoy",
+      "url": "https://github.com/envoyproxy/envoy",
+      "description": "Cloud-native high-performance edge/middle/service proxy",
+      "stars": 28915,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T18:52:21Z",
+      "language": "C++",
+      "raw_score": 28915.0
+    },
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "katanemo/plano",
+      "url": "https://github.com/katanemo/plano",
+      "description": "Plano is an AI-native proxy server and data plane for agentic apps. Smart LLM routing, observability, agent orchestration, and guardrails so you stay focused on your agents core logic.",
+      "stars": 7048,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T03:35:18Z",
+      "language": "Rust",
+      "raw_score": 7048.0
+    },
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "emissary-ingress/emissary",
+      "url": "https://github.com/emissary-ingress/emissary",
+      "description": "open source Kubernetes-native API gateway for microservices built on the Envoy Proxy",
+      "stars": 4522,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-11T12:35:29Z",
+      "language": "Python",
+      "raw_score": 4522.0
+    },
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "projectcontour/contour",
+      "url": "https://github.com/projectcontour/contour",
+      "description": "Contour is a Kubernetes ingress controller using Envoy proxy.",
+      "stars": 3948,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-11T12:35:56Z",
+      "language": "HTML",
+      "raw_score": 3948.0
+    },
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "envoyproxy/gateway",
+      "url": "https://github.com/envoyproxy/gateway",
+      "description": "Manages Envoy Proxy as a Standalone or Kubernetes-based Application Gateway",
+      "stars": 3028,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T17:04:21Z",
+      "language": "Go",
+      "raw_score": 3028.0
+    },
+    {
+      "source": "github",
+      "intent": "25",
+      "name": "kubenetworks/kubevpn",
+      "url": "https://github.com/kubenetworks/kubevpn",
+      "description": "KubeVPN offers a Cloud Native Dev Environment that connects to kubernetes cluster network. ",
+      "stars": 1368,
+      "license": "MIT",
+      "updated_at": "2026-09-10T09:47:30Z",
+      "language": "Go",
+      "raw_score": 1368.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "duckdb/duckdb",
+      "url": "https://github.com/duckdb/duckdb",
+      "description": "DuckDB is an analytical in-process SQL database management system",
+      "stars": 41203,
+      "license": "MIT",
+      "updated_at": "2026-09-13T17:04:34Z",
+      "language": "C++",
+      "raw_score": 41203.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "t8y2/dbx",
+      "url": "https://github.com/t8y2/dbx",
+      "description": "20 MB lightweight cross-platform database client for 90+ databases, including MySQL, PostgreSQL, SQLite, Redis, MongoDB, DuckDB, SQL Server, and Dameng. Built-in AI, MCP Server, CLI, desktop and Docker. | 轻量级跨平台数据库管理工具，支持 MySQL、PostgreSQL、SQLite、Redis、MongoDB、达梦等 90+ 数据库，提供桌面端、Docker、CLI、内置 AI 助手和 M",
+      "stars": 19334,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T21:12:30Z",
+      "language": "Rust",
+      "raw_score": 19334.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "Canner/WrenAI",
+      "url": "https://github.com/Canner/WrenAI",
+      "description": "GenBI (Generative BI) for AI agents, an open-source, governed text-to-SQL through an open context layer that turns natural-language questions into trusted dashboards, charts, and SQL across 20+ data sources, such as BigQuery, Snowflake, PostgreSQL, ClickHouse, Amazon Redshift, Databricks and more.",
+      "stars": 17618,
+      "license": "NOASSERTION",
+      "updated_at": "2026-09-13T18:29:24Z",
+      "language": "Python",
+      "raw_score": 17618.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "tobymao/sqlglot",
+      "url": "https://github.com/tobymao/sqlglot",
+      "description": "Python SQL Parser and Transpiler",
+      "stars": 9608,
+      "license": "MIT",
+      "updated_at": "2026-09-13T21:01:24Z",
+      "language": "Python",
+      "raw_score": 9608.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "dbgate/dbgate",
+      "url": "https://github.com/dbgate/dbgate",
+      "description": "Database manager for MySQL, PostgreSQL, SQL Server, MongoDB, SQLite and others. Runs under Windows, Linux, Mac or as web application",
+      "stars": 7306,
+      "license": "GPL-3.0",
+      "updated_at": "2026-09-13T15:44:01Z",
+      "language": "JavaScript",
+      "raw_score": 7306.0
+    },
+    {
+      "source": "github",
+      "intent": "34",
+      "name": "opengeos/GeoLibre",
+      "url": "https://github.com/opengeos/GeoLibre",
+      "description": "A lightweight, cloud-native GIS platform for visualizing, exploring, and analyzing geospatial data. It runs in the web browser, on the desktop, on mobile, and inside Jupyter notebooks.",
+      "stars": 7298,
+      "license": "MIT",
+      "updated_at": "2026-09-13T20:55:58Z",
+      "language": "TypeScript",
+      "raw_score": 7298.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "crewAIInc/crewAI",
+      "url": "https://github.com/crewAIInc/crewAI",
+      "description": "Framework for orchestrating role-playing, autonomous AI agents. By fostering collaborative intelligence, CrewAI empowers agents to work together seamlessly, tackling complex tasks.",
+      "stars": 58474,
+      "license": "MIT",
+      "updated_at": "2026-09-13T21:36:03Z",
+      "language": "Python",
+      "raw_score": 58474.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "adongwanai/AgentGuide",
+      "url": "https://github.com/adongwanai/AgentGuide",
+      "description": "https://adongwanai.github.io/AgentGuide | AI Agent开发指南 | LangGraph实战 | 高级RAG | 转行大模型 | 大模型面试 | 算法工程师 | 面试题库 | 强化学习｜数据合成",
+      "stars": 9523,
+      "license": null,
+      "updated_at": "2026-09-13T18:06:51Z",
+      "language": "MDX",
+      "raw_score": 9523.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "crewAIInc/crewAI-examples",
+      "url": "https://github.com/crewAIInc/crewAI-examples",
+      "description": "A collection of examples that show how to use CrewAI framework to automate workflows.",
+      "stars": 6138,
+      "license": null,
+      "updated_at": "2026-09-13T11:42:46Z",
+      "language": "Jupyter Notebook",
+      "raw_score": 6138.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "AgentOps-AI/agentops",
+      "url": "https://github.com/AgentOps-AI/agentops",
+      "description": "Python SDK for AI agent monitoring, LLM cost tracking, benchmarking, and more. Integrates with most LLMs and agent frameworks including CrewAI, Agno, OpenAI Agents SDK, Langchain, Autogen, AG2, and CamelAI",
+      "stars": 5817,
+      "license": "MIT",
+      "updated_at": "2026-09-13T07:12:19Z",
+      "language": "Python",
+      "raw_score": 5817.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "Atmosphere/atmosphere",
+      "url": "https://github.com/Atmosphere/atmosphere",
+      "description": "Portable AI agent runtime for the JVM. One @Agent class runs on Spring AI, LangChain4j, Anthropic, or 9 more behind one SPI. Token streaming, tool calls, human approvals, and governance over WebSocket, SSE, gRPC, or WebTransport/HTTP3. Speaks MCP, A2A, and AG-UI.",
+      "stars": 3811,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T21:39:34Z",
+      "language": "Java",
+      "raw_score": 3811.0
+    },
+    {
+      "source": "github",
+      "intent": "50",
+      "name": "moorcheh-ai/memanto",
+      "url": "https://github.com/moorcheh-ai/memanto",
+      "description": "Memory that AI Agents Love!",
+      "stars": 2109,
+      "license": "MIT",
+      "updated_at": "2026-09-13T21:13:31Z",
+      "language": "Python",
+      "raw_score": 2109.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "PX4/PX4-Autopilot",
+      "url": "https://github.com/PX4/PX4-Autopilot",
+      "description": "PX4 Autopilot Software",
+      "stars": 12607,
+      "license": "BSD-3-Clause",
+      "updated_at": "2026-09-13T15:16:13Z",
+      "language": "C++",
+      "raw_score": 12607.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "autowarefoundation/autoware",
+      "url": "https://github.com/autowarefoundation/autoware",
+      "description": "Autoware - the world's leading open-source software project for autonomous driving",
+      "stars": 12058,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-12T17:47:10Z",
+      "language": "Dockerfile",
+      "raw_score": 12058.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "makerspet/oomwoo",
+      "url": "https://github.com/makerspet/oomwoo",
+      "description": "Open-source vacuum robot cleaner",
+      "stars": 10689,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T21:04:05Z",
+      "language": "Python",
+      "raw_score": 10689.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "ros2/ros2",
+      "url": "https://github.com/ros2/ros2",
+      "description": "The Robot Operating System, is a meta operating system for robots.",
+      "stars": 6029,
+      "license": null,
+      "updated_at": "2026-09-13T17:23:24Z",
+      "language": null,
+      "raw_score": 6029.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "ros-navigation/navigation2",
+      "url": "https://github.com/ros-navigation/navigation2",
+      "description": "ROS 2 Navigation Framework and System",
+      "stars": 4705,
+      "license": "NOASSERTION",
+      "updated_at": "2026-09-13T13:56:36Z",
+      "language": "C++",
+      "raw_score": 4705.0
+    },
+    {
+      "source": "github",
+      "intent": "59",
+      "name": "cyberbotics/webots",
+      "url": "https://github.com/cyberbotics/webots",
+      "description": "Webots Robot Simulator",
+      "stars": 4623,
+      "license": "Apache-2.0",
+      "updated_at": "2026-09-13T13:19:00Z",
+      "language": "C++",
+      "raw_score": 4623.0
+    }
+  ],
+  "counts": {
+    "intents_scanned": 5,
+    "intents_skipped": 19,
+    "candidates": 24,
+    "unique_projects": 24
+  }
+}

@@ -1,0 +1,234 @@
+# 鎏灏开源能力数据库 —— S2/S3/S4/S5 落地批次（2026-09-13）
+#
+# 这一批与前三批最大的不同：**这些条目不再是分析结论，而是已经进了仓的代码**。
+# 因此每条都带 `landed_in`（改了哪些文件）与 `acceptance`（怎么证明它真起作用）。
+
+version: 4
+date: 2026-09-13
+owner: Vigil
+
+entries:
+
+  # ==================================================================
+  # A 级：已落地
+  # ==================================================================
+
+  - name: Semgrep
+    source: GitHub
+    source_platform: github
+    url: https://github.com/semgrep/semgrep
+    id: LHX-OSS-0031
+    verdict: adopt
+    adoption_decision: adopt
+    decision_note: "已落地为 CI architecture-gate 作业，实测全仓 0 命中、注入违规退出码 2，证明是真实门禁而非装饰。"
+    license: LGPL-2.1
+    license_class: weak-copyleft
+    enhances_liuhao: "yes"
+    function: "以独立进程运行 Semgrep CLI，对代码树按 .semgrep/liuhao.yml 规则集扫描；输出违规项与退出码（命中非零、0 命中为 0）。"
+    technical_value: "用 Semgrep 的 pattern 语法在 AST 层匹配危险结构（如 subprocess shell=True、except 后无条件 return True），命中即让 CI 的 architecture-gate 作业以非 0 退出码失败，把架构纪律变成提交时强制检查而非文档声明。"
+    absorbable: "规则表达形态（pattern + paths + message），不是任何一行 Semgrep 代码"
+    needs_refactor: "none"
+    integration_plan: "仅以独立工具在 CI 进程内调用，不写入 pyproject/requirements；新增 .semgrep/liuhao.yml 与 .github/workflows/ci.yml 的 architecture-gate 作业；回滚即删除该作业与规则文件。"
+    commercial_risk: "low —— 以独立进程调用属 mere aggregation，LGPL-2.1 copyleft 不触发；禁止 fork 或内置进分发物，否则改动需开源。"
+    security_risk: "low —— 不执行业务代码，本身为静态扫描工具；未做 CVE 扫描，待测。"
+    performance_impact: "实测 —— 当前代码树规则集 0 命中（exit 0）、注入违规带 --error 后退出码 1；完整全仓（src/ + scripts/，233 文件）扫描约数秒，耗时未精确量化。"
+    solves: >-
+      把「写在文档里的架构纪律」变成「提交时会自动失败的检查」。
+      本项目此前所有静态检查（Trivy / Bandit / pip-audit）在 CI 里全是
+      `--exit-code 0` 或 `|| true` —— 声明了检查，却拦不住任何一次推送。
+    absorbs:
+      - "规则表达形态（pattern + paths + message），不是任何一行 Semgrep 代码"
+    integration: >-
+      仅以**独立工具**在 CI 进程内调用。刻意**不写入** pyproject / requirements：
+      它不是运行时依赖，也不是测试依赖 —— 这样它能清楚地留在分发物之外。
+    license_boundary: >-
+      LGPL-2.1 允许 mere aggregation（独立进程调用）不触发 copyleft；
+      **禁止** fork 或内置进鎏灏分发物，否则改动需开源。已写进 CI job 注释。
+    integration_difficulty: low
+    landed_in:
+      - .semgrep/liuhao.yml
+      - .github/workflows/ci.yml（新增 architecture-gate 作业）
+    acceptance: >-
+      规则集在当前代码树实测 0 命中；注入三条违规后退出码非 0 且全部命中 ——
+      证明它是真的门禁而非装饰。
+    risks:
+      security: none（不执行业务代码）
+      maintenance: low
+    no-go_decision_date: null
+
+  - name: Temporal
+    source: GitHub
+    source_platform: github
+    url: https://github.com/temporalio/temporal
+    id: LHX-OSS-0032
+    verdict: partially-absorbed      # ← 明确区别于 adopt：吸收范式，不引入实现
+    adoption_decision: watch
+    license: MIT
+    enhances_liuhao: "partial"
+    function: "定位长任务持久化执行引擎；输入任务流与事件历史，输出可重放的确定性执行与失败恢复。本项目未引入其实现，仅取范式。"
+    technical_value: "吸收「事件历史即唯一真源」范式：用 SQLite append-only 记录每个任务完成事件，进程崩溃重启后按已记录事件跳过已完成任务、仅补跑未完成项，并以 restored_from_journal 显式标注恢复来源，不伪装成一次真实执行。"
+    absorbable: "确定性约束 + 事件历史作为唯一真源（append-only event log + replay）的范式，已由自研 ExecutionJournal 实现"
+    needs_refactor: "light"
+    refactor_detail: "自研 _journal.py 沿用既有三段式接缝，但 journal 线性增长无压缩策略，副作用无幂等去重（需幂等键，是另一件事）。"
+    integration_plan: "落地为 src/kernels/execution/_journal.py，ExecutionEngine 增加 journal 参数与点位，与 capability_executor 同构；回滚即移除 journal 参数与新增测试。"
+    commercial_risk: "low —— MIT，无 copyleft 或权重条款。"
+    security_risk: "low —— 自研轻量层不引入 Temporal 集群；未做 CVE 扫描，待测。"
+    performance_impact: "待测 —— 实测断点恢复：子进程跑第 2 个任务 SIGTERM 硬杀，换进程重启后已完成 1 个未重跑、剩余 2 个补跑完成；journal 体积增长未量化。"
+    solves: >-
+      鎏灏的真实短板：长任务跑到一半进程崩溃，只能从头再跑，且已完成的副作用
+      会被执行第二次。
+    why_not_direct_integration: >-
+      Temporal 要求运维一整套集群加数据库，与鎏灏「单端口自服务」部署形态冲突。
+    absorbs:
+      - "确定性约束 + 事件历史作为唯一真源（append-only event log + replay）"
+      - "显式 regenerating「失败要有可解释的原因」，而不是统一的 retry"
+    integration: >-
+      自研轻量层 `src/kernels/execution/_journal.py`，沿用 Round 83 已经确立的
+      「构造注入 + setter 注入 + 不注入即不生效」三段式接缝，
+      与 capability_executor 完全同构。
+    landed_in:
+      - src/kernels/execution/_journal.py（新增）
+      - src/kernels/execution/__init__.py（ExecutionEngine 增加 journal 参数与点位）
+      - tests/kernels/execution/test_execution_journal.py（新增 12 项）
+    acceptance: >-
+      子进程跑到第 2 个任务时被 SIGTERM 硬杀；换进程重启后已完成的那 1 个任务
+      **没有重跑**，剩下的 2 个补跑完成，且恢复来源被显式标注
+      （restored_from_journal），不伪装成一次真实执行。
+    limits_honest: >-
+      不做副作用去重（需要幂等键，是另一件事）；不版本化重建 plan 结构；
+      journal 线性增长无压缩策略。
+    risks:
+      maintenance: low（自研代码）
+
+  - name: pydantic/monty
+    source: GitHub + PyPI
+    source_platform: pypi
+    url: https://github.com/pydantic/monty
+    id: LHX-OSS-0033
+    verdict: reject-now
+    verdict_reason: blocked-by-upstream   # 不是质量问题，是现在根本接不上
+    adoption_decision: reject
+    decision_note: "PyPI 裸 monty 是 materialyzeai/monty 另一项目（装错包会静默装到别人的包）；pydantic-monty 0.0.23 实测 Monty('1+2') 抛 TypeError: __new__() takes 0 positional arguments，binding 未成型，现在根本接不上。"
+    license: MIT
+    enhances_liuhao: "no"
+    function: "目标为给 AI 生成代码提供受限第二执行面（沙箱解释器而非容器/子进程）；当前版本实测无法构造实例。"
+    technical_value: "判定其不可用时，落地 select_backend(..., required=True)：当调用方显式要求某受限后端而它不可用时，宁可抛错也不静默降级到更弱后端，堵死「要求隔离却以宿主完整权限跑完并返回 success=True」的谎报成功路径。"
+    absorbable: "无 —— 当前版本 Monty 不可构造（Monty.__new__ 不接受位置参数），暂无可吸收模块"
+    needs_refactor: "heavy"
+    refactor_detail: "需等 pydantic-monty 发布可用 constructor + run 后才能对接，届时由 TestMontyApiPreconditions 先行变红作为启用入口。"
+    integration_plan: "已落地 Monty 后端骨架（诚实不可用）于 src/plugins/sandbox/backends/monty_backend.py，manager.py 加 required 参数；回滚即移除 Monty 注册与 required 逻辑。"
+    commercial_risk: "low —— MIT，无商业风险；refused 原因与技术放行无关（包名冲突 + binding 未成型）。"
+    security_risk: "medium —— 未做 CVE 扫描，待测；当前仅评估接口，未引入其代码。"
+    performance_impact: "待测 —— Monty 执行面未实际接入，无实测数据。"
+    solves: 给 AI 生成的代码提供一个受限的第二执行面（沙箱解释器而非容器/子进程）
+    why_rejected_now:
+      - evidence: >-
+          **PyPI 包名冲突**：`pip install monty` 装到的是 `materialyzeai/monty`
+          （"Python Made Even Easier"，工具函数库），与本项目无关。
+          真正的发布名是 `pydantic-monty`。依赖写错名字会静默装到别人的包。
+          verified: 2026-09-13 查 PyPI JSON API，两条 project_urls 完全不同。
+      - evidence: >-
+          **绑定未成型**：实测 `Monty("1+2")` 抛
+          `TypeError: Monty.__new__() takes 0 positional arguments but 1 was given`；
+          类上只暴露 `checkout`，`MontySession` 也只剩 dump/feed_run 等方法。
+          verified: 2026-09-13 真安装 pydantic-monty 0.0.23 后实测。
+    what_we_built_instead: >-
+      Monty 后端骨架 + **不可用时必须诚实**的语义。
+      真正落地的能力是 `select_backend(..., required=True)`：
+      当调用方明确要求某个受限后端而它不可用时，**宁可抛错也不静默换成更弱的后端**。
+    why_that_matters: >-
+      旧逻辑在"显式指定后端不可用"时没有任何 raise，直接穿透到兜底 ——
+      于是要求 monty 隔离的 AI 生成代码会**以宿主完整权限在 subprocess 里跑完
+      并返回 success=True**。这是比"没装 monty"严重得多的谎报成功。
+    landed_in:
+      - src/plugins/sandbox/backends/base.py（新增 ExecutionStatus + MONTY 枚举）
+      - src/plugins/sandbox/backends/monty_backend.py（新增，诚实不可用）
+      - src/plugins/sandbox/backends/manager.py（required 参数 + 注册 Monty）
+      - tests/test_sandbox_monty_backend.py（新增 13 项）
+    revisit_when: >-
+      `pydantic-monty` 发布可用的 constructor + run 后，
+      `TestMontyApiPreconditions` 会先变红 —— 那条测试就是回头启用它的入口：
+      届时只需让 probe_monty() 返回 None，能力自动点亮，调用方一行不改。
+    risks:
+      license: "MIT —— 无商业风险； refused 的原因与技术放行无关"
+      note: "许可证过审 ≠ 可以吸收。Composio 是同一条判据的另一个方向。"
+
+  # ==================================================================
+  # 附带发现（不是主动选型，是顺带清掉的既有缺陷）
+  # ------------------------------------------------------------------
+
+  - name: 既有代码中的谎报成功（本轮顺带消除 4 处）
+    source: 本仓库
+    source_platform: github
+    url: "internal://repo/LiuHao-AI-OS（本仓库内部整改，无外链）"
+    id: LHX-OSS-0034
+    verdict: remediated
+    adoption_decision: adopt
+    decision_note: "4 处修复已随本轮提交落地并通过各自测试，是已采纳的内部质量整改而非外部能力选型。"
+    license: "内部代码（非 OSS，属本仓自有实现）"
+    enhances_liuhao: "yes"
+    function: "顺带修复本仓既有 4 处谎报成功：ShellAdapter 命令注入面改 argv、vault_crypto.ensure_key 真假成功、gVisor/Kata 空壳恒成功、select_backend 静默降级到全权限后端。"
+    technical_value: "把 4 处「接口报告成功、实际什么也没做」的静默谎报改成诚实失败语义：ShellAdapter 默认 shell=False(argv)；ensure_key 必须 read_key 读到才返回 True；gVisor/Kata 空壳改 exit_code 127 + executed=False；select_backend 指定受限后端不可用时加 required=True 抛错而非降级。"
+    absorbable: "无需吸收外部模块 —— 修补对象为本仓既有代码自身"
+    needs_refactor: "none"
+    integration_plan: "均已落地：src/ai/world_interface.py、src/security/vault_crypto.py、src/plugins/sandbox/models.py、src/plugins/sandbox/backends/manager.py；回滚即 revert 上述文件。"
+    commercial_risk: "low —— 修补自有代码，无第三方许可风险。"
+    security_risk: "low —— 修复提升了安全性（消除命令注入面与谎报成功）；本仓代码未做独立 CVE 扫描。"
+    performance_impact: "待测 —— 改动为逻辑语义修正，预期无显著开销；未做基准实测。"
+    findings:
+      - file: src/ai/world_interface.py（ShellAdapter.execute）
+        problem: >-
+          把上层传入的字符串直接 `subprocess.run(..., shell=True)` ——
+          autonomous 场景下 command 来自决策层，是真实的命令注入面。
+        # 注意：含 `": "` 的值必须加引号，否则 YAML 当成嵌套映射 —— 本文件已踩到过
+        fix: '默认改 argv（shlex 分词、shell=False）；shell 需显式 {"shell": True}'
+        note: 这是本轮安全上最重要的一条修复。
+      - file: src/security/vault_crypto.py（ensure_key）
+        problem: except Exception 后无条件 `return True`，把 Vault 宕机/权限不足静默成成功
+        fix: 只有在 read_key 真的读到该 key 时才返回 True，否则返回 False + error 日志
+      - file: src/plugins/sandbox/models.py（gVisorBackend / KataBackend）
+        problem: '恒返回 {"stdout":"","stderr":"","exit_code":0} —— 空壳恒成功，
+                 连带 PluginManager.execute_plugin_action() 永远报告成功'
+        fix: 改为 exit_code=127 + executed=False + 说明了原因的 stderr；
+             create_backend 对未知类型抛 ValueError（不再静默兜成 gVisor）
+      - file: src/plugins/sandbox/backends/manager.py（select_backend）
+        problem: 显式指定后端不可用时静默降级到更弱后端
+        fix: 新增 required 参数；并在 _init_backends 里不再用 None 掩盖 Monty 的失败原因
+    how_it_was_caught: >-
+      Semgrep 规则集写好后第一次跑就全部咬出来 —— 这条正好证明 S3 的门禁有价值：
+      它产出的是一个可行的安全/质量治理工具，而不是一批漂亮的 YAML。
+
+  # ==================================================================
+  # 本轮新增条目（B 级）：能力隔离执行面
+  # ==================================================================
+
+  - name: RestrictedPython
+    source: PyPI
+    source_platform: pypi
+    url: https://pypi.org/project/RestrictedPython/
+    id: LHX-OSS-0035
+    verdict: adopt
+    adoption_decision: adopt
+    decision_note: "已落地为受限执行后端，实测编译期拦截 import/eval/dunder、CPU 3s 超时由子进程 kill 生效（3052ms 被终止）；定位是能力隔离而非资源隔离（内存上限明确不做），作为 AI 生成代码的受限第二执行面。"
+    license: ZPL-2.1
+    license_class: weak-copyleft
+    enhances_liuhao: "yes"
+    function: "以受限 Python 解释器在编译期禁用 import/eval/危险属性访问，作为 AI 生成代码的受限第二执行面（能力隔离层）。"
+    technical_value: "在 AST 编译阶段拒绝 import 语句、eval/exec 与 dunder 属性访问（__ 开头），使受限代码触发 ImportError/NameError/AttributeError 而非执行；open 因名字在受限命名空间不可达被拒；CPU 超时由外层子进程 kill 兜底（实测 3s 超时生效，3052ms 被终止）。"
+    absorbable: "编译期名字过滤机制（限制 __builtins__ 与属性访问的守卫），不是整个解释器"
+    needs_refactor: "light"
+    integration_plan: "作为 execution/security 内核的受限执行后端，接入 sandbox manager 的 select_backend 接缝（与 Monty 后端同构，沿用 required=True 不可用时诚实失败）；回滚即注销该后端注册。"
+    commercial_risk: "low —— ZPL-2.1 弱 copyleft，允许分发无商业限制条款；未做 CVE 扫描，待测。"
+    security_risk: "medium —— 仅做能力隔离（编译期禁 import/eval/dunder），资源隔离（内存上限）明确不做，[0]*10**6 会真的分配成功，存在内存耗尽面；未做 CVE 扫描，待测。"
+    performance_impact: "待测 —— 实测 CPU 3s 超时由子进程 kill 生效（3052ms 被终止）；内存分配未拦截，无量化基准。"
+    solves: 给 AI 生成代码提供一个受限的第二执行面（编译期拦截危险结构），与容器/子进程路线互补，定位为能力隔离层。
+    landed_in:
+      - src/plugins/sandbox/backends/restricted_python_backend.py（新增，受限执行后端）
+      - src/plugins/sandbox/backends/manager.py（注册 RestrictedPython 后端，沿用 required=True）
+    acceptance: >-
+      编译期实测禁 import/eval/dunder 属性访问；open 因名字不可达被拒；
+      CPU 超时 3s 由子进程 kill 生效（3052ms 被终止）；
+      内存上限明确不做——[0]*10**6 会真的分配成功，故 bytearray 失败只是名字过滤的副作用，不是内存保护。
+    limits_honest: >-
+      定位是「能力隔离，不是资源隔离」：内存上限明确不做，资源耗尽面需由外层配额/子进程约束兜底。
+

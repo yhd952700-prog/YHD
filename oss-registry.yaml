@@ -41,6 +41,10 @@ allow_licenses:
   - Unlicense
   - CC0-1.0
   - MPL-2.0
+  # ZPL-2.1（Zope Public License 2.1）：OSI 批准，与 BSD 同类的宽松许可，无
+  # copyleft 传染。RestrictedPython 用它。以 PyPI 官方包形式按原样使用、不修改
+  # 且不重新分发其源文件，风险等同 BSD。
+  - ZPL-2.1
 
 # ------------------------------------------------------- 受限许可证（必须 acknowledged）
 restricted_licenses:
@@ -313,3 +317,19 @@ components:
     used: "yes"
     risk: low
     action: 保持
+  - name: restrictedpython
+    import_name: RestrictedPython
+    license: ZPL-2.1
+    category: security/sandbox
+    used: guarded
+    risk: review
+    acknowledged: >
+      ZPL-2.1 是 OSI 批准的宽松许可（BSD 同类，无 copyleft 传染）。我们以 PyPI
+      官方包形式按原样依赖，不修改、不重新分发其源文件，故不触发源码披露义务。
+      标 review 而非 low 的理由不是法律风险，而是它承担安全职责：
+      **它只提供能力隔离，不提供资源隔离** —— 实测 `[0] * 10**6` 会真实分配成功，
+      若有人误当内存沙箱使用即为事故。该边界已由
+      tests/test_sandbox_restricted_python.py 以断言固化（故意断言它会成功）。
+    action: >
+      作为受限执行面后端使用；需要真资源隔离（内存/内核级）时走 gVisor/Docker，
+      不得用本后端替代。

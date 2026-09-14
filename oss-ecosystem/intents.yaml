@@ -1,0 +1,377 @@
+# 鎏灏全球开源生态吸收 —— 覆盖蓝图（72 类 → 可执行查询 → 目标内核 → 基因归类）
+#
+# 本文件回答一个问题：**用户列的 72 类，到底哪些能真正增强鎏灏？**
+#
+# 工程口径（重要）：
+#   用户的 72 类里，"类"有两种不同性质，处理方式必须区分：
+#     A. **平台类**（GitHub / PyPI / HF / CNCF...）→ 有 API 端点，写在 sources.yaml
+#     B. **生态主题类**（React 生态 / ROS / ClickHouse...）→ 没有独立 API，
+#        本质是**跑在平台类之上的查询意图**。所以它们落在这里，作为 queries。
+#   混淆这两者会导致"给每个生态写一个爬虫"这种荒谬设计。
+#
+# 字段：
+#   id             稳定标识（沿用用户清单编号，便于逐条对照）
+#   group          所属大组
+#   kind           platform(需真探活) / topic(查询意图) / horizon(仅跟踪、不扫描不吸收)
+#   priority       P0 = 直接补内核缺口，优先评估
+#                  P1 = 外围增强，值得吸收但可延后
+#                  P2 = 与本产品无关或重复 → **必须显式标注理由，不得沉默跳过**
+#   queries        注入各源 discover.params.{query} 的搜索词
+#   sources        执行这些查询要走哪些平台源（必须是 sources.yaml 中已存在且 discover 非 null 的 id）
+#   target_kernels 命中后增强哪个内核（对齐 KERNEL-CANON 的 14 个）
+#   gene           归入《开源能力基因库》的哪一类（genebank 的 12 类）
+#   liuhao_gap     鎏灏当前在这个方向上具体缺什么 —— **这是"吸收"是否成立的唯一判据**
+#
+# 诚实约束：若某条 liuhao_gap 说不出具体缺口，说明它不该是 P0。
+#  2026-09-13 首版。
+
+version: 1
+updated: 2026-09-13
+
+coverage:
+
+  # ==================================================== 一组：代码托管平台
+  - { id: 01, group: forge, label: GitHub, kind: platform, priority: P0,
+      sources: [github], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "主发现源。2026-09-13 经代理实测 200，可真跑。" }
+
+  - { id: 02, group: forge, label: GitLab, kind: platform, priority: P1,
+      sources: [gitlab], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "自托管场景与欧洲独家项目的来源；2026-09-13 实测 200。" }
+
+  - { id: 03, group: forge, label: Bitbucket, kind: platform, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "全局发现端点已废弃（410 CHANGE-2770），仅为被动源，覆盖价值低。" }
+
+  - { id: 04, group: forge, label: SourceForge, kind: platform, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "无发现 API，仅被动查询，且以历史项目为主。" }
+
+  - { id: 05, group: forge, label: Codeberg, kind: platform, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "Forgejo 实例，去中心化托管地；当前无 API 适配，暂列不扫。" }
+
+  - { id: 06, group: forge, label: Gitee, kind: platform, priority: P1,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "国产替代与信创合规项目来源，需在 API 鉴权可用后补接。" }
+
+  - { id: 07, group: forge, label: Apache 基金会, kind: topic, priority: P1,
+      sources: [github], queries: ["apache data engineering", "apache arrow"],
+      target_kernels: [execution, resource], gene: [data-capability],
+      liuhao_gap: "大数据执行与资源配额有成熟参考实现（YARN 调度、Ranger 权限模型）。" }
+
+  - { id: 08, group: forge, label: Linux Foundation / CNCF, kind: platform, priority: P0,
+      sources: [linux_foundation], queries: [], target_kernels: [resource, network, audit],
+      gene: [deployment-capability],
+      liuhao_gap: "landscape.yml 是唯一能一次性覆盖 LF+CNCF 上千项目的机器可读源（实测 200，1.1MB）。" }
+
+  # ==================================================== 二组：AI / 大模型
+  - { id: 09, group: ai, label: Hugging Face, kind: platform, priority: P0,
+      sources: [huggingface], queries: ["embedding", "reranker", "function calling"],
+      target_kernels: [context, memory], gene: [ai-capability, knowledge-capability],
+      liuhao_gap: "Context 内核当前默认空转（HYBRID 权重下典型输入全部被 discarded），缺重排与压缩环节。" }
+
+  - { id: 10, group: ai, label: ModelScope 魔搭, kind: platform, priority: P1,
+      sources: [modelscope], queries: [], target_kernels: [context], gene: [ai-capability],
+      liuhao_gap: "国产模型合规来源；需 MODELSCOPE_API_KEY，未配置时扫描必须诚实报 skipped。" }
+
+  - { id: 11, group: ai, label: Papers with Code, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "2025-07 已被 Meta 关停，旧 API 失效。替代：Hugging Face daily_papers。" }
+
+  - { id: 12, group: ai, label: Kaggle, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "价值在可运行 notebook 与数据集而非接口本身，需 token，本轮列为可选。" }
+
+  - { id: 13, group: ai, label: TensorFlow 生态, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["tensorflow serving", "tflite runtime"],
+      target_kernels: [execution], gene: [ai-capability],
+      liuhao_gap: "服务化部署形态可参考；鎏灏主线在 PyTorch 侧，故不作为主吸收对象。" }
+
+  - { id: 14, group: ai, label: PyTorch 生态, kind: topic, priority: P0,
+      sources: [github, pypi], queries: ["pytorch inference optimization", "torch compile"],
+      target_kernels: [execution, resource], gene: [ai-capability],
+      liuhao_gap: "ADA ComputeEngine 已真实起子进程，但没有 GPU 与推理调度层。" }
+
+  - { id: 15, group: ai, label: NVIDIA 开源生态, kind: topic, priority: P1,
+      sources: [github], queries: ["triton inference server", "cuda python binding"],
+      target_kernels: [execution, resource], gene: [ai-capability],
+      liuhao_gap: "GPU 算力尚未纳入 Resource 内核现有的六种配额。" }
+
+  - { id: 16, group: ai, label: Meta AI 开源, kind: topic, priority: P1,
+      sources: [github], queries: ["llama inference", "faiss vector search"],
+      target_kernels: [memory, context], gene: [knowledge-capability],
+      liuhao_gap: "FAISS 是向量检索工业标准，可直接对标 Memory 内核的检索层。" }
+
+  - { id: 17, group: ai, label: Google 开源, kind: topic, priority: P1,
+      sources: [github], queries: ["google adk agent", "gemini function calling"],
+      target_kernels: [network, execution], gene: [agent-capability],
+      liuhao_gap: "ADK 的智能体分工模型，可对照鎏灏 Organization 层的多智能体协议。" }
+
+  - { id: 18, group: ai, label: Microsoft 开源, kind: topic, priority: P0,
+      sources: [github], queries: ["semantic kernel", "autogen multi agent"],
+      target_kernels: [execution, policy], gene: [agent-capability],
+      liuhao_gap: "AutoGen 与 Semantic Kernel 的 planner/guardrail 分离设计，与鎏灏 policy 内核强相关。" }
+
+  - { id: 19, group: ai, label: OpenAI 开放生态, kind: topic, priority: P1,
+      sources: [github, npm], queries: ["openai agents sdk", "function calling schema"],
+      target_kernels: [network], gene: [agent-capability],
+      liuhao_gap: "协议层面的事实标准参考，目标是对齐而非自研。" }
+
+  # ==================================================== 三组：云 / 基础设施
+  - { id: 20, group: infra, label: Kubernetes 生态, kind: topic, priority: P1,
+      sources: [github, linux_foundation], queries: ["kubernetes operator", "controller runtime"],
+      target_kernels: [resource], gene: [deployment-capability],
+      liuhao_gap: "operator 的 reconcile 循环，是 ENOCH 长任务调度可直接借鉴的范式。" }
+
+  - { id: 21, group: infra, label: Docker 生态, kind: platform, priority: P1,
+      sources: [dockerhub], queries: ["sandbox runtime image"], target_kernels: [execution, security],
+      gene: [safety-capability],
+      liuhao_gap: "当前沙箱代理下该源不可达（502），需在 Docker 环境复验，不得据此次结果判定源失效。" }
+
+  - { id: 22, group: infra, label: CNCF 项目, kind: platform, priority: P0,
+      sources: [linux_foundation], queries: [], target_kernels: [resource, audit, network],
+      gene: [deployment-capability],
+      liuhao_gap: "CNCF 的 graduated/incubating 分级本身即可作为成熟度打分依据。" }
+
+  - { id: 23, group: infra, label: OpenTelemetry, kind: topic, priority: P0,
+      sources: [github, npm], queries: ["opentelemetry python sdk", "otel collector"],
+      target_kernels: [audit, evaluation], gene: [self-optimization-capability],
+      liuhao_gap: "src/observability/tracing 为自研实现，需评判是替换还是对齐 OTel 语义约定。" }
+
+  - { id: 24, group: infra, label: Prometheus, kind: topic, priority: P1,
+      sources: [github], queries: ["prometheus client python", "alertmanager"],
+      target_kernels: [resource, evaluation], gene: [self-optimization-capability],
+      liuhao_gap: "Resource 内核的六种配额目前缺少指标导出面。" }
+
+  - { id: 25, group: infra, label: Envoy, kind: topic, priority: P2,
+      sources: [github], queries: ["envoy proxy"], target_kernels: [network], gene: [],
+      liuhao_gap: "网关已定为单端口同源自服务方案，引入 Envoy 成本高而收益低。" }
+
+  - { id: 26, group: infra, label: Terraform 生态, kind: topic, priority: P1,
+      sources: [github], queries: ["terraform provider sdk"], target_kernels: [resource],
+      gene: [deployment-capability],
+      liuhao_gap: "基础设施即代码的声明式与 reconcile 模型，可借给 Resource 内核做配额回收。" }
+
+  # ==================================================== 四组：数据库 / 数据系统
+  - { id: 27, group: data, label: PostgreSQL 生态, kind: topic, priority: P1,
+      sources: [github], queries: ["pgvector", "postgres vector extension"],
+      target_kernels: [memory], gene: [data-capability, knowledge-capability],
+      liuhao_gap: "pgvector 让向量与关系同库存取，可省掉一条独立向量链路。" }
+
+  - { id: 28, group: data, label: MySQL/MariaDB, kind: topic, priority: P2,
+      sources: [github], queries: [], target_kernels: [], gene: [data-capability],
+      liuhao_gap: "运行时 sqlite 与 alembic 双轨，当前无 MySQL 诉求。" }
+
+  - { id: 29, group: data, label: Redis, kind: topic, priority: P1,
+      sources: [github], queries: ["redis python async"], target_kernels: [memory, realtime],
+      gene: [data-capability],
+      liuhao_gap: "当前状态落在文件与 sqlite，缺少跨进程共享的实时会话与锁层。" }
+
+  - { id: 30, group: data, label: Elasticsearch, kind: topic, priority: P1,
+      sources: [github], queries: ["bm25 search library"], target_kernels: [memory, context],
+      gene: [search-capability],
+      liuhao_gap: "BM25 与向量的混合检索是 RAG 基线；注意 Elastic-2.0 非 OSI 许可。" }
+
+  - { id: 31, group: data, label: MongoDB 生态, kind: topic, priority: P2,
+      sources: [github], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "文档型存储非当前必需。" }
+
+  - { id: 32, group: data, label: Apache 数据项目, kind: topic, priority: P1,
+      sources: [github, linux_foundation], queries: ["apache arrow", "apache iceberg"],
+      target_kernels: [context, resource], gene: [data-capability],
+      liuhao_gap: "Arrow 的列式内存格式，是跨进程零拷贝传递的现成答案。" }
+
+  - { id: 33, group: data, label: ClickHouse, kind: topic, priority: P1,
+      sources: [github], queries: ["clickhouse client python"], target_kernels: [audit, evaluation],
+      gene: [data-capability],
+      liuhao_gap: "审计链与评估指标规模上来后（audit_store.db 已逾 33MB），需要列式查询。" }
+
+  - { id: 34, group: data, label: 数据湖 / 数据仓库, kind: topic, priority: P2,
+      sources: [github], queries: ["duckdb"], target_kernels: [analysis], gene: [data-capability],
+      liuhao_gap: "DuckDB 值得单列（进程内 OLAP），其余数据湖暂无落地场景。" }
+
+  # ==================================================== 五组：前后端开发生态
+  - { id: 35, group: dev, label: npm, kind: platform, priority: P0,
+      sources: [npm], queries: [], target_kernels: [], gene: [coding-capability],
+      liuhao_gap: "前端依赖发现源；实测 200。" }
+
+  - { id: 36, group: dev, label: PyPI, kind: platform, priority: P0,
+      sources: [pypi], queries: [], target_kernels: [], gene: [coding-capability],
+      liuhao_gap: "无搜索 API，正确用法是配合 osv/deps.dev 做元数据核实与 CVE 追踪。" }
+
+  - { id: 37, group: dev, label: Maven, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "Java 生态，非鎏灏技术栈。" }
+
+  - { id: 38, group: dev, label: Gradle, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "同上，非技术栈。" }
+
+  - { id: 39, group: dev, label: React 生态, kind: topic, priority: P1,
+      sources: [npm, github], queries: ["react agent ui", "copilot chat component"],
+      target_kernels: [experience], gene: [creation-capability],
+      liuhao_gap: "驾驶舱前端（apps/console）的交互模式参考。" }
+
+  - { id: 40, group: dev, label: Vue 生态, kind: topic, priority: P2,
+      sources: [npm], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "同上，非主选。" }
+
+  - { id: 41, group: dev, label: Angular 生态, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "非技术栈。" }
+
+  - { id: 42, group: dev, label: Node.js 生态, kind: topic, priority: P1,
+      sources: [npm, github], queries: ["node worker threads pool"], target_kernels: [execution],
+      gene: [coding-capability],
+      liuhao_gap: "JavaScript 沙箱执行可作为 Python 子进程之外的第二执行面。" }
+
+  - { id: 43, group: dev, label: Java 开源生态, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "非技术栈。" }
+
+  - { id: 44, group: dev, label: Python 开源生态, kind: topic, priority: P0,
+      sources: [github, pypi], queries: ["python ast static analysis", "python sandbox"],
+      target_kernels: [execution, security], gene: [coding-capability],
+      liuhao_gap: "AST 分析可直接用于编码期的静态检查，吸收目标是「静态切面」而非重写运行时。" }
+
+  - { id: 45, group: dev, label: Go 开源生态, kind: topic, priority: P1,
+      sources: [github], queries: ["go concurrency patterns"], target_kernels: [execution, network],
+      gene: [coding-capability],
+      liuhao_gap: "高并发网络侧的并存实现参考。" }
+
+  - { id: 46, group: dev, label: Rust 开源生态, kind: topic, priority: P1,
+      sources: [github], queries: ["rust wasm runtime", "rust python extension"],
+      target_kernels: [security, execution], gene: [safety-capability],
+      liuhao_gap: "WASM 沙箱配 Rust，是安全执行面性价比最高的技术路线。" }
+
+  # ==================================================== 六组：Agent / 自动化
+  - { id: 47, group: agent, label: LangChain, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["langgraph"], target_kernels: [execution],
+      gene: [agent-capability],
+      liuhao_gap: "权威已裁定自研 goal_task_graph.py 为主，langgraph_workflow.py 标 experimental；只取抽象不换引擎。" }
+
+  - { id: 48, group: agent, label: LlamaIndex, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["llama index rag"], target_kernels: [memory, context],
+      gene: [knowledge-capability],
+      liuhao_gap: "分块、重排与节点索引策略，可转化为 Context 内核的输入聚类策略。" }
+
+  - { id: 49, group: agent, label: AutoGen, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["autogen multi agent"], target_kernels: [execution],
+      gene: [agent-capability],
+      liuhao_gap: "群聊式多智能体协商协议，可对照 Organization 层。" }
+
+  - { id: 50, group: agent, label: CrewAI, kind: topic, priority: P2,
+      sources: [github, pypi], queries: ["crewai"], target_kernels: [], gene: [],
+      liuhao_gap: "角色化编排已被鎏灏 Organization 层覆盖，重复度高。" }
+
+  - { id: 51, group: agent, label: MCP Server 生态, kind: platform, priority: P0,
+      sources: [mcp_registry], queries: [], target_kernels: [network, trust, security],
+      gene: [agent-capability],
+      liuhao_gap: "已知约 52% 停止维护、已披露 30+ CVE，因此必须过 Trust Gate，禁止默认可信。" }
+
+  - { id: 52, group: agent, label: Workflow 自动化, kind: topic, priority: P0,
+      sources: [github], queries: ["durable workflow engine", "temporal", "dag workflow python"],
+      target_kernels: [execution, event], gene: [automation-capability],
+      liuhao_gap: "持久化工作流（检查点与重放）是 ENOCH 长任务能力的直接补强。" }
+
+  - { id: 53, group: agent, label: RPA 开源, kind: topic, priority: P1,
+      sources: [github], queries: ["browser automation agent", "rpa python"],
+      target_kernels: [execution, perception], gene: [automation-capability],
+      liuhao_gap: "浏览器侧接入 Execution，补齐「作用于真实世界」的一环。" }
+
+  # ==================================================== 七组：安全
+  - { id: 54, group: security, label: 网络安全开源, kind: topic, priority: P1,
+      sources: [github], queries: ["network policy engine"], target_kernels: [network, security],
+      gene: [safety-capability],
+      liuhao_gap: "Network 内核改为真实投递后，出向管控成为新的空白。" }
+
+  - { id: 55, group: security, label: 加密算法项目, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["cryptography python"], target_kernels: [security],
+      gene: [safety-capability],
+      liuhao_gap: "Security 内核的 Vault Transit 加密依赖可用性存疑，需可回退的本地实现。" }
+
+  - { id: 56, group: security, label: 身份认证系统, kind: topic, priority: P1,
+      sources: [github], queries: ["oidc server python", "webauthn"], target_kernels: [identity, security],
+      gene: [safety-capability],
+      liuhao_gap: "生产必须挂载身份表（C-2 的前置条件），OIDC 可作为对标方案。" }
+
+  - { id: 57, group: security, label: 权限管理系统, kind: topic, priority: P0,
+      sources: [github, pypi], queries: ["casbin", "open policy agent", "cedar policy"],
+      target_kernels: [policy, security], gene: [safety-capability],
+      liuhao_gap: "Policy 内核为自研 ABAC，Cedar 与 OPA 是对照评估对象，不得盲目替换。" }
+
+  - { id: 58, group: security, label: 安全扫描工具, kind: topic, priority: P0,
+      sources: [github, pypi], queries: ["semgrep", "bandit python"],
+      target_kernels: [verification, security], gene: [safety-capability],
+      liuhao_gap: "已有 bandit-report.json，应让扫描进入 CI 常态而非事后补扫。" }
+
+  # ==================================================== 八组：机器人 / IoT / 边缘
+  - { id: 59, group: robotics, label: ROS 生态, kind: topic, priority: P2,
+      sources: [github], queries: ["ros2"], target_kernels: [], gene: [],
+      liuhao_gap: "除非 boss 明确机器人方向，否则仅作了解项，不投入。" }
+
+  - { id: 60, group: robotics, label: 嵌入式开源, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "同上，无当前场景。" }
+
+  - { id: 61, group: robotics, label: IoT 平台, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "同上，无当前场景。" }
+
+  - { id: 62, group: robotics, label: 边缘计算, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "同上，无当前场景。" }
+
+  # ==================================================== 九组：多媒体
+  - { id: 63, group: media, label: 图像处理, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["image processing pillow"], target_kernels: [perception],
+      gene: [creation-capability],
+      liuhao_gap: "Perception 内核目前是观察加 WorldModel，缺少多模态输入能力。" }
+
+  - { id: 64, group: media, label: 视频处理, kind: topic, priority: P1,
+      sources: [github], queries: ["ffmpeg python"], target_kernels: [perception],
+      gene: [creation-capability],
+      liuhao_gap: "同上，视频输入面。" }
+
+  - { id: 65, group: media, label: 音频处理, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["audio processing python"], target_kernels: [perception],
+      gene: [creation-capability],
+      liuhao_gap: "同上，音频输入面。" }
+
+  - { id: 66, group: media, label: OCR, kind: topic, priority: P1,
+      sources: [github, pypi], queries: ["paddleocr", "tesseract"], target_kernels: [context, perception],
+      gene: [creation-capability],
+      liuhao_gap: "文档进入 Context 内核之前缺前置解析器。" }
+
+  - { id: 67, group: media, label: 语音识别, kind: topic, priority: P1,
+      sources: [github, huggingface], queries: ["whisper"], target_kernels: [perception],
+      gene: [ai-capability],
+      liuhao_gap: "语音入口能力。" }
+
+  - { id: 68, group: media, label: 语音合成, kind: topic, priority: P2,
+      sources: [huggingface], queries: ["text to speech"], target_kernels: [], gene: [],
+      liuhao_gap: "非当前核心能力。" }
+
+  # ==================================================== 十组：游戏 / 图形 / 三维
+  - { id: 69, group: graphics, label: 游戏引擎开源, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "非鎏灏产品方向。" }
+
+  - { id: 70, group: graphics, label: 3D 渲染, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "非鎏灏产品方向。" }
+
+  - { id: 71, group: graphics, label: 图形算法, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "非鎏灏产品方向。" }
+
+  - { id: 72, group: graphics, label: WebGPU / OpenGL, kind: horizon, priority: P2,
+      sources: [], queries: [], target_kernels: [], gene: [],
+      liuhao_gap: "除非驾驶舱要做三维可视化，否则无关。" }
+
+# ------------------------------------------------------------------ 执行口径
+# `python pipeline/oss_radar.py --plan` 会读本文件并打印：
+#   P0/P1/P2 各多少类、多少类指向 sources.yaml 中已验证可达的源、
+#   多少 horizon 类被显式标记为"本轮不扫描"。
+# 诚实要求：**被跳过的类必须出现在报告里**，不得静默遗漏。

@@ -115,8 +115,40 @@ class SandboxBackend(ABC):
         raise NotImplementedError
 
 
+#: exit_code 语义码 —— 表示「什么也没执行」。
+#: 用 127（shell 的 "command not found"）是因为它准确传达「这次调用没有找到一个
+#: 真正能执行命令的执行面」。旧实现此处返回 0（成功）属谎报成功：
+#: 调用方拿到 exit_code=0 会认为命令跑完了，实际一个字节都没跑。
+NOT_EXECUTED_EXIT_CODE = 127
+
+
+def _not_executed(cls_name: str) -> Dict[str, Any]:
+    """占位后端统一的「诚实失败」返回值。
+
+    这两个后端（gVisor / Kata）在本仓库里**从未真正实现过**：没有 runsc、
+    没有 kata-runtime，也不做任何 syscall 拦截。旧代码返回空成功的 dict，
+    让整条 `PluginManager.execute_plugin_action()` 链路永远报告成功。
+    """
+    return {
+        "stdout": "",
+        "stderr": (
+            f"{cls_name}.execute_command is a placeholder: nothing was executed. "
+            "It does not spawn runsc/kata-runtime and performs no syscall interception. "
+            "Use a real execution surface instead — see the Monty / Subprocess / "
+            "gVisor implementations in src/plugins/sandbox/backends/."
+        ),
+        "exit_code": NOT_EXECUTED_EXIT_CODE,
+        "executed": False,
+    }
+
+
 class gVisorBackend(SandboxBackend):
-    """gVisor (runsc) 沙箱后端实现"""
+    """gVisor (runsc) 沙箱后端 —— **占位实现，不可用于真实隔离**。
+
+    注意：本类不提供任何隔离。真正的、可被选择的 gVisor 后端在
+    `src/plugins/sandbox/backends/gvisor.py`（那是 `SandboxBackendManager`
+    会按可用性挑选的那一套）。保留本类仅为兼容旧调用点。
+    """
 
     def __init__(self):
         self._containers: Dict[str, str] = {}  # plugin_id -> container_id
@@ -127,23 +159,19 @@ class gVisorBackend(SandboxBackend):
         container_id = f"gvisor-{plugin_id}-{id(self)}"
         self._containers[plugin_id] = container_id
 
-        # Apply limits if available
-        limits.get("cpu_quota", 50000)  # default 50% of 1 CPU
-        limits.get("memory_limit", 256 * 1024 * 1024)  # 256MB default
+        # NOTE: 下面两行是**死代码** —— 取值后立即丢弃，resource limits 从未被应用。
+        # 保留原样 + 注释记录，因为删掉会改变行为却得不到新能力；真正的限制能力请走
+        # backends/gvisor.py 那套。
+        limits.get("cpu_quota", 50000)  # noqa: B018  (documented no-op)
+        limits.get("memory_limit", 256 * 1024 * 1024)  # noqa: B018  (documented no-op)
 
         # Would run: runsc --cpu-quota=$cpu_quota --memory-limit=$memory_limit run ...
         # For now, just record the configuration
         return container_id
 
     async def execute_command(self, container_id: str, command: List[str]) -> Dict[str, Any]:
-        """在 gVisor 容器中执行命令"""
-        # Would run: runsc exec $container_id "$@"
-        # For sandboxed execution, this would intercept syscalls
-        return {
-            "stdout": "",
-            "stderr": "",
-            "exit_code": 0
-        }
+        """在 gVisor 容器中执行命令 —— 占位实现，实际不执行任何东西。"""
+        return _not_executed(self.__class__.__name__)
 
     async def destroy_container(self, container_id: str) -> None:
         """销毁 gVisor 容器"""
@@ -168,13 +196,8 @@ class KataBackend(SandboxBackend):
         return container_id
 
     async def execute_command(self, container_id: str, command: List[str]) -> Dict[str, Any]:
-        """在 Kata Containers VM 中执行命令"""
-        # Would use kata-runtime to execute
-        return {
-            "stdout": "",
-            "stderr": "",
-            "exit_code": 0
-        }
+        """在 Kata Containers VM 中执行命令 —— 占位实现，实际不执行任何东西。"""
+        return _not_executed(self.__class__.__name__)
 
     async def destroy_container(self, container_id: str) -> None:
         """销毁 Kata Containers VM"""
@@ -192,9 +215,17 @@ def create_backend(backend_type: str = "gvisor") -> SandboxBackend:
     Args:
         backend_type: "gvisor" 或 "kata"
 
-    Returns:
-        SandboxBackend 实例
+    Raise:
+        ValueError: backend_type 不是受支持的取值。
+
+    注：旧实现把任何非 "kata" 的字符串**静默**映射成 gVisorBackend()
+    （拼错的 backend_type 也会拿到一个"看起来能用"的后端），且不做可用性校验。
     """
     if backend_type == "kata":
         return KataBackend()
-    return gVisorBackend()
+    if backend_type == "gvisor":
+        return gVisorBackend()
+    raise ValueError(
+        f"unknown sandbox backend type {backend_type!r}; "
+        "supported values are 'gvisor' and 'kata'"
+    )

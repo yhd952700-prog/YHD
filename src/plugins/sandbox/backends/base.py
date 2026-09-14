@@ -16,6 +16,27 @@ class SandboxBackendType(str, Enum):
     DOCKER = "docker"        # Docker containers
     SUBPROCESS = "subprocess"  # Process isolation fallback
     KATA = "kata"            # Kata Containers (future)
+    # Rust 写的受限 Python 解释器（pydantic/monty），给 AI 生成的代码跑。
+    # 保留 / S5 状态：**已登记但当前不可实例化** —— 详见 monty_backend.py 的探测逻辑。
+    MONTY = "monty"
+    # RestrictedPython：CPython 源码受限编译（ZPL-2.1）。见 restricted_python_backend.py。
+    # 它提供的是**能力隔离**（无 import / open），**不是**资源隔离 —— 请勿对外宣称"沙箱"。
+    RESTRICTED_PYTHON = "restricted_python"
+
+
+class ExecutionStatus(str, Enum):
+    """一次执行的**结果性质** —— `success: bool` 表达不了的那部分。
+
+    `success` 只有两个值，于是「被拒绝」「不支持」「后端没装」全都被压成 False，
+    与「真的跑了但失败」无法区分。鎏灏要的不是"执行失败"，而是"我们明确地、有
+    理由地不执行" —— 这两件事的下游处理完全不同，压成一个布尔就是谎报。
+    """
+    SUCCESS = "success"              # 真的执行了，并成功
+    FAILED = "failed"                # 真的执行了，但失败
+    TIMEOUT = "timeout"              # 真的执行了，但超时
+    REJECTED = "rejected"            # 判定为危险，拒绝执行（主动拦截）
+    UNSUPPORTED = "unsupported"      # 这类操作本后端不做
+    BACKEND_UNAVAILABLE = "backend_unavailable"  # 后端没装/不可用 —— 不是失败
 
 
 class SandboxBackendStatus(str, Enum):
@@ -87,9 +108,17 @@ class ExecutionResult:
         execution_time: Optional[float] = None,
         resource_usage: Optional[Dict[str, Any]] = None,
         backend_info: Optional[Dict[str, Any]] = None,
+        status: Optional["ExecutionStatus"] = None,
     ):
         self.execution_id = execution_id
         self.success = success
+        # status 缺省由 success 推导，保持与历史调用点完全兼容；
+        # 显式传入时以传入为准（例如拒绝/不可用这类"没发生执行"的结果）。
+        if status is None:
+            status = ExecutionStatus.SUCCESS if success else ExecutionStatus.FAILED
+        elif isinstance(status, str):
+            status = ExecutionStatus(status)
+        self.status = status
         self.exit_code = exit_code
         self.stdout = stdout or ""
         self.stderr = stderr or ""
@@ -103,6 +132,7 @@ class ExecutionResult:
         return {
             "execution_id": self.execution_id,
             "success": self.success,
+            "status": self.status.value,
             "exit_code": self.exit_code,
             "stdout": self.stdout,
             "stderr": self.stderr,

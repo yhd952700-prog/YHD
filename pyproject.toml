@@ -50,6 +50,13 @@ dependencies = [
     # 异步引擎回归测试用 sqlite+aiosqlite 驱动；此前只靠 arize-phoenix /
     # langgraph-checkpoint-sqlite 传递带入，任一上游去掉它测试就会挂。
     "aiosqlite>=0.20.0",
+    # RestrictedPython：受限执行面（src/plugins/sandbox/backends/restricted_python_backend.py）。
+    # 放在**运行期依赖**而非 extras：tests/test_sandbox_restricted_python.py 会真起
+    # 子进程验证安全探针，CI 的 test job 只执行 `pip install -e .`，
+    # 若放进 extras 则 CI 上这些用例只能 skip —— 而跳过的绿比红更危险。
+    # 成本可接受：189KiB 纯 Python，运行期零传递依赖。
+    # 许可证 ZPL-2.1（OSI 批准、BSD 同类、无 copyleft 传染），已登记 oss-registry.yaml。
+    "RestrictedPython>=8.0",
 ]
 
 [build-system]
