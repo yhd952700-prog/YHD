@@ -154,7 +154,14 @@ A→B 切换只是换数据源，不改记账接口。
 | `src/kernels/resource/__init__.py` 新增 `account_spend` | ✅ 已加（只把 `used` 往上推；`amount <= 0` 直接返回 0） |
 | `src/ai/liuhao.py` `_commit_turn` 记账 | ✅ 已完成轮次按**放行时评估的同一个数**记账 |
 | `src/ai/providers.py` 真实 usage（B 方案） | ❌ **未做** —— 仍记预估成本，见 §7 |
-| 测试 + 反橡皮图章 | ✅ `tests/test_quota_accounting.py`（14 项） |
+| 测试 + 反橡皮图章 | ✅ `tests/test_quota_accounting.py`（19 项） |
+| 默认预算可运营调整 | ✅ 新增 `LIUHAO_DEFAULT_COST_QUOTA` 环境变量（默认仍 100.0，见下） |
+
+**默认预算做成可配（同一轮追加）**：系统级 `COST` 默认配额原来是写死的 100.0，
+运营想收紧护栏就得改内核源码 —— 那不是运营接口。现改为读 `LIUHAO_DEFAULT_COST_QUOTA`
+（默认 100.0 **不变**，未设时行为与之前逐字节相同）。非法值/负数 ⇒ 回退默认值
+**并 WARNING 出声**（静默忽略一个打错的预算，等于让护栏跑在一个没人选过的数上）。
+⇒ "配额设成 10" 现在是一行环境变量的事，**不需要改代码、不需要重新构建**。
 
 同步更新的既有计数（新增第 44 个内核动作带来的连锁）：
 `tests/kernels/test_risk_classification.py`（43→44、LOW 14→15）、

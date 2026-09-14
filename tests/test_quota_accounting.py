@@ -29,9 +29,12 @@ from unittest import mock
 import pytest
 
 from src.kernels.resource import (
+    COST_QUOTA_ENV,
+    DEFAULT_SYSTEM_COST_QUOTA,
     ResourceQuotaManager,
     ResourceScope,
     ResourceType,
+    default_system_cost_quota,
 )
 
 # --------------------------------------------------------------------------
@@ -248,3 +251,39 @@ class TestTheTurnIsCharged:
 
         (quota,) = _cost_quotas(real_manager, "accounting-error")
         assert quota.used == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------
+# 3. the default budget is an operator knob, not a source edit
+# --------------------------------------------------------------------------
+
+
+class TestTheDefaultBudgetIsConfigurable:
+    """Tightening the guard must not require editing kernel source."""
+
+    def test_the_default_is_unchanged_when_nothing_is_set(self, monkeypatch):
+        monkeypatch.delenv(COST_QUOTA_ENV, raising=False)
+        assert default_system_cost_quota() == pytest.approx(
+            DEFAULT_SYSTEM_COST_QUOTA
+        )
+
+    def test_the_environment_sets_it(self, monkeypatch):
+        monkeypatch.setenv(COST_QUOTA_ENV, "10")
+        manager = ResourceQuotaManager()
+
+        (cost,) = [
+            q
+            for q in manager.get_all_quotas("system")
+            if q.resource_type == ResourceType.COST
+        ]
+        assert cost.limit == pytest.approx(10.0)
+
+    @pytest.mark.parametrize("bad", ["not-a-number", "-1", ""])
+    def test_a_bad_value_falls_back_loudly(self, bad, monkeypatch, caplog):
+        monkeypatch.setenv(COST_QUOTA_ENV, bad)
+        with caplog.at_level("WARNING"):
+            value = default_system_cost_quota()
+
+        assert value == pytest.approx(DEFAULT_SYSTEM_COST_QUOTA)
+        if bad.strip():  # an empty value simply means "not configured"
+            assert COST_QUOTA_ENV in caplog.text

@@ -17,10 +17,48 @@ from datetime import datetime
 from src._time import utc_now
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
+import logging
+import os
 import threading
 import uuid
 
 from src.kernels._crosscutting import kernel_action
+
+_log = logging.getLogger(__name__)
+
+# The system-wide default COST budget. It is deliberately overridable: the
+# point of the cost guard is to have a budget that an operator can tighten,
+# and "edit the source" is not an operator interface. The default value is
+# unchanged so nothing moves until someone sets the variable.
+DEFAULT_SYSTEM_COST_QUOTA = 100.0
+COST_QUOTA_ENV = "LIUHAO_DEFAULT_COST_QUOTA"
+
+
+def default_system_cost_quota() -> float:
+    """Read the system-wide default COST budget (env-overridable).
+
+    Malformed or negative values fall back to :data:`DEFAULT_SYSTEM_COST_QUOTA`
+    **with a warning** -- silently ignoring a typo'd budget would leave the
+    guard running on a number nobody chose.
+    """
+    raw = os.environ.get(COST_QUOTA_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_SYSTEM_COST_QUOTA
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        _log.warning(
+            "%s=%r is not a number; falling back to the default COST quota %.1f",
+            COST_QUOTA_ENV, raw, DEFAULT_SYSTEM_COST_QUOTA,
+        )
+        return DEFAULT_SYSTEM_COST_QUOTA
+    if value < 0:
+        _log.warning(
+            "%s=%r is negative; falling back to the default COST quota %.1f",
+            COST_QUOTA_ENV, raw, DEFAULT_SYSTEM_COST_QUOTA,
+        )
+        return DEFAULT_SYSTEM_COST_QUOTA
+    return value
 
 
 class ResourceType(str, Enum):
@@ -128,7 +166,7 @@ class ResourceQuotaManager:
             (ResourceScope.L3, "system", ResourceType.STORAGE, 500 * 1024**3),  # 500 GB
             (ResourceScope.L3, "system", ResourceType.TOKEN, 1_000_000),
             (ResourceScope.L3, "system", ResourceType.TIME, 3600.0),  # 1 hour
-            (ResourceScope.L3, "system", ResourceType.COST, 100.0),  # $100
+            (ResourceScope.L3, "system", ResourceType.COST, default_system_cost_quota()),
         ]
 
         for scope, owner, rtype, limit in defaults:
