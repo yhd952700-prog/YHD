@@ -1,0 +1,148 @@
+# orphan-registry.yaml -- human decisions about zero-reference src/ modules.
+#
+# Enforced by scripts/verify_no_undocumented_orphans.py (CI guardrails job).
+# Contract: every src/ module with zero references in code (src/ tests/ scripts/
+# apps/ LiuHao-AI-OS LiuHao-O/ configs/ alembic/) must appear below WITH a reason.
+# A module that becomes referenced again must be REMOVED from here (the script
+# warns about stale entries so this file cannot rot).
+#
+# Why this exists: every silent defect found in this repository shared one shape --
+# code written but never called. See docs/ORPHAN-AUDIT.md.
+#
+# classification values:
+#   superseded-duplicate  a live counterpart exists; this copy is dead weight
+#   endpoint-not-mounted  a FastAPI router that no module ever includes
+#   library-staged        working library code with no consumer *yet* (not a bug)
+#   legacy-not-wired      self-declared or clearly legacy, pending removal
+#   tooling               invoked manually by a human, not on the import graph
+#   infra-artifact        generates non-runtime artifacts (charts/config text)
+
+acknowledged:
+  # --- superseded duplicates (verified live counterpart exists) -------------
+  - module: src.security.vault_client
+    classification: superseded-duplicate
+    reason: >-
+      Live counterpart is src/integrations/vault/ (client.py + secret_manager.py),
+      which guards `import hvac` and is the one wired into the app. This 125-line
+      copy imports hvac at module top level (line 3) with no consumer. hvac IS
+      installed in the venv, so this import never fails loudly -- it simply sits
+      there as a second, divergent Vault authority.
+
+  - module: src.security.vault_transit
+    classification: superseded-duplicate
+    reason: >-
+      Transit encrypt/decrypt/key-management already live in
+      src/integrations/vault/client.py:249-271 (encrypt_data / decrypt_data).
+      This 322-line module adds a parallel, unreferenced implementation.
+
+  - module: src.security.rbac_abac
+    classification: superseded-duplicate
+    reason: >-
+      572 lines of RBAC/ABAC hardening with ZERO importers. Its namesake test
+      tests/governance/test_rbac_abac.py actually imports src.security.rbac
+      (RBACManager), not this file -- so even the test named after it does not
+      exercise it. Live authority is src/security/rbac.py (get_rbac_manager).
+
+  - module: src.storage.repository
+    classification: superseded-duplicate
+    reason: >-
+      Third copy of a generic `Repository`. The live one is
+      src/integrations/storage.py:32 (imported by tests/test_orm_storage.py);
+      src/storage/backends.py:430 holds another copy. This one has no importer.
+
+  # --- endpoint defined but never mounted -----------------------------------
+  - module: src.feedback.feedback_api
+    classification: endpoint-not-mounted
+    reason: >-
+      Declares `router = APIRouter(prefix="/feedback")` but no module ever
+      includes it (verified: zero importers of src.feedback.* outside the
+      package, and src/gateway does not reference it). The feedback submission
+      endpoint therefore does not exist at runtime.
+
+  # --- library / staged code (no consumer yet; not a defect) ----------------
+  - module: src.distribution.election
+    classification: library-staged
+    reason: >-
+      258-line leader-election implementation, functional and self-contained.
+      The live distribution transport is src/distribution/bus_backends.py
+      (Phase 7b); election has simply never been wired to a consumer.
+
+  - module: src.distribution.lock
+    classification: library-staged
+    reason: >-
+      233-line distributed lock, self-contained, contains an explicit
+      placeholder marker. No consumer today; kept as a staged library.
+
+  - module: src.gateway.validation
+    classification: library-staged
+    reason: >-
+      8 request-validation helpers. Not referenced: the gateway validates via
+      pydantic request models declared inline on its routes.
+
+  - module: src.logging_config
+    classification: library-staged
+    reason: >-
+      Logging setup helper with zero importers. Runtime logging is configured
+      without an explicit setup_logging()/dictConfig() call site (verified in
+      src/gateway/main.py, main.py, serve.py). Coexists with the equally
+      unwired src/observability/logging_utils.py.
+
+  - module: src.observability.logging_utils
+    classification: library-staged
+    reason: >-
+      Structured-logging helpers (correlation ids, structlog bridge) with zero
+      importers. Same situation as src/logging_config.py -- two unwired logging
+      modules; neither is currently the configured path.
+
+  - module: src.observability.alerts
+    classification: library-staged
+    reason: >-
+      Alert definition module with a single public function and no consumer.
+      Prometheus metrics are exposed live (src/observability/production.py), but
+      no alert rules are wired to them yet.
+
+  - module: src.pipelines.etl
+    classification: library-staged
+    reason: >-
+      ETL pipeline (4 classes, 11 methods) with no consumer. Staged ingestion
+      capability; not on any runtime path.
+
+  - module: src.pipelines.parser
+    classification: library-staged
+    reason: >-
+      Document parser (4 classes, 9 methods) with no consumer. Staged ingestion
+      capability; not on any runtime path.
+
+  - module: src.plugins.marketplace
+    classification: library-staged
+    reason: >-
+      Plugin marketplace store (register/get/list). No consumer; the plugin
+      kernel (src/kernels/plugin) is the live plugin path.
+
+  - module: src.plugins.plugin_manager
+    classification: library-staged
+    reason: >-
+      Plugin manager with container-sandbox integration notes. No consumer; the
+      live plugin authority is src/kernels/plugin.
+
+  # --- tooling and non-runtime artifacts ------------------------------------
+  - module: src.performance.benchmarks
+    classification: tooling
+    reason: >-
+      Benchmark harness meant to be invoked manually, not imported by the app;
+      this is why it has no importer. NOTE: it consumes LRUCache from
+      src/performance/cache.py, so a human run must stay green (the Phase 8
+      cache work kept this in mind).
+
+  - module: src.infra.infra_charts
+    classification: infra-artifact
+    reason: >-
+      Emits Helm chart text; it is a generator of non-runtime artifacts, not
+      application code. The only textual match is inside the module itself.
+
+  # --- legacy ---------------------------------------------------------------
+  - module: src.adapters.observability.opentelemetry_adapter
+    classification: legacy-not-wired
+    reason: >-
+      Module docstring already self-declares "[LEGACY / NOT WIRED]". Real
+      OpenTelemetry export remains a Phase 7 leftover; nothing consumes it.

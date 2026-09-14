@@ -154,7 +154,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # All twelve `scripts/verify_*.py` are wired somewhere: eleven run here and
+  # All thirteen `scripts/verify_*.py` are wired somewhere: twelve run here and
   # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
   guardrails:
     name: Guardrails (Policy C-1..C-6, ORM, persistence)
@@ -211,6 +211,13 @@ jobs:
       # A version pin never tells you that; this does.
       - name: Verify OSS component licenses against oss-registry.yaml
         run: python scripts/verify_oss_licenses.py
+
+      # Every silent defect in this repository shared one shape: code written but
+      # never called (msg_bus, MultiTierCache, BatchCache, Evaluator,
+      # generate_metrics). An orphan is not automatically a bug, but an orphan
+      # nobody decided about is. This makes the decision explicit and mechanical.
+      - name: Verify every zero-reference module is acknowledged
+        run: python scripts/verify_no_undocumented_orphans.py
 
       - name: Migrate a scratch database
         run: |
