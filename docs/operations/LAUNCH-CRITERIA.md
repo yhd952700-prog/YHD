@@ -82,9 +82,12 @@
 
 ## 6. 证据索引
 
-- **提交**：`d992de46`（WS1）、`c123f977`（WS2+WS4），远端 tip 已对齐（逐个 SHA `MATCH`）。
-- **CI**：run `34796348631`（`d992de46`）与 run `34797538140`（`c123f977`）**均 12/12 作业 `success`**
-  （零 `skipped`、零 `failure`），run 结论 `success`（`gh run view <id> --json jobs` 直查）。
+- **提交链**（远端 tip，逐个 SHA `MATCH`）：`85163ce4`(CI 修复) → `2a9920d4`(verify 脚本) →
+  `c123f977`(WS2+WS4) → `d992de46`(WS1)。
+- **CI**：`d992de46`(run `34796348631`) 与 `c123f977`(run `34797538140`) 均 **12/12 `success`**。
+  ⚠️ 插曲：`2a9920d4` 曾红 —— 新增 `scripts/verify_real_execution.py` 却未接进任何 workflow，
+  被 `tests/test_guardrail_scripts.py` 元护栏判红（Run Tests 双版本失败、下游 skipped）；
+  `85163ce4` 把它加进 `ci.yml` 的 `guardrails` 作业后修复。
 - **可复现验证脚本**：`scripts/verify_real_execution.py`（4 项 ALL GREEN：真执行 385 / 拒绝 unsafe /
   无工具诚实失败 / 显式 `success:False` 不被掩盖）。同族脚本：`verify_policy_c1.py`、
   `verify_c2_enforcement.py`、`verify_c3_sovereignty.py`、`verify_c4_approval_channel.py`。
