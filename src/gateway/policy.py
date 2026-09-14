@@ -45,9 +45,49 @@ from ..kernels._sovereignty import (
 
 router = APIRouter(prefix="/v1", tags=["policy"])
 
+#: Header the console carries its bearer token in.
+#:
+#: Deliberately *not* ``Authorization``. On the managed host that serves the
+#: published bundle a front gateway (``CloudStudio Gateway``) overwrites
+#: ``Authorization`` with its own JWT before the request reaches this app.
+#: Measured, not assumed: a request with no such header, one with a 17-char
+#: canary and one with a real 824-char token all arrived as the *same*
+#: 379-char ``HS256`` token -- so on that host every ``Authorization``-based
+#: check rejects everybody, and login "works" only because it reads no header.
+#: A header the gateway does not know passes through untouched, and a value
+#: the infrastructure rewrites is not something to authenticate against
+#: anyway. ``Authorization`` is still honoured so local and Docker
+#: deployments are unchanged.
+TOKEN_HEADER = "X-Liuhao-Token"
 
-def require_bearer_payload(authorization: Optional[str] = Header(None)):
-    """Validate ``Authorization: Bearer <JWT>`` and return the verified payload.
+#: ``Authorization`` remains accepted as the fallback for non-proxied hosts.
+STANDARD_TOKEN_HEADER = "Authorization"
+
+
+def extract_bearer_token(*values: Optional[str]) -> Optional[str]:
+    """Return the first well-formed ``Bearer <token>`` from ``values``.
+
+    Order matters: the caller passes the private header first, so a rewritten
+    ``Authorization`` can never shadow a token the client actually sent.
+    """
+    for value in values:
+        if not value:
+            continue
+        scheme, _, token = value.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            continue
+        return token.strip()
+    return None
+
+
+def require_bearer_payload(
+    x_liuhao_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Validate a bearer token and return the verified payload.
+
+    The token is read from :data:`TOKEN_HEADER` first and ``Authorization``
+    second -- see that constant for why the private header has to win.
 
     This is the **single** implementation of "bearer token -> verified claims"
     in the gateway. ``/v1/auth/*`` depends on it too, so there is exactly one
@@ -57,11 +97,9 @@ def require_bearer_payload(authorization: Optional[str] = Header(None)):
     The JWT signature is verified by ``src.security``; a caller-supplied
     identity is never trusted (see the module docstring, point 1).
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    token = extract_bearer_token(x_liuhao_token, authorization)
+    if token is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="empty bearer token")
     try:
         from ..security import get_jwt_handler
 

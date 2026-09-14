@@ -94,9 +94,17 @@ class RateLimiter:
         self._default_rate = 1.0  # 1 token per second default
 
     def _get_key_id(self, request: Request) -> str:
-        """Extract key identifier from request (API key or IP)."""
+        """Extract key identifier from request (API key or IP).
+
+        The key is read from the private header first: on the managed host a
+        front gateway rewrites ``Authorization``, so a key carried there would
+        be replaced and every caller would silently share one bucket (see
+        ``policy.TOKEN_HEADER``).
+        """
+        from .policy import TOKEN_HEADER
+
         # Try to get from headers/api key first
-        auth_header = request.headers.get("Authorization", "")
+        auth_header = request.headers.get(TOKEN_HEADER) or request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             from ..security.jwt_handler import validate_api_key
             key_obj = validate_api_key(auth_header[7:])
@@ -135,7 +143,9 @@ class RateLimiter:
 
         # Get API key scopes if available
         from ..security.api_keys import validate_api_key
-        auth_header = request.headers.get("Authorization", "")
+        from .policy import TOKEN_HEADER
+
+        auth_header = request.headers.get(TOKEN_HEADER) or request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             key_obj = validate_api_key(auth_header[7:])
             if key_obj:

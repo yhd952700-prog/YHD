@@ -19,7 +19,7 @@
  * 未认证」这类两份真相打架的情况。
  */
 
-import { clearSession, currentToken, decodeToken, saveSession } from './auth';
+import { clearSession, currentToken, decodeToken, saveSession, TOKEN_HEADER } from './auth';
 
 
 /** 内核层拦截配置快照（GET /v1/policy/enforcement 的真实形状）。 */
@@ -112,8 +112,12 @@ export class PolicyApiError extends Error {
 }
 
 function authHeaders(token: string): Record<string, string> {
+  // 双写私有头 + 标准头：托管边缘网关会改写 `Authorization`，私有头是唯一
+  // 能原样穿过的通道（见 `auth.TOKEN_HEADER`）。`Authorization` 保留，兼容
+  // 本机 / Docker 直连部署。
   return {
     'Content-Type': 'application/json',
+    [TOKEN_HEADER]: `Bearer ${token}`,
     Authorization: `Bearer ${token}`,
   };
 }

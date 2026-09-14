@@ -203,7 +203,32 @@ export function clearSession(): void {
   safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
 }
 
-/** 当前会话的令牌，供 `Authorization: Bearer` 使用。 */
+/** 承载令牌的头名。
+ *
+ * 故意**不是** `Authorization`。生产托管的边缘网关（`CloudStudio Gateway`）会在
+ * 请求到达本应用前把 `Authorization` 整个换成它自己的 JWT —— 实测：不带该头、
+ * 带 17 字符假令牌、带 824 字符真令牌，应用收到的都是同一个 379 字符的 HS256
+ * 令牌。只有网关不认识的头能原样穿过；而被基础设施改写的头本来也不该用来鉴权。
+ * 后端 `require_bearer_payload` 优先读此头、其次才读 `Authorization`。
+ */
+export const TOKEN_HEADER = 'X-Liuhao-Token'
+
+/** 带令牌的请求头。
+ *
+ * 两个头都写：私有头是托管环境下**唯一**可用通道，标准头让本机 / Docker 直连
+ * 部署（无网关改写）行为不变。
+ */
+export function tokenHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init)
+  const token = currentToken()
+  if (token) {
+    headers.set(TOKEN_HEADER, `Bearer ${token}`)
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  return headers
+}
+
+/** 当前会话的令牌，供 bearer 头使用。 */
 export function currentToken(): string {
   return getSession()?.token ?? ''
 }
@@ -285,7 +310,7 @@ export async function logout(): Promise<void> {
     if (token) {
       await fetch('/v1/auth/logout', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: tokenHeaders(),
       })
     }
   } catch {
@@ -307,7 +332,7 @@ export async function refreshIdentity(): Promise<{
   if (!token) return null
   try {
     const response = await fetch('/v1/auth/me', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: tokenHeaders(),
       cache: 'no-store',
     })
     if (response.status === 401) {

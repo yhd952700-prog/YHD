@@ -9,14 +9,15 @@
  * 漏了令牌 —— 闸门一上，聊天就会 401，故统一走下面两个helper。
  */
 
-import { clearSession, currentToken, UNAUTHENTICATED_EVENT } from './auth';
+import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth';
 
-/** 组装带会话令牌的请求头。 */
+/** 组装带会话令牌的请求头。
+ *
+ * 委托给 `auth.tokenHeaders`：它同时写私有头（`X-Liuhao-Token`）与标准头，
+ * 前者是托管边缘网关下唯一能原样穿过的通道（见 `auth.TOKEN_HEADER`）。
+ */
 function authHeaders(extra?: HeadersInit): Headers {
-  const headers = new Headers(extra);
-  const token = currentToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  return headers;
+  return tokenHeaders(extra);
 }
 
 /** 401 = 会话失效：清本地会话并广播，让应用退回登录页（同 apiFetch）。 */

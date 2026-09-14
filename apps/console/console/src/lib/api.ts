@@ -2,13 +2,14 @@
  * 带会话的取数层 —— 驾驶舱所有真实数据的统一入口。
  *
  * 两个职责：
- * 1. 自动附带 `Authorization: Bearer`，并在 401 时**立刻清除会话**、广播
+ * 1. 自动附带会话令牌（私有头 `X-Liuhao-Token` + 标准头 `Authorization`，见
+ *    `auth.tokenHeaders`），并在 401 时**立刻清除会话**、广播
  *    未认证事件（否则界面会停在一个"看起来已登录但每个请求都失败"的状态）；
  * 2. 轮询组件 `useApi`，把"过期响应覆盖新响应"这类竞态挡在组件之外。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { clearSession, currentToken, UNAUTHENTICATED_EVENT } from './auth'
+import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
 
 export class ApiError extends Error {
   status: number
@@ -40,9 +41,9 @@ export async function apiFetch<T>(
   init?: RequestInit,
   acceptStatus?: readonly number[],
 ): Promise<T> {
-  const token = currentToken()
-  const headers = new Headers(init?.headers)
-  if (token) headers.set('Authorization', `Bearer ${token}`)
+  // 令牌走「私有头 + 标准头」双写（见 auth.TOKEN_HEADER）：托管边缘网关会
+  // 改写 `Authorization`，只有它不认识的私有头能原样穿过。
+  const headers = tokenHeaders(init?.headers)
   if (init?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
