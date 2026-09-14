@@ -37,7 +37,7 @@ from src.kernels.memory.backends import (
 )
 from src.kernels.memory import MemoryKernel, MemoryScope, MemoryTier
 
-UNREACHABLE_PG = "postgresql://liuhao:liuhao@127.0.0.1:6399/liuhao"
+UNREACHABLE_PG = "postgresql://liuhao:topsecretpw@127.0.0.1:6399/liuhao"
 
 
 def _row(**overrides) -> dict:
@@ -335,12 +335,19 @@ class TestHonestFailure:
         assert ok is False
         assert "未配置" in reason
 
-    def test_capability_probe_reports_unreachable_with_a_reason(self):
+    def test_capability_probe_reports_unavailable_with_a_reason(self):
+        """能力探针应如实报"不可用"并给出有信息量的原因——不论失败发生在哪一层。
+
+        缺驱动（CI 无 psycopg2）与连不上（本机有驱动但 6399 无服务）都是"PostgreSQL
+        不可用"的子因；前者**不是**'不可达'（根本没客户端库去连），所以不锁死
+        '不可达' 这个只属于连接层的措辞，而锁更本质的契约：不可用 + 原因非空 +
+        指向的目标可辨识 + 密码绝不泄露。把 '不可达' 硬塞进"缺驱动"的原因是说谎。
+        """
         ok, reason = postgres_available(UNREACHABLE_PG)
         assert ok is False
-        assert "不可达" in reason
-        assert "liuhao" in reason  # 指向的库有信息量，便于排查
-        assert "supersecret" not in reason
+        assert reason  # 必须有原因，不能静默报可用
+        assert "liuhao" in reason  # 指向的库/主机有信息量，便于排查
+        assert "topsecretpw" not in reason  # 密码已脱敏，绝不出现在探针输出
 
     def test_dsn_env_precedence(self, monkeypatch):
         monkeypatch.setenv("DATABASE_URL", "postgresql://from-database/db")

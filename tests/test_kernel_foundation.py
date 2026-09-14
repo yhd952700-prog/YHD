@@ -169,13 +169,50 @@ async def test_check_database_unhealthy_when_engine_not_initialized(restore_db_s
 
 
 async def test_check_redis_reports_missing_dependency(monkeypatch):
-    """aioredis 已废弃且未随项目安装：缺依赖要明确说，不能伪装成服务故障。"""
+    """aioredis 已废弃且未随项目安装：缺依赖要明确说，不能伪装成服务故障。
+
+    只把 ``sys.modules['redis']`` 置 None 不够——若同一进程里早有测试把
+    ``redis.asyncio`` 缓存进了 sys.modules，``from redis.asyncio import Redis`` 会直接
+    命中缓存、跳过对父包 ``redis`` 的 None 检查，于是"缺依赖"分支不被触发，check_redis
+    反而会真的去连 localhost:6379（这正是 CI 上该用例红的真实根因）。必须连
+    ``redis.asyncio`` 一起置 None，才能稳定复现"依赖缺失"入口。
+    """
     monkeypatch.setitem(sys.modules, "redis", None)
+    monkeypatch.setitem(sys.modules, "redis.asyncio", None)
 
     result = await health_mod.check_redis()
 
     assert result["status"] == "unhealthy"
     assert "not installed" in result["error"]
+
+
+async def test_check_redis_reports_unreachable_gracefully(monkeypatch):
+    """根因回归：驱动在、但连不上时，check_redis 必须优雅返回 unhealthy，
+    绝不能把 ConnectionError/超时抛给健康检查调用方（修根因，不是测试里 try/except 糊过去）。
+
+    用假 Redis 注入一个连接失败的 ping——不碰真实 localhost:6379。
+    """
+    import redis
+    import redis.asyncio as real_redis
+
+    class _FakeRedis:
+        @classmethod
+        def from_url(cls, dsn, **kwargs):
+            return cls()
+
+        async def ping(self):
+            raise redis.exceptions.ConnectionError("connection refused")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(real_redis, "Redis", _FakeRedis)
+
+    result = await health_mod.check_redis()
+
+    assert result["status"] == "unhealthy"
+    assert "unreachable" in result["error"]
+    assert "ConnectionError" in result["error"]
 
 
 async def test_check_vector_db_unhealthy_when_not_configured(monkeypatch):

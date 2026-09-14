@@ -127,7 +127,15 @@ async def check_database() -> dict:
 
 
 async def check_redis() -> dict:
-    """Check Redis connectivity."""
+    """Check Redis connectivity.
+
+    两条失败路径都要**优雅上报**，绝不把异常抛给健康检查调用方：
+    * 缺驱动（``ImportError``）→ 明确说依赖未装；
+    * 驱动在但连不上（``ConnectionError`` / 连接超时）→ 如实说"不可达"，而不是崩溃。
+
+    探针**任何情况下都不抛**：健康检查的调用方是就绪/存活端点，一个畸形
+    ``redis_dsn`` 让整个健康检查 500 会把"配置写错了"伪装成"服务挂了"。
+    """
     redis_dsn = _setting("redis_dsn", "redis://localhost:6379")
     try:
         from redis.asyncio import Redis
@@ -139,11 +147,28 @@ async def check_redis() -> dict:
             "error": "dependency 'redis' is not installed",
         }
 
-    client = Redis.from_url(redis_dsn, socket_connect_timeout=TIMEOUT_SECONDS)
+    try:
+        client = Redis.from_url(redis_dsn, socket_connect_timeout=TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - 畸形 DSN 也算不可用，不是 500 的理由
+        return {
+            "status": UNHEALTHY,
+            "dsn": redact_dsn(redis_dsn),
+            "error": f"redis dsn unusable: {type(exc).__name__}: {exc}",
+        }
+
     try:
         pong = await client.ping()
+    except Exception as exc:  # noqa: BLE001 - 连通性探测：任何异常都算不可达
+        return {
+            "status": UNHEALTHY,
+            "dsn": redact_dsn(redis_dsn),
+            "error": f"redis unreachable: {type(exc).__name__}: {exc}",
+        }
     finally:
-        await client.aclose()
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001 - 释放失败不影响结论
+            pass
 
     return {
         "status": HEALTHY if pong else UNHEALTHY,

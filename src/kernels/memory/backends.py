@@ -258,8 +258,12 @@ class SqlAlchemyBackend:
             self._engine = sqlalchemy.create_engine(self._url, **engine_kwargs)
         except ModuleNotFoundError as exc:
             # create_engine 会在建引擎时导入 DBAPI 驱动。
+            # 即便驱动缺失，也要在消息里给出**脱敏后的** DSN —— 既便于排查，
+            # 又绝不让密码随异常泄露（与下方连接失败分支保持一致，避免"有驱动时
+            # 脱敏、无驱动时不脱敏"这种随环境漂移的脆行为）。
             raise BackendUnavailableError(
                 f"缺少 PostgreSQL DBAPI 驱动（{exc}）。SQLAlchemy 需要驱动才能连 PG；"
+                f"DSN={_redact(self._url) if self._url else '<未配置>'}；"
                 f"请先选定并登记驱动（BSD 许可的 pg8000 合规成本最低），"
                 f"详见 docs/POSTGRES-BACKEND-DESIGN.md §4。"
             ) from exc
@@ -435,9 +439,9 @@ def postgres_available(url: Optional[str] = None) -> Tuple[bool, str]:
     try:
         engine = sqlalchemy.create_engine(resolved)
     except ModuleNotFoundError as exc:
-        return False, f"缺少 DBAPI 驱动：{exc}"
+        return False, f"缺少 DBAPI 驱动：{exc}；DSN={_redact(resolved)}"
     except Exception as exc:
-        return False, f"引擎创建失败：{type(exc).__name__}: {exc}"
+        return False, f"引擎创建失败（{_redact(resolved)}）：{type(exc).__name__}: {exc}"
 
     try:
         with engine.connect() as conn:
