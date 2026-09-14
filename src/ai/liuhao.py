@@ -19,7 +19,13 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from .employee import Agent
-from .agent_factory import AgentMemory, AgentPolicy
+from .agent_factory import (
+    CHARS_PER_TOKEN,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    AgentMemory,
+    AgentPolicy,
+    economy_inputs,
+)
 from .providers import BaseProvider, get_provider
 from .conversation_store import get_conversation_store
 from .tool_registry import ToolRegistry
@@ -146,6 +152,31 @@ class LiuHaoAssistant:
             )
         )
 
+    def _quota_authorize_kwargs(self, message: str) -> Dict[str, Any]:
+        """Real cost/quota inputs for the policy quota rule (``chat`` gate).
+
+        Estimates the worst-case spend of the turn about to be made -- prompt
+        size plus the model's declared maximum output -- and hands it to
+        ``economy_inputs``, which prices it against the real per-model price
+        and the real ``COST`` quota. Anything genuinely unknown comes back
+        *omitted*, never as a fabricated zero (see ``economy_inputs``); the
+        policy decision then records the rule as an unapplied control.
+        """
+        history_chars = sum(len(m.get("content") or "") for m in self.history)
+        prompt_chars = len(self.system_prompt) + history_chars + len(message)
+        tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
+        capabilities = getattr(self.provider, "capabilities", None)
+        tokens_out = int(
+            getattr(capabilities, "max_output_tokens", None)
+            or DEFAULT_MAX_OUTPUT_TOKENS
+        )
+        return economy_inputs(
+            principal=self.principal,
+            model=getattr(self.provider, "model", None),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
+
     # ------------------------------------------------------------------ #
     # 主入口
     # ------------------------------------------------------------------ #
@@ -161,7 +192,9 @@ class LiuHaoAssistant:
         TraceContext.set(correlation_id=correlation_id)
 
         # 1. 授权（policy kernel，default-deny）。
-        decision = self.policy.authorize("chat", risk_level="LOW")
+        decision = self.policy.authorize(
+            "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
+        )
         if not decision.is_allowed:
             log_event(
                 AuditEventType.ACCESS_DENIED,
@@ -214,7 +247,9 @@ class LiuHaoAssistant:
         self._log.debug("ENTER LiuHaoAssistant.chat_stream turn=%s", self.turn)
 
         # 1. 授权（policy kernel，default-deny）。
-        decision = self.policy.authorize("chat", risk_level="LOW")
+        decision = self.policy.authorize(
+            "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
+        )
         if not decision.is_allowed:
             log_event(
                 AuditEventType.ACCESS_DENIED,

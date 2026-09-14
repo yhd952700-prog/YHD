@@ -48,7 +48,7 @@ elif attr_value is None:
 
 以及右值引用解析后为 `None` 时 `_safe_compare` 直接返回 `False`。**两条 fail-open 路径**。
 
-### 1.3 但真正更严重的是：这条规则**在生产里根本不可能触发**
+### 1.3 但真正更严重的是：这条规则**当时在生产里根本不可能触发**（已修，见 §6）
 
 - **没有任何调用点传 `estimated_cost`**。全仓实测：`estimated_cost` 只出现在
   `agent_factory.authorize` 的**形参**（`estimated_cost: Optional[float] = None`，且
@@ -110,7 +110,10 @@ elif attr_value is None:
    的规则计算 `missing_operands`，非空即登记。**判决不变**，只是把"哪条拒绝对策没生效、
    因为缺哪个属性"写进决策对象。
 
-### 2.3 为什么不顺手改 `authorize` 的 `scope=L1`
+### 2.3 为什么不**在那一轮**顺手改 `authorize` 的 `scope=L1`
+
+> **后续（同日）：boss 已授权接线，本节的"不改"已作废 —— 实际落地见 §6。**
+> 下面保留当时的理由，因为它解释了为什么当时**没有**顺手改、而要单独决策。
 
 那会让 `default_deny`（L7）与 `quota_enforcement`（L2）参与运行时环的判决 ⇒ **改变
 所有现有判决**（大量动作会从 `not_applicable` 变 `deny`），爆炸半径覆盖 `RuntimeLoop`
@@ -135,10 +138,81 @@ elif attr_value is None:
 4. **一致性**：`scope_enforcement` 同样被登记。
 5. compileall / flake8 / importlib / 干净检出复跑全绿。
 
-## 5. 诚实的边界
+## 5. 诚实的边界（本轮）
 
 - **不修** `quota_enforcement` 无法触发的问题（需要把经济系统的真实成本估算接进
-  `estimated_cost`，属独立的接线任务，且会改变判决 ⇒ 需 boss 定）。
-- **不修** `authorize` 的 `scope=L1` 过滤（同上）。
+  `estimated_cost`，属独立的接线任务，且会改变判决 ⇒ 需 boss 定）。→ **boss 已授权，已在 §6 完成。**
+- **不修** `authorize` 的 `scope=L1` 过滤（同上）。→ **已在 §6 完成。**
 - 新增的 `unapplied_deny_rules` 是**观测面**，不改变任何调用方的判决消费方式；
   调用方若要据此收紧，属后续决策。
+
+---
+
+## 6. 后续（2026-09-14，boss 授权后）：把「可观测的缺口」接成「真会拦的控制」
+
+boss 授权执行「把 economy 的真实成本估算接进 `estimated_cost`，并修 `authorize` 的
+scope 过滤」。改动如下。
+
+### 6.1 让规则**可达**：`quota_enforcement` 的 scope `L2` → `L1`
+
+`AgentPolicy.authorize` 是**唯一**的 agent 动作闸门，它以 `scope=L1` 求值；`evaluate`
+只保留 `rule.scope <= 请求 scope` 的规则 ⇒ 声明 L2 的规则在**唯一可能用到它的路径上**
+被整个滤掉。资源配额是与 `capability_required`（已 L1）并列的**逐动作护栏**，L1 是它
+该在的位置。`precedence=150` 保持不变 —— 它必须压过应用层
+`liuhao_agent_low_risk_allow`（precedence 50），否则"低风险"会掩盖"超预算"。
+
+### 6.2 让规则**有真数据**：`agent_factory.economy_inputs()`
+
+新增 `economy_inputs(principal, model, tokens_in, tokens_out) -> kwargs`，只从真实来源取：
+
+| 输入 | 真实来源 |
+|---|---|
+| `action.estimated_cost` | `BillingEngine`（`economy.py`）的价目表；按模型定价取 `ModelRegistry.estimated_cost_per_1k` |
+| `resource.available` | `ResourceQuotaManager`（resource 内核）的 `COST` 配额；优先该主体自己的，否则系统级；取最紧的一条 |
+
+**绝不编数**。任一输入真 unknown 时，对应的 key **整个省略**，而不是传 0：
+`0` 会是个谎言（0 永远在预算内 ⇒ 反而把护栏静音）；省略则让规则「不适用」，而上一轮
+建立的可观测面**会把这件事报出来**（`unapplied_deny_rules` / `unresolved_operands`）。
+为此给 `BillingEngine` 补了 `has_price(model)` —— 防止把"未定价"读成"免费"
+（`estimate_cost` 对未知模型返回 0.0）。
+
+取源失败**降级为省略 + WARNING**，不向授权路径抛异常：价目表损坏不该让助手整体倒下，
+但也不能静默。
+
+### 6.3 接到生产闸门：`LiuHaoAssistant.chat` / `chat_stream`
+
+两处 `authorize("chat", ...)` 改为 splat `self._quota_authorize_kwargs(message)`，它用
+prompt（system + 历史 + 本轮）+ 模型声明的 `max_output_tokens` 估**最坏情况**成本，再交给
+`economy_inputs`。生产链路 `src/gateway/chat.py:88/:111 → assistant.chat()` 因此被覆盖。
+
+### 6.4 验收（实测）
+
+| 判据 | 结果 |
+|---|---|
+| 规则可达 | `quota_enforcement.scope == L1`，`precedence 150 > 50` |
+| 超预算真拒 | `authorize(..., resource={"available":1}, estimated_cost=10)` → **DENY by `quota_enforcement`** |
+| 预算内不打扰 | 同上但 `available=100` → 不 DENY |
+| 缺输入仍 fail-open 且可观测 | `NOT_APPLICABLE` + `unapplied_deny_rules` 含该规则 |
+| 未定价模型不当作免费 | `economy_inputs(..., "no-such-model", ...)` **无** `estimated_cost` 键 |
+| 生产闸门真拦 | 把 `COST` 可用额压到 0 → `LiuHaoAssistant.chat()` 返回 `status="denied"` |
+| 回归 | `tests/kernels/policy` + assistant + agent_factory + ai-layer + runtime_loop **208 passed** |
+
+新测试 `tests/kernels/policy/test_quota_enforcement.py`（18 项）。上一轮的
+`tests/kernels/policy/test_policy_rule_observability.py` 里**断言"规则不可达"的测试已被反转**
+（`TestQuotaIsUnreachableInProduction` → `TestQuotaIsNowReachable`）；两条 AST 绊线也改为
+断言"闸门确实在喂数据"—— 其中一条原本会**假装通过**（`liuhao` 用 `**splat` 传参，扫字面
+`estimated_cost=` 关键字永远扫不到），已改成结构性断言。
+
+### 6.5 仍然诚实的边界（**重要**）
+
+1. **成本侧要真起作用，模型必须有价。** 已部署的模型（线上 `gpt-5.6-sol`、本机
+   `qwen2.5:3b`）在 `ModelRegistry` 里**没有定价条目** ⇒ `economy_inputs` 会省略
+   `estimated_cost` ⇒ 规则不适用（可观测，但不拦）。**把真实价格登记进模型注册表后，
+   护栏立刻在生产生效** —— 价格是 boss 才知道的真实数字，我没有编。
+   （注：本机 ollama 的真实成本**就是 0**，但"未定价"与"定价为 0"是两回事，代码刻意不混淆。）
+2. **配额目前不会被消耗。** `ResourceQuotaManager` 的 `used/reserved` 没有任何生产调用点
+   在记账（`allocate()` 无调用方；`commit()` 是 `@kernel_action("resource.commit")` 且
+   **不在** internal-service 白名单里）。所以默认系统 `COST` 配额（$100）恒为 `available=100`。
+   ⇒ 现状下护栏**只在配额被真正设得很紧时才拦**（例如给某主体设一条 `COST` 配额，其
+   `limit` 低于单次动作成本 → 直接拒）。**把"实际花费记账进配额"是独立的一轮工作**
+   （牵涉内核横切策略：`resource.commit` 该不该放行给 agent），本轮未做，未擅自改。

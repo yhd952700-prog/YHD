@@ -22,6 +22,7 @@ This module EXTENDS the existing agent model in ``employee.py`` — it reuses
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -31,6 +32,17 @@ from .providers import get_provider
 from ..kernels.identity import get_identity_manager
 from .observability import observe
 from .audit import audited
+
+_log = logging.getLogger(__name__)
+
+#: Rough prompt->token heuristic (~4 characters per token). This feeds a
+#: *budget guard*, not a tokenizer: it only needs to be the right order of
+#: magnitude so a wildly over-budget action is caught before the call.
+CHARS_PER_TOKEN = 4
+
+#: Assumed output length when the provider does not declare one. Matches the
+#: ``ProviderCapabilities.max_output_tokens`` default in ``providers.py``.
+DEFAULT_MAX_OUTPUT_TOKENS = 1024
 
 
 @dataclass
@@ -222,6 +234,90 @@ class AgentPolicy:
 
     def is_allowed(self, action: str, **kwargs) -> bool:
         return self.authorize(action, **kwargs).is_allowed
+
+
+def economy_inputs(
+    principal: str,
+    model: Optional[str],
+    tokens_in: int,
+    tokens_out: int,
+) -> Dict[str, Any]:
+    """Source the REAL inputs the policy quota rule needs -- or omit them.
+
+    The built-in ``quota_enforcement`` rule denies an action when
+    ``resource.available`` is less than ``action.estimated_cost``. Both sides
+    have to come from real data, so this helper reads:
+
+    * the cost from the billing engine's price table, priced per model by the
+      model registry's ``estimated_cost_per_1k``;
+    * the budget from the resource kernel's ``COST`` quota (the principal's own
+      quota if one exists, otherwise the system-wide one).
+
+    **Nothing here is fabricated.** When an ingredient is genuinely unknown --
+    an unpriced model, or no ``COST`` quota at all -- the corresponding key is
+    *omitted* rather than passed as 0. A zero would be a lie that silences the
+    rule (0 is always within budget), whereas an omission leaves the rule
+    inapplicable and the decision then reports it through
+    ``PolicyDecision.unapplied_deny_rules`` / ``unresolved_operands``.
+
+    Lookup failures degrade to omission with a warning instead of raising:
+    this runs on the authorization path, and a broken price file must not take
+    the assistant down. The warning is what keeps that from being silent.
+
+    Returns a kwargs mapping to splat into :meth:`AgentPolicy.authorize`.
+    """
+    result: Dict[str, Any] = {}
+
+    # ---- cost side: only when the model is actually priced ----------------
+    if model:
+        try:
+            from ..models.registry import get_model_registry
+            from .economy import BillingEngine
+
+            metadata = get_model_registry().get_model(model)
+            if metadata is not None:
+                billing = BillingEngine(
+                    {model: float(metadata.estimated_cost_per_1k)}
+                )
+                # ``has_price`` guards against reading "unpriced" as "free".
+                if billing.has_price(model):
+                    result["estimated_cost"] = billing.estimate_cost(
+                        model, max(0, int(tokens_in)), max(0, int(tokens_out))
+                    )
+        except Exception:  # pragma: no cover - defensive, never break auth
+            _log.warning(
+                "economy_inputs: cost lookup failed for model=%r; omitting "
+                "estimated_cost (quota will not apply on this call)",
+                model,
+                exc_info=True,
+            )
+
+    # ---- budget side: only when a COST quota actually exists --------------
+    try:
+        from ..kernels.resource import get_resource_manager, ResourceType
+
+        manager = get_resource_manager()
+
+        def _cost_quotas(owner: str):
+            return [
+                q
+                for q in manager.get_all_quotas(owner)
+                if q.resource_type == ResourceType.COST
+            ]
+
+        quotas = _cost_quotas(principal) or _cost_quotas("system")
+        if quotas:
+            # The binding constraint is the tightest quota in force.
+            result["resource"] = {"available": min(q.available for q in quotas)}
+    except Exception:  # pragma: no cover - defensive, never break auth
+        _log.warning(
+            "economy_inputs: quota lookup failed for principal=%r; omitting "
+            "resource.available (quota will not apply on this call)",
+            principal,
+            exc_info=True,
+        )
+
+    return result
 
 
 class AgentFactory:

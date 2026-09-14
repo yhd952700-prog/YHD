@@ -149,6 +149,17 @@ class BillingEngine:
         cost, _ = self._price(model, tokens_in, tokens_out)
         return cost
 
+    def has_price(self, model: str) -> bool:
+        """Whether this model has a price entry.
+
+        ``estimate_cost`` returns 0.0 for a model that is not in the table. A
+        caller that is about to *guard* a budget must not read that 0.0 as
+        "free": for an unpriced model the cost is genuinely **unknown**, and
+        passing 0.0 into a quota comparison would silently defeat the guard
+        (0 is always within budget). Ask this first and omit the cost instead.
+        """
+        return model in self._price_table
+
     @observe("billing.record_usage")
     def record_usage(self, model: str, tokens_in: int, tokens_out: int) -> Dict[str, Union[float, str, bool]]:
         """Record one usage event, aggregate it, and return its cost breakdown."""

@@ -50,7 +50,7 @@
 | `human_sovereignty` | 1000 | `actor.type==human` ∧ `risk_level∈{HIGH,CRITICAL}` ∧ `actor.verified==True` | — | ALLOW | L0 |
 | `internal_service_allow` | 900 | `actor.type==service` ∧ `actor.verified==True` ∧ `action.name ∈ 白名单(14)` | `action.name` | ALLOW | L0 |
 | `capability_required` | 200 | `action.required_capability` EXISTS ∧ ¬(`agent.capabilities` ∋ it) | `action.required_capability`、`agent.capabilities` | DENY | L1 |
-| `quota_enforcement` | 150 | `resource.available` < `action.estimated_cost` | **`resource.available` + `action.estimated_cost`** | DENY | L2 |
+| `quota_enforcement` | 150 | `resource.available` < `action.estimated_cost` | **`resource.available` + `action.estimated_cost`** | DENY | **L1**（2026-09-14 由 L2 下调，见下） |
 | `scope_enforcement` | 100 | `agent.scope` < `action.required_scope` | **`agent.scope` + `action.required_scope`** | DENY | L0 |
 | `default_deny` | −1000 | `action` EXISTS | — | DENY | L7 |
 
@@ -62,12 +62,18 @@
 > `quota_enforcement` / `scope_enforcement` 同时补上了 `EXISTS` 前置条件，把"需要什么输入"
 > 从**隐含**变成**声明**；补门**不改变任何判决**（门为真时比较才有可能为真）。
 >
-> **⚠️ 实测（同日）：`quota_enforcement` 目前在生产里不可能触发。** ① 全仓**没有任何调用点**
-> 传 `estimated_cost`（`AgentPolicy.authorize` 只声明了形参；`economy.py` 的成本字典从不进
-> policy 引擎）；② `AgentPolicy.authorize` 传 `scope=L1`，而该规则声明 `scope=L2` ⇒
-> 被 scope 过滤整个滤掉（同路径上 `default_deny`(L7) 也被滤掉）。故
-> **"Actions cannot exceed resource quotas" 目前是一条无法执行的声明**；本次只把它
-> **变得可见**，未擅自改动是否强制（那是策略决策）。
+> **✅ 实测（2026-09-14，boss 授权后已接线）：`quota_enforcement` 现在真的会拦。**
+> ① 规则的 scope 由 **L2 下调为 L1** —— `AgentPolicy.authorize`（唯一的 agent 动作闸门）
+> 以 `scope=L1` 求值，而 `evaluate` 只保留 `rule.scope <= 请求 scope` 的规则，于是声明 L2
+> 的规则在**唯一可能用到它的路径上**被整个滤掉；L1 才是它与同为逐动作护栏的
+> `capability_required` 对齐的位置。`precedence=150` 不变（须压过应用层低风险 ALLOW 的 50）。
+> ② `agent_factory.economy_inputs()` 把**真实**成本（`BillingEngine` × 模型注册表定价）与
+> **真实**预算（resource 内核 `COST` 配额）喂给规则；`liuhao.chat` / `chat_stream` 已在生产
+> 闸门接线。**未定价的模型省略成本**（绝不传 0 冒充"免费"）⇒ 规则不适用，但由上一轮的
+> `unapplied_deny_rules` / `unresolved_operands` **如实报出**。
+>
+> **⚠️ 剩余边界**：已部署的模型在注册表里尚无定价条目，且配额没有被实际花费记账，故护栏
+> 现在**只在配额被设得很紧时才拦**。详见 `docs/POLICY-RULE-OBSERVABILITY-DESIGN.md` §6.5。
 
 `_adjudicate` 发的是 `actor={"type":"system","verified":True}`、`action={"name":…,"risk_level":…}`、`resource=None`、`scope=None`。逐规则推导：
 

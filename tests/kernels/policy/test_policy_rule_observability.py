@@ -22,12 +22,16 @@ What is asserted here
    and ``PolicyDecision.unresolved_operands``.
 3. **Anti-rubber-stamp.** The pre-fix rule shape is reconstructed verbatim and
    asserted to produce *no* signal -- proving the signal is new, not incidental.
-4. **The rule really is unreachable from production.** No call site supplies
-   ``estimated_cost``, and ``AgentPolicy.authorize`` passes ``scope=L1`` while
-   the quota rule declares ``L2`` -- so the scope filter drops it entirely.
+4. **The rule is now reachable and fed from real sources.** Its scope was
+   lowered to L1 to match the gate, and ``liuhao.chat`` supplies a cost and a
+   budget sourced from the billing engine and the resource kernel (see
+   ``tests/kernels/policy/test_quota_enforcement.py``). The tests in the last
+   class here were *inverted* when that happened -- they used to assert the
+   rule was unreachable.
 
-Scope note: this module only makes the gap *visible*. It deliberately does not
-change whether quota is enforced -- that is a policy decision, not a code fix.
+Scope note: this module asserts the gap is *visible*. Whether the rule applies
+on a given call still depends on the caller supplying real inputs; an omission
+is reported through the decision, never papered over with a zero.
 """
 from __future__ import annotations
 
@@ -341,79 +345,85 @@ class TestDecisionCompatibility:
 # =====================================================================
 
 
-class TestQuotaIsUnreachableInProduction:
-    """These tests pin the *current, honest* state of affairs.
-
-    They are not assertions that the behaviour is desirable -- they exist so
-    that the claim "quota is enforced" cannot be made without contradicting a
-    failing test.
+class TestQuotaIsNowReachable:
+    """The scope filter used to drop this rule on the only path that could
+    apply it. These tests pin the *fixed* state -- this class previously
+    asserted the opposite, so a silent regression to unreachability is what
+    they are here to catch.
     """
 
-    def test_authorize_drops_the_quota_rule_via_the_scope_filter(self):
+    def test_authorize_applies_the_quota_rule_when_over_budget(self):
         from src.ai.agent_factory import AgentPolicy
 
         policy = AgentPolicy(principal="probe", scope="L7", capabilities=["x"])
         d = policy.authorize("some.action", resource={"available": 1}, estimated_cost=10)
-        # Over budget, yet quota never even entered the candidate set: the
-        # caller passes scope=L1 and the rule declares scope=L2.
+        # Over budget: the rule is in the candidate set and decides.
+        assert QUOTA in [r.id for r in d.denied_rules]
+        assert d.is_denied
+        assert d.decision == PolicyEffect.DENY
+
+    def test_authorize_leaves_a_within_budget_action_alone(self):
+        from src.ai.agent_factory import AgentPolicy
+
+        policy = AgentPolicy(principal="probe", scope="L7", capabilities=["x"])
+        d = policy.authorize("some.action", resource={"available": 100}, estimated_cost=10)
         assert QUOTA not in [r.id for r in d.denied_rules]
-        assert QUOTA not in [r.id for r in d.unapplied_deny_rules]
-        assert d.decision == PolicyEffect.NOT_APPLICABLE
+        assert not d.is_denied
 
-    def test_no_policy_call_site_supplies_estimated_cost(self):
-        """AST tripwire: without a cost, the quota comparison cannot be made.
+    def test_the_authorization_gate_supplies_economy_inputs(self):
+        """AST tripwire: the gate must hand the rule real cost/budget inputs.
 
-        ``AgentPolicy.authorize`` *declares* an ``estimated_cost`` parameter, but
-        a parameter is not a supplier -- someone has to pass a value. This walks
-        every *policy-engine* call in ``src/`` and asserts that none of them
-        carries a cost, either as a keyword argument or inside an inline
-        ``action=`` dict.
-
-        (The scan is deliberately restricted to policy-engine callees: an
-        unrelated ``RouteResult(estimated_cost=...)`` in the model gateway is a
-        different notion of cost and must not be mistaken for a supplier.)
-
-        If this test ever fails, quota may have become reachable -- which is a
-        *good* thing, but it invalidates the "quota is decorative" note in
-        ``docs/POLICY-RULE-OBSERVABILITY-DESIGN.md`` and the matching line in
-        the project constitution. Update those, then tighten this assertion.
+        The previous version of this test asserted that *nobody* supplied a
+        cost. That stopped being true once the chat path was wired up -- and it
+        was a poor tripwire anyway, because ``liuhao.chat`` splats a mapping,
+        so a scan for a literal ``estimated_cost=`` keyword would have kept
+        passing even if the wiring were deleted. Assert the wiring structurally
+        instead: the gate splats a helper, and that helper calls the real
+        sourcing function.
         """
-        policy_calls = {"evaluate_simple", "evaluate_policy", "evaluate_policy_simple"}
         root = pathlib.Path(__file__).resolve().parents[3]
-        offenders = []
+        tree = ast.parse((root / "src" / "ai" / "liuhao.py").read_text(encoding="utf-8"))
 
-        for path in (root / "src").rglob("*.py"):
-            if "__pycache__" in path.parts:
+        splats = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-            except SyntaxError:
+            callee = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if callee != "authorize":
                 continue
-            rel = path.relative_to(root).as_posix()
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                callee = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-                if callee not in policy_calls and callee != "authorize":
-                    continue
-                for keyword in node.keywords:
-                    if keyword.arg == "estimated_cost":
-                        offenders.append(f"{rel}:{node.lineno} ({callee} kwarg)")
-                    if keyword.arg == "action" and isinstance(keyword.value, ast.Dict):
-                        keys = {
-                            k.value for k in keyword.value.keys
-                            if isinstance(k, ast.Constant)
-                        }
-                        if "estimated_cost" in keys:
-                            offenders.append(f"{rel}:{node.lineno} (action dict)")
+            for keyword in node.keywords:
+                # arg is None => ``**mapping``
+                if keyword.arg is None and isinstance(keyword.value, ast.Call):
+                    splats.append(
+                        getattr(keyword.value.func, "attr", None)
+                        or getattr(keyword.value.func, "id", None)
+                    )
 
-        assert offenders == [], (
-            "estimated_cost now reaches the policy engine at these call sites, so "
-            f"the quota rule may be reachable: {offenders}"
+        assert splats, (
+            "neither chat() nor chat_stream() splats economy inputs into "
+            "authorize(); the quota rule would be fed nothing"
         )
+        assert set(splats) == {"_quota_authorize_kwargs"}, splats
 
-    def test_no_module_outside_the_kernel_hands_a_cost_to_the_engine(self):
-        """Belt-and-braces: ``economy.py`` builds cost dicts that never reach policy."""
+        helper = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_quota_authorize_kwargs"
+        )
+        called = {
+            getattr(c.func, "attr", None) or getattr(c.func, "id", None)
+            for c in ast.walk(helper)
+            if isinstance(c, ast.Call)
+        }
+        assert "economy_inputs" in called, called
+
+    def test_only_the_sourcing_module_hands_a_cost_towards_the_engine(self):
+        """Containment: exactly one module bridges a cost into the engine.
+
+        ``economy.py`` builds cost figures; the cost that reaches the policy
+        engine must come through the module that sources it from real data
+        (``agent_factory.economy_inputs``), not be invented ad hoc by some
+        other caller.
+        """
         root = pathlib.Path(__file__).resolve().parents[3]
         policy_kernel = root / "src" / "kernels" / "policy" / "__init__.py"
         engine_call = re.compile(r"evaluate_simple\(|evaluate_policy\(")
@@ -426,9 +436,11 @@ class TestQuotaIsUnreachableInProduction:
             if "estimated_cost" in text and engine_call.search(text):
                 offenders.append(path.relative_to(root).as_posix())
 
-        # agent_factory declares the parameter and forwards it conditionally;
-        # it is the documented, currently-unused seam.
+        # agent_factory is the bridge: it sources the cost from the billing
+        # engine's price table and forwards it to AgentPolicy.authorize (which
+        # calls the engine). A second module here would be an unreviewed path
+        # into the quota rule.
         assert offenders == ["src/ai/agent_factory.py"], (
             "the set of modules that both mention estimated_cost and call the "
-            f"policy engine changed -- re-check whether quota is reachable: {offenders}"
+            f"policy engine changed -- check who feeds the quota rule: {offenders}"
         )

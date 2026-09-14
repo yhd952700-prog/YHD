@@ -476,6 +476,21 @@ class PolicyEngine:
                 precedence=200,
             ),
             # Resource quota enforcement
+            #
+            # Scope is L1, not L2. ``AgentPolicy.authorize`` -- the one gate
+            # every agent action passes through -- evaluates at L1, and
+            # ``evaluate`` keeps only rules whose scope is at or below the
+            # requested scope. A rule declared L2 was therefore dropped from
+            # the candidate set on the only path that could ever have applied
+            # it, which made "Actions cannot exceed resource quotas" a claim
+            # no caller could trigger. Resource quota is a per-action guard
+            # that sits alongside ``capability_required`` (also L1), so L1 is
+            # where it belongs.
+            #
+            # Precedence 150 is deliberate: it must outrank the app-level
+            # low-risk ALLOW (``liuhao_agent_low_risk_allow``, precedence 50)
+            # so that an over-budget action is denied rather than waved
+            # through as "low risk".
             PolicyRule(
                 id="quota_enforcement",
                 name="Resource Quota Enforcement",
@@ -489,7 +504,7 @@ class PolicyEngine:
                     PolicyCondition("resource.available", PolicyOperator.LT, "$action.estimated_cost"),
                 ],
                 action=PolicyAction.DENY,
-                scope=PolicyScope.L2,
+                scope=PolicyScope.L1,
                 precedence=150,
             ),
         ]
