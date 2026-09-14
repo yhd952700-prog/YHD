@@ -38,10 +38,17 @@ class LCore:
         tools: Optional[ToolRegistry] = None,
         scope: str = "L1",
         authorize: Optional[Callable[[Goal, ExecutionPlan], bool]] = None,
+        register_local_tools: bool = False,
     ) -> None:
         self.scope = scope
         self.tools = tools or ToolRegistry()
         self.router = ToolRouter(self.tools)
+        # Opt-in: wire the real, locally-executable tools (RestrictedPython-backed
+        # python_compute, etc.) into this Core's registry. Off by default so existing
+        # callers/tests that depend on an empty registry keep behaving as before.
+        if register_local_tools:
+            from .tools_local import register_default_local_tools
+            register_default_local_tools(self.tools)
         self.context_kernel = create_context_kernel(scope=scope)
         self.decomposer = GoalDecomposer()
         self.planner = PlanBuilder()

@@ -435,6 +435,26 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             owner="security_kernel",
             tags={"kernel", "security", "rbac", "abac"},
         ),
+        # Local Real-Execution Capability (WS1)
+        # Declared as a real system capability. Whether it *executes* depends on
+        # whether a local tool (RestrictedPython-backed) is wired into the
+        # ToolRegistry. With no tool, execution fails loudly with
+        # "no active tool for capability" instead of silently simulating.
+        CapabilityEntry(
+            id="python_compute",
+            version="1.0.0",
+            namespace="kernel",
+            name="Local Python Compute",
+            description=(
+                "Execute pure-compute Python locally via the RestrictedPython backend. "
+                "Capability isolation only (import/open/eval blocked at compile time; CPU "
+                "timeout via child process). Executable only when a local tool is wired; "
+                "otherwise fails with 'no active tool for capability'."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "compute", "restricted-python"},
+        ),
     ]
 
     for cap in builtins:

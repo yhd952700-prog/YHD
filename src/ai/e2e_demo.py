@@ -136,7 +136,7 @@ def run_e2e_demo(
                 raise RuntimeError(result.error)
             return result.output
 
-        lcore = LCore()
+        lcore = LCore(register_local_tools=True)
         lcore.register_tool(Tool(
             tool_id="persist-report",
             name="persist_report",

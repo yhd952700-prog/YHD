@@ -231,6 +231,22 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
+        # Local computation: route to the real RestrictedPython-backed tool.
+        if any(kw in goal_lower for kw in [
+            "compute", "calculate", "calc", "transform", "run code", "python",
+            "evaluate", "执行代码", "数学", "计算", "求和", "算",
+        ]):
+            tasks.append(Task(
+                id=str(uuid.uuid4())[:8],
+                goal_id=goal.id,
+                name="Compute",
+                description="Run a local computation",
+                capability_id="python_compute",
+                capability_namespace="kernel",
+                inputs={"goal": goal.natural_language},
+                scope=goal.scope,
+            ))
+
         # Default: at least one generic task
         if not tasks:
             tasks.append(Task(
@@ -344,37 +360,71 @@ class ActionExecutor:
         # In production, this would invoke the actual capability.
         # If a real capability executor was injected at assembly time, use it;
         # otherwise fall back to the simulated path (status stays "simulated").
+        #
+        # Honesty contract: an injected executor may signal failure either by
+        # raising (handled below) or by returning a dict that carries an
+        # explicit ``success: False``. We honour that explicit verdict instead
+        # of masking it — a rejected/failed capability must never surface as a
+        # successful action (the Verifier keys off ``ActionResult.success``).
+        # Legacy executors that return a dict *without* a ``success`` key keep
+        # the previous behaviour (assumed successful), preserving backward
+        # compatibility.
         try:
             if self._capability_executor is not None:
                 raw = self._capability_executor(action.capability_id, action.inputs)
                 if isinstance(raw, dict):
                     output = dict(raw)
                     output.setdefault("capability", action.capability_id)
-                    output["status"] = "executed"
+                    explicit = raw.get("success", None)
+                    if explicit is None:
+                        output["status"] = "executed"
+                        ok = True
+                        error = None
+                    else:
+                        ok = bool(explicit)
+                        output.setdefault("status", "executed" if ok else "failed")
+                        error = None if ok else str(
+                            raw.get("error") or "capability reported failure"
+                        )
                 else:
                     output = {
                         "capability": action.capability_id,
                         "status": "executed",
                         "result": raw,
                     }
+                    ok = True
+                    error = None
             else:
                 output = self._simulate_capability(action.capability_id, action.inputs)
+                ok = True
+                error = None
 
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
-            # Emit event
-            publish_event(
-                type="action_completed",
-                source="execution_kernel",
-                data={"action_id": action.id, "task_id": action.task_id, "success": True},
-                correlation_id=action.correlation_id,
-                scope=EventScope(action.scope),
-            )
+            # Emit event — reflect the *real* outcome, not a blanket success.
+            if ok:
+                publish_event(
+                    type="action_completed",
+                    source="execution_kernel",
+                    data={"action_id": action.id, "task_id": action.task_id, "success": True},
+                    correlation_id=action.correlation_id,
+                    scope=EventScope(action.scope),
+                )
+            else:
+                publish_event(
+                    type="action_failed",
+                    source="execution_kernel",
+                    data={"action_id": action.id, "task_id": action.task_id, "error": error},
+                    correlation_id=action.correlation_id,
+                    scope=EventScope(action.scope),
+                    priority=EventPriority.HIGH,
+                )
 
             return ActionResult(
                 action_id=action.id,
-                success=True,
+                success=ok,
                 output=output,
+                error=error,
                 duration_ms=duration_ms,
             )
 

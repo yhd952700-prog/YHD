@@ -232,9 +232,22 @@ class TestEntryHelpers:
 # =====================================================================
 
 class TestGlobalRegistry:
-    def test_global_registry_has_12_builtins(self):
+    def test_global_registry_has_12_kernel_builtins(self):
+        """The kernel ships exactly 12 built-in capabilities (one per kernel
+        surface, owner ``*_kernel``).
+
+        Non-kernel/local capabilities are registered alongside them (e.g.
+        ``python_compute``, owner ``ai_local_tools``) and must not be counted
+        as kernel builtins.
+        """
         g = get_capability_registry()
-        assert g.count_active() == 12
+        kernel_builtins = [
+            c for c in g.get_all_by_namespace("kernel")
+            if c.owner.endswith("_kernel")
+        ]
+        assert len(kernel_builtins) == 12
+        # The local real-execution capability is also present.
+        assert g.lookup("python_compute", "kernel") is not None
 
     def test_global_lookup_builtin_by_explicit_namespace(self):
         g = get_capability_registry()

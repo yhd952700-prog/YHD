@@ -196,3 +196,23 @@ def test_lcore_registry_drives_execution_engine_end_to_end():
     assert any(
         isinstance(o, dict) and o.get("handled_by") == "real_tool" for o in outputs
     ), f"real tool was not reached through the bridge: {outputs}"
+
+
+# ---------------------------------------------------------------------------
+# (h) Honesty guardrail: an explicit success=False must never be masked
+# ---------------------------------------------------------------------------
+def test_explicit_executor_failure_is_not_masked():
+    """An injected executor signalling ``success: False`` must not surface as a
+    successful action — the kernel honours the explicit verdict and preserves
+    the structured reason (this closes the silent-false-success hazard)."""
+    def failing_executor(capability_id, inputs):
+        return {"success": False, "status": "rejected", "error": "sandbox refused"}
+
+    executor = ActionExecutor(capability_executor=failing_executor)
+    result = executor.execute(_make_action())
+
+    assert result.success is False
+    assert "sandbox refused" in (result.error or "")
+    # The structured failure reason survives (not overwritten to "executed").
+    assert result.output["status"] == "rejected"
+
