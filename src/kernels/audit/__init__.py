@@ -12,6 +12,7 @@ correlation-aware querying, and full event lifecycle management.
 - Scope enforcement L0-L7 for audit entries
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 import json
 import hashlib
@@ -102,6 +103,7 @@ class AuditEvent:
 
 class AuditStore:
     """Persistent audit store with SQLite backend and hash-chain integrity."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self, db_path: str = None):
         if db_path is None:
@@ -534,6 +536,22 @@ class AuditStore:
             "db_path": self._db_path,
         }
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global audit store instance
 _audit_store: Optional[AuditStore] = None
@@ -544,6 +562,7 @@ def get_audit_store() -> AuditStore:
     global _audit_store
     if _audit_store is None:
         _audit_store = AuditStore()
+        _audit_store.initialize()  # 存在即 READY：构造完成即视为就绪
     return _audit_store
 
 

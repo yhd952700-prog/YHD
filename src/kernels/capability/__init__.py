@@ -12,6 +12,7 @@ traceability, and scope-based access control.
 - Support capability deprecation and migration
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -103,6 +104,7 @@ class ScopeCheckResult:
 
 class CapabilityRegistry:
     """Authoritative capability registry with traceability."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self):
         self._capabilities: Dict[str, CapabilityEntry] = {}  # key: full_id
@@ -285,6 +287,22 @@ class CapabilityRegistry:
     def count_active(self) -> int:
         return sum(1 for c in self._capabilities.values() if c.status == CapabilityStatus.ACTIVE)
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global registry instance
 _global_registry: Optional[CapabilityRegistry] = None
@@ -297,6 +315,7 @@ def get_capability_registry() -> CapabilityRegistry:
         _global_registry = CapabilityRegistry()
         # Register built-in kernel capabilities
         _register_builtin_capabilities(_global_registry)
+        _global_registry.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_registry
 
 

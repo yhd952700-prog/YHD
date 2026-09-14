@@ -333,6 +333,10 @@ def get_app() -> FastAPI:
     from .profile import router as profile_router
     app.include_router(profile_router, dependencies=[Depends(_require_human)])
 
+    # 内核生命周期可观测端点（14 内核 lifecycle 实时快照，受人类主权闸门保护）。
+    from .kernels import kernels_router
+    app.include_router(kernels_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

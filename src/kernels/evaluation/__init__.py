@@ -12,6 +12,7 @@ and supports escalation to human operators.
 - Track evaluation history for learning
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -139,6 +140,7 @@ class ReplanRequest:
 
 class Evaluator:
     """Evaluates outcomes against criteria."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self, criteria: Optional[EvaluationCriteria] = None):
         self.criteria = criteria or EvaluationCriteria()
@@ -543,6 +545,22 @@ class Evaluator:
                 "pending_replans": sum(1 for r in self._replan_requests if r.status == "pending"),
             }
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global evaluator instance
 _global_evaluator: Optional[Evaluator] = None
@@ -556,6 +574,7 @@ def get_evaluator(criteria: Optional[EvaluationCriteria] = None) -> Evaluator:
         with _global_lock:
             if _global_evaluator is None:
                 _global_evaluator = Evaluator(criteria)
+                _global_evaluator.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_evaluator
 
 

@@ -13,6 +13,7 @@ and scope-aware plugin activation.
 - Plugin version compatibility checking (semver-aware)
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -74,6 +75,7 @@ class PluginInfo:
 
 class PluginRegistry:
     """Central plugin registry with discovery, loading, and lifecycle management."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self, registry_path: str = "./plugins"):
         self._registry_path = Path(registry_path)
@@ -387,6 +389,22 @@ class PluginRegistry:
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False, default=_json_default)
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global plugin registry instance
 _global_plugin_registry: Optional[PluginRegistry] = None
@@ -397,6 +415,7 @@ def get_plugin_registry() -> PluginRegistry:
     global _global_plugin_registry
     if _global_plugin_registry is None:
         _global_plugin_registry = PluginRegistry()
+        _global_plugin_registry.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_plugin_registry
 
 
@@ -455,6 +474,9 @@ def plugin_compatibility_check(plugin_id: str, required_capabilities: List[str])
 
 # FIX: Initialize plugin registry after definition
 _global_plugin_registry = PluginRegistry()
+# 该单例是**导入期**急切实例化的（不走 get_plugin_registry 的惰性路径），
+# 所以必须在这里手工补一次 initialize()，否则它会「在服务却永远 UNINITIALIZED」。
+_global_plugin_registry.initialize()
 
 
 # Plugin audit logging helper

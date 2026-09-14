@@ -11,6 +11,7 @@ Supports scope-aware filtering (L0-L7) and complete audit logging.
 - Provide complete audit trail for all permission operations
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -139,6 +140,7 @@ class AuditEntry:
 
 class IdentityManager:
     """Manages agent identities, permissions, and audit trails."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self):
         self._identities: Dict[str, AgentIdentity] = {}  # id -> AgentIdentity
@@ -571,6 +573,22 @@ class IdentityManager:
                 },
             }
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global identity manager instance
 _global_manager: Optional[IdentityManager] = None
@@ -584,6 +602,7 @@ def get_identity_manager() -> IdentityManager:
         with _global_lock:
             if _global_manager is None:
                 _global_manager = IdentityManager()
+                _global_manager.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_manager
 
 

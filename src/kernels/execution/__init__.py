@@ -13,6 +13,7 @@ Supports parallel execution, retries, checkpoints, and feedback loops.
 - Emit events for traceability
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -570,6 +571,7 @@ class Verifier:
 
 class ExecutionEngine:
     """Main execution engine orchestrating the full pipeline."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(
         self,
@@ -889,6 +891,22 @@ class ExecutionEngine:
         }
         ctx.checkpoints.append(checkpoint)
         return checkpoint
+
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
 
 
 # Convenience functions

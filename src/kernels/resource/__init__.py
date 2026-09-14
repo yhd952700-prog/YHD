@@ -11,6 +11,7 @@ Handles allocation, release, monitoring, and enforcement of resource limits.
 - Provide real-time usage metrics
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -144,6 +145,7 @@ class ResourceUsage:
 
 class ResourceQuotaManager:
     """Manages resource quotas and allocations."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self):
         self._quotas: Dict[str, Quota] = {}  # key: {scope}:{owner}:{resource_type}
@@ -494,6 +496,22 @@ class ResourceQuotaManager:
                 "violations": len(self.enforce_limits()),
             }
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global resource manager instance
 _global_manager: Optional[ResourceQuotaManager] = None
@@ -507,6 +525,7 @@ def get_resource_manager() -> ResourceQuotaManager:
         with _global_lock:
             if _global_manager is None:
                 _global_manager = ResourceQuotaManager()
+                _global_manager.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_manager
 
 

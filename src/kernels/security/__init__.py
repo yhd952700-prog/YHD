@@ -12,6 +12,7 @@ policies, Vault Transit integration for crypto operations, and full audit loggin
 - Scope enforcement L0-L7
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 import logging
 import threading
@@ -175,6 +176,7 @@ class AuditLogEntry:
 
 class SecurityEngine:
     """Core security engine with RBAC, ABAC, and audit capabilities."""
+    lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self):
         self._rbac_rules: Dict[str, RBACRule] = {}
@@ -742,6 +744,22 @@ class SecurityEngine:
                 "unique_permissions": len(self._rbac_rules) + len(self._abac_rules),
             }
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global security engine instance
 _global_security: Optional[SecurityEngine] = None
@@ -752,6 +770,7 @@ def get_security_engine() -> SecurityEngine:
     global _global_security
     if _global_security is None:
         _global_security = SecurityEngine()
+        _global_security.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_security
 
 

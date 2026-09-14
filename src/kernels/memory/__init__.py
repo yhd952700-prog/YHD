@@ -11,6 +11,7 @@ and complete CRUD operations for context augmentation and state persistence.
 - Correlation with event system for audit trails
 """
 from __future__ import annotations
+from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -279,6 +280,7 @@ class MemoryKernel:
     _store: Optional[Any] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.lifecycle = KernelLifecycle.UNINITIALIZED
         # Phase 4: injectable backend. When ``backend`` is None (default) this
         # reproduces historical behaviour byte-for-byte — a SQLite MemoryStore
         # at ``db_path`` (with the same env/default path resolution).
@@ -573,6 +575,22 @@ class MemoryKernel:
             self._entries.clear()
             self._store.clear()
 
+    def initialize(self) -> None:
+        self.lifecycle = KernelLifecycle.READY
+
+    def shutdown(self) -> None:
+        self.lifecycle = KernelLifecycle.STOPPED
+
+    def pause(self) -> None:
+        if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):
+            raise KernelStateError(f"cannot pause from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.PAUSED
+
+    def resume(self) -> None:
+        if self.lifecycle is not KernelLifecycle.PAUSED:
+            raise KernelStateError(f"cannot resume from {self.lifecycle}")
+        self.lifecycle = KernelLifecycle.READY
+
 
 # Global memory kernel instance
 _global_kernel: Optional[MemoryKernel] = None
@@ -587,6 +605,7 @@ def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
     global _global_kernel
     if _global_kernel is None:
         _global_kernel = MemoryKernel(db_path=db_path)
+        _global_kernel.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_kernel
 
 
