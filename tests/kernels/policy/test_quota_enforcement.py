@@ -16,6 +16,10 @@ The three claims under test:
    rule, since 0 is always within budget.
 3. **Wired at the production gate.** ``LiuHaoAssistant.chat`` supplies the
    inputs, and an unaffordable turn really is refused.
+4. **The gate itself is safe.** The estimator runs before every chat over
+   history loaded from external storage, so it must not raise on malformed
+   data; and because the estimate is worst-case, an implausible provider
+   declaration must not manufacture a denial of legitimate traffic.
 """
 from __future__ import annotations
 
@@ -237,3 +241,180 @@ class TestChatGate:
 
         a = self._assistant("quota-gate-unpriced")
         assert a.chat("hello")["status"] == "completed"
+
+
+# --------------------------------------------------------------------------
+# 4. the estimator runs before every chat: it must not raise, and an
+#    implausible declaration must not turn the guard into a blanket denial
+# --------------------------------------------------------------------------
+
+
+class _EstimatorHarness:
+    """Shared fixture: an assistant whose conversation store is a temp DB."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from src.ai import liuhao as liuhao_module
+        from src.ai.conversation_store import ConversationStore
+
+        store = ConversationStore(db_path=str(tmp_path / "conv.db"))
+        monkeypatch.setattr(liuhao_module, "get_conversation_store", lambda: store)
+
+    def _assistant(self, name="quota-estimator"):
+        from src.ai.providers import MockProvider
+
+        from src.ai.liuhao import LiuHaoAssistant
+
+        return LiuHaoAssistant(
+            name=name, provider=MockProvider(name="t", model="mock-model")
+        )
+
+
+class TestTheEstimatorCannotCrashTheGate(_EstimatorHarness):
+    """``_quota_authorize_kwargs`` runs *before* every chat.
+
+    ``history`` is loaded from the conversation store -- external persisted
+    data that can be corrupt, truncated by a crash, or hand-edited. A malformed
+    entry must degrade the *estimate*, never raise out of ``chat``: an
+    unhandled exception here is a 500 on the authorization path.
+    """
+
+    @pytest.mark.parametrize(
+        "history",
+        [
+            [{"role": "user", "content": 1234}],      # non-str content
+            ["not-a-dict"],                            # non-dict entry
+            [{"role": "user", "content": None}],       # null content
+            [{"role": "user"}],                        # content key absent
+            [[1, 2, 3]],                               # nested list entry
+            [{"role": "user", "content": object()}],   # arbitrary object
+        ],
+        ids=["int-content", "str-entry", "null-content", "absent-content", "list-entry", "object-content"],
+    )
+    def test_malformed_history_does_not_raise(self, history):
+        a = self._assistant()
+        a.history = history
+        assert isinstance(a._quota_authorize_kwargs("hi"), dict)
+
+    def test_a_non_string_system_prompt_does_not_raise(self):
+        a = self._assistant()
+        a.system_prompt = 9999
+        assert isinstance(a._quota_authorize_kwargs("hi"), dict)
+
+    def test_an_object_with_a_hostile_str_does_not_raise(self):
+        class Hostile:
+            def __str__(self):
+                raise RuntimeError("boom")
+
+        a = self._assistant()
+        a.history = [{"role": "user", "content": Hostile()}]
+        assert isinstance(a._quota_authorize_kwargs("hi"), dict)
+
+    def test_chat_survives_a_malformed_history(self, monkeypatch):
+        """The end-to-end consequence: no 500 out of ``chat()``."""
+        _patch_prices(monkeypatch, {"mock-model": 0.5})
+        _patch_quotas(monkeypatch, {"system": [100.0]})
+
+        a = self._assistant("quota-malformed-history")
+        a.history = [{"role": "user", "content": 1234}, "not-a-dict"]
+        assert a.chat("hi")["status"] == "completed"
+
+    def test_a_well_formed_history_is_still_counted(self):
+        """Hardening must not silently stop counting real prompt text."""
+        from src.ai.liuhao import _history_char_count
+
+        n = _history_char_count(
+            [{"role": "user", "content": "abcd"}, {"content": "ef"}]
+        )
+        assert n == 6
+
+    def test_a_non_dict_entry_still_contributes_conservatively(self):
+        from src.ai.liuhao import _history_char_count
+
+        # Raw text in the list is still prompt material -- counted, not dropped.
+        assert _history_char_count(["abcd"]) == 4
+
+
+class TestAnImplausibleOutputDeclarationCannotFabricateADenial(_EstimatorHarness):
+    """The estimate is *worst-case* output, so the declared maximum is a lever.
+
+    A provider declaring an absurd ``max_output_tokens`` (e.g. 12,000,000)
+    would otherwise manufacture a cost no real request can incur and deny every
+    legitimate message it serves -- an auth control turned self-inflicted DoS.
+    The value is clamped to a credible ceiling, and the clamp warns loudly.
+    """
+
+    def test_the_ceiling_leaves_real_declarations_untouched(self):
+        from src.ai.agent_factory import MAX_OUTPUT_TOKENS_CEILING
+
+        # providers.py deploys 1024-8192; the ceiling must not touch those.
+        assert MAX_OUTPUT_TOKENS_CEILING >= 8192
+
+    def test_a_real_declaration_passes_through(self):
+        from src.ai.liuhao import _declared_max_output_tokens
+
+        provider = mock.Mock()
+        provider.capabilities = mock.Mock(max_output_tokens=8192)
+        assert _declared_max_output_tokens(provider) == 8192
+
+    def test_a_huge_declaration_is_clamped_to_the_ceiling(self):
+        from src.ai.agent_factory import MAX_OUTPUT_TOKENS_CEILING
+        from src.ai.liuhao import _declared_max_output_tokens
+
+        provider = mock.Mock()
+        provider.capabilities = mock.Mock(max_output_tokens=12_000_000)
+        assert _declared_max_output_tokens(provider) == MAX_OUTPUT_TOKENS_CEILING
+
+    @pytest.mark.parametrize("bad", ["abc", None, 0, -1])
+    def test_a_malformed_declaration_degrades_to_the_default(self, bad):
+        from src.ai.agent_factory import DEFAULT_MAX_OUTPUT_TOKENS
+        from src.ai.liuhao import _declared_max_output_tokens
+
+        provider = mock.Mock()
+        provider.capabilities = mock.Mock(max_output_tokens=bad)
+        assert _declared_max_output_tokens(provider) == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_clamp_warns_instead_of_silently_swallowing(self, caplog):
+        from src.ai.liuhao import _declared_max_output_tokens
+
+        provider = mock.Mock()
+        provider.capabilities = mock.Mock(max_output_tokens=12_000_000)
+        with caplog.at_level("WARNING"):
+            _declared_max_output_tokens(provider)
+        assert any("ceiling" in r.message for r in caplog.records)
+
+    def test_the_clamp_is_what_saves_a_legitimate_message(self, monkeypatch):
+        """Prove the guard would have denied *without* the clamp.
+
+        Same model, same budget, same one-character message; the only
+        difference is the clamp. The unclamped arithmetic is reconstructed so
+        this cannot pass by accident.
+        """
+        _patch_prices(monkeypatch, {"mock-model": 0.5})
+        _patch_quotas(monkeypatch, {"system": [100.0]})
+
+        a = self._assistant("quota-huge-declaration")
+        a.provider.capabilities.max_output_tokens = 12_000_000
+
+        policy = AgentPolicy(principal="probe")
+
+        # post-fix: the clamped estimate keeps the rule out of the way
+        clamped = a._quota_authorize_kwargs("hi")
+        after = policy.authorize("some.action", **clamped)
+        assert QUOTA not in [r.id for r in after.denied_rules]
+
+        # pre-fix: the raw declaration (no clamp) really does deny
+        unclamped = economy_inputs(
+            "probe", "mock-model", tokens_in=88, tokens_out=12_000_000
+        )
+        before = policy.authorize("some.action", **unclamped)
+        assert QUOTA in [r.id for r in before.denied_rules]
+
+    def test_chat_is_not_refused_by_a_huge_declaration(self, monkeypatch):
+        """End-to-end: a legitimate message still completes."""
+        _patch_prices(monkeypatch, {"mock-model": 0.5})
+        _patch_quotas(monkeypatch, {"system": [100.0]})
+
+        a = self._assistant("quota-huge-declaration-chat")
+        a.provider.capabilities.max_output_tokens = 12_000_000
+        assert a.chat("hi")["status"] == "completed"

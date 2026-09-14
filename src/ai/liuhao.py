@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,7 @@ from .employee import Agent
 from .agent_factory import (
     CHARS_PER_TOKEN,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS_CEILING,
     AgentMemory,
     AgentPolicy,
     economy_inputs,
@@ -55,6 +57,81 @@ MAX_HISTORY_MESSAGES = 20
 
 # 单轮对话中最多允许的工具调用轮数（防 LLM 死循环请求工具）。
 MAX_TOOL_ROUNDS = 3
+
+_log = logging.getLogger(__name__)
+
+
+def _safe_text_len(value: Any) -> int:
+    """Length of ``value`` as prompt text, **never raising**.
+
+    This runs on the authorization path. ``self.history`` is loaded from the
+    conversation store (``conversation_store.load_recent``), i.e. from
+    external persisted data that can be corrupt, truncated by a crash, or
+    hand-edited -- a non-``str`` ``content``, a non-dict entry, or an object
+    whose ``__len__``/``__str__`` throws. A malformed entry must not escalate
+    an availability hiccup into an unhandled 500 out of ``chat``: it simply
+    contributes 0 to the estimate here.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(str(value))
+    except Exception:  # pragma: no cover - defensive, hostile __str__
+        return 0
+
+
+def _history_char_count(history: Any) -> int:
+    """Total prompt characters in a (possibly malformed) history list."""
+    try:
+        entries = list(history)
+    except Exception:  # pragma: no cover - defensive, non-iterable history
+        return 0
+    total = 0
+    for entry in entries:
+        if isinstance(entry, dict):
+            total += _safe_text_len(entry.get("content"))
+        else:
+            # A non-dict entry is not a well-formed message, but it may still be
+            # raw prompt text -- count it conservatively rather than dropping it.
+            total += _safe_text_len(entry)
+    return total
+
+
+def _declared_max_output_tokens(provider: Any) -> int:
+    """The provider's output ceiling, clamped to a credible range.
+
+    Never raises: a malformed declaration degrades to the default. A value
+    above :data:`MAX_OUTPUT_TOKENS_CEILING` is clamped **and warned about**,
+    so a misconfigured provider is visible instead of silently denying every
+    request it serves (the estimate is worst-case, see the caller).
+    """
+    capabilities = getattr(provider, "capabilities", None)
+    raw = getattr(capabilities, "max_output_tokens", None)
+    try:
+        declared = int(raw) if raw is not None else DEFAULT_MAX_OUTPUT_TOKENS
+    except (TypeError, ValueError):
+        _log.warning(
+            "liuhao: provider declared a non-numeric max_output_tokens=%r; "
+            "falling back to %d for the budget estimate",
+            raw,
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    if declared <= 0:
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    if declared > MAX_OUTPUT_TOKENS_CEILING:
+        _log.warning(
+            "liuhao: provider declared max_output_tokens=%d, above the "
+            "credible ceiling %d; clamping the budget estimate to the "
+            "ceiling (the estimate is worst-case, so this prevents a "
+            "self-inflicted denial of legitimate traffic)",
+            declared,
+            MAX_OUTPUT_TOKENS_CEILING,
+        )
+        return MAX_OUTPUT_TOKENS_CEILING
+    return declared
 
 
 class LiuHaoAssistant:
@@ -161,15 +238,18 @@ class LiuHaoAssistant:
         and the real ``COST`` quota. Anything genuinely unknown comes back
         *omitted*, never as a fabricated zero (see ``economy_inputs``); the
         policy decision then records the rule as an unapplied control.
+
+        This is on the authorization path, so it must not raise: prompt and
+        output estimates go through the non-raising helpers above rather than
+        raw ``len()``/``int()`` over externally-sourced data.
         """
-        history_chars = sum(len(m.get("content") or "") for m in self.history)
-        prompt_chars = len(self.system_prompt) + history_chars + len(message)
-        tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
-        capabilities = getattr(self.provider, "capabilities", None)
-        tokens_out = int(
-            getattr(capabilities, "max_output_tokens", None)
-            or DEFAULT_MAX_OUTPUT_TOKENS
+        prompt_chars = (
+            _safe_text_len(self.system_prompt)
+            + _history_char_count(self.history)
+            + _safe_text_len(message)
         )
+        tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
+        tokens_out = _declared_max_output_tokens(self.provider)
         return economy_inputs(
             principal=self.principal,
             model=getattr(self.provider, "model", None),

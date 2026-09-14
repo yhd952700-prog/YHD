@@ -44,6 +44,16 @@ CHARS_PER_TOKEN = 4
 #: ``ProviderCapabilities.max_output_tokens`` default in ``providers.py``.
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 
+#: Credibility ceiling for a provider's declared ``max_output_tokens`` when it
+#: feeds the budget guard. Real providers deploy 1024-8192 (see
+#: ``providers.py``), so this bound is far above any realistic completion and
+#: does not weaken enforcement. It exists because the estimate is
+#: *worst-case* -- a single implausible declaration (e.g. 12,000,000) would
+#: otherwise manufacture a cost no real request can incur and turn the guard
+#: into a blanket denial of legitimate traffic. Declarations above the ceiling
+#: are clamped *and warned about*, never silently accepted.
+MAX_OUTPUT_TOKENS_CEILING = 32768
+
 
 @dataclass
 class AgentSpec:

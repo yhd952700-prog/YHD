@@ -195,9 +195,9 @@ prompt（system + 历史 + 本轮）+ 模型声明的 `max_output_tokens` 估**�
 | 缺输入仍 fail-open 且可观测 | `NOT_APPLICABLE` + `unapplied_deny_rules` 含该规则 |
 | 未定价模型不当作免费 | `economy_inputs(..., "no-such-model", ...)` **无** `estimated_cost` 键 |
 | 生产闸门真拦 | 把 `COST` 可用额压到 0 → `LiuHaoAssistant.chat()` 返回 `status="denied"` |
-| 回归 | `tests/kernels/policy` + assistant + agent_factory + ai-layer + runtime_loop **208 passed** |
+| 回归 | `tests/kernels/policy` + assistant + agent_factory + ai-layer + runtime_loop **208 passed**（随后在本轮加固后为 **179 passed / 整个 policy 目录**，见 §6.6） |
 
-新测试 `tests/kernels/policy/test_quota_enforcement.py`（18 项）。上一轮的
+新测试 `tests/kernels/policy/test_quota_enforcement.py`（18 项，复核加固后 **39 项**）。上一轮的
 `tests/kernels/policy/test_policy_rule_observability.py` 里**断言"规则不可达"的测试已被反转**
 （`TestQuotaIsUnreachableInProduction` → `TestQuotaIsNowReachable`）；两条 AST 绊线也改为
 断言"闸门确实在喂数据"—— 其中一条原本会**假装通过**（`liuhao` 用 `**splat` 传参，扫字面
@@ -216,3 +216,33 @@ prompt（system + 历史 + 本轮）+ 模型声明的 `max_output_tokens` 估**�
    ⇒ 现状下护栏**只在配额被真正设得很紧时才拦**（例如给某主体设一条 `COST` 配额，其
    `limit` 低于单次动作成本 → 直接拒）。**把"实际花费记账进配额"是独立的一轮工作**
    （牵涉内核横切策略：`resource.commit` 该不该放行给 agent），本轮未做，未擅自改。
+3. **护栏只覆盖"真花 LLM 钱"的那条路。** 生产链路 `src/gateway/chat.py → LiuHaoAssistant.chat/
+   chat_stream` 是用户实际让 OS 花钱的路径，已被覆盖。**未**覆盖：
+   `runtime_loop.py:102`（agent 总线循环，`authorize(action="msg:<kind>")` 不传成本）与
+   `network_gateway.delegate`（agent 间委派，`evaluate_simple(resource=params)` 不传成本）。
+   这两处要接成本，得先有"一条总线消息 / 一次委派值多少 token"的模型 —— 目前不存在，
+   我不编一个数字去凑。（要接，是独立一轮的设计决策。）
+
+### 6.6 复核后的加固（Round 95，独立 verifier 提出）
+
+独立验证 agent 复核 `30df706b` 时提出三项，其中两项是**真缺陷**，已修：
+
+1. **认证路径可被畸形历史打崩（可用性缺陷）。** `_quota_authorize_kwargs` 用裸
+   `len(m.get("content") or "")` 估 prompt；`self.history` 来自 `conversation_store.load_recent`
+   （**外部持久化数据**，可损坏/被手改）。实测三种直接抛：
+   `{"content": 1234}` → `TypeError`、非 dict 条目 → `AttributeError`、`system_prompt=9999`
+   → `TypeError`，且**异常从 `chat()` 逃出去 = 认证路径 500**。
+   修法：prompt/输出估算全部走不抛的 `_safe_text_len` / `_history_char_count` /
+   `_declared_max_output_tokens`；`len()` 被限制在唯一被守卫的 `_safe_text_len` 里。
+2. **荒谬的 `max_output_tokens` 会把护栏变成"全部拒绝"（误杀）。** 估算取**最坏情况**输出，
+   于是 provider 声明 `max_output_tokens=12_000_000` × $0.01/1k = **$120 > $100 预算** ⇒
+   一条 1 字符的合法消息被拒（实测 pre-fix：`estimated_cost=120.0`，`allowed=False`）。
+   修法：`MAX_OUTPUT_TOKENS_CEILING = 32768` 夹紧（真实 provider 声明 1024–8192，天花板远高于
+   真实补全长度 ⇒ 不削弱常态执法），**夹紧时 warning 出声**而非静默吞掉。
+   实测 post-fix：同一场景 `allowed=True`。
+3. **覆盖缺口** —— 即上面 §6.5 第 3 条，本轮**如实记录、不擅自扩面**。
+
+反橡皮图章：新增测试对着**回退到 HEAD（未修）**的源文件跑，**18 项失败 / 3 项通过**
+（通过的三项恰好是 `null`/缺 key 这类原本就没崩的输入）——证明这些断言真的在测新信号，
+不是装饰。修后全绿。
+

@@ -73,7 +73,14 @@
 > `unapplied_deny_rules` / `unresolved_operands` **如实报出**。
 >
 > **⚠️ 剩余边界**：已部署的模型在注册表里尚无定价条目，且配额没有被实际花费记账，故护栏
-> 现在**只在配额被设得很紧时才拦**。详见 `docs/POLICY-RULE-OBSERVABILITY-DESIGN.md` §6.5。
+> 现在**只在配额被设得很紧时才拦**；护栏也只覆盖真花 LLM 钱的生产链路（`gateway/chat.py →
+> assistant.chat`），agent 总线循环与 agent 间委派未接成本。详见
+> `docs/POLICY-RULE-OBSERVABILITY-DESIGN.md` §6.5。
+>
+> **🔧 复核加固（Round 95）**：`_quota_authorize_kwargs` 的估算在认证路径上运行，已做到
+> **不抛**（畸形历史/毒化 `system_prompt`/非数值声明一律降级，实测不再从 `chat()` 逃逸），
+> 且 `max_output_tokens` 声明被 `MAX_OUTPUT_TOKENS_CEILING`（32768）夹紧 —— 否则一个荒谬声明
+> 会制造出「$120 > $100 预算 ⇒ 拒掉 1 字符合法消息」的误杀。详见 §6.6。
 
 `_adjudicate` 发的是 `actor={"type":"system","verified":True}`、`action={"name":…,"risk_level":…}`、`resource=None`、`scope=None`。逐规则推导：
 
