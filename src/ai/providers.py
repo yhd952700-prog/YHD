@@ -194,9 +194,12 @@ class OpenAIProvider(BaseProvider):
 
     def __init__(self, name: str, model: str, api_key: Optional[str] = None, **kwargs):
         super().__init__(name, model, api_key, **kwargs)
-        # Store proxy config
-        self.proxy = kwargs.get("proxy") or os.environ.get("OPENAI_PROXY")
-        self.base_url = kwargs.get("base_url") or os.environ.get("OPENAI_BASE_URL")
+        # Store proxy config. Resolve through ``_provider_env`` so a value written
+        # in ``.env`` actually takes effect: ConfigManager loads .env into its own
+        # store WITHOUT exporting to ``os.environ``, so reading only os.environ
+        # here silently ignored OPENAI_BASE_URL / OPENAI_PROXY from ``.env``.
+        self.proxy = kwargs.get("proxy") or _provider_env("OPENAI_PROXY") or None
+        self.base_url = kwargs.get("base_url") or _provider_env("OPENAI_BASE_URL") or None
         # Track if using newer SDK version
         self.sdk_version = "1.x"
         self._capabilities = ProviderCapabilities(
@@ -224,6 +227,10 @@ class OpenAIProvider(BaseProvider):
         client = openai.OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            # Every other provider hands ``self.timeout`` to its transport; this
+            # one used to leave the SDK default (10 min) in place, so the declared
+            # 30s timeout was silently ignored. Honor it.
+            timeout=self.timeout,
             http_client=http_client,
         )
         return client
@@ -710,12 +717,23 @@ def get_provider() -> BaseProvider:
         model = _provider_env("AI_PROVIDER_MODEL", "mock-model")
         api_key = _provider_env("AI_PROVIDER_KEY", "[REDACTED]")
 
-        _provider_instance = ProviderFactory.create_provider(
-            provider_type,
-            name=name,
-            model=model,
-            api_key=api_key,
-        )
+        create_kwargs: Dict[str, Any] = {
+            "name": name,
+            "model": model,
+            "api_key": api_key,
+        }
+
+        # Opt-in timeout override. Slow upstreams (large hosted models behind a
+        # proxy, a busy local runner) need far more than the 30s default; when
+        # the var is unset we keep the class default rather than guessing.
+        timeout_raw = _provider_env("AI_PROVIDER_TIMEOUT", "")
+        if timeout_raw:
+            try:
+                create_kwargs["timeout"] = float(timeout_raw)
+            except ValueError:
+                print(f"Warning: invalid AI_PROVIDER_TIMEOUT={timeout_raw!r}; using default")
+
+        _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
 
         # Log provider info (masked)
         print(f"Provider initialized: {provider_type} (name={name}, model={model}, key: {api_key[:8]}...)")

@@ -154,12 +154,76 @@ if os.path.isfile(_SECRETS_FILE):
 # reads as "off":
 #     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
 os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "HIGH,CRITICAL")
-
+{{LLM_BLOCK}}
 from src.gateway.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())
 '''
+
+#: LLM provider settings baked into the launcher at build time.
+#:
+#: Read from the *build* environment, never from ``.env``: that file is the
+#: local dev config (it points at Ollama) and must not leak into a cloud build.
+#: A cloud build therefore looks like::
+#:
+#:     AI_PROVIDER_TYPE=openai AI_PROVIDER_MODEL=<model> \
+#:     AI_PROVIDER_KEY=<key> OPENAI_BASE_URL=<base> \
+#:     python scripts/build_cloud_bundle.py
+#:
+#: Nothing set => no block is emitted and the provider factory keeps its mock
+#: default, i.e. the bundle still boots. A missing key degrades to "no real
+#: model", never to a crash.
+LLM_ENV_KEYS: Tuple[str, ...] = (
+    "AI_PROVIDER_TYPE",
+    "AI_PROVIDER_NAME",
+    "AI_PROVIDER_MODEL",
+    "AI_PROVIDER_KEY",
+    "OPENAI_BASE_URL",
+    "AI_PROVIDER_TIMEOUT",
+)
+
+#: LLM_PLACEHOLDER is replaced (or removed) when the launcher is written.
+LLM_PLACEHOLDER = "{{LLM_BLOCK}}"
+
+
+def _llm_env() -> Dict[str, str]:
+    """Collect the LLM settings actually present in the build environment."""
+    found: Dict[str, str] = {}
+    for key in LLM_ENV_KEYS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            found[key] = value
+    return found
+
+
+def _mask(value: str) -> str:
+    """Mask a secret for build logs while keeping it recognisable."""
+    if len(value) <= 12:
+        return "*" * len(value)
+    return f"{value[:7]}…{value[-4:]}"
+
+
+def _render_llm_block() -> str:
+    """Render the ``os.environ.setdefault`` lines injected into ``serve.py``.
+
+    The key must travel inside the bundle because the publishing platform
+    offers no secret store -- but ``deploy/cloud/`` is gitignored, so the key
+    never reaches version control.
+    """
+    env = _llm_env()
+    if not env:
+        return ""
+    body = "\n".join(f"os.environ.setdefault({k!r}, {v!r})" for k, v in env.items())
+    return (
+        "\n# Real LLM provider, baked at build time from the build environment.\n"
+        "# The publishing platform has no secret store, and this bundle\n"
+        "# directory is gitignored, so the key never reaches version control.\n"
+        "# Built without these vars, the block is absent and the mock default\n"
+        "# applies -- an unconfigured bundle degrades, it does not crash.\n"
+        f"{body}\n"
+    )
+
 
 #: Runtime state that must never travel inside a published bundle. The
 #: ``*.db`` trio covers the SQLite audit/conversation stores the gateway
@@ -340,8 +404,22 @@ def build(out_dir: Path) -> int:
     console_target = out_dir / CONSOLE_DIST_REL
     console_count = _copy_tree(CONSOLE_DIST_SRC, console_target)
     print(f"      dist     -> {console_count} 个文件  →  {CONSOLE_DIST_REL}/")
-    (out_dir / LAUNCHER_NAME).write_text(_LAUNCHER, encoding="utf-8")
+    launcher_source = _LAUNCHER.replace(f"{LLM_PLACEHOLDER}\n", _render_llm_block())
+    if LLM_PLACEHOLDER in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
+        raise AssertionError(f"launcher template still contains {LLM_PLACEHOLDER}")
+    (out_dir / LAUNCHER_NAME).write_text(launcher_source, encoding="utf-8")
     print(f"      入口脚本 -> {LAUNCHER_NAME}")
+
+    llm_env = _llm_env()
+    if llm_env:
+        provider = llm_env.get("AI_PROVIDER_TYPE", "?")
+        model = llm_env.get("AI_PROVIDER_MODEL", "?")
+        base = llm_env.get("OPENAI_BASE_URL", "(provider 默认)")
+        key = llm_env.get("AI_PROVIDER_KEY")
+        shown = _mask(key) if key else "(无 key)"
+        print(f"      LLM      -> {provider} / {model} @ {base}  key={shown}")
+    else:
+        print("      LLM      -> 未配置 → 发布包用 mock provider（对话为演示模型）")
 
     lines = [
         "# 由 scripts/build_cloud_bundle.py 自动生成 —— 不要手改。",

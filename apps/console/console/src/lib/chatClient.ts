@@ -3,7 +3,32 @@
  *
  * 浏览器原生 EventSource 只支持 GET，而后端对话端点是 POST，因此这里用
  * fetch + ReadableStream 手动解析 Server-Sent Events（一行一个 data: 帧）。
+ *
+ * 鉴权：`/v1/chat/*` 已挂后端闸门（与 `apiFetch`/`policyClient` 同一约定），
+ * 因此**每一个**请求都必须带 `Authorization: Bearer`。此文件原先用裸 fetch
+ * 漏了令牌 —— 闸门一上，聊天就会 401，故统一走下面两个helper。
  */
+
+import { clearSession, currentToken, UNAUTHENTICATED_EVENT } from './auth';
+
+/** 组装带会话令牌的请求头。 */
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = currentToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return headers;
+}
+
+/** 401 = 会话失效：清本地会话并广播，让应用退回登录页（同 apiFetch）。 */
+function handleUnauthorized(status: number): void {
+  if (status !== 401) return;
+  clearSession();
+  try {
+    window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+  } catch {
+    // 非浏览器环境：忽略。
+  }
+}
 
 /** 工具调用事件（后端 chat_stream 的 tool 事件）。 */
 export interface ToolEvent {
@@ -35,11 +60,12 @@ export async function* streamChat(
   if (userId) body.user_id = userId;
   const res = await fetch('/v1/chat/stream', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
 
   if (!res.ok || !res.body) {
+    handleUnauthorized(res.status);
     const text = await res.text().catch(() => '');
     throw new Error(`请求失败（${res.status}）：${text}`);
   }
@@ -135,15 +161,21 @@ export async function loadHistory(
   const q = `session_id=${encodeURIComponent(sessionId)}${
     userId ? `&user_id=${encodeURIComponent(userId)}` : ''
   }`;
-  const res = await fetch(`/v1/chat/history?${q}`);
-  if (!res.ok) throw new Error(`加载历史失败（${res.status}）`);
+  const res = await fetch(`/v1/chat/history?${q}`, { headers: authHeaders() });
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(`加载历史失败（${res.status}）`);
+  }
   return (await res.json()) as SessionHistory;
 }
 
 /** 列出后端活跃会话。 */
 export async function listSessions(): Promise<string[]> {
-  const res = await fetch('/v1/chat/sessions');
-  if (!res.ok) throw new Error(`获取会话列表失败（${res.status}）`);
+  const res = await fetch('/v1/chat/sessions', { headers: authHeaders() });
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(`获取会话列表失败（${res.status}）`);
+  }
   const data = (await res.json()) as { sessions?: string[] };
   return data.sessions ?? [];
 }
@@ -152,9 +184,12 @@ export async function listSessions(): Promise<string[]> {
 export async function deleteSession(sessionId: string): Promise<boolean> {
   const res = await fetch(
     `/v1/chat/sessions/${encodeURIComponent(sessionId)}`,
-    { method: 'DELETE' },
+    { method: 'DELETE', headers: authHeaders() },
   );
-  if (!res.ok) throw new Error(`删除会话失败（${res.status}）`);
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(`删除会话失败（${res.status}）`);
+  }
   const data = (await res.json()) as { deleted?: boolean };
   return data.deleted === true;
 }
