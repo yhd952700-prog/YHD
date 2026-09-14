@@ -129,10 +129,15 @@
 
 ## 6. 证据索引
 
-- **提交链**（远端 tip，逐个 SHA `MATCH`）：`f70f7ea5`(Round 88 令牌头收口) → `63f16723`(线上真模型
+- **提交链**（远端 tip，逐个 SHA `MATCH`）：`6f45d300`(Round 89 JWT 密钥持久化 + 线上自证) →
+  `8cbb0d47`(Round 88 文档) → `f70f7ea5`(Round 88 令牌头收口) → `63f16723`(线上真模型
   provider + 前端聊天补鉴权) → `665054b8` → `8684f1bf`(P0 闸门+P2) → `fd08591e` → `5a211d2a` →
   `85163ce4`(CI 修复) → `2a9920d4`(verify 脚本) → `c123f977`(WS2+WS4) → `d992de46`(WS1)。
-- **CI**：`f70f7ea5`(run `34832993125`) **`success`**；`63f16723`(run `34827500694`) **`success`**；
+- **CI**：`6f45d300`(run `34839119953`) **`success`（12/12 全绿：Architecture Gate(Semgrep) /
+  Run Tests 3.11+3.12 / Build Verification / Console Readability Audit / Integration Tests /
+  Linting / Guardrails / Security Scan / Smoke Test / Observability Validation / P0 Gate Check）**；
+  `8cbb0d47`(run `34834317335`) **`success`**；`f70f7ea5`(run `34832993125`) **`success`**；
+  `63f16723`(run `34827500694`) **`success`**；
   `d992de46`(run `34796348631`) 与 `c123f977`(run `34797538140`) 均 **12/12 `success`**。
   ⚠️ 插曲：`2a9920d4` 曾红 —— 新增 `scripts/verify_real_execution.py` 却未接进任何 workflow，
   被 `tests/test_guardrail_scripts.py` 元护栏判红（Run Tests 双版本失败、下游 skipped）；
