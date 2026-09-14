@@ -46,7 +46,13 @@
 | A4 | 人类主权护栏 | ✅ **通过（WS3 复验 + P2 裁决）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。源码默认 OFF 仍由 AST 护栏锁死（`no production @kernel_action has enforce=True`）。**P2 裁决：发布包 serve.py `setdefault LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（与生产 compose 同值）—— 前提是身份表已挂（见 A11），实测线上 `enabled=true / 16 个动作`；回滚 = 导出空值重启。 |
 | A5 | 可观测 | ✅ 通过 | 审计哈希链 + 事件总线 + trace（既有实现与测试）。 |
 | A6 | 可复现部署 | ✅ **通过（WS4 + P0 重建）** | 发布包 229 文件（src 213 + config 7 + console 10 + 根文件）；`RestrictedPython`、`capability-registry.yaml`、**`config/human_identities.json`、`config/auth_secrets.json`** 全部入包。整包冒烟：无令牌 `roster`→401、`/v1/health`→200、登录→令牌、带令牌 roster/summary/profile/enforcement 全 200。 |
-| A7 | 驾驶舱可用 | ✅ **通过（Round 89 重新发布）** | **当前外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，`verified:true`）。实测线上 `/v1/health` 200、无令牌 `/v1/dashboard/roster` 401、`auth/config` 报 `secret_store.configured=true` / `login_eligible_humans=1` / `diagnostics.algorithm=HS256`（Round 89 起用**烘焙的持久密钥**，旧行为是每进程随机的 RS256）/ `roundtrip=ok`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线**（实测其 `algorithm=RS256`，即修复前的旧包）：`unpublish` 被平台 403 挡住（`ListArtifactReleases: 10085:permission denied`），需手动在「设置—数据管理—应用」下线。 |
+| A7 | 驾驶舱可用 | ✅ **通过（Round 89 重新发布）** | **当前外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，`verified:true`）。实测线上 `/v1/health` 200、无令牌 `/v1/dashboard/roster` 401、`auth/config` 报 `secret_store.configured=true` / `login_eligible_humans=1` / `diagnostics.algorithm=HS256`（Round 89 起用**烘焙的持久密钥**，旧行为是每进程随机的 RS256）/ `roundtrip=ok`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线，且 API 侧已成孤儿**（Round 90 收口实测，三条路全被平台拒绝）：
+（1）`unpublish` + appId → `403 ListArtifactReleases: 10085:permission denied`（发布记录**按 `conversationId` 归属**，该 app 属 2026-09-13 那轮会话，本会话枚举不到）；
+（2）`deploy` + 旧 appId（覆盖）→ `无法复用应用 … 的原发布环境`；
+（3）再加 `replaceExistingApp:true` → 同一错误。
+对照试验确认它**确是本应用在服务**（标题同为 `LiuHao AI OS · 鎏灏智能中枢`；宿主机对不存在的子域返回 404，非泛化 200）。
+其暴露面实测为 **fail-closed**：`/v1/dashboard/roster` 401、`POST /v1/chat` 401、`/` 200（登录页）、`/v1/health` 200
+⇒ 定性为「不体面」，非安全事件。剩余人工路：① 在**发布它的那个会话（2026-09-13）**里下线；② 平台侧人工（报 appId）。 |
 | A8 | 测试与门禁 | ✅ 通过 | WS1–WS5 四个提交均 12/12 `success`（见 §6）；本轮本地：顶层 994 passed / importlib 208 modules FAILED=0。 |
 | A9 | 文档与手册 | ✅ **通过（WS4）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite）。 |
 | A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**（Ollama 走 `requests`，已在包内）。 |
