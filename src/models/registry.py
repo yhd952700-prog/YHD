@@ -12,11 +12,30 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, Optional, List
 
 import json
+import os
 import time
 import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Repository root, resolved from this file (src/models/registry.py -> parents[2]).
+# Used to make every default path below *portable*: the historical hard-coded
+# ``D:\LiuHao-AI-OS\...`` path does not exist inside the Linux release bundle
+# (``deploy/cloud/``), which is why model prices never reached production.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: Override for the registry's persistent state file.
+MODEL_REGISTRY_FILE_ENV = "LIUHAO_MODEL_REGISTRY_FILE"
+
+#: Override for the version-controlled model pricing file.
+#: Pricing lives under ``config/`` (which the release bundle copies) and **not**
+#: under ``data/`` -- ``data/`` is gitignored, so prices placed there would
+#: never be committed and never ship.
+MODEL_PRICING_FILE_ENV = "LIUHAO_MODEL_PRICING_FILE"
+
+DEFAULT_MODEL_REGISTRY_FILE = _REPO_ROOT / "data" / "model_registry.json"
+DEFAULT_MODEL_PRICING_FILE = _REPO_ROOT / "config" / "model_pricing.json"
 
 
 class ModelStatus:
@@ -87,17 +106,34 @@ class ModelRegistry:
     - Compatibility checking
     """
 
-    def __init__(self, storage_path: Optional[str] = None):
+    def __init__(
+        self,
+        storage_path: Optional[str] = None,
+        pricing_path: Optional[str] = None,
+    ):
         """
         Initialize Model Registry.
 
         Args:
-            storage_path: Path to model metadata storage file
+            storage_path: Path to model metadata storage file. Falls back to
+                ``$LIUHAO_MODEL_REGISTRY_FILE``, then to a path relative to the
+                repository root (portable -- the previous hard-coded Windows
+                path does not exist inside the Linux release bundle).
+            pricing_path: Path to the version-controlled pricing file. Falls
+                back to ``$LIUHAO_MODEL_PRICING_FILE``, then to
+                ``config/model_pricing.json``.
         """
-        self.storage_path = Path(storage_path) if storage_path else Path(
-            "D:\\LiuHao-AI-OS\\data\\model_registry.json"
+        self.storage_path = Path(
+            storage_path
+            or os.environ.get(MODEL_REGISTRY_FILE_ENV)
+            or DEFAULT_MODEL_REGISTRY_FILE
         )
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.pricing_path = Path(
+            pricing_path
+            or os.environ.get(MODEL_PRICING_FILE_ENV)
+            or DEFAULT_MODEL_PRICING_FILE
+        )
 
         # In-memory registry
         self._models: Dict[str, ModelMetadata] = {}
@@ -106,6 +142,93 @@ class ModelRegistry:
 
         # Load existing state
         self._load_state()
+        # Pricing is *configuration*, not persisted state: applied on top so a
+        # model can be priced without ever being registered as a model.
+        self._apply_pricing_config()
+
+    def _apply_pricing_config(self) -> None:
+        """Overlay ``config/model_pricing.json`` onto the registry.
+
+        A model only needs a price to make the cost guard work -- it does not
+        have to be a registered model. So an unknown id gets a minimal entry;
+        a known one has its ``estimated_cost_per_1k`` overridden.
+
+        Semantics, deliberately:
+        * the file is **optional** -- absent means "no prices configured",
+          which the guard already reports honestly as an unresolved operand;
+        * a malformed file is warned about and skipped, never fatal: pricing
+          must not be able to take the whole process down at start-up;
+        * nothing is written back -- config is not state.
+        """
+        if not self.pricing_path.exists():
+            logger.info(
+                "model pricing file %s not present; no model prices are "
+                "configured (the cost guard will report the cost as unknown)",
+                self.pricing_path,
+            )
+            return
+        try:
+            with open(self.pricing_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:  # pragma: no cover - defensive, config is untrusted
+            logger.warning(
+                "model pricing file %s could not be read; ignoring it",
+                self.pricing_path,
+                exc_info=True,
+            )
+            return
+
+        if not isinstance(data, dict):
+            logger.warning(
+                "model pricing file %s is not an object; ignoring it",
+                self.pricing_path,
+            )
+            return
+
+        applied = 0
+        for model_id, price in data.items():
+            # ``_``-prefixed keys carry documentation, not prices.
+            if model_id.startswith("_"):
+                continue
+            if not isinstance(price, (int, float)) or isinstance(price, bool):
+                logger.warning(
+                    "model pricing: price for %r is not a number (%r); skipping",
+                    model_id,
+                    price,
+                )
+                continue
+            if price < 0:
+                logger.warning(
+                    "model pricing: price for %r is negative (%r); skipping",
+                    model_id,
+                    price,
+                )
+                continue
+            self._set_price(model_id, float(price))
+            applied += 1
+
+        if applied:
+            logger.info(
+                "model pricing: applied %d price(s) from %s",
+                applied,
+                self.pricing_path,
+            )
+
+    def _set_price(self, model_id: str, price: float) -> None:
+        """Set the per-1k-token price of ``model_id``, creating a minimal entry."""
+        existing = self._models.get(model_id)
+        if existing is not None:
+            existing.estimated_cost_per_1k = price
+            return
+        self._models[model_id] = ModelMetadata(
+            model_id=model_id,
+            version="pricing",
+            model_type=ModelType.LLM,
+            name=model_id,
+            description="Priced via config/model_pricing.json (not a registered model).",
+            status=ModelStatus.ACTIVE,
+            estimated_cost_per_1k=price,
+        )
 
     def _load_state(self) -> None:
         """Load registry state from persistent storage."""
