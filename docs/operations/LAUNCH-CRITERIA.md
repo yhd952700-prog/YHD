@@ -82,10 +82,12 @@
 
 ## 6. 证据索引
 
-- **WS1 提交**：`d992de46`（`feat(execution): WS1 真实本地执行打通`），远端 tip 已对齐。
-- **WS1 CI**：run `34796348631`（`d992de46`）——**12/12 作业 `success`**（无 `skipped`），run 结论 `success`
-  （`gh run view 34796348631 --json jobs` 直查）。
-- **运行时探针**：`D:\cache\temp\ws1_runtime_probe.py`（三条路径：真执行 / 拒绝 / 无工具诚实失败）。
+- **提交**：`d992de46`（WS1）、`c123f977`（WS2+WS4），远端 tip 已对齐（逐个 SHA `MATCH`）。
+- **CI**：run `34796348631`（`d992de46`）与 run `34797538140`（`c123f977`）**均 12/12 作业 `success`**
+  （零 `skipped`、零 `failure`），run 结论 `success`（`gh run view <id> --json jobs` 直查）。
+- **可复现验证脚本**：`scripts/verify_real_execution.py`（4 项 ALL GREEN：真执行 385 / 拒绝 unsafe /
+  无工具诚实失败 / 显式 `success:False` 不被掩盖）。同族脚本：`verify_policy_c1.py`、
+  `verify_c2_enforcement.py`、`verify_c3_sovereignty.py`、`verify_c4_approval_channel.py`。
 - **测试**：`tests/test_local_tool_execution.py`（7）、`tests/test_execution_tool_bridge.py`（8，含诚实护栏）、
   `tests/kernels/`（663）、ai 层关键集（226，1 skipped）。
 - **本地五重验证**：`compileall` OK；`flake8 src/` exit 0；`importlib` 208 模块 `FAILED=0`；AST/运行时见探针。
