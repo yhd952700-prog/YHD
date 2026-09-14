@@ -52,7 +52,7 @@
 （3）再加 `replaceExistingApp:true` → 同一错误。
 对照试验确认它**确是本应用在服务**（标题同为 `LiuHao AI OS · 鎏灏智能中枢`；宿主机对不存在的子域返回 404，非泛化 200）。
 其暴露面实测为 **fail-closed**：`/v1/dashboard/roster` 401、`POST /v1/chat` 401、`/` 200（登录页）、`/v1/health` 200
-⇒ 定性为「不体面」，非安全事件。剩余人工路：① 在**发布它的那个会话（2026-09-13）**里下线；② 平台侧人工（报 appId）。 |
+⇒ 定性为「不体面」，非安全事件。剩余人工路：① 在**发布它的那个会话（2026-09-13）**里下线；② 平台侧人工（报 appId）。**Round 96**：新链接曾整条变 404（平台页「链接已失效 / 该应用尚未发布，或者发布已被作者取消」）⇒ 传**同一 `appId` 重新发布即原地复活、`shareLink` 不变**，恢复后复验 `HS256` + 前端指纹 `index-T9uDEQf9.js` + 无令牌 401 全过 ⇒ **链接不是永久物；验收必须复验，不能只看 `verified:true`**。 |
 | A8 | 测试与门禁 | ✅ 通过 | WS1–WS5 四个提交均 12/12 `success`（见 §6）；本轮本地：顶层 994 passed / importlib 208 modules FAILED=0。 |
 | A9 | 文档与手册 | ✅ **通过（WS4）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite）。 |
 | A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**（Ollama 走 `requests`，已在包内）。 |
@@ -112,10 +112,23 @@
   - **本机**：`.env` 已配 `AI_PROVIDER_TYPE=ollama` + `qwen2.5:3b`，是**真模型**。
     实测：`1+1等于几` → 4.4s 真回答；`帮我算 1..1000 平方和` → 1 次 `python_compute` 调用
     → 真值 `333833500` → 散文收口。`qwen2.5:7b` 在 CPU 上 30s 读超时，不可用。
-  - **线上发布包（Round 89 起）**：**已接入真云模型且已线上自证** —— 构建期把
+  - **线上发布包（Round 89 起）**：**已接入真云模型** —— 构建期把
     `AI_PROVIDER_TYPE=openai` / `gpt-5.6-sol` / `OPENAI_BASE_URL=https://jiefuai.vip/v1` / key
-    烘焙进 `serve.py`（key 只进 gitignore 的 `deploy/cloud/`，不入库）。**线上实测**
-    `POST /v1/chat`（带 `boss` 令牌）返回真模型答 `2187`。发布沙箱**能**够到该端点。
+    烘焙进 `serve.py`（key 只进 gitignore 的 `deploy/cloud/`，不入库）。**Round 89 线上实测**
+    `POST /v1/chat`（带 `boss` 令牌）返回真模型答 `2187`。
+    ⚠️ **Round 96 复检：该上游端点现 TCP 不可达 ⇒ 线上对话当前降级为诚实报错。** 实测本地
+    `curl https://jiefuai.vip/v1/models` 连续 3 次 `http=000`（约 21s 超时）、`-4`/`-6`/`:80` 全失败，
+    但 `ping 103.230.123.190` 通（79 ms、0% 丢包），且 `baidu`/`workbuddy.cn` 对照均 200
+    ⇒ **上游主机在、Web 服务或端口不可达**；**不是沙箱出网问题，也不是应用代码缺陷**。
+    表征为 `POST /v1/chat` → `HTTP 200` 但 `{"reply":"[生成失败] Connection error.","status":"error"}`
+    （诚实失败，**未用 mock 冒充真答**）。项目内**无备用 provider/key**（`.env` 仅 `localhost` 的
+    ollama，云沙箱够不到）⇒ 需提供可用端点/密钥；**端点恢复即自动可用，无需改码**。
+  - **Round 96 发布链接失效与恢复**：实测线上 `26430` 链接曾整条变 **404**
+    （平台页 `<title>链接已失效</title>` /「该应用尚未发布，或者发布已被作者取消」），
+    而旧链接 `84759` 仍 200（旧包）。**传同一 `appId` 重新发布即原地复活、`shareLink` 不变**
+    （新 `sandboxId=6ded52064ef84d5bb05ea19c61a19cf8`，`verified:true`）。恢复后复验：
+    `health` 200 / `auth/config` `HS256`+`roundtrip=ok` / 前端指纹 `index-T9uDEQf9.js`（新包）/ 无令牌 401。
+    ⇒ **验收不可只看 `verified:true`**，须复验算法、前端指纹与闸门。
 - **JWT 签名密钥随包发布，是刻意的取舍**：平台无密钥托管，要让令牌跨重启/跨 worker 存活就只能
   把密钥放进包里（与 LLM key 同一处理）。因此**发布包本身即敏感物**：谁拿到包内容谁就能铸造令牌。
   边界是「包不外泄」，而非「密钥不落盘」。若要更强的隔离，应换成平台侧密钥托管或 RS256 +
