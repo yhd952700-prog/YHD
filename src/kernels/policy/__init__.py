@@ -239,6 +239,33 @@ class PolicyCondition:
         except TypeError:
             return False
 
+    def missing_operands(self, context: Dict[str, Any]) -> List[str]:
+        """Return the context paths this condition needs but cannot resolve.
+
+        A condition that references an attribute absent from the context (or a
+        ``$path`` reference that resolves to nothing) evaluates to ``False``
+        without raising. That silence is dangerous for a DENY rule: "not
+        applicable because the input was missing" becomes indistinguishable
+        from "evaluated, and the action was within policy".
+
+        This method names the gap instead of hiding it. It is deliberately
+        read-only and does **not** influence :meth:`evaluate` -- existing
+        decisions are unchanged.
+
+        ``EXISTS`` / ``NOT_EXISTS`` are *assertions about presence*, so an
+        absent attribute is their normal, intended input and is not reported.
+        """
+        if self.operator in (PolicyOperator.EXISTS, PolicyOperator.NOT_EXISTS):
+            return []
+        missing = []
+        if self._get_nested(context, self.attribute) is None:
+            missing.append(self.attribute)
+        if isinstance(self.value, str) and self.value.startswith("$"):
+            reference = self.value[1:]
+            if self._get_nested(context, reference) is None:
+                missing.append(reference)
+        return missing
+
     def _get_nested(self, obj: Dict[str, Any], path: str) -> Any:
         """Get nested attribute using dot notation."""
         keys = path.split('.')
@@ -288,6 +315,20 @@ class PolicyDecision:
     traceability: List[str]
     context: Dict[str, Any]
     evaluated_at: datetime = field(default_factory=utc_now)
+    #: DENY rules that did not apply to this context because one of the
+    #: attributes they compare was absent. A rule listed here is a control
+    #: that did NOT gate the action -- so its absence from this list must
+    #: never be read as "the rule applied and the action passed it".
+    unapplied_deny_rules: List["PolicyRule"] = field(default_factory=list)
+    #: The context paths that blocked those DENY rules, e.g.
+    #: ``["resource.available", "action.estimated_cost"]``. This is the
+    #: machine-readable form of "this control did not run".
+    #:
+    #: Note the deliberate consequence: an *absent* input and an input that
+    #: satisfied the policy both leave the rule out of ``denied_rules``, so
+    #: ``denied_rules`` alone cannot distinguish them. This list is what
+    #: makes the two distinguishable.
+    unresolved_operands: List[str] = field(default_factory=list)
 
     @property
     def is_allowed(self) -> bool:
@@ -403,6 +444,10 @@ class PolicyEngine:
                 name="Scope Enforcement",
                 description="Agents cannot exceed their autonomy scope",
                 conditions=[
+                    # Explicit input requirements: state what this rule needs
+                    # rather than silently declining to apply when it is absent.
+                    PolicyCondition("agent.scope", PolicyOperator.EXISTS, True),
+                    PolicyCondition("action.required_scope", PolicyOperator.EXISTS, True),
                     PolicyCondition("agent.scope", PolicyOperator.LT, "$action.required_scope"),
                 ],
                 action=PolicyAction.DENY,
@@ -436,6 +481,11 @@ class PolicyEngine:
                 name="Resource Quota Enforcement",
                 description="Actions cannot exceed resource quotas",
                 conditions=[
+                    # Explicit input requirements. Without these the rule
+                    # silently declined to apply whenever the caller omitted
+                    # either number, and nothing in the decision said so.
+                    PolicyCondition("resource.available", PolicyOperator.EXISTS, True),
+                    PolicyCondition("action.estimated_cost", PolicyOperator.EXISTS, True),
                     PolicyCondition("resource.available", PolicyOperator.LT, "$action.estimated_cost"),
                 ],
                 action=PolicyAction.DENY,
@@ -549,6 +599,8 @@ class PolicyEngine:
             denied = []
             abstained = []
             traceability = []
+            unapplied_deny_rules: List[PolicyRule] = []
+            unresolved_operands: List[str] = []
 
             # Evaluate rules in precedence order
             for rule in rules:
@@ -571,6 +623,8 @@ class PolicyEngine:
                                 abstained_rules=abstained,
                                 traceability=traceability,
                                 context=context,
+                                unapplied_deny_rules=unapplied_deny_rules,
+                                unresolved_operands=unresolved_operands,
                             )
                     elif rule.action == PolicyAction.DENY:
                         denied.append(rule)
@@ -582,9 +636,25 @@ class PolicyEngine:
                             abstained_rules=abstained,
                             traceability=traceability,
                             context=context,
+                            unapplied_deny_rules=unapplied_deny_rules,
+                            unresolved_operands=unresolved_operands,
                         )
                     elif rule.action == PolicyAction.ABSTAIN:
                         abstained.append(rule)
+                else:
+                    # A DENY rule that declined to apply because a required
+                    # attribute was absent is a control that did NOT run. The
+                    # decision must never look like "the rule applied and the
+                    # action passed it" -- record the gap explicitly instead.
+                    if rule.action == PolicyAction.DENY:
+                        missing: List[str] = []
+                        for condition in rule.conditions:
+                            missing.extend(condition.missing_operands(context))
+                        if missing:
+                            unapplied_deny_rules.append(rule)
+                            for path in missing:
+                                if path not in unresolved_operands:
+                                    unresolved_operands.append(path)
 
             # No explicit ALLOW - check if any DENY matched
             if denied:
@@ -595,6 +665,8 @@ class PolicyEngine:
                     abstained_rules=abstained,
                     traceability=traceability,
                     context=context,
+                    unapplied_deny_rules=unapplied_deny_rules,
+                    unresolved_operands=unresolved_operands,
                 )
 
             # No applicable rules
@@ -605,6 +677,8 @@ class PolicyEngine:
                 abstained_rules=abstained,
                 traceability=traceability,
                 context=context,
+                unapplied_deny_rules=unapplied_deny_rules,
+                unresolved_operands=unresolved_operands,
             )
 
     def evaluate_simple(

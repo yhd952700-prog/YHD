@@ -43,15 +43,31 @@
 
 ### 1.2 内核层实证（恒 deny）
 
-内置 5 条规则（按 precedence 降序）：
+内置 6 条规则（按 precedence 降序；`internal_service_allow` 见 §10 C-1）：
 
-| rule id | precedence | 条件 | action | scope |
-|---|---|---|---|---|
-| `human_sovereignty` | 1000 | `actor.type==human` ∧ `risk_level∈{HIGH,CRITICAL}` ∧ `actor.verified==True` | ALLOW | L0 |
-| `capability_required` | 200 | `action.required_capability` EXISTS ∧ ¬(agent.capabilities ∋ it) | DENY | L1 |
-| `quota_enforcement` | 150 | `resource.available` < `action.estimated_cost` | DENY | L2 |
-| `scope_enforcement` | 100 | `agent.scope` < `action.required_scope` | DENY | L0 |
-| `default_deny` | −1000 | `action` EXISTS | DENY | L7 |
+| rule id | precedence | 条件 | 所需输入 | action | scope |
+|---|---|---|---|---|---|
+| `human_sovereignty` | 1000 | `actor.type==human` ∧ `risk_level∈{HIGH,CRITICAL}` ∧ `actor.verified==True` | — | ALLOW | L0 |
+| `internal_service_allow` | 900 | `actor.type==service` ∧ `actor.verified==True` ∧ `action.name ∈ 白名单(14)` | `action.name` | ALLOW | L0 |
+| `capability_required` | 200 | `action.required_capability` EXISTS ∧ ¬(`agent.capabilities` ∋ it) | `action.required_capability`、`agent.capabilities` | DENY | L1 |
+| `quota_enforcement` | 150 | `resource.available` < `action.estimated_cost` | **`resource.available` + `action.estimated_cost`** | DENY | L2 |
+| `scope_enforcement` | 100 | `agent.scope` < `action.required_scope` | **`agent.scope` + `action.required_scope`** | DENY | L0 |
+| `default_deny` | −1000 | `action` EXISTS | — | DENY | L7 |
+
+> **「所需输入」列的意义**（2026-09-14 增补）：比较类条件在操作数缺失时求值为 `False`，
+> 于是规则**静默不适用**。在此之前，决策里**没有任何字段**能区分
+> 「查过了，合规」与「根本没查，因为没人给数据」——一个没运行的安全控制，看起来和一个
+> 运行了并且放行的控制**完全一样**。现已通过 `PolicyDecision.unapplied_deny_rules` +
+> `unresolved_operands` 使之可观测（实现与实测见 `docs/POLICY-RULE-OBSERVABILITY-DESIGN.md`）。
+> `quota_enforcement` / `scope_enforcement` 同时补上了 `EXISTS` 前置条件，把"需要什么输入"
+> 从**隐含**变成**声明**；补门**不改变任何判决**（门为真时比较才有可能为真）。
+>
+> **⚠️ 实测（同日）：`quota_enforcement` 目前在生产里不可能触发。** ① 全仓**没有任何调用点**
+> 传 `estimated_cost`（`AgentPolicy.authorize` 只声明了形参；`economy.py` 的成本字典从不进
+> policy 引擎）；② `AgentPolicy.authorize` 传 `scope=L1`，而该规则声明 `scope=L2` ⇒
+> 被 scope 过滤整个滤掉（同路径上 `default_deny`(L7) 也被滤掉）。故
+> **"Actions cannot exceed resource quotas" 目前是一条无法执行的声明**；本次只把它
+> **变得可见**，未擅自改动是否强制（那是策略决策）。
 
 `_adjudicate` 发的是 `actor={"type":"system","verified":True}`、`action={"name":…,"risk_level":…}`、`resource=None`、`scope=None`。逐规则推导：
 
