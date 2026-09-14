@@ -13,15 +13,20 @@ policies, Vault Transit integration for crypto operations, and full audit loggin
 """
 from __future__ import annotations
 
-from datetime import datetime
-from src._time import utc_now
+import logging
 import threading
+from datetime import datetime
+
+from src._time import utc_now
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
 from src.kernels._crosscutting import kernel_action
+from ._permission_map import get_mapping
+
+_log = logging.getLogger(__name__)
 
 # Vault availability probe.
 #
@@ -606,6 +611,26 @@ class SecurityEngine:
                     )
                 self._audit_log.append(override_audit)
 
+            # Convergence observability: an unknown or unseeded permission is
+            # *always* denied (``check_rbac`` is fail-closed), and until now
+            # that denial was indistinguishable from "checked and refused".
+            # Naming the difference is what makes the A/B gap actionable.
+            mapping = get_mapping(permission)
+            if mapping is None:
+                _log.warning(
+                    "access decision on UNREGISTERED permission %r (principal=%r): "
+                    "no rule can ever match, so this is denied by default. Register "
+                    "it in src/kernels/security/_permission_map.py.",
+                    permission, principal_id,
+                )
+            elif not mapping.role:
+                _log.warning(
+                    "access decision on UNSEEDED permission %r (principal=%r): the "
+                    "permission is known but no seed rule grants it, so this is "
+                    "denied for everyone.",
+                    permission, principal_id,
+                )
+
             result = {
                 "decision": decision.value,
                 "principal_id": principal_id,
@@ -615,6 +640,9 @@ class SecurityEngine:
                 "abac_check": abac_value,
                 "reason": "; ".join(parts),
                 "human_override": human_override,
+                "permission_known": mapping is not None,
+                "permission_seeded": bool(mapping and mapping.role),
+                "kernel_actions": list(mapping.kernel_actions) if mapping else [],
             }
 
             # Record decision audit
