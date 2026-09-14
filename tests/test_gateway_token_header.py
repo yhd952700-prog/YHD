@@ -229,39 +229,30 @@ class TestOtherTokenReadersUseTheSameRule:
 
 
 # ---------------------------------------------------------------------------
-# 4. /v1/auth/config 的部署诊断：有用，但不得泄露任何秘密
+# 4. /v1/auth/config 是公开端点：只报计数与布尔，不得回显、不得带诊断
 # ---------------------------------------------------------------------------
 
 
-class TestAuthConfigDiagnostics:
-    def test_diagnostics_report_public_facts_only(self, client, auth_env):
-        body = client.get("/v1/auth/config").json()
-        diagnostics = body["diagnostics"]
-        assert diagnostics.get("algorithm")
-        # 自检必须回答"本进程能否接受本进程签发的令牌"。
-        assert diagnostics.get("roundtrip") == "ok"
-
-    def test_diagnostics_do_not_leak_server_filesystem_paths(self, client, auth_env):
-        # /v1/auth/config 是公开端点；泄露 jwt 库的绝对路径就是一条无谓的信息
-        # 披露。版本号 + 算法列表已足够定位"加载的是哪个库"。
+class TestAuthConfigDisclosure:
+    def test_public_config_does_not_leak_server_filesystem_paths(self, client, auth_env):
+        # /v1/auth/config 是公开端点。历史上它一度带上过诊断字段（算法/库版本/
+        # 请求头回显），那些字段在定位完"托管网关改写 Authorization"这一根因后
+        # 已被摘除 —— 公开端点每多一个字段就是多一分暴露面。本用例保留的只是那
+        # 条**不变量**：任何情况下都不得泄露服务端路径。
         raw = client.get("/v1/auth/config").text
         assert "site-packages" not in raw
         assert "library_path" not in raw
 
-    def test_request_probe_reflects_but_never_echoes_the_token(self, client, auth_env):
+    def test_public_config_has_no_diagnostic_or_probe_fields(self, client, auth_env):
+        # 反回潮：诊断/回显字段不得再回到公开端点上。
+        body = client.get("/v1/auth/config").json()
+        assert "diagnostics" not in body
+        assert "request_probe" not in body
+
+    def test_public_config_never_echoes_the_caller_token(self, client, auth_env):
         _register_human("xin.hongda")
         token = _login(client)
-        probe = client.get(
+        text = client.get(
             "/v1/auth/config", headers={STANDARD_TOKEN_HEADER: f"Bearer {token}"}
-        ).json()["request_probe"]
-
-        assert probe["present"] is True
-        assert probe["token_len"] == len(token)
-        assert probe["token_segments"] == 3
-        # 只描述长度与算法，绝不回显令牌本身。
-        assert token not in client.get("/v1/auth/config").text
-
-    def test_request_probe_is_honest_when_the_header_is_absent(self, client, auth_env):
-        probe = client.get("/v1/auth/config").json()["request_probe"]
-        assert probe["present"] is False
-        assert "token_len" not in probe
+        ).text
+        assert token not in text

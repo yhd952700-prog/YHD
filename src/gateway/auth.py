@@ -59,7 +59,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .policy import extract_bearer_token, require_bearer_payload
@@ -379,107 +379,6 @@ def _ttl_seconds() -> int:
     return max(MIN_TTL_SECONDS, min(MAX_TTL_SECONDS, value))
 
 
-def _jwt_roundtrip(handler) -> str:
-    """Sign a throwaway token and verify it with the *same* handler.
-
-    Diagnostic only: the token is never returned, just the verdict. It answers
-    the one question that a 401 from ``/v1/auth/me`` cannot: does *this
-    process* accept the tokens *this process* issues? A deployment where that
-    is false hands out credentials nobody can present -- auth that looks armed
-    and is not. ``/v1/auth/me`` cannot explain that failure because it is
-    swallowed into a 401 detail string.
-    """
-    try:
-        from ..security.jwt_handler import TokenType
-
-        token, _ = handler.create_token(
-            subject="__selftest__",
-            token_type=TokenType.ACCESS,
-            ttl=MIN_TTL_SECONDS,
-        )
-        handler.validate_access_token(token)
-        return "ok"
-    except Exception as exc:  # noqa: BLE001 -- the verdict *is* the payload
-        return f"failed: {type(exc).__name__}: {exc}"
-
-
-def _jwt_diagnostics() -> Dict[str, Any]:
-    """Report the JWT parameters actually in force in this process.
-
-    Everything here is either already public (the algorithm, issuer and
-    audience are legible in any issued token's header) or a verdict string.
-    No key material and no credential is exposed.
-    """
-    out: Dict[str, Any] = {}
-    try:
-        from ..security import get_jwt_handler
-
-        handler = get_jwt_handler()
-        out["algorithm"] = getattr(handler, "algorithm", None)
-        out["issuer"] = getattr(handler, "issuer", None)
-        out["audience"] = getattr(handler, "audience", None)
-        out["handler_module"] = f"{type(handler).__module__}.{type(handler).__qualname__}"
-        out["roundtrip"] = _jwt_roundtrip(handler)
-    except Exception as exc:  # noqa: BLE001
-        out["handler_error"] = f"{type(exc).__name__}: {exc}"
-
-    try:
-        import jwt as _jwt
-        from jwt.algorithms import get_default_algorithms
-
-        out["library_version"] = getattr(_jwt, "__version__", "unknown")
-        out["library_algorithms"] = sorted(get_default_algorithms().keys())
-    except Exception as exc:  # noqa: BLE001
-        out["library_error"] = f"{type(exc).__name__}: {exc}"
-
-    return out
-
-
-def _unverified_header_alg(token: str) -> Optional[str]:
-    """Read ``alg`` from a JWT header without verifying anything.
-
-    Bounded and non-raising: it only ever describes the caller's own token,
-    and a malformed one must not turn a diagnostic into a 500.
-    """
-    try:
-        segment = token.split(".", 1)[0]
-        padded = segment + "=" * (-len(segment) % 4)
-        header = json.loads(base64.urlsafe_b64decode(padded))
-    except Exception:  # noqa: BLE001
-        return None
-    alg = header.get("alg") if isinstance(header, dict) else None
-    return str(alg)[:32] if alg is not None else None
-
-
-def _authorization_probe(request: Request) -> Dict[str, Any]:
-    """Report the ``Authorization`` header as *this process* actually got it.
-
-    Everything returned is the caller's own input reflected back -- no secret
-    of ours. It exists because a reverse proxy that injects or shadows an
-    ``Authorization`` header makes every bearer check fail for everybody, and
-    from inside the app that is indistinguishable from a token bug: the app
-    sees a well-formed ``Bearer ...`` whose algorithm it does not recognise.
-    """
-    values = request.headers.getlist("authorization")
-    out: Dict[str, Any] = {
-        "authorization_header_count": len(values),
-        "header_names": sorted({name.lower() for name in request.headers.keys()}),
-    }
-    if not values:
-        out["present"] = False
-        return out
-
-    raw = values[0]
-    scheme, _, token = raw.partition(" ")
-    out["present"] = True
-    out["raw_len"] = len(raw)
-    out["scheme"] = scheme
-    out["token_len"] = len(token)
-    out["token_segments"] = token.count(".") + 1
-    out["header_alg"] = _unverified_header_alg(token)
-    return out
-
-
 def _human_identity(principal: str):
     """Ask the Identity Kernel whether this principal is a login-eligible human.
 
@@ -644,11 +543,12 @@ def auth_logout(
 
 
 @router.get("/auth/config", response_model=Dict[str, Any])
-def auth_config(request: Request) -> Dict[str, Any]:
+def auth_config() -> Dict[str, Any]:
     """What the login page needs to describe the current auth state.
 
     Public by necessity. It therefore reports *counts and booleans* about the
-    credential store -- never principals, salts or hashes.
+    credential store -- never principals, salts or hashes, and never anything
+    echoed back from the caller's own request headers.
     """
     from ..kernels.identity import get_identity_manager, is_human_identity
 
@@ -694,7 +594,5 @@ def auth_config(request: Request) -> Dict[str, Any]:
         "login_eligible_humans": len(eligible),
         "client_modes": list(CLIENT_MODES),
         "token": {"ttl_seconds": _ttl_seconds()},
-        "diagnostics": _jwt_diagnostics(),
-        "request_probe": _authorization_probe(request),
         "message": message,
     }
