@@ -14,11 +14,11 @@
 > **一个真实自主任务能端到端跑完（真执行，非模拟），且系统对它做不到的事诚实。**
 
 即：`Human Sovereignty Above All` + `More Capability ≠ More Authority` 不只是口号，
-而是**运行时可观测的行为**。拆成 10 条可验证判据（§2）。
+而是**运行时可观测的行为**。拆成 11 条可验证判据（§2）。
 
 ---
 
-## 2. 验收维度（10 条）
+## 2. 验收维度（11 条）
 
 | # | 维度 | 可核实判据（the bar） |
 |---|---|---|
@@ -32,6 +32,7 @@
 | **A8** | 测试与门禁 | CI 全绿（含 Architecture Gate **真拦截**，非 `skipped`）；本地五重验证（compileall / flake8 / AST / importlib / runtime）。 |
 | **A9** | 文档与手册 | 运行手册与**真实单端口架构**一致（不是泛化的 Docker/K8s 模板）。 |
 | **A10** | 供应链/依赖 | 新依赖四方同步（pyproject / requirements / oss-registry / lock）；无未声明依赖。 |
+| **A11** | 访问控制 | 控制台**登录才能用**：业务端点（chat / dashboard / roster / profile / knowledge）无令牌一律 401；只有 `/v1/health`、`/v1/ready`、`/v1/auth/*` 与登录页公开；且至少存在 1 个**可登录的人类**，否则 fail-closed 变成"谁都进不去"。 |
 
 ---
 
@@ -42,13 +43,14 @@
 | A1 | 真实执行 | ✅ **通过（WS1，本轮）** | 探针：目标 `"python: result = sum(i*i for i in range(1,11))"` → `status=executed`、`result='385'`。提交 `d992de46`。 |
 | A2 | 诚实失败 | ✅ **通过（WS1，本轮）** | 探针三路径：真执行 385 / 注入 `import os` → `REJECTED: ImportError` / 未接线 → `no active tool for capability python_compute`。护栏 `tests/test_execution_tool_bridge.py::(h)`。 |
 | A3 | 能力状态诚实 | ✅ **通过（WS2，本轮）** | `capability-registry.yaml` 新增 `local-capabilities`（python_compute）与 `known-open-items`（OPEN-001..006）；名册端点 20 项测试通过。 |
-| A4 | 人类主权护栏 | ✅ **通过（WS3，本轮复验）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。默认 OFF 由 AST 护栏锁定（`no production @kernel_action has enforce=True`）。C-7 身份正向白名单测试通过。生产 arm 属**部署决定**（前置：身份表已挂）。 |
+| A4 | 人类主权护栏 | ✅ **通过（WS3 复验 + P2 裁决）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。源码默认 OFF 仍由 AST 护栏锁死（`no production @kernel_action has enforce=True`）。**P2 裁决：发布包 serve.py `setdefault LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（与生产 compose 同值）—— 前提是身份表已挂（见 A11），实测线上 `enabled=true / 16 个动作`；回滚 = 导出空值重启。 |
 | A5 | 可观测 | ✅ 通过 | 审计哈希链 + 事件总线 + trace（既有实现与测试）。 |
-| A6 | 可复现部署 | ✅ **通过（WS4，本轮）** | 重建发布包 228 文件（src 213 + config 6 + console 10 + 根文件）；本地冒烟：`/v1/ready`→200、`/v1/dashboard/roster`→200（`available=true`，14 内核 + 14 层 = 28 员工）、`/`→200。补 `RestrictedPython` 显式运行时依赖 + `capability-registry.yaml` 入包。 |
-| A7 | 驾驶舱可用 | ✅ **通过（WS5，已上线）** | **新外链在线：`https://liuhao-cockpit-84759.app.workbuddy.host/`**（appId `wbapp_AAy6Aj792OFtebl532XN9S`，`verified=true`）。线上实测 `/`、`/v1/ready`、`/v1/health`、`/v1/dashboard/roster` **全 200**，名册返回真实 28 条目（旧版该端点 404 ⇒ 新版已生效的确证）。**模型仍为 mock（见 §5）**。 |
-| A8 | 测试与门禁 | ✅ 通过 | 历史 6 连全绿 + WS1 CI run（见 §6）。 |
-| A9 | 文档与手册 | ✅ **通过（WS4，本轮）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite；移除 Redis/Postgres/K8s 假设与占位联系方式）。 |
-| A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**。 |
+| A6 | 可复现部署 | ✅ **通过（WS4 + P0 重建）** | 发布包 229 文件（src 213 + config 7 + console 10 + 根文件）；`RestrictedPython`、`capability-registry.yaml`、**`config/human_identities.json`、`config/auth_secrets.json`** 全部入包。整包冒烟：无令牌 `roster`→401、`/v1/health`→200、登录→令牌、带令牌 roster/summary/profile/enforcement 全 200。 |
+| A7 | 驾驶舱可用 | ✅ **通过（WS5 上线）** | **外链：`https://liuhao-cockpit-84759.app.workbuddy.host/`**（appId `wbapp_AAy6Aj792OFtebl532XN9S`）。线上 `/v1/dashboard/roster` 由旧版 404 变为 200 且返回真实 28 条目 ⇒ 新版已生效。**模型仍为 mock（见 §5）**。 |
+| A8 | 测试与门禁 | ✅ 通过 | WS1–WS5 四个提交均 12/12 `success`（见 §6）；本轮本地：顶层 994 passed / importlib 208 modules FAILED=0。 |
+| A9 | 文档与手册 | ✅ **通过（WS4）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite）。 |
+| A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**（Ollama 走 `requests`，已在包内）。 |
+| A11 | 访问控制 | ✅ **通过（P0，本轮）** | 业务路由在 `include_router(dependencies=[Depends(require_human_principal)])` 上挂闸门；新护栏 `tests/test_gateway_auth.py::TestProtectedRouters`（6 项）全绿；实测无令牌 401 / 登录后 200。已挂初始人类 `boss`（`login_eligible_humans=1`）。 |
 
 图例：✅ 通过　🟡 部分 / 进行中　❌ 未达
 
@@ -63,8 +65,15 @@
 5. [x] **提交 + 推送 + CI 全绿** —— ✅ 已完成（`d992de46`/`c123f977`/`85163ce4`/`5a211d2a` 四次均 12/12 `success`；远端 tip = `5a211d2a`）。
 6. [x] **WS5**：线上发布新版 —— ✅ 已完成。原 appId 发布环境不可复用 ⇒ 新建应用上线：
    `https://liuhao-cockpit-84759.app.workbuddy.host/`（线上四端点全 200、名册真实）。
-7. [ ] （**生产**）挂载身份表 + 决策 C-2 是否 arm（arm 前必须确认身份表已挂）。
-8. [ ] （**生产**）接真实 LLM provider（当前外链对话仍是 mock 模型）。
+7. [x] **P0**：控制台「登录才能用」—— ✅ 已完成。业务路由统一挂 `require_human_principal`
+   （`src/gateway/main.py` 的 `include_router(dependencies=[...])`）；注册初始主权人类 `boss`；
+   新增护栏 `TestProtectedRouters`（6 项）。附带修复：`register_human_identity.py` 的
+   `--file` 默认值此前只存在于帮助文本，导致裸命令报 `could not write to the store (file @ )`。
+8. [x] **P2**：生产治理裁决 —— ✅ 已完成（见 A4）。身份表 + 凭据随包发布；发布包
+   `serve.py` 默认 arm `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`，回滚 = 导出空值重启。
+9. [ ] **P1-b**：线上接真实 LLM —— ⏳ **只差一个云端 API key**。
+   本地已切 Ollama `qwen2.5:3b`（`.env` 既有），实测真回答 + 真工具调用；
+   线上 sandbox 够不到本机 11434，必须走 `openai` / `deepseek` / `moonshot` 等云端 key。
 
 ---
 
@@ -74,10 +83,17 @@
 
 - **本地沙箱只提供能力隔离，无资源隔离**：禁 `import`/`open`/`eval`，CPU 靠子进程超时兜底，
   但**无内存上限**（`memory_limit_enforced=False`）。
-- **LLM 默认 mock**：`AI_PROVIDER_TYPE=mock` 时不产生真实模型智能；真实 provider 需配置密钥。
+- **LLM 分两种部署，别混为一谈**：
+  - **本机**：`.env` 已配 `AI_PROVIDER_TYPE=ollama` + `qwen2.5:3b`，是**真模型**。
+    实测：`1+1等于几` → 4.4s 真回答；`帮我算 1..1000 平方和` → 1 次 `python_compute` 调用
+    → 真值 `333833500` → 散文收口。`qwen2.5:7b` 在 CPU 上 30s 读超时，不可用。
+  - **线上发布包**：**仍是 `mock-model`** —— sandbox 够不到本机 Ollama，且包内不含 `.env`。
+    对外必须说「演示模型」，不得称其为真 AI。
 - **WebSocket 适配器不投递**：无 WS 依赖时**诚实拒绝**，不伪造成功。
 - **Vault 未安装**（`vault_connect`）：读密恒为空操作。
 - **Context 内核默认空转**：HYBRID/UNIFORM 默认权重下典型输入全部 discarded。
+- **公开面**只有 `/v1/health`、`/v1/ready`、`/v1/auth/*` 与登录页；其余端点均需令牌。
+  `auth_required` 恒为 `true`（fail-closed）——**没有凭据就没人能登录**，这是设计而非故障。
 
 > 完整机器可读清单：`capability-registry.yaml` → `known-open-items`。
 

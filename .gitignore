@@ -88,6 +88,11 @@ LiuHao-O/*
 # 样例见 config/human_identities.example.json
 config/human_identities.json
 
+# ===== 登录凭据库（PBKDF2 salt+hash）=====
+# 虽然只存哈希不存明文，它仍是凭据材料：入库=每个克隆者都是凭据持有者。
+# 由 scripts/register_human_identity.py --password 生成（默认落在这里）。
+config/auth_secrets.json
+
 # ===== 发布包（由 scripts/build_cloud_bundle.py 生成）=====
 # 它是 src/ 与前端 dist 的副本，入库只会带来 200 个必然漂移的冗余文件。
 # 需要时重新生成即可：python scripts/build_cloud_bundle.py

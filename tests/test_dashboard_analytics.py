@@ -20,8 +20,9 @@ from src.gateway.main import get_app
 
 
 @pytest.fixture
-def client():
-    with TestClient(get_app()) as test_client:
+def client(auth_headers):
+    # 遥测端点在控制台鉴权闸门之后，因此带一个真实签发的令牌。
+    with TestClient(get_app(), headers=auth_headers) as test_client:
         yield test_client
 
 

@@ -13,7 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Request, APIRouter
+from fastapi import FastAPI, Request, APIRouter, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -291,30 +291,44 @@ def get_app() -> FastAPI:
 
     # ==================== Include routers ====================
 
+    # 鉴权闸门：单个依赖实例，供下面所有"登录后才能用"的路由复用。
+    #
+    # 为什么在 include_router 这一层挂，而不是逐个端点加参数：
+    #   1) 一处声明 = 一处可审计。逐个端点加签名，漏掉一个就是一个洞，而且
+    #      新增端点的人不会知道自己漏了；挂在这里，新增路由必须显式选择
+    #      "公开"还是"走闸门"，漏挂会立刻在测试里暴 401。
+    #   2) 与前端一致：console 的 Login.tsx/auth.ts 早已做了登录墙，
+    #      后端此前没跟上 —— 这是"前端有门、后端有洞"的修复。
+    #
+    # 公开（**故意不挂**）：health(/v1/health /ready /metrics)、auth(/v1/auth/*)、
+    # 以及同源静态驾驶舱（登录页本身必须能在未登录时加载）。
+    from .policy import require_human_principal as _require_human
+
     app.include_router(health_router)
     app.include_router(api_router, prefix="/api")
 
     # Business routers (Phase 2.3 RAG knowledge endpoints).
     from src.api.routes.knowledge import router as knowledge_router
-    app.include_router(knowledge_router)
+    app.include_router(knowledge_router, dependencies=[Depends(_require_human)])
 
     # 鎏灏对话端点（真实 LLM 对话闭环）。
     from .chat import router as chat_router
-    app.include_router(chat_router)
+    app.include_router(chat_router, dependencies=[Depends(_require_human)])
 
     # 驾驶舱遥测端点（console CEO Command Center 的真实数据源）。
     from .dashboard import router as dashboard_router
-    app.include_router(dashboard_router)
+    app.include_router(dashboard_router, dependencies=[Depends(_require_human)])
 
     # AI 员工名册端点（真实注册表：14 内核 + 14 能力层 + provider 面）。
     from .roster import router as roster_router
-    app.include_router(roster_router)
+    app.include_router(roster_router, dependencies=[Depends(_require_human)])
 
     # 个人画像端点（KAREN Personal Intelligence 的真实读写面）。
     from .profile import router as profile_router
-    app.include_router(profile_router)
+    app.include_router(profile_router, dependencies=[Depends(_require_human)])
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
+    # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router
     app.include_router(policy_router)
 

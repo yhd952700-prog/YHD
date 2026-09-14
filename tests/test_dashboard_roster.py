@@ -32,9 +32,10 @@ from src.gateway.roster import (
 
 
 @pytest.fixture
-def client():
+def client(auth_headers):
     # `with` 才会跑 lifespan；与 tests/test_console_single_port.py 同一约定。
-    with TestClient(get_app()) as test_client:
+    # 名册端点在控制台鉴权闸门之后，因此带一个真实签发的令牌。
+    with TestClient(get_app(), headers=auth_headers) as test_client:
         yield test_client
 
 

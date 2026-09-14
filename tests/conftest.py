@@ -140,6 +140,28 @@ def _isolate_memory_kernel(tmp_path_factory):
         os.environ["MEMORY_DB_PATH"] = previous
 
 
+# ==================== Console auth (bearer token) ====================
+
+
+@pytest.fixture
+def auth_headers():
+    """A real bearer token, exactly what the console carries after login.
+
+    Since the auth gate was added to ``include_router`` (chat / dashboard /
+    roster / profile / knowledge), those endpoints answer 401 without one. Test
+    clients that exercise their *behaviour* -- not their access control -- pass
+    these headers as a default; tests that assert the 401 itself simply omit
+    them (see ``tests/test_gateway_auth.py``).
+
+    Minted through the same ``get_jwt_handler()`` the gateway validates with, so
+    this exercises the real signature check rather than stubbing it out.
+    """
+    from src.security import get_jwt_handler
+
+    token, _payload = get_jwt_handler().create_token(subject="test-human")
+    return {"Authorization": f"Bearer {token}"}
+
+
 # ==================== Test Path Configuration ====================
 
 # Ensure test output directories exist

@@ -138,6 +138,26 @@ def build_store(args: argparse.Namespace):
         os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = args.backend
     if args.db:
         os.environ[HUMAN_IDENTITIES_DB_ENV] = str(Path(args.db).expanduser())
+
+    # Apply the default the ``--file`` help already promises.
+    #
+    # ``resolve_human_identity_store`` deliberately returns an *empty* location
+    # when nothing is configured, so that a running service with no store loads
+    # nobody (fail-closed). For the *registration* CLI that same emptiness is
+    # only a trap: both ``cmd_list`` and ``cmd_register`` print the bare
+    # ``--principal <name>`` command as the fix, and running it died with
+    # ``could not write to the store (file @ )`` -- i.e. the documented default
+    # existed only in the help text. Registering is an explicit, operator-driven
+    # act, so materialising the default here is the intended behaviour; the
+    # service still loads nobody until its own env points at this file.
+    backend = (os.environ.get(HUMAN_IDENTITIES_BACKEND_ENV) or "").strip().lower()
+    if (
+        not os.environ.get(HUMAN_IDENTITIES_FILE_ENV)
+        and not os.environ.get(HUMAN_IDENTITIES_DB_ENV)
+        and backend != BACKEND_SQLITE
+    ):
+        os.environ[HUMAN_IDENTITIES_FILE_ENV] = str(DEFAULT_FILE)
+
     return resolve_human_identity_store()
 
 

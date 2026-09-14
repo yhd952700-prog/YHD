@@ -122,13 +122,38 @@ _console = os.path.join(BUNDLE_ROOT, "console")
 if os.path.isdir(_console):
     os.environ.setdefault("LIUHAO_CONSOLE_DIST", _console)
 
-# The README/runbook convention is to point the kernel at the bundled seed
-# file. The seed ships empty, so this registers nobody and the fail-closed
-# default stands -- it only turns "(unconfigured)" into a real path in the
-# boot log, and gives a would-be operator a name for the file to edit.
-_seed = os.path.join(BUNDLE_ROOT, "config", "human_identities.json")
-if os.path.isfile(_seed):
-    os.environ.setdefault("LIUHAO_HUMAN_IDENTITIES_FILE", _seed)
+# Point the kernel at the bundled identity registry + credential store.
+#
+# These are exactly the two files scripts/register_human_identity.py writes
+# under config/; the builder copies config/ into the bundle. The gateway
+# requires a bearer token for chat / dashboard / profile / knowledge, so a
+# bundle that does not tell the kernel about them boots "healthy" and is then
+# unusable -- a login wall with nobody able to pass it.
+#
+# When no operator has registered anyone the file is an empty seed and the
+# kernel loads nobody, i.e. the fail-closed default is unchanged.
+_IDENTITY_FILE = os.path.join(BUNDLE_ROOT, "config", "human_identities.json")
+if os.path.isfile(_IDENTITY_FILE):
+    os.environ.setdefault("LIUHAO_HUMAN_IDENTITIES_FILE", _IDENTITY_FILE)
+
+_SECRETS_FILE = os.path.join(BUNDLE_ROOT, "config", "auth_secrets.json")
+if os.path.isfile(_SECRETS_FILE):
+    os.environ.setdefault("LIUHAO_AUTH_SECRETS_FILE", _SECRETS_FILE)
+
+# Policy Controlled, level 2: the kernel really blocks HIGH/CRITICAL actions
+# unless a verified human issued a grant for them (OD-010). Without this the
+# deployment only *records* (level 1) and the "human sovereignty" claim is a
+# log line rather than an enforced boundary.
+#
+# This mirrors docker-compose.prod.yml, which has armed the same value since
+# Round 76, and it is only coherent because the identity registry above is
+# present: with zero registered humans every HIGH/CRITICAL action is denied --
+# fail-closed, deliberately.
+#
+# Disarm without a rebuild by exporting an *empty* value, which the parser
+# reads as "off":
+#     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
+os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "HIGH,CRITICAL")
 
 from src.gateway.__main__ import main  # noqa: E402
 

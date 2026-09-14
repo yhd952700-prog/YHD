@@ -229,3 +229,48 @@ class TestRedaction:
             cli.main(["--help"])
         out = capsys.readouterr().out
         assert "--password-stdin" in out
+
+
+# ---------------------------------------------------------------------------
+# store resolution
+# ---------------------------------------------------------------------------
+
+
+class TestStoreResolution:
+    """The ``--file`` help promises a default; the code must actually apply it.
+
+    Regression: with neither ``--file`` nor the env set, ``build_store``
+    resolved to an *empty* location and registration died with
+    ``could not write to the store (file @ )``. The default existed only in the
+    help text -- while ``cmd_list``/``cmd_register`` both print the bare
+    ``--principal <name>`` command as *the* fix for "nobody is registered".
+    Two halves of the same script disagreeing about where the store lives.
+    """
+
+    ENV_VARS = (
+        "LIUHAO_HUMAN_IDENTITIES_FILE",
+        "LIUHAO_HUMAN_IDENTITIES_DB",
+        "LIUHAO_HUMAN_IDENTITIES_BACKEND",
+    )
+
+    def _clear(self, monkeypatch):
+        for var in self.ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_no_flag_no_env_falls_back_to_the_documented_default(self, cli, monkeypatch):
+        self._clear(monkeypatch)
+        store = cli.build_store(cli.argparse.Namespace(file=None, backend=None, db=None))
+        assert store.location == str(cli.DEFAULT_FILE)
+        assert store.backend_name == "file"
+
+    def test_sqlite_backend_is_not_dragged_back_to_the_file(self, cli, monkeypatch):
+        self._clear(monkeypatch)
+        store = cli.build_store(cli.argparse.Namespace(file=None, backend="sqlite", db=None))
+        assert store.backend_name == "sqlite"
+        assert store.location, "sqlite backend must resolve a real path, not ''"
+
+    def test_an_explicit_file_still_wins(self, cli, monkeypatch, tmp_path):
+        self._clear(monkeypatch)
+        target = tmp_path / "explicit.json"
+        store = cli.build_store(cli.argparse.Namespace(file=str(target), backend=None, db=None))
+        assert store.location == str(target)

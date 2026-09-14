@@ -61,7 +61,7 @@ def console_dist() -> Path:
 
 
 @pytest.fixture
-def client():
+def client(auth_headers):
     """A default gateway app.
 
     Deliberately does **not** require a console bundle. The "API is not
@@ -72,7 +72,10 @@ def client():
     tests ask for ``console_dist`` explicitly instead.
     """
     # `with` runs lifespan; the health endpoints are registered inside it.
-    with TestClient(get_app()) as test_client:
+    # `auth_headers`: the API routers now sit behind the console auth gate, and
+    # the point of these tests is that a real endpoint is *reached* (JSON, not
+    # the console shell) -- so the request has to be a legitimate, signed one.
+    with TestClient(get_app(), headers=auth_headers) as test_client:
         yield test_client
 
 

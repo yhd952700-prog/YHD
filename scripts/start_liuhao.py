@@ -40,6 +40,13 @@ CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 CONSOLE_DIST_ENV = "LIUHAO_CONSOLE_DIST"
 DEFAULT_CONSOLE_DIST = CONSOLE_DIR / "dist"
 
+#: 登录凭据 / 人类身份登记表：`scripts/register_human_identity.py` 的默认落点。
+#: 网关对 chat / dashboard / profile / knowledge 要求 Bearer 令牌，而内核在
+#: 环境变量未设时**刻意不加载任何人**（fail-closed）—— 若不在这里补上，
+#: 本机启动就是一个"没人能通过的登录墙"。详见 `_point_at_console_stores`。
+IDENTITY_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
+AUTH_SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
+
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8080
 DEFAULT_UI_PORT = 5173
@@ -75,6 +82,25 @@ def _console_dist() -> Path | None:
     if not (candidate / "index.html").is_file():
         return None
     return candidate
+
+
+def _point_at_console_stores() -> None:
+    """当本机 config/ 里存在登记表/凭据时，把它们指给要拉起的网关。
+
+    为什么需要这一步：注册脚本把两个文件写在 ``config/`` 下，但内核在
+    ``LIUHAO_HUMAN_IDENTITIES_FILE`` 未设置时**刻意加载零个人类**（fail-closed），
+    网关又对 chat/dashboard/profile/knowledge 要求令牌 —— 两者叠加的结果是
+    一个"谁都进不去的登录墙"，而且没有任何报错说明原因。
+
+    只 ``setdefault``：运维显式导出的路径永远优先；文件不存在则什么都不做，
+    fail-closed 语义保持不变。
+    """
+    for env_name, path in (
+        (IDENTITY_FILE_ENV, ROOT / "config" / "human_identities.json"),
+        (AUTH_SECRETS_ENV, ROOT / "config" / "auth_secrets.json"),
+    ):
+        if not (os.environ.get(env_name) or "").strip() and path.is_file():
+            os.environ[env_name] = str(path)
 
 
 def _no_proxy_opener():
@@ -204,6 +230,9 @@ def main() -> int:
         parser.error("--backend-only 与 --single-port 互斥（前者不含驾驶舱）")
 
     atexit.register(_shutdown_all)
+
+    # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
+    _point_at_console_stores()
 
     api_base = f"http://{args.host}:{args.api_port}"
     ui_base = api_base if args.single_port else f"http://{args.host}:{args.ui_port}"

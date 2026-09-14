@@ -10,7 +10,7 @@ from src.gateway.main import get_app
 
 
 @pytest.fixture()
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, auth_headers):
     """隔离画像库到临时文件，避免污染真实 personal_context.db。"""
     db_path = str(tmp_path / "profile_api.db")
     fresh = pc_module.PersonalContextManager(db_path=db_path)
@@ -26,7 +26,8 @@ def client(tmp_path, monkeypatch):
     # 使全局 audit/memory 的 SQLite 连接跨线程创建，进而污染后续测试
     # （"SQLite objects created in a thread can only be used in that same thread"）。
     # 直接实例化即可在主线程内完成请求（本测试不依赖 lifespan 初始化）。
-    yield TestClient(get_app())
+    # 画像端点在控制台鉴权闸门之后，因此带一个真实签发的令牌。
+    yield TestClient(get_app(), headers=auth_headers)
 
 
 def test_get_empty_profile(client):

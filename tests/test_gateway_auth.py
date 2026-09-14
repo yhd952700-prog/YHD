@@ -488,3 +488,75 @@ def _enforced_action() -> str:
     )
     assert enforced, "risk registry exposes no enforced action -- test premise broken"
     return enforced[0]
+
+
+# ---------------------------------------------------------------------------
+# the auth gate on the business routers
+# ---------------------------------------------------------------------------
+
+
+class TestProtectedRouters:
+    """The console's own API surface answers 401 without a token.
+
+    Before this gate the console had a login wall (``Login.tsx`` / ``auth.ts``)
+    while the API behind it did not: anyone could ``POST /v1/chat`` directly and
+    talk to the agent without ever signing in. ``/v1/auth/config`` meanwhile
+    reported ``auth_required: true``, so the deployment *claimed* fail-closed
+    while its main product surface was wide open -- the worst shape a security
+    claim can take, because it is believed.
+
+    These tests pin the fix at the router level. A newly added router now has to
+    be either explicitly public or explicitly gated, instead of inheriting
+    "open" by omission.
+    """
+
+    #: Reachable without a token, on purpose: the login page needs the config,
+    #: and the platform needs the probes. Adding to this list is a decision.
+    PUBLIC = ("/v1/health", "/v1/ready", "/v1/auth/config")
+
+    #: Every router the console calls after signing in.
+    PROTECTED = (
+        "/v1/chat/stats",
+        "/v1/chat/sessions",
+        "/v1/dashboard/summary",
+        "/v1/dashboard/roster",
+        "/v1/dashboard/analytics?days=7",
+        "/v1/profile",
+        "/v1/policy/approvals",
+    )
+
+    def test_public_endpoints_stay_public(self, client):
+        for path in self.PUBLIC:
+            assert client.get(path).status_code == 200, path
+
+    def test_protected_endpoints_are_401_without_a_token(self, client):
+        for path in self.PROTECTED:
+            assert client.get(path).status_code == 401, path
+
+    def test_chat_post_is_401_without_a_token(self, client):
+        """The concrete hole this gate closed."""
+        assert client.post("/v1/chat", json={"message": "hi"}).status_code == 401
+
+    def test_knowledge_endpoints_are_gated(self, client):
+        assert client.post("/knowledge/search", json={"query": "hi"}).status_code == 401
+
+    def test_a_malformed_token_is_401(self, client):
+        headers = {"Authorization": "Bearer not-a-jwt"}
+        assert client.get("/v1/dashboard/roster", headers=headers).status_code == 401
+
+    def test_the_gate_is_authentication_not_obscurity(self, client, auth_env):
+        """A real login token opens exactly those endpoints -- and only them.
+
+        Without this half, the 401s above would also pass if the routers were
+        simply broken.
+        """
+        _register_human("gate-human")
+        login = client.post(
+            "/v1/auth/login",
+            json={"principal": "gate-human", "secret": PASSWORD, "client": "web"},
+        )
+        assert login.status_code == 200, login.text
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        for path in self.PROTECTED:
+            assert client.get(path, headers=headers).status_code == 200, path
