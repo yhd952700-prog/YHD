@@ -23,12 +23,6 @@ import json
 
 from src.kernels._crosscutting import kernel_action
 from src.kernels.memory.store import MemoryStore
-from src.kernels.memory.backends import (
-    InMemoryBackend,
-    MemoryBackend,
-    SqliteBackend,
-    get_memory_backend,
-)
 
 
 class MemoryTier(str, Enum):
