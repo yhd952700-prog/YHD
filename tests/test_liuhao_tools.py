@@ -31,12 +31,13 @@ def make_assistant(name: str = "tool-test", provider=None) -> LiuHaoAssistant:
 # ---------------------------------------------------------------------- #
 # 工具集构建
 # ---------------------------------------------------------------------- #
-def test_make_tools_has_six_builtins():
+def test_make_tools_has_seven_builtins():
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
     expected = {
         "search_memory",
         "query_audit",
         "system_status",
+        "python_compute",
         "personal_set_preference",
         "personal_add_fact",
         "personal_set_display_name",
@@ -46,7 +47,7 @@ def test_make_tools_has_six_builtins():
 
 def test_tools_registered_active():
     a = make_assistant()
-    assert len(a._tool_list) == 6
+    assert len(a._tool_list) == 7
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 
@@ -99,6 +100,21 @@ def test_execute_system_status():
     a = make_assistant(name="tool-status")
     out = a._execute_tool("system_status", {})
     assert "MockProvider" in out  # stats 含 provider 类名
+
+
+def test_execute_python_compute_real():
+    """驾驶舱助手的计算工具必须真执行（返回真实计算结果，非模拟）。"""
+    a = make_assistant(name="tool-compute")
+    out = a._execute_tool("python_compute", {"code": "result = sum(i * i for i in range(1, 11))"})
+    assert "385" in out
+    assert "executed" in out
+
+
+def test_execute_python_compute_rejects_unsafe():
+    """计算工具必须诚实拒绝不安全代码，而不是静默成功。"""
+    a = make_assistant(name="tool-compute-bad")
+    out = a._execute_tool("python_compute", {"code": "import os"})
+    assert '"success": false' in out.lower() or "rejected" in out.lower()
 
 
 # ---------------------------------------------------------------------- #

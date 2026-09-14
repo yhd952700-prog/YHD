@@ -19,6 +19,7 @@ from ..kernels.memory import MemoryScope, filter_memory
 from .observability import observe
 from .personal_context import get_personal_context
 from .tool_registry import Tool
+from .tools_local import python_compute as _run_python_compute
 
 # 宽松解析用：小模型可能输出近似但非法的 JSON（如 ``"args: {...}"`` 缺引号），
 # 用正则兜底提取工具名与参数。
@@ -139,6 +140,42 @@ def make_tools(
                 risk="LOW",
             )
         )
+
+    # ============ 真实本地计算工具（RestrictedPython 后端） ============
+    # 让驾驶舱对话里的 LLM 真正做本地纯计算（不是模拟）：隔离执行，禁
+    # import/open/eval，CPU 超时兜底。结果赋给变量 ``result``。
+    def python_compute(code: str = "", expression: str = "", timeout: int = 10,
+                       **kwargs: Any) -> str:
+        """在受限沙箱中执行纯计算 Python 代码（须把答案赋给变量 result）。"""
+        out = _run_python_compute(
+            code=code, expression=expression, timeout=timeout, **kwargs
+        )
+        return _serialize(out)
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.python.compute",
+            name="python_compute",
+            version="1.0.0",
+            description=(
+                "在受限沙箱中执行纯计算 Python 代码（须把答案赋给变量 result）："
+                "数学/统计/字符串处理等。禁 import/open/eval，有 CPU 超时。"
+            ),
+            capability="python_compute",
+            schema={
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string",
+                             "description": "Python 代码，须把答案赋给变量 result"},
+                    "expression": {"type": "string",
+                                   "description": "或一个纯表达式（会被包成 result = ...）"},
+                },
+            },
+            fn=python_compute,
+            risk="LOW",
+            sandbox_policy="restricted_python",
+        )
+    )
 
     # ============ KAREN 个人画像工具（让 LLM 在对话中主动记住用户偏好） ============
     pcm = get_personal_context()

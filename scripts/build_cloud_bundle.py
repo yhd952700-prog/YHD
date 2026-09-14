@@ -56,6 +56,27 @@ DEFAULT_OUT = REPO_ROOT / "deploy" / "cloud"
 #: Copied verbatim into the bundle.
 SOURCE_DIRS = ("src", "config")
 
+#: Dependencies the import graph **cannot** see, because they are imported lazily
+#: inside a child process or a deferred probe.
+#:
+#: Measured gap (2026-09-13, WS1/WS4): the ``python_compute`` capability runs
+#: user code through ``src/plugins/sandbox/backends/restricted_python_backend.py``,
+#: which imports ``RestrictedPython`` **inside the sandbox subprocess** (and only
+#: probes it when the backend is constructed). The gateway import graph therefore
+#: never contains it. Without this entry the published bundle boots fine but the
+#: compute tool fails with ``BACKEND_UNAVAILABLE`` at call time. Kept explicit
+#: and commented rather than hidden in a hand-maintained requirements file.
+EXPLICIT_RUNTIME_DEPS: Tuple[str, ...] = ("RestrictedPython",)
+
+#: Repository-root files the gateway reads at runtime, copied to the bundle root.
+#:
+#: Measured gap (2026-09-13, WS4): ``src/gateway/roster.py`` resolves the
+#: registry as ``_REPO_ROOT / "capability-registry.yaml"`` where ``_REPO_ROOT``
+#: is the bundle root. The bundle previously shipped only ``src/`` + ``config/``,
+#: so the roster endpoint silently degraded to ``available: false`` (empty
+#: roster page) on the published link. The file must sit beside ``src/``.
+COPY_ROOT_FILES: Tuple[str, ...] = ("capability-registry.yaml",)
+
 #: Dropped from ``config/`` after copying. Neither is read by the gateway --
 #: they configure the Prometheus/Grafana stack and the Kubernetes production
 #: profile, both of which live in their own compose files. They are excluded
@@ -253,6 +274,17 @@ def build(out_dir: Path) -> int:
     if unmapped:
         print(f"      !! 无法映射到发行包的模块（需人工确认）：{unmapped}")
 
+    # 延迟导入的运行时依赖（import 图看不到）——见 EXPLICIT_RUNTIME_DEPS 注释。
+    for name in EXPLICIT_RUNTIME_DEPS:
+        try:
+            distribution = md.distribution(name)
+        except Exception:  # noqa: BLE001 - 未安装就在发布包里标出来
+            print(f"      !! 显式运行时依赖未安装，发布包将缺失：{name}", file=sys.stderr)
+            continue
+        resolved = distribution.metadata["Name"] or name
+        requirements[resolved] = distribution.version
+        print(f"      + 显式运行时依赖 {resolved}>={_floor(distribution.version)}")
+
     _reset_bundle_root(out_dir)
     print("[2/3] 复制源码与配置")
     for name in SOURCE_DIRS:
@@ -269,6 +301,15 @@ def build(out_dir: Path) -> int:
                     shutil.rmtree(target)
                     details = f"（已剔除 {', '.join(CONFIG_EXCLUDES)}）"
         print(f"      {name:8s} -> {count} 个文件{details}")
+
+    for name in COPY_ROOT_FILES:
+        source_file = REPO_ROOT / name
+        if source_file.is_file():
+            shutil.copy2(source_file, out_dir / name)
+            print(f"      {name} -> 1 个文件（根文件，roster 需要）")
+        else:
+            print(f"      !! 缺少根文件 {name}", file=sys.stderr)
+            return 1
 
     print("[3/3] 复制驾驶舱构建产物 + 写入口脚本")
     console_target = out_dir / CONSOLE_DIST_REL

@@ -24,9 +24,12 @@ capability-registry:
   #    （LHX-C-001..014，一一对应 14 个 OS 内核），与 docs/spec/KERNEL-CANON.md
   #    权威清单的 14 个内核完全一致（12 §112 + audit §113 + plugin §115）。
   #    注意：src/kernels/capability/__init__.py 的 _register_builtin_capabilities
-  #    只自动注册 12 个（§112 那 12 个，不含 LHX-C-013 audit 与 LHX-C-014 plugin，
-  #    二者各有自己的注册/存储路径）。「14 vs 12」是「完整内核清单(14)」与
-  #    「内置自动注册子集(12)」在比不同范围，并非矛盾；14 是内核数，正确，勿改。
+  #    自动注册 12 个**内核**能力（§112 那 12 个，不含 LHX-C-013 audit 与
+  #    LHX-C-014 plugin，二者各有自己的注册/存储路径），另加 1 个非内核的
+  #    本地执行能力 python_compute（见下方 local-capabilities 段）。
+  #    「14 vs 12」是「完整内核清单(14)」与「内置自动注册的内核子集(12)」在比
+  #    不同范围，并非矛盾；14 是内核数，正确，勿改。（python_compute 不计入
+  #    内核能力，故上面那个 12 仍然成立。）
   # 2) total_layers: 14 = 下方 capability-layers: 段条目数
   #    （LHX-L-001..014，更高层 src/ai/ 能力层，组合内核而成），
   #    是与 capabilities 不同的命名空间（LHX-L-* ≠ LHX-C-*），请勿混淆。
@@ -520,3 +523,72 @@ capability-registry:
     tests: tests/test_hardening.py
     test_count: 4
     notes: docs/operations/runbook.md; sandbox-timeout/emergency-stop/anti-cheat gates
+  # =====================================================================
+  # Local (non-kernel) executable capabilities (2026-09-13, Round 86 / WS1).
+  # NOT kernel surfaces — wired into the Execution Kernel via the
+  # CapabilityExecutor seam. Declared so the honest answer to "can the agent
+  # actually *do* local work" is machine-readable.
+  # =====================================================================
+  local-capabilities:
+  - id: LHX-LC-001
+    legacy_id: python_compute
+    name: Local Python Compute — RestrictedPython-backed real execution
+    namespace: kernel            # 执行内核按 capability_namespace="kernel" 路由
+    owner: ai_local_tools
+    status: IMPLEMENTED
+    executable_when_wired: true  # 需 register_default_local_tools() 接线；未接线则诚实失败
+    isolation: capability-only   # 能力隔离（禁 import/open/eval），**无资源隔离**
+    module: src/ai/tools_local.py
+    capability_registration: src/kernels/capability/__init__.py
+    tests: tests/test_local_tool_execution.py
+    test_count: 7
+    notes: >-
+      经 RestrictedPython 后端真执行；支持 code / expression / python: 指令三种显式
+      输入，散文一律诚实拒绝。未接线时失败信息为
+      "no active tool for capability python_compute"（非误导性的 Capability not found）。
+  # =====================================================================
+  # Known-open items —— 诚实清单（2026-09-13 实测）。逐条给：现象 / 影响 / 判据。
+  # 原则：文档承诺 ≠ 运行时事实，本清单以运行时可核实的判据为准。
+  # =====================================================================
+  known-open-items:
+  - id: OPEN-001
+    title: Context 内核默认空转
+    detail: >-
+      HYBRID/UNIFORM 权重下，典型场景输入全部被 discarded
+      （src/kernels/context/__init__.py:140-145）。内核存在且测试通过，但默认
+      权重下不产出可用上下文。
+    impact: 默认配置下上下文压缩对实际任务无增益（不等于崩溃）。
+    status: OPEN
+  - id: OPEN-002
+    title: src/adapters/ 运行时不生效
+    detail: MCP 适配器自声明 not-wired；网关实际走 src/observability/tracing。
+    impact: 该目录代码不被运行时使用（属未接线，不是死代码）。
+    status: OPEN
+  - id: OPEN-003
+    title: src/audit/ 为遗留并行实现
+    detail: >-
+      零 import，但 from src.audit import AuditStore, AuditEvent 可用，且
+      docs/quickstart.md:26 拿它当自检命令。真正的运行时审计实现在
+      src/kernels/audit/（SQLite + hash chain）。
+    impact: 文档承诺入口与运行时实现是两套；保留以兼容自检命令。
+    status: OPEN
+  - id: OPEN-004
+    title: vault_connect 未安装
+    detail: VAULT_AVAILABLE=False，Vault 读密恒为空操作。
+    impact: 机密读取路径不可用（不会伪造成功；返回空）。
+    status: OPEN
+  - id: OPEN-005
+    title: Network WebSocket 适配器诚实拒绝
+    detail: >-
+      无 WS 依赖时不再伪造成功，直接拒绝投递；HTTP 适配器仅 2xx 才标 DELIVERED
+      （Round 84 收口，护栏 tests/kernels/network/test_network_adapters_real.py）。
+    impact: WS 消息无法投递（诚实失败）；HTTP 投递语义已正确。
+    status: RESOLVED-honest-failure
+  - id: OPEN-006
+    title: C-2 策略执法生产开关
+    detail: >-
+      代码默认 OFF（AST 护栏锁死默认值），但 docker-compose.prod.yml:59 已 arm
+      HIGH,CRITICAL。真问题不是「开不开」而是「身份表挂了没」：身份表未挂时
+      0 humans → HIGH/CRITICAL 全拒（fail-closed，刻意）。
+    impact: 生产 arm 前必须确认身份表已挂，否则全部高危动作被拒。
+    status: DEPLOY-DECISION

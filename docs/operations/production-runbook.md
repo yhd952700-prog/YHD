@@ -1,313 +1,170 @@
-# LiuHao AI OS - Production Runbook
+# LIUHAO X —— 生产运行手册（Production Runbook）
 
-## Overview
-This runbook provides operational procedures for the LiuHao AI OS in production.
+> **本文件取代了此前的通用模板。** 旧版描述的是「负载均衡 + API 网关 + Redis + Postgres +
+> Prometheus/Grafana + K8s」的泛化架构，**与本仓库真实形态不符**（网关不依赖 Redis/Postgres，
+> 运行时审计/会话/身份走 **SQLite 文件**；形态是**单端口自服务**），且含 `+1-XXX-XXX-XXXX`
+> 之类的占位联系方式。误导性的运维手册比没有更危险 —— 本版按运行时事实重写。
+> 维护者：Vigil。2026-09-13。
 
-## Service Architecture
+---
+
+## 1. 真实架构（一句话）
+
+**一个 FastAPI 网关进程，单端口同时提供 API 与驾驶舱前端；状态落在本地 SQLite 文件。**
 
 ```
-┌─────────────────┐
-│   Load Balancer │
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│   API Gateway   │ ← FastAPI, port 8080
-└────────┬────────┘
-         │
-    ┌────┴────┬─────────┬──────────┐
-    ▼         ▼         ▼          ▼
-┌───────┐ ┌───────┐ ┌───────┐ ┌────────┐
-│ Auth  │ │ Plugins │ │ Models │ │ Memory │
-└───────┘ └───────┘ └───────┘ └────────┘
+                    ┌──────────────────────────────────────────┐
+  浏览器  ───────►  │  单端口网关（uvicorn / FastAPI）           │
+                    │  ├── /v1/*            API（含驾驶舱数据）   │
+                    │  └── /               驾驶舱静态产物(console/)│
+                    └───────────────┬──────────────────────────┘
+                                    │ 同源，零 CORS
+                 ┌──────────────────┼───────────────────────────┐
+                 ▼                  ▼                           ▼
+        SQLite 审计/会话      身份持久化(JSON/SQLite)      14 内核 / 能力层
+        (*.db，文件)          (LIUHAO_HUMAN_IDENTITIES_*)   (进程内)
 ```
 
-## Critical Services
+**关键事实（与旧模板的差异）**：
 
-| Service | Port | Health Check | Dependencies |
-|---------|------|--------------|--------------|
-| API Gateway | 8080 | /health, /ready | Redis, Database |
-| Redis | 6379 | PING | - |
-| Database | 5432 | SELECT 1 | - |
-| Prometheus | 9090 | /-/healthy | - |
-| Grafana | 3000 | /api/health | Prometheus |
+| 旧模板声称 | 真实情况 |
+|---|---|
+| 需要 Redis (6379) | **不需要**。网关不连 Redis。 |
+| 需要 Postgres (5432) | **不需要**。运行时用 SQLite 文件；`alembic`(47 表) 是另一条互不相干的链路。 |
+| `/health`、`/ready`（无前缀） | 真实路径带前缀：**`/v1/health`**、**`/v1/ready`**。 |
+| 前端独立部署 | 前端由网关**自服务**（`console/` 或 `LIUHAO_CONSOLE_DIST`），同源。 |
+| K8s 集群 | 三种部署形态（§2），K8s 不是默认。 |
 
-## Common Operations
+---
 
-### Start Services
-```bash
-# Using Docker Compose
-docker-compose -f docker-compose.prod.yml up -d
+## 2. 三种部署形态
 
-# Using Kubernetes
-kubectl apply -f k8s/
-```
-
-### Stop Services
-```bash
-# Graceful shutdown
-docker-compose -f docker-compose.prod.yml down
-
-# Kubernetes
-kubectl delete -f k8s/
-```
-
-### Check Service Health
-```bash
-# API Gateway
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
-
-# Redis
-redis-cli ping
-
-# Database
-psql $DATABASE_URL -c "SELECT 1"
-```
-
-## Incident Response
-
-### Service Down
-1. Check service status: `systemctl status liuhao-ai-os` or `docker ps`
-2. Check logs: `docker logs liuhao-api` or `kubectl logs -l app=liuhao-ai-os`
-3. Check dependencies: Redis, Database connectivity
-4. Restart if needed: `docker restart liuhao-api`
-
-### High Error Rate
-1. Check error logs: `grep "ERROR" logs/app.log | tail -50`
-2. Check metrics: Grafana dashboard "Error Rate"
-3. Check recent deployments: `kubectl rollout history deployment/liuhao-ai-os`
-4. Rollback if needed: `kubectl rollout undo deployment/liuhao-ai-os`
-
-### High Latency
-1. Check Grafana dashboard "Latency (P50, P95, P99)"
-3. Check database slow queries: `pg_stat_statements`
-4. Check cache hit rate: Grafana "Cache Hit Rate"
-5. Check for resource contention: CPU, Memory, Disk I/O
-
-### High Memory/CPU
-1. Check Grafana "Memory Usage" / "CPU Usage"
-2. Check for memory leaks: `pprof` or `py-spy`
-3. Check for runaway processes: `ps aux --sort=-%mem | head`
-4. Restart service if needed
-
-### Database Issues
-1. Check connection pool: `db_pool_connections_in_use` vs `db_pool_connections_max`
-2. Check slow queries: `SELECT * FROM pg_stat_statements ORDER BY mean_time DESC LIMIT 10`
-3. Check locks: `SELECT * FROM pg_locks WHERE NOT granted`
-4. Check replication lag (if applicable)
-
-### Redis Issues
-1. Check memory: `redis-cli INFO memory`
-2. Check connected clients: `redis-cli CLIENT LIST`
-3. Check slowlog: `redis-cli SLOWLOG GET 10`
-4. Check persistence: `redis-cli LASTSAVE`
-
-## Backup & Recovery
-
-### Create Backup
-```bash
-python scripts/ops/backup.py create --name "manual_backup_$(date +%Y%m%d)"
-```
-
-### List Backups
-```bash
-python scripts/ops/backup.py list
-```
-
-### Restore Backup
-```bash
-python scripts/ops/backup.py restore --backup backups/backup_20240115_020000.tar.gz
-```
-
-### Automated Backup Schedule
-- Daily at 2:00 AM (configurable via `backup.schedule`)
-- Retention: 30 days (configurable via `backup.retention_days`)
-
-## Rollback Procedures
-
-### Configuration Rollback
-```bash
-# List checkpoints
-python scripts/ops/rollback.py list
-
-# Create checkpoint before changes
-python scripts/ops/rollback.py checkpoint --name "pre_config_change" --description "Before config update"
-
-# Rollback to checkpoint
-python scripts/ops/rollback.py rollback --checkpoint pre_config_change_20240115_143000
-```
-
-### Deployment Rollback
-```bash
-# Kubernetes
-kubectl rollout undo deployment/liuhao-ai-os
-
-# Specific revision
-kubectl rollout undo deployment/liuhao-ai-os --to-revision=5
-
-# Check rollout status
-kubectl rollout status deployment/liuhao-ai-os
-```
-
-### Database Rollback
-```bash
-# Point-in-time recovery (if using PostgreSQL)
-pg_basebackup -D /var/lib/postgresql/data -Ft -z -P
-
-# Or restore from backup
-pg_restore -d liuhao_ai_os backup.dump
-```
-
-## Security Operations
-
-### Rotate API Keys
-```bash
-# List keys
-python -m src.security.api_keys list_keys
-
-# Create new key
-python -m src.security.api_keys create_key --name "new_key" --scopes provider,agent --expires-in-days 90
-
-# Rotate existing key
-python -m src.security.api_keys rotate_key --key-id <key_id>
-```
-
-### JWT Secret Rotation
-1. Generate new secret: `openssl rand -base64 32`
-2. Update `JWT_SECRET_KEY` environment variable
-2. Restart all services
-3. Invalidate existing tokens (optional)
-
-### Certificate Renewal
-```bash
-# Check certificate expiry
-openssl x509 -in certs/server.crt -text -noout | grep "Not After"
-
-# Renew with Let's Encrypt
-certbot renew --cert-name liuhao-ai-os
-
-# Restart services
-docker-compose -f docker-compose.prod.yml restart
-```
-
-## Scaling Operations
-
-### Horizontal Scaling
-```bash
-# Kubernetes
-kubectl scale deployment liuhao-ai-os --replicas=5
-
-# Docker Compose
-docker-compose -f docker-compose.prod.yml up -d --scale api=3
-```
-
-### Vertical Scaling
-```bash
-# Kubernetes - update resource limits
-kubectl patch deployment liuhao-ai-os -p '{"spec":{"template":{"spec":{"containers":[{"name":"api","resources":{"limits":{"memory":"4Gi","cpu":"2000m"}}}]}}}}'
-```
-
-## Log Management
-
-### Log Locations
-- Application: `logs/app.log` (JSON format)
-- Access: `logs/access.log`
-- Audit: `data/security/audit.log`
-- Error: Filter `logs/app.log` for ERROR level
-
-### Log Rotation
-- Max size: 100 MB per file
-- Retention: 10 files
-- Compression: Enabled
-
-### Query Logs
-```bash
-# Search errors
-grep '"level": "ERROR"' logs/app.log | jq .
-
-# Filter by trace ID
-grep "trace_id=\"abc123\"" logs/app.log
-
-# Recent errors
-tail -100 logs/app.log | grep ERROR
-```
-
-## Monitoring & Alerting
-
-### Key Dashboards
-- Overview: System health, request rate, latency, error rate
-- Resources: CPU, Memory, Disk, Network
-- Application: Request rate, Latency (P50/P95/P99), Error rate
-- Security: Auth failures, Security violations
-- Plugins: Plugin health, Resource usage
-- Database: Connections, Slow queries, Latency
-
-### Key Alerts
-| Alert | Severity | Action |
-|-------|----------|--------|
-| ServiceDown | Critical | Immediate investigation |
-| HighErrorRate | Critical | Check logs, consider rollback |
-| HighLatency | Warning | Check resources, DB, cache |
-| HighLatencyP99 | Critical | Urgent investigation |
-| SecurityViolationDetected | Critical | Immediate investigation |
-| HighFailedAuthRate | Warning | Check for brute force |
-
-### Silencing Alerts
-```bash
-# Via Alertmanager API
-curl -X POST http://alertmanager:9093/api/v1/silences \
-  -d '{"matchers":[{"name":"alertname","value":"HighLatency"}],"startsAt":"2024-01-15T10:00:00Z","endsAt":"2024-01-15T12:00:00Z"}'
-```
-
-## Maintenance Windows
-
-### Scheduled Maintenance
-- Weekly: Sunday 02:00-04:00 UTC
-- Tasks: Security patches, dependency updates, backup verification
-
-### Emergency Maintenance
-- Authorization: On-call engineer + team lead approval
-- Communication: #ops channel, status page update
-- Rollback plan: Required before starting
-
-## Contact Information
-
-| Role | Contact | Escalation |
-|------|---------|------------|
-| On-call Engineer | +1-XXX-XXX-XXXX | Primary |
-| Team Lead | +1-XXX-XXX-XXXX | Secondary |
-| Security Team | security@liuhao.example.com | Security incidents |
-| Infrastructure | infra@liuhao.example.com | Infrastructure issues |
-
-## Useful Commands Quick Reference
+### 2.1 云发布包（自包含单端口，推荐给「一键上线」）
 
 ```bash
-# View all pods
-kubectl get pods -n liuhao-ai-os
+# 1) 构建（会测量网关真实 import 图生成 requirements，并复制驾驶舱产物）
+.venv/Scripts/python.exe scripts/build_cloud_bundle.py
 
-# View logs
-kubectl logs -l app=liuhao-ai-os -n liuhao-ai-os --tail=100 -f
+# 2) 本地自测
+cd deploy/cloud && PORT=8080 python serve.py
 
-# Describe pod
-kubectl describe pod -l app=liuhao-ai-os -n liuhao-ai-os
-
-# Exec into pod
-kubectl exec -it -l app=liuhao-ai-os -n liuhao-ai-os -- /bin/bash
-
-# Port forward
-kubectl port-forward -n liuhao-ai-os svc/liuhao-ai-os 8080:8080
-
-# View events
-kubectl get events -n liuhao-ai-os --sort-by='.lastTimestamp'
-
-# Check resource usage
-kubectl top pods -n liuhao-ai-os
-kubectl top nodes
+# 3) 发布：把 deploy/cloud/ 交给单端口托管（上传器会剥离 dist/ 等构建目录，
+#    故前端以 console/ 普通目录名随包）
 ```
 
-## Version Information
+发布包内容：`src/`（网关源码）、`config/`、`console/`（驾驶舱）、`capability-registry.yaml`
+（名册端点需要）、`serve.py`、`requirements.txt`（由 import 图 + 显式运行时依赖生成）。
 
-- Document Version: 1.0.0
-- Last Updated: 2024-01-15
-- Next Review: 2024-04-15
-- Owner: Platform Team
+### 2.2 Docker
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+> ⚠️ 生产清单会**默认武装 `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（见 §4）。
+
+### 2.3 本机（开发/自托管）
+
+```bash
+.venv/Scripts/python.exe scripts/start_liuhao.py --single-port          # 单端口
+.venv/Scripts/python.exe scripts/start_liuhao.py --single-port --https  # 叠加本地 TLS
+```
+
+---
+
+## 3. 健康检查与验证（真实命令）
+
+```bash
+curl -s http://127.0.0.1:8080/v1/health            # 存活：200 + {"status":"ok"}
+curl -s http://127.0.0.1:8080/v1/ready             # 就绪：检查 key/jwt/rbac/enc/limiter
+curl -s http://127.0.0.1:8080/v1/dashboard/roster  # 名册：available 应为 true
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/   # 驾驶舱：200
+```
+
+**判据**：`/v1/ready` 返回 200（`status:"ready"`）；`/v1/dashboard/roster` 的 `available` 为
+`true` 且 `totals.kernels==14`、`totals.layers==14`。若 `available:false`，多半是
+`capability-registry.yaml` 不在网关根目录（发布包根）。
+
+> 冷启动提示：进程起来后前 1–3 秒内探测可能失败（初始化竞态）。先等 `/v1/ready` 返回 200 再探其它端点。
+
+---
+
+## 4. 人类主权与身份表（**生产强制**）
+
+本系统的最高原则是 `Human Sovereignty Above All`。生产上线**必须**处理身份表，否则内核层
+策略执法在 armed 状态下会 **fail-closed**：身份表未挂载 → 0 humans → HIGH/CRITICAL 动作**全拒**。
+
+```bash
+# 注册一个人（写入身份持久化；默认 file 后端，或 sqlite）
+python scripts/register_human_identity.py ...
+
+# 相关环境变量
+LIUHAO_HUMAN_IDENTITIES_FILE=<path>        # file 后端（默认）
+LIUHAO_HUMAN_IDENTITIES_BACKEND=file|sqlite
+LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
+```
+
+**内核层策略执法的默认与开关**：
+
+- `LIUHAO_KERNEL_POLICY_ENFORCE`（**默认空 = 不拦截**，只记录 / L1）。
+  取值形如 `HIGH,CRITICAL` 或具体动作名。**只有 HIGH/CRITICAL 层可被武装**；LOW/MEDIUM
+  不在执法切割线内。typo 会**大声失败**，不会静默变成「未武装」。
+- 43 个生产 `@kernel_action` 调用点**一律 `enforce=False`**（由 AST 护栏锁定，不许散开写死）。
+- 裁决：**生产是否 arm 属部署决定**（前置条件：身份表已挂）。arm/回滚 = 改一个环境变量 + 重启，
+  零代码改动、零成本回滚。
+
+---
+
+## 5. 关键环境变量
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `PORT` | 单端口监听端口 | `8080` |
+| `LIUHAO_CONSOLE_DIST` | 驾驶舱静态产物目录 | 包内 `console/` |
+| `LIUHAO_HUMAN_IDENTITIES_FILE` | 身份表文件（file 后端） | — |
+| `LIUHAO_KERNEL_POLICY_ENFORCE` | 内核层真拦截层选择 | 空（L1 记录） |
+| `AI_PROVIDER_TYPE` / `*_API_KEY` | LLM provider 与密钥（默认 `mock`） | `mock` |
+
+---
+
+## 6. 日志与观测
+
+- **审计**：`src/kernels/audit/`（SQLite + 哈希链，可 `verify_integrity`，能检出内容篡改与尾部截断）。
+- **事件总线**：带 `correlation_id`，可追因果链。
+- **trace**：`src/observability/tracing`（网关实际使用）。
+- **进程日志**：标准输出（JSON 风格行）；启动行会打印端口与 provider。
+- ⚠️ `src/audit/` 是**遗留并行实现**（非运行时链路），保留仅为兼容 `docs/quickstart.md` 的自检命令。
+
+---
+
+## 7. 备份与回滚
+
+- **状态备份**：备份 SQLite 文件（审计 `*.db`、会话、身份表 JSON/SQLite）。这些都是**普通文件**，
+  直接 `cp` 即可。
+- **配置回滚**：改 `.env` / compose 变量后重启进程即可；无迁移脚本依赖。
+- **策略开关回滚**：把 `LIUHAO_KERNEL_POLICY_ENFORCE` 置空并重启 → 立即回到 L1（记录）。
+- **发布包回滚**：保留上一版 `deploy/cloud/` 目录，切回即可。
+
+---
+
+## 8. 已知限制（上线时须一并对外说明）
+
+完整机器可读清单见 `capability-registry.yaml` → `known-open-items`。摘要：
+
+- 本地计算沙箱（RestrictedPython 后端）只提供**能力隔离**（禁 `import`/`open`/`eval` + CPU 超时），
+  **无资源隔离**（无内存上限）。
+- 默认 LLM 为 `mock`（不产生真实模型智能）；真实 provider 需配置密钥。
+- Network WebSocket 适配器在无 WS 依赖时**诚实拒绝**投递（不伪造成功）。
+- `vault_connect` 未安装 → Vault 读密为空操作。
+- Context 内核在默认权重下空转（不产出可用上下文）。
+
+---
+
+## 9. 变更记录
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| 2.0.0 | 2026-09-13 | 按**真实单端口架构**重写；移除 Redis/Postgres/K8s 假设与占位联系方式；补身份表与策略执法开关说明。 |
+| 1.0.0 | 2024-01-15 | 通用模板（**已废弃**：与本仓库真实形态不符）。 |
+
+**联系与升级**：本仓库不自造联系方式。运维联络以仓库/团队现行的 On-call 渠道为准（不在本文件内编造电话或邮箱）。

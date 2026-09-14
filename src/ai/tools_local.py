@@ -72,13 +72,15 @@ def _resolve_code(inputs: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]
     )
 
 
-def _python_compute_fn(**inputs: Any) -> Dict[str, Any]:
+def python_compute(**inputs: Any) -> Dict[str, Any]:
     """Run pure-compute Python locally via the RestrictedPython backend.
 
-    Contract: the resolved code must assign its result to the variable
-    ``result``. Unsafe code (``import``/``open``/``eval``) is rejected at compile
-    time; runaway loops are killed by the child-process timeout. If RestrictedPython
-    is not installed, the backend reports the reason instead of failing silently.
+    Public entry point (used by both the Execution-Kernel tool and the cockpit
+    assistant tool). Contract: the resolved code must assign its result to the
+    variable ``result``. Unsafe code (``import``/``open``/``eval``) is rejected at
+    compile time; runaway loops are killed by the child-process timeout. If
+    RestrictedPython is not installed, the backend reports the reason instead of
+    failing silently.
     """
     code, reason = _resolve_code(inputs)
     if code is None:
@@ -143,7 +145,7 @@ def register_default_local_tools(registry: ToolRegistry) -> None:
         ),
         capability="python_compute",
         schema={"code": "str", "expression": "str", "goal": "str", "timeout": "int"},
-        fn=_python_compute_fn,
+        fn=python_compute,
         risk="LOW",
         sandbox_policy="restricted_python",
         audit_policy="p9.tool.execute",
