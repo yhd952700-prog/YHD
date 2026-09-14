@@ -27,6 +27,22 @@ def engine() -> SecurityEngine:
     return SecurityEngine()
 
 
+def _isolated_identity_manager(monkeypatch):
+    """Give the security kernel a private, empty identity registry.
+
+    ``SecurityEngine._is_verified_human`` (SEC-5) resolves principals through
+    the global ``get_identity_manager()`` singleton. Patching it keeps these
+    tests independent of whatever humans the ambient environment may have
+    seeded (and stops the override tests depending on a shared singleton).
+    """
+    from src.kernels import identity as identity_mod
+
+    monkeypatch.delenv(identity_mod.HUMAN_IDENTITIES_FILE_ENV, raising=False)
+    mgr = identity_mod.IdentityManager()
+    monkeypatch.setattr(identity_mod, "get_identity_manager", lambda: mgr)
+    return mgr
+
+
 # =====================================================================
 # Seeded rules
 # =====================================================================
@@ -355,19 +371,43 @@ class TestDefects:
         assert result["reason"] != "", "decision reason is empty"
         assert result["rbac_check"] is not None, "rbac_check never populated"
 
-    def test_defect_human_override_changes_decision(self, engine):
-        """DEFECT SEC-3: human_override parameter is accepted but ignored.
+    def test_defect_human_override_changes_decision(self, engine, monkeypatch):
+        """SEC-3 / SEC-5: human sovereignty override applies to a *verified* human.
 
         Definition Lock section 112 requires human sovereignty override
-        capability. A human override on a denied decision must not stay
-        a plain DENY.
+        capability. A human override on a denied decision must not stay a
+        plain DENY -- but (SEC-5) it is only legitimate for a principal that
+        resolves to a registered, ACTIVE human identity.
         """
+        mgr = _isolated_identity_manager(monkeypatch)
+        assert mgr.create_human_identity("human-1") is not None
         result = engine.decide_access(
             "human-1", "context:write", human_override=True
         )
         assert result["decision"] != "deny", (
             "human_override=True did not change the denied decision"
         )
+
+    def test_defect_human_override_rejected_for_unverified_principal(self, engine, monkeypatch):
+        """SEC-5: the override is not a bare boolean escape hatch.
+
+        Before SEC-5 *any* caller obtained ALLOW for *any* permission simply
+        by passing ``human_override=True`` -- a privilege-escalation/fail-open
+        hole. An unverified principal must keep the original DENY, and the
+        refusal must be visible in the audit trail rather than silent.
+        """
+        _isolated_identity_manager(monkeypatch)  # deliberately empty registry
+        result = engine.decide_access(
+            "attacker", "context:write", human_override=True
+        )
+        assert result["decision"] == "deny", (
+            "human_override=True escalated an unverified principal to ALLOW"
+        )
+        assert "REJECTED" in result["reason"]
+        assert any(
+            e.operation == "human_sovereignty_override" and e.result == "denied"
+            for e in engine.audit_trail()
+        ), "refused human override was not recorded in the audit trail"
 
     def test_defect_stats_counts_allow_and_deny_results(self, engine):
         """DEFECT SEC-4: stats().by_result always counts zero.

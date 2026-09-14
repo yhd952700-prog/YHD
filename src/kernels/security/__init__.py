@@ -549,9 +549,19 @@ class SecurityEngine:
         """Full access decision with reasoning.
 
         Definition Lock section 112 human sovereignty override: when
-        human_override is True and the combined decision is not ALLOW,
-        the decision is overridden to ALLOW and the override itself is
-        recorded in the audit trail.
+        ``human_override`` is True **and** ``principal_id`` resolves to a
+        verified, ACTIVE human identity, a non-ALLOW decision is overridden
+        to ALLOW and the override is recorded in the audit trail.
+
+        SEC-5: the override is *not* a bare boolean escape hatch. An earlier
+        revision applied it on the flag alone, so **any** caller could obtain
+        ALLOW for **any** permission by passing ``human_override=True`` --
+        a privilege-escalation / fail-open hole. The same defect class was
+        already closed in the Policy Kernel (C-7: "not a service" is not
+        evidence of being human); this is the Security-Kernel twin, so it
+        reuses that kernel's predicate (``is_human_identity``) instead of
+        inventing a second notion of "human". An unverified principal is
+        denied the override and the refusal is audited, not silently ignored.
         """
         with self._lock:
             decision, rbac_result, abac_result = self._evaluate_access(
@@ -562,18 +572,38 @@ class SecurityEngine:
             parts = [f"rbac={rbac_result.value}", f"abac={abac_value}"]
 
             if human_override and decision != AccessDecision.ALLOW:
-                decision = AccessDecision.ALLOW
-                parts.append("human sovereignty override applied")
-                override_audit = AuditLogEntry(
-                    id=str(uuid.uuid4())[:8],
-                    principal_id=principal_id,
-                    operation="human_sovereignty_override",
-                    permission=permission,
-                    scope=scope,
-                    result="allowed",
-                    reason="Human sovereignty override converted a non-allow decision to allow",
-                    timestamp=utc_now(),
-                )
+                # SEC-5: gate the override on a verified human principal.
+                if self._is_verified_human(principal_id):
+                    decision = AccessDecision.ALLOW
+                    parts.append("human sovereignty override applied")
+                    override_audit = AuditLogEntry(
+                        id=str(uuid.uuid4())[:8],
+                        principal_id=principal_id,
+                        operation="human_sovereignty_override",
+                        permission=permission,
+                        scope=scope,
+                        result="allowed",
+                        reason="Human sovereignty override converted a non-allow decision to allow",
+                        timestamp=utc_now(),
+                    )
+                else:
+                    parts.append(
+                        "human sovereignty override REJECTED: principal is not a "
+                        "verified human identity"
+                    )
+                    override_audit = AuditLogEntry(
+                        id=str(uuid.uuid4())[:8],
+                        principal_id=principal_id,
+                        operation="human_sovereignty_override",
+                        permission=permission,
+                        scope=scope,
+                        result="denied",
+                        reason=(
+                            "human_override=True ignored: principal_id does not resolve "
+                            "to an ACTIVE identity marked kind=human"
+                        ),
+                        timestamp=utc_now(),
+                    )
                 self._audit_log.append(override_audit)
 
             result = {
@@ -601,6 +631,39 @@ class SecurityEngine:
             self._audit_log.append(audit)
 
             return result
+
+    def _is_verified_human(self, principal_id: str) -> bool:
+        """Return True iff ``principal_id`` is a verified, ACTIVE human.
+
+        SEC-5. Mirrors the Policy Kernel's ``_is_verified_human`` contract
+        (Policy C-7) rather than defining a second, weaker notion of "human":
+        the principal must resolve to a *registered* identity that is ACTIVE
+        **and** positively marked ``metadata["kind"] == "human"``.
+
+        Merely *not* being a service is not evidence of being human -- the
+        built-in ``system`` identity carries no kind marker and would pass a
+        reverse-exclusion test. Identity is imported lazily to keep this
+        kernel free of a module-level dependency on the Identity Kernel.
+        """
+        ref = (principal_id or "").strip()
+        if not ref:
+            return False
+        try:
+            from src.kernels.identity import (
+                IdentityStatus,
+                get_identity_manager,
+                is_human_identity,
+            )
+        except Exception:  # pragma: no cover - defensive
+            return False
+        try:
+            mgr = get_identity_manager()
+            ident = mgr.get_identity(ref) or mgr.get_identity_by_principal(ref)
+        except Exception:  # pragma: no cover - defensive
+            return False
+        if ident is None or ident.status != IdentityStatus.ACTIVE:
+            return False
+        return is_human_identity(ident)
 
     def audit_trail(self, principal_id: Optional[str] = None, since: Optional[datetime] = None, operation: Optional[str] = None) -> List[AuditLogEntry]:
         """Get security audit trail."""
