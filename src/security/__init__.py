@@ -18,7 +18,16 @@ from __future__ import annotations
 # Dependency-free base modules first.
 from .encryption import EncryptionManager, get_encryption_manager
 from .api_keys import APIKeyManager, KeyScope, KeyStatus, get_api_key_manager
-from .jwt_handler import JWTHandler, TokenType, get_jwt_handler
+from .jwt_handler import (
+    JWTHandler,
+    TokenType,
+    get_jwt_handler,
+    JWT_SECRET_ENV,
+    JWT_SECRET_ENV_ALIASES,
+    JWT_PRIVATE_KEY_ENV,
+    JWT_PUBLIC_KEY_ENV,
+    JWT_ALGORITHM_ENV,
+)
 from .rbac import (
     RBACManager,
     Role,
@@ -48,6 +57,11 @@ __all__ = [
     "JWTHandler",
     "TokenType",
     "get_jwt_handler",
+    "JWT_SECRET_ENV",
+    "JWT_SECRET_ENV_ALIASES",
+    "JWT_PRIVATE_KEY_ENV",
+    "JWT_PUBLIC_KEY_ENV",
+    "JWT_ALGORITHM_ENV",
     # RBAC
     "RBACManager",
     "Role",

@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata as md
 import os
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -77,11 +78,15 @@ EXPLICIT_RUNTIME_DEPS: Tuple[str, ...] = ("RestrictedPython",)
 #: roster page) on the published link. The file must sit beside ``src/``.
 COPY_ROOT_FILES: Tuple[str, ...] = ("capability-registry.yaml",)
 
-#: Dropped from ``config/`` after copying. Neither is read by the gateway --
-#: they configure the Prometheus/Grafana stack and the Kubernetes production
-#: profile, both of which live in their own compose files. They are excluded
-#: because they carry dev-only placeholder secrets and monitoring scrape rules
-#: that have no business in a bundle served from a public URL.
+#: Kept out of ``config/``. Neither is read by the gateway -- they configure
+#: the Prometheus/Grafana stack and the Kubernetes production profile, both of
+#: which live in their own compose files. They are excluded because they carry
+#: dev-only placeholder secrets and monitoring scrape rules that have no
+#: business in a bundle served from a public URL.
+#:
+#: These are passed to the copy as *ignore* patterns rather than deleted after
+#: the fact: nothing is ever written that then has to be removed. That is
+#: cheaper, and it keeps the build free of the bulk-delete path entirely.
 CONFIG_EXCLUDES = ("production", "monitoring")
 
 #: Built console output. Copied to a directory named ``console`` rather than
@@ -154,7 +159,7 @@ if os.path.isfile(_SECRETS_FILE):
 # reads as "off":
 #     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
 os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "HIGH,CRITICAL")
-{{LLM_BLOCK}}
+{{LLM_BLOCK}}{{JWT_BLOCK}}
 from src.gateway.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
@@ -185,6 +190,42 @@ LLM_ENV_KEYS: Tuple[str, ...] = (
 
 #: LLM_PLACEHOLDER is replaced (or removed) when the launcher is written.
 LLM_PLACEHOLDER = "{{LLM_BLOCK}}"
+
+#: Signing-key placeholder, always replaced (never removed) when the launcher
+#: is written -- see ``_render_jwt_block``.
+JWT_PLACEHOLDER = "{{JWT_BLOCK}}"
+
+#: Build-time source for the JWT signing secret. Same rule as the LLM key above:
+#: read from the build environment, never from ``.env``.
+JWT_SECRET_ENV = "LIUHAO_JWT_SECRET"
+
+
+def _render_jwt_block() -> str:
+    """Render the ``os.environ.setdefault`` line that pins the JWT signing key.
+
+    Unlike the LLM block this one is **always** emitted. A bundle without a
+    pinned key signs tokens with a key generated fresh in each process, so a
+    restart logs everybody out and -- worse on a platform that may run more
+    than one worker -- a token minted by one process is rejected by the next.
+    Login would appear to work and the console would still be unusable. Baking
+    a key removes that class of failure at build time, where it is cheap,
+    instead of leaving it to be discovered in production.
+
+    If the operator supplies ``LIUHAO_JWT_SECRET`` it is honoured; otherwise a
+    strong one is generated for this bundle. Either way the value lives only
+    inside this gitignored bundle directory, exactly like the LLM key.
+    """
+    secret = os.environ.get(JWT_SECRET_ENV, "").strip()
+    if not secret:
+        secret = secrets.token_urlsafe(48)
+    return (
+        "\n# JWT signing key, pinned so tokens survive a restart and are shared\n"
+        "# across workers. A per-process key would log everyone out on restart\n"
+        "# and break any deployment running more than one worker. Generated here\n"
+        "# unless LIUHAO_JWT_SECRET was set in the build environment; the value\n"
+        "# stays inside this gitignored bundle, like the LLM key.\n"
+        f"os.environ.setdefault({JWT_SECRET_ENV!r}, {secret!r})\n"
+    )
 
 
 def _llm_env() -> Dict[str, str]:
@@ -228,11 +269,12 @@ def _render_llm_block() -> str:
 #: Runtime state that must never travel inside a published bundle. The
 #: ``*.db`` trio covers the SQLite audit/conversation stores the gateway
 #: creates on first start; the ``*.sqlite3`` trio covers human identities.
-_IGNORED = shutil.ignore_patterns(
+_IGNORE_PATTERNS = (
     "__pycache__", "*.pyc", "*.pyo",
     "*.sqlite3", "*.sqlite3-wal", "*.sqlite3-shm",
     "*.db", "*.db-wal", "*.db-shm",
 )
+_IGNORED = shutil.ignore_patterns(*_IGNORE_PATTERNS)
 
 
 def _third_party_top_level() -> Set[str]:
@@ -286,10 +328,13 @@ def _import_gateway_and_measure() -> Tuple[Dict[str, str], List[str]]:
     return _distributions_for(_third_party_top_level())
 
 
-def _copy_tree(source: Path, destination: Path) -> int:
+def _copy_tree(source: Path, destination: Path, extra_ignore: Iterable[str] = ()) -> int:
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(source, destination, ignore=_IGNORED)
+    ignore = _IGNORED
+    if tuple(extra_ignore):
+        ignore = shutil.ignore_patterns(*_IGNORE_PATTERNS, *extra_ignore)
+    shutil.copytree(source, destination, ignore=ignore)
     return sum(1 for _ in destination.rglob("*") if _.is_file())
 
 
@@ -381,14 +426,9 @@ def build(out_dir: Path) -> int:
         if not source.is_dir():
             print(f"      !! 缺少 {source}", file=sys.stderr)
             return 1
-        count = _copy_tree(source, out_dir / name)
-        details = ""
-        if name == "config":
-            for excluded in CONFIG_EXCLUDES:
-                target = out_dir / name / excluded
-                if target.exists():
-                    shutil.rmtree(target)
-                    details = f"（已剔除 {', '.join(CONFIG_EXCLUDES)}）"
+        exclusions = CONFIG_EXCLUDES if name == "config" else ()
+        count = _copy_tree(source, out_dir / name, extra_ignore=exclusions)
+        details = f"（已剔除 {', '.join(exclusions)}）" if exclusions else ""
         print(f"      {name:8s} -> {count} 个文件{details}")
 
     for name in COPY_ROOT_FILES:
@@ -404,11 +444,21 @@ def build(out_dir: Path) -> int:
     console_target = out_dir / CONSOLE_DIST_REL
     console_count = _copy_tree(CONSOLE_DIST_SRC, console_target)
     print(f"      dist     -> {console_count} 个文件  →  {CONSOLE_DIST_REL}/")
-    launcher_source = _LAUNCHER.replace(f"{LLM_PLACEHOLDER}\n", _render_llm_block())
-    if LLM_PLACEHOLDER in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
-        raise AssertionError(f"launcher template still contains {LLM_PLACEHOLDER}")
+    launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block())
+    launcher_source = launcher_source.replace(JWT_PLACEHOLDER, _render_jwt_block())
+    for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER):
+        if placeholder in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
+            raise AssertionError(f"launcher template still contains {placeholder}")
     (out_dir / LAUNCHER_NAME).write_text(launcher_source, encoding="utf-8")
     print(f"      入口脚本 -> {LAUNCHER_NAME}")
+
+    import re as _re
+
+    _m = _re.search(rf"os\.environ\.setdefault\('{JWT_SECRET_ENV}', '([^']+)'\)",
+                    launcher_source)
+    _pinned = _m.group(1) if _m else None
+    _source = "build env" if os.environ.get(JWT_SECRET_ENV, "").strip() else "本包生成"
+    print(f"      JWT 密钥 -> {_mask(_pinned) if _pinned else '(缺失!)'}  [{_source}]")
 
     llm_env = _llm_env()
     if llm_env:

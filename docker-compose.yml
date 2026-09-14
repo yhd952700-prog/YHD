@@ -10,7 +10,11 @@ services:
       APP_ENV: ${APP_ENV:-staging}
       DATABASE_URL: ${DATABASE_URL:-postgresql://liuhao:liuhao@postgres:5432/liuhao}
       SECRET_KEY: ${SECRET_KEY:-replace-me}
-      JWT_SECRET: ${JWT_SECRET:-replace-me}
+      # JWT 签名密钥。留空 → 每个进程各生成一把：重启即全端登出，多 worker
+      # 还会让登录「成功」而下一个请求 401。生成一把再填：
+      #   python -c "import secrets;print(secrets.token_urlsafe(48))"
+      # 注意：占位串（replace-me / *** 等）会被应用**拒绝**，等同于没设。
+      LIUHAO_JWT_SECRET: ${LIUHAO_JWT_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       METRICS_PERSIST: ${METRICS_PERSIST:-1}
     env_file:

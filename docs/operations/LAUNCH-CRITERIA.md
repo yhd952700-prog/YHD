@@ -42,15 +42,15 @@
 |---|---|---|---|
 | A1 | 真实执行 | ✅ **通过（WS1，本轮）** | 探针：目标 `"python: result = sum(i*i for i in range(1,11))"` → `status=executed`、`result='385'`。提交 `d992de46`。 |
 | A2 | 诚实失败 | ✅ **通过（WS1，本轮）** | 探针三路径：真执行 385 / 注入 `import os` → `REJECTED: ImportError` / 未接线 → `no active tool for capability python_compute`。护栏 `tests/test_execution_tool_bridge.py::(h)`。 |
-| A3 | 能力状态诚实 | ✅ **通过（WS2，本轮）** | `capability-registry.yaml` 新增 `local-capabilities`（python_compute）与 `known-open-items`（OPEN-001..006）；名册端点 20 项测试通过。 |
+| A3 | 能力状态诚实 | ✅ **通过（WS2 + Round 89 复核实测）** | `capability-registry.yaml` 新增 `local-capabilities`（python_compute）与 `known-open-items`（OPEN-001..006）；名册端点 20 项测试通过。**Round 89**：OPEN-001（Context 内核默认空转）经运行核实测**前提已不成立** —— 默认 HYBRID 权重下输入 GOAL/TASK×2/MEMORY/POLICY 得 `retained=['task']`（非空、确定性、与顺序无关），注册表状态改为 `RESOLVED` 并附护栏引用。名册测试复绿（20 passed）。 |
 | A4 | 人类主权护栏 | ✅ **通过（WS3 复验 + P2 裁决）** | 4 个验证脚本 ALL GREEN：C-1(43 动作平衡) / C-2(11，含 fail-closed 阻断) / C-3(15，DEFER+委托) / C-4(52，生产清单 arm 面 == 审计面 16=16)。源码默认 OFF 仍由 AST 护栏锁死（`no production @kernel_action has enforce=True`）。**P2 裁决：发布包 serve.py `setdefault LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（与生产 compose 同值）—— 前提是身份表已挂（见 A11），实测线上 `enabled=true / 16 个动作`；回滚 = 导出空值重启。 |
 | A5 | 可观测 | ✅ 通过 | 审计哈希链 + 事件总线 + trace（既有实现与测试）。 |
 | A6 | 可复现部署 | ✅ **通过（WS4 + P0 重建）** | 发布包 229 文件（src 213 + config 7 + console 10 + 根文件）；`RestrictedPython`、`capability-registry.yaml`、**`config/human_identities.json`、`config/auth_secrets.json`** 全部入包。整包冒烟：无令牌 `roster`→401、`/v1/health`→200、登录→令牌、带令牌 roster/summary/profile/enforcement 全 200。 |
-| A7 | 驾驶舱可用 | ✅ **通过（Round 88 重新发布）** | **当前外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，`verified:true`）。实测线上 `/v1/health` 200、无令牌 `roster` 401、`auth/config` 报 `secret_store.configured=true` 且 `login_eligible_humans=1`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线**：`unpublish` 被平台 403 挡住（`ListArtifactReleases: 10085:permission denied`），需手动在「设置—数据管理—应用」下线。 |
+| A7 | 驾驶舱可用 | ✅ **通过（Round 89 重新发布）** | **当前外链：`https://liuhao-cockpit-26430.app.workbuddy.host/`**（appId `wbapp_Ca767ODcz2AiVn7eutyxnq`，`verified:true`）。实测线上 `/v1/health` 200、无令牌 `/v1/dashboard/roster` 401、`auth/config` 报 `secret_store.configured=true` / `login_eligible_humans=1` / `diagnostics.algorithm=HS256`（Round 89 起用**烘焙的持久密钥**，旧行为是每进程随机的 RS256）/ `roundtrip=ok`、SPA 标题 `<title>LiuHao AI OS · 鎏灏智能中枢</title>`。⚠️ **旧链接 `liuhao-cockpit-84759`（appId `wbapp_AAy6Aj792OFtebl532XN9S`，旧内容）仍在线**（实测其 `algorithm=RS256`，即修复前的旧包）：`unpublish` 被平台 403 挡住（`ListArtifactReleases: 10085:permission denied`），需手动在「设置—数据管理—应用」下线。 |
 | A8 | 测试与门禁 | ✅ 通过 | WS1–WS5 四个提交均 12/12 `success`（见 §6）；本轮本地：顶层 994 passed / importlib 208 modules FAILED=0。 |
 | A9 | 文档与手册 | ✅ **通过（WS4）** | `production-runbook.md` 重写为 v2.0（真实单端口/SQLite）。 |
 | A10 | 供应链/依赖 | ✅ 通过 | 本轮**零新依赖**（Ollama 走 `requests`，已在包内）。 |
-| A11 | 访问控制 | ✅ **通过（P0 + Round 88 令牌头）** | 业务路由在 `include_router(dependencies=[Depends(require_human_principal)])` 上挂闸门；护栏 `tests/test_gateway_auth.py::TestProtectedRouters`（6 项）全绿；实测无令牌 401 / 登录后 200。已挂初始人类 `boss`（`login_eligible_humans=1`）。**Round 88 补**：托管边缘网关会改写 `Authorization` ⇒ 控制台改用私有头 `X-Liuhao-Token`，后端优先读它、`Authorization` 兜底；护栏 `tests/test_gateway_token_header.py`（20 项）。 |
+| A11 | 访问控制 | ✅ **通过（P0 + Round 88 令牌头 + Round 89 线上自证）** | 业务路由在 `include_router(dependencies=[Depends(require_human_principal)])` 上挂闸门；护栏 `tests/test_gateway_auth.py::TestProtectedRouters`（6 项）全绿；实测无令牌 401 / 登录后 200。已挂初始人类 `boss`（`login_eligible_humans=1`）。**Round 88 补**：托管边缘网关会改写 `Authorization` ⇒ 控制台改用私有头 `X-Liuhao-Token`，后端优先读它、`Authorization` 兜底；护栏 `tests/test_gateway_token_header.py`（20 项）。**Round 89 补**：签名密钥固定到 `LIUHAO_JWT_SECRET`（消除「重启即全端登出 / 多 worker 令牌互斥」），并**线上端到端自证**：用发布包烘焙的密钥为 `boss` 铸造合法令牌，走线上 `X-Liuhao-Token` → `/v1/auth/me` 200（`principal=boss`、`still_human=true`）→ `/v1/dashboard/roster` 200 → `POST /v1/chat` 真模型答 `2187`。护栏 `tests/test_jwt_key_persistence.py`（13 项）+ `tests/test_build_bundle_jwt.py`（5 项）。 |
 
 图例：✅ 通过　🟡 部分 / 进行中　❌ 未达
 
@@ -71,16 +71,28 @@
    `--file` 默认值此前只存在于帮助文本，导致裸命令报 `could not write to the store (file @ )`。
 8. [x] **P2**：生产治理裁决 —— ✅ 已完成（见 A4）。身份表 + 凭据随包发布；发布包
    `serve.py` 默认 arm `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`，回滚 = 导出空值重启。
-9. [x] **P1-b**：线上接真实 LLM —— ✅ **已完成（Round 88，boss 提供云端 key）**。
+9. [x] **P1-b**：线上接真实 LLM —— ✅ **已完成（Round 88 接云模型，Round 89 线上自证）**。
    构建期把 `AI_PROVIDER_TYPE=openai` / `AI_PROVIDER_MODEL=gpt-5.6-sol` /
    `OPENAI_BASE_URL=https://jiefuai.vip/v1` / `AI_PROVIDER_KEY`（打码入日志）烘焙进 `serve.py`。
    **整包冒烟（temp 副本）**：真登录 → `POST /v1/chat` → 真模型答 `2187`（3⁷，13.8s，非 mock）。
-   ⚠️ **未端到端自证**：线上"已认证对话"需要 boss 口令登录（口令未留档；且 JWT 密钥每进程随机，
-   无法自铸令牌）。发布沙箱有公网（`pip install` 成功）是可得的旁证。
+   ✅ **Round 89 已端到端自证（线上）**：见第 12 条 —— 线上"已认证对话"不再是缺口。
 10. [x] **Round 88**：令牌头修复收口 + 前端真接线 —— ✅ 已完成（`f70f7ea5`，8 文件；CI success）。
     ⚠️ 关键发现：上一轮只加了前端 `tokenHeaders()` 而**零调用点** ⇒ 生产问题原样存在；本轮把私有头
     接进 `api.ts`/`chatClient.ts`/`policyClient.ts`/`auth.ts`(logout+me) 并补 20 项回归。
 11. [x] **Round 88**：重建发布包 + 重新发布 —— ✅ 已完成（229 文件；新外链见 A7）。
+12. [x] **Round 89**：JWT 密钥持久化 + 线上端到端自证 + OPEN-001 收口 —— ✅ 已完成。
+    - **根因**：`JWTHandler` 没配密钥时在 `__init__` 里现生成 ⇒ **重启即全端登出**；若平台跑
+      多个 worker，A 进程签发的令牌 B 进程不认 ⇒ 登录「成功」而控制台不可用。而部署模板
+      （`docker-compose.yml` 的 `JWT_SECRET` / `docker-compose.prod.yml` 的 `JWT_SECRET_KEY`）
+      **早已声明**该密钥，代码却从不读 —— 声明一直是死配置。
+    - **修复**：`get_jwt_handler()` 支持从环境固定密钥（`LIUHAO_JWT_SECRET`，并兼容上述两个旧名；
+      支持 RS256 的 PEM 对）。未配置时保持原行为**并出 WARNING**（不再静默）。已知占位值
+      （`replace-me` / `change-me` 等）**拒绝当密钥**（已知密钥比随机密钥更危险）。发布包构建期
+      **必然**烘焙一枚持久密钥（无则生成）⇒ 包内 `serve.py` 自带 `LIUHAO_JWT_SECRET`。
+    - **证据**：本地整包冒烟 9/9（含真口令登录 + 用烘焙密钥铸造的令牌被接受 + 真模型答 `2187`）；
+      **线上** 6/6（`/v1/health` 200 / 无令牌 401 / 铸造令牌 `/v1/auth/me` 200 `principal=boss` /
+      带令牌 roster 200 / `POST /v1/chat` 真答 `2187` / 非 mock）。新测 18 项。
+    - **OPEN-001**：运行核实测已不成立 ⇒ 注册表改 `RESOLVED`（见 A3）。
 
 ---
 
@@ -94,14 +106,20 @@
   - **本机**：`.env` 已配 `AI_PROVIDER_TYPE=ollama` + `qwen2.5:3b`，是**真模型**。
     实测：`1+1等于几` → 4.4s 真回答；`帮我算 1..1000 平方和` → 1 次 `python_compute` 调用
     → 真值 `333833500` → 散文收口。`qwen2.5:7b` 在 CPU 上 30s 读超时，不可用。
-  - **线上发布包（Round 88 起）**：**已接入真云模型** —— 构建期把 `AI_PROVIDER_TYPE=openai` /
-    `gpt-5.6-sol` / `OPENAI_BASE_URL=https://jiefuai.vip/v1` / key 烘焙进 `serve.py`
-    （key 只进 gitignore 的 `deploy/cloud/`，不入库）。本地整包走 HTTP 真答 `2187` 已验证。
-    ⚠️ 唯一未证的一环：**发布沙箱能否够到该端点**（需线上登录发一句话确认）。在确认前，
-    对外不宜声称"线上已是真 AI"，可说「已配置真云模型，待一次线上对话确认」。
+  - **线上发布包（Round 89 起）**：**已接入真云模型且已线上自证** —— 构建期把
+    `AI_PROVIDER_TYPE=openai` / `gpt-5.6-sol` / `OPENAI_BASE_URL=https://jiefuai.vip/v1` / key
+    烘焙进 `serve.py`（key 只进 gitignore 的 `deploy/cloud/`，不入库）。**线上实测**
+    `POST /v1/chat`（带 `boss` 令牌）返回真模型答 `2187`。发布沙箱**能**够到该端点。
+- **JWT 签名密钥随包发布，是刻意的取舍**：平台无密钥托管，要让令牌跨重启/跨 worker 存活就只能
+  把密钥放进包里（与 LLM key 同一处理）。因此**发布包本身即敏感物**：谁拿到包内容谁就能铸造令牌。
+  边界是「包不外泄」，而非「密钥不落盘」。若要更强的隔离，应换成平台侧密钥托管或 RS256 +
+  只读挂载私钥（`LIUHAO_JWT_PRIVATE_KEY`/`_PUBLIC_KEY` 已支持）。
+- **`boss` 的登录口令不在本仓库/本会话**：线上已认证对话是用发布包密钥铸造令牌自证的；**口令交换
+  路径**是在本地整包冒烟里用临时身份走真实 HTTP 登录证明的。boss 若不知口令，可用
+  `scripts/register_human_identity.py --principal boss --password-stdin` 重置。
 - **WebSocket 适配器不投递**：无 WS 依赖时**诚实拒绝**，不伪造成功。
 - **Vault 未安装**（`vault_connect`）：读密恒为空操作。
-- **Context 内核默认空转**：HYBRID/UNIFORM 默认权重下典型输入全部 discarded。
+- **Context 内核**：OPEN-001 已于 Round 89 收口（相对阈值保留，默认权重下不再空转，见 A3）。
 - **公开面**只有 `/v1/health`、`/v1/ready`、`/v1/auth/*` 与登录页；其余端点均需令牌。
   `auth_required` 恒为 `true`（fail-closed）——**没有凭据就没人能登录**，这是设计而非故障。
 
@@ -125,8 +143,16 @@
 - **测试**：`tests/test_local_tool_execution.py`（7）、`tests/test_execution_tool_bridge.py`（8，含诚实护栏）、
   `tests/kernels/`（663）、ai 层关键集（226，1 skipped）；
   Round 88 新增 `tests/test_gateway_token_header.py`（20，私有头契约）。
+  **Round 89 新增** `tests/test_jwt_key_persistence.py`（13，密钥持久化 / 兼容旧名 / 拒绝占位值）
+  与 `tests/test_build_bundle_jwt.py`（5，构建期必然烘焙密钥）；`tests/kernels/context/`（28）复绿。
   关联集（gateway/policy 七个文件）140 passed。
-- **本地五重验证**：`compileall` OK；`flake8 src/` exit 0；`importlib` 208 模块 `FAILED=0`；AST/运行时见探针。
+- **本地五重验证（Round 89）**：`compileall` OK；`flake8 src/` exit 0；`importlib` 207 模块 `FAILED=0`；
+  AST/运行时见探针（新增 18 项测试全绿）。
+- **线上端到端探针（Round 89，`scripts`-外一次性脚本，不留库）**：
+  `/v1/health` 200 → 无令牌 `/v1/dashboard/roster` 401 → 铸造 `boss` 令牌 →
+  `/v1/auth/me` 200（`principal=boss`、`display_name="Boss (Sovereign)"`、`still_human=true`）→
+  带令牌 roster 200 → `POST /v1/chat` → `{"reply":"2187",...}`（非 mock）。
+  **本地整包冒烟**另有 9/9：含临时身份**真实口令登录**（`/v1/auth/login`）。
 
 ---
 

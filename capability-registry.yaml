@@ -554,11 +554,17 @@ capability-registry:
   - id: OPEN-001
     title: Context 内核默认空转
     detail: >-
-      HYBRID/UNIFORM 权重下，典型场景输入全部被 discarded
-      （src/kernels/context/__init__.py:140-145）。内核存在且测试通过，但默认
-      权重下不产出可用上下文。
-    impact: 默认配置下上下文压缩对实际任务无增益（不等于崩溃）。
-    status: OPEN
+      【已修，2026-09-14 复核实测】旧现象：保留判定用绝对阈值 weight > 0.5，
+      而权重随 N_INPUTS/计数变化不具尺度不变性，N_INPUTS=12 时默认
+      HYBRID/UNIFORM/IMPORTANCE 把每个已出现类型都丢弃（静默空转）。
+      现判定改为**相对**（归一化后取高于均值者），并保证「绝不产出空保留集」。
+      实测：默认 HYBRID 下输入 GOAL/TASK×2/MEMORY/POLICY ⇒ retained=['task']
+      （非空、确定性、与顺序无关）。
+    impact: 已消除。默认配置下上下文压缩产出非空可用上下文。
+    evidence: >-
+      tests/kernels/context/test_context_retention.py::test_retained_nonempty_for_all_mechanisms
+      （对每个机制断言保留集非空）；同目录 test_context.py 全绿（28 passed）。
+    status: RESOLVED
   - id: OPEN-002
     title: src/adapters/ 运行时不生效
     detail: MCP 适配器自声明 not-wired；网关实际走 src/observability/tracing。

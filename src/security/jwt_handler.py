@@ -9,8 +9,10 @@ Provides:
 - JWKS support for key rotation
 """
 
+import os
 import time
 import secrets
+import logging
 import uuid
 from typing import Optional, Dict, Any, List, Set, Union
 from dataclasses import dataclass, field
@@ -30,6 +32,11 @@ except ImportError:
     RSAAlgorithm = None
 
 from .encryption import EncryptionManager, get_encryption_manager
+
+# Defined after the guarded import above on purpose: pycodestyle tolerates a
+# module-level import placed after a try/except import guard, but any *other*
+# statement before it turns that import into an E402.
+logger = logging.getLogger(__name__)
 
 
 class TokenType(Enum):
@@ -575,12 +582,124 @@ class JWTHandler:
 # Convenience functions
 _default_handler: Optional[JWTHandler] = None
 
+#: Environment variables that pin the signing key to something durable.
+#:
+#: Without these a ``JWTHandler`` generates its keys in ``__init__``, which
+#: means the key lives exactly as long as the process. That is fine for a
+#: single-process dev run, and quietly wrong for a deployment:
+#:
+#:   * a restart invalidates every token -- every signed-in user is logged out
+#:     for no reason they can see;
+#:   * a deployment that runs more than one worker/replica mints tokens in one
+#:     process and validates them in another, so a fresh login fails on the
+#:     very next request. Login "works" and the console is still unusable.
+#:
+#: A key supplied through the environment makes every process share the same
+#: one, which is the whole requirement. ``LIUHAO_JWT_SECRET`` covers the
+#: symmetric case (HS256/HS512); the PEM pair covers the asymmetric one
+#: (RS256/RS512), where only the public key is ever needed to verify.
+JWT_SECRET_ENV = "LIUHAO_JWT_SECRET"
+
+#: Names older deployments already use for the same secret. ``docker-compose
+#: .yml`` sets ``JWT_SECRET`` and ``docker-compose.prod.yml`` sets
+#: ``JWT_SECRET_KEY``; until now the code read neither, so those declarations
+#: were silently ignored and every process still minted its own key. Honouring
+#: them lets an existing deployment stop being broken by editing nothing.
+JWT_SECRET_ENV_ALIASES = ("JWT_SECRET_KEY", "JWT_SECRET")
+
+JWT_PRIVATE_KEY_ENV = "LIUHAO_JWT_PRIVATE_KEY"
+JWT_PUBLIC_KEY_ENV = "LIUHAO_JWT_PUBLIC_KEY"
+JWT_ALGORITHM_ENV = "LIUHAO_JWT_ALGORITHM"
+
+#: Values that are plainly not secrets. A *known* signing key is worse than a
+#: random one -- anyone who has read this repository could mint tokens -- so a
+#: placeholder is treated as "not configured" rather than trusted. Compared
+#: case-insensitively.
+_PLACEHOLDER_SECRETS = frozenset({
+    "replace-me", "change-me", "changeme", "your-secret-key",
+    "secret", "***", "xxx", "todo", "password",
+})
+
+
+def _configured_secret() -> Optional[tuple]:
+    """Return ``(name, value)`` for the first usable secret in the environment.
+
+    Skips empty values and known placeholders (loudly -- a placeholder that is
+    quietly ignored is how the deployment got here). Returns ``None`` when no
+    variable supplies a usable secret.
+    """
+    for name in (JWT_SECRET_ENV, *JWT_SECRET_ENV_ALIASES):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        if raw.lower() in _PLACEHOLDER_SECRETS:
+            logger.warning(
+                "%s=%r is a placeholder, not a secret; ignoring it. A known "
+                "signing key would let anyone forge tokens.", name, raw,
+            )
+            continue
+        return name, raw
+    return None
+
+
+def _handler_from_env() -> Optional[JWTHandler]:
+    """Build a handler from a signing key pinned in the environment.
+
+    Returns ``None`` when nothing usable is configured, so the caller can fall
+    back to per-process keys exactly as before. Raises when the configuration
+    is self-contradictory (a symmetric secret paired with an asymmetric
+    algorithm): that is a misconfiguration which would otherwise be discovered
+    only as "every login fails", so it fails loudly and early instead.
+    """
+    configured = _configured_secret()
+    private_key = os.environ.get(JWT_PRIVATE_KEY_ENV, "").strip()
+    public_key = os.environ.get(JWT_PUBLIC_KEY_ENV, "").strip()
+    algorithm = os.environ.get(JWT_ALGORITHM_ENV, "").strip()
+
+    if private_key and public_key:
+        return JWTHandler(algorithm=algorithm or "RS256",
+                          private_key=private_key, public_key=public_key)
+    if private_key or public_key:
+        raise RuntimeError(
+            f"{JWT_PRIVATE_KEY_ENV} and {JWT_PUBLIC_KEY_ENV} must be set together"
+        )
+    if configured:
+        name, secret = configured
+        if algorithm.startswith("RS"):
+            raise RuntimeError(
+                f"{name} is set but {JWT_ALGORITHM_ENV}={algorithm} is "
+                f"asymmetric; provide {JWT_PRIVATE_KEY_ENV}/{JWT_PUBLIC_KEY_ENV} "
+                "instead of a secret"
+            )
+        if name != JWT_SECRET_ENV:
+            logger.warning(
+                "using %s for the JWT signing key; prefer %s so the intent is "
+                "explicit.", name, JWT_SECRET_ENV,
+            )
+        return JWTHandler(algorithm=algorithm or "HS256", secret_key=secret)
+    return None
+
 
 def get_jwt_handler() -> JWTHandler:
-    """Get default JWT handler"""
+    """Get the process-wide default JWT handler.
+
+    Prefers a signing key pinned in the environment (see the ``*_ENV``
+    constants above); falls back to a per-process key and says so, because an
+    ephemeral key silently drops sessions on restart and cannot be shared
+    between workers.
+    """
     global _default_handler
     if _default_handler is None:
-        _default_handler = JWTHandler()
+        handler = _handler_from_env()
+        if handler is None:
+            logger.warning(
+                "no %s in the environment: signing keys are generated for this "
+                "process only, so tokens do not survive a restart and are not "
+                "shared across workers. Set %s for a durable deployment.",
+                JWT_SECRET_ENV, JWT_SECRET_ENV,
+            )
+            handler = JWTHandler()
+        _default_handler = handler
     return _default_handler
 
 

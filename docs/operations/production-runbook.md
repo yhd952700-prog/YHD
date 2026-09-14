@@ -124,6 +124,34 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 身份表文件（file 后端） | — |
 | `LIUHAO_KERNEL_POLICY_ENFORCE` | 内核层真拦截层选择 | 空（L1 记录） |
 | `AI_PROVIDER_TYPE` / `*_API_KEY` | LLM provider 与密钥（默认 `mock`） | `mock` |
+| `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（发布包由构建期烘焙） |
+| `JWT_SECRET_KEY` / `JWT_SECRET` | 同上密钥的兼容旧名（生产 compose 用前者） | 未设 |
+| `LIUHAO_JWT_PRIVATE_KEY` / `_PUBLIC_KEY` | 改用 RS256 时的 PEM 对（两者必须同时给） | 未设 |
+| `LIUHAO_JWT_ALGORITHM` | 显式指定算法（默认：有 secret 走 HS256，有 PEM 对走 RS256） | — |
+
+### 5.1 JWT 签名密钥（**必须设**）
+
+不配 `LIUHAO_JWT_SECRET` 时，`JWTHandler` 在进程启动时**现生成**一把密钥。后果：
+
+- **重启即全端登出** —— 旧令牌全部失效，用户看不到任何原因；
+- **多 worker 直接坏掉** —— 登录在 A 进程签发、下一个请求落到 B 进程校验 ⇒ 新登录立刻 401，
+  表现为「登录成功但控制台用不了」。
+
+两种都不是崩溃，是静默的可用性缺陷，所以**未配置时会打 WARNING**（不再沉默）。
+
+发布包（§2.1）在构建期就把 `LIUHAO_JWT_SECRET` 烘焙进 `serve.py`，所以云发布形态默认是对的。
+Docker / 手工部署则要显式设置，例如：
+
+```bash
+export LIUHAO_JWT_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
+```
+
+**占位值会被拒绝**：`replace-me` / `change-me` / `changeme` / `secret` / `***` 等已知占位串**不会**被
+当作密钥（已知密钥比随机密钥更危险 —— 读过仓库的人都能伪造令牌）；此时会打 WARNING 并退回
+逐进程密钥，而不是拿占位串去签。
+
+**轮换**：换掉 `LIUHAO_JWT_SECRET` 并重启 ⇒ 所有已签发令牌立即失效（用户需重新登录）。这是
+预期的，也是唯一的撤销手段（除单令牌 logout 的 blocklist）。
 
 ---
 
@@ -156,7 +184,8 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 - 默认 LLM 为 `mock`（不产生真实模型智能）；真实 provider 需配置密钥。
 - Network WebSocket 适配器在无 WS 依赖时**诚实拒绝**投递（不伪造成功）。
 - `vault_connect` 未安装 → Vault 读密为空操作。
-- Context 内核在默认权重下空转（不产出可用上下文）。
+- **签名密钥随发布包分发**是刻意取舍（平台无密钥托管）：发布包本身即敏感物，谁拿到包内容谁就能
+  铸造令牌。需要更强隔离时改用 RS256 + 只读挂载私钥。详见 §5.1。
 
 ---
 
@@ -164,6 +193,7 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| 2.1.0 | 2026-09-14 | 新增 §5.1 JWT 签名密钥运维（`LIUHAO_JWT_SECRET` + 兼容旧名 + 拒绝占位值 + 轮换）；OPEN-001（Context 内核默认空转）已修，从已知限制中移除。 |
 | 2.0.0 | 2026-09-13 | 按**真实单端口架构**重写；移除 Redis/Postgres/K8s 假设与占位联系方式；补身份表与策略执法开关说明。 |
 | 1.0.0 | 2024-01-15 | 通用模板（**已废弃**：与本仓库真实形态不符）。 |
 
