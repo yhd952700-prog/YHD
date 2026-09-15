@@ -150,3 +150,51 @@ class TestPipeline:
         k = create_context_kernel(mechanism=AttentionMechanism.IMPORTANCE, scope="L2")
         assert k.mechanism is AttentionMechanism.IMPORTANCE
         assert k.scope == "L2"
+
+
+# =====================================================================
+# Bundle content: payloads + correlation traceability
+# =====================================================================
+
+class TestBundleCarriesPayloadAndCorrelation:
+    """The bundle is meant to be model-ready and traceable; both used to be lost.
+
+    Before the fix ``compressed[type]`` held only ``count``/``scope``/
+    ``mechanism`` -- ``inp.data`` was never read -- and ``ContextCompression``
+    had no place to put ``inp.correlation_id``, so traceability ended at the
+    input boundary.
+    """
+
+    def test_compressed_entry_carries_input_payload(self):
+        k = ContextKernel(mechanism=AttentionMechanism.UNIFORM)
+        data = [
+            ContextInput(type=ContextInputType.GOAL, source="s", data={"goal": "ship"}),
+            ContextInput(type=ContextInputType.TASK, source="s", data="t1"),
+        ]
+        res = k.compress(data)
+        assert res.compressed["goal"]["data"] == [{"goal": "ship"}]
+        assert res.compressed["task"]["data"] == ["t1"]
+
+    def test_all_payloads_of_a_type_are_kept_in_order(self):
+        k = ContextKernel(mechanism=AttentionMechanism.UNIFORM)
+        data = [
+            ContextInput(type=ContextInputType.EVENT, source="s", data="e1"),
+            ContextInput(type=ContextInputType.EVENT, source="s", data="e2"),
+        ]
+        res = k.compress(data)
+        assert res.compressed["event"]["data"] == ["e1", "e2"]
+        assert res.compressed["event"]["count"] == 2
+
+    def test_correlation_ids_propagate_deduped_in_input_order(self):
+        k = ContextKernel(mechanism=AttentionMechanism.UNIFORM)
+        data = [
+            ContextInput(type=ContextInputType.GOAL, source="s", correlation_id="c1"),
+            ContextInput(type=ContextInputType.TASK, source="s", correlation_id="c1"),
+            ContextInput(type=ContextInputType.MEMORY, source="s", correlation_id="c2"),
+            ContextInput(type=ContextInputType.TRUST, source="s", correlation_id=None),
+        ]
+        res = k.compress(data)
+        assert res.correlation_ids == ["c1", "c2"]
+
+    def test_empty_compress_has_no_correlation_ids(self):
+        assert ContextKernel().compress([]).correlation_ids == []

@@ -58,6 +58,11 @@ class ContextCompression:
     compression_ratio: float = 1.0
     scope: str = "L0"
     timestamp: float = field(default_factory=lambda: __import__("time").time())
+    #: correlation ids of the inputs that produced this bundle, de-duplicated and
+    #: in input order. Carried through so a caller can trace the bundle back to
+    #: the event(s) that fed it (the class contract promises end-to-end
+    #: traceability; the inputs' ids used to be dropped on the floor).
+    correlation_ids: List[str] = field(default_factory=list)
 
 
 class AttentionMechanism(Enum):
@@ -121,6 +126,18 @@ class ContextKernel:
         type_counts: Dict[ContextInputType, int] = {}
         for inp in inputs:
             type_counts[inp.type] = type_counts.get(inp.type, 0) + 1
+
+        # Payloads per type + the inputs' correlation ids. The bundle is meant to
+        # be *model-ready* and end-to-end traceable, so it must carry the actual
+        # data and ids -- previously only ``count``/``scope``/``mechanism`` were
+        # emitted and every ``inp.data`` / ``inp.correlation_id`` was dropped.
+        payloads: Dict[ContextInputType, List[Any]] = {}
+        correlation_ids: List[str] = []
+        for inp in inputs:
+            payloads.setdefault(inp.type, []).append(inp.data)
+            cid = inp.correlation_id
+            if cid is not None and cid not in correlation_ids:
+                correlation_ids.append(cid)
 
         # Apply attention based on mechanism.
         #
@@ -191,6 +208,7 @@ class ContextKernel:
                         "count": type_counts[itype],
                         "scope": self.scope,
                         "mechanism": self.mechanism.value,
+                        "data": payloads.get(itype, []),
                     }
                 else:
                     discarded.append(itype.value)
@@ -204,6 +222,7 @@ class ContextKernel:
             discarded_keys=discarded,
             compression_ratio=compression_ratio,
             scope=self.scope,
+            correlation_ids=correlation_ids,
         )
 
         # Reset input counts after compression

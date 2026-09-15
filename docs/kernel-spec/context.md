@@ -15,9 +15,9 @@ Context Kernel 负责把 12 类原始输入流（goal / task / memory / identity
 
 - 接受 12 类类型化输入（`ContextInputType`，`src/kernels/context/__init__.py:24`）。
 - 应用注意力/压缩机制产出 `ContextCompression`（`compress:108`、`ContextCompression:52`）。
-- 输出模型就绪包，并维护 correlation_id 端到端可追溯（`ContextInput.correlation_id:46`）。
-- 支持 L0–L7 scope 过滤（`set_scope:94`）。
-- 确定性、与输入顺序无关的输出（重要修复见 `compress` 注释，:124-184）。
+- 输出模型就绪包，并维护 correlation_id 端到端可追溯（`ContextInput.correlation_id:46`）——**2026-09-15 整改**：`ContextCompression` 新增 `correlation_ids`（从输入去重按序携带）；`compressed[type]` 新增 `data`（该类输入的全部 payload）。此前二者都被丢弃：产出只有 `{count,scope,mechanism}`。
+- **scope 是标签，不是过滤器**：`set_scope:94` 校验并存 `self.scope`，`compress` 用它给产出打标；**不按输入自带的 `scope` 筛输入**——按 §7「Context 不做访问裁决」，筛选应委托 Policy/Identity。（原稿「支持 L0–L7 scope 过滤」的措辞与此不符，已更正。）
+- 确定性、与输入顺序无关的输出（重要修复见 `compress` 注释，:124-184）。UNIFORM/RECENCY「全保留」行为由 `tests/kernels/context/test_context_retention.py` 守卫。
 
 ## 3. 生命周期（现状）
 
@@ -61,8 +61,9 @@ Context Kernel 负责把 12 类原始输入流（goal / task / memory / identity
 
 以下为设计契约要求与当前实现的**待核实差距**，非以 HEAD 验证过的事实；不得引用任何已删除的审计文档。
 
-- `compress()` 是否真正携带输入内容（`input_.data`）：原稿称 `compressed[type]` 只记类型计数、`input_.data` 从未读取——需代码实测核对，不得作为现状事实陈述。
-- scope 过滤：声明 L0–L7 过滤但仅 `self.scope` 打标、不筛输入——是否实现待定。
-- `compression_ratio` 实为 `len(retained_types)/12` 的保留比（:196），命名误导，应为 `retention_ratio`。
-- `add_input`/`_input_counts` 是否为被覆盖的死状态（:208-217）——需代码实测。
-- `__import__("time")` 反模式（:44/:59）应改为顶层 `import time`。
+- ✅ **已整改（2026-09-15，实测证实）**：`compress()` 此前只记类型计数、`input_.data` 从未读取（`compressed[type]` = `{count, scope, mechanism}`）——现已加入 `data`（该类型全部输入的 payload，按输入顺序）。回归测试 `TestBundleCarriesPayloadAndCorrelation`。
+- ✅ **已核实＝设计如此（非缺陷）**：scope 仅用 `self.scope` 打标、不筛输入——按 §7，Context 不做访问裁决，筛选委托 Policy/Identity；输入自带的 `scope` 不回写（产出条目的 `scope` 恒为内核 scope，已被 `test_compressed_bundle_carries_scope_and_mechanism` 固定）。§2 措辞已据此更正。
+- **误报记录**：原稿「UNIFORM 策略把内容全丢弃」**已在更早修复**（绝对阈值 `weight>0.5` → 相对保留，见 `compress` 注释 :124-184；守卫 `tests/kernels/context/test_context_retention.py`），本次复核实测 UNIFORM/RECENCY 全保留 ⇒ 判为误报。
+- `compression_ratio` 实为 `len(retained_types)/12` 的保留比（:198），命名误导，应为 `retention_ratio`（改名是破坏性 API 变更，未动；测试已固定该字段名）。
+- `add_input`/`_input_counts` 是否为被覆盖的死状态（:208-217）——需代码实测。实测结论：`compress` 只读 `inputs` 参数、并重置 `_input_counts`，故 `_input_counts` 对产出无影响（`add_input` 计数仅在被 `process`/`compress` 立刻清零前短暂可见）。但 `test_add_input_increments_count` 固定了该行为，删除属破坏性变更，未动。
+- `__import__("time")` 反模式（:45/:59）应改为顶层 `import time`（未动；纯风格，非静默缺陷）。
