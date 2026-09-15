@@ -18,13 +18,15 @@ from datetime import datetime
 from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
-import uuid
-import threading
 import json
-
-import httpx
+import logging
+import os
+import threading
+import uuid
 
 from src.kernels._crosscutting import kernel_action
+
+logger = logging.getLogger("liuhao.kernel.network")
 
 
 class ProtocolType(str, Enum):
@@ -256,7 +258,26 @@ class HTTPAdapter(ProtocolAdapter):
         super().__init__(config)
         # Timeout is configurable via config.config["timeout"] (seconds).
         self._timeout = float(config.config.get("timeout", 5.0))
-        self._client = httpx.Client(timeout=self._timeout)
+        # ``httpx`` is imported lazily and the client is built on first send.
+        # A top-level ``import httpx`` made *the whole kernel* unimportable
+        # when the dependency was missing, even for callers that only ever
+        # use the internal adapter. Now the failure is deferred to the point
+        # where an HTTP client is genuinely needed, and it is reported as a
+        # FAILED message rather than an ImportError escaping ``route()``.
+        self._client = None
+
+    def _ensure_client(self):
+        """Build (once) and return the underlying httpx client."""
+        if self._client is None:
+            try:
+                import httpx  # noqa: PLC0415  (lazy by design, see above)
+            except ImportError as exc:  # pragma: no cover - env dependent
+                raise RuntimeError(
+                    "HTTPAdapter requires the 'httpx' package (declared in "
+                    "requirements.txt); install it or route over another adapter"
+                ) from exc
+            self._client = httpx.Client(timeout=self._timeout)
+        return self._client
 
     def send(self, message: Message) -> bool:
         """POST the message to ``config.endpoint``; return True only on 2xx."""
@@ -268,7 +289,15 @@ class HTTPAdapter(ProtocolAdapter):
             return False
 
         try:
-            response = self._client.post(
+            client = self._ensure_client()
+        except RuntimeError as exc:
+            # Missing dependency: honest failure, never a silent success.
+            message.status = MessageStatus.FAILED
+            message.metadata["error"] = f"http adapter unavailable: {exc}"
+            return False
+
+        try:
+            response = client.post(
                 self.config.endpoint,
                 content=payload,
                 headers={"Content-Type": "application/json"},
@@ -349,15 +378,74 @@ class NetworkBus:
     """Unified network communication bus."""
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
-    def __init__(self):
+    def __init__(self, history_path: Optional[str] = None):
+        """Create a bus.
+
+        ``history_path`` optionally persists the message history as JSON Lines
+        so it survives a restart. It defaults to ``None`` -- i.e. the previous
+        in-memory-only behaviour -- so nothing changes for existing callers.
+        """
         self._adapters: Dict[ProtocolType, ProtocolAdapter] = {}
         self._routes: List[Route] = []
         self._message_history: List[Message] = []
         self._max_history = 10000
         self._lock = threading.RLock()
+        self._history_path = history_path
+        # Persistence failures are recorded, never swallowed silently: they
+        # are surfaced through ``stats()["history_persist_errors"]``.
+        self._history_errors: List[str] = []
 
         # Register built-in adapters
         self._register_builtin_adapters()
+        if self._history_path:
+            self._load_history()
+
+    # ------------------------------------------------------------------
+    # Optional history persistence (JSON Lines, opt-in)
+    # ------------------------------------------------------------------
+
+    def _load_history(self) -> None:
+        """Replay persisted history (bounded by ``_max_history``)."""
+        try:
+            if not os.path.exists(self._history_path):
+                return
+            with open(self._history_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        self._message_history.append(
+                            Message.from_dict(json.loads(line))
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._history_errors.append(f"load: {exc}")
+            self._message_history = self._message_history[-self._max_history:]
+        except Exception as exc:  # noqa: BLE001
+            self._history_errors.append(f"load: {exc}")
+
+    def _append_history(self, message: Message) -> None:
+        """Append one message to the history file (no-op when disabled)."""
+        if not self._history_path:
+            return
+        try:
+            with open(self._history_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(message.to_dict()) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            self._history_errors.append(f"append: {exc}")
+
+    def _rewrite_history(self) -> None:
+        """Rewrite the file from memory after trimming (keeps it bounded)."""
+        if not self._history_path:
+            return
+        try:
+            tmp_path = f"{self._history_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                for entry in self._message_history:
+                    handle.write(json.dumps(entry.to_dict()) + "\n")
+            os.replace(tmp_path, self._history_path)
+        except Exception as exc:  # noqa: BLE001
+            self._history_errors.append(f"rewrite: {exc}")
 
     def _register_builtin_adapters(self):
         """Register built-in protocol adapters."""
@@ -496,6 +584,17 @@ class NetworkBus:
         FAILED with an explanatory error instead of being delivered.
         """
         with self._lock:
+            # Lifecycle gate: PAUSED / STOPPED must actually refuse traffic.
+            # Previously ``pause()`` only flipped the flag and routing carried
+            # on, so "paused" was a label, not a behaviour.
+            if self.lifecycle in (KernelLifecycle.PAUSED, KernelLifecycle.STOPPED):
+                message.status = MessageStatus.FAILED
+                message.metadata["error"] = (
+                    f"network bus is {self.lifecycle.value}; route()/send() "
+                    "are refused while paused or stopped"
+                )
+                return message
+
             # Find route (protocol-aware: see _match_route).
             requested_protocol = message.protocol
             route = self._match_route(message.destination, requested_protocol)
@@ -543,8 +642,10 @@ class NetworkBus:
 
             # Store in history
             self._message_history.append(message)
+            self._append_history(message)
             if len(self._message_history) > self._max_history:
                 self._message_history = self._message_history[-self._max_history:]
+                self._rewrite_history()
 
             # Send via adapter
             message.status = MessageStatus.SENT
@@ -631,6 +732,9 @@ class NetworkBus:
                 "by_status": by_status,
                 "routes": len(self._routes),
                 "adapters": len(self._adapters),
+                # Persistence is opt-in; a non-empty list here means history
+                # is NOT being fully persisted and must be looked at.
+                "history_persist_errors": list(self._history_errors),
             }
 
     def initialize(self) -> None:
@@ -638,6 +742,18 @@ class NetworkBus:
 
     def shutdown(self) -> None:
         self.lifecycle = KernelLifecycle.STOPPED
+        # Release whatever the adapters hold (e.g. the httpx connection pool).
+        # Skipping this leaked sockets every time a bus was shut down.
+        for protocol, adapter in self._adapters.items():
+            close = getattr(adapter, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 - never mask shutdown
+                logger.warning(
+                    "failed to close %s adapter: %s", protocol.value, exc
+                )
 
     def pause(self) -> None:
         if self.lifecycle not in (KernelLifecycle.READY, KernelLifecycle.UNINITIALIZED):

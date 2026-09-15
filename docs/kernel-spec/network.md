@@ -37,9 +37,11 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 对齐 `src/kernels/_base.py` 的 `KernelLifecycle`。
 
 - **UNINITIALIZED**：`NetworkBus()` 构造（`__init__.py:350`，`lifecycle` 默认 `UNINITIALIZED`）。
-- **INITIALIZING → READY**：`initialize()`（`:578`）置 `READY`；`_register_builtin_adapters`（`__init__.py:360`）注册 internal/http/ws 三适配器，并为三者各注册同优先级（100）通配路由 `internal_default` / `http_default` / `websocket_default`（2026-09-15 起；此前仅 `internal_default`）。注意：构造/初始化会触发 `import httpx`（`__init__.py:24`），依赖缺失则构造即崩。
-- **PAUSED / RESUME**：`pause()/resume()`（`:584/:589`）已存在，带状态校验（非法迁移抛 `KernelStateError`）并仅置位 `lifecycle`（PAUSED/READY）；未真正挂起读写。语义目标：PAUSED 时应拒绝 `route`/`send`。
-- **STOPPED**：`shutdown()`（`:581`）置 `lifecycle=STOPPED`；应 `HTTPAdapter.close()`（`__init__.py:299`）释放 httpx 连接，需实测确认是否已释放。
+- **INITIALIZING → READY**：`initialize()`（`NetworkBus.initialize`）置 `READY`；`_register_builtin_adapters` 注册 internal/http/ws 三适配器，并为三者各注册同优先级（100）通配路由 `internal_default` / `http_default` / `websocket_default`（2026-09-15 起；此前仅 `internal_default`）。
+  ⚠️ 2026-09-15 起**构造不再导入 `httpx`**：`HTTPAdapter` 改为懒建客户端（`_ensure_client()`），因此「依赖缺失则构造即崩」已不成立（见 §9）。
+- **PAUSED / RESUME**：`pause()/resume()` 已存在，带状态校验（非法迁移抛 `KernelStateError`）。
+  **2026-09-15 起 PAUSED/STOPPED 真拒收**：`route()` 取锁后立刻校验生命周期，命中 PAUSED/STOPPED 则消息标 FAILED 并写入 `metadata["error"]`（不抛异常、不静默丢弃）。`resume()` 后投递照常恢复。
+- **STOPPED**：`shutdown()` 置 `lifecycle=STOPPED`，并**遍历 `self._adapters` 逐个 `close()`**（逐个 try/except，失败 `logger.warning` 且不中断其余适配器）⇒ httpx 连接真正释放（此前 `shutdown()` 仅置位，连接泄漏）。
 - **ERROR**：适配器 `send` 抛非预期异常应转 ERROR；当前 `route` 仅把消息标 FAILED（如 `__init__.py:454/475`），bus 自身不转 ERROR。
 
 ## 4. 输入模型
@@ -63,9 +65,11 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 对齐 `_base.py` 异常族。
 
 - **缺失**：READY 前调用 `route/send` 应抛 `KernelNotInitializedError`（类已具备 `lifecycle` 字段与方法，是否在各入口做校验需实测）。
-- **配置错误**：`add_route` 的非法 scope 抛 `ValueError`（`__init__.py:405`）应改为 `KernelConfigurationError`；`httpx` 缺失导致构造失败应抛 `KernelConfigurationError` 而非 `ImportError` 崩溃。
-- **权限**：`route` 的 scope 越界应抛 `KernelPermissionError` 而非仅标 FAILED（让调用方区分"被拒"与"投递失败"）。当前 `route` 把越界标 FAILED（`__init__.py:465`）但读的是错误字段，需实测。
-- **当前错误点（核心缺陷）**：`route` 读 `message.metadata["scope"]`（`__init__.py:460`）但 `Message` 无该属性 → 永远取默认 "L1"，scope 控制**形同虚设**；且其"改写 `message.protocol`"（`__init__.py:480`）覆盖了调用方显式指定的协议，导致通配路由强制进程内。
+- **配置错误**：`add_route` 的非法 scope 抛 `ValueError`（实测已钉住）应改为 `KernelConfigurationError`（**仍开放**）；`httpx` 缺失**自 2026-09-15 起不再导致构造失败**——已改懒导入，缺依赖时 `HTTPAdapter.send()` 把原因写进 `message.metadata["error"]` 并返回 `False`（消息 FAILED），不逃逸 ImportError。
+- **权限**：`route` 的 scope 越界应抛 `KernelPermissionError` 而非仅标 FAILED（让调用方区分"被拒"与"投递失败"）。当前 `route` 把越界标 FAILED，**仍开放**。
+- ~~**当前错误点（核心缺陷）**：`route` 读 `message.metadata["scope"]` 但 `Message` 无该属性 → scope 控制形同虚设~~ ❌ **撤回（2026-09-15 实测误报）**：scope 本来就只来自 `metadata["scope"]`（`Message` 无独立 scope 字段是**设计如此**，见 §9），且控制**确实生效**：非法 scope `L9` → FAILED「Invalid message scope」；`L7` 消息 vs `L1` 路由 → FAILED「Message scope L7 exceeds route scope L1」。
+- **`protocol` 被改写**（原核心缺陷）：`route()` 用 `route.protocol` 覆写 `message.protocol`，曾让通配 `internal_default` 吃掉调用方显式指定的协议。2026-09-15 已修：`_match_route` 协议感知 + 三默认路由 + 不可达时写 `x-protocol-downgraded` / `metadata["protocol_downgraded"]`（见 §9）。
+- **持久化**：`history_path` 启用后落盘失败**不吞**——记入 `stats()["history_persist_errors"]`（含原因），投递照常完成。
 
 ## 7. 权限边界（现状已核对）
 
@@ -81,12 +85,15 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 - **单元**：`route` 命中具体路由（非通配）正确选协议；`send(...,protocol=HTTP)` 真正走 `HTTPAdapter`（`__init__.py:520` 默认 INTERNAL）；`InternalAdapter` handler 送达（`__init__.py:220`）；`HTTPAdapter` 2xx→DELIVERED、非 2xx→FAILED（`__init__.py:280`）；`WebSocketAdapter` 诚实 FAILED（`__init__.py:330`）。
 - **边界**：`add_route` 非法 scope 抛错（`__init__.py:405`）；`remove_route`；`get_message_history` 过滤。
 - **失败路径测试**：
-  1. **scope 字段**：给 `Message` 加真实 `scope` 字段后，断言 `route` 读取它而非 `metadata["scope"]`；越界抛 `KernelPermissionError`。
-  2. **协议尊重**：`send(...,protocol=HTTP)` 必须不被 `internal_default` 改写（`__init__.py:480`）——注册默认 HTTP/WS 路由。
-  3. **未实现协议**：A2A/MCP/GRPC 应诚实 FAILED 并明确原因，而非静默。
-  4. **依赖守卫**：`httpx` 缺失时 `NetworkBus` 不应整体崩溃——懒导入。
-  5. **生命周期**：READY 前 `route` 抛 `KernelNotInitializedError`。
-  6. **协议适配器**：`register_adapter`（`__init__.py:391`）覆盖默认注册；`get_adapter`（`__init__.py:397`）对未注册协议返回 None；`HTTPAdapter.close`（`__init__.py:299`）在 STOPPED 时释放连接。
+  1. ✅ **scope**（2026-09-15 已钉住）：`TestScopeEnforcement` 4 条——非法 scope 被拒、消息 scope 超路由上限被拒、路由 scope 非法被拒、合法范围内正常送达。scope 来自 `metadata["scope"]`，`Message` 无独立 scope 字段（设计如此）。
+  2. ✅ **协议尊重**（2026-09-15 已修）：`TestProtocolAwareRouting` 5 条——`send(...,protocol=HTTP)` 不再被 `internal_default` 改写；注册默认 HTTP/WS 路由使其可达。
+  3. ✅ **未实现协议**：A2A/MCP/GRPC 无适配器时诚实 FAILED 并附原因（`No adapter for protocol ...`）。
+  4. ✅ **依赖守卫**（2026-09-15 已修）：`TestHttpxIsLazy` 3 条——模块无顶层 `import httpx`、客户端首次发送才建、缺 httpx 时 `send()` 返回 False 且 `metadata["error"]` 可操作。
+  5. ❌ **生命周期**（**仍开放**）：READY 前 `route` 抛 `KernelNotInitializedError` —— 未实现，当前只对 PAUSED/STOPPED 做拒收。
+  6. ✅ **协议适配器**：`register_adapter` 覆盖默认注册；`get_adapter` 对未注册协议返回 None；`shutdown()` 遍历全部适配器 `close()`（`TestLifecycleGating::test_shutdown_closes_adapters` 已钉住）。
+
+- **当前基线（2026-09-15 实测）**：`tests/kernels/network/` **35 passed / 0 failed**
+  （20 基线 + 5 `TestProtocolAwareRouting` + 4 `TestLifecycleGating` + 3 `TestHttpxIsLazy` + 3 `TestHistoryPersistence`）。
 
 ## 9. 目标态契约与已知缺口（尚未实现，待代码实测）
 
@@ -111,6 +118,36 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
   默认路由变为三条后需删除全部三条（该用例意图是「一条路由都没有」）。
   回归：`TestProtocolAwareRouting`（5 条）；反证：源码退回 HEAD ⇒ 3 红 / 2 守卫绿。
 - ✅ **已实现（本次核实）**：A2A/MCP/GRPC 无适配器时由 `route()` 的 `if not adapter` 分支**诚实 FAILED** 并附原因；WebSocket 适配器 `supports_send=False` / `is_available()=False`，`send()` 一律 FAILED 附可操作原因，绝不谎报 DELIVERED（`:307-341`）。
-- `httpx` 应改为懒导入/依赖守卫——**真实但未修**：`httpx` 由 `HTTPAdapter` 真实使用，且已是声明依赖，改懒导入属健壮性增强而非静默缺陷。
-- `pause()/resume()` 当前仅置位 `lifecycle`，应真正拒绝 PAUSED 态的 `route`/`send`；`shutdown()` 应释放 httpx 连接。**（未修；`HTTPAdapter` 已有 `close()`，`shutdown` 接线待做。）**
-- 消息历史当前全内存，无持久化。**（未修；功能项。）**
+- ✅ **真实且已修（2026-09-15 实测并修复）**：`httpx` 已改为**懒导入 + 依赖守卫**。
+  原先 `src/kernels/network/__init__.py` 顶层 `import httpx`，缺依赖时**导入期即 ImportError**，
+  整个 network 内核连同其测试一起收集失败——一个可选传输依赖能拖垮内核导入。
+
+  **修法**：`HTTPAdapter.__init__` 只置 `self._client = None`；新增 `_ensure_client()`，
+  首次 `send()` 时才 `import httpx` 并建 `httpx.Client(timeout=...)`；捕获 `ImportError`
+  转为 `RuntimeError`，由 `send()` 落进 `message.metadata["error"]` 并返回 `False`
+  （消息变 FAILED，**不逃逸异常**）。另加 `logger = logging.getLogger("liuhao.kernel.network")`，
+  `close()` 不再无条件触碰未建客户端。
+
+  **回归**：`TestHttpxIsLazy`（3 条：模块无顶层 httpx / 客户端首次发送才建 / 缺 httpx 时诚实失败）。
+  **反证**：源码退回 HEAD ⇒ 3 条全红。
+- ✅ **真实且已修（2026-09-15 实测并修复）**：`pause()/resume()` 原先**只置位 `lifecycle`**，
+  PAUSED 态下 `route()`/`send()` 照常投递——生命周期位形同虚设，违反 `KernelLifecycle` 语义。
+
+  **修法**：`route()` 在取锁后立刻校验 `self.lifecycle in (PAUSED, STOPPED)`，
+  命中则 `message.status = FAILED` + `metadata["error"]` 写明「bus is <state>; route()/send()
+  are refused while paused or stopped」并返回（**不抛异常、不静默丢弃**）。
+  `shutdown()` 改为遍历 `self._adapters` 调 `close()`（逐个 try/except，失败 `logger.warning`
+  且不中断其余适配器），真正释放 httpx 连接。
+
+  **回归**：`TestLifecycleGating`（4 条：paused 拒 / stopped 拒 / resume 恢复 / shutdown 关适配器）。
+  **反证**：源码退回 HEAD ⇒ 3 条红；`test_resume_restores_routing` 作为**防过度拦截守卫**仍绿（正确）。
+- ✅ **真实且已修（2026-09-15 实测并修复）**：消息历史原先**全内存**，进程重启即全丢且无痕。
+
+  **修法**：`NetworkBus.__init__(history_path: Optional[str] = None)` 新增可选持久化——
+  **默认 `None` = 完全保持旧行为（不落盘）**，调用方显式传入路径才启用。
+  落盘用 JSON Lines（`_append_history` 追加、`_rewrite_history` 在超过 `_max_history` 裁剪后重写、
+  `_load_history` 启动时回放）。**持久化失败不吞**：异常记入 `stats()["history_persist_errors"]`
+  （含原因），投递本身照常完成——「历史没存下」变成可见事实而非沉默损失。
+
+  **回归**：`TestHistoryPersistence`（3 条：默认不写文件 / 跨重启保留 / 失败进 `history_persist_errors`
+  且不影响投递）。**反证**：源码退回 HEAD ⇒ 3 条全红。

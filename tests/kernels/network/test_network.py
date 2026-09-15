@@ -5,6 +5,7 @@ handler, message round-trip (to_dict/from_dict), adapter
 serialize/deserialize, route add/remove and pattern matching, no-route
 failure, message history and correlation chains, and bus stats.
 """
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -264,3 +265,97 @@ class TestScopeEnforcement:
             metadata={"scope": "L1"},
         ))
         assert m.status == MessageStatus.DELIVERED
+
+
+# =====================================================================
+# Lifecycle is behaviour, not a label (pause/stop must refuse traffic)
+# =====================================================================
+
+class TestLifecycleGating:
+    def test_paused_bus_refuses_route(self, bus):
+        bus.initialize()
+        bus.pause()
+        m = bus.route(Message(type="t", content="x", source="s", destination="d"))
+        assert m.status is MessageStatus.FAILED
+        assert "paused" in m.metadata["error"]
+
+    def test_stopped_bus_refuses_route(self, bus):
+        bus.initialize()
+        bus.shutdown()
+        m = bus.route(Message(type="t", content="x", source="s", destination="d"))
+        assert m.status is MessageStatus.FAILED
+        assert "stopped" in m.metadata["error"]
+
+    def test_resume_restores_routing(self, bus):
+        received = []
+        bus.register_internal_handler("d", lambda m: received.append(m))
+        bus.initialize()
+        bus.pause()
+        bus.resume()
+        m = bus.route(Message(type="t", content="x", source="s", destination="d"))
+        assert m.status is MessageStatus.DELIVERED
+        assert len(received) == 1
+
+    def test_shutdown_closes_adapters(self, bus, monkeypatch):
+        closed = []
+        http_adapter = bus.get_adapter(ProtocolType.HTTP)
+        monkeypatch.setattr(http_adapter, "close", lambda: closed.append("http"))
+        bus.shutdown()
+        assert closed == ["http"]
+
+
+# =====================================================================
+# httpx is a lazy, optional dependency (module import must not depend on it)
+# =====================================================================
+
+class TestHttpxIsLazy:
+    def test_module_has_no_top_level_httpx(self):
+        import src.kernels.network as net
+        assert not hasattr(net, "httpx")
+
+    def test_http_client_built_on_first_send_only(self, bus):
+        adapter = bus.get_adapter(ProtocolType.HTTP)
+        assert adapter._client is None
+
+    def test_missing_httpx_fails_honestly(self, bus, monkeypatch):
+        # ``sys.modules[name] = None`` makes ``import httpx`` raise ImportError.
+        monkeypatch.setitem(sys.modules, "httpx", None)
+        adapter = bus.get_adapter(ProtocolType.HTTP)
+        m = Message(type="t", content="x", source="s", destination="d")
+        assert adapter.send(m) is False
+        assert "http adapter unavailable" in m.metadata["error"]
+        assert m.status is MessageStatus.FAILED
+
+
+# =====================================================================
+# Optional history persistence (opt-in; default stays in-memory)
+# =====================================================================
+
+class TestHistoryPersistence:
+    def test_default_bus_writes_nothing(self, bus, tmp_path):
+        bus.register_internal_handler("d", lambda m: None)
+        bus.send("t", "x", "s", "d")
+        assert list(tmp_path.iterdir()) == []
+        assert bus.stats()["history_persist_errors"] == []
+
+    def test_history_survives_a_restart(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        first = NetworkBus(history_path=str(path))
+        first.register_internal_handler("d", lambda m: None)
+        first.send("t", "hello", "s", "d")
+        assert path.exists()
+
+        second = NetworkBus(history_path=str(path))
+        history = second.get_message_history()
+        assert len(history) == 1
+        assert history[0].content == "hello"
+        assert second.stats()["history_persist_errors"] == []
+
+    def test_persistence_failure_is_surfaced_not_swallowed(self, tmp_path):
+        # A directory cannot be opened for appending: the failure must land in
+        # stats() rather than vanish or crash the send.
+        bus = NetworkBus(history_path=str(tmp_path))
+        bus.register_internal_handler("d", lambda m: None)
+        m = bus.send("t", "x", "s", "d")
+        assert m.status is MessageStatus.DELIVERED  # delivery unaffected
+        assert bus.stats()["history_persist_errors"]

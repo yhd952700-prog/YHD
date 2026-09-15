@@ -224,9 +224,11 @@ capability-registry:
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
-    test_coverage: '25/25 unit tests passing (tests/kernels/network/, 2026-09-15 verified: 20 baseline + 5 TestProtocolAwareRouting regression tests)'
-    evidence:
-      - tests/kernels/network/test_network.py::TestProtocolAwareRouting — explicit protocol is no longer overwritten by the internal catch-all
+    - tests/kernels/network/test_network.py::TestProtocolAwareRouting — explicit protocol is no longer overwritten by the internal catch-all
+    - tests/kernels/network/test_network.py::TestLifecycleGating — PAUSED/STOPPED buses actually refuse route()/send(); shutdown() closes adapters
+    - tests/kernels/network/test_network.py::TestHttpxIsLazy — httpx is lazy-imported; a missing dependency fails honestly instead of raising at import time
+    - tests/kernels/network/test_network.py::TestHistoryPersistence — optional JSONL history (history_path=None by default); persistence errors surface in stats().history_persist_errors
+    test_coverage: '35/35 unit tests passing (tests/kernels/network/, 2026-09-15 verified: 20 baseline + 5 TestProtocolAwareRouting + 10 for lifecycle gating / lazy httpx / history persistence)'
     implementation_completeness:
       code_exists: true
       executable: true
