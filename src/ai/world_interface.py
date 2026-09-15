@@ -114,6 +114,10 @@ class ShellAdapter(WorldAdapter):
                 raise ValueError("shell run requires a non-empty command")
         completed = subprocess.run(
             argv,
+            # nosec B602  # shell=True 仅当调用方显式传 params={"shell": True} 时触发；
+            # 默认走 shlex.split 分词、不经 shell，命令注入面已关闭。Autonomous
+            # 路径还需经 authorize 回调授权（见 ShellAdapter 类 docstring 契约）。
+            # 属有意为之的 opt-in 能力，非意外漏洞 —— 故精确抑制此单行，而非整类跳过。
             shell=use_shell,
             capture_output=True,
             text=True,

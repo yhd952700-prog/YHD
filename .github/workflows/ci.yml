@@ -79,10 +79,17 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy
 
-      - name: Run Python Security Scan
-        run: |
-          python -m pip install --quiet bandit || true
-          python -m bandit -r src/ -f json -o bandit-results.json || true
+      # ── Bandit 真门禁（HIGH only，与 architecture-gate 同硬度）─────────────
+      # 阈值取 --severity-level high：命中即失败，绝不 || true。MEDIUM/LOW 只
+      # 采集不阻断，避免第一天就红导致门禁被无视（仓库既有纪律：规则须实测 0 命中）。
+      # 唯一例外 B602 在 src/ai/world_interface.py:117 用**单行** nosec 抑制，
+      # 原因见该行注释——shell=True 为显式 opt-in、默认关闭、经授权契约保护，非意外
+      # 漏洞。要收紧只需删掉那行 nosec，该 HIGH 即重新阻断。lint job 处仅作全量采集。
+      - name: Install Bandit (gate dependency)
+        run: python -m pip install --quiet bandit
+
+      - name: Bandit security gate (HIGH only, blocking)
+        run: python -m bandit -r src/ --severity-level high -f json -o bandit-results.json
 
       - name: Upload Bandit Results
         uses: actions/upload-artifact@v4
@@ -257,6 +264,9 @@ jobs:
       - name: Run Flake8
         run: python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503
 
+      # ⚠️ 采集用，非门禁：真正会阻断 CI 的 Bandit 门禁在 security job
+      # （--severity-level high，命中即失败）。此处保留全量扫描 + artifact，
+      # 供人工审查 MEDIUM/LOW，与 security job 的 HIGH 门禁互补。
       - name: Run Bandit
         run: python -m bandit -r src/ -f json -o bandit-results.json || true
 
