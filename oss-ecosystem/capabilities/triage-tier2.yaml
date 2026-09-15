@@ -1,0 +1,326 @@
+# 鎏灏 OSS 候选分级 —— tier2 清单（第二轮， Oss-Thicken 任务产出）
+# 生成: 2026-09-15 | 数据来源: state/scan-20260913T210132Z.json（657 去重池）
+# 全部 stars / license / last_push 来自 api.github.com/repos/<owner>/<repo> 实时二次核实（2026-09-15 真发请求，19 次全成功，未触发限流）。
+# ---- 数量漏斗 ----
+#   去重池(来自 README) : 657
+#   已登记(automation/safety/coding/agent/triage-tier1/s2-s5-landed) : 32 个 repo 排除
+#   本批候选池(排除已登记 + R1 许可阻断) : 598
+#   本次选取 : 14（见下，id 0201–0214）；另选 5 条最有价值者做深度分析（tier2-depth.yaml，id 0221–0225）
+#   说明：tier2 与 tier2-depth 为**同一批新增项目**，为避免重复登记，深度分析的 5 个 repo 不再出现在本轻量清单。
+# 体例照 triage-tier1.yaml（entries 列表 + 13 必填字段）。enhances_liuhao/verdict 等加引号防 YAML1.1 布尔误判。
+# 人工筛选纪律：库而非重型平台（已剔除 langchain/langchain 等重型框架与 supabase 等 SaaS）；不托管凭证给外部 SaaS（R4）；排除 capabilities/*.yaml 已登记项目。
+# 注：本文件 4 个 repo 的 license GitHub API 返回 NOASSERTION，**已逐份实读 LICENSE 文件**，结论是
+#     「许可并非不明，而是检测器匹配不到」：rq=BSD-2-Clause、vercel/ai=Apache-2.0（短式声明）、
+#     ncnn=BSD-3-Clause（另捆 zlib 等第三方源码）、TensorRT-LLM=Apache-2.0（含衍生代码）。
+#     前两条低风险；后两条保留 commercial_risk=medium，原因是捆绑/衍生代码另适用其他许可，需逐项确认非 copyleft。
+#     第 5 条 pgvector 在 tier2-depth.yaml（同为 NOASSERTION，实读为 PostgreSQL License）。
+
+entries:
+- name: PaddlePaddle/PaddleSpeech
+  source_platform: github
+  url: https://github.com/PaddlePaddle/PaddleSpeech
+  id: LHX-OSS-0201
+  license: Apache-2.0
+  stars: 12684
+  last_push: '2026-08-12'
+  solves: creation 基因缺多模态音频入口（intent 67）；本地语音/音频工具链，不依赖外部 ASR SaaS。
+  enhances_liuhao: 'partial'
+  target_kernel: perception
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "Apache-2.0 本地语音工具包，补多模态音频前置解析；体量偏重，列为评估对照而非默认依赖。"
+  function: "本地语音工具包（ASR / TTS / 说话人验证 / 语音翻译）。"
+  technical_value: "提供流式 ASR 与 TTS 前端，补 Perception 内核缺的音频模态第一道解析，本地推理不联网。"
+  absorbable: "流式 ASR 解码与 TTS 前端管线，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 perception 内核的音频解析器备选；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 本地语音工具包，补多模态音频入口，不依赖外部 SaaS。
+- name: m-bain/whisperX
+  source_platform: github
+  url: https://github.com/m-bain/whisperX
+  id: LHX-OSS-0202
+  license: BSD-2-Clause
+  stars: 24039
+  last_push: '2026-08-30'
+  solves: creation 基因缺带词级时间戳的本地 ASR（intent 67），可对齐字幕/检索。
+  enhances_liuhao: 'partial'
+  target_kernel: perception
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "BSD-2-Clause 本地 ASR（词级时间戳 + 说话人分离），与 tier1 的 faster-whisper 互补，列为评估。"
+  function: "带词级时间戳与说话人分离的本地 ASR 库。"
+  technical_value: "在 faster-whisper 之上加词级对齐与大模型说话人分离，补 Perception 音频解析的精细时间轴。"
+  absorbable: "词级对齐与 diarization 封装，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 perception 内核音频解析的精细对齐层；回滚即移除。"
+  commercial_risk: "low —— BSD-2-Clause；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 本地 ASR 词级时间戳，与 faster-whisper 互补。
+- name: rq/rq
+  source_platform: github
+  url: https://github.com/rq/rq
+  id: LHX-OSS-0203
+  license: BSD-2-Clause
+  stars: 10686
+  last_push: '2026-09-14'
+  solves: data 基因缺跨进程共享状态层（无 Redis）；ENOCH 调度目前单进程内存态。
+  enhances_liuhao: 'partial'
+  target_kernel: resource
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "轻量 Python 任务队列；需引入 Redis 依赖，与现有 sqlite 链路并存需评估，判 watch。许可已实读为 BSD-2-Clause（宽松），不再构成待确认项。"
+  function: "基于 Redis 的简单 Python 任务队列。"
+  technical_value: "以 Redis 做跨进程任务分发与状态共享，补 data 基因缺的共享状态层；单文件 worker 极简。"
+  absorbable: "队列与 worker 注册/重试模型，不是整个项目"
+  needs_refactor: light
+  integration_plan: "作为 resource 内核的后台任务层备选；需先评估 Redis 依赖与现有 sqlite 链路并存；回滚即移除。"
+  commercial_risk: "low —— 已实读 LICENSE：BSD-2-Clause 原文（两条条件、无第三条款），宽松许可；API 报 NOASSERTION 仅因文末附带作者观点免责段，非许可不明。"
+  security_risk: "low —— 本地队列；未做 CVE 扫描，待测。"
+  performance_impact: "待测 —— 引入 Redis 依赖。"
+  why: 轻量任务队列，补跨进程共享状态层，但需 Redis。
+- name: milvus-io/milvus
+  source_platform: github
+  url: https://github.com/milvus-io/milvus
+  id: LHX-OSS-0204
+  license: Apache-2.0
+  stars: 46116
+  last_push: '2026-09-15'
+  solves: data / memory 基因缺工业级向量检索（tier1 faiss 是库，milvus 是托管型向量库）。
+  enhances_liuhao: 'partial'
+  target_kernel: memory
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "云原生向量数据库，比 faiss 重；与单端口自服务部署形态冲突，判 watch 仅作规模参考。"
+  function: "云原生向量数据库，支持可扩展 ANN 检索。"
+  technical_value: "以独立向量服务形态提供 ANN 检索，与 faiss（进程内库）是不同档位；鎏灏当前形态更偏库。"
+  absorbable: "分布式索引与查询调度思路，不引入集群"
+  needs_refactor: heavy
+  integration_plan: "仅作规模对照；若 Memory 内核需要跨进程向量服务再评估；回滚即不引入。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 独立服务需网络暴露与鉴权；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 向量数据库，比 faiss 重，仅作规模参考。
+- name: deepspeedai/DeepSpeed
+  source_platform: github
+  url: https://github.com/deepspeedai/DeepSpeed
+  id: LHX-OSS-0205
+  license: Apache-2.0
+  stars: 43114
+  last_push: '2026-09-15'
+  solves: ai 基因缺 GPU/推理调度（intent 14）；分布式训练与推理优化。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "训练/推理优化库，偏训练侧；与当前推理形态关联有限，判 watch。"
+  function: "深度学习优化库（分布式训练与推理）。"
+  technical_value: "ZeRO 显存优化与推理内核，补 ai 基因缺的 GPU 调度能力，但主要面向训练集群。"
+  absorbable: "显存优化与推理内核思路，不是整体引入"
+  needs_refactor: heavy
+  integration_plan: "仅作概念参考；若 Execution 内核需 GPU 推理优化再评估；回滚即不引入。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 训练/推理优化库，偏训练侧，watch。
+- name: sgl-project/sglang
+  source_platform: github
+  url: https://github.com/sgl-project/sglang
+  id: LHX-OSS-0206
+  license: Apache-2.0
+  stars: 35974
+  last_push: '2026-09-15'
+  solves: deployment 基因缺 GPU/model serving 部署形态（intent 16）；与 vllm 同领域。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "高性能 LLM/多模态 serving 框架，与 vllm 互补（结构化生成 + 多模态）；本地部署不托管外部。"
+  function: "高性能 LLM 与多模态模型 serving 框架。"
+  technical_value: "以 RadixAttention 做前缀复用、支持结构化生成，补 deployment 基因缺的本地模型 serving。"
+  absorbable: "前缀缓存与结构化生成调度，不是整体引入"
+  needs_refactor: light
+  integration_plan: "作为 execution 内核的本地推理后端备选（与 vllm 二选一）；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 本地推理服务；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 本地模型 serving 框架，与 vllm 互补。
+- name: nanobrowser/nanobrowser
+  source_platform: github
+  url: https://github.com/nanobrowser/nanobrowser
+  id: LHX-OSS-0207
+  license: Apache-2.0
+  stars: 13797
+  last_push: '2026-08-18'
+  solves: automation 基因缺浏览器/桌面侧执行面（intent 53）；用自有 LLM key，不托管凭证。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "开源 Chrome 扩展，多智能体 Web 自动化，用用户自有 LLM key（R4 友好）；需评估与现有沙箱边界。"
+  function: "开源 Chrome 扩展，AI 驱动的 Web 自动化（多智能体工作流）。"
+  technical_value: "以浏览器扩展形态提供真实 Web 动作面，凭证留在用户侧，补 automation 基因缺的浏览器执行面。"
+  absorbable: "浏览器动作编排封装，不是整个扩展"
+  needs_refactor: light
+  integration_plan: "并入 ActionExecutor 接缝，需评估沙箱边界；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 操作真实浏览器，越权动作面需沙箱边界；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 浏览器自动化扩展，用自有 key，补浏览器执行面。
+- name: casdoor/casdoor
+  source_platform: github
+  url: https://github.com/casdoor/casdoor
+  id: LHX-OSS-0208
+  license: Apache-2.0
+  stars: 14404
+  last_push: '2026-09-14'
+  solves: safety 基因出向管控/认证空白（intent 56）；自托管 IAM，凭证留在内部。
+  enhances_liuhao: 'partial'
+  target_kernel: security
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "自托管 IAM/agent 网关，支持 OIDC/MCP 等多协议；凭证留在内部（R4 友好），但 MCP 网关面需过 Trust Gate。"
+  function: "自托管身份与访问管理（IAM）/ agent 网关与认证服务。"
+  technical_value: "以自托管 IAM 提供认证与 MCP/agent 网关，补 safety 基因出向管控与认证空白，且凭证不托管外部。"
+  absorbable: "认证与策略网关的接线模式，不是整体引入"
+  needs_refactor: light
+  integration_plan: "作为 security 内核的认证/网关对照，MCP 面必须过 Trust Gate；回滚即移除。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 认证服务本身是高价值目标，MCP 网关面需最小权限 + Trust Gate；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 自托管 IAM，凭证留内部，补认证空白。
+- name: langchain-ai/deepagents
+  source_platform: github
+  url: https://github.com/langchain-ai/deepagents
+  id: LHX-OSS-0209
+  license: MIT
+  stars: 29420
+  last_push: '2026-09-15'
+  solves: agent 基因 planner/guardrail 分离参考（intent 47）；与 L-Core 链路高度重叠。
+  enhances_liuhao: 'partial'
+  target_kernel: agent
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "batteries-included agent harness，与 L-Core 高度重叠；仅作模式参考，不引入避免第二权威。"
+  function: "开箱即用的智能体框架（harness）。"
+  technical_value: "提供可配置 agent 循环，对照鎏灏 L-Core 已有 Intent→…→Response 链路，仅取模式不换引擎。"
+  absorbable: "agent 循环与工具调用抽象，不换引擎"
+  needs_refactor: none
+  integration_plan: "仅作参照保留；回滚即不引入。"
+  commercial_risk: "low —— MIT；未做 CVE 扫描，待测。"
+  security_risk: "low —— 框架库；未做 CVE 扫描，待测。"
+  performance_impact: "不适用"
+  why: agent 框架，与 L-Core 重叠，仅作模式参考。
+- name: vercel/ai
+  source_platform: github
+  url: https://github.com/vercel/ai
+  id: LHX-OSS-0210
+  license: Apache-2.0
+  stars: 26746
+  last_push: '2026-09-15'
+  solves: agent / experience 基因缺前端 AI SDK（intent 19）；补驾驶舱前端的 agent 集成范式。
+  enhances_liuhao: 'partial'
+  target_kernel: experience
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "TypeScript AI SDK，仅借鉴交互/流式范式补 Experience 前端，不引入运行期绑定；许可已实读为 Apache-2.0。"
+  function: "TypeScript 的 AI 应用与智能体开发工具包（AI SDK）。"
+  technical_value: "提供前端流式调用与 tool use 范式，补 Experience 驾驶舱前端的 agent 集成参考，不执行业务逻辑。"
+  absorbable: "前端流式与 tool-use 范式（UI 模式），不是运行期绑定"
+  needs_refactor: light
+  integration_plan: "仅借鉴交互模式，不引入依赖；回滚即移除参考。"
+  commercial_risk: "low —— 已实读 LICENSE：Apache-2.0（原文 'Licensed under the Apache License, Version 2.0'，短式声明）。此前记『疑似 MIT』经实读不成立，以文件原文为准。"
+  security_risk: "low —— 前端库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 前端 AI SDK，借鉴范式，许可已实读为 Apache-2.0。
+- name: Tencent/ncnn
+  source_platform: github
+  url: https://github.com/Tencent/ncnn
+  id: LHX-OSS-0211
+  license: BSD-3-Clause
+  stars: 23820
+  last_push: '2026-09-14'
+  solves: ai 基因缺边缘/移动端推理调度（intent 14）；纯 C++ 无第三方依赖。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "移动端优化的 C++ 推理框架，构建无第三方依赖；补边缘侧第二执行面的推理能力。已实读 LICENSE.txt：源码 BSD-3-Clause，另捆少量以 zlib 等许可分发的第三方源码文件。"
+  function: "面向移动端优化的高性能神经网络推理框架（C++）。"
+  technical_value: "以无依赖 C++ 推理框架补 ai 基因边缘侧推理调度，可作为轻量第二执行面的推理后端。"
+  absorbable: "推理执行与算子调度，不是整个框架"
+  needs_refactor: light
+  integration_plan: "作为 execution 内核边缘侧推理后端备选；回滚即移除。"
+  commercial_risk: "medium —— 已实读 LICENSE.txt：ncnn 源码为 BSD-3-Clause（宽松），但同一文件列出以 zlib 等**其他许可**分发的第三方组件。残留风险在于捆绑组件需逐项确认非 copyleft，非许可不明。"
+  security_risk: "low —— 本地推理；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 移动端 C++ 推理框架，补边缘侧推理；源码 BSD-3-Clause，另捆少量第三方源码文件。
+- name: triton-inference-server/server
+  source_platform: github
+  url: https://github.com/triton-inference-server/server
+  id: LHX-OSS-0212
+  license: BSD-3-Clause
+  stars: 10987
+  last_push: '2026-09-14'
+  solves: deployment 基因缺 GPU/model serving 部署形态（intent 15）；云边统一推理服务。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: evaluate
+  adoption_decision: evaluate
+  decision_note: "NVIDIA 推理服务，支持多框架多模型统一 serving；本地部署不托管外部，但偏重。"
+  function: "优化的云与边缘推理服务（Triton Inference Server）。"
+  technical_value: "以统一推理服务封装多框架模型，补 deployment 基因缺的本地模型 serving；需 GPU 宿主。"
+  absorbable: "多模型统一 serving 与动态批处理思路，不是整体引入"
+  needs_refactor: heavy
+  integration_plan: "作为 execution 内核推理后端备选，需 GPU 环境；回滚即不引入。"
+  commercial_risk: "low —— BSD-3-Clause；未做 CVE 扫描，待测。"
+  security_risk: "medium —— 推理服务需网络暴露与鉴权；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: 统一推理服务，补模型 serving，偏重。
+- name: OpenMined/PySyft
+  source_platform: github
+  url: https://github.com/OpenMined/PySyft
+  id: LHX-OSS-0213
+  license: Apache-2.0
+  stars: 10030
+  last_push: '2026-09-13'
+  solves: safety 基因隐私计算参考（intent 55）；数据不出域的联邦学习。
+  enhances_liuhao: 'partial'
+  target_kernel: security
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "联邦学习/隐私计算框架，数据留在远端服务器；概念价值高于集成价值，判 watch。"
+  function: "在远端数据上做数据科学的隐私计算/联邦学习框架。"
+  technical_value: "以联邦学习让计算走向数据而非数据集中，补 safety 基因隐私维度思路，但偏研究。"
+  absorbable: "隐私计算编排抽象，不引入集群"
+  needs_refactor: heavy
+  integration_plan: "仅作隐私计算概念参考；回滚即不引入。"
+  commercial_risk: "low —— Apache-2.0；未做 CVE 扫描，待测。"
+  security_risk: "low —— 框架库；未做 CVE 扫描，待测。"
+  performance_impact: "不适用"
+  why: 联邦学习框架，隐私计算概念参考。
+- name: NVIDIA/TensorRT-LLM
+  source_platform: github
+  url: https://github.com/NVIDIA/TensorRT-LLM
+  id: LHX-OSS-0214
+  license: Apache-2.0
+  stars: 14627
+  last_push: '2026-09-15'
+  solves: deployment 基因缺 GPU 推理优化的部署形态（intent 14）；需 NVIDIA GPU。
+  enhances_liuhao: 'partial'
+  target_kernel: execution
+  verdict: watch
+  adoption_decision: watch
+  decision_note: "NVIDIA GPU 推理优化库，强绑定硬件；与当前部署形态冲突，判 watch。主许可已实读为 Apache-2.0，另含第三方衍生代码清单需逐项确认。"
+  function: "面向 NVIDIA GPU 的大模型推理优化库（Python API + 运行时）。"
+  technical_value: "以 TensorRT 优化做 LLM 高效推理，补 deployment 基因 GPU 推理优化，但强绑定 NVIDIA 硬件。"
+  absorbable: "推理优化内核思路，不引入硬件绑定"
+  needs_refactor: heavy
+  integration_plan: "仅作优化思路参考；回滚即不引入。"
+  commercial_risk: "medium —— 已实读 LICENSE：本项目为 Apache-2.0，但文件载明包含源自其他开源项目的代码『may have different licenses』。主许可宽松，残留风险在于衍生代码需逐项确认。"
+  security_risk: "low —— 本地库；未做 CVE 扫描，待测。"
+  performance_impact: "待测"
+  why: NVIDIA GPU 推理优化，强绑定硬件，watch；主许可已实读为 Apache-2.0。

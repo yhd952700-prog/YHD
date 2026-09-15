@@ -31,7 +31,7 @@
 | 能力账单 | `genebank/GENE-MAP.yaml` | 12 类基因，每类写明"今天谁承担、缺什么" | ✅ 已建 |
 | 覆盖蓝图 | `intents.yaml` | 用户列的 72 类 → 可执行查询 → 目标内核 | ✅ 已建 |
 | 发现引擎 | `pipeline/oss_radar.py` | 真调 API，诚实报告失败 | ✅ 已建并跑通 |
-| 能力数据库 | `capabilities/*.yaml` | 每个候选的 13 字段分析 | 🟡 **32 条 / 6 个文件**（15 深度分析 + 5 落地复记 + 12 tier1 分级；扫描池去重 657） |
+| 能力数据库 | `capabilities/*.yaml` | 每个候选的 13 字段分析 | 🟡 **51 条 / 8 个文件**（20 深度分析 + 5 落地复记 + 12 tier1 分级 + 14 tier2 分级；扫描池去重 657；tier2 由 Oss-Thicken 于 2026-09-15 新增） |
 | 字段契约 | `schema/capability-entry.schema.yaml` | 让"必须分析"变成可校验的事 | ✅ 已建 |
 | 扫描留痕 | `state/scan-*.json` | 每轮真实数据，可复盘 | ✅ 已生成 |
 
@@ -94,30 +94,55 @@ PyPI 十次无发现端点、CNCF 一次连接中断（已通过本地缓存修�
 
 stars / license / language 全部经 `api.github.com/repos/<repo>` **二次核实对齐**。
 
-`capabilities/` 共 **32 条记录 / 6 个文件**（2026-09-14 实测重数）。三种体例**不可混算**：
+`capabilities/` 共 **51 条记录 / 8 个文件**（2026-09-15 重数）。四种体例**不可混算**：
 
 | 文件 | 条数 | 体例 |
 |---|---|---|
 | `automation.yaml` / `safety.yaml` / `coding.yaml` / `agent.yaml` | 5 / 4 / 4 / 2 | **深度分析**（13 字段全填） |
+| `tier2-depth.yaml` | 5 | **tier2 深度分析**（Oss-Thicken 新增，13 字段全填，各对上 GENE-MAP 一条具体缺口） |
 | `s2-s5-landed.yaml` | 5 | **落地复记**（记录第 2–5 轮的实际吸收结果，非新候选） |
 | `triage-tier1.yaml` | 12 | **tier1 分级**（轻量条目，按契约补齐必填字段） |
+| `triage-tier2.yaml` | 14 | **tier2 分级**（Oss-Thicken 新增，轻量条目，id 0201–0214，避免与 tier2-depth 的 5 个 repo 重复登记） |
 
-其中**深度分析 15 条**的结论分布：
+其中**深度分析 20 条**（原 15 + `tier2-depth.yaml` 新增 5）的结论分布：
 
 | 结论 | 数量 | 代表 |
 |---|---|---|
-| **adopt** | 2 | Semgrep（把架构纪律变成 CI 会红的检查）、Bandit（工具已在用，缺的是必跑） |
-| **evaluate** | 5 | Temporal、Conductor、Casbin、Monty、Semantic Kernel |
+| **adopt** | 3 | Semgrep（把架构纪律变成 CI 会红的检查）、Bandit（工具已在用，缺的是必跑）、tesseract（OCR 引擎补多模态输入） |
+| **evaluate** | 9 | Temporal、Conductor、Casbin、Monty、Semantic Kernel、vllm（本地模型 serving）、pgvector（库内向量检索）、authelia（自托管认证网关）、robotframework（真实世界动作面） |
 | **watch** | 6 | Hatchet、OPA、Microsandbox、Dagster、deer-flow、MCP Server 生态 |
 | **reject** | 2 | Airflow（重复自有能力）、Composio（凭证托管触碰主权红线） |
 
-后两类**不计入上面的结论分布**，因为它们都还没走完深度分析：
+其余两类**不计入上面的结论分布**，因为它们都还没走完深度分析：
 
 - `s2-s5-landed.yaml` 的 5 条是**已发生的事实**，不是新结论：Semgrep 已落地、
   Temporal 部分吸收（范式下沉，未引入集群）、`pydantic/monty` 本轮暂缓、
   既有代码 4 处"谎报成功"已修复、RestrictedPython 已落地。
 - `triage-tier1.yaml` 的 12 条是**待复核清单**（adopt 6 / evaluate 6），
   条目已过白名单 + stars/license/last_push 二次核实，但**尚未做 13 字段深度分析**。
+- `triage-tier2.yaml` 的 14 条是 Oss-Thicken 本轮新增的**待复核清单**（adopt 0 / evaluate 8 / watch 6 / reject 0），
+  同样过白名单 + 真实 API 二次核实，尚未做 13 字段深度分析。
+
+**关于 `NOASSERTION`（本轮最容易被误读的一项，单列说明）**：本轮共 5 条的 `license` 被
+GitHub API 返回 `NOASSERTION` —— 本文件 4 条（rq、vercel/ai、Tencent/ncnn、NVIDIA/TensorRT-LLM）
++ `tier2-depth.yaml` 1 条（pgvector）。**已逐份实读 LICENSE 文件本体**，结论是
+**「许可并非不明，而是 GitHub 检测器匹配不到」**：
+
+| repo | 实读到的许可 | 检测器为何报 NOASSERTION | commercial_risk |
+|---|---|---|---|
+| `rq/rq` | **BSD-2-Clause**（两条条件，无第三条款） | 文末多一段作者观点免责声明 | low |
+| `vercel/ai` | **Apache-2.0** | 只贴了 Apache **短式**声明（非全文） | low |
+| `Tencent/ncnn` | **BSD-3-Clause** | 同一 LICENSE.txt 内**捆绑**第三方组件通知清单 | medium（见下） |
+| `NVIDIA/TensorRT-LLM` | **Apache-2.0** | 同上，含源自其他项目的衍生代码 | medium（见下） |
+| `pgvector/pgvector` | **PostgreSQL License** | 文件以 "Portions Copyright" 起头 | low |
+
+其中 3 条按实读结论记 `commercial_risk=low`。ncnn 与 TensorRT-LLM 保留 `medium`，
+**原因不是"许可未知"，而是捆绑/衍生代码另适用其他许可**（ncnn 的 LICENSE.txt 明列 zlib 等；
+TensorRT-LLM 的 LICENSE 写明衍生部分 "may have different licenses"）——
+正式采纳前需逐项确认这些组成部分非 copyleft。这是各自真实的残留风险。
+
+⚠️ **订正**：worker 原先的记录里「vercel/ai 疑似 MIT」「TensorRT-LLM 疑似 BSD 系」经实读**两条均不成立**
+（分别为 Apache-2.0 / Apache-2.0）。凡"疑似许可"一律不得作为结论，须实读文件。
 
 > **已知局限（不掩盖）**：CNCF 全景源只按名称与描述做本地子串匹配，没有相关性排序，
 > 因此候选池里存在噪声（例如搜 "apache arrow" 会命中描述中提到 Arrow 的 InfluxDB）。

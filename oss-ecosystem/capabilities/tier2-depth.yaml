@@ -1,0 +1,180 @@
+# 《鎏灏全球开源能力数据库》—— tier2 深度分析（Oss-Thicken 任务产出）
+# 对应基因见每条 gene 字段。数据来源：state/scan-20260913T210132Z.json（657 去重池）
+#          + api.github.com/repos/<repo> 实时二次核实（stars/license/pushed_at，2026-09-15 真发请求）
+# 核实时间：2026-09-15
+# 体例照 automation.yaml（13 必填字段全填 + upstream_stars/language/target_kernels/gene/evidence/adoption_decision/decision_note）。
+# 说明：本批 5 条为从本轮新增项目里挑出最有价值者做深度分析；为免重复登记，这 5 个 repo 不再出现在 triage-tier2.yaml。
+# 注：tesseract / vllm / authelia / robotframework 为 Apache-2.0；pgvector 的 license GitHub API 返回 NOASSERTION，
+#     已**实读 LICENSE 文件**确认为 PostgreSQL License（宽松、OSI 已认可），检测器匹配不到只因该文件以
+#     "Portions Copyright" 起头，并非许可不明。据此改记 license=PostgreSQL、commercial_risk=low，不留「需人工确认」。
+
+entries:
+
+  - id: LHX-OSS-0221
+    name: tesseract-ocr/tesseract
+    source_platform: github
+    url: https://github.com/tesseract-ocr/tesseract
+    upstream_stars: 76487
+    language: C++
+    function: >
+      工业级 OCR 引擎（C++）。输入图像，输出识别出的文本与版面框；
+      提供训练好的语言模型与 LSTM/经典识别器，可本地离线运行。
+    technical_value: >
+      是 OCR 的事实标准引擎：以 C++ 实现、无外部服务依赖，识别质量与多语言覆盖久经考验。
+      对比 tier1 已登记的 PaddleOCR（同样 adopt，偏中文与端到端检测+识别），
+      tesseract 是更底层的引擎，二者可互为后备而非竞争。
+      直接补 Perception 内核"文档图像前置解析"这道多模态输入的第一关。
+    enhances_liuhao: "yes"
+    absorbable: >
+      OCR 识别与版面分析引擎本体（含 LSTM 识别器与语言模型加载），
+      不是把整个仓库 vendoring 进产品，而是作为 perception 内核的图像→文本解析后端接入。
+    needs_refactor: light
+    integration_plan: >
+      作为 perception 内核的文档图像解析器后端，经 ToolRouter 注入；
+      与 PaddleOCR 并存做候选路由（按语言/版面选择）。回滚即移除该后端封装与依赖。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— 图像尺寸与语言模型加载影响吞吐与内存，需在真实文档上量化。
+    target_kernels: [perception, context]
+    gene: creation-capability
+    evidence: "scan-20260913T210132Z.json intent=66；api.github.com/repos/tesseract-ocr/tesseract 二次核实 2026-09-15（76487/Apache-2.0）"
+    adoption_decision: adopt
+    decision_note: >
+      命中 creation 基因最明确的缺口："Perception 面向文本观察，缺多模态输入（图像/视频/音频/OCR 前置解析均未见）"。
+      纯 C++ 本地库、无外部依赖、Apache-2.0，与 PaddleOCR 构成双 OCR 后备，定为 adopt。
+
+  - id: LHX-OSS-0222
+    name: vllm-project/vllm
+    source_platform: github
+    url: https://github.com/vllm-project/vllm
+    upstream_stars: 91791
+    language: Python
+    function: >
+      高吞吐、显存高效的 LLM 推理与服务引擎。输入模型权重与请求，输出推理结果；
+      内置 PagedAttention 显存管理与连续批处理。
+    technical_value: >
+      核心是 PagedAttention：把 KV cache 像操作系统虚拟内存一样分页，
+      显存碎片近乎归零，同等 GPU 下并发比朴素实现高数倍。
+      这正好补 deployment 基因"缺 GPU/model serving 的部署形态"——鎏灏当前推理走本地
+      llama.cpp（tier1 adopt），但缺少高并发、显存受控的服务化形态。
+      vllm 自托管、不托管外部，守人类主权红线。
+    enhances_liuhao: "yes"
+    absorbable: >
+      服务化推理的连续批处理与 KV cache 分页调度思想，
+      可作为 execution 内核的本地推理后端（与 llama.cpp 分工：轻量本地 vs 高并发服务）。
+    needs_refactor: light
+    integration_plan: >
+      作为 execution 内核可选的本地推理服务后端，经 ToolRouter 注入；
+      与 llama.cpp 二选一或并存（按并发需求路由）。回滚即移除服务进程与封装。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— 需 GPU 宿主；吞吐/显存收益需在本仓真实模型上压测确认。
+    target_kernels: [execution, deployment]
+    gene: deployment-capability
+    evidence: "scan-20260913T210132Z.json intent=16；api.github.com/repos/vllm-project/vllm 二次核实 2026-09-15（91791/Apache-2.0）"
+    adoption_decision: evaluate
+    decision_note: >
+      命中 deployment 基因缺口"缺 GPU/model serving 的部署形态"。定为 evaluate 而非 adopt：
+      必须先证明本仓有 GPU 宿主且高并发推理是真实需求，否则等于背上推理服务运维负担。
+
+  - id: LHX-OSS-0223
+    name: pgvector/pgvector
+    source_platform: github
+    url: https://github.com/pgvector/pgvector
+    upstream_stars: 23018
+    language: C
+    function: >
+      Postgres 的向量相似度检索扩展。输入向量列与查询，输出 ANN/精确最近邻与距离。
+    technical_value: >
+      把向量检索直接做进已有的关系数据库，省去独立向量服务，
+      并可与业务表的 SQL 过滤、事务、权限天然联动。
+      这正好对应 data 基因"缺跨进程共享状态层（无 Redis）"的另一半——
+      若鎏灏未来引入 Postgres，pgvector 让 Memory 内核的向量检索与业务数据同库同事务，
+      比 tier1 的 faiss（进程内库）更利于跨进程共享与一致性。
+    enhances_liuhao: "partial"
+    absorbable: >
+      向量索引（HNSW / IVFFlat）与相似度算子，作为 Memory 内核可选的检索后端，
+      不是引入整套 Postgres 运维——仅当本仓确用 Postgres 时才成立。
+    needs_refactor: light
+    integration_plan: >
+      作为 Memory 内核的向量检索后端候选，条件是本仓引入 Postgres；
+      与 faiss（进程内）分工：单进程用 faiss，跨进程共享用 pgvector。回滚即移除扩展依赖。
+    license: PostgreSQL
+    commercial_risk: low
+    security_risk: low
+    performance_impact: 待测 —— 取决于是否引入 Postgres 及索引规模。
+    target_kernels: [memory, data]
+    gene: data-capability
+    evidence: "scan-20260913T210132Z.json intent=27；api.github.com/repos/pgvector/pgvector 二次核实 2026-09-15（23018 stars）；license 由 API 返回 NOASSERTION 后**实读 LICENSE 文件**确认为 PostgreSQL License（'Portions Copyright ... PostgreSQL Global Development Group'），非许可不明"
+    adoption_decision: evaluate
+    decision_note: >
+      命中 data 基因"缺跨进程共享状态层"与 memory 基因向量检索缺口，但需 Postgres 前提，
+      故定为 evaluate：先确认本仓是否走向 Postgres，再决定是否把向量检索下沉到库内。
+      license 已实读 LICENSE 文件确认为 PostgreSQL License（宽松、OSI 已认可），不构成阻断项。
+
+  - id: LHX-OSS-0224
+    name: authelia/authelia
+    source_platform: github
+    url: https://github.com/authelia/authelia
+    upstream_stars: 28968
+    language: Go
+    function: >
+      自托管单点登录与多因子认证门户（SSO/MFA）。反向代理后做认证与授权，支持 OIDC 等协议。
+    technical_value: >
+      以反向代理 + 策略的方式在"真实投递"之前拦截未认证请求，
+      正好补 safety 基因"Network 内核改为真实投递后，出向管控成为新空白"的认证侧。
+      关键：它是自托管、OpenID Certified、凭证留在鎏灏侧，不托管给外部 SaaS（R4 友好）。
+    enhances_liuhao: "partial"
+    absorbable: >
+      认证网关的接线模式与策略表达（谁能在什么条件下访问什么），
+      可作为 security 内核出向/入向管控的对照，不是整体引入。
+    needs_refactor: light
+    integration_plan: >
+      作为 security 内核出向管控的认证参考，放反向代理层或 Network 内核前；
+      凭证留本地，不接外部 IdP。回滚即移除网关配置。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: medium
+    performance_impact: 待测 —— 反向代理链路增加一次认证跳转延迟。
+    target_kernels: [security, network]
+    gene: safety-capability
+    evidence: "scan-20260913T210132Z.json intent=56；api.github.com/repos/authelia/authelia 二次核实 2026-09-15（28968/Apache-2.0）"
+    adoption_decision: evaluate
+    decision_note: >
+      命中 safety 基因出向管控/认证空白，且自托管守 R4 红线。定为 evaluate：
+      需先确认 Network 内核真实投递后的认证需求范围，再决定接入形态。
+
+  - id: LHX-OSS-0225
+    name: robotframework/robotframework
+    source_platform: github
+    url: https://github.com/robotframework/robotframework
+    upstream_stars: 11882
+    language: Python
+    function: >
+      通用自动化框架（验收测试与 RPA）。以表格/关键字描述任务，驱动真实应用与浏览器/桌面。
+    technical_value: >
+      以"关键字 + 数据驱动"把自动化步骤显式化、可检视、可回放，
+      正好补 automation 基因"浏览器/桌面侧执行面为空"——它的库生态（Selenium/Playwright 等）
+      提供真实 GUI/浏览器动作面，且天然有步骤级日志与失败定位。
+      与 tier1 的 agent-browser（仅浏览器）相比覆盖桌面与更完整的 RPA 编排。
+    enhances_liuhao: "partial"
+    absorbable: >
+      关键字驱动的执行编排与步骤级日志/回放机制，
+      可作为 ActionExecutor 的真实世界动作面后端，不是引入整套 RPA 平台。
+    needs_refactor: light
+    integration_plan: >
+      作为 ActionExecutor 的真实世界动作面（浏览器/桌面）后端候选，
+      与 agent-browser 并存；动作面需沙箱边界。回滚即移除库封装。
+    license: Apache-2.0
+    commercial_risk: low
+    security_risk: medium
+    performance_impact: 待测 —— 真实浏览器/桌面驱动增加执行时延与资源占用。
+    target_kernels: [execution, automation]
+    gene: automation-capability
+    evidence: "scan-20260913T210132Z.json intent=53；api.github.com/repos/robotframework/robotframework 二次核实 2026-09-15（11882/Apache-2.0）"
+    adoption_decision: evaluate
+    decision_note: >
+      命中 automation 基因"浏览器/桌面侧执行面为空"的缺口，且步骤可回放利于审计。
+      定为 evaluate：与 agent-browser 二选一并需评估沙箱边界，避免越权动作面。
