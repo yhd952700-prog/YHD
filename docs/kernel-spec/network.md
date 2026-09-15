@@ -92,9 +92,9 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 
 以下条目为**目标态契约**，并非全部已在 HEAD 实测确认；落地前须以当前代码重新核实，不可照抄：
 
-- `route` 应读取 `Message` 真实 `scope` 字段（而非 `metadata["scope"]`），使 scope 控制真正生效。
-- 默认 `internal_default` 通配路由不应覆盖调用方显式指定的 `protocol`；应注册默认 HTTP/WS 路由使其可达。
-- A2A/MCP/GRPC 适配器缺失时应诚实 FAILED 并明确原因，而非静默。
-- `httpx` 应改为懒导入/依赖守卫，缺依赖时 `NetworkBus` 不应整体导入失败。
-- `pause()/resume()` 当前仅置位 `lifecycle`，应真正拒绝 PAUSED 态的 `route`/`send`；`shutdown()` 应释放 httpx 连接。
-- 消息历史当前全内存，无持久化。
+- ❌ **误报（2026-09-15 实测）**：`Message` **没有** `scope` 字段（字段见 `__init__.py:59-77`），scope 只能来自 `metadata["scope"]`，且**控制确实生效**——实测非法 scope `L9` → FAILED「Invalid message scope: 'L9'」；`L7` 消息 vs 路由上限 `L1` → FAILED「Message scope L7 exceeds route scope L1」；既有 `test_route_message_scope_exceeding_route_denied` 已钉住。原条目基于一个不存在的字段，判为误报。
+- ⚠️ **真实（2026-09-15 实测，未修）**：`internal_default`（`pattern="*"`, `priority=100`）会**覆盖调用方显式指定的 `protocol`**——实测 `Message(destination="x", protocol=HTTP)` 经 `route()` 后 `protocol` 变为 `internal`、`x-route-id=internal_default`；且未注册默认 HTTP/WS 路由，故 HTTP/WS 适配器已注册却无路由可达。**未修原因**：修它要改路由匹配语义（协议感知 + 新增默认协议路由），影响面覆盖**所有**消息路由，属设计级变更，需单独决策。
+- ✅ **已实现（本次核实）**：A2A/MCP/GRPC 无适配器时由 `route()` 的 `if not adapter` 分支**诚实 FAILED** 并附原因；WebSocket 适配器 `supports_send=False` / `is_available()=False`，`send()` 一律 FAILED 附可操作原因，绝不谎报 DELIVERED（`:307-341`）。
+- `httpx` 应改为懒导入/依赖守卫——**真实但未修**：`httpx` 由 `HTTPAdapter` 真实使用，且已是声明依赖，改懒导入属健壮性增强而非静默缺陷。
+- `pause()/resume()` 当前仅置位 `lifecycle`，应真正拒绝 PAUSED 态的 `route`/`send`；`shutdown()` 应释放 httpx 连接。**（未修；`HTTPAdapter` 已有 `close()`，`shutdown` 接线待做。）**
+- 消息历史当前全内存，无持久化。**（未修；功能项。）**
