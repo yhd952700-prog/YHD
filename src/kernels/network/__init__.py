@@ -381,12 +381,33 @@ class NetworkBus:
         ))
         self._adapters[ProtocolType.WEBSOCKET] = ws
 
-        # Default routes
+        # Default routes. Each built-in adapter gets a catch-all at the
+        # SAME priority, so that a caller-requested protocol is actually
+        # reachable: _match_route breaks priority ties in favour of the
+        # route whose protocol matches the message. Before the HTTP /
+        # WebSocket entries existed, every message -- whatever protocol the
+        # caller asked for -- collapsed onto the single internal catch-all
+        # and had its protocol silently rewritten (see
+        # docs/kernel-spec/network.md).
         self.add_route(Route(
             id="internal_default",
             pattern="*",
             protocol=ProtocolType.INTERNAL,
             adapter="internal",
+            priority=100,
+        ))
+        self.add_route(Route(
+            id="http_default",
+            pattern="*",
+            protocol=ProtocolType.HTTP,
+            adapter="http",
+            priority=100,
+        ))
+        self.add_route(Route(
+            id="websocket_default",
+            pattern="*",
+            protocol=ProtocolType.WEBSOCKET,
+            adapter="websocket",
             priority=100,
         ))
 
@@ -421,12 +442,37 @@ class NetworkBus:
                     return True
         return False
 
-    def _match_route(self, destination: str) -> Optional[Route]:
-        """Find matching route for destination."""
-        for route in self._routes:
-            if self._pattern_match(route.pattern, destination):
-                return route
-        return None
+    def _match_route(self, destination: str,
+                     protocol: Optional[ProtocolType] = None) -> Optional[Route]:
+        """Find matching route for ``destination``, honouring the caller's protocol.
+
+        Selection is **priority first, protocol second**: among the routes
+        whose pattern matches ``destination`` the highest ``priority`` still
+        wins (so a specific ``svc.*`` route beats the ``*`` catch-alls), and
+        only *within the same priority* does a route whose ``protocol``
+        equals the requested one take precedence.
+
+        Why protocol is a tie-break rather than a hard filter:
+        ``Message.protocol`` defaults to ``ProtocolType.INTERNAL``, so
+        "unspecified" and "explicitly internal" are indistinguishable in the
+        field's value. Making protocol a hard filter would therefore send
+        every defaulted message onto the internal catch-all and silently
+        ignore more specific routes. The tie-break gives an explicitly
+        requested protocol its effect exactly where that is unambiguous --
+        among equally-specific routes -- without disturbing priority.
+        """
+        candidates = [
+            route for route in self._routes
+            if self._pattern_match(route.pattern, destination)
+        ]
+        if not candidates:
+            return None
+        if protocol is not None:
+            candidates.sort(
+                key=lambda r: (r.priority, r.protocol == protocol),
+                reverse=True,
+            )
+        return candidates[0]
 
     def _pattern_match(self, pattern: str, destination: str) -> bool:
         """Match destination against pattern (supports * wildcard)."""
@@ -450,8 +496,9 @@ class NetworkBus:
         FAILED with an explanatory error instead of being delivered.
         """
         with self._lock:
-            # Find route
-            route = self._match_route(message.destination)
+            # Find route (protocol-aware: see _match_route).
+            requested_protocol = message.protocol
+            route = self._match_route(message.destination, requested_protocol)
             if not route:
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"No route found for {message.destination}"
@@ -478,10 +525,21 @@ class NetworkBus:
                 message.metadata["error"] = f"No adapter for protocol {route.protocol}"
                 return message
 
-            # Update message with route info
+            # Update message with route info. The route's protocol is the
+            # transport actually used. When the caller asked for a protocol
+            # that has NO route for this destination, the swap used to be
+            # invisible; record it so it can never again pass as success.
             message.protocol = route.protocol
             message.headers["x-route-id"] = route.id
             message.headers["x-adapter"] = route.adapter
+            if route.protocol != requested_protocol and not any(
+                self._pattern_match(r.pattern, message.destination)
+                and r.protocol == requested_protocol
+                for r in self._routes
+            ):
+                downgrade = f"{requested_protocol.value} -> {route.protocol.value}"
+                message.headers["x-protocol-downgraded"] = downgrade
+                message.metadata["protocol_downgraded"] = downgrade
 
             # Store in history
             self._message_history.append(message)

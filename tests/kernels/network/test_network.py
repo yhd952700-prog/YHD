@@ -143,10 +143,66 @@ class TestRouting:
         assert bus.remove_route("internal_default") is True
 
     def test_send_no_route_fails(self, bus):
-        bus.remove_route("internal_default")
+        # Each built-in transport now has its own same-priority catch-all
+        # (see _match_route), so "no route at all" means removing all three.
+        for route_id in ("internal_default", "http_default", "websocket_default"):
+            assert bus.remove_route(route_id) is True
         m = bus.send("t", "x", "s", "anything")
         assert m.status == MessageStatus.FAILED
         assert "No route" in m.metadata["error"]
+
+
+# =====================================================================
+# Protocol-aware routing (regression: the internal catch-all used to
+# silently overwrite any protocol the caller explicitly requested)
+# =====================================================================
+
+class TestProtocolAwareRouting:
+    def test_explicit_http_protocol_reaches_http_route(self, bus):
+        m = bus.route(Message(
+            type="t", content="x", source="s", destination="no-specific-route",
+            protocol=ProtocolType.HTTP,
+        ))
+        assert m.protocol is ProtocolType.HTTP
+        assert m.headers.get("x-route-id") == "http_default"
+        assert m.headers.get("x-adapter") == "http"
+
+    def test_explicit_websocket_protocol_reaches_websocket_route(self, bus):
+        m = bus.route(Message(
+            type="t", content="x", source="s", destination="no-specific-route",
+            protocol=ProtocolType.WEBSOCKET,
+        ))
+        assert m.protocol is ProtocolType.WEBSOCKET
+        assert m.headers.get("x-route-id") == "websocket_default"
+        assert m.headers.get("x-adapter") == "websocket"
+
+    def test_unspecified_protocol_still_defaults_to_internal(self, bus):
+        m = bus.route(Message(
+            type="t", content="x", source="s", destination="no-specific-route",
+        ))
+        assert m.protocol is ProtocolType.INTERNAL
+        assert m.headers.get("x-route-id") == "internal_default"
+
+    def test_more_specific_route_still_beats_protocol_tiebreak(self, bus):
+        # A specific route must win on priority even though the message's
+        # protocol (defaulted INTERNAL) matches the internal catch-all.
+        bus.add_route(Route(
+            id="svc", pattern="svc.*", protocol=ProtocolType.HTTP,
+            adapter="http", priority=200,
+        ))
+        m = bus.route(Message(type="t", content="x", source="s", destination="svc.foo"))
+        assert m.headers.get("x-route-id") == "svc"
+        assert m.protocol is ProtocolType.HTTP
+
+    def test_unreachable_protocol_is_recorded_not_silent(self, bus):
+        # No A2A route/adapter exists: the swap to internal must be visible.
+        m = bus.route(Message(
+            type="t", content="x", source="s", destination="no-specific-route",
+            protocol=ProtocolType.A2A,
+        ))
+        assert m.protocol is ProtocolType.INTERNAL
+        assert m.metadata.get("protocol_downgraded") == "a2a -> internal"
+        assert m.headers.get("x-protocol-downgraded") == "a2a -> internal"
 
 
 # =====================================================================

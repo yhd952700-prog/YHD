@@ -7,7 +7,7 @@
 > - **进程级入口**：`get_network_bus()`（`src/kernels/network/__init__.py:600`，构造后立刻 `initialize()`）。
 > - **生命周期判定：已实现**。本类具备 `lifecycle` 字段与四个生命周期方法（存在即 READY）。
 >   - **是否自动驱动**：**是**——进程级惰性单例，首次使用时构造并立即 `initialize()`（存在即 READY）；但 `shutdown`/`pause`/`resume` 无任何后台驱动方，仅由显式调用者触发。
-> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；`route()` 读 `message.metadata["scope"]` 但 `Message` 无 `scope` 属性（scope 默认 L1）；通配路由 `internal_default` 优先级最高且改写 `protocol`，导致 HTTP/WS 不可达；A2A/MCP/GRPC 适配器静默失败；`httpx` 硬导入缺依赖则整 kernel 导入失败。
+> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；`route()` 的 scope 取自 `message.metadata["scope"]`（`Message` 无 `scope` 字段，默认 L1；2026-09-15 实测 scope 控制**确实生效**，详见 §9）；`httpx` 硬导入缺依赖则整 kernel 导入失败。（原「通配路由改写 protocol 致 HTTP/WS 不可达」已于 2026-09-15 修复，见 §9。）
 >
 > **性质提示**：本规范整体是「目标态契约 + 已核对现状」，不是「现状规范」。已核对的现状以上述行号为准；未标注的段落（尤其是 §9 的缺口清单）以代码为准，待实测后修订。
 >
@@ -27,8 +27,8 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 - 消息序列化：`to_dict` / `from_dict`（`__init__.py:83 / :106`）。
 
 **差距（现状，基于代码实测，非引用外部审计文档）**：
-- **scope 读错字段**：`route()` 读 `message.metadata.get("scope","L1")`（`__init__.py:460`），但 `Message` **无 `scope` 属性**（`__init__.py:58-77`）→ 每条消息都被当 L1，scope 控制默认失效。
-- **通配路由强制进程内**：`internal_default` 为 `pattern="*"`→`INTERNAL` 优先级 100（`__init__.py:383-389`），`route()` 改写 `message.protocol`（`__init__.py:480`）→ 即使 `send(...,protocol=HTTP)` 也走 `InternalAdapter`，HTTP/WS 不可达。
+- ~~**scope 读错字段**~~ **误报（2026-09-15 实测）**：`route()` 读 `message.metadata.get("scope","L1")`（`__init__.py:462`）——`Message` 确无 `scope` **属性**，但 scope 的载体本就是 `metadata`，且控制**确实生效**：非法 `L9` → FAILED「Invalid message scope」；`L7` vs 路由上限 `L1` → FAILED「exceeds route scope」（既有 `test_route_message_scope_exceeding_route_denied` 钉住）。原条目把「无该属性」误判成「控制失效」。详见 §9。
+- ~~**通配路由强制进程内**~~ **已于 2026-09-15 修复**：原 `internal_default`（`pattern="*"`→`INTERNAL`, priority 100）会让 `route()` 改写 `message.protocol`，`send(...,protocol=HTTP)` 也走 `InternalAdapter`。现 `_match_route` 协议感知（同优先级内优先匹配请求协议），并为三适配器各注册同优先级（100）通配路由 `internal_default`/`http_default`/`websocket_default`；无可路由的协议（如 A2A）会写 `metadata["protocol_downgraded"]`，不再静默。详见 §9。
 - A2A/MCP/GRPC 路由静默失败：`_adapters.get(route.protocol)` 为 None → `FAILED "No adapter"`（`__init__.py:473-477`）。
 - `httpx` 无条件导入（`__init__.py:24`）→ 缺失则整个 kernel 导入失败（与 WS 适配器"无依赖守卫"矛盾）。
 
@@ -37,7 +37,7 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 对齐 `src/kernels/_base.py` 的 `KernelLifecycle`。
 
 - **UNINITIALIZED**：`NetworkBus()` 构造（`__init__.py:350`，`lifecycle` 默认 `UNINITIALIZED`）。
-- **INITIALIZING → READY**：`initialize()`（`:578`）置 `READY`；`_register_builtin_adapters`（`__init__.py:360`）注册 internal/http/ws 三适配器并加默认 `internal_default` 路由。注意：构造/初始化会触发 `import httpx`（`__init__.py:24`），依赖缺失则构造即崩。
+- **INITIALIZING → READY**：`initialize()`（`:578`）置 `READY`；`_register_builtin_adapters`（`__init__.py:360`）注册 internal/http/ws 三适配器，并为三者各注册同优先级（100）通配路由 `internal_default` / `http_default` / `websocket_default`（2026-09-15 起；此前仅 `internal_default`）。注意：构造/初始化会触发 `import httpx`（`__init__.py:24`），依赖缺失则构造即崩。
 - **PAUSED / RESUME**：`pause()/resume()`（`:584/:589`）已存在，带状态校验（非法迁移抛 `KernelStateError`）并仅置位 `lifecycle`（PAUSED/READY）；未真正挂起读写。语义目标：PAUSED 时应拒绝 `route`/`send`。
 - **STOPPED**：`shutdown()`（`:581`）置 `lifecycle=STOPPED`；应 `HTTPAdapter.close()`（`__init__.py:299`）释放 httpx 连接，需实测确认是否已释放。
 - **ERROR**：适配器 `send` 抛非预期异常应转 ERROR；当前 `route` 仅把消息标 FAILED（如 `__init__.py:454/475`），bus 自身不转 ERROR。
@@ -73,8 +73,8 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 - **capability**：需 `network.register_adapter` / `network.add_route` / `network.remove_route` / `network.route` 动作能力。
 - **与 policy/security 边界**：Policy 的 `scope_enforcement` 规则**已激活**（L0，precedence=100，DENY 越权），并非失活；`_adjudicate` 调用 `evaluate_policy_simple` 时传 `scope=None`。network 自身的 scope 校验由本地 `_is_valid_scope`/`_scope_rank` 实现，是否经 Policy 统一裁决需以代码实测确认，不可断言"未受统一裁决"。
 - **越界/重复（现状实测）**：
-  - scope 控制**失效**：`Message` 缺 `scope` 字段，读 `metadata["scope"]` 永远 L1。
-  - 通配路由强制进程内：默认 `internal_default`（`__init__.py:383`）优先级 100 高于任何具体路由，且 `route` 改写 protocol（`__init__.py:480`）→ HTTP/WS 不可达。
+  - ~~scope 控制**失效**~~ **误报**：scope 载体是 `metadata["scope"]`（非属性），默认 L1 且越权/非法均 FAILED，控制有效（2026-09-15 实测，见 §9）。
+  - ~~通配路由强制进程内~~ **已于 2026-09-15 修复**（见 §6 与 §9）：默认路由现为三条同优先级（100）通配，按请求协议决胜；具体路由仍靠更高 priority 取胜。
 
 ## 8. 测试要求（DoD）
 
@@ -93,7 +93,23 @@ Network Kernel 是 Human-Sovereign Agent OS 的**协议适配与通信路由内�
 以下条目为**目标态契约**，并非全部已在 HEAD 实测确认；落地前须以当前代码重新核实，不可照抄：
 
 - ❌ **误报（2026-09-15 实测）**：`Message` **没有** `scope` 字段（字段见 `__init__.py:59-77`），scope 只能来自 `metadata["scope"]`，且**控制确实生效**——实测非法 scope `L9` → FAILED「Invalid message scope: 'L9'」；`L7` 消息 vs 路由上限 `L1` → FAILED「Message scope L7 exceeds route scope L1」；既有 `test_route_message_scope_exceeding_route_denied` 已钉住。原条目基于一个不存在的字段，判为误报。
-- ⚠️ **真实（2026-09-15 实测，未修）**：`internal_default`（`pattern="*"`, `priority=100`）会**覆盖调用方显式指定的 `protocol`**——实测 `Message(destination="x", protocol=HTTP)` 经 `route()` 后 `protocol` 变为 `internal`、`x-route-id=internal_default`；且未注册默认 HTTP/WS 路由，故 HTTP/WS 适配器已注册却无路由可达。**未修原因**：修它要改路由匹配语义（协议感知 + 新增默认协议路由），影响面覆盖**所有**消息路由，属设计级变更，需单独决策。
+- ✅ **真实且已修（2026-09-15 实测并修复）**：`internal_default`（`pattern="*"`, `priority=100`）会**覆盖调用方显式指定的 `protocol`**——实测 `Message(destination="x", protocol=HTTP)` 经 `route()` 后 `protocol` 变为 `internal`、`x-route-id=internal_default`；且未注册默认 HTTP/WS 路由，故 HTTP/WS 适配器已注册却无路由可达。
+
+  **修法**（`src/kernels/network/__init__.py`）：
+  1. `_match_route(destination, protocol)` 改为**协议感知**：先按 `priority` 排序（具体路由仍压过通配），**同优先级内**优先取 `route.protocol == message.protocol` 的路由。
+     ⚠️ 为什么协议只能做「平局决胜」而不能做硬过滤：`Message.protocol` 默认 `INTERNAL`，
+     「未指定」与「显式 internal」在值上不可区分；若把协议做成硬过滤，所有默认消息都会
+     塌到 internal 通配、从而忽略更具体的路由（既有 `test_add_route_and_deliver` 正是
+     钉住「路由协议可覆盖消息默认协议」）。平局决胜只在无歧义处生效。
+  2. 为内置三适配器各注册**同优先级（100）**通配路由 `internal_default` / `http_default` /
+     `websocket_default` ⇒ 请求 HTTP/WS 时确实可达对应适配器。
+  3. 兜底路径不再静默：若所选路由协议 ≠ 请求协议，**且**该 destination 下不存在该协议的
+     任何路由（如未注册适配器的 A2A），则写入 `metadata["protocol_downgraded"]` 与
+     header `x-protocol-downgraded`（如 `"a2a -> internal"`），换传输不再不可见。
+
+  同步改动：`test_send_no_route_fails` 原只删 `internal_default` 即断言「No route」；
+  默认路由变为三条后需删除全部三条（该用例意图是「一条路由都没有」）。
+  回归：`TestProtocolAwareRouting`（5 条）；反证：源码退回 HEAD ⇒ 3 红 / 2 守卫绿。
 - ✅ **已实现（本次核实）**：A2A/MCP/GRPC 无适配器时由 `route()` 的 `if not adapter` 分支**诚实 FAILED** 并附原因；WebSocket 适配器 `supports_send=False` / `is_available()=False`，`send()` 一律 FAILED 附可操作原因，绝不谎报 DELIVERED（`:307-341`）。
 - `httpx` 应改为懒导入/依赖守卫——**真实但未修**：`httpx` 由 `HTTPAdapter` 真实使用，且已是声明依赖，改懒导入属健壮性增强而非静默缺陷。
 - `pause()/resume()` 当前仅置位 `lifecycle`，应真正拒绝 PAUSED 态的 `route`/`send`；`shutdown()` 应释放 httpx 连接。**（未修；`HTTPAdapter` 已有 `close()`，`shutdown` 接线待做。）**
