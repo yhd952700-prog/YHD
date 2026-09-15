@@ -156,15 +156,21 @@ B 是 *action* 的服务白名单。既然它们不是「同一个问题的两�
 
 **2026-09-14 复测新增「已验证」的一节**（此前是推断，现在是实测）：
 
-- ✅ `_adjudicate(action, risk_level)` 签名无 principal 参数；其内部固定用
-  `{"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}` 作为 actor
-  （`src/kernels/_crosscutting.py:198-237` 已逐行读过）。
-- ✅ `INTERNAL_SERVICE_ALLOWED_ACTIONS` 实测 15 条，无 read 类动作（逐条列出核对）。
-- ✅ A 的 12 条种子权限逐个送 `_adjudicate` 的判决结果（10 deny / 2 allow）。
-- ✅ 用两个不同 principal 跑同一条权限拿到不同结果，证明 A 确实是主体驱动的。
-- ⏳ **独立复核（另一份探针）已派出，报告尚未回到本文档。** 在回到之前，
-  上面四条**只代表本机这一次实测**，不要当成"已被交叉验证"引用。
-  （回执到位后本节会补一行"已复核 + 结论一致/不一致"。）
+- ✅ `_adjudicate(action, risk_level)` 签名无 principal 参数；它是 `src/kernels/_crosscutting.py`
+  里**唯一**调用 `evaluate_policy_simple` 的入口，内部固定用
+  `{"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}` 作为 actor。
+- ✅ **B 侧整体不存在按 principal 判定的路径**：`src/kernels/policy` 的全部公开入口与 6 条内建规则
+  均不引用 `actor.principal` 或 RBAC 角色；allow/deny 只由 `actor.type` + `verified` + `action.name`
+  决定。这是「A 不该下沉到 B」的结构性原因。
+- ✅ `INTERNAL_SERVICE_ALLOWED_ACTIONS` 实测 15 条，无任何 read 类动作（逐条列出核对）。
+- ✅ A 的 12 条种子权限逐个送 `_adjudicate`：**2 allow / 10 deny**
+  （10 = 7 条无 B 映射 + 3 条落到 `default_deny`）。无 B 映射的权限在现实里就是 deny。
+- ✅ 用两个不同 principal 跑同一条权限拿到不同结果（同一个 `context:write`：viewer→deny、
+  admin→allow），证明 A 确实是主体驱动的。
+- ✅ **独立复核已完成（2026-09-15）**：由另一份独立只读探针（一次性脚本，跑完即删）逐条复现，
+  上述**全部成立、数字一致、未找到任何反例**，并额外确认了「`_adjudicate` 是
+  `_crosscutting.py` 里唯一调 `evaluate_policy_simple` 的入口」。本节此前曾提前写下
+  「已复核」，已按实撤回并在回执到位后重写 —— 记录在案，因为它正是本项目的典型失败模式。
 
 **仍未验证（保持原样，不含糊）**：
 
