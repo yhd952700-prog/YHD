@@ -42,11 +42,23 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Dict, Iterator, List, Optional
+import time
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from src._time import utc_now
 
 logger = logging.getLogger("liuhao.kernel.identity")
+
+#: Bounded retry budget for transient SQLite write failures.
+#:
+#: Measured 2026-09-15: with 24 concurrent writers on Windows, ~25-50% of runs
+#: lost 1-4 registrations, every one of them raising
+#: ``attempt to write a readonly database`` from a connection opened *after*
+#: the WAL switch. The failure is transient (it clears on a follow-up
+#: statement) and is not a lock-wait, so ``busy_timeout`` does not prevent it;
+#: a bounded retry does (0/12 runs lost rows, vs 6/12 without).
+_SQLITE_WRITE_ATTEMPTS = 5
+_SQLITE_WRITE_RETRY_DELAY = 0.02
 
 #: Which backend to use: ``"file"`` (default) or ``"sqlite"``.
 HUMAN_IDENTITIES_BACKEND_ENV = "LIUHAO_HUMAN_IDENTITIES_BACKEND"
@@ -306,7 +318,13 @@ class SqliteHumanIdentityStore:
         that mismatch surfaces as ``attempt to write a readonly database`` --
         measured: 24 concurrent writers lost 2 registrations with the naive
         "connect, then set up" ordering. Handing out connections only after WAL
-        is established removes the mixed-mode connection entirely.
+        is established removes that mixed-mode connection.
+
+        It does **not**, on its own, make concurrent writes lossless: measured
+        2026-09-15, 24 concurrent writers still lost 1-4 registrations in
+        ~25-50% of runs, each raising ``attempt to write a readonly database``
+        from a connection opened *after* this switch. See ``_write_with_retry``,
+        which is what actually closes that hole.
         """
         if self._schema_ready:
             return
@@ -368,40 +386,63 @@ class SqliteHumanIdentityStore:
             for row in rows
         ]
 
+    def _write_with_retry(
+        self, statement: Callable[[sqlite3.Connection], Any]
+    ) -> Tuple[Any, Optional[BaseException]]:
+        """Run one write statement, retrying transient SQLite errors.
+
+        Returns ``(result, None)`` on success and ``(None, error)`` if the
+        write never went through. ``sqlite3.OperationalError`` is retried: the
+        ``attempt to write a readonly database`` failure under concurrent WAL
+        writers is transient, and a bounded retry is what makes the write
+        lossless. Any other exception (corrupt file, bad schema) is permanent
+        and is reported immediately -- retrying it would only waste time.
+        """
+        last: Optional[BaseException] = None
+        for attempt in range(_SQLITE_WRITE_ATTEMPTS):
+            try:
+                with self._session() as connection:
+                    return statement(connection), None
+            except sqlite3.OperationalError as exc:  # transient under concurrency
+                last = exc
+                if attempt + 1 < _SQLITE_WRITE_ATTEMPTS:
+                    time.sleep(_SQLITE_WRITE_RETRY_DELAY)
+            except Exception as exc:  # noqa: BLE001 - permanent config problem
+                return None, exc
+        return None, last
+
     def upsert(self, entry: Dict[str, Any]) -> bool:
         principal = str(entry.get(FIELD_PRINCIPAL) or "").strip()
         if not principal:
             return False
-        try:
-            with self._session() as connection:
-                connection.execute(
-                    _SQLITE_UPSERT,
-                    (
-                        principal,
-                        entry.get(FIELD_DISPLAY_NAME),
-                        json.dumps(sorted(set(entry.get(FIELD_PERMISSIONS) or []))),
-                        entry.get(FIELD_SCOPE) or "L0",
-                        _stamp_registered_at(entry),
-                        entry.get(FIELD_SOURCE) or "",
-                    ),
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("could not write %r: %s", self.location, exc)
+        params = (
+            principal,
+            entry.get(FIELD_DISPLAY_NAME),
+            json.dumps(sorted(set(entry.get(FIELD_PERMISSIONS) or []))),
+            entry.get(FIELD_SCOPE) or "L0",
+            _stamp_registered_at(entry),
+            entry.get(FIELD_SOURCE) or "",
+        )
+        _, error = self._write_with_retry(
+            lambda connection: connection.execute(_SQLITE_UPSERT, params)
+        )
+        if error is not None:
+            logger.error("could not write %r: %s", self.location, error)
             return False
         return True
 
     def remove(self, principal: str) -> bool:
         if not os.path.exists(self.location):
             return False
-        try:
-            with self._session() as connection:
-                cursor = connection.execute(
-                    "DELETE FROM human_identities WHERE principal = ?", (principal,)
-                )
-                return cursor.rowcount > 0
-        except Exception as exc:  # noqa: BLE001
-            logger.error("could not update %r: %s", self.location, exc)
+        rowcount, error = self._write_with_retry(
+            lambda connection: connection.execute(
+                "DELETE FROM human_identities WHERE principal = ?", (principal,)
+            ).rowcount
+        )
+        if error is not None:
+            logger.error("could not update %r: %s", self.location, error)
             return False
+        return rowcount > 0
 
 
 def resolve_human_identity_store() -> JsonFileStore | SqliteHumanIdentityStore:

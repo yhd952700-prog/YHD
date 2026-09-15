@@ -208,18 +208,25 @@ class TestSqliteHumanIdentityStore:
         # The concrete improvement over read-modify-write on a JSON file: the
         # upsert is one statement, so N threads must produce N rows.
         store = SqliteHumanIdentityStore(sqlite_path)
-        threads = [
-            threading.Thread(
-                target=store.upsert,
-                args=({FIELD_PRINCIPAL: f"human-{i:03d}"},),
+        results = [None] * 24
+
+        def register(index: int) -> None:
+            results[index] = store.upsert(
+                {FIELD_PRINCIPAL: f"human-{index:03d}"}
             )
-            for i in range(24)
-        ]
+
+        threads = [threading.Thread(target=register, args=(i,)) for i in range(24)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
+        # A lost registration must be LOUD, not a shrunken row count. `upsert`
+        # signals failure by returning False, and this test previously ignored
+        # the return values -- so a lossy write surfaced only as "23 rows".
+        # Measured 2026-09-15: without the bounded retry this was 1-4 losses in
+        # ~25-50% of runs, all "attempt to write a readonly database".
+        assert results == [True] * 24, f"upserts reported failure: {results}"
         principals = {e[FIELD_PRINCIPAL] for e in store.load_all()}
         assert len(principals) == 24
 
