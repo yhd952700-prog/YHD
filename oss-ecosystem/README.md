@@ -43,10 +43,15 @@
 
 | 状态 | 源 | 说明 |
 |---|---|---|
-| ✅ 可用 | github, gitlab, npm, mcp_registry, linux_foundation, spdx | 直接可跑 |
+| ✅ 可用 | github, gitlab, npm, mcp_registry, spdx | 直接可跑 |
+| ⚠️ 复验转为不可达 | linux_foundation | **2026-09-14 复验**：由 ✅ 变为 `RemoteProtocolError: Server disconnected without sending a response`。扫描时按失败如实记录（不假装扫过、不重试到"成功"），待上游/网络恢复后复验 |
 | 🔒 需鉴权 | modelscope, kaggle | 未配凭据时**显式报 skipped**，不假装扫过 |
 | ❌ 本机代理不可达 | huggingface, dockerhub | 走代理返回 502。这是**环境限制，不是源失效**，换网络环境需复验 |
 | ○ 被动源 | bitbucket, sourceforge, apache, pypi, kaggle 等 | 官方无发现端点，仅在别的源提到时单点核查 |
+
+> **2026-09-14 复验**（`--probe` 真发请求）：github / gitlab / npm / mcp_registry / spdx 仍 OK；
+> **本轮唯一变化是 `linux_foundation` 由可用转为不可达**（上游断开，非本仓代码问题）；
+> huggingface / dockerhub 仍被本机代理 502 挡住。没有任何一处被"修成成功"。
 
 **本轮修正了两处错误记录**（前人手稿里有假数据）：
 

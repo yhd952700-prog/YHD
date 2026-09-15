@@ -30,6 +30,7 @@
 | 查 14 Kernel 的权威清单 | [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) |
 | 查 14 Kernel 接口定义 | [`architecture/kernels-interface.md`](architecture/kernels-interface.md) |
 | 查 14 Kernel 生命周期/错误处理/权限边界规范 | [`kernel-spec/README.md`](kernel-spec/README.md)（**设计意图/目标态契约**，非现状规范） |
+| 查全球开源生态吸收计划（能力账单 / 雷达 / 候选库） | [`../oss-ecosystem/README.md`](../oss-ecosystem/README.md)（S1–S5 已完成，含源健康实测与四条红线） |
 | 看现有代码到底有什么 | [`architecture/existing-codebase-audit.md`](architecture/existing-codebase-audit.md)（780 行全量审计） |
 | 查权限系统怎么工作 | [`ARCHITECTURE.md`](ARCHITECTURE.md) §权限系统 |
 | 看产品需求 / UI 设计 | [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md)、[`product/Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) |
