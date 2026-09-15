@@ -4,7 +4,7 @@ There are three access-control authorities in this repo (measured, not
 assumed -- see ``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md``):
 
 * **A** -- this kernel (``src/kernels/security``): **colon** permissions such
-  as ``context:read``, held in the in-memory ``_rbac_rules`` table.
+  as ``research:read``, held in the in-memory ``_rbac_rules`` table.
 * **B** -- ``src/kernels/policy``: **point-dot** kernel actions such as
   ``resource.allocate``, gated by ``INTERNAL_SERVICE_ALLOWED_ACTIONS`` and
   the ``@kernel_action`` decorator.
@@ -22,22 +22,30 @@ now *reported* instead of quietly denied. Switching A over to B is the second
 half and must not happen until this map is complete -- a permission with no
 entry here would land on B's ``default_deny`` and break the caller.
 
-The honest headline: **most of A's permissions have no counterpart in B.**
-B's 44 actions are all *effectful* kernel operations; A is dominated by
-*read/query* permissions that simply do not exist over there. That is why
-``kernel_actions`` is allowed to be empty -- leaving it empty is a finding,
-not an oversight, and ``unmapped_permissions`` reports it.
+**2026-09-15 full cut: authority A now seeds no colon permissions at all, and
+this registry carries only ``research:read``.** Measured with
+``discover_permission_literals`` across the production roots: of the 13 entries
+that used to live here, only ``research:read`` had any call site -- and that
+one was never seeded, so it is fail-closed by design. The other 12 had zero
+production consumers, so shipping them as seeded grants was dead
+configuration; they were removed from both the seed table
+(``src/kernels/security/__init__.py::_seed_default_rules``) and this registry.
+``research:read`` stays registered-but-unseeded so its real call site
+(``src/ai/vhl_benchmark.py``) remains visible rather than silently denied.
 
-**And having a counterpart is still not enough.** Measured 2026-09-14: of the
-twelve seeded permissions, only **two** map onto a B action that B actually
-allow-lists for the internal service -- so delegating A to B would flip the
-other ten from ``allow`` to ``deny`` (all of the reads, plus three admin
-permissions). Worse, ``_adjudicate`` takes no ``principal_id`` at all, so the
-delegation would also erase the subject dimension: every principal would get
-the same answer. Delegation is therefore **rejected**, not deferred; see
-``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md`` section 5. ``b_delegatable_permissions``
-and ``b_denied_under_delegation`` keep that measurement executable so nobody
-can re-derive the plan from a misleading reading of ``kernel_actions``.
+Historical context for the cut: most of A's permissions had no counterpart in
+B. B's 44 actions are all *effectful* kernel operations, while A was dominated
+by *read/query* permissions that do not exist over there -- so
+``kernel_actions`` was allowed to be empty, a finding rather than an oversight.
+Having a counterpart was still not enough: measured 2026-09-14, of the twelve
+seeded permissions only **two** mapped onto a B action B actually allow-lists
+for the internal service, so delegating A to B would have flipped the other
+ten from ``allow`` to ``deny`` (all the reads, plus three admin permissions).
+Worse, ``_adjudicate`` takes no ``principal_id``, so delegation would also
+erase the subject dimension. Delegation was therefore **rejected**, not
+deferred; see ``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md`` section 5. The
+``b_delegatable_permissions`` / ``b_denied_under_delegation`` helpers remain
+queryable (now trivially empty) so the measurement stays executable.
 """
 
 from __future__ import annotations
@@ -103,57 +111,15 @@ class PermissionMapping(NamedTuple):
 #: the ``role`` must match the real seed table and every name in
 #: ``kernel_actions`` must be a real decorated ``@kernel_action``.
 PERMISSION_MAP: Dict[str, PermissionMapping] = {
-    "context:read": PermissionMapping(
-        "context:read", "viewer", (), "read",
-        "读上下文。B 只有 context.set_scope（改），没有读动作 ⇒ 无对应。",
-    ),
-    "context:write": PermissionMapping(
-        "context:write", "admin", ("context.set_scope",), "write",
-        "改上下文 ⇒ 对应 B 唯一的 context 变更动作。",
-    ),
-    "capability:lookup": PermissionMapping(
-        "capability:lookup", "viewer", (), "read",
-        "查能力。B 的 capability.* 全是注册/废弃/下线（改），无读 ⇒ 无对应。",
-    ),
-    "capability:manage": PermissionMapping(
-        "capability:manage", "admin",
-        ("capability.register", "capability.deprecate", "capability.retire"),
-        "write",
-        "管能力 ⇒ 对应 B 的三个 capability 变更动作。",
-    ),
-    "execution:plan": PermissionMapping(
-        "execution:plan", "operator", (), "write",
-        "编排计划是能力层概念；B 只有 execution.execute/create_checkpoint，"
-        "没有独立的 plan 动作 ⇒ 无对应。",
-    ),
-    "execution:trigger": PermissionMapping(
-        "execution:trigger", "admin", ("execution.execute",), "write",
-        "触发执行 ⇒ 对应 B 的 execution.execute。",
-    ),
-    "resource:allocate": PermissionMapping(
-        "resource:allocate", "operator", ("resource.allocate",), "write",
-        "同名且同义，A↔B 唯一完全对齐的一条。",
-    ),
-    "resource:query": PermissionMapping(
-        "resource:query", "viewer", (), "read",
-        "查配额。B 的 resource.* 全是变更类 ⇒ 无对应。",
-    ),
-    "policy:manage": PermissionMapping(
-        "policy:manage", "admin", (), "admin",
-        "改策略。policy 内核**没有任何** @kernel_action ⇒ 无对应。",
-    ),
-    "evaluation:run": PermissionMapping(
-        "evaluation:run", "operator", ("evaluation.evaluate",), "write",
-        "跑评估 ⇒ 对应 B 的 evaluation.evaluate。",
-    ),
-    "audit:query": PermissionMapping(
-        "audit:query", "auditor", (), "read",
-        "查审计。audit 内核**没有任何** @kernel_action ⇒ 无对应。",
-    ),
-    "audit:log": PermissionMapping(
-        "audit:log", "admin", (), "write",
-        "写审计。同上，audit 内核没有 @kernel_action ⇒ 无对应。",
-    ),
+    # 2026-09-15 (boss-approved full cut): the 12 previously-seeded colon
+    # permissions (context:read/write, capability:lookup/manage,
+    # execution:plan/trigger, resource:allocate/query, policy:manage,
+    # evaluation:run, audit:query/log) were removed from both the seed table
+    # (src/kernels/security/__init__.py::_seed_default_rules) and this
+    # registry. Measured with ``discover_permission_literals``: none had a
+    # production call site, so they were dead grants that only widened the
+    # unused authority surface. Only ``research:read`` remains, kept
+    # registered-but-unseeded so its real call site stays visible.
     "research:read": PermissionMapping(
         "research:read", None, (), "read",
         "读研究成果。**A 侧没有任何种子规则** ⇒ 永远判 deny（fail-closed）；"
@@ -274,10 +240,12 @@ def b_delegatable_permissions() -> List[str]:
     ``_adjudicate`` asks "may the internal service do this action?", whereas
     ``decide_access`` asks "does *this principal* hold this permission?".
 
-    Measured 2026-09-14: exactly two of the twelve seeded permissions survive
-    -- ``execution:trigger`` and ``evaluation:run``. The ten that do not are
-    the reason delegation was rejected. This function exists so that reading
-    ``kernel_actions`` can never again be mistaken for "B will allow it".
+    Measured 2026-09-14 (before the full cut): exactly two of the twelve seeded
+    permissions survived -- ``execution:trigger`` and ``evaluation:run``. The
+    ten that did not were the reason delegation was rejected. After the
+    2026-09-15 full cut nothing is seeded, so this now returns ``[]``; the
+    function is kept so reading ``kernel_actions`` can never again be mistaken
+    for "B will allow it".
     """
     allowed = _internal_service_allowed_actions()
     return sorted(

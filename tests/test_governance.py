@@ -23,7 +23,7 @@ from src.ai.governance import (
     ThreatDetector,
     get_emergency_control,
 )
-from src.kernels.security import RBACRole, get_security_engine
+from src.kernels.security import RBACRole, RBACRule, get_security_engine
 from src.kernels.trust import TrustScope, get_trust_manager
 
 
@@ -96,6 +96,12 @@ class TestThreatDetector:
 class TestSecurityChain:
     def _allow_principal(self):
         sec = get_security_engine()
+        # Production seeds no colon permissions after the 2026-09-15 full cut;
+        # seed the one this chain uses (idempotent) so a VIEWER reaches an allow.
+        sec._rbac_rules.setdefault(
+            "context:read",
+            RBACRule(id="context:read", role=RBACRole.VIEWER, permission="context:read"),
+        )
         pid = _uid("principal")
         sec.set_principal_roles(pid, {RBACRole.VIEWER})
         return pid

@@ -9,21 +9,27 @@ Companion to ``src/kernels/security/_permission_map.py``. Three claims:
 2. **Truthful.** Every ``role`` matches the real seed rule, and every name in
    ``kernel_actions`` is a real decorated ``@kernel_action`` -- nothing here
    is asserted into existence.
-3. **Observable.** ``decide_access`` now distinguishes "checked and refused"
+3. **Observable.** ``decide_access`` distinguishes "checked and refused"
    from "this permission can never be granted". That distinction is the whole
    point: before this, both looked like a plain deny.
 
-Verdicts are deliberately unchanged -- this is the mapping half of the
-convergence, not the switch.
+**2026-09-15 (boss-approved full cut).** Authority A no longer seeds any colon
+permissions; the registry carries only ``research:read`` (registered but
+unseeded). The claims above still hold -- vacuously on the "seeded" side, and
+for ``research:read`` on the literal side. The tests that used to measure the
+delegation blast radius (2 of the 12 survived) are now moot and assert the
+post-cut empty state instead; the historical measurement is preserved in the
+module docstring of ``_permission_map.py``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from src.kernels.security import RBACRole, SecurityEngine, get_security_engine
+from src.kernels.security import RBACRole, RBACRule, SecurityEngine, get_security_engine
 from src.kernels.security._permission_map import (
     PERMISSION_MAP,
+    PermissionMapping,
     b_delegatable_permissions,
     b_denied_under_delegation,
     discover_permission_literals,
@@ -62,9 +68,12 @@ def _all_roles(engine: SecurityEngine, principal: str) -> str:
 class TestRegistryCoversTheSeededPermissions:
     def test_every_seeded_permission_is_registered(self, engine):
         seeded = {rule.permission for rule in engine._rbac_rules.values()}
-        assert seeded, "种子表为空，测试本身失效"
+        # Full cut 2026-09-15: production seeds nothing, so the completeness
+        # invariant is vacuous -- assert it anyway (a future re-seed must be
+        # registered) and pin the cut itself.
         missing = sorted(seeded - set(PERMISSION_MAP))
         assert not missing, f"已播种但未登记的权限：{missing}"
+        assert seeded == set(), f"全裁后不应再有种子权限：{sorted(seeded)}"
 
     def test_the_registered_role_matches_the_real_seed_rule(self, engine):
         """The registry must describe the rules that actually exist."""
@@ -81,6 +90,10 @@ class TestRegistryCoversTheSeededPermissions:
         # asked for by production code and must stay visible.
         stale = sorted(set(PERMISSION_MAP) - seeded - {"research:read"})
         assert not stale, f"注册表里有已不再播种的权限：{stale}"
+
+    def test_the_registry_is_research_read_only_after_the_full_cut(self):
+        """The full cut left exactly one registry entry."""
+        assert set(PERMISSION_MAP) == {"research:read"}
 
 
 # --------------------------------------------------------------------------- #
@@ -101,10 +114,11 @@ class TestMappedActionsReallyExist:
         )
         assert not bogus, f"映射到了不存在的内核动作：{bogus}"
 
-    def test_at_least_one_permission_maps_cleanly(self):
-        """Sanity: the scanner above is not passing because nothing maps."""
+    def test_no_permission_maps_to_b_after_the_full_cut(self):
+        """Post-cut the sole registry entry (``research:read``) maps to no B
+        action, so there is nothing left to cross-check against B here."""
         mapped = [p for p, m in PERMISSION_MAP.items() if m.kernel_actions]
-        assert mapped, "没有任何权限映射到 B，交叉校验形同虚设"
+        assert mapped == []
 
     def test_the_unmapped_are_reported_not_hidden(self):
         """B is all-effectful; A is heavy on reads. The gap must be visible."""
@@ -119,25 +133,13 @@ class TestMappedActionsReallyExist:
 
 
 class TestDelegationToBIsMeasurablyUnviable:
-    """"先补映射、再把 A 切到 B" 这个方案，实测不可行 —— 把结论钉成可执行断言。
+    """"先补映射、再把 A 切到 B" 这个方案早已被否决。
 
-    ``kernel_actions`` 的含义是"B 有对应动作"，**不是**"B 会放行"。
-    只读前一个含义的人会重新推导出那个已被否决的方案：实测它会打断 A 的
-    12 条种子权限里的 10 条（含全部读权限）。这组断言让该失败无法被悄悄重引。
-    详见 ``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md`` §5。
+    历史上：实测它会打断 A 的 12 条种子权限里的 10 条（含全部读权限）。
+    2026-09-15 全裁之后 A 不再播种任何冒号权限，委派问题随之失去载体 ——
+    这组断言改为钉住「全裁后无任何可委派权限」这一现状；历史实测值（12 条里
+    只有 2 条幸存）保留在 ``_permission_map.py`` 的模块 docstring 里。
     """
-
-    def test_having_a_counterpart_is_not_the_same_as_being_allowed(self):
-        """必须至少有一条被映射的权限不在 B 的允许表里 —— 否则两个概念
-        无法区分，这个测试类等于什么都没断言。"""
-        from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
-
-        allowed = frozenset(INTERNAL_SERVICE_ALLOWED_ACTIONS)
-        mapped = [p for p, m in PERMISSION_MAP.items() if m.kernel_actions]
-        assert mapped, "没有任何映射，本测试失效"
-        assert any(
-            not (set(PERMISSION_MAP[p].kernel_actions) & allowed) for p in mapped
-        ), "每条被映射的权限都在 B 的允许表里 —— 要么 B 变了，要么本测试失效"
 
     def test_b_has_no_read_action_at_all(self):
         """方案不可行的结构性原因：B 的允许表只有效应型动作。"""
@@ -151,25 +153,13 @@ class TestDelegationToBIsMeasurablyUnviable:
             "必须重新评估收敛方案（而不是只改这里）"
         )
 
-    def test_exactly_two_seeded_permissions_survive_delegation(self):
-        """钉死的实测值。若它变了，收敛决策必须重开 —— 不要只改期望值。"""
-        assert b_delegatable_permissions() == ["evaluation:run", "execution:trigger"]
+    def test_delegation_is_moot_after_the_full_cut(self):
+        """全裁后 A 无种子权限 ⇒ 无可委派；两个测量函数都应为空。"""
+        assert b_delegatable_permissions() == []
+        assert b_denied_under_delegation() == []
 
-    def test_the_blast_radius_is_ten_of_twelve(self):
-        denied = set(b_denied_under_delegation())
-        seeded = [p for p, m in PERMISSION_MAP.items() if m.role]
-        assert len(seeded) == 12
-        assert len(denied) == 10
-        # 断掉的必须包含全部四条读权限 —— 这是最容易被忽略的一半。
-        assert {
-            "context:read",
-            "capability:lookup",
-            "resource:query",
-            "audit:query",
-        } <= denied
-
-    def test_the_two_survivors_are_really_in_bs_allow_list(self):
-        """正向对照：幸存者必须真的在允许表里，而不是碰巧算进去。"""
+    def test_any_survivor_would_really_be_in_bs_allow_list(self):
+        """正向对照（现为空集，结论仍可执行）：幸存者必须在允许表里。"""
         from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
 
         allowed = frozenset(INTERNAL_SERVICE_ALLOWED_ACTIONS)
@@ -235,9 +225,23 @@ class TestTheUnseededPermissionIsVisible:
         assert result["kernel_actions"] == []
         assert "UNREGISTERED" in caplog.text
 
-    def test_a_seeded_permission_is_quiet_and_reports_its_mapping(
-        self, engine, caplog
+    def test_a_registered_seeded_permission_is_quiet(
+        self, engine, caplog, monkeypatch
     ):
+        """Positive control: a permission that is BOTH registered and seeded
+        emits no warning and reports its mapping. Production seeds none after
+        the full cut, so register one locally for this check."""
+        monkeypatch.setitem(
+            PERMISSION_MAP,
+            "resource:allocate",
+            PermissionMapping(
+                "resource:allocate", "operator", ("resource.allocate",), "write",
+                "test-local fixture (removed from production by the 2026-09-15 cut)",
+            ),
+        )
+        engine._rbac_rules["resource:allocate"] = RBACRule(
+            id="resource:allocate", role=RBACRole.OPERATOR, permission="resource:allocate"
+        )
         principal = _all_roles(engine, "map-probe-seeded")
         with caplog.at_level("WARNING"):
             result = engine.decide_access(principal, "resource:allocate")
@@ -251,20 +255,31 @@ class TestTheUnseededPermissionIsVisible:
 
 
 # --------------------------------------------------------------------------- #
-# 5. verdicts did not move (this round only adds visibility)
+# 5. verdicts after the full cut
 # --------------------------------------------------------------------------- #
 
 
-class TestVerdictsAreUnchanged:
-    def test_a_principal_without_the_role_is_still_denied(self, engine):
+class TestVerdictsAfterTheFullCut:
+    def test_removed_permissions_now_deny(self, engine):
+        """The 12 removed permissions are no longer seeded, so a principal that
+        used to be allowed (VIEWER for ``context:read``) is now denied."""
         engine.set_principal_roles("map-probe-viewer", {RBACRole.VIEWER})
-        assert engine.decide_access("map-probe-viewer", "context:read")["decision"] == "allow"
-        assert engine.decide_access("map-probe-viewer", "context:write")["decision"] == "deny"
+        result = engine.decide_access("map-probe-viewer", "context:read")
+        assert result["decision"] == "deny"
+        assert result["permission_known"] is False
 
     def test_the_module_facade_still_works(self):
         result = get_security_engine().decide_access("map-probe-facade", "audit:query")
-        assert result["decision"] == "deny"  # principal has no roles
-        assert result["permission_known"] is True
+        assert result["decision"] == "deny"  # no roles AND the permission is gone
+        assert result["permission_known"] is False
 
     def test_get_mapping_returns_none_for_unknown(self):
         assert get_mapping("nope:nope") is None
+
+    def test_removed_permissions_are_no_longer_known(self):
+        for removed in (
+            "context:read", "context:write", "capability:lookup", "capability:manage",
+            "execution:plan", "execution:trigger", "resource:allocate", "resource:query",
+            "policy:manage", "evaluation:run", "audit:query", "audit:log",
+        ):
+            assert not is_known(removed), removed

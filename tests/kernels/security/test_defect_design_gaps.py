@@ -16,13 +16,21 @@ from src.kernels.security import (
     ABATCondition,
     AccessDecision,
     RBACRole,
+    RBACRule,
     SecurityEngine,
 )
 
 
 @pytest.fixture
 def engine() -> SecurityEngine:
-    return SecurityEngine()
+    e = SecurityEngine()
+    # Production seeds no colon permissions after the 2026-09-15 full cut;
+    # seed the one this module exercises so scope enforcement has a real rule
+    # to allow against.
+    e._rbac_rules["context:read"] = RBACRule(
+        id="context:read", role=RBACRole.VIEWER, permission="context:read"
+    )
+    return e
 
 
 class TestDesignGapS3:

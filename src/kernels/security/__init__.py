@@ -193,29 +193,20 @@ class SecurityEngine:
     def _seed_default_rules(self) -> None:
         """Seed default RBAC rules for core kernel operations.
 
-        Single source of truth: the colon-form permission string is used
-        both as the rule id, the rule's permission field, and the dict
-        key. Checkers and callers therefore agree on one form.
-        """
-        default_rules = [
-            ("context:read", RBACRole.VIEWER),
-            ("context:write", RBACRole.ADMIN),
-            ("capability:lookup", RBACRole.VIEWER),
-            ("capability:manage", RBACRole.ADMIN),
-            ("execution:plan", RBACRole.OPERATOR),
-            ("execution:trigger", RBACRole.ADMIN),
-            ("resource:allocate", RBACRole.OPERATOR),
-            ("resource:query", RBACRole.VIEWER),
-            ("policy:manage", RBACRole.ADMIN),
-            ("evaluation:run", RBACRole.OPERATOR),
-            ("audit:query", RBACRole.AUDITOR),
-            ("audit:log", RBACRole.ADMIN),
-        ]
+        **2026-09-15 (boss-approved full cut): no colon permissions are seeded
+        by default.** Measured with ``discover_permission_literals``: only
+        ``research:read`` has a production call site, and it was never seeded
+        (fail-closed by design); the other 12 had zero production consumers, so
+        shipping them as default grants was dead configuration that only
+        widened the unused authority surface.
 
-        for permission, role in default_rules:
-            self._rbac_rules[permission] = RBACRule(
-                id=permission, role=role, permission=permission
-            )
+        Callers that need colon rules must register them explicitly -- the RBAC
+        mechanism itself is unchanged. The registry
+        (``_permission_map.PERMISSION_MAP``) keeps ``research:read`` for
+        visibility. See ``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md``.
+        """
+        # Intentionally empty.
+        return
 
     def set_principal_roles(self, principal_id: str, roles: Set[RBACRole]) -> None:
         """Set RBAC roles for a principal."""

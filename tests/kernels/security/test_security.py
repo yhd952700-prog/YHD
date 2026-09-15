@@ -15,16 +15,55 @@ from src.kernels.security import (
     AccessDecision,
     AuditLogEntry,
     RBACRole,
+    RBACRule,
     SecurityEngine,
     get_security_engine,
 )
 from src._time import utc_now
 
 
+# Legacy colon policy. Production seeds no colon permissions after the
+# 2026-09-15 full cut (see src/kernels/security/__init__.py::_seed_default_rules);
+# the RBAC mechanism tests below seed it locally so they keep a policy to
+# exercise. Values mirror the removed production table exactly.
+_LEGACY_RULES = [
+    ("context:read", RBACRole.VIEWER),
+    ("context:write", RBACRole.ADMIN),
+    ("capability:lookup", RBACRole.VIEWER),
+    ("capability:manage", RBACRole.ADMIN),
+    ("execution:plan", RBACRole.OPERATOR),
+    ("execution:trigger", RBACRole.ADMIN),
+    ("resource:allocate", RBACRole.OPERATOR),
+    ("resource:query", RBACRole.VIEWER),
+    ("policy:manage", RBACRole.ADMIN),
+    ("evaluation:run", RBACRole.OPERATOR),
+    ("audit:query", RBACRole.AUDITOR),
+    ("audit:log", RBACRole.ADMIN),
+]
+
+
+def _seed_legacy(engine: SecurityEngine) -> SecurityEngine:
+    for permission, role in _LEGACY_RULES:
+        engine._rbac_rules[permission] = RBACRule(
+            id=permission, role=role, permission=permission
+        )
+    return engine
+
+
+@pytest.fixture
+def raw_engine() -> SecurityEngine:
+    """Fresh engine with production defaults (no seeded colon permissions)."""
+    return SecurityEngine()
+
+
 @pytest.fixture
 def engine() -> SecurityEngine:
-    """Fresh engine per test for full isolation."""
-    return SecurityEngine()
+    """Fresh engine seeded with the legacy colon policy.
+
+    Production seeds nothing after the 2026-09-15 full cut; seeding locally
+    keeps the RBAC mechanism tests exercising a real policy.
+    """
+    return _seed_legacy(SecurityEngine())
 
 
 def _isolated_identity_manager(monkeypatch):
@@ -48,21 +87,22 @@ def _isolated_identity_manager(monkeypatch):
 # =====================================================================
 
 class TestSeededRules:
-    def test_engine_seeds_twelve_rbac_rules(self, engine):
-        stats = engine.stats()
-        assert stats["rbac_rules_total"] == 12
-        assert stats["rbac_rules_enabled"] == 12
+    def test_engine_seeds_no_rbac_rules(self, raw_engine):
+        """2026-09-15 full cut: production seeds no colon permissions."""
+        stats = raw_engine.stats()
+        assert stats["rbac_rules_total"] == 0
+        assert stats["rbac_rules_enabled"] == 0
 
-    def test_engine_starts_with_no_abac_rules(self, engine):
-        stats = engine.stats()
+    def test_engine_starts_with_no_abac_rules(self, raw_engine):
+        stats = raw_engine.stats()
         assert stats["abac_rules_total"] == 0
         assert stats["abac_rules_enabled"] == 0
 
-    def test_unique_permissions_counts_both_rule_sets(self, engine):
-        # 12 RBAC + 0 ABAC
-        assert engine.stats()["unique_permissions"] == 12
-        engine.set_abac_rule("custom:perm", "dept", ABATCondition.EQUALS, "eng")
-        assert engine.stats()["unique_permissions"] == 13
+    def test_unique_permissions_counts_both_rule_sets(self, raw_engine):
+        # 0 RBAC + 0 ABAC
+        assert raw_engine.stats()["unique_permissions"] == 0
+        raw_engine.set_abac_rule("custom:perm", "dept", ABATCondition.EQUALS, "eng")
+        assert raw_engine.stats()["unique_permissions"] == 1
 
 
 # =====================================================================
