@@ -31,7 +31,7 @@
 | 能力账单 | `genebank/GENE-MAP.yaml` | 12 类基因，每类写明"今天谁承担、缺什么" | ✅ 已建 |
 | 覆盖蓝图 | `intents.yaml` | 用户列的 72 类 → 可执行查询 → 目标内核 | ✅ 已建 |
 | 发现引擎 | `pipeline/oss_radar.py` | 真调 API，诚实报告失败 | ✅ 已建并跑通 |
-| 能力数据库 | `capabilities/*.yaml` | 每个候选的 13 字段分析 | 🟡 首批 13 条 |
+| 能力数据库 | `capabilities/*.yaml` | 每个候选的 13 字段分析 | 🟡 **32 条 / 6 个文件**（15 深度分析 + 5 落地复记 + 12 tier1 分级；扫描池去重 657） |
 | 字段契约 | `schema/capability-entry.schema.yaml` | 让"必须分析"变成可校验的事 | ✅ 已建 |
 | 扫描留痕 | `state/scan-*.json` | 每轮真实数据，可复盘 | ✅ 已生成 |
 
@@ -94,7 +94,15 @@ PyPI 十次无发现端点、CNCF 一次连接中断（已通过本地缓存修�
 
 stars / license / language 全部经 `api.github.com/repos/<repo>` **二次核实对齐**。
 
-进入深度分析的 **15 条**，结论分布：
+`capabilities/` 共 **32 条记录 / 6 个文件**（2026-09-14 实测重数）。三种体例**不可混算**：
+
+| 文件 | 条数 | 体例 |
+|---|---|---|
+| `automation.yaml` / `safety.yaml` / `coding.yaml` / `agent.yaml` | 5 / 4 / 4 / 2 | **深度分析**（13 字段全填） |
+| `s2-s5-landed.yaml` | 5 | **落地复记**（记录第 2–5 轮的实际吸收结果，非新候选） |
+| `triage-tier1.yaml` | 12 | **tier1 分级**（轻量条目，按契约补齐必填字段） |
+
+其中**深度分析 15 条**的结论分布：
 
 | 结论 | 数量 | 代表 |
 |---|---|---|
@@ -102,6 +110,14 @@ stars / license / language 全部经 `api.github.com/repos/<repo>` **二次核�
 | **evaluate** | 5 | Temporal、Conductor、Casbin、Monty、Semantic Kernel |
 | **watch** | 6 | Hatchet、OPA、Microsandbox、Dagster、deer-flow、MCP Server 生态 |
 | **reject** | 2 | Airflow（重复自有能力）、Composio（凭证托管触碰主权红线） |
+
+后两类**不计入上面的结论分布**，因为它们都还没走完深度分析：
+
+- `s2-s5-landed.yaml` 的 5 条是**已发生的事实**，不是新结论：Semgrep 已落地、
+  Temporal 部分吸收（范式下沉，未引入集群）、`pydantic/monty` 本轮暂缓、
+  既有代码 4 处"谎报成功"已修复、RestrictedPython 已落地。
+- `triage-tier1.yaml` 的 12 条是**待复核清单**（adopt 6 / evaluate 6），
+  条目已过白名单 + stars/license/last_push 二次核实，但**尚未做 13 字段深度分析**。
 
 > **已知局限（不掩盖）**：CNCF 全景源只按名称与描述做本地子串匹配，没有相关性排序，
 > 因此候选池里存在噪声（例如搜 "apache arrow" 会命中描述中提到 Arrow 的 InfluxDB）。

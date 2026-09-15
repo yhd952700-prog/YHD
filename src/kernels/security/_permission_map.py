@@ -27,6 +27,17 @@ B's 44 actions are all *effectful* kernel operations; A is dominated by
 *read/query* permissions that simply do not exist over there. That is why
 ``kernel_actions`` is allowed to be empty -- leaving it empty is a finding,
 not an oversight, and ``unmapped_permissions`` reports it.
+
+**And having a counterpart is still not enough.** Measured 2026-09-14: of the
+twelve seeded permissions, only **two** map onto a B action that B actually
+allow-lists for the internal service -- so delegating A to B would flip the
+other ten from ``allow`` to ``deny`` (all of the reads, plus three admin
+permissions). Worse, ``_adjudicate`` takes no ``principal_id`` at all, so the
+delegation would also erase the subject dimension: every principal would get
+the same answer. Delegation is therefore **rejected**, not deferred; see
+``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md`` section 5. ``b_delegatable_permissions``
+and ``b_denied_under_delegation`` keep that measurement executable so nobody
+can re-derive the plan from a misleading reading of ``kernel_actions``.
 """
 
 from __future__ import annotations
@@ -240,3 +251,52 @@ def unmapped_permissions() -> List[str]:
 def unseeded_permissions() -> List[str]:
     """Permissions with no seed rule -- they can never be granted (sorted)."""
     return sorted(p for p, m in PERMISSION_MAP.items() if not m.role)
+
+
+def _internal_service_allowed_actions() -> frozenset:
+    """Authority B's internal-service allow-list.
+
+    Imported lazily: ``src.kernels.policy`` is a sibling kernel and importing
+    it at module scope would make this audit module a load-order dependency of
+    the Security Kernel.
+    """
+    from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
+
+    return frozenset(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+
+
+def b_delegatable_permissions() -> List[str]:
+    """Seeded permissions B would still allow, if A delegated its verdict to B.
+
+    A permission survives delegation only when it is seeded (so A could ever
+    grant it) **and** at least one of its mapped ``kernel_actions`` is on B's
+    internal-service allow-list. Having a counterpart action is *not* enough:
+    ``_adjudicate`` asks "may the internal service do this action?", whereas
+    ``decide_access`` asks "does *this principal* hold this permission?".
+
+    Measured 2026-09-14: exactly two of the twelve seeded permissions survive
+    -- ``execution:trigger`` and ``evaluation:run``. The ten that do not are
+    the reason delegation was rejected. This function exists so that reading
+    ``kernel_actions`` can never again be mistaken for "B will allow it".
+    """
+    allowed = _internal_service_allowed_actions()
+    return sorted(
+        permission
+        for permission, mapping in PERMISSION_MAP.items()
+        if mapping.role and any(action in allowed for action in mapping.kernel_actions)
+    )
+
+
+def b_denied_under_delegation() -> List[str]:
+    """Seeded permissions B would flip to ``deny`` if A delegated to it.
+
+    The complement of :func:`b_delegatable_permissions` within the seeded set.
+    This is the blast radius of the rejected plan, kept queryable so the claim
+    stays testable rather than becoming prose.
+    """
+    delegatable = set(b_delegatable_permissions())
+    return sorted(
+        permission
+        for permission, mapping in PERMISSION_MAP.items()
+        if mapping.role and permission not in delegatable
+    )

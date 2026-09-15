@@ -24,6 +24,8 @@ import pytest
 from src.kernels.security import RBACRole, SecurityEngine, get_security_engine
 from src.kernels.security._permission_map import (
     PERMISSION_MAP,
+    b_delegatable_permissions,
+    b_denied_under_delegation,
     discover_permission_literals,
     get_mapping,
     is_known,
@@ -109,6 +111,72 @@ class TestMappedActionsReallyExist:
         assert unmapped_permissions(), "声称全部有对应，与实测不符"
         for permission in unmapped_permissions():
             assert PERMISSION_MAP[permission].note, f"{permission} 缺说明"
+
+
+# --------------------------------------------------------------------------- #
+# 2b. "mapped to a real B action" is NOT "B would allow it"
+# --------------------------------------------------------------------------- #
+
+
+class TestDelegationToBIsMeasurablyUnviable:
+    """"先补映射、再把 A 切到 B" 这个方案，实测不可行 —— 把结论钉成可执行断言。
+
+    ``kernel_actions`` 的含义是"B 有对应动作"，**不是**"B 会放行"。
+    只读前一个含义的人会重新推导出那个已被否决的方案：实测它会打断 A 的
+    12 条种子权限里的 10 条（含全部读权限）。这组断言让该失败无法被悄悄重引。
+    详见 ``docs/ACCESS-CONTROL-CONVERGENCE-DESIGN.md`` §5。
+    """
+
+    def test_having_a_counterpart_is_not_the_same_as_being_allowed(self):
+        """必须至少有一条被映射的权限不在 B 的允许表里 —— 否则两个概念
+        无法区分，这个测试类等于什么都没断言。"""
+        from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
+
+        allowed = frozenset(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        mapped = [p for p, m in PERMISSION_MAP.items() if m.kernel_actions]
+        assert mapped, "没有任何映射，本测试失效"
+        assert any(
+            not (set(PERMISSION_MAP[p].kernel_actions) & allowed) for p in mapped
+        ), "每条被映射的权限都在 B 的允许表里 —— 要么 B 变了，要么本测试失效"
+
+    def test_b_has_no_read_action_at_all(self):
+        """方案不可行的结构性原因：B 的允许表只有效应型动作。"""
+        from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
+
+        verbs = {str(a).split(".")[-1] for a in INTERNAL_SERVICE_ALLOWED_ACTIONS}
+        readish = verbs & {"read", "get", "list", "query", "lookup", "describe"}
+        assert verbs, "B 的允许表为空"
+        assert not readish, (
+            f"B 出现了读动作 {sorted(readish)} —— 若属实，A 的读权限或许可以下沉，"
+            "必须重新评估收敛方案（而不是只改这里）"
+        )
+
+    def test_exactly_two_seeded_permissions_survive_delegation(self):
+        """钉死的实测值。若它变了，收敛决策必须重开 —— 不要只改期望值。"""
+        assert b_delegatable_permissions() == ["evaluation:run", "execution:trigger"]
+
+    def test_the_blast_radius_is_ten_of_twelve(self):
+        denied = set(b_denied_under_delegation())
+        seeded = [p for p, m in PERMISSION_MAP.items() if m.role]
+        assert len(seeded) == 12
+        assert len(denied) == 10
+        # 断掉的必须包含全部四条读权限 —— 这是最容易被忽略的一半。
+        assert {
+            "context:read",
+            "capability:lookup",
+            "resource:query",
+            "audit:query",
+        } <= denied
+
+    def test_the_two_survivors_are_really_in_bs_allow_list(self):
+        """正向对照：幸存者必须真的在允许表里，而不是碰巧算进去。"""
+        from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
+
+        allowed = frozenset(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        for permission in b_delegatable_permissions():
+            actions = PERMISSION_MAP[permission].kernel_actions
+            assert actions, f"{permission} 无映射动作，不该出现在幸存者里"
+            assert set(actions) & allowed, f"{permission} 的动作不在允许表：{actions}"
 
 
 # --------------------------------------------------------------------------- #
