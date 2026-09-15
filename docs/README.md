@@ -29,6 +29,7 @@
 | 了解系统整体架构 | [`ARCHITECTURE.md`](ARCHITECTURE.md)（架构总纲，导航入口） |
 | 查 14 Kernel 的权威清单 | [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) |
 | 查 14 Kernel 接口定义 | [`architecture/kernels-interface.md`](architecture/kernels-interface.md) |
+| 查 14 Kernel 生命周期/错误处理/权限边界规范 | [`kernel-spec/README.md`](kernel-spec/README.md)（**设计意图/目标态契约**，非现状规范） |
 | 看现有代码到底有什么 | [`architecture/existing-codebase-audit.md`](architecture/existing-codebase-audit.md)（780 行全量审计） |
 | 查权限系统怎么工作 | [`ARCHITECTURE.md`](ARCHITECTURE.md) §权限系统 |
 | 看产品需求 / UI 设计 | [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md)、[`product/Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) |
@@ -52,7 +53,9 @@ docs/
 ├── product/               产品与设计（3 篇）
 ├── operations/            运维与场景（3 篇）
 ├── l10k/                  L10K 基准（1 篇）
+├── kernel-spec/           14 内核规范（生命周期/错误处理/权限边界，15 文件）
 ├── spec/                  V3.0 目标规格（5 篇，2026-09-06 新增）
+├── kernel-spec/           14 内核规范（生命周期/错误处理/权限边界，2026-09-14 新增）
 └── archive/               历史归档
     ├── Y1_AUDIT_REPORTS.md
     ├── PHASE_ACCEPTANCE_REPORTS.md
@@ -138,6 +141,20 @@ docs/
 | 文件 | 说明 |
 |---|---|
 | `ARCHITECTURE.md` | **架构导航入口**：14 Kernel × 8 Workstream × 十源 DNA 映射、硬规则摘要、文档层级 |
+
+---
+
+## 九、内核规范 `kernel-spec/`（2026-09-14 新增）
+
+| 文件 | 说明 |
+|---|---|
+| [`kernel-spec/README.md`](kernel-spec/README.md) | **索引 + 诚实边界**：14 篇清单（真实实现类/行号、进程级入口、是否自动驱动）、可观测入口（`src/kernels/_registry.py`、`GET /v1/kernels`） |
+| `kernel-spec/{audit,capability,context,evaluation,event,execution,identity,memory,network,plugin,policy,resource,security,trust}.md` | 14 篇内核规范，各含统一「诚实状态头」 |
+
+> ⚠ **定位**：本目录整体是「**设计意图 / 目标态契约 + 已核对现状**」，**不是**现状规范。各篇
+> 文首「诚实状态头」中的类名与行号已逐条对代码验证通过；未标注行号的段落（尤其各篇缺口清单）
+> 须以代码实测为准。已清除原稿对仓库外 `ARCHITECTURE-AUDIT.md` 的全部引用（该文档不在仓库中，
+> 其结论已被项目纪律认定不准）。详见 [`kernel-spec/README.md`](kernel-spec/README.md) 第二节。
 
 ---
 
