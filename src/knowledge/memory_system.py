@@ -575,7 +575,6 @@ class MemoryService:
         """
         return await self._clean_expired()
 
-
     async def store_agent_experience(self, employee_id: str, task_type: str, result_summary: str):
         """Store agent execution experience to shared knowledge base."""
         try:

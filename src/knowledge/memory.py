@@ -47,7 +47,7 @@ except ImportError:
 # Completed 2026-09-15. Kept separate from the Mem0-compatible MemoryManager
 # API above so existing callers (src/ai/*) and tests/test_knowledge_memory.py
 # keep working. Re-exported here for convenience.
-from .memory_system import MemoryService, Memory, MemoryType
+from .memory_system import MemoryService, Memory, MemoryType  # noqa: F401  (re-export)
 
 
 class MemoryTier(Enum):

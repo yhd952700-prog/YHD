@@ -224,7 +224,9 @@ capability-registry:
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
-    test_coverage: '20/20 unit tests passing (tests/kernels/network/, 2026-09-15 verified)'
+    test_coverage: '25/25 unit tests passing (tests/kernels/network/, 2026-09-15 verified: 20 baseline + 5 TestProtocolAwareRouting regression tests)'
+    evidence:
+      - tests/kernels/network/test_network.py::TestProtocolAwareRouting — explicit protocol is no longer overwritten by the internal catch-all
     implementation_completeness:
       code_exists: true
       executable: true

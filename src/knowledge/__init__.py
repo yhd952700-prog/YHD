@@ -17,7 +17,6 @@ from .chunker import chunk_text, chunk_by_sentences
 from .embedding import EmbeddingPipeline, embed_text
 from .vector_store import VectorStore
 from .pii import (
-    KnowledgeSecurityPolicy,
     PIIType,
     PIIMatch,
     PIIResult,

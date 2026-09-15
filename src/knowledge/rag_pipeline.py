@@ -17,7 +17,7 @@ keeping the return payload compatible with the earlier contract:
 from __future__ import annotations
 
 import inspect
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from src.knowledge.embedding import EmbeddingService
 from src.knowledge.pii import detect_pii
