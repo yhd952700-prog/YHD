@@ -26,7 +26,20 @@ from .pii import (
     redact_text,
     detect_pii,
 )
-from .rag_pipeline import RAGPipeline, rag_query, Retriever
+from .rag_pipeline import RAGPipeline
+from .retriever import Retriever
+from .models import (
+    MessageDirection,
+    MessageStatus,
+    PlatformAccount,
+    PlatformAccountStatus,
+    PlatformContact,
+    PlatformMessage,
+    PlatformType,
+)
+from .service import PlatformService
+from .translation import LANGUAGE_LIST, SUPPORTED_LANGUAGES
+from .security import KnowledgeSecurityPolicy
 
 __all__ = [
     "chunk_text",
@@ -43,6 +56,15 @@ __all__ = [
     "redact_text",
     "detect_pii",
     "RAGPipeline",
-    "rag_query",
     "Retriever",
+    "MessageDirection",
+    "MessageStatus",
+    "PlatformAccount",
+    "PlatformAccountStatus",
+    "PlatformContact",
+    "PlatformMessage",
+    "PlatformType",
+    "PlatformService",
+    "LANGUAGE_LIST",
+    "SUPPORTED_LANGUAGES",
 ]

@@ -1,14 +1,11 @@
 """Knowledge API routes for Phase 2.3 RAG."""
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
 
 from src.knowledge.rag_pipeline import RAGPipeline
 from src.knowledge.retriever import Retriever
 from src.knowledge.vector_store import VectorStore
 from src.knowledge.embedding import EmbeddingPipeline
-from src.providers import get_provider
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -21,11 +18,6 @@ def _get_vector_store() -> VectorStore:
 def _get_embedding_pipeline() -> EmbeddingPipeline:
     """Get a default EmbeddingPipeline instance."""
     return EmbeddingPipeline(provider_key="mock")
-
-
-def _get_provider() -> Any:
-    """Get a default LLM provider instance."""
-    return get_provider("mock")
 
 
 @router.post("/search", response_model=dict)
@@ -54,8 +46,6 @@ async def knowledge_search(
 async def knowledge_query(
     query: str,
     vector_store: VectorStore = Depends(_get_vector_store),
-    embedding_pipeline: EmbeddingPipeline = Depends(_get_embedding_pipeline),
-    provider: Any = Depends(_get_provider),
 ):
     """Run a full RAG query: retrieve context and generate answer.
 
@@ -64,13 +54,7 @@ async def knowledge_query(
 
     Returns:
         Dict with query, sources, context, answer, and metadata matching
-        the Phase 2.3 RAG contract.
+        the Phase 2.4 RAG contract.
     """
-    rag = RAGPipeline(
-        retriever=Retriever(
-            vector_store=vector_store,
-            embedding_pipeline=embedding_pipeline,
-        ),
-        provider=provider,
-    )
-    return rag.query(query)
+    rag = RAGPipeline(vector_store=vector_store, provider_name="mock")
+    return await rag.query(query)

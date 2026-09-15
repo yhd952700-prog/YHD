@@ -8,7 +8,7 @@ Responsible for:
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from .embedding import EmbeddingPipeline
 from .vector_store import VectorStore
@@ -24,14 +24,22 @@ class Retriever:
     def __init__(
         self,
         vector_store: VectorStore,
-        embedding_pipeline: EmbeddingPipeline,
+        embedding_pipeline: Optional[EmbeddingPipeline] = None,
+        provider_name: str = "mock",
         top_k: int = 4,
         similarity_threshold: float = 0.3,
     ) -> None:
         self.vector_store = vector_store
         self.embedding_pipeline = embedding_pipeline
+        self.provider_name = provider_name
         self.top_k = top_k
         self.similarity_threshold = similarity_threshold
+
+    def _ensure_pipeline(self) -> EmbeddingPipeline:
+        """Lazily build the embedding pipeline from ``provider_name`` if needed."""
+        if self.embedding_pipeline is None:
+            self.embedding_pipeline = EmbeddingPipeline(provider_key=self.provider_name)
+        return self.embedding_pipeline
 
     def retrieve(self, query: str) -> Dict[str, Any]:
         """Retrieve relevant context chunks for a query.
@@ -116,3 +124,33 @@ class Retriever:
                 "threshold": self.similarity_threshold,
             },
         }
+
+    async def search(self, query: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Async vector search returning a list of hit dicts.
+
+        Each hit has ``chunk_id``, ``document_id``, ``score``, ``content`` and
+        ``metadata`` keys -- the shape the RAG pipeline consumes.
+        """
+        top_k = limit or self.top_k
+        query_embedding = self._ensure_pipeline().embed(query)
+        search_results = self.vector_store.search(
+            query_embedding,
+            top_k=top_k,
+            threshold=self.similarity_threshold,
+        )
+        hits: List[Dict[str, Any]] = []
+        for doc_id, similarity, metadata in search_results:
+            hits.append(
+                {
+                    "chunk_id": doc_id,
+                    "document_id": doc_id,
+                    "score": similarity,
+                    "content": str(metadata) if metadata else "",
+                    "metadata": metadata or {},
+                }
+            )
+        return hits
+
+    def assemble_context(self, hits: List[Dict[str, Any]]) -> str:
+        """Concatenate the ``content`` of retrieval hits into a context blob."""
+        return "\n\n".join(h.get("content", "") for h in hits if h.get("content"))

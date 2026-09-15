@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class PIIType(str, Enum):
@@ -222,9 +222,18 @@ def redact_text(text: str) -> str:
     return get_knowledge_security_policy().redact_text(text)
 
 
-def detect_pii(text: str) -> PIIResult:
-    """Detect PII in text using the default policy."""
-    return get_knowledge_security_policy().detect_pii(text)
+def detect_pii(text: str) -> Dict[str, Any]:
+    """Detect PII in text using the default policy.
+
+    Returns a dict with ``detected`` (bool) and ``types`` (list[str]) so the
+    RAG pipeline can subscript it directly (``result["detected"]``,
+    ``result["types"]``). The underlying :class:`PIIResult` is converted here.
+    """
+    result = get_knowledge_security_policy().detect_pii(text)
+    return {
+        "detected": result.detected,
+        "types": [t.value for t in result.pii_types],
+    }
 
 
 __all__ = [

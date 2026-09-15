@@ -1,31 +1,37 @@
 """
-Integrations Module for LiuHao AI OS
+S2 多平台接入（Platform Intelligence）
 
-Provides:
-- ORM integration with SQLAlchemy
-- Cloud services integration (storage, functions, queues)
-- Identity and access management
-- Export functions for configuration creation
+统一管理 WhatsApp / Facebook / LinkedIn / 企业微信 4 大外贸触达渠道，
+提供账号绑定、消息收发、联系人管理与多语言自动翻译。
+
+The actual S2 implementation lives in ``src/knowledge`` (models / service /
+translation); this package is a thin facade that re-exports those symbols so
+callers can import the platform-intelligence types from ``src.integrations``.
+The legacy ORM/cloud integration layer (cloud_models) was superseded by this
+refactor and is recorded as an acknowledged orphan in orphan-registry.yaml.
 """
 
-from .orm_models import Base, BaseModel, ModelMixin, mapper_registry, SessionManager, create_table, drop_table, add_index, init_models
-from .cloud_models import (
-    CloudProvider, StorageType, FunctionType, QueueType,
-    StorageConfig, StorageObject,
-    FunctionConfig, FunctionInvocation,
-    QueueConfig, Message, QueueMessageRecord,
-    Permission, Role, User,
-    create_storage_config, create_function_config, create_queue_config,
+from src.knowledge.models import (
+    MessageDirection,
+    MessageStatus,
+    PlatformAccount,
+    PlatformAccountStatus,
+    PlatformContact,
+    PlatformMessage,
+    PlatformType,
 )
+from src.knowledge.service import PlatformService
+from src.knowledge.translation import LANGUAGE_LIST, SUPPORTED_LANGUAGES
 
-# Module-level references
 __all__ = [
-    "Base", "BaseModel", "ModelMixin", "mapper_registry",
-    "SessionManager", "create_table", "drop_table", "add_index", "init_models",
-    "CloudProvider", "StorageType", "FunctionType", "QueueType",
-    "StorageConfig", "StorageObject",
-    "FunctionConfig", "FunctionInvocation",
-    "QueueConfig", "Message", "QueueMessageRecord",
-    "Permission", "Role", "User",
-    "create_storage_config", "create_function_config", "create_queue_config",
+    "LANGUAGE_LIST",
+    "MessageDirection",
+    "MessageStatus",
+    "PlatformAccount",
+    "PlatformAccountStatus",
+    "PlatformContact",
+    "PlatformMessage",
+    "PlatformService",
+    "PlatformType",
+    "SUPPORTED_LANGUAGES",
 ]

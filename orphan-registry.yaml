@@ -132,3 +132,20 @@ acknowledged:
     reason: >-
       Module docstring already self-declares "[LEGACY / NOT WIRED]". Real
       OpenTelemetry export remains a Phase 7 leftover; nothing consumes it.
+
+  # --- superseded by the S2 multi-platform refactor (stash pop, 2026-09-15) --
+  - module: src.integrations.cloud_models
+    classification: superseded-duplicate
+    reason: >-
+      Old cloud-integration ORM models (CloudProvider / StorageType /
+      FunctionType / QueueType / StorageConfig / FunctionConfig / QueueConfig /
+      Message / Permission / Role / User / create_*_config helpers). The S2
+      多平台接入 refactor replaced the integrations package surface with the
+      src/knowledge multi-platform modules (models / service / translation),
+      re-exported via src/integrations.__init__; the stash dropped the
+      `from .cloud_models import ...` line, leaving this module with zero
+      references anywhere in src/tests/scripts/apps/alembic. Its only former
+      importer, orm_models.py, stays: it is the live SQLAlchemy Base /
+      SessionManager consumed by storage.py, alembic/env.py and
+      tests/test_orm_storage.py. cloud_models.py is dead weight pending
+      deletion; recover via `git log -- <path>` if a symbol is ever needed.

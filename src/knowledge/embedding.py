@@ -89,3 +89,26 @@ def embed_text(
         chunk_overlap=chunk_overlap,
     )
     return pipeline.embed(text)
+
+
+class EmbeddingService:
+    """Service wrapper around :class:`EmbeddingPipeline`, selected by provider name.
+
+    The S2 RAG refactor constructs ``EmbeddingService(provider_name)`` and keeps
+    it on the pipeline; this class lazily builds the underlying pipeline so the
+    constructor stays cheap and provider-agnostic.
+    """
+
+    def __init__(self, provider_name: str = "mock") -> None:
+        self.provider_name = provider_name
+        self._pipeline: Optional[EmbeddingPipeline] = None
+
+    @property
+    def pipeline(self) -> EmbeddingPipeline:
+        if self._pipeline is None:
+            self._pipeline = EmbeddingPipeline(provider_key=self.provider_name)
+        return self._pipeline
+
+    def embed(self, text: str) -> List[float]:
+        """Embed `text` via the underlying pipeline."""
+        return self.pipeline.embed(text)

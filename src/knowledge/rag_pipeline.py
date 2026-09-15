@@ -1,150 +1,164 @@
-"""RAG (Retrieval-Augmented Generation) pipeline.
+"""Phase 2.3 RAG pipeline prototype.
 
-Phase 2.3 RAG pipeline that connects:
-Query -> Embedding -> Vector Store Search -> Context Generation -> LLM Provider -> Structured Output
+Implements a minimal retrieval augmented generation orchestration that:
+query -> embeddings -> vector store -> context -> provider -> structured output.
 
-The data flow is:
-User Query -> Embedding Service -> Vector Store Search -> Context Generation -> LLM Provider -> Output
+Phase 2.4 adds a light security gate layer around the existing flow while
+keeping the return payload compatible with the earlier contract:
+{
+  "query": "",
+  "sources": [],
+  "context": "",
+  "answer": "",
+  "metadata": {}
+}
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import inspect
+from typing import Any, Dict, List, Optional, Sequence
 
-from .embedding import EmbeddingPipeline
-from .retriever import Retriever
-from .vector_store import VectorStore
+from src.knowledge.embedding import EmbeddingService
+from src.knowledge.pii import detect_pii
+from src.knowledge.retriever import Retriever
+from src.knowledge.security import KnowledgeSecurityPolicy
+from src.providers.registry import get_provider
 
 
 class RAGPipeline:
-    """Phase 2.3 RAG pipeline that connects retrieval to generation."""
+    """Minimal RAG pipeline for the Phase 2.3 demonstration path.
 
-    def __init__(
-        self,
-        retriever: Retriever,
-        provider: Any,  # LLMProvider instance
-        top_k: int = 4,
-        similarity_threshold: float = 0.3,
-    ) -> None:
-        self.retriever = retriever
-        self.provider = provider
-        self.top_k = top_k
-        self.similarity_threshold = similarity_threshold
+    Returned structure is exactly:
+    {
+      "query": "",
+      "sources": [],
+      "context": "",
+      "answer": "",
+      "metadata": {}
+    }
+    """
 
-    def query(self, user_query: str) -> Dict[str, Any]:
-        """Run a full RAG query: retrieve context and generate answer.
+    def __init__(self, vector_store: Any, provider_name: str = "mock"):
+        self.vector_store = vector_store
+        self.provider_name = provider_name
+        self.policy = KnowledgeSecurityPolicy()
+        self.embedding_service = EmbeddingService(provider_name)
+        self.retriever = Retriever(vector_store, provider_name=provider_name)
 
-        Data Flow:
-        User Query -> Retriever (Embedding + Vector Search) -> Context Generation -> LLM Provider -> Structured Output
+    async def query(self, query: str, limit: int = 5, user: Optional[Any] = None, documents: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Execute the complete RAG flow for a plain-text user question.
 
-        Args:
-            user_query: The user's natural language question.
-
-        Returns:
-            Dict matching the Phase 2.3 contract:
-            {
-                "query": user_query,
-                "sources": [doc_id, ...],
-                "context": concatenated context text,
-                "answer": LLM-generated answer,
-                "metadata": {pipeline metadata}
-            }
+        Security hook:
+        - validate retrieval before vector search
+        - filter content after LLM answer generation
+        - audit security metadata before return
         """
-        # Step 1: Retrieve relevant context
-        retrieval_result = self.retriever.retrieve(user_query)
 
-        # Step 2: Build the prompt with context
-        context = retrieval_result["context"]
-        sources = retrieval_result["sources"]
+        # permission validation of retrieval path before vector search
+        docs_for_access = list(documents or [])
+        access = self.policy.validate_retrieval(user, docs_for_access)
+        if not access.get("allowed", True):
+            return {
+                "query": query,
+                "sources": [],
+                "context": "",
+                "answer": "Access denied by knowledge security policy.",
+                "metadata": {
+                    "provider": self.provider_name,
+                    "retrieval": "vector_similarity",
+                    "security_status": "denied",
+                    "pii_detected": False,
+                    "filtered": False,
+                    "policy_version": self.policy.policy_version,
+                    "reason": access.get("reason"),
+                },
+            }
 
-        prompt = self._build_prompt(user_query, context)
+        hits = await self.retriever.search(query, limit=limit)
+        context = self.retriever.assemble_context(hits)
 
-        # Step 3: Generate answer via LLM provider
-        try:
-            llm_response = self.provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-            )
-            answer = llm_response.get("choices", [{}])[0].get(
-                "message", {}
-            ).get("content", "")
-        except Exception:
-            answer = self._fallback_answer(user_query, context)
+        # Context security check to keep small but consistent.
+        pii_context = detect_pii(context)
+        security_status = "passed"
+        context = self.policy.filter_content(context)
 
-        # Step 4: Return structured output
-        return {
-            "query": user_query,
-            "sources": sources,
-            "context": context,
-            "answer": answer,
-            "metadata": {
-                "retrieval_results_count": retrieval_result["metadata"][
-                    "results_count"
-                ],
-                "similarity_threshold": self.similarity_threshold,
-                "provider": self.provider.name if hasattr(self.provider, "name") else "unknown",
+        provider = get_provider(self.provider_name)
+        prompt = (
+            "Use the supplied context to answer the query.\n\n"
+            f"Query: {query}\n\nContext:\n{context}"
+        )
+        if hasattr(provider, "chat"):
+            chat_result = provider.chat([{"role": "user", "content": prompt}])
+            # The provider contract allows ``chat`` to be a coroutine; resolve
+            # it when necessary so both sync and async providers work.
+            if inspect.isawaitable(chat_result):
+                chat_result = await chat_result
+            # ``chat`` returns a dict with a "choices" list per the LLMProvider
+            # interface; extract the assistant message content, falling back to
+            # str() for any non-standard payload.
+            if isinstance(chat_result, dict) and "choices" in chat_result:
+                choice = chat_result["choices"][0]
+                answer = (
+                    choice.get("message", {}).get("content", "")
+                    if isinstance(choice, dict)
+                    else str(choice)
+                )
+            else:
+                answer = str(chat_result)
+        else:
+            answer = context[:200]
+
+        filtered_answer = self.policy.filter_content(answer)
+        filtered = answer != filtered_answer
+        pii_answer = detect_pii(answer)
+        pii_detected = pii_answer["detected"] or pii_context["detected"]
+
+        sources = []
+        for hit in hits:
+            sources.append({
+                "chunk_id": hit.get("chunk_id"),
+                "document_id": hit.get("document_id"),
+                "score": hit.get("score"),
+                "content": hit.get("content"),
+                "metadata": hit.get("metadata", {}),
+            })
+
+        metadata = {
+            "provider": self.provider_name,
+            "retrieval": "vector_similarity",
+            "security": {
+                "permission_check": "available",
+                "source_tracking": "document_id",
+                "retrieval_audit": "enabled",
             },
+            "hits": len(hits),
+            "security_status": security_status,
+            "pii_detected": bool(pii_detected),
+            "filtered": bool(filtered),
+            "policy_version": self.policy.policy_version,
+            "security_check": "pii_scan",
+            "pii_types": list(dict.fromkeys(pii_context["types"] + pii_answer["types"])),
         }
 
-    def _build_prompt(self, query: str, context: str) -> str:
-        """Build the prompt for the LLM provider.
+        # record stable security event
+        self.policy.audit_security_event({
+            "event_type": "retrieval",
+            "query": query,
+            "documents": [s.get("document_id") for s in sources],
+            "provider": self.provider_name,
+            "timestamp": "now",
+            "status": security_status,
+            "security_status": security_status,
+            "pii_detected": bool(pii_detected),
+            "filtered": bool(filtered),
+            "policy_version": self.policy.policy_version,
+        })
 
-        Args:
-            user_query: The original user query.
-            context: Retrieved context text.
-
-        Returns:
-            A formatted prompt string.
-        """
-        return (
-            "Context:\n"
-            f"{context}\n\n"
-            f"Question: {query}\n\n"
-            "Answer the question based on the context provided above. If the context doesn't contain the answer, say \"I don't have enough information to answer this question.\""
-        )
-
-    def _fallback_answer(self, query: str, context: str) -> str:
-        """Fallback answer when LLM provider chat fails."""
-        if context.strip():
-            return (
-                f"Based on the available context: {context[:200]}...\n\n"
-                f"Direct answer to '{query}': I don't have enough information to provide a complete answer, but the context above may be relevant."
-            )
-        return f"I don't have enough information to answer the question: '{query}'"
-
-
-def rag_query(
-    user_query: str,
-    vector_store: VectorStore,
-    embedding_pipeline: EmbeddingPipeline,
-    provider: Any,
-    top_k: int = 4,
-    similarity_threshold: float = 0.3,
-) -> Dict[str, Any]:
-    """Convenience function to run a RAG query.
-
-    Args:
-        user_query: The user's question.
-        vector_store: Initialized VectorStore instance.
-        embedding_pipeline: Initialized EmbeddingPipeline instance.
-        provider: LLMProvider instance (e.g. MockRiskAssessmentProvider).
-        top_k: Number of retrieval results.
-        similarity_threshold: Minimum similarity threshold.
-
-    Returns:
-        Dict matching the Phase 2.3 contract.
-    """
-    retriever = Retriever(
-        vector_store=vector_store,
-        embedding_pipeline=embedding_pipeline,
-        top_k=top_k,
-        similarity_threshold=similarity_threshold,
-    )
-
-    rag = RAGPipeline(
-        retriever=retriever,
-        provider=provider,
-        top_k=top_k,
-        similarity_threshold=similarity_threshold,
-    )
-
-    return rag.query(user_query)
+        return {
+            "query": query,
+            "sources": sources,
+            "context": context,
+            "answer": filtered_answer,
+            "metadata": metadata,
+        }
