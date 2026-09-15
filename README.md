@@ -119,7 +119,8 @@ memory、network、plugin、policy、resource、security、trust。
 
 ## 关键文档
 
-- `docs/QUICKSTART-RUN.md` —— 极简启动手册
+- `docs/RUN.md` —— **完整运行手册**（启动/登录/冒烟/四道 CI 门禁，命令均在本机实测跑通）
+- `docs/QUICKSTART-RUN.md` —— 极简启动手册（5 分钟版；登录与门禁部分以 `docs/RUN.md` 为准）
 - `docs/spec/KERNEL-CANON.md` —— 内核权威定义
 - `docs/spec/POLICY-ENFORCEMENT-DESIGN.md` —— Policy C-1..C-7 设计与裁决
 - `docs/spec/REPO-LINE-CONVERGE.md` —— 仓库线收口（两条不相干历史的处置）
