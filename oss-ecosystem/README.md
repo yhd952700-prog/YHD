@@ -32,7 +32,8 @@
 | 覆盖蓝图 | `intents.yaml` | 用户列的 72 类 → 可执行查询 → 目标内核 | ✅ 已建 |
 | 发现引擎 | `pipeline/oss_radar.py` | 真调 API，诚实报告失败 | ✅ 已建并跑通 |
 | 能力数据库 | `capabilities/*.yaml` | 每个候选的 13 字段分析 | 🟡 **51 条 / 8 个文件**（20 深度分析 + 5 落地复记 + 12 tier1 分级 + 14 tier2 分级；扫描池去重 657；tier2 由 Oss-Thicken 于 2026-09-15 新增） |
-| 字段契约 | `schema/capability-entry.schema.yaml` | 让"必须分析"变成可校验的事 | ✅ 已建 |
+| 字段契约 | `schema/capability-entry.schema.yaml` + `pipeline/validate_entries.py` | 让"必须分析"变成可校验的事 | ✅ 已建（含**可执行校验器**，2026-09-15 补齐） |
+| 契约门禁 | `tests/test_oss_ecosystem_entries.py` | 契约在 CI 里**必跑**，并注入违规反证"真的会红" | ✅ 已接进 `pytest tests/`（CI 真门禁） |
 | 扫描留痕 | `state/scan-*.json` | 每轮真实数据，可复盘 | ✅ 已生成 |
 
 ---

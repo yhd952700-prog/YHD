@@ -219,6 +219,15 @@ jobs:
       - name: Verify OSS component licenses against oss-registry.yaml
         run: python scripts/verify_oss_licenses.py
 
+      # oss-ecosystem/capabilities/*.yaml 的字段契约。schema 从 2026-09-13 起就写着
+      # 「让『每个发现的项目都必须分析』变成**可校验**的事」并指名了 pipeline/validate_entries.py，
+      # 但那个文件直到 2026-09-15 才真正存在 —— 在此之前，5 条 license 被记成裸 NOASSERTION
+      # 且风险等级填错（违反 schema 第 21 行）而没有任何东西发现。
+      # 与 tests/test_oss_ecosystem_entries.py 双保险：这里跑真实语料，
+      # 那里额外反证「注入违规必须变红」，防止门禁退化成 no-op。
+      - name: Verify oss-ecosystem capability entries against the field contract
+        run: python oss-ecosystem/pipeline/validate_entries.py
+
       # Every silent defect in this repository shared one shape: code written but
       # never called (msg_bus, MultiTierCache, BatchCache, Evaluator,
       # generate_metrics). An orphan is not automatically a bug, but an orphan

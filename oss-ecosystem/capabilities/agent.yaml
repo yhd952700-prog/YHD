@@ -65,7 +65,7 @@ entries:
       Network Kernel 接入新 MCP server 必须显式登记 + 记录 its CVE 与最后提交时间，
       且默认走最小权限。禁止一次性批量引入。
     license: 各 server 自行选择，无统一许可
-    commercial_risk: medium
+    commercial_risk: high —— 生态内各 MCP server 自行选择许可、无统一 SPDX，无法逐项核验；按 schema「非标准许可证记 high」处理，接入前须逐个核验许可并过 Trust Gate。
     security_risk: high
     performance_impact: 待测 —— 取决于具体 server；需在隔离环境逐个压测后再定。
     target_kernels: [network, trust, security]

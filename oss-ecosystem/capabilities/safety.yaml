@@ -2,7 +2,8 @@
 # 对应基因：safety-capability
 # 缺口（来自 genebank/GENE-MAP.yaml）：
 #   1) Network 内核改为真实投递后，**出向管控成为新的空白**；
-#   2) 已有 bandit-report.json，但扫描未进入 CI 常态，属事后补扫；
+#   2) [✅ 2026-09-15 已闭环] Bandit 早就跑过，缺的一直是「必跑」；
+#      现已升为 CI 里的**阻断门禁**（security job，`--severity-level high` 命中即红）。
 #   3) Policy 内核为自研 ABAC，需要业界对照物来审视自身完备度。
 #
 # 数据来源：scan-20260913T203529Z.json intent=57/58 + api.github.com/repos/<repo> 二次核实
@@ -118,8 +119,10 @@ entries:
     technical_value: 针对 Python 标准库危险用法的检测规则库成熟，接入成本低。
     enhances_liuhao: "yes"
     absorbable: >
-      无需吸收代码 —— **仓库已有 bandit-report.json，说明跑过但没进 CI**。
-      缺口不在工具而在流程：把 bandit 从"偶尔跑一次"变成"每次提交必跑且失败即阻断"。
+      无需吸收代码 —— 工具本身早已在用（本地产物 bandit-report.json 一度存在），
+      缺的从来不是工具而是流程：把 bandit 从"偶尔跑一次"变成"每次提交必跑且失败即阻断"。
+      ✅ 2026-09-15 已落地：security job 以 `--severity-level high` 阻断，
+      并保留了唯一一处 `# nosec B602`（已反证：去掉它门禁立刻变红，说明抑制是承重的）。
     needs_refactor: none
     integration_plan: >
       补一个 CI job。注意本项目硬规则：测试期框架依赖必须声明在 [project] dependencies
@@ -131,7 +134,7 @@ entries:
     performance_impact: 低 —— CI 阶段。
     target_kernels: [security]
     gene: safety-capability
-    evidence: "scan-20260913T203529Z.json intent=58；仓库内已存在 bandit-report.json"
+    evidence: "scan-20260913T203529Z.json intent=58；CI 门禁位置见 .github/workflows/ci.yml（security job，2026-09-15 起为阻断门禁）"
     adoption_decision: adopt
     decision_note: >
       工具已在用，缺的是把"跑过"升级为"守住"。与 LHX-OSS-0008 合并为一个 quality gate job 落地。
