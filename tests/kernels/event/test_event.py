@@ -167,3 +167,44 @@ class TestStats:
     def test_subscription_matches_wildcard(self, bus):
         sub = Subscription(id="x", event_type="*", handler=lambda e: None)
         assert sub.matches(Event(type="anything", source="s")) is True
+
+
+# =====================================================================
+# Regression: wildcard subscriptions must not accumulate on publish
+# =====================================================================
+
+class TestWildcardDeliveryRegression:
+    """Regression for the ``publish`` aliasing bug.
+
+    ``EventBus._subscriptions`` is a ``defaultdict(list)``, so
+    ``.get(event.type, [])`` handed back the stored list *itself* and the old
+    ``.extend(...)`` mutated it in place: every publish permanently appended
+    the wildcard subscriptions to the type's own list. Wildcard handlers were
+    therefore invoked once per accumulated copy, and the list grew without
+    bound.
+    """
+
+    def test_wildcard_handler_called_exactly_once_per_publish(self, bus):
+        calls = []
+        bus.subscribe("*", lambda e: calls.append(e.type))
+        for _ in range(5):
+            bus.publish(Event(type="a", source="s"))
+        # Before the fix this was 1+2+3+4+5 == 15 deliveries.
+        assert calls == ["a"] * 5
+
+    def test_publish_does_not_grow_the_type_subscription_list(self, bus):
+        bus.subscribe("*", lambda e: None)
+        bus.subscribe("a", lambda e: None)
+        for _ in range(5):
+            bus.publish(Event(type="a", source="s"))
+        # 1 type-specific + 1 wildcard; repeated publishes must not append.
+        assert bus.stats()["total_subscriptions"] == 2
+
+    def test_same_subscription_on_type_and_wildcard_fires_once(self, bus):
+        """De-duplication: one Subscription registered on both keys fires once."""
+        calls = []
+        sub = Subscription(id="dup", event_type="a", handler=lambda e: calls.append(1))
+        bus._subscriptions["a"].append(sub)
+        bus._subscriptions["*"].append(sub)
+        bus.publish(Event(type="a", source="s"))
+        assert calls == [1]

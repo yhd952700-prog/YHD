@@ -158,9 +158,23 @@ class EventBus:
             # Index by correlation ID
             self._correlation_index[event.correlation_id].append(event)
 
-            # Find matching subscriptions
-            subscriptions = self._subscriptions.get(event.type, [])
-            subscriptions.extend(self._subscriptions.get("*", []))
+            # Find matching subscriptions.
+            #
+            # ``self._subscriptions`` is a defaultdict(list), so
+            # ``.get(event.type, [])`` returns the stored list *itself*.
+            # Extending it in place (the old code) appended the wildcard
+            # subscriptions to the type's own list on every publish: the list
+            # grew without bound and each wildcard handler was invoked once per
+            # accumulated copy. Build a fresh, id-de-duplicated list instead.
+            subscriptions: List[Subscription] = []
+            _seen_ids: set = set()
+            for candidate in (
+                *self._subscriptions.get(event.type, ()),
+                *self._subscriptions.get("*", ()),
+            ):
+                if candidate.id not in _seen_ids:
+                    _seen_ids.add(candidate.id)
+                    subscriptions.append(candidate)
 
             for sub in subscriptions:
                 if sub.matches(event):

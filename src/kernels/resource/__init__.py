@@ -126,6 +126,10 @@ class Allocation:
     created_at: datetime = field(default_factory=utc_now)
     expires_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: True once ``commit`` has moved this allocation's amount from the quota's
+    #: ``reserved`` bucket into ``used``. ``release`` needs it to know which
+    #: bucket actually holds the capacity -- see the release() docstring.
+    committed: bool = False
 
 
 @dataclass
@@ -250,10 +254,16 @@ class ResourceQuotaManager:
             quota.reserved += amount
             quota.updated_at = utc_now()
 
-            # Create allocation
+            # Create allocation.
+            #
+            # ``quota_id`` must point at the quota that was actually charged:
+            # ``_find_parent_quota`` above may have returned a quota living in a
+            # PARENT scope. Using the requested scope's key here produced an id
+            # that no quota answers to, so commit()/release() could never resolve
+            # it and the parent quota's ``reserved`` leaked forever.
             allocation = Allocation(
                 id=str(uuid.uuid4())[:8],
-                quota_id=self._quota_key(scope, owner, resource_type),
+                quota_id=self._quota_key(quota.scope, quota.owner, quota.resource_type),
                 amount=amount,
                 owner=owner,
                 purpose=purpose,
@@ -298,6 +308,11 @@ class ResourceQuotaManager:
             if not quota:
                 return False
 
+            # Explicit idempotency: an already-committed allocation must not
+            # charge ``used`` a second time.
+            if allocation.committed:
+                return False
+
             # Move from reserved to used
             if quota.reserved < allocation.amount:
                 return False
@@ -305,6 +320,7 @@ class ResourceQuotaManager:
             quota.reserved -= allocation.amount
             quota.used += allocation.amount
             quota.updated_at = utc_now()
+            allocation.committed = True
 
             return True
 
@@ -361,7 +377,16 @@ class ResourceQuotaManager:
         owner: str,
         allocation_id: Optional[str] = None
     ) -> bool:
-        """Release resources back to quota."""
+        """Release resources back to quota.
+
+        With an ``allocation_id`` the capacity must be returned from whichever
+        bucket actually holds it: ``allocate`` puts it in ``reserved`` and only
+        ``commit`` moves it to ``used``. The old code always decremented
+        ``used``, so releasing an un-committed reservation changed nothing --
+        yet it still returned ``True``, silently reporting a release that never
+        happened and leaking ``reserved`` forever. A release that frees nothing
+        now reports ``False`` so callers can tell the difference.
+        """
         with self._lock:
             if allocation_id:
                 allocation = self._allocations.get(allocation_id)
@@ -372,9 +397,17 @@ class ResourceQuotaManager:
                 if not quota:
                     return False
 
-                # Release from used
-                release_amount = min(amount, quota.used)
-                quota.used -= release_amount
+                # Release from the bucket that actually holds the capacity.
+                if allocation.committed:
+                    release_amount = min(amount, quota.used)
+                    if release_amount <= 0:
+                        return False
+                    quota.used -= release_amount
+                else:
+                    release_amount = min(amount, quota.reserved)
+                    if release_amount <= 0:
+                        return False
+                    quota.reserved -= release_amount
                 quota.updated_at = utc_now()
 
                 # Remove allocation if fully released
@@ -391,6 +424,10 @@ class ResourceQuotaManager:
                 return False
 
             release_amount = min(amount, quota.used)
+            if release_amount <= 0:
+                # Nothing to release: report it honestly rather than dressing a
+                # no-op up as success.
+                return False
             quota.used -= release_amount
             quota.updated_at = utc_now()
 

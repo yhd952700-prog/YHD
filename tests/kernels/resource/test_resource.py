@@ -138,3 +138,74 @@ class TestUsage:
         assert s["total_quotas"] == 6
         assert "token" in s["by_type"]
         assert s["violations"] == 0
+
+
+# =====================================================================
+# Regression: parent-scope fallback + un-committed reservation release
+# =====================================================================
+
+class TestParentScopeAndReleaseRegression:
+    """Regression for two bookkeeping defects in ResourceQuotaManager.
+
+    D2 -- when ``allocate`` fell back to a parent-scope quota it still recorded
+    the *requested* scope's key on the Allocation, so ``commit`` / ``release``
+    could never resolve the quota and the parent's ``reserved`` leaked forever.
+
+    D3 -- ``release`` always decremented ``used`` even though an un-committed
+    reservation lives in ``reserved``; it therefore freed nothing while still
+    returning True.
+    """
+
+    def test_parent_scope_allocation_is_committable(self, mgr):
+        # No quota at L5 -- only a parent (L6) quota exists.
+        mgr.create_quota(ResourceScope.L6, "a", ResourceType.TOKEN, 100)
+        alloc = mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L5, "a")
+        assert alloc is not None
+        assert mgr.commit(alloc.id) is True
+        parent = mgr.get_quota(ResourceScope.L6, "a", ResourceType.TOKEN)
+        assert parent.used == 40
+        assert parent.reserved == 0
+
+    def test_parent_scope_allocation_is_releasable(self, mgr):
+        mgr.create_quota(ResourceScope.L6, "a", ResourceType.TOKEN, 100)
+        alloc = mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L5, "a")
+        assert mgr.release(
+            ResourceType.TOKEN, 40, ResourceScope.L5, "a", allocation_id=alloc.id
+        ) is True
+        parent = mgr.get_quota(ResourceScope.L6, "a", ResourceType.TOKEN)
+        assert parent.reserved == 0
+        assert parent.used == 0
+
+    def test_release_uncommitted_reservation_returns_reserved(self, mgr):
+        mgr.create_quota(ResourceScope.L3, "a", ResourceType.TOKEN, 100)
+        alloc = mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L3, "a")
+        quota = mgr.get_quota(ResourceScope.L3, "a", ResourceType.TOKEN)
+        assert quota.reserved == 40
+        assert mgr.release(
+            ResourceType.TOKEN, 40, ResourceScope.L3, "a", allocation_id=alloc.id
+        ) is True
+        assert quota.reserved == 0
+        assert quota.used == 0
+        assert mgr.get_allocation(alloc.id) is None
+
+    def test_release_that_frees_nothing_reports_failure(self, mgr):
+        mgr.create_quota(ResourceScope.L3, "a", ResourceType.TOKEN, 100)
+        alloc = mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L3, "a")
+        assert mgr.release(
+            ResourceType.TOKEN, 0, ResourceScope.L3, "a", allocation_id=alloc.id
+        ) is False
+        # The reservation is untouched -- a no-op must not be reported as done.
+        assert mgr.get_quota(ResourceScope.L3, "a", ResourceType.TOKEN).reserved == 40
+
+    def test_double_commit_does_not_double_charge(self, mgr):
+        mgr.create_quota(ResourceScope.L3, "a", ResourceType.TOKEN, 100)
+        alloc = mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L3, "a")
+        assert mgr.commit(alloc.id) is True
+        # Refill ``reserved`` with an unrelated reservation. Without this, the
+        # pre-fix "reserved < amount" guard would already veto the repeat commit
+        # for the wrong reason; refilling makes the explicit committed-flag
+        # check the only thing standing between us and a double charge.
+        assert mgr.allocate(ResourceType.TOKEN, 40, ResourceScope.L3, "a") is not None
+        assert mgr.commit(alloc.id) is False
+        assert mgr.get_quota(ResourceScope.L3, "a", ResourceType.TOKEN).used == 40
+        assert mgr.get_quota(ResourceScope.L3, "a", ResourceType.TOKEN).reserved == 40
