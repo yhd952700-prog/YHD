@@ -171,9 +171,9 @@ def _exercise_hot_paths() -> Tuple[List[str], int]:
         get_network_bus()
 
     def _memory():
-        from src.kernels.memory import get_tier_manager
+        from src.kernels.memory import get_memory_kernel
 
-        get_tier_manager()
+        get_memory_kernel()
 
     probe("capability.bootstrap", _cap)
     probe("execution.kernel", _exec)

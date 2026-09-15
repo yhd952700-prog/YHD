@@ -1,7 +1,10 @@
 """Memory Kernel — Multi-tier + scoping
 
 The Memory Kernel provides multi-tier memory storage with L0-L7 scope filtering
-and complete CRUD operations for context augmentation and state persistence.
+and CRUD-style access (store / recall / scope-filter / stats) for context
+augmentation and state persistence. There is deliberately no single-entry
+update/delete: mutating stored state is done via ``compress`` (which deletes the
+entries it consolidates) or ``clear`` (which wipes the store).
 
 依据 Definition Lock §112: Memory Kernel 必须能够
 - store(data, scope, tags, ttl)
@@ -145,82 +148,15 @@ def _tier_ttl(tier: MemoryTier) -> timedelta:
     }[tier]
 
 
-class MemoryTierManager:
-    """Manages memory tier lifecycle and TTL enforcement."""
-
-    _instance: Optional['MemoryTierManager'] = None
-    _lock = threading.Lock()
-
-    def __new__(cls) -> 'MemoryTierManager':
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._initialized = False
-            return cls._instance
-
-    def __init__(self) -> None:
-        if self._initialized:
-            return
-        self._short_term: Dict[str, MemoryEntry] = {}
-        self._mid_term: Dict[str, MemoryEntry] = {}
-        self._long_term: Dict[str, MemoryEntry] = {}
-        self._persistent: Dict[str, MemoryEntry] = {}
-        self._lock = threading.RLock()
-        self._initialized = True
-
-    def _evict_tier(self, tier_dict: Dict[str, MemoryEntry],
-                    tier_name: str, max_age: timedelta) -> List[str]:
-        """Evict entries exceeding max age from a tier."""
-        now = utc_now()
-        evicted = []
-        keys_to_remove = []
-
-        for key, entry in tier_dict.items():
-            if entry.expires_at and entry.expires_at <= now:
-                keys_to_remove.append(key)
-                evicted.append(key)
-
-        for key in keys_to_remove:
-            tier_dict.pop(key, None)
-
-        return evicted
-
-    @kernel_action("memory.auto_cleanup")
-    def auto_cleanup(self) -> Dict[str, int]:
-        """Auto-cleanup expired entries across all tiers."""
-        utc_now()
-        results = {}
-
-        # Short-term: < 5 minutes
-        results['short_term'] = len(self._evict_tier(self._short_term, 'short_term', timedelta(minutes=5)))
-
-        # Mid-term: 5 min - 24 hours
-        results['mid_term'] = len(self._evict_tier(self._mid_term, 'mid_term', timedelta(hours=1)))
-
-        # Long-term: 1 day - 30 days
-        results['long_term'] = len(self._evict_tier(self._long_term, 'long_term', timedelta(days=1)))
-
-        # Persistent: > 30 days (manual review only)
-        # No automatic eviction for persistent
-
-        return results
-
-
-# Global tier manager
-_tier_manager: Optional[MemoryTierManager] = None
-
-
-def get_tier_manager() -> MemoryTierManager:
-    """Get the global tier manager instance."""
-    global _tier_manager
-    if _tier_manager is None:
-        _tier_manager = MemoryTierManager()
-    return _tier_manager
-
-
 def auto_cleanup() -> Dict[str, int]:
-    """Auto-cleanup expired memory entries."""
-    return get_tier_manager().auto_cleanup()
+    """Evict expired entries from the canonical memory kernel.
+
+    Delegates to ``MemoryKernel.auto_cleanup``. The previous module-level
+    implementation routed through a ``MemoryTierManager`` singleton whose
+    per-tier dicts nothing ever populated, so it returned all-zero forever and
+    left every expired row in place -- a silent no-op reported as success.
+    """
+    return get_memory_kernel().auto_cleanup()
 
 
 def _entry_to_row(entry: MemoryEntry, key_hash: str) -> Dict[str, Any]:
@@ -318,7 +254,11 @@ class MemoryKernel:
             elif tier == MemoryTier.LONG_TERM:
                 expires_at = utc_now() + timedelta(days=1)
             elif tier == MemoryTier.PERSISTENT:
-                expires_at = utc_now() + timedelta(days=30)
+                # PERSISTENT is defined as "> 30 days" (see MemoryTier). A
+                # 30-day expiry would delete it exactly at that boundary and
+                # make the *most* durable tier the first to vanish, so
+                # persistent memory carries no automatic expiry.
+                expires_at = None
 
             entry = MemoryEntry(
                 id=str(uuid.uuid4())[:8],
@@ -356,8 +296,12 @@ class MemoryKernel:
         This makes same-key entries stored in different tiers independently
         recallable (the previous ``key_hash`` computation here was dead
         code that never filtered by tier).
+
+        Expired entries (``expires_at <= now``) are never returned: a ``ttl``
+        is enforced on read, not merely by an explicit ``auto_cleanup``.
         """
         with self._lock:
+            now = utc_now()
             # Normalize tier_filter into a set of admissible tiers (or None).
             allowed_tiers: Optional[Set[MemoryTier]] = None
             if tier_filter is not None:
@@ -369,6 +313,8 @@ class MemoryKernel:
             candidates: List[MemoryEntry] = []
             for entry in self._entries.values():
                 if entry.key != key:
+                    continue
+                if entry.expires_at is not None and entry.expires_at <= now:
                     continue
                 if allowed_tiers is not None and entry.tier not in allowed_tiers:
                     continue
@@ -429,26 +375,35 @@ class MemoryKernel:
         min_age: Optional[timedelta] = None,
         max_age: Optional[timedelta] = None
     ) -> List[MemoryEntry]:
-        """Filter memory entries by scope and optional criteria."""
+        """Filter memory entries by scope and optional criteria.
+
+        *min_age* keeps entries **at least** that old; *max_age* keeps entries
+        **at most** that old. (Those two comparisons used to run the wrong way
+        round -- ``min_age`` returned only entries *younger* than the bound and
+        ``max_age`` only *older* ones, the exact inverse of the names.) Expired
+        entries are excluded, consistent with ``recall``.
+        """
         with self._lock:
+            now = utc_now()
             scope_order = {s: i for i, s in enumerate(MemoryScope)}
             min_idx = scope_order[query_scope]
 
             results = [
                 entry for entry in self._entries.values()
                 if scope_order[entry.scope] >= min_idx
+                and (entry.expires_at is None or entry.expires_at > now)
             ]
 
             if max_access_count is not None:
                 results = [e for e in results if e.access_count <= max_access_count]
 
             if min_age is not None:
-                now = utc_now()
-                results = [e for e in results if e.created_at and e.created_at >= now - min_age]
+                # "at least this old": created at or before now - min_age.
+                results = [e for e in results if e.created_at and e.created_at <= now - min_age]
 
             if max_age is not None:
-                now = utc_now()
-                results = [e for e in results if e.created_at and e.created_at < now - max_age]
+                # "at most this old": created at or after now - max_age.
+                results = [e for e in results if e.created_at and e.created_at >= now - max_age]
 
             return sorted(results, key=lambda e: e.created_at, reverse=True)
 
@@ -565,6 +520,28 @@ class MemoryKernel:
                 source_count=len(source_ids),
                 value=value,
             )
+
+    @kernel_action("memory.auto_cleanup")
+    def auto_cleanup(self) -> Dict[str, int]:
+        """Evict expired entries from every tier (memory and persistence).
+
+        Walks the same ``_entries`` that ``store``/``recall`` use and deletes
+        the matching persisted rows, so the returned per-tier counts are rows
+        that are actually gone. ``PERSISTENT`` entries carry no expiry (see
+        ``store``) and so are never evicted here.
+        """
+        with self._lock:
+            now = utc_now()
+            per_tier: Dict[str, int] = {t.value: 0 for t in MemoryTier}
+            dead: List[str] = []
+            for key_hash, entry in self._entries.items():
+                if entry.expires_at is not None and entry.expires_at <= now:
+                    dead.append(key_hash)
+                    per_tier[entry.tier.value] += 1
+            for key_hash in dead:
+                self._entries.pop(key_hash, None)
+                self._store.delete(key_hash)
+            return per_tier
 
     def clear(self) -> None:
         """清空所有记忆条目（内存 + 持久化后端）。

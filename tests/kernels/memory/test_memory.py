@@ -143,3 +143,90 @@ class TestDefects:
         e = mk.recall("k", tier_filter=[MemoryTier.LONG_TERM])
         # Required: tier filter should return only the LONG_TERM entry.
         assert e.tier is MemoryTier.LONG_TERM
+
+
+# =====================================================================
+# TTL enforcement (kernel-spec/memory.md §8 failure-path test 1)
+# =====================================================================
+
+class TestTtlEnforcement:
+    def test_recall_returns_none_for_expired_entry(self, mk):
+        # store with an already-elapsed ttl: recall must not hand it back.
+        mk.store("k", "v", ttl=timedelta(seconds=-5))
+        assert mk.recall("k") is None
+
+    def test_recall_still_returns_live_entry(self, mk):
+        mk.store("k", "v", ttl=timedelta(minutes=5))
+        assert mk.recall("k") is not None
+
+    def test_expiry_is_enforced_before_any_cleanup(self, mk):
+        # Nothing sweeps here: TTL must hold on read, not only via auto_cleanup.
+        mk.store("k", "v", ttl=timedelta(seconds=-1))
+        assert mk.stats()["total_entries"] == 1  # still stored ...
+        assert mk.recall("k") is None            # ... but not recallable
+
+    def test_scope_filter_excludes_expired(self, mk):
+        mk.store("live", "v", ttl=timedelta(minutes=5))
+        mk.store("dead", "v", ttl=timedelta(seconds=-5))
+        assert {e.key for e in mk.scope_filter(MemoryScope.L0)} == {"live"}
+
+    def test_persistent_tier_never_auto_expires(self, mk):
+        # PERSISTENT means "> 30 days"; a 30-day expiry would contradict it.
+        e = mk.store("k", "v", tier=MemoryTier.PERSISTENT)
+        assert e.expires_at is None
+        assert mk.recall("k") is not None
+
+
+# =====================================================================
+# scope_filter age semantics
+# =====================================================================
+
+class TestScopeFilterAge:
+    def test_min_age_keeps_entries_at_least_that_old(self, mk):
+        old = mk.store("old", "v")
+        old.created_at = utc_now() - timedelta(days=10)
+        mk.store("fresh", "v")
+        res = mk.scope_filter(MemoryScope.L0, min_age=timedelta(days=1))
+        assert {e.key for e in res} == {"old"}
+
+    def test_max_age_keeps_entries_at_most_that_old(self, mk):
+        old = mk.store("old", "v")
+        old.created_at = utc_now() - timedelta(days=10)
+        mk.store("fresh", "v")
+        res = mk.scope_filter(MemoryScope.L0, max_age=timedelta(days=1))
+        assert {e.key for e in res} == {"fresh"}
+
+
+# =====================================================================
+# auto_cleanup is real (kernel-spec/memory.md §9: dead tier manager removed)
+# =====================================================================
+
+class TestAutoCleanup:
+    def test_auto_cleanup_evicts_expired_from_memory_and_store(self, mk):
+        mk.store("live", "v", ttl=timedelta(minutes=5))
+        mk.store("dead", "v", ttl=timedelta(seconds=-5))
+        result = mk.auto_cleanup()
+        assert result.get("mid_term", 0) == 1
+        assert mk.stats()["total_entries"] == 1
+        # The persisted row is gone too, not just the in-memory copy.
+        assert mk._store.count() == 1
+
+    def test_auto_cleanup_reports_zero_when_nothing_expired(self, mk):
+        mk.store("live", "v", ttl=timedelta(minutes=5))
+        assert sum(mk.auto_cleanup().values()) == 0
+        assert mk.stats()["total_entries"] == 1
+
+    def test_auto_cleanup_leaves_persistent_entries(self, mk):
+        mk.store("p", "v", tier=MemoryTier.PERSISTENT)
+        assert mk.auto_cleanup().get("persistent", 0) == 0
+        assert mk.recall("p") is not None
+
+
+class TestDeadCodeRemoval:
+    def test_dead_tier_manager_symbols_are_gone(self):
+        # Guards against re-introducing the disconnected MemoryTierManager
+        # facade that made auto_cleanup a silent no-op.
+        import src.kernels.memory as memory_module
+
+        assert not hasattr(memory_module, "MemoryTierManager")
+        assert not hasattr(memory_module, "get_tier_manager")

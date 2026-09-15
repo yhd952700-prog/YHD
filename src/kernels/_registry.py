@@ -75,8 +75,8 @@ def _read_private(module: Any, varname: str) -> Any:
 
 
 # 12 个惰性单例：协定的私有全局变量名（实测核实）。
-# 注意 ``memory`` 模块里还有一个 ``_tier_manager``，但规范单例是 ``_global_kernel``，
-# 这里只读后者。
+# （memory 模块原先另有一个 ``_tier_manager`` 死单例，已随 kernel-spec/memory.md
+# §9 的整改于 2026-09-15 移除；规范单例是 ``_global_kernel``，这里只读后者。）
 _PRIVATE_VAR = {
     "audit": ("_audit_store",),
     "capability": ("_global_registry",),

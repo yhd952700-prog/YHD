@@ -7,7 +7,8 @@
 > - **进程级入口**：`get_memory_kernel()`（`src/kernels/memory/__init__.py:599`，构造后立刻 `initialize()`）。
 > - **生命周期判定：已实现**。本类具备 `lifecycle` 状态与四个生命周期方法（存在即 READY）。
 >   - **是否自动驱动**：**是**——进程级惰性单例，首次使用时构造并立即 `initialize()`（存在即 READY）；但 `shutdown`/`pause`/`resume` 无任何后台驱动方，仅由显式调用者触发。
-> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；`recall` 不强制 TTL 过期；无 backend 抽象（硬绑 SQLite）；`MemoryTierManager`/`get_tier_manager` 为死代码；`correlation_id` 为本地 uuid 不真连事件总线。
+> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；无 backend 抽象（硬绑 SQLite）；`correlation_id` 为本地 uuid 不真连事件总线。
+> - **已于 2026-09-15 整改（实测）**：① `recall`/`scope_filter` 现**强制 TTL 过期**——过期条目不再被召回；② 死单例 `MemoryTierManager`/`get_tier_manager` **已删除**，`MemoryKernel.auto_cleanup()` 改为遍历真实 `_entries` 并删除对应落盘行（此前 `auto_cleanup` 操作的是永不被填充的并行 dict，恒返回全 0 且一条不清，属静默谎报成功）；③ `PERSISTENT` 层不再带 30 天过期（该层定义为「> 30 days」，30 天过期会与之矛盾）；④ `scope_filter` 的 `min_age`/`max_age` 语义已按名字校正（此前二者互换）。
 >
 > **性质提示**：本规范整体是「目标态契约 + 已核对现状」，不是「现状规范」。已核对的现状以上述行号为准；未标注的段落（尤其是 §9 的缺口清单）以代码为准，待实测后修订。
 >
@@ -28,9 +29,9 @@ Memory Kernel 是 Human-Sovereign Agent OS 的**多层（L0–L7）记忆存储�
 - 层级晋升压缩：将快变 tier 的多条 `MemoryEntry` 打包/语义摘要为慢变 tier 单条（`compress`，`__init__.py:420`），被合并源 id 记录为 `provenance.consolidated_from`（`__init__.py:482`）形成溯源链。
 
 **差距（现状，基于代码实测，非引用外部审计文档）**：
-- TTL 在 `recall` 时**不强制**：`recall`（`__init__.py:314-359`）不过滤 `expires_at`；唯一清理 `_evict_tier` 仅由 `auto_cleanup`（`__init__.py:165`）触发，而运行时无调度 → 过期条目被无限召回。
+- ~~TTL 在 `recall` 时**不强制**~~ —— **已整改（2026-09-15）**：`recall` 与 `scope_filter` 均过滤 `expires_at <= now` 的条目；`MemoryKernel.auto_cleanup()` 现真实清理内存与落盘。
 - **无 backend 抽象**：单硬绑定 SQLite，不可插拔（Mem0 / 内存 / PostgreSQL 均不可换）。
-- 死单例 `MemoryTierManager`（`__init__.py:124-199`）从未被 `MemoryKernel` 使用（后者用自身 `self._entries`，`__init__.py:252`）。
+- ~~死单例 `MemoryTierManager`~~ —— **已删除（2026-09-15）**：该类从未被 `MemoryKernel` 使用（后者用自身 `self._entries`），其 `auto_cleanup` 让「清理」恒为空操作；现由 `MemoryKernel.auto_cleanup()` 承担。
 - 事件关联是假的：`correlation_id` 为本地 `uuid.uuid4()[:8]`（`__init__.py:59`），memory 不 import event kernel，审计只靠 `@kernel_action` 装饰器。
 - scope 语义是地板非天花板（`_scope_matches`，`__init__.py:361-364`）。
 
@@ -67,8 +68,8 @@ Memory Kernel 是 Human-Sovereign Agent OS 的**多层（L0–L7）记忆存储�
 - **缺失**：`store`/`recall` 在 READY 前调用应抛 `KernelNotInitializedError`；当前是否在各方法入口做 `lifecycle` 校验需以代码实测确认（类已具备 `lifecycle` 字段与方法）。
 - **配置错误**：`MemoryStore` 建表失败、`MEMORY_DB_PATH` 不可写 → 应抛 `KernelConfigurationError`（当前仅裸 `sqlite3.Error`，store.py:53）。
 - **权限越界**：scope 地板语义（`_scope_matches`，`__init__.py:361`）应上升为 `KernelPermissionError` 当越权召回被尝试。
-- **当前错误点**：`recall` 不过滤 `expires_at` → 属**静默谎报可用**；`_load_persisted` 吞掉坏条目异常（`__init__.py:267`）应改为 `KernelError` 上报告警。
-- `MemoryTierManager`/`get_tier_manager`（`__init__.py:189`）为死路径，其异常不应扩散到 `MemoryKernel`。
+- **已整改（2026-09-15）**：~~`recall` 不过滤 `expires_at` → 属**静默谎报可用**~~ —— `recall`/`scope_filter` 现已强制 TTL；`MemoryKernel.auto_cleanup()` 真清理。遗留：`_load_persisted` 仍吞掉坏条目异常（`__init__.py:267`），应改为 `KernelError` 上报告警。
+- ~~`MemoryTierManager`/`get_tier_manager`（`__init__.py:189`）为死路径~~ —— **已删除（2026-09-15）**，其异常扩散面随之消失。
 
 ## 7. 权限边界（现状已核对）
 
@@ -93,8 +94,8 @@ Memory Kernel 是 Human-Sovereign Agent OS 的**多层（L0–L7）记忆存储�
 
 以下条目为**目标态契约**，并非全部已在 HEAD 实测确认；落地前须以当前代码重新核实，不可照抄：
 
-- `recall` 应强制 TTL 过期，而非无限召回过期条目。
+- ✅ **已完成（2026-09-15）**：`recall` 已强制 TTL 过期，不再无限召回过期条目（回归测试 `TestTtlEnforcement`；该条为 §8 失败路径测试 1）。
 - 应引入 `MemoryBackend` 抽象，使 SQLite / 内存 / PostgreSQL 可插拔，并收敛与 `src/knowledge/memory.py` 的双实现。
 - `pause()/resume()` 当前仅置位 `lifecycle`，应真正拒绝 PAUSED 态的 `store`/`recall`。
 - `shutdown()` 应关闭 SQLite 连接而非仅清数据；READY 前的方法调用应统一抛 `KernelNotInitializedError`。
-- 移除死代码 `MemoryTierManager`/`get_tier_manager`；使 `correlation_id` 真正连入事件总线以实现审计追踪。
+- ✅ **部分完成（2026-09-15）**：已移除死代码 `MemoryTierManager`/`get_tier_manager`（回归测试 `TestDeadCodeRemoval`）。仍待办：使 `correlation_id` 真正连入事件总线以实现审计追踪。
