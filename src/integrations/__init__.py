@@ -8,7 +8,9 @@ The actual S2 implementation lives in ``src/knowledge`` (models / service /
 translation); this package is a thin facade that re-exports those symbols so
 callers can import the platform-intelligence types from ``src.integrations``.
 The legacy ORM/cloud integration layer (cloud_models) was superseded by this
-refactor and is recorded as an acknowledged orphan in orphan-registry.yaml.
+refactor and deleted on 2026-09-15; the decision is recorded as a history note
+in orphan-registry.yaml. The live SQLAlchemy Base/SessionManager stays in the
+sibling orm_models.py module.
 """
 
 from src.knowledge.models import (

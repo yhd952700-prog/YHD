@@ -53,7 +53,7 @@
 2. **当前工作树无法导入安全包**
    `import src.security` 触发 `src/security/__init__.py` → `vault_crypto` →
    `src.integrations.vault.client` → `import src.integrations.models`，
-   而 `src/integrations/models.py` **不存在**（仅有 `cloud_models.py` / `orm_models.py` / `storage.py` / `vault/`）→ `ModuleNotFoundError`。
+   而 `src/integrations/models.py` **不存在**（仅有 `orm_models.py` / `storage.py` / `vault/`）→ `ModuleNotFoundError`。
    后果：当前进程内无法签发/校验令牌（影响 `issue_console_token.py` 等工具）。
 3. **运行态与源码不一致（关键）**
    运行中的网关（1Fxq5U）挂载了全部路由且能对 `/v1/chat` 做真实鉴权，
