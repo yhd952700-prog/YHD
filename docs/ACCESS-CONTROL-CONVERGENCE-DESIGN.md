@@ -156,10 +156,15 @@ B 是 *action* 的服务白名单。既然它们不是「同一个问题的两�
 
 **2026-09-14 复测新增「已验证」的一节**（此前是推断，现在是实测）：
 
-- ✅ `_adjudicate` 无 principal 入口（读签名 + 全文件搜 policy 判决入口确认无第二处）。
-- ✅ `INTERNAL_SERVICE_ALLOWED_ACTIONS` = 15 条，无 read 类动作（逐条列出核对）。
+- ✅ `_adjudicate(action, risk_level)` 签名无 principal 参数；其内部固定用
+  `{"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}` 作为 actor
+  （`src/kernels/_crosscutting.py:198-237` 已逐行读过）。
+- ✅ `INTERNAL_SERVICE_ALLOWED_ACTIONS` 实测 15 条，无 read 类动作（逐条列出核对）。
 - ✅ A 的 12 条种子权限逐个送 `_adjudicate` 的判决结果（10 deny / 2 allow）。
 - ✅ 用两个不同 principal 跑同一条权限拿到不同结果，证明 A 确实是主体驱动的。
+- ⏳ **独立复核（另一份探针）已派出，报告尚未回到本文档。** 在回到之前，
+  上面四条**只代表本机这一次实测**，不要当成"已被交叉验证"引用。
+  （回执到位后本节会补一行"已复核 + 结论一致/不一致"。）
 
 **仍未验证（保持原样，不含糊）**：
 
