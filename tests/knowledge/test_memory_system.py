@@ -15,10 +15,16 @@ from sqlalchemy.pool import StaticPool
 
 from src.knowledge.db import MemoryModel
 from src.knowledge.memory_system import MemoryService, Memory, MemoryType
-from src.core.errors import PermissionDeniedError, ValidationError, NotFoundError
-from src.identity.models import User
-from src.identity.rbac import Permission, RBACService
-from src.identity.audit import AuditService, AuditAction
+from src.knowledge.contracts import (
+    AuditAction,
+    AuditService,
+    NotFoundError,
+    Permission,
+    PermissionDeniedError,
+    RBACService,
+    User,
+    ValidationError,
+)
 
 
 @pytest_asyncio.fixture

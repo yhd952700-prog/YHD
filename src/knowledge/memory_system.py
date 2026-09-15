@@ -9,10 +9,16 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from ..core.errors import NotFoundError, PermissionDeniedError, ValidationError
-from ..identity.audit import AuditAction, AuditService
-from ..identity.models import User
-from ..identity.rbac import Permission, RBACService
+from .contracts import (
+    AuditAction,
+    AuditService,
+    NotFoundError,
+    Permission,
+    PermissionDeniedError,
+    RBACService,
+    User,
+    ValidationError,
+)
 
 
 class MemoryType(str, Enum):
