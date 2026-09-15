@@ -43,6 +43,13 @@ except ImportError:
         return _decorator
 
 
+# --- Memory System refactor (DB-backed MemoryService) ---
+# Completed 2026-09-15. Kept separate from the Mem0-compatible MemoryManager
+# API above so existing callers (src/ai/*) and tests/test_knowledge_memory.py
+# keep working. Re-exported here for convenience.
+from .memory_system import MemoryService, Memory, MemoryType
+
+
 class MemoryTier(Enum):
     """10-layer memory architecture tiers"""
     WORKING = "working"           # L1: Immediate context (seconds-minutes)
