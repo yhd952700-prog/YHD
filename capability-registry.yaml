@@ -14,6 +14,11 @@
 # 2026-09-07 status 升级：DoD 七维收口后，14 个 kernel 的 status 由
 #   PARTIALLY_IMPLEMENTED 统一改为 IMPLEMENTED；test_coverage 同步为
 #   各 kernel 实测测试数（tests/kernels/<name>/，合计 418 用例）。
+# 2026-09-15 复核（第二批/第三批测试并入后重新实测）：tests/kernels/ 共收集 853 用例
+#   （852 passed / 1 skipped；memory 的 PostgreSQL 后端用例因本机无 PG 服务跳过），
+#   其中 14 个 kernel 子目录合计 741 用例（另 112 为 tests/kernels/ 顶层的跨内核用例）。
+#   上方「合计 418 用例」是 2026-09-07 当时的数字，已被本次实测取代；
+#   下方各 kernel 的 test_coverage 已逐条按 2026-09-15 实测更新。
 capability-registry:
   version: v3.0
   total_capabilities: 14
@@ -51,8 +56,9 @@ capability-registry:
     - src/kernels/context/__init__.py implemented
     - 'Attention mechanisms: UNIFORM, IMPORTANCE, RECENCY, HYBRID'
     - Compression ratio calculation
+    - '2026-09-15 fixes: compressed entries carry the input payload (ContextInput.data); ContextCompression.correlation_ids propagates input correlation ids'
     - Scope-aware filtering L0-L7
-    test_coverage: '14/14 unit tests passing (tests/kernels/context/, 2026-09-07 verified)'
+    test_coverage: '34/34 unit tests passing (tests/kernels/context/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -79,7 +85,7 @@ capability-registry:
     - CapabilityEntry with full metadata, traceability_chain, versioning
     - L0-L7 scope enforcement
     - Built-in 12 kernel capabilities auto-registered
-    test_coverage: '29/29 unit tests passing (tests/kernels/capability/, 2026-09-07 verified)'
+    test_coverage: '29/29 unit tests passing (tests/kernels/capability/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -106,7 +112,8 @@ capability-registry:
     - Event with correlation_id, causation_id, scope, priority, tags
     - Dead letter handling with retry
     - Event history and correlation chain queries
-    test_coverage: '16/16 unit tests passing (tests/kernels/event/, 2026-09-07 verified)'
+    - '2026-09-15 fix: publish() no longer mutates the stored subscription list in place (concatenates type + wildcard subs, de-dups by subscription id) — stops unbounded growth and duplicate delivery'
+    test_coverage: '19/19 unit tests passing (tests/kernels/event/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -134,7 +141,7 @@ capability-registry:
     - Action execution with retries, scope checks, capability invocation
     - Verification with criteria, replan triggers, escalation
     - Checkpoints for rollback
-    test_coverage: '42/42 unit tests passing (tests/kernels/execution/, 2026-09-06 batch-1 fixes applied: EXEC-1 criteria applied, EXEC-2 root cause preserved, EXEC-3 correlation chain)'
+    test_coverage: '54/54 unit tests passing (tests/kernels/execution/, 2026-09-15 verified; batch-1 fixes EXEC-1/2/3 in place)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -160,8 +167,9 @@ capability-registry:
     - ResourceQuotaManager with 6 resource types (CPU, MEM, STORAGE, TOKEN, TIME, COST)
     - Quota allocation, commit, release, parent scope fallback
     - Utilization tracking, availability checking, limit enforcement
+    - '2026-09-15 fixes: parent-scope-fallback allocations record the charged quota key (commit/release can resolve it); release() no longer reports success while freeing nothing (uncommitted reservations release from reserved, not used)'
     - L0-L7 scope awareness
-    test_coverage: '13/13 unit tests passing (tests/kernels/resource/, 2026-09-07 verified)'
+    test_coverage: '18/18 unit tests passing (tests/kernels/resource/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -189,7 +197,7 @@ capability-registry:
     - Scope enforcement (L0-L7), capability requirement, quota enforcement
     - PolicySet for grouped policies
     - '2026-09-06 batch-1 fixes: POL-1/2 right-value context references ($path), POL-3 evaluate_simple agent key, POL-4 type-safe comparisons'
-    test_coverage: '45/45 unit tests passing (tests/kernels/policy/, 2026-09-06 Sprint2 落地 P10/POL-5 后全绿)'
+    test_coverage: '180/180 unit tests passing (tests/kernels/policy/, 2026-09-15 verified; batch-1 fixes POL-1..5 + P10 in place)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -216,7 +224,7 @@ capability-registry:
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
-    test_coverage: '16/16 unit tests passing (tests/kernels/network/, 2026-09-07 verified)'
+    test_coverage: '20/20 unit tests passing (tests/kernels/network/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -243,7 +251,7 @@ capability-registry:
     - TrustScore with levels (UNTRUSTED to VERY_HIGH), confidence
     - TrustChain with multiplicative propagation and decay
     - Trust evaluation for access decisions
-    test_coverage: '48/48 unit tests passing (tests/kernels/trust/, 2026-09-07 verified)'
+    test_coverage: '57/57 unit tests passing (tests/kernels/trust/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -270,7 +278,7 @@ capability-registry:
     - Feedback generation (POSITIVE/CORRECTIVE/WARNING/CRITICAL)
     - Replan triggers, escalation, human checkpoints
     - FeedbackEntry, ReplanRequest tracking
-    test_coverage: '29/29 unit tests passing (tests/kernels/evaluation/, 2026-09-07 verified)'
+    test_coverage: '29/29 unit tests passing (tests/kernels/evaluation/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -292,8 +300,8 @@ capability-registry:
     - UB-A1
     - Phase 0+1
     evidence:
-    - src/identity/ directory exists with core modules
-    test_coverage: '34/34 unit tests passing (tests/kernels/identity/, 2026-09-07 verified)'
+    - src/kernels/identity/__init__.py implemented
+    test_coverage: '83/83 unit tests passing (tests/kernels/identity/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -315,8 +323,9 @@ capability-registry:
     - UB-A1
     - Phase 0+1
     evidence:
-    - src/knowledge/memory.py exists
-    test_coverage: '37/37 unit tests passing (tests/kernels/memory/, 2026-09-07 verified)'
+    - src/kernels/memory/__init__.py implemented
+    - '2026-09-15 fixes: TTL enforced on read; real MemoryKernel.auto_cleanup (dead MemoryTierManager removed); PERSISTENT no longer carries a 30-day expiry; scope_filter min_age/max_age semantics corrected'
+    test_coverage: '96/97 unit tests passing (1 skipped: no local PostgreSQL; tests/kernels/memory/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -342,8 +351,9 @@ capability-registry:
     - SecurityEngine with RBAC rules, ABAC attribute conditions, combined access decisions
     - Audit log for every check/grant/revoke with scope and correlation id
     - Human sovereignty override with dedicated audit entries
+    - '2026-09-15: the 12 seeded colon permissions were cut after measuring zero production call sites; the kernel now grants no colon permission, research:read kept for registry visibility only (unseeded, fail-closed)'
     - '2026-09-06 batch-1 fixes: SEC-1 unified permission keys, SEC-2 decision reasoning, SEC-3 human override, SEC-4 stats keys, SEC-5 unconstrained-ABAC allow, SEC-7 missing-attribute fail-closed'
-    test_coverage: '49/49 unit tests passing (tests/kernels/security/, 2026-09-06 Sprint2 落地 S3/S4 后全绿)'
+    test_coverage: '72/72 unit tests passing (tests/kernels/security/, 2026-09-15 verified; batch-1 fixes SEC-1..7 + S3/S4 in place)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -370,7 +380,7 @@ capability-registry:
     - 'verify_integrity: chain linkage + sequence continuity + content re-hash + tail-truncation detection via chain_state anchor'
     - Correlation-aware querying (correlation_id filter) with deterministic seq ordering
     - '2026-09-06 batch-1 fixes: AUD-1 content tampering detection, AUD-2 truncation detection, AUD-3 correlation query, AUD-4 reverse-order SQL'
-    test_coverage: 31/31 unit tests passing (tests/kernels/audit/, 2026-09-06)
+    test_coverage: 31/31 unit tests passing (tests/kernels/audit/, 2026-09-15 verified)
     implementation_completeness:
       code_exists: true
       executable: true
@@ -392,8 +402,9 @@ capability-registry:
     - UB-A1
     - Phase 2 Wave 2
     evidence:
-    - src/kernels/plugin/__init__.py exists (447 lines per KERNEL-CANON)
-    test_coverage: '15/15 unit tests passing (tests/kernels/plugin/, 2026-09-07 verified)'
+    - src/kernels/plugin/__init__.py implemented (513 lines, 2026-09-15)
+    - '2026-09-15 fixes: PEP 440 version comparison for min_version/max_version; import-time eager PluginRegistry() removed (no more cwd ./plugins side effect on import)'
+    test_coverage: '18/18 unit tests passing (tests/kernels/plugin/, 2026-09-15 verified)'
     implementation_completeness:
       code_exists: true
       executable: true
@@ -563,7 +574,7 @@ capability-registry:
     impact: 已消除。默认配置下上下文压缩产出非空可用上下文。
     evidence: >-
       tests/kernels/context/test_context_retention.py::test_retained_nonempty_for_all_mechanisms
-      （对每个机制断言保留集非空）；同目录 test_context.py 全绿（28 passed）。
+      （对每个机制断言保留集非空）；同目录 test_context.py 全绿（34 passed，2026-09-15）。
     status: RESOLVED
   - id: OPEN-002
     title: src/adapters/ 运行时不生效
