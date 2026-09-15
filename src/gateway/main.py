@@ -134,12 +134,73 @@ async def lifespan(app: FastAPI):
     # /v1/ready = 真实依赖检查（子系统不健康时如实返回 503 + errors）。
     # 实测健康状态下二者行为与旧实现一致（ready / 200），差别只在真出问题时。
 
+    # Drive the 14-kernel lifecycle protocol into the real runtime.
+    #
+    # This is the missing driver: ``src.kernels._registry.initialize_all()`` /
+    # ``shutdown_all()`` existed but were NEVER called anywhere in src/ or
+    # scripts/ (verified by grep). Without this, every kernel's ``lifecycle``
+    # flag stays at UNINITIALIZED forever while the kernel is actually serving
+    # requests -- a lying indicator light. Now the runtime genuinely drives it.
+    #
+    # ``initialize_all()`` only touches instances that *already exist* (it never
+    # creates one -- the registry's hard constraint). At cold start only the
+    # singletons materialized above (e.g. identity) are present, so it drives
+    # those to READY and honestly reports the rest as skipped_not_present /
+    # no_canonical_instance. Per-kernel failures are recorded (never swallowed)
+    # and surfaced below loudly.
+    from ..kernels._registry import initialize_all, shutdown_all
+
+    _init_report = initialize_all()
+    _init_initialized = _init_report.get("initialized", [])
+    _init_skipped = _init_report.get("skipped_not_present", [])
+    _init_no_canonical = _init_report.get("no_canonical_instance", [])
+    _init_errors = _init_report.get("errors", [])
+    if _init_errors:
+        # 失败必须响：绝不静默吞异常（这是本项目反复出现的失败模式）。
+        logger.error(
+            "KERNEL LIFECYCLE INIT DEGRADED -- %d kernel(s) failed to "
+            "initialize: %s",
+            len(_init_errors),
+            _init_errors,
+        )
+    logger.info(
+        "Kernel lifecycle: initialized=%s, skipped_not_present=%s, "
+        "no_canonical_instance=%s, errors=%d",
+        _init_initialized, _init_skipped, _init_no_canonical, len(_init_errors),
+    )
+    if _init_errors:
+        # 明确上报降级：启动仍可继续，但把"部分内核未就绪"这个事实高亮出来，
+        # 绝不假装一切正常。运维 / 主权主体可在 /v1/kernels 看到真实状态。
+        logger.warning(
+            "Gateway started in DEGRADED kernel lifecycle state: %d kernel(s) "
+            "did not reach READY. See KERNEL LIFECYCLE INIT DEGRADED above.",
+            len(_init_errors),
+        )
+
     logger.info("Gateway startup complete")
 
     yield  # App runs here
 
     # Shutdown
     logger.info("Shutting down LiuHao AI OS Gateway...")
+    _shutdown_report = shutdown_all()
+    _shutdown_down = _shutdown_report.get("shutdown", [])
+    _shutdown_errors = _shutdown_report.get("errors", [])
+    if _shutdown_errors:
+        logger.error(
+            "KERNEL LIFECYCLE SHUTDOWN DEGRADED -- %d kernel(s) failed to "
+            "shut down cleanly: %s",
+            len(_shutdown_errors),
+            _shutdown_errors,
+        )
+    logger.info(
+        "Kernel lifecycle: shutdown=%s, skipped_not_present=%s, "
+        "no_canonical_instance=%s, errors=%d",
+        _shutdown_down,
+        _shutdown_report.get("skipped_not_present", []),
+        _shutdown_report.get("no_canonical_instance", []),
+        len(_shutdown_errors),
+    )
     logger.info("Gateway shutdown complete")
 
 

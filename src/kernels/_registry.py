@@ -322,6 +322,78 @@ def shutdown_all() -> Dict[str, Any]:
     }
 
 
+def pause_all() -> Dict[str, Any]:
+    """对称地 ``pause()`` 已存在的实例（不创建任何实例）。
+
+    与 ``initialize_all()`` / ``shutdown_all()`` 同一套约定：只对已存在实例操作，
+    实例不存在则记为 ``skipped_not_present`` / ``no_canonical_instance``，驱动异常
+    如实记入 ``errors``，不静默吞掉。
+
+    注意：``pause()`` 的合法前置是 READY 或 UNINITIALIZED；对 PAUSED / STOPPED /
+    其它状态调用会抛 ``KernelStateError``，这类非法转换会被如实记录到 ``errors``
+    而不是被吞掉或伪造成 PAUSED。
+    """
+    paused: List[str] = []
+    skipped_not_present: List[str] = []
+    no_canonical: List[str] = []
+    errors: List[Dict[str, str]] = []
+
+    for entry in KERNEL_ENTRIES:
+        inst = entry.accessor()  # 不创建
+        if inst is None:
+            if entry.reason:
+                no_canonical.append(entry.name)
+            else:
+                skipped_not_present.append(entry.name)
+            continue
+        try:
+            inst.pause()
+            paused.append(entry.name)
+        except Exception as exc:  # 如实记录（含非法转换的 KernelStateError），不静默
+            errors.append({"name": entry.name, "error": str(exc)})
+
+    return {
+        "paused": paused,
+        "skipped_not_present": skipped_not_present,
+        "no_canonical_instance": no_canonical,
+        "errors": errors,
+    }
+
+
+def resume_all() -> Dict[str, Any]:
+    """对称地 ``resume()`` 已存在的实例（不创建任何实例）。
+
+    与 ``pause_all()`` 对称。``resume()`` 的合法前置只有 PAUSED；对 READY /
+    UNINITIALIZED / STOPPED 等状态调用会抛 ``KernelStateError``，如实记入
+    ``errors``。
+    """
+    resumed: List[str] = []
+    skipped_not_present: List[str] = []
+    no_canonical: List[str] = []
+    errors: List[Dict[str, str]] = []
+
+    for entry in KERNEL_ENTRIES:
+        inst = entry.accessor()  # 不创建
+        if inst is None:
+            if entry.reason:
+                no_canonical.append(entry.name)
+            else:
+                skipped_not_present.append(entry.name)
+            continue
+        try:
+            inst.resume()
+            resumed.append(entry.name)
+        except Exception as exc:  # 如实记录（含非法转换的 KernelStateError），不静默
+            errors.append({"name": entry.name, "error": str(exc)})
+
+    return {
+        "resumed": resumed,
+        "skipped_not_present": skipped_not_present,
+        "no_canonical_instance": no_canonical,
+        "errors": errors,
+    }
+
+
 def uninitialized_but_present() -> List[str]:
     """把「实例存在但 ``lifecycle`` 还是 ``UNINITIALIZED``」这个真实缺口报出来。
 
