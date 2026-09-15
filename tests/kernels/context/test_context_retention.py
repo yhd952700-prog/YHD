@@ -194,3 +194,76 @@ class TestGuardrailNotRubberStamp:
                      AttentionMechanism.HYBRID]:
             res = ContextKernel(mechanism=mech).compress(inputs(REPRESENTATIVE))
             assert res.retained_keys, f"fixed {mech.value} must retain something"
+
+
+# =====================================================================
+# Default-mechanism guardrail + true anti-fake (break the REAL fix)
+# =====================================================================
+
+def _guardrail_default_retains(kernel, data):
+    """The assertion a correct fix must satisfy: the default mechanism must
+    retain inputs (never emit an empty context)."""
+    res = kernel.compress(data)
+    assert res.retained_keys, "default mechanism must retain inputs (no empty context)"
+    assert "goal" in res.retained_keys, "dominant GOAL stream must be retained"
+
+
+class TestDefaultMechanismRetains:
+    def test_default_mechanism_retains_inputs(self):
+        # The DEFAULT mechanism is HYBRID. With a realistic input mix the
+        # dominant stream must be retained — this is the exact regression:
+        # pre-fix, the default discarded everything.
+        k = ContextKernel()  # default HYBRID
+        data = inputs([
+            (ContextInputType.GOAL, 6),
+            (ContextInputType.TASK, 3),
+            (ContextInputType.MEMORY, 2),
+            (ContextInputType.TRUST, 1),
+        ])
+        _guardrail_default_retains(k, data)
+
+    def test_guardrail_fails_when_fix_broken(self, monkeypatch):
+        # ANTI-FAKE: temporarily replace the REAL compress() with the PRE-FIX
+        # absolute `weight > 0.5` selection. The guardrail above must then
+        # FAIL (retained becomes empty for the same input). After monkeypatch
+        # auto-reverts, the real (fixed) compress makes it green again.
+        def broken_compress(self, inputs=None):
+            if inputs is None:
+                inputs = []
+            counts = {}
+            for i in inputs:
+                counts[i.type] = counts.get(i.type, 0) + 1
+            aw, retained = {}, []
+            for it in ContextInputType:
+                c = counts.get(it, 0)
+                if c > 0:
+                    if self.mechanism.value == "hybrid":
+                        w = (c + 1) / 24.0
+                    elif self.mechanism.value == "importance":
+                        w = c / 12.0
+                    else:  # uniform / recency -> constant < 0.5
+                        w = 1.0 / 12.0 if self.mechanism.value == "uniform" else 1.0
+                    aw[it.value] = w
+                    if w > 0.5:
+                        retained.append(it.value)
+            discarded = [t.value for t in ContextInputType
+                         if counts.get(t, 0) > 0 and t.value not in retained]
+            return ContextCompression(
+                compressed={},
+                attention_weights=aw,
+                retained_keys=retained,
+                discarded_keys=discarded,
+                compression_ratio=len(retained) / 12,
+                scope=self.scope,
+            )
+
+        data = inputs([(ContextInputType.GOAL, 6), (ContextInputType.TASK, 3)])
+        # 1) break the fix -> guardrail must FAIL
+        with monkeypatch.context() as mp:
+            mp.setattr(ContextKernel, "compress", broken_compress)
+            k_broken = ContextKernel()  # default HYBRID
+            with pytest.raises(AssertionError):
+                _guardrail_default_retains(k_broken, data)
+        # 2) monkeypatch.context() auto-reverted -> real fix restored -> green
+        k_fixed = ContextKernel()
+        _guardrail_default_retains(k_fixed, data)
