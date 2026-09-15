@@ -146,9 +146,9 @@ unregister_plugin` 驱动（`__init__.py:119/227/318/164`）。
 
 以下条目为**目标态契约**，并非全部已在 HEAD 实测确认；落地前须以当前代码重新核实，不可照抄：
 
-- 删除 import 期急切实例化（`__init__.py:457`），统一走 `get_plugin_registry` 懒加载，消除 cwd 副作用。
-- 版本比较应改用 `packaging.version` 语义化版本排序，替换字符串 `<`。
-- 加载/激活失败应抛标准 `Kernel*` 异常（而非 `ImportError`/`FileNotFoundError`/`None`）。
-- 审计入口应统一收敛到 `kernels/audit`，消除与 `src/security.audit_policy` 的双/三套权威分裂。
-- `_VALID_SCOPES` 等 scope 集合应在 `_crosscutting` 统一共享，消除跨内核重复定义。
-- `capability_required` 对 `plugin:manage` 的真实拦截效果需以代码实测确认（规则已激活）。
+- ✅ **已完成（2026-09-15）**：删除 import 期急切实例化（原 `__init__.py:476` 的 `_global_plugin_registry = PluginRegistry()` + 手工 `initialize()`），统一走 `get_plugin_registry` 懒加载。实测证实该急切实例化会在 **import 时**执行 `PluginRegistry.__init__` 的 `mkdir("./plugins")`（相对 cwd）⇒ cwd 副作用；且与 `_registry.py` 把本内核列为「12 个**惰性**单例」的契约冲突。回归测试 `TestImportIsSideEffectFree`（子进程 + tmp cwd 断言：`_global_plugin_registry is None` 且未新建 `plugins/`）。
+- ✅ **已完成（2026-09-15）**：`discover_plugins` 的 `min_version`/`max_version` 由字符串 `<`/`>` 改为 `packaging.version` 语义比较（新增 `_version_ge`；不可解析的版本串回退字符串比较）。实测旧行为：`"1.10.0" < "1.9.0"` 为真 ⇒ 合法的插件会被静默漏掉。回归测试 `TestVersionBoundsAreSemantic`。
+- 加载/激活失败应抛标准 `Kernel*` 异常（而非 `ImportError`/`FileNotFoundError`/`None`）。**（未动；属错误语义改造，需决策）**
+- 审计入口应统一收敛到 `kernels/audit`，消除与 `src/security.audit_policy` 的双/三套权威分裂。**（未动；属架构收敛）**
+- `_VALID_SCOPES` 等 scope 集合应在 `_crosscutting` 统一共享，消除跨内核重复定义。**（未动；属重构）**
+- `capability_required` 对 `plugin:manage` 的真实拦截效果需以代码实测确认（规则已激活）。**（本次未核实）**

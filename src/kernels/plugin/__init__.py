@@ -24,7 +24,23 @@ from pathlib import Path
 import importlib.util
 import json
 
+from packaging.version import InvalidVersion, Version
+
 from src.kernels._crosscutting import kernel_action
+
+
+def _version_ge(a: str, b: str) -> bool:
+    """Return ``True`` when version ``a`` is >= version ``b`` (PEP 440).
+
+    Version bounds used to be compared as plain strings, so ``"1.10.0"`` sorted
+    *below* ``"1.9.0"`` and a ``min_version`` filter silently dropped valid
+    plugins. Falls back to string comparison when either side is not PEP 440
+    parseable, so exotic version strings keep working instead of raising.
+    """
+    try:
+        return Version(a) >= Version(b)
+    except InvalidVersion:
+        return a >= b
 
 
 def _json_default(obj: Any) -> Any:
@@ -211,10 +227,10 @@ class PluginRegistry:
                 if scope and info.scope != scope:
                     continue
 
-                # Version filters (simple string comparison; semver-aware later)
-                if min_version and info.version < min_version:
+                # Version filters -- semantic (PEP 440) comparison, not strings.
+                if min_version and not _version_ge(info.version, min_version):
                     continue
-                if max_version and info.version > max_version:
+                if max_version and not _version_ge(max_version, info.version):
                     continue
 
                 results.append(info)
@@ -472,11 +488,12 @@ def plugin_compatibility_check(plugin_id: str, required_capabilities: List[str])
     return get_plugin_registry().compatibility_check(plugin_id, required_capabilities)
 
 
-# FIX: Initialize plugin registry after definition
-_global_plugin_registry = PluginRegistry()
-# 该单例是**导入期**急切实例化的（不走 get_plugin_registry 的惰性路径），
-# 所以必须在这里手工补一次 initialize()，否则它会「在服务却永远 UNINITIALIZED」。
-_global_plugin_registry.initialize()
+# 此处曾有**导入期急切实例化**（``_global_plugin_registry = PluginRegistry()``
+# 紧接一次 ``initialize()``）。它让「import 本模块」带上副作用：
+# ``PluginRegistry.__init__`` 会 ``mkdir("./plugins")``（相对当前 cwd），并且与
+# ``_registry.py`` 把本内核列为「12 个**惰性**单例」的契约相冲突。
+# 现统一走 ``get_plugin_registry()`` 的惰性路径——该 getter 构造后立即
+# ``initialize()``，因此「存在即 READY」的不变量仍然成立。
 
 
 # Plugin audit logging helper

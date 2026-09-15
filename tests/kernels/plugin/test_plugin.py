@@ -81,6 +81,57 @@ class TestDiscover:
 
 
 # =====================================================================
+# Version bounds are semantic (PEP 440), not lexicographic
+# =====================================================================
+
+class TestVersionBoundsAreSemantic:
+    """String comparison put ``1.10.0`` *below* ``1.9.0``; bounds now use packaging."""
+
+    def test_min_version_uses_semantic_order(self, reg):
+        reg.register_plugin("old", "1.9.0", "memory", ["c"], "L3")
+        reg.register_plugin("new", "1.10.0", "memory", ["c"], "L3")
+        res = reg.discover_plugins(min_version="1.9.5")
+        # Lexicographically "1.10.0" < "1.9.5", so the old code dropped BOTH.
+        assert {p.name for p in res} == {"new"}
+
+    def test_max_version_uses_semantic_order(self, reg):
+        reg.register_plugin("old", "1.9.0", "memory", ["c"], "L3")
+        reg.register_plugin("new", "1.10.0", "memory", ["c"], "L3")
+        res = reg.discover_plugins(max_version="1.9.5")
+        # Lexicographically "1.10.0" > "1.9.5", so the old code kept BOTH.
+        assert {p.name for p in res} == {"old"}
+
+
+# =====================================================================
+# Import must be side-effect free (lazy singleton; no ./plugins mkdir)
+# =====================================================================
+
+class TestImportIsSideEffectFree:
+    def test_import_does_not_instantiate_or_touch_cwd(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[3]
+        code = (
+            "import src.kernels.plugin as p\n"
+            "print('INSTANCE_IS_NONE', p._global_plugin_registry is None)\n"
+            "import os\n"
+            "print('PLUGINS_DIR_EXISTS', os.path.isdir('plugins'))\n"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root)
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(tmp_path), env=env, capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        assert "INSTANCE_IS_NONE True" in out.stdout
+        assert "PLUGINS_DIR_EXISTS False" in out.stdout
+
+
+# =====================================================================
 # Activation / deactivation
 # =====================================================================
 
