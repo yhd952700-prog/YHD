@@ -55,6 +55,14 @@ docstring 措辞与同名方法当成了证据）：
 
 ### 3.1 `superseded-duplicate` — 有 live 对照物的死副本（**最值得关注**）
 
+> ✅ **2026-09-15 已处置：四个模块全部删除**（boss 授权"1 可以"）。
+> 处置前做了**逐字节校验**的备份（`D:/WorkBuddyFiles/orphan-backup-20260915/`，`cmp` 全 OK），
+> 文件经**回收站**删除（不用 `rm`），删除后再跑守卫确认它们已从零引用清单消失。
+> ⚠️ 同步做了**第四步**：把 `orphan-registry.yaml` 里对应的四条 `acknowledged` 条目**移除** ——
+> 不删的话守卫会报 `acknowledged but no longer an orphan`，登记册就开始腐烂，
+> 而"登记册腐烂"正是这个文件存在要防的失败。
+> 下表保留为**决策依据的历史记录**，不再是当前状态。
+
 | 模块 | 行数 | 实测依据 |
 |---|---|---|
 | `src.security.vault_client` | 125 | live = `src/integrations/vault/`（`client.py` + `secret_manager.py`，其 `import hvac` **有守卫**）。此副本在**顶层**无条件 `import hvac`；实测 `hvac` 已安装，故它不会报错，只是作为**第二套 Vault 权威**静静躺着 |

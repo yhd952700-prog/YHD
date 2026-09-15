@@ -18,37 +18,23 @@
 #   infra-artifact        generates non-runtime artifacts (charts/config text)
 
 acknowledged:
-  # --- superseded duplicates (verified live counterpart exists) -------------
-  - module: src.security.vault_client
-    classification: superseded-duplicate
-    reason: >-
-      Live counterpart is src/integrations/vault/ (client.py + secret_manager.py),
-      which guards `import hvac` and is the one wired into the app. This 125-line
-      copy imports hvac at module top level (line 3) with no consumer. hvac IS
-      installed in the venv, so this import never fails loudly -- it simply sits
-      there as a second, divergent Vault authority.
-
-  - module: src.security.vault_transit
-    classification: superseded-duplicate
-    reason: >-
-      Transit encrypt/decrypt/key-management already live in
-      src/integrations/vault/client.py:249-271 (encrypt_data / decrypt_data).
-      This 322-line module adds a parallel, unreferenced implementation.
-
-  - module: src.security.rbac_abac
-    classification: superseded-duplicate
-    reason: >-
-      572 lines of RBAC/ABAC hardening with ZERO importers. Its namesake test
-      tests/governance/test_rbac_abac.py actually imports src.security.rbac
-      (RBACManager), not this file -- so even the test named after it does not
-      exercise it. Live authority is src/security/rbac.py (get_rbac_manager).
-
-  - module: src.storage.repository
-    classification: superseded-duplicate
-    reason: >-
-      Third copy of a generic `Repository`. The live one is
-      src/integrations/storage.py:32 (imported by tests/test_orm_storage.py);
-      src/storage/backends.py:430 holds another copy. This one has no importer.
+  # --- superseded duplicates: ALL FOUR REMOVED 2026-09-15 -------------------
+  # Owner-approved deletion (boss: "1 可以"). Files were moved to the recycle
+  # bin and a byte-identical backup was taken first:
+  #   D:/WorkBuddyFiles/orphan-backup-20260915/
+  #
+  #   deleted module              live counterpart that stays
+  #   --------------------------  --------------------------------------------
+  #   src.security.vault_client   src/integrations/vault/  (guards `import hvac`)
+  #   src.security.vault_transit  src/integrations/vault/client.py:249-271
+  #   src.security.rbac_abac      src/security/rbac.py      (get_rbac_manager)
+  #   src.storage.repository      src/integrations/storage.py:32
+  #
+  # They are recorded here as *history*, not as live orphans: leaving them in
+  # the acknowledged list would make the guard report them as stale and the
+  # registry would rot -- which is the failure this file exists to prevent.
+  # Recovery: `git checkout <sha>~1 -- <path>` from the deletion commit, or the
+  # backup above.
 
   # --- endpoint defined but never mounted -----------------------------------
   - module: src.feedback.feedback_api

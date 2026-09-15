@@ -164,8 +164,18 @@ def test_the_real_repository_has_no_unacknowledged_orphans(guardrail):
     assert _run(guardrail, REPO_ROOT) == 0
 
 
-def test_real_registry_covers_at_least_one_superseded_duplicate(guardrail):
+def test_real_registry_is_not_gutted_and_its_vocabulary_is_honoured(guardrail):
     """Guard against the registry being emptied of its actual findings.
+
+    This assertion used to read ``len(superseded-duplicate) >= 3``. That was a
+    statement about the *repository's state*, not about the safety property --
+    and on 2026-09-15 the state changed: all four verified dead duplicates (the
+    vault pair, the rbac_abac copy, the third Repository) were deleted with
+    owner approval, so the classification now has **zero** members. The honest
+    repair is to assert the property that still matters and to keep the class
+    supported, not to lower the number until the test passes. Lowering it would
+    be the exact "make the guard green" move this repository keeps getting
+    caught by.
 
     Note the deliberate absence of literal dotted module paths in this file: the
     detector scans ``tests/`` for references, so a test that *names* a module
@@ -173,21 +183,35 @@ def test_real_registry_covers_at_least_one_superseded_duplicate(guardrail):
     checking. Assertions therefore go through the registry, never through
     hardcoded module names.
     """
+    import re  # noqa: PLC0415 - local to keep the module header light
+
     import yaml  # noqa: PLC0415 - CI installs pyyaml
 
     registry = REPO_ROOT / "orphan-registry.yaml"
-    data = yaml.safe_load(registry.read_text(encoding="utf-8")) or {}
+    raw = registry.read_text(encoding="utf-8")
+    data = yaml.safe_load(raw) or {}
     entries = data.get("acknowledged") or []
 
-    by_classification: dict[str, list[dict]] = {}
-    for entry in entries:
-        by_classification.setdefault(entry.get("classification", ""), []).append(entry)
+    # 1. An empty registry would make the gate pass while documenting nothing.
+    assert entries, "orphan-registry.yaml acknowledges nothing -- the gate is vacuous"
 
-    duplicates = by_classification.get("superseded-duplicate", [])
-    assert len(duplicates) >= 3, (
-        "expected at least three verified dead duplicates of live "
-        "implementations; found %s" % sorted(by_classification)
+    # 2. The vocabulary is documented in the file header (``#   <class>  <gloss>``).
+    #    Parsing it keeps the test tied to the contract the file states rather
+    #    than to a constant that lives somewhere else and can drift.
+    documented = set(re.findall(r"^#\s{3}([a-z][a-z0-9-]+)\s{2,}\S", raw, re.MULTILINE))
+    assert len(documented) >= 5, (
+        "could not read the classification vocabulary from the registry header; "
+        "got %s -- if the header format changed, update this parse rather than "
+        "deleting the check" % sorted(documented)
     )
-    # Every duplicate reason must point at a live counterpart, not restate itself.
-    for entry in duplicates:
-        assert "live" in entry["reason"].lower() or "counterpart" in entry["reason"].lower(), entry
+
+    # 3. ``superseded-duplicate`` must stay supported even with no members: the
+    #    class is what the four deleted modules were classified as, and the next
+    #    dead copy must land in an existing bucket.
+    assert "superseded-duplicate" in documented
+
+    # 4. Every live entry must be classified with a documented value and carry a
+    #    real reason -- so the file cannot rot into a list of bare names.
+    for entry in entries:
+        assert entry.get("classification") in documented, entry
+        assert (entry.get("reason") or "").strip(), entry
