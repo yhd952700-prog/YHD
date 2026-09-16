@@ -115,12 +115,22 @@ def _tracked_files() -> set[str]:
     """
     import subprocess
 
+    import os
+
+    env = os.environ.copy()
+    for key in list(env):
+        if key in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_PARAMETERS"}:
+            env.pop(key, None)
+        elif key.startswith("GIT_CONFIG_") and key not in {"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL"}:
+            env.pop(key, None)
+
     try:
         proc = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "ls-files"],
             capture_output=True,
             text=True,
             check=True,
+            env=env,
         )
     except (OSError, subprocess.CalledProcessError):
         # Evidence provenance is a repository contract. If Git cannot inspect
