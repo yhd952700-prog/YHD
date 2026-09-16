@@ -123,17 +123,10 @@ def _tracked_files() -> set[str]:
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):
-        # Some packaged/test environments do not expose the Git executable or
-        # index to child processes. Preserve the gate's useful behavior there
-        # by considering only repository files that are actually present,
-        # while excluding generated dependency trees and VCS metadata.
-        ignored_roots = {".git", ".venv", "node_modules", "__pycache__"}
-        return {
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in REPO_ROOT.rglob("*")
-            if path.is_file()
-            and not any(part in ignored_roots for part in path.relative_to(REPO_ROOT).parts)
-        }
+        # Evidence provenance is a repository contract. If Git cannot inspect
+        # the index, fail closed rather than treating every local artifact as
+        # tracked and allowing generated reports through the gate.
+        return set()
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
