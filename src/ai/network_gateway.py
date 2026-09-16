@@ -38,7 +38,7 @@ from ..kernels.network import (
     MessageStatus,
     ProtocolAdapter,
     ProtocolType,
-    get_network_bus,
+    NetworkBus,
 )
 from ..kernels.identity import (
     get_identity_manager,
@@ -288,7 +288,10 @@ class AgentNetworkGateway:
         self._identity = identity_manager or get_identity_manager()
         self._trust = trust_manager or get_trust_manager()
         self._policy = policy_engine or get_policy_engine()
-        self._bus = network_bus or get_network_bus()
+        # A gateway owns its default routing surface. Sharing the process-wide
+        # bus lets an unrelated lifecycle shutdown/pause make delegation fail
+        # based on global state rather than this gateway's configuration.
+        self._bus = network_bus or NetworkBus()
         self.registry = registry or AgentRegistry(
             identity_manager=self._identity, trust_manager=self._trust
         )
