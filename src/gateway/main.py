@@ -398,6 +398,10 @@ def get_app() -> FastAPI:
     from .kernels import kernels_router
     app.include_router(kernels_router, dependencies=[Depends(_require_human)])
 
+    # AI Employee / Goal / Workflow 管理端点（真实 AgentRuntime + Employee 状态面）。
+    from .ai_management import router as ai_mgmt_router
+    app.include_router(ai_mgmt_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router
