@@ -28,7 +28,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-KERNELS_DIR = REPO_ROOT / "src" / "kernels"
+SRC_DIR = REPO_ROOT / "src"
 
 RESULTS = []
 
@@ -42,7 +42,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def _discover_enforce_flags() -> dict:
     """Map of action-name -> whether any call site passes enforce=True."""
     enforced: dict = {}
-    for path in KERNELS_DIR.rglob("*.py"):
+    for path in SRC_DIR.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:

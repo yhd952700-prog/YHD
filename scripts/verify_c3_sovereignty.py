@@ -91,9 +91,12 @@ def _discover_enforce_flags() -> dict:
 
 #: Symbols that *open* the channel. Distinguished by name from the readers
 #: below, so an over-broad "anything imported from _sovereignty" rule -- which
-#: would flag legitimate reads -- is never needed.
+#: would flag legitimate reads -- is never needed. ``grant_window`` is an opener
+#: by the module's own account (``_sovereignty.py``:48 names it alongside
+#: ``human_sovereign`` / ``set_active_sovereignty`` as a way to open the channel)
+#: and returns a ``human_sovereign`` bound to the grant.
 _OPENER_SYMBOLS = frozenset(
-    {"human_sovereign", "set_active_sovereignty", "ActiveSovereignty"}
+    {"human_sovereign", "set_active_sovereignty", "ActiveSovereignty", "grant_window"}
 )
 
 
@@ -168,7 +171,7 @@ def _production_opens_sovereignty() -> bool:
     The claim is bounded to the shapes actually covered:
 
     * a **direct** call ``human_sovereign(...)`` / ``set_active_sovereignty(...)``
-      / ``ActiveSovereignty(...)``;
+      / ``ActiveSovereignty(...)`` / ``grant_window(...)``;
     * an **attribute** call ``mod.set_active_sovereignty(...)``;
     * an **import alias** (``from ... import human_sovereign as hs`` then
       ``hs(...)``), resolved through the module's own import table;

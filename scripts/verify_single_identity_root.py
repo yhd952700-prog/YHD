@@ -248,7 +248,13 @@ def main() -> int:
             f"{len(report.importers)} import(s) of an archived identity implementation"
         )
     else:
-        print("    OK: zero real imports of any archived identity implementation.")
+        print("    OK: zero real imports of any archived identity implementation")
+        print("        -- scoped to statically-resolvable import statements, "
+              "i.e. ast.Import /")
+        print("           ast.ImportFrom with an absolute module name.")
+        print("        NOT covered by this scan: importlib.import_module(...) and "
+              "__import__(...)")
+        print("        with a computed/aliased name, which no AST walk can resolve.")
 
     print("\n" + "=" * 74)
     if problems:
@@ -259,7 +265,8 @@ def main() -> int:
               "silently. An undeclared second identity root is a trust-root "
               "ambiguity, not redundancy.")
         return 1
-    print("OK: one declared identity root; the archived copy is unreferenced and marked.")
+    print("OK: one declared identity root; the archived copy has no "
+          "statically-resolvable import and is marked.")
     return 0
 
 
