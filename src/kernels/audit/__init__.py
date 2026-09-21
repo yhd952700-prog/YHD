@@ -507,7 +507,7 @@ class AuditStore:
     ) -> List[Dict[str, Any]]:
         query = """SELECT event_id, event_type, principal_id, scope,
                    timestamp, correlation_id, outcome, details,
-                   event_hash, prev_event_hash
+                   event_hash, prev_event_hash, hash_alg
                    FROM audit_events WHERE 1=1"""
         params = []
 
@@ -562,6 +562,11 @@ class AuditStore:
                 "details": json.loads(row[7]) if row[7] else {},
                 "event_hash": row[8],
                 "prev_event_hash": row[9],
+                # A5: the algorithm that produced event_hash. Without it on the
+                # *read* surface the field would be write-only, and "what was
+                # this verified with" would be unanswerable from the record --
+                # which is the whole point of storing it.
+                "hash_alg": row[10] if len(row) > 10 else DEFAULT_HASH_ALG,
             }
             results.append(event_dict)
 
@@ -572,7 +577,7 @@ class AuditStore:
         cursor = self._conn.execute(
             """SELECT event_id, event_type, principal_id, scope,
                timestamp, correlation_id, outcome, details,
-               event_hash, prev_event_hash
+               event_hash, prev_event_hash, hash_alg
                FROM audit_events WHERE event_id = ?""",
             (event_id,),
         )
@@ -591,6 +596,7 @@ class AuditStore:
             "details": json.loads(row[7]) if row[7] else {},
             "event_hash": row[8],
             "prev_event_hash": row[9],
+            "hash_alg": row[10] if len(row) > 10 else DEFAULT_HASH_ALG,
         }
 
     def get_stats(self) -> Dict[str, Any]:

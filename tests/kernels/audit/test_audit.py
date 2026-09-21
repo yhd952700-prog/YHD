@@ -13,6 +13,8 @@ import re
 import pytest
 
 from src.kernels.audit import (
+    DEFAULT_HASH_ALG,
+    HASH_ALGORITHMS,
     AuditEventType,
     AuditScope,
     AuditStore,
@@ -336,3 +338,90 @@ class TestDefects:
         log_three(store)
         rows = store.query_events(reverse=True)
         assert [r["principal_id"] for r in rows] == ["p2", "p1", "p0"]
+
+
+# =====================================================================
+# A5 — cryptographic algorithm identifiers on the audit record
+# =====================================================================
+#
+# Why these exist: `hash_alg` was written to the schema and honoured by
+# `compute_hash`, but nothing asserted it -- `grep -rn "hash_alg" --include=*.py
+# tests scripts` returned 0 hits at the time this class was added. A field that
+# no assertion covers is a field that can be silently dropped again, and the
+# failure it prevents (a record that cannot say how to verify itself) only shows
+# up years later, when the answer is unrecoverable.
+#
+# The class also pins the *read* surface. The first version of A5 wrote the
+# column but omitted it from `query_events` / `get_event`, which made it
+# write-only: an auditor reading the chain could not see the algorithm, so the
+# field did not answer the question it exists to answer.
+
+class TestAlgorithmIdentifiers:
+    def test_logged_event_declares_its_algorithm(self, store):
+        event = store.log_event(
+            AuditEventType.ACCESS_CHECK, "p1", AuditScope.L1, "allow",
+        )
+        assert event.hash_alg == DEFAULT_HASH_ALG
+        assert event.to_dict()["hash_alg"] == DEFAULT_HASH_ALG
+
+    def test_declared_algorithm_is_one_this_build_can_perform(self):
+        assert DEFAULT_HASH_ALG in HASH_ALGORITHMS
+        assert callable(HASH_ALGORITHMS[DEFAULT_HASH_ALG])
+
+    def test_the_algorithm_is_visible_on_the_read_surface(self, store):
+        """A write-only algorithm field cannot answer "how do I verify this"."""
+        store.log_event(
+            AuditEventType.ACCESS_CHECK, "p1", AuditScope.L1, "allow",
+        )
+        rows = store.query_events(limit=1)
+        assert rows[0]["hash_alg"] == DEFAULT_HASH_ALG
+
+        single = store.get_event(rows[0]["event_id"])
+        assert single["hash_alg"] == DEFAULT_HASH_ALG
+
+    def test_compute_hash_dispatches_on_the_declared_algorithm(self):
+        event = AuditEvent(
+            event_id="e1", event_type=AuditEventType.ACCESS_CHECK,
+            principal_id="p1", scope=AuditScope.L1, timestamp=1000.0,
+            correlation_id="c1", outcome="allow", details={"k": "v"},
+        )
+        assert re.fullmatch(r"[0-9a-f]{64}", event.compute_hash())
+
+    def test_an_algorithm_this_build_cannot_perform_raises(self):
+        """Not a fallback to the default: an unverifiable claim is refused."""
+        event = AuditEvent(
+            event_id="e1", event_type=AuditEventType.ACCESS_CHECK,
+            principal_id="p1", scope=AuditScope.L1, timestamp=1000.0,
+            correlation_id="c1", outcome="allow", details={},
+            hash_alg="sha512-that-this-build-does-not-implement",
+        )
+        with pytest.raises(ValueError):
+            event.compute_hash()
+
+    def test_event_declaring_an_unverifiable_algorithm_counts_as_broken(
+        self, store, tmp_path
+    ):
+        """fail-closed: verification must not hash it with the default and pass."""
+        import sqlite3
+
+        store.log_event(
+            AuditEventType.ACCESS_CHECK, "p1", AuditScope.L1, "allow",
+        )
+        store.log_event(
+            AuditEventType.ACCESS_CHECK, "p2", AuditScope.L1, "allow",
+        )
+        ok, total = store.verify_integrity()
+        assert ok is True, "the chain must be valid before the injection"
+        assert total == 2
+
+        conn = sqlite3.connect(store._db_path)
+        conn.execute("UPDATE audit_events SET hash_alg = 'sha512'")
+        conn.commit()
+        conn.close()
+
+        ok, total = store.verify_integrity()
+        assert total == 2
+        assert ok is False, (
+            "an event whose declared algorithm this build cannot perform must be "
+            "reported as broken, not silently recomputed with the default"
+        )
