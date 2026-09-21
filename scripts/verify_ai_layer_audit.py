@@ -2,6 +2,21 @@
 
 用途：复现 ``docs/spec/AI-LAYER-DOD-AUDIT.md`` §3.5 的运行时实测矩阵。
 
+**退出码的真实含义（重要，先读这一节）**：
+    本脚本**唯一的失败出口**是 ``main()`` 里的对照探针分支 —— 只有当对照探针
+    测不到已知会审计的 ``@kernel_action`` 写入时，才 ``return 2``。除此之外
+    ``main()`` 末尾是**无条件 ``return 0``**；汇总里 ``errored``（状态 ``ERR``）
+    的那些行只在「探针出错（结论不确定）」小节里**打印，不构成失败**。
+    ⇒ **"绿" 只等价于「对照探针观测到 ``@kernel_action`` 写入的审计事件」**，
+    **不等于**「21 个阶段探针的增量矩阵成立」。矩阵必须逐行人工判读：它完全
+    可以大面积 ``ERR`` / ``no-audit``，而本闸门仍然为绿。
+
+**与部署姿态的边界**：脚本末尾那句「``policy_decision`` 恒为 ``deny`` 且装饰器
+    从不拦截」是**记录态（record-only）观测** —— 本脚本不设置
+    ``LIUHAO_KERNEL_POLICY_ENFORCE``。生产清单 ``docker-compose.prod.yml:59``
+    以 ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}``
+    武装 ``HIGH,CRITICAL``，故那句**不是**对生产运行时行为的断言。
+
 方法：
   1) **对照实验**：先直接调用已知被 ``@kernel_action`` 装饰的
      ``get_memory_kernel().store()``，确认 audit store 计数 +1。
@@ -274,7 +289,12 @@ def main() -> int:
         )
         print(f"   risk={risk:9} -> {decision.decision.value}")
 
-    print("\n注意：policy_decision 恒为 deny 且装饰器从不拦截 —— 见 AI-LAYER-DOD-AUDIT.md §3.5.4。")
+    print(
+        "\n注意：以上是【记录态】观测 —— 本脚本未设置 LIUHAO_KERNEL_POLICY_ENFORCE，"
+        "故 policy_decision 恒为 deny 且装饰器从不拦截（见 AI-LAYER-DOD-AUDIT.md §3.5.4）；"
+        "生产清单 docker-compose.prod.yml:59 武装 HIGH,CRITICAL，"
+        "那句话不是对生产运行时行为的断言。"
+    )
     return 0
 
 

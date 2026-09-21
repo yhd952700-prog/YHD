@@ -12,7 +12,7 @@ Checks (exit 0 = all green):
 3. COVERAGE  — the registry covers EXACTLY the ``@kernel_action("...")`` names
               discovered by AST scan (no missing, no stale, no drift).
 4. TIERS     — every tier is a valid RiskTier; distribution is
-              14 LOW / 12 MEDIUM / 15 HIGH / 2 CRITICAL; LOW == the C-1
+              15 LOW / 12 MEDIUM / 15 HIGH / 2 CRITICAL; LOW == the C-1
               internal-service allow-list (two independent sources agree).
 5. WIRING    — the decorator now records the *real* risk_level in the audit
               trail (previously a dead "LOW"), proving C-2 will have real

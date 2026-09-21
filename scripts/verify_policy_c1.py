@@ -8,15 +8,17 @@ Checks (exit 0 = all green):
 
 1. IMPORT   — every module under src/ imports cleanly (catches import-order /
               class-namespace breakage that syntax + lint checks cannot see).
-2. DECORATOR— every ``@kernel_action``-decorated callable still exposes
-              ``__wrapped__`` and a retrievable signature (the decorator did
-              not clobber descriptors).
+2. DECORATOR— every ``@kernel_action``-decorated callable **in ``src/kernels/``**
+              still exposes ``__wrapped__`` and a retrievable signature (the
+              decorator did not clobber descriptors). 扫描根是 ``src/kernels/``,
+              **不是**整个 ``src/``；且只覆盖能 import 成功的模块。
 3. POLICY   — the internal service principal is verified by the engine and
               the verdict is allow-list driven (not a constant).
 4. FORGERY  — self-declared service claims cannot obtain an allow.
 5. KILLSWITCH — suspending the service identity suppresses every allow.
-6. COVERAGE — every ``@kernel_action("...")`` name in src/ is classified in
-              exactly one of the two policy lists (no drift, no wildcard).
+6. COVERAGE — every ``@kernel_action("...")`` name found under **``src/kernels/``**
+              is classified in exactly one of the two policy lists (no drift,
+              no wildcard). 扫描根是 ``src/kernels/``，**不是**整个 ``src/``。
 """
 
 from __future__ import annotations
@@ -69,6 +71,7 @@ print("=" * 72)
 print("[2] @kernel_action decorated callables still expose __wrapped__")
 print("=" * 72)
 
+# 扫描根是 src/kernels/，**不是**整个 src/（与上面的 docstring 一致）。
 kernel_modules = sorted(
     _module_name(p) for p in (SRC / "kernels").rglob("*.py")
     if p.name != "__init__.py" or True
@@ -198,10 +201,13 @@ print(f"  status={original.value:12s} -> {decide('memory.store', SVC).decision.v
 
 print()
 print("=" * 72)
-print("[6] allow-list covers every decorated kernel action (no drift)")
+print("[6] allow-list covers every decorated kernel action under src/kernels/ (no drift)")
 print("=" * 72)
 
 decorated: set = set()
+# 扫描根是 src/kernels/，**不是**整个 src/（与打印标签一致）。
+# 另：``fname`` 只认同一个字面量 ``kernel_action``，被别名导入的装饰器
+# （``from ... import kernel_action as ka``）在此不可见。
 for path in (SRC / "kernels").rglob("*.py"):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):

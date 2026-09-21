@@ -12,7 +12,11 @@ Why a single registry instead of per-call annotations?
     each decorator call is exactly what let the field drift to a dead default
     (everyone forgets to set it). One auditable table, cross-checked by an AST
     completeness guard (``discover_kernel_action_names``), forces a deliberate
-    classification the moment a new kernel action is added.
+    classification the moment a new kernel action is added -- **inside that
+    guard's scan root, ``src/kernels/``** (see ``KERNELS_DIR`` below). An
+    action added *outside* that root is outside the guard, so "unclassified
+    action = test failure" holds only within ``src/kernels/``; as of this
+    writing there are zero ``@kernel_action`` usages outside it.
 
 Zero execution risk:
     Nothing here calls the policy engine or the decorator. The decorator in
@@ -315,12 +319,18 @@ def get_action_risk(action: str) -> Optional[ActionRisk]:
 
 
 def discover_kernel_action_names() -> set:
-    """Every kernel action name passed to ``@kernel_action("...")`` in src/.
+    """Every kernel action name passed to ``@kernel_action("...")`` **under
+    :data:`KERNELS_DIR` (``src/kernels/``)** -- *not* the whole of ``src/``.
 
     AST scan (not a keyword scan) so it tracks the real decorator usages and
     can be cross-checked against :data:`KERNEL_ACTION_RISK` -- the completeness
     guard that makes "add a kernel action without classifying it" a test
-    failure instead of silent drift.
+    failure instead of silent drift. Scope caveat: that guard holds only within
+    this function's scan root (``src/kernels/``); a ``@kernel_action`` used
+    elsewhere in ``src/`` is invisible here. Also note the callee is matched by
+    a single literal symbol name (``getattr(func, "id", None) or
+    getattr(func, "attr", None) == "kernel_action"``), so a decorator imported
+    under an alias is not recognised either.
     """
     names: set = set()
     for path in KERNELS_DIR.rglob("*.py"):

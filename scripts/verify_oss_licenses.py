@@ -128,7 +128,14 @@ def main() -> int:
         actual = installed_license(name)
         if not actual:
             skipped += 1
-            print(f"  [skip] {name}（本机未安装，交由 CI 校验）")
+            # 这里**不能**说"交由 CI 校验"：CI 对该组件的唯一动作就是运行本脚本
+            # （``.github/workflows/ci.yml`` 的 "Verify OSS component licenses
+            # against oss-registry.yaml" 步骤），而该 job 的安装集同样不包含它。
+            # ⇒ 本组件在现有流程中**从未被校验**；跳过不是"改由别处校验"，是缺口。
+            print(
+                f"  [skip] {name}（本机未安装 ⇒ 本次未校验；"
+                "CI 同一流程亦不安装它 ⇒ 该组件在现有流程中从未被校验）"
+            )
             continue
 
         checked += 1
@@ -163,7 +170,7 @@ def main() -> int:
         print(f"  [{tag}] {name} = {actual}")
 
     print()
-    print(f"已校验 {checked} 个组件，跳过 {skipped} 个（未安装）")
+    print(f"已校验 {checked} 个组件，跳过 {skipped} 个（未安装 —— 跳过项本次未校验，且现有流程中无任何环节会校验它们）")
 
     if failures:
         print(f"[FAIL] 发现 {len(failures)} 项许可证风险：")
@@ -171,7 +178,10 @@ def main() -> int:
             print(f"  - {item}")
         return 1
 
-    print("[GREEN] 所有已安装组件的许可证均已登记且可接受")
+    print(
+        "[GREEN] 本次校验范围内全部合格 —— 范围 = 本 job 恰好装上、且已登记在 "
+        "oss-registry.yaml 里的组件；未安装的组件见上方 [skip] 行，不在本绿之内"
+    )
     return 0
 
 
