@@ -1,4 +1,11 @@
-"""Policy C-4 — deployment-side kernel enforcement control (**default OFF**).
+"""Policy C-4 — deployment-side kernel enforcement control.
+
+The environment variable's **library default is OFF**: with it unset, nothing is
+enforced. That is a statement about *this module*, not about the deployment --
+the production manifest overrides the default and arms ``HIGH,CRITICAL``
+(``docker-compose.prod.yml:59``). "Default OFF" below therefore describes what an
+unset variable does, not what production runs. Reading the two as the same thing
+is how "record-only" gets mistaken for a deployment fact.
 
 Rationale
 ---------
@@ -20,7 +27,7 @@ Selection syntax (env ``LIUHAO_KERNEL_POLICY_ENFORCE``)
 ===========================  ==========================================
 value                        effect
 ===========================  ==========================================
-``""`` (unset)               nothing enforced -- record-only / L1 (default)
+``""`` (unset)               nothing enforced -- L1 (library default; prod arms HIGH,CRITICAL)
 ``CRITICAL``                 every CRITICAL action
 ``HIGH,CRITICAL``            every HIGH and CRITICAL action, minus exemptions
 ``capability.retire``        exactly that action

@@ -61,9 +61,14 @@ AUTHORITATIVE_MODULE = "src.kernels.identity"
 ARCHIVED_MODULES: Sequence[str] = ("src.identity",)
 
 #: Directories that are not first-party source. ``.venv`` is the interpreter's own
-#: site-packages (thousands of files, none of them ours); ``deploy/cloud`` is a
-#: generated bundle that must not be hand-edited and is asserted to be
-#: byte-reproducible by the build pipeline instead.
+#: site-packages (thousands of files, none of them ours).
+#:
+#: ``deploy/cloud`` is *not* listed here on purpose, and the entry was never
+#: added: it is generated output (``scripts/build_cloud_bundle.py``) that must
+#: not be hand-edited, but the scan root is ``REPO_ROOT`` so the bundle's
+#: ``.py`` files are still walked by this guard. No automated comparison
+#: between the bundle and ``src/`` exists in this repository, so a bundle that
+#: has drifted from the source it was built from is not caught anywhere here.
 SKIP_DIR_PARTS = {
     ".venv", "venv", "__pycache__", ".git", "node_modules", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", "build", "dist", ".eggs",

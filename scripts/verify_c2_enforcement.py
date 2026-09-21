@@ -9,8 +9,13 @@ What this proves:
   3. The gate BLOCKS a denied HIGH/CRITICAL action when enforce=True, and is
      fail-closed when adjudication is unavailable.
   4. The gate does NOT block: allow verdicts, and LOW/MEDIUM tiers.
-  5. SAFETY GUARD: no production ``@kernel_action`` call site has flipped
-     enforce=True -- the kernel layer stays additive in production.
+  5. SAFETY GUARD: no production ``@kernel_action`` call site passes
+     enforce=True -- that is exactly what this guard asserts. Whether the gate is
+     armed at *runtime* is a separate, deployment-side decision: the production
+     manifest arms ``HIGH,CRITICAL`` by default (``docker-compose.prod.yml:59``),
+     and ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a change
+     makes an armed action reachable. Do not read "the decorator flag is unset"
+     as "nothing is enforced in production".
 """
 
 from __future__ import annotations

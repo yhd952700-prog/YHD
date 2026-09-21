@@ -292,11 +292,20 @@ def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
     """
     bound = _ACTING_PRINCIPAL.get()
     if bound is not None:
-        return {
+        # F33/D-3: an explicit binding still outranks any inference (order
+        # unchanged), but it must not *discard* the refusal reason the
+        # adjudication produced. Returning early used to drop
+        # ``sovereignty_claim``, so a denied HIGH/CRITICAL action under a
+        # revoked grant looked, in the durable record, exactly like one whose
+        # window was never opened at all.
+        out = {
             "kind": bound["kind"],
             "principal": bound["principal"],
             "source": "bound",
         }
+        if policy_actor.get("sovereignty_claim"):
+            out["sovereignty_claim"] = policy_actor["sovereignty_claim"]
+        return out
     actor_type = policy_actor.get("type", "service")
     claim = policy_actor.get("sovereignty_claim")
     if claim:
@@ -406,6 +415,11 @@ def _sovereignty_claim_state(sov: Any, action: str) -> Optional[str]:
 
     Returns ``None`` when the window may still be honoured, else a short reason.
 
+    Refusal reasons, in the order they are checked: ``grant-not-found``,
+    ``grant-principal-mismatch``, ``grant-revoked``, ``grant-expired``,
+    ``grant-does-not-cover-action``, and ``claim-lookup-error`` for any failure
+    to answer the question at all.
+
     F33 read-path discipline: a grant being valid when the window *opened* does
     not make it valid *now*. The window carries only a ``grant_id`` snapshot, so
     the authoritative answer is re-resolved from the grant registry on every
@@ -416,20 +430,47 @@ def _sovereignty_claim_state(sov: Any, action: str) -> Optional[str]:
     A window with no ``grant_id`` is the bare C-3 channel; its legitimacy is
     recomputed by the policy engine from the Identity Kernel, so there is
     nothing here to re-check and it is left alone.
+
+    **This function never raises.** It is called from inside :func:`_adjudicate`,
+    whose blanket handler answers an exception with ``return None, None,
+    _service_actor_policy_shape()`` -- i.e. *adjudication unavailable*. In the
+    record-only configuration (``enforce`` defaults to ``False``) that answer
+    still lets the wrapped call run, so
+    an exception raised here would silently convert "claim refused" into "no
+    adjudication was performed at all" and drop the refusal into the audit as
+    ``unadjudicated``. Measured on c669bc03: a caller-supplied unhashable
+    ``grant_id`` reached ``_grants.get()``, raised ``TypeError``, and the action
+    executed with the bad value stamped as ``sovereignty_grant``. Any failure to
+    *answer* the question is therefore reported as a refusal
+    (``claim-lookup-error``), which keeps the actor on the service default and
+    keeps a grant id off the audit record.
     """
     if sov is None or sov.grant_id is None:
         return None
-    from src.kernels._sovereignty import get_grant
+    try:
+        from src.kernels._sovereignty import get_grant
 
-    grant = get_grant(sov.grant_id)
-    if grant is None:
-        return "grant-not-found"
-    if grant.is_revoked:
-        return "grant-revoked"
-    if grant.is_expired():
-        return "grant-expired"
-    if action not in grant.actions:
-        return "grant-does-not-cover-action"
+        grant = get_grant(sov.grant_id)
+        if grant is None:
+            return "grant-not-found"
+        # F33/D-2: the grant authorises *its own* human, not whoever happens to
+        # be holding the window. Without this, a window opened for principal B
+        # while carrying A's grant id is re-checked as "live, unrevoked, covers
+        # the action" and escalates B to a human allow that, on the allow path,
+        # no enforcement tier can refuse -- A's approval would be spent by B.
+        if grant.principal != sov.principal:
+            return "grant-principal-mismatch"
+        if grant.is_revoked:
+            return "grant-revoked"
+        if grant.is_expired():
+            return "grant-expired"
+        if action not in grant.actions:
+            return "grant-does-not-cover-action"
+    except Exception as exc:  # refusal, never a raise -- see the docstring
+        logger.warning(
+            "sovereignty claim re-check failed for grant_id=%r: %s", sov.grant_id, exc
+        )
+        return "claim-lookup-error"
     return None
 
 
@@ -463,6 +504,9 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
         # MEDIUM is never enforcement-gated, so it is never escalated either.
         actor = {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
         sov = get_active_sovereignty()
+        #: True only while the window's claim has been honoured *and* we intend
+        #: to record it as the human. Flipped back in the verdict check below.
+        claim_held = False
         if sov is not None and action in sov.actions:
             try:
                 tier = RiskTier(risk_level)
@@ -474,6 +518,7 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
                 claim = _sovereignty_claim_state(sov, action)
                 if claim is None:
                     actor = {"type": "human", "principal": sov.principal}
+                    claim_held = True
                 else:
                     # Fail-closed: do NOT escalate to the human. The actor stays
                     # the service default (denied for HIGH/CRITICAL), and the
@@ -498,6 +543,31 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
             verdict = "deny"
         else:
             verdict = "defer"
+
+        # F33/C: human-sovereignty attribution is conditional on the claim
+        # actually holding *as adjudicated*. The check above re-verifies the
+        # grant; the policy engine independently recomputes ``verified`` from the
+        # Identity Kernel (C-7/P10). When that recompute refuses -- the human was
+        # suspended/removed after the window opened, or the principal was never a
+        # human -- the engine returns deny even though ``actor.type`` said
+        # "human". Recording that actor would write ``actor_kind='human'`` +
+        # ``actor_source='sovereignty-window'``, and stamp a grant id, for a
+        # claim that never held: exactly the false-human record F26/F33 exist to
+        # prevent. So the human *shape* is kept only for a verdict it actually
+        # produced. The verdict itself is NOT touched -- this decides what is
+        # *recorded*, never whether the body runs.
+        #
+        # ``principal`` deliberately stays ``sov.principal``: the claim is what
+        # was refused, and the record must still name who made it (A2) -- only
+        # the authority-bearing shape is withdrawn. ``sovereignty_claim`` makes
+        # ``_resolve_audit_actor`` mark the row as refused rather than as a live
+        # window, and keeps ``grant_id`` off the audit event.
+        if claim_held and verdict != "allow":
+            actor = {
+                "type": "service",
+                "principal": sov.principal,
+                "sovereignty_claim": "claim-human-not-verified",
+            }
 
         rule_id: Optional[str] = None
         for entry in decision.traceability:
@@ -572,10 +642,18 @@ def kernel_action(
                 decision, rule_id, policy_actor = _adjudicate(action, effective_risk)
                 # C-4: remember which approval grant (if any) the verdict was
                 # reached under, so the audit event closes the chain
-                # action <- grant <- authorising human. F33: only when the claim
-                # actually held -- a rejected window must not leave a grant id
-                # that reads as the authorisation for the action.
-                if not policy_actor.get("sovereignty_claim"):
+                # action <- grant <- authorising human. F33: only when a human
+                # escalation actually held -- a rejected window, *and equally* a
+                # window that was never even evaluated for this action, must not
+                # leave a grant id that reads as the authorisation for the
+                # action. "No refusal reason" is not the same as "the human did
+                # this": when the action is outside ``sov.actions`` no claim is
+                # ever re-checked, so the key is absent while the actor is still
+                # the service default. Require the human shape too.
+                if (
+                    policy_actor.get("type") == "human"
+                    and not policy_actor.get("sovereignty_claim")
+                ):
                     grant_id = _active_grant_id()
             # The subject written to the audit event: an explicitly bound acting
             # principal outranks the adjudicated actor; neither of them is the
@@ -599,10 +677,14 @@ def kernel_action(
             #
             # C-4: arming is a *deployment* decision with ONE control point --
             # ``src.kernels._enforcement`` (env ``LIUHAO_KERNEL_POLICY_ENFORCE``).
-            # The 43 production call sites keep ``enforce=False`` (the AST guard
-            # in ``scripts/verify_c2_enforcement.py`` keeps asserting exactly
-            # that) and the switch defaults to "nothing enforced", so production
-            # stays record-only until an operator deliberately selects actions.
+            # Two separate facts, which must not be conflated:
+            #   * no production call site passes ``enforce=True`` -- that is what
+            #     the AST guard in ``scripts/verify_c2_enforcement.py`` asserts;
+            #   * whether the gate is armed at *runtime* is a deployment choice.
+            #     The production manifest arms ``HIGH,CRITICAL`` by default
+            #     (``docker-compose.prod.yml:59``), and
+            #     ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a
+            #     change makes an armed action reachable.
             should_enforce = enforce or is_enforced(action, effective_risk)
             if should_enforce and policy:
                 try:

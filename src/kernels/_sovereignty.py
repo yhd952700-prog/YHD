@@ -182,7 +182,10 @@ class human_sovereign:
             so the window reports the grant's real authorisation time.
         grant_id: (C-4) the approval grant this window was opened from, if any.
             Propagated into the kernel-action audit event so a reviewer can
-            trace an allowed HIGH/CRITICAL action back to its authoriser.
+            trace an allowed HIGH/CRITICAL action back to its authoriser. Must be
+            a ``str`` (or ``None`` for the bare C-3 channel): the adjudication
+            path uses it as a registry key, so a non-string value could only ever
+            break the lookup that decides whether the claim still holds.
         reason: free-text justification, propagated into audit records.
 
     Example::
@@ -200,6 +203,16 @@ class human_sovereign:
         grant_id: Optional[str] = None,
         reason: str = "",
     ) -> None:
+        # Boundary guard (F33/A): ``grant_id`` is used downstream as a
+        # ``_grants`` dict key. An unhashable value (e.g. a JSON list or object
+        # echoed straight from a request) raised ``TypeError`` inside the
+        # adjudication-time re-check, and the surrounding handler turned that
+        # into "adjudication unavailable" rather than "refused". Refusing it here
+        # means the trigger cannot be constructed in the first place.
+        if grant_id is not None and not isinstance(grant_id, str):
+            raise ValueError(
+                f"grant_id must be a str or None, got {type(grant_id).__name__}"
+            )
         self._sov = ActiveSovereignty(
             principal=principal,
             actions=frozenset(actions),

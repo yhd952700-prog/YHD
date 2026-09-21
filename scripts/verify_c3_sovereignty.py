@@ -12,8 +12,11 @@ What this proves:
   5. A spoofed principal (service id labelled human) is rejected -> deny.
   6. Enforced HIGH/CRITICAL WITHOUT delegation => PolicyDeferredError("defer");
      WITH delegation => executes; fail-closed (engine down) => PolicyDeniedError("error").
-  7. SAFETY GUARDS: no production @kernel_action flips enforce=True; no production
-     code OPENS a sovereignty channel (reading get_active_sovereignty is fine).
+  7. SAFETY GUARDS: no production @kernel_action flips enforce=True; and, within
+     the shapes this checker covers (see _production_opens_sovereignty), no
+     opener of a sovereignty channel is reachable from a statically resolvable
+     name under ``src/``. Reading the channel (get_active_sovereignty) is the
+     mechanism itself and is fine.
 """
 
 from __future__ import annotations
@@ -22,11 +25,15 @@ import ast
 import importlib
 import pathlib
 import sys
+from typing import Dict, Optional
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-KERNELS_DIR = REPO_ROOT / "src" / "kernels"
+# D-1a: the guard is about *production* code, and "production" is ``src/``, not
+# merely the kernel package. Scanning only ``src/kernels/`` could not see an
+# opener placed in the gateway or another non-kernel module.
+SRC_DIR = REPO_ROOT / "src"
 
 RESULTS = []
 
@@ -50,7 +57,7 @@ def _fresh_manager_with_human():
 def _discover_enforce_flags() -> dict:
     """Map of action-name -> True for any production call site passing enforce=True."""
     enforced: dict = {}
-    for path in KERNELS_DIR.rglob("*.py"):
+    for path in SRC_DIR.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
@@ -75,28 +82,116 @@ def _discover_enforce_flags() -> dict:
     return enforced
 
 
-def _production_opens_sovereignty() -> bool:
-    """True if any production kernel module OPENS a sovereignty channel.
+#: Symbols that *open* the channel. Distinguished by name from the readers
+#: below, so an over-broad "anything imported from _sovereignty" rule -- which
+#: would flag legitimate reads -- is never needed.
+_OPENER_SYMBOLS = frozenset(
+    {"human_sovereign", "set_active_sovereignty", "ActiveSovereignty"}
+)
 
-    Reading the channel (``get_active_sovereignty``) is the mechanism itself and
-    is fine; only *opening* calls (human_sovereign / set_active_sovereignty /
-    ActiveSovereignty(...)) in production code are guarded against. The defining
-    module is excluded; docstrings are not AST call nodes so they don't false-positive.
+
+def _folded_str(node: ast.AST) -> Optional[str]:
+    """Statically fold a string expression, or ``None`` if it is not one.
+
+    Covers ``"set_active_" + "sovereignty"`` and placeholder-free f-strings --
+    the shapes used to keep a symbol name out of a naive
+    ``getattr(func, "id", None)`` comparison.
     """
-    markers = ("human_sovereign", "set_active_sovereignty", "ActiveSovereignty")
-    for path in KERNELS_DIR.rglob("*.py"):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_str(node.left)
+        right = _folded_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _import_aliases(tree: ast.AST) -> Dict[str, str]:
+    """Map each locally bound name to the symbol it actually refers to.
+
+    ``from src.kernels._sovereignty import human_sovereign as hs`` binds ``hs``
+    to ``human_sovereign``, so an aliased call resolves back to the opener
+    instead of looking like an unknown function.
+    """
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name.rsplit(".", 1)[-1]
+    return aliases
+
+
+def _callee_symbol(func: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
+    """The symbol a call target resolves to, or ``None`` if unresolvable.
+
+    Handles ``f(...)``, ``mod.f(...)``, an aliased ``f``, and the folded
+    ``getattr(obj, "a" + "b")(...)`` form -- where ``func`` is itself a
+    ``ast.Call`` and both ``id`` and ``attr`` are ``None``, which is exactly why
+    the previous marker comparison could never see it.
+    """
+    if isinstance(func, ast.Name):
+        return aliases.get(func.id, func.id)
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Call):
+        inner = func.func
+        name = getattr(inner, "id", None) or getattr(inner, "attr", None)
+        if name == "getattr" and len(func.args) >= 2:
+            return _folded_str(func.args[1])
+    return None
+
+
+def _production_opens_sovereignty() -> bool:
+    """True if any scanned production module OPENS a sovereignty channel.
+
+    The claim is bounded to the shapes actually covered:
+
+    * a **direct** call ``human_sovereign(...)`` / ``set_active_sovereignty(...)``
+      / ``ActiveSovereignty(...)``;
+    * an **attribute** call ``mod.set_active_sovereignty(...)``;
+    * an **import alias** (``from ... import human_sovereign as hs`` then
+      ``hs(...)``), resolved through the module's own import table;
+    * a **folded** ``getattr(obj, "set_active_" + "sovereignty")(...)``;
+
+    scanning ``src/`` (not only ``src/kernels/``). Reading the channel --
+    ``get_active_sovereignty`` -- is the mechanism itself and is *not* flagged in
+    any of the same four shapes: the predicate resolves to a symbol *name* and
+    only the opener names above are openers.
+
+    Deliberately out of scope, named rather than left implicit: ``tests/`` and
+    ``scripts/`` are not scanned at all, because a harness must be able to open
+    a window to exercise the channel. Neither is a call whose symbol cannot be
+    resolved statically (e.g. ``getattr(obj, runtime_name)``). The defining
+    module ``src/kernels/_sovereignty.py`` is skipped: it is where these symbols
+    are *defined*, so a definition there is not a production opener.
+    """
+    for path in SRC_DIR.rglob("*.py"):
         if path.name == "_sovereignty.py":
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
             continue
+        aliases = _import_aliases(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                fname = getattr(func, "id", None) or getattr(func, "attr", None)
-                if fname in markers:
-                    return True
+            if not isinstance(node, ast.Call):
+                continue
+            if _callee_symbol(node.func, aliases) in _OPENER_SYMBOLS:
+                return True
     return False
 
 
