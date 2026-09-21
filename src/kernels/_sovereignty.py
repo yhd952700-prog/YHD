@@ -47,8 +47,10 @@ Zero production behaviour change by default:
     The channel is OFF unless some caller explicitly opens it via
     :func:`human_sovereign` / :func:`set_active_sovereignty` / :func:`grant_window`.
     With no active sovereignty, ``_adjudicate`` keeps using the internal service
-    principal and every production call site stays at ``enforce=False``, so the
-    kernel layer remains record-only exactly as it was in C-1/C-2.
+    principal and every production call site stays at ``enforce=False``. That is
+    the *library* default and is all this claims: the production manifest arms
+    ``HIGH,CRITICAL`` (``docker-compose.prod.yml:59``), so "record-only" must not
+    be read as a deployment fact.
 """
 
 from __future__ import annotations

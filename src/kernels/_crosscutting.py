@@ -47,8 +47,13 @@ package (which has no ``__init__.py``).
 
    **Policy C-2（2026-09-11 Round 67，已实施机制）**：新增 ``enforce`` 开关 +
    :class:`PolicyDeniedError` + 仅 ``HIGH``/``CRITICAL`` 生效的拦截门 + fail-closed。
-   但 ``enforce`` **默认 ``False``**，且 43 个生产装饰点**无一开启** —— 因此生产行为
-   与 C-1 完全一致（仍记录型）。把某个 HIGH/CRITICAL 动作的 ``enforce`` 翻为 ``True``
+   但 ``enforce`` **默认 ``False``**，且 43 个生产装饰点**无一开启** —— 因此**库的默认
+   行为**与 C-1 一致（记录型）。⚠️ 这是**库默认**，不等于部署姿态：生产清单
+   ``docker-compose.prod.yml:59`` 以
+   ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}``
+   武装，被武装的动作上判决**会**产生执行效果（见
+   ``scripts/verify_armed_actions_are_inert.py``）。把某个 HIGH/CRITICAL 动作的
+   ``enforce`` 翻为 ``True``
    即把它从「记录」变为「真拦截」，但内部 service 主体对这些动作恒 ``deny``（不在 C-1
    白名单、须 human 主权，OD-010），若无 C-3 的「动态 human 主体」通道而直接翻转，会
    **自锁系统**（capability.retire / security.set_abac_rule 等再也无法执行）。该翻转
@@ -63,7 +68,8 @@ package (which has no ``__init__.py``).
    （precedence 1000）放行 —— 这正是解除 C-2 自锁的钥匙：翻 ``enforce=True`` 后，
    无人类授权的 HIGH/CRITICAL 动作抛 ``PolicyDeferredError``（待人工审批），有人类
    授权则正常执行。机制默认关闭（无 sovereignty 上下文时行为与 C-1/C-2 完全一致）；
-   43 个生产点仍 ``enforce=False``，生产零行为变更。伪造主体（含以 ``type:"human"``
+   43 个生产点仍 ``enforce=False`` —— 即**装饰点参数未变**，但"部署是否武装"是另一
+   回事（见上）。本句**不得**读作"生产零执行效果"。伪造主体（含以 ``type:"human"``
    引用 service 身份）被 ``_is_verified_human`` 的 kind 校验拒绝，落回 deny。
 
    **Policy C-4（2026-09-12 Round 71，已实施）**：把"开窗口"这件事本身变成
@@ -221,6 +227,27 @@ def _resolve_actor_identity(principal: str) -> Dict[str, Optional[str]]:
         return {"identity_id": identity.id, "fingerprint": identity.fingerprint}
     except Exception:  # pragma: no cover - defensive
         return {"identity_id": None, "fingerprint": None}
+
+
+def _same_human(a: str, b: str) -> bool:
+    """True iff two principal spellings resolve to the same identity.
+
+    ``human_sovereign`` accepts either the identity id (``human:bob``) or the
+    plain principal name (``bob``), and a grant records the spelling it was
+    issued with -- so the window and the grant can legitimately name one human
+    two ways. A raw string comparison would refuse that window, i.e. withdraw a
+    human's authority over spelling, so both sides are canonicalised through the
+    Identity Kernel (the same resolution the audit writer uses) first.
+
+    When either side cannot be resolved the raw answer is kept: an unresolvable
+    principal cannot be *shown* to be the same human, and refusing is the safe
+    direction for an authorisation check.
+    """
+    if a == b:
+        return True
+    left = _resolve_actor_identity(a)["identity_id"]
+    right = _resolve_actor_identity(b)["identity_id"]
+    return left is not None and left == right
 
 
 class PolicyDeniedError(PermissionError):
@@ -458,7 +485,9 @@ def _sovereignty_claim_state(sov: Any, action: str) -> Optional[str]:
         # while carrying A's grant id is re-checked as "live, unrevoked, covers
         # the action" and escalates B to a human allow that, on the allow path,
         # no enforcement tier can refuse -- A's approval would be spent by B.
-        if grant.principal != sov.principal:
+        # Compared canonically, not by string: the same human may be spelled
+        # ``human:bob`` in the grant and ``bob`` in the window.
+        if not _same_human(grant.principal, sov.principal):
             return "grant-principal-mismatch"
         if grant.is_revoked:
             return "grant-revoked"

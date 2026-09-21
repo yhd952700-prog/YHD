@@ -332,6 +332,24 @@ class TestAGrantIsBoundToItsOwnHuman:
         assert actor["type"] != "human", actor
         assert actor.get("sovereignty_claim") == "grant-principal-mismatch", actor
 
+    def test_the_same_human_spelled_two_ways_is_not_a_mismatch(self, humans):
+        """Non-regression: D-2 must not withdraw authority over *spelling*.
+
+        ``human_sovereign`` accepts the identity id (``human:bob``) or the plain
+        principal name (``bob``), and a grant records whichever it was issued
+        with. A raw string comparison would refuse this legitimate window -- the
+        first version of this fix did exactly that, and
+        ``test_sovereignty_grants.py::TestAuditKeyspaceConvergence`` caught it.
+        """
+        _mgr, human = humans
+        assert human.principal != human.id, "test premise: the two forms differ"
+        grant = sov.issue_grant(human.id, [ACTION])
+        with sov.human_sovereign(human.principal, {ACTION}, grant_id=grant.grant_id):
+            verdict, _rule, actor = _adjudicate(ACTION, SCOPE)
+        assert verdict == "allow", (verdict, actor)
+        assert actor.get("type") == "human", actor
+        assert actor.get("sovereignty_claim") is None, actor
+
     def test_an_armed_process_does_not_execute_a_foreign_principal_allow(self, tmp_path):
         """The decisive form: armed, so "it never executed" is an execution fact.
 

@@ -16,10 +16,19 @@ What this proves:
   5. SAFETY GUARDS: no production ``@kernel_action`` flips ``enforce=True``;
      no production kernel code opens a sovereignty channel; the approval request
      model cannot name the approver (the principal is token-only); and exactly one
-     file may arm the switch -- the production manifest, with a spec that resolves
-     to the whole gated surface **minus the audited exemptions** (C-6). Dev, CI
-     and the Dockerfile must never arm it, so the suite keeps exercising the
-     record-only (L1) contract.
+     *deployment manifest* sets the arming variable -- the production manifest,
+     with a spec that resolves to the whole gated surface **minus the audited
+     exemptions** (C-6). Dev, CI and the Dockerfile must never arm it, so the
+     suite keeps exercising the record-only (L1) contract.
+
+     Bounds of that last claim, stated rather than left implicit: the scan runs
+     over the repository **minus ``tests/`` and ``scripts/``** (see the exclusion
+     in ``_armed_specs``), so it cannot see two things that also name the same
+     variable -- ``scripts/build_cloud_bundle.py`` renders it unconditionally into
+     the generated launcher, and this checker reads it. Neither is a deployment
+     manifest, so the narrowed claim holds; but "exactly one file in the
+     repository arms the switch" would be **false** and is **not** what is
+     asserted. The generated bundle is a separate surface with no coverage here.
 
 C-6 update (2026-09-12, Round 75)
 ---------------------------------
@@ -172,16 +181,26 @@ def _armed_specs() -> dict:
     from Python (``os.environ[...] =`` / ``putenv`` / ``setdefault``). Prose and
     docstrings that merely name the variable are deliberately not hits -- the
     enforcement module and the decorator must be able to document the switch.
+
+    **The scan excludes ``tests/`` and ``scripts/``**, and that exclusion is not
+    harmless: it hides ``scripts/build_cloud_bundle.py``, which renders the same
+    variable unconditionally into the generated launcher (the ``_LAUNCHER``
+    template). This guard therefore does **not** cover the generated-bundle
+    surface, and the caller's claim is scoped to *deployment manifests*
+    accordingly. Do not read a single hit here as "only one file in the
+    repository arms this".
     """
     var = "LIUHAO_KERNEL_POLICY_ENFORCE"
     config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
+    # Enumerated rather than a bare directory skip, so the exclusion is visible
+    # at the point it is applied -- and its consequence is recorded above.
+    excluded_roots = (".venv/", ".git/", "node_modules/", "tests/", "scripts/")
     armed = {}
     for path in REPO_ROOT.rglob("*"):
         if not path.is_file():
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
-        if any(rel.startswith(p) for p in (".venv/", ".git/", "node_modules/",
-                                           "tests/", "scripts/")):
+        if any(rel.startswith(p) for p in excluded_roots):
             continue
         try:
             text_ = path.read_text(encoding="utf-8", errors="ignore")

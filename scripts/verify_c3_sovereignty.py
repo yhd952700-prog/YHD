@@ -35,6 +35,13 @@ sys.path.insert(0, str(REPO_ROOT))
 # opener placed in the gateway or another non-kernel module.
 SRC_DIR = REPO_ROOT / "src"
 
+#: The module that *defines* the channel-opener symbols, exempted because a
+#: definition is not a production opener. Exempted by **resolved identity**, not
+#: by basename: skipping any file called ``_sovereignty.py`` would silently blind
+#: this guard to a same-named file placed anywhere else under ``src/`` -- the
+#: same "exempt by name, not by identity" defect class as T-M / F29.
+DEFINING_MODULE = (SRC_DIR / "kernels" / "_sovereignty.py").resolve()
+
 RESULTS = []
 
 
@@ -176,11 +183,13 @@ def _production_opens_sovereignty() -> bool:
     ``scripts/`` are not scanned at all, because a harness must be able to open
     a window to exercise the channel. Neither is a call whose symbol cannot be
     resolved statically (e.g. ``getattr(obj, runtime_name)``). The defining
-    module ``src/kernels/_sovereignty.py`` is skipped: it is where these symbols
-    are *defined*, so a definition there is not a production opener.
+    module ``src/kernels/_sovereignty.py`` -- and only it, matched by resolved
+    path (:data:`DEFINING_MODULE`) -- is skipped: it is where these symbols are
+    *defined*, so a definition there is not a production opener. A different file
+    that merely shares the basename is scanned like any other.
     """
     for path in SRC_DIR.rglob("*.py"):
-        if path.name == "_sovereignty.py":
+        if path.resolve() == DEFINING_MODULE:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -315,7 +324,12 @@ def main() -> int:
     check("no production @kernel_action has enforce=True",
           not enforced_sites,
           f"flipped={sorted(enforced_sites)}" if enforced_sites else "")
-    check("no production code opens a sovereignty channel",
+    # The label must not be broader than what the checker actually proves. The
+    # previous wording ("no production code opens a sovereignty channel") was an
+    # unqualified universal while `_production_opens_sovereignty` covers only
+    # statically resolvable names -- the same defect it was just fixed for,
+    # merely moved from the docstring into the line CI prints.
+    check("no statically-resolvable opener of a sovereignty channel under src/",
           not _production_opens_sovereignty())
 
     failed = [r for r in RESULTS if not r[0]]
