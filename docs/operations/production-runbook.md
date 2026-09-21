@@ -124,7 +124,7 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 身份表文件（file 后端） | — |
 | `LIUHAO_KERNEL_POLICY_ENFORCE` | 内核层真拦截层选择 | 空（L1 记录） |
 | `AI_PROVIDER_TYPE` / `*_API_KEY` | LLM provider 与密钥（默认 `mock`） | `mock` |
-| `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（发布包由构建期烘焙） |
+| `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（构建器**设计上**会在构建期把密钥写进发布包的 `serve.py`；⚠️ 2026-09-21 实测：磁盘上的当前产物**不含**该变量，见 `LAUNCH-CRITERIA.md` §4 第 12 条） |
 | `JWT_SECRET_KEY` / `JWT_SECRET` | 同上密钥的兼容旧名（生产 compose 用前者） | 未设 |
 | `LIUHAO_JWT_PRIVATE_KEY` / `_PUBLIC_KEY` | 改用 RS256 时的 PEM 对（两者必须同时给） | 未设 |
 | `LIUHAO_JWT_ALGORITHM` | 显式指定算法（默认：有 secret 走 HS256，有 PEM 对走 RS256） | — |

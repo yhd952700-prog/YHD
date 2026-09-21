@@ -323,6 +323,11 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
    `resource` kernel），补审计时不应破坏该设计意图。
 5. **Policy Controlled：路线 C 的 C-0 → C-3 机制已全部实施；生产默认仍为 L1（记录型）**。
    内核层判决**已携带信息**（白名单驱动 allow/deny，Round 65），但**仍未拦截**（§3.5.4 修复记录）。
+   > ⚠️ **口径边界（2026-09-21 补）：** 上面两句里的「生产默认 / 仍未拦截」指的是**代码默认**
+   > （43 个装饰点 `enforce=False` + 开关默认空）。**部署面不是这个默认** ——
+   > `docker-compose.prod.yml:59` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`
+   > 武装，被武装的 HIGH/CRITICAL 动作上判决**会**被执行。两者不可互推；云发布包那条路侧
+   > 本工作区不可判定（见 `LAUNCH-CRITERIA.md` A4 行注）。
    > 📄 **方案与实施记录**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比
    > （A 维持 / B 全面拦截 / **C 分层分级，已采纳**）+ 决策点 D1–D8 + 爆炸半径清单。
    > - **C-0 + C-1 已实施并验证**（Round 65，`scripts/verify_policy_c1.py` = ALL GREEN）。
