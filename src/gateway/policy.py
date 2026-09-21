@@ -1,6 +1,6 @@
 """鎏灏 Policy Controlled 审批端点（内核层真拦截的**真实入口**）。
 
-内核层 43 个 ``@kernel_action`` 的 HIGH/CRITICAL 动作在开启拦截后，必须由
+内核层 44 个 ``@kernel_action`` 中，HIGH/CRITICAL 共 17 个动作在开启拦截后，必须由
 **经核验的人类**授权才能执行（OD-010）。C-3 提供了 ``human_sovereign`` 上下文，
 C-4 把授权本身变成可审计凭据。本模块提供那个凭据的**真实签发/查询/撤销入口**。
 
