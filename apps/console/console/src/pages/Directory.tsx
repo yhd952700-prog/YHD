@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import type { RosterPayload } from '../lib/contracts'
+import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
 import { BrainMap, NetworkGraph } from '../components/charts'
@@ -18,9 +18,20 @@ import { Card, Dot, Empty, Guard } from '../components/ui'
 
 type OpenApiPaths = { paths?: Record<string, Record<string, unknown>> }
 
+const STATUS_TONE: Record<string, string> = {
+  idle: 'ok',
+  running: 'accent',
+  paused: 'muted',
+  stopped: 'danger',
+  completed: 'ok',
+  failed: 'danger',
+}
+
 export function Roster({ query }: { query: string }) {
   const roster = useApi<RosterPayload>('/v1/dashboard/roster', 60_000)
-  const [tab, setTab] = useState<'kernels' | 'layers'>('kernels')
+  const employees = useApi<EmployeesPayload>('/v1/employees', 30_000)
+  const goals = useApi<GoalsPayload>('/v1/goals', 30_000)
+  const [tab, setTab] = useState<'kernels' | 'layers' | 'runtime'>('kernels')
 
   const need = query.trim().toLowerCase()
 
@@ -142,9 +153,89 @@ export function Roster({ query }: { query: string }) {
             >
               能力层 {roster.data?.totals.layers ?? 0}
             </button>
+            <button
+              className="os-badge"
+              data-tone={tab === 'runtime' ? 'accent' : 'muted'}
+              onClick={() => setTab('runtime')}
+            >
+              运行时 {employees.data?.count ?? 0}
+            </button>
           </div>
         }
       >
+        {tab === 'runtime' ? (
+          <Guard
+            loading={employees.loading}
+            error={employees.error}
+            data={employees.data}
+            isEmpty={(data) => data.agents.length === 0}
+            emptyTitle="Agent pool 未初始化"
+            onRetry={employees.reload}
+          >
+            {(empData) => (
+              <div className="os-list">
+                <div className="os-row" style={{ marginBottom: 8, borderBottom: '1px solid var(--os-border)' }}>
+                  <div className="os-row-main">
+                    <div className="os-row-sub">
+                      提交 {empData.stats.total_tasks_submitted} ·
+                      完成 {empData.stats.total_tasks_completed} ·
+                      失败 {empData.stats.total_tasks_failed} ·
+                      队列 {empData.stats.task_queue_length}
+                    </div>
+                  </div>
+                </div>
+                {empData.agents.map((agent) => (
+                  <div className="os-row" key={agent.id}>
+                    <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[agent.status] ?? 'muted'})` }} />
+                    <div className="os-row-main">
+                      <div className="os-row-title">
+                        {agent.name}{' '}
+                        <span className="os-badge" data-tone="muted">
+                          {agent.id}
+                        </span>
+                      </div>
+                      <div className="os-row-sub">
+                        {agent.agent_type} ·
+                        完成 {agent.completed_tasks} ·
+                        失败 {agent.failed_tasks} ·
+                        延迟 {agent.total_latency_ms.toFixed(0)}ms
+                        {agent.current_task ? ` · 当前: ${agent.current_task}` : ''}
+                      </div>
+                    </div>
+                    <span className="os-badge" data-tone={STATUS_TONE[agent.status] ?? 'muted'}>
+                      {agent.status}
+                    </span>
+                  </div>
+                ))}
+                {goals.data && goals.data.goals.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>最近 Goal 执行</div>
+                    {goals.data.goals.slice(0, 5).map((goal) => (
+                      <div className="os-row" key={goal.goal_id}>
+                        <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[goal.state] ?? 'muted'})` }} />
+                        <div className="os-row-main">
+                          <div className="os-row-title">
+                            <code>{goal.goal_id}</code>{' '}
+                            <span className="os-badge" data-tone="muted">{goal.scope}</span>
+                          </div>
+                          <div className="os-row-sub">
+                            {goal.natural_language.length > 60
+                              ? goal.natural_language.slice(0, 60) + '…'
+                              : goal.natural_language}
+                            {goal.error ? ` · ${goal.error}` : ''}
+                          </div>
+                        </div>
+                        <span className="os-badge" data-tone={STATUS_TONE[goal.state] ?? 'muted'}>
+                          {goal.state}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Guard>
+        ) : (
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -201,6 +292,7 @@ export function Roster({ query }: { query: string }) {
             )
           }
         </Guard>
+        )}
       </Card>
 
       <Card title="服务面" sub="LLM provider 真实配置状态" span={12}>

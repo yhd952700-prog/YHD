@@ -173,3 +173,94 @@ export interface ApprovalSummary {
   count: number
   grants: { id: string; remaining_seconds?: number; is_active?: boolean }[]
 }
+
+// ─── AI Employee / Goal / Workflow 契约 ─────────────────────
+
+export interface AgentInfo {
+  id: string
+  agent_type: string
+  name: string
+  status: string
+  current_task: string | null
+  completed_tasks: number
+  failed_tasks: number
+  total_latency_ms: number
+}
+
+export interface EmployeeStats {
+  name: string
+  agent_count: number
+  total_tasks_submitted: number
+  total_tasks_completed: number
+  total_tasks_failed: number
+  task_queue_length: number
+}
+
+export interface EmployeesPayload {
+  agents: AgentInfo[]
+  count: number
+  stats: EmployeeStats
+  error?: string
+}
+
+export interface GoalSummary {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  created_at?: number | null
+  error?: string | null
+  replan_suggested: boolean
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface GoalTraceEntry {
+  task_id: string | null
+  event_type: string
+  ts?: string | null
+  capability?: string | null
+  decision: string
+  output?: unknown
+  error?: string | null
+  correlation_id?: string
+}
+
+export interface GoalDetail {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  correlation_id: string
+  error?: string | null
+  replan_count: number
+  replan_suggested: boolean
+  trace: GoalTraceEntry[]
+  tasks: Record<string, unknown>[]
+  evaluation?: {
+    outcome?: string
+    replan_required?: boolean
+    replan_triggered?: boolean
+    summary?: string
+  } | null
+  created_at?: number
+}
+
+export interface GoalsPayload {
+  goals: GoalSummary[]
+  count: number
+}
+
+export interface WorkflowSummary {
+  goal_id: string
+  state: string
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface WorkflowsPayload {
+  workflows: WorkflowSummary[]
+  count: number
+}
