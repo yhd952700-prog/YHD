@@ -53,6 +53,25 @@ def _allow_rule(action_name: str):
     return rule_id
 
 
+@pytest.fixture(autouse=True)
+def _clean_policy_rules():
+    """每个测试前清理 test-registered policy rules，防止单例跨测试污染。
+
+    根因：``get_policy_engine()`` 返回进程级单例，``_allow_rule`` 注册的
+    ``allow-*`` 规则在其他测试后残留，导致 default-deny 逻辑被污染。
+    此 fixture 在每个测试前移除所有 ``allow-`` 前缀的规则，恢复干净状态。
+    """
+    engine = get_policy_engine()
+    for rule in engine.list_rules(enabled_only=False):
+        if rule.id.startswith("allow-"):
+            engine.unregister_rule(rule.id)
+    yield
+    # 测试后再清一次，保护后续测试
+    for rule in engine.list_rules(enabled_only=False):
+        if rule.id.startswith("allow-"):
+            engine.unregister_rule(rule.id)
+
+
 # ---------------------------------------------------------------------------
 # Adapter roundtrips
 # ---------------------------------------------------------------------------
