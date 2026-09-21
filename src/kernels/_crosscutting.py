@@ -81,16 +81,146 @@ package (which has no ``__init__.py``).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import time
 import uuid
 from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 from src.kernels._enforcement import is_enforced
 from src.kernels._risk_classification import ENFORCED_TIERS, RiskTier, get_kernel_action_risk
 
 logger = logging.getLogger("liuhao.kernel.crosscutting")
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3.6 / A2 — who actually performed the action
+# --------------------------------------------------------------------------- #
+#
+# Every ``@kernel_action`` recorded the **literal string** ``"kernel"`` as the
+# audit subject: ``_call_audit("kernel", ...)`` at both call sites. Measured
+# consequence: the authoritative audit chain could not answer "which agent did
+# this", because the constant was identical for all 43 production call sites and
+# for every agent that ever ran through them. Note that this is true with **one**
+# agent -- it is not a scale problem, which is why it is tracked separately from
+# the scale findings.
+#
+# The aggravating detail is that the right answer was *already computed and then
+# discarded*: ``_adjudicate`` resolves the acting principal (``sov.principal``
+# when a verified human holds the window) and the audit path threw it away while
+# writing the constant.
+#
+# Containment has two halves:
+#
+#   1. the acting principal is resolved once and threaded through to the audit
+#      event, together with its ``identity_fingerprint`` -- the canonical
+#      identifier the authorization side also uses. Before this, audit indexed
+#      identities by a unique **principal name** while authorization indexed them
+#      by a **32-bit id**: two key spaces in different domains, so no cross-check
+#      between them was even expressible and a 32-bit collision was unfalsifiable.
+#   2. ``bind_acting_principal`` lets a caller that *knows* which agent is acting
+#      say so for the duration of a block, instead of leaving the service default
+#      to stand in for it.
+#
+# When nothing is bound, the recorded subject is the internal service principal --
+# which is *true*: kernel code, not an agent, performed the action. What is no
+# longer true is that the record **cannot** name an agent.
+_ACTING_PRINCIPAL: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+    "liuhao_acting_principal", default=None
+)
+
+
+@contextmanager
+def bind_acting_principal(principal: str, *, kind: str = "agent") -> Iterator[None]:
+    """Attribute kernel actions performed inside this block to ``principal``.
+
+    Nesting restores the previous binding on exit, so a caller can tighten
+    attribution for a sub-operation without having to reason about what was
+    bound outside.
+    """
+    token = _ACTING_PRINCIPAL.set({"kind": kind, "principal": principal})
+    try:
+        yield
+    finally:
+        _ACTING_PRINCIPAL.reset(token)
+
+
+def acting_principal() -> Optional[Dict[str, str]]:
+    """The currently bound actor, or ``None`` when nothing is bound."""
+    bound = _ACTING_PRINCIPAL.get()
+    return dict(bound) if bound is not None else None
+
+
+#: Set by :func:`mark_action_denied` to tell the decorator that the wrapped call
+#: is refusing by *returning* rather than raising.
+_DENIED_SIGNAL: ContextVar[Optional[str]] = ContextVar(
+    "liuhao_action_denial", default=None
+)
+
+
+def mark_action_denied(reason: str) -> None:
+    """Declare that the enclosing kernel action is refusing.
+
+    A method that reports a refusal by returning ``None``/``False`` is recorded
+    by the decorator as ``outcome="success"``, because from the decorator's point
+    of view the call simply completed. That is how an impersonation attempt ends
+    up reading, in the only durable record, as a *successful identity creation*
+    (PHASE 3.6 / A1; U-1). A method that refuses without raising should say so:
+
+        mark_action_denied("principal uses the reserved identity prefix")
+        return None
+
+    Opt-in on purpose. Inferring "denied" from a falsy return value would silently
+    change the meaning of ``outcome`` for all 43 existing call sites, several of
+    which legitimately return ``None``/``False`` for non-security reasons.
+    """
+    _DENIED_SIGNAL.set(reason)
+
+
+def _consume_denial() -> Optional[str]:
+    """Read and clear the denial signal, so it cannot leak into a later call."""
+    reason = _DENIED_SIGNAL.get()
+    if reason is not None:
+        _DENIED_SIGNAL.set(None)
+    return reason
+
+
+def _service_actor() -> Dict[str, str]:
+    try:
+        from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
+
+        return {"kind": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
+    except Exception:  # pragma: no cover - defensive
+        return {"kind": "service", "principal": "liuhao-internal-service"}
+
+
+def _service_actor_policy_shape() -> Dict[str, str]:
+    """The service actor in the shape the policy engine expects."""
+    return {"type": "service", "principal": _service_actor()["principal"]}
+
+
+def _resolve_actor_identity(principal: str) -> Dict[str, Optional[str]]:
+    """``{"identity_id", "fingerprint"}`` for ``principal`` via the Identity Kernel.
+
+    Both come from the same object, which is the point: audit and authorization
+    now resolve through one identity model instead of two key spaces that could
+    never be compared. Unregistered principals yield ``None`` for both -- an
+    absent attribution must be visibly absent, not a plausible-looking string.
+    """
+    try:
+        from src.kernels.identity import get_identity_manager
+
+        manager = get_identity_manager()
+        identity = manager.get_identity_by_principal(
+            principal
+        ) or manager.get_identity(principal)
+        if identity is None:
+            return {"identity_id": None, "fingerprint": None}
+        return {"identity_id": identity.id, "fingerprint": identity.fingerprint}
+    except Exception:  # pragma: no cover - defensive
+        return {"identity_id": None, "fingerprint": None}
 
 
 class PolicyDeniedError(PermissionError):
@@ -148,15 +278,52 @@ _AUDIT_IMPORT = ("src.kernels.audit", "log_event", "AuditEventType", "AuditScope
 _POLICY_IMPORT = ("src.kernels.policy", "evaluate_policy_simple")
 
 
-def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
+def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
+    """The subject written to the audit event, and why it is that subject.
+
+    Order of precedence (PHASE 3.6 / A2):
+    1. an explicitly bound acting principal -- a caller that knows which agent is
+       acting outranks any inference;
+    2. otherwise the actor the policy engine adjudicated as (a verified human when
+       a sovereignty window covers the action, else the internal service);
+    3. ``actor_source`` records which of the two it was, so a reader of the record
+       can tell "an agent did this" from "the kernel did this" from "we do not
+       know, and here is the default we fell back to".
+    """
+    bound = _ACTING_PRINCIPAL.get()
+    if bound is not None:
+        return {
+            "kind": bound["kind"],
+            "principal": bound["principal"],
+            "source": "bound",
+        }
+    actor_type = policy_actor.get("type", "service")
+    return {
+        "kind": actor_type,
+        "principal": policy_actor["principal"],
+        "source": (
+            "sovereignty-window" if actor_type == "human" else "service-default"
+        ),
+    }
+
+
+def _call_audit(actor: Dict[str, str], action: str, outcome: str,
+                decision: Optional[str],
                 corr_id: str, duration_ms: float, rule_id: Optional[str] = None,
                 risk_level: Optional[str] = None, enforced: bool = False,
-                grant_id: Optional[str] = None) -> None:
+                grant_id: Optional[str] = None,
+                denial_reason: Optional[str] = None) -> None:
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
+
+        # A2: resolve the actor through the Identity Kernel so the audit record
+        # and the authorization decision name the same identity, in the same key
+        # space. Unregistered principals resolve to None for both fields -- an
+        # absent attribution must be visibly absent.
+        identity = _resolve_actor_identity(actor["principal"])
         log_event(
             event_type=AuditEventType.STATE_CHANGE,
-            principal_id=actor,
+            principal_id=actor["principal"],
             scope=AuditScope.L0,
             outcome=outcome,
             details={
@@ -176,6 +343,18 @@ def _call_audit(actor: str, action: str, outcome: str, decision: Optional[str],
                 # C-4: 若本动作是在某个人工审批授权窗口内执行的，记下凭据 id。
                 # 没有它，一次被放行的 HIGH/CRITICAL 动作无法回答"谁批的"。
                 "sovereignty_grant": grant_id,
+                # A2: 真实行动主体的种类、身份 id 与规范指纹。这三个字段让
+                # 「哪个 agent 做的」可答，并让审计侧与授权侧收敛到同一原语
+                # （授权侧按 32-bit id 索引，此前审计侧按唯一主名索引 —— 两个
+                # 键空间无法交叉校验）。
+                "actor_kind": actor.get("kind", "unknown"),
+                "actor_source": actor.get("source", "unknown"),
+                "actor_identity_id": identity["identity_id"],
+                "actor_fingerprint": identity["fingerprint"],
+                # A1/U-1: why a call that *returned* is nonetheless a refusal.
+                # Without it, a refused impersonation reads as a successful
+                # creation in the authoritative chain.
+                "denial_reason": denial_reason,
                 "duration_ms": round(duration_ms, 3),
             },
             correlation_id=corr_id,
@@ -195,8 +374,8 @@ def _active_grant_id() -> Optional[str]:
         return None
 
 
-def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[str]]:
-    """Return ``(decision, rule_id)`` recorded for ``action``.
+def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[str], Dict[str, str]]:
+    """Return ``(decision, rule_id, actor)`` recorded for ``action``.
 
     The actor is the built-in **internal service principal** rather than an
     anonymous ``{"type": "system"}`` actor: the engine recomputes ``verified``
@@ -204,7 +383,11 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
     ``src.kernels.policy.INTERNAL_SERVICE_ALLOWED_ACTIONS`` instead of being a
     constant deny.
 
-    ``(None, None)`` means adjudication was unavailable; the decorator is
+    The actor is returned rather than discarded (PHASE 3.6 / A2): it is the best
+    available answer to "who did this", and the audit path used to throw it away
+    while writing the constant ``"kernel"``.
+
+    ``(None, None, actor)`` means adjudication was unavailable; the decorator is
     additive and must never break or delay the wrapped call on that account.
     """
     try:
@@ -249,10 +432,10 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
             if len(parts) == 3 and parts[0] == "RULE":
                 rule_id = parts[1]
                 break
-        return verdict, rule_id
+        return verdict, rule_id, actor
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("kernel_action policy adjudication failed for %r: %s", action, exc)
-        return None, None
+        return None, None, _service_actor_policy_shape()
 
 
 def kernel_action(
@@ -306,12 +489,21 @@ def kernel_action(
             rule_id: Optional[str] = None
             grant_id: Optional[str] = None
 
+            # A2: the fallback actor, used both when adjudication is disabled and
+            # when it failed. ``_adjudicate`` returns the actor it actually used,
+            # so a sovereignty-window escalation is recorded as the human rather
+            # than as the service.
+            policy_actor = _service_actor_policy_shape()
             if policy:
-                decision, rule_id = _adjudicate(action, effective_risk)
+                decision, rule_id, policy_actor = _adjudicate(action, effective_risk)
                 # C-4: remember which approval grant (if any) the verdict was
                 # reached under, so the audit event closes the chain
                 # action <- grant <- authorising human.
                 grant_id = _active_grant_id()
+            # The subject written to the audit event: an explicitly bound acting
+            # principal outranks the adjudicated actor; neither of them is the
+            # constant "kernel" that used to be written here.
+            audit_actor = _resolve_audit_actor(policy_actor)
 
             # --- Policy C-2 enforcement gate ---------------------------------- #
             # Opt-in (enforce=True) and HIGH/CRITICAL only. With enforce=False
@@ -344,9 +536,9 @@ def kernel_action(
                     block_ms = (time.time() - started) * 1000.0
                     if audit:
                         _call_audit(
-                            "kernel", action, "blocked", decision or "error", corr_id,
-                            block_ms, rule_id, effective_risk, enforced=True,
-                            grant_id=grant_id,
+                            audit_actor, action, "blocked", decision or "error",
+                            corr_id, block_ms, rule_id, effective_risk,
+                            enforced=True, grant_id=grant_id,
                         )
                     if observable:
                         logger.warning(
@@ -367,18 +559,31 @@ def kernel_action(
                     # permanently forbidding the action.
                     raise PolicyDeferredError(action, rule_id)
 
+            # U-1: start from a clean slate, so a denial declared by an earlier
+            # (or nested) call can never be attributed to this one.
+            _DENIED_SIGNAL.set(None)
             outcome = "success"
+            denial_reason: Optional[str] = None
             try:
                 result = fn(*args, **kwargs)
             except Exception:
                 outcome = "failure"
                 raise
             finally:
+                if outcome == "success":
+                    # A refusal reported by returning is still a refusal. Only an
+                    # explicit mark_action_denied() counts -- inferring it from a
+                    # falsy return would silently redefine ``outcome`` for every
+                    # existing call site.
+                    denial_reason = _consume_denial()
+                    if denial_reason is not None:
+                        outcome = "denied"
                 duration_ms = (time.time() - started) * 1000.0
                 if audit:
-                    _call_audit("kernel", action, outcome, decision, corr_id,
+                    _call_audit(audit_actor, action, outcome, decision, corr_id,
                                 duration_ms, rule_id, effective_risk,
-                                grant_id=grant_id)
+                                grant_id=grant_id,
+                                denial_reason=denial_reason)
                 if observable:
                     logger.info(
                         "kernel_action=%s outcome=%s policy=%s risk=%s duration_ms=%.3f correlation_id=%s",

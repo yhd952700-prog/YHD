@@ -125,7 +125,10 @@ def main() -> int:
 
     # fail-closed: adjudication unavailable + enforce => blocks
     orig = xc._adjudicate
-    xc._adjudicate = lambda a, r: (None, None)
+    # PHASE 3.6 / A2: _adjudicate now returns the actor it actually used as a
+    # third value, so the stub must too. The real fail-closed path returns the
+    # service actor shape, so the stub mirrors it rather than inventing one.
+    xc._adjudicate = lambda a, r: (None, None, xc._service_actor_policy_shape())
     try:
         @xc.kernel_action("security.set_abac_rule", enforce=True)
         def critical_enforced():

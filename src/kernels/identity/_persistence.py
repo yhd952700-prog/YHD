@@ -36,6 +36,8 @@ kernel never creates one.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -90,6 +92,91 @@ FIELD_SCOPE = "scope"
 FIELD_REGISTERED_AT = "registered_at"
 FIELD_SOURCE = "source"
 
+# --------------------------------------------------------------------------- #
+# PHASE 3.6 / A3 containment — authorization source integrity
+# --------------------------------------------------------------------------- #
+#
+# "Who may hold sovereignty" is decided by the rows in this store, and the store
+# is a plain JSON file (or a plain SQLite table) that anything with filesystem
+# access -- including an in-process plugin, which Spec §2 B-11 records as loaded
+# without a sandbox -- can edit.
+#
+# Measured 2026-09-20 on the pre-containment tree:
+#   * ``grep -cE "hmac|sign\\(|signature|chmod|0600" src/kernels/identity/_persistence.py`` -> 0
+#   * ``:126`` docstring: "Decode the ``permissions`` column, **tolerating
+#     hand-edited rows**"
+#   * ``:135`` fallback branch comment: "A comma-separated list is what a human
+#     would type into a DB browser."
+#
+# So a hand edit is not an anomaly this code has a concept for -- it is an
+# interaction the code implements deliberately. The consequence is that the
+# charter redlines D1-D4 have their gate *judged* inside the policy kernel (hard
+# to bypass, precedence-guarded) while the question "who is allowed to pass the
+# double-signature as grantor" bottoms out in a hand-editable text file.
+#
+# Containment: an optional per-row authentication tag. When the key below is
+# configured, a row that does not authenticate is **refused** (fail-closed) and
+# the refusal is reported. When it is not configured, legacy behaviour is
+# preserved byte-for-byte and the store reports ``integrity_enforced: False``
+# together with a warning -- so "this registry is not authenticated" is a
+# visible fact rather than a silent default.
+#
+# Deliberately NOT provided: a "skip verification" switch. A switch that
+# disables the check would let the check be neutralised by changing one string
+# in one environment, which is the failure mode this whole phase is about.
+
+#: Optional per-row trust score. Absent means the kernel's documented default
+#: applies -- the kernel no longer hardcodes the number.
+FIELD_TRUST_SCORE = "trust_score"
+
+#: Serialised name of the authentication tag column.
+FIELD_INTEGRITY = "integrity"
+
+#: Integrity verdict attached to an *extended* row.
+FIELD_INTEGRITY_STATUS = "integrity_status"
+
+INTEGRITY_VERIFIED = "verified"
+INTEGRITY_UNVERIFIED = "unverified"
+
+#: Env var holding the key used to authenticate registry rows.
+HUMAN_IDENTITIES_INTEGRITY_KEY_ENV = "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"
+
+#: Fields covered by the tag, in the canonical order :func:`_canonical_row`
+#: serialises them. ``registered_at`` is deliberately excluded: it is bookkeeping
+#: (and is preserved across edits by design), whereas these five decide authority.
+_TAGGED_FIELDS = (
+    FIELD_PRINCIPAL,
+    FIELD_DISPLAY_NAME,
+    FIELD_PERMISSIONS,
+    FIELD_SCOPE,
+    FIELD_TRUST_SCORE,
+)
+
+# PHASE 3.6 / A5 -- algorithm identifiers on *this* evidence too
+# ---------------------------------------------------------------
+# A5 fixed the audit chain so an event states which hash produced it. The row
+# authentication tag written here has the identical problem, and fixing only the
+# audit side would leave the registry as the one piece of evidence whose
+# verification recipe lives out-of-band: a bare hex digest does not say whether
+# it is an HMAC or a plain hash, which primitive, or how long the key was, so a
+# future verifier must trust a note (or the spec version) instead of the record.
+# The tag is therefore written as ``"<alg>:<hexdigest>"`` and verification
+# dispatches on the declared name.
+
+#: MAC algorithms this build can produce and verify, by identifier.
+MAC_ALGORITHMS: Dict[str, Callable[[bytes, bytes], str]] = {
+    "hmac-sha256": lambda key, msg: hmac.new(key, msg, hashlib.sha256).hexdigest(),
+}
+
+#: Identifier written on every tag this build produces.
+DEFAULT_MAC_ALG = "hmac-sha256"
+
+#: Separator between the algorithm identifier and the digest.
+_MAC_ALG_SEPARATOR = ":"
+
+#: Verdict for a row loaded without a configured key.
+DEFAULT_TRUST_SCORE_SENTINEL = "default"
+
 #: Default location for the SQLite backend when only the backend is chosen.
 #: Anchored to the repository root so it does not depend on the CWD.
 DEFAULT_SQLITE_PATH = (
@@ -103,22 +190,34 @@ CREATE TABLE IF NOT EXISTS human_identities (
     permissions   TEXT NOT NULL DEFAULT '[]',
     scope         TEXT NOT NULL DEFAULT 'L0',
     registered_at TEXT NOT NULL DEFAULT '',
-    source        TEXT NOT NULL DEFAULT ''
+    source        TEXT NOT NULL DEFAULT '',
+    trust_score   REAL,
+    integrity     TEXT
 )
 """
+
+#: Columns added after the original schema shipped. Migrated in place by
+#: ``_prepare`` so a pre-existing registration database keeps working.
+_SQLITE_ADDED_COLUMNS = (
+    ("trust_score", "REAL"),
+    ("integrity", "TEXT"),
+)
 
 # Deliberately does NOT overwrite ``registered_at`` on conflict: that column
 # records when the principal was *first* registered, and an upsert is an edit,
 # not a re-registration.
 _SQLITE_UPSERT = """
 INSERT INTO human_identities
-    (principal, display_name, permissions, scope, registered_at, source)
-VALUES (?, ?, ?, ?, ?, ?)
+    (principal, display_name, permissions, scope, registered_at, source,
+     trust_score, integrity)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(principal) DO UPDATE SET
     display_name = excluded.display_name,
     permissions  = excluded.permissions,
     scope        = excluded.scope,
-    source       = excluded.source
+    source       = excluded.source,
+    trust_score  = excluded.trust_score,
+    integrity    = excluded.integrity
 """
 
 
@@ -154,6 +253,107 @@ def _stamp_registered_at(entry: Dict[str, Any]) -> str:
     return utc_now().isoformat()
 
 
+# --------------------------------------------------------------------------- #
+# PHASE 3.6 / A3: row authentication
+# --------------------------------------------------------------------------- #
+
+def _coerce_trust_number(raw: Any) -> Optional[float]:
+    """Normalise a trust score to ``[0, 1]``, or ``None`` when absent/invalid."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _canonical_trust(raw: Any) -> str:
+    """Stable string form of a trust score, used *inside the tag input*.
+
+    Normalising here (rather than comparing floats) is what lets the tag be
+    recomputed identically at write time and at verify time, across a JSON
+    round-trip and a SQLite REAL round-trip.
+    """
+    number = _coerce_trust_number(raw)
+    if number is None:
+        return DEFAULT_TRUST_SCORE_SENTINEL
+    return f"{number:.6f}"
+
+
+def _canonical_row(entry: Dict[str, Any]) -> str:
+    """Canonical serialisation of the authority-bearing fields of a row."""
+    payload = {
+        FIELD_PRINCIPAL: str(entry.get(FIELD_PRINCIPAL) or "").strip(),
+        FIELD_DISPLAY_NAME: str(entry.get(FIELD_DISPLAY_NAME) or ""),
+        FIELD_PERMISSIONS: sorted(
+            {str(p) for p in (entry.get(FIELD_PERMISSIONS) or [])}
+        ),
+        FIELD_SCOPE: str(entry.get(FIELD_SCOPE) or "L0"),
+        FIELD_TRUST_SCORE: _canonical_trust(entry.get(FIELD_TRUST_SCORE)),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def integrity_key() -> str:
+    """The configured registry authentication key, or ``""`` when unset."""
+    return (os.environ.get(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV) or "").strip()
+
+
+def integrity_enforced() -> bool:
+    """True when registry rows must authenticate before they are admitted."""
+    return bool(integrity_key())
+
+
+def compute_row_tag(entry: Dict[str, Any], key: str) -> Optional[str]:
+    """``"<alg>:<hexdigest>"`` authenticating the authority-bearing fields.
+
+    The algorithm name travels **inside** the tag (PHASE 3.6 / A5), so the record
+    says how to verify itself. ``None`` when no key is configured, which is the
+    signal callers use to skip verification rather than to succeed at it
+    silently.
+    """
+    if not key:
+        return None
+    produce = MAC_ALGORITHMS[DEFAULT_MAC_ALG]
+    digest = produce(key.encode("utf-8"), _canonical_row(entry).encode("utf-8"))
+    return f"{DEFAULT_MAC_ALG}{_MAC_ALG_SEPARATOR}{digest}"
+
+
+def tag_matches(entry: Dict[str, Any], key: str, tag: Any) -> bool:
+    """Constant-time check that ``tag`` authenticates ``entry``.
+
+    Fail-closed on an unrecognised or absent algorithm identifier: a tag this
+    build cannot *verify* is not a tag this build may *accept*, and silently
+    falling back to the default algorithm would make the identifier decorative.
+    """
+    if not key:
+        return True  # no key configured -> nothing to verify
+    if not isinstance(tag, str) or not tag:
+        return False
+    alg_name, sep, declared = tag.partition(_MAC_ALG_SEPARATOR)
+    if not sep:
+        # A bare digest states no algorithm. Since the tag column did not exist
+        # before A3 there is no legitimate legacy shape to stay compatible with,
+        # so this is an unverifiable tag rather than an old one.
+        logger.error(
+            "registry integrity tag %r carries no algorithm identifier; refusing "
+            "it rather than assuming %s", tag, DEFAULT_MAC_ALG,
+        )
+        return False
+    produce = MAC_ALGORITHMS.get(alg_name)
+    if produce is None:
+        logger.error(
+            "registry integrity tag declares algorithm %r, which this build "
+            "cannot verify; refusing it rather than assuming %s",
+            alg_name, DEFAULT_MAC_ALG,
+        )
+        return False
+    expected = f"{alg_name}{_MAC_ALG_SEPARATOR}" + produce(
+        key.encode("utf-8"), _canonical_row(entry).encode("utf-8")
+    )
+    return hmac.compare_digest(tag, expected)
+
+
 class JsonFileStore:
     """The original JSON seed file, unchanged in behaviour.
 
@@ -165,8 +365,34 @@ class JsonFileStore:
 
     def __init__(self, location: str):
         self.location = location or ""
+        #: Verdict of the most recent :meth:`load_all`, so a caller can tell
+        #: "the store offered 3 rows and 1 was refused" without parsing logs.
+        self.last_load_report: Dict[str, Any] = {
+            "backend": BACKEND_FILE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
 
-    def load_all(self) -> List[Dict[str, Any]]:
+    def load_all(self, include_extended: bool = False) -> List[Dict[str, Any]]:
+        """Return admitted rows.
+
+        ``include_extended=False`` (the default) keeps the historical shape
+        exactly -- ``principal`` / ``display_name`` / ``permissions`` /
+        ``scope`` / ``registered_at`` -- because tests and operator tooling read
+        that shape. The containment columns travel only when
+        ``include_extended=True`` is asked for explicitly.
+
+        When :data:`HUMAN_IDENTITIES_INTEGRITY_KEY_ENV` is configured, a row
+        that does not authenticate against the key is **refused** (fail-closed)
+        and listed in ``last_load_report["rejected"]``.
+        """
+        self.last_load_report = {
+            "backend": BACKEND_FILE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
         if not self.location:
             # Unconfigured is the fail-closed default, not an error.
             return []
@@ -197,14 +423,37 @@ class JsonFileStore:
                 HUMAN_IDENTITIES_FILE_ENV, self.location, type(payload).__name__,
             )
             return []
+
+        key = integrity_key()
         kept: List[Dict[str, Any]] = []
         for entry in entries:
-            if isinstance(entry, dict):
-                kept.append(entry)
-            else:
+            if not isinstance(entry, dict):
                 logger.error(
                     "skipping non-object entry in %r: %r", self.location, entry,
                 )
+                continue
+            if key and not tag_matches(entry, key, entry.get(FIELD_INTEGRITY)):
+                rejected = entry.get(FIELD_PRINCIPAL) or "<no principal>"
+                self.last_load_report["rejected"].append(rejected)
+                logger.error(
+                    "REFUSING registry row %r in %r: the row does not "
+                    "authenticate against %s (missing or mismatched %r tag). A "
+                    "row that cannot be authenticated cannot decide who holds "
+                    "sovereignty.",
+                    rejected, self.location, HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+                    FIELD_INTEGRITY,
+                )
+                continue
+            if include_extended:
+                extended = dict(entry)
+                extended[FIELD_TRUST_SCORE] = entry.get(FIELD_TRUST_SCORE)
+                extended[FIELD_INTEGRITY_STATUS] = (
+                    INTEGRITY_VERIFIED if key else INTEGRITY_UNVERIFIED
+                )
+                kept.append(extended)
+            else:
+                kept.append(entry)
+        self.last_load_report["admitted"] = len(kept)
         return kept
 
     def _read_document(self) -> Dict[str, Any]:
@@ -262,6 +511,16 @@ class JsonFileStore:
             FIELD_REGISTERED_AT: _stamp_registered_at(entry),
             FIELD_SOURCE: entry.get(FIELD_SOURCE) or "",
         }
+        trust = _coerce_trust_number(entry.get(FIELD_TRUST_SCORE))
+        if trust is not None:
+            stored[FIELD_TRUST_SCORE] = trust
+        key = integrity_key()
+        if key:
+            # Stamped with the key configured *now*. A row written before the
+            # key existed will be refused at load time until it is
+            # re-registered -- which is the honest outcome: an unauthenticated
+            # row cannot be retroactively authenticated.
+            stored[FIELD_INTEGRITY] = compute_row_tag(stored, key)
         for index, existing in enumerate(humans):
             if existing.get(FIELD_PRINCIPAL) == principal:
                 # Keep the original registration instant, same as SQLite.
@@ -301,6 +560,13 @@ class SqliteHumanIdentityStore:
         self.location = str(location)
         self._schema_ready = False
         self._lock = threading.Lock()
+        #: Verdict of the most recent :meth:`load_all`; see the file backend.
+        self.last_load_report: Dict[str, Any] = {
+            "backend": BACKEND_SQLITE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
 
     # ---- connection plumbing -------------------------------------------
 
@@ -334,6 +600,22 @@ class SqliteHumanIdentityStore:
             connection = self._connect()
             try:
                 connection.execute(_SQLITE_SCHEMA)
+                # In-place migration for databases created before the
+                # containment columns existed. ``CREATE TABLE IF NOT EXISTS``
+                # is a no-op on an existing table, so these ALTERs are what
+                # actually carry a legacy registration database forward.
+                existing_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(human_identities)"
+                    ).fetchall()
+                }
+                for column, column_type in _SQLITE_ADDED_COLUMNS:
+                    if column not in existing_columns:
+                        connection.execute(
+                            f"ALTER TABLE human_identities ADD COLUMN "
+                            f"{column} {column_type}"
+                        )
                 # WAL keeps a reader (the kernel booting) from blocking the
                 # writer (an operator registering) and survives a crash.
                 connection.execute("PRAGMA journal_mode=WAL")
@@ -358,7 +640,15 @@ class SqliteHumanIdentityStore:
 
     # ---- store protocol -------------------------------------------------
 
-    def load_all(self) -> List[Dict[str, Any]]:
+    def load_all(self, include_extended: bool = False) -> List[Dict[str, Any]]:
+        """Return admitted rows; see :meth:`JsonFileStore.load_all` for the
+        ``include_extended`` contract and the integrity semantics."""
+        self.last_load_report = {
+            "backend": BACKEND_SQLITE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
         if not os.path.exists(self.location):
             # Read paths never create a store: booting the kernel must not
             # manufacture an empty registration database.
@@ -367,7 +657,8 @@ class SqliteHumanIdentityStore:
             with self._session() as connection:
                 rows = connection.execute(
                     "SELECT principal, display_name, permissions, scope, "
-                    "registered_at FROM human_identities ORDER BY principal"
+                    "registered_at, trust_score, integrity "
+                    "FROM human_identities ORDER BY principal"
                 ).fetchall()
         except Exception as exc:  # noqa: BLE001 - config problem, not a crash
             logger.error(
@@ -375,16 +666,44 @@ class SqliteHumanIdentityStore:
                 HUMAN_IDENTITIES_DB_ENV, self.location, exc,
             )
             return []
-        return [
-            {
+
+        key = integrity_key()
+        kept: List[Dict[str, Any]] = []
+        for row in rows:
+            full = {
                 FIELD_PRINCIPAL: row["principal"],
                 FIELD_DISPLAY_NAME: row["display_name"],
                 FIELD_PERMISSIONS: _decode_permissions(row["permissions"]),
                 FIELD_SCOPE: row["scope"],
                 FIELD_REGISTERED_AT: row["registered_at"],
+                FIELD_TRUST_SCORE: row["trust_score"],
             }
-            for row in rows
-        ]
+            if key and not tag_matches(full, key, row["integrity"]):
+                self.last_load_report["rejected"].append(row["principal"])
+                logger.error(
+                    "REFUSING registry row %r in %r: the row does not "
+                    "authenticate against %s (missing or mismatched %r tag). A "
+                    "row that cannot be authenticated cannot decide who holds "
+                    "sovereignty.",
+                    row["principal"], self.location,
+                    HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, FIELD_INTEGRITY,
+                )
+                continue
+            if include_extended:
+                full[FIELD_INTEGRITY_STATUS] = (
+                    INTEGRITY_VERIFIED if key else INTEGRITY_UNVERIFIED
+                )
+                kept.append(full)
+            else:
+                kept.append({
+                    FIELD_PRINCIPAL: full[FIELD_PRINCIPAL],
+                    FIELD_DISPLAY_NAME: full[FIELD_DISPLAY_NAME],
+                    FIELD_PERMISSIONS: full[FIELD_PERMISSIONS],
+                    FIELD_SCOPE: full[FIELD_SCOPE],
+                    FIELD_REGISTERED_AT: full[FIELD_REGISTERED_AT],
+                })
+        self.last_load_report["admitted"] = len(kept)
+        return kept
 
     def _write_with_retry(
         self, statement: Callable[[sqlite3.Connection], Any]
@@ -415,13 +734,24 @@ class SqliteHumanIdentityStore:
         principal = str(entry.get(FIELD_PRINCIPAL) or "").strip()
         if not principal:
             return False
+        trust = _coerce_trust_number(entry.get(FIELD_TRUST_SCORE))
+        tag_input = {
+            FIELD_PRINCIPAL: principal,
+            FIELD_DISPLAY_NAME: entry.get(FIELD_DISPLAY_NAME),
+            FIELD_PERMISSIONS: sorted(set(entry.get(FIELD_PERMISSIONS) or [])),
+            FIELD_SCOPE: entry.get(FIELD_SCOPE) or "L0",
+            FIELD_TRUST_SCORE: trust,
+        }
+        key = integrity_key()
         params = (
             principal,
             entry.get(FIELD_DISPLAY_NAME),
-            json.dumps(sorted(set(entry.get(FIELD_PERMISSIONS) or []))),
-            entry.get(FIELD_SCOPE) or "L0",
+            json.dumps(tag_input[FIELD_PERMISSIONS]),
+            tag_input[FIELD_SCOPE],
             _stamp_registered_at(entry),
             entry.get(FIELD_SOURCE) or "",
+            trust,
+            compute_row_tag(tag_input, key) if key else None,
         )
         _, error = self._write_with_retry(
             lambda connection: connection.execute(_SQLITE_UPSERT, params)
@@ -476,10 +806,39 @@ def resolve_human_identity_store() -> JsonFileStore | SqliteHumanIdentityStore:
 def describe_human_identity_store(
     store: Optional[JsonFileStore | SqliteHumanIdentityStore] = None,
 ) -> Dict[str, Any]:
-    """Report which store is in use -- for boot logs and operator tooling."""
+    """Report which store is in use -- for boot logs and operator tooling.
+
+    The three keys here are a **pinned public shape**
+    (``tests/kernels/identity/test_human_identity_persistence.py`` compares it
+    with ``==``), so new facts go in :func:`describe_registry_integrity` rather
+    than being appended here.
+    """
     resolved = store if store is not None else resolve_human_identity_store()
     return {
         "backend": resolved.backend_name,
         "location": resolved.location,
         "configured": bool(resolved.location),
     }
+
+
+def describe_registry_integrity(
+    store: Optional[JsonFileStore | SqliteHumanIdentityStore] = None,
+) -> Dict[str, Any]:
+    """Report whether registry rows must authenticate, and the last verdict.
+
+    PHASE 3.6 / A3: "this registry is not authenticated" must be a fact an
+    operator can *read off*, not a property they have to infer from the absence
+    of a warning. A sibling of :func:`describe_human_identity_store` because
+    that function's shape is pinned by tests and read by tooling.
+    """
+    resolved = store if store is not None else resolve_human_identity_store()
+    report: Dict[str, Any] = {
+        "backend": resolved.backend_name,
+        "location": resolved.location,
+        "integrity_enforced": integrity_enforced(),
+        "integrity_key_env": HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+    }
+    last = getattr(resolved, "last_load_report", None)
+    if isinstance(last, dict):
+        report["last_load"] = last
+    return report

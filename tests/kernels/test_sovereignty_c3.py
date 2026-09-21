@@ -63,12 +63,37 @@ def human_manager(monkeypatch):
 
 
 def _audit_details(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    Does **not** filter by ``principal_id``: before A2 the decorator recorded the
+    literal subject ``"kernel"``, so a test could find its own row by that
+    string. A2 replaced the constant with the *actual* acting principal, so
+    pinning the literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- a green that proves nothing.
+
+    Attribution is asserted as a **value** (F26): ``actor_fingerprint`` must be
+    32 hex chars, and the event's ``principal_id`` must agree with the
+    ``actor_identity_id`` in ``details`` (the A2 keyspace convergence).
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=200, reverse=True):
+    for ev in audit_query(limit=200, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fp = det.get("actor_fingerprint")
+        assert isinstance(fp, str) and len(fp) == 32 and all(
+            c in "0123456789abcdef" for c in fp
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fp!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 
@@ -100,9 +125,12 @@ class TestSovereigntyContext:
 class TestNoSovereigntyStillDenies:
     def test_high_critical_denied_without_delegation(self, human_manager):
         clear_active_sovereignty()
-        verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+        verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: with no sovereignty window the adjudicated actor is the internal
+        # service, and that is the actor the audit record will name.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
     def test_enforced_high_raises_deferred_without_delegation(self, human_manager):
         clear_active_sovereignty()
@@ -121,9 +149,14 @@ class TestHumanSovereignFlipsAllow:
     def test_delegated_high_allowed(self, human_manager):
         mgr, human = human_manager
         with human_sovereign(human.id, ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "allow"
         assert rule == "human_sovereignty"
+        # A2: the actor is no longer discarded. A delegation window means the
+        # action is adjudicated *as the human*, so the audit record names the
+        # human rather than the kernel -- "谁批准的" is now answerable.
+        assert actor["type"] == "human"
+        assert actor["principal"] == human.id
 
     def test_delegated_high_executes_when_enforced(self, human_manager):
         mgr, human = human_manager
@@ -139,18 +172,24 @@ class TestHumanSovereignFlipsAllow:
         mgr, human = human_manager
         # Delegate ONLY capability.retire; security.set_abac_rule is out of scope.
         with human_sovereign(human.id, ["capability.retire"]):
-            verdict, rule = _adjudicate("security.set_abac_rule", "CRITICAL")
+            verdict, rule, actor = _adjudicate("security.set_abac_rule", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: an out-of-scope action must not be escalated to the human *at all* --
+        # the actor stays the service, so the record cannot claim human authority
+        # for an action the delegation never covered.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
     def test_low_not_escalated_under_delegation(self, human_manager):
         mgr, human = human_manager
         # LOW stays on the service actor (allow-listed there); delegation must
         # NOT change its verdict.
         with human_sovereign(human.id, ["memory.store"]):
-            verdict, rule = _adjudicate("memory.store", "LOW")
+            verdict, rule, actor = _adjudicate("memory.store", "LOW")
         assert verdict == "allow"
         assert rule == "internal_service_allow"
+        # A2: LOW is never enforcement-gated, so it is never escalated either.
+        assert actor == {"type": "service", "principal": INTERNAL_SERVICE_PRINCIPAL}
 
 
 class TestSpoofRejected:
@@ -158,15 +197,23 @@ class TestSpoofRejected:
         # Label the internal service principal as a "human" actor -- the kind
         # guard in _is_verified_human must reject it.
         with human_sovereign(INTERNAL_SERVICE_PRINCIPAL, ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: the *claim* is recorded (the window asked for this principal to be
+        # treated as human) but it bought no authority -- which is exactly the
+        # distinction the record must preserve.
+        assert actor["principal"] == INTERNAL_SERVICE_PRINCIPAL
 
     def test_unknown_principal_rejected(self, human_manager):
         with human_sovereign("does-not-exist", ["capability.retire"]):
-            verdict, rule = _adjudicate("capability.retire", "CRITICAL")
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "deny"
         assert rule == "default_deny"
+        # A2: an unregistered principal cannot be resolved to an identity, so
+        # the audit record for it will show an absent attribution rather than a
+        # plausible-looking string.
+        assert actor["principal"] == "does-not-exist"
 
 
 class TestAuditOfDefer:

@@ -161,10 +161,13 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # All thirteen `scripts/verify_*.py` are wired somewhere: twelve run here and
+  # All fourteen `scripts/verify_*.py` are wired somewhere: thirteen run here and
   # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
+  # (Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 14; the thirteen
+  # below plus the one in the other workflow. If you add a script, update this
+  # line -- a guard nobody runs is the defect this job exists to catch.)
   guardrails:
-    name: Guardrails (Policy C-1..C-6, ORM, persistence)
+    name: Guardrails (Policy C-1..C-6, identity root, ORM, persistence)
     runs-on: ubuntu-latest
     needs: test
     timeout-minutes: 15
@@ -232,8 +235,25 @@ jobs:
       # never called (msg_bus, MultiTierCache, BatchCache, Evaluator,
       # generate_metrics). An orphan is not automatically a bug, but an orphan
       # nobody decided about is. This makes the decision explicit and mechanical.
+      #
+      # ⚠️ Known limitation (PHASE 3.6, measured — see
+      # D:/WorkBuddyFiles/LIUHAO-Phase3.6-Evidence/p36_tm_orphan_guard_control.py):
+      # this guard's reachability test is a regex over raw file text, so it counts
+      # a DOCSTRING mention as a call site and conflates modules sharing a final
+      # path segment. src.identity (zero importers) is therefore classified as
+      # "referenced" and cannot be flagged by it. T-M's single-identity-root guard
+      # below is AST-based and does not have that hole; the two are complementary.
       - name: Verify every zero-reference module is acknowledged
         run: python scripts/verify_no_undocumented_orphans.py
+
+      # PHASE 3.6 / T-M (F29 6 and F30 1): exactly one identity implementation may
+      # be imported. Two modules both described themselves as the "single Identity
+      # Authority" and neither said which one that was -- an undeclared second
+      # identity root is a trust-root ambiguity, not redundancy. This parses every
+      # .py file for real import statements, so a prose mention can neither
+      # satisfy nor violate it.
+      - name: Verify the single authoritative identity implementation
+        run: python scripts/verify_single_identity_root.py
 
       - name: Migrate a scratch database
         run: |

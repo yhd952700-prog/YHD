@@ -383,10 +383,32 @@ def main() -> int:
             retire_enforced()
 
         details = None
-        for ev in audit_query(principal_id="kernel", limit=200, reverse=True):
+        # PHASE 3.6 / A2 + F26: the audit subject is no longer the literal string
+        # "kernel" -- it is the *actual* acting principal (here, the delegated
+        # human, because the grant window made the policy engine adjudicate as
+        # that human). Pinning the old literal would find either nothing or a
+        # stale row left in the shared audit store by an earlier run, and a stale
+        # row is a green that proves nothing. So: find the event by WHAT HAPPENED,
+        # then assert the attribution as a VALUE rather than reading a column.
+        for ev in audit_query(limit=200, reverse=True):
             det = ev.get("details") or {}
             if det.get("action") == "capability.retire" and det.get("policy_decision") == "allow":
                 details = det
+                fingerprint = det.get("actor_fingerprint")
+                check(
+                    "allowed action audit carries a usable attribution",
+                    isinstance(fingerprint, str)
+                    and len(fingerprint) == 32
+                    and all(c in "0123456789abcdef" for c in fingerprint),
+                    f"actor_fingerprint={fingerprint!r} "
+                    f"(F26: a non-empty column is not evidence)",
+                )
+                check(
+                    "audit principal keyspace agrees with the actor identity id",
+                    ev.get("principal_id") == det.get("actor_identity_id"),
+                    f"principal_id={ev.get('principal_id')!r} vs "
+                    f"actor_identity_id={det.get('actor_identity_id')!r}",
+                )
                 break
         check("allowed action audit carries sovereignty_grant",
               bool(details) and details.get("sovereignty_grant") == chained.grant_id,

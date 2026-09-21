@@ -16,14 +16,51 @@ from src.kernels._base import KernelLifecycle, KernelStateError
 
 import json
 import hashlib
+import logging
 import time
 import sqlite3
 import os
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
+
+logger = logging.getLogger("liuhao.kernel.audit")
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3.6 / A5 — cryptographic algorithm identifiers
+# --------------------------------------------------------------------------- #
+#
+# The chain has always used SHA-256, but never *said so*: ``compute_hash``
+# called ``hashlib.sha256`` directly and nothing recorded which algorithm
+# produced a given ``event_hash``. Two consequences:
+#
+#   * an auditor reading a five-year-old event cannot state what verifies it --
+#     they can only infer it from the source revision that happened to write it;
+#   * migrating to a stronger algorithm becomes a silent, all-or-nothing act,
+#     because there is no per-event record to migrate against.
+#
+# The requirement is: "今天生成的证据，到未来仍然明确知道用什么算法验证".
+# Each event therefore carries its algorithm name.
+#
+# The name is deliberately NOT folded into the hashed payload: that would change
+# the hash domain and invalidate every event already written. It travels beside
+# the hash, and verification dispatches on it. An event naming an algorithm this
+# build does not implement **fails** verification (fail-closed) rather than being
+# hashed with whatever the default happens to be -- "I cannot verify this" is
+# the honest answer, and the wrong algorithm would only produce a wrong-but-green
+# one.
+
+#: Algorithms this build can verify. Adding an entry does not rewrite anything.
+HASH_ALGORITHMS: Dict[str, Callable[[bytes], str]] = {
+    "sha256": lambda payload: hashlib.sha256(payload).hexdigest(),
+}
+
+#: Algorithm applied to newly written events, and assumed for rows stored before
+#: the column existed -- which is factually correct, they were all SHA-256.
+DEFAULT_HASH_ALG = "sha256"
 
 
 class AuditEventType(str, Enum):
@@ -69,9 +106,23 @@ class AuditEvent:
     details: Dict[str, Any] = field(default_factory=dict)
     event_hash: Optional[str] = None
     prev_event_hash: Optional[str] = None
+    #: Name of the algorithm that produced :attr:`event_hash` (PHASE 3.6 / A5).
+    hash_alg: str = DEFAULT_HASH_ALG
 
     def compute_hash(self) -> str:
-        """Compute SHA256 hash of this event's canonical form."""
+        """Compute this event's hash using the algorithm it declares.
+
+        Raises :class:`ValueError` when the declared algorithm is not one this
+        build implements. Callers that verify integrity treat that as a broken
+        event -- see :meth:`AuditStore._verify_integrity_locked` -- so an
+        unverifiable event can never be mistaken for a verified one.
+        """
+        algorithm = HASH_ALGORITHMS.get(self.hash_alg)
+        if algorithm is None:
+            raise ValueError(
+                f"unknown hash algorithm {self.hash_alg!r}; this build can "
+                f"verify {sorted(HASH_ALGORITHMS)}"
+            )
         data = {
             "event_id": self.event_id,
             "event_type": self.event_type.value,
@@ -84,7 +135,7 @@ class AuditEvent:
         }
         # Sort keys for canonical form
         raw = json.dumps(data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode()).hexdigest()
+        return algorithm(raw.encode())
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -98,6 +149,7 @@ class AuditEvent:
             "details": self.details,
             "event_hash": self.event_hash,
             "prev_event_hash": self.prev_event_hash,
+            "hash_alg": self.hash_alg,
         }
 
 
@@ -153,6 +205,7 @@ class AuditStore:
                 event_hash TEXT NOT NULL,
                 prev_event_hash TEXT,
                 seq INTEGER NOT NULL DEFAULT 0,
+                hash_alg TEXT NOT NULL DEFAULT 'sha256',
                 created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_principal ON audit_events(principal_id);
@@ -187,6 +240,15 @@ class AuditStore:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_seq ON audit_events(seq)"
         )
+        # PHASE 3.6 / A5: bring a legacy table forward. Every row that predates
+        # the column was hashed with SHA-256, so the column default is factually
+        # correct for them -- this only records what was already true, it does
+        # not reinterpret any hash.
+        if "hash_alg" not in columns:
+            self._conn.execute(
+                "ALTER TABLE audit_events ADD COLUMN hash_alg TEXT NOT NULL "
+                "DEFAULT 'sha256'"
+            )
         # Seed the chain_state anchor for pre-existing data so integrity
         # verification covers it
         state = self._conn.execute(
@@ -267,8 +329,9 @@ class AuditStore:
         self._conn.execute(
             """INSERT INTO audit_events
                (event_id, event_type, principal_id, scope, timestamp,
-                correlation_id, outcome, details, event_hash, prev_event_hash, seq)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                correlation_id, outcome, details, event_hash, prev_event_hash,
+                seq, hash_alg)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 event.event_id,
                 event.event_type.value,
@@ -281,6 +344,7 @@ class AuditStore:
                 event.event_hash,
                 event.prev_event_hash,
                 seq,
+                event.hash_alg,
             ),
         )
         self._conn.execute(
@@ -318,8 +382,8 @@ class AuditStore:
     def _verify_integrity_locked(self) -> Tuple[bool, int]:
         rows = self._conn.execute(
             "SELECT seq, event_id, event_type, principal_id, scope, timestamp, "
-            "correlation_id, outcome, details, event_hash, prev_event_hash "
-            "FROM audit_events ORDER BY seq ASC"
+            "correlation_id, outcome, details, event_hash, prev_event_hash, "
+            "hash_alg FROM audit_events ORDER BY seq ASC"
         ).fetchall()
 
         state = self._conn.execute(
@@ -339,7 +403,7 @@ class AuditStore:
         for i, row in enumerate(rows):
             (seq, event_id, event_type, principal_id, scope, timestamp,
              correlation_id, outcome, details_json, event_hash,
-             prev_event_hash) = row
+             prev_event_hash, row_hash_alg) = row
 
             # 1. Chain linkage to the previous event
             if i == 0:
@@ -357,6 +421,18 @@ class AuditStore:
 
             # 3. Content integrity: recompute the canonical hash from
             # the stored fields and compare with the stored hash.
+            declared_alg = row_hash_alg or DEFAULT_HASH_ALG
+            if declared_alg not in HASH_ALGORITHMS:
+                # An event whose algorithm this build cannot perform is not
+                # "probably fine" -- it is unverifiable, and unverifiable must
+                # never be read as verified (PHASE 3.6 / A5, fail-closed).
+                logger.error(
+                    "audit event %s declares hash algorithm %r, which this "
+                    "build cannot verify; counting it as broken rather than "
+                    "assuming a default algorithm", event_id, declared_alg,
+                )
+                broken += 1
+                continue
             try:
                 details = json.loads(details_json) if details_json else {}
                 reconstructed = AuditEvent(
@@ -368,6 +444,7 @@ class AuditStore:
                     correlation_id=correlation_id,
                     outcome=outcome,
                     details=details,
+                    hash_alg=declared_alg,
                 )
                 if reconstructed.compute_hash() != event_hash:
                     broken += 1

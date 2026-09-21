@@ -3,6 +3,13 @@
 The Identity Kernel manages agent identity, permissions, and audit trails.
 Supports scope-aware filtering (L0-L7) and complete audit logging.
 
+**This module is the single authoritative identity implementation**
+(PHASE 3.6 / T-M, closing F29 ⑥ and F30 ①). ``src.identity`` is an archived
+non-authoritative copy with zero importers; nothing may import it. The claim is
+machine-checked by ``scripts/verify_single_identity_root.py``, which parses every
+Python file for real import statements rather than grepping text, so a prose
+mention can neither satisfy nor violate it.
+
 依据 Definition Lock §112: Identity Kernel 必须能够
 - create_identity(principal, permissions, scope, trust_score)
 - grant_permission(identity, permission, scope)
@@ -17,15 +24,73 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
+import hashlib
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 import uuid
 import threading
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 from . import _persistence
 
 logger = logging.getLogger("liuhao.kernel.identity")
+
+# --------------------------------------------------------------------------- #
+# T-M — declared single identity root
+# --------------------------------------------------------------------------- #
+# Two identity implementations existed and neither said which was authoritative.
+# Declaring the winner is what F29 ⑥(b) requires; the CI assertion in
+# ``scripts/verify_single_identity_root.py`` is ⑥(c)'s import-side check. The
+# *startup* half of ⑥(c) (refuse to boot if the running implementation's
+# fingerprint differs from a frozen value) is deliberately NOT implemented here:
+# it turns an availability switch, so its blast radius has to be understood
+# before it is armed. It is recorded as a residual risk, not silently added.
+
+#: The one identity implementation the system is allowed to use.
+AUTHORITATIVE_IDENTITY_MODULE = "src.kernels.identity"
+
+#: Copies that exist for historical reasons and may never be imported.
+NON_AUTHORITATIVE_IDENTITY_MODULES = ("src.identity",)
+
+
+def identity_implementation_fingerprint(path: Optional[str] = None) -> str:
+    """SHA-256 of this module's source, so "which implementation ran" is answerable.
+
+    Independent verification is impossible without this: two builds that differ
+    only inside the identity implementation are, from the outside, the same
+    build. Returning a fingerprint makes the difference observable.
+
+    ``path`` is for tests that want to fingerprint a *different* file without
+    importing it; the default is this module's own source.
+    """
+    target = path or __file__
+    with open(target, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def identity_implementation_manifest() -> Dict[str, Any]:
+    """The declared identity root, as data.
+
+    Reports the authority, the archived copies, and the fingerprint of each, so a
+    verification step can compare what is declared against what is present
+    without trusting either.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    manifest: Dict[str, Any] = {
+        "authoritative": AUTHORITATIVE_IDENTITY_MODULE,
+        "non_authoritative": list(NON_AUTHORITATIVE_IDENTITY_MODULES),
+        "fingerprints": {},
+    }
+    for module_name in (AUTHORITATIVE_IDENTITY_MODULE,) + NON_AUTHORITATIVE_IDENTITY_MODULES:
+        candidate = root.joinpath(*module_name.split(".")[1:], "__init__.py")
+        entry = {"present": candidate.is_file(), "path": str(candidate)}
+        if candidate.is_file():
+            entry["fingerprint"] = identity_implementation_fingerprint(str(candidate))
+        manifest["fingerprints"][module_name] = entry
+    return manifest
 
 #: Principal / id of the built-in internal service identity.
 #:
@@ -65,6 +130,116 @@ HUMAN_IDENTITIES_DB_ENV = _persistence.HUMAN_IDENTITIES_DB_ENV
 #: ``AgentIdentity.metadata``. ``tests/kernels/identity/test_human_identity_persistence.py``
 #: pins the two together so they cannot drift apart silently.
 METADATA_DISPLAY_NAME_KEY = "display_name"
+
+# --------------------------------------------------------------------------- #
+# PHASE 3.6 / A1 containment — identity namespaces (R-15b)
+# --------------------------------------------------------------------------- #
+#
+# Before this block existed, three key conventions shared one dict:
+#
+#   built-ins  ``_identities["system"]``, ``_identities["liuhao-internal-service"]``
+#   humans     ``_identities[principal]``                 (``id == principal``)
+#   agents     ``_identities[str(uuid4())[:8]]``
+#
+# and **nothing guarded the boundaries**. Measured failure (R-15, PHASE 3.5):
+# ``_seed_human_identities`` deduplicated only against ``_principal_index``
+# (principal -> id) and never against ``_identities`` (the id namespace). A
+# registry row whose principal equalled a *known agent id* therefore passed the
+# check, was built with ``id = principal`` and **overwrote that agent's slot**,
+# carrying a hardcoded ``trust_score = 1.0`` plus the row's permissions. That is
+# deterministic privilege escalation available on day one, needing no birthday
+# luck, and it left no audit trace -- the collision branch only logged a
+# warning. The registry itself is a plain unsigned JSON file, so the attacker's
+# only prerequisite is write access to it (PHASE 3.5 §R-15b).
+#
+# The fix has two halves:
+#
+# 1. **Disjoint namespaces.** A human id is always ``human:<principal>``; an
+#    agent id is always 8 hex chars. An id can no longer be in both namespaces,
+#    so the collision is structurally impossible rather than merely detected.
+# 2. **A single guarded writer.** Every write into ``_identities`` /
+#    ``_principal_index`` goes through :meth:`IdentityManager._claim_slot`,
+#    which refuses occupied slots, refuses cross-namespace overwrites (= the
+#    structural form of "trust inheritance prohibition"), and **audits** every
+#    refusal.
+#
+# The prefix is *reserved*: no identity may be created with a principal that
+# starts with it, which is what stops an agent from shadowing a human's id
+# string (or a registration from nesting ``human:human:x``).
+
+#: Reserved id prefix for human identities.
+HUMAN_ID_PREFIX = "human:"
+
+#: Namespace tags carried by :attr:`AgentIdentity.namespace`.
+NAMESPACE_HUMAN = "human"
+NAMESPACE_SERVICE = "service"
+NAMESPACE_AGENT = "agent"
+
+#: Trust score given to a seeded human when the registry row carries no
+#: explicit ``trust_score``. Kept at the historical 1.0 so no existing
+#: deployment changes behaviour -- but no longer *hardcoded*: the number is now
+#: read from the row and recorded alongside provenance, so "a registered human
+#: is maximally trusted" is a stated fact about a record rather than an
+#: artefact of the seeding loop. (Nothing in the policy or sovereignty layer
+#: consults ``trust_score`` when deciding whether an actor is human -- verified
+#: by ``grep -rn trust_score src/kernels/policy src/kernels/_sovereignty.py``,
+#: zero hits -- so this value carries no authority by itself.)
+SEEDED_HUMAN_TRUST_SCORE = 1.0
+
+#: Pattern of an agent identity id (``str(uuid.uuid4())[:8]``).
+_AGENT_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+
+#: How many times :meth:`IdentityManager._allocate_agent_id` retries before
+#: widening the id. Sixteen misses on an 8-hex space means the space is
+#: saturated, not unlucky.
+_AGENT_ID_ALLOCATION_ATTEMPTS = 16
+
+
+def is_agent_id(value: str) -> bool:
+    """True iff ``value`` is shaped like an agent identity id."""
+    return bool(isinstance(value, str) and _AGENT_ID_RE.match(value))
+
+
+def normalize_principal(principal: str) -> str:
+    """Strip any reserved id prefix from ``principal``.
+
+    ``"human:x"`` and ``"x"`` name the *same* registration: a human id is
+    always ``human:<principal>``, so the two inputs produce an identical
+    ``AgentIdentity.id`` and an identical ``_principal_index`` key, and the
+    namespace + collision checks that decide whether the write is allowed run
+    on the normalized name either way.
+
+    This is deliberately a *normalization*, not a refusal. Refusing the
+    already-prefixed form would add no safety -- the ambiguity R-15b exploited
+    came from the id *string space* being shared, not from this spelling -- and
+    it would break callers that already write ``human:<name>``. All prefixes are
+    stripped, so ``"human:human:x"`` collapses to ``"x"`` rather than nesting.
+    """
+    value = principal if isinstance(principal, str) else str(principal)
+    while value.startswith(HUMAN_ID_PREFIX):
+        value = value[len(HUMAN_ID_PREFIX):]
+    return value
+
+
+def is_reserved_principal(principal: str) -> bool:
+    """True when ``principal`` cannot name a registration at all.
+
+    Only the degenerate case (``""``, ``"human:"``) qualifies: after prefix
+    stripping there is no name left, so the id would be a bare prefix.
+    """
+    return not normalize_principal(principal).strip()
+
+
+def namespace_disjoint(identity: AgentIdentity) -> bool:
+    """True iff ``identity``'s id and namespace cannot collide with another's.
+
+    This is the invariant ``_claim_slot`` enforces on every write: a human id
+    must never be an agent-shaped id, and a non-human id must never wear the
+    reserved human prefix.
+    """
+    if identity.namespace == NAMESPACE_HUMAN:
+        return identity.id.startswith(HUMAN_ID_PREFIX) and not is_agent_id(identity.id)
+    return not identity.id.startswith(HUMAN_ID_PREFIX)
 
 
 def is_human_identity(identity: Optional[AgentIdentity]) -> bool:
@@ -122,6 +297,51 @@ class AgentIdentity:
     last_modified: datetime = field(default_factory=utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    # -- PHASE 3.6 / A1: immutable principal identity --------------------- #
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """``id`` and ``principal`` are immutable once set.
+
+        The authorization model resolves a principal to an identity and then
+        trusts *that identity's* permissions. An object whose ``principal`` can
+        be reassigned is therefore an object whose authority can be moved to a
+        different name after the fact -- identity laundering. Nothing in the
+        kernel ever mutated these two fields (verified by
+        ``grep -rn "\\.id = \\|\\.principal = " --include=*.py src/ tests/``,
+        no hit on ``AgentIdentity``), so the guard costs nothing and closes the
+        class rather than the instance.
+        """
+        if name in ("id", "principal") and name in self.__dict__:
+            raise AttributeError(
+                f"AgentIdentity.{name} is immutable: cannot set it to "
+                f"{value!r} (current value {self.__dict__[name]!r})"
+            )
+        super().__setattr__(name, value)
+
+    @property
+    def namespace(self) -> str:
+        """Which identity namespace this object belongs to."""
+        kind = (self.metadata or {}).get(METADATA_KIND_KEY)
+        if kind == HUMAN_KIND:
+            return NAMESPACE_HUMAN
+        if kind == SERVICE_KIND:
+            return NAMESPACE_SERVICE
+        return NAMESPACE_AGENT
+
+    @property
+    def fingerprint(self) -> str:
+        """Canonical, collision-free identifier for this identity.
+
+        This is the single primitive the audit side and the authorization side
+        must both converge on (PHASE 3.6 / A2). It is derived from
+        ``namespace`` + ``principal``, so it survives a restart, is stable for
+        the life of the identity, and does **not** inherit the 32-bit
+        collision surface of :attr:`id`.
+        """
+        return hashlib.sha256(
+            f"{self.namespace}\x00{self.principal}".encode("utf-8")
+        ).hexdigest()[:32]
 
 
 @dataclass
@@ -193,7 +413,222 @@ class IdentityManager:
         # whose writes are no-ops -- so nothing changes for deployments that
         # never opted in.
         self._store = _persistence.resolve_human_identity_store()
+        #: Reasons the registry refused an entry at boot. Non-empty means the
+        #: store claimed more humans than the kernel admitted -- surfaced by
+        #: :meth:`describe_identity_namespaces` so it cannot be a silent fact.
+        self._registry_refusals: List[str] = []
+        if self._store.location and not _persistence.integrity_enforced():
+            # Only warn when a registry is actually in use: an unconfigured
+            # store is already fail-closed (zero humans), so warning there would
+            # be noise about a risk that does not exist yet.
+            logger.warning(
+                "human identity registry %r is NOT authenticated: %s is unset, "
+                "so anything that can write that store can create or edit the "
+                "rows that decide who holds sovereignty (PHASE 3.6 / A3). Set "
+                "the variable to require every row to authenticate, or accept "
+                "the risk explicitly -- this message exists so the risk is a "
+                "decision rather than a default.",
+                self._store.location,
+                _persistence.HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+            )
         self._seed_human_identities()
+
+    # ------------------------------------------------------------------ #
+    # PHASE 3.6 / A1: the single guarded writer
+    # ------------------------------------------------------------------ #
+
+    def _audit(
+        self,
+        *,
+        identity_id: str,
+        operation: str,
+        scope: IdentityScope,
+        result: str,
+        reason: str,
+        permission: Optional[str] = None,
+    ) -> AuditEntry:
+        """Append an identity audit entry.
+
+        One helper, so no write path can *forget* to audit. The collision
+        branch this replaces logged a warning and returned: the single most
+        security-relevant event this kernel can observe -- one identity trying
+        to take another's slot -- was the one event with no audit record.
+        """
+        entry = AuditEntry(
+            identity_id=identity_id,
+            operation=operation,
+            permission=permission,
+            scope=scope,
+            result=result,
+            reason=reason,
+        )
+        self._audit_log.append(entry)
+        return entry
+
+    def _record_denial_on_the_chain(
+        self, *, principal: str, reason: str, action: str = "identity.register"
+    ) -> None:
+        """Write a refusal to the **authoritative** audit chain (A1 / U-1).
+
+        ``_audit_log`` is an in-process list: it dies with the process, has no
+        production reader, and is not part of the hash chain. Measured
+        2026-09-21 on the pre-containment tree:
+        ``grep -c "log_event" src/kernels/identity/*.py src/kernels/policy/*.py
+        src/kernels/security/*.py`` returned **0** -- nothing on the governance
+        path writes to the chain at all. A refusal recorded only in the local
+        list is, evidentially, not recorded.
+
+        The seed path needs this explicitly because ``_seed_human_identities``
+        runs inside ``__init__`` and is deliberately *not* a ``@kernel_action``
+        (a policy verdict would call back into ``IdentityManager`` and recurse
+        without bound), so there is no decorator to carry the denial.
+
+        A failure to write is logged at ERROR and never raised: an audit outage
+        must not take down identity resolution.
+        """
+        try:
+            from src.kernels.audit import log_event, AuditEventType, AuditScope
+
+            log_event(
+                event_type=AuditEventType.ACCESS_DENIED,
+                principal_id=principal,
+                scope=AuditScope.L0,
+                outcome="denied",
+                details={
+                    "action": action,
+                    "reason": reason,
+                    "human_id_prefix": HUMAN_ID_PREFIX,
+                    "registry_backend": self._store.backend_name,
+                    "registry_location": self._store.location,
+                },
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error(
+                "could not record identity refusal on the audit chain "
+                "(principal=%r): %s", principal, exc,
+            )
+
+    def _allocate_agent_id(self) -> str:
+        """Allocate an unused agent id.
+
+        ``str(uuid.uuid4())[:8]`` is 32 bits, so a birthday collision is not
+        hypothetical once identities accumulate (~1.2 % at 10k). Previously a
+        colliding id silently overwrote the incumbent. Here a collision just
+        picks another candidate, and the search is bounded -- it can only ever
+        fail *closed* (wider id + loud log), never overwrite.
+        """
+        for _ in range(_AGENT_ID_ALLOCATION_ATTEMPTS):
+            candidate = str(uuid.uuid4())[:8]
+            if candidate not in self._identities:
+                return candidate
+        widened = uuid.uuid4().hex[:16]
+        logger.error(
+            "agent id space appears saturated: %d consecutive 8-hex collisions; "
+            "widening the id for this identity to %r (32-bit birthday collisions "
+            "at scale are now a real failure mode, not a theoretical one)",
+            _AGENT_ID_ALLOCATION_ATTEMPTS, widened,
+        )
+        return widened
+
+    def _claim_slot(self, identity: AgentIdentity, *, origin: str) -> bool:
+        """Claim ``identity.id`` and ``identity.principal`` for ``identity``.
+
+        **The only writer** into ``_identities`` / ``_principal_index``. It
+        replaces every plain ``self._identities[...] = identity`` assignment,
+        because a plain assignment silently overwrites whatever occupied the
+        slot -- which is precisely how R-15 escalated privilege.
+
+        Refuses, returning ``False``, when:
+
+        * the id slot is held by a different object -- **including** when the
+          incumbent sits in another namespace. A human registration must never
+          land on an agent slot and vice versa; that refusal is the structural
+          form of "trust inheritance prohibition", because it removes the only
+          mechanism by which one identity could acquire another's
+          ``trust_score`` and permissions;
+        * the principal already resolves to a different identity (no re-pointing);
+        * the namespace invariant :func:`namespace_disjoint` is violated.
+
+        A refusal is always audited as ``denied`` and logged at ERROR. Nothing
+        here fails open and nothing here fails silently.
+        """
+        def _refuse(reason: str) -> bool:
+            logger.error("refusing identity write (origin=%s): %s", origin, reason)
+            self._audit(
+                identity_id=identity.id,
+                operation="create",
+                scope=identity.scope,
+                result="denied",
+                reason=f"{reason} (origin={origin})",
+            )
+            self._registry_refusals.append(reason)
+            # U-1: a refusal reported by returning is still a refusal. Without
+            # this the enclosing @kernel_action records outcome="success", so an
+            # impersonation attempt reads as a successful creation in the
+            # authoritative chain. Harmless on the undecorated seed path: the
+            # decorator clears the signal at the start of every wrapped call.
+            mark_action_denied(reason)
+            return False
+
+        if not namespace_disjoint(identity):
+            return _refuse(
+                f"identity {identity.namespace}:{identity.principal!r} violates the "
+                f"namespace invariant (id={identity.id!r})"
+            )
+
+        if identity.namespace == NAMESPACE_HUMAN and is_agent_id(identity.principal):
+            # A human principal shaped like an agent id makes the two lookup
+            # paths disagree: ``get_identity(p)`` resolves to the agent while
+            # ``get_identity_by_principal(p)`` resolves to the human. That
+            # ambiguity has no legitimate use, and the registry producing such
+            # rows is attacker-writable -- so it is refused outright
+            # (fail-closed) rather than tolerated with a comment.
+            return _refuse(
+                f"human principal {identity.principal!r} is shaped like an agent "
+                f"id; the id-lookup and principal-lookup paths would disagree"
+            )
+
+        incumbent = self._identities.get(identity.id)
+        if incumbent is not None and incumbent is not identity:
+            return _refuse(
+                f"id slot {identity.id!r} is occupied by "
+                f"{incumbent.namespace}:{incumbent.principal!r}; refusing to "
+                f"overwrite it with {identity.namespace}:{identity.principal!r}"
+            )
+
+        existing_id = self._principal_index.get(identity.principal)
+        if existing_id is not None and existing_id != identity.id:
+            return _refuse(
+                f"principal {identity.principal!r} already resolves to "
+                f"{existing_id!r}; refusing to re-point it at {identity.id!r}"
+            )
+
+        self._identities[identity.id] = identity
+        self._principal_index[identity.principal] = identity.id
+        return True
+
+    def describe_identity_namespaces(self) -> Dict[str, Any]:
+        """Report the id-namespace split and any registry refusal at boot.
+
+        Exists so the containment is *observable*: a refused registration is a
+        security event, and "the kernel loaded 1 of the 2 rows the store
+        offered" must be answerable without reading a log file.
+        """
+        with self._lock:
+            by_namespace: Dict[str, int] = {}
+            for identity in self._identities.values():
+                by_namespace[identity.namespace] = (
+                    by_namespace.get(identity.namespace, 0) + 1
+                )
+            return {
+                "human_id_prefix": HUMAN_ID_PREFIX,
+                "identities_by_namespace": by_namespace,
+                "registry_refusals": list(self._registry_refusals),
+                "store": self.describe_store(),
+                "registry_integrity": _persistence.describe_registry_integrity(
+                    self._store
+                ),
+            }
 
     def _seed_human_identities(self) -> int:
         """Load registered humans from the configured store.
@@ -212,23 +647,79 @@ class IdentityManager:
         need to know about.
         """
         store = self._store
-        entries = store.load_all()
+        # ``include_extended=True`` asks for the containment columns
+        # (``trust_score`` and the integrity verdict) that ``load_all()``
+        # deliberately keeps OUT of its default shape -- the default shape is
+        # pinned by tests and read by operator tooling, so the new data travels
+        # on a side channel rather than mutating a public dict.
+        entries = store.load_all(include_extended=True)
         if not entries:
             return 0
 
         loaded = 0
         for entry in entries:
-            principal = str(entry.get(_persistence.FIELD_PRINCIPAL) or "").strip()
+            principal_as_supplied = str(entry.get(_persistence.FIELD_PRINCIPAL) or "").strip()
+            principal = normalize_principal(principal_as_supplied).strip()
             if not principal:
                 logger.error(
                     "skipping entry without a principal in %r (%s)",
                     store.location, store.backend_name,
                 )
                 continue
+            if is_reserved_principal(principal_as_supplied):
+                # Degenerate after normalization: a row whose principal was
+                # nothing but the reserved prefix. Nothing to register.
+                with self._lock:
+                    self._audit(
+                        identity_id=principal_as_supplied,
+                        operation="create",
+                        scope=IdentityScope.L0,
+                        result="denied",
+                        reason=(
+                            f"registry principal {principal_as_supplied!r} has no "
+                            f"name after stripping the reserved prefix {HUMAN_ID_PREFIX!r}"
+                        ),
+                    )
+                    self._registry_refusals.append(
+                        f"empty principal after prefix strip in registry row "
+                        f"{principal_as_supplied!r}"
+                    )
+                    self._record_denial_on_the_chain(
+                        principal=principal_as_supplied,
+                        reason="registry principal has no name once its reserved prefix is stripped",
+                    )
+                logger.error(
+                    "refusing human registration from %r: principal %r has no name "
+                    "after stripping the reserved prefix %r",
+                    store.location, principal_as_supplied, HUMAN_ID_PREFIX,
+                )
+                continue
             with self._lock:
-                if principal in self._principal_index:
-                    logger.warning(
-                        "human identity %r already registered -- skipping", principal,
+                # Deduplicate against BOTH key spaces. Checking only
+                # ``_principal_index`` is the bug this closes.
+                identity_id = f"{HUMAN_ID_PREFIX}{principal}"
+                if principal in self._principal_index or identity_id in self._identities:
+                    self._audit(
+                        identity_id=identity_id,
+                        operation="create",
+                        scope=IdentityScope.L0,
+                        result="denied",
+                        reason=(
+                            f"human identity {principal!r} already registered "
+                            f"(principal index or id slot occupied) -- refusing "
+                            f"to overwrite the incumbent"
+                        ),
+                    )
+                    self._registry_refusals.append(
+                        f"duplicate human registration {principal!r}"
+                    )
+                    self._record_denial_on_the_chain(
+                        principal=principal,
+                        reason="human identity already registered",
+                    )
+                    logger.error(
+                        "human identity %r already registered -- refusing to "
+                        "overwrite the existing identity", principal,
                     )
                     continue
                 # Built directly instead of via create_identity(): that method
@@ -240,10 +731,26 @@ class IdentityManager:
                 metadata: Dict[str, Any] = {
                     METADATA_KIND_KEY: HUMAN_KIND,
                     "seeded_from": store.location,
+                    # Explicit provenance (A1): which store, which backend, and
+                    # the integrity verdict that admitted this row.
+                    "provenance": {
+                        "record_source": str(
+                            entry.get(_persistence.FIELD_SOURCE) or "registry"
+                        ),
+                        "store_backend": store.backend_name,
+                        "store_location": store.location,
+                        "integrity": entry.get(
+                            _persistence.FIELD_INTEGRITY_STATUS, "unverified"
+                        ),
+                    },
+                    "id_namespace": NAMESPACE_HUMAN,
                 }
                 display_name = entry.get(_persistence.FIELD_DISPLAY_NAME)
                 if display_name:
                     metadata[METADATA_DISPLAY_NAME_KEY] = display_name
+                if principal_as_supplied != principal:
+                    metadata["principal_as_supplied"] = principal_as_supplied
+                    metadata["principal_normalized"] = True
                 registered_at = entry.get(_persistence.FIELD_REGISTERED_AT)
                 if isinstance(registered_at, str) and registered_at.strip():
                     metadata["registered_at"] = registered_at
@@ -255,25 +762,38 @@ class IdentityManager:
                     )
                 except ValueError:
                     scope = IdentityScope.L0
+                # Trust comes from the row and is clamped -- never inherited
+                # from whatever occupied the slot before (A1: trust-inheritance
+                # prohibition).
+                try:
+                    trust_score = float(
+                        entry.get(
+                            _persistence.FIELD_TRUST_SCORE, SEEDED_HUMAN_TRUST_SCORE
+                        )
+                    )
+                except (TypeError, ValueError):
+                    trust_score = SEEDED_HUMAN_TRUST_SCORE
+                trust_score = max(0.0, min(1.0, trust_score))
                 identity = AgentIdentity(
-                    id=principal,
+                    id=identity_id,
                     principal=principal,
                     permissions=set(entry.get(_persistence.FIELD_PERMISSIONS) or []),
                     scope=scope,
-                    trust_score=1.0,
+                    trust_score=trust_score,
                     metadata=metadata,
                 )
-                self._identities[identity.id] = identity
-                self._principal_index[principal] = identity.id
-                self._audit_log.append(
-                    AuditEntry(
-                        identity_id=identity.id,
-                        operation="create",
-                        permission=None,
-                        scope=identity.scope,
-                        result="allowed",
-                        reason=f"Human identity seeded for principal: {principal}",
-                    )
+                if not self._claim_slot(identity, origin=f"seed:{store.backend_name}"):
+                    continue
+                self._audit(
+                    identity_id=identity.id,
+                    operation="create",
+                    permission=None,
+                    scope=identity.scope,
+                    result="allowed",
+                    reason=(
+                        f"Human identity seeded for principal: {principal} "
+                        f"(namespace={NAMESPACE_HUMAN}, trust={trust_score})"
+                    ),
                 )
             loaded += 1
         if loaded:
@@ -330,11 +850,43 @@ class IdentityManager:
         trust_score: float = 0.5,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> AgentIdentity:
-        """Create a new agent identity."""
+        """Create a new identity.
+
+        The id is allocated inside the namespace implied by ``metadata``:
+        ``human:<principal>`` for a human (see :meth:`create_human_identity`),
+        an 8-hex agent id otherwise. The reserved-prefix rule and the namespace
+        invariant are both enforced on the write path, so no caller can place an
+        identity in the wrong namespace or land on an occupied slot.
+        """
         with self._lock:
+            principal_as_supplied = principal
+            principal = normalize_principal(principal).strip()
+            if is_reserved_principal(principal_as_supplied):
+                # Degenerate after normalization ("" or a bare "human:"): there
+                # is no name left to identify the subject by, so the write is
+                # refused rather than allowed to mint a prefix-only id.
+                self._audit(
+                    identity_id=principal_as_supplied,
+                    operation="create",
+                    permission=None,
+                    scope=scope,
+                    result="denied",
+                    reason=(
+                        f"principal {principal_as_supplied!r} is empty after "
+                        f"stripping the reserved id prefix {HUMAN_ID_PREFIX!r}"
+                    ),
+                )
+                logger.error(
+                    "refusing identity creation: principal %r has no name after "
+                    "stripping the reserved prefix %r",
+                    principal_as_supplied, HUMAN_ID_PREFIX,
+                )
+                mark_action_denied("principal has no name once its reserved prefix is stripped")
+                return None
+
             # Principal uniqueness: a principal identifies exactly one identity.
             if principal in self._principal_index:
-                audit = AuditEntry(
+                self._audit(
                     identity_id=self._principal_index[principal],
                     operation="create",
                     permission=None,
@@ -342,34 +894,48 @@ class IdentityManager:
                     result="denied",
                     reason=f"Principal {principal!r} already has an identity",
                 )
-                self._audit_log.append(audit)
+                mark_action_denied("principal already has an identity")
                 return None
 
             # Clamp trust score
             trust_score = max(0.0, min(1.0, trust_score))
 
+            resolved_metadata = dict(metadata or {})
+            is_human = resolved_metadata.get(METADATA_KIND_KEY) == HUMAN_KIND
+            if principal_as_supplied != principal:
+                # Provenance: the id is derived from the normalized name, so
+                # record the spelling that actually arrived rather than letting
+                # the two forms become indistinguishable in the record.
+                resolved_metadata["principal_as_supplied"] = principal_as_supplied
+                resolved_metadata["principal_normalized"] = True
             identity = AgentIdentity(
-                id=str(uuid.uuid4())[:8],
+                id=(
+                    f"{HUMAN_ID_PREFIX}{principal}"
+                    if is_human
+                    else self._allocate_agent_id()
+                ),
                 principal=principal,
                 permissions=permissions or set(),
                 scope=scope,
                 trust_score=trust_score,
-                metadata=metadata or {},
+                metadata=resolved_metadata,
             )
 
-            self._identities[identity.id] = identity
-            self._principal_index[principal] = identity.id
+            if not self._claim_slot(identity, origin="create_identity"):
+                return None
 
             # Record audit event
-            audit = AuditEntry(
+            self._audit(
                 identity_id=identity.id,
                 operation="create",
                 permission=None,
                 scope=scope,
                 result="allowed",
-                reason=f"Identity created for principal: {principal}",
+                reason=(
+                    f"Identity created for principal: {principal} "
+                    f"(namespace={identity.namespace})"
+                ),
             )
-            self._audit_log.append(audit)
 
             return identity
 
@@ -670,3 +1236,31 @@ def create_identity_with_permissions(
 def get_identity_stats() -> Dict[str, Any]:
     """Get identity manager statistics."""
     return get_identity_manager().stats()
+
+
+def resolve_principal_fingerprint(principal: str) -> Optional[str]:
+    """Canonical fingerprint for ``principal``, or ``None`` if unregistered.
+
+    **The single primitive the audit side and the authorization side must both
+    converge on** (PHASE 3.6 / A2 keyspace convergence).
+
+    Before this existed the two sides used different key spaces: the
+    authoritative audit chain indexed identities by a unique **principal name**,
+    while the authorization path indexed them by a **32-bit** ``id``
+    (``uuid4()[:8]``). Two key spaces in different domains can never be
+    cross-checked against one another, so when a 32-bit id collided the audit
+    record stayed field-for-field true, ``verify_integrity()`` still passed, and
+    nothing anywhere could falsify that one principal's authority had been
+    exercised by another. Both sides now resolve through the same object, and
+    :attr:`AgentIdentity.fingerprint` names it without a 32-bit surface.
+    """
+    manager = get_identity_manager()
+    identity = manager.get_identity_by_principal(principal)
+    if identity is None:
+        identity = manager.get_identity(principal)
+    return identity.fingerprint if identity is not None else None
+
+
+def describe_identity_namespaces() -> Dict[str, Any]:
+    """Report the id-namespace split and any boot-time registry refusal."""
+    return get_identity_manager().describe_identity_namespaces()

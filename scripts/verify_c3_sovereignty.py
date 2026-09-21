@@ -124,29 +124,43 @@ def main() -> int:
     idmod.get_identity_manager = lambda: mgr
     try:
         sov.clear_active_sovereignty()
-        v, r = xc._adjudicate("capability.retire", "CRITICAL")
+        v, r, actor = xc._adjudicate("capability.retire", "CRITICAL")
         check("no delegation -> HIGH/CRITICAL denied (service)",
               v == "deny" and r == "default_deny", f"{v}/{r}")
+        # A2: the adjudicated actor is a return value now, not something the
+        # caller must reconstruct. With no window it must be the service actor.
+        check("no delegation -> adjudicated actor is the internal service",
+              actor == {"type": "service", "principal": "liuhao-internal-service"},
+              f"actor={actor}")
 
         with sov.human_sovereign(human.id, ["capability.retire"]):
-            v, r = xc._adjudicate("capability.retire", "CRITICAL")
+            v, r, actor = xc._adjudicate("capability.retire", "CRITICAL")
         check("human delegation -> HIGH/CRITICAL allowed",
               v == "allow" and r == "human_sovereignty", f"{v}/{r}")
+        # A2: and the record will name the human, so "who approved this" is
+        # answerable from the audit chain instead of collapsing to a constant.
+        check("human delegation -> adjudicated actor is the delegating human",
+              actor.get("type") == "human" and actor.get("principal") == human.id,
+              f"actor={actor}")
 
         with sov.human_sovereign("liuhao-internal-service", ["capability.retire"]):
-            v, r = xc._adjudicate("capability.retire", "CRITICAL")
+            v, r, actor = xc._adjudicate("capability.retire", "CRITICAL")
         check("spoofed service-as-human rejected",
               v == "deny" and r == "default_deny", f"{v}/{r}")
 
         with sov.human_sovereign(human.id, ["capability.retire"]):
-            v, r = xc._adjudicate("security.set_abac_rule", "CRITICAL")
+            v, r, actor = xc._adjudicate("security.set_abac_rule", "CRITICAL")
         check("out-of-scope action still denied",
               v == "deny" and r == "default_deny", f"{v}/{r}")
+        check("out-of-scope action is not escalated to the human",
+              actor.get("type") == "service", f"actor={actor}")
 
         with sov.human_sovereign(human.id, ["memory.store"]):
-            v, r = xc._adjudicate("memory.store", "LOW")
+            v, r, actor = xc._adjudicate("memory.store", "LOW")
         check("LOW not escalated under delegation",
               v == "allow" and r == "internal_service_allow", f"{v}/{r}")
+        check("LOW not escalated -> adjudicated actor stays the service",
+              actor.get("type") == "service", f"actor={actor}")
     finally:
         idmod.get_identity_manager = orig
 
@@ -184,7 +198,9 @@ def main() -> int:
 
     # fail-closed -> PolicyDeniedError(error)
     orig_adj = xc._adjudicate
-    xc._adjudicate = lambda a, r: (None, None)
+    # A2: _adjudicate returns the actor it used as a third value; the stub mirrors
+    # the real fail-closed return shape.
+    xc._adjudicate = lambda a, r: (None, None, xc._service_actor_policy_shape())
     try:
         @xc.kernel_action("security.set_abac_rule", enforce=True)
         def crit3():

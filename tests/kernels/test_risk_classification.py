@@ -32,12 +32,37 @@ from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS
 
 
 def _details_for(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    Does **not** filter by ``principal_id``: before A2 the decorator recorded the
+    literal subject ``"kernel"``, so a test could find its own row by that
+    string. A2 replaced the constant with the *actual* acting principal, so
+    pinning the literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- a green that proves nothing.
+
+    Attribution is asserted as a **value** (F26): ``actor_fingerprint`` must be
+    32 hex chars, and the event's ``principal_id`` must agree with the
+    ``actor_identity_id`` in ``details`` (the A2 keyspace convergence).
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=2000, reverse=True):
+    for ev in audit_query(limit=2000, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fp = det.get("actor_fingerprint")
+        assert isinstance(fp, str) and len(fp) == 32 and all(
+            c in "0123456789abcdef" for c in fp
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fp!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 

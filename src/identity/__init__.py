@@ -1,14 +1,57 @@
-"""Identity Kernel — Agent Identity + Permissions
+"""
+    ⚠️  NON-AUTHORITATIVE ARCHIVE — DO NOT IMPORT (PHASE 3.6 / T-M)
+    =============================================================
+    This module is **not** the identity implementation LIUHAO uses. It is an
+    archived, unaudited, zero-reference copy kept in place only so that the
+    historical references to it (see below) do not dangle. It must not gain
+    importers.
 
-The Identity Kernel manages agent identities, principals, and permissions.
-Provides the single Identity Authority for the system.
+    Authoritative implementation:  ``src.kernels.identity``
+    Enforced by:                   ``scripts/verify_single_identity_root.py``
 
-依据 Definition Lock §112: Identity Kernel 必须能够
-- Create and manage agent identities
-- Grant and revoke permissions
-- Audit identity operations
-- Support scope-aware permissions (L0-L7)
-- Maintain identity traceability
+    Why this banner exists (F29 ⑥ / F30 ①)
+    --------------------------------------
+    Two modules in this repository both described themselves as the
+    "single Identity Authority", and **neither said which one that was**. The
+    live one (``src.kernels.identity``) is the one the whole system imports and
+    the one the audit covers; this copy is imported by nobody. Two identity
+    implementations with no declared winner is not redundancy — it is an
+    ambiguity in *where the trust root is*, and the failure mode is not "the
+    wrong one is used" but "the wrong one gets used by accident and silently
+    changes the security semantics".
+
+    Written evidence for the claims above — run these, do not take them on faith:
+
+        grep -rn "from src\\.identity\\|import src\\.identity" --include=*.py \\
+            . | grep -v "^./.venv" | grep -v "^./src/identity/"
+          -> 0 real imports. The only matches are prose in
+             ``src/knowledge/contracts.py`` (docstrings naming this module in
+             order to say NOT to use it).
+
+        python scripts/verify_single_identity_root.py
+          -> AST-based: parses every ``.py`` file and looks for actual
+             ``import``/``from`` statements, so a docstring mention cannot
+             satisfy it.
+
+    ⚠️ This copy was deliberately **not deleted** (F29 ⑥(a): archive and mark,
+    do not delete, so historical references do not break). If you are here to
+    add a feature: it belongs in ``src.kernels.identity``.
+    -------------------------------------------------------------
+
+    Identity Kernel — Agent Identity + Permissions
+
+    (Original docstring, retained for history. Its claim to be "the single
+    Identity Authority for the system" is **superseded** by the banner above.)
+
+    The Identity Kernel manages agent identities, principals, and permissions.
+    Provides the single Identity Authority for the system.
+
+    依据 Definition Lock §112: Identity Kernel 必须能够
+    - Create and manage agent identities
+    - Grant and revoke permissions
+    - Audit identity operations
+    - Support scope-aware permissions (L0-L7)
+    - Maintain identity traceability
 """
 from __future__ import annotations
 

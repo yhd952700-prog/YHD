@@ -170,12 +170,39 @@ from src.kernels._crosscutting import kernel_action  # noqa: E402
 
 
 def _details_for(action_name: str):
+    """Newest audit event written for ``action_name`` -- attribution verified.
+
+    PHASE 3.6 / A2 + F26. Before A2 every ``@kernel_action`` recorded the literal
+    subject ``"kernel"``, so this guard could find its own row by that string.
+    A2 replaced the constant with the *actual* acting principal, so pinning the
+    literal finds either nothing or a stale row left in the shared
+    ``audit_store.db`` by an earlier run -- and a stale row is a green that
+    proves nothing.
+
+    Attribution is asserted as a **value**: ``actor_fingerprint`` must actually
+    be a 32-hex fingerprint (not merely non-empty), and the event's
+    ``principal_id`` column must agree with the ``actor_identity_id`` in
+    ``details`` -- the keyspace convergence A2 established.
+    """
     from src.kernels.audit import audit_query
 
-    for ev in audit_query(principal_id="kernel", limit=2000, reverse=True):
+    for ev in audit_query(limit=2000, reverse=True):
         det = ev.get("details") or {}
-        if det.get("action") == action_name:
-            return det
+        if det.get("action") != action_name:
+            continue
+        fingerprint = det.get("actor_fingerprint")
+        assert isinstance(fingerprint, str) and len(fingerprint) == 32 and all(
+            c in "0123456789abcdef" for c in fingerprint
+        ), (
+            f"audit row for {action_name!r} carries no usable attribution: "
+            f"actor_fingerprint={fingerprint!r} (F26: a non-empty column is not evidence)"
+        )
+        assert ev.get("principal_id") == det.get("actor_identity_id"), (
+            f"audit principal keyspace divergence for {action_name!r}: "
+            f"principal_id={ev.get('principal_id')!r} vs "
+            f"actor_identity_id={det.get('actor_identity_id')!r}"
+        )
+        return det
     return None
 
 
