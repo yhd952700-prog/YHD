@@ -109,7 +109,7 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 - `LIUHAO_KERNEL_POLICY_ENFORCE`（**默认空 = 不拦截**，只记录 / L1）。
   取值形如 `HIGH,CRITICAL` 或具体动作名。**只有 HIGH/CRITICAL 层可被武装**；LOW/MEDIUM
   不在执法切割线内。typo 会**大声失败**，不会静默变成「未武装」。
-- 43 个生产 `@kernel_action` 调用点**一律 `enforce=False`**（由 AST 护栏锁定，不许散开写死）。
+- 44 个生产 `@kernel_action` 调用点**一律 `enforce=False`**（由 AST 护栏锁定，不许散开写死）。
 - 裁决：**生产是否 arm 属部署决定**（前置条件：身份表已挂）。arm/回滚 = 改一个环境变量 + 重启，
   零代码改动、零成本回滚。
 

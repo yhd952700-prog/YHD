@@ -85,7 +85,7 @@ engine.rollback(experiment_id)   # 状态 -> ROLLED_BACK，写入 history 审计
 
 ### 6.1 内核层策略拦截开关（Policy C-4 / C-5 / C-6 裁决）
 
-内核层 43 个 `@kernel_action` 默认**只记录、不拦截**（L1）。把它们变成**真拦截**（L2）
+内核层 44 个 `@kernel_action` 默认**只记录、不拦截**（L1）。把它们变成**真拦截**（L2）
 不需要改代码 —— 用一处运维开关：
 
 ```bash
@@ -172,7 +172,7 @@ export LIUHAO_KERNEL_POLICY_ENFORCE=
 | 护栏 | 守住的不变量 |
 |---|---|
 | `verify_policy_c1.py` | 白名单驱动判决；allow / deny 集合不重叠且无陈旧项 |
-| `verify_d8_risk_classification.py` | 43 个内核动作的风险分级注册表与装饰器接线一致 |
+| `verify_d8_risk_classification.py` | 44 个内核动作的风险分级注册表与装饰器接线一致 |
 | `verify_c2_enforcement.py` | **无任何生产调用点**自行把 `enforce` 翻为 `True` |
 | `verify_c3_sovereignty.py` | DEFER 语义；主权通道未被生产代码开启 |
 | `verify_c4_approval_channel.py` | 审批主体只来自 JWT；`ApprovalRequest` 不含 `principal`；武装面 == 审计许可面 |

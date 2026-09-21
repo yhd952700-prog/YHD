@@ -192,7 +192,7 @@ apps/console/         ← 前端（L-Core）
 > 只满足 L1 时，**必须在审计事件中标注 `policy_enforced: false`**，避免把 `deny` 误读为"动作被拒绝"。
 > 权威表述见 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md) §7。
 >
-> **当前状态**：**能力层** 4 处硬 gate 已达 L2；**内核层** 43 个动作已达 L1，
+> **当前状态**：**能力层** 4 处硬 gate 已达 L2；**内核层** 44 个动作已达 L1，
 > L2 的机制（`enforce` 开关 + 按风险分级执行 + 经核验 human 主权通道）**已就绪但默认关闭**
 > —— 详见 [`spec/POLICY-ENFORCEMENT-DESIGN.md`](spec/POLICY-ENFORCEMENT-DESIGN.md) §10。
 

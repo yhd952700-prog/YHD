@@ -196,7 +196,7 @@ service actor + 白名单外动作  -> deny   trace=['RULE:default_deny:deny']
 `policy_enforced: false` 依旧诚实标注 —— 把它变成真正的控制点是 **C-2**
 （`enforce` 开关 + `PolicyDeniedError`，仅 HIGH/CRITICAL 生效），**尚未实施**。
 
-> **本轮同时纠正设计提案中的两处事实错误**（实测复核）：
+> **本轮同时纠正设计提案中的两处事实错误**（2026-09-11 实测复核，下列 43 为该时点值、非当前计数）：
 > ① 装饰动作数是 **43** 而非 48；
 > ② 43 个装饰点**全部未设置 `risk_level`**（一律默认 `LOW`），即 `risk_level`
 > 参数此前从未被使用 —— 这使"仅对 HIGH/CRITICAL 开拦截"的 C-2 在当前状态下
@@ -324,7 +324,7 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
 5. **Policy Controlled：路线 C 的 C-0 → C-3 机制已全部实施；生产默认仍为 L1（记录型）**。
    内核层判决**已携带信息**（白名单驱动 allow/deny，Round 65），但**仍未拦截**（§3.5.4 修复记录）。
    > ⚠️ **口径边界（2026-09-21 补）：** 上面两句里的「生产默认 / 仍未拦截」指的是**代码默认**
-   > （43 个装饰点 `enforce=False` + 开关默认空）。**部署面不是这个默认** ——
+   > （44 个装饰点 `enforce=False` + 开关默认空）。**部署面不是这个默认** ——
    > `docker-compose.prod.yml:59` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`
    > 武装，被武装的 HIGH/CRITICAL 动作上判决**会**被执行。两者不可互推；云发布包那条路侧
    > 本工作区不可判定（见 `LAUNCH-CRITERIA.md` A4 行注）。
