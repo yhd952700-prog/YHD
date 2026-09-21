@@ -19,7 +19,7 @@ import time
 import pytest
 
 from src.kernels import _sovereignty as sov
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import _adjudicate, kernel_action
 from src.kernels.audit import AuditEventType, audit_query
 from src.kernels.identity import (
     INTERNAL_SERVICE_PRINCIPAL,
@@ -267,3 +267,166 @@ class TestGrantAudit:
         assert details["policy_rule"] == "human_sovereignty"
         assert details["sovereignty_grant"] == grant.grant_id
         assert details["risk_level"] == "CRITICAL"
+
+
+def _action_audit_row(action_name: str):
+    """The newest audit *event* (not just its details) for ``action_name``."""
+    for ev in audit_query(limit=200, reverse=True):
+        if (ev.get("details") or {}).get("action") == action_name:
+            return ev
+    return None
+
+
+class TestAdjudicationRechecksGrantAuthority:
+    """F33 — a grant valid at window-open time is not authority at decision time.
+
+    ``grant_window`` validates the grant object it is handed, once, when the
+    window opens. The adjudication point used to trust that snapshot, so a grant
+    revoked in between still produced ``verdict=allow`` as a *human* actor. Each
+    test below fails (allow) on that behaviour and passes (deny) once the grant
+    is re-resolved from the registry at decision time.
+    """
+
+    def test_revoked_grant_is_denied_at_adjudication(self, humans):
+        _mgr, human = humans
+        grant = sov.issue_grant(human.id, ["capability.retire"])
+        window = sov.grant_window(grant)
+        sov.revoke_grant(grant.grant_id)
+
+        with window:
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
+
+        assert verdict == "deny", (
+            f"a revoked grant adjudicated as {verdict!r} (rule={rule!r}, "
+            f"actor={actor!r}) — revocation is not enforced at the decision point"
+        )
+        assert actor["type"] != "human", actor
+
+    def test_expired_grant_is_denied_at_adjudication(self, humans):
+        _mgr, human = humans
+        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.05)
+        window = sov.grant_window(grant)
+        time.sleep(0.1)
+        assert grant.is_expired() is True
+
+        with window:
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
+
+        assert verdict == "deny", (
+            f"an expired grant adjudicated as {verdict!r} (rule={rule!r}, "
+            f"actor={actor!r}) — expiry is not enforced at the decision point"
+        )
+        assert actor["type"] != "human", actor
+
+    def test_valid_grant_still_allows_at_adjudication(self, humans):
+        """Non-regression: the re-check must not break a genuinely live grant."""
+        _mgr, human = humans
+        grant = sov.issue_grant(human.id, ["capability.retire"])
+        with sov.grant_window(grant):
+            verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
+        assert verdict == "allow"
+        assert rule == "human_sovereignty"
+        assert actor["type"] == "human"
+
+    def test_revoked_grant_audit_is_not_a_human_approval(self, humans):
+        """F26 — the authoritative chain must not record a refused claim as a human.
+
+        On the pre-fix code this row reads ``actor_kind='human'`` +
+        ``actor_source='sovereignty-window'`` + ``policy_decision='allow'``: a
+        REVOKED grant written into the hash chain as a human-authored approval.
+        """
+        _mgr, human = humans
+        grant = sov.issue_grant(human.id, ["capability.retire"])
+        window = sov.grant_window(grant)
+        sov.revoke_grant(grant.grant_id)
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran-under-revoked-grant"
+
+        with window:
+            retire()
+
+        details = _action_audit("capability.retire")
+        assert details is not None
+        assert details["actor_kind"] != "human", (
+            f"a revoked grant was recorded as a human author: {details!r}"
+        )
+        assert details["actor_source"] != "sovereignty-window", (
+            f"a revoked grant was recorded as a live sovereignty window: {details!r}"
+        )
+        assert details["actor_source"] == "sovereignty-window-rejected"
+        assert details["sovereignty_claim"] == "grant-revoked"
+        assert details["policy_decision"] == "deny", details
+        assert details["sovereignty_grant"] is None, (
+            "a rejected window must not record a grant id that reads as authorisation"
+        )
+
+
+class TestAuditKeyspaceConvergence:
+    """F26 — audit and authorization must name an actor in ONE key space."""
+
+    def test_convergence_holds_for_plain_principal_form(self, humans):
+        """A window opened with the plain principal name must still converge.
+
+        ``human_sovereign`` accepts either the identity id (``human:bob``) or the
+        principal name (``bob``); the audit ``principal_id`` used to echo whichever
+        was passed, so it agreed with ``actor_identity_id`` only for callers that
+        happened to pass the id. The property must hold by construction, not by
+        lucky spelling.
+        """
+        _mgr, human = humans
+        assert human.principal != human.id, "test premise: the two forms differ"
+        grant = sov.issue_grant(human.id, ["capability.retire"])
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran-under-plain-principal-window"
+
+        with sov.human_sovereign(
+            human.principal, grant.actions, grant_id=grant.grant_id
+        ):
+            retire()
+
+        row = _action_audit_row("capability.retire")
+        assert row is not None, "no audit row written"
+        details = row["details"]
+        assert row.get("principal_id") == details.get("actor_identity_id"), (
+            f"audit keyspace divergence for the same actor: "
+            f"principal_id={row.get('principal_id')!r} vs "
+            f"actor_identity_id={details.get('actor_identity_id')!r}"
+        )
+        assert row.get("principal_id") == human.id, (
+            "the canonical principal form (identity.id) must be what is recorded"
+        )
+
+    def test_convergence_holds_for_grant_issued_by_plain_name(self, humans):
+        """The same property must hold when the *grant* was issued by the plain name.
+
+        ``issue_grant`` accepts either spelling, so a grant issued as ``bob``
+        opens a window whose principal is ``bob`` while the identity's id is
+        ``human:bob``. Convergence must be a property of the audit writer, not of
+        which spelling the deployer happened to use.
+        """
+        _mgr, human = humans
+        assert human.principal != human.id, "test premise: the two forms differ"
+        grant = sov.issue_grant(human.principal, ["capability.retire"])
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran-under-plain-named-grant"
+
+        with sov.grant_window(grant):
+            assert retire() == "ran-under-plain-named-grant"
+
+        row = _action_audit_row("capability.retire")
+        assert row is not None, "no audit row written"
+        details = row["details"]
+        assert row.get("principal_id") == details.get("actor_identity_id"), (
+            f"audit keyspace divergence for the same actor: "
+            f"principal_id={row.get('principal_id')!r} vs "
+            f"actor_identity_id={details.get('actor_identity_id')!r}"
+        )
+        assert row.get("principal_id") == human.id, (
+            "the canonical principal form (identity.id) must be what is recorded"
+        )

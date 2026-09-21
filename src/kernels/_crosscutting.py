@@ -298,6 +298,20 @@ def _resolve_audit_actor(policy_actor: Dict[str, str]) -> Dict[str, str]:
             "source": "bound",
         }
     actor_type = policy_actor.get("type", "service")
+    claim = policy_actor.get("sovereignty_claim")
+    if claim:
+        # F33: the window's claim was re-checked at the decision point and did
+        # not hold (revoked / expired / out of scope), so the actor actually
+        # adjudicated with is the service default. Record exactly that -- a
+        # reader must never see ``sovereignty-window`` + ``human`` for a claim
+        # we refused, because that is a false human approval in the only
+        # durable record.
+        return {
+            "kind": actor_type,
+            "principal": policy_actor["principal"],
+            "source": "sovereignty-window-rejected",
+            "sovereignty_claim": claim,
+        }
     return {
         "kind": actor_type,
         "principal": policy_actor["principal"],
@@ -321,9 +335,17 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
         # space. Unregistered principals resolve to None for both fields -- an
         # absent attribution must be visibly absent.
         identity = _resolve_actor_identity(actor["principal"])
+        # F26: write ONE canonical principal form. The authorization side indexes
+        # by ``identity.id`` (e.g. ``human:bob``); writing the raw window string
+        # here (e.g. ``bob``) put the two key spaces back in different domains,
+        # so the convergence assertion below held only for whichever spelling
+        # happened to equal the id. An unregistered principal keeps its raw name
+        # (``identity_id`` is None) -- an absent attribution must stay visibly
+        # absent rather than be invented.
+        principal_id = identity["identity_id"] or actor["principal"]
         log_event(
             event_type=AuditEventType.STATE_CHANGE,
-            principal_id=actor["principal"],
+            principal_id=principal_id,
             scope=AuditScope.L0,
             outcome=outcome,
             details={
@@ -351,6 +373,11 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 "actor_source": actor.get("source", "unknown"),
                 "actor_identity_id": identity["identity_id"],
                 "actor_fingerprint": identity["fingerprint"],
+                # F33: when the recorded actor is *not* the human the window
+                # claimed, say why. Without it a denied HIGH/CRITICAL action
+                # under a revoked grant is indistinguishable from one that never
+                # claimed human authority at all.
+                "sovereignty_claim": actor.get("sovereignty_claim"),
                 # A1/U-1: why a call that *returned* is nonetheless a refusal.
                 # Without it, a refused impersonation reads as a successful
                 # creation in the authoritative chain.
@@ -372,6 +399,38 @@ def _active_grant_id() -> Optional[str]:
         return sov.grant_id if sov is not None else None
     except Exception:  # pragma: no cover - defensive
         return None
+
+
+def _sovereignty_claim_state(sov: Any, action: str) -> Optional[str]:
+    """Re-check a sovereignty window's authority **at the decision point**.
+
+    Returns ``None`` when the window may still be honoured, else a short reason.
+
+    F33 read-path discipline: a grant being valid when the window *opened* does
+    not make it valid *now*. The window carries only a ``grant_id`` snapshot, so
+    the authoritative answer is re-resolved from the grant registry on every
+    adjudication -- a grant revoked (or allowed to expire) after the window
+    opened must stop authorising, not keep working because the frozen dataclass
+    the caller happened to hold still looks active.
+
+    A window with no ``grant_id`` is the bare C-3 channel; its legitimacy is
+    recomputed by the policy engine from the Identity Kernel, so there is
+    nothing here to re-check and it is left alone.
+    """
+    if sov is None or sov.grant_id is None:
+        return None
+    from src.kernels._sovereignty import get_grant
+
+    grant = get_grant(sov.grant_id)
+    if grant is None:
+        return "grant-not-found"
+    if grant.is_revoked:
+        return "grant-revoked"
+    if grant.is_expired():
+        return "grant-expired"
+    if action not in grant.actions:
+        return "grant-does-not-cover-action"
+    return None
 
 
 def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[str], Dict[str, str]]:
@@ -410,10 +469,25 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
             except ValueError:
                 tier = RiskTier.LOW
             if tier in ENFORCED_TIERS:
-                actor = {"type": "human", "principal": sov.principal}
+                # F33: the window is not authority by itself -- re-check the
+                # grant it was opened from against the registry *now*.
+                claim = _sovereignty_claim_state(sov, action)
+                if claim is None:
+                    actor = {"type": "human", "principal": sov.principal}
+                else:
+                    # Fail-closed: do NOT escalate to the human. The actor stays
+                    # the service default (denied for HIGH/CRITICAL), and the
+                    # rejection reason rides along so the audit record can say
+                    # the sovereignty claim was refused instead of silently
+                    # looking like a window that was never opened.
+                    actor = {
+                        "type": "service",
+                        "principal": INTERNAL_SERVICE_PRINCIPAL,
+                        "sovereignty_claim": claim,
+                    }
 
         decision = evaluate_policy_simple(
-            actor=actor,
+            actor={"type": actor["type"], "principal": actor["principal"]},
             action={"name": action, "risk_level": risk_level},
             resource=None,
             scope=None,
@@ -498,8 +572,11 @@ def kernel_action(
                 decision, rule_id, policy_actor = _adjudicate(action, effective_risk)
                 # C-4: remember which approval grant (if any) the verdict was
                 # reached under, so the audit event closes the chain
-                # action <- grant <- authorising human.
-                grant_id = _active_grant_id()
+                # action <- grant <- authorising human. F33: only when the claim
+                # actually held -- a rejected window must not leave a grant id
+                # that reads as the authorisation for the action.
+                if not policy_actor.get("sovereignty_claim"):
+                    grant_id = _active_grant_id()
             # The subject written to the audit event: an explicitly bound acting
             # principal outranks the adjudicated actor; neither of them is the
             # constant "kernel" that used to be written here.

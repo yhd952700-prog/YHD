@@ -186,12 +186,35 @@ NAMESPACE_AGENT = "agent"
 #: zero hits -- so this value carries no authority by itself.)
 SEEDED_HUMAN_TRUST_SCORE = 1.0
 
-#: Pattern of an agent identity id (``str(uuid.uuid4())[:8]``).
-_AGENT_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+#: Hex widths an agent identity id may have, narrowest first.
+#:
+#: **This tuple is the single source of truth for "what shape can an agent id
+#: have?"** Both the allocator (:meth:`IdentityManager._allocate_agent_id`) and
+#: the reserved-id predicate (:func:`is_agent_id`) are derived from it, so the
+#: allocator cannot be widened without the check widening with it.
+#:
+#: This coupling is the fix for a measured A1 containment gap: the predicate
+#: was pinned to ``^[0-9a-f]{8}$`` while the allocator widened to 16 hex on
+#: saturation, so ``is_agent_id(<16 hex>)`` was False, a HUMAN whose principal
+#: equalled a widened agent id was admitted as ``human:<id>``, and the id
+#: lookup and the principal lookup then resolved that one name to two different
+#: subjects (agent/admin vs human/admin) -- the exact impersonation A1 exists
+#: to prevent.
+_AGENT_ID_HEX_WIDTHS: tuple = (8, 16)
 
-#: How many times :meth:`IdentityManager._allocate_agent_id` retries before
-#: widening the id. Sixteen misses on an 8-hex space means the space is
-#: saturated, not unlucky.
+#: Width of a normal agent id, and of the widened one used on saturation.
+#: Derived, not restated: the lengths are written down exactly once, above.
+_PRIMARY_AGENT_ID_WIDTH = _AGENT_ID_HEX_WIDTHS[0]
+_WIDENED_AGENT_ID_WIDTH = _AGENT_ID_HEX_WIDTHS[-1]
+
+#: Pattern of an agent identity id -- every width the allocator can mint.
+_AGENT_ID_RE = re.compile(
+    r"^(?:%s)$" % "|".join(r"[0-9a-f]{%d}" % width for width in _AGENT_ID_HEX_WIDTHS)
+)
+
+#: How many times :meth:`IdentityManager._allocate_agent_id` retries at the
+#: primary width before widening the id. Sixteen misses on the primary hex
+#: space means the space is saturated, not unlucky.
 _AGENT_ID_ALLOCATION_ATTEMPTS = 16
 
 
@@ -516,12 +539,16 @@ class IdentityManager:
         colliding id silently overwrote the incumbent. Here a collision just
         picks another candidate, and the search is bounded -- it can only ever
         fail *closed* (wider id + loud log), never overwrite.
+
+        Both widths come from ``_AGENT_ID_HEX_WIDTHS``, which :func:`is_agent_id`
+        also derives from: widening here cannot leave the reserved-id check
+        behind.
         """
         for _ in range(_AGENT_ID_ALLOCATION_ATTEMPTS):
-            candidate = str(uuid.uuid4())[:8]
+            candidate = str(uuid.uuid4())[:_PRIMARY_AGENT_ID_WIDTH]
             if candidate not in self._identities:
                 return candidate
-        widened = uuid.uuid4().hex[:16]
+        widened = uuid.uuid4().hex[:_WIDENED_AGENT_ID_WIDTH]
         logger.error(
             "agent id space appears saturated: %d consecutive 8-hex collisions; "
             "widening the id for this identity to %r (32-bit birthday collisions "

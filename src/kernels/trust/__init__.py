@@ -230,10 +230,16 @@ class TrustManager:
     ) -> TrustScore:
         """Assign initial trust score to an entity.
 
-        ``valid_in`` bounds the score's validity window (PHASE 3.6 / A4). When
-        omitted, an explicit assignment clears any previous window -- re-assigning
-        a score is a fresh statement about the entity, so it should not inherit
-        an expiry the caller never asked for.
+        ``valid_in`` bounds the score's validity window (PHASE 3.6 / A4).
+
+        **Invariant (PHASE 3.6 / A4 follow-up): a validity bound, once set,
+        cannot be cleared by omission.** When ``valid_in`` is omitted the
+        existing ``valid_until`` is carried over unchanged; only an explicit
+        ``valid_in`` moves the bound. This method used to do the opposite --
+        ``valid_until = (utc_now() + valid_in) if valid_in else None`` -- so a
+        caller who merely forgot the TTL silently converted a bounded grant
+        into a *permanent* one, which is the one direction a trust bound must
+        never fail in. Omission is not evidence that the bound was lifted.
         """
         with self._lock:
             if entity_id in self._revoked:
@@ -246,7 +252,11 @@ class TrustManager:
             trust_score.score = score_val
             trust_score.confidence = confidence
             trust_score.last_updated = utc_now()
-            trust_score.valid_until = (utc_now() + valid_in) if valid_in else None
+            # Omission PRESERVES the bound; only an explicit valid_in moves it.
+            # See the docstring's invariant -- this is the polarity that all
+            # three write paths now share.
+            if valid_in is not None:
+                trust_score.valid_until = utc_now() + valid_in
             trust_score._update_level()
 
             # Record event
@@ -415,9 +425,12 @@ class TrustManager:
             # ``establish_trust`` genuinely "handles TTL" while ``get_score``
             # keeps handing back the same relationship as live.
             #
-            # Deliberately one-directional: re-establishing without a TTL does
-            # NOT clear an expired window, because "no TTL supplied" is not
-            # evidence that the previous bound was lifted.
+            # On BOTH sides the polarity is the ``assign_score`` invariant: a
+            # validity bound, once set, cannot be cleared by omission. Omission
+            # is not evidence that the previous bound was lifted, so a
+            # re-establishment without a TTL neither un-expires the derived
+            # aggregate nor un-bounds an already-bounded link. Passing an
+            # explicit ``expires_in`` is the only way to move a bound.
             if expires_at is not None:
                 derived = self._scores.get(to_entity, {}).get(scope)
                 if derived is not None:
@@ -444,7 +457,12 @@ class TrustManager:
 
             if existing:
                 existing.trust_score = score
-                existing.expires_at = expires_at
+                # Only an explicit TTL may move the link's bound (same
+                # invariant as above). Unconditionally assigning ``expires_at``
+                # here let a bare re-establishment erase a link's expiry and
+                # revive a window that had already closed.
+                if expires_at is not None:
+                    existing.expires_at = expires_at
                 existing.metadata = metadata or {}
                 existing.active = True
                 return existing
