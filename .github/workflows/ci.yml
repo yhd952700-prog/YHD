@@ -271,6 +271,15 @@ jobs:
       - name: Verify human registry integrity posture (deployment gate aware)
         run: python scripts/verify_human_registry_integrity_state.py
 
+      # PHASE 3.6 / P0-4 (A2): the audit principal identity must not collapse --
+      # before the A2 fix every @kernel_action wrote the literal "kernel" as the
+      # subject, so a human approval and an agent action were indistinguishable
+      # in the only durable record. This drives the REAL @kernel_action execution
+      # path against a REAL on-disk (SQLite, hash-chained) audit store and
+      # re-reads the durable record independently. It mocks nothing.
+      - name: Verify A2 audit principal identity does not collapse (runtime)
+        run: python scripts/verify_a2_audit_principal_identity.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
