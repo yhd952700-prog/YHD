@@ -255,6 +255,15 @@ jobs:
       - name: Verify the single authoritative identity implementation
         run: python scripts/verify_single_identity_root.py
 
+      # PHASE 3.6 / A1 + A3 (R-15b / F29): the identity trust root must be
+      # structurally incapable of the day-one deterministic privilege escalation
+      # (a human registry row taking an agent's slot), and -- when the integrity
+      # key is configured -- must refuse unauthenticated rows fail-closed. This
+      # drives the REAL IdentityManager against a REAL on-disk store (both the
+      # file and SQLite backends); it is not a unit test and it mocks nothing.
+      - name: Verify R-15b identity trust-root containment (runtime)
+        run: python scripts/verify_r15b_identity_trust_root.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
