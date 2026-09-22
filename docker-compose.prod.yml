@@ -41,6 +41,13 @@ services:
       # 不用数据库、只想用 JSON 种子文件的话，改为设置
       # LIUHAO_HUMAN_IDENTITIES_FILE 并挂载该文件即可。
       - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
+      # 审计库持久化（P0 · CRIT-1B）：审计库默认落在 <bundle_root>/audit_store.db，
+      # 即容器内 /app/audit_store.db。/app 由 Dockerfile:45 WORKDIR 以 root 创建、
+      # :60 只 chown 了 /app/data、:62 以 USER app 运行 ⇒ 该路径既可能不可写，
+      # 也不在任何卷内（本文件唯一挂载是 liuhao_data:/app/data）⇒ 每重建一次容器
+      # 整条审计哈希链归零。改指到卷内、且已 chown app:app 的 /app/data。
+      # Rollback: 删掉这一行即回到默认行为。
+      - AUDIT_DB_PATH=/app/data/audit_store.db
       # Policy Controlled (C-6 decision, 2026-09-12): arm every HIGH and
       # CRITICAL kernel action except the audited exemptions recorded in
       # src/kernels/_enforcement.py (EXEMPT_ACTIONS). The Round 75 call-site
