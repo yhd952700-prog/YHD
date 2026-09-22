@@ -362,7 +362,8 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 corr_id: str, duration_ms: float, rule_id: Optional[str] = None,
                 risk_level: Optional[str] = None, enforced: bool = False,
                 grant_id: Optional[str] = None,
-                denial_reason: Optional[str] = None) -> None:
+                denial_reason: Optional[str] = None,
+                reraise: bool = False) -> None:
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
 
@@ -422,7 +423,15 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
             },
             correlation_id=corr_id,
         )
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # defensive
+        if reraise:
+            # PHASE 3.6 / CRIT-1C Layer 2 (D17 Option C, ACCEPTED): the caller is
+            # a mandatory-evidence action and MUST fail-closed when the evidence
+            # channel is unavailable. Do NOT swallow here -- propagate so the
+            # gate can convert this into a hard deny. Re-raising is the whole
+            # point: "audit failure blocks the action" must never become
+            # "audit failure, action continues" via this branch.
+            raise
         logger.warning("kernel_action audit failed for %r: %s", action, exc)
 
 
@@ -611,6 +620,27 @@ def _adjudicate(action: str, risk_level: str) -> tuple[Optional[str], Optional[s
         return None, None, _service_actor_policy_shape()
 
 
+def _evidence_mandatory(effective_risk: Any) -> bool:
+    """PHASE 3.6 / CRIT-1C Layer 2 (D17 Option C, ACCEPTED): is the authoritative
+    audit Evidence MANDATORY for this action -- i.e. a failure to produce it must
+    fail-closed (action MUST NOT proceed)?
+
+    Grounded on the authoritative risk tier (D8): only HIGH/CRITICAL require
+    mandatory evidence. LOW/MEDIUM keep the Layer-1 degraded-continue path and
+    are explicitly NOT blocked when evidence is unavailable (the boss's grading:
+    LOW -> degraded continue; HIGH -> no evidence, no execute; CRITICAL /
+    sovereignty-sensitive -> fail-closed). The CRITICAL / sovereignty-sensitive
+    actions (``capability.retire``, ``security.set_abac_rule``, trust
+    establish/revoke, permissions ...) are all classified HIGH/CRITICAL, so this
+    single tier check captures them without inventing a second classification.
+    """
+    try:
+        tier = RiskTier(effective_risk)
+    except ValueError:
+        return False
+    return tier in ENFORCED_TIERS
+
+
 def kernel_action(
     action: str,
     *,
@@ -746,6 +776,47 @@ def kernel_action(
                     # grant authority via the sovereignty channel, instead of
                     # permanently forbidding the action.
                     raise PolicyDeferredError(action, rule_id)
+
+            # --- PHASE 3.6 / CRIT-1C Layer 2 (D17 Option C, ACCEPTED) -------- #
+            # For HIGH/CRITICAL actions the authoritative audit Evidence is
+            # MANDATORY: if it cannot be produced, the action MUST NOT proceed
+            # (fail-closed). We prove the evidence channel is live with a real
+            # pre-execution write; if it fails for ANY reason (backend down,
+            # timeout, partial write, txn rollback, network/db unavailable,
+            # shutdown, retry exhaustion ...) we block -- the action never runs.
+            # This is the inverse of the Layer-1 LOW/MEDIUM degraded-continue
+            # path and itself never fails open: any failure -> hard deny.
+            #
+            # NOTE: this gate is independent of ``should_enforce`` -- evidence
+            # mandatoriness follows the action's risk tier, not whether the
+            # enforcement cut-line is armed. A record-only HIGH/CRITICAL action
+            # with no evidence channel is equally unsafe.
+            if _evidence_mandatory(effective_risk):
+                if not audit:
+                    logger.error(
+                        "MANDATORY-EVIDENCE action without audit channel: "
+                        "action=%s risk=%s -- fail-closed", action, effective_risk,
+                    )
+                    raise PolicyDeniedError(action, "error", rule_id)
+                try:
+                    # Real pre-execution write. ``reraise=True`` so a backend
+                    # failure propagates instead of being swallowed by the
+                    # defensive except in _call_audit (which would silently turn
+                    # "block" into "ran anyway" -- the exact fail-open we forbid).
+                    _call_audit(
+                        audit_actor, action, "intent", decision or "unadjudicated",
+                        corr_id, 0.0, rule_id, effective_risk,
+                        grant_id=grant_id, reraise=True,
+                    )
+                except PolicyDeniedError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "AUDIT EVIDENCE UNAVAILABLE for mandatory-evidence "
+                        "action=%s risk=%s correlation_id=%s -- fail-closed",
+                        action, effective_risk, corr_id, exc_info=True,
+                    )
+                    raise PolicyDeniedError(action, "error", rule_id)
 
             # U-1: start from a clean slate, so a denial declared by an earlier
             # (or nested) call can never be attributed to this one.
