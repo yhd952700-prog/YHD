@@ -108,6 +108,23 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Rate Limiter: {str(e)}")
         checks["rate_limiter"] = {"status": "unhealthy", "error": str(e)}
 
+    # CRIT-1C / D17 (Layer 1): surface audit write failures as an observable
+    # subsystem. Only the store *unavailability* marks it unhealthy (LOW tier
+    # is still allowed to keep running); the failure *count* is reported so
+    # operators can see "Evidence=missing" without it taking the service down.
+    try:
+        from ..kernels.audit import audit_stats
+
+        astats = audit_stats()
+        checks["audit_store"] = {
+            "status": "healthy",
+            "total_events": astats.get("total_events", 0),
+            "failures": astats.get("failures", 0),
+        }
+    except Exception as e:
+        errors.append(f"Audit Store: {str(e)}")
+        checks["audit_store"] = {"status": "unhealthy", "error": str(e)}
+
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
 

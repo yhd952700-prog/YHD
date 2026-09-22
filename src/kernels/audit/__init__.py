@@ -326,35 +326,43 @@ class AuditStore:
 
         event.event_hash = event.compute_hash()
 
-        self._conn.execute(
-            """INSERT INTO audit_events
-               (event_id, event_type, principal_id, scope, timestamp,
-                correlation_id, outcome, details, event_hash, prev_event_hash,
-                seq, hash_alg)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                event.event_id,
-                event.event_type.value,
-                event.principal_id,
-                event.scope.value,
-                event.timestamp,
-                event.correlation_id,
-                event.outcome,
-                json.dumps(event.details, sort_keys=True) if event.details else None,
-                event.event_hash,
-                event.prev_event_hash,
-                seq,
-                event.hash_alg,
-            ),
-        )
-        self._conn.execute(
-            """INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                   last_seq = excluded.last_seq,
-                   last_hash = excluded.last_hash""",
-            (seq, event.event_hash),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute(
+                """INSERT INTO audit_events
+                   (event_id, event_type, principal_id, scope, timestamp,
+                    correlation_id, outcome, details, event_hash, prev_event_hash,
+                    seq, hash_alg)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.event_id,
+                    event.event_type.value,
+                    event.principal_id,
+                    event.scope.value,
+                    event.timestamp,
+                    event.correlation_id,
+                    event.outcome,
+                    json.dumps(event.details, sort_keys=True) if event.details else None,
+                    event.event_hash,
+                    event.prev_event_hash,
+                    seq,
+                    event.hash_alg,
+                ),
+            )
+            self._conn.execute(
+                """INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       last_seq = excluded.last_seq,
+                       last_hash = excluded.last_hash""",
+                (seq, event.event_hash),
+            )
+            self._conn.commit()
+        except Exception:
+            # CRIT-1C / D17 (Layer 1): do NOT swallow silently. Record the
+            # failure so operators can observe "Evidence=missing" via
+            # audit_stats() / /v1/ready, then re-raise so the *caller's* own
+            # policy (allow-and-swallow for LOW, or block for critical) decides.
+            record_audit_failure()
+            raise
 
         return event
 
@@ -617,6 +625,7 @@ class AuditStore:
             "total_events": total,
             "breakdown": breakdown,
             "db_path": self._db_path,
+            "failures": get_audit_failure_count(),
         }
 
     def initialize(self) -> None:
@@ -638,6 +647,36 @@ class AuditStore:
 
 # Global audit store instance
 _audit_store: Optional[AuditStore] = None
+
+# CRIT-1C (PHASE 3.6 / D17): audit write failures must not be silently swallowed.
+# Central failure counter -- incremented whenever an audit write to the
+# authoritative store raises, so operators can observe "Evidence=missing"
+# instead of a green dashboard. This is Layer 1 of the two-layer fix; it makes
+# the audit Evidence layer *observable* WITHOUT changing availability semantics
+# (LOW tier is still allowed to keep running, but the failure is no longer
+# silent). Layer 2 (blocking for critical/sovereignty-sensitive actions) is a
+# separate, deliberate decision owned by the human (see H-D17 :163).
+_audit_failure_total = 0
+_audit_failure_lock = threading.Lock()
+_audit_failure_ever = False
+
+
+def record_audit_failure() -> None:
+    """Increment the global audit-failure counter (CRIT-1C / D17 LOW tier signal)."""
+    global _audit_failure_total, _audit_failure_ever
+    with _audit_failure_lock:
+        _audit_failure_total += 1
+        _audit_failure_ever = True
+
+
+def get_audit_failure_count() -> int:
+    """Return the number of audit writes that failed since process start."""
+    return _audit_failure_total
+
+
+def audit_failure_occurred() -> bool:
+    """True once any audit write has failed this process (monotonic)."""
+    return _audit_failure_ever
 
 
 def get_audit_store() -> AuditStore:
@@ -699,3 +738,13 @@ def audit_get_event(event_id: str) -> Optional[Dict[str, Any]]:
 def audit_stats() -> Dict[str, Any]:
     """Get audit store statistics."""
     return get_audit_store().get_stats()
+
+
+def audit_failure_count() -> int:
+    """Return the number of audit writes that failed since process start.
+
+    CRIT-1C / D17 (Layer 1): this is the observable "Evidence=missing" signal.
+    It is monotonically increasing for the life of the process and is surfaced
+    via audit_stats() and the /v1/ready health endpoint.
+    """
+    return get_audit_failure_count()

@@ -133,14 +133,18 @@ def dashboard_summary() -> Dict[str, Any]:
     except Exception as exc:
         summary["sessions"] = {"count": 0, "ids": [], "detail": [], "error": str(exc)}
 
-    # 审计（真实：审计存储统计）
+    # 审计（真实：审计存储统计）— CRIT-1C：审计不可用必须如实暴露，不得伪装成 "0 条事件"
     try:
-        from ..kernels.audit import audit_stats
+        from ..kernels.audit import audit_stats, audit_failure_count
 
         summary["audit"] = audit_stats()
     except Exception as exc:
         logger.warning("dashboard_summary audit_stats failed: %s", exc, exc_info=True)
-        summary["audit"] = {"total_events": 0, "error": str(exc)}
+        summary["audit"] = {
+            "available": False,
+            "error": str(exc),
+            "failures": audit_failure_count(),
+        }
 
     return summary
 
