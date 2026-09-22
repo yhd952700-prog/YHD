@@ -264,6 +264,13 @@ jobs:
       - name: Verify R-15b identity trust-root containment (runtime)
         run: python scripts/verify_r15b_identity_trust_root.py
 
+      # PHASE 3.6 / P0-3 (boss decision 2026-09-22): the human registry integrity
+      # posture must be observable / auditable / deployment-gate aware. This
+      # surfaces it; it exits 0 by default (report only) so existing deployments
+      # without a key are not broken, but a strict gate can opt into hard-fail.
+      - name: Verify human registry integrity posture (deployment gate aware)
+        run: python scripts/verify_human_registry_integrity_state.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db

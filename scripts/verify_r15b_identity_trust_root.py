@@ -274,7 +274,9 @@ def _probe_legitimate_human_without_key(backend: str, tmp: str) -> None:
         f"[{backend}] legacy (no-key) human 'legacy_boss' still admitted -- "
         f"opt-in integrity does not break registration",
     )
-    # And the registry reports integrity NOT enforced, honestly.
+    # And the registry reports its posture HONESTLY (boss decision 2026-09-22):
+    # a registry in use with humans but no key must be DEGRADED / UNVERIFIED,
+    # never presented as fully sovereign.
     integrity_report = mgr.describe_identity_namespaces().get(
         "registry_integrity", {}
     )
@@ -282,6 +284,11 @@ def _probe_legitimate_human_without_key(backend: str, tmp: str) -> None:
         integrity_report.get("integrity_enforced") is False,
         f"[{backend}] registry honestly reports integrity_enforced=False when "
         f"no key is configured",
+    )
+    _record(
+        integrity_report.get("integrity_state") == "degraded_unverified",
+        f"[{backend}] registry in use WITHOUT a key reports "
+        f"integrity_state=degraded_unverified (not 'fully sovereign')",
     )
 
 

@@ -125,6 +125,39 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Audit Store: {str(e)}")
         checks["audit_store"] = {"status": "unhealthy", "error": str(e)}
 
+    # P0-3 (boss decision 2026-09-22): the human-identity registry integrity
+    # posture must be OBSERVABLE at the readiness edge. When a registry is in
+    # use (humans can hold sovereignty) but no integrity key is configured, the
+    # posture is "degraded_unverified" -- the system must NOT present as fully
+    # sovereign. Mark it "degraded" so the overall readiness degrades and a
+    # deployment gate can see it, instead of a warning that disappears.
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        mgr = get_identity_manager()
+        reg = mgr.describe_identity_namespaces().get("registry_integrity", {})
+        state = reg.get("integrity_state", "unknown")
+        if state == "degraded_unverified":
+            checks["human_identity_registry"] = {
+                "status": "degraded",
+                "integrity_state": state,
+                "detail": (
+                    "a human registry is in use but LIUHAO_HUMAN_IDENTITIES_"
+                    "INTEGRITY_KEY is unset -- rows are attacker-writable"
+                ),
+            }
+            errors.append(
+                "Human Identity Registry: degraded_unverified (no integrity key)"
+            )
+        else:
+            checks["human_identity_registry"] = {
+                "status": "healthy",
+                "integrity_state": state,
+            }
+    except Exception as e:  # pragma: no cover - defensive
+        errors.append(f"Human Identity Registry: {str(e)}")
+        checks["human_identity_registry"] = {"status": "unhealthy", "error": str(e)}
+
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
 

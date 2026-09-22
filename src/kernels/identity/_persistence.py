@@ -304,6 +304,35 @@ def integrity_enforced() -> bool:
     return bool(integrity_key())
 
 
+#: Integrity posture reported to readiness / observability / deployment gates.
+#:
+#: PHASE 3.6 / P0-3 (boss decision 2026-09-22, id 9c1k2m / 9r0n4s / 6t0p1h): when a
+#: human registry is in use but no integrity key is configured, the registry is
+#: NOT "fully sovereign" -- it must be reported as explicitly DEGRADED /
+#: UNVERIFIED, observable, auditable and deployment-gate aware. The previous
+#: warn-only behaviour (missing key -> warning -> system appears fully sovereign)
+#: is forbidden by that decision.
+INTEGRITY_STATE_ENFORCED = "enforced"            # key configured -> fail-closed
+INTEGRITY_STATE_DEGRADED = "degraded_unverified"  # registry in use, no key
+INTEGRITY_STATE_NA = "not_applicable"            # no humans to protect
+
+
+def registry_integrity_state(*, admitted: int, configured: bool) -> str:
+    """The honest integrity posture of the human registry.
+
+    ``configured`` is True when a store location is set; ``admitted`` is how many
+    humans the last load actually admitted. With no humans admitted there is
+    nothing whose integrity can be attacked, so the posture is
+    ``not_applicable`` rather than degraded. With humans present and a key set the
+    rows authenticate fail-closed (``enforced``); with humans present and no key
+    the rows are attacker-writable (``degraded_unverified``) -- which must never
+    be surfaced as a clean pass.
+    """
+    if not configured or admitted == 0:
+        return INTEGRITY_STATE_NA
+    return INTEGRITY_STATE_ENFORCED if integrity_enforced() else INTEGRITY_STATE_DEGRADED
+
+
 def compute_row_tag(entry: Dict[str, Any], key: str) -> Optional[str]:
     """``"<alg>:<hexdigest>"`` authenticating the authority-bearing fields.
 
@@ -832,13 +861,17 @@ def describe_registry_integrity(
     that function's shape is pinned by tests and read by tooling.
     """
     resolved = store if store is not None else resolve_human_identity_store()
+    last = getattr(resolved, "last_load_report", None)
+    admitted = (last or {}).get("admitted", 0) if isinstance(last, dict) else 0
     report: Dict[str, Any] = {
         "backend": resolved.backend_name,
         "location": resolved.location,
         "integrity_enforced": integrity_enforced(),
+        "integrity_state": registry_integrity_state(
+            admitted=admitted, configured=bool(resolved.location)
+        ),
         "integrity_key_env": HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
     }
-    last = getattr(resolved, "last_load_report", None)
     if isinstance(last, dict):
         report["last_load"] = last
     return report
