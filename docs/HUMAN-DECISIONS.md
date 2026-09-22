@@ -13,9 +13,9 @@
 | 版本 | v0.2（PARTIALLY DECIDED），D1–D18 |
 | 决策归属 | **Human（所有权人 / boss）** |
 | 记录时间 | 2026-09-21T10:41 local（2026-09-21T17:41:22Z UTC） |
-| 字节数 | 182,324 |
-| 行数 | 807 |
-| **sha256** | `2558b550db1b91a4c558560d48daf80c54b91d9467d4890dbba17e0420155678` |
+| 字节数 | 185,022 |
+| 行数 | 812 |
+| **sha256** | `34d7883b3df7ae01208a807fd3604cff4216e0ca6904edeccc6de69a96d195b7` |
 
 > ⚠️ 校验规则：**若上表 sha256 与权威文件不符，以权威文件为准，本指针须同步更新。**
 > 本指针只解决「可发现性」，**不提供证明力**——证明力来自权威文件本身。
@@ -32,15 +32,15 @@
 
 ### H-D16 · Option B：安全修复 与 安全姿态/开关 彻底分离
 - 四步不得隐式合并：`Build Artifact → Verify Artifact → Deploy Artifact → Activate Security Posture`
-- 产物可追溯链：`source commit → build input → build output → deployment artifact → deployed digest`
+- 产物可追溯链（2026-09-22 更新）：`source commit → build inputs → build digest → deployment digest → runtime identity`（build digest 与 deployment digest 须分别独立计算；runtime identity 指线上实例指纹）
 - ⚠️ 实测：第五跳 `deployed digest` **在仓库内无载体**（`deploy/cloud/` 无 MANIFEST / BUILD_INFO / digest 文件）。
 
 ### H-D17 · Option C：按风险分档的审计强制（Risk-Graded Audit Enforcement）
 - **审计后端失败 ≠ 一律放行，也 ≠ 一律阻断**；行为由动作的**风险类别**决定。
 - **critical / sovereignty-sensitive action：无法产生权威审计证据时，动作不得继续。（硬性要求，无例外）**
 - 明确禁止的悖论：`Decision = DENY / Evidence = missing / Action = continues`
-- ⚠️ **已知范围比原记录更宽**：同一形态在门禁侧也存在（`scripts/verify_ai_layer_audit.py:278` 无条件 `return 0`）。
-- 🔴 **仍待 boss 裁决**：D17 的 C 是否**同时约束「门禁 / 验证脚本」一侧**（决策包 `:169`）。
+- ⚠️ 同一形态在门禁侧也存在（`scripts/verify_ai_layer_audit.py:278` 无条件 `return 0`）。
+- ✅ **2026-09-22 已裁决**：D17 的 C **同时约束门禁 / 验证脚本侧**——该脚本的探针异常须进入明确的 PASS / FAIL / DEGRADED / UNVERIFIED，**禁止 `probe failed → exit 0 → green`**（决策包 H-D17 已闭合原 "需要你明确" 的口子）。
 
 ### H-D18 · 维持 LEGAL REVIEW REQUIRED
 - 唯一允许路径：`Fact Package → Counsel Review → Decision → Architecture Update`
