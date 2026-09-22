@@ -280,6 +280,16 @@ jobs:
       - name: Verify A2 audit principal identity does not collapse (runtime)
         run: python scripts/verify_a2_audit_principal_identity.py
 
+      # PHASE 3.6 / P0-5 (A2 + F33): the authorization source -- the actor
+      # _adjudicate returns as "who did / authorised this" -- must be the SAME
+      # subject written to the durable audit record, with no drift and no
+      # sovereignty-washing (a refused sovereignty claim must not read as a live
+      # human window). Drives the REAL CRITICAL @kernel_action capability.retire
+      # against a REAL on-disk (SQLite, hash-chained) audit store, opens REAL
+      # sovereignty windows, and re-reads the durable record independently.
+      - name: Verify P0-5 authorization source integrity (runtime)
+        run: python scripts/verify_p05_authorization_source_integrity.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
