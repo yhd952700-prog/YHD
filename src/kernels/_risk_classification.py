@@ -112,7 +112,7 @@ class ActionRisk(NamedTuple):
 # --------------------------------------------------------------------------- #
 
 KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
-    # ---- LOW (14): query / compute / bookkeeping ------------------------- #
+    # ---- LOW (15): query / compute / bookkeeping ------------------------- #
     "context.compress": ActionRisk(
         RiskTier.LOW, False, False,
         "上下文压缩：计算/簿记，不改变权限、不销毁记录。",
