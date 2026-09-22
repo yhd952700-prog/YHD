@@ -290,6 +290,16 @@ jobs:
       - name: Verify P0-5 authorization source integrity (runtime)
         run: python scripts/verify_p05_authorization_source_integrity.py
 
+      # PHASE 3.6 / P0-6 (F33 / D-2): a sovereignty window carries only a
+      # grant_id snapshot; the authorization it grants must be RE-RESOLVED from
+      # the grant registry at every adjudication. A grant revoked / expired /
+      # issued to a different principal after the window opened must fail-closed
+      # to the service actor (no stolen-human approval). Drives the REAL CRITICAL
+      # @kernel_action capability.retire against a REAL on-disk hash-chain store
+      # with REAL issued/revoked grants, and re-reads the record independently.
+      - name: Verify P0-6 revocable-grant read-path (F33) runtime
+        run: python scripts/verify_p06_revocable_grant_read_path.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
