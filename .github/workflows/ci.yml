@@ -300,6 +300,15 @@ jobs:
       - name: Verify P0-6 revocable-grant read-path (F33) runtime
         run: python scripts/verify_p06_revocable_grant_read_path.py
 
+      # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
+      # sovereign override assertion and an independent verifier's confirmation --
+      # must explicitly record its signature algorithm (sig_alg) and verification
+      # must dispatch on it. Unknown algorithms fail-closed with NO default
+      # fallback. Generates REAL RSA-3072 signatures, persists them, re-reads from
+      # disk independently, and proves sig_alg == actual verification algorithm.
+      - name: Verify P0-7 B2 dual-signature evidence sig_alg (runtime)
+        run: python scripts/verify_p07_dual_signature_sig_alg.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
