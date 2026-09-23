@@ -54,8 +54,9 @@ class PluginSandboxStore:
                 # P0-8c: NO default fallback. An envelope that declares
                 # no algorithm is UNVERIFIED, never silently read as sha256.
                 self._hash_alg = data.get("hash_alg")
-                if self._hash_alg and (not self._hash_chain
-                        or len(self._hash_chain) != len(self._contexts)):
+                if self._hash_alg and (
+                    not self._hash_chain or len(self._hash_chain) != len(self._contexts)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
 
@@ -98,7 +99,6 @@ class PluginSandboxStore:
         """Persist contexts and results to storage."""
         if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
-
 
         data = {
             "version": 1,

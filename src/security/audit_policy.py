@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
-import hashlib
+from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
 import json
 import threading
 import uuid
@@ -61,6 +61,10 @@ class AuditEntry:
     correlation_id: str
     prev_hash: str = ""
     hash: str = ""
+    #: P0-8c: which algorithm produced ``hash``, so the entry says how to
+    #: verify itself instead of relying on a hard-coded sha256. NOTE: it is not
+    #: part of ``chain_data``, so adding it changed no existing hash.
+    hash_alg: str = "sha256"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def compute_hash(self) -> str:
@@ -87,7 +91,15 @@ class AuditEntry:
             "prev_hash": self.prev_hash,
         }
         chain_string = json.dumps(chain_data, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(chain_string.encode("utf-8")).hexdigest()
+        # P0-8c: dispatch on the entry's DECLARED algorithm. An unknown
+        # declaration fails closed (raises) -- never a silent sha256 fallback.
+        fn = _CHAIN_HASH_ALGORITHMS.get(self.hash_alg)
+        if fn is None:
+            raise ValueError(
+                f"unknown hash algorithm {self.hash_alg!r}; this build can "
+                f"verify {sorted(_CHAIN_HASH_ALGORITHMS)}"
+            )
+        return fn(chain_string.encode("utf-8"))
 
     def set_hash(self) -> None:
         """Set this entry's hash after computing it."""
@@ -154,7 +166,12 @@ class AuditKernel:
 
             for i, entry in enumerate(self._entries):
                 # Recompute hash and compare
-                recomputed = entry.compute_hash()
+                try:
+                    recomputed = entry.compute_hash()
+                except ValueError:
+                    # P0-8c: an entry declaring an algorithm this build cannot
+                    # perform is UNVERIFIABLE -- fail closed, never assume sha256.
+                    return False, entry.id
                 if entry.hash != recomputed:
                     return False, entry.id
 

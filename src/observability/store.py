@@ -54,8 +54,9 @@ class ObservabilityStore:
                 # no algorithm is UNVERIFIED, never silently read as sha256.
                 self._hash_alg = data.get("hash_alg")
                 # Rebuild hash chain if missing or inconsistent
-                if self._hash_alg and (not self._hash_chain
-                        or len(self._hash_chain) != len(self._spans)):
+                if self._hash_alg and (
+                    not self._hash_chain or len(self._hash_chain) != len(self._spans)
+                ):
                     self._hash_chain = None
                     self._build_hash_chain()
 
@@ -99,7 +100,6 @@ class ObservabilityStore:
         # Ensure hash chain is built
         if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
-
 
         data = {
             "version": 1,

@@ -11,7 +11,7 @@ Audit events are written to the AuditStore with SHA256 event hashing,
 ensuring a verifiable chain of custody for all crypto operations.
 """
 
-import hashlib
+from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
 import json
 import logging
 import time
@@ -55,6 +55,10 @@ class CryptoAuditEvent:
     event_hash: Optional[str] = None
     # Hash of the previous event (links into audit chain)
     prev_event_hash: Optional[str] = None
+    #: P0-8c: which algorithm produced ``event_hash``. The chain now says how
+    #: to verify itself instead of relying on a hard-coded sha256. It is
+    #: EXCLUDED from the canonical form, so adding it changed no existing hash.
+    hash_alg: str = "sha256"
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -62,13 +66,26 @@ class CryptoAuditEvent:
         return data
 
     def compute_hash(self) -> str:
-        """Compute SHA256 hash of this event's canonical JSON form."""
+        """Compute this event's hash using its DECLARED algorithm.
+
+        P0-8c: the algorithm is dispatched from the shared registry on the
+        event's own ``hash_alg`` declaration. An unknown declaration fails
+        closed (raises) -- it is never silently recomputed with sha256.
+        """
         # Canonicalize: sort keys, remove event_hash and prev_event_hash
         canonical = self.to_dict()
         canonical.pop("event_hash", None)
         canonical.pop("prev_event_hash", None)
+        # The declaration is metadata about the hash, not part of its input.
+        canonical.pop("hash_alg", None)
         raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode()).hexdigest()
+        fn = _CHAIN_HASH_ALGORITHMS.get(self.hash_alg)
+        if fn is None:
+            raise ValueError(
+                f"unknown hash algorithm {self.hash_alg!r}; this build can "
+                f"verify {sorted(_CHAIN_HASH_ALGORITHMS)}"
+            )
+        return fn(raw.encode())
 
 
 def redact_secrets(details: Dict[str, Any]) -> Dict[str, Any]:
@@ -281,7 +298,13 @@ class CryptoAuditLogger:
                     f"expected prev_hash={expected_prev}, got={event.prev_event_hash}"
                 )
                 return False
-            expected_hash = event.compute_hash()
+            try:
+                expected_hash = event.compute_hash()
+            except ValueError as exc:
+                # P0-8c: an event declaring an algorithm this build cannot
+                # perform is UNVERIFIABLE -- fail closed, never assume sha256.
+                logger.error("audit event %s is unverifiable: %s", event.event_id, exc)
+                return False
             if event.event_hash != expected_hash:
                 logger.error(
                     f"Audit event hash mismatch at {event.event_id}: "

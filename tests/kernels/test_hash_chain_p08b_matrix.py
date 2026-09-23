@@ -19,6 +19,8 @@ import os
 import sys
 from enum import Enum
 
+import pytest
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -52,31 +54,50 @@ def test_hc09_algorithm_and_canonical_exclude_prev_hash() -> None:
     e1 = logger.log(op, key_name="k1", success=True)
     e2 = logger.log(op, key_name="k2", success=True)
 
-    # Canonical form: to_dict() minus event_hash/prev_event_hash.
+    # Canonical form: to_dict() minus event_hash/prev_event_hash/hash_alg.
+    # P0-8c added ``hash_alg``; it is metadata ABOUT the hash and is popped, so
+    # the canonical -- and therefore every existing hash -- is unchanged.
     canonical = e2.to_dict()
     canonical.pop("event_hash", None)
     canonical.pop("prev_event_hash", None)
+    canonical.pop("hash_alg", None)
     assert _sha256(_canon(canonical)) == e2.event_hash, (
         "HC-09 canonicalization changed: hash no longer equals "
-        "sha256(json(to_dict minus event_hash/prev_event_hash))"
+        "sha256(json(to_dict minus event_hash/prev_event_hash/hash_alg))"
     )
     # prev_event_hash is linkage only -- never part of the hash input.
     assert e2.prev_event_hash == e1.event_hash
     assert logger.verify_chain() is True
 
 
-def test_hc09_has_no_algorithm_declaration() -> None:
-    """Records the matrix fact: HC-09 declares no hash_alg (hard-coded sha256).
+def test_hc09_declares_algorithm_and_is_fail_closed() -> None:
+    """P0-8c: HC-09 declares its algorithm and refuses an unknown one.
 
-    If a ``hash_alg`` field is ever added, this test fails on purpose so the
-    matrix is re-verified rather than silently drifting.
+    Replaces the earlier ``test_hc09_has_no_algorithm_declaration``, which
+    pinned the pre-P0-8c truth (hard-coded sha256, no dispatch). That fact is
+    no longer true and asserting it would freeze the matrix in the wrong state.
     """
     op = next(iter(CryptoOperation))
-    e = CryptoAuditLogger(component_name="pytest-p08b").log(op, key_name="k")
-    fields = getattr(e, "__dataclass_fields__", {})
-    assert not any(n in ("hash_alg", "alg", "algorithm") for n in fields), (
-        "HC-09 now declares an algorithm -- re-verify the matrix entry"
-    )
+    logger = CryptoAuditLogger(component_name="pytest-p08b")
+    e1 = logger.log(op, key_name="k1", success=True)
+
+    assert e1.hash_alg == "sha256"
+
+    # Pre-condition: the event is INTACT under sha256, so a silent sha256
+    # fallback would make the tampered-algorithm case verify -- it must not.
+    canon = e1.to_dict()
+    canon.pop("event_hash", None)
+    canon.pop("prev_event_hash", None)
+    canon.pop("hash_alg", None)
+    assert _sha256(_canon(canon)) == e1.event_hash
+
+    # Unknown declared algorithm -> fail closed, NEVER recomputed with sha256.
+    e1.hash_alg = "sha3-512-not-registered"
+    assert logger.verify_chain() is False
+
+    # compute_hash() itself refuses rather than falling back.
+    with pytest.raises(ValueError):
+        e1.compute_hash()
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +145,33 @@ def test_hc10_metadata_is_not_covered_by_the_hash() -> None:
     entry.metadata["injected"] = "TAMPERED"
     ok, _broken = kernel.verify_integrity()
     assert ok is True, "metadata coverage changed -- re-open the human decision"
+
+
+def test_hc10_declares_algorithm_and_is_fail_closed() -> None:
+    """P0-8c: HC-10 declares its algorithm and refuses an unknown one."""
+    etype = next(iter(PolicyEventType))
+    kernel = AuditKernel()
+    a1 = kernel.log(etype, "principal-1", result="ok")
+
+    assert a1.hash_alg == "sha256"
+
+    # Pre-condition: intact under sha256 -> a fallback would verify.
+    et = a1.event_type.value if isinstance(a1.event_type, Enum) else a1.event_type
+    chain_data = {
+        "id": a1.id, "timestamp": a1.timestamp.isoformat(), "event_type": et,
+        "principal_id": a1.principal_id, "permission": a1.permission,
+        "scope": a1.scope, "result": a1.result, "reason": a1.reason,
+        "correlation_id": a1.correlation_id, "prev_hash": a1.prev_hash,
+    }
+    assert _sha256(_canon(chain_data)) == a1.hash
+
+    # Unknown declared algorithm -> fail closed, NEVER recomputed with sha256.
+    a1.hash_alg = "sha3-512-not-registered"
+    ok, broken = kernel.verify_integrity()
+    assert ok is False and broken == a1.id
+
+    with pytest.raises(ValueError):
+        a1.compute_hash()
 
 
 # ---------------------------------------------------------------------------

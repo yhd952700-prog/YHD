@@ -276,24 +276,29 @@ def probe_hc09() -> None:
     e1 = logger.log(op, key_name="k1", success=True)
     e2 = logger.log(op, key_name="k2", success=True)
 
-    # --- algorithm actually used (hard-coded) ------------------------------
+    # --- algorithm actually used ------------------------------------------
+    # P0-8c: the declared algorithm is EXCLUDED from the canonical form (it is
+    # metadata ABOUT the hash, not part of its input), so it is popped before
+    # recomputing. Popping it is also why adding the field changed no hash.
     d = e2.to_dict()
     d.pop("event_hash", None)
     d.pop("prev_event_hash", None)
+    d.pop("hash_alg", None)
     check(f"{hc}: algorithm in use is sha256 (proved by recompute)",
           sha256_hex(canon(d)) == e2.event_hash, "recompute == event_hash")
 
     # --- declaration -------------------------------------------------------
-    has_alg = any(
-        f.name in ("hash_alg", "alg", "algorithm")
-        for f in getattr(e2, "__dataclass_fields__", {}).values()
-    )
-    if has_alg:
-        check(f"{hc}: hash_alg declared on the event", True)
-    else:
-        mark_unverified(hc, "hash_alg declaration",
-                        "event carries no algorithm field; sha256 is hard-coded "
-                        "in compute_hash, so the chain does not say how to verify itself")
+    check(f"{hc}: hash_alg declared on the event (P0-8c)",
+          getattr(e2, "hash_alg", None) == "sha256",
+          f"hash_alg={getattr(e2, 'hash_alg', None)!r}")
+
+    # --- declaration is metadata: it does not enter the hash input ---------
+    with_alg = e2.to_dict()
+    with_alg.pop("event_hash", None)
+    with_alg.pop("prev_event_hash", None)
+    check(f"{hc}: hash_alg is EXCLUDED from the canonical input (no silent rehash)",
+          sha256_hex(canon(with_alg)) != e2.event_hash,
+          "canonical WITH hash_alg hashes differently, proving it is popped")
 
     # --- prev_hash participation -------------------------------------------
     check(f"{hc}: prev_event_hash EXCLUDED from the hash input",
@@ -307,11 +312,27 @@ def probe_hc09() -> None:
     check(f"{hc}: verify path -> verify_chain() False after tamper",
           logger.verify_chain() is False)
 
-    # --- fail-closed -------------------------------------------------------
-    mark_unverified(hc, "fail-closed behaviour",
-                    "no algorithm dispatch exists (hard-coded sha256), so there is "
-                    "no 'unknown algorithm' case -- the property is inapplicable, "
-                    "not satisfied")
+    # --- fail-closed (P0-8c) -----------------------------------------------
+    # IMPORTANT: this must run on PRISTINE data. Reusing the tampered logger
+    # above would return False for the wrong reason and fake a pass -- the very
+    # methodological trap this probe already hit once for HC-04..HC-08.
+    pristine = CryptoAuditLogger(component_name="p08b-failclosed")
+    p1 = pristine.log(op, key_name="k1", success=True)
+    check(f"{hc}: pristine chain verifies before the fail-closed probe",
+          pristine.verify_chain() is True)
+    # The data is intact under sha256, so a silent sha256 fallback WOULD verify.
+    pd = p1.to_dict()
+    pd.pop("event_hash", None)
+    pd.pop("prev_event_hash", None)
+    pd.pop("hash_alg", None)
+    check(f"{hc}: pre-condition -- data is intact under sha256",
+          sha256_hex(canon(pd)) == p1.event_hash,
+          "sha256 recompute matches, so a fallback would have returned True")
+    # Now declare an algorithm this build cannot perform.
+    p1.hash_alg = "sha3-512-not-registered"
+    check(f"{hc}: unknown declared algorithm -> verify_chain() False (fail-closed)",
+          pristine.verify_chain() is False,
+          "unknown alg refused; NOT silently recomputed with sha256")
 
     # --- evidence grade ----------------------------------------------------
     mark_unverified(hc, "durability / evidence grade",
@@ -369,15 +390,15 @@ def probe_hc10() -> None:
                      "every historical hash -> human decision, not assumed here")
 
     # --- declaration -------------------------------------------------------
-    has_alg = any(
-        f.name in ("hash_alg", "alg", "algorithm")
-        for f in getattr(a2, "__dataclass_fields__", {}).values()
-    )
-    if has_alg:
-        check(f"{hc}: hash_alg declared on the entry", True)
-    else:
-        mark_unverified(hc, "hash_alg declaration",
-                        "entry carries no algorithm field; sha256 is hard-coded")
+    check(f"{hc}: hash_alg declared on the entry (P0-8c)",
+          getattr(a2, "hash_alg", None) == "sha256",
+          f"hash_alg={getattr(a2, 'hash_alg', None)!r}")
+    # The declaration is NOT part of ``chain_data`` (the 10 hashed fields), so
+    # adding it changed no existing hash -- same discipline as HC-09.
+    check(f"{hc}: hash_alg is EXCLUDED from the 10 hashed fields",
+          "hash_alg" not in chain_data and
+          sha256_hex(canon(chain_data)) == a2.hash,
+          "recompute of the 10-field form still matches")
 
     # --- verify path -------------------------------------------------------
     ok, broken = kernel.verify_integrity()
@@ -386,9 +407,28 @@ def probe_hc10() -> None:
     ok2, _ = kernel.verify_integrity()
     check(f"{hc}: verify path -> verify_integrity() False after tamper", ok2 is False)
 
-    # --- fail-closed -------------------------------------------------------
-    mark_unverified(hc, "fail-closed behaviour",
-                    "no algorithm dispatch (hard-coded sha256); property inapplicable")
+    # --- fail-closed (P0-8c) -----------------------------------------------
+    # PRISTINE data again: the kernel above was already tampered, and verifying
+    # it would return False for the wrong reason (a false pass).
+    pk = AuditKernel()
+    q1 = pk.log(etype, "principal-fc", result="ok")
+    ok_p, _ = pk.verify_integrity()
+    check(f"{hc}: pristine chain verifies before the fail-closed probe", ok_p is True)
+    # Pre-condition: the entry is intact under sha256, so a fallback would pass.
+    qt = q1.event_type.value if isinstance(q1.event_type, Enum) else q1.event_type
+    qd = {
+        "id": q1.id, "timestamp": q1.timestamp.isoformat(), "event_type": qt,
+        "principal_id": q1.principal_id, "permission": q1.permission,
+        "scope": q1.scope, "result": q1.result, "reason": q1.reason,
+        "correlation_id": q1.correlation_id, "prev_hash": q1.prev_hash,
+    }
+    check(f"{hc}: pre-condition -- entry is intact under sha256",
+          sha256_hex(canon(qd)) == q1.hash,
+          "sha256 recompute matches, so a fallback would have returned True")
+    q1.hash_alg = "sha3-512-not-registered"
+    ok_u, broken_u = pk.verify_integrity()
+    check(f"{hc}: unknown declared algorithm -> verify_integrity() False (fail-closed)",
+          ok_u is False, f"broken={broken_u}; NOT recomputed with sha256")
 
     mark_unverified(hc, "durability / evidence grade",
                     "entries live only in AuditKernel._entries (a list); no persistence")
