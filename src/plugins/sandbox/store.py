@@ -10,9 +10,9 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
 from datetime import datetime
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import SandboxExecutionContext, SandboxResult
@@ -35,6 +35,7 @@ class PluginSandboxStore:
         self._contexts: Dict[str, SandboxExecutionContext] = {}
         self._results: Dict[str, SandboxResult] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -50,6 +51,7 @@ class PluginSandboxStore:
                     k: SandboxResult.from_dict(v) for k, v in data.get("results", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 if not self._hash_chain or len(self._hash_chain) != len(self._contexts):
                     self._hash_chain = None
                     self._build_hash_chain()
@@ -73,7 +75,7 @@ class PluginSandboxStore:
             context_dict = context.to_dict()
             context_dict["prev_hash"] = prev_hash
             context_data = json.dumps(context_dict, sort_keys=True, separators=(",", ":"))
-            context_hash = hashlib.sha256(context_data.encode()).hexdigest()
+            context_hash = compute_hash(self._hash_alg, context_data.encode())
             chain.append(context_hash)
             prev_hash = context_hash
 
@@ -88,6 +90,7 @@ class PluginSandboxStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "contexts": {k: v.to_dict() for k, v in self._contexts.items()},
             "results": {k: v.to_dict() for k, v in self._results.items()},
@@ -160,13 +163,15 @@ class PluginSandboxStore:
         """
         eid = result.execution_id
         self._results[eid] = result
-        # Also update the associated context's status
+        # Reflect the outcome onto the associated context (both share the
+        # execution_id as their key).
         if eid in self._contexts:
-            self._contexts[eid].status = result.success.__class__.__name__.lower() if hasattr(result.success, '__class__') else str(result.success)
-            self._contexts[eid].exit_code = result.exit_code if hasattr(result, 'exit_code') else None
-            self._contexts[eid].error_message = result.error
-            self._contexts[eid].output = result.output
-            self._contexts[eid].end_time = datetime.now()
+            ctx = self._contexts[eid]
+            ctx.status = result.status
+            ctx.exit_code = result.exit_code
+            ctx.error_message = result.stderr
+            ctx.output = result.stdout
+            ctx.end_time = datetime.now()
         self._save()
         return eid
 
@@ -192,12 +197,11 @@ class PluginSandboxStore:
             context_dict = context.to_dict()
             context_dict["prev_hash"] = prev_hash
             context_data = json.dumps(context_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(context_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, context_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

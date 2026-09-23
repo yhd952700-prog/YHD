@@ -10,9 +10,9 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
 from datetime import datetime
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import Plugin, PluginVersion
@@ -34,6 +34,7 @@ class PluginMarketplaceStore:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._plugins: Dict[str, Plugin] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -46,6 +47,7 @@ class PluginMarketplaceStore:
                     k: Plugin.from_dict(v) for k, v in data.get("plugins", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 # Rebuild hash chain if missing or inconsistent
                 if not self._hash_chain or len(self._hash_chain) != len(self._plugins):
                     self._hash_chain = None
@@ -68,7 +70,7 @@ class PluginMarketplaceStore:
             plugin_dict = plugin.to_dict()
             plugin_dict["prev_hash"] = prev_hash
             plugin_data = json.dumps(plugin_dict, sort_keys=True, separators=(",", ":"))
-            plugin_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
+            plugin_hash = compute_hash(self._hash_alg, plugin_data.encode())
             chain.append(plugin_hash)
             prev_hash = plugin_hash
 
@@ -83,6 +85,7 @@ class PluginMarketplaceStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "plugins": {k: v.to_dict() for k, v in self._plugins.items()},
         }
@@ -222,12 +225,11 @@ class PluginMarketplaceStore:
             plugin_dict = plugin.to_dict()
             plugin_dict["prev_hash"] = prev_hash
             plugin_data = json.dumps(plugin_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(plugin_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, plugin_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

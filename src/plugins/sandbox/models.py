@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from enum import Enum
 from datetime import datetime
+import uuid
 from src._time import utc_now
 
 
@@ -34,6 +35,27 @@ class ResourceLimits:
         self.execution_time_limit = execution_time_limit
         self.network_access = network_access
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise resource limits for on-disk persistence / hashing."""
+        return {
+            "cpu_quota": self.cpu_quota,
+            "memory_limit": self.memory_limit,
+            "pids_limit": self.pids_limit,
+            "execution_time_limit": self.execution_time_limit,
+            "network_access": self.network_access,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ResourceLimits":
+        """Reconstruct resource limits (unknown keys are ignored)."""
+        return cls(
+            cpu_quota=data.get("cpu_quota"),
+            memory_limit=data.get("memory_limit"),
+            pids_limit=data.get("pids_limit"),
+            execution_time_limit=data.get("execution_time_limit"),
+            network_access=data.get("network_access", False),
+        )
+
 
 class SandboxExecutionContext:
     """Context for a sandbox execution."""
@@ -45,12 +67,65 @@ class SandboxExecutionContext:
         limits: Optional[ResourceLimits] = None,
         metadata: Optional[Dict[str, Any]] = None,
         created_at: Optional[datetime] = None,
+        execution_id: Optional[str] = None,
+        status: Any = None,
+        exit_code: Optional[int] = None,
+        error_message: Optional[str] = None,
+        output: Optional[str] = None,
+        end_time: Optional[datetime] = None,
     ):
         self.plugin_id = plugin_id
         self.sandbox_id = sandbox_id
         self.limits = limits or ResourceLimits()
         self.metadata = metadata or {}
         self.created_at = created_at or utc_now()
+        # Stable id for this execution. The store uses it as the dict key, so it
+        # MUST be persisted and restored verbatim (a fresh uuid on reload would
+        # break the on-disk -> reload hash-chain round-trip).
+        self.execution_id = execution_id or str(uuid.uuid4())
+        # Runtime outcome fields, populated by PluginSandboxStore.store_result.
+        self.status = status
+        self.exit_code = exit_code
+        self.error_message = error_message
+        self.output = output
+        self.end_time = end_time
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise the context (used for persistence and hash-chain input)."""
+        return {
+            "execution_id": self.execution_id,
+            "plugin_id": self.plugin_id,
+            "sandbox_id": self.sandbox_id,
+            "limits": self.limits.to_dict() if self.limits else None,
+            "metadata": self.metadata,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "status": self.status.value if isinstance(self.status, Enum) else self.status,
+            "exit_code": self.exit_code,
+            "error_message": self.error_message,
+            "output": self.output,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SandboxExecutionContext":
+        """Reconstruct a context from its serialised form."""
+        raw_limits = data.get("limits")
+        limits = ResourceLimits.from_dict(raw_limits) if raw_limits else None
+        raw_created = data.get("created_at")
+        raw_end = data.get("end_time")
+        return cls(
+            plugin_id=data.get("plugin_id", ""),
+            sandbox_id=data.get("sandbox_id", ""),
+            limits=limits,
+            metadata=data.get("metadata") or {},
+            created_at=datetime.fromisoformat(raw_created) if raw_created else None,
+            execution_id=data.get("execution_id"),
+            status=data.get("status"),
+            exit_code=data.get("exit_code"),
+            error_message=data.get("error_message"),
+            output=data.get("output"),
+            end_time=datetime.fromisoformat(raw_end) if raw_end else None,
+        )
 
 
 class SandboxResult:
@@ -65,6 +140,7 @@ class SandboxResult:
         exit_code: int = 0,
         duration_ms: int = 0,
         metadata: Optional[Dict[str, Any]] = None,
+        execution_id: Optional[str] = None,
     ):
         self.sandbox_id = sandbox_id
         self.status = status
@@ -73,6 +149,39 @@ class SandboxResult:
         self.exit_code = exit_code
         self.duration_ms = duration_ms
         self.metadata = metadata or {}
+        # Stable execution id; the store keys results by this, so it must round
+        # -trip through persistence just like SandboxExecutionContext.
+        self.execution_id = execution_id or str(uuid.uuid4())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise the result (status is stored as its enum value)."""
+        return {
+            "execution_id": self.execution_id,
+            "sandbox_id": self.sandbox_id,
+            "status": self.status.value if isinstance(self.status, Enum) else self.status,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "exit_code": self.exit_code,
+            "duration_ms": self.duration_ms,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SandboxResult":
+        """Reconstruct a result from its serialised form."""
+        raw_status = data.get("status")
+        if raw_status is not None and not isinstance(raw_status, SandboxStatus):
+            raw_status = SandboxStatus(raw_status)
+        return cls(
+            sandbox_id=data.get("sandbox_id", ""),
+            status=raw_status,
+            stdout=data.get("stdout", ""),
+            stderr=data.get("stderr", ""),
+            exit_code=data.get("exit_code", 0),
+            duration_ms=data.get("duration_ms", 0),
+            metadata=data.get("metadata") or {},
+            execution_id=data.get("execution_id"),
+        )
 
 
 class SandboxBackend(ABC):

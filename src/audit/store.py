@@ -9,8 +9,8 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 import uuid
 from typing import Dict, List, Optional, Any
 
@@ -34,6 +34,7 @@ class AuditStore:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._events: Dict[str, AuditEvent] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -46,6 +47,7 @@ class AuditStore:
                     k: AuditEvent.from_dict(v) for k, v in data.get("events", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 # Rebuild hash chain if missing or inconsistent
                 if not self._hash_chain or len(self._hash_chain) != len(self._events):
                     self._hash_chain = None
@@ -67,7 +69,7 @@ class AuditStore:
             event_dict["prev_hash"] = prev_hash
             # Compute hash of this event (excluding prev_hash)
             event_data = json.dumps(event_dict, sort_keys=True, separators=(",", ":"))
-            event_hash = hashlib.sha256(event_data.encode()).hexdigest()
+            event_hash = compute_hash(self._hash_alg, event_data.encode())
             chain.append(event_hash)
             prev_hash = event_hash
 
@@ -83,6 +85,7 @@ class AuditStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "events": {k: v.to_dict() for k, v in self._events.items()},
         }
@@ -228,12 +231,11 @@ class AuditStore:
             event_dict = event.to_dict()
             event_dict["prev_hash"] = prev_hash
             event_data = json.dumps(event_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(event_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, event_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

@@ -309,6 +309,16 @@ jobs:
       - name: Verify P0-7 B2 dual-signature evidence sig_alg (runtime)
         run: python scripts/verify_p07_dual_signature_sig_alg.py
 
+      # PHASE 3.6 / P0-8b + P0-8c (D2): every on-disk JSON hash chain
+      # (HC-02..HC-08) must declare its algorithm (hash_alg) explicitly and
+      # verify by dispatching on that declared name -- unknown algorithms fail
+      # closed with NO default fallback. The script performs a REAL filesystem
+      # round-trip per chain (independent reload + tamper + unknown-alg) and
+      # exits non-zero on any violation, so this is the bundle / deployment
+      # rebuild gate, not a no-op.
+      - name: Verify P0-8b/8c hash-chain sig_alg (runtime, deployment gate)
+        run: python scripts/verify_p08_hash_chain_sig_alg.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db

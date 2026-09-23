@@ -10,8 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-import hashlib
 import json
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 import time
 
 # Type variable for storage entries
@@ -166,6 +166,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._entries: Dict[str, StorageEntry] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     @property
@@ -195,6 +196,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
                     k: StorageEntry.from_dict(v) for k, v in data.get("entries", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 if not self._hash_chain or len(self._hash_chain) != len(self._entries):
                     self._hash_chain = None
                     self._build_hash_chain()
@@ -216,7 +218,7 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             entry_dict = entry.to_dict()
             entry_dict["prev_hash"] = prev_hash
             entry_data = json.dumps(entry_dict, sort_keys=True, separators=(",", ":"))
-            entry_hash = hashlib.sha256(entry_data.encode()).hexdigest()
+            entry_hash = compute_hash(self._hash_alg, entry_data.encode())
             chain.append(entry_hash)
             prev_hash = entry_hash
         self._hash_chain = chain
@@ -224,14 +226,42 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 
     def _save(self) -> None:
         """Persist entries to JSON file."""
+        if self._hash_chain is None:
+            self._build_hash_chain()
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "entries": {k: v.to_dict() for k, v in self._entries.items()},
         }
         with open(self.storage_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
+
+    def verify_integrity(self) -> bool:
+        """Verify the hash chain integrity using the declared hash algorithm.
+
+        Fail-closed: an unknown declared algorithm (or any hash mismatch)
+        returns ``False`` — never raises, never silently falls back.
+        """
+        chain = self._hash_chain
+        if chain is None:
+            return False
+        if len(chain) != len(self._entries):
+            return False
+
+        sorted_keys = sorted(self._entries.keys())
+        prev_hash = "genesis"
+        for i, key in enumerate(sorted_keys):
+            entry = self._entries[key]
+            entry_dict = entry.to_dict()
+            entry_dict["prev_hash"] = prev_hash
+            entry_data = json.dumps(entry_dict, sort_keys=True, separators=(",", ":"))
+            ok, _reason = verify_declared_hash(self._hash_alg, entry_data.encode(), chain[i])
+            if not ok:
+                return False
+            prev_hash = chain[i]
+        return True
 
     def get(self, key: str) -> Optional[StorageEntry]:
         """Get an entry by key."""

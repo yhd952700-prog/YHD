@@ -10,8 +10,8 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import Span, Metric
@@ -34,6 +34,7 @@ class ObservabilityStore:
         self._spans: Dict[str, Span] = {}
         self._metrics: Dict[str, Metric] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -49,6 +50,7 @@ class ObservabilityStore:
                     k: Metric.from_dict(v) for k, v in data.get("metrics", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 # Rebuild hash chain if missing or inconsistent
                 if not self._hash_chain or len(self._hash_chain) != len(self._spans):
                     self._hash_chain = None
@@ -73,7 +75,7 @@ class ObservabilityStore:
             span_dict = span.to_dict()
             span_dict["prev_hash"] = prev_hash
             span_data = json.dumps(span_dict, sort_keys=True, separators=(",", ":"))
-            span_hash = hashlib.sha256(span_data.encode()).hexdigest()
+            span_hash = compute_hash(self._hash_alg, span_data.encode())
             chain.append(span_hash)
             prev_hash = span_hash
 
@@ -89,6 +91,7 @@ class ObservabilityStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "spans": {k: v.to_dict() for k, v in self._spans.items()},
             "metrics": {k: v.to_dict() for k, v in self._metrics.items()},
@@ -227,12 +230,11 @@ class ObservabilityStore:
             span_dict = span.to_dict()
             span_dict["prev_hash"] = prev_hash
             span_data = json.dumps(span_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(span_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, span_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 

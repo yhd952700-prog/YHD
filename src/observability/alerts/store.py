@@ -10,8 +10,8 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
@@ -35,6 +35,7 @@ class AlertStore:
         self._alerts: Dict[str, Alert] = {}
         self._rules: Dict[str, AlertRule] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -50,6 +51,7 @@ class AlertStore:
                     k: AlertRule.from_dict(v) for k, v in data.get("rules", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 # Rebuild hash chain if missing or inconsistent
                 if not self._hash_chain or len(self._hash_chain) != len(self._alerts) + len(self._rules):
                     self._hash_chain = None
@@ -83,13 +85,13 @@ class AlertStore:
                 item_dict = item.to_dict()
                 item_dict["prev_hash"] = prev_hash
                 item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
+                item_hash = compute_hash(self._hash_alg, item_data.encode())
                 chain.append(item_hash)
             elif isinstance(item, AlertRule):
                 item_dict = item.to_dict()
                 item_dict["prev_hash"] = prev_hash
                 item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
+                item_hash = compute_hash(self._hash_alg, item_data.encode())
                 chain.append(item_hash)
             prev_hash = chain[-1] if chain else "genesis"
 
@@ -104,6 +106,7 @@ class AlertStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "alerts": {k: v.to_dict() for k, v in self._alerts.items()},
             "rules": {k: v.to_dict() for k, v in self._rules.items()},
@@ -213,38 +216,45 @@ class AlertStore:
     # ==================== Integrity ====================
 
     def verify_integrity(self) -> bool:
-        """Verify the hash chain integrity."""
+        """Verify the hash chain integrity using the declared hash algorithm.
+
+        Fail-closed: an unknown declared algorithm (or any hash mismatch)
+        returns ``False`` — never raises, never silently falls back.
+        """
         if not self._alerts and not self._rules:
             return True
 
-        # Recalculate and compare
-        chain: List[str] = []
-        all_items: List[tuple[str, Any]] = []
+        chain = self._hash_chain
+        if chain is None:
+            return False
 
+        all_items: List[tuple[str, Any]] = []
         for eid, alert in self._alerts.items():
             all_items.append((eid, alert))
         for rid, rule in self._rules.items():
             all_items.append((rid, rule))
 
+        if len(chain) != len(all_items):
+            return False
+
         all_items.sort(key=lambda x: x[0])
 
         prev_hash = "genesis"
-        for eid, item in all_items:
+        for i, (eid, item) in enumerate(all_items):
             if isinstance(item, Alert):
                 item_dict = item.to_dict()
-                item_dict["prev_hash"] = prev_hash
-                item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
-                chain.append(item_hash)
             elif isinstance(item, AlertRule):
                 item_dict = item.to_dict()
-                item_dict["prev_hash"] = prev_hash
-                item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
-                item_hash = hashlib.sha256(item_data.encode()).hexdigest()
-                chain.append(item_hash)
-            prev_hash = chain[-1] if chain else "genesis"
+            else:
+                return False
+            item_dict["prev_hash"] = prev_hash
+            item_data = json.dumps(item_dict, sort_keys=True, separators=(",", ":"))
+            ok, _reason = verify_declared_hash(self._hash_alg, item_data.encode(), chain[i])
+            if not ok:
+                return False
+            prev_hash = chain[i]
 
-        return self._hash_chain == chain
+        return True
 
     # ==================== Statistics ====================
 

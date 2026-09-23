@@ -10,8 +10,8 @@ Provides:
 
 from pathlib import Path
 import json
-import hashlib
 import time
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import (
@@ -40,6 +40,7 @@ class PluginDependenciesStore:
         self._dependencies: Dict[str, PluginDependency] = {}
         self._resolutions: Dict[str, DependencyResolution] = {}
         self._hash_chain: Optional[List[str]] = None
+        self._hash_alg: str = DEFAULT_HASH_ALG
         self._load()
 
     def _load(self) -> None:
@@ -55,6 +56,7 @@ class PluginDependenciesStore:
                     k: DependencyResolution.from_dict(v) for k, v in data.get("resolutions", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
+                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
                 if not self._hash_chain or len(self._hash_chain) != len(self._dependencies):
                     self._hash_chain = None
                     self._build_hash_chain()
@@ -78,7 +80,7 @@ class PluginDependenciesStore:
             dep_dict = dep.to_dict()
             dep_dict["prev_hash"] = prev_hash
             dep_data = json.dumps(dep_dict, sort_keys=True, separators=(",", ":"))
-            dep_hash = hashlib.sha256(dep_data.encode()).hexdigest()
+            dep_hash = compute_hash(self._hash_alg, dep_data.encode())
             chain.append(dep_hash)
             prev_hash = dep_hash
 
@@ -93,6 +95,7 @@ class PluginDependenciesStore:
         data = {
             "version": 1,
             "saved_at": time.time(),
+            "hash_alg": self._hash_alg,
             "hash_chain": self._hash_chain,
             "dependencies": {k: v.to_dict() for k, v in self._dependencies.items()},
             "resolutions": {k: v.to_dict() for k, v in self._resolutions.items()},
@@ -200,12 +203,11 @@ class PluginDependenciesStore:
             dep_dict = dep.to_dict()
             dep_dict["prev_hash"] = prev_hash
             dep_data = json.dumps(dep_dict, sort_keys=True, separators=(",", ":"))
-            expected_hash = hashlib.sha256(dep_data.encode()).hexdigest()
-
-            if expected_hash != chain[i]:
+            ok, _reason = verify_declared_hash(self._hash_alg, dep_data.encode(), chain[i])
+            if not ok:
                 return False
 
-            prev_hash = expected_hash
+            prev_hash = chain[i]
 
         return True
 
