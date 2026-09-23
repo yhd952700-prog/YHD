@@ -196,10 +196,14 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
                     k: StorageEntry.from_dict(v) for k, v in data.get("entries", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
-                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
-                if not self._hash_chain or len(self._hash_chain) != len(self._entries):
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
+                if self._hash_alg and (not self._hash_chain
+                        or len(self._hash_chain) != len(self._entries)):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load storage: {e}")
                 self._entries = {}
@@ -210,6 +214,14 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         sorted_keys = sorted(self._entries.keys())
         prev_hash = "genesis"
@@ -226,8 +238,9 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
 
     def _save(self) -> None:
         """Persist entries to JSON file."""
-        if self._hash_chain is None:
+        if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
+
         data = {
             "version": 1,
             "saved_at": time.time(),
@@ -244,6 +257,13 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
         Fail-closed: an unknown declared algorithm (or any hash mismatch)
         returns ``False`` — never raises, never silently falls back.
         """
+        if not self._entries:
+            return True
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg:
+            return False
         chain = self._hash_chain
         if chain is None:
             return False

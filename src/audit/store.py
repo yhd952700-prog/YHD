@@ -47,11 +47,15 @@ class AuditStore:
                     k: AuditEvent.from_dict(v) for k, v in data.get("events", {}).items()
                 }
                 self._hash_chain = data.get("hash_chain")
-                self._hash_alg = data.get("hash_alg") or DEFAULT_HASH_ALG
+                # P0-8c: NO default fallback. An envelope that declares
+                # no algorithm is UNVERIFIED, never silently read as sha256.
+                self._hash_alg = data.get("hash_alg")
                 # Rebuild hash chain if missing or inconsistent
-                if not self._hash_chain or len(self._hash_chain) != len(self._events):
+                if self._hash_alg and (not self._hash_chain
+                        or len(self._hash_chain) != len(self._events)):
                     self._hash_chain = None
                     self._build_hash_chain()
+
             except Exception as e:
                 print(f"Warning: Failed to load audit store: {e}")
                 self._events = {}
@@ -59,6 +63,14 @@ class AuditStore:
 
     def _build_hash_chain(self) -> None:
         """Build or rebuild the hash chain from current events."""
+        # P0-8c: refuse to (re)build a chain without a declared algorithm.
+        # Defaulting to sha256 is exactly what the containment forbids;
+        # the operator must stamp legacy data via the migration script.
+        if not self._hash_alg:
+            raise ValueError(
+                "cannot build a hash chain without a declared hash_alg; "
+                "run scripts/migrate_p08_hash_alg.py to stamp legacy data"
+            )
         chain: List[str] = []
         sorted_ids = sorted(self._events.keys())
         prev_hash = "genesis"
@@ -79,8 +91,9 @@ class AuditStore:
     def _save(self) -> None:
         """Persist events to storage with hash chain."""
         # Ensure hash chain is built
-        if self._hash_chain is None:
+        if self._hash_alg and self._hash_chain is None:
             self._build_hash_chain()
+
 
         data = {
             "version": 1,
@@ -217,8 +230,13 @@ class AuditStore:
         Returns:
             True if the hash chain is intact, False otherwise.
         """
-        if not self._events or not self._hash_chain:
+        if not self._events:
             return True  # Empty or not loaded yet is considered valid
+        # P0-8c: data that declares no algorithm (or carries no chain) is
+        # UNVERIFIED -- fail closed, never a silent pass and never a
+        # silent fallback to sha256.
+        if not self._hash_alg or not self._hash_chain:
+            return False
 
         chain = self._hash_chain
         if len(chain) != len(self._events):

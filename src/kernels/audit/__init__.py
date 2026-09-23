@@ -429,7 +429,18 @@ class AuditStore:
 
             # 3. Content integrity: recompute the canonical hash from
             # the stored fields and compare with the stored hash.
-            declared_alg = row_hash_alg or DEFAULT_HASH_ALG
+            # P0-8c: NO default fallback. A row that declares no algorithm is
+            # UNVERIFIED -- it is counted broken rather than silently being
+            # read as the default algorithm.
+            declared_alg = row_hash_alg
+            if not declared_alg:
+                logger.error(
+                    "audit event %s carries no hash_alg declaration; this row "
+                    "is UNVERIFIED and is counted as broken rather than "
+                    "assuming %s", event_id, DEFAULT_HASH_ALG,
+                )
+                broken += 1
+                continue
             if declared_alg not in HASH_ALGORITHMS:
                 # An event whose algorithm this build cannot perform is not
                 # "probably fine" -- it is unverifiable, and unverifiable must
@@ -574,7 +585,11 @@ class AuditStore:
                 # *read* surface the field would be write-only, and "what was
                 # this verified with" would be unanswerable from the record --
                 # which is the whole point of storing it.
-                "hash_alg": row[10] if len(row) > 10 else DEFAULT_HASH_ALG,
+                # P0-8c: report the declared algorithm verbatim. An absent
+                # declaration must surface as None (UNVERIFIED), never as an
+                # assumed default -- a reader must be able to tell the
+                # difference between "sha256" and "nothing was declared".
+                "hash_alg": row[10] if len(row) > 10 else None,
             }
             results.append(event_dict)
 
