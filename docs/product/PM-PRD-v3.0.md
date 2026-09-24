@@ -69,7 +69,7 @@
 - **REQ-SEC-001**: RBAC roles + permissions (verified SEC_01)
 - **REQ-SEC-002**: ABAC policies with default-deny (verified SEC_02)
 - **REQ-SEC-003**: Vault Transit encryption, keys never in DB (verified SEC_03)
-- **REQ-SEC-004**: CryptoAuditLogger with hash-chain integrity (verified SEC_04)
+- **REQ-SEC-004**: CryptoAuditLogger with hash-chain integrity (verified SEC_04) (IN-MEMORY ONLY — not persisted, not audit-grade). Durable tamper-evident audit is provided by src.kernels.audit (HC-01; runtime integrity currently UNVERIFIED).
 - **REQ-SEC-005**: API Key management with scopes (verified SEC_05)
 - **REQ-SEC-006**: Key rotation automation (verified SEC_06)
 
@@ -104,7 +104,7 @@
 | Security | TLS 1.3 enforced | End-to-end | MUST |
 | Security | Vault keys | Never in DB | MUST |
 | Audit | Operation traceability | 100% | MUST |
-| Audit | Tamper-proof | Hash chain | MUST |
+| Audit | Tamper-proof (durable: authoritative chain HC-01; in-memory crypto-audit HC-09 is NON-AUTHORITATIVE) | Hash chain | MUST |
 | Observability | Trace completeness | Full chain | MUST |
 | Observability | Metrics completeness | RED + USE | MUST |
 | Disaster Recovery | RPO | < 5min | MUST |
