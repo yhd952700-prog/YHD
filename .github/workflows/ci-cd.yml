@@ -80,6 +80,19 @@ jobs:
             type=ref,event=pr
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+      - name: Install dependencies (for release gates)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Release gate — HOLD control (C1)
+        # C1: LIUHAO_HOLD must hard-abort any release. A truthy value exits
+        # non-zero (2) and fails THIS job before the push step below runs, so
+        # no image is ever pushed / promoted while HOLD is active.
+        run: python scripts/check_hold_gate.py
+      - name: Release gate — GO readiness (UU-01)
+        # UU-01: separates "P0-8 matrix green" from "GO-ready". Fails (no push)
+        # when HC-01 is not COMPLIANT or the deployment does not arm CRITICAL.
+        run: python scripts/verify_go_readiness.py
       - name: Build and push
         uses: docker/build-push-action@v5
         with:

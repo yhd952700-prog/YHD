@@ -70,14 +70,27 @@ Any side-effect produced by a `human_sovereignty_override` (whether or not
 `HOLD` does not — and cannot — relax this invariant. An override under `HOLD`
 still writes a new auditable event; it does not edit or remove prior events.
 
-### 2.4 Optional `HOLD` env gate for deploy / CI jobs (recommended, not mandatory)
+### 2.4 MANDATORY `HOLD` env gate for deploy / CI jobs (enforced as C1)
 
-Deploy and CI release jobs SHOULD consult an explicit gate before promoting:
+Deploy and CI release jobs MUST consult the explicit gate
+`scripts/check_hold_gate.py` as the **first step, before any push / deploy /
+promotion step** (C1, STEP 11 expert review). The gate is no longer optional
+human discipline — it is a machine-verifiable control that fails the job
+before `docker/build-push-action` runs:
 
-* **Env var:** `LIUHAO_HOLD=1` (or any non-empty truthy value).
-* **Behaviour:** if set, the deploy/release job MUST abort *before* the
-  promotion step (F1/F3) and exit non-zero, surfacing a clear `HOLD active`
-  message. Automatic code-change agents (F2) MUST also check this gate and stop.
+* **Env var:** `LIUHAO_HOLD=1` (or any non-empty truthy value) activates HOLD.
+  `LIUHAO_HOLD=0|false|off` or *unset* leaves it inactive (release may
+  proceed); the default (unset) is explicit and auditable — the gate prints
+  what it decided (`HOLD inactive (LIUHAO_HOLD=unset): release may proceed
+  (default)`).
+* **Behaviour:** if `LIUHAO_HOLD` is truthy, `check_hold_gate.py` prints
+  `HOLD active (LIUHAO_HOLD=<value>): release blocked` and exits **2**
+  (non-zero), which fails the CI job *before* the push step, so no image is
+  pushed and no promotion occurs. Automatic code-change agents (F2) MUST also
+  check this gate and stop.
+* **Wired in CI:** `.github/workflows/ci-cd.yml` runs `check_hold_gate.py` as a
+  release-gate step in the `build` job, ahead of `Build and push`. A truthy
+  `LIUHAO_HOLD` therefore hard-aborts the release with no registry push.
 * **Not a security boundary:** the env gate is an operational safeguard, not an
   authorization control. The authoritative guarantee is the code-level freeze in
   §2.1; the env gate is the convenient, visible switch.
