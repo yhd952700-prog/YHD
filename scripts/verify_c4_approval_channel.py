@@ -302,29 +302,6 @@ def _spec_from_line(line: str, var: str) -> Optional[str]:
     return None
 
 
-def _spec_from_python_env_write(line: str, var: str) -> Optional[str]:
-    """Extract the value written to ``var`` by a Python env-write.
-
-    Handles the forms used as *deployment arming* (a shipped literal default):
-    ``os.environ.setdefault("VAR", "VALUE")`` / ``os.putenv("VAR", "VALUE")`` and
-    ``os.environ["VAR"] = "VALUE"``. Returns ``None`` when the value is not a
-    string literal -- e.g. a verification harness writing ``action`` / ``spec``
-    to probe reachability. Those ship no default and must not be classified as a
-    deployment-arming site.
-    """
-    patterns = [
-        # setdefault("VAR", "VALUE") / putenv("VAR", "VALUE")
-        re.escape(var) + r'["\']\s*,\s*["\']([^"\']*)["\']',
-        # environ["VAR"] = "VALUE"
-        re.escape(var) + r'["\']\s*\]\s*=\s*["\']([^"\']*)["\']',
-    ]
-    for pat in patterns:
-        m = re.search(pat, line)
-        if m:
-            return m.group(1).strip()
-    return None
-
-
 def _tracked_files() -> List[pathlib.Path]:
     """Repository files tracked by git.
 
@@ -344,14 +321,104 @@ def _tracked_files() -> List[pathlib.Path]:
     return [REPO_ROOT / p for p in out.stdout.split("\0") if p]
 
 
+def _attr_chain(node: ast.AST) -> str:
+    """Render a dotted attribute/name chain as ``a.b.c`` (or '' if not a chain)."""
+    parts: List[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    return ".".join(reversed(parts)) if parts else ""
+
+
+def _python_arms_env_var(tree: ast.AST, var: str) -> Optional[str]:
+    """Return the literal spec a Python file arms ``var`` with, else ``None``.
+
+    Only real arming operations count -- ``os.environ.setdefault('VAR', 'VAL')``,
+    ``os.putenv('VAR', 'VAL')``, or ``os.environ['VAR'] = 'VAL'``. A docstring or
+    comment that merely *mentions* the pattern (e.g. an example embedded in a
+    gate script's docstring) is NOT an AST call/assignment and is therefore
+    ignored -- the regex-over-raw-text approach used previously mis-flagged such
+    mentions as deployment-arming sites. A write whose value is not a string
+    literal (a reachability probe) ships no default and is also ignored.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fname = _attr_chain(node.func)
+            if fname in ("os.environ.setdefault", "os.putenv") and len(node.args) >= 2:
+                key, val = node.args[0], node.args[1]
+                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        and key.value == var):
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        return val.value
+                    return None
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript)
+                        and _attr_chain(target.value) == "os.environ"
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                        and target.slice.value == var):
+                    val = node.value
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        return val.value
+                    return None
+    return None
+
+
+def _python_arming_from_text(text_: str, var: str) -> Optional[str]:
+    """Return the literal spec a *file's raw text* arms ``var`` with, else None.
+
+    Scans raw text -- including string literals such as a generated launcher
+    template -- for ``os.environ.setdefault('VAR', 'VAL')``, ``os.putenv(...)``
+    or ``os.environ['VAR'] = 'VAL'``. Used ONLY for the cloud-bundle launcher,
+    which ships its arming inside a template string rather than an executable
+    call. Every other Python file is checked via AST, so its docstrings and
+    comments are never mis-classified as arming sites.
+    """
+    for line in text_.splitlines():
+        if var not in line:
+            continue
+        patterns = [
+            re.escape(var) + r'["\']\s*,\s*["\']([^"\']*)["\']',
+            re.escape(var) + r'["\']\s*\]\s*=\s*["\']([^"\']*)["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, line)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def _python_arming_for_file(rel: str, text_: str, var: str) -> Optional[str]:
+    """Dispatch Python arming detection.
+
+    The bundle launcher is read from raw text because its arming lives in a
+    generated template string; every other Python file is checked via AST, so a
+    docstring/comment that merely *mentions* the write pattern (e.g. an example
+    inside a gate script's docstring) is never mis-classified as an arming site.
+    """
+    if rel == BUNDLE_LAUNCHER:
+        return _python_arming_from_text(text_, var)
+    try:
+        tree = ast.parse(text_, filename="<" + rel + ">")
+    except SyntaxError:
+        return None
+    return _python_arms_env_var(tree, var)
+
+
 def _armed_specs() -> dict:
     """Map every file that *arms* the switch to the spec it arms it with.
 
     Arming = assigning the variable in a config/deployment file, or *writing* it
     from Python with a **literal** spec (``os.environ.setdefault("VAR", "VALUE")``
-    / ``putenv`` / ``environ["VAR"] = "VALUE"``). Prose and docstrings that
-    merely name the variable are not hits -- the enforcement module and the
-    decorator must be able to document the switch.
+    / ``putenv`` / ``environ["VAR"] = "VALUE"``). Python detection is AST-based,
+    so prose, docstrings and comments that merely *mention* the write pattern are
+    not hits -- the enforcement module and the gate scripts are free to document
+    or illustrate it. Only an actual ``os.environ[...]`` assignment or
+    ``setdefault``/``putenv`` call with a literal value counts as an arming site.
 
     A Python write whose value is a *variable* (a verification harness probing
     reachability, e.g. ``scripts/verify_armed_actions_are_inert.py`` setting the
@@ -390,26 +457,18 @@ def _armed_specs() -> dict:
         is_config = suffix in config_suffixes or path.name.startswith("Dockerfile")
         if not is_config and suffix != ".py":
             continue
-        for line in text_.splitlines():
-            if var not in line:
-                continue
-            if is_config:
+        if is_config:
+            for line in text_.splitlines():
+                if var not in line:
+                    continue
                 spec = _spec_from_line(line, var)
-                if spec is None:
-                    continue
-            else:
-                writes_env = ("putenv" in line or "setdefault" in line
-                              or ("=" in line and "environ" in line))
-                if not writes_env:
-                    continue
-                # Only a *literal* spec write is a deployment arming site. A
-                # write whose value is a variable (a reachability probe) ships no
-                # default and is skipped -- never counted as an arming site.
-                spec = _spec_from_python_env_write(line, var)
-                if spec is None:
-                    continue
-            armed[rel] = spec
-            break
+                if spec is not None:
+                    armed[rel] = spec
+                    break
+        else:
+            spec = _python_arming_for_file(rel, text_, var)
+            if spec is not None:
+                armed[rel] = spec
     return armed
 
 

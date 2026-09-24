@@ -67,3 +67,27 @@ def test_bundle_full_build_arms_critical(tmp_path):
     text = serve_py.read_text(encoding="utf-8")
     assert ARMING_LINE in text
     assert "HIGH,CRITICAL" not in text
+
+
+# ---------------------------------------------------------------------------
+# Regression test for the c4 arming scanner. A gate/verification script may
+# *mention* the arming write pattern in its docstring (scripts/verify_go_readiness.py
+# documents the setdefault form). The scanner is AST-based, so such mentions must
+# NOT be mis-classified as a deployment-arming site. This guards the fix that
+# previously let an untracked verify_go_readiness.py pass and then fail once it
+# was committed (the regex-over-raw-text scanner matched the docstring example).
+# ---------------------------------------------------------------------------
+_C4_PATH = os.path.join(REPO_ROOT, "scripts", "verify_c4_approval_channel.py")
+_c4_spec = importlib.util.spec_from_file_location("verify_c4_approval_channel", _C4_PATH)
+c4 = importlib.util.module_from_spec(_c4_spec)
+_c4_spec.loader.exec_module(c4)
+
+
+def test_c4_scanner_ignores_docstring_mentions_of_arming():
+    """verify_go_readiness.py mentions setdefault(..., "HIGH,CRITICAL") in its
+    docstring; it must NOT appear as an arming site, and the two legitimate
+    surfaces must still resolve to exactly CRITICAL."""
+    armed = c4._armed_specs()
+    assert "scripts/verify_go_readiness.py" not in armed
+    assert armed.get("scripts/build_cloud_bundle.py") == "CRITICAL"
+    assert armed.get("docker-compose.prod.yml") == "CRITICAL"
