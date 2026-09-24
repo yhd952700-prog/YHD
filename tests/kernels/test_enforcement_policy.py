@@ -219,3 +219,33 @@ class TestSwitchArmsProductionCallSites:
 
         # Not selected -> still record-only, even though it is CRITICAL.
         assert set_rule() == "ran"
+
+
+class TestCriticalSpecNoBootstrapDeadlock:
+    """D24: arming CRITICAL alone must NOT self-lock kernel bootstrap.
+
+    EXEMPT_ACTIONS (``capability.register``) keeps the registry bootstrap off the
+    enforcement cut line, so a fresh capability-kernel initialisation with
+    ``LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL`` must not raise
+    ``PolicyDeferredError``. This is the regression gate for "narrowing the
+    deployment to CRITICAL only": if an exempted startup action were ever dropped
+    from ``EXEMPT_ACTIONS``, this proves it would self-lock at bootstrap.
+    """
+
+    def test_critical_spec_does_not_raise_at_bootstrap(self, monkeypatch):
+        import src.kernels.capability as cap_mod
+
+        monkeypatch.setenv(enf.ENV_VAR, "CRITICAL")
+        enf.reload()
+        prior = cap_mod._global_registry
+        cap_mod._global_registry = None
+        try:
+            reg = cap_mod.get_capability_registry()
+        except PolicyDeferredError as exc:
+            pytest.fail(
+                f"CRITICAL spec self-locked capability-kernel bootstrap: {exc}"
+            )
+        finally:
+            cap_mod._global_registry = prior
+            enf.reload()
+        assert reg is not None

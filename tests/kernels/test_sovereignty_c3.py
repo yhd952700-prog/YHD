@@ -25,7 +25,9 @@ from src.kernels._sovereignty import (
     ActiveSovereignty,
     clear_active_sovereignty,
     get_active_sovereignty,
+    grant_window,
     human_sovereign,
+    issue_grant,
     set_active_sovereignty,
 )
 from src.kernels.identity import (
@@ -232,3 +234,55 @@ class TestAuditOfDefer:
         # "was this actually blocked?" is separately auditable.
         assert det.get("policy_decision") == "deny"
         assert det.get("policy_enforced") is True
+
+
+def _latest_details(action_name: str):
+    """Newest audit event details for ``action_name`` (lenient: no attribution asserts)."""
+    from src.kernels.audit import audit_query
+
+    for ev in audit_query(limit=200, reverse=True):
+        det = ev.get("details") or {}
+        if det.get("action") == action_name:
+            return det
+    return None
+
+
+class TestSovereigntyGrantRecorded:
+    """D23: the allow path stamps the real grant id; the deny path stamps none."""
+
+    def test_allow_under_active_grant_records_the_grant_id(self, human_manager):
+        mgr, human = human_manager
+        grant = issue_grant(human.id, ["capability.retire"], reason="d23")
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran-under-grant"
+
+        with grant_window(grant):
+            assert retire() == "ran-under-grant"
+
+        det = _latest_details("capability.retire")
+        assert det is not None, "no audit row written"
+        # D23: the grant that authorised this action is recorded as a real,
+        # non-None value -- closing the action <- grant <- human chain.
+        assert det.get("policy_decision") == "allow"
+        assert det.get("sovereignty_grant") is not None
+        assert det.get("sovereignty_grant") == grant.grant_id
+
+    def test_no_window_records_no_grant(self, human_manager):
+        clear_active_sovereignty()
+
+        @kernel_action("capability.retire")
+        def retire():
+            return "ran"
+
+        # No delegation -> service actor -> deny verdict, still executes
+        # (record-only, the library default).
+        assert retire() == "ran"
+
+        det = _latest_details("capability.retire")
+        assert det is not None, "no audit row written"
+        assert det.get("policy_decision") == "deny", det
+        # D23: a denied action (no window) must carry NO grant id -- the deny
+        # path is forced to None by the wrapper guard, independent of claim_held.
+        assert det.get("sovereignty_grant") is None, det

@@ -205,3 +205,26 @@ class TestGateOnlyEscalatesEnforcedTiers:
         assert RiskTier.MEDIUM not in ENFORCED_TIERS
         assert is_enforced_tier(RiskTier.CRITICAL) is True
         assert is_enforced_tier(RiskTier.MEDIUM) is False
+
+
+class TestCriticalBlockVsRecord:
+    """D24: CRITICAL actions are deferred/blocked when enforced, recorded when not."""
+
+    @kernel_action("capability.retire", enforce=True)  # CRITICAL, service=deny
+    def critical_enforced(self):
+        return "ran-should-not"
+
+    def test_enforced_critical_blocks_pending_human(self):
+        with pytest.raises(PolicyDeferredError) as exc:
+            self.critical_enforced()
+        assert exc.value.action == "capability.retire"
+        assert exc.value.verdict == "defer"
+
+    def test_record_only_critical_executes(self):
+        @kernel_action("capability.retire")  # enforce defaults False
+        def critical_record_only():
+            return "ran"
+
+        # Library default (no enforce + env unset): additive record-only, the
+        # body runs and nothing is blocked even though the verdict is deny.
+        assert critical_record_only() == "ran"

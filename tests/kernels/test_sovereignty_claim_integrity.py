@@ -438,3 +438,24 @@ class TestAGrantIsNotStampedWhenItDidNotAuthorise:
             f"authorisation: {details!r}"
         )
         assert details["sovereignty_claim"] is None, details
+
+
+class TestDenyPathCarriesNoGrant:
+    """D23: a denied (non-allow) action must never be stamped with a grant id."""
+
+    def test_deny_without_window_records_no_sovereignty_grant(self, humans):
+        _mgr, human = humans
+
+        @kernel_action(ACTION)
+        def retire():
+            return "ran"
+
+        sov.clear_active_sovereignty()
+        retire()
+
+        details = (_action_row(ACTION) or {}).get("details")
+        assert details is not None, "no audit row written"
+        assert details["policy_decision"] == "deny", details
+        # D23: the deny path is forced to None by the wrapper guard,
+        # independent of the claim_held control flow (future-proofs F26/F33).
+        assert details["sovereignty_grant"] is None, details

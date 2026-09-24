@@ -50,7 +50,7 @@ package (which has no ``__init__.py``).
    但 ``enforce`` **默认 ``False``**，且 43 个生产装饰点**无一开启** —— 因此**库的默认
    行为**与 C-1 一致（记录型）。⚠️ 这是**库默认**，不等于部署姿态：生产清单
    ``docker-compose.prod.yml:59`` 以
-   ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}``
+   ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}``
    武装，被武装的动作上判决**会**产生执行效果（见
    ``scripts/verify_armed_actions_are_inert.py``）。把某个 HIGH/CRITICAL 动作的
    ``enforce`` 翻为 ``True``
@@ -401,6 +401,10 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 "policy_enforced": enforced,
                 # C-4: 若本动作是在某个人工审批授权窗口内执行的，记下凭据 id。
                 # 没有它，一次被放行的 HIGH/CRITICAL 动作无法回答"谁批的"。
+                # D23: sovereignty_grant 已在包装器里被强制为 None（deny/error/
+                # defer 或 denied/blocked 路径），此处只可能是 None 或真实
+                # grant id ——「deny 路径绝不带 grant」因此独立于 claim_held
+                # 控制流，未来防护 F26/F33。
                 "sovereignty_grant": grant_id,
                 # A2: 真实行动主体的种类、身份 id 与规范指纹。这三个字段让
                 # 「哪个 agent 做的」可答，并让审计侧与授权侧收敛到同一原语
@@ -719,6 +723,35 @@ def kernel_action(
             # constant "kernel" that used to be written here.
             audit_actor = _resolve_audit_actor(policy_actor)
 
+            # D23: defensive harden — a sovereignty grant is stamped ONLY on the
+            # allow path. Any non-allow verdict (deny/error/defer) or a
+            # blocked/denied outcome must never carry a grant id, INDEPENDENT of
+            # the ``claim_held`` control flow above. This closes the
+            # false-human-authorisation class (F26/F33) even if the escalation
+            # logic is later refactored, and makes "deny path never gets a grant"
+            # a property of the audit writer rather than a side effect of the
+            # adjudication branch.
+            def _grant_for_audit(audit_decision: Optional[str],
+                                 audit_outcome: str) -> Optional[str]:
+                if audit_decision in ("deny", "error", "defer") or \
+                        audit_outcome in ("denied", "blocked"):
+                    return None
+                return grant_id
+
+            # D23 (optional re-check): before stamping a real grant id, confirm
+            # it is still live. A grant revoked/expired after the window opened
+            # must not be recorded as live authorisation for this action. Runs
+            # only when a real grant id was actually resolved.
+            if grant_id is not None:
+                try:
+                    from src.kernels._sovereignty import get_grant
+
+                    _live = get_grant(grant_id)
+                    if _live is None or not _live.is_active():
+                        grant_id = None
+                except Exception:  # pragma: no cover - defensive
+                    grant_id = None
+
             # --- Policy C-2 enforcement gate ---------------------------------- #
             # Opt-in (enforce=True) and HIGH/CRITICAL only. With enforce=False
             # (the default for all 43 production call sites) this branch is
@@ -756,7 +789,8 @@ def kernel_action(
                         _call_audit(
                             audit_actor, action, "blocked", decision or "error",
                             corr_id, block_ms, rule_id, effective_risk,
-                            enforced=True, grant_id=grant_id,
+                            enforced=True,
+                            grant_id=_grant_for_audit(decision or "error", "blocked"),
                         )
                     if observable:
                         logger.warning(
@@ -764,6 +798,28 @@ def kernel_action(
                             "rule=%s correlation_id=%s",
                             action, decision or "error", effective_risk,
                             rule_id or "?", corr_id,
+                        )
+                        # D24 (false-positive alert): a STRUCTURED alert so a
+                        # legitimately-blocked action is visible and reviewable
+                        # WITHOUT parsing prose. False positives are NOT fixed by
+                        # flipping the global switch -- a verified human grants
+                        # authority via POST /policy/approvals, which opens a
+                        # sovereignty window; the blocked action then adjudicates
+                        # as that human and is allowed. (Hence the deployment
+                        # default stays CRITICAL-only, not a global ON.)
+                        logger.warning(
+                            "POLICY BLOCK STRUCTURED ALERT: a HIGH/CRITICAL "
+                            "action was deferred pending human sovereignty",
+                            extra={
+                                "alert": {
+                                    "kind": "policy_block_false_positive",
+                                    "action": action,
+                                    "tier": effective_risk,
+                                    "verdict": decision or "error",
+                                    "rule_id": rule_id,
+                                    "correlation_id": corr_id,
+                                }
+                            },
                         )
                     if decision is None:
                         # fail-closed: the engine was unavailable, so we cannot
@@ -806,7 +862,10 @@ def kernel_action(
                     _call_audit(
                         audit_actor, action, "intent", decision or "unadjudicated",
                         corr_id, 0.0, rule_id, effective_risk,
-                        grant_id=grant_id, reraise=True,
+                        grant_id=_grant_for_audit(
+                            decision or "unadjudicated", "intent"
+                        ),
+                        reraise=True,
                     )
                 except PolicyDeniedError:
                     raise
@@ -841,7 +900,9 @@ def kernel_action(
                 if audit:
                     _call_audit(audit_actor, action, outcome, decision, corr_id,
                                 duration_ms, rule_id, effective_risk,
-                                grant_id=grant_id,
+                                grant_id=_grant_for_audit(
+                                    decision or "unadjudicated", outcome
+                                ),
                                 denial_reason=denial_reason)
                 if observable:
                     logger.info(

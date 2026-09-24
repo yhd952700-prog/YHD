@@ -181,16 +181,22 @@ class TestArmedGateEndToEndOverHttp:
 
 
 class TestProductionArmingDecision:
-    """C-6: exactly one file arms the switch, and it arms the audited surface."""
+    """C-6: exactly one file arms the switch, and it arms the audited surface.
+
+    D24 narrowed the deployment from "HIGH,CRITICAL" to "CRITICAL" only --
+    CRITICAL actions are blocked by default, everything else is record-only, and
+    the switch is NOT globally ON.
+    """
 
     def test_production_manifest_arms_the_audited_surface(self):
         text = (REPO_ROOT / PROD_MANIFEST).read_text(encoding="utf-8")
         match = re.search(r"LIUHAO_KERNEL_POLICY_ENFORCE=[^\n]*:-([^}]*)\}", text)
         assert match, "the production manifest does not arm the switch"
         spec = match.group(1).strip()
-        assert spec == "HIGH,CRITICAL", spec
+        # D24: the deployment arms CRITICAL only.
+        assert spec == "CRITICAL", spec
 
-        expected = (HIGH_ACTIONS | CRITICAL_ACTIONS) - set(enf.EXEMPT_ACTIONS)
+        expected = CRITICAL_ACTIONS - set(enf.EXEMPT_ACTIONS)
         armed = enf.parse_spec(spec)
         assert armed == expected, (
             "missing=%s extra=%s"
@@ -198,7 +204,8 @@ class TestProductionArmingDecision:
         )
         assert len(CRITICAL_ACTIONS) == 2
         assert len(HIGH_ACTIONS) == 15
-        assert len(expected) == 16
+        # D24: the armed surface is now the CRITICAL tier only (2 actions).
+        assert len(expected) == 2
 
     def test_no_other_file_arms_the_switch(self):
         config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}

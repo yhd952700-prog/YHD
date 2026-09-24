@@ -48,9 +48,12 @@ services:
       # 整条审计哈希链归零。改指到卷内、且已 chown app:app 的 /app/data。
       # Rollback: 删掉这一行即回到默认行为。
       - AUDIT_DB_PATH=/app/data/audit_store.db
-      # Policy Controlled (C-6 decision, 2026-09-12): arm every HIGH and
-      # CRITICAL kernel action except the audited exemptions recorded in
-      # src/kernels/_enforcement.py (EXEMPT_ACTIONS). The Round 75 call-site
+      # Policy Controlled (C-6 decision, 2026-09-12; D24 narrow, 2026-09-12):
+      # arm every CRITICAL kernel action except the audited exemptions recorded
+      # in src/kernels/_enforcement.py (EXEMPT_ACTIONS). D24 narrowed the
+      # deployment from "HIGH,CRITICAL" to "CRITICAL" so the default-protective
+      # posture is CRITICAL-block / LOW-record, and the switch is NOT globally ON.
+      # The Round 75 call-site
       # audit measured every armed action as unreachable from production
       # code, so this is a zero-behaviour change today -- but the gate is now
       # live across the whole high-risk surface, and a future or compromised
@@ -59,11 +62,11 @@ services:
       # scripts/verify_armed_actions_are_inert.py turns CI red if a change
       # makes an armed action reachable.
       #
-      # 注意：武装之后，一旦有 HIGH/CRITICAL 动作真的可达，就必须有人类能批准。
+      # 注意：武装之后，一旦有 CRITICAL 动作真的可达，就必须有人类能批准。
       # 未登记任何人类 = 无人可批 = fail-closed（刻意默认）。网关启动时会以
       # WARNING 明确打印这一点；登记用 scripts/register_human_identity.py。
       # Rollback: set this variable to the empty string.
-      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}
+      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}
     volumes:
       # 运行期状态：身份库 / SQLite / WAL 文件。
       - liuhao_data:/app/data

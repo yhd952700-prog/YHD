@@ -18,8 +18,9 @@ What this proves:
      the approval request
      model cannot name the approver (the principal is token-only); and exactly one
      *deployment manifest* sets the arming variable -- the production manifest,
-     with a spec that resolves to the whole gated surface **minus the audited
-     exemptions** (C-6). Dev, CI and the Dockerfile must never arm it, so the
+     with a spec that resolves to the CRITICAL tier **minus the audited exemptions**
+     (C-6; D24 narrowed the deployment to CRITICAL only). Dev, CI and the Dockerfile
+     must never arm it, so the
      suite keeps exercising the record-only (L1) contract.
 
      Bounds of that last claim, stated rather than left implicit: the scan runs
@@ -53,6 +54,11 @@ were replaced by the stronger, more specific pair:
 * the armed set must equal ``(HIGH | CRITICAL) - EXEMPT_ACTIONS`` -- i.e. arming
   nothing extra *and* silently dropping nothing; and
 * no exempt action may be armed, and naming one in the spec must raise.
+
+D24 (2026-09-12): the deployment was narrowed from ``HIGH,CRITICAL`` to
+``CRITICAL`` only, so the check below now compares against the CRITICAL tier
+minus exemptions. The HIGH-tier audit is still complete (every HIGH action
+measured unreachable, one exempted); it is simply no longer armed by default.
 
 Reachability itself is not asserted here (a static file cannot see it); it is
 measured dynamically by ``scripts/verify_armed_actions_are_inert.py``.
@@ -594,11 +600,12 @@ def main() -> int:
         check("production manifest spec parses (no typo, no inert entry)",
               spec_error is None, spec_error or f"spec={prod_spec!r}")
 
-        # C-6: the armed set must equal the whole gated surface minus the audited
-        # exemptions -- not more (nothing armed by accident) and not less (nothing
-        # silently dropped from a tier expansion).
-        audited_surface = (high_actions | critical_actions) - set(enf.EXEMPT_ACTIONS)
-        check("production manifest arms exactly the audited surface",
+        # C-6/D24: the armed set must equal the CRITICAL tier minus the audited
+        # exemptions (D24 narrowed the deployment from HIGH,CRITICAL to CRITICAL)
+        # -- not more (nothing armed by accident) and not less (nothing silently
+        # dropped from the tier expansion).
+        audited_surface = critical_actions - set(enf.EXEMPT_ACTIONS)
+        check("production manifest arms exactly the audited (CRITICAL) surface",
               armed_actions == audited_surface,
               f"armed={len(armed_actions)} audited={len(audited_surface)} "
               f"missing={sorted(audited_surface - armed_actions)} "
