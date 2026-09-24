@@ -325,7 +325,7 @@ l10k / hardening / conversation_store / tool_registry）一个内核动作都不
    内核层判决**已携带信息**（白名单驱动 allow/deny，Round 65），但**仍未拦截**（§3.5.4 修复记录）。
    > ⚠️ **口径边界（2026-09-21 补）：** 上面两句里的「生产默认 / 仍未拦截」指的是**代码默认**
    > （44 个装饰点 `enforce=False` + 开关默认空）。**部署面不是这个默认** ——
-   > `docker-compose.prod.yml:59` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`
+   > `docker-compose.prod.yml:69` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`
    > 武装，被武装的 HIGH/CRITICAL 动作上判决**会**被执行。两者不可互推；云发布包那条路侧
    > 本工作区不可判定（见 `LAUNCH-CRITERIA.md` A4 行注）。
    > 📄 **方案与实施记录**：**`POLICY-ENFORCEMENT-DESIGN.md`** —— 三条路线对比

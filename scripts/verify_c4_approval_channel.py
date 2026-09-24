@@ -16,21 +16,23 @@ What this proves:
   5. SAFETY GUARDS: no production ``@kernel_action`` flips ``enforce=True``;
      no statically-resolvable opener of a sovereignty channel under ``src/``;
      the approval request
-     model cannot name the approver (the principal is token-only); and exactly one
-     *deployment manifest* sets the arming variable -- the production manifest,
-     with a spec that resolves to the CRITICAL tier **minus the audited exemptions**
-     (C-6; D24 narrowed the deployment to CRITICAL only). Dev, CI and the Dockerfile
-     must never arm it, so the
+     model cannot name the approver (the principal is token-only); and exactly two
+     surfaces arm the switch for production: the production deployment manifest
+     (``docker-compose.prod.yml``) and the cloud-bundle launcher template
+     (``scripts/build_cloud_bundle.py``), each resolving to the CRITICAL tier
+     **minus the audited exemptions** (C-6; D24 narrowed the deployment to
+     CRITICAL only). Dev, CI and the Dockerfile must never arm it, so the
      suite keeps exercising the record-only (L1) contract.
 
-     Bounds of that last claim, stated rather than left implicit: the scan runs
-     over the repository **minus ``tests/`` and ``scripts/``** (see the exclusion
-     in ``_armed_specs``), so it cannot see two things that also name the same
-     variable -- ``scripts/build_cloud_bundle.py`` renders it unconditionally into
-     the generated launcher, and this checker reads it. Neither is a deployment
-     manifest, so the narrowed claim holds; but "exactly one file in the
-     repository arms the switch" would be **false** and is **not** what is
-     asserted. The generated bundle is a separate surface with no coverage here.
+     Bounds of that last claim, stated rather than left implicit: the scan now
+     covers ``scripts/`` as well (the exclusion was removed), so the bundle
+     launcher is in scope and asserted to arm exactly CRITICAL -- not
+     ``HIGH,CRITICAL``. A Python write of the variable whose **value is a
+     variable** (a verification harness probing reachability, e.g.
+     ``scripts/verify_armed_actions_are_inert.py``) is *not* classified as a
+     deployment-arming site, because it ships no default spec; only a literal
+     spec write is. "Exactly two surfaces arm a shipped default, both CRITICAL"
+     is therefore what is asserted, and it holds.
 
      Bounds of the opener claim too, stated rather than left implicit: the scan
      covers ``src/`` only -- not ``tests/`` or ``scripts/``, which must be able to
@@ -71,9 +73,10 @@ import importlib
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -86,6 +89,13 @@ POLICY_ROUTER = REPO_ROOT / "src" / "gateway" / "policy.py"
 #: Arming is a deliberate, reviewable deployment decision (C-5); dev and CI stay
 #: off so the suite keeps exercising the record-only (L1) contract.
 PROD_MANIFEST = "docker-compose.prod.yml"
+
+#: The second legitimate arming site: the cloud-bundle launcher template.
+#: ``scripts/build_cloud_bundle.py`` renders ``LIUHAO_KERNEL_POLICY_ENFORCE``
+#: unconditionally into the generated ``serve.py`` (D24 requires it to be
+#: CRITICAL, matching the production manifest). It is scanned alongside the
+#: manifest and must resolve to exactly CRITICAL.
+BUNDLE_LAUNCHER = "scripts/build_cloud_bundle.py"
 
 RESULTS = []
 
@@ -292,29 +302,79 @@ def _spec_from_line(line: str, var: str) -> Optional[str]:
     return None
 
 
+def _spec_from_python_env_write(line: str, var: str) -> Optional[str]:
+    """Extract the value written to ``var`` by a Python env-write.
+
+    Handles the forms used as *deployment arming* (a shipped literal default):
+    ``os.environ.setdefault("VAR", "VALUE")`` / ``os.putenv("VAR", "VALUE")`` and
+    ``os.environ["VAR"] = "VALUE"``. Returns ``None`` when the value is not a
+    string literal -- e.g. a verification harness writing ``action`` / ``spec``
+    to probe reachability. Those ship no default and must not be classified as a
+    deployment-arming site.
+    """
+    patterns = [
+        # setdefault("VAR", "VALUE") / putenv("VAR", "VALUE")
+        re.escape(var) + r'["\']\s*,\s*["\']([^"\']*)["\']',
+        # environ["VAR"] = "VALUE"
+        re.escape(var) + r'["\']\s*\]\s*=\s*["\']([^"\']*)["\']',
+    ]
+    for pat in patterns:
+        m = re.search(pat, line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _tracked_files() -> List[pathlib.Path]:
+    """Repository files tracked by git.
+
+    Excludes untracked scratch (e.g. local verification helpers) and gitignored
+    build output, so the check verifies the *committed, shippable* deployment
+    artifacts -- the production manifest and the cloud-bundle launcher -- rather
+    than whatever happens to sit in a working tree. Falls back to a full tree
+    walk if git is unavailable.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return [p for p in REPO_ROOT.rglob("*") if p.is_file()]
+    return [REPO_ROOT / p for p in out.stdout.split("\0") if p]
+
+
 def _armed_specs() -> dict:
     """Map every file that *arms* the switch to the spec it arms it with.
 
     Arming = assigning the variable in a config/deployment file, or *writing* it
-    from Python (``os.environ[...] =`` / ``putenv`` / ``setdefault``). Prose and
-    docstrings that merely name the variable are deliberately not hits -- the
-    enforcement module and the decorator must be able to document the switch.
+    from Python with a **literal** spec (``os.environ.setdefault("VAR", "VALUE")``
+    / ``putenv`` / ``environ["VAR"] = "VALUE"``). Prose and docstrings that
+    merely name the variable are not hits -- the enforcement module and the
+    decorator must be able to document the switch.
 
-    **The scan excludes ``tests/`` and ``scripts/``**, and that exclusion is not
-    harmless: it hides ``scripts/build_cloud_bundle.py``, which renders the same
-    variable unconditionally into the generated launcher (the ``_LAUNCHER``
-    template). This guard therefore does **not** cover the generated-bundle
-    surface, and the caller's claim is scoped to *deployment manifests*
-    accordingly. Do not read a single hit here as "only one file in the
-    repository arms this".
+    A Python write whose value is a *variable* (a verification harness probing
+    reachability, e.g. ``scripts/verify_armed_actions_are_inert.py`` setting the
+    variable to ``action`` / ``spec``) ships no default and is **not** counted as
+    an arming site -- only a literal spec write is.
+
+    The scan covers the whole repository **minus ``tests/``** (and ``.venv/``,
+    ``.git/``, ``node_modules/``). ``scripts/`` is deliberately scanned so the
+    cloud-bundle launcher is visible: D24 requires it to arm exactly CRITICAL,
+    matching the production manifest. Two surfaces may therefore arm the switch
+    -- the production manifest and the bundle launcher -- and the caller asserts
+    both resolve to CRITICAL. Do not read a single hit here as "only one file in
+    the repository arms this".
     """
     var = "LIUHAO_KERNEL_POLICY_ENFORCE"
     config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
     # Enumerated rather than a bare directory skip, so the exclusion is visible
     # at the point it is applied -- and its consequence is recorded above.
-    excluded_roots = (".venv/", ".git/", "node_modules/", "tests/", "scripts/")
+    # NOTE: ``scripts/`` is intentionally NOT excluded -- the cloud-bundle
+    # launcher is a real arming site that D24 requires to be CRITICAL.
+    excluded_roots = (".venv/", ".git/", "node_modules/", "tests/")
     armed = {}
-    for path in REPO_ROOT.rglob("*"):
+    for path in _tracked_files():
         if not path.is_file():
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
@@ -342,8 +402,12 @@ def _armed_specs() -> dict:
                               or ("=" in line and "environ" in line))
                 if not writes_env:
                     continue
-                # A Python env write is always unexpected, whatever it sets.
-                spec = _spec_from_line(line, var) or "<env-write>"
+                # Only a *literal* spec write is a deployment arming site. A
+                # write whose value is a variable (a reachability probe) ships no
+                # default and is skipped -- never counted as an arming site.
+                spec = _spec_from_python_env_write(line, var)
+                if spec is None:
+                    continue
             armed[rel] = spec
             break
     return armed
@@ -580,10 +644,18 @@ def main() -> int:
     )
 
     armed = _armed_specs()
-    unexpected = sorted(k for k in armed if k != PROD_MANIFEST)
-    check("only the production manifest arms enforcement (dev/CI/Dockerfile never)",
+    allowed_arming = {PROD_MANIFEST, BUNDLE_LAUNCHER}
+    unexpected = sorted(k for k in armed if k not in allowed_arming)
+    check("only the production manifest and the cloud-bundle launcher arm "
+          "enforcement (dev/CI/Dockerfile never)",
           not unexpected,
-          f"unexpected={unexpected}" if unexpected else f"armed via {PROD_MANIFEST} only")
+          f"unexpected={unexpected}" if unexpected else f"armed via {sorted(armed)}")
+    for site in sorted(allowed_arming):
+        spec = armed.get(site)
+        check(f"{site} arms exactly CRITICAL (D24 deployment truth)",
+              spec == "CRITICAL",
+              (f"{site} spec={spec!r}" if spec != "CRITICAL"
+               else f"armed via {sorted(armed)}"))
 
     prod_spec = armed.get(PROD_MANIFEST)
     check("production manifest arms the switch explicitly",

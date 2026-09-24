@@ -61,7 +61,7 @@ cd deploy/cloud && PORT=8080 python serve.py
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-> ⚠️ 生产清单会**默认武装 `LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL`**（见 §4）。
+> ⚠️ 生产清单会**默认武装 `LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL`**（见 §4；D24 已由 HIGH,CRITICAL 收窄为 CRITICAL）。
 
 ### 2.3 本机（开发/自托管）
 

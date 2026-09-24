@@ -145,20 +145,22 @@ _SECRETS_FILE = os.path.join(BUNDLE_ROOT, "config", "auth_secrets.json")
 if os.path.isfile(_SECRETS_FILE):
     os.environ.setdefault("LIUHAO_AUTH_SECRETS_FILE", _SECRETS_FILE)
 
-# Policy Controlled, level 2: the kernel really blocks HIGH/CRITICAL actions
+# Policy Controlled, level 2: the kernel really blocks CRITICAL actions
 # unless a verified human issued a grant for them (OD-010). Without this the
 # deployment only *records* (level 1) and the "human sovereignty" claim is a
 # log line rather than an enforced boundary.
 #
-# This mirrors docker-compose.prod.yml, which has armed the same value since
-# Round 76, and it is only coherent because the identity registry above is
-# present: with zero registered humans every HIGH/CRITICAL action is denied --
-# fail-closed, deliberately.
+# This arms CRITICAL, matching docker-compose.prod.yml:69. D24 (2026-09-12)
+# narrowed the production deployment to CRITICAL only (dropping the earlier HIGH
+# tier), so the bundle must agree with the manifest rather than diverge. It is
+# only coherent
+# because the identity registry above is present: with zero registered humans
+# every CRITICAL action is denied -- fail-closed, deliberately.
 #
 # Disarm without a rebuild by exporting an *empty* value, which the parser
 # reads as "off":
 #     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
-os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "HIGH,CRITICAL")
+os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")
 {{LLM_BLOCK}}{{JWT_BLOCK}}
 from src.gateway.__main__ import main  # noqa: E402
 

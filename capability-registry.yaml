@@ -608,8 +608,8 @@ capability-registry:
   - id: OPEN-006
     title: C-2 策略执法生产开关
     detail: >-
-      代码默认 OFF（AST 护栏锁死默认值），但 docker-compose.prod.yml:59 已 arm
-      HIGH,CRITICAL。真问题不是「开不开」而是「身份表挂了没」：身份表未挂时
-      0 humans → HIGH/CRITICAL 全拒（fail-closed，刻意）。
-    impact: 生产 arm 前必须确认身份表已挂，否则全部高危动作被拒。
+      代码默认 OFF（AST 护栏锁死默认值），但 docker-compose.prod.yml:69 已 arm
+      CRITICAL（D24 由 HIGH,CRITICAL 收窄）。真问题不是「开不开」而是「身份表挂了没」：身份表未挂时
+      0 humans → CRITICAL 全拒（fail-closed，刻意）。
+    impact: 生产 arm 前必须确认身份表已挂，否则全部 CRITICAL 动作被拒。
     status: DEPLOY-DECISION

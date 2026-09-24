@@ -12,7 +12,7 @@ What this proves:
   5. SAFETY GUARD: no production ``@kernel_action`` call site passes
      enforce=True -- that is exactly what this guard asserts. Whether the gate is
      armed at *runtime* is a separate, deployment-side decision: the production
-     manifest arms ``HIGH,CRITICAL`` by default (``docker-compose.prod.yml:59``),
+     manifest arms ``CRITICAL`` by default (``docker-compose.prod.yml:69``),
      and ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a change
      makes an armed action reachable. Do not read "the decorator flag is unset"
      as "nothing is enforced in production".

@@ -49,7 +49,7 @@ Zero production behaviour change by default:
     With no active sovereignty, ``_adjudicate`` keeps using the internal service
     principal and every production call site stays at ``enforce=False``. That is
     the *library* default and is all this claims: the production manifest arms
-    ``HIGH,CRITICAL`` (``docker-compose.prod.yml:59``), so "record-only" must not
+    ``CRITICAL`` (``docker-compose.prod.yml:69``), so "record-only" must not
     be read as a deployment fact.
 """
 

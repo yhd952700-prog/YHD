@@ -13,9 +13,9 @@
 
 **与部署姿态的边界**：脚本末尾那句「``policy_decision`` 恒为 ``deny`` 且装饰器
     从不拦截」是**记录态（record-only）观测** —— 本脚本不设置
-    ``LIUHAO_KERNEL_POLICY_ENFORCE``。生产清单 ``docker-compose.prod.yml:59``
-    以 ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}``
-    武装 ``HIGH,CRITICAL``，故那句**不是**对生产运行时行为的断言。
+    ``LIUHAO_KERNEL_POLICY_ENFORCE``。生产清单 ``docker-compose.prod.yml:69``
+    以 ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}``
+    武装 ``CRITICAL``，故那句**不是**对生产运行时行为的断言。
 
 方法：
   1) **对照实验**：先直接调用已知被 ``@kernel_action`` 装饰的
@@ -292,7 +292,7 @@ def main() -> int:
     print(
         "\n注意：以上是【记录态】观测 —— 本脚本未设置 LIUHAO_KERNEL_POLICY_ENFORCE，"
         "故 policy_decision 恒为 deny 且装饰器从不拦截（见 AI-LAYER-DOD-AUDIT.md §3.5.4）；"
-        "生产清单 docker-compose.prod.yml:59 武装 HIGH,CRITICAL，"
+        "生产清单 docker-compose.prod.yml:69 武装 CRITICAL，"
         "那句话不是对生产运行时行为的断言。"
     )
     return 0

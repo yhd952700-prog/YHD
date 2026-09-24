@@ -99,7 +99,7 @@ risk=CRITICAL -> deny   trace=['RULE:default_deny:deny']
 
 → **判决与动作、风险完全无关**，是一个常量。装饰器又 additive，故该 `deny` 无执行效果。审计事件已显式标注 `policy_enforced: false` 以避免误读。
 
-> ⚠️ **口径边界（2026-09-21 补）：** 本句描述的是**代码默认**（44 个装饰点 `enforce=False` + 开关默认空），即「记录型 / L1」。**部署面不等于代码默认**：`docker-compose.prod.yml:59` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}` 武装，被武装的 HIGH/CRITICAL 动作上 `deny` **会**产生执行效果（抛 `PolicyDeniedError` / `PolicyDeferredError`）。云发布包的启动器在**源码侧**同样渲染该 setdefault（`scripts/build_cloud_bundle.py:161`，无条件），但磁盘上当前那一份 `deploy/cloud/serve.py` **不含**该行、且它晚于最后一次发布 ⇒ **线上当刻是否武装，本工作区不可判定**。读本句与部署清单时请勿互推。
+> ⚠️ **口径边界（2026-09-21 补）：** 本句描述的是**代码默认**（44 个装饰点 `enforce=False` + 开关默认空），即「记录型 / L1」。**部署面不等于代码默认**：`docker-compose.prod.yml:69` 以 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}` 武装，被武装的 CRITICAL 动作上 `deny` **会**产生执行效果（抛 `PolicyDeniedError` / `PolicyDeferredError`）。云发布包的启动器在**源码侧**同样渲染该 setdefault（`scripts/build_cloud_bundle.py:161`，无条件），但磁盘上当前那一份 `deploy/cloud/serve.py` **不含**该行、且它晚于最后一次发布 ⇒ **线上当刻是否武装，本工作区不可判定**。读本句与部署清单时请勿互推。
 
 > **⚠️ 本节为"修复前"基线。** C-1 已实施（2026-09-11）：actor 改为经核验的内部
 > service 主体，内置规则 `internal_service_allow`（白名单 14 项）使判决变为
@@ -377,7 +377,7 @@ def kernel_action(action, *, risk_level="LOW", enforce=None, audit=True, observa
 **已裁决（2026-09-12 Round 73，用户授权"剩余的剩余裁决也交给你"）**：
 
 ① **生产开启内核层真拦截 = 是。** 落地在**生产部署清单**，而不是代码：
-`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+`docker-compose.prod.yml` 的 `LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
 
   Round 73 只开了 `CRITICAL`（2 个），前置条件是「HIGH 待调用点审计」。**Round 75（C-6）
   完成该审计并把武装面扩到 16 个**（全部 HIGH/CRITICAL 减去 1 个实测有活调用点的豁免项
@@ -903,7 +903,7 @@ CI 里跑）。
 - `describe()` 增加 `exempt_actions`，因此 `GET /v1/policy/enforcement` 可见。
 
 生产清单：`docker-compose.prod.yml` →
-`LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-HIGH,CRITICAL}`。
+`LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}`。
 
 ### 10.11.5 把「惰性」变成 CI 门禁（本轮最重要的交付）
 

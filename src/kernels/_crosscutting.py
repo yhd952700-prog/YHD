@@ -49,7 +49,7 @@ package (which has no ``__init__.py``).
    :class:`PolicyDeniedError` + 仅 ``HIGH``/``CRITICAL`` 生效的拦截门 + fail-closed。
    但 ``enforce`` **默认 ``False``**，且 43 个生产装饰点**无一开启** —— 因此**库的默认
    行为**与 C-1 一致（记录型）。⚠️ 这是**库默认**，不等于部署姿态：生产清单
-   ``docker-compose.prod.yml:59`` 以
+   ``docker-compose.prod.yml:69`` 以
    ``LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}``
    武装，被武装的动作上判决**会**产生执行效果（见
    ``scripts/verify_armed_actions_are_inert.py``）。把某个 HIGH/CRITICAL 动作的
@@ -773,8 +773,8 @@ def kernel_action(
             #   * no production call site passes ``enforce=True`` -- that is what
             #     the AST guard in ``scripts/verify_c2_enforcement.py`` asserts;
             #   * whether the gate is armed at *runtime* is a deployment choice.
-            #     The production manifest arms ``HIGH,CRITICAL`` by default
-            #     (``docker-compose.prod.yml:59``), and
+            #     The production manifest arms ``CRITICAL`` by default
+            #     (``docker-compose.prod.yml:69``), and
             #     ``scripts/verify_armed_actions_are_inert.py`` keeps CI red if a
             #     change makes an armed action reachable.
             should_enforce = enforce or is_enforced(action, effective_risk)

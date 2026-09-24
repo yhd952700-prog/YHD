@@ -89,8 +89,8 @@ engine.rollback(experiment_id)   # 状态 -> ROLLED_BACK，写入 history 审计
 不需要改代码 —— 用一处运维开关：
 
 ```bash
-# 当前生产默认（已写入 docker-compose.prod.yml）：武装全部 16 个 HIGH/CRITICAL 动作
-export LIUHAO_KERNEL_POLICY_ENFORCE=HIGH,CRITICAL
+# 生产默认（已写入 docker-compose.prod.yml，D24 收窄）：仅武装 CRITICAL；HIGH,CRITICAL 仍为可选值
+export LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL
 # 逐动作精确开启
 export LIUHAO_KERNEL_POLICY_ENFORCE=capability.retire
 # 整体回滚为记录型（L1）
