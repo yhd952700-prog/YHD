@@ -244,7 +244,13 @@ def main() -> int:
     print("\n" + "=" * 64)
     print(f"P0-8b / P0-8c SUMMARY: {passed}/{total} checks passed, {failed} failed")
     print("=" * 64)
-    return 0 if failed == 0 else 1
+    # Written as two explicit returns rather than "return 0 if failed == 0 else 1":
+    # tests/test_guardrail_scripts.py decides whether a gate can fail by AST, and
+    # its helper only recognises a Return holding a literal non-zero int. The
+    # conditional-expression form made our gate look toothless to that check.
+    if failed:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

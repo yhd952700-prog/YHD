@@ -328,6 +328,19 @@ jobs:
       - name: Verify P0-8b/8c hash-chain sig_alg (runtime, deployment gate)
         run: python scripts/verify_p08_hash_chain_sig_alg.py
 
+      # PHASE 3.6 / P0-8 technical closure: the FINAL STATUS MATRIX for every
+      # chain HC-01..HC-11, derived at runtime from eight dimensions
+      # (declaration / canonicalization / prev_hash rule / persistence /
+      # verification / tamper detection / unknown-algorithm behaviour /
+      # migration state). Status vocabulary is closed: COMPLIANT, LEGACY,
+      # UNVERIFIED, BLOCKED -- never a fuzzy "mostly done".
+      #
+      # Each chain also DECLARES the status it is expected to hold, so if
+      # runtime evidence derives something different the step goes red. That is
+      # what keeps this matrix from decaying into decoration.
+      - name: Verify P0-8 hash-chain final status matrix HC-01..HC-11 (runtime)
+        run: python scripts/verify_p08_final_status_matrix.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db

@@ -505,7 +505,12 @@ def main() -> int:
         for hc, finding, why in FINDINGS:
             print(f"  - {hc}: {finding}\n      {why}")
 
-    return 0 if failed == 0 else 1
+    # Two explicit returns, not "return 0 if failed == 0 else 1": the guardrail
+    # test that every gate must be able to fail decides that by AST, and it only
+    # recognises a Return holding a literal non-zero int.
+    if failed:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
