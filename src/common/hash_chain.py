@@ -18,6 +18,13 @@ existing canonical form (some include ``prev_hash`` in the hash input, the main
 audit chain excludes it). Unifying canonicalization is a separate, breaking
 change that requires a data-migration plan and is deliberately out of scope for
 this round.
+
+``canon_version`` (see D21 / HC-09 / HC-10) is a VERSION LABEL / contract
+selector carried by an event, NOT a durability claim. It names which canonical
+contract produced the chain link; it confers NO authority and NO persistence on
+the chain. Durable, authoritative audit is the SQLite ``src.kernels.audit`` store
+(HC-01), whose runtime chain-of-custody integrity is currently UNVERIFIED. A
+non-empty ``canon_version`` therefore proves nothing about evidence quality.
 """
 
 from __future__ import annotations
@@ -69,3 +76,26 @@ def verify_declared_hash(
     if actual != expected:
         return (False, "mismatch")
     return (True, "ok")
+
+
+# ---------------------------------------------------------------------------
+# D21 — canon-version dispatch (label / contract selector, NOT a durability claim)
+# ---------------------------------------------------------------------------
+KNOWN_CANON_VERSIONS = frozenset({"HC-FROZEN-v1", "CURRENT", "LEGACY"})
+
+
+def verify_by_canon_version(
+    declared_version: str, canonical_bytes: bytes, expected_hash: str, alg: str
+) -> Tuple[bool, str]:
+    """Verify *expected_hash* of *canonical_bytes* under *alg*, gated by version.
+
+    ``declared_version`` is a version LABEL / contract selector (e.g. "CURRENT",
+    "LEGACY", "HC-FROZEN-v1"). It is NOT a durability claim and confers no
+    authority on the chain. If the label is unknown the verification is refused
+    with ``(False, "unknown_version")``. Otherwise dispatch to
+    ``verify_declared_hash`` (fail-closed: an unknown *alg* returns
+    ``(False, "unknown")`` -- there is NO default fallback to sha256).
+    """
+    if declared_version not in KNOWN_CANON_VERSIONS:
+        return (False, "unknown_version")
+    return verify_declared_hash(alg, canonical_bytes, expected_hash)

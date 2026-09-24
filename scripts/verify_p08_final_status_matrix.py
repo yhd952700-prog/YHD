@@ -51,7 +51,7 @@ EXPECTED = {
     "HC-07": "COMPLIANT",
     "HC-08": "COMPLIANT",
     "HC-09": "UNVERIFIED",   # durability: memory-only, pending decision D19
-    "HC-10": "UNVERIFIED",   # durability: memory-only, pending decision D19
+    "HC-10": "UNVERIFIED",   # durability: memory-only (D19=A+); NON-AUTHORITATIVE
     "HC-11": "UNVERIFIED",   # no integrity key configured -> verification is vacuous
 }
 
@@ -342,7 +342,7 @@ def probe_hc10() -> None:
 
     put(hc,
         declaration="DECLARED " + str(a1.hash_alg),
-        canonicalization="10-field json(sort_keys,separators); timestamp isoformat, event_type=value",
+        canonicalization="12-field json(sort_keys,separators); timestamp isoformat, event_type=value; metadata+canon_version included",
         prev_hash="INCLUDED in input" if included and excluded else "UNKNOWN",
         persistence="VOLATILE (AuditKernel._entries list; no persistence call)",
         verification="VERIFIED" if ok0 is True else "FAILED",

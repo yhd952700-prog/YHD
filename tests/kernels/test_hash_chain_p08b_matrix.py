@@ -110,6 +110,7 @@ def test_hc10_canonical_includes_prev_hash() -> None:
     a2 = kernel.log(etype, "principal-2", result="ok")
 
     et = a2.event_type.value if isinstance(a2.event_type, Enum) else a2.event_type
+    # D20: the canonical now ALSO covers ``metadata`` and ``canon_version``.
     chain_data = {
         "id": a2.id,
         "timestamp": a2.timestamp.isoformat(),
@@ -121,6 +122,8 @@ def test_hc10_canonical_includes_prev_hash() -> None:
         "reason": a2.reason,
         "correlation_id": a2.correlation_id,
         "prev_hash": a2.prev_hash,
+        "metadata": a2.metadata,
+        "canon_version": a2.canon_version,
     }
     assert _sha256(_canon(chain_data)) == a2.hash
 
@@ -132,19 +135,41 @@ def test_hc10_canonical_includes_prev_hash() -> None:
     assert a1.prev_hash == "genesis_hash_0"
 
 
-def test_hc10_metadata_is_not_covered_by_the_hash() -> None:
-    """Records the confirmed finding: metadata tampering is undetectable.
+def test_hc10_metadata_is_covered_by_the_hash_under_current() -> None:
+    """D20: under CURRENT canon_version, metadata tampering IS detected.
 
-    Extending coverage would change every historical hash, so this is a human
-    decision -- the test pins the CURRENT truth so a change cannot slip in
-    unnoticed.
+    This reverses the earlier pin (which recorded that metadata was NOT covered).
+    D20 made ``metadata`` part of the canonical form, so a mutated metadata dict
+    now changes the hash and ``verify_integrity`` returns False. No migration is
+    required because the chain is volatile (in-memory only).
     """
     etype = next(iter(PolicyEventType))
     kernel = AuditKernel()
     entry = kernel.log(etype, "principal-1", result="ok")
     entry.metadata["injected"] = "TAMPERED"
     ok, _broken = kernel.verify_integrity()
-    assert ok is True, "metadata coverage changed -- re-open the human decision"
+    assert ok is False, "metadata is covered by the hash under CURRENT; tamper must be detected"
+
+
+def test_hc10_current_metadata_coverage_and_determinism() -> None:
+    """D20: (1) metadata mutation changes the hash under CURRENT; (2) the canonical
+    form is deterministic w.r.t. dict key order (sort_keys).
+    """
+    etype = next(iter(PolicyEventType))
+    kernel = AuditKernel()
+    entry = kernel.log(etype, "p-x", result="ok")
+    base = entry.compute_hash()
+
+    # (1) mutating metadata changes the hash -> metadata IS covered (D20).
+    entry.metadata["injected"] = "TAMPERED"
+    assert entry.compute_hash() != base
+
+    # (2) canonicalization is order-independent for the metadata payload.
+    entry.metadata = {"z": 1, "a": 2}
+    h_order_1 = entry.compute_hash()
+    entry.metadata = {"a": 2, "z": 1}
+    h_order_2 = entry.compute_hash()
+    assert h_order_1 == h_order_2, "canonical form must be order-independent (sort_keys)"
 
 
 def test_hc10_declares_algorithm_and_is_fail_closed() -> None:
@@ -154,6 +179,7 @@ def test_hc10_declares_algorithm_and_is_fail_closed() -> None:
     a1 = kernel.log(etype, "principal-1", result="ok")
 
     assert a1.hash_alg == "sha256"
+    assert a1.canon_version == "CURRENT"
 
     # Pre-condition: intact under sha256 -> a fallback would verify.
     et = a1.event_type.value if isinstance(a1.event_type, Enum) else a1.event_type
@@ -162,6 +188,7 @@ def test_hc10_declares_algorithm_and_is_fail_closed() -> None:
         "principal_id": a1.principal_id, "permission": a1.permission,
         "scope": a1.scope, "result": a1.result, "reason": a1.reason,
         "correlation_id": a1.correlation_id, "prev_hash": a1.prev_hash,
+        "metadata": a1.metadata, "canon_version": a1.canon_version,
     }
     assert _sha256(_canon(chain_data)) == a1.hash
 

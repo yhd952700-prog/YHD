@@ -33,6 +33,8 @@ if _REPO_ROOT not in sys.path:
 from src.common.hash_chain import (  # noqa: E402
     compute_hash,
     verify_declared_hash,
+    verify_by_canon_version,
+    KNOWN_CANON_VERSIONS,
     DEFAULT_HASH_ALG,
 )
 
@@ -99,3 +101,32 @@ def _roundtrip(cfg: dict) -> None:
 def test_chain_roundtrip_and_fail_closed(cfg: dict) -> None:
     """Parametrised over every JSON-file hash chain (HC-02..HC-08)."""
     _roundtrip(cfg)
+
+
+# ---------------------------------------------------------------------------
+# D21 — canon-version dispatch (label / contract selector, NOT durability)
+# ---------------------------------------------------------------------------
+def test_verify_by_canon_version_rejects_unknown_version() -> None:
+    """A version label outside KNOWN_CANON_VERSIONS is refused."""
+    canonical = b"liuhao-payload"
+    expected = compute_hash("sha256", canonical)
+    assert verify_by_canon_version("BOGUS", canonical, expected, "sha256") == (False, "unknown_version")
+    assert verify_by_canon_version("", canonical, expected, "sha256") == (False, "unknown_version")
+    assert "CURRENT" in KNOWN_CANON_VERSIONS
+    assert "LEGACY" in KNOWN_CANON_VERSIONS
+    assert "HC-FROZEN-v1" in KNOWN_CANON_VERSIONS
+
+
+def test_verify_by_canon_version_dispatches_known_versions() -> None:
+    """Same payload verifies under LEGACY and CURRENT; both default to sha256."""
+    canonical = b"liuhao-payload"
+    expected = compute_hash("sha256", canonical)
+    for version in ("LEGACY", "CURRENT"):
+        assert verify_by_canon_version(version, canonical, expected, "sha256") == (True, "ok")
+
+
+def test_verify_by_canon_version_no_default_fallback_on_unknown_alg() -> None:
+    """An unknown algorithm under a KNOWN version fails closed, never sha256."""
+    canonical = b"liuhao-payload"
+    expected = compute_hash("sha256", canonical)
+    assert verify_by_canon_version("CURRENT", canonical, expected, "sha512-unknown") == (False, "unknown")

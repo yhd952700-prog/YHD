@@ -1,4 +1,14 @@
-"""Audit Kernel — Full audit trail with hash chain integrity
+"""Audit Kernel — Full audit trail with hash chain integrity (VOLATILE / IN-MEMORY ONLY / NON-AUTHORITATIVE)
+
+WARNING — VOLATILE, IN-MEMORY ONLY, NON-AUTHORITATIVE:
+    The Audit Kernel (HC-10) holds entries in ``self._entries`` ONLY. There is
+    NO persistence layer: all entries are lost on process restart, and the chain
+    is NOT backed by the authoritative AuditStore (src.kernels.audit, HC-01).
+    This module is therefore NOT the authoritative source of audit evidence.
+    Durable, tamper-evident audit lives in src.kernels.audit (HC-01), whose
+    runtime chain-of-custody integrity is currently UNVERIFIED. Do NOT treat
+    this kernel's output as audit-grade evidence. The ``dropped_count`` and
+    ``high_water_mark`` counters are telemetry, not evidence.
 
 The Audit Kernel provides complete audit logging for all security-relevant
 events across every kernel in the system. Each entry is cryptographically
@@ -13,14 +23,19 @@ linked via a hash chain to ensure tamper evidence.
 """
 from __future__ import annotations
 
+import collections
+import json
+import logging
+import os
+import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
 from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
-import json
-import threading
-import uuid
+
+logger = logging.getLogger(__name__)
 
 
 class AuditEventType(str, Enum):
@@ -66,6 +81,11 @@ class AuditEntry:
     #: part of ``chain_data``, so adding it changed no existing hash.
     hash_alg: str = "sha256"
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: D21 / HC-10 — canon-version LABEL / contract selector. It IS part of the
+    #: canonical form (so a future version change is detectable), but it confers
+    #: NO durability or authority on the chain: this kernel is volatile and
+    #: non-authoritative (see module docstring).
+    canon_version: str = "CURRENT"
 
     def compute_hash(self) -> str:
         """Compute the cryptographic hash for this entry, chaining to previous."""
@@ -89,6 +109,8 @@ class AuditEntry:
             "reason": self.reason,
             "correlation_id": self.correlation_id,
             "prev_hash": self.prev_hash,
+            "metadata": self.metadata,
+            "canon_version": self.canon_version,
         }
         chain_string = json.dumps(chain_data, sort_keys=True, separators=(",", ":"))
         # P0-8c: dispatch on the entry's DECLARED algorithm. An unknown
@@ -107,11 +129,29 @@ class AuditEntry:
 
 
 class AuditKernel:
-    """Complete audit kernel with hash-chain integrity and query capabilities."""
+    """Audit kernel with hash-chain integrity and query capabilities.
 
-    def __init__(self):
-        self._entries: List[AuditEntry] = []
+    WARNING — VOLATILE / IN-MEMORY ONLY / NON-AUTHORITATIVE (HC-10):
+        Entries live in ``self._entries`` only; there is NO persistence layer, so
+        all entries are lost on restart and the chain is NOT backed by the
+        authoritative AuditStore (src.kernels.audit, HC-01). This kernel is NOT
+        the authoritative audit source. Durable, tamper-evident audit is
+        src.kernels.audit (HC-01), whose runtime integrity is currently
+        UNVERIFIED. Do not treat this kernel's output as audit-grade evidence.
+        The ``dropped_count`` and ``high_water_mark`` counters are telemetry, not
+        evidence.
+    """
+
+    def __init__(self, hwm_path: Optional[str] = None):
+        # D19: bounded ring buffer -> old entries evicted (telemetry, not evidence).
+        self._entries: collections.deque = collections.deque(maxlen=10000)
         self._lock = threading.RLock()
+        self._dropped_count = 0
+        # HWM telemetry file. None => disabled (default for direct construction;
+        # the production singleton may set a real path). Counter-only, never a
+        # trust input.
+        self._hwm_path = hwm_path if hwm_path is not None else os.environ.get("AUDIT_HWM_PATH")
+        self._entries_ever_written = self._load_hwm()
 
     def log(
         self,
@@ -150,9 +190,83 @@ class AuditKernel:
             )
 
             entry.set_hash()
+
+            # D19: ring eviction -> if full, the append drops the oldest entry.
+            # Count it as dropped (telemetry) so loss is observable.
+            if len(self._entries) == self._entries.maxlen:
+                self._dropped_count += 1
             self._entries.append(entry)
 
+            self._entries_ever_written += 1
+            if self._hwm_path is not None:
+                self._save_hwm()
+
             return entry
+
+    # ------------------------------------------------------------------
+    # D19: high-water-mark (HWM) telemetry (counter-only, fail-open).
+    # ------------------------------------------------------------------
+    def _load_hwm(self) -> int:
+        """Load the monotonic ``entries_ever_written`` counter from disk.
+
+        Fail-open: ANY error returns 0. The HWM file holds ONLY a counter and
+        must NEVER influence a trust decision.
+        """
+        if not self._hwm_path:
+            return 0
+        try:
+            with open(self._hwm_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                val = data.get("entries_ever_written")
+                if isinstance(val, int) and val >= 0:
+                    return val
+            logger.warning(
+                "HWM file %s has unexpected content; starting counter at 0",
+                self._hwm_path,
+            )
+            return 0
+        except FileNotFoundError:
+            return 0
+        except Exception as exc:  # noqa: BLE001 - fail-open on any HWM error
+            logger.warning("Failed to load HWM file %s: %s", self._hwm_path, exc)
+            return 0
+
+    def _save_hwm(self) -> None:
+        """Persist ``entries_ever_written`` (telemetry only).
+
+        Called under ``self._lock``. Fail-open: ANY error is swallowed. The file
+        holds ONLY a counter and is NOT audit evidence.
+        """
+        if not self._hwm_path:
+            return
+        with self._lock:
+            try:
+                payload = {"entries_ever_written": self._entries_ever_written}
+                tmp = f"{self._hwm_path}.tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+                try:
+                    os.chmod(tmp, 0o600)
+                except OSError:
+                    pass
+                os.replace(tmp, self._hwm_path)
+                try:
+                    os.chmod(self._hwm_path, 0o600)
+                except OSError:
+                    pass
+            except Exception as exc:  # noqa: BLE001 - fail-open on any HWM error
+                logger.warning("Failed to save HWM file %s: %s", self._hwm_path, exc)
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of entries evicted from the ring buffer (telemetry, not evidence)."""
+        return self._dropped_count
+
+    @property
+    def high_water_mark(self) -> int:
+        """Monotonic count of entries ever written (survives restart via HWM file)."""
+        return self._entries_ever_written
 
     def verify_integrity(self) -> Tuple[bool, Optional[str]]:
         """Verify complete hash chain integrity.
@@ -284,10 +398,25 @@ _global_audit_kernel: Optional[AuditKernel] = None
 
 
 def get_audit_kernel() -> AuditKernel:
-    """Get or create the global audit kernel instance."""
+    """Get or create the global audit kernel instance.
+
+    The production singleton is the ONLY construction that writes the HWM
+    telemetry file: it resolves a real path from ``AUDIT_KERNEL_HWM_PATH`` or a
+    default under the ``~/.liuhao`` data dir (distinct from the crypto logger's
+    ``audit_hwm.json`` to avoid counter collision). Direct constructions keep
+    ``hwm_path=None`` (file writing disabled) unless they opt in explicitly.
+    """
     global _global_audit_kernel
     if _global_audit_kernel is None:
-        _global_audit_kernel = AuditKernel()
+        hwm_path = os.environ.get("AUDIT_KERNEL_HWM_PATH")
+        if not hwm_path:
+            data_dir = os.path.join(os.path.expanduser("~"), ".liuhao")
+            try:
+                os.makedirs(data_dir, exist_ok=True)
+            except OSError:
+                data_dir = None
+            hwm_path = os.path.join(data_dir, "audit_kernel_hwm.json") if data_dir else None
+        _global_audit_kernel = AuditKernel(hwm_path=hwm_path)
     return _global_audit_kernel
 
 
