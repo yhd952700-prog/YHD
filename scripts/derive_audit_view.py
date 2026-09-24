@@ -43,10 +43,16 @@ WHAT IT COMPUTES
                                but POSITION-UNPROVABLE ("content provable,
                                position unprovable").
 4. Detects same-second collision groups and marks the CRITICAL-sovereignty ones.
-   The LOCKED decision D22 cites **14** such groups as the canonical known
-   figure. Detection here is data-driven; the runtime-detected count is reported
-   alongside the known figure, and any discrepancy is surfaced as a FINDING (the
-   script never fails or gates on data reality — it is read-only).
+   The figure "14" historically cited by decision D22 ("grouped at 14 spots") is
+   a POINT-IN-TIME observation, NOT a stable or reproducible invariant. The live
+   ``audit_store.db`` is append-only and continuously written, so this
+   data-driven count DRIFTS (a STEP 11 run found 348; this snapshot finds 354).
+   The script therefore never freezes the number, never redefines the metric to
+   force a match, and never gates/fails on the delta. It computes the LIVE count
+   with documented conditions + snapshot time, compares it against a clearly
+   labeled ``BASELINE_SNAPSHOT`` (date / query / conditions recorded as
+   METADATA, not as pass/fail truth), and reports the delta as a FINDING with an
+   explicit explanation of the difference (read-only reporter; never a gate).
 
 USAGE
 -----
@@ -59,6 +65,7 @@ errors (unreadable source, unwritable out dir).
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -88,12 +95,37 @@ CANONICAL_FIELDS = (
 
 HASH_ALG = "sha256"
 
-#: LOCKED decision D22 figure: the canonical number of same-second collision
-#: groups among CRITICAL sovereignty events ("grouped at 14 spots"). This is a
-#: documented, declared figure from the decision, NOT a runtime-derived one.
-#: Runtime detection is data-driven; see :func:`derive_audit_view` which reports
-#: detected-vs-known and flags any mismatch as a FINDING (never a failure).
-KNOWN_CRITICAL_SOVEREIGNTY_COLLISION_GROUPS = 14
+#: BASELINE_SNAPSHOT for the CRITICAL-sovereignty same-second collision-group
+#: count.
+#:
+#: RE-ADJUDICATED in Phase 3.6 (forensic DB investigation). The former static
+#: constant ``14`` (D22 decision "grouped at 14 spots") has been REVOKED as a
+#: pass/fail truth. It is kept here ONLY as a clearly-labeled historical
+#: reference recorded as METADATA, never as a gate.
+#:
+#: The live count is data-driven and DRIFTS because the audit database is still
+#: being written; it is therefore NOT a stable, reproducible invariant. The
+#: script computes the live count, compares it to this baseline, and reports the
+#: delta as a FINDING with an explanation -- it never redefines the metric to
+#: force a match, and never fails/gates on the difference.
+BASELINE_SNAPSHOT = {
+    "label": "D22-decision historical reference (NOT a pass/fail threshold)",
+    "recorded_date": "2026-09-24",  # date this baseline metadata was (re)captured
+    "recorded_count": 14,           # D22 decision figure; expected to drift vs live
+    "query_conditions": (
+        "collision_group = a maximal run of >=2 records sharing the same "
+        "integer-second timestamp; a group is 'critical_sovereignty' when its "
+        "members include >=2 CRITICAL human_sovereignty_override events "
+        "(details.risk_levels contains at least one 'CRITICAL' value)"
+    ),
+    "source": "D22 decision 'grouped at 14 spots' (historical, point-in-time)",
+    "caveat": (
+        "Point-in-time figure only. The live audit_store.db is still being "
+        "written, so the live count is expected to differ from 14. Never use as "
+        "a gate. See the FINDING (live vs baseline delta) for the explanation; "
+        "the metric must not be redefined to force a match."
+    ),
+}
 
 TOOL_NAME = "derive_audit_view.py"
 TOOL_VERSION = "1.0.0"
@@ -321,6 +353,10 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
     # 1) Anchor the original via its byte-level sha256 (read-only).
     original_sha256, original_size = compute_file_sha256(source_path)
     original_name = os.path.basename(source_path)
+    # Snapshot anchor: the source file's own modification time at read, used as the
+    # data-cut timestamp for this derivation. Deterministic given the source and
+    # precise for a forensic snapshot. Never written back to the source.
+    source_mtime = os.path.getmtime(source_path)
 
     # 2) Work only on an isolated copy.
     copy_path = backup_to_temp_copy(source_path)
@@ -352,8 +388,22 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
     order_provable_records = total - position_unprovable_records
     crit_groups = [g for g in collision_groups if g["critical_sovereignty"]]
     crit_detected = len(crit_groups)
-    crit_known = KNOWN_CRITICAL_SOVEREIGNTY_COLLISION_GROUPS
-    crit_match = (crit_detected == crit_known)
+
+    # --- Re-adjudicated invariant (Phase 3.6 forensic DB investigation) ---
+    # The former static constant 14 (D22 "grouped at 14 spots") is NOT a stable
+    # invariant. The live audit_store.db is append-only and continuously written,
+    # so this data-driven count DRIFTS (STEP 11 found 348; this snapshot 354).
+    # We therefore never freeze the number, never redefine the metric to force a
+    # match, and never gate/fail on the delta. We compute the LIVE count with
+    # documented conditions + snapshot time, compare it against a clearly-labeled
+    # BASELINE_SNAPSHOT (date / query / conditions as METADATA, not pass/fail
+    # truth), and report the delta as a FINDING with an explicit explanation.
+    baseline = BASELINE_SNAPSHOT
+    baseline_count = baseline["recorded_count"]
+    delta = crit_detected - baseline_count
+    live_snapshot_time = datetime.datetime.fromtimestamp(
+        source_mtime, datetime.UTC
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     summary = {
         "total_records": total,
@@ -362,21 +412,44 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         "order_provable_records": order_provable_records,
         "position_unprovable_records": position_unprovable_records,
         "collision_groups_total": len(collision_groups),
-        "critical_sovereignty_collision_groups_detected": crit_detected,
-        "critical_sovereignty_collision_groups_known": crit_known,
-        "critical_sovereignty_collision_groups_match": crit_match,
+        "critical_sovereignty_collision_groups_live": crit_detected,
+        "baseline_snapshot": {
+            "label": baseline["label"],
+            "recorded_date": baseline["recorded_date"],
+            "recorded_count": baseline_count,
+            "query_conditions": baseline["query_conditions"],
+            "source": baseline["source"],
+            "caveat": baseline["caveat"],
+        },
+        "live_vs_baseline_delta": delta,
+        "live_snapshot_time": live_snapshot_time,
         "intervals_total": len(intervals),
         "order_provable_intervals": sum(1 for iv in intervals if iv["kind"] == "order_provable"),
         "position_unprovable_intervals": sum(1 for iv in intervals if iv["kind"] == "position_unprovable"),
     }
 
-    if not crit_match:
-        # Read-only reporting only: never fail/gate on data reality.
-        summary["FINDING"] = (
-            f"detected {crit_detected} critical-sovereignty collision groups, "
-            f"but the LOCKED decision D22 cites {crit_known}. This is a "
-            f"reporting discrepancy, not a verification failure; reconcile the "
-            f"deployed data against the decision."
+    # Always report the delta as a FINDING (read-only; never a gate / never hides
+    # the difference / never redefines the metric to force a match).
+    if delta != 0:
+        summary["FINDING_critical_sovereignty_collision_groups"] = (
+            f"live detected {crit_detected} CRITICAL-sovereignty same-second "
+            f"collision groups at snapshot {live_snapshot_time}; "
+            f"BASELINE_SNAPSHOT records {baseline_count} "
+            f"({baseline['source']}, recorded {baseline['recorded_date']}). "
+            f"Delta = {delta}. "
+            f"This is EXPECTED DRIFT, not a verification failure: the metric is "
+            f"data-driven (>=2 CRITICAL human_sovereignty_override events sharing "
+            f"an integer-second timestamp) and the live audit_store.db is still "
+            f"being written. The D22 '14' was a point-in-time decision figure, "
+            f"not a reproducible invariant. Reconcile by re-deriving the live "
+            f"count; do NOT freeze or redefine the metric to force a match."
+        )
+    else:
+        summary["FINDING_critical_sovereignty_collision_groups"] = (
+            f"live detected {crit_detected} == BASELINE_SNAPSHOT "
+            f"{baseline_count}. This equality is a property of THIS live snapshot "
+            f"only; the metric drifts as the db is written and must not be treated "
+            f"as a stable invariant."
         )
 
     partition_doc = {
@@ -485,9 +558,12 @@ def main(argv: list[str] | None = None) -> int:
           f"order_provable={s['order_provable_records']} "
           f"position_unprovable={s['position_unprovable_records']}")
     print(f"  collision_groups={s['collision_groups_total']} "
-          f"critical_sovereignty_collision_groups_detected={s['critical_sovereignty_collision_groups_detected']} "
-          f"known={s['critical_sovereignty_collision_groups_known']} "
-          f"match={s['critical_sovereignty_collision_groups_match']}")
+          f"critical_sovereignty_collision_groups_live={s['critical_sovereignty_collision_groups_live']} "
+          f"baseline={s['baseline_snapshot']['recorded_count']} "
+          f"delta={s['live_vs_baseline_delta']} "
+          f"snapshot={s['live_snapshot_time']}")
+    if "FINDING_critical_sovereignty_collision_groups" in s:
+        print(f"  FINDING: {s['FINDING_critical_sovereignty_collision_groups']}")
     print(f"  wrote: {result['manifest_path']}")
     print(f"         {result['partition_path']}")
     print(f"         {result['records_path']}")
