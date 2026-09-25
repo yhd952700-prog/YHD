@@ -31,7 +31,12 @@ def make_assistant(name: str = "tool-test", provider=None) -> LiuHaoAssistant:
 # ---------------------------------------------------------------------- #
 # 工具集构建
 # ---------------------------------------------------------------------- #
-def test_make_tools_has_seven_builtins():
+def test_make_tools_builtin_set_is_exact():
+    """内置工具集合是**精确**断言，不是"至少包含"。
+
+    刻意不放松成子集判断：新增工具必须显式更新这里，从而保证每一次扩大"模型可
+    调用的动作面"都是一次有意识的决定 —— 而不是某天悄悄多出来一只手。
+    """
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
     expected = {
         "search_memory",
@@ -41,13 +46,17 @@ def test_make_tools_has_seven_builtins():
         "personal_set_preference",
         "personal_add_fact",
         "personal_set_display_name",
+        # 2026-09-24 新增：受工作区闸门约束的只读文件工具
+        "read_file",
+        "list_files",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    assert len(a._tool_list) == 7
+    # 9 = 原 7 个内置 + read_file / list_files（只读；写入工具要等审批链路接通）
+    assert len(a._tool_list) == 9
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 

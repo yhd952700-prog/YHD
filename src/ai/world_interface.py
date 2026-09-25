@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..kernels.execution import ActionResult
 from .observability import observe as _observe
 from .audit import audited
+from .workspace import resolve_in_workspace
 
 
 @dataclass
@@ -54,14 +55,35 @@ class WorldAdapter(ABC):
 
 
 class FilesystemAdapter(WorldAdapter):
-    """Read/write/list the local filesystem (locally testable)."""
+    """Read/write/list the local filesystem (locally testable).
+
+    ⚠️ 路径约束默认**关闭**（``root=None``）
+    --------------------------------------
+    保持历史行为：既有调用方（``e2e_demo`` / ``hardening`` / ``vhl_benchmark``）
+    各自在 ``WorldInterface`` 的 ``authorize`` 回调里圈地，且那套圈地是
+    **「只约束写、读一律放行」**。因此 ``root=None`` 时 ``read``/``list`` 可及全盘。
+
+    **任何由 LLM / 工具调用驱动的使用都必须显式传 ``root``**：传入后
+    ``read`` / ``list`` / ``write`` 一律先过 :func:`resolve_in_workspace`，
+    越界即拒绝（fail-closed）。工具层（``src/ai/tools.py``）即按此构造；
+    新增调用方时不要依赖默认值，那等于把闸门留空。
+    """
 
     name = "filesystem"
     SUPPORTED_ACTIONS = frozenset({"read", "write", "list"})
 
+    def __init__(self, root: Optional[str] = None) -> None:
+        self.root = root
+
+    def _resolve(self, path: Any) -> str:
+        """收敛入参路径；``root`` 未设时原样返回（历史行为，便于既有测试）。"""
+        if self.root is None:
+            return str(path)
+        return resolve_in_workspace(str(path), self.root)
+
     def observe(self, request: WorldRequest) -> Any:
         action = request.action
-        path = request.params.get("path")
+        path = self._resolve(request.params.get("path"))
         if action == "read":
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -72,7 +94,7 @@ class FilesystemAdapter(WorldAdapter):
     @_observe("filesystem_adapter.execute")
     def execute(self, request: WorldRequest) -> Any:
         action = request.action
-        path = request.params.get("path")
+        path = self._resolve(request.params.get("path"))
         if action == "write":
             content = request.params.get("content", "")
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

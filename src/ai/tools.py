@@ -20,6 +20,8 @@ from .observability import observe
 from .personal_context import get_personal_context
 from .tool_registry import Tool
 from .tools_local import python_compute as _run_python_compute
+from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
+from .workspace import workspace_root
 
 # 宽松解析用：小模型可能输出近似但非法的 JSON（如 ``"args: {...}"`` 缺引号），
 # 用正则兜底提取工具名与参数。
@@ -263,6 +265,88 @@ def make_tools(
             },
             fn=personal_set_display_name,
             risk="LOW",
+        )
+    )
+
+    # ----- 文件访问（受工作区闸门约束；**只读**） -------------------------
+    # 根在**构建时解析一次**并固定：避免多轮对话过程中环境变量被改动，出现
+    # "这一轮能读、下一轮读不了"这种无法复现的行为。适配器必须显式带 root ——
+    # 不传即不设限（见 FilesystemAdapter docstring），那等于把闸门留空。
+    #
+    # 刻意**不提供写入工具**：写入要经过审批链路（policy/approvals）才有意义，
+    # 在那条路打通之前先给写权限，等于让模型在无人过问的情况下改动磁盘。
+    fs_root = workspace_root()
+    fs_world = WorldInterface(adapters=[FilesystemAdapter(root=fs_root)])
+
+    # 单次返回上限：工具输出会整段进上下文，不设限会让一次读文件吃掉整个窗口。
+    read_limit = 20000
+
+    def read_file(path: str = "", **kwargs: Any) -> str:
+        """读取工作区内的一个文本文件（越界路径被拒）。"""
+        target = path or kwargs.get("file") or kwargs.get("filename") or ""
+        if not str(target).strip():
+            return "请提供 path 参数（工作区内的相对路径）。"
+        result = fs_world.observe(
+            WorldRequest(adapter="filesystem", action="read",
+                         params={"path": str(target)})
+        )
+        if result.get("status") != "observed":
+            return f"读取失败：{result.get('error') or result.get('status')}"
+        text = str(result.get("data", ""))
+        if len(text) > read_limit:
+            return f"{text[:read_limit]}\n…（已截断，原文 {len(text)} 字符）"
+        return text
+
+    def list_files(path: str = ".", **kwargs: Any) -> str:
+        """列出工作区内某个目录的条目（越界路径被拒）。"""
+        target = path or kwargs.get("dir") or kwargs.get("directory") or "."
+        result = fs_world.observe(
+            WorldRequest(adapter="filesystem", action="list",
+                         params={"path": str(target)})
+        )
+        if result.get("status") != "observed":
+            return f"列目录失败：{result.get('error') or result.get('status')}"
+        entries = sorted(str(name) for name in result.get("data", []))[:200]
+        return _serialize({
+            "workspace": fs_root,
+            "path": str(target),
+            "entries": entries,
+        })
+
+    tools.append(
+        Tool(
+            tool_id="liuhao.file.read",
+            name="read_file",
+            version="1.0.0",
+            description=(
+                "读取工作区内的文本文件。path 用工作区内的相对路径，"
+                f"工作区根为 {fs_root}；越界路径会被拒绝。"
+            ),
+            capability="file.read",
+            schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            fn=read_file,
+            risk="LOW",
+            permission="workspace.read",
+        )
+    )
+    tools.append(
+        Tool(
+            tool_id="liuhao.file.list",
+            name="list_files",
+            version="1.0.0",
+            description="列出工作区内某个目录的条目（path 用相对路径，默认工作区根）。",
+            capability="file.list",
+            schema={
+                "type": "object",
+                "properties": {"path": {"type": "string", "default": "."}},
+            },
+            fn=list_files,
+            risk="LOW",
+            permission="workspace.read",
         )
     )
 
