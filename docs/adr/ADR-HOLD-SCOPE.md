@@ -100,6 +100,29 @@ before `docker/build-push-action` runs:
 
 ---
 
+### 2.5 HC-01 repair-architecture authorization does NOT lift `HOLD`
+
+On 2026-09-24 the owner issued HD-01…HD-05 authorizing the *architecture* of an HC-01
+repair (full corrective fix + non-destructive migration; Single Writer Service; retain-all
++ NON-AUTHORITATIVE fork tagging; Hybrid TSA). These are **repair-architecture
+authorizations, not a GO authorization**:
+
+* `# HOLD` remains active. `HC-01 = UNVERIFIED` and `GO = BLOCKED` are unchanged.
+* HOLD-ALLOWED during the freeze: forensic investigation, and (only after explicit
+  HD-01 authorization) minimal containment. HOLD-BLOCKED: repair / migration /
+  production deployment / release / promotion.
+* Any repair/migration is permitted **only** once the corresponding Human Decision
+  explicitly authorizes it, and **no repair may bypass `HOLD` or the `GO` gate**
+  (`check_hold_gate.py` / `verify_go_readiness.py` remain enforced in CI).
+* The ten hard prohibitions attached to HD-01…HD-05 — no deletion of original
+  history, no overwriting old hashes, no direct renumbering of historical `seq`, no
+  forcing `UNIQUE(seq)` onto the damaged table, no verifier tampering to fake GREEN,
+  no metric recalibration to hide 284/169, no production deploy under HOLD, no
+  release/promotion, no claiming interface-only TSA/TPM as externally-trusted evidence
+  — are binding and supersede any implementation convenience.
+
+---
+
 ## 3. Consequences
 
 ### Positive
