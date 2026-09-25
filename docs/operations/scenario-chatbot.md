@@ -81,7 +81,7 @@ store.register(knowledge_plugin)
 from src.kernels.audit import AuditStore, AuditEventType, AuditScope, log_event
 from src.observability import Span, ObservabilityStore
 
-# 创建审计事件 - 用户咨询（写入防篡改链）
+# 创建审计事件 - 用户咨询（写入 kernels/audit 审计链；设计为防篡改，但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复+独立验证）
 log_event(
     AuditEventType.ACCESS_CHECK,
     principal_id="gateway",

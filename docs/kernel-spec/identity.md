@@ -24,7 +24,7 @@ Identity Kernel 是 Human-Sovereign 架构的"身份与权限基座"。它负责
 - 创建并唯一标识身份（`create_identity`，`identity/__init__.py:322`）。
 - 以 L0–L7 作用域约束权限授予与检查（`grant_permission:438`、`check_permission:538`）。
 - 仅持久化人类身份，保证主权通道重启后仍可用（`create_human_identity:374`、`_persist_human_identity:284`）。
-- 提供人类身份的权限审计轨迹（经 _persistence 持久化、防篡改；AuditEntry:127、audit_trail:515）。注意：非人类身份的 audit_trail 为内存态，进程重启即失，不视为完整、防篡改轨迹。
+- 提供人类身份的权限审计轨迹（进程内 `AuditEntry` 列表，位于内存、**不**经 `_persistence` 持久化、**不**具防篡改/哈希链；权威审计轨迹以 `kernels/audit`（`src.kernels.audit.log_event`，HC-01）为准，其运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复+独立验证；见 `identity/__init__.py` `AuditEntry`:372、`audit_trail`:1111）。注意：人类与非人类身份的 identity-kernel 自持 audit_trail 均为内存态，进程重启即失，不视为完整、防篡改轨迹。
 - 以正向白名单判定"已验证人类"，支撑 Policy / Security 的主权覆盖（`is_human_identity:69`）。
 
 **当前实现与目标的差距（现状，基于代码实测，非引用外部审计文档）**：

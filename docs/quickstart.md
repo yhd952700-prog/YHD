@@ -25,7 +25,7 @@ pip install -r requirements.txt
 # 4. 验证安装
 # 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉：284 处断链 / 169 行重复 seq，待 F1–F6 修复 + 独立验证后方可断言为完整证据源）。
 # 旧路径 src.audit 仍 import 可用，但已弃用、不具防篡改链。
-python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel (authoritative, tamper-evident) OK')"
+python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel importable (SQLite + hash chain, designed tamper-evident; runtime integrity currently UNVERIFIED — forked chain, pending F1-F6 + independent verification)')"
 python -c "from src.audit import AuditEvent; print('Audit legacy compat layer importable (deprecated: not tamper-evident)')"
 python -c "from src.observability import Span; print('Observability module OK')"
 python -c "from src.performance import create_lru_cache; print('Performance module OK')"

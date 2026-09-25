@@ -224,7 +224,7 @@ Trigger → LangGraph StateGraph (FRIDAY) →
 | Security | TLS 1.3 enforced | End-to-end | Cert verification |
 | Security | Vault keys | Never in DB | Vault audit |
 | Audit | Operation traceability | 100% | Audit log coverage |
-| Audit | Tamper-proof | Hash chain | Chain verification |
+| Audit | Tamper-evident (target; runtime integrity UNVERIFIED — forked chain) | Hash chain | Chain verification (pending F1–F6 + independent verification) |
 | Observability | Trace completeness | Full chain | OTel span coverage |
 | Observability | Metrics completeness | RED + USE | Prometheus rules |
 | Disaster Recovery | RPO | < 5min | Backup verification |
