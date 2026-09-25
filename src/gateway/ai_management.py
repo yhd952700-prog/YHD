@@ -19,7 +19,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/v1", tags=["ai-management"])
 class GoalCreateRequest(BaseModel):
     """创建+执行 Goal 的请求体。"""
     natural_language: str = Field(..., min_length=1, max_length=2000,
-                                   description="自然语言目标描述")
+                                 description="自然语言目标描述")
     scope: str = Field("L1", description="执行范围 L0-L7")
     plan_mode: str = Field("auto", description="计划模式: auto/manual")
     verification_criteria: Optional[Dict[str, Any]] = Field(

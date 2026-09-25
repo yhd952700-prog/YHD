@@ -869,7 +869,7 @@ def kernel_action(
                     )
                 except PolicyDeniedError:
                     raise
-                except Exception as exc:
+                except Exception:
                     logger.error(
                         "AUDIT EVIDENCE UNAVAILABLE for mandatory-evidence "
                         "action=%s risk=%s correlation_id=%s -- fail-closed",
