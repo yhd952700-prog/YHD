@@ -84,7 +84,9 @@ def _dotted(node: ast.AST) -> str:
     return ""
 
 
-def _is_nonzero_int(node: ast.AST | None) -> bool:
+def _is_nonzero_int(node: ast.AST | None, constants: dict[str, int] | None = None) -> bool:
+    if isinstance(node, ast.Name) and constants and node.id in constants:
+        return constants[node.id] != 0
     if not isinstance(node, ast.Constant):
         return False
     value = node.value
@@ -93,20 +95,46 @@ def _is_nonzero_int(node: ast.AST | None) -> bool:
     return value != 0
 
 
-def _argument_can_be_nonzero(node: ast.AST | None) -> bool:
-    """True for ``1``, ``1 if bad else 0`` and ``0 if ok else 1``."""
+def _module_constants(tree: ast.AST) -> dict[str, int]:
+    """Module-level ``NAME = <int literal>`` bindings (``EXIT_FAIL = 1`` and friends).
+
+    Needed because a gate that ends with ``return EXIT_FAIL`` is just as able to
+    fail as one that ends with ``return 1`` -- a checker that only understood
+    literals reported the GO gate as unable to fail, which is both wrong and
+    corrosive: a meta-guard that cries wolf gets switched off.
+    """
+    out: dict[str, int] = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            value = node.value
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, int)
+                and not isinstance(value.value, bool)
+            ):
+                out[target.id] = value.value
+    return out
+
+
+def _argument_can_be_nonzero(node: ast.AST | None, constants: dict[str, int] | None = None) -> bool:
+    """True for ``1``, ``EXIT_FAIL``, ``1 if bad else 0`` and ``0 if ok else 1``."""
     if node is None:
         return False
-    if _is_nonzero_int(node):
+    if _is_nonzero_int(node, constants):
         return True
     if isinstance(node, ast.IfExp):
-        return _argument_can_be_nonzero(node.body) or _argument_can_be_nonzero(node.orelse)
+        return (
+            _argument_can_be_nonzero(node.body, constants)
+            or _argument_can_be_nonzero(node.orelse, constants)
+        )
     return False
 
 
-def _function_returns_nonzero(func: ast.AST) -> bool:
+def _function_returns_nonzero(func: ast.AST, constants: dict[str, int] | None = None) -> bool:
     return any(
-        isinstance(node, ast.Return) and _is_nonzero_int(node.value)
+        isinstance(node, ast.Return) and _is_nonzero_int(node.value, constants)
         for node in ast.walk(func)
     )
 
@@ -125,23 +153,24 @@ def _can_exit_nonzero(path: pathlib.Path) -> bool:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    constants = _module_constants(tree)
 
     def call_target_returns_nonzero(node: ast.AST | None) -> bool:
         if not isinstance(node, ast.Call):
             return False
         target = functions.get(_dotted(node.func))
-        return target is not None and _function_returns_nonzero(target)
+        return target is not None and _function_returns_nonzero(target, constants)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _dotted(node.func) in _EXIT_CALLS:
             argument = node.args[0] if node.args else None
-            if _argument_can_be_nonzero(argument) or call_target_returns_nonzero(argument):
+            if _argument_can_be_nonzero(argument, constants) or call_target_returns_nonzero(argument):
                 return True
         elif isinstance(node, ast.Raise) and node.exc is not None:
             exc = node.exc
             if isinstance(exc, ast.Call) and _dotted(exc.func) in _SYSTEM_EXIT_CALLS:
                 argument = exc.args[0] if exc.args else None
-                if _argument_can_be_nonzero(argument) or call_target_returns_nonzero(argument):
+                if _argument_can_be_nonzero(argument, constants) or call_target_returns_nonzero(argument):
                     return True
             elif isinstance(exc, ast.Call):
                 return True  # raising any other exception aborts with a traceback

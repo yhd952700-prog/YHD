@@ -57,6 +57,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# A gate that only imports when some other process already fixed sys.path is a
+# gate that works on one machine and mysteriously cannot start on another (three
+# of this repo's verify_* scripts had exactly that defect). Bootstrap explicitly
+# so `python scripts/verify_go_readiness.py` resolves `src...` by itself.
+_REPO_ROOT_FOR_PATH = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT_FOR_PATH) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT_FOR_PATH))
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX_SCRIPT = REPO_ROOT / "scripts" / "verify_p08_final_status_matrix.py"
 ENV_VAR = "LIUHAO_KERNEL_POLICY_ENFORCE"

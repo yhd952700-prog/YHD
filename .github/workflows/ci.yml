@@ -161,11 +161,11 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # All fourteen `scripts/verify_*.py` are wired somewhere: thirteen run here and
-  # `verify_metrics_persist.py` runs in verify_metrics_persist.yml.
-  # (Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 14; the thirteen
-  # below plus the one in the other workflow. If you add a script, update this
-  # line -- a guard nobody runs is the defect this job exists to catch.)
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 25 (2026-09-25).
+  # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
+  # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
+  # script without wiring it turns CI red, which is the point: a guard nobody runs
+  # protects nothing. Keep the count honest when you add one.
   guardrails:
     name: Guardrails (Policy C-1..C-6, identity root, ORM, persistence)
     runs-on: ubuntu-latest
@@ -207,6 +207,27 @@ jobs:
       # site is written instead of surfacing as a production incident.
       - name: Verify every armed action is inert on production paths (C-6)
         run: python scripts/verify_armed_actions_are_inert.py
+
+      # A4: decision / enforcement / evidence must be one event with one
+      # correlation_id. Wired deliberately even though it currently exits 2:
+      # exit 2 means "ALLOW+DENY closure proven, one probe UNVERIFIED (known
+      # CRIT-1C gap: a CRITICAL action still runs when the audit write fails)".
+      # An unwired guard protects nothing, and hiding a known gap behind an
+      # unwired script is worse than showing it. So: 0 or 2 passes, 1 (a real
+      # closure regression) fails. When CRIT-1C is fixed, tighten this to
+      # require 0.
+      - name: Verify A4 same-decision-point closure
+        run: |
+          set +e
+          python scripts/verify_same_decision_point_closure.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; then
+            echo "A4 closure: no regression (exit $code; 2 = known UNVERIFIED gap, tracked)"
+            exit 0
+          fi
+          echo "::error ::A4 closure gate failed (exit $code)"
+          exit 1
 
       - name: Verify AI-layer audit delegation (probe self-validation)
         run: python scripts/verify_ai_layer_audit.py
