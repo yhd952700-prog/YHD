@@ -9,7 +9,7 @@
 
 ## 1. 定义
 
-Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核**，提供基于 SHA256 哈希链的不可变审计日志（SQLite 后端），支持 `correlation_id` 关联查询、完整性校验与完整事件生命周期管理。它依据 Definition Lock §113，是系统合规与可追溯性的最终事实来源（sink），仅依赖标准库（`json/hashlib/sqlite3`），被 `_crosscutting` 织入层懒导入以记录全部 kernel action 判决（`src/kernels/audit/__init__.py:104`）。
+Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核（设计为防篡改；运行时链完整性当前 UNVERIFIED，链存在分叉，待 F1–F6 修复+独立验证）**，提供基于 SHA256 哈希链的不可变审计日志（SQLite 后端），支持 `correlation_id` 关联查询、完整性校验与完整事件生命周期管理。它依据 Definition Lock §113，是系统合规与可追溯性的设计目标事实来源（sink；当前因链分叉，运行时完整性 UNVERIFIED，见 GOVERNANCE.md §7），仅依赖标准库（`json/hashlib/sqlite3`），被 `_crosscutting` 织入层懒导入以记录全部 kernel action 判决（`src/kernels/audit/__init__.py:104`）。
 
 ## 2. 目标（现状可实现的能力）
 

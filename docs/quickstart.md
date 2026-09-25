@@ -23,7 +23,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # 4. 验证安装
-# 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，防篡改，是真实数据源）。
+# 优先验证权威审计链 src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉：284 处断链 / 169 行重复 seq，待 F1–F6 修复 + 独立验证后方可断言为完整证据源）。
 # 旧路径 src.audit 仍 import 可用，但已弃用、不具防篡改链。
 python -c "from src.kernels.audit import AuditStore, verify_audit_integrity; print('Audit kernel (authoritative, tamper-evident) OK')"
 python -c "from src.audit import AuditEvent; print('Audit legacy compat layer importable (deprecated: not tamper-evident)')"
@@ -36,11 +36,11 @@ python -c "from src.plugins.marketplace import Plugin, get_marketplace_store; pr
 ### 基本使用
 
 ```python
-# 权威审计实现：src.kernels.audit（SQLite + 哈希链，防篡改，是真实证据源）。
+# 权威审计实现：src.kernels.audit（SQLite + 哈希链，设计为防篡改；但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复 + 独立验证后方可断言为完整证据源）。
 # 旧路径 src.audit 仍可 import，但其事件写入 JSON 文件、不具防篡改链，请勿用于真实审计。
 from src.kernels.audit import AuditStore, AuditEventType, AuditScope
 
-# 创建审计事件（示例写入临时库；生产用默认 AuditStore() 落到 audit_store.db 防篡改链）
+# 创建审计事件（示例写入临时库；生产用默认 AuditStore() 落到 audit_store.db；注意该链当前运行时完整性 UNVERIFIED，存在分叉，待修复）
 store = AuditStore(db_path="examples/audit_example.db")
 store.log_event(AuditEventType.ACCESS_ALLOWED, "user1", AuditScope.L1, "allow",
                 details={"note": "login ok"})
@@ -213,7 +213,7 @@ LiuHao-AI-OS/
 
 | 问题 | 解决方案 |
 |------|----------|
-| 审计事件未持久化 | 权威审计落在 `audit_store.db`（SQLite 防篡改链）；`src.audit` 遗留层写入 `data/audit/events.json` 且不具防篡改链，请勿用于真实审计 |
+| 审计事件未持久化 | 权威审计落在 `audit_store.db`（SQLite 哈希链，设计为防篡改；但当前运行时完整性 UNVERIFIED，存在分叉，待修复）；`src.audit` 遗留层写入 `data/audit/events.json` 且不具防篡改链，请勿用于真实审计 |
 | 插件注册失败 | 检查插件元数据是否完整，版本是否冲突 |
 | 沙箱超时 | 调整 `ResourceLimits.execution_time_limit` 或优化代码 |
 | 缓存命中率低 | 调整 `max_size` 或�查 key 是否一致 |

@@ -104,7 +104,7 @@
 | Security | TLS 1.3 enforced | End-to-end | MUST |
 | Security | Vault keys | Never in DB | MUST |
 | Audit | Operation traceability | 100% | MUST |
-| Audit | Tamper-proof (durable: authoritative chain HC-01; in-memory crypto-audit HC-09 is NON-AUTHORITATIVE) | Hash chain | MUST |
+| Audit | Tamper-evident (target; HC-01 runtime integrity currently UNVERIFIED — forked chain, pending F1–F6 + independent verification; in-memory crypto-audit HC-09 is NON-AUTHORITATIVE) | Hash chain | MUST |
 | Observability | Trace completeness | Full chain | MUST |
 | Observability | Metrics completeness | RED + USE | MUST |
 | Disaster Recovery | RPO | < 5min | MUST |

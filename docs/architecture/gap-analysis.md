@@ -100,7 +100,7 @@ pytest tests/test_orm_storage.py  # 在 PG 上
 ### Definition Lock 要求
 - ✅ RBAC 角色 + 权限
 - ✅ ABAC 策略
-- ✅ Audit 不可篡改
+- ⚠️ Audit：哈希链**设计为**防篡改，但运行时链完整性当前为 **UNVERIFIED**（链存在分叉：284 处断链 / 169 行重复 seq，待 F1–F6 修复+独立验证）。原「不可篡改」结论仅指设计属性，不反映当前已验证状态。
 - ✅ Vault Transit 加密
 
 ### 当前实现

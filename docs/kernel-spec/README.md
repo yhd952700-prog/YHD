@@ -12,7 +12,7 @@
 
 | 文档 | 内核 | 真实实现类（路径:行号）¹ | 进程级入口 | 自动驱动到 READY |
 |------|------|------------------------|------------|------------------|
-| [audit.md](./audit.md) | 防篡改审计（哈希链） | `src/kernels/audit/__init__.py:104` `AuditStore` | `get_audit_store()` | 是（单例） |
+| [audit.md](./audit.md) | 审计（哈希链，设计为防篡改；运行时完整性当前 UNVERIFIED） | `src/kernels/audit/__init__.py:104` `AuditStore` | `get_audit_store()` | 是（单例） |
 | [capability.md](./capability.md) | 能力注册中心 | `src/kernels/capability/__init__.py:105` `CapabilityRegistry` | `get_capability_registry()` | 是（单例） |
 | [context.md](./context.md) | 上下文压缩 | `src/kernels/context/__init__.py:71` `ContextKernel` | `create_context_kernel()` **工厂** | **否** |
 | [evaluation.md](./evaluation.md) | 结果评估与反馈闭环 | `src/kernels/evaluation/__init__.py:141` `Evaluator` | `get_evaluator()` | 是（单例） |

@@ -39,7 +39,7 @@
 | 10 | **trust** | `src/kernels/trust/` | 629 | §112 | 信任评分、传播、衰减、撤销 |
 | 11 | **evaluation** | `src/kernels/evaluation/` | 595 | §112 | 结果评估、反馈、重规划触发、升级 |
 | 12 | **security** | `src/kernels/security/` | 450 | **§112** | RBAC+ABAC、Vault Transit 加密、审计 |
-| 13 | **audit** | `src/kernels/audit/` | 423 | **§113** | 防篡改审计链（hash-chain）、关联查询 |
+| 13 | **audit** | `src/kernels/audit/` | 423 | **§113** | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
 | 14 | **plugin** | `src/kernels/plugin/` | 447 | **§115** | 插件注册、热加载、版本兼容、作用域激活 |
 
 **合计 6,391 行。**
