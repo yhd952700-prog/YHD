@@ -49,9 +49,23 @@ _ENTRY = """  - id: {eid}
 {extra}"""
 
 
-def run_validator() -> tuple[int, str]:
+def run_validator(cap_dir: Path | None = None) -> tuple[int, str]:
+    """Run the validator; ``cap_dir`` points it at a COPY of the corpus.
+
+    Why a copy at all: injecting a violation used to mean writing
+    ``_zz_probe_invalid.yaml`` into the tracked ``capabilities/`` directory and
+    deleting it in a ``finally``. When cleanup does not happen (a killed run, a
+    locked file, an interrupted session), that probe STAYS: the corpus count
+    test then sees 9 files instead of 8, the validator goes red, and unrelated
+    later tests inherit the damage. It also risks being committed.
+    Injecting into a copy under ``tmp_path`` makes the whole failure mode
+    impossible, and it is why the validator accepts ``--capabilities-dir``.
+    """
+    cmd = [sys.executable, str(VALIDATOR)]
+    if cap_dir is not None:
+        cmd += ["--capabilities-dir", str(cap_dir)]
     proc = subprocess.run(
-        [sys.executable, str(VALIDATOR)],
+        cmd,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
@@ -59,6 +73,18 @@ def run_validator() -> tuple[int, str]:
         errors="replace",
     )
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+@pytest.fixture
+def corpus_copy(tmp_path: Path) -> Path:
+    """A throwaway copy of the real corpus, so nothing is written to the repo."""
+    target = tmp_path / "capabilities"
+    target.mkdir()
+    real = sorted(CAP_DIR.glob("*.yaml"))
+    assert real, f"真实语料为空：{CAP_DIR}"
+    for path in real:
+        (target / path.name).write_bytes(path.read_bytes())
+    return target
 
 
 def test_validator_script_is_where_schema_says_it_is():
@@ -121,19 +147,39 @@ def _probe(case: str) -> str:
         ("untracked-evidence", "git 跟踪"),
     ],
 )
-def test_validator_catches_injected_violation(case, expected_fragment):
+def test_validator_catches_injected_violation(case, expected_fragment, corpus_copy):
     """门禁必须有牙：注入一类违规就必须变红。"""
-    probe = CAP_DIR / PROBE_NAME
-    try:
-        probe.write_text("entries:\n" + _probe(case), encoding="utf-8")
-        code, out = run_validator()
-        assert code == 1, f"注入「{case}」后校验器仍通过 —— 门禁是假的：\n{out}"
-        assert expected_fragment in out, f"注入「{case}」未被识别，输出里没有 {expected_fragment!r}：\n{out}"
-    finally:
-        probe.unlink(missing_ok=True)
-    # 清理后必须立刻恢复通过，证明失败确实来自注入
-    code, out = run_validator()
+    # Injected into the COPY, never into the tracked corpus.
+    (corpus_copy / PROBE_NAME).write_text(
+        "entries:\n" + _probe(case), encoding="utf-8"
+    )
+    code, out = run_validator(corpus_copy)
+    assert code == 1, f"注入「{case}」后校验器仍通过 —— 门禁是假的：\n{out}"
+    assert expected_fragment in out, (
+        f"注入「{case}」未被识别，输出里没有 {expected_fragment!r}：\n{out}"
+    )
+
+    # 拿掉注入必须立刻恢复通过，证明失败确实来自注入——这里同样只动副本。
+    (corpus_copy / PROBE_NAME).unlink()
+    code, out = run_validator(corpus_copy)
     assert code == 0, f"探针删除后仍未恢复通过：\n{out}"
+
+
+def test_injection_never_touches_the_tracked_corpus(corpus_copy):
+    """回归锁：探针必须只落在副本里。
+
+    这条失败过：全量跑时探针残留在 `capabilities/` 下，于是语料计数从 8 个文件
+    变成 9 个，连带把后面一批不相关的测试打成红的。副本里注入之后，这类
+    「测试污染仓库」再无可能。
+    """
+    (corpus_copy / PROBE_NAME).write_text(
+        "entries:\n" + _probe("cliche"), encoding="utf-8"
+    )
+    run_validator(corpus_copy)
+
+    assert not (CAP_DIR / PROBE_NAME).exists(), (
+        f"探针出现在被 git 跟踪的语料目录里：{CAP_DIR / PROBE_NAME}"
+    )
 
 
 def test_readme_declared_corpus_size_matches_actual():

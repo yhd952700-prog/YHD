@@ -38,6 +38,8 @@
 
 用法：
     .venv\\Scripts\\python.exe oss-ecosystem/pipeline/validate_entries.py
+    .venv\\Scripts\\python.exe oss-ecosystem/pipeline/validate_entries.py \
+        --capabilities-dir <语料副本目录>     # 校验副本，不动被 git 跟踪的语料.py
 
 退出码：0 = 无硬失败（警告仍可能打印）；1 = 存在契约违规。
 """
@@ -145,15 +147,23 @@ def _evidence_source_resolves(token: str, tracked: set[str]) -> bool:
     return any(path == token or path.endswith("/" + token) for path in tracked)
 
 
-def collect_entries() -> dict[str, list[dict]]:
+def collect_entries(cap_dir: Path = None) -> dict[str, list[dict]]:
+    """Read `*.yaml` from ``cap_dir`` (defaults to the real corpus directory).
+
+    The directory is a parameter because a gate that can only ever be pointed
+    at the live tree forces its own tests to write probe files INTO that tree --
+    and a probe left behind by a failing run then breaks every test that counts
+    the corpus. Default keeps every existing caller (CI, docs) unchanged.
+    """
     out: dict[str, list[dict]] = {}
-    for path in sorted(CAP_DIR.glob("*.yaml")):
+    target = Path(cap_dir) if cap_dir is not None else CAP_DIR
+    for path in sorted(target.glob("*.yaml")):
         entries = _load_yaml(path).get("entries")
         out[path.name] = entries if isinstance(entries, list) else []
     return out
 
 
-def main() -> int:
+def main(cap_dir: Path = None) -> int:
     for path in (SCHEMA, SOURCES, SPDX_LIST):
         if not path.exists():
             print(f"[FAIL] 缺少判据文件 {path}")
@@ -171,7 +181,7 @@ def main() -> int:
         print(f"[FAIL] {SOURCES} 没有 sources，无法判定")
         return 1
 
-    files = collect_entries()
+    files = collect_entries(cap_dir)
     if not any(files.values()):
         print("[FAIL] capabilities/ 下没有任何记录")
         return 1
@@ -293,5 +303,20 @@ def main() -> int:
     return 0
 
 
+def _capabilities_dir_from_argv(argv: list[str]) -> Path:
+    """``--capabilities-dir <path>`` for callers that validate a copy.
+
+    Documented deliberately: the point is that a test (or an operator
+    rehearsing a change) can validate a COPY instead of editing the tracked
+    corpus and hoping the cleanup runs.
+    """
+    for i, token in enumerate(argv):
+        if token == "--capabilities-dir" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if token.startswith("--capabilities-dir="):
+            return Path(token.split("=", 1)[1])
+    return CAP_DIR
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(_capabilities_dir_from_argv(sys.argv[1:])))
