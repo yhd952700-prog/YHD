@@ -635,6 +635,11 @@ jobs:
         # are written to $RUNNER_TEMP (never committed) using the public demo
         # secret the audit script expects. The script self-verifies a real login.
         env:
+          # With the fail-closed registry (HC-11 / U6) an unauthenticated row is
+          # refused, so without this key the seeded CEO would be silently
+          # dropped and the real login below would 401. It is a throwaway CI
+          # value: nothing outside this job is protected by it.
+          LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ci-ephemeral-integrity-key
           LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
           LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
         run: |
@@ -648,6 +653,7 @@ jobs:
 
       - name: Start gateway (loopback only — serves built SPA + auth API)
         env:
+          LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ci-ephemeral-integrity-key
           LIUHAO_HUMAN_IDENTITIES_FILE: ${{ runner.temp }}/liuhao/human_identities.json
           LIUHAO_AUTH_SECRETS_FILE: ${{ runner.temp }}/liuhao/ci_auth_secrets.json
           LIUHAO_CONSOLE_DIST: apps/console/console/dist

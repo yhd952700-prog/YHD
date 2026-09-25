@@ -31,6 +31,7 @@ from src.kernels.identity import (
     HUMAN_IDENTITIES_BACKEND_ENV,
     HUMAN_IDENTITIES_DB_ENV,
     HUMAN_IDENTITIES_FILE_ENV,
+    HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
     IdentityManager,
     METADATA_DISPLAY_NAME_KEY,
     is_human_identity,
@@ -39,16 +40,33 @@ from src.kernels.identity._persistence import (
     BACKEND_FILE,
     BACKEND_SQLITE,
     FIELD_DISPLAY_NAME,
+    FIELD_INTEGRITY,
     FIELD_PERMISSIONS,
     FIELD_PRINCIPAL,
     FIELD_REGISTERED_AT,
     FIELD_SOURCE,
     FIELD_SCOPE,
+    FIELD_TRUST_SCORE,
     JsonFileStore,
     SqliteHumanIdentityStore,
+    DEFAULT_MAC_ALG,
+    _decode_permissions,
+    compute_row_tag,
     describe_human_identity_store,
     resolve_human_identity_store,
+    tag_matches,
 )
+
+
+def _tagged(entry: "dict") -> "dict":
+    """Stamp a seed row with the enforced test key so the store admits it.
+
+    Mirrors what a registration tool would write: without a valid
+    ``integrity`` tag the row is refused fail-closed (HC-11 / U6), so seed
+    fixtures that expect admission must carry the tag.
+    """
+    entry[FIELD_INTEGRITY] = compute_row_tag(entry, TEST_INTEGRITY_KEY)
+    return entry
 
 _ENV_VARS = (
     HUMAN_IDENTITIES_BACKEND_ENV,
@@ -62,6 +80,18 @@ def clean_env(monkeypatch):
     """No test inherits an identity configuration from the shell."""
     for name in _ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+# HC-11 / U6: the integrity key is now ENFORCED -- a registry without it refuses
+# every row (fail-closed). These store-layer tests exercise the supported
+# (key-configured) admission path, so they run with a fixed test key set. Tests
+# that must observe the no-key fail-closed behaviour delete it explicitly.
+TEST_INTEGRITY_KEY = "test-integrity-key"
+
+
+@pytest.fixture(autouse=True)
+def enforce_integrity_key(monkeypatch):
+    monkeypatch.setenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, TEST_INTEGRITY_KEY)
 
 
 @pytest.fixture
@@ -152,11 +182,16 @@ class TestJsonFileStore:
         assert store.remove("alice") is True
         assert store.remove("alice") is False
 
-    def test_a_bare_list_is_still_accepted(self, json_path):
-        # Hand-written seed files in the wild use both shapes.
+    def test_a_bare_list_without_a_tag_is_refused(self, json_path):
+        # Hand-written seed files in the wild use both shapes. With the integrity
+        # key enforced (HC-11 / U6) a row carrying no authentication tag cannot be
+        # verified, so it is refused -- the parse still happens, but the row is
+        # not admitted into the sovereign set.
         with open(json_path, "w", encoding="utf-8") as handle:
             json.dump([{FIELD_PRINCIPAL: "alice"}], handle)
-        assert [e[FIELD_PRINCIPAL] for e in JsonFileStore(json_path).load_all()] == ["alice"]
+        store = JsonFileStore(json_path)
+        assert store.load_all() == []
+        assert store.last_load_report["rejected"] == ["alice"]
 
     def test_a_malformed_document_yields_no_humans(self, json_path, caplog):
         with open(json_path, "w", encoding="utf-8") as handle:
@@ -167,6 +202,89 @@ class TestJsonFileStore:
         with open(json_path, "w", encoding="utf-8") as handle:
             handle.write('"just a string"')
         assert JsonFileStore(json_path).load_all() == []
+
+
+class TestFailClosedWithoutIntegrityKey:
+    """HC-11 / U6: a registry with no integrity key refuses every row.
+
+    The previous behaviour (``tag_matches`` returned ``True`` when the key was
+    absent) silently admitted any attacker-writable row into the sovereign set.
+    The contract now is fail-closed: no key -> zero admitted humans, the refused
+    rows reported in ``rejected``. These tests pin that contract directly and
+    make sure the "no key" branch can never drift back to "admit unverified".
+    """
+
+    def test_no_key_configured_refuses_a_tagged_row(self, monkeypatch, json_path):
+        # Delete the key the autouse fixture set -- this test must observe the
+        # un-configured deployment.
+        monkeypatch.delenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, raising=False)
+        # Even a perfectly good, correctly computed tag is refused: without the
+        # key, verification CANNOT be performed, so admission is impossible.
+        alice = _tagged({FIELD_PRINCIPAL: "alice"})
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json.dump([alice], handle)
+        store = JsonFileStore(json_path)
+        assert store.load_all() == []
+        assert store.last_load_report["rejected"] == ["alice"]
+        assert store.last_load_report["integrity_enforced"] is False
+
+    def test_no_key_configured_refuses_an_untagged_row(self, monkeypatch, json_path):
+        monkeypatch.delenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, raising=False)
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json.dump([{FIELD_PRINCIPAL: "alice"}], handle)
+        store = JsonFileStore(json_path)
+        assert store.load_all() == []
+        assert store.last_load_report["rejected"] == ["alice"]
+
+    def test_tag_matches_is_fail_closed_without_key(self):
+        entry = {FIELD_PRINCIPAL: "alice"}
+        # The "no key" branch must refuse regardless of whether a tag is present
+        # (a missing tag, or a perfectly good one), because absence of a key
+        # means absence of the ability to verify -- not "verified".
+        assert tag_matches(entry, "", None) is False
+        assert tag_matches(entry, "", f"{DEFAULT_MAC_ALG}:deadbeef") is False
+
+
+class TestTamperDetection:
+    """HC-11: a row whose authority-bearing fields were changed without a fresh
+    tag must be refused -- this is the tamper-evidence the integrity tag exists
+    for. ``_decode_permissions`` still tolerates comma syntax (covered by
+    ``TestSqliteHumanIdentityStore``); what is no longer tolerated is a change
+    that bypasses the authentication tag.
+    """
+
+    def test_a_permission_edit_without_a_fresh_tag_is_refused(self, sqlite_path):
+        store = SqliteHumanIdentityStore(sqlite_path)
+        store.upsert({FIELD_PRINCIPAL: "alice"})
+        with sqlite3.connect(sqlite_path) as connection:
+            # Hand-edit the permission set but leave the old tag in place.
+            connection.execute(
+                "UPDATE human_identities SET permissions = ? WHERE principal = ?",
+                ('["b"]', "alice"),
+            )
+        # The stale tag no longer authenticates the edited row -> refused.
+        assert store.load_all() == []
+        assert store.last_load_report["rejected"] == ["alice"]
+
+    def test_a_principal_spoof_without_a_fresh_tag_is_refused(self, sqlite_path):
+        store = SqliteHumanIdentityStore(sqlite_path)
+        store.upsert({FIELD_PRINCIPAL: "alice"})
+        with sqlite3.connect(sqlite_path) as connection:
+            # An attacker tries to clone alice's authentic tag onto a new,
+            # attacker-chosen principal. The tag is keyed to the row contents,
+            # so it cannot be reused across a changed principal.
+            connection.execute(
+                "INSERT INTO human_identities "
+                "(principal, display_name, permissions, scope, registered_at, "
+                " source, trust_score, integrity) "
+                "SELECT 'mallory', display_name, permissions, scope, "
+                " registered_at, source, trust_score, integrity "
+                "FROM human_identities WHERE principal = 'alice'",
+            )
+        loaded = {e[FIELD_PRINCIPAL] for e in store.load_all()}
+        # alice authenticates; mallory's copied tag does not -> only alice.
+        assert loaded == {"alice"}
+        assert store.last_load_report["rejected"] == ["mallory"]
 
 
 class TestSqliteHumanIdentityStore:
@@ -241,9 +359,32 @@ class TestSqliteHumanIdentityStore:
         store = SqliteHumanIdentityStore(sqlite_path)
         store.upsert({FIELD_PRINCIPAL: "alice"})
         with sqlite3.connect(sqlite_path) as connection:
+            # A human hand-edits permissions in a DB browser to a
+            # comma-separated string (the documented decode tolerance), then
+            # re-stamps the row so it still authenticates under the enforced
+            # integrity key (HC-11 / U6). A *silent* hand-edit -- one that does
+            # not update the tag -- is now refused (see TestTamperDetection),
+            # which is the whole point of the containment; this test only
+            # preserves the "comma syntax still decodes" coverage.
             connection.execute(
                 "UPDATE human_identities SET permissions = ? WHERE principal = ?",
                 ("a, b", "alice"),
+            )
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT principal, display_name, permissions, scope, trust_score "
+                "FROM human_identities WHERE principal = ?", ("alice",)
+            ).fetchone()
+            entry = {
+                FIELD_PRINCIPAL: row["principal"],
+                FIELD_DISPLAY_NAME: row["display_name"],
+                FIELD_PERMISSIONS: _decode_permissions(row["permissions"]),
+                FIELD_SCOPE: row["scope"],
+                FIELD_TRUST_SCORE: row["trust_score"],
+            }
+            connection.execute(
+                "UPDATE human_identities SET integrity = ? WHERE principal = ?",
+                (compute_row_tag(entry, TEST_INTEGRITY_KEY), "alice"),
             )
         assert store.load_all()[0][FIELD_PERMISSIONS] == ["a", "b"]
 
@@ -263,10 +404,9 @@ class TestIdentityManagerUsesTheStore:
         ] == []
 
     def test_a_json_seed_file_is_loaded(self, monkeypatch, json_path):
+        alice = _tagged({FIELD_PRINCIPAL: "alice", FIELD_DISPLAY_NAME: "Alice"})
         with open(json_path, "w", encoding="utf-8") as handle:
-            json.dump({"humans": [
-                {FIELD_PRINCIPAL: "alice", FIELD_DISPLAY_NAME: "Alice"},
-            ]}, handle)
+            json.dump({"humans": [alice]}, handle)
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, json_path)
 
         identity = IdentityManager().get_identity_by_principal("alice")
@@ -294,10 +434,11 @@ class TestIdentityManagerUsesTheStore:
         ] == []
 
     def test_an_entry_without_a_principal_is_skipped(self, monkeypatch, json_path):
+        alice = _tagged({FIELD_PRINCIPAL: "alice"})
         with open(json_path, "w", encoding="utf-8") as handle:
             json.dump({"humans": [
                 {FIELD_DISPLAY_NAME: "nobody"},
-                {FIELD_PRINCIPAL: "alice"},
+                alice,
             ]}, handle)
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, json_path)
         humans = [
@@ -308,10 +449,9 @@ class TestIdentityManagerUsesTheStore:
         assert humans == ["alice"]
 
     def test_an_out_of_range_scope_falls_back_to_l0(self, monkeypatch, json_path):
+        alice = _tagged({FIELD_PRINCIPAL: "alice", FIELD_SCOPE: "L99"})
         with open(json_path, "w", encoding="utf-8") as handle:
-            json.dump({"humans": [
-                {FIELD_PRINCIPAL: "alice", FIELD_SCOPE: "L99"},
-            ]}, handle)
+            json.dump({"humans": [alice]}, handle)
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, json_path)
         assert is_human_identity(
             IdentityManager().get_identity_by_principal("alice")

@@ -41,6 +41,12 @@ def workspace(cli, monkeypatch, tmp_path):
     """Isolated stores, and a CWD that swallows runtime files (audit store)."""
     monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_FILE", str(tmp_path / "humans.json"))
     monkeypatch.setenv("LIUHAO_AUTH_SECRETS_FILE", str(tmp_path / "secrets.json"))
+    # HC-11 / U6: the registry integrity key is ENFORCED. The registration tool
+    # is the operator's path to a sovereign registry, so it runs with a key set
+    # (a production deployment configures LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY);
+    # without it, rows cannot be authenticated and registration cannot verify
+    # that a fresh kernel admits the principal.
+    monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", "test-integrity-key")
     monkeypatch.delenv("LIUHAO_HUMAN_IDENTITIES_BACKEND", raising=False)
     monkeypatch.delenv("LIUHAO_HUMAN_IDENTITIES_DB", raising=False)
     monkeypatch.delenv(cli.PASSWORD_ENV, raising=False)

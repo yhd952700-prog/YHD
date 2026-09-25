@@ -102,7 +102,14 @@ python scripts/register_human_identity.py ...
 LIUHAO_HUMAN_IDENTITIES_FILE=<path>        # file 后端（默认）
 LIUHAO_HUMAN_IDENTITIES_BACKEND=file|sqlite
 LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
+LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY=<key>  # 行级校验密钥（HMAC-SHA256）
 ```
+
+> **身份表已 fail-closed（2026-09-25 起，HC-11 / U6）**：缺少上面那行 KEY 时校验无法进行，
+> 于是**表中每一行都会被拒绝**，系统承认的人类数为 **0**——不是「降级」，是**无人能登录、
+> 无人能审批**。因此：新部署先设 KEY 再登记；存量升级**必须重新登记每一个人**（旧行无法追溯补验）。
+> 体检用 `python scripts/verify_human_registry_integrity_state.py`，看 `refused_rows`，
+> 不要只看 `integrity_state`。
 
 **内核层策略执法的默认与开关**：
 
@@ -122,6 +129,7 @@ LIUHAO_HUMAN_IDENTITIES_DB=<path>          # sqlite 后端
 | `PORT` | 单端口监听端口 | `8080` |
 | `LIUHAO_CONSOLE_DIST` | 驾驶舱静态产物目录 | 包内 `console/` |
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 身份表文件（file 后端） | — |
+| `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` | 身份表行级校验密钥；**未设 ⇒ 每行被拒 ⇒ 承认的人类数为 0**（见 §4 的 fail-closed 说明） | — |
 | `LIUHAO_KERNEL_POLICY_ENFORCE` | 内核层真拦截层选择 | 空（L1 记录） |
 | `AI_PROVIDER_TYPE` / `*_API_KEY` | LLM provider 与密钥（默认 `mock`） | `mock` |
 | `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256）。**不设则每进程现生成** | 未设（构建器**设计上**会在构建期把密钥写进发布包的 `serve.py`；⚠️ 2026-09-21 实测：磁盘上的当前产物**不含**该变量，见 `LAUNCH-CRITERIA.md` §4 第 12 条） |

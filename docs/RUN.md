@@ -28,10 +28,23 @@
 | `LIUHAO_JWT_SECRET` | JWT 签名密钥（HS256） | **是** | 网关与令牌脚本**必须用同一把**。占位串（`replace-me`/`change-me`/`secret`/`password` 等）会被拒绝，等同没设 |
 | `LIUHAO_HUMAN_IDENTITIES_FILE` | 人类身份登记表路径 | 是* | 默认 `config/human_identities.json`；文件不存在时内核**加载 0 个人类**（无人能审批/登录） |
 | `LIUHAO_AUTH_SECRETS_FILE` | 登录凭据库（PBKDF2 哈希）路径 | 否† | 默认 `config/auth_secrets.json`；仅 `/v1/auth/login` 密码登录需要 |
+| `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` | 身份表行级校验密钥（HMAC‑SHA256） | **是**（只要启用身份登记表） | 见下方「身份表已 fail‑closed」 |
 | `LIUHAO_CONSOLE_DIST` | 构建产物目录 | 否 | 设了则网关同源托管驾驶舱（单端口模式）；开发期用独立 vite，可不设 |
 
 \* 不设置也能启动，但 `/v1/auth/me`、`/v1/chat` 等会 401，且无人能审批。
 † 仅当你走「密码登录」路径时才需要；走 `issue_console_token.py` 令牌路径不需要凭据库。
+
+身份表已 fail-closed（2026-09-25 起，HC-11 / U6）
+================================================
+行校验离不开密钥，所以**没有密钥时每一行都会被拒绝**——结果不是「降级运行」，而是
+**一个被承认的人类都没有：无人能登录、无人能审批**。
+
+- 新部署：先设 `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY`，再用 `scripts/register_human_identity.py`
+  逐人登记（脚本会用这把密钥给每行打标签）。
+- 存量升级：**旧行无法追溯补验**。设好密钥后必须**重新登记每一个人**，否则整表被拒。
+- 体检：`python scripts/verify_human_registry_integrity_state.py`。报告里 `refused_rows`
+  非空 = 有人类被挡在门外；这和「表里本来没人」不是一回事，别因为
+  `integrity_state: not_applicable` 就放行。
 
 生成一把真密钥（**不要**用占位串）：
 

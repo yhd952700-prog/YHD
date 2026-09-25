@@ -116,10 +116,11 @@ FIELD_SOURCE = "source"
 #
 # Containment: an optional per-row authentication tag. When the key below is
 # configured, a row that does not authenticate is **refused** (fail-closed) and
-# the refusal is reported. When it is not configured, legacy behaviour is
-# preserved byte-for-byte and the store reports ``integrity_enforced: False``
-# together with a warning -- so "this registry is not authenticated" is a
-# visible fact rather than a silent default.
+# the refusal is reported. When the key is NOT configured, verification cannot
+# be performed, so the store refuses every row (fail-closed, HC-11 / U6) rather
+# than admitting unverifiable, attacker-writable rows; ``integrity_enforced`` is
+# False and ``last_load_report["rejected"]`` records what was refused. This is the
+# "enforce key" posture: a registry without a key holds no admitted humans.
 #
 # Deliberately NOT provided: a "skip verification" switch. A switch that
 # disables the check would let the check be neutralised by changing one string
@@ -312,6 +313,11 @@ def integrity_enforced() -> bool:
 #: UNVERIFIED, observable, auditable and deployment-gate aware. The previous
 #: warn-only behaviour (missing key -> warning -> system appears fully sovereign)
 #: is forbidden by that decision.
+#:
+#: UPDATED by HC-11 / U6 (2026-09-25): escalated from "report degraded" to
+#: "enforce key" -- with no key configured the store REFUSES every row
+#: (fail-closed) rather than admitting unverified rows. Refused rows surface via
+#: ``last_load_report["rejected"]`` and ``integrity_enforced`` stays False.
 INTEGRITY_STATE_ENFORCED = "enforced"            # key configured -> fail-closed
 INTEGRITY_STATE_DEGRADED = "degraded_unverified"  # registry in use, no key
 INTEGRITY_STATE_NA = "not_applicable"            # no humans to protect
@@ -337,9 +343,9 @@ def compute_row_tag(entry: Dict[str, Any], key: str) -> Optional[str]:
     """``"<alg>:<hexdigest>"`` authenticating the authority-bearing fields.
 
     The algorithm name travels **inside** the tag (PHASE 3.6 / A5), so the record
-    says how to verify itself. ``None`` when no key is configured, which is the
-    signal callers use to skip verification rather than to succeed at it
-    silently.
+    says how to verify itself. ``None`` when no key is configured -- and because
+    verification cannot be performed without the key, callers refuse the row
+    (fail-closed, HC-11 / U6) rather than admitting it unverified.
     """
     if not key:
         return None
@@ -356,7 +362,12 @@ def tag_matches(entry: Dict[str, Any], key: str, tag: Any) -> bool:
     falling back to the default algorithm would make the identifier decorative.
     """
     if not key:
-        return True  # no key configured -> nothing to verify
+        # No key configured -> verification CANNOT be performed, so the row
+        # cannot be confirmed authentic. Fail-closed: refuse. Admitting an
+        # unverifiable (and therefore attacker-writable) row would let it decide
+        # who holds sovereignty. HC-11 / U6: the previous ``return True`` here
+        # was a bypass -- "nothing to verify" is NOT "verified".
+        return False
     if not isinstance(tag, str) or not tag:
         return False
     alg_name, sep, declared = tag.partition(_MAC_ALG_SEPARATOR)
@@ -461,14 +472,16 @@ class JsonFileStore:
                     "skipping non-object entry in %r: %r", self.location, entry,
                 )
                 continue
-            if key and not tag_matches(entry, key, entry.get(FIELD_INTEGRITY)):
+            if not tag_matches(entry, key, entry.get(FIELD_INTEGRITY)):
                 rejected = entry.get(FIELD_PRINCIPAL) or "<no principal>"
                 self.last_load_report["rejected"].append(rejected)
                 logger.error(
                     "REFUSING registry row %r in %r: the row does not "
                     "authenticate against %s (missing or mismatched %r tag). A "
                     "row that cannot be authenticated cannot decide who holds "
-                    "sovereignty.",
+                    "sovereignty. Remedy: set that variable and re-register the "
+                    "human with scripts/register_human_identity.py so the row "
+                    "carries a valid tag; no human is recognised until then.",
                     rejected, self.location, HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
                     FIELD_INTEGRITY,
                 )
@@ -707,13 +720,15 @@ class SqliteHumanIdentityStore:
                 FIELD_REGISTERED_AT: row["registered_at"],
                 FIELD_TRUST_SCORE: row["trust_score"],
             }
-            if key and not tag_matches(full, key, row["integrity"]):
+            if not tag_matches(full, key, row["integrity"]):
                 self.last_load_report["rejected"].append(row["principal"])
                 logger.error(
                     "REFUSING registry row %r in %r: the row does not "
                     "authenticate against %s (missing or mismatched %r tag). A "
                     "row that cannot be authenticated cannot decide who holds "
-                    "sovereignty.",
+                    "sovereignty. Remedy: set that variable and re-register the "
+                    "human with scripts/register_human_identity.py so the row "
+                    "carries a valid tag; no human is recognised until then.",
                     row["principal"], self.location,
                     HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, FIELD_INTEGRITY,
                 )

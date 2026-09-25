@@ -92,6 +92,7 @@ def identity_implementation_manifest() -> Dict[str, Any]:
         manifest["fingerprints"][module_name] = entry
     return manifest
 
+
 #: Principal / id of the built-in internal service identity.
 #:
 #: Canonical home: the Identity Kernel owns which identities exist. The
@@ -122,6 +123,11 @@ HUMAN_IDENTITIES_FILE_ENV = _persistence.HUMAN_IDENTITIES_FILE_ENV
 #: the SQLite path when that backend is selected. See :mod:`._persistence`.
 HUMAN_IDENTITIES_BACKEND_ENV = _persistence.HUMAN_IDENTITIES_BACKEND_ENV
 HUMAN_IDENTITIES_DB_ENV = _persistence.HUMAN_IDENTITIES_DB_ENV
+
+#: Env var holding the key used to authenticate registry rows (HC-11 / U6).
+#: Re-exported from :mod:`._persistence` for the same reason as the location
+#: variables above -- operator tooling and tests resolve it through this module.
+HUMAN_IDENTITIES_INTEGRITY_KEY_ENV = _persistence.HUMAN_IDENTITIES_INTEGRITY_KEY_ENV
 
 #: ``metadata`` key for a human-friendly name, shown by operators' tooling.
 #:
@@ -441,16 +447,19 @@ class IdentityManager:
         #: :meth:`describe_identity_namespaces` so it cannot be a silent fact.
         self._registry_refusals: List[str] = []
         if self._store.location and not _persistence.integrity_enforced():
-            # Only warn when a registry is actually in use: an unconfigured
-            # store is already fail-closed (zero humans), so warning there would
-            # be noise about a risk that does not exist yet.
+            # A registry is in use but no integrity key is configured. Per the
+            # "enforce key" posture (HC-11 / U6) the store therefore refuses
+            # every row at load time (fail-closed): it holds zero admitted
+            # humans until the key is set. This warning exists so the operator
+            # knows WHY no humans were admitted, and that setting the variable is
+            # required -- not optional -- for the registry to be usable.
             logger.warning(
                 "human identity registry %r is NOT authenticated: %s is unset, "
-                "so anything that can write that store can create or edit the "
-                "rows that decide who holds sovereignty (PHASE 3.6 / A3). Set "
-                "the variable to require every row to authenticate, or accept "
-                "the risk explicitly -- this message exists so the risk is a "
-                "decision rather than a default.",
+                "so every stored row is refused at load (fail-closed) and the "
+                "registry holds no admitted humans. Anything that can write that "
+                "store can otherwise create or edit the rows that decide who "
+                "holds sovereignty (PHASE 3.6 / A3). Set the variable to enable "
+                "row authentication and admit the registered humans.",
                 self._store.location,
                 _persistence.HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
             )

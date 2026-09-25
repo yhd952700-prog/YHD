@@ -13,11 +13,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
 from src.kernels.identity import (
     HUMAN_IDENTITIES_FILE_ENV,
+    HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
     HUMAN_KIND,
     IdentityManager,
     IdentityScope,
@@ -25,7 +27,33 @@ from src.kernels.identity import (
     METADATA_KIND_KEY,
     is_human_identity,
 )
+from src.kernels.identity._persistence import FIELD_INTEGRITY, compute_row_tag
 from src.kernels import _sovereignty as sov
+
+
+#: Key used only by these fixtures. A registry row must authenticate against
+#: the configured key before it can decide who holds sovereignty.
+_TEST_KEY = "c7-fixture-integrity-key"
+
+
+def _stamp(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``entry`` carrying a valid row tag under :data:`_TEST_KEY`.
+
+    Why fixtures must carry a tag at all
+    ------------------------------------
+    The registry became **fail-closed** (HC-11 / U6): a row that cannot be
+    authenticated is refused, regardless of whether a key is configured. So a
+    seed row written straight into JSON by a test is refused exactly like one
+    written straight in by an attacker -- which is the point.
+
+    Stamping keeps the ORIGINAL intent of every seeding test below (file-shape
+    tolerance, restart survival) instead of weakening its assertions: each test
+    still proves the *shipping load path* admits through what it should, it no
+    longer accidentally depends on "unauthenticated rows are welcome".
+    """
+    tagged = dict(entry)
+    tagged[FIELD_INTEGRITY] = compute_row_tag(tagged, _TEST_KEY)
+    return tagged
 
 
 @pytest.fixture
@@ -141,11 +169,12 @@ class TestSeedingMakesRegistrationSurviveRestart:
             tmp_path,
             {
                 "humans": [
-                    {"principal": "ivan", "display_name": "Ivan"},
-                    {"principal": "judy", "permissions": ["approve"]},
+                    _stamp({"principal": "ivan", "display_name": "Ivan"}),
+                    _stamp({"principal": "judy", "permissions": ["approve"]}),
                 ]
             },
         )
+        monkeypatch.setenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, _TEST_KEY)
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, str(path))
         mgr = IdentityManager()
         ivan = mgr.get_identity_by_principal("ivan")
@@ -157,9 +186,23 @@ class TestSeedingMakesRegistrationSurviveRestart:
         assert is_human_identity(mgr.get_identity("system")) is False
 
     def test_a_bare_list_is_tolerated(self, monkeypatch, tmp_path):
-        path = self._write(tmp_path, [{"principal": "ken"}])
+        # Still about file SHAPE: a bare list rather than {"humans": [...]}.
+        path = self._write(tmp_path, [_stamp({"principal": "ken"})])
+        monkeypatch.setenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, _TEST_KEY)
         monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, str(path))
         assert is_human_identity(IdentityManager().get_identity_by_principal("ken"))
+
+    def test_an_untagged_seed_row_is_refused(self, monkeypatch, tmp_path):
+        # The HC-11 / U6 escalated posture, asserted at the seed-file level:
+        # handwriting rows into the registry is exactly what an attacker does,
+        # and an unauthenticated row must never be able to confer sovereignty --
+        # whether or not a key is configured.
+        path = self._write(tmp_path, {"humans": [{"principal": "mallory"}]})
+        monkeypatch.setenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, _TEST_KEY)
+        monkeypatch.setenv(HUMAN_IDENTITIES_FILE_ENV, str(path))
+        mgr = IdentityManager()
+        assert mgr.get_identity_by_principal("mallory") is None
+        assert [i for i in mgr.list_identities() if is_human_identity(i)] == []
 
     def test_a_malformed_file_loads_nothing_and_does_not_crash(
         self, monkeypatch, tmp_path
