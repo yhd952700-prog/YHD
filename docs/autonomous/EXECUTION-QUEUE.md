@@ -42,7 +42,24 @@
 ## Team availability note
 - `governance-legal`, `os-systems`, `security-identity` are **rate-limited (429)**; reset ~2026-09-26 02:51 UTC+8. Lead continues directly on their queued items; they resume assigned work after the reset. Nothing was claimed as done on their behalf except work the lead itself completed and verified here.
 
+## Wave 5 — Silent-success sweep (recovery paths that could not fail)
+- Q5.1 `src/sre/disaster/backup.py` (U30) — restore discarded the parsed JSON and reported success for anything with a matching filename, including tampered ones. Fixed: hash verified on restore (single shared `compute_integrity_hash`), recovered data returned in `RecoveryRecord`. `tests/sre/test_disaster_backup.py` — 10 cases.
+- Q5.2 `scripts/ops/backup.py` (U31) — the real operational tool: `extractall` without `filter=` (tarball chooses where we write), `_encrypt_backup` NameError (`base64` never imported), verification run AFTER encryption so encrypted backups always "failed", scratch dir hardcoded to `/tmp` on a Windows project. Fixed + `tests/sre/test_ops_backup.py`.
+- Q5.3 `tests/sre/` now exists (U26) — this was the first DR test coverage in the repo.
+- Q5.4 Baseline honesty (U32) — see §Test baseline below.
+
+## Test baseline (evidence, not vibes)
+- Full suite: **~2,500 tests, ~8 min, no hang** when run serially. The earlier "suite hangs" report was not reproduced.
+- **Discipline: never run two pytest processes against this repo at once.** They share temp dirs and sqlite scratch files and produce phantom failures.
+- Known failures at HEAD-`54fe5f2c` control worktree, identical in the working tree ⇒ **pre-existing, not ours**:
+  1. `tests/scripts/test_derive_audit_view.py::test_fourteen_collision_groups_flagged`
+  2. `tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path[verify_go_readiness.py]`
+  3. `tests/test_guardrail_scripts.py::test_every_gate_script_has_a_failure_exit[verify_go_readiness.py]`
+  4. `tests/test_guardrail_scripts.py::test_every_gate_script_is_wired_into_ci[verify_same_decision_point_closure.py]`
+  Item 4 is a genuine gap: an unwired gate protects nothing. Items 2–3 say a gate script is missing its sys.path bootstrap / failure exit — worth fixing, not waiving.
+- Open question being measured (**order-dependence**): `tests/test_oss_ecosystem_entries.py`, `tests/test_policy_properties.py`, `tests/test_knowledge_memory.py` pass in isolation but fail during the full run. Root cause not yet attributed — could be shared global state, the ops corpus directory, or an earlier test leaking env/cwd. Named from `--junitxml` rather than guessed.
+
 ## Standing
-- `UNKNOWN-TO-OWNER.md` maintained by all leads (U1–U28).
+- `UNKNOWN-TO-OWNER.md` maintained by all leads (U1–U33).
 - Old Blueprint / Roadmap upgraded as discovery dictates (team-decided).
 - **HUMAN DECISION REQUIRED** reserved strictly to: data ownership, product/business sovereignty, law/compliance policy, retention final policy, irreversible deletion of original assets, external contracts/liability, non-derivable value tradeoffs. Currently open: **R7/HD-06 retention final policy**, **HD-05 TSA/TPM provider**.
