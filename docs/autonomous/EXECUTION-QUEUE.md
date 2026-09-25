@@ -49,15 +49,16 @@
 - Q5.4 Baseline honesty (U32) — see §Test baseline below.
 
 ## Test baseline (evidence, not vibes)
-- Full suite: **~2,500 tests, ~8 min, no hang** when run serially. The earlier "suite hangs" report was not reproduced.
-- **Discipline: never run two pytest processes against this repo at once.** They share temp dirs and sqlite scratch files and produce phantom failures.
-- Known failures at HEAD-`54fe5f2c` control worktree, identical in the working tree ⇒ **pre-existing, not ours**:
-  1. `tests/scripts/test_derive_audit_view.py::test_fourteen_collision_groups_flagged`
-  2. `tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path[verify_go_readiness.py]`
-  3. `tests/test_guardrail_scripts.py::test_every_gate_script_has_a_failure_exit[verify_go_readiness.py]`
-  4. `tests/test_guardrail_scripts.py::test_every_gate_script_is_wired_into_ci[verify_same_decision_point_closure.py]`
-  Item 4 is a genuine gap: an unwired gate protects nothing. Items 2–3 say a gate script is missing its sys.path bootstrap / failure exit — worth fixing, not waiving.
-- Open question being measured (**order-dependence**): `tests/test_oss_ecosystem_entries.py`, `tests/test_policy_properties.py`, `tests/test_knowledge_memory.py` pass in isolation but fail during the full run. Root cause not yet attributed — could be shared global state, the ops corpus directory, or an earlier test leaking env/cwd. Named from `--junitxml` rather than guessed.
+- Serial full suite: **2525 tests, ~7–8 min, no hang**. The earlier "the suite hangs" report never reproduced.
+- **Discipline: never run two pytest processes against this repo at once.** They share temp dirs and sqlite scratch files and manufacture phantom failures.
+
+### Fixed this wave (was 13 failures + 11 errors → 3 failures + 11 errors, and the 11 are environmental)
+- **Corpus-gate pollution (6 failures) — ROOT-CAUSED AND FIXED.** `tests/test_oss_ecosystem_entries.py` could only validate the LIVE `oss-ecosystem/capabilities/` directory, so injecting a violation meant writing `_zz_probe_invalid.yaml` into the tracked tree and deleting it in a `finally`. Once cleanup does not complete, the probe stays: the corpus counts 9 files / 52 records instead of 8 / 51, and everything downstream goes red. Fixed by giving `validate_entries.py` a `--capabilities-dir` flag and injecting into a `tmp_path` copy (`d063ae3e`). Also removed the standing risk of ever committing that probe.
+- **Guardrail meta-guard (3 failures) — FIXED.** It claimed `verify_go_readiness.py` "cannot fail" because it only understood integer literals, while the script returns `EXIT_FAIL`; fixed by resolving module-level int constants in the checker, adding the missing `sys.path` bootstrap, and wiring `verify_same_decision_point_closure.py` into CI (0 or 2 pass, 1 fails — its exit 2 is the honest CRIT-1C known gap) (`bc528e9d`).
+
+### Remaining, attributed
+1. `tests/scripts/test_derive_audit_view.py::test_fourteen_collision_groups_flagged` — **the only real repo failure**. `KeyError: 'critical_sovereignty_collision_groups_detected'`; belongs to the D22 derived-view work. Pre-existing (also fails at control `54fe5f2c`).
+2. `test_knowledge_memory.py` (11), `test_policy_properties.py::test_service_principal_allow_exactly_whitelist` (1), `test_register_human_identity.py::test_registers_and_proves_the_login` (1) — **environmental, not repo defects.** Tracebacks end inside the WorkBuddy sandbox shim: `sitecustomize.py::_check_bulk_delete_guard → raise SystemExit(1)`, i.e. a per-turn bulk-delete budget (~50) that a full suite exhausts. Every one of them passes on its own and in small groups. CI (GitHub Actions, no shim) will not see them. Recorded, not "fixed", because there is nothing in the repo to fix.
 
 ## Standing
 - `UNKNOWN-TO-OWNER.md` maintained by all leads (U1–U33).
