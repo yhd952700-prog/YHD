@@ -40,7 +40,7 @@
   2. Forbid `shell=True` on the autonomous path unless a human-in-the-loop has
      explicitly armed it.
   3. Keep the `authorize` callback mandatory and logged.
-- **Status:** DISCOVERED (read-only). Not yet remediated. No code changed.
+- **Status:** REMEDIATED (commit `6d7769e6`, wave p36). `WorldInterface` now takes an explicit `actor` flag; with `actor="autonomous"` the policy gate is default-deny and `shell=True` host-command execution is blocked unless an explicit human-arming `authorize` policy allows it. Human dispatch keeps default-allow (no regression). Caveat: the protection is opt-in at construction — autonomous agents must be built with `actor="autonomous"`; the agent framework (security-identity) should set this automatically. **HUMAN DECISION REQUIRED** remains open for the policy question of *whether* autonomous agents may ever run host commands at all — the code now makes the safe default (deny + require arming), but that is a governance choice, not just a code fix.
 
 ## U2 — Subprocess sandbox resource limits are not enforced on Windows
 - **Where:** `src/plugins/sandbox/backends/subprocess_backend.py` ≈L128
@@ -96,7 +96,7 @@
 - **Why it matters (capability security):** this is a framework-wide pattern — any NEW world action / adapter / tool added without an explicit `authorize` callback inherits permit-by-default. The human-facing L-Core default-allow is defensible (human sovereignty), but the pattern is dangerous wherever it gates non-human/autonomous capability (shell, subprocess, external writes).
 - **Severity:** MEDIUM–HIGH (compounding U1).
 - **Recommendation:** invert the default to deny when `authorize is None` for any non-human-facing capability; keep explicit allow only for the human's L-Core interface, and log every gate decision.
-- **Status:** DISCOVERED (read-only). No code changed.
+- **Status:** PARTIALLY REMEDIATED (wave p36). The `world_interface.py` autonomous path is now default-deny (commit `6d7769e6`). `lcore.py` was intentionally left default-allow (human sovereignty, per directive). Residual: the systemic `authorize=None → allow` pattern still exists at `lcore.py:131-132` for the human L-Core (by design) — any NEW non-human capability must set `actor="autonomous"` to inherit default-deny. Tracked for the agent framework to wire automatically.
 
 ## U6 — `revoke_all_user_tokens` is a silent no-op placeholder
 - **Where:** `src/security/jwt_handler.py:545-548`.
@@ -104,7 +104,7 @@
 - **Why it matters:** this is exactly the "false success" the mandate forbids. An operator/automated responder calling "revoke all of user X's tokens" after a compromise would believe the revocation happened; it did not. Violates the HARD BOUNDARY "No faking success" and "No garbage code."
 - **Severity:** HIGH (security control that silently does nothing).
 - **Recommendation:** either implement it against a real token store, or make it raise `NotImplementedError` so callers cannot mistake a no-op for success. Do NOT ship a silent 0.
-- **Status:** DISCOVERED (read-only). No code changed.
+- **Status:** REMEDIATED (commit `5d618ac5`, wave p36). `revoke_all_user_tokens` now maintains a subject→JTI index in `create_token` and actually revokes all of a user's tracked tokens, returning the real count (0 honestly when none). No longer a silent no-op. In-memory only (documented; same limitation as the rest of the revocation blacklist — not durable across restart/workers). Regression test added (`tests/test_jwt_revoke_all.py`).
 
 ## U7 — Built-in `system` identity carries `admin`; verify no principal spoofing
 - **Where:** `src/kernels/identity/__init__.py:402-408` (default `system` identity, `permissions={"admin"}`, scope L0).
@@ -112,7 +112,7 @@
 - **Why it matters (verification question, not a confirmed vuln):** a built-in `admin` principal is a high-value target. The owner should know whether the Policy Kernel / RBAC layer **rejects an externally-supplied `principal="system"`** (spoofing). If any caller-supplied principal string can become "system", that is privilege escalation to admin.
 - **Severity:** LOW–MEDIUM (depends on spoofing protection, unverified here).
 - **Recommendation:** confirm `principal` is never trusted from untrusted input for the `system`/service marker; add a regression test that an external request claiming `system` is denied or re-bound to a non-admin identity.
-- **Status:** DISCOVERED (read-only); flagged for verification, not a confirmed defect.
+- **Status:** VERIFIED SAFE (read-only review, wave p36; no code change needed). The Policy Kernel (`src/gateway/policy.py`) derives `principal` **exclusively** from the signature-verified JWT `sub` claim; the request body cannot supply a principal (`ApprovalRequest` has no `principal` field), and `require_bearer_payload` validates the JWT signature. External auth (`src/gateway/auth.py`) requires a verified credential to bind a principal to a token. The built-in `system` identity's `admin` perms are reachable only via a valid `sub="system"` JWT, which requires the `system` credential secret (unforgeable without it). RBAC is fail-closed default-deny. Conclusion: external `principal="system"` spoofing to admin is rejected. Residual trust (unchanged): depends on (a) JWT signing-key confidentiality, (b) no weak/known `system` credential, (c) no future code adding a trusted `principal` request field.
 
 ## Reviewed-safe (explicit false-positive callouts)
 - `jwt_handler.py` unverified `jwt.decode(..., options={"verify_signature": False})` at L435/L525 is **safe**: it only extracts `jti` for revocation lookup; the trust decision uses a fully-verified decode (L448: signature + issuer + audience + exp + iat). No unverified claim is trusted.
