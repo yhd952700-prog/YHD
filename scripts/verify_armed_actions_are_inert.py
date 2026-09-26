@@ -312,6 +312,24 @@ def run_full_spec_subset(spec: str, failures: List[str]) -> Dict[str, int]:
 
 
 def main(argv: List[str]) -> int:
+    # Companion wiring (C-6 guard): give the guard and every subprocess it
+    # spawns a clean, isolated audit evidence channel. The mandatory-evidence
+    # gate at src/kernels/_crosscutting.py:878 is fail-closed and blocks any
+    # HIGH/CRITICAL action when the audit evidence channel is unavailable. The
+    # guard's fresh subprocesses (and the app-level suite it runs) do not inherit
+    # a test/CI audit backend, so without this the gate spuriously fires and the
+    # guard reports the armed actions as "not inert" (a false RED driven by
+    # audit-channel absence, not by arming). Pointing AUDIT_DB_PATH at a fresh
+    # temp sqlite gives the gate a real channel to write to -- the gate still
+    # requires evidence to be produced and still blocks if the channel is
+    # genuinely down. This does NOT weaken fail-closed; it only ensures the
+    # probe measures arming, not audit-channel absence.
+    if "AUDIT_DB_PATH" not in os.environ:
+        import tempfile
+
+        _audit_tmp = tempfile.mkdtemp(prefix="c6_guard_audit_")
+        os.environ["AUDIT_DB_PATH"] = os.path.join(_audit_tmp, "audit.db")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--probe",
