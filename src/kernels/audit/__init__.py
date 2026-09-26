@@ -14,6 +14,7 @@ correlation-aware querying, and full event lifecycle management.
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError
 from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
+from .fencing import SqliteWriterLease, require_writer_lease
 
 import json
 import logging
@@ -169,6 +170,7 @@ class AuditStore:
                 os.path.join(_project_root, "audit_store.db")
             )
         self._db_path = db_path
+        self._writer_token: Optional[int] = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -262,6 +264,30 @@ class AuditStore:
                     (last[0], last[1]),
                 )
         self._conn.commit()
+        # Q3.5 (fencing): the single-writer lease lives in the audit DB itself,
+        # so the fence check and the append are atomic on the same connection.
+        self._lease = SqliteWriterLease(self._conn)
+
+    # ------------------------------------------------------------------ #
+    # Q3.5 — single-writer fencing helpers
+    # ------------------------------------------------------------------ #
+    def _lease_owner(self) -> str:
+        """Stable owner id for this store instance's writer lease."""
+        return f"audit-store:{os.getpid()}"
+
+    def _ensure_writer_lease(self) -> None:
+        """Hold one writer lease for this store's lifetime.
+
+        Acquire lazily on first write, then keep it. Re-acquire ONLY when the
+        current token is missing or has expired (a legitimate, still-active
+        single writer refreshing its own lease). We never silently re-acquire a
+        token that was fenced by a *different* owner -- ``SqliteWriterLease.acquire``
+        raises :class:`StaleWriterError` in that case, which refuses the append
+        (the correct fence behaviour: a fenced writer must not append).
+        """
+        if self._writer_token is not None and self._lease.validate(self._writer_token):
+            return
+        self._writer_token = self._lease.acquire(owner=self._lease_owner())
 
     def log_event(
         self,
@@ -293,6 +319,11 @@ class AuditStore:
     ) -> AuditEvent:
         if correlation_id is None:
             correlation_id = str(uuid.uuid4())[:8]
+
+        # Q3.5 (fencing): hold a single-writer lease for this store's lifetime
+        # and refuse to append if this writer has been fenced by a newer lease.
+        self._ensure_writer_lease()
+        require_writer_lease(self._lease, self._writer_token)
 
         timestamp = time.time()
 
