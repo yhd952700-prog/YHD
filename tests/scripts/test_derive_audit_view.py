@@ -19,8 +19,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "derive_audit_view.py"
 
@@ -153,11 +151,18 @@ def test_fourteen_collision_groups_flagged(tmp_path: Path) -> None:
 
     s = result["summary"]
     # 14 planted collision groups, all of them CRITICAL sovereignty.
+    # Functional assertion on CONTROLLED synthetic data: the tool must partition
+    # exactly the 14 same-second groups we planted (it never sees the live db).
     assert s["collision_groups_total"] == N_COLLISION_GROUPS
-    assert s["critical_sovereignty_collision_groups_detected"] == N_COLLISION_GROUPS
-    # The synthetic data matches the LOCKED decision's known figure of 14.
-    assert s["critical_sovereignty_collision_groups_known"] == N_COLLISION_GROUPS
-    assert s["critical_sovereignty_collision_groups_match"] is True
+    # On this controlled data every planted group has >=2 CRITICAL sovereignty
+    # members, so the LIVE critical-sovereignty count equals the planted count.
+    assert s["critical_sovereignty_collision_groups_live"] == N_COLLISION_GROUPS
+    # Re-adjudicated (D22): the tool must NOT gate on a frozen "known" figure or
+    # report a pass/fail "match". It reports the count as a read-only FINDING with
+    # the live-vs-baseline delta, never as a pass/fail truth.
+    assert "critical_sovereignty_collision_groups_match" not in s
+    assert "critical_sovereignty_collision_groups_known" not in s
+    assert "FINDING_critical_sovereignty_collision_groups" in s
 
     # Position-unprovable records = 14 groups * 2 members.
     assert s["position_unprovable_records"] == N_COLLISION_GROUPS * 2
