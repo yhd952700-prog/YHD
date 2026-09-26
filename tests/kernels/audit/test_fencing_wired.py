@@ -46,12 +46,42 @@ def test_normal_writes_succeed_with_fencing(tmp_path):
 
 
 def test_second_writer_cannot_acquire_while_lease_held(tmp_path):
+    """The fence itself: while the lease IS held, a different live owner is
+    refused.
+
+    U39 / ADR Option B changed WHEN the lease is held: it is now scoped to one
+    append and yielded when that append commits (asserted by
+    ``test_lease_is_yielded_after_append``). So this test holds the lease
+    explicitly rather than relying on a write having left it held. The invariant
+    under test is unchanged -- while a live writer owns the lease, nobody else
+    may take it.
+    """
     store = AuditStore(db_path=str(tmp_path / "audit.db"))
-    _write(store, 0)  # store acquires token T1 (unexpired)
-    # A competing writer on the same DB must be refused while T1 is unexpired.
+    lease_a = SqliteWriterLease(store._conn)
+    token = lease_a.acquire(owner="writer-a", ttl_sec=30.0)
     lease_b = SqliteWriterLease(store._conn)
     with pytest.raises(StaleWriterError):
         lease_b.acquire(owner="writer-b")
+    assert lease_a.validate(token) is True
+
+
+def test_lease_is_yielded_after_append(tmp_path):
+    """U39: once an append commits, the lease is free for another process.
+
+    This is what makes several live processes sharing one audit database
+    possible. It does NOT relax the fence -- concurrency is prevented by the
+    atomic append transaction plus the lease held during it, and the resulting
+    fork-freedom is asserted end-to-end in
+    ``tests/kernels/audit/test_multiprocess_append.py``.
+    """
+    store = AuditStore(db_path=str(tmp_path / "audit.db"))
+    _write(store, 0)
+    assert store._lease.current().owner is None, (
+        "lease must be yielded once the append commits, otherwise a second "
+        "process can never append (U39)"
+    )
+    lease_b = SqliteWriterLease(store._conn)
+    assert lease_b.acquire(owner="writer-b") > 0
 
 
 def test_fenced_writer_is_refused_on_append(tmp_path):

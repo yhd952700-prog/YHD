@@ -317,6 +317,72 @@ class SqliteWriterLease(WriterLease):
             self._conn.rollback()
             raise
 
+    def acquire_within(self, owner: str, ttl_sec: float = 30.0) -> int:
+        """Same rules as :meth:`acquire`, but WITHOUT transaction control.
+
+        The caller must already hold a write transaction (``BEGIN IMMEDIATE``).
+        This is what makes the fence check and the append share ONE atomic
+        transaction -- the property the class docstring claims, and which the
+        previous code did not actually deliver (the lease committed its own
+        transaction and the append then ran separately).
+
+        Contention is therefore resolved by SQLite's write lock (a competing
+        process blocks until the current append commits) rather than by
+        surfacing ``StaleWriterError`` to the caller, so a busy peer no longer
+        reads as "evidence channel unavailable" -- which the fail-closed gate
+        turned into a denial of every governed action (U39).
+        """
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT token, owner, expires_at FROM writer_lease WHERE id = 1"
+        ).fetchone()
+        if row is not None:
+            cur_token, cur_owner, cur_exp = row
+            if cur_exp is not None and cur_exp > now:
+                if cur_owner == owner:
+                    # Same writer renewing its own live lease (U38).
+                    self._conn.execute(
+                        "UPDATE writer_lease SET expires_at = ? WHERE id = 1",
+                        (now + ttl_sec,),
+                    )
+                    return cur_token
+                pid = _owner_pid(cur_owner)
+                alive = _is_process_alive(pid) if pid is not None else None
+                if alive is not False:
+                    raise StaleWriterError(
+                        f"lease held by {cur_owner!r} (alive={alive}) until {cur_exp}"
+                    )
+                # alive is False -> owner process exited; take over.
+            new_token = (cur_token or 0) + 1
+        else:
+            new_token = 1
+        self._conn.execute(
+            "INSERT INTO writer_lease (id, token, owner, acquired_at, expires_at) "
+            "VALUES (1, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "token = excluded.token, owner = excluded.owner, "
+            "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at",
+            (new_token, owner, now, now + ttl_sec),
+        )
+        return new_token
+
+    def release_within(self, token: int) -> bool:
+        """Release the lease WITHOUT transaction control (caller holds the txn).
+
+        Used to yield the lease as part of the append's commit, so a peer can
+        take over the instant the append lands.
+        """
+        row = self._conn.execute(
+            "SELECT token FROM writer_lease WHERE id = 1"
+        ).fetchone()
+        if row is not None and row[0] == token:
+            # Keep the token counter monotonic; only invalidate the active holder.
+            self._conn.execute(
+                "UPDATE writer_lease SET owner = NULL, expires_at = 0 WHERE id = 1"
+            )
+            return True
+        return False
+
     def validate(self, token: int) -> bool:
         now = time.time()
         row = self._conn.execute(

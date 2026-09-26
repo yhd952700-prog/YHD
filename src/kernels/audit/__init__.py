@@ -29,6 +29,14 @@ import uuid
 
 logger = logging.getLogger("liuhao.kernel.audit")
 
+# --- U39 / ADR "audit single-writer lease" Option B -------------------------
+# The writer lease is now taken INSIDE the append's write transaction and
+# yielded when that transaction commits (see ``_log_event_locked``). Contention
+# is therefore absorbed by SQLite's write lock -- a competing process waits for
+# the current append -- instead of being reported as "evidence channel
+# unavailable", which the fail-closed gate turned into a denial of every
+# governed action. A genuinely fenced writer is still refused immediately.
+
 
 # --------------------------------------------------------------------------- #
 # PHASE 3.6 / A5 — cryptographic algorithm identifiers
@@ -276,23 +284,10 @@ class AuditStore:
         return f"audit-store:{os.getpid()}"
 
     def _ensure_writer_lease(self) -> None:
-        """Hold one writer lease for this store's lifetime.
-
-        Acquire lazily on first write, then keep it. Re-acquire ONLY when the
-        current token is missing or has expired (a legitimate, still-active
-        single writer refreshing its own lease).
-
-        A lease held by a *different LIVE* owner is still refused
-        (``SqliteWriterLease.acquire`` raises :class:`StaleWriterError`) -- the
-        correct fence behaviour: a fenced writer must not append (split-brain
-        prevention). A lease held by a *dead* owner process is now taken over
-        (Fix A): ``acquire`` detects the owner process has exited via
-        ``os.kill(pid, 0)`` and fences it, so a previous writer that crashed
-        without releasing no longer blocks new writers for the full TTL.
+        """Deprecated shim: the lease is now taken *inside* the append
+        transaction (see ``_log_event_locked``). Kept only because it is part
+        of the historical internal API; it intentionally does nothing.
         """
-        if self._writer_token is not None and self._lease.validate(self._writer_token):
-            return
-        self._writer_token = self._lease.acquire(owner=self._lease_owner())
 
     def log_event(
         self,
@@ -325,71 +320,95 @@ class AuditStore:
         if correlation_id is None:
             correlation_id = str(uuid.uuid4())[:8]
 
-        # Q3.5 (fencing): hold a single-writer lease for this store's lifetime
-        # and refuse to append if this writer has been fenced by a newer lease.
-        self._ensure_writer_lease()
-        require_writer_lease(self._lease, self._writer_token)
-
         timestamp = time.time()
 
-        # The chain_state anchor is the single source of truth for the
-        # chain head: it assigns the next monotonic sequence number and
-        # provides the previous event hash. Unlike timestamp ordering,
-        # this is immune to clock granularity ties.
-        state = self._conn.execute(
-            "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
-        ).fetchone()
-        if state:
-            last_seq, prev_hash = state[0], state[1]
-        else:
-            last_seq, prev_hash = 0, None
-        seq = last_seq + 1
-
-        event_id = str(uuid.uuid4())[:12]
-        event = AuditEvent(
-            event_id=event_id,
-            event_type=event_type,
-            principal_id=principal_id,
-            scope=scope,
-            timestamp=timestamp,
-            correlation_id=correlation_id,
-            outcome=outcome,
-            details=details or {},
-            prev_event_hash=prev_hash,
-        )
-
-        event.event_hash = event.compute_hash()
-
+        # U39 / ADR Option B: ONE atomic transaction for the whole
+        # read-modify-write. Previously the SELECT of chain_state ran OUTSIDE
+        # any transaction (only the INSERTs were implicitly wrapped), so two
+        # writers could read the same last_seq and both append it -- the HC-01
+        # fork (duplicate seq / broken joins). The process-lifetime lease used
+        # to paper over that; now the transaction is the real guarantee and the
+        # lease is an additional, explicit fence on top of it.
         try:
-            self._conn.execute(
-                """INSERT INTO audit_events
-                   (event_id, event_type, principal_id, scope, timestamp,
-                    correlation_id, outcome, details, event_hash, prev_event_hash,
-                    seq, hash_alg)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    event.event_id,
-                    event.event_type.value,
-                    event.principal_id,
-                    event.scope.value,
-                    event.timestamp,
-                    event.correlation_id,
-                    event.outcome,
-                    json.dumps(event.details, sort_keys=True) if event.details else None,
-                    event.event_hash,
-                    event.prev_event_hash,
-                    seq,
-                    event.hash_alg,
-                ),
-            )
-            self._conn.execute(
-                """INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       last_seq = excluded.last_seq,
-                       last_hash = excluded.last_hash""",
-                (seq, event.event_hash),
-            )
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Q3.5 fencing, now genuinely atomic with the append: take the
+                # lease INSIDE the write transaction. A competing process blocks
+                # on SQLite's write lock instead of being told the evidence
+                # channel is unavailable; a genuinely fenced writer (a newer live
+                # owner) is still refused immediately.
+                self._writer_token = self._lease.acquire_within(
+                    owner=self._lease_owner()
+                )
+                require_writer_lease(self._lease, self._writer_token)
+
+                # The chain_state anchor is the single source of truth for the
+                # chain head: it assigns the next monotonic sequence number and
+                # provides the previous event hash. Unlike timestamp ordering,
+                # this is immune to clock granularity ties.
+                state = self._conn.execute(
+                    "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
+                ).fetchone()
+                if state:
+                    last_seq, prev_hash = state[0], state[1]
+                else:
+                    last_seq, prev_hash = 0, None
+                seq = last_seq + 1
+
+                event_id = str(uuid.uuid4())[:12]
+                event = AuditEvent(
+                    event_id=event_id,
+                    event_type=event_type,
+                    principal_id=principal_id,
+                    scope=scope,
+                    timestamp=timestamp,
+                    correlation_id=correlation_id,
+                    outcome=outcome,
+                    details=details or {},
+                    prev_event_hash=prev_hash,
+                )
+
+                event.event_hash = event.compute_hash()
+
+                self._conn.execute(
+                    """INSERT INTO audit_events
+                       (event_id, event_type, principal_id, scope, timestamp,
+                        correlation_id, outcome, details, event_hash, prev_event_hash,
+                        seq, hash_alg)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        event.event_id,
+                        event.event_type.value,
+                        event.principal_id,
+                        event.scope.value,
+                        event.timestamp,
+                        event.correlation_id,
+                        event.outcome,
+                        json.dumps(event.details, sort_keys=True) if event.details else None,
+                        event.event_hash,
+                        event.prev_event_hash,
+                        seq,
+                        event.hash_alg,
+                    ),
+                )
+                self._conn.execute(
+                    """INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                           last_seq = excluded.last_seq,
+                           last_hash = excluded.last_hash""",
+                    (seq, event.event_hash),
+                )
+                # Per-append lease (U39): yield it in the SAME transaction, so
+                # the moment this append commits another process may take over.
+                # Rolling back the append also rolls back the yield -- the two
+                # can never disagree.
+                self._lease.release_within(self._writer_token)
+                self._conn.commit()
+                self._writer_token = None
+            except Exception:
+                self._conn.rollback()
+                self._writer_token = None
+                raise
         except Exception:
             # CRIT-1C / D17 (Layer 1): do NOT swallow silently. Record the
             # failure so operators can observe "Evidence=missing" via

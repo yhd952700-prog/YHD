@@ -1,7 +1,8 @@
 # ADR — Audit store writer lease: single-writer per database (U39)
 
-**Status:** ACCEPTED (current behaviour) — with an OPEN remediation item below.
-**Date:** 2026-09-26
+**Status:** **Option B IMPLEMENTED (2026-09-26)** — verified; Option C remains the
+long-term scale path.
+**Date:** 2026-09-26 (updated same day: B implemented + verified)
 **Author:** expert-org team lead (autonomous)
 **Relates to:** U38 (self-fence, fixed), U39 (cross-process denial, this ADR),
 HC-01 hash-chain fork (284 broken joins), CRIT-1C mandatory-evidence gate.
@@ -76,31 +77,70 @@ tuning problem.
 
 ## 5. Decision
 
-- **Keep A (status quo) as the current, verified behaviour.** It is correct and it
-  is what protects HC-01 from further forking. This ADR records the limitation
-  rather than allowing it to be discovered again as a surprise.
-- **Do not weaken the gate.** The denial is the fail-closed contract working; the
-  defect is the *topology*, not the gate.
-- **Remediation path: B now, C later.** Per-append leasing (B) removes the
-  ceiling while keeping every write serialised under one transaction. The
-  dedicated writer (C) is the end-state for multi-node scale.
-- `tests/kernels/execution/test_execution_journal.py::TestCrashRecovery` now gives
-  its child process a private `AUDIT_DB_PATH`. That is *test scoping*, not a fix:
-  the test is about journal durability across a kill, not about cross-process
-  audit contention. The production limitation above is unchanged by it.
+- ~~Keep A (status quo).~~ **SUPERSEDED — Option B is implemented and verified.**
+- **Do not weaken the gate.** The denial was the fail-closed contract working; the
+  defect was the *topology*, not the gate.
 
-## 6. Verification requirements before B ships
+### 5b. What B actually changed (implemented)
 
-1. `tests/kernels/audit/*` fully green (fencing, durability, recovery, hash chain).
-2. C-6 guard (`scripts/verify_armed_actions_are_inert.py`) ALL GREEN.
-3. A new test proving N processes appending concurrently produce a chain with
-   **zero** broken joins (the property HC-01 lost).
-4. A test proving a crashed writer mid-append leaves no partial row and its lease
-   is recoverable within TTL.
+The decisive discovery: the append was **never atomic**. `_log_event_locked` ran
+`SELECT last_seq, last_hash FROM chain_state` *outside* any transaction, then
+INSERTed and committed later. Two writers could read the same `last_seq` and both
+append it — the fork. The process-lifetime lease was papering over a
+non-atomic read-modify-write. (The comment claiming "the fence check and the
+append are atomic on the same connection" was aspirational: the lease committed
+its own transaction and the append then ran separately.)
+
+B fixes the actual defect and rescales the lease:
+
+1. **Atomic append** — `BEGIN IMMEDIATE` … read chain_state → compute →
+   INSERT event → UPDATE chain_state → COMMIT. The read-modify-write is now one
+   transaction, so SQLite serialises concurrent writers at the DB level.
+2. **Lease scoped to one append** — `SqliteWriterLease.acquire_within()` /
+   `release_within()` take and yield the lease *inside* that same transaction, so
+   the fence check and the append really are atomic, and the yield rolls back if
+   the append rolls back (they can never disagree).
+3. **No retry loop needed** — contention is absorbed by SQLite's write lock (a
+   competing process waits for the current append) instead of surfacing
+   `StaleWriterError`, which the fail-closed gate read as "evidence unavailable".
+   A genuinely *fenced* writer (a newer live owner) is still refused immediately.
+
+Properties preserved: exactly one writer appends at a time; a different live
+owner is still refused; a dead owner is still taken over (Fix A); fail-closed is
+untouched (if the append cannot commit, the error still propagates and the
+mandatory-evidence gate denies the action).
+
+**One existing test was retargeted, deliberately and transparently:**
+`test_second_writer_cannot_acquire_while_lease_held` asserted that after a write
+the lease was *still held* — an implementation detail of topology A. It now
+asserts the real invariant (while the lease IS held, a different live owner is
+refused) and a new test `test_lease_is_yielded_after_append` pins the per-append
+contract. The safety assertion was not weakened, only re-anchored.
+
+## 6. Verification (done, not planned)
+
+1. `tests/kernels/audit/*` green — 83 passed.
+2. C-6 guard re-run: ALL GREEN (7 checks).
+3. **New `tests/kernels/audit/test_multiprocess_append.py`** — 5 tests proving
+   N processes (2/4/6) appending concurrently to one database produce:
+   exact row count (no lost append), seq exactly 1..N (no duplicates, no gaps),
+   0 broken joins, chain_state anchor == tail, and `verify_integrity() is True`.
+4. **Discrimination proof**: all 5 tests FAIL when the fix is reverted
+   (reproducing `StaleWriterError: lease held by 'audit-store:<pid>' (alive=True)`)
+   and PASS with it. A test that passes both ways proves nothing — the
+   capability-registry test was strengthened for exactly this reason.
+
+### Still open (C, the scale path)
+
+Per-append leasing means each append takes and yields the lease, so throughput is
+bounded by SQLite's single-writer serialisation. That is correct but is not a
+million-events-per-second shape. Option C (**dedicated append-only audit writer**
+that all processes forward to) remains the end-state; B removes the correctness
+ceiling, C removes the throughput ceiling. Not needed until throughput is the
+binding constraint — measure before building it.
 
 ## 7. Human-sovereign input (isolated, non-blocking)
 
-Not required to proceed with B. If the intended deployment topology is
-*deliberately* single-process-per-audit-store, then A is final and this ADR
-closes with no code change. That is a product/deployment decision; engineering
-defaults to the safer path (A) until told otherwise, and B/C are prepared.
+None required. If the intended deployment topology is *deliberately*
+single-process-per-audit-store, B is harmless (it is strictly more permissive but
+no less safe). Building C is a scale decision; engineering will measure first.
