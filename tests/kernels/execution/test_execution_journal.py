@@ -193,7 +193,19 @@ class TestCrashRecovery:
         script = tmp_path / "child.py"
         script.write_text(_CHILD_SRC, encoding="utf-8")
 
-        env = dict(os.environ, PYTHONPATH=str(ROOT))
+        # Give the child its OWN audit store. It is a second live process, and
+        # the audit writer lease is single-writer per database: sharing the
+        # parent's AUDIT_DB_PATH makes the child's capability.register fail
+        # closed (it cannot obtain evidence), so it would die in
+        # GoalDecomposer.__init__ before ever reaching the code this test is
+        # about. The lease behaviour is correct and is NOT weakened here -- see
+        # docs/autonomous/ADR-audit-single-writer-lease.md (U39) for the
+        # cross-process limitation this exposes and its remediation path.
+        env = dict(
+            os.environ,
+            PYTHONPATH=str(ROOT),
+            AUDIT_DB_PATH=str(tmp_path / "child_audit.db"),
+        )
         proc = subprocess.run(
             [sys.executable, str(script), db, "1"],
             capture_output=True, text=True, timeout=120, env=env,

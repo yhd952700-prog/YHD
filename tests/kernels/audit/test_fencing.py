@@ -236,14 +236,14 @@ def test_sqlite_different_owner_with_live_pid_is_still_fenced():
 
 
 def test_inmemory_same_owner_renewal_is_not_a_self_fence():
-    l = InMemoryWriterLease()
-    t1 = l.acquire("w1", ttl_sec=30.0)
-    t2 = l.acquire("w1", ttl_sec=30.0)  # same owner -> renewal
+    lease = InMemoryWriterLease()
+    t1 = lease.acquire("w1", ttl_sec=30.0)
+    t2 = lease.acquire("w1", ttl_sec=30.0)  # same owner -> renewal
     assert t2 == t1
-    assert l.validate(t1) is True
+    assert lease.validate(t1) is True
     # A different owner is still fenced.
     try:
-        l.acquire("w2", ttl_sec=30.0)
+        lease.acquire("w2", ttl_sec=30.0)
         assert False, "different owner must still raise"
     except StaleWriterError:
         pass

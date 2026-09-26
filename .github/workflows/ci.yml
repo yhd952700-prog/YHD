@@ -362,6 +362,15 @@ jobs:
       - name: Verify P0-8 hash-chain final status matrix HC-01..HC-11 (runtime)
         run: python scripts/verify_p08_final_status_matrix.py
 
+      # Compliance-liability claim linting (scripts/lint_audit_claims.py).
+      # Standalone, pytest-free verifier: proves the rule's hit/miss behaviour so
+      # the claim scanner cannot silently stop catching liability language.
+      # Wired here because an unwired gate protects nothing -- the guardrail
+      # meta-test (tests/test_guardrail_scripts.py) rejects any verify_*.py that
+      # no workflow invokes.
+      - name: Verify compliance-liability claim lint rules (standalone)
+        run: python scripts/verify_compliance_lint.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db

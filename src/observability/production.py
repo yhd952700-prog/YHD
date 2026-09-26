@@ -92,7 +92,7 @@ def prometheus_response() -> Tuple[bytes, str]:
 
 
 # ============================================================
-# 2) 子系统探针 —— 把 14 内核纳入就绪检查
+# 2) 子系统探针 —— 把每个内核纳入就绪检查（数量随内核增加，勿写死 14）
 # ============================================================
 
 #: ``(子系统名, 模块路径, getter 名)``。getter 均在对应内核的 ``__init__`` 中定义。
@@ -113,6 +113,9 @@ SUBSYSTEM_PROBES: Tuple[Tuple[str, str, str], ...] = (
     ("audit", "src.kernels.audit", "get_audit_store"),
     ("trust", "src.kernels.trust", "get_trust_manager"),
     ("plugin", "src.kernels.plugin", "get_plugin_registry"),
+    # Added with the retention subsystem: a kernel package on disk with no probe
+    # is invisible to readiness, which is how a whole subsystem ships unmonitored.
+    ("retention", "src.kernels.retention", "get_retention_manager"),
 )
 
 STATUS_HEALTHY = "healthy"

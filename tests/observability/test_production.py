@@ -106,22 +106,32 @@ class TestPrometheusExposure:
 # ============================================================
 
 
+def _kernels_on_disk() -> set:
+    """Ground truth: the kernel packages actually present under ``src/kernels/``.
+
+    Every count assertion below is derived from this instead of a literal, so
+    adding a kernel cannot silently rot the suite (which is exactly what a
+    hardcoded ``14`` did the moment the retention kernel landed).
+    """
+    return {
+        d.name
+        for d in KERNELS_DIR.iterdir()
+        if d.is_dir() and not d.name.startswith("_") and d.name != "__pycache__"
+    }
+
+
 class TestSubsystemProbes:
     def test_probe_registry_covers_every_kernel_on_disk(self):
         """防漂移：磁盘上的内核目录必须与探针注册表一一对应。"""
-        on_disk = {
-            d.name
-            for d in KERNELS_DIR.iterdir()
-            if d.is_dir() and not d.name.startswith("_") and d.name != "__pycache__"
-        }
+        on_disk = _kernels_on_disk()
         probed = {name for name, _mod, _getter in production.SUBSYSTEM_PROBES}
         assert probed == on_disk, (
             f"探针注册表与磁盘内核不一致。缺少探针: {on_disk - probed}；"
             f"多余探针: {probed - on_disk}"
         )
 
-    def test_registry_has_fourteen_probes(self):
-        assert len(production.SUBSYSTEM_PROBES) == 14
+    def test_registry_has_one_probe_per_kernel(self):
+        assert len(production.SUBSYSTEM_PROBES) == len(_kernels_on_disk())
 
     def test_probe_names_are_unique(self):
         names = [n for n, _m, _g in production.SUBSYSTEM_PROBES]
@@ -130,14 +140,14 @@ class TestSubsystemProbes:
     def test_real_kernels_are_all_healthy(self):
         report = check_subsystems()
         assert report.ready is True
-        assert report.counts[STATUS_HEALTHY] == 14, report.to_dict()
+        assert report.counts[STATUS_HEALTHY] == len(_kernels_on_disk()), report.to_dict()
         assert report.counts[STATUS_UNAVAILABLE] == 0
 
     def test_report_is_serialisable(self):
         payload = check_subsystems().to_dict()
         json.dumps(payload)  # 不抛即通过
         assert payload["status"] == "ready"
-        assert payload["total"] == 14
+        assert payload["total"] == len(_kernels_on_disk())
 
     def test_broken_module_is_unavailable_and_does_not_raise(self):
         report = check_subsystems(
@@ -375,8 +385,8 @@ class TestHttpEndpoints:
         response = client.get("/v1/ready/subsystems")
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["total"] == 14
-        assert body["counts"]["healthy"] == 14
+        assert body["total"] == len(_kernels_on_disk())
+        assert body["counts"]["healthy"] == len(_kernels_on_disk())
         assert body["status"] == "ready"
 
     def test_subsystem_readiness_503_when_a_kernel_is_unavailable(self, client, monkeypatch):

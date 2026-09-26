@@ -29,6 +29,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]  # scripts/ -> repo root
 SCRIPT = REPO_ROOT / "scripts" / "lint_audit_claims.py"
 
+# A gate that only imports when some other process already fixed sys.path is a
+# gate that silently fails to run. Bootstrap here so `python scripts/x.py` from
+# the repo root works (asserted for every verify_*.py by
+# tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 _spec = importlib.util.spec_from_file_location("lint_audit_claims_under_test", SCRIPT)
 mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mod

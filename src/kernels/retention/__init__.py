@@ -28,6 +28,9 @@ Public API
 
 from __future__ import annotations
 
+import threading
+from typing import Optional
+
 from .config import (
     RETENTION_POLICY_ENV,
     RetentionConfig,
@@ -70,6 +73,31 @@ from .migration import (
     serialize_lifecycle,
 )
 
+_global_manager: Optional[RetentionManager] = None
+_global_lock = threading.Lock()
+
+
+def get_retention_manager() -> RetentionManager:
+    """Get or create the global retention manager.
+
+    Mirrors the singleton-getter contract the other kernels expose (see
+    ``src.kernels.trust.get_trust_manager``). ``src/observability/production.py``
+    requires one ``get_*`` getter per kernel package on disk, so until this
+    existed the readiness report silently omitted retention -- a whole retention
+    subsystem with no health probe.
+
+    Default posture is unchanged: ``RetentionManager`` loads ``NO_DELETE`` unless
+    ``LIUHAO_RETENTION_POLICY`` says otherwise, and never destroys an
+    ``IMMUTABLE_ORIGINAL``.
+    """
+    global _global_manager
+    if _global_manager is None:
+        with _global_lock:
+            if _global_manager is None:
+                _global_manager = RetentionManager()
+    return _global_manager
+
+
 __all__ = [
     "RETENTION_POLICY_ENV",
     "RetentionConfig",
@@ -98,6 +126,7 @@ __all__ = [
     "RetentionMetrics",
     "default_event_sink",
     "RetentionManager",
+    "get_retention_manager",
     "CURRENT_RETENTION_METADATA_VERSION",
     "serialize_lifecycle",
     "deserialize_lifecycle",
