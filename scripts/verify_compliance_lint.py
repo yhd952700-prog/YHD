@@ -80,6 +80,19 @@ def main() -> int:
     results.append(_check(
         "data-subject rights implemented (no caveat) -> FIRES",
         _fires("Data-subject rights are fully implemented and enforced.\n"), True))
+    # --- HIT (extended): other legal-assertion forms that must fire ---
+    results.append(_check(
+        "authorized by law (no caveat) -> FIRES",
+        _fires("We are authorized by law to process your personal data.\n"), True))
+    results.append(_check(
+        "authorized to act on your behalf (no caveat) -> FIRES",
+        _fires("LIUHAO is authorized to act on your behalf.\n"), True))
+    results.append(_check(
+        "ISO 27001 certified (no caveat) -> FIRES",
+        _fires("Our infrastructure is ISO 27001 certified.\n"), True))
+    results.append(_check(
+        "SOC 2 compliant (no caveat) -> FIRES",
+        _fires("We are SOC 2 compliant across all services.\n"), True))
 
     # --- MISS cases: honestly caveated / negated / out-of-scope ---
     results.append(_check(
@@ -103,6 +116,13 @@ def main() -> int:
     results.append(_check(
         "identity '认证' mention (not a certification claim) -> no fire",
         _fires("身份认证与授权框架已实现。\n"), False))
+    # --- MISS (extended): principal/agent authorization must NOT fire ---
+    results.append(_check(
+        "user authorized the agent to act (principal authorization) -> no fire",
+        _fires("The user authorized the agent to act on the task.\n"), False))
+    results.append(_check(
+        "authorized legally (principal authorization, not 'by law') -> no fire",
+        _fires("The principal authorized the agent legally to proceed.\n"), False))
 
     print()
     if all(results):

@@ -67,6 +67,22 @@ def test_data_subject_rights_fires() -> None:
     assert _fires("Data-subject rights are fully implemented and enforced.\n") is True
 
 
+def test_authorized_by_law_fires() -> None:
+    assert _fires("We are authorized by law to process your personal data.\n") is True
+
+
+def test_authorized_to_act_on_your_behalf_fires() -> None:
+    assert _fires("LIUHAO is authorized to act on your behalf.\n") is True
+
+
+def test_iso_27001_certified_fires() -> None:
+    assert _fires("Our infrastructure is ISO 27001 certified.\n") is True
+
+
+def test_soc2_compliant_fires() -> None:
+    assert _fires("We are SOC 2 compliant across all services.\n") is True
+
+
 # --- MISS: honestly caveated / negated / out-of-scope ---
 def test_gdpr_compliant_caveated_does_not_fire() -> None:
     assert _fires("We are GDPR compliant (Frozen/TBD; HUMAN DECISION REQUIRED — see U36).\n") is False
@@ -95,3 +111,12 @@ def test_technical_authorized_not_in_scope() -> None:
 
 def test_identity_auth_mention_not_in_scope() -> None:
     assert _fires("身份认证与授权框架已实现。\n") is False
+
+
+def test_user_authorized_agent_to_act_not_in_scope() -> None:
+    # Principal/agent authorization, not a legal "authorized by law" claim.
+    assert _fires("The user authorized the agent to act on the task.\n") is False
+
+
+def test_authorized_legally_not_in_scope() -> None:
+    assert _fires("The principal authorized the agent legally to proceed.\n") is False

@@ -30,12 +30,43 @@ compliance/liability guard is a defensive net against fake external legal
 assurance (U36/U37/HD-06) — it does NOT constitute compliance and does NOT
 replace human legal review.
 
+BOUNDARY — WHAT THIS GUARD IS NOT
+--------------------------------
+This is a TECHNICAL claim-guard, NOT a legal / compliance / liability
+certification. It does not — and cannot — establish that LIUHAO is GDPR-,
+CCPA-, or any other regulation-compliant, nor that any data-protection or
+autonomous-action liability framework exists. It only FLAGS unqualified
+outward *affirmative* claims (e.g. "we are GDPR compliant", "PII is
+protected") that appear in docs WITHOUT the required honest caveat, so they
+cannot be shipped as fake external assurance. Legal conclusions are NEVER
+fabricated by this script. A PASS means only "no un-caveated claims were
+found in the scanned files" — it is NOT a statement that the project is
+compliant, safe, or legally cleared (owner directive §8: lint ≠ legal
+compliance, lint ≠ GDPR compliance, lint ≠ liability framework).
+
+SCAN SURFACES
+-------------
+By default this scans the `docs/` tree (CI mode = markdown changed vs HEAD
+under docs/; --all = the whole docs/ tree) PLUS a documented, scoped set of
+outward-facing surfaces OUTSIDE docs/ so false claims cannot hide in the
+repo's published face:
+  * root project docs        : README.md, ACCEPTANCE.md, CONTRIBUTING.md
+  * product / component / package docs (recursive *.md):
+        apps/, libs/, oss-ecosystem/, skills/, LiuHao-O/
+Third-party / generated trees (.venv, node_modules, .git, __pycache__) and
+the doc-specific EXCLUDE_GLOBS are never scanned. Extending the surface
+list changes WHICH files are checked; it does NOT change the claim
+semantics or add any legal conclusion (see BOUNDARY above). Adding a path
+to OUTWARD_SURFACE_* is an explicit, reviewed decision — not a silent
+widening.
+
 USAGE
 -----
-  # CI mode (default): scan markdown files changed vs HEAD (filtered to docs/)
+  # CI mode (default): scan markdown files changed vs HEAD
+  #   (docs/**/*.md OR any outward-facing surface file)
   python scripts/lint_audit_claims.py
 
-  # Scan the entire default tree (one-time baseline audit)
+  # Scan the entire default tree + outward surfaces (one-time baseline audit)
   python scripts/lint_audit_claims.py --all
 
   # Scan explicit paths (used for the planted-bad-line dry-run + pre-commit hook)
@@ -196,7 +227,12 @@ RULES: List[dict] = [
             ("LEGAL-ACCOUNTABLE", re.compile(r"法律(上)?(问责|责任|合规|审查|约束)")),
             ("LIABLE", re.compile(r"liable\s+for\s+(autonomous|agent|ai)\s+(actions|acts|decisions)", re.IGNORECASE)),
             ("LIABLE", re.compile(r"(对)?(自主|智能体)行动(承担)?法律(责任|赔偿)")),
-            ("AUTHORIZED-LAW", re.compile(r"authorized\s+(to\s+act|by\s+law|legally)(\s+on\s+your\s+behalf)?", re.IGNORECASE)),
+            # "authorized to act" alone is dropped (too broad — it matches
+            # "the user authorized the agent to act", a benign user-authorization
+            # statement). We keep only the clearly legal-assertion forms so the
+            # guard does not fire on ordinary principal/agent authorization.
+            ("AUTHORIZED-LAW", re.compile(r"authorized\s+by\s+law", re.IGNORECASE)),
+            ("AUTHORIZED-LAW", re.compile(r"authorized\s+to\s+act\s+on\s+your\s+behalf", re.IGNORECASE)),
             ("AUTHORIZED-LAW", re.compile(r"经法律授权(代表你)?")),
             ("AUTHORIZED-LAW", re.compile(r"合法授权")),
             ("CERTIFIED", re.compile(r"\bSOC\s?2\b", re.IGNORECASE)),
@@ -267,6 +303,18 @@ EXCLUDE_GLOBS = [
     "docs/architecture/migration-matrix.md",
 ]
 
+# Outward-facing markdown surfaces OUTSIDE docs/ that are part of the repo's
+# published / project face. The guard scans these too (see SCAN SURFACES in the
+# module docstring) so un-caveated claims cannot hide outside docs/. This is a
+# documented, scoped list — adding a path here is an explicit, reviewed
+# decision, NOT a silent widening. Extending this list never changes the claim
+# semantics (see BOUNDARY above).
+OUTWARD_SURFACE_PREFIXES = ("apps/", "libs/", "oss-ecosystem/", "skills/", "LiuHao-O/")
+OUTWARD_SURFACE_FILES = ("README.md", "ACCEPTANCE.md", "CONTRIBUTING.md")
+
+# Directory trees that are never walked (third-party / generated / VCS).
+SKIP_DIRS = {".venv", "node_modules", ".git", "__pycache__"}
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -285,6 +333,18 @@ def is_excluded(rel_path: str) -> bool:
         if fnmatch.fnmatch(rel, glob):
             return True
     return False
+
+
+def is_outward_surface(rel_path: str) -> bool:
+    """True if rel_path is one of the documented outward-facing surfaces."""
+    rel = rel_path.replace(os.sep, "/")
+    if rel in OUTWARD_SURFACE_FILES:
+        return True
+    return any(rel.startswith(p) for p in OUTWARD_SURFACE_PREFIXES)
+
+
+def _skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS
 
 
 def changed_doc_files(base_dir: str) -> List[str]:
@@ -330,29 +390,45 @@ def collect_targets(args) -> List[str]:
                         if not is_excluded(relp):
                             targets.append(full)
     elif args.all:
-        walk_root = os.path.join(base_dir, DEFAULT_BASE)
-        if not os.path.isdir(walk_root):
-            walk_root = base_dir
-        for root, dirs, files in os.walk(walk_root):
-            rel_dir = os.path.relpath(root, base_dir).replace(os.sep, "/")
-            dirs[:] = [
-                d for d in dirs
-                if not is_excluded(os.path.join(rel_dir, d).replace(os.sep, "/"))
-            ]
-            for f in files:
-                if not f.lower().endswith(".md"):
-                    continue
-                relp = os.path.join(rel_dir, f).replace(os.sep, "/")
-                if is_excluded(relp):
-                    continue
-                targets.append(os.path.join(root, f))
+        # Scan the whole docs/ tree PLUS every documented outward-facing
+        # surface (root project docs + product/component/package docs).
+        roots = []
+        docs_root = os.path.join(base_dir, DEFAULT_BASE)
+        if os.path.isdir(docs_root):
+            roots.append(docs_root)
+        for prefix in OUTWARD_SURFACE_PREFIXES:
+            p = os.path.join(base_dir, prefix)
+            if os.path.isdir(p):
+                roots.append(p)
+        for fname in OUTWARD_SURFACE_FILES:
+            fp = os.path.join(base_dir, fname)
+            if os.path.isfile(fp) and not is_excluded(fname):
+                targets.append(fp)
+        for walk_root in roots:
+            for root, dirs, files in os.walk(walk_root):
+                dirs[:] = [d for d in dirs if not _skip_dir(d)]
+                rel_dir = os.path.relpath(root, base_dir).replace(os.sep, "/")
+                dirs[:] = [
+                    d for d in dirs
+                    if not is_excluded(os.path.join(rel_dir, d).replace(os.sep, "/"))
+                ]
+                for f in files:
+                    if not f.lower().endswith(".md"):
+                        continue
+                    relp = os.path.join(rel_dir, f).replace(os.sep, "/")
+                    if is_excluded(relp):
+                        continue
+                    targets.append(os.path.join(root, f))
     else:
-        # CI mode: changed files under docs/
+        # CI mode: changed markdown files under docs/ OR any outward surface.
         for f in changed_doc_files(base_dir):
             if not f.lower().endswith(".md"):
                 continue
             relp = f.replace(os.sep, "/")
-            if relp.startswith("docs/") and not is_excluded(relp):
+            if any(seg in SKIP_DIRS for seg in relp.split("/")):
+                continue
+            if ((relp.startswith("docs/") and not is_excluded(relp))
+                    or (is_outward_surface(relp) and not is_excluded(relp))):
                 targets.append(os.path.join(base_dir, f))
     # de-dup, keep order
     seen = set()

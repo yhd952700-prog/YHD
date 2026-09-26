@@ -28,7 +28,7 @@ hook is a fast local check, not a substitute for the gate.
 The guard enforces two red lines (see `docs/autonomous/GOVERNANCE.md` §7 and the
 D19/D20 decision):
 
-### HC-01 — `src/kernels/audit` (authoritative audit sink)
+### HC-01 — `src/kernels/audit` (designated authoritative audit sink; runtime chain-of-custody UNVERIFIED)
 Designed tamper-evident (SHA-256 hash chain), but its **runtime** chain-of-custody
 integrity is currently **UNVERIFIED** (a forked chain was found: 284 broken joins /
 169 duplicate-seq rows, pending F1–F6 remediation + independent verification).

@@ -4,12 +4,28 @@ on:
   pull_request:
     paths:
       - 'docs/**/*.md'
+      - 'README.md'
+      - 'ACCEPTANCE.md'
+      - 'CONTRIBUTING.md'
+      - 'apps/**/*.md'
+      - 'libs/**/*.md'
+      - 'oss-ecosystem/**/*.md'
+      - 'skills/**/*.md'
+      - 'LiuHao-O/**/*.md'
   push:
     branches:
       - p36
       - main
     paths:
       - 'docs/**/*.md'
+      - 'README.md'
+      - 'ACCEPTANCE.md'
+      - 'CONTRIBUTING.md'
+      - 'apps/**/*.md'
+      - 'libs/**/*.md'
+      - 'oss-ecosystem/**/*.md'
+      - 'skills/**/*.md'
+      - 'LiuHao-O/**/*.md'
       - 'scripts/lint_audit_claims.py'
 
 jobs:
@@ -22,8 +38,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Lint HC-01 audit tamper / evidence-source claims
+      - name: Lint HC-01 audit tamper / evidence-source / compliance claims
         run: python scripts/lint_audit_claims.py
-        # Default (no args) = CI mode: scans docs/**/*.md files changed vs HEAD.
-        # Fails (exit 1) if any changed doc asserts HC-01 is tamper-proof / a
-        # verified true evidence source WITHOUT the UNVERIFIED / forked caveat.
+        # Default (no args) = CI mode: scans docs/**/*.md AND the documented
+        # outward-facing surfaces (README.md, ACCEPTANCE.md, CONTRIBUTING.md,
+        # apps/**, libs/**, oss-ecosystem/**, skills/**, LiuHao-O/**) changed
+        # vs HEAD. Fails (exit 1) if any changed doc asserts HC-01 is
+        # tamper-proof / a verified true evidence source, HC-09/HC-10 are
+        # durable/authoritative, or makes a compliance/liability claim
+        # (GDPR/CCPA/PII/privacy/legal-accountability) WITHOUT the required
+        # caveat. This is a technical claim-guard, NOT a legal/compliance
+        # certification.
