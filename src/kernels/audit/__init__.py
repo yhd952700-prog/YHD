@@ -280,10 +280,15 @@ class AuditStore:
 
         Acquire lazily on first write, then keep it. Re-acquire ONLY when the
         current token is missing or has expired (a legitimate, still-active
-        single writer refreshing its own lease). We never silently re-acquire a
-        token that was fenced by a *different* owner -- ``SqliteWriterLease.acquire``
-        raises :class:`StaleWriterError` in that case, which refuses the append
-        (the correct fence behaviour: a fenced writer must not append).
+        single writer refreshing its own lease).
+
+        A lease held by a *different LIVE* owner is still refused
+        (``SqliteWriterLease.acquire`` raises :class:`StaleWriterError`) -- the
+        correct fence behaviour: a fenced writer must not append (split-brain
+        prevention). A lease held by a *dead* owner process is now taken over
+        (Fix A): ``acquire`` detects the owner process has exited via
+        ``os.kill(pid, 0)`` and fences it, so a previous writer that crashed
+        without releasing no longer blocks new writers for the full TTL.
         """
         if self._writer_token is not None and self._lease.validate(self._writer_token):
             return

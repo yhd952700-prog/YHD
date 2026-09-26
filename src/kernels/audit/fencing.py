@@ -16,11 +16,108 @@ Q3.5-later).
 
 from __future__ import annotations
 
+import ctypes
+import os
 import sqlite3
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
+
+
+def _owner_pid(owner: Optional[str]) -> Optional[int]:
+    """Best-effort parse of a process id from a lease ``owner`` string.
+
+    The live audit store uses ``"audit-store:<pid>"`` (see
+    ``AuditStore._lease_owner``); other owners parse to ``None`` so we never
+    *assume* liveness we cannot establish.
+    """
+    if not owner or ":" not in owner:
+        return None
+    tail = owner.rsplit(":", 1)[1]
+    try:
+        pid = int(tail)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _is_process_alive(pid: int) -> Optional[bool]:
+    """Probe whether ``pid`` is still running.
+
+    Returns ``True`` if the process is alive, ``False`` if it is known dead, and
+    ``None`` if liveness cannot be determined (no permission / unsupported).
+
+    Platform notes (this matters: the previous implementation used
+    ``os.kill(pid, 0)`` everywhere, which is reliable on POSIX but **not** on
+    Windows -- on Windows that call returns without error for a process whose
+    kernel object still exists after exit, and raises ``OSError`` (not
+    ``ProcessLookupError``) for a pid that never existed, so it could neither
+    confirm death nor confirm liveness. That made the dead-owner lease takeover
+    (Fix A) silently ineffective on the Windows deployment target).
+
+    * POSIX: ``os.kill(pid, 0)`` -- ``ProcessLookupError`` means the pid is gone.
+    * Windows: ``OpenProcess`` + ``GetExitCodeProcess``; ``STILL_ACTIVE`` (259)
+      means the process is still running. ``ERROR_ACCESS_DENIED`` (5) means the
+      pid exists but we cannot query it -> "unknown" (stay conservative). Any
+      other failure (e.g. ``ERROR_INVALID_PARAMETER``/87) means the pid does not
+      exist -> dead.
+    """
+    if sys.platform == "win32":
+        return _is_process_alive_win32(pid)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError (alive but unprivileged) or any other OSError: we
+        # cannot *confirm* death, so report "unknown" and let the caller fall
+        # back to the TTL check rather than stealing an unconfirmed-orphan lease.
+        return None
+
+
+def _is_process_alive_win32(pid: int) -> Optional[bool]:
+    """Windows liveness probe via ``GetExitCodeProcess`` (``STILL_ACTIVE``=259)."""
+    kernel32 = _win32_kernel32()
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        err = ctypes.get_last_error()
+        if err == 5:  # ERROR_ACCESS_DENIED -> exists but unqueryable -> unknown
+            return None
+        return False  # ERROR_INVALID_PARAMETER (87) etc -> pid does not exist
+    try:
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return exit_code.value == _STILL_ACTIVE
+        return None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+_win32_kernel32_cache: Optional[object] = None
+
+
+def _win32_kernel32():
+    global _win32_kernel32_cache
+    if _win32_kernel32_cache is None:
+        lib = ctypes.WinDLL("kernel32", use_last_error=True)
+        lib.OpenProcess.restype = ctypes.c_void_p
+        lib.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+        lib.GetExitCodeProcess.restype = ctypes.c_int
+        lib.GetExitCodeProcess.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        lib.CloseHandle.restype = ctypes.c_int
+        lib.CloseHandle.argtypes = [ctypes.c_void_p]
+        _win32_kernel32_cache = lib
+    return _win32_kernel32_cache
+
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
 
 
 class StaleWriterError(Exception):
@@ -147,9 +244,21 @@ class SqliteWriterLease(WriterLease):
             if row is not None:
                 cur_token, cur_owner, cur_exp = row
                 if cur_exp is not None and cur_exp > now:
-                    raise StaleWriterError(
-                        f"lease already held by {cur_owner!r} until {cur_exp}"
-                    )
+                    # Lease not yet TTL-expired. A *live* owner keeps it (split
+                    # brain prevention). A *dead* owner must be fenced over: the
+                    # previous writer process exited without releasing, and
+                    # leaving its lease live for the full TTL is exactly what
+                    # caused the C-6 NOT-INERT self-lock (verify_armed's probe
+                    # process found the breadth app-suite's lease still valid).
+                    # When liveness cannot be determined we stay conservative and
+                    # refuse (do not steal an unconfirmed-orphan lease).
+                    pid = _owner_pid(cur_owner)
+                    alive = _is_process_alive(pid) if pid is not None else None
+                    if alive is not False:
+                        raise StaleWriterError(
+                            f"lease held by {cur_owner!r} (alive={alive}) until {cur_exp}"
+                        )
+                    # alive is False -> owner process has exited; take over.
                 new_token = (cur_token or 0) + 1
             else:
                 new_token = 1
