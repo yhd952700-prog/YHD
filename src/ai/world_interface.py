@@ -159,11 +159,25 @@ class WorldInterface:
         adapters: Optional[List[WorldAdapter]] = None,
         authorize: Optional[Callable[[WorldRequest], bool]] = None,
         verify: Optional[Callable[[ActionResult], bool]] = None,
+        *,
+        actor: str = "human",
     ) -> None:
         self.adapters: Dict[str, WorldAdapter] = {
             a.name: a for a in (adapters or [])
         }
-        # Optional policy gate (default allow) and result verifier (default: success).
+        # §37 actor model. ``"human"`` keeps the historical default-allow
+        # policy gate (human sovereignty). ``"autonomous"`` flips the default
+        # to DENY and additionally blocks host-command (shell=True) execution
+        # unless an explicit human-arming policy is injected (see authorize()).
+        if actor not in ("human", "autonomous"):
+            raise ValueError(
+                f"actor must be 'human' or 'autonomous', got {actor!r}"
+            )
+        self._actor = actor
+        # Policy gate. For a human actor the gate is default-allow (sovereignty);
+        # for an autonomous actor it is default-deny and host-command
+        # (shell=True) execution is blocked unless an explicit human-arming
+        # policy allows it.
         self._authorize_fn = authorize
         self._verify_fn = verify
 
@@ -179,8 +193,29 @@ class WorldInterface:
         return adapter.supports(request.action)
 
     def authorize(self, request: WorldRequest) -> bool:
+        """§37 policy gate.
+
+        For an ``actor="autonomous"`` interface the default is DENY
+        (fail-closed): nothing may act unless an explicit human-arming
+        ``authorize`` policy is injected and permits it. Host-command
+        execution (the ``shell`` adapter invoked with
+        ``params={"shell": True}``) is blocked by default and may proceed only
+        when the injected policy explicitly arms it.
+
+        For an ``actor="human"`` interface the historical default-allow is kept
+        (human sovereignty): with no policy injected, requests are permitted.
+        """
+        # Autonomous host-command execution is blocked unless explicitly armed
+        # by a human-in-the-loop policy.
+        if (self._actor == "autonomous"
+                and request.adapter == "shell"
+                and request.params.get("shell")):
+            if self._authorize_fn is None or not self._authorize_fn(request):
+                return False
+            return True
         if self._authorize_fn is None:
-            return True  # default allow (governed by injected policy otherwise)
+            # Human dispatch keeps default-allow; autonomous is default-deny.
+            return self._actor != "autonomous"
         return self._authorize_fn(request)
 
     @_observe("world_interface.observe")
