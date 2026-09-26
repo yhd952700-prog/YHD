@@ -31,7 +31,7 @@
 - Q3.2 Testing-platform + coverage gates — `quality-reliability` — partially: gap scan done, **dynamic gate blocked** by suite instability (U25); needs `pytest-timeout` + threshold (confirmed absent: `--timeout` is not installed)
 - Q3.3 Benchmarking / sizing harness — **DONE** commit `b2617567` (`src/benchmarks/sizing.py`) + commit `54fe5f2c` (`scripts/bench_audit_chain.py`). Measured: ~1.8k eps per-event, ~40k eps batched, ~418 B/row
 - Q3.4 Developer SDK / CLI scaffold — `os-systems` — **DONE** commit `6653bb71` (minimal read-only CLI)
-- Q3.5 HC-01 F1–F6 remediation — `os-systems` — primitives **DONE** commit `6653bb71` (`fencing.py`, `durability.py`); **wiring + live migration pending**; HC-01 stays UNVERIFIED
+- Q3.5 HC-01 chain integrity — `os-systems` (primitives) + team lead (wiring). Primitives **DONE** `6653bb71` (`fencing.py`, `durability.py`, `recovery.py`). **Wiring DONE this wave**: shared hash-algorithm registry (`src/common/hash_chain`) routed into the live write/verify path (`07e98eb3`); `SqliteWriterLease` single-writer fence wired into `_log_event_locked` (`ac3a90bc`). `recovery.py` intentionally left as a runnable, non-destructive remediation tool (leaves HC-01 UNVERIFIED). **HC-01 deployment stays UNVERIFIED** (forked `audit_store.db` is a data concern, D22; the wired code is verified on fresh dbs).
 - Q3.6 CI doc-lint guard — `governance-legal` — **DONE** (`842eeb3e` + `5a2de585` + `2b48d71f`); HC-11 rule pending Q1.1 → now unblocked by this wave
 
 ## Wave 4 — Discovered while finishing Q1.1 (team-lead执行的直接交付)
@@ -48,6 +48,16 @@
 - Q5.3 `tests/sre/` now exists (U26) — this was the first DR test coverage in the repo.
 - Q5.4 Baseline honesty (U32) — see §Test baseline below.
 
+## Wave 7 — Q3.5 wiring, D22 closure, U33 ruling (team-lead, direct)
+- D22 derived-view test aligned to the re-adjudicated summary keys — **DONE** (`c49e4ecc`). Closes the last real repo failure; the full suite now has **zero** reproducible repo failures (the 11 errors are environmental, U35).
+- HC-01 Q3.5 — **wiring DONE** (`07e98eb3` + `ac3a90bc`): the shared hash-algorithm registry (`src/common/hash_chain`) is routed into the live write/verify path (removes a private duplicate of `HASH_ALGORITHMS`/`DEFAULT_HASH_ALG`), and `SqliteWriterLease` single-writer fence is wired into `_log_event_locked` (closes the cross-process gap RCA-1; 4 new fence tests). `recovery.py` is intentionally left as a runnable, non-destructive detect→quarantine→rederive→re-verify remediation tool — it does NOT auto-wire into the live path and leaves HC-01 UNVERIFIED. **HC-01 deployment status remains UNVERIFIED** (the forked `audit_store.db` is a DATA concern, D22); the wired code is verified on fresh, isolated dbs.
+- U33 — **Resolved (scoped)** (`c85333fd`): the two backup implementations are different LAYERS (portable archive tool `scripts/ops/backup.py` vs in-app DR record-integrity lib `src/sre/disaster/backup.py`), not redundant; neither retired; boundary documented in each module. The genuine gap is neither having a production caller yet.
+
+### Next autonomous work
+- Resume the three rate-limited agents after reset: `security-identity` Q2.2 (formal security/forensics report) + Q0.1 (HC-09/10 semantics); `governance-legal` HC-11 doc-lint rule (now unblocked by Q1.1); `os-systems` follow-up on Q2.5 AI/Agent infra gap.
+- HC-01 live migration (the forked `audit_store.db`): run `recovery.run()` against a transaction-consistent copy once forensics sign off — irreversible, so it stays a HUMAN-DECISION-gated step (D22).
+- Wire a production caller for one of the backup implementations (U33 follow-up) — decide which is the canonical operational path.
+
 ## Test baseline (evidence, not vibes)
 - Serial full suite: **2525 tests, ~7–8 min, no hang**. The earlier "the suite hangs" report never reproduced.
 - **Discipline: never run two pytest processes against this repo at once.** They share temp dirs and sqlite scratch files and manufacture phantom failures.
@@ -57,7 +67,7 @@
 - **Guardrail meta-guard (3 failures) — FIXED.** It claimed `verify_go_readiness.py` "cannot fail" because it only understood integer literals, while the script returns `EXIT_FAIL`; fixed by resolving module-level int constants in the checker, adding the missing `sys.path` bootstrap, and wiring `verify_same_decision_point_closure.py` into CI (0 or 2 pass, 1 fails — its exit 2 is the honest CRIT-1C known gap) (`bc528e9d`).
 
 ### Remaining, attributed
-1. `tests/scripts/test_derive_audit_view.py::test_fourteen_collision_groups_flagged` — **the only real repo failure**. `KeyError: 'critical_sovereignty_collision_groups_detected'`; belongs to the D22 derived-view work. Pre-existing (also fails at control `54fe5f2c`).
+1. ~~`tests/scripts/test_derive_audit_view.py::test_fourteen_collision_groups_flagged`~~ — **RESOLVED** (`c49e4ecc`). Was the last real repo failure: the test encoded the REVOKED D22 gating semantics (`critical_sovereignty_collision_groups_detected/known/match`). Aligned it to the re-adjudicated, no-freeze summary keys (`critical_sovereignty_collision_groups_live` + a read-only FINDING); 5/5 pass. The reproducible real-repo-failure count is now **zero**.
 2. `test_knowledge_memory.py` (11), `test_policy_properties.py::test_service_principal_allow_exactly_whitelist` (1), `test_register_human_identity.py::test_registers_and_proves_the_login` (1) — **environmental, not repo defects.** Tracebacks end inside the WorkBuddy sandbox shim: `sitecustomize.py::_check_bulk_delete_guard → raise SystemExit(1)`, i.e. a per-turn bulk-delete budget (~50) that a full suite exhausts. Every one of them passes on its own and in small groups. CI (GitHub Actions, no shim) will not see them. Recorded, not "fixed", because there is nothing in the repo to fix.
 
 ## Standing
