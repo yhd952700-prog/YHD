@@ -3,6 +3,12 @@
 Backup Script for LiuHao AI OS
 
 Performs automated backups of critical data with encryption and verification.
+
+SCOPE BOUNDARY (U33): this is the operational *portable archive* tool -- encrypted
+tar bundles of DB dumps / config, meant to be uploaded and restored as a unit. It
+is NOT the in-application DR record-integrity library
+(``src/sre/disaster/backup.py``), which verifies individual records. Different
+layers, intentionally coexist. Currently has a CLI but no production caller wired.
 """
 
 import os

@@ -11,6 +11,12 @@ recovery path; it is a backup you discover is empty during the incident.
 
 Restore therefore recomputes the hash from what it actually read and refuses on
 a mismatch, and it hands the recovered data back instead of discarding it.
+
+SCOPE BOUNDARY (U33): this is the in-application DR *record-integrity* library
+(per-record hash-verified recovery). It is NOT the portable operational backup
+archive -- that is ``scripts/ops/backup.py`` (tar + encrypt + upload). The two
+are different layers and intentionally coexist; do not wire one in place of the
+other, and neither is currently wired to a production caller.
 """
 
 import json
