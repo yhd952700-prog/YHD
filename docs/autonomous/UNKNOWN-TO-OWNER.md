@@ -1,7 +1,158 @@
-# UNKNOWN-TO-OWNER — things the owner didn't ask for, the team found
+# UNKNOWN-TO-OWNER Register (LIUHAO AI OS)
 
-> Living register. The owner explicitly asked the team to discover and act on what they had not imagined. Entries: **id · discovered-by · date · what · why-it-matters · team-status · priority**.
-> `Built/Doing` = team proceeding autonomously. `Resolved` = decided. `HUMAN` = sovereignty boundary, owner only.
+> Purpose: a read-only discovery register of system facts the project owner very
+> likely does NOT know — security posture, capability surfaces, and systemic
+> gaps an autonomous R&D org must surface before they bite.
+>
+> Discipline (per FULL AUTONOMOUS mandate, HARD BOUNDARIES):
+> - This file is produced by READ-ONLY scanning. No evidence was deleted,
+>   overwritten, or re-captured. The forensic snapshot and
+>   `D:\WorkBuddyFiles\LIUHAO-Phase3.6-Evidence\` remain IMMUTABLE.
+> - "VERIFIED" is used ONLY where independently proven. No success is faked.
+> - No source was modified to produce these findings; this is a register, not a
+>   change.
+>
+> Domain owner of this section: **sec-impl** (security architecture / AI-security
+> / identity / capability-security / red-team discovery).
+> Last scan: 2026-09-26 (rate-limit lifted), branch p36.
+
+---
+
+## U1 — Shell adapter is a default-allow command-execution capability surface
+- **Where:** `src/ai/world_interface.py` — `ShellAdapter.execute` (≈L126-151),
+  `WorldInterface.__init__` (≈L157-168).
+- **What:** `ShellAdapter` runs host commands. By default it uses `shlex.split`
+  (no shell). But `shell=True` is reachable whenever a caller passes
+  `params={"shell": True}`. More importantly, `WorldInterface` constructs with
+  `authorize=None`, documented as **"default allow"**. So the gate that is
+  supposed to sit in front of a command-execution capability *defaults to
+  permissive*.
+- **Why it matters (AI / capability security):** an LLM-driven planner that can
+  register or reach a `shell` adapter — with a permissive (or absent)
+  `authorize` callback — can execute arbitrary host commands. On the autonomous
+  path this is a direct host-compromise capability, not merely a sandbox escape.
+- **Severity:** HIGH for autonomous operation. Not a hard human-sovereignty
+  violation yet, but it is a capability that must be armed deliberately, not
+  defaulted open.
+- **Recommendation (for team-lead / security-identity triage):**
+  1. Make `WorldInterface` *default-deny* when `authorize is None` (refuse, do
+     not allow).
+  2. Forbid `shell=True` on the autonomous path unless a human-in-the-loop has
+     explicitly armed it.
+  3. Keep the `authorize` callback mandatory and logged.
+- **Status:** DISCOVERED (read-only). Not yet remediated. No code changed.
+
+## U2 — Subprocess sandbox resource limits are not enforced on Windows
+- **Where:** `src/plugins/sandbox/backends/subprocess_backend.py` ≈L128
+  (`preexec_fn=_set_limits if os.name != 'nt' else None`).
+- **What:** The subprocess sandbox applies `RLIMIT_AS / RLIMIT_CPU /
+  RLIMIT_NPROC / RLIMIT_FSIZE` via `preexec_fn`, but `preexec_fn` is ignored on
+  Windows (`None`), so on `nt` hosts **none of the resource limits are applied**.
+- **Why it matters:** plugin / agent code executed through this backend is not
+  memory-/CPU-/PID-/output-bounded on Windows. A runaway or hostile plugin can
+  exhaust host resources; containment is weaker on the Windows deploy target than
+  on Unix.
+- **Severity:** MEDIUM (platform-dependent containment gap).
+- **Recommendation:** add a Windows-side limiter (job objects / process groups)
+  or explicitly document Windows as an unsupported sandbox target.
+- **Status:** DISCOVERED (read-only). No code changed.
+
+## U3 — There is currently NO verified durable audit trail in this build
+- **Where:** `src/security/audit_logger.py` (HC-09), `src/security/audit_policy.py`
+  (HC-10), `src/kernels/audit` (HC-01).
+- **What:** D19/D20/D21 (implemented this wave) deliberately keep HC-09/HC-10
+  **volatile / in-memory / non-authoritative** — they are NOT audit-grade and the
+  matrix still rates them UNVERIFIED. The only authoritative store
+  (`src.kernels.audit`, HC-01) has a **forked, UNVERIFIED** chain (per the matrix
+  and the HC-01 decision memo). So as of this build, no chain is VERIFIED.
+- **Why it matters:** any "we have an audit log" claim today is misleading. The
+  system cannot yet produce tamper-evident, durable evidence of security-relevant
+  actions. This is by human decision (D19 = A+, do-not-persist), not an accident,
+  but the owner should know the evidence gap is real and current.
+- **Severity:** STRATEGIC / governance. HC-01 remediation (F1–F6) is the path to
+  VERIFIED; until then, treat all internal audit as telemetry, not evidence.
+- **Status:** CONFIRMED by runtime matrix probe (verify_p08_final_status_matrix.py
+  → COMPLIANT 7 / UNVERIFIED 4, no drift). Not a defect to "fix" this wave; it is
+  the declared, honest state.
+
+## U4 — New HWM telemetry file is counter-only and fail-open (correct, but note)
+- **Where:** `src/security/audit_logger.py` `get_crypto_audit_logger()` writes
+  ` ~/.liuhao/audit_hwm.json` in production (D19).
+- **What:** The high-water-mark file holds ONLY `{"entries_ever_written": <int>}`,
+  mode 0600, atomic `os.replace`, fully fail-open. It confers no authority and is
+  explicitly NOT evidence.
+- **Why it matters (note, not a defect):** ensure operators/backup tooling do not
+  mistake this counter file for audit evidence or chain-of-custody. It is
+  monotonic telemetry only.
+- **Severity:** INFO.
+- **Status:** IMPLEMENTED this wave; recorded so it is not later mistaken for
+  proof.
+
+---
+
+## U5 — Systemic permit-by-default authorization framework
+- **Where:** `src/ai/lcore.py:131-132` (`if self.authorize is None: return True  # human-sovereignty default allow`); `src/ai/world_interface.py:166,183` (`# Optional policy gate (default allow)` / `return True  # default allow`).
+- **What:** Multiple components treat `authorize=None` as **allow**. `WorldInterface` and `L-Core` both fall through to permit when no explicit gate is injected. (See U1 for the dangerous instance: the shell adapter sits behind this default-allow.)
+- **Why it matters (capability security):** this is a framework-wide pattern — any NEW world action / adapter / tool added without an explicit `authorize` callback inherits permit-by-default. The human-facing L-Core default-allow is defensible (human sovereignty), but the pattern is dangerous wherever it gates non-human/autonomous capability (shell, subprocess, external writes).
+- **Severity:** MEDIUM–HIGH (compounding U1).
+- **Recommendation:** invert the default to deny when `authorize is None` for any non-human-facing capability; keep explicit allow only for the human's L-Core interface, and log every gate decision.
+- **Status:** DISCOVERED (read-only). No code changed.
+
+## U6 — `revoke_all_user_tokens` is a silent no-op placeholder
+- **Where:** `src/security/jwt_handler.py:545-548`.
+- **What:** `revoke_all_user_tokens(subject)` returns `0` with a `# placeholder for now` comment — it does NOT revoke anything. No exception, no log, just a falsy 0.
+- **Why it matters:** this is exactly the "false success" the mandate forbids. An operator/automated responder calling "revoke all of user X's tokens" after a compromise would believe the revocation happened; it did not. Violates the HARD BOUNDARY "No faking success" and "No garbage code."
+- **Severity:** HIGH (security control that silently does nothing).
+- **Recommendation:** either implement it against a real token store, or make it raise `NotImplementedError` so callers cannot mistake a no-op for success. Do NOT ship a silent 0.
+- **Status:** DISCOVERED (read-only). No code changed.
+
+## U7 — Built-in `system` identity carries `admin`; verify no principal spoofing
+- **Where:** `src/kernels/identity/__init__.py:402-408` (default `system` identity, `permissions={"admin"}`, scope L0).
+- **What:** The bootstrap `system` principal is a privileged built-in used for kernel-internal actions (Policy C-1). Its `metadata["kind"]=="service"` marker is what lets the Policy Kernel distinguish it from human identities. Intentional design.
+- **Why it matters (verification question, not a confirmed vuln):** a built-in `admin` principal is a high-value target. The owner should know whether the Policy Kernel / RBAC layer **rejects an externally-supplied `principal="system"`** (spoofing). If any caller-supplied principal string can become "system", that is privilege escalation to admin.
+- **Severity:** LOW–MEDIUM (depends on spoofing protection, unverified here).
+- **Recommendation:** confirm `principal` is never trusted from untrusted input for the `system`/service marker; add a regression test that an external request claiming `system` is denied or re-bound to a non-admin identity.
+- **Status:** DISCOVERED (read-only); flagged for verification, not a confirmed defect.
+
+## Reviewed-safe (explicit false-positive callouts)
+- `jwt_handler.py` unverified `jwt.decode(..., options={"verify_signature": False})` at L435/L525 is **safe**: it only extracts `jti` for revocation lookup; the trust decision uses a fully-verified decode (L448: signature + issuer + audience + exp + iat). No unverified claim is trusted.
+- `introspect_token` calls `validate_token(token, verify_exp=False)` (L553) — minor: an expired token reports `active: True` on introspection. Standard-ish, but note if strict expiry on introspection is required.
+- All secret/key/token generation uses `secrets.token_*` / `secrets.token_bytes` (strong CSPRNG). No `random.*` used for secrets. Good.
+- No `CERT_NONE` / `verify=False` / unverified-TLS anywhere in `src`. Good.
+- No weak `md5`/`sha1` for security; hash chains use `sha256` via the explicit-algorithm registry. Good.
+- RBAC kernel (`src/security/rbac.py`) is **default-deny**: `has_permission` / `check_access` fall through to `return False` (L191/L217/L562). This is the correct posture and contrasts with the `WorldInterface`/`lcore` `authorize=None → allow` pattern (U5). The authz gap is at the world-action/adapter boundary, not in RBAC itself.
+
+## Scan method (reproducibility)
+- Read-only static greps over `src/` for: `shell=True`, `verify=False`,
+  `pickle/yaml.load/marshal/eval/exec`, `md5/sha1`, hardcoded
+  `password/api_key/secret_key/token`, `DEBUG=True`, `disable_auth/bypass_auth`.
+- Runtime: re-ran SEC-subset pytest (75 passed) and
+  `verify_p08_final_status_matrix.py` (EXIT 0, 7/4, no drift).
+- No evidence files were touched. No source was modified for this scan.
+
+---
+
+## U36 — No data-protection / PII legal-compliance framework (GDPR/CCPA) despite PII handling in the pipeline
+- **Where:** `src/knowledge/pii.py` (regex PII detect + `[REDACTED]`); audit chains (`src/kernels/audit` HC-01, `src/security/audit_logger.py` HC-09) redact **secrets only**, not PII; `docs/archive/PHASE_ACCEPTANCE_REPORTS.md:1300` → `Phase 20 | 合规自动化（GDPR/CCPA） | 🔒 Frozen | TBD via Amendment`.
+- **What:** The pipeline ingests/redacts PII (emails, phones, identity/address markers) and the audit trail records identity principals + operations, but there is **no implemented data-protection legal framework**: no data-subject rights (access / rectification / erasure), no cross-border / jurisdiction policy, and no finalized retention policy (HD-06 = HUMAN DECISION). GDPR/CCPA compliance is explicitly Frozen/TBD.
+- **Why it matters (governance / legal):** LIUHAO is an autonomous agent OS that will process personal data; operating it without a data-protection posture creates external legal liability (GDPR/CCPA enforcement) the owner is currently unaware of. This is a sovereignty/legal boundary, not a defect for the team to auto-fix.
+- **Severity:** HIGH (legal exposure) — but explicitly a HUMAN DECISION boundary (data ownership, law/compliance policy, retention final policy per EXECUTION-QUEUE §Standing).
+- **Recommendation:** escalate to owner as HUMAN DECISION (see `docs/autonomous/HUMAN-DECISION-HD06-U37.md`). Team must NOT auto-decide data-protection compliance or retention.
+- **Status:** DISCOVERED (read-only). No code changed. Pending HUMAN DECISION.
+
+## U37 — No legal liability / accountability framework for autonomous-agent actions
+- **Where:** design intent `Human-Sovereign + Bounded Autonomous Authority`; `src/kernels/audit` (HC-01) is a *technical* audit chain, not a legal-attribution framework; `docs/autonomous/EXECUTION-QUEUE.md:76` lists `external contracts/liability` as HUMAN DECISION REQUIRED.
+- **What:** Agents execute bounded autonomous authority, yet there is no documented framework answering **who bears legal liability when an autonomous action causes harm**, nor how authorization/attribution records map to external (human / contractual) responsibility. Technical accountability (HC-01 audit chain) exists; legal liability assignment does not.
+- **Why it matters (governance / legal):** as the owner delegates the *entire* project to the team, legal liability for autonomous actions remains an unaddressed owner-level boundary. Auto-executing agent actions without a liability framework is a HUMAN DECISION, not a team default.
+- **Severity:** HIGH (legal exposure) — HUMAN DECISION REQUIRED.
+- **Recommendation:** escalate to owner as HUMAN DECISION (see `docs/autonomous/HUMAN-DECISION-HD06-U37.md`). Team must NOT assume/default liability allocation.
+- **Status:** DISCOVERED (read-only). No code changed. Pending HUMAN DECISION.
+
+---
+
+## Recovered governance-legal register entries (committed at HEAD, pre-sec-impl rewrite)
+
+> **PRESERVED VERBATIM** to avoid loss during the concurrent sec-impl rewrite of this file. The **U1–U7** rows below are governance-legal's ORIGINAL entries and are **DISTINCT** from sec-impl's U1–U7 prose sections above (both agents independently numbered their findings U1–U7). Rows **U8–U35** are unique to governance-legal. Cross-references in EXECUTION-QUEUE (U15–U22, U24–U35, etc.) resolve to this block.
 
 | id | discovered-by | date | what | why it matters | status | priority |
 |----|----|----|----|----|----|----|
