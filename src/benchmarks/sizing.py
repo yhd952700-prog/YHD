@@ -23,7 +23,10 @@ import sqlite3
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+# Tuple is imported even though ``from __future__ import annotations`` makes the
+# annotation lazy: anything that RESOLVES the hints (typing.get_type_hints,
+# documentation tooling) would otherwise raise NameError on harness_temp_db().
+from typing import Dict, Optional, Tuple
 
 # Mirror of the audit_events schema subset the harness exercises.
 _SCHEMA = """
