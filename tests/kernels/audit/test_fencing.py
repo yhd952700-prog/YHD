@@ -6,9 +6,11 @@ throwaway connections, and prove the core invariant: a strictly monotonic token
 fences every older writer (the C3 split-brain closure for RCA-1).
 """
 
+import os
 import sqlite3
 import time
 
+from src.kernels.audit import AuditStore, AuditEventType, AuditScope
 from src.kernels.audit.fencing import (
     StaleWriterError,
     InMemoryWriterLease,
@@ -184,3 +186,107 @@ def test_sqlite_require_writer_lease_ok_and_stale():
         assert False
     except StaleWriterError:
         pass
+
+
+# --- U38: a writer must not fence ITSELF out -----------------------------------
+#
+# Root cause: ``acquire`` refused any live lease by judging liveness only from the
+# pid embedded in the owner string -- which is alive for our own process. So an
+# AuditStore re-created inside one process within the lease TTL fenced itself, and
+# (fail-closed gate) denied every HIGH/CRITICAL action for up to the full TTL.
+
+
+def test_sqlite_same_owner_renewal_is_not_a_self_fence():
+    """The same writer re-acquiring its own live lease renews instead of raising."""
+    conn = _fresh_conn()
+    lease = SqliteWriterLease(conn)
+    me = f"audit-store:{os.getpid()}"
+    t1 = lease.acquire(me, ttl_sec=30.0)
+    # Renewal by the identical owner must succeed and keep the same fence token
+    # (bumping would fence a co-existing same-owner holder -> mutual thrash).
+    t2 = lease.acquire(me, ttl_sec=30.0)
+    assert t2 == t1
+    assert lease.validate(t1) is True
+    assert lease.current().owner == me
+
+
+def test_sqlite_same_owner_renewal_extends_the_expiry():
+    lease = SqliteWriterLease(_fresh_conn())
+    me = f"audit-store:{os.getpid()}"
+    lease.acquire(me, ttl_sec=5.0)
+    before = lease.current().expires_at
+    time.sleep(0.02)
+    lease.acquire(me, ttl_sec=30.0)
+    assert lease.current().expires_at > before
+
+
+def test_sqlite_different_owner_with_live_pid_is_still_fenced():
+    """THE safety counterpart: a *different* owner is refused even when its pid
+    demonstrably alive. Renewal must never become lease-stealing."""
+    conn = _fresh_conn()
+    lease = SqliteWriterLease(conn)
+    # Incumbent owner string embeds a pid we know is alive: our own.
+    lease.acquire(f"audit-store:{os.getpid()}", ttl_sec=30.0)
+    try:
+        # Different owner string, same (live) pid -> must still be refused.
+        lease.acquire(f"other-writer:{os.getpid()}", ttl_sec=30.0)
+        assert False, "a different live owner must still be fenced (no lease stealing)"
+    except StaleWriterError:
+        pass
+
+
+def test_inmemory_same_owner_renewal_is_not_a_self_fence():
+    l = InMemoryWriterLease()
+    t1 = l.acquire("w1", ttl_sec=30.0)
+    t2 = l.acquire("w1", ttl_sec=30.0)  # same owner -> renewal
+    assert t2 == t1
+    assert l.validate(t1) is True
+    # A different owner is still fenced.
+    try:
+        l.acquire("w2", ttl_sec=30.0)
+        assert False, "different owner must still raise"
+    except StaleWriterError:
+        pass
+
+
+def test_two_audit_stores_in_one_process_both_append(tmp_path):
+    """End-to-end regression for the real symptom: recreating the audit store
+    inside one process (singleton reset / reconnect / per-test isolation) used to
+    self-fence, which fail-closed then turned into a denial of every HIGH/CRITICAL
+    action. Both instances must be able to append."""
+    db = str(tmp_path / "audit.db")
+    first = AuditStore(db_path=db)
+    first.initialize()
+    first.log_event(
+        event_type=AuditEventType.STATE_CHANGE,
+        principal_id="svc-a",
+        scope=AuditScope.L0,
+        outcome="success",
+        details={"action": "first.store"},
+        correlation_id="corr-1",
+    )
+    # Second store, same process, same DB: this is what used to raise
+    # StaleWriterError("lease held by 'audit-store:<our own pid>' (alive=True)").
+    second = AuditStore(db_path=db)
+    second.initialize()
+    second.log_event(
+        event_type=AuditEventType.STATE_CHANGE,
+        principal_id="svc-b",
+        scope=AuditScope.L0,
+        outcome="success",
+        details={"action": "second.store"},
+        correlation_id="corr-2",
+    )
+    # And the first instance must still be able to append afterwards (no thrash).
+    first.log_event(
+        event_type=AuditEventType.STATE_CHANGE,
+        principal_id="svc-a",
+        scope=AuditScope.L0,
+        outcome="success",
+        details={"action": "first.store.again"},
+        correlation_id="corr-3",
+    )
+    rows = sqlite3.connect(db).execute(
+        "SELECT COUNT(*) FROM audit_events"
+    ).fetchone()[0]
+    assert rows == 3, f"expected 3 appended events, got {rows}"

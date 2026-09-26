@@ -173,6 +173,14 @@ class InMemoryWriterLease(WriterLease):
     def acquire(self, owner: str, ttl_sec: float = 30.0) -> int:
         now = time.time()
         if self._token and self._expires_at and self._expires_at > now:
+            if self._owner == owner:
+                # FIX (U38, self-fence): same writer renewing the lease it already
+                # holds -- legitimate renewal, not a competing writer. See the
+                # equivalent fix in ``SqliteWriterLease.acquire`` for the full
+                # rationale. The token is NOT bumped, so a co-existing same-owner
+                # holder is not fenced by our renewal (no mutual-fence thrash).
+                self._expires_at = now + ttl_sec
+                return self._token
             raise StaleWriterError(
                 f"lease already held by {self._owner!r} until {self._expires_at}"
             )
@@ -244,14 +252,47 @@ class SqliteWriterLease(WriterLease):
             if row is not None:
                 cur_token, cur_owner, cur_exp = row
                 if cur_exp is not None and cur_exp > now:
-                    # Lease not yet TTL-expired. A *live* owner keeps it (split
-                    # brain prevention). A *dead* owner must be fenced over: the
-                    # previous writer process exited without releasing, and
-                    # leaving its lease live for the full TTL is exactly what
-                    # caused the C-6 NOT-INERT self-lock (verify_armed's probe
-                    # process found the breadth app-suite's lease still valid).
-                    # When liveness cannot be determined we stay conservative and
-                    # refuse (do not steal an unconfirmed-orphan lease).
+                    if cur_owner == owner:
+                        # FIX (U38, self-fence): this is the *same* writer
+                        # re-acquiring a lease it already holds -- a legitimate
+                        # RENEWAL, not a competing writer.  ``_ensure_writer_lease``
+                        # documents exactly this case ("a legitimate, still-active
+                        # single writer refreshing its own lease"), but the branch
+                        # below used to reject it, because liveness was judged
+                        # only from the *pid* embedded in the owner string -- and
+                        # that pid is of course alive for our own process.
+                        #
+                        # Consequence of the bug: any AuditStore re-created inside
+                        # one process while its own lease was still live (singleton
+                        # reset, re-connect, per-test isolation) fenced ITSELF out.
+                        # Because the mandatory-evidence gate is fail-closed, that
+                        # denied *every* HIGH/CRITICAL action for up to the full
+                        # lease TTL -- a self-inflicted availability outage.
+                        #
+                        # Split-brain protection is deliberately untouched: renewal
+                        # applies ONLY when the owner string is identical, so a
+                        # *different* live owner is still refused just below.
+                        #
+                        # The token is deliberately NOT bumped: this writer keeps
+                        # its existing fence token.  Bumping would invalidate the
+                        # token held by any co-existing same-owner instance and
+                        # make them fight -- each renewal fencing the other, with
+                        # every subsequent write re-acquiring (thrash).
+                        self._conn.execute(
+                            "UPDATE writer_lease SET expires_at = ? WHERE id = 1",
+                            (now + ttl_sec,),
+                        )
+                        self._conn.commit()
+                        return cur_token
+                    # Lease not yet TTL-expired and held by a *different* owner.
+                    # A *live* owner keeps it (split brain prevention). A *dead*
+                    # owner must be fenced over: the previous writer process
+                    # exited without releasing, and leaving its lease live for the
+                    # full TTL is exactly what caused the C-6 NOT-INERT self-lock
+                    # (verify_armed's probe process found the breadth app-suite's
+                    # lease still valid). When liveness cannot be determined we
+                    # stay conservative and refuse (do not steal an
+                    # unconfirmed-orphan lease).
                     pid = _owner_pid(cur_owner)
                     alive = _is_process_alive(pid) if pid is not None else None
                     if alive is not False:
