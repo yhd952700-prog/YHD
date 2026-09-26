@@ -198,6 +198,12 @@ class JWTHandler:
         self._revoked_tokens: Set[str] = set()
         self._revoked_refresh_tokens: Set[str] = set()
 
+        # Subject -> set of JTIs minted for that subject. Maintained in
+        # create_token so revoke_all_user_tokens can actually revoke a user's
+        # tokens instead of silently doing nothing. In-memory only (see the
+        # module note on per-process signing keys).
+        self._subject_tokens: Dict[str, Set[str]] = {}
+
         # Load or generate keys
         self._load_keys(private_key, public_key, secret_key, key_file)
 
@@ -348,6 +354,11 @@ class JWTHandler:
             ip_address=ip_address,
             user_agent=user_agent,
         )
+
+        # Track this JTI under its subject so revoke_all_user_tokens can find
+        # it later. Append-only: individual revocations do not remove the JTI
+        # here (harmless -- revoke_all re-adds to the blacklist idempotently).
+        self._subject_tokens.setdefault(subject, set()).add(payload.jti)
 
         # Encode token
         token = jwt.encode(
@@ -543,9 +554,28 @@ class JWTHandler:
         self._revoked_refresh_tokens.add(jti)
 
     def revoke_all_user_tokens(self, subject: str) -> int:
-        """Revoke all tokens for a user (requires token introspection storage)"""
-        # This would require a token store - placeholder for now
-        return 0
+        """Revoke every token currently minted for ``subject``.
+
+        Works off the in-memory subject->JTI index maintained in
+        :meth:`create_token`. Returns the number of JTIs revoked. A ``0`` here
+        means the subject had no tracked tokens -- it is an honest "nothing to
+        revoke", NOT a silent success pretending tokens were killed.
+
+        Scope/limitations (honest, not hidden):
+          * In-memory only. It does not survive a process restart and is not
+            shared across workers -- the same limitation as the rest of the
+            revocation blacklist in this class (see the module note on
+            per-process signing keys). A deployment that needs durable,
+            cross-worker revocation must back this with a shared store
+            (Redis/DB), at which point this method should be re-pointed there.
+          * Only tokens minted *after* this handler instance started tracking
+            are covered.
+        """
+        jtis = self._subject_tokens.pop(subject, set())
+        for jti in jtis:
+            self._revoked_tokens.add(jti)
+            self._revoked_refresh_tokens.add(jti)
+        return len(jtis)
 
     def introspect_token(self, token: str) -> Dict[str, Any]:
         """Introspect token (RFC 7662)"""
