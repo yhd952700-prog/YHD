@@ -148,6 +148,7 @@ class HardeningSuite:
         world = WorldInterface(
             adapters=[FilesystemAdapter()],
             authorize=lambda req: False,
+            actor="autonomous",
         )
         result = world.execute(WorldRequest(
             adapter="filesystem", action="write",

@@ -123,6 +123,7 @@ def run_e2e_demo(
         world = WorldInterface(
             adapters=[FilesystemAdapter()],
             authorize=_world_authorize(output_dir),
+            actor="autonomous",
         )
         report_path = os.path.join(output_dir, "report.md")
 

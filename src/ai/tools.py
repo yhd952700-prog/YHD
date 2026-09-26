@@ -276,7 +276,22 @@ def make_tools(
     # 刻意**不提供写入工具**：写入要经过审批链路（policy/approvals）才有意义，
     # 在那条路打通之前先给写权限，等于让模型在无人过问的情况下改动磁盘。
     fs_root = workspace_root()
-    fs_world = WorldInterface(adapters=[FilesystemAdapter(root=fs_root)])
+
+    # U1/U5 收口：LLM 可调用文件工具是**自主(autonomous)面**，必须显式
+    # actor="autonomous" 让其默认拒绝；同时只放行 read / list 这类只读观察，
+    # write / exec / shell 一律 fail-closed 拒绝（此处压根不注册任何写工具，
+    # 且工作区越界已由 FilesystemAdapter(root=fs_root) 在 resolve_in_workspace
+    # 处拦截）。没有显式 authorize_fn 的 autonomous 接口会默认全拒，会让误读
+    # 工具直接挂掉，所以这里必须给一个最小只读授权策略。
+    def _tool_fs_authorize(request: WorldRequest) -> bool:
+        # 工具层是只读观察面：只允许 read / list；任何写或执行都拒绝。
+        return request.action in ("read", "list")
+
+    fs_world = WorldInterface(
+        adapters=[FilesystemAdapter(root=fs_root)],
+        authorize=_tool_fs_authorize,
+        actor="autonomous",
+    )
 
     # 单次返回上限：工具输出会整段进上下文，不设限会让一次读文件吃掉整个窗口。
     read_limit = 20000

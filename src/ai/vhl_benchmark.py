@@ -131,6 +131,7 @@ def run_vhl_benchmark(
         world = WorldInterface(
             adapters=[FilesystemAdapter()],
             authorize=_world_authorize(output_dir),
+            actor="autonomous",
         )
         report_path = os.path.join(output_dir, "report.md")
 
