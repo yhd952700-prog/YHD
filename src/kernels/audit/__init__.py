@@ -13,9 +13,9 @@ correlation-aware querying, and full event lifecycle management.
 """
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError
+from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
 
 import json
-import hashlib
 import logging
 import time
 import sqlite3
@@ -23,7 +23,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 logger = logging.getLogger("liuhao.kernel.audit")
@@ -53,14 +53,12 @@ logger = logging.getLogger("liuhao.kernel.audit")
 # the honest answer, and the wrong algorithm would only produce a wrong-but-green
 # one.
 
-#: Algorithms this build can verify. Adding an entry does not rewrite anything.
-HASH_ALGORITHMS: Dict[str, Callable[[bytes], str]] = {
-    "sha256": lambda payload: hashlib.sha256(payload).hexdigest(),
-}
-
-#: Algorithm applied to newly written events, and assumed for rows stored before
-#: the column existed -- which is factually correct, they were all SHA-256.
-DEFAULT_HASH_ALG = "sha256"
+# P0-8: this module now consumes the shared algorithm registry
+# (``src.common.hash_chain``) instead of keeping a private copy, so the audit
+# chain can never drift from the rest of the system's algorithm set and verifies
+# fail-closed through the same dispatch used by HC-02..HC-08. The write path
+# (``AuditEvent.compute_hash``) and the verify path (``_verify_integrity_locked``)
+# both resolve the declared algorithm through this single source of truth.
 
 
 class AuditEventType(str, Enum):
