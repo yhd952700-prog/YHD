@@ -29,6 +29,51 @@ import uuid
 
 logger = logging.getLogger("liuhao.kernel.audit")
 
+# How long SQLite waits on the write lock before reporting SQLITE_BUSY.
+# Raised from the driver default (5s) because initialisation now holds the
+# write lock across the whole schema migration: with N processes starting at
+# once, the losers must WAIT for the winner rather than fail.
+_SQLITE_BUSY_TIMEOUT_SEC = 30.0
+
+# --- transient-fault recovery (see AuditStore._write_with_retry) ------------
+# SQLite primary result codes, per https://sqlite.org/rescode.html
+_SQLITE_BUSY = 5
+_SQLITE_LOCKED = 6
+_SQLITE_READONLY = 8
+_RETRYABLE_SQLITE_CODES = frozenset({_SQLITE_BUSY, _SQLITE_LOCKED, _SQLITE_READONLY})
+_MAX_WRITE_ATTEMPTS = 8
+_WRITE_RETRY_BASE_SEC = 0.02
+_WRITE_RETRY_MAX_DELAY_SEC = 0.5
+
+# Schema applied as individual statements (never executescript()) so it can
+# run inside one BEGIN IMMEDIATE -- see the cold-start race note in _init_db.
+_SCHEMA_STATEMENTS = (
+    """CREATE TABLE IF NOT EXISTS audit_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        timestamp REAL NOT NULL,
+        correlation_id TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        details TEXT,
+        event_hash TEXT NOT NULL,
+        prev_event_hash TEXT,
+        seq INTEGER NOT NULL DEFAULT 0,
+        hash_alg TEXT NOT NULL DEFAULT 'sha256',
+        created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_principal ON audit_events(principal_id)",
+    "CREATE INDEX IF NOT EXISTS idx_scope ON audit_events(scope)",
+    "CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_events(timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_correlation ON audit_events(correlation_id)",
+    """CREATE TABLE IF NOT EXISTS chain_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_seq INTEGER NOT NULL,
+        last_hash TEXT
+    )""",
+)
+
 # --- U39 / ADR "audit single-writer lease" Option B -------------------------
 # The writer lease is now taken INSIDE the append's write transaction and
 # yielded when that transaction commits (see ``_log_event_locked``). Contention
@@ -98,6 +143,22 @@ class AuditScope(str, Enum):
     L5 = "L5"
     L6 = "L6"
     L7 = "L7"
+
+
+@dataclass
+class AuditBatchResult:
+    """Outcome of one :meth:`AuditStore.log_event_batch` call.
+
+    ``appended``   -- events that were actually committed, in batch order.
+    ``duplicates`` -- event_ids that were already committed, so they were
+                      skipped (retry-safe idempotency). They consumed no seq.
+
+    A returned result means the batch COMMITTED: there is no partial batch.
+    If the batch could not commit, the call raised instead.
+    """
+
+    appended: List["AuditEvent"]
+    duplicates: List[str]
 
 
 @dataclass
@@ -179,6 +240,11 @@ class AuditStore:
             )
         self._db_path = db_path
         self._writer_token: Optional[int] = None
+        # Created before _init_db() and NEVER recreated: _write_with_retry()
+        # can re-open the connection while this lock is held, and swapping the
+        # lock object underneath a held lock would open a window in which a
+        # second thread serialises against a different lock.
+        self._lock = threading.RLock()
         self._init_db()
 
     def _init_db(self) -> None:
@@ -196,82 +262,84 @@ class AuditStore:
         # 线程池里 —— 连接会被多线程复用（此前缺此参数，导致
         # "SQLite objects created in a thread can only be used in that same thread"）。
         # 线程安全由 self._lock 保证（hash-chain 的 seq/prev_hash 必须串行推进）。
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(
+            self._db_path, timeout=_SQLITE_BUSY_TIMEOUT_SEC, check_same_thread=False
+        )
+        # NOTE: PRAGMA journal_mode cannot be changed from inside a
+        # transaction, so it must stay above the BEGIN IMMEDIATE below.
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript("""
-            CREATE TABLE IF NOT EXISTS audit_events (
-                event_id TEXT PRIMARY KEY,
-                event_type TEXT NOT NULL,
-                principal_id TEXT NOT NULL,
-                scope TEXT NOT NULL,
-                timestamp REAL NOT NULL,
-                correlation_id TEXT NOT NULL,
-                outcome TEXT NOT NULL,
-                details TEXT,
-                event_hash TEXT NOT NULL,
-                prev_event_hash TEXT,
-                seq INTEGER NOT NULL DEFAULT 0,
-                hash_alg TEXT NOT NULL DEFAULT 'sha256',
-                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_principal ON audit_events(principal_id);
-            CREATE INDEX IF NOT EXISTS idx_scope ON audit_events(scope);
-            CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_events(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_correlation ON audit_events(correlation_id);
-            CREATE TABLE IF NOT EXISTS chain_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                last_seq INTEGER NOT NULL,
-                last_hash TEXT
-            );
-        """)
-        # Migration for legacy databases created before the seq column
-        columns = [row[1] for row in
-                   self._conn.execute("PRAGMA table_info(audit_events)").fetchall()]
-        if "seq" not in columns:
-            self._conn.execute(
-                "ALTER TABLE audit_events ADD COLUMN seq INTEGER NOT NULL DEFAULT 0"
-            )
-            # Backfill seq in insertion order for existing rows
-            legacy_rows = self._conn.execute(
-                "SELECT event_id FROM audit_events ORDER BY rowid"
-            ).fetchall()
-            for index, row in enumerate(legacy_rows, start=1):
+
+        # ---- cold-start race (measured, not guessed) ----------------------
+        # When several processes open the SAME brand-new database at once, the
+        # first write is also what materialises the -wal / -shm files. That
+        # moment loses the race often enough to matter: 6 processes x 12
+        # rounds produced "attempt to write a readonly database"
+        # (SQLITE_READONLY) in 2-4 of the 12 rounds, while staggering the
+        # process starts produced 0/12. Holding the write lock across the DDL
+        # serialises it -- whoever arrives first creates the WAL files, the
+        # rest wait on the busy handler instead of racing it.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # executescript() implicitly commits, so the schema is applied as
+            # individual statements inside the transaction instead.
+            for statement in _SCHEMA_STATEMENTS:
+                self._conn.execute(statement)
+
+            # Migration for legacy databases created before the seq column
+            columns = [row[1] for row in
+                       self._conn.execute("PRAGMA table_info(audit_events)").fetchall()]
+            if "seq" not in columns:
                 self._conn.execute(
-                    "UPDATE audit_events SET seq = ? WHERE event_id = ?",
-                    (index, row[0]),
+                    "ALTER TABLE audit_events ADD COLUMN seq INTEGER NOT NULL DEFAULT 0"
                 )
-        # Ensure the seq index exists. This must run AFTER the seq column is
-        # guaranteed to exist (either fresh schema or migrated legacy schema),
-        # otherwise SQLite raises "no such column: seq".
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_seq ON audit_events(seq)"
-        )
-        # PHASE 3.6 / A5: bring a legacy table forward. Every row that predates
-        # the column was hashed with SHA-256, so the column default is factually
-        # correct for them -- this only records what was already true, it does
-        # not reinterpret any hash.
-        if "hash_alg" not in columns:
+                # Backfill seq in insertion order for existing rows
+                legacy_rows = self._conn.execute(
+                    "SELECT event_id FROM audit_events ORDER BY rowid"
+                ).fetchall()
+                for index, row in enumerate(legacy_rows, start=1):
+                    self._conn.execute(
+                        "UPDATE audit_events SET seq = ? WHERE event_id = ?",
+                        (index, row[0]),
+                    )
+            # Ensure the seq index exists. This must run AFTER the seq column is
+            # guaranteed to exist (either fresh schema or migrated legacy schema),
+            # otherwise SQLite raises "no such column: seq".
             self._conn.execute(
-                "ALTER TABLE audit_events ADD COLUMN hash_alg TEXT NOT NULL "
-                "DEFAULT 'sha256'"
+                "CREATE INDEX IF NOT EXISTS idx_seq ON audit_events(seq)"
             )
-        # Seed the chain_state anchor for pre-existing data so integrity
-        # verification covers it
-        state = self._conn.execute(
-            "SELECT last_seq FROM chain_state WHERE id = 1"
-        ).fetchone()
-        if state is None:
-            last = self._conn.execute(
-                "SELECT seq, event_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
+            # PHASE 3.6 / A5: bring a legacy table forward. Every row that
+            # predates the column was hashed with SHA-256, so the column
+            # default is factually correct for them -- this only records what
+            # was already true, it does not reinterpret any hash.
+            if "hash_alg" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE audit_events ADD COLUMN hash_alg TEXT NOT NULL "
+                    "DEFAULT 'sha256'"
+                )
+            # Seed the chain_state anchor for pre-existing data so integrity
+            # verification covers it.
+            #
+            # INSERT OR IGNORE (not a plain INSERT): this read-then-insert pair
+            # runs on every process that opens the store, and it is NOT atomic
+            # on its own -- two processes can both observe "no anchor yet" and
+            # both try to insert id=1, which raises
+            # "UNIQUE constraint failed: chain_state.id" (observed 1/12 rounds
+            # with 6 concurrent processes). Losing that race is benign: the row
+            # is already correct.
+            state = self._conn.execute(
+                "SELECT last_seq FROM chain_state WHERE id = 1"
             ).fetchone()
-            if last:
-                self._conn.execute(
-                    "INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)",
-                    (last[0], last[1]),
-                )
-        self._conn.commit()
+            if state is None:
+                last = self._conn.execute(
+                    "SELECT seq, event_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
+                ).fetchone()
+                if last:
+                    self._insert_chain_anchor(last[0], last[1])
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         # Q3.5 (fencing): the single-writer lease lives in the audit DB itself,
         # so the fence check and the append are atomic on the same connection.
         self._lease = SqliteWriterLease(self._conn)
@@ -288,6 +356,87 @@ class AuditStore:
         transaction (see ``_log_event_locked``). Kept only because it is part
         of the historical internal API; it intentionally does nothing.
         """
+
+    def _insert_chain_anchor(self, last_seq: int, last_hash: Optional[str]) -> None:
+        """Write the chain_state anchor, tolerating a peer that got there first.
+
+        INSERT OR IGNORE (never a plain INSERT): this is the tail of a
+        read-then-write pair that every process performs when it opens the
+        store. Two processes can both read "no anchor yet" and both try to
+        write id=1 -- observed once in 12 runs with 6 concurrent processes as
+        "UNIQUE constraint failed: chain_state.id". Losing that race is
+        harmless: the row a peer wrote is already correct.
+        """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO chain_state (id, last_seq, last_hash) "
+            "VALUES (1, ?, ?)",
+            (last_seq, last_hash),
+        )
+
+    def _reopen(self) -> None:
+        """Drop the connection and establish a fresh one.
+
+        Needed because a SQLITE_READONLY fault of the "cannot initialise the
+        WAL shared-memory file" kind poisons the *connection*, not the
+        statement: retrying on the same handle keeps failing (measured), while
+        a new handle succeeds. Schema creation is idempotent, so re-running
+        ``_init_db`` is safe -- this never rewrites existing evidence.
+        """
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001 - the handle may already be unusable
+            pass
+        self._writer_token = None
+        self._init_db()
+
+    def _write_with_retry(self, attempt_fn):
+        """Run one write transaction, recovering from transient SQLite faults.
+
+        Why this exists (measured, not guessed): with several processes opening
+        the same database at once, SQLite intermittently answers
+        SQLITE_READONLY ("attempt to write a readonly database", code 8) while
+        the WAL shared-memory file is being created or torn down by a peer.
+        Six concurrent processes hit it in 2-4 runs out of 12. It is NOT
+        recoverable by retrying on the same connection -- the handle is
+        poisoned -- so the retry re-opens it.
+
+        Why retrying cannot duplicate evidence:
+          * only BUSY / LOCKED / READONLY are retried, and SQLite raises all
+            three while acquiring a lock or preparing a statement, i.e. before
+            any row of this transaction has been applied;
+          * the transaction is still rolled back first, so if it was open at
+            all it is discarded whole;
+          * therefore a retry re-runs a transaction that provably committed
+            nothing -- it cannot create a duplicate event or burn a seq number.
+
+        Any other failure (a data error, a disk error, a denied lease) still
+        propagates on the first attempt, unchanged and fail-closed.
+        """
+        last: Optional[BaseException] = None
+        for attempt in range(_MAX_WRITE_ATTEMPTS):
+            try:
+                return attempt_fn()
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, "sqlite_errorcode", None)
+                if code not in _RETRYABLE_SQLITE_CODES:
+                    raise
+                last = exc
+                try:
+                    self._conn.rollback()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
+                self._writer_token = None
+                if code == _SQLITE_READONLY:
+                    try:
+                        self._reopen()
+                    except sqlite3.Error:
+                        pass  # the next attempt will try to re-open again
+                if attempt + 1 < _MAX_WRITE_ATTEMPTS:
+                    time.sleep(
+                        min(_WRITE_RETRY_BASE_SEC * (2 ** attempt),
+                            _WRITE_RETRY_MAX_DELAY_SEC)
+                    )
+        raise last
 
     def log_event(
         self,
@@ -309,6 +458,29 @@ class AuditStore:
             )
 
     def _log_event_locked(
+        self,
+        event_type: AuditEventType,
+        principal_id: str,
+        scope: AuditScope,
+        outcome: str,
+        details: Optional[Dict[str, Any]],
+        correlation_id: Optional[str],
+    ) -> AuditEvent:
+        try:
+            return self._write_with_retry(
+                lambda: self._attempt_log_event(
+                    event_type, principal_id, scope, outcome, details, correlation_id
+                )
+            )
+        except Exception:
+            # CRIT-1C / D17 (Layer 1): do NOT swallow silently. Record the
+            # failure so operators can observe "Evidence=missing" via
+            # audit_stats() / /v1/ready, then re-raise so the *caller's* own
+            # policy (allow-and-swallow for LOW, or block for critical) decides.
+            record_audit_failure()
+            raise
+
+    def _attempt_log_event(
         self,
         event_type: AuditEventType,
         principal_id: str,
@@ -410,14 +582,157 @@ class AuditStore:
                 self._writer_token = None
                 raise
         except Exception:
-            # CRIT-1C / D17 (Layer 1): do NOT swallow silently. Record the
-            # failure so operators can observe "Evidence=missing" via
-            # audit_stats() / /v1/ready, then re-raise so the *caller's* own
-            # policy (allow-and-swallow for LOW, or block for critical) decides.
-            record_audit_failure()
+            # Belt and braces: _write_with_retry() also rolls back before it
+            # retries, but the connection must never be left mid-transaction
+            # on the way out.
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001 - the handle may already be dead
+                pass
+            self._writer_token = None
             raise
 
         return event
+
+    def log_event_batch(self, events: List[AuditEvent]) -> "AuditBatchResult":
+        """Append N events in ONE atomic transaction (Option C1).
+
+        This exists because measurement showed the append ceiling is
+        per-transaction cost, not hashing: single appends run ~2k/sec while a
+        batch of 250 runs ~23k/sec (see ADR-audit-single-writer-lease.md §8).
+
+        Semantics -- every one of these is deliberate and tested:
+
+        * **Ordering** -- events are appended in list order; ``seq`` increases by
+          exactly one per appended event, and ``prev_event_hash`` chains through
+          the batch and onto the previously committed tail. Order within a batch
+          is therefore the caller's list order, which is the only defensible
+          definition for a scheduler-independent pipeline.
+        * **Atomicity** -- all-or-nothing. "Committed" means every non-duplicate
+          event in the batch is durable. A crash mid-batch rolls the whole batch
+          back: never a partial batch, never a gap in ``seq``.
+        * **Idempotency** -- a caller-supplied ``event_id`` that is already
+          committed is skipped: it consumes no seq and creates no duplicate.
+          This is what makes retry-after-uncertain-outcome safe, and it is the
+          reason a batched pipeline does not silently duplicate evidence.
+        * **Fencing** -- the lease is taken once per batch, inside the same
+          transaction, so a fenced writer is still refused.
+        * **Fail-closed** -- if the batch cannot commit the error propagates and
+          the mandatory-evidence gate denies the governed action.
+
+        Returns :class:`AuditBatchResult`.
+        """
+        if not events:
+            return AuditBatchResult(appended=[], duplicates=[])
+
+        with self._lock:
+            return self._log_event_batch_locked(events)
+
+    def _log_event_batch_locked(self, events: List[AuditEvent]) -> "AuditBatchResult":
+        try:
+            return self._write_with_retry(
+                lambda: self._attempt_log_event_batch(events)
+            )
+        except Exception:
+            # Same fail-closed contract as the single append (CRIT-1C / D17).
+            record_audit_failure()
+            raise
+
+    def _attempt_log_event_batch(self, events: List[AuditEvent]) -> "AuditBatchResult":
+        conn = self._conn
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._writer_token = self._lease.acquire_within(
+                    owner=self._lease_owner()
+                )
+                require_writer_lease(self._lease, self._writer_token)
+
+                state = conn.execute(
+                    "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
+                ).fetchone()
+                last_seq, prev_hash = (state[0], state[1]) if state else (0, None)
+
+                # Idempotency: which of these event_ids are already committed?
+                existing: set = set()
+                ids = [e.event_id for e in events if e.event_id]
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    placeholders = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        f"SELECT event_id FROM audit_events "
+                        f"WHERE event_id IN ({placeholders})",
+                        chunk,
+                    ).fetchall()
+                    existing.update(row[0] for row in rows)
+
+                appended: List[AuditEvent] = []
+                duplicates: List[str] = []
+                seen: set = set()
+
+                for event in events:
+                    if not event.event_id:
+                        event.event_id = str(uuid.uuid4())[:12]
+                    if event.event_id in existing or event.event_id in seen:
+                        duplicates.append(event.event_id)
+                        continue
+                    seen.add(event.event_id)
+
+                    last_seq += 1
+                    event.prev_event_hash = prev_hash
+                    event.event_hash = event.compute_hash()
+
+                    conn.execute(
+                        """INSERT INTO audit_events
+                           (event_id, event_type, principal_id, scope, timestamp,
+                            correlation_id, outcome, details, event_hash,
+                            prev_event_hash, seq, hash_alg)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            event.event_id,
+                            event.event_type.value,
+                            event.principal_id,
+                            event.scope.value,
+                            event.timestamp,
+                            event.correlation_id,
+                            event.outcome,
+                            json.dumps(event.details, sort_keys=True)
+                            if event.details else None,
+                            event.event_hash,
+                            event.prev_event_hash,
+                            last_seq,
+                            event.hash_alg,
+                        ),
+                    )
+                    prev_hash = event.event_hash
+                    appended.append(event)
+
+                if appended:
+                    conn.execute(
+                        """INSERT INTO chain_state (id, last_seq, last_hash)
+                           VALUES (1, ?, ?)
+                           ON CONFLICT(id) DO UPDATE SET
+                               last_seq = excluded.last_seq,
+                               last_hash = excluded.last_hash""",
+                        (last_seq, prev_hash),
+                    )
+                self._lease.release_within(self._writer_token)
+                conn.commit()
+                self._writer_token = None
+            except Exception:
+                conn.rollback()
+                self._writer_token = None
+                raise
+        except Exception:
+            # Same belt-and-braces guarantee as the single-append path.
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 - the handle may already be dead
+                pass
+            self._writer_token = None
+            raise
+
+        return AuditBatchResult(appended=appended, duplicates=duplicates)
 
     def verify_integrity(self) -> Tuple[bool, int]:
         """Verify the integrity of the audit event hash chain.
