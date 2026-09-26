@@ -150,6 +150,32 @@
 
 ---
 
+## U45 — `revoke_all_user_tokens` remediation is in-memory only (not durable across restart / workers)
+- **Where:** `src/security/jwt_handler.py` (`revoke_all_user_tokens`, commit `5d618ac5` — the U43 fix).
+- **What:** The U43 remediation made `revoke_all_user_tokens` actually revoke a user's tracked tokens (returning the real count), closing the silent-no-op hole. But the revocation blacklist remains **in-memory only**: it is NOT persisted and does NOT survive a process restart or propagate across multiple workers. After a restart (or on a second worker) the blacklist starts empty — previously "revoked" tokens are live again.
+- **Why it matters (honest limitation, not a new defect):** this is the *same* standing limitation as the rest of the revocation blacklist (HC-09/HC-10 volatile by D19/D20). The team must not present revocation as durable. It is a real, documented constraint on the owner's security posture and should not be hidden.
+- **Severity:** MEDIUM (revocation durability gap) — inherited, not regressed.
+- **Recommendation:** record as a known limitation; treat in-memory revocation as telemetry, not cross-restart/worker enforcement. Durable revocation is a separate design decision (HUMAN DECISION / data-ownership boundary).
+- **Status:** DISCOVERED (read-only reconciliation of sec-impl's report). Consistent with the U43 note and the revocation-blacklist limitation. No code changed.
+
+## U46 — Opt-in `actor="autonomous"` wiring gap CLOSED (U1/U5)
+- **Where:** `src/ai/world_interface.py` — 4 non-human `WorldInterface` construction sites; `tests/test_world_interface_actor_wiring.py`.
+- **What:** The default-deny autonomous gate (U42) only took effect if a caller explicitly set `actor="autonomous"`. The 4 non-human `WorldInterface` sites were not wired to do so — the safe default was opt-in and unexercised. Commit `17ca073c` sets `actor="autonomous"` explicitly at those 4 sites and adds a regression guard (`test_world_interface_actor_wiring.py`) that fails if any non-human site is built without the flag.
+- **Why it matters:** closes the residual opt-in gap so the U42 default-deny is actually applied to every autonomous world-action surface, not just the shell adapter.
+- **Severity:** RESOLVED (was MEDIUM–HIGH).
+- **Recommendation:** keep the regression guard green; any future non-human `WorldInterface` site must set `actor="autonomous"` or the guard fails CI.
+- **Status:** REMEDIATED (commit `17ca073c`, per sec-impl report). Regression guard in place.
+
+## U47 — `ac3a90bc` (Q3.5 part2) missing dead-process detection → cross-process `StaleWriterError` → forced evidence self-lock → C-6 NOT INERT (real regression)
+- **Where:** `ac3a90bc` (Q3.5 part2); fencing / `capability.register` path.
+- **What:** `ac3a90bc` added a fence self-lock but **lacks dead-process detection**. In a multi-process deployment a stale writer is not detected → a cross-process `StaleWriterError` is raised → `capability.register` *forces* the evidence self-lock as a defensive response → the C-6 capability is **NOT INERT** (it actively self-locks instead of failing inert/safe).
+- **Why it matters (real regression, not a design discovery):** a safety mechanism intended to fail inert is instead forced into an active self-lock under a cross-process stale-writer condition. This can deny service / cascade rather than degrade safely, and contradicts the C-6 "inert" guarantee.
+- **Severity:** HIGH (autonomous safety regression). HUMAN DECISION boundary on the fix posture.
+- **Recommendation (two fixes, split ownership):**
+  - **Fix A — lease takeover:** detect dead writers and let a live lease take over; assigned to **sec-impl** (re-dispatched).
+  - **Fix B — bounded carve-out in `capability.register`:** prevent the forced self-lock from overriding inert; **HUMAN DECISION REQUIRED** (owner safety-posture call — team must NOT auto-decide the carve-out bounds).
+- **Status:** DISCOVERED (real regression, attributed to `ac3a90bc`). Fix A in progress (sec-impl). Fix B pending owner safety-posture decision — team must NOT auto-implement the carve-out.
+
 > **Provenance:** U1–U35 reconciled verbatim from the committed `HEAD` during a concurrent file-rewrite conflict (originally authored by governance-legal); no content altered.
 
 | id | discovered-by | date | what | why it matters | status | priority |
