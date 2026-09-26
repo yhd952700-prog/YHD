@@ -18,7 +18,7 @@
 
 ---
 
-## U1 — Shell adapter is a default-allow command-execution capability surface
+## U38 — Shell adapter is a default-allow command-execution capability surface
 - **Where:** `src/ai/world_interface.py` — `ShellAdapter.execute` (≈L126-151),
   `WorldInterface.__init__` (≈L157-168).
 - **What:** `ShellAdapter` runs host commands. By default it uses `shlex.split`
@@ -42,7 +42,7 @@
   3. Keep the `authorize` callback mandatory and logged.
 - **Status:** REMEDIATED (commit `6d7769e6`, wave p36). `WorldInterface` now takes an explicit `actor` flag; with `actor="autonomous"` the policy gate is default-deny and `shell=True` host-command execution is blocked unless an explicit human-arming `authorize` policy allows it. Human dispatch keeps default-allow (no regression). Caveat: the protection is opt-in at construction — autonomous agents must be built with `actor="autonomous"`; the agent framework (security-identity) should set this automatically. **HUMAN DECISION REQUIRED** remains open for the policy question of *whether* autonomous agents may ever run host commands at all — the code now makes the safe default (deny + require arming), but that is a governance choice, not just a code fix.
 
-## U2 — Subprocess sandbox resource limits are not enforced on Windows
+## U39 — Subprocess sandbox resource limits are not enforced on Windows
 - **Where:** `src/plugins/sandbox/backends/subprocess_backend.py` ≈L128
   (`preexec_fn=_set_limits if os.name != 'nt' else None`).
 - **What:** The subprocess sandbox applies `RLIMIT_AS / RLIMIT_CPU /
@@ -57,7 +57,7 @@
   or explicitly document Windows as an unsupported sandbox target.
 - **Status:** DISCOVERED (read-only). No code changed.
 
-## U3 — There is currently NO verified durable audit trail in this build
+## U40 — There is currently NO verified durable audit trail in this build
 - **Where:** `src/security/audit_logger.py` (HC-09), `src/security/audit_policy.py`
   (HC-10), `src/kernels/audit` (HC-01).
 - **What:** D19/D20/D21 (implemented this wave) deliberately keep HC-09/HC-10
@@ -75,7 +75,7 @@
   → COMPLIANT 7 / UNVERIFIED 4, no drift). Not a defect to "fix" this wave; it is
   the declared, honest state.
 
-## U4 — New HWM telemetry file is counter-only and fail-open (correct, but note)
+## U41 — New HWM telemetry file is counter-only and fail-open (correct, but note)
 - **Where:** `src/security/audit_logger.py` `get_crypto_audit_logger()` writes
   ` ~/.liuhao/audit_hwm.json` in production (D19).
 - **What:** The high-water-mark file holds ONLY `{"entries_ever_written": <int>}`,
@@ -90,15 +90,15 @@
 
 ---
 
-## U5 — Systemic permit-by-default authorization framework
+## U42 — Systemic permit-by-default authorization framework
 - **Where:** `src/ai/lcore.py:131-132` (`if self.authorize is None: return True  # human-sovereignty default allow`); `src/ai/world_interface.py:166,183` (`# Optional policy gate (default allow)` / `return True  # default allow`).
-- **What:** Multiple components treat `authorize=None` as **allow**. `WorldInterface` and `L-Core` both fall through to permit when no explicit gate is injected. (See U1 for the dangerous instance: the shell adapter sits behind this default-allow.)
+- **What:** Multiple components treat `authorize=None` as **allow**. `WorldInterface` and `L-Core` both fall through to permit when no explicit gate is injected. (See U38 for the dangerous instance: the shell adapter sits behind this default-allow.)
 - **Why it matters (capability security):** this is a framework-wide pattern — any NEW world action / adapter / tool added without an explicit `authorize` callback inherits permit-by-default. The human-facing L-Core default-allow is defensible (human sovereignty), but the pattern is dangerous wherever it gates non-human/autonomous capability (shell, subprocess, external writes).
-- **Severity:** MEDIUM–HIGH (compounding U1).
+- **Severity:** MEDIUM–HIGH (compounding U38).
 - **Recommendation:** invert the default to deny when `authorize is None` for any non-human-facing capability; keep explicit allow only for the human's L-Core interface, and log every gate decision.
 - **Status:** PARTIALLY REMEDIATED (wave p36). The `world_interface.py` autonomous path is now default-deny (commit `6d7769e6`). `lcore.py` was intentionally left default-allow (human sovereignty, per directive). Residual: the systemic `authorize=None → allow` pattern still exists at `lcore.py:131-132` for the human L-Core (by design) — any NEW non-human capability must set `actor="autonomous"` to inherit default-deny. Tracked for the agent framework to wire automatically.
 
-## U6 — `revoke_all_user_tokens` is a silent no-op placeholder
+## U43 — `revoke_all_user_tokens` is a silent no-op placeholder
 - **Where:** `src/security/jwt_handler.py:545-548`.
 - **What:** `revoke_all_user_tokens(subject)` returns `0` with a `# placeholder for now` comment — it does NOT revoke anything. No exception, no log, just a falsy 0.
 - **Why it matters:** this is exactly the "false success" the mandate forbids. An operator/automated responder calling "revoke all of user X's tokens" after a compromise would believe the revocation happened; it did not. Violates the HARD BOUNDARY "No faking success" and "No garbage code."
@@ -106,7 +106,7 @@
 - **Recommendation:** either implement it against a real token store, or make it raise `NotImplementedError` so callers cannot mistake a no-op for success. Do NOT ship a silent 0.
 - **Status:** REMEDIATED (commit `5d618ac5`, wave p36). `revoke_all_user_tokens` now maintains a subject→JTI index in `create_token` and actually revokes all of a user's tracked tokens, returning the real count (0 honestly when none). No longer a silent no-op. In-memory only (documented; same limitation as the rest of the revocation blacklist — not durable across restart/workers). Regression test added (`tests/test_jwt_revoke_all.py`).
 
-## U7 — Built-in `system` identity carries `admin`; verify no principal spoofing
+## U44 — Built-in `system` identity carries `admin`; verify no principal spoofing
 - **Where:** `src/kernels/identity/__init__.py:402-408` (default `system` identity, `permissions={"admin"}`, scope L0).
 - **What:** The bootstrap `system` principal is a privileged built-in used for kernel-internal actions (Policy C-1). Its `metadata["kind"]=="service"` marker is what lets the Policy Kernel distinguish it from human identities. Intentional design.
 - **Why it matters (verification question, not a confirmed vuln):** a built-in `admin` principal is a high-value target. The owner should know whether the Policy Kernel / RBAC layer **rejects an externally-supplied `principal="system"`** (spoofing). If any caller-supplied principal string can become "system", that is privilege escalation to admin.
@@ -120,7 +120,7 @@
 - All secret/key/token generation uses `secrets.token_*` / `secrets.token_bytes` (strong CSPRNG). No `random.*` used for secrets. Good.
 - No `CERT_NONE` / `verify=False` / unverified-TLS anywhere in `src`. Good.
 - No weak `md5`/`sha1` for security; hash chains use `sha256` via the explicit-algorithm registry. Good.
-- RBAC kernel (`src/security/rbac.py`) is **default-deny**: `has_permission` / `check_access` fall through to `return False` (L191/L217/L562). This is the correct posture and contrasts with the `WorldInterface`/`lcore` `authorize=None → allow` pattern (U5). The authz gap is at the world-action/adapter boundary, not in RBAC itself.
+- RBAC kernel (`src/security/rbac.py`) is **default-deny**: `has_permission` / `check_access` fall through to `return False` (L191/L217/L562). This is the correct posture and contrasts with the `WorldInterface`/`lcore` `authorize=None → allow` pattern (U42). The authz gap is at the world-action/adapter boundary, not in RBAC itself.
 
 ## Scan method (reproducibility)
 - Read-only static greps over `src/` for: `shell=True`, `verify=False`,
@@ -150,9 +150,7 @@
 
 ---
 
-## Recovered governance-legal register entries (committed at HEAD, pre-sec-impl rewrite)
-
-> **PRESERVED VERBATIM** to avoid loss during the concurrent sec-impl rewrite of this file. The **U1–U7** rows below are governance-legal's ORIGINAL entries and are **DISTINCT** from sec-impl's U1–U7 prose sections above (both agents independently numbered their findings U1–U7). Rows **U8–U35** are unique to governance-legal. Cross-references in EXECUTION-QUEUE (U15–U22, U24–U35, etc.) resolve to this block.
+> **Provenance:** U1–U35 reconciled verbatim from the committed `HEAD` during a concurrent file-rewrite conflict (originally authored by governance-legal); no content altered.
 
 | id | discovered-by | date | what | why it matters | status | priority |
 |----|----|----|----|----|----|----|
