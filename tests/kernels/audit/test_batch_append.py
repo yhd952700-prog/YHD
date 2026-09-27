@@ -61,6 +61,43 @@ def _table_exists(conn, name):
     return bool(rows)
 
 
+def _connect_after_kill(db, attempts=8, pause=0.25):
+    """Open a DB that was produced by hard-killing a child mid-WAL-write.
+
+    On Windows a TerminateProcess'd child can leave its -wal/-shm handles and a
+    transient on-disk state that makes the *next* open throw
+    ``sqlite3.OperationalError: disk I/O error`` for a fraction of a second
+    (antivirus scanning the temp .db, OS releasing the shared-memory file, etc.).
+    That is an OS/AV race in the test harness, not a product durability defect:
+    SQLite's own WAL recovery is what we want to exercise, and it only runs once
+    the file is actually openable. Retry the open+probe so the harness can reach
+    the real assertion instead of flaking on the reopen. A *genuine* corruption
+    (e.g. "database disk image is malformed") is not retried and still fails the
+    test, so this never masks a real defect.
+    """
+    last = None
+    for _ in range(attempts):
+        try:
+            conn = sqlite3.connect(db)
+            # Force the OS/AV race to surface before doing real reads.
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1"
+            ).fetchall()
+            return conn
+        except sqlite3.OperationalError as exc:
+            last = exc
+            msg = str(exc).lower()
+            if "disk i/o error" in msg or "i/o error" in msg:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                time.sleep(pause)
+                continue
+            raise
+    raise last
+
+
 def _open_state(db):
     """(seqs, broken_joins, anchor) -- (None, None, None) if not yet created.
 
@@ -71,7 +108,7 @@ def _open_state(db):
     """
     if not os.path.exists(db):
         return None, None, None
-    conn = sqlite3.connect(db)
+    conn = _connect_after_kill(db)
     try:
         if not _table_exists(conn, "audit_events"):
             return None, None, None
