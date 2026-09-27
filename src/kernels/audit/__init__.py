@@ -262,24 +262,55 @@ class AuditStore:
         # 线程池里 —— 连接会被多线程复用（此前缺此参数，导致
         # "SQLite objects created in a thread can only be used in that same thread"）。
         # 线程安全由 self._lock 保证（hash-chain 的 seq/prev_hash 必须串行推进）。
-        self._conn = sqlite3.connect(
-            self._db_path, timeout=_SQLITE_BUSY_TIMEOUT_SEC, check_same_thread=False
-        )
-        # NOTE: PRAGMA journal_mode cannot be changed from inside a
-        # transaction, so it must stay above the BEGIN IMMEDIATE below.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-
         # ---- cold-start race (measured, not guessed) ----------------------
         # When several processes open the SAME brand-new database at once, the
         # first write is also what materialises the -wal / -shm files. That
         # moment loses the race often enough to matter: 6 processes x 12
         # rounds produced "attempt to write a readonly database"
         # (SQLITE_READONLY) in 2-4 of the 12 rounds, while staggering the
-        # process starts produced 0/12. Holding the write lock across the DDL
-        # serialises it -- whoever arrives first creates the WAL files, the
-        # rest wait on the busy handler instead of racing it.
-        self._conn.execute("BEGIN IMMEDIATE")
+        # process starts produced 0/12. Two things follow:
+        #   * hold the write lock across the DDL, so whoever arrives first
+        #     creates the WAL files and the rest wait on the busy handler;
+        #   * retry the whole open+initialise, because the connect/BEGIN pair
+        #     itself can be the thing that loses the race -- and unlike a write
+        #     it has no transaction to roll back, so it simply reconnects.
+        last: Optional[BaseException] = None
+        for attempt in range(_MAX_WRITE_ATTEMPTS):
+            try:
+                self._conn = sqlite3.connect(
+                    self._db_path, timeout=_SQLITE_BUSY_TIMEOUT_SEC,
+                    check_same_thread=False,
+                )
+                # NOTE: PRAGMA journal_mode cannot be changed from inside a
+                # transaction, so it must stay above the BEGIN IMMEDIATE below.
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._apply_schema()
+                break
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, "sqlite_errorcode", None)
+                if code not in _RETRYABLE_SQLITE_CODES:
+                    raise
+                last = exc
+                try:
+                    self._conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                if attempt + 1 < _MAX_WRITE_ATTEMPTS:
+                    time.sleep(
+                        min(_WRITE_RETRY_BASE_SEC * (2 ** attempt),
+                            _WRITE_RETRY_MAX_DELAY_SEC)
+                    )
+        else:
+            raise last
+
+        # Q3.5 (fencing): the single-writer lease lives in the audit DB itself,
+        # so the fence check and the append are atomic on the same connection.
+        self._lease = SqliteWriterLease(self._conn)
+
+    def _apply_schema(self) -> None:
+        """Create/migrate the schema inside the transaction opened by _init_db."""
         try:
             # executescript() implicitly commits, so the schema is applied as
             # individual statements inside the transaction instead.
@@ -340,9 +371,6 @@ class AuditStore:
         except Exception:
             self._conn.rollback()
             raise
-        # Q3.5 (fencing): the single-writer lease lives in the audit DB itself,
-        # so the fence check and the append are atomic on the same connection.
-        self._lease = SqliteWriterLease(self._conn)
 
     # ------------------------------------------------------------------ #
     # Q3.5 — single-writer fencing helpers

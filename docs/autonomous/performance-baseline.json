@@ -1,0 +1,102 @@
+{
+  "generated_at": "2026-09-27T10:31:37-0700",
+  "python": "3.13.14",
+  "platform": "win32",
+  "quick": false,
+  "single_append": {
+    "events": 2000,
+    "events_per_sec": 2561.8,
+    "latency_ms_p50": 0.227,
+    "latency_ms_p95": 0.453,
+    "latency_ms_p99": 2.462,
+    "cpu_seconds": 0.516,
+    "wall_seconds": 0.781
+  },
+  "batched_append": [
+    {
+      "batch_size": 1,
+      "events": 2000,
+      "events_per_sec": 2588.7,
+      "batch_latency_ms_p50": 0.224,
+      "batch_latency_ms_p95": 0.316,
+      "batch_latency_ms_p99": 1.74,
+      "per_event_ms_p95": 0.3164,
+      "cpu_seconds": 0.547,
+      "wall_seconds": 0.773,
+      "batches": 2000
+    },
+    {
+      "batch_size": 10,
+      "events": 2000,
+      "events_per_sec": 10221.3,
+      "batch_latency_ms_p50": 0.679,
+      "batch_latency_ms_p95": 1.102,
+      "batch_latency_ms_p99": 13.805,
+      "per_event_ms_p95": 0.1102,
+      "cpu_seconds": 0.172,
+      "wall_seconds": 0.196,
+      "batches": 200
+    },
+    {
+      "batch_size": 50,
+      "events": 2000,
+      "events_per_sec": 16355.4,
+      "batch_latency_ms_p50": 2.385,
+      "batch_latency_ms_p95": 3.157,
+      "batch_latency_ms_p99": 21.638,
+      "per_event_ms_p95": 0.0631,
+      "cpu_seconds": 0.109,
+      "wall_seconds": 0.122,
+      "batches": 40
+    },
+    {
+      "batch_size": 100,
+      "events": 2000,
+      "events_per_sec": 14699.7,
+      "batch_latency_ms_p50": 4.93,
+      "batch_latency_ms_p95": 9.9,
+      "batch_latency_ms_p99": 21.57,
+      "per_event_ms_p95": 0.099,
+      "cpu_seconds": 0.125,
+      "wall_seconds": 0.136,
+      "batches": 20
+    },
+    {
+      "batch_size": 250,
+      "events": 2000,
+      "events_per_sec": 20346.7,
+      "batch_latency_ms_p50": 11.726,
+      "batch_latency_ms_p95": 12.569,
+      "batch_latency_ms_p99": 12.569,
+      "per_event_ms_p95": 0.0503,
+      "cpu_seconds": 0.094,
+      "wall_seconds": 0.098,
+      "batches": 8
+    }
+  ],
+  "verify": {
+    "verify_ms_at_15000_events": 353.88,
+    "verify_ms_at_23000_events": 520.33
+  },
+  "chain_verifies": true,
+  "events_in_database": 23000,
+  "disk_bytes_per_event": 477.5,
+  "database_bytes": 11064144,
+  "multi_process": {
+    "processes": 4,
+    "batch_size": 250,
+    "aggregate_events_per_sec_including_startup": 5079.0,
+    "aggregate_events_per_sec_excluding_startup": 48433.8,
+    "wall_seconds": 1.575,
+    "slowest_child_seconds": 0.165,
+    "startup_overhead_seconds": 1.41,
+    "rows_committed": 8000,
+    "rows_expected": 8000,
+    "no_lost_appends": true,
+    "contiguous_seq": true
+  },
+  "recovery": {
+    "recovery_seconds": 0.099,
+    "chain_intact_after_kill": true
+  }
+}

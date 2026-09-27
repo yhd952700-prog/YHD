@@ -139,8 +139,75 @@ that all processes forward to) remains the end-state; B removes the correctness
 ceiling, C removes the throughput ceiling. Not needed until throughput is the
 binding constraint — measure before building it.
 
-## 7. Human-sovereign input (isolated, non-blocking)
+## 7. Option C1 — batched atomic append (implemented, measured)
+
+B made multi-process correctness work. It did not change the throughput shape,
+so before designing a separate writer process the cost was measured rather than
+assumed (`scripts/bench_audit_append.py`, baseline written to
+`docs/autonomous/performance-baseline.json`):
+
+| what | result |
+|---|---|
+| hashing alone, no database | **~67,000/sec** — hashing is *not* the bottleneck |
+| single append (one transaction per event) | **~2,250/sec**, p95 0.47 ms, p99 2.06 ms |
+| batch of 10 | ~9,950/sec |
+| batch of 100 | ~14,200/sec |
+| batch of 250 | **~16,500/sec** |
+| 4 processes contending for one DB | ~1,500/sec incl. start-up (see baseline for the start-up-corrected figure) |
+| re-verify 15,000 events | 404 ms |
+| re-verify 23,000 events | 590 ms |
+| disk per event | ~478 bytes |
+
+The cost is **per transaction**, not per event. That makes C's real lever
+batching, not a separate writer process — so C1 was built first, and the
+dedicated-writer option is deferred to C2 with a measurement to justify it.
+
+### Semantics C1 guarantees (each is pinned by a test)
+
+* **Order** — events append in the caller's list order; `seq` increases by
+  exactly one per appended event; `prev_event_hash` chains through the batch and
+  onto the previously committed tail. List order is the only defensible
+  definition for a scheduler-independent pipeline.
+* **Atomicity** — all or nothing. "Committed" means every non-duplicate event in
+  the batch is durable. A crash mid-batch rolls the whole batch back: never a
+  partial batch, never a gap in `seq`.
+* **Idempotency** — a caller-supplied `event_id` already committed is skipped; it
+  consumes no `seq` and creates no duplicate. This is what makes
+  retry-after-uncertain-outcome safe.
+* **Fencing** — the lease is taken once per batch, inside the same transaction,
+  so a fenced writer is still refused.
+* **Fail-closed** — if the batch cannot commit, the error propagates and the
+  mandatory-evidence gate denies the governed action.
+
+### Two intermittent defects found while measuring (both fixed)
+
+Neither was visible in inspection or in a single test run; both were found by
+running the experiment repeatedly and counting failures.
+
+1. **`SQLITE_READONLY` ("attempt to write a readonly database")** — with several
+   processes opening one database, SQLite intermittently fails while the WAL
+   shared-memory file is created or torn down by a peer. Measured: 6 processes
+   × 12 rounds failed in 2–4 rounds; with the process starts staggered, 0/12.
+   Retrying on the *same* connection never recovers — the handle is poisoned —
+   so `_write_with_retry()` rolls back and **re-opens**, bounded, and only for
+   BUSY / LOCKED / READONLY. After: **0/20**.
+2. **`UNIQUE constraint failed: chain_state.id`** — two processes both observe
+   "no anchor yet" and both insert the seed row. The seed is now
+   `INSERT OR IGNORE`, and the whole schema migration runs inside
+   `BEGIN IMMEDIATE` so initialisation serialises on SQLite's write lock.
+
+Both have deterministic regression tests (`tests/kernels/audit/test_write_retry.py`);
+each was proven to fail with the exact production symptom when the fix is reverted.
+
+### Verified
+
+`tests/kernels/audit/*` 97 passed; full suite 2927 passed / 20 skipped / 0 failed;
+C-6 ALL GREEN (7 checks).
+
+## 8. Human-sovereign input (isolated, non-blocking)
 
 None required. If the intended deployment topology is *deliberately*
 single-process-per-audit-store, B is harmless (it is strictly more permissive but
-no less safe). Building C is a scale decision; engineering will measure first.
+no less safe). Building C2 is a scale decision; engineering will measure first —
+and the measurement so far says the next real constraint is **verification cost
+growing linearly with the chain**, not append throughput.

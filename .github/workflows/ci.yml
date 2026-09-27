@@ -409,6 +409,24 @@ jobs:
       - name: Run Flake8
         run: python -m flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503
 
+      # Audit append performance / invariants gate.
+      #
+      # BLOCKING part: --invariants-only checks properties that hold on ANY
+      # machine (no lost appends under concurrency, contiguous seq, chain
+      # intact after a hard kill, chain verifies). Those are correctness, so
+      # they must never regress regardless of hardware.
+      #
+      # NOT blocking: the numeric comparison (--gate against
+      # performance-baseline.json). Events/sec is a property of the machine, and
+      # a shared runner cannot be compared against a workstation baseline --
+      # doing so would produce a gate that fails for reasons that have nothing
+      # to do with the code. It is reported for humans instead.
+      - name: Audit append invariants gate (blocking)
+        run: python scripts/bench_audit_append.py --quick --invariants-only
+
+      - name: Audit append throughput vs baseline (advisory)
+        run: python scripts/bench_audit_append.py --quick --gate docs/autonomous/performance-baseline.json --tolerance 0.5 || true
+
       # ⚠️ 采集用，非门禁：真正会阻断 CI 的 Bandit 门禁在 security job
       # （--severity-level high，命中即失败）。此处保留全量扫描 + artifact，
       # 供人工审查 MEDIUM/LOW，与 security job 的 HIGH 门禁互补。

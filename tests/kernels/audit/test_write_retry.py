@@ -173,6 +173,53 @@ def test_batch_recovery_is_all_or_nothing(tmp_path):
     assert ok is True
 
 
+def test_init_db_itself_recovers_from_a_readonly_cold_start(tmp_path, monkeypatch):
+    """The cold-start race can be lost by _init_db, not just by an append.
+
+    Found by the performance gate: opening a brand-new database is exactly the
+    moment the WAL race is worst, and _init_db has no transaction to roll back
+    -- it has to reconnect. Without this, a deployment whose processes all
+    start at once can fail before it ever logs anything.
+    """
+    real_connect = sqlite3.connect
+    begins = {"n": 0}
+
+    class FlakyOnInit:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args):
+            if sql.strip().upper().startswith("BEGIN"):
+                begins["n"] += 1
+                if begins["n"] == 1:
+                    exc = sqlite3.OperationalError(
+                        "attempt to write a readonly database")
+                    exc.sqlite_errorcode = SQLITE_READONLY
+                    raise exc
+            return self._real.execute(sql, *args)
+
+        def commit(self):
+            return self._real.commit()
+
+        def rollback(self):
+            return self._real.rollback()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(sqlite3, "connect",
+                        lambda *a, **kw: FlakyOnInit(real_connect(*a, **kw)))
+
+    db = str(tmp_path / "h.db")
+    store = AuditStore(db_path=db)      # must not raise
+    store.initialize()
+
+    assert begins["n"] >= 2, "the failed open must be retried, not fatal"
+    store.log_event(AuditEventType.STATE_CHANGE, "p", AuditScope.L0, "ok",
+                    {"i": 0}, "c0")
+    assert _rows(db) == [1]
+
+
 def test_chain_anchor_insert_tolerates_a_racing_peer(tmp_path):
     """Regression for 'UNIQUE constraint failed: chain_state.id'.
 
