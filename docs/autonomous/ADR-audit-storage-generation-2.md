@@ -1,8 +1,21 @@
 # ADR — Audit Storage Generation 2: the 10× / 100× / 1000× scaling path (C1 → C2 → C3)
 
-**Status:** **DESIGN (not implemented).** No code in `src/` or `tests/` was changed to
-produce this document; it is research + design only.
-**Date:** 2026-09-26
+**Status:** **DESIGN (not implemented by the author).** No code in `src/` or
+`tests/` was changed to produce this document; it is research + design only.
+**Concurrent-implementation note (2026-09-27):** while this ADR was being
+written, another teammate began landing C2 in `src/kernels/audit` —
+`link_hash` on `AuditEvent` + `ALTER TABLE … ADD COLUMN link_hash`
+(`__init__.py` ~L216-394), a new `src/kernels/audit/verification.py`
+(`verify_segment`, `write_checkpoint`, `recompute_checkpoint`,
+`audit_checkpoints`, `verification_coverage`), and
+`src/kernels/audit/hashutil.py` (one shared canonicalization for writer and
+verifier). Those correspond to §3.3 (`link_hash`) and §3.6 (segmented
+verification) below, arrived at independently. Where they overlap, **treat their
+code as the implementation and this ADR as the rationale, the measurements, and
+the part that is not yet built: group commit (§3.1), pre-hashing outside the
+transaction (§3.2), the index move (§3.4), `synchronous=FULL` + `UNIQUE(seq)` +
+128-bit ids (§3.5), and all of C3.**
+**Date:** 2026-09-26 (revised 2026-09-27 for the concurrency note)
 **Author:** c2-scaling (autonomous, team `p08-d19-d20-d21`), branch `p36`
 **Supersedes / extends:** `ADR-audit-single-writer-lease.md` (Option B/C). This ADR
 does **not** contradict it — §6 of that ADR named Option C ("dedicated append-only
@@ -264,6 +277,21 @@ event_hash_i)`, with `link_hash_0 = H("genesis" ‖ event_hash_1)`. Now the tail
 Cost: **MEASURED** one extra SHA-256 per event ≈ 2.4 µs (5%). Additive column,
 nullable, backfilled deterministically (§6). `prev_event_hash` is **kept** — the
 existing verifier is not replaced, it is supplemented, and both must pass.
+
+**Invariant the backfill must respect (non-obvious, and easy to get wrong):**
+`link_hash` is *forward-cumulative*, and an appending writer derives its value
+from `chain_state.last_link_hash`. Therefore the backfill must be **exclusive
+with appends for its whole duration** — chunking the backfill is fine, but
+releasing the append lock *between chunks* is not: at that moment
+`chain_state.last_link_hash` is correct only up to the last chunk while later
+rows are still NULL, so a concurrent append would compute and persist a
+`link_hash` from a stale cumulative value, producing a **permanently broken
+chain**. The consequence is that a live backfill is a write-stop whose length
+grows with the chain, which is why the preferred shape is to backfill an
+offline `VACUUM INTO` copy and cut over (§6 step 2), and why a live backfill
+must at minimum carry progress + ETA so the stop is declared rather than open-
+ended. Until a row is backfilled, its `link_hash` is NULL and must be read as
+**UNVERIFIED**, never as "no link, therefore fine". (Registered as R-G2-07c.)
 
 ### 3.4 C2-4 — Move the four query indexes off the hot append path
 
@@ -747,6 +775,11 @@ the function names are the stable reference.
     backwards NTP step produces a chain whose `seq` order and `timestamp` order
     disagree while the chain still "verifies". HD-05 is the compensation and it
     is not wired to the chain head.
+
+Read §9 items 2 and 6 as **corroborated by, not competitive with, the
+in-flight C2 work**: `verification.py` addresses item 2 (segmented verification)
+and `link_hash` addresses item 6 (cumulative commitment). Items 1, 3, 4, 5, 7,
+8, 9, 10 are, as far as this review can tell, still open.
 
 ---
 

@@ -120,6 +120,110 @@
 - **Who decides:** engineering. "Report unverified as unverified" is a standing
   boundary (GOVERNANCE §2.2, no faking success).
 
+### R-G2-07b — A **false red**: a healthy chain is reported broken (mirror risk of R-G2-07) — **CODE FIXED 2026-09-27; retained as a regression guard**
+- **Why it appears:** verification reads `audit_events` and `chain_state` as two
+  **separate autocommit SELECTs**, so SQLite gives each its own MVCC snapshot.
+  Any append that commits between the two reads makes
+  `chain_state.last_seq != last_row.seq`, and the verifier reports **broken**.
+  The window is the whole first `fetchall()` — at the MEASURED 26.4 µs/row that
+  is ~0.2 s at 32k rows, ~2 s at 317k rows, ESTIMATE ~67 s at 10M rows, i.e. the
+  window *grows with the chain* precisely when verification matters most.
+  *(Reported by `access-audit`, relayed via `os-impl`, against the in-flight C2
+  code; re-anchor line numbers before acting — the file is under active edit.)*
+- **Status — resolved in code (2026-09-27):** `_begin_read_transaction` /
+  `_end_read_transaction` (`__init__.py` ~L902-927) now pin one MVCC snapshot
+  for both reads; `_verify_integrity_on` (~L933-955) uses it. Reported and
+  re-anchored by `access-audit`; the code's own comment (L934-939) restates the
+  failure mode. **Retained below as a regression guard, not as an open defect.**
+- **How it is detected (O(1) criterion — preferred, from `access-audit`):** in a
+  single `BEGIN DEFERRED` transaction read `chain_state.last_seq` and
+  `MAX(audit_events.seq)` and assert they are equal. On an append-only chain the
+  two are equal at every instant, so: equal ⇒ the earlier inequality was
+  cross-snapshot skew (false red); unequal ⇒ genuinely broken. This is the same
+  primitive the fix uses, so the repro and the regression test share it.
+  (Heavier alternative, still valid: re-run against a `VACUUM INTO` snapshot.)
+  The regression test must **force** the window — inject a sleep or a committing
+  append between the two SELECTs — and assert the pinned version still passes.
+- **Fail-closed behaviour — and this is the trap:** fail-closed converts a red
+  verdict into **denial of every HIGH/CRITICAL governed action**. A false red is
+  therefore not merely a noisy alert, it is a **self-inflicted availability
+  outage whose duration grows with the chain** — the exact failure mode of U50,
+  reached by a different route. Mitigation is to make both reads share one
+  snapshot (`BEGIN DEFERRED` … `ROLLBACK`) so the comparison is well-defined;
+  and to treat "verified on the snapshot" as the authoritative verdict, with the
+  live read used only as a cheap pre-check.
+- **Who decides:** engineering (the fix is a transaction-scoping change). The
+  rule that a red verdict must never be auto-repaired or auto-suppressed is a
+  standing boundary.
+
+### R-G2-07c — Long O(n) work holding the append lock (backfill) — the lock is NECESSARY; do not "optimise" it away
+- **Why it appears:** `backfill_link_hashes`-style migrations take `self._lock`
+  and then `BEGIN IMMEDIATE` + a bulk UPDATE over the whole chain. The lock is
+  the same one `log_event()` needs, so the migration's duration is an append
+  outage; at 10M rows that is minutes to hours of every HIGH/CRITICAL action
+  being denied by the fail-closed gate.
+- **⚠️ RETRACTED GUIDANCE — do not release the lock mid-backfill.** An earlier
+  version of this entry recommended "chunk + release `self._lock` between
+  chunks". **That advice is wrong and would corrupt the chain permanently.**
+  `link_hash` is a *forward-cumulative* value: an appending writer derives its
+  `link_hash` from `chain_state.last_link_hash`. If the lock is released after
+  chunk *k*, `chain_state.last_link_hash` is only correct up to chunk *k* while
+  rows *k+1..N* are still un-backfilled — so a concurrent append would compute
+  and **persist** its `link_hash` from a stale cumulative value. That is an
+  irreversible broken chain, strictly worse than the starvation being fixed.
+  (Established by the code comment at `__init__.py` ~L1428-1432 and confirmed
+  by `access-audit`, who retracted their own original recommendation.)
+  **The correct reclassification: this is not a superfluous lock — it is a
+  necessary lock whose hold time is unbounded, unprogressed and unobserved.**
+- **How it is detected:** lock-hold-time instrumentation (acquisition → release)
+  exported as a metric; alarm at any hold > 1 s; a migration progress counter
+  (rows done / rows total + estimated finish) so an operator can distinguish
+  "slow" from "hung" and can tell *how long writes are stopped*.
+- **Fail-closed behaviour — the two admissible shapes:**
+  1. **Preferred: run the backfill on an offline copy.** `snapshot_audit_db`
+     (`src/kernels/audit/durability.py:57`, `VACUUM INTO`) already exists;
+     backfill the copy, verify it, then cut over. The lock problem disappears
+     entirely.
+  2. **If it must run live: keep the lock for the whole run**, chunk only to
+     bound individual transaction size (the code already uses `executemany`,
+     ~L1455-1460 — that part is correct), and add progress + ETA logging so the
+     write-stop is a *declared* window rather than an open-ended hang.
+  Either way: an un-backfilled row's `link_hash` is NULL and **must be read as
+  UNVERIFIED**, never as "no link, therefore fine" — otherwise a partially
+  backfilled store reports success it has not earned (this is R-G2-07 applied
+  to migration state).
+- **Who decides:** engineering for the mechanism and the observability; running
+  it against the production (forked) DB remains gated on the HC-01 fork
+  disposition, which is a **HUMAN** decision. Whether a multi-hour write stop is
+  acceptable at all is an operational judgment for the human, and it should be
+  decided *before* the migration starts, not discovered during it.
+
+### R-G2-07d — Snapshot pinning covers only 1 of 5 verification entry points
+- **Why it appears:** `_begin_read_transaction` (added to fix R-G2-07b) is
+  called from exactly one place, `_verify_integrity_on`. Four other entry points
+  still issue multiple statements without a pinned snapshot:
+  `verify_segment` (~L1084 → `verification.verify_segment`, which reads events,
+  then `tail_seq` on `chain_state` at `verification.py:209-213`, then
+  `coverage_frontier` on checkpoints at 216-219, then `rooted_at_genesis` at
+  300+), `verify_incremental` (~L1123), `audit_checkpoints` (~L1365), and
+  `recompute_checkpoint` (~L1381).
+- **Why it matters:** same failure class as R-G2-07b (comparing values taken
+  from two different MVCC snapshots), but landing on C2's *checkpoint* semantics
+  — e.g. `_verify_incremental_on` reads `tail_seq` under snapshot A, verifies a
+  segment under snapshot B, then writes a checkpoint from that result. A false
+  red here is equally a fail-closed denial; a false *green* here would be worse
+  (R-G2-07).
+- **How it is detected:** the O(1) criterion from R-G2-07b applied inside each
+  entry point; plus a structural check — assert that every function performing
+  more than one read for a cross-comparison is wrapped in
+  `_begin_read_transaction`. A simple lint/AST check can enforce this, because
+  the pin is a single named primitive.
+- **Fail-closed behaviour:** unchanged from R-G2-07b — an inconclusive read is
+  UNVERIFIED/deny, never success.
+- **Who decides:** engineering. Cost of the fix is ~zero (hoist the existing
+  `_begin_read_transaction` to the outer level of those four entry points; same
+  primitive already proven). *(Reported by `access-audit`, 2026-09-27.)*
+
 ### R-G2-08 — Widening `event_id` leaves a mixed-width population
 - **Why it appears:** C2-5 changes *generation*, not stored values; the DB
   carries both 48-bit and 128-bit ids indefinitely.
@@ -269,7 +373,47 @@
 
 ---
 
-## 3. Standing rule for every risk above
+## 3. Open actions (detection gaps with no owner yet)
+
+These are not risks; they are **missing detectors** that a risk above depends
+on. Each is listed because "the risk is registered" is worthless if nothing
+observes it. An action is closed only when the detector exists and is proven to
+fire.
+
+### A-01 — UNASSIGNED: `AuditStore` lock-hold-time metric (root cause for R-G2-07c and U50)
+- **What is missing:** no signal records *how long* `AuditStore._lock` is held.
+  Two registered risks are invisible without it: R-G2-07c (a backfill can hold
+  the append lock for minutes to hours) and U50 (a full-chain
+  `verify_integrity()` holds the same lock — 26.4 µs/row MEASURED ⇒ ~264 s at
+  10⁷ rows). Both surface only as "HIGH/CRITICAL actions are being denied",
+  which is one layer too late to diagnose.
+- **Spec (small enough to be uncontroversial):** record `t0` at lock
+  acquisition and `t1` at release in every `with self._lock:` site in
+  `src/kernels/audit/__init__.py`; export a gauge
+  `audit_lock_hold_seconds_last` plus a monotonic counter
+  `audit_lock_hold_seconds_total`; log a WARNING on any single hold > 1 s
+  including the calling function name. Deliberately **not** a histogram — one
+  scalar "last hold" plus one counter is enough to answer "is the lock stuck,
+  and who is holding it".
+- **Why it is unassigned:** `src/kernels/audit/**` is under the standing
+  **D23/D24 prohibition** for `os-impl`, who reported the gap and cannot take
+  it; `c2-scaling` is under a **docs-only** constraint for this task and cannot
+  take it either. **Team-lead must name an owner.**
+- **Interim coverage (not a substitute):** `os-impl` added a *consumer-side
+  symptom* signal in `HostCommandBroker` (commit `9ecc62e4`) —
+  `audit_failures`, `last_audit_error`, `last_audit_write_ms`, timed in a
+  `finally` so it records on both the success and the fail-closed refusal path.
+  That tells you **who felt it**; A-01 tells you **why**. Correlating the two is
+  the intended reading: broker write latency rising *together with* a long lock
+  hold confirms an append-lock stall rather than a broker-local problem.
+- **Explicit non-goal:** this metric must never be used to justify weakening the
+  gate. A long hold during a legitimate backfill or a legitimate full
+  verification is a reason to **refuse** governed actions, not a reason to let
+  them run unaudited.
+
+---
+
+## 4. Standing rule for every risk above
 
 When detection is inconclusive, the system's answer is **UNVERIFIED**, never
 VERIFIED. Every risk in this register resolves to one of three fail-closed
