@@ -30,25 +30,42 @@ regression.
 
 From `performance-baseline.json` in this directory.
 
+Measured with the shipping durability default (`synchronous=FULL`).
+
 | metric | value |
 |---|---|
-| single append throughput | **2,562 events/sec** |
-| single append latency | p50 ~0.24 ms · p95 0.453 ms · p99 2.462 ms |
-| batch = 1 | 2,589/sec |
-| batch = 10 | 10,221/sec |
-| batch = 50 | 16,355/sec |
-| batch = 100 | 14,700/sec |
-| batch = 250 | **20,347/sec** (≈8× a single append) |
+| single append throughput | **731 events/sec** |
+| single append latency | p95 2.033 ms · p99 3.664 ms |
+| batch = 1 | 739/sec |
+| batch = 10 | 5,342/sec |
+| batch = 50 | 12,689/sec |
+| batch = 100 | 15,056/sec |
+| batch = 250 | **17,738/sec** (≈24× a single append) |
 | hashing alone (no database) | ~67,000/sec — **not** the bottleneck |
-| 4 processes, one DB, batch 250 | 48,434/sec excluding interpreter start-up; 5,079/sec including it |
-| re-verify 15,000 events | 354 ms |
-| re-verify 23,000 events | 520 ms |
-| disk per event | ~478 bytes |
-| recovery after a hard kill | 0.099 s, chain intact |
+| 4 processes, one DB, batch 250 | 44,185/sec excluding interpreter start-up; 4,564/sec including it |
+| re-verify 15,000 events | 351 ms |
+| re-verify 23,000 events | 611 ms |
+| disk per event | ~455 bytes |
+| recovery after a hard kill | 0.103 s, chain intact |
 
-The 50-wide batch measuring faster than the 100-wide one is measurement noise,
-not a real inversion — both sit on the same plateau, and the gate uses a 25%
-tolerance precisely so this kind of jitter does not fail a build.
+### Why single-append throughput dropped from ~2,500 to ~731
+
+This baseline was re-baselined on purpose, with a reason: the store now opens
+`synchronous=FULL`, so a commit survives a power cut (it previously only
+survived a process crash). The fsync costs ~1.4 ms per **transaction**, which
+is the entire cost when you append one event per transaction, and a rounding
+error when you append 250:
+
+| batch | NORMAL | FULL | cost of durability |
+|---|---|---|---|
+| 1 | 2,435/sec | 741/sec | 3.29× |
+| 50 | 19,722/sec | 13,969/sec | 1.41× |
+| 250 | 21,434/sec | 20,249/sec | **1.06×** |
+
+So the correct reading is not "the store got 3× slower" but **"batching is now
+worth 24× instead of 8×, because it amortises the fsync that makes the evidence
+durable"**. Any caller that needs throughput should batch; that is the same
+conclusion the C1 work already reached, now with a durability reason on top.
 
 ### Two numbers that are easy to misread
 
