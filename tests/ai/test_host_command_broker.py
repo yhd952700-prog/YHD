@@ -193,6 +193,10 @@ def test_audit_failure_is_fail_closed_by_default():
     assert dec.outcome is DecisionOutcome.ERROR
     assert "audit trail unavailable" in dec.reason
     assert len(exec_fn.calls) == 0  # never executed
+    # Consumer-side signal for audit-backend health (symptom of lock contention).
+    assert broker.audit_failures == 1
+    assert "audit backend down" in (broker.last_audit_error or "")
+    assert broker.last_audit_write_ms is not None
 
 
 def test_audit_failure_degrades_only_when_explicitly_opted_out():

@@ -20,6 +20,7 @@ Observability is fail-soft: audit/event emission never breaks the decision path.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Dict, Optional
 
 from .approval import ApprovalInterface
@@ -78,6 +79,13 @@ class HostCommandBroker:
         # (fail-closed) rather than running silently. Set False only for
         # deliberate, documented degradation.
         self.fail_closed_audit = fail_closed_audit
+        # Consumer-side signal for audit-backend health. This COMPLEMENTS -- never
+        # substitutes -- the root-cause "append-lock hold duration" metric that
+        # belongs inside AuditStore (not ours to edit). A rising audit_failures /
+        # long last_audit_write_ms here is the symptom of lock contention there.
+        self.audit_failures: int = 0
+        self.last_audit_error: Optional[str] = None
+        self.last_audit_write_ms: Optional[float] = None
         self.catalog = catalog or CapabilityCatalog()
         # When the global gate is OFF, force the deny-all policy regardless of
         # any injected policy, so the gate is the authoritative default-DENY.
@@ -146,9 +154,12 @@ class HostCommandBroker:
         # 4b) Accountability: record the authorization BEFORE executing. An
         # executed host command with no audit record breaks sovereignty, so a
         # failed audit write is fatal by default (fail-closed).
+        started = time.time()
         try:
             self._sink("host_command_authorized", decision.as_dict())
         except Exception as exc:  # noqa: BLE001 - audit failure is a decision input
+            self.audit_failures += 1
+            self.last_audit_error = str(exc)
             if self.fail_closed_audit:
                 err = HostCommandDecision(
                     DecisionOutcome.ERROR,
@@ -160,6 +171,9 @@ class HostCommandBroker:
                 )
                 self._emit("host_command_audit_failure", {**err.as_dict(), "error": str(exc)})
                 return err
+        finally:
+            # Runs on both paths (success and fail-closed refusal).
+            self.last_audit_write_ms = (time.time() - started) * 1000.0
         try:
             result = self.executor(req)
             self._emit(
