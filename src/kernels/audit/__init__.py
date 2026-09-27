@@ -88,6 +88,12 @@ _MAX_WRITE_ATTEMPTS = 8
 _WRITE_RETRY_BASE_SEC = 0.02
 _WRITE_RETRY_MAX_DELAY_SEC = 0.5
 
+# F-04: a dashboard or replay that asks for "everything" must not be able to
+# pull the entire multi-million-row chain into memory on the read path. Cap any
+# unbounded query_events() at this many rows; a caller-supplied smaller limit is
+# still honoured. This is a safety ceiling, not a pagination contract.
+_QUERY_EVENTS_MAX_ROWS = 10_000
+
 # Schema applied as individual statements (never executescript()) so it can
 # run inside one BEGIN IMMEDIATE -- see the cold-start race note in _init_db.
 _SCHEMA_STATEMENTS = (
@@ -378,8 +384,15 @@ class AuditStore:
             # Ensure the seq index exists. This must run AFTER the seq column is
             # guaranteed to exist (either fresh schema or migrated legacy schema),
             # otherwise SQLite raises "no such column: seq".
+            # C2/UNIQUE(seq): a database-level backstop against a duplicate or
+            # skipped sequence number -- the hash chain's monotonic seq is the
+            # audit-order axis, so a duplicate seq would silently merge two
+            # events and a gap would break the prev_hash chain. The unique index
+            # is additive: it refuses to open a store whose seq is not already
+            # strictly unique (fail-closed), which is exactly what we want.
+            self._conn.execute("DROP INDEX IF EXISTS idx_seq")
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_seq ON audit_events(seq)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uidx_seq ON audit_events(seq)"
             )
             # PHASE 3.6 / A5: bring a legacy table forward. Every row that
             # predates the column was hashed with SHA-256, so the column
@@ -1550,10 +1563,21 @@ class AuditStore:
         querying (Definition Lock section 113). Returns list of event
         dicts ordered by the monotonic sequence number (ascending by
         default, descending when reverse=True).
+
+        Reads from a pinned snapshot (never the write connection, never the
+        append lock): a reader must not observe an uncommitted append, and it
+        must not block the writer. An unbounded call is capped at
+        ``_QUERY_EVENTS_MAX_ROWS`` so a dashboard or replay cannot drag the
+        whole multi-million-row chain into memory.
         """
-        # 与写路径同一把锁：共享的 sqlite3 连接不并发使用。
-        with self._lock:
-            return self._query_events_locked(
+        cap = (
+            _QUERY_EVENTS_MAX_ROWS
+            if limit is None
+            else min(int(limit), _QUERY_EVENTS_MAX_ROWS)
+        )
+        return self._read_only(
+            lambda conn: self._query_events_on(
+                conn,
                 principal_id=principal_id,
                 scope=scope,
                 start_time=start_time,
@@ -1561,12 +1585,14 @@ class AuditStore:
                 outcome=outcome,
                 event_type=event_type,
                 correlation_id=correlation_id,
-                limit=limit,
+                limit=cap,
                 reverse=reverse,
             )
+        )
 
-    def _query_events_locked(
+    def _query_events_on(
         self,
+        conn,
         principal_id: Optional[str] = None,
         scope: Optional[AuditScope] = None,
         start_time: Optional[float] = None,
@@ -1619,7 +1645,7 @@ class AuditStore:
             query += " LIMIT ?"
             params.append(limit)
 
-        cursor = self._conn.execute(query, params)
+        cursor = conn.execute(query, params)
         results = []
 
         for row in cursor.fetchall():

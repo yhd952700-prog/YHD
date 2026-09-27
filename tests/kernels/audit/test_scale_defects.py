@@ -150,3 +150,66 @@ def test_an_unknown_durability_value_falls_back_to_the_safe_grade(
     monkeypatch.setenv("LIUHAO_AUDIT_SYNCHRONOUS", "not-a-level")
     store = _store(tmp_path, "g.db")
     assert _applied_sync(store) == SYNC_FULL
+
+
+def test_query_events_caps_unbounded_results(tmp_path):
+    """A caller that asks for 'everything' must not pull the whole chain.
+
+    F-04: an unbounded query_events() is a memory-exhaustion footgun at
+    million scale. It is capped, while an explicit smaller limit is still
+    honoured.
+    """
+    from src.kernels.audit import _QUERY_EVENTS_MAX_ROWS
+
+    store = _store(tmp_path, "r.db")
+    n = 15_000
+    for i in range(n):
+        store.log_event(AuditEventType.STATE_CHANGE, "p", AuditScope.L0, "ok",
+                        {"i": i}, f"c{i}")
+
+    rows = store.query_events(limit=None)
+    assert len(rows) == _QUERY_EVENTS_MAX_ROWS, (
+        f"unbounded query must be capped at {_QUERY_EVENTS_MAX_ROWS}, "
+        f"got {len(rows)}"
+    )
+
+    small = store.query_events(limit=500)
+    assert len(small) == 500
+
+
+def test_query_events_does_not_block_on_the_append_lock(tmp_path):
+    """The read path must not serialize behind an in-flight append.
+
+    F-04: query_events() used to take the same lock every append needs, so a
+    long-running dashboard pull would freeze governed actions. Now it reads a
+    pinned snapshot instead. This holds the lock itself to prove the old
+    behaviour would have stalled here.
+    """
+    store = _store(tmp_path, "q.db")
+    for i in range(50):
+        store.log_event(AuditEventType.STATE_CHANGE, "p", AuditScope.L0, "ok",
+                        {"i": i}, f"c{i}")
+
+    finished = threading.Event()
+    outcome: dict = {}
+
+    def query():
+        try:
+            outcome["rows"] = store.query_events(limit=10)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            outcome["exc"] = exc
+        finally:
+            finished.set()
+
+    with store._lock:  # simulate an in-flight append holding the write path
+        worker = threading.Thread(target=query, daemon=True)
+        worker.start()
+        completed = finished.wait(timeout=15)
+        worker.join(timeout=15)
+
+    assert completed, (
+        "query_events() blocked on the append lock -- a read would freeze "
+        "every governed action for the length of the scan"
+    )
+    assert "exc" not in outcome, f"query_events raised: {outcome['exc']}"
+    assert len(outcome["rows"]) == 10
