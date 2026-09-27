@@ -21,6 +21,7 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -112,6 +113,9 @@ def _win32_kernel32():
         ]
         lib.CloseHandle.restype = ctypes.c_int
         lib.CloseHandle.argtypes = [ctypes.c_void_p]
+        # #99 — boot generation (host uptime in ms) for the lease liveness test.
+        lib.GetTickCount64.restype = ctypes.c_ulonglong
+        lib.GetTickCount64.argtypes = []
         _win32_kernel32_cache = lib
     return _win32_kernel32_cache
 
@@ -120,8 +124,138 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
 
 
+# --------------------------------------------------------------------------- #
+# #99 — writer identity upgrade (ADR-audit-writer-lease-identity)
+# --------------------------------------------------------------------------- #
+# Per-process identity so a fenced writer can PROVE it was fenced, and so PID
+# reuse / host restart / cross-host collision (T1/T2/T6) can no longer masquerade
+# as "a healthy live writer". The uuid is generated once per process and shared by
+# every AuditStore in that process (U38: two instances in one process must share
+# an identity, or they would fence each other). boot_gen is a host-local monotonic
+# uptime in ms, captured once per process; it is the only liveness signal that
+# needs no shared wall clock and the only one that can prove a reboot happened.
+_LEASE_WRITER_ID: Optional[str] = None
+_LEASE_BOOT_GEN: Optional[int] = None
+# #99 — the fencing token this process's writer_id last KNEW it held. It is
+# process-global (keyed to writer_id), NOT per-AuditStore-instance, because two
+# AuditStore instances in one process share the same writer_id and the same lease
+# row (U38). A per-instance value would fabricate a false FencedWriterError when a
+# second instance re-acquires. It is never reset to None: a reset would make a
+# reopen look like a superseded token; the comparison only fires when a peer has
+# actually raised the row's token above what we last held.
+_LEASE_LAST_TOKEN: Optional[int] = None
+
+
+def _get_last_token() -> Optional[int]:
+    return _LEASE_LAST_TOKEN
+
+
+def _set_last_token(token: Optional[int]) -> None:
+    global _LEASE_LAST_TOKEN
+    _LEASE_LAST_TOKEN = token
+
+
+def _process_writer_id() -> Optional[str]:
+    """This process's stable audit-writer identity (uuid4 hex), or None."""
+    global _LEASE_WRITER_ID
+    if _LEASE_WRITER_ID is None:
+        try:
+            _LEASE_WRITER_ID = uuid.uuid4().hex
+        except Exception:  # noqa: BLE001 - identity must never break the path
+            return None
+    return _LEASE_WRITER_ID
+
+
+def _process_boot_gen() -> Optional[int]:
+    """This process's host uptime in ms, or None if it cannot be read."""
+    global _LEASE_BOOT_GEN
+    if _LEASE_BOOT_GEN is None:
+        _LEASE_BOOT_GEN = _read_boot_gen_ms()
+    return _LEASE_BOOT_GEN
+
+
+def _read_boot_gen_ms() -> Optional[int]:
+    """Host-local monotonic uptime in milliseconds.
+
+    Windows: GetTickCount64. POSIX: CLOCK_BOOTTIME if available (counts
+    suspend), else CLOCK_MONOTONIC, else time.monotonic(). Any failure returns
+    None so the caller can fall back to "unknown -> refuse" rather than crash.
+    """
+    try:
+        if sys.platform == "win32":
+            return int(_win32_kernel32().GetTickCount64())
+        clk = getattr(time, "CLOCK_BOOTTIME", None)
+        if clk is None:
+            clk = getattr(time, "CLOCK_MONOTONIC", None)
+        if clk is not None:
+            return int(time.clock_gettime(clk) * 1000.0)
+        return int(time.monotonic() * 1000.0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _lease_identity_mode() -> str:
+    """Which identity model governs lease acquisition.
+
+    "pid"  (default) — the legacy owner/PID liveness model, unchanged.
+    "uuid" — the ADR-audit-writer-lease-identity model: writer_id + boot_gen +
+             writer_epoch, with FencedWriterError for a superseded writer.
+
+    The default is "pid" for this release so the new columns are purely additive
+    and the fleet can be proven safe before the switch (ADR §6.5).
+    """
+    return os.environ.get("LIUHAO_AUDIT_LEASE_IDENTITY", "pid").strip().lower() or "pid"
+
+
+# SKEW_BUDGET_SEC / BOOT_TOL_MS: tolerances for the liveness test. Every branch
+# that cannot PROVE staleness returns "live" (refuse), per the ADR's fail-closed
+# rule (a fork is never an acceptable outcome of a fence decision).
+_SKEW_BUDGET_SEC = 5.0
+_BOOT_TOL_MS = 1000
+
+
+def _fence_metric():
+    """Lazily resolve the writer-fence counter (avoids import-time coupling)."""
+    from src.reliability.metrics import counter
+    return counter(
+        "audit_writer_fence_total",
+        "Count of writer-fence events detected by the audit single-writer "
+        "lease (a forced takeover or a superseded-token detection).",
+        "events",
+    )
+
+
+def get_writer_fence_total() -> float:
+    """Expose the cumulative writer-fence count (for audit_stats())."""
+    return _fence_metric().sample()
+
+
 class StaleWriterError(Exception):
     """Raised when a writer attempts to append with a stale/expired lease token."""
+
+
+class FencedWriterError(StaleWriterError):
+    """A writer whose own token was superseded while it believed it still held
+    the lease.
+
+    Subclasses :class:`StaleWriterError` so every existing ``except
+    StaleWriterError`` site keeps working, but it is a distinct, louder signal:
+    it means "you were explicitly fenced", not merely "the lease is held by
+    someone else". Carries the epoch of the fence event so the victim (and an
+    operator) can prove a takeover occurred (ADR §4.6).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        fenced_epoch: Optional[int] = None,
+        holder: Optional[str] = None,
+        token: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.fenced_epoch = fenced_epoch
+        self.fenced_holder = holder
+        self.fenced_token = token
 
 
 @dataclass
@@ -130,6 +264,10 @@ class LeaseView:
     owner: Optional[str]
     acquired_at: Optional[float]
     expires_at: Optional[float]
+    writer_id: Optional[str] = None
+    writer_epoch: Optional[int] = None
+    boot_gen: Optional[int] = None
+    released_at: Optional[float] = None
 
 
 class WriterLease(ABC):
@@ -137,19 +275,24 @@ class WriterLease(ABC):
     monotonic token so a newer lease fences all older ones."""
 
     @abstractmethod
-    def acquire(self, owner: str, ttl_sec: float = 30.0) -> int: ...
+    def acquire(self, owner: str, ttl_sec: float = 30.0) -> int:
+        ...
 
     @abstractmethod
-    def validate(self, token: int) -> bool: ...
+    def validate(self, token: int) -> bool:
+        ...
 
     @abstractmethod
-    def is_stale(self, token: int) -> bool: ...
+    def is_stale(self, token: int) -> bool:
+        ...
 
     @abstractmethod
-    def release(self, token: int) -> bool: ...
+    def release(self, token: int) -> bool:
+        ...
 
     @abstractmethod
-    def current(self) -> LeaseView: ...
+    def current(self) -> LeaseView:
+        ...
 
 
 def require_writer_lease(lease: WriterLease, token: int) -> None:
@@ -219,13 +362,21 @@ class InMemoryWriterLease(WriterLease):
         )
 
 
+# #99 — the lease table gains four additive columns (writer_id, writer_epoch,
+# boot_gen, released_at). Existing 5-column rows still work: the new columns are
+# NULL-tolerant and are only consulted when non-NULL, so a legacy row falls back
+# to the wall-clock TTL (pid mode). See ADR-audit-writer-lease-identity §4.2/§6.
 _LEASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS writer_lease (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     token INTEGER NOT NULL,
     owner TEXT,
     acquired_at REAL,
-    expires_at REAL
+    expires_at REAL,
+    writer_id TEXT,
+    writer_epoch INTEGER NOT NULL DEFAULT 0,
+    boot_gen INTEGER,
+    released_at REAL
 );
 """
 
@@ -242,82 +393,37 @@ class SqliteWriterLease(WriterLease):
         self._conn = conn
         conn.executescript(_LEASE_SCHEMA)
 
-    def acquire(self, owner: str, ttl_sec: float = 30.0) -> int:
-        now = time.time()
+    def acquire(
+        self, owner: str, ttl_sec: float = 30.0,
+        writer_id: Optional[str] = None, boot_gen: Optional[int] = None,
+        my_last_token: Optional[int] = None,
+    ) -> int:
+        # #99 / finding #7: an exported API must not start a transaction inside
+        # one. The previous code unconditionally executed BEGIN IMMEDIATE, which
+        # raised "cannot start a transaction within a transaction" for any caller
+        # (e.g. a future heartbeat) that already held one.
+        if self._conn.in_transaction:
+            raise sqlite3.OperationalError(
+                "cannot start a transaction within a transaction")
         self._conn.execute("BEGIN IMMEDIATE")
         try:
-            row = self._conn.execute(
-                "SELECT token, owner, expires_at FROM writer_lease WHERE id = 1"
-            ).fetchone()
-            if row is not None:
-                cur_token, cur_owner, cur_exp = row
-                if cur_exp is not None and cur_exp > now:
-                    if cur_owner == owner:
-                        # FIX (U38, self-fence): this is the *same* writer
-                        # re-acquiring a lease it already holds -- a legitimate
-                        # RENEWAL, not a competing writer.  ``_ensure_writer_lease``
-                        # documents exactly this case ("a legitimate, still-active
-                        # single writer refreshing its own lease"), but the branch
-                        # below used to reject it, because liveness was judged
-                        # only from the *pid* embedded in the owner string -- and
-                        # that pid is of course alive for our own process.
-                        #
-                        # Consequence of the bug: any AuditStore re-created inside
-                        # one process while its own lease was still live (singleton
-                        # reset, re-connect, per-test isolation) fenced ITSELF out.
-                        # Because the mandatory-evidence gate is fail-closed, that
-                        # denied *every* HIGH/CRITICAL action for up to the full
-                        # lease TTL -- a self-inflicted availability outage.
-                        #
-                        # Split-brain protection is deliberately untouched: renewal
-                        # applies ONLY when the owner string is identical, so a
-                        # *different* live owner is still refused just below.
-                        #
-                        # The token is deliberately NOT bumped: this writer keeps
-                        # its existing fence token.  Bumping would invalidate the
-                        # token held by any co-existing same-owner instance and
-                        # make them fight -- each renewal fencing the other, with
-                        # every subsequent write re-acquiring (thrash).
-                        self._conn.execute(
-                            "UPDATE writer_lease SET expires_at = ? WHERE id = 1",
-                            (now + ttl_sec,),
-                        )
-                        self._conn.commit()
-                        return cur_token
-                    # Lease not yet TTL-expired and held by a *different* owner.
-                    # A *live* owner keeps it (split brain prevention). A *dead*
-                    # owner must be fenced over: the previous writer process
-                    # exited without releasing, and leaving its lease live for the
-                    # full TTL is exactly what caused the C-6 NOT-INERT self-lock
-                    # (verify_armed's probe process found the breadth app-suite's
-                    # lease still valid). When liveness cannot be determined we
-                    # stay conservative and refuse (do not steal an
-                    # unconfirmed-orphan lease).
-                    pid = _owner_pid(cur_owner)
-                    alive = _is_process_alive(pid) if pid is not None else None
-                    if alive is not False:
-                        raise StaleWriterError(
-                            f"lease held by {cur_owner!r} (alive={alive}) until {cur_exp}"
-                        )
-                    # alive is False -> owner process has exited; take over.
-                new_token = (cur_token or 0) + 1
+            if writer_id is not None and _lease_identity_mode() == "uuid":
+                token = self._acquire_within_uuid(
+                    owner, ttl_sec, writer_id, boot_gen, my_last_token)
             else:
-                new_token = 1
-            self._conn.execute(
-                "INSERT INTO writer_lease (id, token, owner, acquired_at, expires_at) "
-                "VALUES (1, ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET "
-                "token = excluded.token, owner = excluded.owner, "
-                "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at",
-                (new_token, owner, now, now + ttl_sec),
-            )
+                token = self._acquire_within_pid(owner, ttl_sec)
             self._conn.commit()
-            return new_token
+            return token
         except Exception:
             self._conn.rollback()
             raise
 
-    def acquire_within(self, owner: str, ttl_sec: float = 30.0) -> int:
+    def acquire_within(
+        self, owner: str, ttl_sec: float = 30.0,
+        writer_id: Optional[str] = None,
+        boot_gen: Optional[int] = None,
+        my_last_token: Optional[int] = None,
+    ) -> int:
         """Same rules as :meth:`acquire`, but WITHOUT transaction control.
 
         The caller must already hold a write transaction (``BEGIN IMMEDIATE``).
@@ -331,7 +437,20 @@ class SqliteWriterLease(WriterLease):
         surfacing ``StaleWriterError`` to the caller, so a busy peer no longer
         reads as "evidence channel unavailable" -- which the fail-closed gate
         turned into a denial of every governed action (U39).
+
+        #99: when ``writer_id`` is supplied AND the process opted into the uuid
+        identity model (``LIUHAO_AUDIT_LEASE_IDENTITY=uuid``), the decision uses
+        writer_id / boot_gen / writer_epoch and can raise :class:`FencedWriterError`
+        (ADR-audit-writer-lease-identity §4). Otherwise the legacy owner/PID model
+        is used exactly as before; pid mode is the default for this release.
         """
+        if writer_id is not None and _lease_identity_mode() == "uuid":
+            return self._acquire_within_uuid(
+                owner, ttl_sec, writer_id, boot_gen, my_last_token)
+        return self._acquire_within_pid(owner, ttl_sec)
+
+    def _acquire_within_pid(self, owner: str, ttl_sec: float = 30.0) -> int:
+        """Legacy owner/PID liveness decision -- unchanged behaviour (pid mode)."""
         now = time.time()
         row = self._conn.execute(
             "SELECT token, owner, expires_at FROM writer_lease WHERE id = 1"
@@ -366,19 +485,118 @@ class SqliteWriterLease(WriterLease):
         )
         return new_token
 
+    def _acquire_within_uuid(self, owner, ttl_sec, writer_id, boot_gen, my_last_token):
+        """#99 uuid-mode decision (ADR §4.3). One SELECT, one UPDATE/INSERT, zero
+        extra round trips -- identical cost profile to the pid path.
+
+        Decision table (every ambiguous cell resolves to REFUSE / fail-closed):
+          * no row            -> install, token=1, epoch=0
+          * holder == me, token <= my last -> renew (U38 preserved), epoch unchanged
+          * holder == me, token  > my last -> FencedWriterError (we were fenced)
+          * different holder, lease live    -> StaleWriterError (refuse)
+          * different holder, lease not live -> forced takeover, token+1, epoch+1
+          * different holder, liveness unknown -> refuse
+        """
+        now = time.time()
+        row = self._conn.execute(
+            "SELECT token, writer_id, writer_epoch, expires_at, boot_gen, "
+            "released_at FROM writer_lease WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return self._install_lease(
+                1, 0, writer_id, boot_gen, owner, now, ttl_sec)
+        cur_token, holder, cur_epoch, cur_exp, cur_boot, _rel = row
+        if holder is not None and holder == writer_id:
+            # Same writer. If the row token is HIGHER than the token we last
+            # held, someone took our token out from under us -> we were fenced.
+            # Fail closed and loudly; do NOT silently renew.
+            last = my_last_token if my_last_token is not None else -1
+            if cur_token > last:
+                _fence_metric().inc()
+                raise FencedWriterError(
+                    f"writer {writer_id!r} was fenced: current token "
+                    f"{cur_token} > my last token {last}",
+                    fenced_epoch=cur_epoch,
+                    holder=holder,
+                    token=cur_token,
+                )
+            # Still ours (released/expired, nobody stole it) -> renew, no epoch bump.
+            return self._renew_lease(
+                cur_token, (cur_epoch or 0), writer_id, boot_gen, owner,
+                now, ttl_sec)
+        # Different writer (or a legacy NULL-holder row).
+        if self._lease_is_live(cur_exp, cur_boot, now, boot_gen):
+            raise StaleWriterError(
+                f"lease held by writer {holder!r} (boot_gen={cur_boot}) "
+                f"until {cur_exp}"
+            )
+        # Not live -> forced takeover: token +1 AND epoch +1. This is the event
+        # that proves a fence happened (ADR §4.5), so it is counted.
+        _fence_metric().inc()
+        return self._install_lease(
+            (cur_token or 0) + 1, (cur_epoch or 0) + 1,
+            writer_id, boot_gen, owner, now, ttl_sec)
+
+    def _lease_is_live(self, expires_at, row_boot_gen, now, my_boot_gen):
+        """#99 liveness test replacing _is_process_alive(pid) (ADR §4.4).
+
+        Returns True (live -> refuse takeover / fail closed) unless staleness is
+        PROVEN. Every ambiguous branch returns True.
+        """
+        if expires_at is not None and expires_at <= now - _SKEW_BUDGET_SEC:
+            return False  # plainly expired (with skew budget) -> not live
+        if row_boot_gen is None or my_boot_gen is None:
+            return True  # unknown boot gen -> REFUSE (never steal on ambiguity)
+        if row_boot_gen > my_boot_gen + _BOOT_TOL_MS:
+            return True  # uptime went backwards or a FOREIGN host (T6) -> REFUSE
+        if row_boot_gen < my_boot_gen - _BOOT_TOL_MS:
+            return False  # the host rebooted since -> stale, takeover allowed (T2)
+        return expires_at is not None and expires_at > now - _SKEW_BUDGET_SEC
+
+    def _install_lease(self, token, epoch, writer_id, boot_gen, owner, now, ttl_sec):
+        """Write (or overwrite) the lease row with a NEW token + epoch."""
+        self._conn.execute(
+            "INSERT INTO writer_lease "
+            "(id, token, owner, acquired_at, expires_at, writer_id, writer_epoch, "
+            " boot_gen, released_at) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, NULL) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "token = excluded.token, owner = excluded.owner, "
+            "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at, "
+            "writer_id = excluded.writer_id, writer_epoch = excluded.writer_epoch, "
+            "boot_gen = excluded.boot_gen, released_at = excluded.released_at",
+            (token, owner, now, now + ttl_sec, writer_id, epoch, boot_gen),
+        )
+        return token
+
+    def _renew_lease(self, token, epoch, writer_id, boot_gen, owner, now, ttl_sec):
+        """Renew our own live/released lease: extend the TTL, keep token + epoch."""
+        self._conn.execute(
+            "UPDATE writer_lease SET expires_at = ?, owner = ?, acquired_at = ?, "
+            "writer_id = ?, boot_gen = ?, released_at = NULL WHERE id = 1",
+            (now + ttl_sec, owner, now, writer_id, boot_gen),
+        )
+        return token
+
     def release_within(self, token: int) -> bool:
         """Release the lease WITHOUT transaction control (caller holds the txn).
 
         Used to yield the lease as part of the append's commit, so a peer can
         take over the instant the append lands.
+
+        #99: keep ``token`` / ``writer_id`` / ``writer_epoch``. Nulling
+        ``writer_id`` would make every subsequent append look like a takeover and
+        bump the epoch once per append, destroying its meaning (ADR §4.5). Only
+        the live markers are cleared, and ``released_at`` records the yield.
         """
         row = self._conn.execute(
             "SELECT token FROM writer_lease WHERE id = 1"
         ).fetchone()
         if row is not None and row[0] == token:
-            # Keep the token counter monotonic; only invalidate the active holder.
             self._conn.execute(
-                "UPDATE writer_lease SET owner = NULL, expires_at = 0 WHERE id = 1"
+                "UPDATE writer_lease SET owner = NULL, expires_at = 0, "
+                "released_at = ? WHERE id = 1",
+                (time.time(),),
             )
             return True
         return False
@@ -402,10 +620,11 @@ class SqliteWriterLease(WriterLease):
             "SELECT token FROM writer_lease WHERE id = 1"
         ).fetchone()
         if row is not None and row[0] == token:
-            # Keep the token counter monotonic; only invalidate the active holder.
+            # Keep token / writer_id / writer_epoch; record the yield.
             self._conn.execute(
-                "UPDATE writer_lease SET owner = NULL, expires_at = 0 "
-                "WHERE id = 1"
+                "UPDATE writer_lease SET owner = NULL, expires_at = 0, "
+                "released_at = ? WHERE id = 1",
+                (time.time(),),
             )
             self._conn.commit()
             return True
@@ -413,8 +632,11 @@ class SqliteWriterLease(WriterLease):
 
     def current(self) -> LeaseView:
         row = self._conn.execute(
-            "SELECT token, owner, acquired_at, expires_at FROM writer_lease WHERE id = 1"
+            "SELECT token, owner, acquired_at, expires_at, writer_id, "
+            "writer_epoch, boot_gen, released_at FROM writer_lease WHERE id = 1"
         ).fetchone()
         if row is None:
             return LeaseView(None, None, None, None)
-        return LeaseView(row[0], row[1], row[2], row[3])
+        return LeaseView(
+            row[0], row[1], row[2], row[3],
+            row[4], row[5], row[6], row[7])

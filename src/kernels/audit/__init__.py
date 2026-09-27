@@ -17,7 +17,16 @@ from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
 from .durability import configure_audit_durability
 from .hashutil import canonical_json, event_payload
 from . import verification as _verification
-from .fencing import SqliteWriterLease, require_writer_lease
+from .fencing import (
+    SqliteWriterLease,
+    require_writer_lease,
+    _process_writer_id,
+    _process_boot_gen,
+    _lease_identity_mode,
+    get_writer_fence_total,
+    _get_last_token,
+    _set_last_token,
+)
 from src.reliability.metrics import counter, gauge
 
 import json
@@ -121,6 +130,21 @@ _SCHEMA_STATEMENTS = (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         last_seq INTEGER NOT NULL,
         last_hash TEXT
+    )""",
+    # #99 — single-writer lease table created INSIDE the _init_db transaction so
+    # it is covered by the same cold-start write lock as the rest of the schema
+    # (ADR-audit-writer-lease-identity §6.1). The four new columns are additive;
+    # legacy 5-column rows are migrated by the ALTER below.
+    """CREATE TABLE IF NOT EXISTS writer_lease (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        token INTEGER NOT NULL,
+        owner TEXT,
+        acquired_at REAL,
+        expires_at REAL,
+        writer_id TEXT,
+        writer_epoch INTEGER NOT NULL DEFAULT 0,
+        boot_gen INTEGER,
+        released_at REAL
     )""",
 )
 
@@ -286,6 +310,11 @@ class AuditStore:
             )
         self._db_path = db_path
         self._writer_token: Optional[int] = None
+        # NOTE: the "last fencing token this writer_id held" is process-global
+        # (see fencing._LEASE_LAST_TOKEN), NOT a per-instance attribute, because
+        # two AuditStore instances in one process share the same writer_id and the
+        # same lease row (U38). A per-instance copy would fabricate a false
+        # FencedWriterError on the second instance.
         # Created before _init_db() and NEVER recreated: _write_with_retry()
         # can re-open the connection while this lock is held, and swapping the
         # lock object underneath a held lock would open a window in which a
@@ -436,6 +465,28 @@ class AuditStore:
                 ).fetchone()
                 if last:
                     self._insert_chain_anchor(last[0], last[1])
+            # #99 — additive migration of the single-writer lease to the
+            # writer-identity model (ADR-audit-writer-lease-identity §4.2/§6.1).
+            # New columns are NULL-tolerant and only consulted when non-NULL, so a
+            # legacy 5-column row keeps working exactly as before (pid mode). The
+            # migration runs inside this BEGIN IMMEDIATE, not as a second
+            # unguarded ALTER (Gen-2 ADR finding #8).
+            _lease_cols = [r[1] for r in self._conn.execute(
+                "PRAGMA table_info(writer_lease)").fetchall()]
+            _lease_alters = [
+                ("writer_id",
+                 "ALTER TABLE writer_lease ADD COLUMN writer_id TEXT"),
+                ("writer_epoch",
+                 "ALTER TABLE writer_lease ADD COLUMN writer_epoch "
+                 "INTEGER NOT NULL DEFAULT 0"),
+                ("boot_gen",
+                 "ALTER TABLE writer_lease ADD COLUMN boot_gen INTEGER"),
+                ("released_at",
+                 "ALTER TABLE writer_lease ADD COLUMN released_at REAL"),
+            ]
+            for _col, _stmt in _lease_alters:
+                if _col not in _lease_cols:
+                    self._conn.execute(_stmt)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -638,14 +689,22 @@ class AuditStore:
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                # Q3.5 fencing, now genuinely atomic with the append: take the
-                # lease INSIDE the write transaction. A competing process blocks
-                # on SQLite's write lock instead of being told the evidence
+                # Q3.5 / #99 fencing, now genuinely atomic with the append: take
+                # the lease INSIDE the write transaction. A competing process
+                # blocks on SQLite's write lock instead of being told the evidence
                 # channel is unavailable; a genuinely fenced writer (a newer live
-                # owner) is still refused immediately.
+                # owner) is still refused immediately. #99 passes the process
+                # writer_id / boot_gen / my_last_token so the uuid identity model
+                # (opt-in via LIUHAO_AUDIT_LEASE_IDENTITY=uuid) can detect a
+                # superseded token (FencedWriterError) and record forced
+                # takeovers (writer_epoch).
                 self._writer_token = self._lease.acquire_within(
-                    owner=self._lease_owner()
+                    owner=self._lease_owner(),
+                    writer_id=_process_writer_id(),
+                    boot_gen=_process_boot_gen(),
+                    my_last_token=_get_last_token(),
                 )
+                _set_last_token(self._writer_token)
                 require_writer_lease(self._lease, self._writer_token)
 
                 # The chain_state anchor is the single source of truth for the
@@ -725,6 +784,10 @@ class AuditStore:
                 # can never disagree.
                 self._lease.release_within(self._writer_token)
                 self._conn.commit()
+                # Keep the process-global last token: after a successful release
+                # the row still shows OUR writer_id, so the next append renews
+                # instead of fabricating a false fence. Never reset it (a reset
+                # would make a reopen look like a superseded token).
                 self._writer_token = None
             except Exception:
                 self._conn.rollback()
@@ -793,8 +856,12 @@ class AuditStore:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 self._writer_token = self._lease.acquire_within(
-                    owner=self._lease_owner()
+                    owner=self._lease_owner(),
+                    writer_id=_process_writer_id(),
+                    boot_gen=_process_boot_gen(),
+                    my_last_token=_get_last_token(),
                 )
+                _set_last_token(self._writer_token)
                 require_writer_lease(self._lease, self._writer_token)
 
                 state = conn.execute(
@@ -1762,15 +1829,26 @@ class AuditStore:
                 breakdown[f"{row[0]}:{row[1]}"] = row[2]
             total = conn.execute(
                 "SELECT COUNT(*) FROM audit_events").fetchone()[0]
-            return breakdown, total
+            lease = conn.execute(
+                "SELECT writer_id, writer_epoch FROM writer_lease WHERE id = 1"
+            ).fetchone()
+            writer_id = lease[0] if lease else None
+            writer_epoch = lease[1] if lease else 0
+            return breakdown, total, writer_id, writer_epoch
 
-        breakdown, total = self._read_only(_read)
+        breakdown, total, writer_id, writer_epoch = self._read_only(_read)
 
         return {
             "total_events": total,
             "breakdown": breakdown,
             "db_path": self._db_path,
             "failures": get_audit_failure_count(),
+            # #99 — surfaced so an operator can see whether the writer-identity
+            # model is active and how many forced takeovers have occurred.
+            "writer_id": writer_id,
+            "writer_epoch": writer_epoch,
+            "lease_identity_mode": _lease_identity_mode(),
+            "writer_fence_total": get_writer_fence_total(),
         }
 
     def initialize(self) -> None:
