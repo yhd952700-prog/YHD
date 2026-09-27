@@ -14,6 +14,7 @@ correlation-aware querying, and full event lifecycle management.
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError
 from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
+from .durability import configure_audit_durability
 from .fencing import SqliteWriterLease, require_writer_lease
 
 import json
@@ -21,6 +22,7 @@ import logging
 import time
 import sqlite3
 import os
+import pathlib
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -34,6 +36,40 @@ logger = logging.getLogger("liuhao.kernel.audit")
 # write lock across the whole schema migration: with N processes starting at
 # once, the losers must WAIT for the winner rather than fail.
 _SQLITE_BUSY_TIMEOUT_SEC = 30.0
+
+# --- durability: does a "committed" event survive POWER loss? ---------------
+# WAL + synchronous=NORMAL survives a process crash but NOT a power cut: a
+# transaction that already returned "committed" can be lost. For an evidence
+# store whose entire promise is "the record exists", that is the wrong default,
+# so it is FULL now.
+#
+# The reason this is affordable: the fsync cost is per TRANSACTION, not per
+# event, so it collapses once appends are batched (Option C1). MEASURED on this
+# machine (scripts/bench_audit_append.py methodology, 2000 events, temp DB):
+#
+#     batch=1    NORMAL 2,435 eps -> FULL 741 eps   = 3.29x
+#     batch=50   NORMAL 19,722    -> FULL 13,969    = 1.41x
+#     batch=250  NORMAL 21,434    -> FULL 20,249    = 1.06x
+#
+# So the honest framing is not "durability costs 3x", it is "durability costs
+# 3x if you append one at a time and 6% if you batch". Callers that genuinely
+# need NORMAL throughput can opt out with LIUHAO_AUDIT_SYNCHRONOUS=NORMAL,
+# knowing exactly what they are giving up.
+_DEFAULT_SYNCHRONOUS = "FULL"
+_VALID_SYNCHRONOUS = ("OFF", "NORMAL", "FULL", "EXTRA")
+
+
+def _synchronous_level() -> str:
+    """The durability grade this store opens with.
+
+    Read per store (not at import time) so an operator can choose the grade
+    per deployment and so the choice is testable. An unrecognised value falls
+    back to the safe grade rather than to whatever SQLite defaults to.
+    """
+    level = os.environ.get(
+        "LIUHAO_AUDIT_SYNCHRONOUS", _DEFAULT_SYNCHRONOUS).upper()
+    return level if level in _VALID_SYNCHRONOUS else _DEFAULT_SYNCHRONOUS
+
 
 # --- transient-fault recovery (see AuditStore._write_with_retry) ------------
 # SQLite primary result codes, per https://sqlite.org/rescode.html
@@ -284,7 +320,10 @@ class AuditStore:
                 # NOTE: PRAGMA journal_mode cannot be changed from inside a
                 # transaction, so it must stay above the BEGIN IMMEDIATE below.
                 self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
+                # Wired through the durability helper (it used to be dead
+                # code -- built and never called), so the level is
+                # validated and the applied value is observable.
+                configure_audit_durability(self._conn, _synchronous_level())
                 self._conn.execute("BEGIN IMMEDIATE")
                 self._apply_schema()
                 break
@@ -518,7 +557,10 @@ class AuditStore:
         correlation_id: Optional[str],
     ) -> AuditEvent:
         if correlation_id is None:
-            correlation_id = str(uuid.uuid4())[:8]
+            # Full width: 8 hex chars (32 bits) collide within any large
+            # deployment, and a collision silently conflates unrelated events
+            # in every correlation-based query.
+            correlation_id = uuid.uuid4().hex
 
         timestamp = time.time()
 
@@ -555,7 +597,12 @@ class AuditStore:
                     last_seq, prev_hash = 0, None
                 seq = last_seq + 1
 
-                event_id = str(uuid.uuid4())[:12]
+                # Full 128-bit id, never a truncation. It used to be
+                # str(uuid.uuid4())[:12] -- 48 bits, which by the birthday
+                # bound collides with ~18% probability at 10^7 events. In the
+                # batch path a collision is classified as a duplicate, so real
+                # evidence would be dropped with no error at all.
+                event_id = uuid.uuid4().hex
                 event = AuditEvent(
                     event_id=event_id,
                     event_type=event_type,
@@ -700,7 +747,12 @@ class AuditStore:
 
                 for event in events:
                     if not event.event_id:
-                        event.event_id = str(uuid.uuid4())[:12]
+                        event.event_id = uuid.uuid4().hex
+                    # Same defaulting rule as the single append: a caller that
+                    # omits correlation_id gets a fresh one, instead of being
+                    # rejected by the NOT NULL column.
+                    if not event.correlation_id:
+                        event.correlation_id = uuid.uuid4().hex
                     if event.event_id in existing or event.event_id in seen:
                         duplicates.append(event.event_id)
                         continue
@@ -779,18 +831,49 @@ class AuditStore:
         Returns:
             (is_integrity_ok, total_events)
         """
-        # 与写路径同一把锁：校验期间不允许并发写入，避免读到链中间态。
-        with self._lock:
-            return self._verify_integrity_locked()
+        # Verification runs on a DEDICATED read-only snapshot connection, NOT
+        # under the append lock.
+        #
+        # It used to hold self._lock -- the same lock every append needs -- for
+        # the whole scan, which is a full fetchall() at ~23 us/row (measured).
+        # On the production-sized store (317,383 rows) that is ~7-8 seconds in
+        # which no HIGH/CRITICAL governed action can be recorded, because the
+        # mandatory-evidence path needs that lock; at ten million rows it is
+        # minutes. Reading a committed snapshot instead costs nothing and is
+        # what an auditor actually wants: a consistent point-in-time view.
+        conn = self._open_snapshot()
+        if conn is None:
+            # A read-only handle cannot recover a WAL that needs recovery, so
+            # fall back to the shared connection (correct, but blocking).
+            with self._lock:
+                return self._verify_integrity_on(self._conn)
+        try:
+            return self._verify_integrity_on(conn)
+        finally:
+            conn.close()
+
+    def _open_snapshot(self) -> Optional[sqlite3.Connection]:
+        """Open a private read-only connection, or None if that is impossible."""
+        try:
+            uri = pathlib.Path(os.path.abspath(self._db_path)).as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=_SQLITE_BUSY_TIMEOUT_SEC)
+            conn.execute("PRAGMA query_only = ON")
+            return conn
+        except (sqlite3.Error, ValueError):
+            return None
 
     def _verify_integrity_locked(self) -> Tuple[bool, int]:
-        rows = self._conn.execute(
+        """Deprecated: kept for callers that already hold the append lock."""
+        return self._verify_integrity_on(self._conn)
+
+    def _verify_integrity_on(self, conn) -> Tuple[bool, int]:
+        rows = conn.execute(
             "SELECT seq, event_id, event_type, principal_id, scope, timestamp, "
             "correlation_id, outcome, details, event_hash, prev_event_hash, "
             "hash_alg FROM audit_events ORDER BY seq ASC"
         ).fetchall()
 
-        state = self._conn.execute(
+        state = conn.execute(
             "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
         ).fetchone()
 
