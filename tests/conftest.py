@@ -140,6 +140,48 @@ def _isolate_memory_kernel(tmp_path_factory):
         os.environ["MEMORY_DB_PATH"] = previous
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_audit_store(tmp_path_factory):
+    """隔离 audit store 全局单例的持久化后端（Companion-Wiring A1a 根因修复）。
+
+    CRIT-1C Layer 2 强制证据门禁（``src.kernels/_crosscutting.py:850-878``）会对每个
+    HIGH/CRITICAL 内核动作做一次**真实的事前审计写入**。该写入经由 ``AuditStore`` 的
+    SQLite 单写者租约（writer lease，见 ``src/kernels/audit/fencing.py``）。默认的
+    ``AUDIT_DB_PATH`` 指向共享文件 ``<project_root>/audit_store.db``；若上一个测试进程
+    留下的租约仍在有效期内且宿主进程仍“存活”，新进程获取租约会抛 ``StaleWriterError``，
+    而门禁用 ``_call_audit(..., reraise=True)`` 把该异常上抛，最终在
+    ``_crosscutting.py:878`` 把**任意审计后端故障**转换为
+    ``PolicyDeniedError: ... rule=default_deny``。后果是**整片** HIGH/CRITICAL 动作被拒——
+    这正是基线 68 个失败中的主导类别（``capability.register``、``capability.retire``、
+    ``trust.*``、``security.set_abac_rule`` 等）。
+
+    A1b（``Capability not found: kernel.network_bus/python_compute``）是该门禁失败在
+    builtin 注册路径上的**下游连锁**：``get_capability_registry()`` 通过 HIGH 的
+    ``capability.register`` 注册 13 个内置能力，门禁把注册拒掉 -> 注册表为空 -> 后续查找
+    报 “Capability not found”。修好证据通道后即一并消解。
+
+    本 fixture 把 ``AUDIT_DB_PATH`` 重定向到 pytest 临时目录下的独占文件，并丢弃已按
+    默认/旧路径构建的 ``_audit_store`` 单例，使每个测试会话使用干净的审计库（无陈旧
+    租约）。这是**测试基础设施修复**：不触碰强制证据门禁、不削弱 fail-closed、不改任何
+    测试断言、不翻转生产默认值。门禁本身保持“证据通道不可用即拒绝”的 fail-closed 语义——
+    我们只是让测试环境的证据通道真正可用，而非绕过它。
+    """
+    import os
+
+    import src.kernels.audit as audit_module
+
+    db = tmp_path_factory.mktemp("lh_audit") / "audit_test.db"
+    previous = os.environ.get("AUDIT_DB_PATH")
+    os.environ["AUDIT_DB_PATH"] = str(db)
+    # 丢弃任何已按默认/旧路径构建的单例，迫使下次 get_audit_store() 按新路径重建。
+    audit_module._audit_store = None
+    yield
+    if previous is None:
+        os.environ.pop("AUDIT_DB_PATH", None)
+    else:
+        os.environ["AUDIT_DB_PATH"] = previous
+
+
 # ==================== Console auth (bearer token) ====================
 
 
