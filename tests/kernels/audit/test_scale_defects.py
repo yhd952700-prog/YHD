@@ -213,3 +213,58 @@ def test_query_events_does_not_block_on_the_append_lock(tmp_path):
     )
     assert "exc" not in outcome, f"query_events raised: {outcome['exc']}"
     assert len(outcome["rows"]) == 10
+
+
+def test_concurrent_appends_serialize_without_loss(tmp_path):
+    """F-05: moving the retry ladder out of the append lock must not let
+    concurrent writers corrupt the chain or drop events.
+
+    Four threads append at once; every event must land, seq must stay
+    gap-free, and integrity must hold.
+    """
+    store = _store(tmp_path, "conc.db")
+    n_threads = 4
+    per_thread = 200
+    errors = []
+
+    def worker(pid):
+        try:
+            for i in range(per_thread):
+                store.log_event(
+                    AuditEventType.STATE_CHANGE, pid, AuditScope.L0, "ok",
+                    {"i": i}, f"{pid}-{i}")
+        except BaseException as exc:  # noqa: BLE001 - collected below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(f"p{k}",))
+        for k in range(n_threads)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not errors, f"concurrent appends raised: {errors[:3]}"
+    total = store.get_stats()["total_events"]
+    assert total == n_threads * per_thread, (
+        f"expected {n_threads * per_thread} events, got {total}")
+    ok, verified = store.verify_integrity()
+    assert ok is True
+    # And the per-principal breakdown matches -- no events merged or dropped.
+    for k in range(n_threads):
+        assert len(store.query_events(principal_id=f"p{k}")) == per_thread
+
+
+def test_append_lock_hold_metric_is_recorded(tmp_path):
+    """A-01: the append-lock hold duration is accumulated as a counter."""
+    from src.kernels.audit import audit_lock_hold_seconds_total
+
+    store = _store(tmp_path, "m.db")
+    before = audit_lock_hold_seconds_total.sample()
+    for i in range(20):
+        store.log_event(AuditEventType.STATE_CHANGE, "p", AuditScope.L0, "ok",
+                        {"i": i}, f"c{i}")
+    after = audit_lock_hold_seconds_total.sample()
+    assert after > before, (
+        "append-lock hold duration must be accumulated (A-01)")

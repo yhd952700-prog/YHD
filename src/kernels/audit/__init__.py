@@ -18,6 +18,7 @@ from .durability import configure_audit_durability
 from .hashutil import canonical_json, event_payload
 from . import verification as _verification
 from .fencing import SqliteWriterLease, require_writer_lease
+from src.reliability.metrics import counter, gauge
 
 import json
 import logging
@@ -485,7 +486,7 @@ class AuditStore:
         self._writer_token = None
         self._init_db()
 
-    def _write_with_retry(self, attempt_fn):
+    def _write_with_retry(self, attempt_fn, name=None, continuous_lock=False):
         """Run one write transaction, recovering from transient SQLite faults.
 
         Why this exists (measured, not guessed): with several processes opening
@@ -507,31 +508,65 @@ class AuditStore:
 
         Any other failure (a data error, a disk error, a denied lease) still
         propagates on the first attempt, unchanged and fail-closed.
+
+        LOCK HANDLING (F-05): the append lock is held for the duration of ONE
+        attempt and for the connection clean-up that follows a retryable error,
+        then RELEASED during the backoff sleep. Previously the lock was held for
+        the whole backoff window, so a busy/locked storm froze every other
+        writer -- and every governed action that needs the evidence channel --
+        for the entire retry. Callers that must hold the lock continuously for
+        the whole operation (the cumulative-link backfill, which must not let a
+        concurrent append write a broken chain mid-flight) pass
+        ``continuous_lock=True``; that preserves the invariant at the cost of
+        blocking other writers during a (rare) backoff.
         """
         last: Optional[BaseException] = None
-        for attempt in range(_MAX_WRITE_ATTEMPTS):
-            try:
-                return attempt_fn()
-            except sqlite3.OperationalError as exc:
-                code = getattr(exc, "sqlite_errorcode", None)
-                if code not in _RETRYABLE_SQLITE_CODES:
-                    raise
-                last = exc
+        label = name or getattr(attempt_fn, "__name__", "attempt")
+        lock_held = False
+        try:
+            if continuous_lock:
+                self._lock.acquire()
+                lock_held = True
+            for attempt in range(_MAX_WRITE_ATTEMPTS):
+                if not continuous_lock:
+                    self._lock.acquire()
+                    lock_held = True
                 try:
-                    self._conn.rollback()
-                except Exception:  # noqa: BLE001 - best-effort cleanup
-                    pass
-                self._writer_token = None
-                if code == _SQLITE_READONLY:
+                    _t0 = time.perf_counter()
                     try:
-                        self._reopen()
-                    except sqlite3.Error:
-                        pass  # the next attempt will try to re-open again
+                        result = attempt_fn()
+                    finally:
+                        _record_lock_hold(time.perf_counter() - _t0, label)
+                    return result
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    if code not in _RETRYABLE_SQLITE_CODES:
+                        raise
+                    last = exc
+                    # Connection clean-up happens WHILE the lock is held, so no
+                    # other thread can touch self._conn mid-recovery.
+                    try:
+                        self._conn.rollback()
+                    except Exception:  # noqa: BLE001 - best-effort cleanup
+                        pass
+                    self._writer_token = None
+                    if code == _SQLITE_READONLY:
+                        try:
+                            self._reopen()
+                        except sqlite3.Error:
+                            pass  # the next attempt will try to re-open again
+                finally:
+                    if lock_held and not continuous_lock:
+                        self._lock.release()
+                        lock_held = False
                 if attempt + 1 < _MAX_WRITE_ATTEMPTS:
                     time.sleep(
                         min(_WRITE_RETRY_BASE_SEC * (2 ** attempt),
                             _WRITE_RETRY_MAX_DELAY_SEC)
                     )
+        finally:
+            if lock_held:
+                self._lock.release()
         raise last
 
     def log_event(
@@ -548,10 +583,9 @@ class AuditStore:
         线程安全：审计 store 是全局单例，而 FastAPI 同步端点跑在线程池里，
         hash-chain 的 seq / prev_event_hash 必须串行推进，故整个写路径加锁。
         """
-        with self._lock:
-            return self._log_event_locked(
-                event_type, principal_id, scope, outcome, details, correlation_id
-            )
+        return self._log_event_locked(
+            event_type, principal_id, scope, outcome, details, correlation_id
+        )
 
     def _log_event_locked(
         self,
@@ -566,7 +600,8 @@ class AuditStore:
             return self._write_with_retry(
                 lambda: self._attempt_log_event(
                     event_type, principal_id, scope, outcome, details, correlation_id
-                )
+                ),
+                name="_attempt_log_event",
             )
         except Exception:
             # CRIT-1C / D17 (Layer 1): do NOT swallow silently. Record the
@@ -739,13 +774,13 @@ class AuditStore:
         if not events:
             return AuditBatchResult(appended=[], duplicates=[])
 
-        with self._lock:
-            return self._log_event_batch_locked(events)
+        return self._log_event_batch_locked(events)
 
     def _log_event_batch_locked(self, events: List[AuditEvent]) -> "AuditBatchResult":
         try:
             return self._write_with_retry(
-                lambda: self._attempt_log_event_batch(events)
+                lambda: self._attempt_log_event_batch(events),
+                name="_attempt_log_event_batch",
             )
         except Exception:
             # Same fail-closed contract as the single append (CRIT-1C / D17).
@@ -1353,14 +1388,15 @@ class AuditStore:
     def _stamp_checkpoint(self, checkpoint_id: int, end_link_hash: str,
                           event_count: int) -> bool:
         """Re-stamp a checkpoint as re-verified now, guarded against movement."""
-        with self._lock:
-            try:
-                return self._write_with_retry(
-                    lambda: self._attempt_stamp_checkpoint(
-                        checkpoint_id, end_link_hash, event_count))
-            except Exception:
-                record_audit_failure()
-                raise
+        try:
+            return self._write_with_retry(
+                lambda: self._attempt_stamp_checkpoint(
+                    checkpoint_id, end_link_hash, event_count),
+                name="_attempt_stamp_checkpoint",
+            )
+        except Exception:
+            record_audit_failure()
+            raise
 
     def _attempt_stamp_checkpoint(self, checkpoint_id: int, end_link_hash: str,
                                   event_count: int) -> bool:
@@ -1412,9 +1448,10 @@ class AuditStore:
 
     def _write_checkpoint(self, segment, method: str) -> int:
         """Persist a derived checkpoint inside its own transaction."""
-        with self._lock:
-            return self._write_with_retry(
-                lambda: self._attempt_write_checkpoint(segment, method))
+        return self._write_with_retry(
+            lambda: self._attempt_write_checkpoint(segment, method),
+            name="_attempt_write_checkpoint",
+        )
 
     def _attempt_write_checkpoint(self, segment, method: str) -> int:
         try:
@@ -1468,9 +1505,10 @@ class AuditStore:
         Called when an event at or after `seq` turns out to be wrong: the
         derived state that covered it is no longer true.
         """
-        with self._lock:
-            return self._write_with_retry(
-                lambda: self._attempt_invalidate_checkpoints(seq))
+        return self._write_with_retry(
+            lambda: self._attempt_invalidate_checkpoints(seq),
+            name="_attempt_invalidate_checkpoints",
+        )
 
     def _attempt_invalidate_checkpoints(self, seq: int) -> int:
         try:
@@ -1493,8 +1531,11 @@ class AuditStore:
         After it completes, the cumulative chain covers the whole history and
         segmented verification is available for it.
         """
-        with self._lock:
-            return self._write_with_retry(self._attempt_backfill_link_hashes)
+        return self._write_with_retry(
+            self._attempt_backfill_link_hashes,
+            name="_attempt_backfill_link_hashes",
+            continuous_lock=True,
+        )
 
     def _attempt_backfill_link_hashes(self) -> int:
         # Why the append lock is held for the whole backfill, and why that is
@@ -1781,6 +1822,37 @@ def get_audit_failure_count() -> int:
 def audit_failure_occurred() -> bool:
     """True once any audit write has failed this process (monotonic)."""
     return _audit_failure_ever
+
+
+# A-01: append-lock hold duration -- a root-cause signal for R-G2-07c (a backfill
+# can hold the append lock for minutes) and U50 (full-chain verify_integrity holds
+# it ~264 s at 1e7 rows). One "last hold" gauge + one cumulative counter answers
+# "is the lock stuck, and who is holding it" without a histogram.
+audit_lock_hold_seconds_last = gauge(
+    "audit_lock_hold_seconds_last",
+    "Duration the AuditStore append lock was last held (seconds).",
+    "seconds",
+)
+audit_lock_hold_seconds_total = counter(
+    "audit_lock_hold_seconds_total",
+    "Cumulative time the AuditStore append lock has been held (seconds).",
+    "seconds",
+)
+
+
+def _record_lock_hold(duration: float, name: str) -> None:
+    """Record an append-lock hold and warn if it was unusually long.
+
+    Wrapped in try/except because a metric must never break the write path.
+    """
+    try:
+        audit_lock_hold_seconds_last.set(duration)
+        audit_lock_hold_seconds_total.inc(duration)
+        if duration > 1.0:
+            logger.warning(
+                "audit append-lock held %.3fs in %s", duration, name)
+    except Exception:  # noqa: BLE001 - observability must not fail writes
+        pass
 
 
 def get_audit_store() -> AuditStore:
