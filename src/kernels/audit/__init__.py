@@ -15,6 +15,8 @@ from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError
 from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
 from .durability import configure_audit_durability
+from .hashutil import canonical_json, event_payload
+from . import verification as _verification
 from .fencing import SqliteWriterLease, require_writer_lease
 
 import json
@@ -77,6 +79,11 @@ _SQLITE_BUSY = 5
 _SQLITE_LOCKED = 6
 _SQLITE_READONLY = 8
 _RETRYABLE_SQLITE_CODES = frozenset({_SQLITE_BUSY, _SQLITE_LOCKED, _SQLITE_READONLY})
+# Rows per executemany batch when backfilling the cumulative link chain. Only
+# a constant factor -- the backfill stays in one transaction, see the comment
+# on _attempt_backfill_link_hashes.
+_BACKFILL_CHUNK = 5000
+
 _MAX_WRITE_ATTEMPTS = 8
 _WRITE_RETRY_BASE_SEC = 0.02
 _WRITE_RETRY_MAX_DELAY_SEC = 0.5
@@ -210,6 +217,11 @@ class AuditEvent:
     details: Dict[str, Any] = field(default_factory=dict)
     event_hash: Optional[str] = None
     prev_event_hash: Optional[str] = None
+    #: Cumulative commitment to the whole ordered prefix (C2).
+    #: ``link_hash_i = H(link_hash_{i-1} || event_hash_i)``. This is what makes
+    #: a segment verifiable on its own without re-reading the history, and it
+    #: is what lets a checkpoint be re-derived instead of trusted.
+    link_hash: Optional[str] = None
     #: Name of the algorithm that produced :attr:`event_hash` (PHASE 3.6 / A5).
     hash_alg: str = DEFAULT_HASH_ALG
 
@@ -227,19 +239,10 @@ class AuditEvent:
                 f"unknown hash algorithm {self.hash_alg!r}; this build can "
                 f"verify {sorted(HASH_ALGORITHMS)}"
             )
-        data = {
-            "event_id": self.event_id,
-            "event_type": self.event_type.value,
-            "principal_id": self.principal_id,
-            "scope": self.scope.value,
-            "timestamp": self.timestamp,
-            "correlation_id": self.correlation_id,
-            "outcome": self.outcome,
-            "details": self.details,
-        }
-        # Sort keys for canonical form
-        raw = json.dumps(data, sort_keys=True, separators=(",", ":"))
-        return algorithm(raw.encode())
+        # Canonical form comes from one shared function: if the writer and
+        # the verifier ever canonicalise differently, verification stops
+        # meaning anything -- so they cannot have separate copies.
+        return algorithm(canonical_json(event_payload(self)).encode())
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -387,6 +390,19 @@ class AuditStore:
                     "ALTER TABLE audit_events ADD COLUMN hash_alg TEXT NOT NULL "
                     "DEFAULT 'sha256'"
                 )
+            # C2: cumulative link hash, additive and NULLable so a legacy
+            # database keeps verifying until it is backfilled.
+            if "link_hash" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE audit_events ADD COLUMN link_hash TEXT"
+                )
+                columns.append("link_hash")
+            cs_columns = [row[1] for row in self._conn.execute(
+                "PRAGMA table_info(chain_state)").fetchall()]
+            if "last_link_hash" not in cs_columns:
+                self._conn.execute(
+                    "ALTER TABLE chain_state ADD COLUMN last_link_hash TEXT")
+            _verification.create_tables(self._conn)
             # Seed the chain_state anchor for pre-existing data so integrity
             # verification covers it.
             #
@@ -589,12 +605,14 @@ class AuditStore:
                 # provides the previous event hash. Unlike timestamp ordering,
                 # this is immune to clock granularity ties.
                 state = self._conn.execute(
-                    "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
+                    "SELECT last_seq, last_hash, last_link_hash "
+                    "FROM chain_state WHERE id = 1"
                 ).fetchone()
                 if state:
                     last_seq, prev_hash = state[0], state[1]
+                    prev_link = state[2] if len(state) > 2 else None
                 else:
-                    last_seq, prev_hash = 0, None
+                    last_seq, prev_hash, prev_link = 0, None, None
                 seq = last_seq + 1
 
                 # Full 128-bit id, never a truncation. It used to be
@@ -616,13 +634,18 @@ class AuditStore:
                 )
 
                 event.event_hash = event.compute_hash()
+                # C2: cumulative commitment to the whole prefix. Computed and
+                # stored in the SAME transaction as the event, so it can never
+                # disagree with the row it summarises.
+                event.link_hash = _verification.link_hash(
+                    prev_link, event.event_hash, event.hash_alg)
 
                 self._conn.execute(
                     """INSERT INTO audit_events
                        (event_id, event_type, principal_id, scope, timestamp,
                         correlation_id, outcome, details, event_hash, prev_event_hash,
-                        seq, hash_alg)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        seq, hash_alg, link_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event.event_id,
                         event.event_type.value,
@@ -636,14 +659,17 @@ class AuditStore:
                         event.prev_event_hash,
                         seq,
                         event.hash_alg,
+                        event.link_hash,
                     ),
                 )
                 self._conn.execute(
-                    """INSERT INTO chain_state (id, last_seq, last_hash) VALUES (1, ?, ?)
+                    """INSERT INTO chain_state (id, last_seq, last_hash,
+                        last_link_hash) VALUES (1, ?, ?, ?)
                        ON CONFLICT(id) DO UPDATE SET
                            last_seq = excluded.last_seq,
-                           last_hash = excluded.last_hash""",
-                    (seq, event.event_hash),
+                           last_hash = excluded.last_hash,
+                           last_link_hash = excluded.last_link_hash""",
+                    (seq, event.event_hash, event.link_hash),
                 )
                 # Per-append lease (U39): yield it in the SAME transaction, so
                 # the moment this append commits another process may take over.
@@ -724,9 +750,14 @@ class AuditStore:
                 require_writer_lease(self._lease, self._writer_token)
 
                 state = conn.execute(
-                    "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
+                    "SELECT last_seq, last_hash, last_link_hash "
+                    "FROM chain_state WHERE id = 1"
                 ).fetchone()
-                last_seq, prev_hash = (state[0], state[1]) if state else (0, None)
+                if state:
+                    last_seq, prev_hash = state[0], state[1]
+                    prev_link = state[2] if len(state) > 2 else None
+                else:
+                    last_seq, prev_hash, prev_link = 0, None, None
 
                 # Idempotency: which of these event_ids are already committed?
                 existing: set = set()
@@ -761,13 +792,15 @@ class AuditStore:
                     last_seq += 1
                     event.prev_event_hash = prev_hash
                     event.event_hash = event.compute_hash()
+                    event.link_hash = _verification.link_hash(
+                        prev_link, event.event_hash, event.hash_alg)
 
                     conn.execute(
                         """INSERT INTO audit_events
                            (event_id, event_type, principal_id, scope, timestamp,
                             correlation_id, outcome, details, event_hash,
-                            prev_event_hash, seq, hash_alg)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            prev_event_hash, seq, hash_alg, link_hash)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             event.event_id,
                             event.event_type.value,
@@ -782,19 +815,23 @@ class AuditStore:
                             event.prev_event_hash,
                             last_seq,
                             event.hash_alg,
+                            event.link_hash,
                         ),
                     )
                     prev_hash = event.event_hash
+                    prev_link = event.link_hash
                     appended.append(event)
 
                 if appended:
                     conn.execute(
-                        """INSERT INTO chain_state (id, last_seq, last_hash)
-                           VALUES (1, ?, ?)
+                        """INSERT INTO chain_state (id, last_seq, last_hash,
+                            last_link_hash)
+                           VALUES (1, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
                                last_seq = excluded.last_seq,
-                               last_hash = excluded.last_hash""",
-                        (last_seq, prev_hash),
+                               last_hash = excluded.last_hash,
+                               last_link_hash = excluded.last_link_hash""",
+                        (last_seq, prev_hash, prev_link),
                     )
                 self._lease.release_within(self._writer_token)
                 conn.commit()
@@ -853,29 +890,108 @@ class AuditStore:
             conn.close()
 
     def _open_snapshot(self) -> Optional[sqlite3.Connection]:
-        """Open a private read-only connection, or None if that is impossible."""
+        """Open a private read-only connection, or None if that is impossible.
+
+        The connection is returned with ONE read snapshot already pinned, so
+        every read a caller performs through it -- tail seq, event rows,
+        checkpoints, coverage -- comes from the same consistent point in time.
+        Pinning here rather than per-caller is deliberate: the read entry
+        points (verify_integrity / verify_segment / verify_incremental /
+        audit_checkpoints / recompute_checkpoint / verification_coverage) each
+        issue several SELECTs, and without a pinned snapshot each SELECT gets
+        its own -- which is how a healthy chain gets reported broken.
+        """
         try:
             uri = pathlib.Path(os.path.abspath(self._db_path)).as_uri() + "?mode=ro"
             conn = sqlite3.connect(uri, uri=True, timeout=_SQLITE_BUSY_TIMEOUT_SEC)
             conn.execute("PRAGMA query_only = ON")
+            try:
+                conn.execute("BEGIN DEFERRED")
+            except sqlite3.Error:
+                # Degrade to the old per-statement behaviour rather than
+                # refusing to read at all; closing still cleans up.
+                pass
             return conn
         except (sqlite3.Error, ValueError):
             return None
+
+    def _read_only(self, fn):
+        """Run ``fn(conn)`` against a private pinned snapshot.
+
+        Every read path should come through here. Reading straight off
+        ``self._conn`` is not a shortcut, it is a different (and wrong) answer:
+        that is the WRITE connection, so a reader can observe rows from a
+        transaction that has not committed -- and in an audit store, observing
+        an event that is later rolled back is a false statement about history.
+        The snapshot is pinned, so multiple SELECTs inside ``fn`` agree.
+
+        Falls back to the shared connection under the append lock only when a
+        read-only handle cannot be opened at all (e.g. a WAL that needs
+        recovery) -- correct, but it blocks appends, hence last resort.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return fn(self._conn)
+        try:
+            return fn(conn)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _begin_read_transaction(conn) -> bool:
+        """Pin one read snapshot. True if WE opened it and must close it.
+
+        Written as raw SQL rather than relying on the driver's implicit
+        transaction handling, because python's sqlite3 in legacy autocommit
+        mode only opens a transaction for DML -- two bare SELECTs would get
+        two different snapshots, which is exactly the bug this prevents.
+        """
+        try:
+            if getattr(conn, "in_transaction", False):
+                return False
+            conn.execute("BEGIN DEFERRED")
+            return True
+        except sqlite3.Error:
+            # A read-only or already-transactional connection is a legitimate
+            # state; failing to pin the snapshot degrades to the old behaviour
+            # rather than breaking verification outright.
+            return False
+
+    @staticmethod
+    def _end_read_transaction(conn) -> None:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
 
     def _verify_integrity_locked(self) -> Tuple[bool, int]:
         """Deprecated: kept for callers that already hold the append lock."""
         return self._verify_integrity_on(self._conn)
 
     def _verify_integrity_on(self, conn) -> Tuple[bool, int]:
-        rows = conn.execute(
-            "SELECT seq, event_id, event_type, principal_id, scope, timestamp, "
-            "correlation_id, outcome, details, event_hash, prev_event_hash, "
-            "hash_alg FROM audit_events ORDER BY seq ASC"
-        ).fetchall()
+        # The event scan and the tail anchor MUST be read from one read
+        # snapshot. Without an explicit transaction, SQLite gives each SELECT
+        # its own snapshot, so an append committing between the two makes the
+        # scan end at seq N while the anchor already says N+1 -- a perfectly
+        # healthy chain reported as broken, which under the mandatory-evidence
+        # fail-closed gate denies every HIGH/CRITICAL action.
+        began = self._begin_read_transaction(conn)
+        try:
+            rows = conn.execute(
+                "SELECT seq, event_id, event_type, principal_id, scope, "
+                "timestamp, correlation_id, outcome, details, event_hash, "
+                "prev_event_hash, hash_alg, link_hash FROM audit_events "
+                "ORDER BY seq ASC"
+            ).fetchall()
 
-        state = conn.execute(
-            "SELECT last_seq, last_hash FROM chain_state WHERE id = 1"
-        ).fetchone()
+            state = conn.execute(
+                "SELECT last_seq, last_hash, last_link_hash FROM chain_state "
+                "WHERE id = 1"
+            ).fetchone()
+        finally:
+            if began:
+                self._end_read_transaction(conn)
 
         if not rows:
             # Empty log: valid only if the anchor agrees that nothing was
@@ -886,11 +1002,12 @@ class AuditStore:
 
         total = len(rows)
         broken = 0
+        running_link: Optional[str] = None
 
         for i, row in enumerate(rows):
             (seq, event_id, event_type, principal_id, scope, timestamp,
              correlation_id, outcome, details_json, event_hash,
-             prev_event_hash, row_hash_alg) = row
+             prev_event_hash, row_hash_alg, stored_link) = row
 
             # 1. Chain linkage to the previous event
             if i == 0:
@@ -950,13 +1067,470 @@ class AuditStore:
                 # Corrupted enum value or malformed details JSON
                 broken += 1
 
+            # 5. Cumulative commitment (C2). A row written before C2 has no
+            # link_hash and is simply skipped -- but skipping breaks the
+            # running accumulation, so any row AFTER a gap is checked against
+            # a fresh start and will mismatch if the history was edited. The
+            # tail comparison below catches the case where only the newest
+            # link_hash values were stripped.
+            if stored_link is None:
+                running_link = None
+            else:
+                try:
+                    expected_link = _verification.link_hash(
+                        running_link, event_hash, declared_alg)
+                except ValueError:
+                    broken += 1
+                    expected_link = None
+                if expected_link is not None and expected_link != stored_link:
+                    broken += 1
+                running_link = stored_link
+
         # 4. Tail integrity: the anchor must match the last stored event
         if state is not None:
             if state[0] != rows[-1][0] or state[1] != rows[-1][9]:
                 broken += 1
+            # The anchor's cumulative hash must agree with the tail's. Without
+            # this, stripping link_hash from the newest rows would go
+            # undetected (they would merely look like "pre-C2" rows).
+            tail_link = rows[-1][12]
+            anchor_link = state[2] if len(state) > 2 else None
+            if (tail_link is None) != (anchor_link is None):
+                broken += 1
+            elif tail_link is not None and tail_link != anchor_link:
+                broken += 1
 
         is_ok = broken == 0
         return is_ok, total
+
+    # ------------------------------------------------------------------ #
+    # C2 — segmented / incremental verification
+    # ------------------------------------------------------------------ #
+    def link_hash_at(self, seq: int) -> Optional[str]:
+        """Stored cumulative link hash as of `seq` (None before any event).
+
+        Convenience for callers that want to anchor a segment. It reads a
+        stored value, so it is a *pointer*, never a proof -- use
+        :meth:`verify_segment` for that.
+        """
+        if seq <= 0:
+            return None
+        row = self._conn.execute(
+            "SELECT link_hash FROM audit_events WHERE seq = ?", (seq,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def verify_segment(self, start_seq: int, end_seq: int,
+                       start_link_hash: Optional[str] = None) -> dict:
+        """Recompute every event in [start_seq, end_seq] from raw storage.
+
+        Trusts nothing: no checkpoint, no chain_state row, no cached value.
+        If ``start_link_hash`` is omitted it is read from the previous event --
+        from the SAME snapshot the range is verified against, so a concurrent
+        (or later-rolled-back) append cannot make the result unreproducible.
+        It is still only a pointer: the range itself is always fully recomputed,
+        and ``anchor_source``/``rooted_at_genesis`` say what it proves.
+        """
+        # An anchor we read ourselves is a POINTER, not a proof. Label it so a
+        # caller can never mistake "this range re-derives" for "the history
+        # behind this range was proven".
+        auto_anchor = start_link_hash is None and start_seq > 1
+        anchor_source = (
+            _verification.ANCHOR_STORED if auto_anchor else None)
+
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                if auto_anchor:
+                    start_link_hash = self.link_hash_at(start_seq - 1)
+                return _verification.verify_segment(
+                    self._conn, start_seq, end_seq, start_link_hash,
+                    anchor_source=anchor_source).as_dict()
+        try:
+            if auto_anchor:
+                row = conn.execute(
+                    "SELECT link_hash FROM audit_events WHERE seq = ?",
+                    (start_seq - 1,),
+                ).fetchone()
+                start_link_hash = row[0] if row else None
+            return _verification.verify_segment(
+                conn, start_seq, end_seq, start_link_hash,
+                anchor_source=anchor_source).as_dict()
+        finally:
+            conn.close()
+
+    def verify_incremental(self, max_events: Optional[int] = None) -> dict:
+        """Verify only the events appended since the last checkpoint.
+
+        Cost is proportional to the NEW events, not to the history -- that is
+        the entire point of C2.
+
+        Read the result honestly:
+
+        * ``segment_verified``  — the newly appended events re-verify.
+        * ``rooted_at_genesis`` — the anchor traces back to seq 1 through an
+          unbroken cover of checkpoints.
+
+        An incremental run that is not rooted at genesis has NOT verified the
+        whole chain; it has verified a suffix against a checkpoint. Reporting
+        those two as "verified" is exactly the error this API exists to
+        prevent -- a correct checkpoint does not make the history correct.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return self._verify_incremental_on(self._conn, max_events)
+        try:
+            return self._verify_incremental_on(conn, max_events)
+        finally:
+            conn.close()
+
+    def _verify_incremental_on(self, conn, max_events: Optional[int]) -> dict:
+        row = conn.execute(
+            "SELECT last_seq FROM chain_state WHERE id = 1").fetchone()
+        tail_seq = row[0] if row else 0
+
+        ckpt = _verification.latest_checkpoint(conn)
+        if ckpt is None:
+            start_seq, start_link, anchor_id = 1, None, None
+            anchor_source = _verification.ANCHOR_GENESIS
+        else:
+            anchor_id, start_seq, start_link = ckpt[0], ckpt[2] + 1, ckpt[4]
+            # The anchor is only "proven" if the checkpoint it came from is
+            # itself reachable from seq 1. Otherwise it is a stored value and
+            # must be reported as such.
+            anchor_end = ckpt[2]
+            rooted_anchor = (
+                _verification.coverage_frontier(conn, anchor_end) >= anchor_end)
+            anchor_source = (
+                _verification.ANCHOR_CHECKPOINT if rooted_anchor
+                else _verification.ANCHOR_STORED)
+
+        end_seq = tail_seq
+        if max_events is not None and end_seq - start_seq + 1 > max_events:
+            end_seq = start_seq + max_events - 1
+
+        if end_seq < start_seq:
+            return _verification.IncrementalResult(
+                segment_verified=True,
+                rooted_at_genesis=_verification.rooted_at_genesis(conn,
+                                                                  tail_seq),
+                from_seq=start_seq, to_seq=end_seq, events_checked=0,
+                anchor_checkpoint_id=anchor_id, new_checkpoint_id=None,
+                failures=[], anchor_source=anchor_source,
+            ).as_dict()
+
+        segment = _verification.verify_segment(
+            conn, start_seq, end_seq, start_link, anchor_source=anchor_source)
+
+        new_id = None
+        if segment.verified:
+            # Written only AFTER the segment verified, and only as derived
+            # data: it can always be recomputed from the events themselves.
+            new_id = self._write_checkpoint(
+                segment, method="incremental" if ckpt is not None else "full")
+
+        # Rooted means "covered from seq 1 through the tail we just verified".
+        # It must be read AFTER the checkpoint write and from a FRESH
+        # connection: the verification connection is pinned to a snapshot from
+        # before the write, so asking it would report the new checkpoint as
+        # missing. The bound stays `tail_seq`, so events appended by someone
+        # else in the meantime cannot turn a truthful True into a False.
+        rooted = self._rooted_at(tail_seq)
+        return _verification.IncrementalResult(
+            segment_verified=segment.verified,
+            rooted_at_genesis=rooted,
+            from_seq=start_seq, to_seq=end_seq,
+            events_checked=segment.event_count,
+            anchor_checkpoint_id=anchor_id, new_checkpoint_id=new_id,
+            failures=segment.failures, anchor_source=anchor_source,
+        ).as_dict()
+
+    # ------------------------------------------------------------------ #
+    # C2 — rolling re-verification
+    # ------------------------------------------------------------------ #
+    def verify_rolling(
+        self,
+        budget_events: int = _verification.DEFAULT_SEGMENT_EVENTS,
+        max_age_sec: Optional[float] = None,
+    ) -> dict:
+        """Re-verify the least-recently-verified regions, within a budget.
+
+        Why this has to exist: `verify_incremental` only ever looks at NEW
+        events. A region that was verified once and then corrupted would
+        therefore never be looked at again, and "verified" would slowly decay
+        from a statement about the present into a statement about the day the
+        checkpoint happened to be written. Rolling verification is what stops
+        that decay: it keeps re-deriving old regions on a budget, oldest first.
+
+        The budget is a work bound, not a correctness bound: a single region
+        larger than the budget is still re-verified rather than skipped, and
+        the result says so (`budget_exceeded`).
+
+        Returns a dict with:
+          * ``reverified``      — regions re-derived clean, now re-stamped;
+          * ``failures``        — regions that no longer re-derive, each with
+                                  the pinpointed seq values;
+          * ``events_reverified``, ``budget_events``, ``budget_exceeded``;
+          * ``remaining_stale`` — regions still awaiting a pass.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return self._verify_rolling_on(self._conn, budget_events,
+                                               max_age_sec)
+        try:
+            queue = _verification.stale_checkpoints(conn, max_age_sec)
+        finally:
+            conn.close()
+
+        if not queue:
+            return {
+                "reverified": [], "failures": [], "events_reverified": 0,
+                "budget_events": budget_events, "budget_exceeded": False,
+                "remaining_stale": 0,
+            }
+
+        reverified: List[dict] = []
+        failures: List[dict] = []
+        used = 0
+        exceeded = False
+
+        for row in queue:
+            (ckpt_id, start_seq, end_seq, start_link, end_link,
+             _end_event_hash, event_count, _verified_at, _method) = row
+            if used > 0 and used + event_count > budget_events:
+                # Budget spent -- the rest waits for the next pass. Deferring
+                # is allowed; pretending it was verified is not.
+                break
+            if event_count > budget_events:
+                exceeded = True
+
+            segment = self.verify_segment(start_seq, end_seq, start_link)
+            used += segment["event_count"]
+            entry = {
+                "checkpoint_id": ckpt_id,
+                "start_seq": start_seq,
+                "end_seq": end_seq,
+                "event_count": segment["event_count"],
+                "failures": segment["failures"],
+                "anchor_source": segment["anchor_source"],
+            }
+            if segment["verified"]:
+                stamped = self._stamp_checkpoint(ckpt_id, end_link, event_count)
+                entry["restamped"] = stamped
+                reverified.append(entry)
+            else:
+                # Not deleted here: a failed re-derivation is EVIDENCE, and
+                # discarding it would destroy the record of what was found.
+                # `audit_checkpoints()` will keep reporting it as broken.
+                entry["restamped"] = False
+                failures.append(entry)
+
+        remaining = len(queue) - len(reverified) - len(failures)
+        return {
+            "reverified": reverified,
+            "failures": failures,
+            "events_reverified": used,
+            "budget_events": budget_events,
+            "budget_exceeded": exceeded,
+            "remaining_stale": remaining,
+        }
+
+    def _stamp_checkpoint(self, checkpoint_id: int, end_link_hash: str,
+                          event_count: int) -> bool:
+        """Re-stamp a checkpoint as re-verified now, guarded against movement."""
+        with self._lock:
+            try:
+                return self._write_with_retry(
+                    lambda: self._attempt_stamp_checkpoint(
+                        checkpoint_id, end_link_hash, event_count))
+            except Exception:
+                record_audit_failure()
+                raise
+
+    def _attempt_stamp_checkpoint(self, checkpoint_id: int, end_link_hash: str,
+                                  event_count: int) -> bool:
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                stamped = _verification.refresh_checkpoint(
+                    self._conn, checkpoint_id, end_link_hash, event_count)
+                self._conn.commit()
+                return stamped
+            except Exception:
+                self._conn.rollback()
+                raise
+        except Exception:
+            record_audit_failure()
+            raise
+
+    def verification_coverage(self) -> dict:
+        """How much of the chain a genesis-rooted cover currently reaches.
+
+        Numbers, not a verdict -- but the numbers include ``uncovered_events``
+        and ``oldest_verified_at``, so "we have not re-derived this in N days"
+        cannot be hidden behind a green light.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return _verification.verification_coverage(self._conn)
+        try:
+            return _verification.verification_coverage(conn)
+        finally:
+            conn.close()
+
+    def _rooted_at(self, upto_seq: int) -> bool:
+        """Coverage through `upto_seq`, read from a fresh snapshot.
+
+        Fresh rather than the caller's pinned connection, because coverage is a
+        statement about the derived state as it stands now -- including a
+        checkpoint the caller just committed.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return _verification.rooted_at_genesis(self._conn, upto_seq)
+        try:
+            return _verification.rooted_at_genesis(conn, upto_seq)
+        finally:
+            conn.close()
+
+    def _write_checkpoint(self, segment, method: str) -> int:
+        """Persist a derived checkpoint inside its own transaction."""
+        with self._lock:
+            return self._write_with_retry(
+                lambda: self._attempt_write_checkpoint(segment, method))
+
+    def _attempt_write_checkpoint(self, segment, method: str) -> int:
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                new_id = _verification.write_checkpoint(
+                    self._conn, segment.start_seq, segment.end_seq,
+                    segment.start_link_hash, segment.end_link_hash,
+                    segment.end_event_hash, segment.event_count, method,
+                )
+                self._conn.commit()
+                return new_id
+            except Exception:
+                self._conn.rollback()
+                raise
+        except Exception:
+            record_audit_failure()
+            raise
+
+    def audit_checkpoints(self) -> Tuple[bool, List[int]]:
+        """Re-derive EVERY checkpoint from raw events.
+
+        This is the operation that stops a checkpoint from becoming a second
+        trust root: a checkpoint that cannot be recomputed from the evidence is
+        discarded, never believed.
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return _verification.audit_checkpoints(self._conn)
+        try:
+            return _verification.audit_checkpoints(conn)
+        finally:
+            conn.close()
+
+    def recompute_checkpoint(self, checkpoint_id: int) -> bool:
+        """True if one stored checkpoint still matches a recomputation."""
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return _verification.recompute_checkpoint(
+                    self._conn, checkpoint_id)
+        try:
+            return _verification.recompute_checkpoint(conn, checkpoint_id)
+        finally:
+            conn.close()
+
+    def invalidate_checkpoints_from(self, seq: int) -> int:
+        """Drop derived checkpoints covering `seq` onwards.
+
+        Called when an event at or after `seq` turns out to be wrong: the
+        derived state that covered it is no longer true.
+        """
+        with self._lock:
+            return self._write_with_retry(
+                lambda: self._attempt_invalidate_checkpoints(seq))
+
+    def _attempt_invalidate_checkpoints(self, seq: int) -> int:
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                n = _verification.discard_checkpoints_from(self._conn, seq)
+                self._conn.commit()
+                return n
+            except Exception:
+                self._conn.rollback()
+                raise
+        except Exception:
+            record_audit_failure()
+            raise
+
+    def backfill_link_hashes(self) -> int:
+        """Populate link_hash for rows written before C2 existed.
+
+        One-time, O(n), and explicitly invoked -- it is never run implicitly.
+        After it completes, the cumulative chain covers the whole history and
+        segmented verification is available for it.
+        """
+        with self._lock:
+            return self._write_with_retry(self._attempt_backfill_link_hashes)
+
+    def _attempt_backfill_link_hashes(self) -> int:
+        # Why the append lock is held for the whole backfill, and why that is
+        # correct rather than merely conservative: an appending writer derives
+        # its link_hash from chain_state.last_link_hash, and during a backfill
+        # that value is NULL or partial. Releasing the lock mid-backfill would
+        # therefore let a concurrent append write a PERMANENTLY broken chain.
+        # The operation is made fast (chunked executemany, one transaction)
+        # instead of being made concurrent. Do not "optimise" the lock away.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._conn.execute(
+                "SELECT seq, event_hash, hash_alg FROM audit_events "
+                "ORDER BY seq ASC").fetchall()
+            if not rows:
+                self._conn.commit()
+                return 0
+
+            running = None
+            batch: List[Tuple[str, int]] = []
+            updated = 0
+            for seq, event_hash, hash_alg in rows:
+                running = _verification.link_hash(
+                    running, event_hash, hash_alg or DEFAULT_HASH_ALG)
+                batch.append((running, seq))
+                if len(batch) >= _BACKFILL_CHUNK:
+                    self._conn.executemany(
+                        "UPDATE audit_events SET link_hash = ? WHERE seq = ?",
+                        batch)
+                    updated += len(batch)
+                    batch.clear()
+            if batch:
+                self._conn.executemany(
+                    "UPDATE audit_events SET link_hash = ? WHERE seq = ?",
+                    batch)
+                updated += len(batch)
+
+            self._conn.execute(
+                """INSERT INTO chain_state (id, last_seq, last_hash,
+                    last_link_hash) VALUES (1, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       last_link_hash = excluded.last_link_hash""",
+                (rows[-1][0], rows[-1][1], running),
+            )
+            self._conn.commit()
+            return updated
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def query_events(
         self,
@@ -1075,15 +1649,19 @@ class AuditStore:
         return results
 
     def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
-        """Get a single audit event by ID."""
-        cursor = self._conn.execute(
+        """Get a single audit event by ID.
+
+        Read from a pinned snapshot, never from the write connection: an
+        uncommitted append must not be observable, because an event that is
+        later rolled back is not part of the history.
+        """
+        row = self._read_only(lambda conn: conn.execute(
             """SELECT event_id, event_type, principal_id, scope,
                timestamp, correlation_id, outcome, details,
                event_hash, prev_event_hash, hash_alg
                FROM audit_events WHERE event_id = ?""",
             (event_id,),
-        )
-        row = cursor.fetchone()
+        ).fetchone())
         if not row:
             return None
 
@@ -1102,18 +1680,24 @@ class AuditStore:
         }
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get audit store statistics."""
-        cursor = self._conn.execute(
-            "SELECT event_type, outcome, COUNT(*) as cnt "
-            "FROM audit_events GROUP BY event_type, outcome"
-        )
-        breakdown = {}
-        for row in cursor.fetchall():
-            key = f"{row[0]}:{row[1]}"
-            breakdown[key] = row[2]
+        """Get audit store statistics.
 
-        cursor = self._conn.execute("SELECT COUNT(*) FROM audit_events")
-        total = cursor.fetchone()[0]
+        Both SELECTs run on ONE pinned snapshot, so the breakdown and the total
+        are counts of the same set of rows -- otherwise a concurrent append
+        between them yields a breakdown that does not sum to the total.
+        """
+        def _read(conn):
+            breakdown = {}
+            for row in conn.execute(
+                "SELECT event_type, outcome, COUNT(*) as cnt "
+                "FROM audit_events GROUP BY event_type, outcome"
+            ).fetchall():
+                breakdown[f"{row[0]}:{row[1]}"] = row[2]
+            total = conn.execute(
+                "SELECT COUNT(*) FROM audit_events").fetchone()[0]
+            return breakdown, total
+
+        breakdown, total = self._read_only(_read)
 
         return {
             "total_events": total,

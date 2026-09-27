@@ -107,3 +107,9 @@ deploy/cloud/
 data/
 *.sqlite3-wal
 *.sqlite3-shm
+
+# ===== 测试/脚本产物 =====
+# retention 冷归档测试落在本仓库根，属生成物。
+.retention_cold/
+# Windows 下 `2>nul` / `> nul` 重定向会在当前目录留一个 0 字节的 nul 文件。
+/nul
