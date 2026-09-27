@@ -40,18 +40,23 @@ HostCommandEventSink = Callable[[str, Dict[str, Any]], None]
 
 
 def _default_sink(event: str, details: Dict[str, Any]) -> None:
-    try:
-        from src.kernels.audit import AuditEventType, AuditScope, log_event
+    """Write the event to the audit kernel.
 
-        log_event(
-            AuditEventType.POLICY_EVAL,
-            details.get("principal", "host-command-broker"),
-            AuditScope.L5,
-            details.get("outcome", "ok"),
-            {**details, "host_command_event": event},
-        )
-    except Exception:
-        pass  # observability must not fail the control path
+    Failures are **raised**, not swallowed, so callers can choose the policy:
+    telemetry paths go through :meth:`HostCommandBroker._emit` (fail-soft), while
+    the pre-execution authorization record treats a failure as fatal by default.
+    (Previously this swallowed every error, so an executed host command could
+    leave no audit record at all -- unacceptable for a sovereignty boundary.)
+    """
+    from src.kernels.audit import AuditEventType, AuditScope, log_event
+
+    log_event(
+        AuditEventType.POLICY_EVAL,
+        details.get("principal", "host-command-broker"),
+        AuditScope.L5,
+        details.get("outcome", "ok"),
+        {**details, "host_command_event": event},
+    )
 
 
 class HostCommandBroker:
@@ -66,7 +71,13 @@ class HostCommandBroker:
         *,
         simulate: bool = False,
         event_sink: Optional[HostCommandEventSink] = None,
+        fail_closed_audit: bool = True,
     ) -> None:
+        # Accountability guarantee: an executed host command must leave an audit
+        # record. If the audit trail cannot be written, refuse to execute
+        # (fail-closed) rather than running silently. Set False only for
+        # deliberate, documented degradation.
+        self.fail_closed_audit = fail_closed_audit
         self.catalog = catalog or CapabilityCatalog()
         # When the global gate is OFF, force the deny-all policy regardless of
         # any injected policy, so the gate is the authoritative default-DENY.
@@ -132,6 +143,23 @@ class HostCommandBroker:
             )
             self._emit("host_command_decision", err.as_dict())
             return err
+        # 4b) Accountability: record the authorization BEFORE executing. An
+        # executed host command with no audit record breaks sovereignty, so a
+        # failed audit write is fatal by default (fail-closed).
+        try:
+            self._sink("host_command_authorized", decision.as_dict())
+        except Exception as exc:  # noqa: BLE001 - audit failure is a decision input
+            if self.fail_closed_audit:
+                err = HostCommandDecision(
+                    DecisionOutcome.ERROR,
+                    f"audit trail unavailable; refusing to execute "
+                    f"(fail-closed): {exc}",
+                    req,
+                    sandbox=decision.sandbox,
+                    approval_id=decision.approval_id,
+                )
+                self._emit("host_command_audit_failure", {**err.as_dict(), "error": str(exc)})
+                return err
         try:
             result = self.executor(req)
             self._emit(

@@ -41,6 +41,7 @@ def build_test_broker(
     executor: Optional[CommandExecutor] = None,
     simulate: bool = False,
     event_sink: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    fail_closed_audit: bool = True,
 ) -> HostCommandBroker:
     """Build a broker for tests with explicit capabilities (bypasses env gate)."""
     catalog = CapabilityCatalog()
@@ -55,6 +56,7 @@ def build_test_broker(
         executor=executor,
         simulate=simulate,
         event_sink=event_sink,
+        fail_closed_audit=fail_closed_audit,
     )
     return broker
 

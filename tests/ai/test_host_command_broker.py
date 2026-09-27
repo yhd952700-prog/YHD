@@ -171,3 +171,59 @@ def test_decision_is_host_command_decision():
     dec = broker.submit(HostCommandRequest(command="git status"))
     assert isinstance(dec, HostCommandDecision)
     assert isinstance(dec.as_dict(), dict)
+
+
+def _exploding_sink(event, details):
+    raise RuntimeError("audit backend down")
+
+
+def test_audit_failure_is_fail_closed_by_default():
+    # An executed host command must leave an audit record; if the audit trail
+    # cannot be written, refuse to execute rather than run unaccountably.
+    import os
+
+    os.environ[ENV_VAR] = "true"
+    reload()
+    exec_fn = FakeExecutor()
+    broker = build_test_broker(
+        enabled=True, capabilities=(_git_cap(),), executor=exec_fn,
+        event_sink=_exploding_sink,
+    )
+    dec = broker.submit(HostCommandRequest(command="git status"))
+    assert dec.outcome is DecisionOutcome.ERROR
+    assert "audit trail unavailable" in dec.reason
+    assert len(exec_fn.calls) == 0  # never executed
+
+
+def test_audit_failure_degrades_only_when_explicitly_opted_out():
+    import os
+
+    os.environ[ENV_VAR] = "true"
+    reload()
+    exec_fn = FakeExecutor()
+    broker = build_test_broker(
+        enabled=True, capabilities=(_git_cap(),), executor=exec_fn,
+        event_sink=_exploding_sink, fail_closed_audit=False,
+    )
+    dec = broker.submit(HostCommandRequest(command="git status"))
+    assert dec.outcome is DecisionOutcome.ALLOW
+    assert len(exec_fn.calls) == 1
+
+
+def test_authorization_recorded_before_execution():
+    import os
+
+    os.environ[ENV_VAR] = "true"
+    reload()
+    events = []
+    exec_fn = FakeExecutor()
+    broker = build_test_broker(
+        enabled=True, capabilities=(_git_cap(),), executor=exec_fn,
+        event_sink=lambda e, d: events.append(e),
+    )
+    broker.submit(HostCommandRequest(command="git status"))
+    assert "host_command_authorized" in events
+    assert "host_command_executed" in events
+    assert events.index("host_command_authorized") < events.index(
+        "host_command_executed"
+    )
