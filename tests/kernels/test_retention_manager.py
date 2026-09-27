@@ -1,9 +1,11 @@
 """HD-06 — retention manager tests (immutable-history invariant enforcement)."""
 
+import tempfile
 import time
 
 from src.kernels.retention import (
     LifecycleState,
+    LocalFsColdStorage,
     RecordClass,
     RetentionConfig,
     RetentionMode,
@@ -19,7 +21,12 @@ def _sink():
 
 def _manager(mode=RetentionMode.NO_DELETE, delete_after_days=None, sink=None):
     cfg = RetentionConfig(mode=mode, delete_after_days=delete_after_days)
-    return RetentionManager(config=cfg, event_sink=sink or (lambda e, d: None))
+    # Cold storage goes to a temp dir: tests must not create .retention_cold/
+    # in the repo root when pytest is invoked from there.
+    cold = tempfile.mkdtemp(prefix="liuhao-retention-cold-")
+    return RetentionManager(
+        config=cfg, cold_root=cold, event_sink=sink or (lambda e, d: None)
+    )
 
 
 def test_register_original_refuses_overwrite():
@@ -112,6 +119,16 @@ def test_legal_hold_blocks_purge():
     assert mgr.release_legal_hold(hold_ids[0])
     decision2 = mgr.evaluate("d")
     assert decision2.action == "delete_derivative"
+
+
+def test_cold_root_not_created_until_first_write(tmp_path):
+    # Constructing cold storage must not touch the filesystem; only a real write
+    # materialises the root (otherwise every manager build litters the cwd).
+    root = tmp_path / "cold"
+    LocalFsColdStorage(str(root))
+    assert not root.exists()
+    LocalFsColdStorage(str(root)).put("k", b"v")
+    assert root.exists()
 
 
 def test_summary_reports_state_and_metrics():

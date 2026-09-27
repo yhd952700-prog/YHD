@@ -49,7 +49,16 @@ class LocalFsColdStorage(ColdStorageBackend):
 
     def __init__(self, root: str) -> None:
         self.root = root
-        os.makedirs(root, exist_ok=True)
+
+    def _ensure_root(self) -> None:
+        """Create the cold root on first use, not at construction time.
+
+        Constructing a backend must not touch the filesystem: otherwise merely
+        building a :class:`~src.kernels.retention.manager.RetentionManager`
+        would litter the working directory (e.g. a stray ``.retention_cold/`` in
+        the repo root), even for records that are never archived.
+        """
+        os.makedirs(self.root, exist_ok=True)
 
     def _path(self, key: str) -> str:
         # Namespace keys into a flat, safe filename space.
@@ -57,6 +66,7 @@ class LocalFsColdStorage(ColdStorageBackend):
         return os.path.join(self.root, safe + ".cold")
 
     def put(self, key: str, data: bytes) -> str:
+        self._ensure_root()  # lazy: only a real write materialises the root
         path = self._path(key)
         tmp = path + ".tmp"
         with open(tmp, "wb") as fh:
