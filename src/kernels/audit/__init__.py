@@ -43,6 +43,30 @@ import uuid
 
 logger = logging.getLogger("liuhao.kernel.audit")
 
+
+# --- storage-level faults (distinct from hash-chain integrity) --------------
+# These are raised by the storage-fault resilience layer below, so callers and
+# tests can tell a "disk / I/O / corruption" fault apart from a generic
+# ``sqlite3`` error or a "kernel not initialised" error.
+class AuditStorageError(Exception):
+    """Base class for audit-store storage faults that are NOT hash-chain
+    problems (disk full, I/O error, corruption of the DB/WAL files)."""
+
+
+class AuditDiskFullError(AuditStorageError):
+    """Raised when a write fails because the database or its disk is full
+    (SQLITE_FULL). The write is fail-closed: no event was persisted and the
+    error is reported loudly so evidence is never silently dropped."""
+
+
+class AuditCorruptionError(AuditStorageError):
+    """Raised when the audit DB or WAL is found corrupt or suffers an I/O error
+    (SQLITE_CORRUPT / SQLITE_IOERR). The faulty files are quarantined for
+    forensics (never deleted) and -- if a transaction-consistent backup exists --
+    restored, but the triggering write is never blindly retried into a worse
+    state."""
+
+
 # How long SQLite waits on the write lock before reporting SQLITE_BUSY.
 # Raised from the driver default (5s) because initialisation now holds the
 # write lock across the whole schema migration: with N processes starting at
@@ -88,7 +112,18 @@ def _synchronous_level() -> str:
 _SQLITE_BUSY = 5
 _SQLITE_LOCKED = 6
 _SQLITE_READONLY = 8
-_RETRYABLE_SQLITE_CODES = frozenset({_SQLITE_BUSY, _SQLITE_LOCKED, _SQLITE_READONLY})
+# Storage faults the store KNOWS how to handle (as opposed to a generic data
+# error). FULL is retried (bounded) then fails closed; IOERR and CORRUPT are
+# handled by quarantine + clear error and are deliberately NOT blind-retried --
+# a corrupt DB retried in a loop can be driven into a *worse* state, so the
+# first sight of corruption moves the evidence aside and reports loudly.
+_SQLITE_IOERR = 10
+_SQLITE_CORRUPT = 11
+_SQLITE_FULL = 13
+_RETRYABLE_SQLITE_CODES = frozenset({
+    _SQLITE_BUSY, _SQLITE_LOCKED, _SQLITE_READONLY,
+    _SQLITE_FULL, _SQLITE_IOERR, _SQLITE_CORRUPT,
+})
 # Rows per executemany batch when backfilling the cumulative link chain. Only
 # a constant factor -- the backfill stays in one transaction, see the comment
 # on _attempt_backfill_link_hashes.
@@ -97,6 +132,50 @@ _BACKFILL_CHUNK = 5000
 _MAX_WRITE_ATTEMPTS = 8
 _WRITE_RETRY_BASE_SEC = 0.02
 _WRITE_RETRY_MAX_DELAY_SEC = 0.5
+
+
+def _quarantine_and_maybe_restore(
+    db_path: str, *, reason: str, backup_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """Move the live audit DB / WAL / SHM files aside (preserving them for
+    forensics) and optionally restore from a transaction-consistent backup.
+
+    This is the fail-closed half of corruption recovery: the bad files are
+    NEVER deleted -- an operator must be able to inspect them -- they are merely
+    renamed into a ``.quarantine-<ts>`` directory. If ``backup_path`` points at
+    an existing file (e.g. one produced by ``snapshot_audit_db`` / ``VACUUM
+    INTO``), it is copied back into place so the store can resume on known-good
+    evidence; otherwise the store is left with no DB files and the caller must
+    decide policy (it still has the quarantined evidence to fall back to).
+
+    Returns a dict the caller turns into a clear error message.
+    """
+    import shutil  # local import keeps the hot path import-light
+
+    quarantine_dir = f"{db_path}.quarantine-{int(time.time() * 1000)}"
+    os.makedirs(quarantine_dir, exist_ok=True)
+    quarantined: List[str] = []
+    for candidate in (db_path, db_path + "-wal", db_path + "-shm"):
+        if os.path.exists(candidate):
+            dest = os.path.join(quarantine_dir, os.path.basename(candidate))
+            try:
+                shutil.move(candidate, dest)
+                quarantined.append(candidate)
+            except OSError:  # noqa: BLE001 - best effort; keep going
+                pass
+    restored_from: Optional[str] = None
+    if backup_path and os.path.exists(backup_path):
+        try:
+            shutil.copyfile(backup_path, db_path)
+            restored_from = backup_path
+        except OSError:  # noqa: BLE001 - restore failed; leave empty, report
+            pass
+    return {
+        "quarantine_dir": quarantine_dir,
+        "quarantined": quarantined,
+        "restored_from": restored_from,
+    }
+
 
 # F-04: a dashboard or replay that asks for "everything" must not be able to
 # pull the entire multi-million-row chain into memory on the read path. Cap any
@@ -295,7 +374,7 @@ class AuditStore:
     """Persistent audit store with SQLite backend and hash-chain integrity."""
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, backup_path: str = None):
         if db_path is None:
             # 默认落在项目根目录，而非写死某台机器的绝对路径（写死会在 CI
             # 工作区造出名为 "D:" 的目录，upload-artifact 因含冒号失败）。
@@ -309,6 +388,16 @@ class AuditStore:
                 os.path.join(_project_root, "audit_store.db")
             )
         self._db_path = db_path
+        # Transaction-consistent backup used by corruption recovery. Defaults to
+        # ``<db>.backup`` or the AUDIT_DB_BACKUP_PATH env var; ``None`` disables
+        # auto-restore (quarantine-only, fail-closed).
+        if backup_path is None:
+            backup_path = os.environ.get("AUDIT_DB_BACKUP_PATH")
+        if backup_path is None:
+            backup_path = db_path + ".backup"
+        self._backup_path: str = backup_path
+        # Last corruption-quarantine location, for operators/tests to inspect.
+        self._last_quarantine_dir: Optional[str] = None
         self._writer_token: Optional[int] = None
         # NOTE: the "last fencing token this writer_id held" is process-global
         # (see fencing._LEASE_LAST_TOKEN), NOT a per-instance attribute, because
@@ -537,6 +626,74 @@ class AuditStore:
         self._writer_token = None
         self._init_db()
 
+    def _handle_storage_corruption(self, code: int, exc: BaseException) -> None:
+        """Handle a SQLITE_CORRUPT / SQLITE_IOERR fault WITHOUT blind retry.
+
+        Called from ``_write_with_retry`` the FIRST time corruption is seen. It
+        closes the poisoned handle, quarantines the evidence files, attempts a
+        restore-from-backup, and then RAISES :class:`AuditCorruptionError` so the
+        caller's fail-closed policy decides what to do next. It never retries the
+        transaction (that could deepen the corruption) and never silently
+        succeeds -- a corrupt store must be made visible, not looped over.
+        """
+        label = {
+            _SQLITE_CORRUPT: "SQLITE_CORRUPT",
+            _SQLITE_IOERR: "SQLITE_IOERR",
+        }.get(code, f"sqlite-code-{code}")
+        try:
+            self._conn.rollback()
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001 - handle may already be unusable
+            pass
+        self._writer_token = None
+        info = _quarantine_and_maybe_restore(
+            self._db_path, reason=label, backup_path=self._backup_path)
+        self._last_quarantine_dir = info.get("quarantine_dir")
+        if info.get("restored_from"):
+            # Best-effort: bring the store back online on the restored backup so
+            # a still-running process can keep appending instead of dying.
+            try:
+                self._reopen()
+            except sqlite3.Error:
+                pass
+        raise AuditCorruptionError(
+            f"audit store corruption detected ({label}) on {self._db_path}. "
+            f"The faulty files were quarantined (NOT deleted) under "
+            f"{info.get('quarantine_dir')!r} for forensics; "
+            f"restored_from_backup={info.get('restored_from')!r}. "
+            f"AuditCorruptionError means the triggering write was NOT applied "
+            f"and was NOT silently retried."
+        ) from exc
+
+    def check_storage_health(self) -> bool:
+        """Detect DB/WAL corruption WITHOUT writing.
+
+        Runs ``PRAGMA integrity_check(1)``. Returns True on a healthy database.
+        Raises :class:`AuditCorruptionError` if SQLite reports corruption or an
+        I/O error -- either as an exception or as non-"ok" ``integrity_check``
+        output -- so a corrupt store is surfaced as a CLEAR error rather than a
+        raw ``sqlite3`` exception or a silent ``ok=True``.
+        """
+        try:
+            rows = self._conn.execute("PRAGMA integrity_check(1)").fetchall()
+        except sqlite3.DatabaseError as exc:
+            code = getattr(exc, "sqlite_errorcode", None)
+            if code in (_SQLITE_CORRUPT, _SQLITE_IOERR):
+                raise AuditCorruptionError(
+                    f"audit store corruption detected on {self._db_path} "
+                    f"(sqlite code {code})."
+                ) from exc
+            raise
+        if rows != [("ok",)]:
+            raise AuditCorruptionError(
+                f"audit store corruption detected on {self._db_path} "
+                f"(PRAGMA integrity_check={rows!r})."
+            )
+        return True
+
     def _write_with_retry(self, attempt_fn, name=None, continuous_lock=False):
         """Run one write transaction, recovering from transient SQLite faults.
 
@@ -601,6 +758,11 @@ class AuditStore:
                     except Exception:  # noqa: BLE001 - best-effort cleanup
                         pass
                     self._writer_token = None
+                    if code in (_SQLITE_CORRUPT, _SQLITE_IOERR):
+                        # Careful handling: a corrupt / I/O-errored database must
+                        # NOT be blind-retried into a worse state. Quarantine the
+                        # evidence and raise a clear error instead of looping.
+                        self._handle_storage_corruption(code, exc)
                     if code == _SQLITE_READONLY:
                         try:
                             self._reopen()
@@ -618,6 +780,17 @@ class AuditStore:
         finally:
             if lock_held:
                 self._lock.release()
+        # Exhausted the retry budget. FULL means "the disk is genuinely full":
+        # we retried (in case space freed up) and now fail closed with a CLEAR
+        # error so evidence is never silently dropped.
+        code = getattr(last, "sqlite_errorcode", None) if last is not None else None
+        if code == _SQLITE_FULL:
+            raise AuditDiskFullError(
+                "audit store write failed: the database or its disk is full "
+                f"(SQLITE_FULL). No event was persisted, so the audit chain is "
+                f"incomplete and this failure is reported fail-closed rather "
+                f"than silently dropping evidence. db={self._db_path}"
+            ) from last
         raise last
 
     def log_event(
@@ -1001,6 +1174,18 @@ class AuditStore:
                 return self._verify_integrity_on(self._conn)
         try:
             return self._verify_integrity_on(conn)
+        except sqlite3.DatabaseError as exc:
+            # A corrupt / I/O-errored DB must surface as a CLEAR error, not a raw
+            # sqlite3 exception and not a silent "ok". This is the read-only
+            # mirror of the write-path corruption handling: detected, reported,
+            # and (crucially) not retried in a loop.
+            code = getattr(exc, "sqlite_errorcode", None)
+            if code in (_SQLITE_CORRUPT, _SQLITE_IOERR):
+                raise AuditCorruptionError(
+                    f"audit store corruption detected during verify_integrity "
+                    f"on {self._db_path} (sqlite code {code})."
+                ) from exc
+            raise
         finally:
             conn.close()
 
