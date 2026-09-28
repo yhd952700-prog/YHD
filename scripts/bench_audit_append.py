@@ -6,8 +6,15 @@ Why this exists
 Throughput numbers that live only in a chat log cannot be regressed against.
 This script turns them into a file that CI can compare against:
 
-    python scripts/bench_audit_append.py --write docs/autonomous/performance-baseline.json
-    python scripts/bench_audit_append.py --gate  docs/autonomous/performance-baseline.json
+    python scripts/bench_audit_append.py --write-baseline scripts/bench_baseline.json
+    python scripts/bench_audit_append.py --quick --gate scripts/bench_baseline.json
+
+The numeric gate is keyed by a machine/profile fingerprint (OS, Python
+version, CPU model/thread count, quick flag). A baseline only compares against
+a run with the SAME profile: a shared runner on different hardware is not a
+regression of the code, so a profile mismatch SKIPs the numeric gate instead of
+failing it. The machine-independent INVARIANTS (no lost appends, contiguous
+seq, chain intact after a kill, chain verifies) are always the blocking check.
 
 The gate is deliberately LOWER-BOUND only for throughput (a slowdown fails)
 and UPPER-BOUND for latency/recovery (a slowdown fails). It never raises a
@@ -36,6 +43,7 @@ import argparse
 import json
 import os
 import pathlib
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -357,7 +365,12 @@ def check_gate(baseline: dict, current: dict, tolerance: float) -> list:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--write", metavar="PATH", help="write the baseline JSON here")
-    ap.add_argument("--gate", metavar="PATH", help="compare against this baseline")
+    ap.add_argument("--write-baseline", metavar="PATH",
+                    help="write/update the profile-keyed baseline (keyed by "
+                         "machine fingerprint); preserves other profiles")
+    ap.add_argument("--gate", metavar="PATH",
+                    help="compare against the profile-keyed baseline; SKIPs "
+                         "when the current machine profile does not match")
     ap.add_argument("--tolerance", type=float, default=0.25,
                     help="allowed regression fraction (default 0.25 = 25%%)")
     ap.add_argument("--quick", action="store_true", help="fewer samples, for CI")
@@ -367,10 +380,11 @@ def main() -> int:
                     verifies). Throughput numbers are machine-specific, so a
                     shared CI runner cannot be compared against a workstation
                     baseline -- these invariants can, which makes them the
-                    blocking CI gate while the numeric gate stays advisory.""")
+                    blocking CI gate while the numeric gate stays profile-scoped.""")
     args = ap.parse_args()
 
     current = run(quick=args.quick)
+    profile = detect_profile(args.quick)
 
     if args.write:
         path = pathlib.Path(args.write)
@@ -378,18 +392,28 @@ def main() -> int:
         path.write_text(json.dumps(current, indent=2), encoding="utf-8")
         print(f"wrote baseline -> {path}")
 
+    if args.write_baseline:
+        write_profile_baseline(args.write_baseline, profile, current,
+                               platform.platform())
+        print(f"wrote profile baseline [{profile}] -> {args.write_baseline}")
+
     print(json.dumps(current, indent=2))
 
     if args.invariants_only:
         failures = check_invariants(current)
+        label, status = "INVARIANT", "GATE"
     elif args.gate:
-        baseline = json.loads(pathlib.Path(args.gate).read_text(encoding="utf-8"))
-        failures = check_gate(baseline, current, args.tolerance)
+        status, failures, label, skip_msg = decide_gate(
+            args.gate, profile, current, args.tolerance)
     else:
-        failures = []
+        failures, status, label, skip_msg = [], "GATE", "PERFORMANCE", ""
 
     if args.gate or args.invariants_only:
-        label = "INVARIANT" if args.invariants_only else "PERFORMANCE"
+        if status == "SKIP":
+            print(f"\n=== {label} GATE: SKIP ===")
+            print("  - " + skip_msg)
+            print("  (numeric gate skipped; invariants remain the blocking check)")
+            return 0
         if failures:
             print(f"\n=== {label} GATE: FAIL ===")
             for f in failures:
@@ -422,6 +446,100 @@ def check_invariants(current: dict) -> list:
     if not current.get("chain_verifies"):
         failures.append("chain_verifies: the benchmark chain does not verify")
     return failures
+
+
+# ---------------------------------------------------------------------------
+# Machine/profile fingerprint + profile-keyed baseline handling.
+#
+# A performance baseline (events/sec, latency) is a property of the machine it
+# was captured on. Comparing a CI runner against a workstation baseline -- or
+# against a different workload (quick vs full) -- produces a gate that fails
+# for reasons that have nothing to do with the code. To keep CI numbers honest,
+# the numeric gate is keyed by a profile fingerprint and SKIPS (never fails,
+# never pretends to pass) when the current profile does not match the baseline.
+# ---------------------------------------------------------------------------
+
+BASELINE_SCHEMA = "liuhao-bench-baseline/v1"
+
+
+def detect_profile(quick: bool) -> str:
+    """Machine/profile fingerprint used to key performance baselines.
+
+    Two runs only compare when their profiles match. Override with the
+    LIUHAO_BENCH_PROFILE env var for reproducible CI runs (e.g. pin a runner).
+    """
+    override = os.environ.get("LIUHAO_BENCH_PROFILE")
+    if override:
+        return override
+    os_name = platform.system()
+    pyver = sys.version.split()[0]
+    cpu = (platform.processor() or platform.machine() or "unknown").replace(" ", "_")
+    threads = os.cpu_count() or 0
+    return f"{os_name}|py{pyver}|{cpu}|t{threads}|{'quick' if quick else 'full'}"
+
+
+def load_profile_baseline(baseline_path, profile):
+    """Resolve the baseline for ``profile``.
+
+    Returns ``(status, baseline_or_None, message)`` where ``status`` is either
+    ``"GATE"`` (profile matched, compare numerically) or ``"SKIP"`` (do NOT
+    fail CI -- re-baseline required or file missing/legacy).
+    """
+    p = pathlib.Path(baseline_path)
+    if not p.exists():
+        return "SKIP", None, f"baseline file not found: {baseline_path}"
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict) or "profiles" not in doc:
+        return ("SKIP", None,
+                "baseline file is not profile-keyed (legacy flat format) -- "
+                "re-baseline with --write-baseline")
+    profiles = doc.get("profiles", {})
+    if profile not in profiles:
+        available = ", ".join(sorted(profiles)) or "<none>"
+        return ("SKIP", None,
+                f"profile mismatch -- re-baseline required. "
+                f"current profile: {profile!r}; available: {available}")
+    return "GATE", profiles[profile], ""
+
+
+def write_profile_baseline(baseline_path, profile, current, machine):
+    """Write/update the profile-keyed baseline, preserving other profiles."""
+    p = pathlib.Path(baseline_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    doc = {}
+    if p.exists():
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            doc = {}
+    if not isinstance(doc, dict) or "profiles" not in doc:
+        doc = {"schema": BASELINE_SCHEMA, "default_profile": profile,
+               "profiles": {}}
+    doc["schema"] = BASELINE_SCHEMA
+    doc["default_profile"] = doc.get("default_profile") or profile
+    entry = dict(current)
+    entry["profile"] = profile
+    entry["captured_at"] = current.get("generated_at")
+    entry["machine"] = machine
+    doc["profiles"][profile] = entry
+    p.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    return doc
+
+
+def decide_gate(baseline_path, profile, current, tolerance):
+    """Decide the numeric gate without re-running the benchmark.
+
+    Returns ``(status, failures, label, message)``. ``status`` is ``"SKIP"``
+    (failures empty, caller must NOT fail CI) or ``"GATE"`` (run the numeric +
+    invariant comparison). The machine-independent invariants are folded in so
+    a correctness break blocks even on a matching profile.
+    """
+    status, baseline, msg = load_profile_baseline(baseline_path, profile)
+    if status == "SKIP":
+        return "SKIP", [], "PERFORMANCE", msg
+    failures = list(check_gate(baseline, current, tolerance))
+    failures += check_invariants(current)
+    return "GATE", failures, "PERFORMANCE", ""
 
 
 if __name__ == "__main__":

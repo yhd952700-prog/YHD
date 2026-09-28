@@ -11,10 +11,27 @@ therefore tolerance-based and re-baselined deliberately, never automatically.
 ## How to run
 
 ```
-python scripts/bench_audit_append.py --write docs/autonomous/performance-baseline.json   # re-baseline
-python scripts/bench_audit_append.py --gate  docs/autonomous/performance-baseline.json    # CI check
-python scripts/bench_audit_append.py --quick --gate docs/autonomous/performance-baseline.json
+python scripts/bench_audit_append.py --quick --write-baseline scripts/bench_baseline.json   # re-baseline CURRENT machine
+python scripts/bench_audit_append.py --quick --gate scripts/bench_baseline.json             # CI check (profile-keyed)
+python scripts/bench_audit_append.py --quick --invariants-only                              # always-blocking invariants
 ```
+
+The numeric gate is **profile-keyed**. The baseline (`scripts/bench_baseline.json`)
+is a map of machine/profile fingerprint → measured numbers. The fingerprint is
+`OS|py<version>|<cpu>|t<threads>|<quick|full>`. A run only compares against a
+baseline captured on the **same** profile:
+
+* profile **matches** → a real regression blocks the build (lower-bound on
+  throughput, upper-bound on latency/recovery).
+* profile **mismatches** (different machine / different workload) → the numeric
+  gate **SKIPs**. It does not fail and does not pretend to pass — it asks for a
+  re-baseline. This is what keeps CI numbers honest instead of comparing a
+  shared runner against a workstation.
+
+Override the fingerprint with `LIUHAO_BENCH_PROFILE` to pin a CI runner. The
+machine-independent **invariants** (no lost appends, contiguous seq, chain
+intact after a kill, chain verifies) are the always-blocking check, on every
+profile.
 
 The gate is one-directional on purpose:
 
@@ -28,7 +45,11 @@ regression.
 
 ## Baseline
 
-From `performance-baseline.json` in this directory.
+From `scripts/bench_baseline.json`, keyed by machine profile. Each entry
+carries provenance (`captured_at`, `machine`, `python`). The previously shared
+flat `docs/autonomous/performance-baseline.json` was retired: it was captured on
+a different (faster) machine with the `full` workload, which made the CI
+`--quick` gate misleading.
 
 Measured with the shipping durability default (`synchronous=FULL`).
 

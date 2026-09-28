@@ -416,16 +416,19 @@ jobs:
       # intact after a hard kill, chain verifies). Those are correctness, so
       # they must never regress regardless of hardware.
       #
-      # NOT blocking: the numeric comparison (--gate against
-      # performance-baseline.json). Events/sec is a property of the machine, and
-      # a shared runner cannot be compared against a workstation baseline --
-      # doing so would produce a gate that fails for reasons that have nothing
-      # to do with the code. It is reported for humans instead.
+      # NUMERIC gate (--gate against the profile-keyed baseline in
+      # scripts/bench_baseline.json): events/sec is a property of the machine,
+      # so the baseline is keyed by a machine/profile fingerprint (OS, Python
+      # version, CPU, quick flag). When the current runner's profile does NOT
+      # match the baseline, the numeric gate SKIPs -- it does not fail and does
+      # not pretend to pass, it just asks for a re-baseline. When the profile
+      # DOES match, a real regression blocks the build. This keeps CI numbers
+      # honest instead of comparing a shared runner against a workstation.
       - name: Audit append invariants gate (blocking)
         run: python scripts/bench_audit_append.py --quick --invariants-only
 
-      - name: Audit append throughput vs baseline (advisory)
-        run: python scripts/bench_audit_append.py --quick --gate docs/autonomous/performance-baseline.json --tolerance 0.5 || true
+      - name: Audit append throughput vs profile baseline (skip on mismatch)
+        run: python scripts/bench_audit_append.py --quick --gate scripts/bench_baseline.json --tolerance 0.5
 
       # ⚠️ 采集用，非门禁：真正会阻断 CI 的 Bandit 门禁在 security job
       # （--severity-level high，命中即失败）。此处保留全量扫描 + artifact，
