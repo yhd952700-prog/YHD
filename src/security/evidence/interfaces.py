@@ -2,14 +2,40 @@
 
 The subsystem is built around five narrow interfaces so that the *final* trusted
 timestamp / platform-root-of-trust provider (a reserved human decision — see
-docs/autonomous/EXECUTION-QUEUE.md and HUMAN-DECISION-BACKLOG.md) can be swapped
-by CONFIG without touching call sites:
+docs/adr/ADR-root-of-trust-hd05.md and HUMAN-DECISION-BACKLOG.md HD-05) can be
+swapped by CONFIG without touching call sites:
 
-  * :class:`Signer`          — produces / verifies a signature over arbitrary bytes.
-  * :class:`TimestampProvider` — binds a (digest, time) proof to an artifact.
-  * :class:`KeyLifecycle`    — generate / rotate / export / load signing keys.
-  * :class:`EvidenceAdapter` — seals a manifest into a verifiable bundle and opens it.
-  * :class:`Verifier`        — verifies a bundle end-to-end, fail-closed.
+  * :class:`Signer`            — produces / verifies a signature over arbitrary bytes.
+  * :class:`TimestampIssuer`   — produces a (digest, time) trusted-timestamp proof.
+  * :class:`TimestampVerifier` — independently verifies a proof against a trust anchor.
+  * :class:`KeyLifecycle`      — generate / rotate / export / load signing keys.
+  * :class:`EvidenceAdapter`   — seals a manifest into a verifiable bundle; opens it.
+  * :class:`Verifier`          — verifies a bundle end-to-end, fail-closed.
+
+ROOT-OF-TRUST DISCIPLINE (this is the core of HD-05):
+-----------------------------------------------------
+Issuing a timestamp and *verifying* it are SEPARATE concerns. A timestamp is
+either:
+
+  * INDEPENDENTLY VERIFIED — its authenticity is established by a trust anchor
+    (X.509 cert / public key) that is *external* to the entity that produced the
+    artifact (e.g. a real RFC 3161 TSA whose root is configured out-of-band);
+  * SELF-ATTESTED — the same local/mock key both signs and "verifies". This is
+    fine for dev/test and for tamper-evidence, but it is NOT third-party trust
+    and MUST NEVER be presented as production-grade / independently verified.
+
+Every :class:`TimestampToken` therefore carries two explicit fields:
+
+  * ``authority``     — who attests the timestamp (e.g. ``"local"``, a TSA host,
+    or a configured anchor id).
+  * ``self_attested`` — ``True`` iff the issuer is the same entity that verifies.
+    A self-attested token is flagged so upper layers cannot claim it is
+    independently verified.
+
+The local mock is ALWAYS self-attested. Selecting a real, independently-verified
+provider (real RFC 3161 TSA / TPM / quorum) is the RESERVED human decision HD-05;
+the code makes the local self-attested mode explicit and refuses to present it as
+production-grade.
 
 CONVENTION (matches ``kernels/audit`` A5 ``hash_alg`` and ``dual_signature``
 ``sig_alg``): the algorithm identifier travels INSIDE the token, and verification
@@ -75,9 +101,14 @@ class TimestampToken:
     """An RFC 3161-shaped trusted-timestamp proof bound to an artifact digest.
 
     Models the three things a TimeStampToken conveys: the *messageImprint*
-    (``digest``), the *genTime* (``ts``), and the TSA's signature over them
+    (``digest``), the *genTime* (``ts``), and the issuer's signature over them
     (``token``). ``alg`` / ``source`` make the proof self-describing and let the
     verifier dispatch on the declared algorithm (fail-closed on unknown).
+
+    ROOT-OF-TRUST FIELDS (HD-05):
+      * ``authority``     — who attests this timestamp (see module docstring).
+      * ``self_attested`` — True iff the issuer == verifier (no independent root).
+        A self-attested token MUST NOT be presented as independently verified.
     """
 
     source: str
@@ -86,6 +117,8 @@ class TimestampToken:
     digest: str
     token: str
     pubkey_id: Optional[str] = None
+    authority: str = ""
+    self_attested: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -97,6 +130,8 @@ class TimestampToken:
         }
         if self.pubkey_id is not None:
             d["pubkey_id"] = self.pubkey_id
+        d["authority"] = self.authority
+        d["self_attested"] = self.self_attested
         return d
 
     @classmethod
@@ -104,7 +139,51 @@ class TimestampToken:
         return cls(
             source=d["source"], alg=d["alg"], ts=d["ts"], digest=d["digest"],
             token=d["token"], pubkey_id=d.get("pubkey_id"),
+            authority=d.get("authority", d.get("source", "")),
+            self_attested=bool(d.get("self_attested", False)),
         )
+
+
+@dataclass
+class TrustAnchor:
+    """A configured root of trust used to INDEPENDENTLY verify a timestamp.
+
+    Holds the verifying material (PEM X.509 cert or public key) and the
+    authority name it represents. ``self_attested`` marks anchors that are the
+    same key that signed (e.g. a locally-generated self-signed cert used for
+    offline testing) — they verify the CMS math but do NOT constitute
+    third-party trust.
+
+    Importing :mod:`cryptography` is deferred to the load methods so this value
+    type stays import-light.
+    """
+
+    authority: str
+    verifying_pem: str
+    self_attested: bool = False
+    source: str = "local"
+
+    def load_public_key(self):
+        """Return the :class:`cryptography` public key for this anchor."""
+        from cryptography.hazmat.primitives.serialization import (
+            load_pem_public_key,
+        )
+        from cryptography.x509 import load_pem_x509_certificate
+
+        try:
+            cert = load_pem_x509_certificate(self.verifying_pem.encode("utf-8"))
+            return cert.public_key()
+        except ValueError:
+            return load_pem_public_key(self.verifying_pem.encode("utf-8"))
+
+    def load_cert(self):
+        """Return the :class:`cryptography` X.509 cert, or None if a bare key."""
+        from cryptography.x509 import load_pem_x509_certificate
+
+        try:
+            return load_pem_x509_certificate(self.verifying_pem.encode("utf-8"))
+        except ValueError:
+            return None
 
 
 @dataclass
@@ -153,11 +232,18 @@ class EvidenceBundle:
 class VerificationResult:
     """End-to-end verification outcome. Fail-closed: ``ok`` is True only when no
     check failed. ``checked`` lists what was examined; ``failures`` lists why
-    ``ok`` is False (empty when ``ok`` is True)."""
+    ``ok`` is False (empty when ``ok`` is True).
+
+    ``self_attested`` mirrors the bundle's timestamp: True when the proof was
+    asserted by the same entity that produced it (no independent root). Upper
+    layers MUST NOT present a ``self_attested`` result as production-grade /
+    independently verified.
+    """
 
     ok: bool
     checked: list = field(default_factory=list)
     failures: list = field(default_factory=list)
+    self_attested: bool = False
 
     def with_check(self, name: str) -> "VerificationResult":
         self.checked.append(name)
@@ -189,8 +275,14 @@ class Signer(abc.ABC):
         """Return True iff ``token`` is a valid signature over ``data``."""
 
 
-class TimestampProvider(abc.ABC):
-    """Binds a (digest, time) trusted-timestamp proof to an artifact."""
+class TimestampIssuer(abc.ABC):
+    """Produces a (digest, time) trusted-timestamp proof bound to an artifact.
+
+    The issuer MAY be self-attested (the local mock). The returned
+    :class:`TimestampToken` MUST carry ``authority`` and ``self_attested`` so
+    callers can never mistake a self-attested proof for an independently-verified
+    one.
+    """
 
     @property
     @abc.abstractmethod
@@ -202,13 +294,56 @@ class TimestampProvider(abc.ABC):
     def alg(self) -> str:
         """Self-describing algorithm identifier (travels inside the token)."""
 
+    @property
     @abc.abstractmethod
-    def timestamp(self, data: bytes) -> TimestampToken:
-        """Return a trusted-timestamp token for ``data`` (binds sha256(data)+now)."""
+    def authority(self) -> str:
+        """Name of the authority that attests the timestamp.
+
+        For self-attested providers this is the same entity that signs (e.g.
+        ``"local"``). For an independently-verified provider it names the trust
+        anchor / TSA host configured out-of-band.
+        """
 
     @abc.abstractmethod
-    def verify(self, data: bytes, token: TimestampToken) -> bool:
-        """Return True iff ``token`` is a valid timestamp for ``data``."""
+    def timestamp(self, data: bytes) -> TimestampToken:
+        """Return a trusted-timestamp token for ``data`` (binds sha256(data)+now).
+
+        The token MUST set ``authority`` and ``self_attested`` explicitly.
+        """
+
+
+class TimestampVerifier(abc.ABC):
+    """Independently verifies a :class:`TimestampToken` against a trust anchor.
+
+    Verification DISPATCHES ON the token's declared ``alg`` and ``source``; an
+    unknown / mismatched provider is rejected (fail-closed). When ``anchor`` is
+    provided, the proof is checked against that external root of trust; when it
+    is None the verifier may fall back to embedded material (which is, by
+    definition, self-attested and MUST be flagged as such upstream).
+    """
+
+    @property
+    @abc.abstractmethod
+    def source_name(self) -> str:
+        """Backend name this verifier accepts (``local`` / ``rfc3161`` / ``tpm``)."""
+
+    @abc.abstractmethod
+    def verify(self, data: bytes, token: TimestampToken,
+               anchor: Optional[TrustAnchor] = None) -> bool:
+        """Return True iff ``token`` is a valid, anchored timestamp for ``data``.
+
+        Fail-closed: any missing anchor, provider mismatch, bad signature, digest
+        mismatch, or unparseable CMS returns False — never a silent pass.
+        """
+
+
+class TimestampProvider(TimestampIssuer, TimestampVerifier):
+    """Combined issuer+verifier role (kept for backward-compatible call sites).
+
+    Concrete providers implement both sides. Note that for a self-attested
+    provider the same key issues AND verifies — the verifier is NOT independent
+    of the issuer, and the token's ``self_attested`` flag makes that explicit.
+    """
 
 
 class KeyLifecycle(abc.ABC):

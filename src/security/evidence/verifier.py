@@ -13,6 +13,7 @@ from .interfaces import (
     EvidenceBundle,
     Signer,
     TimestampProvider,
+    TrustAnchor,
     VerificationResult,
     Verifier,
     artifact_digest,
@@ -21,13 +22,21 @@ from .interfaces import (
 
 class EvidenceVerifier(Verifier):
     """Verifies bundles end-to-end. Holds the provider (and optional signer)
-    needed to check the embedded trust proofs. Concrete impl of :class:`Verifier`."""
+    needed to check the embedded trust proofs. Concrete impl of :class:`Verifier`.
+
+    Root-of-trust honesty: a bundle whose timestamp is ``self_attested`` verifies
+    cryptographically but is NOT independently rooted. ``verify_bundle`` surfaces
+    this via :attr:`VerificationResult.self_attested` and a recorded check, so the
+    result can never be silently presented as production-grade / independently
+    verified.
+    """
 
     def __init__(self, provider: TimestampProvider, signer: Optional[Signer] = None):
         self._provider = provider
         self._signer = signer
 
-    def verify_bundle(self, bundle: EvidenceBundle) -> VerificationResult:
+    def verify_bundle(self, bundle: EvidenceBundle,
+                      anchor: Optional[TrustAnchor] = None) -> VerificationResult:
         res = VerificationResult(ok=True)
         canonical = None
         try:
@@ -41,10 +50,18 @@ class EvidenceVerifier(Verifier):
 
         res.with_check("timestamp")
         try:
-            if not self._provider.verify(canonical, bundle.timestamp):
+            if not self._provider.verify(canonical, bundle.timestamp, anchor=anchor):
                 res.with_failure("timestamp token invalid for this artifact")
         except Exception as exc:  # fail-closed: never let a verify error look like success
             res.with_failure(f"timestamp verification error: {exc}")
+
+        # Honesty flag: a self-attested timestamp is verified, but not independent.
+        if bundle.timestamp.self_attested:
+            res.self_attested = True
+            res.with_check(
+                "timestamp.self_attested=True (issuer==verifier; not independently "
+                "anchored — must NOT be presented as production-grade)"
+            )
 
         if bundle.signature is not None:
             res.with_check("signature")

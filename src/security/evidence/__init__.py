@@ -36,6 +36,7 @@ from .errors import (
 )
 from .factory import (
     DEFAULT_PROVIDER,
+    LOCAL_IS_PRODUCTION_GRADE,
     PROVIDERS,
     build_default_subsystem,
     get_key_lifecycle,
@@ -49,8 +50,11 @@ from .interfaces import (
     KeyLifecycle,
     SignatureToken,
     Signer,
+    TimestampIssuer,
     TimestampProvider,
     TimestampToken,
+    TimestampVerifier,
+    TrustAnchor,
     VerificationResult,
     Verifier,
     artifact_digest,
@@ -66,10 +70,13 @@ __all__ = [
     "TimestampToken",
     "EvidenceBundle",
     "VerificationResult",
+    "TrustAnchor",
     "artifact_digest",
     # interfaces
     "Signer",
+    "TimestampIssuer",
     "TimestampProvider",
+    "TimestampVerifier",
     "KeyLifecycle",
     "EvidenceAdapter",
     "Verifier",
@@ -83,6 +90,7 @@ __all__ = [
     # factory
     "PROVIDERS",
     "DEFAULT_PROVIDER",
+    "LOCAL_IS_PRODUCTION_GRADE",
     "get_timestamp_provider",
     "get_signer",
     "get_key_lifecycle",

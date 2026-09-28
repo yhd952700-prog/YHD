@@ -1,6 +1,35 @@
 #!/usr/bin/env python3
-"""D26 (phase 1) — RFC 3161 timestamp authority abstraction (local fallback, no
-external dependency).
+"""D26 — RFC 3161 timestamp authority abstraction (local fallback, no external dependency).
+
+================================================================================
+DEV-ONLY MOCK — NOT A ROOT OF TRUST, NOT PRODUCTION-GRADE
+================================================================================
+This script is a *development-only* convenience for stamping ad-hoc safeguard /
+forensic MANIFEST files with a locally-signed timestamp. It is NOT the
+authoritative trusted-timestamp / platform-root-of-trust path. The real,
+provider-neutral subsystem lives in ``src/security/evidence`` (HD-05) and
+implements genuine RFC 3161 CMS verification against a configurable trust anchor.
+
+Two important, deliberately-stated facts (previously under-documented):
+
+  1. The local fallback here is SELF-ATTESTED: the same HMAC key both stamps and
+     verifies. It provides tamper-evidence only — it is NOT independently
+     verified by any third party and MUST NOT be described as "fully usable in
+     production" as a root of trust. Any production use requires a human-chosen
+     provider (HD-05), e.g. a real RFC 3161 TSA or TPM/HSM.
+
+  2. This module uses a SCHEMA DIVERGENT from ``src/security/evidence``:
+     here a timestamp is ``{"ts","source","token","alg":"hmac-sha256"}`` bound
+     with ``hmac-sha256(key, manifest_bytes || "|" || ts)``; the evidence
+     subsystem uses ``{"source","alg","ts","digest","token","authority",
+     "self_attested"}`` with ``authority`` + ``self_attested`` fields and real
+     CMS/PKCS#7 verification. The two are NOT interchangeable and this script
+     must not be presented as the evidence subsystem's implementation.
+
+Final TSA / hardware-root selection is a RESERVED human decision
+(docs/autonomous/HUMAN-DECISION-BACKLOG.md HD-05; docs/adr/ADR-root-of-trust-hd05.md).
+This module never performs a network call and never performs an irreversible key
+ceremony.
 
 WHY THIS EXISTS
 ---------------
@@ -18,8 +47,10 @@ abstraction with three backends:
     INTERFACE ONLY in this phase (requires a TPM / PKCS#11 stack we do not
     depend on). ``stamp()`` raises ``NotImplementedError``.
   * ``LocalTimestampAuthority`` — a LOCAL, OFFLINE fallback that produces a
-    locally-signed timestamp token. No network call is ever made. It is the
-    default and is fully usable today.
+    locally-signed (HMAC) timestamp token. No network call is ever made. It is
+    the default for *development / local forensics only*. It is SELF-ATTESTED
+    (the same key stamps and verifies) and is DEV-ONLY — NOT a production root of
+    trust and MUST NOT be described as "fully usable in production".
 
 MANIFEST SCHEMA EXTENSION (the ``timestamp`` field)
 --------------------------------------------------
@@ -59,7 +90,7 @@ import hashlib
 import hmac
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -242,11 +273,15 @@ LOCAL_TSA_KEY_FILE = os.path.join("config", "local_tsa_key")
 
 
 class LocalTimestampAuthority(TimestampAuthority):
-    """Local, offline timestamp authority.
+    """Local, offline, SELF-ATTESTED timestamp authority (DEV-ONLY).
 
     Produces a locally-signed token = ``hmac-sha256(key, manifest_bytes || "|" || ts)``.
     No network is ever touched. The token is verifiable by any process that holds
     the same ``key`` (env var, key file, or an explicitly injected key).
+
+    IMPORTANT: this is a self-attested dev mock, NOT a production root of trust.
+    It provides local tamper-evidence only and must never be presented as an
+    independently-verified trusted timestamp.
     """
 
     source_name = "local"

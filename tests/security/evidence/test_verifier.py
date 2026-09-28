@@ -38,6 +38,9 @@ def test_verify_bundle_ok_for_sealed_artifact() -> None:
     assert "artifact_digest" in res.checked
     assert "timestamp" in res.checked
     assert "signature" in res.checked
+    # The default (local) provider is self-attested: the result must be flagged,
+    # never silently presented as independently verified / production-grade.
+    assert res.self_attested is True
 
 
 def test_verify_bundle_detects_tampered_manifest_fail_closed() -> None:

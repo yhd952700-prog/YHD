@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-
 from src.security.evidence import LocalRfc3161LikeProvider, SignatureToken, TimestampToken
 
 

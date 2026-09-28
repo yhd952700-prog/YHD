@@ -1,29 +1,51 @@
-"""HD-05 — RFC 3161 Time-Stamp Protocol provider (INTERFACE ONLY / phase 1).
+"""HD-05 — RFC 3161 Time-Stamp Protocol provider (REAL CMS verify, offline-capable).
 
-This provider declares the RFC 3161 contract and implements the parts that are
-possible OFFLINE without a live TSA:
+Unlike phase 1 (which only declared the contract and raised ``NotImplementedError``
+for every operation), this provider implements a genuinely RFC 3161-shaped
+trusted timestamp:
 
-  * :meth:`message_imprint` — the SHA-256 messageImprint (the controllable part
-    of every TimeStampReq);
-  * :meth:`build_timestamp_request` — a *valid DER* ``TimeStampReq`` (version=1,
-    messageImprint) built by hand below, so the request shape is real and
-    testable, not a placeholder;
-  * :meth:`parse_response` — a best-effort, guarded extractor of ``genTime`` from
-    a ``TimeStampResp`` DER (full CMS/PKCS#7 trust validation is phase 2).
+  * :meth:`timestamp` builds a real CMS ``SignedData`` (``id-signedData``) wrapping
+    a ``TSTInfo`` (``id-ct-TSTInfo``), signed with RSA-PKCS#1v15 + SHA-256 over
+    the signedAttrs SET — the same structure an RFC 3161 TimeStampToken carries.
+  * :meth:`verify` parses that CMS and checks the signature against a configurable
+    X.509 trust anchor, plus the messageImprint (``sha256(data)``), the ``nonce``,
+    and the ``genTime`` accuracy. The verification logic is REAL and testable
+    OFFLINE (no live TSA) against a generated anchor.
 
-It is deliberately NOT wired to a live TSA. :meth:`timestamp` / :meth:`verify`
-raise ``NotImplementedError`` so a misconfigured caller fails loudly instead of
-emitting an unsigned token. Final provider selection (which TSA, which trust
-root) is a reserved human decision — see docs/autonomous/HUMAN-DECISION-BACKLOG.md
-(HD-05). This module never performs a network call on its own.
+WHY NO ``NotImplementedError``:
+------------------------------
+The verification path is the part that matters for trust, and it is fully
+implemented here. Issuing a token still needs signing material; when none is
+supplied the provider generates an ephemeral self-signed key+cert so the stack
+stays usable offline — but the resulting token is explicitly ``self_attested``.
+Contacting a *live* external TSA (HTTP TimeStampReq/TimeStampResp round-trip) is
+NOT done here; that is a wiring detail for the human-chosen production provider.
+
+ROOT-OF-TRUST DISCIPLINE (HD-05):
+--------------------------------
+If no real TSA URL is configured (``tsa_url is None``), every token this provider
+issues is **self-attested** (its own key is the "authority") and is flagged
+``self_attested=True`` with ``authority`` naming the local anchor. It is VERIFIED
+cryptographically but is NOT independently rooted in a third party, so it must
+never be presented as production-grade. Only a human decision (HD-05) picks the
+real, independently-verified TSA + trust root.
+
+This module never performs a network call on its own.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+from datetime import datetime, timezone
 from typing import Optional
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
 from .errors import TimestampVerificationError
-from .interfaces import TimestampProvider, TimestampToken
+from .interfaces import TimestampProvider, TimestampToken, TrustAnchor, artifact_digest
+from . import rfc3161_cms as _cms
 
 
 # SHA-256 AlgorithmIdentifier (OID 2.16.840.1.101.3.4.2.1, NULL parameters).
@@ -64,13 +86,48 @@ def _extract_octet_string(der: bytes, at: int) -> bytes:
     return der[start:start + length]
 
 
-class Rfc3161TimestampProvider(TimestampProvider):
-    """RFC 3161 (Time-Stamp Protocol) backend — interface only in phase 1."""
+def _pem_cert_to_der(pem: str) -> bytes:
+    cert = x509.load_pem_x509_certificate(pem.encode("utf-8"))
+    return cert.public_bytes(serialization.Encoding.DER)
 
-    def __init__(self, tsa_url: Optional[str] = None):
-        # Stored, not used: wiring a live TSA (request/response over HTTP, CMS
-        # trust validation) is phase 2. Setting it does not enable network use.
+
+class Rfc3161TimestampProvider(TimestampProvider):
+    """RFC 3161 (Time-Stamp Protocol) backend — real CMS verify, offline-capable.
+
+    The verification logic is fully implemented and testable offline against a
+    generated trust anchor. Issuance works offline too: when no ``signing_key_pem``
+    / ``signing_cert_pem`` is supplied, an ephemeral self-signed key+cert is
+    generated so the stack remains usable — but such tokens are ``self_attested``.
+    """
+
+    def __init__(self, tsa_url: Optional[str] = None, trust_anchor_pem: Optional[str] = None,
+                 signing_key_pem: Optional[str] = None, signing_cert_pem: Optional[str] = None):
+        # Stored, not used for network: wiring a live TSA (request/response over
+        # HTTP) is a detail for the human-chosen production provider (HD-05).
         self.tsa_url = tsa_url
+
+        # Resolve signing material. Prefer explicit key+cert; else generate an
+        # ephemeral self-signed key+cert (offline, self-attested).
+        if signing_key_pem is not None and signing_cert_pem is not None:
+            self._key = serialization.load_pem_private_key(
+                signing_key_pem.encode("utf-8"), password=None
+            )
+            if not isinstance(self._key, rsa.RSAPrivateKey):
+                raise TimestampVerificationError("signing_key_pem is not an RSA private key")
+            cert = x509.load_pem_x509_certificate(signing_cert_pem.encode("utf-8"))
+        else:
+            self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            cert = _self_signed_cert(self._key)
+
+        self._cert = cert
+        self._cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        self._cert_der = cert.public_bytes(serialization.Encoding.DER)
+
+        # The trust anchor defaults to our own cert (self-attested). A real
+        # provider overrides this with the configured external TSA root.
+        self._trust_anchor_pem = trust_anchor_pem or self._cert_pem
+
+    # -- authority / self-attestation --------------------------------------
 
     @property
     def source_name(self) -> str:
@@ -78,9 +135,86 @@ class Rfc3161TimestampProvider(TimestampProvider):
 
     @property
     def alg(self) -> str:
-        return "rfc3161"
+        return "rfc3161-cms"
 
-    # -- offline, real parts -------------------------------------------------
+    @property
+    def authority(self) -> str:
+        """Name of the attesting authority.
+
+        A real TSA host if configured, otherwise an explicit self-attested label
+        so callers never mistake the offline mock for a live TSA.
+        """
+        return self.tsa_url or "rfc3161-self-attested"
+
+    @property
+    def is_self_attested(self) -> bool:
+        """True when no real external TSA is configured (HD-05 reserved)."""
+        return self.tsa_url is None
+
+    def trust_anchor(self) -> TrustAnchor:
+        """The trust anchor this provider verifies against (for offline tests)."""
+        return TrustAnchor(
+            authority=self.authority,
+            verifying_pem=self._trust_anchor_pem,
+            self_attested=self.is_self_attested,
+            source="rfc3161",
+        )
+
+    # -- issuer -------------------------------------------------------------
+
+    def timestamp(self, data: bytes) -> TimestampToken:
+        """Issue a real CMS TimeStampToken (offline).
+
+        The token is ``self_attested`` iff no real TSA URL is configured. The
+        signature is verifiable offline against the trust anchor; the flag is what
+        stops anyone presenting a self-attested token as independently verified.
+        """
+        cms_der = _cms.build_timestamp_token(data, self._key, self._cert_der)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return TimestampToken(
+            source=self.source_name, alg=self.alg, ts=ts,
+            digest=artifact_digest(data), token=base64.b64encode(cms_der).decode("ascii"),
+            pubkey_id=self._cert_thumbprint(),
+            authority=self.authority,
+            self_attested=self.is_self_attested,
+        )
+
+    def _cert_thumbprint(self) -> str:
+        return hashlib.sha256(self._cert_der).hexdigest()[:16]
+
+    # -- verifier (REAL, offline-capable) -----------------------------------
+
+    def verify(self, data: bytes, token: TimestampToken,
+               anchor: Optional[TrustAnchor] = None) -> bool:
+        """Verify a CMS TimeStampToken against a trust anchor (fail-closed).
+
+        Provider mismatch (``token.source != "rfc3161"``) is rejected. When
+        ``anchor`` is supplied its cert is the external root of trust; otherwise
+        the token's embedded signer cert is used (which is, by definition,
+        self-attested). Any malformed CMS / bad signature / digest mismatch /
+        missing nonce returns False — never a silent pass.
+        """
+        if token.source != self.source_name:
+            return False
+        if token.alg != self.alg:
+            return False
+        try:
+            cms_der = base64.b64decode(token.token)
+        except (ValueError, TypeError):
+            return False
+        anchor_cert_der = None
+        if anchor is not None:
+            try:
+                anchor_cert_der = _pem_cert_to_der(anchor.verifying_pem)
+            except ValueError:
+                return False
+        try:
+            _cms.verify_timestamp_token(cms_der, data, anchor_cert_der=anchor_cert_der)
+            return True
+        except TimestampVerificationError:
+            return False
+
+    # -- offline, real parts (request shaping, kept for compatibility) ------
 
     def message_imprint(self, artifact_bytes: bytes) -> bytes:
         """The RFC 3161 messageImprint: SHA-256 of the artifact (raw bytes)."""
@@ -145,11 +279,10 @@ class Rfc3161TimestampProvider(TimestampProvider):
         """Best-effort extractor of ``genTime`` from a TimeStampResp DER.
 
         A real TimeStampToken is a CMS/PKCS#7 ``SignedData``; full trust
-        validation (certificate chain, ESSCertID, signature over the imprint)
-        is phase 2. Here we locate the first ``GeneralizedTime`` (tag 0x18) or
-        ``UTCTime`` (tag 0x17) and return it, so the response-parsing path is
-        wired and testable against a fixture. Any malformed input raises
-        :class:`TimestampVerificationError` (fail-closed).
+        validation is implemented in :mod:`rfc3161_cms`. Here we locate the first
+        ``GeneralizedTime`` (tag 0x18) or ``UTCTime`` (tag 0x17) and return it, so
+        the response-parsing path is wired and testable against a fixture. Any
+        malformed input raises :class:`TimestampVerificationError` (fail-closed).
         """
         for tag in (0x18, 0x17):
             idx = der_bytes.find(bytes([tag]))
@@ -162,16 +295,19 @@ class Rfc3161TimestampProvider(TimestampProvider):
                     raise TimestampVerificationError(f"malformed time in response: {exc}") from exc
         raise TimestampVerificationError("no genTime found in TimeStampResp")
 
-    # -- not wired in phase 1 ----------------------------------------------
 
-    def timestamp(self, data: bytes) -> TimestampToken:
-        raise NotImplementedError(
-            "Rfc3161TimestampProvider.timestamp is not wired in phase 1: no live "
-            "TSA is configured. Set tsa_url AND implement the HTTP TimeStampReq/"
-            "TimeStampResp round-trip + CMS trust validation before use."
-        )
+def _self_signed_cert(key: rsa.RSAPrivateKey) -> x509.Certificate:
+    """Generate an ephemeral self-signed cert (offline anchor / signing cert)."""
+    from cryptography.x509.oid import NameOID
 
-    def verify(self, data: bytes, token: TimestampToken) -> bool:
-        raise NotImplementedError(
-            "Rfc3161TimestampProvider.verify is not implemented in phase 1."
-        )
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "local-rfc3161-anchor")])
+    return (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime(2020, 1, 1))
+        .not_valid_after(datetime(2035, 1, 1))
+        .sign(key, hashes.SHA256())
+    )

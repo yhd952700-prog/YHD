@@ -31,6 +31,12 @@ PROVIDERS: Dict[str, type] = {
 DEFAULT_PROVIDER_ENV = "LIUHAO_TSA_PROVIDER"
 DEFAULT_PROVIDER = "local"
 
+#: The local mock is a SELF-ATTESTED dev/test adapter. It is explicitly NOT a
+#: production root of trust and MUST NOT be claimed as one. The FINAL provider
+#: (real RFC 3161 TSA / TPM / quorum) is a RESERVED human decision (HD-05,
+#: docs/adr/ADR-root-of-trust-hd05.md).
+LOCAL_IS_PRODUCTION_GRADE = False
+
 
 def get_timestamp_provider(name: Optional[str] = None) -> TimestampProvider:
     name = name or os.environ.get(DEFAULT_PROVIDER_ENV, DEFAULT_PROVIDER)
@@ -70,16 +76,22 @@ def get_verifier(name: Optional[str] = None) -> Verifier:
 def build_default_subsystem(name: Optional[str] = None) -> dict:
     """Wire a complete, provider-neutral evidence subsystem.
 
-    Returns ``{provider, signer, key_lifecycle, verifier, adapter}``. The local
-    mock satisfies all five roles, so the returned subsystem is fully usable and
-    offline. Real providers plug in by name via ``LIUHAO_TSA_PROVIDER``.
+    Returns ``{provider, signer, key_lifecycle, verifier, adapter,
+    production_grade}``. The local mock satisfies all five roles, so the returned
+    subsystem is fully usable and offline — but ``production_grade`` is False for
+    the local (self-attested) provider. Real providers plug in by name via
+    ``LIUHAO_TSA_PROVIDER``.
     """
     from .adapter import ManifestEvidenceAdapter
+    from .verifier import EvidenceVerifier
 
     provider = get_timestamp_provider(name)
     signer = provider if isinstance(provider, Signer) else None
     key_lifecycle = provider if isinstance(provider, KeyLifecycle) else None
-    verifier = get_verifier(name)
+    # Reuse the SAME provider instance so a self-attested local/rfc3161 verify
+    # checks against the very key that stamped the bundle (a fresh instance would
+    # hold a different ephemeral key and fail-closed).
+    verifier = EvidenceVerifier(provider, signer)
     adapter = ManifestEvidenceAdapter(provider, signer)
     return {
         "provider": provider,
@@ -87,4 +99,5 @@ def build_default_subsystem(name: Optional[str] = None) -> dict:
         "key_lifecycle": key_lifecycle,
         "verifier": verifier,
         "adapter": adapter,
+        "production_grade": (LOCAL_IS_PRODUCTION_GRADE if provider.source_name == "local" else False),
     }

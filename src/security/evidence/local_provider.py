@@ -1,4 +1,4 @@
-"""HD-05 — LOCAL mock / RFC 3161-shaped trusted-timestamp provider (OFFLINE).
+"""HD-05 — LOCAL mock / RFC 3161-shaped trusted-timestamp provider (OFFLINE, SELF-ATTESTED).
 
 This is the TEMPORARY adapter the build uses so the entire technical stack is
 complete and testable *without* any external/paid TSA or hardware root of trust.
@@ -12,15 +12,21 @@ It is deliberately RFC 3161-shaped:
   * verification dispatches on the declared ``alg`` and rejects unknowns
     (fail-closed) — the same discipline as ``kernels/audit`` ``hash_alg``.
 
+ROOT-OF-TRUST DISCIPLINE (the heart of HD-05):
+-----------------------------------------------
+The local provider is **self-attested**: the same key that issues the timestamp
+also "verifies" it. There is NO independent third party. Every token therefore
+carries ``self_attested=True`` and ``authority="local"`` so that nothing upstream
+can mistake this dev/test mock for an independently-verified, production-grade
+root of trust. The FINAL provider (real RFC 3161 TSA / TPM / quorum) is a RESERVED
+human decision — see docs/adr/ADR-root-of-trust-hd05.md (HD-05) and
+docs/autonomous/HUMAN-DECISION-BACKLOG.md.
+
 It performs NO network call and NO irreversible key ceremony. The key is
 ephemeral in-process by default (verifiable within the process); operators may
 set ``LIUHAO_TSA_LOCAL_KEY_PEM`` (or pass ``private_key_pem``) to a PEM for
-cross-run stability. Final provider selection (real RFC 3161 TSA / TPM) is a
-reserved human decision — see docs/autonomous/HUMAN-DECISION-BACKLOG.md (HD-05)
-and EXECUTION-QUEUE.md.
-
-This module is independent of ``jwt_handler`` / ``vault_crypto`` so existing
-RSA capabilities are untouched.
+cross-run stability. This module is independent of ``jwt_handler`` /
+``vault_crypto`` so existing RSA capabilities are untouched.
 """
 from __future__ import annotations
 
@@ -33,19 +39,24 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.exceptions import InvalidSignature
 
-from .errors import KeyLifecycleError, TimestampVerificationError
+from .errors import KeyLifecycleError
 from .interfaces import (
     KeyLifecycle,
     SignatureToken,
     Signer,
     TimestampProvider,
     TimestampToken,
+    TrustAnchor,
     artifact_digest,
 )
 
 
 LOCAL_TSA_KEY_ENV = "LIUHAO_TSA_LOCAL_KEY_PEM"
 ALG = "RS256-RSA3072"
+
+#: The local mock is, by definition, a self-attested authority. It is NOT
+#: independently verified and MUST NOT be presented as production-grade.
+LOCAL_AUTHORITY = "local"
 
 
 def _now_utc() -> str:
@@ -56,14 +67,29 @@ def _pubkey_id_from_pem(pem: str) -> str:
     return hashlib.sha256(pem.encode("utf-8")).hexdigest()[:16]
 
 
+def _b64_local(b: bytes) -> str:
+    import base64
+    return base64.b64encode(b).decode("ascii")
+
+
+def _unb64_local(s: str) -> bytes:
+    import base64
+    return base64.b64decode(s)
+
+
 class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
-    """Offline, RSA-3072, RFC 3161-shaped trusted-timestamp provider.
+    """Offline, RSA-3072, RFC 3161-shaped, **self-attested** timestamp provider.
 
     Implements :class:`Signer`, :class:`TimestampProvider` and
     :class:`KeyLifecycle` so it can stand in for any of them in the subsystem.
+    ``timestamp()`` returns a token with ``self_attested=True`` and
+    ``authority="local"`` — the explicit signal that this is NOT a production
+    root of trust.
     """
 
-    def __init__(self, private_key_pem: Optional[str] = None, key_file: Optional[str] = None):
+    def __init__(self, private_key_pem: Optional[str] = None, key_file: Optional[str] = None,
+                 authority: str = LOCAL_AUTHORITY):
+        self._authority = authority
         self._private_key: Optional[rsa.RSAPrivateKey] = None
         self._public_key: Optional[rsa.RSAPublicKey] = None
         pem = private_key_pem or os.environ.get(LOCAL_TSA_KEY_ENV)
@@ -99,7 +125,7 @@ class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
     def load(self, pem: str) -> None:
         try:
             key = serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
-        except ValueError as exc:
+        except ValueError:
             # Maybe it's a public-only PEM (trust binding use-case).
             try:
                 pub = serialization.load_pem_public_key(pem.encode("utf-8"))
@@ -129,10 +155,16 @@ class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
         return SignatureToken(alg=ALG, source=self.source_name, token=token,
                               pubkey_id=self.public_key_id())
 
-    def verify(self, data: bytes, token) -> bool:
+    def verify(self, data: bytes, token, anchor: Optional[TrustAnchor] = None) -> bool:
         """Unified verify for both :class:`SignatureToken` and
         :class:`TimestampToken` (the two interfaces share the ``verify`` name but
-        different token types, so dispatch on the runtime type)."""
+        different token types, so dispatch on the runtime type).
+
+        ``anchor`` is accepted for interface compatibility but a self-attested
+        local provider always verifies against its OWN loaded key; the token's
+        ``self_attested`` flag (set by :meth:`timestamp`) is the source of truth
+        for whether the proof is independently verified (it is not).
+        """
         if isinstance(token, TimestampToken):
             return self._verify_timestamp(data, token)
         if isinstance(token, SignatureToken):
@@ -152,7 +184,7 @@ class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
         except (InvalidSignature, ValueError, TypeError):
             return False
 
-    # -- TimestampProvider --------------------------------------------------
+    # -- TimestampProvider / TimestampIssuer / TimestampVerifier ------------
 
     @property
     def source_name(self) -> str:
@@ -161,6 +193,10 @@ class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
     @property
     def alg(self) -> str:
         return ALG
+
+    @property
+    def authority(self) -> str:
+        return self._authority
 
     def _resolve_pubkey(self, pubkey_id: Optional[str]):
         if self._public_key is None:
@@ -179,32 +215,29 @@ class LocalRfc3161LikeProvider(Signer, TimestampProvider, KeyLifecycle):
         return TimestampToken(
             source=self.source_name, alg=ALG, ts=ts, digest=digest, token=token,
             pubkey_id=self.public_key_id(),
+            authority=self.authority,
+            self_attested=True,  # the local mock is self-attested by definition
         )
 
-    def _verify_timestamp(self, data: bytes, token: TimestampToken) -> bool:
-        """Verify a timestamp token for ``data`` (fail-closed)."""
-        if token.alg != ALG:
-            return False
+    def _verify_timestamp(self, data: bytes, token: TimestampToken,
+                          anchor: Optional[TrustAnchor] = None) -> bool:
+        """Verify a timestamp token for ``data`` (fail-closed).
+
+        Provider mismatch is rejected: a token issued by another backend must not
+        verify here. The digest binding, algorithm, and signature are checked.
+        """
         if token.source != self.source_name:
+            return False
+        if token.alg != ALG:
             return False
         if token.digest != artifact_digest(data):
             return False
         pub = self._resolve_pubkey(token.pubkey_id)
         if pub is None:
             return False
-        payload = token.digest.encode("utf-8") + b"|" + token.ts.encode("utf-8")
+        bind = token.digest.encode("utf-8") + b"|" + token.ts.encode("utf-8")
         try:
-            pub.verify(_unb64_local(token.token), payload, padding.PKCS1v15(), hashes.SHA256())
+            pub.verify(_unb64_local(token.token), bind, padding.PKCS1v15(), hashes.SHA256())
             return True
         except (InvalidSignature, ValueError, TypeError):
             return False
-
-
-def _b64_local(b: bytes) -> str:
-    import base64
-    return base64.b64encode(b).decode("ascii")
-
-
-def _unb64_local(s: str) -> bytes:
-    import base64
-    return base64.b64decode(s)

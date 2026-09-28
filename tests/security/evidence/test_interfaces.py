@@ -5,8 +5,6 @@ subsystem is complete and testable without a real TSA/TPM.
 """
 from __future__ import annotations
 
-import pytest
-
 from src.security.evidence import (
     EvidenceAdapter,
     KeyLifecycle,
@@ -38,6 +36,9 @@ def test_timestamp_token_is_self_describing() -> None:
     assert token.digest  # messageImprint (sha256 hex)
     assert token.token  # base64 signature
     assert token.pubkey_id  # key binding
+    # Root-of-trust discipline: a local token is explicitly self-attested.
+    assert token.authority == "local"
+    assert token.self_attested is True
 
 
 def test_token_round_trips_through_dict() -> None:

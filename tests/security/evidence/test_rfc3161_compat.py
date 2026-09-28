@@ -1,11 +1,14 @@
-"""HD-05 — RFC 3161 TSA compatibility-test skeleton (phase 2 placeholder).
+"""HD-05 — RFC 3161 TSA compatibility tests (offline, real CMS verify).
 
 Two layers:
 
 1. OFFLINE, always-run: the real DER builders in
    :class:`Rfc3161TimestampProvider` produce a structurally valid ``TimeStampReq``
    and can extract ``genTime`` from a ``TimeStampResp`` fixture. These prove the
-   wire format is correct without any network or any external/paid provider.
+   request wire format is correct without any network or any external/paid
+   provider. The *verification* logic is ALSO real and offline-capable: the
+   provider builds and verifies a genuine CMS ``TimeStampToken`` against a
+   generated trust anchor (see ``tests/security/test_root_of_trust.py``).
 
 2. LIVE-TSA skeleton (SKIPPED by default): shows exactly how a real RFC 3161 TSA
    is reached in phase 2 — POST ``build_timestamp_request(...)`` to the TSA URL,
@@ -14,8 +17,8 @@ Two layers:
    external/paid provider is ever contacted automatically.
 
 Final TSA selection (which provider, which trust root) is a RESERVED HUMAN
-DECISION — see docs/autonomous/HUMAN-DECISION-BACKLOG.md (HD-05). This skeleton
-must not commit to any TSA or perform any irreversible key ceremony.
+DECISION — see docs/adr/ADR-root-of-trust-hd05.md (HD-05). The issuer/verifier
+code must not commit to any TSA or perform any irreversible key ceremony.
 """
 from __future__ import annotations
 
@@ -77,13 +80,17 @@ def test_parse_response_rejects_missing_gen_time_fail_closed() -> None:
         p.parse_response(no_time)
 
 
-def test_rfc3161_provider_timestamp_is_not_wired_fail_closed() -> None:
-    # Phase 1: timestamp/verify must fail loudly, never emit an unsigned token.
+def test_rfc3161_provider_timestamp_is_wired_offline_not_network() -> None:
+    # The verification LOGIC is implemented (no NotImplementedError). Issuance is
+    # offline-capable: with no TSA URL the provider self-attests using an
+    # ephemeral key, and verify succeeds against the embedded anchor. It must NOT
+    # contact any network — the token is built in-process.
     p = Rfc3161TimestampProvider()
-    with pytest.raises(NotImplementedError):
-        p.timestamp(b"x")
-    with pytest.raises(NotImplementedError):
-        p.verify(b"x", None)  # type: ignore[arg-type]
+    token = p.timestamp(b"x")
+    assert token.source == "rfc3161"
+    assert token.self_attested is True  # no TSA URL -> self-attested, not independent
+    assert p.verify(b"x", token) is True
+    assert p.verify(b"other", token) is False  # tamper -> fail-closed
 
 
 # ---------------------------------------------------------------------------
