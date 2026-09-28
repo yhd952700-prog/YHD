@@ -1994,6 +1994,20 @@ def audit_stats() -> Dict[str, Any]:
     return get_audit_store().get_stats()
 
 
+def audit_verification_coverage() -> Dict[str, Any]:
+    """Audit hash-chain verification coverage (C2).
+
+    Surfaced via the /v1/ready health endpoint so that "the chain has not been
+    re-derived in N days" or "the history is only partially covered by
+    checkpoints" cannot hide behind a green dashboard. Returns the dict produced
+    by AuditStore.verification_coverage(): tail_seq, covered_through,
+    uncovered_events, coverage_ratio, checkpoint_count, oldest_verified_at,
+    newest_verified_at, rooted_at_genesis. Read-only: opens a snapshot
+    connection and re-derives checkpoints from raw events.
+    """
+    return get_audit_store().verification_coverage()
+
+
 def audit_failure_count() -> int:
     """Return the number of audit writes that failed since process start.
 

@@ -108,19 +108,39 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Rate Limiter: {str(e)}")
         checks["rate_limiter"] = {"status": "unhealthy", "error": str(e)}
 
-    # CRIT-1C / D17 (Layer 1): surface audit write failures as an observable
-    # subsystem. Only the store *unavailability* marks it unhealthy (LOW tier
-    # is still allowed to keep running); the failure *count* is reported so
-    # operators can see "Evidence=missing" without it taking the service down.
+    # CRIT-1C / D17 (Layer 1) + C2 observability: surface audit write failures
+    # AND verification coverage as observable signals. Only the store
+    # *unavailability* marks it unhealthy (LOW tier may still keep running); the
+    # failure *count* and verification *coverage* are reported so operators can
+    # see "Evidence=missing" / "chain not re-derived" without it taking the
+    # service down. Coverage being incomplete does NOT flip readiness to 503
+    # (there is no periodic verifier mandated yet, so a populated-but-unverified
+    # deployment must not self-terminate); it is reported in `checks` + `errors`
+    # so it is visible instead of hidden behind a green light.
     try:
-        from ..kernels.audit import audit_stats
+        from ..kernels.audit import audit_stats, audit_verification_coverage
 
         astats = audit_stats()
+        cov = audit_verification_coverage()
+        incomplete = (cov.get("uncovered_events", 0) > 0) or (
+            not cov.get("rooted_at_genesis", True)
+        )
         checks["audit_store"] = {
             "status": "healthy",
             "total_events": astats.get("total_events", 0),
             "failures": astats.get("failures", 0),
+            "coverage_ratio": cov.get("coverage_ratio"),
+            "uncovered_events": cov.get("uncovered_events"),
+            "covered_through": cov.get("covered_through"),
+            "newest_verified_at": cov.get("newest_verified_at"),
+            "rooted_at_genesis": cov.get("rooted_at_genesis"),
         }
+        if incomplete:
+            errors.append(
+                "Audit chain verification incomplete: "
+                f"{cov.get('uncovered_events')} events uncovered, "
+                f"rooted_at_genesis={cov.get('rooted_at_genesis')}"
+            )
     except Exception as e:
         errors.append(f"Audit Store: {str(e)}")
         checks["audit_store"] = {"status": "unhealthy", "error": str(e)}
