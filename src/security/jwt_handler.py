@@ -32,6 +32,7 @@ except ImportError:
     RSAAlgorithm = None
 
 from .encryption import EncryptionManager, get_encryption_manager
+from .secret_store import SecretBackendUnavailable, is_production
 
 # Defined after the guarded import above on purpose: pycodestyle tolerates a
 # module-level import placed after a try/except import guard, but any *other*
@@ -722,6 +723,16 @@ def get_jwt_handler() -> JWTHandler:
     if _default_handler is None:
         handler = _handler_from_env()
         if handler is None:
+            if is_production():
+                # Fail-CLOSED: an ephemeral, per-process signing key silently
+                # drops every session on restart and cannot be shared across
+                # workers. Refuse autonomous execution rather than degrade
+                # security by minting tokens with a throwaway key.
+                raise SecretBackendUnavailable(
+                    f"no durable JWT signing key configured (set {JWT_SECRET_ENV} "
+                    "or the RSA key env vars). Refusing to run in production "
+                    "with an ephemeral, per-process key."
+                )
             logger.warning(
                 "no %s in the environment: signing keys are generated for this "
                 "process only, so tokens do not survive a restart and are not "

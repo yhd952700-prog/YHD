@@ -243,10 +243,13 @@ class VaultTransitCrypto:
             Hex-encoded hash string
         """
         if self._offline:
-            # Offline fallback: SHA256 + pepper from EncryptionManager
+            # Offline fallback: SHA256 + pepper derived from the (now persisted)
+            # EncryptionManager master key. The pepper is stable across restarts
+            # because the master key is persisted, so stored hashes remain
+            # verifiable.
             from .encryption import get_encryption_manager
             mgr = get_encryption_manager()
-            pepper = mgr.master_key.hex()[:32] if hasattr(mgr, "master_key") else ""
+            pepper = mgr.master_key.hex()[:32]
             return hashlib.sha256(
                 (pepper + raw_key).encode()
             ).hexdigest()

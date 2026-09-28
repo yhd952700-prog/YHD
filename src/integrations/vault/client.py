@@ -6,6 +6,8 @@ Supports local development mode and production Vault clusters.
 """
 
 from typing import Any, Dict, Optional, List
+import base64
+import secrets
 import threading
 import os
 import logging
@@ -81,6 +83,9 @@ class VaultClient:
         self._client: Optional["hvac.Client"] = None
         self._connected = False
         self._offline_cache: Dict[str, Any] = {}
+        # Ephemeral AES-GCM key for the dev-only offline transit path. NEVER
+        # used in production (the gate below raises first).
+        self._offline_aesgcm = None
 
     @classmethod
     def get_instance(cls, config: Optional[VaultConfig] = None) -> "VaultClient":
@@ -129,17 +134,42 @@ class VaultClient:
             self._connected = False
             return False
 
+    # --- Fail-closed backend gate ---------------------------------------
+
+    def _enforce_usable_backend(self) -> bool:
+        """Ensure a real backend is in use.
+
+        Returns True when Vault is connected. When Vault is offline:
+          * in production, the in-memory plaintext cache is FORBIDDEN -- we
+            raise ``SecretBackendUnavailable`` (fail-closed) instead of
+            silently caching secrets in memory;
+          * in dev/test it is allowed and we return False so the caller may use
+            the (clearly non-production) offline cache.
+        """
+        # Lazy import to avoid a circular import at module load time
+        # (secret_store -> src.security.__init__ -> vault_crypto -> client).
+        from ...security.secret_store import SecretBackendUnavailable, is_production
+        if self._connected:
+            return True
+        if is_production():
+            raise SecretBackendUnavailable(
+                "Vault is offline and the in-memory offline cache is forbidden "
+                "in production. Configure a real secret backend (Vault, or "
+                "LIUHAO_SECRET_MASTER_PASSPHRASE) before autonomous execution."
+            )
+        return False
+
     # --- KV Secret Engine ---
 
     def write_secret(self, path: str, data: Dict[str, Any]) -> bool:
         """Write a secret to the KV store."""
-        if not self._connected:
-            # Offline mode: cache in memory
+        if not self._enforce_usable_backend():
+            # Dev/test only: cache in memory (explicitly non-production).
             self._offline_cache[path] = {
                 "data": data,
                 "created_at": datetime.now().isoformat(),
             }
-            logger.info(f"[offline] Cached secret at {path}")
+            logger.info(f"[offline] Cached secret at {path} (dev/test only)")
             return True
 
         try:
@@ -163,7 +193,7 @@ class VaultClient:
 
     def read_secret(self, path: str) -> Optional[Dict[str, Any]]:
         """Read a secret from the KV store."""
-        if not self._connected:
+        if not self._enforce_usable_backend():
             cached = self._offline_cache.get(path)
             if cached:
                 return cached["data"]
@@ -190,7 +220,7 @@ class VaultClient:
 
     def delete_secret(self, path: str) -> bool:
         """Delete a secret from the KV store."""
-        if not self._connected:
+        if not self._enforce_usable_backend():
             self._offline_cache.pop(path, None)
             return True
 
@@ -212,7 +242,7 @@ class VaultClient:
 
     def list_secrets(self, prefix: str = "") -> List[str]:
         """List secrets under a given prefix."""
-        if not self._connected:
+        if not self._enforce_usable_backend():
             return list(self._offline_cache.keys())
 
         try:
@@ -238,12 +268,22 @@ class VaultClient:
 
     def encrypt(self, key_name: str, plaintext: str) -> Optional[str]:
         """Encrypt plaintext using Vault Transit engine."""
-        if not self._connected:
-            # Offline: simple encryption
-            import hashlib
-            encrypted = hashlib.sha256(plaintext.encode()).hexdigest()
-            self._offline_cache[f"transit/{key_name}"] = encrypted
-            return f"offline-encrypted:{encrypted}"
+        if not self._enforce_usable_backend():
+            # Dev/test only: REAL AES-GCM under an ephemeral per-process key.
+            # The previous sha256 "encryption" was irreversible and NOT
+            # encryption; this is actual authenticated encryption, but it is
+            # not for production (key is in-memory and per-process).
+            if self._offline_aesgcm is None:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                self._offline_aesgcm = AESGCM(secrets.token_bytes(32))
+            nonce = secrets.token_bytes(12)
+            ct = self._offline_aesgcm.encrypt(
+                nonce, plaintext.encode(), key_name.encode()
+            )
+            self._offline_cache[f"transit/{key_name}"] = base64.b64encode(
+                nonce + ct
+            ).decode()
+            return "offline-encrypted:" + base64.b64encode(nonce + ct).decode()
 
         try:
             response = self._client.secrets.transit.encrypt_data(
@@ -257,7 +297,20 @@ class VaultClient:
 
     def decrypt(self, key_name: str, ciphertext: str) -> Optional[str]:
         """Decrypt ciphertext using Vault Transit engine."""
-        if not self._connected:
+        if not self._enforce_usable_backend():
+            if isinstance(ciphertext, str) and ciphertext.startswith(
+                "offline-encrypted:"
+            ):
+                try:
+                    raw = base64.b64decode(ciphertext[len("offline-encrypted:"):])
+                    nonce, ct = raw[:12], raw[12:]
+                    if self._offline_aesgcm is None:
+                        return None
+                    return self._offline_aesgcm.decrypt(
+                        nonce, ct, key_name.encode()
+                    ).decode()
+                except Exception:
+                    return None
             return None
 
         try:
@@ -265,8 +318,8 @@ class VaultClient:
                 name=key_name,
                 ciphertext=ciphertext,
             )
-            import base64
-            return base64.b64decode(response["data"]["plaintext"]).decode()
+            import base64 as _b64
+            return _b64.b64decode(response["data"]["plaintext"]).decode()
         except Exception as e:
             logger.error(f"Vault transit decrypt failed: {e}")
             return None

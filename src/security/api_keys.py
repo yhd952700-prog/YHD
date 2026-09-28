@@ -230,6 +230,11 @@ class APIKeyManager:
         os.makedirs(os.path.dirname(self._storage_path) or ".", exist_ok=True)
         with open(self._storage_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
+        # Restrict to the owning user; the registry must not be world-readable.
+        try:
+            os.chmod(self._storage_path, 0o600)
+        except OSError:
+            pass
 
     def _load(self) -> None:
         if not self._storage_path or not os.path.exists(self._storage_path):
@@ -263,7 +268,11 @@ _api_key_manager: Optional[APIKeyManager] = None
 def get_api_key_manager() -> APIKeyManager:
     global _api_key_manager
     if _api_key_manager is None:
-        _api_key_manager = APIKeyManager()
+        # Production persists the (hash-only) registry to disk via
+        # LIUHAO_API_KEY_STORE. When unset we stay in-memory (dev/test); the
+        # fail-closed secret backend gate governs durable secret storage.
+        storage_path = os.environ.get("LIUHAO_API_KEY_STORE")
+        _api_key_manager = APIKeyManager(storage_path=storage_path)
     return _api_key_manager
 
 

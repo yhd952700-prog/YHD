@@ -12,6 +12,7 @@ import base64
 import secrets
 import hashlib
 import hmac
+import os
 from typing import Optional, Tuple, Union
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,20 +79,32 @@ class EncryptionManager:
 
         self.config = config or EncryptionConfig()
 
-        # Load or generate master key
+        # Load or generate master key.
         if master_key:
             self._master_key = master_key
         elif key_file:
             self._master_key = self._load_key_file(key_file)
         else:
-            # Try to load from default location
-            default_key_file = Path.home() / ".liuhao" / "master.key"
+            default_key_file = Path(
+                os.environ.get(
+                    "LIUHAO_MASTER_KEY_FILE",
+                    str(Path.home() / ".liuhao" / "master.key"),
+                )
+            )
             if default_key_file.exists():
+                # Real persistence: load the previously generated master key so
+                # it is NOT regenerated on every boot.
                 self._master_key = self._load_key_file(str(default_key_file))
-            else:
+            elif os.environ.get("LIUHAO_SECRET_DEV_EPHEMERAL"):
+                # Explicit dev-only ephemeral mode: the key is kept in memory
+                # ONLY and is intentionally never persisted. Production must
+                # never reach this branch.
                 self._master_key = self.generate_key()
-                # Optionally save to default location
-                # self._save_key_file(str(default_key_file), self._master_key)
+            else:
+                # Production: generate a real master key and PERSIST it (chmod
+                # 600) so it survives restarts instead of being regenerated.
+                self._master_key = self.generate_key()
+                self._save_key_file(str(default_key_file), self._master_key)
 
         # Initialize Fernet with master key
         self._fernet = Fernet(base64.urlsafe_b64encode(self._master_key[:32]))
@@ -112,9 +125,32 @@ class EncryptionManager:
             return self.derive_key_from_password(key_data.decode())
 
     def _save_key_file(self, path: str, key: bytes) -> None:
-        """Save master key to file"""
+        """Save master key to file (chmod 0600)."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(base64.urlsafe_b64encode(key))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def save(self, path: Optional[str] = None) -> None:
+        """Persist the master key (chmod 0600).
+
+        Useful after rotation so the new key survives restart instead of being
+        silently lost. Falls back to ``LIUHAO_MASTER_KEY_FILE`` / the default
+        location when ``path`` is not given.
+        """
+        if path is None:
+            path = os.environ.get(
+                "LIUHAO_MASTER_KEY_FILE",
+                str(Path.home() / ".liuhao" / "master.key"),
+            )
+        self._save_key_file(path, self._master_key)
+
+    @property
+    def master_key(self) -> bytes:
+        """Read-only raw master key (32 bytes)."""
+        return self._master_key
 
     @staticmethod
     def generate_key(length: int = 32) -> bytes:
