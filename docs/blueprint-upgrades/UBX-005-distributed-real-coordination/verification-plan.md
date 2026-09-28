@@ -102,5 +102,5 @@
 ## 7. Commit
 
 - 实现提交：`ac17bbbc`（`feat(ubx-005): real distributed coordination
-  (lease + fencing token + election)`，分支 `p36`，父提交 `4191fca0`）
+  (lease + fencing token + election)`，分支 `p36`，父提交 `589315de`）
 - 本文件 §7 的 hash 回填提交在其之后（自指，故单列一行）。
