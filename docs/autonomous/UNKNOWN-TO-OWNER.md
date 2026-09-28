@@ -15,6 +15,7 @@
 > Domain owner of this section: **sec-impl** (security architecture / AI-security
 > / identity / capability-security / red-team discovery).
 > Last scan: 2026-09-26 (rate-limit lifted), branch p36.
+> Indexed in UNIFIED-BLUEPRINT §9 (cross-reference index).
 
 ---
 
@@ -216,7 +217,9 @@
 | U35 | reliability | 2026-09-26 | The full-suite redness is partly **environmental**: the WorkBuddy sandbox injects `sitecustomize.py` with a **bulk-delete guard** that, after ~50 file deletions in a turn, makes any further `os.remove` / `Path.unlink` raise `SystemExit(1)`. In a 2525-test run that budget is exhausted, so `tests/test_knowledge_memory.py` (11 errors), `test_policy_properties.py::test_service_principal_allow_exactly_whitelist` and `test_register_human_identity.py::test_registers_and_proves_the_login` fail — each traced to `sitecustomize.py:848 raise SystemExit(1)`, and each passes when run alone or in small groups. | Booking these as repo regressions would send someone hunting a bug that does not exist (and CI, which has no shim, would disagree with local results forever). | Recorded as environmental, NOT fixed — there is nothing in the repo to change. Mitigation when a trustworthy number is needed: run the suite in chunks, or trust the per-file/per-group runs. Do not "fix" the tests to stop deleting files. | Won't fix (environmental) | P1 |
 
 
-## U36 — HD-05 local trusted-timestamp mock is self-signed, NOT a third-party root of trust
+## U54 — HD-05 local trusted-timestamp mock is self-signed, NOT a third-party root of trust
+
+> **编号更正（2026-09-28）**：本条原为 `U36`，与上方 `U36`（PII/GDPR 数据保护框架）撞号。按"U-NNN 永不复用号"规则，本条顺延为 `U54`。原 `U36` 表项（UNKNOWN-TO-OWNER.md 末尾表格）同步更名。Indexed in UNIFIED-BLUEPRINT §9.
 - **Where:** `src/security/evidence/` (new subsystem, HD-05). `LocalRfc3161LikeProvider` is the DEFAULT provider; `adapter.py` / `verifier.py` / `factory.py` wire it.
 - **What:** HD-05 delivers a complete, offline, provider-neutral evidence/timestamp subsystem (5 interfaces: `Signer`, `TimestampProvider`, `KeyLifecycle`, `EvidenceAdapter`, `Verifier`) with a LOCAL RFC 3161-shaped mock as the default. The mock signs the `(artifact_digest, ts)` binding with an ephemeral in-process RSA-3072 key that is NOT anchored to any external CA, TSA, or hardware root. Evidence sealed by the local mock is therefore **self-attested**: its "trusted timestamp" proves only that *this process* asserted the time, not that any independent authority did.
 - **Why it matters:** if the owner (or any consumer) treats a bundle produced by the default local provider as externally-verifiable / court-admissible trusted-timestamp evidence, they have a false sense of trust. The trust anchor is local-only until a real RFC 3161 TSA or TPM/HSM is selected and its key ceremony performed.
@@ -226,7 +229,7 @@
 
 | id | discovered-by | date | what | why it matters | status | priority |
 |----|----|----|----|----|----|----|
-| U36 | os-systems | 2026-09-26 | HD-05 local timestamp mock is self-signed RSA-3072 (ephemeral in-process key), not anchored to any external CA/TSA/TPM | Evidence sealed by the default local provider is self-attested, not third-party trusted; relying on it as court-admissible timestamp = false trust | DISCOVERED — local mock is a dev/placement stub; final TSA/TPM is a reserved HUMAN DECISION (LIUHAO_TSA_PROVIDER) | P1 |
+| U54 | os-systems | 2026-09-26 | HD-05 local timestamp mock is self-signed RSA-3072 (ephemeral in-process key), not anchored to any external CA/TSA/TPM | Evidence sealed by the default local provider is self-attested, not third-party trusted; relying on it as court-admissible timestamp = false trust | DISCOVERED — local mock is a dev/placement stub; final TSA/TPM is a reserved HUMAN DECISION (LIUHAO_TSA_PROVIDER) | P1 |
 
 ---
 

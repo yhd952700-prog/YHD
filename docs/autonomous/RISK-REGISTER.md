@@ -1,5 +1,8 @@
 # LIUHAO — Risk Register (LIVING)
 
+> **Indexed in UNIFIED-BLUEPRINT §9** (cross-reference index) — this register is the
+> authoritative risk companion to `UNKNOWN-TO-OWNER.md` and to every `UBX-*` upgrade.
+>
 > **Scope note (2026-09-26, c2-scaling).** This file did not exist; it is seeded
 > here with the risks introduced by **Audit Storage Generation 2**
 > (`ADR-audit-storage-generation-2.md`, C2 and C3). The pre-existing discovery

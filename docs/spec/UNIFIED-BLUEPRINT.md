@@ -342,8 +342,36 @@ Parent Identity → Parent Authorization → Quota → Budget → Resource
 | 查 Kernel 有几个、叫什么 | 查 [`KERNEL-CANON.md`](KERNEL-CANON.md)，本文不重复维护清单 |
 | 发现文档与代码冲突 | **以代码为准**，回来更新本文件 §3 裁决表 |
 | 新增 kernel | 先在 KERNEL-CANON 登记，说明为何不属于现有 14 个 |
-| 遇到无法判断的条款归属 | **停下来问人**，不要自行推断条款内容 |
+| 遇到无法判断的条款归属 | 先查 [`GOVERNANCE.md`](../autonomous/GOVERNANCE.md)：仅 **HC-01 级人类主权事件**（法律 / 数据归属 / 重大合规 / 不可逆删除 / 外部责任，见 GOVERNANCE §3）属**人类决策隔离**——此类问题升给人，但**不阻塞**自主工作的其余部分（GOVERNANCE §1/§4 授权团队自主推进）；其余归属不确定由团队按 GOVERNANCE §4 自主裁决，**不得自行编造条款内容** |
 | 想改本文件 §3 裁决表 | 必须给出代码事实或用户明确指令，否则不改 |
+
+---
+
+## 9. 活体登记册（交叉引用索引）
+
+> 本文件是 L0 宪法层入口（§0），但有两份**持续演进**的活体登记册不在 §1–§8 的静态索引里。
+> 它们由自主团队持续写入，本索引是它们与蓝图的**唯一锚点**，避免被 §6 的"只给指针"规则遗漏。
+
+| 登记册 | 路径 | 性质 | 负责人 | 索引约定 |
+|---|---|---|---|---|
+| **UNKNOWN-TO-OWNER** | [`../autonomous/UNKNOWN-TO-OWNER.md`](../autonomous/UNKNOWN-TO-OWNER.md) | 只读扫描发现的系统事实（U1–U∞），含安全暴露/能力面/系统性缺口 | sec-impl | 每条 U-NNN 永不复用号；新发现追加到末尾 |
+| **RISK-REGISTER** | [`../autonomous/RISK-REGISTER.md`](../autonomous/RISK-REGISTER.md) | 随升级引入的风险（R-G2-*/R-G3-*）、fail-closed 行为、**谁决策**（engineering / HUMAN） | c2-scaling | 风险编号与 ADR/UBX 联动，退休需记录证据 |
+| **BLUEPRINT-UPGRADES** | [`../blueprint-upgrades/README.md`](../blueprint-upgrades/README.md) | 蓝图的"四件套"自动升级机制（UBX-NNN-*），含 auto-apply vs 人类决策门槛 | team-lead | 见 §9.1 |
+
+**双向接线（wiring）规则**：
+- 两份活体登记册的文首均带一行 `> Indexed in UNIFIED-BLUEPRINT §9`，指回本索引。
+- 本索引是**手动维护步骤**（非自动）：登记册新增编号段或改名时，同步更新上表。
+- 可选 CI 守卫（`scripts/lint_blueprint_wiring.py`，预留）断言 `UNKNOWN-TO-OWNER.md` 与 `RISK-REGISTER.md` 均被本文件引用，缺失即失败——目前以人工步骤为准，不阻塞提交。
+
+### 9.1 Blueprint 自动升级机制（UBX）与本文件的冲突裁决关系
+
+蓝图本身可被**自主升级**（GOVERNANCE §4 明确授权："old Blueprints may be upgraded"）。
+任何对蓝图 §3 裁决表 / §6 索引的变更，**必须**走 [`docs/blueprint-upgrades/`](../blueprint-upgrades/README.md)
+的 **UBX 四件套提案**流程（ADR + 架构增量 + 迁移路径 + 验证计划），不得直接散改。
+
+- **auto-apply（自主自动生效）**：纯文档/索引类升级、fail-closed 行为收紧、风险登记——团队按 GOVERNANCE §4 自主裁决并落地。
+- **human-decision-gated（人类决策门槛）**：任何触及 **HC-01 级人类主权事件**（GOVERNANCE §3）的升级——法律/数据归属/重大合规/不可逆删除/外部责任——**升给人**，不阻塞其余自主工作。
+- 所有升级以 `UBX-NNN-<slug>/` 目录落地，README 定义何时自动适用、何时需人类拍板。
 
 ---
 
