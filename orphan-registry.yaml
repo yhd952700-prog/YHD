@@ -45,20 +45,22 @@ acknowledged:
       package, and src/gateway does not reference it). The feedback submission
       endpoint therefore does not exist at runtime.
 
+  # --- 2026-09-28 / UBX-005：以下两条已被移出本清单 ------------------------
+  # UBX-005 把这两个模块从"从未接线的桩"改成了协调层的真实客户端，并且新增了
+  # tests/distribution/test_coordination.py 引用它们。按本文件顶部的契约
+  # （"模块一旦重新被引用就必须从清单中移除，否则清单会腐烂"），这两条不再是
+  # 孤儿，已从 acknowledged 列表删除，以免守护脚本把它们报成 stale。
+  #
+  #   removed entry          why it is no longer an orphan
+  #   ---------------------  ---------------------------------------------
+  #   src.distribution.lock    重写为 src/distribution/coordination.py 的客户端；
+  #                            被 tests/distribution/test_coordination.py 引用。
+  #   src.distribution.election 改为基于租约的选主；同样被上述测试引用。
+  #
+  # 注意：两者至今仍无**生产**调用点（只有测试）。UBX-005 的接线步骤
+  # （谁在启动时装配协调后端 / C15 deny 门装在哪）仍待实施。
+
   # --- library / staged code (no consumer yet; not a defect) ----------------
-  - module: src.distribution.election
-    classification: library-staged
-    reason: >-
-      258-line leader-election implementation, functional and self-contained.
-      The live distribution transport is src/distribution/bus_backends.py
-      (Phase 7b); election has simply never been wired to a consumer.
-
-  - module: src.distribution.lock
-    classification: library-staged
-    reason: >-
-      233-line distributed lock, self-contained, contains an explicit
-      placeholder marker. No consumer today; kept as a staged library.
-
   - module: src.gateway.validation
     classification: library-staged
     reason: >-
