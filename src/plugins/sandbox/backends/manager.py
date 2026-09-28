@@ -289,6 +289,9 @@ class SandboxBackendManager:
         volumes: Optional[Dict[str, str]] = None,
         backend_type: Optional[SandboxBackendType] = None,
         required: bool = False,
+        requires_untrusted_code: bool = False,
+        risk_tier: str = "LOW",
+        enforce_isolation: Optional[bool] = None,
     ) -> ExecutionResult:
         """
         Execute a command in the sandbox.
@@ -305,10 +308,36 @@ class SandboxBackendManager:
             backend_type: Force specific backend (optional)
             required: True 时，指定的后端不可用则直接抛错，绝不静默换用别的后端
                       （语义见 select_backend 的 Warning）
+            requires_untrusted_code: 该动作执行的是**不可信 / AI 生成的代码**。
+                为 True 时启用 UBX-002 隔离保证：若没有任何"真正的"隔离后端
+                （gVisor / Docker / Monty / RestrictedPython），且态势已武装
+                （enforce_isolation 或 LIUHAO_SANDBOX_ENFORCE=on）且风险为
+                HIGH/CRITICAL，则**拒绝**（fail-closed），绝不落到宿主 subprocess。
+                默认 False：保持历史行为（不强制隔离），因此现有调用点不受影响。
+            risk_tier: "LOW"/"MEDIUM"/"HIGH"/"CRITICAL"；仅 HIGH/CRITICAL 在武装时
+                触发 fail-closed；LOW/MEDIUM 即使武装也仅降级继续（与审计证据闸门的分级一致）。
+            enforce_isolation: 强制隔离态势。默认读取 LIUHAO_SANDBOX_ENFORCE。
 
         Returns:
             ExecutionResult
+
+        Raises:
+            SandboxIsolationUnavailable: 武装 + 不可信代码 + 无真正隔离后端 +
+                HIGH/CRITICAL 风险时，拒绝在宿主上执行（fail-closed）。
         """
+        # UBX-002 / U39: isolation assurance for untrusted-code execution. The
+        # default (requires_untrusted_code=False) is a no-op, so existing call
+        # sites are unchanged; only actions that OPT IN assert the guarantee.
+        if requires_untrusted_code:
+            from ..assurance import assure_sandbox_isolation
+
+            assure_sandbox_isolation(
+                self,
+                risk_tier=risk_tier,
+                requires_untrusted_code=True,
+                enforce=enforce_isolation,
+            )  # raises SandboxIsolationUnavailable (fail-closed) when armed
+
         self._total_executions += 1
         self._start_times[execution_id] = time.time()
 

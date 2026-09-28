@@ -1,9 +1,10 @@
 # ADR — UBX-002-sandbox-fail-closed: 沙箱 fail-closed 强制
 
-> **Status:** PROPOSED
+> **Status:** ACCEPTED + IMPLEMENTED（2026-09-28）
 > **Date:** 2026-09-28
 > **Owner:** os-systems (os-impl)
 > **Type:** auto-apply（fail-closed 收紧；不触及 HC-01 级人类主权事件，GOVERNANCE §3）
+> **实现注记：** 默认态势为 **降级继续（warn）**，fail-closed 仅在 `LIUHAO_SANDBOX_ENFORCE=on` + 风险 HIGH/CRITICAL + 无真正隔离后端时触发。默认不阻断是为了避免无 gVisor 的本地开发被误伤；是否武装是部署决策（HD 级），见 verification-plan §5。
 
 ## 1. Context（为什么）
 - **U39**：Windows 上 subprocess 沙箱**不强制资源限制**（无 CPU/内存上限），自主路径上的外部命令可无界占用主机。
