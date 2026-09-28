@@ -99,6 +99,28 @@ class HostCommandBroker:
         self._sink = event_sink or _default_sink
 
     def submit(self, req: HostCommandRequest) -> HostCommandDecision:
+        # 0) D19-D21 defense-in-depth: if an executor fence context is bound on
+        # the call stack, re-validate it. A forged/stale/expired/unknown executor
+        # is refused fail-closed BEFORE any policy evaluation or execution.
+        try:
+            from src.kernels.execution.fence import (
+                ExecutorFenceDenied,
+                current_executor_fence,
+                get_executor_fence,
+            )
+
+            _fctx = current_executor_fence()
+            if _fctx is not None:
+                get_executor_fence().enforce(_fctx, "host_command.submit", ())
+        except ExecutorFenceDenied as exc:
+            err = HostCommandDecision(
+                DecisionOutcome.ERROR,
+                f"executor fence denied (fail-closed): {exc}",
+                req,
+            )
+            self._emit("host_command_fence_denied", err.as_dict())
+            return err
+
         # 1) Global enablement gate (default DENY).
         if not is_enabled():
             decision = HostCommandDecision(

@@ -90,6 +90,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
+import os
 import time
 import uuid
 from functools import wraps
@@ -364,6 +365,16 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 grant_id: Optional[str] = None,
                 denial_reason: Optional[str] = None,
                 reraise: bool = False) -> None:
+    # Audit linkage (D19-D21): when an executor fence context is bound on the
+    # call stack, stamp the executor identity / fence token / lease epoch into the
+    # audit record. Because ``details`` feeds the hash chain's prev_hash, this
+    # linkage is tamper-evident and answers "which executor did this".
+    try:
+        from src.kernels.execution.fence import current_executor_fence
+
+        _fctx = current_executor_fence()
+    except Exception:  # pragma: no cover - fence import must never break audit
+        _fctx = None
     try:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
 
@@ -424,6 +435,11 @@ def _call_audit(actor: Dict[str, str], action: str, outcome: str,
                 # creation in the authoritative chain.
                 "denial_reason": denial_reason,
                 "duration_ms": round(duration_ms, 3),
+                # D19-D21: executor fence linkage (tamper-evident via the chain).
+                # Absent when no executor fence context is bound (legacy path).
+                "executor_id": _fctx.executor_id if _fctx is not None else None,
+                "fence_token": _fctx.token if _fctx is not None else None,
+                "lease_epoch": _fctx.epoch if _fctx is not None else None,
             },
             correlation_id=corr_id,
         )
@@ -645,6 +661,42 @@ def _evidence_mandatory(effective_risk: Any) -> bool:
     return tier in ENFORCED_TIERS
 
 
+# --------------------------------------------------------------------------- #
+# Agent-Safety Execution Fence (P0 / D19-D21) — default-DENY autonomous gate
+# --------------------------------------------------------------------------- #
+# The fence is opt-in so the existing 400+ tests keep their behaviour, exactly
+# like the audit single-writer fence was rolled out. It is ARMED by the
+# deployment (LIUHAO_EXECUTOR_FENCE=on) or by an explicit action allow-list.
+# When armed, EVERY fenced action WITHOUT a valid executor fence context is
+# denied (default-deny). See src/kernels/execution/fence.py + UBX-001.
+_FENCE_ACTIONS: set = set()
+
+
+def _fence_enabled_for(action: str) -> bool:
+    env = os.environ.get("LIUHAO_EXECUTOR_FENCE", "").strip().lower()
+    if env in ("on", "1", "true", "yes"):
+        return True
+    return action in _FENCE_ACTIONS
+
+
+def _enforce_executor_fence_at_gate(action: str, corr_id: str) -> None:
+    """Raise PolicyDeniedError (fail-closed) unless a valid fence context is
+    bound for this action. Called from the @kernel_action wrapper when the fence
+    is armed for ``action``."""
+    from src.kernels.execution.fence import (
+        ExecutorFenceDenied,
+        current_executor_fence,
+        get_executor_fence,
+    )
+
+    fence_ctx = current_executor_fence()
+    try:
+        get_executor_fence().enforce(fence_ctx, action, (), correlation_id=corr_id)
+    except ExecutorFenceDenied as exc:
+        # Hard deny -- never defer an autonomous-execution authorization failure.
+        raise PolicyDeniedError(action, "executor-fence", None) from exc
+
+
 def kernel_action(
     action: str,
     *,
@@ -722,6 +774,15 @@ def kernel_action(
             # principal outranks the adjudicated actor; neither of them is the
             # constant "kernel" that used to be written here.
             audit_actor = _resolve_audit_actor(policy_actor)
+
+            # --- Agent-Safety Execution Fence (P0 / D19-D21) ----------------- #
+            # Default-DENY autonomous execution gate. When armed for this action
+            # (LIUHAO_EXECUTOR_FENCE=on or an explicit allow-list), an executor
+            # fence context MUST be bound or the action is denied. Any fail-closed
+            # condition (missing identity, unknown/stale/expired lease, replay,
+            # capability escalation, audit unavailable) hard-denies here.
+            if _fence_enabled_for(action):
+                _enforce_executor_fence_at_gate(action, corr_id)
 
             # D23: defensive harden — a sovereignty grant is stamped ONLY on the
             # allow path. Any non-allow verdict (deny/error/defer) or a

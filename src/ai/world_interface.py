@@ -34,6 +34,7 @@ class WorldRequest:
     action: str   # e.g. "read", "write", "list", "run"
     params: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    correlation_id: Optional[str] = None  # D19-D21: fences a single action attempt
 
 
 class WorldAdapter(ABC):
@@ -239,6 +240,28 @@ class WorldInterface:
         if not self.validate(request):
             return ActionResult(action_id=request.action, success=False,
                                 error=f"unknown {request.adapter}.{request.action}")
+        # D19-D21 defense-in-depth: if an executor fence context is bound on the
+        # call stack, re-validate it here (the primary gate is @kernel_action).
+        # A forged/stale/expired context is refused fail-closed.
+        _fctx = None
+        try:
+            from src.kernels.execution.fence import (
+                ExecutorFenceDenied,
+                current_executor_fence,
+                get_executor_fence,
+            )
+
+            _fctx = current_executor_fence()
+            if _fctx is not None:
+                get_executor_fence().enforce(
+                    _fctx,
+                    f"world.{request.adapter}.{request.action}",
+                    (),
+                    correlation_id=request.correlation_id or _fctx.executor_id,
+                )
+        except ExecutorFenceDenied as exc:
+            return ActionResult(action_id=request.action, success=False,
+                                error=f"executor fence denied: {exc}")
         if not self.authorize(request):
             return ActionResult(action_id=request.action, success=False,
                                 error="denied by policy")

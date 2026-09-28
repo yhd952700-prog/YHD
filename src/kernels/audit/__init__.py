@@ -2127,6 +2127,16 @@ def get_audit_store() -> AuditStore:
     return _audit_store
 
 
+def get_audit_connection() -> "sqlite3.Connection":
+    """Expose the audit store's SQLite connection.
+
+    Used by the agent-safety execution fence (``src/kernels/execution/fence.py``)
+    so the fence check and the audit append share ONE connection/transaction and
+    are therefore atomic. The fence tables live in the same database file.
+    """
+    return get_audit_store()._conn
+
+
 def log_event(
     event_type: AuditEventType,
     principal_id: str,
