@@ -33,6 +33,7 @@ import textwrap
 import time
 import uuid
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import pytest
 
@@ -42,6 +43,7 @@ from src.distribution.coordination import (
     DistributedExecutorLease,
     DistributedLease,
     ExecutorFenceBackendError,
+    EtcdLease,
     FileLockLease,
     FencingToken,
     RedisLease,
@@ -53,6 +55,7 @@ from src.kernels.execution.fence import (
     ExecutorFenceDenied,
     ExecutorLease,
     ExecutorLimitExceeded,
+    ReplayDetectedError,
     StaleExecutorError,
 )
 from src.distribution.election import LeaderElection
@@ -480,8 +483,19 @@ class TestUnreachableBackendDenies:
 
     def test_unknown_backend_is_a_loud_value_error(self):
         with pytest.raises(ValueError) as exc:
+            get_distributed_lease("x", backend="consul")
+        assert "consul" in str(exc.value)
+
+    def test_etcd_backend_is_now_supported_and_fails_closed_without_etcd(self):
+        """etcd 现在是受支持的后端；但 etcd3 未安装 / 后端不可达时必须 fail-closed。
+
+        绝不能在 etcd3 缺失时崩溃，也不能偷偷降级成 file/memory。
+        """
+        # etcd3 在此 venv 未安装（任务约束：设计测试不依赖它），所以走到
+        # connect() 的 import etcd3 分支 → CoordinationUnavailableError。
+        with pytest.raises(CoordinationUnavailableError) as exc:
             get_distributed_lease("x", backend="etcd")
-        assert "etcd" in str(exc.value)
+        assert "etcd" in str(exc.value).lower()
 
     def test_operations_on_a_closed_redis_lease_deny(self):
         lease = RedisLease("x", url=UNREACHABLE_URL, connect_timeout=0.3)
@@ -1814,3 +1828,352 @@ class TestRealRedisEndToEnd:
         assert ok is True
         assert a.release("node-a", tok.next()) is False
         assert a.validate("node-a", tok) is True
+
+
+# =============================================================================
+# M) EtcdLease —— 用内存假后端把 etcd 路径真跑一遍（无需 live etcd）
+# =============================================================================
+
+
+class _FakeEtcdClient:
+    """最小 etcd KV 假后端：精确复刻 compare-and-put + TTL 语义。
+
+    它**不**执行 etcd 的 Raft / 实际 RPC；它只复刻 EtcdLease 依赖的那几个语义：
+
+    * ``grant_ttl`` + 绑在 key 上的租约 TTL：TTL 一过，key 在 ``get`` /
+      ``get_prefix`` / ``cas_*`` 里**自动消失**（等价于 etcd 自动回收过期租约键）。
+    * ``cas_version``：按 etcd 的 **key version** 做 compare-and-put（版本 0 =
+      不存在），这正是 etcd 事务的语义。
+    * ``cas_absent``：version == 0 才写入 ⇒ 首次成功、重放失败。
+    * ``down`` 开关：模拟"运行中后端死掉"，每条命令都抛 ``ConnectionError``，
+      让 EtcdLease 把它翻译成 :class:`CoordinationUnavailableError`（fail-closed）。
+
+    因此这一组测试验证的是「传给 etcd 的语义是否正确、返回值如何被解释」，
+    **不**验证真实 etcd 服务上的行为 —— 后者见 :class:`TestRealEtcdEndToEnd`
+    （无 live etcd 时跳过）。
+    """
+
+    def __init__(self, down: bool = False) -> None:
+        # key -> {"value": bytes, "lease_id": int|None, "version": int}
+        self._store: Dict[str, Dict[str, Any]] = {}
+        self._leases: Dict[int, float] = {}  # lease_id -> 过期时间戳
+        self._next_lease = 1
+        self._down = down
+
+    def _check(self) -> None:
+        if self._down:
+            raise ConnectionError("etcd backend is down")
+
+    def ping(self) -> bool:
+        return not self._down
+
+    def _expired(self, lease_id: Optional[int]) -> bool:
+        if lease_id is None:
+            return False
+        exp = self._leases.get(lease_id)
+        return exp is not None and exp < time.time()
+
+    def get(self, key: str):
+        self._check()
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        if self._expired(entry["lease_id"]):
+            del self._store[key]
+            return None
+        return entry["value"]
+
+    def version(self, key: str) -> int:
+        self._check()
+        entry = self._store.get(key)
+        if entry is None or self._expired(entry["lease_id"]):
+            if entry is not None and self._expired(entry["lease_id"]):
+                del self._store[key]
+            return 0
+        return entry["version"]
+
+    def grant_ttl(self, ttl_sec: float) -> int:
+        self._check()
+        lid = self._next_lease
+        self._next_lease += 1
+        self._leases[lid] = time.time() + float(ttl_sec)
+        return lid
+
+    def put(self, key: str, value: bytes, lease_id: Optional[int] = None) -> None:
+        self._check()
+        entry = self._store.get(key)
+        ver = (entry["version"] + 1) if entry else 1
+        self._store[key] = {
+            "value": value,
+            "lease_id": lease_id,
+            "version": ver,
+        }
+
+    def delete(self, key: str) -> None:
+        self._check()
+        self._store.pop(key, None)
+
+    def cas_version(
+        self, key: str, expected_version: int, value: bytes,
+        lease_id: Optional[int] = None,
+    ) -> bool:
+        self._check()
+        entry = self._store.get(key)
+        if entry is not None and self._expired(entry["lease_id"]):
+            del self._store[key]
+            entry = None
+        cur_ver = entry["version"] if entry is not None else 0
+        if cur_ver == expected_version:
+            self.put(key, value, lease_id)
+            return True
+        return False
+
+    def cas_absent(self, key: str, value: bytes, lease_id: Optional[int] = None) -> bool:
+        self._check()
+        entry = self._store.get(key)
+        if entry is not None and not self._expired(entry["lease_id"]):
+            return False
+        if entry is not None and self._expired(entry["lease_id"]):
+            del self._store[key]
+        self.put(key, value, lease_id)
+        return True
+
+    def get_prefix(self, prefix: str) -> Dict[str, bytes]:
+        self._check()
+        out: Dict[str, bytes] = {}
+        for k, entry in list(self._store.items()):
+            if self._expired(entry["lease_id"]):
+                del self._store[k]
+                continue
+            if k.startswith(prefix):
+                out[k] = entry["value"]
+        return out
+
+    def close(self) -> None:
+        self._store.clear()
+        self._leases.clear()
+
+
+def _etcd_available() -> bool:
+    import socket
+
+    sock = socket.socket()
+    sock.settimeout(0.3)
+    try:
+        # etcd 默认客户端端口
+        sock.connect(("127.0.0.1", 2379))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+try:  # pragma: no cover - 取决于本机装没装
+    import etcd3 as _etcd3_mod  # noqa: F401
+
+    _HAS_ETCD3 = True
+except Exception:  # noqa: BLE001
+    _HAS_ETCD3 = False
+
+
+class TestEtcdLeaseWiring:
+    """EtcdLease 的接线：验证「传给 etcd 的语义是否正确、返回值如何被解释」。
+
+    与 :class:`TestRedisLeaseWiring` 同构。注意：这里走的是内存假后端，不是真实
+    etcd；真实 etcd 上的行为由 :class:`TestRealEtcdEndToEnd` 负责（无 live etcd
+    时跳过）。
+    """
+
+    def test_acquire_mints_a_globally_monotonic_token(self):
+        # 两个租约名共享同一个 etcd 后端 ⇒ 共用同一个全局计数器（与真实 etcd 一致）。
+        client = _FakeEtcdClient()
+        a = EtcdLease("res-a", client=client)
+        b = EtcdLease("res-b", client=client)
+        ok_a, tok_a = a.acquire("owner-a", 30.0)
+        ok_b, tok_b = b.acquire("owner-b", 30.0)
+        assert ok_a is True and ok_b is True
+        # 两个不同租约名共用同一个全局计数器（计数器键与 name 无关）
+        assert int(tok_b) == int(tok_a) + 1
+
+    def test_acquire_rejects_a_second_live_holder(self):
+        # 同一 etcd 后端上的两个 EtcdLease 实例 = 两个"节点"争同一租约。
+        client = _FakeEtcdClient()
+        a = EtcdLease("contend", client=client)
+        b = EtcdLease("contend", client=client)
+        ok_a, _ = a.acquire("owner-a", 30.0)
+        assert ok_a is True
+        ok_b, tok_b = b.acquire("owner-b", 30.0)
+        assert ok_b is False and tok_b is None
+
+    def test_renew_with_right_owner_keeps_the_token(self):
+        a = EtcdLease("renew", client=_FakeEtcdClient())
+        ok, tok = a.acquire("owner-a", 30.0)
+        assert ok is True
+        assert a.renew("owner-a", tok, 60.0) == tok
+        # 错令牌续租必须失败（返回 None）
+        assert a.renew("owner-a", FencingToken(int(tok) + 99), 60.0) is None
+
+    def test_release_requires_the_right_owner_and_token(self):
+        a = EtcdLease("rel", client=_FakeEtcdClient())
+        ok, tok = a.acquire("owner-a", 30.0)
+        assert ok is True
+        assert a.release("owner-b", tok) is False
+        assert a.release("owner-a", FencingToken(int(tok) + 1)) is False
+        assert a.validate("owner-a", tok) is True
+        assert a.release("owner-a", tok) is True
+        assert a.validate("owner-a", tok) is False
+
+    def test_consume_persists_a_key_with_the_correlation_id(self):
+        client = _FakeEtcdClient()
+        lease = EtcdLease("res", client=client)
+        lease.consume("exec-1", FencingToken(7), "c1")
+        # key 确实写进了后端，且编码了 (name, token, correlation_id)
+        key = "liuhao:lease:consumed:res:7:c1"
+        assert client.get(key) == b"1"
+
+    def test_consume_dedups_a_replay_cross_node(self):
+        """同一 (token, correlation_id) 的第二次 consume 必须失败 ⇒ 重放被拒。"""
+        client = _FakeEtcdClient()
+        lease = EtcdLease("res", client=client)
+        lease.consume("exec-1", FencingToken(7), "c1")
+        with pytest.raises(ValueError):
+            lease.consume("exec-1", FencingToken(7), "c1")
+        # 不同的 correlation_id 仍可消费（不是全局锁死）
+        lease.consume("exec-1", FencingToken(7), "c2")
+
+    def test_consume_rejects_empty_correlation_id(self):
+        lease = EtcdLease("res", client=_FakeEtcdClient())
+        with pytest.raises(ValueError):
+            lease.consume("exec-1", FencingToken(7), "")
+
+    def test_consume_invalid_token_raises_replay_detected(self):
+        lease = EtcdLease("res", client=_FakeEtcdClient())
+        with pytest.raises(ReplayDetectedError):
+            # parse_token 拒绝的东西（None）⇒ 桥接转 ReplayDetectedError
+            lease.consume("exec-1", None, "c1")  # type: ignore[arg-type]
+
+    def test_force_new_era_increments_epoch_monotonically(self):
+        # 原始租约 API 的 force_new_era 只推进纪元计数；"纪元推进使旧令牌失效"
+        # 由桥接层（DistributedExecutorLease）判定，原始 validate 只查 holder/token。
+        client = _FakeEtcdClient()
+        lease = EtcdLease("era", client=client)
+        assert lease.current_epoch() == 0
+        e1 = lease.force_new_era()
+        e2 = lease.force_new_era()
+        assert e1 == 1 and e2 == 2
+        assert lease.current_epoch() == 2
+
+    def test_bridge_force_new_era_invalidates_a_held_token(self):
+        """穿桥接：纪元推进后，持有旧纪元令牌的 validate 必须变 False（stale）。"""
+        client = _FakeEtcdClient()
+        bridge = DistributedExecutorLease(lease_factory=lambda n: EtcdLease(n, client=client))
+        tok = bridge.acquire("exec-era", "o", 30.0, ["read"])
+        assert bridge.validate("exec-era", tok) is True
+        bridge.force_new_era()
+        # 纪元推进 == 脑裂恢复时的一次性夺权；旧持有者从此失效。
+        assert bridge.validate("exec-era", tok) is False
+        assert bridge.current("exec-era").state == "stale"
+
+    def test_count_live_excludes_bookkeeping_keys(self):
+        client = _FakeEtcdClient()
+        lease = EtcdLease("cnt", client=client)
+        lease.acquire("o1", 30.0)
+        # 额外塞一个"已消费"键和一个 epoch 键，确认 count_live 不计它们
+        client.put("liuhao:lease:consumed:cnt:7:c1", b"1")
+        client.put("liuhao:lease:cnt:epoch", b"3")
+        assert lease.count_live() == 1
+
+    def test_expiry_allows_takeover_with_a_greater_token(self):
+        client = _FakeEtcdClient()
+        a = EtcdLease("ttl", client=client)
+        b = EtcdLease("ttl", client=client)
+        # etcd 租约 TTL 最小 1s（与真实 etcd 一致），所以这里用 1s 并等足时长。
+        ok1, tok1 = a.acquire("owner-a", 1.0)
+        assert ok1 is True
+        # TTL 未到 ⇒ 不许提前夺权
+        ok_early, _ = b.acquire("owner-b", 30.0)
+        assert ok_early is False
+        time.sleep(1.3)
+        ok2, tok2 = b.acquire("owner-b", 30.0)
+        assert ok2 is True and int(tok2) > int(tok1)
+        assert a.validate("owner-a", tok1) is False
+
+
+class TestEtcdLeaseFailClosed:
+    """EtcdLease 的 fail-closed：后端死掉时一切操作都必须 deny，绝不静默放行。"""
+
+    def test_acquire_raises_when_backend_is_down(self):
+        lease = EtcdLease("dead", client=_FakeEtcdClient(down=True))
+        with pytest.raises(CoordinationUnavailableError):
+            lease.acquire("owner", 30.0)
+
+    def test_validate_raises_when_backend_is_down(self):
+        lease = EtcdLease("dead", client=_FakeEtcdClient(down=True))
+        with pytest.raises(CoordinationUnavailableError):
+            lease.validate("owner", FencingToken(1))
+
+    def test_release_raises_when_backend_is_down(self):
+        lease = EtcdLease("dead", client=_FakeEtcdClient(down=True))
+        with pytest.raises(CoordinationUnavailableError):
+            lease.release("owner", FencingToken(1))
+
+    def test_consume_raises_when_backend_is_down(self):
+        """consume 在后端不可达时抛 CoordinationUnavailableError（fail-closed），
+        绝不静默放行重放。"""
+        lease = EtcdLease("dead", client=_FakeEtcdClient(down=True))
+        with pytest.raises(CoordinationUnavailableError):
+            lease.consume("exec-1", FencingToken(1), "c1")
+
+    def test_bridge_on_etcd_detects_replay(self):
+        """穿桥接：EtcdLease 的跨节点重放检测在桥接层同样成立。"""
+        from src.kernels.execution.fence import ReplayDetectedError
+
+        client = _FakeEtcdClient()
+        bridge = DistributedExecutorLease(lease_factory=lambda n: EtcdLease(n, client=client))
+        tok = bridge.acquire("exec-r", "o", 30.0, [])
+        assert tok is not None
+        bridge.consume_token("exec-r", tok, "action-1")
+        with pytest.raises(ReplayDetectedError):
+            bridge.consume_token("exec-r", tok, "action-1")
+        # 不同 correlation_id 仍可消费
+        bridge.consume_token("exec-r", tok, "action-2")
+
+    def test_bridge_on_etcd_fails_closed_on_backend_outage(self):
+        """后端死时，穿桥接的动作也必须被拒（绝不 best-effort 放行）。"""
+        from src.kernels.execution.fence import ExecutorFenceDenied
+
+        client = _FakeEtcdClient(down=True)
+        bridge = DistributedExecutorLease(lease_factory=lambda n: EtcdLease(n, client=client))
+        fence = ExecutorFence(bridge)
+        with pytest.raises((CoordinationUnavailableError, ExecutorFenceDenied)):
+            fence.acquire_for("exec-x", "o", ["read"], ttl_sec=30.0)
+
+
+@pytest.mark.skipif(
+    not (_etcd_available() and _HAS_ETCD3),
+    reason="需要真实 etcd（127.0.0.1:2379）+ etcd3 库；否则跳过。",
+)
+class TestRealEtcdEndToEnd:
+    """只有真实 etcd 才能真正验证事务语义（compare-and-put / TTL / 全局令牌）。
+
+    跳过时请明确知道这意味着什么：EtcdLease 的**运行时**行为在本环境未被执行验证
+    （CI 上若 etcd 服务容器 + etcd3 就位，则会真正执行）。etcd 逻辑本身已用内存假
+    后端在 :class:`TestEtcdLeaseWiring` 真跑验证，不依赖 live etcd。
+    """
+
+    def test_cross_node_mutual_exclusion(self):
+        a = get_distributed_lease("e2e-a", backend="etcd")
+        b = get_distributed_lease("e2e-a", backend="etcd")
+        ok_a, tok_a = a.acquire("node-a", 30.0)
+        ok_b, _ = b.acquire("node-b", 30.0)
+        assert ok_a is True and ok_b is False
+        assert a.release("node-a", tok_a) is True
+        ok_b2, tok_b2 = b.acquire("node-b", 30.0)
+        assert ok_b2 is True and int(tok_b2) > int(tok_a)
+
+    def test_consume_dedups_a_replay(self):
+        lease = get_distributed_lease("e2e-consume", backend="etcd")
+        lease.consume("exec-1", FencingToken(1), "c1")
+        with pytest.raises(ValueError):
+            lease.consume("exec-1", FencingToken(1), "c1")

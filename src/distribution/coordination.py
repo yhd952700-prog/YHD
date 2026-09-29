@@ -104,6 +104,7 @@ __all__ = [
     "DistributedLease",
     "FileLockLease",
     "RedisLease",
+    "EtcdLease",
     "DistributedExecutorLease",
     "get_distributed_lease",
     "parse_token",
@@ -117,7 +118,7 @@ __all__ = [
 
 #: 选择协调后端的环境变量（形状对齐 ``bus_backends.get_bus_backend(mode=...)``）。
 BACKEND_ENV = "LIUHAO_DISTRIBUTED_LEASE_BACKEND"
-SUPPORTED_BACKENDS = ("file", "redis")
+SUPPORTED_BACKENDS = ("file", "redis", "etcd")
 DEFAULT_BACKEND = "file"
 DEFAULT_LEASE_NAME = "default"
 
@@ -1275,6 +1276,476 @@ if r then return 1 else return 0 end
 
 
 # =============================================================================
+# 可选后端：Etcd（与 RedisLease 并列的第三个真实跨节点后端）
+# =============================================================================
+
+#: EtcdLease 需要的**最少** KV 操作面。生产用 :class:`_Etcd3Adapter` 包住
+#: ``etcd3`` 库；测试用内存假后端（见 ``tests/distribution/test_coordination.py``
+#: 的 ``_FakeEtcdClient``）实现同一面，因此"etcd 路径"可在**无 live etcd** 的环境
+#: 下被真执行验证（与 fakeredis 同理）。
+#:
+#: 关键不变量（与 RedisLease 完全一致）：
+#: * 租约键的"存活"由 etcd 的**租约 TTL** 判定 —— 不需要两台机器时钟一致。
+#: * ``consume`` 用 **compare-and-put（事务）** 把 ``(executor, token,
+#:   correlation_id)`` 的"已消费"状态持久化进 etcd：首次 ``put-if-absent`` 成功，
+#:   重复 put 被事务拒绝 ⇒ 跨节点重放检测真正成立。
+#: * 后端不可达 ⇒ :class:`CoordinationUnavailableError`（fail-closed，绝不静默放行）。
+class _EtcdContention(Exception):
+    """内部信号：etcd 事务（cas）因并发竞争失败，需要重试。
+
+    **不是**确定性拒绝（拒绝是 ``(False, None)`` / ``None`` / ``False``）；它只是
+    "这一轮 CAS 没抢到，再试一次就好"。与 :class:`_LockContended` 同构。
+    """
+
+
+class _Etcd3Adapter:
+    """把 ``etcd3`` 客户端适配成 EtcdLease 需要的极简 KV 面。
+
+    任何方法在后端不可用时都抛 :class:`CoordinationUnavailableError`（不抛裸
+    ``ConnectionError``）；EtcdLease 由此把一切后端故障翻译成 fail-closed。
+    """
+
+    def __init__(self, client, connect_timeout: float = 2.0) -> None:
+        self._c = client
+        self._connect_timeout = connect_timeout
+        self._leases: Dict[int, Any] = {}
+
+    def ping(self) -> bool:
+        try:
+            self._c.get(b"__liuhao_ping__")
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
+    def get(self, key: str):
+        try:
+            val, _meta = self._c.get(key)
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd get failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        return val
+
+    def version(self, key: str) -> int:
+        try:
+            _val, meta = self._c.get(key)
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd get failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        return int(meta.version) if meta is not None else 0
+
+    def grant_ttl(self, ttl_sec: float) -> int:
+        try:
+            lease = self._c.lease(max(1, int(ttl_sec)))
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd grant lease failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        self._leases[lease.id] = lease
+        return lease.id
+
+    def put(self, key: str, value: bytes, lease_id: Optional[int] = None) -> None:
+        lease = self._leases.get(lease_id) if lease_id is not None else None
+        try:
+            self._c.put(key, value, lease=lease)
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd put failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def delete(self, key: str) -> None:
+        try:
+            self._c.delete(key)
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd delete failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def cas_version(
+        self, key: str, expected_version: int, value: bytes,
+        lease_id: Optional[int] = None,
+    ) -> bool:
+        lease = self._leases.get(lease_id) if lease_id is not None else None
+        try:
+            txn = self._c.transaction()
+            txn.compare(txn.key(key).version == expected_version)
+            txn.success(txn.put(key, value, lease=lease))
+            success, _ = txn.commit()
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd txn failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        return bool(success)
+
+    def cas_absent(self, key: str, value: bytes, lease_id: Optional[int] = None) -> bool:
+        lease = self._leases.get(lease_id) if lease_id is not None else None
+        try:
+            txn = self._c.transaction()
+            txn.compare(txn.key(key).version == 0)
+            txn.success(txn.put(key, value, lease=lease))
+            success, _ = txn.commit()
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd txn failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        return bool(success)
+
+    def get_prefix(self, prefix: str) -> Dict[str, bytes]:
+        try:
+            results = self._c.get_prefix(prefix)
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd get_prefix failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        out: Dict[str, bytes] = {}
+        for val, meta in results:
+            if meta is not None and meta.key is not None:
+                k = meta.key.decode() if isinstance(meta.key, bytes) else meta.key
+                out[k] = val
+        return out
+
+    def close(self) -> None:
+        for lease in self._leases.values():
+            try:
+                lease.revoke()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self._c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class EtcdLease(DistributedLease):
+    """基于 etcd 的跨节点租约（与 RedisLease 并列的第三个真实后端）。
+
+    * 持有标记：``<prefix><name>`` 的值 ``"<owner>|<token>|<era>|<caps_json>"``，
+      绑定一个 etcd **租约**实现 TTL —— 过期由 etcd 侧判定，不需要两台机器时钟一致。
+    * 单调令牌：一个**全局**计数器键，用 ``cas_version`` 事务原子自增。
+    * replay 去重：``consume`` 用 ``cas_absent`` 事务把
+      ``(executor, token, correlation_id)`` 持久化进 etcd（带 24h TTL），两个节点
+      共享同一份 etcd 状态即可跨节点检测重放。
+
+    与 RedisLease 完全相同的 fail-closed 纪律：后端不可达 ⇒
+    :class:`CoordinationUnavailableError`，绝不静默降级或放行重放。
+
+    .. note::
+       ``etcd3`` 是**延迟导入**的依赖；``get_distributed_lease(backend="etcd")``
+       在 ``etcd3`` 未安装或 etcd 不可达时抛 :class:`CoordinationUnavailableError`
+       （而不是崩溃）。本仓库未把 ``etcd3`` 装进本机 venv（见任务约束），所以 CI 上
+       的 :class:`TestRealEtcdEndToEnd` 会跳过；但 etcd 逻辑**已用内存假后端真跑
+       验证**（见 ``tests/distribution/test_coordination.py`` 的
+       ``TestEtcdLeaseWiring`` 等），不需要 live etcd。
+    """
+
+    DEFAULT_ENDPOINTS = ("localhost:2379",)
+    DEFAULT_PREFIX = "liuhao:lease:"
+
+    #: 已消费 correlation_id 记录的存活时间（秒）。仓库既有实现是永久保留；
+    #: etcd 版为不无限膨胀给一个长 TTL（必须 ≥ 任何真实重放窗口；24h 足够）。
+    _CONSUME_TTL_SEC = 24 * 60 * 60
+
+    def __init__(
+        self,
+        name: str = DEFAULT_LEASE_NAME,
+        endpoints: Optional[Sequence[str]] = None,
+        client: Any = None,
+        prefix: str = DEFAULT_PREFIX,
+        connect_timeout: float = 2.0,
+    ) -> None:
+        self.name = name
+        self._endpoints = list(endpoints) if endpoints else list(self.DEFAULT_ENDPOINTS)
+        self._prefix = prefix
+        self._connect_timeout = connect_timeout
+        self._lease_key = f"{prefix}{name}"
+        self._caps_key = f"{prefix}{name}:caps"
+        self._epoch_key = f"{prefix}{name}:epoch"
+        self._token_key = f"{prefix}__global_token__"
+        # 已是实现了极简 KV 面的对象（真实 _Etcd3Adapter 或测试假后端）。
+        self._client = client
+        self._injected_client = client is not None
+        self._connected = False
+
+    def connect(self) -> None:
+        if self._client is None:
+            try:
+                import etcd3  # 延迟导入
+            except ImportError as exc:
+                raise CoordinationUnavailableError(
+                    "etcd coordination backend needs etcd3: pip install 'etcd3>=0.12.0'"
+                ) from exc
+            host, port = "localhost", 2379
+            if self._endpoints:
+                first = self._endpoints[0]
+                if ":" in first:
+                    host, port_s = first.rsplit(":", 1)
+                    port = int(port_s)
+                else:
+                    host = first
+            try:
+                raw = etcd3.client(host=host, port=port, timeout=self._connect_timeout)
+            except Exception as exc:  # noqa: BLE001
+                raise CoordinationUnavailableError(
+                    f"cannot construct etcd client ({host}:{port}): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            self._client = _Etcd3Adapter(raw, connect_timeout=self._connect_timeout)
+        # 无论注入还是新建，都先 ping 确认后端可达（不可达 ⇒ fail-closed）。
+        if not self._client.ping():
+            raise CoordinationUnavailableError(
+                f"etcd coordination backend is unreachable ({self._endpoints})"
+            )
+        self._connected = True
+
+    def close(self) -> None:
+        client, self._client = self._client, None
+        self._connected = False
+        if client is not None and not self._injected_client:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @property
+    def _kv(self):
+        if self._client is None:
+            raise CoordinationUnavailableError(
+                "etcd coordination backend is not connected; call connect() first"
+            )
+        return self._client
+
+    def _run(self, fn, what: str):
+        try:
+            return fn()
+        except (CoordinationUnavailableError, ValueError, ReplayDetectedError, _EtcdContention):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd coordination {what} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _parse(raw: Any):
+        s = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        parts = s.split("|", 3)
+        if len(parts) < 3:
+            return None
+        holder, tok_s, era_s = parts[0], parts[1], parts[2]
+        caps_s = parts[3] if len(parts) > 3 else ""
+        return holder, tok_s, era_s, caps_s
+
+    def _next_global_token(self) -> int:
+        for attempt in range(_RETRY_ATTEMPTS):
+            ver = self._kv.version(self._token_key)
+            cur = self._kv.get(self._token_key)
+            expected = int(cur) if cur is not None else 0
+            if self._kv.cas_version(self._token_key, ver, str(expected + 1).encode()):
+                return expected + 1
+            _backoff_sleep(attempt)
+        raise CoordinationUnavailableError(
+            "etcd: cannot allocate a global token (contention)"
+        )
+
+    def acquire(
+        self,
+        owner: str,
+        ttl_sec: float = 30.0,
+        granted_capabilities: Optional[Sequence[str]] = None,
+        era: Optional[int] = None,
+    ) -> Tuple[bool, Optional[FencingToken]]:
+        if not owner:
+            raise ValueError("owner must be a non-empty string")
+        if float(ttl_sec) <= 0:
+            raise ValueError(f"ttl_sec must be > 0, got {ttl_sec}")
+        ttl = max(1, int(float(ttl_sec)))
+        era_s = "" if era is None else str(era)
+        caps = json.dumps(list(granted_capabilities or ()))
+
+        for attempt in range(_RETRY_ATTEMPTS):
+            def _attempt() -> Optional[Tuple[bool, Optional[FencingToken]]]:
+                lease_id = self._kv.grant_ttl(ttl)
+                cur = self._kv.get(self._lease_key)
+                ver = self._kv.version(self._lease_key)
+                if cur is not None:
+                    parsed = self._parse(cur)
+                    if parsed is None:
+                        return (False, None)
+                    holder, tok_s, cur_era_s, cur_caps_s = parsed
+                    if holder == owner and cur_era_s == era_s:
+                        newval = f"{owner}|{tok_s}|{era_s}|{cur_caps_s}"
+                        if self._kv.cas_version(self._lease_key, ver, newval.encode(), lease_id):
+                            return (True, FencingToken(int(tok_s)))
+                        raise _EtcdContention()  # 竞争，外层重试
+                    return (False, None)
+                token = self._next_global_token()
+                newval = f"{owner}|{token}|{era_s}|{caps}"
+                if self._kv.cas_version(self._lease_key, ver, newval.encode(), lease_id):
+                    return (True, FencingToken(token))
+                raise _EtcdContention()
+
+            try:
+                result = self._run(_attempt, "acquire")
+            except _EtcdContention:
+                _backoff_sleep(attempt)
+                continue
+            if result is not None:
+                return result
+            _backoff_sleep(attempt)
+        raise CoordinationUnavailableError(
+            "etcd: acquire gave up after contention budget"
+        )
+
+    def validate(self, owner: str, token: FencingToken) -> bool:
+        want = parse_token(token)
+        if want is None:
+            return False
+        cur = self._run(lambda: self._kv.get(self._lease_key), "validate")
+        if cur is None:
+            return False
+        parsed = self._parse(cur)
+        if parsed is None:
+            return False
+        holder, tok_s, _era_s, _caps_s = parsed
+        return holder == owner and int(tok_s) == int(want)
+
+    def renew(
+        self, owner: str, token: FencingToken, ttl_sec: float
+    ) -> Optional[FencingToken]:
+        want = parse_token(token)
+        if want is None:
+            return None
+        if float(ttl_sec) <= 0:
+            return None
+        ttl = max(1, int(float(ttl_sec)))
+
+        for attempt in range(_RETRY_ATTEMPTS):
+            def _attempt() -> Optional[FencingToken]:
+                cur = self._kv.get(self._lease_key)
+                ver = self._kv.version(self._lease_key)
+                if cur is None:
+                    return None  # 确定性拒绝：无租约
+                parsed = self._parse(cur)
+                if parsed is None:
+                    return None
+                holder, tok_s, _era_s, _caps_s = parsed
+                if holder != owner or int(tok_s) != int(want):
+                    return None  # 确定性拒绝：owner/token 不匹配
+                lease_id = self._kv.grant_ttl(ttl)
+                if self._kv.cas_version(self._lease_key, ver, cur, lease_id):
+                    return want
+                raise _EtcdContention()  # 竞争，外层重试
+
+            try:
+                result = self._run(_attempt, "renew")
+            except _EtcdContention:
+                _backoff_sleep(attempt)
+                continue
+            return result  # FencingToken 或 None（确定性拒绝）
+        raise CoordinationUnavailableError("etcd: renew gave up after contention budget")
+
+    def release(self, owner: str, token: FencingToken) -> bool:
+        want = parse_token(token)
+        if want is None:
+            return False
+
+        def _attempt() -> bool:
+            cur = self._kv.get(self._lease_key)
+            if cur is None:
+                return False
+            parsed = self._parse(cur)
+            if parsed is None:
+                return False
+            holder, tok_s, _era_s, _caps_s = parsed
+            if holder != owner or int(tok_s) != int(want):
+                return False
+            self._kv.delete(self._lease_key)
+            return True
+
+        return bool(self._run(_attempt, "release"))
+
+    def consume(self, executor_id: str, token: FencingToken, correlation_id: str) -> None:
+        """跨节点 replay 去重：持久化进 etcd，两个节点共享同一份状态。
+
+        用 ``cas_absent`` 事务原子地占用这条 ``(executor, token, correlation_id)``；
+        "已占用" ⇒ 重放。后端不可达 ⇒ :class:`CoordinationUnavailableError`
+        （fail-closed，绝不静默放行重放）。
+        """
+        want = parse_token(token)
+        if want is None:
+            raise ReplayDetectedError(f"cannot consume an invalid token for {executor_id!r}")
+        if not correlation_id:
+            raise ValueError("correlation_id is required for replay detection")
+        key = f"{self._prefix}consumed:{self.name}:{int(want)}:{correlation_id}"
+
+        def _attempt() -> None:
+            lease_id = self._kv.grant_ttl(self._CONSUME_TTL_SEC)
+            ok = self._kv.cas_absent(key, b"1", lease_id)
+            if not ok:
+                raise ValueError("already consumed")
+
+        self._run(_attempt, "consume")
+
+    def current(self) -> LeaseView:
+        raw = self._run(lambda: self._kv.get(self._lease_key), "current")
+        epoch = int(
+            self._run(lambda: self._kv.get(self._epoch_key) or b"0", "current_epoch") or 0
+        )
+        if raw is None:
+            return LeaseView(self.name, None, None, None, None, None, epoch, "free", (), None)
+        parsed = self._parse(raw)
+        if parsed is None:
+            return LeaseView(self.name, None, None, None, None, None, epoch, "free", (), None)
+        holder, tok_s, era_s, caps_s = parsed
+        caps = tuple(json.loads(caps_s)) if caps_s else ()
+        return LeaseView(
+            self.name,
+            holder,
+            FencingToken(int(tok_s)),
+            None,
+            None,
+            None,
+            epoch,
+            "held",
+            caps,
+            int(era_s) if era_s else None,
+        )
+
+    def current_epoch(self) -> int:
+        return int(self._run(lambda: self._kv.get(self._epoch_key) or b"0", "current_epoch") or 0)
+
+    def force_new_era(self) -> int:
+        for attempt in range(_RETRY_ATTEMPTS):
+            ver = self._kv.version(self._epoch_key)
+            cur = self._kv.get(self._epoch_key)
+            expected = int(cur) if cur is not None else 0
+            if self._kv.cas_version(self._epoch_key, ver, str(expected + 1).encode()):
+                return expected + 1
+            _backoff_sleep(attempt)
+        raise CoordinationUnavailableError(
+            "etcd: force_new_era gave up after contention budget"
+        )
+
+    def count_live(self, prefix: Optional[str] = None, now: Optional[float] = None) -> int:
+        pattern = f"{self._prefix}{prefix or ''}"
+
+        def _attempt() -> int:
+            items = self._kv.get_prefix(pattern)
+            live = 0
+            for key in items:
+                if key.endswith(":caps") or key.endswith(":epoch"):
+                    continue
+                if key == self._token_key:
+                    continue
+                if key.startswith(f"{self._prefix}consumed:"):
+                    continue
+                live += 1
+            return live
+
+        return int(self._run(_attempt, "count_live"))
+
+
+# =============================================================================
 # 工厂 —— 绝不静默降级
 # =============================================================================
 
@@ -1284,6 +1755,7 @@ def get_distributed_lease(
     backend: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     client: Any = None,
+    etcd_endpoints: Optional[Sequence[str]] = None,
 ) -> DistributedLease:
     """构造租约后端。**失败即抛**，绝不回退到更弱的后端。
 
@@ -1309,6 +1781,17 @@ def get_distributed_lease(
             connect_timeout=config.get("connect_timeout", 2.0),
         )
         lease.connect()  # 连不上 → CoordinationUnavailableError（不降级）
+        return lease
+
+    if raw == "etcd":
+        lease = EtcdLease(
+            name,
+            endpoints=etcd_endpoints or config.get("endpoints"),
+            client=client,
+            prefix=config.get("prefix", EtcdLease.DEFAULT_PREFIX),
+            connect_timeout=config.get("connect_timeout", 2.0),
+        )
+        lease.connect()  # 连不上 / etcd3 未装 → CoordinationUnavailableError（不降级）
         return lease
 
     raise ValueError(

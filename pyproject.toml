@@ -69,6 +69,12 @@ tests = [
     "fakeredis>=2.0.0",
     "lupa>=2.0",
 ]
+# 第三个协调后端（etcd）。**可选**：不进默认运行期依赖、也不进 [tests]，避免
+# 在没装 etcd3 的环境里把安装拖垮。CI 上若想让 TestRealEtcdEndToEnd 从"skip"变
+# "真验证"，显式 `pip install -e .[etcd]` 即可（本仓库 venv 按任务约束未安装）。
+etcd = [
+    "etcd3>=0.12.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

@@ -32,6 +32,24 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # 真 etcd：让 TestRealEtcdEndToEnd（real etcd）在 CI 上**真正执行**（前提
+      # 是 [etcd] extra 已装 etcd3）。与 redis 镜像同理，镜像自带的不依赖网络即可
+      # 用 `etcdctl endpoint health` 做健康探针；CI 上若没装 etcd3，该组仍优雅 skip。
+      etcd:
+        image: bitnami/etcd:3.5
+        ports:
+          - 2379:2379
+        env:
+          ETCD_ENABLE_V2: "false"
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -48,7 +66,7 @@ jobs:
           # TestRedisLuaScriptsActuallyExecute 在 CI 上**真正执行**（不再 skip）。
           # 缺 lupa 时该组在测试内优雅 skip（nodes fixture 的 eval 自检），不会把
           # 收集搞挂；但 CI 显式装齐才能把"skip"变成"已验证"。
-          pip install -e .[tests]
+          pip install -e .[tests,etcd]
           pip install flake8
 
       - name: Run Unit Tests
