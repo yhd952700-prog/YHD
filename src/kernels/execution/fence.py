@@ -29,7 +29,9 @@ SECURITY POSTURE (non-negotiable, concerns 7/12/16 + audit fail-closed):
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -932,19 +934,119 @@ def set_executor_fence(fence: ExecutorFence) -> None:
         _DEFAULT_FENCE = fence
 
 
-def attach_default_executor_fence() -> ExecutorFence:
-    """Build the production fence sharing the audit store's DB connection.
+def attach_default_executor_fence(
+    backend: Optional[str] = None,
+    lease_dir: Optional[str] = None,
+    max_executors: Optional[int] = None,
+) -> ExecutorFence:
+    """Build the production fence and install it as the active one.
 
-    This makes the fence check and the audit append atomic on one connection.
-    Idempotent.
+    Backend selection is opt-in; the default is **byte-for-byte identical** to
+    before (single-node SQLite sharing the audit DB connection):
+
+      * unset / ``"sqlite"`` -> :class:`SqliteExecutorLease` sharing the audit
+        connection (no new behaviour).
+      * ``"file"``           -> :class:`~src.distribution.coordination.
+        DistributedExecutorLease` over a SQLite-WAL coordination backend on a
+        **persistent** directory (``LIUHAO_EXECUTOR_FENCE_LEASE_DIR``). This is
+        real cross-process fencing that survives restarts. It REFUSES to fall
+        back to a temp dir (that would silently lose fencing across restarts),
+        so if no dir is configured it stays on sqlite rather than degrade
+        silently.
+      * ``"redis"``          -> :class:`DistributedExecutorLease` over the
+        Lua-based Redis backend. A connect failure is fail-closed
+        (``CoordinationUnavailableError``), never silent.
+
+    ``max_executors`` (or ``LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS``) enforces the
+    N+1 concurrent-executor cap (concern 11). Idempotent.
     """
-    from src.kernels.audit import get_audit_connection
+    if max_executors is None:
+        env_max = os.environ.get("LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS")
+        if env_max:
+            try:
+                max_executors = int(env_max)
+            except ValueError:
+                max_executors = None
 
-    conn = get_audit_connection()
-    lease = SqliteExecutorLease(conn)
-    fence = ExecutorFence(lease, audit_available=lambda: True)
-    set_executor_fence(fence)
-    return fence
+    backend = (
+        backend
+        or os.environ.get("LIUHAO_DISTRIBUTED_LEASE_BACKEND")
+        or "sqlite"
+    ).strip().lower()
+
+    if backend in ("sqlite", "none", ""):
+        from src.kernels.audit import get_audit_connection
+
+        conn = get_audit_connection()
+        lease = SqliteExecutorLease(conn)
+        fence = ExecutorFence(
+            lease, audit_available=lambda: True, max_executors=max_executors
+        )
+        set_executor_fence(fence)
+        return fence
+
+    if backend == "file":
+        from src.distribution import coordination as _coord
+
+        if lease_dir is None:
+            lease_dir = os.environ.get("LIUHAO_EXECUTOR_FENCE_LEASE_DIR")
+        if not lease_dir:
+            # Fail-safe: no persistent dir -> keep single-node sqlite rather
+            # than silently use a temp dir (which would lose fencing on restart
+            # and make "two processes both execute" undetectable).
+            from src.kernels.audit import get_audit_connection
+
+            conn = get_audit_connection()
+            lease = SqliteExecutorLease(conn)
+            fence = ExecutorFence(
+                lease, audit_available=lambda: True, max_executors=max_executors
+            )
+            set_executor_fence(fence)
+            return fence
+
+        resolved_dir = os.path.abspath(lease_dir)
+
+        def _factory(name: str) -> "_coord.DistributedLease":
+            return _coord.get_distributed_lease(
+                name, backend="file", config={"directory": resolved_dir}
+            )
+
+        dist = _coord.DistributedExecutorLease(
+            lease_factory=_factory,
+            max_executors=max_executors,
+            admission_ttl=10.0,
+        )
+        fence = ExecutorFence(
+            dist, audit_available=lambda: True, max_executors=max_executors
+        )
+        set_executor_fence(fence)
+        return fence
+
+    if backend == "redis":
+        from src.distribution import coordination as _coord
+
+        redis_url = os.environ.get("LIUHAO_EXECUTOR_FENCE_REDIS_URL")
+
+        def _factory(name: str) -> "_coord.DistributedLease":  # noqa: F811
+            return _coord.get_distributed_lease(
+                name,
+                backend="redis",
+                config={"url": redis_url} if redis_url else {},
+            )
+
+        dist = _coord.DistributedExecutorLease(
+            lease_factory=_factory,
+            max_executors=max_executors,
+            admission_ttl=10.0,
+        )
+        fence = ExecutorFence(
+            dist, audit_available=lambda: True, max_executors=max_executors
+        )
+        set_executor_fence(fence)
+        return fence
+
+    # Unknown backend -> refuse loudly rather than silently degrade.
+    raise ValueError(f"Unsupported executor-fence backend: {backend!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -974,3 +1076,105 @@ def unbind_executor_fence(token: contextvars.Token) -> None:
 def get_executor_fence_total() -> int:
     """Expose the cumulative executor-fence (denial) count for observability."""
     return _FENCE_DENIALS
+
+
+# --------------------------------------------------------------------------- #
+# Deployment arming + autonomous execution boundary wiring (UBX-005)
+# --------------------------------------------------------------------------- #
+def executor_fence_armed() -> bool:
+    """True iff the executor fence gate is armed for this deployment.
+
+    Mirrors the action-specific check in ``src.kernels._crosscutting`` but is
+    not action-specific: the production wiring uses it to decide whether to
+    acquire and bind an executor identity around an autonomous action.
+    """
+    env = os.environ.get("LIUHAO_EXECUTOR_FENCE", "").strip().lower()
+    return env in ("on", "1", "true", "yes")
+
+
+# An executor (process) holds ONE lease for its lifetime; per-action we just
+# (re)bind the same context and refresh the heartbeat so the autonomous agent
+# keeps a stable identity and two processes cannot both be valid under
+# max_executors. Held here (not on the fence) because the fence is intentionally
+# stateless about *who* is currently acting.
+_PROC_EXECUTOR_CTX: Optional[FenceContext] = None
+_PROC_EXECUTOR_LOCK = threading.Lock()
+
+
+def _acquire_process_executor_lease(
+    fence: ExecutorFence,
+    executor_id: str,
+    owner: str,
+    capabilities: Sequence[str],
+    ttl_sec: float,
+) -> FenceContext:
+    global _PROC_EXECUTOR_CTX
+    with _PROC_EXECUTOR_LOCK:
+        if _PROC_EXECUTOR_CTX is not None:
+            # Refresh liveness so the executor does not go stale between actions.
+            try:
+                fence.heartbeat(_PROC_EXECUTOR_CTX)
+            except Exception:  # noqa: BLE001 - heartbeat must never break the action
+                pass
+            return _PROC_EXECUTOR_CTX
+        ctx = fence.acquire_for(executor_id, owner, capabilities, ttl_sec=ttl_sec)
+        _PROC_EXECUTOR_CTX = ctx
+        return ctx
+
+
+def release_process_executor_lease() -> None:
+    """Release the process's executor lease (call at shutdown / process exit)."""
+    global _PROC_EXECUTOR_CTX
+    with _PROC_EXECUTOR_LOCK:
+        ctx = _PROC_EXECUTOR_CTX
+        _PROC_EXECUTOR_CTX = None
+    if ctx is not None:
+        try:
+            get_executor_fence().release(ctx)
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+
+
+def reset_process_executor_lease_for_testing() -> None:
+    """Drop the cached process lease WITHOUT releasing (test isolation only)."""
+    global _PROC_EXECUTOR_CTX
+    with _PROC_EXECUTOR_LOCK:
+        _PROC_EXECUTOR_CTX = None
+
+
+@contextlib.contextmanager
+def executor_session(
+    action: str = "",
+    capabilities: Sequence[str] = (),
+    ttl_sec: float = 30.0,
+    owner: Optional[str] = None,
+):
+    """Acquire an executor lease and bind a fence context for the call duration.
+
+    Wrap the autonomous action execution boundary with this. When the executor
+    fence gate is ARMED, the action gets a valid executor identity so the
+    central default-DENY gate (``@kernel_action``) and the defense-in-depth
+    checks in ``world_interface`` / ``host_command.broker`` ALLOW it instead of
+    default-denying it. When the gate is NOT armed, this is a pass-through and
+    default behaviour is byte-identical.
+
+    Fail-closed: if the gate is armed and a lease cannot be acquired (cap
+    reached, backend down, ...) :class:`ExecutorFenceDenied` propagates and the
+    boundary MUST refuse the action.
+    """
+    if not executor_fence_armed():
+        yield None
+        return
+    fence = get_executor_fence()
+    executor_id = _process_executor_id()
+    if executor_id is None:
+        raise ExecutorUnknownError("cannot establish an executor identity")
+    owner = owner or executor_id
+    ctx = _acquire_process_executor_lease(
+        fence, executor_id, owner, capabilities, ttl_sec
+    )
+    token = bind_executor_fence(ctx)
+    try:
+        yield ctx
+    finally:
+        unbind_executor_fence(token)

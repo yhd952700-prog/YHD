@@ -10,6 +10,7 @@ Provides the unified entry point for all services with:
 
 import time
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -178,6 +179,29 @@ async def lifespan(app: FastAPI):
         )
 
     logger.info("Gateway startup complete")
+
+    # UBX-005: install the production executor fence at boot. This makes the
+    # Agent-Safety Execution Fence REAL (cross-process / cross-node when a
+    # coordination backend is configured) instead of the inert default. Failure
+    # is fail-loud: we log at ERROR and keep booting, but the system then runs
+    # UN-fenced -- operators MUST notice (mirrors the kernel-lifecycle
+    # init-degraded reporting above; do NOT silently swallow this).
+    try:
+        from ..kernels.execution.fence import attach_default_executor_fence
+
+        _fence = attach_default_executor_fence()
+        logger.info(
+            "Executor fence installed (backend=%s, max_executors=%s)",
+            os.environ.get("LIUHAO_DISTRIBUTED_LEASE_BACKEND", "sqlite"),
+            getattr(_fence.lease, "max_executors", None),
+        )
+    except Exception as _fence_exc:  # noqa: BLE001 - must be loud, must not crash boot
+        logger.error(
+            "EXECUTOR FENCE INSTALL FAILED -- autonomous actions will run "
+            "UN-FENCED (fail-open risk): %s",
+            _fence_exc,
+            exc_info=True,
+        )
 
     yield  # App runs here
 

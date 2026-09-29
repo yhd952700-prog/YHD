@@ -240,6 +240,28 @@ class WorldInterface:
         if not self.validate(request):
             return ActionResult(action_id=request.action, success=False,
                                 error=f"unknown {request.adapter}.{request.action}")
+        # UBX-005 production wiring: when the executor fence gate is ARMED, wrap
+        # the action in an executor lease so the central default-DENY gate
+        # (@kernel_action) and the defense-in-depth check below ALLOW it; when
+        # NOT armed this is a pass-through (byte-identical). Fail-closed: if
+        # armed and we cannot acquire a lease, refuse the action.
+        from src.kernels.execution.fence import (
+            ExecutorFenceDenied,
+            executor_session,
+        )
+
+        try:
+            with executor_session(
+                action=f"world.{request.adapter}.{request.action}",
+                capabilities=(),
+                ttl_sec=30.0,
+            ):
+                return self._execute_fenced(request)
+        except ExecutorFenceDenied as exc:
+            return ActionResult(action_id=request.action, success=False,
+                                error=f"executor fence denied (fail-closed): {exc}")
+
+    def _execute_fenced(self, request: WorldRequest) -> ActionResult:
         # D19-D21 defense-in-depth: if an executor fence context is bound on the
         # call stack, re-validate it here (the primary gate is @kernel_action).
         # A forged/stale/expired context is refused fail-closed.

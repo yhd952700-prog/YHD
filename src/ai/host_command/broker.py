@@ -99,6 +99,31 @@ class HostCommandBroker:
         self._sink = event_sink or _default_sink
 
     def submit(self, req: HostCommandRequest) -> HostCommandDecision:
+        # UBX-005 production wiring: when the executor fence gate is ARMED, wrap
+        # the host command in an executor lease so the default-DENY gate /
+        # defense-in-depth allow it; when NOT armed this is a pass-through
+        # (byte-identical). Fail-closed: if armed and we cannot acquire a lease,
+        # refuse the command.
+        from src.kernels.execution.fence import (
+            ExecutorFenceDenied,
+            executor_session,
+        )
+
+        try:
+            with executor_session(
+                action="host_command.submit", capabilities=(), ttl_sec=30.0
+            ):
+                return self._submit_fenced(req)
+        except ExecutorFenceDenied as exc:
+            err = HostCommandDecision(
+                DecisionOutcome.ERROR,
+                f"executor fence denied (fail-closed): {exc}",
+                req,
+            )
+            self._emit("host_command_fence_denied", err.as_dict())
+            return err
+
+    def _submit_fenced(self, req: HostCommandRequest) -> HostCommandDecision:
         # 0) D19-D21 defense-in-depth: if an executor fence context is bound on
         # the call stack, re-validate it. A forged/stale/expired/unknown executor
         # is refused fail-closed BEFORE any policy evaluation or execution.
