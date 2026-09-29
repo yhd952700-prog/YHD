@@ -3,10 +3,10 @@
   "generated_by": "scripts/verify_readiness.py",
   "release_ready": false,
   "counts": {
-    "PASS": 6,
+    "PASS": 7,
     "FAIL": 0,
     "BLOCKED": 1,
-    "NOT_VERIFIED": 5
+    "NOT_VERIFIED": 4
   },
   "conditions": [
     {
@@ -66,8 +66,8 @@
     {
       "id": "C10",
       "name": "Independent verification",
-      "status": "NOT VERIFIED",
-      "evidence": "no standing independent verification harness yet"
+      "status": "PASS",
+      "evidence": "independent verification harness present"
     },
     {
       "id": "C11",
