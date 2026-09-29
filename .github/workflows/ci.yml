@@ -18,6 +18,20 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12']
 
+    # 真 redis-server：让 TestRealRedisEndToEnd（real redis）在 CI 上**真正执行**，
+    # 不再 skip。TestRedisLuaScriptsActuallyExecute 走 fakeredis(+lupa)，两者互补：
+    # fakeredis 验证 Lua 语义，真 redis 验证真实服务上的行为。
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -30,7 +44,11 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # 装 [tests] extra 才会带上 fakeredis + lupa，让
+          # TestRedisLuaScriptsActuallyExecute 在 CI 上**真正执行**（不再 skip）。
+          # 缺 lupa 时该组在测试内优雅 skip（nodes fixture 的 eval 自检），不会把
+          # 收集搞挂；但 CI 显式装齐才能把"skip"变成"已验证"。
+          pip install -e .[tests]
           pip install flake8
 
       - name: Run Unit Tests
