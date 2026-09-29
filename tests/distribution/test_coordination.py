@@ -25,10 +25,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -38,19 +41,22 @@ from src.distribution.coordination import (
     CoordinationUnavailableError,
     DistributedExecutorLease,
     DistributedLease,
+    ExecutorFenceBackendError,
     FileLockLease,
     FencingToken,
     RedisLease,
     get_distributed_lease,
     parse_token,
 )
-from src.distribution.election import LeaderElection
-from src.distribution.lock import DistributedLock
 from src.kernels.execution.fence import (
     ExecutorFence,
+    ExecutorFenceDenied,
     ExecutorLease,
+    ExecutorLimitExceeded,
     StaleExecutorError,
 )
+from src.distribution.election import LeaderElection
+from src.distribution.lock import DistributedLock
 
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -65,33 +71,129 @@ FAST_FAIL = {"url": UNREACHABLE_URL, "connect_timeout": 0.3}
 
 WORKER_SRC = textwrap.dedent(
     '''
+    """独立进程工人。所有参数通过单个 JSON 传入（避免 argv 位置歧义）。"""
+
     import json, os, sys, time
 
-    mode, directory, name, out, repo = sys.argv[1:6]
-    sys.path.insert(0, repo)
+    payload = json.loads(sys.argv[1])
+    mode = payload["mode"]
+    out = payload["out"]
+    sys.path.insert(0, payload["repo"])
 
     from src.distribution.coordination import FileLockLease
 
-    lease = FileLockLease(name, directory=directory)
+    lease = FileLockLease(payload["name"], directory=payload["dir"])
     owner = "proc-%d" % os.getpid()
-    ttl = 3.0 if mode == "crash" else 30.0
-    ok, token = lease.acquire(owner, ttl)
-    with open(out, "w") as fh:
-        json.dump(
-            {"pid": os.getpid(), "ok": bool(ok),
-             "token": int(token) if token is not None else None},
-            fh,
-        )
-        fh.flush()
-        os.fsync(fh.fileno())
+    result = {"pid": os.getpid(), "mode": mode}
+
+    def finish(extra=None):
+        if extra:
+            result.update(extra)
+        with open(out, "w") as fh:
+            json.dump(result, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
 
     if mode == "crash":
+        ok, token = lease.acquire(owner, payload.get("ttl", 3.0))
+        finish({"ok": bool(ok),
+                "token": int(token) if token is not None else None})
         # 等价 kill -9：不跑 finally、不 flush stdio、不释放任何东西。
         os._exit(9)
 
-    time.sleep(float(sys.argv[6]) if len(sys.argv) > 6 else 2.0)
-    if ok and token is not None:
-        lease.release(owner, token)
+    if mode == "hold":
+        ok, token = lease.acquire(owner, payload.get("ttl", 30.0))
+        finish({"ok": bool(ok),
+                "token": int(token) if token is not None else None})
+        time.sleep(float(payload.get("hold", 2.0)))
+        if ok and token is not None:
+            lease.release(owner, token)
+        sys.exit(0)
+
+    if mode == "reader":
+        # 持续读，制造"围栏热路径"：ExecutorFence._enforce 每个动作都读。
+        deadline = time.time() + float(payload.get("seconds", 3.0))
+        expected = payload.get("expected_holder")
+        reads = anomalies = 0
+        last_error = None
+        while time.time() < deadline:
+            try:
+                view = lease.current()
+                reads += 1
+                # 一致性：holder 与 token 必须同在/同缺；state 必须合法；
+                # 持有者只能是预期的那个（或空）。
+                if (view.token is None) != (view.holder is None):
+                    anomalies += 1
+                if view.state not in ("held", "expired", "free", "released"):
+                    anomalies += 1
+                if expected and view.holder is not None and view.holder != expected:
+                    anomalies += 1
+            except Exception as exc:
+                anomalies += 1
+                last_error = "%s: %s" % (type(exc).__name__, exc)
+        finish({"reads": reads, "anomalies": anomalies, "last_error": last_error})
+        sys.exit(0)
+
+    if mode == "writer":
+        # 有并发读者在侧的情况下，写者必须能持续推进。
+        attempts = int(payload.get("attempts", 50))
+        ok_count = 0
+        errors = []
+        for _ in range(attempts):
+            try:
+                ok, _tok = lease.acquire(payload.get("writer_owner", owner),
+                                         payload.get("ttl", 10.0))
+                if ok:
+                    ok_count += 1
+            except Exception as exc:
+                errors.append("%s: %s" % (type(exc).__name__, exc))
+        finish({"attempts": attempts, "ok": ok_count,
+                "error_count": len(errors), "errors": errors[:5]})
+        sys.exit(0)
+
+    if mode == "exec":
+        from src.distribution.coordination import DistributedExecutorLease
+
+        directory = payload["dir"]
+        bridge = DistributedExecutorLease(
+            lease_factory=lambda n: FileLockLease(n, directory=directory),
+            # 上限必须由**桥接**强制（原子），fence 侧的 check-then-act 只是快路径。
+            max_executors=payload.get("max_executors"),
+        )
+        exec_id = payload["exec_id"]
+        action = payload.get("action", "acquire")
+        res = {"exec_id": exec_id, "action": action}
+        try:
+            if action == "acquire":
+                tok = bridge.acquire(exec_id, "owner", float(payload.get("ttl", 30.0)),
+                                     list(payload.get("caps", ["read"])))
+                res.update({"token": tok,
+                            "validate": bool(bridge.validate(exec_id, tok)),
+                            "state": bridge.current(exec_id).state})
+            elif action == "validate":
+                tok = int(payload["token"])
+                res.update({"validate": bool(bridge.validate(exec_id, tok)),
+                            "state": bridge.current(exec_id).state,
+                            "known": bool(bridge.known_executor(exec_id)),
+                            "caps": list(bridge.current(exec_id).granted_capabilities)})
+            elif action == "enforce":
+                from src.kernels.execution.fence import ExecutorFence
+                fence = ExecutorFence(bridge, max_executors=payload.get("max_executors"))
+                ctx = fence.acquire_for(exec_id, "owner", ["read"], ttl_sec=30.0)
+                fence.enforce(ctx, "read", ["read"], correlation_id="c1")
+                res.update({"token": ctx.token, "allowed": True})
+        except Exception as exc:
+            try:
+                st = bridge.current(exec_id).state
+            except Exception:
+                st = None
+            res.update({"error": "%s: %s" % (type(exc).__name__, exc),
+                        "error_type": type(exc).__name__, "state": st})
+        finish(res)
+        sys.exit(0)
+
+    finish()
+    sys.exit(0)
     '''
 )
 
@@ -102,40 +204,47 @@ def _worker_path(tmp_path: Path) -> str:
     return str(path)
 
 
-def _run_workers(tmp_path: Path, mode: str, count: int, hold: float = 2.0):
-    """启动 ``count`` 个独立进程争同一个租约，返回它们各自的结果 dict。"""
+def _spawn(tmp_path: Path, payload: dict):
+    """启动**一个独立 OS 进程**；返回 ``(out_path, Popen)``。"""
     worker = _worker_path(tmp_path)
-    lease_dir = tmp_path / "leases"
-    lease_dir.mkdir(exist_ok=True)
+    out = Path(payload["out"])
+    return out, subprocess.Popen(
+        [sys.executable, worker, json.dumps(payload)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
-    procs = []
-    for i in range(count):
-        out = lease_dir / f"result-{mode}-{i}.json"
-        procs.append(
-            (
-                out,
-                subprocess.Popen(
-                    [
-                        sys.executable,
-                        worker,
-                        mode,
-                        str(lease_dir),
-                        "contended",
-                        str(out),
-                        REPO_ROOT,
-                        str(hold),
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                ),
-            )
-        )
 
+def _collect(pairs, timeout: int = 180):
     results = []
-    for out, proc in procs:
-        proc.wait(timeout=60)
+    for out, proc in pairs:
+        proc.wait(timeout=timeout)
         results.append(json.loads(out.read_text(encoding="utf-8")))
     return results
+
+
+def _run_workers(tmp_path: Path, mode: str, count: int, hold: float = 2.0):
+    """启动 ``count`` 个独立进程争同一个租约，返回它们各自的结果 dict。"""
+    lease_dir = tmp_path / "leases"
+    lease_dir.mkdir(exist_ok=True)
+    pairs = []
+    for i in range(count):
+        out = lease_dir / f"result-{mode}-{i}.json"
+        pairs.append(
+            _spawn(
+                tmp_path,
+                {
+                    "mode": mode,
+                    "dir": str(lease_dir),
+                    "name": "contended",
+                    "out": str(out),
+                    "repo": REPO_ROOT,
+                    "hold": hold,
+                    "ttl": 3.0 if mode == "crash" else 30.0,
+                },
+            )
+        )
+    return _collect(pairs)
 
 
 @pytest.fixture
@@ -470,6 +579,9 @@ class TestRedisLeaseWiring:
         assert call["keys"] == ["p:res", "p:__global_token__"]
         assert call["argv"][0] == "owner-a"
         assert call["argv"][1] == 30000
+        # ARGV 还必须带上 era 与 capabilities —— 让别的进程能校验它没获取的令牌
+        assert call["argv"][2] == ""
+        assert json.loads(call["argv"][3]) == []
 
     def test_release_is_a_compare_and_delete(self):
         client = RecordingRedis(eval_result=0)
@@ -822,6 +934,671 @@ class TestLegacyLiedExactlyWhereTheNewOneRefuses:
 
 
 # =============================================================================
+# K2) P0-1 —— 失败即闭：后端 I/O 故障必须是围栏拒绝，绝不能是裸 OSError
+# =============================================================================
+
+
+class _ExplodingStore:
+    """每次操作都抛指定异常的假 store（模拟磁盘/权限/SQLite 故障）。"""
+
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    def read(self, name):
+        raise self.exc
+
+    def write(self, *a, **k):
+        raise self.exc
+
+    def count_live(self, prefix=None, now=None):
+        raise self.exc
+
+    def next_global_token(self):
+        raise self.exc
+
+    def bump_epoch(self, name):
+        raise self.exc
+
+    def consume(self, *a, **k):
+        raise self.exc
+
+
+class TestFailClosedIO:
+    """P0-1：裸 ``PermissionError`` 绝不能逃出围栏。
+
+    旧实现里 ``os.open`` / ``os.replace`` 都在 try 之外，一个 PermissionError
+    会一路冒到调用方；调用方若写的是 ``except Exception: pass``，动作就会
+    **在未持租约的情况下被执行**。
+    """
+
+    def test_permission_error_on_acquire_becomes_a_fence_denial(self, factory):
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        from src.kernels.execution.fence import ExecutorFence
+
+        broken = FileLockLease("boom", directory=bridge._era_lease._dir)
+        broken._store = _ExplodingStore(PermissionError(13, "Permission denied"))
+        bridge._leases["exec-x"] = broken
+        bridge._era_lease._store = _ExplodingStore(PermissionError(13, "denied"))
+
+        fence = ExecutorFence(bridge)
+        with pytest.raises(ExecutorFenceBackendError) as exc:
+            fence.acquire_for("exec-x", "o", ["read"], ttl_sec=30.0)
+        # 必须是围栏拒绝（ExecutorFenceDenied 的子类），不是 OSError。
+        assert isinstance(exc.value, ExecutorFenceDenied)
+        assert not isinstance(exc.value, OSError)
+
+    def test_permission_error_is_not_leaked_as_oserror(self, factory):
+        """直接断言：抛出的东西不是 OSError 的子类。"""
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        lease = bridge._lease_for("exec-y")
+        lease._store = _ExplodingStore(PermissionError(13, "denied"))
+        with pytest.raises(ExecutorFenceBackendError):
+            bridge.acquire("exec-y", "o", 30.0, ["read"])
+        with pytest.raises(ExecutorFenceBackendError):
+            bridge.validate("exec-y", FencingToken(1))
+
+    def test_raw_oserror_from_os_open_is_translated(self, lease_dir):
+        """os.open 失败必须变成 CoordinationUnavailableError（不是 PermissionError）。"""
+        lease = FileLockLease("perm", directory=lease_dir)
+        real_open = os.open
+
+        def boom(path, flags, mode=0o777, **kw):
+            raise PermissionError(13, "Permission denied")
+
+        os.open = boom
+        try:
+            with pytest.raises(CoordinationUnavailableError) as exc:
+                lease.acquire("owner", 30.0)
+            assert not isinstance(exc.value, PermissionError)
+        finally:
+            os.open = real_open
+
+    def test_any_backend_exception_surfaces_as_fence_denied(self, factory):
+        """不只是 OSError —— 任何后端异常都不能逃逸成非拒绝型异常。"""
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        for exc in (
+            OSError(5, "boom"),
+            RuntimeError("boom"),
+            sqlite3.DatabaseError("boom"),
+        ):
+            lease = bridge._lease_for("exec-z")
+            lease._store = _ExplodingStore(exc)
+            with pytest.raises(ExecutorFenceDenied):
+                bridge.acquire("exec-z", "o", 30.0, [])
+
+    def test_every_fence_boundary_call_is_guarded(self, factory):
+        """围栏边界上的**每一个**调用（含 consume / current / count）都必须翻译。"""
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        tok = bridge.acquire("exec-g", "o", 30.0, ["read"])
+        lease = bridge._lease_for("exec-g")
+        lease._store = _ExplodingStore(OSError(5, "boom"))
+        for call in (
+            lambda: bridge.acquire("exec-g", "o", 30.0, []),
+            lambda: bridge.validate("exec-g", tok),
+            lambda: bridge.current("exec-g"),
+            lambda: bridge.heartbeat("exec-g", tok),
+            lambda: bridge.renew("exec-g", tok, 30.0),
+            lambda: bridge.release("exec-g", tok),
+            lambda: bridge.consume_token("exec-g", tok, "c1"),
+            lambda: bridge.known_executor("exec-g"),
+        ):
+            with pytest.raises(ExecutorFenceDenied):
+                call()
+
+
+# =============================================================================
+# K3) P0-2 —— Windows 上"并发读者 + 写者"必须都能推进
+# =============================================================================
+
+
+class TestConcurrentReadersAndWriter:
+    """P0-2：围栏热路径本身就是 reader（``_enforce`` 每动作都读）。
+
+    裸 JSON sidecar + ``os.replace`` 在 Windows 上会在这里失效：读者的句柄不带
+    ``FILE_SHARE_DELETE``，写者的替换被拒（实测 3 读者 → 写者 0/400 成功）。
+    后端因此换成 SQLite(WAL)。本组测试就是那条回归防线。
+    """
+
+    def test_writer_makes_progress_with_three_concurrent_readers(self, tmp_path):
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+        writer_owner = "the-writer"
+
+        pairs = []
+        for i in range(3):  # N >= 3 读者
+            out = lease_dir / f"reader-{i}.json"
+            pairs.append(
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "reader",
+                        "dir": str(lease_dir),
+                        "name": "hot",
+                        "out": str(out),
+                        "repo": REPO_ROOT,
+                        "seconds": 4.0,
+                        "expected_holder": writer_owner,
+                    },
+                )
+            )
+        out_w = lease_dir / "writer.json"
+        pairs.append(
+            _spawn(
+                tmp_path,
+                {
+                    "mode": "writer",
+                    "dir": str(lease_dir),
+                    "name": "hot",
+                    "out": str(out_w),
+                    "repo": REPO_ROOT,
+                    "attempts": 400,
+                    "writer_owner": writer_owner,
+                    "ttl": 10.0,
+                },
+            )
+        )
+
+        results = _collect(pairs, timeout=180)
+        readers = [r for r in results if r["mode"] == "reader"]
+        (writer,) = [r for r in results if r["mode"] == "writer"]
+
+        # 1) 写者必须完成**有意义数量**的写入（旧实现在 Windows 上是 0）
+        assert writer["attempts"] == 400
+        assert writer["ok"] > 0, (
+            f"writer completed {writer['ok']}/400 writes under concurrent readers; "
+            f"errors: {writer['errors']}"
+        )
+        assert writer["error_count"] == 0, writer["errors"]
+
+        # 2) 读者必须真的读到了东西，且一次撕裂都没看到
+        assert len(readers) == 3
+        assert all(r["reads"] > 0 for r in readers)
+        assert all(r["anomalies"] == 0 for r in readers), readers
+        assert all(r.get("last_error") is None for r in readers)
+
+    def test_state_store_is_wal_so_readers_never_block_the_writer(self, lease_dir):
+        """锁住 P0-2 的**机制选择**（行为证据在上面的 3 读者 + 1 写者）。
+
+        诚实说明：单靠行为测试区分不出 WAL 与 rollback journal —— ``_with_retry``
+        + ``busy_timeout`` 会把 DELETE 模式下的 "database is locked" 也重试成
+        成功（变异 M5 因此**存活**）。这条断言把"我们确实选了 WAL"固定下来，
+        但它证明的是设计选择，不是运行时效果。
+        """
+        store = FileLockLease("wal-probe", directory=lease_dir)._store
+        (mode,) = store._execute("PRAGMA journal_mode")[0]
+        assert str(mode).lower() == "wal", mode
+
+    def test_readers_never_observe_a_torn_state(self, tmp_path):
+        """同一目录内高频读 + 写；每次读到的状态必须自洽。"""
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+        lease = FileLockLease("hot2", directory=lease_dir)
+        writer = FileLockLease("hot2", directory=lease_dir)
+
+        ok, token = writer.acquire("w", 30.0)
+        assert ok is True
+
+        anomalies = 0
+        deadline = time.time() + 2.0
+        reads = 0
+        while time.time() < deadline:
+            view = lease.current()
+            reads += 1
+            if (view.token is None) != (view.holder is None):
+                anomalies += 1
+            if view.state not in ("held", "expired", "free", "released"):
+                anomalies += 1
+            # 写者在循环里不断续租（写），读者同时读
+            writer.renew("w", token, 30.0)
+        assert reads > 0
+        assert anomalies == 0
+
+
+# =============================================================================
+# K4) P0-3 —— 桥接必须可以安全接线
+# =============================================================================
+
+
+class TestBridgeStateIsBackendGlobal:
+    """P0-3(a)：能力授权与纪元必须**持久化在后端**，跨进程可读。"""
+
+    def test_a_process_that_never_acquired_can_see_the_grant(self, tmp_path):
+        """旧实现里 bridgeB 看到 granted_capabilities=()，无法区分 unknown/stale。"""
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+        out_a = lease_dir / "a.json"
+        (res_a,) = _collect(
+            [
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "exec",
+                        "dir": str(lease_dir),
+                        "name": "unused",
+                        "out": str(out_a),
+                        "repo": REPO_ROOT,
+                        "exec_id": "shared-exec",
+                        "action": "acquire",
+                        "ttl": 30.0,
+                        "caps": ["read", "write"],
+                    },
+                )
+            ]
+        )
+        assert res_a.get("token") is not None, res_a
+
+        # 另一个进程：从未 acquire 过，直接读
+        out_b = lease_dir / "b.json"
+        (res_b,) = _collect(
+            [
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "exec",
+                        "dir": str(lease_dir),
+                        "name": "unused",
+                        "out": str(out_b),
+                        "repo": REPO_ROOT,
+                        "exec_id": "shared-exec",
+                        "action": "validate",
+                        "token": res_a["token"],
+                    },
+                )
+            ]
+        )
+        assert res_b["known"] is True
+        # 授权必须可见（旧实现这里是 ()）
+        assert set(res_b["caps"]) == {"read", "write"}
+        # 但不能通过 validate —— 同一时刻只允许持有它的那个进程
+        assert res_b["validate"] is False
+        # 关键：state 能区分"stale"（有租约但不是我）而不是 unknown
+        assert res_b["state"] == "stale"
+
+    def test_unknown_executor_is_distinguishable_from_stale(self, factory):
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        unknown = bridge.current("never-seen")
+        assert unknown.executor_id is None
+        assert unknown.state == "unknown"
+        assert bridge.known_executor("never-seen") is False
+
+
+class TestGlobalExecutorCap:
+    """P0-3(b)：``max_executors`` 的 N+1 上限必须**跨进程**成立。
+
+    旧实现的 ``count_active()`` 是进程内视图：process1 填满 2 个，新起的
+    process2 看到 0 又加了 2 个 → 4 个活跃执行者对着上限 2。
+    """
+
+    def test_cap_is_enforced_across_separate_processes(self, tmp_path):
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+
+        pairs = []
+        for i in range(4):  # 上限 2，起 4 个进程各占 1 个 executor
+            out = lease_dir / f"cap-{i}.json"
+            pairs.append(
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "exec",
+                        "dir": str(lease_dir),
+                        "name": "unused",
+                        "out": str(out),
+                        "repo": REPO_ROOT,
+                        "exec_id": f"exec-{i}",
+                        "action": "enforce",
+                        "max_executors": 2,
+                    },
+                )
+            )
+        results = _collect(pairs)
+
+        allowed = [r for r in results if r.get("allowed")]
+        denied = [r for r in results if "error" in r]
+        # 上限 2 ⇒ 最多 2 个进程能拿到执行租约
+        assert len(allowed) <= 2, (
+            f"max_executors=2 but {len(allowed)} processes acquired: {results}"
+        )
+        assert len(denied) >= 1, f"expected some processes to be denied: {results}"
+
+    def test_cap_is_enforced_atomically_in_one_process(self, factory):
+        """上限判定必须与 acquire 在同一临界区内（续租不算新增）。"""
+        bridge = DistributedExecutorLease(lease_factory=factory, max_executors=2)
+        assert bridge.max_executors == 2
+        t1 = bridge.acquire("cap-a", "o", 30.0, [])
+        t2 = bridge.acquire("cap-b", "o", 30.0, [])
+        assert t2 > t1
+        with pytest.raises(ExecutorLimitExceeded):
+            bridge.acquire("cap-c", "o", 30.0, [])
+        # 已持有者续租不占新名额
+        assert bridge.acquire("cap-a", "o", 30.0, []) == t1
+        # 释放一个后名额回来
+        assert bridge.release("cap-b", t2) is True
+        assert bridge.acquire("cap-c", "o", 30.0, []) > t2
+
+    def test_count_active_sees_other_processes_leases(self, factory):
+        """count_active 必须是后端全局计数，不是本进程见过几个。"""
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        assert bridge.count_active() == 0
+        bridge.acquire("exec-a", "o", 30.0, [])
+        bridge.acquire("exec-b", "o", 30.0, [])
+        assert bridge.count_active() == 2
+        # 一个**全新的** bridge（模拟另一个进程）也必须看到 2
+        fresh = DistributedExecutorLease(lease_factory=factory)
+        assert fresh.count_active() == 2
+
+
+class TestOnlyOneProcessPerExecutorId:
+    """P0-3(c)：同一 executor_id 在同一时刻最多只有一个进程能通过校验。"""
+
+    def test_two_processes_cannot_both_act_as_the_same_executor(self, tmp_path):
+        """旧实现：A 与 B 都拿到 token=2，都 validate True，都被 enforce 放行。"""
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+
+        def run(exec_id, action, token=None, ttl=1.0):
+            out = lease_dir / f"{action}-{exec_id}-{uuid.uuid4().hex[:8]}.json"
+            payload = {
+                "mode": "exec",
+                "dir": str(lease_dir),
+                "name": "unused",
+                "out": str(out),
+                "repo": REPO_ROOT,
+                "exec_id": exec_id,
+                "action": action,
+                "ttl": ttl,
+            }
+            if token is not None:
+                payload["token"] = token
+            (res,) = _collect([_spawn(tmp_path, payload)])
+            return res
+
+        # A 获取（长 TTL —— 子进程启动本身要花 ~1s，短 TTL 会让"A 还活着"这个
+        # 前提在 B 尝试之前就失效，测试就会假失败）
+        res_a = run("shared", "acquire", ttl=60.0)
+        assert res_a.get("token") is not None, res_a
+        assert res_a["validate"] is True, res_a
+        token_a = res_a["token"]
+        # 围栏令牌必须是可比较的正整数（绝不是 uuid4 字符串）
+        assert isinstance(token_a, int) and token_a >= 1, res_a
+
+        # B 立刻尝试：A 还活着 → 必须被拒（不能拿到同一个令牌）
+        res_b = run("shared", "acquire", ttl=60.0)
+        assert res_b.get("token") is None, (
+            f"B must not acquire while A holds the id; got {res_b}"
+        )
+        assert "error" in res_b, res_b
+        # 且 A 的令牌不能被 B 的尝试动过
+        assert res_b.get("state") == "stale", res_b
+
+        # 过期接管：换一个 id，短 TTL，等它真正过期（等到**记录的到期时刻**之后）
+        res_c = run("shared-exp", "acquire", ttl=1.0)
+        assert res_c.get("token") is not None, res_c
+        token_c = res_c["token"]
+        time.sleep(1.5)
+        res_d = run("shared-exp", "acquire", ttl=60.0)
+        assert res_d.get("token") is not None, res_d
+        assert res_d["token"] > token_c, (
+            f"takeover token {res_d['token']} must be > {token_c}"
+        )
+
+        # 此刻旧令牌必须失效（哪怕换了个进程，令牌本身也不该再被接受）
+        res_e = run("shared-exp", "validate", token=token_c)
+        assert res_e["validate"] is False
+
+    def test_at_most_one_process_validates_at_any_moment(self, tmp_path):
+        lease_dir = tmp_path / "leases"
+        lease_dir.mkdir(exist_ok=True)
+        out = lease_dir / "owner.json"
+        (res,) = _collect(
+            [
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "exec",
+                        "dir": str(lease_dir),
+                        "name": "unused",
+                        "out": str(out),
+                        "repo": REPO_ROOT,
+                        "exec_id": "solo-exec",
+                        "action": "acquire",
+                        "ttl": 30.0,
+                    },
+                )
+            ]
+        )
+        token = res["token"]
+        assert res["validate"] is True
+
+        # 另起 3 个进程同时校验同一个 (executor_id, token)
+        pairs = []
+        for i in range(3):
+            o = lease_dir / f"v-{i}.json"
+            pairs.append(
+                _spawn(
+                    tmp_path,
+                    {
+                        "mode": "exec",
+                        "dir": str(lease_dir),
+                        "name": "unused",
+                        "out": str(o),
+                        "repo": REPO_ROOT,
+                        "exec_id": "solo-exec",
+                        "action": "validate",
+                        "token": token,
+                    },
+                )
+            )
+        results = _collect(pairs)
+        # 持有者进程自己 validate=True；其余 3 个必须全是 False
+        assert all(r["validate"] is False for r in results), results
+
+    def test_takeover_never_hands_the_incumbent_token_to_another_owner(self, lease_dir):
+        a = FileLockLease("tk", directory=lease_dir)
+        b = FileLockLease("tk", directory=lease_dir)
+        ok1, t1 = a.acquire("owner-A", 30.0)
+        assert ok1 is True
+        # A 还活着时，B 绝不能拿到 A 的令牌
+        ok2, t2 = b.acquire("owner-B", 30.0)
+        assert ok2 is False and t2 is None
+        # A 释放后 B 接管 → 新令牌严格更大（不是复用 t1）
+        assert a.release("owner-A", t1) is True
+        ok3, t3 = b.acquire("owner-B", 30.0)
+        assert ok3 is True and int(t3) > int(t1)
+
+
+class TestHeartbeatFailureIsObservable:
+    """P0-3(d)：心跳失败必须可见（旧实现成功失败都返回 None 并吞掉异常）。"""
+
+    def test_heartbeat_returns_the_renewed_token(self, factory):
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        token = bridge.acquire("exec-hb", "o", 30.0, [])
+        assert bridge.heartbeat("exec-hb", token) == token
+        assert bridge.heartbeat_failures == 0
+
+    def test_heartbeat_on_a_dead_lease_raises_and_counts(self, factory):
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        token = bridge.acquire("exec-hb2", "o", 30.0, [])
+        assert bridge.release("exec-hb2", token) is True
+        with pytest.raises(StaleExecutorError):
+            bridge.heartbeat("exec-hb2", token)
+        assert bridge.heartbeat_failures == 1
+
+    def test_heartbeat_with_a_garbage_token_raises(self, factory):
+        bridge = DistributedExecutorLease(lease_factory=factory)
+        bridge.acquire("exec-hb3", "o", 30.0, [])
+        with pytest.raises(StaleExecutorError):
+            bridge.heartbeat("exec-hb3", "not-a-token")
+        assert bridge.heartbeat_failures == 1
+
+
+# =============================================================================
+# K5) P1-1 —— 释放时"令牌校验"必须有**文件后端**的杀得死的测试
+# =============================================================================
+
+
+class TestReleaseWithCorrectOwnerButStaleToken:
+    """P1-1：变异 M1（删掉 release 的令牌校验）曾经存活。
+
+    原因：所有文件后端的 release 测试都用**错误的 owner**，持有者检查先把它拦下，
+    令牌比较根本没被走到；唯一"正确 owner + 错误令牌"的测试在被 skip 的 Redis
+    类里。下面两条把这条路径钉死在文件后端上。
+    """
+
+    def test_file_release_with_correct_owner_but_stale_token_is_refused(self, lease_dir):
+        lease = FileLockLease("k", directory=lease_dir)
+        ok, tok = lease.acquire("alice", 30.0)
+        assert ok is True
+        # 正确 owner + 陈旧/被取代的令牌：绝不能释放
+        assert lease.release("alice", FencingToken(int(tok) + 1)) is False
+        assert lease.release("alice", FencingToken(int(tok) * 100 + 7)) is False
+        assert lease.current().holder == "alice"
+        assert lease.validate("alice", tok) is True
+        # 真令牌仍然有效
+        assert lease.release("alice", tok) is True
+
+    def test_bridge_release_with_a_superseded_token_does_not_free(self, lease_dir):
+        d = lease_dir
+        bridge = DistributedExecutorLease(lease_factory=lambda n: FileLockLease(n, directory=d))
+        tok = bridge.acquire("exec-1", "owner", 30.0, ["read"])
+        # 正确的 executor_id + 错误的令牌
+        assert bridge.release("exec-1", FencingToken(int(tok) + 1)) is False
+        assert bridge.validate("exec-1", tok) is True
+        assert bridge.release("exec-1", tok) is True
+        assert bridge.validate("exec-1", tok) is False
+
+    def test_release_under_contention_is_not_confused_with_denial(self, lease_dir):
+        """P1-1 尾声：竞争（可重试）与拒绝（确定）必须分开。
+
+        持续并发 release 时，正确令牌的 release 必须**全部成功**（旧实现约 17%
+        因为锁竞争假失败），而错误令牌的 release 必须**全部失败**。
+        """
+        lease = FileLockLease("contend", directory=lease_dir)
+        ok, tok = lease.acquire("owner", 300.0)
+        assert ok is True
+
+        errors = []
+        for _ in range(60):
+            if not lease.release("owner", tok):
+                errors.append("correct token refused")
+            # 重新拿回来（续租），保证下一次 release 仍然合法
+            ok2, tok2 = lease.acquire("owner", 300.0)
+            assert ok2 is True
+            tok = tok2
+        assert errors == [], f"{len(errors)} correct releases were refused"
+
+        # 错误令牌：无论有没有并发，都必须拒绝
+        wrong = [lease.release("owner", FencingToken(int(tok) + 1)) for _ in range(20)]
+        assert all(r is False for r in wrong)
+
+
+# =============================================================================
+# K6) 与 SqliteExecutorLease 的行为等价性
+# =============================================================================
+
+
+class TestParityWithSqliteExecutorLease:
+    """P0-3(d)：在相同输入下，桥接应与仓库既有的 SqliteExecutorLease 同行为。
+
+    （验证者曾指出：Sqlite 抛 FencedExecutorError 的地方，桥接不抛。）
+    """
+
+    def _sqlite(self, tmp_path):
+        import sqlite3 as _sq
+
+        from src.kernels.execution.fence import SqliteExecutorLease
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        conn = _sq.connect(str(tmp_path / "fence.db"))
+        return SqliteExecutorLease(conn)
+
+    def _bridge(self, tmp_path):
+        d = tmp_path / "leases"
+        d.mkdir(parents=True, exist_ok=True)
+        return DistributedExecutorLease(lease_factory=lambda n: FileLockLease(n, directory=str(d)))
+
+    def test_both_raise_fenced_when_the_token_was_superseded(self, tmp_path):
+        """两者都必须在"我记住的令牌被别人超过"时抛 FencedExecutorError。
+
+        语义：``my_last_token`` = 我上次持有的令牌。后端现存的令牌**大于**它 ⇒
+        有人在我之后夺权了 ⇒ 我必须被围栏。（传一个**更大**的值不构成夺权，
+        所以这里传 ``t1 - 1``。）
+        """
+        from src.kernels.execution.fence import FencedExecutorError
+
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            t1 = lease.acquire("e1", "o", 30.0, [])
+            assert t1 is not None
+            with pytest.raises(FencedExecutorError):
+                lease.acquire("e1", "o", 30.0, [], None, t1 - 1)
+
+    def test_documented_divergence_expired_lease_can_be_reclaimed(self, tmp_path):
+        """**已知且刻意**的分歧（已写进 verification-plan.md）。
+
+        ``SqliteExecutorLease`` 在 ``my_last_token=None`` 时用 ``-1`` 兜底 ⇒ 只要
+        租约行还在（哪怕已过期）就抛 ``FencedExecutorError``。而
+        ``ExecutorFence.acquire_for`` 从不传 ``my_last_token``，后果是：租约过期
+        后同一个 executor_id **永远无法重新接管**（fence.py 侧的设计问题，本任务
+        不改 fence.py）。
+
+        桥接在"已过期"时允许接管，并铸一个**严格更大**的令牌 —— 同一时刻仍然
+        只有一个持有者（旧令牌立即失效），但不会把执行器永久锁死在外面。
+        """
+        from src.kernels.execution.fence import FencedExecutorError
+
+        # sqlite：过期后重新 acquire 会被自己的 -1 兜底否决
+        sq = self._sqlite(tmp_path / "sqlite-div")
+        assert sq.acquire("e-div", "o", 0.3, []) >= 1
+        time.sleep(0.5)
+        with pytest.raises(FencedExecutorError):
+            sq.acquire("e-div", "o", 30.0, [])
+
+        # 桥接：过期后允许接管，令牌严格更大
+        br = self._bridge(tmp_path / "bridge-div")
+        t_br = br.acquire("e-div", "o", 0.3, [])
+        time.sleep(0.5)
+        t_br2 = br.acquire("e-div", "o", 30.0, [])
+        assert t_br2 > t_br
+        assert br.validate("e-div", t_br) is False  # 旧令牌立刻失效
+        assert br.validate("e-div", t_br2) is True
+
+    def test_both_deny_capability_escalation(self, tmp_path):
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            tok = lease.acquire("e2", "o", 30.0, ["read"])
+            assert lease.validate("e2", tok, ["read"]) is True
+            assert lease.validate("e2", tok, ["admin"]) is False
+
+    def test_both_detect_replay(self, tmp_path):
+        from src.kernels.execution.fence import ReplayDetectedError
+
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            tok = lease.acquire("e3", "o", 30.0, [])
+            lease.consume_token("e3", tok, "same")
+            with pytest.raises(ReplayDetectedError):
+                lease.consume_token("e3", tok, "same")
+
+    def test_both_report_held_then_stale_consistently(self, tmp_path):
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            tok = lease.acquire("e4", "o", 30.0, ["read"])
+            assert lease.current("e4").state == "held"
+            assert lease.is_stale("e4", tok) is False
+            assert lease.release("e4", tok) is True
+            assert lease.is_stale("e4", tok) is True
+
+    def test_both_force_new_era_invalidates(self, tmp_path):
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            tok = lease.acquire("e5", "o", 30.0, [])
+            assert lease.validate("e5", tok) is True
+            lease.force_new_era()
+            assert lease.validate("e5", tok) is False
+
+
+# =============================================================================
 # L) 需要真实 Redis 的端到端（无服务时显式跳过并说明原因）
 # =============================================================================
 
@@ -838,6 +1615,111 @@ def _redis_available() -> bool:
         return False
     finally:
         sock.close()
+
+
+try:  # pragma: no cover - 取决于本机装没装
+    import fakeredis as _fakeredis  # noqa: F401
+
+    _HAS_FAKEREDIS = True
+except Exception:  # noqa: BLE001
+    _HAS_FAKEREDIS = False
+
+
+@pytest.mark.skipif(
+    not _HAS_FAKEREDIS,
+    reason="需要 fakeredis（+lupa 才有 Lua 解释器）才能真跑 Lua 脚本。"
+    "⚠️ 跳过即意味着 Redis 路径**仍未被执行验证**。",
+)
+class TestRedisLuaScriptsActuallyExecute:
+    """把 RedisLease 的 4 段 Lua **真的执行一遍**。
+
+    与 :class:`TestRealRedisEndToEnd` 的区别：那组要真 ``redis-server``；这组只需
+    ``fakeredis``（共享 ``FakeServer`` 的两个 client = 两个"节点"共享同一份状态），
+    配合 ``lupa`` 就是**真 Lua 解释器**，因此 compare-and-delete / INCR 单调令牌 /
+    ``PX`` 过期这几条运行时语义可以在本机被验证。
+
+    ⚠️ ``fakeredis`` / ``lupa`` **未声明进 pyproject.toml**（本轮不改依赖声明，
+    见 verification-plan §6），所以 CI 上这组仍会 skip —— 这是**已知且未解决**
+    的覆盖缺口，不是"已验证"。
+    """
+
+    @pytest.fixture
+    def nodes(self):
+        import fakeredis
+
+        server = fakeredis.FakeServer()
+        c1 = fakeredis.FakeStrictRedis(server=server)
+        c2 = fakeredis.FakeStrictRedis(server=server)
+        try:
+            assert c1.eval("return 1", 0) == 1
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"fakeredis 无法执行 Lua（需要 lupa）: {type(exc).__name__}: {exc}")
+        return c1, c2
+
+    def test_acquire_is_mutually_exclusive_across_two_clients(self, nodes):
+        c1, c2 = nodes
+        a = RedisLease("lua-shared", client=c1)
+        b = RedisLease("lua-shared", client=c2)
+        a.connect()
+        b.connect()
+        ok_a, tok_a = a.acquire("node-A", 30.0)
+        ok_b, tok_b = b.acquire("node-B", 30.0)
+        assert ok_a is True and int(tok_a) >= 1
+        assert ok_b is False and tok_b is None
+
+    def test_release_with_a_stale_token_does_not_free_the_lease(self, nodes):
+        c1, c2 = nodes
+        a = RedisLease("lua-rel", client=c1)
+        b = RedisLease("lua-rel", client=c2)
+        a.connect()
+        b.connect()
+        ok, tok = a.acquire("node-A", 30.0)
+        assert ok is True
+        # 错的 owner / 错的令牌，都不能释放别人的租约
+        assert a.release("node-B", tok) is False
+        assert b.release("node-A", tok.next()) is False
+        assert a.validate("node-A", tok) is True
+
+    def test_renew_with_a_stale_token_returns_none(self, nodes):
+        c1, _ = nodes
+        a = RedisLease("lua-renew", client=c1)
+        a.connect()
+        ok, tok = a.acquire("node-A", 30.0)
+        assert ok is True
+        assert a.renew("node-A", tok, 60.0) == tok
+        assert a.renew("node-A", FencingToken(int(tok) + 999), 60.0) is None
+
+    def test_expiry_allows_takeover_with_a_strictly_greater_token(self, nodes):
+        c1, c2 = nodes
+        a = RedisLease("lua-ttl", client=c1)
+        b = RedisLease("lua-ttl", client=c2)
+        a.connect()
+        b.connect()
+        ok1, tok1 = a.acquire("node-A", 0.3)
+        assert ok1 is True
+        # TTL 未到 ⇒ 不许提前夺权
+        ok_early, _ = b.acquire("node-B", 30.0)
+        assert ok_early is False
+        time.sleep(0.6)
+        ok2, tok2 = b.acquire("node-B", 30.0)
+        assert ok2 is True and int(tok2) > int(tok1)
+        assert a.validate("node-A", tok1) is False
+
+    def test_bridge_on_redis_persists_capabilities_and_era(self, nodes):
+        """P0-3(a) 在 Redis 后端上同样成立：授权写进后端，别的"节点"读得到。"""
+        c1, c2 = nodes
+        b1 = DistributedExecutorLease(lease_factory=lambda n: RedisLease(n, client=c1))
+        b2 = DistributedExecutorLease(lease_factory=lambda n: RedisLease(n, client=c2))
+        b2._holder = "another-node"  # 同进程内 holder 相同，这里显式换个身份
+        tok = b1.acquire("exec-r", "o", 30.0, ["read", "write"])
+        assert b1.validate("exec-r", tok, ["read"]) is True
+        assert b1.validate("exec-r", tok, ["admin"]) is False
+        view = b2.current("exec-r")
+        assert set(view.granted_capabilities) == {"read", "write"}
+        assert view.state == "stale"  # 不是 unknown
+        assert b2.validate("exec-r", tok) is False
+        b1.force_new_era()
+        assert b1.validate("exec-r", tok) is False
 
 
 @pytest.mark.skipif(
