@@ -495,7 +495,15 @@ class SqliteExecutorLease(ExecutorLease):
             return self._install(executor_id, owner, now, ttl_sec, granted_capabilities, boot_gen)
         cur_token, cur_eid, cur_epoch, cur_exp, cur_boot, cur_hb, rel = row
         if cur_eid == executor_id:
-            if last is not None and cur_token > last:
+            # Only treat a newer token as a fence signal while the current lease
+            # is still LIVE (has not reached its expires_at). An EXPIRED lease's
+            # holder is no longer authoritative -- its token already fails
+            # validate() -- so a re-acquire must be allowed. Otherwise a
+            # crashed/restarted executor whose row was never released would be
+            # locked out forever. Note: we use STRICT expiry (expires_at <= now),
+            # matching validate(), not _is_live()'s clock-skew grace budget.
+            expired = cur_exp is not None and cur_exp <= now
+            if last is not None and cur_token > last and not expired:
                 raise FencedExecutorError(
                     f"executor {executor_id!r} was fenced: token "
                     f"{cur_token} > my last {last}"
@@ -596,39 +604,73 @@ class SqliteExecutorLease(ExecutorLease):
         return not self.validate(executor_id, token)
 
     def heartbeat(self, executor_id, token):
-        self._conn.execute(
-            "UPDATE executor_fence SET last_heartbeat_at = ? "
-            "WHERE executor_id = ? AND token = ? AND released_at IS NULL",
-            (time.time(), executor_id, token),
-        )
+        # Self-commit when not already inside a caller's transaction (mirrors
+        # consume_token); fold into the caller's BEGIN IMMEDIATE otherwise so the
+        # write is durable and the audit-atomicity guarantee is preserved.
+        own = not self._conn.in_transaction
+        try:
+            if own:
+                self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                "UPDATE executor_fence SET last_heartbeat_at = ? "
+                "WHERE executor_id = ? AND token = ? AND released_at IS NULL",
+                (time.time(), executor_id, token),
+            )
+        except Exception:
+            if own and self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        if own:
+            self._conn.commit()
 
     def renew(self, executor_id, token, ttl_sec):
-        cur = self._conn.execute(
-            "SELECT token FROM executor_fence WHERE executor_id = ? AND released_at IS NULL",
-            (executor_id,),
-        ).fetchone()
-        if cur is None or cur[0] != token:
-            raise StaleExecutorError(f"cannot renew: no live lease for {executor_id!r}")
-        self._conn.execute(
-            "UPDATE executor_fence SET expires_at = ?, last_heartbeat_at = ? "
-            "WHERE executor_id = ? AND token = ?",
-            (time.time() + ttl_sec, time.time(), executor_id, token),
-        )
+        own = not self._conn.in_transaction
+        try:
+            if own:
+                self._conn.execute("BEGIN IMMEDIATE")
+            cur = self._conn.execute(
+                "SELECT token FROM executor_fence WHERE executor_id = ? AND released_at IS NULL",
+                (executor_id,),
+            ).fetchone()
+            if cur is None or cur[0] != token:
+                raise StaleExecutorError(f"cannot renew: no live lease for {executor_id!r}")
+            self._conn.execute(
+                "UPDATE executor_fence SET expires_at = ?, last_heartbeat_at = ? "
+                "WHERE executor_id = ? AND token = ?",
+                (time.time() + ttl_sec, time.time(), executor_id, token),
+            )
+        except Exception:
+            if own and self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        if own:
+            self._conn.commit()
         return token
 
     def release(self, executor_id, token):
-        cur = self._conn.execute(
-            "SELECT token FROM executor_fence WHERE executor_id = ? AND released_at IS NULL",
-            (executor_id,),
-        ).fetchone()
-        if cur is not None and cur[0] == token:
-            self._conn.execute(
-                "UPDATE executor_fence SET owner = NULL, released_at = ? "
-                "WHERE executor_id = ? AND token = ?",
-                (time.time(), executor_id, token),
-            )
-            return True
-        return False
+        own = not self._conn.in_transaction
+        released = False
+        try:
+            if own:
+                self._conn.execute("BEGIN IMMEDIATE")
+            cur = self._conn.execute(
+                "SELECT token FROM executor_fence WHERE executor_id = ? AND released_at IS NULL",
+                (executor_id,),
+            ).fetchone()
+            if cur is not None and cur[0] == token:
+                self._conn.execute(
+                    "UPDATE executor_fence SET owner = NULL, released_at = ? "
+                    "WHERE executor_id = ? AND token = ?",
+                    (time.time(), executor_id, token),
+                )
+                released = True
+        except Exception:
+            if own and self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        if own:
+            self._conn.commit()
+        return released
 
     def consume_token(self, executor_id, token, correlation_id):
         # Manage our own transaction so the replay marker is durable even when
@@ -656,13 +698,25 @@ class SqliteExecutorLease(ExecutorLease):
             self._conn.commit()
 
     def force_new_era(self):
-        ep = self._conn.execute(
-            "SELECT global_epoch FROM fence_epoch WHERE id = 1"
-        ).fetchone()
-        new_epoch = (ep[0] if ep else 0) + 1
-        self._conn.execute(
-            "UPDATE fence_epoch SET global_epoch = ? WHERE id = 1", (new_epoch,)
-        )
+        # Self-commit when standalone; fold into a caller's transaction otherwise
+        # (see heartbeat/renew/release for the same durability pattern).
+        own = not self._conn.in_transaction
+        try:
+            if own:
+                self._conn.execute("BEGIN IMMEDIATE")
+            ep = self._conn.execute(
+                "SELECT global_epoch FROM fence_epoch WHERE id = 1"
+            ).fetchone()
+            new_epoch = (ep[0] if ep else 0) + 1
+            self._conn.execute(
+                "UPDATE fence_epoch SET global_epoch = ? WHERE id = 1", (new_epoch,)
+            )
+        except Exception:
+            if own and self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        if own:
+            self._conn.commit()
         return new_epoch
 
     def current(self, executor_id):

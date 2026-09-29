@@ -146,14 +146,15 @@
 
 ## 6. 仍需后续处理 / 明确未验证
 
-1. **需要 fence.py 改一行（我没有擅自改）**：
-   `SqliteExecutorLease._acquire_within_locked`（`fence.py:494-497`）在
-   `my_last_token is None` 时用 `-1` 兜底 ⇒ 只要租约行还在（**哪怕已过期**）就抛
-   `FencedExecutorError`；而 `ExecutorFence.acquire_for`（`fence.py:768`）**从不传**
-   `my_last_token`。后果：**租约过期后同一个 executor_id 永远无法重新接管**
-   （重启即永久锁死）。桥接侧刻意不照抄这个行为（过期允许接管，铸更大令牌），
-   差异已由 `TestParityWithSqliteExecutorLease::test_documented_divergence_expired_lease_can_be_reclaimed`
-   固定下来。建议改法：`acquire_for` 传入当前已知 token，或让该分支先看过期。
+1. **fence.py 过期租约永久锁死（已修复，本会话）**：
+   原 `SqliteExecutorLease._acquire_within_locked` 在 `my_last_token is None`（默认
+   `-1`）时对**任何**仍存在的行（**哪怕已过期**）抛 `FencedExecutorError`；而
+   `ExecutorFence.acquire_for` 从不传 `my_last_token` ⇒ **租约过期后同一个
+   executor_id 永远无法重新接管**（重启即永久锁死）。修复：围栏信号只在当前租约
+   **严格未过期**（`expires_at > now`，与 `validate()` 一致，不用 `_is_live()` 的
+   时钟偏移宽限）时触发；过期租约允许重新接管。桥接侧本就允许过期接管，分歧消除。
+   回归：`TestParityWithSqliteExecutorLease::test_both_allow_expired_reacquire_after_fix`
+   + `test_coordination_adversarial.py::test_fence_expiry_reacquire_not_permanent`。
 2. **`ExecutorFence.acquire_for` 的上限检查是 check-then-act**（`fence.py:770-774`），
    本身不原子。本轮在桥接里用准入临界区补上了原子性，但**必须把
    `max_executors` 同时传给 `DistributedExecutorLease`**，否则上限仍有竞态
@@ -173,6 +174,34 @@
 10. **Windows 文件名**：`_safe_name` 现在会给每个名字附 10 位哈希，旧目录里
     形如 `executor:xxx.lock`（实为 NTFS 备用数据流）的残留不会被自动清理；
     换目录即彻底避开，无需迁移。
+
+11. **fence.py 非 acquire 写入不提交（已修复，本会话）**：`heartbeat` / `renew` /
+    `release` / `force_new_era` 只发 SQL 不 `commit`，残留打开事务（连接关闭即
+    回滚、对其他进程不可见）。`consume_token` 早已用 `own_txn` 自提交模式修正；
+    本会话对这 4 个方法套用同一 `own_txn` 模式（独立调用时自提交；已处于调用方
+    事务内则折叠进去），既保证持久性又不破坏"与审计原子"的保证。回归：见 §8。
+
+## 8. 独立对抗性验证（第二层 QA，本会话追加）
+
+实现者自测（199 passed / 3 skipped）+ 变异测试为第一层证据。本会话由 team-lead
+另派**全新 worker** 做独立攻破式验证，以 fresh eyes 尝试击穿三个 P0 不变量，并用
+**真实 OS 子进程**复现原攻击场景（`tests/distribution/test_coordination_adversarial.py`，
+11 条，flake8 clean）：
+
+| 场景 | 结果 | 证据 |
+|---|---|---|
+| P0-1 端到端 fail-closed | **PASS** | 对 `_enforce` 的 current/validate/consume_token 三条路径分别注入裸 `OSError` 与 `sqlite3.OperationalError`；`ExecutorFence.enforce` 抛 `ExecutorFenceBackendError`（实为 `ExecutorFenceDenied` 子类），**哨兵动作永不被执行** |
+| P0-3(c) 两进程争同一 executor_id | **PASS** | 真实 subprocess 协调；过期夺权与 force_new_era 取代两子场景均证明"任一瞬间不可能双验证" |
+| P0-2 写者不被读者饿死 | **PASS** | 3 读者 + 1 写者同 SQLite(WAL) 目录；`writer_success = 400/400`（原 bug 为 0/400） |
+| fence.py 过期锁死 | **已确认并修复** | 见 §6.1 |
+| fence.py 非 acquire 写入不提交 | **已确认并修复** | 见 §6.11 |
+
+**VERDICT（独立）**：UBX-005 三个 P0 修复经独立攻击性验证**成立、围栏未被绕过**；
+并额外发现两个 fence.py 生产默认路径缺陷（非 UBX-005 新代码引入，属既有
+`SqliteExecutorLease`），均已修复并补回归测试。
+
+**仍未验证（如实）**：P1-2 的"真 redis-server"行为与网络分区（§3、§4）；这两项
+环境无法构造，且 fakeredis/lupa 未进 pyproject ⇒ CI 上 Redis Lua 仍 skip。
 
 ## 7. Commit
 

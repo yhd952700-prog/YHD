@@ -1533,35 +1533,35 @@ class TestParityWithSqliteExecutorLease:
             with pytest.raises(FencedExecutorError):
                 lease.acquire("e1", "o", 30.0, [], None, t1 - 1)
 
-    def test_documented_divergence_expired_lease_can_be_reclaimed(self, tmp_path):
-        """**已知且刻意**的分歧（已写进 verification-plan.md）。
+    def test_both_allow_expired_reacquire_after_fix(self, tmp_path):
+        """After the fence.py fix, an expired (non-released) lease can be
+        re-acquired by BOTH the production-default SqliteExecutorLease and the
+        distributed bridge -- a crashed/restarted executor is no longer locked
+        out forever.
 
-        ``SqliteExecutorLease`` 在 ``my_last_token=None`` 时用 ``-1`` 兜底 ⇒ 只要
-        租约行还在（哪怕已过期）就抛 ``FencedExecutorError``。而
-        ``ExecutorFence.acquire_for`` 从不传 ``my_last_token``，后果是：租约过期
-        后同一个 executor_id **永远无法重新接管**（fence.py 侧的设计问题，本任务
-        不改 fence.py）。
-
-        桥接在"已过期"时允许接管，并铸一个**严格更大**的令牌 —— 同一时刻仍然
-        只有一个持有者（旧令牌立即失效），但不会把执行器永久锁死在外面。
+        Previously SqliteExecutorLease raised FencedExecutorError on any
+        still-present row (my_last_token defaulted to -1); that was a bug and is
+        now fixed. The fence signal only fires while the current lease is still
+        strictly live, so an expired lease's holder is no longer authoritative.
         """
-        from src.kernels.execution.fence import FencedExecutorError
+        for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
+            lease = mk(tmp_path / name)
+            t1 = lease.acquire("e-div", "o", 0.3, [])
+            assert t1 is not None
+            time.sleep(0.6)
+            # Re-acquire after expiry must NOT raise FencedExecutorError.
+            t2 = lease.acquire("e-div", "o", 30.0, [])
+            assert t2 is not None
+            assert lease.validate("e-div", t2) is True
 
-        # sqlite：过期后重新 acquire 会被自己的 -1 兜底否决
-        sq = self._sqlite(tmp_path / "sqlite-div")
-        assert sq.acquire("e-div", "o", 0.3, []) >= 1
-        time.sleep(0.5)
-        with pytest.raises(FencedExecutorError):
-            sq.acquire("e-div", "o", 30.0, [])
-
-        # 桥接：过期后允许接管，令牌严格更大
-        br = self._bridge(tmp_path / "bridge-div")
-        t_br = br.acquire("e-div", "o", 0.3, [])
-        time.sleep(0.5)
-        t_br2 = br.acquire("e-div", "o", 30.0, [])
-        assert t_br2 > t_br
-        assert br.validate("e-div", t_br) is False  # 旧令牌立刻失效
-        assert br.validate("e-div", t_br2) is True
+        # The bridge additionally mints a strictly greater token and invalidates
+        # the old one (the production sqlite lease renews in place instead).
+        br = self._bridge(tmp_path / "bridge-extra")
+        bt1 = br.acquire("e-div2", "o", 0.3, [])
+        time.sleep(0.6)
+        bt2 = br.acquire("e-div2", "o", 30.0, [])
+        assert bt2 > bt1
+        assert br.validate("e-div2", bt1) is False
 
     def test_both_deny_capability_escalation(self, tmp_path):
         for name, mk in (("sqlite", self._sqlite), ("bridge", self._bridge)):
