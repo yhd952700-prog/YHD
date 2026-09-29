@@ -3,10 +3,10 @@
   "generated_by": "scripts/verify_readiness.py",
   "release_ready": false,
   "counts": {
-    "PASS": 4,
+    "PASS": 5,
     "FAIL": 0,
     "BLOCKED": 1,
-    "NOT_VERIFIED": 7
+    "NOT_VERIFIED": 6
   },
   "conditions": [
     {
@@ -25,7 +25,7 @@
       "id": "C3",
       "name": "Stable tests",
       "status": "NOT VERIFIED",
-      "evidence": "3258 collected; full clean-env re-run not yet recorded (use --full to attempt)."
+      "evidence": "3261 collected; full clean-env re-run not yet recorded (use --full to attempt)."
     },
     {
       "id": "C4",
@@ -42,14 +42,14 @@
     {
       "id": "C6",
       "name": "Crash / recovery / failover",
-      "status": "NOT VERIFIED",
-      "evidence": "reliability suites rc=1 (may need live infra): mer_mid_stream_preserves_dedup\nFAILED tests/distribution/test_fence_coordination_chaos.py::TestBackendFailoverHonest::test_failover_loses_dedup_but_refuses_stale_context\n4 failed, 16 passed in 31.36s\n"
+      "status": "PASS",
+      "evidence": "reliability suites pass (3 files)"
     },
     {
       "id": "C7",
       "name": "Performance meets scale",
       "status": "NOT VERIFIED",
-      "evidence": "gate rc=1: in_intact_after_kill\": true\n  }\n}\n\n=== PERFORMANCE GATE: FAIL ===\n  - multi_process.aggregate_events_per_sec_excluding_startup: throughput regressed 7590.6 < 12058.0 (baseline 16077.4, tolerance 25%)\n"
+      "evidence": "gate did not PASS (load-sensitive; run on idle/CI): rc=1; e 450, in _init_db\n    self._conn.execute(\"PRAGMA journal_mode=WAL\")\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsqlite3.OperationalError: disk I/O error\n"
     },
     {
       "id": "C8",
@@ -79,7 +79,7 @@
       "id": "C12",
       "name": "No unexplained major failures",
       "status": "NOT VERIFIED",
-      "evidence": "3258 collected; full clean-env cross-reference pending (no unexplained major failure known)."
+      "evidence": "3261 collected; full clean-env cross-reference pending (no unexplained major failure known)."
     }
   ]
 }

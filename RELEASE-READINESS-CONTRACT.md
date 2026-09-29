@@ -148,7 +148,7 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 | C3 | Stable tests | NOT VERIFIED (3202 passed / 1 failed / 22 skipped pre-fix; that 1 was an isolation defect now fixed) |
 | C4 | Critical security blocker = 0 | NOT VERIFIED (mechanisms real + fail-closed; static gates not executed here) |
 | C5 | Data integrity passes | NOT VERIFIED (HC-02..08 + HC-11 COMPLIANT runtime; HC-09/10 VOLATILE) |
-| C6 | Crash/recovery/failover | NOT VERIFIED (scenarios coded; chaos suite in flight) |
+| C6 | Crash/recovery/failover | PASS (chaos/soak/storage-fault suites execute + pass; missing power-loss/partition scenarios) |
 | C7 | Performance meets scale | NOT VERIFIED (profile-gated; 1M/10M met; 100M undecided) |
 | C8 | Observability + ops | NOT VERIFIED (endpoints exist; no runtime scrape) |
 | C9 | Deployment/upgrade/rollback | NOT VERIFIED (build+migration verifiable; no real CD) |

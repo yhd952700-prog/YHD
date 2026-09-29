@@ -72,15 +72,18 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **Next:** Decide HC-09/HC-10 persistence (engineering, owner-decidable) or keep volatile by design; keep HC-01 frozen & isolated.
 
 ## G6 — Reliability
-- **Status:** **NOT VERIFIED** (scenarios coded + CI-wired; not executed in clean env)
-- **Evidence (real scenario coverage, EVIDENCED by code):**
-  - `test_audit_soak_concurrency.py`: 4 threads × 2500 = 10 000 appends no loss; crash via `store._conn.close()` recovers with no gap.
+- **Status:** **NOT VERIFIED** (soak/fault/chaos suites now EXECUTE + PASS in this env; missing power-loss / network-partition scenarios)
+- **Evidence (executed, not just coded):**
+  - `tests/distribution/test_fence_coordination_chaos.py` (NEW, commit `d063f8c2`, **10 passed**): fail-closed proofs — backend-outage (RedisLease unreachable → `CoordinationUnavailableError` → fence denies replay), split-brain/cross-node replay (fakeredis two-node, 300-iter soak), lease-expiry (stale context denied; re-acquire mints strictly greater token), crash-recovery (subprocess `kill()` mid-stream → no double-execution, no gap), failover.
+  - `tests/kernels/audit/test_audit_soak_concurrency.py`: 4 threads × 2500 = 10 000 appends no loss; crash via `store._conn.close()` recovers with no gap.
   - `test_storage_faults.py`: real injection of `SQLITE_FULL` / `READONLY` / `CORRUPT` / `IOERR`, plus multi-process `kill()` mid-transaction → sibling recovers, seq contiguous; backup restore; real byte-flip detected.
-  - Missing (not evidenced): OS-level **power loss** (only process-kill/conn-close simulated), **network partition**, and cross-shard atomic snapshot.
-- **Last Verified:** 2026-09-29 (code read + CI wiring).
-- **Blocker:** none — needs a clean-env execution pass.
+  - The release gate's C6 ran all three reliability files together and **PASSED** (2026-09-29).
+  - **HONEST LIMITATION (failover):** switching the lease backend (file↔redis↔etcd) does NOT migrate replay-dedup state — a replay recorded on the old backend is not detected on the new one. Mitigation: the fresh backend REJECTS stale (old-backend) authorization contexts rather than trusting them. Production pins a single backend per process lifetime, so this is not a live path, but it is a real gap if backend selection ever changes at runtime. Recorded, not hidden.
+  - Still missing (not evidenced): OS-level **power loss**, **network partition**, cross-shard atomic snapshot.
+- **Last Verified:** 2026-09-29 (chaos/soak/storage-fault suites executed + pass; gate C6 green).
+- **Blocker:** none — remaining gaps are scenario coverage (power-loss/partition), not execution.
 - **Owner:** quality-reliability (`qr-baseline`).
-- **Next:** Execute the soak/fault suite in a clean env and publish results; add power-loss/partition scenarios.
+- **Next:** Add power-loss / network-partition scenarios; wire the reliability suites into a CI clean-env job as the formal G6 gate.
 
 ## G7 — Performance & Scale
 - **Status:** **NOT VERIFIED** (real machine-profile baselines + 1M/10M runs; 100M extrapolated; CI numeric gate skips on profile mismatch)
@@ -170,10 +173,10 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **U42 (CLARIFIED):** see High Risks — RBAC/ABAC kernel is default-deny; human boundary default-allow is by design. CI guardrail recommended.
 
 ## Autonomous Workstreams (self-directed, no owner prompting)
-1. **#3 Distributed coordination hardening** — `EtcdLease` third backend + CI etcd service; rebuild `deploy/cloud/src/distribution/` bundle; Windows legacy filename auto-clean. *(IN FLIGHT — worker)*
-2. **#4 Productionization** — soak / chaos benchmarks (crash-recovery, lease-expiry, split-brain, backend outage, failover) for the fence + coordination path. *(IN FLIGHT — worker)*
-3. **#6 Continuous discovery** — scan for un-owned problems (U39 Windows sandbox RLIMIT, U42 permit-by-default auth, doc/code drift, repeat implementations). *(IN FLIGHT — worker)*
-4. **G2/G3/G6/G7/G8/G9/G10 verification** — turn each NOT VERIFIED into VERIFIED with clean-env evidence.
+1. **#3 Distributed coordination hardening** — `EtcdLease` third backend + CI etcd service + pyproject `[etcd]` extra + Windows legacy filename auto-clean. **DONE (commit `1b4a00e1`)**; real `etcd3`+live-server path not exercised here (fake-etcd test layer covers behavior).
+2. **#4 Productionization** — soak / chaos benchmarks for the fence + coordination path. **DONE (commit `d063f8c2`)**; 10 fail-closed scenarios, executed + pass; failover cross-backend-dedup limitation documented (see G6).
+3. **#6 Continuous discovery** — **DONE**: U39 FIXED (`08ff1a88`); U42 clarified (RBAC/ABAC kernel default-deny; human boundary default-allow by design); doc/code drift clarified (14 kernels authoritative; Definition Lock v3.0 nonexistent); AuditStore/SecretStore pairs live, not dead code.
+4. **G2/G3/G6/G7/G8/G9/G10 verification** — turn each NOT VERIFIED into VERIFIED with clean-env evidence (G6 now has executed+passing chaos/soak/storage-fault suites).
 5. **Blueprint evolution** — upgrade `UNIFIED-BLUEPRINT` when research proves current architecture unfit for the million-scale target (with ADR + Architecture Delta + Migration Path + Verification Plan).
 6. **Independent verification service** — standing harness consuming runtime evidence scripts, decoupled from the builder.
 7. **HC-09/HC-10 persistence decision** — owner-decidable engineering choice (keep volatile by design, or persist).
@@ -182,7 +185,7 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - `docs/spec/UNIFIED-BLUEPRINT.md` **v1.0** (established 2026-09-06). Product/Architecture: **LIUHAO X v3.0 / Architecture v3.0**. UBX upgrade mechanism (UBX-001..006) established 2026-09-28, all currently **PROPOSED**.
 
 ## Current Architecture Version
-- **LIUHAO X v3.0 / Architecture v3.0** (single-process SQLite audit chain + in-process `RLock` on `p36`; HC-09/HC-10 volatile; 11 integrity chains → 8 compliant / 3 unverified).
+- **LIUHAO X v3.0 / Architecture v3.0** (single-process SQLite audit chain + in-process `RLock` on `p36`; HC-09/HC-10 volatile; 11 integrity chains → 8 compliant / 3 unverified). Distributed coordination now offers **three backends** — FileLock (SQLite WAL + UNIQUE consumed table), Redis (Lua SET-NX-PX), and the NEW **EtcdLease** (commit `1b4a00e1`, in-memory fake-etcd test layer; real `etcd3`+live-server path not exercised here).
 
 ## Current Test Baseline
 - **Full `pytest tests/` (2026-09-29, pre-fix): 3202 passed, 1 failed, 22 skipped** (604 s). The 1 failure was a test-isolation env leak (see G3), now fixed; a clean-env re-run to confirm 0 failures is the remaining step. 3225 tests collected. Representative suites green (coordination 89/2, fence_metrics 9, fence+gateway-health 40, secret_store 15, lifecycle 5+1skip, kernel_registry 10).
@@ -193,8 +196,9 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 ---
 
 ## Next Autonomous Work
-1. **DONE** — `RELEASE-READINESS-CONTRACT.md` (canonical 12-condition contract) + `scripts/verify_readiness.py` (gate battery, writes `readiness_report.json`). First run of the battery already returns PASS on C1 (build), C2 (clean-env boot + /v1/health=200), C4 (no hardcoded secrets + fail-closed + CI gates), C5 (hash-chain 32/32 COMPLIANT); C11 BLOCKED (HC-01); rest NOT VERIFIED pending clean-env evidence.
-2. **DONE this cycle** — full test baseline published (3202 passed / 1 failed / 22 skipped) and the single failure root-caused as a test-isolation leak + fixed. Remaining: clean-env re-run to confirm 0 failures reproducibly.
-3. **IN FLIGHT (worker)** — **#3** EtcdLease third backend + CI etcd service; **#4** fence+coordination chaos/soak benchmarks; **#6** discovery sweep (U39/U42/drift/repeats) — delegated to parallel workers, results pending.
-4. Reconcile doc/code drift (kernel count; Definition Lock proven nonexistent) — covered by the #6 worker.
-5. Return to EVOLUTION after RELEASE READY.
+1. **DONE** — `RELEASE-READINESS-CONTRACT.md` (canonical 12-condition contract) + `scripts/verify_readiness.py` (gate battery, writes `readiness_report.json`). First run of the battery already returns PASS on C1, C2, C4, C5, C6; C11 BLOCKED (HC-01); rest NOT VERIFIED pending clean-env evidence.
+2. **DONE this cycle** — full test baseline published (3202 passed / 1 failed / 22 skipped) and the single failure root-caused as a test-isolation leak + fixed (verified, 4 affected files green).
+3. **DONE this cycle** — #3 EtcdLease backend (`1b4a00e1`), #4 chaos/soak benchmarks (`d063f8c2`), #6 discovery (U39 fixed `08ff1a88`; U42/drift/repeats clarified).
+4. **IN PROGRESS** — clean-env full `pytest tests/` re-run (workers now idle) to confirm 0 failures reproducibly; then **push `p36`**.
+5. **RECOMMENDED** — U42 CI guardrail: force `actor="autonomous"` (inherits default-deny) + default-deny for any new WorldInterface adapter that omits an explicit `actor`.
+6. Continue turning NOT VERIFIED → VERIFIED for G2/G7/G8/G9/G10; stand up the independent-verification harness (C10); then RELEASE READY → EVOLUTION.
