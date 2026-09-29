@@ -59,6 +59,17 @@ dependencies = [
     "RestrictedPython>=8.0",
 ]
 
+# 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
+# 生产安装）。CI 必须 `pip install -e .[tests]` 才会装上它们，从而让
+# tests/distribution/test_coordination.py 里的 `TestRedisLuaScriptsActuallyExecute`
+# （fakeredis + lupa 真跑 Lua）从"skip"变成"真验证"。缺 lupa 时该组在测试内优雅
+# skip（nodes fixture 的 eval 自检），不会把安装/收集搞挂。
+[project.optional-dependencies]
+tests = [
+    "fakeredis>=2.0.0",
+    "lupa>=2.0",
+]
+
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"

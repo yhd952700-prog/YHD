@@ -876,6 +876,20 @@ class FileLockLease(DistributedLease):
 
         return _with_retry(_attempt, f"release lease {self.name!r}")
 
+    def consume(self, executor_id: str, token: FencingToken, correlation_id: str) -> None:
+        """replay 去重委托给 SQLite 的 UNIQUE 约束（跨进程成立）。
+
+        ``_store.consume`` 在重复消费时抛 ``ValueError``（由桥接转成
+        :class:`ReplayDetectedError`）；后端故障抛
+        :class:`CoordinationUnavailableError`。
+        """
+        want = parse_token(token)
+        if want is None:
+            raise ReplayDetectedError(f"cannot consume an invalid token for {executor_id!r}")
+        if not correlation_id:
+            raise ValueError("correlation_id is required for replay detection")
+        self._store.consume(self.name, int(want), correlation_id)
+
     def current(self) -> LeaseView:
         row = _with_retry(lambda: self._store.read(self.name), f"read lease {self.name!r}")
         return self._view_from(row)
@@ -915,12 +929,22 @@ class RedisLease(DistributedLease):
     * 释放/续租/校验：全部走 **Lua compare-and-delete / compare-and-set**。
 
     .. note::
-       **Lua 的验证状态（如实）**：4 段 Lua 已用 ``fakeredis`` + ``lupa``（真 Lua
-       解释器）执行验证过 —— 见 ``TestRedisLuaScriptsActuallyExecute``。但
-       ``fakeredis`` / ``lupa`` **没有声明进 pyproject.toml**，所以 CI 上那组
-       **仍然 skip**；``TestRealRedisEndToEnd``（真 ``redis-server``）在本仓库
-       环境同样 skip。换言之：Lua **逻辑**已验证，**真 Redis 上的行为未验证**。
-       ``redis`` 是延迟导入的。
+       **replay 去重（P1-2 修复点）**：``consume`` 用 :attr:`_CONSUME_LUA`
+       （``SET ... NX PX``）把 (executor, token, correlation_id) 的"已消费"状态
+       **持久化在 Redis**，因此跨节点重放检测真正成立 —— 两个不同进程/主机只要
+       共享同一份 Redis 状态，节点 A 消费后节点 B 必然也检测到重放。旧实现里
+       ``DistributedExecutorLease`` 对没有 ``_store`` 的后端（Redis 就是）静默
+       退回进程内 ``set``，跨节点重放检测彻底失效；现已强制每个后端实现
+       ``consume``。
+
+       **Lua 的验证状态（如实）**：4 段 Lua + ``consume`` 已用 ``fakeredis`` +
+       ``lupa``（真 Lua 解释器）执行验证过 —— 见
+       ``TestRedisLuaScriptsActuallyExecute``。``fakeredis`` / ``lupa`` 现已声明进
+       ``pyproject.toml`` 的 ``[project.optional-dependencies].tests``，CI 用
+       ``pip install -e .[tests]`` 即可让这组**真正执行**（不再 skip）；
+       ``TestRealRedisEndToEnd``（真 ``redis-server``）在本仓库环境仍 skip，除非
+       127.0.0.1:6379 有服务。换句话说：Lua **逻辑**已被 fakeredis 真跑验证，
+       **真 Redis 上的行为**仍只在有服务时验证。``redis`` 是延迟导入的。
     """
 
     DEFAULT_URL = "redis://localhost:6379/0"
@@ -999,6 +1023,19 @@ if not j then return 0 end
 if holder ~= ARGV[1] or string.sub(rest, 1, j - 1) ~= ARGV[2] then return 0 end
 return 1
 """
+
+    #: KEYS[1]=consumed-key; ARGV[1]=value, ARGV[2]=ttl_ms。
+    #: 原子 "set-if-not-exists + PX 过期"：首次消费返回 1，重复消费返回 0。
+    #: 这是跨节点 replay 去重**真正持久化在 Redis** 的关键（见 ``consume``）。
+    _CONSUME_LUA = """
+local r = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', tonumber(ARGV[2]))
+if r then return 1 else return 0 end
+"""
+
+    #: consumed（已消费 correlation_id）记录的存活时间（ms）。
+    #: 仓库既有 SqliteExecutorLease 是永久保留；Redis 版为不无限膨胀给一个长 TTL。
+    #: 必须 ≥ 任何真实重放窗口；24h 足够，replay 检测语义不变。
+    _CONSUME_TTL_MS = 24 * 60 * 60 * 1000
 
     def __init__(
         self,
@@ -1133,6 +1170,37 @@ return 1
         self._check_owner(owner)
         result = self._run(self._RELEASE_LUA, [self._lease_key], [owner, str(int(want))])
         return int(result) == 1
+
+    def consume(self, executor_id: str, token: FencingToken, correlation_id: str) -> None:
+        """跨节点 replay 去重：**持久化在 Redis**，两个节点共享同一份状态。
+
+        用 :attr:`_CONSUME_LUA` 原子地 ``SET ... NX PX`` 占用这条
+        ``(executor, token, correlation_id)``；"已占用" ⇒ 重放。
+
+        * 重放 ⇒ 抛 :class:`ValueError`（由桥接转成 :class:`ReplayDetectedError`）。
+        * 后端不可达 ⇒ :meth:`_run` 抛 :class:`CoordinationUnavailableError`
+          （fail-closed，绝不静默放行重放）。
+
+        .. note::
+            这是修掉「Redis 后端 replay 检测退化成进程内内存 set」的关键。旧实现
+            里 ``DistributedExecutorLease._consume_token`` 对**没有** ``_store`` 的
+            后端（Redis 就是）静默回退到进程内 ``_consumed`` set，导致两个 Redis
+            节点各记各的、跨节点重放检测彻底失效。现在每个后端都必须实现
+            ``consume``（见 :meth:`FileLockLease.consume`）。
+        """
+        want = parse_token(token)
+        if want is None:
+            raise ReplayDetectedError(f"cannot consume an invalid token for {executor_id!r}")
+        if not correlation_id:
+            raise ValueError("correlation_id is required for replay detection")
+        key = f"{self._prefix}consumed:{self.name}:{int(want)}:{correlation_id}"
+        try:
+            result = self._run(self._CONSUME_LUA, [key], ["1", self._CONSUME_TTL_MS])
+        except CoordinationUnavailableError:
+            # 透传：桥接的 _guarded 会再包成 ExecutorFenceBackendError（deny）。
+            raise
+        if int(result) != 1:
+            raise ValueError("already consumed")
 
     def current(self) -> LeaseView:
         raw = self._get(self._lease_key)
@@ -1562,28 +1630,23 @@ class DistributedExecutorLease(ExecutorLease):
         if want is None:
             raise ReplayDetectedError(f"cannot consume an invalid token for {executor_id!r}")
         lease = self._lease_for(executor_id)
-        store = getattr(lease, "_store", None)
-        if store is None:
-            # 非文件后端：退回进程内去重（如实记录这一限制）。
-            return self._consume_local(executor_id, want, correlation_id)
+        # 每个后端都必须自己实现跨节点/跨进程的 replay 去重（见
+        # RedisLease.consume / FileLockLease.consume）。不再退回进程内
+        # _consume_local —— 那会让"分布式"后端在 replay 检测上退化为单机内存，
+        # 等于没防（P1-2 修复点）。
+        consume = getattr(lease, "consume", None)
+        if consume is None:
+            raise CoordinationUnavailableError(
+                f"coordination backend {type(lease).__name__} does not implement "
+                "consume() (replay detection unavailable)"
+            )
         try:
-            store.consume(lease.name, int(want), correlation_id)
+            consume(executor_id, int(want), correlation_id)
         except ValueError as exc:
             raise ReplayDetectedError(
                 f"replay of (executor={executor_id}, token={int(want)}, "
                 f"corr={correlation_id})"
             ) from exc
-
-    def _consume_local(self, executor_id, token, correlation_id):
-        if not hasattr(self, "_consumed"):
-            self._consumed = set()
-        key = (executor_id, int(token), correlation_id)
-        if key in self._consumed:
-            raise ReplayDetectedError(
-                f"replay of (executor={executor_id}, token={int(token)}, "
-                f"corr={correlation_id})"
-            )
-        self._consumed.add(key)
 
     def force_new_era(self):
         return self._guarded("executor fence force_new_era", self._era_lease.force_new_era)

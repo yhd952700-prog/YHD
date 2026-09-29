@@ -604,6 +604,32 @@ class TestRedisLeaseWiring:
         b = RedisLease("two", client=RecordingRedis(), prefix="p:")
         assert a._token_key == b._token_key
 
+    def test_consume_passes_correct_key_and_ttl(self):
+        """consume 必须把 (name, token, correlation_id) 编码进 Redis key，并带 TTL。"""
+        client = RecordingRedis(eval_result=1)
+        lease = RedisLease("res", client=client, prefix="p:")
+        lease.connect()
+        lease.consume("exec-1", FencingToken(7), "c1")
+        call = client.eval_calls[-1]
+        assert call["keys"] == ["p:consumed:res:7:c1"]
+        assert call["argv"][0] == "1"
+        assert int(call["argv"][1]) == RedisLease._CONSUME_TTL_MS
+
+    def test_consume_returns_0_raises_replay(self):
+        """Lua 返回 0（key 已存在）⇒ consume 抛 ValueError（桥接转 ReplayDetectedError）。"""
+        client = RecordingRedis(eval_result=0)
+        lease = RedisLease("res", client=client, prefix="p:")
+        lease.connect()
+        with pytest.raises(ValueError):
+            lease.consume("exec-1", FencingToken(7), "c1")
+
+    def test_consume_rejects_empty_correlation_id(self):
+        client = RecordingRedis(eval_result=1)
+        lease = RedisLease("res", client=client, prefix="p:")
+        lease.connect()
+        with pytest.raises(ValueError):
+            lease.consume("exec-1", FencingToken(7), "")
+
 
 # =============================================================================
 # H) ExecutorFence 桥接 —— 不改 fence.py 一行
@@ -1636,11 +1662,12 @@ class TestRedisLuaScriptsActuallyExecute:
     与 :class:`TestRealRedisEndToEnd` 的区别：那组要真 ``redis-server``；这组只需
     ``fakeredis``（共享 ``FakeServer`` 的两个 client = 两个"节点"共享同一份状态），
     配合 ``lupa`` 就是**真 Lua 解释器**，因此 compare-and-delete / INCR 单调令牌 /
-    ``PX`` 过期这几条运行时语义可以在本机被验证。
+    ``PX`` 过期 / ``consume`` 的 SET-NX 这几条运行时语义可以在本机被验证。
 
-    ⚠️ ``fakeredis`` / ``lupa`` **未声明进 pyproject.toml**（本轮不改依赖声明，
-    见 verification-plan §6），所以 CI 上这组仍会 skip —— 这是**已知且未解决**
-    的覆盖缺口，不是"已验证"。
+    ``fakeredis`` / ``lupa`` 现已声明进 ``pyproject.toml`` 的
+    ``[project.optional-dependencies].tests``；CI 用 ``pip install -e .[tests]``
+    即可让这组**真正执行**（不再 skip）。本机（venv 已装 lupa）会实跑；缺 lupa 时
+    ``nodes`` fixture 的 eval 自检会优雅 skip，不会把收集搞挂。
     """
 
     @pytest.fixture
@@ -1720,6 +1747,45 @@ class TestRedisLuaScriptsActuallyExecute:
         assert b2.validate("exec-r", tok) is False
         b1.force_new_era()
         assert b1.validate("exec-r", tok) is False
+
+    def test_consume_is_cross_node_persistent(self, nodes):
+        """P1-2 修复点：Redis 后端的 replay 去重必须**跨节点**成立。
+
+        旧实现里 ``DistributedExecutorLease`` 对 Redis 后端静默退回进程内
+        ``set``，两个节点各记各的、跨节点重放检测彻底失效。现在 ``consume`` 走
+        Redis 的 SET-NX，节点 A 消费后节点 B 必然也检测到重放。
+        """
+        from src.kernels.execution.fence import ReplayDetectedError
+
+        c1, c2 = nodes
+        b1 = DistributedExecutorLease(lease_factory=lambda n: RedisLease(n, client=c1))
+        b2 = DistributedExecutorLease(lease_factory=lambda n: RedisLease(n, client=c2))
+        b2._holder = "another-node"  # 同进程内 holder 相同，这里显式换个身份
+        tok = b1.acquire("exec-consume", "o", 30.0, [])
+        assert tok is not None
+
+        # 节点 1 消费一次 —— 成功
+        b1.consume_token("exec-consume", tok, "action-1")
+        # 节点 2（共享同一份 Redis 状态）必须也检测到重放 ⇒ 证明去重是跨节点的
+        with pytest.raises(ReplayDetectedError):
+            b2.consume_token("exec-consume", tok, "action-1")
+        # 不同 correlation_id 仍可消费（不是全局锁死）
+        b2.consume_token("exec-consume", tok, "action-2")
+
+    def test_consume_denies_when_backend_is_unreachable(self):
+        """后端死时 consume 必须 deny（fail-closed），绝不静默放行重放。"""
+        from src.kernels.execution.fence import ExecutorFenceDenied
+
+        bridge = DistributedExecutorLease(lease_factory=factory_for_dead_redis())
+        with pytest.raises(ExecutorFenceDenied):
+            bridge.consume_token("exec-consume-dead", FencingToken(1), "c1")
+
+    def test_redis_lease_consume_raises_when_backend_down(self):
+        """``RedisLease.consume`` 在后端不可达时抛 CoordinationUnavailableError。"""
+        lease = RedisLease("dead-consume", client=DeadRedis(), prefix="dead:")
+        lease.connect()
+        with pytest.raises(CoordinationUnavailableError):
+            lease.consume("e", FencingToken(1), "c1")
 
 
 @pytest.mark.skipif(
