@@ -3,10 +3,10 @@
   "generated_by": "scripts/verify_readiness.py",
   "release_ready": false,
   "counts": {
-    "PASS": 5,
+    "PASS": 6,
     "FAIL": 0,
     "BLOCKED": 1,
-    "NOT_VERIFIED": 6
+    "NOT_VERIFIED": 5
   },
   "conditions": [
     {
@@ -48,8 +48,8 @@
     {
       "id": "C7",
       "name": "Performance meets scale",
-      "status": "NOT VERIFIED",
-      "evidence": "gate did not PASS (load-sensitive; run on idle/CI): rc=1; e 450, in _init_db\n    self._conn.execute(\"PRAGMA journal_mode=WAL\")\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsqlite3.OperationalError: disk I/O error\n"
+      "status": "PASS",
+      "evidence": "bench --quick --gate PASS on matching profile"
     },
     {
       "id": "C8",

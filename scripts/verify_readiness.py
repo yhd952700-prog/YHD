@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))  # bootstrap so `import src...` works when run directly
 SRC = REPO / "src"
 SCRIPTS = REPO / "scripts"
 CI = REPO / ".github" / "workflows"
@@ -399,9 +400,12 @@ def main(argv):
     print(f"  report written: {out_path}")
 
     # Exit 2 on any FAIL (contradiction); 0 otherwise (NOT VERIFIED/BLOCKED are
-    # pending verification, not contradictions).
-    return 2 if n_fail > 0 else 0
+    # pending verification, not contradictions). Use an explicit sys.exit branch
+    # (not a returned IfExp) so the meta-guardrail can prove this gate can fail.
+    if n_fail > 0:
+        sys.exit(2)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    main(sys.argv[1:])

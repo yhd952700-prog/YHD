@@ -1,0 +1,62 @@
+name: Release Readiness
+
+# RELEASE-READINESS-CONTRACT.md gate battery (scripts/verify_readiness.py).
+# Wired here on purpose: an unwired verify_*.py fails tests/test_guardrail_scripts.py,
+# which is the meta-guardrail that keeps the 25+ gate scripts from silently decaying.
+# The script exits 2 only when a condition is genuinely contradicted (FAIL); NOT
+# VERIFIED / BLOCKED are pending verification and do not fail the run. As of this
+# commit every condition is PASS / NOT VERIFIED / BLOCKED, so this job is green;
+# if a real regression makes a check FAIL, CI goes red -- which is the point.
+
+on:
+  push:
+    branches: ['p36']
+  pull_request:
+    branches: ['p36']
+
+jobs:
+  readiness:
+    name: Release Readiness Contract (C1..C12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      etcd:
+        image: bitnami/etcd:3.5
+        ports:
+          - 2379:2379
+        env:
+          ETCD_ENABLE_V2: "false"
+          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
+        options: >-
+          --health-cmd "etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[tests,etcd]
+
+      - name: Run release-readiness contract
+        run: python scripts/verify_readiness.py

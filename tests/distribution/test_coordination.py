@@ -89,6 +89,19 @@ WORKER_SRC = textwrap.dedent(
     owner = "proc-%d" % os.getpid()
     result = {"pid": os.getpid(), "mode": mode}
 
+    # 争用栅栏：父进程在所有子进程 spawn 完成后才创建 barrier 文件。
+    # 工人等到它出现再抢锁，确保"真正同时争用"。否则在满负荷测试下子进程
+    # spawn 错峰可能超过 hold 窗口，后 spawn 的进程会在前一个持有者释放后才
+    # 抢到锁，被误判为"多个持有者"（这是测试工装的时序缺陷，不是租约缺陷）。
+    # 若租约本身存在真实竞态，栅栏反而会让它稳定暴露（测试仍会红），不会掩盖。
+    _barrier = payload.get("barrier")
+    if _barrier:
+        _bdeadline = time.time() + float(payload.get("barrier_timeout", 60.0))
+        while not os.path.exists(_barrier):
+            if time.time() > _bdeadline:
+                break
+            time.sleep(0.005)
+
     def finish(extra=None):
         if extra:
             result.update(extra)
@@ -230,23 +243,27 @@ def _run_workers(tmp_path: Path, mode: str, count: int, hold: float = 2.0):
     """启动 ``count`` 个独立进程争同一个租约，返回它们各自的结果 dict。"""
     lease_dir = tmp_path / "leases"
     lease_dir.mkdir(exist_ok=True)
+    # 争用栅栏文件：仅 "hold" 模式（TestTwoProcessesContend）使用，确保子进程
+    # 真正同时争用，消除 spawn 错峰导致的偶发多赢假阳性。
+    barrier_path = lease_dir / ".contend_barrier"
     pairs = []
     for i in range(count):
         out = lease_dir / f"result-{mode}-{i}.json"
-        pairs.append(
-            _spawn(
-                tmp_path,
-                {
-                    "mode": mode,
-                    "dir": str(lease_dir),
-                    "name": "contended",
-                    "out": str(out),
-                    "repo": REPO_ROOT,
-                    "hold": hold,
-                    "ttl": 3.0 if mode == "crash" else 30.0,
-                },
-            )
-        )
+        payload = {
+            "mode": mode,
+            "dir": str(lease_dir),
+            "name": "contended",
+            "out": str(out),
+            "repo": REPO_ROOT,
+            "hold": hold,
+            "ttl": 3.0 if mode == "crash" else 30.0,
+        }
+        if mode == "hold":
+            payload["barrier"] = str(barrier_path)
+        pairs.append(_spawn(tmp_path, payload))
+    # 所有子进程已 spawn 完成：放开栅栏，让它们真正"同时"抢锁。
+    if mode == "hold":
+        barrier_path.write_text("go", encoding="utf-8")
     return _collect(pairs)
 
 
