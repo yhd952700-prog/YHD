@@ -40,6 +40,13 @@ def _clear_env(monkeypatch):
         "LIUHAO_SECRET_DEV_EPHEMERAL",
         "LIUHAO_ENV",
         "VAULT_ADDR",
+        # JWT signing-key env vars. A *leaked* LIUHAO_JWT_SECRET (or its
+        # aliases) from another test would make get_jwt_handler() build a
+        # handler instead of raising in production, silently defeating the
+        # fail-closed gate. Clear them so this file stays hermetic.
+        "LIUHAO_JWT_SECRET",
+        "JWT_SECRET_KEY",
+        "JWT_SECRET",
     ):
         monkeypatch.delenv(var, raising=False)
 

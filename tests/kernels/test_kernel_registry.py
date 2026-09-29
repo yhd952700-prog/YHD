@@ -175,13 +175,15 @@ def test_kernels_route_mounted_behind_human_principal_gate():
     )
 
 
-def test_kernels_endpoint_requires_human_token_live():
+def test_kernels_endpoint_requires_human_token_live(monkeypatch):
     """端到端：无令牌返回 401，带有效人类令牌返回 200（覆盖全部 14 内核）。
 
     若当前环境无法构建完整网关客户端（例如缺少网关运行所需配置），则优雅跳过，
     但上面的反射测试已证明路由受闸门保护——不属于「橡皮图章」。
     """
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-kernel-registry-e2e")
+    # Use monkeypatch (not os.environ.setdefault) so the JWT secret is reverted
+    # at teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-kernel-registry-e2e", prepend=False)
     try:
         from fastapi.testclient import TestClient
         from src.gateway.main import get_app

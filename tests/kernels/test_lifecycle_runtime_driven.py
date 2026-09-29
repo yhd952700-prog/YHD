@@ -83,7 +83,7 @@ def test_resume_illegal_transition_raises(reset_kernel_globals):
 # --------------------------------------------------------------------------- #
 
 def test_lifespan_drives_kernel_ready_on_startup_and_stopped_on_shutdown(
-    reset_kernel_globals,
+    reset_kernel_globals, monkeypatch,
 ):
     """绿色护栏：lifespan 启动调用 initialize_all() 把实例驱动到 READY；
     关闭调用 shutdown_all() 把它驱动到 STOPPED。
@@ -95,7 +95,9 @@ def test_lifespan_drives_kernel_ready_on_startup_and_stopped_on_shutdown(
     assert inst.lifecycle is KernelLifecycle.UNINITIALIZED
     _security_mod._global_security = inst
 
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-lifecycle-runtime")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-lifecycle-runtime", prepend=False)
     from fastapi.testclient import TestClient
     from src.gateway.main import get_app
 
@@ -133,7 +135,9 @@ def test_lifespan_counterproof_removing_init_call_leaves_kernel_uninitialized(
         "src.kernels._registry.initialize_all", lambda: noop_report
     )
 
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-lifecycle-counterproof")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-lifecycle-counterproof", prepend=False)
     from fastapi.testclient import TestClient
     from src.gateway.main import get_app
 
@@ -149,11 +153,15 @@ def test_lifespan_counterproof_removing_init_call_leaves_kernel_uninitialized(
 # 3. 主权驱动端点：init / shutdown / {name}/pause / {name}/resume + 诚实失败
 # --------------------------------------------------------------------------- #
 
-def test_kernel_management_endpoints_drive_and_fail_honestly(reset_kernel_globals):
+def test_kernel_management_endpoints_drive_and_fail_honestly(
+    reset_kernel_globals, monkeypatch,
+):
     """端到端：受人类闸门保护的生命周期端点能真正驱动，并对非法/无实例/factory-only
     如实返回（绝不伪造成功）。
     """
-    os.environ.setdefault("LIUHAO_JWT_SECRET", "test-secret-kernel-endpoints")
+    # monkeypatch (not os.environ.setdefault) so the secret is reverted at
+    # teardown and never leaks into the shared process for later tests.
+    monkeypatch.setenv("LIUHAO_JWT_SECRET", "test-secret-kernel-endpoints", prepend=False)
     try:
         from fastapi.testclient import TestClient
         from src.gateway.main import get_app

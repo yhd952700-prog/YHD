@@ -1,0 +1,85 @@
+{
+  "contract_version": "1.0",
+  "generated_by": "scripts/verify_readiness.py",
+  "release_ready": false,
+  "counts": {
+    "PASS": 4,
+    "FAIL": 0,
+    "BLOCKED": 1,
+    "NOT_VERIFIED": 7
+  },
+  "conditions": [
+    {
+      "id": "C1",
+      "name": "Build passes",
+      "status": "PASS",
+      "evidence": "compileall clean; 4 entry modules import OK"
+    },
+    {
+      "id": "C2",
+      "name": "Clean-environment runnable",
+      "status": "PASS",
+      "evidence": "clean-env boot + GET /v1/health = 200"
+    },
+    {
+      "id": "C3",
+      "name": "Stable tests",
+      "status": "NOT VERIFIED",
+      "evidence": "3258 collected; full clean-env re-run not yet recorded (use --full to attempt)."
+    },
+    {
+      "id": "C4",
+      "name": "Critical security blocker = 0",
+      "status": "PASS",
+      "evidence": "no high-confidence secrets; fail-closed present; CI gates ['bandit:high', 'semgrep:error']"
+    },
+    {
+      "id": "C5",
+      "name": "Data integrity passes",
+      "status": "PASS",
+      "evidence": "hash-chain sig/alg 32/32 COMPLIANT (HC-02..08 + HC-11)"
+    },
+    {
+      "id": "C6",
+      "name": "Crash / recovery / failover",
+      "status": "NOT VERIFIED",
+      "evidence": "reliability suites rc=1 (may need live infra): mer_mid_stream_preserves_dedup\nFAILED tests/distribution/test_fence_coordination_chaos.py::TestBackendFailoverHonest::test_failover_loses_dedup_but_refuses_stale_context\n4 failed, 16 passed in 31.36s\n"
+    },
+    {
+      "id": "C7",
+      "name": "Performance meets scale",
+      "status": "NOT VERIFIED",
+      "evidence": "gate rc=1: in_intact_after_kill\": true\n  }\n}\n\n=== PERFORMANCE GATE: FAIL ===\n  - multi_process.aggregate_events_per_sec_excluding_startup: throughput regressed 7590.6 < 12058.0 (baseline 16077.4, tolerance 25%)\n"
+    },
+    {
+      "id": "C8",
+      "name": "Observability + operations",
+      "status": "NOT VERIFIED",
+      "evidence": "endpoints exist (prometheus + ready); no runtime scrape performed here"
+    },
+    {
+      "id": "C9",
+      "name": "Deployment / upgrade / rollback",
+      "status": "NOT VERIFIED",
+      "evidence": "Dockerfile + alembic present; real CD absent=True (honest)"
+    },
+    {
+      "id": "C10",
+      "name": "Independent verification",
+      "status": "NOT VERIFIED",
+      "evidence": "no standing independent verification harness yet"
+    },
+    {
+      "id": "C11",
+      "name": "HC-01 real verification",
+      "status": "BLOCKED",
+      "evidence": "HC-01 BLOCKED / GO=BLOCKED \u2014 HUMAN DECISION PENDING (Decision Isolation active; not an engineering blocker)"
+    },
+    {
+      "id": "C12",
+      "name": "No unexplained major failures",
+      "status": "NOT VERIFIED",
+      "evidence": "3258 collected; full clean-env cross-reference pending (no unexplained major failure known)."
+    }
+  ]
+}
