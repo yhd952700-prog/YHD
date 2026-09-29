@@ -8,7 +8,10 @@ Provides basic isolation when gVisor/Docker are unavailable.
 import subprocess
 import os
 import time
+import logging
 from typing import Dict, Any, Optional, List
+
+logger = logging.getLogger(__name__)
 
 # Cross-platform resource limit support
 # 'resource' module is Unix-only; Windows uses psutil/process limits via subprocess
@@ -79,6 +82,32 @@ class SubprocessBackend(SandboxBackendBase):
         start_time = time.time()
         limits = resource_limits or ResourceLimits()
         timeout = timeout or limits.execution_time_limit or 60
+
+        # Windows / non-Unix gap (U39): `preexec_fn` + `resource.setrlimit` are
+        # Unix-only. On Windows the resource limits below silently no-op — only
+        # the wall-clock `timeout` (enforced via proc.communicate) is active.
+        # Surface this honestly instead of letting callers believe isolation
+        # is in effect. The Linux/unix path is intentionally left untouched.
+        if os.name == 'nt':
+            unenforced = [
+                name
+                for name, val in (
+                    ("memory_limit", limits.memory_limit),
+                    ("max_pids", limits.max_pids),
+                    ("max_output_size", limits.max_output_size),
+                )
+                if val
+            ]
+            if unenforced:
+                logger.warning(
+                    "SubprocessBackend on Windows: resource limits %s are NOT "
+                    "enforced (setrlimit/preexec_fn are Unix-only). Only the "
+                    "wall-clock timeout of %ss is applied; memory, PID and "
+                    "file-size isolation are absent. Use gVisor/Docker for real "
+                    "isolation.",
+                    unenforced,
+                    timeout,
+                )
 
         # Prepare environment
         env = os.environ.copy()
