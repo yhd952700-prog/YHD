@@ -317,6 +317,129 @@ def set_employee_success_rate(employee_name: str, rate: float):
 
 
 # ============================================================
+# Executor Fence / Coordinator Metrics (UBX-005 observability)
+# ============================================================
+# These surface the human-sovereignty-critical executor fence (the default-DENY
+# autonomous-action gate) into Prometheus so operators can see denials, liveness
+# failures, backend outages, and concurrent-executor pressure. Every emitter is
+# best-effort: a metrics failure must NEVER break the fence path.
+
+executor_fence_denials_total = Counter(
+    'executor_fence_denials_total',
+    'Total executor-fence denials (default-deny outcomes), labelled by reason',
+    ['reason'],
+    registry=REGISTRY,
+)
+
+executor_fence_enforce_seconds = Histogram(
+    'executor_fence_enforce_seconds',
+    'Executor fence enforce() latency in seconds (the per-action gate)',
+    buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5],
+    registry=REGISTRY,
+)
+
+executor_fence_active_leases = Gauge(
+    'executor_fence_active_leases',
+    'Number of currently-active (non-stale) executor leases',
+    registry=REGISTRY,
+)
+
+executor_fence_epoch = Gauge(
+    'executor_fence_epoch',
+    'Current executor-fence logical era/epoch in effect',
+    registry=REGISTRY,
+)
+
+executor_fence_heartbeat_failures_total = Counter(
+    'executor_fence_heartbeat_failures_total',
+    'Executor fence heartbeat failures (liveness lost or backend error)',
+    registry=REGISTRY,
+)
+
+executor_fence_backend_errors_total = Counter(
+    'executor_fence_backend_errors_total',
+    'Executor fence coordination-backend failures that forced a fail-closed deny',
+    registry=REGISTRY,
+)
+
+executor_fence_renew_failures_total = Counter(
+    'executor_fence_renew_failures_total',
+    'Executor fence renew() failures (stale lease or backend error)',
+    registry=REGISTRY,
+)
+
+coordinator_admission_contention_total = Counter(
+    'coordinator_admission_contention_total',
+    'Coordinator admission-section contention (retry attempts under max_executors)',
+    registry=REGISTRY,
+)
+
+
+def record_fence_denial(reason: str) -> None:
+    """Record one executor-fence denial, labelled by its reason class name."""
+    try:
+        executor_fence_denials_total.labels(reason=reason).inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def observe_fence_enforce(duration: float) -> None:
+    """Record the latency of a single enforce() call."""
+    try:
+        executor_fence_enforce_seconds.observe(duration)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def set_fence_active_leases(n: int) -> None:
+    """Set the gauge of currently-active executor leases."""
+    try:
+        executor_fence_active_leases.set(int(n))
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def set_fence_epoch(epoch: int) -> None:
+    """Set the gauge of the current executor-fence era/epoch."""
+    try:
+        executor_fence_epoch.set(int(epoch))
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_heartbeat_failure() -> None:
+    """Record one executor-fence heartbeat failure."""
+    try:
+        executor_fence_heartbeat_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_backend_error() -> None:
+    """Record one coordination-backend failure that forced a fail-closed deny."""
+    try:
+        executor_fence_backend_errors_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_renew_failure() -> None:
+    """Record one executor-fence renew() failure."""
+    try:
+        executor_fence_renew_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_coordinator_admission_contention() -> None:
+    """Record one coordinator admission-section contention event."""
+    try:
+        coordinator_admission_contention_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+# ============================================================
 # Context Managers for Easy Tracking
 # ============================================================
 

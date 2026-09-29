@@ -39,12 +39,72 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 import contextvars  # noqa: E402  (placed late only for readability; imported at module load)
 
 
 # Fence (denial) event counter -- fail-closed observability.
 _FENCE_DENIALS = 0
+
+
+# --------------------------------------------------------------------------- #
+# Fence observability hooks (best-effort; never break the gate)
+# --------------------------------------------------------------------------- #
+# The executor fence is human-sovereignty-critical: it must NEVER fail open or
+# stall because an observability sink is unavailable. Metrics are therefore
+# lazy-imported and every emit is wrapped so a metrics error is invisible to the
+# security path. The functions below are the only things the gate calls.
+_FENCE_METRICS: Any = None  # cached module, or False once import is known-bad.
+
+
+def _fence_metrics() -> Any:
+    global _FENCE_METRICS
+    if _FENCE_METRICS is None:
+        try:
+            import src.observability.metrics as _m  # lazy: keep fence import-safe
+
+            _FENCE_METRICS = _m
+        except Exception:  # pragma: no cover - metrics are optional
+            _FENCE_METRICS = False
+    return _FENCE_METRICS
+
+
+def _emit_fence_metric(fn_name: str, *args: Any) -> None:
+    m = _fence_metrics()
+    if m is False:
+        return
+    try:
+        getattr(m, fn_name)(*args)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def _record_fence_denial(reason: str) -> None:
+    _emit_fence_metric("record_fence_denial", reason)
+
+
+def _observe_fence_enforce(duration: float) -> None:
+    _emit_fence_metric("observe_fence_enforce", duration)
+
+
+def _set_fence_active_leases(n: int) -> None:
+    _emit_fence_metric("set_fence_active_leases", n)
+
+
+def _set_fence_epoch(epoch: int) -> None:
+    _emit_fence_metric("set_fence_epoch", epoch)
+
+
+def _record_fence_heartbeat_failure() -> None:
+    _emit_fence_metric("record_fence_heartbeat_failure")
+
+
+def _record_fence_backend_error() -> None:
+    _emit_fence_metric("record_fence_backend_error")
+
+
+def _record_fence_renew_failure() -> None:
+    _emit_fence_metric("record_fence_renew_failure")
 
 
 # --------------------------------------------------------------------------- #
@@ -826,10 +886,22 @@ class ExecutorFence:
         # currently-held lease) counts; renewals of an existing lease are exempt.
         if self.max_executors is not None and self.lease.current(executor_id).state != "held":
             if self.lease.count_active() >= self.max_executors:
+                _record_fence_denial("ExecutorLimitExceeded")
                 raise ExecutorLimitExceeded(
                     f"concurrent executor cap {self.max_executors} reached"
                 )
-        token = self.lease.acquire(executor_id, owner, ttl_sec, capabilities, boot_gen=boot_gen)
+        try:
+            token = self.lease.acquire(
+                executor_id, owner, ttl_sec, capabilities, boot_gen=boot_gen
+            )
+        except ExecutorFenceDenied as exc:
+            # A backend failure (CoordinationUnavailableError) surfaces here as
+            # ExecutorFenceBackendError -> count it as a deny + a backend error.
+            reason = type(exc).__name__
+            _record_fence_denial(reason)
+            if reason == "ExecutorFenceBackendError":
+                _record_fence_backend_error()
+            raise
         epoch = self.lease.current(executor_id).epoch or 0
         return FenceContext(
             executor_id=executor_id, token=token, epoch=epoch,
@@ -844,12 +916,28 @@ class ExecutorFence:
         correlation_id: Optional[str] = None,
     ) -> None:
         """Raise :class:`ExecutorFenceDenied` on ANY fail-closed condition."""
+        start = time.time()
         try:
             self._enforce(ctx, action, required_capabilities, correlation_id)
-        except ExecutorFenceDenied:
+        except ExecutorFenceDenied as exc:
             global _FENCE_DENIALS
             _FENCE_DENIALS += 1
+            reason = type(exc).__name__
+            _record_fence_denial(reason)
+            if reason == "ExecutorFenceBackendError":
+                _record_fence_backend_error()
             raise
+        else:
+            # Success path: keep the operating gauges fresh (best-effort). These
+            # must not be able to turn a successful allow into a failure.
+            try:
+                if ctx is not None:
+                    _set_fence_epoch(ctx.epoch or 0)
+                _set_fence_active_leases(self.lease.count_active())
+            except Exception:  # noqa: BLE001 - observability must never break the gate
+                pass
+        finally:
+            _observe_fence_enforce(time.time() - start)
 
     def _enforce(
         self,
@@ -893,7 +981,17 @@ class ExecutorFence:
         self.lease.consume_token(ctx.executor_id, ctx.token, f"{action}:{cid}")
 
     def heartbeat(self, ctx: FenceContext) -> None:
-        self.lease.heartbeat(ctx.executor_id, ctx.token)
+        try:
+            self.lease.heartbeat(ctx.executor_id, ctx.token)
+        except ExecutorFenceDenied as exc:
+            # Liveness lost (StaleExecutorError) OR a coordination-backend
+            # failure (ExecutorFenceBackendError) both mean the executor can no
+            # longer prove it is the live, authorized one -> the heartbeat is a
+            # failure and must be visible.
+            _record_fence_heartbeat_failure()
+            if type(exc).__name__ == "ExecutorFenceBackendError":
+                _record_fence_backend_error()
+            raise
 
     def release(self, ctx: FenceContext) -> bool:
         return self.lease.release(ctx.executor_id, ctx.token)

@@ -178,6 +178,47 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Human Identity Registry: {str(e)}")
         checks["human_identity_registry"] = {"status": "unhealthy", "error": str(e)}
 
+    # UBX-005 observability: surface the human-sovereignty-critical executor
+    # fence at the readiness edge. This is a VISIBILITY signal, not a gating
+    # one -- a deployment that deliberately leaves the gate unarmed must not be
+    # marked unhealthy, but operators must be able to SEE that the gate is off.
+    # A genuine failure (exception) is reported as unhealthy so it is visible.
+    try:
+        from ..kernels.execution.fence import (
+            current_executor_fence,
+            executor_fence_armed,
+            get_executor_fence,
+            get_executor_fence_total,
+        )
+
+        fence = get_executor_fence()
+        armed = executor_fence_armed()
+        proc_ctx = current_executor_fence()
+        active_leases = fence.lease.count_active() if fence is not None else 0
+        backend = type(fence.lease).__name__ if fence is not None else "none"
+        heartbeat_failures = (
+            getattr(fence.lease, "heartbeat_failures", 0) if fence is not None else 0
+        )
+        checks["executor_fence"] = {
+            "status": "healthy",
+            "armed": armed,
+            "backend": backend,
+            "active_leases": active_leases,
+            "epoch": proc_ctx.epoch if proc_ctx is not None else None,
+            "denials_total": get_executor_fence_total(),
+            "heartbeat_failures": heartbeat_failures,
+        }
+        if not armed:
+            # Informational only -- the default policy is that the gate is
+            # opt-in, so an unarmed deployment is a config state, not a fault.
+            checks["executor_fence"]["note"] = (
+                "executor fence gate not armed (LIUHAO_EXECUTOR_FENCE != on): "
+                "the default-deny autonomous-action gate is inactive"
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        errors.append(f"Executor Fence: {str(e)}")
+        checks["executor_fence"] = {"status": "unhealthy", "error": str(e)}
+
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
 

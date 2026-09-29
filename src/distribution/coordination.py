@@ -65,6 +65,37 @@ from src.kernels.execution.fence import (
     StaleExecutorError,
 )
 
+# --------------------------------------------------------------------------- #
+# Coordinator observability hooks (best-effort; never break coordination)
+# --------------------------------------------------------------------------- #
+# Like the fence itself, coordination must never fail open or stall because an
+# observability sink is unavailable. Metrics are lazy-imported and every emit is
+# wrapped so a metrics error is invisible to the coordination path.
+_COORD_METRICS = None
+
+
+def _coord_metrics():
+    global _COORD_METRICS
+    if _COORD_METRICS is None:
+        try:
+            import src.observability.metrics as _m
+
+            _COORD_METRICS = _m
+        except Exception:  # pragma: no cover - metrics are optional
+            _COORD_METRICS = False
+    return _COORD_METRICS
+
+
+def _emit_coord_metric(fn_name: str, *args) -> None:
+    m = _coord_metrics()
+    if m is False:
+        return
+    try:
+        getattr(m, fn_name)(*args)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
 __all__ = [
     "CoordinationUnavailableError",
     "ExecutorFenceBackendError",
@@ -1303,6 +1334,9 @@ class DistributedExecutorLease(ExecutorLease):
                 ok, token = lease.acquire(self._holder, self._admission_ttl)
                 if ok and token is not None:
                     break
+                # A refused admission acquire (another holder transiently holds
+                # the admission lease) is contention: count it, then back off.
+                _emit_coord_metric("record_coordinator_admission_contention")
                 _backoff_sleep(attempt)
             else:
                 raise CoordinationUnavailableError(
@@ -1493,6 +1527,7 @@ class DistributedExecutorLease(ExecutorLease):
             lambda: self._lease_for(executor_id).renew(self._holder, want, ttl_sec),
         )
         if new is None:
+            _emit_coord_metric("record_fence_renew_failure")
             raise StaleExecutorError(f"cannot renew: no live lease for {executor_id!r}")
         with self._lock:
             meta = self._meta.get(executor_id)
