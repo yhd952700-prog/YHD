@@ -197,7 +197,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 33 (2026-09-30).
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 34 (2026-09-30).
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
   # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
   # script without wiring it turns CI red, which is the point: a guard nobody runs
@@ -425,6 +425,14 @@ jobs:
       # anchoring is the next step, gated on HC-01 stabilisation.
       - name: Verify U51 REAL external transparency-log anchor (RFC 6962, out-of-band key) (self-test)
         run: python scripts/verify_u51_external_anchor.py
+
+      # PHASE 3.6 / UNIFIED audit-integrity aggregate: a single fail-closed gate that
+      # re-derives ALL six P08/U51/U53 gates in separate subprocesses (builder-
+      # decoupled -- the builder cannot fake a gate it does not run) and fails the
+      # whole command if any one fails. Closes the gap that independent_verification.py
+      # (G10) does NOT compose the U51/U53 gates. Emits a tamper-evident record_hash.
+      - name: Verify unified audit-integrity aggregate (P08 + U51 + U53, fail-closed)
+        run: python scripts/verify_audit_integrity.py
 
       # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
       # sovereign override assertion and an independent verifier's confirmation --
