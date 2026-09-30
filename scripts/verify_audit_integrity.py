@@ -46,6 +46,7 @@ GATES: list[tuple[str, str, str]] = [
     ("U51X", "REAL external anchor (RFC 6962 + STH)", "scripts/verify_u51_external_anchor.py"),
     ("U51C", "external anchor key ceremony (pinned out-of-band key)", "scripts/verify_u51_external_anchor_ceremony.py"),
     ("FENCE", "single-writer fence on audit append path", "scripts/verify_fence_single_writer.py"),
+    ("FORK", "live audit_store.db no-fork monitor (RCA-1 recurrence guard, F6)", "scripts/verify_audit_chain_no_fork.py"),
 ]
 
 #: substrings (lowercased) that flag a PASS-with-note (skip / self-attested / etc.)

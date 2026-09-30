@@ -453,6 +453,20 @@ jobs:
       - name: Verify audit single-writer fence on the live append path (self-test)
         run: python scripts/verify_fence_single_writer.py
 
+      # PHASE 3.6 / F6 (RCA-1 recurrence guard, HC-01 team-owned engineering):
+      # the unified aggregate above drives HERMETIC temp stores or re-derives the
+      # seven JSON chains -- NONE of them open the actual DEPLOYED
+      # audit_store.db. So a re-fork of the live store (concurrent non-atomic
+      # seq assignment -> duplicate seq, broken hash-chain joins) would go
+      # UNNOTICED by CI. This gate reads the LIVE store READ-ONLY (it never
+      # writes/repairs/restores/migrates/rebuilds it -- those are frozen
+      # human-sovereign HC-01 decisions) and asserts verify_integrity() ok AND
+      # duplicate_seq_count() == 0. A missing live store is a SKIP (exit 0), not
+      # a silent pass. Fail-closed: rc 2 on any fork/tamper signal. It does NOT
+      # assert HC-01 VERIFIED.
+      - name: Verify live audit_store.db is not forked (RCA-1 recurrence guard, F6)
+        run: python scripts/verify_audit_chain_no_fork.py
+
       # PHASE 3.6 / UNIFIED audit-integrity aggregate: a single fail-closed gate that
       # re-derives ALL six P08/U51/U53 gates in separate subprocesses (builder-
       # decoupled -- the builder cannot fake a gate it does not run) and fails the

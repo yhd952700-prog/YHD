@@ -1189,6 +1189,34 @@ class AuditStore:
         finally:
             conn.close()
 
+    def duplicate_seq_count(self) -> int:
+        """Count rows that share a ``seq`` with another row (RCA-1 fork metric).
+
+        A healthy audit chain has every ``seq`` unique, so this count MUST be
+        zero. The figure returned is ``total_rows - distinct_seqs`` -- the
+        number of "extra" rows beyond the first occurrence of each seq -- which
+        is exactly what :meth:`_verify_integrity_on` increments in its explicit
+        fork detection (``dup_seq``).
+
+        This is an independent, precise signal used by the fail-closed live-DB
+        no-fork monitor (F6) and by tests that inject a forked chain. It runs on
+        a dedicated read-only snapshot and never modifies the store.
+        """
+        def _count(conn) -> int:
+            row = conn.execute(
+                "SELECT COUNT(*) - COUNT(DISTINCT seq) FROM audit_events"
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return _count(self._conn)
+        try:
+            return _count(conn)
+        finally:
+            conn.close()
+
     def _open_snapshot(self) -> Optional[sqlite3.Connection]:
         """Open a private read-only connection, or None if that is impossible.
 
@@ -1282,7 +1310,7 @@ class AuditStore:
                 "SELECT seq, event_id, event_type, principal_id, scope, "
                 "timestamp, correlation_id, outcome, details, event_hash, "
                 "prev_event_hash, hash_alg, link_hash FROM audit_events "
-                "ORDER BY seq ASC"
+                "ORDER BY seq ASC, rowid ASC"
             ).fetchall()
 
             state = conn.execute(
@@ -1302,6 +1330,7 @@ class AuditStore:
 
         total = len(rows)
         broken = 0
+        dup_seq = 0
         running_link: Optional[str] = None
 
         for i, row in enumerate(rows):
@@ -1319,8 +1348,25 @@ class AuditStore:
                 # Subsequent events must reference previous event's hash
                 if prev_event_hash != prev_row[9]:
                     broken += 1
-                # 2. Sequence numbers must be contiguous
-                if seq != prev_row[0] + 1:
+                # 2. Sequence numbers must be contiguous AND unique.
+                # A duplicate seq is the RCA-1 fork signature: concurrent
+                # writers assigned the same sequence number because seq
+                # allocation was not atomic under a single-writer fence. Detect
+                # it explicitly and count it on its own branch so a recurrence
+                # is visible and the broken count is deterministic (the scan is
+                # now ordered by ``seq ASC, rowid ASC`` -- a stable tie-break),
+                # rather than being silently folded into the contiguity check.
+                # A gap (seq skipping a value) is a different failure and is
+                # counted on its own branch below.
+                if seq == prev_row[0]:
+                    dup_seq += 1
+                    broken += 1
+                    logger.error(
+                        "audit chain fork signature: duplicate seq=%s "
+                        "(event_id=%s) -- RCA-1 concurrency defect",
+                        seq, event_id,
+                    )
+                elif seq != prev_row[0] + 1:
                     broken += 1
 
             # 3. Content integrity: recompute the canonical hash from
