@@ -12,10 +12,12 @@ live store is intact, and (c) FAIL (non-zero) when the live store is forked.
 These tests never touch the real deployed audit_store.db; everything runs on
 per-test temp files.
 """
+import hashlib
 import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from src.kernels.audit import (
@@ -131,6 +133,89 @@ def test_no_fork_gate_passes_on_clean_live_store(tmp_path):
     rc, out = _run_gate(db)
     assert rc == 0, "clean live store must PASS (rc 0), got %d: %s" % (rc, out)
     assert "PASS" in out
+
+
+def _load_gate_module():
+    """Import scripts/verify_audit_chain_no_fork.py by path (not a package)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_audit_chain_no_fork", GATE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _tree_hashes(root: Path, db: Path) -> dict[str, str]:
+    """sha256 of the DB and any -wal/-shm sidecars that exist."""
+    out = {}
+    for name in ("", "-wal", "-shm"):
+        candidate = db.with_name(db.name + name)
+        if candidate.exists():
+            out[candidate.name] = hashlib.sha256(
+                candidate.read_bytes()).hexdigest()
+    return out
+
+
+def test_gate_does_not_modify_the_target_store(tmp_path):
+    """The gate claims to be read-only: prove it leaves the bytes untouched.
+
+    This is the regression for finding G-3 -- constructing an AuditStore issues
+    and COMMITS DDL, so a 'read-only' monitor that built a store was writing to
+    the very evidence it reported on.
+    """
+    db = tmp_path / "live.db"
+    _build_clean_store(str(db), n=4)._conn.close()
+    before = _tree_hashes(tmp_path, db)
+    rc, out = _run_gate(db)
+    assert rc == 0, "clean store must PASS: %s" % out
+    after = _tree_hashes(tmp_path, db)
+    assert after == before, (
+        "the no-fork gate MODIFIED the store it only claims to read:\n"
+        "before=%s\nafter=%s" % (before, after)
+    )
+
+
+def test_gate_selftest_runs_even_without_a_live_store(tmp_path):
+    """The deployed DB is gitignored, so CI SKIPs the live check. Prove the gate
+    still does real work there instead of being a green no-op (finding G-2)."""
+    rc, out = _run_gate(tmp_path / "does_not_exist.db")
+    assert rc == 0, out
+    assert "SKIP" in out, "no live store must be reported as a SKIP, not a pass"
+    assert "SELF-TEST PASS" in out, (
+        "no live store means the gate must still prove its detector works; "
+        "otherwise CI would learn nothing from this gate")
+
+
+def test_selftest_catches_a_broken_detector(tmp_path):
+    """Negative control: if the detector stops detecting, the gate must FAIL."""
+    gate = _load_gate_module()
+
+    healthy_ok, healthy_detail = gate.selftest_detector()
+    assert healthy_ok, "detector self-test failed on an intact detector: %s" % (
+        healthy_detail,)
+
+    with tempfile.TemporaryDirectory(prefix="liuhao-nofork-neg-") as tmp:
+        path = str(Path(tmp) / "forked.db")
+        gate._build_forked_store(path)
+        conn = gate.open_read_only(path)
+        try:
+            ok, detail = gate.check_store_read_only(conn)
+        finally:
+            conn.close()
+        assert ok is False, "forked store must be detected: %s" % detail
+
+    # Now neuter the detector and assert the self-test refuses to pass.
+    original = gate.check_store_read_only
+    gate.check_store_read_only = lambda conn: (True, "always healthy")
+    try:
+        broken_ok, broken_detail = gate.selftest_detector()
+        assert broken_ok is False, (
+            "self-test passed even though the detector reports everything as "
+            "healthy -- a broken monitor would silently green-light a re-fork")
+        assert "BROKEN" in broken_detail
+    finally:
+        gate.check_store_read_only = original
 
 
 def test_no_fork_gate_fails_on_forked_live_store(tmp_path):

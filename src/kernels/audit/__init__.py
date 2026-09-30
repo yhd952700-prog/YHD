@@ -1297,14 +1297,24 @@ class AuditStore:
         """Deprecated: kept for callers that already hold the append lock."""
         return self._verify_integrity_on(self._conn)
 
-    def _verify_integrity_on(self, conn) -> Tuple[bool, int]:
+    @staticmethod
+    def _verify_integrity_on(conn) -> Tuple[bool, int]:
+        """Verify the chain over an explicit connection. See verify_chain_integrity.
+
+        Declared a ``staticmethod`` deliberately: it never touches instance
+        state, so it can be invoked as ``AuditStore._verify_integrity_on(conn)``
+        by callers that must NOT construct an AuditStore (constructing one runs
+        ``_init_db``, which issues and COMMITS DDL -- see
+        :func:`verify_chain_integrity`). Existing ``self._verify_integrity_on(...)``
+        call sites keep working unchanged.
+        """
         # The event scan and the tail anchor MUST be read from one read
         # snapshot. Without an explicit transaction, SQLite gives each SELECT
         # its own snapshot, so an append committing between the two makes the
         # scan end at seq N while the anchor already says N+1 -- a perfectly
         # healthy chain reported as broken, which under the mandatory-evidence
         # fail-closed gate denies every HIGH/CRITICAL action.
-        began = self._begin_read_transaction(conn)
+        began = AuditStore._begin_read_transaction(conn)
         try:
             rows = conn.execute(
                 "SELECT seq, event_id, event_type, principal_id, scope, "
@@ -1319,7 +1329,7 @@ class AuditStore:
             ).fetchone()
         finally:
             if began:
-                self._end_read_transaction(conn)
+                AuditStore._end_read_transaction(conn)
 
         if not rows:
             # Empty log: valid only if the anchor agrees that nothing was
@@ -2113,6 +2123,24 @@ _audit_store: Optional[AuditStore] = None
 _audit_failure_total = 0
 _audit_failure_lock = threading.Lock()
 _audit_failure_ever = False
+
+
+def verify_chain_integrity(conn) -> Tuple[bool, int]:
+    """Verify the audit hash chain over an ALREADY-OPEN connection.
+
+    This is the read-only entry point for monitoring and CI gates that must
+    inspect a store WITHOUT constructing an :class:`AuditStore`. Constructing a
+    store is **not** read-only: ``_init_db`` issues DDL and COMMITS it (schema
+    creation, additive migrations, ``CREATE UNIQUE INDEX``, anchor seeding),
+    which silently mutates the very file we claim to be only inspecting. Against
+    a deployed -- or forensically frozen -- audit store that is unacceptable, so
+    callers open their own connection (normally ``file:...?mode=ro`` plus
+    ``PRAGMA query_only=ON``) and hand it here.
+
+    Returns ``(is_ok, total_events)``; semantics are identical to
+    :meth:`AuditStore.verify_integrity`.
+    """
+    return AuditStore._verify_integrity_on(conn)
 
 
 def record_audit_failure() -> None:
