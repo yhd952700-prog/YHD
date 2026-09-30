@@ -3,13 +3,20 @@
 用途：复现 ``docs/spec/AI-LAYER-DOD-AUDIT.md`` §3.5 的运行时实测矩阵。
 
 **退出码的真实含义（重要，先读这一节）**：
-    本脚本**唯一的失败出口**是 ``main()`` 里的对照探针分支 —— 只有当对照探针
-    测不到已知会审计的 ``@kernel_action`` 写入时，才 ``return 2``。除此之外
-    ``main()`` 末尾是**无条件 ``return 0``**；汇总里 ``errored``（状态 ``ERR``）
-    的那些行只在「探针出错（结论不确定）」小节里**打印，不构成失败**。
-    ⇒ **"绿" 只等价于「对照探针观测到 ``@kernel_action`` 写入的审计事件」**，
-    **不等于**「21 个阶段探针的增量矩阵成立」。矩阵必须逐行人工判读：它完全
-    可以大面积 ``ERR`` / ``no-audit``，而本闸门仍然为绿。
+    本脚本是 **fail-closed** 的审计覆盖闸门（F1 修复：原先是"绿-by-default"——
+    末尾无条件 ``return 0``，20/21 个模块失去审计覆盖仍会绿）。现在：
+
+      * 对照探针失败（测不到已知会审计的 ``@kernel_action`` 写入） → ``return 2``；
+      * 任一探针 **出错**（状态 ``ERR``，结论不确定） → ``return 2``；
+      * 任一模块的**关键操作未写入审计**且**未列入 ``ALLOW_NO_AUDIT`` 允许清单**
+        （疑似审计覆盖回归） → ``return 2``。
+
+    只有「对照通过 + 无探针出错 + 无未授权的不下沉模块」三者同时成立才 ``return 0``。
+    ``ALLOW_NO_AUDIT`` 仅收录**有意不接入能力层审计**的模块（目前仅 P17 Economy，
+    其 docstring 明示为有意独立实现，见 ``docs/spec/AI-LAYER-DOD-AUDIT.md`` §3.5 及
+    ``tests/test_ai_layer_dod_delegation.py::test_economy_still_has_no_capability_layer_audit``）；
+    任何新增的、确实不应审计的模块都必须显式加入该清单并在规格文档中记录理由，否则会被
+    本闸门判为回归。
 
 **与部署姿态的边界**：脚本末尾那句「``policy_decision`` 恒为 ``deny`` 且装饰器
     从不拦截」是**记录态（record-only）观测** —— 本脚本不设置
@@ -65,6 +72,16 @@ from src.kernels.audit import audit_query, get_audit_store  # noqa: E402
 from src.kernels.policy import get_policy_engine  # noqa: E402
 
 ROWS: list = []
+
+# F1 修复：显式允许「有意不接入能力层审计」的模块。仅当某模块的**关键操作确实
+# 不应审计**时才加入此处，并在 docs/spec/AI-LAYER-DOD-AUDIT.md 中记录理由。
+# 目前仅有 P17 Economy —— 其 docstring 明示为"self-contained, dependency-free"的
+# 有意独立实现（不接线能力层审计），见规格文档 §3.5 / 行 268-270 及
+# tests/test_ai_layer_dod_delegation.py::test_economy_still_has_no_capability_layer_audit。
+# 任何未列入此清单却未产生审计的模块，都会让本闸门变红（视为审计覆盖回归）。
+ALLOW_NO_AUDIT: frozenset = frozenset({
+    ("P17", "economy.BudgetEngine.reserve/consume()"),
+})
 
 
 def _count() -> int:
@@ -267,7 +284,8 @@ def main() -> int:
         print(f"   +{delta:<3} {phase} {label}")
     print("\n【不产生审计 — 该模块的关键操作未写入审计】")
     for phase, label, _, _, _ in clean:
-        print(f"    0    {phase} {label}")
+        mark = "   (允许不下沉)" if (phase, label) in ALLOW_NO_AUDIT else "   [未授权的不下沉]"
+        print(f"    0    {phase} {label}{mark}")
     if errored:
         print("\n【探针出错（结论不确定）】")
         for phase, label, _, _, err in errored:
@@ -295,6 +313,28 @@ def main() -> int:
         "生产清单 docker-compose.prod.yml:69 武装 CRITICAL，"
         "那句话不是对生产运行时行为的断言。"
     )
+
+    # ---- fail-closed 判定（F1 修复：绿不再仅等价于"对照探针通过"）----
+    failures = []
+    if errored:
+        failures.append(
+            "%d 个探针出错（结论不确定），不能算绿：%s"
+            % (len(errored), ", ".join("%s/%s" % (p, l) for (p, l, _, _, _) in errored)))
+    unexpected_no_audit = [
+        (p, l) for (p, l, d, s, e) in clean if (p, l) not in ALLOW_NO_AUDIT
+    ]
+    if unexpected_no_audit:
+        failures.append(
+            "%d 个模块的关键操作未写入审计且未列入允许清单（疑似审计覆盖回归）：%s"
+            % (len(unexpected_no_audit),
+               ", ".join("%s/%s" % (p, l) for p, l in unexpected_no_audit)))
+
+    if failures:
+        print("\nAI-LAYER AUDIT GATE FAIL:")
+        for f in failures:
+            print("  - " + f)
+        return 2
+    print("\nAI-LAYER AUDIT GATE PASS：对照通过、无探针出错、无未授权的不下沉模块。")
     return 0
 
 
