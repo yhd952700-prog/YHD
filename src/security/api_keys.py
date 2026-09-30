@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
@@ -27,6 +28,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class PermissionLockdownError(OSError):
+    """Raised when the API-key registry file could not be locked down to 0600.
+
+    Fail-closed: we must NOT report a clean save when the on-disk registry
+    (hash-only, but still sensitive — it holds key hashes) may be left
+    world-readable. The old code silently swallowed the ``os.chmod`` failure,
+    which is a fail-open / silent-success security anti-pattern.
+    """
 
 
 class KeyScope(str, Enum):
@@ -114,11 +127,20 @@ class APIKeyManager:
         """
         key_id = f"lhao_{secrets.token_urlsafe(16)}"
         raw_key = f"lhao_{secrets.token_urlsafe(32)}"
+        # Normalise scopes to KeyScope enums so the in-memory representation is
+        # consistent with _load (which coerces strings -> enums) and with
+        # _save / has_scope (which assume enum members). Accepts either
+        # KeyScope enums or their string values.
+        normalized_scopes = (
+            [s if isinstance(s, KeyScope) else KeyScope(s) for s in scopes]
+            if scopes
+            else [KeyScope.READ]
+        )
         key = APIKey(
             id=key_id,
             name=name,
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
-            scopes=list(scopes) if scopes else [KeyScope.READ],
+            scopes=normalized_scopes,
             status=KeyStatus.ACTIVE,
             created_at=time.time(),
             expires_at=self._expiry_ts(expires_in_days, expires_at),
@@ -228,13 +250,42 @@ class APIKeyManager:
             ]
         }
         os.makedirs(os.path.dirname(self._storage_path) or ".", exist_ok=True)
-        with open(self._storage_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        # Restrict to the owning user; the registry must not be world-readable.
+        # Open with 0600 from the start so the (hash-only) registry is never
+        # created world-readable (closes the chmod TOCTOU race on POSIX). The
+        # raw key is never written, but the registry still holds key hashes and
+        # must not be world-readable.
+        fd = os.open(
+            self._storage_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+                f.flush()
+        except BaseException:
+            # If json.dump/flush raised, the wrapper has already closed the fd
+            # on its way out; only close the raw fd if fdopen itself never took
+            # ownership (e.g. it raised before returning).
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        # Defense-in-depth: re-assert 0600 in case the path already existed with
+        # looser permissions (e.g. a registry loaded from a world-readable file).
         try:
             os.chmod(self._storage_path, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "SECURITY: failed to enforce 0600 on API key registry %r "
+                "(registry may be world-readable): %s",
+                self._storage_path, exc,
+            )
+            raise PermissionLockdownError(
+                f"API key registry {self._storage_path!r} could not be locked "
+                f"down to 0600 ({exc}); refusing to report a clean save"
+            ) from exc
 
     def _load(self) -> None:
         if not self._storage_path or not os.path.exists(self._storage_path):
