@@ -197,7 +197,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 25 (2026-09-25).
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 30 (2026-09-30).
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
   # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
   # script without wiring it turns CI red, which is the point: a guard nobody runs
@@ -375,6 +375,19 @@ jobs:
       # next step, gated on HC-01 stabilisation.
       - name: Verify U53 Root-of-Trust chain-head signing primitive (self-test)
         run: python scripts/verify_u53_root_of_trust.py
+
+      # PHASE 3.6 / U51 (no single value commits its own history => cheap
+      # notarization/inclusion-proof infeasible): this gate is a self-test of the
+      # chain-head notary (src/kernels/audit/inclusion_proof.py): a Merkle
+      # accumulator over signed heads so any historical signed head carries a
+      # trustless inclusion proof into the canonical timeline. It proves the
+      # capability EXISTS and is fail-closed (round-trip, tamper rejected,
+      # uncheckpointed-head refused, tampered-persisted-file refused, forged root
+      # detected by self-consistency), and that the published root composes with
+      # the U53 RoT (the root is itself RoT-attested). Live HC-01 notarisation is
+      # the next step, gated on HC-01 stabilisation.
+      - name: Verify U51 chain-head notary / inclusion-proof primitive (self-test)
+        run: python scripts/verify_u51_inclusion_proof.py
 
       # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
       # sovereign override assertion and an independent verifier's confirmation --
