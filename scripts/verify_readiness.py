@@ -268,7 +268,14 @@ def check_performance():
 
 
 def check_observability():
-    """C8: metrics/ready endpoints exist; no runtime scrape performed here."""
+    """C8: RUNTIME SCRAPE of /v1/metrics/prometheus (not merely "endpoints exist").
+
+    Performs a real scrape against a booted app and proves the export path
+    actually executes: HTTP 200, a non-empty Prometheus payload, and real
+    metric families present. It also reports honestly whether any sample
+    increments under synthetic traffic -- export and per-request
+    instrumentation are DIFFERENT claims and must not be conflated.
+    """
     obs = SRC / "gateway" / "observability.py"
     health = SRC / "gateway" / "health.py"
     if not obs.exists() or not health.exists():
@@ -277,9 +284,114 @@ def check_observability():
     has_metrics = "/metrics/prometheus" in t or "prometheus_metrics" in t
     if not has_metrics:
         return FAIL, "prometheus metrics endpoint not found"
-    return NOT_VERIFIED, (
-        "endpoints exist (prometheus + ready); no runtime scrape performed here"
+
+    # ---- REAL runtime scrape (the evidence that makes C8 verifiable) ----
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, '__REPO__')\n"
+        "from fastapi.testclient import TestClient\n"
+        "from src.gateway.main import get_app\n"
+        "app = get_app()\n"
+        "with TestClient(app) as c:\n"
+        "    for _ in range(3):\n"
+        "        c.get('/v1/health')\n"
+        "    r1 = c.get('/v1/metrics/prometheus')\n"
+        "    if r1.status_code != 200:\n"
+        "        print('SCRAPE_STATUS', r1.status_code)\n"
+        "        sys.exit(0)\n"
+        "    b1 = r1.text\n"
+        "    for _ in range(7):\n"
+        "        c.get('/v1/health')\n"
+        "    b2 = c.get('/v1/metrics/prometheus').text\n"
+        "    import re as _re\n"
+        "    fams = sorted({ln.split()[2] for ln in b1.splitlines()\n"
+        "                   if ln.startswith('# TYPE ')})\n"
+        "    req_ubx = ('executor_fence_denials_total',\n"
+        "               'executor_fence_active_leases',\n"
+        "               'coordinator_admission_contention_total')\n"
+        "    want = [f for f in req_ubx if f in fams]\n"
+        "    http_present = 'http_requests_total' in fams\n"
+        "    http_fed = ('http_requests_total{' in b1) or ('http_requests_total{' in b2)\n"
+        "    err_fams = [f for f in fams if _re.search(\n"
+        "        r'error|exception|fail|denied|reject|5xx|refuse', f)]\n"
+        "    print('SCRAPE_STATUS', 200)\n"
+        "    print('SCRAPE_BYTES', len(b1))\n"
+        "    print('N_FAMILIES', len(fams))\n"
+        "    print('UBX005_FAMILIES', ','.join(want))\n"
+        "    print('HTTP_TOTAL_PRESENT', int(http_present))\n"
+        "    print('HTTP_TOTAL_FED', int(http_fed))\n"
+        "    print('ERROR_VIS_FAMS', ','.join(err_fams))\n"
+        "    print('SAMPLES_CHANGED', int(b1 != b2))\n"
+    ).replace("__REPO__", str(REPO).replace("\\", "/"))
+    rc, out = _run(
+        [sys.executable, "-c", code], env=_clean_env(), timeout=180
     )
+    if rc != 0:
+        return NOT_VERIFIED, f"runtime scrape could not run (env gap): {out[-200:]}"
+    if "SCRAPE_STATUS 200" not in out:
+        # A non-200 here is a real contradiction in the export path.
+        return FAIL, f"metrics scrape did not return 200: {out.strip()[-160:]}"
+
+    m_bytes = re.search(r"SCRAPE_BYTES (\d+)", out)
+    m_fams = re.search(r"N_FAMILIES (\d+)", out)
+    m_ubx = re.search(r"UBX005_FAMILIES (.*)", out)
+    m_http_present = re.search(r"HTTP_TOTAL_PRESENT (\d+)", out)
+    m_http_fed = re.search(r"HTTP_TOTAL_FED (\d+)", out)
+    m_err = re.search(r"ERROR_VIS_FAMS (.*)", out)
+    m_chg = re.search(r"SAMPLES_CHANGED (\d+)", out)
+    n_bytes = int(m_bytes.group(1)) if m_bytes else 0
+    n_fams = int(m_fams.group(1)) if m_fams else 0
+    ubx = (m_ubx.group(1).strip() if m_ubx else "")
+    http_present = bool(int(m_http_present.group(1))) if m_http_present else False
+    http_fed = bool(int(m_http_fed.group(1))) if m_http_fed else False
+    err_fams = (m_err.group(1).strip() if m_err else "")
+    changed = bool(int(m_chg.group(1))) if m_chg else False
+
+    if n_bytes <= 0 or n_fams <= 0:
+        return FAIL, "metrics scrape returned an empty payload (no families exported)"
+
+    # ---- C8 hardened regression assertions (a silent regression now FAILs) ----
+    # Any future gateway/observability change MUST re-satisfy every one of these
+    # or C8 returns FAIL (battery exit 2), which blocks release. This is the
+    # long-term regression gate for observability, not a one-off PASS.
+    if n_fams < 40:
+        return FAIL, f"metric family count regressed to {n_fams} (< 40 floor; baseline 45)"
+    if not http_present:
+        return FAIL, "http_requests_total family not exported (HTTP counters missing)"
+    if not http_fed:
+        return FAIL, (
+            "http_requests_total declared but carries no samples "
+            "(request instrumentation dead / not wired into middleware)"
+        )
+    missing_ubx = [
+        f for f in (
+            "executor_fence_denials_total",
+            "executor_fence_active_leases",
+            "coordinator_admission_contention_total",
+        ) if f not in ubx
+    ]
+    if missing_ubx:
+        return FAIL, (
+            "required sovereignty/coordination metric families missing: "
+            + ", ".join(missing_ubx)
+        )
+    if not err_fams:
+        return FAIL, (
+            "no error-visibility metric family exported "
+            "(no error|exception|fail|denied|reject family found)"
+        )
+
+    evidence = (
+        f"runtime scrape /v1/metrics/prometheus = 200, {n_bytes} bytes, "
+        f"{n_fams} real metric families exported (floor 40); "
+        f"http_requests_total PRESENT+FED; UBX005 all present; "
+        f"error-visibility present"
+        + (f" (incl. {ubx})" if ubx else "")
+    )
+    # Changed is informational only now that http_fed is a hard requirement.
+    if not changed:
+        evidence += "; NOTE: some non-HTTP sample did not move under synthetic traffic"
+    return PASS, evidence
 
 
 def check_deployment():

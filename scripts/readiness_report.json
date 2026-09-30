@@ -3,10 +3,10 @@
   "generated_by": "scripts/verify_readiness.py",
   "release_ready": false,
   "counts": {
-    "PASS": 7,
+    "PASS": 6,
     "FAIL": 0,
     "BLOCKED": 1,
-    "NOT_VERIFIED": 4
+    "NOT_VERIFIED": 5
   },
   "conditions": [
     {
@@ -42,20 +42,20 @@
     {
       "id": "C6",
       "name": "Crash / recovery / failover",
-      "status": "PASS",
-      "evidence": "reliability suites pass (3 files)"
+      "status": "NOT VERIFIED",
+      "evidence": "reliability suites rc=124 (may need live infra): TIMEOUT"
     },
     {
       "id": "C7",
       "name": "Performance meets scale",
-      "status": "PASS",
-      "evidence": "bench --quick --gate PASS on matching profile"
+      "status": "NOT VERIFIED",
+      "evidence": "gate did not PASS (load-sensitive; run on idle/CI): rc=1;  regressed 19.572 > 3.115 (baseline 2.492, tolerance 25%)\n  - batched[10].events_per_sec: throughput regressed 2493.5 < 3771.4 (baseline 5028.5, tolerance 25%)\n"
     },
     {
       "id": "C8",
       "name": "Observability + operations",
-      "status": "NOT VERIFIED",
-      "evidence": "endpoints exist (prometheus + ready); no runtime scrape performed here"
+      "status": "PASS",
+      "evidence": "runtime scrape /v1/metrics/prometheus = 200, 9170 bytes, 45 real metric families exported (floor 40); http_requests_total PRESENT+FED; UBX005 all present; error-visibility present (incl. executor_fence_denials_total,executor_fence_active_leases,coordinator_admission_contention_total)"
     },
     {
       "id": "C9",

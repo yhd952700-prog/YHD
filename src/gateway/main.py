@@ -23,6 +23,20 @@ from ..config_manager import get_config
 from ..security import get_jwt_handler, get_rbac_manager
 from ..observability.tracing import get_tracer
 
+# HTTP request metrics (families declared in ``src/observability/metrics.py``).
+# Historically these were never fed, so ``/v1/metrics/prometheus`` exported their
+# families with **zero per-request samples** -- a scrape looked instrumented while
+# carrying no request data. Importing them here lets ``logging_middleware`` feed
+# them with real traffic.
+try:  # pragma: no cover - depends on the optional prometheus_client package
+    from ..observability.metrics import (
+        http_request_duration_seconds as _HTTP_REQUEST_DURATION,
+        http_requests_total as _HTTP_REQUESTS_TOTAL,
+    )
+except Exception:  # metrics unavailable here; the endpoint 503s anyway
+    _HTTP_REQUEST_DURATION = None
+    _HTTP_REQUESTS_TOTAL = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -285,6 +299,24 @@ def get_app() -> FastAPI:
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = str(process_time)
         response.headers["X-Trace-ID"] = trace_id
+
+        # Feed the HTTP request metrics so a scrape carries real per-request
+        # samples (see the guarded import above). Instrumentation must never
+        # break the request itself, hence the guard.
+        if _HTTP_REQUESTS_TOTAL is not None:
+            endpoint = request.url.path
+            try:
+                _HTTP_REQUESTS_TOTAL.labels(
+                    method=request.method,
+                    endpoint=endpoint,
+                    status=str(response.status_code),
+                ).inc()
+                _HTTP_REQUEST_DURATION.labels(
+                    method=request.method,
+                    endpoint=endpoint,
+                ).observe(process_time)
+            except Exception as exc:  # pragma: no cover - never fail a request
+                logger.warning(f"http metrics instrumentation failed: {exc}")
 
         logger.info(
             f"{request.method} {request.url.path} "
