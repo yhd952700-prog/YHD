@@ -1,0 +1,10 @@
+{
+  "ceremony_id": "extanchor-ceremony-d0bba5f57f8f4d96ad174aceed2b1c86",
+  "kind": "external-anchor-ceremony",
+  "sig_alg": "RS256-RSA3072",
+  "key_id": "22ed7a7d1b9355e725d2766121aed196",
+  "public_pem": "-----BEGIN PUBLIC KEY-----\nMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAsIao0PS/+Z7Eli6e0ly6\nELdcidZ3VFObOpKrR19sTsdtExWLcjRLXDl+/tR729n6HZBGqZ9bvkc3/yAYy1kP\nm+vRoSeIRoiwZ672xwCzrVB6ZPwnZXJmhlMXOunJOIf3R20n/wyErDBi5Z3dIoLk\n71zM5UewedqB6XU6UCQ5kpULNd5NLm5/1JsFamxcL4lOROU0AHTe6+mZjTkCeJGO\nf/NqwH1ch9avRBGcyV75nAKMtQkw1zm5Mmrio58X9gh4sNaQHjqNtIbm494sYDTa\ncs5jbLJi4cuH584/gwAzKa2uC/2qwZGL+bGdZWLSdvGfIPjmSNDoghDiI/cs/EBg\n105RJdxcFjBA+OSzKghPzTTrAGMxBdLAMQW+dD3mAHVUS/tq9WbDWJHIWKp5CQfF\nPDliZVf7+HbAJ8uGHVCNXGzQw3YpwYWY6KnXoA28269HUg1zy+BI/+85Z9tHVGiY\nsxB9jhqFJWtsB+ooLJ4kN5JouTZh0Hdp8BIBmoqqcAkdAgMBAAE=\n-----END PUBLIC KEY-----\n",
+  "ceremony_at": "2026-09-30T14:34:23.850435+00:00",
+  "notes": "out-of-band pinned external anchor key for the U51 REAL external transparency-log anchor (RFC 6962 + STH). Minted in a key ceremony; the audit runtime consumes only the public key.",
+  "ceremony_claim_signature": "IXz4LysTRCxGZ0VWTOR8nFhhM/10oq7q3pegZtBGzIAhGQ6ADsYmwAaZypmLRQfMv00Ty/T7iigjqzeXbNzmRK4wczZ82XJM16afwpzd9fTeJ0+SShh92kx5LsY4aZcu+EgmGp4uH9uPTvziSG+XIRG/dKpaY8jMU69pyQiwxCofMxprsfH3suAqA+QoWnRSNfjtGMmh1XzUnsM5ozQ1CXphw+pMmL9EvoMDi/Jpt7qPl9sajy70vDepoANt8BpN5O5P3AO15DbpzSBVJ/XpKlbWwI1R5WrxAlxS/g9+EvZm0a80RqGS0rjSmjFu+wuVD3MXZ7dYJbxK4i2NDAmmlPQ2++70iYrIsgt9uLpO2rEQ/IZFC3Sh4SlB5rrUr80AIqSX61W6N5IDq6eoV/yrM259+L9ndG/RTr8l7+0CpzNQsQnAePUykPdVQQJNEZ8yaXlEbvSGKB5N4E5OGCA1TF7s7OcglzsbUVTEsIgbapg+68rKwO0F0EuZVATRiTEf"
+}

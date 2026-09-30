@@ -42,6 +42,7 @@ GATES: list[tuple[str, str, str]] = [
     ("U51N", "chain-head notary / inclusion proof", "scripts/verify_u51_inclusion_proof.py"),
     ("U51A", "operator-independent transparency anchor", "scripts/verify_u51_transparency_anchor.py"),
     ("U51X", "REAL external anchor (RFC 6962 + STH)", "scripts/verify_u51_external_anchor.py"),
+    ("U51C", "external anchor key ceremony (pinned out-of-band key)", "scripts/verify_u51_external_anchor_ceremony.py"),
 ]
 
 #: substrings (lowercased) that flag a PASS-with-note (skip / self-attested / etc.)
