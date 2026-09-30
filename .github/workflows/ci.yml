@@ -357,6 +357,25 @@ jobs:
       - name: Verify P0-6 revocable-grant read-path (F33) runtime
         run: python scripts/verify_p06_revocable_grant_read_path.py
 
+      # PHASE 3.6 / U42 (authorization integrity): the autonomous actor must
+      # inherit the default-deny kernel, and every WorldInterface construction
+      # must set an explicit actor= so it cannot silently fall back to the human
+      # default-allow posture. Static enforcement of the U42 invariant; it also
+      # fails CI if the central autonomous execution-fence gate or the
+      # WorldInterface deny line is ever removed (a gate that vanished must be loud).
+      - name: Verify U42 autonomous-actor default-deny + explicit actor (static)
+        run: python scripts/verify_u42_autonomous_actor.py
+
+      # PHASE 3.6 / U53 (Root of Trust: no one signs the chain head). This gate is
+      # a self-test of the Root-of-Trust chain-head signing primitive
+      # (src/kernels/audit/root_of_trust.py): it proves the capability EXISTS and
+      # is fail-closed (round-trip, tamper rejected, wrong-key rejected, unknown
+      # sig_alg fail-closed, opt-in unconfigured refuses to sign). It does not
+      # assert the live HC-01 chain is signed in prod -- that integration is the
+      # next step, gated on HC-01 stabilisation.
+      - name: Verify U53 Root-of-Trust chain-head signing primitive (self-test)
+        run: python scripts/verify_u53_root_of_trust.py
+
       # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
       # sovereign override assertion and an independent verifier's confirmation --
       # must explicitly record its signature algorithm (sig_alg) and verification
