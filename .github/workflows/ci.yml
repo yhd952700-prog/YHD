@@ -197,7 +197,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 30 (2026-09-30).
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 31 (2026-09-30).
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
   # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
   # script without wiring it turns CI red, which is the point: a guard nobody runs
@@ -375,6 +375,17 @@ jobs:
       # next step, gated on HC-01 stabilisation.
       - name: Verify U53 Root-of-Trust chain-head signing primitive (self-test)
         run: python scripts/verify_u53_root_of_trust.py
+
+      # PHASE 3.6 / U53 HA (high availability): a single TSA is a SPOF. This gate
+      # is a self-test of the K-of-M quorum TSA (src/kernels/audit/trusted_timestamp.py):
+      # a 3-member / quorum-2 authority mints + verifies a bundle; below-threshold
+      # rejects; an unknown-TSA token is ignored; a tampered payload fails every
+      # member; a member outage is tolerated (unless require_full); and the quorum
+      # bundle composes with the U53 RoT attestation fail-closed. It does not
+      # assert the live HC-01 chain is quorum-timestamped in prod -- that
+      # integration is the next step, gated on HC-01 stabilisation.
+      - name: Verify U53 high-availability K-of-M quorum TSA (self-test)
+        run: python scripts/verify_u53_tsa_quorum.py
 
       # PHASE 3.6 / U51 (no single value commits its own history => cheap
       # notarization/inclusion-proof infeasible): this gate is a self-test of the

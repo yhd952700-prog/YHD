@@ -42,12 +42,13 @@ ENVIRONMENT (opt-in, all optional)
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import datetime as _dt
 import hashlib
 import os
 import subprocess
 import tempfile
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 #: SHA-256 OBJECT IDENTIFIER (2.16.840.1.101.3.4.2.1).
 _OID_SHA256 = "2.16.840.1.101.3.4.2.1"
@@ -414,6 +415,135 @@ class TimestampToken:
         }
 
 
+@dataclass
+class TimestampTokenBundle:
+    """A quorum set of RFC 3161 tokens from independent TSAs (U53 HA).
+
+    Trust in the timestamp is no longer pinned to a SINGLE TSA (a SPOF): a token
+    is accepted only if at least ``threshold`` DISTINCT, independently operated
+    TSAs attest the same payload. This removes the "one TSA outage (or
+    compromise) breaks timestamping" liability of the single-TSA path.
+    """
+
+    threshold: int
+    members: int
+    tokens: List[dict]  # each is a TimestampToken.to_record() dict
+
+    @property
+    def token_b64(self) -> Optional[str]:
+        return self.tokens[0]["tsa_token"] if self.tokens else None
+
+    @property
+    def tsa_cert_id(self) -> Optional[str]:
+        return self.tokens[0]["tsa_cert_id"] if self.tokens else None
+
+    @property
+    def gen_time(self) -> Optional["_dt.datetime"]:
+        g = self.tokens[0].get("tsa_gen_time") if self.tokens else None
+        return _dt.datetime.fromisoformat(g) if g else None
+
+    def to_record(self) -> dict:
+        return {
+            "threshold": self.threshold,
+            "members": self.members,
+            "tokens": [dict(t) for t in self.tokens],
+        }
+
+    @classmethod
+    def from_record(cls, d: dict) -> "TimestampTokenBundle":
+        return cls(
+            threshold=int(d["threshold"]),
+            members=int(d["members"]),
+            tokens=[dict(t) for t in d["tokens"]],
+        )
+
+
+class QuorumTimestampAuthority:
+    """A TSA that requires K-of-M independent TSAs to agree (high availability).
+
+    Wraps a list of :class:`TrustedTimestampAuthority` members. ``request_token``
+    mints from every reachable member (a member outage is tolerated as long as
+    ``quorum`` members still succeed); ``verify_bundle`` accepts only if at least
+    ``quorum`` DISTINCT members verify their token against the SAME payload.
+    Fail-closed: a token from a TSA not in the member set is ignored; a tampered
+    payload fails every member; falling below quorum rejects.
+    """
+
+    def __init__(self, members: List["TrustedTimestampAuthority"], quorum: int):
+        if not members:
+            raise ValueError("QuorumTimestampAuthority needs at least one TSA member")
+        if not (1 <= quorum <= len(members)):
+            raise ValueError(
+                "quorum %d out of range for %d members" % (quorum, len(members))
+            )
+        self._members = list(members)
+        self._quorum = quorum
+
+    def request_token(
+        self, data: bytes, *, require_full: bool = False
+    ) -> TimestampTokenBundle:
+        """Mint from each reachable member; require >= quorum successes."""
+        collected: List[dict] = []
+        errors: List[str] = []
+        for m in self._members:
+            try:
+                tok = m.request_token(data)
+                collected.append(tok.to_record())
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+        if require_full and len(collected) != len(self._members):
+            raise RuntimeError(
+                "quorum request: %d/%d TSAs succeeded; require_full=True: %r"
+                % (len(collected), len(self._members), errors)
+            )
+        if len(collected) < self._quorum:
+            raise RuntimeError(
+                "quorum request: only %d/%d TSAs succeeded, below threshold %d: %r"
+                % (len(collected), len(self._members), self._quorum, errors)
+            )
+        return TimestampTokenBundle(
+            threshold=self._quorum, members=len(self._members), tokens=collected
+        )
+
+    def verify_bundle(
+        self, bundle: TimestampTokenBundle, data: bytes
+    ) -> Tuple[bool, str]:
+        """Fail-closed quorum verification: >= threshold DISTINCT members."""
+        if not isinstance(bundle, TimestampTokenBundle):
+            return False, "not a TimestampTokenBundle"
+        if len(bundle.tokens) < bundle.threshold:
+            return False, "bundle holds %d tokens, threshold %d" % (
+                len(bundle.tokens), bundle.threshold)
+        ok_count = 0
+        seen_certs: set = set()
+        for rec in bundle.tokens:
+            cid = rec.get("tsa_cert_id")
+            member = self._member_by_cert_id(cid)
+            if member is None:
+                # Token from an unknown / untrusted TSA -> ignored (fail-closed).
+                continue
+            tok = TimestampToken(
+                token_der=base64.b64decode(rec["tsa_token"]),
+                gen_time=None,
+                tsa_cert_id=cid,
+            )
+            ok, _reason = member.verify_token(tok, data)
+            if ok and cid not in seen_certs:
+                ok_count += 1
+                seen_certs.add(cid)
+        if ok_count >= bundle.threshold:
+            return True, "ok (%d/%d members verified)" % (
+                ok_count, len(self._members))
+        return False, "only %d/%d members verified, threshold %d" % (
+            ok_count, len(self._members), bundle.threshold)
+
+    def _member_by_cert_id(self, cid) -> Optional["TrustedTimestampAuthority"]:
+        for m in self._members:
+            if m.cert_id == cid:
+                return m
+        return None
+
+
 class TrustedTimestampAuthority:
     """Obtain + verify RFC 3161 trusted timestamps for attestation payloads.
 
@@ -436,6 +566,11 @@ class TrustedTimestampAuthority:
         self._signer_cert = signer_cert_pem or tsa_cert_pem
         self._signer_key = signer_key_pem
         self._cert_id = hashlib.sha256(tsa_cert_pem).hexdigest()[:32]
+
+    @property
+    def cert_id(self) -> str:
+        """Public pin of the TSA cert (used by QuorumTimestampAuthority)."""
+        return self._cert_id
 
     @classmethod
     def from_env(cls) -> Optional["TrustedTimestampAuthority"]:

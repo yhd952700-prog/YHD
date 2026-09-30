@@ -35,7 +35,7 @@ import base64
 import glob
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from cryptography.hazmat.primitives import serialization
 
@@ -46,7 +46,9 @@ from .dual_signature import (
     key_id_of,
 )
 from .trusted_timestamp import (
+    QuorumTimestampAuthority,
     TimestampToken,
+    TimestampTokenBundle,
     TrustedTimestampAuthority,
 )
 
@@ -76,6 +78,7 @@ class RootOfTrustAttestation:
     tsa_token: Optional[str] = None  # base64 DER TimeStampToken
     tsa_gen_time: Optional[str] = None  # ISO-8601 UTC from the TSA
     tsa_cert_id: Optional[str] = None  # sha256 pin of the TSA cert
+    tsa_bundle: Optional[List[dict]] = None  # K-of-M TSA token set (U53 HA)
 
     def to_payload(self) -> dict:
         """The authority-bearing claims the signature is computed over."""
@@ -97,6 +100,7 @@ class RootOfTrustAttestation:
             "tsa_token": self.tsa_token,
             "tsa_gen_time": self.tsa_gen_time,
             "tsa_cert_id": self.tsa_cert_id,
+            "tsa_bundle": self.tsa_bundle,
         }
 
 
@@ -262,11 +266,19 @@ class ChainRootOfTrust:
         tsa_token = None
         tsa_gen_time = None
         tsa_cert_id = None
+        tsa_bundle = None
         if self._tsa is not None:
-            tok = self._tsa.request_token(data)
-            tsa_token = tok.token_b64
-            tsa_gen_time = tok.gen_time.isoformat() if tok.gen_time else None
-            tsa_cert_id = tok.tsa_cert_id
+            if isinstance(self._tsa, QuorumTimestampAuthority):
+                bundle = self._tsa.request_token(data)
+                tsa_bundle = bundle.to_record()
+                tsa_token = bundle.token_b64
+                tsa_gen_time = bundle.gen_time.isoformat() if bundle.gen_time else None
+                tsa_cert_id = bundle.tsa_cert_id
+            else:
+                tok = self._tsa.request_token(data)
+                tsa_token = tok.token_b64
+                tsa_gen_time = tok.gen_time.isoformat() if tok.gen_time else None
+                tsa_cert_id = tok.tsa_cert_id
         return RootOfTrustAttestation(
             sig_alg=sig_alg,
             key_id=active_id,
@@ -277,6 +289,7 @@ class ChainRootOfTrust:
             tsa_token=tsa_token,
             tsa_gen_time=tsa_gen_time,
             tsa_cert_id=tsa_cert_id,
+            tsa_bundle=tsa_bundle,
         )
 
     def verify_attestation(self, att: RootOfTrustAttestation) -> Tuple[bool, str]:
@@ -314,6 +327,17 @@ class ChainRootOfTrust:
         attestation WITH a timestamp but no configured TSA, or whose token fails
         cryptographic verification against the pinned TSA cert, is REJECTED.
         """
+        data = canonical_bytes(att.to_payload())
+        # Quorum (K-of-M) timestamp: verify against a QuorumTimestampAuthority.
+        if att.tsa_bundle is not None:
+            authority = tsa or self._tsa
+            if not isinstance(authority, QuorumTimestampAuthority):
+                return False, (
+                    "attestation carries a TSA bundle but no "
+                    "QuorumTimestampAuthority is configured"
+                )
+            bundle = TimestampTokenBundle.from_record(att.tsa_bundle)
+            return authority.verify_bundle(bundle, data)
         if att.tsa_token is None:
             return True, "no timestamp attached (opt-in skipped)"
         authority = tsa or self._tsa
@@ -327,5 +351,4 @@ class ChainRootOfTrust:
             gen_time=None,
             tsa_cert_id=att.tsa_cert_id or "",
         )
-        data = canonical_bytes(att.to_payload())
         return authority.verify_token(token, data)
