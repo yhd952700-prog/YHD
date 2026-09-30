@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """verify_audit_integrity.py -- single fail-closed audit-integrity aggregate (P08/U51/U53).
 
-The audit subsystem now has six evidence-grade, fail-closed CI gates:
+The audit subsystem now has eight evidence-grade, fail-closed CI gates:
   P08  hash-chain sig/alg (HC-02..HC-08 + HC-11)
   U53  Root-of-Trust chain-head signing
   U53Q K-of-M quorum TSA (HA, openssl-gated)
   U51N chain-head notary / inclusion proof
   U51A operator-independent transparency anchor
   U51X REAL external anchor (RFC 6962 + STH)
+  U51C external anchor key ceremony (pinned out-of-band key)
+  FENCE single-writer fence on the audit append path (Q3.5 / #99)
 
 `independent_verification.py` (G10) re-derives C10-1..C10-4 but NOT these six --
 it has no knowledge of U51/U53. This command closes that gap: it is the single
@@ -43,6 +45,7 @@ GATES: list[tuple[str, str, str]] = [
     ("U51A", "operator-independent transparency anchor", "scripts/verify_u51_transparency_anchor.py"),
     ("U51X", "REAL external anchor (RFC 6962 + STH)", "scripts/verify_u51_external_anchor.py"),
     ("U51C", "external anchor key ceremony (pinned out-of-band key)", "scripts/verify_u51_external_anchor_ceremony.py"),
+    ("FENCE", "single-writer fence on audit append path", "scripts/verify_fence_single_writer.py"),
 ]
 
 #: substrings (lowercased) that flag a PASS-with-note (skip / self-attested / etc.)
