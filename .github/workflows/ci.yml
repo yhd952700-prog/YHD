@@ -197,7 +197,7 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 31 (2026-09-30).
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 32 (2026-09-30).
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
   # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
   # script without wiring it turns CI red, which is the point: a guard nobody runs
@@ -399,6 +399,18 @@ jobs:
       # the next step, gated on HC-01 stabilisation.
       - name: Verify U51 chain-head notary / inclusion-proof primitive (self-test)
         run: python scripts/verify_u51_inclusion_proof.py
+
+      # PHASE 3.6 / U51 external anchor: the notary's PUBLISHED ROOT -- and the
+      # notary file -- live under the operator's control, so an operator could
+      # rewrite the root itself. This gate is a self-test of the transparency-log
+      # anchor (src/kernels/audit/transparency_anchor.py): each published notary
+      # root is committed to an operator-INDEPENDENT, signed, append-only log, so
+      # an auditor can verify a root was anchored by a key the operator does not
+      # hold. Fail-closed (tampered root / forged signature / broken chain
+      # linkage / tampered persisted file rejected). Live HC-01 anchoring is the
+      # next step, gated on HC-01 stabilisation.
+      - name: Verify U51 transparency-log anchor of published notary roots (self-test)
+        run: python scripts/verify_u51_transparency_anchor.py
 
       # PHASE 3.6 / P0-7 (B2): every dual-signature evidence record -- a human's
       # sovereign override assertion and an independent verifier's confirmation --
