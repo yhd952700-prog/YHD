@@ -4,8 +4,8 @@
     "intended_guarantee": "Atomicity: a crash/kill mid-transaction rolls the whole in-flight transaction back. No partial row, no broken hash chain, no gap in seq.",
     "method": "Spawn child, append 400 single-event transactions, kill (TerminateProcess) ~80 ms in, reopen, re-verify.",
     "observed": {
-      "committed_before_kill_per_progress_file": 40,
-      "events_after_reopen": 41,
+      "committed_before_kill_per_progress_file": 32,
+      "events_after_reopen": 33,
       "verify_integrity_ok": true,
       "seq_contiguous": true
     },
