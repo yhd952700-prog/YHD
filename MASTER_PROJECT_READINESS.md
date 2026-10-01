@@ -122,14 +122,15 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **Next:** Prove alerting/ingestion receipt — run a real Prometheus scrape against a live exporter and an injected-fault test proving an alert rule fires; the HTTP-metrics wiring is DONE (no longer outstanding).
 
 ## G9 — Deployment & Upgrade
-- **Status:** **VERIFIED** (upgrade/rollback path PROVEN on a temp db + staging/test contract validated; real CD intentionally absent → HUMAN DECISION REQUIRED)
+- **Status:** **NOT VERIFIED** for real deployment — the image has **never been built or booted** in any environment. What is actually proven is narrower: the **upgrade/rollback path** (alembic up/down on a temp db) and a staging contract. Real CD intentionally absent → HUMAN DECISION REQUIRED. Do NOT read this as "we deployed it".
 - **Evidence (real, non-fabricated — this cycle, commit `ffe7f76f`):**
   - `scripts/verify_deploy_readiness.py`: REALLY executes three checks — (A) Docker CLI present (29.8.1), (B) **`alembic upgrade head` → `verify_orm_vs_db.py` (NO divergence) → `verify_persistence.py` (PERSISTED OK) → `alembic downgrade base`** on a throwaway TEMP sqlite db, proving the migration set is genuinely reversible; (C) staging compose validated (python YAML-schema sanity check — authoritative `docker compose config` is NOT VERIFIED because the compose v2 plugin is absent in this env).
   - `infra/staging/docker-compose.yml`: an explicit **STAGING/TEST ONLY** contract — built-from-repo image + tag, hard resource limits (mem 2G / cpus 1.5) + reservations, real `/v1/health` healthcheck, persistence on a named volume, `LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL` kept (fail-closed posture exercised), NO production secrets committed inline.
   - `docs/autonomous/G9-deployment-contract.md`: the evidence table + honest gaps + the human-decision checklist.
   - The release gate **C9 now PASS** (2026-10-01): `check_deployment` runs `verify_deploy_readiness.py` via the repo `.venv` (managed venv lacks alembic) and parses its PASS/FAIL/NOT_VERIFIED.
   - **Honest gaps (recorded, not hidden):** (1) authoritative `docker compose config` NOT VERIFIED (compose plugin absent here); (2) the image was NOT actually `docker build`-ed in this env; (3) **no real CD** — `ci-cd.yml` `deploy-*` jobs deliberately `exit 1`, no helm/k8s manifests.
-- **Last Verified:** 2026-10-01 (verify_deploy_readiness.py real run + C9 gate PASS).
+- **Last Verified:** 2026-10-01 — **upgrade/rollback only** (verify_deploy_readiness.py real run + C9 gate PASS).
+- **NOT VERIFIED:** image build + container boot. No docker daemon in this environment (CLI 29.8.1 present but engine down; `wsl.exe` sandbox-blocked). `scripts/verify_image_build.py` (commit `f765f257`) is the re-runnable gate and **exits 2 on NOT_VERIFIED** so a missing daemon can never read as green. Also found: the container listens on **8080**, not 8000 (`src/gateway/__main__.py` `DEFAULT_PORT`), so any deployment doc publishing 8000 is wrong; and `.dockerignore` has no `*.db` rule, so a 30 MB frozen DB streams into the build context.
 - **Blocker:** **HUMAN DECISION REQUIRED** — production deploy target (host/secrets/DB/scale/approval) not chosen; CD jobs `exit 1` by design. This is a sovereign decision, not an engineering blocker.
 - **Owner:** os-systems (`os-impl`).
 - **Next:** Install the docker compose plugin + build the image in a prod-prepared env to close the `docker compose config` gap; choose a real CD target (helm/k8s) before claiming full G9 VERIFIED for production.
