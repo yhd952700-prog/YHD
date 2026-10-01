@@ -355,9 +355,25 @@ def get_production_config() -> ProductionConfig:
 
 
 def get_config(environment: Optional[str] = None) -> ProductionConfig:
-    """Get configuration for specified environment."""
-    env = environment or os.getenv("ENVIRONMENT", "development")
-    
+    """Get configuration for specified environment.
+
+    When no explicit ``environment`` is given, the production decision is routed
+    through the unified posture resolver (``src.security.posture``, honoring
+    LIUHAO_ENV > ENVIRONMENT > APP_ENV) rather than reading ENVIRONMENT alone —
+    otherwise a deployment that sets LIUHAO_ENV/APP_ENV but not ENVIRONMENT would
+    silently fall through to a development config. An explicit ``environment``
+    string still wins (e.g. staging), and an unset ENVIRONMENT falls back to
+    development.
+    """
+    if environment is None:
+        from src.security.posture import is_production
+        if is_production():
+            environment = "production"
+        else:
+            environment = os.getenv("ENVIRONMENT", "development")
+
+    env = environment
+
     if env == "production":
         return get_production_config()
     elif env == "staging":

@@ -328,8 +328,16 @@ def validate_production_config(
     source = env if env is not None else _os_environ()
     placeholders = _placeholder_set()
 
+    # Production posture is resolved through the single source of truth
+    # (src.security.posture), which honors LIUHAO_ENV > ENVIRONMENT > APP_ENV —
+    # NOT just APP_ENV. The old direct read masked a production deployment that
+    # set LIUHAO_ENV/ENVIRONMENT but not APP_ENV, silently downgrading the
+    # critical findings below to "non-production" (fail-open). strict=False so
+    # the preflight never raises on an undeterminable posture — it reports
+    # findings, it does not decide process-wide posture.
+    from src.security.posture import is_production as _is_production
+    is_prod = _is_production(source, strict=False)
     app_env = (source.get(APP_ENV_ENV) or "").strip()
-    is_prod = app_env.lower() in _PRODUCTION_ENVS
 
     findings: List[ConfigFinding] = []
 

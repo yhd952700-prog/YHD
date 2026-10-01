@@ -282,6 +282,26 @@ class TestPreflight:
         assert report.ok is True, "warning 不应让预检失败"
         assert report.warning_count == 3
 
+    def test_liuhao_env_production_detected_without_app_env(self):
+        # Regression for the P0 posture bypass: production posture is resolved
+        # via the unified resolver (LIUHAO_ENV wins), NOT by reading APP_ENV
+        # alone. A deployment that sets LIUHAO_ENV=production but not APP_ENV
+        # must still trigger the production-only warnings (sqlite/debug/policy),
+        # otherwise a real production box would be silently preflighted as dev.
+        report = validate_production_config(env={
+            "LIUHAO_ENV": "production",
+            "SECRET_KEY": "a-real-long-random-value",
+            "LIUHAO_JWT_SECRET": "another-real-long-random-value",
+            "DATABASE_URL": "sqlite:///liuhao.db",
+            "LOG_LEVEL": "DEBUG",
+        })
+        codes = {f.code for f in report.findings}
+        assert {
+            "sqlite_in_production",
+            "debug_logging_in_production",
+            "policy_enforcement_off",
+        } <= codes
+
     def test_sqlite_only_warns_in_production(self):
         report = validate_production_config(env={
             "APP_ENV": "staging",
