@@ -18,7 +18,7 @@ jobs:
   readiness:
     name: Release Readiness Contract (C1..C12)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     services:
       redis:
@@ -58,8 +58,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[tests,etcd]
 
-      - name: Run release-readiness contract
-        run: python scripts/verify_readiness.py
+      - name: Run release-readiness contract (full — executes the suite for C3/C12)
+        # --full makes check_tests / check_no_major_failures actually EXECUTE the
+        # full pytest suite (not just collect), so C3 (Stable tests) and C12 (No
+        # unexplained major failures) flip from NOT VERIFIED to PASS on a permanent
+        # CI artifact. C7 stays NOT VERIFIED on CI by design (its numeric gate is
+        # profile-keyed and SKIPs on the Linux runner — the machine-independent
+        # invariants remain the blocking check and PASS). The script exits 2 only
+        # on a real FAIL; NOT VERIFIED / BLOCKED do not fail the run.
+        run: python scripts/verify_readiness.py --full
 
   independent-verification:
     name: Independent Verification (C10 harness)
