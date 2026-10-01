@@ -373,6 +373,70 @@ returns `True`, i.e. refuses. This preserves the existing conservative rule
 ("do not steal an unconfirmed-orphan lease", `fencing.py:293-295`) and never
 inverts it.
 
+#### 4.4b — the pid-mode fallback: unparseable or unqueryable owner
+
+The `uuid` test above replaces the *liveness* question in uuid mode. While the
+default is still `pid`, the legacy path (`fencing.py:468-473`) collapses two
+different unknowns into one refusal:
+
+```python
+pid = _owner_pid(cur_owner)
+alive = _is_process_alive(pid) if pid is not None else None
+if alive is not False:              # True AND None both refuse
+    raise StaleWriterError(...)
+```
+
+* **(a) liveness unknown** — Windows `ERROR_ACCESS_DENIED` / POSIX `EPERM`
+  → `None` → refuse. **Intended.** This is the fail-closed rule of §4.4; it is
+  not a defect and must not be "fixed" into a takeover.
+* **(b) owner does not parse to a pid** — `_owner_pid()` returns `None` → same
+  branch → refuse. Correct for the same reason (a non-parseable owner is an
+  unknown writer, and an unknown writer is never stolen from). **In the current
+  #99 code this branch is unreachable**: `owner` is always `audit-store:<pid>`
+  (§6.3, verified against the implementation — `_lease_owner()` is the only
+  source, and every `writer_lease.owner` write point receives that pid-shaped
+  string), so the only live source of `None` is `_is_process_alive` (case a).
+  The unparseable-owner case is therefore a **regression guard**, not a present
+  defect: it must be pinned so that any *future* change which breaks the owner
+  format (or a test/ops row that writes a non-`prefix:int` owner) cannot
+  silently turn into a self-lock. It must never be described as a current bug.
+
+  **MEASURED** (throwaway DB, `LIUHAO_AUDIT_LEASE_IDENTITY=uuid` writer, then a
+  `pid`-mode writer on the same file):
+
+  ```
+  after uuid-mode append: (token=1, owner=None, writer_id='eef1502c…', epoch=0,
+                           boot_gen=33380390, expires_at=0.0)
+  MIXED FLEET (pid reader after uuid writer): append OK
+  ```
+
+  So a mixed fleet does **not** deadlock: uuid mode leaves `owner = NULL` /
+  `expires_at = 0` exactly as pid mode does.
+
+  **MEASURED** for the adversarial case (a live row whose owner is
+  `'writer_id:boot_gen:epoch'`):
+
+  ```
+  t=0.0s: refused -> StaleWriterError   # alive=None
+  t=0.8s (after expires_at): OK         # self-heals at TTL
+  ```
+
+  The refusal is **bounded by `expires_at`**, not permanent — it self-heals the
+  moment the row's TTL elapses. The only unbounded variant is a *legacy pre-U39*
+  writer (topology A: lease held for the process lifetime and refreshed on every
+  write) that keeps extending `expires_at`; against such a writer a pid-mode peer
+  is refused indefinitely. That is the pre-existing U39 symptom, not something
+  this ADR introduces, and it is one more argument for retiring topology A
+  rather than for loosening this branch.
+
+**Diagnosability gap (amendment, not a behaviour change):** the pid-mode message
+`lease held by '…' (alive=None)` does not distinguish *why* liveness is unknown
+— no permission, unparseable owner, or unsupported platform. An operator seeing
+`alive=None` cannot tell a transient permissions problem from a foreign writer.
+Recommendation: extend the message with a reason code (`alive=None` +
+`reason=unparseable_owner|no_permission|unsupported_platform`) and **keep the
+refusal**. This is a message change only; the branch stays fail-closed.
+
 ### 4.5 Release, takeover, restart
 
 * **Release** (`release_within`, unchanged shape): set `owner = NULL`,
@@ -558,6 +622,16 @@ non-numeric tail returns `None`, `alive` becomes `None`, and the old binary's
 `if alive is not False: raise` (`fencing.py:298`) then refuses **everything**.
 Keep `owner` exactly `audit-store:<pid>` for one full release; it is a
 diagnostic column only, and can be dropped later.
+
+**Verified against the #99 implementation:** `_lease_owner()` is unchanged
+(`audit-store:<pid>`) and is what uuid mode writes into the row — the uuid
+identity lives in the separate `writer_id` column. **MEASURED**: a uuid-mode
+writer leaves `owner = NULL, expires_at = 0.0` after its append, and a
+subsequent pid-mode writer on the same file appends successfully. So the
+mixed-fleet case in §4.4b does not arise in the shipped code. The test that must
+pin this is stronger than "the function returns the right string": it must
+assert the **row written by uuid mode has a pid-parseable `owner`** (or is NULL
+post-release), because that is the property the legacy reader depends on.
 
 ### 6.4 The operator escape hatch — and what is forbidden
 
