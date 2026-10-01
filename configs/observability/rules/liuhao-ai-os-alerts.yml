@@ -1,9 +1,47 @@
 # LiuHao AI OS - Prometheus Alert Rules
+#
+# 2026-09 修正说明（请读完再加规则）
+# ---------------------------------------------------------------------------
+# 这个文件的旧版本里有三条告警**在物理上永远不可能触发**，因为它们的指标在
+# src/ 下**一个发射点都没有** —— 声明了 Counter/Gauge，但没有任何代码去
+# .inc()/.set()。一条永不触发的告警比没有告警更糟：它看起来像覆盖。
+# 被删除的三条及其原因：
+#   * provider_up == 0
+#       -> provider_up 只在 src/observability/metrics.py 里声明；唯一会写它的
+#          set_provider_availability() 全仓库零调用点。
+#   * task_queue_depth > 100
+#       -> 唯一会写它的 set_queue_depth() 全仓库零调用点。
+#   * rate(agent_coordination_failures_total[5m])
+#       -> track_coordination() 确实被调用，但所有调用点都用默认 failed=False，
+#          所以这个 Counter 永远不会自增。
+#
+# 新规则：本文件的每条告警只能引用「src/ 下真的有发射点」的指标，或
+# 「确实在运行的 exporter」提供的指标。这条约束由
+# scripts/verify_alert_rules.py 强制（AST 扫描 src/ 求发射点，不是白名单），
+# 并已接入 .github/workflows/ci.yml 的 guardrails job。加规则前先跑它。
+#
+# 指标来源（实测，非推测）：
+#   * http_requests_total / http_request_duration_seconds
+#       <- src/gateway/main.py 的 logging_middleware
+#   * task_execution_total <- src/ai/goal_task_graph.py (track_task_execution)
+#   * agent_tasks_total    <- src/ai/employee.py (track_agent_task)
+#   * executor_fence_*     <- src/kernels/execution/fence.py
+#                             （经 getattr 间接派发：_emit_fence_metric）
+#   * container_*          <- cAdvisor（docker-compose.observability.yml 确有其服务）
+#   * up                   <- Prometheus 每次抓取自动注入
+#
+# 仍然没有指标的缺口（不要假装已覆盖）
+# ---------------------------------------------------------------------------
+# 以下几类事件今天**没有任何 Prometheus 指标**，因此也无法告警：
+#   * 审计写入失败（audit append 失败 / 哈希链断裂）
+#   * 审计库损坏 / quarantine 事件
+#   * fence 安装失败（acquire 失败）
+# 需要覆盖时先在 src/ 里加发射点，再回来加规则。
 groups:
   - name: liuhao-ai-os-alerts
     interval: 30s
     rules:
-      # High-level service alerts
+      # ---- Liveness -------------------------------------------------------
       - alert: ServiceDown
         expr: up{job="liuhao-ai-os"} == 0
         for: 1m
@@ -11,73 +49,127 @@ groups:
           severity: critical
         annotations:
           summary: "LiuHao AI OS service is down"
-          description: "{{ $labels.job }} has been down for more than 1 minute."
+          description: >-
+            {{ $labels.job }} ({{ $labels.instance }}) has been unreachable for
+            more than 1 minute. Either the api container is down, or the metrics
+            path /v1/metrics/prometheus is answering non-2xx.
 
-      # Provider availability
-      - alert: ProviderUnavailable
-        expr: provider_up == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "AI Provider {{ $labels.provider }} unavailable"
-          description: "Provider {{ $labels.provider }} has been unavailable for 2 minutes."
-
-      # High latency
-      - alert: HighLatency
-        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 5
-        for: 3m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High API latency detected"
-          description: "95th percentile latency > 5s for {{ $labels.job }}"
-
-      # Error rate
+      # ---- HTTP 表面（唯一确定有数据的应用指标来源）------------------------
       - alert: HighErrorRate
-        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) by (job) / sum(rate(http_requests_total[5m])) by (job) > 0.05
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High error rate"
-          description: "Error rate > 5% for {{ $labels.job }}"
+          summary: "High HTTP 5xx error rate"
+          description: >-
+            5xx share of all HTTP requests is above 5% for more than 5 minutes.
+            Note: with zero traffic the ratio has no samples and this alert is
+            silently inactive -- it is a ratio, not an absolute error count.
 
-      # Resource utilization
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 HTTP latency above 2s"
+          description: >-
+            95th percentile HTTP request latency is above 2 seconds for more
+            than 5 minutes.
+
+      # ---- 任务执行 -------------------------------------------------------
+      - alert: TaskExecutionFailureRate
+        expr: |
+          sum(rate(task_execution_total{status="failed"}[5m]))
+            / sum(rate(task_execution_total[5m])) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task execution failure rate above 10%"
+          description: >-
+            More than 10% of task executions end in status="failed". Fed by
+            track_task_execution() in src/ai/goal_task_graph.py.
+
+      - alert: AgentTaskFailureRate
+        expr: |
+          sum(rate(agent_tasks_total{status="failed"}[5m]))
+            / sum(rate(agent_tasks_total[5m])) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent task failure rate above 10%"
+          description: >-
+            More than 10% of agent tasks end in status="failed". Fed by
+            track_agent_task() in src/ai/employee.py.
+
+      # ---- 执行栅栏（人类主权关键路径，fail-closed）------------------------
+      - alert: ExecutorFenceBackendErrors
+        expr: increase(executor_fence_backend_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Executor fence coordination backend failed (fail-closed deny)"
+          description: >-
+            The coordination backend behind the executor fence failed and the
+            fence denied an autonomous action because of it. Every such event is
+            a forced fail-closed outcome, not a transient retry.
+
+      - alert: ExecutorFenceHeartbeatFailures
+        expr: increase(executor_fence_heartbeat_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Executor fence heartbeat failure"
+          description: >-
+            An executor lost liveness (or hit a backend error) while holding a
+            fence lease. Sustained heartbeat failures mean stale leases and
+            forced denies.
+
+      - alert: ExecutorFenceRenewFailures
+        expr: increase(executor_fence_renew_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Executor fence lease renew failed"
+          description: >-
+            renew() failed because the lease was stale or the backend errored.
+            The executor must re-acquire; repeated failures mean a lease is
+            being lost under load.
+
+      # ---- 容器资源（cAdvisor 指标，非本仓库代码产出）----------------------
       - alert: HighMemoryUsage
         expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.85
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High memory usage"
-          description: "Container {{ $labels.container }} memory usage > 85%"
+          summary: "Container memory usage above 85% of its limit"
+          description: >-
+            Container {{ $labels.name }} is using more than 85% of its memory
+            limit. Limitation: containers without a memory limit expose
+            container_spec_memory_limit_bytes as 0, so the ratio has no sample
+            and this alert cannot fire for them.
 
       - alert: HighCPUUsage
-        expr: (rate(container_cpu_usage_seconds_total[5m]) / container_spec_cpu_quota/container_spec_cpu_period) > 0.80
+        expr: |
+          rate(container_cpu_usage_seconds_total[5m])
+            / (container_spec_cpu_quota / container_spec_cpu_period) > 0.80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High CPU usage"
-          description: "Container {{ $labels.container }} CPU usage > 80%"
-
-      # Queue depth
-      - alert: TaskQueueBacklog
-        expr: task_queue_depth > 100
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Task queue backlog growing"
-          description: "Task queue has {{ $value }} pending tasks"
-
-      # Agent coordination
-      - alert: AgentCoordinationFailure
-        expr: rate(agent_coordination_failures_total[5m]) > 0.1
-        for: 3m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Agent coordination failures"
-          description: "Agent coordination failure rate > 10%"
+          summary: "Container CPU usage above 80% of its quota"
+          description: >-
+            Container {{ $labels.name }} is using more than 80% of its CPU
+            quota. Same limitation as above: no CPU quota means no sample.

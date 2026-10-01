@@ -525,6 +525,15 @@ jobs:
       - name: Verify compliance-liability claim lint rules (standalone)
         run: python scripts/verify_compliance_lint.py
 
+      # Alert-rules provenance (alertconfig-fix): every Prometheus alert must key
+      # on a metric that src/ actually increments/sets (or that a running exporter
+      # provides), else the alert can never fire and reads as coverage. This is the
+      # regression gate for configs/observability/{prometheus.yml,rules/*.yml}.
+      # AST-based, not a hardcoded allowlist, so a dead metric cannot be silently
+      # re-added. Must be wired here or test_guardrail_scripts.py fails it.
+      - name: Verify Prometheus alert rules only reference produced metrics
+        run: python scripts/verify_alert_rules.py
+
       - name: Migrate a scratch database
         run: |
           rm -f ci_guardrail.db
