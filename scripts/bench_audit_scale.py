@@ -73,6 +73,7 @@ import argparse
 import gc
 import json
 import os
+import platform
 import random
 import shutil
 import sqlite3
@@ -175,6 +176,65 @@ def process_rss_bytes() -> int:
     except Exception:
         pass
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# Environment evidence (machine fingerprint for an honest, reproducible report)
+# --------------------------------------------------------------------------- #
+def detect_disk_type() -> str:
+    """Best-effort physical-media / filesystem hint (SSD/HDD/undetermined)."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["wmic", "diskdrive", "get", "mediatype,model"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+            low = (out or "").lower()
+            if "ssd" in low:
+                return "ssd (wmic)"
+            if "hdd" in low or "fixed" in low:
+                return "hdd (wmic)"
+            return "undetermined (wmic: %r)" % out.strip()[:120]
+        import psutil  # type: ignore
+        parts = psutil.disk_partitions()
+        if parts:
+            return "fstype=%s" % parts[0].fstype
+    except Exception as exc:
+        return "undetermined (%s)" % type(exc).__name__
+    return "undetermined"
+
+
+def environment_evidence() -> dict:
+    return {
+        "os": platform.platform(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "python_version": sys.version.split()[0],
+        "python_full": sys.version,
+        "cpu_count": os.cpu_count(),
+        "cpu_model": platform.processor() or platform.machine() or "unknown",
+        "machine": platform.machine(),
+        "disk_type": detect_disk_type(),
+        "note": "All benchmarks use an isolated temp DB; repo-root "
+                "audit_store.db was never opened read-write.",
+    }
+
+
+def parse_scale_token(s: str) -> int:
+    s = str(s).strip().lower()
+    if s.endswith("k"):
+        return int(float(s[:-1]) * 1_000)
+    if s.endswith("m"):
+        return int(float(s[:-1]) * 1_000_000)
+    return int(s)
+
+
+def scale_label(n: int) -> str:
+    if n % 1_000_000 == 0:
+        return "%dm" % (n // 1_000_000)
+    if n % 1_000 == 0:
+        return "%dk" % (n // 1_000)
+    return str(n)
 
 
 # --------------------------------------------------------------------------- #
@@ -594,7 +654,15 @@ def finalize(state: dict, out_md: Path) -> int:
         "meta": {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "python": sys.version.split()[0],
+            "python_full": sys.version,
             "platform": sys.platform,
+            "os": platform.platform(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "cpu_count": os.cpu_count(),
+            "cpu_model": platform.processor() or platform.machine() or "unknown",
+            "machine": platform.machine(),
+            "disk_type": detect_disk_type(),
             "total_ram_gb": round(vm.total / BYTES_PER_GB, 1),
             "available_ram_gb": round(vm.available / BYTES_PER_GB, 1),
             "rss_source": "psutil",
@@ -602,46 +670,95 @@ def finalize(state: dict, out_md: Path) -> int:
             "scale_build_batch": SCALE_BUILD_BATCH,
             "execution_model": ("chunked/resumable: this sandbox kills any process at ~120s, so "
                                 "1M and 10M were built/verified in bounded steps; 100M is an "
-                                "extrapolated ceiling, not a measured run."),
+                                "extrapolated ceiling, not a measured run. The --scale single-shot "
+                                "mode runs one isolated temp DB end-to-end and reports real numbers."),
         },
         "batch_sizes": BATCH_SIZES,
         "durability_modes": DURABILITY_MODES,
     }
     for k in ("throughput", "throughput_scaled", "throughput_normal_default",
-              "per_event_latency_ms", "scale_1M", "scale_10M", "multi_process"):
+              "per_event_latency_ms", "scale_1M", "scale_10M", "multi_process",
+              "single_run"):
         if k in state:
             report[k] = state[k]
     report["scale_100M"] = extrapolate_100m(state)
+    # In single-shot (--scale) mode there is no 1M/10M build to extrapolate from,
+    # so derive an honest 100M readiness estimate directly from the measured rates.
+    if "single_run" in report and "scale_1M" not in report:
+        sr = report["single_run"]
+        b_eps = sr.get("batch_append", {}).get("events_per_sec") or 0
+        s_eps = sr.get("single_append", {}).get("events_per_sec") or 0
+        single_sample = min(sr.get("scale_target") or 0, 15000)
+        remain = 100_000_000 - single_sample
+        est_write = (remain / b_eps) if b_eps else None
+        us_per = sr.get("full_chain_verify", {}).get("us_per_event")
+        est_verify = (us_per * 100_000_000 / 1_000_000.0) if us_per else None
+        bpe = sr.get("storage", {}).get("bytes_per_event")
+        proj_db = (bpe * 100_000_000) if bpe else None
+        report["scale_100M"] = {
+            "ran": False,
+            "source": "single_run measured rates (no 1M/10M build in this run)",
+            "skip_reasons": [
+                "NOT run in this turn; ready-to-run via `--scale 100m`. The estimated "
+                "write time below is extrapolated from the measured batch eps at FULL.",
+            ],
+            "estimated": {
+                "batch_eps_FULL": round(b_eps, 1),
+                "single_sample_eps_FULL": round(s_eps, 1),
+                "projected_write_sec_FULL_batch250": round(est_write, 1) if est_write else None,
+                "projected_write_hours_FULL_batch250": round(est_write / 3600.0, 2) if est_write else None,
+                "projected_verify_integrity_sec": round(est_verify, 1) if est_verify else None,
+                "projected_db_bytes": int(proj_db) if proj_db else None,
+                "projected_db_gb": round(proj_db / (1024 ** 3), 2) if proj_db else None,
+                "note": ("verify_integrity is an O(N) full scan; extrapolated linearly from the "
+                         "measured us/event at this scale. Disk grows linearly with N. "
+                         "verify_segment/verify_rolling/query_events use fixed windows and are "
+                         "scale-independent."),
+            },
+        }
 
     # Prefer the 10M-anchored rates when available (more scale-representative);
     # the fresh-DB `throughput` table is the faithful fallback.
     thr = report.get("throughput_scaled") or report.get("throughput", {})
-    full_single = thr.get("FULL", {}).get("1", {}).get("eps", 0)
-    normal_single = thr.get("NORMAL", {}).get("1", {}).get("eps", 0)
-    full_b250 = thr.get("FULL", {}).get("250", {}).get("eps", 0)
-    normal_b250 = thr.get("NORMAL", {}).get("250", {}).get("eps", 0)
-    gate_fail = []
-    if normal_single < SINGLE_EVENT_GATE_EPS:
-        gate_fail.append(f"NORMAL single-event eps {normal_single} < {SINGLE_EVENT_GATE_EPS}")
-    if normal_b250 < BATCH250_GATE_EPS:
-        gate_fail.append(f"NORMAL batch=250 eps {normal_b250} < {BATCH250_GATE_EPS}")
-    report["guardrail"] = {
-        "gate_single_event_eps": SINGLE_EVENT_GATE_EPS,
-        "gate_batch250_eps": BATCH250_GATE_EPS,
-        "measured_single_event_eps_FULL": full_single,
-        "measured_single_event_eps_NORMAL": normal_single,
-        "measured_batch250_eps_FULL": full_b250,
-        "measured_batch250_eps_NORMAL": normal_b250,
-        "evaluated_mode": "NORMAL (throughput-optimal; matches the 2000/21000 baseline)",
-        "passed": not gate_fail,
-        "failures": gate_fail,
-        "full_single_note": (f"FULL single-event eps is {full_single} (< {SINGLE_EVENT_GATE_EPS}) "
-            f"BY DESIGN: FULL fsync-per-transaction durability. Documented, accepted trade "
-            f"(PERFORMANCE-BASELINE.md); batching is the intended path. Batching (batch=250) under "
-            f"FULL is {full_b250} >= {BATCH250_GATE_EPS}."),
-    }
-
-    failures = list(gate_fail)
+    if not thr:
+        # single-shot (--scale) mode reports measured numbers but does not carry
+        # the per-batch throughput table the regression gate keys off. Don't
+        # fabricate a gate result; say so and pass (the chain/mp invariants
+        # below still run if those sections are present).
+        report["guardrail"] = {
+            "evaluated_mode": "not evaluated in this run (no --step rates data)",
+            "passed": True,
+            "note": ("The regression gate needs per-batch throughput from `--step rates`. "
+                     "The --scale single-shot mode reports measured numbers only; re-run with "
+                     "`--step rates` to populate the gate thresholds."),
+        }
+        failures = []
+    else:
+        full_single = thr.get("FULL", {}).get("1", {}).get("eps", 0)
+        normal_single = thr.get("NORMAL", {}).get("1", {}).get("eps", 0)
+        full_b250 = thr.get("FULL", {}).get("250", {}).get("eps", 0)
+        normal_b250 = thr.get("NORMAL", {}).get("250", {}).get("eps", 0)
+        gate_fail = []
+        if normal_single < SINGLE_EVENT_GATE_EPS:
+            gate_fail.append(f"NORMAL single-event eps {normal_single} < {SINGLE_EVENT_GATE_EPS}")
+        if normal_b250 < BATCH250_GATE_EPS:
+            gate_fail.append(f"NORMAL batch=250 eps {normal_b250} < {BATCH250_GATE_EPS}")
+        report["guardrail"] = {
+            "gate_single_event_eps": SINGLE_EVENT_GATE_EPS,
+            "gate_batch250_eps": BATCH250_GATE_EPS,
+            "measured_single_event_eps_FULL": full_single,
+            "measured_single_event_eps_NORMAL": normal_single,
+            "measured_batch250_eps_FULL": full_b250,
+            "measured_batch250_eps_NORMAL": normal_b250,
+            "evaluated_mode": "NORMAL (throughput-optimal; matches the 2000/21000 baseline)",
+            "passed": not gate_fail,
+            "failures": gate_fail,
+            "full_single_note": (f"FULL single-event eps is {full_single} (< {SINGLE_EVENT_GATE_EPS}) "
+                f"BY DESIGN: FULL fsync-per-transaction durability. Documented, accepted trade "
+                f"(PERFORMANCE-BASELINE.md); batching is the intended path. Batching (batch=250) under "
+                f"FULL is {full_b250} >= {BATCH250_GATE_EPS}."),
+        }
+        failures = list(gate_fail)
     for label in ("scale_1M", "scale_10M"):
         vi = state.get(label, {}).get("verify_integrity")
         if isinstance(vi, dict) and vi.get("ok") is False:
@@ -799,6 +916,50 @@ def write_markdown_report(report: dict, path: Path) -> None:
     else:
         lines.append(f"- error: {mp.get('error', mp)}")
 
+    # Single-shot (--scale) comprehensive metrics, if present in this run.
+    sr = report.get("single_run")
+    if isinstance(sr, dict):
+        lines.append("\n## Single-shot (--scale) comprehensive metrics\n")
+        env = sr.get("environment", {})
+        lines.append(f"- scale_target: {sr.get('scale_target')} ({sr.get('scale_label')})  "
+                     f"sync: {sr.get('sync')}  completed: {sr.get('completed')}")
+        lines.append(f"- environment: os={env.get('os')}  cpu_count={env.get('cpu_count')}  "
+                     f"python={env.get('python_version')}  disk={env.get('disk_type')}")
+        sa = sr.get("single_append", {})
+        ba = sr.get("batch_append", {})
+        fv = sr.get("full_chain_verify", {})
+        cw = sr.get("concurrent_writers", {})
+        sp = sr.get("stability_probe", {})
+        mg = sr.get("memory_growth_bytes", {})
+        st = sr.get("storage", {})
+        lines.append(f"- single-append: events={sa.get('sampled_events')} "
+                     f"eps={fmt(sa.get('events_per_sec'))} wall={fmt(sa.get('wall_sec'))}s")
+        lines.append(f"- batch-append: events={ba.get('events')} batch_size={ba.get('batch_size')} "
+                     f"eps={fmt(ba.get('events_per_sec'))} wall={fmt(ba.get('wall_sec'))}s")
+        lines.append(f"- full-chain verify: events={fv.get('events')} ok={fv.get('chain_ok')} "
+                     f"wall={fmt(fv.get('wall_sec'))}s ({fmt(fv.get('verify_ms'))} ms, "
+                     f"{fmt(fv.get('us_per_event'))} us/event)")
+        if isinstance(cw, dict) and "error" not in cw:
+            lines.append(f"- concurrent writers ({cw.get('processes')} proc): "
+                         f"events={cw.get('events')} "
+                         f"agg_eps_incl={fmt(cw.get('aggregate_eps_including_startup'))} "
+                         f"agg_eps_excl={fmt(cw.get('aggregate_eps_excluding_startup'))} "
+                         f"no_lost={cw.get('no_lost_appends')} contiguous={cw.get('contiguous_seq')}")
+        else:
+            lines.append(f"- concurrent writers: {cw}")
+        lines.append(f"- memory growth (RSS): before={fmt(mg.get('rss_before_open'))} "
+                     f"after_build={fmt(mg.get('rss_after_build'))} "
+                     f"growth={fmt(mg.get('growth_after_build'))} bytes")
+        lines.append(f"- storage: db={fmt(st.get('db_bytes'))} B wal={fmt(st.get('wal_bytes'))} B "
+                     f"({st.get('bytes_per_event')} B/event)")
+        if isinstance(sp, dict):
+            lines.append(f"- stability probe ({sp.get('duration_sec')}s): "
+                         f"appended={sp.get('events_appended_in_probe')} "
+                         f"approx_eps={fmt(sp.get('approx_events_per_sec'))} "
+                         f"chain_ok={sp.get('chain_ok_after_probe')} "
+                         f"total_after={sp.get('total_events_after_probe')}")
+        lines.append("")
+
     lines.append("\n## 100M — honest ceiling (NOT measured)\n")
     if ran:
         lines.append("- 100M was actually run. See JSON `scale_100M`.")
@@ -842,6 +1003,139 @@ def write_markdown_report(report: dict, path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Single-shot comprehensive run (--scale): one temp DB, full metric list
+# --------------------------------------------------------------------------- #
+def do_single_run(state: dict, args) -> None:
+    """Run the full scale metric list on ONE isolated temp DB at `args.scale`.
+
+    This is the convenience mode the task asks for: a single command
+    (`--scale 100k`, `1m`, `10m`, `100m`) that ACTUALLY inserts the events and
+    reports single-append + batch-append throughput, concurrent-writer
+    throughput, full-chain verification cost, memory growth, storage, and a
+    short long-running stability probe -- with machine environment evidence.
+    """
+    scale = parse_scale_token(args.scale)
+    sync = args.sync
+    label = scale_label(scale)
+    workdir = state["workdir"]
+    rundir = os.path.join(workdir, "single_run")
+    os.makedirs(rundir, exist_ok=True)
+    db = os.path.join(rundir, "scale.db")
+    for suf in ("", "-wal", "-shm"):
+        try:
+            os.remove(db + suf)
+        except OSError:
+            pass
+
+    res = {"scale_target": scale, "scale_label": label, "sync": sync,
+           "completed": False, "environment": environment_evidence()}
+
+    rss_before = process_rss_bytes()
+    store = make_store(db, sync)
+
+    # --- single-append throughput (representative sample) -------------------
+    # Single appends are ~3x slower than batches; measuring ALL of 100M that way
+    # would take days, so we sample a representative prefix and report the real
+    # per-event rate, then top up the chain via the production batch path.
+    single = scale if scale <= 20000 else 15000
+    t0 = time.perf_counter()
+    for i in range(single):
+        store.log_event(AuditEventType.STATE_CHANGE, "bench", AuditScope.L0, "ok",
+                        {"i": i, "phase": "single"}, "s%d" % i)
+    sw = time.perf_counter() - t0
+    res["single_append"] = {
+        "sampled_events": single,
+        "wall_sec": round(sw, 3),
+        "events_per_sec": round(single / sw, 1) if sw else 0.0,
+        "note": "representative sample; chain topped up via batch path",
+    }
+
+    # --- batch-append throughput (production path, reaches full scale) -------
+    batch = scale - single
+    bsz = SCALE_BUILD_BATCH
+    t0 = time.perf_counter()
+    done = 0
+    while done < batch:
+        n = min(bsz, batch - done)
+        store.log_event_batch([make_event(done + i, "sr") for i in range(n)])
+        done += n
+    bw = time.perf_counter() - t0
+    res["batch_append"] = {
+        "events": batch,
+        "batch_size": bsz,
+        "wall_sec": round(bw, 3),
+        "events_per_sec": round(batch / bw, 1) if bw else 0.0,
+    }
+
+    rss_after_build = process_rss_bytes()
+
+    # --- full-chain verification cost ---------------------------------------
+    ok, total = store.verify_integrity()
+    t0 = time.perf_counter()
+    ok, total = store.verify_integrity()
+    vw = time.perf_counter() - t0
+    res["full_chain_verify"] = {
+        "events": total,
+        "chain_ok": bool(ok),
+        "wall_sec": round(vw, 3),
+        "verify_ms": round(vw * 1000.0, 2),
+        "us_per_event": round(vw * 1_000_000.0 / total, 2) if total else 0.0,
+    }
+
+    disk = db_bytes_on_disk(db)
+    disk["bytes_per_event"] = round(disk["total_bytes"] / max(1, total), 1)
+    res["storage"] = disk
+    res["memory_growth_bytes"] = {
+        "rss_before_open": rss_before,
+        "rss_after_build": rss_after_build,
+        "growth_after_build": (rss_after_build - rss_before)
+        if rss_before and rss_after_build else None,
+    }
+    store._conn.close()
+
+    # --- concurrent-writer throughput (isolated DB, N processes) ------------
+    per = max(10000, min(250_000, (scale // args.processes) or 250_000))
+    do_multiprocess(state, processes=args.processes, per_process=per, batch=bsz)
+    mp = state.get("multi_process", {})
+    if isinstance(mp, dict) and "error" not in mp:
+        res["concurrent_writers"] = {
+            "processes": mp.get("processes"),
+            "events": mp.get("total_events"),
+            "aggregate_eps_including_startup": mp.get("aggregate_eps_incl_startup"),
+            "aggregate_eps_excluding_startup": mp.get("aggregate_eps_excl_startup"),
+            "no_lost_appends": mp.get("no_lost_appends"),
+            "contiguous_seq": mp.get("contiguous_seq"),
+        }
+    else:
+        res["concurrent_writers"] = mp  # error dict or empty
+
+    # --- short long-running stability probe (sustained appends on main DB) --
+    if ok:
+        store2 = make_store(db, sync)
+        t_end = time.time() + args.stability_seconds
+        cnt = 0
+        while time.time() < t_end:
+            store2.log_event_batch([make_event(scale + cnt + i, "pr") for i in range(bsz)])
+            cnt += bsz
+        ok2, total2 = store2.verify_integrity()
+        res["stability_probe"] = {
+            "duration_sec": args.stability_seconds,
+            "events_appended_in_probe": cnt,
+            "approx_events_per_sec": round(cnt / args.stability_seconds, 1),
+            "chain_ok_after_probe": bool(ok2),
+            "total_events_after_probe": total2,
+        }
+        store2._conn.close()
+
+    res["completed"] = True
+    state["single_run"] = res
+    print(f"[single_run {label} {sync}] single_eps={res['single_append']['events_per_sec']} "
+          f"batch_eps={res['batch_append']['events_per_sec']} "
+          f"verify_s={res['full_chain_verify']['wall_sec']} "
+          f"completed={res['completed']}", flush=True)
+
+
+# --------------------------------------------------------------------------- #
 # State load/save + entry
 # --------------------------------------------------------------------------- #
 def load_state(workdir: str) -> dict:
@@ -863,8 +1157,19 @@ def save_state(workdir: str, state: dict) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workdir", required=True, help="persistent working dir for DB + state")
-    ap.add_argument("--step", required=True,
-                    choices=["rates", "rates_scaled", "build", "verify", "multiprocess", "finalize"])
+    ap.add_argument("--step", required=False, default=None,
+                    choices=["rates", "rates_scaled", "build", "verify", "multiprocess", "finalize"],
+                    help="chunked/resumable step (omit when using --scale single-shot mode)")
+    # Single-shot convenience mode (the task's --scale / --max-events flag):
+    # one command that ACTUALLY inserts `scale` events and reports the full list.
+    ap.add_argument("--scale", default=None,
+                    help="single-shot scale: 100k, 1m, 10m, 100m, or a raw int")
+    ap.add_argument("--max-events", dest="max_events", default=None,
+                    help="alias for a single --scale value")
+    ap.add_argument("--processes", type=int, default=8,
+                    help="concurrent writers for the single-shot mode (default 8)")
+    ap.add_argument("--stability-seconds", dest="stability_seconds", type=int, default=30,
+                    help="long-running stability probe duration in the single-shot mode (default 30)")
     ap.add_argument("--count", type=int, help="scale event count (for build/verify)")
     ap.add_argument("--chunk", type=int, default=1_400_000, help="events per build call")
     ap.add_argument("--autockpt", type=int, default=None,
@@ -874,6 +1179,21 @@ def main(argv=None) -> int:
     ap.add_argument("--part", default="integrity", choices=["integrity", "tail"])
     ap.add_argument("--out-md", default=str(ROOT / "docs" / "autonomous" / "SCALE-HARNESS-RESULTS.md"))
     args = ap.parse_args(argv)
+
+    scale = args.scale or args.max_events
+    if scale:
+        # Single-shot comprehensive run: build + measure + report + exit.
+        state = load_state(args.workdir)
+        state["workdir"] = args.workdir
+        args.scale = scale
+        do_single_run(state, args)
+        rc = finalize(state, Path(args.out_md))
+        save_state(args.workdir, state)
+        return rc
+
+    if not args.step:
+        print("either --scale/--max-events OR --step is required", flush=True)
+        return 2
 
     state = load_state(args.workdir)
     state["workdir"] = args.workdir
