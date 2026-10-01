@@ -34,6 +34,16 @@ from src.kernels.execution import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # These unit tests exercise the **simulated** capability fallback. The
+    # production gateway injects a real capability executor, so an unwired
+    # kernel fails closed instead of masquerading as success. Simulation is
+    # opt-in (SIMULATION_OPT_IN_ENV); unit tests of the fallback opt in
+    # explicitly rather than relying on the (now removed) silent default.
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
+
+
 @pytest.fixture
 def decomposer():
     return GoalDecomposer()
@@ -248,6 +258,19 @@ class TestActionExecutor:
         assert "capability exploded" in result.error
         chain = get_event_bus().get_correlation_chain(action.correlation_id)
         assert "action_failed" in [e.type for e in chain]
+
+    def test_unwired_executor_fails_closed(self, executor, monkeypatch):
+        # Production gateway injects a real capability executor. When nothing is
+        # wired and simulation is NOT explicitly opted in, the kernel MUST fail
+        # closed: it must not report success for work it never performed. The
+        # autouse fixture opts these tests into the simulated fallback, so we
+        # deliberately turn it off here to assert the safety net holds.
+        monkeypatch.delenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", raising=False)
+        action = make_action()
+        result = executor.execute(action)
+        assert not result.success
+        assert result.output.get("status") == "unwired"
+        assert "no capability executor wired" in (result.error or "")
 
 
 # =====================================================================

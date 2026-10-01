@@ -1,0 +1,145 @@
+# =============================================================================
+# LIUHAO AI OS — Closed-Loop Observability Alert Rules
+# =============================================================================
+#
+# WHY THIS FILE EXISTS (read before editing)
+# -----------------------------------------------------------------------------
+# The repo already has `configs/observability/rules/liuhao-ai-os-alerts.yml`
+# (production-oriented rules). This file exists for a DIFFERENT purpose: it is
+# the rule set used by `scripts/verify_observability_loop.py` to prove the
+# FULL chain
+#     application -> exporter -> collector -> storage -> alert rule
+#       -> ACTUAL FIRING -> operator visibility
+# and NOT just "the app answers /v1/metrics/prometheus with HTTP 200".
+#
+# HARD RULE FOR EVERY `expr:` IN THIS FILE
+# -----------------------------------------------------------------------------
+# Every metric referenced here must be ONE OF:
+#   (a) emitted by the running process (verified by live scrape, see doc), or
+#   (b) `up` — synthesized by Prometheus itself for every scrape target.
+# A rule referencing a metric that is never emitted NEVER FIRES and would turn
+# the gate into a fake green light. `scripts/verify_observability_loop.py`
+# re-checks this at runtime: it scrapes the app, parses metric family names, and
+# fails if any rule's metric is absent from the live scrape.
+#
+# METRICS USED HERE AND WHERE THEY COME FROM (measured, not assumed)
+#   * up{job="liuhao-ai-os"}          <- Prometheus-injected per target
+#   * http_requests_total{status=...} <- src/gateway/main.py logging_middleware
+#   * liuhao_executor_fence_installed <- src/observability/metrics.py Gauge,
+#                                        set during gateway lifespan startup
+#                                        (live value observed = 1)
+#   * process_open_fds                <- prometheus_client process collector
+#                                        (observed = 0 on Windows: no fds)
+#
+# PROBE GROUP WARNING
+# -----------------------------------------------------------------------------
+# Group `liuhao-closed-loop-probe` exists ONLY so the closed loop can be
+# demonstrated end-to-end in minutes. It contains a deliberately-forcible rule
+# (404 burst) and deliberately fast `for:` durations. DO NOT ship this group to
+# production as-is: it will page you for a handful of 404s.
+# =============================================================================
+
+groups:
+  # ---------------------------------------------------------------------------
+  # PROBE GROUP — fast, forceable, used by the closed-loop gate.
+  # ---------------------------------------------------------------------------
+  - name: liuhao-closed-loop-probe
+    interval: 10s
+    rules:
+      # Fires when the scrape target is down. `up` is injected by Prometheus on
+      # every scrape, so this needs no application emission point. Forced during
+      # verification by stopping the app process.
+      - alert: LoopProbeServiceDown
+        expr: up{job="liuhao-ai-os"} == 0
+        for: 0s
+        labels:
+          severity: critical
+          probe: 'true'
+          chain: 'closed-loop'
+        annotations:
+          summary: "[PROBE] liuhao-ai-os scrape target is down"
+          description: >-
+            up{job="liuhao-ai-os"} == 0. The collector cannot reach
+            /v1/metrics/prometheus. This is the forcing condition used to prove
+            alert-rule -> FIRING -> Alertmanager delivery.
+
+      # Fires when an application-emitted metric disappears from storage. This
+      # is the strongest available proof that the rule references a metric the
+      # application really exports: if `liuhao_executor_fence_installed` were
+      # never emitted, `absent()` would be permanently true and the gate's
+      # "metric exists in live scrape" check would have already failed.
+      - alert: LoopProbeAppMetricAbsent
+        expr: absent(liuhao_executor_fence_installed)
+        for: 0s
+        labels:
+          severity: warning
+          probe: 'true'
+          chain: 'closed-loop'
+        annotations:
+          summary: "[PROBE] liuhao_executor_fence_installed is missing from storage"
+          description: >-
+            The gateway did not report liuhao_executor_fence_installed. Either
+            the process is down, the exporter regressed, or the fence failed to
+            install during lifespan startup (fail-closed path).
+
+      # Fires WHILE THE APP IS UP, on a metric the app really increments. Forced
+      # during verification by issuing real HTTP 404 requests against the
+      # gateway, which the logging_middleware counts into
+      # http_requests_total{status="404"}. This is the only rule in this file
+      # that proves firing without taking the application down.
+      - alert: LoopProbeHttp404Burst
+        expr: sum(increase(http_requests_total{status="404"}[2m])) >= 5
+        for: 0s
+        labels:
+          severity: warning
+          probe: 'true'
+          chain: 'closed-loop'
+        annotations:
+          summary: "[PROBE] burst of HTTP 404s on the gateway"
+          description: >-
+            At least 5 requests returned HTTP 404 within 2 minutes. Used as a
+            forceable, real-metric firing condition for the observability
+            closed-loop gate. Remove or re-threshold before production use.
+
+  # ---------------------------------------------------------------------------
+  # OPERATIONAL GROUP — real ops value, conservative thresholds.
+  # ---------------------------------------------------------------------------
+  - name: liuhao-ai-os-core
+    interval: 30s
+    rules:
+      - alert: LiuhaoServiceDown
+        expr: up{job="liuhao-ai-os"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "liuhao-ai-os is unreachable for > 1 minute"
+          description: >-
+            {{ $labels.instance }} has not answered /v1/metrics/prometheus with
+            2xx for more than one minute.
+
+      - alert: LiuhaoExecutorFenceNotInstalled
+        expr: liuhao_executor_fence_installed == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Executor fence is NOT installed on a running gateway"
+          description: >-
+            The gateway is up (it is being scraped) but it reports
+            liuhao_executor_fence_installed == 0. Autonomous actions must be
+            denied while the fence is absent; treat this as a fail-closed
+            posture gap, not a cosmetic metric problem.
+
+      # NOTE — deliberately low threshold: the gateway counts its own scrapes,
+      # so http_requests_total is never truly idle while Prometheus runs.
+      - alert: LiuhaoHttp5xxPresent
+        expr: sum(increase(http_requests_total{status=~"5.."}[10m])) > 0
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx observed on the gateway"
+          description: >-
+            At least one request returned 5xx in the last 10 minutes. Fed by
+            src/gateway/main.py logging_middleware.

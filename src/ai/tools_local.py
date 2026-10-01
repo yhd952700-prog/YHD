@@ -16,14 +16,24 @@ Why this matters for launch
 these tools registered, the autonomous loop can *actually do* local work, and
 capabilities that require an external service (network, LLM provider) still fail
 honestly with ``no active tool`` / backend-unavailable instead of pretending.
+
+Two local tools:
+
+* ``python_compute`` — pure compute via the RestrictedPython backend.
+* ``file_write``     — a real file write, **contained** to the workspace root
+  (``src/ai/workspace.py``). Autonomous writes are only defensible with a hard
+  boundary, so containment is part of the tool, not the caller's job.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from typing import Any, Dict, Optional, Tuple
 
 from .tool_registry import Tool, ToolRegistry
+from .workspace import workspace_root, WorkspaceViolation
+from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
 from ..plugins.sandbox.backends.restricted_python_backend import (
     RestrictedPythonBackend,
     RESULT_VAR,
@@ -121,35 +131,159 @@ def python_compute(**inputs: Any) -> Dict[str, Any]:
     }
 
 
-def register_default_local_tools(registry: ToolRegistry) -> None:
+def _make_file_write(root: str):
+    """Build the ``file_write`` callable bound to a **fixed** workspace root.
+
+    The root is resolved **once, at registration time** (not per call): a root
+    that can change mid-run produces "this round is allowed, the next is not"
+    behaviour that nobody can reproduce. The same rationale as the read tools in
+    ``src/ai/tools.py``.
+
+    Containment: every path goes through :func:`resolve_in_workspace`, i.e. it is
+    realpath-resolved (``..`` and symlinks collapses) and must land inside
+    ``root``. Anything else raises :class:`WorkspaceViolation` and is reported as
+    a failed action — fail-closed, never a silent escape upward.
+    """
+    fs_root = os.path.abspath(root)
+    fs_world = WorldInterface(
+        adapters=[FilesystemAdapter(root=fs_root)],
+        # Autonomous face: default-DENY, and the only thing this interface is
+        # allowed to do is write inside the workspace. No shell, no read-elsewhere.
+        authorize=lambda request: (
+            request.adapter == "filesystem" and request.action == "write"
+        ),
+        actor="autonomous",
+    )
+
+    def file_write(**inputs: Any) -> Dict[str, Any]:
+        """Write ``content`` to ``path`` inside the workspace. Real side effect."""
+        path = inputs.get("path") or inputs.get("file") or inputs.get("filename")
+        if not isinstance(path, str) or not path.strip():
+            return {
+                "success": False,
+                "status": "rejected",
+                "error": (
+                    "file_write needs a `path` (relative to the workspace root). "
+                    "The planner must supply it — this tool will not invent one."
+                ),
+            }
+
+        if "content" not in inputs:
+            return {
+                "success": False,
+                "status": "rejected",
+                "error": "file_write needs `content` (the exact bytes to write).",
+            }
+        content = inputs["content"]
+        if isinstance(content, (int, float)):
+            content = str(content)
+        if not isinstance(content, str):
+            return {
+                "success": False,
+                "status": "rejected",
+                "error": (
+                    f"file_write `content` must be a string (got "
+                    f"{type(content).__name__}); refusing to serialize it."
+                ),
+            }
+
+        result = fs_world.execute(
+            WorldRequest(
+                adapter="filesystem",
+                action="write",
+                params={"path": path.strip(), "content": content},
+            )
+        )
+        if not result.success:
+            return {
+                "success": False,
+                "status": "failed",
+                "error": result.error,
+                "workspace_root": fs_root,
+            }
+
+        written = None
+        if isinstance(result.output, dict):
+            written = result.output.get("written")
+        if written is None:
+            # Fall back to resolving the same way the adapter did, purely for
+            # reporting — the write itself already happened via the adapter.
+            try:
+                from .workspace import resolve_in_workspace
+
+                written = resolve_in_workspace(path.strip(), fs_root)
+            except WorkspaceViolation:
+                written = None
+        return {
+            "success": True,
+            "status": "executed",
+            "path": written,
+            "bytes": len(content.encode("utf-8")),
+            "workspace_root": fs_root,
+        }
+
+    return file_write
+
+
+def register_default_local_tools(
+    registry: ToolRegistry,
+    root: Optional[str] = None,
+) -> None:
     """Register the real, locally-executable tools into ``registry``.
 
     Walks each tool through the §40 lifecycle (REGISTER -> VALIDATE -> APPROVE ->
     ACTIVE) so it is immediately executable. Idempotent: re-registering is a no-op
     beyond re-asserting ACTIVE.
-    """
-    if registry.get("local_python_compute") is not None:
-        # Already registered — keep it simple and idempotent.
-        return
 
-    registry.register(Tool(
-        tool_id="local_python_compute",
-        name="Local Python Compute",
-        version="1.0.0",
-        description=(
-            "Execute pure-compute Python locally via the RestrictedPython backend. "
-            "Supply a `code` program (assigning its answer to `result`), an "
-            "`expression`, or a goal carrying a `python:`/`code:` directive. "
-            "import/open/eval are blocked at compile time and there is a CPU "
-            "timeout. Provides capability isolation only — not resource isolation."
-        ),
-        capability="python_compute",
-        schema={"code": "str", "expression": "str", "goal": "str", "timeout": "int"},
-        fn=python_compute,
-        risk="LOW",
-        sandbox_policy="restricted_python",
-        audit_policy="p9.tool.execute",
-    ))
-    registry.validate("local_python_compute")
-    registry.approve("local_python_compute")
-    registry.activate("local_python_compute")
+    Args:
+        registry: target registry.
+        root: workspace root for the file-write tool. Defaults to
+            :func:`workspace_root` (env ``LIUHAO_WORKSPACE_ROOT``).
+    """
+    # Already registered — keep it simple and idempotent.
+    if registry.get("local_python_compute") is None:
+        registry.register(Tool(
+            tool_id="local_python_compute",
+            name="Local Python Compute",
+            version="1.0.0",
+            description=(
+                "Execute pure-compute Python locally via the RestrictedPython backend. "
+                "Supply a `code` program (assigning its answer to `result`), an "
+                "`expression`, or a goal carrying a `python:`/`code:` directive. "
+                "import/open/eval are blocked at compile time and there is a CPU "
+                "timeout. Provides capability isolation only — not resource isolation."
+            ),
+            capability="python_compute",
+            schema={"code": "str", "expression": "str", "goal": "str", "timeout": "int"},
+            fn=python_compute,
+            risk="LOW",
+            sandbox_policy="restricted_python",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_python_compute")
+        registry.approve("local_python_compute")
+        registry.activate("local_python_compute")
+
+    fs_root = os.path.abspath(root or workspace_root())
+    if registry.get("local_file_write") is None:
+        registry.register(Tool(
+            tool_id="local_file_write",
+            name="Local Workspace File Write",
+            version="1.0.0",
+            description=(
+                "Write a file inside the LIUHAO workspace. Requires `path` "
+                "(relative to the workspace root) and `content`. The path is "
+                "realpath-resolved and must stay inside the workspace root — "
+                "traversal (`..`, absolute paths, symlinks pointing outward) is "
+                "refused. This is a REAL side effect on disk."
+            ),
+            capability="file_write",
+            schema={"path": "str", "content": "str"},
+            fn=_make_file_write(fs_root),
+            risk="MEDIUM",
+            sandbox_policy="workspace_containment",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_file_write")
+        registry.approve("local_file_write")
+        registry.activate("local_file_write")

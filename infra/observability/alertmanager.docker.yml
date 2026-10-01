@@ -1,0 +1,22 @@
+# Alertmanager config for the closed-loop verification stack (container mode).
+#
+# `closed-loop-sink` is a plain HTTP webhook receiver. In docker mode the sink
+# runs on the DOCKER HOST, hence host.docker.internal. The verify script runs a
+# listener there and prints the real delivered payload — that is the
+# "operator visibility" link, proven by bytes on the wire rather than by
+# "Alertmanager is configured".
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: 'closed-loop-sink'
+  group_by: ['alertname']
+  group_wait: 0s
+  group_interval: 1m
+  repeat_interval: 5m
+
+receivers:
+  - name: 'closed-loop-sink'
+    webhook_configs:
+      - url: 'http://host.docker.internal:18010/'
+        send_resolved: true

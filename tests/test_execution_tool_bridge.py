@@ -6,8 +6,20 @@ simulating them, while preserving strict layering (kernels must not import ai).
 """
 import uuid
 
+import pytest
+
 from src.kernels.execution import Action, ActionExecutor
 from src.ai.tool_registry import Tool, ToolRegistry, ToolRouter
+
+
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # The simulation fallback is now opt-in (LIUHAO_ALLOW_SIMULATED_EXECUTION).
+    # These bridge tests exercise the *simulated* path and the bridge wiring;
+    # we opt in explicitly rather than relying on a silent default so the
+    # simulation contract stays honest (production wires a real executor and
+    # fails closed when nothing is wired).
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
 
 
 def _make_action(action_id="a1", capability_id="network_bus", scope="L1", inputs=None):
@@ -25,7 +37,10 @@ def _make_action(action_id="a1", capability_id="network_bus", scope="L1", inputs
 
 
 # ---------------------------------------------------------------------------
-# (a) Backward compatibility: no injection => simulated path unchanged
+# (a) Backward compatibility: no injection + simulation opted in => simulated
+#     path preserved. (Simulation is no longer a silent default -- it must be
+#     explicitly requested, so the kernel cannot masquerade a simulation as a
+#     real execution in production.)
 # ---------------------------------------------------------------------------
 def test_no_injection_stays_simulated():
     executor = ActionExecutor()
@@ -215,4 +230,3 @@ def test_explicit_executor_failure_is_not_masked():
     assert "sandbox refused" in (result.error or "")
     # The structured failure reason survives (not overwritten to "executed").
     assert result.output["status"] == "rejected"
-

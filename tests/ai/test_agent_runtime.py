@@ -18,6 +18,18 @@ from src.ai.agent_runtime import (
 from src.kernels.execution import ActionResult, Task, Verifier, VerifyResult
 from src.kernels.memory import MemoryScope, get_memory_kernel
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _allow_simulated_execution(monkeypatch):
+    # These offline engine tests intentionally run with NO real capability
+    # executor and rely on the engine's built-in *simulated* executor (the
+    # docstring states: "全部离线、使用引擎内置模拟执行器"). Simulation is now
+    # opt-in (LIUHAO_ALLOW_SIMULATED_EXECUTION); we opt in explicitly rather
+    # than relying on a silent default, so the simulation contract stays honest.
+    monkeypatch.setenv("LIUHAO_ALLOW_SIMULATED_EXECUTION", "1")
+
 
 def _runtime() -> AgentRuntime:
     # 默认无 capability_executor → 引擎内置 _simulate_capability（离线、无 LLM）。

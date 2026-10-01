@@ -1,0 +1,42 @@
+# Prometheus config for the closed-loop verification stack.
+#
+# Target: the gateway running on the DOCKER HOST at port 8010.
+# `host.docker.internal` only resolves if the container is given
+# `extra_hosts: ["host.docker.internal:host-gateway"]` (see docker-compose.yml).
+#
+# This file is intentionally SEPARATE from configs/observability/prometheus.yml
+# (which targets the in-cluster service `api:8080`). Reusing the production
+# config against a host-bound app would silently scrape the wrong thing.
+global:
+  scrape_interval: 10s
+  scrape_timeout: 8s
+  evaluation_interval: 10s
+  external_labels:
+    cluster: 'liuhao-ai-os'
+    environment: 'closed-loop-verification'
+    verifier: 'obs-loop'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - '/etc/prometheus/rules/alert_rules.yml'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # The gateway under test. metrics_path is the REAL route in this repo
+  # (src/gateway/observability.py); `/metrics` does not exist and 404s.
+  - job_name: 'liuhao-ai-os'
+    metrics_path: '/v1/metrics/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['host.docker.internal:8010']
+        labels:
+          service: 'liuhao-ai-os'
+          component: 'api'
+          probe: 'closed-loop'

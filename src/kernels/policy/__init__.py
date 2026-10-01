@@ -12,6 +12,7 @@ Implements ABAC (Attribute-Based Access Control) with policy evaluation.
 """
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -111,6 +112,13 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # security: reading a decision (grant/revoke/set_abac_rule change
     # authority -> denied).
     "security.decide_access",
+    # policy: the engine evaluating an action is the operational loop; the
+    # engine unregistering a non-sentinel rule is the system managing its own
+    # policy. Sentinel rules (default_deny / human_sovereignty) are protected
+    # inside unregister_rule itself and can never be removed, so allowing the
+    # service principal here does not open a fail-open hole.
+    "policy.evaluate",
+    "policy.unregister_rule",
 })
 
 #: Kernel actions explicitly DENIED for the internal service principal.
@@ -160,6 +168,14 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     "trust.revoke",
     "trust.update_score",
 })
+
+
+#: Sentinel rules that MUST NOT be removable at runtime. ``default_deny`` is the
+#: fail-closed floor of the entire ABAC engine; ``human_sovereignty`` is the
+#: OD-010 human-override boundary. Removing either silently fails the system
+#: open or surrenders the human override, so :meth:`unregister_rule` refuses
+#: them and records the refusal as a denied action.
+_PROTECTED_RULE_IDS: frozenset = frozenset({"default_deny", "human_sovereignty"})
 
 
 @dataclass
@@ -524,8 +540,19 @@ class PolicyEngine:
             self._rules[rule.id] = rule
             return True
 
+    @kernel_action("policy.unregister_rule")
     def unregister_rule(self, rule_id: str) -> bool:
-        """Unregister a policy rule."""
+        """Unregister a policy rule.
+
+        Sentinel rules (``default_deny``, ``human_sovereignty``) are protected:
+        removing them would fail the system open (no default deny) or surrender
+        the human-sovereignty override, so the call is refused and recorded as a
+        denied action rather than silently succeeding.
+        """
+        if rule_id in _PROTECTED_RULE_IDS:
+            mark_action_denied(f"refusing to unregister protected rule {rule_id}")
+            logger.error("REFUSED unregister of protected policy rule: %s", rule_id)
+            return False
         with self._lock:
             if rule_id in self._rules:
                 del self._rules[rule_id]
@@ -572,13 +599,20 @@ class PolicyEngine:
         with self._lock:
             return self._policy_sets.get(set_id)
 
+    @kernel_action("policy.evaluate", policy=False)
     def evaluate(
         self,
         context: Dict[str, Any],
         scope: Optional[PolicyScope] = None,
         policy_set_id: Optional[str] = None
     ) -> PolicyDecision:
-        """Evaluate policies against context."""
+        """Evaluate policies against context.
+
+        ``policy=False`` on the decorator: the wrapper must not adjudicate
+        *itself* (that would nest an ABAC evaluation inside the very evaluation
+        it is performing). The actual ALLOW/DENY verdict is returned in the
+        ``PolicyDecision``, not the wrapper's outcome.
+        """
         with self._lock:
             # Ensure the human-verification signal is present on the
             # actor/agent context so the human_sovereignty rule can gate

@@ -1,0 +1,36 @@
+# Prometheus config for a NATIVE (non-container) closed-loop run: Prometheus
+# and Alertmanager run as ordinary Windows processes on the same host as the
+# gateway, so the target is 127.0.0.1:8010, not host.docker.internal.
+#
+# Used by scripts/verify_observability_loop.py --mode local.
+global:
+  scrape_interval: 10s
+  scrape_timeout: 8s
+  evaluation_interval: 10s
+  external_labels:
+    cluster: 'liuhao-ai-os'
+    environment: 'closed-loop-verification'
+    verifier: 'obs-loop'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']
+
+rule_files:
+  - 'alert_rules.yml'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+
+  - job_name: 'liuhao-ai-os'
+    metrics_path: '/v1/metrics/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['127.0.0.1:8010']
+        labels:
+          service: 'liuhao-ai-os'
+          component: 'api'
+          probe: 'closed-loop'

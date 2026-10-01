@@ -21,6 +21,8 @@ from src._time import utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
+import os
+import re
 
 # Import dependencies
 from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
@@ -35,6 +37,32 @@ from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: 
 # the ai layer (strict layering: spec -> kernels -> ai -> gateway/console), so
 # the actual executor is injected at assembly time by an upper layer.
 CapabilityExecutor = Callable[[str, Dict[str, Any]], Any]
+
+#: Opt-in switch for the **simulated** capability path.
+#:
+#: Why it exists (the real defect fixed here)
+#: ----------------------------------------
+#: Previously, when no ``capability_executor`` was injected, :meth:`ActionExecutor.execute`
+#: fell through to ``_simulate_capability`` and returned ``status="simulated"`` while
+#: marking the action **success**. So the production path (gateway -> AgentRuntime ->
+#: ExecutionEngine) could report a goal as ``completed`` / ``SUCCESS`` without doing
+#: anything. Reporting success while doing nothing is *worse* than failing, so an
+#: unwired kernel must fail closed. The simulated path is retained for demo /
+#: benchmark / unit tests, but only when this env var is explicitly set, and the
+#: result still carries ``status="simulated"`` / ``simulated=True`` so it can never
+#: be mistaken for a real execution.
+SIMULATION_OPT_IN_ENV = "LIUHAO_ALLOW_SIMULATED_EXECUTION"
+
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def simulated_execution_enabled() -> bool:
+    """Whether the simulated capability path has been explicitly opted in.
+
+    Read from the environment on **every call** (not cached at import) so tests /
+    demos can flip it for the duration of a single run.
+    """
+    return (os.environ.get(SIMULATION_OPT_IN_ENV) or "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
 class TaskStatus(str, Enum):
@@ -184,8 +212,45 @@ class ExecutionContext:
 class GoalDecomposer:
     """Decomposes natural language goals into structured tasks."""
 
+    # Explicit file-write phrasings the decomposer recognises. These are
+    # *shapes*, not understanding: the goal must state a filename and (optionally)
+    # the content, because downstream tools need tool-shaped inputs
+    # (``path`` / ``content``), not a prose sentence. Anything that does not match
+    # gets no file task at all -- inventing a path or content from prose would be
+    # exactly the "reports success without knowing what to do" failure mode this
+    # kernel must not have.
+    _FILE_WRITE_A = re.compile(
+        r"(?:create|write|save|make|generate)\s+(?:a\s+|an\s+)?(?:new\s+)?file\s+"
+        r"(?:named|called|at|as)?\s*"
+        r"(?P<path>[\w./\\-]+\.[A-Za-z0-9]+)"
+        r"(?:\s*(?:containing|that\s+contains|with\s+content|with)\s*"
+        r"(?:['\"](?P<quoted>.*?)['\"]|(?P<bare>\S+)))?",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _FILE_WRITE_B = re.compile(
+        r"(?:write|save)\s+['\"](?P<content>.*?)['\"]\s+"
+        r"(?:to|into|in)\s+(?:the\s+)?(?:file\s+)?"
+        r"(?P<path>[\w./\\-]+\.[A-Za-z0-9]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     def __init__(self):
         self.capability_registry = get_capability_registry()
+
+    @classmethod
+    def _extract_file_write(cls, text: str) -> Optional[Dict[str, str]]:
+        """Return ``{"path": ..., "content": ...}`` for an explicit file-write
+        goal, else ``None`` (no file task is invented)."""
+        m = cls._FILE_WRITE_B.search(text)
+        if m:
+            return {"path": m.group("path"), "content": m.group("content")}
+        m = cls._FILE_WRITE_A.search(text)
+        if m:
+            content = m.group("quoted")
+            if content is None:
+                content = m.group("bare") or ""
+            return {"path": m.group("path"), "content": content}
+        return None
 
     def decompose(self, goal: Goal) -> List[Task]:
         """Decompose goal into tasks using capability registry."""
@@ -245,6 +310,23 @@ class GoalDecomposer:
                 capability_id="python_compute",
                 capability_namespace="kernel",
                 inputs={"goal": goal.natural_language},
+                scope=goal.scope,
+            ))
+
+        # File write: route to the real, workspace-contained local tool.
+        # Inputs are TOOL-SHAPED (path/content), not the whole sentence -- the
+        # previous "pass the goal through as {"goal": ...}" shape is why a
+        # realistic goal could never actually execute.
+        file_write_inputs = self._extract_file_write(goal.natural_language)
+        if file_write_inputs is not None:
+            tasks.append(Task(
+                id=str(uuid.uuid4())[:8],
+                goal_id=goal.id,
+                name="WriteFile",
+                description="Write a file inside the workspace",
+                capability_id="file_write",
+                capability_namespace="kernel",
+                inputs=file_write_inputs,
                 scope=goal.scope,
             ))
 
@@ -371,6 +453,7 @@ class ActionExecutor:
         # the previous behaviour (assumed successful), preserving backward
         # compatibility.
         try:
+            simulated = False
             if self._capability_executor is not None:
                 raw = self._capability_executor(action.capability_id, action.inputs)
                 if isinstance(raw, dict):
@@ -395,10 +478,31 @@ class ActionExecutor:
                     }
                     ok = True
                     error = None
-            else:
+            elif simulated_execution_enabled():
                 output = self._simulate_capability(action.capability_id, action.inputs)
+                simulated = True
                 ok = True
                 error = None
+            else:
+                # FAIL CLOSED -- an unwired kernel did not execute anything and
+                # must not be allowed to say otherwise.
+                output = {
+                    "capability": action.capability_id,
+                    "status": "unwired",
+                    "executed": False,
+                    "inputs_received": list(action.inputs.keys()),
+                    "timestamp": utc_now().isoformat(),
+                }
+                simulated = False
+                ok = False
+                error = (
+                    "no capability executor wired: the Execution Kernel cannot "
+                    f"execute capability '{action.capability_id}'. Inject a real "
+                    "capability_executor at assembly time to execute for real, or "
+                    f"set {SIMULATION_OPT_IN_ENV}=1 to request the simulated path "
+                    "explicitly (demo/test only -- a simulated result is NOT a real "
+                    "execution)."
+                )
 
             duration_ms = int((utc_now() - start_time).total_seconds() * 1000)
 
@@ -407,7 +511,7 @@ class ActionExecutor:
                 publish_event(
                     type="action_completed",
                     source="execution_kernel",
-                    data={"action_id": action.id, "task_id": action.task_id, "success": True},
+                    data={"action_id": action.id, "task_id": action.task_id, "success": True, "simulated": simulated},
                     correlation_id=action.correlation_id,
                     scope=EventScope(action.scope),
                 )
@@ -449,11 +553,18 @@ class ActionExecutor:
             )
 
     def _simulate_capability(self, capability_id: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Simulate capability execution (replace with real invocation)."""
-        # This would call the actual capability implementation
+        """Simulate capability execution -- **never** a real side effect.
+
+        Only reachable when the caller explicitly opted in via
+        ``LIUHAO_ALLOW_SIMULATED_EXECUTION=1`` (see :meth:`execute`). The output
+        is labelled ``status="simulated"`` *and* ``simulated=True`` so that no
+        consumer can mistake it for a real execution.
+        """
         return {
             "capability": capability_id,
             "status": "simulated",
+            "simulated": True,
+            "executed": False,
             "inputs_received": list(inputs.keys()),
             "timestamp": utc_now().isoformat(),
         }

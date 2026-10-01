@@ -141,6 +141,15 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
         RiskTier.LOW, False, False,
         "死信重试：重新投递，不改变权限。",
     ),
+    "policy.evaluate": ActionRisk(
+        RiskTier.LOW, False, False,
+        "策略求值：只读，不修改规则集（policy=False 避免自我裁决嵌套）。",
+    ),
+    "policy.unregister_rule": ActionRisk(
+        RiskTier.LOW, False, False,
+        "策略注销：受哨兵保护（default_deny/human_sovereignty 拒绝注销），"
+        "其余注销为内部簿记，且拒绝本身记为 denied。",
+    ),
     "execution.execute": ActionRisk(
         RiskTier.LOW, False, False,
         "执行已批准计划：运行环操作，作用域有界，非权限变更。",

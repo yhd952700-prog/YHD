@@ -131,8 +131,18 @@ class AIStateManager:
         if self._runtime is None:
             try:
                 from src.ai.agent_runtime import AgentRuntime
-                self._runtime = AgentRuntime(scope="L1")
-                logger.info("AIStateManager: AgentRuntime initialized")
+                from src.ai.lcore import LCore
+                # Wire the REAL local-tool executor (RestrictedPython compute +
+                # workspace-contained file writes) so goals actually execute
+                # instead of taking the simulated path. Fail-closed: with no
+                # executor the Execution Kernel refuses (never reports success
+                # for work it did not do).
+                _lcore = LCore(scope="L1", register_local_tools=True)
+                self._runtime = AgentRuntime(
+                    scope="L1",
+                    capability_executor=_lcore.capability_executor(),
+                )
+                logger.info("AIStateManager: AgentRuntime initialized (real executor wired)")
             except Exception as exc:
                 logger.error("AIStateManager: failed to init AgentRuntime: %s", exc)
                 raise

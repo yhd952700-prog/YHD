@@ -23,7 +23,7 @@ import os
 import threading
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 _log = logging.getLogger(__name__)
 
@@ -237,6 +237,7 @@ class ResourceQuotaManager:
     ) -> Optional[Allocation]:
         """Allocate resources from quota."""
         if amount <= 0:
+            mark_action_denied("allocate rejected: amount must be > 0")
             return None
 
         quota = self.get_quota(scope, owner, resource_type)
@@ -244,9 +245,14 @@ class ResourceQuotaManager:
             # Try to find parent scope quota (L3 -> L2 -> L1 -> L0)
             quota = self._find_parent_quota(scope, owner, resource_type)
             if not quota:
+                mark_action_denied("allocate rejected: no quota in scope or any parent scope")
                 return None
 
         if not quota.can_allocate(amount):
+            mark_action_denied(
+                f"allocate rejected: insufficient quota "
+                f"(available={quota.available}, requested={amount})"
+            )
             return None
 
         with self._lock:

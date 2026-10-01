@@ -474,6 +474,28 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             owner="ai_local_tools",
             tags={"kernel", "execution", "local", "compute", "restricted-python"},
         ),
+        # Local Real-Execution Capability — file write inside the workspace (WS1b)
+        # Same contract as python_compute: declared as a real system capability,
+        # but it ONLY executes when a local tool is wired into the ToolRegistry.
+        # With no tool, execution fails loudly with "no active tool for capability"
+        # instead of silently simulating. The tool itself is path-contained:
+        # writes are resolved through ``resolve_in_workspace`` and anything
+        # outside the workspace root is refused (fail-closed).
+        CapabilityEntry(
+            id="file_write",
+            version="1.0.0",
+            namespace="kernel",
+            name="Local Workspace File Write",
+            description=(
+                "Write a file inside the LIUHAO workspace. Path containment is "
+                "enforced (realpath must stay inside the workspace root; traversal "
+                "is refused). Executable only when a local tool is wired; otherwise "
+                "fails with 'no active tool for capability'."
+            ),
+            scope=CapabilityScope.L3,
+            owner="ai_local_tools",
+            tags={"kernel", "execution", "local", "filesystem", "workspace"},
+        ),
     ]
 
     for cap in builtins:
