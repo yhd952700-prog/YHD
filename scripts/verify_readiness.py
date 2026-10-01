@@ -234,22 +234,37 @@ def check_data_integrity():
 
 
 def check_reliability():
-    """C6: run chaos/soak suite; fail-closed assertions must hold."""
+    """C6: run chaos/soak/failure-mode suite; fail-closed assertions must hold.
+
+    Covers the RELEASE-READINESS-CLOSURE G6 matrix on throwaway temp databases
+    (the production ``audit_store.db`` is never opened): ENOSPC/SQLITE_FULL
+    fail-closed, CORRUPT/IOERR quarantine, real-file corruption detection,
+    cross-process kill + restart chain recovery, single-writer fence / stale
+    lease, lock contention / thread safety, and (new) in-process restart
+    recovery under synchronous=FULL plus a real OS-level read-only DB-unavailable
+    scenario.
+    """
     targets = [
         SCRIPTS.parent / "tests" / "distribution" / "test_fence_coordination_chaos.py",
         SCRIPTS.parent / "tests" / "kernels" / "audit" / "test_audit_soak_concurrency.py",
         SCRIPTS.parent / "tests" / "kernels" / "audit" / "test_storage_faults.py",
+        SCRIPTS.parent / "tests" / "kernels" / "audit" / "test_multiprocess_append.py",
+        SCRIPTS.parent / "tests" / "kernels" / "audit" / "test_fencing_wired.py",
+        SCRIPTS.parent / "tests" / "kernels" / "audit" / "test_g6_restart_recovery.py",
     ]
     present = [t for t in targets if t.exists()]
     if not present:
         return NOT_VERIFIED, "no reliability/chaos suites present yet"
     rc, out = _run(
         [sys.executable, "-m", "pytest", *[str(t) for t in present],
-         "-p", "no:phoenix", "-q", "--timeout=60"],
-        timeout=300,
+         "-p", "no:phoenix", "-q", "--timeout=120"],
+        timeout=600,
     )
     if rc == 0:
-        return PASS, f"reliability suites pass ({len(present)} files)"
+        return PASS, (
+            f"reliability/failure-mode suites pass ({len(present)} files, "
+            f"temp-DB only; live audit_store.db untouched)"
+        )
     return NOT_VERIFIED, f"reliability suites rc={rc} (may need live infra): {out[-200:]}"
 
 
@@ -406,7 +421,41 @@ def check_observability():
 
 
 def check_deployment():
-    """C9: Dockerfile + alembic + migration up/down verifiable; real CD absent."""
+    """C9: real deployment/upgrade/rollback verification chain present + runnable.
+
+    Prefers ``scripts/verify_deploy_readiness.py`` (which REALLY runs alembic
+    upgrade/downgrade on a TEMP db + validates the staging compose). Falls back
+    to the lighter Dockerfile + alembic presence check when the script or the
+    alembic-capable interpreter is unavailable.
+    """
+    script = SCRIPTS / "verify_deploy_readiness.py"
+    # The migration checks need alembic/sqlalchemy/pyyaml; the managed venv
+    # lacks them, so only run the script when the repo's own .venv is present.
+    g9_py = None
+    for cand in (REPO / ".venv" / "Scripts" / "python.exe",
+                 REPO / ".venv" / "bin" / "python"):
+        if cand.exists():
+            g9_py = str(cand)
+            break
+    if script.exists() and g9_py is not None and g9_py != sys.executable:
+        env = dict(os.environ, G9_PYTHON=g9_py)
+        rc, out = _run([g9_py, str(script)], env=env, timeout=300)
+        fail_lines = [l for l in out.splitlines()
+                      if l.strip().startswith("[") and "FAIL" in l]
+        if rc == 0 and not fail_lines:
+            summary = "; ".join(
+                l.strip() for l in out.splitlines() if l.strip().startswith("[")
+            )[:400]
+            return PASS, f"verify_deploy_readiness.py PASS: {summary}"
+        if fail_lines:
+            return FAIL, (
+                f"verify_deploy_readiness.py FAIL: {fail_lines[0].strip()} | "
+                f"{out[-200:]}"
+            )
+        return NOT_VERIFIED, (
+            f"verify_deploy_readiness.py ran (rc={rc}); {out[-200:]}"
+        )
+
     has_docker = (REPO / "Dockerfile").exists()
     has_alembic = (REPO / "alembic.ini").exists() or (REPO / "migrations").exists()
     if not has_docker or not has_alembic:
@@ -511,8 +560,8 @@ CONDITION_META = {
         "next_action": "none — HC-01 handled by C11/governance",
     },
     "C6": {
-        "command": "pytest tests/distribution/test_fence_coordination_chaos.py tests/kernels/audit/test_audit_soak_concurrency.py tests/kernels/audit/test_storage_faults.py",
-        "known_limitation": "missing power-loss / network-partition scenarios; uses temp DBs only (live audit_store.db untouched)",
+        "command": "pytest tests/distribution/test_fence_coordination_chaos.py tests/kernels/audit/test_audit_soak_concurrency.py tests/kernels/audit/test_storage_faults.py tests/kernels/audit/test_multiprocess_append.py tests/kernels/audit/test_fencing_wired.py tests/kernels/audit/test_g6_restart_recovery.py",
+        "known_limitation": "missing power-loss / network-partition scenarios; uses temp DBs only (live audit_store.db untouched); in-process restart recovery + real read-only-DB-unavailable added this cycle",
         "next_action": "add power-loss / partition scenarios; wire as a CI clean-env job",
     },
     "C7": {
@@ -526,9 +575,10 @@ CONDITION_META = {
         "next_action": "prove a real Prometheus scrape receives data AND an alert actually fires",
     },
     "C9": {
-        "command": "Dockerfile + alembic presence check",
-        "known_limitation": "real CD is intentionally absent (deploy jobs exit 1)",
-        "next_action": "decide on a real CD target (helm/k8s) before claiming G9 VERIFIED",
+        "command": "scripts/verify_deploy_readiness.py (A: docker CLI, B: alembic upgrade/downgrade on TEMP db, C: staging compose schema)",
+        "known_limitation": "authoritative `docker compose config` NOT VERIFIED (compose v2 plugin absent in this env); image not actually built; real CD absent by design; runs on repo .venv (managed venv lacks alembic)",
+        "blocker": "HUMAN DECISION REQUIRED — production deploy target (host/secrets/DB/scale/approval) not chosen; CD jobs exit 1 by design",
+        "next_action": "install docker compose plugin + build image in a prod-prepared env; choose a real CD target (helm/k8s)",
     },
     "C10": {
         "command": "scripts/independent_verification.py presence + this battery",
