@@ -1032,6 +1032,96 @@ def set_executor_fence(fence: ExecutorFence) -> None:
         _DEFAULT_FENCE = fence
 
 
+# --------------------------------------------------------------------------- #
+# Default-fence installation state (G8/G9 fail-open observability)
+# --------------------------------------------------------------------------- #
+# ``attach_default_executor_fence()`` is the boot-time wiring that turns the
+# executor fence from the inert in-memory default into a REAL gate (cross-process
+# / cross-node when a coordination backend is configured). ``src/gateway/main.py``
+# used to swallow its failure behind one ERROR log line and KEEP SERVING, so a
+# process could execute autonomous actions UN-FENCED with:
+#   * no metric,
+#   * no readiness signal,
+#   * no test.
+# That is a fail-open the operator cannot see. The record below makes the
+# degraded state durable and queryable so it can be metered and surfaced.
+#
+# It is deliberately a plain module-level dict with no lock: it is written once
+# at boot and only read afterwards, and a torn read can only ever report
+# "not attached" (the fail-loud direction) -- never a false "attached".
+_DEFAULT_FENCE_STATUS: dict = {
+    "attached": False,     # did attach_default_executor_fence() succeed?
+    "error": None,         # str: "ExcType: message" of the failure, or None
+    "failed_at": None,     # float: epoch seconds of the failure, or None
+    "attached_at": None,   # float: epoch seconds of the last success, or None
+}
+
+
+def get_default_fence_status() -> dict:
+    """Return a snapshot of the default-fence installation state.
+
+    Shape::
+
+        {"attached": bool, "error": str | None, "failed_at": float | None,
+         "attached_at": float | None}
+
+    ``attached=False`` with ``error=None`` means the install was never attempted
+    in this process (e.g. a worker that never ran the gateway lifespan) -- NOT a
+    confirmed failure. ``error is not None`` is the confirmed-failure signal.
+    """
+    return dict(_DEFAULT_FENCE_STATUS)
+
+
+def reset_default_fence_status() -> None:
+    """Clear the installation record (assembly / test helper).
+
+    Exists so a test suite can isolate the boot state the same way it isolates
+    ``_DEFAULT_FENCE``. It is NOT called by production code: boot records once
+    and reads thereafter.
+    """
+    _DEFAULT_FENCE_STATUS.update(
+        {"attached": False, "error": None, "failed_at": None, "attached_at": None}
+    )
+
+
+def record_default_fence_success() -> None:
+    """Record that the default production fence was attached successfully.
+
+    Called by the gateway lifespan (``src/gateway/main.py``) -- the installer --
+    right after ``attach_default_executor_fence()`` returns. Any other entry
+    point that installs the fence should call this too, otherwise the process
+    will honestly-but-misleadingly report "not attached".
+    """
+    _DEFAULT_FENCE_STATUS.update(
+        {"attached": True, "error": None, "failed_at": None, "attached_at": time.time()}
+    )
+    _emit_fence_metric("set_fence_installed", True)
+
+
+def record_default_fence_failure(exc: BaseException) -> None:
+    """Record that the default production fence FAILED to attach.
+
+    This is the fail-open state: the process will keep serving with autonomous
+    actions un-fenced. Recording it makes the state (a) queryable via
+    :func:`get_default_fence_status`, (b) metered via
+    ``liuhao_executor_fence_installed == 0`` and
+    ``liuhao_executor_fence_install_failures_total``, and (c) visible in
+    ``/v1/ready``. None of that prevents the fail-open by itself -- the deployment
+    that needs prevention sets ``LIUHAO_REQUIRE_EXECUTOR_FENCE=1`` so startup
+    ABORTS instead.
+    """
+    _DEFAULT_FENCE_STATUS.update(
+        {
+            "attached": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "failed_at": time.time(),
+            "attached_at": None,
+        }
+    )
+    _emit_fence_metric("set_fence_installed", False)
+    _emit_fence_metric("record_fence_install_failure")
+
+
 def attach_default_executor_fence(
     backend: Optional[str] = None,
     lease_dir: Optional[str] = None,

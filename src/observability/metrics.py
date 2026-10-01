@@ -374,6 +374,44 @@ coordinator_admission_contention_total = Counter(
     registry=REGISTRY,
 )
 
+# G8/G9 fail-open observability: whether the *production* executor fence is
+# actually installed in this process. ``attach_default_executor_fence()`` failing
+# at boot used to be invisible (one ERROR log, boot continues, metric families
+# absent) -- an operator scraping Prometheus saw a fully instrumented service
+# that was silently running autonomous actions UN-FENCED.
+# 0 does NOT mean "the fence is not needed": it means "not installed". A
+# deployment that legitimately leaves the gate unarmed is reported separately by
+# /v1/ready (armed=False) and must not be conflated with this signal.
+liuhao_executor_fence_installed = Gauge(
+    'liuhao_executor_fence_installed',
+    'Executor-fence installation state (1=default production fence attached, '
+    '0=NOT attached -- autonomous actions may be running un-fenced)',
+    registry=REGISTRY,
+)
+
+liuhao_executor_fence_install_failures_total = Counter(
+    'liuhao_executor_fence_install_failures_total',
+    'Total failures to attach the default production executor fence at boot '
+    '(each one left the process un-fenced unless startup aborted)',
+    registry=REGISTRY,
+)
+
+
+def set_fence_installed(installed: bool) -> None:
+    """Set the executor-fence installation gauge (1 attached / 0 not attached)."""
+    try:
+        liuhao_executor_fence_installed.set(1 if installed else 0)
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
+
+def record_fence_install_failure() -> None:
+    """Count one failed attempt to attach the default executor fence."""
+    try:
+        liuhao_executor_fence_install_failures_total.inc()
+    except Exception:  # pragma: no cover - metrics must never raise
+        pass
+
 
 def record_fence_denial(reason: str) -> None:
     """Record one executor-fence denial, labelled by its reason class name."""

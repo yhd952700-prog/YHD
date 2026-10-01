@@ -183,16 +183,27 @@ async def readiness_probe(request: Request) -> JSONResponse:
     # one -- a deployment that deliberately leaves the gate unarmed must not be
     # marked unhealthy, but operators must be able to SEE that the gate is off.
     # A genuine failure (exception) is reported as unhealthy so it is visible.
+    #
+    # G8/G9: "armed but the production fence failed to attach" used to be
+    # INVISIBLE here -- /v1/ready stayed green while autonomous actions ran
+    # UN-FENCED (the gateway lifespan logged one ERROR and kept booting). It is
+    # now a real dependency check: when autonomous-action enforcement is ON
+    # (``armed``) and the default fence did NOT attach, readiness is DEGRADED.
+    # When the fence is legitimately not required (gate not armed), behaviour is
+    # byte-for-byte what it was before: healthy + informational note.
     try:
         from ..kernels.execution.fence import (
             current_executor_fence,
             executor_fence_armed,
+            get_default_fence_status,
             get_executor_fence,
             get_executor_fence_total,
         )
 
         fence = get_executor_fence()
         armed = executor_fence_armed()
+        install = get_default_fence_status()
+        installed = bool(install.get("attached"))
         proc_ctx = current_executor_fence()
         active_leases = fence.lease.count_active() if fence is not None else 0
         backend = type(fence.lease).__name__ if fence is not None else "none"
@@ -202,13 +213,28 @@ async def readiness_probe(request: Request) -> JSONResponse:
         checks["executor_fence"] = {
             "status": "healthy",
             "armed": armed,
+            "installed": installed,
             "backend": backend,
             "active_leases": active_leases,
             "epoch": proc_ctx.epoch if proc_ctx is not None else None,
             "denials_total": get_executor_fence_total(),
             "heartbeat_failures": heartbeat_failures,
         }
-        if not armed:
+        if armed and not installed:
+            # The one state that must NOT be green: autonomous-action
+            # enforcement is on, but the fence that enforces it never attached.
+            reason = install.get("error") or (
+                "the default executor fence was never attached in this process"
+            )
+            checks["executor_fence"]["status"] = "degraded"
+            checks["executor_fence"]["error"] = reason
+            checks["executor_fence"]["failed_at"] = install.get("failed_at")
+            errors.append(
+                "Executor Fence: armed (LIUHAO_EXECUTOR_FENCE=on) but the "
+                f"default executor fence is NOT attached -- {reason}. "
+                "Autonomous actions may be running UN-FENCED."
+            )
+        elif not armed:
             # Informational only -- the default policy is that the gate is
             # opt-in, so an unarmed deployment is a config state, not a fault.
             checks["executor_fence"]["note"] = (

@@ -200,10 +200,26 @@ async def lifespan(app: FastAPI):
     # is fail-loud: we log at ERROR and keep booting, but the system then runs
     # UN-fenced -- operators MUST notice (mirrors the kernel-lifecycle
     # init-degraded reporting above; do NOT silently swallow this).
+    #
+    # G8/G9: "log and continue" alone was an *unobservable* fail-open -- there
+    # was no metric, /v1/ready stayed green, and no test covered it. The failure
+    # is now additionally (a) recorded in ``get_default_fence_status()``,
+    # (b) metered (``liuhao_executor_fence_installed=0`` +
+    # ``liuhao_executor_fence_install_failures_total``) and (c) surfaced by
+    # /v1/ready.
+    #
+    # ``LIUHAO_REQUIRE_EXECUTOR_FENCE=1`` converts this fail-open into
+    # fail-closed: startup ABORTS (raises) instead of serving un-fenced. It is
+    # OPT-IN and defaults to off so existing deployments are not broken by this
+    # change; a sovereignty-critical deployment should set it.
     try:
-        from ..kernels.execution.fence import attach_default_executor_fence
+        from ..kernels.execution.fence import (
+            attach_default_executor_fence,
+            record_default_fence_success,
+        )
 
         _fence = attach_default_executor_fence()
+        record_default_fence_success()
         logger.info(
             "Executor fence installed (backend=%s, max_executors=%s)",
             os.environ.get("LIUHAO_DISTRIBUTED_LEASE_BACKEND", "sqlite"),
@@ -216,6 +232,26 @@ async def lifespan(app: FastAPI):
             _fence_exc,
             exc_info=True,
         )
+        try:
+            from ..kernels.execution.fence import record_default_fence_failure
+
+            record_default_fence_failure(_fence_exc)
+        except Exception:  # noqa: BLE001 - recording must never mask the boot failure
+            logger.error(
+                "Failed to record the executor-fence install failure: %s",
+                _fence_exc,
+                exc_info=True,
+            )
+        _require_fence = os.environ.get(
+            "LIUHAO_REQUIRE_EXECUTOR_FENCE", ""
+        ).strip().lower()
+        if _require_fence in ("1", "true", "yes", "on"):
+            # fail-closed: refuse to serve autonomous actions un-fenced.
+            raise RuntimeError(
+                "EXECUTOR FENCE REQUIRED (LIUHAO_REQUIRE_EXECUTOR_FENCE=1) "
+                f"but the default executor fence could not be attached: "
+                f"{type(_fence_exc).__name__}: {_fence_exc}"
+            ) from _fence_exc
 
     yield  # App runs here
 
