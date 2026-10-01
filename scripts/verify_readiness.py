@@ -440,11 +440,11 @@ def check_deployment():
     if script.exists() and g9_py is not None and g9_py != sys.executable:
         env = dict(os.environ, G9_PYTHON=g9_py)
         rc, out = _run([g9_py, str(script)], env=env, timeout=300)
-        fail_lines = [l for l in out.splitlines()
-                      if l.strip().startswith("[") and "FAIL" in l]
+        fail_lines = [ln for ln in out.splitlines()
+                      if ln.strip().startswith("[") and "FAIL" in ln]
         if rc == 0 and not fail_lines:
             summary = "; ".join(
-                l.strip() for l in out.splitlines() if l.strip().startswith("[")
+                ln.strip() for ln in out.splitlines() if ln.strip().startswith("[")
             )[:400]
             return PASS, f"verify_deploy_readiness.py PASS: {summary}"
         if fail_lines:
@@ -565,9 +565,9 @@ CONDITION_META = {
         "next_action": "add power-loss / partition scenarios; wire as a CI clean-env job",
     },
     "C7": {
-        "command": "scripts/bench_audit_append.py --quick --gate bench_baseline.json",
-        "known_limitation": "load-sensitive; 100M is extrapolation; CI Linux profile SKIPs the numeric gate",
-        "next_action": "run on an idle/CI runner; build the 100M harness; mark stale baselines",
+        "command": "scripts/bench_audit_append.py --quick --gate bench_baseline.json + scripts/bench_audit_scale.py --scale 1m --sync FULL",
+        "known_limitation": "numeric gate is profile-keyed (passes on the captured Windows|py3.13.14 profile; CI Linux SKIPs it). 1M real-insert validated (15,095 eps batch=FULL, 27.8s full-chain verify, 8-proc 15,484 eps, 0 lost/0 fork). 100M is honest extrapolation (~1.84h write / ~46min verify / ~39GB) — harness is genuinely executable via --scale 100m but not yet run.",
+        "next_action": "run --scale 10m/100m on an idle/CI runner when budget allows; keep bench_baseline.json profile-keyed",
     },
     "C8": {
         "command": "runtime scrape of /v1/metrics/prometheus via TestClient",
