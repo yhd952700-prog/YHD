@@ -128,7 +128,38 @@ BASELINE_SNAPSHOT = {
 }
 
 TOOL_NAME = "derive_audit_view.py"
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
+
+#: API alignment note (locked against HEAD ba094678).
+#:
+#: The content hash this tool recomputes MUST match the write path's
+#: ``AuditEvent.compute_hash`` byte-for-byte, or every record would read as
+#: content-unprovable (silent false negative). The current write path
+#: (``src/kernels/audit/__init__.py`` -> ``hashutil.py``) canonicalises via
+#: ``canonical_json(event_payload(event))`` where:
+#:   * ``event_payload`` returns exactly the 8 CANONICAL_FIELDS above (it does
+#:     NOT include event_hash, prev_event_hash, link_hash, seq, or hash_alg);
+#:   * ``canonical_json`` is ``json.dumps(data, sort_keys=True,
+#:     separators=(",", ":"))`` -- identical to this module's :func:`_canon`.
+#: Therefore :func:`canonical_content_hash` is a faithful re-derivation.
+SCHEMA_ALIGNMENT = {
+    "locked_against_head": "ba094678",
+    "canonical_fields": list(CANONICAL_FIELDS),
+    "canonicalization": "json.dumps(sort_keys=True, separators=(',',':'))",
+    "excluded_from_content_hash": [
+        "event_hash", "prev_event_hash", "link_hash", "seq", "hash_alg",
+    ],
+    "source_of_truth": (
+        "src/kernels/audit/__init__.py:AuditEvent.compute_hash -> "
+        "src/kernels/audit/hashutil.py:canonical_json/event_payload"
+    ),
+    "link_hash_note": (
+        "link_hash is a C2 cumulative chain commitment "
+        "(link_hash_i = H(link_hash_{i-1} || event_hash_i)); it is linkage-only "
+        "and is NOT part of an event's content, so it is excluded from the "
+        "content hash and never written back by this read-only tool."
+    ),
+}
 
 #: Output file names (written into --out; never into the source directory).
 MANIFEST_FILENAME = "MANIFEST(sha256)"
@@ -209,11 +240,15 @@ def backup_to_temp_copy(source_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def load_chain_records(conn: sqlite3.Connection) -> list[dict]:
+    # SELECT * (not a hard-coded column list) so the loader stays robust to
+    # ADDITIVE schema changes such as the ``link_hash`` column added to
+    # ``audit_events`` after the original D22 write (see audit module history
+    # around HEAD ba094678). ``link_hash`` is linkage-only (C2 cumulative chain
+    # commitment) and is intentionally EXCLUDED from the content hash -- see
+    # :func:`canonical_content_hash`. Field access below is by name, so column
+    # order does not matter.
     conn.row_factory = sqlite3.Row
-    cur = conn.execute(
-        f"SELECT {', '.join(CANONICAL_FIELDS)}, event_hash, prev_event_hash, "
-        f"seq, hash_alg FROM {CHAIN_TABLE} ORDER BY rowid"
-    )
+    cur = conn.execute(f"SELECT * FROM {CHAIN_TABLE} ORDER BY rowid")
     return [dict(r) for r in cur.fetchall()]
 
 
