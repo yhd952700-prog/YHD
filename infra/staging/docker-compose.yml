@@ -1,0 +1,113 @@
+# =============================================================================
+# LIUHAO autonomous OS — STAGING / TEST deployment contract
+# =============================================================================
+#
+# !!!!!  PRODUCTION DEPLOY TARGET = HUMAN DECISION REQUIRED  !!!!!
+#
+# !!!!!  THIS COMPOSE FILE IS NOT FOR PRODUCTION USE  !!!!!
+# This file is a STAGING/TEST contract ONLY. It is NOT a production deployment.
+# Promoting this contract to a real production environment (choice of target
+# host, real secrets, scale, approval gate) is a SOVEREIGN HUMAN DECISION and
+# is intentionally NOT assumed or automated here. The project's CD jobs still
+# `exit 1` by design — there is no real CD target / helm chart yet.
+#
+# What this contract guarantees for STAGING/TEST:
+#   * references the image BUILT FROM THE REPO Dockerfile (single-port API +
+#     cockpit, non-root runtime user) — see Dockerfile;
+#   * hard resource limits + reservations (so a stray staging run cannot starve
+#     the host);
+#   * a real healthcheck against /v1/health (matches the Dockerfile HEALTHCHECK);
+#   * NO production secrets committed inline — every secret is either EMPTY or a
+#     clearly-dev-only placeholder, and MUST be injected from a secret manager
+#     before any non-staging use.
+#
+# Rollback path (validated by scripts/verify_deploy_readiness.py, check B):
+#   1. DB schema rollback:  `alembic upgrade head` is reversible via
+#      `alembic downgrade base` (proven on a TEMP db).
+#   2. App rollback:        re-pin `image: liuhao-ai-os:staging` to the previous
+#      digest/tag and `docker compose -f infra/staging/docker-compose.yml up -d`.
+# =============================================================================
+
+services:
+  api:
+    # --- referencing the built image ---------------------------------------
+    # Build it once (matches Dockerfile exactly) and tag it for staging:
+    #   docker build -t liuhao-ai-os:staging -f Dockerfile .
+    # `build` + `image` together means compose builds AND tags with this name,
+    # so the running container is unambiguously the built artifact.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: liuhao-ai-os:staging
+    container_name: liuhao-api-staging
+    ports:
+      - "8080:8080"
+    environment:
+      # Posture: explicit STAGING. Never set production here.
+      - APP_ENV=staging
+      - LIUHAO_ENV=staging
+      - ENVIRONMENT=staging
+      - PORT=8080
+
+      # DB: staging uses the default SQLite backend (the code does not require
+      # Postgres — see docker-compose.prod.yml note). Real DB choice for prod is
+      # a HUMAN DECISION. Lives on the persisted volume below.
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/liuhao_ai_os.db}
+
+      # Audit hash-chain persistence (P0 · CRIT-1B): MUST be on the volume, never
+      # the ephemeral container root, or the chain resets on every rebuild.
+      - AUDIT_DB_PATH=/app/data/audit_store.db
+
+      # Human-identity persistence (Policy C-7): default SQLite backend.
+      - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
+
+      # Kernel policy enforcement: keep CRITICAL-armed posture in staging too, so
+      # the fail-closed gate is exercised (see docker-compose.prod.yml comment).
+      - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}
+
+      # ---- SECRETS: STAGING/TEST ONLY. NONE are real production secrets. ----
+      # Inject real secrets from a secret manager / CI secret store before any
+      # non-staging use. Leaving them empty is intentional for a throwaway test.
+      # A non-empty, clearly-dev placeholder is used only so the app boots in a
+      # pure staging smoke test; it is NOT a credential.
+      - JWT_SECRET_KEY=${LIUHAO_JWT_SECRET:-staging-dev-only-insecure}
+      - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY:-}
+      - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY:-}
+      # Row-level identity integrity key (HC-11 / U6): empty => staging admits 0
+      # humans (fail-closed, same as prod). Set via secret manager for a real run.
+      - LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY=${LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    volumes:
+      # All runtime state (identity db, app db, audit_store.db, WAL) lives here.
+      - liuhao_staging_data:/app/data
+
+    # --- explicit resource limits (STAGING/TEST contract) -------------------
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.5"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+    # --- real healthcheck (matches Dockerfile HEALTHCHECK) ------------------
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    restart: unless-stopped
+    networks:
+      - liuhao-staging
+
+volumes:
+  liuhao_staging_data:
+
+networks:
+  liuhao-staging:
+    name: liuhao-staging
