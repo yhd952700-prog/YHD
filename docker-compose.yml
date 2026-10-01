@@ -8,6 +8,10 @@ services:
       - "8080:8080"
     environment:
       APP_ENV: ${APP_ENV:-staging}
+      # Canonical posture signal (src/security/posture.py reads this alias too).
+      # Keeps the LIUHAO-native variable present so a future refactor that reads
+      # ONLY LIUHAO_ENV cannot silently flip this deployment to non-production.
+      LIUHAO_ENV: ${APP_ENV:-staging}
       DATABASE_URL: ${DATABASE_URL:-postgresql://liuhao:liuhao@postgres:5432/liuhao}
       SECRET_KEY: ${SECRET_KEY:-replace-me}
       # JWT 签名密钥。留空 → 每个进程各生成一把：重启即全端登出，多 worker

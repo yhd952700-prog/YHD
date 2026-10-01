@@ -148,7 +148,8 @@ class VaultClient:
         """
         # Lazy import to avoid a circular import at module load time
         # (secret_store -> src.security.__init__ -> vault_crypto -> client).
-        from ...security.secret_store import SecretBackendUnavailable, is_production
+        from ...security.secret_store import SecretBackendUnavailable
+        from ...security.posture import is_production  # unified posture source of truth
         if self._connected:
             return True
         if is_production():

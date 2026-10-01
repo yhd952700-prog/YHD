@@ -32,7 +32,8 @@ except ImportError:
     RSAAlgorithm = None
 
 from .encryption import EncryptionManager, get_encryption_manager
-from .secret_store import SecretBackendUnavailable, is_production
+from .secret_store import SecretBackendUnavailable
+from .posture import is_production  # unified posture source of truth
 
 # Defined after the guarded import above on purpose: pycodestyle tolerates a
 # module-level import placed after a try/except import guard, but any *other*

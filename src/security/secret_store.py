@@ -44,18 +44,21 @@ class SecretBackendUnavailable(RuntimeError):
 
 
 # --------------------------------------------------------------------------- #
-# Environment helpers
+# Environment helpers (posture — single source of truth)
 # --------------------------------------------------------------------------- #
-def is_production() -> bool:
-    """True only when the deployment explicitly declares a production posture.
-
-    The default (no ``LIUHAO_ENV``) is treated as development/test so existing
-    dev/test harnesses keep working; production must be opted into so the
-    fail-closed gate is unambiguous. The ``LIUHAO_SECRET_DEV_EPHEMERAL`` flag
-    does NOT override an explicit production declaration.
-    """
-    env = os.environ.get("LIUHAO_ENV", "").strip().lower()
-    return env in ("production", "prod")
+# Production-posture detection used to read only ``LIUHAO_ENV`` (see
+# ``secret_store:49`` in history). Nothing in the deployment ever set that
+# variable, so ``is_production()`` was ALWAYS False in production and every
+# safety branch silently took the non-production path. The canonical, unified
+# resolver now lives in ``src/security/posture.py`` and reads
+# ``LIUHAO_ENV`` > ``ENVIRONMENT`` > ``APP_ENV``. We re-export from there so
+# existing imports of ``is_production`` keep working unchanged.
+from .posture import (  # noqa: E402,F401  (re-export; SoT is posture.py)
+    PostureUndeterminable,
+    deployment_posture,
+    describe_posture,
+    is_production,
+)
 
 
 def _env_secret_passphrase() -> Optional[str]:

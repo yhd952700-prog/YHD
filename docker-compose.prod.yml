@@ -29,6 +29,12 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Posture: the canonical, app-namespaced signal. Previously the codebase
+      # read LIUHAO_ENV for production-posture but it was never set here, so the
+      # fail-closed gates (secret backend, Vault fallback, JWT durable key)
+      # silently took the NON-production branch in production. Keep ENVIRONMENT
+      # too: config/production/config.py still reads it. (posture.py SoT)
+      - LIUHAO_ENV=production
       - ENVIRONMENT=production
       - PORT=8080
       # 应用当前不用 Postgres（默认 sqlite）。保留变量只为兼容既有 .env；
