@@ -7,7 +7,7 @@
 >
 > Branch: `p36`. Repo: `D:\LiuHao-AI-OS`. Report date: **2026-09-30**.
 
-## Overall Status: **BUILDING**
+## Overall Status: **RELEASE READINESS CLOSURE** (phase pivot from BUILDING — goal now is an objective `RELEASE READY` judgment, not more features)
 
 The system has real, fail-closed security and data-integrity subsystems, a distributed execution fence, and a live observability surface. It is **not** yet RELEASE READY: the reliability/performance/deployment gates (G6/G7/G9) are NOT VERIFIED, and HC-01 is a frozen human-sovereignty decision. The **clean-environment run (G2)**, the full test baseline (G3), the independent-verification harness (G10), and the observability **export path** (G8) are now VERIFIED — a clean-env full re-run produced **3307 passed / 24 skipped / 0 failed (exit 0)**, reproducible; the builder-decoupled harness attests the verifiable integrity/security claims (OVERALL = PASS, FAIL = 0); and a real runtime scrape proves `/v1/metrics/prometheus` serves **45 metric families** with genuinely live per-request samples (HTTP counters increment 3.0 → 10.0 under traffic). Work continues autonomously toward RELEASE READY, then EVOLUTION.
 
@@ -113,7 +113,8 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
   - **GAP FOUND *and FIXED* this cycle (recorded honestly):** the first real scrape exposed that the HTTP instrumentation was **declared but never fed** — `http_requests_total` / `http_request_duration_seconds` emitted **zero sample lines**, and two scrapes were byte-identical after repeated requests, so a dashboard would *look* instrumented while carrying no request data. Fixed by feeding both families from `logging_middleware` (`src/gateway/main.py`: guarded import + `.labels(...).inc()` / `.observe()`). The same probe now shows **real per-request samples**: `http_requests_total{endpoint="/v1/health",method="GET",status="200"} 3.0 → 10.0`, `http_request_duration_seconds_count` likewise, body changes between scrapes, and exported families grew **43 → 45**. **This exact regression is now caught automatically** by the hardened C8 `http_fed` assertion.
   - **Honest distinction resolved:** export *and* request instrumentation are both now proven; the remaining observability gap is alerting/ingestion (next bullet).
   - Monitoring configs exist (`loki.yml`, `otel-collector.yml`, `tempo.yaml`, `configs/observability/rules/liuhao-ai-os-alerts.yml`) — the dead `config/monitoring/prometheus_rules.{yaml,yml}` were **deleted this cycle** (nothing mounted them; an `verify_alert_rules.py` CI gate now prevents dead rule files from being (re)introduced). Whether a Prometheus/Loki server actually receives data, and whether alerts fire, is still NOT VERIFIED.
-- **Last Verified:** 2026-09-30 (hardened C8 gate executed inside the battery; full regression green: 3237 passed / 24 skipped / 0 failed).
+  - **BLOCKED (HUMAN DECISION REQUIRED) — two real observability metrics cannot get a real producer without touching the frozen module:** `liuhao_audit_write_failures_total` and an audit-DB corruption/quarantine event metric. Their only valid producers live inside `src/kernels/audit/__init__.py` (the write-failure path and `_handle_storage_corruption`), which is under the HC-01 writer-path freeze — engineering may NOT modify it until the human-sovereignty decision lifts. Per the no-fake-green rule, these metrics are **NOT created with a placeholder/synthetic producer**; that would be exactly the "metric name with no real producer" failure the closure forbids. They stay BLOCKED and recorded here. The decision to lift the freeze for a fail-open, non-DB-altering observability hook (or to accept they cannot have producers while HC-01 is frozen) is a HUMAN DECISION, not an engineering choice.
+- **Last Verified:** 2026-09-30 (hardened C8 gate executed inside the battery; full regression green: 3237 passed / 24 skipped / 0 failed) · 2026-10-01 battery subset C8 PASS (runtime scrape 200, 10026 bytes, 48 families).
 - **Blocker:** none for export; the alerting/ingestion gap is the remaining work.
 - **Owner:** os-systems (`os-impl`) + quality-reliability (`qr-baseline`).
 - **Next:** Prove alerting/ingestion receipt — run a real Prometheus scrape against a live exporter and an injected-fault test proving an alert rule fires; the HTTP-metrics wiring is DONE (no longer outstanding).
@@ -138,7 +139,8 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
   - The `verify_*.py` guardrail scripts (≈25) remain wired into CI `guardrails`; `tests/test_guardrail_scripts.py` still enforces every one is invoked.
   - The harness is wired into CI (`release-readiness.yml`, `independent-verification` job) and uploads the record as an artifact — it is now a standing service, not a one-off.
   - **Honest limitation:** this is a first-stage, builder-decoupled harness run in-repo; a fully *external* third-party auditor (out-of-repo, independent signer) for HC-01 / system-level claims remains a future recommendation. The harness records exactly that gap rather than hiding it.
-- **Last Verified:** 2026-09-29 (harness built + run + CI-wired).
+  - **G10 structured-evidence enhancement (2026-10-01):** `scripts/verify_readiness.py` now emits per-gate `command` / `known_limitation` / `blocker` / `next_action`, plus report-level `generated_at` (UTC) and `environment` (os/python/ci) — satisfying the per-gate evidence contract (evidence + timestamp + command + environment + limitation + blocker + next-action). 2026-10-01 targeted run (C2,C4,C5,C8,C10,C11): **PASS=5, BLOCKED=1 (HC-01), FAIL=0**, written to `scripts/readiness_report.json`.
+- **Last Verified:** 2026-09-29 (harness built + run + CI-wired) · 2026-10-01 (structured-report enhancement + subset run).
 - **Blocker:** none — HC-01 is still frozen, but the harness records it honestly instead of blocking verification of the verifiable claims.
 - **Owner:** governance-legal (`gov-impl`).
 - **Next:** Optionally promote to a truly external signer (out-of-repo auditor) for HC-01; integrate the `--full` suite re-run into the standing CI record.
@@ -155,7 +157,7 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **Next:** Await human decision on HC-01 disposition; in the meantime keep it isolated and keep all other chains (HC-02..HC-08, HC-11) releasable.
 
 ## Release Readiness
-- **Status:** **NOT READY** — gated by NOT VERIFIED: G6, G7, G9. Engineering-critical blockers: none. HC-01 is frozen & isolated (does not block engineering). G2 (clean-env run), G3 (full test baseline), G8 (observability export, runtime-scraped), and G10 (independent verification harness) are now VERIFIED.
+- **Status:** **NOT READY** — gated by NOT VERIFIED: G6, G7, G9, and the two BLOCKED observability metrics (audit write-failure + corruption/quarantine) whose producers are frozen with HC-01. Engineering-critical blockers: none. HC-01 is frozen & isolated (does not block engineering). G1 (build), G2 (clean-env run), G3 (full test baseline), G4 (security), G5 (data integrity for HC-02..08 + HC-11), G8 (observability export, runtime-scraped), and G10 (independent verification, structured report) are now VERIFIED. The authoritative machine-checkable verdict is `scripts/readiness_report.json` — regenerate with `python scripts/verify_readiness.py` (use `--only` to run a subset, `--full` to execute the suite inside C3).
 
 ---
 

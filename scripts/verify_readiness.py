@@ -12,7 +12,16 @@ decision => BLOCKED. A real contradiction => FAIL.
 
 Outputs:
   - a markdown table + verdict to stdout
-  - a JSON report to ``scripts/readiness_report.json``
+  - a JSON report to ``scripts/readiness_report.json`` — each condition carries
+    ``status``, ``evidence``, ``command``, ``known_limitation``, ``blocker`` and
+    ``next_action``; the report root also carries ``generated_at`` (UTC) and
+    ``environment`` (os / python / ci). This is the G10 independent-verification
+    evidence layer: every release-critical gate is judged with objective, dated,
+    reproducible evidence — not a subjective "basically done".
+
+Run with ``--only C2,C5,C8`` to execute a subset of conditions (e.g. to avoid the
+heavy C3/C6/C7 battery on a quick check), or ``--full`` to actually execute the
+test suite inside C3.
 
 Exit codes:
   - 0  : no condition FAILED (nothing is contradicted)
@@ -24,8 +33,10 @@ authoritative verdict.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -469,11 +480,96 @@ CHECKS = [
     ("C12", "No unexplained major failures", check_no_major_failures),
 ]
 
+# G10 structured-evidence metadata for each condition: the exact command/test,
+# the known limitation of that check, any hard blocker, and the next action.
+# Blocked human-sovereignty conditions carry a ``blocker`` string; everything
+# else leaves it empty so the JSON report stays honest about what is pending.
+CONDITION_META = {
+    "C1": {
+        "command": "python -m compileall src/ + import 4 entry modules",
+        "known_limitation": "compileall + import only; does not prove runtime behaviour",
+        "next_action": "wire as a CI build job (already compiles in normal CI)",
+    },
+    "C2": {
+        "command": "fastapi TestClient boot + GET /v1/health",
+        "known_limitation": "in-process TestClient, not a real container boot",
+        "next_action": "add a CI job that boots the built image from scratch",
+    },
+    "C3": {
+        "command": "pytest tests/ --co (use --full to actually execute)",
+        "known_limitation": "without --full it relies on the recorded baseline",
+        "next_action": "run --full on a clean CI runner; wire pytest as the formal G3 gate",
+    },
+    "C4": {
+        "command": "high-confidence secret-pattern scan + fail-closed grep + CI gate declaration",
+        "known_limitation": "static only; Bandit/Semgrep are declared but not executed here",
+        "next_action": "execute bandit/semgrep in CI",
+    },
+    "C5": {
+        "command": "scripts/verify_p08_hash_chain_sig_alg.py (HC-02..08 + HC-11)",
+        "known_limitation": "covers HC-02..08 + HC-11 only; HC-01 is frozen",
+        "next_action": "none — HC-01 handled by C11/governance",
+    },
+    "C6": {
+        "command": "pytest tests/distribution/test_fence_coordination_chaos.py tests/kernels/audit/test_audit_soak_concurrency.py tests/kernels/audit/test_storage_faults.py",
+        "known_limitation": "missing power-loss / network-partition scenarios; uses temp DBs only (live audit_store.db untouched)",
+        "next_action": "add power-loss / partition scenarios; wire as a CI clean-env job",
+    },
+    "C7": {
+        "command": "scripts/bench_audit_append.py --quick --gate bench_baseline.json",
+        "known_limitation": "load-sensitive; 100M is extrapolation; CI Linux profile SKIPs the numeric gate",
+        "next_action": "run on an idle/CI runner; build the 100M harness; mark stale baselines",
+    },
+    "C8": {
+        "command": "runtime scrape of /v1/metrics/prometheus via TestClient",
+        "known_limitation": "proves the export path executes; alerting/ingestion RECEIPT is NOT verified",
+        "next_action": "prove a real Prometheus scrape receives data AND an alert actually fires",
+    },
+    "C9": {
+        "command": "Dockerfile + alembic presence check",
+        "known_limitation": "real CD is intentionally absent (deploy jobs exit 1)",
+        "next_action": "decide on a real CD target (helm/k8s) before claiming G9 VERIFIED",
+    },
+    "C10": {
+        "command": "scripts/independent_verification.py presence + this battery",
+        "known_limitation": "harness present; per-gate structured evidence report is new",
+        "next_action": "keep the battery CI-wired; keep extending per-gate evidence",
+    },
+    "C11": {
+        "command": "scripts/verify_p08b_chain_matrix.py / HC-01 governance",
+        "known_limitation": "HC-01 is frozen; it cannot be independently VERIFIED by engineering",
+        "blocker": "HUMAN DECISION REQUIRED — HC-01 A/B/C disposition (overwrite/restore/repair/migrate/delete/rebuild all forbidden until then)",
+        "next_action": "await the human-sovereignty decision; never touch the live audit_store.db",
+    },
+    "C12": {
+        "command": "pytest tests/ --co cross-reference",
+        "known_limitation": "collection only; full unexplained-failure cross-reference pending",
+        "next_action": "run --full on a clean runner",
+    },
+}
+
 
 def main(argv):
     full = "--full" in argv
+    if "--only" in argv:
+        try:
+            only = set(argv[argv.index("--only") + 1].split(","))
+        except IndexError:
+            only = None
+    else:
+        only = None
+
+    env = {
+        "os": platform.system(),
+        "python": sys.version.split()[0],
+        "ci": bool(os.environ.get("CI")),
+    }
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     results = []
     for cid, name, fn in CHECKS:
+        if only is not None and cid not in only:
+            continue
         try:
             if cid == "C3":
                 status, evidence = fn(full=full)
@@ -481,8 +577,17 @@ def main(argv):
                 status, evidence = fn()
         except Exception as exc:  # noqa: BLE001
             status, evidence = NOT_VERIFIED, f"checker raised: {exc!r}"
-        results.append({"id": cid, "name": name, "status": status,
-                        "evidence": evidence})
+        meta = CONDITION_META.get(cid, {})
+        results.append({
+            "id": cid,
+            "name": name,
+            "status": status,
+            "evidence": evidence,
+            "command": meta.get("command", f"check_{cid}"),
+            "known_limitation": meta.get("known_limitation", ""),
+            "blocker": meta.get("blocker", ""),
+            "next_action": meta.get("next_action", ""),
+        })
         print(f"[{cid}] {name}: {status} — {evidence}")
 
     n_pass = sum(1 for r in results if r["status"] == PASS)
@@ -502,6 +607,8 @@ def main(argv):
     report = {
         "contract_version": "1.0",
         "generated_by": "scripts/verify_readiness.py",
+        "generated_at": timestamp,
+        "environment": env,
         "release_ready": release_ready,
         "counts": {"PASS": n_pass, "FAIL": n_fail, "BLOCKED": n_blocked,
                    "NOT_VERIFIED": n_nv},
