@@ -31,6 +31,7 @@ from src.kernels.execution import (
     ExecutionContext,
     Goal,
     CapabilityExecutor,
+    GoalCancelled,
 )
 from src.kernels.evaluation import (
     EvaluationResult,
@@ -76,6 +77,7 @@ class AgentRunState(str, Enum):
     VERIFYING = "verifying"    # derived: during Evaluator.evaluate
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -228,6 +230,10 @@ class AgentRuntime:
         # engine's journal resumes completed tasks). Guarded by no lock: a
         # runtime drives one goal at a time through ``run_goal``.
         self._goal_texts: Dict[str, str] = {}
+        # Per-goal stop flags (threading.Event) for cooperative cancellation.
+        # Keyed by goal_id; set by :meth:`request_stop` so the execution loop
+        # can abort a running goal cleanly.
+        self._stop_events: Dict[str, threading.Event] = {}
         # Route the evaluation kernel's ``execute_replan`` action to a real
         # re-execution instead of a status flip. The evaluation kernel stays
         # layering-clean: it only holds a callable.
@@ -250,16 +256,25 @@ class AgentRuntime:
         verification_criteria: Optional[Dict[str, Any]] = None,
         persist: bool = True,
         correlation_id: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> AgentRunResult:
         """Run one goal end-to-end: plan → execute → evaluate → (persist).
 
         Failure recovery is *reported* via ``replan_suggested``; call
         :meth:`replan` explicitly to act on it (avoids hidden recursion / loops).
+
+        ``stop_event`` is an optional :class:`threading.Event` (keyed by
+        ``goal_id``); when it is set, the execution loop raises
+        :class:`GoalCancelled` and this returns a CANCELLED result -- a real,
+        cooperative abort rather than a faked stop.
         """
         scope = scope or self.scope
         goal_id = goal_id or str(uuid.uuid4())[:8]
         correlation_id = correlation_id or str(uuid.uuid4())
         self._goal_texts[goal_id] = goal_text
+        if stop_event is None:
+            stop_event = threading.Event()
+        self._stop_events[goal_id] = stop_event
 
         observer = AgentObserver(correlation_id)
         observer.subscribe()
@@ -275,7 +290,10 @@ class AgentRuntime:
 
             state = AgentRunState.EXECUTING
             ctx = self.engine.execute_goal(
-                goal, plan_mode=plan_mode, verification_criteria=verification_criteria
+                goal,
+                plan_mode=plan_mode,
+                verification_criteria=verification_criteria,
+                stop_event=stop_event,
             )
 
             state = AgentRunState.VERIFYING
@@ -298,6 +316,18 @@ class AgentRuntime:
                 memory_keys=memory_keys,
                 replan_suggested=replan_suggested,
             )
+        except GoalCancelled as exc:
+            # Cooperative cancellation: the goal was aborted by a stop request.
+            # Report it honestly as CANCELLED -- never as success.
+            return AgentRunResult(
+                goal_id=goal_id,
+                correlation_id=correlation_id,
+                state=AgentRunState.CANCELLED,
+                context=None,
+                evaluation=None,
+                trace=observer.trace,
+                error=f"goal {goal_id} cancelled: {exc}",
+            )
         except Exception as exc:  # graceful failure, never crash the caller
             return AgentRunResult(
                 goal_id=goal_id,
@@ -310,6 +340,21 @@ class AgentRuntime:
             )
         finally:
             observer.unsubscribe()
+            self._stop_events.pop(goal_id, None)
+
+    def request_stop(self, goal_id: str) -> bool:
+        """Signal a running goal to abort (cooperative cancellation).
+
+        Returns ``True`` if a live execution for ``goal_id`` was found and its
+        stop flag set; ``False`` if the goal is not currently running (already
+        finished, or never started). The execution loop observes the flag and
+        terminates as CANCELLED.
+        """
+        event = self._stop_events.get(goal_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     # ------------------------------------------------------------------ #
     # Failure recovery hooks

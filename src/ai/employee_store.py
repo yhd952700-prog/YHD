@@ -153,6 +153,10 @@ class EmployeeStore:
             "total_tasks_submitted": employee.total_tasks_submitted,
             "total_tasks_completed": employee.total_tasks_completed,
             "total_tasks_failed": employee.total_tasks_failed,
+            "total_goals_submitted": employee.total_goals_submitted,
+            "total_goals_completed": employee.total_goals_completed,
+            "total_goals_failed": employee.total_goals_failed,
+            "goals": list(employee.goals),
         }
 
     def _deserialize_employee(
@@ -216,6 +220,10 @@ class EmployeeStore:
         emp.total_tasks_submitted = int(data.get("total_tasks_submitted", 0))
         emp.total_tasks_completed = int(data.get("total_tasks_completed", 0))
         emp.total_tasks_failed = int(data.get("total_tasks_failed", 0))
+        emp.total_goals_submitted = int(data.get("total_goals_submitted", 0))
+        emp.total_goals_completed = int(data.get("total_goals_completed", 0))
+        emp.total_goals_failed = int(data.get("total_goals_failed", 0))
+        emp.goals = list(data.get("goals", []))
         return emp
 
     # ------------------------------------------------------------------ #

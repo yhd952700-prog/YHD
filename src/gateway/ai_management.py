@@ -150,6 +150,7 @@ class AIStateManager:
             return
         self._initialized = True
         self._goals: Dict[str, Dict[str, Any]] = {}
+        self._goal_threads: Dict[str, threading.Thread] = {}
         self._runtime = None
         self._employee = None
         self._employee_store = None
@@ -163,17 +164,33 @@ class AIStateManager:
             try:
                 from src.ai.agent_runtime import AgentRuntime
                 from src.ai.lcore import LCore
+                from src.kernels.execution._journal import ExecutionJournal
                 # Wire the REAL local-tool executor (RestrictedPython compute +
                 # workspace-contained file writes) so goals actually execute
                 # instead of taking the simulated path. Fail-closed: with no
                 # executor the Execution Kernel refuses (never reports success
                 # for work it did not do).
                 _lcore = LCore(scope="L1", register_local_tools=True)
+                # Crash recovery: attach a durable, append-only journal so a
+                # goal mid-flight when the process died can resume already-
+                # completed tasks on restart (journal keyed by goal id). Path is
+                # REDIR-able via LIUHAO_WORKSPACE_ROOT so isolation verifiers
+                # never touch the real workspace.
+                root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
+                if root:
+                    journal_path = os.path.join(root, "liuhao_execution.journal")
+                else:
+                    journal_path = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        ".liuhao_execution.journal",
+                    )
+                journal = ExecutionJournal(journal_path)
                 self._runtime = AgentRuntime(
                     scope="L1",
                     capability_executor=_lcore.capability_executor(),
+                    journal=journal,
                 )
-                logger.info("AIStateManager: AgentRuntime initialized (real executor wired)")
+                logger.info("AIStateManager: AgentRuntime initialized (real executor wired, journal=%s)", journal_path)
             except Exception as exc:
                 logger.error("AIStateManager: failed to init AgentRuntime: %s", exc)
                 raise
@@ -271,26 +288,101 @@ class AIStateManager:
         scope: str = "L1",
         plan_mode: str = "auto",
         verification_criteria: Optional[Dict[str, Any]] = None,
+        background: bool = False,
     ) -> Dict[str, Any]:
-        """创建并执行一个 Goal，返回执行结果。"""
+        """创建并执行一个 Goal，返回执行结果。
+
+        - 真实绑定到默认 Employee（``liuhao-default``）：提交时记 goal 归属、
+          把该员工的 agent 标 BUSY，结束时标回 IDLE 并汇总 goal 计数，使
+          roster / KPI 反映真实执行。
+        - ``background=False``（默认，保持现有契约）：同步跑完，返回
+          completed/failed 终态 —— 现有 REST 端点与测试依赖此行为。
+        - ``background=True``：在后台线程跑，立即返回 ``state:"running"``，
+          供自主工作者场景与取消演示使用（``POST /v1/goals/{id}/stop`` 可干净中止）。
+        """
         runtime = self._ensure_runtime()
         goal_id = str(uuid.uuid4())[:8]
 
+        # Bind to the real Employee (count submitted + mark agents BUSY) so the
+        # "autonomous worker" actually drives the employee's agent pool.
+        employee = self._ensure_employee()
+        employee.record_goal_submitted(goal_id)
+        employee.mark_agents_busy()
+        self._persist_employee()
+
+        if background:
+            running_entry = {
+                "goal_id": goal_id,
+                "state": "running",
+                "natural_language": natural_language,
+                "scope": scope,
+                "correlation_id": "",
+                "error": None,
+                "replan_count": 0,
+                "replan_suggested": False,
+                "trace": [],
+                "tasks": [],
+                "evaluation": None,
+                "created_at": time.time(),
+            }
+            with self._goal_lock:
+                self._goals[goal_id] = running_entry
+            self._save_goals()
+            t = threading.Thread(
+                target=self._run_bound_goal,
+                args=(goal_id, natural_language, scope, plan_mode,
+                      verification_criteria, True),
+                name=f"goal-{goal_id}",
+                daemon=True,
+            )
+            t.start()
+            self._goal_threads[goal_id] = t
+            return running_entry
+
+        return self._run_bound_goal(
+            goal_id, natural_language, scope, plan_mode, verification_criteria, True
+        )
+
+    def _run_bound_goal(
+        self,
+        goal_id: str,
+        natural_language: str,
+        scope: str,
+        plan_mode: str,
+        verification_criteria: Optional[Dict[str, Any]],
+        persist: bool,
+    ) -> Dict[str, Any]:
+        """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。"""
         try:
+            runtime = self._ensure_runtime()
             result = runtime.run_goal(
                 goal_text=natural_language,
                 goal_id=goal_id,
                 scope=scope,
                 plan_mode=plan_mode,
                 verification_criteria=verification_criteria,
-                persist=True,
+                persist=persist,
             )
         except Exception as exc:
-            logger.error("create_and_execute_goal failed: %s", exc, exc_info=True)
-            return {
+            logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
+            result = None
+            error = str(exc)
+        else:
+            error = None
+
+        # The employee pool is no longer engaged on this goal.
+        employee = self._ensure_employee()
+        employee.mark_agents_idle()
+        if result is not None:
+            final_state = result.state.value if hasattr(result.state, "value") else str(result.state)
+            employee.record_goal_finished(goal_id, final_state)
+        self._persist_employee()
+
+        if result is None:
+            entry = {
                 "goal_id": goal_id,
                 "state": "failed",
-                "error": str(exc),
+                "error": error,
                 "natural_language": natural_language,
                 "scope": scope,
                 "correlation_id": "",
@@ -301,11 +393,12 @@ class AIStateManager:
                 "evaluation": None,
                 "created_at": time.time(),
             }
-
-        entry = self._result_to_dict(result, natural_language, scope)
+        else:
+            entry = self._result_to_dict(result, natural_language, scope)
         with self._goal_lock:
             self._goals[goal_id] = entry
         self._save_goals()
+        self._goal_threads.pop(goal_id, None)
         return entry
 
     def replan_goal(self, goal_id: str) -> Dict[str, Any]:
@@ -366,6 +459,100 @@ class AIStateManager:
         if item is None:
             raise ValueError(f"Goal {goal_id} not found")
         return item
+
+    def stop_goal(self, goal_id: str) -> Dict[str, Any]:
+        """人类操作员中止一个 Goal（主权控制）—— 真实取消运行中目标并审计。
+
+        - 若目标仍在后台运行：设置其 stop flag，执行循环会在任务边界抛出
+          GoalCancelled，目标被干净置为 ``cancelled``（绝不伪造成功）。
+        - 若目标已结束：幂等地把状态标为 ``cancelled``（仅状态级，不重跑）。
+        - 无论哪种情况都审计这条人类喊停，使审计链如实记录主权动作。
+        """
+        with self._goal_lock:
+            item = self._goals.get(goal_id)
+            if item is None:
+                raise ValueError(f"Goal {goal_id} not found")
+
+        # Ask the runtime to abort any live execution for this goal. Retry
+        # briefly because the background thread registers its stop flag a few
+        # ms after the goal is created.
+        cancelled = False
+        try:
+            runtime = self._ensure_runtime()
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if runtime.request_stop(goal_id):
+                    cancelled = True
+                    break
+                with self._goal_lock:
+                    cur = self._goals.get(goal_id)
+                if cur is not None and cur.get("state") != "running":
+                    break
+                time.sleep(0.1)
+        except Exception as exc:
+            logger.warning("stop_goal: request_stop failed: %s", exc)
+
+        if cancelled:
+            # Wait for the background execution to observe the stop flag and
+            # persist its terminal CANCELLED state (bounded wait).
+            self._await_goal(goal_id, timeout=30.0)
+
+        # Audit the human stop (honest: this is an allowed sovereign action).
+        try:
+            self._audit_goal_stop(goal_id, was_running=cancelled)
+        except Exception as exc:
+            logger.warning("stop_goal: audit failed: %s", exc)
+
+        # Reflect cancellation in the persisted goal state.
+        with self._goal_lock:
+            item = self._goals.get(goal_id)
+            if item is not None:
+                item = dict(item)
+                if item.get("state") not in ("completed", "failed", "cancelled"):
+                    item["state"] = "cancelled"
+                item["error"] = item.get("error") or "aborted by human operator"
+                item["replan_suggested"] = False
+                self._goals[goal_id] = item
+        self._save_goals()
+
+        # Keep the employee KPI honest about the cancellation.
+        try:
+            employee = self._ensure_employee()
+            employee.record_goal_finished(goal_id, "cancelled")
+            self._persist_employee()
+        except Exception:
+            pass
+
+        with self._goal_lock:
+            return dict(self._goals.get(goal_id, item))
+
+    def _await_goal(self, goal_id: str, timeout: float = 30.0) -> None:
+        """Block until the background goal leaves the 'running' state (or timeout)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._goal_lock:
+                item = self._goals.get(goal_id)
+            if item is None or item.get("state") != "running":
+                return
+            time.sleep(0.1)
+
+    def _audit_goal_stop(self, goal_id: str, was_running: bool) -> None:
+        """Record the human stop action in the audit chain (honest sovereignty)."""
+        from src.kernels.audit import log_event, AuditEventType, AuditScope
+
+        log_event(
+            AuditEventType.GOAL_CONTROL,
+            principal_id="human-operator",
+            scope=AuditScope.L1,
+            outcome="allow",
+            details={
+                "goal_id": goal_id,
+                "action": "stop",
+                "was_running": bool(was_running),
+                "reason": "human operator abort",
+            },
+            correlation_id=goal_id,
+        )
 
     # ── Employee / Agent 操作 ──
 
@@ -437,6 +624,9 @@ class AIStateManager:
             "total_tasks_submitted": emp.total_tasks_submitted,
             "total_tasks_completed": emp.total_tasks_completed,
             "total_tasks_failed": emp.total_tasks_failed,
+            "total_goals_submitted": emp.total_goals_submitted,
+            "total_goals_completed": emp.total_goals_completed,
+            "total_goals_failed": emp.total_goals_failed,
             "task_queue_length": len(emp.task_queue),
         }
 
@@ -475,6 +665,9 @@ class AIStateManager:
                 "total_tasks_submitted": emp.total_tasks_submitted,
                 "total_tasks_completed": emp.total_tasks_completed,
                 "total_tasks_failed": emp.total_tasks_failed,
+                "total_goals_submitted": emp.total_goals_submitted,
+                "total_goals_completed": emp.total_goals_completed,
+                "total_goals_failed": emp.total_goals_failed,
                 "task_queue_length": len(emp.task_queue),
             },
         }
@@ -679,6 +872,21 @@ def replan_goal(goal_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Replan failed: {exc}")
+
+
+@router.post("/goals/{goal_id}/stop")
+def stop_goal(goal_id: str) -> Dict[str, Any]:
+    """人类操作员中止一个正在运行的 Goal（主权控制）。
+
+    控制台「中止」按钮的落点。若目标仍在后台运行，设置其 stop flag，执行循环
+    会在任务边界干净抛出 GoalCancelled，目标被置为 ``cancelled``（绝不伪造成功）；
+    若目标已结束则幂等标记为 ``cancelled``。人类喊停动作会被审计。
+    """
+    mgr = AIStateManager()
+    try:
+        return mgr.stop_goal(goal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/employees")

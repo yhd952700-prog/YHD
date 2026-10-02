@@ -280,6 +280,7 @@ class AuditEventType(str, Enum):
     CONDITIONAL_ACCESS = "conditional_access"
     DEFERRED_ACCESS = "deferred_access"
     HUMAN_SOVEREIGNTY_OVERRIDE = "human_sovereignty_override"
+    GOAL_CONTROL = "goal_control"
     KERNEL_IMPLEMENTATION = "kernel_implementation"
     KERNEL_STATUS = "kernel_status"
     PHASE_GATE = "phase_gate"

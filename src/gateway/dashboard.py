@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, List
 
@@ -45,6 +46,10 @@ def _provider_info() -> Dict[str, Any]:
 
     info: Dict[str, Any] = {
         "type": _provider_env("AI_PROVIDER_TYPE", "mock"),
+        "mode": "real" if _provider_env("AI_PROVIDER_TYPE", "mock").lower()
+        not in ("mock", "", "none") else "mock",
+        "simulated": (os.environ.get("LIUHAO_ALLOW_SIMULATED_EXECUTION") or "")
+        .strip().lower() in {"1", "true", "yes", "on"},
         "model": None,
         "name": None,
     }

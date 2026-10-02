@@ -607,6 +607,24 @@ class LangGraphIntegrator:
         }
 
 
+def ai_provider_status() -> Dict[str, Any]:
+    """Honest, real-time view of the configured AI provider mode.
+
+    The default is ``mock`` (a safe development default -- no network, no fake
+    key). Anything other than ``mock`` is a REAL provider. We also surface
+    whether the execution kernel's *simulated* capability path is opted in
+    (``LIUHAO_ALLOW_SIMULATED_EXECUTION=1``), so a reader can tell at a glance
+    whether outcomes are real executions or explicitly-requested simulations.
+    Never silently pretends a simulation is real.
+    """
+    ptype = _provider_env("AI_PROVIDER_TYPE", "mock").lower()
+    mode = "real" if ptype not in ("mock", "", "none") else "mock"
+    simulated = (os.environ.get("LIUHAO_ALLOW_SIMULATED_EXECUTION") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return {"type": ptype, "mode": mode, "simulated": simulated}
+
+
 # Provider factory and registry
 class ProviderFactory:
     """Factory class for creating provider instances."""

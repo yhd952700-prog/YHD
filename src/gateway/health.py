@@ -34,6 +34,14 @@ async def liveness_probe(request: Request) -> JSONResponse:
     """
     trace_id = request.headers.get("X-Trace-ID", "unknown")
 
+    # Honest provider-mode surfacing (MOCK vs REAL) -- never silently simulated.
+    try:
+        from ..ai.providers import ai_provider_status
+
+        ai_provider = ai_provider_status()
+    except Exception:
+        ai_provider = {"type": "unknown", "mode": "unknown", "simulated": False}
+
     return JSONResponse(
         content={
             "status": "ok",
@@ -41,6 +49,7 @@ async def liveness_probe(request: Request) -> JSONResponse:
             "timestamp": time.time(),
             "trace_id": trace_id,
             "version": "1.0.0",
+            "ai_provider": ai_provider,
         },
         status_code=status.HTTP_200_OK,
     )
@@ -245,6 +254,17 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Executor Fence: {str(e)}")
         checks["executor_fence"] = {"status": "unhealthy", "error": str(e)}
 
+    # Honest provider-mode surfacing (MOCK vs REAL). This is a *config* state,
+    # not a fault, so it is reported as healthy; the mode itself ("mock"/"real")
+    # tells operators whether executions are real or a dev default. Never
+    # silently fakes a simulation as real.
+    try:
+        from ..ai.providers import ai_provider_status
+
+        checks["ai_provider"] = {"status": "healthy", **ai_provider_status()}
+    except Exception as e:  # pragma: no cover - defensive
+        checks["ai_provider"] = {"status": "unhealthy", "error": str(e)}
+
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
 
@@ -256,6 +276,7 @@ async def readiness_probe(request: Request) -> JSONResponse:
         "timestamp": time.time(),
         "trace_id": trace_id,
         "checks": checks,
+        "ai_provider": checks.get("ai_provider"),
     }
 
     # Add error details if degraded/unhealthy

@@ -34,6 +34,7 @@ class AgentStatus(Enum):
     Lifecycle (MASTER-SPEC Phase 3): create → run → pause → resume → stop → recover.
     """
     IDLE = "idle"              # created, ready to run
+    BUSY = "busy"              # employee pool engaged on a goal (run-level)
     RUNNING = "running"        # actively executing a task
     PAUSED = "paused"          # suspended mid-flight, resumable
     STOPPED = "stopped"        # terminal stop, not resumable
@@ -257,6 +258,14 @@ class Employee:
         self.total_tasks_completed = 0
         self.total_tasks_failed = 0
 
+        # Goal-level metrics (real execution binding): each goal submitted to /
+        # completed / failed by this employee. Drives roster / KPI so the
+        # "autonomous worker" actually shows up in the numbers, not just tasks.
+        self.total_goals_submitted = 0
+        self.total_goals_completed = 0
+        self.total_goals_failed = 0
+        self.goals: List[str] = []
+
         # Observability
         if self.enable_observability:
             self._memory = create_memory_manager(user_id=f"employee_{name}", use_mem0=False)
@@ -300,6 +309,43 @@ class Employee:
         self.task_queue.append(task_id)
         self.total_tasks_submitted += 1
         return task_id
+
+    # ── Goal-level binding (real autonomous-worker accounting) ──
+
+    def mark_agents_busy(self) -> None:
+        """Mark every idle agent BUSY while this employee works a goal.
+
+        Only touches agents that are IDLE/BUSY so it never clobbers a
+        paused/resumed agent mid-lifecycle (important for the pause/resume
+        endpoint's semantics).
+        """
+        for agent in self.agents.values():
+            if agent.status in (AgentStatus.IDLE, AgentStatus.BUSY):
+                agent.status = AgentStatus.BUSY
+
+    def mark_agents_idle(self) -> None:
+        """Release the goal-level BUSY flag back to IDLE once the goal ends."""
+        for agent in self.agents.values():
+            if agent.status == AgentStatus.BUSY:
+                agent.status = AgentStatus.IDLE
+
+    def record_goal_submitted(self, goal_id: str) -> None:
+        """Register a goal as submitted (counted once per goal_id)."""
+        if goal_id not in self.goals:
+            self.goals.append(goal_id)
+            self.total_goals_submitted += 1
+
+    def record_goal_finished(self, goal_id: str, state: str) -> None:
+        """Account a goal's terminal outcome in the employee KPI.
+
+        ``state`` is the AgentRunState value ("completed" / "failed" /
+        "cancelled"). A cancelled goal counts as failed for KPI purposes.
+        """
+        self.record_goal_submitted(goal_id)
+        if state == "completed":
+            self.total_goals_completed += 1
+        elif state in ("failed", "cancelled"):
+            self.total_goals_failed += 1
 
     def add_tasks(self, tasks: List[Dict[str, Any]]) -> List[str]:
         """Add multiple tasks at once."""
