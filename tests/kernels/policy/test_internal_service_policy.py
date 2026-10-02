@@ -195,23 +195,36 @@ class TestRevocableVerification:
 
 
 def _decorated_action_names() -> set:
-    """Every kernel action name passed to ``@kernel_action("...")`` in src/."""
+    """Every kernel action name passed to ``@kernel_action("...")`` in src/.
+
+    Historically this scanned only ``src/kernels/``; the Planner's
+    ``@kernel_action`` decorators now also live under ``src/ai/`` (e.g.
+    ``ai.execute_planner_task`` in ``src/ai/goal_task_graph.py``), so the scan
+    must cover both roots -- otherwise a legitimately-classified planner action
+    is wrongly reported as "classified but never decorated" (stale) and the guard
+    fails. The guard's intent is "every decorated action is classified", which
+    requires seeing every decoration.
+    """
     names: set = set()
-    for path in KERNELS_DIR.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for dec in node.decorator_list:
-                if not isinstance(dec, ast.Call) or not dec.args:
+    # Scan roots: the kernel tree plus the ai layer (which now carries
+    # @kernel_action-decorated methods, per the planner audit-wiring work).
+    scan_roots = [KERNELS_DIR, REPO_ROOT / "src" / "ai"]
+    for root in scan_roots:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                func = dec.func
-                fname = getattr(func, "id", None) or getattr(func, "attr", None)
-                if fname != "kernel_action":
-                    continue
-                arg0 = dec.args[0]
-                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                    names.add(arg0.value)
+                for dec in node.decorator_list:
+                    if not isinstance(dec, ast.Call) or not dec.args:
+                        continue
+                    func = dec.func
+                    fname = getattr(func, "id", None) or getattr(func, "attr", None)
+                    if fname != "kernel_action":
+                        continue
+                    arg0 = dec.args[0]
+                    if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                        names.add(arg0.value)
     return names
 
 

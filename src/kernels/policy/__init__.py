@@ -141,6 +141,13 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     "trust.establish_trust",
     "trust.revoke",
     "trust.update_score",
+    # ai: the Planner's real task-execution loop (GoalTaskGraph.execute_graph
+    # -> _execute_task_audited) is the operational loop -- running a plan is
+    # analogous to execution.execute. Classified ALLOWED (service-operational),
+    # so the audit truthfully records allow + success for the planning->execution
+    # path. Policy posture stays record-only (enforce=False); this is honest
+    # auditing, not blocking.
+    "ai.execute_planner_task",
 })
 
 #: Kernel actions explicitly DENIED for the internal service principal.

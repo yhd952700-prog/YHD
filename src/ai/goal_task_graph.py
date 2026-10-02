@@ -10,13 +10,32 @@ from dataclasses import dataclass, field
 from enum import Enum
 import uuid
 import time
+import json
+import os
 from collections import defaultdict, deque
 
 from .providers import BaseProvider, get_provider
-from ..observability.metrics import track_goal_decomposition, track_task_execution
+try:
+    from ..observability.metrics import (
+        track_goal_decomposition,
+        track_task_execution,
+    )
+except Exception:  # pragma: no cover - metrics backend optional at import time
+    # When the metrics backend (prometheus_client) is not installed the planner
+    # must still import and run; metrics simply degrade to no-ops. In the normal
+    # (venv) environment the import succeeds and behaviour is unchanged.
+    def track_goal_decomposition(*_args, **_kwargs):
+        return None
+
+    def track_task_execution(*_args, **_kwargs):
+        return None
 from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
 from .observability import observe
+# The kernel layer is audited via @kernel_action (Policy Controlled + Audited +
+# Observable). Importing it here follows the existing src/ai -> src/kernels
+# dependency pattern (src/ai/agent_runtime.py, src/ai/liuhao.py already do so).
+from src.kernels._crosscutting import kernel_action
 
 
 class GoalStatus(Enum):
@@ -423,14 +442,25 @@ Example output format:
     @observe("goal_task_graph.execute_task")
     def execute_task(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
         """
-        Execute a single task using the provided agent executor.
+        Execute a single task via the audited ``@kernel_action`` path.
 
-        Args:
-            task_id: ID of task to execute
-            agent_executor: Function(agent_id, task_description) -> result
+        The real execution work (status transitions + the agent callback) is
+        performed by :meth:`_execute_task_audited`, which is decorated with
+        ``@kernel_action("ai.execute_planner_task")`` so the planner's
+        task-execution loop is now covered by the audit (previously it called
+        ``agent_executor`` directly and was orphaned from the audited path).
+        """
+        return self._execute_task_audited(task_id, agent_executor)
 
-        Returns:
-            Execution result
+    @kernel_action("ai.execute_planner_task")
+    def _execute_task_audited(self, task_id: str, agent_executor: Callable) -> Dict[str, Any]:
+        """
+        Audited core of a single task's execution.
+
+        Decorated with ``@kernel_action`` so every task run records an honest
+        audit event (``outcome`` / ``policy_decision``) via the same
+        cross-cutting path used by the kernel layer. The policy posture stays
+        record-only (``enforce=False``) -- this is honest auditing, not blocking.
         """
         if task_id not in self.tasks:
             return {"task_id": task_id, "status": "failed", "error": "Task not found"}
@@ -449,7 +479,7 @@ Example output format:
         )
 
         try:
-            # Execute via agent executor
+            # Execute via agent executor -- now inside the audited wrapper.
             result = agent_executor(task.assigned_agent or "default", task.description)
 
             task.result = result
@@ -640,6 +670,136 @@ Example output format:
             "failed": len([t for t in tasks if t.id in self.failed_tasks]),
             "pending": len([t for t in tasks if t.status == TaskStatus.PENDING]),
         }
+
+    # ------------------------------------------------------------------ #
+    # Durable persistence (restart recovery) -- stdlib json only, no deps.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _default_state_path() -> str:
+        """Default location for the persisted planner state.
+
+        Under ``LIUHAO_WORKSPACE_ROOT`` when set (REDIR-able so isolation
+        verifiers never touch the real workspace), else
+        ``<repo>/.planner_state.json``.
+        """
+        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
+        if root:
+            return os.path.join(root, "planner_state.json")
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        return os.path.join(repo_root, ".planner_state.json")
+
+    def _serialize_goal(self, goal: Optional[GoalDefinition]) -> Optional[Dict[str, Any]]:
+        if goal is None:
+            return None
+        return {
+            "id": goal.id,
+            "description": goal.description,
+            "priority": goal.priority,
+            "status": goal.status.value,
+            "metadata": goal.metadata,
+            "created_at": goal.created_at,
+            "updated_at": goal.updated_at,
+        }
+
+    def _serialize_task(self, task: TaskNode) -> Dict[str, Any]:
+        # result may be an arbitrary object; keep it JSON-safe or fall back to a
+        # stringified form so the dump never raises during restart recovery.
+        try:
+            json.dumps(task.result)
+            result = task.result
+        except (TypeError, ValueError):
+            result = {"__unserializable__": str(task.result)}
+        return {
+            "id": task.id,
+            "description": task.description,
+            "task_type": task.task_type,
+            "depends_on": list(task.depends_on),
+            "status": task.status.value,
+            "assigned_agent": task.assigned_agent,
+            "result": result,
+            "error": task.error,
+            "priority": task.priority,
+            "metadata": task.metadata,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+        }
+
+    def save_state(self, path: Optional[str] = None) -> str:
+        """Persist goals + tasks to a JSON file.
+
+        Returns the path written. Uses only the stdlib ``json`` module so no
+        third-party dependency is introduced. Call this after (or during)
+        execution so a process restart can recover the graph via
+        :meth:`load_state`.
+        """
+        path = path or self._default_state_path()
+        data = {
+            "version": 1,
+            "goals": self._serialize_goal(self.goal),
+            "tasks": [self._serialize_task(t) for t in self.tasks.values()],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        return path
+
+    @classmethod
+    def load_state(
+        cls, path: Optional[str] = None, **init_kwargs: Any
+    ) -> "GoalTaskGraph":
+        """Load a previously saved planner state into a fresh instance.
+
+        The restored instance carries the same goal id, task ids, statuses,
+        dependency edges and completion sets, enabling recovery across a
+        process restart. ``**init_kwargs`` are forwarded to the constructor
+        (e.g. ``enable_observability=False``).
+        """
+        resolved = path or cls._default_state_path()
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"planner state not found: {resolved}")
+        with open(resolved, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+
+        graph = cls(**init_kwargs)
+        goal_data = data.get("goals")
+        if goal_data:
+            graph.goal = GoalDefinition(
+                id=goal_data["id"],
+                description=goal_data.get("description", ""),
+                priority=goal_data.get("priority", "medium"),
+                status=GoalStatus(goal_data.get("status", "pending")),
+                metadata=goal_data.get("metadata", {}) or {},
+                created_at=goal_data.get("created_at", time.time()),
+                updated_at=goal_data.get("updated_at", time.time()),
+            )
+        for td in data.get("tasks", []):
+            task = TaskNode(
+                id=td["id"],
+                description=td.get("description", ""),
+                task_type=td.get("task_type", "general"),
+                depends_on=list(td.get("depends_on", []) or []),
+                status=TaskStatus(td.get("status", "pending")),
+                assigned_agent=td.get("assigned_agent"),
+                result=td.get("result"),
+                error=td.get("error"),
+                priority=td.get("priority", 0),
+                metadata=td.get("metadata", {}) or {},
+                created_at=td.get("created_at", time.time()),
+                started_at=td.get("started_at"),
+                completed_at=td.get("completed_at"),
+            )
+            graph.tasks[task.id] = task
+            if graph.goal is not None:
+                graph.goal_tasks[graph.goal.id].append(task.id)
+                for dep in task.depends_on:
+                    graph.task_dependencies[dep].add(task.id)
+            if task.status == TaskStatus.COMPLETED:
+                graph.completed_tasks.add(task.id)
+            elif task.status == TaskStatus.FAILED:
+                graph.failed_tasks.add(task.id)
+        return graph
 
 
 # Convenience function for quick goal decomposition
