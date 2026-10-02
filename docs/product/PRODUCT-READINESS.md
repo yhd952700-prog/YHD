@@ -59,12 +59,36 @@
 > complete but not browser-proven; the approve-panel and a user-facing audit-
 > query surface remain open) — see "Cycle 4" section.
 
+> **Cycle-5 change (2026-10-02, HTTP closure + audit UX):** the single largest
+> honesty gap in this document is now closed: **a real registered human can hand
+> LIUHAO a real goal over real HTTP and get a real result** — proven by
+> `scripts/verify_http_full_closure.py` (**31/31**, real `uvicorn` server, real
+> bearer token, real artifact on disk, audit rows carrying the goal's correlation
+> id, HTTP stop → `cancelled`, HTTP replan honest). Proving it **exposed four real
+> defects that were previously invisible** because P6 had only ever been proven
+> in-process (see "Cycle 5"). Also added the missing **user-facing audit surface**
+> (`src/gateway/audit.py` — read-only `/v1/audit/events`, `/events/{seq}`,
+> `/verify`, `/summary`) proven by `scripts/verify_audit_user_surface.py`
+> (**31/31**) including a **real tamper test returning `ok=false`**
+> (`content hash mismatch at seq=2`). **P8 flipped FAIL → PASS** (its stated
+> flip criteria — "a user can query and independently verify the chain" — is now
+> met with measured evidence). P6's old HTTP caveat is closed. No other gate
+> flipped. Regression: **168 passed** (`tests/ai` + `tests/kernels/execution` +
+> `tests/gateway`).
+>
+> > **Honest note on the P8 flip:** P8's written flip bar was *query + independent
+> > verify + truthful outcome*, all now met and measured. Its title mentions "UX",
+> > and the **rendered audit view is NOT yet built** — only the HTTP endpoints and
+> > typed frontend client functions (`operator.ts`) are. We flip on the written
+> > criteria and record the residual rather than either overclaiming or refusing
+> > to credit proven work.
+
 ## Verdict summary
 
 | | |
 |---|---|
-| **PASS** | **3** (P4, P6, P7) |
-| **FAIL** | **7** (P1, P2, P3, P5, P8, P9, P10) |
+| **PASS** | **4** (P4, P6, P7, P8) |
+| **FAIL** | **6** (P1, P2, P3, P5, P9, P10) |
 | **BLOCKED** | 0 |
 | **NOT YET TESTED** | 0 |
 | **PRODUCT ACCEPTANCE** | **NOT READY** |
@@ -412,12 +436,21 @@ scripts/verify_p6_e2e_file_creation.py
 A realistic "create file" goal, executed through the exact production path,
 **actually writes the file to disk with the expected content**. Not a state flag.
 
-**Caveat (kept honest):** the proof exercises the execution pipeline + `file_write`
-tool directly (same wiring the HTTP gateway uses); the full `POST /v1/goals`
-HTTP round-trip was not separately re-run this cycle. The unwired-executor
-failure mode is proven; the wired path is proven at the pipeline level.
-**Flips to FAIL if:** the HTTP gateway path is found to still simulate, or the
-wired executor regresses.
+**~~Caveat~~ — CLOSED cycle 5 (2026-10-02):** the old caveat was that only the
+in-process pipeline was proven and `POST /v1/goals` was never exercised over HTTP.
+That gap is now closed, and closing it **exposed four real defects** that were
+invisible to in-process testing (see "Cycle 5"). Measured by
+`scripts/verify_http_full_closure.py` — **31/31 PASS**: a real `uvicorn` server on
+127.0.0.1, a real registered human identity, a real JWT bearer token
+(`X-Liuhao-Token`), `POST /v1/goals` → poll to terminal → **the file exists on
+disk with the exact expected content**, the goal is bound to a real employee, the
+temp audit store has rows carrying the goal's correlation id, `POST
+/v1/goals/{id}/stop` terminates a running goal as `cancelled` (real cooperative
+cancellation), `POST /v1/goals/{id}/replan` stays honestly `failed` when tasks
+failed, and the same request **without a token returns 401**. Operational closure
+over real HTTP is now demonstrated, not assumed.
+**Flips to FAIL if:** the HTTP gateway path is found to still simulate, the wired
+executor regresses, or the stop/replan semantics regress to false success.
 
 ---
 
@@ -464,37 +497,92 @@ of not being re-executed); that remains a known limitation, not a claimed featur
 
 ---
 
-## P8 — Explainability / Audit UX — **FAIL**
+## P8 — Explainability / Audit UX — **PASS** (cycle 5, measured — see honest note below)
 
 **Requires:** a user can see, for any action, what happened, why, and prove it
 was not altered.
 
-**Evidence:**
-- The **audit mechanism is genuinely REAL-USABLE**: append →
-  `verify_integrity() = (True, 5)`; tamper row 3 via raw SQL → `(False, 5)`;
-  corruption → rollback + quarantine (never delete) + restore + raise.
-- **But there is no user-facing surface**: no HTTP endpoint and no CLI to query or
-  verify the chain (only `src/gateway/dashboard.py:66` summary + internal
-  `audit_query()`).
+**Prior state (cycle 4 and earlier):** FAIL. The mechanism was real but had **no
+user-facing surface** — no HTTP endpoint or CLI to query or verify the chain — and
+the record had previously misstated outcomes.
+
+**What changed this cycle (measured):** `src/gateway/audit.py` adds a strictly
+**read-only**, sovereignty-gated audit surface, mounted at `src/gateway/main.py:531-532`
+with the same human bearer dependency as the other routers:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/audit/events` | list real events, filter by `correlation_id` / `principal` / `action` / `outcome` / `event_type` / `since` / `until`, with `limit` + honest `truncated` echo |
+| `GET /v1/audit/events/{seq}` | one event by sequence; duplicates honestly flagged `duplicate_seq` |
+| `GET` + `POST /v1/audit/verify` | runs the **real** `verify_integrity()`; returns `ok`, `entries_checked`, `first_failure` |
+| `GET /v1/audit/summary` | counts by outcome/action |
+
+Evidence (`scripts/verify_audit_user_surface.py`, **31/31 PASS**) — the decisive
+checks that this is not another silent-success trap:
+
+- **Real HTTP + real auth:** real `uvicorn` thread, token minted via
+  `register_human_identity.py` + `issue_console_token.py`. **Unauthenticated and
+  invalid-token access to every audit endpoint returns 401** — the audit trail is
+  not anonymously readable.
+- **Tamper test actually fails:** on a throwaway temp copy, one row's `outcome` was
+  altered to `TAMPERED-BY-TEST` via raw SQL (hash untouched). The endpoint returned:
+  ```
+  ok             = False
+  entries_checked= 71
+  first_failure  = content hash mismatch at seq=2
+  failures       = ['content hash mismatch at seq=2']
+  ```
+  A verify endpoint that could not return `False` would be worthless; this one
+  names the offending sequence. The tampered row also remains readable via
+  `/events/{seq}` (an auditor must be able to *see* the bad row, not merely be
+  told "the chain broke").
+- **No mutation surface:** OpenAPI confirms the only non-GET under `/v1/audit/*` is
+  `POST /v1/audit/verify` (read-only verification). No write/delete/repair endpoint
+  exists — a self-healing chain would not be evidence. Unreadable store → honest
+  error, never `{ok: true}`.
+- The hashing is the **existing** `AuditStore` / `verify_integrity()` on its pinned
+  read-only snapshot path — nothing reimplemented.
+
+**Honest residual (why PASS is not a full UX pass):** the flip bar written for this
+gate was *"a user can query and independently verify the chain, and `outcome`
+reflects what actually happened"* — all three are now met with measured evidence
+(the outcome-truthfulness item was fixed in cycle 3 across all 20 denied actions).
+But the gate is titled *Audit **UX***, and the **rendered audit view is not
+built**: only the endpoints plus typed frontend client functions in
+`apps/console/console/src/lib/operator.ts` exist. We credit the proven capability
+and record the residual plainly rather than overclaiming a complete UX.
+
+**Flips back to FAIL if:** an audit write/mutation endpoint is ever added, the
+verify endpoint can be made to return `ok=true` on a tampered chain, or the
+endpoints become readable without a valid human token.
+**Remaining gaps recorded honestly (none of them the flip criteria):**
 - The UI's audit section is labelled **"数据中心"** (data centre) — users will not
-  look there for an audit trail.
-- **Critically: the chain's content is not trustworthy.** Combined measured sample
-  across both kernel audits: **41 of 48 HC-01 records (85%) assert
-  `policy=deny` while `outcome` reads `success`/`intent`**; **zero** records had
-  `enforced=True`.
-  **Tamper-evidence is real; truthfulness is not. These are two separate claims
-  and only the first is earned.** A chain that can prove it was *not altered*
-  while its content is false is **more dangerous than an unprotected chain**,
-  because it passes the integrity check and is then accepted as trustworthy
-  evidence. Consequence: **HC-01 cannot currently be used for any compliance or
-  evidentiary purpose.**
+  look there for an audit trail; **the rendered audit view that consumes the new
+  endpoints is not yet built** (client functions are wired, no component renders
+  them). This is the "UX" half of the gate's title and the main residual.
+- **(Historical, frozen) chain truthfulness defect:** on the **old** HC-01 sample,
+  **41 of 48 HC-01 records (85%) assert `policy=deny` while `outcome` reads
+  `success`/`intent`**; **zero** had `enforced=True`. That is retained *as frozen
+  historical evidence* of the old bug and is NOT reprocessed — but it is the reason
+  this gate's flip criteria included "outcome reflects what actually happened".
+  That item is fixed going forward: since cycle 3, `@kernel_action` relabels
+  `outcome` to `denied` for every definitive `deny`/`defer` verdict, proven across
+  all 20 denied actions (`scripts/verify_audit_truthfulness.py`). The principle
+  still stands and is why the tamper test above matters: *tamper-evidence and
+  truthfulness are separate claims, and a chain that proves it was unaltered while
+  recording false content is more dangerous than no chain at all.*
 - External anchoring (`external_anchor.py`) is real RFC-6962 math, but the only
   shipped transport is `LocalReferenceLog`; `ExternalLogTransport.submit_root`
-  raises `NotImplementedError` — **no real third-party transparency log.**
+  raises `NotImplementedError` — **no real third-party transparency log.** Left as
+  is: honestly stubbed, not claimed. Enablement requires choosing and contracting a
+  real log operator — an owner/legal decision, not an engineering one.
 
-**Biggest gap:** no user-facing query/verify, and the record misstates outcomes.
-**Flips to PASS when:** a user can query and independently verify the chain, and
-`outcome` reflects what actually happened.
+**Flip criteria met:** a user can query and independently verify the chain
+(endpoints + tamper test, 31/31) **and** `outcome` reflects what actually happened
+(cycle-3 relabelling, all 20 denied actions).
+**Flips back to FAIL if:** any audit write/mutation endpoint is added, `/verify`
+can return `ok=true` on a tampered chain, or the endpoints become readable without
+a valid human token.
 
 ---
 
@@ -729,6 +817,89 @@ panel) and **user-facing audit-query surface** (P8), plus genuine LLM planning
 (P2) and multi-agent collaboration (P3) which require either a real provider key
 (owner decision) or real orchestration wiring. **No gate flipped to PASS this
 cycle** — P4/P6/P7 stay PASS.
+
+## Cycle 5 — 2026-10-02 HTTP operational closure + audit UX (measured)
+
+Two hardenings this cycle, both measured with real servers and real credentials,
+none touching the frozen HC-01 evidence (every verifier REDIRs `AUDIT_DB_PATH` /
+`LIUHAO_WORKSPACE_ROOT` to a fresh temp tree). Regression: **168 passed**
+(`tests/ai` + `tests/kernels/execution` + `tests/gateway`).
+
+### 1. Real HTTP closed loop — and the four defects it exposed
+
+`scripts/verify_http_full_closure.py` (**31/31 PASS**) drives the **real**
+`uvicorn` server on 127.0.0.1 as a **real registered human**: identity registered
+via `register_human_identity.py`, JWT minted via `issue_console_token.py`, carried
+in the `X-Liuhao-Token` header. This proves a genuine HTTP round-trip including
+middleware, lifespan and the real auth dependency — not an in-process call.
+
+It confirms: `POST /v1/goals` → poll to terminal → **the file exists on disk with
+the exact expected content**; the goal is bound to a real employee; temp audit rows
+carry the goal's correlation id; `POST /v1/goals/{id}/stop` terminates a **running**
+goal as `cancelled`; `POST /v1/goals/{id}/replan` stays honestly `failed` when tasks
+failed; and **the same request without a token returns 401**.
+
+The reason this mattered is the important part: **P6 had only ever been proven
+in-process, and moving to real HTTP immediately exposed four defects that
+in-process testing could not see.** All four were real product bugs, all fixed at
+the root (never by weakening the test):
+
+1. **Asynchronous goal execution was unreachable over HTTP.** `AIStateManager.
+   create_and_execute_goal` already supported `background=True`, but
+   `GoalCreateRequest` had no such field and `create_goal` never passed it — so
+   every HTTP-created goal finished *inside* the POST request. `POST
+   /v1/goals/{id}/stop` was therefore structurally incapable of being a
+   cancellation; it could only ever be a post-hoc state edit on an
+   already-terminal goal. Fixed by plumbing an optional `background` field
+   (default `False`, existing synchronous contract untouched).
+2. **The cancel signal never reached the execution loop.** `_execute_task` was
+   called without forwarding `stop_event`, so the "honour a stop before each
+   attempt" check always saw `None` — dead code. Measured cost: a human stop during
+   a long task took **39s** to take effect because the full retry budget had to
+   burn down first. Fixed with a one-line forward.
+3. **Stop overwrote real outcomes and corrupted employee KPI.** `stop_goal` stamped
+   `error="aborted by human operator"` onto *any* goal receiving a stop POST —
+   including an already-failed goal, **destroying its real root cause** — and booked
+   every stop as `cancelled` in employee metrics, so a completed goal counted as
+   **both completed and failed**. Both now apply only to a goal genuinely still
+   running.
+4. **Every HTTP goal reported zero tasks — a completed goal rendered identical to a
+   no-op.** `_result_to_dict` read `ctx.tasks`, an attribute `ExecutionContext` does
+   not have (tasks live on `ctx.plan`); its `hasattr` guard was always `False`. So
+   `GET /v1/goals/{id}` and `/v1/workflows/{id}` showed every goal as "did
+   nothing". Found while hardening two checks that had been passing vacuously.
+
+This is the concrete meaning of `HTTP 200 ≠ operational closure`: the earlier P6
+PASS was earned at the pipeline level and was **not** evidence that a user got a
+result. A 200 that does not produce the artifact is a failure to fix, not a pass to
+record.
+
+### 2. User-facing audit surface (P8 → PASS)
+
+`src/gateway/audit.py` (new, mounted at `src/gateway/main.py:531-532` with the same
+human bearer dependency, plus an explicit `require_human_principal` inside each
+handler so a missed mount cannot expose the trail anonymously) adds **read-only**
+`GET /v1/audit/events`, `GET /v1/audit/events/{seq}`, `GET`+`POST /v1/audit/verify`
+and `GET /v1/audit/summary`. It reuses the existing `AuditStore` read-only snapshot
+path and the real `verify_integrity()` — no hashing reimplemented. Frontend typed
+clients (`fetchAuditEvents` / `fetchAuditEventBySeq` / `verifyAuditChain` /
+`fetchAuditSummary`) were added to `apps/console/console/src/lib/operator.ts`;
+`tsc -b` and `vite build` both pass.
+
+`scripts/verify_audit_user_surface.py` (**31/31 PASS**) proves it over real HTTP
+with real auth: unauthenticated/invalid tokens → 401 everywhere; the tamper test
+alters one row's `outcome` via raw SQL on a throwaway temp copy and the endpoint
+returns `ok=false` / `content hash mismatch at seq=2`; the tampered row is still
+readable via `/events/{seq}`; and OpenAPI confirms no mutation route exists beyond
+the read-only verify itself.
+
+**Net state:** the product closed loop `planning → execution → permissions →
+WorldInterface → independent verification → audit → recovery → user result` is now
+demonstrable **end to end over real HTTP by a real authenticated human**, with a
+tamper-evident audit trail a user can query and verify. Remaining open gates are
+P1/P2/P3/P5/P9/P10 — dominated by **UI not yet proven end-to-end in a browser**,
+**no LLM-driven planning** (owner must supply a provider key), **no real
+multi-agent orchestration**, and **identity/permissions not surfaced to the user**.
 
 ## Known over-claims that must be corrected externally
 
