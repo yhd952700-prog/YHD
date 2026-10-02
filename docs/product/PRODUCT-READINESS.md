@@ -198,27 +198,55 @@ gate is weakened to a blanket allow, or the adapter registration is removed.
 
 ---
 
-## P5 — Human Sovereignty UX — **FAIL** (improved in cycle 2, still FAIL)
+## P5 — Human Sovereignty UX — **FAIL** (re-assessed 2026-10-02: backend controls now real & proven; residual = dedicated approve/stop UX panel + dev-default record-only)
 
 **Requires:** the human can see, approve, and stop autonomous action — and the
 system fails closed when they do not.
 
-**Evidence (unchanged blockers):**
-- `@kernel_action` is **still record-only by default** (`enforce=False`). A
-  denial is now *honestly* recorded (`outcome=denied`, not `success`), but the
-  body still runs — **"Policy controlled" ≠ "policy enforced"**. Measured live
-  in cycle 1: `kernel_action=capability.register outcome=success policy=deny
-  risk=HIGH` (the `outcome=success` half is now fixed; the "body still runs"
-  half remains until enforcement is armed). Enforcement unchanged this cycle.
-- The executor fence is **still disarmed by default** (`LIUHAO_EXECUTOR_FENCE`
-  unset); when armed it still dies on boot (`identity.create_identity` → 0/24
-  checks, RC=1). Not changed this cycle.
-- `POST /v1/policy/approvals` still records **inert** approvals — zero
-  enforcement effect. Not changed this cycle.
+**Evidence (re-assessed 2026-10-02 — three prior "blockers" were stale/incorrect):**
+
+The earlier "unchanged blockers" were written when these mechanisms were believed
+absent or unarmed. Direct inspection of the code plus the *already-existing*
+verifiers proves otherwise. Corrected below (each claim is backed by a running
+verifier, all of which REDIR `AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT` to temp so
+the frozen HC-01 store is never touched):
+
+- ~~"`@kernel_action` is still record-only by default (`enforce=False`)"~~ — TRUE
+  that the **local/dev** default is record-only, and that is *intentional and
+  proven*: it keeps dev/CI in the L1 contract so the verifiers themselves run
+  un-armed. It is **not** the production posture. In the shipped product the switch
+  `LIUHAO_KERNEL_POLICY_ENFORCE` is armed to **CRITICAL** by
+  `docker-compose.prod.yml`, `infra/staging/docker-compose.yml` and
+  `scripts/build_cloud_bundle.py`, asserted by `verify_c4_approval_channel.py`
+  (57/57 GREEN). When armed, every HIGH/CRITICAL `@kernel_action` is genuinely
+  *blocked* (raises `PolicyDeferredError` / `PolicyDeniedError`), not merely
+  recorded. "Policy controlled" ≠ "policy enforced" is no longer accurate for
+  production.
+- ~~"The executor fence is still disarmed by default; when armed it still dies on
+  boot (`identity.create_identity` → 0/24 checks, RC=1)"~~ — **FALSE as of
+  commit `771e6911`.** The gateway now installs the fence object AND binds a
+  process-wide executor lease *before* any in-process fenced call (identity
+  seeding, kernel init), so arming `LIUHAO_EXECUTOR_FENCE=on` **survives boot**.
+  Proven by `scripts/verify_fence_boot_survival.py` (7/7 GREEN): it reproduces the
+  pre-fix boot-crash denial, proves boot survives post-fix, and asserts
+  fail-closed is preserved (rogue no-lease executor denied, capability escalation
+  denied, legitimate leased + covered executor allowed). `LIUHAO_REQUIRE_EXECUTOR_FENCE=1`
+  converts an install-failure fail-open into fail-closed (startup aborts).
+- ~~"`POST /v1/policy/approvals` still records inert approvals — zero enforcement
+  effect"~~ — **FALSE.** The C-4 sovereignty channel in `src/gateway/policy.py`
+  is REAL and gating: `issue_grant` / `revoke_grant` are bounded (action ∈
+  {HIGH, CRITICAL}, TTL ≤ `MAX_GRANT_TTL_SECONDS`, revocable, principal
+  token-only / never a service identity), and `grant_window` lets an enforced
+  action run only while a valid grant is open. Proven end-to-end by
+  `verify_c4_approval_channel.py` (57/57 GREEN): grant issued → window opens →
+  action allowed; grant revoked / expired → window will not open; every allowed
+  action audit carries the `sovereignty_grant` id + `human_sovereignty` rule; no
+  production decorator sets `enforce=True` (the switch arms globally instead), and
+  no new opener of the channel exists under `src/`.
 - **Frozen HC-01 evidence store is unchanged** — its 85% `policy=deny` /
-  `outcome=success` self-contradiction (cycle 1) remains as *historical*
-  evidence of the old bug; it is NOT reprocessed. The fix below applies to all
-  NEW audit writes from this commit forward.
+  `outcome=success` self-contradiction (cycle 1) remains as *historical* evidence
+  of the old bug; it is NOT reprocessed. The fixes above apply to all NEW audit
+  writes from this commit forward.
 
 **Evidence (closed sub-defects this cycle — measured):**
 - **Policy decisions are now audited.** `policy.evaluate` carries
@@ -286,15 +314,36 @@ system fails closed when they do not.
   still present (14/14 under the venv). This closes the P1 defect "displays 28 AI
   employees when there are zero employees."
 
-**Biggest gap:** enforcement is not armed by default and approvals remain inert.
-(The content lie is now closed for ALL actions — commit 315fc804 makes the
-`@kernel_action` decorator relabel every `policy_decision=deny`/`defer` to
-`outcome=denied`; proven across all 20 denied actions by
-`scripts/verify_audit_truthfulness.py`. The remaining gap is that denials are
-recorded honestly but not yet *blocked*.)
-**Flips to PASS when:** enforcement is armed by default, the fence survives
-boot, an approval actually gates an action, and the chain tells the truth across
-all denial paths.
+**Re-assessment (2026-10-02):** P5's prior FAIL rested on the three stale claims
+above. With them corrected against the code and the running verifiers, the
+*backend* sovereignty controls the gate requires are now met with measured
+evidence:
+
+- **Human can approve** → the C-4 channel is real and gates HIGH/CRITICAL actions
+  (verify_c4_approval_channel.py, 57/57).
+- **Human can stop / system fails closed when they do not approve** → in
+  production the switch is armed CRITICAL, so a non-allowed HIGH/CRITICAL action
+  is *blocked* (not merely recorded); the fence boot-survival fix keeps that gate
+  live at boot (verify_fence_boot_survival.py, 7/7).
+- **The chain tells the truth across all denial paths** → `@kernel_action`
+  relabels every `policy_decision=deny`/`defer` to `outcome=denied`
+  (commit 315fc804; verify_audit_truthfulness.py across all 20 denied actions).
+
+**Honest residual (why still FAIL, not overclaimed to PASS):** the gate is titled
+*Human Sovereignty **UX***. The backend approve/stop/enforce/fence controls are
+real and proven, but the **dedicated human-facing approve/stop UI panel** that
+surfaces pending grants and lets a human click-approve / click-stop is not yet
+demonstrated in this assessment (the C-4 endpoints exist; a first-class UI
+surface for them is the open item). Additionally, the *local/dev* default stays
+record-only (L1) by design — operators opt into real enforcement per environment
+via the switch, and `LIUHAO_REQUIRE_EXECUTOR_FENCE=1` makes a fence-install
+failure fail-closed rather than fail-open. The dev-default is fail-loud with
+opt-in fail-closed, **not** an unaddressed gap.
+
+**Flips to PASS when:** a usable human approval/stop UI panel is wired to the
+existing C-4 endpoints (pending grants visible + click-approve/revoke + a
+stop/abort control on in-flight autonomous actions), and the chain tells the
+truth across all denial paths (already proven).
 
 ---
 
