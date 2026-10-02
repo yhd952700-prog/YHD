@@ -1051,6 +1051,14 @@ class IdentityManager:
         with self._lock:
             identity = self._get_identity(identity_id)
             if not identity:
+                # A refusal reported by returning is still a refusal: without
+                # this, the enclosing @kernel_action stamps outcome="success"
+                # and the chain records a grant to a principal that does not
+                # exist as a successful permission grant.
+                mark_action_denied(
+                    f"identity {identity_id!r} not found; refusing to grant "
+                    f"{permission!r} to an unknown principal"
+                )
                 return False
 
             # Scope check: permission scope cannot exceed identity scope
@@ -1066,6 +1074,12 @@ class IdentityManager:
                     reason=f"Permission scope {scope} exceeds identity scope {identity.scope}",
                 )
                 self._audit_log.append(audit)
+                # Same reason, same lie prevented: ``_audit_log`` is an
+                # in-process list, not the authoritative chain.
+                mark_action_denied(
+                    f"permission scope {scope} exceeds identity scope "
+                    f"{identity.scope} (identity={identity_id!r})"
+                )
                 return False
 
             identity.permissions.add(permission)
@@ -1095,9 +1109,20 @@ class IdentityManager:
         with self._lock:
             identity = self._get_identity(identity_id)
             if not identity:
+                # Same lie as the grant path: a bare ``return False`` reads as a
+                # completed revocation on the authoritative chain unless the
+                # refusal is declared here.
+                mark_action_denied(
+                    f"identity {identity_id!r} not found; refusing to revoke "
+                    f"{permission!r} from an unknown principal"
+                )
                 return False
 
             if permission not in identity.permissions:
+                mark_action_denied(
+                    f"identity {identity_id!r} does not hold {permission!r}; "
+                    f"nothing was revoked"
+                )
                 return False
 
             identity.permissions.discard(permission)
