@@ -31,14 +31,42 @@
 > execution out of the autonomous goal path by default. No product gate flipped to
 > PASS this cycle; P4/P6 evidence is strengthened (see "Cycle 3" section).
 
+> **Cycle-4 change (2026-10-02, autonomous hardening):** five more measured
+> hardenings landed on `p36` and were integrated (all verifiers REDIR
+> `AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT` to temp; frozen HC-01 untouched):
+> (1) the console now ships a real **operator control panel**
+> (`apps/console/console/src/components/OperatorControls.tsx` + `lib/operator.ts`,
+> wired into `pages/Directory.tsx`) with hire / create-goal / pause / resume /
+> delete / stop / replan forms that call the proven REST endpoints — closing the
+> P1 "no UI hire form / pause-resume buttons" and P5 "no human-facing stop panel"
+> gaps at the *code* level (browser end-to-end click-through still outstanding);
+> (2) `Verifier.verify` now **independently re-reads disk** for file-side effects
+> instead of trusting the executor's returned dict (`scripts/
+> verify_execution_independent_verification.py`, 5/5 PASS) — strengthens P6;
+> (3) `WorldInterface` + `host_command` are now **genuinely enforced and honestly
+> documented**: autonomous `FilesystemAdapter(root=None)` is fail-closed, shell
+> execution is routed through the default-DENY `HostCommandBroker`, and the
+> `capabilities=()` executor-fence *no-op* is honestly replaced by the real policy
+> gate (`tests/ai/test_world_interface_safety_fix.py`, 6/6 PASS); (4) the
+> hash-chain audit now carries the **goal's correlation id** for every kernel
+> action (`src/kernels/_crosscutting.py` `KERNEL_ACTION_CORRELATION_ID`
+> ContextVar, `scripts/verify_audit_goal_correlation.py`, 9/9 PASS) — closes the
+> P8 "cannot prove this goal ran this action" traceability gap; (5) an honest
+> end-to-end acceptance test (`scripts/verify_e2e_real_execution.py`, 13/13 PASS)
+> re-confirms the full chain and documents the planner as **deterministic
+> keyword/regex, not LLM** and only `python_compute` + `file_write` as REAL
+> executors. **No product gate flipped to PASS this cycle** (UI controls are code-
+> complete but not browser-proven; the approve-panel and a user-facing audit-
+> query surface remain open) — see "Cycle 4" section.
+
 ## Verdict summary
 
 | | |
 |---|---|
-| **PASS** | **2** |
-| **FAIL** | **7** |
+| **PASS** | **3** (P4, P6, P7) |
+| **FAIL** | **7** (P1, P2, P3, P5, P8, P9, P10) |
 | **BLOCKED** | 0 |
-| **NOT YET TESTED** | 1 |
+| **NOT YET TESTED** | 0 |
 | **PRODUCT ACCEPTANCE** | **NOT READY** |
 
 The single most important fact in this document: **the one end-to-end user
@@ -620,6 +648,87 @@ alerts; host-command execution is gated and documented. Product gates P1–P3, P
 P8–P10 remain open; **P7 (Recovery) flipped to PASS** this cycle (kernel crash
 recovery + `execute_replan` re-execution + `retry_dead_letter` honest reporting +
 `replan_goal` resume all measured by tests).
+
+## Cycle 4 — 2026-10-02 operator UX + honesty hardening (measured)
+
+Five autonomous hardenings this cycle, all measured, none touching the frozen
+HC-01 evidence (every verifier REDIRs `AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT` to
+temp). All merged into `p36` and pushed; the shared test suite (`tests/ai` +
+`tests/kernels/execution`) is **151 passed**, no regressions.
+
+1. **Operator control panel is now real code (P1 / P5 / P10 progress).**
+   `apps/console/console/src/components/OperatorControls.tsx` + `lib/operator.ts`
+   add hire / create-goal / pause / resume / delete / stop / replan forms and
+   buttons wired into `pages/Directory.tsx`; `operator.ts` calls the proven REST
+   endpoints (`POST /v1/employees`, `POST /v1/goals`, `POST /v1/goals/{id}/stop`,
+   `POST /v1/goals/{id}/replan`, pause/resume/delete). The console **builds** via
+   `vite build` (40 modules, exit 0) and the dead read-only `src/ui/*.py`
+   decorative package was deleted (9 files) plus the false-confidence
+   `tests/frontend/test_phase7_productization.py`. Honest status: the controls
+   exist and compile and target proven endpoints, but a **browser end-to-end
+   click-through** is not yet run in this assessment — so P1/P5/P10 stay FAIL
+   at the *proven* bar (code-complete, not UX-proven).
+
+2. **Verification is no longer self-proving (P6 strengthen).** `Verifier.verify`
+   (`src/kernels/execution/__init__.py`) now independently re-reads disk for
+   file-write outcomes: a capability that returns `{"written": path}` without
+   writing now FAILS verification (and demands replan) instead of trusting the
+   returned dict. Proven by `scripts/verify_execution_independent_verification.py`
+   (T1 claimed-but-missing → FAILED; T2 real write → SUCCESS; T3 wrong content →
+   FAILED; T4 non-file → SUCCESS preserved) — **5/5 PASS**. This removes the
+   worst "simulation ≠ execution" gap at the verification layer.
+
+3. **WorldInterface + host-command are genuinely enforced and honestly
+   documented (P4 / P5 strengthen).** `src/ai/world_interface.py` now:
+   - fail-closes autonomous `FilesystemAdapter(root=None)` — read/list/write
+     against an unbounded root is denied (human/legacy bounded-root path
+     unchanged);
+   - routes shell execution through the default-DENY `HostCommandBroker`
+     (`LIUHAO_HOST_COMMAND_ENABLED` + capability policy + human approval), so
+     `subprocess.run` is no longer bypassed;
+   - replaces the misleading `capabilities=()` executor-fence *no-op* (which is
+     always-allow per `fence.py:426/661`) with an honest statement that world /
+     host-command authorization is enforced by the real policy gate, not the
+     fence. `SandboxSpec` is honestly labelled "INTENT ONLY — not enforced".
+   Proven by `tests/ai/test_world_interface_safety_fix.py` — **6/6 PASS**
+   (autonomous unbounded-fs denied; bounded-fs allowed; human unbounded-fs
+   allowed; shell without gate armed denied; shell with gate+policy allowed).
+
+4. **Audit chain now proves goal→action linkage (P8 traceability).**
+   `src/kernels/_crosscutting.py` adds a `KERNEL_ACTION_CORRELATION_ID`
+   ContextVar + `kernel_action_correlation_id()` context manager;
+   `ExecutionEngine.execute_goal` wraps the whole goal in it, so every kernel
+   action's hash-chain audit event carries the **goal's** correlation id instead
+   of a fresh random one. Proven by `scripts/verify_audit_goal_correlation.py`
+   — **9/9 PASS** (the `execution.execute` events for the real `file_write` /
+   `python_compute` actions match the goal's correlation id; the unset-path still
+   emits a non-empty random id for backward compatibility). The audit chain can
+   now prove "this goal executed this action" — previously impossible.
+
+5. **Honest end-to-end acceptance re-confirmed (P2 / P6 refine).**
+   `scripts/verify_e2e_real_execution.py` — **13/13 PASS** — drives a goal through
+   the full pipeline with a real capability executor and asserts: a real
+   `file_write` lands on disk with the expected content; `python_compute` produces
+   a real result; an unserved capability FAILS HONESTLY (`status=unwired` /
+   `simulated`, never "executed"); the hash-chain audit records the action. Ground
+   truth established: `GoalDecomposer.decompose` (`src/kernels/execution/
+   __init__.py`) is **deterministic keyword/regex, NOT LLM** (its own comment:
+   "in production would use LLM"); of the 14 registered capabilities only
+   `python_compute` + `file_write` are REAL executors (real only when a real
+   executor is injected); the other 12 kernel capabilities are fail-closed
+   (`unwired`) or honestly labelled `simulated` when opted in — never mislabelled
+   as real.
+
+**Net state:** the autonomous loop is now demonstrably honest at every layer —
+planning is deterministic (not faked as LLM), execution is real for the two
+served capabilities, verification re-reads disk, world/host-command actions are
+fail-closed and routed through the real policy gate, and the audit chain ties
+actions back to the goal that ran them. Product gates P1–P3, P5, P8–P10 remain
+open; the binding gaps are now **UI-proven click-through** (P1/P5/P10 operator
+panel) and **user-facing audit-query surface** (P8), plus genuine LLM planning
+(P2) and multi-agent collaboration (P3) which require either a real provider key
+(owner decision) or real orchestration wiring. **No gate flipped to PASS this
+cycle** — P4/P6/P7 stay PASS.
 
 ## Known over-claims that must be corrected externally
 
