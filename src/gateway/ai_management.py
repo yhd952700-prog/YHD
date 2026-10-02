@@ -324,10 +324,10 @@ class AIStateManager:
             state=AgentRunState(prior_entry.get("state", "failed")),
             context=None,
             evaluation=None,
-            trace=ExecutionTrace(),
+            trace=ExecutionTrace(correlation_id=prior_entry.get("correlation_id", "")),
             error=prior_entry.get("error"),
         )
-        result = runtime.replan(prior)
+        result = runtime.replan(prior, goal_text=prior_entry["natural_language"])
         entry = self._result_to_dict(result, prior_entry["natural_language"],
                                      prior_entry["scope"])
         entry["replan_count"] = prior_entry.get("replan_count", 0) + 1

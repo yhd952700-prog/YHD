@@ -344,22 +344,46 @@ wired executor regresses.
 
 ---
 
-## P7 — Recovery — **NOT YET TESTED**
+## P7 — Recovery — **PASS (measured)**
 
 **Requires:** a failed or interrupted task is detected, recovered or reported —
 and the user sees it.
 
-**Evidence:** the kernel-level primitive IS real — `ExecutionJournal` +
-`_adopt_journaled_progress` (`kernels/execution/__init__.py:729`) genuinely
-resumed both tasks after a crash (measured), and audit-store corruption handling
-quarantines and restores. But the **product-level** loop is not proven, and two
-recovery paths are known-bad: `execute_replan` is a status-flip stub that never
-re-executes, and `retry_dead_letter` returns `True` while failing again.
+**Evidence (all measured by tests, not claimed):**
 
-**Why not FAIL:** the underlying primitive demonstrably works; we simply have not
-run a user-visible recovery scenario.
-**Flips to PASS when:** an interrupted goal is resumed or honestly reported to the
-user, end to end.
+- **Kernel crash recovery is now PROVEN end-to-end.**
+  `tests/kernels/execution/test_recovery_real.py::test_crash_recovery_resumes_completed_tasks_no_repeat`
+  wires a real `ExecutionJournal` + `capability_executor` (`LCore`), runs a goal
+  that yields ≥2 workspace file-write tasks, then simulates a crash/restart with a
+  **new** `ExecutionEngine` + `ExecutionJournal` on the SAME goal id (deterministic
+  task names). On restart `_adopt_journaled_progress`
+  (`src/kernels/execution/__init__.py:840`) resumes both completed tasks WITHOUT
+  re-invoking the side-effecting `file_write` (a side-effect counter proves it is
+  called exactly 0 times on resume; file contents are byte-identical). This is REAL
+  recovery, not a stub.
+- **`execute_replan` is no longer a status-flip stub.**
+  `src/kernels/evaluation/__init__.py:521` now routes to a wired `replan_executor`
+  (set by `AgentRuntime` on the evaluator, calling `run_goal`) and returns `True`
+  only when the re-execution genuinely succeeds; returns `False` honestly when no
+  runtime is wired or the re-run fails. Proven by
+  `test_execute_replan_re_executes_via_runtime` (re-execution writes the file) and
+  `test_execute_replan_false_when_unrecoverable` (honest `False`).
+- **`retry_dead_letter` no longer lies.**
+  `src/kernels/event/__init__.py:272` detects that `publish` swallows handler
+  exceptions into a *new* dead letter for the same event, so a re-dispatch that
+  fails again is reported `False` (never `True`-while-failing). Proven by
+  `test_retry_dead_letter_honest`.
+- **Product-level `replan_goal` resumes completed tasks.**
+  `src/gateway/ai_management.py:311` now passes the real goal text to
+  `runtime.replan` (previously re-ran an *empty* goal), and the journal-driven
+  resume means the file-write side effect is not duplicated. Proven by
+  `tests/gateway/test_recovery.py::test_replan_goal_resumes_completed_tasks`.
+
+**Honesty note:** recovery correctness rests on *deterministic task names*
+(`GoalDecomposer` stability) — that is the contract `_adopt_journaled_progress`
+matches on. The journal does not yet do cross-process *side-effect idempotency*
+keys (external side effects other than file writes are de-duplicated only by virtue
+of not being re-executed); that remains a known limitation, not a claimed feature.
 
 ---
 
@@ -544,7 +568,9 @@ temp):
 **Net state:** the autonomous loop can now do REAL local work (file write,
 sandboxed compute) and fails honestly elsewhere; execution failures now raise real
 alerts; host-command execution is gated and documented. Product gates P1–P3, P5,
-P7–P10 remain open (no product-gate flip this cycle).
+P8–P10 remain open; **P7 (Recovery) flipped to PASS** this cycle (kernel crash
+recovery + `execute_replan` re-execution + `retry_dead_letter` honest reporting +
+`replan_goal` resume all measured by tests).
 
 ## Known over-claims that must be corrected externally
 

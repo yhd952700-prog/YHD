@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 import threading
 
@@ -142,12 +142,27 @@ class Evaluator:
     """Evaluates outcomes against criteria."""
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
-    def __init__(self, criteria: Optional[EvaluationCriteria] = None):
+    def __init__(
+        self,
+        criteria: Optional[EvaluationCriteria] = None,
+        replan_executor: Optional[Callable[[str], Any]] = None,
+    ) -> None:
         self.criteria = criteria or EvaluationCriteria()
         self._evaluation_history: List[EvaluationResult] = []
         self._feedback_history: List[FeedbackEntry] = []
         self._replan_requests: List[ReplanRequest] = []
+        self._replan_executor = replan_executor
         self._lock = threading.RLock()
+
+    def set_replan_executor(self, executor: Optional[Callable[[str], Any]]) -> None:
+        """Wire the real re-execution path (AgentRuntime.replan) into this kernel.
+
+        Without it ``execute_replan`` cannot re-run anything and must report
+        failure honestly instead of flipping status. This mirrors the
+        ``capability_executor`` injection seam on ``ExecutionEngine``: the
+        evaluation kernel stays layering-clean and depends only on a callable.
+        """
+        self._replan_executor = executor
 
     @kernel_action("evaluation.evaluate")
     def evaluate(
@@ -520,14 +535,46 @@ class Evaluator:
 
     @kernel_action("evaluation.execute_replan")
     def execute_replan(self, replan_id: str) -> bool:
-        """Mark replan as executed."""
+        """Actually re-execute the failed goal through the wired runtime.
+
+        Previously this only flipped ``r.status = "executed"`` (a status-flip
+        stub that never re-ran the goal). Now it routes to ``_replan_executor``
+        (set by :meth:`set_replan_executor`, normally wired to
+        ``AgentRuntime.replan``), and only marks the request executed — and
+        returns ``True`` — when the re-execution genuinely succeeds. If no
+        executor is wired, or the re-execution fails, it returns ``False``
+        honestly and leaves the status untouched (never claims success while
+        failing).
+        """
         with self._lock:
+            target: Optional[ReplanRequest] = None
             for r in self._replan_requests:
                 if r.id == replan_id:
-                    r.status = "executed"
-                    r.executed_at = utc_now()
-                    return True
-        return False
+                    target = r
+                    break
+            if target is None:
+                return False
+
+            executor = self._replan_executor
+            if executor is None:
+                # No runtime wired: re-execution is impossible. Honest failure.
+                return False
+
+            try:
+                result = executor(target.goal_id)
+            except Exception:
+                return False
+
+            # Success = the re-run did not end in FAILED. ``AgentRunResult.state``
+            # is a str-Enum, so comparing to the string "failed" is robust without
+            # importing the ai layer (keeps this kernel layering-clean).
+            state = getattr(result, "state", "failed")
+            if str(state) == "failed":
+                return False
+
+            target.status = "executed"
+            target.executed_at = utc_now()
+            return True
 
     def stats(self) -> Dict[str, Any]:
         """Get evaluator statistics."""

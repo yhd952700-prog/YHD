@@ -223,6 +223,19 @@ class AgentRuntime:
         self.evaluator = evaluator or get_evaluator()
         self.memory = memory or get_memory_kernel()
         self.max_replans = max_replans
+        # Remember the goal text for each goal_id so ``replan``/``recover`` can
+        # actually re-run the *same* goal (deterministic task names -> the
+        # engine's journal resumes completed tasks). Guarded by no lock: a
+        # runtime drives one goal at a time through ``run_goal``.
+        self._goal_texts: Dict[str, str] = {}
+        # Route the evaluation kernel's ``execute_replan`` action to a real
+        # re-execution instead of a status flip. The evaluation kernel stays
+        # layering-clean: it only holds a callable.
+        try:
+            self.evaluator.set_replan_executor(self._replan_for_evaluator)
+        except Exception:
+            # A non-Evaluator (e.g. a test double) may not implement the hook.
+            pass
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -246,6 +259,7 @@ class AgentRuntime:
         scope = scope or self.scope
         goal_id = goal_id or str(uuid.uuid4())[:8]
         correlation_id = correlation_id or str(uuid.uuid4())
+        self._goal_texts[goal_id] = goal_text
 
         observer = AgentObserver(correlation_id)
         observer.subscribe()
@@ -306,17 +320,23 @@ class AgentRuntime:
         *,
         extra_criteria: Optional[Dict[str, Any]] = None,
         max_replans: Optional[int] = None,
+        goal_text: Optional[str] = None,
     ) -> AgentRunResult:
         """Re-run a goal after a failed/partial run (fills the engine's L811 no-op).
 
         Idempotent: ``ExecutionEngine`` resumes already-completed tasks by name
         via its journal (``src/kernels/execution/__init__.py:714``), so side
         effects are not repeated. Bounded by ``max_replans`` to avoid loops.
+
+        ``goal_text`` lets callers (e.g. the gateway, whose stored ``prior`` has
+        no live ``context``) supply the original goal text; it falls back to
+        ``prior.context.goal.natural_language`` when available.
         """
         max_replans = max_replans or self.max_replans
         if prior.replan_count >= max_replans:
             return prior
-        goal_text = prior.context.goal.natural_language if prior.context else ""
+        if goal_text is None:
+            goal_text = prior.context.goal.natural_language if prior.context else ""
         result = self.run_goal(
             goal_text,
             goal_id=prior.goal_id,
@@ -327,6 +347,27 @@ class AgentRuntime:
         )
         result.replan_count = prior.replan_count + 1
         return result
+
+    def _replan_for_evaluator(self, goal_id: str) -> AgentRunResult:
+        """Callback the evaluation kernel uses to actually re-run a goal.
+
+        Looks up the original goal text recorded in ``run_goal`` and re-executes
+        it (journal-driven resume makes this idempotent). Returns a FAILED
+        result — which makes ``Evaluator.execute_replan`` report ``False``
+        honestly — when this runtime has no record of the goal.
+        """
+        text = self._goal_texts.get(goal_id)
+        if text is None:
+            return AgentRunResult(
+                goal_id=goal_id,
+                correlation_id="",
+                state=AgentRunState.FAILED,
+                context=None,
+                evaluation=None,
+                trace=ExecutionTrace(correlation_id=""),
+                error="goal text unavailable for replan (not executed by this runtime)",
+            )
+        return self.run_goal(text, goal_id=goal_id, persist=True)
 
     def recover(self, goal: Goal) -> AgentRunResult:
         """Idempotent replay of a goal (rollforward / crash recovery).

@@ -270,18 +270,35 @@ class EventBus:
 
     @kernel_action("event.retry_dead_letter")
     def retry_dead_letter(self, index: int) -> bool:
-        """Retry a dead letter event."""
+        """Re-dispatch a dead-lettered handler, honestly reporting the outcome.
+
+        ``publish`` swallows handler exceptions and only appends a NEW dead
+        letter for the *same event object* when the handler fails again, so a
+        naive ``return True`` after ``publish`` would claim success while the
+        handler actually failed a second time. We compare the dead-letter count
+        before/after re-publish: if a fresh dead letter for this exact event
+        appeared, the re-dispatch failed and we must report ``False`` (and must
+        NOT mark it resolved). Only when no new failure was recorded do we
+        consider the re-dispatch successful.
+        """
         with self._lock:
             if 0 <= index < len(self._dead_letters):
                 dl = self._dead_letters[index]
                 dl.attempt += 1
+                before = len(self._dead_letters)
                 try:
-                    # Re-publish to same subscriptions
                     self.publish(dl.event)
-                    dl.resolved = True
-                    return True
                 except Exception:
+                    # publish itself raised (transport-level failure).
                     return False
+                re_failed = any(
+                    e.event is dl.event for e in self._dead_letters[before:]
+                )
+                if re_failed:
+                    # The handler raised again; a new dead letter proves it.
+                    return False
+                dl.resolved = True
+                return True
         return False
 
     @kernel_action("event.clear_history")
