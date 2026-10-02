@@ -39,6 +39,15 @@ export interface CreateGoalBody {
   scope?: string
   plan_mode?: string
   verification_criteria?: Json | null
+  /**
+   * 后台执行。``true`` 时网关立刻返回 ``state:"running"``，执行在后台线程继续，
+   * 于是「中止」是一个**可观测的主权动作**：目标真的在飞，人真的能把它停下来。
+   *
+   * 默认 ``false`` 是网关的既有契约（同步跑完再返回）。驾驶舱此前从不发送这个
+   * 字段，于是 UI 上创建的每一个 goal 都在请求里就跑完了 —— 「停止」按钮永远
+   * 没有可停的东西，主权中止路径在界面上等于不存在。
+   */
+  background?: boolean
 }
 
 export function createGoal(body: CreateGoalBody): Promise<Json> {
@@ -49,6 +58,7 @@ export function createGoal(body: CreateGoalBody): Promise<Json> {
       scope: body.scope ?? 'L1',
       plan_mode: body.plan_mode ?? 'auto',
       verification_criteria: body.verification_criteria ?? null,
+      background: body.background ?? false,
     }),
   })
 }

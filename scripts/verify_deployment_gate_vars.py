@@ -423,7 +423,13 @@ def scan_gate_candidates(src_dir: Path = SRC_DIR) -> Dict[str, List[Tuple[str, i
             chain = ancestors.get(id(node), [])
             if not any(isinstance(a, _CONDITIONAL_NODES) for a in chain):
                 continue
-            candidates.setdefault(first.value, []).append((rel, node.lineno))
+            # `name` is already the *resolved* variable name (a str) -- see
+            # `_resolve_name`. It used to be spelled `first.value` here, which is
+            # an undefined name, so this scanner died with NameError the first
+            # time it met a candidate. A gate that crashes on its own input is
+            # indistinguishable from a gate that passes: neither produces a
+            # finding. Fixed so the scan actually reports unclassified gates.
+            candidates.setdefault(name, []).append((rel, node.lineno))
     return candidates
 
 

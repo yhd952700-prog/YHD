@@ -131,6 +131,8 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
   const [text, setText] = useState('')
   const [scope, setScope] = useState('L1')
   const [planMode, setPlanMode] = useState('auto')
+  // 后台执行：不勾就是同步跑完才返回，「停止」永远没有可停的目标。
+  const [background, setBackground] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ok, setOk] = useState(false)
@@ -148,6 +150,7 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
         natural_language: text.trim(),
         scope,
         plan_mode: planMode,
+        background,
       })
       setOk(true)
       setText('')
@@ -190,6 +193,19 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
             <option value="auto">auto</option>
             <option value="manual">manual</option>
           </select>
+        </div>
+      </div>
+      <div className="os-field">
+        <label>后台执行</label>
+        <div className="os-input">
+          <label className="os-check">
+            <input
+              type="checkbox"
+              checked={background}
+              onChange={(e) => setBackground(e.target.checked)}
+            />
+            立即返回并可中止
+          </label>
         </div>
       </div>
       <button className="os-btn" disabled={busy} onClick={() => void submit()}>

@@ -3,15 +3,29 @@
 Run:  .venv/Scripts/python.exe scripts/issue_console_token.py --list
       .venv/Scripts/python.exe scripts/issue_console_token.py --principal <id>
 
-Why a local script and not a login endpoint
--------------------------------------------
-The gateway deliberately has no ``/v1/auth/login``. Adding one would create a
-new, unauthenticated, internet-reachable credential-minting surface (brute
-force, lockout, rate limiting, its own audit trail) -- a security review in its
-own right, well beyond "wire the console panel". Until that review happens,
-the honest position is that the token's trust anchor is **access to this
-machine's filesystem**: whoever can run this script can already read the JWT
-signing key, so a login form would add ceremony, not security.
+Why this script still exists now that ``POST /v1/auth/login`` is real
+--------------------------------------------------------------------
+**Historical note (corrected 2026-10-02):** this docstring used to claim the
+gateway "deliberately has no ``/v1/auth/login``". That is **stale**. The
+endpoint exists and is real -- ``src/gateway/auth.py``, ``POST /v1/auth/login``
+-- and compares the submitted password with PBKDF2-HMAC-SHA256 against the
+credential record, rate-limits failures, and issues a JWT on success. Real
+humans sign in to the console with it; they do not mint tokens by hand.
+
+So this script is no longer the only way in. It remains for the cases a login
+form is the wrong shape for:
+
+  * **headless / non-interactive operators** (CI, runbooks, break-glass
+    automation) that need a short-lived approval token without a browser;
+  * **breaking the chicken-and-egg**: it can mint for a principal whose
+    credential has not been set yet, which is exactly the state a fresh
+    deployment is in before ``register_human_identity.py --password`` runs.
+
+It is **not** a bypass. It cannot mint for an unregistered or non-human
+principal -- see the C-7 section below -- and the token it produces is subject
+to the same sovereignty gate as a token obtained by logging in. The trust
+anchor is still *access to this machine's filesystem*: whoever can run this
+can already read the JWT signing key.
 
 C-7 is fixed: only a *registered human* may approve (since 2026-09-12)
 --------------------------------------------------------------------

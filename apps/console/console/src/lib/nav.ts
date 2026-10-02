@@ -17,6 +17,7 @@ import {
   IconData,
   IconEmployees,
   IconKnowledge,
+  IconLock,
   IconSettings,
   IconShield,
   IconWorkbench,
@@ -43,6 +44,8 @@ export const PRIMARY_NAV: NavItem[] = [
 /** 独立于主导航的治理入口。 */
 export const GOVERNANCE_NAV: NavItem[] = [
   { key: 'approval', label: '审批中心', icon: IconShield },
+  // 审计链：后端 `/v1/audit/*` 一直有真实数据，此前没有任何页面渲染它。
+  { key: 'audit', label: '审计链', icon: IconLock },
   { key: 'status', label: '系统状态', icon: IconActivity },
 ]
 

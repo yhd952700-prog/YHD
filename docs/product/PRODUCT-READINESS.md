@@ -1002,7 +1002,37 @@ multi-agent orchestration**, and **identity/permissions not surfaced to the user
 - Plugin `load_plugin()` **does not exist**; `PluginInterface` is absent;
   `plugins/registry_index.json` shows historical `active_plugins: 0`.
 - G9 was labelled `VERIFIED` when only the upgrade/rollback path was proven —
-  corrected to **NOT VERIFIED** for image build/boot (no docker daemon).
+  corrected to **NOT VERIFIED** for image build/boot.
+
+  **Reason corrected 2026-10-02.** The recorded reason was "no docker daemon".
+  That is no longer accurate and must not be repeated: a Docker daemon *is*
+  installed and startable in principle (client `29.8.1`, Docker Desktop
+  present at `AppData\Local\Programs\DockerDesktop`). The actual blocker is a
+  host-level restriction: Docker Desktop's engine is WSL2-only here, and the
+  host's enforcement policy denies `wsl.exe` outright, so the engine cannot
+  start. Evidence, from `AppData\Local\Docker\log\host\monitor.log` on the
+  2026-10-02 run:
+
+  ```
+  [main.wslexec][E] c:\windows\system32\wsl.exe --version failed:
+      fork/exec C:\Windows\System32\wsl.exe: Access is denied.
+  [main.engines] engine linux/wsl failed to start: checking preconditions:
+      checking WSL version: getting WSL version: executing wsl --version:
+      running wslexec: An error occurred while running the command.
+  ```
+
+  Consequently `docker compose up` cannot be executed by the project itself;
+  this is an environment restriction, **not** evidence that the image is
+  unbuildable. What *was* established on 2026-10-02:
+  - the console bundle builds for real (`tsc -b` clean; `vite build` produces
+    `index.html` + JS + CSS, 41 modules) — so the Dockerfile's console stage
+    has a real, buildable input;
+  - no headless browser could be started either, so the UI click-through was
+    likewise not executed.
+
+  G9 therefore stays **NOT VERIFIED**. `scripts/verify_deployed_product_closure.py`
+  now exists to close it in one command on any host with a live daemon, and it
+  is written to **fail (exit 2), never silently pass**, when Docker is absent.
 
 ## Re-run / regenerate
 

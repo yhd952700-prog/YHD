@@ -47,6 +47,16 @@ services:
       # 不用数据库、只想用 JSON 种子文件的话，改为设置
       # LIUHAO_HUMAN_IDENTITIES_FILE 并挂载该文件即可。
       - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
+      # 登录凭据库（与身份库是**两个不同的库**，见
+      # scripts/register_human_identity.py 的说明）。
+      #
+      # 不设这一行时它落在默认路径 <repo>/config/auth_secrets.json，也就是容器内
+      # /app/config/auth_secrets.json —— 那不在任何卷里（唯一挂载是
+      # liuhao_data:/app/data）⇒ 每重建一次容器，所有人的密码都消失，已登录会话
+      # 全部失效，且界面会退回"尚未配置登录凭据（fail-closed）"。一个把人类凭据
+      # 放在可丢弃层里的部署不是可运维的部署。改指到卷内，与身份库同生命周期。
+      # Rollback: 删掉这一行即回到默认行为。
+      - LIUHAO_AUTH_SECRETS_FILE=${LIUHAO_AUTH_SECRETS_FILE:-/app/data/auth_secrets.json}
       # 行级校验密钥（HC-11 / U6）。不设 ⇒ 校验无法进行 ⇒ 表中每一行都被拒绝 ⇒
       # 系统承认的人类数为 0（无人能登录/审批）。存量身份表升级后必须重新登记每个人。
       - LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY=${LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY}
