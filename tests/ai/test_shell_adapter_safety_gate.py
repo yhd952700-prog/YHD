@@ -18,9 +18,16 @@ from src.ai.world_interface_shell_gate import (
 # --------------------------------------------------------------------------- #
 # (a) an autonomous interface DENIES a shell run by default
 # --------------------------------------------------------------------------- #
-def test_autonomous_interface_denies_shell_by_default():
+def test_autonomous_interface_denies_shell_by_default(monkeypatch):
     # Realistic autonomous policy: only allow non-shell, workspace actions.
-    # It does NOT arm the shell adapter, so a shell run must be denied.
+    # It does NOT arm the shell adapter, so a shell run must be denied. Explicitly
+    # disarm the global host-command gate so the test asserts the gate-off path
+    # deterministically (the denial also holds when the gate is armed + policy denies).
+    from src.ai.host_command.enablement import reload as _hc_reload
+
+    monkeypatch.delenv("LIUHAO_HOST_COMMAND_ENABLED", raising=False)
+    _hc_reload()
+
     def authorize(request):
         return request.adapter != "shell"
 
@@ -29,7 +36,7 @@ def test_autonomous_interface_denies_shell_by_default():
         WorldRequest(adapter="shell", action="run", params={"command": "echo hi"})
     )
     assert result.success is False
-    assert "denied" in (result.error or "").lower()
+    assert "deny" in (result.error or "").lower()
 
 
 def test_autonomous_interface_requires_authorize_to_build():
@@ -45,7 +52,12 @@ def test_shell_true_requires_human_arm_token_at_build():
         build_shell_world_request("echo hi", shell=True, human_arm_token=None)
 
 
-def test_shell_true_with_token_but_unarmed_authorize_is_blocked():
+def test_shell_true_with_token_but_unarmed_authorize_is_blocked(monkeypatch):
+    from src.ai.host_command.enablement import reload as _hc_reload
+
+    monkeypatch.delenv("LIUHAO_HOST_COMMAND_ENABLED", raising=False)
+    _hc_reload()
+
     def authorize(request):
         return False  # policy does not arm shell
 
@@ -56,13 +68,20 @@ def test_shell_true_with_token_but_unarmed_authorize_is_blocked():
     assert req.metadata.get("human_arm_token") == "tok-123"
     result = wi.execute(req)
     assert result.success is False
-    assert "denied" in (result.error or "").lower()
+    assert "deny" in (result.error or "").lower()
 
 
 def test_shell_true_with_token_and_armed_authorize_is_allowed_and_logged(
-    caplog,
+    caplog, monkeypatch,
 ):
     import logging
+
+    from src.ai.host_command.enablement import reload as _hc_reload
+
+    # Under p36-wi-safety shell is gated by the global host-command enablement
+    # switch; arm it so the armed+tokened policy can actually execute.
+    monkeypatch.setenv("LIUHAO_HOST_COMMAND_ENABLED", "1")
+    _hc_reload()
 
     def authorize(request):
         # Explicitly arms shell when a human token is present.

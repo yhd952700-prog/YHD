@@ -99,11 +99,17 @@ class HostCommandBroker:
         self._sink = event_sink or _default_sink
 
     def submit(self, req: HostCommandRequest) -> HostCommandDecision:
-        # UBX-005 production wiring: when the executor fence gate is ARMED, wrap
-        # the host command in an executor lease so the default-DENY gate /
-        # defense-in-depth allow it; when NOT armed this is a pass-through
-        # (byte-identical). Fail-closed: if armed and we cannot acquire a lease,
-        # refuse the command.
+        # Executor-identity fence wrapper (NOT a capability gate). When the executor
+        # fence gate (LIUHAO_EXECUTOR_FENCE) is ARMED, this wraps the command in an
+        # executor lease so every action has a valid, non-stale, non-replayed
+        # executor identity. The lease is granted ``capabilities=()`` -- an EMPTY grant --
+        # so the lease's capability check is a deliberate no-op (``set(()) ⊆ set(())`` is
+        # always True). Host-command authorization is enforced by THIS pipeline (the
+        # enablement gate + policy + approval below), NOT by the executor fence. The
+        # wrapper is kept only so that when the fence gate is armed actions still
+        # acquire an identity; it does not add or imply capability authorization.
+        # When the gate is NOT armed this is a pass-through. Fail-closed: if armed and
+        # we cannot acquire a lease, refuse the command.
         from src.kernels.execution.fence import (
             ExecutorFenceDenied,
             executor_session,

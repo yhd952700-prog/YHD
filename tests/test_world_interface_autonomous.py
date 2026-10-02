@@ -36,7 +36,13 @@ def test_autonomous_shell_default_denied():
     assert res.success is False
 
 
-def test_autonomous_shell_armed_allows():
+def test_autonomous_shell_armed_allows(monkeypatch):
+    # Under p36-wi-safety shell is gated by the global host-command enablement
+    # switch (LIUHAO_HOST_COMMAND_ENABLED); arm it so the armed policy can proceed.
+    from src.ai.host_command.enablement import reload as _hc_reload
+
+    monkeypatch.setenv("LIUHAO_HOST_COMMAND_ENABLED", "1")
+    _hc_reload()
     wi = WorldInterface(
         actor="autonomous", adapters=[ShellAdapter()],
         authorize=lambda r: True,  # explicit human arming
@@ -46,7 +52,12 @@ def test_autonomous_shell_armed_allows():
     assert "armed_ok" in res.output["stdout"]
 
 
-def test_human_shell_default_allowed():
+def test_human_shell_default_allowed(monkeypatch):
+    # Human shell now also requires the global host-command gate to be armed.
+    from src.ai.host_command.enablement import reload as _hc_reload
+
+    monkeypatch.setenv("LIUHAO_HOST_COMMAND_ENABLED", "1")
+    _hc_reload()
     wi = WorldInterface(adapters=[ShellAdapter()])  # default actor="human"
     res = wi.execute(_shell_request("echo human_ok"))
     assert res.success is True
