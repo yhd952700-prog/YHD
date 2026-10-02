@@ -54,22 +54,26 @@ the user.
   agent_types=["planner","executor","critic"])`. Synthesised, not persisted.
 - An `EmployeeStore` (`src/ai/employee_store.py`, commit 187291d6) now persists
   `Employee`/agents/tasks **and** the gateway's `_goals` across restart; the
-  gateway seeds/loads the default employee from it. **But** the UI still surfaces
-  28 (kernel modules + capability layers) as "employees" (`roster.py:289`) and
-  there is no user-facing hire/pause/resume-by-name.
+  gateway seeds/loads the default employee from it. The roster now surfaces those
+  REAL employees (commit 20415d5c): `dashboard_roster` returns `real_employees`
+  from `EmployeeStore` and `totals.employees` counts only real employees — kernel
+  modules + capability layers are no longer miscounted as 28 "employees" (they are
+  preserved separately as `totals.registry_entries`). Still no user-facing
+  hire/pause/resume-by-name.
 - `_goals` is an **in-process dict** (`ai_management.py:124`) — lost on restart,
   not shared across workers.
-- The UI's "My AI Employees" is a capability-registry viewer: `roster.py:289`
-  computes `employees = kernels + layers = 28`. The product therefore displays
-  **"28 AI employees" when there are zero employees.**
+- The UI's "My AI Employees" previously miscounted kernel modules + capability
+  layers as 28 "employees" (`total = kernels + layers`). This is now fixed
+  (commit 20415d5c): the roster surfaces `real_employees` from `EmployeeStore`,
+  `totals.employees` reflects the true persisted count, and the module count lives
+  in `totals.registry_entries` as registry info, not employees.
 
 **Biggest gap:** the persisted employee is still a single hardcoded default
 (`liuhao-default`) seeded by the gateway — there is no user-facing
-hire/pause/resume-by-name, and the UI's "My AI Employees" still counts kernel
-modules + capability layers as 28 "employees" (`roster.py:289`) instead of real
-persisted employees. (The persistence machinery — `EmployeeStore`, commit
-187291d6, and the planner-state `save_state`/`load_state`, commit 2f7484d5 — now
-exists; it just isn't surfaced to the user.)
+hire/pause/resume-by-name, and no multi-employee management UI. (The persistence
+machinery — `EmployeeStore`, commit 187291d6, and the planner-state
+`save_state`/`load_state`, commit 2f7484d5 — plus the honest roster surfacing,
+commit 20415d5c — now exist; they just aren't fully exposed to the user yet.)
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
 kernel modules.
@@ -225,7 +229,17 @@ system fails closed when they do not.
   seeds/loads the default employee from it and persists `pause`/`resume` + goal
   history across restart. Proven by `scripts/verify_employee_persistence.py`
   (PASS): seed→save→restart→load recovers agent counts, task status and counters.
-  (The UI still presents 28 synthetic modules as "employees" — see P1.)
+  (The UI now surfaces these real employees — see roster fix below.)
+
+- **The roster no longer miscounts modules as employees.** `dashboard_roster`
+  (`src/gateway/roster.py`, logic extracted to `src/ai/roster_payload.py` to stay
+  fastapi-free, commit 20415d5c) now returns `real_employees` rebuilt from
+  `EmployeeStore` and sets `totals.employees` to the TRUE persisted count; kernel
+  modules + capability layers are preserved as `totals.registry_entries` (registry
+  info, not employees). Proven by `scripts/verify_roster_real_employees.py`
+  (PASS): real employees surfaced, modules not counted as employees, kernels/layers
+  still present (14/14 under the venv). This closes the P1 defect "displays 28 AI
+  employees when there are zero employees."
 
 **Biggest gap:** enforcement is not armed by default and approvals remain inert.
 (The content lie is now closed for ALL actions — commit 315fc804 makes the
