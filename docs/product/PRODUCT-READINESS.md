@@ -933,6 +933,57 @@ returns `ok=false` / `content hash mismatch at seq=2`; the tampered row is still
 readable via `/events/{seq}`; and OpenAPI confirms no mutation route exists beyond
 the read-only verify itself.
 
+### 3. Read-only identity/permission surface (P9 backend) + a corrected stale claim
+
+`src/gateway/identity.py` (new) adds strictly **read-only** `/v1/identity/principals`,
+`/v1/identity/principals/{id}`, `/v1/identity/permissions`, `/v1/identity/summary`,
+mounted behind the same human bearer gate. OpenAPI confirms no non-GET method exists
+under `/v1/identity` — deliberate: **grant/revoke over HTTP is an authority surface**
+and is not added this cycle. `scripts/verify_identity_user_surface.py` is **48/48 PASS**
+over a real server with real auth.
+
+Honesty details that matter: the kernel stores permissions as a flat `Set[str]` and
+does **not** retain per-grant scope, so rows report the identity's scope ceiling with
+that limitation stated rather than inventing a per-grant scope. Over-flat filters
+narrow server-side. An unset `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` yields a 200 with
+explicit `warnings` / `registry.rows_refused` instead of an empty list that would read
+as "there are no humans" — the empty-vs-unknown lie is avoided on purpose.
+
+**A stale P9 claim is hereby corrected.** P9 previously asserted there was *no
+authentication, no token issuance*. That is **wrong and now stricken**: the gateway has
+real JWT validation (`src/gateway/policy.py:83`, via `src.security.get_jwt_handler()`),
+and `POST /v1/auth/login` genuinely exists at `src/gateway/auth.py:415` — PBKDF2-HMAC-SHA256
+comparison against real credential records, failure rate limiting, and JWT issuance.
+`scripts/issue_console_token.py`'s docstring claiming "the gateway deliberately has no
+`/v1/auth/login`" is itself stale and should be corrected at source. Still true: **no
+MFA, no automated key rotation**, and (verified this cycle) human registrations are
+**still memory-only and lost on restart under default env** — persistence works only
+when both the registry file env and the integrity key are set.
+
+### 4. Refusals recorded as success — fixed in the identity kernel
+
+`grant_permission` / `revoke_permission` returned `False` on refusal without calling
+`mark_action_denied`, so the `@kernel_action` hash-chain event recorded
+`outcome=success` for a denied permission grant — the same class of lie previously fixed
+in `resource.allocate` and `policy.unregister_rule`. Fixed on **four** refusal paths
+(grant: unknown identity, scope ceiling; revoke: unknown identity, permission not held);
+`return` semantics untouched. `scripts/verify_identity_denial_audit.py` was written
+**first and confirmed FAILING before the fix** (12 checks failed — all four paths proved
+to be recorded as `success`), then PASS after: no grant/revoke event carries a refusal
+reason while reading success, and successful grant/revoke still record `success`.
+
+Sweep result: the identity kernel has exactly three `@kernel_action` methods
+(`create_identity`, `grant_permission`, `revoke_permission`) — no other refused-return
+sites were found. Two honest notes left unresolved rather than papered over:
+- `grant`/`revoke` are HIGH-risk and **not** in `INTERNAL_SERVICE_ALLOWED_ACTIONS`, so
+  adjudicated as the internal-service principal every policy verdict is `deny` — meaning
+  a **successful** grant can also be recorded `denied` (the mirror-image of the same
+  distortion). Isolating the two requires a real C-3 sovereignty window. That executing
+  HIGH-risk authority actions without human authorization is reachable at all is flagged
+  as a genuine follow-up.
+- `check_permission` is **not** `@kernel_action`-decorated, so permission *checks* leave
+  no audit event at all. Reported, not silently fixed (adding it is a design decision).
+
 **Net state:** the product closed loop `planning → execution → permissions →
 WorldInterface → independent verification → audit → recovery → user result` is now
 demonstrable **end to end over real HTTP by a real authenticated human**, with a
