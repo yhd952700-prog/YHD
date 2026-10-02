@@ -30,7 +30,7 @@ from src.kernels.context import ContextKernel, ContextInput, ContextInputType, c
 from src.kernels.capability import get_capability_registry, CapabilityScope, check_capability_scope
 from src.kernels.event import get_event_bus, publish_event, EventScope, EventPriority
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, kernel_action_correlation_id
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
 
 
@@ -839,87 +839,91 @@ class ExecutionEngine:
     ) -> ExecutionContext:
         """Execute a goal through the full pipeline."""
         ctx = ExecutionContext(goal=goal, plan=None, context_kernel=self.context_kernel)
-
-        # Step 1: Decompose
-        publish_event(
-            type="execution_started",
-            source="execution_kernel",
-            data={"goal_id": goal.id, "goal": goal.natural_language},
-            correlation_id=goal.correlation_id,
-            scope=EventScope(goal.scope),
-        )
-
-        tasks = self.decomposer.decompose(goal)
-
-        # Step 2: Plan
-        plan = self.planner.build(goal, tasks, mode=plan_mode)
-        ctx.plan = plan
-        plan.status = PlanStatus.ACTIVE
-        plan.started_at = utc_now()
-
-        # Step 2.5: Adopt durable progress (crash recovery)
-        # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
-        # 才能对上上一次执行留下来的那串事件。
-        resumed_count = 0
-        if self.journal is not None:
-            self._execution_id = goal.id
-            self.journal.record(
-                self._execution_id,
-                "execution_started",
-                goal=goal.natural_language,
-                plan_id=plan.id,
-                task_count=len(plan.tasks),
+        # Audit traceability: thread the goal's correlation id into every
+        # kernel-action audit event so the hash-chain audit can tie each action
+        # back to the goal that ran it (goal -> action link). Backward compatible:
+        # a direct action outside any goal still gets a per-action random id.
+        with kernel_action_correlation_id(goal.correlation_id):
+            # Step 1: Decompose
+            publish_event(
+                type="execution_started",
+                source="execution_kernel",
+                data={"goal_id": goal.id, "goal": goal.natural_language},
+                correlation_id=goal.correlation_id,
+                scope=EventScope(goal.scope),
             )
-            resumed_count = self._adopt_journaled_progress(ctx)
-            if resumed_count:
-                publish_event(
-                    type="execution_resumed",
-                    source="execution_kernel",
-                    data={
-                        "goal_id": goal.id,
-                        "resumed_tasks": resumed_count,
-                        "total_tasks": len(plan.tasks),
-                    },
-                    correlation_id=goal.correlation_id,
-                    scope=EventScope(goal.scope),
+
+            tasks = self.decomposer.decompose(goal)
+
+            # Step 2: Plan
+            plan = self.planner.build(goal, tasks, mode=plan_mode)
+            ctx.plan = plan
+            plan.status = PlanStatus.ACTIVE
+            plan.started_at = utc_now()
+
+            # Step 2.5: Adopt durable progress (crash recovery)
+            # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
+            # 才能对上上一次执行留下来的那串事件。
+            resumed_count = 0
+            if self.journal is not None:
+                self._execution_id = goal.id
+                self.journal.record(
+                    self._execution_id,
+                    "execution_started",
+                    goal=goal.natural_language,
+                    plan_id=plan.id,
+                    task_count=len(plan.tasks),
+                )
+                resumed_count = self._adopt_journaled_progress(ctx)
+                if resumed_count:
+                    publish_event(
+                        type="execution_resumed",
+                        source="execution_kernel",
+                        data={
+                            "goal_id": goal.id,
+                            "resumed_tasks": resumed_count,
+                            "total_tasks": len(plan.tasks),
+                        },
+                        correlation_id=goal.correlation_id,
+                        scope=EventScope(goal.scope),
+                    )
+
+            # Step 3: Execute
+            self._execute_plan(ctx, verification_criteria, stop_event)
+
+            # Step 4: Final verification
+            plan.completed_at = utc_now()
+            if ctx.failed_tasks:
+                plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
+            else:
+                plan.status = PlanStatus.COMPLETED
+
+            if self.journal is not None and self._execution_id is not None:
+                self.journal.record(
+                    self._execution_id,
+                    "execution_completed",
+                    plan_id=plan.id,
+                    status=plan.status.value,
+                    completed=len(ctx.completed_tasks),
+                    failed=len(ctx.failed_tasks),
+                    resumed=resumed_count,
                 )
 
-        # Step 3: Execute
-        self._execute_plan(ctx, verification_criteria, stop_event)
-
-        # Step 4: Final verification
-        plan.completed_at = utc_now()
-        if ctx.failed_tasks:
-            plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
-        else:
-            plan.status = PlanStatus.COMPLETED
-
-        if self.journal is not None and self._execution_id is not None:
-            self.journal.record(
-                self._execution_id,
-                "execution_completed",
-                plan_id=plan.id,
-                status=plan.status.value,
-                completed=len(ctx.completed_tasks),
-                failed=len(ctx.failed_tasks),
-                resumed=resumed_count,
+            publish_event(
+                type="execution_completed",
+                source="execution_kernel",
+                data={
+                    "goal_id": goal.id,
+                    "plan_id": plan.id,
+                    "status": plan.status.value,
+                    "completed": len(ctx.completed_tasks),
+                    "failed": len(ctx.failed_tasks),
+                },
+                correlation_id=goal.correlation_id,
+                scope=EventScope(goal.scope),
             )
 
-        publish_event(
-            type="execution_completed",
-            source="execution_kernel",
-            data={
-                "goal_id": goal.id,
-                "plan_id": plan.id,
-                "status": plan.status.value,
-                "completed": len(ctx.completed_tasks),
-                "failed": len(ctx.failed_tasks),
-            },
-            correlation_id=goal.correlation_id,
-            scope=EventScope(goal.scope),
-        )
-
-        return ctx
+            return ctx
 
     def _execute_plan(
         self,
