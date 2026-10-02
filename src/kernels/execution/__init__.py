@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
 import os
 import re
+import threading
 
 # Import dependencies
 from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
@@ -63,6 +64,17 @@ def simulated_execution_enabled() -> bool:
     demos can flip it for the duration of a single run.
     """
     return (os.environ.get(SIMULATION_OPT_IN_ENV) or "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+class GoalCancelled(Exception):
+    """Raised when a running goal is aborted via its stop flag.
+
+    The AgentRuntime / gateway set a :class:`threading.Event` keyed by goal_id;
+    the execution loop checks it between tasks (and before each retry) and raises
+    this so the goal terminates cleanly as CANCELLED instead of running to
+    completion. This is a real, cooperative cancellation -- never a silent
+    success or a faked stop.
+    """
 
 
 class TaskStatus(str, Enum):
@@ -713,7 +725,8 @@ class ExecutionEngine:
         self,
         goal: Goal,
         plan_mode: str = "auto",
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> ExecutionContext:
         """Execute a goal through the full pipeline."""
         ctx = ExecutionContext(goal=goal, plan=None, context_kernel=self.context_kernel)
@@ -763,7 +776,7 @@ class ExecutionEngine:
                 )
 
         # Step 3: Execute
-        self._execute_plan(ctx, verification_criteria)
+        self._execute_plan(ctx, verification_criteria, stop_event)
 
         # Step 4: Final verification
         plan.completed_at = utc_now()
@@ -802,7 +815,8 @@ class ExecutionEngine:
     def _execute_plan(
         self,
         ctx: ExecutionContext,
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Execute all tasks in the plan."""
         max_iterations = 100  # Prevent infinite loops
@@ -810,6 +824,13 @@ class ExecutionEngine:
 
         while iteration < max_iterations:
             iteration += 1
+
+            # Cooperative cancellation: a human operator (or the gateway) may
+            # have asked this goal to stop. Honour it between tasks so we never
+            # start a new task after a stop was requested.
+            if stop_event is not None and stop_event.is_set():
+                self._record_cancel(ctx)
+                raise GoalCancelled(ctx.goal.id)
 
             ready_tasks = ctx.plan.get_ready_tasks(ctx.completed_tasks)
             pending_tasks = [t for t in ctx.plan.tasks if t.status == TaskStatus.PENDING]
@@ -877,11 +898,28 @@ class ExecutionEngine:
             return
         self.journal.record(self._execution_id, event_type, task_name=task.name, **payload)
 
+    def _record_cancel(self, ctx: ExecutionContext) -> None:
+        """Write a goal-level CANCELLED marker to the journal (no-op if unjournaled)."""
+        if self.journal is None or self._execution_id is None:
+            return
+        try:
+            self.journal.record(
+                self._execution_id,
+                "execution_cancelled",
+                status="cancelled",
+                completed=len(ctx.completed_tasks),
+                failed=len(ctx.failed_tasks),
+            )
+        except Exception:
+            # Journal write must never crash a cancellation.
+            pass
+
     def _execute_task(
         self,
         ctx: ExecutionContext,
         task: Task,
-        verification_criteria: Optional[Dict[str, Any]] = None
+        verification_criteria: Optional[Dict[str, Any]] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Execute a single task with retries."""
         task.status = TaskStatus.RUNNING
@@ -916,6 +954,10 @@ class ExecutionEngine:
 
         # Execute with retries
         while task.retry_count <= task.max_retries:
+            # Honour a stop request before each attempt.
+            if stop_event is not None and stop_event.is_set():
+                self._record_cancel(ctx)
+                raise GoalCancelled(ctx.goal.id)
             result = self.executor.execute(action)
             ctx.task_results[task.id] = result
 

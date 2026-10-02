@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -87,12 +88,23 @@ class ExecutionJournal:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        self._conn = sqlite3.connect(db_path, timeout=10.0)
+        # check_same_thread=False: the journal owns a single connection but may
+        # be written from a worker thread (background goal execution) while it
+        # was opened on the request thread. Writes are serialized by the caller
+        # / journal lock, so disabling the same-thread guard is safe and avoids
+        # "SQLite objects created in a thread can only be used in that same
+        # thread" when a goal runs in the background.
+        self._conn = sqlite3.connect(db_path, timeout=10.0, check_same_thread=False)
         # 注意：必须先 connect 再设 WAL（Windows 上顺序反了会报错，
         # 见 identity 内核持久化里的同一条坑）。
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Serialize all connection access: the journal may be written from a
+        # background goal thread while read from the request thread, and
+        # multiple concurrent background goals would otherwise race on the
+        # single shared connection.
+        self._lock = threading.Lock()
 
     # -- write -----------------------------------------------------------
 
@@ -108,28 +120,30 @@ class ExecutionJournal:
         立即提交是为了对抗硬 kill：进程被 `kill -9` 时没有 flush 机会，
         尚未 commit 的事件会随进程一起消失，那样 journal 就形同虚设。
         """
-        cur = self._conn.execute(
-            "INSERT INTO journal_events (execution_id, event_type, task_name, ts, payload)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (
-                execution_id,
-                event_type,
-                task_name,
-                utc_now().isoformat(),
-                json.dumps(payload, ensure_ascii=False, default=str),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO journal_events (execution_id, event_type, task_name, ts, payload)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    execution_id,
+                    event_type,
+                    task_name,
+                    utc_now().isoformat(),
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                ),
+            )
+            self._conn.commit()
         return int(cur.lastrowid or 0)
 
     # -- read ------------------------------------------------------------
 
     def events(self, execution_id: str) -> List[JournalEvent]:
-        rows = self._conn.execute(
-            "SELECT seq, execution_id, event_type, task_name, ts, payload"
-            " FROM journal_events WHERE execution_id = ? ORDER BY seq",
-            (execution_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, execution_id, event_type, task_name, ts, payload"
+                " FROM journal_events WHERE execution_id = ? ORDER BY seq",
+                (execution_id,),
+            ).fetchall()
         out: List[JournalEvent] = []
         for seq, eid, etype, tname, ts, payload in rows:
             try:
