@@ -184,6 +184,37 @@ export function Roster({ query }: { query: string }) {
                     </div>
                   </div>
                 </div>
+                {empData.employees && empData.employees.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>
+                      按名员工（{empData.employees.length}）
+                    </div>
+                    {empData.employees.map((emp) => (
+                      <div className="os-row" key={emp.name}>
+                        <span
+                          className="os-dot"
+                          style={{
+                            background:
+                              emp.name === 'liuhao-default'
+                                ? 'var(--os-accent)'
+                                : 'var(--os-ok)',
+                          }}
+                        />
+                        <div className="os-row-main">
+                          <div className="os-row-title">
+                            {emp.name}{' '}
+                            <span className="os-badge" data-tone="muted">
+                              {emp.agent_count} agents
+                            </span>
+                          </div>
+                          <div className="os-row-sub">
+                            {emp.agents.map((a) => a.status).join(' · ')}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {empData.agents.map((agent) => (
                   <div className="os-row" key={agent.id}>
                     <span className="os-dot" style={{ background: `var(--os-${STATUS_TONE[agent.status] ?? 'muted'})` }} />

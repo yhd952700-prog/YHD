@@ -64,6 +64,24 @@ the user.
 - `src/gateway/ai_management.py:141-156` `_ensure_employee()` **hardcodes** the
   only employee: `Employee(name="liuhao-default", agent_count=3,
   agent_types=["planner","executor","critic"])`. Synthesised, not persisted.
+  This seed default is now kept **only for backward compat** (the gateway still
+  seeds it on first run so `_ensure_employee` keeps working); it is no longer the
+  only employee.
+- **By-name lifecycle is now real (cycle P1 lifecycle work).** `AIStateManager`
+  gained `hire_employee(name, agent_count, agent_types)` (idempotent: returns an
+  `already_existed` marker instead of silently overwriting), `list_all_employees()`
+  (iterates `EmployeeStore.list_employees()` — ALL stored employees, not just the
+  default) and `remove_employee(name)` (refuses to delete the seed default
+  `liuhao-default` so the gateway keeps booting). REST: `POST /v1/employees` (201 on
+  create, 409 on duplicate name), `GET /v1/employees` (returns `employees[]` — the
+  full real roster), `DELETE /v1/employees/{name}` (200 / 404 missing / 403 default).
+  Agent ids are now **globally unique** (`<employee>-a<i>`, see `src/ai/employee.py`)
+  so pause/resume/get-by-id resolve the right employee instead of colliding on
+  `agent_0`. These routes share the same `require_human_principal` gate as the other
+  `/v1` routes. Measured by `tests/gateway/test_employee_lifecycle.py` (PASS):
+  hire → list → pause one of its agents → resume → remove → no longer listed; the
+  seed default still seeds and deleting it returns 403; duplicate name returns 409.
+  Data is REDIR'd to a temp dir via `LIUHAO_WORKSPACE_ROOT`.
 - An `EmployeeStore` (`src/ai/employee_store.py`, commit 187291d6) now persists
   `Employee`/agents/tasks **and** the gateway's `_goals` across restart; the
   gateway seeds/loads the default employee from it. The roster now surfaces those
@@ -80,15 +98,23 @@ the user.
   `totals.employees` reflects the true persisted count, and the module count lives
   in `totals.registry_entries` as registry info, not employees.
 
-**Biggest gap:** the persisted employee is still a single hardcoded default
-(`liuhao-default`) seeded by the gateway — there is no user-facing
-hire/pause/resume-by-name, and no multi-employee management UI. (The persistence
-machinery — `EmployeeStore`, commit 187291d6, and the planner-state
-`save_state`/`load_state`, commit 2f7484d5 — plus the honest roster surfacing,
-commit 20415d5c — now exist; they just aren't fully exposed to the user yet.)
+**Biggest gap:** the backend by-name lifecycle (hire / list / pause / resume /
+remove) is now implemented and proven by an integration test, so the *server-side*
+half of P1 is real. What remains is the **UI**: the console's "My AI Employees"
+runtime tab now *lists* every real employee by name (incl. hired ones) and shows
+per-agent status, but there is still no dedicated **"hire employee" form** and no
+per-employee **pause/resume buttons** in the console — pause/resume is currently
+exercised only through the REST endpoints. (The persistence machinery —
+`EmployeeStore`, commit 187291d6, and the planner-state `save_state`/`load_state`,
+commit 2f7484d5 — plus the honest roster surfacing, commit 20415d5c — all exist and
+are now fully exposed on the backend.)
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
-kernel modules.
+kernel modules. **Status this cycle:** backend create/persist/list/pause/resume/
+remove is measurable + tested (cross-restart durability is by-design via
+`EmployeeStore` atomic JSON; not separately integration-tested yet). UI hire form
++ per-employee pause/resume buttons remain outstanding → P1 stays **FAIL** until
+those land.
 
 ---
 
@@ -405,7 +431,11 @@ to assign a task, receive a file, or create a project. `Tasks`, `Projects`,
 `Files` and `Apps` have **no UI at all** despite backend routes existing
 (`POST /v1/goals`, `/v1/workflows`, `workspace.py`, `PluginRegistry`) and
 frontend contract types already declared but unconsumed
-(`apps/console/console/src/lib/contracts.ts:206-266`).
+(`apps/console/console/src/lib/contracts.ts:206-266`). A real by-name employee
+write path was added this cycle (`POST/DELETE /v1/employees`, proven by
+`tests/gateway/test_employee_lifecycle.py`) — so the gateway now exposes a 5th
+real write/delete action — but that is employee *management*, not completing a
+user job end-to-end, so it does not move P10.
 
 **Biggest gap:** the product cannot complete a real job.
 **Flips to PASS when:** a named realistic user job is completed end to end with a

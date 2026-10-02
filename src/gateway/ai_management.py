@@ -19,9 +19,14 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any gateway<->ai cycle
+    from .employee import Agent, Employee
+    from .employee_store import EmployeeStore
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -33,8 +38,10 @@ router = APIRouter(prefix="/v1", tags=["ai-management"])
 
 class GoalCreateRequest(BaseModel):
     """创建+执行 Goal 的请求体。"""
-    natural_language: str = Field(..., min_length=1, max_length=2000,
-                                 description="自然语言目标描述")
+    natural_language: str = Field(
+        ..., min_length=1, max_length=2000,
+        description="自然语言目标描述",
+    )
     scope: str = Field("L1", description="执行范围 L0-L7")
     plan_mode: str = Field("auto", description="计划模式: auto/manual")
     verification_criteria: Optional[Dict[str, Any]] = Field(
@@ -95,6 +102,25 @@ class AgentDetail(BaseModel):
     total_latency_ms: float = 0.0
     metadata: Dict[str, Any] = Field(default_factory=dict)
     checkpoint_state: Optional[Dict[str, Any]] = None
+
+
+class HireEmployeeRequest(BaseModel):
+    """按名雇佣一个新 AI Employee 的请求体。"""
+    name: str = Field(..., min_length=1, max_length=128,
+                      description="员工名（唯一键，全局不可重复）")
+    agent_count: int = Field(3, ge=1, le=64, description="agent 数量")
+    agent_types: List[str] = Field(
+        default_factory=list,
+        description="agent 类型列表（长度不足时按末位补齐）",
+    )
+
+
+class EmployeeSummary(BaseModel):
+    """按名列出员工时的单条摘要。"""
+    name: str
+    agent_count: int
+    agents: List[Dict[str, Any]] = Field(default_factory=list)
+    stats: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ─── 状态管理器（单例） ──────────────────────────────────────
@@ -361,9 +387,8 @@ class AIStateManager:
         return result
 
     def get_agent(self, agent_id: str) -> Dict[str, Any]:
-        """获取单个 agent 详情。"""
-        emp = self._ensure_employee()
-        agent = emp.agents.get(agent_id)
+        """获取单个 agent 详情（跨所有员工按 id 解析）。"""
+        _employee, agent = self._find_employee_with_agent(agent_id)
         if agent is None:
             raise ValueError(f"Agent {agent_id} not found")
         return {
@@ -380,23 +405,27 @@ class AIStateManager:
         }
 
     def pause_agent(self, agent_id: str) -> Dict[str, Any]:
-        """暂停一个 agent。"""
-        emp = self._ensure_employee()
-        agent = emp.agents.get(agent_id)
+        """暂停一个 agent（跨所有员工按 id 解析）。"""
+        employee, agent = self._find_employee_with_agent(agent_id)
         if agent is None:
             raise ValueError(f"Agent {agent_id} not found")
         ok = agent.pause()
-        self._persist_employee()
+        if employee is self._ensure_employee():
+            self._persist_employee()
+        else:
+            self._store().save(employee)
         return {"agent_id": agent_id, "paused": ok, "status": agent.status.value}
 
     def resume_agent(self, agent_id: str) -> Dict[str, Any]:
-        """恢复一个暂停的 agent。"""
-        emp = self._ensure_employee()
-        agent = emp.agents.get(agent_id)
+        """恢复一个暂停的 agent（跨所有员工按 id 解析）。"""
+        employee, agent = self._find_employee_with_agent(agent_id)
         if agent is None:
             raise ValueError(f"Agent {agent_id} not found")
         ok = agent.resume()
-        self._persist_employee()
+        if employee is self._ensure_employee():
+            self._persist_employee()
+        else:
+            self._store().save(employee)
         return {"agent_id": agent_id, "resumed": ok, "status": agent.status.value}
 
     def get_employee_stats(self) -> Dict[str, Any]:
@@ -410,6 +439,131 @@ class AIStateManager:
             "total_tasks_failed": emp.total_tasks_failed,
             "task_queue_length": len(emp.task_queue),
         }
+
+    # ── 按名员工生命周期（by-name hire / list / remove） ──
+
+    _SEED_DEFAULT_NAME = "liuhao-default"
+
+    def _store(self) -> "EmployeeStore":
+        """返回（懒初始化的）EmployeeStore 单例句柄。"""
+        if self._employee_store is None:
+            self._ensure_employee()  # 顺便把 store 建好
+        return self._employee_store
+
+    def _summarize_employee(self, emp: "Employee") -> Dict[str, Any]:
+        """把一个真实 Employee 转成列表摘要。"""
+        agents = [
+            {
+                "id": a.id,
+                "agent_type": a.agent_type,
+                "name": a.name,
+                "status": a.status.value,
+                "current_task": a.current_task,
+                "completed_tasks": a.completed_tasks,
+                "failed_tasks": a.failed_tasks,
+                "total_latency_ms": a.total_latency_ms,
+            }
+            for a in emp.agents.values()
+        ]
+        return {
+            "name": emp.name,
+            "agent_count": len(emp.agents),
+            "agents": agents,
+            "stats": {
+                "name": emp.name,
+                "agent_count": len(emp.agents),
+                "total_tasks_submitted": emp.total_tasks_submitted,
+                "total_tasks_completed": emp.total_tasks_completed,
+                "total_tasks_failed": emp.total_tasks_failed,
+                "task_queue_length": len(emp.task_queue),
+            },
+        }
+
+    def hire_employee(
+        self,
+        name: str,
+        agent_count: int = 3,
+        agent_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """按名雇佣（创建并持久化）一个新员工。
+
+        幂等且**绝不静默覆盖**已存在的同名员工：若 ``name`` 已存在于 store，
+        返回 ``already_existed=True`` 标记，由端点决定回 409。否则用
+        ``EmployeeStore.create_employee`` 落盘后返回摘要。
+        """
+        store = self._store()
+        existing = store.load(name)
+        if existing is not None:
+            return {
+                "created": False,
+                "already_existed": True,
+                "employee": self._summarize_employee(existing),
+            }
+        emp = store.create_employee(
+            name=name,
+            agent_count=agent_count,
+            agent_types=agent_types,
+        )
+        return {
+            "created": True,
+            "already_existed": False,
+            "employee": self._summarize_employee(emp),
+        }
+
+    def list_all_employees(self) -> List[Dict[str, Any]]:
+        """列出 store 中**所有**真实员工（不止默认），含 name/agent_count/stats。
+
+        这是 P1「按名员工名册」的真实数据源；与 roster 的 ``real_employees``
+        同源（都来自 ``EmployeeStore.list_employees()``）。
+        """
+        store = self._store()
+        result: List[Dict[str, Any]] = []
+        for ename in store.list_employees():
+            emp = store.load(ename)
+            if emp is None:
+                continue
+            result.append(self._summarize_employee(emp))
+        return result
+
+    def remove_employee(self, name: str) -> bool:
+        """移除一名员工。
+
+        硬保护：拒绝删除 seed 默认员工 ``liuhao-default``（网关
+        ``_ensure_employee`` 依赖它，删掉会让后续请求 500）。返回 ``True``
+        表示删除成功；``False`` 表示该员工本就不存在。
+        """
+        if name == self._SEED_DEFAULT_NAME:
+            raise ValueError(
+                f"refusing to remove the seed default employee {name!r} "
+                f"(the gateway depends on it)"
+            )
+        store = self._store()
+        return store.remove(name)
+
+    def _find_employee_with_agent(
+        self, agent_id: str
+    ) -> "Tuple[Optional[Employee], Optional[Agent]]":
+        """跨所有员工按 agent id 解析出 (employee, agent)。
+
+        默认员工（``_ensure_employee`` 持有的内存实例）优先匹配，使其仍是
+        真实来源、pause/resume 经 ``_persist_employee`` 落盘；其余按名员工从
+        store 按需加载。agent id 全局唯一（``<employee>-a<i>``），因此不会歧义。
+        """
+        default = self._ensure_employee()
+        agent = default.agents.get(agent_id)
+        if agent is not None:
+            return default, agent
+        store = self._store()
+        for ename in store.list_employees():
+            if ename == default.name:
+                continue
+            emp = store.load(ename)
+            if emp is None:
+                continue
+            agent = emp.agents.get(agent_id)
+            if agent is not None:
+                return emp, agent
+        return None, None
 
     # ── 内部工具 ──
 
@@ -529,19 +683,67 @@ def replan_goal(goal_id: str) -> Dict[str, Any]:
 
 @router.get("/employees")
 def list_employees() -> Dict[str, Any]:
-    """列出所有 AI Employee（agent pool 真实状态）。"""
+    """列出**所有**真实 AI Employee（来自 EmployeeStore，按名）。
+
+    返回 ``employees``（全员摘要列表）作为 P1「按名员工名册」的真实契约；
+    同时保留 ``agents``/``count``/``stats``（默认员工的 agent pool），
+    以保持现有 console 运行时 Tab 的向后兼容。
+    """
     mgr = AIStateManager()
     try:
-        agents = mgr.list_agents()
-        stats = mgr.get_employee_stats()
-        return {"agents": agents, "count": len(agents), "stats": stats}
+        all_emps = mgr.list_all_employees()
+        default_agents = mgr.list_agents()
+        default_stats = mgr.get_employee_stats()
+        return {
+            "employees": all_emps,
+            "employee_count": len(all_emps),
+            "agents": default_agents,
+            "count": len(default_agents),
+            "stats": default_stats,
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Employee listing failed: {exc}")
 
 
+@router.post("/employees")
+def hire_employee(req: HireEmployeeRequest) -> Dict[str, Any]:
+    """按名雇佣一个新 AI Employee。
+
+    若 ``name`` 已存在 → 409（绝不静默覆盖）；创建成功 → 201。
+    """
+    mgr = AIStateManager()
+    try:
+        result = mgr.hire_employee(req.name, req.agent_count, req.agent_types)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result["already_existed"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"employee {req.name!r} already exists",
+        )
+    return JSONResponse(status_code=201, content=result["employee"])
+
+
+@router.delete("/employees/{name}")
+def remove_employee(name: str) -> Dict[str, Any]:
+    """移除一名按名员工。
+
+    - 删除 seed 默认 ``liuhao-default`` → 403（保护网关依赖）；
+    - 不存在 → 404；成功 → 200。
+    """
+    mgr = AIStateManager()
+    try:
+        removed = mgr.remove_employee(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"employee {name!r} not found")
+    return {"removed": name, "ok": True}
+
+
 @router.get("/employees/{agent_id}")
 def get_employee(agent_id: str) -> Dict[str, Any]:
-    """获取单个 AI Employee 详情。"""
+    """获取单个 AI Employee（agent）详情（跨所有员工按 id 解析）。"""
     mgr = AIStateManager()
     try:
         return mgr.get_agent(agent_id)

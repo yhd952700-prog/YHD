@@ -196,10 +196,22 @@ export interface EmployeeStats {
   task_queue_length: number
 }
 
+/** 按名员工名册中的单条摘要（与后端 GET /v1/employees 的 employees[] 对应）。 */
+export interface EmployeeSummary {
+  name: string
+  agent_count: number
+  agents: AgentInfo[]
+  stats: EmployeeStats
+}
+
 export interface EmployeesPayload {
+  /** 默认员工的 agent pool（向后兼容运行时 Tab）。 */
   agents: AgentInfo[]
   count: number
   stats: EmployeeStats
+  /** 全员真实员工列表（P1 按名生命周期的真实契约）。 */
+  employees?: EmployeeSummary[]
+  employee_count?: number
   error?: string
 }
 

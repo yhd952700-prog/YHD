@@ -267,7 +267,13 @@ class Employee:
         """Create agent pool."""
         for i in range(self.agent_count):
             agent_type = self.agent_types[i]
-            agent_id = f"agent_{i}"
+            # Globally-unique id (prefixed by employee name) so that an agent can
+            # be addressed by id across multiple employees without collision --
+            # required for by-name pause/resume in AIStateManager. Previously
+            # every employee used the same ``agent_0``/``agent_1``/... ids, which
+            # made ``pause_agent(agent_id)`` ambiguous once more than one
+            # employee existed.
+            agent_id = f"{self.name}-a{i}"
             system_prompt = self.system_prompts.get(agent_type, "")
 
             agent = Agent(
