@@ -98,17 +98,23 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # execution: running a plan / checkpointing are the operational loop.
     "execution.create_checkpoint",
     "execution.execute",
-    # memory: persistence and compaction (auto_cleanup destroys -> denied).
+    # memory: persistence and compaction. auto_cleanup is now a
+    # service-operational housekeeping action (see additions below).
     "memory.compress",
     "memory.store",
-    # network: routing an existing route (add/remove/register change
-    # topology -> denied).
+    # network: routing an existing route (route), and seeding the built-in
+    # default routes at kernel init (add_route), are service-operational;
+    # register/remove change topology -> denied.
     "network.route",
+    "network.add_route",
     # resource: releasing returns capacity; account_spend records an *already
-    # incurred* spend (bookkeeping, and it can only reduce availability).
-    # create/allocate/commit move or reserve quota -> denied.
+    # incurred* spend (bookkeeping); allocate / create_quota reserve quota for
+    # tasks the executor runs (service-operational). commit finalises a
+    # reservation and stays denied (authority).
     "resource.release",
     "resource.account_spend",
+    "resource.allocate",
+    "resource.create_quota",
     # security: reading a decision (grant/revoke/set_abac_rule change
     # authority -> denied).
     "security.decide_access",
@@ -119,6 +125,22 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # service principal here does not open a fail-open hole.
     "policy.evaluate",
     "policy.unregister_rule",
+    # identity: the kernel creates working identities for agents it spawns
+    # (agent_factory / liuhao / network_gateway) and seeds child identities.
+    # Operational identity lifecycle, NOT a permission grant -- the created
+    # identity carries only the scope the caller assigns; the service's own
+    # authority still comes solely from this allow-list (grant/revoke
+    # permission stay denied, OD-010).
+    "identity.create_identity",
+    # memory: automatic compaction/cleanup is the operational housekeeping loop.
+    "memory.auto_cleanup",
+    # trust: the trust kernel computes/refreshes scores and relationships
+    # autonomously -- operational security *signals*, not authority grants
+    # (OD-010 authority lives in grant/revoke/rbac/abac/capability).
+    "trust.assign_score",
+    "trust.establish_trust",
+    "trust.revoke",
+    "trust.update_score",
 })
 
 #: Kernel actions explicitly DENIED for the internal service principal.
@@ -139,14 +161,11 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     "evaluation.execute_replan",
     # event: history deletion is destructive.
     "event.clear_history",
-    # identity: identity and permission lifecycle = authority.
-    "identity.create_identity",
+    # identity: permission lifecycle = authority (create_identity is now a
+    # service-operational action -- see INTERNAL_SERVICE_ALLOWED_ACTIONS).
     "identity.grant_permission",
     "identity.revoke_permission",
-    # memory: automatic cleanup destroys stored state.
-    "memory.auto_cleanup",
-    # network: topology mutations.
-    "network.add_route",
+    # network: topology mutations (add_route is now service-operational).
     "network.register_adapter",
     "network.remove_route",
     # plugin: installing / activating / removing code.
@@ -154,19 +173,13 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     "plugin.deactivate_plugin",
     "plugin.register_plugin",
     "plugin.unregister_plugin",
-    # resource: quota lifecycle.
-    "resource.allocate",
+    # resource: committing a reserved quota is authority (allocate /
+    # create_quota are now service-operational).
     "resource.commit",
-    "resource.create_quota",
     # security: RBAC/ABAC authority.
     "security.grant_rbac_role",
     "security.revoke_rbac_role",
     "security.set_abac_rule",
-    # trust: trust scores are a security signal.
-    "trust.assign_score",
-    "trust.establish_trust",
-    "trust.revoke",
-    "trust.update_score",
 })
 
 

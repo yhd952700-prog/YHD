@@ -141,18 +141,21 @@ adapter registration is removed.
 system fails closed when they do not.
 
 **Evidence (unchanged blockers):**
-- `@kernel_action` is **still record-only by default** (`enforce=False`).
-  Measured live in cycle 1: `kernel_action=capability.register outcome=success
-  policy=deny risk=HIGH` — policy said deny, the action ran, `success` written.
-  **"Policy controlled" ≠ "policy enforced".** Not changed this cycle.
+- `@kernel_action` is **still record-only by default** (`enforce=False`). A
+  denial is now *honestly* recorded (`outcome=denied`, not `success`), but the
+  body still runs — **"Policy controlled" ≠ "policy enforced"**. Measured live
+  in cycle 1: `kernel_action=capability.register outcome=success policy=deny
+  risk=HIGH` (the `outcome=success` half is now fixed; the "body still runs"
+  half remains until enforcement is armed). Enforcement unchanged this cycle.
 - The executor fence is **still disarmed by default** (`LIUHAO_EXECUTOR_FENCE`
   unset); when armed it still dies on boot (`identity.create_identity` → 0/24
   checks, RC=1). Not changed this cycle.
 - `POST /v1/policy/approvals` still records **inert** approvals — zero
   enforcement effect. Not changed this cycle.
-- HC-01 still records denials as successes across the broader action set (the
-  85% self-contradiction from cycle 1 is not fully resolved — only
-  `resource.allocate` was fixed this cycle, see below).
+- **Frozen HC-01 evidence store is unchanged** — its 85% `policy=deny` /
+  `outcome=success` self-contradiction (cycle 1) remains as *historical*
+  evidence of the old bug; it is NOT reprocessed. The fix below applies to all
+  NEW audit writes from this commit forward.
 
 **Evidence (closed sub-defects this cycle — measured):**
 - **Policy decisions are now audited.** `policy.evaluate` carries
@@ -168,6 +171,25 @@ system fails closed when they do not.
   `scripts/verify_p6_real_execution.py` → `RESOURCE_ALLOCATE_DENIED_RECORDED: True`
   and `DECORATOR_MECHANISM_OK: True` (denied/success/failure three-state
   verified).
+- **The content lie is now closed for ALL actions (not just `resource.allocate`).**
+  The `@kernel_action` decorator (post-fix, `src/kernels/_crosscutting.py`)
+  relabels the audit `outcome` from `success` to `denied` for *every* definitive
+  `policy_decision=deny` (and `defer`) verdict, so a refusal can no longer be
+  recorded as a success. Proven systematically by
+  `scripts/verify_audit_truthfulness.py` — it exercises the real decorator +
+  real policy engine + real (temp) audit store across **all 20 denied actions**
+  and asserts `outcome != "success"` for every one (PASS). The body still runs
+  (record-only, so no operational self-lock), but the chain now tells the truth.
+- **The policy posture was completed, not just relabelled.** 9 operational
+  actions the service legitimately performs (`identity.create_identity`,
+  `memory.auto_cleanup`, `resource.allocate`, `resource.create_quota`,
+  `network.add_route`, and the 4 `trust.*` signals) were moved from
+  `INTERNAL_SERVICE_DENIED_ACTIONS` to `INTERNAL_SERVICE_ALLOWED_ACTIONS` with
+  justifying comments. They are now truthfully recorded as `allow` / `success`
+  (instead of being flagged `denied` while the system depended on them), and the
+  remaining denied set is genuine authority/destructive actions that require a
+  verified human (OD-010). The `test_every_decorated_kernel_action_is_classified`
+  completeness guard still holds.
 
 **Biggest gap:** enforcement is not armed by default, approvals remain inert,
 and the chain still lies for most denial paths.
@@ -332,43 +354,42 @@ verifiable artifact.
 5. **No identity/permission check** on writes in memory, network, resource,
    security, trust, and execution (execution checks capability scope only, never
    identity).
-6. **The audit chain records refusals as successes.** Publish **both** figures
-   with the explanation — either one alone is attackable:
-   - **Row level: 41 of 48 HC-01 records (85%)** carry `policy_decision=deny`
-     while `outcome` reads `success`/`intent`.
-   - **Action level: 27 of 33 actions (82%)** were denied yet recorded as success.
+6. **The audit chain used to record refusals as successes — RESOLVED at the
+   mechanism level (this commit); historical HC-01 figures retained as frozen
+   evidence.** Publish both with the explanation — either one alone is attackable:
+   - **(Historical, frozen) Row level: 41 of 48 HC-01 records (85%)** carried
+     `policy_decision=deny` while `outcome` read `success`/`intent`.
+   - **(Historical, frozen) Action level: 27 of 33 actions (82%)** were denied yet
+     recorded as success.
    - *Why they differ (explained, not fudged):* HIGH-risk actions write **two**
      rows (mandatory-evidence `intent` + `success`); MEDIUM/LOW write one. HIGH is
      therefore double-counted at row level.
-   - **Cleanest single piece of evidence — lead with this:** `resource.allocate`
-     invoked deliberately as an ordinary business operation returned success,
-     executed for real, and the chain recorded `policy=deny / outcome=success`.
-     One action, one row, unambiguous. The 13× `capability.register` per boot
-     (= 26 rows per process start) is the **multiplier**, not the proof —
-     bootstrap can be waved off as "init noise"; an ordinary allocation cannot.
-     **Cycle-2 update:** `resource.allocate` is now fixed — its three deny paths
-     call `mark_action_denied`, so an ordinary allocation refused by quota is
-     recorded `outcome=denied`. The 8% (row-level) / 18% (action-level) drop
-     from this one fix is real but does not close the gate; the MEDIUM-risk
-     single-row-success asymmetry below is the remaining structural defect.
-   - **Worst structural asymmetry:** MEDIUM-risk denials leave a **single isolated
-     `success` row with no paired `intent`** — nothing on the chain even hints a
-     decision was refused. MEDIUM is exactly the tier covering identity creation,
-     quota allocation, route changes and replan approval
-     (`identity.create_identity`, `resource.create_quota`, `network.add_route`,
-     `evaluation.approve_replan` / `execute_replan`). So *"who was created, who got
-     resources, how the topology changed, who approved the replan"* is recorded
-     entirely as uncontested single-row successes with no internal evidence of
-     contradiction.
-   - `capability.register` sits in `EXEMPT_ACTIONS` (`_enforcement.py:86`) so it
-     can never be armed — permanent noise by design. Only `identity` uses
-     `mark_action_denied` at all — **3** effective sites
-     (`identity/__init__.py:606/:920/:933`) — and it misses its own
-     `grant_permission` scope-overflow branch (`:1056-1069`), which writes a
-     `result="denied"` `AuditEntry` into an in-process list that **never reaches
-     the chain**, then returns `False` without declaring the denial.
-   - `policy_enforced=False` on **every** row measured (0/34 and 0/14 across the
-     two audits). Never read "Policy Controlled" as "policy enforced".
+   - **(Fixed, this commit) Going forward**, the `@kernel_action` decorator
+     (`src/kernels/_crosscutting.py`) relabels `outcome` to `denied` for **every**
+     definitive `policy_decision=deny` (and `defer`) verdict — MEDIUM and LOW
+     included — so a refusal can no longer be recorded as a success. This closes
+     the MEDIUM-risk single-row-`success` asymmetry that was the worst structural
+     defect (it covered `identity.create_identity`, `resource.create_quota`,
+     `network.add_route`, `evaluation.approve_replan` / `execute_replan`).
+     Proven systematically: `scripts/verify_audit_truthfulness.py` exercises the
+     real decorator + policy engine + (temp) audit store across **all 20 denied
+     actions** and asserts `outcome != "success"` for every one (PASS).
+   - **The policy posture was completed, not just relabelled.** 9 operational
+     actions the service legitimately performs (`identity.create_identity`,
+     `memory.auto_cleanup`, `resource.allocate`, `resource.create_quota`,
+     `network.add_route`, `trust.assign_score` / `establish_trust` / `revoke` /
+     `update_score`) were moved from `INTERNAL_SERVICE_DENIED_ACTIONS` to
+     `INTERNAL_SERVICE_ALLOWED_ACTIONS`. They are now truthfully recorded as
+     `allow` / `success` instead of being flagged `denied` while the system
+     depended on them; the remaining denied set is genuine authority/destructive
+     actions requiring a verified human (OD-010).
+   - **Remaining gap (item 3):** `policy_enforced=False` by default — a denial is
+     now HONESTLY recorded but the body still runs under the record-only posture.
+     Actually *blocking* denials is a separate OD-010 deployment decision (arming
+     the C-2 gate). Closing that requires the identity-kernel permission
+     grant/revoke feature and its tests to run under a human-sovereignty window
+     first — flagged to the owner, not silently switched on. Never read "Policy
+     Controlled" as "policy enforced".
 
 ## Known over-claims that must be corrected externally
 

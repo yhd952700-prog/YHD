@@ -938,6 +938,23 @@ def kernel_action(
                     )
                     raise PolicyDeniedError(action, "error", rule_id)
 
+            # --- AUDIT TRUTHFULNESS (Phase 3.6, owner directive) -------------- #
+            # A definitive policy verdict of "deny" (or "defer") must NEVER be
+            # recorded as outcome="success". Previously the record-only (C-1)
+            # posture executed the wrapped function anyway and labelled the
+            # event "success", silently hiding the refusal: a reviewer seeing
+            # outcome="success" could not tell the action had been policy-denied.
+            # The body is still permitted to *proceed* under the record-only
+            # posture (so the operational loop is never self-locked and no
+            # existing authority feature regresses), but the audit now honestly
+            # surfaces the refusal by recording outcome="denied" alongside
+            # policy_decision="deny" + policy_enforced=False (see the finally
+            # block below). Arming the C-2 enforcement gate to actually *block*
+            # such actions is a separate, owner-approved OD-010 deployment
+            # decision; this change fixes only the content lie in the audit.
+            # (mark_action_denied() still sets "denied" for an in-body refusal;
+            # the new branch additionally catches the policy verdict.)
+
             # U-1: start from a clean slate, so a denial declared by an earlier
             # (or nested) call can never be attributed to this one.
             _DENIED_SIGNAL.set(None)
@@ -957,6 +974,15 @@ def kernel_action(
                     denial_reason = _consume_denial()
                     if denial_reason is not None:
                         outcome = "denied"
+                    elif policy and decision in ("deny", "defer"):
+                        # AUDIT TRUTHFULNESS: the policy engine returned a
+                        # definitive non-allow verdict for this actor, yet the
+                        # record-only posture let the body run. Do NOT masquerade
+                        # that as success -- record the refusal honestly so the
+                        # audit no longer lies about a denied action.
+                        verdict_label = "deny" if decision == "deny" else "defer"
+                        outcome = "denied"
+                        denial_reason = f"policy:{verdict_label}(rule={rule_id})"
                 duration_ms = (time.time() - started) * 1000.0
                 if audit:
                     _call_audit(audit_actor, action, outcome, decision, corr_id,
