@@ -1330,6 +1330,52 @@ def reset_process_executor_lease_for_testing() -> None:
         _PROC_EXECUTOR_CTX = None
 
 
+#: Process-lifetime lease TTL. A single process holds ONE executor lease for its
+#: whole life; a long TTL (renewed only by shutdown) keeps in-process actions
+#: valid against the fence gate without per-call renewal churn. Bounded so it
+#: never overflows a sensible `expires_at`.
+PROCESS_LEASE_TTL_SECONDS = 10 * 365 * 24 * 3600
+
+
+def establish_process_executor_lease(
+    capabilities: Sequence[str] = (),
+    ttl_sec: float = PROCESS_LEASE_TTL_SECONDS,
+    owner: Optional[str] = None,
+) -> FenceContext:
+    """Bind a process-wide executor lease so in-process actions satisfy the
+    default-DENY fence gate -- the boot wiring that makes arming
+    ``LIUHAO_EXECUTOR_FENCE=on`` survivable.
+
+    Without this, every fenced ``@kernel_action`` raised ``PolicyDeniedError`` at
+    boot: bootstrap / service actions (identity seeding, kernel lifecycle init)
+    run in-process with NO executor identity bound, so the gate default-denied
+    them -- the old "0/24 checks, RC=1" crash. Installing the fence object AND
+    binding one stable lease for the process, *before any fenced call*, lets
+    legitimate in-process actions pass while every call is still validated
+    (token, expiry, liveness, epoch, replay, capability scope).
+
+    Idempotent: the first call acquires; later calls reuse the cached context,
+    refresh its heartbeat, and re-bind it. Safe to call from boot and from any
+    in-process entry point.
+
+    Fail-closed: if no executor identity can be established, raises
+    :class:`ExecutorUnknownError` so the caller cannot silently proceed
+    un-fenced.
+    """
+    fence = get_executor_fence()
+    executor_id = _process_executor_id()
+    if executor_id is None:
+        raise ExecutorUnknownError("cannot establish an executor identity")
+    ctx = _acquire_process_executor_lease(
+        fence, executor_id, owner or executor_id, capabilities, ttl_sec
+    )
+    # Bind process-wide (never reset within the process). ``executor_session``
+    # still shadows this per autonomous action and restores it on exit, so the
+    # two cooperate rather than conflict.
+    bind_executor_fence(ctx)
+    return ctx
+
+
 @contextlib.contextmanager
 def executor_session(
     action: str = "",

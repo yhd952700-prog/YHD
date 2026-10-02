@@ -82,6 +82,68 @@ async def lifespan(app: FastAPI):
     get_tracer()
     logger.info("Tracer initialized")
 
+    # UBX-005: install the production executor fence AND bind a process-wide
+    # executor lease *before* any in-process kernel action runs (identity
+    # seeding, kernel lifecycle init below). This is the boot wiring that makes
+    # arming ``LIUHAO_EXECUTOR_FENCE=on`` survivable: without the bound lease,
+    # every fenced ``@kernel_action`` raised ``PolicyDeniedError`` at boot (the
+    # old "0/24 checks, RC=1" crash) because bootstrap / service actions run with
+    # no executor identity bound. Installing + binding here -- ahead of the first
+    # fenced call -- guarantees the lease is valid against the REAL fence object
+    # and lets legitimate in-process actions pass while every call is still
+    # validated (token / expiry / liveness / epoch / replay / capability scope).
+    try:
+        from ..kernels.execution.fence import (
+            attach_default_executor_fence,
+            establish_process_executor_lease,
+            executor_fence_armed,
+            record_default_fence_failure,
+            record_default_fence_success,
+        )
+
+        _fence = attach_default_executor_fence()
+        record_default_fence_success()
+        logger.info(
+            "Executor fence installed (backend=%s, max_executors=%s)",
+            os.environ.get("LIUHAO_DISTRIBUTED_LEASE_BACKEND", "sqlite"),
+            getattr(_fence.lease, "max_executors", None),
+        )
+        # Arm the gate only when the operator opted in (LIUHAO_EXECUTOR_FENCE=on);
+        # when armed, bind one stable lease so in-process actions satisfy the
+        # default-DENY gate. The gate stays un-armed (pass-through) otherwise, so
+        # the boot behaviour is byte-identical to before for operators who do not
+        # set it.
+        if executor_fence_armed():
+            establish_process_executor_lease()
+            logger.info(
+                "Executor fence gate ARMED; process lease bound (boot survives)"
+            )
+    except Exception as _fence_exc:  # noqa: BLE001 - must be loud, must not crash boot
+        logger.error(
+            "EXECUTOR FENCE INSTALL FAILED -- autonomous actions will run "
+            "UN-FENCED (fail-open risk): %s",
+            _fence_exc, exc_info=True,
+        )
+        try:
+            from ..kernels.execution.fence import record_default_fence_failure
+
+            record_default_fence_failure(_fence_exc)
+        except Exception:  # noqa: BLE001 - recording must never mask the boot failure
+            logger.error(
+                "Failed to record the executor-fence install failure: %s",
+                _fence_exc, exc_info=True,
+            )
+        _require_fence = os.environ.get(
+            "LIUHAO_REQUIRE_EXECUTOR_FENCE", ""
+        ).strip().lower()
+        if _require_fence in ("1", "true", "yes", "on"):
+            # fail-closed: refuse to serve autonomous actions un-fenced.
+            raise RuntimeError(
+                "EXECUTOR FENCE REQUIRED (LIUHAO_REQUIRE_EXECUTOR_FENCE=1) "
+                f"but the default executor fence could not be attached: "
+                f"{type(_fence_exc).__name__}: {_fence_exc}"
+            ) from _fence_exc
+
     # Policy Controlled: surface the kernel enforcement selection at boot.
     # A mistyped selection is fail-loud (parse_spec raises, which would reject
     # every HIGH/CRITICAL action), so it must never be discovered only at the
@@ -194,64 +256,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("Gateway startup complete")
 
-    # UBX-005: install the production executor fence at boot. This makes the
-    # Agent-Safety Execution Fence REAL (cross-process / cross-node when a
-    # coordination backend is configured) instead of the inert default. Failure
-    # is fail-loud: we log at ERROR and keep booting, but the system then runs
-    # UN-fenced -- operators MUST notice (mirrors the kernel-lifecycle
-    # init-degraded reporting above; do NOT silently swallow this).
-    #
-    # G8/G9: "log and continue" alone was an *unobservable* fail-open -- there
-    # was no metric, /v1/ready stayed green, and no test covered it. The failure
-    # is now additionally (a) recorded in ``get_default_fence_status()``,
-    # (b) metered (``liuhao_executor_fence_installed=0`` +
-    # ``liuhao_executor_fence_install_failures_total``) and (c) surfaced by
-    # /v1/ready.
-    #
-    # ``LIUHAO_REQUIRE_EXECUTOR_FENCE=1`` converts this fail-open into
-    # fail-closed: startup ABORTS (raises) instead of serving un-fenced. It is
-    # OPT-IN and defaults to off so existing deployments are not broken by this
-    # change; a sovereignty-critical deployment should set it.
-    try:
-        from ..kernels.execution.fence import (
-            attach_default_executor_fence,
-            record_default_fence_success,
-        )
-
-        _fence = attach_default_executor_fence()
-        record_default_fence_success()
-        logger.info(
-            "Executor fence installed (backend=%s, max_executors=%s)",
-            os.environ.get("LIUHAO_DISTRIBUTED_LEASE_BACKEND", "sqlite"),
-            getattr(_fence.lease, "max_executors", None),
-        )
-    except Exception as _fence_exc:  # noqa: BLE001 - must be loud, must not crash boot
-        logger.error(
-            "EXECUTOR FENCE INSTALL FAILED -- autonomous actions will run "
-            "UN-FENCED (fail-open risk): %s",
-            _fence_exc,
-            exc_info=True,
-        )
-        try:
-            from ..kernels.execution.fence import record_default_fence_failure
-
-            record_default_fence_failure(_fence_exc)
-        except Exception:  # noqa: BLE001 - recording must never mask the boot failure
-            logger.error(
-                "Failed to record the executor-fence install failure: %s",
-                _fence_exc,
-                exc_info=True,
-            )
-        _require_fence = os.environ.get(
-            "LIUHAO_REQUIRE_EXECUTOR_FENCE", ""
-        ).strip().lower()
-        if _require_fence in ("1", "true", "yes", "on"):
-            # fail-closed: refuse to serve autonomous actions un-fenced.
-            raise RuntimeError(
-                "EXECUTOR FENCE REQUIRED (LIUHAO_REQUIRE_EXECUTOR_FENCE=1) "
-                f"but the default executor fence could not be attached: "
-                f"{type(_fence_exc).__name__}: {_fence_exc}"
-            ) from _fence_exc
+    # NOTE: the executor fence is installed and the process lease is bound
+    # EARLIER in this lifespan (before any in-process kernel action runs), so
+    # arming LIUHAO_EXECUTOR_FENCE=on is survivable at boot. A second install
+    # here would replace the fence object and invalidate the already-bound lease,
+    # so the late install block was intentionally removed. See the UBX-005 block
+    # near the top of this lifespan.
 
     # OB-closed-loop: wire REAL execution-failure events to the REAL alert
     # subsystem. Without this, execution failures never produced alerts (the
