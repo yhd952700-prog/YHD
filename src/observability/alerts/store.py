@@ -10,11 +10,16 @@ Provides:
 
 from pathlib import Path
 import json
+import os
 import time
-from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
-
+from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
+
+# Tests redirect the alert store to a temp dir via this env var (REDIR). The
+# production default is unchanged; this only makes the path overridable.
+ALERTS_STORE_PATH_ENV = "LIUHAO_ALERTS_STORE_PATH"
+DEFAULT_ALERTS_STORE_PATH = "data/observability/alerts.json"
 
 
 class AlertStore:
@@ -29,7 +34,11 @@ class AlertStore:
     - History and resolution tracking
     """
 
-    def __init__(self, storage_path: str = "data/observability/alerts.json"):
+    def __init__(self, storage_path: str = None):
+        if storage_path is None:
+            storage_path = os.environ.get(
+                ALERTS_STORE_PATH_ENV, DEFAULT_ALERTS_STORE_PATH
+            )
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self._alerts: Dict[str, Alert] = {}

@@ -253,6 +253,27 @@ async def lifespan(app: FastAPI):
                 f"{type(_fence_exc).__name__}: {_fence_exc}"
             ) from _fence_exc
 
+    # OB-closed-loop: wire REAL execution-failure events to the REAL alert
+    # subsystem. Without this, execution failures never produced alerts (the
+    # alert engine existed but was never driven). Idempotent and fail-safe;
+    # a failure must be loud but must not crash boot.
+    try:
+        from ..observability.alerts.execution_binding import (
+            install_execution_alert_binding,
+        )
+
+        install_execution_alert_binding()
+        logger.info(
+            "Execution->alert binding installed (real dispatch to store + console)"
+        )
+    except Exception as _alert_exc:  # noqa: BLE001 - loud, never crash boot
+        logger.error(
+            "EXECUTION->ALERT BINDING FAILED -- execution failures will NOT "
+            "produce alerts (observability closed loop broken): %s",
+            _alert_exc,
+            exc_info=True,
+        )
+
     yield  # App runs here
 
     # Shutdown

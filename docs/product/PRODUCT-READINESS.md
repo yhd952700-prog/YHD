@@ -1,6 +1,6 @@
 # LIUHAO — PRODUCT READINESS GATE (P1–P10)
 
-> Generated: 2026-10-01 (cycle 2) · Branch `p36` · Evidence date: 2026-10-01
+> Generated: 2026-10-02 (cycle 3) · Branch `p36` · Evidence date: 2026-10-02
 >
 > **Honesty discipline (non-negotiable):** each gate is one of
 > `PASS` / `FAIL` / `BLOCKED` / `NOT YET TESTED`.
@@ -18,6 +18,18 @@
 > unreachable/unwired; both are now exercised end to end and the artifacts are
 > observed, not assumed. P5 (Human-Sovereignty UX) is **still FAIL** but several
 > of its sub-defects were closed this cycle (see P5).
+>
+> **Cycle-3 change (2026-10-02):** the real-execution closed loop is now proven
+> across the FULL chain by a single standalone verifier
+> (`scripts/verify_real_execution_e2e.py`, REDIR to temp, HC-01 untouched): a
+> natural-language file-write goal produces a REAL on-disk artifact; a `python:`
+> directive goal produces a REAL computation; an unserved capability FAILS
+> HONESTLY (no false success); the audit trail is populated (9/9 checks PASS).
+> Two cross-cutting gaps closed: the observability alert loop is now wired
+> (execution failures → real alerts to the store + console), and the `ShellAdapter`
+> now has a fail-closed safety gate + threat model that keeps host-command
+> execution out of the autonomous goal path by default. No product gate flipped to
+> PASS this cycle; P4/P6 evidence is strengthened (see "Cycle 3" section).
 
 ## Verdict summary
 
@@ -145,11 +157,18 @@ permission-checked adapters.
   `filesystem_adapter.execute` logs the violation.
 
 **Caveat (kept honest):** this is an *authorization + workspace-containment*
-boundary, not a process-level OS sandbox. The `ShellAdapter` is still not
-registered, so "run a command" is not yet demonstrated. The gate is PASS for the
+boundary, not a process-level OS sandbox. The `ShellAdapter` remains **not
+registered** in the autonomous goal path (so "run a command" is still not
+demonstrated there), but it is now protected by a **fail-closed safety gate**
+(`src/ai/world_interface_shell_gate.py`) + a written threat model
+(`docs/security/shell-adapter-threat-model.md`): an autonomous shell interface
+cannot be constructed without an explicit human-arming `authorize` policy, and
+`shell=True` (real shell, injection surface re-opened) requires a logged,
+per-request `human_arm_token`. 10/10 gate tests pass
+(`tests/ai/test_shell_adapter_safety_gate.py`). The gate is PASS for the
 file-write path only.
-**Flips to FAIL if:** the containment boundary is found bypassable, or the
-adapter registration is removed.
+**Flips to FAIL if:** the containment boundary is found bypassable, the shell
+gate is weakened to a blanket allow, or the adapter registration is removed.
 
 ---
 
@@ -401,7 +420,10 @@ verifiable artifact.
    (`src/observability/metrics.py:155-183`) are declared with **zero call sites**.
 2. **WorldInterface adapter now registered and exercised** (P4 → PASS, cycle 2):
    `FilesystemAdapter` is wired via the `file_write` tool's `WorldInterface`.
-   `ShellAdapter` is still never registered.
+   `ShellAdapter` is still never registered in the autonomous goal path — but as of
+   cycle 3 it has a fail-closed safety gate (`src/ai/world_interface_shell_gate.py`)
+   + threat model (`docs/security/shell-adapter-threat-model.md`), so host-command
+   execution stays default-deny and human-armed only.
 3. **Policy recorded but not enforced** by default (P5).
 4. **No persistence** across capability, context, evaluation, event, resource,
    security, trust — state resets on restart; revoked trust "resurrects".
@@ -444,6 +466,55 @@ verifiable artifact.
      grant/revoke feature and its tests to run under a human-sovereignty window
      first — flagged to the owner, not silently switched on. Never read "Policy
      Controlled" as "policy enforced".
+
+## Cycle 3 — 2026-10-02 closed-loop hardening (measured)
+
+Three autonomous hardenings this cycle, all measured, none touching the frozen
+HC-01 evidence (every verifier REDIRs `AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT` to
+temp):
+
+1. **Real-execution closed loop proven end to end** — `scripts/
+   verify_real_execution_e2e.py` runs the exact production wiring
+   (`LCore(register_local_tools=True).capability_executor()` → `AgentRuntime`) and
+   asserts: (T1) a natural-language *"create a file named X containing Y"* goal
+   produces a REAL on-disk file with the expected content and the goal reports
+   `completed`; (T2) a `python:` directive goal (`python: result = 6*7+1`) produces
+   a REAL computation (`43`); (T3) an unserved capability (*"search the web"*) FAILS
+   HONESTLY — `state=failed`, zero false successes; (T4) the audit trail is
+   populated. 9/9 checks PASS. **Honest limitation recorded:** the keyword planner
+   cannot autonomously synthesize executable code — real compute requires the user
+   (or a future LLM planner) to supply a `python:`/`code:` directive or tool-shaped
+   `code`/`expression`; natural-language file-write is reachable, but search /
+   memory / network capabilities are not served and therefore fail honestly rather
+   than silently. This corrects a prior mis-synthesis: the gateway already wires a
+   real executor (the earlier "unwired" gap was already repaired in cycle 2).
+
+2. **Observability alert loop closed** — `src/observability/alerts/
+   execution_binding.py` subscribes to the EventBus for `action_failed` /
+   `task_failed` / `execution_completed` (failed tasks) at L7 and emits **real**
+   alerts to the store (`data/observability/alerts.json`) + console, fail-safe
+   (never raises). Installed at gateway startup (`src/gateway/main.py` lifespan).
+   Default rules: any `task_failed` → HIGH; CRITICAL `action_failed` → CRITICAL;
+   plan completed with failures → HIGH. 5/5 tests pass
+   (`tests/observability/test_execution_alert_loop.py`). Store path REDIR-able via
+   `LIUHAO_ALERTS_STORE_PATH`. Previously this subsystem was a stub —
+   `evaluate_alerts` was never driven and execution events never reached it.
+
+3. **ShellAdapter fail-closed safety gate + threat model** — `src/ai/
+   world_interface_shell_gate.py` is the ONLY sanctioned constructor for a shell-
+   capable `WorldInterface`: an `autonomous` interface cannot be built without an
+   explicit human-arming `authorize` policy, and `shell=True` requires a logged,
+   per-request `human_arm_token`. `docs/security/shell-adapter-threat-model.md`
+   documents command-injection, host-wide blast radius, and why shell stays out of
+   the autonomous default path. 10/10 tests pass
+   (`tests/ai/test_shell_adapter_safety_gate.py`). `ShellAdapter` remains
+   unregistered in the autonomous goal path — host-command execution is still
+   fail-closed by absence, now also guarded by policy.
+
+**Net state:** the autonomous loop can now do REAL local work (file write,
+sandboxed compute) and fails honestly elsewhere; execution failures now raise real
+alerts; host-command execution is gated and documented. Product gates P1–P3, P5,
+P7–P10 remain open (no product-gate flip this cycle).
 
 ## Known over-claims that must be corrected externally
 
