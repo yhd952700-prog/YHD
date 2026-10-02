@@ -160,6 +160,48 @@ def acting_principal() -> Optional[Dict[str, str]]:
     return dict(bound) if bound is not None else None
 
 
+# --------------------------------------------------------------------------- #
+# Audit traceability — bind a goal/operation correlation id onto kernel actions
+# --------------------------------------------------------------------------- #
+#
+# Previously every ``@kernel_action`` wrote a FRESH random correlation id
+# (``uuid.uuid4().hex``) into its hash-chained audit event. The consequence was
+# a traceability gap: the audit chain could prove "an action executed" but could
+# NOT prove "this goal executed it". The goal -> action link existed only on the
+# event bus (``execution_started`` / ``execution_completed`` carry
+# ``goal.correlation_id``), NOT in the immutable hash-chain audit. That undermines
+# audit credibility ("审计真实可信"): an auditor reading only the hash-chain could
+# not bind an action back to the goal that ran it.
+#
+# Fix: let the active operation/goal publish its correlation id through this
+# :class:`~contextvars.ContextVar`. When set, the ``kernel_action`` wrapper uses
+# it for the audit event's ``correlation_id``; when unset (e.g. a direct action
+# outside any goal), it still falls back to a per-action random id, so behaviour
+# is backward compatible.
+KERNEL_ACTION_CORRELATION_ID: ContextVar[Optional[str]] = ContextVar(
+    "liuhao_kernel_action_correlation_id", default=None
+)
+
+
+@contextmanager
+def kernel_action_correlation_id(cid: str) -> Iterator[None]:
+    """Bind ``cid`` as the correlation id for every kernel action in this block.
+
+    Within the ``with`` block, any ``@kernel_action``-decorated call stamps
+    ``cid`` (instead of a fresh random id) onto its hash-chained audit event, so
+    the audit chain can tie the action back to the operation/goal that ran it.
+
+    Nesting restores the previous binding on exit, so a sub-operation can tighten
+    attribution without disturbing what was bound outside (mirrors
+    :func:`bind_acting_principal`).
+    """
+    token = KERNEL_ACTION_CORRELATION_ID.set(cid)
+    try:
+        yield
+    finally:
+        KERNEL_ACTION_CORRELATION_ID.reset(token)
+
+
 #: Set by :func:`mark_action_denied` to tell the decorator that the wrapped call
 #: is refusing by *returning* rather than raising.
 _DENIED_SIGNAL: ContextVar[Optional[str]] = ContextVar(
@@ -742,7 +784,10 @@ def kernel_action(
     def decorator(fn: Callable) -> Callable:
         @wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            corr_id = uuid.uuid4().hex
+            # Traceability fix (audit goal->action link): prefer the correlation
+            # id published by the enclosing goal/operation; fall back to a fresh
+            # random id when nothing is bound (backward compatible).
+            corr_id = KERNEL_ACTION_CORRELATION_ID.get() or uuid.uuid4().hex
             started = time.time()
             decision: Optional[str] = None
             rule_id: Optional[str] = None
