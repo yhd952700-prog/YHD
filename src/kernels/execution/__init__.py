@@ -628,6 +628,15 @@ class Verifier:
                 replan_required=True,
             )
 
+        # Independent file-side-effect verification (additive).
+        # A capability that merely *claims* success (e.g. returns
+        # {"written": path}) must not self-prove verification. When the
+        # outcome looks like a file write, re-read the disk to confirm the
+        # artifact actually exists (and, optionally, matches expected content).
+        file_failure = self._verify_file_side_effect(task, action_result, expected)
+        if file_failure is not None:
+            return file_failure
+
         if not expected:
             # No criteria - assume success if action succeeded
             return VerificationResult(
@@ -637,12 +646,18 @@ class Verifier:
                 feedback="Action completed successfully (no verification criteria)",
             )
 
-        # Simple matching
+        # Simple matching. The "content" key (when present) is consumed by the
+        # independent file-side-effect check above and is not a dict-match
+        # criterion, so exclude it from the remaining criteria set to avoid a
+        # spurious "missing" detail against the action output.
+        match_expected = dict(expected)
+        match_expected.pop("content", None)
+
         matches = 0
-        total = len(expected)
+        total = len(match_expected)
         details = {}
 
-        for key, expected_value in expected.items():
+        for key, expected_value in match_expected.items():
             if key in actual:
                 actual_value = actual[key]
                 if self._values_match(expected_value, actual_value):
@@ -690,6 +705,100 @@ class Verifier:
         except (TypeError, ValueError):
             pass
         return False
+
+    # Keys whose string value is treated as a filesystem path for a file write.
+    _FILE_WRITE_KEYS = ("written", "path", "file")
+
+    def _verify_file_side_effect(
+        self,
+        task: "Task",
+        action_result: "ActionResult",
+        expected: Dict[str, Any],
+    ) -> Optional["VerificationResult"]:
+        """Independently confirm a claimed file write actually hit the disk.
+
+        This is the anti-self-proving check: verification must not trust the
+        executor's returned ``output`` dict. When the outcome looks like a file
+        write (a path under a write-key in the output or in the expected
+        criteria), we re-read the disk.
+
+        Returns:
+          * ``None`` if no file-write outcome is detected (so the normal
+            dict-matching in :meth:`verify` proceeds unchanged), or if the
+            artifact exists and any requested content check passes.
+          * a FAILED ``VerificationResult`` (``replan_required=True``) when the
+            claimed artifact is missing or its content does not match.
+        """
+        output = action_result.output
+
+        # 1) Detect a claimed path: prefer a write-key in the action output.
+        claimed_path: Optional[str] = None
+        if isinstance(output, dict):
+            for key in self._FILE_WRITE_KEYS:
+                value = output.get(key)
+                if isinstance(value, str) and value:
+                    claimed_path = value
+                    break
+
+        # 2) Fall back to a path under a write-key in the expected criteria
+        #    (e.g. task.expected_outputs carrying the intended artifact path).
+        if claimed_path is None:
+            for key in self._FILE_WRITE_KEYS:
+                value = expected.get(key)
+                if isinstance(value, str) and value:
+                    claimed_path = value
+                    break
+
+        if claimed_path is None:
+            return None
+
+        # 3) Independent disk check. The capability claimed to write a file;
+        #    prove it. A missing artifact means success was self-proclaimed.
+        if not os.path.exists(claimed_path):
+            return VerificationResult(
+                task_id=task.id,
+                result=VerifyResult.FAILED,
+                score=0.0,
+                feedback=(
+                    f"file not present on disk: action claimed success "
+                    f"but no artifact at {claimed_path}"
+                ),
+                replan_required=True,
+            )
+
+        # 4) Optional content verification. ``content`` is the file's expected
+        #    contents (not an output-dict key), provided via criteria.
+        expected_content = expected.get("content")
+        if expected_content is not None:
+            try:
+                with open(claimed_path, "r", encoding="utf-8") as f:
+                    actual_content = f.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                return VerificationResult(
+                    task_id=task.id,
+                    result=VerifyResult.FAILED,
+                    score=0.0,
+                    feedback=(
+                        f"could not read back written file {claimed_path}: {exc}"
+                    ),
+                    replan_required=True,
+                )
+            if actual_content != expected_content:
+                return VerificationResult(
+                    task_id=task.id,
+                    result=VerifyResult.FAILED,
+                    score=0.0,
+                    feedback=(
+                        f"content mismatch for {claimed_path}: "
+                        f"expected {len(str(expected_content))} chars, "
+                        f"got {len(actual_content)} chars"
+                    ),
+                    replan_required=True,
+                )
+
+        # Artifact exists (and content matches, if requested). Let normal
+        # dict-matching proceed for any remaining non-file criteria.
+        return None
 
 
 class ExecutionEngine:
