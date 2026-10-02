@@ -12,7 +12,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .providers import BaseProvider, get_provider
-from ..observability.metrics import track_agent_task, track_coordination
+try:
+    from ..observability.metrics import track_agent_task, track_coordination
+except Exception:  # pragma: no cover - metrics backend optional at import time
+    # When prometheus_client is not installed the employee module must still
+    # import and run (e.g. under the system python used by standalone
+    # verifiers); metrics simply degrade to no-ops. Mirrors the guard already
+    # present in src/ai/goal_task_graph.py.
+    def track_agent_task(*_args, **_kwargs):
+        return None
+
+    def track_coordination(*_args, **_kwargs):
+        return None
 from ..observability.tracing import create_span, end_span, AISpanAttributes
 from ..knowledge.memory import create_memory_manager, MemoryTier
 

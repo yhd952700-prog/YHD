@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -124,7 +126,10 @@ class AIStateManager:
         self._goals: Dict[str, Dict[str, Any]] = {}
         self._runtime = None
         self._employee = None
+        self._employee_store = None
         self._goal_lock = threading.Lock()
+        # Recover any goals persisted across a previous process restart.
+        self._load_goals()
 
     def _ensure_runtime(self):
         """懒初始化 AgentRuntime（延迟到首次使用，避免 import 时副作用）。"""
@@ -148,22 +153,89 @@ class AIStateManager:
                 raise
         return self._runtime
 
+    # ── Employee persistence (restart recovery) ──
+
     def _ensure_employee(self):
-        """懒初始化 Employee（真实 agent pool）。"""
+        """懒初始化 Employee（真实 agent pool）。
+
+        首次运行（store 为空）按默认种子配置创建一个 Employee 并落盘；后续运行
+        从 EmployeeStore 加载已持久化的 Employee，使 agent/task 状态在进程重启后
+        仍可恢复（此前全部为内存态，重启即丢）。
+        """
         if self._employee is None:
             try:
-                from src.ai.employee import Employee
-                self._employee = Employee(
+                from src.ai.employee_store import EmployeeStore
+                self._employee_store = EmployeeStore()
+                self._employee = self._employee_store.create_employee(
                     name="liuhao-default",
                     agent_count=3,
                     agent_types=["planner", "executor", "critic"],
                 )
-                logger.info("AIStateManager: Employee initialized with %d agents",
+                logger.info("AIStateManager: Employee ready with %d agents (store-backed)",
                             len(self._employee.agents))
             except Exception as exc:
                 logger.error("AIStateManager: failed to init Employee: %s", exc)
                 raise
         return self._employee
+
+    def _persist_employee(self) -> None:
+        """Best-effort persist of the current Employee (agent/task state)."""
+        if self._employee_store is not None and self._employee is not None:
+            try:
+                self._employee_store.save(self._employee)
+            except Exception as exc:  # persistence must never break a request
+                logger.warning("AIStateManager: employee persist failed: %s", exc)
+
+    # ── Goal persistence (restart recovery) ──
+
+    @staticmethod
+    def _default_goals_path() -> str:
+        """Default location of the persisted goals dict.
+
+        ``LIUHAO_WORKSPACE_ROOT/liuhao_goals.json`` when set (REDIR-able for
+        isolation verifiers), else ``<repo_root>/.liuhao_goals.json``.
+        """
+        root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
+        if root:
+            return os.path.join(root, "liuhao_goals.json")
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        return os.path.join(repo_root, ".liuhao_goals.json")
+
+    def _save_goals(self) -> None:
+        """Persist ``_goals`` to JSON so executed-goal history survives restart."""
+        path = self._default_goals_path()
+        try:
+            directory = os.path.dirname(os.path.abspath(path))
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            serialized: Dict[str, Any] = {}
+            for gid, entry in self._goals.items():
+                try:
+                    json.dumps(entry)
+                    serialized[gid] = entry
+                except (TypeError, ValueError):
+                    serialized[gid] = {"__unserializable__": str(entry)}
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(serialized, fh, indent=2)
+            os.replace(tmp, path)
+        except Exception as exc:  # persistence must never break a request
+            logger.warning("AIStateManager: goals persist failed: %s", exc)
+
+    def _load_goals(self) -> None:
+        """Reload ``_goals`` from the persisted JSON (no-op if absent)."""
+        path = self._default_goals_path()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                self._goals = data
+        except Exception as exc:
+            logger.warning("AIStateManager: goals load failed: %s", exc)
 
     # ── Goal 操作 ──
 
@@ -207,6 +279,7 @@ class AIStateManager:
         entry = self._result_to_dict(result, natural_language, scope)
         with self._goal_lock:
             self._goals[goal_id] = entry
+        self._save_goals()
         return entry
 
     def replan_goal(self, goal_id: str) -> Dict[str, Any]:
@@ -234,6 +307,7 @@ class AIStateManager:
         entry["replan_count"] = prior_entry.get("replan_count", 0) + 1
         with self._goal_lock:
             self._goals[goal_id] = entry
+        self._save_goals()
         return entry
 
     def list_goals(self) -> List[Dict[str, Any]]:
@@ -312,6 +386,7 @@ class AIStateManager:
         if agent is None:
             raise ValueError(f"Agent {agent_id} not found")
         ok = agent.pause()
+        self._persist_employee()
         return {"agent_id": agent_id, "paused": ok, "status": agent.status.value}
 
     def resume_agent(self, agent_id: str) -> Dict[str, Any]:
@@ -321,6 +396,7 @@ class AIStateManager:
         if agent is None:
             raise ValueError(f"Agent {agent_id} not found")
         ok = agent.resume()
+        self._persist_employee()
         return {"agent_id": agent_id, "resumed": ok, "status": agent.status.value}
 
     def get_employee_stats(self) -> Dict[str, Any]:
