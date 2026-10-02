@@ -16,13 +16,17 @@ What this proves:
   5. SAFETY GUARDS: no production ``@kernel_action`` flips ``enforce=True``;
      no statically-resolvable opener of a sovereignty channel under ``src/``;
      the approval request
-     model cannot name the approver (the principal is token-only); and exactly two
-     surfaces arm the switch for production: the production deployment manifest
-     (``docker-compose.prod.yml``) and the cloud-bundle launcher template
-     (``scripts/build_cloud_bundle.py``), each resolving to the CRITICAL tier
-     **minus the audited exemptions** (C-6; D24 narrowed the deployment to
-     CRITICAL only). Dev, CI and the Dockerfile must never arm it, so the
-     suite keeps exercising the record-only (L1) contract.
+     model cannot name the approver (the principal is token-only); and exactly
+     three surfaces arm the switch for a deployed environment: the production
+     deployment manifest (``docker-compose.prod.yml``), the staging deployment
+     contract (``infra/staging/docker-compose.yml``) and the cloud-bundle
+     launcher template (``scripts/build_cloud_bundle.py``), each resolving to the
+     CRITICAL tier **minus the audited exemptions** (C-6; D24 narrowed the
+     deployment to CRITICAL only). Staging is a *deployed* pre-prod environment,
+     so mirroring production's CRITICAL there is the fail-closed-correct posture;
+     it exercises the real gate before prod instead of staying record-only.
+     Local dev, CI and the Dockerfile must never arm it, so the suite keeps
+     exercising the record-only (L1) contract.
 
      Bounds of that last claim, stated rather than left implicit: the scan now
      covers ``scripts/`` as well (the exclusion was removed), so the bundle
@@ -31,7 +35,7 @@ What this proves:
      variable** (a verification harness probing reachability, e.g.
      ``scripts/verify_armed_actions_are_inert.py``) is *not* classified as a
      deployment-arming site, because it ships no default spec; only a literal
-     spec write is. "Exactly two surfaces arm a shipped default, both CRITICAL"
+     spec write is. "Exactly three surfaces arm a shipped default, all CRITICAL"
      is therefore what is asserted, and it holds.
 
      Bounds of the opener claim too, stated rather than left implicit: the scan
@@ -96,6 +100,16 @@ PROD_MANIFEST = "docker-compose.prod.yml"
 #: CRITICAL, matching the production manifest). It is scanned alongside the
 #: manifest and must resolve to exactly CRITICAL.
 BUNDLE_LAUNCHER = "scripts/build_cloud_bundle.py"
+
+#: The third legitimate arming site: the *staging* deployment contract
+#: (``infra/staging/docker-compose.yml``, added by the G9 staging-verification
+#: chain). Staging is a DEPLOYED pre-prod environment, not a local dev/CI run, so
+#: mirroring production's CRITICAL enforcement there is the fail-closed-correct
+#: posture -- it exercises the real gate before prod, instead of staying
+#: record-only. It must also resolve to exactly CRITICAL. Local dev, CI and the
+#: Dockerfile stay record-only (L1) on purpose, so the suite keeps exercising the
+#: un-armed contract.
+STAGING_MANIFEST = "infra/staging/docker-compose.yml"
 
 RESULTS = []
 
@@ -428,10 +442,12 @@ def _armed_specs() -> dict:
     The scan covers the whole repository **minus ``tests/``** (and ``.venv/``,
     ``.git/``, ``node_modules/``). ``scripts/`` is deliberately scanned so the
     cloud-bundle launcher is visible: D24 requires it to arm exactly CRITICAL,
-    matching the production manifest. Two surfaces may therefore arm the switch
-    -- the production manifest and the bundle launcher -- and the caller asserts
-    both resolve to CRITICAL. Do not read a single hit here as "only one file in
-    the repository arms this".
+    matching the production manifest. ``infra/staging/`` is likewise a deployed
+    pre-prod contract that legitimately mirrors production's CRITICAL. Three
+    surfaces may therefore arm the switch -- the production manifest, the staging
+    contract and the bundle launcher -- and the caller asserts all three resolve
+    to CRITICAL. Do not read a single hit here as "only one file in the
+    repository arms this".
     """
     var = "LIUHAO_KERNEL_POLICY_ENFORCE"
     config_suffixes = {".yml", ".yaml", ".env", ".toml", ".ini", ".cfg", ".sh", ".json"}
@@ -703,10 +719,10 @@ def main() -> int:
     )
 
     armed = _armed_specs()
-    allowed_arming = {PROD_MANIFEST, BUNDLE_LAUNCHER}
+    allowed_arming = {PROD_MANIFEST, STAGING_MANIFEST, BUNDLE_LAUNCHER}
     unexpected = sorted(k for k in armed if k not in allowed_arming)
-    check("only the production manifest and the cloud-bundle launcher arm "
-          "enforcement (dev/CI/Dockerfile never)",
+    check("only the production manifest, the staging contract, and the "
+          "cloud-bundle launcher arm enforcement (dev/CI/Dockerfile never)",
           not unexpected,
           f"unexpected={unexpected}" if unexpected else f"armed via {sorted(armed)}")
     for site in sorted(allowed_arming):
