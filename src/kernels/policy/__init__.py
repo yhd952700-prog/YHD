@@ -1,13 +1,27 @@
 """Policy Kernel — Permission Boundaries + Policy Engine
 
-The Policy Kernel defines and enforces permission boundaries across the system.
-Implements ABAC (Attribute-Based Access Control) with policy evaluation.
+The Policy Kernel EVALUATES and decides permission boundaries (ABAC) across the
+system. It is the policy DECISION POINT: every kernel action passes through this
+engine and receives an ALLOW / DENY verdict with full traceability.
+
+ENFORCEMENT (hard-deny) is a SEPARATE, deployment-controlled concern:
+  * The engine itself only *records* the verdict unless enforcement is armed.
+  * Arming is controlled by the env var ``LIUHAO_KERNEL_POLICY_ENFORCE``
+    (see ``src/kernels/_enforcement.py``). With it UNSET (the library default),
+    the engine runs and records decisions but does NOT hard-deny -- posture is
+    record-only (L1).
+  * The production manifest arms ``CRITICAL``
+    (``docker-compose.prod.yml``), so production hard-denies at CRITICAL.
+  * This kernel must NOT be described as "always enforcing". It enforces
+    exactly the actions selected by ``LIUHAO_KERNEL_POLICY_ENFORCE``; otherwise
+    it is record-only.
 
 依据 Definition Lock §112: Policy Kernel 必须能够
 - Define policy rules with conditions and actions
 - Evaluate access decisions (ALLOW/DENY)
 - Support policy precedence and conflict resolution
-- Enforce scope-based permissions (L0-L7)
+- (Scope-based permissions L0-L7 are EVALUATED; whether they HARD-DENY depends
+  on ``LIUHAO_KERNEL_POLICY_ENFORCE`` -- not always-on)
 - Provide audit trail for all decisions
 """
 from __future__ import annotations
@@ -391,7 +405,13 @@ class PolicySet:
 
 
 class PolicyEngine:
-    """Policy evaluation engine with ABAC support."""
+    """Policy evaluation engine (ABAC) -- the system's policy DECISION POINT.
+
+    This engine evaluates registered rules and returns an ALLOW/DENY verdict
+    with traceability. It does NOT, by itself, hard-deny kernel actions: the
+    kernel layer records the verdict unless enforcement is armed via
+    ``LIUHAO_KERNEL_POLICY_ENFORCE`` (see ``src/kernels/_enforcement.py``).
+    """
     lifecycle: KernelLifecycle = KernelLifecycle.UNINITIALIZED
 
     def __init__(self):

@@ -25,6 +25,14 @@ Design notes (NO FAKE, §158):
   NOT fabricate a successful delivery.
 - All identity / trust / policy checks consult the real kernels; nothing
   is stubbed or self-asserted.
+
+Protocol-adapter reality (NO FAKE, continued): the ``A2AAdapter`` /
+``MCPAdapter`` below are honest LOCAL-DELIVERY adapters -- their ``send()``
+returns ``False`` and records ``"transport not configured"`` / "real ...
+transport not implemented in this build" when no real wire transport is
+configured (which is the default). There is NO ``GRPCAdapter`` and NO real
+A2A/MCP/gRPC wire transport anywhere in this repo; those protocols are
+PLANNED / not-implemented. Do not advertise them as live transports.
 """
 from __future__ import annotations
 
