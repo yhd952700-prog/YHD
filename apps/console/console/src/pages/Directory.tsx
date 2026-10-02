@@ -14,6 +14,13 @@ import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contr
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
 import { BrainMap, NetworkGraph } from '../components/charts'
+import {
+  AgentActionButtons,
+  CreateGoalForm,
+  EmployeeActionButtons,
+  GoalActionButtons,
+  HireEmployeeForm,
+} from '../components/OperatorControls'
 import { Card, Dot, Empty, Guard } from '../components/ui'
 
 type OpenApiPaths = { paths?: Record<string, Record<string, unknown>> }
@@ -172,7 +179,23 @@ export function Roster({ query }: { query: string }) {
             emptyTitle="Agent pool 未初始化"
             onRetry={employees.reload}
           >
-            {(empData) => (
+            {(empData) => (<>
+              <div className="os-operator-panel">
+                <div className="os-operator-grid">
+                  <div>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
+                      雇佣 AI Employee → POST /v1/employees
+                    </div>
+                    <HireEmployeeForm onDone={employees.reload} />
+                  </div>
+                  <div>
+                    <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
+                      创建 Goal → POST /v1/goals
+                    </div>
+                    <CreateGoalForm onDone={goals.reload} />
+                  </div>
+                </div>
+              </div>
               <div className="os-list">
                 <div className="os-row" style={{ marginBottom: 8, borderBottom: '1px solid var(--os-border)' }}>
                   <div className="os-row-main">
@@ -211,6 +234,7 @@ export function Roster({ query }: { query: string }) {
                             {emp.agents.map((a) => a.status).join(' · ')}
                           </div>
                         </div>
+                        <EmployeeActionButtons name={emp.name} onDone={employees.reload} />
                       </div>
                     ))}
                   </div>
@@ -233,11 +257,12 @@ export function Roster({ query }: { query: string }) {
                         {agent.current_task ? ` · 当前: ${agent.current_task}` : ''}
                       </div>
                     </div>
-                    <span className="os-badge" data-tone={STATUS_TONE[agent.status] ?? 'muted'}>
-                      {agent.status}
-                    </span>
-                  </div>
-                ))}
+                        <span className="os-badge" data-tone={STATUS_TONE[agent.status] ?? 'muted'}>
+                          {agent.status}
+                        </span>
+                        <AgentActionButtons agentId={agent.id} status={agent.status} onDone={employees.reload} />
+                      </div>
+                    ))}
                 {goals.data && goals.data.goals.length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 4 }}>最近 Goal 执行</div>
@@ -259,12 +284,13 @@ export function Roster({ query }: { query: string }) {
                         <span className="os-badge" data-tone={STATUS_TONE[goal.state] ?? 'muted'}>
                           {goal.state}
                         </span>
+                        <GoalActionButtons goalId={goal.goal_id} state={goal.state} onDone={goals.reload} />
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-            )}
+            </>)}
           </Guard>
         ) : (
         <Guard
