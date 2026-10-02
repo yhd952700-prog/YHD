@@ -525,6 +525,12 @@ def get_app() -> FastAPI:
     from .ai_management import router as ai_mgmt_router
     app.include_router(ai_mgmt_router, dependencies=[Depends(_require_human)])
 
+    # 审计可解释性查询面（P8）：真实哈希链的**只读**查询/校验入口。
+    # 只读是硬约束：任何"修复链"的能力都会摧毁 tamper-evidence（见 audit.py
+    # 模块 docstring）。与其余业务面一样挂人类主权闸门 —— 审计轨迹不匿名可读。
+    from .audit import router as audit_router
+    app.include_router(audit_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

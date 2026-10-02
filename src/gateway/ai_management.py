@@ -47,6 +47,23 @@ class GoalCreateRequest(BaseModel):
     verification_criteria: Optional[Dict[str, Any]] = Field(
         None, description="可选验证标准"
     )
+    # Why this exists: ``create_and_execute_goal`` could always run a goal on a
+    # background thread, but nothing over HTTP could ask for it, so the goal
+    # always finished inside the POST request. That makes the whole
+    # cancellation path unreachable from the product surface: by the time any
+    # client could call ``POST /v1/goals/{id}/stop`` the goal was already in a
+    # terminal state, and "stop" could only ever be a post-hoc state edit --
+    # not the cooperative cancellation the code claims to provide. Default
+    # ``False`` keeps the existing synchronous contract untouched.
+    background: bool = Field(
+        False,
+        description=(
+            "true: return immediately with state='running' and execute on a "
+            "background thread, so GET /v1/goals/{id} can be polled and "
+            "POST /v1/goals/{id}/stop can really cancel the run. "
+            "false (default): execute synchronously and return the terminal state."
+        ),
+    )
 
 
 class GoalSummary(BaseModel):
@@ -465,7 +482,9 @@ class AIStateManager:
 
         - 若目标仍在后台运行：设置其 stop flag，执行循环会在任务边界抛出
           GoalCancelled，目标被干净置为 ``cancelled``（绝不伪造成功）。
-        - 若目标已结束：幂等地把状态标为 ``cancelled``（仅状态级，不重跑）。
+        - 若目标已结束：**如实保留其真实终态**，不在事后把 error 改写成
+          "aborted"。把一个已经 completed/failed 的目标标为人类中止，就是让
+          操作员看到一个自己并未造成的结果。
         - 无论哪种情况都审计这条人类喊停，使审计链如实记录主权动作。
         """
         with self._goal_lock:
@@ -503,25 +522,35 @@ class AIStateManager:
         except Exception as exc:
             logger.warning("stop_goal: audit failed: %s", exc)
 
-        # Reflect cancellation in the persisted goal state.
+        # Reflect cancellation in the persisted goal state -- but ONLY for a
+        # goal that was actually still running. A goal that had already reached
+        # a terminal state keeps its real outcome and its real error: the old
+        # code stamped "aborted by human operator" onto anything that received
+        # a stop POST, so an already-failed goal appeared to have been stopped
+        # by someone who was not there, and its root cause was overwritten.
         with self._goal_lock:
             item = self._goals.get(goal_id)
             if item is not None:
                 item = dict(item)
                 if item.get("state") not in ("completed", "failed", "cancelled"):
                     item["state"] = "cancelled"
-                item["error"] = item.get("error") or "aborted by human operator"
-                item["replan_suggested"] = False
+                    item["error"] = item.get("error") or "aborted by human operator"
+                    item["replan_suggested"] = False
                 self._goals[goal_id] = item
+            final_state = (self._goals.get(goal_id) or {}).get("state")
         self._save_goals()
 
-        # Keep the employee KPI honest about the cancellation.
-        try:
-            employee = self._ensure_employee()
-            employee.record_goal_finished(goal_id, "cancelled")
-            self._persist_employee()
-        except Exception:
-            pass
+        # Keep the employee KPI honest about the cancellation -- and only about
+        # a cancellation. Counting every stop POST as a failed goal meant one
+        # completed goal was booked BOTH as completed and as failed, inflating
+        # the denominator of every success-rate figure derived from these KPIs.
+        if final_state == "cancelled":
+            try:
+                employee = self._ensure_employee()
+                employee.record_goal_finished(goal_id, "cancelled")
+                self._persist_employee()
+            except Exception:
+                pass
 
         with self._goal_lock:
             return dict(self._goals.get(goal_id, item))
@@ -782,8 +811,17 @@ class AIStateManager:
         tasks = []
         if result.context:
             ctx = result.context
-            if hasattr(ctx, 'tasks') and ctx.tasks:
-                for t in ctx.tasks:
+            # The tasks live on the PLAN, not on the context: ``ExecutionContext``
+            # has no ``tasks`` field at all (src/kernels/execution/__init__.py:212),
+            # so the old ``hasattr(ctx, "tasks")`` guard was always False and this
+            # list was ALWAYS empty -- every goal detail served over HTTP rendered
+            # as "did nothing, no tasks". Task status is how an operator decides
+            # whether a "completed" goal actually completed anything, so read the
+            # plan and fall back to the old attribute if a future shape has one.
+            plan_tasks = getattr(getattr(ctx, "plan", None), "tasks", None)
+            ctx_tasks = plan_tasks if plan_tasks is not None else getattr(ctx, "tasks", None)
+            if ctx_tasks:
+                for t in ctx_tasks:
                     tasks.append({
                         "id": t.id,
                         "name": t.name,
@@ -839,6 +877,11 @@ def create_goal(req: GoalCreateRequest) -> Dict[str, Any]:
 
     调用 AgentRuntime.run_goal，走完整链：
     plan → execute → evaluate → persist。
+
+    ``background=true`` 时只在后台启动执行并立即返回 ``state:"running"``，
+    使 ``GET /v1/goals/{id}`` 可被轮询、``POST /v1/goals/{id}/stop`` 能真的
+    终止一次运行中的执行 —— 没有这个开关，停止能力在 HTTP 面上永远不可达，
+    因为目标在 POST 返回前就已经跑完了。
     """
     mgr = AIStateManager()
     try:
@@ -847,6 +890,7 @@ def create_goal(req: GoalCreateRequest) -> Dict[str, Any]:
             scope=req.scope,
             plan_mode=req.plan_mode,
             verification_criteria=req.verification_criteria,
+            background=req.background,
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Goal execution failed: {exc}")
