@@ -35,10 +35,10 @@ and proven** — a "create file" goal, run through the production wiring, actual
 writes the file to disk with the expected content and an unwired executor fails
 instead of lying. That was the worst defect in the report (P6). It is now PASS,
 measured. The product is still **NOT READY** because P1–P3, P5, P8–P10 remain
-open (no employee persistence / EmployeeStore, planner execution now audited
-but not yet wired into a user-facing path, no enforced approvals, no
-user-facing audit/permission surface, no real user workflow completed through
-the UI).
+open (employee persistence now exists as a store but the UI still surfaces 28
+synthetic modules as "employees", planner execution now audited but not yet
+wired into a user-facing path, no enforced approvals, no user-facing
+audit/permission surface, no real user workflow completed through the UI).
 
 ---
 
@@ -52,18 +52,24 @@ the user.
 - `src/gateway/ai_management.py:141-156` `_ensure_employee()` **hardcodes** the
   only employee: `Employee(name="liuhao-default", agent_count=3,
   agent_types=["planner","executor","critic"])`. Synthesised, not persisted.
-- No `EmployeeStore` / `employee_store` exists anywhere (repo-wide grep).
+- An `EmployeeStore` (`src/ai/employee_store.py`, commit 187291d6) now persists
+  `Employee`/agents/tasks **and** the gateway's `_goals` across restart; the
+  gateway seeds/loads the default employee from it. **But** the UI still surfaces
+  28 (kernel modules + capability layers) as "employees" (`roster.py:289`) and
+  there is no user-facing hire/pause/resume-by-name.
 - `_goals` is an **in-process dict** (`ai_management.py:124`) — lost on restart,
   not shared across workers.
 - The UI's "My AI Employees" is a capability-registry viewer: `roster.py:289`
   computes `employees = kernels + layers = 28`. The product therefore displays
   **"28 AI employees" when there are zero employees.**
 
-**Biggest gap:** there is no `EmployeeStore` / employee persistence (the
-`Employee` / `Agent` objects in `src/ai/employee.py` are in-memory). Note: a
-persistence layer now exists for the *planner task graph* (`GoalTaskGraph`
-`save_state` / `load_state`, commit 2f7484d5) — but that covers goals/tasks,
-not the employee roster.
+**Biggest gap:** the persisted employee is still a single hardcoded default
+(`liuhao-default`) seeded by the gateway — there is no user-facing
+hire/pause/resume-by-name, and the UI's "My AI Employees" still counts kernel
+modules + capability layers as 28 "employees" (`roster.py:289`) instead of real
+persisted employees. (The persistence machinery — `EmployeeStore`, commit
+187291d6, and the planner-state `save_state`/`load_state`, commit 2f7484d5 — now
+exists; it just isn't surfaced to the user.)
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
 kernel modules.
@@ -212,6 +218,14 @@ system fails closed when they do not.
   goals, tasks, statuses and dependency edges across a process restart — closing
   "no persistence at all" for the planning state. (Employee/agent persistence is
   a separate, still-open item — see P1.)
+- **Employee/agent/goal persistence now exists.** `EmployeeStore`
+  (`src/ai/employee_store.py`, commit 187291d6) persists `Employee` + agents +
+  tasks + aggregate counters to a JSON file (stdlib only, REDIR-able via
+  `LIUHAO_WORKSPACE_ROOT`, atomic write, corrupt-safe), and `AIStateManager`
+  seeds/loads the default employee from it and persists `pause`/`resume` + goal
+  history across restart. Proven by `scripts/verify_employee_persistence.py`
+  (PASS): seed→save→restart→load recovers agent counts, task status and counters.
+  (The UI still presents 28 synthetic modules as "employees" — see P1.)
 
 **Biggest gap:** enforcement is not armed by default and approvals remain inert.
 (The content lie is now closed for ALL actions — commit 315fc804 makes the

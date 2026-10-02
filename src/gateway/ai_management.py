@@ -199,7 +199,7 @@ class AIStateManager:
         if root:
             return os.path.join(root, "liuhao_goals.json")
         repo_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
         return os.path.join(repo_root, ".liuhao_goals.json")
 
