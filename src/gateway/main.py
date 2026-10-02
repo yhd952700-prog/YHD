@@ -531,6 +531,15 @@ def get_app() -> FastAPI:
     from .audit import router as audit_router
     app.include_router(audit_router, dependencies=[Depends(_require_human)])
 
+    # 身份 / 权限可解释性面（P9 Permissions / Identity UX）：把**已经存在**的身份
+    # 内核摊开给人看 —— 谁存在、每个主体持有哪些权限。真实来源只有
+    # src/kernels.identity，没有任何在本层重建的主体表。
+    # 只读是硬约束：加一层 HTTP 赋权/撤权端点就是新增赋权面，而这条路径此刻没有
+    # 人类复核兜底（见 identity.py 模块 docstring）。与其余业务面一样挂人类主权
+    # 闸门 —— 权限账本不匿名可读。
+    from .identity import router as identity_router
+    app.include_router(identity_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

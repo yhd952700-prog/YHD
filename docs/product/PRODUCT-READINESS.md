@@ -594,17 +594,57 @@ a valid human token.
 - The **identity kernel is REAL-USABLE**: real enforcement of lifecycle, scope
   ceiling, principal uniqueness, and human/agent namespace disjointness;
   fail-closed registry integrity.
-- But it is an **authorization registry, not authentication** — no credentials,
-  no token issuance, no MFA, no key rotation in the kernel.
+- ~~It is an **authorization registry, not authentication** — no credentials,
+  no token issuance, no MFA, no key rotation in the kernel.~~ **RETRACTED**
+  (branch `p36-identity-ux`): the gateway really does authenticate.
+  `src/gateway/policy.py:83 require_bearer_payload` verifies a JWT **signature**
+  through `src.security.get_jwt_handler().validate_access_token`
+  (HS256/RS256 keyed from `LIUHAO_JWT_SECRET`; configured federation needed for
+  more than one worker; production refuses to boot without it), reading
+  `X-Liuhao-Token` first and `Authorization: Bearer` second; every business
+  router is mounted behind that dependency in `src/gateway/main.py`.
+  `POST /v1/auth/login` (`src/gateway/auth.py:415`) checks a real
+  PBKDF2-HMAC-SHA256 credential record with throttling and issues a JWT, and
+  `scripts/issue_console_token.py` mints one for a registered human. What is
+  still true today: **no MFA and no automated key rotation**, and the docstring
+  at the top of `scripts/issue_console_token.py` still claims "the gateway has
+  no `/v1/auth/login`" — that sentence is stale as well.
 - Default config leaves both persistence env vars unset ⇒ human registrations are
-  **memory-only and vanish on restart**.
+  **memory-only and vanish on restart**. **Measured, not assumed** (two processes
+  sharing one temp registry, see `scripts/verify_identity_user_surface.py`):
+  with `LIUHAO_HUMAN_IDENTITIES_FILE` unset the write is an explicit no-op
+  (`src/kernels/identity/_persistence.py:524`) and the registration is gone in
+  the next process; with the file **and**
+  `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` set it survives the restart; with the
+  file set but no key the row is written to disk and then **refused** at load
+  (fail-closed, HC-11 / U6). Three different failures behind one "there are no
+  humans" symptom — which is why the new endpoints report the reason.
 - `grant_permission`'s scope-ceiling refusal is recorded on HC-01 as
-  `outcome=success` — a false success on the authoritative chain.
+  `outcome=success` — a false success on the authoritative chain. Still true:
+  that method returns `False` and never calls `mark_action_denied`, unlike
+  `create_identity` (`src/kernels/identity/__init__.py:1043` vs `:933`).
 - The UI exposes exactly **4 write actions** total (send chat, record approval,
   revoke approval, log out). None manages permissions.
 
-**Biggest gap:** identity is never surfaced to the user, and its refusals are
-recorded as successes.
+**Added since that assessment (backend only, no UI):** a read-only identity
+surface — `GET /v1/identity/principals`, `/v1/identity/principals/{principal_id}`,
+`/v1/identity/permissions`, `/v1/identity/summary` (`src/gateway/identity.py`) —
+mounted behind the same human-principal gate as every other business router and
+**read-only by construction**: no POST/PUT/PATCH/DELETE exists under
+`/v1/identity` at all. Every count comes from `IdentityManager` itself — no
+second source of truth, no synthesized rows; derived `resource`/`action` fields
+are labelled `derived` and the per-grant scope the kernel does not retain is
+reported as absent rather than invented. `scripts/verify_identity_user_surface.py`
+proves it over real HTTP against a real uvicorn server (48/48 checks): real
+fixtures round-trip, 401 for missing and forged tokens, honest 503 when the
+identity kernel is not READY, honest `warnings` + `registry.rows_refused` when a
+configured registry fails closed, and 404 (never an empty object) for an unknown
+principal.
+
+**Biggest gap:** identity is now enumerable over HTTP but still not visible in
+the UI, grants are deliberately not writable over HTTP (mutation is an authority
+surface and has no human-review gate yet), and refusals are still recorded as
+successes.
 **Flips to PASS when:** permissions are visible/manageable in the UI and refusals
 are recorded truthfully.
 
