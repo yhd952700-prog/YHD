@@ -960,8 +960,15 @@ class ExecutionEngine:
                 break
 
             # Execute ready tasks (in parallel conceptually)
+            #
+            # ``stop_event`` MUST be forwarded: it is what makes aborting a
+            # goal responsive. Without it the "honour a stop request before
+            # each attempt" check inside ``_execute_task`` saw ``None`` and was
+            # dead code, so a human STOP arriving during a long-running task
+            # was only observed after the task's whole retry budget burned
+            # down (~40s for a task that times out at 10s with max_retries=3).
             for task in ready_tasks:
-                self._execute_task(ctx, task, verification_criteria)
+                self._execute_task(ctx, task, verification_criteria, stop_event)
 
         if iteration >= max_iterations:
             # Timeout
