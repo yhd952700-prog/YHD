@@ -10,11 +10,15 @@ Provides:
 
 from pathlib import Path
 import json
+import logging
 import os
 import time
 from typing import Dict, List, Optional, Any
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
+from .sinks import dispatch_alert
+
+logger = logging.getLogger(__name__)
 
 # Tests redirect the alert store to a temp dir via this env var (REDIR). The
 # production default is unchanged; this only makes the path overridable.
@@ -141,7 +145,13 @@ class AlertStore:
 
     def emit_alert(self, alert: Alert) -> str:
         """
-        Emit (store) an alert.
+        Emit (store + deliver) an alert.
+
+        The alert is first persisted to the JSON store (the fail-closed
+        guarantee: the record always survives). It is then dispatched to the
+        configured notification sink(s) — console log, and a webhook when
+        ``LIUHAO_ALERT_WEBHOOK`` is set. A sink failure is logged and swallowed;
+        it can never lose the persisted record or break the caller.
 
         Args:
             alert: The alert to store
@@ -152,6 +162,13 @@ class AlertStore:
         eid = alert.id
         self._alerts[eid] = alert
         self._save()
+        # Real delivery: dispatch to the configured sink(s). File persistence
+        # above is the fail-closed guarantee — even if dispatch fails, the alert
+        # record is already on disk.
+        try:
+            dispatch_alert(alert)
+        except Exception as exc:  # noqa: BLE001 - emit_alert must never raise
+            logger.warning("alert dispatch failed (alert already persisted): %s", exc)
         return eid
 
     def get_alert(self, alert_id: str) -> Optional[Alert]:
