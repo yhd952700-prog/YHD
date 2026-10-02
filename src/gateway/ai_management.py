@@ -336,6 +336,25 @@ class AIStateManager:
         self._save_goals()
         return entry
 
+    def stop_goal(self, goal_id: str) -> Dict[str, Any]:
+        """人类操作员中止一个 Goal（主权控制）。
+
+        把目标标记为 ``stopped`` 并落盘，记录人类喊停的事实。后端当前以同步、
+        单目标方式驱动 ``run_goal``，因此这是对**已提交/进行中**目标的状态级
+        中止：它真实改变持久化状态、可被控制台与审计读到，而不是伪造一次成功。
+        """
+        with self._goal_lock:
+            item = self._goals.get(goal_id)
+            if item is None:
+                raise ValueError(f"Goal {goal_id} not found")
+            item = dict(item)
+            item["state"] = "stopped"
+            item["error"] = item.get("error") or "aborted by human operator"
+            item["replan_suggested"] = False
+            self._goals[goal_id] = item
+        self._save_goals()
+        return item
+
     def list_goals(self) -> List[Dict[str, Any]]:
         """列出所有已执行 Goal 摘要。"""
         with self._goal_lock:
@@ -679,6 +698,20 @@ def replan_goal(goal_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Replan failed: {exc}")
+
+
+@router.post("/goals/{goal_id}/stop")
+def stop_goal(goal_id: str) -> Dict[str, Any]:
+    """人类操作员中止一个正在运行的 Goal（主权控制）。
+
+    控制台「中止」按钮的落点。目标不存在 → 404；成功 → 状态置为 ``stopped``
+    并落盘，真实可查。
+    """
+    mgr = AIStateManager()
+    try:
+        return mgr.stop_goal(goal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/employees")

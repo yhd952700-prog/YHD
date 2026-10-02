@@ -1019,6 +1019,60 @@ select {
   font-weight: 560;
 }
 
+/* ── 操作员控制：表单与行内动作按钮 ─────────────────────────── */
+
+.os-operator-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 16px;
+  align-items: end;
+}
+
+.os-operator-form .os-field-wide {
+  grid-column: 1 / -1;
+}
+
+.os-operator-form .os-btn {
+  grid-column: 1 / -1;
+  width: auto;
+  justify-self: start;
+  margin-top: 4px;
+}
+
+.os-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: 8px;
+}
+
+.os-action-group .os-btn {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.os-operator-panel {
+  margin-bottom: 18px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--os-border);
+  background: var(--os-panel-2);
+}
+
+.os-operator-grid {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
+.os-operator-grid > * {
+  flex: 1 1 340px;
+  min-width: 0;
+}
+
 .os-check {
   display: flex;
   align-items: center;
