@@ -24,12 +24,16 @@ class DecisionOutcome(str, Enum):
 
 @dataclass
 class SandboxSpec:
-    """Containment constraints recorded for an execution.
+    """Containment constraints recorded for an execution (INTENT ONLY — not enforced).
 
-    This is the *intent* the broker enforces at the policy layer; actual OS-level
-    sandboxing is performed by the executor (e.g. RestrictedPython / container),
-    not by this dataclass. Recording the spec makes the containment decision
-    auditable even when the low-level mechanism differs per deployment.
+    This dataclass records the *intent* the broker reaches at the policy layer. It
+    does NOT by itself apply any OS-level isolation: there is currently NO executor
+    in this codebase that turns ``SandboxSpec`` into a real sandbox (no RestrictedPython
+    shim, no container/chroot/seccomp wiring is connected to this spec). Treat it as
+    auditable, human-readable intent — a documented plan — NOT as an active security
+    boundary. Any claim that a host command "runs sandboxed" is FALSE until an executor
+    is wired to honor these fields and the broker is switched to enforce them. Until
+    then, a ``SandboxSpec`` on a decision is advisory metadata only.
     """
 
     cwd: Optional[str] = None
