@@ -66,10 +66,12 @@ def _emit_exec_alert(
         state=AlertState.FIRING,
         tags=tags,
     )
-    # Real dispatch: write to the alerts store (AlertStore.emit_alert) and log
-    # to console. No stub — the store path is what actually persists alerts.
+    # Real dispatch: write to the alerts store (AlertStore.emit_alert). That
+    # call now persists the alert AND delivers it through the configured sink(s)
+    # (console log + webhook when LIUHAO_ALERT_WEBHOOK is set). No stub — the
+    # store path is what actually persists and pages. The console log is emitted
+    # by ConsoleLogSink so every alert (not just execution ones) is surfaced.
     emit_alert(alert)
-    logger.warning("[ALERT][%s] %s :: %s", severity.name, name, message)
 
 
 def _on_execution_event(event: Event) -> None:

@@ -29,7 +29,23 @@ from .store import (
 
 
 def install_production_rules() -> None:
-    """Register production alert rules with tuned thresholds (OB-04 gap)."""
+    """Register production alert rules with tuned thresholds (OB-04 gap).
+
+    PENDING METRIC EMITTERS (honest status, do not whitewash):
+    Every rule below references a metric (``error_rate_percent``,
+    ``memory_usage_percent``, ``cpu_usage_percent``, ``latency_p99_ms``,
+    ``service_heartbeat_interval``, ``audit_log_lag_seconds``) for which NO
+    emitter exists anywhere in the codebase. ``AlertManager.evaluate_all`` only
+    fires a rule when that metric name is present in the metrics dict passed to
+    it, and nothing feeds these names today — so enabling them would make
+    ``evaluate_all`` silently inert (decorative). They are therefore registered
+    but ``enabled=False`` until real metric emitters are wired. We deliberately
+    do NOT invent fake metric emitters to make them "pass".
+
+    The execution-failure alerts (see ``execution_binding``) are the REAL,
+    working path: they are emitted directly on EventBus failure events and reach
+    the configured sink via ``AlertStore.emit_alert`` -> ``dispatch_alert``.
+    """
     # Service down alert: fire if service heartbeat missing for 5 minutes
     add_alert_rule(AlertRule(
         id="svc_heartbeat_missing",
@@ -45,6 +61,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=60.0,
         evaluation_count=3,
+        enabled=False,  # PENDING METRIC EMITTER: no service_heartbeat_interval source
     ))
 
     # Error rate alert: fire if error rate > 5% over 5-min window
@@ -62,6 +79,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=False,  # PENDING METRIC EMITTER: no error_rate_percent source
     ))
 
     # Latency alert: fire if P99 latency > 2s
@@ -79,6 +97,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=10.0,
         evaluation_count=3,
+        enabled=False,  # PENDING METRIC EMITTER: no latency_p99_ms source
     ))
 
     # Memory usage alert: fire if memory > 85%
@@ -96,6 +115,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=False,  # PENDING METRIC EMITTER: no memory_usage_percent source
     ))
 
     # CPU usage alert: fire if CPU > 80%
@@ -113,6 +133,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=15.0,
         evaluation_count=2,
+        enabled=False,  # PENDING METRIC EMITTER: no cpu_usage_percent source
     ))
 
     # Audit log gap alert: fire if audit log sync lag > 60 seconds
@@ -130,6 +151,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
+        enabled=False,  # PENDING METRIC EMITTER: no audit_log_lag_seconds source
     ))
 
 
