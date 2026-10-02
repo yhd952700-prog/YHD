@@ -35,7 +35,8 @@ and proven** — a "create file" goal, run through the production wiring, actual
 writes the file to disk with the expected content and an unwired executor fails
 instead of lying. That was the worst defect in the report (P6). It is now PASS,
 measured. The product is still **NOT READY** because P1–P3, P5, P8–P10 remain
-open (no employee persistence, no wired planner, no enforced approvals, no
+open (no employee persistence / EmployeeStore, planner execution now audited
+but not yet wired into a user-facing path, no enforced approvals, no
 user-facing audit/permission surface, no real user workflow completed through
 the UI).
 
@@ -58,7 +59,11 @@ the user.
   computes `employees = kernels + layers = 28`. The product therefore displays
   **"28 AI employees" when there are zero employees.**
 
-**Biggest gap:** there is no employee persistence layer at all.
+**Biggest gap:** there is no `EmployeeStore` / employee persistence (the
+`Employee` / `Agent` objects in `src/ai/employee.py` are in-memory). Note: a
+persistence layer now exists for the *planner task graph* (`GoalTaskGraph`
+`save_state` / `load_state`, commit 2f7484d5) — but that covers goals/tasks,
+not the employee roster.
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
 kernel modules.
@@ -73,15 +78,18 @@ that an executor can actually run.
 **Evidence:**
 - `GoalDecomposer.decompose` (`src/kernels/execution/__init__.py:190`) is a
   **keyword table**; its own comment states that "in production would use LLM".
-- The real LLM-backed planner `src/ai/goal_task_graph.py` (846 lines) is an
-  **orphan — zero references anywhere in `src/`.**
+- The real LLM-backed planner `src/ai/goal_task_graph.py` is an **orphan — no
+  caller outside its own module** (the gateway never invokes it). Its task
+  execution is now routed through the `@kernel_action("ai.execute_planner_task")`
+  audit (commit 2f7484d5), but it is still not invoked by any user-facing path.
 - Decomposition passes `{"goal": <the whole sentence>}` to capabilities, not
   tool-shaped inputs (`code` / `path` / `content` / `expression`). An executor
   receiving this cannot act on it.
 
-**Biggest gap:** no planner is wired into any user path.
+**Biggest gap:** no planner is wired into any user-facing path (its execution is
+now audited, but nothing calls it).
 **Flips to PASS when:** a real goal is decomposed into executable tasks with
-tool-shaped inputs and those tasks actually run.
+tool-shaped inputs and those tasks actually run through a user path.
 
 ---
 
@@ -190,9 +198,27 @@ system fails closed when they do not.
   remaining denied set is genuine authority/destructive actions that require a
   verified human (OD-010). The `test_every_decorated_kernel_action_is_classified`
   completeness guard still holds.
+- **The planner's task execution is now on the audited path.** `GoalTaskGraph`
+  `.execute_task` delegates to a `@kernel_action("ai.execute_planner_task")`
+  -wrapped method (commit 2f7484d5), so the planning→execution loop is no longer
+  orphaned from the audit. The new action is classified `ALLOWED` in
+  `INTERNAL_SERVICE_ALLOWED_ACTIONS`. Proven by
+  `scripts/verify_planner_audit_loop.py` (PASS): all 4 tasks run, every
+  `ai.execute_planner_task` event records `outcome=success` + `policy=allow`, and
+  a regression guard asserts no event anywhere has `(decision=deny AND
+  outcome=success)`.
+- **First persistence layer in the product.** `GoalTaskGraph.save_state` /
+  `load_state` (stdlib `json`, REDIR-able via `LIUHAO_WORKSPACE_ROOT`) round-trip
+  goals, tasks, statuses and dependency edges across a process restart — closing
+  "no persistence at all" for the planning state. (Employee/agent persistence is
+  a separate, still-open item — see P1.)
 
-**Biggest gap:** enforcement is not armed by default, approvals remain inert,
-and the chain still lies for most denial paths.
+**Biggest gap:** enforcement is not armed by default and approvals remain inert.
+(The content lie is now closed for ALL actions — commit 315fc804 makes the
+`@kernel_action` decorator relabel every `policy_decision=deny`/`defer` to
+`outcome=denied`; proven across all 20 denied actions by
+`scripts/verify_audit_truthfulness.py`. The remaining gap is that denials are
+recorded honestly but not yet *blocked*.)
 **Flips to PASS when:** enforcement is armed by default, the fence survives
 boot, an approval actually gates an action, and the chain tells the truth across
 all denial paths.
