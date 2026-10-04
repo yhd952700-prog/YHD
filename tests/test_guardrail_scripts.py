@@ -29,11 +29,13 @@ controls exercised in Round 74.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 import re
 import textwrap
 
 import pytest
+import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -68,14 +70,85 @@ def _source(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _workflow_text() -> str:
-    if not WORKFLOWS_DIR.is_dir():
-        return ""
-    return "\n".join(
-        p.read_text(encoding="utf-8", errors="replace")
-        for p in sorted(WORKFLOWS_DIR.iterdir())
-        if p.suffix in (".yml", ".yaml")
+#: Step fields that carry a shell command, i.e. that can invoke a script.
+_STEP_COMMAND_KEYS = ("run",)
+#: ``with:`` entries that carry a command for a remote/composite action. None of
+#: these is used in this repository today (every gate is invoked from ``run:``);
+#: they are listed so adding one later does not silently unwire its script.
+_WITH_COMMAND_KEYS = ("args", "command", "script", "entrypoint", "entrypoint_args")
+
+
+def _workflow_files(workflows_dir: pathlib.Path = WORKFLOWS_DIR) -> list[pathlib.Path]:
+    if not workflows_dir.is_dir():
+        return []
+    return sorted(
+        p for p in workflows_dir.iterdir() if p.suffix in (".yml", ".yaml")
     )
+
+
+@functools.lru_cache(maxsize=None)
+def _load_workflows(workflows_dir: pathlib.Path = WORKFLOWS_DIR) -> tuple[object, ...]:
+    """Parse every workflow file.
+
+    A file that does not parse is raised as an :class:`AssertionError` naming the
+    file and the error, because skipping an unreadable workflow is exactly how a
+    wiring check quietly stops checking anything.
+    """
+    documents = []
+    for path in _workflow_files(workflows_dir):
+        try:
+            documents.append(yaml.safe_load(_source(path)))
+        except yaml.YAMLError as exc:
+            raise AssertionError(
+                "%s is not valid YAML (%s) -- a workflow this test cannot read is a "
+                "workflow it cannot verify, so it fails instead of being skipped"
+                % (path.name, exc)
+            ) from exc
+    return tuple(documents)
+
+
+def _step_commands(document: object) -> list[str]:
+    """Command-bearing strings from ``jobs -> * -> steps -> *``.
+
+    Deliberately narrow: a script named in a YAML comment, in a step ``name:``
+    or in a job name is *not* invoked. Matching on the raw workflow text made a
+    comment listing the deliberately-unwired scripts look like five real
+    invocations, which turned this guardrail green while nothing was wired --
+    a false green, worse than the false positive it replaced.
+    """
+    commands: list[str] = []
+    if not isinstance(document, dict):
+        return commands
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return commands
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for key in _STEP_COMMAND_KEYS:
+                value = step.get(key)
+                if isinstance(value, str):
+                    commands.append(value)
+            with_block = step.get("with")
+            if isinstance(with_block, dict):
+                for key, value in with_block.items():
+                    if key in _WITH_COMMAND_KEYS and isinstance(value, str):
+                        commands.append(value)
+    return commands
+
+
+def _workflow_invokes(document: object, script_name: str) -> bool:
+    return any(script_name in command for command in _step_commands(document))
+
+
+def _is_wired_into_ci(script_name: str) -> bool:
+    return any(_workflow_invokes(doc, script_name) for doc in _load_workflows())
 
 
 def _dotted(node: ast.AST) -> str:
@@ -303,12 +376,13 @@ def test_every_gate_script_has_a_failure_exit(script: pathlib.Path) -> None:
 @pytest.mark.parametrize("script", _gate_scripts(), ids=lambda p: p.name)
 def test_every_gate_script_is_wired_into_ci(script: pathlib.Path) -> None:
     """An unwired guardrail is decay: nobody runs it until someone remembers."""
-    text = _workflow_text()
-    assert text, "no workflow files found under .github/workflows"
-    assert script.name in text, (
-        "%s is never invoked by any workflow, so it cannot protect anything; "
-        "wire it into a job or list it in DIAGNOSTIC_REPORTERS with a reason"
-        % script.name
+    assert _workflow_files(), "no workflow files found under .github/workflows"
+    assert _is_wired_into_ci(script.name), (
+        "%s is never invoked by any workflow step, so it cannot protect anything; "
+        "wire it into a job or list it in DIAGNOSTIC_REPORTERS with a reason. "
+        "Note: a mention in a YAML comment or a step `name:` does not count -- "
+        "only a command-bearing field (`run:`, or `with:` args/command/script/"
+        "entrypoint) is an invocation" % script.name
     )
 
 
@@ -427,6 +501,99 @@ _CANNOT_FAIL_SHAPES = [
 def test_scripts_that_cannot_fail_are_still_flagged(source: str) -> None:
     """Negative control: broadening the analysis must not make it vacuous."""
     assert not _can_exit_nonzero_source(source), "cannot fail, must stay flagged:\n%s" % source
+
+
+def test_unparseable_workflow_fails_loudly(tmp_path: pathlib.Path) -> None:
+    """A workflow this test cannot read must fail the test, not be skipped."""
+    broken = tmp_path / "broken.yml"
+    broken.write_text("jobs:\n  gates:\n    steps:\n      - run: [unclosed\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="broken.yml"):
+        _load_workflows(tmp_path)
+
+
+_WIRING_CONTROLS = [
+    pytest.param(
+        """
+        jobs:
+          gates:
+            steps:
+              # deliberately not wired: verify_deploy_readiness.py
+              - name: run something else
+                run: echo hi
+        """,
+        False,
+        id="mentioned_only_in_a_yaml_comment",
+    ),
+    pytest.param(
+        """
+        jobs:
+          gates:
+            steps:
+              - name: report verify_deploy_readiness.py status
+                run: echo hi
+        """,
+        False,
+        id="mentioned_only_in_a_step_name",
+    ),
+    pytest.param(
+        """
+        jobs:
+          # verify_deploy_readiness.py is intentionally listed here
+          gates:
+            name: verify_deploy_readiness.py gate
+            steps:
+              - name: verify_deploy_readiness.py
+                run: echo hi
+        """,
+        False,
+        id="mentioned_only_in_comments_job_name_and_step_name",
+    ),
+    pytest.param(
+        """
+        jobs:
+          gates:
+            steps:
+              - name: deploy readiness
+                run: python scripts/verify_deploy_readiness.py
+        """,
+        True,
+        id="invoked_from_run",
+    ),
+    pytest.param(
+        """
+        jobs:
+          gates:
+            steps:
+              - name: deploy readiness
+                run: |
+                  set -e
+                  python scripts/verify_deploy_readiness.py --strict
+        """,
+        True,
+        id="invoked_from_multiline_run",
+    ),
+    pytest.param(
+        """
+        jobs:
+          gates:
+            steps:
+              - name: deploy readiness
+                uses: some/action@v1
+                with:
+                  script: scripts/verify_deploy_readiness.py
+        """,
+        True,
+        id="invoked_from_with_script",
+    ),
+]
+
+
+@pytest.mark.parametrize("source,expected", _WIRING_CONTROLS)
+def test_wiring_is_read_from_commands_not_prose(source: str, expected: bool) -> None:
+    """Negative control for the false green: a comment or a ``name:`` is not an
+    invocation, and only ``run:`` / command-bearing ``with:`` entries are."""
+    document = yaml.safe_load(textwrap.dedent(source))
+    assert _workflow_invokes(document, "verify_deploy_readiness.py") is expected
 
 
 def test_previously_misflagged_conditional_gates_can_fail() -> None:
