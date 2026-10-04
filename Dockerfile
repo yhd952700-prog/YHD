@@ -52,6 +52,14 @@ COPY --chown=app:app src/ ./src/
 COPY --chown=app:app config/ ./config/
 COPY --chown=app:app scripts/ ./scripts/
 
+# 权威能力注册表。src/ai/roster_payload.py 的 REGISTRY_PATH 是
+# `<repo_root>/capability-registry.yaml`（由 __file__ 上溯三层得出），
+# 所以它必须落在 /app/ 根上。缺这一行时文件在镜像里根本不存在，
+# GET /v1/dashboard/roster 会 available=false 并把 kernels/layers 报成空数组
+# —— 而那不是"没注册能力"，是"镜像没带文件"，两者在界面上长得一样。
+# 实测确认（2026-10-04）：此前的 COPY 清单里没有它。
+COPY --chown=app:app capability-registry.yaml ./capability-registry.yaml
+
 # 驾驶舱构建产物：路径必须与 src/gateway/console_static.py 的
 # DEFAULT_CONSOLE_DIST（<repo>/apps/console/console/dist）一致。
 COPY --from=console --chown=app:app /console/dist/ ./apps/console/console/dist/

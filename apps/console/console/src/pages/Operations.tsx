@@ -417,8 +417,8 @@ export function SystemStatus() {
               <dd>
                 {data.declared_totals?.capabilities ?? '—'} / {data.declared_totals?.layers ?? '—'}
               </dd>
-              <dt>声明测试用例</dt>
-              <dd>{formatCompact(data.totals.declared_test_cases)}</dd>
+              <dt>注册表条目</dt>
+              <dd>{formatCompact(data.totals.registry_entries)}</dd>
               <dt>当前 provider</dt>
               <dd>{data.providers.active?.type ?? '—'}</dd>
             </dl>

@@ -92,11 +92,20 @@ export interface RosterPayload {
   error?: string | null
   version?: string
   declared_totals?: { capabilities?: number; layers?: number }
+  // Mirrors build_roster_payload() in src/ai/roster_payload.py exactly.
+  // `declared_test_cases` used to be declared here and rendered by the
+  // operations panel, but the backend has never produced it -- the payload
+  // carries `declared_totals.{capabilities,layers}` instead. A field the server
+  // does not send renders as undefined, so the panel was displaying a number
+  // that did not exist. Do not add a field here without checking the payload
+  // builder: this type is the only thing standing between the two.
   totals: {
     kernels: number
     layers: number
+    /** kernel modules + capability layers. NOT an employee count. */
+    registry_entries: number
+    /** real persisted employees only -- see real_employees */
     employees: number
-    declared_test_cases: number
   }
   kernels: RegistryKernel[]
   layers: RegistryLayer[]
