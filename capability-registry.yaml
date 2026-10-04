@@ -268,6 +268,16 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: >-
+      HONESTY UPDATE 2026-10-21: 此前长期 PRIMITIVE-ONLY —— 决策函数
+      (is_revoked / evaluate_trust / get_score) 只在孤儿模块 src/ai/governance.py 与
+      src/ai/network_gateway.py 里被调用（零 importer，信任从不进入真实用户决策）。
+      现已接上真实决策路径：新增只读读取面 GET /v1/trust/{entity_id}（真实状态：
+      撤销标记 / 各作用域分数 / 自信任链探针 / manager.stats()），并在真实挂载路由
+      POST /employees (hire_employee) 之前调用 get_trust_manager().is_revoked(name)
+      拦截被撤销主体的（重新）雇佣（403，带原因）。默认注册表为空，is_revoked 恒 False，
+      正常路径不受影响（fail-open-but-meaningful）。persistence 仍为内存态（跨进程不持久），
+      属跨切面阻塞项，未改 status: IMPLEMENTED。
   - id: LHX-C-011
     legacy_id: evaluation_engine
     name: Evaluation Kernel — Outcome evaluation + feedback loop

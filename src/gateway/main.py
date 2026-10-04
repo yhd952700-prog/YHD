@@ -679,6 +679,12 @@ def get_app() -> FastAPI:
     from .events import router as events_router
     app.include_router(events_router, dependencies=[Depends(_require_human)])
 
+    # 信任只读面（LHX-C-010 缺口）：把信任内核的**真实**状态摊开给人看 ——
+    # 撤销标记、各作用域信任分、自信任链探针、管理器统计。只读、人类主权闸门。
+    # 与其余业务面一致挂 require_human_principal 闸门。
+    from .trust import router as trust_router
+    app.include_router(trust_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

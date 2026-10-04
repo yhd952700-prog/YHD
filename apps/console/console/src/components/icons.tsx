@@ -246,3 +246,11 @@ export const IconEvents = (p: IconProps) => (
     <path d="M19.1 4.9a9.5 9.5 0 0 1 0 14.2" />
   </Glyph>
 )
+
+export const IconTrust = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M12 3l7.2 2.8v5.4c0 4.4-3 8.3-7.2 9.6-4.2-1.3-7.2-5.2-7.2-9.6V5.8z" />
+    <path d="M12 7.4v9.2" />
+    <path d="M8.4 12h7.2" />
+  </Glyph>
+)

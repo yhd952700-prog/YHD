@@ -477,3 +477,60 @@ export function getEvents(limit?: number): Promise<EventsResponse> {
   const qs = limit !== undefined ? `?limit=${encodeURIComponent(String(limit))}` : ''
   return apiFetch<EventsResponse>(`/v1/events${qs}`)
 }
+
+// ─── 信任内核（只读可观测面） ─────────────────────────────────
+//
+// 端点与 `src/gateway/trust.py` 严格对齐（`GET /v1/trust/{entity_id}`）。后端直接复用
+// 信任内核进程单例的真实状态——撤销标记、各作用域信任分、自信任链探针、管理器统计。
+//
+// 诚实优先：后端绝不编造分数；某作用域没有分数就直接省略，前端如实展示"该实体暂无信任分"；
+// 401 由 apiFetch 统一抛出并清会话；其他错误原样展示，不退化成"暂无数据"。
+
+export interface TrustScoreEntry {
+  /** 信任等级（untrusted / low / medium / high / very_high） */
+  level: string
+  /** 0.0 - 1.0 */
+  score: number
+  /** ISO 8601 有效期上限；null 表示无过期 */
+  expires_at: string | null
+  /** 窗口是否已关闭 */
+  is_expired: boolean
+}
+
+export interface TrustChainLinkEntry {
+  from_entity: string
+  to_entity: string
+  trust_score: number
+  scope: string
+  active: boolean
+  expires_at: string | null
+  is_expired: boolean
+}
+
+export interface TrustChainSummary {
+  source: string
+  target: string
+  composite_score: number
+  scope: string
+  valid: boolean
+  computed_at: string
+  links: TrustChainLinkEntry[]
+}
+
+export interface TrustSummary {
+  /** 被查询的实体 id（原样回显） */
+  entity_id: string
+  /** 是否在信任撤销注册表中 */
+  revoked: boolean
+  /** scope -> 真实信任分；没有分数的 scope 不会出现 */
+  scores: Record<string, TrustScoreEntry>
+  /** 自信任链探针的真实结果；恒定存在（含自环） */
+  chain_summary: TrustChainSummary | null
+  /** 管理器统计 */
+  stats: Record<string, unknown>
+}
+
+/** 读取某实体的真实信任状态；entityId 经 encodeURIComponent，避免把特殊字符当路径分叉。 */
+export function getTrust(entityId: string): Promise<TrustSummary> {
+  return apiFetch<TrustSummary>(`/v1/trust/${encodeURIComponent(entityId)}`)
+}

@@ -32,6 +32,9 @@ from pydantic import BaseModel, Field
 # Used to turn a produced file's absolute path into a workspace-relative,
 # honest artifact reference (never inventing a path that isn't real).
 from src.ai.workspace import workspace_root
+# 真实信任决议：雇佣前先查信任内核的撤销注册表。``src.kernels.trust`` 不反向
+# import ``src.gateway``，故此处取顶层 import 无循环风险（已验证）。
+from src.kernels.trust import get_trust_manager
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +346,7 @@ class AIStateManager:
             except Exception as exc:
                 raise ValueError(f"Project {project_id} lookup failed: {exc}")
 
-        runtime = self._ensure_runtime()
+        self._ensure_runtime()
         goal_id = str(uuid.uuid4())[:8]
 
         # Bind to the real Employee (count submitted + mark agents BUSY) so the
@@ -1079,6 +1082,14 @@ def hire_employee(req: HireEmployeeRequest) -> Dict[str, Any]:
     若 ``name`` 已存在 → 409（绝不静默覆盖）；创建成功 → 201。
     """
     mgr = AIStateManager()
+    # 真实信任决议（LHX-C-010）：被撤销的主体不得被（重新）雇佣。
+    # 默认注册表为空，``is_revoked`` 对任何主体返回 False，故正常路径不受影响
+    # （fail-open-but-meaningful：撤销名单里没有的人照常可雇）。
+    if get_trust_manager().is_revoked(req.name):
+        raise HTTPException(
+            status_code=403,
+            detail=f"identity {req.name!r} is revoked in the trust registry; hire refused (human-sovereignty: revoked principal cannot be (re)hired)",
+        )
     try:
         result = mgr.hire_employee(req.name, req.agent_count, req.agent_types)
     except ValueError as exc:
