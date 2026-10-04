@@ -125,7 +125,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "means the gate NEVER executes even though boot logs the fence as "
             "installed, so every fenced action runs un-gated"
         ),
-        "refs": ("src/kernels/_crosscutting.py:676", "src/kernels/_crosscutting.py:679"),
+        "refs": ("src/kernels/_crosscutting.py:718", "src/kernels/execution/fence.py:1279"),
     },
     {
         "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
@@ -136,7 +136,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "un-fenced, log ERROR, keep serving) to fail-closed (abort boot); "
             "unset means the deployment keeps the fail-open default"
         ),
-        "refs": ("src/gateway/main.py:246",),
+        "refs": ("src/gateway/main.py:146",),
     },
     {
         "var": "LIUHAO_POSTURE_STRICT",
@@ -147,7 +147,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "means posture silently resolves to non-production (fail-open by "
             "compatibility) and every posture-gated branch takes the permissive path"
         ),
-        "refs": ("src/security/posture.py:218", "src/security/posture.py:219"),
+        "refs": ("src/security/posture.py:123", "src/security/posture.py:132"),
     },
     {
         "var": "LIUHAO_ENV",
@@ -159,7 +159,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "Recorded here because the original single-variable read made "
             "is_production() permanently False in the production container"
         ),
-        "refs": ("src/security/posture.py:58", "src/security/posture.py:150"),
+        "refs": ("src/security/posture.py:58", "src/security/posture.py:64"),
     },
     {
         "var": "AUDIT_DB_BACKUP_PATH",
@@ -171,7 +171,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "production code ever writes, so the restore branch is inert and a "
             "corruption event silently starts a new hash chain"
         ),
-        "refs": ("src/kernels/audit/__init__.py:395",),
+        "refs": ("src/kernels/audit/__init__.py:396",),
     },
     {
         "var": "LIUHAO_EXECUTOR_FENCE_LEASE_DIR",
@@ -521,6 +521,92 @@ class Finding(object):
         }
 
 
+def drifted_refs(var: str, refs: Sequence[str],
+                 aliases: Sequence[str],
+                 const_names: Sequence[str] = ()) -> List[str]:
+    """Refs that no longer point at code mentioning ``var`` (or an alias).
+
+    A ``refs`` entry is the only thing that makes a finding checkable, so a
+    stale one is worse than no ref at all: it hands the reader a file:line that
+    looks like evidence and is not. On 2026-10-04 every SEED ref was checked
+    and 5 of them had drifted -- e.g. ``src/kernels/_crosscutting.py:676`` is
+    now ``if len(parts) == 3 and parts[0] == "RULE":`` and says nothing about
+    ``LIUHAO_EXECUTOR_FENCE``.
+
+    Line-level matching is deliberately loose (substring of the var name, any
+    alias, or any module-level CONSTANT that holds the var's name, anywhere on
+    the line). The check that matters is "is this still the code we meant", and a
+    ref that moved by a few lines but still names the variable is not drift. A
+    ref that names nothing is drift, and saying so is more useful than silently
+    printing a wrong pointer.
+
+    ``const_names`` exists because a table-driven read mentions neither the env
+    var nor a declared alias: ``posture.py:123`` reads ``source.get(STRICT_ENV)``
+    where ``STRICT_ENV`` is defined at :68. Without it that citation would be
+    reported as drifted, and a checker that cries wolf is one people stop running.
+    """
+    out: List[str] = []
+    needles = [var] + [str(a) for a in aliases] + [str(c) for c in const_names]
+    for raw in refs:
+        ref = str(raw)
+        path, sep, line = ref.rpartition(":")
+        if not sep or not line.isdigit():
+            out.append("%s (no file:line)" % ref)
+            continue
+        p = REPO_ROOT / path
+        if not p.is_file():
+            out.append("%s (file missing)" % ref)
+            continue
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        n = int(line)
+        if n < 1 or n > len(lines):
+            out.append("%s (beyond EOF, file has %d lines)" % (ref, len(lines)))
+            continue
+        if not any(needle in lines[n - 1] for needle in needles):
+            out.append("%s (line reads: %s)"
+                       % (ref, lines[n - 1].strip()[:60]))
+    return out
+
+
+def constant_aliases(names: Sequence[str], src_dir: Path = SRC_DIR) -> Dict[str, List[str]]:
+    """Module-level CONSTANTS whose value is one of ``names``.
+
+    A variable read through a constant is still a real read site: posture.py
+    defines ``STRICT_ENV = "LIUHAO_POSTURE_STRICT"`` and then calls
+    ``source.get(STRICT_ENV)``. The line doing the reading mentions neither the
+    env var's name nor any declared alias, so without this the ref check would
+    report a perfectly good citation as drifted -- and a checker that cries wolf
+    gets ignored, which is worse than having none.
+    """
+    wanted = set(names)
+    out: Dict[str, List[str]] = {}
+    if not src_dir.is_dir() or not wanted:
+        return out
+    for path in sorted(src_dir.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        for node in tree.body:
+            targets: List[str] = []
+            value: Optional[ast.AST] = None
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None \
+                    and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, str) \
+                    and isinstance(node.target, ast.Name):
+                targets = [node.target.id]
+                value = node.value
+            if not targets or value is None or value.value not in wanted:
+                continue
+            for const in targets:
+                out.setdefault(str(value.value), []).append(const)
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
 def evaluate(artifact_vars: Dict[str, List[str]],
              reads: Dict[str, List[Tuple[str, int]]],
              candidates: Dict[str, List[Tuple[str, int]]],
@@ -529,6 +615,10 @@ def evaluate(artifact_vars: Dict[str, List[str]],
     findings: List[Finding] = []
     seed_vars = {str(entry["var"]) for entry in SEED_GATES}
     mentions = mentions or {}
+    const_map = constant_aliases(sorted(
+        {str(e["var"]) for e in SEED_GATES}
+        | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
+    ))
 
     # 1. seed gates
     for entry in SEED_GATES:
@@ -543,6 +633,19 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                 var, "seed-entry-has-no-reason",
                 "SEED_GATES entry carries no `why`; an unexplained gate cannot "
                 "be reviewed."))
+        # Refs are the only thing that makes a finding checkable, so verify they
+        # still point at the variable. Reported independently of every other
+        # check below: a drifted ref must not hide a real gate finding, and it
+        # must not be silenced by one either.
+        bad_refs = drifted_refs(var, refs, aliases, const_map.get(var, ()))
+        if bad_refs:
+            findings.append(Finding(
+                var, "seed-ref-drifted",
+                "cited evidence no longer points at this variable -- %s. A ref "
+                "that names unrelated code is worse than no ref: it looks "
+                "checkable and is not." % "; ".join(bad_refs),
+                [r for r in refs if r not in bad_refs],
+                "re-point the entry at the line that reads %s" % var))
         # A var can be live while never appearing in a literal
         # ``os.environ.get("LIUHAO_X")`` call -- ``src/security/posture.py``
         # iterates a table of names, and ``fence.py`` builds some names. For
