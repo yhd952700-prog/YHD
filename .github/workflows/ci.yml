@@ -335,6 +335,17 @@ jobs:
       - name: Verify countable claims in KERNEL-CANON against the committed code
         run: python scripts/verify_doc_count_claims.py
 
+      # A relative markdown link is a claim that the thing it names is over
+      # there. docs/ARCHITECTURE.md linked `../CODEX-CONTRACT.md` twice -- that
+      # file lives in docs/, not the repo root -- and one of those links sat in
+      # the "reader should read this first" navigation table, so the entry point
+      # it recommended to an AI coding agent was dead. docs/archive/ is excluded
+      # BY ITS OWN declared policy ("preserve as-is"): its file:/// absolute
+      # links are a faithful record of the paths as they were, and rewriting
+      # history to satisfy a linter would be the worse lie.
+      - name: Verify no relative markdown link dangles
+        run: python scripts/verify_doc_links.py
+
       # PHASE 3.6 / T-M (F29 6 and F30 1): exactly one identity implementation may
       # be imported. Two modules both described themselves as the "single Identity
       # Authority" and neither said which one that was -- an undeclared second

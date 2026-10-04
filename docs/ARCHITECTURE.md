@@ -10,7 +10,7 @@
 
 | 读者 | 应该先读 |
 |------|----------|
-| AI 编码代理 | [`../CODEX-CONTRACT.md`](../CODEX-CONTRACT.md) → 本文件 → `spec/KERNEL-CANON.md` |
+| AI 编码代理 | [`CODEX-CONTRACT.md`](CODEX-CONTRACT.md) → 本文件 → `spec/KERNEL-CANON.md` |
 | 新成员 | 本文件 → `docs/quickstart.md` → `spec/MASTER-SPEC-v3.0.md` 第一部分 |
 | 架构师 | 本文件 → `architecture/Architect-Architecture-v3.0.md` → `architecture/gap-analysis.md` |
 | 运维 | `operations/production-runbook.md` → `operations/health-check-spec.md` |
@@ -122,7 +122,7 @@ HUMAN
 7. 没写测试的功能，不许标 `IMPLEMENTED`
 8. R4 虚构能力（AGI/意识/全知/无限复制/完美预测等）→ Never Claim
 
-完整 25 条见：[`../CODEX-CONTRACT.md`](../CODEX-CONTRACT.md)
+完整 25 条见：[`CODEX-CONTRACT.md`](CODEX-CONTRACT.md)
 
 ---
 
