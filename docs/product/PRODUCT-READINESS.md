@@ -716,7 +716,8 @@ a valid human token.
   (fail-closed, HC-11 / U6). Three different failures behind one "there are no
   humans" symptom — which is why the new endpoints report the reason.
 - ~~`grant_permission`'s scope-ceiling refusal is recorded on HC-01 as
-  `outcome=success` — a false success on the authoritative chain.~~ **FIXED in
+  `outcome=success` — a false success on the authoritative audit chain (HC-01,
+  whose runtime integrity is UNVERIFIED — forked chain, pending F1–F6).~~ **FIXED in
   cycle 5:** `grant_permission` / `revoke_permission` now call `mark_action_denied`
   on all four refusal paths (unknown identity / scope ceiling on grant; unknown
   identity / permission-not-held on revoke), proven by
@@ -1156,7 +1157,9 @@ sites were found. Two honest notes left unresolved rather than papered over:
 **Net state:** the product closed loop `planning → execution → permissions →
 WorldInterface → independent verification → audit → recovery → user result` is now
 demonstrable **end to end over real HTTP by a real authenticated human**, with a
-tamper-evident audit trail a user can query and verify. Remaining open gates are
+tamper-evident-by-design audit trail a user can query and verify (its runtime
+chain-of-custody integrity is **UNVERIFIED** — forked chain, pending F1–F6 plus
+independent verification). Remaining open gates are
 P1, P5, P9, P10 — all four are now **capability-complete** (backends real and
 measured; UIs compiled and wired); their only outstanding demonstrable step is a
 **browser click-through** (this environment has no headless browser), not a missing

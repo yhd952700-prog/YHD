@@ -7,6 +7,15 @@ on:
       - 'README.md'
       - 'ACCEPTANCE.md'
       - 'CONTRIBUTING.md'
+      # GOVERNANCE (法度明, 2026-10): these two root-level readiness documents
+      # assert audit-integrity status in their G10 / release-gate sections. They
+      # were absent from both this path filter AND the linter's
+      # OUTWARD_SURFACE_FILES tuple, so an un-caveated tamper/evidence claim in
+      # either file could not fail CI — proven: an explicit run against them
+      # reported 4 findings while a CI-mode run reported `targets: 0 ... PASS`.
+      - 'MASTER_PROJECT_READINESS.md'
+      - 'RELEASE-READINESS-CONTRACT.md'
+      - 'scripts/lint_audit_claims.py'
       - 'apps/**/*.md'
       - 'libs/**/*.md'
       - 'oss-ecosystem/**/*.md'
@@ -21,6 +30,8 @@ on:
       - 'README.md'
       - 'ACCEPTANCE.md'
       - 'CONTRIBUTING.md'
+      - 'MASTER_PROJECT_READINESS.md'
+      - 'RELEASE-READINESS-CONTRACT.md'
       - 'apps/**/*.md'
       - 'libs/**/*.md'
       - 'oss-ecosystem/**/*.md'

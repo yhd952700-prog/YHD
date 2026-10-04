@@ -26,7 +26,7 @@ its own**, it is marked `REAL (indirect)` and the missing surface is called out.
 
 ## 1. The authoritative kernel set — and two corrections to the assumption
 
-The user's assumed list was incomplete/incorrect. The authoritative source is
+The user's assumed list was incomplete/incorrect. The canonical list is
 `capability-registry.yaml:38` (`total_capabilities: 14`), ids `LHX-C-001..014`.
 
 **The 14 registered kernels are:** identity, memory, context, capability, event,
@@ -314,8 +314,10 @@ a crypto capability that does not exist.
 
 ## 11. audit (LHX-C-013) — REAL PRODUCT CAPABILITY; external anchoring NOT wired
 
-**Claims** (`src/kernels/audit/__init__.py:1-15`): tamper-evident audit logging,
+**Claims** (`src/kernels/audit/__init__.py:1-15`): tamper-evident audit logging — design-level only; runtime integrity **UNVERIFIED** (forked chain: 284 broken joins / 169 duplicate-seq rows, pending F1–F6 + independent verification, `docs/autonomous/GOVERNANCE.md` §7).
 SHA-256 hash chain, correlation querying, human-sovereignty override logging.
+The chain is *designed* tamper-evident; the populated deployment nonetheless
+carries a forked chain, so nothing here may be read as a verified integrity trail.
 
 **What is real — and genuinely user-visible:**
 - Routes (`src/gateway/audit.py`, mounted `src/gateway/main.py:532` with `_require_human`):
@@ -348,8 +350,12 @@ reason is "not invoked", not "not implemented".
   `audit_events_quarantine`) is real code but **not exposed by any route**.
 
 **Single most important gap:** invoke an anchor (even `LocalReferenceLog`) from the
-real write path and expose the resulting receipt via `/v1/audit/*`. Today
-"tamper-evident" is true locally but nothing is anchored anywhere.
+real write path and expose the resulting receipt via `/v1/audit/*`. Today the
+chain is tamper-evident *by design only* — and its runtime integrity on the
+populated deployment is **UNVERIFIED** (forked chain, 284 broken joins / 169
+duplicate-seq rows, pending F1–F6 + independent verification) — while **nothing is
+anchored anywhere**, so no external party could detect a rewrite even once the
+local chain is repaired.
 
 ---
 

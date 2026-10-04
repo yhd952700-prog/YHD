@@ -143,6 +143,27 @@ RULES: List[dict] = [
             re.compile(r"不视为.*防篡改"),
             re.compile(r"pending\s+F1", re.IGNORECASE),
         ],
+        # Negation exclusion. An HONEST NEGATIVE statement -- "there is NO
+        # VERIFIED tamper-proof persistent audit trail today" -- is the opposite
+        # of an overclaim: it is the disclosure this whole red line exists to
+        # produce. Without this exclusion the guard fires on U40 in
+        # MASTER_PROJECT_READINESS.md and pressures an author to delete the very
+        # sentence that tells the reader the guarantee does not exist.
+        #
+        # Scoped deliberately NARROW. Only an explicit negation of the CLAIM
+        # ITSELF ("no ... tamper-proof", "not tamper-evident", "no evidence-grade
+        # ... exists") suppresses the finding; a sentence that merely mentions a
+        # gap elsewhere does not. This mirrors the COMPLIANCE-LIABILITY rule's
+        # `negate`, so both red lines treat honest negatives the same way.
+        "negate": [
+            re.compile(r"\b(no|not|never|without)\b[^.;]{0,60}\b"
+                       r"(tamper[- ]?(proof|evident)|evidence[- ]grade|"
+                       r"audit[- ]grade|真实证据源|防篡改|不可篡改)",
+                       re.IGNORECASE),
+            re.compile(r"(没有|尚无|并无|不具备|不具|未具备)[^。；]{0,40}"
+                       r"(防篡改|不可篡改|证据级|审计级)"),
+            re.compile(r"telemetry[- ]grade", re.IGNORECASE),
+        ],
     },
     {
         "group": "HC-09-10-VOLATILE",
@@ -309,8 +330,25 @@ EXCLUDE_GLOBS = [
 # documented, scoped list — adding a path here is an explicit, reviewed
 # decision, NOT a silent widening. Extending this list never changes the claim
 # semantics (see BOUNDARY above).
+#
+# GOVERNANCE (法度明): `MASTER_PROJECT_READINESS.md` and
+# `RELEASE-READINESS-CONTRACT.md` were MISSING here although both are top-level
+# project-face documents whose G10 / release-gate sections assert audit-integrity
+# status outright. Proof of the blind spot: invoking the linter explicitly on
+# those two files reported 4 un-caveated claims, while a CI-mode run reported
+# `targets: 0 ... PASS` — the guard could not see the two documents most likely
+# to be read as a readiness claim. Any future top-level *.md MUST be added here
+# in the same commit that creates it; `tests/test_lint_audit_claims_surface.py`
+# fails when a root-level markdown file exists that this tuple does not name, so
+# the surface cannot silently shrink again.
 OUTWARD_SURFACE_PREFIXES = ("apps/", "libs/", "oss-ecosystem/", "skills/", "LiuHao-O/")
-OUTWARD_SURFACE_FILES = ("README.md", "ACCEPTANCE.md", "CONTRIBUTING.md")
+OUTWARD_SURFACE_FILES = (
+    "README.md",
+    "ACCEPTANCE.md",
+    "CONTRIBUTING.md",
+    "MASTER_PROJECT_READINESS.md",
+    "RELEASE-READINESS-CONTRACT.md",
+)
 
 # Directory trees that are never walked (third-party / generated / VCS).
 SKIP_DIRS = {".venv", "node_modules", ".git", "__pycache__"}

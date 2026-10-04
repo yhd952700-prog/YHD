@@ -11,8 +11,24 @@ pipeline), this harness:
   * records each check's command, return code, and a sha256 of its raw stdout;
   * records KNOWN GAPS honestly (HC-09/HC-10 volatile-by-design, HC-01 frozen
     human decision, C8/C9/G2 NOT VERIFIED) instead of hiding or assuming them;
-  * emits a tamper-evident verification record (``record_hash`` = sha256 of the
-    canonical record) that a third party can re-check offline.
+  * emits a SELF-HASHED verification record (``record_hash`` = sha256 of the
+    canonical record) so an offline reader can detect accidental corruption or
+    a partial edit.
+
+``record_hash`` IS NOT tamper-evident, and this file must not call it that.
+The hash lives INSIDE the record it covers, and the process that computed it is
+the same process that produced the content, so anyone able to edit the record
+can recompute the hash in one line. Falsified constructively: flip ``overall``
+from FAIL to PASS, recompute, and an offline re-check reports the edited record
+as internally consistent (MASTER_PROJECT_READINESS.md G10 and this module's
+docstring previously claimed "tamper-evident"; corrected 2026-10 on governance
+evidence). What the hash DOES give you is a cheap integrity tripwire against
+corruption and casual hand-editing -- nothing more. Real tamper-evidence needs
+the record hash committed to somewhere the editor cannot reach: a signature
+under a key the audit process does not hold (U53 ``ChainRootOfTrust``), an
+append-only transparency log (U51), or an RFC 3161 trusted timestamp (U53/TSA).
+Those primitives exist in ``src/kernels/audit/`` and are **NOT wired into this
+record** -- live notarisation is deferred behind HC-01 chain stabilisation.
 
 It does NOT claim the system is RELEASE READY -- that is the readiness
 battery's verdict. It only attests that the *verifiable* integrity/security
@@ -230,7 +246,10 @@ def main(argv):
         "counts": {"PASS": n_pass, "FAIL": n_fail, "GAP": n_gap},
         "overall": "PASS" if n_fail == 0 else "FAIL",
     }
-    # Tamper-evident: hash the canonical record (excluding record_hash itself).
+    # Self-hash of the canonical record (record_hash itself excluded). This is a
+    # CORRUPTION TRIPWIRE, NOT tamper-evidence: the hash is inside the record and
+    # is recomputable by whoever edits it. See the module docstring for the
+    # falsification and for what real anchoring would require.
     canonical = json.dumps(record, sort_keys=True, ensure_ascii=False)
     record["record_hash"] = _sha256(canonical)
 
