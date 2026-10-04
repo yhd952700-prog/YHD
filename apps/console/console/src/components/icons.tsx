@@ -227,3 +227,12 @@ export const IconProjects = (p: IconProps) => (
     <path d="M3.6 9.6h16.2v7.8" />
   </Glyph>
 )
+
+export const IconApps = (p: IconProps) => (
+  <Glyph {...p}>
+    <rect x="3.5" y="3.5" width="7" height="7" rx="1.4" />
+    <rect x="13.5" y="3.5" width="7" height="7" rx="1.4" />
+    <rect x="3.5" y="13.5" width="7" height="7" rx="1.4" />
+    <rect x="13.5" y="13.5" width="7" height="7" rx="1.4" />
+  </Glyph>
+)

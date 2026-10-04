@@ -396,3 +396,42 @@ export function deleteProject(projectId: string): Promise<{ removed: string; ok:
     { method: 'DELETE' },
   )
 }
+
+// ─── 应用（产品面：把"插件"真实呈现给人类，并允许激活） ───────────────
+//
+// 端点与 `src/gateway/plugins.py` 严格对齐（`GET /v1/plugins`、
+// `POST /v1/plugins/{id}/activate`）。这是内核层**真实存在**的插件注册项，
+// 不是装饰：列表返回真实注册表（id/name/version/status/active），激活端点
+// 真正加载插件并标记 ACTIVE（见后端 `load_plugin`）。诚实优先：未知 id 由
+// 后端返回 404，激活失败会带真实 error，前端原样展示，不假装成功。
+
+export interface AppSummary {
+  plugin_id: string
+  name: string
+  version: string
+  kernel_type: string
+  status: string
+  active: boolean
+  capabilities: string[]
+  scope: string
+  error: string | null
+}
+
+export interface AppsResponse {
+  plugins: AppSummary[]
+  total: number
+  active: number
+}
+
+/** 列表：每 30 秒轮询一次（激活态会变化）。 */
+export function listApps(): Promise<AppsResponse> {
+  return apiFetch<AppsResponse>('/v1/plugins')
+}
+
+/** 激活：人类主权动作（走带会话的 apiFetch，401 由它统一抛出并清会话）。 */
+export function activateApp(pluginId: string): Promise<AppSummary> {
+  return apiFetch<AppSummary>(
+    `/v1/plugins/${encodeURIComponent(pluginId)}/activate`,
+    { method: 'POST' },
+  )
+}

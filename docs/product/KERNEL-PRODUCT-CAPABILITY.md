@@ -67,20 +67,20 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 | 11 | network | LHX-C-009 | **PRIMITIVE ONLY** ⚠ overclaim | none |
 | 12 | trust | LHX-C-010 | **PRIMITIVE ONLY** | none |
 | 13 | event | LHX-C-008 | **PRIMITIVE ONLY** | WS exists but is **not mounted** |
-| 14 | plugin | LHX-C-014 | **STUB / PARTIAL** ⚠ overclaim | none |
+| 14 | plugin | LHX-C-014 | **REAL PRODUCT CAPABILITY** | `/v1/plugins` (2026-10-20) |
 | — | retention | *(unregistered)* | **PRIMITIVE ONLY** | none |
-| — | observability | *(not a kernel)* | **STUB / PARTIAL** | 3 routes, **no alerts surface** |
+| — | observability | *(not a kernel)* | **REAL (alerts live)** | `/v1/alerts`, `/v1/alerts/rules`, 6 live health rules |
 
-**Counts (the 14 registered kernels):** `REAL PRODUCT CAPABILITY` **10**
+**Counts (the 14 registered kernels):** `REAL PRODUCT CAPABILITY` **11**
 (8 direct + 2 indirect-only-surface: memory, context/capability/resource counted as
-real-but-surface-less), `PRIMITIVE ONLY` **3** (network, trust, event),
-`STUB / PARTIAL` **1** (plugin).
+real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page), `PRIMITIVE ONLY` **3** (network, trust, event),
+`STUB / PARTIAL` **0**.
 
 Split precisely:
-- **REAL, user-observable outcome: 6** — identity, execution, evaluation, policy, security, audit
+- **REAL, user-observable outcome: 7** — identity, execution, evaluation, policy, security, audit, plugin
 - **REAL, meaningful work but no surface of its own: 4** — memory, context, capability, resource
 - **PRIMITIVE ONLY: 3** — network, trust, event
-- **STUB / PARTIAL: 1** — plugin
+- **STUB / PARTIAL: 0**
 
 ---
 
@@ -466,7 +466,7 @@ event bus is real plumbing with no visible outlet.
 
 ---
 
-## 16. plugin (LHX-C-014) — STUB / PARTIAL ⚠ OVERCLAIMED
+## 16. plugin (LHX-C-014) — REAL PRODUCT CAPABILITY (2026-10-20; see §25)
 
 **Claims** (`src/kernels/plugin/__init__.py:1-14`):
 ```
@@ -522,7 +522,7 @@ drift starts.
 
 ---
 
-## 18. observability (cross-cutting, not a registered kernel) — STUB / PARTIAL
+## 18. observability (cross-cutting, not a registered kernel) — REAL (alerts live, 2026-10-20; see §25)
 
 ### The 6 metric-threshold rules are STILL disabled — confirmed
 
@@ -616,8 +616,8 @@ absent. Status as of 2026-10-03:**
 |---|---|---|
 | Files | **REAL (closed)** | `src/gateway/files.py` strict-read-only `/v1/files` + `/v1/files/content` (fail-closed `resolve_in_workspace`, human-gated); `apps/console/console/src/pages/Files.tsx` + nav key `files`; 8/8 backend tests. |
 | Tasks | **REAL via Goals (closed)** | No independent `/v1/tasks`, but every goal detail (`GET /v1/goals/{id}`) carries the real decomposed `tasks` list; `apps/console/console/src/pages/Goals.tsx` renders them read-only. |
-| Projects | **ABSENT (gap)** | No model, no store, no route, no page anywhere. See blocker #1. |
-| Apps | **ABSENT (gap)** | No app registry / manifest / marketplace concept reaches a product path; the plugin kernel has no loader (blocker #2). |
+| Projects | **REAL (closed)** | `src/gateway/projects.py` `ProjectStore` + 4 human-gated endpoints; goals link under projects; `pages/Projects.tsx` + nav key `projects`; 8/8 backend tests. |
+| Apps | **REAL (minimal)** | `src/kernels/plugin` now defines `PluginInterface` + real `load_plugin`; `GET/POST /v1/plugins` route + `pages/Apps.tsx` + nav key `apps`; built-in `builtin.example_capability` activatable end-to-end (4/4 tests). No marketplace/manifest yet. |
 
 ### Backend route inventory (updated)
 
@@ -765,61 +765,62 @@ Notable: `src/ai/roster_payload.py` is **not** an orphan — it is the real sour
 
 Ranked by how much they block acceptance, not by how long the list is.
 
-### #1 — The advertised product surfaces: Files + Tasks closed; Projects + Apps still absent
-As of 2026-10-03 the four are no longer uniformly missing:
+### #1 — The advertised product surfaces: CLOSED (2026-10-20)
+All four are now real, wired product surfaces built on real data — none faked:
 - **Files — CLOSED.** `src/gateway/files.py` exposes strict-read-only `/v1/files` +
   `/v1/files/content` (every path fail-closed through `resolve_in_workspace`, human-
   gated); `pages/Files.tsx` + nav key `files` render it; 8/8 backend tests.
 - **Tasks — CLOSED (via Goals).** No independent `/v1/tasks`, but every goal detail
   (`GET /v1/goals/{id}`) carries the real decomposed `tasks` list, and `pages/Goals.tsx`
   renders it read-only. The unit of work ("goal") is real and wired.
-- **Projects — STILL ABSENT.** No model, no store, no route, no page anywhere. Closing
-  it requires defining a Project model + storage + route from scratch (goals would hang
-  under projects). **Do not fake it** — leave it documented as a gap until built.
-- **Apps — STILL ABSENT (see #2).** No app registry / manifest / marketplace concept
-  reaches a product path; the plugin kernel has no loader.
+- **Projects — CLOSED (2026-10-20).** `src/gateway/projects.py` `ProjectStore` (JSON,
+  workspace-rooted, fail-closed) + 4 human-gated endpoints; goals link under projects
+  via `project_id`; `pages/Projects.tsx` + nav key `projects`; 8/8 backend tests.
+- **Apps — CLOSED (minimal, 2026-10-20).** The plugin kernel now defines `PluginInterface`
+  + a real `load_plugin`; `GET/POST /v1/plugins` route + `pages/Apps.tsx` + nav key
+  `apps` expose the surface; built-in `builtin.example_capability` activates
+  end-to-end (4/4 tests). No marketplace/manifest yet — that is the next increment.
 
-*Why #1 still ranks:* two of four are closed, but the two remaining (Projects, Apps)
-are genuine product gaps, and an "AI OS" whose users cannot open a project or install
-an app still fails the plainest reading of its PRD. It cannot be closed by improving a
-kernel.
+*Why #1 was downgraded:* all four advertised surfaces now exist and render real backend
+state. App-install ergonomics (manifest marketplace) and a broader plugin catalogue are
+incremental, not acceptance blockers.
 
-### #2 — The plugin kernel has no loader; "Apps" has no mechanism (honestly marked 2026-10-03)
-`src/kernels/plugin/__init__.py:12` promises `load_plugin(plugin_id) → PluginInterface`.
-Neither exists: `load_plugin` is not defined in the kernel, and `PluginInterface` is
-never defined anywhere — it appears only as `hasattr` duck-typing checks (`:273`,
-`:302`). `plugins/registry_index.json:4` records `active_plugins: 0`, and
-`src/plugins/registry.py:18` `PluginRegistry` has zero importers.
-**Correction (2026-10-03):** the capability entry `LHX-C-014` was downgraded from
-falsely-`IMPLEMENTED` to `PARTIAL` + `reachability: UNREACHABLE` in
-`capability-registry.yaml`, matching the already-honest `LHX-L-002`. The register/
-discover/activate code + 18 unit tests still exist but have zero non-test `src/`
-importers, so no product path invokes it.
+### #2 — The plugin kernel loader: CLOSED (2026-10-20)
+`src/kernels/plugin/__init__.py` now defines `PluginInterface` (aliased from the real
+`src.plugins.base.Plugin` ABC) and implements `load_plugin(plugin_id)` — it imports the
+plugin module via `importlib`, finds the concrete `PluginInterface` subclass, and
+instantiates it (cached in `self._loaded`). `activate_plugin` calls `load_plugin` and
+sets status ACTIVE. A bootstrap `register_builtin_plugins()` registers a real built-in
+(`builtin.example_capability`, whose `execute` returns live registry/heartbeat data).
+`src/gateway/plugins.py` exposes `GET /v1/plugins` (list) and
+`POST /v1/plugins/{id}/activate` (404 on unknown), human-gated; `pages/Apps.tsx` + nav
+key `apps` render it. `tests/gateway/test_plugins_surface.py` (4/4) exercises activation
+end-to-end. `capability-registry.yaml` LHX-C-014 `notes` flipped to REACHABLE.
 
-*Why #2 still ranks:* it is the root cause beneath the Apps half of #1. Even if an
-Apps page were built, there is no way to install or activate anything into it — a UI
-over a loader that does not exist.
+*Why #2 was downgraded:* the loader is real and reachable; the Apps surface exists. The
+colon-id OS-kernel self-registered entries remain intentionally non-loadable (no
+PluginInterface subclass), and a plugin marketplace/manifest is a later increment.
 
-### #3 — Observability alerting: read surface closed; system-health rules still inert (partial, 2026-10-03)
-- **Read surface — CLOSED.** `src/gateway/observability.py` now exposes read-only
+### #3 — Observability alerting: CLOSED (2026-10-20)
+- **Read surface — CLOSED.** `src/gateway/observability.py` exposes read-only
   `/v1/alerts` and `/v1/alerts/rules` (human-gated). `install_production_rules()` is
-  now called at gateway startup (`main.py`), so the rule registry is populated and
-  readable. A read-only alert card was added to the `status` page
-  (`pages/Operations.tsx` `SystemAlerts`). The real execution-failure alerts (fired via
-  EventBus → `AlertStore.emit_alert` → console/webhook sink) are now **visible to an
-  operator**, not just written to a log/JSON.
-- **System-health rules — STILL INERT (honest).** All six metric-threshold rules remain
-  `enabled=False` because their metrics (`error_rate_percent`, `memory_usage_percent`,
+  called at gateway startup (`main.py`), populating the rule registry. A read-only alert
+  card is on the `status` page. Execution-failure alerts (EventBus → `AlertStore.emit_alert`
+  → console/webhook sink) are visible to an operator.
+- **System-health rules — NOW LIVE (honest).** All six metric-threshold rules are
+  `enabled=True` and fed by **real** `MetricCollector` emitters (`src/observability/
+  metrics.py`) producing actual `error_rate_percent`, `memory_usage_percent`,
   `cpu_usage_percent`, `latency_p99_ms`, `service_heartbeat_interval`,
-  `audit_log_lag_seconds`) have **zero emitters** anywhere in the codebase. Enabling
-  them would make `evaluate_all` silently inert (decorative). The fix is real metric
-  emitters, not flipping a flag. `WebhookSink` still activates only when
-  `LIUHAO_ALERT_WEBHOOK` is set (not by default).
+  `audit_log_lag_seconds` from the live process/OS/audit store. A 15s gateway daemon
+  (`main.py`) drives `collect_snapshot()` → `AlertManager.evaluate_all()`. A real breach
+  produces a real persisted alert. The earlier alert-storm bug (`Alert.id` was random per
+  evaluation) was fixed: id is now deterministic, dispatch is de-duplicated, and alerts
+  auto-resolve on recovery. `WebhookSink` still activates only when `LIUHAO_ALERT_WEBHOOK`
+  is set (not by default) — an operator-facing config choice, not a code defect.
 
-*Why #3 still ranks:* the operator can now SEE firing execution-failure alerts, but the
-system still cannot alert on its own health (CPU/memory/error-rate/latency/heartbeat/
-audit-lag), so the first production incident of that kind is still discovered by a user.
-That remains an acceptance blocker until real metric emitters are wired.
+*Why #3 was downgraded:* the system now genuinely alerts on its own health, not just on
+execution failures. The honest residual: webhook paging is opt-in (default sink is
+console-only), which is a deployment-config posture, not a missing capability.
 
 **Honourable mention (not in the top 3, but it will come up in acceptance):** the
 planner is deterministic keyword matching —
@@ -829,6 +830,35 @@ provider key. **Do not fake it**; keep the honest deterministic fallback and rec
 the dependency.
 
 ---
+
+## 25. Update log (2026-10-20)
+
+This snapshot (§0 pinned at `eeef0d4b`, 2026-10-02) is now partially outdated; the
+following were built / corrected on branch `p36` after the snapshot and are committed:
+
+- **Projects surface CLOSED** (was ABSENT): `src/gateway/projects.py` + project linkage in
+  `ai_management.py` + `pages/Projects.tsx`; 8/8 backend tests.
+- **Apps surface CLOSED (minimal)** (was ABSENT): plugin kernel `load_plugin`/`PluginInterface`
+  now real (aliased from `src.plugins.base.Plugin`); `GET/POST /v1/plugins` + `pages/Apps.tsx`;
+  built-in `builtin.example_capability` activates end-to-end; 4/4 tests.
+- **System-health alerting LIVE** (was inert): six rules `enabled=True`, fed by real
+  `MetricCollector` emitters; 15s gateway daemon drives `evaluate_all`; deterministic alert
+  id + dispatch dedup + auto-resolve fix (the earlier alert-storm bug).
+- **Honesty corrections in `capability-registry.yaml`**: network adapter claim corrected
+  (A2A/MCP/gRPC have no adapter), plugin entry flipped to REACHABLE, network-gateway name
+  de-overclaimed.
+- **Vault dead-claim already removed** from `src/kernels/security/__init__.py` and
+  `src/security/audit_logger.py` (correction note present); `python_compute` rejection
+  message already self-documents the `python:` directive — bare NL is honestly rejected,
+  never faked as success.
+
+The narrative in §16 and §18 above still describes the pre-2026-10-20 state; treat those
+two sections as superseded by this §25.
+
+Remaining honest gaps NOT closed here (see MASTER/PRODUCT-READINESS): G9 full deploy
+closure (BLOCKED — no Docker daemon / compose plugin / browser in this env), other FAILed
+acceptance gates (e.g., goal pause/resume lifecycle), and PRIMITIVE-ONLY kernels
+(network/trust/event) whose capabilities are not yet on a real user decision path.
 
 ## 24. Reproduction
 

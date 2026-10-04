@@ -220,7 +220,7 @@ capability-registry:
     - Phase 2 Wave 2
     evidence:
     - src/kernels/network/__init__.py implemented
-    - NetworkBus with routing, protocol adapters (A2A, MCP, gRPC, HTTP, WS, Internal)
+    - NetworkBus with routing, protocol adapters: InternalAdapter (in-process), HTTPAdapter (httpx, lazy), WebSocketAdapter (registered honest-refusal); A2A/MCP/gRPC declared in ProtocolType but have NO transport adapter.
     - Message with correlation_id, causation_id, priority, status, headers
     - Route matching with wildcards, InternalAdapter for in-process delivery
     - Correlation chain tracking
@@ -420,7 +420,7 @@ capability-registry:
       audited: true
       tested: true
       documented: true
-    notes: HONESTY 2026-10-03 register/discover/activate code + tests exist BUT ZERO non-test src/ importers => no product path invokes it, reachability UNREACHABLE (mirrors LHX-L-002). The advertised loader load_plugin(plugin_id)->PluginInterface is UNIMPLEMENTED (module docstring self-admits it); PluginInterface contract class is never defined; plugin registry on disk is empty. "Apps" surface has no concept anywhere (no app registry/manifest). Downgraded from falsely-IMPLEMENTED.
+    notes: HONESTY 2026-10-20 loader now REAL. src/kernels/plugin/__init__.py defines PluginInterface (aliased from src.plugins.base.Plugin), implements load_plugin() (importlib import + PluginInterface subclass instantiation) and activate_plugin(); gateway exposes GET/POST /v1/plugins and the console has an Apps page (apps key) — a real product surface. Built-in plugin builtin.example_capability is registered at bootstrap and activates end-to-end (tests/gateway/test_plugins_surface.py, 4/4). The OS-kernel self-registered colon-id entries (identity:..., memory:...) remain non-loadable (no PluginInterface subclass) and are intentionally not advertised. Reachability now REACHABLE (was UNREACHABLE at 2026-10-03).
   # =====================================================================
   # Phase 9-21 capability layers (src/ai/): the higher-level runtime that
   # composes the 14 kernels. All IMPLEMENTED with unit tests; honest
@@ -479,7 +479,7 @@ capability-registry:
     notes: MS:§58-60 mission loop; MissionStore JSON persistence survives restart
   - id: LHX-L-007
     phase: Phase 14
-    name: Network Gateway — A2A/MCP adapters + external-agent trust
+    name: Network Gateway — external-agent trust (A2A/MCP/gRPC adapters NOT implemented)
     module: src/ai/network_gateway.py
     status: IMPLEMENTED
     tests: tests/test_network_gateway.py

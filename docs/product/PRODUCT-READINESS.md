@@ -654,17 +654,17 @@ are recorded truthfully.
 
 **Requires:** a real user can accomplish a real job through the product.
 
-**Evidence:** the only proven end-to-end workflow returns `SUCCESS` without
-performing the work (P6). The entire UI supports 4 write actions. There is no way
-to assign a task, receive a file, or create a project. `Tasks`, `Projects`,
-`Files` and `Apps` have **no UI at all** despite backend routes existing
-(`POST /v1/goals`, `/v1/workflows`, `workspace.py`, `PluginRegistry`) and
-frontend contract types already declared but unconsumed
-(`apps/console/console/src/lib/contracts.ts:206-266`). A real by-name employee
-write path was added this cycle (`POST/DELETE /v1/employees`, proven by
-`tests/gateway/test_employee_lifecycle.py`) — so the gateway now exposes a 5th
-real write/delete action — but that is employee *management*, not completing a
-user job end-to-end, so it does not move P10.
+**Evidence (updated 2026-10-20):** the core product surfaces now HAVE real UIs on
+real backend data — `Files` (`pages/Files.tsx`, strict read-only workspace browser),
+`Goals`/`Tasks` (`pages/Goals.tsx`, real goal + task execution history), `Projects`
+(`pages/Projects.tsx`, human-gated create/list/get/delete; goals link under projects),
+and `Apps` (`pages/Apps.tsx`, lists/activates real plugins via `GET/POST /v1/plugins`).
+A real human-gated **create-project** write action exists (`POST /v1/projects`). The
+residual gap is a *fully verifiable end-to-end user job*: there is still no product
+flow to assign an ad-hoc task to an agent and receive a produced file as a deliverable
+within one tracked job (files are produced into the workspace and browsable, but not
+"received" through a job-completion UX). Employee management remains a real write action
+(`POST/DELETE /v1/employees`), but that is management, not job completion.
 
 **Biggest gap:** the product cannot complete a real job.
 **Flips to PASS when:** a named realistic user job is completed end to end with a
@@ -674,9 +674,13 @@ verifiable artifact.
 
 ## Cross-cutting blockers (each caps multiple gates)
 
-1. **No kernel exports real metrics.** `goal_decompositions_total`,
+1. **Some kernel metrics are declared with zero call sites.** `goal_decompositions_total`,
    `goal_tasks_generated`, `task_execution_total`
    (`src/observability/metrics.py:155-183`) are declared with **zero call sites**.
+   (System-health metrics — `error_rate_percent`, `memory_usage_percent`,
+   `cpu_usage_percent`, `latency_p99_ms`, `service_heartbeat_interval`,
+   `audit_log_lag_seconds` — are NOW emitted by `MetricCollector` and feed live alert
+   rules; see KERNEL-PRODUCT-CAPABILITY.md §25.)
 2. **WorldInterface adapter now registered and exercised** (P4 → PASS, cycle 2):
    `FilesystemAdapter` is wired via the `file_write` tool's `WorldInterface`.
    `ShellAdapter` is still never registered in the autonomous goal path — but as of

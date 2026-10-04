@@ -9,7 +9,7 @@ and scope-aware plugin activation.
 - unregister_plugin(plugin_id)
 - discover_plugins(kernel_type, scope, min_version, max_version)
 - list_active_plugins() → List[PluginInfo]
-- load_plugin(plugin_id) → PluginInterface  # UNIMPLEMENTED (2026-10-02)
+- load_plugin(plugin_id) → PluginInterface  # 已实现：真实 importlib 加载 + PluginInterface 子类实例化
 - Plugin version compatibility checking (semver-aware)
 """
 from __future__ import annotations
@@ -21,12 +21,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 import threading
 from pathlib import Path
+import importlib
 import importlib.util
 import json
 
 from packaging.version import InvalidVersion, Version
 
 from src.kernels._crosscutting import kernel_action
+
+# The real plugin contract lives in src.plugins.base. We alias it here as
+# PluginInterface so the loader/activator can depend on a single, honest type.
+# This import is safe: src.plugins.base only depends on abc/typing/dataclasses
+# and never imports the kernel layer, so there is no circular dependency.
+from src.plugins.base import Plugin as PluginInterface, PluginMetadata
 
 
 def _version_ge(a: str, b: str) -> bool:
@@ -87,6 +94,10 @@ class PluginInfo:
     unloaded_at: Optional[datetime] = None
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Python import path of the module that contains the concrete
+    # PluginInterface subclass (e.g. "src.plugins.builtin.example_capability_plugin").
+    # Honest loader requires this to actually import + instantiate the plugin.
+    module_path: Optional[str] = None
 
 
 class PluginRegistry:
@@ -131,6 +142,7 @@ class PluginRegistry:
                     ),
                     error=pdata.get("error"),
                     metadata=pdata.get("metadata", {}),
+                    module_path=pdata.get("module_path"),
                 )
                 self._plugins[info.plugin_id] = info
 
@@ -144,12 +156,21 @@ class PluginRegistry:
         scope: str,
         compatibility: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        plugin_id: Optional[str] = None,
+        module_path: Optional[str] = None,
     ) -> PluginInfo:
-        """Register a new plugin in the registry (scope-validated L0-L7)."""
+        """Register a new plugin in the registry (scope-validated L0-L7).
+
+        ``plugin_id`` and ``module_path`` are optional: OS kernels keep the
+        auto-generated ``kernel_type:name:version`` id, whereas built-in
+        loadable plugins pass a clean id (no colons) and the import path of
+        their ``PluginInterface`` subclass so the loader can actually import it.
+        """
         if scope not in _VALID_SCOPES:
             raise ValueError(f"Invalid plugin scope: {scope!r} (must be L0-L7)")
         with self._lock:
-            plugin_id = f"{kernel_type}:{name}:{version}"
+            if plugin_id is None:
+                plugin_id = f"{kernel_type}:{name}:{version}"
             compatibility = compatibility or {}
             metadata = metadata or {}
 
@@ -163,6 +184,7 @@ class PluginRegistry:
                 compatibility=compatibility,
                 status=PluginStatus.REGISTERED,
                 metadata=metadata,
+                module_path=module_path,
             )
 
             self._plugins[plugin_id] = info
@@ -242,93 +264,109 @@ class PluginRegistry:
         with self._lock:
             return self._plugins.get(plugin_id)
 
-    @kernel_action("plugin.activate_plugin")
-    def activate_plugin(self, plugin_id: str) -> Optional[PluginInfo]:
-        """Mark a plugin as loading/active and attempt to load it."""
+    def list_plugins(self) -> List[PluginInfo]:
+        """Return a snapshot of every registered plugin (copy, thread-safe)."""
+        with self._lock:
+            return list(self._plugins.values())
+
+    def load_plugin(self, plugin_id: str) -> Optional["PluginInterface"]:
+        """Load a registered plugin into memory and return a real instance.
+
+        Honest loader: looks up the plugin's ``module_path`` (stored on the
+        ``PluginInfo`` or in its ``metadata``), imports the module via
+        ``importlib.import_module``, finds the concrete ``PluginInterface``
+        subclass, instantiates it, and caches it in ``self._loaded``. Returns
+        ``None`` (and marks the plugin FAILED with a real reason) if anything is
+        missing — never a fake / stub instance.
+        """
         with self._lock:
             info = self._plugins.get(plugin_id)
             if not info:
                 return None
 
-            if info.status == PluginStatus.ACTIVE:
-                # Already active, return existing info
+            module_path = info.module_path or (info.metadata or {}).get("module_path")
+            if not module_path:
+                info.status = PluginStatus.FAILED
+                info.error = "No module_path registered for plugin (cannot load)"
+                self._save_index()
+                return None
+
+            try:
+                module = importlib.import_module(module_path)
+            except ImportError as exc:
+                info.status = PluginStatus.FAILED
+                info.error = f"Could not import module {module_path!r}: {exc}"
+                self._save_index()
+                return None
+
+            # Find the concrete PluginInterface subclass (exclude the ABC itself).
+            plugin_cls = None
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if (
+                    isinstance(attr, type)
+                    and issubclass(attr, PluginInterface)
+                    and attr is not PluginInterface
+                ):
+                    plugin_cls = attr
+                    break
+            if plugin_cls is None:
+                info.status = PluginStatus.FAILED
+                info.error = f"No PluginInterface subclass found in {module_path!r}"
+                self._save_index()
+                return None
+
+            try:
+                metadata = PluginMetadata(
+                    name=info.name,
+                    version=info.version,
+                    description=(info.metadata or {}).get("description", ""),
+                )
+                instance = plugin_cls(metadata)
+            except Exception as exc:
+                info.status = PluginStatus.FAILED
+                info.error = f"Failed to instantiate {plugin_cls.__name__}: {exc}"
+                self._save_index()
+                return None
+
+            self._loaded[plugin_id] = instance
+            return instance
+
+    @kernel_action("plugin.activate_plugin")
+    def activate_plugin(self, plugin_id: str) -> Optional[PluginInfo]:
+        """Mark a plugin ACTIVE by actually loading it into memory.
+
+        Reuses :meth:`load_plugin` so the status transition always reflects a
+        real, importable instance — never a placeholder.
+        """
+        with self._lock:
+            info = self._plugins.get(plugin_id)
+            if not info:
+                return None
+
+            if info.status == PluginStatus.ACTIVE and plugin_id in self._loaded:
+                # Already active with a live instance, return existing info.
                 return info
 
-            info.status = PluginStatus.LOADING
+            instance = self.load_plugin(plugin_id)
+            if instance is None:
+                # load_plugin already recorded the reason in info.error + status.
+                self._save_index()
+                return info
 
-            # Attempt to load the plugin module
-            try:
-                plugin_dir = self._registry_path / "plugins" / plugin_id
-                if plugin_dir.exists():
-                    # Load the plugin's __init__.py
-                    init_path = plugin_dir / "__init__.py"
-                    if init_path.exists():
-                        spec = importlib.util.spec_from_file_location(
-                            f"plugin_{plugin_id}", init_path
-                        )
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
+            info.status = PluginStatus.ACTIVE
+            info.loaded_at = datetime.now(timezone.utc)
+            info.error = None
+            self._loaded[plugin_id] = instance
 
-                        # Check for PluginInterface
-                        if hasattr(module, "PluginInterface"):
-                            info.status = PluginStatus.ACTIVE
-                            info.loaded_at = datetime.now(timezone.utc)
-
-                            # Store loaded module
-                            self._loaded[plugin_id] = module
-
-                            audit_log(
-                                event_type="plugin_activate",
-                                principal_id="system",
-                                permission="plugin:manage",
-                                scope="L1",
-                                result="allowed",
-                                reason=f"Plugin {info.name} v{info.version} activated",
-                            )
-                        else:
-                            info.status = PluginStatus.FAILED
-                            info.error = "Plugin module missing PluginInterface"
-                            raise ImportError("Missing PluginInterface")
-
-                    else:
-                        info.status = PluginStatus.FAILED
-                        info.error = f"No __init__.py in {plugin_dir}"
-                        raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
-
-                else:
-                    # Try importing by plugin_id directly
-                    try:
-                        module = importlib.import_module(plugin_id)
-                        if hasattr(module, "PluginInterface"):
-                            info.status = PluginStatus.ACTIVE
-                            info.loaded_at = datetime.now(timezone.utc)
-                            self._loaded[plugin_id] = module
-                            audit_log(
-                                event_type="plugin_activate",
-                                principal_id="system",
-                                permission="plugin:manage",
-                                scope="L1",
-                                result="allowed",
-                                reason=f"Plugin {info.name} v{info.version} activated",
-                            )
-                        else:
-                            info.status = PluginStatus.FAILED
-                            info.error = "Module missing PluginInterface"
-                    except ImportError:
-                        info.status = PluginStatus.FAILED
-                        info.error = f"Could not import plugin {plugin_id}"
-
-            except Exception as e:
-                info.status = PluginStatus.FAILED
-                info.error = str(e)
-                audit_log(
-                    event_type="plugin_activate_failed",
-                    principal_id="system",
-                    permission="plugin:manage",
-                    scope="L1",
-                    result="denied",
-                    reason=f"Plugin {info.name} v{info.version} failed to activate: {e}",
-                )
+            audit_log(
+                event_type="plugin_activate",
+                principal_id="system",
+                permission="plugin:manage",
+                scope="L1",
+                result="allowed",
+                reason=f"Plugin {info.name} v{info.version} activated (real instance loaded)",
+            )
 
             self._save_index()
             return info
@@ -486,6 +524,45 @@ def plugin_list_by_kernel(kernel_type: str):
 def plugin_compatibility_check(plugin_id: str, required_capabilities: List[str]) -> Tuple[bool, List[str]]:
     """Convenience function to check plugin capabilities."""
     return get_plugin_registry().compatibility_check(plugin_id, required_capabilities)
+
+
+def register_builtin_plugins() -> None:
+    """Register the shipped built-in plugins with clean, loadable ids.
+
+    Called once at gateway boot (right after ``install_production_rules``).
+    Idempotent: skips any id that is already registered, so re-running boot or
+    tests never duplicates or clobbers an existing entry.
+
+    Each built-in carries a ``module_path`` pointing at a real
+    ``PluginInterface`` subclass, so ``load_plugin`` / ``activate_plugin`` can
+    actually import and instantiate it — closing the loop that was previously
+    left as ``# UNIMPLEMENTED``.
+    """
+    reg = get_plugin_registry()
+
+    builtins = [
+        PluginInfo(
+            plugin_id="builtin.example_capability",
+            name="example_capability",
+            version="1.0.0",
+            kernel_type="builtin",
+            capabilities=["capability.inspect", "heartbeat"],
+            scope="L1",
+            compatibility={},
+            status=PluginStatus.REGISTERED,
+            metadata={
+                "module_path": "src.plugins.builtin.example_capability_plugin",
+                "description": "示例能力插件：返回真实的插件注册表心跳与已注册能力清单。",
+            },
+        ),
+    ]
+
+    for info in builtins:
+        if reg.get_plugin(info.plugin_id) is None:
+            # 仅写入内存注册表，不落盘到 registry_index.json：内置插件由代码定义、
+            # 每次启动都会经 register_builtin_plugins 重新注册，不应被当成"用户安装的
+            # 插件"持久化进 tracked 文件，避免污染 plugins/registry_index.json。
+            reg._plugins[info.plugin_id] = info
 
 
 # 此处曾有**导入期急切实例化**（``_global_plugin_registry = PluginRegistry()``

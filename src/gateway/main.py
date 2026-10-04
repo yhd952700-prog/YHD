@@ -308,6 +308,21 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
+    # Plugin loader (Top-3 #2): register the built-in, loadable plugins so that
+    # GET /v1/plugins and the Apps surface have at least one real, activatable
+    # entry. Idempotent and fail-safe — never crash boot.
+    try:
+        from src.kernels.plugin import register_builtin_plugins
+
+        register_builtin_plugins()
+        logger.info("Built-in plugins registered (Apps surface enabled)")
+    except Exception as _plugin_exc:  # noqa: BLE001 - loud, never crash boot
+        logger.error(
+            "REGISTER BUILTIN PLUGINS FAILED -- /v1/plugins will be empty: %s",
+            _plugin_exc,
+            exc_info=True,
+        )
+
     # OB / blocker #3: drive the REAL metrics -> alert evaluation loop.
     # install_production_rules() now registers *enabled* rules and
     # MetricCollector produces real values for all 6 metric names, so this
@@ -651,6 +666,11 @@ def get_app() -> FastAPI:
     # 人类主权创建/读取/删除，挂 require_human_principal 闸门。
     from .projects import router as projects_router
     app.include_router(projects_router, dependencies=[Depends(_require_human)])
+
+    # Apps 面（Top-3 #2 缺口）：把"插件"真实呈现给人类，并允许激活（真实加载）。
+    # 与 Projects 面一致，挂 require_human_principal 人类主权闸门。
+    from .plugins import router as plugins_router
+    app.include_router(plugins_router, dependencies=[Depends(_require_human)])
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
