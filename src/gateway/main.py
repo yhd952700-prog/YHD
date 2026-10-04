@@ -11,6 +11,7 @@ Provides the unified entry point for all services with:
 import time
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -36,6 +37,14 @@ try:  # pragma: no cover - depends on the optional prometheus_client package
 except Exception:  # metrics unavailable here; the endpoint 503s anyway
     _HTTP_REQUEST_DURATION = None
     _HTTP_REQUESTS_TOTAL = None
+
+# Real metric collector that feeds the alert engine (OB / blocker #3). The
+# collector is independent of prometheus_client so the alert loop works even
+# when prometheus_client is absent.
+try:  # pragma: no cover - depends on the metrics module being importable
+    from ..observability.metrics import get_metric_collector as _get_metric_collector
+except Exception:  # metrics unavailable; middleware becomes a no-op
+    _get_metric_collector = None
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +300,7 @@ async def lifespan(app: FastAPI):
     try:
         from ..observability.alerts import install_production_rules
         install_production_rules()
-        logger.info("Production alert rules registered (all enabled=False until metric emitters land)")
+        logger.info("Production alert rules registered (enabled=True; real metric emitters now wired)")
     except Exception as _rules_exc:  # noqa: BLE001 - loud, never crash boot
         logger.error(
             "INSTALL PRODUCTION ALERT RULES FAILED -- /v1/alerts/rules will be empty: %s",
@@ -299,10 +308,65 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
+    # OB / blocker #3: drive the REAL metrics -> alert evaluation loop.
+    # install_production_rules() now registers *enabled* rules and
+    # MetricCollector produces real values for all 6 metric names, so this
+    # daemon thread genuinely closes the loop: collect_snapshot() every 15s,
+    # then AlertManager.evaluate_all(snapshot). Fail-safe: any iteration error
+    # is logged and never crashes the loop or boot. The stop Event is set in
+    # the shutdown half of this lifespan.
+    try:
+        from ..observability.metrics import get_metric_collector
+        from ..observability.alerts import get_alert_manager
+
+        _metrics_stop = threading.Event()
+        app.state.metrics_evaluator_stop = _metrics_stop
+
+        def _metrics_evaluator() -> None:
+            collector = get_metric_collector()
+            manager = get_alert_manager()
+            while not _metrics_stop.is_set():
+                try:
+                    snapshot = collector.collect_snapshot()
+                    manager.evaluate_all(snapshot)
+                except Exception as _eval_exc:  # noqa: BLE001 - never kill loop
+                    logger.error(
+                        "METRICS EVALUATOR ITERATION FAILED: %s",
+                        _eval_exc, exc_info=True,
+                    )
+                # Interruptible wait so shutdown is responsive.
+                _metrics_stop.wait(15.0)
+
+        _metrics_thread = threading.Thread(
+            target=_metrics_evaluator, name="metrics-evaluator", daemon=True
+        )
+        _metrics_thread.start()
+        app.state.metrics_evaluator_thread = _metrics_thread
+        logger.info(
+            "Metrics evaluator loop started (15s interval; enabled system-health rules)"
+        )
+    except Exception as _eval_start_exc:  # noqa: BLE001 - loud, never crash boot
+        logger.error(
+            "METRICS EVALUATOR LOOP FAILED TO START -- system-health rules will "
+            "NOT be evaluated (observability closed loop broken): %s",
+            _eval_start_exc, exc_info=True,
+        )
+
     yield  # App runs here
 
     # Shutdown
     logger.info("Shutting down LiuHao AI OS Gateway...")
+
+    # Stop the metrics evaluator loop (best-effort; never stalls shutdown long).
+    try:
+        _metrics_stop = getattr(app.state, "metrics_evaluator_stop", None)
+        _metrics_thread = getattr(app.state, "metrics_evaluator_thread", None)
+        if _metrics_stop is not None:
+            _metrics_stop.set()
+        if _metrics_thread is not None:
+            _metrics_thread.join(timeout=5.0)
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        pass
     _shutdown_report = shutdown_all()
     _shutdown_down = _shutdown_report.get("shutdown", [])
     _shutdown_errors = _shutdown_report.get("errors", [])
@@ -406,6 +470,26 @@ def get_app() -> FastAPI:
             f"trace_id={trace_id}"
         )
 
+        return response
+
+    # ==================== Metrics recording middleware ====================
+    # Feeds the REAL alert-engine emitters (MetricCollector) with live per-
+    # request data: status class counters + a bounded latency window. This is
+    # what makes error_rate_percent and latency_p99_ms real. It must NEVER
+    # break the request, hence the guard + internal swallow.
+
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        if _get_metric_collector is not None:
+            try:
+                _get_metric_collector().record_request(
+                    process_time, response.status_code
+                )
+            except Exception as exc:  # pragma: no cover - never fail a request
+                logger.warning(f"metric recording failed: {exc}")
         return response
 
     # ==================== Exception handlers ====================
@@ -562,6 +646,11 @@ def get_app() -> FastAPI:
     # 越界即 400。与其余业务面一样挂人类主权闸门 —— 工作区内容不匿名可读。
     from .files import router as files_router
     app.include_router(files_router, dependencies=[Depends(_require_human)])
+
+    # Projects 面（Top-3 #1 缺口之一）：把目标归类成人类可管理的项目容器。
+    # 人类主权创建/读取/删除，挂 require_human_principal 闸门。
+    from .projects import router as projects_router
+    app.include_router(projects_router, dependencies=[Depends(_require_human)])
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。

@@ -20,6 +20,7 @@ import {
   IconGoals,
   IconKnowledge,
   IconLock,
+  IconProjects,
   IconSettings,
   IconShield,
   IconWorkbench,
@@ -41,6 +42,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'knowledge', label: '知识中心', icon: IconKnowledge },
   { key: 'workbench', label: '工作台', icon: IconWorkbench },
   { key: 'goals', label: '目标与任务', icon: IconGoals },
+  { key: 'projects', label: '项目', icon: IconProjects },
   { key: 'data', label: '数据中心', icon: IconData },
 ]
 

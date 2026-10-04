@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 from enum import Enum, auto
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AlertSeverity(Enum):
@@ -161,11 +164,13 @@ class AlertRule:
             return None
 
         if triggered:
-            # Value is outside threshold - this is the nth consecutive trigger
-            # For simplicity, we just fire on first detection
-            # In production, would track consecutive evaluations
+            # Value is outside threshold. The alert id is DETERMINISTIC and
+            # equals the rule id: one rule maps to one active alert, so repeated
+            # evaluation of a sustained breach overwrites the same alert instead
+            # of stamping a new random id every tick (which would storm the
+            # store and the notification sink). Recovery auto-resolves it.
             alert = Alert(
-                id=str(auto()),
+                id=self.id,
                 alert_type=self.alert_type,
                 name=self.name,
                 severity=self.severity,
@@ -270,13 +275,32 @@ class AlertManager:
         """
         Evaluate all rules against current metrics.
 
+        Honest closed loop (blocker #3):
+        - A breach produces ONE persisted, firing alert (id == rule id).
+        - A breach that persists across ticks REFRESHES that alert but does NOT
+          re-dispatch to the sink, so a sustained incident cannot storm the
+          store or the webhook with duplicates.
+        - When the metric returns below threshold, a previously-firing alert for
+          that rule is AUTO-RESOLVED, so the operator view reflects reality
+          instead of showing a stale permanent firing alert.
+
         Args:
             metrics: Dict of metric_name -> current_value
 
         Returns:
-            List of newly triggered alerts
+            List of NEWLY triggered alerts (transitions into firing only).
         """
         new_alerts = []
+
+        # Read the currently-firing set ONCE so we can tell a new episode from an
+        # already-firing one within this pass.
+        try:
+            from .store import get_alert_store
+            store = get_alert_store()
+            firing_ids = {a.id for a in store.list_firing()}
+        except Exception:  # noqa: BLE001 - never break evaluation on store hiccup
+            store = None
+            firing_ids = set()
 
         for rule in self.rules.values():
             if rule.metric_name not in metrics:
@@ -286,12 +310,37 @@ class AlertManager:
             alert = rule.evaluate(current_value)
 
             if alert is not None:
-                # Store alert
+                already_firing = alert.id in firing_ids
+                # Manager registry: keep the latest view in memory.
                 self.alerts[alert.id] = alert
-                self.alert_history.append(alert)
 
-                # Update alert state in storage
-                new_alerts.append(alert)
+                # CLOSE THE LOOP: persist + dispatch. On a NEW firing episode we
+                # deliver to the sink (console/webhook); on an already-firing
+                # breach we persist a refresh but do NOT re-page. Without the
+                # dispatch guard the engine would spam the sink every 15s.
+                try:
+                    from .store import emit_alert
+
+                    emit_alert(alert, dispatch=not already_firing)
+                except Exception as _emit_exc:  # noqa: BLE001 - never mask alert
+                    logger.error(
+                        "emit_alert failed for %s (%s): %s",
+                        alert.id, alert.metric_name, _emit_exc, exc_info=True,
+                    )
+
+                if not already_firing:
+                    self.alert_history.append(alert)
+                    new_alerts.append(alert)
+            else:
+                # Metric recovered below threshold -> auto-resolve a previously
+                # firing alert for this rule so it stops showing as firing.
+                if store is not None and rule.id in firing_ids:
+                    try:
+                        store.resolve_alert(rule.id)
+                        if rule.id in self.alerts:
+                            self.alerts[rule.id].state = AlertState.RESOLVED
+                    except Exception:  # noqa: BLE001 - resolve must never raise
+                        pass
 
         return new_alerts
 

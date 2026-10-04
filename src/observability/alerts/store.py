@@ -143,7 +143,7 @@ class AlertStore:
 
     # ==================== Alert Operations ====================
 
-    def emit_alert(self, alert: Alert) -> str:
+    def emit_alert(self, alert: Alert, dispatch: bool = True) -> str:
         """
         Emit (store + deliver) an alert.
 
@@ -154,7 +154,11 @@ class AlertStore:
         it can never lose the persisted record or break the caller.
 
         Args:
-            alert: The alert to store
+            alert: The alert to store.
+            dispatch: When ``True`` (default) the alert is delivered to the
+                configured sink(s). When ``False`` the alert is persisted but
+                NOT re-dispatched — used to refresh an alert that is already
+                firing so a sustained breach cannot storm the sink.
 
         Returns:
             The alert ID
@@ -165,10 +169,11 @@ class AlertStore:
         # Real delivery: dispatch to the configured sink(s). File persistence
         # above is the fail-closed guarantee — even if dispatch fails, the alert
         # record is already on disk.
-        try:
-            dispatch_alert(alert)
-        except Exception as exc:  # noqa: BLE001 - emit_alert must never raise
-            logger.warning("alert dispatch failed (alert already persisted): %s", exc)
+        if dispatch:
+            try:
+                dispatch_alert(alert)
+            except Exception as exc:  # noqa: BLE001 - emit_alert must never raise
+                logger.warning("alert dispatch failed (alert already persisted): %s", exc)
         return eid
 
     def get_alert(self, alert_id: str) -> Optional[Alert]:
@@ -333,9 +338,9 @@ def get_alert_store() -> AlertStore:
     return _default_store
 
 
-def emit_alert(alert: Alert) -> str:
+def emit_alert(alert: Alert, dispatch: bool = True) -> str:
     """Emit (store) an alert using the default store."""
-    return get_alert_store().emit_alert(alert)
+    return get_alert_store().emit_alert(alert, dispatch=dispatch)
 
 
 def get_alert(alert_id: str) -> Optional[Alert]:

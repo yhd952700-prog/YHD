@@ -113,9 +113,10 @@ def list_alerts() -> Dict[str, Any]:
 def list_alert_rules() -> Dict[str, Any]:
     """列出已注册的告警规则及其真实 enabled 状态。
 
-    诚实说明：install_production_rules() 注册的 6 条系统健康规则当前全部
-    enabled=False（它们的指标发射器尚未接线，启用即装饰性失效）；执行失败告警
-    不经规则引擎，直接经 EventBus 落库。本端点如实返回规则状态，不美化。
+    诚实说明：install_production_rules() 注册的 6 条系统健康规则现已全部
+    enabled=True —— 真正的指标发射器（MetricCollector）已接线，网关 lifespan
+    里的 15s 守护线程会把真实快照喂给 AlertManager.evaluate_all，真实越界才会
+    产生真实告警。本端点如实返回规则状态，不美化。
     """
     store = AlertStore()
     rules = store.list_rules()
@@ -134,3 +135,25 @@ def list_alert_rules() -> Dict[str, Any]:
             for r in rules
         ],
     }
+
+
+@router.get("/observability/metrics", dependencies=[Depends(require_human_principal)])
+def observability_metrics() -> Dict[str, Any]:
+    """Read-only snapshot of the 6 real metric values feeding the alert engine.
+
+    Returns ``{"metrics": collector.collect_snapshot()}``. These are the SAME
+    real values the 15s evaluator loop feeds to ``AlertManager.evaluate_all`` —
+    nothing here is synthesised for display. Operators use it to confirm the
+    emitters are live and to see current headroom against the rule thresholds.
+    """
+    try:
+        from ..observability.metrics import get_metric_collector
+
+        snapshot = get_metric_collector().collect_snapshot()
+    except Exception as exc:  # noqa: BLE001 - never 500 on observability read
+        logger.warning("metric snapshot failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"metric collector unavailable: {exc}",
+        )
+    return {"metrics": snapshot}

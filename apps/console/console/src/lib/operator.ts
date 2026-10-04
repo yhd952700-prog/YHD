@@ -48,6 +48,11 @@ export interface CreateGoalBody {
    * 没有可停的东西，主权中止路径在界面上等于不存在。
    */
   background?: boolean
+  /**
+   * 归属的项目 id（来自 `Projects` 面）。必须是已存在的项目，否则网关返回 404。
+   * 留空表示独立目标，不属于任何项目。
+   */
+  project_id?: string | null
 }
 
 export function createGoal(body: CreateGoalBody): Promise<Json> {
@@ -322,4 +327,72 @@ export function listGoals(): Promise<GoalsResponse> {
 /** 详情：手动触发（点开某条才取），不轮询。 */
 export function getGoal(goalId: string): Promise<GoalDetail> {
   return apiFetch<GoalDetail>(`/v1/goals/${encodeURIComponent(goalId)}`)
+}
+
+// ─── 项目（产品面：把目标归类成人类可管理的容器） ───────────────
+//
+// 端点与 `src/gateway/projects.py` 严格对齐（`GET /v1/projects`、
+// `GET /v1/projects/{id}`、`POST /v1/projects`、`DELETE /v1/projects/{id}`）。
+// 这是人类主权创建 / 读取 / 删除的真实产物；目标在创建时可挂到某个项目之下
+// （`createGoal` 的 `project_id` 字段，见上文），于是"项目"不是装饰，而是真实归类。
+//
+// 诚实优先：详情端点返回项目下的真实目标摘要，没有目标就 `goal_count=0`、
+// `goals=[]`，不编造；删除会一致地把每个关联目标的 `project_id` 清回 None。
+
+export interface ProjectGoalRef {
+  goal_id: string
+  state: string
+  natural_language: string
+  created_at: number | null
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface ProjectSummary {
+  project_id: string
+  name: string
+  description: string
+  created_at: number | null
+  creator: string | null
+  goal_ids: string[]
+  goal_count: number
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  goals: ProjectGoalRef[]
+}
+
+export interface ProjectsResponse {
+  projects: ProjectSummary[]
+  count: number
+}
+
+export interface CreateProjectBody {
+  name: string
+  description?: string
+}
+
+/** 列表：每 30 秒轮询一次（项目会随目标归类而变化）。 */
+export function listProjects(): Promise<ProjectsResponse> {
+  return apiFetch<ProjectsResponse>('/v1/projects')
+}
+
+/** 详情：手动触发（点开某个项目才取），不轮询。 */
+export function getProject(projectId: string): Promise<ProjectDetail> {
+  return apiFetch<ProjectDetail>(`/v1/projects/${encodeURIComponent(projectId)}`)
+}
+
+export function createProject(body: CreateProjectBody): Promise<ProjectSummary> {
+  return apiFetch<ProjectSummary>('/v1/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: body.name, description: body.description ?? '' }),
+  })
+}
+
+export function deleteProject(projectId: string): Promise<{ removed: string; ok: boolean }> {
+  return apiFetch<{ removed: string; ok: boolean }>(
+    `/v1/projects/${encodeURIComponent(projectId)}`,
+    { method: 'DELETE' },
+  )
 }

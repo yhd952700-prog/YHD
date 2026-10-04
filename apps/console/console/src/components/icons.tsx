@@ -220,3 +220,10 @@ export const IconGoals = (p: IconProps) => (
     <circle cx="12" cy="12" r="2.5" fill="currentColor" />
   </Glyph>
 )
+
+export const IconProjects = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M3.5 7.2A1.6 1.6 0 0 1 5.1 5.6h3.4l1.8 2.2h7.6A1.6 1.6 0 0 1 19.5 9.4v8.2A1.6 1.6 0 0 1 17.9 19.2H5.1A1.6 1.6 0 0 1 3.5 17.6z" />
+    <path d="M3.6 9.6h16.2v7.8" />
+  </Glyph>
+)

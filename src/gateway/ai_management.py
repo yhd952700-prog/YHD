@@ -47,6 +47,11 @@ class GoalCreateRequest(BaseModel):
     verification_criteria: Optional[Dict[str, Any]] = Field(
         None, description="可选验证标准"
     )
+    # 把目标挂到某个真实存在的项目之下（Projects 面，Top-3 #1 缺口之一）。
+    # None 表示独立目标，不属于任何项目。传入不存在的 project_id 会被拒绝。
+    project_id: Optional[str] = Field(
+        None, description="可选：归属的项目 id（必须已存在，否则 404）"
+    )
     # Why this exists: ``create_and_execute_goal`` could always run a goal on a
     # background thread, but nothing over HTTP could ask for it, so the goal
     # always finished inside the POST request. That makes the whole
@@ -306,6 +311,7 @@ class AIStateManager:
         plan_mode: str = "auto",
         verification_criteria: Optional[Dict[str, Any]] = None,
         background: bool = False,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建并执行一个 Goal，返回执行结果。
 
@@ -317,6 +323,17 @@ class AIStateManager:
         - ``background=True``：在后台线程跑，立即返回 ``state:"running"``，
           供自主工作者场景与取消演示使用（``POST /v1/goals/{id}/stop`` 可干净中止）。
         """
+        # Fail fast on a non-existent project before doing any execution work.
+        if project_id is not None:
+            try:
+                from .projects import ProjectStore
+                if not ProjectStore().exists(project_id):
+                    raise ValueError(f"Project {project_id} not found")
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(f"Project {project_id} lookup failed: {exc}")
+
         runtime = self._ensure_runtime()
         goal_id = str(uuid.uuid4())[:8]
 
@@ -341,6 +358,7 @@ class AIStateManager:
                 "tasks": [],
                 "evaluation": None,
                 "created_at": time.time(),
+                "project_id": project_id,
             }
             with self._goal_lock:
                 self._goals[goal_id] = running_entry
@@ -348,17 +366,36 @@ class AIStateManager:
             t = threading.Thread(
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
-                      verification_criteria, True),
+                      verification_criteria, True, project_id),
                 name=f"goal-{goal_id}",
                 daemon=True,
             )
             t.start()
             self._goal_threads[goal_id] = t
+            # Register the link immediately (goal id is known up-front).
+            self._link_goal_to_project(project_id, goal_id)
             return running_entry
 
-        return self._run_bound_goal(
-            goal_id, natural_language, scope, plan_mode, verification_criteria, True
+        entry = self._run_bound_goal(
+            goal_id, natural_language, scope, plan_mode, verification_criteria, True,
+            project_id,
         )
+        # Register the link once the goal exists (sync path).
+        self._link_goal_to_project(project_id, goal_id)
+        return entry
+
+    def _link_goal_to_project(
+        self, project_id: Optional[str], goal_id: str
+    ) -> None:
+        """Best-effort: add a goal to a project's goal_ids (no-op if no project)."""
+        if not project_id:
+            return
+        try:
+            from .projects import ProjectStore
+            ProjectStore().add_goal(project_id, goal_id)
+        except Exception as exc:  # linking must never break goal creation
+            logger.warning("goal->project link failed (%s/%s): %s",
+                           project_id, goal_id, exc)
 
     def _run_bound_goal(
         self,
@@ -368,6 +405,7 @@ class AIStateManager:
         plan_mode: str,
         verification_criteria: Optional[Dict[str, Any]],
         persist: bool,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。"""
         try:
@@ -409,9 +447,11 @@ class AIStateManager:
                 "tasks": [],
                 "evaluation": None,
                 "created_at": time.time(),
+                "project_id": project_id,
             }
         else:
             entry = self._result_to_dict(result, natural_language, scope)
+            entry["project_id"] = project_id
         with self._goal_lock:
             self._goals[goal_id] = entry
         self._save_goals()
@@ -441,6 +481,8 @@ class AIStateManager:
         entry = self._result_to_dict(result, prior_entry["natural_language"],
                                      prior_entry["scope"])
         entry["replan_count"] = prior_entry.get("replan_count", 0) + 1
+        # Keep the project association across a replan (honest continuity).
+        entry["project_id"] = prior_entry.get("project_id")
         with self._goal_lock:
             self._goals[goal_id] = entry
         self._save_goals()
@@ -466,6 +508,7 @@ class AIStateManager:
                 "task_count": len(tasks),
                 "completed_tasks": completed,
                 "failed_tasks": failed,
+                "project_id": item.get("project_id"),
             })
         return summaries
 
@@ -891,7 +934,11 @@ def create_goal(req: GoalCreateRequest) -> Dict[str, Any]:
             plan_mode=req.plan_mode,
             verification_criteria=req.verification_criteria,
             background=req.background,
+            project_id=req.project_id,
         )
+    except ValueError as exc:
+        # e.g. a non-existent project_id — honest 404, not a 503 crash.
+        raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Goal execution failed: {exc}")
 

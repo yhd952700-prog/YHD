@@ -31,20 +31,20 @@ from .store import (
 def install_production_rules() -> None:
     """Register production alert rules with tuned thresholds (OB-04 gap).
 
-    PENDING METRIC EMITTERS (honest status, do not whitewash):
-    Every rule below references a metric (``error_rate_percent``,
-    ``memory_usage_percent``, ``cpu_usage_percent``, ``latency_p99_ms``,
-    ``service_heartbeat_interval``, ``audit_log_lag_seconds``) for which NO
-    emitter exists anywhere in the codebase. ``AlertManager.evaluate_all`` only
-    fires a rule when that metric name is present in the metrics dict passed to
-    it, and nothing feeds these names today — so enabling them would make
-    ``evaluate_all`` silently inert (decorative). They are therefore registered
-    but ``enabled=False`` until real metric emitters are wired. We deliberately
-    do NOT invent fake metric emitters to make them "pass".
+    LIVE AS OF BLOCKER #3: the metric emitters now exist. ``MetricCollector``
+    (in ``src/observability/metrics.py``) produces REAL values for every one of
+    the six referenced metrics (``error_rate_percent``, ``memory_usage_percent``,
+    ``cpu_usage_percent``, ``latency_p99_ms``, ``service_heartbeat_interval``,
+    ``audit_log_lag_seconds``) from the live process / OS / audit store — no
+    value is invented. The gateway lifespan drives a 15s daemon loop that calls
+    ``collect_snapshot()`` then ``AlertManager.evaluate_all(snapshot)``. Because
+    each metric name is now present in the snapshot AND every rule below is
+    ``enabled=True``, a genuine breach produces a genuine stored alert. This is
+    the honest, working closed loop — not decorative.
 
-    The execution-failure alerts (see ``execution_binding``) are the REAL,
-    working path: they are emitted directly on EventBus failure events and reach
-    the configured sink via ``AlertStore.emit_alert`` -> ``dispatch_alert``.
+    The execution-failure alerts (see ``execution_binding``) remain the OTHER
+    REAL path: emitted directly on EventBus failure events and delivered via
+    ``AlertStore.emit_alert`` -> ``dispatch_alert``.
     """
     # Service down alert: fire if service heartbeat missing for 5 minutes
     add_alert_rule(AlertRule(
@@ -61,7 +61,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=60.0,
         evaluation_count=3,
-        enabled=False,  # PENDING METRIC EMITTER: no service_heartbeat_interval source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Error rate alert: fire if error rate > 5% over 5-min window
@@ -79,7 +79,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
-        enabled=False,  # PENDING METRIC EMITTER: no error_rate_percent source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Latency alert: fire if P99 latency > 2s
@@ -97,7 +97,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=10.0,
         evaluation_count=3,
-        enabled=False,  # PENDING METRIC EMITTER: no latency_p99_ms source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Memory usage alert: fire if memory > 85%
@@ -115,7 +115,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
-        enabled=False,  # PENDING METRIC EMITTER: no memory_usage_percent source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # CPU usage alert: fire if CPU > 80%
@@ -133,7 +133,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=15.0,
         evaluation_count=2,
-        enabled=False,  # PENDING METRIC EMITTER: no cpu_usage_percent source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # Audit log gap alert: fire if audit log sync lag > 60 seconds
@@ -151,7 +151,7 @@ def install_production_rules() -> None:
         ),
         evaluation_interval=30.0,
         evaluation_count=2,
-        enabled=False,  # PENDING METRIC EMITTER: no audit_log_lag_seconds source
+        enabled=True,  # LIVE: real MetricCollector emitters now feed this rule
     ))
 
     # 同步进 AlertStore，使读取面 GET /v1/alerts/rules 能如实返回规则状态。
@@ -159,13 +159,14 @@ def install_production_rules() -> None:
     _persist_rules_to_store()
 
 
-
 def _persist_rules_to_store() -> None:
     """把已注册的规则同步进 AlertStore，使其成为可被读取的 system-of-record。
 
     诚实说明：install_production_rules() 把规则注册进 AlertManager（评估注册表），
     但读取面 ``GET /v1/alerts/rules`` 读出的是 AlertStore（持久化记录）。两者必须
-    同步，否则规则"注册了却读不到"。本函数不修改任何 enabled 状态，也不发明指标发射器。
+    同步，否则规则"注册了却读不到"。本函数同步的 enabled 状态就是 install_production_rules()
+    里设定的真实值（6 条系统健康规则现已 enabled=True，因为真正的指标发射器已接线），
+    不发明、不美化成 False。
     """
     store = AlertStore()
     for _rule in get_alert_manager().list_rules():
