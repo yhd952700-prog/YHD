@@ -236,3 +236,13 @@ export const IconApps = (p: IconProps) => (
     <rect x="13.5" y="13.5" width="7" height="7" rx="1.4" />
   </Glyph>
 )
+
+export const IconEvents = (p: IconProps) => (
+  <Glyph {...p}>
+    <circle cx="12" cy="12" r="2.2" />
+    <path d="M7.8 7.8a6 6 0 0 0 0 8.4" />
+    <path d="M16.2 7.8a6 6 0 0 1 0 8.4" />
+    <path d="M4.9 4.9a9.5 9.5 0 0 0 0 14.2" />
+    <path d="M19.1 4.9a9.5 9.5 0 0 1 0 14.2" />
+  </Glyph>
+)

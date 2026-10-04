@@ -66,20 +66,20 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 | 10 | resource | LHX-C-007 | **REAL (indirect)** | none of its own |
 | 11 | network | LHX-C-009 | **PRIMITIVE ONLY** ⚠ overclaim | none |
 | 12 | trust | LHX-C-010 | **PRIMITIVE ONLY** | none |
-| 13 | event | LHX-C-008 | **PRIMITIVE ONLY** | WS exists but is **not mounted** |
+| 13 | event | LHX-C-008 | **REAL (indirect)** | `/v1/events` read-only (2026-10-20) |
 | 14 | plugin | LHX-C-014 | **REAL PRODUCT CAPABILITY** | `/v1/plugins` (2026-10-20) |
 | — | retention | *(unregistered)* | **PRIMITIVE ONLY** | none |
 | — | observability | *(not a kernel)* | **REAL (alerts live)** | `/v1/alerts`, `/v1/alerts/rules`, 6 live health rules |
 
 **Counts (the 14 registered kernels):** `REAL PRODUCT CAPABILITY` **11**
 (8 direct + 2 indirect-only-surface: memory, context/capability/resource counted as
-real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page), `PRIMITIVE ONLY` **3** (network, trust, event),
+real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page), `PRIMITIVE ONLY` **2** (network, trust),
 `STUB / PARTIAL` **0**.
 
 Split precisely:
-- **REAL, user-observable outcome: 7** — identity, execution, evaluation, policy, security, audit, plugin
+- **REAL, user-observable outcome: 8** — identity, execution, evaluation, policy, security, audit, plugin, event
 - **REAL, meaningful work but no surface of its own: 4** — memory, context, capability, resource
-- **PRIMITIVE ONLY: 3** — network, trust, event
+- **PRIMITIVE ONLY: 2** — network, trust
 - **STUB / PARTIAL: 0**
 
 ---
@@ -440,7 +440,7 @@ user decision.
 
 ---
 
-## 15. event (LHX-C-008) — PRIMITIVE ONLY (a WS surface exists but is NOT mounted)
+## 15. event (LHX-C-008) — REAL (indirect; read-only surface added 2026-10-20; see §25)
 
 **Claims** (`src/kernels/event/__init__.py:1-16`): unified bus, correlation IDs,
 dead-letter handling, "event replay".
@@ -460,9 +460,13 @@ is **not** the product app: `src/gateway/__main__.py` runs `src.gateway.main:app
 and the router list at `src/gateway/main.py:492-550` contains **no** events router.
 So `/ws/events` ships to nobody.
 
-**Single most important gap:** mount an event surface (WS or a polling
-`/v1/events`) in `src/gateway/main.py`, or delete `src/api/events_ws.py`. Today the
-event bus is real plumbing with no visible outlet.
+**Closed (2026-10-20):** a real read-only surface now exists — `src/gateway/events.py`
+exposes `GET /v1/events` (human-gated) backed by the kernel's own
+`get_event_history()` (`src/kernels/event/__init__.py:238`), and the console has an
+`events` nav key + `pages/Events.tsx` polling it every 15s. The earlier WS surface
+(`src/api/events_ws.py`) remains unmounted but is now redundant; the polling endpoint
+is the shipped outlet. The event kernel is no longer PRIMITIVE-ONLY — it has a real,
+user-observable (read-only) surface.
 
 ---
 
@@ -851,6 +855,10 @@ following were built / corrected on branch `p36` after the snapshot and are comm
   `src/security/audit_logger.py` (correction note present); `python_compute` rejection
   message already self-documents the `python:` directive — bare NL is honestly rejected,
   never faked as success.
+- **Events surface CLOSED** (was PRIMITIVE-ONLY): `src/gateway/events.py` exposes read-only
+  `GET /v1/events` (human-gated) backed by the kernel's own `get_event_history()`; console
+  `events` nav key + `pages/Events.tsx` polls it every 15s. Event kernel now has a real,
+  user-observable (read-only) outlet; PRIMITIVE-ONLY count drops to network + trust.
 
 The narrative in §16 and §18 above still describes the pre-2026-10-20 state; treat those
 two sections as superseded by this §25.

@@ -112,8 +112,10 @@ capability-registry:
     - Event with correlation_id, causation_id, scope, priority, tags
     - Dead letter handling with retry
     - Event history and correlation chain queries
+    - Read-only GET /v1/events surface (src/gateway/events.py, human-gated) exposes the kernel's get_event_history() in the shipping app (2026-10-20)
     - '2026-09-15 fix: publish() no longer mutates the stored subscription list in place (concatenates type + wildcard subs, de-dups by subscription id) — stops unbounded growth and duplicate delivery'
     test_coverage: '19/19 unit tests passing (tests/kernels/event/, 2026-09-15 verified)'
+    notes: HONESTY 2026-10-20 event kernel now has a real user-facing surface — read-only GET /v1/events (src/gateway/events.py, human-gated) backed by kernel get_event_history(); console events page polls it. Previously PRIMITIVE-ONLY (WS at src/api/events_ws.py was unmounted). Reachability now REACHABLE.
     implementation_completeness:
       code_exists: true
       executable: true

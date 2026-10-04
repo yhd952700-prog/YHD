@@ -16,6 +16,7 @@ import {
   IconDashboard,
   IconData,
   IconEmployees,
+  IconEvents,
   IconFiles,
   IconGoals,
   IconKnowledge,
@@ -46,6 +47,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'projects', label: '项目', icon: IconProjects },
   { key: 'apps', label: '应用', icon: IconApps },
   { key: 'data', label: '数据中心', icon: IconData },
+  { key: 'events', label: '事件流', icon: IconEvents },
 ]
 
 /** 独立于主导航的治理入口。 */

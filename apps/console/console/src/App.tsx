@@ -54,6 +54,7 @@ import { Files } from './pages/Files'
 import { Goals } from './pages/Goals'
 import { Projects } from './pages/Projects'
 import { Apps } from './pages/Apps'
+import { Events } from './pages/Events'
 import { BusinessCenter, KnowledgeCenter, Roster } from './pages/Directory'
 import { DataCenter, SystemStatus } from './pages/Operations'
 import { Settings } from './pages/Settings'
@@ -84,6 +85,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   goals: { title: '目标与任务', sub: 'AI 员工真实执行过的目标与任务分解（只读）' },
   projects: { title: '项目', sub: '人类主权面：把 AI 员工的目标分类到真实项目之下' },
   apps: { title: '应用', sub: '真实插件与应用 —— 由你激活' },
+  events: { title: '事件流', sub: '真实系统事件流 —— 内核总线实况' },
   status: { title: '系统状态', sub: '依赖探针与安全组件实况' },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
 }
@@ -454,6 +456,7 @@ function App() {
       {active === 'goals' && <Goals query={query} />}
       {active === 'projects' && <Projects query={query} />}
       {active === 'apps' && <Apps query={query} />}
+      {active === 'events' && <Events query={query} />}
       {active === 'status' && <SystemStatus />}
       {active === 'settings' && (
         <Settings

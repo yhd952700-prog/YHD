@@ -435,3 +435,43 @@ export function activateApp(pluginId: string): Promise<AppSummary> {
     { method: 'POST' },
   )
 }
+
+// ─── 事件流（只读可观测面） ─────────────────────────────────
+//
+// 端点与 `src/gateway/events.py` 严格对齐（`GET /v1/events`）。后端直接复用事件内核
+// 的 `get_event_history`——内核已保真记录总线上的真实事件，这里只把真实发生的近期
+// 事件摊开给人看。
+//
+// 诚实优先：后端返回的每一条都来自内核总线真实发生过的事件；真空就是真空，前端如实
+// 展示"内核总线暂无事件"，不编造占位事件来假装系统正在活动。
+
+export interface EventSummary {
+  /** 事件关联 id（内核 Event.correlation_id） */
+  id: string
+  type: string
+  source: string
+  /** ISO 8601 时间戳 */
+  timestamp: string
+  scope: string
+  priority: string
+  /** 人类可读的载荷摘要（绝不声称更多信息） */
+  summary: string
+  /** 原始载荷（JSON 安全） */
+  data: Record<string, unknown> | null
+}
+
+export interface EventsResponse {
+  events: EventSummary[]
+  count: number
+  limit: number
+  /** 缓冲区内还有更早的事件 */
+  truncated: boolean
+  /** 数据来源（诚实标注） */
+  source: string
+}
+
+/** 近期真实事件；limit 缺省时后端取最近 50 条。 */
+export function getEvents(limit?: number): Promise<EventsResponse> {
+  const qs = limit !== undefined ? `?limit=${encodeURIComponent(String(limit))}` : ''
+  return apiFetch<EventsResponse>(`/v1/events${qs}`)
+}
