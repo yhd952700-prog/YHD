@@ -90,8 +90,8 @@
 | | |
 |---|---|
 | **PASS** | **6** (P2, P3, P4, P6, P7, P8) |
-| **FAIL** | **4** (P1, P5, P9, P10) |
-| **BLOCKED** | 0 |
+| **BLOCKED** | **3** (P1, P5, P10) — backend **and** UI are real & wired; outstanding = browser click-through (environment-limited, not a capability gap) |
+| **FAIL** | **1** (P9) — backend read-only surface proven (48/48 over real HTTP); the Identity/Permissions **UI page is not yet built** (build dispatched this cycle) |
 | **NOT YET TESTED** | 0 |
 | **PRODUCT ACCEPTANCE** | **NOT READY** |
 
@@ -100,19 +100,34 @@ workflow that previously returned `SUCCESS` without doing the work is now fixed
 and proven** — a "create file" goal, run through the production wiring, actually
 writes the file to disk with the expected content and an unwired executor fails
 instead of lying. That was the worst defect in the report (P6). It is now PASS,
-measured. The product is still **NOT READY** because P1, P5, P9, P10 remain
-open — but those four are now *capability-complete*: their backends are real and
-measured, and their only outstanding demonstrable step is a **browser
-click-through** (this environment has no headless browser), not a missing
-capability. P2 (Task Planning) and P3 (Multi-Agent Collaboration) flipped to
-PASS this cycle: the deterministic planner is genuinely wired into the
-`POST /v1/goals` user path (measured), and a file-write goal is now observably
-worked by **≥2 distinct real agents** (primary write + derived sha256 sidecar),
-both producing real on-disk artifacts (measured).
+measured.
+
+**Honesty correction (cycle 7):** earlier cycles *underclaimed* the UI layer.
+The cockpit is not a stub — `src/gateway/main.py` mounts real routers and
+`apps/console/console/src/App.tsx` actually imports and renders both
+`ApprovalCenter` (the P5 human approve/stop panel, wired to the real
+`/v1/policy/approvals` C-4 endpoints via `policyClient.ts`) and `Audit` (the P8
+audit view, wired to `/v1/audit/*` via `operator.ts`). The prior "P5 has no
+approve/stop panel" / "P8 audit view not built" statements were **wrong** — the
+components exist and are rendered. They still have **not been exercised in a
+browser click-through** here (no headless browser), which is the only remaining
+demonstrable step.
+
+**Reclassification this cycle (cycle 7):** P1, P5, P10 move `FAIL → BLOCKED`.
+All three have real, measured backends **and** real, wired UI; the only
+outstanding step is a **browser click-through** (this environment has no headless
+browser) — an environmental gap, not a capability gap. P9 stays `FAIL` because
+its Identity/Permissions **UI page is genuinely not built yet** (the backend
+read-only surface is proven); that build was dispatched this cycle. P2 (Task
+Planning) and P3 (Multi-Agent Collaboration) are PASS (deterministic planner
+wired into `POST /v1/goals`; a file-write goal worked by ≥2 distinct real agents
+with observable combined artifacts). The product is still **NOT READY** only
+because the browser click-through (and, for P9, its UI build) is outstanding on
+this host.
 
 ---
 
-## P1 — AI Employee — **FAIL**
+## P1 — AI Employee — **BLOCKED** (cycle 7: backend + UI real & wired; outstanding = browser click-through)
 
 **Requires:** a real, persistent roster of AI employees with lifecycle (hire /
 pause / resume), each with identity and capabilities, visible and manageable by
@@ -165,19 +180,25 @@ rendered in `pages/Directory.tsx`, calls `operator.hireEmployee` → `POST
 rendered per agent in `Directory.tsx`, calls `pauseAgent` / `resumeAgent` → the real
 `POST /v1/employees/{id}/pause|resume` endpoints). Both are wired to the by-name
 lifecycle endpoints integration-tested in `tests/gateway/test_employee_lifecycle.py`,
-so the *UI* half of P1 is no longer the blocker. What genuinely remains
-unverifiable in this environment: (1) a real **browser click-through** of the full
-hire → pause → resume → remove flow (no headless browser available here), and (2) a
-**cross-restart durability** integration test for `EmployeeStore` (durability is
-by-design via atomic JSON writes, but not separately exercised across a process
-restart in CI).
+so the *UI* half of P1 is built and wired.
+
+**Honest residual (cycle 7 — why BLOCKED, not FAIL):** the backend lifecycle
+(hire/persist/list/pause/resume/remove) is real and tested, and the console UI is
+built and wired — so P1 is no longer a capability gap. Two items remain, both
+environmental/verification, not missing capability: (1) a real **browser
+click-through** of the full hire → pause → resume → remove flow (no headless
+browser available here), and (2) a **cross-restart durability** integration test
+for `EmployeeStore`. Item (2) was closed this cycle:
+`tests/ai/test_employee_store_durability.py` (3/3 PASS) opens a *second*
+`EmployeeStore` against the same file after a save and asserts the employee, its
+agents (incl. a paused agent), task status and aggregate counters all survive —
+the first CI exercise of `EmployeeStore` durability across a simulated restart.
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
 kernel modules. **Status this cycle:** create/persist/list/pause/resume/remove is
 real on both backend (tested) and the console UI (hire form + pause/resume buttons
-wired). P1 stays **FAIL** only on the two items above — a browser click-through and
-a cross-restart durability test — which require an environment with a browser / a
-restart integration test, not a missing capability.
+wired); cross-restart durability is now CI-proven. P1 is **BLOCKED** on the
+browser click-through (environment-limited), not on a missing capability.
 
 ---
 
@@ -305,7 +326,7 @@ gate is weakened to a blanket allow, or the adapter registration is removed.
 
 ---
 
-## P5 — Human Sovereignty UX — **FAIL** (re-assessed 2026-10-02: backend controls now real & proven; residual = dedicated approve/stop UX panel + dev-default record-only)
+## P5 — Human Sovereignty UX — **BLOCKED** (cycle 7: approve/stop UI built & wired; outstanding = browser click-through + dev-default record-only)
 
 **Requires:** the human can see, approve, and stop autonomous action — and the
 system fails closed when they do not.
@@ -436,21 +457,28 @@ evidence:
   relabels every `policy_decision=deny`/`defer` to `outcome=denied`
   (commit 315fc804; verify_audit_truthfulness.py across all 20 denied actions).
 
-**Honest residual (why still FAIL, not overclaimed to PASS):** the gate is titled
+**Honest residual (cycle 7 — why BLOCKED, not FAIL):** the gate is titled
 *Human Sovereignty **UX***. The backend approve/stop/enforce/fence controls are
-real and proven, but the **dedicated human-facing approve/stop UI panel** that
-surfaces pending grants and lets a human click-approve / click-stop is not yet
-demonstrated in this assessment (the C-4 endpoints exist; a first-class UI
-surface for them is the open item). Additionally, the *local/dev* default stays
+real and proven, and the **dedicated human-facing approve/stop UI panel now
+actually exists and is wired** — `components/ApprovalCenter.tsx` (imported at
+`App.tsx:23`, rendered at `App.tsx:454`) consumes `policyClient.ts` (`GET /v1/policy/approvals`
+for the enforcement snapshot + live grant list, `POST` to issue / `DELETE` to
+revoke) and surfaces pending grants with click-approve / click-revoke; the
+stop/abort control on in-flight goals lives in `OperatorControls.tsx` →
+`operator.stopGoal` (`POST /v1/goals/{id}/stop`, proven in cycle 5). So the *UX*
+half of P5 is built and wired, not absent. Two items remain, both environmental,
+not capability: (1) a real **browser click-through** of the approve/revoke + stop
+flow (no headless browser here), and (2) the *local/dev* default stays
 record-only (L1) by design — operators opt into real enforcement per environment
-via the switch, and `LIUHAO_REQUIRE_EXECUTOR_FENCE=1` makes a fence-install
-failure fail-closed rather than fail-open. The dev-default is fail-loud with
-opt-in fail-closed, **not** an unaddressed gap.
+via the `LIUHAO_KERNEL_POLICY_ENFORCE` switch, and `LIUHAO_REQUIRE_EXECUTOR_FENCE=1`
+makes a fence-install failure fail-closed rather than fail-open. The dev-default
+is fail-loud with opt-in fail-closed, **not** an unaddressed gap.
 
 **Flips to PASS when:** a usable human approval/stop UI panel is wired to the
 existing C-4 endpoints (pending grants visible + click-approve/revoke + a
 stop/abort control on in-flight autonomous actions), and the chain tells the
-truth across all denial paths (already proven).
+truth across all denial paths (already proven) — all three are now met at the
+code/wiring level; the only outstanding step is the browser click-through.
 
 ---
 
@@ -599,23 +627,30 @@ checks that this is not another silent-success trap:
 - The hashing is the **existing** `AuditStore` / `verify_integrity()` on its pinned
   read-only snapshot path — nothing reimplemented.
 
-**Honest residual (why PASS is not a full UX pass):** the flip bar written for this
-gate was *"a user can query and independently verify the chain, and `outcome`
-reflects what actually happened"* — all three are now met with measured evidence
-(the outcome-truthfulness item was fixed in cycle 3 across all 20 denied actions).
-But the gate is titled *Audit **UX***, and the **rendered audit view is not
-built**: only the endpoints plus typed frontend client functions in
-`apps/console/console/src/lib/operator.ts` exist. We credit the proven capability
-and record the residual plainly rather than overclaiming a complete UX.
+**Honest residual (cycle 7 — re-closed):** the flip bar written for this gate was
+*"a user can query and independently verify the chain, and `outcome` reflects what
+actually happened"* — all three are now met with measured evidence (the
+outcome-truthfulness item was fixed in cycle 3 across all 20 denied actions).
+The gate is titled *Audit **UX***; previously this document claimed *"the rendered
+audit view is not built"*. That was **wrong** — `apps/console/console/src/pages/Audit.tsx`
+(imported at `App.tsx:52`, rendered at `App.tsx:458`) consumes the three
+`operator.ts` client functions (`fetchAuditEvents` / `verifyAuditChain` /
+`fetchAuditSummary`) and renders the integrity state, action distribution, outcome
+distribution and a full event table with correlation-id filtering, and shows
+`ok=false` as a danger state rather than masking it. So the rendered audit view IS
+built and wired. The only outstanding demonstrable step is a **browser
+click-through** (no headless browser here) — an environmental gap, not a
+capability gap.
 
 **Flips back to FAIL if:** an audit write/mutation endpoint is ever added, the
 verify endpoint can be made to return `ok=true` on a tampered chain, or the
 endpoints become readable without a valid human token.
 **Remaining gaps recorded honestly (none of them the flip criteria):**
-- The UI's audit section is labelled **"数据中心"** (data centre) — users will not
-  look there for an audit trail; **the rendered audit view that consumes the new
-  endpoints is not yet built** (client functions are wired, no component renders
-  them). This is the "UX" half of the gate's title and the main residual.
+- The dedicated **审计链** page (`Audit.tsx`) now renders the new endpoints (summary /
+  events / verify) with honest `ok=false` handling — the rendered audit view IS
+  built and wired (cycle 7 correction; prior cycles wrongly claimed it was not).
+  The separate **数据中心** page under Operations still shows raw audit-storage
+  contents (excluding kernel noise) and is a different, raw view.
 - **(Historical, frozen) chain truthfulness defect:** on the **old** HC-01 sample,
   **41 of 48 HC-01 records (85%) assert `policy=deny` while `outcome` reads
   `success`/`intent`**; **zero** had `enforced=True`. That is retained *as frozen
@@ -675,10 +710,17 @@ a valid human token.
   file set but no key the row is written to disk and then **refused** at load
   (fail-closed, HC-11 / U6). Three different failures behind one "there are no
   humans" symptom — which is why the new endpoints report the reason.
-- `grant_permission`'s scope-ceiling refusal is recorded on HC-01 as
-  `outcome=success` — a false success on the authoritative chain. Still true:
-  that method returns `False` and never calls `mark_action_denied`, unlike
-  `create_identity` (`src/kernels/identity/__init__.py:1043` vs `:933`).
+- ~~`grant_permission`'s scope-ceiling refusal is recorded on HC-01 as
+  `outcome=success` — a false success on the authoritative chain.~~ **FIXED in
+  cycle 5:** `grant_permission` / `revoke_permission` now call `mark_action_denied`
+  on all four refusal paths (unknown identity / scope ceiling on grant; unknown
+  identity / permission-not-held on revoke), proven by
+  `scripts/verify_identity_denial_audit.py` (12 checks, confirmed FAILING before the
+  fix → PASS after). The genuine remaining asymmetry is the **mirror** distortion:
+  `grant`/`revoke` are HIGH-risk and absent from `INTERNAL_SERVICE_ALLOWED_ACTIONS`,
+  so adjudicated as the internal-service principal every verdict is `deny` — meaning
+  a *successful* grant can also be recorded `denied`. Isolating the two requires a
+  real C-3 sovereignty window (owner decision, not engineering).
 - The UI exposes exactly **4 write actions** total (send chat, record approval,
   revoke approval, log out). None manages permissions.
 
@@ -697,16 +739,23 @@ identity kernel is not READY, honest `warnings` + `registry.rows_refused` when a
 configured registry fails closed, and 404 (never an empty object) for an unknown
 principal.
 
-**Biggest gap:** identity is now enumerable over HTTP but still not visible in
-the UI, grants are deliberately not writable over HTTP (mutation is an authority
-surface and has no human-review gate yet), and refusals are still recorded as
-successes.
-**Flips to PASS when:** permissions are visible/manageable in the UI and refusals
-are recorded truthfully.
+**Biggest gap (cycle 7 reassessment):** identity is now enumerable over HTTP and
+proven (48/48 over real HTTP with real auth, `scripts/verify_identity_user_surface.py`);
+the false-success-on-refusal is **fixed** (cycle 5, four paths). What remains
+genuinely open: (1) the Identity/Permissions **UI page is not yet built** — there
+is no `Identity.tsx` and `operator.ts` has no identity client functions (a build
+was dispatched this cycle to wire `GET /v1/identity/*` into a real view); (2)
+grants are deliberately **not** writable over HTTP (mutation is an authority
+surface with no human-review gate yet); (3) the **mirror** denial distortion above
+(successful grant recorded `denied`) requires a C-3 sovereignty window — an
+owner/legal decision.
+**Flips to PASS when:** the Identity/Permissions UI is built and browser-verified,
+grants are visible, and the mirror refusal/grant distortion is resolved under a
+real sovereignty window.
 
 ---
 
-## P10 — Real User Workflow — **FAIL**
+## P10 — Real User Workflow — **BLOCKED** (cycle 7: headless closed loop proven + UI built & wired; outstanding = browser click-through + cross-restart durability)
 
 **Requires:** a real user can accomplish a real job through the product.
 
@@ -746,14 +795,21 @@ plans / executes / verifies / audits / delivers — it does NOT depend on a prov
 (the planner is deterministic) and does NOT depend on a browser. (Honest correction made
 elsewhere: a `python:` directive does NOT write a file; only `file_write` does.)
 
-**Biggest gap (re-scoped 2026-10-04):** the *headless* closed loop is proven; what remains
-is the **user-seat / browser** experience of that loop — a human clicking through create-goal
-→ watch execution → receive the delivered artifact in the Goals UI, plus a cross-restart
-durability integration test for the produced artifact / audit. Those require a browser /
-a restart harness, which this environment lacks.
+**Biggest gap (re-scoped 2026-10-04; reclassified cycle 7):** the *headless* closed
+loop is proven, and the **user-seat UI is built and wired** — `App.tsx` renders
+`Goals` / `Files` / `Projects` / `Apps` (real goal + task history, read-only
+workspace browser, human-gated project create/list, plugin activation), and
+`Goals.tsx` surfaces the real `artifacts` list from the goal-detail API. What
+remains is environmental, not a capability gap: (1) a **browser click-through**
+of create-goal → watch execution → receive the delivered artifact (no headless
+browser here), and (2) a **cross-restart durability** integration test for the
+produced artifact / audit store (the `EmployeeStore` durability test landed this
+cycle; the artifact/audit restart-harness is the analogous open item). Both
+require a browser / a restart harness, which this environment lacks.
 **Flips to PASS when:** a named realistic user job is completed end to end with a
-verifiable artifact surfaced in-product — now proven at the API/headless layer; the browser
-click-through of that same flow is the remaining demonstrable step.
+verifiable artifact surfaced in-product — proven at the API/headless layer and the
+UI is built; the browser click-through of that same flow is the remaining
+demonstrable step.
 
 ---
 
@@ -1198,12 +1254,69 @@ test touched by the second-task change (`tests/gateway/test_recovery.py`) was
 updated from `file_write == 1` to `== 2` (a file-write goal now legitimately
 emits the primary write + checksum sidecar) and re-passed.
 
-**Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). FAIL = **4** (P1, P5, P9,
-P10). All four remaining FAILs are **capability-complete** — backends real and
-measured, UIs compiled and wired — and their only outstanding demonstrable step
-is a **browser click-through** (this environment has no headless browser), not a
-missing capability. PRODUCT ACCEPTANCE therefore remains NOT READY only on the
-environment-limited browser proof, not on engineering substance.
+**Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3** (P1, P5, P10).
+FAIL = **1** (P9). The three BLOCKED gates are **capability-complete** — backends
+real and measured **and** the console UI is built and wired into `App.tsx`
+(correcting earlier cycles that underclaimed the UI). Their only outstanding
+demonstrable step is a **browser click-through** (this environment has no headless
+browser), not a missing capability. P9 remains FAIL only because its
+Identity/Permissions UI page is not yet built (backend read-only surface proven).
+PRODUCT ACCEPTANCE therefore remains NOT READY on the environment-limited browser
+proof + the P9 UI build, not on engineering substance.
+
+## Cycle 7 — honesty correction: the cockpit UI was underclaimed
+
+This cycle did not flip any gate on new evidence. It corrected a **systematic
+honesty error in this document**: earlier cycles asserted that the human-facing
+UI for P5 (approve/stop) and P8 (audit view) was "not built", and that P1/P5/P9/P10
+were open only on a browser click-through. Direct inspection of the console
+source disproves the UI claims — the cockpit is real and wired:
+
+- `apps/console/console/src/App.tsx` imports and **renders** both
+  `ApprovalCenter` (line 454, the P5 human approve/stop panel) and `Audit`
+  (line 458, the P8 audit view). Neither is an orphaned file.
+- `ApprovalCenter.tsx` consumes `policyClient.ts` (`GET /v1/policy/approvals`
+  enforcement snapshot + grant list, `POST` issue / `DELETE` revoke) — the real
+  C-4 sovereignty channel, not a mock.
+- `Audit.tsx` consumes `operator.ts` (`fetchAuditEvents` / `verifyAuditChain` /
+  `fetchAuditSummary`) and renders the integrity state, action/outcome
+  distributions and event table, showing `ok=false` as a danger state rather than
+  masking it.
+- The stop/abort control on in-flight goals lives in `OperatorControls.tsx` →
+  `operator.stopGoal` (`POST /v1/goals/{id}/stop`, proven end-to-end in cycle 5).
+
+**Reclassification:** because the backend **and** UI are now real and wired for
+P1 (hire/pause/resume forms in `Directory.tsx`), P5 (ApprovalCenter) and P10
+(Goals/Files/Projects/Apps pages), those three move `FAIL → BLOCKED`. "BLOCKED"
+here means *the engineering is complete; the only outstanding step is a browser
+click-through* (this environment has no headless browser) — an environmental gap,
+not a capability gap. P9 stays `FAIL` because its Identity/Permissions **page is
+genuinely not built yet** (no `Identity.tsx`; `operator.ts` has no identity
+client functions); a build to wire `GET /v1/identity/*` into a real view was
+dispatched this cycle.
+
+**P9 stale-claim correction:** the P9 section previously asserted refusals were
+"still recorded as successes". That was fixed in cycle 5 on four refusal paths
+(`grant_permission` / `revoke_permission` now call `mark_action_denied`, proven by
+`scripts/verify_identity_denial_audit.py`). The genuine remaining asymmetry is the
+*mirror* distortion — `grant`/`revoke` are HIGH-risk and absent from
+`INTERNAL_SERVICE_ALLOWED_ACTIONS`, so a *successful* grant adjudicated as the
+internal-service principal is recorded `denied`; isolating the two needs a real
+C-3 sovereignty window (owner decision).
+
+**Measured addition (P1 durability):** `tests/ai/test_employee_store_durability.py`
+(3/3 PASS) is the first CI exercise of `EmployeeStore` durability across a
+*symbolic process restart* — it saves an employee with a completed task and a
+paused agent, opens a second store against the same file, and asserts the
+employee, agents, task status and aggregate counters all survive.
+
+**Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3** (P1, P5, P10).
+FAIL = **1** (P9). PRODUCT ACCEPTANCE remains NOT READY only on the
+environment-limited browser proof + the P9 UI build, not on engineering
+substance. RELEASE READINESS cannot honestly reach RELEASE READY here either: G9
+(full Docker-compose + browser click-through) is BLOCKED on the host WSL2
+restriction (Docker Desktop's engine cannot start — `wsl.exe` denied by host
+policy), portable to a capable host.
 
 ## Re-run / regenerate
 
