@@ -31,8 +31,22 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_state_manager():
-    """每个测试前重置 AIStateManager 单例，避免跨测试污染。"""
+def reset_state_manager(tmp_path, monkeypatch):
+    """每个测试前重置 AIStateManager 单例，避免跨测试污染。
+
+    同时做工作区隔离。`reset_state_manager` 每用例把 `AIStateManager._instance`
+    置 None，于是下一次 `_ensure_runtime()` 会**重新捕获** `workspace_root()`。
+    本文件原先不设 `LIUHAO_WORKSPACE_ROOT`，而 goals / employees / projects 三个
+    store 的兜底路径不是共享工作区，而是**直接写仓库根**：
+    `src/gateway/ai_management.py::_default_goals_path`、
+    `src/ai/employee_store.py::_default_store_path`、
+    `src/gateway/projects.py::_default_path` 都返回
+    `<repo_root>/.liuhao_goals.json` / `.liuhao_employees.json` /
+    `.liuhao_projects.json`。实测这些文件会被本文件真的写出来（2026-10-4），
+    而且**不在 .gitignore 里**——一个 `git add -A` 就会把它们卷进提交。
+    导出到 tmp_path 后，写入只落在临时目录。
+    """
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(tmp_path))
     AIStateManager._instance = None
     yield
     AIStateManager._instance = None
