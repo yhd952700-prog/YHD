@@ -69,6 +69,15 @@ jobs:
           pip install -e .[tests,etcd]
           pip install flake8
 
+      - name: Verify test collection is complete
+        # Runs BEFORE the unit tests on purpose. A collection-time ImportError
+        # aborts the whole pytest session, so the tests below would report a
+        # failure that reads like "some tests are red" when in fact thousands
+        # of them never ran. On 2026-10-04 exactly that happened (roster.py was
+        # rewritten, its test's import was not) and 3592 tests vanished while
+        # any subset run still looked green.
+        run: python scripts/verify_test_collection.py
+
       - name: Run Unit Tests
         run: |
           if [ -d tests/ ]; then
