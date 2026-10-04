@@ -22,8 +22,10 @@
 > **Cycle-3 change (2026-10-02):** the real-execution closed loop is now proven
 > across the FULL chain by a single standalone verifier
 > (`scripts/verify_real_execution_e2e.py`, REDIR to temp, HC-01 untouched): a
-> natural-language file-write goal produces a REAL on-disk artifact; a `python:`
-> directive goal produces a REAL computation; an unserved capability FAILS
+> natural-language file-write goal produces a REAL on-disk artifact — and
+> `file_write` is the ONLY tool that writes to disk; a `python:` directive goal
+> executes code via `python_compute` and returns a value but does NOT write a
+> file; an unserved capability FAILS
 > HONESTLY (no false success); the audit trail is populated (9/9 checks PASS).
 > Two cross-cutting gaps closed: the observability alert loop is now wired
 > (execution failures → real alerts to the store + console), and the `ShellAdapter`

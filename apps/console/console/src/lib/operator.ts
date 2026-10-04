@@ -534,3 +534,50 @@ export interface TrustSummary {
 export function getTrust(entityId: string): Promise<TrustSummary> {
   return apiFetch<TrustSummary>(`/v1/trust/${encodeURIComponent(entityId)}`)
 }
+
+// ─── 网络内核（只读可观测面） ─────────────────────────────────
+//
+// 端点与 `src/gateway/networks.py` 严格对齐（`GET /v1/network/messages`）。后端直接复用
+// 网络内核进程单例的真实总线状态——stats() 统计与 get_message_history() 消息历史。
+//
+// 诚实优先：后端返回的 history 是总线真实发生过的消息（序列化为 to_dict）；全新进程里
+// 总线没有任何消息时 history 为空数组，前端如实展示"总线暂无消息"，不编造占位消息。
+// 严格只读：没有发送 / 写入入口（真实外部 send 是安全风险且无真实路径）。401 由 apiFetch
+// 统一抛出并清会话；其他错误原样展示，不退化成"暂无数据"。
+
+export interface NetworkMessageEntry {
+  /** 消息 id（内核 Message.id） */
+  id: string
+  /** 消息类型 / 类别 */
+  type: string
+  /** 来源 */
+  source: string
+  /** 目标 */
+  destination: string
+  /** 实际使用的协议（route 后可能被改写） */
+  protocol: string
+  /** 关联 id */
+  correlation_id: string
+  /** 因果 id */
+  causation_id: string
+  /** 优先级 */
+  priority: string
+  /** 投递状态（pending/sent/delivered/failed/...） */
+  status: string
+  /** ISO 8601 创建时间；null 不出现 */
+  created_at: string | null
+  /** 其余字段（headers / metadata / 时间等）原样保留 */
+  [key: string]: unknown
+}
+
+export interface NetworkMessagesResponse {
+  /** bus.stats() 的真实统计 */
+  stats: Record<string, unknown>
+  /** 总线真实消息历史（最近 10000 条）；真空时为 [] */
+  history: NetworkMessageEntry[]
+}
+
+/** 读取网络总线真实状态；严格只读，无任何写 / 发送入口。 */
+export function getNetworkMessages(): Promise<NetworkMessagesResponse> {
+  return apiFetch<NetworkMessagesResponse>('/v1/network/messages')
+}

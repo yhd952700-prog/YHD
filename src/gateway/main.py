@@ -685,6 +685,13 @@ def get_app() -> FastAPI:
     from .trust import router as trust_router
     app.include_router(trust_router, dependencies=[Depends(_require_human)])
 
+    # 网络只读面（LHX-C-009 缺口）：把网络总线里**真实发生**的消息与统计摊开给人看，
+    # 只读、人类主权闸门。后端直接复用网络内核进程单例的 stats() 与 get_message_history()，
+    # 绝不另建一份可能分叉/造假的副本。与其余业务面一致挂 require_human_principal 闸门。
+    # 严格只读：不建任何 send/写端点（真实外部 send 是安全风险且无真实路径）。
+    from .networks import router as networks_router
+    app.include_router(networks_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

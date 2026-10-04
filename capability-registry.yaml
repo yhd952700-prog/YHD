@@ -241,6 +241,15 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: >-
+      HONESTY 2026-10-04 network kernel now has a real user-facing surface — read-only
+      GET /v1/network/messages (src/gateway/networks.py, human-gated) backed by kernel
+      get_network_bus().stats() and get_message_history(); console Network page renders it.
+      Strictly read-only (no send/write endpoint): a real external send would be a security
+      risk and has no genuine path. Reachability now REACHABLE on the real INTERNAL/HTTP/WS
+      transports. A2A/MCP/gRPC adapters remain absent (get_adapter returns None for them;
+      only INTERNAL/HTTP/WEBSOCKET registered) and are still HONESTLY PRIMITIVE-ONLY —
+      status not overstated.
   - id: LHX-C-010
     legacy_id: trust_chain
     name: Trust Kernel — Trust scores + chain + revocation

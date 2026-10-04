@@ -56,6 +56,7 @@ import { Projects } from './pages/Projects'
 import { Apps } from './pages/Apps'
 import { Events } from './pages/Events'
 import { Trust } from './pages/Trust'
+import { Network } from './pages/Network'
 import { BusinessCenter, KnowledgeCenter, Roster } from './pages/Directory'
 import { DataCenter, SystemStatus } from './pages/Operations'
 import { Settings } from './pages/Settings'
@@ -88,6 +89,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   apps: { title: '应用', sub: '真实插件与应用 —— 由你激活' },
   events: { title: '事件流', sub: '真实系统事件流 —— 内核总线实况' },
   trust: { title: '信任', sub: '信任内核真实状态（只读）—— 撤销标记 / 信任分 / 自信任链' },
+  network: { title: '网络', sub: '网络总线真实状态（只读）—— 统计 / 消息历史' },
   status: { title: '系统状态', sub: '依赖探针与安全组件实况' },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
 }
@@ -460,6 +462,7 @@ function App() {
       {active === 'apps' && <Apps query={query} />}
       {active === 'events' && <Events query={query} />}
       {active === 'trust' && <Trust query={query} />}
+      {active === 'network' && <Network query={query} />}
       {active === 'status' && <SystemStatus />}
       {active === 'settings' && (
         <Settings
