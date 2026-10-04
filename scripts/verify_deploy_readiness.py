@@ -100,6 +100,132 @@ def status_for(rc: int) -> str:
     return "PASS" if rc == 0 else "FAIL"
 
 
+def _norm(p: str) -> str:
+    """Normalised absolute path, for 'is this the repo's own dir?' comparisons."""
+    return os.path.normcase(os.path.abspath(p))
+
+
+# ----------------------------------------------------------------------------
+# Alembic entry-point resolution
+# ----------------------------------------------------------------------------
+# Why this exists (do not "simplify" back to a bare `python -m alembic`):
+#
+#   MEASURED on this host (2026-10-04, Windows, cwd=repo root):
+#     * the managed venv has NO alembic at all -- `pip show alembic` says
+#       "Package(s) not found". That, not a build defect, is why this gate was
+#       red here.
+#     * the repo `.venv` has alembic 1.20.0, which DOES ship `alembic/__main__.py`,
+#       and `python -m alembic --version` prints "alembic 1.20.0" there. So
+#       `-m alembic` is NOT inherently broken and this is NOT a portability
+#       defect in the gate.
+#     * what IS a real defect is DIAGNOSTIC. The repo root contains a top-level
+#       `alembic/` directory (that is `script_location` in alembic.ini) with no
+#       `__init__.py`, so under PEP 420 it forms a NAMESPACE package named
+#       `alembic`. With the distribution absent, `python -m alembic` therefore
+#       reports "No module named alembic.__main__; 'alembic' is a package and
+#       cannot be directly executed" instead of the truthful "No module named
+#       'alembic'". A gate that misattributes its own failure invites someone
+#       to silence it, which is worse than being red.
+#     * latent trap: if anyone adds `alembic/__init__.py` to the migrations
+#       directory, it becomes a regular package and beats site-packages on
+#       sys.path, so `-m alembic` breaks EVEN when alembic is correctly
+#       installed (verified experimentally).
+#
+#   So: probe which `alembic` is actually importable, prefer the console script
+#   (`alembic = alembic.config:main`, the entry point alembic declares in its
+#   packaging metadata, and a sibling of the interpreter so it is guaranteed to
+#   be the SAME environment), fall back to `python -m alembic`, and if NEITHER
+#   runs, report FAIL with the real reason and the remedy. It never degrades to
+#   NOT_VERIFIED, never skips, never reports PASS.
+_ALEMBIC_SHADOW_PROBE = (
+    "import alembic;"
+    "print(alembic.__file__ or '<namespace-package>');"
+    "print('|'.join(getattr(alembic, '__path__', [])))"
+)
+
+
+def _alembic_import_state(env) -> tuple[bool, str]:
+    """Is the REAL alembic distribution importable, or is the repo's own
+    `alembic/` migrations directory (PEP 420 namespace pkg) shadowing it?
+
+    Returns (is_real_distribution, human_readable_where)."""
+    cp = run([PY, "-c", _ALEMBIC_SHADOW_PROBE], env=env, cwd=REPO_ROOT, timeout=120)
+    if cp.returncode != 0:
+        err = (cp.stderr.strip() or cp.stdout.strip()).splitlines()
+        return False, "alembic is not importable at all" + (
+            f" ({err[-1]})" if err else "")
+    lines = cp.stdout.strip().splitlines()
+    loc = lines[0].strip() if lines else ""
+    paths = lines[1].strip() if len(lines) > 1 else ""
+    if not loc or loc == "<namespace-package>":
+        return False, (
+            "no real alembic distribution is installed; the name `alembic` only "
+            f"resolves to this repo's own migrations directory (path={paths!r})")
+    pkg_dir = _norm(str(Path(loc).parent))
+    if pkg_dir == _norm(str(REPO_ROOT / "alembic")):
+        return False, (
+            f"`alembic` resolves to {pkg_dir} -- this repo's migrations directory "
+            "is shadowing the installed distribution")
+    return True, loc
+
+
+def _alembic_console_candidates() -> list[str]:
+    """Candidate `alembic` console scripts, most trustworthy first."""
+    out: list[str] = []
+    # 1) sibling of the interpreter -> guaranteed to be the SAME environment
+    #    (a PATH `alembic` may belong to a different interpreter/venv).
+    py_dir = Path(PY).parent
+    for name in ("alembic.exe", "alembic"):
+        cand = py_dir / name
+        if cand.is_file():
+            out.append(str(cand))
+    # 2) whatever the shell resolves on PATH
+    which = shutil.which("alembic")
+    if which:
+        out.append(which)
+    # de-dup, preserve order
+    seen: set[str] = set()
+    return [c for c in out if not (_norm(c) in seen or seen.add(_norm(c)))]
+
+
+def _probe_alembic(cmd: list[str], env) -> tuple[bool, str]:
+    """Can this command actually run alembic? (`alembic --version` must work)."""
+    cp = run([*cmd, "--version"], env=env, cwd=REPO_ROOT, timeout=120)
+    out = (cp.stdout.strip() or cp.stderr.strip()).strip()
+    return (cp.returncode == 0 and "alembic" in out.lower()), (out.splitlines() or [""])[-1]
+
+
+def resolve_alembic_cmd(env, detail: list[str]) -> Optional[list[str]]:
+    """Resolve a runnable alembic entry point, or None if there is none.
+
+    Appends the resolution trace to `detail` so the report always shows which
+    entry point was used and why."""
+    is_real, where = _alembic_import_state(env)
+    detail.append(f"alembic import resolves to: {where}")
+    if not is_real:
+        detail.append(
+            "REMEDY: install the alembic distribution into this interpreter, e.g. "
+            f"`{PY} -m pip install alembic` -- then re-run this gate. "
+            "This check FAILS (it does not skip) because the migration/rollback "
+            "path was NOT proven.")
+        return None
+
+    for cand in _alembic_console_candidates():
+        ok, ver = _probe_alembic([cand], env)
+        if ok:
+            detail.append(f"alembic entry point: console script {cand} ({ver})")
+            return [cand]
+        detail.append(f"console script unusable: {cand} -> {ver}")
+
+    ok, ver = _probe_alembic([PY, "-m", "alembic"], env)
+    if ok:
+        detail.append(
+            f"alembic entry point: fallback `python -m alembic` with {PY} ({ver})")
+        return [PY, "-m", "alembic"]
+    detail.append(f"`python -m alembic` unusable with {PY} -> {ver}")
+    return None
+
+
 def sec(url: str) -> str:
     """Redact obvious secret material in a URL for logging."""
     return url
@@ -152,8 +278,20 @@ def check_alembic_rollback(tmp_db: Path) -> Check:
 
     env = {"DATABASE_URL": url, "PYTHONPATH": str(REPO_ROOT)}
 
+    # Resolve a runnable alembic entry point BEFORE touching any database.
+    # No runnable entry point == FAIL (loudly, with the real reason).
+    alembic_cmd = resolve_alembic_cmd(env, detail)
+    if alembic_cmd is None:
+        return Check(
+            "B. alembic upgrade/rollback", "FAIL",
+            f"no runnable alembic entry point for interpreter {PY} "
+            "(neither the `alembic` console script nor `python -m alembic` works); "
+            "the migration/rollback path was NOT proven",
+            detail,
+        )
+
     def alembic(args):
-        return run([PY, "-m", "alembic", "-c", str(ALEMBIC_INI), *args],
+        return run([*alembic_cmd, "-c", str(ALEMBIC_INI), *args],
                    env=env, cwd=REPO_ROOT, timeout=300)
 
     # 1) upgrade head
