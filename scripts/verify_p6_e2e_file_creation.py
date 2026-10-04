@@ -31,6 +31,17 @@ sys.path.insert(0, REPO)
 WS = os.environ.get("LIUHAO_WORKSPACE_ROOT") or tempfile.mkdtemp(
     prefix="liuhao_p6_ws_"
 )
+os.makedirs(WS, exist_ok=True)
+
+# 关键（根因）：只算出 WS 是不够的，必须**导出**给进程环境。
+# file_write 的路径判定走 ``src/ai/workspace.py::workspace_root()``：
+# 环境变量优先，为空时回落到 Windows 默认根 ``D:\LiuHao-Workspace``。
+# 本脚本原先只算不导出，于是文件被真实写进**生产工作区**，而断言却盯着
+# 临时目录 —— 门禁必然假失败，且顺带污染真实工作区。这里不改变任何产品
+# 行为，只是让校验台把它断言的那个根声明出来。导出必须先于任何可能捕获
+# 工作区根的 src 导入。
+os.environ["LIUHAO_WORKSPACE_ROOT"] = WS
+
 TARGET = os.path.join(WS, "report.txt")
 EXPECTED = "hello world"
 
@@ -42,6 +53,17 @@ from src.ai.lcore import LCore  # noqa: E402
 from src.ai.agent_runtime import AgentRuntime, AgentRunState  # noqa: E402
 
 
+# 刻意**不**绑定 acting principal。
+#
+# 曾一度以为必须 bind_acting_principal("liuhao-internal-service") 才能让
+# capability.register 不被默认拒绝。A/B 探针证伪了这个判断：绑定与不绑定，
+# 文件都真实落盘（state=completed / exists=True / content 正确）。原因是
+# capability.register 的 deny 判决在 record-only 姿态下本就不阻断执行
+# （见 src/kernels/_crosscutting.py 的 AUDIT TRUTHFULNESS 分支：body 照跑，
+# 但审计诚实地记 outcome="denied" + policy_enforced=False）。
+#
+# 而且绑定会让审计 actor 记成 source="bound"，而生产启动路径并不绑定任何主体
+# （生产是 service-default）—— 绑了反而让证据**偏离**生产。故保持不绑定。
 def main() -> int:
     lcore = LCore(register_local_tools=True)
     rt = AgentRuntime(
