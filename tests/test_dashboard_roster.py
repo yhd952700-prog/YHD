@@ -21,8 +21,19 @@ import yaml
 from fastapi.testclient import TestClient
 
 from src.gateway.main import get_app
-from src.gateway import roster as roster_module
-from src.gateway.roster import (
+
+# The data-building half of the roster lives in ``src.ai.roster_payload`` (fastapi
+# free) since commit 20415d5c; ``src.gateway.roster`` is now only the thin
+# ``@router.get`` wrapper. These tests assert against the DATA module, which is
+# where ``REGISTRY_PATH`` / ``load_registry`` / ``provider_status`` /
+# ``BAND_BY_PHASE`` actually live.
+#
+# Why this matters beyond a tidy import: until this was fixed the module failed
+# to import at all, so pytest aborted collection for the WHOLE ``tests/`` tree
+# (3592 tests never ran). A green-looking narrow run is not evidence that a
+# collection error is harmless.
+from src.ai import roster_payload as roster_module
+from src.ai.roster_payload import (
     BAND_BY_PHASE,
     DOMAIN_BY_KERNEL,
     DOMAIN_LABELS,
@@ -194,12 +205,41 @@ class TestDegradesHonestly:
         body = _get_roster(client)
         assert body["totals"]["kernels"] == len(body["kernels"])
         assert body["totals"]["layers"] == len(body["layers"])
-        assert body["totals"]["employees"] == len(body["kernels"]) + len(body["layers"])
+        # Since 20415d5c the module count is reported as ``registry_entries``,
+        # NOT as ``employees``. The old assertion here
+        # (``employees == len(kernels) + len(layers)``) encoded the very
+        # conflation that commit removed: it called a kernel a "member of
+        # staff". ``employees`` must equal the number of REAL persisted
+        # employees, which is the number that can be held accountable.
+        assert body["totals"]["registry_entries"] == len(body["kernels"]) + len(body["layers"])
+        assert body["totals"]["employees"] == len(body["real_employees"])
 
-    def test_declared_tests_are_summed_from_the_registry(self, client, registry_block):
+    def test_employees_are_not_modules(self, client):
+        """A registry module is not an employee -- and the count must not imply it."""
         body = _get_roster(client)
-        expected = sum(int(entry.get("test_count") or 0) for entry in registry_block["capability-layers"])
-        assert body["totals"]["declared_test_cases"] == expected
+        assert body["totals"]["employees"] == len(body["real_employees"])
+        # Every counted employee must be traceable to the real store, i.e. have
+        # an id -- a bare count of registry rows could never satisfy this.
+        for employee in body["real_employees"]:
+            assert employee.get("id")
+            assert employee.get("name")
+
+    def test_declared_totals_agree_with_the_registry_rows(self, client, registry_block):
+        """The registry's own declared totals must match the rows it ships.
+
+        ``declared_totals`` carries ``capabilities`` / ``layers`` (the registry's
+        self-declared counts). If those drift from the actual row counts, the
+        dashboard would quote a total nobody can reconcile against the file it
+        names as its source. Note there is deliberately NO ``test_cases`` key
+        here -- the payload never claimed one.
+        """
+        body = _get_roster(client)
+        declared = body["declared_totals"]
+        assert declared["capabilities"] == len(registry_block["capabilities"])
+        assert declared["layers"] == len(registry_block["capability-layers"])
+        # And the derived counts must agree with the declared ones.
+        assert body["totals"]["kernels"] == declared["capabilities"]
+        assert body["totals"]["layers"] == declared["layers"]
 
 
 class TestRegistryFileIsPresent:
