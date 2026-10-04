@@ -877,6 +877,12 @@ class AIStateManager:
 
         # 提取 context 中的 task 信息
         tasks = []
+        # Bound unconditionally: line 923 below reads ``plan_tasks`` on EVERY
+        # path, including ``result.context`` being falsy. Binding it only inside
+        # the ``if`` made that read raise UnboundLocalError in background goal
+        # threads (observed in verify_employee_goal_binding.py /
+        # verify_http_full_closure.py logs) -- a crash the gates never counted.
+        plan_tasks = None
         if result.context:
             ctx = result.context
             # The tasks live on the PLAN, not on the context: ``ExecutionContext``
