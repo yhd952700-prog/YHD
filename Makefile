@@ -9,10 +9,18 @@
 
 PYTHON ?= python
 
-.PHONY: hooks lint-docs
+.PHONY: hooks lint-docs run run-backend
 
 hooks:
 	@ROOT=$$(git rev-parse --show-toplevel); ln -sf "$$ROOT/scripts/pre-commit-lint.sh" "$$ROOT/.git/hooks/pre-commit"; chmod +x "$$ROOT/scripts/pre-commit-lint.sh"; echo "Installed LIUHAO pre-commit doc-lint hook (lints staged *.md before each commit)."
 
 lint-docs:
 	$(PYTHON) scripts/lint_audit_claims.py --all
+
+# --- Local, non-Docker run (see docs/product/LOCAL-RUN.md) ---
+# Boots the real FastAPI gateway via uvicorn; no Docker required.
+run:
+	@ROOT=$$(git rev-parse --show-toplevel); "$$ROOT/.venv/Scripts/python.exe" "$$ROOT/scripts/start_liuhao.py"
+
+run-backend:
+	@ROOT=$$(git rev-parse --show-toplevel); "$$ROOT/.venv/Scripts/python.exe" "$$ROOT/scripts/start_liuhao.py" --backend-only

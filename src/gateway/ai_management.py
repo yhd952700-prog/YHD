@@ -29,6 +29,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+# Used to turn a produced file's absolute path into a workspace-relative,
+# honest artifact reference (never inventing a path that isn't real).
+from src.ai.workspace import workspace_root
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["ai-management"])
@@ -97,6 +101,11 @@ class GoalDetail(BaseModel):
     replan_suggested: bool = False
     trace: List[Dict[str, Any]] = Field(default_factory=list)
     tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    # Real workspace files the goal actually produced (workspace-relative paths).
+    # Empty list = the goal wrote nothing into the workspace. Fail-closed: a path
+    # is recorded only when a file_write task completed and its output path was
+    # proven to land inside the workspace root.
+    artifacts: List[str] = Field(default_factory=list)
     evaluation: Optional[Dict[str, Any]] = None
 
 
@@ -356,6 +365,7 @@ class AIStateManager:
                 "replan_suggested": False,
                 "trace": [],
                 "tasks": [],
+                "artifacts": [],
                 "evaluation": None,
                 "created_at": time.time(),
                 "project_id": project_id,
@@ -445,6 +455,7 @@ class AIStateManager:
                 "replan_suggested": False,
                 "trace": [],
                 "tasks": [],
+                "artifacts": [],
                 "evaluation": None,
                 "created_at": time.time(),
                 "project_id": project_id,
@@ -889,6 +900,14 @@ class AIStateManager:
                 "summary": getattr(ev, 'summary', ''),
             }
 
+        # Collect REAL produced artifacts: workspace files a file_write task
+        # actually wrote. We only record a path when the task completed AND its
+        # output carries an absolute `path` that provably sits inside a workspace
+        # root (the one the tool itself used, falling back to the live
+        # workspace_root()). Nothing is invented; if no file was written the list
+        # stays empty.
+        artifacts = AIStateManager._collect_artifacts(plan_tasks or [])
+
         return {
             "goal_id": result.goal_id,
             "state": result.state.value if hasattr(result.state, 'value') else str(result.state),
@@ -900,9 +919,58 @@ class AIStateManager:
             "replan_suggested": result.replan_suggested,
             "trace": trace_entries,
             "tasks": tasks,
+            "artifacts": artifacts,
             "evaluation": evaluation,
             "created_at": time.time(),
         }
+
+    @staticmethod
+    def _collect_artifacts(plan_tasks: List[Any]) -> List[str]:
+        """Return workspace-relative paths of files the goal really produced.
+
+        Walks the plan's tasks. For each completed ``file_write`` task whose
+        output carries a concrete ``path``, it proves the path lands inside the
+        workspace (using the root the tool reported, else the live
+        :func:`workspace_root`) and records the relative path. Deduped; never
+        invents a path. A path outside the workspace (or with no readable root)
+        is skipped fail-closed.
+        """
+        produced: List[str] = []
+        seen: set[str] = set()
+        for t in plan_tasks:
+            if getattr(t, "capability_id", None) != "file_write":
+                continue
+            tstatus = t.status.value if hasattr(t.status, "value") else str(t.status)
+            if tstatus != "completed":
+                continue
+            res = t.result
+            if not isinstance(res, dict):
+                continue
+            written = res.get("path")
+            if not isinstance(written, str) or not written:
+                continue
+            # Prefer the exact root the tool wrote into; fall back to the live
+            # workspace root.
+            root = res.get("workspace_root")
+            root = root if isinstance(root, str) and root else workspace_root()
+            try:
+                ws_root = os.path.abspath(root)
+                abs_path = os.path.abspath(written)
+            except (TypeError, ValueError, OSError):
+                continue
+            if abs_path == ws_root:
+                rel = ""
+            elif abs_path.startswith(ws_root + os.sep):
+                rel = os.path.relpath(abs_path, ws_root)
+            else:
+                # Outside the workspace: do not record (fail-closed).
+                continue
+            # Normalize to forward slashes for a stable, portable reference.
+            rel = rel.replace(os.sep, "/")
+            if rel and rel not in seen:
+                seen.add(rel)
+                produced.append(rel)
+        return produced
 
 
 # ─── REST 端点 ───────────────────────────────────────────────

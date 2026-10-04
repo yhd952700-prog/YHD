@@ -305,6 +305,8 @@ export interface GoalDetail {
   error: string | null
   correlation_id: string | null
   created_at: number | null
+  /** 真实工作区产物（相对路径）。空数组 = 该目标没有向工作区写入任何文件。 */
+  artifacts: string[]
   evaluation: {
     outcome: string | null
     summary: string

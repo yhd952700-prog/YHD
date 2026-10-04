@@ -23,6 +23,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
 import {
   getGoal,
+  readFile,
   type GoalDetail,
   type GoalsResponse,
   type GoalSummary,
@@ -98,11 +99,22 @@ export function Goals({ query }: { query: string }) {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
+  // 产物查看：点开某个 artifact 后，直接调 `/v1/files/content` 读取真实内容。
+  const [openArtifact, setOpenArtifact] = useState<string | null>(null)
+  const [artifactContent, setArtifactContent] = useState<string | null>(null)
+  const [artifactError, setArtifactError] = useState<string | null>(null)
+  const [artifactLoading, setArtifactLoading] = useState(false)
+
   const openGoal = useCallback(async (id: string) => {
     setSelectedId(id)
     setDetail(null)
     setDetailError(null)
     setDetailLoading(true)
+    // 切换目标时收起上一个目标的产物视图，避免串台。
+    setOpenArtifact(null)
+    setArtifactContent(null)
+    setArtifactError(null)
+    setArtifactLoading(false)
     try {
       setDetail(await getGoal(id))
     } catch (err) {
@@ -112,6 +124,30 @@ export function Goals({ query }: { query: string }) {
       setDetailError(status === 404 ? '目标不存在或已被清除' : err instanceof Error ? err.message : '读取失败')
     } finally {
       setDetailLoading(false)
+    }
+  }, [])
+
+  const openArtifactFile = useCallback(async (relPath: string) => {
+    setOpenArtifact(relPath)
+    setArtifactContent(null)
+    setArtifactError(null)
+    setArtifactLoading(true)
+    try {
+      // 直接调后端的文件内容端点读取真实产物（只读、经执行围栏约束）。
+      const res = await readFile(relPath)
+      setArtifactContent(res.content)
+    } catch (err) {
+      setArtifactContent(null)
+      const status = err instanceof ApiError ? err.status : 0
+      setArtifactError(
+        status === 404
+          ? '产物文件已不存在（可能已被清除）'
+          : err instanceof Error
+            ? err.message
+            : '读取失败',
+      )
+    } finally {
+      setArtifactLoading(false)
     }
   }, [])
 
@@ -249,6 +285,45 @@ export function Goals({ query }: { query: string }) {
                     <div className="os-kv-row">
                       <span className="os-kv-key">评估</span>
                       <span className="os-kv-value">{data.evaluation.summary}</span>
+                    </div>
+                  )}
+
+                  {/* 产生的产物：目标真实写入工作区的文件（相对路径）。
+                      空数组就是没产生任何文件，如实显示，不编造。 */}
+                  <div className="os-kv-row os-kv-col">
+                    <span className="os-kv-key">产生的产物</span>
+                    <span className="os-kv-value">
+                      {(!data.artifacts || data.artifacts.length === 0) ? (
+                        <span className="os-hint">此目标没有向工作区写入任何文件。</span>
+                      ) : (
+                        <ul className="os-list">
+                          {data.artifacts.map((relPath: string) => (
+                            <li key={relPath}>
+                              <button
+                                className="os-link"
+                                onClick={() => void openArtifactFile(relPath)}
+                                title={relPath}
+                              >
+                                {relPath}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </span>
+                  </div>
+
+                  {/* 点开后直接读取真实文件内容（只读）。 */}
+                  {openArtifact && (
+                    <div className="os-kv-row os-kv-col">
+                      <span className="os-kv-key">产物内容 · {openArtifact}</span>
+                      <span className="os-kv-value">
+                        {artifactLoading && <span className="os-hint">读取中…</span>}
+                        {artifactError && <span className="os-error">{artifactError}</span>}
+                        {artifactContent !== null && !artifactLoading && (
+                          <pre className="os-pre">{artifactContent}</pre>
+                        )}
+                      </span>
                     </div>
                   )}
                 </div>
