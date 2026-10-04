@@ -523,9 +523,12 @@ class Finding(object):
 
 def evaluate(artifact_vars: Dict[str, List[str]],
              reads: Dict[str, List[Tuple[str, int]]],
-             candidates: Dict[str, List[Tuple[str, int]]]) -> List[Finding]:
+             candidates: Dict[str, List[Tuple[str, int]]],
+             mentions: Optional[Dict[str, List[Tuple[str, int]]]] = None
+             ) -> List[Finding]:
     findings: List[Finding] = []
     seed_vars = {str(entry["var"]) for entry in SEED_GATES}
+    mentions = mentions or {}
 
     # 1. seed gates
     for entry in SEED_GATES:
@@ -540,14 +543,42 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                 var, "seed-entry-has-no-reason",
                 "SEED_GATES entry carries no `why`; an unexplained gate cannot "
                 "be reviewed."))
+        # A var can be live while never appearing in a literal
+        # ``os.environ.get("LIUHAO_X")`` call -- ``src/security/posture.py``
+        # iterates a table of names, and ``fence.py`` builds some names. For
+        # those, ``scan_env_reads`` finds nothing and the entry would be
+        # misreported as stale. ``mentions`` (from ``scan_literal_mentions``)
+        # is the weaker but sufficient evidence that the name is still spelled
+        # in src/; the finding is downgraded to a note rather than suppressed,
+        # so a genuinely-rotted entry can still be argued about explicitly.
+        #
+        # This function existed but had ZERO callers until 2026-10-04: its
+        # docstring promised to keep a live seed entry from being misreported,
+        # and ``evaluate()`` never received its output -- so the promise was
+        # documentation of a behaviour that did not exist.
         if var not in reads and not any(a in reads for a in aliases):
-            findings.append(Finding(
-                var, "stale-seed-entry",
-                "listed as a gate but `%s` (nor any alias %s) is read anywhere "
-                "under src/ -- either the control was removed or this entry "
-                "rotted" % (var, list(aliases)),
-                refs,
-                "remove the entry or point it at the variable now in use"))
+            seen_at = mentions.get(var) or []
+            seen_alias = [a for a in aliases if mentions.get(a)]
+            if seen_at or seen_alias:
+                where = seen_at or mentions[seen_alias[0]]
+                findings.append(Finding(
+                    var, "seed-entry-read-indirectly",
+                    "listed as a gate and the name is still spelled in src/ "
+                    "(e.g. %s:%d), but no literal env read was found -- it is "
+                    "most likely read through a table, so `expect` cannot be "
+                    "verified automatically. Confirm by hand, or point the "
+                    "entry at the reading site."
+                    % (where[0][0], where[0][1]),
+                    refs or ["%s:%d" % (r[0], r[1]) for r in where],
+                    "confirm the control is still armed at the site above"))
+            else:
+                findings.append(Finding(
+                    var, "stale-seed-entry",
+                    "listed as a gate but `%s` (nor any alias %s) is read or "
+                    "even named anywhere under src/ -- either the control was "
+                    "removed or this entry rotted" % (var, list(aliases)),
+                    refs,
+                    "remove the entry or point it at the variable now in use"))
             continue
 
         set_in = artifact_vars.get(var, [])
@@ -562,13 +593,26 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                 "set %s in docker-compose.prod.yml (or the bundle builder), or "
                 "move it to ALLOWLIST with a written reason" % var))
         elif expect == "absent":
-            if not set_in:
+            # Aliases must be honoured here too. They already are for
+            # ``expect == "set"`` (see ``alias_hits`` above), so checking only
+            # ``set_in`` made the two branches disagree about what "set in an
+            # artifact" means -- and it failed OPEN, which is the dangerous
+            # direction: a dev-only control shipped under its alias name was
+            # reported as clean. Proven by probe (2026-10-04): with
+            # ``expect="absent"`` and only the alias present in
+            # ``artifact_vars``, this branch emitted no finding, while the same
+            # entry set under its canonical name correctly reported
+            # ``dev-only-var-set-in-artifact``.
+            if not set_in and not alias_hits:
                 continue
+            shipped = sorted(set(set_in) | {a for a in alias_hits})
+            which = " or its alias %s" % ", ".join(sorted(alias_hits)) if alias_hits and not set_in else ""
             findings.append(Finding(
                 var, "dev-only-var-set-in-artifact",
-                "%s -- but it is set in %s" % (why, ", ".join(sorted(set(set_in)))),
+                "%s -- but it is set%s in %s"
+                % (why, which, ", ".join(shipped)),
                 refs,
-                "remove it from %s" % ", ".join(sorted(set(set_in)))))
+                "remove %s from %s" % (var, ", ".join(shipped))))
         else:
             findings.append(Finding(
                 var, "bad-seed-entry",
@@ -596,14 +640,34 @@ def evaluate(artifact_vars: Dict[str, List[str]],
             "to ALLOWLIST with a reason stating what the unset branch does"))
 
     # 3. allowlist rot
+    #
+    # An allowlist entry must be removed once the variable is gone, precisely so
+    # it cannot mask a future re-read. "No literal read" is not sufficient
+    # evidence of removal: a table-driven read (see ``mentions`` above) would
+    # make a LIVE variable look rotted, and acting on that report would delete
+    # a valid exemption -- the same class of error as reporting it as rot when
+    # it is merely indirect. So the name must be absent from BOTH scans before
+    # the entry is called stale.
     for var in sorted(ALLOWLIST):
-        if var not in reads:
+        if var in reads:
+            continue
+        seen_at = mentions.get(var) or []
+        if seen_at:
             findings.append(Finding(
-                var, "stale-allowlist-entry",
-                "allowlisted, but `%s` is no longer read anywhere under src/ -- "
-                "the entry must be removed so it cannot mask a future re-read"
-                % var,
-                [], "remove from ALLOWLIST"))
+                var, "allowlist-entry-read-indirectly",
+                "allowlisted, and the name is still spelled in src/ (e.g. "
+                "%s:%d) but not via a literal env read -- verify by hand that "
+                "the exemption is still justified rather than deleting it"
+                % (seen_at[0][0], seen_at[0][1]),
+                ["%s:%d" % (r[0], r[1]) for r in seen_at],
+                "confirm the exemption still applies at the site above"))
+            continue
+        findings.append(Finding(
+            var, "stale-allowlist-entry",
+            "allowlisted, but `%s` is neither read nor named anywhere under "
+            "src/ -- the entry must be removed so it cannot mask a future "
+            "re-read" % var,
+            [], "remove from ALLOWLIST"))
 
     return findings
 
@@ -657,7 +721,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     artifact_vars = scan_artifact_vars(artifacts)
     reads = scan_env_reads()
     candidates = scan_gate_candidates()
-    findings = evaluate(artifact_vars, reads, candidates)
+    # Every seed/allowlist name, so an entry whose variable is read through a
+    # table is not mistaken for a rotted one (see ``evaluate``).
+    tracked = sorted({str(e["var"]) for e in SEED_GATES}
+                     | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
+                     | set(ALLOWLIST))
+    mentions = scan_literal_mentions(tracked)
+    findings = evaluate(artifact_vars, reads, candidates, mentions)
 
     if args.json:
         print(json.dumps({
@@ -665,6 +735,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "artifacts": [str(p) for p in artifacts],
             "env_reads": len(reads),
             "candidates": len(candidates),
+            "literal_mentions": len(mentions),
             "findings": [f.as_dict() for f in findings],
         }, indent=2))
     else:
