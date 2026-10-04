@@ -52,6 +52,25 @@ COPY --chown=app:app src/ ./src/
 COPY --chown=app:app config/ ./config/
 COPY --chown=app:app scripts/ ./scripts/
 
+# 仓库根级的共享错误类型模块。src/ai/providers.py 的 `generate_with_retry` 在
+# 函数体内 `from error_types import classify_error, ProviderRateLimitError`，
+# 而该导入是**顶层模块名**（不是 `src.error_types`），所以它只在 CWD/镜像根下
+# 才能解析。缺这一行时，镜像里根本没有这个文件：
+#   import src.ai.providers  成功（它在 src/ 下，随 COPY 进镜像），
+#   get_provider()           成功（只构造对象，不发请求），
+#   generate_with_retry(...) ModuleNotFoundError: No module named 'error_types'
+# 也就是说 provider 抽象在镜像里「能构造、能出现在 /v1/dashboard 上，但任何一次
+# 真实生成都 100% 崩」—— 正是本项目最危险的「看起来在工作、实际什么都没做」。
+# 实测确认（2026-10-04）：用与 Dockerfile COPY 清单一致的目录复现，STEP3 即崩。
+# 之所以不把 error_types.py 移进 src/：本仓库 .pth 把 src/ 同时暴露为顶层包，
+# 移动会让 `import error_types` 与 `import src.error_types` 成为**两个不同的
+# 模块对象**，打断 LiuHao-O/packages/common 的 identity 断言
+# （tests/test_liuhao_packages_facade.py 断言 common.classify_error is
+# error_types.classify_error）。保持单模块身份 + 随镜像发布，是风险最低的正解。
+# 防回归：tests/test_container_packaging_guard.py 会静态扫描 src/ 的仓库根级
+# 导入，并逐个核对本文件的 COPY 清单，漏掉即测试失败。
+COPY --chown=app:app error_types.py ./error_types.py
+
 # 权威能力注册表。src/ai/roster_payload.py 的 REGISTRY_PATH 是
 # `<repo_root>/capability-registry.yaml`（由 __file__ 上溯三层得出），
 # 所以它必须落在 /app/ 根上。缺这一行时文件在镜像里根本不存在，

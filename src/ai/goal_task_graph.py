@@ -45,6 +45,11 @@ class GoalStatus(Enum):
     DECOMPOSED = "decomposed"
     EXECUTING = "executing"
     COMPLETED = "completed"
+    #: Some tasks completed, some failed. Deliberately distinct from COMPLETED:
+    #: ``GoalStatus`` is what ``save_state`` persists and ``get_graph_summary``
+    #: reports, so folding "partial" into COMPLETED would make a partially-failed
+    #: goal indistinguishable from a clean success after a process restart.
+    PARTIAL = "partial"
     FAILED = "failed"
 
 
@@ -583,19 +588,30 @@ Example output format:
                 ready = [t for t in tasks if t.id in remaining and self._is_ready(t.id)]
 
                 if not ready:
-                    # No ready tasks but remaining - check for deadlock
-                    if self.has_cycle([t for t in tasks if t.id in remaining]):
-                        # Mark remaining as failed due to cycle
-                        for tid in remaining:
-                            task = self.tasks[tid]
-                            task.status = TaskStatus.FAILED
-                            task.error = "Circular dependency detected"
-                            self.failed_tasks.add(tid)
-                            results[tid] = {"task_id": tid, "status": "failed", "error": "Circular dependency"}
-                        break
-                    # Wait a bit and retry
-                    time.sleep(0.1)
-                    continue
+                    # No task is ready but work remains => the remaining tasks can
+                    # never become ready. There are exactly two causes, and BOTH
+                    # are terminal:
+                    #   (a) a dependency reached a non-completed terminal state
+                    #       (failed) -- ``_is_ready`` only accepts deps in
+                    #       ``completed_tasks``, so a failed dep blocks forever;
+                    #   (b) a dependency cycle.
+                    # The previous code only handled (b) and otherwise did
+                    # ``time.sleep(0.1); continue`` -- an UNBOUNDED busy-wait that
+                    # never terminates: proven hang (a goal whose first task fails
+                    # while a second task depends on it spins forever at 10Hz,
+                    # holding the thread pool open and the caller never returns).
+                    #
+                    # Note this is a *provable* deadlock, not a race: every future
+                    # submitted in the previous iteration is fully collected by the
+                    # ``as_completed`` loop below before control returns here, so
+                    # "no ready task" can never be a transient in-flight state.
+                    # There is nothing to wait for -- we must terminate honestly.
+                    self._fail_blocked_tasks(
+                        remaining, tasks, results, cycle=self.has_cycle(
+                            [t for t in tasks if t.id in remaining]
+                        )
+                    )
+                    break
 
                 # Submit ready tasks
                 future_to_task = {}
@@ -624,7 +640,11 @@ Example output format:
             self.goal.status = GoalStatus.FAILED
             overall_status = "failed"
         else:
-            self.goal.status = GoalStatus.COMPLETED  # Partial success
+            # Partial success must NOT be recorded as COMPLETED: ``goal.status`` is
+            # what ``save_state`` persists and what ``get_graph_summary`` reports,
+            # so stamping COMPLETED on a partially-failed goal makes a partial
+            # failure indistinguishable from a clean success after a restart.
+            self.goal.status = GoalStatus.PARTIAL
             overall_status = "partial"
 
         self.goal.updated_at = time.time()
@@ -639,6 +659,53 @@ Example output format:
             "results": results,
             "execution_order": [t.id for t in self.get_execution_order(tasks)],
         }
+
+    def _fail_blocked_tasks(
+        self,
+        remaining: Set[str],
+        tasks: List[TaskNode],
+        results: Dict[str, Any],
+        *,
+        cycle: bool,
+    ) -> None:
+        """Terminally fail every task that can never become ready.
+
+        Called from :meth:`execute_graph` when no remaining task is ready. Each
+        blocked task is failed with the *actual* reason it is blocked -- a failed
+        dependency (transitively), a dependency that does not exist, or a cycle --
+        rather than a single blanket message. "Marked failed" is not the same as
+        "we know why it failed", and the reason is what makes the resulting goal
+        failure diagnosable from the outside.
+        """
+        for tid in sorted(remaining):
+            task = self.tasks[tid]
+            if cycle:
+                error = "Circular dependency detected"
+            else:
+                error = self._describe_block(tid)
+            task.status = TaskStatus.FAILED
+            task.error = error
+            task.completed_at = time.time()
+            self.failed_tasks.add(tid)
+            results[tid] = {"task_id": tid, "status": "failed", "error": error}
+
+    def _describe_block(self, task_id: str) -> str:
+        """Explain why ``task_id`` can never run, naming the offending dep."""
+        task = self.tasks.get(task_id)
+        if task is None:  # pragma: no cover - defensive
+            return "Task not found"
+        for dep in task.depends_on:
+            if dep in self.failed_tasks:
+                return f"Blocked: dependency '{dep}' failed"
+            dep_task = self.tasks.get(dep)
+            if dep_task is None:
+                return f"Blocked: dependency '{dep}' does not exist"
+            if dep_task.status not in (TaskStatus.COMPLETED,):
+                return (
+                    f"Blocked: dependency '{dep}' is "
+                    f"{dep_task.status.value}, never completed"
+                )
+        return "Blocked: dependencies can never be satisfied"
 
     def _is_ready(self, task_id: str) -> bool:
         """Check if task is ready to execute."""
