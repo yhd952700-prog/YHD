@@ -400,13 +400,14 @@ capability-registry:
     name: Plugin Kernel — Registration, hot-loading, version compatibility
     kind: kernel
     source: ZOON
-    status: IMPLEMENTED
+    status: PARTIAL
+    reachability: UNREACHABLE
     kernel: plugin
     traceability:
     - UB-A1
     - Phase 2 Wave 2
     evidence:
-    - src/kernels/plugin/__init__.py implemented (513 lines, 2026-09-15)
+    - src/kernels/plugin/__init__.py implemented (register/discover/activate/deactivate + 18 unit tests, 2026-09-15)
     - '2026-09-15 fixes: PEP 440 version comparison for min_version/max_version; import-time eager PluginRegistry() removed (no more cwd ./plugins side effect on import)'
     test_coverage: '18/18 unit tests passing (tests/kernels/plugin/, 2026-09-15 verified)'
     implementation_completeness:
@@ -419,6 +420,7 @@ capability-registry:
       audited: true
       tested: true
       documented: true
+    notes: HONESTY 2026-10-03 register/discover/activate code + tests exist BUT ZERO non-test src/ importers => no product path invokes it, reachability UNREACHABLE (mirrors LHX-L-002). The advertised loader load_plugin(plugin_id)->PluginInterface is UNIMPLEMENTED (module docstring self-admits it); PluginInterface contract class is never defined; plugin registry on disk is empty. "Apps" surface has no concept anywhere (no app registry/manifest). Downgraded from falsely-IMPLEMENTED.
   # =====================================================================
   # Phase 9-21 capability layers (src/ai/): the higher-level runtime that
   # composes the 14 kernels. All IMPLEMENTED with unit tests; honest

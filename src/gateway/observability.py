@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
@@ -29,6 +30,7 @@ from ..observability.production import (
     prometheus_response,
     validate_production_config,
 )
+from ..observability.alerts.store import AlertStore
 from .policy import require_human_principal
 
 logger = logging.getLogger("liuhao.gateway.observability")
@@ -86,3 +88,49 @@ async def production_preflight() -> JSONResponse:
     """
     report = validate_production_config()
     return JSONResponse(content=report.to_dict(), status_code=status.HTTP_200_OK)
+
+
+@router.get("/alerts", dependencies=[Depends(require_human_principal)])
+def list_alerts() -> Dict[str, Any]:
+    """列出告警（只读）。返回 firing 告警与最近告警；库为空时 count=0，不是错误。
+
+    这是把"只写不读"的告警存储变成操作员可见的第一步：执行失败告警（真实路径）
+    此前只落日志/JSON，没有任何 API 或 UI 能读取。本端点如实返回当前库里的内容。
+    """
+    store = AlertStore()
+    all_alerts = store.list_alerts()
+    firing = store.list_firing()
+    # 最近 50 条，按 fired_at 倒序。
+    recent = sorted(all_alerts, key=lambda a: a.fired_at or 0, reverse=True)[:50]
+    return {
+        "count": len(all_alerts),
+        "firing_count": len(firing),
+        "alerts": [a.to_dict() for a in recent],
+    }
+
+
+@router.get("/alerts/rules", dependencies=[Depends(require_human_principal)])
+def list_alert_rules() -> Dict[str, Any]:
+    """列出已注册的告警规则及其真实 enabled 状态。
+
+    诚实说明：install_production_rules() 注册的 6 条系统健康规则当前全部
+    enabled=False（它们的指标发射器尚未接线，启用即装饰性失效）；执行失败告警
+    不经规则引擎，直接经 EventBus 落库。本端点如实返回规则状态，不美化。
+    """
+    store = AlertStore()
+    rules = store.list_rules()
+    return {
+        "count": len(rules),
+        "rules": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "enabled": r.enabled,
+                "severity": r.severity.name if hasattr(r.severity, "name") else str(r.severity),
+                "alert_type": r.alert_type.value if hasattr(r.alert_type, "value") else str(r.alert_type),
+                "metric_name": r.metric_name,
+                "description": r.description,
+            }
+            for r in rules
+        ],
+    }

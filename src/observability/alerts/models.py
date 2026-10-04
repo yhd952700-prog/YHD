@@ -181,6 +181,52 @@ class AlertRule:
         # Value returned to normal - could resolve if currently firing
         return None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization (store persistence)."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "alert_type": self.alert_type.value,
+            "metric_name": self.metric_name,
+            "threshold": {
+                "operator": self.threshold.operator,
+                "value": self.threshold.value,
+                "duration": self.threshold.duration,
+                "timeout": self.threshold.timeout,
+            },
+            "severity": self.severity.name,
+            "evaluation_interval": self.evaluation_interval,
+            "evaluation_count": self.evaluation_count,
+            "tags": self.tags,
+            "receiver": self.receiver,
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AlertRule":
+        """Create AlertRule from dictionary (store load)."""
+        thr = data.get("threshold") or {}
+        return cls(
+            id=data.get("id", ""),
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            alert_type=AlertType(data.get("alert_type", "metric_threshold")),
+            metric_name=data.get("metric_name"),
+            threshold=AlertThreshold(
+                operator=thr.get("operator", "gte"),
+                value=float(thr.get("value", 0.0)),
+                duration=float(thr.get("duration", 0.0)),
+                timeout=float(thr.get("timeout", 0.0)),
+            ),
+            severity=AlertSeverity[data.get("severity", "MEDIUM")],
+            evaluation_interval=float(data.get("evaluation_interval", 60.0)),
+            evaluation_count=int(data.get("evaluation_count", 1)),
+            tags=data.get("tags", {}),
+            receiver=data.get("receiver", "console"),
+            enabled=bool(data.get("enabled", True)),
+        )
+
 
 @dataclass
 class AlertManager:

@@ -213,3 +213,10 @@ export const IconFiles = (p: IconProps) => (
     <path d="M9 12h6M9 15.2h6" />
   </Glyph>
 )
+
+export const IconGoals = (p: IconProps) => (
+  <Glyph {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="2.5" fill="currentColor" />
+  </Glyph>
+)

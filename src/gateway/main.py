@@ -284,6 +284,21 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
+    # Register the production alert RULES into the store at boot. The rules are
+    # all enabled=False (their metric emitters are not wired yet) -- this makes
+    # their honest status visible via GET /v1/alerts/rules instead of leaving
+    # the registry empty. Idempotent and fail-safe.
+    try:
+        from ..observability.alerts import install_production_rules
+        install_production_rules()
+        logger.info("Production alert rules registered (all enabled=False until metric emitters land)")
+    except Exception as _rules_exc:  # noqa: BLE001 - loud, never crash boot
+        logger.error(
+            "INSTALL PRODUCTION ALERT RULES FAILED -- /v1/alerts/rules will be empty: %s",
+            _rules_exc,
+            exc_info=True,
+        )
+
     yield  # App runs here
 
     # Shutdown

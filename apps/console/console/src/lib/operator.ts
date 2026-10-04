@@ -255,3 +255,71 @@ export function listFiles(path: string = ''): Promise<FileListResponse> {
 export function readFile(path: string): Promise<FileContentResponse> {
   return apiFetch<FileContentResponse>(`/v1/files/content?path=${encodeURIComponent(path)}`)
 }
+
+// ─── 目标与任务（只读可观测面） ──────────────────────────────
+//
+// 端点与 `src/gateway/ai_management.py` 严格对齐（`GET /v1/goals`、
+// `GET /v1/goals/{goal_id}`）。这一层**只有读**：没有任何写入 / 创建 / 中止 /
+// 重规划能力 —— 写仍由本文件里既有的 `createGoal` / `stopGoal` / `replanGoal`
+// 主权动作完成，这里只把 AI 员工真实执行过的目标与任务分解摊开给人看。
+//
+// 诚实优先：后端对不存在的 goal_id 返回真实的 404，前端原样抛错并展示
+// "目标不存在或已被清除"，不退化成空列表；401 由 apiFetch 统一抛出并清会话。
+
+export interface GoalSummary {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  created_at: number | null
+  error: string | null
+  replan_suggested: boolean
+  task_count: number
+  completed_tasks: number
+  failed_tasks: number
+}
+
+export interface GoalTask {
+  id: string
+  name: string
+  description: string | null
+  status: string
+  capability_id: string | null
+  assigned_agent: string | null
+  result: string | null
+  error: string | null
+  started_at: string | null
+  completed_at: string | null
+}
+
+export interface GoalDetail {
+  goal_id: string
+  state: string
+  natural_language: string
+  scope: string
+  error: string | null
+  correlation_id: string | null
+  created_at: number | null
+  evaluation: {
+    outcome: string | null
+    summary: string
+    replan_required: boolean
+    replan_triggered: boolean
+  } | null
+  tasks: GoalTask[]
+}
+
+export interface GoalsResponse {
+  goals: GoalSummary[]
+  count: number
+}
+
+/** 列表：随轮询自动刷新。 */
+export function listGoals(): Promise<GoalsResponse> {
+  return apiFetch<GoalsResponse>('/v1/goals')
+}
+
+/** 详情：手动触发（点开某条才取），不轮询。 */
+export function getGoal(goalId: string): Promise<GoalDetail> {
+  return apiFetch<GoalDetail>(`/v1/goals/${encodeURIComponent(goalId)}`)
+}

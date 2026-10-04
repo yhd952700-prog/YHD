@@ -425,6 +425,131 @@ export function SystemStatus() {
           )}
         </Guard>
       </Card>
+
+      <SystemAlerts />
     </div>
+  )
+}
+
+// ─── 运维告警（只读读取面） ─────────────────────────────────
+//
+// 端点 `/v1/alerts` 与 `/v1/alerts/rules` 由 `src/gateway/observability.py` 暴露，
+// 只读，需人类令牌。这是把"只写不读"的告警库变成操作员可见的关键一步：
+// 执行失败告警（真实路径）此前只落日志/JSON，没有任何 API 或 UI 能读取。
+//
+// 诚实优先：
+// * firing_count=0 时如实显示"当前没有正在触发的告警"，不伪装成"一切正常"的绿勾。
+// * 规则注册表如实展示：系统健康规则当前全部停用（对应指标发射器尚未接线，启用即
+//   装饰性失效）；执行失败告警规则已启用（真实可用路径）。不美化这一分裂。
+
+interface AlertItem {
+  id: string
+  name: string
+  severity: string
+  state: string
+  source: string
+  message: string
+  fired_at: number | null
+}
+
+interface AlertsResponse {
+  count: number
+  firing_count: number
+  alerts: AlertItem[]
+}
+
+interface AlertRuleItem {
+  id: string
+  name: string
+  enabled: boolean
+  severity: string
+  metric_name: string | null
+}
+
+interface AlertRulesResponse {
+  count: number
+  rules: AlertRuleItem[]
+}
+
+function SystemAlerts() {
+  const alerts = useApi<AlertsResponse>('/v1/alerts', REFRESH)
+  const rules = useApi<AlertRulesResponse>('/v1/alerts/rules', REFRESH)
+
+  const firing = (alerts.data?.alerts ?? []).filter((a) => a.state === 'FIRING')
+  const disabledHealth = (rules.data?.rules ?? []).filter((r) => !r.enabled)
+  const enabledExec = (rules.data?.rules ?? []).filter((r) => r.enabled)
+
+  return (
+    <Card
+      title="运维告警"
+      sub="真实告警库只读视图（执行失败告警为真实可用路径）"
+      span={12}
+    >
+      <Guard
+        loading={alerts.loading}
+        error={alerts.error}
+        data={alerts.data}
+        emptyTitle="告警库为空"
+        emptyHint="还没有任何告警被记录；执行失败时这里会出现条目。"
+        onRetry={alerts.reload}
+      >
+        {(data) => (
+          <>
+            <div className="os-kv">
+              <div className="os-kv-row">
+                <span className="os-kv-key">正在触发</span>
+                <span className="os-kv-value">
+                  <span
+                    className={`os-dot os-tone-${data.firing_count > 0 ? 'danger' : 'ok'}`}
+                  />
+                  {data.firing_count}
+                </span>
+              </div>
+              <div className="os-kv-row">
+                <span className="os-kv-key">历史告警总数</span>
+                <span className="os-kv-value">{data.count}</span>
+              </div>
+            </div>
+
+            {firing.length === 0 ? (
+              <p className="os-hint">当前没有正在触发的告警。</p>
+            ) : (
+              <div className="os-table-wrap" style={{ marginTop: 12 }}>
+                <table className="os-table">
+                  <thead>
+                    <tr>
+                      <th>严重度</th>
+                      <th>名称</th>
+                      <th>来源</th>
+                      <th>信息</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {firing.map((a) => (
+                      <tr key={a.id}>
+                        <td>
+                          <span className={`os-dot os-tone-${a.severity === 'CRITICAL' || a.severity === 'HIGH' ? 'danger' : 'warn'}`} />
+                          {a.severity}
+                        </td>
+                        <td>{a.name}</td>
+                        <td>{a.source || '—'}</td>
+                        <td>{a.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {rules.data && (
+              <p className="os-hint" style={{ marginTop: 12 }}>
+                规则注册表：{disabledHealth.length} 条系统健康规则全部停用（指标发射器未接线，启用即失效）；
+                {enabledExec.length} 条执行失败告警规则已启用（真实可用）。
+              </p>
+            )}
+          </>
+        )}
+      </Guard>
+    </Card>
   )
 }

@@ -606,25 +606,27 @@ call `install_production_rules()` at startup, then set `LIUHAO_ALERT_WEBHOOK`. T
 
 ---
 
-## 19. Cross-cutting finding: Tasks / Projects / Files / Apps DO NOT EXIST
+## 19. Cross-cutting finding: Tasks / Projects / Files / Apps — partially closed (2026-10-03)
 
-**This is the single largest gap between the OS promise and the shipped product.**
+**This was the single largest gap between the OS promise and the shipped product.
+It is now partially closed: two of the four have real, wired surfaces; two remain
+absent. Status as of 2026-10-03:**
 
-### Backend: no routes at all
+| Surface | Status | Evidence |
+|---|---|---|
+| Files | **REAL (closed)** | `src/gateway/files.py` strict-read-only `/v1/files` + `/v1/files/content` (fail-closed `resolve_in_workspace`, human-gated); `apps/console/console/src/pages/Files.tsx` + nav key `files`; 8/8 backend tests. |
+| Tasks | **REAL via Goals (closed)** | No independent `/v1/tasks`, but every goal detail (`GET /v1/goals/{id}`) carries the real decomposed `tasks` list; `apps/console/console/src/pages/Goals.tsx` renders them read-only. |
+| Projects | **ABSENT (gap)** | No model, no store, no route, no page anywhere. See blocker #1. |
+| Apps | **ABSENT (gap)** | No app registry / manifest / marketplace concept reaches a product path; the plugin kernel has no loader (blocker #2). |
 
-A grep across `src/gateway/` and `src/api/` for `v1/tasks`, `/tasks`, `/projects`,
-`/files`, `/apps`, `workspace.py`, `PluginRegistry` returns **zero results**.
+### Backend route inventory (updated)
 
-The complete mounted route inventory (`src/gateway/main.py:492-550`, plus the
-decorators in each module) is:
-`/v1/health`, `/v1/ready`, `/v1/metrics`, `/v1/metrics/prometheus`,
-`/v1/ready/subsystems`, `/v1/production/preflight`, `/v1/knowledge/*`,
-`/v1/chat*`, `/v1/dashboard/{summary,activity,analytics,roster}`, `/v1/profile*`,
-`/v1/kernels*`, `/v1/goals*`, `/v1/employees*`, `/v1/workflows*`, `/v1/audit/*`,
-`/v1/identity/*`, `/v1/policy/*`, `/v1/auth/*`.
-
-**There is no `/v1/tasks`, `/v1/projects`, `/v1/files`, or `/v1/apps`.**
-**There is no `workspace.py`.**
+The mounted route inventory now additionally includes `/v1/files`,
+`/v1/files/content` (strict read-only), `/v1/alerts`, `/v1/alerts/rules`
+(read-only, human-gated), joining the previously-listed set. **There is still no
+`/v1/projects` or `/v1/apps`.** The real workspace module is `src/ai/workspace.py`
+(`workspace_root` / `resolve_in_workspace`, fail-closed) — not a `workspace.py` at
+the repo root as the original finding assumed.
 
 ### `/v1/workflows` is not a workflow product
 
@@ -655,19 +657,20 @@ Page→nav mapping (`apps/console/console/src/App.tsx:429-450`) against
 | `business` | 业务中心 | `BusinessCenter` (Directory:398) | live: `/v1/dashboard/roster` only |
 | `knowledge` | 知识中心 | `KnowledgeCenter` (Directory:489) | live: `/v1/dashboard/roster` + `/openapi.json` |
 | `workbench` | 工作台 | `Workbench` | live: `ChatPanel` streaming |
+| `goals` | 目标与任务 | `Goals` (pages/Goals.tsx) | live: `/v1/goals`, `/v1/goals/{id}` — real execution history + task decomposition (read-only) |
 | `data` | 数据中心 | `DataCenter` (Operations:250) | live: `/v1/ready`, `/v1/metrics`, `/v1/policy/enforcement`, `/v1/auth/config` |
 | `approval` | 审批中心 | `ApprovalCenter` | live: `/v1/policy/approvals` |
-| `status` | 系统状态 | `SystemStatus` (Operations:31) | live: `/v1/dashboard/analytics?days=30`, `/v1/dashboard/summary` |
+| `audit` | 审计链 | `Audit` (pages/Audit.tsx) | live: `/v1/audit/events`, `/verify`, `/summary` (read-only) |
+| `files` | 工作区文件 | `Files` (pages/Files.tsx) | live: `/v1/files`, `/v1/files/content` — real workspace browse/read (read-only) |
+| `status` | 系统状态 | `SystemStatus` (Operations:31) | live: `/v1/dashboard/analytics?days=30`, `/v1/dashboard/summary`, `/v1/alerts`, `/v1/alerts/rules` (alert card added 2026-10-03) |
 | `settings` | 系统设置 | `Settings` | **no network calls at all** |
 
-> **Snapshot caveat.** The nav table above reflects commit `eeef0d4b` (9 keys).
-> While this audit was running, another branch of work added a 10th key —
-> `audit` → `Audit.tsx` (untracked at the time of writing), rendering
-> `fetchAuditEvents` / `verifyAuditChain` / `fetchAuditSummary` from
-> `lib/operator.ts`. That does not change any kernel verdict here (the audit
-> kernel was already `REAL` on the strength of its routes alone), but a reader
-> inspecting `lib/nav.ts` *today* will see one more entry than the table shows.
-> It also does not create a Tasks/Projects/Files/Apps surface.
+> **Snapshot caveat.** This audit snapshot was taken at commit `eeef0d4b` (9 keys).
+> Since then the following product surfaces were built on **real, wired data** and
+> are not "fake pages": `audit` (Audit.tsx), `files` (Files.tsx, strict-read-only
+> workspace browser), `goals` (Goals.tsx, real goal + task execution history), and a
+> read-only alert card on `status` (`/v1/alerts`, `/v1/alerts/rules`). None of these
+> invent mock data; each renders a backend endpoint that returns real state.
 
 **Per-page rendering verdict:**
 - **Overview** — live. `pages/Overview.tsx:35-40` five `useApi` calls.
@@ -762,52 +765,61 @@ Notable: `src/ai/roster_payload.py` is **not** an orphan — it is the real sour
 
 Ranked by how much they block acceptance, not by how long the list is.
 
-### #1 — The advertised product surfaces do not exist: Tasks, Projects, Files, Apps
-There is no `/v1/tasks`, `/v1/projects`, `/v1/files`, or `/v1/apps` route anywhere in
-`src/gateway/` or `src/api/`; there is no `workspace.py`; the console's nine nav keys
-(`lib/nav.ts:34-51`) map to no such page. `/v1/workflows`
-(`ai_management.py:1026`) is a read-only projection over goals, and the contract types
-that would back a Workflows UI (`WorkflowsPayload`, `GoalDetail`, `GoalTraceEntry`)
-have **zero** consumers outside `contracts.ts`.
+### #1 — The advertised product surfaces: Files + Tasks closed; Projects + Apps still absent
+As of 2026-10-03 the four are no longer uniformly missing:
+- **Files — CLOSED.** `src/gateway/files.py` exposes strict-read-only `/v1/files` +
+  `/v1/files/content` (every path fail-closed through `resolve_in_workspace`, human-
+  gated); `pages/Files.tsx` + nav key `files` render it; 8/8 backend tests.
+- **Tasks — CLOSED (via Goals).** No independent `/v1/tasks`, but every goal detail
+  (`GET /v1/goals/{id}`) carries the real decomposed `tasks` list, and `pages/Goals.tsx`
+  renders it read-only. The unit of work ("goal") is real and wired.
+- **Projects — STILL ABSENT.** No model, no store, no route, no page anywhere. Closing
+  it requires defining a Project model + storage + route from scratch (goals would hang
+  under projects). **Do not fake it** — leave it documented as a gap until built.
+- **Apps — STILL ABSENT (see #2).** No app registry / manifest / marketplace concept
+  reaches a product path; the plugin kernel has no loader.
 
-*Why this is #1:* every other finding is about a mechanism being weak or unwired.
-This one is about a **product that was never built**. An "AI OS" whose users cannot
-create a task, open a project, touch a file, or install an app fails the plainest
-reading of its own PRD. It is also the cheapest to state and the most expensive to
-fake — and it cannot be closed by improving any kernel.
+*Why #1 still ranks:* two of four are closed, but the two remaining (Projects, Apps)
+are genuine product gaps, and an "AI OS" whose users cannot open a project or install
+an app still fails the plainest reading of its PRD. It cannot be closed by improving a
+kernel.
 
-### #2 — The plugin kernel has no loader, so "Apps" has no mechanism
-`src/kernels/plugin/__init__.py:11` promises `load_plugin(plugin_id) → PluginInterface`.
+### #2 — The plugin kernel has no loader; "Apps" has no mechanism (honestly marked 2026-10-03)
+`src/kernels/plugin/__init__.py:12` promises `load_plugin(plugin_id) → PluginInterface`.
 Neither exists: `load_plugin` is not defined in the kernel, and `PluginInterface` is
-never defined anywhere — it appears only as `hasattr` duck-typing checks
-(`:273`, `:302`). `plugins/registry_index.json:4` records `active_plugins: 0`, and
+never defined anywhere — it appears only as `hasattr` duck-typing checks (`:273`,
+`:302`). `plugins/registry_index.json:4` records `active_plugins: 0`, and
 `src/plugins/registry.py:18` `PluginRegistry` has zero importers.
+**Correction (2026-10-03):** the capability entry `LHX-C-014` was downgraded from
+falsely-`IMPLEMENTED` to `PARTIAL` + `reachability: UNREACHABLE` in
+`capability-registry.yaml`, matching the already-honest `LHX-L-002`. The register/
+discover/activate code + 18 unit tests still exist but have zero non-test `src/`
+importers, so no product path invokes it.
 
-*Why #2:* it is the root cause beneath half of #1. Even if an Apps page were built,
-there is no way to install or activate anything into it — a UI over a loader that
-does not exist. It is also a **live false claim in a docstring** that a skeptical
-reviewer will find in one grep, which is the kind of thing that collapses trust in
-the whole audit. Ranked below #1 only because a missing loader is a smaller build
-than four missing product surfaces.
+*Why #2 still ranks:* it is the root cause beneath the Apps half of #1. Even if an
+Apps page were built, there is no way to install or activate anything into it — a UI
+over a loader that does not exist.
 
-### #3 — Observability cannot alert on system health, and nothing pages a human
-All six metric-threshold rules are still `enabled=False`
-(`alerts/__init__.py:64/82/100/118/136/154`) **and** `install_production_rules()`
-(`:31`) has **zero callers** in `src/`, `tests/`, or `scripts/` — the rules are not
-registered at all. All six metrics have zero emitters. The only path that can fire is
-execution-failure (`execution_binding.py:214` → `main.py:271`), and its only
-configured sink by default is `ConsoleLogSink` (`sinks.py:45`) — the real
-`WebhookSink` (`sinks.py:60`) activates only when `LIUHAO_ALERT_WEBHOOK` is set
-(`:33`, `:109`), which it is not by default. There is no `/v1/alerts` route
-(`gateway/observability.py` has only 3, none alert-related) and no alerts UI.
+### #3 — Observability alerting: read surface closed; system-health rules still inert (partial, 2026-10-03)
+- **Read surface — CLOSED.** `src/gateway/observability.py` now exposes read-only
+  `/v1/alerts` and `/v1/alerts/rules` (human-gated). `install_production_rules()` is
+  now called at gateway startup (`main.py`), so the rule registry is populated and
+  readable. A read-only alert card was added to the `status` page
+  (`pages/Operations.tsx` `SystemAlerts`). The real execution-failure alerts (fired via
+  EventBus → `AlertStore.emit_alert` → console/webhook sink) are now **visible to an
+  operator**, not just written to a log/JSON.
+- **System-health rules — STILL INERT (honest).** All six metric-threshold rules remain
+  `enabled=False` because their metrics (`error_rate_percent`, `memory_usage_percent`,
+  `cpu_usage_percent`, `latency_p99_ms`, `service_heartbeat_interval`,
+  `audit_log_lag_seconds`) have **zero emitters** anywhere in the codebase. Enabling
+  them would make `evaluate_all` silently inert (decorative). The fix is real metric
+  emitters, not flipping a flag. `WebhookSink` still activates only when
+  `LIUHAO_ALERT_WEBHOOK` is set (not by default).
 
-*Why #3:* the first two are about what the product *offers*; this one is about
-whether anyone would **know** it broke. Shipping a system where high CPU, memory,
-error-rate, latency, heartbeat loss and audit-lag can never raise an alert — and
-where the one path that can fire writes a log line — means the first production
-incident is discovered by a user, not by the operator. That is an acceptance blocker
-for any system that claims production readiness, and it is invisible until measured,
-which is exactly why it ranks here rather than being dismissed as "just monitoring".
+*Why #3 still ranks:* the operator can now SEE firing execution-failure alerts, but the
+system still cannot alert on its own health (CPU/memory/error-rate/latency/heartbeat/
+audit-lag), so the first production incident of that kind is still discovered by a user.
+That remains an acceptance blocker until real metric emitters are wired.
 
 **Honourable mention (not in the top 3, but it will come up in acceptance):** the
 planner is deterministic keyword matching —

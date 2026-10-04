@@ -154,6 +154,23 @@ def install_production_rules() -> None:
         enabled=False,  # PENDING METRIC EMITTER: no audit_log_lag_seconds source
     ))
 
+    # 同步进 AlertStore，使读取面 GET /v1/alerts/rules 能如实返回规则状态。
+    # 不改动 enabled，也不发明指标发射器——只是把"已注册"这件事落盘成可读记录。
+    _persist_rules_to_store()
+
+
+
+def _persist_rules_to_store() -> None:
+    """把已注册的规则同步进 AlertStore，使其成为可被读取的 system-of-record。
+
+    诚实说明：install_production_rules() 把规则注册进 AlertManager（评估注册表），
+    但读取面 ``GET /v1/alerts/rules`` 读出的是 AlertStore（持久化记录）。两者必须
+    同步，否则规则"注册了却读不到"。本函数不修改任何 enabled 状态，也不发明指标发射器。
+    """
+    store = AlertStore()
+    for _rule in get_alert_manager().list_rules():
+        store.add_rule(_rule)
+
 
 __all__ = [
     "Alert",
