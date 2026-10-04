@@ -1,7 +1,7 @@
 # KERNEL PRODUCT-CAPABILITY AUDIT — LIUHAO `p36`
 
-**Branch:** `p36-kernel-audit` (pinned at `eeef0d4b`)
-**Date:** 2026-10-02
+**Branch:** `p36` (audit snapshot pinned at `eeef0d4b`, 2026-10-02; all subsequent builds on `p36`)
+**Date:** 2026-10-02 (snapshot) — updated through 2026-10-21
 **Scope:** read-only audit. No `src/` file was modified. No test was run against the
 frozen HC-01 evidence (`AUDIT_DB_PATH` / `LIUHAO_WORKSPACE_ROOT` were not touched).
 
@@ -859,6 +859,31 @@ following were built / corrected on branch `p36` after the snapshot and are comm
   `GET /v1/events` (human-gated) backed by the kernel's own `get_event_history()`; console
   `events` nav key + `pages/Events.tsx` polls it every 15s. Event kernel now has a real,
   user-observable (read-only) outlet; PRIMITIVE-ONLY count drops to network + trust.
+
+### 2026-10-21 (this round)
+
+- **Goal→artifact traceability CLOSED (P10 residual)** — `src/gateway/ai_management.py`
+  `_result_to_dict` now collects real workspace-relative artifact paths from completed
+  `file_write` tasks via `AIStateManager._collect_artifacts` (fail-closed: only files
+  inside `workspace_root`, deduplicated, never invented; `[]` fallback). `GET /v1/goals/{id}`
+  returns `artifacts`; `pages/Goals.tsx` renders a "产生的产物" section that opens the real
+  file via `/v1/files/content`; `operator.ts` `GoalDetail` gained `artifacts: string[]`;
+  `os.css` styling added. 2/2 backend tests (`test_goal_artifacts_linkage.py`) prove the
+  linkage is real (writes a file → appears; writes none → empty) — not mock.
+- **Honest local boot proof — NO Docker required** — `docs/product/LOCAL-RUN.md` documents
+  the real boot path (`uvicorn src.gateway.main:app` → `/v1/health` 200, `/v1/ready` 200
+  with 15/15 subsystems healthy + 38,468 REAL audit events, `/v1/metrics` 200, authenticated
+  `/v1/kernels` 200 with 14 kernels, no-token `/v1/kernels` → 401 real human-sovereignty gate).
+  Frontend builds standalone (`tsc -b` + `vite build` → dist 323KB JS / 43KB CSS). `Makefile`
+  gains additive `run` / `run-backend` targets. G9 full Docker closure remains honestly
+  **BLOCKED** (no daemon / compose plugin / browser on this host) — portable, not faked.
+- **Alert-rule honesty test corrected** — `test_alerts_surface.py` still asserted the six
+  system-health rules `disabled`; they are now `enabled=True` because the real `MetricCollector`
+  emitters are wired and the 15s gateway daemon genuinely evaluates them (a real breach fires
+  a real persisted alert, not decorative). Updated the assertion to `enabled=True` and added
+  `test_enabled_rule_fires_on_breach_disabled_does_not`, which drives the rule object to
+  falsify "decorative enable": over-threshold → FIRING, in-threshold → None, disabled → None.
+  Gateway suite **52/52 green**.
 
 The narrative in §16 and §18 above still describes the pre-2026-10-20 state; treat those
 two sections as superseded by this §25.

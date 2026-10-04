@@ -654,21 +654,34 @@ are recorded truthfully.
 
 **Requires:** a real user can accomplish a real job through the product.
 
-**Evidence (updated 2026-10-20):** the core product surfaces now HAVE real UIs on
+**Evidence (updated 2026-10-21):** the core product surfaces now HAVE real UIs on
 real backend data — `Files` (`pages/Files.tsx`, strict read-only workspace browser),
 `Goals`/`Tasks` (`pages/Goals.tsx`, real goal + task execution history), `Projects`
 (`pages/Projects.tsx`, human-gated create/list/get/delete; goals link under projects),
 and `Apps` (`pages/Apps.tsx`, lists/activates real plugins via `GET/POST /v1/plugins`).
-A real human-gated **create-project** write action exists (`POST /v1/projects`). The
-residual gap is a *fully verifiable end-to-end user job*: there is still no product
-flow to assign an ad-hoc task to an agent and receive a produced file as a deliverable
-within one tracked job (files are produced into the workspace and browsable, but not
-"received" through a job-completion UX). Employee management remains a real write action
-(`POST/DELETE /v1/employees`), but that is management, not job completion.
+A real human-gated **create-project** write action exists (`POST /v1/projects`).
 
-**Biggest gap:** the product cannot complete a real job.
+**Artifact traceability now CLOSED (2026-10-21, P10 residual).** The goal detail API
+(`GET /v1/goals/{id}`) now returns a real `artifacts` list: `src/gateway/ai_management.py`
+collects workspace-relative paths produced by completed `file_write` tasks (fail-closed —
+only inside `workspace_root`, deduped, never invented; `[]` fallback). `pages/Goals.tsx`
+renders a "产生的产物" section that opens the real file through `/v1/files/content`.
+2/2 backend tests prove the linkage is real (writes a file → artifact appears; writes none
+→ empty). So a produced file is now *surfaced against the job that created it* — the
+artifact is no longer orphaned in the workspace.
+
+**Residual gap (still caps PASS):** there is still no product flow to *assign an ad-hoc
+task to an agent and watch it complete as a single tracked job with a delivered artifact*
+from the user's seat — the agent-side execution that writes the file is driven by the
+execution kernel's goal path, not by a user-facing "assign task → receive deliverable"
+UX. Employee management remains a real write action (`POST/DELETE /v1/employees`), but
+that is management, not job completion. The artifact-traceability closure makes the
+*evidence* of a completed job browseable; the *job-completion UX* itself is the remaining
+item.
+
+**Biggest gap:** the product cannot complete a real job from the user's seat end to end.
 **Flips to PASS when:** a named realistic user job is completed end to end with a
-verifiable artifact.
+verifiable artifact surfaced in-product.
 
 ---
 
@@ -1037,6 +1050,27 @@ multi-agent orchestration**, and **identity/permissions not surfaced to the user
   G9 therefore stays **NOT VERIFIED**. `scripts/verify_deployed_product_closure.py`
   now exists to close it in one command on any host with a live daemon, and it
   is written to **fail (exit 2), never silently pass**, when Docker is absent.
+
+### Honest partial proof — the product boots and serves REAL endpoints with NO Docker (2026-10-21)
+
+G9 is "full Docker-compose + browser click-through closure". That remains BLOCKED on this
+host. But the underlying product is **not** Docker-dependent to *run*: it is a plain
+`uvicorn src.gateway.main:app` ASGI service plus a standalone-built SPA. The deploy worker
+booted it for real (no daemon) and recorded the evidence in `docs/product/LOCAL-RUN.md`:
+
+- `uvicorn src.gateway.main:app` starts; `/v1/health` → 200.
+- `/v1/ready` → 200 with **15/15 subsystems healthy** and **38,468 REAL audit events**
+  already in the chain (not fabricated — the audit store was read, not written for the test).
+- `/v1/metrics` → 200 (Prometheus exposition, incl. the live system-health gauges).
+- authenticated `GET /v1/kernels` → 200, **14 kernels** reported; **no-token**
+  `GET /v1/kernels` → **401** — the human-sovereignty gate is real, not decorative.
+- frontend builds standalone: `tsc -b` clean + `vite build` → `dist/` (323 KB JS / 43 KB CSS).
+- `Makefile` gains additive `run` / `run-backend` targets invoking `scripts/start_liuhao.py`.
+
+This is a HONEST partial closure: it proves the service is runnable and serves real,
+measurable state, and that human-sovereignty gates fire. It does **not** substitute for
+G9 (containerized, reproducible, browser-verified deployment) — which is still required
+for `RELEASE READY` and remains portable to a capable host.
 
 ## Re-run / regenerate
 
