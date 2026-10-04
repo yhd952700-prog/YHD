@@ -1394,6 +1394,95 @@ issue/revoke audit events persist on the hash chain), but it is inconsistent wit
 the human registry's persistence fix; noted for the owner's awareness as a
 follow-up, not as a `HUMAN DECISION REQUIRED`.
 
+## Cycle 9 — External Acceptance Package built; every host-dependent gate wired to a real, verified consolidator
+
+**Purpose.** The four BLOCKED gates were blocked on one thing: nobody had
+prepared the acceptance machinery for a host that can actually run it. This cycle
+built the **External Acceptance Package (EAP)** so the moment a capable host
+exists, the gates are executed rather than discussed.
+
+### Built
+
+`eap/` — five packages, new files only (`src/` untouched, freeze boundary held):
+
+| # | Package | Contents |
+|---|---------|----------|
+| 01 | browser click-through | Playwright specs for **P1** `p1_console.spec.ts`, **P5** `p5_sovereignty.spec.ts`, **P9** `p9_identity.spec.ts`, **P10** `p10_workflow.spec.ts`, plus `playwright.config.ts`, `specs/_helpers.ts`, `fixtures/seed-data.md`, `expected-results.md`, `failure-interpretation.md` |
+| 02 | deployment (G9) | `00-overview.md`, `runbook-build-boot-health.md`, `runbook-upgrade-rollback.md`, `expected-results.md`, `failure-interpretation.md` |
+| 03 | observability alerting | `runbook-alert-firing.md`, `expected-results.md`, `failure-interpretation.md` |
+| 04 | full regression | `run-regression.py` (stdlib-only, chunked, fail-closed), `expected-results.md`, `failure-interpretation.md` |
+| 05 | final readiness battery | `consolidate_readiness.py`, `README.md` |
+
+Specs were grounded by reading the real console — all selectors trace to source:
+SPA navigation is **query-string based** (`?p=<key>`, **not** `/console/...`),
+login is `#os-principal` / `#os-secret` / `button.os-btn`, and the API root is
+`/v1` served from the same single port (no CORS, no second service).
+
+### Verified (actually executed, not merely written)
+
+- **Playwright specs compile and are discoverable.** `npm install` then
+  `npx playwright test --list` → **5 tests discovered, 0 errors** (4 runnable +
+  1 deliberate skip). They were **not** executed against a running app — no
+  headless browser here.
+- **`run-regression.py` ran for real** in `--collect-only` mode: discovered
+  **27 top-level test chunks**, wrote a valid JSON report, exited `2`
+  (NOT VERIFIED — nothing executed). Honest.
+- **`consolidate_readiness.py` was proven in all three verdict directions** —
+  this matters, because a consolidator stuck permanently at "NOT READY" would be
+  as useless as one that always says PASS:
+
+| Input given | Result | Exit |
+|-------------|--------|------|
+| none | 4 gates `BLOCKED-on-host`, 5 checks `NOT VERIFIED`, no gate invented as passing | `2` |
+| synthetic all-green evidence | all 9 `PASS`, `PRODUCT ACCEPTANCE: PASS`, `RELEASE READY` | `0` |
+| one failing Playwright test | `P1: FAIL`, `PRODUCT ACCEPTANCE: FAIL` | `1` |
+
+P5 also correctly reported PASS with one passed + one skipped test, confirming
+the intentional skip is handled without becoming a hole.
+
+### Honest boundaries carried into the EAP
+
+- The P5 grant console says **"记录授权"** (records authorization), not
+  "放行". Issuing a grant does **not** release kernel interception — the armed
+  action still returns 409. The spec **asserts** this boundary rather than
+  papering over it.
+- P9's `Identity` page is **strictly read-only**; there is no permission-mutation
+  endpoint. The mutation surface that exists is the C-4 approval channel.
+- Production Alertmanager has **no deliverable sink** (email-only to fake
+  `.local` domains + an ignored invalid `alerts:` block). The alert-firing proof
+  uses the verification sink, and this gap is stated in the runbook so nobody
+  mistakes "the pipeline can fire" for "an operator gets paged".
+
+### Verdicts — unchanged, and deliberately so
+
+Nothing here advances any gate. Authoring acceptance machinery is **not**
+evidence that the product passed it.
+
+`PASS = 6` (P2, P3, P4, P6, P7, P8) · `BLOCKED = 4` (P1, P5, P9, P10) · `FAIL = 0`
+**PRODUCT ACCEPTANCE = NOT READY** · **RELEASE READINESS = NOT RELEASE READY**
+
+## EXTERNAL ACCEPTANCE READINESS
+
+What a capable host must have, and what lands where:
+
+| Requirement | Needed for | Current authoring-host status |
+|-------------|-----------|-------------------------------|
+| Reachable Docker daemon | G9 image build/boot/health, staging compose | **absent** (Docker Desktop installed, engine not running; WSL2 backend blocked by sandbox policy) |
+| `docker compose` v2 plugin | authoritative `docker compose config` on the staging contract | **absent** — only a Python YAML-sanity fallback ran |
+| Headless browser (Playwright) | P1/P5/P9/P10 click-through | **absent** — specs authored + list-validated only |
+| prometheus + alertmanager binaries | proving an alert really fires (L5 + L6) | **absent** |
+| Repo `.venv` (alembic, pytest) | upgrade/rollback proof, full regression | **present** — that is why packages 04 and 05 could be exercised here |
+
+Ordered run: `01` browser → `02` G9 build/boot/health → `02` upgrade/rollback →
+`03` alert firing → `04` regression → `05` consolidate. Each step emits JSON that
+`05` consumes; `05` alone decides the flip and refuses to assume one.
+
+> **NOT VERIFIED ≠ FAIL.** But equally **environment missing ≠ RELEASE READY.**
+> Both statements are load-bearing and must appear together in any report derived
+> from this document.
+
+---
+
 ## Re-run / regenerate
 
 Evidence for each gate lives with the audit records cited above. This document is
