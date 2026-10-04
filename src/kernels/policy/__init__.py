@@ -86,9 +86,26 @@ class PolicyOperator(str, Enum):
 #: Kernel actions the internal service principal is PRE-APPROVED to perform.
 #:
 #: Classification rule (deliberately mechanical, so it can be audited):
-#: an action is allow-listed iff it is *query / compute / bookkeeping* --
-#: it neither changes authority (permissions, scopes, roles, trust, quotas,
-#: topology, capability or plugin registry) nor destroys state.
+#: an action is allow-listed iff it is *classified* AND *not sovereignty-gated*
+#: (its tier is not in ``ENFORCED_TIERS`` -- i.e. it is LOW or MEDIUM) AND it
+#: is *non-destructive* (``ActionRisk.destructive`` is False).
+#:
+#: NOTE this is deliberately NOT "LOW only". A single authoritative risk tier
+#: (``src/kernels._risk_classification``) and this operational allow-list are
+#: two **orthogonal** dimensions: the tier answers "how much blast radius /
+#: does this need a human?", the allow-list answers "may the internal service
+#: perform this unattended?". MEDIUM is defined as a *reversible operational*
+#: authority/state change, which the service legitimately must do on a normal
+#: path, so MEDIUM is allow-eligible. What is NOT allow-eligible is any action
+#: that is **sovereignty-gated** (HIGH/CRITICAL -> requires a verified human,
+#: OD-010) or **destructive** (irreversible loss).
+#:
+#: The binding invariant is enforced in ``tests/kernels/test_risk_classification.py``:
+#: ``ALLOW ∩ ENFORCED_TIERS == ∅`` and every allow-listed action is
+#: non-destructive. It is deliberately NOT "``LOW == ALLOW``": that older,
+#: over-strict equality was an accidental coupling of the two dimensions which
+#: contradicted the risk table's own MEDIUM definition, and it could not
+#: express "a MEDIUM operational action is legitimately pre-approved".
 #:
 #: Explicit enumeration with **no wildcard** is intentional: a newly added
 #: kernel action is NOT pre-approved and must be classified deliberately
@@ -112,8 +129,9 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # execution: running a plan / checkpointing are the operational loop.
     "execution.create_checkpoint",
     "execution.execute",
-    # memory: persistence and compaction. auto_cleanup is now a
-    # service-operational housekeeping action (see additions below).
+    # memory: persistence and compaction. auto_cleanup is irreversible
+    # destruction (HIGH) and is therefore NOT pre-approved -- see
+    # INTERNAL_SERVICE_DENIED_ACTIONS.
     "memory.compress",
     "memory.store",
     # network: routing an existing route (route), and seeding the built-in
@@ -146,14 +164,11 @@ INTERNAL_SERVICE_ALLOWED_ACTIONS: frozenset = frozenset({
     # authority still comes solely from this allow-list (grant/revoke
     # permission stay denied, OD-010).
     "identity.create_identity",
-    # memory: automatic compaction/cleanup is the operational housekeeping loop.
-    "memory.auto_cleanup",
-    # trust: the trust kernel computes/refreshes scores and relationships
-    # autonomously -- operational security *signals*, not authority grants
-    # (OD-010 authority lives in grant/revoke/rbac/abac/capability).
+    # trust: the trust kernel writes/refreshes *scores* autonomously -- those
+    # are reversible operational signals (MEDIUM), not authority grants, so
+    # they stay allow-listed. establish/revoke change the trust *baseline*
+    # (HIGH) and are NOT pre-approved; see INTERNAL_SERVICE_DENIED_ACTIONS.
     "trust.assign_score",
-    "trust.establish_trust",
-    "trust.revoke",
     "trust.update_score",
     # ai: the Planner's real task-execution loop (GoalTaskGraph.execute_graph
     # -> _execute_task_audited) is the operational loop -- running a plan is
@@ -186,6 +201,11 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     # service-operational action -- see INTERNAL_SERVICE_ALLOWED_ACTIONS).
     "identity.grant_permission",
     "identity.revoke_permission",
+    # memory: auto_cleanup irreversibly destroys stored state (HIGH,
+    # destructive=True). It was briefly allow-listed on the assumption that it
+    # is "housekeeping", but no production caller reaches it and destroying
+    # state is not a bookkeeping operation -- so it requires a verified human.
+    "memory.auto_cleanup",
     # network: topology mutations (add_route is now service-operational).
     "network.register_adapter",
     "network.remove_route",
@@ -197,6 +217,12 @@ INTERNAL_SERVICE_DENIED_ACTIONS: frozenset = frozenset({
     # resource: committing a reserved quota is authority (allocate /
     # create_quota are now service-operational).
     "resource.commit",
+    # trust: establish/revoke change the trust baseline itself (HIGH). Writing
+    # a score (assign/update) is a reversible MEDIUM signal and stays
+    # allow-listed; granting or withdrawing a trust *relationship* is a
+    # sovereignty decision (OD-010), so it is never pre-approved.
+    "trust.establish_trust",
+    "trust.revoke",
     # security: RBAC/ABAC authority.
     "security.grant_rbac_role",
     "security.revoke_rbac_role",

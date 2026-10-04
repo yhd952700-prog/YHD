@@ -1,23 +1,26 @@
 """D8 — kernel action risk classification.
 
-The 46 ``@kernel_action``-decorated kernel actions are now classified in a
+Every ``@kernel_action``-decorated action under ``src/`` is now classified in a
 single authoritative registry (``src.kernels._risk_classification``) instead
 of each call site silently defaulting to the dead ``"LOW"`` risk_level.
 
 Every claim here is backed by a runtime assertion, and the registry is
-cross-checked against TWO independent sources so it cannot drift:
+cross-checked against an independent source so it cannot drift:
 
-* the AST scan of ``@kernel_action("...")`` decorations in ``src/kernels``
-  (same guard style as the C-1 allow-list completeness test); and
-* ``INTERNAL_SERVICE_ALLOWED_ACTIONS`` -- the LOW tier must equal the
-  pre-approved internal-service set (C-1), proving the two classifications
-  agree rather than coincidentally matching.
+* the AST scan of ``@kernel_action("...")`` decorations across **all of
+  ``src/``** (``discover_kernel_action_names``); and
+* ``INTERNAL_SERVICE_ALLOWED_ACTIONS`` -- via the *sovereignty* invariant
+  (``TestSovereigntyInvariant``): the internal-service allow-list may only
+  contain actions that are **not** enforcement-gated and are **non-destructive**,
+  so no HIGH/CRITICAL or irreversible action is ever pre-approved for the
+  service. (This deliberately replaced an older, over-strict
+  ``LOW == ALLOW`` equality that wrongly coupled two orthogonal dimensions --
+  see that test's docstring.)
 """
 
 from __future__ import annotations
 
 from src.kernels._risk_classification import (
-    ALL_CLASSIFIED_ACTIONS,
     ENFORCED_TIERS,
     ActionRisk,
     KERNEL_ACTION_RISK,
@@ -81,8 +84,8 @@ class TestCompleteness:
         assert not unclassified, f"未分类的内核动作：{unclassified}"
         assert not stale, f"注册表中有已不存在的动作：{stale}"
 
-    def test_total_is_46(self):
-        assert len(KERNEL_ACTION_RISK) == 46
+    def test_total_is_47(self):
+        assert len(KERNEL_ACTION_RISK) == 47
 
 
 # --------------------------------------------------------------------------- #
@@ -103,17 +106,10 @@ class TestTiers:
             counts[rec.tier] += 1
         assert counts == {
             RiskTier.LOW: 17,
-            RiskTier.MEDIUM: 12,
+            RiskTier.MEDIUM: 13,
             RiskTier.HIGH: 15,
             RiskTier.CRITICAL: 2,
         }, counts
-
-    def test_low_tier_equals_internal_service_allow_list(self):
-        """D8 的 LOW 分级必须与 C-1 的内部服务白名单完全一致（强交叉校验）。"""
-        low = {a for a, rec in KERNEL_ACTION_RISK.items() if rec.tier is RiskTier.LOW}
-        assert low == set(INTERNAL_SERVICE_ALLOWED_ACTIONS), (
-            sorted(low ^ set(INTERNAL_SERVICE_ALLOWED_ACTIONS))
-        )
 
     def test_high_and_critical_are_mutually_exclusive_from_low_medium(self):
         enforced = {a for a, rec in KERNEL_ACTION_RISK.items() if is_enforced_tier(rec.tier)}
@@ -122,6 +118,88 @@ class TestTiers:
             if rec.tier in (RiskTier.LOW, RiskTier.MEDIUM)
         }
         assert not (enforced & low_medium)
+
+
+# --------------------------------------------------------------------------- #
+# 1b. Sovereignty invariant: what the internal service may be pre-approved for
+# --------------------------------------------------------------------------- #
+#
+# This pair of assertions replaces an older ``LOW == ALLOW`` equality. That
+# equality was an accidental coupling of two ORTHOGONAL dimensions:
+#   * the risk TIER answers "how much blast radius / does this need a human?";
+#   * the ALLOW-list answers "may the internal service do this unattended?".
+# It also contradicted the risk table's own MEDIUM definition ("reversible
+# operational authority/state change" -- trust-score write, identity creation,
+# topology add, quota lifecycle), so it excluded MEDIUM *by construction* and
+# could not express "a MEDIUM operational action is legitimately pre-approved".
+# A batch allow-list edit (315fc804) therefore left it red for weeks.
+#
+# The invariant that actually protects the boundary is the sovereignty one:
+# nothing the C-2 gate treats as HIGH/CRITICAL, and nothing irreversibly
+# destructive, may be pre-approved for the internal service -- those require a
+# verified human (OD-010). MEDIUM operational actions are legitimate here and
+# are explicitly allowed to stay.
+
+
+class TestSovereigntyInvariant:
+    def test_allow_list_contains_no_sovereignty_gated_action(self):
+        allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        sovereignty_gated = {
+            a
+            for a in allow
+            if (rec := get_action_risk(a)) is not None
+            and is_enforced_tier(rec.tier)
+        }
+        assert not sovereignty_gated, (
+            "内部服务白名单不得预批准需要人类主权的动作 (HIGH/CRITICAL): "
+            f"{sorted(sovereignty_gated)}"
+        )
+
+    def test_allow_list_contains_no_destructive_action(self):
+        allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        destructive = {
+            a
+            for a in allow
+            if (rec := get_action_risk(a)) is not None and rec.destructive
+        }
+        assert not destructive, (
+            "内部服务白名单不得预批准不可逆销毁动作: " f"{sorted(destructive)}"
+        )
+
+    def test_medium_operational_actions_are_allowed_on_purpose(self):
+        """The 7 MEDIUM operational actions are ALLOW-listed deliberately.
+
+        This test exists so the invariant above can never be "satisfied" by
+        quietly deleting the MEDIUM entries: it positively asserts the
+        legitimate operational set is still pre-approved, and that it is
+        MEDIUM (not LOW) -- i.e. the two dimensions stay decoupled.
+        """
+        expected = {
+            "identity.create_identity",
+            "network.add_route",
+            "resource.allocate",
+            "resource.create_quota",
+            "trust.assign_score",
+            "trust.update_score",
+        }
+        allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        assert expected <= allow, sorted(expected - allow)
+        for action in expected:
+            rec = get_action_risk(action)
+            assert rec is not None and rec.tier is RiskTier.MEDIUM, (
+                action,
+                rec,
+            )
+
+    def test_sovereignty_gated_actions_are_not_pre_approved(self):
+        """Every HIGH/CRITICAL action must be absent from the allow-list."""
+        allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+        gated = {
+            a
+            for a, rec in KERNEL_ACTION_RISK.items()
+            if is_enforced_tier(rec.tier)
+        }
+        assert not (gated & allow), sorted(gated & allow)
 
 
 # --------------------------------------------------------------------------- #

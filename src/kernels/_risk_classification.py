@@ -1,4 +1,4 @@
-"""Canonical risk classification for the 44 kernel-layer ``@kernel_action`` actions.
+"""Canonical risk classification for the kernel-layer ``@kernel_action`` actions.
 
 D8 deliverable (Policy C-2 prerequisite). **This module is PURE DATA** -- it
 imports only the standard library and changing it never alters any policy
@@ -8,15 +8,19 @@ that the ``risk_level`` parameter -- which every ``@kernel_action`` call site
 left at its inert ``"LOW"`` default -- finally carries real signal.
 
 Why a single registry instead of per-call annotations?
-    The 44 call sites live across 12 kernel modules. Scattering the tier into
-    each decorator call is exactly what let the field drift to a dead default
-    (everyone forgets to set it). One auditable table, cross-checked by an AST
-    completeness guard (``discover_kernel_action_names``), forces a deliberate
-    classification the moment a new kernel action is added -- **inside that
-    guard's scan root, ``src/kernels/``** (see ``KERNELS_DIR`` below). An
-    action added *outside* that root is outside the guard, so "unclassified
-    action = test failure" holds only within ``src/kernels/``; as of this
-    writing there are zero ``@kernel_action`` usages outside it.
+    The call sites live across the kernel modules plus ``src/ai/``. Scattering
+    the tier into each decorator call is exactly what let the field drift to a
+    dead default (everyone forgets to set it). One auditable table,
+    cross-checked by an AST completeness guard
+    (``discover_kernel_action_names``), forces a deliberate classification the
+    moment a new kernel action is added. The guard scans **all of ``src/``**
+    (see ``_scan_roots`` below). It used to scan only ``src/kernels/``, which
+    let the real decorated action ``ai.execute_planner_task``
+    (``src/ai/goal_task_graph.py``) escape classification: it hit the
+    ``get_kernel_action_risk`` "unknown -> LOW" fallback, so a code-executing
+    planner action was silently treated as bookkeeping and carried no mandatory
+    audit evidence. The scan root is now the whole of ``src/``, so "unclassified
+    action = test failure" holds everywhere.
 
 Zero execution risk:
     Nothing here calls the policy engine or the decorator. The decorator in
@@ -25,7 +29,7 @@ Zero execution risk:
     input is inert (the only rule that reads ``risk_level`` requires
     ``actor.type == "human"``), so D8 changes what the engine is *told* without
     changing any *verdict*. Once C-2 turns enforcement on, the tiers are
-    already correct -- no second pass over 44 call sites.
+    already correct -- no second pass over the call sites.
 """
 
 from __future__ import annotations
@@ -233,6 +237,13 @@ KERNEL_ACTION_RISK: Dict[str, ActionRisk] = {
         RiskTier.MEDIUM, True, False,
         "更新信任分：写安全信号，可逆。",
     ),
+    "ai.execute_planner_task": ActionRisk(
+        RiskTier.MEDIUM, False, False,
+        "执行 planner 派发的单个任务：变更任务/记忆状态并委派给 agent_executor。"
+        "不是 LOW——它会驱动真实的 agent/能力执行（局部 blast radius 超出"
+        "「查询/簿记」），也不是 authority grant；定为 MEDIUM 因为它可逆、"
+        "有界、非破坏，且不授予权限。",
+    ),
 
     # ---- HIGH (15): authority change / destructive / code lifecycle ------ #
     "identity.grant_permission": ActionRisk(
@@ -327,37 +338,51 @@ def get_action_risk(action: str) -> Optional[ActionRisk]:
     return KERNEL_ACTION_RISK.get(action)
 
 
+def _scan_roots() -> tuple:
+    """Directories the completeness guard scans for ``@kernel_action`` usages.
+
+    Historically this was ``src/kernels/`` only, which let a real decorated
+    action -- ``ai.execute_planner_task`` in ``src/ai/goal_task_graph.py`` --
+    escape classification entirely (it fell through to the ``get_kernel_action_risk``
+    "unknown -> LOW" fallback, so a code-executing planner action was silently
+    treated as bookkeeping and carried no mandatory audit evidence). The guard
+    now scans **all of ``src/``**. Kept as a helper (not inlined) so the scan
+    root is a single, auditable fact.
+    """
+    return (KERNELS_DIR.parent,)  # KERNELS_DIR == src/kernels; parent == src/
+
+
 def discover_kernel_action_names() -> set:
-    """Every kernel action name passed to ``@kernel_action("...")`` **under
-    :data:`KERNELS_DIR` (``src/kernels/``)** -- *not* the whole of ``src/``.
+    """Every kernel action name passed to ``@kernel_action("...")`` anywhere
+    under ``src/`` (see :func:`_scan_roots`).
 
     AST scan (not a keyword scan) so it tracks the real decorator usages and
     can be cross-checked against :data:`KERNEL_ACTION_RISK` -- the completeness
     guard that makes "add a kernel action without classifying it" a test
-    failure instead of silent drift. Scope caveat: that guard holds only within
-    this function's scan root (``src/kernels/``); a ``@kernel_action`` used
-    elsewhere in ``src/`` is invisible here. Also note the callee is matched by
-    a single literal symbol name (``getattr(func, "id", None) or
-    getattr(func, "attr", None) == "kernel_action"``), so a decorator imported
-    under an alias is not recognised either.
+    failure instead of silent drift. The scan root is the whole of ``src/``, so
+    a ``@kernel_action`` outside ``src/kernels/`` is no longer invisible. The
+    callee is matched by a single literal symbol name (``getattr(func, "id",
+    None) or getattr(func, "attr", None) == "kernel_action"``), so a decorator
+    imported under an alias is still not recognised.
     """
     names: set = set()
-    for path in KERNELS_DIR.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    for root in _scan_roots():
+        for path in root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError:
                 continue
-            for dec in node.decorator_list:
-                if not isinstance(dec, ast.Call) or not dec.args:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                func = dec.func
-                fname = getattr(func, "id", None) or getattr(func, "attr", None)
-                if fname != "kernel_action":
-                    continue
-                arg0 = dec.args[0]
-                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                    names.add(arg0.value)
+                for dec in node.decorator_list:
+                    if not isinstance(dec, ast.Call) or not dec.args:
+                        continue
+                    func = dec.func
+                    fname = getattr(func, "id", None) or getattr(func, "attr", None)
+                    if fname != "kernel_action":
+                        continue
+                    arg0 = dec.args[0]
+                    if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                        names.add(arg0.value)
     return names
