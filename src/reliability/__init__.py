@@ -43,6 +43,14 @@ from .audit_metrics import (
 )
 from .structured_log import StructuredLogger, get_struct_logger
 from .tracing import Span, Tracer, get_tracer
+from .checkpointer import (
+    BackgroundVerifier,
+    CheckpointStats,
+    estimate_verify_seconds,
+    get_background_verifier,
+    start_background_verifier,
+    stop_background_verifier,
+)
 
 __all__ = [
     "Counter",
@@ -67,4 +75,10 @@ __all__ = [
     "Span",
     "Tracer",
     "get_tracer",
+    "BackgroundVerifier",
+    "CheckpointStats",
+    "estimate_verify_seconds",
+    "get_background_verifier",
+    "start_background_verifier",
+    "stop_background_verifier",
 ]
