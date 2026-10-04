@@ -59,7 +59,10 @@ def test_replan_goal_resumes_completed_tasks():
     GID = "gw-replan-gid"
     GOAL_TEXT = "write a file named gw1.txt containing hello"
     runtime1.run_goal(GOAL_TEXT, goal_id=GID, persist=False)
-    assert calls1["file_write"] == 1, "initial run must write the file"
+    # A file-write goal now emits the primary write PLUS a derived sha256
+    # integrity sidecar (WriteChecksum) -- both are real file_write actions, so
+    # the exact, stable count is 2 (see GoalDecomposer in src/kernels/execution).
+    assert calls1["file_write"] == 2, "initial run must write the file + checksum sidecar"
     assert os.path.exists(_file("gw1.txt"))
     journal1.close()
 

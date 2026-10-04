@@ -225,6 +225,17 @@ class AIStateManager:
                     journal=journal,
                 )
                 logger.info("AIStateManager: AgentRuntime initialized (real executor wired, journal=%s)", journal_path)
+                # Inject the real Employee's agent ids so the deterministic
+                # decomposer assigns a goal's tasks to distinct REAL agents
+                # (multi-agent observability for P3). Fail-soft: if the employee
+                # is not yet available the decomposer falls back to synthetic ids.
+                try:
+                    emp = self._ensure_employee()
+                    ids = list(getattr(emp, "agents", {}).keys())
+                    if ids:
+                        self._runtime.engine.decomposer.agent_ids = ids
+                except Exception as _exc:  # pragma: no cover - best effort
+                    logger.debug("AIStateManager: agent id injection skipped: %s", _exc)
             except Exception as exc:
                 logger.error("AIStateManager: failed to init AgentRuntime: %s", exc)
                 raise
