@@ -714,6 +714,15 @@ jobs:
       - name: Verify the roster surfaces real employees, not modules
         run: python scripts/verify_roster_real_employees.py
 
+      # Migration / rollback path. Wired only after it was proven to actually
+      # run: with an interpreter that has alembic, this reaches revision 005,
+      # downgrades to base leaving only alembic_version, and re-checks
+      # persistence. It fails LOUDLY (never skips) when no alembic entry point
+      # is resolvable, so a missing dependency reads as a missing dependency
+      # instead of an alembic build defect. Needs the `alembic` installed above.
+      - name: Verify schema upgrade and rollback really run
+        run: python scripts/verify_deploy_readiness.py
+
   # Linting job
   lint:
     name: Linting
