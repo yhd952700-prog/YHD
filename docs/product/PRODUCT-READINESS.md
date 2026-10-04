@@ -140,8 +140,10 @@ the user.
   REAL employees (commit 20415d5c): `dashboard_roster` returns `real_employees`
   from `EmployeeStore` and `totals.employees` counts only real employees — kernel
   modules + capability layers are no longer miscounted as 28 "employees" (they are
-  preserved separately as `totals.registry_entries`). Still no user-facing
-  hire/pause/resume-by-name.
+  preserved separately as `totals.registry_entries`). The console now also surfaces a
+  dedicated hire form (`HireEmployeeForm`, `components/OperatorControls.tsx`) and
+  per-agent pause/resume buttons (`AgentActionButtons`), both wired to the real
+  lifecycle endpoints (`POST /v1/employees`, `POST /v1/employees/{id}/pause|resume`).
 - `_goals` is an **in-process dict** (`ai_management.py:124`) — lost on restart,
   not shared across workers.
 - The UI's "My AI Employees" previously miscounted kernel modules + capability
@@ -150,23 +152,26 @@ the user.
   `totals.employees` reflects the true persisted count, and the module count lives
   in `totals.registry_entries` as registry info, not employees.
 
-**Biggest gap:** the backend by-name lifecycle (hire / list / pause / resume /
-remove) is now implemented and proven by an integration test, so the *server-side*
-half of P1 is real. What remains is the **UI**: the console's "My AI Employees"
-runtime tab now *lists* every real employee by name (incl. hired ones) and shows
-per-agent status, but there is still no dedicated **"hire employee" form** and no
-per-employee **pause/resume buttons** in the console — pause/resume is currently
-exercised only through the REST endpoints. (The persistence machinery —
-`EmployeeStore`, commit 187291d6, and the planner-state `save_state`/`load_state`,
-commit 2f7484d5 — plus the honest roster surfacing, commit 20415d5c — all exist and
-are now fully exposed on the backend.)
+**Biggest gap (corrected 2026-10-21):** the console *does* now have both the
+dedicated **hire form** (`HireEmployeeForm` in `components/OperatorControls.tsx`,
+rendered in `pages/Directory.tsx`, calls `operator.hireEmployee` → `POST
+/v1/employees`) and per-agent **pause/resume buttons** (`AgentActionButtons`,
+rendered per agent in `Directory.tsx`, calls `pauseAgent` / `resumeAgent` → the real
+`POST /v1/employees/{id}/pause|resume` endpoints). Both are wired to the by-name
+lifecycle endpoints integration-tested in `tests/gateway/test_employee_lifecycle.py`,
+so the *UI* half of P1 is no longer the blocker. What genuinely remains
+unverifiable in this environment: (1) a real **browser click-through** of the full
+hire → pause → resume → remove flow (no headless browser available here), and (2) a
+**cross-restart durability** integration test for `EmployeeStore` (durability is
+by-design via atomic JSON writes, but not separately exercised across a process
+restart in CI).
 **Flips to PASS when:** a real employee can be created, persists across restart,
 can be paused/resumed from the UI, and appears by name — not as a count of
-kernel modules. **Status this cycle:** backend create/persist/list/pause/resume/
-remove is measurable + tested (cross-restart durability is by-design via
-`EmployeeStore` atomic JSON; not separately integration-tested yet). UI hire form
-+ per-employee pause/resume buttons remain outstanding → P1 stays **FAIL** until
-those land.
+kernel modules. **Status this cycle:** create/persist/list/pause/resume/remove is
+real on both backend (tested) and the console UI (hire form + pause/resume buttons
+wired). P1 stays **FAIL** only on the two items above — a browser click-through and
+a cross-restart durability test — which require an environment with a browser / a
+restart integration test, not a missing capability.
 
 ---
 
