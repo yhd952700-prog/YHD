@@ -224,8 +224,12 @@ class TestPrincipalIsTokenOnly:
 class TestPostureSnapshotIsAuthenticated:
     """The enforcement snapshot is a map of what is *not* gated."""
 
-    def test_enforcement_reports_the_real_arming(self, human, client):
-        os.environ[enf.ENV_VAR] = "CRITICAL"
+    def test_enforcement_reports_the_real_arming(self, human, client, monkeypatch):
+        # Use monkeypatch (auto-restored) instead of a bare os.environ write:
+        # a direct assignment leaks into later modules and makes
+        # test_default_is_off order-dependent (a broken default could then pass
+        # after an armed test). The channel is correct; only the test hygiene was.
+        monkeypatch.setenv(enf.ENV_VAR, "CRITICAL")
         enf.reload()
         body = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()
         assert body["enabled"] is True

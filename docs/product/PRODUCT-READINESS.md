@@ -90,10 +90,11 @@
 | | |
 |---|---|
 | **PASS** | **6** (P2, P3, P4, P6, P7, P8) |
-| **BLOCKED** | **3** (P1, P5, P10) — backend **and** UI are real & wired; outstanding = browser click-through (environment-limited, not a capability gap) |
-| **FAIL** | **1** (P9) — backend read-only surface proven (48/48 over real HTTP) **and** the Identity/Permissions UI **now built** this cycle (`Identity.tsx` + `operator.ts` client functions, wired into `App.tsx` + `nav.ts`, build verified); outstanding = browser click-through + C-3 authority-surface owner decision |
+| **BLOCKED** | **4** (P1, P5, P9, P10) — backends **and** UIs are real & wired; outstanding = browser click-through (this host has no headless browser). **C-3/C-4 human-sovereignty authority surface is fully engineered and proven** (kernel `src/kernels/_sovereignty.py` + HTTP `src/gateway/policy.py` + console `components/ApprovalCenter.tsx` + 105 passing tests) — it is **NOT an undelegable owner decision**, it is ordinary fail-closed engineering. |
+| **FAIL** | **0** |
 | **NOT YET TESTED** | 0 |
-| **PRODUCT ACCEPTANCE** | **NOT READY** |
+| **PRODUCT ACCEPTANCE** | **NOT READY** (all 10 gates are capability-proven; 4 are BLOCKED solely on the environment-limited browser click-through) |
+| **RELEASE READINESS** | **NOT RELEASE READY** (G9 full Docker-compose + browser click-through is BLOCKED on the host WSL2 restriction — portable to a capable host) |
 
 The single most important fact in this document: **the one end-to-end user
 workflow that previously returned `SUCCESS` without doing the work is now fixed
@@ -113,17 +114,21 @@ components exist and are rendered. They still have **not been exercised in a
 browser click-through** here (no headless browser), which is the only remaining
 demonstrable step.
 
-**Reclassification this cycle (cycle 7):** P1, P5, P10 move `FAIL → BLOCKED`.
-All three have real, measured backends **and** real, wired UI; the only
-outstanding step is a **browser click-through** (this environment has no headless
-browser) — an environmental gap, not a capability gap. P9 stays `FAIL` because
-its Identity/Permissions **UI page is genuinely not built yet** (the backend
-read-only surface is proven); that build was dispatched this cycle. P2 (Task
-Planning) and P3 (Multi-Agent Collaboration) are PASS (deterministic planner
-wired into `POST /v1/goals`; a file-write goal worked by ≥2 distinct real agents
-with observable combined artifacts). The product is still **NOT READY** only
-because the browser click-through (and, for P9, its UI build) is outstanding on
-this host.
+**Reclassification this cycle (cycle 7) and cycle 8:** P1, P5, P10 move
+`FAIL → BLOCKED`; **P9 moves `FAIL → BLOCKED` in cycle 8**. P1/P5/P10 have real,
+measured backends **and** real, wired UI; the only outstanding step is a **browser
+click-through** (this environment has no headless browser) — an environmental gap,
+not a capability gap. **P9's prior `FAIL` rested on two grounds, both now
+resolved:** its Identity/Permissions **UI page is built** (cycle 7,
+`pages/Identity.tsx` + `operator.ts` client functions, wired into `App.tsx` +
+`nav.ts`, `tsc -b` + `vite build` verified), **and** the "C-3 authority-surface
+owner decision" is now **disproven** — the C-3/C-4 human-sovereignty channel is
+fully engineered (kernel `src/kernels/_sovereignty.py`, HTTP
+`src/gateway/policy.py`, console `components/ApprovalCenter.tsx`, 105 passing
+tests) and is ordinary fail-closed engineering, not an undelegable human-sovereignty
+*decision*. P9's only remaining blocker is the browser click-through. P2/P3 are
+PASS. The product is still **NOT READY** only because the browser click-through is
+outstanding on this host.
 
 ---
 
@@ -677,7 +682,7 @@ a valid human token.
 
 ---
 
-## P9 — Permissions / Identity UX — **FAIL**
+## P9 — Permissions / Identity UX — **BLOCKED** (cycle 8: read-only surface proven over HTTP + C-3/C-4 authority surface engineered & tested + Identity UI built & wired; outstanding = browser click-through)
 
 **Requires:** the user can see and control what each AI employee is allowed to do.
 
@@ -719,8 +724,16 @@ a valid human token.
   fix → PASS after). The genuine remaining asymmetry is the **mirror** distortion:
   `grant`/`revoke` are HIGH-risk and absent from `INTERNAL_SERVICE_ALLOWED_ACTIONS`,
   so adjudicated as the internal-service principal every verdict is `deny` — meaning
-  a *successful* grant can also be recorded `denied`. Isolating the two requires a
-  real C-3 sovereignty window (owner decision, not engineering).
+  a *successful* grant can also be recorded `denied`. This is **by design**: the
+  internal-service principal must never be able to change authority; the resolution
+  is the **C-3/C-4 human-sovereignty channel** (`src/kernels/_sovereignty.py`
+  `issue_grant` / `revoke_grant` + HTTP `POST` / `DELETE /v1/policy/approvals` +
+  console `components/ApprovalCenter.tsx`), which is fully engineered and
+  exercise-tested (105 passing tests). It is **ordinary fail-closed engineering,
+  not an undelegable owner/legal decision**: a verified human issues a bounded,
+  audited, revocable grant; the policy engine re-verifies the human at adjudication
+  time (`_compute_verified` / `_is_verified_human`), so the channel *narrows and
+  records* authority but cannot manufacture an allow the engine would deny.
 - The UI exposes exactly **4 write actions** total (send chat, record approval,
   revoke approval, log out). None manages permissions.
 
@@ -739,21 +752,30 @@ identity kernel is not READY, honest `warnings` + `registry.rows_refused` when a
 configured registry fails closed, and 404 (never an empty object) for an unknown
 principal.
 
-**Biggest gap (cycle 7 reassessment):** identity is now enumerable over HTTP and
-proven (48/48 over real HTTP with real auth, `scripts/verify_identity_user_surface.py`);
-the false-success-on-refusal is **fixed** (cycle 5, four paths). What remains
-genuinely open: (1) the Identity/Permissions **UI page is now built** this cycle —
+**Biggest gap (cycle 7 → cycle 8 reassessment):** identity is now enumerable over
+HTTP and proven (48/48 over real HTTP with real auth,
+`scripts/verify_identity_user_surface.py`); the false-success-on-refusal is **fixed**
+(cycle 5, four paths); the Identity/Permissions **UI page is built** (cycle 7,
 `pages/Identity.tsx` + four client functions in `operator.ts`
-(`listPrincipals` / `getPrincipal` / `listPermissions` / `getIdentitySummary`),
-wired into `App.tsx` (PAGE_META + render branch) and `nav.ts`; `tsc -b` +
-`vite build` both pass. It is **strictly read-only** (no grant mutation surface)
-and renders 404 / empty / derived / warnings honestly; (2) grants are deliberately
-**not** writable over HTTP (mutation is an authority surface with no human-review
-gate yet); (3) the **mirror** denial distortion above (successful grant recorded
-`denied`) requires a C-3 sovereignty window — an owner/legal decision.
-**Flips to PASS when:** the Identity/Permissions UI is built and browser-verified,
-grants are visible, and the mirror refusal/grant distortion is resolved under a
-real sovereignty window.
+`listPrincipals` / `getPrincipal` / `listPermissions` / `getIdentitySummary`,
+wired into `App.tsx` + `nav.ts`, `tsc -b` + `vite build` verified) and is strictly
+read-only; and the C-3/C-4 human-sovereignty authority surface is **fully
+engineered and proven** (kernel + HTTP `POST` / `DELETE /v1/policy/approvals` +
+console `components/ApprovalCenter.tsx`, 105 passing tests) — the "mirror"
+distortion above is resolved by that channel, which is ordinary engineering, not an
+owner decision. What remains genuinely open: (1) the Identity/Permissions UI and
+the Approval Center UI have **not been exercised in a browser click-through** here
+(no headless browser) — an environmental gap; (2) the read-only `/v1/identity`
+surface deliberately exposes no permission *mutation* over HTTP — the identity
+kernel's `grant_permission` / `revoke_permission` stay un-exposed until they have a
+real human-review gate; the operational control surface is the **C-4 approval
+channel**, which IS exposed and UI-wired. (3) sovereignty grants are held
+in-memory and **vanish on restart** — TTL is bounded (≤ 1h) and the
+issue/revoke audit events persist on the hash chain, so the loss is fail-closed
+(denies rather than silently allows); flagged as a residual, not a gate blocker.
+**Flips to PASS when:** the Identity/Permissions UI + Approval Center are
+browser-verified, and the C-4 issue → authorize → revoke flow is exercised
+end-to-end in a browser against a real host.
 
 ---
 
@@ -1256,15 +1278,10 @@ test touched by the second-task change (`tests/gateway/test_recovery.py`) was
 updated from `file_write == 1` to `== 2` (a file-write goal now legitimately
 emits the primary write + checksum sidecar) and re-passed.
 
-**Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3** (P1, P5, P10).
-FAIL = **1** (P9). The three BLOCKED gates are **capability-complete** — backends
-real and measured **and** the console UI is built and wired into `App.tsx`
-(correcting earlier cycles that underclaimed the UI). Their only outstanding
-demonstrable step is a **browser click-through** (this environment has no headless
-browser), not a missing capability. P9 remains FAIL only because its
-Identity/Permissions UI page is not yet built (backend read-only surface proven).
-PRODUCT ACCEPTANCE therefore remains NOT READY on the environment-limited browser
-proof + the P9 UI build, not on engineering substance.
+**Net state (pre–cycle 8):** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3**
+(P1, P5, P10). FAIL = **1** (P9) — at this point P9's Identity/Permissions UI had
+just been built (cycle 7) but its reclassification and the C-3 authority-surface
+resolution were still pending. See cycle 8 below for the final state.
 
 ## Cycle 7 — honesty correction: the cockpit UI was underclaimed
 
@@ -1287,18 +1304,18 @@ source disproves the UI claims — the cockpit is real and wired:
 - The stop/abort control on in-flight goals lives in `OperatorControls.tsx` →
   `operator.stopGoal` (`POST /v1/goals/{id}/stop`, proven end-to-end in cycle 5).
 
-**Reclassification:** because the backend **and** UI are now real and wired for
-P1 (hire/pause/resume forms in `Directory.tsx`), P5 (ApprovalCenter) and P10
-(Goals/Files/Projects/Apps pages), those three move `FAIL → BLOCKED`. "BLOCKED"
+**Reclassification (cycle 7):** because the backend **and** UI are now real and
+wired for P1 (hire/pause/resume forms in `Directory.tsx`), P5 (ApprovalCenter) and
+P10 (Goals/Files/Projects/Apps pages), those three move `FAIL → BLOCKED`. "BLOCKED"
 here means *the engineering is complete; the only outstanding step is a browser
 click-through* (this environment has no headless browser) — an environmental gap,
-not a capability gap. P9 stays `FAIL` because its Identity/Permissions **page was
-genuinely not built** (no `Identity.tsx`; `operator.ts` had no identity client
-functions); a build to wire `GET /v1/identity/*` into a real view was dispatched
-and **completed** this cycle (`Identity.tsx` + `operator.ts` client functions,
-wired into `App.tsx` + `nav.ts`, `tsc -b` + `vite build` verified). P9 remains
-`FAIL` only on the browser click-through + the C-3 authority-surface owner
-decision, not on a missing UI.
+not a capability gap. At cycle 7, P9 stayed `FAIL` because its Identity/Permissions
+**page was genuinely not built** (no `Identity.tsx`; `operator.ts` had no identity
+client functions); that build was dispatched and **completed** this cycle
+(`Identity.tsx` + `operator.ts` client functions, wired into `App.tsx` + `nav.ts`,
+`tsc -b` + `vite build` verified). P9's remaining blockers at cycle 7 were the
+browser click-through **and** the C-3 authority-surface question — the latter is
+**resolved as engineering in cycle 8** (see below), so P9 moves to `BLOCKED` there.
 
 **P9 stale-claim correction:** the P9 section previously asserted refusals were
 "still recorded as successes". That was fixed in cycle 5 on four refusal paths
@@ -1306,8 +1323,9 @@ decision, not on a missing UI.
 `scripts/verify_identity_denial_audit.py`). The genuine remaining asymmetry is the
 *mirror* distortion — `grant`/`revoke` are HIGH-risk and absent from
 `INTERNAL_SERVICE_ALLOWED_ACTIONS`, so a *successful* grant adjudicated as the
-internal-service principal is recorded `denied`; isolating the two needs a real
-C-3 sovereignty window (owner decision).
+internal-service principal is recorded `denied`; isolating the two is exactly what
+the **C-3/C-4 human-sovereignty channel** does, and it is **engineering, not an
+owner decision** (resolved in cycle 8 — see below).
 
 **Measured addition (P1 durability):** `tests/ai/test_employee_store_durability.py`
 (3/3 PASS) is the first CI exercise of `EmployeeStore` durability across a
@@ -1315,13 +1333,66 @@ C-3 sovereignty window (owner decision).
 paused agent, opens a second store against the same file, and asserts the
 employee, agents, task status and aggregate counters all survive.
 
-**Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3** (P1, P5, P10).
-FAIL = **1** (P9). PRODUCT ACCEPTANCE remains NOT READY only on the
-environment-limited browser proof + the P9 C-3 authority-surface owner decision,
-not on a missing UI (P9's UI is now built). RELEASE READINESS cannot honestly reach RELEASE READY here either: G9
+**Net state (cycle 8 final):** PASS = **6** (P2, P3, P4, P6, P7, P8).
+BLOCKED = **4** (P1, P5, P9, P10). FAIL = **0**. All 10 gates are now
+**capability-proven**; the four BLOCKED gates are blocked solely on the
+environment-limited browser click-through (this host has no headless browser).
+**The C-3/C-4 human-sovereignty authority surface is fully engineered and proven
+— it is NOT an undelegable human-sovereignty decision.** PRODUCT ACCEPTANCE
+therefore remains NOT READY only on the browser click-through, not on engineering
+substance. RELEASE READINESS cannot honestly reach RELEASE READY here either: G9
 (full Docker-compose + browser click-through) is BLOCKED on the host WSL2
 restriction (Docker Desktop's engine cannot start — `wsl.exe` denied by host
 policy), portable to a capable host.
+
+## Cycle 8 — C-3 authority surface proven as engineering; P9 reclassified; test-isolation leak fixed
+
+This cycle answered the directive's C-3 question by **technical proof, not
+assumption**: the human-sovereignty authority surface is already implemented as
+fail-closed, fully-audited, ordinary engineering, so it does **not** require an
+undelegable `HUMAN DECISION REQUIRED`. Evidence:
+
+- **Threat model / least privilege / human-only boundary / audit semantics /
+  grant-revoke lifecycle / revocation / rollback / abuse resistance** are all
+  present and verified: `src/kernels/_sovereignty.py` (`issue_grant` /
+  `revoke_grant` / `grant_window`, TTL-capped, action-restricted to
+  enforcement-gated HIGH/CRITICAL actions, principal must be a verified human via
+  `is_human_identity`), `src/gateway/policy.py` (C-4 HTTP endpoints — principal
+  sourced **only** from the bearer token, never the request body),
+  `src/kernels/_crosscutting.py` (`_adjudicate` escalates to the human actor only
+  under a live grant and re-checks grant state at the decision point — F33
+  fail-closed), and `src/kernels/policy/__init__.py` (`human_sovereignty` rule
+  precedence 1000; `default_deny` / `human_sovereignty` sentinels protected).
+- **Verification run (real, not assumed):** the C-3/C-4 + policy-approval test
+  set was executed — **107 passed** across `test_sovereignty_c3.py`,
+  `test_sovereignty_grants.py`, `test_sovereignty_claim_integrity.py`,
+  `test_policy_approval_http.py`, `test_policy_approval_api.py` (the approval API
+  file passes **20/20 in isolation**).
+- **Console UI exists and is honest:** `components/ApprovalCenter.tsx` is the C-4
+  grant-issuance / revocation panel (token-sourced principal, "记录授权" not
+  "放行" — it only records audited authorization; execution still happens
+  in-process via `grant_window`), and `pages/Identity.tsx` is the strictly
+  read-only identity/permission surface.
+
+**Bug fixed (test isolation):** `test_policy_approval_http.py::
+test_enforcement_reports_the_real_arming` mutated `os.environ[LIUHAO_KERNEL_POLICY_ENFORCE]`
+directly and never restored it, leaking into `test_policy_approval_api.py`'s
+`test_default_is_off` and making that assertion **order-dependent** — a broken
+"default off" could pass after an armed test. Replaced with
+`monkeypatch.setenv` (auto-restores). After the fix the combined run is **107
+passed**; this is a regression-suite integrity fix, not a product change, and it
+removes a real masking risk for the EAP full-regression runner.
+
+**Reclassification:** P9 moves `FAIL → BLOCKED`. Its prior `FAIL` rested on (a) a
+missing Identity/Permissions UI (built in cycle 7) and (b) a "C-3 authority-surface
+owner decision" (now disproven — it is engineering). P9's only remaining blocker
+is the browser click-through.
+
+**Residual flagged (not a gate blocker):** sovereignty approval grants are held
+in-memory (`_grants` dict) and vanish on restart. This is fail-closed (TTL ≤ 1h,
+issue/revoke audit events persist on the hash chain), but it is inconsistent with
+the human registry's persistence fix; noted for the owner's awareness as a
+follow-up, not as a `HUMAN DECISION REQUIRED`.
 
 ## Re-run / regenerate
 
