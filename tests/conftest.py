@@ -328,6 +328,389 @@ def _isolate_knowledge_memory_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("MEMORY_PERSIST_DIR", raising=False)
 
 
+# ==================== Guard: tests must not delete files in the work tree ====
+#
+# 为什么不能只靠"人记住"
+# ----------------------
+# 2026-10-04 实测事故：``tests/test_knowledge_memory.py`` 的 setup/teardown 用
+# **CWD 相对路径** ``os.path.join('memory_data', 'xxx.json')`` 调 ``os.remove``。
+# 进程 CWD 是仓库根，所以它删的是 ``D:/LiuHao-AI-OS/memory_data/`` 里的真实文件。
+# 后果不是"那个测试挂了"，而是**间接因果**：
+#
+#   1. 本机有个 sitecustomize shim 会 patch os.remove/os.unlink/shutil.rmtree，
+#      同一 turn 内删除累计到 50 次后每次抛 SystemExit(1)；
+#   2. SystemExit 落在 xunit 的 setup_method/teardown_method 里，打坏 pytest 的
+#      fixture finalizer 栈（``_assert not self._finalizers_``）；
+#   3. session 级 tmp_path_factory 卡死，把**同一个目录**分给后续所有测试；
+#   4. 全量跑时 28 failed + 16 errors，彼此毫无关系，症状是 FileExistsError
+#      和 ``assert 80 == 40``。
+#
+# 任何人看到这种失败，第一反应都是"宿主环境不稳 / 这测试 flaky"。真正的原因藏在
+# 另一个文件的一次删除里，而 pytest 永远不会把两者联系起来。代价是团队开始怀疑
+# 自己的开发环境，而不是怀疑代码。
+#
+# 本护栏把这种间接因果变成**就地失败**：谁删、删哪个路径、调用栈在哪一行，当场
+# 报错。宁可误报（能看懂即可），不可漏报。
+#
+# 判据
+# ----
+#   放行：位于 ``tempfile.gettempdir()``（本机 D:\\cache\\temp）之下——
+#         pytest 的 tmp_path / tmp_path_factory / basetemp 都在这里；
+#         以及完全在仓库工作树之外的路径（不属于本护栏管辖范围）。
+#   拒绝：位于仓库工作树之内（仓库根 = 本文件上溯一级）的任何路径，
+#         除非该路径已由测试通过 ``allow_repo_deletion`` 显式登记。
+#
+# 顺带收益：仓库根的 ``audit_store.db``（冻结的 HC-01 证据）也落在拒绝面内。
+# 任何测试试图删除/覆盖它都会当场变红，而不是悄悄毁掉证据。
+
+# 这些 import 故意留在文件中段（E402）：整个 guard 代码块必须能**原样切出来**
+# 给子进程 conftest 用（见 tests/test_cwd_delete_guard.py 的 _guard_source），
+# 块内自带import 才能独立成立。挪到文件头会切不出可用的子进程 conftest。
+import os as _guard_os  # noqa: E402
+import shutil as _guard_shutil  # noqa: E402
+import tempfile as _guard_tempfile  # noqa: E402
+import traceback as _guard_traceback  # noqa: E402
+from pathlib import Path as _GuardPath  # noqa: E402
+
+# ``pytest`` 在下方 "Async Fixtures" 段以模块级名字导入；本 guard 代码块位于那段
+# 之后，因此运行时引用同一个名字是安全的（定义期不求值）。这样避免重复 import
+# 触发 E402，也避免同一模块出现两个 pytest 名字。
+
+#: 仓库工作树根：``tests/conftest.py`` 上溯一级。
+REPO_ROOT = _GuardPath(__file__).resolve().parent.parent
+
+#: pytest 临时根。本机为 D:\\cache\\temp，恰好也是宿主 safe-delete shim 的 bypass 目录。
+_TEMP_ROOT = _GuardPath(_guard_tempfile.gettempdir()).resolve()
+
+#: 额外放行的临时根。若 pytest 启动时带了 ``--basetemp``（不在 gettempdir 之下），
+#: 该目录由 ``_forbid_deleting_repository_files`` 在会话开始时登记进来。
+_EXTRA_TEMP_ROOTS: set = set()
+
+#: 当前正在运行的用例 nodeid。由 ``_record_current_test`` 逐用例更新，
+#: 仅为让报错信息能直接点名是哪个测试干的（调用栈之外的第二重定位）。
+_CURRENT_NODEID = {"nodeid": "<session setup>"}
+
+
+def _norm_target(path) -> _GuardPath:
+    """把删除目标解析成绝对路径。
+
+    相对路径按**进程 CWD** 解析——这正是事故的成因：CWD 相对路径会静默地指向
+    仓库内的真实文件，所以这里必须用 ``abspath`` 而不是要求调用方传绝对路径。
+    """
+    return _GuardPath(_guard_os.path.abspath(_guard_os.fspath(path))).resolve()
+
+
+def _is_under(child: _GuardPath, parent: _GuardPath) -> bool:
+    """``child`` 是否等于 ``parent`` 或位于其之下（Windows 大小写不敏感）。"""
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+#: 调用栈里**不展示**的路径片段。pytest / pluggy / site-packages 的框架帧对
+#: "是谁干的"这个问题零信息量，却会把真正的肇事前缀埋掉。实测：14 帧里有 11 帧
+#: 是 ``_pytest/runner.py`` 与 ``pluggy``，删掉它们之后肇事那一行立刻可见。
+_STACK_NOISE = (
+    "site-packages",
+    _guard_os.sep + "_pytest" + _guard_os.sep,
+    "pluggy",
+)
+
+
+def _describe_stack(skip_frames: int = 2, keep: int = 8) -> str:
+    """取最近若干帧调用栈，去掉护栏自身与 pytest 框架的帧。
+
+    保留顺序为**由外到内**（真实调用顺序），并在开头标注省略了多少帧，
+    这样"从哪条路走过去的"和"在哪一行干的"两件事都能一眼看到。
+    """
+    frames = _guard_traceback.format_stack()
+    # format_stack()[-1] 是发起删除的那一帧；去掉护栏内部的 skip_frames 帧。
+    frames = frames[:-skip_frames] if skip_frames else frames
+    kept = [f for f in frames if not any(n in f for n in _STACK_NOISE)]
+    dropped = len(frames) - len(kept)
+    if len(kept) > keep:
+        # 保留最内层 keep 帧（离肇事点最近），但仍按由外到内输出。
+        dropped += len(kept) - keep
+        kept = kept[-keep:]
+    header = "  ...（省略 %d 帧 pytest 框架/中间帧）...\n" % dropped if dropped else ""
+    return header + "".join(kept).rstrip()
+
+
+def _repo_deletion_violation(kind: str, target: _GuardPath, registered):
+    """就地失败：路径 + 是谁 + 调用栈 + 怎么豁免。``pytest.fail`` 不返回。"""
+    rel = os.path.relpath(str(target), str(REPO_ROOT))
+    lines = [
+        "",
+        "=" * 78,
+        "护栏拦截：测试试图删除仓库工作树内的文件/目录。",
+        "=" * 78,
+        "  删除接口  : %s" % kind,
+        "  完整路径  : %s" % target,
+        "  仓库内位置: %s" % rel,
+        "  当前用例  : %s" % _CURRENT_NODEID["nodeid"],
+        "",
+        "判据：允许删除 tempfile.gettempdir() (%s) 之下的一切" % _TEMP_ROOT,
+        "      （tmp_path / tmp_path_factory / basetemp 都在那里）；",
+        "      仓库工作树 (%s) 内的一切默认拒绝。" % REPO_ROOT,
+        "",
+        "如果这个路径确实是**本次测试自己创建**的产物，",
+        "请用 allow_repo_deletion 显式登记并写明原因，例如：",
+        "",
+        "    def test_x(self, allow_repo_deletion):",
+        "        allow_repo_deletion.register(CORPUS / '_probe.yaml',",
+        "            reason='注入探针，验证门禁会变红')",
+        "        (CORPUS / '_probe.yaml').unlink()",
+        "",
+    ]
+    if registered:
+        lines += [
+            "注意：该路径**已经**登记在白名单里，但登记已被消费过",
+            "（reason=%r）。一次登记只允许一次删除；请重新登记。" % registered,
+            "",
+        ]
+    lines += ["调用栈（最近的帧）：", _describe_stack()]
+    return pytest.fail("\n".join(lines), pytrace=False)
+
+
+class _RepoDeletionAllowlist:
+    """显式豁免登记表：只放行"本次运行中测试自己创建"的路径。
+
+    三条硬规则，缺一不可：
+
+    1. **必须带原因**，且非空。照抄 ``tests/test_guardrail_scripts.py`` 里
+       ``DIAGNOSTIC_REPORTERS`` 的做法：没有原因的豁免等于没有豁免——下一个人
+       无法判断这条是"深思熟虑"还是"懒得改"。
+    2. **登记时路径必须不存在**。已存在的路径说明它不是本次运行创建的，
+       登记它就是借护栏之手删除仓库的既有内容（可能还是被 git 跟踪的文件）。
+    3. **一次登记只消费一次**。删除发生后条目即失效，防止一个登记被复用来
+       连续删一批文件。
+    """
+
+    def __init__(self):
+        #: key = 绝对路径字符串，value = 条目 dict
+        self._entries: dict = {}
+
+    def register(self, path, reason: str) -> "_GuardPath":
+        """登记一个"我合法地创建并删除这个路径"。返回规范化后的绝对路径。"""
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssertionError(
+                "allow_repo_deletion.register(%s) 缺少原因：reason 必须是非空字符串。"
+                "没有原因的豁免无法被复核，等于没有豁免。" % (path,)
+            )
+        target = _norm_target(path)
+        if not _is_under(target, REPO_ROOT):
+            raise AssertionError(
+                "allow_repo_deletion.register(%s)：该路径不在仓库工作树 (%s) 之内，"
+                "删除它本来就被放行，无需登记。登记是给「必须删仓库内路径」的用例用的。"
+                % (target, REPO_ROOT)
+            )
+        key = str(target)
+        if key in self._entries:
+            raise AssertionError(
+                "路径 %s 已被登记（reason=%r）。一次登记只允许一次删除；"
+                "请在删除后重新登记，或修正为一次登记一次删除。"
+                % (target, self._entries[key]["reason"])
+            )
+        if _GuardPath(key).exists() or _GuardPath(key).is_symlink():
+            raise AssertionError(
+                "拒绝登记 %s：登记时该路径**已经存在**，因此它不是本次运行中"
+                "由测试创建的。豁免机制只放行「测试自己创建并跑完即删」的产物；"
+                "已存在的路径（尤其是 git 跟踪的文件）不在豁免范围内。"
+                % target
+            )
+        self._entries[key] = {
+            "reason": reason,
+            "nodeid": _CURRENT_NODEID["nodeid"],
+            "consumed": False,
+        }
+        return target
+
+    def consume(self, target: _GuardPath) -> None:
+        """标记一条登记已被使用（由护栏在放行时调用）。"""
+        entry = self._entries.get(str(target))
+        if entry is not None:
+            entry["consumed"] = True
+
+    def lookup(self, target: _GuardPath):
+        return self._entries.get(str(target))
+
+    def forget(self, target: _GuardPath) -> None:
+        self._entries.pop(str(target), None)
+
+    def finalize(self) -> None:
+        """用例结束时的腐化检测：登记了却没删（或删了又冒出来）都是登记有问题。
+
+        无论检查是否通过都清空登记表：检查用的 ``pytest.fail`` 会中断用例，
+        残留条目若不清掉，会让 fixture 的 teardown 再报一次同样的错，把真实
+        失败现场糊掉两层。
+        """
+        problems = []
+        try:
+            for key, entry in self._entries.items():
+                path = _GuardPath(key)
+                if not entry["consumed"]:
+                    problems.append(
+                        "  %s\n    reason=%r\n    登记后从未被删除 —— 白名单条目腐化了："
+                        "用例声称会清理这个路径但没有删。请补上删除，或撤掉登记。"
+                        % (path, entry["reason"])
+                    )
+                elif path.exists() or path.is_symlink():
+                    problems.append(
+                        "  %s\n    reason=%r\n    登记的删除发生后该路径又存在了 —— "
+                        "说明删除的不是本次运行创建的那一份，或删除后被重新创建。"
+                        % (path, entry["reason"])
+                    )
+            if problems:
+                pytest.fail(
+                    "\nallow_repo_deletion 白名单腐化检测失败（用例 %s）：\n%s\n"
+                    % (_CURRENT_NODEID["nodeid"], "\n".join(problems)),
+                    pytrace=False,
+                )
+        finally:
+            self._entries.clear()
+
+
+#: 当前生效的白名单登记表。由 ``allow_repo_deletion`` fixture 逐用例替换，
+#: 保证登记表不跨用例泄漏（跨用例共享会让"上一个用例登记了没删"变成
+#: "下一个用例莫名报已被登记"这类极难定位的假失败）。
+_ACTIVE_ALLOWLIST = [_RepoDeletionAllowlist()]
+
+
+@pytest.fixture
+def allow_repo_deletion():
+    """显式豁免"本次测试自己创建、跑完即删"的仓库内路径。
+
+    用法::
+
+        def test_x(self, allow_repo_deletion):
+            probe = allow_repo_deletion.register(
+                REPO_ROOT / "oss-ecosystem" / "capabilities" / "_probe.yaml",
+                reason="注入违规探针，验证门禁有牙；副本已改用 tmp_path，本条为历史遗留",
+            )
+            probe.write_text("...")
+            probe.unlink()          # 这次删除被放行，且消费掉该登记
+
+    没有它，任何删除仓库内路径的尝试都会 ``pytest.fail`` 并打印路径与调用栈。
+
+    登记表是**每用例独立**的（不是模块级共享 dict）：否则一个用例登记了却没删，
+    残留条目会让下一个用例的登记莫名其妙地报"已被登记"。独立性本身就是护栏的一部分。
+    """
+    allowlist = _RepoDeletionAllowlist()
+    previous = _ACTIVE_ALLOWLIST[0]
+    _ACTIVE_ALLOWLIST[0] = allowlist
+    try:
+        yield allowlist
+    finally:
+        _ACTIVE_ALLOWLIST[0] = previous
+    # finalize 只做**检查**，清空由 _entries 的实例生命周期保证。
+    allowlist.finalize()
+
+
+@pytest.fixture(autouse=True)
+def _record_current_test(request):
+    """把当前用例的 nodeid 记进护栏的全局，供删除拦截信息点名。"""
+    previous = _CURRENT_NODEID["nodeid"]
+    _CURRENT_NODEID["nodeid"] = request.node.nodeid
+    yield
+    _CURRENT_NODEID["nodeid"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_deleting_repository_files(tmp_path_factory):
+    """拦截 os.remove / os.unlink / pathlib.Path.unlink/rmdir / shutil.rmtree
+    对仓库工作树内路径的删除。
+
+    判据与设计理由见本文件上方"Guard: tests must not delete files in the work
+    tree"注释块（含 2026-10-04 那次 28 failed + 16 errors 的完整因果链）。
+
+    为什么必须连 ``pathlib.Path.unlink`` 一起拦（实测踩到的坑）
+    --------------------------------------------------------
+    只 patch ``os.unlink`` **不够**。本机（CodeBuddy CLI）的 ``sitecustomize.py``
+    shim 在导入期就重绑了 ``pathlib.Path.unlink = _safe_path_unlink``，而该函数在
+    放行分支里直连原生实现 ``_orig_path_unlink``，**不经过** ``os.unlink``。
+    于是 ``Path(...).unlink()`` 可以从 ``os.unlink`` 的补丁下方溜过去，护栏对它
+    完全失明——而仓库里现役的测试恰恰大量用 ``Path.unlink()``
+    （``tests/test_oss_ecosystem_entries.py:163``、``tests/test_knowledge_memory.py:48``）。
+    这是本护栏第一版实测漏掉的洞，由 ``tests/test_cwd_delete_guard.py`` 的
+    ``test_path_unlink_is_also_guarded`` 钉住。
+    同理 ``Path.rmdir`` 与 ``shutil.rmtree`` 都在重绑之列，一并拦。
+
+    豁免：``allow_repo_deletion`` 显式登记 + 必填原因 + 一次性消费 + 腐化检测。
+    """
+    import pathlib as _guard_pathlib
+
+    originals = {
+        "os.remove": _guard_os.remove,
+        "os.unlink": _guard_os.unlink,
+        "pathlib.Path.unlink": _guard_pathlib.Path.unlink,
+        "pathlib.Path.rmdir": _guard_pathlib.Path.rmdir,
+        "shutil.rmtree": _guard_shutil.rmtree,
+    }
+
+    def _check(kind, path):
+        target = _norm_target(path)
+        if _is_under(target, _TEMP_ROOT):
+            return
+        for root in _EXTRA_TEMP_ROOTS:
+            if _is_under(target, root):
+                return
+        if not _is_under(target, REPO_ROOT):
+            return  # 仓库之外：不属本护栏管辖
+        allowlist = _ACTIVE_ALLOWLIST[0]
+        entry = allowlist.lookup(target)
+        if entry is not None and not entry["consumed"]:
+            allowlist.consume(target)
+            return
+        _repo_deletion_violation(kind, target, entry)
+
+    def guarded_remove(path, *args, **kwargs):
+        if kwargs.get("dir_fd") is None and not args:
+            _check("os.remove", path)
+        return originals["os.remove"](path, *args, **kwargs)
+
+    def guarded_unlink(path, *args, **kwargs):
+        if kwargs.get("dir_fd") is None and not args:
+            _check("os.unlink", path)
+        return originals["os.unlink"](path, *args, **kwargs)
+
+    def guarded_path_unlink(self, missing_ok=False):
+        _check("pathlib.Path.unlink", self)
+        return originals["pathlib.Path.unlink"](self, missing_ok=missing_ok)
+
+    def guarded_path_rmdir(self):
+        _check("pathlib.Path.rmdir", self)
+        return originals["pathlib.Path.rmdir"](self)
+
+    def guarded_rmtree(path, *args, **kwargs):
+        # rmtree 只接受路径参数（无 dir_fd），无条件校验。
+        _check("shutil.rmtree", path)
+        return originals["shutil.rmtree"](path, *args, **kwargs)
+
+    _guard_os.remove = guarded_remove
+    _guard_os.unlink = guarded_unlink
+    _guard_shutil.rmtree = guarded_rmtree
+    _guard_pathlib.Path.unlink = guarded_path_unlink
+    _guard_pathlib.Path.rmdir = guarded_path_rmdir
+    # pytest 若被指定了 --basetemp（在 gettempdir 之外），把它的根也登记为放行区。
+    _EXTRA_TEMP_ROOTS.clear()
+    basetemp = getattr(tmp_path_factory, "basetemp", None)
+    if basetemp is not None:
+        resolved = _GuardPath(str(basetemp)).resolve()
+        if not _is_under(resolved, _TEMP_ROOT):
+            _EXTRA_TEMP_ROOTS.add(resolved)
+    try:
+        yield
+    finally:
+        _guard_os.remove = originals["os.remove"]
+        _guard_os.unlink = originals["os.unlink"]
+        _guard_shutil.rmtree = originals["shutil.rmtree"]
+        _guard_pathlib.Path.unlink = originals["pathlib.Path.unlink"]
+        _guard_pathlib.Path.rmdir = originals["pathlib.Path.rmdir"]
+        _EXTRA_TEMP_ROOTS.clear()
+
+
 # ==================== Console auth (bearer token) ====================
 
 
