@@ -288,6 +288,46 @@ def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(fence_module, "_DEFAULT_FENCE", None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_knowledge_memory_dir(tmp_path, monkeypatch):
+    """让知识记忆的落盘目录真正离开仓库，并让删除不再被宿主守卫拦截。
+
+    根因
+    ----
+    ``src/knowledge/memory.py`` 的 ``InMemoryBackend._save_to_file()``（:352-356）与
+    ``_load_from_file()``（:382）读 ``os.getenv('MEMORY_PERSIST_DIR', 'memory_data')``。
+    这个环境变量**全仓库只有这两处出现**——没有任何测试设置过它。于是兜底值
+    ``memory_data`` 生效，而它是 **CWD 相对**的：进程 CWD 是仓库根，所以测试把
+    记忆数据写进了 ``D:\\LiuHao-AI-OS\\memory_data\\``。
+
+    后果分两层，第二层是本 fixture 存在的主要理由
+    ----------------------------------------------
+    1. 数据层面：``memory_data/*.json`` 已被 ``.gitignore:43`` 覆盖（实测
+       ``git check-ignore`` 命中），所以不会污染提交；但 ``goal_task_graph_memories.json``
+       之类文件会在测试期间被真实创建/改写。
+    2. **破坏力层面**（2026-10-04 实测）：``tests/test_knowledge_memory.py`` 的
+       ``setup_method``/``teardown_method`` 用**同样的 CWD 相对路径**调 ``os.remove``，
+       而本机（CodeBuddy CLI）有个 ``sitecustomize.py`` shim 会 monkeypatch
+       ``os.remove``/``os.unlink``/``shutil.rmtree``：同一 turn 内删除次数累计到 50
+       之后，每一次删除都抛 ``SystemExit(1)``（``SAFE_DELETE_BULK_CONFIRM_REQUIRED``）。
+       ``SystemExit`` 落在 xunit 钩子里会**打坏 pytest 的 fixture finalizer 栈**
+       （``_assert not self._finalizers_``），session 级 ``tmp_path_factory`` 卡死，
+       之后**所有**测试共用同一个 tmp 目录 —— 全量跑时实测 28 failed + 16 errors
+       由此而来，和测试之间毫无关系。
+
+    修法
+    ----
+    重定向环境变量，让写入落在 ``tmp_path`` 下。``tmp_path`` 在本机位于
+    ``D:\\cache\\temp``，正是 shim 的 bypass 目录（``tempfile.gettempdir()``），
+    因此删除不再被拦截。生产默认值 ``memory_data`` **保持不变**。
+
+    与 F1/F3 fixture 同构：只改测试环境，不改产品行为、不改任何测试断言。
+    """
+    monkeypatch.setenv("MEMORY_PERSIST_DIR", str(tmp_path / "memory_data"))
+    yield
+    monkeypatch.delenv("MEMORY_PERSIST_DIR", raising=False)
+
+
 # ==================== Console auth (bearer token) ====================
 
 
