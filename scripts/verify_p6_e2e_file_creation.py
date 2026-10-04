@@ -18,12 +18,19 @@ Run from the repo root:
 """
 import os
 import sys
+import tempfile
 import uuid
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-WS = os.environ["LIUHAO_WORKSPACE_ROOT"]
+# 未设置 LIUHAO_WORKSPACE_ROOT 时自建临时工作区：原先直接 os.environ[...] 会在
+# 变量缺失时抛 KeyError，令这个门禁**根本无法独立运行**（因而也无法被 CI 执行）。
+# 与同族 verify_e2e_real_execution.py 自备考古临时工作区的行为对齐；
+# 环境变量仍优先，便于需要时指向真实工作区取证。
+WS = os.environ.get("LIUHAO_WORKSPACE_ROOT") or tempfile.mkdtemp(
+    prefix="liuhao_p6_ws_"
+)
 TARGET = os.path.join(WS, "report.txt")
 EXPECTED = "hello world"
 

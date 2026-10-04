@@ -256,10 +256,19 @@ def run_decomposer_finding():
     goal = Goal(id="G_dec", natural_language=text, scope="L1")
     tasks = GoalDecomposer().decompose(goal)
     fw = [t for t in tasks if t.capability_id == "file_write"]
+    # 校验口径随实现更新（2026-10-04 实测）：分解器现在会额外产出一个
+    # ``<path>.sha256`` 校验伴随文件，所以 "file_write 任务恰好 1 个" 这条
+    # 前提已经过期——它早于校验伴随文件特性，并非内容捕获能力退化。
+    # 实测：TOTAL=2，[0] report.txt/SUMMARY，[1] report.txt.sha256/<hash>。
+    # 因此改为断言：(a) 主文件任务恰好 1 个且 path/content 正确（能力本身）；
+    # (b) 校验伴随文件确实产出（显式断言，避免把它当噪音悄悄放过）。
+    primary = [t for t in fw if t.inputs.get("path") == "report.txt"]
+    sidecar = [t for t in fw if str(t.inputs.get("path", "")).endswith(".sha256")]
     check("GoalDecomposer turns NL 'write a file named X containing Y' into a file_write task",
-          len(fw) == 1 and fw[0].inputs.get("path") == "report.txt"
-          and fw[0].inputs.get("content") == "SUMMARY",
-          detail=f"inputs={fw[0].inputs if fw else None}")
+          len(primary) == 1 and primary[0].inputs.get("content") == "SUMMARY"
+          and len(sidecar) == 1,
+          detail=f"file_write={len(fw)} primary={primary[0].inputs if primary else None} "
+                 f"sidecar={sidecar[0].inputs.get('path') if sidecar else None}")
     print("    FINDING: task generation is keyword/regex-based (src/kernels/execution/"
           "__init__.py:267 GoalDecomposer.decompose), NOT LLM-driven. Comment at "
           "line 269: 'in production would use LLM'.")
