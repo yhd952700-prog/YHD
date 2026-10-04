@@ -312,6 +312,29 @@ jobs:
       - name: Verify every zero-reference module is acknowledged
         run: python scripts/verify_no_undocumented_orphans.py
 
+      # The published HTTP contract must equal what the code actually serves.
+      # openapi.yaml was found (2026-10-04) to declare 6 paths of which ZERO
+      # existed at runtime, while omitting all 58 real paths -- i.e. it described
+      # an API the gateway does not implement. A declared-but-absent endpoint is
+      # an *invented capability*, which is worse than a stale doc: it invites an
+      # integrator or an agent to build against a surface that was never there.
+      # This re-derives the spec from the in-process app and fails on any ghost,
+      # omission, or HTTP-method disagreement. Regenerate deliberately with
+      # `python scripts/verify_openapi_contract.py --write`; never by hand.
+      - name: Verify published OpenAPI contract matches the running gateway
+        run: python scripts/verify_openapi_contract.py
+
+      # Countable claims in the authoritative kernel list must be re-derivable.
+      # docs/spec/KERNEL-CANON.md calls itself "the single authoritative source",
+      # yet its v1.0 table had14/14 wrong line counts (audit claimed 423, actually
+      # 2,288 in __init__.py), and the total printed beneath it ("合计 6,391") did
+      # not match the sum of its own rows (6,581) -- a self-contradiction on one
+      # page of the file everything else defers to. A count nobody can recompute
+      # is indistinguishable from a guess. This re-derives every kernel row from
+      # `git show HEAD:` and fails on any drift or self-inconsistency.
+      - name: Verify countable claims in KERNEL-CANON against the committed code
+        run: python scripts/verify_doc_count_claims.py
+
       # PHASE 3.6 / T-M (F29 6 and F30 1): exactly one identity implementation may
       # be imported. Two modules both described themselves as the "single Identity
       # Authority" and neither said which one that was -- an undeclared second
