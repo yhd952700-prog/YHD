@@ -463,17 +463,28 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
-        # Local computation: route to the real RestrictedPython-backed tool --
-        # but ONLY when the goal actually yields TOOL-SHAPED input. The tool
-        # contract (tools_local._resolve_code) demands `code` / `expression` and
-        # deliberately refuses to guess Python from prose; passing the whole
-        # sentence as inputs (the previous shape) therefore failed EVERY time
-        # with an honest "needs executable code" rejection, making the
-        # capability unreachable. Extracting the expression here is what makes
-        # it real -- and, symmetrically, a vague goal now yields NO compute
-        # task instead of a task that is guaranteed to fail.
+        # Local computation: route to the real RestrictedPython-backed tool.
+        #
+        # The task's INPUTS are tool-shaped (`expression` / `code`) whenever the
+        # goal actually yields one. Previously the whole sentence was forwarded
+        # as `{"goal": ...}`, which matches none of the three shapes
+        # `tools_local._resolve_code` accepts, so EVERY compute-shaped goal
+        # failed with an honest "needs executable code" rejection and the
+        # capability was unreachable. Extracting the expression is what makes it
+        # real.
+        #
+        # When NO expression can be extracted, we still ROUTE the task -- the
+        # keyword contract is unchanged and narrowing it here would silently
+        # break goals that legitimately need a human/LLM to supply the code.
+        # Such a task keeps the previous `{"goal": ...}` shape and therefore
+        # still fails honestly at the tool, which is the correct outcome: better
+        # a visible, explained failure than a silent mis-route.
         compute_inputs = self._extract_compute(goal.natural_language)
-        if compute_inputs is not None:
+        if compute_inputs is not None or mentions((
+            "compute", "calculate", "calc", "transform", "run code", "python",
+            "evaluate", "sum", "total", "difference", "product",
+            "执行代码", "数学", "计算", "求和", "算", "差", "积", "商",
+        )):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -481,7 +492,7 @@ class GoalDecomposer:
                 description="Run a local computation",
                 capability_id="python_compute",
                 capability_namespace="kernel",
-                inputs=compute_inputs,
+                inputs=compute_inputs or {"goal": goal.natural_language},
                 scope=goal.scope,
             ))
 
