@@ -84,6 +84,32 @@ import pytest
 import pytest_asyncio
 import asyncio
 
+# Hypothesis must not keep its example database inside the work tree.
+#
+# The autouse delete guard further down rejects any unlink/rmtree under
+# REPO_ROOT, on the assumption that "inside the repo" means "a test artifact
+# somebody should not quietly delete". Hypothesis breaks that assumption: its
+# DirectoryBasedExampleDatabase lives in `.hypothesis/` at the cwd, it is
+# fully self-ignored by git, and its `save()` de-duplicates by calling
+# `Path(...).unlink()` on a stale entry. The guard fired on that and turned
+# `tests/test_policy_properties.py::test_service_principal_allow_exactly_whitelist`
+# red -- a regression this guard introduced in 1bf84c9d.
+#
+# Redirecting storage is the supported knob (hypothesis reads it at
+# configuration time) and it puts the cache under the system temp dir, which
+# the guard already allows. The alternative -- allow-listing `.hypothesis` --
+# would weaken the guard's rule for a directory the guard never reasoned about,
+# and would let a genuine "tests are deleting files in the repo" slip through
+# just because someone pointed hypothesis at the repo again.
+import os as _hyp_env  # noqa: E402
+import tempfile as _hyp_tempfile  # noqa: E402
+
+_hyp_env.environ.setdefault(
+    "HYPOTHESIS_STORAGE_DIRECTORY",
+    _hyp_tempfile.mkdtemp(prefix="liuhao_hypothesis_"),
+)
+
+
 @pytest_asyncio.fixture
 async def event_loop():
     """Create an event loop for async tests."""
