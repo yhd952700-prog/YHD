@@ -567,7 +567,7 @@ jobs:
   # already carries ~30 steps against a 15-minute budget; adding 16 more would
   # turn a timeout into a false red.
   #
-  # DELIBERATELY NOT WIRED -- 5 gates remain unwired, each with the measured
+  # DELIBERATELY NOT WIRED -- 4 gates remain unwired, each with the measured
   # reason it cannot produce a valid verdict on a GitHub-hosted runner. They
   # stay unwired on purpose: hiding them behind DIAGNOSTIC_REPORTERS or
   # `|| true` would suppress a true positive, which is the dishonesty this
@@ -575,16 +575,24 @@ jobs:
   # them -- that red entry is the signal, not a nuisance. Each has its own
   # remediation task.
   #
+  # `verify_deploy_readiness` was on this list until it was wired at the
+  # `guardrails-extended` step below, after its alembic-invocation portability
+  # defect was fixed. Kept out of the list deliberately: a stale entry here
+  # reads as "known broken" when the gate is in fact running, which is the
+  # mirror image of the false green this job exists to prevent.
+  #
   # NOTE ON FORMATTING: the names below are written WITHOUT the `.py` suffix
   # on purpose. The meta-guardrail greps the raw workflow text for a script's
-  # basename, so spelling them out in full here would make five genuinely
+  # basename, so spelling them out in full here would make four genuinely
   # unwired gates read as wired -- a false green, i.e. the exact decay this
   # job exists to prevent. Keep them suffix-less.
-  #   * verify_deployment_gate_vars     -- GENUINE FAIL (12 unresolved
-  #                                        deployment-gate variables).
-  #   * verify_deploy_readiness         -- needs an executable `alembic`
-  #                                        (`python -m alembic` -> "No module
-  #                                        named alembic.__main__").
+  #   * verify_deployment_gate_vars     -- GENUINE FAIL (runs clean, reports
+  #                                        12 findings: 7 gates genuinely unset
+  #                                        in the artifacts + 3 unclassified
+  #                                        candidates + 2 read indirectly via
+  #                                        a constant and needing human
+  #                                        confirmation). The 12 are a human
+  #                                        decision, tracked in the task list.
   #   * verify_deployed_product_closure -- needs a Docker daemon AND a
   #                                        headless browser.
   #   * verify_image_build              -- needs a Docker daemon.

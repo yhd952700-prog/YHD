@@ -49,6 +49,13 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Bootstrap sys.path so `python scripts/verify_test_collection.py` from the
+# repository root behaves like `python -m ...`. Required by the meta-guardrail in
+# tests/test_guardrail_scripts.py, which enforces it on every verify_*.py. This
+# script does not import src today; the bootstrap is here so that adding a src
+# import later cannot silently break direct invocation.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Floor for the collected test count. Lower it ONLY when a refactor provably
 # removes tests, and say so in the commit message. Never lower it to make a red
