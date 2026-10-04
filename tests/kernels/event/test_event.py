@@ -108,6 +108,19 @@ class TestDeadLetter:
         assert isinstance(dls[0].error, RuntimeError)
 
     def test_retry_dead_letter_reinvokes_handler(self, bus):
+        """A retry must REALLY re-invoke the handler — and report honestly.
+
+        What this test protects (its name) is that the retry actually
+        re-dispatches: the handler is invoked a second time. That still holds
+        and is asserted first, because it is the property that a naive
+        "return True" implementation would also satisfy.
+
+        What it then protects is the honest-reporting half: this handler raises
+        again, so a second dead letter is appended for the same event and
+        ``retry_dead_letter`` must return ``False``. The old ``is True``
+        assertion was written against the pre-fix stub and described a success
+        that never happened — the same "reports success, did nothing" shape.
+        """
         calls = {"n": 0}
 
         def boom(e):
@@ -117,13 +130,48 @@ class TestDeadLetter:
         bus.subscribe("a", boom)
         bus.publish(Event(type="a", source="s"))
         assert len(bus.get_dead_letters()) == 1
-        assert bus.retry_dead_letter(0) is True
-        # Handler was invoked again on retry.
+
+        # The handler fails again, so the re-dispatch failed: honest False.
+        assert bus.retry_dead_letter(0) is False
+        # Handler was invoked again on retry -- the behaviour the name claims.
         assert calls["n"] == 2
-        # There are now two dead letters; the original is resolved.
+        # The failed retry appended a NEW dead letter and did NOT resolve the
+        # original: nothing succeeded, so nothing may look resolved.
         all_dls = bus.get_dead_letters(unresolved_only=False)
         assert len(all_dls) == 2
+        assert all_dls[0].resolved is False
+        assert all_dls[1].resolved is False
+        # Both remain unresolved, so neither failure is hidden from the queue.
+        assert len(bus.get_dead_letters()) == 2
+
+    def test_retry_dead_letter_true_when_handler_recovers(self, bus):
+        """The success direction: once the handler stops raising, retry is True.
+
+        Without this the previous test could be satisfied by a
+        ``return False`` that never retries anything. Together the two pin
+        both directions of the contract.
+        """
+        state = {"broken": True}
+
+        def handler(e):
+            if state["broken"]:
+                raise RuntimeError("kaboom")
+
+        bus.subscribe("a", handler)
+        bus.publish(Event(type="a", source="s"))
+        assert len(bus.get_dead_letters()) == 1
+        assert bus.retry_dead_letter(0) is False, "still broken -> honest False"
+        # That failed retry appended a second dead letter for the same event.
+        assert len(bus.get_dead_letters()) == 2
+
+        state["broken"] = False
+        assert bus.retry_dead_letter(0) is True
+        all_dls = bus.get_dead_letters(unresolved_only=False)
         assert all_dls[0].resolved is True
+        # The queue is not empty: the second failure was never retried, so it
+        # must still be visible. Resolving one entry must not hide another.
+        assert len(bus.get_dead_letters()) == 1
+        assert bus.get_dead_letters()[0] is all_dls[1]
 
 
 # =====================================================================

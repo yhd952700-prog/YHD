@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 import uuid
 import os
 import re
@@ -269,16 +269,165 @@ class GoalDecomposer:
             return {"path": m.group("path"), "content": content}
         return None
 
+    #: Multi-word keywords, kept as phrases so word-boundary matching applies to
+    #: the whole phrase rather than to each word independently.
+    _MULTIWORD_KEYWORDS = ("run code",)
+
+    #: An explicitly requested numeric/arithmetic computation, e.g.
+    #: "calculate the sum of 2 and 3" / "compute 2+3" / "求 2*3 的值".
+    #: Matched ONLY when the goal names a calculation AND carries an expression
+    #: built from digits and arithmetic operators. Anything vaguer produces no
+    #: compute task at all -- inventing an expression from prose would be the
+    #: "reports success without knowing what to do" failure mode, and
+    #: ``tools_local._resolve_code`` deliberately refuses to guess from prose
+    #: too. Both sides must agree on that contract, so both refuse.
+    _ARITH_EXPR = re.compile(
+        r"(?P<expr>[-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+"
+        r"|\(\s*[-+*/%\d.\s()]+\))"
+    )
+    #: "the sum of 2 and 3" / "sum 2 and 3" -- the most natural English phrasing
+    #: for an arithmetic request, and one the operator-expression regex alone
+    #: cannot see. Requires BOTH a number AND the word "and", so ordinary prose
+    #: containing two unrelated numbers is not turned into an expression.
+    _WORD_ARITH = re.compile(
+        r"(?:sum|total|product|difference|plus|minus|times|divided\s+by|"
+        r"divide|add(?:ition)?|multiply|subtract|averag\w+|"
+        r"求和|总和|差|积|商|加|乘|减|除|平均|"
+        r"加上|减去|乘以|除以)"
+        r"[^0-9\-+*/%]{0,24}?"
+        r"(?P<a>[-+]?\d+(?:\.\d+)?)"
+        r"[^0-9\-+*/%]{0,12}?"
+        r"(?:and|to|by|加|乘|减|除以|加上|减去|除)"
+        r"\s*"
+        r"(?P<b>[-+]?\d+(?:\.\d+)?)",
+        re.IGNORECASE,
+    )
+    _COMPUTE_REQUEST = re.compile(
+        r"\b(?:calculat\w*|comput\w*|evaluat\w+|sum|total|difference|product|"
+        r"arithmetic|math\b|multiply|subtract|divide|averag\w+|"
+        r"计算|求和|差|积|商|算|数学)",
+        re.IGNORECASE,
+    )
+    _CODE_DIRECTIVE = re.compile(
+        r"(?:python|code)\s*:\s*(?P<code>.+)", re.IGNORECASE | re.DOTALL
+    )
+
+    @classmethod
+    def _extract_compute(cls, text: str) -> Optional[Dict[str, Any]]:
+        """Return ``{"expression": ...}`` or ``{"code": ...}`` for a compute goal.
+
+        Two accepted shapes, in priority order:
+
+        1. an explicit ``python:`` / ``code:`` directive -- passed through as
+           ``code`` verbatim, exactly what ``tools_local._resolve_code`` wants;
+        2. a stated arithmetic request (``calculate`` / ``计算`` / ...) that
+           carries a well-formed numeric expression -- passed as ``expression``.
+
+        Returns ``None`` when neither shape is present, so a vague goal such as
+        "run some code" yields NO compute task rather than a fabricated one.
+        """
+        m = cls._CODE_DIRECTIVE.search(text)
+        if m:
+            return {"code": m.group("code").strip()}
+
+        if not cls._COMPUTE_REQUEST.search(text):
+            return None
+
+        # "sum of 2 and 3" -> the operator is in the WORDS, not the digits.
+        w = cls._WORD_ARITH.search(text)
+        if w:
+            verb = w.group(0).lower()
+            a, b = w.group("a"), w.group("b")
+            if any(k in verb for k in ("averag", "平均")):
+                # Average is (a+b)/2, NOT a sum. Getting this wrong would
+                # return a confidently WRONG number, which is worse than
+                # refusing -- so it is handled explicitly.
+                expr = f"(({a}+{b})/2)"
+            elif any(k in verb for k in ("difference", "minus", "subtract",
+                                         "减去", "差")):
+                expr = f"({a}-{b})"
+            elif any(k in verb for k in ("times", "multiply", "product",
+                                         "乘", "积")):
+                expr = f"({a}*{b})"
+            elif any(k in verb for k in ("divided", "divide", "除以", "商")):
+                expr = f"({a}/{b})"
+            else:
+                expr = f"({a}+{b})"
+            return {"expression": expr}
+
+        e = cls._ARITH_EXPR.search(text)
+        if not e:
+            return None
+        return {"expression": re.sub(r"\s+", "", e.group("expr"))}
+
+    @classmethod
+    def _mentions(cls, text: str, keywords: Iterable[str]) -> bool:
+        """True iff any keyword appears in ``text`` as a **whole word/phrase**.
+
+        Why this is not ``any(kw in text for kw in keywords)``:
+        substring matching cannot tell a keyword from a word that merely
+        contains it, so it invented work the user never asked for. Measured on
+        the real decomposer before this fix::
+
+            "write a file named replan.txt containing done"
+                -> ['Plan', 'WriteFile', 'WriteChecksum']
+            "write a file named airplane.txt containing x"
+                -> ['Plan', 'WriteFile', 'WriteChecksum']
+
+        ``replan``/``airplane`` contain the substring "plan", so a phantom
+        ``Plan`` task (``capability_id="execution_pipeline"``) was appended to a
+        pure file-write goal. Two things then went wrong at once:
+
+        1. **Intent drift** -- the plan executed a capability the user never
+           asked for. The goal was not what the user said it was.
+        2. **A false terminal state** -- no local tool serves
+           ``execution_pipeline``, so that phantom task always fails, the
+           context lands in ``PARTIAL`` with a failed task, and the runtime
+           reports ``AgentRunState.FAILED`` even though the file the user asked
+           for was written correctly. A goal that genuinely succeeded was
+           reported as a failure.
+
+        ASCII keywords are matched on word boundaries. CJK keywords have no word
+        boundaries, so they keep substring semantics (Chinese has no spaces);
+        multi-word ASCII keywords are matched as the whole phrase.
+        """
+        for kw in keywords:
+            if not kw:
+                continue
+            # CJK (and any other non-ASCII) keyword: substring is the best
+            # available test, since \b is defined against [a-zA-Z0-9_] only.
+            if any(ord(ch) > 0x7F for ch in kw):
+                if kw in text:
+                    return True
+                continue
+            pattern = "|".join(
+                re.escape(part)
+                for part in kw.split()
+            )
+            if re.search(rf"(?<![A-Za-z0-9_])(?:{pattern})(?![A-Za-z0-9_])", text):
+                return True
+        return False
+
     def decompose(self, goal: Goal) -> List[Task]:
         """Decompose goal into tasks using capability registry."""
         # This is a simplified decomposition - in production would use LLM
         tasks = []
 
-        # Analyze goal for keywords to determine required capabilities
+        # Analyze goal for keywords to determine required capabilities.
+        # Lower-cased for matching only; the original text is what tasks carry.
         goal_lower = goal.natural_language.lower()
+        # A file path in the goal is a literal ARGUMENT, not an instruction.
+        # "write a file named plan.txt" asks for a file, not for a plan, so the
+        # path is masked out before keyword matching -- otherwise the filename
+        # alone would conjure a Plan task the user never mentioned.
+        file_write_inputs = self._extract_file_write(goal.natural_language)
+        search_text = goal_lower
+        if file_write_inputs and file_write_inputs.get("path"):
+            search_text = goal_lower.replace(file_write_inputs["path"].lower(), " ")
+        mentions = lambda kws: self._mentions(search_text, kws)  # noqa: E731
 
         # Example decomposition patterns
-        if any(kw in goal_lower for kw in ["search", "find", "lookup", "query"]):
+        if mentions(("search", "find", "lookup", "query")):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -290,7 +439,7 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
-        if any(kw in goal_lower for kw in ["plan", "schedule", "organize"]):
+        if mentions(("plan", "schedule", "organize")):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -302,7 +451,7 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
-        if any(kw in goal_lower for kw in ["remember", "store", "save", "memory"]):
+        if mentions(("remember", "store", "save", "memory")):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -314,11 +463,17 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
-        # Local computation: route to the real RestrictedPython-backed tool.
-        if any(kw in goal_lower for kw in [
-            "compute", "calculate", "calc", "transform", "run code", "python",
-            "evaluate", "执行代码", "数学", "计算", "求和", "算",
-        ]):
+        # Local computation: route to the real RestrictedPython-backed tool --
+        # but ONLY when the goal actually yields TOOL-SHAPED input. The tool
+        # contract (tools_local._resolve_code) demands `code` / `expression` and
+        # deliberately refuses to guess Python from prose; passing the whole
+        # sentence as inputs (the previous shape) therefore failed EVERY time
+        # with an honest "needs executable code" rejection, making the
+        # capability unreachable. Extracting the expression here is what makes
+        # it real -- and, symmetrically, a vague goal now yields NO compute
+        # task instead of a task that is guaranteed to fail.
+        compute_inputs = self._extract_compute(goal.natural_language)
+        if compute_inputs is not None:
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
@@ -326,7 +481,7 @@ class GoalDecomposer:
                 description="Run a local computation",
                 capability_id="python_compute",
                 capability_namespace="kernel",
-                inputs={"goal": goal.natural_language},
+                inputs=compute_inputs,
                 scope=goal.scope,
             ))
 
@@ -334,7 +489,7 @@ class GoalDecomposer:
         # Inputs are TOOL-SHAPED (path/content), not the whole sentence -- the
         # previous "pass the goal through as {"goal": ...}" shape is why a
         # realistic goal could never actually execute.
-        file_write_inputs = self._extract_file_write(goal.natural_language)
+        # (``file_write_inputs`` was already extracted above, for path masking.)
         if file_write_inputs is not None:
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],

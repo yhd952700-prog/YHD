@@ -158,16 +158,25 @@ def test_execute_replan_false_when_unrecoverable():
     """execute_replan must NEVER return True while failing."""
     from types import SimpleNamespace
     from src.kernels.evaluation import Evaluator, ReplanRequest
+    from src.ai.agent_runtime import AgentRunState
 
     # Case 1: re-execution fails -> honest False.
-    def _fail_exec(gid: str):
-        return SimpleNamespace(state="failed")
-
-    ev = Evaluator(replan_executor=_fail_exec)
-    req = ReplanRequest(goal_id="fail-gid")
-    ev._replan_requests.append(req)
-    assert ev.execute_replan(req.id) is False
-    assert req.status != "executed"
+    # BOTH shapes are exercised on purpose. The bare string is what the test
+    # double used to return; ``AgentRunState.FAILED`` is what the real runtime
+    # actually returns, and it is a str-mixin Enum whose ``str()`` is
+    # "AgentRunState.FAILED". A check written as ``str(state) == "failed"``
+    # therefore rejected the double and waved the real failure through --
+    # execute_replan returned True for a goal that failed again and did no
+    # work. Passing only the string kept that invisible.
+    for label, state in (("bare string", "failed"),
+                         ("real AgentRunState", AgentRunState.FAILED),
+                         ("cancelled by human", AgentRunState.CANCELLED)):
+        ev = Evaluator(replan_executor=lambda gid, _s=state: SimpleNamespace(state=_s))
+        req = ReplanRequest(goal_id="fail-gid")
+        ev._replan_requests.append(req)
+        assert ev.execute_replan(req.id) is False, f"{label} must report failure"
+        assert req.status != "executed", f"{label} must not mark executed"
+        assert req.executed_at is None, f"{label} must not stamp executed_at"
 
     # Case 2: no runtime wired -> cannot re-execute -> honest False.
     ev2 = Evaluator()  # no executor
@@ -175,6 +184,67 @@ def test_execute_replan_false_when_unrecoverable():
     ev2._replan_requests.append(req2)
     assert ev2.execute_replan(req2.id) is False
     assert req2.status != "executed"
+
+    # Case 3: an unrecognised state must fail closed rather than be waved
+    # through as success -- "not FAILED" is not the same claim as "succeeded".
+    ev3 = Evaluator(replan_executor=lambda gid: SimpleNamespace(state="some-new-state"))
+    req3 = ReplanRequest(goal_id="unknown-gid")
+    ev3._replan_requests.append(req3)
+    assert ev3.execute_replan(req3.id) is False
+    assert req3.status != "executed"
+
+
+def test_execute_replan_real_runtime_failure_is_not_success():
+    """End-to-end: a goal that FAILS for real must not be reported as replanned.
+
+    This is the regression test for the P0 "reports success, did nothing"
+    defect. It wires the genuine ``AgentRuntime`` and drives it with a
+    decomposer whose task can never succeed (the write escapes the workspace
+    root and is refused by the filesystem adapter), so the runtime really
+    returns ``AgentRunState.FAILED``. No test double is involved anywhere on
+    the path that decides the verdict -- which is exactly why the double-based
+    test above missed the defect.
+    """
+    from src.kernels.evaluation import Evaluator, ReplanRequest
+    from src.kernels.execution import Task
+    from src.ai.agent_runtime import AgentRuntime, AgentRunState
+
+    class _ImpossibleDecomposer:
+        def decompose(self, goal):
+            return [
+                Task(
+                    id="t1", goal_id=goal.id, name="WriteFile:escape.txt",
+                    description="write outside the workspace root",
+                    capability_id="file_write", capability_namespace="kernel",
+                    inputs={"path": "../escaped.txt", "content": "x"},
+                    scope=goal.scope,
+                )
+            ]
+
+    counted, _ = _counted_lcore()
+    runtime = AgentRuntime(
+        scope="L1", capability_executor=counted,
+        journal=ExecutionJournal(os.path.join(_TMP, "replan_fail_journal.db")),
+    )
+    runtime.engine.decomposer = _ImpossibleDecomposer()
+
+    # The real run genuinely fails.
+    first = runtime.run_goal("do the impossible", goal_id="G-FAIL", persist=False)
+    assert first.state == AgentRunState.FAILED, first.state
+    assert first.context is not None and first.context.failed_tasks
+
+    ev = Evaluator()
+    ev.set_replan_executor(runtime._replan_for_evaluator)
+    req = ReplanRequest(goal_id="G-FAIL")
+    ev._replan_requests.append(req)
+
+    assert ev.execute_replan(req.id) is False, (
+        "a re-run that FAILED again must not be reported as a successful replan"
+    )
+    assert req.status != "executed"
+    assert req.executed_at is None
+    # And nothing was written: the refusal was real, not just reported.
+    assert not os.path.exists(os.path.join(os.path.dirname(_TMP), "escaped.txt"))
 
 
 def test_retry_dead_letter_honest():

@@ -25,6 +25,43 @@ import threading
 from src.kernels._crosscutting import kernel_action
 
 
+#: The ONLY re-execution state that counts as a successful replan.
+#:
+#: Deliberately a whitelist. A blacklist ("anything that is not FAILED") cannot
+#: distinguish "succeeded" from "was cancelled by a human" or "is a state this
+#: kernel has never heard of", and conflating those is how a re-plan reports
+#: success while nothing was achieved.
+REPLAN_SUCCESS_STATE = "completed"
+
+
+def _state_value(state: Any) -> Optional[str]:
+    """Reduce a run-state to its comparable string, or ``None`` if unknowable.
+
+    ``AgentRunResult.state`` is ``AgentRunState``, a ``str``-mixin Enum. Two
+    facts make the obvious comparison wrong in opposite directions:
+
+    * ``str(AgentRunState.FAILED)`` is ``"AgentRunState.FAILED"`` because
+      ``Enum`` supplies ``__str__`` — so ``str(state) == "failed"`` never
+      matches a real runtime failure;
+    * ``AgentRunState.FAILED == "failed"`` *is* ``True`` thanks to the ``str``
+      mixin — so a direct ``==`` happens to work but silently depends on the
+      mixin, and would break for a plain ``Enum``.
+
+    Reading ``.value`` when present and comparing the raw value otherwise makes
+    both shapes agree and keeps this kernel from importing the ``ai`` layer
+    (layering stays clean). Anything without a usable value returns ``None``,
+    which the caller's whitelist comparison treats as failure — fail closed.
+    """
+    if state is None:
+        return None
+    value = getattr(state, "value", None)
+    if isinstance(value, str):
+        return value
+    if isinstance(state, str):
+        return state
+    return None
+
+
 class EvaluationOutcome(str, Enum):
     """Evaluation outcome categories."""
     SUCCESS = "success"          # All criteria met
@@ -540,7 +577,7 @@ class Evaluator:
         Previously this only flipped ``r.status = "executed"`` (a status-flip
         stub that never re-ran the goal). Now it routes to ``_replan_executor``
         (set by :meth:`set_replan_executor`, normally wired to
-        ``AgentRuntime.replan``), and only marks the request executed — and
+        ``AgentRuntime.replan`), and only marks the request executed — and
         returns ``True`` — when the re-execution genuinely succeeds. If no
         executor is wired, or the re-execution fails, it returns ``False``
         honestly and leaves the status untouched (never claims success while
@@ -565,11 +602,28 @@ class Evaluator:
             except Exception:
                 return False
 
-            # Success = the re-run did not end in FAILED. ``AgentRunResult.state``
-            # is a str-Enum, so comparing to the string "failed" is robust without
-            # importing the ai layer (keeps this kernel layering-clean).
-            state = getattr(result, "state", "failed")
-            if str(state) == "failed":
+            # Success is a WHITELIST, not a blacklist.
+            #
+            # The previous test was ``str(state) == "failed"`` with a comment
+            # claiming a str-Enum compares robustly. It does not:
+            # ``str(AgentRunState.FAILED)`` is ``"AgentRunState.FAILED"`` (Enum
+            # defines ``__str__``), while ``AgentRunState.FAILED == "failed"`` is
+            # True (str mixin). So the real runtime's FAILED result sailed past
+            # the check and ``execute_replan`` returned True with
+            # ``status="executed"`` for a goal that failed again and did no
+            # work -- the exact "reports success, did nothing" class this method
+            # was written to prevent. The regression test missed it because it
+            # fed a bare string ``"failed"``, never the enum the runtime
+            # actually returns.
+            #
+            # A blacklist also cannot express the other half of the contract:
+            # CANCELLED means a human stopped the goal, so re-running it would
+            # override a sovereign decision, and it must not read as success.
+            # Only an explicit COMPLETED -- extracted via ``.value`` so a
+            # str-Enum and a plain string agree -- counts, and anything this
+            # kernel does not recognise fails closed.
+            state = getattr(result, "state", None)
+            if _state_value(state) != REPLAN_SUCCESS_STATE:
                 return False
 
             target.status = "executed"

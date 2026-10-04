@@ -279,6 +279,27 @@ class TestResultAndHistories:
         assert evaluator.apply_feedback("nope") is False
 
     def test_replan_lifecycle(self, evaluator):
+        """The happy path must re-execute through a real executor.
+
+        The executor is wired here (it is not a no-op in the kernel): with the
+        fix in ``execute_replan``, an evaluator with no executor honestly
+        returns ``False``, so leaving the fixture unwired would have made this
+        test assert the *failure* contract under the happy path's name. The
+        ``is True`` assertion is kept because it is the behaviour that matters:
+        a replan whose re-run genuinely completes reports success.
+        """
+        completed = {"n": 0}
+
+        class _Completed:
+            state = "completed"
+
+        def _executor(goal_id: str):
+            completed["n"] += 1
+            assert goal_id == "g1", goal_id
+            return _Completed()
+
+        evaluator.set_replan_executor(_executor)
+
         expected = {f"k{i}": i for i in range(10)}
         evaluator.evaluate(
             goal_with(expected), {}, criteria=lenient_criteria(),
@@ -288,10 +309,32 @@ class TestResultAndHistories:
         assert evaluator.approve_replan(replan.id) is True
         assert replan.status == "approved"
         assert evaluator.execute_replan(replan.id) is True
+        # The success must come from a real re-run, not a status flip.
+        assert completed["n"] == 1, "executor must actually be invoked once"
         assert replan.status == "executed"
         assert replan.executed_at is not None
         assert evaluator.approve_replan("nope") is False
         assert evaluator.execute_replan("nope") is False
+
+    def test_replan_without_executor_is_honest_failure(self, evaluator):
+        """No executor wired => re-execution is impossible => honest False.
+
+        The companion to ``test_replan_lifecycle``: that test proves a real
+        re-run reports success, this one proves the *absence* of a re-run is
+        never dressed up as one. Together they keep both directions honest, so
+        neither assertion can be satisfied by a stub.
+        """
+        evaluator.evaluate(
+            goal_with({f"k{i}": i for i in range(10)}), {},
+            criteria=lenient_criteria(),
+        )
+        replan = evaluator.get_replan_requests()[0]
+        evaluator.approve_replan(replan.id)
+        assert replan.status == "approved"
+        assert evaluator.execute_replan(replan.id) is False
+        # Status must be left untouched -- not advanced to "executed".
+        assert replan.status == "approved", replan.status
+        assert replan.executed_at is None
 
     def test_no_replan_on_success(self, evaluator):
         evaluator.evaluate(
