@@ -155,6 +155,18 @@ export interface AnalyticsPayload {
 export interface HealthCheckEntry {
   status?: string
   error?: string
+  /**
+   * 审计证据链判据（`/v1/ready` 的 `checks.audit_store`）。
+   *
+   * 与 `status` 是**两个不同的问题**，不可互相替代：
+   *   - `status` = 可用性：这份依赖能不能提供服务（决定 readiness 是否 503）；
+   *   - `evidence_status` = 证据完整性：哈希链是否真被重新推导过。
+   *
+   * 曾经只有 `status` 且它被硬编码为 `healthy`，于是 `errors` 说"审计链不完整"
+   * 而 `checks` 说"全好"—— 同一份 payload 自相矛盾。分字段后两者可以同时为真。
+   */
+  availability?: 'available' | 'unavailable'
+  evidence_status?: 'verified' | 'unverified' | 'broken' | 'unknown'
   [key: string]: unknown
 }
 
@@ -165,8 +177,17 @@ export interface HealthPayload {
   timestamp?: number
 }
 
+/** `/v1/ready` 的就绪载荷。
+ *
+ * 此前这里只声明了 `status?: string` —— 一个会让调用方以为"就绪载荷只有一句话"的
+ * 契约：既没有 `checks`（机器/KPI 真正读的那份），也没有 `errors`（给人看的那份）。
+ * 两个字段都补上，前端才有路径消费审计证据链判据。
+ */
 export interface ReadyPayload {
   status?: string
+  checks?: Record<string, HealthCheckEntry>
+  errors?: string[]
+  timestamp?: number
 }
 
 export interface EnforcementPayload {

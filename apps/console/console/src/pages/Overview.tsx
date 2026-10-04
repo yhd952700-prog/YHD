@@ -60,7 +60,20 @@ export function Overview({ query }: { query: string }) {
     const names = Object.keys(checks)
     if (names.length === 0) return null
     const healthy = names.filter((name) => checks[name]?.status === 'healthy').length
-    return { healthy, total: names.length, ratio: healthy / names.length }
+    return {
+      healthy,
+      total: names.length,
+      ratio: healthy / names.length,
+      // 审计证据链的判据独立于可用性。分母计入它，这样"依赖全绿但证据链从未被
+      // 重新推导"不会显示成 100%——那正是本缺陷在控制台上的原样呈现。
+      auditEvidence: checks.audit_store?.evidence_status as
+        | 'verified'
+        | 'unverified'
+        | 'broken'
+        | 'unknown'
+        | undefined,
+      auditUncovered: checks.audit_store?.uncovered_events as number | undefined,
+    }
   }, [ready.data])
 
   return (
@@ -95,9 +108,17 @@ export function Overview({ query }: { query: string }) {
           <Kpi
             label="系统健康度"
             value={health ? `${(health.ratio * 100).toFixed(0)}%` : null}
-            foot={health ? `${health.healthy}/${health.total} 项依赖正常` : '来自就绪探针'}
+            foot={
+              health
+                ? health.auditEvidence && health.auditEvidence !== 'verified'
+                  ? `${health.healthy}/${health.total} 项依赖正常 · 证据链 ${
+                      health.auditEvidence === 'broken' ? '已断裂' : '未重新推导'
+                    }（${health.auditUncovered ?? '?'} 条事件未覆盖）`
+                  : `${health.healthy}/${health.total} 项依赖正常`
+                : '来自就绪探针'
+            }
             error={ready.error}
-            tone={health && health.ratio < 1 ? 'warn' : undefined}
+            tone={health && (health.ratio < 1 || (health.auditEvidence && health.auditEvidence !== 'verified')) ? 'warn' : undefined}
           />
         </div>
       </div>

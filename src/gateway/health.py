@@ -118,41 +118,99 @@ async def readiness_probe(request: Request) -> JSONResponse:
         checks["rate_limiter"] = {"status": "unhealthy", "error": str(e)}
 
     # CRIT-1C / D17 (Layer 1) + C2 observability: surface audit write failures
-    # AND verification coverage as observable signals. Only the store
-    # *unavailability* marks it unhealthy (LOW tier may still keep running); the
-    # failure *count* and verification *coverage* are reported so operators can
-    # see "Evidence=missing" / "chain not re-derived" without it taking the
-    # service down. Coverage being incomplete does NOT flip readiness to 503
-    # (there is no periodic verifier mandated yet, so a populated-but-unverified
-    # deployment must not self-terminate); it is reported in `checks` + `errors`
-    # so it is visible instead of hidden behind a green light.
+    # AND verification coverage as observable signals.
+    #
+    # TWO DISTINCT QUESTIONS, TWO DISTINCT FIELDS. Conflating them is what
+    # produced a self-contradictory payload: this block used to append "Audit
+    # chain verification incomplete" to `errors` while leaving `status` at
+    # "healthy", so the same object said the chain was broken AND fine, and the
+    # console -- which counts `checks[*].status` -- reported 100% health behind
+    # HTTP 200. `errors` is prose for humans; `checks` is what machines and KPIs
+    # read. They must never disagree.
+    #
+    #   availability     -- can the store be reached and read at all?
+    #   evidence_status  -- has the chain actually been re-derived?
+    #
+    # `evidence_status` has three honest values:
+    #   "verified"    -- checkpoints cover the tail, rooted at genesis.
+    #   "unverified"  -- there are events but NO checkpoint has ever been
+    #                    written. This is the steady state of every deployment
+    #                    today, because nothing in production calls
+    #                    verify_incremental/verify_rolling (the /v1/audit/verify
+    #                    endpoint runs verify_integrity(), which is read-only and
+    #                    writes no checkpoint). It is an honest gap in evidence,
+    #                    NOT a broken chain, and it must NOT gate readiness:
+    #                    flipping /v1/ready to 503 here would make every
+    #                    instance permanently un-ready and K8s would pull the
+    #                    whole deployment out of rotation, with no mechanism in
+    #                    place to ever advance the coverage back.
+    #   "broken"      -- checkpoints EXIST but no longer cover the history
+    #                    (a gap, a non-genesis start, or a regression). That is
+    #                    a real integrity failure, so it DOES degrade the gate.
     try:
         from ..kernels.audit import audit_stats, audit_verification_coverage
 
         astats = audit_stats()
         cov = audit_verification_coverage()
-        incomplete = (cov.get("uncovered_events", 0) > 0) or (
-            not cov.get("rooted_at_genesis", True)
-        )
+        uncovered = cov.get("uncovered_events", 0) or 0
+        rooted = cov.get("rooted_at_genesis", True)
+        # `checkpoint_count` is what separates "never verified" from "coverage
+        # regressed". Both look identical in uncovered_events alone.
+        checkpoints = cov.get("checkpoint_count")
+        incomplete = (uncovered > 0) or (not rooted)
+
+        if not incomplete:
+            evidence_status = "verified"
+        elif checkpoints is None:
+            # Coverage reporter that does not publish checkpoint_count: we
+            # cannot prove a regression, so do not invent one.
+            evidence_status = "unverified"
+        elif checkpoints > 0:
+            # It WAS covered and now is not -> integrity regression.
+            evidence_status = "broken"
+        else:
+            # Never verified. Honest gap, not a proven break.
+            evidence_status = "unverified"
+
         checks["audit_store"] = {
-            "status": "healthy",
+            # Availability: the store opened and answered. Reported separately
+            # so a reachable-but-unverified store is never read as a verdict on
+            # the evidence.
+            "availability": "available",
+            # Evidence integrity: the three honest values above.
+            "evidence_status": evidence_status,
+            "status": "degraded" if evidence_status == "broken" else "healthy",
             "total_events": astats.get("total_events", 0),
             "failures": astats.get("failures", 0),
             "coverage_ratio": cov.get("coverage_ratio"),
-            "uncovered_events": cov.get("uncovered_events"),
+            "uncovered_events": uncovered,
             "covered_through": cov.get("covered_through"),
             "newest_verified_at": cov.get("newest_verified_at"),
-            "rooted_at_genesis": cov.get("rooted_at_genesis"),
+            "rooted_at_genesis": rooted,
         }
         if incomplete:
+            # Kept verbatim in spirit: this line is for humans and is NOT
+            # weakened. It now names which of the two cases it is.
             errors.append(
                 "Audit chain verification incomplete: "
-                f"{cov.get('uncovered_events')} events uncovered, "
-                f"rooted_at_genesis={cov.get('rooted_at_genesis')}"
+                f"{uncovered} events uncovered, "
+                f"rooted_at_genesis={rooted} "
+                f"(evidence_status={evidence_status}"
+                + (
+                    f", {checkpoints} checkpoint(s) exist so coverage regressed"
+                    if checkpoints
+                    else ", no checkpoint has ever been written"
+                )
+                + ")"
             )
     except Exception as e:
         errors.append(f"Audit Store: {str(e)}")
-        checks["audit_store"] = {"status": "unhealthy", "error": str(e)}
+        checks["audit_store"] = {
+            "availability": "unavailable",
+            "evidence_status": "unknown",
+            "status": "unhealthy",
+            "error": str(e),
+        }
 
     # P0-3 (boss decision 2026-09-22): the human-identity registry integrity
     # posture must be OBSERVABLE at the readiness edge. When a registry is in

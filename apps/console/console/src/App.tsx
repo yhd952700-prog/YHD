@@ -383,6 +383,30 @@ function App() {
       })
     }
 
+    // 2b) 审计证据链判据。可用性(availability)与证据完整性(evidence_status)是两个
+    // 不同的问题：store 打得开≠ 哈希链被重新推导过。以前只有 availability 这一档，
+    // 于是"审计链不完整"这条致命事实被"依赖全绿 + 健康度 100%"盖住。
+    // 这不是装饰：HC-01 的证据链不可信时，最需要人介入的时刻不能表现得最健康。
+    const audit = checks.audit_store
+    const evidence = audit?.evidence_status
+    if (evidence && evidence !== 'verified' && evidence !== 'unknown') {
+      const uncovered = typeof audit?.uncovered_events === 'number' ? audit.uncovered_events : null
+      items.push({
+        id: 'ready-audit-evidence',
+        tone: evidence === 'broken' ? 'danger' : 'warn',
+        title:
+          evidence === 'broken'
+            ? '审计证据链覆盖已断裂'
+            : '审计证据链尚未被重新推导',
+        detail: [
+          evidence === 'broken'
+            ? `曾有 checkpoint，但覆盖不再完整（${uncovered ?? '?'} 条事件未被覆盖）——这是完整性回归。`
+            : `有 ${uncovered ?? '?'} 条审计事件，但没有任何 checkpoint 覆盖过它们（生产尚未接入周期性验证器）。`,
+          '服务本身仍可正常受理流量，此项不影响就绪探针。',
+        ].join(''),
+      })
+    }
+
     // 3) provider 配置：未配置不是故障，但会直接决定对话/知识检索能不能用
     const providers = roster.data?.providers
     if (providers) {
