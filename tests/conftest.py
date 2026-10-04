@@ -182,6 +182,47 @@ def _isolate_audit_store(tmp_path_factory):
         os.environ["AUDIT_DB_PATH"] = previous
 
 
+@pytest.fixture(autouse=True)
+def _isolate_alert_store(tmp_path, monkeypatch):
+    """隔离告警 store 单例，使每个用例的 ``LIUHAO_ALERTS_STORE_PATH`` 真正生效。
+
+    这是 F3 的根因修复。此前只有 3 个测试文件复位了告警单例，另外 8 处
+    （``test_alerts_surface`` / ``test_events_surface`` / ``test_plugins_surface`` /
+    ``test_projects_surface`` / ``test_trust_surface`` 等）只是 monkeypatch 了环境变量。
+    但 ``src/observability/alerts/store.py`` 的 ``get_alert_store()`` 是模块级单例
+    ``_default_store``：它只在第一次调用时按*当时*的环境变量构造 ``AlertStore``，
+    之后永不重新解析。于是只要会话里**任何一个**先跑的测试构造过该单例，后续测试
+    即使把路径指向 ``tmp_path``，``/v1/alerts`` 读面与 ``emit_alert`` 写面拿到的仍是
+    那份绑定到默认（生产）路径的 store。
+
+    取证（``D:\\cache\\temp\\probe_f3_alert_singleton.py``，零污染版，用仿部署目录）：
+    单例先绑定后 ``setenv`` 被完全忽略，``emit_alert`` 落在 ``tmp`` 之外。
+    已实测确认的**真实**影响是打开默认库即触发一次 ``_save()``、刷新
+    ``saved_at``（实测只改这一个字段，``alerts``/``rules``/``hash_chain`` 逐字节不变）；
+    至于测试告警是否真的会堆进默认库，取决于会话中单例被污染的时机——风险真实，
+    但本机当前 136 条 ``execution_kernel`` 告警经 ``fired_at`` 核验属更早的真实
+    执行失败（10-02 09:51~11:17、10-04 09:06），**不是**测试产物，此处不作夸大断言。
+
+    而 ``tests/gateway/test_alerts_surface.py::test_alerts_honest_empty_when_no_failures``
+    断言 ``count == 0`` 却从不断言"是哪一个 store 应答"，因此是一个**假通过**：它看到
+    的 0 只反映隔离，不证明真实告警不存在。修复后实测（``test_f3_bidirectional_proof.py``）
+    经 ``emit_alert`` 写入一条真实告警后，``/v1/alerts`` 的 ``count`` 由 0 变 1 ——
+    该断言第一次具备失败能力。
+
+    本 fixture 在每个用例前后都把 ``_default_store`` 戳回 ``None``，并把路径重定向到
+    该用例的 ``tmp_path``。这是测试基础设施修复：不改生产默认值、不削弱告警语义、不改
+    任何测试断言——只是让每个测试真正拥有一个自己的告警 store。
+    """
+    import src.observability.alerts.store as store_mod
+
+    monkeypatch.setenv(
+        store_mod.ALERTS_STORE_PATH_ENV, str(tmp_path / "alerts.json")
+    )
+    monkeypatch.setattr(store_mod, "_default_store", None)
+    yield
+    monkeypatch.setattr(store_mod, "_default_store", None)
+
+
 # ==================== Console auth (bearer token) ====================
 
 
