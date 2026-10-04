@@ -64,7 +64,7 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 | 8 | security | LHX-C-012 | **REAL PRODUCT CAPABILITY** ⚠ overclaim | gates every authenticated request |
 | 9 | audit | LHX-C-013 | **REAL PRODUCT CAPABILITY** | `GET/POST /v1/audit/*` (5 routes) |
 | 10 | resource | LHX-C-007 | **REAL (indirect)** | none of its own |
-| 11 | network | LHX-C-009 | **PRIMITIVE ONLY** ⚠ overclaim | none |
+| 11 | network | LHX-C-009 | **REAL (indirect)** | `/v1/network/messages` read-only (2026-10-04); A2A/MCP/gRPC adapters still absent |
 | 12 | trust | LHX-C-010 | **REAL (indirect)** | `/v1/trust/{entity_id}` read-only + hire gate (2026-10-21) |
 | 13 | event | LHX-C-008 | **REAL (indirect)** | `/v1/events` read-only (2026-10-20) |
 | 14 | plugin | LHX-C-014 | **REAL PRODUCT CAPABILITY** | `/v1/plugins` (2026-10-20) |
@@ -74,13 +74,13 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 **Counts (the 14 registered kernels):** `REAL PRODUCT CAPABILITY` **11**
 (8 direct + 2 indirect-only-surface: memory, context/capability/resource counted as
 real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page, +
-trust now on a real decision path with a read surface), `PRIMITIVE ONLY` **1** (network),
+trust + network now on real decision paths with read surfaces), `PRIMITIVE ONLY` **0**,
 `STUB / PARTIAL` **0**.
 
 Split precisely:
-- **REAL, user-observable outcome: 9** — identity, execution, evaluation, policy, security, audit, plugin, event, trust
+- **REAL, user-observable outcome: 10** — identity, execution, evaluation, policy, security, audit, plugin, event, trust, network
 - **REAL, meaningful work but no surface of its own: 4** — memory, context, capability, resource
-- **PRIMITIVE ONLY: 1** — network
+- **PRIMITIVE ONLY: 0**
 - **STUB / PARTIAL: 0**
 
 ---
@@ -381,41 +381,42 @@ state is invisible and "enforce limits" is unverifiable by a user.
 
 ---
 
-## 13. network (LHX-C-009) — PRIMITIVE ONLY ⚠ OVERCLAIMED
+## 13. network (LHX-C-009) — REAL (indirect); read surface added 2026-10-04
 
-### The registry claim is false (confirmed still false)
+### The registry overclaim — now corrected
 
-`capability-registry.yaml:223`:
-> `- NetworkBus with routing, protocol adapters (A2A, MCP, gRPC, HTTP, WS, Internal)`
-
-**Six protocols are listed. Three adapters exist.** Adapter classes in
-`src/kernels/network/__init__.py`:
+`capability-registry.yaml:223` listed six protocols (A2A, MCP, gRPC, HTTP, WS,
+Internal). **Three adapters exist** in `src/kernels/network/__init__.py`:
 - `:231` `class InternalAdapter` — registered `:477`
 - `:265` `class HTTPAdapter` — registered `:485`
 - `:358` `class WebSocketAdapter` — registered `:493`
 
 `A2A`, `MCP`, `GRPC` are declared in `ProtocolType` (`:47`) but **have no adapter
-registered**. The kernel's own docstring says so at `:19-22`:
+registered** — the kernel's own docstring says so (`:19-22`). **This overclaim has
+been corrected** (2026-10-04): `capability-registry.yaml` LHX-C-009 now carries a
+`notes` entry stating the three protocol adapters are absent and remain honestly
+PRIMITIVE-ONLY, while the bus itself is reachable on the real INTERNAL/HTTP/WS
+transports. The machine-readable registry no longer overstates.
 
-> `* A2A / MCP / GRPC — declared in :class:`ProtocolType` but have NO`
-> `transport adapter registered in this kernel.`
+### User path — now exists (was the gap)
 
-WebSocket is registered but is an honest refusal: `:383` `def send(...)`, and the
-comment at `:369` confirms it is "intentionally still registered".
+Previously there was **no gateway route** touching the network kernel (`network_gateway.py`
+is an orphan, imported only by `hardening.py:23`, which has zero importers). That changed
+on 2026-10-04: `src/gateway/networks.py` adds `GET /v1/network/messages` (human-gated via
+`Depends(_require_human)`, mounted in `main.py` alongside `trust_router`), returning the
+bus's **real** `stats()` and `get_message_history()` (serialized via `Message.to_dict()`).
+Strictly read-only — no send/write endpoint, because a real external send is a security
+risk with no genuine product path. The frontend adds a `network` nav key + read-only
+`Network.tsx` page. So the bus is now user-observable, satisfying the "no surface" gap
+that made it PRIMITIVE-ONLY.
 
-**The kernel source is honest; the registry is not.** This is a live overclaim in the
-machine-readable capability registry — the artefact most likely to be read as truth.
-
-### No user path
-
-Importers in `src/`: only `src/ai/network_gateway.py`, `src/kernels/_registry.py`
-(a registry index), and `src/observability/production.py` (liveness probe).
-`src/ai/network_gateway.py` is itself imported only by `src/ai/hardening.py:23`,
-which has **zero importers** anywhere in `src/`. **No gateway route touches the
-network kernel.**
-
-**Classification:** `PRIMITIVE ONLY` (correct in-process mechanism, zero user path),
-with an `OVERCLAIMED` registry entry.
+**Classification:** `REAL (indirect)` — the bus + its three real transports are on a real,
+human-gated product path with a read surface; the three absent protocol adapters
+(A2A/MCP/gRPC) stay honestly PRIMITIVE-ONLY (no adapter, no code path). A genuine MCP
+adapter is technically feasible (the `mcp` dep is already present and
+`src/adapters/mcp/mcp_adapter.py` exists but is `not-wired` and needs an allowlist +
+sandbox + policy gate before it could be a real adapter) — that is a larger product
+decision, not a classification shortcut, and is recorded here rather than faked.
 
 **Single most important gap:** correct `capability-registry.yaml:223` to list
 Internal/HTTP (+ WS as honest-refusal) and delete the A2A/MCP/gRPC claim.
@@ -920,13 +921,37 @@ following were built / corrected on branch `p36` after the snapshot and are comm
   - **Honest residual:** governance/network_gateway trust logic still orphaned; trust state is
     still in-memory only (no persistence across restart).
 
-The narrative in §14 above now reflects the 2026-10-21 state; treat the pre-2026-10-20
-description as superseded by this §25.
+The narrative in §13 and §14 above now reflects the 2026-10-04 / 2026-10-21 state; treat the
+pre-2026-10-20 description as superseded by this §25.
 
-Remaining honest gaps NOT closed here (see MASTER/PRODUCT-READINESS): G9 full deploy
-closure (BLOCKED — no Docker daemon / compose plugin / browser in this env), other FAILed
-acceptance gates (e.g., goal pause/resume lifecycle), and PRIMITIVE-ONLY kernels
-(network/trust/event) whose capabilities are not yet on a real user decision path.
+### 2026-10-04 (this round)
+
+- **P10 honest end-to-end proof (no LLM provider key)** — `tests/gateway/test_p10_real_job_e2e.py`
+  (3/3) drives the REAL app via `TestClient` and proves the full closed loop executes without a
+  provider key: a deterministic (keyword/regex) `GoalDecomposer` maps a natural-language file-write
+  goal to a `file_write` task → `file_write` writes a **real on-disk file** under the workspace
+  (WorldInterface/FilesystemAdapter) → the goal detail API surfaces it in `artifacts` → `GET
+  /v1/files/content` reads back the same real file → the audit chain holds a real row indexed by the
+  goal's `correlation_id` → no token → 401. This is the strongest evidence yet that the system
+  really plans / executes / verifies / audits / delivers. (Honest correction: the prior doc claim
+  that a `python:` directive writes a file is FALSE — `python_compute` only returns a value; only
+  `file_write` writes to disk. Corrected in PRODUCT-READINESS.)
+- **Network kernel → REAL (indirect) (was PRIMITIVE-ONLY)** — `src/gateway/networks.py` adds
+  `GET /v1/network/messages` (human-gated, read-only) returning the bus's REAL `stats()` and
+  `get_message_history()`; mounted in `main.py` alongside `trust_router`. Strictly read-only (no send
+  endpoint — real external send is a security risk with no genuine path). Frontend: `network` nav key
+  + read-only `Network.tsx`. `capability-registry.yaml` LHX-C-009 notes now honestly state the three
+  protocol adapters (A2A/MCP/gRPC) are absent and remain PRIMITIVE-ONLY, while the bus IS reachable
+  on the real INTERNAL/HTTP/WS transports. Verdict table + counts updated: **PRIMITIVE-ONLY = 0**;
+  REAL, user-observable outcome = **10**. (A genuine MCP adapter is feasible — `mcp` dep present,
+  `src/adapters/mcp/mcp_adapter.py` exists but is `not-wired` and needs allowlist + sandbox + policy
+  gate — recorded as a larger product decision, not faked.)
+
+Remaining honest gaps NOT closed here (see MASTER/PRODUCT-READINESS): G9 full deploy closure
+(BLOCKED — no Docker daemon / compose plugin / browser in this env); the browser click-through of
+the P10 job-completion UX and a cross-restart durability integration test (no browser / no restart
+test harness here); and a genuine MCP adapter for network (feasible, deferred). All 14 registered
+kernels now have at least a real read surface or a real decision path — **PRIMITIVE-ONLY count is 0**.
 
 ## 24. Reproduction
 

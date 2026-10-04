@@ -686,9 +686,25 @@ that is management, not job completion. The artifact-traceability closure makes 
 *evidence* of a completed job browseable; the *job-completion UX* itself is the remaining
 item.
 
-**Biggest gap:** the product cannot complete a real job from the user's seat end to end.
+**Closed-loop now PROVEN without a browser or LLM key (2026-10-04).** `tests/gateway/
+test_p10_real_job_e2e.py` (3/3) drives the REAL app via `TestClient` and proves the full
+chain executes: a deterministic (keyword/regex) `GoalDecomposer` maps a natural-language
+file-write goal to a `file_write` task → `file_write` writes a **real on-disk file** under
+the workspace → the goal detail API surfaces it in `artifacts` → `GET /v1/files/content`
+reads back the same real file → the audit chain holds a real row indexed by the goal's
+`correlation_id` → no token → 401. This is direct evidence that the system really
+plans / executes / verifies / audits / delivers — it does NOT depend on a provider key
+(the planner is deterministic) and does NOT depend on a browser. (Honest correction made
+elsewhere: a `python:` directive does NOT write a file; only `file_write` does.)
+
+**Biggest gap (re-scoped 2026-10-04):** the *headless* closed loop is proven; what remains
+is the **user-seat / browser** experience of that loop — a human clicking through create-goal
+→ watch execution → receive the delivered artifact in the Goals UI, plus a cross-restart
+durability integration test for the produced artifact / audit. Those require a browser /
+a restart harness, which this environment lacks.
 **Flips to PASS when:** a named realistic user job is completed end to end with a
-verifiable artifact surfaced in-product.
+verifiable artifact surfaced in-product — now proven at the API/headless layer; the browser
+click-through of that same flow is the remaining demonstrable step.
 
 ---
 
