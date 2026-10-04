@@ -65,7 +65,7 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 | 9 | audit | LHX-C-013 | **REAL PRODUCT CAPABILITY** | `GET/POST /v1/audit/*` (5 routes) |
 | 10 | resource | LHX-C-007 | **REAL (indirect)** | none of its own |
 | 11 | network | LHX-C-009 | **PRIMITIVE ONLY** ⚠ overclaim | none |
-| 12 | trust | LHX-C-010 | **PRIMITIVE ONLY** | none |
+| 12 | trust | LHX-C-010 | **REAL (indirect)** | `/v1/trust/{entity_id}` read-only + hire gate (2026-10-21) |
 | 13 | event | LHX-C-008 | **REAL (indirect)** | `/v1/events` read-only (2026-10-20) |
 | 14 | plugin | LHX-C-014 | **REAL PRODUCT CAPABILITY** | `/v1/plugins` (2026-10-20) |
 | — | retention | *(unregistered)* | **PRIMITIVE ONLY** | none |
@@ -73,13 +73,14 @@ reachable by a user**, regardless of whether an `APIRouter` for it exists.
 
 **Counts (the 14 registered kernels):** `REAL PRODUCT CAPABILITY` **11**
 (8 direct + 2 indirect-only-surface: memory, context/capability/resource counted as
-real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page), `PRIMITIVE ONLY` **2** (network, trust),
+real-but-surface-less, + plugin now user-observable via `/v1/plugins` + Apps page, +
+trust now on a real decision path with a read surface), `PRIMITIVE ONLY` **1** (network),
 `STUB / PARTIAL` **0**.
 
 Split precisely:
-- **REAL, user-observable outcome: 8** — identity, execution, evaluation, policy, security, audit, plugin, event
+- **REAL, user-observable outcome: 9** — identity, execution, evaluation, policy, security, audit, plugin, event, trust
 - **REAL, meaningful work but no surface of its own: 4** — memory, context, capability, resource
-- **PRIMITIVE ONLY: 2** — network, trust
+- **PRIMITIVE ONLY: 1** — network
 - **STUB / PARTIAL: 0**
 
 ---
@@ -421,22 +422,37 @@ Internal/HTTP (+ WS as honest-refusal) and delete the A2A/MCP/gRPC claim.
 
 ---
 
-## 14. trust (LHX-C-010) — PRIMITIVE ONLY
+## 14. trust (LHX-C-010) — REAL (indirect); now on a real decision path (2026-10-21)
 
 **Claims** (`src/kernels/trust/__init__.py:1-13`): trust scores, chains with
 transitive propagation, revocation, "Evaluate trust for access decisions".
 
-**What is real:** the mechanism exists (765 lines) and is correct-by-test.
+**What is real — and now genuinely wired:**
+- The mechanism exists (765 lines) and is correct-by-test; the decision functions
+  `is_revoked` / `evaluate_trust` / `get_score` are real.
+- **Read surface (user-observable):** `src/gateway/trust.py` exposes
+  `GET /v1/trust/{entity_id}` (human-gated) returning the trust manager's REAL state
+  — `revoked`, per-scope `scores` (omitted when absent, never invented), a self-chain
+  probe (`get_trust_chain(entity_id, entity_id)`), and `manager.stats()`. Strictly
+  read-only: no revoke/write endpoint.
+- **Real decision gate:** `src/gateway/ai_management.py:hire_employee` now calls
+  `get_trust_manager().is_revoked(req.name)` **before** creating an employee and refuses
+  a revoked identity with `403` (human-sovereignty: a revoked principal cannot be
+  (re)hired). The default registry is empty, so `is_revoked` is `False` for every
+  entity and the happy path is unaffected — fail-open-but-meaningful. `tests/gateway/
+  test_trust_surface.py` (5/5) proves both the read surface (401 without token; real
+  revoked/benign state) and the gate (revoked identity refused; benign identity still
+  hired at 201).
 
-**Integration: none.** Importers outside the package: `src/ai/governance.py`,
-`src/ai/network_gateway.py`, `src/kernels/retention/__init__.py`, and
-`src/observability/production.py:114` (liveness probe only). Both
-`src/ai/governance.py` and `src/ai/network_gateway.py` are themselves orphaned
-(see §18). **No gateway route, no execution path.** Trust never influences a real
-user decision.
+**Honest residual:** `src/ai/governance.py` and `src/ai/network_gateway.py` still call
+trust but are ORPHANS (zero product importers) — so trust's *richest* decision logic
+(governance adjudication, network target revocation) is still not on a real path. Only
+the hire gate + read surface are live. And trust state is still **in-memory only**
+(cross-cutting blocker: no persistence), so a revocation does not survive a restart.
+Both are recorded, not papered over.
 
-**Single most important gap:** wire trust into one real decision — otherwise
-"evaluate trust for access decisions" describes a library call nobody makes.
+**Single most important gap (remaining):** persist trust state, and/or wire the
+existing `governance.py` trust adjudication into the real goal-execution path.
 
 ---
 
@@ -885,8 +901,27 @@ following were built / corrected on branch `p36` after the snapshot and are comm
   falsify "decorative enable": over-threshold → FIRING, in-threshold → None, disabled → None.
   Gateway suite **52/52 green**.
 
-The narrative in §16 and §18 above still describes the pre-2026-10-20 state; treat those
-two sections as superseded by this §25.
+### 2026-10-21 (this round, continued)
+
+- **Trust kernel → REAL (indirect) (was PRIMITIVE-ONLY)** — the decision functions were
+  only ever called from two ORPHAN modules (`src/ai/governance.py`, `src/ai/network_gateway.py`,
+  zero product importers), so trust never influenced a real user decision. Now:
+  - `src/gateway/trust.py` adds `GET /v1/trust/{entity_id}` (human-gated, read-only) returning
+    the trust manager's REAL state (revoked, per-scope scores, self-chain probe, stats) — no
+    invented values.
+  - `hire_employee` (`src/gateway/ai_management.py`) now refuses a revoked identity with `403`
+    via `get_trust_manager().is_revoked(name)` before hire; default registry empty ⇒ happy path
+    unaffected (fail-open-but-meaningful).
+  - `tests/gateway/test_trust_surface.py` (5/5) proves the surface (401 without token; real
+    revoked/benign state) and the gate (revoked refused; benign still hired). Frontend: `trust`
+    nav key + read-only `Trust.tsx` query page. `capability-registry.yaml` LHX-C-010 notes
+    honestly updated (still `IMPLEMENTED`). Verdict table + counts updated: PRIMITIVE-ONLY drops
+  to **network only** (1); REAL, user-observable outcome rises to **9**.
+  - **Honest residual:** governance/network_gateway trust logic still orphaned; trust state is
+    still in-memory only (no persistence across restart).
+
+The narrative in §14 above now reflects the 2026-10-21 state; treat the pre-2026-10-20
+description as superseded by this §25.
 
 Remaining honest gaps NOT closed here (see MASTER/PRODUCT-READINESS): G9 full deploy
 closure (BLOCKED — no Docker daemon / compose plugin / browser in this env), other FAILed
