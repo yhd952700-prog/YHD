@@ -91,7 +91,7 @@
 |---|---|
 | **PASS** | **6** (P2, P3, P4, P6, P7, P8) |
 | **BLOCKED** | **3** (P1, P5, P10) — backend **and** UI are real & wired; outstanding = browser click-through (environment-limited, not a capability gap) |
-| **FAIL** | **1** (P9) — backend read-only surface proven (48/48 over real HTTP); the Identity/Permissions **UI page is not yet built** (build dispatched this cycle) |
+| **FAIL** | **1** (P9) — backend read-only surface proven (48/48 over real HTTP) **and** the Identity/Permissions UI **now built** this cycle (`Identity.tsx` + `operator.ts` client functions, wired into `App.tsx` + `nav.ts`, build verified); outstanding = browser click-through + C-3 authority-surface owner decision |
 | **NOT YET TESTED** | 0 |
 | **PRODUCT ACCEPTANCE** | **NOT READY** |
 
@@ -742,13 +742,15 @@ principal.
 **Biggest gap (cycle 7 reassessment):** identity is now enumerable over HTTP and
 proven (48/48 over real HTTP with real auth, `scripts/verify_identity_user_surface.py`);
 the false-success-on-refusal is **fixed** (cycle 5, four paths). What remains
-genuinely open: (1) the Identity/Permissions **UI page is not yet built** — there
-is no `Identity.tsx` and `operator.ts` has no identity client functions (a build
-was dispatched this cycle to wire `GET /v1/identity/*` into a real view); (2)
-grants are deliberately **not** writable over HTTP (mutation is an authority
-surface with no human-review gate yet); (3) the **mirror** denial distortion above
-(successful grant recorded `denied`) requires a C-3 sovereignty window — an
-owner/legal decision.
+genuinely open: (1) the Identity/Permissions **UI page is now built** this cycle —
+`pages/Identity.tsx` + four client functions in `operator.ts`
+(`listPrincipals` / `getPrincipal` / `listPermissions` / `getIdentitySummary`),
+wired into `App.tsx` (PAGE_META + render branch) and `nav.ts`; `tsc -b` +
+`vite build` both pass. It is **strictly read-only** (no grant mutation surface)
+and renders 404 / empty / derived / warnings honestly; (2) grants are deliberately
+**not** writable over HTTP (mutation is an authority surface with no human-review
+gate yet); (3) the **mirror** denial distortion above (successful grant recorded
+`denied`) requires a C-3 sovereignty window — an owner/legal decision.
 **Flips to PASS when:** the Identity/Permissions UI is built and browser-verified,
 grants are visible, and the mirror refusal/grant distortion is resolved under a
 real sovereignty window.
@@ -1290,10 +1292,13 @@ P1 (hire/pause/resume forms in `Directory.tsx`), P5 (ApprovalCenter) and P10
 (Goals/Files/Projects/Apps pages), those three move `FAIL → BLOCKED`. "BLOCKED"
 here means *the engineering is complete; the only outstanding step is a browser
 click-through* (this environment has no headless browser) — an environmental gap,
-not a capability gap. P9 stays `FAIL` because its Identity/Permissions **page is
-genuinely not built yet** (no `Identity.tsx`; `operator.ts` has no identity
-client functions); a build to wire `GET /v1/identity/*` into a real view was
-dispatched this cycle.
+not a capability gap. P9 stays `FAIL` because its Identity/Permissions **page was
+genuinely not built** (no `Identity.tsx`; `operator.ts` had no identity client
+functions); a build to wire `GET /v1/identity/*` into a real view was dispatched
+and **completed** this cycle (`Identity.tsx` + `operator.ts` client functions,
+wired into `App.tsx` + `nav.ts`, `tsc -b` + `vite build` verified). P9 remains
+`FAIL` only on the browser click-through + the C-3 authority-surface owner
+decision, not on a missing UI.
 
 **P9 stale-claim correction:** the P9 section previously asserted refusals were
 "still recorded as successes". That was fixed in cycle 5 on four refusal paths
@@ -1312,8 +1317,8 @@ employee, agents, task status and aggregate counters all survive.
 
 **Net state:** PASS = **6** (P2, P3, P4, P6, P7, P8). BLOCKED = **3** (P1, P5, P10).
 FAIL = **1** (P9). PRODUCT ACCEPTANCE remains NOT READY only on the
-environment-limited browser proof + the P9 UI build, not on engineering
-substance. RELEASE READINESS cannot honestly reach RELEASE READY here either: G9
+environment-limited browser proof + the P9 C-3 authority-surface owner decision,
+not on a missing UI (P9's UI is now built). RELEASE READINESS cannot honestly reach RELEASE READY here either: G9
 (full Docker-compose + browser click-through) is BLOCKED on the host WSL2
 restriction (Docker Desktop's engine cannot start — `wsl.exe` denied by host
 policy), portable to a capable host.

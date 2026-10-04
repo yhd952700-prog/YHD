@@ -60,6 +60,8 @@ export const GOVERNANCE_NAV: NavItem[] = [
   { key: 'trust', label: '信任', icon: IconTrust },
   // 网络内核只读面：后端 `/v1/network/messages` 返回总线真实状态（stats + 消息历史），此前没有任何页面渲染它。
   { key: 'network', label: '网络', icon: IconActivity },
+  // 身份与权限只读面：后端 `/v1/identity/*` 返回真实身份内核状态（主体 / 权限 / 注册表诚实度），此前没有任何页面渲染它。
+  { key: 'identity', label: '身份与权限', icon: IconShield },
   // 工作区文件：AI 员工经 file_write 写出的产物，此前没有任何页面让人浏览/读取。
   { key: 'files', label: '工作区文件', icon: IconFiles },
   { key: 'status', label: '系统状态', icon: IconActivity },

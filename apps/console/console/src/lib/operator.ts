@@ -581,3 +581,142 @@ export interface NetworkMessagesResponse {
 export function getNetworkMessages(): Promise<NetworkMessagesResponse> {
   return apiFetch<NetworkMessagesResponse>('/v1/network/messages')
 }
+
+// ─── 身份与权限（只读可观测面） ───────────────────────────────
+//
+// 端点与 `src/gateway/identity.py` 严格对齐（**全部 GET**、全部 `require_human_principal`
+// 闸门）：
+//   GET /v1/identity/principals         主体清单（含注册表诚实度）
+//   GET /v1/identity/principals/{id}    单个主体（未知 -> 404，绝不返回空对象）
+//   GET /v1/identity/permissions        扁平 grant 清单（派生字段带 derived 标签）
+//   GET /v1/identity/summary            按类型 / 状态 / 作用域上限计数 + 注册表诚实度
+//
+// 这一层**只有读**：身份内核把权限存成扁平 `Set[str]`，**不保留**每条 grant 的 scope，
+// 所以响应里的 `scope` 永远是身份的作用域上限（scope_ceiling），不是单条授权的 scope；
+// 凡是展示层派生出来的 `derived_action` / `derived_resource` 都带 `derived: true` 标签，
+// 原始 `permission` 串永远是权威。后端对未知 id 返回**真实 404**，前端原样抛错并展示
+// "主体不存在或已被清除"，不退化成空对象；`registry.rows_refused` / `warnings` 若非空
+// 必须原样摊开（fail-closed 的诚实度 —— "零个人类"可能是注册表拒绝的结果，不是没有人类）。
+
+/** 注册表自身真相（与 `_registry_report` 一一对应）。 */
+export interface IdentityRegistry {
+  backend: string | null
+  location: string | null
+  configured: boolean
+  integrity_enforced: boolean
+  integrity_state: string | null
+  integrity_key_env: string
+  rows_admitted: number | null
+  /** fail-closed 时被拒收的行（真实内容，必须摊开给人看） */
+  rows_refused: string[]
+  rows_offered: number | null
+}
+
+/** 单个主体的真相视图（`_identity_view`，字段全部来自 `AgentIdentity`）。 */
+export interface PrincipalView {
+  id: string
+  principal: string
+  /** 内核 namespace 判定：human / agent / service */
+  kind: string
+  namespace: string
+  /** kind 是内核显式标注的还是推断的（缺失 metadata["kind"] 时推断为 agent） */
+  kind_marked: boolean
+  status: string
+  active: boolean
+  /** 作用域上限 L0-L7，不是单条授权的 scope */
+  scope: string
+  trust_score: number | null
+  permission_count: number
+  fingerprint: string | null
+  created_at: string | null
+  last_modified: string | null
+  display_name: string | null
+}
+
+export interface PrincipalsResponse {
+  principals: PrincipalView[]
+  count: number
+  total: number
+  truncated: boolean
+  by_kind: Record<string, number>
+  filters: Record<string, unknown>
+  registry: IdentityRegistry
+  warnings: string[]
+  source: Record<string, unknown>
+  read_only: boolean
+}
+
+/** 一条扁平 grant（谁 -> 被授予了什么 -> 受哪个作用域上限约束）。 */
+export interface PermissionGrant {
+  principal_id: string
+  principal: string
+  kind: string
+  /** 权限原始串，权威字段 */
+  permission: string
+  /** 展示层派生（从 permission 按 ":" 拆分），非内核事实 */
+  derived_action: string | null
+  derived_resource: string | null
+  derived: boolean
+  scope: string
+  identity_active: boolean
+}
+
+export interface PermissionsResponse {
+  grants: PermissionGrant[]
+  count: number
+  truncated: boolean
+  filters: Record<string, unknown>
+  /** 两条「有意不说」的诚实声明（scope / 派生） */
+  notes: string[]
+  registry: IdentityRegistry
+  warnings: string[]
+  source: Record<string, unknown>
+  read_only: boolean
+}
+
+export interface IdentitySummary {
+  total_principals: number
+  by_kind: Record<string, number>
+  by_status: Record<string, number>
+  by_scope: Record<string, number>
+  total_grants: number
+  individual_principals: Record<string, unknown>
+  scope_note: string
+  registry: IdentityRegistry
+  warnings: string[]
+  source: Record<string, unknown>
+  read_only: boolean
+}
+
+export interface PrincipalDetail {
+  principal: PrincipalView
+  permissions: string[]
+  grants: PermissionGrant[]
+  permission_count: number
+  scope_note: string
+  derivation_note: string
+  registry: IdentityRegistry
+  warnings: string[]
+  source: Record<string, unknown>
+  read_only: boolean
+}
+
+/** 主体清单：随轮询自动刷新（身份会被创建 / 停用，状态会变）。 */
+export function listPrincipals(): Promise<PrincipalsResponse> {
+  return apiFetch<PrincipalsResponse>('/v1/identity/principals')
+}
+
+/** 单个主体：手动触发（输入 id / principal 才取），不轮询。未知 id 后端返回真实 404。 */
+export function getPrincipal(id: string): Promise<PrincipalDetail> {
+  return apiFetch<PrincipalDetail>(`/v1/identity/principals/${encodeURIComponent(id)}`)
+}
+
+/** 扁平权限清单：随轮询自动刷新（grant 会随授权变化）。 */
+export function listPermissions(): Promise<PermissionsResponse> {
+  return apiFetch<PermissionsResponse>('/v1/identity/permissions')
+}
+
+/** 身份总览：随轮询自动刷新。 */
+export function getIdentitySummary(): Promise<IdentitySummary> {
+  return apiFetch<IdentitySummary>('/v1/identity/summary')
+}
