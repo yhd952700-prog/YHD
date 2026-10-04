@@ -121,7 +121,7 @@ def run_e2e_demo(
 
         # ------------------------------------------ Act 4: L-Core + World
         world = WorldInterface(
-            adapters=[FilesystemAdapter()],
+            adapters=[FilesystemAdapter(root=output_dir)],
             authorize=_world_authorize(output_dir),
             actor="autonomous",
         )
