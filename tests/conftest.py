@@ -223,6 +223,71 @@ def _isolate_alert_store(tmp_path, monkeypatch):
     monkeypatch.setattr(store_mod, "_default_store", None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
+    """让每个用例自己的 ``AUDIT_DB_PATH`` 重定向真正生效（F1 根因修复）。
+
+    与 ``_isolate_alert_store`` 同构，但审计侧多两个必须讲清的约束。
+
+    为什么需要
+    ----------
+    ``src/kernels/audit/__init__.py:2196`` 的 ``get_audit_store()`` 是模块级单例
+    ``_audit_store``，而 ``AuditStore.__init__``（:378-391）**只在构造时**读
+    ``AUDIT_DB_PATH``，之后永不重新解析。``_isolate_audit_store`` 只在**会话开始**
+    时复位一次单例，因此任何一个测试在这之后 ``monkeypatch.setenv("AUDIT_DB_PATH",
+    ...)`` 都是空的——实测 24 个提到该变量的测试文件里，19 个是这种 env-only 情形。
+
+    已实测确认的假通过：``tests/kernels/audit/test_audit.py:256-258`` 在
+    ``setenv("AUDIT_DB_PATH", tmp_path/"global_audit.db")`` 之后只断言
+    ``get_audit_store() is get_audit_store()``——只验同一性、不验路径。我把单例
+    故意污染到另一个库之后该断言**依然通过**（取证：tests 目录下的临时探针），
+    也就是说它对"重定向是否生效"完全无感。修复后本 fixture 让路径断言可成立。
+
+    约束一：必须一并复位 executor fence
+    ------------------------------------
+    ``src/kernels/execution/fence.py`` 的 ``attach_default_executor_fence()``
+    （:1166-1173）会把审计 SQLite 连接交给 ``SqliteExecutorLease`` 并装进**模块级
+    全局** ``_DEFAULT_FENCE``。若只复位 ``_audit_store`` 而不碰 fence，fence 会继续
+    持有旧连接的第二个强引用——那条连接一旦被回收或关闭，执行路径就会拿到坏连接。
+    本 fixture 把 fence 退回 ``None``：``get_executor_fence()``（:1017）会重建一个
+    ``InMemoryExecutorLease``，它**不持有 SQLite 连接**，因此与审计单例无耦合。
+    这只影响测试环境的围栏后端，不改生产装配（生产在 boot 时调用
+    ``attach_default_executor_fence``，测试不去触发它）。
+
+    约束二：不要给 ``AuditStore`` 加 ``close()``、也不改 ``shutdown()`` 语义
+    ------------------------------------------------------------------
+    ``AuditStore.shutdown()``（:2099-2100）只翻转 lifecycle 标志、不关连接，
+    这是既有事实，别把它改成"真关闭"——生产代码路径可能依赖它只是打标志。
+    句柄方面实测**不会**线性泄漏：连续 25 次函数级复位后活着的 sqlite 连接恒为
+    2（当前 store + fence 持有的首个 store），旧 store 由 CPython 引用计数及时
+    回收，泄漏是 O(1) 有界而非 O(N)。所以此处不额外做连接关闭，避免引入新故障。
+
+    这是测试基础设施修复：不改生产默认值、不削弱 fail-closed 的强制证据门禁
+    （CRIT-1C 依旧对 HIGH/CRITICAL 动作做真实审计写入）、不改任何测试断言。
+    """
+    import src.kernels.audit as audit_module
+    import src.kernels.execution.fence as fence_module
+
+    # The database gets its OWN directory from tmp_path_factory -- deliberately
+    # NOT tmp_path. Several tests assert that tmp_path stays completely empty
+    # (tests/kernels/network/test_network.py::TestHistoryPersistence::
+    # test_default_bus_writes_nothing does `list(tmp_path.iterdir()) == []`, and
+    # tests/kernels/identity/test_human_identity_persistence.py::
+    # test_an_unconfigured_store_never_creates_a_file compares the listing before
+    # and after). Pointing AUDIT_DB_PATH inside tmp_path made the CRIT-1C evidence
+    # gate legitimately create audit_store.db{,-wal,-shm} there and broke both; a
+    # subdirectory inside tmp_path still broke the first one. Staying entirely
+    # outside tmp_path keeps the audit trail away from directories those tests
+    # inspect, while remaining per-test isolated.
+    audit_dir = tmp_path_factory.mktemp("lh_audit_test")
+    monkeypatch.setenv("AUDIT_DB_PATH", str(audit_dir / "audit_store.db"))
+    monkeypatch.setattr(audit_module, "_audit_store", None)
+    monkeypatch.setattr(fence_module, "_DEFAULT_FENCE", None)
+    yield
+    monkeypatch.setattr(audit_module, "_audit_store", None)
+    monkeypatch.setattr(fence_module, "_DEFAULT_FENCE", None)
+
+
 # ==================== Console auth (bearer token) ====================
 
 

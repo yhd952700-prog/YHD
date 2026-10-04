@@ -254,8 +254,22 @@ class TestVerifyIntegrity:
 
 class TestGlobalStore:
     def test_get_audit_store_returns_same_instance(self, tmp_path, monkeypatch):
+        """单例必须既**同一**又**指向被重定向的库**。
+
+        这个断言原本只有 ``get_audit_store() is get_audit_store()``——纯同一性。
+        实测把单例故意污染到另一个库之后它依然通过，所以它对
+        "AUDIT_DB_PATH 有没有被理会"完全无感。补上路径断言后它才真正有牙。
+        """
         monkeypatch.setenv("AUDIT_DB_PATH", str(tmp_path / "global_audit.db"))
-        assert get_audit_store() is get_audit_store()
+        store = get_audit_store()
+        assert store is get_audit_store()
+        # The identity assertion above is satisfied by ANY singleton; this is the
+        # part that proves the per-test redirection was actually honoured.
+        from pathlib import Path
+
+        assert Path(store._db_path).resolve() == (tmp_path / "global_audit.db").resolve(), (
+            "the audit store ignored AUDIT_DB_PATH and stayed on %s" % store._db_path
+        )
 
 
 # =====================================================================

@@ -70,8 +70,14 @@ def _redirect_stores(tmp_path, monkeypatch):
 
     _store_mod._default_store = None
     _models_mod._default_manager = None
-    if hasattr(_audit_mod, "_default_store"):
-        _audit_mod._default_store = None
+    # The audit singleton is ``_audit_store`` (src/kernels/audit/__init__.py:2114),
+    # NOT ``_default_store`` -- that is the ALERT store's name. The old
+    # ``hasattr(_audit_mod, "_default_store")`` guard therefore always evaluated
+    # False and this reset silently did nothing, while the comment above claimed
+    # it happened. Assigning the real attribute is what actually resets it.
+    # (tests/conftest.py now resets both singletons per test as well; this local
+    # reset keeps the intent of this file explicit.)
+    _audit_mod._audit_store = None
 
     install_production_rules()
     yield
