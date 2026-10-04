@@ -549,6 +549,171 @@ jobs:
           DATABASE_URL: sqlite:///./ci_guardrail.db
         run: python scripts/verify_persistence.py
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # Guardrails, extended set: 16 more `scripts/verify_*.py` gates that were
+  # written, cited as evidence in PRODUCT-READINESS.md, and yet never invoked
+  # by any workflow -- i.e. protecting nothing. An unwired guardrail is decay.
+  #
+  # Split into its own job (not folded into `guardrails` above) because that job
+  # already carries ~30 steps against a 15-minute budget; adding 16 more would
+  # turn a timeout into a false red.
+  #
+  # DELIBERATELY NOT WIRED -- 5 gates remain unwired, each with the measured
+  # reason it cannot produce a valid verdict on a GitHub-hosted runner. They
+  # stay unwired on purpose: hiding them behind DIAGNOSTIC_REPORTERS or
+  # `|| true` would suppress a true positive, which is the dishonesty this
+  # repo forbids. tests/test_guardrail_scripts.py therefore still reports
+  # them -- that red entry is the signal, not a nuisance. Each has its own
+  # remediation task.
+  #
+  # NOTE ON FORMATTING: the names below are written WITHOUT the `.py` suffix
+  # on purpose. The meta-guardrail greps the raw workflow text for a script's
+  # basename, so spelling them out in full here would make five genuinely
+  # unwired gates read as wired -- a false green, i.e. the exact decay this
+  # job exists to prevent. Keep them suffix-less.
+  #   * verify_deployment_gate_vars     -- GENUINE FAIL (12 unresolved
+  #                                        deployment-gate variables).
+  #   * verify_deploy_readiness         -- needs an executable `alembic`
+  #                                        (`python -m alembic` -> "No module
+  #                                        named alembic.__main__").
+  #   * verify_deployed_product_closure -- needs a Docker daemon AND a
+  #                                        headless browser.
+  #   * verify_image_build              -- needs a Docker daemon.
+  #   * verify_observability_loop       -- needs a live Prometheus /
+  #                                        Alertmanager stack on
+  #                                        8010/9090/9093.
+  guardrails-extended:
+    name: Guardrails Extended (audit/identity/execution/employee/user-surface)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 25
+
+    # Isolation, belt-and-braces. These gates redirect persistence themselves,
+    # but a gate that ever forgets must not land artifacts in a real workspace
+    # or a real audit DB: verify_p6_e2e_file_creation.py once wrote test
+    # artifacts into the production workspace because the workspace root and
+    # the assertion target diverged. Pinning the roots here makes that class of
+    # mistake impossible for this job.
+    env:
+      LIUHAO_WORKSPACE_ROOT: ${{ runner.temp }}/liuhao-ws
+      AUDIT_DB_PATH: ${{ runner.temp }}/liuhao-audit/audit.db
+      LIUHAO_ALERTS_STORE_PATH: ${{ runner.temp }}/liuhao-alerts.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install alembic sqlalchemy
+
+      - name: Create the isolated workspace / audit roots
+        run: |
+          mkdir -p "$LIUHAO_WORKSPACE_ROOT"
+          mkdir -p "$(dirname "$AUDIT_DB_PATH")"
+          echo "workspace root: $LIUHAO_WORKSPACE_ROOT"
+          echo "audit db path:  $AUDIT_DB_PATH"
+
+      # ── Audit truthfulness & traceability ──────────────────────────────
+      # A policy verdict of deny must never be written to the durable record as
+      # outcome=success. This is the defect class that hid refusals behind a
+      # green audit trail; it drives the real @kernel_action decorator against
+      # the real policy engine and a real hash-chained store.
+      - name: Verify a policy DENY is never recorded as outcome=success
+        run: python scripts/verify_audit_truthfulness.py
+
+      # The same lie, one layer up: identity.grant/revoke report a refusal by
+      # `return False`, which the decorator cannot distinguish from success.
+      - name: Verify identity grant/revoke refusals are audited as refusals
+        run: python scripts/verify_identity_denial_audit.py
+
+      # Traceability: the audit chain could prove "an action executed" but not
+      # "this goal executed it". Proves kernel-action events carry the GOAL's
+      # correlation id, not a fresh random one.
+      - name: Verify goal -> action audit correlation id propagation
+        run: python scripts/verify_audit_goal_correlation.py
+
+      # The planner's task loop must run through the audited @kernel_action path
+      # (ai.execute_planner_task) and its durable state must round-trip.
+      - name: Verify the planner loop is audited and its state round-trips
+        run: python scripts/verify_planner_audit_loop.py
+
+      # ── Real execution honesty ─────────────────────────────────────────
+      # Planner -> Execution -> Verify -> Audit, with a real file_write and a
+      # real python_compute: proves the artifact and the audit record are real,
+      # and that with no executor injected the kernel does NOT claim a run.
+      - name: Verify planner->execution->verify->audit closes end-to-end honestly
+        run: python scripts/verify_e2e_real_execution.py
+
+      # Verifier.verify must re-check the filesystem itself, not trust the
+      # executor's `{"written": path}` claim -- the anti-self-proving fix.
+      - name: Verify the Verifier does not trust the executor's self-report
+        run: python scripts/verify_execution_independent_verification.py
+
+      # Production wiring path: the same capability executor the gateway
+      # injects, plus P4 workspace-containment refusal on an escaping write.
+      - name: Verify P6 real artifact creation and P4 workspace containment
+        run: python scripts/verify_p6_e2e_file_creation.py
+
+      # Real execution vs fail-closed, plus policy/resource denial truthfulness
+      # and the mark_action_denied three-state mechanism.
+      - name: Verify P6 real execution vs fail-closed honesty
+        run: python scripts/verify_p6_real_execution.py
+
+      # Full user-facing chain with no simulated-execution opt-in: a real
+      # side effect, a real compute result, and an honest failure (never a
+      # silent success) for a capability the system cannot serve.
+      - name: Verify real-execution E2E honesty with no simulated opt-in
+        run: python scripts/verify_real_execution_e2e.py
+
+      # The single-writer fence must be armed without killing boot: it has to
+      # survive in-process startup calls AND stay fail-closed for rogue
+      # executors. Previously arming it made the gateway die on boot.
+      - name: Verify the executor fence survives boot and stays fail-closed
+        run: python scripts/verify_fence_boot_survival.py
+
+      # ── User-facing surfaces ───────────────────────────────────────────
+      # The audit mechanism was always real but no human could reach it.
+      # Proves /v1/audit/* is served over real HTTP, filters by correlation_id,
+      # reports ok=false on a tampered throwaway copy (not a stub that always
+      # answers True), 401s without a token, and mounts no mutation route.
+      - name: Verify the user-facing audit surface (query + tamper detection + 401)
+        run: python scripts/verify_audit_user_surface.py
+
+      # Same for identity: real principals surfaced honestly, empty-vs-unknown
+      # distinguished (503 / warnings instead of a clean-looking empty list),
+      # 401 without a token, and no mutation route under /v1/identity.
+      - name: Verify the user-facing identity/permission surface
+        run: python scripts/verify_identity_user_surface.py
+
+      # Operational closure: a real user hands real work over real HTTP (real
+      # uvicorn socket, real ASGI stack, real httpx client) and gets a real
+      # result -- not an in-process shortcut.
+      - name: Verify a real user gets a real result over real HTTP
+        run: python scripts/verify_http_full_closure.py
+
+      # ── AI Employee ────────────────────────────────────────────────────
+      # The employee is a real worker bound to the loop: goal ownership, BUSY
+      # -> IDLE, and a real cancellation (never faked as a success).
+      - name: Verify AI Employee goal binding and real cancellation
+        run: python scripts/verify_employee_goal_binding.py
+
+      # EmployeeStore must survive a process restart (employees / agents /
+      # tasks), with no network call.
+      - name: Verify EmployeeStore survives a restart
+        run: python scripts/verify_employee_persistence.py
+
+      # The dashboard roster must surface persisted employees, not kernel /
+      # layer modules dressed up as employees -- the "modules as staff" lie.
+      - name: Verify the roster surfaces real employees, not modules
+        run: python scripts/verify_roster_real_employees.py
+
   # Linting job
   lint:
     name: Linting
