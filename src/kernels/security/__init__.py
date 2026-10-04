@@ -1,15 +1,20 @@
-"""Security Kernel — RBAC+ABAC+Vault+Audit enforcement
+"""Security Kernel — RBAC+ABAC+Audit enforcement
 
 The Security Kernel provides comprehensive access control with RBAC and ABAC
-policies, Vault Transit integration for crypto operations, and full audit logging.
+policies, full audit logging.
 
 依据 Definition Lock §112: Security Kernel 必须能够
 - RBAC role-based access control with role hierarchies
 - ABAC attribute-based access control with condition evaluation
-- Vault Transit integration for cryptographic operations
 - Complete audit trail for all access decisions
 - Human sovereignty override capability
 - Scope enforcement L0-L7
+
+NOTE (2026-10-02 honesty correction): this kernel does NOT integrate Vault
+Transit. The earlier "Vault" claims were removed — `VAULT_AVAILABLE` had zero
+consumers and the old stub silently returned empty reads. The real Vault client
+lives in src/security/vault_client.py and src/integrations/vault/ and is not
+wired here. See KERNEL-PRODUCT-CAPABILITY.md §10.
 """
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError

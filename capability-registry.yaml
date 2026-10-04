@@ -438,10 +438,11 @@ capability-registry:
     phase: Phase 10
     name: Multi-Agent Collaboration — team/peer protocols
     module: src/ai/collaboration.py
-    status: IMPLEMENTED
+    status: PARTIAL
+    reachability: UNREACHABLE
     tests: tests/test_collaboration.py
     test_count: 12
-    notes: MS:§68-69 network-mandatory chain reuse; no fake agents
+    notes: MS:§68-69 network-mandatory chain reuse; no fake agents; HONESTY 2026-10-02 module+12 tests exist but ZERO non-test src/ importers => no product path invokes it, reachability UNREACHABLE until wired (was falsely IMPLEMENTED)
   - id: LHX-L-003
     phase: Phase 11
     name: Perception — Observation + Perceiver + WorldModel

@@ -8,8 +8,8 @@ and scope-aware plugin activation.
 - register_plugin(name, version, kernel_type, capabilities, compatibility)
 - unregister_plugin(plugin_id)
 - discover_plugins(kernel_type, scope, min_version, max_version)
-- load_plugin(plugin_id) → PluginInterface
 - list_active_plugins() → List[PluginInfo]
+- load_plugin(plugin_id) → PluginInterface  # UNIMPLEMENTED (2026-10-02)
 - Plugin version compatibility checking (semver-aware)
 """
 from __future__ import annotations

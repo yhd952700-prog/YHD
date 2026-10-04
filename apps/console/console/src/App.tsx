@@ -50,6 +50,7 @@ import {
 import type { ApprovalGrant, EnforcementSnapshot } from './lib/policyClient'
 import { Overview } from './pages/Overview'
 import { Audit } from './pages/Audit'
+import { Files } from './pages/Files'
 import { BusinessCenter, KnowledgeCenter, Roster } from './pages/Directory'
 import { DataCenter, SystemStatus } from './pages/Operations'
 import { Settings } from './pages/Settings'
@@ -76,6 +77,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除内核噪声）' },
   approval: { title: '审批中心', sub: '内核层拦截的人工授权 —— 需人类令牌' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
+  files: { title: '工作区文件', sub: 'AI 员工写出的真实产物（只读浏览 / 读取）' },
   status: { title: '系统状态', sub: '依赖探针与安全组件实况' },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
 }
@@ -442,6 +444,7 @@ function App() {
         </div>
       )}
       {active === 'audit' && <Audit query={query} />}
+      {active === 'files' && <Files query={query} />}
       {active === 'status' && <SystemStatus />}
       {active === 'settings' && (
         <Settings

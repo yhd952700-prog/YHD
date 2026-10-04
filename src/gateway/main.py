@@ -540,6 +540,14 @@ def get_app() -> FastAPI:
     from .identity import router as identity_router
     app.include_router(identity_router, dependencies=[Depends(_require_human)])
 
+    # 工作区文件可观测面（P1 产品缺口 #1）：把 AI 员工**真实写出的产物**摊开给
+    # 人看 —— 浏览/读取工作区内的文件。严格只读：本模块没有任何写入口，写仍由
+    # 执行内核的 file_write 工具经执行围栏负责，避免开一条绕过审计的落盘侧门。
+    # 路径统一经 src.ai.workspace.resolve_in_workspace 收敛到工作区根之内，
+    # 越界即 400。与其余业务面一样挂人类主权闸门 —— 工作区内容不匿名可读。
+    from .files import router as files_router
+    app.include_router(files_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

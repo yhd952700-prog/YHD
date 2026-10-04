@@ -449,7 +449,7 @@ def _register_builtin_capabilities(registry: CapabilityRegistry) -> None:
             version="1.0.0",
             namespace="kernel",
             name="Security Enforcement",
-            description="RBAC + ABAC + Vault + Audit",
+            description="RBAC + ABAC + Audit",
             scope=CapabilityScope.L5,
             owner="security_kernel",
             tags={"kernel", "security", "rbac", "abac"},

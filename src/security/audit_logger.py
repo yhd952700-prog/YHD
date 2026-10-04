@@ -5,7 +5,6 @@ Provides tamper-evident logging of all cryptographic operations:
 - encrypt/decrypt invocations
 - sign/verify operations
 - key generation, rotation, export
-- Vault Transit key lifecycle
 
 Audit events are recorded IN-MEMORY in `self._events` as a hash chain
 (event_hash / prev_event_hash, SHA256). They are NOT written to any store and

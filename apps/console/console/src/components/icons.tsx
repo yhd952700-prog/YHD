@@ -205,3 +205,11 @@ export const IconLock = (p: IconProps) => (
     <path d="M8.2 10.4V7.8a3.8 3.8 0 0 1 7.6 0v2.6" />
   </Glyph>
 )
+
+export const IconFiles = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M6 3.4h7.2L18 8.2v12.4H6z" />
+    <path d="M13 3.4V8.2h4.6" />
+    <path d="M9 12h6M9 15.2h6" />
+  </Glyph>
+)

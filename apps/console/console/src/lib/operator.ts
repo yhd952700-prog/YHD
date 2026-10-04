@@ -213,3 +213,45 @@ export function verifyAuditChain(): Promise<AuditVerifyResult> {
 export function fetchAuditSummary(): Promise<AuditSummary> {
   return apiFetch<AuditSummary>('/v1/audit/summary')
 }
+
+// ─── 工作区文件（只读可观测面） ──────────────────────────────
+//
+// 端点与 `src/gateway/files.py` 严格对齐。这一层**只有读**：没有写入 / 删除 /
+// 上传能力 —— 写仍由执行内核的 `file_write` 工具负责，经执行围栏约束。一个能直接
+// 落盘、不经审计的工作区侧门等于把 AI 员工的所有产物置于人类随心篡改之下。
+// `listFiles` 返回 `count=0` 就是真空目录；`readFile` 在后端返回 404/413/415 时
+// 原样抛错，前端必须如实展示，不能退化成"空内容"。
+
+export interface FileEntry {
+  name: string
+  /** 相对工作区的路径（始终以 / 开头，或直接是文件名） */
+  rel_path: string
+  type: 'dir' | 'file'
+  /** 目录为 null */
+  size: number | null
+  /** Unix 秒 */
+  mtime: number
+}
+
+export interface FileListResponse {
+  root: string
+  path: string
+  count: number
+  entries: FileEntry[]
+}
+
+export interface FileContentResponse {
+  path: string
+  size: number
+  encoding: string
+  content: string
+}
+
+export function listFiles(path: string = ''): Promise<FileListResponse> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : ''
+  return apiFetch<FileListResponse>(`/v1/files${qs}`)
+}
+
+export function readFile(path: string): Promise<FileContentResponse> {
+  return apiFetch<FileContentResponse>(`/v1/files/content?path=${encodeURIComponent(path)}`)
+}
