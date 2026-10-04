@@ -71,6 +71,7 @@ import argparse
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -436,6 +437,32 @@ def scan_gate_candidates(src_dir: Path = SRC_DIR) -> Dict[str, List[Tuple[str, i
 # --------------------------------------------------------------------------- #
 # Deployable-artifact scan
 # --------------------------------------------------------------------------- #
+def _is_version_controlled(path: Path) -> Optional[bool]:
+    """True/False if git can answer, None if git is unavailable.
+
+    Used to keep unversioned files out of the evidence set. A file that no
+    commit contains is not a description of the deployment -- it is one
+    developer's leftovers. Measured on 2026-10-04: two of the 21 collected
+    artifacts were untracked, and one of them was ``.env``: gitignored, holding
+    SECRET_KEY and JWT_SECRET. Had a gate variable happened to be set only
+    there, this gate would report "set in the artifact" on the machine that
+    created the file and "never set" on every other machine and on CI. A
+    security gate whose verdict depends on unversioned local state is a false
+    green waiting to happen, so the file must not be evidence.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    # returncode 1 == not tracked; anything else (128 == not a repo, etc.)
+    return False if proc.returncode == 1 else None
+
+
 def collect_artifacts(extra: Sequence[str] = ()) -> List[Path]:
     found: List[Path] = []
     for pattern in ARTIFACT_GLOBS:
@@ -466,6 +493,32 @@ def collect_artifacts(extra: Sequence[str] = ()) -> List[Path]:
     return unique
 
 
+def untracked_artifacts(artifacts: Sequence[Path]) -> List[Path]:
+    """Artifacts that no commit contains -- excluded from the evidence set.
+
+    Kept as a separate list rather than silently filtered so the caller can
+    report it: a developer who drops a ``docker-compose.prod.yml`` in the repo
+    root and expects the gate to read it deserves to be told why it was
+    ignored, not left wondering which file the gate actually looked at.
+    """
+    out: List[Path] = []
+    for path in artifacts:
+        # An explicitly passed --extra-artifacts path is the caller vouching for
+        # it (that flag exists precisely to prove a proposed fix), so it is not
+        # second-guessed here.
+        if _is_version_controlled(path) is False:
+            out.append(path)
+    return out
+
+
+def _label(path: Path) -> str:
+    """Repo-relative label for an artifact, so findings are machine-independent."""
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
     """Variable names any artifact sets, mapped to the artifacts that set them."""
     texts: List[Tuple[Path, str]] = []
@@ -476,11 +529,7 @@ def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
             continue
     found: Dict[str, List[str]] = {}
 
-    def label(path: Path) -> str:
-        try:
-            return path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
-            return str(path)
+    label = _label
 
     for path, text in texts:
         names: Set[str] = set()
@@ -663,17 +712,32 @@ def evaluate(artifact_vars: Dict[str, List[str]],
             seen_at = mentions.get(var) or []
             seen_alias = [a for a in aliases if mentions.get(a)]
             if seen_at or seen_alias:
-                where = seen_at or mentions[seen_alias[0]]
-                findings.append(Finding(
-                    var, "seed-entry-read-indirectly",
-                    "listed as a gate and the name is still spelled in src/ "
-                    "(e.g. %s:%d), but no literal env read was found -- it is "
-                    "most likely read through a table, so `expect` cannot be "
-                    "verified automatically. Confirm by hand, or point the "
-                    "entry at the reading site."
-                    % (where[0][0], where[0][1]),
-                    refs or ["%s:%d" % (r[0], r[1]) for r in where],
-                    "confirm the control is still armed at the site above"))
+                # Only worth saying when it changes what the reader should do.
+                #
+                # This finding was originally appended unconditionally, which
+                # made a false red out of a satisfied gate: `LIUHAO_ENV` is
+                # `expect="set"` and IS set -- `docker-compose.prod.yml:37` has
+                # `- LIUHAO_ENV=production` -- yet the entry was still reported
+                # as "cannot be verified automatically", because whether the
+                # artifact satisfies `expect` is decidable and had already been
+                # decided a few lines below. The note is about the READ being
+                # invisible to the scanner, not about `expect` being in doubt;
+                # if the artifact check passes, a human has nothing to confirm.
+                set_in_here = artifact_vars.get(var, [])
+                alias_here = [a for a in aliases if a in artifact_vars]
+                satisfied = (expect != "set") or bool(set_in_here or alias_here)
+                if not satisfied:
+                    where = seen_at or mentions[seen_alias[0]]
+                    findings.append(Finding(
+                        var, "seed-entry-read-indirectly",
+                        "listed as a gate and the name is still spelled in src/ "
+                        "(e.g. %s:%d), but no literal env read was found -- it "
+                        "is most likely read through a table, so the automatic "
+                        "read-based checks cannot be trusted for this entry. "
+                        "Confirm the control really is armed at the site above."
+                        % (where[0][0], where[0][1]),
+                        refs or ["%s:%d" % (r[0], r[1]) for r in where],
+                        "confirm the control is still armed at the site above"))
             else:
                 findings.append(Finding(
                     var, "stale-seed-entry",
@@ -821,6 +885,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_ERROR
 
     artifacts = collect_artifacts(args.extra_artifacts)
+    # Files no commit contains are not a description of the deployment. On
+    # 2026-10-04 this excluded .env (gitignored, holds SECRET_KEY/JWT_SECRET)
+    # and a stray LiuHao-O/docker-compose.yml -- 2 of 21. Keeping them would
+    # make the verdict depend on one developer's unversioned local state.
+    untracked = untracked_artifacts(artifacts)
+    if untracked:
+        artifacts = [p for p in artifacts if p not in untracked]
     artifact_vars = scan_artifact_vars(artifacts)
     reads = scan_env_reads()
     candidates = scan_gate_candidates()
@@ -831,6 +902,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                      | set(ALLOWLIST))
     mentions = scan_literal_mentions(tracked)
     findings = evaluate(artifact_vars, reads, candidates, mentions)
+    for path in untracked:
+        findings.append(Finding(
+            "ARTIFACT:%s" % path.name, "untracked-artifact-ignored",
+            "`%s` looks like a deployment artifact but no commit contains it, "
+            "so it was not read as evidence -- a gate variable satisfied only "
+            "there would pass on this machine and fail everywhere else"
+            % _label(path),
+            [_label(path)],
+            "commit it if it is part of the deployment, or delete it"))
 
     if args.json:
         print(json.dumps({

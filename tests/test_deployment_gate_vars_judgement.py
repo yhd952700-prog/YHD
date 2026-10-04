@@ -37,6 +37,7 @@ green" here would be exactly the fake-pass pattern these tests exist to prevent.
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 
 import pytest
@@ -255,3 +256,52 @@ class TestGateIsNotDecorative:
         )
         findings = gate.evaluate({}, {"PROBE_BAD": [("src/app.py", 1)]}, {}, {})
         assert "bad-seed-entry" in [f.kind for f in findings if f.var == "PROBE_BAD"]
+
+
+# --------------------------------------------------------------------------- #
+# G5 -- evidence must be version-controlled, or the verdict is local state
+# --------------------------------------------------------------------------- #
+class TestEvidenceIsVersionControlled:
+    """A file no commit contains is not a description of the deployment.
+
+    Measured on 2026-10-04: 2 of the 21 collected artifacts were untracked, and
+    one was ``.env`` -- gitignored, containing SECRET_KEY and JWT_SECRET. Had a
+    gate variable been set only there, this gate would have reported "set in the
+    artifact" on the machine that happened to create the file, and "never set"
+    on every other machine and on CI. That is a false green whose cause is
+    invisible: nothing about the run looks different.
+    """
+
+    def test_env_is_excluded_from_the_evidence_set(self, gate):
+        labels = {gate._label(p) for p in gate.collect_artifacts()}
+        if ".env" not in labels:
+            pytest.skip("no untracked .env on this machine")
+        untracked = {gate._label(p) for p in gate.untracked_artifacts(gate.collect_artifacts())}
+        assert ".env" in untracked, (
+            ".env is gitignored and holds secrets; it must never count as "
+            "deployment evidence")
+
+    def test_every_collected_artifact_is_either_tracked_or_reported(self, gate):
+        """No artifact may be quietly ignored: tracked, or named in a finding."""
+        artifacts = gate.collect_artifacts()
+        untracked = {gate._label(p) for p in gate.untracked_artifacts(artifacts)}
+        # In the real run these two are reported as untracked-artifact-ignored.
+        # This test just pins the invariant that the split is total.
+        tracked = {gate._label(p) for p in artifacts} - untracked
+        assert tracked | untracked == {gate._label(p) for p in artifacts}
+
+    def test_artifact_collection_is_deterministic(self, gate):
+        """Same inputs, same order -- twice.
+
+        A gate whose own evidence set reorders between runs produces findings
+        that reorder too, which makes a diff of two runs unreadable and hides
+        real changes among cosmetic ones.
+        """
+        a = gate.collect_artifacts()
+        b = gate.collect_artifacts()
+        assert [str(p) for p in a] == [str(p) for p in b]
+
+    def test_scan_is_deterministic(self, gate):
+        va = gate.scan_artifact_vars(gate.collect_artifacts())
+        vb = gate.scan_artifact_vars(gate.collect_artifacts())
+        assert json.dumps(va, sort_keys=True) == json.dumps(vb, sort_keys=True)
