@@ -69,6 +69,12 @@ import shutil
 import socket
 import subprocess
 import sys
+
+# Bootstrap sys.path so `import src...` resolves when this script is run
+# directly (`python scripts/x.py` from the repo root). Required by the
+# meta-guardrail tests/test_guardrail_scripts.py.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 import tempfile
 import time
 import urllib.error

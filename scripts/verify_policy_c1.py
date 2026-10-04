@@ -8,17 +8,21 @@ Checks (exit 0 = all green):
 
 1. IMPORT   — every module under src/ imports cleanly (catches import-order /
               class-namespace breakage that syntax + lint checks cannot see).
-2. DECORATOR— every ``@kernel_action``-decorated callable **in ``src/kernels/``**
+2. DECORATOR— every ``@kernel_action``-decorated callable under **``src/``**
               still exposes ``__wrapped__`` and a retrievable signature (the
-              decorator did not clobber descriptors). 扫描根是 ``src/kernels/``,
-              **不是**整个 ``src/``；且只覆盖能 import 成功的模块。
+              decorator did not clobber descriptors).
+              扫描根是**整个 ``src/``**：内核动作并不只住在 ``src/kernels/``
+              （``ai.execute_planner_task`` 就在 ``src/ai/goal_task_graph.py``），
+              扫 ``src/kernels/`` 会让它们逃脱本检查。只覆盖能 import 成功的模块。
 3. POLICY   — the internal service principal is verified by the engine and
               the verdict is allow-list driven (not a constant).
 4. FORGERY  — self-declared service claims cannot obtain an allow.
 5. KILLSWITCH — suspending the service identity suppresses every allow.
-6. COVERAGE — every ``@kernel_action("...")`` name found under **``src/kernels/``**
+6. COVERAGE — every ``@kernel_action("...")`` name found under **``src/``**
               is classified in exactly one of the two policy lists (no drift,
-              no wildcard). 扫描根是 ``src/kernels/``，**不是**整个 ``src/``。
+              no wildcard).
+              扫描根是**整个 ``src/``**（理由同 2）。由此任何新装饰的内核动作，
+              无论落在哪个子包，都必须显式进入允许/拒绝清单，否则本检查变红。
 """
 
 from __future__ import annotations
@@ -71,9 +75,11 @@ print("=" * 72)
 print("[2] @kernel_action decorated callables still expose __wrapped__")
 print("=" * 72)
 
-# 扫描根是 src/kernels/，**不是**整个 src/（与上面的 docstring 一致）。
+# 扫描根是**整个 src/**（与上面的 docstring 一致）。内核动作可以定义在
+# src/kernels/ 之外（例如 src/ai/goal_task_graph.py 的
+# ai.execute_planner_task），窄扫描根会让它们绕过本检查。
 kernel_modules = sorted(
-    _module_name(p) for p in (SRC / "kernels").rglob("*.py")
+    _module_name(p) for p in SRC.rglob("*.py")
     if p.name != "__init__.py" or True
 )
 seen = 0
@@ -201,17 +207,22 @@ print(f"  status={original.value:12s} -> {decide('memory.store', SVC).decision.v
 
 print()
 print("=" * 72)
-print("[6] allow-list covers every decorated kernel action under src/kernels/ (no drift)")
+print("[6] allow-list covers every decorated kernel action under src/ (no drift)")
 print("=" * 72)
 
 decorated: set = set()
-# 扫描根是 src/kernels/，**不是**整个 src/（与打印标签一致）。
+# 扫描根是**整个 src/**（与打印标签一致）。理由见 docstring 与本文件 check [2]：
+# 只扫 src/kernels/ 会让定义在其他子包里的内核动作既不报 unclassified，
+# 也把真实存在的动作误判成 stale。
 # 另：``fname`` 只认同一个字面量 ``kernel_action``，被别名导入的装饰器
-# （``from ... import kernel_action as ka``）在此不可见。
-for path in (SRC / "kernels").rglob("*.py"):
+# （``from ... import kernel_action as ka``）在此不可见。实测当前 src/ 下
+# 不存在任何别名导入，故该限制目前影响为零；若将来出现需一并处理。
+for path in SRC.rglob("*.py"):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # ClassDef 一并纳入：装饰在类上的 @kernel_action 同样参与策略裁决，
+        # 只认 FunctionDef 会让它们静默逃脱覆盖率检查。
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         for dec in node.decorator_list:
             if isinstance(dec, ast.Call) and dec.args and isinstance(dec.args[0], ast.Constant):
