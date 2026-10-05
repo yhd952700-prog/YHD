@@ -6,7 +6,7 @@
 > - **进程级入口**：`get_policy_engine()`（`src/kernels/policy/__init__.py:871`，构造后立刻 `initialize()`）。
 > - **生命周期判定：部分实现**。生命周期协议已落地，本类具备 `lifecycle` 字段与四个方法。
 >   - **是否自动驱动**：**是**——进程级惰性单例，首次使用时构造并立即 `initialize()`（存在即 READY）；但 `shutdown`/`pause`/`resume` 无任何后台驱动方，仅由显式调用者触发。
-> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；`scope_enforcement`/`capability_required`/`quota_enforcement` 在真实路径失活（`_adjudicate` 不传 `required_scope`/`required_capability`/`estimated_cost`/`agent.*`/`resource.*`）；`default_deny` 可被 `scope` 关掉形成 fail-open；`NOT_APPLICABLE` 非拒绝。`policy:manage` 权限在 authority A 内、无 authority B 对应动作。
+> - **未接线/仅置位的部分**：`pause()`/`resume()` 已接门禁（见下）；`scope_enforcement`/`capability_required`/`quota_enforcement` 在真实路径失活（`_adjudicate` 不传 `required_scope`/`required_capability`/`estimated_cost`/`agent.*`/`resource.*`）；`default_deny` 可被 `scope` 关掉形成 fail-open；`NOT_APPLICABLE` 非拒绝。`policy:manage` 权限在 authority A 内、无 authority B 对应动作。
 > - **外部审计引用**：无 —— 本文件不引用 `ARCHITECTURE-AUDIT.md`（该文档不在仓库中，其结论已被项目纪律认定不准，不作为权威来源）。原稿中的此类「审计 §X.Y」引用已全部删除或改写。
 >
 > **性质提示**：本规范整体是「设计意图 / 契约（目标态）」而非「现状事实描述」。其 §3 称 `pause()`/`resume()`「当前无实现」已与当前代码不符（现已实现，但仅置位）。生命周期/权限边界章节可作目标契约，但「差距」段落（尤其 P0 结论）需重测后修订。
@@ -40,7 +40,7 @@ Policy Kernel 是系统的 ABAC 策略引擎与权限边界裁决者。它定义
 - 当前 `PolicyEngine` **未继承** `Kernel` 基类，经 `get_policy_engine()`（`:762`）懒加载：首次构建即 `_register_builtin_policies`（`:322`，6 条规则）。
 - `initialize()`：契约 READY（幂等）；当前构建期同步注册内置规则。
 - `shutdown()`：契约 STOPPED；当前无持久状态（规则全内存）。
-- `pause()/resume()`：当前无实现；PAUSED 语义应为拒绝 `evaluate` 新决策（返回 fail-closed）。
+- `pause()/resume()`：**2026-10-05 起 PAUSED/STOPPED 真拒收（fail-closed）**。`evaluate()` 取锁后先校验 `is_servable(self)`，命中则返回 `PolicyDecision(decision=PolicyEffect.DENY, ...)`，并在 `traceability` 写入 `lifecycle-gate:policy engine is <state>` —— 拒绝**可溯源**，不会被误读成一条普通策略拒绝。`resume()` 后恢复裁决。拒绝刻意用返回值而非异常（理由同 security.md：授权路径里「异常被宽泛捕获」= fail-open）。门禁真源：`scripts/verify_kernel_lifecycle_gate.py`。
 - 错误转入 `ERROR`：当规则条件求值抛非预期异常（应为 `PolicyCondition._safe_compare` 已吞，`:227-240`）时，若越界应置 ERROR。
 
 ## 4. 输入模型

@@ -43,6 +43,54 @@ class KernelPermissionError(KernelError):
     """动作被 policy / security 拒绝。"""
 
 
+class KernelNotServableError(KernelStateError):
+    """内核处于 PAUSED / STOPPED，某个受门禁保护的操作被拒绝。
+
+    与 :class:`KernelStateError` 同族（现有 409 映射因此继续成立），但单独成类
+    是为了让「生命周期门禁拒绝」与「非法状态迁移」在日志与测试里可区分：前者是
+    门禁**按设计生效**，后者是调用方**用错了状态**。
+    """
+
+
+#: 只有这两个状态真正关门。``UNINITIALIZED`` **不**关门 —— 见
+#: :func:`is_servable` 的说明。
+_NON_SERVABLE = (KernelLifecycle.PAUSED, KernelLifecycle.STOPPED)
+
+
+def is_servable(kernel: object) -> bool:
+    """该内核此刻是否应当接受受门禁保护的操作。
+
+    只有 ``PAUSED`` / ``STOPPED`` 关门。``UNINITIALIZED`` **有意不关门**：
+    仓库里大量代码直接 ``SecurityEngine()`` / ``AuditStore()`` 构造实例而从不调
+    ``initialize()``（``tests/`` 有 100+ 处，生产也有 ``src/ai/network_gateway.py``
+    这类直接构造），若把 ``UNINITIALIZED`` 也关掉，这些路径会在**从未被 pause 过**
+    的情况下直接失败 —— 那是把门禁变成停产事故，而不是收紧语义。
+
+    这个取舍是刻意的：``UNINITIALIZED`` 的诚实性由 ``/v1/kernels`` 的
+    ``uninitialized_but_present`` 负责暴露（可观测），而门禁只负责
+    ``PAUSED``/``STOPPED`` 这两个**有人明确下达**的状态（可执行）。
+    """
+    return getattr(kernel, "lifecycle", None) not in _NON_SERVABLE
+
+
+def assert_servable(kernel: object, operation: str) -> None:
+    """门禁：``PAUSED`` / ``STOPPED`` 时抛 :class:`KernelNotServableError`。
+
+    供返回值形状无法承载「拒绝」语义的入口使用（写操作、无返回值操作）。
+
+    **不要**在「返回值本身能表达拒绝」的入口用它 —— 那种场合应返回拒绝值并
+    记录原因，否则调用方若宽泛地 catch 异常，会把「拒绝」变成「无主异常」，
+    在 security / policy 这类内核上**方向恰好是 fail-open**。见
+    ``SecurityEngine.check_rbac``（返回 DENY）与 ``NetworkBus.route``
+    （标 FAILED）两种正确写法。
+    """
+    if not is_servable(kernel):
+        raise KernelNotServableError(
+            f"{type(kernel).__name__}.{operation} refused: kernel is "
+            f"{getattr(kernel, 'lifecycle', None)}"
+        )
+
+
 class KernelCapabilityError(KernelError):
     """缺少所需能力，或能力超出 scope。"""
 

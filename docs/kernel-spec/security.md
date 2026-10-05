@@ -6,7 +6,7 @@
 > - **进程级入口**：`get_security_engine()`（`src/kernels/security/__init__.py:768`，构造后立刻 `initialize()`）。
 > - **生命周期判定：部分实现**。生命周期协议已落地，本类具备 `lifecycle` 字段与四个方法。
 >   - **是否自动驱动**：**是**——进程级惰性单例，首次使用时构造并立即 `initialize()`（存在即 READY）；但 `shutdown`/`pause`/`resume` 无任何后台驱动方，仅由显式调用者触发。
-> - **未接线/仅置位的部分**：`pause()`/`resume()` 仅置位状态；与 Policy 存在双访问权威；`_enforce_principal_scope` 无记录即 no-op（scope 天花板默认失效）；`_eval_condition` 数字比较回退字符串比较；`decide_access` 默认「仅记录」不拦截执行。冒号权限（`context:read` 等）在 authority A（本 kernel）内裁决，与 authority B 的 point-dot 动作互不交叉（见 `_permission_map.py`）。
+> - **未接线/仅置位的部分**：`pause()`/`resume()` 已接门禁（见下）；与 Policy 存在双访问权威；`_enforce_principal_scope` 无记录即 no-op（scope 天花板默认失效）；`_eval_condition` 数字比较回退字符串比较；`decide_access` 默认「仅记录」不拦截执行。冒号权限（`context:read` 等）在 authority A（本 kernel）内裁决，与 authority B 的 point-dot 动作互不交叉（见 `_permission_map.py`）。
 > - **外部审计引用**：无 —— 本文件不引用 `ARCHITECTURE-AUDIT.md`（该文档不在仓库中，其结论已被项目纪律认定不准，不作为权威来源）。原稿中的此类「审计 §X.Y」引用已全部删除或改写。
 >
 > **性质提示**：本规范整体是「设计意图 / 契约（目标态）」而非「现状事实描述」。其 §3 称 `pause()`/`resume()`「当前无实现」已与当前代码不符（现已实现，但仅置位）。生命周期/权限边界章节可作目标契约，但「差距」段落需重测后修订。
@@ -43,7 +43,8 @@ Security Kernel 提供 RBAC + ABAC 访问控制、scope 天花板强制与内存
 - 当前 `SecurityEngine` **未继承** `Kernel` 基类，经 `get_security_engine()`（`:722`）懒加载：首次构建即 `_seed_default_rules`（`:184`，12 条冒号权限 RBAC 规则）。
 - `initialize()`：契约 READY（幂等）；当前构建期同步播种规则。
 - `shutdown()`：契约 STOPPED；当前内存审计 `_audit_log`（`:181`）应 flush 到持久 store。
-- `pause()/resume()`：当前无实现；PAUSED 语义应为拒绝 `decide_access`/`check_rbac`。
+- `pause()/resume()`：**2026-10-05 起 PAUSED/STOPPED 真拒收**。`check_rbac()` 取锁后先校验 `is_servable(self)`，命中则**返回 `AccessDecision.DENY`** 并写审计轨迹；`check_access()` / `decide_access()` 经 `_evaluate_access()` → `check_rbac()` 一并继承（实测三者均返回 deny）。`resume()` 后放行恢复。
+  **拒绝方向刻意是「返回值」而不是抛异常**：若改为抛 `KernelNotServableError`，上游一个宽泛的 `except` 就会让「拒绝」变成「无判定」，而授权路径里「无判定」的失效方向**恰好是 fail-open** —— 对本内核是最坏的失效方向。门禁真源：`scripts/verify_kernel_lifecycle_gate.py`。
 - 错误转入 `ERROR`：当 Vault 客户端库（已移除幻影依赖，`:45-49`）或被懒导入 identity 模块不可用时不应静默——应记 ERROR。
 
 ## 4. 输入模型

@@ -12,7 +12,12 @@ IDs for end-to-end traceability.
 - Provide ordering guarantees per correlation ID
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import (
+    KernelLifecycle,
+    KernelNotServableError,
+    KernelStateError,
+    is_servable,
+)
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -148,8 +153,29 @@ class EventBus:
 
     @kernel_action("event.publish")
     def publish(self, event: Event) -> str:
-        """Publish an event to all matching subscribers."""
+        """Publish an event to all matching subscribers.
+
+        Lifecycle gate: a PAUSED / STOPPED bus refuses the publish and records
+        the event as a dead letter, so the refusal is visible in
+        ``stats()["dead_letters_total"]`` instead of vanishing. It previously
+        only flipped a flag and kept delivering to subscribers, so "paused" was
+        a label rather than a behaviour.
+        """
         with self._lock:
+            if not is_servable(self):
+                self._dead_letters.append(
+                    DeadLetterEntry(
+                        event,
+                        KernelNotServableError(
+                            f"event bus is {self.lifecycle.value}"
+                        ),
+                        "lifecycle-gate",
+                    )
+                )
+                raise KernelNotServableError(
+                    f"EventBus.publish refused: event bus is {self.lifecycle.value}"
+                )
+
             # Store in history
             self._event_history.append(event)
             if len(self._event_history) > self._max_history:

@@ -26,7 +26,7 @@ REALITY CHECK — protocol surface (do not overstate):
                 Treat A2A/MCP/GRPC as PLANNED / not-implemented here.
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,7 +39,7 @@ import os
 import threading
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 logger = logging.getLogger("liuhao.kernel.network")
 
@@ -609,13 +609,17 @@ class NetworkBus:
         with self._lock:
             # Lifecycle gate: PAUSED / STOPPED must actually refuse traffic.
             # Previously ``pause()`` only flipped the flag and routing carried
-            # on, so "paused" was a label, not a behaviour.
-            if self.lifecycle in (KernelLifecycle.PAUSED, KernelLifecycle.STOPPED):
+            # on, so "paused" was a label, not a behaviour. This is the
+            # reference implementation the other kernels were aligned to;
+            # ``is_servable`` is the single source of truth for the state
+            # matrix (see ``src/kernels/_base.py``).
+            if not is_servable(self):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = (
                     f"network bus is {self.lifecycle.value}; route()/send() "
                     "are refused while paused or stopped"
                 )
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Find route (protocol-aware: see _match_route).
@@ -624,6 +628,7 @@ class NetworkBus:
             if not route:
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"No route found for {message.destination}"
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Scope enforcement (Permissioned): the message may only be
@@ -632,12 +637,14 @@ class NetworkBus:
             if not _is_valid_scope(msg_scope):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"Invalid message scope: {msg_scope!r}"
+                mark_action_denied(message.metadata["error"])
                 return message
             if _scope_rank(msg_scope) > _scope_rank(route.scope):
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = (
                     f"Message scope {msg_scope} exceeds route scope {route.scope}"
                 )
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Get adapter
@@ -645,6 +652,7 @@ class NetworkBus:
             if not adapter:
                 message.status = MessageStatus.FAILED
                 message.metadata["error"] = f"No adapter for protocol {route.protocol}"
+                mark_action_denied(message.metadata["error"])
                 return message
 
             # Update message with route info. The route's protocol is the

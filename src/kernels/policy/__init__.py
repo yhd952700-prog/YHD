@@ -25,7 +25,7 @@ ENFORCEMENT (hard-deny) is a SEPARATE, deployment-controlled concern:
 - Provide audit trail for all decisions
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 from dataclasses import dataclass, field
@@ -680,6 +680,17 @@ class PolicyEngine:
         ``PolicyDecision``, not the wrapper's outcome.
         """
         with self._lock:
+            if not is_servable(self):
+                return PolicyDecision(
+                    decision=PolicyEffect.DENY,
+                    matched_rules=[],
+                    denied_rules=[],
+                    abstained_rules=[],
+                    traceability=[
+                        f"lifecycle-gate:policy engine is {self.lifecycle.value}"
+                    ],
+                    context=dict(context),
+                )
             # Ensure the human-verification signal is present on the
             # actor/agent context so the human_sovereignty rule can gate
             # on it (P10). We never trust a caller-supplied "verified"

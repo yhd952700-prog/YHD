@@ -17,7 +17,7 @@ lives in src/security/vault_client.py and src/integrations/vault/ and is not
 wired here. See KERNEL-PRODUCT-CAPABILITY.md §10.
 """
 from __future__ import annotations
-from src.kernels._base import KernelLifecycle, KernelStateError
+from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 
 import logging
 import threading
@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 from ._permission_map import get_mapping
 
 _log = logging.getLogger(__name__)
@@ -313,6 +313,9 @@ class SecurityEngine:
                 )
                 self._audit_log.append(audit)
                 return True
+            mark_action_denied(
+                f"revoke_rbac_role rejected: {principal_id!r} does not hold role {role.value}"
+            )
             return False
 
     def check_rbac(self, principal_id: str, permission: str, scope: str = "L1") -> AccessDecision:
@@ -321,8 +324,24 @@ class SecurityEngine:
         Scope participates in the decision (S4): an invalid scope value is
         rejected with DENY, and a request whose scope exceeds the
         principal's authorized ceiling is denied.
+
+        Lifecycle gate: a PAUSED / STOPPED security engine returns DENY (and
+        audits it) instead of adjudicating. ``pause()`` used to only flip a
+        flag, so a "paused" engine kept granting access. The refusal is a
+        *returned DENY*, never a raised exception -- a caller that catches
+        broadly would otherwise turn "denied" into an unhandled path whose
+        effective direction is fail-OPEN, which is precisely the wrong way
+        for this kernel to fail.
         """
         with self._lock:
+            if not is_servable(self):
+                self._audit_rbac_check(
+                    principal_id, permission, scope, "denied",
+                    f"RBAC check denied: security engine is "
+                    f"{self.lifecycle.value}",
+                )
+                return AccessDecision.DENY
+
             if not _is_valid_scope(scope):
                 self._audit_rbac_check(principal_id, permission, scope, "denied",
                                        f"RBAC check denied: invalid scope {scope!r}")
