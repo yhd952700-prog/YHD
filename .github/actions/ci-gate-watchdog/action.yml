@@ -1,0 +1,39 @@
+name: 'CI Gate Watchdog (CRITICAL-5)'
+description: >-
+  Fail the current gate job LOUDLY when a required upstream job did not succeed,
+  instead of letting GitHub Actions silently SKIP the dependent job.
+
+  Failure mode being closed (CRITICAL-5): every gate job that `needs: test`
+  (security, guardrails, guardrails-extended, lint, gate-check) is wired through
+  `needs:`, so when the Ubuntu `test` job goes red for any reason GitHub marks
+  those gates as SKIPPED rather than FAILED. A first-run blind deployment failure
+  therefore never turns the "all green" RELEASE-READY signal red — it just
+  disappears. This action, paired with `if: always()` on the gate job, makes the
+  gate fail explicitly so a broken `test` can never mask a broken build.
+
+inputs:
+  upstream-name:
+    description: 'Human-readable name of the required upstream job, e.g. "test".'
+    required: true
+  upstream-result:
+    description: >-
+      Result of the required upstream job, passed in as
+      `${{ needs.<job>.result }}`. One of: success | failure | cancelled |
+      skipped | "" (empty if the input was omitted).
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: CRITICAL-5 watchdog — fail loudly if upstream did not succeed
+      shell: bash
+      env:
+        UPSTREAM_NAME: ${{ inputs.upstream-name }}
+        UPSTREAM_RESULT: ${{ inputs.upstream-result }}
+      run: |
+        echo "CRITICAL-5 watchdog: required upstream job '${UPSTREAM_NAME}' result='${UPSTREAM_RESULT}'"
+        if [ "${UPSTREAM_RESULT}" != "success" ]; then
+          echo "::error::CRITICAL-5: gate blocked. Required upstream job '${UPSTREAM_NAME}' did not succeed (result=${UPSTREAM_RESULT}). Failing this gate LOUDLY instead of letting GitHub silently SKIP it, so a red '${UPSTREAM_NAME}' run cannot mask a broken build behind a false 'all green'."
+          exit 1
+        fi
+        echo "CRITICAL-5 watchdog: upstream '${UPSTREAM_NAME}' succeeded; this gate may proceed."

@@ -106,11 +106,21 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red test must not mask a green gate).
+    if: always()
     permissions:
       contents: read
       security-events: write
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
       - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scan
@@ -215,9 +225,18 @@ jobs:
     name: Guardrails (Policy C-1..C-6, identity root, ORM, persistence)
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
     timeout-minutes: 15
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -647,6 +666,8 @@ jobs:
     name: Guardrails Extended (audit/identity/execution/employee/user-surface)
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
     timeout-minutes: 25
 
     # Isolation, belt-and-braces. These gates redirect persistence themselves,
@@ -661,6 +682,13 @@ jobs:
       LIUHAO_ALERTS_STORE_PATH: ${{ runner.temp }}/liuhao-alerts.json
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -799,9 +827,18 @@ jobs:
     name: Linting
     runs-on: ubuntu-latest
     needs: test
+    # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
+    if: always()
     timeout-minutes: 15
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -1170,8 +1207,30 @@ jobs:
     # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
     # 用 default_branch 可自愈：以后换默认分支不必再改这里。
     # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # CRITICAL-5: keep the default-branch restriction AND run even if an upstream
+    # job failed, so a red 'test'/'security'/'observability' cannot silently SKIP
+    # this final gate.
+    if: always() && github.ref_name == github.event.repository.default_branch
     steps:
+      # CRITICAL-5 watchdog: fail loudly if any required upstream did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+
+      - name: CRITICAL-5 gate watchdog (security)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: security
+          upstream-result: ${{ needs.security.result }}
+
+      - name: CRITICAL-5 gate watchdog (observability)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: observability
+          upstream-result: ${{ needs.observability.result }}
+
       - name: Check STAGING_DATABASE_URL
         run: |
           if [ -z "${{ secrets.STAGING_DATABASE_URL }}" ]; then
