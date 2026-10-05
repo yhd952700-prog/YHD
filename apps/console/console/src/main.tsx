@@ -5,10 +5,23 @@ import './index.css'
 // index.css 引入，否则 :root 上的默认令牌会被基础样式覆盖。
 import './os.css'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {/*
+      最后一道边界：罩住整棵树。
+
+      在此之前，任何渲染异常都会让 React **卸载整棵树**，`#root` 里什么都不剩 ——
+      屏幕全白，而白屏里没有任何一句话能告诉人"出了什么事"。对一个把"人类主权"
+      写在首要位置的系统来说，最需要观测的时刻反而没有界面可看，这是最坏的失败形态。
+
+      `App` 内部另有分区级边界（见 components/ui.tsx 的 Card），所以这里兜住的
+      只会是外壳级故障；它的职责是"绝不让整个界面消失成一块空白"。
+    */}
+    <ErrorBoundary label="控制台整体">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )
 

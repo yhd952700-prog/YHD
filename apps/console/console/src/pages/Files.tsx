@@ -28,6 +28,7 @@ import {
   type FileListResponse,
 } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
+import { safeText } from '../lib/format'
 
 /** 路径面包屑：把 `a/b/c` 拆成 [{label, path}]，根单独成一项。 */
 function breadcrumbs(path: string): { label: string; path: string }[] {
@@ -111,7 +112,9 @@ export function Files({ query }: { query: string }) {
     const entries = listing.data?.entries ?? []
     if (!need) return entries
     return entries.filter((entry) =>
-      [entry.name, entry.rel_path, entry.type].some((value) => value.toLowerCase().includes(need)),
+      [entry.name, entry.rel_path, entry.type].some((value) =>
+        safeText(value).toLowerCase().includes(need),
+      ),
     )
   }, [listing.data, need])
 

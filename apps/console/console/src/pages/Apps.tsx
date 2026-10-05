@@ -25,6 +25,7 @@ import {
   type AppsResponse,
 } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
+import { safeArray } from '../lib/format'
 
 /** 状态色：与 goals / projects 的色调约定一致。 */
 function statusTone(status: string): 'accent' | 'danger' | 'muted' {
@@ -75,7 +76,7 @@ export function Apps({ query }: { query: string }) {
     const list = apps.data?.plugins ?? []
     if (!need) return list
     return list.filter((app: AppSummary) =>
-      [app.plugin_id, app.name, app.kernel_type, ...app.capabilities]
+      [app.plugin_id, app.name, app.kernel_type, ...safeArray<string>(app.capabilities)]
         .filter((value): value is string => typeof value === 'string')
         .some((value) => value.toLowerCase().includes(need)),
     )
@@ -128,7 +129,9 @@ export function Apps({ query }: { query: string }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {shown.map((app: AppSummary) => (
+                    {shown.map((app: AppSummary) => {
+                      const caps = safeArray(app.capabilities)
+                      return (
                       <tr key={app.plugin_id}>
                         <td>{app.plugin_id}</td>
                         <td>{app.name}</td>
@@ -142,9 +145,9 @@ export function Apps({ query }: { query: string }) {
                           )}
                         </td>
                         <td>
-                          {app.capabilities.length === 0
+                          {caps.length === 0
                             ? '—'
-                            : app.capabilities.join(', ')}
+                            : caps.join(', ')}
                         </td>
                         <td>
                           {app.active ? (
@@ -165,7 +168,7 @@ export function Apps({ query }: { query: string }) {
                           )}
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>

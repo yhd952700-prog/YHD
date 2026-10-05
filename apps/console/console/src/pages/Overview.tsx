@@ -24,7 +24,8 @@ import type {
 } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { eventLabel, outcomeLabel, outcomeTone, relativeTime } from '../lib/format'
+import { eventLabel, outcomeLabel, outcomeTone, relativeTime, safeText } from '../lib/format'
+import { providerPosture, providerRowSubtitle } from '../lib/honesty'
 import { BrainMap, DonutChart, LineChart, NetworkGraph } from '../components/charts'
 import { Card, Dot, Guard } from '../components/ui'
 
@@ -47,9 +48,9 @@ export function Overview({ query }: { query: string }) {
     return items
       .filter(
         (item) =>
-          item.principal.toLowerCase().includes(need) ||
+          safeText(item.principal).toLowerCase().includes(need) ||
           eventLabel(item.type).toLowerCase().includes(need) ||
-          item.type.toLowerCase().includes(need) ||
+          safeText(item.type).toLowerCase().includes(need) ||
           outcomeLabel(item.outcome).toLowerCase().includes(need),
       )
       .slice(0, 8)
@@ -368,19 +369,39 @@ export function Overview({ query }: { query: string }) {
           emptyTitle="没有已注册的 provider"
           onRetry={roster.reload}
         >
-          {(data) => (
+          {(data) => {
+            // 诚实性判据的**唯一来源**是当前生效的那个 provider。逐项渲染时用它，
+            // 而不是各算各的 —— 否则同一个"是不是真的"问题会在 7 行里得到 7 个
+            // 不同答案，那比全都不显示更糟。
+            const posture = providerPosture(data)
+            return (
             <>
               <div className="os-list">
-                {data.items.map((item) => (
+                {data.items.map((item) => {
+                  const itemPosture = providerPosture({
+                    mode: data.mode,
+                    simulated: data.simulated,
+                  })
+                  // configured 仍决定"能不能接通"这一层事实（缺密钥就是接不通），
+                  // 但它绝不能替代诚实性 —— 下面那一行字两者都要说。
+                  const dotTone = !item.configured
+                    ? item.registered
+                      ? 'var(--os-warn)'
+                      : 'var(--os-text-faint)'
+                    : itemPosture.tone === 'ok'
+                      ? 'var(--os-ok)'
+                      : itemPosture.tone === 'danger'
+                        ? 'var(--os-danger)'
+                        : 'var(--os-warn)'
+                  const badgeTone = !item.configured
+                    ? 'warn'
+                    : itemPosture.tone
+                  return (
                   <div className="os-row" key={item.type}>
                     <span
                       className="os-dot"
                       style={{
-                        background: item.configured
-                          ? 'var(--os-ok)'
-                          : item.registered
-                            ? 'var(--os-warn)'
-                            : 'var(--os-text-faint)',
+                        background: dotTone,
                       }}
                     />
                     <div className="os-row-main">
@@ -394,20 +415,36 @@ export function Overview({ query }: { query: string }) {
                             </span>
                           </>
                         )}
+                        {item.is_mock && (
+                          <>
+                            {' '}
+                            <span className="os-badge" data-tone="danger">
+                              模拟
+                            </span>
+                          </>
+                        )}
                       </div>
                       <div className="os-row-sub">
-                        {item.configured
-                          ? '已配置，可用于真实调用'
-                          : item.required_env.length > 0
-                            ? `缺少密钥：${item.required_env.join(' / ')}`
-                            : '无需密钥'}
+                        {providerRowSubtitle({
+                          configured: item.configured,
+                          requiredEnv: item.required_env,
+                          // 逐项都以**当前生效 provider**的诚实性为准：现在生效的
+                          // 是不是假 provider，决定了界面上任何一句"可用于调用"
+                          // 该不该被相信，所以这里必须显式传，不能默认省略。
+                          posture: itemPosture,
+                        })}
                       </div>
                     </div>
-                    <span className="os-badge" data-tone={item.configured ? 'ok' : 'warn'}>
-                      {item.configured ? '就绪' : '未配置'}
+                    <span className="os-badge" data-tone={badgeTone}>
+                      {!item.configured
+                        ? '未配置'
+                        : itemPosture.isReal
+                          ? '就绪'
+                          : itemPosture.badge}
                     </span>
                   </div>
-                ))}
+                  )
+                })}
               </div>
               <div className="os-legend" style={{ marginTop: 10 }}>
                 <Dot
@@ -418,6 +455,15 @@ export function Overview({ query }: { query: string }) {
                       <span className="os-legend-value">
                         {roster.data?.providers.active.type ?? '—'}
                       </span>
+                    </>
+                  }
+                />
+                <Dot
+                  tone={posture.tone}
+                  label={
+                    <>
+                      {posture.isReal ? '真实调用' : '非真实调用'} ·{' '}
+                      <span className="os-legend-value">{posture.badge}</span>
                     </>
                   }
                 />
@@ -433,8 +479,14 @@ export function Overview({ query }: { query: string }) {
                   }
                 />
               </div>
+              {/* 一句话把"能否接通"和"是否真实"分开说清。这是后端三个诚实性字段
+                  第一次真正抵达人眼的地方 —— 在此之前它们从未被任何界面渲染过。 */}
+              <p className="os-note" style={{ marginTop: 8 }}>
+                <span>{posture.verdict}。</span>
+              </p>
             </>
-          )}
+            )
+          }}
         </Guard>
       </Card>
     </div>

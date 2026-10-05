@@ -13,6 +13,7 @@
 import type { ReactNode } from 'react'
 import type { Tone } from '../lib/format'
 import { toneVar } from '../lib/format'
+import { ErrorBoundary } from './ErrorBoundary'
 import { IconAlert, IconRefresh } from './icons'
 
 export function Card({
@@ -37,7 +38,14 @@ export function Card({
         </div>
         {action}
       </div>
-      <div className="os-card-body">{children}</div>
+      {/* 每个 Card 自带一道边界。这不是可有可无的包装：
+          没有它，一个面板的渲染异常会卸载**整棵 React 树**，于是"审计面板里的
+          一个字段缺失"会连带把总览、导航、登录态界面全部变成白屏 —— 一个人类
+          主体在系统出问题时看不到任何东西。边界把它降级成"这一块坏了，其余照常"，
+          并在原地显示真实的错误消息与重试入口。 */}
+      <div className="os-card-body">
+        <ErrorBoundary label={title}>{children}</ErrorBoundary>
+      </div>
     </section>
   )
 }

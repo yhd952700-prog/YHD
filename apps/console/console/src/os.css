@@ -725,6 +725,51 @@ select {
   animation: os-shimmer 1.4s ease-in-out infinite;
 }
 
+/* 渲染崩溃面板（ErrorBoundary 的兜底 UI）。
+   刻意**不**复用 `.os-empty`：那个是"这里本来就没有数据"的语气（虚线框 + 弱化文字）。
+   一个崩掉的区块如果长成那个样子，人会读成"这块没数据" —— 那正好在最该报警的时候
+   制造了一个看起来平静的界面。所以这里用 danger 色调 + 实线左边框：它必须一眼
+   就和"空"区分开。 */
+.os-crash {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(in srgb, var(--os-danger) 42%, transparent);
+  border-left: 3px solid var(--os-danger);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--os-danger) 8%, transparent);
+  font-size: 12px;
+}
+
+.os-crash-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--os-danger);
+}
+
+.os-crash-head strong {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.os-crash-message {
+  margin: 0;
+  color: var(--os-text-dim);
+  font-family: var(--os-font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.os-crash-note {
+  margin: 0;
+  color: var(--os-text-faint);
+  line-height: 1.6;
+}
+
 @keyframes os-shimmer {
   0% { background-position: 100% 0; }
   100% { background-position: 0 0; }
