@@ -433,3 +433,52 @@ class TestDefects:
             f"instead of FAILED"
         )
         assert result.escalation_required is True
+
+
+# =====================================================================
+# Alignment: evaluation verdict must reconcile with actual execution
+# (reports success but did nothing/failed -- evaluation chain)
+# =====================================================================
+
+class TestEvaluationHonorsExecutionOutcome:
+    def test_no_criteria_but_failed_tasks_is_not_success(self, evaluator):
+        """A goal with no success criteria whose tasks FAILED to execute must
+        NOT be reported SUCCESS. _determine_outcome returns SUCCESS for an
+        empty criterion set; without the reality-check the actual execution
+        failure (actual_outcome['failed']) was ignored -- the exact
+        'reports success, did nothing/failed' class.
+        """
+        result = evaluator.evaluate(
+            {"id": "g1", "expected_outputs": {}},
+            {"goal_id": "g1", "completed": [], "failed": ["t1"], "task_results": {}},
+        )
+        assert result.outcome is EvaluationOutcome.FAILED, (
+            f"failed-task goal reported {result.outcome.value}, expected FAILED"
+        )
+
+    def test_no_criteria_all_completed_stays_success(self, evaluator):
+        """No criteria + every task genuinely completed -> SUCCESS is correct."""
+        result = evaluator.evaluate(
+            {"id": "g2", "expected_outputs": {}},
+            {"goal_id": "g2", "completed": ["t1", "t2"], "failed": [], "task_results": {}},
+        )
+        assert result.outcome is EvaluationOutcome.SUCCESS
+
+    def test_no_criteria_some_failed_is_partial(self, evaluator):
+        """No criteria + some completed, some failed -> PARTIAL, not SUCCESS."""
+        result = evaluator.evaluate(
+            {"id": "g3", "expected_outputs": {}},
+            {"goal_id": "g3", "completed": ["t1"], "failed": ["t2"], "task_results": {}},
+        )
+        assert result.outcome is EvaluationOutcome.PARTIAL
+
+    def test_criteria_met_but_failed_tasks_downgraded(self, evaluator):
+        """Even when declared criteria are met, failed tasks must not read as
+        plain SUCCESS -- the execution reality wins (PARTIAL when some done).
+        """
+        result = evaluator.evaluate(
+            {"id": "g4", "expected_outputs": {"x": 1}},
+            {"goal_id": "g4", "completed": ["t1"], "failed": ["t2"],
+             "task_results": {}, "x": 1},
+        )
+        assert result.outcome in (EvaluationOutcome.PARTIAL, EvaluationOutcome.FAILED)

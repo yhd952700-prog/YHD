@@ -226,6 +226,23 @@ class Evaluator:
         # Determine outcome
         outcome = self._determine_outcome(overall_score, criterion_results, eval_criteria)
 
+        # Alignment reality-check. The criteria comparison above knows nothing
+        # about whether the work actually executed. A goal with no declared
+        # success criteria is "trivially SUCCESS" by _determine_outcome (an
+        # empty criterion set means nothing was violated), but if the actual
+        # execution reported failed tasks the goal did NOT succeed. Reporting
+        # SUCCESS there is exactly the "reports success, did nothing / failed"
+        # failure class this kernel must not have. Reconcile the verdict with
+        # what actually happened -- only when the caller supplied it, so
+        # generic callers that pass no execution state are unaffected.
+        failed = actual_outcome.get("failed") or []
+        completed = actual_outcome.get("completed") or []
+        if failed and outcome == EvaluationOutcome.SUCCESS:
+            outcome = (
+                EvaluationOutcome.FAILED if not completed
+                else EvaluationOutcome.PARTIAL
+            )
+
         # Generate feedback
         feedback, feedback_type = self._generate_feedback(
             outcome, overall_score, criterion_results, eval_criteria
