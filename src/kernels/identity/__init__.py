@@ -895,6 +895,34 @@ class IdentityManager:
         identity in the wrong namespace or land on an occupied slot.
         """
         with self._lock:
+            # Principal must be a non-empty string. The contract is
+            # ``principal: str``; anything else -- ``None`` left behind by a
+            # missing config value, ``0``/``False`` from a type confusion, an
+            # empty or whitespace-only string -- is a caller bug that must NOT be
+            # silently coerced into a phantom principal. The prior
+            # normalisation turned ``None`` into the literal "None" and minted a
+            # nameable subject ("human:None") that is_human_identity() would then
+            # accept, so the minting primitive in this kernel could be reached
+            # with no principal at all.
+            if not isinstance(principal, str) or not principal.strip():
+                self._audit(
+                    identity_id=str(principal),
+                    operation="create",
+                    permission=None,
+                    scope=scope,
+                    result="denied",
+                    reason=(
+                        f"principal must be a non-empty string, got "
+                        f"{type(principal).__name__}"
+                    ),
+                )
+                logger.error(
+                    "refusing identity creation: principal %r is not a "
+                    "non-empty string",
+                    principal,
+                )
+                mark_action_denied("principal is not a non-empty string")
+                return None
             principal_as_supplied = principal
             principal = normalize_principal(principal).strip()
             if is_reserved_principal(principal_as_supplied):
