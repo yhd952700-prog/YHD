@@ -89,11 +89,11 @@
 
 | | |
 |---|---|
-| **PASS** | **6** (P2, P3, P4, P6, P7, P8) |
-| **BLOCKED** | **4** (P1, P5, P9, P10) — backends **and** UIs are real & wired; outstanding = browser click-through (this host has no headless browser). **C-3/C-4 human-sovereignty authority surface is fully engineered and proven** (kernel `src/kernels/_sovereignty.py` + HTTP `src/gateway/policy.py` + console `components/ApprovalCenter.tsx` + 105 passing tests) — it is **NOT an undelegable owner decision**, it is ordinary fail-closed engineering. |
+| **PASS** | **5** (P2, P4, P6, P7, P8) |
+| **BLOCKED** | **5** (P1, P3, P5, P9, P10) — P1/P5/P9/P10 are environment-limited (browser click-through on a host with no headless browser); **P3 is BLOCKED on a real capability gap**: multi-agent collaboration is decorative (byte-identical outcome across 0/3-real/3-ghost agents — see P3). **C-3/C-4 human-sovereignty authority surface is fully engineered and proven** (kernel `src/kernels/_sovereignty.py` + HTTP `src/gateway/policy.py` + console `components/ApprovalCenter.tsx` + 105 passing tests) — it is **NOT an undelegable owner decision**, it is ordinary fail-closed engineering. |
 | **FAIL** | **0** |
 | **NOT YET TESTED** | 0 |
-| **PRODUCT ACCEPTANCE** | **NOT READY** (all 10 gates are capability-proven; 4 are BLOCKED solely on the environment-limited browser click-through) |
+| **PRODUCT ACCEPTANCE** | **NOT READY** — 5 gates BLOCKED: P1/P5/P9/P10 on the environment-limited browser click-through, and **P3 on a genuine capability gap** (multi-agent collaboration is decorative, not causal) |
 | **RELEASE READINESS** | **NOT RELEASE READY** (G9 full Docker-compose + browser click-through is BLOCKED on the host WSL2 restriction — portable to a capable host) |
 
 The single most important fact in this document: **the one end-to-end user
@@ -126,9 +126,11 @@ owner decision" is now **disproven** — the C-3/C-4 human-sovereignty channel i
 fully engineered (kernel `src/kernels/_sovereignty.py`, HTTP
 `src/gateway/policy.py`, console `components/ApprovalCenter.tsx`, 105 passing
 tests) and is ordinary fail-closed engineering, not an undelegable human-sovereignty
-*decision*. P9's only remaining blocker is the browser click-through. P2/P3 are
-PASS. The product is still **NOT READY** only because the browser click-through is
-outstanding on this host.
+*decision*. P9's only remaining blocker is the browser click-through. P2 is
+PASS; **P3 is BLOCKED** (multi-agent collaboration is decorative — see the P3
+section and `scripts/verify_agent_collaboration_causal.py`). The product is still
+**NOT READY** because the browser click-through is outstanding on this host **and**
+P3 is a genuine capability gap, not an environment gap.
 
 ---
 
@@ -246,47 +248,51 @@ measured this cycle.**
 
 ---
 
-## P3 — Multi-Agent Collaboration — **PASS** (cycle 6, measured — deterministic, no LLM)
+## P3 — Multi-Agent Collaboration — **BLOCKED (decorative — not causal)**
 
 **Requires:** more than one AI employee working a shared goal, with results
-combined.
+combined — and the *combination* must be **causal**: removing or corrupting an
+agent must change the result.
 
-**Evidence (measured, not assumed):**
-- `src/ai/collaboration.py` (the LLM-backed `MultiAgentTeam`) is still an orphan
-  with zero user-facing callers and requires a provider key — but forcing it into
-  the path without a key would mean injecting a fake provider and *manufacturing*
-  results, which violates the honesty discipline. So it is deliberately **not**
-  the mechanism used to close this gate.
-- Instead, the gate is met **honestly and deterministically** (no LLM): for a
-  real file-write goal, `GoalDecomposer.decompose` now emits **two genuinely
-  distinct REAL tasks** — `WriteFile` (writes the file via the local
-  `file_write` tool) and `WriteChecksum` (writes a derived `sha256` integrity
-  **sidecar** for that same file, content = `sha256(primary content)`), with an
-  explicit dependency so the checksum runs after the file exists. Both are real
-  `file_write` actions executed by the wired local executor.
-- Each task is assigned to a **distinct real agent** from the persisted
-  `Employee` (gateway injects `liuhao-default-a0` / `-a1` into the decomposer;
-  absent that, deterministic synthetic ids). The goal-detail response surfaces
-  `assigned_agent` (already wired at `ai_management.py` ~L888) so ≥2 agents are
-  observably working the goal.
-- The combined result is **observable end to end**: `GET /v1/goals/{id}` returns
-  `artifacts` containing **both** the file and its `.sha256` sidecar (the
-  `_collect_artifacts` collector already only records `file_write` tasks, so both
-  real artifacts appear).
+**Status (re-assessed 2026-10-05, agent-science):** the previously-recorded PASS
+rested on **labels, not behaviour**. A file-write goal does emit two `file_write`
+tasks (`WriteFile` + `WriteChecksum` sidecar) assigned to two distinct agent
+ids (`liuhao-default-a0` / `-a1`), and both artifacts are observable on disk.
+That satisfies *a* reading of the bar (≥2 agents assigned, ≥2 artifacts). But it
+does **not** satisfy the causal reading the bar actually demands:
 
-**Honest residual (why recorded as capability-complete):** the gate's flip bar —
-*a goal is genuinely worked by ≥2 agents and the combined result is observable
-end to end* — is met and measured by
-`tests/gateway/test_p3_multi_agent_collaboration.py` (4/4): a file-write goal via
-the real gateway yields ≥2 distinct `assigned_agent` values and ≥2 real
-on-disk artifacts (file + checksum) with correct content. The LLM-backed
-multi-agent *orchestration* (`collaboration.py`) remains a separate owner-gated
-item; what this gate requires — ≥2 agents genuinely doing real, distinct work on
-one goal with an observable combined result — is satisfied by the deterministic
-path.
+- `scripts/verify_agent_collaboration_causal.py` run on current HEAD
+  (commit 95011a00) returns **3/6 PASS, 3 true-negative FAIL**:
+  - `arm1_agent_pool_is_causal` FAIL — the goal's on-disk outcome (`report.txt`
+    + sha256) is **byte-identical** with **0 agents / 3 real agents / 3 ghost
+    agents**. The pool changes only the *label*, so multi-agent collaboration is
+    **DECORATIVE**.
+  - `arm1_corrupt_agent_does_not_silently_succeed` FAIL — a non-existent agent id
+    still completes, confirming the assignment is not causal to execution.
+  - `arm2_memory_is_causal` FAIL — a planted "NEVER write files" memory entry
+    changes **nothing**; the run never reads memory, so agents cannot learn from
+    it.
+  - `arm3_positive_control` PASS — a different goal yields different artifacts,
+    proving the harness is live (the FAILs are real, not a dead gate).
 
-**Flips to PASS when:** a goal is genuinely worked by ≥2 agents and the combined
-result is observable end to end. **Met and measured this cycle (deterministic).**
+**Conclusion:** "distinct `assigned_agent` values" is a *label*, not a result.
+The decomposition emits two real `file_write` tasks, but their assignment to
+distinct agents is **not causal** to the outcome. Genuine multi-agent
+collaboration (distinct sub-problems worked by distinct agents whose outputs are
+actually merged into the goal result) is **not yet present**.
+
+**Honest residual:** the LLM-backed orchestration (`src/ai/collaboration.py`,
+`MultiAgentTeam`) remains an orphan with zero user-facing callers and requires a
+provider key — injecting it without a key would *manufacture* results, which
+violates the honesty discipline, so it is deliberately **not** the mechanism.
+What *is* real: two sequential `file_write` actions run, two artifacts land, and
+the labels differ. That is a single-agent-shaped pipeline dressed in two labels —
+acceptable as a building block, **not** as "multi-agent collaboration".
+
+**Flips to PASS when:** `verify_agent_collaboration_causal.py` arm1/arm2 flip to
+PASS — i.e. an agent's removal/corruption changes the result, and agent outputs
+are genuinely merged into the goal artifact. Until then this gate stays BLOCKED
+(decorative), and the 3 true-negative FAILs are kept **un-xfailed** on purpose.
 
 ---
 
