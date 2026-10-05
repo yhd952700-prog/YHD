@@ -2,7 +2,7 @@
 
 D8 deliverable (Policy C-2 prerequisite). **This module is PURE DATA** -- it
 imports only the standard library and changing it never alters any policy
-decision. It exists so that the (future) C-2 enforcement flip has an
+decision. It exists so that the C-2 enforcement flip has an
 *objective* cut line (``ENFORCED_TIERS``) instead of a hardcoded list, and so
 that the ``risk_level`` parameter -- which every ``@kernel_action`` call site
 left at its inert ``"LOW"`` default -- finally carries real signal.
@@ -324,7 +324,7 @@ ALL_CLASSIFIED_ACTIONS: frozenset = frozenset(KERNEL_ACTION_RISK)
 def get_kernel_action_risk(action: str) -> str:
     """Return the canonical ``risk_level`` string for ``action``.
 
-    Falls back to ``"LOW"`` for unknown actions (safe default: the future C-2
+    Falls back to ``"LOW"`` for unknown actions (safe default: the C-2
     gate only escalates HIGH/CRITICAL, so an unclassified action is treated as
     the least dangerous -- and the completeness guard test refuses to let an
     action stay unclassified anyway).
