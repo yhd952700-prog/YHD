@@ -144,6 +144,23 @@ def test_real_evidence_source_still_fires() -> None:
     assert _hc01_fires("kernels/audit 是真实证据源。\n") is True
 
 
+def test_bare_evidence_grade_claim_fires() -> None:
+    """Regression for an asymmetry in the rule, not in the negation.
+
+    The rule could excuse "no evidence-grade ..." but had no token for the
+    AFFIRMATIVE form, so "our audit store is evidence-grade" -- exactly what
+    HC-01 is not, per D19/D20 (telemetry-grade, not evidence-grade) -- passed
+    silently. Adding the token changed nothing across the whole scanned
+    surface, i.e. every honest use was already caveated.
+    """
+    for sentence in (
+        "Our audit store is evidence-grade and ships today.",
+        "This is an audit-grade audit source.",
+        "本系统是证据级审计。",
+    ):
+        assert _hc01_fires(sentence + "\n") is True, sentence
+
+
 def test_self_hashed_record_must_not_be_called_tamper_evident() -> None:
     """Regression for the falsified ``record_hash`` claim (2026-10).
 
@@ -155,6 +172,59 @@ def test_self_hashed_record_must_not_be_called_tamper_evident() -> None:
         "independent_verification.py emits a tamper-evident record "
         "(record_hash = sha256 of the canonical record).\n"
     ) is True
+
+
+# --- MUST FIRE: overclaims DISGUISED as negatives ---------------------------
+#
+# These are the attacks that broke the first version of the HC-01 negation
+# exclusion, which allowed up to 60 characters between the negation and the
+# claim token. In every case "no / not / without" negates *doubt*, *question*,
+# *worry*, or *only* -- NOT the audit claim -- so the sentence is an affirmative
+# overclaim wearing a negation. All six slipped through once; they must never
+# slip through again.
+_ADVERSARIAL = [
+    "There is no doubt: our audit store is tamper-proof.",
+    "Without question, the audit trail is tamper-evident.",
+    "Not only is it fast, the audit is tamper-proof.",
+    "No serious auditor questions that we are tamper-proof.",
+    "没有理由怀疑：本系统已实现防篡改审计。",
+    "There is no need to worry — our evidence-grade audit is authoritative.",
+]
+
+
+def test_overclaims_disguised_as_negatives_still_fire() -> None:
+    for sentence in _ADVERSARIAL:
+        assert _hc01_fires(sentence + "\n") is True, (
+            "an affirmative overclaim escaped by hiding behind a negation that "
+            "scopes over the wrong word: %r" % sentence
+        )
+
+
+def test_no_doubt_idiom_is_explicitly_blocklisted() -> None:
+    """The idiom blocklist must exist and be applied, not be decorative."""
+    hc01_rule = next(r for r in mod.RULES if r["group"] == HC01)
+    excluded = hc01_rule.get("negate_exclude")
+    assert excluded, "HC-01-AUDIT must carry a negate_exclude idiom blocklist"
+    assert any(p.search("There is no doubt: tamper-proof") for p in excluded), (
+        "the 'no doubt' idiom must be in the blocklist"
+    )
+    assert any(p.search("not only") for p in excluded), (
+        "the 'not only' idiom must be in the blocklist"
+    )
+
+
+def test_negation_must_be_adjacent_not_distant() -> None:
+    """The first version's 60-char gap is what let the attacks through.
+
+    A negation 40 characters away from the claim must NOT suppress it; that
+    distance is the specific hole, so it is asserted directly rather than
+    trusting the regex shape.
+    """
+    distant = (
+        "We have no reason to doubt anything at all here: the audit store "
+        "is tamper-proof."
+    )
+    assert _hc01_fires(distant + "\n") is True
 
 
 # --- MUST NOT FIRE: honest negatives and already-caveated statements ---

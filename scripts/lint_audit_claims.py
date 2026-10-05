@@ -117,6 +117,17 @@ RULES: List[dict] = [
             ("TAMPER", re.compile(r"防篡改")),
             ("TAMPER", re.compile(r"不可篡改")),
             ("EVIDENCE", re.compile(r"真实证据源")),
+            # Bare grade claims. These were an ASYMMETRY: the rule's `negate`
+            # list could excuse "no evidence-grade ..." while the `claims` list
+            # had no token for the affirmative form, so "our audit store is
+            # evidence-grade" -- precisely what HC-01 is NOT, per D19/D20
+            # (telemetry-grade, not evidence-grade) -- passed silently. Adding
+            # them changed nothing across the whole scanned surface, so the
+            # honest uses were already caveated; the hole only ever let a false
+            # claim through.
+            ("EVIDENCE", re.compile(r"\bevidence[- ]?grade\b", re.IGNORECASE)),
+            ("EVIDENCE", re.compile(r"\baudit[- ]?grade\b", re.IGNORECASE)),
+            ("EVIDENCE", re.compile(r"证据级|审计级")),
             ("EVIDENCE", re.compile(r"true\s+(evidence\s+source|source\s+of\s+truth)", re.IGNORECASE)),
             ("EVIDENCE", re.compile(r"authoritative\s+(audit|evidence|chain|source|sink)", re.IGNORECASE)),
             ("EVIDENCE", re.compile(r"权威.*(审计|证据).*(事实来源|源)")),
@@ -150,19 +161,65 @@ RULES: List[dict] = [
         # MASTER_PROJECT_READINESS.md and pressures an author to delete the very
         # sentence that tells the reader the guarantee does not exist.
         #
-        # Scoped deliberately NARROW. Only an explicit negation of the CLAIM
-        # ITSELF ("no ... tamper-proof", "not tamper-evident", "no evidence-grade
-        # ... exists") suppresses the finding; a sentence that merely mentions a
-        # gap elsewhere does not. This mirrors the COMPLIANCE-LIABILITY rule's
-        # `negate`, so both red lines treat honest negatives the same way.
+        # Scoped deliberately NARROW, and then narrowed again after it was
+        # bypassed (see below).
+        #
+        # THE FIRST VERSION WAS TOO LOOSE AND I BROKE IT MYSELF.
+        # It allowed up to 60 characters between the negation and the claim
+        # token, which let an AFFIRMATIVE overclaim hide behind a negation that
+        # belonged to some other phrase. Six of six attacks slipped through:
+        #   "There is no doubt: our audit store is tamper-proof."
+        #   "Without question, the audit trail is tamper-evident."
+        #   "Not only is it fast, the audit is tamper-proof."
+        #   "No serious auditor questions that we are tamper-proof."
+        #   "没有理由怀疑：本系统已实现防篡改审计。"
+        #   "There is no need to worry -- our evidence-grade audit is shipped."
+        # In each of those, "no"/"not"/"without" negates *doubt*, *question*,
+        # *worry* -- not the audit claim. A negation that scopes over the wrong
+        # thing is not a negation of the claim at all.
+        #
+        # THE RULE THAT REPLACED IT: the negation must IMMEDIATELY modify the
+        # claim token, allowing only a small set of qualifiers ("verified",
+        # "persistent", "longer", "durable", "fully"). Distance is no longer
+        # tolerated, so an intervening noun ("doubt", "question") breaks the
+        # match and the claim is reported. Idiom blocklist kept as belt-and-
+        # braces: even an adjacent "no" is NOT a negation when it is part of
+        # "no doubt / no question / no reason to doubt".
         "negate": [
-            re.compile(r"\b(no|not|never|without)\b[^.;]{0,60}\b"
-                       r"(tamper[- ]?(proof|evident)|evidence[- ]grade|"
+            # "no(VERIFIED|persistent|longer|durable|fully)? tamper-proof ..."
+            re.compile(r"\bno\s+(?:verified\s+|persistent\s+|longer\s+|"
+                       r"durable\s+|fully\s+)?"
+                       r"(?:tamper[- ]?(?:proof|evident)|evidence[- ]grade|"
                        r"audit[- ]grade|真实证据源|防篡改|不可篡改)",
                        re.IGNORECASE),
-            re.compile(r"(没有|尚无|并无|不具备|不具|未具备)[^。；]{0,40}"
-                       r"(防篡改|不可篡改|证据级|审计级)"),
+            # "not tamper-evident" / "not evidence-grade" / "is not 防篡改"
+            re.compile(r"\bnot\s+(?:a\s+|an\s+|the\s+)?"
+                       r"(?:tamper[- ]?(?:proof|evident)|evidence[- ]grade|"
+                       r"audit[- ]grade|防篡改|不可篡改)",
+                       re.IGNORECASE),
+            # "never tamper-proof", "without tamper-evidence"
+            re.compile(r"\b(?:never|without)\s+"
+                       r"(?:tamper[- ]?(?:proof|evident)|evidence[- ]grade|"
+                       r"audit[- ]grade|防篡改|不可篡改)",
+                       re.IGNORECASE),
+            # Chinese: negation must be adjacent to the claim term.
+            re.compile(r"(?:没有|尚无|并无|不具备|不具|未具备|并非)"
+                       r"(?:已|的|任何|完全)?"
+                       r"(?:防篡改|不可篡改|证据级|审计级)"),
+            # An honest "not evidence-grade" style disclosure.
             re.compile(r"telemetry[- ]grade", re.IGNORECASE),
+            re.compile(r"not\s+evidence[- ]grade", re.IGNORECASE),
+        ],
+        # Idiom guard: these read as negatives but scope over the WRONG word, so
+        # they must never be what suppresses a finding (defensive: the narrow
+        # regexes above already stop them, this makes the intent explicit and
+        # testable).
+        "negate_exclude": [
+            re.compile(r"\bno\s+(doubt|question|reason|need|worry|longer\s+is)",
+                       re.IGNORECASE),
+            re.compile(r"\bwithout\s+(question|doubt)\b", re.IGNORECASE),
+            re.compile(r"\bnot\s+only\b", re.IGNORECASE),
+            re.compile(r"没有理由怀疑|毫无疑问"),
         ],
     },
     {
@@ -538,7 +595,16 @@ def scan_file(path: str, window: int) -> List[Tuple[int, str, str, str]]:
             # text never fires. (Conservative: applied to the claim line only.)
             negate = rule.get("negate")
             if negate and line_caveated(line, negate):
-                continue
+                # An idiom that merely *looks* like a negation ("no doubt",
+                # "not only") scopes over the wrong word. If that idiom is what
+                # made the line look negative, the negation is not suppressing
+                # anything real — report the claim. See the HC-01-AUDIT
+                # `negate` comment for the six attacks this closes.
+                idiom = rule.get("negate_exclude")
+                if idiom and line_caveated(line, idiom):
+                    pass  # fall through and report
+                else:
+                    continue
 
             # Per-rule context window (default to the global window).
             rule_window = rule.get("window", window)
