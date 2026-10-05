@@ -52,7 +52,7 @@ export function Card({
 
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+    <div role="status" aria-busy="true" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="os-skeleton" style={{ height: index === 0 ? 22 : 38 }} />
       ))}
@@ -62,7 +62,7 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 
 export function Failure({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div className="os-empty">
+    <div className="os-empty" role="alert">
       <IconAlert size={17} />
       <strong>数据不可用</strong>
       <span>{message}</span>
@@ -77,7 +77,7 @@ export function Failure({ message, onRetry }: { message: string; onRetry?: () =>
 
 export function Empty({ title, hint }: { title: string; hint?: string }) {
   return (
-    <div className="os-empty">
+    <div className="os-empty" role="status">
       <strong>{title}</strong>
       {hint && <span>{hint}</span>}
     </div>

@@ -97,3 +97,44 @@ describe('Guard 四态契约', () => {
     expect(container.querySelector('.os-skeleton')).toBeNull()
   })
 })
+
+describe('状态组件的无障碍角色', () => {
+  test('Failure 标记 role=alert，错误能被读屏软件播报', () => {
+    const { container } = render(
+      <Guard loading={false} error="审计链断裂" data={null} onRetry={() => {}}>
+        {() => <span>x</span>}
+      </Guard>,
+    )
+    const alert = container.querySelector('[role="alert"]')
+    expect(alert).toBeTruthy()
+    expect(alert?.textContent).toContain('审计链断裂')
+  })
+
+  test('Loading 标记 role=status 且 aria-busy=true', () => {
+    const { container } = render(
+      <Guard loading error={null} data={null}>
+        {() => <span>x</span>}
+      </Guard>,
+    )
+    const status = container.querySelector('[role="status"]')
+    expect(status).toBeTruthy()
+    expect(status?.getAttribute('aria-busy')).toBe('true')
+  })
+
+  test('Empty 标记 role=status', () => {
+    const { container } = render(
+      <Guard
+        loading={false}
+        error={null}
+        data={[] as unknown as { length: number }}
+        isEmpty={(d: { length: number }) => d.length === 0}
+        emptyTitle="暂无应用"
+      >
+        {() => <span>x</span>}
+      </Guard>,
+    )
+    const status = container.querySelector('[role="status"]')
+    expect(status).toBeTruthy()
+    expect(status?.textContent).toContain('暂无应用')
+  })
+})
