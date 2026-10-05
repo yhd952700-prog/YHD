@@ -52,8 +52,41 @@ EXPECTED = {
     "HC-08": "COMPLIANT",
     "HC-09": "UNVERIFIED",   # durability: memory-only, pending decision D19
     "HC-10": "UNVERIFIED",   # durability: memory-only (D19=A+); NON-AUTHORITATIVE
-    "HC-11": "UNVERIFIED",   # no integrity key configured -> verification is vacuous
+    # HC-11 is the MECHANISM status and answers only "does the row
+    # authentication code fail closed?". Measured: it does, in BOTH key
+    # postures (see POSTURE below). It is UNVERIFIED here only because
+    # ``classify()`` also weighs ``verification`` -- a pristine row admitting
+    # -- which a key-less deployment cannot do BY DESIGN. That is a statement
+    # about this machine's configuration, not about the code, so the two are
+    # reported separately: mechanism here, usable-human posture below.
+    "HC-11": "UNVERIFIED",   # no integrity key on THIS host -> 0 humans admitted
 }
+
+#: Deployment posture, reported SEPARATELY from the mechanism verdict above.
+#:
+#: HC-11's per-row MAC fails closed in every posture (measured both ways), so
+#: folding "can this deployment admit a human at all?" into the same field as
+#: "does the tamper check work?" made a correct implementation read as a code
+#: defect. The two facts have different owners and different remedies:
+#:
+#:   * mechanism  -> the code in src/kernels/identity/_persistence.py
+#:   * posture    -> whether LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY is set here
+#:
+#: A key-less host is a SOVEREIGNTY OUTAGE, not a hole: nobody can approve a
+#: HIGH/CRITICAL action, and nobody can impersonate one either. It is reported
+#: as an explicit operational state so it cannot be mistaken for either
+#: "the registry is unprotected" or "no humans are registered on purpose".
+
+
+def classify_posture(hc: str) -> str:
+    """Derive the DEPLOYMENT posture from runtime facts. Never affects the
+    mechanism verdict above; it names what an operator must do about this host.
+    """
+    f = FACTS.get(hc, {})
+    if "posture" not in f:
+        return "N/A"
+    return f["posture"]
+
 
 FACTS: dict = {}
 
@@ -397,6 +430,22 @@ def probe_hc11() -> None:
     else:
         pristine, detected = pristine_without, detected_without
 
+    # MECHANISM vs POSTURE (measured, not asserted).
+    #
+    # Both round trips are run on every invocation precisely so this file can
+    # state the mechanism independently of how THIS host is configured: if
+    # either posture detected the tamper, the row authentication works. What
+    # differs between them is only whether a *pristine* row can be admitted --
+    # i.e. whether this deployment can recognise any human at all.
+    mechanism_fails_closed = detected_with and detected_without
+    if not configured_now:
+        posture = ("SOVEREIGNTY OUTAGE - no integrity key on this host, so 0 humans "
+                   "are admitted and nobody can approve a HIGH/CRITICAL action "
+                   "(fail-closed; set %s and re-register each human)"
+                   % HUMAN_IDENTITIES_INTEGRITY_KEY_ENV)
+    else:
+        posture = "USABLE - integrity key configured; registered humans are admitted"
+
     put(hc,
         declaration="DECLARED inside the tag ('<alg>:<digest>')",
         canonicalization="_canonical_row json(sort_keys,separators) over authority-bearing fields",
@@ -404,6 +453,11 @@ def probe_hc11() -> None:
         persistence="DURABLE (SQLite human_identities table)",
         verification="VERIFIED" if pristine else "FAILED",
         tamper="DETECTED" if detected else "NOT DETECTED (no integrity key -> verification vacuously True)",
+        # Mechanism facts: valid in every posture, so they describe the code and
+        # not this host's configuration.
+        mechanism="FAIL-CLOSED in both key postures" if mechanism_fails_closed
+                  else "FAIL-OPEN in at least one posture (row accepted untampered)",
+        posture=posture,
         unknown_alg="FAIL_CLOSED (bare digest and unknown alg both refused)",
         legacy_data="NONE",
         migration="key %s; tamper detected with key=%s, without key=%s" % (
@@ -446,7 +500,21 @@ def main() -> int:
         print("   tamper detection     : %s" % f["tamper"])
         print("   unknown algorithm    : %s" % f["unknown_alg"])
         print("   migration status     : %s" % f["migration"])
+        if "mechanism" in f:
+            print("   mechanism            : %s" % f["mechanism"])
         print("   why                  : %s" % why)
+
+    print("")
+    print("=" * 78)
+    print("DEPLOYMENT POSTURE (this host; NOT a code verdict)")
+    print("=" * 78)
+    print("A posture line names what THIS machine is configured to admit. It is")
+    print("reported apart from the verdict above because the two have different")
+    print("owners: the mechanism is the code, the posture is the deployment.")
+    for hc in order:
+        posture = classify_posture(hc)
+        if posture != "N/A":
+            print("  [%s] %s" % (hc, posture))
 
     print("")
     print("=" * 78)
