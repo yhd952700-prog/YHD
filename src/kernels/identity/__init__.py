@@ -1027,6 +1027,97 @@ class IdentityManager:
                 return None
             return self._identities.get(identity_id)
 
+    def suspend_identity(self, principal: str, reason: str = "") -> bool:
+        """Revoke ``principal``'s standing as a human who may hold sovereignty.
+
+        Return True only when the identity is **actually** suspended -- i.e.
+        when it can no longer satisfy :func:`is_human_identity`.
+
+        Why this exists: deleting a row from the human-identity store removed
+        the *persisted* registration but left the in-memory identity ACTIVE, so
+        an approval the operator had just revoked still authorised a CRITICAL
+        action until the next restart. Sovereignty therefore had a grant path
+        and no *live* recall path: the operator-facing revoke command could
+        only promise "this stops working after you restart".
+
+        ``IdentityStatus.SUSPENDED`` was defined but read by no code at all;
+        ``is_human_identity`` requires ACTIVE, so setting it here is what makes
+        revocation take effect in the running process.
+
+        SUSPENDED rather than deleted on purpose: revocation must be reversible
+        and must not destroy the audit record of who was registered. Deleting
+        the identity would make "who approved this last Tuesday?" unanswerable.
+
+        Outstanding sovereignty grants are recalled too -- see
+        :func:`src.kernels._sovereignty.revoke_grants_for_principal`. A
+        suspended human holding a live grant is exactly the failure this method
+        exists to prevent, so it refuses to report success if that recall did
+        not happen.
+
+        Returns False (and audits the refusal) when there is no such identity,
+        when it is already suspended (idempotent, still True), or when the
+        grant recall fails.
+        """
+        with self._lock:
+            identity = self.get_identity_by_principal(principal)
+            if identity is None:
+                self._audit(
+                    identity_id=principal,
+                    operation="suspend",
+                    scope=IdentityScope.L0,
+                    result="denied",
+                    reason=f"cannot suspend {principal!r}: no such identity",
+                )
+                mark_action_denied("no such identity to suspend")
+                logger.error("refusing suspend: no identity for principal %r", principal)
+                return False
+
+            if identity.status == IdentityStatus.SUSPENDED:
+                return True
+
+            # Recall every grant held by this principal BEFORE the identity
+            # stops being a human: order matters because the adjudication path
+            # re-verifies humanness, and a grant we failed to recall would
+            # otherwise linger as authority with no owner.
+            try:
+                from src.kernels._sovereignty import revoke_grants_for_principal
+                revoked = revoke_grants_for_principal(principal, reason=reason)
+            except Exception as exc:  # noqa: BLE001 - refusal, not a crash
+                self._audit(
+                    identity_id=identity.id,
+                    operation="suspend",
+                    scope=identity.scope,
+                    result="denied",
+                    reason=(
+                        f"refusing to suspend {principal!r}: outstanding sovereignty "
+                        f"grants could not be recalled ({exc})"
+                    ),
+                )
+                mark_action_denied("grants could not be recalled")
+                logger.error(
+                    "refusing suspend of %r: grant recall failed: %s", principal, exc,
+                )
+                return False
+
+            identity.status = IdentityStatus.SUSPENDED
+            self._audit(
+                identity_id=identity.id,
+                operation="suspend",
+                scope=identity.scope,
+                result="allowed",
+                reason=(
+                    f"identity suspended and no longer counts as a human: "
+                    f"{reason or 'no reason given'} "
+                    f"(sovereignty grants recalled: {revoked})"
+                ),
+            )
+            logger.warning(
+                "suspended identity %r; it can no longer approve HIGH/CRITICAL "
+                "actions and %d outstanding grant(s) were recalled",
+                principal, revoked,
+            )
+            return True
+
     def list_identities(self, scope: Optional[IdentityScope] = None) -> List[AgentIdentity]:
         """List identities, optionally filtered by scope."""
         with self._lock:

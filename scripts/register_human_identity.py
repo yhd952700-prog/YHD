@@ -442,16 +442,68 @@ def cmd_revoke(store, secret_store, principal: str) -> int:
         print(f"{principal!r} was not registered in "
               f"{store.backend_name} @ {store.location} -- nothing to revoke.")
         return 1
-    print(f"revoked        : {principal}")
+
+    # Recall the LIVE half, not just the stored half.
+    #
+    # Removing the row only stops this principal being re-admitted on the next
+    # boot. The running process still held the identity ACTIVE, so an approval
+    # the operator just revoked kept authorising HIGH/CRITICAL actions until a
+    # restart. That made "revoke" a promise about the future, not an action in
+    # the present -- which is not what the word means when sovereignty is at
+    # stake (e.g. an employee leaving, or a compromised account).
+    #
+    # suspend_identity() sets SUSPENDED (which is_human_identity() refuses) and
+    # recalls every outstanding grant held by this principal.
+    from src.kernels.identity import get_identity_manager, is_human_identity
+    manager = get_identity_manager()
+    suspended = manager.suspend_identity(principal, reason="revoked by operator")
+
+    # Honesty gate: never print "revoked" unless the live state agrees.
+    # A revoke that only touched the store while the identity is still a live
+    # human is a PARTIAL revoke, and reporting success here is exactly the
+    # "silent no-op reported as success" failure mode this repo keeps
+    # rooting out. The caller gets a non-zero exit and a stated remedy.
+    identity = manager.get_identity_by_principal(principal)
+    still_human = identity is not None and is_human_identity(identity)
+    # Three distinct outcomes, each reported on its own terms. Collapsing them
+    # into one "revoked" line is how a partial revoke ends up reading as a
+    # complete one -- in particular, "this process never held that identity" is
+    # NOT the same success as "we suspended it and recalled its grants", and
+    # must not be reported as if grants had been recalled here.
+    was_live = identity is not None
+
     print(f"identity store : {store.backend_name} @ {store.location} "
           f"({'removed' if removed_identity else 'not present'})")
     print(f"credential     : {secret_store.path} "
           f"({'removed' if removed_credential else 'not present'})")
+    if not was_live:
+        live_state = "not present in this process (nothing live to suspend)"
+    elif suspended and not still_human:
+        live_state = "suspended - no longer counts as human"
+    else:
+        live_state = "NOT suspended - STILL A HUMAN"
+    print(f"running process: {live_state}")
+
+    if still_human:
+        print()
+        print("REVOCATION INCOMPLETE: the store row is gone but this principal is")
+        print("still an ACTIVE human in the running process, so it can still")
+        print("approve HIGH/CRITICAL actions until the next restart.")
+        print("Restart the process, or suspend it via the Identity Kernel.")
+        return 1
+
+    print(f"revoked        : {principal}")
     print()
-    print("Revoking here stops FUTURE approvals and sign-ins by this principal.")
-    print("It does not recall grants already issued -- revoke those with")
-    print("DELETE /v1/policy/approvals/{grant_id}. Tokens already issued remain")
-    print("valid until they expire; POST /v1/auth/logout revokes one early.")
+    if was_live and suspended:
+        print("This principal can no longer approve any HIGH/CRITICAL action in")
+        print("this process, and its outstanding sovereignty grants were recalled.")
+    else:
+        print("No live identity for this principal existed in this process, so")
+        print("nothing needed to be suspended here and no grants were held by it")
+        print("here. NOTE: a process that already has this principal loaded is NOT")
+        print("affected by this command -- suspend it there too, or restart it.")
+    print("Tokens already issued remain valid until they expire; "
+          "POST /v1/auth/logout revokes one early.")
     return 0
 
 

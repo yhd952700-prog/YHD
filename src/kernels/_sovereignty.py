@@ -447,6 +447,60 @@ def get_grant(grant_id: str) -> Optional[SovereigntyGrant]:
         return _grants.get(grant_id)
 
 
+def revoke_grants_for_principal(principal: str, *, reason: str = "") -> int:
+    """Revoke every outstanding grant held by ``principal``; return the count.
+
+    The single-grant :func:`revoke_grant` needs a ``grant_id``, which an
+    operator suspending a human does not have: they know the *person*, not the
+    identifiers of the approvals that person happens to hold. Without this,
+    suspending someone could leave live grants behind, and those grants are
+    what actually authorise a HIGH/CRITICAL action at adjudication time.
+
+    Covers grants in any state that is still ``is_active`` -- i.e. un-revoked
+    and un-expired. Already-revoked and already-expired grants are left alone
+    so the count reflects what this call actually took away.
+
+    The principal is compared as recorded on the grant (``grant.principal``).
+    A caller spelling the human ``human:bob`` where the grant says ``bob``
+    still matches: identity code normalises both forms, and a missed match
+    here would mean an approval surviving the suspension of its owner.
+    """
+    from src.kernels.identity import normalize_principal
+
+    wanted = normalize_principal(principal).strip()
+    revoked = 0
+    with _grants_lock:
+        for grant_id, grant in list(_grants.items()):
+            if normalize_principal(grant.principal).strip() != wanted:
+                continue
+            if not grant.is_active():
+                continue
+            _grants[grant_id] = SovereigntyGrant(
+                grant_id=grant.grant_id,
+                principal=grant.principal,
+                actions=grant.actions,
+                reason=grant.reason,
+                issued_by=grant.issued_by,
+                granted_at=grant.granted_at,
+                expires_at=grant.expires_at,
+                revoked_at=time.time(),
+                revoke_reason=reason or "principal suspended",
+            )
+            revoked += 1
+    if revoked:
+        _audit(
+            "revoked",
+            principal,
+            {
+                "principal": principal,
+                "revoked_by": principal,
+                "reason": reason or "principal suspended",
+                "grants_recalled": revoked,
+            },
+        )
+    return revoked
+
+
 def list_grants(
     *, include_expired: bool = False, include_revoked: bool = False
 ) -> List[SovereigntyGrant]:
