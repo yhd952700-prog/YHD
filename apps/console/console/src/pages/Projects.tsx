@@ -201,8 +201,6 @@ export function Projects({ query }: { query: string }) {
           ) : undefined
         }
       >
-        {projects.error && !projects.loading && <p className="os-error">{projects.error}</p>}
-        {projects.loading && !projects.data && <p>读取中…</p>}
         {shown.length === 0 && !projects.loading && !projects.error ? (
           <Empty
             title={need ? '没有匹配的项目' : '暂无项目'}

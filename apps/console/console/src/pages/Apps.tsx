@@ -97,8 +97,6 @@ export function Apps({ query }: { query: string }) {
         sub="系统里真实注册的插件（每 30 秒刷新）"
         span={12}
       >
-        {apps.error && !apps.loading && <p className="os-error">{apps.error}</p>}
-        {apps.loading && !apps.data && <p>读取中…</p>}
         {shown.length === 0 && !apps.loading && !apps.error ? (
           <Empty
             title={need ? '没有匹配的应用' : '暂无应用'}

@@ -185,8 +185,6 @@ export function Goals({ query }: { query: string }) {
           ) : undefined
         }
       >
-        {goals.error && !goals.loading && <p className="os-error">{goals.error}</p>}
-        {goals.loading && !goals.data && <p>读取中…</p>}
         {shown.length === 0 && !goals.loading && !goals.error ? (
           <Empty
             title={need ? '没有匹配的目标' : '暂无目标'}
