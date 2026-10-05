@@ -60,7 +60,7 @@ export function Roster({ query }: { query: string }) {
 
   return (
     <div className="os-grid">
-      <Card title="协作网络" sub="能力层按阶段带分布" span={5}>
+      <Card title="能力层分布" sub="能力层按阶段带分布" span={5}>
         <Guard
           loading={roster.loading}
           error={roster.error}

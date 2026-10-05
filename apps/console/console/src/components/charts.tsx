@@ -270,7 +270,7 @@ export function DonutChart({
 }
 
 // ---------------------------------------------------------------------------
-// 协作网络图
+// 网络分布图（中心枢纽 + 按分组同心环布局）
 // ---------------------------------------------------------------------------
 
 export interface NetworkNode {
@@ -326,7 +326,7 @@ export function NetworkGraph({ nodes, hubLabel = '鎏灏 OS', height = 232 }: Ne
       className="os-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`协作网络图：${nodes.length} 个节点`}
+      aria-label={`网络分布图：${nodes.length} 个节点`}
     >
       {groups.map((group, index) => (
         <circle

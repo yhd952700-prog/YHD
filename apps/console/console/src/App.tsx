@@ -39,6 +39,7 @@ import type { Session } from './lib/auth'
 import { useDeviceMode } from './lib/mode'
 import { useApi } from './lib/api'
 import type { HealthPayload, RosterPayload } from './lib/contracts'
+import { providerPosture } from './lib/honesty'
 import {
   PolicyAuthError,
   describeToken,
@@ -426,6 +427,33 @@ function App() {
           detail: unconfigured
             .map((item) => `${item.label}（${item.required_env.join(' / ') || '无需密钥'}）`)
             .join('；'),
+        })
+      }
+
+      // 3b) 诚实性：现在生效的 provider 是不是假的。这不是"配置没配好"，而是
+      // "配置看起来是好的、但拿到的结果是编造的" —— 对信任的破坏更大，所以排在
+      // 配置类之后、但只要成立就用 danger。
+      //
+      // 此前这条事实完全没有出口：后端一直在 `/v1/health`、`/v1/ready`、
+      // `/v1/dashboard/summary` 里播报 `mode`/`simulated`（注释原文"Never silently
+      // pretends a simulation is real"），而名册端点没带、前端类型也没声明，于是
+      // 一个跑在内置 mock 上的部署在控制台上看起来和一个接了真模型的一模一样。
+      // 现在它是一条真会出现在通知栏里的字。
+      const posture = providerPosture({
+        mode: providers.mode ?? providers.active?.mode,
+        simulated: providers.simulated ?? providers.active?.simulated,
+      })
+      if (!posture.isReal) {
+        items.push({
+          id: 'provider-not-real',
+          tone: posture.tone === 'danger' ? 'danger' : 'warn',
+          title:
+            posture.simulated && posture.isMock
+              ? '当前为模拟输出（mock + 模拟执行）'
+              : posture.isMock
+                ? '当前生效的是 mock provider'
+                : '执行内核处于模拟路径',
+          detail: `${posture.verdict}。生效 provider：${providers.active?.type ?? '—'}。`,
         })
       }
     } else if (roster.error) {

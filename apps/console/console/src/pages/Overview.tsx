@@ -5,7 +5,7 @@
  * 真实的资金/账本数据源（Economy 引擎是库不是实时账本，无全局单例），因此这里
  * 换成同样四个位置、但每一个都能追溯到真实来源的指标：
  *
- *   AI 员工总数  ← capability-registry.yaml（14 内核 + 14 能力层）
+ *   AI 员工总数  ← EmployeeStore 真实持久化员工（totals.employees）；foot 附带内核/能力层注册表说明
  *   运行中任务    ← 网关进程内活跃会话表
  *   审计事件      ← 审计存储真实计数
  *   系统健康度    ← /v1/ready 的五项依赖检查
@@ -124,10 +124,10 @@ export function Overview({ query }: { query: string }) {
         </div>
       </div>
 
-      {/* ---------- AI 员工协作网络 ---------- */}
+      {/* ---------- 能力层分布 ---------- */}
       <Card
-        title="AI 员工协作网络"
-        sub="真实能力层（capability-registry.yaml）按阶段带分布"
+        title="能力层分布"
+        sub="capability-registry.yaml 能力层按阶段带分布"
         span={5}
       >
         <Guard

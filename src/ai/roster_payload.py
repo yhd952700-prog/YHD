@@ -104,6 +104,11 @@ PROVIDER_LABELS: Dict[str, str] = {
     "deepseek": "DeepSeek",
 }
 
+#: provider"会不会返回编造结果"由 :func:`src.ai.providers.provider_mode_for` 唯一
+#: 裁决（它读 ``NON_REAL_PROVIDER_TYPES``）。本模块**不**再自带一份清单：两处各写
+#: 一遍 judgement 就会各自演化，最后名册说 mock 而 ``/v1/health`` 说 real，
+#: 那时界面该信谁就没有答案了。
+
 # 注册表解析结果缓存：(mtime, payload)。文件小但每轮轮询都读没必要。
 _cache: Optional[Tuple[float, Dict[str, Any]]] = None
 
@@ -200,15 +205,56 @@ def load_registry() -> Dict[str, Any]:
 
 
 def provider_status() -> Dict[str, Any]:
-    """真实 provider 面：已注册的类 + 当前生效的 provider + 密钥是否就位。"""
+    """真实 provider 面：已注册的类 + 当前生效的 provider + 密钥是否就位。
+
+    ``active`` 额外携带 **诚实性判据**（``mode`` / ``simulated``），取自
+    :func:`src.ai.providers.ai_provider_status` —— 那是全仓唯一裁决
+    "mock 还是 real / 执行是否被模拟" 的地方。
+
+    为什么必须带上
+    --------------
+    控制台 ``Overview`` 的 provider 卡片逐条渲染本函数的 ``items``，此前对每个
+    ``configured`` 为真的项一律写"已配置，可用于真实调用" + 绿色"就绪"。而
+    ``configured`` 只回答"密钥/环境变量到位了吗"，**不回答"这是不是假AI"**：
+    ``mock`` 无需密钥，于是这里 ``configured=True``，界面就把内置 mock 呈现成
+    真实能力。
+
+    后端其实一直在如实播报（``/v1/health``、``/v1/ready``、
+    ``/v1/dashboard/summary`` 都带 ``mode``/``simulated``，``providers.py`` 的注释
+    原文是"Never silently pretends a simulation is real"），但名册这条路径没带，
+    于是前端**无从显示**这个区分 —— 一条"后端有事实、界面给假绿灯"的通路。
+
+    现在 ``active`` 与 ``items`` 都带上这两个字段，且都出自同一个函数：同一份
+    事实只有一个来源，前端不需要、也无法自己重新推断。
+    """
     # 与 dashboard.py 同一解析口径：os.environ 优先，其次 .env（经 ConfigManager）。
     # 只读 os.environ 会把写在 .env 里的 AI_PROVIDER_* / *_API_KEY 误报为"未配置"。
-    from .providers import ProviderFactory, _provider_env, get_provider
+    from .providers import (
+        ProviderFactory,
+        _provider_env,
+        ai_provider_status,
+        get_provider,
+        provider_mode_for,
+    )
 
     registered = sorted(ProviderFactory._providers.keys())
 
+    # 诚实性判据的唯一来源。取不到时如实降级为 None（"未知"），绝不猜成 real。
+    try:
+        honesty = ai_provider_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("ai_provider_status failed, honesty fields omitted: %s", exc)
+        honesty = {}
+
     active_type = _provider_env("AI_PROVIDER_TYPE", "mock")
-    active: Dict[str, Any] = {"type": active_type, "model": None, "name": None}
+    active: Dict[str, Any] = {
+        "type": active_type,
+        # 这两个字段是"前端能不能如实告知真人"的前提，不是可选装饰。
+        "mode": honesty.get("mode"),
+        "simulated": honesty.get("simulated"),
+        "model": None,
+        "name": None,
+    }
     try:
         instance = get_provider()
         active["model"] = getattr(instance, "model", None)
@@ -235,6 +281,13 @@ def provider_status() -> Dict[str, Any]:
                 "configured": configured,
                 "active": provider_type == active.get("type"),
                 "required_env": list(required),
+                # 逐项的诚实性判据。`configured` 只说明"环境变量齐了"，这一项才
+                # 说明"调用出去会不会得到假结果"—— 两者不可互相替代，界面必须分开显示。
+                "is_mock": provider_mode_for(provider_type) == "mock",
+                "is_active_provider_mock": (
+                    provider_type == active.get("type")
+                    and honesty.get("mode") == "mock"
+                ),
             }
         )
 
@@ -243,6 +296,10 @@ def provider_status() -> Dict[str, Any]:
         "configured_count": sum(1 for item in items if item["configured"]),
         "active": active,
         "items": items,
+        # 顶层再放一份，供只想问"现在整个系统是不是假的"的调用方一次取到，
+        # 免得为了这一个布尔去翻 providers.active。
+        "mode": honesty.get("mode"),
+        "simulated": honesty.get("simulated"),
     }
 
 

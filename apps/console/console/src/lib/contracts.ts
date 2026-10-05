@@ -6,7 +6,26 @@
  * 空壳，前端必须能承受，而不是假设形状永远完整。
  */
 
-export interface ProviderInfo {
+/** 当前生效的 provider 的诚实性判据（后端 `ai_provider_status()` 的形状）。
+ *
+ * 这三个字段回答的是**"我看到的输出是真的吗"**，与 `ProviderItem.configured`
+ * （"环境变量/密钥到位了吗"）是两个不同的问题，不可互相替代。
+ *
+ * 为什么它们必须在类型里：接口一开始只声明 `{type, model, name, error}`，
+ * 于是 `mode` / `simulated` 在 TS 层面就不存在 —— 前端**想显示也显示不出来**。
+ * 加上它们之前，控制台把内置 mock provider 渲染成"已配置，可用于真实调用"+
+ * 绿色"就绪"（`Overview` 的 provider 卡片），而后端在这三个字段里一直如实
+ * 区分 mock/real（`providers.py` 的注释："Never silently pretends a
+ * simulation is real"）。缺这三个字段不是"少显示一点"，是**界面给假绿灯**。
+ */
+export interface ProviderHonesty {
+  /** `mock` = 不调用真实模型，返回编造结果；`real` = 真实调用。 */
+  mode?: 'mock' | 'real' | string
+  /** 执行内核是否走模拟路径（`LIUHAO_ALLOW_SIMULATED_EXECUTION`）。 */
+  simulated?: boolean
+}
+
+export interface ProviderInfo extends ProviderHonesty {
   type?: string
   model?: string | null
   name?: string | null
@@ -76,6 +95,24 @@ export interface RegistryLayer {
   band_label: string
 }
 
+/** 名册 payload 中的真实员工条目（与后端 `build_roster_payload().real_employees` 一一对应）。
+ *
+ * 这是**真实持久化**员工（来自 `EmployeeStore`），与 `layers` / `kernels` 那种静态注册表
+ * 条目是两回事——后者是"注册信息"，前者是"真有人/真有 agent 在跑"。
+ *
+ * Overview 的「能力层分布」卡片**有意不**把它渲染成"员工协作网络"——那曾是虚假宣称
+ * （静态 capability-registry 分带 + 伪辐条，零员工、零协作、零边）。这里只把真实数据契约
+ * 声明出来，供未来按需消费；绝不默认它已被画成一张"协作网络"图。
+ */
+export interface RosterEmployee {
+  name: string
+  agent_count: number
+  agents: { id: string; agent_type: string; status: string }[]
+  total_tasks_submitted: number
+  total_tasks_completed: number
+  total_tasks_failed: number
+}
+
 export interface ProviderItem {
   type: string
   label: string
@@ -83,6 +120,10 @@ export interface ProviderItem {
   configured: boolean
   active: boolean
   required_env: string[]
+  /** 接上去也不会产生真实调用的 provider（内置 mock / 空 / none）。 */
+  is_mock?: boolean
+  /** 这一项是不是**当前生效的那个**假 provider（"你正在被 mock 服务"）。 */
+  is_active_provider_mock?: boolean
 }
 
 export interface RosterPayload {
@@ -111,12 +152,17 @@ export interface RosterPayload {
   layers: RegistryLayer[]
   domains: { key: string; label: string }[]
   bands: { key: string; label: string }[]
+  /** 真实持久化员工（来自 EmployeeStore）。后端会发送；Overview 当前不把它渲染成网络图。 */
+  real_employees?: RosterEmployee[]
   providers: {
     registered_count: number
     configured_count: number
     active: ProviderInfo
     items: ProviderItem[]
     error?: string
+    /** 全系统级诚实性判据（不必翻 `active` 就能回答"现在是真跑还是模拟"）。 */
+    mode?: 'mock' | 'real' | string
+    simulated?: boolean
   }
 }
 

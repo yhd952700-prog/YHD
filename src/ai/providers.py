@@ -607,6 +607,30 @@ class LangGraphIntegrator:
         }
 
 
+#: 会被视为"非真实"的 provider 类型取值。
+#:
+#: 这不是一张"低质量 provider"名单，而是"接上去也不会产生真实模型调用"的名单。
+#: 抽成模块级常量，是因为这个判断此前在两处各写了一遍（这里，以及
+#: ``roster_payload`` 的逐项标记），而两处独立实现的同一 judgement 必然各自演化
+#: —— 那时名册说mock、``/v1/health`` 说 real，界面该信谁就没有答案了。
+NON_REAL_PROVIDER_TYPES: frozenset = frozenset({"mock", "", "none"})
+
+
+def provider_mode_for(provider_type: Optional[str]) -> str:
+    """某个 provider 类型的诚实性模式：``"mock"``（编造结果）或 ``"real"``。
+
+    这是全仓**唯一**裁决"这个 provider 类型是不是假的"的地方。它是纯函数 ——
+    只看传入的类型串，不读环境、不构造实例 —— 所以任何调用方（名册逐项标记、
+    ``ai_provider_status``、将来的校验脚本）都能得到同一个答案，且不需要临时改动
+    任何全局状态。
+
+    Args:
+        provider_type: provider 类型串；``None`` / 空串按"未配置"处理，而未配置的
+            默认就是 ``mock``（安全默认：宁可说这是假的，也不要让人以为接了真模型）。
+    """
+    return "real" if str(provider_type or "").strip().lower() not in NON_REAL_PROVIDER_TYPES else "mock"
+
+
 def ai_provider_status() -> Dict[str, Any]:
     """Honest, real-time view of the configured AI provider mode.
 
@@ -618,7 +642,8 @@ def ai_provider_status() -> Dict[str, Any]:
     Never silently pretends a simulation is real.
     """
     ptype = _provider_env("AI_PROVIDER_TYPE", "mock").lower()
-    mode = "real" if ptype not in ("mock", "", "none") else "mock"
+    # 判定委托给 provider_mode_for —— 权威只有一处，避免两处实现分叉。
+    mode = provider_mode_for(ptype)
     simulated = (os.environ.get("LIUHAO_ALLOW_SIMULATED_EXECUTION") or "").strip().lower() in {
         "1", "true", "yes", "on",
     }
