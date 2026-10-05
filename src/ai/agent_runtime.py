@@ -217,11 +217,28 @@ class AgentRuntime:
         evaluator: Optional[Any] = None,
         memory: Optional[MemoryKernel] = None,
         max_replans: int = 2,
+        executable_capabilities: Optional[Any] = None,
     ) -> None:
         self.scope = scope
         self.engine = ExecutionEngine(
             scope=scope, capability_executor=capability_executor, journal=journal
         )
+        # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
+        # ids, or a zero-arg callable returning them. When supplied, the plan is
+        # validated BEFORE any task runs, so a goal needing an unregistered
+        # capability fails fast with a named reason instead of executing part of
+        # the work and failing afterwards. Unsupplied => unchanged behaviour.
+        if executable_capabilities is not None:
+            from .planner_contract import ExecutableAwareDecomposer
+
+            provider = (
+                executable_capabilities
+                if callable(executable_capabilities)
+                else lambda: executable_capabilities
+            )
+            self.engine.decomposer = ExecutableAwareDecomposer(
+                self.engine.decomposer, capability_provider=provider
+            )
         self.evaluator = evaluator or get_evaluator()
         self.memory = memory or get_memory_kernel()
         self.max_replans = max_replans

@@ -15,7 +15,7 @@ Context Kernel's typed inputs, and routes *real* tool execution through
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set
 
 from ..kernels.execution import (
     Goal,
@@ -26,7 +26,7 @@ from ..kernels.execution import (
     ActionResult,
 )
 from ..kernels.context import create_context_kernel, ContextInput, ContextInputType
-from .tool_registry import ToolRegistry, ToolRouter
+from .tool_registry import ToolRegistry, ToolRouter, ToolStatus
 from .observability import observe, get_logger
 
 
@@ -77,6 +77,42 @@ class LCore:
         Without this, ``ExecutionEngine`` keeps taking its simulated path.
         """
         return self.router.as_capability_executor()
+
+    def executable_capabilities(self) -> Callable[[], Set[str]]:
+        """Zero-arg provider of the capability ids this Core can really execute.
+
+        Deliberately a *provider*, not a snapshot: tools can be registered after
+        wiring, and a frozen set taken too early would reject work that later
+        became executable. Intended for the planner contract::
+
+            AgentRuntime(capability_executor=lcore.capability_executor(),
+                         executable_capabilities=lcore.executable_capabilities())
+
+        so a goal is rejected at PLAN time when it needs a capability that has
+        no executor, instead of running part of the work and failing afterwards.
+        """
+        def _provide() -> Set[str]:
+            try:
+                # The capability namespace the planner emits (e.g. ``file_write``,
+                # ``python_compute``) is the tool's ``capability`` field, NOT its
+                # ``tool_id`` (``local_file_write`` / ``local_python_compute``).
+                # The router routes by ``capability``, so the contract must check
+                # against the same namespace -- otherwise the two real tools
+                # would be rejected as "missing". Only ACTIVE tools are
+                # executable (a SUSPENDED/REVOKED tool must not count as
+                # available), matching ``ToolRouter.route``.
+                return {
+                    t.capability
+                    for t in self.tools._tools.values()
+                    if self.tools._status.get(t.tool_id) == ToolStatus.ACTIVE
+                }
+            except Exception:
+                # A broken introspection must not be read as "nothing is
+                # executable" (that would reject every goal). Fail open on
+                # introspection only; the real executor still fails closed at
+                # execution time.
+                return set()
+        return _provide
 
     @observe("LCore.handle_intent")
     def handle_intent(

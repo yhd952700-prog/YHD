@@ -222,6 +222,7 @@ class AIStateManager:
                 self._runtime = AgentRuntime(
                     scope="L1",
                     capability_executor=_lcore.capability_executor(),
+                    executable_capabilities=_lcore.executable_capabilities(),
                     journal=journal,
                 )
                 logger.info("AIStateManager: AgentRuntime initialized (real executor wired, journal=%s)", journal_path)
