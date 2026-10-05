@@ -108,7 +108,18 @@ export class ErrorBoundary extends Component<Props, State> {
           这是这一块的显示问题，不是整台系统的结论：其它页面仍可用。点「重试」会重新
           渲染这一块（不刷新页面，不会丢失登录与正在进行的操作）。
         </p>
-        <button className="os-link" onClick={this.retry} style={{ marginTop: 4 }} type="button">
+        {/*
+          兜底面板挂载时把焦点移到「重试」按钮：键盘 / 读屏用户无需手动 Tab 即可立即
+          恢复。用回调 ref 在挂载瞬间聚焦，比 componentDidUpdate 更可靠（错误恢复路径下
+          生命周期调用不稳定）。
+        */}
+        <button
+          ref={(el) => el?.focus()}
+          className="os-link"
+          onClick={this.retry}
+          style={{ marginTop: 4 }}
+          type="button"
+        >
           <IconRefresh size={12} /> 重试
         </button>
       </div>

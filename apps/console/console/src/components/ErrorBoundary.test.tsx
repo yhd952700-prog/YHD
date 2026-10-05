@@ -83,6 +83,18 @@ describe('ErrorBoundary 兜住渲染异常', () => {
     expect(screen.queryByText(/重试/)).toBeNull()
   })
 
+  test('崩溃兜底出现时，焦点自动移到「重试」按钮（键盘 / 读屏可立即恢复）', () => {
+    render(
+      <ErrorBoundary label="可恢复">
+        <Boom />
+      </ErrorBoundary>,
+    )
+    const retry = screen.getByRole('button', { name: /重试/ })
+    // 边界捕获异常的瞬间把焦点移过去，键盘用户无需手动 Tab 即可恢复，
+    // 读屏软件也会随焦点变化宣读「重试」按钮。
+    expect(document.activeElement).toBe(retry)
+  })
+
   test('自定义 fallback 会被使用', () => {
     render(
       <ErrorBoundary label="自定义" fallback={<p>我的兜底内容</p>}>
