@@ -20,10 +20,21 @@ A script that is deliberately a pure report must be listed in
 and the allowlist itself is checked so it cannot rot or be abused. The allowlist
 is currently empty, which is the intended steady state.
 
+"Wired" is not the same as "protecting". A gate invoked only from a timed or
+manual workflow runs zero times on the next commit, so this module classifies
+every gate by the narrowest trigger that invokes it:
+``push-protected`` / ``scheduled-only`` / ``unwired``. The middle class is a
+legitimate engineering trade-off, not a defect, but it must be *declared* in
+:data:`SCHEDULED_ONLY_GATES` with a reason -- otherwise a zero-protection gate
+carries the credibility of a real one, and the failure is invisible precisely
+because the guardrail stays green.
+
 Limitation, stated honestly: (2) is a *necessary* condition, not a sufficient
 one -- a script that raises only on an unreachable branch would still pass.
 Sufficiency comes from the scripts actually running in CI (3) plus the negative
-controls exercised in Round 74.
+controls exercised in Round 74. Classification is likewise structural: it reads
+declared triggers, so a workflow whose ``on:`` is dynamic cannot be classified
+more precisely than its narrowest declared trigger.
 """
 
 from __future__ import annotations
@@ -48,6 +59,29 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 #: listed script a real failure path will break this module -- which is the
 #: intended behaviour: remove it from the allowlist so the gate checks apply.
 DIAGNOSTIC_REPORTERS: dict[str, str] = {}
+
+#: ``verify_*`` scripts that are invoked ONLY from a timed / manual workflow,
+#: mapped to the reason that trade-off is accepted.
+#:
+#: Same shape and same intent as :data:`DIAGNOSTIC_REPORTERS`, one layer up: a
+#: listed reporter is a claim "this has no pass/fail contract", a listed gate
+#: here is a claim "this runs on a schedule, not on your commit". Both must be
+#: written down, because an unlisted one is a gate that looks wired and protects
+#: nothing on the next push.
+#:
+#: Verified by :func:`test_scheduled_only_gates_are_declared_with_reasons`, so
+#: this cannot rot: a gate that becomes push-protected, disappears, or gains a
+#: reason-less entry breaks this module.
+SCHEDULED_ONLY_GATES: dict[str, str] = {
+    "verify_metrics_persist.py": (
+        "Needs a real PostgreSQL URL to validate persistence end to end "
+        "(STAGING_DATABASE_URL), so it runs on a schedule and by hand rather "
+        "than on every push. Tracked as a real CD gate, not a CI gate: "
+        "ci-cd.yml's deploy-staging/deploy-production deliberately exit 1 and "
+        "name this workflow as the real verified CD path. Registration here "
+        "records that 'we accept this gate does not run per-commit'."
+    ),
+}
 
 _BOOTSTRAP_RE = re.compile(r"sys\.path\.(insert|append)")
 
@@ -145,6 +179,70 @@ def _step_commands(document: object) -> list[str]:
 
 def _workflow_invokes(document: object, script_name: str) -> bool:
     return any(script_name in command for command in _step_commands(document))
+
+
+#: Trigger keys that mean "this workflow runs on a commit/PR", i.e. a gate
+#: invoked only from such a workflow actually protects every push.
+_PUSH_TRIGGER_KEYS = frozenset({"push", "pull_request"})
+#: Trigger keys that mean "this workflow runs on a timer or a human click".
+#: A gate invoked ONLY from these protects nothing on the next commit.
+_SIDED_TRIGGER_KEYS = frozenset(
+    {"schedule", "workflow_dispatch", "workflow_call", "repository_dispatch"}
+)
+
+
+def _workflow_triggers(document: object) -> frozenset[str]:
+    """The trigger keys a workflow declares under ``on:``.
+
+    ``on:`` is parsed by PyYAML as the boolean ``True`` (YAML 1.1 bare ``on``),
+    so both spellings are accepted. A workflow may also use the list form
+    (``on: [push, schedule]``) instead of a mapping.
+    """
+    if not isinstance(document, dict):
+        return frozenset()
+    raw = document.get("on", document.get(True))
+    if isinstance(raw, str):
+        return frozenset({raw})
+    if isinstance(raw, list):
+        return frozenset(str(item) for item in raw)
+    if isinstance(raw, dict):
+        return frozenset(str(key) for key in raw)
+    return frozenset()
+
+
+#: Classification of a gate by WHERE it is invoked. The distinction that matters:
+#: a gate invoked only from a nightly/manual workflow runs zero times on the
+#: next commit, so counting it as "wired" lets a zero-protection gate borrow
+#: the credibility of a real one. That is a *declared trade-off*, not a defect --
+#: hence :data:`SCHEDULED_ONLY_GATES`, which forces the trade-off to be written
+#: down instead of being discovered later.
+PUSH_PROTECTED = "push-protected"
+SCHEDULED_ONLY = "scheduled-only"
+UNWIRED = "unwired"
+
+
+def _classify_wiring(script_name: str) -> str:
+    """Classify a gate by the narrowest trigger that invokes it."""
+    saw_push = False
+    saw_sided = False
+    for document in _load_workflows():
+        if not _workflow_invokes(document, script_name):
+            continue
+        triggers = _workflow_triggers(document)
+        if triggers & _PUSH_TRIGGER_KEYS:
+            saw_push = True
+        elif triggers & _SIDED_TRIGGER_KEYS:
+            saw_sided = True
+        else:
+            # Invoked from a workflow with no recognisable trigger: treat it as
+            # push-protected rather than inventing a new category, but never
+            # let it *alone* excuse a scheduled-only gate.
+            saw_push = True
+    if saw_push:
+        return PUSH_PROTECTED
+    if saw_sided:
+        return SCHEDULED_ONLY
+    return UNWIRED
 
 
 def _is_wired_into_ci(script_name: str) -> bool:
@@ -390,6 +488,84 @@ def test_allowlist_entries_exist_and_have_reasons() -> None:
     for name, reason in DIAGNOSTIC_REPORTERS.items():
         assert (SCRIPTS_DIR / name).is_file(), "allowlisted but missing: %s" % name
         assert reason.strip(), "allowlist entry %s has no reason" % name
+
+
+# --------------------------------------------------------------------------- #
+# Trigger classification: wired != protected
+# --------------------------------------------------------------------------- #
+def test_scheduled_only_gates_are_declared_with_reasons() -> None:
+    """A gate that only runs on a timer must be a *declared* trade-off.
+
+    Without this, ``_is_wired_into_ci`` scores a nightly-only gate exactly like
+    a per-commit one, so a gate that runs zero times on the next push borrows
+    the credibility of one that does. Declaring it keeps the trade-off visible.
+    """
+    existing = {p.name for p in _all_verify_scripts()}
+    for name, reason in SCHEDULED_ONLY_GATES.items():
+        assert name in existing, (
+            "SCHEDULED_ONLY_GATES lists %s but no such verify_*.py exists -- "
+            "remove the stale entry" % name
+        )
+        assert reason.strip(), (
+            "scheduled-only gate %s has no reason; state what the trade-off is "
+            "so the next reader does not have to re-derive it" % name
+        )
+        assert _classify_wiring(name) == SCHEDULED_ONLY, (
+            "%s is registered as scheduled-only but is actually %s -- update the "
+            "registration (or the workflow triggers) so the record matches reality"
+            % (name, _classify_wiring(name))
+        )
+
+
+def test_no_gate_is_scheduled_only_without_a_declaration() -> None:
+    """The anti-decay direction: a NEW scheduled-only gate must go red.
+
+    This is the check that stops the category from quietly growing, which is how
+    'wired' became 'looks wired' in the first place.
+    """
+    undeclared = [
+        p.name for p in _gate_scripts()
+        if _classify_wiring(p.name) == SCHEDULED_ONLY
+        and p.name not in SCHEDULED_ONLY_GATES
+    ]
+    assert not undeclared, (
+        "these gates run only on a schedule/dispatch, so they protect nothing on "
+        "the next commit, but they are not declared in SCHEDULED_ONLY_GATES: %s "
+        "-- add an entry with a reason, or wire them into a push/pull_request "
+        "workflow" % undeclared
+    )
+
+
+def test_declared_scheduled_only_gates_are_not_counted_as_push_protected() -> None:
+    """Belt and braces: the classification must not be a rubber stamp.
+
+    If a listed gate ever becomes push-protected, test_scheduled_only_gates_
+    are_declared_with_reasons already fails. This asserts the inverse directly:
+    a declared gate is genuinely absent from the push-protected set.
+    """
+    push_protected = {
+        p.name for p in _gate_scripts() if _classify_wiring(p.name) == PUSH_PROTECTED
+    }
+    for name in SCHEDULED_ONLY_GATES:
+        assert name not in push_protected, (
+            "%s is declared scheduled-only yet classifies as push-protected" % name
+        )
+
+
+def test_wiring_classification_covers_every_gate() -> None:
+    """No gate may fall outside the three categories (guards future edits)."""
+    allowed = {PUSH_PROTECTED, SCHEDULED_ONLY, UNWIRED}
+    for script in _gate_scripts():
+        assert _classify_wiring(script.name) in allowed, script.name
+
+
+def test_verify_metrics_persist_is_classified_scheduled_only() -> None:
+    """Pin the concrete case that motivated the category.
+
+    Without this, someone could 'fix' a red by flipping the workflow to
+    ``on: push`` and never learn that a real DB requirement was the reason.
+    """
+    assert _classify_wiring("verify_metrics_persist.py") == SCHEDULED_ONLY
 
 
 def test_allowlist_entries_are_genuine_reporters() -> None:
