@@ -293,6 +293,56 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
+    # C2 audit-chain checkpointer: start the ONLY producer of verification
+    # checkpoints. Without this, `verify_incremental` / `verify_rolling` have no
+    # production caller, so `checkpoint_count` stays 0 forever and /v1/ready
+    # reports `evidence_status="unverified"` permanently -- an honest gap that
+    # can never close on its own, and "verified" decays into "we verified it
+    # once, on an unknown date".
+    #
+    # Precedence: AUDIT_DB_PATH wins and is resolved FIRST, before any other
+    # consumer of the audit store can construct it. The gap path is created ONLY
+    # when AUDIT_DB_PATH is explicitly set; when it is unset we skip outright --
+    # no thread, no file, and above all NO write to the default project-root
+    # store. That default is the frozen HC-01 evidence store, and a background
+    # thread must never be the thing that appends to it.
+    #
+    # Idempotent (start() returns the running worker) and fail-safe: a failure
+    # is logged loudly and boot continues. This deliberately does NOT gate
+    # readiness -- `unverified` must not 503 the deployment, because that would
+    # pull every instance out of rotation with no mechanism to advance coverage.
+    _audit_db_path = os.environ.get("AUDIT_DB_PATH")
+    if not _audit_db_path:
+        logger.warning(
+            "AUDIT CHECKPOINTER SKIPPED -- AUDIT_DB_PATH is not set. The audit "
+            "chain will NOT be checkpointed, so /v1/ready evidence_status stays "
+            "'unverified'. Set AUDIT_DB_PATH to a volume path to enable it "
+            "(the default project-root store is frozen evidence and is never "
+            "written by this background thread)."
+        )
+    else:
+        try:
+            from ..reliability.checkpointer import start_background_verifier
+
+            _checkpointer = start_background_verifier()
+            app.state.audit_checkpointer = _checkpointer
+            logger.info(
+                "Audit checkpointer started (segment=%s events, interval=%ss, "
+                "rolling every %s ticks, ~%ss/tick) against AUDIT_DB_PATH=%s",
+                _checkpointer.segment_events,
+                _checkpointer.incremental_interval_sec,
+                _checkpointer.rolling_every_n_ticks,
+                round(_checkpointer.estimate_verify_seconds(
+                    _checkpointer.segment_events), 3),
+                _audit_db_path,
+            )
+        except Exception as _ckpt_exc:  # noqa: BLE001 - loud, never crash boot
+            logger.error(
+                "AUDIT CHECKPOINTER FAILED TO START -- the audit chain will not "
+                "be checkpointed and evidence_status stays 'unverified': %s",
+                _ckpt_exc, exc_info=True,
+            )
+
     # Register the production alert RULES into the store at boot. The rules are
     # all enabled=False (their metric emitters are not wired yet) -- this makes
     # their honest status visible via GET /v1/alerts/rules instead of leaving
@@ -371,6 +421,18 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down LiuHao AI OS Gateway...")
+
+    # Stop the audit checkpointer (best-effort; never stalls shutdown long).
+    try:
+        _checkpointer = getattr(app.state, "audit_checkpointer", None)
+        if _checkpointer is not None:
+            _checkpointer.stop(timeout=5.0)
+            logger.info(
+                "Audit checkpointer stopped (stats=%s)",
+                _checkpointer.stats.snapshot(),
+            )
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        logger.exception("AUDIT CHECKPOINTER STOP FAILED (shutdown continues)")
 
     # Stop the metrics evaluator loop (best-effort; never stalls shutdown long).
     try:

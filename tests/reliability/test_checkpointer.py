@@ -152,14 +152,16 @@ def test_tick_never_raises_when_store_is_broken():
 # --------------------------------------------------------------------------- #
 # Lifecycle
 # --------------------------------------------------------------------------- #
-def test_start_is_idempotent_and_thread_is_daemon(store):
+def test_start_is_idempotent_and_thread_is_non_daemon(store):
     _seed(store, 20)
     v = cp.BackgroundVerifier(lambda: store, incremental_interval_sec=3600)
     try:
         assert v.start() is True
         assert v.start() is False, "second start must not spawn a rival thread"
         assert v.running is True
-        assert v._thread.daemon is True, "must never block interpreter exit"
+        # Non-daemon so a checkpoint write is never killed mid-flight at exit.
+        # This makes stop() mandatory -- enforced by the shutdown test below.
+        assert v._thread.daemon is False
         # the first tick runs promptly
         deadline = time.time() + 5
         while v.stats.snapshot()["ticks"] == 0 and time.time() < deadline:
@@ -168,6 +170,54 @@ def test_start_is_idempotent_and_thread_is_daemon(store):
     finally:
         v.stop(timeout=2)
     assert v.running is False
+
+
+def test_status_is_ok_when_coverage_is_complete(store):
+    _seed(store, 200)
+    v = cp.BackgroundVerifier(lambda: store, segment_events=5000)
+    out = v.tick()
+    assert out["status"] == "ok"
+    assert v.stats.snapshot()["last_status"] == "ok"
+    assert v.stats.snapshot()["status_counts"] == {"ok": 1}
+
+
+def test_status_is_degraded_when_coverage_lags_behind(store):
+    # More events than one segment can cover => covered, but not complete.
+    _seed(store, 800)
+    v = cp.BackgroundVerifier(lambda: store, segment_events=100)
+    out = v.tick()
+    cov = store.verification_coverage()
+    assert cov["uncovered_events"] > 0
+    assert out["status"] == "degraded", out
+    assert v.stats.snapshot()["last_status"] == "degraded"
+
+
+def test_status_is_failed_when_a_segment_does_not_rederive(store):
+    _seed(store, 100)
+    v = cp.BackgroundVerifier(lambda: store, rolling_every_n_ticks=1)
+    v.tick()
+    store._conn.execute("UPDATE audit_events SET outcome='tampered' WHERE seq=50")
+    store._conn.commit()
+    out = v.tick()
+    assert out["status"] == "failed", out
+    assert v.stats.snapshot()["status_counts"].get("failed", 0) >= 1
+
+
+def test_status_is_failed_when_the_store_is_unreachable():
+    class Exploding:
+        def verify_incremental(self, **_):
+            raise RuntimeError("backend down")
+
+        def verify_rolling(self, **_):
+            raise RuntimeError("backend down")
+
+        def verification_coverage(self):
+            raise RuntimeError("backend down")
+
+    v = cp.BackgroundVerifier(lambda: Exploding())
+    out = v.tick()
+    assert out["status"] == "failed"
+    assert v.stats.snapshot()["last_status"] == "failed"
 
 
 def test_stop_is_safe_when_never_started(store):

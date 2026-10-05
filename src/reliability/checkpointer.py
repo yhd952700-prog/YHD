@@ -91,6 +91,9 @@ class CheckpointStats:
         self.last_tick_at: Optional[float] = None
         self.last_error: Optional[str] = None
         self.last_coverage: Optional[Dict[str, Any]] = None
+        # Outcome of every tick. "It ran" is not evidence; the result is.
+        self.last_status: Optional[str] = None
+        self.status_counts: Dict[str, int] = {}
 
     def record_tick(self, coverage: Optional[Dict[str, Any]]) -> None:
         with self._lock:
@@ -122,6 +125,12 @@ class CheckpointStats:
             self.tick_errors += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
 
+    def record_status(self, status: str) -> None:
+        """Record the tick's outcome so 'it ran' is never the only evidence."""
+        with self._lock:
+            self.last_status = status
+            self.status_counts[status] = self.status_counts.get(status, 0) + 1
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -135,6 +144,8 @@ class CheckpointStats:
                 "tick_errors": self.tick_errors,
                 "last_tick_at": self.last_tick_at,
                 "last_error": self.last_error,
+                "last_status": self.last_status,
+                "status_counts": dict(self.status_counts),
                 "last_coverage": self.last_coverage,
             }
 
@@ -155,12 +166,19 @@ class BackgroundVerifier:
         incremental_interval_sec: float = DEFAULT_INCREMENTAL_INTERVAL_SEC,
         rolling_every_n_ticks: int = DEFAULT_ROLLING_EVERY_N_TICKS,
         rolling_max_age_sec: Optional[float] = None,
+        daemon: bool = False,
     ) -> None:
         self._store_factory = store_factory
         self.segment_events = int(segment_events)
         self.incremental_interval_sec = float(incremental_interval_sec)
         self.rolling_every_n_ticks = max(1, int(rolling_every_n_ticks))
         self.rolling_max_age_sec = rolling_max_age_sec
+        # NON-DAEMON by default so a checkpoint write is never killed mid-flight
+        # on interpreter exit. The obligation this creates is real: callers MUST
+        # call stop() (the gateway lifespan does, in its shutdown half). The
+        # wait is interruptible, so shutdown is prompt rather than blocking for
+        # a full interval.
+        self.daemon = daemon
         self.stats = CheckpointStats()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -168,8 +186,14 @@ class BackgroundVerifier:
 
     # -- one pass ------------------------------------------------------- #
     def tick(self) -> Dict[str, Any]:
-        """Run one incremental verify (+ rolling when due). Never raises."""
-        out: Dict[str, Any] = {"rolling": None, "incremental": None}
+        """Run one incremental verify (+ rolling when due). Never raises.
+
+        Always records an outcome in ``out["status"]`` -- ``ok`` /
+        ``degraded`` / ``failed``. A scheduler that only logs "I ran" is the
+        same disease as a gate that cannot fail: it produces the appearance of
+        evidence without the substance.
+        """
+        out: Dict[str, Any] = {"rolling": None, "incremental": None, "status": None}
         try:
             store = self._store_factory()
 
@@ -200,8 +224,26 @@ class BackgroundVerifier:
 
             cov = store.verification_coverage()
             self.stats.record_tick(cov)
+
+            # Outcome, not just liveness:
+            #   failed   -- a segment did not re-derive, or the tick errored
+            #   degraded -- it ran and wrote, but coverage is still behind
+            #               (uncovered events or not rooted at genesis)
+            #   ok       -- the covered range is complete and genesis-rooted
+            if not inc.get("segment_verified", False) or (
+                out.get("rolling") or {}).get("failures"):
+                status = "failed"
+            elif (cov.get("uncovered_events") or 0) > 0 or not cov.get(
+                "rooted_at_genesis", False
+            ):
+                status = "degraded"
+            else:
+                status = "ok"
+            out["status"] = status
+            self.stats.record_status(status)
             _log.info(
                 "checkpoint_tick_complete",
+                status=status,
                 checkpoints=cov.get("checkpoint_count"),
                 uncovered=cov.get("uncovered_events"),
                 coverage_ratio=cov.get("coverage_ratio"),
@@ -209,6 +251,8 @@ class BackgroundVerifier:
             )
         except Exception as exc:  # never propagate into the host process
             self.stats.record_error(exc)
+            self.stats.record_status("failed")
+            out["status"] = "failed"
             _log.error("checkpoint_tick_failed", error=f"{type(exc).__name__}: {exc}")
         return out
 
@@ -226,7 +270,7 @@ class BackgroundVerifier:
             t = threading.Thread(
                 target=self._run,
                 name="liuhao-audit-checkpointer",
-                daemon=True,  # never blocks interpreter exit
+                daemon=self.daemon,
             )
             self._thread = t
             t.start()
