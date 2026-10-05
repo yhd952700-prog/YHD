@@ -17,7 +17,7 @@ import type {
 import type { AuthConfig } from '../lib/auth'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { eventLabel, humanDuration, outcomeLabel, outcomeTone } from '../lib/format'
+import { eventLabel, humanDuration, outcomeLabel, outcomeTone, safeText } from '../lib/format'
 import { DonutChart, LineChart } from '../components/charts'
 import { Card, Dot, Guard } from '../components/ui'
 
@@ -39,9 +39,9 @@ export function DataCenter({ query }: { query: string }) {
     if (!need) return items
     return items.filter(
       (item) =>
-        item.type.toLowerCase().includes(need) ||
+        safeText(item.type).toLowerCase().includes(need) ||
         eventLabel(item.type).toLowerCase().includes(need) ||
-        item.outcome.toLowerCase().includes(need),
+        safeText(item.outcome).toLowerCase().includes(need),
     )
   }, [analytics.data, need])
 
