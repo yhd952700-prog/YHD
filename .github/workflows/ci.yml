@@ -346,6 +346,16 @@ jobs:
       - name: Verify no relative markdown link dangles
         run: python scripts/verify_doc_links.py
 
+      # docs/README.md is the reader's map: it must actually index the docs
+      # tree. Measured 2026-10-04 it named only 38 of 135 markdown files and
+      # listed 9 of 15 directories in its structure block -- so a reader who
+      # trusts the index concludes the project has no governance charter, no
+      # blueprint-upgrade packages, and no ADR set. This makes every live doc's
+      # presence (and every path the index claims) mechanical, so a future edit
+      # that silently drops 70% of the tree turns CI red instead of misleading.
+      - name: Verify docs/README.md indexes the whole docs tree
+        run: python scripts/verify_docs_index_coverage.py
+
       # PHASE 3.6 / T-M (F29 6 and F30 1): exactly one identity implementation may
       # be imported. Two modules both described themselves as the "single Identity
       # Authority" and neither said which one that was -- an undeclared second
