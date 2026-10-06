@@ -317,3 +317,49 @@ def test_nested_comparison_catches_a_missing_key():
     broken = {"goals": [{f.split(".")[-1]: 1 for f in declared[:-1]}]}
     missing = [f for f in declared if not _get_at(_resolve(broken, "goals[]"), f)[0]]
     assert missing == [declared[-1]], f"漏发字段应被查出，实际={missing}"
+
+
+class TestRosterEmployeeCountIsReal:
+    """``totals.employees`` 必须只数**真实员工**，绝不能退回去数注册表条目。
+
+    历史缺陷的形状：旧版把 14 个 kernel + 14 个能力层当成"28 个 AI 员工"，
+    ``employees = len(kernels) + len(layers)`` —— 把一排静态 YAML 条目说成
+    一群员工。修好后那个 28 被如实保留为 ``registry_entries``（名字就写着
+    "注册表条目数"），与"员工数"彻底分家。
+
+    这两个数一旦重新混起来，Overview 的「AI 员工总数」KPI 就重新变成一句
+    怎么说都不算数的空话，所以这里用不变量而不是用"看起来对"来钉住它。
+    """
+
+    def test_employees_equals_the_real_employee_count(self, client):
+        payload = client.get("/v1/dashboard/roster").json()
+        totals = payload.get("totals") or {}
+        real = payload.get("real_employees") or []
+        assert totals.get("employees") == len(real), (
+            f"totals.employees={totals.get('employees')!r} 但 len(real_employees)={len(real)}："
+            f"员工数必须从真实持久化员工列表推导，不能从别的东西估。"
+        )
+
+    def test_registry_entries_is_the_module_sum(self, client):
+        payload = client.get("/v1/dashboard/roster").json()
+        totals = payload.get("totals") or {}
+        module_sum = len(payload.get("kernels") or []) + len(payload.get("layers") or [])
+        assert totals.get("registry_entries") == module_sum, (
+            f"registry_entries={totals.get('registry_entries')!r} "
+            f"不等于 kernels+layers={module_sum}"
+        )
+
+    def test_employees_is_not_the_registry_sum(self, client):
+        """直接封住那条历史捷径：employees 不得等于 kernels+layers。"""
+        payload = client.get("/v1/dashboard/roster").json()
+        totals = payload.get("totals") or {}
+        module_sum = len(payload.get("kernels") or []) + len(payload.get("layers") or [])
+        employees = totals.get("employees")
+        real_count = len(payload.get("real_employees") or [])
+        # 只有"真实员工数恰好等于注册表条目数"时二者才可能相等，那种巧合被允许
+        # —— 但它仍必须是数出来的，所以上一条断言（== len(real_employees)）恒成立。
+        if real_count != module_sum:
+            assert employees != module_sum, (
+                f"employees={employees!r} == kernels+layers={module_sum}："
+                f"又把注册表模块当成员工数了（旧 defect 回归）。"
+            )
