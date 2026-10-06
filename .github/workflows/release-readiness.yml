@@ -72,6 +72,9 @@ jobs:
     name: Independent Verification (C10 harness)
     runs-on: ubuntu-latest
     needs: readiness
+    # CRITICAL-5: run even if 'readiness' failed, so this gate FAILS loudly
+    # instead of being silently SKIPPED.
+    if: always()
     timeout-minutes: 30
 
     services:
@@ -100,6 +103,12 @@ jobs:
           --health-retries 5
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'readiness' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (readiness)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: readiness
+          upstream-result: ${{ needs.readiness.result }}
       - uses: actions/checkout@v4
 
       - name: Set up Python

@@ -1,26 +1,36 @@
-"""CRITICAL-5 watchdog verification — real evidence, not a reimplementation.
+"""CRITICAL-5 watchdog verification — dynamic, honest, real evidence.
 
-Proves three things WITHOUT needing `act` / Docker / a real Ubuntu CI run:
+CRITICAL-5 mandates that a "red" upstream job must turn its downstream gate
+jobs RED (explicit FAIL), never silently SKIP. A SKIP hides a broken build
+behind a falsely "all green" pipeline.
 
-  1. VALIDITY  — both `ci.yml` and the composite action parse as valid YAML.
-  2. WIRING    — the 5 gate jobs that can be silently skipped
-                 (security, guardrails, guardrails-extended, lint — all
-                 `needs: test`; and gate-check — `needs: [test, security,
-                 observability]`) now carry `if: always()` and a watchdog step
-                 that references the correct `needs.<job>.result`.
-  3. LOGIC     — the ACTUAL shell code inside the composite action fails
-                 (exit 1) for every upstream result other than "success", and
-                 passes (exit 0) only for "success". The shell is extracted
-                 from action.yml at runtime and executed, so this tests the
-                 real code, not a copy.
+This verifier proves the watchdog is correctly wired WITHOUT needing `act` /
+Docker / a real Ubuntu CI run, by statically scanning the workflow files:
 
-Exit 0 = watchdog is correctly implemented. Exit 1 = a check failed.
+  1. VALIDITY  -- the composite action and every workflow file parse as YAML.
+  2. WIRING    -- for EVERY job in EVERY workflow file that declares `needs:`:
+                   (a) the job's `if:` must contain `always()` so it still
+                       runs when an upstream failed (instead of being skipped);
+                   (b) a watchdog step (uses .../ci-gate-watchdog) must exist
+                       for EACH upstream, asserting `needs.<up>.result == success`.
+                 Any `needs:` job violating (a) or (b) is reported as UNCOVERED.
+                 This is a DYNAMIC scan of `.github/workflows/*.yml` -- there is
+                 NO hard-coded job whitelist, so a newly added `needs:` job that
+                 forgets the watchdog is caught, and a workflow that is not yet
+                 covered is flagged honestly rather than hidden behind GREEN.
+  3. LOGIC     -- the ACTUAL shell code inside the composite action is executed
+                 with injected upstream results: exit 0 only for "success",
+                 exit 1 for failure/cancelled/skipped/empty (the latter being
+                 fail-closed on a missing input).
+
+Exit 0 = every `needs:` job across all workflows is correctly watchdog-protected.
+Exit 1 = at least one `needs:` job is uncovered (or a static/logic check failed).
 
 HONEST LIMITATION: this does NOT run real GitHub Actions. The end-to-end
-"red `test` -> gate shows FAILED, not SKIP" orchestration is verified by static
-reasoning + this decision-logic test, and remains UNVERIFIED by a real Ubuntu
-CI run (no `act` / no Docker in this environment). That gap is reported
-explicitly rather than papered over.
+"red upstream -> gate shows FAILED, not SKIP" orchestration is verified by static
+analysis + this decision-logic test, and remains UNVERIFIED by a real Ubuntu CI
+run (no `act` / no Docker in this environment). That gap is reported explicitly
+rather than papered over.
 """
 
 from __future__ import annotations
@@ -34,18 +44,27 @@ import yaml
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 ACTION = REPO / ".github/actions/ci-gate-watchdog/action.yml"
-CI = REPO / ".github/workflows/ci.yml"
-
-# job_name -> list of upstream jobs whose result the watchdog must assert
-EXPECTED_WIRING = {
-    "security": ["test"],
-    "guardrails": ["test"],
-    "guardrails-extended": ["test"],
-    "lint": ["test"],
-    "gate-check": ["test", "security", "observability"],
-}
+WORKFLOWS = sorted(REPO.glob(".github/workflows/*.yml"))
 
 failures: list[str] = []
+
+
+def _normalize_needs(value) -> list[str]:
+    """`needs:` may be a scalar job name or a list; return a list of names."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    # dict form (needs: {job: result}) -- keys are upstream job names
+    if isinstance(value, dict):
+        return [str(k) for k in value.keys()]
+    return [str(value)]
+
+
+def _job_has_always(job: dict) -> bool:
+    return "always()" in str(job.get("if", ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -54,7 +73,8 @@ failures: list[str] = []
 print("=" * 72)
 print("[1] YAML validity")
 print("=" * 72)
-for path in (ACTION, CI):
+yaml_targets = [ACTION] + WORKFLOWS
+for path in yaml_targets:
     try:
         with open(path) as fh:
             yaml.safe_load(fh)
@@ -64,47 +84,81 @@ for path in (ACTION, CI):
 
 
 # --------------------------------------------------------------------------- #
-# 2. WIRING (static structural check)
+# 2. WIRING (dynamic, all workflows, every needs: job)
 # --------------------------------------------------------------------------- #
 print()
 print("=" * 72)
-print("[2] gate-job wiring (if: always() + watchdog step per upstream)")
+print("[2] gate-job wiring across ALL workflows (if: always() + watchdog per upstream)")
 print("=" * 72)
 
-action = yaml.safe_load(open(ACTION))
-ci = yaml.safe_load(open(CI))
-jobs = ci.get("jobs", {})
+total_needs_jobs = 0
+covered = 0
 
-for job_name, upstreams in EXPECTED_WIRING.items():
-    if job_name not in jobs:
-        failures.append(f"WIRING: job '{job_name}' not found in ci.yml")
+for wf in WORKFLOWS:
+    try:
+        with open(wf) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"WIRING: cannot read {wf.name}: {exc}")
         continue
-    job = jobs[job_name]
-    job_if = str(job.get("if", ""))
-    if "always()" not in job_if:
-        failures.append(f"WIRING: job '{job_name}' missing always() in if: ({job_if!r})")
-
-    watchdog_steps = [
-        s for s in job.get("steps", []) if str(s.get("uses", "")).endswith("ci-gate-watchdog")
-    ]
-    found_names = {str(s.get("with", {}).get("upstream-name")) for s in watchdog_steps}
-    for upstream in upstreams:
-        if upstream not in found_names:
-            failures.append(f"WIRING: job '{job_name}' missing watchdog for upstream '{upstream}'")
+    jobs = doc.get("jobs", {}) or {}
+    wf_rel = wf.relative_to(REPO)
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
             continue
-        matching = [
-            s for s in watchdog_steps
-            if str(s.get("with", {}).get("upstream-name")) == upstream
+        upstreams = _normalize_needs(job.get("needs"))
+        if not upstreams:
+            continue  # not a dependent job -> nothing to watchdog
+        total_needs_jobs += 1
+        job_if = str(job.get("if", ""))
+        always_ok = _job_has_always(job)
+        if not always_ok:
+            failures.append(
+                f"WIRING: {wf_rel}:{job_name} has needs:{upstreams} but its "
+                f"`if:` lacks always() -> would SKIP silently on red upstream"
+            )
+        watchdog_steps = [
+            s for s in job.get("steps", []) if str(s.get("uses", "")).endswith("ci-gate-watchdog")
         ]
-        for s in matching:
-            result_ref = str(s.get("with", {}).get("upstream-result", ""))
-            if f"needs.{upstream}.result" not in result_ref:
-                failures.append(
-                    f"WIRING: job '{job_name}' watchdog for '{upstream}' does not "
-                    f"reference needs.{upstream}.result (got {result_ref!r})"
-                )
-    if job_name not in [f.split("'")[1] for f in failures if "WIRING" in f and job_name in f]:
-        print(f"  OK  {job_name}: always() + watchdog for {upstreams}")
+        found_names = {str(s.get("with", {}).get("upstream-name")) for s in watchdog_steps}
+        missing = [u for u in upstreams if u not in found_names]
+        if missing:
+            failures.append(
+                f"WIRING: {wf_rel}:{job_name} missing watchdog step(s) for upstream(s) {missing}"
+            )
+        else:
+            for upstream in missing:  # (none, but keep structure)
+                pass
+            for upstream in upstreams:
+                matching = [
+                    s for s in watchdog_steps
+                    if str(s.get("with", {}).get("upstream-name")) == upstream
+                ]
+                for s in matching:
+                    result_ref = str(s.get("with", {}).get("upstream-result", ""))
+                    if f"needs.{upstream}.result" not in result_ref:
+                        failures.append(
+                            f"WIRING: {wf_rel}:{job_name} watchdog for '{upstream}' "
+                            f"does not reference needs.{upstream}.result (got {result_ref!r})"
+                        )
+        if always_ok and not missing:
+            covered += 1
+            print(f"  OK  {wf_rel}:{job_name} -> watchdog for {upstreams}")
+
+if total_needs_jobs == 0:
+    failures.append("WIRING: no `needs:` jobs found in any workflow (unexpected)")
+else:
+    print(f"  scanned {total_needs_jobs} dependent job(s) across {len(WORKFLOWS)} workflow file(s)")
+
+# Explicit, honest coverage statement (no silent green).
+print()
+if covered == total_needs_jobs:
+    print(f"  COVERAGE: all {covered} `needs:` jobs are watchdog-protected.")
+else:
+    print(
+        f"  COVERAGE: {covered}/{total_needs_jobs} `needs:` jobs protected -- "
+        f"{total_needs_jobs - covered} UNCOVERED (see failures above)."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +169,7 @@ print("=" * 72)
 print("[3] watchdog decision logic (real shell, injected upstream results)")
 print("=" * 72)
 
+action = yaml.safe_load(open(ACTION))
 watchdog_run = None
 for step in action.get("runs", {}).get("steps", []):
     if step.get("shell") == "bash" and "run" in step:
@@ -123,25 +178,32 @@ for step in action.get("runs", {}).get("steps", []):
 if watchdog_run is None:
     failures.append("LOGIC: could not locate the bash step in the composite action")
 else:
-    # Locate a real POSIX shell. Bare "bash" can resolve to the WSL shim
-    # (wsl.exe) on Windows, which is sandbox-blocked; prefer the absolute
-    # git-bash / Ubuntu path, which is correct in both local and CI envs.
+    # Locate a real POSIX shell that BOTH runs and propagates the caller's
+    # environment. Bare "bash" on this Windows/git-bash box starts but does NOT
+    # forward env vars (UPSTREAM_RESULT/UPSTREAM_NAME arrive empty), which would
+    # make the decision-logic test meaningless; "sh" does propagate them. The
+    # action code is pure POSIX sh, so sh is a faithful proxy for the real
+    # GitHub `bash` runner. We probe env propagation explicitly rather than
+    # trusting a bare `true` check.
     bash = None
-    for cand in ("/usr/bin/bash", "/usr/bin/sh", "bash", "sh"):
-        if cand.startswith("/") and os.path.exists(cand):
+    for cand in ("/usr/bin/bash", "/usr/bin/sh", "bash", "sh", "/bin/bash", "/bin/sh"):
+        if cand.startswith("/") and not os.path.exists(cand):
+            continue
+        probe = subprocess.run([cand, "-c", "true"], capture_output=True, text=True)
+        if probe.returncode != 0:
+            continue
+        check = subprocess.run(
+            [cand, "-c", 'test "$CRIT5_PROBE" = "ok"'],
+            env={**os.environ, "CRIT5_PROBE": "ok"},
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
             bash = cand
             break
-        # bare name: let PATH resolve, but only accept if it actually runs.
-        if not cand.startswith("/"):
-            probe = subprocess.run(
-                [cand, "-c", "true"], capture_output=True, text=True
-            )
-            if probe.returncode == 0:
-                bash = cand
-                break
     if bash is None:
-        failures.append("LOGIC: no usable POSIX shell found for the subprocess")
-        bash = "bash"
+        failures.append("LOGIC: no usable POSIX shell (env-propagating) found")
+        bash = "sh"
     print(f"  using shell: {bash}")
     cases = {
         "success": 0,
@@ -179,10 +241,11 @@ else:
 print()
 print("=" * 72)
 if failures:
-    print(f"RESULT: FAILED ({len(failures)})")
+    print(f"RESULT: FAILED ({len(failures)}) -- watchdog coverage gaps exist:")
     for line in failures:
         print("  -", line)
+    print("  (real GitHub Ubuntu run remains UNVERIFIED: no act/Docker here)")
     sys.exit(1)
-print("RESULT: ALL GREEN — CRITICAL-5 watchdog correctly implemented")
+print("RESULT: PASS -- every `needs:` job across all workflows is watchdog-protected")
 print("  (real GitHub Ubuntu run remains UNVERIFIED: no act/Docker here)")
 sys.exit(0)

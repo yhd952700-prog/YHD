@@ -193,9 +193,17 @@ jobs:
     # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
     # 用 default_branch 可自愈：以后换默认分支不必再改这里。
     # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # CRITICAL-5: run even if 'security' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always() && github.ref_name == github.event.repository.default_branch
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'security' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (security)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: security
+          upstream-result: ${{ needs.security.result }}
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -255,6 +263,9 @@ jobs:
 
       - name: Verify D8 risk classification wiring
         run: python scripts/verify_d8_risk_classification.py
+
+      - name: Verify CRITICAL-5 watchdog coverage (no silent SKIP on red upstream)
+        run: python scripts/verify_critical5_watchdog.py
 
       - name: Verify C-2 enforcement switch is not armed by code
         run: python scripts/verify_c2_enforcement.py
@@ -909,10 +920,18 @@ jobs:
     # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
     # 用 default_branch 可自愈：以后换默认分支不必再改这里。
     # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # CRITICAL-5: run even if 'build' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always() && github.ref_name == github.event.repository.default_branch
     timeout-minutes: 60
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (build)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: build
+          upstream-result: ${{ needs.build.result }}
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -943,10 +962,18 @@ jobs:
     # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
     # 用 default_branch 可自愈：以后换默认分支不必再改这里。
     # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    if: github.ref_name == github.event.repository.default_branch
+    # CRITICAL-5: run even if 'integration' failed, so this gate FAILS loudly instead
+    # of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always() && github.ref_name == github.event.repository.default_branch
     timeout-minutes: 15
 
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'integration' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (integration)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: integration
+          upstream-result: ${{ needs.integration.result }}
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5

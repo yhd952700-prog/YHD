@@ -25,7 +25,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # requirements.txt 是 `uv pip compile pyproject.toml` 的**默认依赖**产物，
+          # **不含** `[tests]` extra（fakeredis / lupa）。只装它，
+          # tests/distribution/ 下的协调 / 围栏用例会静默 skip ——
+          # 而"跳过的绿"比红更危险。所以这里显式追加 tests extra。
+          # （与 ci.yml 的 `pip install -e .[tests,etcd]` 保持同一安装面，
+          #   避免两个 workflow 对"测试环境是什么"各说一套。）
           pip install -r requirements.txt
+          pip install -e .[tests,etcd]
           pip install pytest-cov
       - name: Run unit tests
         run: python -m pytest tests/ -v --tb=short -m "not integration and not e2e"
@@ -43,6 +50,20 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # 这个 job 以前**根本没有装项目**（唯一的 pip 调用是装 bandit），
+      # 却直接 `pytest tests/ -m security`。pytest 收集阶段就会 import src/，
+      # 在没有 fastapi/pydantic/cryptography 的裸解释器上直接收集失败 ——
+      # 实测：屏蔽这些第三方包后 `pytest tests/ -m security --collect-only`
+      # 以 ImportError 退出（exit 1）。也就是说该 job 从来不可能变绿。
+      # 由 scripts/verify_dependency_declaration_surface.py 检查 B 守住。
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[tests,etcd]
       - name: Run security tests
         run: python -m pytest tests/ -v --tb=short -m security
       - name: Run bandit
@@ -59,8 +80,21 @@ jobs:
   build:
     needs: [test, security]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # CRITICAL-5: run even if 'test'/'security' failed, so downstream deploy gates
+    # FAIL loudly instead of being silently SKIPPED.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      # CRITICAL-5 watchdog: fail loudly if a required upstream did not succeed.
+      - name: CRITICAL-5 gate watchdog (test)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: test
+          upstream-result: ${{ needs.test.result }}
+      - name: CRITICAL-5 gate watchdog (security)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: security
+          upstream-result: ${{ needs.security.result }}
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -107,7 +141,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: staging
+    # CRITICAL-5: run even if 'build' failed, so the deploy gate FAILS loudly
+    # instead of being silently SKIPPED (a red build must not mask a green deploy).
+    if: always()
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (build)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: build
+          upstream-result: ${{ needs.build.result }}
       - uses: actions/checkout@v4
       - name: Deploy to Staging
         run: |
@@ -122,7 +165,16 @@ jobs:
     needs: deploy-staging
     runs-on: ubuntu-latest
     environment: production
+    # CRITICAL-5: run even if 'deploy-staging' failed, so the deploy gate FAILS
+    # loudly instead of being silently SKIPPED.
+    if: always()
     steps:
+      # CRITICAL-5 watchdog: fail loudly if the required 'deploy-staging' job did not succeed.
+      - name: CRITICAL-5 gate watchdog (deploy-staging)
+        uses: ./.github/actions/ci-gate-watchdog
+        with:
+          upstream-name: deploy-staging
+          upstream-result: ${{ needs.deploy-staging.result }}
       - uses: actions/checkout@v4
       - name: Deploy to Production
         run: |
