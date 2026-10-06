@@ -42,7 +42,7 @@ Audit Kernel 是 Human-Sovereign Agent OS 的**防篡改审计内核（设计为
 - `AuditEvent`（:59）：单条已签名事件，`event_hash` 由 `compute_hash` 生成。
 - `get_event(event_id) → Optional[Dict]`（`src/kernels/audit/__init__.py:493`）。
 - `get_stats() → Dict`（事件类型/结果分布、`db_path`，:519）。
-- **持久化**：SQLite（WAL 模式，:139），`audit_events` + `chain_state` 双表（:141-165）；由 `AUDIT_DB_PATH` 控制路径（默认仓库根 `audit_store.db`，:117）。
+- **持久化**：SQLite（WAL 模式，:139），`audit_events` + `chain_state` 双表（:141-165）；路径由 `AUDIT_DB_PATH` 控制。**`AUDIT_DB_PATH` 未设置且未显式传入 `db_path` 时 `AuditStore()` 直接 fail-closed 报错**（不再默认落到仓库根 `audit_store.db`——那是冻结的 HC-01 证据库，曾被无配置进程静默污染；见 `scripts/forensics_evidence_store_pollution.py`）。生产在 docker-compose 显式设为 `/app/data/audit_store.db`，测试经 `tests/conftest.py` 重定向到临时文件。
 - **全局单例**：`get_audit_store()`（:560）。
 
 ## 6. 错误处理（对齐 `src/kernels/_base.py`）

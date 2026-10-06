@@ -27,7 +27,7 @@ import json
 
 from packaging.version import InvalidVersion, Version
 
-from src.kernels._crosscutting import kernel_action
+from src.kernels._crosscutting import kernel_action, mark_action_denied
 
 # The real plugin contract lives in src.plugins.base. We alias it here as
 # PluginInterface so the loader/activator can depend on a single, honest type.
@@ -206,6 +206,7 @@ class PluginRegistry:
         """Unregister a plugin from the registry."""
         with self._lock:
             if plugin_id not in self._plugins:
+                mark_action_denied(f"unregister rejected: unknown plugin {plugin_id!r}")
                 return False
 
             info = self._plugins[plugin_id]
@@ -342,6 +343,7 @@ class PluginRegistry:
         with self._lock:
             info = self._plugins.get(plugin_id)
             if not info:
+                mark_action_denied(f"activate rejected: unknown plugin {plugin_id!r}")
                 return None
 
             if info.status == PluginStatus.ACTIVE and plugin_id in self._loaded:
@@ -351,6 +353,9 @@ class PluginRegistry:
             instance = self.load_plugin(plugin_id)
             if instance is None:
                 # load_plugin already recorded the reason in info.error + status.
+                mark_action_denied(
+                    f"activate rejected: {info.error or 'plugin failed to load'}"
+                )
                 self._save_index()
                 return info
 
@@ -377,6 +382,10 @@ class PluginRegistry:
         with self._lock:
             info = self._plugins.get(plugin_id)
             if not info or info.status != PluginStatus.ACTIVE:
+                mark_action_denied(
+                    f"deactivate rejected: plugin {plugin_id!r} "
+                    f"{'unknown' if not info else 'not active (' + info.status.value + ')'}"
+                )
                 return False
 
             info.status = PluginStatus.DISCOVERED

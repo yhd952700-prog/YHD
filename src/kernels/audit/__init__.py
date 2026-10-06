@@ -377,17 +377,35 @@ class AuditStore:
 
     def __init__(self, db_path: str = None, backup_path: str = None):
         if db_path is None:
-            # 默认落在项目根目录，而非写死某台机器的绝对路径（写死会在 CI
-            # 工作区造出名为 "D:" 的目录，upload-artifact 因含冒号失败）。
-            _project_root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # ③ / evidence-store isolation (config-layer, NOT file attributes):
+            # the frozen HC-01 evidence store lives at <project_root>/audit_store.db
+            # and must NEVER be written by a caller that forgot to configure a
+            # path. The previous default fell back to exactly that file, so any
+            # process running without AUDIT_DB_PATH silently polluted the frozen
+            # evidence. Read-only forensics
+            # (scripts/forensics_evidence_store_pollution.py, run against the live
+            # store with AUDIT_DB_PATH redirected to a temp dir and the store
+            # only ever copied+read) confirmed the damage: 40,482 events from 40
+            # distinct writer identities and ~29k independent correlation_ids all
+            # landed in the single shared root file (test-liuhao / mem-isolated /
+            # restart-check alongside the canonical liuhao-internal-service).
+            # We now FAIL CLOSED: the path must be explicit.
+            #   - production sets AUDIT_DB_PATH in docker-compose (prod + staging)
+            #     to /app/data/audit_store.db;
+            #   - the test suite redirects it via tests/conftest.py.
+            # Anything else must make a conscious configuration decision instead
+            # of clobbering evidence.
+            explicit = os.environ.get("AUDIT_DB_PATH")
+            if not explicit:
+                raise RuntimeError(
+                    "AUDIT_DB_PATH is not set and no db_path was supplied. "
+                    "Refusing to default to the project-root audit_store.db, which "
+                    "is the frozen HC-01 evidence store. Set AUDIT_DB_PATH "
+                    "explicitly (production: docker-compose sets "
+                    "/app/data/audit_store.db; tests: conftest redirects to a temp "
+                    "file) or pass db_path to AuditStore()."
                 )
-            )
-            db_path = os.environ.get(
-                "AUDIT_DB_PATH",
-                os.path.join(_project_root, "audit_store.db")
-            )
+            db_path = explicit
         self._db_path = db_path
         # Transaction-consistent backup used by corruption recovery. Defaults to
         # ``<db>.backup`` or the AUDIT_DB_BACKUP_PATH env var; ``None`` disables
