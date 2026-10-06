@@ -217,13 +217,51 @@ def compute_file_sha256(path: str) -> tuple[str, int]:
 # Safe copy (never operate on the original in place)
 # ---------------------------------------------------------------------------
 
+def detect_pre_existing_sidecars(source_path: str) -> list[str]:
+    """Return ``<db>-wal`` / ``<db>-shm`` sidecars already next to the source.
+
+    Pure directory listing -- never opens, reads, or touches them.
+
+    This matters because the source is opened with ``immutable=1`` (see
+    :func:`backup_to_temp_copy`), which makes SQLite skip the WAL entirely and
+    read only the main database file. If a ``-wal`` already exists, it may hold
+    committed-but-not-yet-checkpointed transactions that this view would NOT
+    see. Rather than silently presenting a possibly-stale snapshot, the tool
+    records the fact so a reviewer can see the caveat. It never gates on it.
+    """
+    directory = os.path.dirname(os.path.abspath(source_path))
+    base = os.path.basename(source_path)
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        name for name in os.listdir(directory)
+        if name.startswith(base + "-") and name[len(base) + 1:] in ("wal", "shm")
+    )
+
+
 def backup_to_temp_copy(source_path: str) -> str:
     """Make an isolated copy of ``source_path`` via SQLite ``.backup``.
 
-    The source is opened READ-ONLY. The copy lives in a throwaway temp dir and is
-    the ONLY database this tool reads records from. Returns the copy path.
+    The source is opened READ-ONLY *and* IMMUTABLE. The copy lives in a
+    throwaway temp dir and is the ONLY database this tool reads records from.
+    Returns the copy path.
     """
-    src = sqlite3.connect(f"file:{os.path.abspath(source_path)}?mode=ro", uri=True)
+    # READ-ONLY *and* IMMUTABLE -- this is the HC-01 freeze side-effect fix.
+    #
+    # ``mode=ro`` alone is NOT sufficient: on a WAL-mode database SQLite still
+    # creates ``<db>-wal`` and ``<db>-shm`` sidecars beside the source when a
+    # connection is opened, because it needs shared memory even to read. That
+    # introduces NEW FILES into the evidence directory and therefore changes its
+    # fingerprint -- exactly what the HC-01 freeze discipline forbids ("never
+    # touch audit_store.db / -wal / -shm"). So the earlier "zero side effects"
+    # claim was only true for non-WAL sources.
+    #
+    # ``immutable=1`` promises SQLite that the file cannot change, so it skips
+    # locking and never materialises -wal/-shm -- making the zero-side-effect
+    # claim true for WAL-mode sources too.
+    src = sqlite3.connect(
+        f"file:{os.path.abspath(source_path)}?mode=ro&immutable=1", uri=True
+    )
     tmp_dir = tempfile.mkdtemp(prefix="derive_audit_view_copy_")
     copy_path = os.path.join(tmp_dir, "audit_store.copy.db")
     dst = sqlite3.connect(copy_path)
@@ -385,6 +423,13 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         raise FileNotFoundError(f"source database not found: {source_path}")
     os.makedirs(out_dir, exist_ok=True)
 
+    # 1b) Record any -wal / -shm sidecars ALREADY sitting beside the source
+    #     (pure directory listing; never opens or touches them). The source is
+    #     read with immutable=1, which skips the WAL, so a pre-existing -wal
+    #     could hold committed-but-not-yet-checkpointed transactions that this
+    #     view would NOT include. Recorded as a visible caveat, never a gate.
+    pre_existing_sidecars = detect_pre_existing_sidecars(source_path)
+
     # 1) Anchor the original via its byte-level sha256 (read-only).
     original_sha256, original_size = compute_file_sha256(source_path)
     original_name = os.path.basename(source_path)
@@ -520,6 +565,20 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
             "computed over the ORIGINAL db file bytes (read-only); the tool "
             "never writes to, reorders, or overwrites the original database."
         ),
+        "source_open_mode": (
+            "file:<abspath>?mode=ro&immutable=1 -- read-only AND immutable, so "
+            "SQLite never materialises -wal/-shm sidecars beside the source "
+            "(HC-01 freeze: the evidence directory fingerprint is unchanged)."
+        ),
+        "pre_existing_sidecars": pre_existing_sidecars,
+        "sidecar_caveat": (
+            "immutable=1 makes SQLite skip the WAL; a pre-existing -wal may hold "
+            "committed-but-not-yet-checkpointed transactions that are NOT "
+            "included in this view."
+            if pre_existing_sidecars
+            else "no -wal/-shm present beside the source at derivation time; "
+                 "this view covers the main database file as-is."
+        ),
         "tool": TOOL_NAME,
         "tool_version": TOOL_VERSION,
     }
@@ -557,6 +616,7 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         "manifest_path": manifest_path,
         "partition_path": partition_path,
         "records_path": records_path,
+        "pre_existing_sidecars": pre_existing_sidecars,
         "summary": summary,
     }
 
@@ -599,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
           f"snapshot={s['live_snapshot_time']}")
     if "FINDING_critical_sovereignty_collision_groups" in s:
         print(f"  FINDING: {s['FINDING_critical_sovereignty_collision_groups']}")
+    if result.get("pre_existing_sidecars"):
+        print(f"  CAVEAT: pre-existing sidecars beside the source: "
+              f"{result['pre_existing_sidecars']} -- the immutable read skips the "
+              f"WAL, so not-yet-checkpointed transactions are NOT in this view.")
     print(f"  wrote: {result['manifest_path']}")
     print(f"         {result['partition_path']}")
     print(f"         {result['records_path']}")
