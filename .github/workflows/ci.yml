@@ -703,7 +703,14 @@ jobs:
     needs: test
     # CRITICAL-5: run even if 'test' failed, so this gate FAILS loudly.
     if: always()
-    timeout-minutes: 25
+    # Budget headroom: this job now runs 27 verify_* gates. The four added when
+    # closing the meta-guard gap measure ~223s together on this box (the
+    # dependency-declaration surface gate alone is ~206s), on top of 23 existing
+    # steps. 25 min left too little margin, and a timeout here reads as a FALSE
+    # RED -- the exact failure this job's own comment warns about ("adding 16
+    # more would turn a timeout into a false red"). Raised to 40 to keep the
+    # gate trustworthy; a real CI timing run should retune this with data.
+    timeout-minutes: 40
 
     # Isolation, belt-and-braces. These gates redirect persistence themselves,
     # but a gate that ever forgets must not land artifacts in a real workspace
