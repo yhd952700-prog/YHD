@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
+import { readError } from './errorMessage'
 
 export class ApiError extends Error {
   status: number
@@ -17,17 +18,6 @@ export class ApiError extends Error {
     super(message)
     this.status = status
   }
-}
-
-async function readError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown }
-    if (typeof body?.detail === 'string') return body.detail
-    if (body?.detail) return JSON.stringify(body.detail)
-  } catch {
-    // 非 JSON：退回状态文本。
-  }
-  return response.statusText || `HTTP ${response.status}`
 }
 
 /** 发一个带会话的请求。401 会清会话并广播未认证。
