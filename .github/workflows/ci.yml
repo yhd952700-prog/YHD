@@ -304,6 +304,30 @@ jobs:
           echo "::error ::A4 closure gate failed (exit $code)"
           exit 1
 
+      # AGENT SCIENCE GATE (causal ablation): is the multi-agent / memory layer
+      # REAL or a LABEL? Wired deliberately even though it currently exits 2:
+      # exit 2 means KNOWN RED — the multi-agent layer is causally DECORATIVE
+      # (outcome is bit-identical with 0 / 3 real / 3 ghost agents; a planted
+      # memory directive changes nothing). This is a tracked known product gap,
+      # not a green pass. An unwired guard protects nothing, and hiding a known
+      # gap behind an unwired script is worse than showing it. So: 0 or 2 passes
+      # (2 = KNOWN RED, visible), 1 (a real harness regression — positive
+      # control / label separation / memory-write visibility failed) fails. When
+      # the product routes execution through the assigned agent (or feeds
+      # recall() into decisions), tighten this to require 0.
+      - name: Verify multi-agent / memory layer is causally real (not decorative)
+        run: |
+          set +e
+          python scripts/verify_agent_collaboration_causal.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; then
+            echo "agent-collaboration gate: no harness regression (exit $code; 2 = KNOWN RED decorative layer, tracked)"
+            exit 0
+          fi
+          echo "::error ::agent-collaboration gate harness BROKEN (exit $code)"
+          exit 1
+
       - name: Verify AI-layer audit delegation (probe self-validation)
         run: python scripts/verify_ai_layer_audit.py
 

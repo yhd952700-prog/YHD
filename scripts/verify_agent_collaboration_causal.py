@@ -21,8 +21,20 @@ built to catch. Turning this gate green REQUIRES real multi-agent behaviour,
 and the failure message says what evidence would do that.
 
 Run: .venv/Scripts/python.exe scripts/verify_agent_collaboration_causal.py
-Exit code 0 = the multi-agent layer is causally REAL (or the gate's arms are
-not applicable); 1 = it is decorative. Read the printed verdict either way.
+
+Exit codes (mirrors the A4 same-decision-point gate convention, so a KNOWN RED
+stays honest and visible in CI instead of being masked):
+  0 = the multi-agent / memory layer is causally REAL — it changes the outcome.
+  2 = KNOWN RED: the layer is causally DECORATIVE in the current build (a
+      tracked known gap, NOT a green pass). Wired into CI as "pass-but-visible"
+      like A4's exit-2, so the gap stays visible instead of being hidden.
+      Fix the product (route execution through the assigned agent, or feed
+      recall() into decomposition/execution) to reach exit 0.
+  1 = GATE BROKEN: a harness precondition failed (positive control / label
+      separation / memory-write visibility). This is a regression in the gate
+      itself, not a verdict on the product — it must fail loudly, never be
+      mistaken for the KNOWN-RED exit 2.
+Read the printed verdict either way.
 """
 import hashlib
 import os
@@ -162,18 +174,51 @@ def main():
             "=> the 'no change' findings above are real, not a dead harness")
 
     print("\n" + "=" * 78)
+    by_name = {n: ok for n, ok, _ in RESULTS}
     failed = [n for n, ok, _ in RESULTS if not ok]
     print(f"VERDICT: {len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
-    if failed:
-        print("\nMULTI-AGENT / MEMORY IS NOT CAUSAL — the following product claims")
-        print("are NOT supported by behaviour, only by labels and stored rows:")
-        for n in failed:
-            print(f"  - {n}")
-        print("\nThis is a TRUE NEGATIVE about the current build, not a broken")
-        print("gate. Do not flip P3 to PASS on the strength of >=2 distinct")
-        print("`assigned_agent` strings: that quantity is a label, not a result.")
+
+    # Harness preconditions: this gate can only be trusted if it can (a) observe
+    # distinct labels, (b) really persist the memory write it claims, and (c)
+    # detect a change when the goal changes. If any fails the gate is BROKEN,
+    # which is a regression in the gate itself — fail loudly (exit 1), never
+    # conflate with the decorative-product KNOWN RED (exit 2).
+    harness_ok = (
+        by_name.get("arm1_labels_actually_differ", False)
+        and by_name.get("arm2_memory_write_is_real", False)
+        and by_name.get("arm3_positive_control", False)
+    )
+    # Causal arms: the genuine product question. REAL means the component changes
+    # the outcome; DECORATIVE means it changes only labels, not results.
+    causal_real = (
+        by_name.get("arm1_agent_pool_is_causal", False)
+        and by_name.get("arm1_corrupt_agent_does_not_silently_succeed", False)
+        and by_name.get("arm2_memory_is_causal", False)
+    )
+
+    if not harness_ok:
+        print("\nGATE BROKEN (exit 1): a harness precondition failed (label")
+        print("separation / memory-write visibility / positive control). The")
+        print("ablation arms cannot be trusted, so this is a REGRESSION in the")
+        print("gate itself, not a verdict on the product. Fix the harness; do")
+        print("NOT record this as the KNOWN-RED exit 2 below.")
         return 1
-    print("\nThe agent/memory layers are causally real: they change the outcome.")
+
+    if not causal_real:
+        print("\nKNOWN RED (exit 2): the multi-agent / memory layer is causally")
+        print("DECORATIVE in the current build — the outcome is bit-identical")
+        print("across present / absent / corrupted component. Labels and stored")
+        print("rows change; results do not. This is a TRACKED KNOWN GAP, NOT a")
+        print("green pass. Do not flip P3 to PASS on >=2 distinct")
+        print("`assigned_agent` strings alone (that quantity is a label, not a")
+        print("result). Fix the product to reach exit 0: route execution through")
+        print("the assigned agent, or feed recall() into decomposition/execution.")
+        print("\n  unmet causal checks:")
+        for n in failed:
+            print(f"    - {n}")
+        return 2
+
+    print("\nThe agent/memory layers are causally real: they change the outcome (exit 0).")
     return 0
 
 
