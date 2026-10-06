@@ -786,3 +786,152 @@ def test_previously_misflagged_conditional_gates_can_fail() -> None:
         assert _can_exit_nonzero(path), (
             "%s regressed: no non-zero exit path recognised" % name
         )
+
+
+# --------------------------------------------------------------------------- #
+# Exemption ledger: an honest record of gates this layer cannot verify green.
+#
+# This section does NOT make test_every_gate_script_is_wired_into_ci pass. Those
+# four assertions stay red on purpose: the gates are real, and an unwired real
+# gate protects nothing. What the ledger adds is (a) one visible place naming
+# each red gate, its owner and its unblock path, and (b) checks that the ledger
+# itself cannot rot or be used to launder a real gap into a fake green.
+#
+# The ledger lives in a Markdown file rather than here so it is reviewable as
+# prose; :func:`_load_ledger` parses it, so the record and the test cannot drift.
+# --------------------------------------------------------------------------- #
+
+EXEMPTION_LEDGER = REPO_ROOT / "docs" / "ci" / "gate-exemptions.md"
+
+#: Categories the ledger may use. ``pending-owner`` means "a human decision is
+#: still open"; ``blocked-by-host`` means "the gate is correct but this runner
+#: cannot produce its verdict". Anything else is rejected so a new category
+#: cannot be invented to silence a gate.
+_ALLOWED_EXEMPTION_CATEGORIES = {"pending-owner", "blocked-by-host"}
+
+
+def _load_ledger() -> dict[str, dict[str, str]]:
+    """Parse the exemption ledger into ``{script_name: {field: value}}``.
+
+    Parsed from the Markdown on purpose: a hard-coded dict here would be a
+    second copy that could disagree with the reviewed document.
+    """
+    assert EXEMPTION_LEDGER.is_file(), (
+        "exemption ledger is missing: %s -- gates that cannot be verified green "
+        "must be recorded in one visible place, not hidden in a workflow "
+        "comment" % EXEMPTION_LEDGER
+    )
+    entries: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    last_key: str | None = None
+    for line in EXEMPTION_LEDGER.read_text(encoding="utf-8").splitlines():
+        heading = re.match(
+            r"^###\s+\d+\.\s+`([^`]+)`\s+[-\u2013\u2014]+\s+`([^`]+)`", line
+        )
+        if heading:
+            current = {"category": heading.group(2)}
+            entries[heading.group(1)] = current
+            last_key = None
+            continue
+        if current is None:
+            continue
+        # A field bullet starts with "- **Field:** value"; indented continuation
+        # lines belong to the field above it. Markdown wraps long values, so a
+        # single-line regex would capture only a fragment of the real value.
+        # The field-name class must admit hyphens ("Re-run condition").
+        field = re.match(
+            r"^-\s+\*\*([A-Za-z][A-Za-z \-]*?):\*\*\s*(\S.*)$", line
+        )
+        if field:
+            last_key = field.group(1).strip().lower()
+            current.setdefault(last_key, field.group(2).strip())
+            continue
+        if last_key and re.match(r"^\s+\S", line):
+            current[last_key] = (current[last_key] + " " + line.strip()).strip()
+        else:
+            last_key = None
+    return entries
+
+
+def test_exemption_ledger_is_wellformed() -> None:
+    """Every ledger entry names an owner, a reason and an unblock condition."""
+    entries = _load_ledger()
+    assert entries, (
+        "the exemption ledger parsed to zero entries -- if every gate is now "
+        "wired, delete the ledger and this section; do not leave it empty"
+    )
+    for name, entry in entries.items():
+        assert entry.get("category") in _ALLOWED_EXEMPTION_CATEGORIES, (
+            "%s has category %r; allowed categories are %s -- a new category "
+            "must not be invented to silence a gate"
+            % (name, entry.get("category"), sorted(_ALLOWED_EXEMPTION_CATEGORIES))
+        )
+        assert (SCRIPTS_DIR / name).is_file(), (
+            "ledger lists %s but no such verify_*.py exists -- remove the stale "
+            "entry" % name
+        )
+        for required in ("owner", "why exempt", "re-run condition"):
+            assert entry.get(required), (
+                "%s is missing a '%s' in the ledger; an exemption with no owner "
+                "or no unblock path is not an exemption, it is an abandonment"
+                % (name, required)
+            )
+
+
+def test_gate_exemption_entries_are_still_needed() -> None:
+    """Anti-rot: a gate that has become wired must leave the ledger.
+
+    Without this the ledger would outlive its reason and quietly start
+    describing gates that are in fact protected -- the exact decay this whole
+    module exists to prevent, one level up.
+    """
+    stale = [
+        name
+        for name in _load_ledger()
+        if _is_wired_into_ci(name)
+    ]
+    assert not stale, (
+        "these ledger entries are now wired into a workflow, so the exemption "
+        "no longer applies -- remove them from %s: %s"
+        % (EXEMPTION_LEDGER.name, sorted(stale))
+    )
+
+
+def test_every_unwired_gate_is_accounted_for_in_the_ledger() -> None:
+    """No gate may be silently unwired: wired, or in the ledger with a reason.
+
+    This is the anti-silent-gap direction. It does not turn the red assertions
+    green; it makes an *unrecorded* unwired gate impossible, so a new one cannot
+    appear without someone writing down who owns it.
+    """
+    entries = _load_ledger()
+    unaccounted = [
+        p.name
+        for p in _gate_scripts()
+        if not _is_wired_into_ci(p.name) and p.name not in entries
+    ]
+    assert not unaccounted, (
+        "these gates are neither wired nor recorded in %s, so they protect "
+        "nothing and nobody owns them: %s" % (EXEMPTION_LEDGER.name, unaccounted)
+    )
+
+
+def test_pending_owner_exemptions_are_visible_to_ci() -> None:
+    """Fail-closed: an open ``pending-owner`` entry must be loud in CI.
+
+    A pending entry means a human decision is still outstanding. That must not
+    be able to pass quietly: this test is designed to FAIL while any pending
+    entry exists, so the ledger cannot become a place where work is shelved
+    indefinitely. It turns green only when the owner wires the gate and the
+    entry is deleted.
+    """
+    pending = sorted(
+        name
+        for name, entry in _load_ledger().items()
+        if entry.get("category") == "pending-owner"
+    )
+    assert not pending, (
+        "PENDING-OWNER gate exemptions are open -- these need an owner decision "
+        "and must then be wired and removed from the ledger, not left to rot: %s"
+        % pending
+    )
