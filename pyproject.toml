@@ -57,6 +57,43 @@ dependencies = [
     # 成本可接受：189KiB 纯 Python，运行期零传递依赖。
     # 许可证 ZPL-2.1（OSI 批准、BSD 同类、无 copyleft 传染），已登记 oss-registry.yaml。
     "RestrictedPython>=8.0",
+    # ---- 以下 4 个是 src/ 的**直接 import**，此前只靠上游传递依赖"碰巧可 import"。
+    # 由 scripts/verify_dependency_declaration_surface.py 机械化守住：任何 src/ 里
+    # 直接 import（含函数内 lazy import）却没在下面声明的第三方包，都会让该门禁变红。
+    # 此前 mcp / qdrant-client / aiosqlite 已按同样理由补过；这 4 个是同一批漏网的。
+    # 全部只设下界、不设上界，与 requirements.txt 现有锁定解析结果相容。
+    #
+    # requests：生产 webhook 告警投递面 src/observability/alerts/sinks.py 的
+    #   `requests.post`，以及 src/ai/providers.py 的 5 处 provider 调用。此前只在
+    #   requirements.txt 里被 hvac / langsmith / opentelemetry 传递带入 —— 生产
+    #   投递面靠传递依赖是运气，不是声明。
+    "requests>=2.28.0",
+    # sqlalchemy：src/integrations/{orm_models,storage}.py 与 src/knowledge/db.py
+    #   在**模块顶层** from sqlalchemy import ...（含 ext.asyncio / orm）。
+    "sqlalchemy>=2.0.0",
+    # starlette：src/gateway/console_static.py 顶层 from starlette.staticfiles /
+    #   exceptions。它是 fastapi 的传递依赖，但本仓直接用其符号，应显式声明。
+    "starlette>=0.36.3",
+    # packaging：src/kernels/plugin/__init__.py 顶层 from packaging.version import
+    #   Version/InvalidVersion（插件版本解析）。
+    "packaging>=23.0",
+    #
+    # ---- 以下 4 个同样是直接 import，但**藏在函数体里**（含 try: 内的缩进块），
+    # 所以初版扫描没看到。补上后 verify_dependency_declaration_surface.py 才会安静。
+    #
+    # pyjwt（import jwt）：src/security/jwt_handler.py —— 令牌签发/校验面。
+    #   此前只靠 mcp → pyjwt 传递带入：一个安全边界依赖上游 SDK 的传递链，
+    #   是这 4 个里最不该靠运气的一个。
+    "pyjwt>=2.8.0",
+    # langchain-core：src/ai/langgraph_workflow.py（messages / runnables）。
+    #   已声明了 langchain / langchain-openai / langchain-community，但
+    #   langchain-core 是本仓**直接 import** 的那个包。
+    "langchain-core>=0.3.0",
+    # psutil：src/observability/metrics.py（主机指标采集）。
+    "psutil>=5.9.0",
+    # pydantic-monty-client（import pydantic_monty）：
+    #   src/plugins/sandbox/backends/monty_backend.py —— 受限执行后端。
+    "pydantic-monty-client>=0.0.20",
 ]
 
 # 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
@@ -74,6 +111,24 @@ tests = [
 # "真验证"，显式 `pip install -e .[etcd]` 即可（本仓库 venv 按任务约束未安装）。
 etcd = [
     "etcd3>=0.12.0",
+]
+# scripts/verify_deployed_product_closure.py 的浏览器后端。**可选**，且不进运行期
+# 依赖：这个门禁跑在**宿主/CI runner** 上（它驱动浏览器去访问已部署的栈），
+# 进运行期依赖会把生产镜像和每个 CI job 的安装都拖垮。此前 playwright/selenium
+# 完全没出现在任何声明面 —— 门禁 :193 `from playwright.sync_api import ...`
+# 只能靠"碰巧装了"才跑得起来，属于依赖声明面缺失（见 UNVERIFIED #4-a）。
+# 装上后仍需一个浏览器二进制：playwright 自带 chromium（`playwright install
+# chromium`），或用 --browser-binary / $LIUHAO_BROWSER_BINARY 指定系统 chromium。
+deploy-closure = [
+    "playwright>=1.44",
+    "selenium>=4.20",
+]
+# scripts/ops/audit_console_readability.py 的 WebSocket 客户端（读审计控制台
+# 实时事件流）。**可选**：这条运维脚本把 websockets 当可选导入（缺了就打印
+# 安装提示），此前只在 requirements.txt 里被 uvicorn/fastapi 传递带进来
+# （"装了但没声明"），属于依赖声明面缺失（任务①「装了但没声明」一类）。
+ops = [
+    "websockets>=12.0",
 ]
 
 [build-system]

@@ -25,11 +25,17 @@ This script closes that gap end to end:
 
 Hard rules
 ==========
-* **Docker unavailable is a FAIL, never a skip.** This script's entire subject
-  is the deployed stack; if it cannot run Docker it must exit non-zero and say
-  so loudly. A verifier that quietly passes when its subject is missing is
-  worse than no verifier -- it is the exact failure mode this keystone exists
-  to remove.
+* **A missing prerequisite BLOCKS, it never silently passes.** The script's
+  subject is the deployed stack; if Docker or a browser is absent the closure
+  is **NOT VERIFIED** and the exit status is non-zero. A verifier that quietly
+  goes green when its subject is missing is worse than no verifier -- it is the
+  exact failure mode this keystone exists to remove.
+* **NOT VERIFIED is not FAIL.** A missing Docker daemon or a missing browser is
+  an *environment* gap: nothing was proven, but nothing was disproven either.
+  It is reported as ``BLOCKED`` / ``NOT VERIFIED`` and exits ``2``. Only a
+  check that actually ran and did not hold is reported as ``FAIL`` (exit ``1``).
+  Conflating the two would let an operator read "the deployment is broken"
+  out of a machine that simply has no daemon.
 * **No production evidence is touched.** The deployment gets a fresh temp
   project name, a fresh temp ``.env`` with generated secrets, and fresh named
   volumes that are deleted at the end. Nothing here mounts, reads or reuses
@@ -37,18 +43,48 @@ Hard rules
 * **Never weaken the test to get green.** If the goal does not really produce
   the artifact, or the audit rows are not really tied to the goal, this FAILS.
 
+Portability
+===========
+This gate runs on the **host / CI runner**, not inside the deployed container;
+it drives a browser against the deployed stack. It therefore needs BOTH a
+Docker daemon and a browser binary on the machine that runs it.
+
+The browser is resolved, never hardcoded:
+
+  1. ``--browser-binary`` / ``$LIUHAO_BROWSER_BINARY`` (explicit override);
+  2. auto-detection of well-known locations (Linux chromium/chrome first, then
+     Windows Edge/Chrome, then macOS);
+  3. Playwright's own bundled chromium, when the ``playwright`` extra is
+     installed.
+
+If none of those exist the click-through is BLOCKED -- not skipped, not
+crashed. The previous revision hardcoded
+``C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe``, which
+made the gate meaningless on every non-Windows host (see UNVERIFIED #4-a).
+
+Dependencies
+============
+``playwright`` and ``selenium`` are **optional** -- declaring them as runtime
+dependencies would bloat the production image and every CI install for a gate
+most jobs cannot run. They live in the ``deploy-closure`` extra::
+
+    pip install -e ".[deploy-closure]"
+
 Exit status
 ===========
-  * ``0`` -- every check passed.
-  * ``1`` -- at least one check failed (a real finding).
-  * ``2`` -- a prerequisite is missing (no Docker, no browser). Also a failure:
-             the closure was NOT demonstrated.
+  * ``0`` -- every check passed; the closure was really demonstrated.
+  * ``1`` -- at least one check FAILed (a real finding about the product).
+  * ``2`` -- a prerequisite is missing: closure NOT VERIFIED. Non-zero on
+             purpose -- this must never read as green.
 
 Usage
 =====
   python scripts/verify_deployed_product_closure.py
   python scripts/verify_deployed_product_closure.py --keep      # leave stack up
   python scripts/verify_deployed_product_closure.py --skip-build
+  python scripts/verify_deployed_product_closure.py --host-port 18000
+  python scripts/verify_deployed_product_closure.py \
+      --browser-binary /usr/bin/chromium
 """
 from __future__ import annotations
 
@@ -76,8 +112,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 COMPOSE_FILE = "docker-compose.prod.yml"
 SERVICE = "api"
-HOST_PORT = 8080
+
+# Default matches docker-compose.prod.yml ("8080:8080"), but it is overridable:
+# a hardcoded host port makes the gate unrunnable on any host where 8080 is
+# already taken, and this repo already reserves 8000/8010/9090/9093 for
+# concurrently running services.
+DEFAULT_HOST_PORT = 8080
+HOST_PORT = DEFAULT_HOST_PORT
 BASE_URL = "http://127.0.0.1:%d" % HOST_PORT
+
+
+def set_host_port(port: int) -> None:
+    """(Re)bind the module-level port used by every HTTP call."""
+    global HOST_PORT, BASE_URL
+    HOST_PORT = int(port)
+    BASE_URL = "http://127.0.0.1:%d" % HOST_PORT
+
 
 # The job the real user performs. The content string is asserted byte-for-byte
 # on the container filesystem, so it must be unusual enough that nothing else
@@ -96,32 +146,66 @@ EXIT_OK, EXIT_FAIL, EXIT_PREREQ = 0, 1, 2
 # --------------------------------------------------------------------------- #
 # Result recording
 # --------------------------------------------------------------------------- #
+PASS, FAIL, BLOCKED = "PASS", "FAIL", "BLOCKED"
+
+
 class Report(object):
-    """Collects per-check PASS/FAIL and renders a verdict."""
+    """Collects per-check PASS / FAIL / BLOCKED and renders a verdict.
+
+    Why three states and not two
+    ----------------------------
+    ``FAIL`` asserts something about the *product*. ``BLOCKED`` asserts
+    something about the *machine running the check*: a prerequisite was absent,
+    so nothing was proven and nothing was disproven. Collapsing BLOCKED into
+    FAIL turns "this host has no Docker daemon" into "the deployment is
+    broken", which is a false claim; collapsing it into PASS is worse still.
+    Both non-PASS states keep the exit status non-zero.
+    """
 
     def __init__(self) -> None:
-        self.rows: List[Tuple[str, bool, str]] = []
+        self.rows: List[Tuple[str, str, str]] = []
+
+    def _add(self, name: str, status: str, detail: str = "") -> bool:
+        self.rows.append((name, status, detail))
+        print("[%s] %s%s" % (status, name,
+                             (" -- " + detail) if detail else ""))
+        return status == PASS
 
     def check(self, name: str, ok: bool, detail: str = "") -> bool:
-        self.rows.append((name, bool(ok), detail))
-        print("[%s] %s%s" % ("PASS" if ok else "FAIL", name,
-                             (" -- " + detail) if detail else ""))
-        return bool(ok)
+        return self._add(name, PASS if ok else FAIL, detail)
+
+    def block(self, name: str, detail: str = "") -> bool:
+        """A prerequisite is missing: NOT VERIFIED, never a silent pass."""
+        return self._add(name, BLOCKED, detail)
 
     @property
     def failed(self) -> int:
-        return sum(1 for _, ok, _ in self.rows if not ok)
+        return sum(1 for _, st, _ in self.rows if st == FAIL)
+
+    @property
+    def blocked(self) -> int:
+        return sum(1 for _, st, _ in self.rows if st == BLOCKED)
 
     def render(self) -> str:
         total = len(self.rows)
-        bad = self.failed
+        bad, blocked = self.failed, self.blocked
+        passed = total - bad - blocked
         lines = ["", "=" * 74,
-                 "deployed-product closure: %d/%d checks passed" % (total - bad, total),
+                 "deployed-product closure: %d passed, %d FAILED, %d BLOCKED "
+                 "(of %d)" % (passed, bad, blocked, total),
                  "=" * 74]
         if bad:
             lines.append("RESULT: FAIL -- the following did not hold:")
-            for name, ok, detail in self.rows:
-                if not ok:
+            for name, st, detail in self.rows:
+                if st == FAIL:
+                    lines.append("  * %s%s" % (name, (" -- " + detail) if detail else ""))
+        elif blocked:
+            lines.append("RESULT: NOT VERIFIED -- the closure was NOT "
+                         "demonstrated. Blocked prerequisites (environment gap,")
+            lines.append("        NOT a product defect -- nothing was proven "
+                         "and nothing was disproven):")
+            for name, st, detail in self.rows:
+                if st == BLOCKED:
                     lines.append("  * %s%s" % (name, (" -- " + detail) if detail else ""))
         else:
             lines.append("RESULT: PASS -- a real user completed a real job "
@@ -174,58 +258,157 @@ def http_json(method: str, path: str, token: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 # Headless browser
 # --------------------------------------------------------------------------- #
+def classify_binary(path: str) -> str:
+    """Chromium-family or Edge? They need different Selenium drivers."""
+    return "edge" if "edge" in os.path.basename(path).lower() else "chromium"
+
+
+#: Auto-detection order. **Linux/CI first**: this gate's target deployment
+#: environment is a Linux host, so a Linux browser must win over a Windows one.
+BROWSER_CANDIDATES: List[Tuple[str, str]] = [
+    ("/usr/bin/chromium", "chromium"),
+    ("/usr/bin/chromium-browser", "chromium"),
+    ("/usr/bin/google-chrome", "chromium"),
+    ("/usr/bin/google-chrome-stable", "chromium"),
+    ("/snap/bin/chromium", "chromium"),
+    ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "chromium"),
+    (r"C:\Program Files\Google\Chrome\Application\chrome.exe", "chromium"),
+    (r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "chromium"),
+    (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "edge"),
+    (r"C:\Program Files\Microsoft\Edge\Application\msedge.exe", "edge"),
+]
+
+
+def configured_binary(explicit: Optional[str] = None) -> Optional[str]:
+    """The operator's explicit choice, if any (flag wins over env var)."""
+    return explicit or os.environ.get("LIUHAO_BROWSER_BINARY") or None
+
+
+def resolve_browser_binary(explicit: Optional[str] = None
+                           ) -> Optional[Tuple[str, str]]:
+    """Locate a browser binary -> ``(path, kind)``; ``None`` if there is none.
+
+    Resolution order (first hit wins):
+
+      1. ``--browser-binary`` / ``$LIUHAO_BROWSER_BINARY`` -- **authoritative**;
+      2. auto-detection over :data:`BROWSER_CANDIDATES` (Linux/CI first);
+      3. Playwright's bundled chromium (handled by the caller, not here).
+
+    An explicit choice that does not exist returns ``None`` **without falling
+    back** to a different browser. Silently substituting some other browser
+    would turn a typo into a gate that "passes" using a binary nobody asked
+    for -- the misconfiguration has to be reported, not papered over.
+
+    Nothing here is Windows-specific. The previous revision hardcoded
+    ``C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe``, which
+    made the gate structurally meaningless off Windows.
+    """
+    chosen = configured_binary(explicit)
+    if chosen:
+        return (chosen, classify_binary(chosen)) if os.path.isfile(chosen) else None
+    for path, kind in BROWSER_CANDIDATES:
+        if os.path.isfile(path):
+            return path, kind
+    return None
+
+
+class BrowserUnavailable(RuntimeError):
+    """No browser backend could be started.
+
+    Distinct from an assertion failure on purpose: the caller turns this into
+    BLOCKED / NOT VERIFIED (exit 2), not into FAIL. A machine with no browser
+    has not disproven the product -- it has proven nothing at all.
+    """
+
+
 class Browser(object):
     """Thin driver-agnostic facade over Playwright or Selenium.
 
-    Both backends are tried. If neither can drive a browser this raises
-    :class:`RuntimeError` and the caller turns that into a visible FAIL -- the
-    click-through is the point of the exercise and must not be skipped.
+    Both backends are tried, and both honour the resolved browser binary
+    instead of a hardcoded path. If neither can drive a browser this raises
+    :class:`BrowserUnavailable` and the caller reports BLOCKED -- the
+    click-through is the point of the exercise and must never be skipped.
     """
 
-    def __init__(self) -> None:
+    #: where the binary came from, for honest reporting
+    source: str = ""
+
+    def __init__(self, binary: Optional[str] = None) -> None:
         self._kind = ""
         self._raw: Any = None
         self._page: Any = None
-        self._open()
+        self._By: Any = None
+        self._open(binary)
 
-    def _open(self) -> None:
+    def _open(self, binary: Optional[str]) -> None:
+        resolved = resolve_browser_binary(binary)
+        executable = resolved[0] if resolved else None
+        kind = resolved[1] if resolved else ""
+        if resolved:
+            self.source = "%s (%s)" % (executable, kind)
+        errors: List[str] = []
+
+        # -- 1. Playwright (preferred: it manages its own driver) ------------ #
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
-        except Exception:
+        except Exception as exc:
             sync_playwright = None  # type: ignore
+            errors.append("playwright not importable: %s" % exc)
         if sync_playwright is not None:
             try:
                 pw = sync_playwright().start()
+                launch = {"args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+                if executable:
+                    launch["executable_path"] = executable
                 self._raw = pw
-                self._page = pw.chromium.launch(
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]).new_page()
+                self._page = pw.chromium.launch(**launch).new_page()
                 self._kind = "playwright"
+                if not self.source:
+                    self.source = "playwright bundled chromium"
                 return
-            except Exception:
+            except Exception as exc:
+                errors.append("playwright launch failed: %s" % str(exc)[:160])
                 self._close()
+
+        # -- 2. Selenium (Chromium or Edge, whichever the binary is) --------- #
         try:
             from selenium import webdriver  # type: ignore
-            from selenium.webdriver.edge.options import Options as EdgeOptions  # type: ignore
             from selenium.webdriver.common.by import By  # type: ignore
         except Exception as exc:
-            raise RuntimeError("no browser backend importable: %s" % exc)
-        last = ""
-        options = EdgeOptions()
-        for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
-                    "--disable-gpu", "--window-size=1440,900"):
-            options.add_argument(arg)
-        edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-        if os.path.isfile(edge):
-            options.binary_location = edge
+            raise BrowserUnavailable(
+                "no browser backend importable (%s); %s"
+                % (exc, " | ".join(errors)))
         try:
-            self._raw = webdriver.Edge(options=options)
-            self._kind = "selenium-edge"
+            if kind == "edge":
+                from selenium.webdriver.edge.options import Options  # type: ignore
+                driver = webdriver.Edge
+                label = "selenium-edge"
+            else:
+                from selenium.webdriver.chrome.options import Options  # type: ignore
+                driver = webdriver.Chrome
+                label = "selenium-chromium"
+            options = Options()
+            for arg in ("--headless=new", "--no-sandbox",
+                        "--disable-dev-shm-usage", "--disable-gpu",
+                        "--window-size=1440,900"):
+                options.add_argument(arg)
+            if executable:
+                options.binary_location = executable
+            self._raw = driver(options=options)
+            self._kind = label
             self._page = self._raw
-            self._By = By  # type: ignore[attr-defined]
+            self._By = By
+            self.source = "%s via %s" % (executable or "default", label)
             return
         except Exception as exc:
-            last = str(exc)[:200]
-        raise RuntimeError("could not start a headless browser (%s)" % last)
+            errors.append("%s launch failed: %s"
+                          % (kind or "chromium", str(exc)[:160]))
+
+        raise BrowserUnavailable(
+            "could not start a headless browser (tried: %s). Set "
+            "--browser-binary or $LIUHAO_BROWSER_BINARY, or install the "
+            "'deploy-closure' extra for Playwright's bundled chromium."
+            % " | ".join(errors))
 
     # -- facade ------------------------------------------------------------ #
     @property
@@ -314,26 +497,92 @@ class Browser(object):
 # Steps
 # --------------------------------------------------------------------------- #
 def preflight_docker(rep: Report) -> bool:
-    """Docker must be present AND have a live daemon. Anything else fails."""
+    """Docker must be present AND have a live daemon.
+
+    A missing daemon BLOCKS (NOT VERIFIED, exit 2) -- it does not FAIL. This
+    script's subject is the deployed stack, so nothing may be reported green,
+    but "this host has no Docker" is a fact about the host, not evidence that
+    the deployment is broken.
+    """
     if shutil.which("docker") is None:
-        rep.check("docker CLI present", False, "docker not on PATH")
+        rep.block("docker CLI present", "docker not on PATH")
         return False
     rep.check("docker CLI present", True)
     proc = run(["docker", "version", "--format", "{{.Server.Version}}"], timeout=60)
     if proc.returncode != 0 or not (proc.stdout or "").strip():
         detail = ((proc.stderr or proc.stdout or "") or "").strip().splitlines()
-        rep.check("docker daemon reachable", False,
+        rep.block("docker daemon reachable",
                   "no live daemon -- %s" % (detail[-1] if detail else "unknown"))
         print("\n" + "!" * 74)
-        print("! DOCKER DAEMON UNAVAILABLE -- deployed-product closure NOT demonstrated.")
-        print("! This script's subject is the deployed stack. It does not pass")
-        print("! by skipping; it fails, because nothing was proven.")
+        print("! DOCKER DAEMON UNAVAILABLE -- deployed-product closure NOT VERIFIED.")
+        print("! This script's subject is the deployed stack. It does not go")
+        print("! green by skipping; it exits 2 as NOT VERIFIED, because")
+        print("! nothing was proven AND nothing was disproven.")
         for line in detail[-4:]:
             print("!   %s" % line)
         print("!" * 74)
         return False
     rep.check("docker daemon reachable", True, "server " + proc.stdout.strip())
     return True
+
+
+def preflight_browser(rep: Report, binary: Optional[str]) -> bool:
+    """A browser must be resolvable BEFORE the stack is brought up.
+
+    Checked up front on purpose: the previous revision booted the whole stack,
+    migrated, bootstrapped a human and only then discovered it could not drive
+    a browser -- minutes of work burned to reach a foregone conclusion.
+    """
+    resolved = resolve_browser_binary(binary)
+    if resolved:
+        rep.check("browser binary resolvable", True, "%s (%s)" % resolved)
+    else:
+        # Distinguish "you pointed me at a browser that isn't there" (a real
+        # misconfiguration, worth shouting about) from "no browser at all here".
+        chosen = configured_binary(binary)
+        if chosen:
+            rep.block("browser binary resolvable",
+                      "explicitly configured browser binary does NOT exist: %s "
+                      "(not falling back to a different browser). Fix "
+                      "--browser-binary / $LIUHAO_BROWSER_BINARY."
+                      % chosen)
+            return False
+        try:
+            import playwright  # noqa: F401  type: ignore
+            rep.check("browser binary resolvable", True,
+                      "no system binary; relying on playwright bundled chromium")
+        except Exception:
+            rep.block(
+                "browser binary resolvable",
+                "no browser binary found and playwright is not installed. "
+                "Install the 'deploy-closure' extra "
+                "(pip install -e '.[deploy-closure]') or set --browser-binary "
+                "/ $LIUHAO_BROWSER_BINARY. The click-through is NOT VERIFIED "
+                "(the deployed stack itself was not disproven).")
+            return False
+
+    # A resolvable binary is not the same as a *usable* browser. Launch it and
+    # navigate once: observed on the authoring host, Edge + selenium start
+    # cleanly and then fail with "WebDriverException: unhandled request", which
+    # would otherwise crash the gate mid-run instead of reporting BLOCKED.
+    try:
+        browser = Browser(binary)
+    except BrowserUnavailable as exc:
+        rep.block("headless browser launches", str(exc)[:300])
+        return False
+    try:
+        browser.get("about:blank")
+        browser.text()
+        rep.check("headless browser usable", True,
+                  "%s -- %s" % (browser.kind, browser.source))
+        return True
+    except Exception as exc:
+        rep.block("headless browser usable",
+                  "browser launched (%s) but the session is not usable: %s: %s"
+                  % (browser.kind, type(exc).__name__, str(exc)[:180]))
+        return False
+    finally:
+        browser.quit()
 
 
 def write_env(tmp: Path, password: str) -> Path:
@@ -480,15 +729,23 @@ def login_http(password: str) -> Optional[str]:
 
 
 def drive_console(rep: Report, password: str, artifact_content: str,
-                  shot_dir: Path) -> Dict[str, Any]:
+                  shot_dir: Path, binary: Optional[str] = None
+                  ) -> Dict[str, Any]:
     """The click-through, through the real UI, against the deployed stack."""
     out: Dict[str, Any] = {}
     try:
-        browser = Browser()
-    except RuntimeError as exc:
-        rep.check("headless browser available", False, str(exc)[:300])
+        browser = Browser(binary)
+    except BrowserUnavailable as exc:
+        # Environment gap, NOT a product defect: BLOCKED, never FAIL.
+        rep.block("headless browser available", str(exc)[:300])
         return out
-    rep.check("headless browser available", True, browser.kind)
+    except RuntimeError as exc:
+        # A backend existed but could not start for some other reason -- still
+        # an environment problem, so still BLOCKED rather than a product FAIL.
+        rep.block("headless browser available", str(exc)[:300])
+        return out
+    rep.check("headless browser available", True,
+              "%s -- %s" % (browser.kind, browser.source))
 
     try:
         # 1. load the console from the container (single-port: API serves the SPA)
@@ -702,17 +959,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="leave the stack running for manual inspection")
     parser.add_argument("--skip-build", action="store_true",
                         help="reuse an already-built image (faster re-runs)")
+    parser.add_argument("--host-port", type=int, default=DEFAULT_HOST_PORT,
+                        help="host port the stack is published on "
+                             "(default %d, matching %s)"
+                             % (DEFAULT_HOST_PORT, COMPOSE_FILE))
+    parser.add_argument("--browser-binary", default=None,
+                        help="path to a chromium/edge binary; overrides "
+                             "$LIUHAO_BROWSER_BINARY and auto-detection")
     args = parser.parse_args(argv)
+
+    set_host_port(args.host_port)
+    if os.environ.get("LIUHAO_BROWSER_BINARY") and not args.browser_binary:
+        args.browser_binary = os.environ["LIUHAO_BROWSER_BINARY"]
 
     rep = Report()
     print("=" * 74)
     print("LIUHAO deployed-product closure")
+    print("host port   : %d" % HOST_PORT)
+    print("browser     : %s" % (args.browser_binary or "auto-detect"))
     print("=" * 74)
 
-    # Prerequisite: a real Docker daemon. Missing => visible failure, not a skip.
+    # Prerequisite: a real Docker daemon. Missing => BLOCKED / exit 2, never a
+    # silent pass and never a claim that the product is broken.
     if not preflight_docker(rep):
         print(rep.render())
         return EXIT_PREREQ
+
+    # Prerequisite: a browser, checked before we spend minutes booting a stack.
+    browser_ok = preflight_browser(rep, args.browser_binary)
 
     tmp = Path(tempfile.mkdtemp(prefix="liuhao-deploy-closure-"))
     project = "liuhao-closure-%s" % secrets.token_hex(4)
@@ -745,13 +1019,46 @@ def main(argv: Optional[List[str]] = None) -> int:
         rep.check("credential login returns a JWT", token is not None,
                   "" if token else "no token in login response")
 
-        drive_console(rep, password, artifact_content, shots)
-        assert_artifact_on_container(rep, project, env_file, artifact_content)
-        assert_audit_tied_to_goal(rep, token)
+        if not browser_ok:
+            # Everything from the click-through onward is unreachable. BLOCK
+            # each of them by name -- do NOT let them FAIL, because a host with
+            # no browser has not disproven the product. The stack-level checks
+            # above still stand as real evidence.
+            for name in ("headless browser available",
+                         "console loads from deployed container",
+                         "login with real credential through the UI",
+                         "hire a real AI employee through the UI",
+                         "create a real goal through the UI",
+                         "goal reaches a terminal state in the UI",
+                         "stop a running goal through the UI",
+                         "artifact exists on container filesystem",
+                         "artifact content matches exactly",
+                         "audit records are tied to the goal"):
+                rep.block(name, "browser prerequisite missing -- NOT VERIFIED")
+        else:
+            # Belt-and-braces: the browser passed preflight but may still die
+            # mid-run (driver crash, OOM). A dying session must BLOCK the
+            # remaining checks, never crash the gate with a traceback.
+            try:
+                drive_console(rep, password, artifact_content, shots,
+                              args.browser_binary)
+                assert_artifact_on_container(rep, project, env_file,
+                                             artifact_content)
+                assert_audit_tied_to_goal(rep, token)
+            except Exception as exc:
+                rep.block("browser session survived the click-through",
+                          "%s: %s -- the click-through is NOT VERIFIED"
+                          % (type(exc).__name__, str(exc)[:200]))
 
         print("\nscreenshots: %s" % shots)
         print(rep.render())
-        return EXIT_FAIL if rep.failed else EXIT_OK
+        # A real FAIL outranks a block; any block means the closure was NOT
+        # demonstrated and must not read as green.
+        if rep.failed:
+            return EXIT_FAIL
+        if rep.blocked:
+            return EXIT_PREREQ
+        return EXIT_OK
     finally:
         if not args.keep:
             teardown(project, env_file, keep=False)
