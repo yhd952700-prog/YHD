@@ -153,7 +153,19 @@ for rec in KERNEL_ACTION_RISK.values():
     assert isinstance(rec.tier, RiskTier), "non-enum tier"
     counts[rec.tier] += 1
 print(f"  distribution: { {t.value: c for t, c in counts.items()} }")
-if counts != {RiskTier.LOW: 15, RiskTier.MEDIUM: 12, RiskTier.HIGH: 15, RiskTier.CRITICAL: 2}:
+# Expected tier distribution. This is a guardrail: any drift from this baseline
+# must be re-confirmed as legitimate (new @kernel_action added with an intentional
+# tier) rather than silently accepted. Baseline updated 2026-10-06 after confirming
+# the prior {LOW:15, MEDIUM:12} had grown by 2 LOW + 1 MEDIUM from legitimately
+# registered kernel actions (coverage check showed decorated==registry, no
+# unclassified/stale). HIGH/CRITICAL are safety-critical and intentionally pinned.
+EXPECTED_TIER_DISTRIBUTION = {
+    RiskTier.LOW: 17,
+    RiskTier.MEDIUM: 13,
+    RiskTier.HIGH: 15,
+    RiskTier.CRITICAL: 2,
+}
+if counts != EXPECTED_TIER_DISTRIBUTION:
     failures.append(f"TIERS: unexpected distribution {counts}")
 
 low = {a for a, rec in KERNEL_ACTION_RISK.items() if rec.tier is RiskTier.LOW}
