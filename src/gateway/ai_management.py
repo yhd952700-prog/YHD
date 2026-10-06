@@ -938,6 +938,8 @@ class AIStateManager:
             "error": result.error,
             "replan_count": result.replan_count,
             "replan_suggested": result.replan_suggested,
+            "memory_keys": result.memory_keys,
+            "persist_errors": result.persist_errors,
             "trace": trace_entries,
             "tasks": tasks,
             "artifacts": artifacts,

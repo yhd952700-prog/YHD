@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.kernels.execution import (
     ExecutionEngine,
@@ -196,6 +196,7 @@ class AgentRunResult:
     evaluation: Optional[EvaluationResult]
     trace: ExecutionTrace
     memory_keys: List[str] = field(default_factory=list)
+    persist_errors: List[str] = field(default_factory=list)
     replan_count: int = 0
     replan_suggested: bool = False
     error: Optional[str] = None
@@ -315,7 +316,11 @@ class AgentRuntime:
 
             state = AgentRunState.VERIFYING
             evaluation = self._evaluate(goal, ctx, correlation_id)
-            memory_keys = self._persist(goal, ctx, evaluation, correlation_id) if persist else []
+            memory_keys, persist_errors = (
+                self._persist(goal, ctx, evaluation, correlation_id)
+                if persist
+                else ([], [])
+            )
 
             replan_suggested = self._needs_replan(ctx, evaluation)
             state = (
@@ -331,6 +336,7 @@ class AgentRuntime:
                 evaluation=evaluation,
                 trace=observer.trace,
                 memory_keys=memory_keys,
+                persist_errors=persist_errors,
                 replan_suggested=replan_suggested,
             )
         except GoalCancelled as exc:
@@ -490,10 +496,25 @@ class AgentRuntime:
         ctx: ExecutionContext,
         evaluation: Optional[EvaluationResult],
         correlation_id: str,
-    ) -> List[str]:
-        keys: List[str] = []
+    ) -> Tuple[List[str], List[str]]:
+        """Persist run memory. Returns ``(written_keys, errors)``.
+
+        Honesty contract (alignment / intent-preservation): a memory write that
+        fails must NEVER be swallowed into silence. Each failure is captured in
+        ``errors`` so the caller (``run_goal``) can surface it on the
+        ``AgentRunResult``. The run still completes -- persistence must not crash
+        a run (availability) -- but a consumer reading the result can tell that
+        the agent did NOT actually remember this run, instead of believing a
+        silent, lossy "completed". ``written_keys`` holds only keys truly stored.
+        """
+        written: List[str] = []
+        errors: List[str] = []
         try:
             scope = MemoryScope(goal.scope)
+        except Exception as exc:
+            errors.append(f"memory scope invalid for goal {goal.id}: {exc!r}")
+            return written, errors
+        try:
             episodic = {
                 "goal_id": goal.id,
                 "goal": goal.natural_language,
@@ -508,9 +529,12 @@ class AgentRuntime:
                 key, episodic, tier=MemoryTier.MID_TERM, scope=scope,
                 tags={"episodic", "agent_run"},
             )
-            keys.append(key)
+            written.append(key)
+        except Exception as exc:
+            errors.append(f"episodic store failed for goal {goal.id}: {exc!r}")
 
-            if evaluation is not None and evaluation.replan_triggered:
+        if evaluation is not None and getattr(evaluation, "replan_triggered", False):
+            try:
                 learn = {
                     "goal_id": goal.id,
                     "feedback": evaluation.feedback,
@@ -521,11 +545,10 @@ class AgentRuntime:
                     k2, learn, tier=MemoryTier.MID_TERM, scope=scope,
                     tags={"semantic", "learning"},
                 )
-                keys.append(k2)
-        except Exception:
-            # Persistence must never fail a run.
-            pass
-        return keys
+                written.append(k2)
+            except Exception as exc:
+                errors.append(f"learning store failed for goal {goal.id}: {exc!r}")
+        return written, errors
 
 
 # ---------------------------------------------------------------------- #
