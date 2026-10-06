@@ -43,6 +43,15 @@ import sys
 import yaml
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+
+# Repo root on sys.path so this gate is runnable exactly like every other
+# scripts/verify_*.py: `python scripts/verify_critical5_watchdog.py` from the
+# repo root. tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path
+# enforces that convention uniformly; this script only needs `yaml` today, but
+# adopting the house bootstrap keeps it standalone-runnable if it ever imports
+# `src...` and keeps the meta-gate green without weakening the check.
+sys.path.insert(0, str(REPO))
+
 ACTION = REPO / ".github/actions/ci-gate-watchdog/action.yml"
 WORKFLOWS = sorted(REPO.glob(".github/workflows/*.yml"))
 
