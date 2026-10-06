@@ -99,12 +99,26 @@ class PlanStatus(str, Enum):
 
 
 class VerifyResult(str, Enum):
-    """Verification outcome."""
+    """Verification outcome.
+
+    ``UNVERIFIED`` is a first-class honesty state: it means "the action ran and
+    reported success, but nothing here PROVES it". It is deliberately NOT
+    ``SUCCESS``. Before this existed, a task with no verification criteria fell
+    into a "no criteria -> assume success" branch that returned
+    ``SUCCESS``/``1.0`` -- so an executor that simply claimed success without
+    producing any artifact was graded as a fully verified pass. Absence of
+    evidence was being reported as evidence of success.
+    """
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
     OFF_TRACK = "off_track"
     NEEDS_HUMAN = "needs_human"
+    #: Action reported success but no independent evidence could confirm it.
+    #: Score is 0.0 because nothing was proven; ``replan_required`` stays False
+    #: because retrying an unverifiable-but-not-failed task is not obviously
+    #: useful (and would risk a replan loop). It is UNPROVEN, not PROVEN.
+    UNVERIFIED = "unverified"
 
 
 @dataclass
@@ -857,12 +871,32 @@ class Verifier:
             return file_failure
 
         if not expected:
-            # No criteria - assume success if action succeeded
+            # HONESTY FIX (was: "No criteria - assume success if action
+            # succeeded" -> SUCCESS/1.0).
+            #
+            # The defect: with no criteria there is nothing to check the output
+            # against, so this branch could only ever return SUCCESS/1.0. An
+            # executor that merely *claimed* success -- returning
+            # {"success": True} and writing nothing -- therefore received a
+            # fully-verified pass. "Nothing was proven" was reported as
+            # "everything was proven".
+            #
+            # The fix: absence of criteria is NOT evidence of success. Report
+            # UNVERIFIED (score 0.0) so the gap is visible and cannot be read
+            # as a verified pass. We deliberately do NOT invent criteria here and
+            # we do NOT fail the task -- the action may well have succeeded; it
+            # simply is not provable from what this kernel can observe. Callers
+            # that need a hard guarantee must supply expected_outputs.
             return VerificationResult(
                 task_id=task.id,
-                result=VerifyResult.SUCCESS,
-                score=1.0,
-                feedback="Action completed successfully (no verification criteria)",
+                result=VerifyResult.UNVERIFIED,
+                score=0.0,
+                feedback=(
+                    "action reported success but NO verification criteria were "
+                    "defined, so its outcome cannot be independently confirmed; "
+                    "reported as UNVERIFIED rather than a verified success"
+                ),
+                replan_required=False,
             )
 
         # Simple matching. The "content" key (when present) is consumed by the

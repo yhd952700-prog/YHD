@@ -82,24 +82,16 @@ def test_explicit_failure_dict_is_reported_as_failure_with_root_cause():
     assert "sandbox refused the write" in _task_reasons(res)
 
 
-def test_no_artifact_claim_is_not_rejected_by_the_verifier_TODAY():
-    """The verifier is NOT a control here: a success claim with no artifact and
-    no verification criteria is scored as a PASS (1.0).
+def test_no_artifact_claim_is_not_reported_as_verified_success():
+    """CONTROL (was ``..._is_not_rejected_by_the_verifier_TODAY``): an unproven
+    success claim is NOT graded as a verified pass.
 
-    This test LOCKS IN THE TRUE CURRENT BEHAVIOUR and is deliberately named
-    ``..._TODAY`` so it can never be mistaken for a passing control. Measured
-    with ``Verifier.verify``: when a capability returns
-    ``{"success": True}`` and the task defines NO ``expected_outputs``, the
-    verifier reaches the "no criteria - assume success if action succeeded"
-    branch (src/kernels/execution/__init__.py:859-866) and returns
-    ``score=1.0`` / ``VerifyResult.SUCCESS``.
-
-    CONSEQUENCE: the verifier launders an unproven success claim into a pass.
-    That is a real honesty defect (worse than GAP B below, which assumed the
-    verifier scored 0.0 and only that the verdict was dropped). Fixing it means
-    changing execution-kernel behaviour -- OWNED OUTSIDE THIS FILE'S SCOPE,
-    pending team-lead authorisation. Until then this test keeps the fact
-    visible and machine-checkable instead of silently documenting a falsehood.
+    History: this test originally asserted the verifier returned 0.0, but
+    measurement showed it returned 1.0 -- the ``execution/__init__.py`` "no
+    criteria -> assume success" branch laundered an executor that wrote nothing
+    into a fully-verified pass. That branch has since been fixed: with no
+    criteria the verifier now returns UNVERIFIED / 0.0. This test is the
+    regression control for that fix.
     """
 
     def claims_success_without_writing(capability_id, inputs):
@@ -111,14 +103,10 @@ def test_no_artifact_claim_is_not_rejected_by_the_verifier_TODAY():
     )
 
     assert res.context.verification_results, "no verification was performed"
-    scores = {v.score for v in res.context.verification_results.values()}
-    # TRUTH (measured, not assumed): the verifier scores this 1.0 -- it does NOT
-    # catch the missing artifact. If a future fix makes this 0.0, this test
-    # fails loudly and must be renamed back to a control assertion.
-    assert scores == {1.0}, (
-        "verifier behaviour changed: an unproven success claim no longer scores "
-        "1.0. If this is now caught (score 0.0), rename this test and promote it "
-        "to a real control."
+    # The verifier must not certify a success it cannot prove.
+    assert all(v.score < 1.0 for v in res.context.verification_results.values()), (
+        "verifier graded an unproven success claim as fully verified "
+        "(score 1.0) -- the 'no criteria -> assume success' regression is back"
     )
     assert not os.path.exists(_file("boom.txt"))
 

@@ -344,12 +344,20 @@ class TestVerifier:
         assert v.replan_required
         assert "boom" in v.feedback
 
-    def test_no_criteria_means_success(self, verifier):
+    def test_no_criteria_is_unverified_not_success(self, verifier):
+        """HONESTY: with no criteria there is nothing to verify against.
+
+        This previously asserted SUCCESS/1.0 ("no criteria -> assume success"),
+        which graded an executor that merely claimed success as a fully
+        verified pass. Absence of evidence is not evidence of success: the
+        honest verdict is UNVERIFIED with score 0.0.
+        """
         task = make_task("T1")  # empty expected_outputs
         v = verifier.verify(task, make_result(output={"anything": 1}))
-        assert v.result is VerifyResult.SUCCESS
-        assert v.score == 1.0
+        assert v.result is VerifyResult.UNVERIFIED
+        assert v.score == 0.0
         assert not v.replan_required
+        assert "UNVERIFIED" in v.feedback
 
     def test_full_match_is_success(self, verifier):
         task = make_task("T1", expected_outputs={"status": "ok"})
@@ -423,7 +431,11 @@ class TestExecutionEngine:
         assert not ctx.failed_tasks
         for t in ctx.plan.tasks:
             assert t.status is TaskStatus.COMPLETED
-            assert ctx.verification_results[t.id].result is VerifyResult.SUCCESS
+            # These decomposed tasks define no expected_outputs, so the verifier
+            # reports UNVERIFIED (nothing was disproved, but nothing was proven
+            # either) -- not a verified SUCCESS. The task still COMPLETES; the
+            # honesty fix deliberately does not turn "unprovable" into "failed".
+            assert ctx.verification_results[t.id].result is VerifyResult.UNVERIFIED
 
     def test_happy_path_publishes_lifecycle_events(self):
         engine = create_execution_engine(scope="L1")
