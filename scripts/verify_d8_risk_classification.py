@@ -12,8 +12,11 @@ Checks (exit 0 = all green):
 3. COVERAGE  — the registry covers EXACTLY the ``@kernel_action("...")`` names
               discovered by AST scan (no missing, no stale, no drift).
 4. TIERS     — every tier is a valid RiskTier; distribution is
-              15 LOW / 12 MEDIUM / 15 HIGH / 2 CRITICAL; LOW == the C-1
-              internal-service allow-list (two independent sources agree).
+              LOW 17 / MEDIUM 13 / HIGH 15 / CRITICAL 2; the internal-service
+              allow-list is checked against the ORTHOGONAL sovereignty invariant
+              (no HIGH/CRITICAL or destructive action pre-approved; the intended
+              MEDIUM operational actions stay allow-listed and tier-confirmed) --
+              the allow-list is NOT the LOW tier (decoupled dimensions).
 5. WIRING    — the decorator now records the *real* risk_level in the audit
               trail (previously a dead "LOW"), proving C-2 will have real
               input without changing any verdict today.
@@ -85,6 +88,9 @@ print("=" * 72)
 from src.kernels._risk_classification import (  # noqa: E402
     KERNEL_ACTION_RISK,
     RiskTier,
+    ENFORCED_TIERS,
+    is_enforced_tier,
+    get_action_risk,
     discover_kernel_action_names,
 )
 from src.kernels.policy import INTERNAL_SERVICE_ALLOWED_ACTIONS  # noqa: E402
@@ -158,7 +164,7 @@ if len(classified) != expected:
 # --------------------------------------------------------------------------- #
 print()
 print("=" * 72)
-print("[4] tier validity + distribution + LOW==allow-list cross-check")
+print("[4] tier validity + distribution + orthogonal sovereignty invariant")
 print("=" * 72)
 
 counts = {t: 0 for t in RiskTier}
@@ -181,13 +187,60 @@ EXPECTED_TIER_DISTRIBUTION = {
 if counts != EXPECTED_TIER_DISTRIBUTION:
     failures.append(f"TIERS: unexpected distribution {counts}")
 
-low = {a for a, rec in KERNEL_ACTION_RISK.items() if rec.tier is RiskTier.LOW}
-if low != set(INTERNAL_SERVICE_ALLOWED_ACTIONS):
+# Orthogonal sovereignty invariant -- mirrors tests/kernels/test_risk_classification.py
+# TestSovereigntyInvariant (commit 5cc13c5b). The allow-list is NOT the LOW tier;
+# internal services may run MEDIUM operational actions, but must never be
+# pre-approved for sovereignty-gated (HIGH/CRITICAL) or irreversible/destructive
+# actions. The two dimensions are decoupled on purpose: reverting the allow-list to
+# LOW-only would drop identity/quota/route/trust/planner paths to default_deny and
+# break the operational loop (the reverse error systems-critic warned against).
+sov_ok = True
+allow = set(INTERNAL_SERVICE_ALLOWED_ACTIONS)
+
+# (1) allow-list must not pre-approve any sovereignty-gated (HIGH/CRITICAL) action.
+gated = {a for a, rec in KERNEL_ACTION_RISK.items() if is_enforced_tier(rec.tier)}
+if gated & allow:
+    sov_ok = False
     failures.append(
-        f"TIERS: LOW set != internal-service allow-list {sorted(low ^ set(INTERNAL_SERVICE_ALLOWED_ACTIONS))}"
+        f"SOVEREIGNTY: allow-list pre-approves enforced-tier action(s) {sorted(gated & allow)}"
     )
 else:
-    print("  LOW tier == INTERNAL_SERVICE_ALLOWED_ACTIONS (C-1 agreement): OK")
+    print("  allow-list ∩ enforced tiers (HIGH/CRITICAL) == ∅: OK")
+
+# (2) allow-list must not pre-approve any irreversible / destructive action.
+destructive = {a for a in allow if (rec := get_action_risk(a)) is not None and rec.destructive}
+if destructive:
+    sov_ok = False
+    failures.append(
+        f"SOVEREIGNTY: allow-list pre-approves destructive action(s) {sorted(destructive)}"
+    )
+else:
+    print("  allow-list contains no destructive action: OK")
+
+# (3) positive: the intended MEDIUM operational actions stay allow-listed AND are MEDIUM.
+expected_medium = {
+    "identity.create_identity",
+    "network.add_route",
+    "resource.allocate",
+    "resource.create_quota",
+    "trust.assign_score",
+    "trust.update_score",
+}
+if not expected_medium <= allow:
+    sov_ok = False
+    failures.append(
+        f"SOVEREIGNTY: expected MEDIUM operational actions missing from allow-list "
+        f"{sorted(expected_medium - allow)}"
+    )
+for a in expected_medium:
+    rec = get_action_risk(a)
+    if rec is None or rec.tier is not RiskTier.MEDIUM:
+        sov_ok = False
+        failures.append(
+            f"SOVEREIGNTY: {a} expected MEDIUM in allow-list, got {rec.tier if rec else None}"
+        )
+if sov_ok:
+    print("  MEDIUM operational actions present in allow-list and tier-confirmed: OK")
 
 # --------------------------------------------------------------------------- #
 # 5. WIRING — decorator records the real risk_level in audit

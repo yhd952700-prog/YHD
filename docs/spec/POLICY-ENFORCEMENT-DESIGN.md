@@ -496,9 +496,19 @@ CRITICAL 动作，审计记为「system 批准」。不构成越权（需本机�
 |---|---|---|
 | 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | 0 违规 |
 | 2 | importlib 全量导入 `src/` 下 **195** 个模块 | FAILED: 0 |
-| 3 | `scripts/verify_d8_risk_classification.py` 五重断言 | **ALL GREEN** |
+| 3 | `scripts/verify_d8_risk_classification.py` 五重断言（第 4 项为**正交主权不变量**，非 `LOW==allow-list`） | **ALL GREEN** |
 | 4 | 装饰器端到端：CRITICAL 动作审计 `risk_level=CRITICAL`、LOW 动作 `=LOW`；verdict 不变（仍 record-only） | 通过 |
 | 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/` | **610 passed / 1 skipped / 0 failed** |
+
+> **注（第 3 项口径，verify_d8）**：第 4 项断言现为**正交主权不变量**
+> （`ALLOW ∩ ENFORCED_TIERS == ∅`、allow 中无 destructive 动作、且 allow-list 中
+> 刻意保留的 MEDIUM 操作性动作 `identity.create_identity` / `network.add_route` /
+> `resource.allocate` / `resource.create_quota` / `trust.assign_score` /
+> `trust.update_score` 仍 ∈ allow 且确为 MEDIUM），**不再**断言 `LOW == allow-list`。
+> 内部 service 主体运行这些 MEDIUM 操作性动作是**设计意图**，**不得**为让门禁变绿
+> 而把 allow-list 回退成 LOW-only——那会让身份/配额/路由/信任/planner 路径落
+> `default_deny`、破坏 operational loop。该不变量镜像自
+> `tests/kernels/test_risk_classification.py::TestSovereigntyInvariant`。
 
 ### 10.5.4 未做的事（明确边界）
 
@@ -672,7 +682,7 @@ C-4 的职责就是把它补完。
 | 1 | `flake8 src/ --max-line-length=100 --select=E,F,W --ignore=E501,W503`（CI 口径） | **0 违规** |
 | 2 | importlib 全量导入 `src/` 下 **199** 个模块 | **FAILED: 0** |
 | 3 | `scripts/verify_c4_approval_channel.py` | **ALL GREEN（44 项）** |
-| 4 | `verify_policy_c1` / `verify_d8_risk_classification` / `verify_c2_enforcement`(11) / `verify_c3_sovereignty`(15) | 全部 **ALL GREEN**（零回归） |
+| 4 | `verify_policy_c1` / `verify_d8_risk_classification`（正交主权不变量，见 §10.5.3 注）/ `verify_c2_enforcement`(11) / `verify_c3_sovereignty`(15) | 全部 **ALL GREEN**（零回归） |
 | 5 | `pytest tests/kernels tests/test_ai_layer_dod_delegation.py tests/test_liuhao_assistant.py tests/test_runtime_loop.py tests/security/ tests/test_policy_approval_api.py` | **697 passed / 1 skipped / 0 failed**（Round 68 基线 635 + 新增 62，零回归） |
 
 ### 10.8.5 未做的事（明确边界）
