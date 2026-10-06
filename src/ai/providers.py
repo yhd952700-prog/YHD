@@ -320,7 +320,14 @@ class GoogleProvider(BaseProvider):
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Google Gemini API."""
-        import google.generativeai as genai
+        try:
+            import google.generativeai as genai
+        except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
+            raise RuntimeError(
+                "GoogleProvider requires the 'google-generativeai' package "
+                "(pip install '.[google]'); it is an opt-in dependency, not "
+                "part of the default install."
+            ) from exc
 
         model = kwargs.get("model", self.model)
         try:

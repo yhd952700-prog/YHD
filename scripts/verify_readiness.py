@@ -109,6 +109,9 @@ def check_build():
 def check_clean_env_run():
     """C2: boot gateway in a clean env, GET /v1/health -> 200."""
     code = (
+        "import os, tempfile\n"
+        "os.environ[\"AUDIT_DB_PATH\"] = os.path.join("
+        "tempfile.mkdtemp(prefix=\"ready_audit_\"), \"audit_store.db\")\n"
         "import sys\n"
         "from fastapi.testclient import TestClient\n"
         "from src.gateway.main import get_app\n"
@@ -313,6 +316,9 @@ def check_observability():
 
     # ---- REAL runtime scrape (the evidence that makes C8 verifiable) ----
     code = (
+        "import os, tempfile\n"
+        "os.environ[\"AUDIT_DB_PATH\"] = os.path.join("
+        "tempfile.mkdtemp(prefix=\"ready_audit_\"), \"audit_store.db\")\n"
         "import sys\n"
         "sys.path.insert(0, '__REPO__')\n"
         "from fastapi.testclient import TestClient\n"

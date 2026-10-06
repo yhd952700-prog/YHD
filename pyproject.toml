@@ -130,6 +130,14 @@ deploy-closure = [
 ops = [
     "websockets>=12.0",
 ]
+# src/ai/providers.py:323 `GoogleProvider.generate()` 惰性导入
+# `google.generativeai`（Gemini 旧版 SDK）。之前在任何声明面里都**零 google\***
+# 声明，而锁文件只带 google-genai（提供互不相关的 `google.genai` 命名空间），
+# 于是 GOOGLE_API_KEY 一设就触发 `ModuleNotFoundError` 的“假可用”。作为可选项
+# 声明，使依赖声明面诚实（任务①/UNVERIFIED google 盲区）。
+google = [
+    "google-generativeai>=0.3.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

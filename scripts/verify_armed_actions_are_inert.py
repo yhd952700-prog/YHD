@@ -136,9 +136,14 @@ def _exercise_hot_paths() -> Tuple[List[str], int]:
         ActionExecutor()
 
     def _app():
+        # Boot the gateway factory on the probe's hot path, then tear it
+        # down cleanly so its lifespan (audit/logging) stops -- a bare
+        # ``get_app()`` leaks the instance and leaves the lifecycle running.
+        from fastapi.testclient import TestClient
         from src.gateway.main import get_app
 
-        get_app()
+        with TestClient(get_app()):
+            pass
 
     def _plugin():
         from src.kernels.plugin import get_plugin_registry
@@ -192,13 +197,16 @@ def _exercise_hot_paths() -> Tuple[List[str], int]:
 
         from src.gateway.main import get_app
 
-        client = TestClient(get_app(), raise_server_exceptions=False)
-        for route in GET_ROUTES:
-            try:
-                client.get(route)
-                touched += 1
-            except Exception:  # noqa: BLE001 - never let a route error fail the probe
-                pass
+        # Wrap in `with` so the lifespan starts and stops and the app object is
+        # reclaimed -- a bare ``client = TestClient(...)`` leaks it and leaves
+        # the gateway's audit/logging lifecycle running.
+        with TestClient(get_app(), raise_server_exceptions=False) as client:
+            for route in GET_ROUTES:
+                try:
+                    client.get(route)
+                    touched += 1
+                except Exception:  # noqa: BLE001 - never let a route error fail the probe
+                    pass
     except Exception:  # noqa: BLE001 - TestClient unavailable is not a failure
         pass
 
