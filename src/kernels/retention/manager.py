@@ -12,6 +12,20 @@ It does this two ways:
      derivative copies may be purged, and only when not under a legal hold.
 
 All destructive actions are gated; observability is fail-soft.
+
+ERASURE LIMITATION (governance-legal; HD-06 / U36 / U52 / U37): the same hard
+invariant that makes this an evidence-preservation guarantee also means a
+data-subject erasure request (GDPR Art. 17 / CCPA §1798.105 / PIPL Art. 47)
+CANNOT be honored by deletion for any ``IMMUTABLE_ORIGINAL`` that is personal
+data. "Delete after N years" is therefore impossible on the audit/evidence
+chain without breaking integrity (U52) -- only (a) keep-forever, (b) retire
+whole shard files, or (c) crypto-shredding (per-subject key destruction) are
+structurally possible, and crypto-shredding still proves *that* an event
+happened to *whom* at *what time*; only the payload becomes unreadable, which
+does NOT satisfy an erasure obligation. The final erasure / retention policy is
+a HUMAN DECISION (HD-06). There is currently NO data-subject-rights mechanism
+(U36). This module must not be read as "we delete your data on request"; it is
+the opposite for originals, and the owner must decide the lawful reconciliation.
 """
 
 from __future__ import annotations
@@ -20,7 +34,7 @@ import time
 from typing import Dict, Optional
 
 from .archival import ArchivalTarget, LocalFsArchiveTarget
-from .config import RetentionConfig, RetentionMode, load_retention_config
+from .config import RetentionConfig, load_retention_config
 from .legal_hold import LegalHold, LegalHoldRegistry
 from .lifecycle import LifecycleMetadata, LifecycleState, RecordClass
 from .observability import RetentionEventSink, RetentionMetrics, default_event_sink

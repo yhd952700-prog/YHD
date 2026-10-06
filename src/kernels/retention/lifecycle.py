@@ -16,7 +16,20 @@ from typing import Any, Dict, Optional
 
 
 class RecordClass(str, Enum):
-    """What kind of record this is -- the basis of the no-delete invariant."""
+    """What kind of record this is -- the basis of the no-delete invariant.
+
+    ERASURE LIMITATION (governance-legal; see HD-06 / U36 / U52 / U37): because
+    an ``IMMUTABLE_ORIGINAL`` can never be deleted, overwritten, or destroyed by
+    any retention policy, a data-subject erasure request -- GDPR Art. 17, CCPA
+    §1798.105, PIPL Art. 47 -- CANNOT be honored by deletion for any original
+    that is personal data. The final erasure / retention policy is a HUMAN
+    DECISION (HD-06); where erasure is legally required it must be handled
+    OUTSIDE this invariant (per-subject crypto-shredding of derivative copies,
+    or a documented Art. 17(3) exemption for the non-erasable residue). There is
+    currently NO data-subject-rights mechanism in the product (U36), so this
+    invariant is an evidence-preservation guarantee AND an erasure limitation --
+    both must be disclosed, not only the former.
+    """
 
     #: The canonical, authoritative copy (e.g. the audit/evidence chain). Never
     #: deletable, overwritable, or destroyable by any retention policy.
