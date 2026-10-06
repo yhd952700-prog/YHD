@@ -85,14 +85,49 @@ class BaseProvider:
         raise NotImplementedError
 
     def generate_with_retry(self, prompt: str, **kwargs) -> str:
-        """Generate with automatic retry and error classification."""
+        """Generate with automatic retry and error classification.
+
+        An EMPTY response is treated as a FAILURE, not as a successful
+        generation.
+
+        Why
+        ---
+        Several providers normalise a missing completion to ``""`` --
+        e.g. ``response.choices[0].message.content or ""`` -- because the SDK
+        type allows ``None``. That ``""`` used to flow straight back to the
+        caller as a legitimate result. Downstream (``employee.execute``) then
+        reported ``status="completed"``, incremented ``completed_tasks`` and
+        emitted a ``completed`` metric, while carrying no model output at all.
+        That is a silent fake success: every observable signal says the task was
+        done, and nothing records that the model actually said nothing. A caller
+        that trusts the status string stores an empty answer as if it were the
+        model's reply.
+
+        So emptiness is checked HERE, at the provider boundary, rather than at
+        each call site. This is the single choke point every consumer already
+        routes through, so the fix covers present call sites
+        (``employee.execute``, ``goal_task_graph``) and any future one. An
+        empty completion is also retried: a transient upstream hiccup that
+        returns no content should not be reported as a completed task on the
+        first try.
+
+        Raises:
+            ProviderError: if every attempt produced an empty response. The
+                message names the provider so the failure is actionable instead
+                of surfacing as a bare ``""``.
+        """
         import time
-        from error_types import classify_error, ProviderRateLimitError
+        from error_types import (
+            ProviderEmptyResponseError,
+            ProviderRateLimitError,
+            classify_error,
+        )
 
         last_error = None
+        last_empty_detail = ""
         for attempt in range(self.max_retries + 1):
             try:
-                return self.generate(prompt, **kwargs)
+                response = self.generate(prompt, **kwargs)
             except Exception as e:
                 last_error = classify_error(e, self.name)
 
@@ -115,8 +150,33 @@ class BaseProvider:
                     continue
                 else:
                     raise
+                continue
 
-        raise last_error
+            # The transport succeeded. Emptiness is a SEPARATE failure mode and is
+            # checked OUTSIDE the try above, so it is never re-wrapped by
+            # classify_error() into a generic ProviderError (which would triple
+            # the message and bury the actionable cause).
+            if response is None or not str(response).strip():
+                last_empty_detail = (
+                    f"type={type(response).__name__}, "
+                    f"length={len(response) if isinstance(response, str) else 'n/a'}"
+                )
+                if attempt < self.max_retries:
+                    delay = self.retry_base_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
+                raise ProviderEmptyResponseError(
+                    self.name,
+                    detail=f"{last_empty_detail} after {attempt + 1} attempt(s)",
+                    attempts=attempt + 1,
+                )
+            return response
+
+        # Only reachable if max_retries < 0, which no real provider config uses.
+        raise ProviderEmptyResponseError(
+            self.name,
+            detail=last_empty_detail or "no response produced",
+        )
 
     def chat(self, messages, **kwargs) -> str:
         """Chat-style generation over a message list.

@@ -35,6 +35,38 @@ class ProviderRateLimitError(ProviderError):
             "RATE_LIMIT_ERROR"
         )
 
+class ProviderEmptyResponseError(ProviderError):
+    """Provider returned a syntactically valid but EMPTY completion.
+
+    Why this exists
+    ---------------
+    Several providers normalise a missing completion to ``""`` (e.g.
+    ``response.choices[0].message.content or ""``) because the SDK type permits
+    ``None``. Returning that ``""`` as a normal result is a silent fake success:
+    the caller reports the task as completed and stores an empty string as if it
+    were the model's answer. Nothing downstream can tell "the model said
+    nothing" from "the model said something".
+
+    It is deliberately distinct from :class:`ProviderAPIError` -- the request
+    SUCCEEDED (HTTP 200, valid envelope). The failure is that no usable content
+    came back, which is a different operator action (check model filters,
+    content policy, max_tokens truncation, or upstream health) than a transport
+    failure. Collapsing the two would make the diagnosis misleading.
+    """
+
+    def __init__(self, provider: str, detail: str = "empty response", attempts: int = 1):
+        self.detail = detail
+        self.attempts = attempts
+        super().__init__(
+            f"Provider {provider} returned an empty response "
+            f"({detail}; attempts={attempts}). No model output was produced, so "
+            "this is reported as a FAILURE rather than an empty success.",
+            provider,
+            "EMPTY_RESPONSE",
+            severity="high",
+        )
+
+
 class ConfigurationError(LiuHaoError):
     """配置错误"""
     def __init__(self, message: str, config_key: str = None):
