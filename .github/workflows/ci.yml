@@ -824,6 +824,31 @@ jobs:
       - name: Verify the roster surfaces real employees, not modules
         run: python scripts/verify_roster_real_employees.py
 
+      # ── Invisible-gate closure (autonomous patrol) ──────────────────────
+      # These five `scripts/verify_*.py` gates carried a real pass/fail contract
+      # but were never invoked by any workflow -- invisible gates that "passed"
+      # only because nobody ran them. Each was run locally on this build and
+      # exits 0; see the commit message for the run evidence. The 3 remaining
+      # unwired verify_* scripts are intentionally NOT gates (one is report-only
+      # by design, one is a coverage probe, one is a genuine RED that surfaces a
+      # real product finding and is reported separately, not hidden).
+      - name: Verify gateway-app instantiation hygiene (SA-2; no frozen-audit-db leak)
+        run: python scripts/verify_app_instantiation_hygiene.py
+
+      - name: Verify authorization grants are enumerable + target-bound (C-3/C-4)
+        run: python scripts/verify_authorization_enumerable.py
+
+      - name: Verify HC-11 identity-chain mechanism is fail-closed in both postures
+        run: python scripts/verify_hc11_identity_chain_integrity.py
+
+      - name: Verify kernel lifecycle PAUSED/STOPPED really refuse work
+        run: python scripts/verify_kernel_lifecycle_gate.py
+
+      - name: Verify planner contract refuses capabilities with no executor
+        env:
+          CODEBUDDY_SAFE_DELETE_ENABLED: 0
+        run: python scripts/verify_open_domain_contract.py
+
       # Migration / rollback path. Wired only after it was proven to actually
       # run: with an interpreter that has alembic, this reaches revision 005,
       # downgrades to base leaving only alembic_version, and re-checks
