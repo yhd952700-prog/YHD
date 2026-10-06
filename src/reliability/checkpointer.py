@@ -126,10 +126,22 @@ class CheckpointStats:
             self.last_error = f"{type(exc).__name__}: {exc}"
 
     def record_status(self, status: str) -> None:
-        """Record the tick's outcome so 'it ran' is never the only evidence."""
+        """Record the tick's outcome so 'it ran' is never the only evidence.
+
+        Also publishes it to the Prometheus gauge here, in the same function
+        that stores it -- a writer and a publisher that compute separately
+        eventually disagree, and then the dashboard and the readiness edge
+        disagree about whether verification is working.
+        """
         with self._lock:
             self.last_status = status
             self.status_counts[status] = self.status_counts.get(status, 0) + 1
+        try:
+            from .audit_metrics import set_checkpointer_status
+
+            set_checkpointer_status(status)
+        except Exception:  # noqa: BLE001 - metrics must never break the verifier
+            pass
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -331,6 +343,38 @@ def start_background_verifier(
 
 def get_background_verifier() -> Optional[BackgroundVerifier]:
     return _worker
+
+
+def get_checkpointer_status() -> Dict[str, Any]:
+    """Readiness-consumable view of the checkpointer's tick outcomes.
+
+    This exists because the outcome was computed and then dropped: a
+    checkpointer that reported ``failed`` on every tick was indistinguishable
+    from one reporting ``ok`` at every operator-visible surface. Consumers
+    (:mod:`src.gateway.health`) use this rather than reaching into the worker.
+
+    ``available`` is False when no verifier is running in this process, and
+    ``last_status`` is None when it has never ticked. Both are reported as
+    healthy: a deployment that does not run the background verifier is a
+    configuration state, not a failure, and must not be taken out of rotation.
+    """
+    worker = get_background_verifier()
+    if worker is None:
+        return {
+            "available": False,
+            "last_status": None,
+            "status_counts": {},
+            "ticks": 0,
+            "last_error": None,
+        }
+    snap = worker.stats.snapshot()
+    return {
+        "available": True,
+        "last_status": snap.get("last_status"),
+        "status_counts": dict(snap.get("status_counts") or {}),
+        "ticks": snap.get("ticks", 0),
+        "last_error": snap.get("last_error"),
+    }
 
 
 def stop_background_verifier(timeout: float = 5.0) -> None:

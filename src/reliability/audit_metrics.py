@@ -54,6 +54,38 @@ audit_integrity_ok = gauge(
     "Last full integrity scan result (1 pass / 0 fail). Only set when a check has run.",
     "bool",
 )
+#: Outcome of the last audit checkpointer tick.
+#:
+#: The checkpointer has computed ok / degraded / failed on every tick since
+#: 119d6a10, but NOTHING consumed it: no alert, no gate, no readiness signal. A
+#: checkpointer failing on every tick was therefore indistinguishable from a
+#: healthy one anywhere an operator could look. This gauge is the export half of
+#: closing that; ``src/gateway/health.py`` is the readiness half.
+#:
+#: Encoding is ordinal so "worse than" is a single comparison:
+#:   0 = ok, 1 = degraded, 2 = failed, -1 = unknown / never ticked.
+#: -1 rather than 0 on purpose: an unknown outcome must never read as "ok".
+audit_checkpointer_status = gauge(
+    "audit_checkpointer_status",
+    "Outcome of the last audit checkpointer tick (0=ok, 1=degraded, 2=failed, -1=unknown).",
+    "enum",
+)
+
+#: status string -> gauge value. Unknown statuses map to -1 (never to 0).
+_CHECKPOINTER_STATUS_VALUES = {"ok": 0.0, "degraded": 1.0, "failed": 2.0}
+
+
+def set_checkpointer_status(status: Any) -> None:
+    """Publish the checkpointer's tick outcome.
+
+    Called from the one place the outcome is produced
+    (:meth:`src.reliability.checkpointer.CheckpointStats.record_status`) so the
+    gauge cannot drift from the in-memory value. Never raises: a metrics
+    failure must not break the verifier.
+    """
+    audit_checkpointer_status.set(
+        _CHECKPOINTER_STATUS_VALUES.get(str(status), -1.0)
+    )
 
 
 def refresh_audit_metrics(with_integrity_check: bool = False) -> Dict[str, Any]:

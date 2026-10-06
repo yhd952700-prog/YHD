@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 from typing import Dict, Any
 import time
+import os
 
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
 from ..gateway.rate_limiter import get_rate_limiter
@@ -212,6 +213,93 @@ async def readiness_probe(request: Request) -> JSONResponse:
             "error": str(e),
         }
 
+    # G8/G9: the audit checkpointer computes an outcome for every tick
+    # (ok / degraded / failed -- see CheckpointStats.record_status) but NOTHING
+    # consumed it. A checkpointer failing on every tick and one succeeding on
+    # every tick produced byte-identical readiness, alerts and dashboards.
+    #
+    # Which outcome gates readiness, and why it is `failed` and not `degraded`:
+    #   * "failed"  = the tick raised, or a segment did not verify. That is a
+    #     real integrity failure, so it DEGRADEDs the gate (HTTP 503).
+    #   * "degraded" = coverage is incomplete. The audit_store block above
+    #     deliberately does NOT take the service out of rotation for that, and
+    #     a cold-start store with events but no checkpoint yet reports
+    #     "degraded" on its very first tick -- gating on it would make
+    #     /v1/ready permanently 503 on every fresh deployment. It is therefore
+    #     surfaced here and in `errors`, but does not gate.
+    #
+    # A deployment with no verifier (or one that never ticked) is a
+    # configuration state, not a fault, and stays healthy -- that is the
+    # control case exercised by the tests.
+    try:
+        from ..reliability.checkpointer import get_checkpointer_status
+
+        cp = get_checkpointer_status()
+        cp_status = cp.get("last_status")
+        checks["audit_checkpointer"] = {
+            "status": "healthy",
+            "available": bool(cp.get("available")),
+            "last_status": cp_status,
+            "status_counts": cp.get("status_counts") or {},
+            "ticks": cp.get("ticks", 0),
+        }
+        if cp_status == "failed":
+            detail = cp.get("last_error") or "no error text recorded"
+            checks["audit_checkpointer"]["status"] = "degraded"
+            checks["audit_checkpointer"]["error"] = (
+                f"last checkpoint tick FAILED: {detail}"
+            )
+            errors.append(
+                "Audit checkpointer: last tick FAILED "
+                f"({detail}) -- audit verification is not running"
+            )
+        elif cp_status == "degraded":
+            # Visible, non-gating: see the rationale above.
+            checks["audit_checkpointer"]["coverage_incomplete"] = True
+            errors.append(
+                "Audit checkpointer: last tick degraded (verification coverage "
+                "incomplete). Reported, not gating: a cold-start store reports "
+                "this until its first checkpoint."
+            )
+        elif not cp.get("available"):
+            # The verifier is not running in this process. This is NOT one
+            # state -- it mirrors the boot decision in src/gateway/main.py,
+            # where start_background_verifier() is called ONLY when AUDIT_DB_PATH
+            # is set:
+            #   * AUDIT_DB_PATH unset -> the verifier is intentionally not
+            #     started. Configuration state, not a fault: keep healthy +
+            #     informational note; never pull a deployment out of rotation
+            #     for a deliberate choice.
+            #   * AUDIT_DB_PATH set    -> the verifier WAS expected to start but
+            #     did not (its start raised and was caught at main.py:339, e.g.
+            #     the audit engine was unavailable at boot). This must NOT read
+            #     as healthy -- it is precisely the "engine unavailable ->
+            #     fake-green" trap. Degrade honestly so the instance is taken
+            #     out of rotation instead of serving with an un-verified audit
+            #     chain.
+            if os.environ.get("AUDIT_DB_PATH"):
+                checks["audit_checkpointer"]["status"] = "degraded"
+                checks["audit_checkpointer"]["error"] = (
+                    "AUDIT_DB_PATH is set (the audit verifier was expected to "
+                    "start in this process) but no checkpointer is running -- "
+                    "it failed to start (audit engine unavailable at boot?). "
+                    "The audit chain is NOT being checkpointed."
+                )
+                errors.append(
+                    "Audit checkpointer: AUDIT_DB_PATH is set but the verifier "
+                    "is not running -- the audit chain is not being "
+                    "checkpointed (audit engine unavailable at boot?)."
+                )
+            else:
+                checks["audit_checkpointer"]["note"] = (
+                    "AUDIT_DB_PATH is not set: this process does not start the "
+                    "audit verifier (configuration state). Set AUDIT_DB_PATH to "
+                    "a volume path to enable audit-chain checkpointing."
+                )
+    except Exception as e:  # pragma: no cover - defensive
+        errors.append(f"Audit Checkpointer: {str(e)}")
+        checks["audit_checkpointer"] = {"status": "unhealthy", "error": str(e)}
+
     # P0-3 (boss decision 2026-09-22): the human-identity registry integrity
     # posture must be OBSERVABLE at the readiness edge. When a registry is in
     # use (humans can hold sovereignty) but no integrity key is configured, the
@@ -312,7 +400,9 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Executor Fence: {str(e)}")
         checks["executor_fence"] = {"status": "unhealthy", "error": str(e)}
 
-    # Honest provider-mode surfacing (MOCK vs REAL). This is a *config* state,
+    
+
+# Honest provider-mode surfacing (MOCK vs REAL). This is a *config* state,
     # not a fault, so it is reported as healthy; the mode itself ("mock"/"real")
     # tells operators whether executions are real or a dev default. Never
     # silently fakes a simulation as real.
