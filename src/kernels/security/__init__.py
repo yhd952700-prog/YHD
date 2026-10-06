@@ -196,7 +196,7 @@ class SecurityEngine:
         self._seed_default_rules()
 
     def _seed_default_rules(self) -> None:
-        """Seed default RBAC rules for core kernel operations.
+        """No default RBAC rules are seeded; this hook is intentionally empty.
 
         **2026-09-15 (boss-approved full cut): no colon permissions are seeded
         by default.** Measured with ``discover_permission_literals``: only
