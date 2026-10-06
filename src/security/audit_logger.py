@@ -159,6 +159,12 @@ class CryptoAuditLogger:
         self._hwm_path = hwm_path if hwm_path is not None else os.environ.get("AUDIT_HWM_PATH")
         self._lock = threading.RLock()
         self._entries_ever_written = self._load_hwm()
+        # D19-A+: baseline of the HWM as loaded at construction. Only entries
+        # written from here on can be reconciled against this process's own
+        # eviction counter; without it, every restart would re-report the
+        # previous process's evictions as unexplained loss. See
+        # :mod:`src.security.persistence_health`.
+        self._hwm_at_epoch_start = self._entries_ever_written
 
     def _generate_event_id(self) -> str:
         """Generate a unique event ID using timestamp + counter + random."""
@@ -447,6 +453,7 @@ class CryptoAuditLogger:
                 self._entries_ever_written,
                 self._dropped_count,
                 len(self._events),
+                high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
             )
 
     def stats(self) -> Dict[str, Any]:
@@ -461,7 +468,10 @@ class CryptoAuditLogger:
             "buffered_entries": buffered,
             "high_water_mark": hwm,
             "dropped_count": dropped,
-            "unaccounted_loss": unaccounted_loss(hwm, dropped, buffered),
+            "unaccounted_loss": unaccounted_loss(
+                hwm, dropped, buffered,
+                high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
+            ),
             "evidence_destroyed": health in ALERTING_STATES,
         }
 

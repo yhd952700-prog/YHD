@@ -158,6 +158,12 @@ class AuditKernel:
         # trust input.
         self._hwm_path = hwm_path if hwm_path is not None else os.environ.get("AUDIT_HWM_PATH")
         self._entries_ever_written = self._load_hwm()
+        # D19-A+: baseline of the HWM as loaded at construction. Only entries
+        # written from here on can be reconciled against this process's own
+        # eviction counter; without it, every restart would re-report the
+        # previous process's evictions as unexplained loss. See
+        # :mod:`src.security.persistence_health`.
+        self._hwm_at_epoch_start = self._entries_ever_written
 
     def log(
         self,
@@ -294,6 +300,7 @@ class AuditKernel:
                 self._entries_ever_written,
                 self._dropped_count,
                 len(self._entries),
+                high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
             )
 
     def verify_integrity(self) -> Tuple[bool, Optional[str]]:
@@ -418,7 +425,10 @@ class AuditKernel:
                 "broken_chain_entry": broken_id,
                 "persistence_health": health.value,
                 "dropped_count": dropped,
-                "unaccounted_loss": unaccounted_loss(hwm, dropped, total),
+                "unaccounted_loss": unaccounted_loss(
+                    hwm, dropped, total,
+                    high_water_mark_at_epoch_start=self._hwm_at_epoch_start,
+                ),
                 "evidence_destroyed": health in ALERTING_STATES,
                 "first_entry_timestamp": first_ts.isoformat() if first_ts else None,
                 "last_entry_timestamp": last_ts.isoformat() if last_ts else None,

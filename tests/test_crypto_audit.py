@@ -157,6 +157,112 @@ def test_unaccounted_loss_is_never_negative() -> None:
     assert unaccounted_loss(10, 0, 9) == 1
 
 
+# ---------------------------------------------------------------------------
+# Epoch baseline — regression for a defect this very change introduced
+# ---------------------------------------------------------------------------
+# HWM is DURABLE (reloaded from file) but dropped_count/buffered are PER-PROCESS
+# (they reset on restart). The naive identity therefore mixes lifetimes and, on
+# every restart, reports the previous process's evictions as unexplained loss.
+# Proven with a live probe before the fix: a healthy chain that simply rewrote
+# its 5 entries reported truncated / unaccounted_loss=5 / evidence_destroyed.
+# A signal that cries wolf on every restart is worse than no signal, so the
+# epoch baseline exists -- and these pin it.
+
+
+@pytest.mark.parametrize(
+    "hwm,dropped,buffered,baseline,expected",
+    [
+        # The proven false alarm: 10 written / 5 buffered, but 5 of those were
+        # written by a PREVIOUS process whose evictions this process cannot see.
+        (10, 0, 5, 5, PersistenceHealth.EXPECTED_EVICTION),
+        # Same numbers, baseline 0 (no epoch tracking) -> the old false TRUNCATED.
+        (10, 0, 5, 0, PersistenceHealth.TRUNCATED),
+        # Genuine in-epoch tampering is STILL caught with a baseline set:
+        # 3 written this epoch, 1 buffered, no eviction accounted for.
+        (8, 0, 2, 5, PersistenceHealth.TRUNCATED),
+        # Ring eviction inside the epoch stays healthy.
+        (30, 10, 15, 5, PersistenceHealth.EXPECTED_EVICTION),
+        # Empty buffer after restart is still DESTROYED (truthful for volatile).
+        (5, 0, 0, 5, PersistenceHealth.DESTROYED),
+        # A rolled-back HWM file (baseline > hwm) must clamp, not crash or lie.
+        (4, 0, 4, 99, PersistenceHealth.EXPECTED_EVICTION),
+    ],
+)
+def test_epoch_baseline_excludes_previous_process_losses(
+    hwm, dropped, buffered, baseline, expected
+) -> None:
+    assert (
+        resolve_persistence_health(
+            hwm,
+            dropped,
+            buffered,
+            high_water_mark_at_epoch_start=baseline,
+        )
+        is expected
+    )
+
+
+def test_epoch_baseline_keeps_unaccounted_loss_consistent_with_the_verdict() -> None:
+    """The reported magnitude must agree with the category, or operators get
+    'truncated' next to 'unaccounted_loss: 0' -- the exact self-contradiction
+    this repo already had to fix once in the readiness payload."""
+    for baseline in (0, 5):
+        v = resolve_persistence_health(
+            10, 0, 5, high_water_mark_at_epoch_start=baseline
+        )
+        loss = unaccounted_loss(
+            10, 0, 5, high_water_mark_at_epoch_start=baseline
+        )
+        assert (v is PersistenceHealth.TRUNCATED) == (loss > 0)
+        assert loss >= 0
+
+
+class TestRestartDoesNotFalselyAlert:
+    """End-to-end on the real kernel: a restart must not manufacture a TRUNCATED."""
+
+    def test_rewriting_the_same_entries_after_restart_is_healthy(self, tmp_path):
+        hwm = tmp_path / "hwm.json"
+        etype = AuditEventType.ACCESS_DECISION
+
+        first = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            first.log(etype, "p", result="ok")
+
+        # Restart: HWM reloads, dropped_count resets. Rewriting the SAME five
+        # entries is a perfectly healthy chain.
+        second = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            second.log(etype, "p", result="ok")
+
+        assert second.persistence_health() is PersistenceHealth.EXPECTED_EVICTION
+        stats = second.stats()
+        assert stats["unaccounted_loss"] == 0
+        assert stats["evidence_destroyed"] is False, (
+            "a healthy post-restart chain reported evidence_destroyed -- "
+            "this is the false alarm that trains operators to ignore the check"
+        )
+
+    def test_empty_buffer_after_restart_is_still_reported_destroyed(self, tmp_path):
+        """The fix must not blind the check: volatile loss is still reported."""
+        hwm = tmp_path / "hwm.json"
+        first = AuditKernel(hwm_path=str(hwm))
+        for _ in range(5):
+            first.log(AuditEventType.ACCESS_DECISION, "p", result="ok")
+
+        second = AuditKernel(hwm_path=str(hwm))
+        assert second.persistence_health() is PersistenceHealth.DESTROYED
+
+    def test_in_epoch_silent_removal_is_still_caught(self, tmp_path):
+        """Detection survives the epoch fix: bypassing the eviction counter
+        inside this process is still TRUNCATED."""
+        kernel = AuditKernel(hwm_path=str(tmp_path / "hwm.json"))
+        for _ in range(10):
+            kernel.log(AuditEventType.ACCESS_DECISION, "p", result="ok")
+        # Simulate a removal that does NOT go through the ring's eviction path.
+        kernel._entries.popleft()
+        assert kernel.persistence_health() is PersistenceHealth.TRUNCATED
+
+
 class TestCryptoLoggerPersistenceHealth:
     """HC-09 (CryptoAuditLogger)."""
 
