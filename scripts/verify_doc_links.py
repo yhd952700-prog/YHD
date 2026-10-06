@@ -47,8 +47,15 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Repo root on sys.path so this gate runs exactly like every other
+# scripts/verify_*.py: `python scripts/verify_doc_links.py` from the repo root.
+# Uniform convention enforced by
+# tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path.
+sys.path.insert(0, REPO_ROOT)
 
 # Roots whose markdown is scanned. Root-level project docs are part of the
 # outward face: a reader arriving from the repo homepage meets them first.

@@ -61,7 +61,14 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
+
+# Repo root on sys.path so this gate runs exactly like every other
+# scripts/verify_*.py: `python scripts/verify_app_instantiation_hygiene.py` from
+# the repo root. Uniform convention enforced by
+# tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"

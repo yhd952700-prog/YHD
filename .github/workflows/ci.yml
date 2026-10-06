@@ -843,6 +843,36 @@ jobs:
       - name: Verify EmployeeStore survives a restart
         run: python scripts/verify_employee_persistence.py
 
+      # ── Meta-guard closure: gates that existed but ran nowhere ──────────
+      # These four carry a real pass/fail contract and can exit non-zero, but
+      # no workflow invoked them, so they protected nothing (they were only
+      # named in comments, which the meta-guard deliberately does not count as
+      # wiring). Wired here so tests/test_guardrail_scripts.py::
+      # test_every_gate_script_is_wired_into_ci can go green honestly.
+
+      # Report-only by design (exit 0 regardless) but it DOES have an opt-in
+      # failure path, so it is wired rather than allowlisted: an unwired probe
+      # nobody ever runs is a comment, not a measurement.
+      - name: Inventory public zero-caller decision functions (report-only probe)
+        run: python scripts/verify_zero_caller_decision_functions.py
+
+      # Report-only by default; --strict is the gate. Wired without --strict so
+      # the default probe runs every commit; the FP-rate contract is documented
+      # in the script and enforced by its own tests.
+      - name: Prove the employee layer cannot silently self-improve (report-only probe)
+        run: python scripts/verify_employee_no_learning.py
+
+      # Causal ablation across the decomposer's recognised goal shapes: are the
+      # uncovered shapes honestly reported rather than hidden. Exits 0 today.
+      - name: Verify agent causality coverage across goal shapes
+        run: python scripts/verify_agent_causality_coverage.py
+
+      # The declaration-surface gate: every third-party import in src/ is
+      # declared, and every pytest job installs what it needs. ~3.5 min (measured
+      # 206s), so it sits at the end of this 25-minute-budget job.
+      - name: Verify dependency declaration surface (src imports declared + CI installs them)
+        run: python scripts/verify_dependency_declaration_surface.py
+
       # The dashboard roster must surface persisted employees, not kernel /
       # layer modules dressed up as employees -- the "modules as staff" lie.
       - name: Verify the roster surfaces real employees, not modules

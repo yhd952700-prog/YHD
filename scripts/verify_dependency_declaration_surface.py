@@ -74,6 +74,12 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Set, Tuple
 
+# Repo root on sys.path so this gate runs exactly like every other
+# scripts/verify_*.py: `python scripts/verify_dependency_declaration_surface.py`
+# from the repo root. Uniform convention enforced by
+# tests/test_guardrail_scripts.py::test_every_verify_script_bootstraps_sys_path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 SCRIPTS = REPO / "scripts"
