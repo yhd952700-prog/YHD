@@ -42,7 +42,7 @@ Deliberately NOT done
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Optional, Set
+from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 
 class PlannerContractError(Exception):
@@ -65,6 +65,54 @@ class PlannerContractError(Exception):
         )
 
 
+class PlannerInputError(PlannerContractError):
+    """A planned task has an executor but not the inputs that executor requires.
+
+    Second contract layer (2026-10-04). The capability-existence check catches
+    "no executor at all"; this catches the subtler case where an executor
+    exists but the planned task cannot possibly satisfy it. Concretely, the
+    deterministic decomposer emits a ``python_compute`` task whose only input
+    is the raw goal text (``goal=...``); ``python_compute`` does NOT guess code
+    from prose and rejects such a task. Left unchecked, that doomed task runs
+    beside the executable ones, the goal is reported failed, and any real side
+    effect already happened — the mirror image of "did nothing but said done".
+
+    Raising here moves the failure to PLAN time, before any task runs, with a
+    message that names both the capability and the inputs it needed.
+    """
+
+    def __init__(self, capability: str, task_name: str, required: Iterable[str],
+                 goal_id: Optional[str] = None) -> None:
+        self.capability = capability
+        self.task_name = task_name
+        self.required = tuple(required)
+        alts = " or ".join(f"'{k}'" for k in self.required)
+        super().__init__(
+            {capability},
+            goal_id=goal_id,
+        )
+        # Replace the base message with the more specific one.
+        self.args = (
+            f"goal {goal_id or '<unknown>'} cannot be executed: task "
+            f"'{task_name}' needs capability '{capability}', which IS "
+            f"registered, but the plan supplies none of its required inputs "
+            f"({alts}). The executor would reject this task at run time, so it "
+            f"is refused at plan time instead of failing mid-run.",
+        )
+
+
+#: Minimum inputs a capability's executor must receive for the task to have any
+#: chance of succeeding. A task whose inputs satisfy NONE of a capability's
+#: alternatives is doomed and is refused at plan time. Keyed by the capability
+#: namespace (the same namespace the router routes by). Extend as more real
+#: executors gain required inputs.
+DEFAULT_INPUT_REQUIREMENTS: dict = {
+    # python_compute executes code / evaluates an expression; it refuses to
+    # guess Python from prose, so a task carrying only `goal` is doomed.
+    "python_compute": ("code", "expression"),
+}
+
+
 class ExecutableAwareDecomposer:
     """Wraps a decomposer and enforces the planner ↔ executor contract.
 
@@ -80,8 +128,15 @@ class ExecutableAwareDecomposer:
         inner: Any,
         available_capabilities: Optional[Iterable[str]] = None,
         capability_provider: Optional[Callable[[], Iterable[str]]] = None,
+        input_requirements: Optional[Dict[str, Iterable[str]]] = None,
     ) -> None:
         self._inner = inner
+        # ``None`` means "use the built-in table"; pass ``{}`` to disable the
+        # input layer entirely (capability-existence check only).
+        self._input_requirements: Dict[str, Iterable[str]] = (
+            DEFAULT_INPUT_REQUIREMENTS if input_requirements is None
+            else {k: tuple(v) for k, v in input_requirements.items()}
+        )
         # A provider is preferred over a frozen set: the tool registry can gain
         # capabilities after wiring, and a stale snapshot would reject work that
         # became executable.
@@ -142,4 +197,21 @@ class ExecutableAwareDecomposer:
         )
         if missing:
             raise PlannerContractError(missing, goal_id=getattr(goal, "id", None))
+        # Second layer: the capability exists, but does the planned task supply
+        # the inputs that executor actually requires? A task that cannot satisfy
+        # its executor is doomed; refuse it now (plan time) rather than let it
+        # run beside executable tasks and fail mid-run after real side effects.
+        for t in (tasks or []):
+            cap = getattr(t, "capability_id", None)
+            required = self._input_requirements.get(cap)
+            if not required:
+                continue
+            inputs = getattr(t, "inputs", None) or {}
+            if not any(inputs.get(k) for k in required):
+                raise PlannerInputError(
+                    cap,
+                    getattr(t, "name", "<unnamed>"),
+                    required,
+                    goal_id=getattr(goal, "id", None),
+                )
         return tasks
