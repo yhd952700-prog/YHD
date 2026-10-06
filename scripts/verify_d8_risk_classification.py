@@ -131,8 +131,14 @@ if unclassified:
     failures.append(f"COVERAGE: unclassified kernel actions {unclassified}")
 if stale:
     failures.append(f"COVERAGE: stale registry entries {stale}")
-if len(classified) != 44:
-    failures.append(f"COVERAGE: registry size {len(classified)} != 44")
+# Derived from discover_kernel_action_names() (computed above into `decorated`)
+# instead of a hardcoded magic number: legitimate growth -- adding a new
+# @kernel_action and its registry entry -- must not trip a brittle size guard.
+# The unclassified/stale checks above already enforce classified == decorated;
+# this is the explicit size sanity signal expressed against the real set.
+expected = len(decorated)
+if len(classified) != expected:
+    failures.append(f"COVERAGE: registry size {len(classified)} != derived {expected}")
 
 # --------------------------------------------------------------------------- #
 # 4. TIERS
