@@ -26,7 +26,7 @@ ENFORCEMENT (hard-deny) is a SEPARATE, deployment-controlled concern:
 """
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
-from src.kernels._crosscutting import kernel_action, mark_action_denied
+from src.kernels._crosscutting import kernel_action
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,8 +36,26 @@ from typing import Any, Dict, List, Optional
 import threading
 import re
 import logging
+import uuid
 
 logger = logging.getLogger("liuhao.kernel.policy")
+
+#: The canonical protected-rule set is ``_PROTECTED_RULE_IDS`` (defined near the
+#: rule dataclasses, module level). It is the source of truth used by
+#: ``unregister_rule`` and ``_evaluate_decision``. It is intentionally not named
+#: ``PROTECTED_RULE_IDS`` to avoid colliding with the kernel's other constant
+#: surfaces; both spellings mean the fail-closed / human-sovereign foundation.
+
+#: Logical action names recorded in the audit events this kernel writes,
+#: mirroring the ``@kernel_action`` convention so they line up if/when these
+#: paths are later promoted to decorated kernel actions.
+POLICY_EVALUATE_ACTION = "policy.evaluate"
+POLICY_UNREGISTER_RULE_ACTION = "policy.unregister_rule"
+
+#: Re-entrancy guard: ``evaluate`` writes its own audit record, and the audit
+#: write path re-enters the policy engine (identity resolution inside the audit
+#: writer adjudicates a kernel action). Without the guard the write recurses.
+_evaluation_audit_guard = threading.local()
 
 
 class PolicyAction(str, Enum):
@@ -430,6 +448,80 @@ class PolicySet:
     updated_at: datetime = field(default_factory=utc_now)
 
 
+# --------------------------------------------------------------------------- #
+# Audit helpers (module-level so they share no instance state with the engine)
+# --------------------------------------------------------------------------- #
+
+
+def _audit_safe_action(context: Dict[str, Any]) -> Dict[str, Any]:
+    """Whitelisted extract of the action being judged -- never the full payload.
+
+    A request context can carry attributes/secrets; the audit record must stay
+    queryable without becoming a secret dump. Only the action's name and risk
+    tier are recorded.
+    """
+    action = context.get("action")
+    if not isinstance(action, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    name = action.get("name")
+    if isinstance(name, str):
+        out["name"] = name[:128]
+    risk = action.get("risk_level")
+    if isinstance(risk, (str, int)) and not isinstance(risk, bool):
+        out["risk_level"] = risk
+    return out
+
+
+def _audit_safe_actor(context: Dict[str, Any]) -> Dict[str, Any]:
+    """Whitelisted extract of the actor being judged -- type/principal/verified."""
+    actor = context.get("actor")
+    if not isinstance(actor, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    actor_type = actor.get("type")
+    if isinstance(actor_type, str):
+        out["type"] = actor_type[:64]
+    ref = actor.get("principal") or actor.get("id") or actor.get("identity_id")
+    if isinstance(ref, str):
+        out["principal"] = ref[:128]
+    out["verified"] = bool(actor.get("verified"))
+    return out
+
+
+# Once-per-process warnings so a tampered ``enabled`` flag on a protected rule is
+# surfaced without flooding the log on every evaluation.
+_protected_disabled_warned: "set" = set()
+
+
+def _warn_protected_rule_disabled(rule: "PolicyRule") -> None:
+    """Warn once per rule id when a protected rule has ``enabled=False``."""
+    if rule.id in _protected_disabled_warned:
+        return
+    _protected_disabled_warned.add(rule.id)
+    logger.warning(
+        "protected policy rule %r has enabled=False; it is still applied -- "
+        "the fail-closed foundation cannot be switched off", rule.id,
+    )
+
+
+def _rule_matches(rule: "PolicyRule", context: Dict[str, Any]) -> bool:
+    """Whether ``rule`` matches ``context``.
+
+    Identical to ``PolicyRule.matches`` except the ``enabled`` flag is *ignored*
+    for protected rules: the fail-closed / human-sovereign foundation must apply
+    even if something flips ``enabled`` to ``False`` (that flag is the one knob
+    that would otherwise silently neutralise ``default_deny``). The engine's own
+    filter keeps non-protected disabled rules out of the candidate set, so for
+    them this behaves exactly like ``rule.matches``.
+    """
+    if rule.id in _PROTECTED_RULE_IDS:
+        if not rule.enabled:
+            _warn_protected_rule_disabled(rule)
+        return all(c.evaluate(context) for c in rule.conditions)
+    return rule.matches(context)
+
+
 class PolicyEngine:
     """Policy evaluation engine (ABAC) -- the system's policy DECISION POINT.
 
@@ -606,24 +698,36 @@ class PolicyEngine:
             self._rules[rule.id] = rule
             return True
 
-    @kernel_action("policy.unregister_rule")
+    @kernel_action("policy.unregister_rule", policy=False, audit=False)
     def unregister_rule(self, rule_id: str) -> bool:
         """Unregister a policy rule.
 
-        Sentinel rules (``default_deny``, ``human_sovereignty``) are protected:
-        removing them would fail the system open (no default deny) or surrender
-        the human-sovereignty override, so the call is refused and recorded as a
-        denied action rather than silently succeeding.
+        The fail-closed / human-sovereign foundation (``_PROTECTED_RULE_IDS``)
+        can never be removed: an attempt is refused (returns ``False``), logged,
+        and recorded as a *blocked* mutation so the tamper attempt is visible in
+        the authoritative audit chain. Every non-protected removal is likewise
+        recorded, so a rule can never disappear from the engine without a trace.
         """
-        if rule_id in _PROTECTED_RULE_IDS:
-            mark_action_denied(f"refusing to unregister protected rule {rule_id}")
-            logger.error("REFUSED unregister of protected policy rule: %s", rule_id)
-            return False
         with self._lock:
-            if rule_id in self._rules:
+            if rule_id in _PROTECTED_RULE_IDS:
+                removed = False
+                reason = "protected_rule"
+            elif rule_id in self._rules:
                 del self._rules[rule_id]
-                return True
-            return False
+                removed = True
+                reason = None
+            else:
+                # Nothing to remove: no state change, no attack signal worth a row.
+                return False
+
+        if reason == "protected_rule":
+            # Hard refusal: keep the fail-closed default and the human override.
+            logger.warning(
+                "refused to unregister protected policy rule %r -- the "
+                "fail-closed foundation cannot be switched off", rule_id,
+            )
+        self._record_rule_mutation(rule_id, removed=removed, reason=reason)
+        return removed
 
     def get_rule(self, rule_id: str) -> Optional[PolicyRule]:
         """Get rule by ID."""
@@ -665,20 +769,37 @@ class PolicyEngine:
         with self._lock:
             return self._policy_sets.get(set_id)
 
-    @kernel_action("policy.evaluate", policy=False)
+    @kernel_action("policy.evaluate", policy=False, audit=False)
     def evaluate(
         self,
         context: Dict[str, Any],
         scope: Optional[PolicyScope] = None,
         policy_set_id: Optional[str] = None
     ) -> PolicyDecision:
-        """Evaluate policies against context.
+        """Evaluate policies against context -- and record the decision.
 
-        ``policy=False`` on the decorator: the wrapper must not adjudicate
-        *itself* (that would nest an ABAC evaluation inside the very evaluation
-        it is performing). The actual ALLOW/DENY verdict is returned in the
-        ``PolicyDecision``, not the wrapper's outcome.
+        Every authorization decision is appended to the authoritative audit
+        chain (``_record_decision``) before it is returned, so ALLOW/DENY are no
+        longer observable only in memory. The audit write is evidence-only: it
+        can never change the decision, and a failed write is reported via the
+        CRIT-1C failure counter rather than breaking authorization.
+
+        (The earlier ``@kernel_action`` form was rejected: the action names are
+        not in ``KERNEL_ACTION_RISK``, which fails the completeness guard, and
+        with ``policy=False`` it recorded no actual verdict. This implementation
+        writes the decision directly.)
         """
+        decision = self._evaluate_decision(context, scope, policy_set_id)
+        self._record_decision(decision)
+        return decision
+
+    def _evaluate_decision(
+        self,
+        context: Dict[str, Any],
+        scope: Optional[PolicyScope] = None,
+        policy_set_id: Optional[str] = None
+    ) -> PolicyDecision:
+        """Core evaluation (no audit write)."""
         with self._lock:
             if not is_servable(self):
                 return PolicyDecision(
@@ -691,6 +812,7 @@ class PolicyEngine:
                     ],
                     context=dict(context),
                 )
+
             # Ensure the human-verification signal is present on the
             # actor/agent context so the human_sovereignty rule can gate
             # on it (P10). We never trust a caller-supplied "verified"
@@ -719,8 +841,14 @@ class PolicyEngine:
                 scope_order = {s: i for i, s in enumerate(PolicyScope)}
                 rules = [r for r in rules if scope_order[r.scope] <= scope_order[scope]]
 
-            # Filter enabled
-            rules = [r for r in rules if r.enabled]
+            # Filter enabled. Protected rules cannot be switched off by clearing
+            # ``PolicyRule.enabled`` -- that would silently neutralise the
+            # fail-closed foundation -- so they stay in the candidate set
+            # regardless of that flag (a one-time warning is logged).
+            rules = [r for r in rules if r.enabled or r.id in _PROTECTED_RULE_IDS]
+            for r in rules:
+                if not r.enabled and r.id in _PROTECTED_RULE_IDS:
+                    _warn_protected_rule_disabled(r)
 
             # Sort by precedence
             rules = sorted(rules, key=lambda r: r.precedence, reverse=True)
@@ -734,7 +862,7 @@ class PolicyEngine:
 
             # Evaluate rules in precedence order
             for rule in rules:
-                if rule.matches(context):
+                if _rule_matches(rule, context):
                     traceability.append(f"RULE:{rule.id}:{rule.action.value}")
                     if rule.action == PolicyAction.ALLOW:
                         matched.append(rule)
@@ -743,7 +871,7 @@ class PolicyEngine:
                         higher_deny = any(
                             r.action == PolicyAction.DENY and r.precedence > rule.precedence
                             for r in rules
-                            if r.matches(context)
+                            if _rule_matches(r, context)
                         )
                         if not higher_deny:
                             return PolicyDecision(
@@ -810,6 +938,144 @@ class PolicyEngine:
                 unapplied_deny_rules=unapplied_deny_rules,
                 unresolved_operands=unresolved_operands,
             )
+
+    def _record_decision(self, decision: "PolicyDecision") -> Optional[str]:
+        """Append the authorization decision to the authoritative audit chain.
+
+        Returns the audit ``event_id``, or ``None`` when no record was written
+        (nested evaluation, or the audit channel refused). A ``None`` NEVER
+        changes the decision: this is an evidence channel, not a control point.
+        """
+        if getattr(_evaluation_audit_guard, "active", False):
+            # Nested: we are already inside an audit write triggered by an outer
+            # evaluation. Recording again would recurse and multiply rows for one
+            # decision.
+            return None
+        _evaluation_audit_guard.active = True
+        try:
+            from src.kernels.audit import (
+                AuditEventType,
+                AuditScope,
+                log_event,
+                record_audit_failure,
+            )
+        except Exception as exc:  # pragma: no cover - import must never break policy
+            logger.warning("policy decision audit unavailable (import failed): %s", exc)
+            return None
+
+        actor_shape = _audit_safe_actor(decision.context)
+        decisive = decision.denied_rules[0] if decision.denied_rules else (
+            decision.matched_rules[0] if decision.matched_rules else None
+        )
+        is_deny = decision.decision == PolicyEffect.DENY
+        if actor_shape.get("principal"):
+            principal_id = (
+                f"{actor_shape.get('type') or 'actor'}:{actor_shape['principal']}"
+            )
+        else:
+            # NOT identity-resolved: the audit store keys events by principal, and
+            # resolving here would risk an adjudication re-entering the engine. The
+            # actor's claimed type/principal are recorded in ``judged_actor``
+            # instead; this is a known limitation, not a hidden one.
+            principal_id = "policy:unattributed"
+        details = {
+            # The decision itself. This is the fact the HC-01 chain was missing:
+            # before this change an ALLOW/DENY existed only in memory.
+            "action": POLICY_EVALUATE_ACTION,
+            "policy_decision": decision.decision.value,
+            # Which rule produced it (the decisive one) plus the full ordered
+            # trace of everything that matched -- "why" is as auditable as "what".
+            "policy_rule": decisive.id if decisive is not None else "none",
+            "policy_traceability": list(decision.traceability),
+            # Controls that did NOT run because an operand was absent (P0-3b).
+            # Silently dropping these would make "the quota rule never fired"
+            # read like "the action passed the quota rule".
+            "policy_unapplied_deny_rules": [
+                r.id for r in decision.unapplied_deny_rules
+            ],
+            "policy_unresolved_operands": list(decision.unresolved_operands),
+            # Deliberately NOT the whole context: a request payload can carry
+            # attributes/secrets. Only the identity of what was judged is recorded.
+            "judged_action": _audit_safe_action(decision.context),
+            "judged_actor": actor_shape,
+        }
+        if is_deny:
+            details["denial_reason"] = f"policy_deny:{details['policy_rule']}"
+        try:
+            event = log_event(
+                event_type=AuditEventType.POLICY_EVAL,
+                principal_id=principal_id,
+                scope=AuditScope.L0,
+                outcome="denied" if is_deny else "success",
+                details=details,
+                correlation_id=uuid.uuid4().hex,
+            )
+            return getattr(event, "event_id", None)
+        except Exception as exc:
+            # Evidence channel down: the decision still stands and is still
+            # returned to the caller. What must never happen is silence -- bump
+            # the CRIT-1C failure counter and say so.
+            logger.warning(
+                "POLICY DECISION NOT RECORDED decision=%s rule=%s action=%s: %s",
+                details["policy_decision"], details["policy_rule"],
+                details["judged_action"].get("name"), exc,
+            )
+            try:
+                record_audit_failure()
+            except Exception:  # pragma: no cover
+                pass
+            return None
+        finally:
+            _evaluation_audit_guard.active = False
+
+    def _record_rule_mutation(
+        self, rule_id: str, *, removed: bool, reason: Optional[str]
+    ) -> Optional[str]:
+        """Append a rule-set mutation (or blocked attempt) to the audit chain."""
+        if getattr(_evaluation_audit_guard, "active", False):
+            return None
+        _evaluation_audit_guard.active = True
+        try:
+            from src.kernels.audit import (
+                AuditEventType,
+                AuditScope,
+                log_event,
+                record_audit_failure,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("policy rule-mutation audit unavailable (import): %s", exc)
+            return None
+        details = {
+            "action": POLICY_UNREGISTER_RULE_ACTION,
+            "policy_rule": rule_id,
+            "rule_removed": removed,
+            "rule_mutation_reason": reason,
+        }
+        outcome = "blocked" if reason == "protected_rule" else "success"
+        if reason == "protected_rule":
+            details["denial_reason"] = "protected_rule"
+        try:
+            event = log_event(
+                event_type=AuditEventType.STATE_CHANGE,
+                principal_id="policy:engine",
+                scope=AuditScope.L0,
+                outcome=outcome,
+                details=details,
+                correlation_id=uuid.uuid4().hex,
+            )
+            return getattr(event, "event_id", None)
+        except Exception as exc:
+            logger.warning(
+                "POLICY RULE MUTATION NOT RECORDED rule=%s reason=%s: %s",
+                rule_id, reason, exc,
+            )
+            try:
+                record_audit_failure()
+            except Exception:  # pragma: no cover
+                pass
+            return None
+        finally:
+            _evaluation_audit_guard.active = False
 
     def evaluate_simple(
         self,
