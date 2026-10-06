@@ -34,6 +34,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
 from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
+from src.security.persistence_health import (
+    ALERTING_STATES,
+    PersistenceHealth,
+    resolve_persistence_health,
+    unaccounted_loss,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +274,28 @@ class AuditKernel:
         """Monotonic count of entries ever written (survives restart via HWM file)."""
         return self._entries_ever_written
 
+    # ------------------------------------------------------------------
+    # D19-A+: persistence-health accounting (telemetry, NOT evidence)
+    # ------------------------------------------------------------------
+    def persistence_health(self) -> PersistenceHealth:
+        """D19-A+: reconcile HWM / evictions / buffer into one verdict.
+
+        This is the half of A+ that was never wired up: the counters existed
+        (``high_water_mark`` / ``dropped_count`` / buffer length) but nothing
+        ever reconciled them, so "evidence was DESTROYED" and "evidence was
+        evicted as expected" were indistinguishable at runtime. See
+        :mod:`src.security.persistence_health` for what each state does and
+        does not mean.
+
+        Telemetry only -- never a trust, policy or authorization input.
+        """
+        with self._lock:
+            return resolve_persistence_health(
+                self._entries_ever_written,
+                self._dropped_count,
+                len(self._entries),
+            )
+
     def verify_integrity(self) -> Tuple[bool, Optional[str]]:
         """Verify complete hash chain integrity.
 
@@ -375,6 +403,11 @@ class AuditKernel:
             else:
                 first_ts = last_ts = None
 
+            # D19-A+: persistence-health accounting (telemetry, NOT evidence).
+            health = self.persistence_health()
+            dropped = self._dropped_count
+            hwm = self._entries_ever_written
+
             return {
                 "total_entries": total,
                 "by_event_type": by_type,
@@ -383,6 +416,10 @@ class AuditKernel:
                 "by_principal": by_principal,
                 "chain_integrity_valid": is_valid,
                 "broken_chain_entry": broken_id,
+                "persistence_health": health.value,
+                "dropped_count": dropped,
+                "unaccounted_loss": unaccounted_loss(hwm, dropped, total),
+                "evidence_destroyed": health in ALERTING_STATES,
                 "first_entry_timestamp": first_ts.isoformat() if first_ts else None,
                 "last_entry_timestamp": last_ts.isoformat() if last_ts else None,
                 "date_range_days": (

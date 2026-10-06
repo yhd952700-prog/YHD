@@ -16,6 +16,12 @@ src.kernels.audit.
 """
 
 from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
+from src.security.persistence_health import (
+    ALERTING_STATES,
+    PersistenceHealth,
+    resolve_persistence_health,
+    unaccounted_loss,
+)
 import collections
 import json
 import logging
@@ -420,6 +426,44 @@ class CryptoAuditLogger:
     def high_water_mark(self) -> int:
         """Monotonic count of events ever written (survives restart via HWM file)."""
         return self._entries_ever_written
+
+    # ------------------------------------------------------------------
+    # D19-A+: persistence-health accounting (telemetry, NOT evidence)
+    # ------------------------------------------------------------------
+    def persistence_health(self) -> PersistenceHealth:
+        """D19-A+: reconcile HWM / evictions / buffer into one verdict.
+
+        This is the half of A+ that was never wired up: the counters existed
+        (``high_water_mark`` / ``dropped_count`` / buffer length) but nothing
+        ever reconciled them, so "evidence was DESTROYED" and "evidence was
+        evicted as expected" were indistinguishable at runtime. See
+        :mod:`src.security.persistence_health` for what each state does and
+        does not mean.
+
+        Telemetry only -- never a trust, policy or authorization input.
+        """
+        with self._lock:
+            return resolve_persistence_health(
+                self._entries_ever_written,
+                self._dropped_count,
+                len(self._events),
+            )
+
+    def stats(self) -> Dict[str, Any]:
+        """Telemetry snapshot (NOT audit evidence) including persistence health."""
+        health = self.persistence_health()
+        with self._lock:
+            buffered = len(self._events)
+            hwm = self._entries_ever_written
+            dropped = self._dropped_count
+        return {
+            "persistence_health": health.value,
+            "buffered_entries": buffered,
+            "high_water_mark": hwm,
+            "dropped_count": dropped,
+            "unaccounted_loss": unaccounted_loss(hwm, dropped, buffered),
+            "evidence_destroyed": health in ALERTING_STATES,
+        }
 
     def clear(self) -> None:
         """Clear the in-memory event buffer.
