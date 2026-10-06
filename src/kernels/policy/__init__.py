@@ -51,6 +51,22 @@ logger = logging.getLogger("liuhao.kernel.policy")
 #: paths are later promoted to decorated kernel actions.
 POLICY_EVALUATE_ACTION = "policy.evaluate"
 POLICY_UNREGISTER_RULE_ACTION = "policy.unregister_rule"
+POLICY_REGISTER_RULE_ACTION = "policy.register_rule"
+
+#: AUDIT BEST-EFFORT (NOT fail-closed) -- read before trusting the chain.
+#: Every authorization decision AND every rule-set mutation (add/remove) is
+#: written to the authoritative audit chain (HC-01). The write is *evidence*,
+#: not a *control point*: if ``log_event`` raises, the decision/mutation still
+#: stands and is still returned to the caller, and the CRIT-1C failure counter
+#: is bumped (``record_audit_failure``) so the gap is visible. A missing audit
+#: row can therefore NEVER change an authorization outcome -- by design. This is
+#: accepted by the project owner; it is documented here and in
+#: docs/kernel-spec/policy-audit-integrity.md so it is not buried in a report.
+#: Known limitations: the principal recorded on these events is "policy:engine"
+#: (rule changes are programmatic, not yet identity-attributed) or the actor's
+#: *claimed* type/principal for decisions (identity is not resolved here to
+#: avoid re-entering the engine during adjudication). See _record_decision /
+#: _record_rule_mutation.
 
 #: Re-entrancy guard: ``evaluate`` writes its own audit record, and the audit
 #: write path re-enters the policy engine (identity resolution inside the audit
@@ -489,6 +505,30 @@ def _audit_safe_actor(context: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _audit_safe_rule_meta(rule: "PolicyRule") -> Dict[str, Any]:
+    """Whitelisted rule-definition fields for the registration audit record.
+
+    We record the rule's *shape* (id/name/action/scope/precedence/enabled and how
+    many conditions), never the condition bodies -- those can reference request
+    variables and are not needed to prove "a rule was registered with this
+    precedence/action". This is the registration-side mirror of
+    ``_audit_safe_action``'s payload-minimisation discipline: the audit store
+    must stay queryable without becoming a secret or rule-internals dump.
+    """
+    try:
+        return {
+            "id": rule.id,
+            "name": (rule.name or "")[:128],
+            "action": getattr(rule.action, "value", str(rule.action)),
+            "scope": getattr(rule.scope, "value", str(rule.scope)),
+            "precedence": rule.precedence,
+            "enabled": bool(rule.enabled),
+            "condition_count": len(getattr(rule, "conditions", []) or []),
+        }
+    except Exception:  # pragma: no cover - defensive
+        return {"id": getattr(rule, "id", "unknown")}
+
+
 # Once-per-process warnings so a tampered ``enabled`` flag on a protected rule is
 # surfaced without flooding the log on every evaluation.
 _protected_disabled_warned: "set" = set()
@@ -688,15 +728,57 @@ class PolicyEngine:
         ]
 
         for rule in builtin_policies:
-            self.register_rule(rule)
+            self.register_rule(rule, source="bootstrap")
 
-    def register_rule(self, rule: PolicyRule) -> bool:
-        """Register a policy rule."""
+    def register_rule(
+        self, rule: PolicyRule, *, source: str = "register_rule"
+    ) -> bool:
+        """Register a policy rule and record the registration in the audit chain.
+
+        Why this is audited (the "door is only half locked" gap)
+        --------------------------------------------------------
+        Before this change an attacker -- or a buggy caller -- could add a
+        higher-precedence ALLOW rule with *zero* trace. That is the exact mirror
+        image of the unregister gap that :meth:`unregister_rule` now closes: a
+        rule that appears without an audit row is the same class of silent
+        mutation as one that vanishes without one. Here we make registration a
+        durable, queryable event too.
+
+        Semantics
+        ---------
+        * Returns ``False`` (and records a *duplicate_id* mutation) if a rule with
+          the same id already exists. This also incidentally prevents shadowing a
+          protected foundation rule (``_PROTECTED_RULE_IDS`` is seeded at bootstrap
+          and can never be re-registered) -- the registration-side protection is
+          the duplicate-id guard, NOT a separate refusal, because bootstrap itself
+          registers ``default_deny``/``human_sovereignty`` through this very
+          method; a protected-id refusal here would break engine construction.
+        * The change is written to the authoritative audit chain via
+          :meth:`_record_rule_mutation`. The write is **best-effort (NOT
+          fail-closed)**: a failed audit write never changes the registration
+          outcome -- see the module audit-best-effort note.
+
+        ``source`` is the code-path provenance (``"bootstrap"`` /
+        ``"define_policy_rule"`` / ``"register_rule"``) so "where did this rule
+        come from" is answerable in the chain.
+        """
         with self._lock:
             if rule.id in self._rules:
-                return False
-            self._rules[rule.id] = rule
-            return True
+                added = False
+                reason = "duplicate_id"
+            else:
+                self._rules[rule.id] = rule
+                added = True
+                reason = None
+        self._record_rule_mutation(
+            rule.id,
+            added=added,
+            removed=False,
+            reason=reason,
+            source=source,
+            rule_meta=_audit_safe_rule_meta(rule),
+        )
+        return added
 
     @kernel_action("policy.unregister_rule", policy=False, audit=False)
     def unregister_rule(self, rule_id: str) -> bool:
@@ -726,7 +808,10 @@ class PolicyEngine:
                 "refused to unregister protected policy rule %r -- the "
                 "fail-closed foundation cannot be switched off", rule_id,
             )
-        self._record_rule_mutation(rule_id, removed=removed, reason=reason)
+        self._record_rule_mutation(
+            rule_id, added=False, removed=removed, reason=reason,
+            source="unregister_rule",
+        )
         return removed
 
     def get_rule(self, rule_id: str) -> Optional[PolicyRule]:
@@ -802,6 +887,12 @@ class PolicyEngine:
         """Core evaluation (no audit write)."""
         with self._lock:
             if not is_servable(self):
+                # Lifecycle gate: PAUSED/STOPPED -> DENY (a sovereign "engine
+                # unavailable = deny" verdict, committed in 8be3d0d6). This verdict
+                # is still recorded: evaluate() calls _record_decision on the
+                # returned decision unconditionally, so the sovereign deny is NOT
+                # silent. (The early return here precedes that audited call -- the
+                # record is written by the caller, not skipped.)
                 return PolicyDecision(
                     decision=PolicyEffect.DENY,
                     matched_rules=[],
@@ -1029,10 +1120,30 @@ class PolicyEngine:
             _evaluation_audit_guard.active = False
 
     def _record_rule_mutation(
-        self, rule_id: str, *, removed: bool, reason: Optional[str]
+        self,
+        rule_id: str,
+        *,
+        added: bool = False,
+        removed: bool = False,
+        reason: Optional[str] = None,
+        source: str = "unknown",
+        rule_meta: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
-        """Append a rule-set mutation (or blocked attempt) to the audit chain."""
+        """Append a rule-set insert/removal (or blocked attempt) to the audit chain.
+
+        BEST-EFFORT -- NOT fail-closed (see module audit-best-effort note). If the
+        audit channel throws, the rule change still stands and is still returned to
+        the caller; we only bump the CRIT-1C failure counter and log. A missing
+        audit row must never change an authorization outcome -- this is an evidence
+        channel, not a control point.
+
+        ``added`` is True for a successful registration; ``removed`` is True for a
+        successful removal; a blocked attempt (protected-rule refusal, or a
+        duplicate-id registration) sets neither but carries a ``reason``.
+        """
         if getattr(_evaluation_audit_guard, "active", False):
+            # Nested: we are already inside an audit write triggered by an outer
+            # decision evaluation. Recording again would recurse.
             return None
         _evaluation_audit_guard.active = True
         try:
@@ -1042,16 +1153,38 @@ class PolicyEngine:
                 log_event,
                 record_audit_failure,
             )
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover - import must never break policy
             logger.warning("policy rule-mutation audit unavailable (import): %s", exc)
             return None
+
+        if added and not removed:
+            change = "rule_added"
+            outcome = "success"
+        elif removed and not added:
+            change = "rule_removed"
+            outcome = "success"
+        else:
+            # Blocked attempt: protected-rule refusal (the fail-closed foundation
+            # cannot be removed) or a duplicate-id registration.
+            change = "blocked_remove" if reason == "protected_rule" else "blocked_add"
+            outcome = "blocked" if reason == "protected_rule" else "success"
+
         details = {
-            "action": POLICY_UNREGISTER_RULE_ACTION,
+            # The action name mirrors the @kernel_action convention so these rows
+            # line up if/when register/unregister are promoted to decorated actions.
+            "action": POLICY_REGISTER_RULE_ACTION if added else POLICY_UNREGISTER_RULE_ACTION,
             "policy_rule": rule_id,
+            "rule_added": added,
             "rule_removed": removed,
+            "rule_change": change,
+            "rule_source": source,
             "rule_mutation_reason": reason,
+            # Explicit timestamp (in addition to the one log_event stamps) so
+            # "when" is answerable directly from the event, not only by chain order.
+            "recorded_at": utc_now().isoformat(),
         }
-        outcome = "blocked" if reason == "protected_rule" else "success"
+        if rule_meta is not None:
+            details["rule_meta"] = rule_meta
         if reason == "protected_rule":
             details["denial_reason"] = "protected_rule"
         try:
@@ -1066,8 +1199,8 @@ class PolicyEngine:
             return getattr(event, "event_id", None)
         except Exception as exc:
             logger.warning(
-                "POLICY RULE MUTATION NOT RECORDED rule=%s reason=%s: %s",
-                rule_id, reason, exc,
+                "POLICY RULE MUTATION NOT RECORDED rule=%s change=%s reason=%s: %s",
+                rule_id, change, reason, exc,
             )
             try:
                 record_audit_failure()
@@ -1276,7 +1409,7 @@ def define_policy_rule(
         scope=scope,
         precedence=precedence,
     )
-    get_policy_engine().register_rule(rule)
+    get_policy_engine().register_rule(rule, source="define_policy_rule")
     return rule
 
 

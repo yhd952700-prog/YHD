@@ -39,7 +39,11 @@ import os
 import threading
 import uuid
 
-from src.kernels._crosscutting import kernel_action, mark_action_denied
+from src.kernels._crosscutting import (
+    kernel_action,
+    mark_action_denied,
+    mark_action_failed,
+)
 
 logger = logging.getLogger("liuhao.kernel.network")
 
@@ -688,6 +692,15 @@ class NetworkBus:
                 message.delivered_at = utc_now()
             else:
                 message.status = MessageStatus.FAILED
+                # Audit truthfulness: the route matched and the body ran, but the
+                # delivery did not complete. Previously this fell through to
+                # outcome="success" -- a message that was never delivered read as a
+                # successful routing. Signal the failure so the chain records
+                # outcome="failed" instead of a false success.
+                mark_action_failed(
+                    f"route {route.id!r} adapter {route.adapter!r} "
+                    f"send() returned False (message not delivered)"
+                )
 
             return message
 

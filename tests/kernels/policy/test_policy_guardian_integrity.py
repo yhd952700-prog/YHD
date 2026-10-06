@@ -35,11 +35,13 @@ import pytest
 
 from src.kernels.audit import audit_query
 from src.kernels.policy import (
+    KernelLifecycle,
     PolicyAction,
     PolicyCondition,
     PolicyEngine,
     PolicyOperator,
     PolicyRule,
+    define_policy_rule,
 )
 
 

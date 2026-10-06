@@ -236,6 +236,42 @@ def _consume_denial() -> Optional[str]:
     return reason
 
 
+#: Set by :func:`mark_action_failed` to tell the decorator that the wrapped call
+#: *ran* but did NOT complete successfully (e.g. a routing delivery failure), so
+#: the audit must record ``outcome="failed"`` rather than masquerading it as
+#: ``outcome="success"``. Parallel to :data:`_DENIED_SIGNAL`.
+_FAILED_SIGNAL: ContextVar[Optional[str]] = ContextVar(
+    "liuhao_action_failure", default=None
+)
+
+
+def mark_action_failed(reason: str) -> None:
+    """Declare that the enclosing kernel action ran but did NOT complete.
+
+    A method that returns a "tried but failed" result (e.g. ``route()`` where the
+    matched adapter's ``send()`` returned ``False``) is recorded by the decorator
+    as ``outcome="success"`` because from the decorator's point of view the call
+    simply completed. That is how a message that was never delivered ends up
+    reading, in the only durable record, as a *successful* routing:
+
+        mark_action_failed("adapter internal send() returned False")
+        return message  # already stamped FAILED
+
+    Opt-in on purpose. Inferring "failed" from a falsy/``False`` return would
+    silently change the meaning of ``outcome`` for all 43 existing call sites,
+    several of which legitimately return ``False`` for non-failure reasons.
+    """
+    _FAILED_SIGNAL.set(reason)
+
+
+def _consume_failure() -> Optional[str]:
+    """Read and clear the failure signal, so it cannot leak into a later call."""
+    reason = _FAILED_SIGNAL.get()
+    if reason is not None:
+        _FAILED_SIGNAL.set(None)
+    return reason
+
+
 def _service_actor() -> Dict[str, str]:
     try:
         from src.kernels.identity import INTERNAL_SERVICE_PRINCIPAL
@@ -840,7 +876,8 @@ def kernel_action(
             def _grant_for_audit(audit_decision: Optional[str],
                                  audit_outcome: str) -> Optional[str]:
                 if audit_decision in ("deny", "error", "defer") or \
-                        audit_outcome in ("denied", "blocked"):
+                        audit_outcome in ("denied", "blocked",
+                                          "unauthorized_success", "failed"):
                     return None
                 return grant_id
 
@@ -1003,6 +1040,7 @@ def kernel_action(
             # U-1: start from a clean slate, so a denial declared by an earlier
             # (or nested) call can never be attributed to this one.
             _DENIED_SIGNAL.set(None)
+            _FAILED_SIGNAL.set(None)
             outcome = "success"
             denial_reason: Optional[str] = None
             try:
@@ -1018,16 +1056,33 @@ def kernel_action(
                     # existing call site.
                     denial_reason = _consume_denial()
                     if denial_reason is not None:
+                        # Genuine refusal declared by the body (e.g. a permission
+                        # grant the kernel rejected, or a route with no adapter).
+                        # The action did NOT happen -> "denied".
                         outcome = "denied"
                     elif policy and decision in ("deny", "defer"):
-                        # AUDIT TRUTHFULNESS: the policy engine returned a
-                        # definitive non-allow verdict for this actor, yet the
-                        # record-only posture let the body run. Do NOT masquerade
-                        # that as success -- record the refusal honestly so the
-                        # audit no longer lies about a denied action.
+                        # AUDIT TRUTHFULNESS (HC-01 residual / mirror distortion):
+                        # the policy engine returned a definitive non-allow verdict
+                        # for this actor, yet the record-only (C-1) posture let the
+                        # body run. Do NOT masquerade that as "success" AND do NOT
+                        # call it "denied" (which would falsely imply the action
+                        # was blocked). Record it as ``unauthorized_success`` -- the
+                        # action executed but was never authorised. This makes the
+                        # mirror distortion visible on the chain instead of hiding
+                        # it behind a clean-looking "denied" that a reviewer would
+                        # trust as "this was refused".
                         verdict_label = "deny" if decision == "deny" else "defer"
-                        outcome = "denied"
+                        outcome = "unauthorized_success"
                         denial_reason = f"policy:{verdict_label}(rule={rule_id})"
+                    else:
+                        failure_reason = _consume_failure()
+                        if failure_reason is not None:
+                            # The body ran but did not complete successfully
+                            # (e.g. a routing delivery failure where the matched
+                            # adapter's send() returned False). Not a refusal and
+                            # not a success -> "failed".
+                            outcome = "failed"
+                            denial_reason = failure_reason
                 duration_ms = (time.time() - started) * 1000.0
                 if audit:
                     _call_audit(audit_actor, action, outcome, decision, corr_id,
