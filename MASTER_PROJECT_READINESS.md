@@ -5,9 +5,9 @@
 > **Honesty discipline (NON-NEGOTIABLE):** Every gate is one of `PASS` / `FAIL` / `BLOCKED` / `NOT YET TESTED` / `NOT VERIFIED`.
 > A gate is `NOT VERIFIED` when there is **no evidence** — we do **not** guess, do **not** fabricate percentages, and do **not** substitute "basically done" for `PASS`. "Tests pass" is not "production verified". Where a claim is documentation-only it is flagged `CLAIMED`, not counted as evidence.
 >
-> Branch: `p36`. Repo: `D:\LiuHao-AI-OS`. Report date: **2026-09-30**.
+> Branch: `p36`. Repo: `D:\LiuHao-AI-OS`. Evidence cutoff: **2026-09-30** · Last updated: **2026-10-05** (commit `936c50e6`).
 
-## Overall Status: **RELEASE READINESS CLOSURE** (phase pivot from BUILDING — goal now is an objective `RELEASE READY` judgment, not more features)
+## Overall Status: **NOT RELEASE READY** — release-readiness evaluation in progress (phase pivot from BUILDING; the goal is an objective `RELEASE READY` judgment, not more features)
 
 The system has real, fail-closed security and data-integrity subsystems, a distributed execution fence, and a live observability surface. It is **not** yet RELEASE READY: the reliability/performance/deployment gates (G6/G7/G9) are NOT VERIFIED, and HC-01 is a frozen human-sovereignty decision. The **clean-environment run (G2)**, the full test baseline (G3), the independent-verification harness (G10), and the observability **export path** (G8) are now VERIFIED — a clean-env full re-run produced **3307 passed / 24 skipped / 0 failed (exit 0)**, reproducible; the builder-decoupled harness attests the verifiable integrity/security claims (OVERALL = PASS, FAIL = 0); and a real runtime scrape proves `/v1/metrics/prometheus` serves **45 metric families** with genuinely live per-request samples (HTTP counters increment 3.0 → 10.0 under traffic). Work continues autonomously toward RELEASE READY, then EVOLUTION.
 
