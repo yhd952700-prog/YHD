@@ -1470,6 +1470,52 @@ evidence that the product passed it.
 `PASS = 6` (P2, P3, P4, P6, P7, P8) · `BLOCKED = 4` (P1, P5, P9, P10) · `FAIL = 0`
 **PRODUCT ACCEPTANCE = NOT READY** · **RELEASE READINESS = NOT RELEASE READY**
 
+## API-only endpoints — real data, no product view (product-architect)
+
+Seven gateway GET endpoints return **real** data but have **zero product view**: no
+console page calls them. This is *not* a false claim (no page renders a fabricated
+version of them) — it is **unrealised product surface**: a real capability the user
+cannot reach.
+
+Verified by static scan (no browser needed): list real GET paths from
+`TestClient(get_app()).get("/openapi.json")["paths"]`, then require an actual
+**API-call string** (`'/v1/...'`) in `apps/console/console/src/**/*.{ts,tsx}`.
+
+| Endpoint | Returns (real) | Product view | Status |
+|---|---|---|---|
+| `/v1/production/preflight` | `{ok, app_env, critical_count, warning_count, findings[]}` | none | **intended for a view** — production config pre-flight; auth needs only a token `sub` (console token satisfies it); UI not yet built |
+| `/v1/observability/metrics` | `{metrics: {...}}` — the same real values the alert engine consumes | none | API-only (deliberate) |
+| `/v1/kernels` | kernel registry | none | API-only (deliberate). The console renders kernel data from `/v1/dashboard/roster`, **not** from this endpoint |
+| `/v1/workflows`, `/v1/workflows/{goal_id}` | workflow summaries / one workflow | none | none — see contract-debt note below |
+| `/v1/profile` | profile | none | none |
+| `/v1/chat/stats` | chat statistics | none | none |
+
+Decisions and boundaries:
+- `/v1/kernels` and `/v1/observability/metrics` are deliberately **API-only, no product
+  view** (product ruling). Documented here so their absence is not mistaken for a
+  missing backend capability.
+- `/v1/production/preflight` is the one endpoint intended to gain a console view. No
+  page exists yet. Not counted as a pass or a fail — it is simply not built.
+- **Contract debt (not a user-facing lie):** `contracts.ts` *declares*
+  `WorkflowsPayload` / `WorkflowSummary` (lines ~343–355) that **no page imports**.
+  The declared shapes correctly describe `/v1/workflows`, so nothing is false and
+  nothing renders it; the types are contract debt pending a decision on whether a
+  workflows view is wanted. They are left in place (deleting a correct type would
+  hide a real endpoint) rather than removed.
+
+> **Scanning note (method matters).** A first pass matched each endpoint's *last path
+> segment* anywhere in the source. That produced a **false negative** for
+> `/v1/kernels`: `Directory.tsx` has a local tab literal `useState<'kernels' | ...>`,
+> which the loose matcher read as "the frontend uses /v1/kernels". The corrected rule
+> requires the full `'/v1/...'` **API-call string**. A drift scanner that under-reports
+> is as dangerous as one that over-reports — it manufactures false comfort.
+
+> **NOT VERIFIED ≠ FAIL**, and **API-only ≠ broken**: these endpoints are real and
+> return 200. The honest statement is "no product view yet", not "the capability does
+> not exist".
+
+---
+
 ## EXTERNAL ACCEPTANCE READINESS
 
 What a capable host must have, and what lands where:
