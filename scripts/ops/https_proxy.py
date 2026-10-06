@@ -10,6 +10,21 @@
   手机端需先信任该证书（见交付说明），否则会报安全警告且安装提示不出现。
 
 不会改动 8099 进程；本代理停了，8099 的原生 HTTP 仍可用。
+
+证书路径解析顺序（跨平台，不再硬编码 Windows 路径）
+-------------------------------------------------
+1. ``LIUHAO_TLS_CERT`` / ``LIUHAO_TLS_KEY``：直接指定证书与私钥文件，优先级最高；
+2. 否则落到 ``<证书目录>/liuhao-local.pem`` 与 ``<证书目录>/liuhao-local.key``，
+   其中 ``<证书目录>`` 由 ``LIUHAO_TLS_CERT_DIR`` 指定；
+3. 否则默认 ``<系统临时目录>/liuhao-ui/certs``（``tempfile.gettempdir()``）。
+   此前默认值是硬编码的 ``D:/cache/temp/liuhao-ui/certs``，在 Ubuntu/CI 上必然
+   指向不存在的目录。
+
+未配置时的行为（fail-closed）
+----------------------------
+证书或私钥文件不存在时，``main()`` 打印缺失的具体路径并以退出码 **2** 结束，
+**不会**静默降级为明文 HTTP，也不会退化为「起了但不可用」。要生成证书请显式
+设置上述任一环境变量指向已签发的文件。
 """
 from __future__ import annotations
 
@@ -18,10 +33,16 @@ import os
 import ssl
 import socketserver
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
-DEFAULT_CERT_DIR = r"D:/cache/temp/liuhao-ui/certs"
+# Cross-platform default (see module docstring). Overridable via
+# LIUHAO_TLS_CERT_DIR; individual files overridable via LIUHAO_TLS_CERT / _KEY.
+DEFAULT_CERT_DIR = os.environ.get(
+    "LIUHAO_TLS_CERT_DIR",
+    os.path.join(tempfile.gettempdir(), "liuhao-ui", "certs"),
+)
 BACKEND_HOST = os.environ.get("LIUHAO_PROXY_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("LIUHAO_PROXY_BACKEND_PORT", "8099"))
 LISTEN_PORT = int(os.environ.get("LIUHAO_TLS_PORT", "8443"))
