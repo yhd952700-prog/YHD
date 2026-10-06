@@ -24,12 +24,25 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import os
 import pathlib
 import sys
+import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 sys.path.insert(0, str(REPO_ROOT))
+
+# --- audit-store isolation (honors ③ fail-closed, never touches frozen store) ---
+# Step [5] invokes real @kernel_action probes that write to the audit trail. The
+# frozen HC-01 evidence store (repo-root audit_store.db) MUST NOT be written by a
+# verification script, and ③ fail-closed makes AuditStore() refuse to default to
+# it when AUDIT_DB_PATH is unset -- which would crash this script at step 5
+# (before it can reach the honest L154 result) if run in an env that does not
+# pre-set AUDIT_DB_PATH. Redirect to an isolated temp db so the script is
+# self-contained; respect an externally-provided value if one is already set.
+_PROBE_DB = os.path.join(tempfile.gettempdir(), f"d8_risk_probe_{os.getpid()}.sqlite")
+os.environ.setdefault("AUDIT_DB_PATH", _PROBE_DB)
 
 failures: list[str] = []
 
@@ -183,6 +196,8 @@ print()
 print("=" * 72)
 print("[5] decorator feeds the real risk_level into the audit trail")
 print("=" * 72)
+print(f"  audit-store isolation: AUDIT_DB_PATH={os.environ.get('AUDIT_DB_PATH')} "
+      f"(must NOT be the frozen repo-root audit_store.db)")
 
 from src.kernels._crosscutting import kernel_action  # noqa: E402
 
