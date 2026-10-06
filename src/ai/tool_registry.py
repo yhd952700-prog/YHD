@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..kernels.execution import ActionResult
 from .observability import observe
@@ -133,9 +133,24 @@ class ToolRegistry:
                                 error=f"tool {tool_id} is not active")
         try:
             output = tool.fn(**inputs)
-            return ActionResult(action_id=tool_id, success=True, output=output)
         except Exception as exc:  # noqa: BLE001 - surface as failed action
             return ActionResult(action_id=tool_id, success=False, error=str(exc))
+        # In-band rejection: several tools (notably ``python_compute`` and
+        # ``file_write``) report a refusal by RETURNING
+        # ``{"success": False, "status": "rejected", "error": ...}`` instead of
+        # raising. Wrapping that in ``ActionResult(success=True)`` is a silent
+        # success: the tool explicitly said it refused, yet the registry would
+        # record a successful action and only a downstream verifier would
+        # happen to notice. Propagate the tool's own verdict honestly so the
+        # failure cannot be mistaken for success.
+        #
+        # Conservative: only an explicit ``False`` counts (not any falsy value),
+        # so a tool that merely omits ``success`` is still treated as success.
+        if isinstance(output, Mapping) and output.get("success", True) is False:
+            reason = output.get("error") or output.get("status") or "tool reported failure"
+            return ActionResult(action_id=tool_id, success=False,
+                                error=str(reason), output=output)
+        return ActionResult(action_id=tool_id, success=True, output=output)
 
 
 class ToolRouter:
