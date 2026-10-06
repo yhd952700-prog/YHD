@@ -70,9 +70,14 @@ def _code_only(text: str) -> str:
     一个不剥注释的"不该出现 JSON.stringify"断言，会把这段**必须保留的缺陷说明**
     判成违规。于是守卫自己产生了假红 —— 那比没有守卫更糟，因为它会诱导人把正确的
     注释删掉来"修复"测试。所有"不该出现 X"的断言都必须走这里。
+
+    **顺序必须是「先行注释、后块注释」**（第二次栽在同一处才补上这条）。仓库里有
+    ``// 审计链：后端 `/v1/audit/*` ...`` 这样的行注释，其中 ``/*`` 是孤立片段：
+    若先剥块注释，正则会一路配到几百字符外某个**真正的** ``*/``，把中间的活代码
+    一起吞掉，读起来就像"功能没写"而实际是解析器吃错了。先剥行注释即切断配对。
     """
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"^\s*//.*$", "", text, flags=re.M)
+    text = re.sub(r"^\s*//.*$", "", text, flags=re.M)
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 
 
 class TestErrorMessageIsWiredAndTraceable:

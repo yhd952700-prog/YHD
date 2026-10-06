@@ -27,6 +27,7 @@ import {
   IconShield,
   IconTrust,
   IconWorkbench,
+  IconServer,
 } from '../components/icons'
 
 export interface NavItem {
@@ -65,6 +66,9 @@ export const GOVERNANCE_NAV: NavItem[] = [
   // 工作区文件：AI 员工经 file_write 写出的产物，此前没有任何页面让人浏览/读取。
   { key: 'files', label: '工作区文件', icon: IconFiles },
   { key: 'status', label: '系统状态', icon: IconActivity },
+  // 生产预检：`/v1/production/preflight` 此前真实可用但界面上无入口，
+  // 一份算好的"能不能上生产"从未递到人眼前。只读，不含任何配置值。
+  { key: 'preflight', label: '生产预检', icon: IconServer },
 ]
 
 export const FOOTER_NAV: NavItem[] = [{ key: 'settings', label: '系统设置', icon: IconSettings }]

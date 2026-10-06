@@ -352,3 +352,35 @@ export interface WorkflowsPayload {
   workflows: WorkflowSummary[]
   count: number
 }
+
+/** `/v1/production/preflight` 的单条配置发现。
+ *
+ * 后端 `ConfigFinding.to_dict()`（`src/observability/production.py`）逐字对应。
+ * `severity` 只有两种取值：`critical` / `warning` —— 这不是自由文本，后端用它
+ * 统计 `critical_count` / `warning_count`，所以前端也按这两个值分色，不猜。
+ */
+export interface PreflightFinding {
+  /** 被检查的环境变量名，例如 `SECRET_KEY`。 */
+  key: string
+  severity: 'critical' | 'warning' | string
+  /** 机器可读判据，例如 `secret_key_missing`。 */
+  code: string
+  /** 给人看的中文说明，后端原文。 */
+  message: string
+}
+
+/** `/v1/production/preflight` 的响应（`PreflightReport.to_dict()`）。
+ *
+ * 端点受 `require_human_principal` 保护：令牌必须带 `sub`，否则 401。
+ * **报告只含键名 / 代码 / 严重级别，绝不含任何配置值** —— 前端因此不需要
+ * （也不允许）在这里"顺手显示一下密钥"。
+ */
+export interface PreflightPayload {
+  /** 无 critical 即通过。等价于 `critical_count === 0`，不是独立判据。 */
+  ok: boolean
+  /** `APP_ENV` 原值；空串表示未声明，**不等于** production。 */
+  app_env: string
+  critical_count: number
+  warning_count: number
+  findings: PreflightFinding[]
+}

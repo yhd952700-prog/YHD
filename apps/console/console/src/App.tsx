@@ -61,6 +61,7 @@ import { Network } from './pages/Network'
 import { Identity } from './pages/Identity'
 import { BusinessCenter, KnowledgeCenter, Roster } from './pages/Directory'
 import { DataCenter, SystemStatus } from './pages/Operations'
+import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
 import { Workbench } from './pages/Workbench'
 
@@ -94,6 +95,10 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   network: { title: '网络', sub: '网络总线真实状态（只读）—— 统计 / 消息历史' },
   identity: { title: '身份与权限', sub: '真实身份与权限清单（只读，可观测）' },
   status: { title: '系统状态', sub: '依赖探针与安全组件实况' },
+  preflight: {
+    title: '生产预检',
+    sub: '真实配置预检结果 —— 只读，不含任何配置值',
+  },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
 }
 
@@ -519,6 +524,7 @@ function App() {
       {active === 'network' && <Network query={query} />}
       {active === 'identity' && <Identity query={query} />}
       {active === 'status' && <SystemStatus />}
+      {active === 'preflight' && <Preflight />}
       {active === 'settings' && (
         <Settings
           device={device}
