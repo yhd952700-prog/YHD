@@ -400,9 +400,7 @@ async def readiness_probe(request: Request) -> JSONResponse:
         errors.append(f"Executor Fence: {str(e)}")
         checks["executor_fence"] = {"status": "unhealthy", "error": str(e)}
 
-    
-
-# Honest provider-mode surfacing (MOCK vs REAL). This is a *config* state,
+    # Honest provider-mode surfacing (MOCK vs REAL). This is a *config* state,
     # not a fault, so it is reported as healthy; the mode itself ("mock"/"real")
     # tells operators whether executions are real or a dev default. Never
     # silently fakes a simulation as real.
@@ -412,6 +410,43 @@ async def readiness_probe(request: Request) -> JSONResponse:
         checks["ai_provider"] = {"status": "healthy", **ai_provider_status()}
     except Exception as e:  # pragma: no cover - defensive
         checks["ai_provider"] = {"status": "unhealthy", "error": str(e)}
+
+    # C-2 arming self-check (security domain owns the DECISION, this is wiring).
+    #
+    # C-2 -- the blocking gate for HIGH/CRITICAL kernel actions -- is armed by a
+    # single control point (LIUHAO_KERNEL_POLICY_ENFORCE; docker-compose.prod.yml
+    # sets CRITICAL per D24), while production decoration points pass
+    # enforce=False (C-4 single-control-point design, correct). The cost is that
+    # nothing in-process asserted the gate is REALLY armed: blank the variable and
+    # the defence silently degrades to record-only while every other signal stays
+    # green (silent fail-open).
+    #
+    # We deliberately CONSUME src.security.c2_arming (the single source of truth)
+    # rather than re-deriving the verdict here: two truths drift, and the stale one
+    # silently yields a wrong security call. TestWiringContract in
+    # tests/gateway/test_c2_arming_visibility.py enforces that.
+    #
+    # to_check() already carries a "status" field, so an arming mismatch
+    # (UNARMED_PRODUCTION / INVALID_SPEC -> "degraded") flows into the existing
+    # checks -> overall_status -> HTTP 503 path below with no extra state logic.
+    # Unarmed NON-production stays healthy + a note (a deliberate config choice,
+    # not a fault) so operators are not trained to ignore this check.
+    try:
+        from ..security.c2_arming import c2_arming_verdict_from_env
+
+        verdict = c2_arming_verdict_from_env()
+        checks["kernel_policy_enforcement"] = verdict.to_check()
+        line = verdict.to_error_line()
+        if line:
+            errors.append(line)
+    except Exception as e:  # pragma: no cover - defensive
+        # Fail LOUD, not open: if the arming self-check cannot run we cannot
+        # claim the sovereignty gate is armed.
+        checks["kernel_policy_enforcement"] = {
+            "status": "unhealthy",
+            "error": f"C-2 arming self-check failed: {str(e)}",
+        }
+        errors.append(f"Kernel Policy Enforcement: arming self-check error: {str(e)}")
 
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
