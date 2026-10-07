@@ -191,7 +191,16 @@ def _goals_for_project(project_id: str) -> List[Dict[str, Any]]:
     summaries = []
     for item in items:
         tasks = item.get("tasks", []) or []
-        completed = sum(1 for t in tasks if t.get("status") == "completed")
+        # ARM1 decision (A): a ``completed_unattributed`` task DID complete -- only
+        # its agent attribution could not be established. This reads the same
+        # ``AIStateManager._goals`` task list as ``ai_management.list_goals``, so
+        # the two counters must agree; counting it as anything other than
+        # completed would under-report real finished work here while the goals
+        # endpoint reports it.
+        completed = sum(
+            1 for t in tasks
+            if t.get("status") in ("completed", "completed_unattributed")
+        )
         failed = sum(1 for t in tasks if t.get("status") == "failed")
         summaries.append({
             "goal_id": item["goal_id"],
