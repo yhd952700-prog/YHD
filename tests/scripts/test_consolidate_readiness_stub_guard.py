@@ -18,7 +18,9 @@ stub evidence" would be an assertion nobody can check.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 
 import pytest
@@ -27,6 +29,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _SCRIPT = (
     _REPO_ROOT / "eap" / "05-final-readiness-battery" / "consolidate_readiness.py"
 )
+_READINESS_PRODUCER = _REPO_ROOT / "scripts" / "verify_readiness.py"
 
 
 def _load():
@@ -129,21 +132,51 @@ def test_real_check_list_shape_is_unaaffected() -> None:
     ) == FAIL
 
 
-def test_real_repo_evidence_files_are_not_newly_rejected() -> None:
-    """No false red on the evidence files that actually exist in this repo.
+def _regenerate_canonical_report(dest_dir: pathlib.Path) -> pathlib.Path:
+    """Produce the canonical readiness report with the REAL producer.
 
-    If any shipped evidence document regressed from PASS to UNVERIFIED, this
-    module would be manufacturing a red in order to prevent a green -- which is
-    the same dishonesty in the other direction.
+    ``scripts/readiness_report.json`` is a RUN ARTIFACT: ``verify_readiness.py``
+    regenerates it every run and it is gitignored (it embeds ``generated_at``,
+    the interpreter and profile-dependent gate outcomes, so a checked-in copy
+    reads as current evidence when it is not). A clean checkout therefore ships
+    no such file *on purpose*, and this test must not smuggle one back in.
+    Instead we run the real producer's cheapest check-set -- redirected into
+    ``dest_dir`` so nothing is written into the repo tree -- and classify the
+    report it actually emits.
     """
-    candidates = sorted(_REPO_ROOT.glob("scripts/*readiness*.json"))
-    candidates += sorted(_REPO_ROOT.glob("scripts/*evidence*.json"))
-    assert candidates, "no evidence documents found; the fixture set has moved"
-    for path in candidates:
-        data, reason = MODULE.load_evidence(path)
-        assert data is not None, (path, reason)
-        status = MODULE.classify_check(data, reason)[0]
-        assert status != FAIL, (
-            "%s classified as FAIL purely from its file contents -- the stub "
-            "guard must never convert a shipped document into a failure" % path
-        )
+    spec = importlib.util.spec_from_file_location(
+        "verify_readiness_under_test", _READINESS_PRODUCER
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.SCRIPTS = dest_dir  # redirect the report out of the repo tree
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            module.main(["--only", "C10"])
+        except SystemExit:
+            pass
+    report = dest_dir / "readiness_report.json"
+    assert report.is_file(), "the producer did not write a report"
+    return report
+
+
+def test_real_gate_report_is_not_newly_rejected(tmp_path: pathlib.Path) -> None:
+    """No false red on a real gate's own report.
+
+    If the guard turned a real evidence document into FAIL, it would be
+    manufacturing a red in order to prevent a green -- the same dishonesty in
+    the other direction. The producer's report is the canonical such document;
+    proving it classifies to anything-but-FAIL anchors the guard to a real
+    gate's output instead of to a committed fixture that must not exist.
+    """
+    report = _regenerate_canonical_report(tmp_path)
+    data, reason = MODULE.load_evidence(report)
+    assert data is not None, (report, reason)
+    # The producer's real schema, not a toy shape.
+    assert "conditions" in data and "counts" in data, sorted(data)
+    status = MODULE.classify_check(data, reason)[0]
+    assert status != FAIL, (
+        "%s classified as FAIL purely from its file contents -- the stub "
+        "guard must never convert a real gate report into a failure" % report
+    )
