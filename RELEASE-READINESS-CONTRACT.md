@@ -150,9 +150,19 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 
 ---
 
-## Current recorded status (2026-09-29, baseline)
+## Recorded status — 2026-09-29 baseline snapshot (SUPERSEDED — NOT current)
 
-| ID | Condition | Recorded status |
+> **Do not read this table as the current verdict.** It is the historical
+> 2026-09-29 baseline, preserved verbatim. Its "Recorded status" column was
+> accurate *when written* and has since been superseded as gates were verified
+> (see the *Current verdict* line below and `MASTER_PROJECT_READINESS.md`). The
+> authoritative current verdict is always the regenerated
+> `scripts/readiness_report.json` — a run artifact; regenerate it, never trust a
+> copy. Labeling this snapshot "current" would itself be a stale-as-current
+> false claim (the exact defect class tracked in
+> `docs/governance/CONTROL-CLAIM-LEDGER.md`).
+
+| ID | Condition | Recorded status (2026-09-29) |
 |----|-----------|----------------|
 | C1 | Build passes | NOT VERIFIED |
 | C2 | Clean-env runnable | NOT VERIFIED |
@@ -167,6 +177,14 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 | C11 | HC-01 real verification | BLOCKED (human decision pending; isolated) |
 | C12 | No unexplained major failures | NOT VERIFIED |
 
-**Overall: NOT RELEASE READY** — gated by NOT VERIFIED on C1–C10 and BLOCKED on C11. No `FAIL`
-recorded. Engineering-critical blockers: none (HC-01 is frozen & isolated, not an engineering
-failure).
+**Overall (2026-09-29 baseline): NOT RELEASE READY** — at that date the verdict was gated by
+`NOT VERIFIED` on C1–C10 and `BLOCKED` on C11. No `FAIL` was recorded.
+
+**Current verdict (supersedes the 2026-09-29 table above):** `release_ready = false`, unchanged.
+The authoritative machine verdict recorded in `MASTER_PROJECT_READINESS.md` (run **2026-10-01**) is
+**PASS = 9, FAIL = 0, BLOCKED = 1 (C11 / HC-01), NOT VERIFIED = 2 (C3 / C12)** — i.e. most gates
+that read `NOT VERIFIED` in the historical table have since been verified, and the only release
+gates not at `PASS` are C11 (HC-01: a frozen human-sovereignty decision, `GO = BLOCKED`) plus
+C3/C12. Engineering-critical blockers: none (HC-01 is frozen & isolated, not an engineering
+failure). This contract does not restate a "current" per-gate table on purpose — regenerate
+`scripts/readiness_report.json` for the machine verdict.
