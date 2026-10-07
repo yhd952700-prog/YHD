@@ -28,8 +28,12 @@ The default (unset) is explicit and auditable: the script ALWAYS prints what
 was decided and from which value. There is no hidden "maybe" state.
 
 This is an OPERATIONAL safeguard, not a security boundary (per ADR-HOLD-SCOPE
-section 2.4). It complements -- never replaces -- the code-level freeze and the
-human_sovereignty_override channel.
+section 2.4). It is the ONLY machine enforcement of the freeze, and it does NOT
+complement a code-level freeze: no `src/` code reads `LIUHAO_HOLD`, so there is
+no code path that would refuse work on its own (that claim was withdrawn -- see
+docs/governance/CONTROL-CLAIM-LEDGER.md and commit 6922c8a5). Nor does this
+script read the `human_sovereignty_override` channel, so it cannot attest to
+it: the exit code below speaks only to the value of `LIUHAO_HOLD`.
 
 Dependency surface: standard library only (os, sys).
 
