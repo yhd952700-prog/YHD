@@ -488,6 +488,20 @@ EXCLUDE_GLOBS = [
     # locator, not a tamper-proofness claim; the UNVERIFIED status is tracked
     # elsewhere (GOVERNANCE.md §7). Excluded to avoid a false positive.
     "docs/architecture/migration-matrix.md",
+    # The claim-correction ledger is the ADJUDICATION REGISTRY for claims: it
+    # must quote claim language (including the very tokens this rule flags --
+    # e.g. 证据级 as a severity-tier label in the §3 signal taxonomy) in order
+    # to DEFINE the criterion and RECORD already-adjudicated claims. Scanning it
+    # is guaranteed self-noise, not coverage. This is the SAME reason
+    # lint_control_claims.py already lists it in its own EXCLUDE_GLOBS; the two
+    # sibling guards wired into the one doc-lint job had drifted apart, and the
+    # asymmetry was invisible because the audit-claim step ran in changed-vs-HEAD
+    # mode, which scans 0 files on a clean checkout (see doc-lint.yml).
+    # Corrected 2026-10-07 (governance-legal); registered in the ledger's
+    # §2 更正登记表. Evidence before the fix: `--all` exited 1 with 3 HC-01-AUDIT
+    # findings, all in this ledger (lines 164/196/207). Locked by
+    # tests/scripts/test_lint_audit_claims_surface.py.
+    "docs/governance/CONTROL-CLAIM-LEDGER.md",
 ]
 
 # Outward-facing markdown surfaces OUTSIDE docs/ that are part of the repo's

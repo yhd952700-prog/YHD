@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -256,6 +257,55 @@ def test_existing_unverified_caveat_still_suppresses() -> None:
         "tamper-evident audit logging — runtime integrity currently UNVERIFIED, "
         "forked chain, pending F1-F6.\n"
     ) is False
+
+
+# --------------------------------------------------------------------------- #
+# The claim-correction ledger must be OUT of this scan (it is the adjudicator).
+# Corrected 2026-10-07 (governance-legal): registered in the ledger's
+# §2 更正登记表. Before the fix `--all` exited 1 with 3 HC-01-AUDIT findings,
+# all in docs/governance/CONTROL-CLAIM-LEDGER.md (lines 164/196/207, the token
+# 证据级 used as a severity-tier label, not a claim that LIUHAO's audit IS
+# evidence-grade). The ledger may not be scanned by the guard whose verdicts it
+# records -- the same reason lint_control_claims.py already excludes it.
+# --------------------------------------------------------------------------- #
+
+def test_control_claim_ledger_is_excluded_from_the_audit_claim_scan() -> None:
+    assert mod.is_excluded("docs/governance/CONTROL-CLAIM-LEDGER.md") is True
+    # Negative controls: ordinary documents must still be scanned.
+    assert mod.is_excluded("docs/README.md") is False
+    assert mod.is_excluded("README.md") is False
+
+
+def test_explicit_scan_of_the_ledger_reports_no_findings() -> None:
+    """Driver-level lock, so a collect_targets refactor cannot silently re-add it.
+
+    RED before the correction (3 HC-01-AUDIT findings / exit 1); GREEN after
+    (0 targets / exit 0).
+    """
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "docs/governance/CONTROL-CLAIM-LEDGER.md"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "0 markdown file(s)" in proc.stdout, proc.stdout
+
+
+def test_doc_lint_runs_the_audit_claim_guard_over_the_whole_tree() -> None:
+    """A changed-vs-HEAD run is a NO-OP on a clean CI checkout (``targets: 0``).
+
+    Observed on a clean worktree: mode ``CI/changed``, ``targets: 0``, PASS --
+    the step enforced nothing. It must therefore run ``--all``, mirroring the
+    control-claim step, or the guard is decorative in CI.
+    """
+    workflow = REPO_ROOT / ".github" / "workflows" / "doc-lint.yml"
+    text = workflow.read_text(encoding="utf-8")
+    assert "lint_audit_claims.py --all" in text, (
+        "the audit-claim CI step must run --all; a changed-vs-HEAD run scans 0 "
+        "files on a clean checkout and is a false green"
+    )
+    assert "lint_control_claims.py --all" in text, (
+        "the sibling control-claim step must keep running --all (regression guard)"
+    )
 
 
 def test_volatile_caveat_still_suppresses() -> None:
