@@ -95,7 +95,7 @@ This checklist must be completed before declaring the system production-ready.
 - [ ] Container images scanned and clean
 - [ ] Secrets rotation schedule implemented
 - [ ] Access control review completed
-- [ ] Audit logging tamper-proof verified
+- [ ] Audit logging integrity verified (⚠️ designed tamper-evident; runtime integrity currently UNVERIFIED — HC-01 master chain forked: 284 broken joins / 169 duplicate-seq rows, pending F1–F6 + independent verification. Do NOT assert "tamper-proof" or "true evidence source".)
 
 ## Production Launch Checklist
 
