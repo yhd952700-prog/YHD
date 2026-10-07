@@ -502,11 +502,20 @@ class AIStateManager:
             evaluation=None,
             trace=ExecutionTrace(correlation_id=prior_entry.get("correlation_id", "")),
             error=prior_entry.get("error"),
+            # Thread the STORED count into the prior so the runtime's own
+            # ``max_replans`` bound is enforced *through* the gateway. Without
+            # this the runtime always sees 0 and can never refuse a replan.
+            replan_count=prior_entry.get("replan_count", 0),
         )
         result = runtime.replan(prior, goal_text=prior_entry["natural_language"])
         entry = self._result_to_dict(result, prior_entry["natural_language"],
                                      prior_entry["scope"])
-        entry["replan_count"] = prior_entry.get("replan_count", 0) + 1
+        # ``replan_count`` is the runtime's AUTHORITATIVE count -- already carried
+        # by ``_result_to_dict`` from ``result.replan_count``. Never write the
+        # unconditional ``prior + 1`` here: when the runtime REFUSES the replan
+        # (it hit ``max_replans`` and returned ``prior`` unchanged) nothing
+        # re-ran, so counting one more is a quiet lie about how many times the
+        # goal actually re-ran.
         # Keep the project association across a replan (honest continuity).
         entry["project_id"] = prior_entry.get("project_id")
         with self._goal_lock:
