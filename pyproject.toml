@@ -138,6 +138,25 @@ ops = [
 google = [
     "google-generativeai>=0.3.0",
 ]
+# 数据库迁移工具 alembic。**可选**，且不进运行期依赖：全仓唯一消费者是
+# scripts/verify_deploy_readiness.py（迁移入口探测），src/ 下**没有任何模块**
+# import alembic（实测 grep：只有两处注释提到 migration），把它塞进运行期依赖
+# 会白白加重生产镜像和每个 CI job。
+#
+# 此前它**只**出现在 requirements.txt:15（alembic==1.19.2），而 CI 走
+# `pip install -e .[tests,etcd]` 根本不读 requirements.txt，于是 ci.yml 里有两处
+# 裸 `pip install alembic sqlalchemy` 兜底（不钉版本）。这是一个**脆弱契约**：
+# 声明面说没有这个依赖，真正在用它的人靠"记得手写一行 pip install"活着 ——
+# 任何新增需要 alembic 的 job 漏写那一行就会静默降级或失败，且报出来的错
+# （"No module named alembic.__main__"）看起来像 alembic 本身坏了，见
+# scripts/verify_deploy_readiness.py:111-137 那段探测注释。
+#
+# 版本：只设下界 1.19.2（与 requirements.txt 已锁定的解析结果相容；本机 .venv
+# 实测 1.20.0 同样满足）。刻意不钉上界 —— 钉死会在上游发新版时制造假红。
+# sqlalchemy 不需要在这里重复声明：它已是运行期依赖。
+migrations = [
+    "alembic>=1.19.2",
+]
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
