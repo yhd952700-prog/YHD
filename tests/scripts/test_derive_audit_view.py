@@ -9,7 +9,11 @@ Builds a SYNTHETIC in-memory SQLite database (never the real deployed
   * the tool is idempotent: running it twice on the same source produces
     byte-identical output;
   * the tool never writes back to (or reorders) the original — it only ever works
-    on an isolated ``.backup`` copy.
+    on an isolated ``.backup`` copy;
+  * the ``--allow-stale`` fail-closed contract (team-lead ruling A): a
+    pre-existing ``-wal``/``-shm`` sidecar makes the tool refuse by default,
+    proceeds only with the explicit flag, marks STALE in EVERY output document
+    in that mode, and leaves the ordinary (no-sidecar) path unperturbed.
 """
 from __future__ import annotations
 
@@ -226,3 +230,103 @@ def test_collision_group_sorting_is_deterministic(tmp_path: Path) -> None:
     for g in doc["collision_groups"]:
         ids = g["member_event_ids"]
         assert ids == sorted(ids), "collision group members not deterministically ordered"
+
+
+# ---------------------------------------------------------------------------
+# `--allow-stale` fail-closed contract (team-lead ruling A)
+#
+# The source is opened with immutable=1, which SKIPS the WAL. A pre-existing
+# -wal/-shm sidecar therefore means the view may silently MISS committed-but-
+# not-yet-checkpointed transactions -- a view that LOOKS complete but is not.
+# The tool must (i) refuse by default, (ii) proceed only with the explicit
+# --allow-stale opt-in AND mark STALE in EVERY output document, and (iii) leave
+# the ordinary (no-sidecar) path byte-for-byte unchanged.
+# ---------------------------------------------------------------------------
+
+def _make_pre_existing_sidecar(src: Path, suffix: str = "-wal") -> Path:
+    """Create an empty ``<db>-wal`` beside the source.
+
+    ``detect_pre_existing_sidecars`` is a pure directory listing, so the mere
+    PRESENCE of the file (whatever its bytes) is the signal under test.
+    """
+    side = src.with_name(src.name + suffix)
+    side.write_bytes(b"")
+    return side
+
+
+def test_no_sidecar_is_complete_and_carries_no_stale_marker(tmp_path: Path) -> None:
+    """(iii) No sidecar -> COMPLETE view; ordinary output is not perturbed.
+
+    Without -wal/-shm the derivation must behave as before: the summary says
+    COMPLETE, and NO stale marker leaks into any output document (so a normal
+    run stays byte-identical to the pre-change tool).
+    """
+    src = _make_synthetic_source(tmp_path)
+    out = tmp_path / "out"
+    rc = mod.main(["--source", str(src), "--out", str(out)])
+    assert rc == 0
+
+    summary = json.loads(
+        (out / mod.PARTITION_FILENAME).read_text(encoding="utf-8")
+    )["summary"]
+    assert summary["view_status"] == "COMPLETE"
+    assert summary["stale_reason"] is None
+    assert summary["pre_existing_sidecars"] == []
+
+    manifest = json.loads((out / mod.MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert "view_status" not in manifest
+    assert "STALE_WARNING" not in manifest
+    for line in (out / mod.RECORDS_FILENAME).read_text(encoding="utf-8").splitlines():
+        assert "view_status" not in json.loads(line)
+
+
+def test_pre_existing_sidecar_fails_closed_without_flag(tmp_path: Path) -> None:
+    """(i) Sidecar + NO flag -> fail closed (non-zero exit; no view written)."""
+    src = _make_synthetic_source(tmp_path)
+    _make_pre_existing_sidecar(src, "-wal")
+    out = tmp_path / "out"
+
+    # Function-level: the explicit fail-closed error is raised.
+    try:
+        mod.derive_audit_view(str(src), str(out))
+    except mod.StaleSourceError:
+        pass
+    else:  # pragma: no cover - only on regression
+        raise AssertionError("expected StaleSourceError (fail-closed) by default")
+
+    # CLI-level: main() reports the non-zero exit code.
+    rc = mod.main(["--source", str(src), "--out", str(out)])
+    assert rc != 0
+
+
+def test_allow_stale_flag_marks_every_output_document(tmp_path: Path) -> None:
+    """(ii) Sidecar + --allow-stale -> exit 0 AND the STALE marker is REAL.
+
+    The marker must be present in EVERY output document (MANIFEST(sha256),
+    audit_view_partition.json, audit_view_records.jsonl), not merely claimed in
+    a docstring.
+    """
+    src = _make_synthetic_source(tmp_path)
+    _make_pre_existing_sidecar(src, "-wal")
+    out = tmp_path / "out"
+
+    rc = mod.main(["--source", str(src), "--out", str(out), "--allow-stale"])
+    assert rc == 0
+
+    manifest = json.loads((out / mod.MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    assert manifest["view_status"] == "STALE_INCOMPLETE"
+    assert manifest["stale"] is True
+    assert manifest["stale_reason"]
+    assert manifest["STALE_WARNING"]
+
+    partition = json.loads(
+        (out / mod.PARTITION_FILENAME).read_text(encoding="utf-8")
+    )
+    assert partition["view_status"] == "STALE_INCOMPLETE"
+    assert partition["summary"]["view_status"] == "STALE_INCOMPLETE"
+    assert partition["summary"]["stale_reason"]
+
+    lines = (out / mod.RECORDS_FILENAME).read_text(encoding="utf-8").splitlines()
+    assert lines, "records stream must not be empty"
+    for line in lines:
+        assert json.loads(line)["view_status"] == "STALE_INCOMPLETE"

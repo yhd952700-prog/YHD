@@ -58,9 +58,20 @@ USAGE
 -----
     python scripts/derive_audit_view.py --source audit_store.db --out out_dir
 
-Exit code is 0 on a successful, safe derivation. The script never exits non-zero
-for *data* reasons (it is a reporter, not a gate); it only fails on operational
-errors (unreadable source, unwritable out dir).
+Exit code is 0 on a successful, safe derivation. The script fails (non-zero) on
+operational errors (unreadable source, unwritable out dir) AND -- importantly --
+it FAILS CLOSED when a ``-wal`` / ``-shm`` sidecar already sits beside the
+source. Reason: the source is opened with ``immutable=1`` (so this tool never
+creates sidecars itself), and an immutable read SKIPS the WAL -- so transactions
+that are committed but not yet checkpointed would be silently absent from the
+view. That yields something that LOOKS authoritative but is incomplete, which is
+the same class of failure as the original defect, so it is refused by default.
+
+``--allow-stale`` is the explicit opt-in to proceed anyway. In that mode EVERY
+output document is marked STALE / INCOMPLETE -- MANIFEST(sha256),
+audit_view_partition.json, and each line of audit_view_records.jsonl -- and a
+prominent CAVEAT is printed, so that no reader can mistake the view for a
+complete one.
 """
 from __future__ import annotations
 
@@ -226,8 +237,10 @@ def detect_pre_existing_sidecars(source_path: str) -> list[str]:
     :func:`backup_to_temp_copy`), which makes SQLite skip the WAL entirely and
     read only the main database file. If a ``-wal`` already exists, it may hold
     committed-but-not-yet-checkpointed transactions that this view would NOT
-    see. Rather than silently presenting a possibly-stale snapshot, the tool
-    records the fact so a reviewer can see the caveat. It never gates on it.
+    see. Rather than silently presenting a possibly-stale snapshot, the caller
+    :func:`derive_audit_view` FAILS CLOSED on this signal: it refuses to derive
+    unless the operator explicitly opts in with ``--allow-stale``, and in that
+    opt-in mode every output document is marked STALE / INCOMPLETE.
     """
     directory = os.path.dirname(os.path.abspath(source_path))
     base = os.path.basename(source_path)
@@ -237,6 +250,18 @@ def detect_pre_existing_sidecars(source_path: str) -> list[str]:
         name for name in os.listdir(directory)
         if name.startswith(base + "-") and name[len(base) + 1:] in ("wal", "shm")
     )
+
+
+class StaleSourceError(RuntimeError):
+    """Raised (fail-closed) when a -wal/-shm sidecar already sits beside the source.
+
+    The source is opened immutable=1, so an immutable read SKIPS the WAL. If a
+    ``-wal`` already exists, it can hold committed-but-not-checkpointed
+    transactions that this view would silently omit -- a view that LOOKS complete
+    but is not. The tool refuses by default (see the team-lead ruling: this is the
+    same class of failure as the original sidecar-creation defect). Use
+    ``--allow-stale`` to proceed anyway; the output is then marked STALE/INCOMPLETE.
+    """
 
 
 def backup_to_temp_copy(source_path: str) -> str:
@@ -413,22 +438,53 @@ def partition_intervals(sorted_records: list[dict]) -> tuple[list[dict], list[di
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def derive_audit_view(source_path: str, out_dir: str) -> dict:
+def derive_audit_view(source_path: str, out_dir: str, allow_stale: bool = False) -> dict:
     """Produce the derived audit view for ``source_path`` under ``out_dir``.
 
     Strictly read-only on ``source_path``: an isolated ``.backup`` copy is made
     and all work happens on the copy. Returns a summary dict.
+
+    ``allow_stale`` is the explicit opt-in to proceed when a ``-wal``/``-shm``
+    sidecar already sits beside the source (which would otherwise trigger a
+    fail-closed :class:`StaleSourceError`).
     """
     if not os.path.isfile(source_path):
         raise FileNotFoundError(f"source database not found: {source_path}")
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1b) Record any -wal / -shm sidecars ALREADY sitting beside the source
-    #     (pure directory listing; never opens or touches them). The source is
-    #     read with immutable=1, which skips the WAL, so a pre-existing -wal
-    #     could hold committed-but-not-yet-checkpointed transactions that this
-    #     view would NOT include. Recorded as a visible caveat, never a gate.
+    # 1b) Detect any -wal / -shm sidecars ALREADY beside the source (pure
+    #     directory listing; never opens or touches them). The source is read
+    #     with immutable=1, which skips the WAL, so a pre-existing -wal could
+    #     hold committed-but-not-yet-checkpointed transactions that this view
+    #     would NOT include.
     pre_existing_sidecars = detect_pre_existing_sidecars(source_path)
+
+    # FAIL-CLOSED (team-lead ruling): refuse to produce a view that LOOKS
+    # complete but is not. Unless the caller explicitly opts in with
+    # --allow-stale, we do not derive from a source that has uncheckpointed WAL.
+    if pre_existing_sidecars and not allow_stale:
+        raise StaleSourceError(
+            "refusing to derive: WAL/shm sidecar(s) present beside the source: "
+            f"{', '.join(pre_existing_sidecars)}.\n\n"
+            "A '-wal' file can hold transactions that are COMMITTED but NOT yet "
+            "CHECKPOINTED. This tool opens the source with immutable=1 (so it "
+            "never creates sidecars itself), and an immutable read SKIPS the WAL "
+            "-- so those transactions would be missing from this view, producing "
+            "something that looks complete but is not.\n\n"
+            "To proceed safely, either:\n"
+            "  * checkpoint the source first (PRAGMA wal_checkpoint(TRUNCATE)) "
+            "and re-run on the quiesced copy, or\n"
+            "  * derive from an already-quiescent snapshot, or\n"
+            "  * pass --allow-stale to knowingly accept a possibly-INCOMPLETE "
+            "view (it will be explicitly marked STALE / INCOMPLETE)."
+        )
+    stale = bool(pre_existing_sidecars) and allow_stale
+    view_status = "STALE_INCOMPLETE" if stale else "COMPLETE"
+    stale_reason = (
+        "derived from a source that had a -wal/-shm sidecar, with "
+        "--allow-stale; WAL content excluded."
+        if stale else None
+    )
 
     # 1) Anchor the original via its byte-level sha256 (read-only).
     original_sha256, original_size = compute_file_sha256(source_path)
@@ -506,6 +562,9 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         "intervals_total": len(intervals),
         "order_provable_intervals": sum(1 for iv in intervals if iv["kind"] == "order_provable"),
         "position_unprovable_intervals": sum(1 for iv in intervals if iv["kind"] == "position_unprovable"),
+        "view_status": view_status,
+        "pre_existing_sidecars": pre_existing_sidecars,
+        "stale_reason": stale_reason,
     }
 
     # Always report the delta as a FINDING (read-only; never a gate / never hides
@@ -549,6 +608,14 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         "collision_groups": collision_groups,
         "intervals": intervals,
     }
+    # A STALE view must be unmistakable at the TOP LEVEL of this document (not
+    # only buried in the summary), so no reader can mistake it for a complete
+    # view. Added ONLY in stale mode: the ordinary path stays byte-identical.
+    if stale:
+        partition_doc["view_status"] = view_status
+        partition_doc["stale"] = True
+        partition_doc["stale_reason"] = stale_reason
+        partition_doc["pre_existing_sidecars"] = pre_existing_sidecars
 
     # 4) Write deterministic outputs (no wall-clock => idempotent).
     manifest_path = os.path.join(out_dir, MANIFEST_FILENAME)
@@ -582,6 +649,21 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
         "tool": TOOL_NAME,
         "tool_version": TOOL_VERSION,
     }
+    # Make the module docstring's promise REAL: in --allow-stale mode the
+    # MANIFEST(sha256) itself carries the STALE / INCOMPLETE marker (the earlier
+    # WIP documented this but left the manifest without it). Conditional so the
+    # ordinary no-flag path is byte-identical to before.
+    if stale:
+        manifest_doc["view_status"] = view_status
+        manifest_doc["stale"] = True
+        manifest_doc["stale_reason"] = stale_reason
+        manifest_doc["STALE_WARNING"] = (
+            "THIS VIEW IS STALE / INCOMPLETE. It was derived from a source that "
+            "had a -wal/-shm sidecar present and --allow-stale was passed. The "
+            "immutable=1 read SKIPS the WAL, so transactions that are COMMITTED "
+            "but NOT yet CHECKPOINTED are MISSING from this view. Do NOT treat it "
+            "as a complete view; re-derive from a quiesced snapshot instead."
+        )
 
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest_doc, fh, sort_keys=True, indent=2)
@@ -609,6 +691,11 @@ def derive_audit_view(source_path: str, out_dir: str) -> dict:
                 "collision_group_id": r.get("collision_group_id"),
                 "derived_chain_prev_hash": r.get("derived_chain_prev_hash"),
             }
+            # In stale mode every record line carries the marker too, so even a
+            # consumer that reads ONLY the records stream cannot mistake it for a
+            # complete view. Omitted in the ordinary path (byte-identical).
+            if stale:
+                out["view_status"] = view_status
             fh.write(_canon(out) + "\n")
 
     return {
@@ -638,10 +725,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Output directory for MANIFEST(sha256) and the derived view files. "
              "(default: %(default)s)",
     )
+    parser.add_argument(
+        "--allow-stale",
+        action="store_true",
+        help="Proceed even when a -wal/-shm sidecar already sits beside the "
+             "source. The source is read with immutable=1 (which skips the WAL), "
+             "so such a view may MISS committed-but-not-yet-checkpointed "
+             "transactions. By default this tool FAILS CLOSED; with this flag it "
+             "proceeds and every output document is explicitly marked "
+             "STALE / INCOMPLETE.",
+    )
     args = parser.parse_args(argv)
 
     try:
-        result = derive_audit_view(args.source, args.out)
+        result = derive_audit_view(args.source, args.out, allow_stale=args.allow_stale)
     except Exception as exc:  # operational errors only; never data-gated
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -659,10 +756,18 @@ def main(argv: list[str] | None = None) -> int:
           f"snapshot={s['live_snapshot_time']}")
     if "FINDING_critical_sovereignty_collision_groups" in s:
         print(f"  FINDING: {s['FINDING_critical_sovereignty_collision_groups']}")
-    if result.get("pre_existing_sidecars"):
-        print(f"  CAVEAT: pre-existing sidecars beside the source: "
-              f"{result['pre_existing_sidecars']} -- the immutable read skips the "
-              f"WAL, so not-yet-checkpointed transactions are NOT in this view.")
+    if s.get("view_status") == "STALE_INCOMPLETE":
+        bar = "!" * 72
+        print(f"  {bar}")
+        print("  !!! STALE / INCOMPLETE VIEW (--allow-stale) !!!")
+        print(f"  !!! pre-existing sidecar(s) beside the source: "
+              f"{result['pre_existing_sidecars']}")
+        print("  !!! The immutable=1 read SKIPS the WAL, so committed-but-not-"
+              "yet-checkpointed")
+        print("  !!! transactions are NOT in this view. Do NOT treat it as "
+              "complete;")
+        print("  !!! every output document carries a STALE marker.")
+        print(f"  {bar}")
     print(f"  wrote: {result['manifest_path']}")
     print(f"         {result['partition_path']}")
     print(f"         {result['records_path']}")
