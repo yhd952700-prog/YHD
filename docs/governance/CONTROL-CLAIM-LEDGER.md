@@ -237,16 +237,17 @@ costs: it teaches people to ignore the line."（该 commit 信息还自纠了一
 | 5 | `main.py:325-360` **假失败**（INFO 未打印 + 假 ERROR，实已启动） | 假失败 | `1bc3418e` 改调用（模块级函数） | 行为测试**双向锁**（真 raise 必出且 app.state 无 checkpointer） |
 | 6 | preflight docstring 伪证（断言某变异仍绿灯，实测为假） | 假声明 | `652e9a09` 删假证据、改**构造反例**并明写"并非真实历史" | 反例可测；**docstring 历史断言靠人工** |
 | 7 | `scripts/readiness_report.json` 陈旧证据 | 假声明（陈旧当当前） | `189144ac` 移出跟踪（`.gitignore:130`） | 门禁（生成物不入库）；**10-04 的 `PASS=6` 副本从未提交、永久丢失** |
-| 8 | `verify_readiness.py:163/263` 依赖 `--timeout`，`pytest-timeout` **全仓未声明**；合法与否**取决于哪个解释器**跑它 | 未执行被洗成 NOT VERIFIED | 声明依赖（或改调用） | 门禁（依赖声明面 ↔ CLI 参数一致）；**该门禁现只查 fakeredis/lupa，此处是已知缺口** |
+| 8 | `verify_readiness.py` 的 C3/C6 依赖 `--timeout`；合法与否**取决于哪个解释器**跑它。声明面**已补**（`pyproject.toml:115` `[tests]` = `pytest-timeout>=2.3.0`，by `938b59fd`） | 未执行被洗成 NOT VERIFIED（**已由 `938b59fd` 改为独立 `ERROR`/exit 2**） | 声明依赖（**已完成 `938b59fd`**） | 门禁（依赖声明面 ↔ CLI 参数一致）；**该门禁仍缺**——`verify_dependency_declaration_surface` 现只查 `fakeredis/lupa`，**不查 `--timeout`** |
 
-**案例 8 亲验修正（三解释器实测，比原措辞更准）**：`scripts/verify_readiness.py` 的关键子进程**全部走
-`sys.executable`**（`:86/:99/:124/:139/:162/:231/:262/:337/:419/:554`），而 `pytest-timeout` **全仓从未声明**
-（`pyproject.toml` / `requirements*.txt` / workflows 全空）。⇒ `--timeout` 是否合法参数**取决于用哪个解释器跑它**。
-本机实测三例：① 仓库自带 `.venv`（Python **3.12.14**）：`pytest_timeout` **不存在**（`import` → ModuleNotFoundError）
-→ `--timeout` **unrecognized** → **EXIT=4**；② 受管 venv `…/envs/default`（Python **3.13.14**）：`pytest_timeout 2.4.0`
-**已装** → `--timeout` **合法**（实测 6 collected / EXIT=0）；③ 被移出跟踪的 `readiness_report.json` 记
-`environment.python = 3.13.14`（`generated_at 2026-10-01`）。**同一份代码、同一台机器，"三个解释器、两种结果"——
-这是环境抽签，不是稳定能力**；比我原话"既未声明也未安装"与团队负责人原话"本机装了"都更准。
+**案例 8 亲验修正（两环境实测；2026-10-07 更正计数过读）**：`scripts/verify_readiness.py` 的关键子进程**全部走
+`sys.executable`**，⇒ `--timeout` 是否合法参数**取决于用哪个解释器跑它**。全机实测**两个环境、两种结果**：
+① **仓库自带 venv** `D:\LiuHao-AI-OS\.venv`（Python **3.12.14**）：`pytest_timeout` **不存在**（`import` → ModuleNotFoundError）
+→ `--timeout` **unrecognized** → **EXIT=4**；② **受管 venv** `C:\Users\Administrator\.workbuddy\binaries\python\envs\default`
+（Python **3.13.14**）：`pytest_timeout 2.4.0` **已装** → `--timeout` **合法**（实测 6 collected / EXIT=0）。
+（`envs/` 下 `find` 仅 `default` 一个 ⇒ 全机**两环境**。）
+**更正：本段此前写"三个解释器、两种结果"是计数过读**——把被移出跟踪的 `readiness_report.json` 里
+`environment.python = 3.13.14` 误当第三个，而**它就是环境②自己**（详见 §2 更正登记表第 1 行）。**结论不变**：
+这是**环境抽签，不是稳定能力**；声明面已由 `938b59fd` 补上（`pyproject.toml:115`），**门禁面仍缺**（见上表）。
 
 **（防回退）不得据路径名推断版本**：② 的受管 venv 实测 `-V` → **Python 3.13.14**，但其**目录名**为
 `…/binaries/python/versions/3.13.12/`（`python.exe -V` 亦 3.13.14；`pyvenv.cfg` 记 `version = 3.13.14`，
