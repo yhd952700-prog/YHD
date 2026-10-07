@@ -94,6 +94,57 @@ def load_evidence(path: Path | None) -> tuple[dict | None, str]:
         return None, f"evidence file unreadable ({exc.__class__.__name__}: {exc})"
 
 
+#: Fields that identify WHICH script produced an evidence document.
+_PRODUCER_KEYS = ("generated_by", "produced_by", "producer", "gate", "script",
+                  "source")
+#: Fields carrying the producer's process exit status.
+_EXIT_KEYS = ("exit_code", "exitcode", "returncode", "rc")
+
+
+def _provenance_attested(data: dict) -> tuple[bool, str]:
+    """Is this document provably written by a gate script that exited 0?
+
+    A bare ``{"status": "PASS"}`` is exactly the shape a CI wrapper produces if
+    it swallows a gate's non-zero exit and writes a placeholder, and it is also
+    the shape anyone can hand-edit. Trusting it would let a stub mint a
+    ``RELEASE READY`` -- the same "trust the script's own report" failure that
+    CRITICAL-5 exists to prevent, one layer up.
+
+    So a scalar PASS is accepted only when the document names the script that
+    produced it AND records that the script exited 0.
+    """
+    producer = None
+    for key in _PRODUCER_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            producer = value.strip()
+            break
+    if producer is None:
+        return False, (
+            "no producer field (%s) -- the document does not say which script "
+            "wrote it" % "/".join(_PRODUCER_KEYS)
+        )
+    if not producer.endswith(".py"):
+        return False, "producer %r is not a .py script" % producer
+
+    exit_code = None
+    for key in _EXIT_KEYS:
+        if key in data:
+            exit_code = data[key]
+            break
+    if exit_code is None:
+        return False, (
+            "producer %r is named but no exit status is recorded (%s) -- a gate "
+            "that does not report how it exited cannot prove it passed"
+            % (producer, "/".join(_EXIT_KEYS))
+        )
+    if isinstance(exit_code, bool) or not isinstance(exit_code, (int, float)):
+        return False, "exit status %r is not numeric" % (exit_code,)
+    if int(exit_code) != 0:
+        return False, "producer %r reported non-zero exit %s" % (producer, exit_code)
+    return True, "produced by %s with exit 0" % producer
+
+
 def classify_check(data: dict | None, reason: str) -> tuple[str, str, list[str]]:
     """Return (status, human_reason, detail_lines) for one evidence document."""
     if data is None:
@@ -131,6 +182,20 @@ def classify_check(data: dict | None, reason: str) -> tuple[str, str, list[str]]
         if key in data and isinstance(data[key], (str, int, float)):
             st = _classify_status(data[key])
             details.append(f"  - {key} = {data[key]!r} -> {st}")
+            # Only a PASS can mint trust, so only a PASS has to prove its
+            # provenance. A document reporting FAIL or NOT_VERIFIED is already
+            # withholding trust; demanding attestation there would turn an
+            # honest failure into an argument about metadata.
+            if st == PASS:
+                ok, why = _provenance_attested(data)
+                if not ok:
+                    details.append(f"  - provenance: REJECTED -- {why}")
+                    return (UNVERIFIED,
+                            "evidence claims PASS but its provenance is not "
+                            "attested (" + why + ") -- an unattributed scalar "
+                            "verdict cannot mint a pass",
+                            details)
+                details.append(f"  - provenance: {why}")
             msg = "evidence reports " + st
             return st, msg, details
 
