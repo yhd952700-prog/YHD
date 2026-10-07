@@ -10,6 +10,13 @@ plus the two path filters (`scripts/lint_control_claims.py`,
 `scripts/control_claim_baseline.txt`). Wiring rule: this is a *claim-guard*, not
 a gate to widen — **do NOT expand its scan surface to make it "look broader";
 fix the product instead.**
+**Deliberate deviation from precedent:** the `lint_audit_claims.py` precedent
+lists only the linter script in `paths`; this guard ALSO lists its baseline
+(`scripts/control_claim_baseline.txt`). Reason: the baseline is the guard's
+first-class input — a PR that *only* loosens the baseline (widening/emptying the
+ratchet) without touching any doc would otherwise not trigger the job and could
+bypass the guard silently. Listing it closes the one channel that can quietly
+weaken this guard. (Recorded so it is not mistaken for a copy-paste omission.)
 
 ## The criterion (three-state; NEVER two-state)
 
@@ -33,6 +40,18 @@ the guard only forbids leaving an assertive claim **un-dispositioned**.
 **Cross-layer rule:** a claim about *another layer's* behaviour ("the backend
 will send X", "CI enforces Y", "the server rejects Z") needs the basis on
 **that layer's** artefact. One side alone = a false guarantee.
+
+**Basis-pointer rule (reachability, not existence):** a basis pointer to a commit
+must be verified **reachable** from the current branch — `git merge-base
+--is-ancestor <sha> HEAD` (exit 0) or `git rev-list HEAD | grep -c ^<sha>` = 1 —
+not merely **present** as a git object. A history rewrite (`git commit --amend`,
+rebase) leaves the superseded commit *showable but unreachable*: `git cat-file
+-t <sha>` still answers `commit` and `git show <sha>` still prints a valid
+commit, so a naive existence check **passes while the pointer is dead**.
+Unreachable pointer = unverifiable basis = a false guarantee. (Sample: an
+earlier revision of this ledger cited the commit that a later `--amend`
+superseded with `1bc3418e`; the existence check (`cat-file`/`show`) passed,
+`--is-ancestor` did not.)
 
 ## Results — first full re-scan (2026-10-07)
 
@@ -66,7 +85,7 @@ Each is a recorded improvement, not a silent gap.
 | file:line | claim | falsification basis | status |
 |---|---|---|---|
 | `docs/adr/ADR-HOLD-SCOPE.md` §2.1 | "the code-level freeze" is the authoritative guarantee | No `src/` code reads `LIUHAO_HOLD`; only machine enforcement is `check_hold_gate.py`. | **FALSIFIED → FIXED** — doc rewritten in `6922c8a5`; the guarantee is now described as human discipline outside the CI release path. |
-| `apps/console/console/src/lib/errorMessage.ts:32-33` | "回退到响应头 `X-Trace-ID`，跨域部署下也能拿到" (cross-layer) | On the **pre-fix HEAD** `expose_headers` was ABSENT in `src/gateway/main.py` → CORS exposes only simple response headers → browser JS could not read `X-Trace-ID`; the backend half was missing. | **FALSIFIED → PASS (re-verified)** — backend half landed in `440c3a39` (now in HEAD): `expose_headers=["X-Trace-ID"]` (`src/gateway/main.py:536`), `request.state.trace_id` (`:558`), response header set (`:564`); behaviour test `tests/gateway/test_error_surface_and_boot_truth.py` (**6 passed**) pins both halves. **Both sides of the cross-layer claim now have a basis.** |
+| `apps/console/console/src/lib/errorMessage.ts:32-33` | "回退到响应头 `X-Trace-ID`，跨域部署下也能拿到" (cross-layer) | On the **pre-fix HEAD** `expose_headers` was ABSENT in `src/gateway/main.py` → CORS exposes only simple response headers → browser JS could not read `X-Trace-ID`; the backend half was missing. | **FALSIFIED → PASS (re-verified)** — backend half landed in `1bc3418e` (reachable from HEAD): `expose_headers=["X-Trace-ID"]` (`src/gateway/main.py:536`), `request.state.trace_id` (`:558`), response header set (`:564`); behaviour test `tests/gateway/test_error_surface_and_boot_truth.py` (**6 passed**) pins both halves. **Both sides of the cross-layer claim now have a basis.** |
 
 Textbook sample for the cross-layer rule: this claim was true on **neither** side
 at `HEAD` (backend did not expose the header; frontend's fallback therefore
@@ -101,7 +120,7 @@ carried it. One side alone = a false guarantee.
 | `docs/autonomous/IDENTIFIER-POLICY.md:230` | FP (heading) | "identifiers lacking a uniqueness guarantee" — a section title |
 
 **Net:** **2 FALSIFIED found, 0 outstanding** — both actioned (one doc rewrite
-`6922c8a5`; one wired + re-verified `440c3a39`, re-adjudicated FALSIFIED → PASS);
+`6922c8a5`; one wired + re-verified `1bc3418e`, re-adjudicated FALSIFIED → PASS);
 12 PASS; 3 NOT VERIFIED; 7 regex false positives (FP) — the FP set is why this is
 a **ratchet** (baseline), not a "clean all N lines" gate.
 
