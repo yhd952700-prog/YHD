@@ -84,6 +84,24 @@ class TaskStatus(str, Enum):
     PLANNED = "planned"
     RUNNING = "running"
     COMPLETED = "completed"
+    #: The work ran and its side effects are real, but it was CLAIMED for an
+    #: agent that could not be resolved -- so it is deliberately NOT recorded as
+    #: an ordinary completed task. Added for ARM1: an ``assigned_agent`` that no
+    #: registered agent answers to must not be able to silently read as
+    #: "completed, performed by that agent". The bytes on disk are unchanged; the
+    #: attribution is what is refused.
+    #:
+    #: DECISION (A) -- this status means "the work is complete; only the
+    #: attribution could not be established". It must therefore be treated AS
+    #: COMPLETED everywhere the question is "did the work finish?":
+    #:   * the task stays in ``completed_tasks`` (so the goal still completes);
+    #:   * its artifacts are still collected and reported;
+    #:   * it is still counted as completed in summaries.
+    #: Rejecting a false attribution must never be allowed to escalate into
+    #: "real, finished work is reported as not done" -- that would be trading one
+    #: false report for another. The attribution failure is carried separately
+    #: (``result["agent_attribution"] == "unattributed"``) so it stays auditable.
+    COMPLETED_UNATTRIBUTED = "completed_unattributed"
     FAILED = "failed"
     SKIPPED = "skipped"
     RETRYING = "retrying"
@@ -151,6 +169,12 @@ class Task:
     retry_count: int = 0
     timeout_seconds: int = 300
     assigned_agent: Optional[str] = None
+    #: True when ``assigned_agent`` names an agent the caller EXPLICITLY injected
+    #: (a real claim about who performs this work), vs. a synthetic id the
+    #: decomposer derived when no pool was supplied. Only explicit claims are
+    #: fail-closed on: a dangling explicit id must not read as "that agent did
+    #: it", whereas a synthetic placeholder makes no such claim.
+    agent_claimed: bool = False
     result: Optional[Any] = None
     error: Optional[str] = None
     started_at: Optional[datetime] = None
@@ -198,6 +222,16 @@ class Action:
     correlation_id: str
     scope: str
     timeout_seconds: int
+    #: The agent this action is attributed to (ARM1). Optional with a default so
+    #: every existing construction site keeps working unchanged. When set and the
+    #: agent cannot be resolved to a real executor, the action still runs its
+    #: capability -- but the task is recorded as UNATTRIBUTED rather than as
+    #: work that agent performed.
+    assigned_agent: Optional[str] = None
+    #: Mirrors ``Task.agent_claimed``: True when ``assigned_agent`` is an
+    #: EXPLICIT claim about who performs the work (vs. a synthetic placeholder).
+    #: Defaults False so every existing Action construction site is unaffected.
+    agent_claimed: bool = False
 
 
 @dataclass
@@ -592,12 +626,20 @@ class GoalDecomposer:
         """
         if not tasks:
             return
-        pool = self.agent_ids or [
-            "%s-a%d" % (goal.id, i) for i in range(len(tasks))
-        ]
-        for i, t in enumerate(tasks):
-            if t.assigned_agent is None:
-                t.assigned_agent = pool[i % len(pool)]
+        # ARM1: only an EXPLICITLY injected pool is a claim about who performs
+        # the work. The synthetic fallback is a placeholder and makes no claim,
+        # so it is not fail-closed -- otherwise every unpooled run would be
+        # flagged, which would say nothing true about agent causality.
+        if self.agent_ids:
+            for i, t in enumerate(tasks):
+                if t.assigned_agent is None:
+                    t.assigned_agent = self.agent_ids[i % len(self.agent_ids)]
+                    t.agent_claimed = True
+        else:
+            for i, t in enumerate(tasks):
+                if t.assigned_agent is None:
+                    t.assigned_agent = "%s-a%d" % (goal.id, i)
+                    t.agent_claimed = False
 
 
 class PlanBuilder:
@@ -655,10 +697,40 @@ class ActionExecutor:
         self.capability_registry = get_capability_registry()
         self.event_bus = get_event_bus()
         self._capability_executor = capability_executor
+        # ARM1: optional resolver mapping an assigned_agent id -> a callable that
+        # performs the capability FOR that agent. When absent (the default), agent
+        # attribution cannot be substantiated, so an action carrying an
+        # assigned_agent is reported as UNATTRIBUTED rather than silently
+        # credited to the named agent. Injecting a resolver is what makes
+        # "assigned to agent X" a causal claim rather than a label.
+        self._agent_resolver: Optional[Callable[[str], Optional[Callable[..., Any]]]] = None
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor after construction."""
         self._capability_executor = capability_executor
+
+    def set_agent_resolver(
+        self,
+        resolver: Optional[Callable[[str], Optional[Callable[..., Any]]]],
+    ) -> None:
+        """Inject a resolver that maps an agent id to that agent's own executor.
+
+        ``resolver(agent_id)`` returns a callable ``(capability_id, inputs) ->
+        output`` that genuinely performs the work for that agent, or ``None`` if
+        the agent is unknown. Returning ``None`` is what makes a dangling agent
+        reference fail loudly instead of silently succeeding.
+        """
+        self._agent_resolver = resolver
+
+    def resolve_agent_executor(self, agent_id: str) -> Optional[Callable[..., Any]]:
+        """Return the agent-specific executor, or None when unresolvable."""
+        if self._agent_resolver is None or not agent_id:
+            return None
+        try:
+            return self._agent_resolver(agent_id)
+        except Exception:
+            # A resolver that blows up must not be read as "agent exists".
+            return None
 
     @property
     def has_capability_executor(self) -> bool:
@@ -699,11 +771,37 @@ class ActionExecutor:
         # compatibility.
         try:
             simulated = False
-            if self._capability_executor is not None:
-                raw = self._capability_executor(action.capability_id, action.inputs)
+            # ARM1: when the action is attributed to an agent, the agent's own
+            # executor performs the capability -- this is what makes the pool
+            # causal instead of decorative. An unresolvable agent does NOT block
+            # the work (the gate forbids "passing" by refusing to execute at all),
+            # but it must not be recorded as agent-performed either: we fall back
+            # to the shared executor and flag the result as unattributed so the
+            # task is not silently credited to an agent that does not exist.
+            agent_executor = (
+                self.resolve_agent_executor(action.assigned_agent)
+                if action.assigned_agent and action.agent_claimed
+                else None
+            )
+            # Only an EXPLICIT claim that cannot be substantiated is fail-closed.
+            # A synthetic placeholder (agent_claimed=False) makes no claim, so it
+            # is not flagged -- flagging it would be noise, not honesty.
+            agent_unattributed = (
+                bool(action.assigned_agent)
+                and bool(action.agent_claimed)
+                and agent_executor is None
+            )
+
+            executor = agent_executor if agent_executor is not None else self._capability_executor
+
+            if executor is not None:
+                raw = executor(action.capability_id, action.inputs)
                 if isinstance(raw, dict):
                     output = dict(raw)
                     output.setdefault("capability", action.capability_id)
+                    if agent_unattributed:
+                        output["agent_attribution"] = "unattributed"
+                        output["unattributed_agent"] = action.assigned_agent
                     explicit = raw.get("success", None)
                     if explicit is None:
                         output["status"] = "executed"
@@ -1313,7 +1411,9 @@ class ExecutionEngine:
             scope=EventScope(task.scope),
         )
 
-        # Create action
+        # Create action. ARM1: carry the assigned agent across the Action
+        # boundary so it actually reaches the executor (previously it stopped at
+        # the Task dataclass and was physically unable to influence execution).
         action = Action(
             id=str(uuid.uuid4())[:8],
             task_id=task.id,
@@ -1323,6 +1423,8 @@ class ExecutionEngine:
             correlation_id=task.correlation_id,
             scope=task.scope,
             timeout_seconds=task.timeout_seconds,
+            assigned_agent=task.assigned_agent,
+            agent_claimed=task.agent_claimed,
         )
 
         # Execute with retries
@@ -1335,7 +1437,22 @@ class ExecutionEngine:
             ctx.task_results[task.id] = result
 
             if result.success:
-                task.status = TaskStatus.COMPLETED
+                # ARM1 honesty: the side effects are real, but if the task was
+                # attributed to an agent that could not be resolved, do NOT
+                # record it as an ordinary COMPLETED task -- that is exactly the
+                # "ghost id still completes cleanly" defect. Record it as
+                # UNATTRIBUTED: the work happened, the claimed performer did not
+                # exist. The task still counts as completed for the goal (the
+                # bytes are on disk) so we never fake a failure either.
+                _unattributed = (
+                    isinstance(result.output, dict)
+                    and result.output.get("agent_attribution") == "unattributed"
+                )
+                task.status = (
+                    TaskStatus.COMPLETED_UNATTRIBUTED
+                    if _unattributed
+                    else TaskStatus.COMPLETED
+                )
                 task.result = result.output
                 task.completed_at = utc_now()
                 ctx.completed_tasks.add(task.id)

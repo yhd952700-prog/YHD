@@ -521,7 +521,13 @@ class AIStateManager:
         summaries = []
         for item in items:
             tasks = item.get("tasks", [])
-            completed = sum(1 for t in tasks if t.get("status") == "completed")
+            # ARM1 decision (A): a COMPLETED_UNATTRIBUTED task DID complete -- only its
+            # agent attribution could not be established. Counting it as anything
+            # other than completed would hide real finished work.
+            completed = sum(
+                1 for t in tasks
+                if t.get("status") in ("completed", "completed_unattributed")
+            )
             failed = sum(1 for t in tasks if t.get("status") == "failed")
             summaries.append({
                 "goal_id": item["goal_id"],
@@ -964,7 +970,13 @@ class AIStateManager:
             if getattr(t, "capability_id", None) != "file_write":
                 continue
             tstatus = t.status.value if hasattr(t.status, "value") else str(t.status)
-            if tstatus != "completed":
+            # ARM1: ``completed_unattributed`` means the work ran and produced
+            # its side effects, but was attributed to an agent that could not be
+            # resolved. The artifact is REAL and must still be reported -- the
+            # unresolved attribution is a separate concern from whether bytes
+            # landed. Excluding it here would hide real work, which is its own
+            # dishonesty.
+            if tstatus not in ("completed", "completed_unattributed"):
                 continue
             res = t.result
             if not isinstance(res, dict):
