@@ -50,6 +50,24 @@ When `HOLD` is active, the following automated forward-motion paths are frozen:
 
 `HOLD` is a freeze of *automated forward motion*. It is intentionally narrow.
 
+**How §2.1 is enforced — verified 2026-10-07 (do NOT read the table above as an
+enforcement guarantee):** §2.1 states HOLD's *scope*, **not** a separate
+enforcement mechanism. The **only** machine enforcement of `HOLD` in this
+repository is `scripts/check_hold_gate.py`, invoked as a release-gate step in the
+CI release path (§2.4). There is **no** product code (`src/`) that reads
+`LIUHAO_HOLD`. In particular:
+* **F1 (deployment)** is enforced only insofar as the CI release job that performs
+  the deploy consults the gate; there is no independent deploy-time check.
+* **F2 (automatic agent code-changes)** is **not** blocked by any code. The
+  nearest guard, `src/ai/evolution.py` (MASTER-SPEC 80 "no production
+  self-modification without evaluation"), is gated on benchmark + human approval
+  and does **not** consult `HOLD`.
+* **F3 (CI publish)** is the gate step itself.
+
+Consequence: **outside the CI release path, `HOLD` is human discipline, not a
+machine control.** Any earlier or downstream phrasing that called §2.1 "the
+code-level freeze" was **unsupported by code** and has been corrected here.
+
 ### 2.2 What `HOLD` does NOT gate (out of scope)
 
 | # | Not gated by `HOLD` | Why |
@@ -105,12 +123,17 @@ before `docker/build-push-action` runs:
   sets `LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}`, HOLD is **armed by
   default**: unless a human sets the repo variable `LIUHAO_HOLD=0`,
   `check_hold_gate.py` exits **2** and the job fails at that step, *before*
-  `Build and push` — so no image is pushed and no promotion occurs. The
-  authoritative guarantee remains the code-level freeze in §2.1; this env gate is
-  the visible, machine-checked switch on the release path.
+  `Build and push` — so no image is pushed and no promotion occurs. **Honesty
+  boundary:** the default-armed property is verified only at the *code/config*
+  level — it **cannot** be exercised by a real GitHub runner from this
+  workstation (no local runner), so its *runtime* behaviour is **UNVERIFIED**
+  here. This gate step is the **only** machine enforcement of `HOLD` (see §2.1);
+  there is no separate "code-level freeze" backing it.
 * **Not a security boundary:** the env gate is an operational safeguard, not an
-  authorization control. The authoritative guarantee is the code-level freeze in
-  §2.1; the env gate is the convenient, visible switch.
+  authorization control. It is the **only** machine enforcement of `HOLD` on the
+  release path (see §2.1 — no code in `src/` reads `LIUHAO_HOLD`); it does **not**
+  back a separate "code-level freeze", and off the release path the freeze is
+  human discipline.
 * **Human override still passes:** a job that is blocked by `HOLD` MUST still
   permit an explicit `human_sovereignty_override` to proceed (per N1), and that
   override's audit event is appended (per §2.3), never rewriting history.
