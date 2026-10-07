@@ -124,10 +124,23 @@ EXCLUDE_GLOBS = (
     # place truth is decided, not a document asserting controls about LIUHAO.
     "docs/governance/CONTROL-CLAIM-LEDGER.md",
 )
-BASELINE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "scripts", "control_claim_baseline.txt",
-)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASELINE_FILE = os.path.join(_ROOT, "scripts", "control_claim_baseline.txt")
+
+# --- LEDGER proposal-hook check (a DIFFERENT rule from the claim scan) -------
+# The ledger is EXCLUDED from the assertive-claim scan above on purpose (it must
+# quote control language to define the criterion). This is a separate STRUCTURE
+# rule that applies ONLY to the ledger: every proposal line -- a markdown list
+# item carrying the proposal phrase -- must carry an explicit review-date hook
+#   （提出 YYYY-MM-DD；复核 YYYY-MM-DD）
+# so an un-landed proposal becomes VISIBLY due instead of silently rotting. The
+# machine only checks the hook is PRESENT (deterministic, clock-free); whether the
+# date has passed, and whether to wire or delete, stays human. Explicitly NOT a
+# wall-clock-red gate.
+LEDGER_FILE = os.path.join(_ROOT, "docs", "governance", "CONTROL-CLAIM-LEDGER.md")
+PROPOSAL_PHRASE = "提案，未接线"
+PROPOSAL_HOOK = re.compile(r"提出\s*\d{4}-\d{2}-\d{2}.*?复核\s*\d{4}-\d{2}-\d{2}")
+_LIST_ITEM = re.compile(r"^\s*[-*]\s+")
 DEFAULT_WINDOW = 2
 
 
@@ -199,6 +212,28 @@ def load_baseline() -> set:
                 if ln.strip() and not ln.strip().startswith("#")}
 
 
+def check_ledger_proposal_hooks() -> List[str]:
+    """LEDGER-ONLY structure check -- NOT the assertive-claim scan (see note above).
+
+    Every markdown list item carrying the proposal phrase must also carry the
+    review-date hook ``（提出 YYYY-MM-DD；复核 YYYY-MM-DD）``. A proposal with no
+    review date would rot silently -- the very defect this repo keeps hitting.
+    Returns ``file:line`` findings (empty = OK). Prose mentions (e.g. the rule
+    text that defines the hook) are not list items and are ignored, so the check
+    is free of self-noise.
+    """
+    if not os.path.exists(LEDGER_FILE):
+        return []
+    findings: List[str] = []
+    with open(LEDGER_FILE, "r", encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh, start=1):
+            if _LIST_ITEM.match(line) and PROPOSAL_PHRASE in line:
+                if not PROPOSAL_HOOK.search(line):
+                    rel = os.path.relpath(LEDGER_FILE, _ROOT).replace(os.sep, "/")
+                    findings.append(f"{rel}:{i}")
+    return findings
+
+
 def main(argv: List[str] | None = None) -> int:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ap = argparse.ArgumentParser(description="Control-claim guard (ratcheted)")
@@ -245,6 +280,21 @@ def main(argv: List[str] | None = None) -> int:
     if args.show:
         for f in cross_layer:
             print(f"    [XL] {_key(f, root)} ({f['verdict']}) {f['text']}")
+
+    # LEDGER-only structure check (a SEPARATE rule from the claim scan above;
+    # runs on every invocation, not a wall-clock gate).
+    prop_findings = check_ledger_proposal_hooks()
+    if prop_findings:
+        print("-" * 72)
+        print("LEDGER proposal-hook check FAILED -- proposal line(s) with no "
+              "review-date hook:")
+        for k in prop_findings:
+            print(f"  FAIL {k}")
+        print("=" * 72)
+        print(f"FAIL: {len(prop_findings)} ledger proposal(s) lack "
+              "（提出 YYYY-MM-DD；复核 YYYY-MM-DD）. Add the hook, or wire/delete "
+              "the proposal at its review date.")
+        return 1
 
     baseline = load_baseline()
     if args.update_baseline:
