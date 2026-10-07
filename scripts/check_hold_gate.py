@@ -45,7 +45,6 @@ Usage
 from __future__ import annotations
 
 import os
-import sys
 
 ENV_VAR = "LIUHAO_HOLD"
 
