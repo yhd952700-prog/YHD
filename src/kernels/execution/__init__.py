@@ -499,7 +499,21 @@ class GoalDecomposer:
                 scope=goal.scope,
             ))
 
-        if mentions(("remember", "store", "save", "memory")):
+        # "save" is AMBIGUOUS: it is a FILE verb here (``_FILE_WRITE_A`` /
+        # ``_FILE_WRITE_B`` match "save a file named X") and a MEMORY verb
+        # ("save this to memory"). Treating it as a memory verb unconditionally
+        # meant every file-save goal silently grew a second task the user never
+        # asked for -- and memory was written with the raw sentence as content:
+        #     "save a file named report.txt containing 'hello'"
+        #         -> [Memory Store(content="save a file named report.txt ..."),
+        #             WriteFile, WriteChecksum]
+        # When the goal is recognised as a file write, "save" is spent on the
+        # file task; memory still fires on the UNAMBIGUOUS memory verbs
+        # (remember / store / memory), so "save x.txt and remember it" works.
+        memory_keywords = ("remember", "store", "memory")
+        if not (file_write_inputs and file_write_inputs.get("path")):
+            memory_keywords = memory_keywords + ("save",)
+        if mentions(memory_keywords):
             tasks.append(Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
