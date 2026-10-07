@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from error_types import ProviderError
+
 from .chunker import chunk_text
 
 
@@ -45,21 +47,43 @@ class EmbeddingPipeline:
         )
 
     def embed(self, text: str) -> List[float]:
-        """Generate embeddings for a single text.
+        """Generate embeddings for a single text, or fail loudly.
 
-        In the mock/stub mode, returns a zero vector.
-        In a real implementation, this would call the provider's embeddings() method.
+        Delegates to the configured provider and returns its first vector.
+
+        Failure is deliberately loud. A provider with no real backend (the
+        ``openai`` / ``self_host`` stubs) raises
+        :class:`~src.providers.llm_base.ProviderNotConfiguredError` when the
+        simulation opt-in (``LIUHAO_ALLOW_SIMULATED_EXECUTION``) is unset, and
+        that error MUST reach the caller. The previous implementation wrapped
+        the call in ``except Exception: pass`` and fell back to
+        ``[0.0] * 1536``: an all-zero vector is indistinguishable from a real
+        embedding, so it silently poisoned downstream retrieval and similarity
+        scoring. Fabricating data is worse than failing, so no fallback vector
+        is ever returned here. (The ``mock`` provider's own declared zero
+        vectors still pass through unchanged -- that is an honest contract, not
+        a swallowed error.)
         """
-        # Use the provider's embeddings if available
+        # The provider call is intentionally NOT wrapped in try/except: a
+        # provider error (not configured, transport, auth) is a real fault the
+        # caller must see, not something to hide behind a fake vector.
+        emb = self.provider.embeddings([text])
+
+        # A usable payload carries at least one ``embedding`` entry. A payload
+        # that does not is a provider fault too -- surface it rather than
+        # inventing a vector. The except is narrowed to the shape errors this
+        # parse can actually raise; notably it does NOT catch
+        # ProviderNotConfiguredError, which must propagate untouched.
         try:
-            emb = self.provider.embeddings([text])
-            # Return the first embedding vector
-            if emb and "data" in emb and len(emb["data"]) > 0:
-                return emb["data"][0]["embedding"]
-        except Exception:
-            pass
-        # Fallback: return zero vector
-        return [0.0] * 1536
+            return emb["data"][0]["embedding"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                f"provider {self.provider_key!r} returned a payload without a "
+                "usable embedding; refusing to fabricate a zero vector",
+                provider=self.provider_key,
+                error_code="EMPTY_EMBEDDING",
+                severity="high",
+            ) from exc
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts."""
