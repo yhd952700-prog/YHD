@@ -279,6 +279,19 @@ export function Goals({ query }: { query: string }) {
                     <span className="os-kv-key">范围</span>
                     <span className="os-kv-value">{data.scope || '—'}</span>
                   </div>
+                  {/* 归属项目：我的新创建入口能把目标挂到项目下，这里必须让归属**可见**，
+                      否则"归属了但看不到"= 又一次 surface 与真相不一致。
+                      undefined（历史目标）与 null（独立目标）刻意分开表述，不糊成一个"—"。 */}
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">归属项目</span>
+                    <span className="os-kv-value">
+                      {data.project_id === undefined
+                        ? '未记录归属'
+                        : data.project_id === null
+                          ? '独立目标（不属于任何项目）'
+                          : data.project_id}
+                    </span>
+                  </div>
                   {data.evaluation?.summary && (
                     <div className="os-kv-row">
                       <span className="os-kv-key">评估</span>

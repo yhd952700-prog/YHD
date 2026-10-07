@@ -311,6 +311,12 @@ export interface GoalDetail {
   error: string | null
   correlation_id: string | null
   created_at: number | null
+  /**
+   * 归属的项目 id；null = 独立目标（不属于任何项目）。后端 `GET /v1/goals/{id}`
+   * 恒返回该键（`_run_bound_goal` 两条分支都写入）。设为可选是为了对**早于本字段
+   * 存在的历史目标记录** fail-safe：缺失时界面显示「未记录归属」，不假装成 null。
+   */
+  project_id?: string | null
   /** 真实工作区产物（相对路径）。空数组 = 该目标没有向工作区写入任何文件。 */
   artifacts: string[]
   evaluation: {

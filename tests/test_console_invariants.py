@@ -62,6 +62,28 @@ def _blob() -> str:
     return "\n".join(p.read_text(encoding="utf-8") for p in _files())
 
 
+def _brace_body(text: str, start: int) -> str:
+    """从 ``start`` 起，取第一个 ``{`` 到与之配对 ``}`` 之间的内容。
+
+    为什么不能用 ``text.index("}", start)``：接口体里可能有嵌套对象字面量
+    （如 ``GoalDetail.evaluation``），取"第一个右括号"会把它误当成接口结尾，
+    于是对嵌套块**之后**的字段失明 —— 正是同类守卫栽过的那种"在最需要的地方
+    失明"。这里做括号配平，嵌套与否都取到真正的接口结尾。
+    """
+    open_brace = text.index("{", start)
+    depth, cursor = 0, open_brace
+    while cursor < len(text):
+        char = text[cursor]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        cursor += 1
+    return text[open_brace + 1 : cursor]
+
+
 def _code_only(text: str) -> str:
     """剥掉块注释与行注释，只留下真正会执行/显示的代码。
 
@@ -163,3 +185,42 @@ class TestRoutingHasNoConsolePrefix:
         assert not offenders, (
             f"{offenders} 硬编码了 /console/ 前缀 —— 单端口下会 404 并悄悄回落 overview"
         )
+
+
+class TestGoalProjectAffiliationIsVisible:
+    """目标 ↔ 项目归属：创建时能设置，就必须在**目标详情**里看得见。
+
+    缺陷形状：`CreateGoalForm` 新增的「归属项目」选择器能把目标挂到项目下（请求体
+    真的带 `project_id`），但如果目标详情视图不呈现它，用户就**无法从目标侧确认自己
+    设了什么** —— 只能绕到 Projects 页反查。那是一次 surface 与真相的不一致：
+    设置发生了，呈现缺席。这里用不变量把"归属必须可见"钉住。
+
+    同时钉住**诚实分级**：`undefined`（早于该字段的历史目标）必须与 `null`（独立目标）
+    分开表述，不许糊成一个「—」，否则两种截然不同的现实看起来一模一样。
+    """
+
+    def test_goal_detail_type_declares_affiliation(self):
+        op = _read("lib/operator.ts")
+        start = op.find("interface GoalDetail")
+        assert start != -1, "找不到 GoalDetail 接口声明"
+        body = _brace_body(op, start)
+        assert "project_id" in body, (
+            "GoalDetail 未声明 project_id —— 后端 GET /v1/goals/{id} 恒返回该键，"
+            "前端不声明就用不上，归属从目标侧不可见"
+        )
+
+    def test_goals_page_renders_affiliation(self):
+        goals = _read("pages/Goals.tsx")
+        assert "project_id" in goals, (
+            "Goals 详情未渲染 project_id —— 用户设了归属却在目标详情里看不到，"
+            "只能绕道 Projects 页反查（surface 与真相不一致）"
+        )
+
+    def test_undefined_and_null_are_not_conflated(self):
+        goals = _read("pages/Goals.tsx")
+        # 两种现实必须分别表述：历史目标「未记录归属」 vs 独立目标。
+        assert "未记录归属" in goals, (
+            "缺少「未记录归属」—— undefined（历史目标）与 null（独立目标）被混为一谈，"
+            "会让'没记录'伪装成'确认不属于任何项目'"
+        )
+        assert "独立目标" in goals, "缺少「独立目标」表述：null 归属未被如实呈现"
