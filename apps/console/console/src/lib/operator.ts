@@ -63,6 +63,12 @@ export function createGoal(body: CreateGoalBody): Promise<Json> {
       scope: body.scope ?? 'L1',
       plan_mode: body.plan_mode ?? 'auto',
       verification_criteria: body.verification_criteria ?? null,
+      // 必须显式序列化：后端 `GoalCreateRequest.project_id` 是决定"目标归属哪个
+      // 项目"的唯一字段。本字段此前**只声明在类型里、从未进过请求体**——于是哪怕
+      // 调用方传了 project_id，也会被静默丢弃、目标落为"独立目标"，而类型检查
+      // （tsc）全程是绿的。类型声明 ≠ 已接线；这里补上真正的接线。
+      // null = 独立目标（后端语义），与后端 `Optional[str] = None` 一致。
+      project_id: body.project_id ?? null,
       background: body.background ?? false,
     }),
   })

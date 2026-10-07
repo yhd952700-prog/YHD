@@ -90,7 +90,33 @@
 | **owner** | 后端 `src/observability/production.py` + `src/gateway/observability.py`（**非我域**）；前端 `pages/Preflight.tsx`（product-architect） |
 | **status** | **NOT VERIFIED（运行时）** — 端点形状与 401 边界已用真令牌活探针核实；页面由 `tests/test_preflight_surface.py` 静态看守；**浏览器渲染未验** |
 
+## P8b — 目标 ↔ 项目归属（**写路径接线**，本次闭环）
+
+> **为什么单列**：这不是"再加一个视图"，而是**请求方向的漂移门禁** ——
+> 与 `test_contracts_drift_gate.py`（响应方向）互为镜像。它拦的缺陷形状是：
+> 前端类型声明里**有**某字段、`tsc -b` 全绿，但 `JSON.stringify` 的请求体里
+> **没有**它 —— 调用方传了值，后端收到的却是默认值，能力被**静默丢弃**。
+
+| 格 | 内容 |
+|---|---|
+| **Route** | `?p=employees`（我 AI 员工）→ 运行时标签页的「创建 Goal」表单 |
+| **DOM 入口断言** | 表单含「归属项目（可选）」`<select>`，首项为「（不归属任何项目）」，其余选项来自真实 `GET /v1/projects` |
+| **Endpoint** | `POST /v1/goals`（请求体必须带 `project_id`）、`GET /v1/projects` |
+| **Auth+读写** | 需人类令牌；**写**（创建目标并归属） |
+| **Gate 断言** | ① `createGoal` 的请求体键集 == 后端 `GoalCreateRequest` 字段集（含 `project_id`）；② 未选项目时显式发 `project_id: null`（独立目标），而不是丢键；③ 未知 `project_id` → 后端真实 404，前端原样展示 |
+| **owner** | 前端 `lib/operator.ts` + `components/OperatorControls.tsx` + `pages/Projects.tsx`（product-architect）；后端 `src/gateway/ai_management.py`（本就真实，见 `tests/gateway/test_projects_surface.py`） |
+| **status** | **PASS（接线层）** — 由 `tests/test_console_request_drift_gate.py`（5/5，静态）+ `src/lib/operator.test.ts`（6/6，运行时 stub fetch）看守；浏览器点击贯通仍待 EAP 01 |
+
+**真身缺陷（本次修掉）**：`operator.ts::createGoal` 声明了 `project_id` 却从不序列化它，
+于是整条「目标 ↔ 项目」归属链在控制台**不可达**，而 `Projects.tsx` 还在对用户宣称
+"创建目标时可选归属项目"——**一句做不到的承诺**。三处一并修：①`createGoal` 序列化
+`project_id`；②`CreateGoalForm` 增加真实项目选择器（走 `/v1/projects`）；③
+`Projects.tsx` 的空态文案与说明改为指向真正的创建入口（「我 AI 员工 → 运行时 →
+创建 Goal」），不再把用户引向只读的「目标与任务」页（`pages/Goals.tsx` 严格只读，
+根本没有创建表单）。
+
 ---
+
 
 ## 归属缺口登记（`UNKNOWN-TO-OWNER`）
 
@@ -119,10 +145,14 @@
 CODEBUDDY_SAFE_DELETE_ENABLED=0 .venv/Scripts/python.exe -m pytest \
   tests/test_console_invariants.py tests/test_preflight_surface.py \
   tests/test_provider_honesty_surface.py tests/test_contracts_drift_gate.py \
+  tests/test_console_request_drift_gate.py \
   -p no:cacheprovider --basetemp="D:/cache/temp/pytest_<你的目录>" -q
 
 # 前端类型（任何 UI 改动后必须 EXIT=0 且输出为空）
 cd apps/console/console && npx tsc -b
+
+# 前端运行时单测（写请求体接线 + 展示层总函数）
+cd apps/console/console && npx vitest run
 
 # 运行时点击贯通（需要浏览器宿主）
 cd eap/01-browser-click-through && npx playwright test --reporter=json,list

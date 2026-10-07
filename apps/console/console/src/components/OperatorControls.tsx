@@ -15,6 +15,7 @@
  */
 
 import { useState } from 'react'
+import { useApi } from '../lib/api'
 import {
   createGoal,
   deleteEmployee,
@@ -23,6 +24,7 @@ import {
   replanGoal,
   resumeAgent,
   stopGoal,
+  type ProjectsResponse,
 } from '../lib/operator'
 
 /** 把一次动作的「进行中 / 失败」状态收敛到一个小 hook，避免每个按钮各写一套。 */
@@ -133,9 +135,15 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
   const [planMode, setPlanMode] = useState('auto')
   // 后台执行：不勾就是同步跑完才返回，「停止」永远没有可停的目标。
   const [background, setBackground] = useState(true)
+  // 归属项目：空串 = 独立目标（后端 project_id=None）。非空即真实挂到该项目之下。
+  // 项目清单取自真实端点 `/v1/projects`（只取一次），不是写死的占位选项。
+  const [projectId, setProjectId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ok, setOk] = useState(false)
+
+  // 项目清单：0 表示只取一次。列表为空/读取失败都如实呈现，不编造占位项目。
+  const projects = useApi<ProjectsResponse>('/v1/projects', 0)
 
   async function submit() {
     if (!text.trim()) {
@@ -151,6 +159,8 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
         scope,
         plan_mode: planMode,
         background,
+        // 空串归一成 null：后端据此判"独立目标"。有值就是真实归属。
+        project_id: projectId.trim() || null,
       })
       setOk(true)
       setText('')
@@ -194,6 +204,24 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
             <option value="manual">manual</option>
           </select>
         </div>
+      </div>
+      <div className="os-field">
+        <label>归属项目（可选）</label>
+        <div className="os-input">
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="">（不归属任何项目）</option>
+            {(projects.data?.projects ?? []).map((p) => (
+              <option key={p.project_id} value={p.project_id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {projects.error && (
+          <span className="os-row-sub" style={{ color: 'var(--os-danger)' }}>
+            无法读取项目列表：{projects.error}
+          </span>
+        )}
       </div>
       <div className="os-field">
         <label>后台执行</label>
