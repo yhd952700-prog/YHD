@@ -8,6 +8,7 @@
 - **Evidence IMMUTABLE**: forensic snapshot + all `D:\WorkBuddyFiles\LIUHAO-Phase3.6-Evidence\` files — never delete / overwrite / re-capture-overwrite.
 - No garbage code; every built subsystem ships with Tests + Verification + Docs + Observability hook + Recovery consideration.
 - Commits: scoped per-path (never `git add -A`); **do NOT push** to remote without explicit coordination.
+- **Concurrent writers (U57, 2026-10-07)** — 18 Owners share ONE worktree, no file locks. Every commit: ① record `git rev-parse HEAD` + `git status --porcelain` BEFORE; ② after, `git show --stat HEAD` must contain ONLY your paths — a foreign path in your commit → STOP, report team-lead, never amend/reset to conceal; ③ reports state `HEAD-before → hash`; re-check `git rev-parse HEAD` before acting on any cited hash. Evidence rule: a test run proves the WORKTREE state, not the committed state — always record the HEAD a run was made on.
 
 ## Wave 0 — Locked decisions
 - Q0.1 D19/D20/D21 — HC-09/10 semantics + hash_chain dispatch — `sec-impl` (paused; work tree currently clean of its changes)
