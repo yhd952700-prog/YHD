@@ -41,6 +41,15 @@ python eap/05-final-readiness-battery/consolidate_readiness.py \
 Every argument is optional — supplying nothing yields the honest "we ran
 nothing, so we know nothing" report.
 
+`--out-dir` resolution rule: it defaults to **this battery's own directory**
+(`eap/05-final-readiness-battery`), and a relative value is resolved **against
+`--repo-root`**, never against the current working directory. So the documented
+invocation above writes to the same place no matter where you run it, and the
+report can never land in the repository root by accident (a root-level
+`*.md` is checked against the outward-claims scan surface — see
+`tests/scripts/test_lint_audit_claims_surface.py`). Absolute paths are used
+as given.
+
 Outputs: `EAP-EVIDENCE-REPORT.md` + `EAP-EVIDENCE-REPORT.json`.
 
 ---
