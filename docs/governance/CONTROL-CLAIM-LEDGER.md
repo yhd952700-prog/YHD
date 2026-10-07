@@ -170,9 +170,11 @@ not as a permanent guarantee — re-check when the cited artefact changes.
 理由：假信号的成本 ∝ 暴露时长 × 消费者数量。
 
 **留痕**：**复用**现有 ratchet/baseline 机制，**不新增平行件**——更正登记表就落在本节
-（一收获一行：键 / 方向 / 检出方式 / 更正动作 / 提交 / 回归测试）。门禁侧把
-"更正过的声明不得静默回退"接进 `scripts/lint_control_claims.py`（认可 `FALSIFIED→PASS`
-这类更正标记，并要求更正窗口内带上更正提交或回归测试路径）。
+（一收获一行：键 / 方向 / 检出方式 / 更正动作 / 提交 / 回归测试）。
+**（提案，未接线）**门禁侧把"更正过的声明不得静默回退"接进 `scripts/lint_control_claims.py`
+（认可 `FALSIFIED→PASS` 这类更正标记，并要求更正窗口内带上更正提交或回归测试路径）。
+**本节所写是规则，不是"已接线"的断言**：现 `lint_control_claims.py` **尚无**该模式——按规则第 3 步，
+这是一条**待接线**项，不得读成已生效。
 
 **谁判"已更正"**：**自证无效**——写错的人不能给自己判过。**独立复核**是硬要求，至少覆盖
 `FALSIFIED→PASS` 翻转与一切**证据级/对外**声明；低等级内部文本更正由**第二位读者（非作者）**
@@ -199,11 +201,13 @@ costs: it teaches people to ignore the line."（该 commit 信息还自纠了一
 
 ### 5. 能进门禁 vs 只能人工纪律 · 真正的兜底
 
-**能进（机器可查）**：新出现的**未处置**声明 → 已门禁（ratchet）。**更正过的声明回退** → 门禁
-（更正窗口须带更正提交/回归测试）。运行时**假成功**（fail-closed 路径）→ 行为测试断言未配置即
-`raise`/`unavailable`（案例 2/4）。**幽灵旗子** → 调该旗子并断言其文档承诺行为（案例 3）。
-**受跟踪运行产物** → .gitignore + 禁止生成物入库（案例 7，已部分落地）。**依赖↔CLI 参数错配**
-（案例 8）→ runner 里出现 `--timeout` 必须有 `pytest-timeout` 声明。
+**能进（机器可查）**——每项**标注当前状态**，绝不把"能进"读成"已进"：
+- 【**已接线**】新出现的**未处置**声明 → ratchet（`lint_control_claims.py` + baseline，已进 CI `doc-lint.yml`）。
+- 【**提案，未接线**】**更正过的声明回退** → 更正窗口须带更正提交/回归测试路径（见 §2）。
+- 【**部分已接线**】运行时**假成功**（fail-closed 路径）→ 行为测试断言未配置即 `raise`/`unavailable`（案例 2/4 已有测试）。
+- 【**已接线（案例 3 的测试已存在）**】**幽灵旗子** → 调该旗子并断言其文档承诺行为。
+- 【**部分已接线**】**受跟踪运行产物** → `.gitignore` 已含 `/scripts/readiness_report.json`；**尚无**"禁止生成物入库"的自动门（案例 7）。
+- 【**提案，未接线**】**依赖↔CLI 参数错配**（案例 8）→ runner 里出现 `--timeout` 必须有 `pytest-timeout` 声明；现有 `verify_dependency_declaration_surface` **只查 fakeredis/lupa**，此处是已知缺口。
 
 **只能靠人工纪律（诚实列出，不粉饰）**：**跨层 docstring 一致性**（案例 1 前端半——守卫只扫 `.md`，
 代码 docstring 在扫描面之外，只能靠人把两半对齐）· **docstring 里的"历史/实测"断言**（案例 6，
