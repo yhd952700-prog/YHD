@@ -23,9 +23,18 @@ class MetricsApplication:
         }
 
     def ready(self) -> dict[str, Any]:
-        count = self.repository.count()
+        """Readiness probe that can actually report ``not_ready``.
+
+        Previously this returned ``"ready" if count >= 0 else "not_ready"`` --
+        and SQL ``COUNT(*)`` is never negative, so the ``not_ready`` branch was
+        unreachable and the probe reported healthy without checking anything.
+        It now performs a real liveness probe (``repository.is_ready()``) and
+        reports ``not_ready`` when the store is genuinely unreachable.
+        """
+        ready = self.repository.is_ready()
+        count = self.repository.count() if ready else 0
         return {
-            "status": "ready" if count >= 0 else "not_ready",
+            "status": "ready" if ready else "not_ready",
             "database_url": self.database_url,
             "provider_samples": count,
         }

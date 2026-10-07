@@ -117,6 +117,25 @@ class ProviderMetricsRepository:
             row = self._conn.execute("SELECT COUNT(*) FROM provider_metric_samples").fetchone()
         return int(row[0]) if row is not None else 0
 
+    def is_ready(self) -> bool:
+        """Real liveness probe for the readiness endpoint.
+
+        Returns ``True`` only when a genuine query round-trip against the
+        underlying store actually succeeds, and ``False`` -- rather than
+        raising -- when the store is unreachable or broken. A readiness probe
+        must be *able to report not-ready*; the previous caller check
+        (``count >= 0``) was a tautology (SQL ``COUNT(*)`` is never negative),
+        so it could never fail and reported healthy without probing anything.
+        """
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM provider_metric_samples"
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
     def close(self) -> None:
         """Close the underlying connection. Safe to call multiple times."""
         conn = getattr(self, "_conn", None)
