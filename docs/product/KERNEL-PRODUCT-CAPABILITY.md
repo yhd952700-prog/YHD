@@ -519,7 +519,8 @@ user-observable (read-only) surface.
   definition to import.
 - **`list_active_plugins`** *does* exist (`src/kernels/plugin/__init__.py:362`), so
   the docstring is partially true.
-- **`plugins/registry_index.json:4`** `"active_plugins": 0` — confirmed.
+- **`plugins/registry_index.json`** (runtime artifact written by `_save_index`;
+  **not tracked**) showed `"active_plugins": 0` — confirmed at audit time.
 - **No route:** the full gateway inventory (§17) contains no `/v1/plugins`.
 - `docs/product/PRODUCT-READINESS.md:1002-1003` already records this; it is still true.
 
@@ -970,7 +971,7 @@ grep -n "class .*Adapter" src/kernels/network/__init__.py
 grep -rn "VAULT_AVAILABLE" src/
 # plugin loader
 grep -rn "def load_plugin\|class PluginInterface" src/
-cat plugins/registry_index.json
+cat plugins/registry_index.json  # 运行时产物（未纳入版本控制）：需先由一次插件注册/激活生成
 # disabled rules + never-called installer
 grep -n "enabled=False" src/observability/alerts/__init__.py
 grep -rn "install_production_rules" src/ tests/ scripts/

@@ -128,3 +128,13 @@ data/
 # 跑 `--full`，本地跑 `python scripts/verify_readiness.py`。基线类产物
 # （test_baseline.json / bench_baseline.json）是受跟踪的输入，与此不同。
 /scripts/readiness_report.json
+
+# ===== 插件注册表索引（运行产物，非受跟踪输入）=====
+# PluginRegistry._save_index（src/kernels/plugin/__init__.py，写盘见 :443-453）产出的运行快照：
+# generated_at（datetime.now）随每次运行漂移，plugins 内容随当次进程注册了哪些插件而变
+# （本文件曾因此带出一条"注册了却没有 module_path、加载失败"的幽灵条目）。提交它等于把一份
+# 随时会被重写的墙钟快照当作证据 —— 与上面 readiness_report.json 同类。它的正确读法是
+# 运行时产物 / GET /v1/plugins，而非一份受跟踪文件。
+# 一致性说明：并行的第二套插件注册表 data/plugins/registry.json 早已被上方 `data/`
+# 规则（.gitignore:114）忽略；本条目只是补上同样的处置。
+/plugins/registry_index.json

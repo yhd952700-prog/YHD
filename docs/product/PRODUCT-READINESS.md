@@ -1180,7 +1180,8 @@ in cycle 6 via the deterministic path.
 - Security kernel "Vault Transit integration" is **dead** — `VAULT_AVAILABLE`
   has zero consumers in `src/`.
 - Plugin `load_plugin()` **does not exist**; `PluginInterface` is absent;
-  `plugins/registry_index.json` shows historical `active_plugins: 0`.
+  the plugin registry index (runtime artifact `plugins/registry_index.json`,
+  **not tracked**) showed historical `active_plugins: 0`.
 - G9 was labelled `VERIFIED` when only the upgrade/rollback path was proven —
   corrected to **NOT VERIFIED** for image build/boot.
 

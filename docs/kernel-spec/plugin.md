@@ -82,7 +82,10 @@ unregister_plugin` 驱动（`__init__.py:119/227/318/164`）。
 
 - `PluginInfo`（`__init__.py:58`）：注册/发现/激活的统一返回单元，`status` 反映生命周期。
 - **持久化**：`_save_index`（`__init__.py:378-388`）写 `./plugins/registry_index.json`
-  （经 `_json_default` 处理 `datetime`，`__init__.py:29-41`）。
+  （经 `_json_default` 处理 `datetime`，`__init__.py:29-41`）。该索引是**运行时产物**
+  （每次注册/激活/卸载都会整体重写，`generated_at` 随运行漂移），**不纳入版本控制**
+  （`.gitignore` 已忽略）；运行时读取视图是 `GET /v1/plugins`，并行注册表
+  `data/plugins/registry.json` 亦早已被忽略。
 - **审计事件**：`audit_log`（`__init__.py:461-474`）发 `plugin_register/unregister/activate/
   deactivate/activate_failed`，但 `scope` 硬编码 `"L1"`（`__init__.py:153-312`）。
 - `_loaded: Dict[str, Any]`（`__init__.py:81`）：已激活插件模块的内存缓存。
