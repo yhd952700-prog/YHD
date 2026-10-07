@@ -704,33 +704,79 @@ def test_guardrail_scripts_were_found() -> None:
     assert "verify_persistence.py" in names, names
 
 
-#: Machine-readable count kept in a ``ci.yml`` comment, so the number a reader
-#: sees and the number this module enforces cannot drift apart.
-_GATE_COUNT_MARKER_RE = re.compile(r"GATE-COUNT-MARKER:\s*(\d+)")
+#: Machine-readable counts kept in ``ci.yml`` comments, so the numbers a reader
+#: sees and the numbers this module enforces cannot drift apart.
 _CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_VERIFY_SCRIPT_RE = re.compile(r"scripts/verify_[a-z0-9_]+\.py")
+
+
+def _ci_job_verify_invocations(job_name: str) -> int:
+    """How many verify_* invocations one ``ci.yml`` job actually contains.
+
+    Derived from the PARSED YAML, counting every occurrence in every step's
+    ``run:``. The first version of this number was obtained with
+    ``sed -n '<line range>' | grep -c 'run: python scripts/verify_'`` and was
+    wrong (39 vs the real 41): that only matches single-line ``run:`` steps and
+    silently skips every multi-line ``run: |`` block. Counting text ranges is
+    how a count rots; counting the structure is not.
+    """
+    for path, document in zip(_workflow_files(), _load_workflows()):
+        if path.name != _CI_WORKFLOW.name or not isinstance(document, dict):
+            continue
+        jobs = document.get("jobs")
+        if not isinstance(jobs, dict):
+            return 0
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            return 0
+        return sum(
+            len(_VERIFY_SCRIPT_RE.findall(str(step.get("run", ""))))
+            for step in (job.get("steps") or [])
+            if isinstance(step, dict)
+        )
+    return 0
+
+
+#: marker in ci.yml -> how the real value is derived
+_DECLARED_COUNTS = {
+    "GATE-COUNT-MARKER": lambda: len(_all_verify_scripts()),
+    "GUARDRAILS-GATE-COUNT": lambda: _ci_job_verify_invocations("guardrails"),
+    "GUARDRAILS-EXTENDED-GATE-COUNT": (
+        lambda: _ci_job_verify_invocations("guardrails-extended")
+    ),
+}
 
 
 def test_declared_gate_count_matches_reality() -> None:
-    """The gate count quoted in ``ci.yml`` must equal the real file count.
+    """Every gate count quoted in ``ci.yml`` must equal the real value.
 
     That comment said ``36`` while the directory held 61 and then 76 -- a number
     nobody re-derives is a number nobody can trust, and "we have N gates" is
-    exactly the kind of claim a readiness review repeats. So the marker is
-    parsed here and compared with the directory: adding a gate without updating
-    the count, or updating the count without adding the gate, turns CI red.
+    exactly the kind of claim a readiness review repeats. So each marker is
+    parsed here and compared with a value derived from the filesystem or the
+    parsed YAML: adding a gate without updating the count, or updating the count
+    without adding the gate, turns CI red.
+
+    Three markers are checked, not one: the total (files on disk) plus the two
+    per-job totals. The per-job pair exists because a wrong per-job number is
+    how a budget decision gets made on fiction -- "guardrails already carries N
+    gates, so it cannot absorb one more" is an argument people act on.
     """
     assert _CI_WORKFLOW.is_file(), "missing %s" % _CI_WORKFLOW
-    declared = _GATE_COUNT_MARKER_RE.findall(_CI_WORKFLOW.read_text(encoding="utf-8"))
-    assert len(declared) == 1, (
-        "ci.yml must carry exactly one 'GATE-COUNT-MARKER: <n>' line, found %d "
-        "-- two markers would let one of them rot unnoticed" % len(declared)
-    )
-    actual = len(_all_verify_scripts())
-    assert int(declared[0]) == actual, (
-        "ci.yml declares %s gates but scripts/ holds %d -- update the marker and "
-        "the prose next to it, or wire/delete the script that changed the count"
-        % (declared[0], actual)
-    )
+    text = _CI_WORKFLOW.read_text(encoding="utf-8")
+    for marker, derive in _DECLARED_COUNTS.items():
+        declared = re.findall(r"%s:\s*(\d+)" % marker, text)
+        assert len(declared) == 1, (
+            "ci.yml must carry exactly one '%s: <n>' line, found %d -- two "
+            "markers with the same name would let one rot unnoticed"
+            % (marker, len(declared))
+        )
+        actual = derive()
+        assert int(declared[0]) == actual, (
+            "ci.yml declares %s = %s but the derived value is %d -- update the "
+            "marker and the prose next to it, or wire/delete the gate that "
+            "changed the count" % (marker, declared[0], actual)
+        )
 
 
 @pytest.mark.parametrize("script", _all_verify_scripts(), ids=lambda p: p.name)

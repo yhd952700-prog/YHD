@@ -679,10 +679,16 @@ jobs:
   # by any workflow -- i.e. protecting nothing. An unwired guardrail is decay.
   #
   # Split into its own job (not folded into `guardrails` above) because that job
-  # already carries 39 verify_* gates against a 15-minute budget; adding 27 more
-  # would turn a timeout into a false red. (Both counts were re-measured
-  # 2026-10-07 with `sed -n '<job range>' ci.yml | grep -c 'run: python
-  # scripts/verify_'`; they are not estimates.)
+  # already carries 41 verify_* gates against a 15-minute budget; adding 27 more
+  # would turn a timeout into a false red.
+  #
+  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 27 -- both are
+  # parsed by tests/test_guardrail_scripts.py and compared against counts
+  # DERIVED FROM THE PARSED YAML (not from a line range). The first version of
+  # this comment said 39, because it was measured with
+  # `sed -n '<line range>' | grep -c 'run: python scripts/verify_'`, which only
+  # sees single-line `run:` steps and silently misses every multi-line `run: |`
+  # block. 41 is the real number. Do not go back to line-range counting.
   #
   # DELIBERATELY NOT WIRED -- 4 gates remain unwired, each with the measured
   # reason it cannot produce a valid verdict on a GitHub-hosted runner. They
