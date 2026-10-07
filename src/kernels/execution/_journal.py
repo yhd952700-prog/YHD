@@ -173,6 +173,33 @@ class ExecutionJournal:
         ).fetchall()
         return {r[0] for r in rows if r[0]}
 
+    def completed_task_artifacts(self, execution_id: str) -> Dict[str, str]:
+        """Map each completed task name to the artifact path it recorded.
+
+        Defect E: a ``task_completed`` row proves the task ran *at some point*,
+        not that its side effect is still on disk. The artifact path recorded at
+        completion is what lets recovery ask the harder question -- does it still
+        exist? Tasks that declared no artifact are simply absent from the map.
+        """
+        rows = self._conn.execute(
+            "SELECT task_name, payload FROM journal_events"
+            " WHERE execution_id = ? AND event_type = 'task_completed'"
+            "   AND task_name IS NOT NULL",
+            (execution_id,),
+        ).fetchall()
+        out: Dict[str, str] = {}
+        for tname, payload in rows:
+            if not tname:
+                continue
+            try:
+                data = json.loads(payload) if payload else {}
+            except (TypeError, ValueError):
+                continue
+            path = data.get("artifact_path") if isinstance(data, dict) else None
+            if isinstance(path, str) and path:
+                out[tname] = path
+        return out
+
     def failed_task_names(self, execution_id: str) -> Set[str]:
         rows = self._conn.execute(
             "SELECT DISTINCT task_name FROM journal_events"

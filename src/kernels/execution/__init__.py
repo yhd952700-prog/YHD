@@ -913,6 +913,50 @@ class ActionExecutor:
         }
 
 
+#: Output-dict keys whose string value names a file the capability wrote.
+#: Kept identical to ``Verifier._FILE_WRITE_KEYS`` on purpose: "what counts as a
+#: claimed artifact" must not have two different answers in one kernel.
+_FILE_WRITE_KEYS = ("written", "path", "file")
+
+
+def artifact_path_from_output(output: Any) -> Optional[str]:
+    """Best-effort extraction of the file a capability claims to have written.
+
+    Returns ``None`` when the output declares no artifact -- which is a
+    *statement about the contract*, not proof that nothing was produced. Used by
+    Defect-E journal verification: only a task that DECLARES an artifact can have
+    that artifact checked later.
+    """
+    if not isinstance(output, dict):
+        return None
+    for key in _FILE_WRITE_KEYS:
+        value = output.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def artifact_currently_exists(path: Optional[str]) -> Optional[bool]:
+    """Prove a declared artifact still exists, or report that it cannot be proven.
+
+    Returns:
+      * ``True``  -- the file exists and is non-empty (proof it is still there).
+      * ``False`` -- the file is absent or empty (proof the side effect is GONE).
+      * ``None``  -- no artifact was declared, so there is nothing to prove.
+
+    ``None`` is deliberately NOT ``True``: "cannot be checked" must never be
+    silently upgraded to "verified". Callers decide what an unprovable claim
+    means; they cannot mistake it for evidence.
+    """
+    if not path:
+        return None
+    try:
+        return os.path.exists(path) and os.path.getsize(path) > 0
+    except OSError:
+        # A path we cannot even stat is not a path we can vouch for.
+        return False
+
+
 class Verifier:
     """Verifies task outcomes against criteria."""
 
@@ -1342,11 +1386,43 @@ class ExecutionEngine:
         done = self.journal.completed_task_names(self._execution_id)
         if not done:
             return 0
+        artifacts = self.journal.completed_task_artifacts(self._execution_id)
 
         resumed = 0
         for task in ctx.plan.tasks:
             if task.status != TaskStatus.PENDING or task.name not in done:
                 continue
+
+            # DEFECT E -- "it finished once" is NOT "it is still finished".
+            #
+            # Previously ANY name match was stamped COMPLETED with a synthetic
+            # success=True ActionResult and zero evidence, so an artifact that
+            # had since been deleted (or never flushed) was reported as done and
+            # the goal declared complete over work that is not there.
+            #
+            # Now a claim is only reclaimable when it is PROVEN:
+            #   * the task declared an artifact  -> the file must still exist and
+            #     be non-empty, else we do NOT reclaim (it stays PENDING and
+            #     re-executes, which is what actually restores the artifact);
+            #   * the task declared no artifact  -> there is no persistent side
+            #     effect that could have gone away, so there is nothing to prove.
+            #     Note this is NOT the same as "verified"; it is "nothing was
+            #     claimed", and it is kept distinct so the two are never conflated.
+            declared_path = artifacts.get(task.name)
+            still_there = artifact_currently_exists(declared_path)
+            if still_there is False:
+                # Proven ABSENT -- refuse the claim. Leaving it PENDING means it
+                # re-runs, which is the only way the missing artifact comes back.
+                self._journal_event(
+                    task,
+                    "journal_claim_unverified",
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=declared_path,
+                    reason="declared artifact missing or empty on resume",
+                )
+                continue
+
             task.status = TaskStatus.COMPLETED
             task.started_at = task.started_at or utc_now()
             task.completed_at = utc_now()
@@ -1355,7 +1431,18 @@ class ExecutionEngine:
             ctx.task_results[task.id] = ActionResult(
                 action_id=f"restored:{task.id}",
                 success=True,
-                output={"restored_from_journal": True, "task_name": task.name},
+                output={
+                    "restored_from_journal": True,
+                    "task_name": task.name,
+                    # Honest provenance of HOW this was accepted back:
+                    # "verified" (artifact proved present) vs "unverifiable"
+                    # (nothing was declared, so nothing could be checked).
+                    "resume_basis": (
+                        "artifact_verified" if still_there is True
+                        else "no_artifact_declared"
+                    ),
+                    "artifact_path": declared_path,
+                },
                 duration_ms=0,
             )
             resumed += 1
@@ -1458,8 +1545,18 @@ class ExecutionEngine:
                 ctx.completed_tasks.add(task.id)
                 # 必须在已被正式标记 COMPLETED 之后立刻落盘：崩溃随时可能发生，
                 # 晚一步写就等于这个任务下次还要重跑（副作用执行第二次）。
+                #
+                # Defect E: record WHAT was produced, not just that it finished.
+                # A bare "task_completed" row only proves the task ran at some
+                # point; the artifact path is what lets a later recovery ask
+                # whether the side effect is STILL there (and is therefore not
+                # silently reclaimable after someone deleted it).
                 self._journal_event(
-                    task, "task_completed", task_id=task.id, goal_id=task.goal_id
+                    task,
+                    "task_completed",
+                    task_id=task.id,
+                    goal_id=task.goal_id,
+                    artifact_path=artifact_path_from_output(result.output),
                 )
 
                 # Verify
