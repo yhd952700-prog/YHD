@@ -29,6 +29,18 @@ legitimate engineering trade-off, not a defect, but it must be *declared* in
 carries the credibility of a real one, and the failure is invisible precisely
 because the guardrail stays green.
 
+"Invoked" is not the same as "runs for us" either. A gate can be named in a
+workflow step and still execute zero times on the branch where work lands --
+when every job that invokes it sits in a workflow whose ``on:`` excludes that
+branch, or behind a job-level ``if:`` that pins another branch. So this module
+reads ``on:`` (branch admission), ``if:`` (branch/event pins) and ``needs:``
+(dangling upstream) as well, and exposes :func:`_protects_target_branch` as the
+real bar, with :func:`_is_wired_into_ci` kept as the weaker "invoked anywhere"
+floor. A gate that clears the floor but not the bar is its own visible state,
+and must be declared in :data:`SCHEDULED_ONLY_GATES` or recorded in the
+exemption ledger -- see :func:`test_gates_that_never_run_on_a_target_branch_
+are_recorded`.
+
 Limitation, stated honestly: (2) is a *necessary* condition, not a sufficient
 one -- a script that raises only on an unreachable branch would still pass.
 Sufficiency comes from the scripts actually running in CI (3) plus the negative
@@ -41,8 +53,10 @@ from __future__ import annotations
 
 import ast
 import functools
+import os
 import pathlib
 import re
+import subprocess
 import textwrap
 
 import pytest
@@ -141,6 +155,29 @@ def _load_workflows(workflows_dir: pathlib.Path = WORKFLOWS_DIR) -> tuple[object
     return tuple(documents)
 
 
+def _job_step_commands(job: object) -> list[str]:
+    """Command-bearing strings from one job's ``steps``."""
+    commands: list[str] = []
+    if not isinstance(job, dict):
+        return commands
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return commands
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in _STEP_COMMAND_KEYS:
+            value = step.get(key)
+            if isinstance(value, str):
+                commands.append(value)
+        with_block = step.get("with")
+        if isinstance(with_block, dict):
+            for key, value in with_block.items():
+                if key in _WITH_COMMAND_KEYS and isinstance(value, str):
+                    commands.append(value)
+    return commands
+
+
 def _step_commands(document: object) -> list[str]:
     """Command-bearing strings from ``jobs -> * -> steps -> *``.
 
@@ -157,23 +194,7 @@ def _step_commands(document: object) -> list[str]:
     if not isinstance(jobs, dict):
         return commands
     for job in jobs.values():
-        if not isinstance(job, dict):
-            continue
-        steps = job.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            for key in _STEP_COMMAND_KEYS:
-                value = step.get(key)
-                if isinstance(value, str):
-                    commands.append(value)
-            with_block = step.get("with")
-            if isinstance(with_block, dict):
-                for key, value in with_block.items():
-                    if key in _WITH_COMMAND_KEYS and isinstance(value, str):
-                        commands.append(value)
+        commands.extend(_job_step_commands(job))
     return commands
 
 
@@ -210,6 +231,217 @@ def _workflow_triggers(document: object) -> frozenset[str]:
     return frozenset()
 
 
+#: Branches on which work actually lands. A gate that cannot run on any of them
+#: protects nothing for us, however often it runs elsewhere. Overridable via
+#: ``LIUHAO_TARGET_BRANCHES`` so the check survives a branch rename without
+#: being silently weakened.
+DEFAULT_TARGET_BRANCHES = ("p36",)
+
+
+def _target_branches() -> frozenset[str]:
+    raw = os.environ.get("LIUHAO_TARGET_BRANCHES")
+    if raw is None:
+        raw = ",".join(DEFAULT_TARGET_BRANCHES)
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+#: Sentinel: the trigger admits every branch (``**``, ``*``, or no ``branches:``).
+_ALL_BRANCHES = "__ALL_BRANCHES__"
+#: Value carried by a ``github.ref_name == github.event.repository.default_branch``
+#: pin whose default branch cannot be resolved. It never matches a target branch,
+#: so an unprovable pin is never counted as protection.
+_UNKNOWN_BRANCH = "__UNKNOWN_BRANCH__"
+
+_REF_EXPRS = ("github.ref", "github.ref_name")
+_CMP_RE = re.compile(
+    r"""(['"][^'"]*['"]|[A-Za-z_][A-Za-z0-9_.]*)\s*==\s*"""
+    r"""(['"][^'"]*['"]|[A-Za-z_][A-Za-z0-9_.]*)"""
+)
+
+
+def _unquote_token(token: str) -> str | None:
+    token = token.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def _default_branch() -> str | None:
+    """The repository's default branch, or ``None`` when it cannot be resolved.
+
+    Only needed to evaluate ``ref_name == github.event.repository.default_branch``
+    pins. ``LIUHAO_DEFAULT_BRANCH`` wins, so an environment where ``origin/HEAD``
+    is unset is explicit rather than quietly changing the verdict.
+    """
+    override = os.environ.get("LIUHAO_DEFAULT_BRANCH")
+    if override:
+        return override.strip()
+    try:
+        proc = subprocess.run(
+            ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    ref = proc.stdout.strip()
+    if not ref:
+        return None
+    return ref.split("/", 1)[1] if ref.startswith("origin/") else ref
+
+
+def _trigger_branch_map(document: object) -> dict[str, object]:
+    """``{event: admitted branches}``; ``_ALL_BRANCHES`` means every branch."""
+    if not isinstance(document, dict):
+        return {}
+    raw = document.get("on", document.get(True))
+    if isinstance(raw, str):
+        return {raw: _ALL_BRANCHES}
+    if isinstance(raw, list):
+        return {str(item): _ALL_BRANCHES for item in raw}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, object] = {}
+    for event, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            out[str(event)] = _ALL_BRANCHES
+            continue
+        branches = cfg.get("branches")
+        if branches is None:
+            out[str(event)] = _ALL_BRANCHES
+        elif isinstance(branches, str):
+            out[str(event)] = frozenset({branches})
+        elif any(str(b) in ("**", "*") for b in branches):
+            out[str(event)] = _ALL_BRANCHES
+        else:
+            out[str(event)] = frozenset(str(b) for b in branches)
+    return out
+
+
+def _job_if_pins(if_expression: object) -> tuple[frozenset[str], frozenset[str]]:
+    """``(events, branches)`` pinned by a job-level ``if:``.
+
+    Only positive ``==`` qualifiers are collected: a ``!=`` widens the set and
+    can never by itself make a job unreachable, so collecting it would
+    manufacture false reds.
+    """
+    events: set[str] = set()
+    branches: set[str] = set()
+    for match in _CMP_RE.finditer(str(if_expression or "")):
+        for expr, other in ((match.group(1), match.group(2)), (match.group(2), match.group(1))):
+            if expr == "github.event_name":
+                literal = _unquote_token(other)
+                if literal is not None:
+                    events.add(literal)
+            elif expr in _REF_EXPRS:
+                if "github.event.repository.default_branch" in other:
+                    branches.add(_default_branch() or _UNKNOWN_BRANCH)
+                    continue
+                literal = _unquote_token(other)
+                if literal is None:
+                    continue
+                if literal.startswith("refs/heads/"):
+                    literal = literal[len("refs/heads/"):]
+                branches.add(literal)
+    return frozenset(events), frozenset(branches)
+
+
+def _normalise_needs(needs: object) -> list[str]:
+    if needs is None:
+        return []
+    if isinstance(needs, str):
+        return [needs]
+    if isinstance(needs, dict):
+        return [str(key) for key in needs]
+    if isinstance(needs, list):
+        return [str(item) for item in needs]
+    return [str(needs)]
+
+
+def _job_runs_on_target(document: object, job: object) -> bool:
+    """Can this job execute when work lands on a target branch?
+
+    Two layers on top of "the script name appears in a command":
+
+    1. TRIGGER ADMISSION -- the workflow's ``on:`` must admit a target branch
+       for at least one event. ``ci-cd.yml`` triggers only on ``main``/``develop``,
+       so nothing in it has ever run for work on ``p36``.
+    2. IF PINS -- a job-level ``if:`` that pins an event or a branch must not
+       exclude that combination. This is the class that silently disabled four
+       ``ci.yml`` jobs (``ref_name == github.event.repository.default_branch``
+       while the default branch was not the working branch).
+
+    A ``needs:`` naming a job the workflow does not define makes the job
+    unrunnable as well, so that is checked too. (Whether a satisfied ``needs:``
+    chain survives a red upstream is CRITICAL-5's job, enforced by
+    ``scripts/verify_critical5_watchdog.py``; it is deliberately not duplicated
+    here, because two copies of that rule would drift.)
+    """
+    if not isinstance(document, dict) or not isinstance(job, dict):
+        return False
+    branch_map = _trigger_branch_map(document)
+    if not branch_map:
+        return False
+    targets = _target_branches()
+    # Only commit/PR events carry "work landed on a branch". A `schedule` or
+    # `workflow_dispatch` trigger admits branches too, but it never fires for a
+    # push, so it cannot make a gate protect one (that is SCHEDULED_ONLY's job).
+    admissible = {
+        event
+        for event, branches in branch_map.items()
+        if event in _PUSH_TRIGGER_KEYS
+        and (
+            branches == _ALL_BRANCHES
+            or (isinstance(branches, frozenset) and branches & targets)
+        )
+    }
+    if not admissible:
+        return False
+    pinned_events, pinned_branches = _job_if_pins(job.get("if"))
+    if pinned_events and not (pinned_events & admissible):
+        return False
+    if pinned_branches and not (pinned_branches & targets):
+        return False
+    jobs = document.get("jobs")
+    if isinstance(jobs, dict):
+        for upstream in _normalise_needs(job.get("needs")):
+            if upstream not in jobs:
+                return False
+    return True
+
+
+def _invoking_jobs(script_name: str) -> list[tuple[str, str, bool]]:
+    """``(workflow, job, runs_on_target)`` for every job invoking the script."""
+    found: list[tuple[str, str, bool]] = []
+    for path, document in zip(_workflow_files(), _load_workflows()):
+        jobs = document.get("jobs") if isinstance(document, dict) else None
+        if not isinstance(jobs, dict):
+            continue
+        for job_name, job in jobs.items():
+            if not isinstance(job, dict):
+                continue
+            if not any(script_name in cmd for cmd in _job_step_commands(job)):
+                continue
+            found.append((path.name, str(job_name), _job_runs_on_target(document, job)))
+    return found
+
+
+def _protects_target_branch(script_name: str) -> bool:
+    """True only if some job invoking the script can run on a target branch.
+
+    ``_is_wired_into_ci`` answers "is it invoked anywhere"; this answers the
+    question that actually matters, "does that invocation protect the branch we
+    work on". A gate invoked solely from a workflow whose triggers exclude every
+    target branch -- or solely from a job whose ``if:`` pins another branch --
+    runs zero times for our work while its name still appears in CI.
+    """
+    return any(runs_on_target for _, _, runs_on_target in _invoking_jobs(script_name))
+
+
 #: Classification of a gate by WHERE it is invoked. The distinction that matters:
 #: a gate invoked only from a nightly/manual workflow runs zero times on the
 #: next commit, so counting it as "wired" lets a zero-protection gate borrow
@@ -222,7 +454,14 @@ UNWIRED = "unwired"
 
 
 def _classify_wiring(script_name: str) -> str:
-    """Classify a gate by the narrowest trigger that invokes it."""
+    """Classify a gate by the narrowest trigger that invokes it.
+
+    Reading ``on:`` is necessary but not sufficient: a push-triggered workflow
+    whose ``branches:`` exclude every target branch, or whose job ``if:`` pins
+    another branch, still runs zero times for our work. So an invocation only
+    counts toward ``push-protected`` when :func:`_protects_target_branch`
+    confirms the job is actually reachable.
+    """
     saw_push = False
     saw_sided = False
     for document in _load_workflows():
@@ -230,14 +469,18 @@ def _classify_wiring(script_name: str) -> str:
             continue
         triggers = _workflow_triggers(document)
         if triggers & _PUSH_TRIGGER_KEYS:
-            saw_push = True
+            if _protects_target_branch(script_name):
+                saw_push = True
+            # else: declared as a push workflow, yet no invocation of this gate
+            #       reaches a target branch -> contributes no protection.
         elif triggers & _SIDED_TRIGGER_KEYS:
             saw_sided = True
         else:
             # Invoked from a workflow with no recognisable trigger: treat it as
             # push-protected rather than inventing a new category, but never
             # let it *alone* excuse a scheduled-only gate.
-            saw_push = True
+            if _protects_target_branch(script_name):
+                saw_push = True
     if saw_push:
         return PUSH_PROTECTED
     if saw_sided:
@@ -246,6 +489,14 @@ def _classify_wiring(script_name: str) -> str:
 
 
 def _is_wired_into_ci(script_name: str) -> bool:
+    """Is the script *invoked* by any workflow step at all?
+
+    Deliberately the weaker primitive: it is the floor ("somebody runs it
+    somewhere"), not the bar. The bar is :func:`_protects_target_branch`,
+    which additionally proves the invoking job can run on a branch we work on.
+    Keeping both means "invoked but unreachable" is its own visible state
+    instead of being folded into either green or red.
+    """
     return any(_workflow_invokes(doc, script_name) for doc in _load_workflows())
 
 
@@ -453,6 +704,35 @@ def test_guardrail_scripts_were_found() -> None:
     assert "verify_persistence.py" in names, names
 
 
+#: Machine-readable count kept in a ``ci.yml`` comment, so the number a reader
+#: sees and the number this module enforces cannot drift apart.
+_GATE_COUNT_MARKER_RE = re.compile(r"GATE-COUNT-MARKER:\s*(\d+)")
+_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def test_declared_gate_count_matches_reality() -> None:
+    """The gate count quoted in ``ci.yml`` must equal the real file count.
+
+    That comment said ``36`` while the directory held 61 and then 76 -- a number
+    nobody re-derives is a number nobody can trust, and "we have N gates" is
+    exactly the kind of claim a readiness review repeats. So the marker is
+    parsed here and compared with the directory: adding a gate without updating
+    the count, or updating the count without adding the gate, turns CI red.
+    """
+    assert _CI_WORKFLOW.is_file(), "missing %s" % _CI_WORKFLOW
+    declared = _GATE_COUNT_MARKER_RE.findall(_CI_WORKFLOW.read_text(encoding="utf-8"))
+    assert len(declared) == 1, (
+        "ci.yml must carry exactly one 'GATE-COUNT-MARKER: <n>' line, found %d "
+        "-- two markers would let one of them rot unnoticed" % len(declared)
+    )
+    actual = len(_all_verify_scripts())
+    assert int(declared[0]) == actual, (
+        "ci.yml declares %s gates but scripts/ holds %d -- update the marker and "
+        "the prose next to it, or wire/delete the script that changed the count"
+        % (declared[0], actual)
+    )
+
+
 @pytest.mark.parametrize("script", _all_verify_scripts(), ids=lambda p: p.name)
 def test_every_verify_script_bootstraps_sys_path(script: pathlib.Path) -> None:
     """``python scripts/x.py`` from the repo root must be able to import src."""
@@ -557,6 +837,93 @@ def test_wiring_classification_covers_every_gate() -> None:
     allowed = {PUSH_PROTECTED, SCHEDULED_ONLY, UNWIRED}
     for script in _gate_scripts():
         assert _classify_wiring(script.name) in allowed, script.name
+
+
+def test_gates_that_never_run_on_a_target_branch_are_recorded() -> None:
+    """"Invoked" is not "protects": close the gap between the two.
+
+    A gate can be named in a workflow step and still run zero times for our
+    work -- when every job that invokes it sits in a workflow whose triggers
+    exclude the target branch, or behind an ``if:`` that pins another branch.
+    ``_is_wired_into_ci`` scores such a gate as wired, which is precisely the
+    false assurance that let four ``ci.yml`` jobs stay dark.
+
+    The concrete case today: ``verify_go_readiness.py`` is invoked only from
+    ``ci-cd.yml:build``, and ``ci-cd.yml`` triggers on ``main``/``develop``
+    only, so it has never run for work on p36.
+
+    Escape hatches are the same as everywhere else in this module -- declare
+    the trade-off (:data:`SCHEDULED_ONLY_GATES`) or record it in the exemption
+    ledger with an owner and an unblock path. Silence is not one.
+    """
+    ledger = _load_ledger()
+    unrecorded = [
+        p.name
+        for p in _gate_scripts()
+        if _is_wired_into_ci(p.name)
+        and not _protects_target_branch(p.name)
+        and p.name not in SCHEDULED_ONLY_GATES
+        and p.name not in ledger
+    ]
+    assert not unrecorded, (
+        "these gates are named in a workflow but every job that invokes them is "
+        "unreachable on %s, so they protect nothing while reading as wired: %s "
+        "-- wire them into a job that actually runs, declare them in "
+        "SCHEDULED_ONLY_GATES, or record them in %s with an owner"
+        % (sorted(_target_branches()), unrecorded, EXEMPTION_LEDGER.name)
+    )
+
+
+def test_reachability_judgment_reads_triggers_and_if_pins() -> None:
+    """Control: the two new layers must actually fire, not merely parse.
+
+    Without this, a future edit could reduce ``_job_runs_on_target`` to a
+    rubber stamp and the module would still be green -- the same way
+    "the name appears in the file" was green while nothing ran.
+    """
+    unreachable = {
+        "on": {"push": {"branches": ["main", "develop"]}},
+        "jobs": {"build": {"if": "always()", "steps": [{"run": "python scripts/x.py"}]}},
+    }
+    assert not _job_runs_on_target(unreachable, unreachable["jobs"]["build"]), (
+        "a workflow whose triggers exclude every target branch must not count "
+        "as reachable"
+    )
+
+    pinned = {
+        "on": {"push": {"branches": ["**"]}},
+        "jobs": {
+            "gate": {
+                "if": "always() && github.ref == 'refs/heads/main'",
+                "steps": [{"run": "python scripts/x.py"}],
+            }
+        },
+    }
+    assert not _job_runs_on_target(pinned, pinned["jobs"]["gate"]), (
+        "a job pinning a branch that is not a target branch must not count as "
+        "reachable"
+    )
+
+    reachable = {
+        "on": {"push": {"branches": ["**"]}},
+        "jobs": {"gate": {"if": "always()", "steps": [{"run": "python scripts/x.py"}]}},
+    }
+    assert _job_runs_on_target(reachable, reachable["jobs"]["gate"])
+
+    dangling = {
+        "on": {"push": {"branches": ["**"]}},
+        "jobs": {
+            "gate": {
+                "needs": "does-not-exist",
+                "if": "always()",
+                "steps": [{"run": "python scripts/x.py"}],
+            }
+        },
+    }
+    assert not _job_runs_on_target(dangling, dangling["jobs"]["gate"]), (
+        "a job whose `needs:` names a job the workflow does not define can "
+        "never run"
+    )
 
 
 def test_verify_metrics_persist_is_classified_scheduled_only() -> None:
@@ -884,11 +1251,15 @@ def test_gate_exemption_entries_are_still_needed() -> None:
     Without this the ledger would outlive its reason and quietly start
     describing gates that are in fact protected -- the exact decay this whole
     module exists to prevent, one level up.
+
+    "Wired" here means *protecting a target branch*, not merely named in a
+    command: a gate invoked only from an unreachable job is still exempt, so
+    seeing its name in ci-cd.yml does not make its ledger entry stale.
     """
     stale = [
         name
         for name in _load_ledger()
-        if _is_wired_into_ci(name)
+        if _protects_target_branch(name)
     ]
     assert not stale, (
         "these ledger entries are now wired into a workflow, so the exemption "

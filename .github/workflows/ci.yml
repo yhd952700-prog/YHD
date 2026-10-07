@@ -223,7 +223,10 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 36 (2026-09-30).
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 76 (2026-10-07).
+  # GATE-COUNT-MARKER: 76 -- tests/test_guardrail_scripts.py parses this marker
+  # and fails when it disagrees with the real file count, so this number cannot
+  # silently rot the way "36" did.
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by
   # some workflow, sys.path-bootstrapped, and able to exit non-zero -- so adding a
   # script without wiring it turns CI red, which is the point: a guard nobody runs
@@ -656,13 +659,15 @@ jobs:
         run: python scripts/verify_persistence.py
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Guardrails, extended set: 16 more `scripts/verify_*.py` gates that were
+  # Guardrails, extended set: 27 more `scripts/verify_*.py` gates that were
   # written, cited as evidence in PRODUCT-READINESS.md, and yet never invoked
   # by any workflow -- i.e. protecting nothing. An unwired guardrail is decay.
   #
   # Split into its own job (not folded into `guardrails` above) because that job
-  # already carries ~30 steps against a 15-minute budget; adding 16 more would
-  # turn a timeout into a false red.
+  # already carries 39 verify_* gates against a 15-minute budget; adding 27 more
+  # would turn a timeout into a false red. (Both counts were re-measured
+  # 2026-10-07 with `sed -n '<job range>' ci.yml | grep -c 'run: python
+  # scripts/verify_'`; they are not estimates.)
   #
   # DELIBERATELY NOT WIRED -- 4 gates remain unwired, each with the measured
   # reason it cannot produce a valid verdict on a GitHub-hosted runner. They
@@ -671,6 +676,15 @@ jobs:
   # repo forbids. tests/test_guardrail_scripts.py therefore still reports
   # them -- that red entry is the signal, not a nuisance. Each has its own
   # remediation task.
+  #
+  # SEPARATE, NEWER CLASS -- "invoked but unreachable". A gate can be named in a
+  # workflow step and still run zero times for our work, when every job that
+  # invokes it sits behind triggers or an `if:` that exclude the working branch.
+  # `verify_go_readiness.py` is the live instance: it is invoked only from
+  # ci-cd.yml:build, and ci-cd.yml triggers on main/develop only, so it has
+  # never run on p36. It is NOT in the four below because its blocker is a
+  # wiring/ownership decision, not a runner capability. Recorded in
+  # docs/ci/gate-exemptions.md entry 5 (pending-owner: g9-deploy).
   #
   # `verify_deploy_readiness` was on this list until it was wired at the
   # `guardrails-extended` step below, after its alembic-invocation portability
@@ -684,12 +698,17 @@ jobs:
   # unwired gates read as wired -- a false green, i.e. the exact decay this
   # job exists to prevent. Keep them suffix-less.
   #   * verify_deployment_gate_vars     -- GENUINE FAIL (runs clean, reports
-  #                                        12 findings: 7 gates genuinely unset
-  #                                        in the artifacts + 3 unclassified
-  #                                        candidates + 2 read indirectly via
-  #                                        a constant and needing human
-  #                                        confirmation). The 12 are a human
-  #                                        decision, tracked in the task list.
+  #                                        16 findings, re-measured
+  #                                        2026-10-07: unclassified
+  #                                        gate-variable candidates such as
+  #                                        LIUHAO_CONSOLE_DIST and
+  #                                        LIUHAO_WORKSPACE_ROOT, plus
+  #                                        untracked deployment artifacts
+  #                                        (.env, docker-compose.yml) that
+  #                                        would let a gate pass on one machine
+  #                                        and fail everywhere else). The 16
+  #                                        are a human decision. The older
+  #                                        "12 findings" figure here was stale.
   #   * verify_deployed_product_closure -- needs a Docker daemon AND a
   #                                        headless browser.
   #   * verify_image_build              -- needs a Docker daemon.

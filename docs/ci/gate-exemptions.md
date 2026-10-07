@@ -18,13 +18,13 @@ real gate but whose verdict a bare CI runner cannot produce**:
 
 - `DIAGNOSTIC_REPORTERS` — exempts a script from (2) and (3), but is validated by
   `test_allowlist_entries_are_genuine_reporters`, which **fails** if a listed
-  script has any non-zero exit path. All four gates below *can* exit non-zero
+  script has any non-zero exit path. All five gates below *can* exit non-zero
   (verified by AST), so registering them here would break that assertion rather
   than satisfy it.
 - `SCHEDULED_ONLY_GATES` — a gate already invoked from a timer/manual workflow.
 
 So this ledger is **not** a licence to skip the guard. It is the honest record of
-*why* four assertions stay red, who owns each, and what must happen to turn them
+*why* five assertions stay red, who owns each, and what must happen to turn them
 green. This file is referenced from `tests/test_guardrail_scripts.py`
 (`GATE_EXEMPTIONS`), so the ledger and the test cannot drift apart silently.
 
@@ -111,6 +111,35 @@ cannot produce a valid verdict there either.
 - **Re-run condition:** owner classifies the 16 findings, then wires the gate.
   Because the findings are **human decisions**, this entry is deliberately
   `pending-owner`, not a permanent exemption.
+
+### 5. `verify_go_readiness.py` — `pending-owner` (**invoked but UNREACHABLE**)
+
+- **Nature:** real GO gate, *named* in CI yet **never executed for our work**.
+  This is a new failure class, not an environment problem: the script is
+  correct, the wiring is not.
+- **Owner:** `g9-deploy` (owns `ci-cd.yml`, the only workflow that invokes it).
+- **Why exempt:** it is invoked from exactly one job, `ci-cd.yml:build`, and that
+  job is **unreachable on the working branch**. `ci-cd.yml` triggers only on
+  `push: [main, develop]` and `pull_request: [main]`, while all work lands on
+  `p36`; additionally the job's own
+  `if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'`
+  pins both the event and the branch away from `p36`. So the gate has run zero
+  times for this branch while reading as "wired" in every earlier audit — the
+  same false assurance that previously hid four dead `ci.yml` jobs.
+- **Why this needs an owner decision rather than an automatic fix:** the gate's
+  own docstring states it **fails today by design** (HC-01's persisted chain is
+  forked, so the honest verdict is `GO_STATUS: UNVERIFIED` / `exit 1`). Making it
+  reachable therefore converts it from "never runs" to "runs and correctly fails
+  the GO decision" — which is a release-gate decision for the owner, not
+  something to trigger silently from a wiring cleanup.
+- **Host capability required:** none. It needs no Docker and no browser; the
+  blocker is reachability + an open GO decision, not the runner.
+- **Re-run condition:** owner either (a) makes `ci-cd.yml:build` reachable on the
+  working branch (drop the branch/event pins, as was done for four `ci.yml`
+  jobs), or (b) invokes the gate from a job that already runs on the working
+  branch, or (c) states in writing that the GO gate intentionally does not gate
+  this branch. Then delete this entry — `test_gate_exemption_entries_are_still_
+  needed` fails on a stale entry.
 
 ## What is NOT in this ledger
 
