@@ -38,6 +38,16 @@ Every scanned candidate must be resolved by exactly one of: being SET in an
 artifact, being in ``SEED_GATES``, or being in ``ALLOWLIST`` **with a written
 reason**. There is no implicit leniency and no "warn only" path to green.
 
+NOTE (2026-10-07, unresolved): the candidate loop below does **not** honour
+"being SET in an artifact" -- a scan-detected candidate is reported until it is
+in ``SEED_GATES`` or ``ALLOWLIST``, even when an artifact sets it (measured:
+``AUDIT_DB_PATH`` is set at ``docker-compose.prod.yml:69`` and is still
+reported). The two readings are both defensible: honouring the artifact would
+clear ``LIUHAO_WORKSPACE_ROOT`` / ``LIUHAO_CONSOLE_DIST`` that only the *CI*
+workflow sets (not the deployment), which could green-light a real gap; not
+honouring it demands an explicit adjudication the code cannot infer. Left as-is
+rather than silently picking a side -- see task #250.
+
 Scope, stated honestly
 ======================
 The AST scan is a *necessary* detector, not a sufficient one. A variable whose
@@ -126,7 +136,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "means the gate NEVER executes even though boot logs the fence as "
             "installed, so every fenced action runs un-gated"
         ),
-        "refs": ("src/kernels/_crosscutting.py:718", "src/kernels/execution/fence.py:1279"),
+        "refs": ("src/kernels/_crosscutting.py:754", "src/kernels/execution/fence.py:1279"),
     },
     {
         "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
@@ -172,7 +182,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "production code ever writes, so the restore branch is inert and a "
             "corruption event silently starts a new hash chain"
         ),
-        "refs": ("src/kernels/audit/__init__.py:396",),
+        "refs": ("src/kernels/audit/__init__.py:414",),
     },
     {
         "var": "LIUHAO_EXECUTOR_FENCE_LEASE_DIR",
@@ -688,12 +698,21 @@ def evaluate(artifact_vars: Dict[str, List[str]],
         # must not be silenced by one either.
         bad_refs = drifted_refs(var, refs, aliases, const_map.get(var, ()))
         if bad_refs:
+            # ``drifted_refs`` returns a *formatted* description of each bad ref
+            # ("<ref> (line reads: ...)"). The old filter compared that
+            # description against the raw ref, so it never matched and the
+            # finding re-listed -- under "read at:" -- the very pointer it had
+            # just called drifted, handing the reader evidence the gate knew was
+            # wrong. Recover the raw ref from the description prefix so only the
+            # *still-valid* evidence is shown; the bad ref is named in the
+            # detail above and is not silently dropped.
+            bad_raw = {str(b).split(" (", 1)[0] for b in bad_refs}
             findings.append(Finding(
                 var, "seed-ref-drifted",
                 "cited evidence no longer points at this variable -- %s. A ref "
                 "that names unrelated code is worse than no ref: it looks "
                 "checkable and is not." % "; ".join(bad_refs),
-                [r for r in refs if r not in bad_refs],
+                [r for r in refs if str(r) not in bad_raw],
                 "re-point the entry at the line that reads %s" % var))
         # A var can be live while never appearing in a literal
         # ``os.environ.get("LIUHAO_X")`` call -- ``src/security/posture.py``
