@@ -4,6 +4,12 @@
 **Guard:** `scripts/lint_control_claims.py` (ratcheted — fails on a *new*
 un-dispositioned assertive control claim; existing ones are frozen in
 `scripts/control_claim_baseline.txt` and adjudicated here).
+**Wired into CI:** `.github/workflows/doc-lint.yml`, in the same
+`lint-audit-claims` job (`run: python scripts/lint_control_claims.py --all`),
+plus the two path filters (`scripts/lint_control_claims.py`,
+`scripts/control_claim_baseline.txt`). Wiring rule: this is a *claim-guard*, not
+a gate to widen — **do NOT expand its scan surface to make it "look broader";
+fix the product instead.**
 
 ## The criterion (three-state; NEVER two-state)
 
@@ -40,21 +46,32 @@ This ledger is **excluded from its own scan**: it must quote control language to
 is guaranteed self-noise. Excluding it removed 4 spurious "claims" (its own lines
 11/15/28/29) and restored the corpus to the 130-file / 22-claim figures above.
 
-**Known scope boundary (honest limitation).** The guard does **not** scan code
-docstrings (`src/`, `apps/`). The two headline false guarantees include one of
-exactly this kind — `apps/console/console/src/lib/errorMessage.ts:32-33` (a TS
-docstring asserting a peer layer sends `X-Trace-ID`). That class is currently
-caught **manually + via this ledger**, not by the guard. The `CROSS_LAYER`
-detector is also English-centric: it did **not** match the Chinese form
-"跨域部署下也能拿到" for that very line. Both are recorded improvements, not
-silent gaps — do not read a guard `PASS` as "no false guarantee exists in code".
+**Known blind spots (confirmed; registered, not hidden).** A guard `PASS` must
+**not** be read as "no false guarantee exists" — these bound what this guard can
+see:
+1. **Markdown-only surface.** `scan_file` only reads `.md`, so **code docstrings
+   (`src/`, `apps/`) are out of surface**. The headline `errorMessage.ts:32-33`
+   case is exactly this kind — it was caught **by inspection + this ledger, not by
+   the guard**. Widening the surface to scan code is a *product* decision and was
+   deliberately **not** done here (fix the product, not the gate).
+2. **`CROSS_LAYER` is English-centric, and its Chinese branch is verb-less.**
+   The 后端/前端/网关/服务端/客户端/浏览器/作业 alternation requires no verb, so
+   it is over-broad in Markdown and effectively absent for code — it did **not**
+   match the Chinese form "跨域部署下也能拿到" on the very line above.
 
-### FALSIFIED — confirmed real defects
+Each is a recorded improvement, not a silent gap.
+
+### FALSIFIED — confirmed real defects (both now actioned)
 
 | file:line | claim | falsification basis | status |
 |---|---|---|---|
-| `docs/adr/ADR-HOLD-SCOPE.md` §2.1 | "the code-level freeze" is the authoritative guarantee | No `src/` code reads `LIUHAO_HOLD`; only machine enforcement is `check_hold_gate.py`. | **FIXED** — commit `6922c8a5` |
-| `apps/console/console/src/lib/errorMessage.ts:32-33` | "回退到响应头 `X-Trace-ID`，跨域部署下也能拿到" (cross-layer) | On **HEAD** `expose_headers` is **ABSENT** in `src/gateway/main.py` → CORS exposes only simple headers → browser JS cannot read `X-Trace-ID`. Backend half was absent. | **FIXED in working tree, NOT yet on HEAD** — owner added `expose_headers=["X-Trace-ID"]` + `request.state.trace_id`; re-verify once committed |
+| `docs/adr/ADR-HOLD-SCOPE.md` §2.1 | "the code-level freeze" is the authoritative guarantee | No `src/` code reads `LIUHAO_HOLD`; only machine enforcement is `check_hold_gate.py`. | **FALSIFIED → FIXED** — doc rewritten in `6922c8a5`; the guarantee is now described as human discipline outside the CI release path. |
+| `apps/console/console/src/lib/errorMessage.ts:32-33` | "回退到响应头 `X-Trace-ID`，跨域部署下也能拿到" (cross-layer) | On the **pre-fix HEAD** `expose_headers` was ABSENT in `src/gateway/main.py` → CORS exposes only simple response headers → browser JS could not read `X-Trace-ID`; the backend half was missing. | **FALSIFIED → PASS (re-verified)** — backend half landed in `440c3a39` (now in HEAD): `expose_headers=["X-Trace-ID"]` (`src/gateway/main.py:536`), `request.state.trace_id` (`:558`), response header set (`:564`); behaviour test `tests/gateway/test_error_surface_and_boot_truth.py` (**6 passed**) pins both halves. **Both sides of the cross-layer claim now have a basis.** |
+
+Textbook sample for the cross-layer rule: this claim was true on **neither** side
+at `HEAD` (backend did not expose the header; frontend's fallback therefore
+returned `null` cross-origin) and became true only when **both** artefacts
+carried it. One side alone = a false guarantee.
 
 ### un-dispositioned 22 — adjudication
 
@@ -83,10 +100,10 @@ silent gaps — do not read a guard `PASS` as "no false guarantee exists in code
 | `docs/autonomous/HUMAN-DECISION-BACKLOG.md:25` | FP (status) | "Irreversible action still blocked" — status, not a control guarantee |
 | `docs/autonomous/IDENTIFIER-POLICY.md:230` | FP (heading) | "identifiers lacking a uniqueness guarantee" — a section title |
 
-**Net:** 0 **new** FALSIFIED beyond the two already-actioned (HOLD §2.1, the
-`X-Trace-ID` cross-layer claim); 12 PASS; 3 NOT VERIFIED; 7 regex false
-positives (FP) — the FP set is why this is a **ratchet** (baseline), not a
-"clean all N lines" gate.
+**Net:** **2 FALSIFIED found, 0 outstanding** — both actioned (one doc rewrite
+`6922c8a5`; one wired + re-verified `440c3a39`, re-adjudicated FALSIFIED → PASS);
+12 PASS; 3 NOT VERIFIED; 7 regex false positives (FP) — the FP set is why this is
+a **ratchet** (baseline), not a "clean all N lines" gate.
 
 ## Note on scope of applicability
 

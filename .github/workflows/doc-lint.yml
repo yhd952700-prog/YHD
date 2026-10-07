@@ -16,6 +16,8 @@ on:
       - 'MASTER_PROJECT_READINESS.md'
       - 'RELEASE-READINESS-CONTRACT.md'
       - 'scripts/lint_audit_claims.py'
+      - 'scripts/lint_control_claims.py'
+      - 'scripts/control_claim_baseline.txt'
       - 'apps/**/*.md'
       - 'libs/**/*.md'
       - 'oss-ecosystem/**/*.md'
@@ -38,6 +40,8 @@ on:
       - 'skills/**/*.md'
       - 'LiuHao-O/**/*.md'
       - 'scripts/lint_audit_claims.py'
+      - 'scripts/lint_control_claims.py'
+      - 'scripts/control_claim_baseline.txt'
 
 jobs:
   lint-audit-claims:
@@ -60,3 +64,15 @@ jobs:
         # (GDPR/CCPA/PII/privacy/legal-accountability) WITHOUT the required
         # caveat. This is a technical claim-guard, NOT a legal/compliance
         # certification.
+      - name: Lint control claims (assertive control claims need a basis)
+        run: python scripts/lint_control_claims.py --all
+        # Scans docs/**/*.md for ASSERTIVE control claims ("is enforced",
+        # "guarantees", "will block/deny", "cannot be ...", "强制...") that carry
+        # NEITHER a verifiable basis pointer (path/commit/file:line) NOR an
+        # UNVERIFIED tag. Ratcheted: fails (exit 1) ONLY on a NEW
+        # un-dispositioned claim; the existing set is frozen in
+        # scripts/control_claim_baseline.txt and adjudicated in
+        # docs/governance/CONTROL-CLAIM-LEDGER.md. Three-state by design
+        # (FALSIFIED / NOT VERIFIED / PASS), never two-state. Known scope limit:
+        # it scans Markdown only -- code docstrings (src/, apps/) are OUT of
+        # surface, so a PASS here is NOT "no false guarantee exists in code".
