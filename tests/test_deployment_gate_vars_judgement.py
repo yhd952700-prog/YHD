@@ -28,10 +28,15 @@ G4  ``refs`` were emitted as evidence and never checked. 5 of them had drifted:
     looks checkable.
 
 What these tests deliberately do NOT assert: that the gate exits 0. It exits 1,
-and that is correct -- 7 real gates are unset in the deployment artifacts and 3
-scan-detected variables are unclassified. That is a human decision, recorded in
-the task list, not something a test should paper over. Asserting "the gate is
-green" here would be exactly the fake-pass pattern these tests exist to prevent.
+and that is correct -- 8 seed gates are unset or read-indirectly in the
+deployment artifacts (7 ``gate-var-never-set`` plus ``LIUHAO_POSTURE_STRICT``,
+reported as ``seed-entry-read-indirectly``) and 4 scan-detected variables are
+unclassified (``AUDIT_DB_PATH``, ``LIUHAO_ALLOW_SIMULATED_EXECUTION``,
+``LIUHAO_CONSOLE_DIST``, ``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the
+run is 14 findings (16 before the two drifted-ref findings were fixed in
+2b8f802b). That is a human decision, recorded in the task list, not something a
+test should paper over. Asserting "the gate is green" here would be exactly the
+fake-pass pattern these tests exist to prevent.
 """
 
 from __future__ import annotations
