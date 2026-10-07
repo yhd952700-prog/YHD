@@ -185,6 +185,41 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
         "refs": ("src/kernels/audit/__init__.py:414",),
     },
     {
+        "var": "AUDIT_DB_PATH",
+        "expect": "set",
+        "aliases": (),
+        "why": (
+            "configured path of the persisted audit hash-chain. Absence selects "
+            "the permissive branch in two of its three readers: "
+            "src/gateway/main.py:314-322 logs 'AUDIT CHECKPOINTER SKIPPED' and "
+            "keeps serving (the background verifier never starts, so /v1/ready "
+            "evidence_status stays 'unverified' forever), and "
+            "src/gateway/health.py:280-298 calls unset a 'configuration state' "
+            "(healthy, note only) while it degrades when the var IS set but no "
+            "verifier runs. The third reader is deliberately fail-closed, not "
+            "permissive: src/kernels/audit/__init__.py:398-407 raises "
+            "RuntimeError rather than defaulting to the frozen project-root "
+            "store. Unset therefore does not stop the service -- it silently "
+            "leaves the audit chain uncheckpointed. It is also NOT a readiness "
+            "gate by design (src/gateway/main.py:310-313: 'unverified' must not "
+            "503 the deployment), which is exactly why the decision has to be "
+            "recorded here instead of inferred from a green signal. Armed at "
+            "docker-compose.prod.yml:69 and "
+            "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
+            ".github/workflows/ci.yml:762 also pins a temp path, so removing the "
+            "two compose lines alone does NOT redden this entry -- the CI pin "
+            "keeps it satisfied. That is the artifact-honouring tension recorded "
+            "in the NOTE above (task #250), not an arming decision."
+        ),
+        "refs": (
+            "src/gateway/main.py:314",
+            "src/gateway/health.py:280",
+            "src/kernels/audit/__init__.py:398",
+            "docker-compose.prod.yml:69",
+            "infra/staging/docker-compose.yml:59",
+        ),
+    },
+    {
         "var": "LIUHAO_EXECUTOR_FENCE_LEASE_DIR",
         "expect": "set",
         "aliases": (),

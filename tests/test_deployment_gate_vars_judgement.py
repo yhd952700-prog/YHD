@@ -30,13 +30,15 @@ G4  ``refs`` were emitted as evidence and never checked. 5 of them had drifted:
 What these tests deliberately do NOT assert: that the gate exits 0. It exits 1,
 and that is correct -- 8 seed gates are unset or read-indirectly in the
 deployment artifacts (7 ``gate-var-never-set`` plus ``LIUHAO_POSTURE_STRICT``,
-reported as ``seed-entry-read-indirectly``) and 4 scan-detected variables are
-unclassified (``AUDIT_DB_PATH``, ``LIUHAO_ALLOW_SIMULATED_EXECUTION``,
-``LIUHAO_CONSOLE_DIST``, ``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the
-run is 14 findings (16 before the two drifted-ref findings were fixed in
-2b8f802b). That is a human decision, recorded in the task list, not something a
-test should paper over. Asserting "the gate is green" here would be exactly the
-fake-pass pattern these tests exist to prevent.
+reported as ``seed-entry-read-indirectly``) and 3 scan-detected variables are
+unclassified (``LIUHAO_ALLOW_SIMULATED_EXECUTION``, ``LIUHAO_CONSOLE_DIST``,
+``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the run is 13 findings (16
+before the two drifted-ref findings were fixed in 2b8f802b; 14 before
+``AUDIT_DB_PATH`` was adjudicated into SEED_GATES the same day, which dropped
+the unclassified count from 4 to 3). That is a human decision, recorded in the
+task list, not something a test should paper over. Asserting "the gate is
+green" here would be exactly the fake-pass pattern these tests exist to
+prevent.
 """
 
 from __future__ import annotations
@@ -365,3 +367,103 @@ class TestEvidenceIsVersionControlled:
         assert "PROBE_READ_VAR" not in found, (
             "a subscript read is not a set; counting it would let evidence the "
             "artifact merely reads satisfy a gate: %r" % (found,))
+
+
+# --------------------------------------------------------------------------- #
+# AUDIT_DB_PATH -- the decision must be recorded AND the entry must have teeth
+# --------------------------------------------------------------------------- #
+#: The sites the entry's `why` claims. Kept next to the assertions so a reworded
+#: `why` that quietly drops one of them is caught.
+_AUDIT_DB_PATH_EVIDENCE = (
+    "src/gateway/main.py:314",
+    "src/gateway/health.py:280",
+    "src/kernels/audit/__init__.py:398",
+    "docker-compose.prod.yml:69",
+    "infra/staging/docker-compose.yml:59",
+)
+
+
+@pytest.fixture(scope="module")
+def tracked_artifact_vars(gate):
+    """What the *tracked* artifacts set -- the same set the real run uses."""
+    artifacts = gate.collect_artifacts()
+    untracked = {str(p) for p in gate.untracked_artifacts(artifacts)}
+    tracked = [p for p in artifacts if str(p) not in untracked]
+    return gate.scan_artifact_vars(tracked)
+
+
+class TestAuditDbPathIsAdjudicated:
+    """Its absence is permissive, so it is a SEED entry -- not an exemption.
+
+    ``src/gateway/main.py:314-322`` logs "AUDIT CHECKPOINTER SKIPPED" and keeps
+    serving; ``src/gateway/health.py:280-298`` calls unset a "configuration
+    state" (healthy, note only). Only ``src/kernels/audit/__init__.py:398-407``
+    fails closed. A variable whose absence is the permissive branch in two of
+    its three readers is what SEED_GATES exists for, and an entry there must be
+    satisfied by a shipped artifact. ALLOWLIST would be the weaker choice: just
+    free text, with nothing to go red if someone deletes the arming line.
+
+    Measured 2026-10-07: before, the run reported it as
+    ``unclassified-gate-candidate``; after, it produces no finding at all.
+    """
+
+    def test_it_is_a_seed_gate_and_not_an_allowlist_entry(self, gate):
+        entries = {str(e["var"]): e for e in gate.SEED_GATES}
+        assert "AUDIT_DB_PATH" in entries, (
+            "absence is the permissive branch at main.py:314 and health.py:280, "
+            "so the decision has to be recorded in SEED_GATES")
+        assert str(entries["AUDIT_DB_PATH"]["expect"]) == "set", (
+            "if absence selects a permissive branch, the safe state is SET")
+        assert "AUDIT_DB_PATH" not in gate.ALLOWLIST, (
+            "ALLOWLIST means 'this is not a control gate' -- the opposite of "
+            "the adjudication recorded in SEED_GATES")
+
+    def test_the_reason_still_names_every_read_site_and_arming_point(self, gate):
+        """The `why` is the reviewable artefact; it must keep its evidence."""
+        why = next(str(e.get("why", "")) for e in gate.SEED_GATES
+                   if str(e["var"]) == "AUDIT_DB_PATH")
+        for needle in _AUDIT_DB_PATH_EVIDENCE:
+            assert needle in why, (
+                "the AUDIT_DB_PATH entry no longer mentions %s -- the polarity "
+                "claim is only checkable while its sites are named" % needle)
+
+    def test_a_deployment_that_does_not_set_it_is_still_a_finding(self, gate):
+        """Teeth: an entry must not be satisfiable by existing on paper."""
+        reads = {"AUDIT_DB_PATH": [("src/gateway/main.py", 314)]}
+        findings = gate.evaluate({}, reads, {}, {})  # no artifact sets it
+        kinds = [f.kind for f in findings if f.var == "AUDIT_DB_PATH"]
+        assert "gate-var-never-set" in kinds, (
+            "with no artifact setting it the gate must still fail; got %r"
+            % (kinds,))
+
+    def test_the_shipped_artifacts_do_satisfy_it(self, gate, tracked_artifact_vars):
+        """Counterweight: it must currently be resolved, not merely declared."""
+        where = tracked_artifact_vars.get("AUDIT_DB_PATH")
+        assert where, (
+            "AUDIT_DB_PATH is adjudicated expect='set' but no tracked artifact "
+            "sets it, so the entry would itself be a finding")
+        assert any("docker-compose" in w for w in where), where
+
+    def test_the_ci_pin_alone_also_satisfies_it_recorded_limitation(
+        self, gate, tracked_artifact_vars
+    ):
+        """Measured limitation of this entry, pinned so it cannot be forgotten.
+
+        Measured 2026-10-07 in an isolated worktree: commenting out
+        ``docker-compose.prod.yml:69`` and ``infra/staging/docker-compose.yml:59``
+        together did **not** redden the entry, because
+        ``.github/workflows/ci.yml:762`` is in the artifact set and pins a temp
+        path. Removing all three DID redden it (``gate-var-never-set``). So the
+        anti-decay benefit is weaker than the SEED_GATES pitch implies: only
+        deleting every setter is detected.
+
+        That is the "is a CI job's env part of the deployment?" tension already
+        recorded at the top of the gate (task #250), not an arming decision. If
+        someone later splits deployment artifacts from CI workflow env, this
+        test fails and they must restate the limitation deliberately instead of
+        silently widening what the entry proves.
+        """
+        setters = tracked_artifact_vars.get("AUDIT_DB_PATH", [])
+        assert ".github/workflows/ci.yml" in setters, (
+            "the CI pin is what props this entry up; if it is gone, delete this "
+            "test and say so in the entry's `why`. setters=%r" % (setters,))
