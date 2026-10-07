@@ -39,6 +39,17 @@ from pathlib import Path
 
 REPORT_VERSION = 1
 
+#: Where the consolidated report is written when `--out-dir` is not given,
+#: relative to `--repo-root`. It is THIS battery's own directory, on purpose:
+#: the default used to be "." (the process CWD), which dumped
+#: `EAP-EVIDENCE-REPORT.md` into the repo root and tripped the root-markdown
+#: scan-surface check in tests/scripts/test_lint_audit_claims_surface.py.
+#: A default output location must not be able to turn a gate red, and it must
+#: not depend on where the tool happened to be invoked from. This matches what
+#: eap/README.md and this directory's README already document as the
+#: canonical output path.
+_BATTERY_DIR_REL = "eap/05-final-readiness-battery"
+
 PASS = "PASS"
 FAIL = "FAIL"
 BLOCKED = "BLOCKED-on-host"
@@ -290,12 +301,30 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--regression-report", default="", help="eap/04 run-regression.py --json output")
     ap.add_argument("--browser-report", default="", help="eap/01 Playwright JSON report")
     ap.add_argument("--product-readiness", default="docs/product/PRODUCT-READINESS.md")
-    ap.add_argument("--out-dir", default=".", help="where to write the consolidated report")
+    ap.add_argument(
+        "--out-dir",
+        default=_BATTERY_DIR_REL,
+        help=(
+            "where to write the consolidated report; relative paths are "
+            "resolved against --repo-root (default: %(default)s)"
+        ),
+    )
     args = ap.parse_args(argv)
 
     repo_root = Path(args.repo_root).resolve()
     out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        # Same convention as every evidence path below: relative to --repo-root,
+        # never to the CWD.
+        out_dir = repo_root / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    def shown(path: Path) -> str:
+        """Repo-relative display when possible; absolute otherwise."""
+        try:
+            return str(path.relative_to(repo_root))
+        except ValueError:
+            return str(path)
 
     def maybe(x: str) -> Path | None:
         if not x:
@@ -383,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     print("-" * 74)
     print(f"  PRODUCT ACCEPTANCE : {product}")
     print(f"  RELEASE READINESS  : {release}")
-    print(f"  reports -> {out_dir / 'EAP-EVIDENCE-REPORT.md'}"
+    print(f"  reports -> {shown(out_dir / 'EAP-EVIDENCE-REPORT.md')}"
           f" (+ .json)")
     print("=" * 74)
 
