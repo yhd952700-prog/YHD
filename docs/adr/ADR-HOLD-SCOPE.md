@@ -78,29 +78,36 @@ promotion step** (C1, STEP 11 expert review). The gate is no longer optional
 human discipline — it is a machine-verifiable control that fails the job
 before `docker/build-push-action` runs:
 
-* **Env var:** `LIUHAO_HOLD=1` (or any non-empty truthy value) activates HOLD.
-  `LIUHAO_HOLD=0|false|off` or *unset* leaves it inactive (release may
-  proceed); the default (unset) is explicit and auditable — the gate prints
-  what it decided (`HOLD inactive (LIUHAO_HOLD=unset): release may proceed
-  (default)`).
+* **Env var:** `LIUHAO_HOLD=1` (or any non-empty truthy value) activates HOLD;
+  `LIUHAO_HOLD=0|false|off` leaves it inactive. **At the script level** an
+  *unset* variable also leaves HOLD inactive (the gate prints `HOLD inactive
+  (LIUHAO_HOLD=unset): release may proceed (default)`) — but **in CI this
+  script-level default is overridden to fail-safe**: `.github/workflows/ci-cd.yml`
+  sets `LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}`, so with the repo variable
+  unset the gate receives `1` and HOLD is **armed by default**. Lifting the
+  freeze is therefore a *platform* action (set the GitHub repo variable
+  `LIUHAO_HOLD=0`, which is audit-logged) — not a code edit.
 * **Behaviour:** if `LIUHAO_HOLD` is truthy, `check_hold_gate.py` prints
   `HOLD active (LIUHAO_HOLD=<value>): release blocked` and exits **2**
   (non-zero), which fails the CI job *before* the push step, so no image is
   pushed and no promotion occurs. Automatic code-change agents (F2) MUST also
   check this gate and stop.
-* **Wired in CI — but currently UNREACHABLE for our work (execution count: 0):**
-  `.github/workflows/ci-cd.yml` *names* `check_hold_gate.py` as a release-gate
-  step in the `build` job, ahead of `Build and push`. But that `build` job is
-  gated `if: always() && github.event_name == 'push' && github.ref ==
-  'refs/heads/main'`, and `ci-cd.yml` triggers only on `push: [main, develop]` /
-  `pull_request: [main]`. All work lands on `p36`, and both `main` (2026-09-03)
-  and `develop` (2026-09-02) are stale — so this step **has never executed on
-  any of our commits**. The wiring is correct; the invocation path is not
-  reachable. A truthy `LIUHAO_HOLD` *would* hard-abort the release with no
-  registry push **if and when that path runs** — it is **not** a control we can
-  currently rely on. See `docs/ci/gate-exemptions.md` entry 5 (pending-owner:
-  `g9-deploy`). The authoritative guarantee remains the code-level freeze in
-  §2.1, not this env gate.
+* **Wired in CI on the release path (reachable; HOLD default-armed):**
+  `.github/workflows/ci-cd.yml` runs `check_hold_gate.py` as a release-gate step
+  in the `build` job, ahead of `Build and push`. The workflow is a **deliberate,
+  human/tag-triggered release path** — `on: workflow_dispatch` + `push: tags:
+  ['v*']` — *not* an automatic per-push run for ordinary work on `p36`. (The old
+  `push: [main, develop]` / `pull_request: [main]` triggers and the
+  `if: ... github.ref == 'refs/heads/main'` pin once made this job unreachable
+  and the workflow executed **zero** times — `gh run list --workflow=ci-cd.yml`
+  => `[]`; both were corrected in commit `2eb15d35`, dropping the pins and
+  moving to manual dispatch + version tags.) Because the `build` job's `env`
+  sets `LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}`, HOLD is **armed by
+  default**: unless a human sets the repo variable `LIUHAO_HOLD=0`,
+  `check_hold_gate.py` exits **2** and the job fails at that step, *before*
+  `Build and push` — so no image is pushed and no promotion occurs. The
+  authoritative guarantee remains the code-level freeze in §2.1; this env gate is
+  the visible, machine-checked switch on the release path.
 * **Not a security boundary:** the env gate is an operational safeguard, not an
   authorization control. The authoritative guarantee is the code-level freeze in
   §2.1; the env gate is the convenient, visible switch.
@@ -123,14 +130,14 @@ authorizations, not a GO authorization**:
   production deployment / release / promotion.
 * Any repair/migration is permitted **only** once the corresponding Human Decision
   explicitly authorizes it, and **no repair may bypass `HOLD` or the `GO` gate**.
-  (`check_hold_gate.py` / `verify_go_readiness.py` are *intended* to be enforced
-  in CI — but see the correction in §2.4: both are named only in
-  `ci-cd.yml:build`, a job unreachable on `p36`. In practice they have run **zero
-  times** for our work, so they are **not** a live backstop today. The hard
-  guarantees today are the code-level freeze in §2.1 and human discipline;
-  treating these scripts as an executing CI gate would be false comfort. Wiring
-  them onto a reachable job is tracked as `docs/ci/gate-exemptions.md` entry 5,
-  pending-owner `g9-deploy`.)
+  Both gates now execute on the reachable release path (`ci-cd.yml:build`,
+  triggered only by `workflow_dispatch` / `v*` tags — see §2.4). Ordering
+  matters: the `check_hold_gate.py` step runs **before** `verify_go_readiness.py`
+  and the job fails on the first non-zero exit, so if `verify_go_readiness.py`
+  ever runs, `HOLD` must already have been lifted (`LIUHAO_HOLD=0`). With HC-01
+  `UNVERIFIED` the GO gate exits non-zero, so in the default (HOLD armed) state a
+  release is blocked at the `HOLD` step and the GO gate is never reached — the
+  release path is fail-closed on **both** controls by default.
 * The ten hard prohibitions attached to HD-01…HD-05 — no deletion of original
   history, no overwriting old hashes, no direct renumbering of historical `seq`, no
   forcing `UNIQUE(seq)` onto the damaged table, no verifier tampering to fake GREEN,
