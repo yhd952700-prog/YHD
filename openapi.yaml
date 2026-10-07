@@ -9,7 +9,16 @@ components:
       description: '审批凭据签发请求。
 
 
-        注意：**没有** ``principal`` 字段 —— 主体只能来自身份令牌。'
+        注意：**没有** ``principal`` 字段 —— 主体只能来自身份令牌。
+
+
+        ``target`` 是**必填**的：授权的最小单位是 (principal, action, target)，
+
+        缺省 target 不能解释成"任意 target"，否则一份只为一台资源签发的批准会
+
+        静默覆盖全部资源。要授权全部 target，必须显式传 ``target="*"`` **并且**
+
+        ``confirm_wildcard=True``（二次确认）。'
       properties:
         actions:
           description: 被授权的内核动作名（HIGH/CRITICAL）
@@ -18,11 +27,21 @@ components:
           minItems: 1
           title: Actions
           type: array
+        confirm_wildcard:
+          default: false
+          description: 把 target 设为 '*' 时的二次确认。仅为全目标授权时需要；默认 false，此时通配会被拒绝。
+          title: Confirm Wildcard
+          type: boolean
         reason:
           default: ''
           description: 授权理由（记入审计）
           maxLength: 500
           title: Reason
+          type: string
+        target:
+          description: 被授权的具体 target（资源标识）。必填；授权仅对该 target 生效。授权全部 target 需显式写 '*' 并同时置 confirm_wildcard=true。
+          minLength: 1
+          title: Target
           type: string
         ttl_seconds:
           default: 300.0
@@ -33,6 +52,7 @@ components:
           type: number
       required:
       - actions
+      - target
       title: ApprovalRequest
       type: object
     ChatRequest:

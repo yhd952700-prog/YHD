@@ -15,12 +15,15 @@ import {
  * ------------------------------------------------------------------
  * 1. 四个 Policy 端点**都要求 Bearer 令牌**。没有令牌时本面板如实显示
  *    「未认证」，绝不假装系统处于某个安全状态。
- * 2. 签发一条凭据 = 记录一次**审计化授权**（谁批的、批了哪些动作、有效到何时）。
- *    它**不会**解除拦截：执行必须由能力层在同进程内于 `grant_window(grant)`
+ * 2. 签发一条凭据 = 记录一次**审计化授权**（谁批的、批了哪些动作、对哪个 target、有效到何时）。
+ *    它**不会**解除拦截：执行必须由能力层在同进程内于 `grant_window(grant, target=…)`
  *    中完成（设计决策 §10.8.3-1 刻意不提供 HTTP 远程执行内核动作的入口）。
  *    因此按钮文案是「记录授权」，而不是「放行」。
  * 3. 主体只能来自令牌的 `sub`；请求体里塞 principal 不会被采信，面板也不提供
  *    该输入框——那正是这道门存在的意义。
+ * 4. 授权的最小单位是 (principal, action, target)：**target 必填**，空值不得提交
+ *    （否则后端 422）。仅当确实要授权**全部** target 时才用通配 `"*"`，且必须
+ *    二次确认（对应后端 `confirm_wildcard`，未确认的通配会被拒绝）。
  */
 
 export interface ApprovalUiState {
@@ -37,7 +40,13 @@ export interface ApprovalUiState {
 export interface ApprovalActions {
   onTokenChange: (token: string) => void
   onRefresh: () => void
-  onIssue: (action: string, reason: string, ttlSeconds: number) => void
+  onIssue: (
+    action: string,
+    target: string,
+    reason: string,
+    ttlSeconds: number,
+    confirmWildcard: boolean,
+  ) => void
   onRevoke: (grantId: string) => void
 }
 
@@ -194,11 +203,17 @@ export function ApprovalCenter({
   actions: ApprovalActions
 }) {
   const [action, setAction] = useState('')
+  const [target, setTarget] = useState('')
   const [reason, setReason] = useState('')
   const [ttl, setTtl] = useState(300)
+  const [wildcardConfirmed, setWildcardConfirmed] = useState(false)
 
   const options = state.snap?.enforced_actions ?? []
   const selected = action || options[0] || ''
+  const trimmedTarget = target.trim()
+  const isWildcard = trimmedTarget === '*'
+  // 空 target 不得提交（否则后端 422）；通配 "*" 必须二次确认后才允许提交。
+  const canIssue = !!selected && trimmedTarget !== '' && (!isWildcard || wildcardConfirmed)
 
   return (
     <div className="panel approval-panel">
@@ -254,6 +269,16 @@ export function ApprovalCenter({
             </select>
             <input
               className="profile-input"
+              value={target}
+              onChange={(e) => {
+                setTarget(e.target.value)
+                setWildcardConfirmed(false)
+              }}
+              placeholder="授权目标（target，必填）"
+              title="该凭据只对这一个 target 生效；要授权全部 target 需填 * 并二次确认"
+            />
+            <input
+              className="profile-input"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="授权理由（记入审计）"
@@ -267,11 +292,23 @@ export function ApprovalCenter({
               onChange={(e) => setTtl(Number(e.target.value) || 300)}
               title="有效期（秒），上限 3600"
             />
+            {isWildcard && (
+              <label className="approval-wildcard-confirm">
+                <input
+                  type="checkbox"
+                  checked={wildcardConfirmed}
+                  onChange={(e) => setWildcardConfirmed(e.target.checked)}
+                />
+                确认对<b>全部 target</b>授权（通配 “*”，高危，需二次确认）
+              </label>
+            )}
             <button
               className="profile-btn"
-              onClick={() => actions.onIssue(selected, reason, ttl)}
-              disabled={state.busy || !selected}
-              title="记录授权（不是「放行」——执行仍需在 grant_window 内进行）"
+              onClick={() =>
+                actions.onIssue(selected, trimmedTarget, reason, ttl, isWildcard && wildcardConfirmed)
+              }
+              disabled={state.busy || !canIssue}
+              title="记录授权（不是「放行」——执行仍需在 grant_window(grant, target=…) 内进行）"
             >
               记录授权
             </button>
@@ -280,7 +317,7 @@ export function ApprovalCenter({
           <div className="approval-note">
             凭据是**审计化授权记录**，不是通行证。后端刻意不提供「用凭据在 HTTP 上执行内核动作」
             的入口（设计决策 §10.8.3-1），所以签发后重试同一请求仍会得到 409 ——
-            执行须由能力层在同进程内于 <code>grant_window(grant)</code> 中完成。
+            执行须由能力层在同进程内于 <code>grant_window(grant, target=…)</code> 中完成。
           </div>
         </>
       )}

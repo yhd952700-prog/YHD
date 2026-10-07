@@ -48,6 +48,9 @@ test('P5 sovereignty: posture, grant issue + revoke, and honest boundary', async
   await page.locator('select.profile-select').selectOption({ label: action })
   // Reason input: pinned by its unique placeholder (the token/ttl inputs also use .profile-input, so avoid class-only matching).
   await page.getByPlaceholder('授权理由（记入审计）').fill('EAP click-through grant')
+  // target is now REQUIRED (authorisation unit = principal x action x target). An empty target
+  // disables the button / returns 422; fill a concrete one before issuing.
+  await page.getByPlaceholder('授权目标（target，必填）').fill('capability:eap-demo')
   // ttl defaults to 300; leave as-is. Issue via the "记录授权" button (NOT "放行").
   await page.getByRole('button', { name: '记录授权' }).click()
 
@@ -103,7 +106,7 @@ test('P5 negative: a machine-principal token cannot issue a grant (expect 400)',
       Authorization: `Bearer ${machineToken}`,
       'Content-Type': 'application/json',
     },
-    data: { actions: ['file_write'], reason: 'should be rejected', ttl_seconds: 300 },
+    data: { actions: ['file_write'], target: 'capability:eap-demo', reason: 'should be rejected', ttl_seconds: 300 },
   })
   expect(res.status()).toBe(400)
 })

@@ -38,6 +38,10 @@ export interface ApprovalGrant {
   grant_id: string;
   principal: string;
   actions: string[];
+  /** 该凭据授权的具体资源。授权单位是 (principal, action, target)。 */
+  target: string;
+  /** True 表示这是一张覆盖**全部** target 的通配凭据（target === "*"）。 */
+  is_wildcard: boolean;
   reason: string;
   issued_by: string;
   granted_at: number;
@@ -162,17 +166,32 @@ export function listApprovals(
 /**
  * 签发一条审批凭据。
  *
- * 注意：**没有 principal 参数** —— 主体只能来自令牌，这是刻意的安全设计。
+ * 注意：
+ * - **没有 principal 参数** —— 主体只能来自令牌，这是刻意的安全设计。
+ * - ``target`` **必填且无默认值**。授权的最小单位是 (principal, action, target)：
+ *   缺省 target 不能被解释成"任意 target"，否则一份只为一台资源签发的批准会静默
+ *   覆盖全部资源。后端 ``SovereigntyGrant.target`` 已必填无默认，前端**不得**给它
+ *   兜一个默认值把这道门再打开。
+ * - ``confirmWildcard``：仅当确实要授权**全部** target（``target === "*"``）时才传
+ *   true，对应后端 ``confirm_wildcard`` 的二次确认；后端对未确认的通配会拒绝（400）。
  */
 export function issueApproval(
   token: string,
   actions: string[],
+  target: string,
   reason: string,
   ttlSeconds: number,
+  confirmWildcard = false,
 ): Promise<{ approved: boolean; grant: ApprovalGrant }> {
   return call<{ approved: boolean; grant: ApprovalGrant }>('/v1/policy/approvals', token, {
     method: 'POST',
-    body: JSON.stringify({ actions, reason, ttl_seconds: ttlSeconds }),
+    body: JSON.stringify({
+      actions,
+      target,
+      confirm_wildcard: confirmWildcard,
+      reason,
+      ttl_seconds: ttlSeconds,
+    }),
   });
 }
 

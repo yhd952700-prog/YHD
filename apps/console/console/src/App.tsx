@@ -281,11 +281,18 @@ function App() {
   }, [])
 
   const onIssue = useCallback(
-    async (action: string, reason: string, ttlSeconds: number) => {
+    async (
+      action: string,
+      target: string,
+      reason: string,
+      ttlSeconds: number,
+      confirmWildcard: boolean,
+    ) => {
       const token = aclView.token
       setAcl((prev) => ({ ...prev, busy: true, error: '' }))
       try {
-        await issueApproval(token, [action], reason, ttlSeconds)
+        // target 必填无默认：授权单位是 (principal, action, target)，见 policyClient.issueApproval。
+        await issueApproval(token, [action], target, reason, ttlSeconds, confirmWildcard)
       } catch (err) {
         setAcl((prev) => ({
           ...prev,
