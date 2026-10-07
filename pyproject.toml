@@ -101,10 +101,18 @@ dependencies = [
 # tests/distribution/test_coordination.py 里的 `TestRedisLuaScriptsActuallyExecute`
 # （fakeredis + lupa 真跑 Lua）从"skip"变成"真验证"。缺 lupa 时该组在测试内优雅
 # skip（nodes fixture 的 eval 自检），不会把安装/收集搞挂。
+#
+# pytest-timeout 同理进 [tests]（不进运行期依赖）：scripts/verify_readiness.py 的
+# C3(--full：`pytest tests/ --timeout=60`) 与 C6(`--timeout=120`) 靠它给单测/混沌
+# 套件加挂起保护。它是 release-readiness CI 的运行期门禁依赖 —— 该 job 跑
+# `verify_readiness.py --full` 前先 `pip install -e .[tests,etcd]`，缺它时 pytest 报
+# `error: unrecognized arguments: --timeout` ⇒ rc=4 ⇒ C3/C6 根本无法执行。此前本机
+# 恰好装了、却从未出现在任何声明面，属依赖声明面缺失（见 #383）。
 [project.optional-dependencies]
 tests = [
     "fakeredis>=2.0.0",
     "lupa>=2.0",
+    "pytest-timeout>=2.3.0",
 ]
 # 第三个协调后端（etcd）。**可选**：不进默认运行期依赖、也不进 [tests]，避免
 # 在没装 etcd3 的环境里把安装拖垮。CI 上若想让 TestRealEtcdEndToEnd 从"skip"变

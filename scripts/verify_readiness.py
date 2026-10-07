@@ -8,7 +8,10 @@ BLOCKED plus a one-line evidence string.
 
 Honesty rule: a condition is PASS only when its checker actually executed and
 produced evidence. Absent evidence => NOT VERIFIED. A blocked human-sovereignty
-decision => BLOCKED. A real contradiction => FAIL.
+decision => BLOCKED. A real contradiction => FAIL. A checker that could not RUN
+at all -- its tool/harness rejected the invocation, or the runner module was
+missing -- => ERROR: a verification-process failure, kept distinct from an
+honest NOT VERIFIED so a missing plugin cannot masquerade as a recorded gap.
 
 Outputs:
   - a markdown table + verdict to stdout
@@ -24,12 +27,14 @@ heavy C3/C6/C7 battery on a quick check), or ``--full`` to actually execute the
 test suite inside C3.
 
 Exit codes:
-  - 0  : no condition FAILED (nothing is contradicted)
-  - 2  : one or more conditions FAILED
+  - 0  : no condition FAILED and none ERRORED (nothing contradicted, nothing
+         unable to run)
+  - 2  : one or more conditions FAILED or ERRORED
 
 NOT VERIFIED / BLOCKED do NOT cause a non-zero exit today (they are pending
-verification, not contradictions). The JSON ``release_ready`` field is the
-authoritative verdict.
+verification, not contradictions). ERROR does: a check that could not be
+evaluated is a failure of the verification process, not a pending item. The JSON
+``release_ready`` field is the authoritative verdict.
 """
 from __future__ import annotations
 
@@ -49,6 +54,11 @@ SCRIPTS = REPO / "scripts"
 CI = REPO / ".github" / "workflows"
 
 PASS, FAIL, NOT_VERIFIED, BLOCKED = "PASS", "FAIL", "NOT VERIFIED", "BLOCKED"
+#: A checker that could not RUN (tool/harness rejected its invocation, or the
+#: runner module was absent). Deliberately a distinct status -- NOT_VERIFIED
+#: means "ran, no verdict yet"; ERROR means "never got to run", which is a
+#: verification-process failure and must not be mistaken for the former.
+ERROR = "ERROR"
 
 
 def _run(cmd, env=None, timeout=120, cwd=None):
@@ -75,6 +85,48 @@ def _clean_env():
         if k.startswith("LIUHAO_") or k in ("VAULT_ADDR",):
             env.pop(k, None)
     return env
+
+
+#: Signals that a checker's tool/harness never actually started, as opposed to
+#: running and reaching a verdict. A pytest that rejects ``--timeout`` (the
+#: plugin is not installed) prints ``error: unrecognized arguments: --timeout``;
+#: a missing runner module prints ``No module named ...``. Matched only in the
+#: HEAD of the output, where a runner's own startup diagnostics live -- a test's
+#: incidental wording further down must not be read as the harness failing.
+_TOOL_FAILURE_SIGNALS = (
+    ("the runner rejected its own arguments", re.compile(r"unrecognized arguments:")),
+    ("the runner module is missing", re.compile(r"No module named '?pytest")),
+    ("the plugin module is missing", re.compile(r"No module named '?pytest_timeout")),
+)
+
+
+def _tool_failure(out: str) -> str | None:
+    """Return a one-line reason if ``out`` shows the tool/harness never started.
+
+    Every critical subprocess here runs ``sys.executable``, so whether
+    ``--timeout=NN`` is even a legal flag depends on WHICH interpreter launched
+    this script (the repo ``.venv`` may lack pytest-timeout while the managed
+    one has it). Without this, that accident is laundered into a plain
+    NOT_VERIFIED that reads exactly like an honest evidence gap.
+    """
+    head = (out or "")[:1000]
+    for label, pat in _TOOL_FAILURE_SIGNALS:
+        if pat.search(head):
+            return label
+    return None
+
+
+def _could_not_run(out: str) -> str | None:
+    """Return the ERROR evidence string when the checker never ran, else None."""
+    reason = _tool_failure(out)
+    if reason is None:
+        return None
+    return (
+        f"checker could not run ({reason}) -- this is NOT a verdict on the "
+        f"product. If it is the --timeout flag, pytest-timeout is not installed "
+        f"on this interpreter (it is declared in the [tests] extra). Tail: "
+        f"{out[-200:]}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +181,9 @@ def check_clean_env_run():
         return PASS, "clean-env boot + GET /v1/health = 200"
     if rc == 0:
         return NOT_VERIFIED, f"boot OK but health not 200: {out[-200:]}"
+    err = _could_not_run(out)
+    if err:
+        return ERROR, err
     # Boot raised: distinguish product defect from env/config gap.
     return NOT_VERIFIED, f"boot raised (env/config gap, not proven product defect): {out[-300:]}"
 
@@ -169,6 +224,9 @@ def check_tests(full=False):
             fails = m.group(1)
         if rc2 == 0 and fails == "0":
             return PASS, f"full run: {collected} collected, 0 failed"
+        err = _could_not_run(out2)
+        if err:
+            return ERROR, err
         return NOT_VERIFIED, f"full run rc={rc2}, failed={fails}; {out2[-200:]}"
     return NOT_VERIFIED, (
         f"{collected} collected; full clean-env re-run not yet recorded "
@@ -268,6 +326,9 @@ def check_reliability():
             f"reliability/failure-mode suites pass ({len(present)} files, "
             f"temp-DB only; live audit_store.db untouched)"
         )
+    err = _could_not_run(out)
+    if err:
+        return ERROR, err
     return NOT_VERIFIED, f"reliability suites rc={rc} (may need live infra): {out[-200:]}"
 
 
@@ -419,6 +480,9 @@ def check_observability():
         [sys.executable, "-c", code], env=_clean_env(), timeout=180
     )
     if rc != 0:
+        err = _could_not_run(out)
+        if err:
+            return ERROR, err
         return NOT_VERIFIED, f"runtime scrape could not run (env gap): {out[-200:]}"
     if "SCRAPE_STATUS 200" not in out:
         # A non-200 here is a real contradiction in the export path.
@@ -518,6 +582,9 @@ def check_deployment():
                 f"verify_deploy_readiness.py FAIL: {fail_lines[0].strip()} | "
                 f"{out[-200:]}"
             )
+        err = _could_not_run(out)
+        if err:
+            return ERROR, err
         return NOT_VERIFIED, (
             f"verify_deploy_readiness.py ran (rc={rc}); {out[-200:]}"
         )
@@ -692,7 +759,9 @@ def main(argv):
             else:
                 status, evidence = fn()
         except Exception as exc:  # noqa: BLE001
-            status, evidence = NOT_VERIFIED, f"checker raised: {exc!r}"
+            # The checker raised before reaching a verdict: that is the checker
+            # failing, not the product -- ERROR, never a silent NOT_VERIFIED.
+            status, evidence = ERROR, f"checker raised before a verdict: {exc!r}"
         meta = CONDITION_META.get(cid, {})
         results.append({
             "id": cid,
@@ -710,13 +779,15 @@ def main(argv):
     n_fail = sum(1 for r in results if r["status"] == FAIL)
     n_blocked = sum(1 for r in results if r["status"] == BLOCKED)
     n_nv = sum(1 for r in results if r["status"] == NOT_VERIFIED)
-    release_ready = (n_fail == 0 and n_blocked == 0 and n_nv == 0)
+    n_error = sum(1 for r in results if r["status"] == ERROR)
+    release_ready = (n_fail == 0 and n_blocked == 0 and n_nv == 0
+                     and n_error == 0)
 
     print("\n" + "=" * 72)
     print("RELEASE-READINESS verdict")
     print("=" * 72)
     print(f"  PASS={n_pass}  FAIL={n_fail}  BLOCKED={n_blocked}  "
-          f"NOT_VERIFIED={n_nv}")
+          f"NOT_VERIFIED={n_nv}  ERROR={n_error}")
     print(f"  RELEASE READY = {release_ready}")
     print("=" * 72)
 
@@ -727,17 +798,18 @@ def main(argv):
         "environment": env,
         "release_ready": release_ready,
         "counts": {"PASS": n_pass, "FAIL": n_fail, "BLOCKED": n_blocked,
-                   "NOT_VERIFIED": n_nv},
+                   "NOT_VERIFIED": n_nv, "ERROR": n_error},
         "conditions": results,
     }
     out_path = SCRIPTS / "readiness_report.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"  report written: {out_path}")
 
-    # Exit 2 on any FAIL (contradiction); 0 otherwise (NOT VERIFIED/BLOCKED are
-    # pending verification, not contradictions). Use an explicit sys.exit branch
-    # (not a returned IfExp) so the meta-guardrail can prove this gate can fail.
-    if n_fail > 0:
+    # Exit 2 on any FAIL (contradiction) OR any ERROR (a checker that could not
+    # run: a verification-process failure, not a pending item). Use an explicit
+    # sys.exit branch (not a returned IfExp) so the meta-guardrail can prove
+    # this gate can fail. NOT VERIFIED / BLOCKED stay exit 0 by design.
+    if n_fail > 0 or n_error > 0:
         sys.exit(2)
     sys.exit(0)
 

@@ -8,7 +8,11 @@
 > **Honesty rule (non-negotiable).** A condition is `PASS` only when its checker has
 > *executed and produced real evidence* in this environment. Absent evidence ⇒ `NOT VERIFIED`.
 > A blocked human-sovereignty decision ⇒ `BLOCKED`. A real contradiction of the acceptance
-> criterion ⇒ `FAIL`. We never mark `PASS` on documentation alone.
+> criterion ⇒ `FAIL`. A checker that could not RUN at all — its tool/harness rejected the
+> invocation (e.g. pytest `unrecognized arguments: --timeout` when `pytest-timeout` is absent),
+> or the runner module was missing — ⇒ `ERROR`: a verification-process failure, deliberately
+> distinct from an honest `NOT VERIFIED` so a missing plugin cannot masquerade as a recorded
+> gap. We never mark `PASS` on documentation alone.
 >
 > Branch: `p36`. Repo: `D:\LiuHao-AI-OS`. Contract version: **1.0** (2026-09-29).
 
@@ -17,9 +21,10 @@
 ## Overall Release Verdict
 
 `RELEASE READY` is awarded **only when all 12 conditions are `PASS`** (no `FAIL`, no
-`NOT VERIFIED`, no `BLOCKED`). Any `FAIL` or `BLOCKED` is a hard release blocker. Any
-`NOT VERIFIED` means the evidence has not been produced yet and the condition is, by
-definition, not satisfied for release.
+`NOT VERIFIED`, no `BLOCKED`, no `ERROR`). Any `FAIL` or `BLOCKED` is a hard release blocker.
+Any `NOT VERIFIED` means the evidence has not been produced yet and the condition is, by
+definition, not satisfied for release. Any `ERROR` means a checker could not even run — also
+not satisfied, and additionally a harness/declaration defect to fix.
 
 `scripts/verify_readiness.py` computes this verdict and writes `scripts/readiness_report.json`.
 That file is a **run artifact, not a committed one**: it embeds `generated_at`, the
@@ -134,11 +139,12 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 - Emits a markdown table (status + evidence) to stdout and a JSON report to
   `scripts/readiness_report.json` (a **run artifact** — gitignored, regenerated per
   run, never a checked-in verdict).
-- Exit code **0** when there are **no `FAIL`** results (i.e. nothing is *contradicted*);
-  exit code **2** when one or more conditions `FAIL`. `NOT VERIFIED` / `BLOCKED` do **not**
-  cause a non-zero exit today (they are pending verification, not contradictions) — the JSON
-  report is the authoritative RELEASE READY verdict and CI should treat `RELEASE READY != true`
-  as a soft gate until the contract is tightened.
+- Exit code **0** when there are **no `FAIL` and no `ERROR`** results; exit code **2** when
+  one or more conditions `FAIL` **or** `ERROR`. `NOT VERIFIED` / `BLOCKED` do **not** cause a
+  non-zero exit today (they are pending verification, not contradictions). `ERROR` **does**: a
+  check that could not be evaluated is a failure of the verification process, not a pending
+  item. The JSON report is the authoritative RELEASE READY verdict and CI should treat
+  `RELEASE READY != true` as a soft gate until the contract is tightened.
 - Supports `--quick` (skip the 600s full suite; rely on recorded baseline) and `--full`
   (attempt the full `pytest tests/` run).
 
