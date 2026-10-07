@@ -127,10 +127,12 @@ recording them here would be a stale entry:
   were added in `11c85a23`. It is **not** awaiting any owner.
 - `verify_go_readiness.py` — **removed from this ledger** (was entry 5, was
   `pending-owner`). Its owner (`g9-deploy`) made `ci-cd.yml:build` reachable: the
-  stale `push: [main, develop]` / `pull_request: [main]` triggers and the
-  `github.ref == 'refs/heads/main'` job pin were replaced by
-  `workflow_dispatch` + `push: tags: ['v*']` with `if: ${{ !cancelled() }}`, so
-  the gate is now wired into a reachable job. The gate's OWN verdict is still
+  stale `push: [main, develop]` / `pull_request: [main]` triggers were replaced
+  by `workflow_dispatch` + `push: tags: ['v*']`, and the
+  `github.ref == 'refs/heads/main'` job pin was dropped — the job keeps the
+  literal `if: always()` that the CRITICAL-5 watchdog mandates (it rejects
+  `!cancelled()`), so the gate is now wired into a reachable job. The gate's OWN
+  verdict is still
   `GO_STATUS: UNVERIFIED` / exit 1 while HC-01 is forked — that is an honest gate
   verdict, **not** a wiring gap, so it does not belong in this ledger. (The HOLD
   control runs before it and is default-armed, so on a normal release attempt the

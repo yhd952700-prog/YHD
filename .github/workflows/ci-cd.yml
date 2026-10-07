@@ -161,6 +161,12 @@ jobs:
         # reach the GO decision — but it means "GO ran" implies "HOLD was off".
         run: python scripts/verify_go_readiness.py
       - name: Build and push
+        # ITEM-4 (SAFE form). Do NOT use a bare `if: ${{ !cancelled() }}` here:
+        # that DROPS the implicit `success()` gate, so the image would still be
+        # pushed even after the HOLD / GO release gate above FAILED. Keeping
+        # `success()` preserves that protection and `!cancelled()` additionally
+        # skips the push when the whole run is cancelled mid-way.
+        if: ${{ success() && !cancelled() }}
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -187,6 +193,8 @@ jobs:
           upstream-result: ${{ needs.build.result }}
       - uses: actions/checkout@v4
       - name: Deploy to Staging
+        # ITEM-4: same safe form as the push step — success() gate preserved.
+        if: ${{ success() && !cancelled() }}
         run: |
           echo "::error::No real staging deployment is configured in this workflow."
           echo "This step used to end with 'Staging deployment simulated', so the job"
@@ -212,6 +220,8 @@ jobs:
           upstream-result: ${{ needs.deploy-staging.result }}
       - uses: actions/checkout@v4
       - name: Deploy to Production
+        # ITEM-4: same safe form — success() gate preserved.
+        if: ${{ success() && !cancelled() }}
         run: |
           echo "::error::No real production deployment is configured in this workflow."
           echo "This step used to end with 'Production deployment simulated', so the job"
