@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-10-04 实测）**：活跃文档 **121** 篇（不含 `archive/` 与
-> `spec/incoming/`），本索引**逐一列全121 篇**。该数字由
+> **覆盖状态（2026-10-07 实测）**：活跃文档 **125** 篇（不含 `archive/` 与
+> `spec/incoming/`），本索引**逐一列全 125 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -89,7 +89,7 @@
 
 ---
 
-## 2. 目录结构（15 个目录，实测）
+## 2. 目录结构（14 个目录，实测）
 
 ```text
 docs/
@@ -100,15 +100,17 @@ docs/
 ├── *-DESIGN.md 等 15 篇根级设计文档（见 §4）
 ├── adr/                (2)     架构决策记录
 ├── architecture/       (8)     架构
-├── autonomous/         (22)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
+├── autonomous/         (23)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
+├── ci/                 (1)     CI 门禁豁免登记册
 ├── decisions/          (1)     悬而未决决策登记
+├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── l10k/               (1)     L10K 基准设计
 ├── operations/         (5)     运维与上线
-├── product/            (6)     产品需求 · UI/UX · 产品就绪门禁
+├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── security/           (1)     安全威胁模型
-├── spec/               (18)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
+├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
 └── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
@@ -135,7 +137,7 @@ docs/
 
 ---
 
-## 4. 全量清单（121 篇，逐一列出）
+## 4. 全量清单（125 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -187,7 +189,7 @@ docs/
 | [`architecture/migration-matrix.md`](architecture/migration-matrix.md) | 迁移矩阵 |
 | [`architecture/phase-9-10-12-15-e2e-demo.md`](architecture/phase-9-10-12-15-e2e-demo.md) | Phase 9/10/12/15 端到端 demo |
 
-### 4.5 `autonomous/`（22）— 治理 · 决策 · 登记册 · 部署 · 基准
+### 4.5 `autonomous/`（23）— 治理 · 决策 · 登记册 · 部署 · 基准
 
 > ⚠️ **本目录包含项目最高治理文件 [`GOVERNANCE.md`](autonomous/GOVERNANCE.md)
 > （自主开发授权、硬边界、人类主权保留项）。旧版索引完全遗漏本目录。**
@@ -199,6 +201,7 @@ docs/
 | [`autonomous/GOVERNANCE.md`](autonomous/GOVERNANCE.md) | 🔴 **治理章程**：授权范围 · 硬边界 · 人类决策保留项 |
 | [`autonomous/HUMAN-DECISION-BACKLOG.md`](autonomous/HUMAN-DECISION-BACKLOG.md) | 已隔离的人类主权项（**是透明度，不是闸门**） |
 | [`autonomous/HUMAN-DECISION-HD06-U37.md`](autonomous/HUMAN-DECISION-HD06-U37.md) | HD-06 / U37 决策记录 |
+| [`autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md`](autonomous/GOV-LEGAL-RETENTION-ERASURE-CONFLICT.md) | 留存 / 删除义务 vs 证据保全冲突（分析已交付，**策略本身留给 HD-06 人类决策**，未自动实施） |
 
 **活登记册（LIVING）**
 
@@ -280,7 +283,7 @@ docs/
 | [`spec/REPO-LINE-CONVERGE.md`](spec/REPO-LINE-CONVERGE.md) | 仓库线索收敛计划 |
 | [`spec/incoming/`](spec/incoming/) | ⚠️ **已被取代的合并草案**（6 篇，由同目录 `MERGE-LEDGER.md` 登记合并过程） |
 
-### 4.9 `operations/`（5）· `product/`（6）· `l10k/`（1）· `security/`（1）· `decisions/`（1）
+### 4.9 `operations/`（5）· `product/`（7）· `l10k/`（1）· `security/`（1）· `decisions/`（1）
 
 | 文件 | 说明 |
 |---|---|
@@ -295,11 +298,24 @@ docs/
 | [`product/Designer-UIUX-v3.0.md`](product/Designer-UIUX-v3.0.md) | UI/UX 设计 v3.0 |
 | [`product/capability-traceability.md`](product/capability-traceability.md) | 能力追溯矩阵 |
 | [`product/LOCAL-RUN.md`](product/LOCAL-RUN.md) | 本地运行 |
+| [`product/console-clickthrough-spec.md`](product/console-clickthrough-spec.md) | 控制台点击贯通规格（7 字段可追溯，EAP 01 的判据单一真相） |
 | [`l10k/test-design.md`](l10k/test-design.md) | L10K 基准设计（基线数据在根 `l10k-baseline.yaml`） |
 | [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md) | Shell 适配器威胁模型 |
 | [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) | 悬而未决决策登记 |
 
-### 4.10 `archive/`（7）— ⚠️ 历史归档，**保持原貌**
+### 4.10 `ci/`（1）— CI 门禁豁免登记
+
+| 文件 | 说明 |
+|---|---|
+| [`ci/gate-exemptions.md`](ci/gate-exemptions.md) | gate 豁免登记册：**为什么** 4 条 meta-guardrail 断言保持红色、各自归属、以及转绿条件（不伪装成"通过"） |
+
+### 4.11 `governance/`（1）— 控制声明裁决登记
+
+| 文件 | 说明 |
+|---|---|
+| [`governance/CONTROL-CLAIM-LEDGER.md`](governance/CONTROL-CLAIM-LEDGER.md) | control-claim 裁决登记册（三态判据 FALSIFIED/NOT VERIFIED/PASS + 更正规则，ratcheted，由 `lint_control_claims.py` 接线 CI） |
+
+### 4.12 `archive/`（7）— ⚠️ 历史归档，**保持原貌**
 
 | 文件 | 说明 |
 |---|---|
@@ -323,7 +339,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 121 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 125 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |
