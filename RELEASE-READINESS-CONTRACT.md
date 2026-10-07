@@ -22,6 +22,10 @@
 definition, not satisfied for release.
 
 `scripts/verify_readiness.py` computes this verdict and writes `scripts/readiness_report.json`.
+That file is a **run artifact, not a committed one**: it embeds `generated_at`, the
+interpreter (`environment.python`), and plugin/profile-dependent gate outcomes, so a
+checked-in copy would quickly read as current evidence when it is not. Regenerate it
+(`python scripts/verify_readiness.py`) rather than trusting a copy; it is gitignored.
 
 ---
 
@@ -128,7 +132,8 @@ Each condition names the checker implemented in `scripts/verify_readiness.py` (f
 `scripts/verify_readiness.py`:
 - Runs every `check_<id>` above.
 - Emits a markdown table (status + evidence) to stdout and a JSON report to
-  `scripts/readiness_report.json`.
+  `scripts/readiness_report.json` (a **run artifact** — gitignored, regenerated per
+  run, never a checked-in verdict).
 - Exit code **0** when there are **no `FAIL`** results (i.e. nothing is *contradicted*);
   exit code **2** when one or more conditions `FAIL`. `NOT VERIFIED` / `BLOCKED` do **not**
   cause a non-zero exit today (they are pending verification, not contradictions) — the JSON

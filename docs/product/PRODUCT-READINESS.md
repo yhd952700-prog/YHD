@@ -9,7 +9,7 @@
 > it is not a softer `PASS`.
 >
 > This is the **product** gate. It is deliberately separate from the engineering
-> gate (`scripts/readiness_report.json`, C1–C12). Strong engineering gates do
+> gate (C1–C12, `scripts/verify_readiness.py`). Strong engineering gates do
 > **not** imply a working product.
 >
 > **Cycle-2 change (this update):** P4 (WorldInterface) and P6 (End-to-End

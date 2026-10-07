@@ -120,3 +120,11 @@ data/
 .retention_cold/
 # Windows 下 `2>nul` / `> nul` 重定向会在当前目录留一个 0 字节的 nul 文件。
 /nul
+
+# RELEASE-READINESS-CONTRACT 的机器判决，由 scripts/verify_readiness.py 生成。
+# 它嵌有 generated_at 时间戳、environment（os/python）与依赖插件的门禁结果 ——
+# 逐次重生成即不同，故提交它等于「把一份陈旧副本伪装成当前证据」：谁看到旧的
+# PASS 数谁就误判就绪度。判决的正确载体是运行本身 —— CI 在 release-readiness.yml
+# 跑 `--full`，本地跑 `python scripts/verify_readiness.py`。基线类产物
+# （test_baseline.json / bench_baseline.json）是受跟踪的输入，与此不同。
+/scripts/readiness_report.json
