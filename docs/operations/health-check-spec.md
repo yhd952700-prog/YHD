@@ -1,4 +1,4 @@
-# LiuHao AI OS 健康检查规范
+# LIUHAO X 健康检查规范
 
 ## 端点规范
 

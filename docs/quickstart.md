@@ -1,11 +1,11 @@
 # 快速开始指南
 
-## 10分钟上手 LiuHao AI OS
+## 10分钟上手 LIUHAO X
 
 ### 前置条件
 
 - Python 3.11+
-- LiuHao AI OS 已安装
+- LIUHAO X 已安装
 - D:\\LiuHao-AI-OS 目录权限
 
 ### 安装步骤
