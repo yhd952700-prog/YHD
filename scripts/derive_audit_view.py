@@ -721,9 +721,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--out",
-        default="audit_derived_view",
+        default=None,
         help="Output directory for MANIFEST(sha256) and the derived view files. "
-             "(default: %(default)s)",
+             "When omitted it defaults to a location OUTSIDE the repository "
+             "(<system-temp>/audit_derived_view), so a bare run can never write "
+             "into the working tree and pollute it. Pass an explicit path to "
+             "choose the location.",
     )
     parser.add_argument(
         "--allow-stale",
@@ -737,8 +740,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Default output lands OUTSIDE the repository: the old relative default
+    # ("audit_derived_view") wrote into the CWD, so a bare run from the repo root
+    # polluted the working tree. An absolute path under the system temp dir keeps
+    # every derived artifact out of the repo.
+    out_dir = args.out or os.path.join(tempfile.gettempdir(), "audit_derived_view")
+
     try:
-        result = derive_audit_view(args.source, args.out, allow_stale=args.allow_stale)
+        result = derive_audit_view(args.source, out_dir, allow_stale=args.allow_stale)
     except Exception as exc:  # operational errors only; never data-gated
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
