@@ -233,8 +233,8 @@ jobs:
   # registry, AI-layer audit delegation, and the ORM/migration + cross-session
   # persistence guarantees.
   # Each one exits non-zero on violation, so a red job here is a real gate.
-  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 76 (2026-10-07).
-  # GATE-COUNT-MARKER: 76 -- tests/test_guardrail_scripts.py parses this marker
+  # Counted, not assumed: `ls scripts/verify_*.py | wc -l` = 77 (2026-10-07).
+  # GATE-COUNT-MARKER: 77 -- tests/test_guardrail_scripts.py parses this marker
   # and fails when it disagrees with the real file count, so this number cannot
   # silently rot the way "36" did.
   # tests/test_guardrail_scripts.py enforces that EVERY one of them is invoked by

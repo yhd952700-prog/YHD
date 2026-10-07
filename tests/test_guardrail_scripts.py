@@ -95,6 +95,19 @@ SCHEDULED_ONLY_GATES: dict[str, str] = {
         "name this workflow as the real verified CD path. Registration here "
         "records that 'we accept this gate does not run per-commit'."
     ),
+    "verify_image_mirrors.py": (
+        "Probes real container registries over HTTPS (auth.docker.io and "
+        "/v2/<repo>/manifests/<ref>). On a busy day Docker Hub answers 429 to "
+        "anonymous pulls; a per-push gate would turn that rate limit into a red "
+        "check, and a red nobody believes trains people to ignore red -- as "
+        "costly as a missed failure. So it runs on a schedule and by hand, and a "
+        "rate limit is reported as PROBE_INCONCLUSIVE (NOT_VERIFIED), never as a "
+        "dead image. What it catches is the INVISIBLE failure: a removed image "
+        "manifest (bitnami/etcd, 2026-09-30) kills a service container, every "
+        "`needs:` job behind it SKIPs, and the whole protection surface goes to "
+        "zero with no red check anywhere. Registration records that 'we accept "
+        "this gate does not run per-commit'."
+    ),
 }
 
 _BOOTSTRAP_RE = re.compile(r"sys\.path\.(insert|append)")
