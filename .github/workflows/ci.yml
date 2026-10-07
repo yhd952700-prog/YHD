@@ -188,14 +188,13 @@ jobs:
     name: Observability Validation
     runs-on: ubuntu-latest
     needs: security
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    # CRITICAL-5: run even if 'security' failed, so this gate FAILS loudly instead
-    # of being silently SKIPPED (a red upstream must not mask a green gate).
-    if: always() && github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if an upstream job failed, so this gate FAILS loudly
+    # instead of being silently SKIPPED (a red upstream must not mask a green gate).
+    if: always()
 
     steps:
       # CRITICAL-5 watchdog: fail loudly if the required 'security' job did not succeed.
@@ -1001,14 +1000,13 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: build
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
     # CRITICAL-5: run even if 'build' failed, so this gate FAILS loudly instead
     # of being silently SKIPPED (a red upstream must not mask a green gate).
-    if: always() && github.ref_name == github.event.repository.default_branch
+    if: always()
     timeout-minutes: 60
 
     steps:
@@ -1043,14 +1041,13 @@ jobs:
     name: Smoke Test
     runs-on: ubuntu-latest
     needs: integration
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致本作业声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
     # CRITICAL-5: run even if 'integration' failed, so this gate FAILS loudly instead
     # of being silently SKIPPED (a red upstream must not mask a green gate).
-    if: always() && github.ref_name == github.event.repository.default_branch
+    if: always()
     timeout-minutes: 15
 
     steps:
@@ -1315,15 +1312,13 @@ jobs:
     name: P0 Gate Check
     runs-on: ubuntu-latest
     needs: [test, security, observability]
-    # 跟随**默认分支**而非硬编码 main：Round 78 已把默认分支切为
-    # wip/liuhao-x-evolve，main 停在 2026-09-03（legacy 归档），
-    # 硬编码 main 会让本作业**永久不运行**（= 声明了却零保护）。
-    # 用 default_branch 可自愈：以后换默认分支不必再改这里。
-    # 已知局限：pull_request 事件下 github.ref_name 不是分支名，故 PR 上仍不跑。
-    # CRITICAL-5: keep the default-branch restriction AND run even if an upstream
-    # job failed, so a red 'test'/'security'/'observability' cannot silently SKIP
-    # this final gate.
-    if: always() && github.ref_name == github.event.repository.default_branch
+    # 已修复：原先这里额外追加了 `&& github.ref_name == github.event.repository.default_branch`。
+    # 由于默认分支（wip/liuhao-x-evolve）与工作分支（p36）不同，该条件**恒不成立**，
+    # 导致这道 P0 Go/No-Go 聚合门禁声明了却从未执行——即「连红都不报」，比报红严重得多。
+    # 现在无条件运行：任何分支、任何 PR 都要受这道门保护。
+    # CRITICAL-5: run even if an upstream job failed, so a red 'test'/'security'/
+    # 'observability' cannot silently SKIP this final gate.
+    if: always()
     steps:
       # CRITICAL-5 watchdog: fail loudly if any required upstream did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
