@@ -55,6 +55,21 @@ def compute_integrity_hash(
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def _is_hex_digest(value: str) -> bool:
+    """True iff ``value`` is a plain ASCII hex string we can compare safely.
+
+    ``hmac.compare_digest`` raises ``TypeError`` when either side is a ``str``
+    containing non-ASCII characters. So a backup whose ``integrity_hash`` field
+    is a non-ASCII string (a corrupted file, or one someone hand-edited) used to
+    make ``restore`` **raise** -- the recovery path crashed instead of refusing.
+    A hash we wrote is always ASCII hex, so anything else is, by construction,
+    not ours; the caller below turns it into a fail-closed refusal.
+    """
+    return bool(value) and value.isascii() and all(
+        ch in "0123456789abcdefABCDEF" for ch in value
+    )
+
+
 @dataclass
 class BackupManager:
 
@@ -156,6 +171,21 @@ class RecoveryManager:
                 error=(
                     "Backup carries no integrity hash, so it cannot be shown to "
                     "be the data that was written; refusing to restore it"
+                ),
+            )
+        if not _is_hex_digest(declared):
+            # Fail closed on a structurally invalid hash instead of letting
+            # compare_digest raise (e.g. a non-ASCII str): a field that is not
+            # a hex digest is not a hash this system wrote, so the backup is
+            # corrupt or was edited.
+            return RecoveryRecord(
+                backup_id=backup_id,
+                success=False,
+                error=(
+                    f"Backup declares a malformed integrity hash ({declared!r}); "
+                    "it is not a hash this system wrote, so the file is corrupt "
+                    "or was edited. Refusing to restore it; find an earlier "
+                    "backup and treat this as an incident."
                 ),
             )
         if not compare_digest(declared, expected):

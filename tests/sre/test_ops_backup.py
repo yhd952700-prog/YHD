@@ -154,5 +154,71 @@ class TestWindowsScratchDirectory:
         assert "tempfile.mkdtemp" in source
 
 
+class TestEncryptedRestoreFailsClosed:
+    """A decrypt failure must return False, not raise out of ``restore_backup``.
+
+    ``restore_backup`` documents "Returns: True if successful" and the CLI does
+    ``sys.exit(0 if success else 1)``. But decryption used to run *outside* the
+    try/except, so a wrong/missing key or a corrupt ciphertext raised
+    ``InvalidToken`` straight out of the method -- the caller got an exception
+    where it was promised a boolean, and temp cleanup was skipped entirely.
+    """
+
+    def test_a_wrong_key_is_refused_not_raised(self, ops_backup, tmp_path):
+        archive = _write_archive(
+            tmp_path / "store" / "enc.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        # Encrypt with a real key via the tool's own routine, then open with a
+        # different key.
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        wrong = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="z" * 32
+        )
+        target = tmp_path / "restore-target"
+
+        assert wrong.restore_backup(archive, target) is False
+        # Fail closed: nothing half-restored.
+        assert not (target / "backup" / "data.txt").exists()
+
+    def test_a_corrupt_ciphertext_is_refused_not_raised(self, ops_backup, tmp_path):
+        archive = _write_archive(
+            tmp_path / "store" / "corrupt.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        raw = archive.read_bytes()
+        archive.write_bytes(raw[: len(raw) // 2])
+        manager = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )
+
+        assert manager.restore_backup(archive, tmp_path / "restore-target") is False
+
+    def test_a_good_encrypted_backup_restores_and_leaves_no_scratch(
+        self, ops_backup, tmp_path
+    ):
+        archive = _write_archive(
+            tmp_path / "store" / "enc2.tar.gz",
+            {"backup/metadata.json": b"{}", "backup/data.txt": b"secret"},
+        )
+        _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )._encrypt_backup(archive)
+        manager = _manager(
+            ops_backup, tmp_path, encryption=True, encryption_key="k" * 32
+        )
+        target = tmp_path / "restore-target"
+
+        assert manager.restore_backup(archive, target) is True
+        assert (target / "backup" / "data.txt").read_bytes() == b"secret"
+        # The decrypted scratch copy must not linger next to the archive.
+        assert not list((tmp_path / "store").glob("*.decrypted"))
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-v"]))

@@ -239,12 +239,26 @@ class BackupManager:
 
         logger.info(f"Restoring from backup: {backup_path}")
 
-        # Decrypt if needed
         temp_backup = backup_path
-        if self.backup_config.encryption:
-            temp_backup = self._decrypt_backup(backup_path)
-
         try:
+            # Decrypt if needed. Decryption lives INSIDE the try on purpose: a
+            # wrong/missing key, or a corrupt ciphertext, makes Fernet raise
+            # InvalidToken -- and a method whose contract is "True if
+            # successful" must fail closed (return False with a reason), not
+            # propagate an exception the caller never planned for. Doing this
+            # outside the try also skipped temp cleanup entirely.
+            if self.backup_config.encryption:
+                try:
+                    temp_backup = self._decrypt_backup(backup_path)
+                except Exception as decrypt_error:
+                    logger.error(
+                        "Refusing to restore %s: decryption failed (%s). The "
+                        "backup is encrypted but the configured key cannot open "
+                        "it -- wrong key, or the archive is corrupt.",
+                        backup_path, decrypt_error,
+                    )
+                    return False
+
             # Refuse to unpack an archive we cannot at least read end to end.
             # "It extracted" has always been the honest bar here; with
             # encryption off, nothing proves the bits are the bits we wrote.
@@ -275,7 +289,9 @@ class BackupManager:
             logger.error(f"Restore failed: {e}")
             return False
         finally:
-            if temp_backup != backup_path:
+            # Only the decrypted scratch copy is ours to remove; never unlink
+            # the operator's original archive.
+            if temp_backup != backup_path and temp_backup.exists():
                 os.unlink(temp_backup)
     
     def _decrypt_backup(self, backup_path: Path) -> Path:

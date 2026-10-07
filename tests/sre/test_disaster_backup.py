@@ -186,5 +186,52 @@ class TestRestoreRefusesBadBackups:
         assert outcome.payload is None
 
 
+class TestRestoreSurvivesMalformedFields:
+    """A malformed field must produce a refusal, never an exception.
+
+    The hardened restore path refuses tampered/absent hashes -- but the very
+    value it compares could itself be malformed. ``hmac.compare_digest`` raises
+    ``TypeError`` on non-ASCII ``str`` input, so a hand-edited / corrupt
+    ``integrity_hash`` used to make ``restore`` crash instead of failing closed.
+    A recovery path that raises is indistinguishable, to the caller, from one
+    that does nothing -- both end the incident badly.
+    """
+
+    def test_a_non_ascii_integrity_hash_is_refused_not_raised(self, managers):
+        backup_mgr, recovery_mgr = managers
+        _write_raw(
+            backup_mgr.backup_dir,
+            "unicode-hash",
+            json.dumps(
+                {
+                    "payload": {},
+                    "resource_snapshot": {},
+                    "integrity_hash": "caf\u00e9",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+
+        outcome = recovery_mgr.restore("unicode-hash")
+
+        assert outcome.success is False
+        assert outcome.payload is None
+        assert "malformed" in (outcome.error or "").lower()
+
+    def test_a_non_string_integrity_hash_is_refused_not_raised(self, managers):
+        backup_mgr, recovery_mgr = managers
+        _write_raw(
+            backup_mgr.backup_dir,
+            "list-hash",
+            b'{"payload": {}, "resource_snapshot": {}, '
+            b'"integrity_hash": ["not", "a", "digest"]}',
+        )
+
+        outcome = recovery_mgr.restore("list-hash")
+
+        assert outcome.success is False
+        assert outcome.payload is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-v"]))
