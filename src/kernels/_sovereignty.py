@@ -29,6 +29,23 @@ C-4 — why a grant object, not just a context manager?
     enforcement gate actually governs (HIGH/CRITICAL), and refuses unknown
     action names -- so it can never be a blank cheque.
 
+Target binding (why a grant names a resource, not just an action)
+    The unit of authorisation is the triple **(principal, action, target)**.
+    Without a target, an approval "to retire a capability" could be spent on
+    *any* capability: the grant would look perfectly normal on the chain (a
+    real issuer, a real reason, a real TTL) while quietly covering more than
+    was reviewed. ``target`` is therefore mandatory with no default, the only
+    expression of "all targets" is the explicit :data:`WILDCARD_TARGET` (which
+    needs secondary confirmation), and :func:`grant_window` refuses -- and
+    audits -- a use against a target the grant does not cover. A missing field
+    must never widen authority.
+
+    This is an independent, stricter namespace than RBAC's ``Permission.target``
+    (which is ``Optional`` and treats ``None`` as a wildcard) and ABAC's
+    ``ABACResource.resource_id``. Sovereignty is the highest-precedence boundary
+    and may only be stricter than the layers below it, never inherit their
+    looser semantics.
+
 Issuing a grant still does not, by itself, grant anything at runtime: the
 policy engine recomputes ``verified`` from the Identity Kernel at adjudication
 time. The grant layer narrows *and records*; it cannot manufacture an allow
@@ -71,8 +88,45 @@ DEFAULT_GRANT_TTL_SECONDS = 300.0
 #: Hard ceiling for a single grant -- an approval must not be open-ended.
 MAX_GRANT_TTL_SECONDS = 3600.0
 
+#: The ONLY legal expression of "all targets". A grant must name a concrete
+#: target; wildcard authority must be written explicitly, never inferred from a
+#: missing field. See :func:`_validated_target`.
+WILDCARD_TARGET = "*"
+
 #: Principal recorded on grant lifecycle audit events.
 SOVEREIGNTY_AUDIT_PRINCIPAL = "liuhao.sovereignty"
+
+
+class SovereigntyDeniedError(PermissionError):
+    """A sovereignty authorization was REFUSED.
+
+    Deliberately a ``PermissionError`` (like ``PolicyDeniedError``) so an appeal
+    handler maps it to "denied" rather than letting it fall through to a generic
+    500 -- turning "you are not authorised for this target" into "the service is
+    broken" would hide the refusal, which is exactly the semantics governance
+    forbids. It is also a refusal of an authorization, not a transport fault.
+    """
+
+
+class SovereigntyTargetMismatchError(SovereigntyDeniedError):
+    """A grant was used against a target it does not cover.
+
+    Raised by :func:`grant_window` when the requested target is neither the
+    grant's target nor covered by an explicit wildcard grant. The attempt is
+    audited before this is raised: an actor probing which targets they hold
+    authority over is doing something worth recording, not merely a mistake to
+    swallow.
+    """
+
+    def __init__(self, grant_target: str, requested_target: str, grant_id: str = ""):
+        self.grant_target = grant_target
+        self.requested_target = requested_target
+        self.grant_id = grant_id
+        super().__init__(
+            f"sovereignty grant {grant_id or '<unknown>'} authorises target "
+            f"{grant_target!r}, not {requested_target!r} -- cross-target use "
+            "refused (delegation is per (principal, action, target))"
+        )
 
 
 @dataclass(frozen=True)
@@ -84,6 +138,10 @@ class ActiveSovereignty:
     granted_at: float
     #: C-4: the grant this window was opened from, when there was one.
     grant_id: Optional[str] = None
+    #: The concrete target this delegation applies to. ``None`` only for the bare
+    #: C-3 channel (no grant); a window opened from a grant always carries the
+    #: grant's target (or the concrete target a wildcard grant was used for).
+    target: Optional[str] = None
     reason: str = ""
 
 
@@ -95,17 +153,40 @@ class SovereigntyGrant:
     proves nothing to the policy engine, which always re-verifies the human
     identity from the Identity Kernel. The grant's value is accountability --
     it answers "who authorized this, for what, and until when".
+
+    The unit of authorisation is the triple **(principal, action, target)**.
+    ``target`` is mandatory and has no default: a grant that omits it would be a
+    grant over every target, and an omitted field silently widening authority is
+    the classic fail-open shape. The only way to authorise every target is to
+    write :data:`WILDCARD_TARGET` explicitly, which is itself a higher
+    sovereignty act (see :func:`issue_grant`).
     """
 
     grant_id: str
     principal: str
     actions: FrozenSet[str]
+    #: The concrete resource this grant applies to, or :data:`WILDCARD_TARGET`.
+    target: str
     reason: str
     issued_by: str
     granted_at: float
     expires_at: float
     revoked_at: Optional[float] = None
     revoke_reason: str = ""
+
+    @property
+    def is_wildcard(self) -> bool:
+        """True when this grant covers every target."""
+        return self.target == WILDCARD_TARGET
+
+    def covers_target(self, target: str) -> bool:
+        """True iff this grant authorises action on ``target``.
+
+        A wildcard grant covers everything; otherwise the target must match
+        exactly. There is no prefix/globbing: "prod-*" would invite a matching
+        bug where a broader string than intended passes, so it is not offered.
+        """
+        return self.is_wildcard or self.target == target
 
     def is_expired(self, now: Optional[float] = None) -> bool:
         """True once the grant's TTL has elapsed."""
@@ -125,11 +206,19 @@ class SovereigntyGrant:
         return max(0.0, self.expires_at - (now if now is not None else time.time()))
 
     def to_dict(self) -> Dict[str, object]:
-        """JSON-friendly projection (used by the approval API)."""
+        """JSON-friendly projection (used by the approval API).
+
+        ``target`` and ``is_wildcard`` are part of the projection on purpose: an
+        API that hides the target would let a reviewer read a narrow approval as
+        if it were broader (or vice versa), so the authorised scope must be
+        visible wherever the grant is.
+        """
         return {
             "grant_id": self.grant_id,
             "principal": self.principal,
             "actions": sorted(self.actions),
+            "target": self.target,
+            "is_wildcard": self.is_wildcard,
             "reason": self.reason,
             "issued_by": self.issued_by,
             "granted_at": self.granted_at,
@@ -188,6 +277,9 @@ class human_sovereign:
             a ``str`` (or ``None`` for the bare C-3 channel): the adjudication
             path uses it as a registry key, so a non-string value could only ever
             break the lookup that decides whether the claim still holds.
+        target: the concrete resource this delegation applies to. ``None`` only
+            for the bare C-3 channel (no grant). A window opened from a grant
+            always carries a concrete target -- see :func:`grant_window`.
         reason: free-text justification, propagated into audit records.
 
     Example::
@@ -203,6 +295,7 @@ class human_sovereign:
         *,
         granted_at: Optional[float] = None,
         grant_id: Optional[str] = None,
+        target: Optional[str] = None,
         reason: str = "",
     ) -> None:
         # Boundary guard (F33/A): ``grant_id`` is used downstream as a
@@ -220,6 +313,7 @@ class human_sovereign:
             actions=frozenset(actions),
             granted_at=granted_at if granted_at is not None else time.time(),
             grant_id=grant_id,
+            target=target,
             reason=reason,
         )
         self._token: Optional[contextvars.Token] = None
@@ -344,25 +438,69 @@ def get_kernel_action_risk_safe(action: str) -> str:
         return "UNKNOWN"
 
 
+def _validated_target(target: Optional[str], *, allow_wildcard: bool = False) -> str:
+    """Validate a grant/window target. Fail closed; never infer a default.
+
+    Refusals, all deliberate:
+
+    * ``None`` / non-``str`` / blank -- a missing target must NEVER be read as
+      "all targets". That inference is the fail-open shape this whole field
+      exists to remove, so it is rejected at the boundary rather than coerced.
+    * :data:`WILDCARD_TARGET` without ``allow_wildcard=True`` -- a grant over
+      every target is a higher sovereignty act than a grant over one resource
+      and must be requested explicitly, not stumbled into.
+    """
+    if target is None:
+        raise ValueError(
+            "sovereignty grant requires an explicit target; pass the concrete "
+            "resource the authorisation applies to, or the explicit wildcard "
+            f"{WILDCARD_TARGET!r} with allow_wildcard=True. A missing target is "
+            "refused rather than treated as 'all targets'."
+        )
+    if not isinstance(target, str):
+        raise ValueError(f"target must be a str, got {type(target).__name__}")
+    t = target.strip()
+    if not t:
+        raise ValueError("target must be a non-empty string")
+    if t == WILDCARD_TARGET and not allow_wildcard:
+        raise ValueError(
+            f"target {WILDCARD_TARGET!r} authorises EVERY target and is a "
+            "higher-sovereignty act: it requires explicit secondary "
+            "confirmation (allow_wildcard=True). Prefer a concrete target."
+        )
+    return t
+
+
 def issue_grant(
     principal: str,
     actions: Iterable[str],
     *,
+    target: str,
     reason: str = "",
     ttl_seconds: float = DEFAULT_GRANT_TTL_SECONDS,
     issued_by: str = "",
+    allow_wildcard: bool = False,
 ) -> SovereigntyGrant:
-    """Record an audited authorization for ``actions`` held by ``principal``.
+    """Record an audited authorization for ``actions`` on ``target``.
+
+    ``target`` is mandatory and keyword-only, with NO default. This is
+    deliberate: the unit of authorisation is (principal, action, target), and a
+    defaulted/omitted target would silently mean "every target" -- letting one
+    approval cover resources it was never reviewed for. To authorise every
+    target you must pass ``target=WILDCARD_TARGET, allow_wildcard=True``, which
+    is recorded distinctly on the audit chain.
 
     Raises:
-        ValueError: empty/unknown/not-gated actions, a bad TTL, or a principal
-            that is unknown, inactive, or a service identity.
+        ValueError: empty/unknown/not-gated actions, a bad TTL, a principal
+            that is unknown, inactive, or a service identity, or a missing /
+            blank / unconfirmed-wildcard target.
 
     The returned grant is *evidence of authorisation*, not a runtime capability:
     the policy engine still re-verifies the human at adjudication time.
     """
     pid = _validated_principal(principal)
     names = _validated_actions(actions)
+    tgt = _validated_target(target, allow_wildcard=allow_wildcard)
 
     ttl = float(ttl_seconds)
     if not (0 < ttl <= MAX_GRANT_TTL_SECONDS):
@@ -375,6 +513,7 @@ def issue_grant(
         grant_id=uuid.uuid4().hex,
         principal=pid,
         actions=names,
+        target=tgt,
         reason=reason or "",
         issued_by=issued_by or pid,
         granted_at=now,
@@ -391,6 +530,11 @@ def issue_grant(
             "principal": pid,
             "issued_by": grant.issued_by,
             "actions": sorted(names),
+            "target": tgt,
+            # Wildcard ISSUANCE is recorded as its own visible fact, so "this is
+            # an all-targets grant" is never something a reader has to infer
+            # from a missing field.
+            "is_wildcard": grant.is_wildcard,
             "risk_levels": {
                 a: get_kernel_action_risk_safe(a) for a in sorted(names)
             },
@@ -418,6 +562,10 @@ def revoke_grant(grant_id: str, *, revoked_by: str = "", reason: str = "") -> So
             grant_id=grant.grant_id,
             principal=grant.principal,
             actions=grant.actions,
+            # MUST carry the target through: a rebuild that dropped it would
+            # silently widen a scoped approval to "all targets" on its way to
+            # the revoked state. See the revoke-fidelity regression test.
+            target=grant.target,
             reason=grant.reason,
             issued_by=grant.issued_by,
             granted_at=grant.granted_at,
@@ -436,6 +584,8 @@ def revoke_grant(grant_id: str, *, revoked_by: str = "", reason: str = "") -> So
             "revoked_by": revoked_by or revoked.principal,
             "reason": revoked.revoke_reason,
             "actions": sorted(revoked.actions),
+            "target": revoked.target,
+            "is_wildcard": revoked.is_wildcard,
         },
     )
     return revoked
@@ -479,6 +629,9 @@ def revoke_grants_for_principal(principal: str, *, reason: str = "") -> int:
                 grant_id=grant.grant_id,
                 principal=grant.principal,
                 actions=grant.actions,
+                # Same revoke-fidelity rule as revoke_grant: preserve the target,
+                # or recalling a person's approval silently widens its scope.
+                target=grant.target,
                 reason=grant.reason,
                 issued_by=grant.issued_by,
                 granted_at=grant.granted_at,
@@ -515,22 +668,63 @@ def list_grants(
     return sorted(grants, key=lambda g: g.granted_at, reverse=True)
 
 
-def grant_window(grant: SovereigntyGrant) -> human_sovereign:
-    """Open a delegation window bound to an **active** grant.
+def grant_window(grant: SovereigntyGrant, *, target: str) -> human_sovereign:
+    """Open a delegation window bound to an **active** grant, for ``target``.
+
+    The requested ``target`` must be the one the grant was issued for. A grant
+    for target A cannot be used to act on target B: that cross-target reuse is
+    exactly the hole this parameter closes, and it is refused AND audited, so an
+    attempt to probe which targets an approval covers leaves a record rather
+    than disappearing.
+
+    A wildcard grant (:data:`WILDCARD_TARGET`) covers any concrete ``target``;
+    the wildcard is only permitted on the *issue* side (with explicit
+    confirmation), never as the target of a use -- you act on a specific
+    resource, so a use must name it.
 
     Raises:
         ValueError: the grant is revoked or expired -- approval is not a
-            permanent key, so a stale grant must not silently work.
+            permanent key, so a stale grant must not silently work; or the
+            requested target is missing/blank/wildcard.
+        SovereigntyTargetMismatchError: the requested target is not covered by
+            the grant. A ``PermissionError`` subclass, so the refusal reads as
+            "denied", not as an internal fault.
     """
     if grant.is_revoked:
         raise ValueError(f"sovereignty grant is revoked: {grant.grant_id}")
     if grant.is_expired():
         raise ValueError(f"sovereignty grant is expired: {grant.grant_id}")
+
+    # The USE side never accepts a wildcard: a concrete target must be named so
+    # the audit records what was actually acted upon.
+    requested = _validated_target(target, allow_wildcard=False)
+
+    if not grant.covers_target(requested):
+        # Record the attempt itself: "used a target-A grant to touch target B"
+        # is the security-relevant event, and it is what makes enumeration
+        # attempts visible instead of free.
+        _audit(
+            "denied",
+            grant.principal,
+            {
+                "grant_id": grant.grant_id,
+                "principal": grant.principal,
+                "reason": "target mismatch",
+                "grant_target": grant.target,
+                "requested_target": requested,
+                "actions": sorted(grant.actions),
+            },
+        )
+        raise SovereigntyTargetMismatchError(
+            grant.target, requested, grant_id=grant.grant_id
+        )
+
     return human_sovereign(
         grant.principal,
         grant.actions,
         granted_at=grant.granted_at,
         grant_id=grant.grant_id,
+        target=requested,
         reason=grant.reason,
     )
 

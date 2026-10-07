@@ -38,6 +38,7 @@ Every test below was measured to fail on ``c669bc03`` and pass after the fix.
 """
 from __future__ import annotations
 
+
 import os
 import pathlib
 import subprocess
@@ -61,6 +62,13 @@ from src.kernels.identity import IdentityManager, IdentityScope, IdentityStatus
 ACTION = "capability.retire"          # CRITICAL, enforcement-gated
 OTHER_ACTION = "security.set_abac_rule"   # CRITICAL, not covered by ACTION grants
 SCOPE = "CRITICAL"
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 @pytest.fixture
@@ -141,7 +149,7 @@ class TestClaimRecheckNeverFailsOpen:
         this fix must not touch that. What must change is the *attribution*.
         """
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, [ACTION])
+        grant = sov.issue_grant(human.id, [ACTION], target=_TARGET)
         sov.revoke_grant(grant.grant_id)
 
         @kernel_action(ACTION)
@@ -181,14 +189,14 @@ class TestRefusedClaimGetsNoHumanAttribution:
         ``sovereignty_grant`` stamp.
         """
         mgr, human = humans
-        grant = sov.issue_grant(human.id, [ACTION])
+        grant = sov.issue_grant(human.id, [ACTION], target=_TARGET)
         mgr._identities[human.id].status = IdentityStatus.SUSPENDED
 
         @kernel_action(ACTION)
         def retire():
             return "ran"
 
-        with sov.grant_window(grant):
+        with sov.grant_window(grant, target=_TARGET):
             retire()
 
         details = (_action_row(ACTION) or {}).get("details")
@@ -219,13 +227,13 @@ class TestRefusedClaimGetsNoHumanAttribution:
     def test_a_grant_that_is_live_and_human_still_reads_as_a_human_approval(self, humans):
         """Non-regression: the attribution must survive for a claim that held."""
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, [ACTION])
+        grant = sov.issue_grant(human.id, [ACTION], target=_TARGET)
 
         @kernel_action(ACTION, enforce=True)
         def retire():
             return "ran-under-grant"
 
-        with sov.grant_window(grant):
+        with sov.grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-grant"
 
         details = (_action_row(ACTION) or {}).get("details")
@@ -272,7 +280,10 @@ beta = mgr.create_identity("human-vigil-beta", scope=IdentityScope.L0,
                            metadata={"kind": "human"})
 idmod.get_identity_manager = lambda: mgr
 sov.clear_grants()
-grant = sov.issue_grant(alpha.id, ["__ACTION__"])
+_TARGET = "kernel-target:demo"
+
+
+grant = sov.issue_grant(alpha.id, ["__ACTION__"], target=_TARGET)
 
 ran = []
 
@@ -310,7 +321,7 @@ class TestAGrantIsBoundToItsOwnHuman:
         beta = mgr.create_identity(
             "human-vigil-beta", scope=IdentityScope.L0, metadata={"kind": "human"}
         )
-        grant = sov.issue_grant(alpha.id, [ACTION])
+        grant = sov.issue_grant(alpha.id, [ACTION], target=_TARGET)
         window = ActiveSovereignty(
             principal=beta.id,
             actions=frozenset({ACTION}),
@@ -325,7 +336,7 @@ class TestAGrantIsBoundToItsOwnHuman:
         beta = mgr.create_identity(
             "human-vigil-beta", scope=IdentityScope.L0, metadata={"kind": "human"}
         )
-        grant = sov.issue_grant(alpha.id, [ACTION])
+        grant = sov.issue_grant(alpha.id, [ACTION], target=_TARGET)
         with sov.human_sovereign(beta.id, {ACTION}, grant_id=grant.grant_id):
             verdict, _rule, actor = _adjudicate(ACTION, SCOPE)
         assert verdict == "deny", (verdict, actor)
@@ -343,7 +354,7 @@ class TestAGrantIsBoundToItsOwnHuman:
         """
         _mgr, human = humans
         assert human.principal != human.id, "test premise: the two forms differ"
-        grant = sov.issue_grant(human.id, [ACTION])
+        grant = sov.issue_grant(human.id, [ACTION], target=_TARGET)
         with sov.human_sovereign(human.principal, {ACTION}, grant_id=grant.grant_id):
             verdict, _rule, actor = _adjudicate(ACTION, SCOPE)
         assert verdict == "allow", (verdict, actor)
@@ -421,13 +432,13 @@ class TestAGrantIsNotStampedWhenItDidNotAuthorise:
 
     def test_a_window_that_does_not_cover_the_action_stamps_no_grant(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, [ACTION])
+        grant = sov.issue_grant(human.id, [ACTION], target=_TARGET)
 
         @kernel_action(OTHER_ACTION)
         def other():
             return "ran-out-of-scope"
 
-        with sov.grant_window(grant):
+        with sov.grant_window(grant, target=_TARGET):
             other()
 
         details = (_action_row(OTHER_ACTION) or {}).get("details")

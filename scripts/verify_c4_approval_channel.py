@@ -114,6 +114,11 @@ STAGING_MANIFEST = "infra/staging/docker-compose.yml"
 RESULTS = []
 
 
+# Sovereignty grants are bound to a target (governance ruling 2026-10-05);
+# a concrete target is enough for these checks.
+_TARGET = "kernel-target:demo"
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     RESULTS.append((ok, name, detail))
     mark = "PASS" if ok else "FAIL"
@@ -243,7 +248,7 @@ def _production_opens_sovereignty() -> bool:
     The claim is bounded to the shapes actually covered:
 
     * a **direct** call ``human_sovereign(...)`` / ``set_active_sovereignty(...)``
-      / ``ActiveSovereignty(...)`` / ``grant_window(...)``;
+      / ``ActiveSovereignty(...)`` / ``grant_window(..., target=_TARGET)``;
     * an **attribute** call ``mod.set_active_sovereignty(...)``;
     * an **import alias** (``from ... import human_sovereign as hs`` then
       ``hs(...)``), resolved through the module's own import table;
@@ -562,8 +567,8 @@ def main() -> int:
                 raised = err.verdict == "defer"
             check("switch ON -> production-style call site now defers (no grant)", raised)
 
-            grant = sov.issue_grant(human.id, ["capability.retire"], reason="c4 verify")
-            with sov.grant_window(grant):
+            grant = sov.issue_grant(human.id, ["capability.retire"], reason="c4 verify", target=_TARGET)
+            with sov.grant_window(grant, target=_TARGET):
                 out = retire_armed()
             check("switch ON + grant -> action executes", out == "ran", str(out))
         finally:
@@ -571,7 +576,7 @@ def main() -> int:
             enf.reload()
 
         # 3. grant mechanics
-        grant = sov.issue_grant(human.id, ["capability.retire"], reason="mechanics")
+        grant = sov.issue_grant(human.id, ["capability.retire"], reason="mechanics", target=_TARGET)
         check("grant is active on issue", grant.is_active() and not grant.is_expired())
         check("grant retrievable by id", sov.get_grant(grant.grant_id) is grant)
         check("grant appears in listing",
@@ -587,15 +592,15 @@ def main() -> int:
         check("revoked grant hidden from default listing",
               grant.grant_id not in [g.grant_id for g in sov.list_grants()])
         try:
-            sov.grant_window(revoked)
+            sov.grant_window(revoked, target=_TARGET)
             check("revoked grant cannot open a window", False, "no ValueError")
         except ValueError:
             check("revoked grant cannot open a window", True)
 
-        expired = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01)
+        expired = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01, target=_TARGET)
         time.sleep(0.05)
         try:
-            sov.grant_window(expired)
+            sov.grant_window(expired, target=_TARGET)
             check("expired grant cannot open a window", False, "no ValueError")
         except ValueError:
             check("expired grant cannot open a window", True)
@@ -609,14 +614,14 @@ def main() -> int:
             ([], "empty action set"),
         ):
             try:
-                sov.issue_grant(human.id, bad)
+                sov.issue_grant(human.id, bad, target=_TARGET)
                 check(f"issue_grant rejects {label}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects {label}", True)
 
         for bad in (0, -1, sov.MAX_GRANT_TTL_SECONDS + 1):
             try:
-                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad)
+                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad, target=_TARGET)
                 check(f"issue_grant rejects ttl={bad}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects ttl={bad}", True)
@@ -627,7 +632,7 @@ def main() -> int:
             ("liuhao-internal-service", "service identity"),
         ):
             try:
-                sov.issue_grant(bad, ["capability.retire"])
+                sov.issue_grant(bad, ["capability.retire"], target=_TARGET)
                 check(f"issue_grant rejects {label}", False, "no ValueError")
             except ValueError:
                 check(f"issue_grant rejects {label}", True)
@@ -649,13 +654,13 @@ def main() -> int:
         check("grant issue writes a 'granted' audit event", bool(_events("granted")))
         check("grant revoke writes a 'revoked' audit event", bool(_events("revoked")))
 
-        chained = sov.issue_grant(human.id, ["capability.retire"], reason="chain")
+        chained = sov.issue_grant(human.id, ["capability.retire"], reason="chain", target=_TARGET)
 
         @xc.kernel_action("capability.retire", enforce=True)
         def retire_enforced():
             return "ran"
 
-        with sov.grant_window(chained):
+        with sov.grant_window(chained, target=_TARGET):
             retire_enforced()
 
         details = None

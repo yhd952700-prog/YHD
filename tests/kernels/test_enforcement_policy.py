@@ -21,6 +21,7 @@ which runs in CI's ``guardrails`` job.
 
 from __future__ import annotations
 
+
 import pytest
 
 from src.kernels import _enforcement as enf
@@ -33,6 +34,13 @@ CRITICAL_ACTIONS = frozenset(
     a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.CRITICAL
 )
 HIGH_ACTIONS = frozenset(a for a, r in KERNEL_ACTION_RISK.items() if r.tier is RiskTier.HIGH)
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 @pytest.fixture(autouse=True)
@@ -205,8 +213,8 @@ class TestSwitchArmsProductionCallSites:
         def retire():
             return "ran-under-grant"
 
-        grant = issue_grant(human.id, ["capability.retire"], reason="ops approval")
-        with grant_window(grant):
+        grant = issue_grant(human.id, ["capability.retire"], reason="ops approval", target=_TARGET)
+        with grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-grant"
 
     def test_switch_does_not_leak_to_other_actions(self, human_env, monkeypatch):

@@ -27,6 +27,7 @@ Pinned here:
 
 from __future__ import annotations
 
+
 import os
 import pathlib
 import re
@@ -46,6 +47,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 GATED_ACTION = "capability.retire"          # CRITICAL
 LOW_ACTION = "event.publish"                # LOW -- never enforcement-gated
+
+
+# Mandatory target for /v1/policy/approvals (governance ruling
+# 2026-10-05). A single concrete target is enough here; target-binding
+# semantics are covered in tests/kernels/test_sovereignty_target_binding.py.
+_T = "kernel-target:demo"
 
 
 @pytest.fixture(autouse=True)
@@ -142,13 +149,13 @@ class TestPrincipalIsTokenOnly:
     """The approver can only ever be whoever the token says it is."""
 
     def test_missing_token_is_401(self, client):
-        resp = client.post("/v1/policy/approvals", json={"actions": [GATED_ACTION]})
+        resp = client.post("/v1/policy/approvals", json={"target": _T, "actions": [GATED_ACTION]})
         assert resp.status_code == 401, resp.text
 
     def test_non_bearer_scheme_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Basic YWRtaW46YWRtaW4="},
         )
         assert resp.status_code == 401, resp.text
@@ -156,7 +163,7 @@ class TestPrincipalIsTokenOnly:
     def test_garbage_token_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Bearer not.a.jwt"},
         )
         assert resp.status_code == 401, resp.text
@@ -164,7 +171,7 @@ class TestPrincipalIsTokenOnly:
     def test_empty_bearer_token_is_401(self, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers={"Authorization": "Bearer "},
         )
         assert resp.status_code == 401, resp.text
@@ -176,7 +183,7 @@ class TestPrincipalIsTokenOnly:
         resp = client.post(
             "/v1/policy/approvals",
             json={
-                "actions": [GATED_ACTION],
+                "target": _T, "actions": [GATED_ACTION],
                 "principal": "somebody-else-entirely",
                 "issued_by": "somebody-else-entirely",
             },
@@ -194,12 +201,23 @@ class TestPrincipalIsTokenOnly:
         from src.gateway.policy import ApprovalRequest
 
         fields = set(ApprovalRequest.model_fields)
-        assert fields == {"actions", "reason", "ttl_seconds"}, fields
+        # Exact set (still fails loudly on any unexpected field). ``target`` and
+        # ``confirm_wildcard`` are the governance-required authorisation scope
+        # (2026-10-05): the grant names the resource it covers, and an all-target
+        # grant needs explicit secondary confirmation.
+        assert fields == {
+            "actions",
+            "target",
+            "confirm_wildcard",
+            "reason",
+            "ttl_seconds",
+        }, fields
+        assert "principal" not in fields and "approver" not in fields, fields
 
     def test_token_for_an_unknown_principal_is_400(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth("no-such-identity"),
         )
         assert resp.status_code == 400, resp.text
@@ -210,7 +228,7 @@ class TestPrincipalIsTokenOnly:
         # HIGH/CRITICAL action -- that would make the gate self-releasing.
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(service.id),
         )
         assert resp.status_code == 400, resp.text
@@ -247,7 +265,7 @@ class TestGrantLifecycleOverHttp:
     def test_issue_then_list_then_fetch(self, human, client):
         created = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "reason": "quarterly cleanup"},
+            json={"target": _T, "actions": [GATED_ACTION], "reason": "quarterly cleanup"},
             headers=_auth(human.id),
         )
         assert created.status_code == 200, created.text
@@ -273,7 +291,7 @@ class TestGrantLifecycleOverHttp:
     def test_ttl_ceiling_is_enforced_over_http(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "ttl_seconds": sov.MAX_GRANT_TTL_SECONDS + 1},
+            json={"target": _T, "actions": [GATED_ACTION], "ttl_seconds": sov.MAX_GRANT_TTL_SECONDS + 1},
             headers=_auth(human.id),
         )
         assert resp.status_code == 422, resp.text
@@ -283,7 +301,7 @@ class TestGrantLifecycleOverHttp:
         # doing nothing -- refuse it rather than record a no-op.
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": [LOW_ACTION]},
+            json={"target": _T, "actions": [LOW_ACTION]},
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
@@ -292,7 +310,7 @@ class TestGrantLifecycleOverHttp:
     def test_an_unknown_action_cannot_be_granted(self, human, client):
         resp = client.post(
             "/v1/policy/approvals",
-            json={"actions": ["totally.made.up"]},
+            json={"target": _T, "actions": ["totally.made.up"]},
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
@@ -300,14 +318,14 @@ class TestGrantLifecycleOverHttp:
 
     def test_empty_action_list_is_rejected(self, human, client):
         resp = client.post(
-            "/v1/policy/approvals", json={"actions": []}, headers=_auth(human.id)
+            "/v1/policy/approvals", json={"target": _T, "actions": []}, headers=_auth(human.id)
         )
         assert resp.status_code == 422, resp.text
 
     def test_revoke_then_hidden_from_the_default_listing(self, human, client):
         grant_id = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         ).json()["grant"]["grant_id"]
 
@@ -334,7 +352,7 @@ class TestGrantLifecycleOverHttp:
     def test_revoke_is_idempotent(self, human, client):
         grant_id = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         ).json()["grant"]["grant_id"]
         first = client.delete(
@@ -383,7 +401,7 @@ class TestTheLoopIsHonestOverHttp:
 
         issued = client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION], "reason": "r76 loop probe"},
+            json={"target": _T, "actions": [GATED_ACTION], "reason": "r76 loop probe"},
             headers=_auth(human.id),
         )
         assert issued.status_code == 200
@@ -417,7 +435,7 @@ class TestTheLoopIsHonestOverHttp:
         before = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()
         client.post(
             "/v1/policy/approvals",
-            json={"actions": [GATED_ACTION]},
+            json={"target": _T, "actions": [GATED_ACTION]},
             headers=_auth(human.id),
         )
         after = client.get("/v1/policy/enforcement", headers=_auth(human.id)).json()

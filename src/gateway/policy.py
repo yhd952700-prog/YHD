@@ -37,6 +37,7 @@ from ..kernels._enforcement import describe as describe_enforcement
 from ..kernels._sovereignty import (
     DEFAULT_GRANT_TTL_SECONDS,
     MAX_GRANT_TTL_SECONDS,
+    WILDCARD_TARGET,
     get_grant,
     issue_grant,
     list_grants,
@@ -125,9 +126,29 @@ class ApprovalRequest(BaseModel):
     """审批凭据签发请求。
 
     注意：**没有** ``principal`` 字段 —— 主体只能来自身份令牌。
+
+    ``target`` 是**必填**的：授权的最小单位是 (principal, action, target)，
+    缺省 target 不能解释成"任意 target"，否则一份只为一台资源签发的批准会
+    静默覆盖全部资源。要授权全部 target，必须显式传 ``target="*"`` **并且**
+    ``confirm_wildcard=True``（二次确认）。
     """
 
     actions: List[str] = Field(..., min_length=1, description="被授权的内核动作名（HIGH/CRITICAL）")
+    target: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "被授权的具体 target（资源标识）。必填；授权仅对该 target 生效。"
+            f"授权全部 target 需显式写 '{WILDCARD_TARGET}' 并同时置 confirm_wildcard=true。"
+        ),
+    )
+    confirm_wildcard: bool = Field(
+        False,
+        description=(
+            f"把 target 设为 '{WILDCARD_TARGET}' 时的二次确认。仅为全目标授权时需要；"
+            "默认 false，此时通配会被拒绝。"
+        ),
+    )
     reason: str = Field("", max_length=500, description="授权理由（记入审计）")
     ttl_seconds: float = Field(
         DEFAULT_GRANT_TTL_SECONDS,
@@ -147,9 +168,13 @@ def create_approval(
         grant = issue_grant(
             principal,
             req.actions,
+            target=req.target,
             reason=req.reason,
             ttl_seconds=req.ttl_seconds,
             issued_by=principal,
+            # Wildcard authority carries through from the request's explicit
+            # second confirmation; without it, target="*" is refused (400).
+            allow_wildcard=req.confirm_wildcard,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -13,6 +13,7 @@ These tests prove:
 
 from __future__ import annotations
 
+
 import pytest
 
 from src.kernels._crosscutting import (
@@ -36,6 +37,13 @@ from src.kernels.identity import (
     IdentityScope,
     IdentityStatus,
 )
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 def _fresh_manager_with_human():
@@ -252,13 +260,13 @@ class TestSovereigntyGrantRecorded:
 
     def test_allow_under_active_grant_records_the_grant_id(self, human_manager):
         mgr, human = human_manager
-        grant = issue_grant(human.id, ["capability.retire"], reason="d23")
+        grant = issue_grant(human.id, ["capability.retire"], reason="d23", target=_TARGET)
 
         @kernel_action("capability.retire")
         def retire():
             return "ran-under-grant"
 
-        with grant_window(grant):
+        with grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-grant"
 
         det = _latest_details("capability.retire")

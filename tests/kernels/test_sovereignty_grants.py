@@ -14,6 +14,7 @@ itself a first-class object. These tests prove the grant layer is:
 
 from __future__ import annotations
 
+
 import time
 
 import pytest
@@ -27,6 +28,13 @@ from src.kernels.identity import (
     IdentityScope,
     IdentityStatus,
 )
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 @pytest.fixture
@@ -87,7 +95,7 @@ def _action_audit(action_name: str):
 class TestGrantLifecycle:
     def test_issue_records_and_lists(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], reason="quarterly cleanup")
+        grant = sov.issue_grant(human.id, ["capability.retire"], reason="quarterly cleanup", target=_TARGET)
 
         assert grant.grant_id
         assert grant.principal == human.id
@@ -103,7 +111,7 @@ class TestGrantLifecycle:
 
     def test_to_dict_shape(self, humans):
         _mgr, human = humans
-        payload = sov.issue_grant(human.id, ["capability.retire"]).to_dict()
+        payload = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET).to_dict()
         assert payload["actions"] == ["capability.retire"]
         assert payload["is_active"] is True
         assert payload["revoked_at"] is None
@@ -111,7 +119,7 @@ class TestGrantLifecycle:
 
     def test_revoke_is_idempotent(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
         first = sov.revoke_grant(grant.grant_id, revoked_by=human.id, reason="changed my mind")
         second = sov.revoke_grant(grant.grant_id)
         assert first.is_revoked is True
@@ -124,7 +132,7 @@ class TestGrantLifecycle:
 
     def test_revoked_hidden_from_default_listing(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
         sov.revoke_grant(grant.grant_id)
         assert sov.list_grants() == []
         assert [g.grant_id for g in sov.list_grants(include_revoked=True)] == [grant.grant_id]
@@ -135,67 +143,67 @@ class TestGrantIsBounded:
         _mgr, human = humans
         for bad in (0, -1):
             with pytest.raises(ValueError):
-                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad)
+                sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=bad, target=_TARGET)
 
     def test_ttl_has_a_ceiling(self, humans):
         _mgr, human = humans
         with pytest.raises(ValueError):
             sov.issue_grant(
-                human.id, ["capability.retire"], ttl_seconds=sov.MAX_GRANT_TTL_SECONDS + 1
+                human.id, ["capability.retire"], ttl_seconds=sov.MAX_GRANT_TTL_SECONDS + 1, target=_TARGET
             )
 
     def test_expired_grant_cannot_open_a_window(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01)
+        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01, target=_TARGET)
         time.sleep(0.05)
         assert grant.is_expired() is True
         assert grant.is_active() is False
         with pytest.raises(ValueError):
-            sov.grant_window(grant)
+            sov.grant_window(grant, target=_TARGET)
 
     def test_expired_hidden_from_default_listing(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01)
+        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.01, target=_TARGET)
         time.sleep(0.05)
         assert sov.list_grants() == []
         assert [g.grant_id for g in sov.list_grants(include_expired=True)] == [grant.grant_id]
 
     def test_revoked_grant_cannot_open_a_window(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
         revoked = sov.revoke_grant(grant.grant_id)
         with pytest.raises(ValueError):
-            sov.grant_window(revoked)
+            sov.grant_window(revoked, target=_TARGET)
 
 
 class TestGrantIsLeastPrivilege:
     def test_unknown_action_rejected(self, humans):
         _mgr, human = humans
         with pytest.raises(ValueError):
-            sov.issue_grant(human.id, ["not.a.kernel.action"])
+            sov.issue_grant(human.id, ["not.a.kernel.action"], target=_TARGET)
 
     def test_low_and_medium_actions_rejected(self, humans):
         _mgr, human = humans
         for action in ("memory.store", "trust.assign_score"):
             with pytest.raises(ValueError):
-                sov.issue_grant(human.id, [action])
+                sov.issue_grant(human.id, [action], target=_TARGET)
 
     def test_empty_action_set_rejected(self, humans):
         _mgr, human = humans
         with pytest.raises(ValueError):
-            sov.issue_grant(human.id, [])
+            sov.issue_grant(human.id, [], target=_TARGET)
 
     def test_critical_action_accepted(self, humans):
         _mgr, human = humans
         grant = sov.issue_grant(
-            human.id, ["capability.retire", "security.set_abac_rule"]
+            human.id, ["capability.retire", "security.set_abac_rule"], target=_TARGET
         )
         assert grant.actions == frozenset({"capability.retire", "security.set_abac_rule"})
 
     def test_grant_does_not_widen_beyond_its_actions(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
-        with sov.grant_window(grant):
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
+        with sov.grant_window(grant, target=_TARGET):
             active = sov.get_active_sovereignty()
             assert active is not None
             assert "security.set_abac_rule" not in active.actions
@@ -204,17 +212,17 @@ class TestGrantIsLeastPrivilege:
 class TestGrantRequiresAVerifiedHuman:
     def test_unknown_principal_rejected(self, humans):
         with pytest.raises(ValueError):
-            sov.issue_grant("does-not-exist", ["capability.retire"])
+            sov.issue_grant("does-not-exist", ["capability.retire"], target=_TARGET)
 
     def test_service_identity_cannot_hold_sovereignty(self, humans):
         # The internal service principal exists and is ACTIVE, but is marked
         # kind == "service" -> it must never hold human sovereignty (OD-010).
         with pytest.raises(ValueError):
-            sov.issue_grant(INTERNAL_SERVICE_PRINCIPAL, ["capability.retire"])
+            sov.issue_grant(INTERNAL_SERVICE_PRINCIPAL, ["capability.retire"], target=_TARGET)
 
     def test_empty_principal_rejected(self, humans):
         with pytest.raises(ValueError):
-            sov.issue_grant("", ["capability.retire"])
+            sov.issue_grant("", ["capability.retire"], target=_TARGET)
 
     def test_inactive_identity_rejected(self, humans):
         mgr, _human = humans
@@ -223,13 +231,13 @@ class TestGrantRequiresAVerifiedHuman:
         )
         mgr._identities[suspended.id].status = IdentityStatus.SUSPENDED
         with pytest.raises(ValueError):
-            sov.issue_grant(suspended.id, ["capability.retire"])
+            sov.issue_grant(suspended.id, ["capability.retire"], target=_TARGET)
 
 
 class TestGrantAudit:
     def test_issue_writes_granted_event(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], reason="audit me")
+        grant = sov.issue_grant(human.id, ["capability.retire"], reason="audit me", target=_TARGET)
         events = _lifecycle_events("granted")
         assert events, "issue_grant must write a HUMAN_SOVEREIGNTY_OVERRIDE event"
         match = [e for e in events if (e.get("details") or {}).get("grant_id") == grant.grant_id]
@@ -242,7 +250,7 @@ class TestGrantAudit:
 
     def test_revoke_writes_revoked_event(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
         sov.revoke_grant(grant.grant_id, revoked_by=human.id, reason="done")
         events = _lifecycle_events("revoked")
         match = [e for e in events if (e.get("details") or {}).get("grant_id") == grant.grant_id]
@@ -252,13 +260,13 @@ class TestGrantAudit:
     def test_action_audit_carries_the_grant_id(self, humans):
         """The causal chain: kernel action <- grant <- authorising human."""
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], reason="chain")
+        grant = sov.issue_grant(human.id, ["capability.retire"], reason="chain", target=_TARGET)
 
         @kernel_action("capability.retire", enforce=True)
         def retire():
             return "ran-under-grant"
 
-        with sov.grant_window(grant):
+        with sov.grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-grant"
 
         details = _action_audit("capability.retire")
@@ -289,8 +297,8 @@ class TestAdjudicationRechecksGrantAuthority:
 
     def test_revoked_grant_is_denied_at_adjudication(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
-        window = sov.grant_window(grant)
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
+        window = sov.grant_window(grant, target=_TARGET)
         sov.revoke_grant(grant.grant_id)
 
         with window:
@@ -304,8 +312,8 @@ class TestAdjudicationRechecksGrantAuthority:
 
     def test_expired_grant_is_denied_at_adjudication(self, humans):
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.05)
-        window = sov.grant_window(grant)
+        grant = sov.issue_grant(human.id, ["capability.retire"], ttl_seconds=0.05, target=_TARGET)
+        window = sov.grant_window(grant, target=_TARGET)
         time.sleep(0.1)
         assert grant.is_expired() is True
 
@@ -321,8 +329,8 @@ class TestAdjudicationRechecksGrantAuthority:
     def test_valid_grant_still_allows_at_adjudication(self, humans):
         """Non-regression: the re-check must not break a genuinely live grant."""
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
-        with sov.grant_window(grant):
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
+        with sov.grant_window(grant, target=_TARGET):
             verdict, rule, actor = _adjudicate("capability.retire", "CRITICAL")
         assert verdict == "allow"
         assert rule == "human_sovereignty"
@@ -336,8 +344,8 @@ class TestAdjudicationRechecksGrantAuthority:
         REVOKED grant written into the hash chain as a human-authored approval.
         """
         _mgr, human = humans
-        grant = sov.issue_grant(human.id, ["capability.retire"])
-        window = sov.grant_window(grant)
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
+        window = sov.grant_window(grant, target=_TARGET)
         sov.revoke_grant(grant.grant_id)
 
         @kernel_action("capability.retire")
@@ -377,7 +385,7 @@ class TestAuditKeyspaceConvergence:
         """
         _mgr, human = humans
         assert human.principal != human.id, "test premise: the two forms differ"
-        grant = sov.issue_grant(human.id, ["capability.retire"])
+        grant = sov.issue_grant(human.id, ["capability.retire"], target=_TARGET)
 
         @kernel_action("capability.retire")
         def retire():
@@ -410,13 +418,13 @@ class TestAuditKeyspaceConvergence:
         """
         _mgr, human = humans
         assert human.principal != human.id, "test premise: the two forms differ"
-        grant = sov.issue_grant(human.principal, ["capability.retire"])
+        grant = sov.issue_grant(human.principal, ["capability.retire"], target=_TARGET)
 
         @kernel_action("capability.retire")
         def retire():
             return "ran-under-plain-named-grant"
 
-        with sov.grant_window(grant):
+        with sov.grant_window(grant, target=_TARGET):
             assert retire() == "ran-under-plain-named-grant"
 
         row = _action_audit_row("capability.retire")

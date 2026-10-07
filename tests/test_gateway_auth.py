@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+
 import json
 
 import pytest
@@ -29,6 +30,12 @@ PASSWORD = "correct horse battery staple"
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
+
+
+# Mandatory target for /v1/policy/approvals (governance ruling
+# 2026-10-05). A single concrete target is enough here; target-binding
+# semantics are covered in tests/kernels/test_sovereignty_target_binding.py.
+_T = "kernel-target:demo"
 
 
 @pytest.fixture
@@ -446,7 +453,7 @@ class TestTokenIsReal:
         response = client.post(
             "/v1/policy/approvals",
             headers={"Authorization": f"Bearer {token}"},
-            json={"actions": [_enforced_action()], "reason": "should not work"},
+            json={"target": _T, "actions": [_enforced_action()], "reason": "should not work"},
         )
         assert response.status_code == 400, response.text
         detail = response.json()["detail"]
@@ -468,7 +475,7 @@ class TestTokenIsReal:
         response = client.post(
             "/v1/policy/approvals",
             headers={"Authorization": f"Bearer {token}"},
-            json={"actions": [_enforced_action()], "reason": "positive control"},
+            json={"target": _T, "actions": [_enforced_action()], "reason": "positive control"},
         )
         assert response.status_code == 200, response.text
         assert response.json()["approved"] is True

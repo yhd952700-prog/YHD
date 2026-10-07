@@ -51,6 +51,11 @@ PLACEHOLDER_RULES = {
 }
 
 
+# Sovereignty grants are bound to a target (governance ruling 2026-10-05);
+# a concrete target is enough for these checks.
+_TARGET = "kernel-target:demo"
+
+
 def _details(raw):
     if isinstance(raw, dict):
         return raw
@@ -94,7 +99,7 @@ def build_chain():
             # a MEDIUM action such as ai.execute_planner_task is refused by
             # design, which is why the first run produced no grant record.
             grant = issue_grant(principal, ["capability.register"],
-                                reason="probe: basis chain", ttl_seconds=180)
+                                reason="probe: basis chain", ttl_seconds=180, target=_TARGET)
             print(f"  issued grant {grant.grant_id[:12]}... for principal={principal}")
         except Exception as exc:
             print(f"  issue_grant refused: {type(exc).__name__}: {exc}")

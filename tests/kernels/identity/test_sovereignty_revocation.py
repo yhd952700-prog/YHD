@@ -13,6 +13,7 @@ defect was present.
 """
 from __future__ import annotations
 
+
 import pytest
 
 from src.kernels import _sovereignty
@@ -23,6 +24,13 @@ from src.kernels.identity import (
 )
 from src.kernels.policy import get_policy_engine
 from src.kernels._risk_classification import KERNEL_ACTION_RISK, RiskTier
+
+
+# Mandatory target for sovereignty grants (governance ruling
+# 2026-10-05). Target-binding semantics themselves are covered in
+# tests/kernels/test_sovereignty_target_binding.py; here a single
+# concrete target is enough to exercise the other properties.
+_TARGET = "kernel-target:demo"
 
 
 def _a_critical_action() -> str:
@@ -58,7 +66,7 @@ def test_suspended_human_loses_sovereignty_without_restart():
     manager = get_identity_manager()
     manager.create_human_identity("revoked-leaver")
     grant = _sovereignty.issue_grant(
-        principal="revoked-leaver", actions=[action], reason="fixture"
+        principal="revoked-leaver", actions=[action], reason="fixture", target=_TARGET
     )
 
     assert _decide(action, "revoked-leaver", grant.grant_id).name == "ALLOW"
@@ -76,10 +84,10 @@ def test_suspending_recalls_outstanding_grants():
     manager.create_human_identity("grant-holder")
     grants = [
         _sovereignty.issue_grant(
-            principal="grant-holder", actions=[action], reason="one"
+            principal="grant-holder", actions=[action], reason="one", target=_TARGET
         ),
         _sovereignty.issue_grant(
-            principal="grant-holder", actions=[action], reason="two"
+            principal="grant-holder", actions=[action], reason="two", target=_TARGET
         ),
     ]
     assert all(g.is_active() for g in (g.grant_id and g or g for g in grants))
@@ -99,7 +107,7 @@ def test_revoke_grants_for_principal_matches_both_id_spellings():
     manager.create_human_identity("spelling")
     identity = manager.get_identity_by_principal("spelling")
     grant = _sovereignty.issue_grant(
-        principal=identity.id, actions=[action], reason="fixture"
+        principal=identity.id, actions=[action], reason="fixture", target=_TARGET
     )
 
     recalled = _sovereignty.revoke_grants_for_principal("spelling", reason="test")

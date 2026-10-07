@@ -81,6 +81,11 @@ L_PLACEHOLDER = "UNVERIFIED/DERIVED"
 L_ABSENT = "UNVERIFIED/DERIVED"
 
 
+# Sovereignty grants are bound to a target (governance ruling 2026-10-05);
+# a concrete target is enough for these checks.
+_TARGET = "kernel-target:demo"
+
+
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -282,7 +287,7 @@ def self_test():
     principal = getattr(ident, "principal_id", None) or ident.id
 
     grant = issue_grant(principal, ["capability.register"],
-                        reason="basis view self-test", ttl_seconds=300)
+                        reason="basis view self-test", ttl_seconds=300, target=_TARGET)
 
     @kernel_action("capability.register")
     def _gated():

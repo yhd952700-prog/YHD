@@ -59,6 +59,11 @@ _RESULTS: list[tuple[bool, str]] = []
 KERNEL_PRINCIPAL = "liuhao-internal-service"
 
 
+# Sovereignty grants are bound to a target (governance ruling 2026-10-05);
+# a concrete target is enough for these checks.
+_TARGET = "kernel-target:demo"
+
+
 def _record(ok: bool, label: str) -> None:
     _RESULTS.append((ok, label))
     print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
@@ -111,7 +116,7 @@ def main() -> int:
     print(f"  humans: {bob_id}, {alice_id}\n")
 
     # --- (1) Valid grant: live grant escalates the holder to human ----------
-    grant = issue_grant(bob_id, ["capability.retire"], ttl_seconds=3600)
+    grant = issue_grant(bob_id, ["capability.retire"], ttl_seconds=3600, target=_TARGET)
     with human_sovereign(bob_id, ["capability.retire"], grant_id=grant.grant_id):
         reg.retire("p06_cap_valid", "core")
     evt_valid = _latest_event()
@@ -149,7 +154,7 @@ def main() -> int:
     )
 
     # --- (3) Expired grant: TTL-expired grant -> fail-closed -----------------
-    grant2 = issue_grant(bob_id, ["capability.retire"], ttl_seconds=0.02)
+    grant2 = issue_grant(bob_id, ["capability.retire"], ttl_seconds=0.02, target=_TARGET)
     time.sleep(0.1)  # let the TTL elapse
     with human_sovereign(bob_id, ["capability.retire"], grant_id=grant2.grant_id):
         reg.retire("p06_cap_expired", "core")
@@ -160,7 +165,7 @@ def main() -> int:
     )
 
     # --- (4) Principal mismatch: A's grant cannot be spent by B -------------
-    grant3 = issue_grant(alice_id, ["capability.retire"], ttl_seconds=3600)
+    grant3 = issue_grant(alice_id, ["capability.retire"], ttl_seconds=3600, target=_TARGET)
     # bob opens a window carrying alice's grant id -> must NOT escalate bob.
     with human_sovereign(bob_id, ["capability.retire"], grant_id=grant3.grant_id):
         reg.retire("p06_cap_mismatch", "core")
