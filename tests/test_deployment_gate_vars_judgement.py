@@ -209,6 +209,33 @@ class TestRefIntegrity:
                                  ["src/security/posture.py:123"], (),
                                  consts.get("LIUHAO_POSTURE_STRICT", ())) == []
 
+    def test_drifted_finding_lists_only_the_still_valid_refs(self, gate, monkeypatch):
+        """A drifted ref must not reappear under the finding's ``read at:`` list.
+
+        ``drifted_refs`` returns a *formatted* description ("<ref> (line
+        reads: ...)"). The exclusion filter compared that description against
+        the raw ref, so it never matched and the finding printed -- as if it
+        were good evidence -- the very pointer it had just called drifted. The
+        reader then sees the bad ref twice: once condemned, once presented.
+        """
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "LIUHAO_SANDBOX_ENFORCE",
+            "aliases": (),
+            "expect": "set",
+            "why": "probe: one drifted ref, one valid ref",
+            "refs": ("src/plugins/sandbox/assurance.py:1",     # drifted
+                     "src/plugins/sandbox/assurance.py:72"),   # valid
+        },))
+        findings = gate.evaluate(
+            {}, {"LIUHAO_SANDBOX_ENFORCE": [("src/plugins/sandbox/assurance.py", 72)]},
+            {}, {})
+        drift = [f for f in findings
+                 if f.var == "LIUHAO_SANDBOX_ENFORCE" and f.kind == "seed-ref-drifted"]
+        assert len(drift) == 1, [f.kind for f in findings]
+        assert drift[0].refs == ["src/plugins/sandbox/assurance.py:72"], (
+            "the drifted ref must be excluded from the finding's evidence list; "
+            "got %r" % (drift[0].refs,))
+
     def test_every_shipped_ref_is_currently_valid(self, gate):
         """The gate's own table must be clean, or it is citing fiction.
 
