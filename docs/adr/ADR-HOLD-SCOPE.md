@@ -88,9 +88,19 @@ before `docker/build-push-action` runs:
   (non-zero), which fails the CI job *before* the push step, so no image is
   pushed and no promotion occurs. Automatic code-change agents (F2) MUST also
   check this gate and stop.
-* **Wired in CI:** `.github/workflows/ci-cd.yml` runs `check_hold_gate.py` as a
-  release-gate step in the `build` job, ahead of `Build and push`. A truthy
-  `LIUHAO_HOLD` therefore hard-aborts the release with no registry push.
+* **Wired in CI — but currently UNREACHABLE for our work (execution count: 0):**
+  `.github/workflows/ci-cd.yml` *names* `check_hold_gate.py` as a release-gate
+  step in the `build` job, ahead of `Build and push`. But that `build` job is
+  gated `if: always() && github.event_name == 'push' && github.ref ==
+  'refs/heads/main'`, and `ci-cd.yml` triggers only on `push: [main, develop]` /
+  `pull_request: [main]`. All work lands on `p36`, and both `main` (2026-09-03)
+  and `develop` (2026-09-02) are stale — so this step **has never executed on
+  any of our commits**. The wiring is correct; the invocation path is not
+  reachable. A truthy `LIUHAO_HOLD` *would* hard-abort the release with no
+  registry push **if and when that path runs** — it is **not** a control we can
+  currently rely on. See `docs/ci/gate-exemptions.md` entry 5 (pending-owner:
+  `g9-deploy`). The authoritative guarantee remains the code-level freeze in
+  §2.1, not this env gate.
 * **Not a security boundary:** the env gate is an operational safeguard, not an
   authorization control. The authoritative guarantee is the code-level freeze in
   §2.1; the env gate is the convenient, visible switch.
@@ -112,8 +122,15 @@ authorizations, not a GO authorization**:
   HD-01 authorization) minimal containment. HOLD-BLOCKED: repair / migration /
   production deployment / release / promotion.
 * Any repair/migration is permitted **only** once the corresponding Human Decision
-  explicitly authorizes it, and **no repair may bypass `HOLD` or the `GO` gate**
-  (`check_hold_gate.py` / `verify_go_readiness.py` remain enforced in CI).
+  explicitly authorizes it, and **no repair may bypass `HOLD` or the `GO` gate**.
+  (`check_hold_gate.py` / `verify_go_readiness.py` are *intended* to be enforced
+  in CI — but see the correction in §2.4: both are named only in
+  `ci-cd.yml:build`, a job unreachable on `p36`. In practice they have run **zero
+  times** for our work, so they are **not** a live backstop today. The hard
+  guarantees today are the code-level freeze in §2.1 and human discipline;
+  treating these scripts as an executing CI gate would be false comfort. Wiring
+  them onto a reachable job is tracked as `docs/ci/gate-exemptions.md` entry 5,
+  pending-owner `g9-deploy`.)
 * The ten hard prohibitions attached to HD-01…HD-05 — no deletion of original
   history, no overwriting old hashes, no direct renumbering of historical `seq`, no
   forcing `UNIQUE(seq)` onto the damaged table, no verifier tampering to fake GREEN,
