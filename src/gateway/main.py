@@ -322,18 +322,29 @@ async def lifespan(app: FastAPI):
         )
     else:
         try:
-            from ..reliability.checkpointer import start_background_verifier
+            from ..reliability.checkpointer import (
+                estimate_verify_seconds,
+                start_background_verifier,
+            )
 
             _checkpointer = start_background_verifier()
             app.state.audit_checkpointer = _checkpointer
+            # ``estimate_verify_seconds`` is a MODULE-LEVEL function, not a
+            # BackgroundVerifier method (see checkpointer.py:73; the class's own
+            # start() calls it the same way). Calling it off the instance raised
+            # AttributeError *after* start() had already launched the thread and
+            # mounted it on app.state -- so the handler below logged "FAILED TO
+            # START ... evidence_status stays 'unverified'" while the
+            # checkpointer was in fact running. A false failure claim does the
+            # same damage as a false success: it trains people to ignore this
+            # line. Any future edit must keep this a module-level call.
             logger.info(
                 "Audit checkpointer started (segment=%s events, interval=%ss, "
                 "rolling every %s ticks, ~%ss/tick) against AUDIT_DB_PATH=%s",
                 _checkpointer.segment_events,
                 _checkpointer.incremental_interval_sec,
                 _checkpointer.rolling_every_n_ticks,
-                round(_checkpointer.estimate_verify_seconds(
-                    _checkpointer.segment_events), 3),
+                round(estimate_verify_seconds(_checkpointer.segment_events), 3),
                 _audit_db_path,
             )
         except Exception as _ckpt_exc:  # noqa: BLE001 - loud, never crash boot
@@ -467,6 +478,25 @@ async def lifespan(app: FastAPI):
 
 # ==================== FastAPI Application ====================
 
+def describe_exception(exc: BaseException, limit: int = 300) -> str:
+    """把异常压成一句**可读且真实**的话（供 500 响应体使用）。
+
+    诚实 > 好看：兜底处理器不能为了"文案统一"把真实成因吞掉，否则运维拿到
+    的只有一句"发生了一个错误"，什么都做不了。同时做两件事防止走极端：
+
+    * 保留异常类型 + 消息（"sqlite3.OperationalError: no such table: x" 本身
+      就是最精确的修复指引）；
+    * 截断到 `limit` 字符 —— 异常消息可能含整段 payload / 路径，原样回给
+      客户端等于把内部实现细节整包倒出去。完整堆栈留在服务端日志里。
+    """
+    text = str(exc).strip()
+    if not text:
+        return type(exc).__name__
+    if len(text) > limit:
+        text = text[:limit] + "…(已截断)"
+    return f"{type(exc).__name__}: {text}"
+
+
 def get_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -500,6 +530,10 @@ def get_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # 不暴露 X-Trace-ID，跨域的浏览器 JS 就读不到它（CORS 默认只放开
+        # 简单响应头），于是"拿 trace_id 去查日志"这条唯一的排障路径在
+        # 跨域部署下直接断掉。跨域也要把它交出去。
+        expose_headers=["X-Trace-ID"],
     )
 
     # GZip compression
@@ -516,6 +550,12 @@ def get_app() -> FastAPI:
         if not trace_id:
             import uuid
             trace_id = str(uuid.uuid4())
+
+        # 必须落在 request.state：全局异常处理器（main.py 的
+        # global_exception_handler）靠它把 500 响应和日志行串起来。此前它只
+        # 是这里的局部变量，于是 500 响应里的 trace_id 恒为 "unknown" ——
+        # 一个根本检索不到任何东西的死面包屑。
+        request.state.trace_id = trace_id
 
         response = await call_next(request)
 
@@ -571,20 +611,33 @@ def get_app() -> FastAPI:
 
     # ==================== Exception handlers ====================
 
+    # 兜底 500 的文案必须是**可行动**的：说清哪里坏了 + 怎么查 + 怎么办。
+    # 此前这里是 "An unexpected error occurred" —— 与 "Internal Server Error"
+    # 是同一类：说了一半（"坏了"）却不说另外两半，操作者只能干瞪眼。这里
+    # 给出三件东西：真实异常（诚实，不为了统一而吞细节）、一个真能检索到
+    # 日志的 trace_id（由 logging_middleware 写入 request.state）、以及下一步
+    # 动作。完整堆栈**只**进服务端日志，不进响应体。
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
+        trace_id = getattr(request.state, "trace_id", None) or "unknown"
         logger.error(
-            f"Unhandled exception: {exc}\n"
-            f"Path: {request.url}\n"
-            f"Method: {request.method}",
+            "Unhandled exception trace_id=%s path=%s method=%s: %s",
+            trace_id,
+            request.url,
+            request.method,
+            describe_exception(exc, limit=2000),
             exc_info=True,
         )
         return JSONResponse(
             status_code=500,
             content={
                 "error": "internal_server_error",
-                "detail": "An unexpected error occurred",
-                "trace_id": getattr(request.state, "trace_id", "unknown"),
+                "detail": (
+                    f"服务端处理此请求时发生未预期错误（{describe_exception(exc)}）。"
+                    f"完整堆栈已写入服务端日志，请以 trace_id={trace_id} 检索定位；"
+                    "排除成因后重试本请求。"
+                ),
+                "trace_id": trace_id,
             },
         )
 
@@ -642,7 +695,15 @@ def get_app() -> FastAPI:
             status_code=403,
             content={
                 "error": "policy_denied",
-                "detail": "The kernel policy engine denied this action.",
+                # 原文案只说"被拒了"，不说"下一步能做什么"，操作者会去重试
+                # 或去找一个并不存在的放行端点。这里把"没有放行入口"也说
+                # 出来 —— 知道此路不通本身就是可行动的信息。
+                "detail": (
+                    f"内核策略引擎拒绝了该动作（action={exc.action}，"
+                    f"rule={exc.rule_id}）。判定由内核策略层作出，HTTP 面没有"
+                    "放行或改写入口，重试不会改变结果；请按响应中的 rule 定位"
+                    "该规则后再决定如何调整调用。"
+                ),
                 "action": exc.action,
                 "verdict": exc.verdict,
                 "rule": exc.rule_id,
