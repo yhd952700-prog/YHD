@@ -73,6 +73,20 @@ def _store():
     return get_audit_store()
 
 
+def _unreadable_detail(exc: BaseException) -> str:
+    """审计库读失败的**可行动**文案。
+
+    "audit store unreadable: <异常>" 只说了"哪里坏了"，没说"去哪里修"。审计
+    库的位置由 ``AUDIT_DB_PATH`` 决定（见 docker-compose.prod.yml 与
+    tests/conftest.py），所以文案直接点名它 —— 这正是界面错误文案该给的
+    修复指引，而不是让人猜。
+    """
+    return (
+        f"审计库不可读：{exc}。请检查 AUDIT_DB_PATH 指向的 SQLite 文件是否"
+        "存在、且对服务进程可读；若文件被移动/截断，链校验会一并失败。"
+    )
+
+
 def _row_to_event(row) -> Dict[str, Any]:
     (
         seq, event_id, event_type, principal_id, scope, timestamp,
@@ -214,7 +228,7 @@ def list_events(
         logger.warning("audit events query failed: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=503,
-            detail=f"audit store unreadable: {exc}",
+            detail=_unreadable_detail(exc),
         )
     return {
         "events": events,
@@ -249,7 +263,7 @@ def get_event(
         event = _read_event_by_seq(seq)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit event lookup failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail=f"audit store unreadable: {exc}")
+        raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
     if event is None:
         raise HTTPException(status_code=404, detail=f"no audit event at seq={seq}")
@@ -395,7 +409,7 @@ def summary(
         data = _store()._read_only(_run)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit summary failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail=f"audit store unreadable: {exc}")
+        raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
     data["generated_at"] = time.time()
     return data
