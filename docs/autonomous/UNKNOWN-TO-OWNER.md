@@ -24,6 +24,9 @@
 > (`355 passed`). Corrected stale statuses (evidence inline): **U3, U6, U12, U25,
 > U47(Fix A), U48, U49, U50, U51**. New entries: **U57, U58, U59**. Nothing was
 > deleted; no evidence was touched; `src/` was not modified by this audit.
+> Follow-up: U58's missing gate is now built — `scripts/check_unknown_register.py`
+> (+ `tests/test_check_unknown_register.py`) fails a run when an entry is still
+> open but cites a commit already an ancestor of HEAD (`91f2c876`; CI wiring pending).
 
 ---
 
@@ -370,7 +373,19 @@
   that is an ancestor of HEAD while its status still reads `DISCOVERED` (or a
   scheduled reconcile job), and/or require every fix commit to update the register
   entry it closes. This audit corrected the *instances*; the *gate* is still missing.
-- **Status:** DISCOVERED (read-only). No code changed.
+- **Status:** **REMEDIATED (gate built).** `scripts/check_unknown_register.py` +
+  `tests/test_check_unknown_register.py` (commit `91f2c876`) implement the gate: an
+  entry whose status is still open but which cites a commit already an ancestor of
+  HEAD fails the run. Two documented precision exclusions avoid false positives on
+  legitimate context citations — (i) `X → Y` arrow endpoints (state-transition
+  evidence) and (ii) commits shared by more than one entry (context), unless cited
+  in the entry's own `**Status:**` region. Verified: real register → PASS (58 entries,
+  exit 0); crafted counterexamples on temp copies → FAIL (status-region + unique-body
+  paths); 8 unit tests pass. **Residual (honest):** the gate is a standalone script +
+  test, **not yet wired into CI** — wiring is an owner call (natural home:
+  `quality-reliability`, alongside the doc-lint surface). The lint only catches an
+  entry that *cites* its fix commit; a silent fix with no citation still escapes,
+  which is why the going-forward discipline is "name the fix commit in the Status line".
 
 ## U59 — Declared dependency ≠ installed dependency: `pytest-timeout` is absent from the live `.venv`
 
@@ -395,5 +410,5 @@
 | id | discovered-by | date | what | why it matters | status | priority |
 |----|----|----|----|----|----|----|
 | U57 | unknown-unknowns | 2026-10-07 | 18 agents share one git worktree with no ownership lock; HEAD moved `c438313e`→`9595b51b` and the WIP set was entirely replaced mid-audit | Test evidence is attributed to a HEAD that may change *during* the run; path overlap = silent lost update; "don't touch the WIP files" is unenforceable | DISCOVERED — serialize commits / pin the tree; re-check HEAD before+after commit | P0 |
-| U58 | unknown-unknowns | 2026-10-07 | Register had no reconciliation gate: U48–U51 + U47-FixA stayed `DISCOVERED` for ~2 weeks after the fixes (2026-09-27) were already ancestors of HEAD; 308 commits since last scan | A stale open-risk list wastes cycles re-solving solved items and hides the actually-open ones; "logged it" misread as "tracking it" | DISCOVERED — add a reconcile lint (`DISCOVERED` + fix-commit-ancestor-of-HEAD ⇒ fail); instances corrected this audit | P1 |
+| U58 | unknown-unknowns | 2026-10-07 | Register had no reconciliation gate: U48–U51 + U47-FixA stayed `DISCOVERED` for ~2 weeks after the fixes (2026-09-27) were already ancestors of HEAD; 308 commits since last scan | A stale open-risk list wastes cycles re-solving solved items and hides the actually-open ones; "logged it" misread as "tracking it" | **REMEDIATED (gate built)** — `scripts/check_unknown_register.py` + tests (`91f2c876`): open status + landed cited commit ⇒ fail; PASS on this register (58 entries), FAIL on crafted counterexamples. Residual: CI wiring pending (owner call) | P1 |
 | U59 | unknown-unknowns | 2026-10-07 | `pytest-timeout` declared in `pyproject` `[tests]` but absent from the live `.venv` | `verify_readiness` C3/C6 timeout gate cannot run locally (rc=4); the hang-protection added after U25 is unarmed where verification runs | DISCOVERED — assert importability + clear remedy; CI must install `.[tests]` | P2 |
