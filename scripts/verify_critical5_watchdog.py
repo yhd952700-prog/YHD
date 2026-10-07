@@ -33,11 +33,28 @@ Docker / a real Ubuntu CI run, by statically scanning the workflow files:
                  with injected upstream results: exit 0 only for "success",
                  exit 1 for failure/cancelled/skipped/empty (the latter being
                  fail-closed on a missing input).
+  5. HOLD ARMING -- for EVERY job in EVERY workflow that RUNS
+                 `scripts/check_hold_gate.py`, the effective `env` must define
+                 `LIUHAO_HOLD` AND that value must be traceable to a source a
+                 human can set through the platform (a repo variable, secret or
+                 dispatch input). Rationale: `check_hold_gate.py` treats an
+                 UNSET variable as "HOLD inactive -> exit 0", so a HOLD gate
+                 wired without an armed input is a control that can never
+                 block anything -- it looks present and enforces nothing. A
+                 HARDCODED literal is equally rejected: a freeze that can only
+                 be lifted by editing and deploying this workflow makes lifting
+                 the freeze heavier than imposing it, which is exactly the
+                 bypass the HOLD ADR rules out. When the value is an expression
+                 this gate cannot resolve, it does NOT guess: it degrades to a
+                 TEXT-LEVEL criterion (the key is present in `env:`) and says so
+                 in the output, labelled DEGRADED.
 
-Exit 0 = every `needs:` job across all workflows is correctly watchdog-protected
-         and every gated job is reachable on the working branch.
-Exit 1 = at least one `needs:` job is uncovered, a job is UNREACHABLE, or a
-         static/logic check failed.
+Exit 0 = every `needs:` job across all workflows is correctly watchdog-protected,
+         every gated job is reachable on the working branch, and every job that
+         runs the HOLD gate resolves `LIUHAO_HOLD` from a platform-set value.
+Exit 1 = at least one `needs:` job is uncovered, a job is UNREACHABLE, a
+         static/logic check failed, or a job runs the HOLD gate with an `env`
+         that is unarmed / hardcoded.
 
 HONEST LIMITATION: this does NOT run real GitHub Actions. The end-to-end
 "red upstream -> gate shows FAILED, not SKIP" orchestration is verified by static
@@ -528,19 +545,204 @@ else:
 
 
 # --------------------------------------------------------------------------- #
+# 5. HOLD ARMING — a gate whose input is unwired is a gate that never blocks
+# --------------------------------------------------------------------------- #
+print()
+print("=" * 72)
+print("[5] HOLD-gate arming (jobs running check_hold_gate.py must resolve LIUHAO_HOLD)")
+print("=" * 72)
+
+_HOLD_INVOCATION = "check_hold_gate"
+_HOLD_ENV_KEY = "LIUHAO_HOLD"
+
+#: Sources a human can change *through the platform* (repo variable / secret /
+#: dispatch input) rather than by editing this repository. A value bound to one
+#: of these is auditable: setting it is a logged platform action, not a commit.
+_EXTERNAL_VALUE_SOURCES = (
+    "vars.",
+    "secrets.",
+    "inputs.",
+    "github.event.inputs",
+)
+
+_EXPR_BODY_RE = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+#: An expression whose entire body is a constant (`${{ 1 }}`, `${{ '0' }}`).
+_PURE_LITERAL_BODY_RE = re.compile(r"^(?:[-+]?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")$")
+
+
+def _strip_line_comments(text: object) -> str:
+    """Drop full-line comments so a *mention* of the script is not a *call*.
+
+    `tests/test_guardrail_scripts.py` already had to fix exactly this
+    false-green class once (a YAML comment counted as a CI invocation). A job
+    that only names `check_hold_gate.py` inside a comment does not run it and
+    must not be graded as though it did.
+    """
+    return "\n".join(
+        line
+        for line in str(text).splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def _hold_gate_steps(job: dict) -> list[dict]:
+    """Steps of `job` that actually execute check_hold_gate.py."""
+    return [
+        step
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict)
+        and _HOLD_INVOCATION in _strip_line_comments(step.get("run", ""))
+    ]
+
+
+def _classify_hold_value(value: object) -> tuple[str, str]:
+    """Grade a LIUHAO_HOLD value. Returns (verdict, why).
+
+    verdict is one of:
+      * ``"absent"``    -- the key is not defined at all (gate reads UNSET).
+      * ``"hardcoded"`` -- a constant, literal or disguised as an expression.
+      * ``"traceable"`` -- bound to a platform-set source a human controls.
+      * ``"degraded"``  -- dynamic, but not a source this gate recognises; the
+                           caller must grade it by the text-level rule only.
+    """
+    if value is None:
+        return "absent", "the key is not defined in the job's effective env"
+    text = str(value).strip()
+    bodies = [m.group(1).strip() for m in _EXPR_BODY_RE.finditer(text)]
+    if not bodies:
+        return "hardcoded", f"hardcoded literal {text!r} (no ${{{{ }}}} expression)"
+    if any(tok in body for body in bodies for tok in _EXTERNAL_VALUE_SOURCES):
+        return "traceable", f"{text!r} is bound to a platform-set variable"
+    if all(_PURE_LITERAL_BODY_RE.match(body) for body in bodies):
+        return "hardcoded", f"{text!r} is a constant wearing expression syntax"
+    return "degraded", (
+        f"{text!r} is an expression this gate cannot resolve to a platform "
+        f"variable"
+    )
+
+
+hold_jobs = 0
+hold_traceable = 0
+hold_degraded_jobs = 0
+
+for wf in WORKFLOWS:
+    try:
+        with open(wf) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:  # noqa: BLE001  (already reported as a failure in step 1)
+        continue
+    if not isinstance(doc, dict):
+        continue
+    wf_env = doc.get("env")
+    wf_env = wf_env if isinstance(wf_env, dict) else {}
+    wf_rel = _display(wf)
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        invoking = _hold_gate_steps(job)
+        if not invoking:
+            continue
+        hold_jobs += 1
+        job_env = job.get("env")
+        job_env = job_env if isinstance(job_env, dict) else {}
+        bad: list[tuple[str, str]] = []
+        saw_degraded = False
+        for step in invoking:
+            step_env = step.get("env")
+            step_env = step_env if isinstance(step_env, dict) else {}
+            effective = {**wf_env, **job_env, **step_env}
+            verdict, why = _classify_hold_value(effective.get(_HOLD_ENV_KEY))
+            where = f"{wf_rel}:{job_name} [{step.get('name') or '(unnamed step)'}]"
+            if verdict == "traceable":
+                print(f"  OK  {where} -> {why}")
+            elif verdict == "degraded":
+                saw_degraded = True
+                print(f"  DEGRADED  {where} -> {why}")
+            elif verdict == "absent":
+                print(f"  UNARMED  {where} -> {why}")
+                bad.append((
+                    verdict,
+                    "the gate reads UNSET, which it treats as HOLD inactive "
+                    "(exit 0), so this job would release with no freeze in force",
+                ))
+            else:
+                print(f"  HARDCODED  {where} -> {why}")
+                bad.append((
+                    verdict,
+                    "lifting the freeze would require editing and deploying this "
+                    "workflow instead of an auditable platform action",
+                ))
+        if bad:
+            for verdict, consequence in bad:
+                failures.append(
+                    f"HOLD-ARMING: {wf_rel}:{job_name} runs the HOLD gate but "
+                    f"LIUHAO_HOLD is {verdict} -- {consequence}"
+                )
+        elif saw_degraded:
+            # Not a failure -- but it is also NOT a proven arming, so it must not
+            # be counted in the traceable numerator. Saying "1/1 armed" here
+            # would be the same overclaim this whole section exists to stop.
+            hold_degraded_jobs += 1
+        else:
+            hold_traceable += 1
+
+if hold_jobs == 0:
+    print(
+        "  NOTE (informational, not failing): no workflow runs "
+        f"scripts/{_HOLD_INVOCATION}.py -- the C1 HOLD control has no CI caller "
+        "here, so there is no arming to judge."
+    )
+elif hold_degraded_jobs:
+    print(
+        f"  HOLD-ARMING: {hold_traceable}/{hold_jobs} job(s) that run the HOLD "
+        f"gate resolve LIUHAO_HOLD to a platform-set value; "
+        f"{hold_degraded_jobs} graded by the DEGRADED text-level rule only"
+    )
+else:
+    print(
+        f"  HOLD-ARMING: {hold_traceable}/{hold_jobs} job(s) that run the HOLD gate "
+        f"resolve LIUHAO_HOLD to a platform-set value"
+    )
+if hold_degraded_jobs:
+    # Say it out loud rather than implying a semantic proof was performed.
+    print(
+        f"  NOTE (DEGRADED criterion): {hold_degraded_jobs} HOLD-gate job(s) were "
+        "graded by a TEXT-LEVEL rule -- the key is present in the invoking job's "
+        "env -- because this gate could not resolve the expression. Traceability "
+        "to a platform-set source was NOT proven for those; a human still has to "
+        "read them."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # RESULT
 # --------------------------------------------------------------------------- #
 print()
 print("=" * 72)
 if failures:
-    print(f"RESULT: FAILED ({len(failures)}) -- watchdog coverage gaps exist:")
+    print(f"RESULT: FAILED ({len(failures)}) -- gate coverage / arming gaps exist:")
     for line in failures:
         print("  -", line)
     print("  (real GitHub Ubuntu run remains UNVERIFIED: no act/Docker here)")
     sys.exit(1)
+if hold_jobs == 0:
+    hold_clause = "and no workflow runs the HOLD gate here (nothing to arm)"
+elif hold_degraded_jobs:
+    # The degraded case must not be folded into an "all armed" claim.
+    hold_clause = (
+        f"and {hold_traceable}/{hold_jobs} HOLD-gate job(s) resolve LIUHAO_HOLD "
+        f"to a platform-set value ({hold_degraded_jobs} graded by the DEGRADED "
+        "text-level rule only)"
+    )
+else:
+    hold_clause = (
+        f"and all {hold_jobs} HOLD-gate job(s) resolve LIUHAO_HOLD to a "
+        "platform-set value"
+    )
 print(
-    "RESULT: PASS -- every `needs:` job across all workflows is watchdog-protected "
-    f"and all {gated_jobs} gated job(s) are reachable on '{working_branch}'"
+    "RESULT: PASS -- every `needs:` job across all workflows is watchdog-protected, "
+    f"all {gated_jobs} gated job(s) are reachable on '{working_branch}', "
+    f"{hold_clause}"
 )
 print("  (real GitHub Ubuntu run remains UNVERIFIED: no act/Docker here)")
 sys.exit(0)
