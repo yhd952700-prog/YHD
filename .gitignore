@@ -47,6 +47,13 @@ data/model_registry.json
 backup_*.sql
 bandit-report.json
 
+# ===== 员工/目标存储（运行态）=====
+# EmployeeStore 在 LIUHAO_WORKSPACE_ROOT 未设置时把运行态写进仓库根
+# （见 src/ai/employee_store.py 的 _default_store_path）。它是运行数据、
+# 随本机而变，入库只会带来"神秘的 diff"。仓库根的其他临时产物
+# （.tmp_audit_*.db / *.log）已被上面的 *.db 与 *.log 覆盖，这一族是缺口。
+.liuhao_*.json
+
 # ===== 本地工作数据（记忆 / 诊断截图） =====
 .workbuddy/
 l-core-ui-verification.png
