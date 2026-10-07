@@ -33,19 +33,29 @@ jobs:
           --health-retries 5
 
       # 真 etcd：让 TestRealEtcdEndToEnd（real etcd）在 CI 上**真正执行**（前提
-      # 是 [etcd] extra 已装 etcd3）。与 redis 镜像同理，镜像自带的不依赖网络即可
-      # 用 `etcdctl endpoint health` 做健康探针；CI 上若没装 etcd3，该组仍优雅 skip。
+      # 是 [etcd] extra 已装 etcd3）；CI 上若没装 etcd3，该组仍优雅 skip。
+      #
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器在起容器阶段就失败 -> test job 根本没跑起来 -> 所有 needs: test 的
+      # 下游门禁（security / guardrails / guardrails-extended / lint / gate-check）
+      # 全部 skipped。一个起不来的服务容器不是"etcd 相关测试跳过"，而是**整条 CI
+      # 保护面静默归零**，这正是必须换掉而不是绕过去的理由。
+      # 实测替代：quay.io/coreos/etcd:v3.5.34 的 manifest HTTP 200（同 3.5 线）。
+      #
+      # coreos 系镜像不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION /
+      # ETCD_ENABLE_V2），它们是 bitnami entrypoint 的参数包装；etcd 原生默认就是
+      # 无鉴权，所以直接删除而不是改名。health-cmd 必须显式给 ETCDCTL_API=3 和
+      # --endpoints，否则 etcdctl 可能落到 v2 或默认地址、健康探针恒失败。
       etcd:
-        image: bitnami/etcd:3.5
+        image: quay.io/coreos/etcd:v3.5.34
         ports:
           - 2379:2379
         env:
-          ETCD_ENABLE_V2: "false"
-          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
           ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "etcdctl endpoint health"
+          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5

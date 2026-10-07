@@ -30,17 +30,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
+      # 运行 0 成功）。改用 quay.io/coreos/etcd:v3.5.34（manifest 实测 HTTP 200）。
+      # coreos 系不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION / ETCD_ENABLE_V2），
+      # 无鉴权是 etcd 默认行为，故删除而非改名；health-cmd 必须显式给
+      # ETCDCTL_API=3 与 --endpoints，否则探针恒失败。
       etcd:
-        image: bitnami/etcd:3.5
+        image: quay.io/coreos/etcd:v3.5.34
         ports:
           - 2379:2379
         env:
-          ETCD_ENABLE_V2: "false"
-          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
           ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "etcdctl endpoint health"
+          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -87,17 +92,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
+      # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
+      # 运行 0 成功）。改用 quay.io/coreos/etcd:v3.5.34（manifest 实测 HTTP 200）。
+      # coreos 系不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION / ETCD_ENABLE_V2），
+      # 无鉴权是 etcd 默认行为，故删除而非改名；health-cmd 必须显式给
+      # ETCDCTL_API=3 与 --endpoints，否则探针恒失败。
       etcd:
-        image: bitnami/etcd:3.5
+        image: quay.io/coreos/etcd:v3.5.34
         ports:
           - 2379:2379
         env:
-          ETCD_ENABLE_V2: "false"
-          ALLOW_NONE_AUTHENTICATION: "yes"
+          ETCDCTL_API: "3"
           ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://localhost:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "etcdctl endpoint health"
+          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
