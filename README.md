@@ -1,19 +1,46 @@
-# 鎏灏 LIUHAO X
+# LIUHAO X / 鎏灏 X
 
+> **Human-Sovereign Agent Operating System（人类主权自主智能体 OS）。**
 > 由十源 DNA（ULTRON / VISION / ADA / EDITH / FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）
-> 统一形成的 AI 操作系统。形态是**系统集成**，不是统一人格。
+> 统一形成。形态是**系统集成**，不是统一人格。
+>
+> **命名口径（唯一权威）**：主品牌 **LIUHAO X / 鎏灏 X**，品类
+> **Human-Sovereign Agent Operating System** —— 见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+> §系统定位 与 [`docs/product/PM-PRD-v3.0.md`](docs/product/PM-PRD-v3.0.md)。
+> 仓库历史文稿中出现的 “LiuHao AI OS / 鎏灏 AI OS / 鎏灏智能中枢” 等是旧称或驾驶舱应用名，
+> **不作为主品牌引用**。
 
-## 当前状态（2026-09-12 实测）
+## 当前状态（诚实头 — 状态快照，不是发布就绪声明）
+
+> **本节的唯一权威来源是 [`MASTER_PROJECT_READINESS.md`](MASTER_PROJECT_READINESS.md) 与
+> [`RELEASE-READINESS-CONTRACT.md`](RELEASE-READINESS-CONTRACT.md)。**
+> 本项目门禁纪律：每个门只能写 `PASS / FAIL / BLOCKED / NOT VERIFIED`；没有证据就只能写
+> `NOT VERIFIED`，**不把“有代码”当“已实现”、不把“测试通过”当“生产已验证”**。本节如实呈现，不美化。
+
+- **发布就绪判定：`NOT RELEASE READY`。** 12 项工程门禁（C1–C12）最近一次记录为
+  **PASS=9 · FAIL=0 · BLOCKED=1 · NOT VERIFIED=2**（`release_ready=false`）。以运行时
+  `python scripts/verify_readiness.py` 重算为准，**不引用任何签入的副本**。
+- **HC-01（审计主链运行时完整性）= `UNVERIFIED` / `GO=BLOCKED`** —— 这是**人类主权决策**，
+  已隔离（Decision Isolation），**不阻塞其余工程**；但在人类决策落定前，**系统不能因 HC-01
+  被宣布为 RELEASE READY**，且任何“防篡改 / 权威证据源”类表述都**必须**带上 `UNVERIFIED`
+  限定。依据见 [`docs/autonomous/GOVERNANCE.md`](docs/autonomous/GOVERNANCE.md) §2 与
+  [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- **产品门禁与工程门禁分离**：工程门禁强 ≠ 产品可用。产品门禁见
+  [`docs/product/PRODUCT-READINESS.md`](docs/product/PRODUCT-READINESS.md)。
+
+### 已实测可运行（历史快照，非“已完成”声明）
 
 | 项 | 状态 |
 | --- | --- |
-| CI | **1446 passed / 14 skipped / 0 failed**（Python 3.11 + 3.12 双矩阵，含前端构建与 lint） |
-| 网关 | 实测可启动，`/v1/health`、`/v1/ready`、`/docs` 全部 200 |
+| 全量测试 | clean-env 全量 `pytest tests/` **3307 passed / 24 skipped / 0 failed**（2026-09-30 记录于 SSoT 的 G2/G3；更早快照曾为 1446 passed，已过时） |
+| 网关 | 实测可启动，`/v1/health`、`/v1/ready`、`/docs` 返回 200 |
 | 驾驶舱 | 实测可启动（5173），已把 `/v1` 代理到网关 8080 |
-| 真实推理 | Ollama `qwen2.5:3b` 端到端跑通（实测 5.1s 返回中文回复） |
-| 端到端冒烟 | **9/9 通过**（含 KAREN 画像闭环：写入画像后能正确回忆时区与语言） |
-| DoD 七维 | Implemented / Tested / Observable / Permissioned / **Policy Controlled** / Audited / Documented |
-| Policy 强制链 | C-1 → C-7 **全部实施完毕** |
+| 真实推理 | Ollama `qwen2.5:3b` 端到端跑通（实测返回真实中文回复） |
+| 端到端冒烟 | 9/9 通过（含 KAREN 画像闭环：写入画像后能正确回忆时区与语言） |
+| DoD 七维 | Implemented / Tested / Observable / Permissioned / Policy Controlled / Audited / Documented —— **逐内核真实状态**见 [`docs/spec/KERNEL-DOD-AUDIT.md`](docs/spec/KERNEL-DOD-AUDIT.md)，不以本行为完成度结论 |
+
+> ⚠️ 上表是**可运行性快照**，不是“项目已完成”。发布判据与全部未验证项以本节开头指向的
+> SSoT 为准。
 
 ---
 
