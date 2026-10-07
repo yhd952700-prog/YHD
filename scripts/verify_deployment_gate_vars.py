@@ -24,7 +24,12 @@ What it checks
 ==============
 1. **Seed gates** (:data:`SEED_GATES`) — variables adjudicated by hand as gating
    a permissive branch. Each must be SET in a deployable artifact (or one of its
-   declared aliases), or must be ABSENT when that is the safe state.
+   declared aliases), or must be ABSENT when that is the safe state. A setter
+   that exists **only in a CI workflow** does not count as arming the deployment
+   and is reported as its own category (``seed-armed-only-in-ci``): a CI runner
+   is throwaway, so a value set there arms the test job, not production. Counting
+   it as "the deployment sets this" is the false green this gate exists to
+   prevent.
 2. **Scanned gates** (:func:`scan_gate_candidates`) — an AST scan of ``src/`` for
    reads whose absence selects a branch: ``os.environ.get(NAME)`` /
    ``os.getenv(NAME)`` with a falsy-or-absent default, read under a conditional
@@ -214,10 +219,12 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "recorded here instead of inferred from a green signal. Armed at "
             "docker-compose.prod.yml:69 and "
             "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
-            ".github/workflows/ci.yml:762 also pins a temp path, so removing the "
-            "two compose lines alone does NOT redden this entry -- the CI pin "
-            "keeps it satisfied. That is the artifact-honouring tension recorded "
-            "in the NOTE above (task #250), not an arming decision."
+            ".github/workflows/ci.yml:766 also pins a temp path, but a CI-only "
+            "setter does NOT count as deployment arming (category "
+            "`seed-armed-only-in-ci`), so the two compose setters are what keep "
+            "this entry green -- removing both reddens it even while the CI pin "
+            "stands. Before that tightening a CI pin alone kept it green, which "
+            "is exactly the false green the tightening removes."
         ),
         "refs": (
             "src/gateway/main.py:314",
@@ -225,6 +232,11 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "src/kernels/audit/__init__.py:398",
             "docker-compose.prod.yml:69",
             "infra/staging/docker-compose.yml:59",
+            # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
+            # and listed here so its line is drift-checked too: it shifted from
+            # :762 to :766 the moment the workflow's own comment grew, which is
+            # exactly the rot a bare prose pointer would hide.
+            ".github/workflows/ci.yml:766",
         ),
     },
     {
@@ -612,6 +624,24 @@ def _label(path: Path) -> str:
         return str(path)
 
 
+#: Repo-relative prefix of a CI workflow artifact (``.github/workflows/``). The
+#: workflows ARE in the artifact set (a control that no deployment sets but CI
+#: does would otherwise look armed), yet a CI runner is recreated for every run:
+#: a value set there arms the *test job*, not the shipped system.
+_WORKFLOWS_LABEL_PREFIX = WORKFLOWS_DIR.relative_to(REPO_ROOT).as_posix() + "/"
+
+
+def _is_ci_artifact(label: str) -> bool:
+    """True when a repo-relative artifact label is a GitHub Actions workflow.
+
+    Used so a seed gate cannot be satisfied by a CI-only setter: that is the
+    "looks armed, is not armed in the deployment" gap this gate exists to close,
+    and counting a throwaway CI runner as the deployment is a false green whose
+    cause is invisible in the run.
+    """
+    return label.startswith(_WORKFLOWS_LABEL_PREFIX)
+
+
 def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
     """Variable names any artifact sets, mapped to the artifacts that set them."""
     texts: List[Tuple[Path, str]] = []
@@ -770,6 +800,28 @@ def constant_aliases(names: Sequence[str], src_dir: Path = SRC_DIR) -> Dict[str,
     return {k: sorted(set(v)) for k, v in out.items()}
 
 
+def _ci_only_finding(var: str, why: str, refs: Sequence[str],
+                     reads: Dict[str, List[Tuple[str, int]]],
+                     ci_setters: Sequence[str]) -> Finding:
+    """The finding for an ``expect="set"`` entry armed only by CI workflows.
+
+    A distinct kind -- not ``gate-var-never-set`` -- so the reader is told what
+    is actually wrong: the entry *is* armed somewhere, just not anywhere the
+    deployment can see. Folding it into "never set" would hide that the arming
+    line exists but is in the wrong place.
+    """
+    return Finding(
+        var, "seed-armed-only-in-ci",
+        "the only artifact(s) that set %s are CI workflow(s): %s. A CI workflow "
+        "runs on a throwaway runner -- a value set there arms the test job, not "
+        "the deployment -- so counting it as 'the deployment sets this' is a "
+        "false green whose cause is invisible in the run. %s"
+        % (var, ", ".join(sorted(ci_setters)), why),
+        refs or ["%s:%d" % (r[0], r[1]) for r in reads.get(var, [])],
+        "set %s in docker-compose.prod.yml (or the bundle builder), not only in "
+        "a CI workflow" % var)
+
+
 def evaluate(artifact_vars: Dict[str, List[str]],
              reads: Dict[str, List[Tuple[str, int]]],
              candidates: Dict[str, List[Tuple[str, int]]],
@@ -818,6 +870,16 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                 "checkable and is not." % "; ".join(bad_refs),
                 [r for r in refs if str(r) not in bad_raw],
                 "re-point the entry at the line that reads %s" % var))
+        # Classify every artifact that satisfies this entry, because *where* a
+        # setter lives changes the verdict: a setter that exists only in a CI
+        # workflow arms a throwaway runner, not the deployment, so it must not
+        # count as "the deployment sets this" (see `_is_ci_artifact`).
+        set_in = artifact_vars.get(var, [])
+        alias_hits = [a for a in aliases if a in artifact_vars]
+        all_setters = list(set_in) + [
+            lbl for a in alias_hits for lbl in artifact_vars[a]]
+        deploy_setters = [lbl for lbl in all_setters if not _is_ci_artifact(lbl)]
+        ci_setters = [lbl for lbl in all_setters if _is_ci_artifact(lbl)]
         # A var can be live while never appearing in a literal
         # ``os.environ.get("LIUHAO_X")`` call -- ``src/security/posture.py``
         # iterates a table of names, and ``fence.py`` builds some names. For
@@ -846,21 +908,27 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                 # decided a few lines below. The note is about the READ being
                 # invisible to the scanner, not about `expect` being in doubt;
                 # if the artifact check passes, a human has nothing to confirm.
-                set_in_here = artifact_vars.get(var, [])
-                alias_here = [a for a in aliases if a in artifact_vars]
-                satisfied = (expect != "set") or bool(set_in_here or alias_here)
+                # A CI-only setter is still "not satisfied" for expect="set",
+                # but the reason differs and must be said plainly rather than
+                # folded into the indirect-read note.
+                satisfied = (expect != "set") or bool(deploy_setters)
                 if not satisfied:
                     where = seen_at or mentions[seen_alias[0]]
-                    findings.append(Finding(
-                        var, "seed-entry-read-indirectly",
-                        "listed as a gate and the name is still spelled in src/ "
-                        "(e.g. %s:%d), but no literal env read was found -- it "
-                        "is most likely read through a table, so the automatic "
-                        "read-based checks cannot be trusted for this entry. "
-                        "Confirm the control really is armed at the site above."
-                        % (where[0][0], where[0][1]),
-                        refs or ["%s:%d" % (r[0], r[1]) for r in where],
-                        "confirm the control is still armed at the site above"))
+                    fallback_refs = refs or ["%s:%d" % (r[0], r[1]) for r in where]
+                    if expect == "set" and ci_setters:
+                        findings.append(_ci_only_finding(
+                            var, why, fallback_refs, reads, ci_setters))
+                    else:
+                        findings.append(Finding(
+                            var, "seed-entry-read-indirectly",
+                            "listed as a gate and the name is still spelled in "
+                            "src/ (e.g. %s:%d), but no literal env read was "
+                            "found -- it is most likely read through a table, so "
+                            "the automatic read-based checks cannot be trusted "
+                            "for this entry. Confirm the control really is armed "
+                            "at the site above." % (where[0][0], where[0][1]),
+                            fallback_refs,
+                            "confirm the control is still armed at the site above"))
             else:
                 findings.append(Finding(
                     var, "stale-seed-entry",
@@ -871,10 +939,13 @@ def evaluate(artifact_vars: Dict[str, List[str]],
                     "remove the entry or point it at the variable now in use"))
             continue
 
-        set_in = artifact_vars.get(var, [])
-        alias_hits = [a for a in aliases if a in artifact_vars]
         if expect == "set":
-            if set_in or alias_hits:
+            if deploy_setters:
+                continue
+            if ci_setters:
+                # Armed, but only where a throwaway runner can see it: report
+                # the CI-only category, not "never set".
+                findings.append(_ci_only_finding(var, why, refs, reads, ci_setters))
                 continue
             findings.append(Finding(
                 var, "gate-var-never-set",

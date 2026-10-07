@@ -425,6 +425,67 @@ class TestIgnoredPathsAreDeterministic:
 
 
 # --------------------------------------------------------------------------- #
+# A CI-only setter must not count as deployment arming
+# --------------------------------------------------------------------------- #
+class TestCiOnlyArming:
+    """A variable only a CI workflow sets is not armed in the deployment.
+
+    ``ARTIFACT_GLOBS`` includes ``.github/workflows/*.yml``, so a control that
+    no deployment sets but CI does would otherwise look armed. A CI runner is
+    thrown away after every run: a value set there arms the *test job*, not the
+    shipped system, so counting it as "the deployment sets this" is the false
+    green this gate exists to catch.
+    """
+
+    @staticmethod
+    def _entry(var):
+        return ({"var": var, "aliases": (), "expect": "set",
+                 "why": "probe", "refs": ()},)
+
+    def test_ci_only_setter_does_not_satisfy_a_seed_gate(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES",
+                            gate.SEED_GATES + self._entry("PROBE_CI_ONLY"))
+        findings = gate.evaluate(
+            {"PROBE_CI_ONLY": [".github/workflows/ci.yml"]},
+            {"PROBE_CI_ONLY": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_CI_ONLY"]
+        assert kinds == ["seed-armed-only-in-ci"], kinds
+
+    def test_a_deploy_setter_alongside_a_ci_setter_still_satisfies(self, gate, monkeypatch):
+        monkeypatch.setattr(
+            gate, "SEED_GATES",
+            gate.SEED_GATES + self._entry("PROBE_DEPLOY_AND_CI"))
+        findings = gate.evaluate(
+            {"PROBE_DEPLOY_AND_CI": [".github/workflows/ci.yml",
+                                     "docker-compose.prod.yml"]},
+            {"PROBE_DEPLOY_AND_CI": [("src/app.py", 10)]}, {}, {})
+        assert not [f for f in findings if f.var == "PROBE_DEPLOY_AND_CI"]
+
+    def test_no_setter_at_all_is_still_gate_var_never_set(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES",
+                            gate.SEED_GATES + self._entry("PROBE_NO_SETTER"))
+        findings = gate.evaluate({}, {"PROBE_NO_SETTER": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_NO_SETTER"]
+        assert kinds == ["gate-var-never-set"], kinds
+
+    def test_alias_armed_only_in_ci_is_also_ci_only(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + (
+            {"var": "PROBE_ALIAS_CI", "aliases": ("PROBE_ALIAS_CI_ALT",),
+             "expect": "set", "why": "probe", "refs": ()},))
+        findings = gate.evaluate(
+            {"PROBE_ALIAS_CI_ALT": [".github/workflows/ci.yml"]},
+            {"PROBE_ALIAS_CI": [("src/app.py", 10)]}, {}, {})
+        kinds = [f.kind for f in findings if f.var == "PROBE_ALIAS_CI"]
+        assert kinds == ["seed-armed-only-in-ci"], kinds
+
+    def test_is_ci_artifact_recognises_workflows(self, gate):
+        assert gate._is_ci_artifact(".github/workflows/ci.yml")
+        assert gate._is_ci_artifact(".github/workflows/ci-cd.yml")
+        assert not gate._is_ci_artifact("docker-compose.prod.yml")
+        assert not gate._is_ci_artifact("infra/staging/docker-compose.yml")
+
+
+# --------------------------------------------------------------------------- #
 # AUDIT_DB_PATH -- the decision must be recorded AND the entry must have teeth
 # --------------------------------------------------------------------------- #
 #: The sites the entry's `why` claims. Kept next to the assertions so a reworded
@@ -435,6 +496,7 @@ _AUDIT_DB_PATH_EVIDENCE = (
     "src/kernels/audit/__init__.py:398",
     "docker-compose.prod.yml:69",
     "infra/staging/docker-compose.yml:59",
+    ".github/workflows/ci.yml:766",
 )
 
 
@@ -499,26 +561,22 @@ class TestAuditDbPathIsAdjudicated:
             "sets it, so the entry would itself be a finding")
         assert any("docker-compose" in w for w in where), where
 
-    def test_the_ci_pin_alone_also_satisfies_it_recorded_limitation(
+    def test_the_compose_setters_not_the_ci_pin_are_what_arm_it(
         self, gate, tracked_artifact_vars
     ):
-        """Measured limitation of this entry, pinned so it cannot be forgotten.
+        """A CI-only setter must not count: the deployment setters do the arming.
 
-        Measured 2026-10-07 in an isolated worktree: commenting out
-        ``docker-compose.prod.yml:69`` and ``infra/staging/docker-compose.yml:59``
-        together did **not** redden the entry, because
-        ``.github/workflows/ci.yml:762`` is in the artifact set and pins a temp
-        path. Removing all three DID redden it (``gate-var-never-set``). So the
-        anti-decay benefit is weaker than the SEED_GATES pitch implies: only
-        deleting every setter is detected.
-
-        That is the "is a CI job's env part of the deployment?" tension already
-        recorded at the top of the gate (task #250), not an arming decision. If
-        someone later splits deployment artifacts from CI workflow env, this
-        test fails and they must restate the limitation deliberately instead of
-        silently widening what the entry proves.
+        Measured 2026-10-07 in an isolated worktree: with only the CI pin
+        (``.github/workflows/ci.yml:766``) standing -- the two compose lines
+        commented out -- the entry now reddens as ``seed-armed-only-in-ci``, and
+        the two compose setters are what keep it green. Before that tightening
+        the CI pin alone kept it green, which was the false green the tightening
+        removes: a value set on a throwaway runner is not the deployment.
         """
         setters = tracked_artifact_vars.get("AUDIT_DB_PATH", [])
-        assert ".github/workflows/ci.yml" in setters, (
-            "the CI pin is what props this entry up; if it is gone, delete this "
-            "test and say so in the entry's `why`. setters=%r" % (setters,))
+        ci = [s for s in setters if gate._is_ci_artifact(s)]
+        deploy = [s for s in setters if not gate._is_ci_artifact(s)]
+        assert ci == [".github/workflows/ci.yml"], ci
+        assert deploy, (
+            "the compose setters are the actual arming of this entry; "
+            "setters=%r" % (setters,))
