@@ -544,7 +544,8 @@ def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
     for path, text in texts:
         names: Set[str] = set()
         # `NAME=value` / `NAME: value` / `- NAME=value` (compose, Dockerfile ENV,
-        # workflow env:, .env, `os.environ["NAME"] = ...` in the bundle builder)
+        # workflow env:, .env). The Python-side setter forms the bundle builder
+        # actually uses are handled in the two scans below.
         for match in re.finditer(r"(?m)^[ \t]*-?[ \t]*[\"']?([A-Z][A-Z0-9_]{1,})[\"']?[ \t]*(?:=|:)", text):
             names.add(match.group(1))
         # compose pass-through form: `- NAME` (value supplied by the host)
@@ -552,6 +553,26 @@ def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
             names.add(match.group(1))
         # inline assignment forms inside python / yaml one-liners
         for match in re.finditer(r"[\"']([A-Z][A-Z0-9_]{1,})[\"'][ \t]*[:=]", text):
+            names.add(match.group(1))
+        # Python-side deployment setters, which none of the regexes above can
+        # see because a "]" or "(" sits between the name and the "=":
+        #   os.environ["NAME"] = ...        (subscript assignment)
+        #   os.environ.setdefault("NAME", ...)
+        # ``scripts/build_cloud_bundle.py`` ships its whole deployment contract
+        # through the second form (LIUHAO_CONSOLE_DIST at :128,
+        # LIUHAO_HUMAN_IDENTITIES_FILE at :142, LIUHAO_AUTH_SECRETS_FILE at :146,
+        # LIUHAO_KERNEL_POLICY_ENFORCE at :163), and it is a declared artifact
+        # (``ARTIFACT_EXTRA_FILES``). Measured on 2026-10-07: without these two
+        # scans the bundle builder looked like it set *nothing*, so a variable it
+        # really sets would be reported "never set in a deployment artifact".
+        for match in re.finditer(
+                r"(?m)(?:os\.)?environ\[[ \t]*[\"']([A-Z][A-Z0-9_]{1,})[\"'][ \t]*\]"
+                r"[ \t]*[=:]",
+                text):
+            names.add(match.group(1))
+        for match in re.finditer(
+                r"(?m)(?:os\.)?environ\.setdefault\(\s*[\"']([A-Z][A-Z0-9_]{1,})[\"']",
+                text):
             names.add(match.group(1))
         for name in names:
             found.setdefault(name, []).append(label(path))
