@@ -22,6 +22,11 @@ authoritative chain must never assert a false success for a refused action.
 
 from src.kernels.audit import audit_query
 from src.kernels import security, plugin, resource, network, memory
+from src.kernels._crosscutting import (
+    kernel_action,
+    mark_action_denied,
+    mark_action_failed,
+)
 
 
 def _latest_event(action_name: str):
@@ -144,3 +149,77 @@ def test_memory_compress_noop_not_denied():
         f"(should stay 'success')"
     )
     assert ev.get("outcome") != "denied"
+
+
+# --------------------------------------------------------------------------- #
+# 6. HC-01 residual / mirror distortion: policy deny but body ran
+# --------------------------------------------------------------------------- #
+def test_policy_deny_but_body_ran_unauthorized_success():
+    """verdict=deny yet the body executed: must record 'unauthorized_success'
+    (executed-but-unauthorised) -- never 'success' and never a clean 'denied'
+    that would hide the mirror lie behind a trustworthy-looking refusal.
+    """
+
+    class _Probe:
+        @kernel_action("identity.grant_permission")  # DENIED for service
+        def ran_anyway(self):
+            return "ran"
+
+    out = _Probe().ran_anyway()
+    assert out == "ran"  # additive: the body still executes under record-only
+    ev = _latest_event("identity.grant_permission")
+    assert ev is not None, "no audit event recorded"
+    det = ev.get("details") or {}
+    assert det.get("policy_decision") == "deny"
+    assert ev.get("outcome") == "unauthorized_success"
+    assert ev.get("outcome") != "success"
+    assert ev.get("outcome") != "denied"  # must not masquerade as a clean denial
+
+
+def test_mark_action_failed_records_failed():
+    """A body that ran but did not complete must record 'failed', not a
+    false 'success'."""
+
+    class _Probe:
+        @kernel_action("memory.store")
+        def do(self):
+            mark_action_failed("delivery did not complete")
+            return "done"
+
+    _Probe().do()
+    ev = _latest_event("memory.store")
+    assert ev is not None, "no audit event recorded"
+    assert ev.get("outcome") == "failed"
+    assert ev.get("outcome") != "success"
+
+
+def test_network_route_delivery_failure_records_failed():
+    """network.route: when the matched adapter's send() returns False the
+    message was never delivered, yet was previously recorded as
+    outcome='success'. It must now record 'failed'.
+    """
+
+    class _FalseAdapter(network.ProtocolAdapter):
+        def __init__(self):
+            super().__init__(network.AdapterConfig(
+                name="false", protocol=network.ProtocolType.INTERNAL,
+                endpoint="inproc://false"))
+
+        def send(self, message):
+            return False
+
+    bus = network.NetworkBus()  # fresh instance: no singleton pollution
+    bus.register_adapter(_FalseAdapter())
+    # High priority so it wins over the built-in '*' catch-all route.
+    bus.add_route(network.Route(
+        id="fail1", pattern="deliver/*", protocol=network.ProtocolType.INTERNAL,
+        adapter="internal", priority=200, scope="L1",
+    ))
+    msg = network.Message(
+        destination="deliver/x", content={}, metadata={"scope": "L1"})
+    out = bus.route(msg)
+    assert out.status == network.MessageStatus.FAILED
+    ev = _latest_event("network.route")
+    assert ev is not None, "no audit event recorded for network.route"
+    assert ev.get("outcome") == "failed"
+    assert ev.get("outcome") != "success"

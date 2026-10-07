@@ -11,9 +11,13 @@ which silently hid a policy refusal. This script exercises the *real* decorator
 end-to-end through the *real* policy engine + *real* audit store (redirected to
 a temp DB so the frozen HC-01 evidence store is never touched) and asserts:
 
-  1. A definitive ``deny`` verdict records ``outcome == "denied"`` (never
-     ``"success"``), ``policy_decision == "deny"``, ``policy_enforced == False``,
-     while the body STILL runs (additive -- no operational self-lock).
+  1. A definitive ``deny`` verdict is NEVER recorded as ``outcome == "success"``.
+     When the record-only (C-1) posture let the body run anyway, the event reads
+     ``outcome == "unauthorized_success"`` (executed but never authorised) -- the
+     mirror distortion is made *visible* on the chain instead of being hidden
+     behind a clean-looking ``"denied"`` that a reviewer would trust as "this was
+     refused". ``policy_decision == "deny"`` and ``policy_enforced == False`` hold,
+     and the body STILL runs (additive -- no operational self-lock).
   2. Every action in INTERNAL_SERVICE_DENIED_ACTIONS, when invoked through the
      decorator, records ``outcome != "success"`` (the systematic guarantee).
   3. An allowed action records ``outcome == "success"`` + ``policy_decision ==
@@ -93,9 +97,14 @@ def main():
         failures += 0 if _check("outcome != 'success' (core requirement)",
                                 outcome != "success",
                                 f"outcome={outcome!r}") else 1
-        failures += 0 if _check("outcome == 'denied'",
-                                outcome == "denied",
-                                f"outcome={outcome!r}") else 1
+        failures += 0 if _check(
+            "outcome in ('denied','unauthorized_success') (mirror distortion visible)",
+            outcome in ("denied", "unauthorized_success"),
+            f"outcome={outcome!r}") else 1
+        failures += 0 if _check(
+            "executed-but-unauthorised recorded as 'unauthorized_success'",
+            outcome == "unauthorized_success",
+            f"outcome={outcome!r}") else 1
         failures += 0 if _check("policy_decision == 'deny'",
                                 det.get("policy_decision") == "deny",
                                 f"policy_decision={det.get('policy_decision')!r}") else 1
