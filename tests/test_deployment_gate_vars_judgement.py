@@ -332,3 +332,31 @@ class TestEvidenceIsVersionControlled:
         va = gate.scan_artifact_vars(gate.collect_artifacts())
         vb = gate.scan_artifact_vars(gate.collect_artifacts())
         assert json.dumps(va, sort_keys=True) == json.dumps(vb, sort_keys=True)
+
+    def test_python_setter_forms_in_an_artifact_are_recognised(self, gate, tmp_path):
+        """A deployment that ships its env via a Python setter must count.
+
+        ``scripts/build_cloud_bundle.py`` sets its whole deployment contract with
+        ``os.environ.setdefault`` (LIUHAO_CONSOLE_DIST at :128,
+        LIUHAO_HUMAN_IDENTITIES_FILE at :142, LIUHAO_AUTH_SECRETS_FILE at :146,
+        LIUHAO_KERNEL_POLICY_ENFORCE at :163), and it is a declared artifact. The
+        ``NAME=value`` / ``"NAME":`` regexes cannot see either Python form (a
+        "(" or a "]" sits between the name and the "="), so before 2026-10-07 the
+        cloud bundle looked like it set nothing and a variable it really sets
+        would be reported "never set in a deployment artifact".
+
+        A subscript *read* must still not count as a set.
+        """
+        probe = tmp_path / "probe_bundle.py"
+        probe.write_text(
+            "import os\n"
+            'os.environ.setdefault("PROBE_BUNDLE_VAR", "x")\n'
+            'os.environ["PROBE_SUBSCRIPT_VAR"] = "y"\n'
+            'read = os.environ["PROBE_READ_VAR"]\n',
+            encoding="utf-8")
+        found = gate.scan_artifact_vars([probe])
+        assert "PROBE_BUNDLE_VAR" in found, found
+        assert "PROBE_SUBSCRIPT_VAR" in found, found
+        assert "PROBE_READ_VAR" not in found, (
+            "a subscript read is not a set; counting it would let evidence the "
+            "artifact merely reads satisfy a gate: %r" % (found,))
