@@ -271,6 +271,60 @@ def check_reliability():
     return NOT_VERIFIED, f"reliability suites rc={rc} (may need live infra): {out[-200:]}"
 
 
+#: The bench prints `current profile: '<key>'` when the numeric gate SKIPs.
+_C7_PROFILE_RE = re.compile(r"current profile:\s*'([^']+)'")
+
+
+def _c7_profile_from(out: str) -> str | None:
+    """The machine profile the bench run reported, if it said so."""
+    match = _C7_PROFILE_RE.search(out)
+    return match.group(1) if match else None
+
+
+def _c7_verdict(out: str, profile_override: str | None) -> tuple[str, str]:
+    """Classify the bench gate's stdout into ``(status, reason)``.
+
+    Kept pure -- no subprocess, no filesystem -- so the classification is
+    testable instead of being a claim. See
+    tests/scripts/test_readiness_c7_profile_gate.py.
+
+    Every branch is honest in the same direction: a numeric gate that did not
+    actually compare is NOT_VERIFIED, never PASS.
+
+    The SKIP wording used to say "profile mismatch / CI Linux", which reads as
+    "this only happens on Linux". It does not. Measured here: the captured
+    baseline is ``Windows|py3.13.14|...`` while this repo's venv is py3.12.14,
+    so the numeric gate SKIPs on the Windows host too. The reason text now says
+    that, and names the profile actually seen.
+    """
+    if "PERFORMANCE GATE: PASS" in out:
+        if profile_override:
+            return (
+                PASS,
+                "bench --quick --gate PASS, but LIUHAO_BENCH_PROFILE=%r forced "
+                "the profile key: this is a real numeric comparison ONLY if that "
+                "override names the hardware the baseline was captured on. Read "
+                "it as a regression signal under that condition alone."
+                % profile_override,
+            )
+        return PASS, "bench --quick --gate PASS on this machine's own profile"
+    if "GATE: SKIP" in out or "profile mismatch" in out.lower():
+        seen = _c7_profile_from(out)
+        return (
+            NOT_VERIFIED,
+            "numeric gate SKIPped -- no baseline captured for this machine "
+            "profile" + (f" (current: {seen})" if seen else "") + ". "
+            "Not Linux-specific: the baseline holds only "
+            "Windows|py3.13.14|... and this repo's venv is py3.12.14, so the "
+            "numeric gate does not run here either. Invariants were still "
+            "checked; what is missing is the throughput comparison.",
+        )
+    return NOT_VERIFIED, (
+        "numeric gate neither PASSed nor SKIPped cleanly -- treating as "
+        "unproven, not as a regression"
+    )
+
+
 def check_performance():
     """C7: bench baseline exists + --quick gate passes on matching profile."""
     baseline = SCRIPTS / "bench_baseline.json"
@@ -283,10 +337,16 @@ def check_performance():
         [sys.executable, str(gate), "--quick", "--gate", str(baseline)],
         timeout=240,
     )
-    if "PERFORMANCE GATE: PASS" in out:
-        return PASS, "bench --quick --gate PASS on matching profile"
-    if "GATE: SKIP" in out or "profile mismatch" in out.lower():
-        return NOT_VERIFIED, "gate SKIP (profile mismatch / CI Linux)"
+    status, reason = _c7_verdict(out, os.environ.get("LIUHAO_BENCH_PROFILE"))
+    if status == NOT_VERIFIED and "neither PASSed" in reason:
+        # Preserve the load-sensitive wording (and the rc/output tail) for the
+        # genuinely-ambiguous case; a FAIL under concurrent load is not proof of
+        # a code regression.
+        return NOT_VERIFIED, (
+            f"gate did not PASS (load-sensitive; run on idle/CI): rc={rc}; "
+            f"{out[-160:]}"
+        )
+    return status, reason
     # The numeric gate is load-sensitive (throughput vs baseline). A FAIL under
     # concurrent load is not a proven code regression, so we surface NOT VERIFIED
     # rather than FAIL, and point at an idle/CI runner for a stable verdict.
@@ -572,8 +632,8 @@ CONDITION_META = {
     },
     "C7": {
         "command": "scripts/bench_audit_append.py --quick --gate bench_baseline.json + scripts/bench_audit_scale.py --scale 1m --sync FULL",
-        "known_limitation": "numeric gate is profile-keyed (passes on the captured Windows|py3.13.14 profile; CI Linux SKIPs it). 1M real-insert validated (15,095 eps batch=FULL, 27.8s full-chain verify, 8-proc 15,484 eps, 0 lost/0 fork). 100M is honest extrapolation (~1.84h write / ~46min verify / ~39GB) — harness is genuinely executable via --scale 100m but not yet run.",
-        "next_action": "run --scale 10m/100m on an idle/CI runner when budget allows; keep bench_baseline.json profile-keyed",
+        "known_limitation": "numeric gate is profile-keyed and currently SKIPs EVERYWHERE we actually run, not only on Linux: bench_baseline.json holds exactly one profile (Windows|py3.13.14|...), while this repo's venv is py3.12.14 and CI is Linux, so neither matches. Measured: `bench_audit_append.py --quick --gate` on this host exits 0 printing 'PERFORMANCE GATE: SKIP' with current profile 'Windows|py3.12.14|...'. Invariants ARE still checked and remain blocking; what does not run is the throughput comparison. 1M real-insert validated (15,095 eps batch=FULL, 27.8s full-chain verify, 8-proc 15,484 eps, 0 lost/0 fork). 100M is honest extrapolation (~1.84h write / ~46min verify / ~39GB) — harness is genuinely executable via --scale 100m but not yet run.",
+        "next_action": "to make C7 a real numeric gate, re-capture bench_baseline.json ON the runner that will enforce it (--write-baseline) — a baseline copied across hardware is not a regression signal. Also note the fingerprint includes CPU model and thread count, so GitHub-hosted runners (variable cpu_count) will keep SKIPping; a stable gate needs a pinned self-hosted runner plus LIUHAO_BENCH_PROFILE, or a coarse-grained profile key. Until then, C7's numeric half is honest but inert.",
     },
     "C8": {
         "command": "runtime scrape of /v1/metrics/prometheus via TestClient",
