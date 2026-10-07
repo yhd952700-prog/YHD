@@ -16,6 +16,14 @@
 > / identity / capability-security / red-team discovery).
 > Last scan: 2026-09-26 (rate-limit lifted), branch p36.
 > Indexed in UNIFIED-BLUEPRINT §9 (cross-reference index).
+>
+> **Reconciliation audit — unknown-unknowns, 2026-10-07, HEAD `c438313e`→`9595b51b`.**
+> This register is a LIVING doc but had no gate forcing a revisit after a fix
+> lands, so several entries were stamped `DISCOVERED` and never re-checked.
+> This audit re-verified each status against real code + git + a scoped test run
+> (`355 passed`). Corrected stale statuses (evidence inline): **U3, U6, U12, U25,
+> U47(Fix A), U48, U49, U50, U51**. New entries: **U57, U58, U59**. Nothing was
+> deleted; no evidence was touched; `src/` was not modified by this audit.
 
 ---
 
@@ -175,7 +183,9 @@
 - **Recommendation (two fixes, split ownership):**
   - **Fix A — lease takeover:** detect dead writers and let a live lease take over; assigned to **sec-impl** (re-dispatched).
   - **Fix B — bounded carve-out in `capability.register`:** prevent the forced self-lock from overriding inert; **HUMAN DECISION REQUIRED** (owner safety-posture call — team must NOT auto-decide the carve-out bounds).
-- **Status:** DISCOVERED (real regression, attributed to `ac3a90bc`). Fix A in progress (sec-impl). Fix B pending owner safety-posture decision — team must NOT auto-implement the carve-out.
+- **Status:** Fix A **REMEDIATED**; Fix B **pending HUMAN DECISION**. (re-audited 2026-10-07, unknown-unknowns.)
+  - **Fix A — DONE.** `d55c324e` "Fix A (C-6): correct Windows liveness probe so dead-owner lease takeover actually works". Verified in code: `src/kernels/audit/fencing.py` now distinguishes dead-owner staleness (host rebooted / lease not live → forced takeover, token+1, epoch+1) from a live foreign holder (→ refuse, fail-closed) — see `fencing.py:496-553`. The Windows liveness probe that previously could "confirm neither death nor liveness" (the root of the forced `StaleWriterError`→self-lock path) is corrected. Regression: `tests/kernels/audit/test_fencing_wired.py` green in the scoped run below.
+  - **Fix B — still HUMAN DECISION.** The bounded carve-out in `capability.register` that stops a forced self-lock from overriding inert remains an owner safety-posture call; team must NOT auto-implement it.
 
 > **Provenance:** U1–U35 reconciled verbatim from the committed `HEAD` during a concurrent file-rewrite conflict (originally authored by governance-legal); no content altered.
 
@@ -183,16 +193,16 @@
 |----|----|----|----|----|----|----|
 | U1 | security | 2026-09-25 | HC-09/HC-10 are volatile (in-memory only) | Crypto + permission audit can be silently lost on process exit | Decided D19=A+ keeps them volatile by design; durable path designed separately | P1 |
 | U2 | os-systems | 2026-09-25 | Single-writer/RLock audit chain + linear `seq` won't scale | 10×/100× growth breaks ordering + concurrency | Researching HLC / segmented ordering | P1 |
-| U3 | reliability | 2026-09-25 | No recovery framework for chain forks | A fork (HC-01) currently blocks GO; need detect → recover | Designing recovery framework | P0 |
+| U3 | reliability | 2026-09-25 | No recovery framework for chain forks | A fork (HC-01) currently blocks GO; need detect → recover | **Resolved (framework)** — `src/kernels/audit/recovery.py` implements the full detect→quarantine→rederive→reverify chain (`ForkReport`, `detect`, `quarantine`, `rederive`, `reverified`, `run`) with `tests/kernels/audit/test_recovery.py`. The *framework* exists; recovering the actual HC-01 fork is a separate HUMAN DECISION (see header). | P0 |
 | U4 | observability | 2026-09-25 | No metrics / tracing layer across kernels | Can't operate/debug a production system blind | **Built incrementally** — `src/reliability/` delivered: metrics (Counter/Gauge/Histogram + Prometheus text), audit_metrics (audit_evidence_status / audit_failure_total / audit_total_events / audit_fork_count / audit_integrity_ok, read-only on `src.kernels.audit` public API), structured_log (JSON), tracing (span hooks). 27 tests, 99% coverage. Evidence=missing surfaced, never swallowed. | Built/Doing | P1 |
 | U5 | platform | 2026-09-25 | No developer SDK/API or reproducible build | External devs/agents can't extend safely | Roadmap | P2 |
-| U6 | security | 2026-09-25 | HC-11 `tag_matches()` returns True when key absent (fail-open) | Identity-integrity verification silently bypassed | Decided: enforce key + fail-closed (pending impl) | P0 |
+| U6 | security | 2026-09-25 | HC-11 `tag_matches()` returns True when key absent (fail-open) | Identity-integrity verification silently bypassed | **Resolved** — `src/kernels/identity/_persistence.py:357` `tag_matches` is now fail-closed: no key ⇒ `return False` ("no key ⇒ cannot verify ⇒ refuse"); bare/unknown-algorithm tags refused. (Previously `return True`.) Locks the HC-11 escalation; see U27 for the migration trap this created. | P0 |
 | U7 | forensics | 2026-09-25 | Forensic baseline custody not automated; snapshot opened RW post-capture | Chain-of-custody break undermines evidence | Decided: immutable storage + manifest; snapshot retained | P1 |
 | U8 | governance | 2026-09-25 | Schema v1 (snapshot) vs v9 (live) divergence | Migration-source ambiguity | Resolved: Path A (live source); snapshot historical | Resolved |
 | U9 | scale | 2026-09-25 | No benchmarking / sizing harness | Can't plan 10×/100× capacity | **Owned + scaffold built** — `scripts/bench_audit_chain.py` (per-event vs batched throughput, bytes/row, annual-GiB projection at 10/100 eps, full-verify time extrapolation to 1M rows) + test. Measured: ~1.8k eps per-event, ~40k eps batched, ~418 B/row, ~40s/1M verify. | Built/Doing | P2 |
 | U10 | agent | 2026-09-25 | No safe external-agent onboarding protocol | Future "AI Agent will need" unaddressed | Roadmap | P2 |
 | U11 | os-systems | 2026-09-25 | Per-instance `threading.RLock()` + `check_same_thread=False` + no `busy_timeout` across 25+ modules (e.g. src/kernels/audit/\_\_init\_\_.py:191-192; 25+ `RLock` sites) | Cross-process concurrency unprotected; the RCA-1 fork class is systemic, not just the audit store. Also no `UNIQUE(seq)` / DEFERRED-only transactions allow duplicate seq | Decided: move to single-writer-service + `BEGIN IMMEDIATE` + `UNIQUE(seq)` (F1/F2) | P1 |
-| U12 | os-systems | 2026-09-25 | Distribution fencing / leader-election are Redis-less stubs (src/distribution/election.py:59, src/distribution/lock.py:118) | HD-02=A single-writer has NO cross-process enforcement today; failover reintroduces split-brain (C3) | Designing fencing token lease as part of F2/HD-02 | P0 |
+| U12 | os-systems | 2026-09-25 | Distribution fencing / leader-election are Redis-less stubs (src/distribution/election.py:59, src/distribution/lock.py:118) | HD-02=A single-writer has NO cross-process enforcement today; failover reintroduces split-brain (C3) | **Partially remediated** — `src/distribution/lock.py` now validates the fencing token on `release` (old code ignored `lock_id`, so any string unlocked) and returns a monotonically-comparable token, not a random UUID; `election.py` now drives a real `DistributedLease` (liveness = lease expiry, not session TTL). Residual: durability/consensus guarantees of the concrete backend (etcd/Redis) still not end-to-end proven here. | P0 |
 | U13 | os-systems | 2026-09-25 | Dual audit persistence: JSON `AuditStore` (src/audit/store.py:21, default data/audit/events.json) coexists with the SQLite store | Two audit sources of truth (R12); contradicts F2 single-source; reconciliation hazard | Retire the JSON store (F2/R12) | P1 |
 | U14 | os-systems | 2026-09-25 | `journal_mode=WAL` + `synchronous=NORMAL` on 6+ SQLite stores (audit, memory, execution journal, identity persistence, conversation_store, personal_context) | Windows power-loss can lose an uncheckpointed `-wal`; a copy-based snapshot without `VACUUM INTO` loses data; a single SQLite file is a write-throughput ceiling (mandatory single-writer) | Research checkpoint policy + Windows durability; recovery mandates `VACUUM INTO` snapshot (R8/R11) | P1 |
 | U15 | governance-legal | 2026-09-26 | `docs/kernel-spec/identity.md:27` claimed the human-path permission audit trail is "经 _persistence 持久化、防篡改". Code (`src/kernels/identity/__init__.py`) shows `self._audit_log: List[AuditEntry]` is in-memory only, never persisted to `_persistence`, and has NO hash-chain/prev_hash. Only denials route to the real chain via `_record_denial_on_the_chain` → `src.kernels.audit.log_event`. | Misrepresents identity audit as durable/tamper-proof; contradicts the kernel's own code comment ("dies with the process, not part of the hash chain"). Not a sovereignty boundary → fixed, not HUMAN. | Resolved — doc corrected: in-memory, NOT persisted, NOT tamper-evident; authoritative trail = kernels/audit (HC-01, runtime UNVERIFIED). | P1 |
@@ -202,7 +212,7 @@
 | U19 | governance-legal | 2026-09-26 | `docs/operations/scenario-chatbot.md:84` comment "写入防篡改链" (bare) — missed by prior commit 0c266910 (which fixed L79/181/186). | Runbook told operators the event goes to a "tamper-proof chain" with no caveat. | Resolved — corrected to "写入 kernels/audit 审计链；设计为防篡改，但运行时链完整性当前 UNVERIFIED——链存在分叉，待 F1–F6 修复+独立验证". | P1 |
 | U20 | governance-legal | 2026-09-26 | Built `scripts/lint_audit_claims.py` + `.github/workflows/doc-lint.yml` — CI guard that FAILS (exit 1) if any doc change introduces an HC-01 "tamper-proof / true evidence source / authoritative" claim WITHOUT the UNVERIFIED/fork caveat. | Prevents recurrence of the bare-claim misrepresentation class (the D19/D20 red line) that let U15-U19 slip in. | Built — committed (docs + script only, scoped, no push). Verified: full-tree clean (exit 0); planted bare line → exit 1; caveated line → exit 0. | P1 |
 | U24 | reliability | 2026-09-26 | Audit chain had NO time-series metrics (no fork_count / evidence / failure gauges). The only exposure was `/v1/ready` total_events + failures (point-in-time, not scrapable). | Without time-series signals, a forked/missing store can hide behind a green dashboard; violates INV-7 (Observability). | Closed — `src/reliability/audit_metrics.py` exposes audit_evidence_status / audit_failure_total / audit_total_events / audit_fork_count / audit_integrity_ok, read-only on the public API. Recovery: store unreachable → evidence_status=0 (Evidence=missing), never silent. | Resolved | P1 |
-| U25 | reliability | 2026-09-26 | Full `pytest` suite is unstable: a dynamic repo-wide coverage run is blocked — the run is killed (SIGTERM) by a hanging/blocking test in another agent's WIP. No per-test timeout gate in CI. | Blocks the Q3.2 coverage gate from being enforced dynamically; flaky CI hides real regressions. | Discovered — recommend adding `pytest-timeout` + a per-test timeout (e.g. 30s) and a CI coverage-threshold gate. Static gap scan done instead (see report). | Doing | P1 |
+| U25 | reliability | 2026-09-26 | Full `pytest` suite is unstable: a dynamic repo-wide coverage run is blocked — the run is killed (SIGTERM) by a hanging/blocking test in another agent's WIP. No per-test timeout gate in CI. | Blocks the Q3.2 coverage gate from being enforced dynamically; flaky CI hides real regressions. | **Superseded + partly resolved** — the "hang" did NOT reproduce (serial full suite: 2525 tests, ~7–8 min, no hang — EXECUTION-QUEUE §Test baseline; consistent with U32). The steady redness is environmental (U35 sandbox shim), not a hang. A per-test timeout gate now EXISTS: `pytest-timeout>=2.3.0` is declared in `pyproject.toml` `[tests]` and used by `scripts/verify_readiness.py` C3/C6 (`--timeout=60/120`). **New caveat (U59):** pytest-timeout is NOT installed in the live `.venv`, so C3/C6 cannot execute locally (rc=4). | P1 |
 | U26 | reliability | 2026-09-26 | `src/sre/` (cost/cost_manager.py, disaster/backup.py, scaling/) has ZERO dedicated tests (`tests/sre/` does not exist). | Disaster-recovery backup logic and scaling/cost controllers are reliability-critical yet unverified; a backup regression would be silent until a real disaster. | Discovered — recommend a `tests/sre/` suite; prioritize `disaster/backup.py` (backup/restore round-trip + corruption detection). | Doing | P1 |
 | U21 | governance-legal | 2026-09-26 | Extended the doc-lint guard to ALSO catch HC-09 (`src/security/audit_logger.py` / CryptoAuditLogger) and HC-10 (`src/security/audit_policy.py` / AuditKernel) claims of durability / authority / evidence-grade made WITHOUT the VOLATILE / NON-AUTHORITATIVE / IN-MEMORY-ONLY caveat (the D19/D20 red line, parallel to HC-01's UNVERIFIED rule). Added `scripts/pre-commit-lint.sh` (optional local pre-commit hook variant). | Full-tree scan confirms NO remaining bare HC-09/HC-10 claims in live docs — the prior D19/D20 work already caveated them (capability-traceability.md:21/42 → 内存态/非持久/非权威; PM-PRD-v3.0.md:72/107 → IN-MEMORY ONLY / NON-AUTHORITATIVE). Guard now closes the whole D19/D20 misrepresentation class at doc-edit time (CI + local pre-commit). | Built — committed (scripts + hook only, scoped, no push). Verified: HC-09 bare probe → exit 1 (group HC-09-10-VOLATILE + correct VOLATILE hint); caveated probe → exit 0; pre-commit hook blocks a staged bare claim. | P1 |
 | U22 | governance-legal | 2026-09-26 | Made the pre-commit doc-lint hook discoverable: root `Makefile` (`make hooks`, `make lint-docs`) + `CONTRIBUTING.md` documenting the HC-01 / HC-09 / HC-10 claim rules and required caveats. HC-11 doc-claim lint rule HELD pending Q1.1. | Pre-commit hook now installable; contributor docs state the accepted caveat language per subsystem. | Built/Doing — Makefile + CONTRIBUTING committed; HC-11 rule pending Q1.1. | P1 |
@@ -240,7 +250,7 @@
 - **Why it matters:** today the durability upgrade looks unaffordable (3.6×), so it stays off, and the evidence store keeps a silent power-loss hole. It is affordable *only* in combination with group commit (batching). That coupling is the whole reason this is non-obvious: neither change is correct alone.
 - **Severity:** HIGH (silent evidence loss under a failure mode the owner will experience eventually and attribute to something else).
 - **Recommendation:** ship `synchronous=FULL` **together with** group commit (`ADR-audit-storage-generation-2.md` §3.1 + §3.5), never separately. Separately: wire `configure_audit_durability()` into `_init_db` **or delete it** — a durability helper that is built and never called is a claim nobody ever checks.
-- **Status:** DISCOVERED (read-only). Measurements are the author's, reproduced independently of the team-lead's ~2k/~23k figures.
+- **Status:** **REMEDIATED** (re-audited 2026-10-07). Both halves shipped *together*, which is exactly what the entry demanded. (a) Durability default flipped: `_DEFAULT_SYNCHRONOUS = "FULL"` with an env opt-out `LIUHAO_AUDIT_SYNCHRONOUS` (`5ee7b69a`, "two million-scale defects + power-loss durability by default"); `_init_db` now calls `configure_audit_durability(self._conn, _synchronous_level())` — the helper has a real production caller now (`src/kernels/audit/__init__.py:473`), closing the "built and never called" gap. (b) Group commit landed: `log_event_batch` / `_attempt_log_event_batch` (`8fe8be3b`, Option C1). Measured in the code's own header (`__init__.py:79-92`): FULL costs 3.29× at batch=1 but only 1.06× at batch=250 — the coupling the entry predicted. Runtime evidence: `tests/kernels/audit/test_durability.py` + `test_batch_append.py` green.
 
 ## U49 — The audit `event_id` is only 48 bits: at million-event scale, evidence is silently dropped
 - **Where:** `src/kernels/audit/__init__.py` `_attempt_log_event` (~L530) and `_attempt_log_event_batch` (~L675): `event_id = str(uuid.uuid4())[:12]`.
@@ -251,7 +261,7 @@
   The batch case is the dangerous one: the existing idempotency rule — which is otherwise a virtue — converts a weak-id collision into invisible data loss, and it will look exactly like a successful de-duplication in every dashboard we have.
 - **Severity:** HIGH at the scale the roadmap targets (the roadmap says 10×/100×/1000×; 10⁷ events is ~1.4 hours of operation at the MEASURED 2k eps ceiling).
 - **Recommendation:** `uuid4().hex` (128 bits) at every generation site; make the "duplicate skip" counter distinguishable from "retry of a known id" and alert on a skip whose payload differs from the stored row; assert post-change that no new 12-char ids appear.
-- **Status:** DISCOVERED (read-only).
+- **Status:** **REMEDIATED** (re-audited 2026-10-07). The recommendation was implemented exactly: every generation site now uses `uuid.uuid4().hex` (128-bit) — `src/kernels/audit/__init__.py:870,922,1088,1093`; the only surviving `[:12]` is a comment explaining the bug (`:918`). A repo-wide grep for `uuid4()[:12]` over `src/` now matches nothing but that comment. Locked by test `tests/kernels/audit/test_scale_defects.py::test_generated_event_ids_are_full_width_and_unique` (asserts `len(eid)==32` + uniqueness), and the anchor is documented in `docs/autonomous/IDENTIFIER-POLICY.md` §1. Commit `5ee7b69a`. Runtime evidence: `test_scale_defects.py` green.
 
 ## U50 — Scheduled integrity verification is itself an availability outage, and its length grows with the chain
 - **Where:** `src/kernels/audit/__init__.py::_verify_integrity_locked` (~L758-763): `SELECT … FROM audit_events ORDER BY seq ASC` with `.fetchall()` (the entire chain in RAM), then an `AuditEvent` constructed per row, all under the **same `self._lock` as `log_event`**. Production trigger: `src/reliability/audit_metrics.py::refresh_audit_metrics(with_integrity_check=True)`.
@@ -259,7 +269,7 @@
 - **Why it matters:** while the scan holds the lock, appends block. The mandatory-evidence gate is fail-closed, so "cannot write evidence" becomes "deny the action" — meaning **the operator who enables continuous verification at scale will take the whole governed-action surface down for minutes, growing linearly forever**. Nobody has priced that. The bigger the chain gets, the more dangerous the safety check becomes.
 - **Severity:** HIGH (availability) and it *worsens* with success.
 - **Recommendation:** segmented verification (persist `verified_upto_seq` + `verified_link_hash`; verify only the new tail) and run verification against a `VACUUM INTO` snapshot, never the live store — `ADR-audit-storage-generation-2.md` §3.6. Add a hard rule: the `verified_upto` marker may only advance inside the transaction that verified the segment, or it becomes a false green (registered as R-G2-07).
-- **Status:** DISCOVERED (read-only).
+- **Status:** **REMEDIATED** (re-audited 2026-10-07). Segmented / incremental / rolling verification shipped in `cc727374` ("C2: segmented/incremental/rolling verification + audit-read-path hardening"): the store now exposes `verify_segment` (`__init__.py:1498`), `verify_incremental` (`:1537`), and `verify_rolling` (`:1627`), so an operator enabling continuous verification no longer pays a full-chain `fetchall()` under the append lock. The read path was also moved off the append lock separately (`9a4cfd7f`, F-04) and the read snapshot is now taken in one transaction so a concurrent append cannot produce a false "broken chain". Runtime evidence: `tests/kernels/audit/test_audit_segmented_verification.py` + `test_segmented_verification.py` green. (Full-chain `verify_integrity()` still exists for periodic deep checks; that is correct — the point was to make it avoidable, not to delete it.)
 
 ## U51 — The chain has no single value that commits to its own history, so cheap notarization and inclusion proofs are impossible today
 - **Where:** `AuditEvent.compute_hash()` (`src/kernels/audit/__init__.py` ~L180-199) hashes `event_id, event_type, principal_id, scope, timestamp, correlation_id, outcome, details` — **not** `prev_event_hash`, **not** `seq`. `prev_event_hash` is a plain pointer column covered by no hash. (`src/common/hash_chain.py` documents this deliberately: canonicalization is not unified across chains.)
@@ -269,7 +279,7 @@
   3. **No inclusion proofs**: you cannot prove "event X sits at position k" without replaying the whole chain.
 - **Why it matters:** "hash chain" is being read as "tamper-proof". It is tamper-*evident* against an adversary who can only make *inconsistent* edits. An adversary with SQL write access can recompute the whole chain consistently and nothing detects it.
 - **Recommendation:** add an additive `link_hash` column with `link_hash_i = H(link_hash_{i-1} ‖ event_hash_i)` (`ADR-audit-storage-generation-2.md` §3.3). MEASURED cost ≈2.4 µs/event (5%). One extra hash buys: a single notarizable head, inclusion proofs, and — once epochs exist — **one TSA call per epoch instead of per event**, which is what finally makes HD-05 usable.
-- **Status:** DISCOVERED (read-only). Keep `prev_event_hash` — this supplements the existing verifier, it does not replace it.
+- **Status:** **REMEDIATED** (re-audited 2026-10-07). The additive `link_hash` column now exists with a real cumulative chain: `link_hash_i = H(link_hash_{i-1} ‖ event_hash_i)` is computed and persisted (`src/kernels/audit/__init__.py:332-335,907,939-971`) and older rows are backfilled (`_attempt_backfill_link_hashes`, `cc727374` + `c10f0013`), with `chain_state.last_link_hash` as the tail commitment. This is what makes a single notarizable head, Merkle inclusion proofs, and per-*epoch* TSA calls possible — the follow-on work landed: `e3ccb448` (chain-head notary, trustless Merkle inclusion proofs over signed heads) and `67e7ddda` (external transparency-log anchor). Runtime evidence: `tests/kernels/audit/test_inclusion_proof.py` green. `prev_event_hash` was kept, as this entry required. **Residual (honest):** the *signature* campaign over the periodic head and the algorithm-epoch table (U53) remain open; U52 (retention) remains a HUMAN DECISION.
 
 ## U52 — Retention policy and an append-only hash chain are in direct contradiction, and crypto-shredding does not mean erasure
 - **Where:** HD-06 / R7 (retention final policy — an open HUMAN DECISION) versus the no-delete invariant already adopted (I1 no-delete / I2 no-reorder in `src/kernels/audit/recovery.py`, and GOVERNANCE §2.3 no destroying evidence).
@@ -292,11 +302,98 @@
 
 | id | discovered-by | date | what | why it matters | status | priority |
 |----|----|----|----|----|----|----|
-| U48 | c2-scaling | 2026-09-26 | WAL + `synchronous=NORMAL` loses committed events on power loss; `configure_audit_durability()` (FULL) has zero production callers | "write returned ⇒ evidence exists" is false under power loss; the fix costs 14% at batch=250 (MEASURED) but 3.6× at batch=1, so it is only payable with group commit | DISCOVERED — fix is ADR Gen-2 C2-1 + C2-5, must ship together | P0 |
-| U49 | c2-scaling | 2026-09-26 | `event_id = str(uuid.uuid4())[:12]` is 48 bits | ≈18% collision chance at 10⁷ events; in the batch path a collision is silently skipped as a duplicate — real evidence lost with no error and no metric | DISCOVERED — widen to `uuid4().hex` (128 bits) | P0 |
-| U50 | c2-scaling | 2026-09-26 | `verify_integrity()` = full `fetchall()` under the append lock | MEASURED 26.4 µs/row ⇒ ~264 s at 10⁷ rows during which appends block ⇒ fail-closed denies every HIGH/CRITICAL action; the safety check becomes an outage that grows with success | DISCOVERED — segmented + off-snapshot verification (ADR §3.6) | P0 |
-| U51 | c2-scaling | 2026-09-26 | `event_hash` excludes `prev_event_hash`; no cumulative commitment | No O(1) notarizable head ⇒ HD-05 costs one TSA call per event and will stay unused; no inclusion proofs; truncation defence is a row in the same file it defends | DISCOVERED — additive `link_hash` (ADR §3.3), ~5% cost | P1 |
+| U48 | c2-scaling | 2026-09-26 | WAL + `synchronous=NORMAL` loses committed events on power loss; `configure_audit_durability()` (FULL) has zero production callers | "write returned ⇒ evidence exists" is false under power loss; the fix costs 14% at batch=250 (MEASURED) but 3.6× at batch=1, so it is only payable with group commit | **REMEDIATED** — `_DEFAULT_SYNCHRONOUS="FULL"` + `configure_audit_durability` now called in `_init_db` (`5ee7b69a`) AND group commit shipped (`8fe8be3b`); both halves together, as required | P0 |
+| U49 | c2-scaling | 2026-09-26 | `event_id = str(uuid.uuid4())[:12]` is 48 bits | ≈18% collision chance at 10⁷ events; in the batch path a collision is silently skipped as a duplicate — real evidence lost with no error and no metric | **REMEDIATED** — every site now `uuid.uuid4().hex` (128-bit) (`5ee7b69a`); grep-for-`[:12]` clean; locked by `test_scale_defects.py` | P0 |
+| U50 | c2-scaling | 2026-09-26 | `verify_integrity()` = full `fetchall()` under the append lock | MEASURED 26.4 µs/row ⇒ ~264 s at 10⁷ rows during which appends block ⇒ fail-closed denies every HIGH/CRITICAL action; the safety check becomes an outage that grows with success | **REMEDIATED** — segmented/incremental/rolling verification shipped (`cc727374`): `verify_segment`/`verify_incremental`/`verify_rolling`; read path also off the append lock (`9a4cfd7f`) | P0 |
+| U51 | c2-scaling | 2026-09-26 | `event_hash` excludes `prev_event_hash`; no cumulative commitment | No O(1) notarizable head ⇒ HD-05 costs one TSA call per event and will stay unused; no inclusion proofs; truncation defence is a row in the same file it defends | **REMEDIATED** — additive `link_hash` cumulative chain + backfill (`cc727374`,`c10f0013`); head-notary/inclusion proofs (`e3ccb448`,`67e7ddda`). Residual: head *signature* + alg-epoch (U53) open | P1 |
 | U52 | c2-scaling | 2026-09-26 | Retention vs append-only chain; crypto-shredding ≠ erasure; shard key decides legal-hold feasibility | "Delete after N years" is impossible without breaking the chain; crypto-shredding still proves that the event happened; per-tenant vs correlation-id sharding is a legal choice | DISCOVERED — escalates HD-06 HUMAN DECISION | P1 |
 | U53 | c2-scaling | 2026-09-26 | No signature over the chain head; no chain-level algorithm epoch; wall-clock timestamps inside the hash | Chain proves internal consistency only — a consistent full rewrite is undetectable; 2036 auditors must replay to learn the chain's own algorithm; NTP steps produce a verifying chain whose seq and timestamp orders disagree | DISCOVERED — sign the epoch head via HD-05; add `chain_alg_epoch` | P1 |
 | U55 | governance-legal | 2026-10-05 | Learning / self-improvement capability claims had NO doc-lint guard: an outward "agents / AI employees learn, improve over time, get better with use, self-improve" statement was unchecked, though the system provably does NOT learn (probe `scripts/verify_employee_no_learning.py`, 030dd17f: memory WRITE=1 / READ=0; `apply_feedback` invoked 0× in autonomous runtime) | A false capability claim of this class carries consumer-protection / false-advertising exposure (FTC §5 deception; 广告法 / 反不正当竞争法 虚假宣传) and misrepresents the product to buyers | Built — fourth doc-lint red line `CAPABILITY-LEARNING-CLAIMS` added to `scripts/lint_audit_claims.py` with a negate branch so honest negatives pass; commit 69312da1; `--all` PASS, 28 surface tests pass | P1 |
 | U56 | governance-legal | 2026-10-05 | The readiness aggregator `eap/05-final-readiness-battery/consolidate_readiness.py` writes its consolidated report to the **repo root** by default, dropping an untracked artifact (`EAP-EVIDENCE-REPORT.md` / `.json`) into the scanned working tree — which made the pre-existing surface test `test_root_markdown_files_are_all_in_the_scan_surface` fail (1 failed / 27 passed). Team-lead then moved those root artifacts out of the tree (to `D:\cache\temp\lead-eap-artifacts-1791394398\`, not deleted) and the test recovered to **28 passed** — single cause, verified. | The real blind spot is NOT "this one document went unscanned" but "**a generator writes untracked artifacts into the scanned workspace**" — the next generated report repeats it. Straggling root markdown is *meant* to be flagged red; enlarging the scan surface to accommodate a work-stand contamination inverts the guard. | DISCOVERED — the fix belongs to **quality-reliability** (the aggregator's default output path must not be the repo root), not governance-legal or team-lead. Do **NOT** add this filename to `OUTWARD_SURFACE_FILES` unless the EAP README explicitly requires the report to be committed — in that case the correct handling is a controlled directory + scan-surface registration, never left lying in the root. | P2 |
+
+---
+
+## U57 — 18 concurrent agents mutate ONE git worktree with no ownership lock; the "anchored" HEAD was stale within minutes
+
+- **Where:** the whole repo — a single git worktree on branch `p36`, shared by the
+  entire autonomous org (team-lead + 17 domain experts).
+- **What (MEASURED this session, 2026-10-07, unknown-unknowns):** the team-lead
+  "anchored and on-the-spot verified" state was **already wrong when this audit
+  read it**. Between two `git` reads minutes apart:
+  - `HEAD` moved `c438313e` → `9595b51b` (a `business-strategy:` commit);
+  - `origin/p36..HEAD` moved **169 → 172**;
+  - the `git status --short` set of 8 WIP files was **entirely replaced** (the six
+    `.gitignore` / `docs/*` / `plugins/registry_index.json` / `src/workflow/*`
+    entries vanished; `README.md`, `apps/console/*`, `docs/README.md`,
+    `scripts/ops/backup.py`, `src/providers/self_host.py`, `src/sre/disaster/*`
+    appeared) and new **untracked** test files surfaced
+    (`tests/kernels/identity/test_denial_chain_provability.py`,
+    `tests/test_console_request_drift_gate.py`, `tests/test_hold_sovereignty_invariants.py`,
+    `tests/test_provider_selfhost_stub_honesty.py`).
+- **Why it matters — this is about the *integrity of the evidence pipeline*, not
+  code correctness:**
+  1. A test run's result is reported against a "HEAD" that may have changed *during*
+     the run → "**verification**" and "**committed artifact**" are not the same object.
+     (This audit's own `355 passed` scoped run is subject to exactly this caveat.)
+  2. Two agents editing the same path → **silent lost update**; git has no per-file lock.
+  3. `git add <path>` can capture *another* agent's concurrent in-flight edit to the
+     same path (the "scoped commit" discipline is not actually scoped under concurrency).
+  4. The standing boundary "don't touch the N WIP files" is **unenforceable** because
+     the set is a continuously moving target — a snapshot taken at wake-up is stale
+     by the first tool call.
+- **Severity:** HIGH for a multi-agent autonomous org. It does not corrupt the audit
+  *chain*; it corrupts the org's ability to *know what it verified*.
+- **Recommendation (for team-lead / governance):** serialize commits (single
+  committer or a merge queue), or keep an atomically-updated file-ownership manifest;
+  pin the tree during any verification (`git worktree` or record `git rev-parse HEAD`
+  + `git status --porcelain`) and **re-check HEAD immediately before AND after
+  commit, rejecting the commit if it moved**; never attribute a test result to a HEAD
+  that was not pinned for the duration of the run.
+- **Status:** DISCOVERED (read-only). No code changed. A process/governance fix, not
+  a source change.
+
+## U58 — The discovery register has no reconciliation gate: fixes land, entries stay DISCOVERED
+
+- **Where:** this file (`docs/autonomous/UNKNOWN-TO-OWNER.md`).
+- **What:** **308 commits** landed since the register's "last scan 2026-09-26". Five
+  entries — **U48, U49, U50, U51, and U47 (Fix A)** — were still stamped
+  `DISCOVERED` even though their fixes committed on **2026-09-26/27** and are
+  **ancestors of HEAD** (`5ee7b69a`, `cc727374`, `8fe8be3b`, `d55c324e`, `c10f0013`).
+  Nothing in the pipeline revisits an entry when the fix lands.
+- **Why it matters:** this register is the org's memory of its own open risks, and
+  that memory was **unverified**. A stale "open risk" list is itself a hazard:
+  (a) experts burn cycles re-solving already-solved problems; (b) the *actually*-open
+  risks get hidden behind the noise; (c) "we logged it" is misread as "we are
+  tracking it" — exactly the false-success class the mandate forbids.
+- **Severity:** MEDIUM–HIGH (meta: it degrades every other entry's signal).
+- **Recommendation:** a CI/lint gate that fails when a register entry cites a commit
+  that is an ancestor of HEAD while its status still reads `DISCOVERED` (or a
+  scheduled reconcile job), and/or require every fix commit to update the register
+  entry it closes. This audit corrected the *instances*; the *gate* is still missing.
+- **Status:** DISCOVERED (read-only). No code changed.
+
+## U59 — Declared dependency ≠ installed dependency: `pytest-timeout` is absent from the live `.venv`
+
+- **Where:** `pyproject.toml` `[project.optional-dependencies].tests` declares
+  `pytest-timeout>=2.3.0`; `scripts/verify_readiness.py` C3/C6 invoke
+  `pytest ... --timeout=60/120`; the live `.venv` does **not** have the plugin.
+- **What (MEASURED):** `./.venv/Scripts/python.exe -c "import pytest_timeout"` →
+  `ModuleNotFoundError`. With the plugin absent, pytest rejects `--timeout` with
+  `error: unrecognized arguments: --timeout` ⇒ **rc=4**, so the C3/C6 timeout gate
+  **cannot execute locally**. (The `pyproject.toml:105-110` comment / issue #383
+  records this class of "declared but not present" gap.)
+- **Why it matters:** the per-test hang protection added in response to U25 is
+  **unarmed in the very environment where verification is run**. A claim that "a
+  timeout gate exists" is today config-only, not observed.
+- **Severity:** MEDIUM (verification-tooling gap, not a product defect).
+- **Recommendation:** `verify_readiness.py` should assert `pytest_timeout` is
+  importable before using `--timeout` and fail with an actionable remedy (or install
+  into the run venv); CI must `pip install -e .[tests]`.
+- **Status:** DISCOVERED (environmental; evidence: the import failed in `.venv`).
+  No code changed.
+
+| id | discovered-by | date | what | why it matters | status | priority |
+|----|----|----|----|----|----|----|
+| U57 | unknown-unknowns | 2026-10-07 | 18 agents share one git worktree with no ownership lock; HEAD moved `c438313e`→`9595b51b` and the WIP set was entirely replaced mid-audit | Test evidence is attributed to a HEAD that may change *during* the run; path overlap = silent lost update; "don't touch the WIP files" is unenforceable | DISCOVERED — serialize commits / pin the tree; re-check HEAD before+after commit | P0 |
+| U58 | unknown-unknowns | 2026-10-07 | Register had no reconciliation gate: U48–U51 + U47-FixA stayed `DISCOVERED` for ~2 weeks after the fixes (2026-09-27) were already ancestors of HEAD; 308 commits since last scan | A stale open-risk list wastes cycles re-solving solved items and hides the actually-open ones; "logged it" misread as "tracking it" | DISCOVERED — add a reconcile lint (`DISCOVERED` + fix-commit-ancestor-of-HEAD ⇒ fail); instances corrected this audit | P1 |
+| U59 | unknown-unknowns | 2026-10-07 | `pytest-timeout` declared in `pyproject` `[tests]` but absent from the live `.venv` | `verify_readiness` C3/C6 timeout gate cannot run locally (rc=4); the hang-protection added after U25 is unarmed where verification runs | DISCOVERED — assert importability + clear remedy; CI must install `.[tests]` | P2 |
