@@ -28,16 +28,11 @@
 
 import type { PreflightFinding, PreflightPayload } from '../lib/contracts'
 import { useApi } from '../lib/api'
+import { preflightVerdict, severityTone } from '../lib/preflightLogic'
 import { Card, Dot, Guard } from '../components/ui'
 
 /** 预检结论的刷新间隔：配置不会秒级变化，60s 足够，且不刷爆网关。 */
 const REFRESH = 60_000
-
-function severityTone(severity: string): 'danger' | 'warn' {
-  // 只有两种取值（见 PreflightFinding）。未知取值按 critical 处理 ——
-  // 宁可把未知显示得严重一点，也不要因为没识别出来就显示成绿色。
-  return severity === 'warning' ? 'warn' : 'danger'
-}
 
 function FindingRow({ finding }: { finding: PreflightFinding }) {
   return (
@@ -67,15 +62,11 @@ export function Preflight() {
   const data = preflight.data
 
   // 结论先于明细：这是"能不能上生产"的答案，不该让人翻到列表底部自己总结。
-  const verdict = !data
-    ? null
-    : data.ok
-      ? { tone: 'ok' as const, title: '预检通过', detail: '没有 critical 项。' }
-      : {
-          tone: 'danger' as const,
-          title: `预检未通过：${data.critical_count} 项严重问题`,
-          detail: '在此配置下不应承载生产流量。',
-        }
+  // 判定逻辑在 lib/preflightLogic（可被真实执行的纯函数，有单测），
+  // 本页只负责把后端给的计数喂进去 —— 不自己重新数一遍。
+  const verdict = data
+    ? preflightVerdict(data.ok, data.critical_count, data.warning_count)
+    : null
 
   return (
     <div className="os-grid">
@@ -87,7 +78,9 @@ export function Preflight() {
               <div
                 className="os-kpi-value"
                 style={{
-                  color: verdict.tone === 'ok' ? 'var(--os-ok)' : 'var(--os-danger)',
+                  // blocked 是唯一决定"红还是绿"的事实：ok=true 但有警告时
+                  // 仍是绿（警告不阻断），ok=false 一律红。
+                  color: verdict.blocked ? 'var(--os-danger)' : 'var(--os-ok)',
                   fontSize: 20,
                 }}
               >

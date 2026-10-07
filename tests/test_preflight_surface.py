@@ -20,14 +20,18 @@
 
 from __future__ import annotations
 
-import json
 import pathlib
 import re
+import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.gateway.main import get_app
+
+#: 真实执行前端纯逻辑用的 node 测试（Node 22 内置 strip-types + node:test，零新依赖）
+_NODE_TEST = pathlib.Path(__file__).resolve().parent / "preflight_logic.test.mjs"
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 _CONSOLE_SRC = pathlib.Path(__file__).resolve().parents[1] / (
     "apps/console/console/src"
@@ -167,31 +171,53 @@ class TestConsoleActuallyRendersIt:
         assert re.search(r"\.warning_count", code), "页面没有引用后端的 warning_count"
 
     def test_unresolved_severity_is_not_green(self):
-        """未知 severity 必须按严重处理，不能默认绿。
+        """未知 severity 必须按严重处理 —— **由真实执行**验证，不是读源码猜。
 
-        这是"未知即不可信"的直接编码：把没识别出来的取值显示成绿色，
-        等于凭猜测放行一份生产配置。
+        旧写法用正则从页面源码里抠出 ``severityTone`` 的函数体，断言它同时含有
+        ``warning``/``danger`` 两词、且含有子串 ``=== 'warning' ? 'warn' : 'danger'``。
+        这类**文本断言可被构造反例骗过**（下面是构造体，**并非某次真实提交的历史**）：
+        保留那串三元文本、但实际无条件 ``return 'warn'``::
+
+            function severityTone(severity: string): 'danger' | 'warn' {
+              void (severity === 'warning' ? 'warn' : 'danger')  // 诱饵
+              return 'warn'                                       // 真实行为：fail-open
+            }
+
+        对该构造体，旧断言的两条实测**都为真 ⇒ 假绿**，而这行代码对任何输入都返回
+        ``'warn'``。也就是说：旧断言验证的是"源码长得像不像"，不是"行为对不对"，
+        会在代码写错时照样通过。文本解析类断言最危险的失效方向就是这种**假绿**。
+
+        现在逻辑住在 ``lib/preflightLogic.ts``，由
+        ``TestPreflightLogicRunsForReal`` **真正执行**它。此处只确认接线：
+        页面必须**导入**那个模块，不得自带第二份分色实现（两份判据必然分叉）。
         """
+        if not _PAGE.is_file():  # pragma: no cover
+            pytest.skip("Preflight.tsx not present")
         code = _code_only(_PAGE.read_text(encoding="utf-8"))
-        fn = re.search(r"function severityTone\([^)]*\)[^{]*\{(.*?)\n\}", code, re.S)
-        assert fn, "找不到 severityTone —— 严重级别的分色逻辑应集中在一处"
-        body = fn.group(1)
-        assert "warning" in body and "danger" in body, (
-            "severityTone 必须同时处理 warning 与 danger"
+        assert "severityTone" in code, "页面不再使用 severityTone —— 分色逻辑跑哪去了"
+        assert "preflightLogic" in code, (
+            "页面必须从 lib/preflightLogic 导入分色/结论逻辑，"
+            "不得自带第二份实现 —— 两份判据迟早分叉"
         )
-        # 只有显式的 warning 才降级；默认分支必须是 danger。
-        assert re.search(r"===\s*'warning'\s*\?\s*'warn'\s*:\s*'danger'", body), (
-            "severityTone 的默认分支不是 danger —— 未知 severity 会被显示成非严重"
+        assert not re.search(r"function\s+severityTone\b", code), (
+            "页面里又定义了一份 severityTone —— 权威必须只有 lib/preflightLogic 一处"
         )
 
     def test_page_does_not_display_configuration_values(self):
-        """页面绝不能显示配置值 —— 后端根本不下发，展示了就是编造。"""
+        """页面绝不能显示配置值 —— 后端根本不下发，展示了就是编造。
+
+        只查**渲染出来的字面量与字段访问**（已剥注释）：docstring 里为了说明
+        "我们不下发配置值"而引用这些词是**必须保留的证据**。
+        """
         code = _code_only(_PAGE.read_text(encoding="utf-8"))
-        for forbidden in ("secret_key", "SECRET_KEY", "api_key", "token"):
-            assert forbidden not in code, (
-                f"页面引用了 {forbidden!r} —— 本端点只下发键名/代码/严重级别，"
-                f"任何配置值都是编造或泄漏"
-            )
+        # 字段访问形式（data.secret_key / finding.value）才是真正的泄漏通道。
+        leaks = re.findall(
+            r"\.\s*(secret_key|api_key|token|password|value)\b", code, re.I
+        )
+        assert not leaks, (
+            f"页面读取了疑似配置值的字段 {sorted(set(leaks))} —— "
+            f"本端点只下发 key/code/severity/message，任何配置值都是编造或泄漏"
+        )
 
     def test_no_write_call_in_the_page(self):
         """预检是只读体检报告 —— 页面上不得出现写请求。"""
@@ -224,3 +250,55 @@ def test_live_response_and_contract_agree_on_field_names(client):
     assert declared <= sent, (
         f"契约声明了后端不发的键：{sorted(declared - sent)}"
     )
+
+
+class TestPreflightLogicRunsForReal:
+    """**真正执行**前端分色/结论逻辑，而不是读源码猜它对不对。
+
+    为什么这一节存在（"文本断言守不住行为"）
+    -------------------------------------------
+    本文件此前用**正则从页面源码抠出函数体**来断言 fail-closed 行为。这类断言
+    可被**构造反例**骗过（下面是构造体，**并非某次真实提交的历史**）：保留被断言的
+    三元文本、但实际无条件 ``return 'warn'``::
+
+        function severityTone(severity: string): 'danger' | 'warn' {
+          void (severity === 'warning' ? 'warn' : 'danger')  // 诱饵
+          return 'warn'                                       // 真实行为：fail-open
+        }
+
+    对该构造体，旧断言的两条（``warning``/``danger`` 两词俱在 + 正则命中）实测
+    **都为真 ⇒ 假绿**，而这行代码对任何输入都返回 ``'warn'``。
+
+    文本解析类断言的失效方向通常是**假绿**：它验证"源码长得像不像"，
+    于是会在代码写错时照样通过，并让人误以为这里有人看着。假绿比假红危险，
+    因为假红会让人去查代码，假绿让人去**改正确的东西**。
+
+    修法不是把正则写得更巧，而是**换成执行**：Node 22 自带
+    ``--experimental-strip-types`` 与 ``node:test``，零新依赖即可真跑
+    ``lib/preflightLogic.ts``。本节只做跨工具链的那一跳。
+    """
+
+    def test_node_executes_the_real_logic_module(self):
+        node_test = pathlib.Path(__file__).resolve().parent / "preflight_logic.test.mjs"
+        logic = _CONSOLE_SRC / "lib" / "preflightLogic.ts"
+        if not node_test.is_file():  # pragma: no cover
+            pytest.skip("preflight_logic.test.mjs not present")
+        if not logic.is_file():  # pragma: no cover
+            pytest.skip("lib/preflightLogic.ts not present")
+
+        result = subprocess.run(
+            [
+                "node",
+                "--experimental-strip-types",
+                "--test",
+                str(node_test),
+            ],
+            cwd=pathlib.Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, (
+            "真实执行 preflightLogic 的 node 测试失败 —— fail-closed 行为可能已被破坏。\n"
+            f"stdout:\n{result.stdout[-3000:]}\nstderr:\n{result.stderr[-2000:]}"
+        )
