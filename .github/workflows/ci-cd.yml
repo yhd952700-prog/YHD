@@ -1,10 +1,18 @@
 name: CI/CD Pipeline
 
+# CD / release is a DELIBERATE, human-triggered path — never an automatic
+# per-push path. The old `push: [main, develop]` / `pull_request: [main]`
+# triggers could never fire for our work: the repo default branch is
+# wip/liuhao-x-evolve, work lands on p36, and `main` is a frozen legacy archive
+# (last commit 2026-09-03). Consequence: this entire workflow executed ZERO
+# times — `gh run list --workflow=ci-cd.yml` => [] — so the release gates it
+# declares guarded nothing. Restricting to a manual dispatch + version tags
+# keeps the writer-class jobs (docker login / build-push / deploy) under
+# explicit human control and out of unscoped pushes.
 on:
+  workflow_dispatch:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
+    tags: ['v*']
 
 env:
   REGISTRY: ghcr.io
@@ -81,8 +89,28 @@ jobs:
     needs: [test, security]
     runs-on: ubuntu-latest
     # CRITICAL-5: run even if 'test'/'security' failed, so downstream deploy gates
-    # FAIL loudly instead of being silently SKIPPED.
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # FAIL loudly instead of being silently SKIPPED. NOTE: the CRITICAL-5 watchdog
+    # (scripts/verify_critical5_watchdog.py) requires a literal `always()` here;
+    # `!cancelled()` is NOT accepted by it (it would read as "would SKIP silently
+    # on red upstream"). Do not substitute another status function.
+    # The old `if:` ALSO pinned `github.event_name == 'push'` and
+    # `github.ref == 'refs/heads/main'`, which made this job UNREACHABLE for our
+    # work (default branch != main, work lands on p36). Those pins are dropped
+    # now — that is why the release gates below were declared but never executed.
+    if: always()
+    env:
+      # C1 HOLD — DEFAULT ARMED, and deliberately NOT hardcoded to "1".
+      # scripts/check_hold_gate.py reads LIUHAO_HOLD: UNSET => exit 0 (HOLD
+      # inactive), so a release could proceed with no freeze actually in force
+      # (that was the real state: the variable was never set anywhere in
+      # .github/). The repo variable wins when present; otherwise default to "1"
+      # so the freeze is ON (fail-safe, matching the standing `# HOLD`).
+      # Why not a bare "1": lifting the freeze must be a PLATFORM action (set the
+      # repo variable LIUHAO_HOLD=0 in GitHub, which is audit-logged), not a code
+      # change + deploy. Hardcoding "1" would make lifting the freeze heavier
+      # than imposing it and would invite "edit the workflow" as a bypass.
+      # Do NOT simplify this to a constant.
+      LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}
     steps:
       # CRITICAL-5 watchdog: fail loudly if a required upstream did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
@@ -126,6 +154,11 @@ jobs:
       - name: Release gate — GO readiness (UU-01)
         # UU-01: separates "P0-8 matrix green" from "GO-ready". Fails (no push)
         # when HC-01 is not COMPLIANT or the deployment does not arm CRITICAL.
+        # ORDERING NOTE: the HOLD control above exits 2 while the freeze is armed,
+        # failing the job BEFORE this step. With LIUHAO_HOLD defaulting to armed,
+        # this GO gate therefore only actually EXECUTES once the freeze is lifted
+        # (LIUHAO_HOLD=0). That is intended — a frozen system should not even
+        # reach the GO decision — but it means "GO ran" implies "HOLD was off".
         run: python scripts/verify_go_readiness.py
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -143,6 +176,7 @@ jobs:
     environment: staging
     # CRITICAL-5: run even if 'build' failed, so the deploy gate FAILS loudly
     # instead of being silently SKIPPED (a red build must not mask a green deploy).
+    # Must stay a literal `always()` for that watchdog.
     if: always()
     steps:
       # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
@@ -167,6 +201,7 @@ jobs:
     environment: production
     # CRITICAL-5: run even if 'deploy-staging' failed, so the deploy gate FAILS
     # loudly instead of being silently SKIPPED.
+    # Must stay a literal `always()` for that watchdog.
     if: always()
     steps:
       # CRITICAL-5 watchdog: fail loudly if the required 'deploy-staging' job did not succeed.
