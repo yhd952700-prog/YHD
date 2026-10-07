@@ -33,7 +33,13 @@
 
 用法::
 
-    D:\\LiuHao-AI-OS\\.venv\\Scripts\\python.exe scripts/verify_ai_layer_audit.py
+    python scripts/verify_ai_layer_audit.py
+
+（此前这里写的是本机绝对路径 ``D:\\LiuHao-AI-OS\\.venv\\Scripts\\python.exe``。
+  那既不是可移植的调用方式，也掩盖了一个事实：本脚本长期只在 Windows 上跑过。
+  同一处还硬编码了 ``D:/cache/temp`` 作为临时目录（见 :func:`_tmpdir`）——
+  在 Ubuntu runner 上该路径非法，CI 每次都只能走 fallback，而那条 fallback 从未
+  在 Linux 上真正执行验证过。）
 
 判据来自 ``docs/CODEX-CONTRACT.md`` §5：
   Audited           = 关键操作写入 audit log（含 correlation_id）
@@ -52,13 +58,30 @@ sys.path.insert(0, str(ROOT))
 
 
 def _tmpdir() -> Path:
-    """优先用 D 盘临时目录（本项目约定）；不可用时退回系统临时目录。"""
-    candidate = Path("D:/cache/temp")
+    """Per-run scratch directory for the isolated DBs.
+
+    This used to prefer the literal Windows path ``D:/cache/temp``. On the
+    Ubuntu CI runner that is not a valid path, so every CI run silently took the
+    ``mkdtemp`` fallback -- a branch that had never actually executed on Linux
+    (the workflow was dying before this script ever ran, see CRITICAL-1).
+
+    The Windows constant is gone rather than guarded: ``mkdtemp`` already
+    honours TMPDIR/TEMP, so on this project's Windows box it resolves under
+    D:\\cache\\temp by itself while Linux gets /tmp. No drive letter, no
+    per-OS branch, same result on both.
+
+    A fresh directory per run is also the *correct* behaviour for what this
+    script measures: it reads audit-store event **increments**, and reusing one
+    fixed directory would let a previous run's rows leak into the next
+    measurement.
+    """
     try:
-        candidate.mkdir(parents=True, exist_ok=True)
-        return candidate
-    except OSError:
         return Path(tempfile.mkdtemp(prefix="liuhao_ai_dod_"))
+    except OSError:
+        # Last resort, still outside the repo. The pid keeps parallel runs apart.
+        fallback = Path(tempfile.gettempdir()) / f"liuhao_ai_dod_{os.getpid()}"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 TMP = _tmpdir()
