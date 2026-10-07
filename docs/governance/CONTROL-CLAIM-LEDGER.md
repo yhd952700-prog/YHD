@@ -203,11 +203,16 @@ costs: it teaches people to ignore the line."（该 commit 信息还自纠了一
 
 **能进（机器可查）**——每项**标注当前状态**，绝不把"能进"读成"已进"：
 - 【**已接线**】新出现的**未处置**声明 → ratchet（`lint_control_claims.py` + baseline，已进 CI `doc-lint.yml`）。
-- 【**提案，未接线**】**更正过的声明回退** → 更正窗口须带更正提交/回归测试路径（见 §2）。
+- 【**提案，未接线**（提出 2026-10-07；复核 2026-11-07）】**更正过的声明回退** → 更正窗口须带更正提交/回归测试路径（见 §2）。
 - 【**部分已接线**】运行时**假成功**（fail-closed 路径）→ 行为测试断言未配置即 `raise`/`unavailable`（案例 2/4 已有测试）。
 - 【**已接线（案例 3 的测试已存在）**】**幽灵旗子** → 调该旗子并断言其文档承诺行为。
 - 【**部分已接线**】**受跟踪运行产物** → `.gitignore` 已含 `/scripts/readiness_report.json`；**尚无**"禁止生成物入库"的自动门（案例 7）。
-- 【**提案，未接线**】**依赖↔CLI 参数错配**（案例 8）→ runner 里出现 `--timeout` 必须有 `pytest-timeout` 声明；现有 `verify_dependency_declaration_surface` **只查 fakeredis/lupa**，此处是已知缺口。
+- 【**提案，未接线**（提出 2026-10-07；复核 2026-11-07）】**依赖↔CLI 参数错配**（案例 8）→ runner 里出现 `--timeout` 必须有 `pytest-timeout` 声明。**声明面已由 `938b59fd` 补齐**（`pyproject.toml:115`）；**门禁面仍缺**——`verify_dependency_declaration_surface` 现只查 `fakeredis/lupa`，**不查 `--timeout`**。
+
+**提案不得无日期**（2026-10-07）：每一条【提案，未接线】**必须**携带 `（提出 YYYY-MM-DD；复核 YYYY-MM-DD）`；
+**缺日期 → 门禁 FAIL**——由 `lint_control_claims.py` 的**台账结构检查**强制（**这是另一条规则，不是把断言扫描扩到台账上**）。
+到**复核日**仍未接线的，**必须二选一：接线，或删除**，不得留。**机器只强制"声明必须带复核日"；"到没到日、选哪条"留在人。**
+（不采用"挂钟自动转红"：那会让红不再指向任何人的改动、训练人忽略红灯——见 §3；仓内无时钟，见 §2。）
 
 **只能靠人工纪律（诚实列出，不粉饰）**：**跨层 docstring 一致性**（案例 1 前端半——守卫只扫 `.md`，
 代码 docstring 在扫描面之外，只能靠人把两半对齐）· **docstring 里的"历史/实测"断言**（案例 6，
@@ -220,11 +225,13 @@ costs: it teaches people to ignore the line."（该 commit 信息还自纠了一
 **其余一切（跨层、docstring 历史、意图、通知、时限）：是人工纪律，不是代码强制，不是"已受控"。**
 当前**没有任何流程强制一次更正发生**；一条假声明可以无限期不被更正，除非有人注意到。**这就是诚实的底线。**
 
-**案例 8 的要害（补进缺口说明）**：`verify_readiness.py` 的**两条失败路径**都把**非零退出码洗成** `NOT_VERIFIED`——
-`:172`（`return NOT_VERIFIED, f"full run rc={rc2}, failed={fails}; …"`）与 `:271`
-（`return NOT_VERIFIED, f"reliability suites rc={rc} (may need live infra): …"`）。于是 `unrecognized arguments`
-（**"检查根本没跑起来"**，rc=4）与真正的**"跑了但没通过"**在输出里**长得一模一样**——都落进同一个 `NOT_VERIFIED`，
-消费方**无法从这一行区分二者，必须回读原始 stdout**。这正是案例 8 的要害：**"未执行" 与 "已裁决" 在信号上不可辨**。
+**案例 8 的要害（2026-10-07 重判：已由 `938b59fd` 修复）**：`verify_readiness.py` 原先把**两条失败路径**的非零 rc
+都洗成 `NOT_VERIFIED`（原 `:172` `full run rc={rc2}…` / 原 `:271` `reliability suites rc={rc}…`），使
+"检查根本没跑起来"（rc=4 `unrecognized arguments`）与"跑了但没通过"**落进同一个 `NOT_VERIFIED`**、不可辨。
+**`938b59fd`（#383）已改**：新增独立 `ERROR` 状态 + `_tool_failure()` 识别"旗子被拒 / 运行器模块缺失"，
+C2/C3/C6/C8/C9 的运行时失败 → `ERROR`（**exit 2**），而"跑了但没通过"仍留 `NOT_VERIFIED`（exit 0）；
+`pyproject.toml:115` 补齐声明。**本条从"未处置"转为"已改正"**——登记见 §2 更正登记表第 3 行。
+（残留：**门禁面**仍缺"`--timeout` ⇒ 必须有 `pytest-timeout` 声明"这条**静态**检查；见上表末行的【提案，未接线】。）
 
 ### 6. 8 个案例的分类归位（2026-10-05~07，全部 ∈ HEAD；逐笔 `git show` 亲验）
 
