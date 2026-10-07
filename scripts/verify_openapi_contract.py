@@ -62,9 +62,14 @@ IGNORED_TOP_LEVEL_KEYS = ("info", "servers", "tags", "externalDocs")
 
 
 def _load_runtime_spec():
-    from src.gateway.main import get_app  # imported late: needs sys.path set up
+    # Use the shared helper instead of a bare ``get_app().openapi()``: it wraps
+    # the app in a ``TestClient`` context manager (so the lifespan starts and
+    # stops) and redirects ``AUDIT_DB_PATH`` to a throwaway db, so building the
+    # spec never writes to -- or leaks -- the repository's frozen audit
+    # evidence. See scripts/_gateway_app.py.
+    from _gateway_app import gateway_openapi_spec
 
-    return get_app().openapi()
+    return gateway_openapi_spec()
 
 
 def _load_committed(path: str):

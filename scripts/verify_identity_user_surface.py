@@ -511,9 +511,9 @@ def check_no_mutation_routes():
     latter yields ``_IncludedRouter`` wrappers with neither ``path`` nor
     ``methods``, so a naive scan finds nothing and passes vacuously.
     """
-    from src.gateway.main import get_app
+    from _gateway_app import gateway_openapi_spec
 
-    spec = get_app().openapi()
+    spec = gateway_openapi_spec()
     paths = {p: sorted(m for m in ops if m.lower() in (
         "get", "post", "put", "patch", "delete"))
         for p, ops in spec["paths"].items() if p.startswith("/v1/identity")}

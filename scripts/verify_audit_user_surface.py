@@ -388,9 +388,9 @@ def check_no_mutation_routes():
     ``methods``, so a naive scan finds nothing and passes vacuously -- exactly
     the kind of check that looks like proof and isn't.
     """
-    from src.gateway.main import get_app
+    from _gateway_app import gateway_openapi_spec
 
-    spec = get_app().openapi()
+    spec = gateway_openapi_spec()
     audit_paths = {p: sorted(m for m in ops if m.lower() in (
         "get", "post", "put", "patch", "delete"))
         for p, ops in spec["paths"].items() if p.startswith("/v1/audit")}
