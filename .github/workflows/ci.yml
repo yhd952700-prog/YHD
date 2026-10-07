@@ -719,17 +719,21 @@ jobs:
   # unwired gates read as wired -- a false green, i.e. the exact decay this
   # job exists to prevent. Keep them suffix-less.
   #   * verify_deployment_gate_vars     -- GENUINE FAIL (runs clean, reports
-  #                                        16 findings, re-measured
-  #                                        2026-10-07: unclassified
-  #                                        gate-variable candidates such as
-  #                                        LIUHAO_CONSOLE_DIST and
-  #                                        LIUHAO_WORKSPACE_ROOT, plus
-  #                                        untracked deployment artifacts
-  #                                        (.env, docker-compose.yml) that
-  #                                        would let a gate pass on one machine
-  #                                        and fail everywhere else). The 16
-  #                                        are a human decision. The older
-  #                                        "12 findings" figure here was stale.
+  #                                        findings that are open human
+  #                                        decisions: unclassified gate-variable
+  #                                        candidates such as LIUHAO_CONSOLE_DIST
+  #                                        and LIUHAO_WORKSPACE_ROOT, plus
+  #                                        unarmed seed gates). Count re-measured
+  #                                        2026-10-07: 11 findings. The two
+  #                                        untracked artifacts (.env,
+  #                                        LiuHao-O/docker-compose.yml) are now
+  #                                        surfaced as INFO, not findings: both are
+  #                                        gitignored, and a gitignored path is
+  #                                        local state, not deployment -- letting
+  #                                        it move the exit code made the verdict
+  #                                        depend on the local machine. The 11 are
+  #                                        a human decision. The older "16
+  #                                        findings" figure here was stale.
   #   * verify_deployed_product_closure -- needs a Docker daemon AND a
   #                                        headless browser.
   #   * verify_image_build              -- needs a Docker daemon.

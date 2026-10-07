@@ -97,18 +97,19 @@ cannot produce a valid verdict there either.
   in this ledger that is *not* an environment problem, and it must not be filed
   as one.
 - **Owner:** `gate-var-evidence`.
-- **Why exempt:** it runs cleanly and reports **16 findings** about deployment
+- **Why exempt:** it runs cleanly and reports **11 findings** about deployment
   environment variables that no deployable artifact sets — unclassified
   gate-variable candidates (e.g. `LIUHAO_CONSOLE_DIST`,
-  `LIUHAO_WORKSPACE_ROOT`) plus untracked deployment artifacts
-  (`.env`, `docker-compose.yml`) that would let a gate pass on one machine and
-  fail everywhere else. It needs **no Docker and no browser**; the `exit 1` is a
+  `LIUHAO_WORKSPACE_ROOT`) plus unarmed seed gates. (Untracked *gitignored*
+  artifacts such as `.env` are surfaced as INFO, not findings: a gitignored
+  path is local state by the repo's own declared intent, so it must not move
+  the exit code.) It needs **no Docker and no browser**; the `exit 1` is a
   true verdict about the repository, not the host. The exemption is from being
   *wired before its findings are adjudicated*, not from being wrong.
 - **Why still unwired:** wiring it would be correct once the findings are
   adjudicated; wiring it *before* that would turn CI red for findings that are
   still open human decisions (SEED_GATES / ALLOWLIST classification).
-- **Re-run condition:** owner classifies the 16 findings, then wires the gate.
+- **Re-run condition:** owner classifies the 11 findings, then wires the gate.
   Because the findings are **human decisions**, this entry is deliberately
   `pending-owner`, not a permanent exemption.
 

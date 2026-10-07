@@ -32,13 +32,16 @@ and that is correct -- 8 seed gates are unset or read-indirectly in the
 deployment artifacts (7 ``gate-var-never-set`` plus ``LIUHAO_POSTURE_STRICT``,
 reported as ``seed-entry-read-indirectly``) and 3 scan-detected variables are
 unclassified (``LIUHAO_ALLOW_SIMULATED_EXECUTION``, ``LIUHAO_CONSOLE_DIST``,
-``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the run is 13 findings (16
-before the two drifted-ref findings were fixed in 2b8f802b; 14 before
-``AUDIT_DB_PATH`` was adjudicated into SEED_GATES the same day, which dropped
-the unclassified count from 4 to 3). That is a human decision, recorded in the
-task list, not something a test should paper over. Asserting "the gate is
-green" here would be exactly the fake-pass pattern these tests exist to
-prevent.
+``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the run is **11** findings. It
+was 16 before the two drifted-ref findings were fixed in ``2b8f802b``; then 13
+after ``AUDIT_DB_PATH`` was adjudicated into SEED_GATES (dropping the
+unclassified count from 4 to 3); then 11 when the two gitignored untracked
+artifacts -- ``.env`` and ``LiuHao-O/docker-compose.yml`` -- stopped being
+findings. A gitignored path is local state by the repo's own declared intent, so
+letting it move the exit code made the verdict depend on which files a machine
+happens to have. That residual red is a human decision, recorded in the task
+list, not something a test should paper over. Asserting "the gate is green" here
+would be exactly the fake-pass pattern these tests exist to prevent.
 """
 
 from __future__ import annotations
@@ -316,11 +319,13 @@ class TestEvidenceIsVersionControlled:
             "deployment evidence")
 
     def test_every_collected_artifact_is_either_tracked_or_reported(self, gate):
-        """No artifact may be quietly ignored: tracked, or named in a finding."""
+        """No artifact may be quietly ignored: tracked, or surfaced some way."""
         artifacts = gate.collect_artifacts()
         untracked = {gate._label(p) for p in gate.untracked_artifacts(artifacts)}
-        # In the real run these two are reported as untracked-artifact-ignored.
-        # This test just pins the invariant that the split is total.
+        # Untracked files are no longer findings by default: since 2026-10-07 a
+        # gitignored one is surfaced as an INFO line instead (local state, not
+        # deployment). Either way the split must be total -- nothing may vanish
+        # silently -- which is the only thing this test pins.
         tracked = {gate._label(p) for p in artifacts} - untracked
         assert tracked | untracked == {gate._label(p) for p in artifacts}
 
@@ -367,6 +372,56 @@ class TestEvidenceIsVersionControlled:
         assert "PROBE_READ_VAR" not in found, (
             "a subscript read is not a set; counting it would let evidence the "
             "artifact merely reads satisfy a gate: %r" % (found,))
+
+
+# --------------------------------------------------------------------------- #
+# Evidence determinism -- a gitignored path must not move the exit code
+# --------------------------------------------------------------------------- #
+class TestIgnoredPathsAreDeterministic:
+    """A gitignored path is local state, not deployment, and must not gate.
+
+    Before 2026-10-07 the gate reported ``.env`` and ``LiuHao-O/docker-compose.yml``
+    as findings, so its exit code answered "does this machine happen to have a
+    .env?". That is the "passes on my box, fails on the runner" defect the gate
+    exists to remove -- a locally-created file deciding a security verdict. The
+    fix is narrow: an artifact VCS deliberately ignores is informational; one
+    that is untracked and NOT ignored stays a finding.
+    """
+
+    def test_tracked_file_is_not_ignored(self, gate):
+        assert gate._is_git_ignored(
+            REPO_ROOT / "scripts" / "verify_deployment_gate_vars.py") is False
+
+    def test_gitignored_artifacts_are_ignored(self, gate):
+        # `git check-ignore` answers on the path name, whether or not the file
+        # exists, so this is stable across machines.
+        assert gate._is_git_ignored(REPO_ROOT / ".env") is True
+        assert gate._is_git_ignored(
+            REPO_ROOT / "LiuHao-O" / "docker-compose.yml") is True
+
+    def test_partition_splits_ignored_from_genuinely_untracked(self, gate, monkeypatch):
+        """The other half of the rule: untracked AND not ignored is STILL a finding."""
+        monkeypatch.setattr(
+            gate, "_is_git_ignored",
+            lambda p: True if p.name == "ignored_one" else False)
+        ignored, real = gate.partition_untracked(
+            [pathlib.Path("ignored_one"), pathlib.Path("real_one")])
+        assert [p.name for p in ignored] == ["ignored_one"]
+        assert [p.name for p in real] == ["real_one"]
+
+    def test_real_run_reports_ignored_artifacts_as_info_not_findings(self, gate):
+        import subprocess
+        import sys
+        proc = subprocess.run([sys.executable, str(SCRIPT)], cwd=str(REPO_ROOT),
+                              capture_output=True, text=True, timeout=180)
+        assert proc.returncode == 1, proc.stdout
+        findings_part, sep, info_part = proc.stdout.partition("INFO --")
+        assert "ARTIFACT:.env" not in findings_part, (
+            "a gitignored artifact must not be a finding -- that made the exit "
+            "code depend on local files:\n%s" % findings_part)
+        if (REPO_ROOT / ".env").is_file():
+            assert sep, "the ignored artifacts must still be surfaced as INFO"
+            assert ".env" in info_part
 
 
 # --------------------------------------------------------------------------- #

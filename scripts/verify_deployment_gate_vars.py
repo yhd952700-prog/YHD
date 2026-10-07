@@ -33,6 +33,14 @@ What it checks
 3. **Anti-decay** — a seed or allowlist entry whose variable is no longer read
    anywhere in ``src/`` is a FAIL, not a silent pass. A registry that rots is
    the same decoration this gate exists to remove.
+4. **Evidence must be deterministic** — an artifact whose path VCS deliberately
+   ignores (``.gitignore``) is local state by the repository's *own declared
+   intent*, not deployment. It is still surfaced, but as an informational line,
+   and it does **not** affect the exit code; an untracked-but-not-ignored
+   artifact stays a real finding, because it may carry evidence that exists on
+   one machine and nowhere else. Before 2026-10-07 both were findings, which made
+   the exit code depend on which files a given machine happened to have -- the
+   "passes here, fails there" defect this gate exists to remove.
 
 Every scanned candidate must be resolved by exactly one of: being SET in an
 artifact, being in ``SEED_GATES``, or being in ``ALLOWLIST`` **with a written
@@ -556,6 +564,46 @@ def untracked_artifacts(artifacts: Sequence[Path]) -> List[Path]:
     return out
 
 
+def _is_git_ignored(path: Path) -> Optional[bool]:
+    """True/False if git says the path is ignored, None if git cannot answer.
+
+    Distinct from :func:`_is_version_controlled` on purpose. "No commit
+    contains it" and "the repository deliberately ignores it" are different
+    facts, and they warrant different verdicts: an ignored path is local state
+    by the repo's own declared intent (so it must not move the exit code),
+    whereas an untracked-but-not-ignored path may hold evidence that exists on
+    this machine alone (so it must stay a finding). Collapsing the two made the
+    verdict depend on the local filesystem -- ``.env`` present here, absent on
+    CI -- which is the "passes on my box, fails on the runner" defect this gate
+    was built to remove.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--", str(path)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None  # 128 == not a repo / other git error
+
+
+def partition_untracked(untracked: Sequence[Path]) -> Tuple[List[Path], List[Path]]:
+    """Split untracked artifacts into (gitignored, genuinely-untracked).
+
+    The first list is informational; the second is a finding. See
+    :func:`_is_git_ignored` for why the two must not be conflated.
+    """
+    ignored: List[Path] = []
+    real: List[Path] = []
+    for path in untracked:
+        (ignored if _is_git_ignored(path) is True else real).append(path)
+    return ignored, real
+
+
 def _label(path: Path) -> str:
     """Repo-relative label for an artifact, so findings are machine-independent."""
     try:
@@ -917,7 +965,8 @@ def evaluate(artifact_vars: Dict[str, List[str]],
 def render(findings: Sequence[Finding],
            artifact_count: int,
            reads_count: int,
-           candidate_count: int) -> str:
+           candidate_count: int,
+           ignored_local: Sequence[str] = ()) -> str:
     lines: List[str] = []
     lines.append("=" * 78)
     lines.append("Deployment gate-variable gate")
@@ -929,16 +978,26 @@ def render(findings: Sequence[Finding],
     if not findings:
         lines.append("RESULT: PASS -- every gate variable is resolved by an "
                      "artifact, a seed entry, or a reasoned allowlist entry.")
-        return "\n".join(lines)
-    lines.append("RESULT: FAIL -- %d unresolved gate variable(s):" % len(findings))
-    lines.append("")
-    for i, f in enumerate(findings, 1):
-        lines.append("[%d] %s  (%s)" % (i, f.var, f.kind))
-        lines.append("    %s" % f.detail)
-        if f.refs:
-            lines.append("    read at: %s" % ", ".join(f.refs))
-        if f.suggestion:
-            lines.append("    fix:     %s" % f.suggestion)
+    else:
+        lines.append("RESULT: FAIL -- %d unresolved gate variable(s):" % len(findings))
+        lines.append("")
+        for i, f in enumerate(findings, 1):
+            lines.append("[%d] %s  (%s)" % (i, f.var, f.kind))
+            lines.append("    %s" % f.detail)
+            if f.refs:
+                lines.append("    read at: %s" % ", ".join(f.refs))
+            if f.suggestion:
+                lines.append("    fix:     %s" % f.suggestion)
+            lines.append("")
+    # Informational, and deliberately OUTSIDE the finding count: a gitignored
+    # path is local state by the repo's own declared intent, not deployment, so
+    # surfacing it must not move the exit code (see `_is_git_ignored`).
+    if ignored_local:
+        lines.append("INFO -- gitignored untracked artifact(s): surfaced so "
+                     "nobody wonders what the gate read, but NOT counted as "
+                     "deployment evidence and NOT affecting the exit code:")
+        for label in ignored_local:
+            lines.append("  - %s" % label)
         lines.append("")
     return "\n".join(lines)
 
@@ -962,9 +1021,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     artifacts = collect_artifacts(args.extra_artifacts)
     # Files no commit contains are not a description of the deployment. On
     # 2026-10-04 this excluded .env (gitignored, holds SECRET_KEY/JWT_SECRET)
-    # and a stray LiuHao-O/docker-compose.yml -- 2 of 21. Keeping them would
-    # make the verdict depend on one developer's unversioned local state.
+    # and a stray LiuHao-O/docker-compose.yml -- 2 of 21.
+    #
+    # Since 2026-10-07 the untracked set is split by *why* it is untracked,
+    # because the two causes warrant different verdicts (see `_is_git_ignored`):
+    #   * gitignored -> local state by the repo's declared intent -> INFO only,
+    #     never a finding, never affecting the exit code;
+    #   * untracked and not ignored -> may be evidence that exists nowhere else
+    #     -> still a finding.
+    # The old code treated both as findings, so the exit code answered "does
+    # this machine happen to have a .env?" -- a locally-created file deciding a
+    # gate verdict, which is precisely the false green this gate removes.
     untracked = untracked_artifacts(artifacts)
+    ignored_local, untracked_findings = partition_untracked(untracked)
     if untracked:
         artifacts = [p for p in artifacts if p not in untracked]
     artifact_vars = scan_artifact_vars(artifacts)
@@ -977,16 +1046,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                      | set(ALLOWLIST))
     mentions = scan_literal_mentions(tracked)
     findings = evaluate(artifact_vars, reads, candidates, mentions)
-    for path in untracked:
+    for path in untracked_findings:
         findings.append(Finding(
             "ARTIFACT:%s" % path.name, "untracked-artifact-ignored",
-            "`%s` looks like a deployment artifact but no commit contains it, "
-            "so it was not read as evidence -- a gate variable satisfied only "
-            "there would pass on this machine and fail everywhere else"
-            % _label(path),
+            "`%s` looks like a deployment artifact, no commit contains it, and "
+            "it is NOT gitignored -- so it may hold evidence that exists on this "
+            "machine and nowhere else. It was not read as evidence: a gate "
+            "variable satisfied only there would pass here and fail everywhere "
+            "else" % _label(path),
             [_label(path)],
-            "commit it if it is part of the deployment, or delete it"))
+            "commit it if it is part of the deployment, or gitignore it if it "
+            "is local state"))
 
+    ignored_labels = [_label(p) for p in ignored_local]
     if args.json:
         print(json.dumps({
             "exit": EXIT_FAIL if findings else EXIT_OK,
@@ -994,10 +1066,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "env_reads": len(reads),
             "candidates": len(candidates),
             "literal_mentions": len(mentions),
+            "ignored_local_artifacts": ignored_labels,
             "findings": [f.as_dict() for f in findings],
         }, indent=2))
     else:
-        print(render(findings, len(artifacts), len(reads), len(candidates)))
+        print(render(findings, len(artifacts), len(reads), len(candidates),
+                     ignored_labels))
 
     return EXIT_FAIL if findings else EXIT_OK
 
