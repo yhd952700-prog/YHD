@@ -358,6 +358,115 @@ RULES: List[dict] = [
             re.compile(r"\bU36\b|\bU37\b|HD-06"),
         ],
     },
+    {
+        # ----------------------------------------------------------------- #
+        # Fourth red line (capability accuracy — 法度明): LEARNING /
+        # SELF-IMPROVEMENT capability claims.
+        #
+        # MEASURED FACT (2026-10-05; found by 元知行, independently
+        # re-verified by governance-legal before this rule was written):
+        # the system does NOT learn. The agent execution path writes memory
+        # but NEVER reads it:
+        #   * `Agent.execute()` (src/ai/employee.py) builds its prompt from a
+        #     STATIC `system_prompt` plus the current task and calls the
+        #     provider — no `_memory.search` / `recall` / `get` anywhere in
+        #     that path.
+        #   * `AgentRuntimeService.execute()` (src/ai/agent_factory.py) merely
+        #     delegates to the above.
+        #   * `AgentMemory` exposes `store()` and `recall()`, but `execute()`
+        #     never calls them — so a planted memory entry changes nothing
+        #     about a run (this is exactly what killed
+        #     `arm2_memory_is_causal`).
+        #   * No learning / training loop exists anywhere in src/ai or
+        #     src/kernels.
+        # Therefore any outward statement that AI employees / agents / the
+        # system "learn", "improve over time", "get better with use", or
+        # "self-improve" is a FALSE product claim. Beyond being wrong, it is
+        # the class of statement that carries consumer-protection /
+        # false-advertising exposure (FTC Act §5 deception; 广告法 /
+        # 反不正当竞争法 false 宣传), which is why it belongs in this guard
+        # and not merely in a style guide.
+        #
+        # ASYMMETRY GUARD: the tokens below are the AFFIRMATIVE forms only.
+        # An honest negative ("agents cannot learn", "does not learn",
+        # "未实现学习") must pass — see `negate` / `negate_words`.
+        # ----------------------------------------------------------------- #
+        "group": "CAPABILITY-LEARNING-CLAIMS",
+        "mode": "claim",
+        "window": 2,
+        "claims": [
+            # Product-subject anchored: "agents learn", "AI employees learn".
+            # Deliberately NOT a bare "learn" match — "learn the API",
+            # "machine learning", "user can learn" are benign and must not fire.
+            ("LEARNING", re.compile(
+                r"\b(?:agents?|ai\s+employees?|employees?|the\s+system|"
+                r"liuhao|鎏灏|AI\s*员工)\s+"
+                r"(?:will\s+|can\s+|could\s+|continuously\s+|gradually\s+)?"
+                r"(?:learn|learns|learning)\b", re.IGNORECASE)),
+            ("LEARNING", re.compile(
+                r"learns?\s+from\s+(?:experience|every\s+(?:task|interaction|"
+                r"run|execution)|past\s+(?:tasks?|runs?|mistakes))",
+                re.IGNORECASE)),
+            ("LEARNING", re.compile(
+                r"learn\s+from\s+(?:experience|feedback|mistakes|past\s+"
+                r"(?:tasks?|runs?))", re.IGNORECASE)),
+            ("LEARNING", re.compile(
+                r"improves?\s+(?:over\s+time|with\s+(?:use|experience)|"
+                r"as\s+it\s+is\s+used|the\s+more\s+it)", re.IGNORECASE)),
+            ("LEARNING", re.compile(
+                r"gets?\s+better\s+(?:over\s+time|with\s+use|the\s+more)",
+                re.IGNORECASE)),
+            ("LEARNING", re.compile(r"self[- ]?improv(?:ing|ement|es)",
+                                    re.IGNORECASE)),
+            ("LEARNING", re.compile(r"continuously\s+(?:learn|improve)",
+                                    re.IGNORECASE)),
+            ("LEARNING", re.compile(r"越用越(?:聪明|好|强|准)")),
+            ("LEARNING", re.compile(r"自我(?:进化|改进|学习|完善)")),
+            ("LEARNING", re.compile(r"从经验(?:中)?(?:学习|积累|变好|改进)")),
+            ("LEARNING", re.compile(r"积累经验|经验积累")),
+            ("LEARNING", re.compile(r"(?:会|能够|可以)?学习并(?:改进|提升|进化)")),
+        ],
+        # Honest negatives must NOT fire. "cannot learn" needs an explicit
+        # entry: the generic `\bnot\b` near-token rule cannot see the "not"
+        # inside "cannot" (it is not a word boundary there).
+        "negate": [
+            re.compile(r"cannot\s+learn", re.IGNORECASE),
+            re.compile(r"does\s+not\s+learn", re.IGNORECASE),
+            re.compile(r"do\s+not\s+learn", re.IGNORECASE),
+            re.compile(r"never\s+(?:learns?|learn)", re.IGNORECASE),
+            re.compile(r"not\s+learn", re.IGNORECASE),
+            re.compile(r"no\s+learning", re.IGNORECASE),
+            re.compile(r"without\s+learning", re.IGNORECASE),
+            re.compile(r"not\s+self[- ]?improv", re.IGNORECASE),
+            re.compile(r"does\s+not\s+(?:self[- ]?improve|improve\s+over)",
+                       re.IGNORECASE),
+            # Chinese honest negatives.
+            re.compile(r"不会学习|无法学习|没有学习|不能学习|未(?:实现|支持|提供)学习"),
+            re.compile(r"没有(?:自我)?(?:进化|改进|学习)"),
+            # The measured finding itself, and the P3 wording that states it.
+            re.compile(r"never\s+reads\s+memory", re.IGNORECASE),
+            re.compile(r"decorative|not\s+causal", re.IGNORECASE),
+            re.compile(r"NOT_IMPLEMENTED", re.IGNORECASE),
+        ],
+        "negate_words": [
+            re.compile(r"\b(not|n't|never)\b", re.IGNORECASE),
+            re.compile(r"(不|未|没有|无|非)(会|能|是|具备|提供|实现|受)?"),
+        ],
+        # Required caveat for the learning-capability class: an aspirational
+        # statement is allowed only when plainly marked as not built yet.
+        "caveats": [
+            re.compile(r"NOT_IMPLEMENTED", re.IGNORECASE),
+            re.compile(r"not\s+(yet\s+)?(implemented|built|wired|available)",
+                       re.IGNORECASE),
+            re.compile(r"未(实现|建立|接入|提供)"),
+            re.compile(r"\b(roadmap|planned|future\s+work|aspirational)\b",
+                       re.IGNORECASE),
+            re.compile(r"规划|路线图|未来|计划中|待实现"),
+            re.compile(r"HUMAN\s+DECISION", re.IGNORECASE),
+            re.compile(r"decorative|not\s+causal", re.IGNORECASE),
+            re.compile(r"DISCOVERED", re.IGNORECASE),
+        ],
+    },
 ]
 
 # HC-09/HC-10 module-reference patterns, reused to relabel HC-01 violations that
@@ -669,7 +778,10 @@ def main(argv: List[str]) -> int:
     targets = collect_targets(args)
 
     print("=" * 72)
-    print("HC-01 / HC-09 / HC-10 / compliance-liability audit & claim lint")
+    print(
+        "HC-01 / HC-09 / HC-10 / compliance-liability / learning-capability "
+        "audit & claim lint"
+    )
     print(f"  base-dir : {base_dir}")
     print(f"  mode     : {'explicit' if args.paths else ('all' if args.all else 'CI/changed')}")
     print(f"  window   : ±{args.window} line(s)")

@@ -291,3 +291,138 @@ def test_full_repo_surface_has_no_uncaveated_claims() -> None:
         for (ln, grp, tok, snip) in mod.scan_file(path, 1):
             violations.append("%s:%d [%s] %s" % (rel, ln, grp, tok))
     assert not violations, "un-caveated claim(s):\n  " + "\n  ".join(violations)
+
+
+# =========================================================================== #
+# LEARNING / SELF-IMPROVEMENT capability claims (fourth red line).
+#
+# Measured fact (元知行 found it; governance-legal re-verified it before writing
+# this rule): the agent execution path WRITES memory but NEVER READS it.
+# `Agent.execute()` builds its prompt from a static `system_prompt` + the task
+# and calls the provider; no `_memory.search`/`recall`/`get` is in that path, and
+# `AgentRuntimeService.execute()` only delegates. `AgentMemory` has
+# `store()`/`recall()` but `execute()` never calls them. So "AI employees learn"
+# is a FALSE product claim. These tests keep the guard's teeth:
+#   MUST_FIRE     -> affirmative learning/self-improvement claims
+#   MUST_NOT_FIRE -> honest negatives and honestly-marked roadmap statements
+# =========================================================================== #
+LEARNING = "CAPABILITY-LEARNING-CLAIMS"
+
+_MUST_FIRE = [
+    "Our AI employees learn from experience and improve over time.",
+    "Agents learn from every task they run.",
+    "The system self-improves as it is used.",
+    "LIUHAO gets better the more you use it.",
+    "Employees learn from feedback and get better over time.",
+    "The agents continuously learn from past runs.",
+    "AI 员工会学习并改进。",
+    "系统会自我进化。",
+    "系统从经验中学习，越用越聪明。",
+    "The system improves with use.",
+]
+
+
+def _learning_fires(text: str) -> bool:
+    return any(g == LEARNING for (_ln, g, _tok, _snip) in _scan(text))
+
+
+def test_learning_capability_group_exists_and_is_armed() -> None:
+    """The fourth red line must exist and not be a hollow shell.
+
+    A rule with the token list but without `negate` / `negate_words` / `caveats`
+    would either fire on honest negatives or be unusable; assert the shape so a
+    future edit cannot silently reduce it to a no-op.
+    """
+    rule = next((r for r in mod.RULES if r["group"] == LEARNING), None)
+    assert rule is not None, (
+        "CAPABILITY-LEARNING-CLAIMS rule is missing -- an uncaveated "
+        "'AI employees learn' claim would no longer be caught"
+    )
+    assert rule["mode"] == "claim"
+    assert rule["claims"], "no claim tokens: the rule can never fire"
+    for key in ("negate", "negate_words", "caveats"):
+        assert rule.get(key), "rule is missing %r -- it cannot distinguish an "
+        "honest negative from an overclaim"
+
+
+def test_affirmative_learning_claims_fire() -> None:
+    """Every affirmative learning / self-improvement phrasing must be caught."""
+    for sentence in _MUST_FIRE:
+        assert _learning_fires(sentence + "\n") is True, (
+            "a false learning capability claim escaped the guard: %r" % sentence
+        )
+
+
+def test_honest_negative_cannot_learn_does_not_fire() -> None:
+    """The sentence that states the truth must never be flagged.
+
+    This is the exact form used in docs/product/PRODUCT-READINESS.md -- the
+    honest disclosure must be writable without tripping the guard.
+    """
+    assert _learning_fires(
+        "the run never reads memory, so agents cannot learn from it.\n"
+    ) is False
+
+
+def test_honest_negative_do_not_learn_does_not_fire() -> None:
+    assert _learning_fires(
+        "Our agents do not learn from experience; there is no learning loop.\n"
+    ) is False
+
+
+def test_honest_negative_not_self_improving_does_not_fire() -> None:
+    assert _learning_fires(
+        "The system is not self-improving and does not learn.\n"
+    ) is False
+
+
+def test_honest_negative_chinese_does_not_fire() -> None:
+    assert _learning_fires("AI 员工不会学习，也不会自我改进。\n") is False
+
+
+def test_roadmap_statement_marked_not_implemented_still_passes() -> None:
+    """An aspirational statement is allowed only when plainly marked as unbuilt.
+
+    Over-blocking is its own failure: a roadmap item must be writable. But the
+    caveat is what makes it honest, so removing the marker must make it fire.
+    """
+    assert _learning_fires(
+        "Agents learn from experience (roadmap, NOT IMPLEMENTED).\n"
+    ) is False
+    # Strip the honest marker and the same sentence must now be flagged.
+    assert _learning_fires("Agents learn from experience.\n") is True
+
+
+def test_benign_uses_of_learn_do_not_fire() -> None:
+    """'learn' is overloaded; only product-capability claims may fire.
+
+    Deliberately NOT matched: learning the API, machine-learning topics, a user
+    learning the product. A guard that fires on these gets disabled -- which is
+    how a claim guard dies.
+    """
+    for sentence in (
+        "Users can learn the API in ten minutes.",
+        "This document covers machine learning concepts.",
+        "Read the guide to learn how to configure providers.",
+    ):
+        assert _learning_fires(sentence + "\n") is False, (
+            "the guard fired on a benign use of 'learn': %r" % sentence
+        )
+
+
+def test_false_learning_fact_stays_disclosed_in_product_readiness() -> None:
+    """The measured 'cannot learn' fact must stay visible to a reader.
+
+    The guard stops the FALSE claim from being published; this test stops the
+    TRUE disclosure from being quietly deleted. Both directions matter -- a
+    reader who never sees the limitation will assume learning works.
+    """
+    path = REPO_ROOT / "docs" / "product" / "PRODUCT-READINESS.md"
+    text = path.read_text(encoding="utf-8")
+    lowered = text.lower()
+    assert "cannot learn" in lowered or "never reads memory" in lowered, (
+        "docs/product/PRODUCT-READINESS.md must keep stating that agents "
+        "cannot learn (the run never reads memory) -- removing the honest "
+        "disclosure leaves readers assuming a learning capability that the "
+        "code does not have"
+    )
