@@ -1,23 +1,138 @@
-"""Security Hardening for LiuHao AI OS — Workstream H
+"""
+Security module for LiuHao AI OS.
 
-Per Definition Lock constraints and Hermes override #16/#19.
-Implements Vault Transit integration, RBAC/ABAC hardening for the Model Gateway
-and broader system security.
+Provides comprehensive security capabilities including:
+- Encryption and key management (encryption.py)
+- Authentication and session management (authentication.py)
+- Authorization and RBAC (authorization.py)
+- Input sanitization and validation (input_sanitizer.py)
+- Rate limiting (rate_limit.py)
+- Security audit trail (audit_trail.py)
 
-Spec items: Vault Transit hash-chain logging, RBAC policy propagation,
-ABAC rule evaluation, capability-based access control.
+Legacy public API (jwt_handler / rbac / api_keys / audit_logger / vault_crypto
+and the EncryptionManager compatibility layer in encryption.py) is re-exported
+here as well: the gateway, the health probe and the existing test suite import
+these names from the package root. Where the new modules define a name that
+already exists in the legacy surface (``TokenType``, ``Role``, ``Permission``,
+``ResourceType``, ``RoleStatus``), the LEGACY definition wins the package-level
+name; the new-style definitions remain importable from their submodules
+(e.g. ``src.security.authentication.TokenType``).
 
-This package re-exports the public API surface consumed by the test suite and
-downstream modules. Import order matters to avoid circular imports:
-dependencies (encryption / vault_client) are imported before dependents
-(api_keys / jwt_handler / rbac / audit_logger / vault_crypto).
+Import order matters to avoid circular imports: dependency-free base modules
+(encryption) are imported before dependents (jwt_handler / rbac / vault_crypto).
 """
 
 from __future__ import annotations
 
-# Dependency-free base modules first.
-from .encryption import EncryptionManager, get_encryption_manager
-from .api_keys import APIKeyManager, KeyScope, KeyStatus, get_api_key_manager
+# --- Encryption (base module; also hosts the legacy EncryptionManager) ---
+from .encryption import (
+    AesGcmCipher,
+    DataAtRestEncryption,
+    EncryptedData,
+    EncryptionConfig,
+    EncryptionManager,
+    EncryptionMode,
+    HashAlgorithm,
+    HashUtils,
+    HmacUtils,
+    InMemoryKeyManager,
+    KeyDerivation,
+    KeyManager,
+    KeyMaterial,
+    KeyType,
+    PasswordHasher,
+    RsaCipher,
+    SecureRandom,
+    decrypt_data,
+    encrypt_data,
+    generate_key,
+    get_encryption_manager,
+)
+
+# --- New-style modules (depend only on .encryption or nothing) ---
+# NOTE: authentication.TokenType is intentionally NOT re-exported here; the
+# package-level ``TokenType`` is the JWT one from jwt_handler (see below).
+from .authentication import (
+    ApiKey,
+    ApiKeyManager,
+    AuthEvent,
+    AuthEventLogger,
+    AuthMethod,
+    AuthResult,
+    AuthStatus,
+    JwtManager,
+    LoginAttempt,
+    LoginAttemptTracker,
+    MfaManager,
+    MfaMethod,
+    MfaProvider,
+    PasswordAuthenticator,
+    Session,
+    SessionManager,
+    TotpMfaProvider,
+)
+# NOTE: authorization.{Permission, ResourceType, Role, RoleStatus} are
+# intentionally NOT re-exported here; those package-level names come from the
+# legacy rbac module (see below).
+from .authorization import (
+    AbacPolicy,
+    Action,
+    PermissionEffect,
+    PermissionRegistry,
+    PolicyEvaluationResult,
+    RbacManager,
+    SimpleAbacPolicy,
+    UserRoleAssignment,
+    create_default_rbac,
+)
+from .input_sanitizer import (
+    CommandInjectionGuard,
+    FileUploadCheckResult,
+    FileUploadSecurity,
+    InputValidator,
+    PathTraversalGuard,
+    SanitizationLevel,
+    SqlInjectionGuard,
+    ValidationResult,
+    ValidationStatus,
+    XssGuard,
+)
+from .rate_limit import (
+    FixedWindowLimiter,
+    MemoryRateLimitBackend,
+    RateLimitBackend,
+    RateLimitConfig,
+    RateLimitHeaders,
+    RateLimitManager,
+    RateLimitResult,
+    RateLimitStatus,
+    RateLimitStrategy,
+    RateLimitTier,
+    SlidingWindowLimiter,
+    TieredRateLimits,
+    TokenBucketLimiter,
+)
+from .audit_trail import (
+    AuditEvent,
+    AuditEventType,
+    AuditLogStatus,
+    AuditRetentionPolicy,
+    AuditSeverity,
+    AuditStore,
+    AuditTrailManager,
+    ComplianceReport,
+    HashChainAuditor,
+    InMemoryAuditStore,
+    SuspiciousActivityDetector,
+)
+
+# --- Legacy surface consumed by the gateway / health probe / test suite ---
+from .api_keys import (
+    APIKeyManager,
+    KeyScope,
+    KeyStatus,
+    get_api_key_manager,
+)
 from .jwt_handler import (
     JWTHandler,
     TokenType,
@@ -46,14 +161,98 @@ from .vault_crypto import VaultTransitCrypto
 
 __all__ = [
     # Encryption
+    "AesGcmCipher",
+    "DataAtRestEncryption",
+    "EncryptedData",
+    "EncryptionConfig",
     "EncryptionManager",
+    "EncryptionMode",
+    "HashAlgorithm",
+    "HashUtils",
+    "HmacUtils",
+    "InMemoryKeyManager",
+    "KeyDerivation",
+    "KeyManager",
+    "KeyMaterial",
+    "KeyType",
+    "PasswordHasher",
+    "RsaCipher",
+    "SecureRandom",
+    "decrypt_data",
+    "encrypt_data",
+    "generate_key",
     "get_encryption_manager",
-    # API keys
+    # Authentication (new-style)
+    "ApiKey",
+    "ApiKeyManager",
+    "AuthEvent",
+    "AuthEventLogger",
+    "AuthMethod",
+    "AuthResult",
+    "AuthStatus",
+    "JwtManager",
+    "LoginAttempt",
+    "LoginAttemptTracker",
+    "MfaManager",
+    "MfaMethod",
+    "MfaProvider",
+    "PasswordAuthenticator",
+    "Session",
+    "SessionManager",
+    "TotpMfaProvider",
+    # Authorization (new-style)
+    "AbacPolicy",
+    "Action",
+    "PermissionEffect",
+    "PermissionRegistry",
+    "PolicyEvaluationResult",
+    "RbacManager",
+    "SimpleAbacPolicy",
+    "UserRoleAssignment",
+    "create_default_rbac",
+    # Input sanitization
+    "CommandInjectionGuard",
+    "FileUploadCheckResult",
+    "FileUploadSecurity",
+    "InputValidator",
+    "PathTraversalGuard",
+    "SanitizationLevel",
+    "SqlInjectionGuard",
+    "ValidationResult",
+    "ValidationStatus",
+    "XssGuard",
+    # Rate limiting
+    "FixedWindowLimiter",
+    "MemoryRateLimitBackend",
+    "RateLimitBackend",
+    "RateLimitConfig",
+    "RateLimitHeaders",
+    "RateLimitManager",
+    "RateLimitResult",
+    "RateLimitStatus",
+    "RateLimitStrategy",
+    "RateLimitTier",
+    "SlidingWindowLimiter",
+    "TieredRateLimits",
+    "TokenBucketLimiter",
+    # Audit trail (new-style)
+    "AuditEvent",
+    "AuditEventType",
+    "AuditLogStatus",
+    "AuditRetentionPolicy",
+    "AuditSeverity",
+    "AuditStore",
+    "AuditTrailManager",
+    "ComplianceReport",
+    "HashChainAuditor",
+    "InMemoryAuditStore",
+    "SuspiciousActivityDetector",
+    # API keys (legacy)
     "APIKeyManager",
     "KeyScope",
     "KeyStatus",
     "get_api_key_manager",
-    # JWT
+    # JWT (legacy; TokenType here is the JWT one)
     "JWTHandler",
     "TokenType",
     "get_jwt_handler",
@@ -62,7 +261,7 @@ __all__ = [
     "JWT_PRIVATE_KEY_ENV",
     "JWT_PUBLIC_KEY_ENV",
     "JWT_ALGORITHM_ENV",
-    # RBAC
+    # RBAC (legacy)
     "RBACManager",
     "Role",
     "Permission",
@@ -70,10 +269,10 @@ __all__ = [
     "ResourceType",
     "RoleStatus",
     "get_rbac_manager",
-    # Crypto audit
+    # Crypto audit (legacy)
     "CryptoAuditLogger",
     "CryptoAuditEvent",
     "CryptoOperation",
-    # Vault transit crypto
+    # Vault transit crypto (legacy)
     "VaultTransitCrypto",
 ]
