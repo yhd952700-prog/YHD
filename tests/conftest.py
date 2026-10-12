@@ -467,6 +467,7 @@ def _isolate_knowledge_memory_dir(tmp_path, monkeypatch):
 import os as _guard_os  # noqa: E402
 import shutil as _guard_shutil  # noqa: E402
 import tempfile as _guard_tempfile  # noqa: E402
+import threading as _guard_threading  # noqa: E402
 import traceback as _guard_traceback  # noqa: E402
 from pathlib import Path as _GuardPath  # noqa: E402
 
@@ -487,6 +488,26 @@ _EXTRA_TEMP_ROOTS: set = set()
 #: 当前正在运行的用例 nodeid。由 ``_record_current_test`` 逐用例更新，
 #: 仅为让报错信息能直接点名是哪个测试干的（调用栈之外的第二重定位）。
 _CURRENT_NODEID = {"nodeid": "<session setup>"}
+
+#: 同一次逻辑删除的内层路由深度（线程本地）。
+#:
+#: 真实踩到的双记账坑（2026-10-12 复现，tests/_zz_debug_probe 探针实证）：
+#: 原生 ``pathlib.Path.unlink`` 的实现内部就是 ``os.unlink(self)``
+#: （pathlib.py:1342），而本护栏把两个入口都 patch 了。于是一次逻辑删除被
+#: 校验两次：外层 ``guarded_path_unlink`` 按白名单放行并**消费登记**，内层
+#: ``guarded_unlink`` 看到"登记已被消费"又把**同一次**删除拦下——文件没删成，
+#: teardown 的腐化检测再报"删除后该路径又存在"，残留探针继而让后续所有
+#: ``register(_SELF_PROBE)`` 报"登记时已经存在"，级联出整片假失败。
+#: 是否存在这层内层路由取决于宿主是否在导入期重绑过 ``Path.unlink``
+#: （如某些 CLI 的 sitecustomize shim 直连原生实现、不经过 ``os.unlink``），
+#: 所以这是**环境相关**的假失败：有 shim 的机器上绿，原生 CPython 上红。
+#:
+#: 对策：外层包装在校验通过后、调用原生实现期间把深度加一；``_check`` 见到
+#: 深度非零即直通。``shutil.rmtree`` 同理——按目录登记放行后，其内部对每个
+#: 子项的 ``os.unlink`` 都属于同一次已授权删除（登记时目录必须不存在，整棵
+#: 子树都是本次运行创建的），不应再逐个校验。对**未授权**目标的行为不变：
+#: 外层 ``_check`` 在深度为零时先行拦截，根本走不到原生实现。
+_guard_state = _guard_threading.local()
 
 
 def _norm_target(path) -> _GuardPath:
@@ -748,6 +769,10 @@ def _forbid_deleting_repository_files(tmp_path_factory):
     }
 
     def _check(kind, path):
+        if getattr(_guard_state, "depth", 0):
+            # 同一次已授权删除的内层路由（Path.unlink→os.unlink、rmtree 子项）：
+            # 外层包装已完成校验/消费登记，内层直通，避免一次删除被记两笔账。
+            return
         target = _norm_target(path)
         if _is_under(target, _TEMP_ROOT):
             return
@@ -763,28 +788,38 @@ def _forbid_deleting_repository_files(tmp_path_factory):
             return
         _repo_deletion_violation(kind, target, entry)
 
+    def _call_original(fn, *args, **kwargs):
+        """调用被包装的原生实现；期间深度加一，内层路由（见 _guard_state）直通。"""
+        _guard_state.depth = getattr(_guard_state, "depth", 0) + 1
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _guard_state.depth -= 1
+
     def guarded_remove(path, *args, **kwargs):
         if kwargs.get("dir_fd") is None and not args:
             _check("os.remove", path)
-        return originals["os.remove"](path, *args, **kwargs)
+        return _call_original(originals["os.remove"], path, *args, **kwargs)
 
     def guarded_unlink(path, *args, **kwargs):
         if kwargs.get("dir_fd") is None and not args:
             _check("os.unlink", path)
-        return originals["os.unlink"](path, *args, **kwargs)
+        return _call_original(originals["os.unlink"], path, *args, **kwargs)
 
     def guarded_path_unlink(self, missing_ok=False):
         _check("pathlib.Path.unlink", self)
-        return originals["pathlib.Path.unlink"](self, missing_ok=missing_ok)
+        return _call_original(
+            originals["pathlib.Path.unlink"], self, missing_ok=missing_ok
+        )
 
     def guarded_path_rmdir(self):
         _check("pathlib.Path.rmdir", self)
-        return originals["pathlib.Path.rmdir"](self)
+        return _call_original(originals["pathlib.Path.rmdir"], self)
 
     def guarded_rmtree(path, *args, **kwargs):
         # rmtree 只接受路径参数（无 dir_fd），无条件校验。
         _check("shutil.rmtree", path)
-        return originals["shutil.rmtree"](path, *args, **kwargs)
+        return _call_original(originals["shutil.rmtree"], path, *args, **kwargs)
 
     _guard_os.remove = guarded_remove
     _guard_os.unlink = guarded_unlink
