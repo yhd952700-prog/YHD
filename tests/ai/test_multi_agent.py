@@ -1,4 +1,4 @@
-﻿"""Tests for the enhanced multi-agent collaboration system."""
+"""Tests for the enhanced multi-agent collaboration system."""
 from __future__ import annotations
 
 import pytest

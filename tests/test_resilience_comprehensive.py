@@ -1,4 +1,4 @@
-﻿"""Comprehensive resilience pattern tests for LiuHao AI OS.
+"""Comprehensive resilience pattern tests for LiuHao AI OS.
 
 Covers:
 - CircuitBreaker: state transitions, failure thresholds, recovery,
