@@ -89,9 +89,9 @@ def test_wrong_tsa_cert_fails_verification() -> None:
 
 
 def test_gen_time_extraction_from_real_token() -> None:
-    signer_key, signer_cert, ca_cert = generate_test_tsa_keypair()
     if not _HAS_OPENSSL:
         pytest.skip("openssl required to mint a real token")
+    signer_key, signer_cert, ca_cert = generate_test_tsa_keypair()
     tsa = TrustedTimestampAuthority(
         tsa_cert_pem=ca_cert,
         signer_cert_pem=signer_cert,
@@ -105,9 +105,9 @@ def test_gen_time_extraction_from_real_token() -> None:
 
 
 def test_http_response_parser_pulls_token() -> None:
-    signer_key, signer_cert, ca_cert = generate_test_tsa_keypair()
     if not _HAS_OPENSSL:
         pytest.skip("openssl required to mint a real token")
+    signer_key, signer_cert, ca_cert = generate_test_tsa_keypair()
     tsa = TrustedTimestampAuthority(
         tsa_cert_pem=ca_cert,
         signer_cert_pem=signer_cert,
