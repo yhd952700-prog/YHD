@@ -45,6 +45,8 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -129,6 +131,195 @@ def _could_not_run(out: str) -> str | None:
     )
 
 
+#: Markers a host-injected safe-delete shim leaves when it aborts a process.
+#: The WorkBuddy CLI ships ``cli/vendor/shim/sitecustomize.py`` (imported at
+#: interpreter start), which monkeypatches os.remove/os.unlink/shutil.rmtree.
+#: Once a turn's cumulative deletes cross its bulk-confirm threshold it raises
+#: SystemExit(1) -- so a pytest that ran green can still exit rc=1. That is NOT
+#: a test failure and must not be read as one.
+_SHIM_MARKER_RE = re.compile(r"\[safe-delete\]\[?(SAFE_DELETE_[A-Z_]+)")
+
+
+def _shim_marker(out: str) -> str | None:
+    """Name the safe-delete shim's marker if the output shows one, else None."""
+    match = _SHIM_MARKER_RE.search(out or "")
+    if match:
+        return match.group(0).strip("[]")
+    return None
+
+
+#: pytest's own terminal summary for a FAILED run, e.g. ``5 failed, 267 passed``
+#: or ``1 error in 3.1s``. Used ONLY as a fallback when no JUnit verdict exists:
+#: it distinguishes "the session ran to completion and reported failures" (a
+#: verdict -> NOT VERIFIED) from "the session never finished" (an ERROR). It is
+#: never used to mint a PASS -- a pass requires the structural JUnit document.
+_PYTEST_FAIL_SUMMARY_RE = re.compile(r"(\d+)\s+failed")
+_PYTEST_ERROR_SUMMARY_RE = re.compile(r"(\d+)\s+errors?")
+
+
+def _pytest_failure_summary(out: str) -> tuple[int, int] | None:
+    """Return ``(failed, errors)`` if pytest printed a completion summary.
+
+    ``None`` when no summary is present at all -- i.e. the process produced no
+    terminal report (killed / truncated), which the caller reads as an ERROR
+    rather than laundering into NOT VERIFIED.
+    """
+    text = out or ""
+    failed = _PYTEST_FAIL_SUMMARY_RE.search(text)
+    errored = _PYTEST_ERROR_SUMMARY_RE.search(text)
+    if failed is None and errored is None:
+        return None
+    return (
+        int(failed.group(1)) if failed else 0,
+        int(errored.group(1)) if errored else 0,
+    )
+
+
+def _pytest_verdict(xml_path: str | None) -> tuple[int, int, int, int] | None:
+    """Parse pytest's JUnit XML -> ``(tests, failures, errors, skipped)`` or None.
+
+    COMPLETENESS (why a killed run cannot be read as a clean pass): pytest opens
+    the JUnit file ONLY in ``pytest_sessionfinish`` and writes the entire
+    document before closing it (``_pytest/junitxml.py``: open at :647, body at
+    :683, close after). A run that is killed never reaches that point, so the
+    file is absent or truncated -> unparseable. On top of "it parses" we require
+    the document to be STRUCTURALLY self-consistent: every suite's ``tests``
+    attribute must equal its own ``<testcase>`` count, and the root totals must
+    equal the summed suites. A partially written tree fails these and is
+    rejected -- it is never read as a zero-failure run.
+    """
+    if not xml_path or not os.path.isfile(xml_path):
+        return None
+    try:
+        root = ET.parse(xml_path).getroot()
+    except ET.ParseError:
+        return None
+    except OSError:
+        return None
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    if not suites:
+        return None
+    totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for suite in suites:
+        for key in totals:
+            try:
+                totals[key] += int(suite.get(key) or 0)
+            except (TypeError, ValueError):
+                return None
+        n_cases = sum(1 for _ in suite.iter("testcase"))
+        if n_cases != int(suite.get("tests") or 0):
+            return None  # structural mismatch -> partial / tampered document
+    if root.tag == "testsuites":
+        for key, value in totals.items():
+            attr = root.get(key)
+            if attr is not None and int(attr) != value:
+                return None
+    return totals["tests"], totals["failures"], totals["errors"], totals["skipped"]
+
+
+def _verdict_from_run(
+    rc: int, out: str, xml_path: str | None, *, subject: str, pass_detail: str
+) -> tuple[str, str]:
+    """Decide PASS / NOT VERIFIED / ERROR from the RUNNER'S verdict, not ``rc``.
+
+    ``rc`` is not trustworthy here: the host's safe-delete shim raises
+    SystemExit(1) once a turn's delete count crosses its threshold, so pytest
+    can exit non-zero with every test green. Reading pytest's own JUnit verdict
+    (and naming the shim when it is what moved ``rc``) separates "rc=1 because a
+    test failed" from "rc=1 because the shim aborted a clean run". Precedence:
+
+    1. the runner could not start (bad flag / missing module)      -> ERROR
+    2. a parseable verdict with 0 failures and 0 errors            -> PASS
+    3. a parseable verdict WITH failures/errors                    -> NOT VERIFIED
+    4. no verdict, rc != 0, but pytest printed a fail summary      -> NOT VERIFIED
+    5. no verdict, rc != 0, no summary (killed / truncated)        -> ERROR
+    6. no verdict, rc == 0                                         -> NOT VERIFIED
+
+    Tier 4 exists so a suite that genuinely ran and failed (and, for any reason,
+    left no JUnit document) is still a verdict rather than a tool accident; a
+    PASS is never granted without the structural JUnit document (tier 2), so a
+    killed run can never be read as a clean pass.
+    """
+    err = _could_not_run(out)
+    if err:
+        return ERROR, err
+    verdict = _pytest_verdict(xml_path)
+    if verdict is not None:
+        tests, failures, errors, skipped = verdict
+        if tests > 0 and failures == 0 and errors == 0:
+            detail = f"{pass_detail} ({tests} tests, 0 failed, 0 errors"
+            detail += f", {skipped} skipped)" if skipped else ")"
+            if rc != 0:
+                shim = _shim_marker(out)
+                detail += (
+                    f"; process rc={rc} was raised by the safe-delete shim "
+                    f"({shim}), NOT by any test failure"
+                )
+            return PASS, detail
+        return NOT_VERIFIED, (
+            f"{subject} ran: {tests} tests, {failures} failed, {errors} errors "
+            f"(rc={rc}) -- a real failure, not a tool accident."
+        )
+    summary = _pytest_failure_summary(out)
+    if summary is not None and (summary[0] > 0 or summary[1] > 0):
+        failed, errored = summary
+        return NOT_VERIFIED, (
+            f"{subject} ran: pytest reported {failed} failed, {errored} errors "
+            f"(rc={rc}) -- a real verdict, not a tool accident. (No JUnit XML "
+            f"was produced; a PASS requires the structural document, so this "
+            f"stays NOT VERIFIED.)"
+        )
+    if rc != 0:
+        shim = _shim_marker(out)
+        return ERROR, (
+            f"{subject}: rc={rc} and no parseable pytest verdict (JUnit) was "
+            f"produced -- the checker did not complete a clean run"
+            + (f"; a shim marker is present ({shim})" if shim else "")
+            + f". Tail: {out[-200:]}"
+        )
+    return NOT_VERIFIED, (
+        f"{subject}: rc=0 but no parseable verdict was produced; {out[-200:]}"
+    )
+
+
+#: Set by ``check_tests`` on a --full run; C12 reuses it so the whole suite runs
+#: ONCE per battery. A second execution would double CI wall-clock, and two
+#: pytest processes against this repo at once share scratch dirs / sqlite files
+#: and manufacture phantom failures.
+_LAST_FULL_RUN: dict | None = None
+
+
+def _execute_full_suite() -> dict:
+    """Execute the full suite once; return the raw run plus its JUnit verdict.
+
+    The JUnit file is written under the OS temp dir and deliberately NOT deleted
+    afterwards: deleting is exactly the operation the host safe-delete shim
+    intercepts (see ``_SHIM_MARKER_RE``), and this module must not trip the very
+    accident it was hardened against. The temp dir is reclaimed by the OS.
+
+    Not cached at call level on purpose: ``check_tests`` recomputes on every call
+    so its classification stays drivable by a stubbed ``_run`` in tests.
+    """
+    fd, xml_path = tempfile.mkstemp(prefix="ready_junit_", suffix=".xml")
+    os.close(fd)  # pytest --junitxml opens and overwrites this path itself
+    cmd = [
+        sys.executable, "-m", "pytest", "tests/", "-p", "no:phoenix", "-q",
+        "--timeout=60", f"--junitxml={xml_path}",
+    ]
+    rc, out = _run(cmd, timeout=1800)
+    verdict = _pytest_verdict(xml_path)
+    return {
+        "rc": rc,
+        "out": out,
+        "xml": xml_path,
+        "tests": verdict[0] if verdict else None,
+        "failures": verdict[1] if verdict else None,
+        "errors": verdict[2] if verdict else None,
+        "skipped": verdict[3] if verdict else None,
+        "command": " ".join(cmd),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Checkers
 # --------------------------------------------------------------------------- #
@@ -189,7 +380,14 @@ def check_clean_env_run():
 
 
 def check_tests(full=False):
-    """C3: collect the suite; in --full run it, else rely on recorded baseline."""
+    """C3: collect the suite; with ``--full`` run it and read pytest's OWN verdict.
+
+    The ``--full`` branch is the numeric path the contract gates on. It executes
+    the whole suite and classifies via JUnit XML, so (a) a killed / truncated run
+    cannot be read as a zero-failure pass and (b) a genuinely green run that the
+    host's safe-delete shim aborted (rc=1) is still PASS. Without ``--full`` it
+    falls back to a recorded baseline when one exists, else NOT VERIFIED.
+    """
     rc, out = _run(
         [sys.executable, "-m", "pytest", "tests/", "--co", "-q"],
         timeout=180,
@@ -201,6 +399,19 @@ def check_tests(full=False):
             collected = int(m.group(1))
     if rc != 0 or collected == 0:
         return FAIL, f"collection failed (rc={rc}): {out[-200:]}"
+
+    # --full takes precedence over a recorded baseline: a stale baseline must
+    # never short-circuit an actual execution the operator asked for.
+    if full:
+        global _LAST_FULL_RUN
+        run = _execute_full_suite()
+        _LAST_FULL_RUN = run
+        return _verdict_from_run(
+            run["rc"], run["out"], run["xml"],
+            subject="full suite",
+            pass_detail=f"full run: {collected} collected, 0 failed",
+        )
+
     baseline = SCRIPTS / "test_baseline.json"
     if baseline.exists():
         try:
@@ -212,22 +423,6 @@ def check_tests(full=False):
             )
         except Exception:  # noqa: BLE001
             pass
-    if full:
-        rc2, out2 = _run(
-            [sys.executable, "-m", "pytest", "tests/", "-p", "no:phoenix", "-q",
-             "--timeout=60"],
-            timeout=1200,
-        )
-        fails = "?"
-        m = re.search(r"(\d+) failed", out2)
-        if m:
-            fails = m.group(1)
-        if rc2 == 0 and fails == "0":
-            return PASS, f"full run: {collected} collected, 0 failed"
-        err = _could_not_run(out2)
-        if err:
-            return ERROR, err
-        return NOT_VERIFIED, f"full run rc={rc2}, failed={fails}; {out2[-200:]}"
     return NOT_VERIFIED, (
         f"{collected} collected; full clean-env re-run not yet recorded "
         f"(use --full to attempt)."
@@ -628,9 +823,17 @@ def check_hc01():
     )
 
 
-def check_no_major_failures():
-    """C12: cross-reference; no unexplained major failure."""
-    # Honest: only PASS if the full suite was actually run with 0 unexplained failures.
+def check_no_major_failures(full=False):
+    """C12: no unexplained major failure -- cross-referenced against a real run.
+
+    Collection-only without ``--full`` (honest NOT VERIFIED). With ``--full`` it
+    consumes the full-suite verdict C3 produced (reusing that single execution;
+    it only runs the suite itself when C12 is the sole condition selected) and
+    PASSes ONLY on a clean session: >0 tests, 0 failures, 0 errors. A run with
+    failures stays NOT VERIFIED -- attributing each failure (environment vs
+    product) is not something this battery can settle, and guessing would be
+    exactly the dishonesty the contract forbids.
+    """
     rc, out = _run(
         [sys.executable, "-m", "pytest", "tests/", "--co", "-q"], timeout=180
     )
@@ -641,9 +844,26 @@ def check_no_major_failures():
             collected = int(m.group(1))
     if collected == 0:
         return FAIL, "cannot collect suite"
+    if not full:
+        return NOT_VERIFIED, (
+            f"{collected} collected; full clean-env cross-reference pending "
+            f"(use --full; no unexplained major failure known)."
+        )
+    run = _LAST_FULL_RUN if _LAST_FULL_RUN is not None else _execute_full_suite()
+    tests, failures, errors = run["tests"], run["failures"], run["errors"]
+    if tests and failures == 0 and errors == 0:
+        return PASS, (
+            f"full run cross-reference: {tests} tests, 0 failed, 0 errors "
+            f"(no unexplained major failure)"
+        )
+    if tests is None:
+        return NOT_VERIFIED, (
+            f"full run produced no parseable JUnit verdict (rc={run['rc']}) -- "
+            f"the session did not complete a clean run; cross-reference pending"
+        )
     return NOT_VERIFIED, (
-        f"{collected} collected; full clean-env cross-reference pending "
-        f"(no unexplained major failure known)."
+        f"full run: {tests} tests, {failures} failed, {errors} errors -- each "
+        f"failure must be attributed (environment vs product) before PASS"
     )
 
 
@@ -678,9 +898,9 @@ CONDITION_META = {
         "next_action": "add a CI job that boots the built image from scratch",
     },
     "C3": {
-        "command": "pytest tests/ --co (use --full to actually execute)",
-        "known_limitation": "without --full it relies on the recorded baseline",
-        "next_action": "run --full on a clean CI runner; wire pytest as the formal G3 gate",
+        "command": "pytest tests/ --co + (--full) pytest tests/ --junitxml=<tmp>",
+        "known_limitation": "without --full it relies on a recorded baseline; with --full the verdict comes from JUnit XML (structural), so a safe-delete-shim rc=1 on a green run is PASS and a killed run is ERROR",
+        "next_action": "run --full on a clean CI runner (release-readiness.yml already does); wire pytest as the formal G3 gate",
     },
     "C4": {
         "command": "high-confidence secret-pattern scan + fail-closed grep + CI gate declaration",
@@ -725,9 +945,9 @@ CONDITION_META = {
         "next_action": "await the human-sovereignty decision; never touch the live audit_store.db",
     },
     "C12": {
-        "command": "pytest tests/ --co cross-reference",
-        "known_limitation": "collection only; full unexplained-failure cross-reference pending",
-        "next_action": "run --full on a clean runner",
+        "command": "pytest tests/ --co + (--full) reuse of C3's full-suite JUnit verdict",
+        "known_limitation": "collection-only without --full; with --full it PASSes ONLY on a clean session (>0 tests, 0 failures, 0 errors); a failed run stays NOT VERIFIED because per-failure attribution (environment vs product) is manual",
+        "next_action": "run --full on a clean runner (release-readiness.yml already does)",
     },
 }
 
@@ -754,7 +974,10 @@ def main(argv):
         if only is not None and cid not in only:
             continue
         try:
-            if cid == "C3":
+            if cid in ("C3", "C12"):
+                # Both the suite-stability condition (C3) and the no-unexplained-
+                # failure cross-reference (C12) honour --full; C3 runs the suite
+                # and C12 reuses that one execution (see _LAST_FULL_RUN).
                 status, evidence = fn(full=full)
             else:
                 status, evidence = fn()

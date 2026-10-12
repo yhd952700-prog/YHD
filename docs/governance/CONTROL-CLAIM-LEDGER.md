@@ -178,14 +178,17 @@ not as a permanent guarantee — re-check when the cited artefact changes.
 
 ### 更正登记表
 
-> 列：**键 / 方向 / 检出方式 / 更正动作 / 提交 / 回归**。**方向**分二类：**假声明**（写下时即为假）·
-> **过期（上游变更）**（写下时为真，后因他人提交而过期）。**回归**栏必须如实——**无可执行回归就写"仅人工复核"，不许假装有**。
+> 列：**键 / 方向 / 检出方式 / 更正动作 / 提交 / 回归**。**方向**分四类：**假声明**（写下时即为假）·
+> **过期（上游变更）**（写下时为真，后因他人提交而过期）· **假失败**（信号报"失败"而实际成立——守卫误红）·
+> **假成功（守卫）**（信号报"通过"而实际未执行/未生效）。**回归**栏必须如实——**无可执行回归就写"仅人工复核"，不许假装有**。
 
 | 键 | 方向 | 检出方式 | 更正动作 | 提交 | 回归 |
 |---|---|---|---|---|---|
 | §6 案例 8「**三个**解释器、两种结果」 | **假声明（计数过读）** | 独立复核：团队负责人数出"三个"；`quality-reliability` 以绝对路径 `find …/python/envs/` 仅得 `default`；本席复测同 | **改写**（三→两环境 + 绝对路径 + 各环境插件状态） | `c969e0c0` | **无可执行回归，仅人工复核**（计数类事实无行为测试） |
 | §6 案例 8 表行「`pytest-timeout` 全仓未声明」 | **过期（上游变更）**（写下时为真） | `git show 938b59fd` + `pyproject.toml:115` | **改写**（声明面已补；门禁面仍缺） | `c969e0c0` | **无可执行回归，仅人工复核** |
 | §5 案例 8 缺口「两条失败路径都洗成 `NOT_VERIFIED`」 | **过期（上游变更）**（写下时为真） | `938b59fd` 新增 `ERROR` 状态 + `_tool_failure()`（`scripts/verify_readiness.py`） | **改写**（重判为"已改正"） | `1ca8cfe7` | **有**：`tests/scripts/test_readiness_checker_error.py`（`938b59fd` 引入；锁 `ERROR`↔`NOT_VERIFIED` 区分） |
+| `docs/governance/CONTROL-CLAIM-LEDGER.md` 触发 `lint_audit_claims.py --all`（token `证据级`，行 164/196/207） | **假失败（守卫误红；孪生守卫扫描面不一致）** | 独立复核：本席重跑 `--all` → **exit 1**（3 findings，全在台账）；`git log -S"证据级"` 定位到**本席** `89cb54b5`；`git show 334416bb:…` 证明台账**创建时无该 token**（即 `--all` 当时干净） | **更正载体＝守卫**（把台账加入 `lint_audit_claims.py` 的 `EXCLUDE_GLOBS`；理由与 `lint_control_claims.py` 既有排除**同因**——裁决登记册必须引用 claim 措辞以*定义*判据、*记录*已裁决声明） | `96f20f63` | **有**：`tests/scripts/test_lint_audit_claims_surface.py::test_control_claim_ledger_is_excluded_from_the_audit_claim_scan` + `::test_explicit_scan_of_the_ledger_reports_no_findings`（修前 exit 1 / 3 findings，修后 exit 0 / 0 targets；另证：往**普通**文档植入 `tamper-proof` 仍 → exit 1，证明排除未钝化规则） |
+| `.github/workflows/doc-lint.yml` 的 audit-claim 步骤（无参＝`changed vs HEAD`） | **假成功（守卫未执行，被读成通过）** | 干净 worktree 实测（`git worktree add --detach`）：`mode: CI/changed`、`targets: 0`、`PASS` —— `git diff HEAD` 在干净检出下为空，该步骤**从不扫描任何文件** | **接线**（改跑 `--all`，与 control-claim 步骤对齐；否则该守卫在 CI 中是摆设） | `96f20f63` | **有**：`::test_doc_lint_runs_the_audit_claim_guard_over_the_whole_tree`（断言步骤用 `--all`） |
 
 **第 1 行的方法学意义**：这是本节规则**第一次被真实行使**——且行使对象恰是**本节作者自己**（该行由本席落盘，
 计数错误源自团队负责人口述、**本席当时未复核即采信**）。一个从未被行使的更正流程本身就是**未验证声明**；

@@ -78,7 +78,22 @@ class BackupManager:
         """
         if name is None:
             name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
+
+        # Never silently downgrade to an unencrypted archive. With encryption
+        # enabled but no key, the old code logged a warning and wrote PLAINTEXT
+        # -- while the config still claimed encryption=True -- and that archive
+        # then could not be opened by a restore using the same config. Refuse up
+        # front, before creating anything, so no restorable-looking artifact
+        # exists. (This is the shipped default: BackupConfig.encryption=True,
+        # encryption_key=None.)
+        if self.backup_config.encryption and not self.backup_config.encryption_key:
+            raise RuntimeError(
+                "Encryption is enabled (backup.encryption=True) but no "
+                "encryption_key is configured; refusing to write an unencrypted "
+                "backup. Set backup.encryption_key, or set encryption=False to "
+                "store plaintext archives deliberately."
+            )
+
         backup_path = self.backup_dir / f"{name}.tar.gz"
         # NOT /tmp: that path assumes POSIX and silently lands somewhere else
         # on Windows, where this project actually runs.
@@ -132,7 +147,14 @@ class BackupManager:
             # could never both be on.
             if self.backup_config.verify_after_backup:
                 if not self._verify_backup(backup_path):
-                    raise Exception("Backup verification failed")
+                    # Do not leave a failed archive behind: list_backups() would
+                    # advertise it as a restorable backup, and a later restore
+                    # would be operating on a file we already know is bad.
+                    backup_path.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Backup verification failed for {backup_path}; the "
+                        "unusable archive was removed. No backup was produced."
+                    )
 
             # Encrypt if enabled
             if self.backup_config.encryption:
@@ -346,7 +368,12 @@ def main():
     manager = BackupManager(config)
     
     if args.action == "create":
-        path = manager.create_backup(args.name)
+        try:
+            path = manager.create_backup(args.name)
+        except Exception as error:
+            # e.g. encryption enabled without a key: report it, do not traceback.
+            print(f"Error: backup failed: {error}")
+            sys.exit(1)
         print(f"Backup created: {path}")
     
     elif args.action == "list":
