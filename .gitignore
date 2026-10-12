@@ -138,3 +138,7 @@ data/
 # 一致性说明：并行的第二套插件注册表 data/plugins/registry.json 早已被上方 `data/`
 # 规则（.gitignore:114）忽略；本条目只是补上同样的处置。
 /plugins/registry_index.json
+
+node_modules/
+frontend/dist/
+frontend/node_modules/
