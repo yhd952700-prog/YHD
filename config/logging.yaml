@@ -1,0 +1,251 @@
+# =============================================================================
+# LiuHao AI OS — 日志配置 (logging.yaml)
+# =============================================================================
+# 用途：
+#   Python logging.config.dictConfig 兼容的日志配置文件。
+#   应用启动时由 src/core/logging_setup.py 读取并应用。
+#
+# 核心设计：
+#   1. 双格式输出：生产 JSON（机器解析）/ 开发彩色文本（人类阅读）
+#   2. 文件轮转：按大小轮转 + 压缩归档，防止磁盘打满
+#   3. 敏感字段脱敏：password/token/secret 等字段在输出前被 mask
+#   4. 分级路由：ERROR 以上单独落 error.log，便于告警采集
+#   5. 第三方库降噪：uvicorn/sqlalchemy/httpx 等默认提到 WARNING
+#
+# 重要参数：
+#   - handlers.file.filename       主日志文件路径（容器内应为挂载卷）
+#   - handlers.file.maxBytes       单文件上限，超过即轮转
+#   - handlers.file.backupCount    保留的轮转文件数
+#   - filters.sensitive_mask       脱敏过滤器，勿删除
+# =============================================================================
+
+version: 1
+disable_existing_loggers: false
+
+# -----------------------------------------------------------------------------
+# 格式化器
+# -----------------------------------------------------------------------------
+formatters:
+  json:
+    class: pythonjsonlogger.jsonlogger.JsonFormatter
+    format: "%(asctime)s %(name)s %(levelname)s %(message)s %(request_id)s %(user_id)s %(duration_ms)s"
+    rename_fields:
+      asctime: timestamp
+      levelname: level
+      name: logger
+    datefmt: "%Y-%m-%dT%H:%M:%S%z"
+
+  text:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+  colored:
+    class: colorlog.ColoredFormatter
+    format: "%(log_color)s%(asctime)s | %(levelname)-8s%(reset)s | %(cyan)s%(name)s%(reset)s:%(lineno)d | %(message)s"
+    datefmt: "%H:%M:%S"
+    log_colors:
+      DEBUG: white
+      INFO: green
+      WARNING: yellow
+      ERROR: red
+      CRITICAL: bold_red
+
+  access:
+    format: "%(asctime)s | ACCESS | %(client_addr)s \"%(request_line)s\" %(status_code)s %(duration_ms)sms"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+# -----------------------------------------------------------------------------
+# 过滤器：敏感信息脱敏 + 请求上下文注入
+# -----------------------------------------------------------------------------
+filters:
+  sensitive_mask:
+    # 实现：src/core/logging_filters.py:SensitiveDataFilter
+    # 对 record.msg 与 record.args 做正则替换，命中字段值替换为 ***
+    (): src.core.logging_filters.SensitiveDataFilter
+    patterns:
+      - password
+      - passwd
+      - secret
+      - token
+      - api_key
+      - apikey
+      - authorization
+      - cookie
+      - set-cookie
+      - x-api-key
+      - master_key
+      - private_key
+    replacement: "***MASKED***"
+
+  request_context:
+    # 注入 request_id / user_id / trace_id，缺失时输出 "-"
+    (): src.core.logging_filters.RequestContextFilter
+
+  health_check_noise:
+    # 丢弃 /healthz /readyz 的访问日志，避免淹没有效信息
+    (): src.core.logging_filters.ExcludePathsFilter
+    paths:
+      - /healthz
+      - /readyz
+
+# -----------------------------------------------------------------------------
+# 处理器
+# -----------------------------------------------------------------------------
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: json                 # 生产 console 也用 JSON，供容器日志采集
+    filters: [sensitive_mask, request_context]
+    stream: ext://sys.stdout
+
+  console_dev:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: colored
+    filters: [sensitive_mask, request_context]
+    stream: ext://sys.stdout
+
+  file:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filters: [sensitive_mask, request_context]
+    filename: logs/app.log
+    maxBytes: 104857600             # 100 MB
+    backupCount: 10
+    encoding: utf-8
+    delay: true                     # 首次写入才打开文件，避免空文件
+
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: json
+    filters: [sensitive_mask, request_context]
+    filename: logs/error.log
+    maxBytes: 52428800              # 50 MB
+    backupCount: 20                 # 错误日志保留更多份
+    encoding: utf-8
+    delay: true
+
+  audit_file:
+    # 审计日志独立通道：不可屏蔽、独立保留策略
+    class: logging.handlers.TimedRotatingFileHandler
+    level: INFO
+    formatter: json
+    filters: [sensitive_mask]
+    filename: logs/audit.log
+    when: midnight
+    interval: 1
+    backupCount: 730                # 保留两年（合规）
+    encoding: utf-8
+    utc: true
+
+  access_file:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: access
+    filters: [health_check_noise]
+    filename: logs/access.log
+    maxBytes: 104857600
+    backupCount: 5
+    encoding: utf-8
+    delay: true
+
+  syslog:
+    class: logging.handlers.SysLogHandler
+    level: WARNING
+    formatter: json
+    filters: [sensitive_mask, request_context]
+    address: ["localhost", 514]
+    facility: local0
+
+# -----------------------------------------------------------------------------
+# Logger 定义
+# -----------------------------------------------------------------------------
+loggers:
+  "":                               # root
+    level: INFO
+    handlers: [console, file, error_file]
+    propagate: false
+
+  liuhao:                           # 应用主命名空间
+    level: INFO
+    handlers: [console, file, error_file]
+    propagate: false
+
+  liuhao.audit:
+    level: INFO
+    handlers: [audit_file]
+    propagate: false                # 审计日志只进独立文件
+
+  liuhao.access:
+    level: INFO
+    handlers: [access_file]
+    propagate: false
+
+  liuhao.agents:
+    level: INFO                     # 开发环境可被覆盖为 DEBUG
+    handlers: [console, file]
+    propagate: false
+
+  liuhao.providers:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  # --- 第三方库降噪 ---
+  uvicorn:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  uvicorn.access:
+    level: WARNING                  # 访问日志走 liuhao.access，uvicorn 自带的静音
+    handlers: [console]
+    propagate: false
+
+  uvicorn.error:
+    level: INFO
+    handlers: [console, error_file]
+    propagate: false
+
+  sqlalchemy.engine:
+    level: WARNING                  # 需要 SQL 日志时临时调 INFO（database.echo 更推荐）
+    handlers: [console]
+    propagate: false
+
+  sqlalchemy.pool:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  alembic:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  httpx:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  httpcore:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  redis:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  asyncio:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  watchfiles:                       # 开发热重载的文件监听噪音
+    level: WARNING
+    handlers: [console]
+    propagate: false

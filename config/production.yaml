@@ -1,0 +1,248 @@
+# =============================================================================
+# LiuHao AI OS — 生产环境配置 (production.yaml)
+# =============================================================================
+# 用途：
+#   生产环境（APP_ENV=production）加载本文件，深度合并覆盖 default.yaml。
+#   设计目标：安全优先、性能优化、可观测、可恢复。
+#
+# 与 default.yaml 的关键差异：
+#   1. 数据库切换为 PostgreSQL，连接池加大，禁止自动迁移与 SQL echo
+#   2. 关闭 mock provider 与 debug；启用 TLS、审计、加密备份
+#   3. 日志 JSON 化并输出到文件 + stdout，由 Promtail/FluentBit 采集
+#   4. 追踪采样率 10%，指标全量开启
+#   5. 熔断/限流/舱壁参数按生产容量标定
+#
+# 重要：本文件仍然不包含任何真实密钥。以下值必须通过环境变量注入：
+#   DATABASE_URL / REDIS_PASSWORD / LIUHAO_JWT_SECRET /
+#   LIUHAO_ENCRYPTION_MASTER_KEY / 各 provider 的 *_API_KEY
+# =============================================================================
+
+app:
+  environment: production
+  debug: false
+
+# -----------------------------------------------------------------------------
+# HTTP 服务：多 worker + 严格超时与限流
+# -----------------------------------------------------------------------------
+server:
+  workers: 4                        # 建议 = vCPU 核数；多 worker 必须配置共享 JWT 密钥
+  cors:
+    allow_origins:
+      - "https://ai.liuhao.example.com"   # 生产域名，禁止 *
+  timeouts:
+    read_seconds: 15
+    write_seconds: 30
+    idle_seconds: 75
+  limits:
+    rate_limit_per_minute: 120
+  trusted_proxies:
+    - "10.0.0.0/8"                  # 内网 LB / Ingress 网段
+  compression:
+    level: 4                        # 生产在 CPU 与压缩率间取平衡
+
+# -----------------------------------------------------------------------------
+# 数据库：PostgreSQL + 大连接池
+# -----------------------------------------------------------------------------
+database:
+  url: postgresql://liuhao:CHANGE_ME@postgres:5432/liuhao
+  pool_size: 20
+  max_overflow: 40
+  pool_timeout_seconds: 10
+  pool_recycle_seconds: 1800
+  statement_timeout_ms: 15000       # 防止慢查询拖垮整个池
+  echo: false
+  migration:
+    auto_run: false                 # 生产永远由 CI/人工执行 alembic upgrade
+
+# -----------------------------------------------------------------------------
+# Redis：开启密码与 TLS（云托管 Redis 常见要求）
+# -----------------------------------------------------------------------------
+redis:
+  host: redis
+  password: ""                      # REDIS_PASSWORD 注入
+  ssl: true
+  max_connections: 100
+  key_prefix: "liuhao:prod:"
+
+# -----------------------------------------------------------------------------
+# 日志：JSON 到文件，供日志管道采集
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO
+  format: json
+  output: both
+  file:
+    path: /var/log/liuhao/app.log
+    max_size_mb: 200
+    backup_count: 30
+    compress_rotated: true
+
+# -----------------------------------------------------------------------------
+# 安全：全面收紧
+# -----------------------------------------------------------------------------
+security:
+  jwt:
+    access_token_expire_minutes: 15 # 缩短 access token 寿命
+    refresh_token_expire_days: 3
+  api_keys:
+    default_expiry_days: 30
+    rotation_grace_days: 3
+  tls:
+    enabled: true
+    cert_path: /etc/liuhao/certs/server.crt
+    key_path: /etc/liuhao/certs/server.key
+    ca_path: /etc/liuhao/certs/ca.crt
+    mtls_enabled: true              # 内部服务间 mTLS
+  audit:
+    enabled: true
+    retention_days: 730             # 合规要求两年
+  rbac:
+    enabled: true
+    default_role: viewer
+
+# -----------------------------------------------------------------------------
+# 模型提供者：云上主用 + 本地兜底，禁用 mock
+# -----------------------------------------------------------------------------
+providers:
+  default: anthropic
+  fallback_chain: [anthropic, openai, ollama]
+  request_timeout_seconds: 45
+  max_retries: 3
+
+  ollama:
+    enabled: true
+    base_url: http://ollama:11434   # 内网自托管，作为零成本兜底
+    model: qwen2.5:7b
+
+  openai:
+    enabled: true
+    model: gpt-4o-mini
+
+  anthropic:
+    enabled: true
+    model: claude-sonnet-4-5
+
+  google:
+    enabled: true
+    model: gemini-2.0-flash
+
+  moonshot:
+    enabled: true
+
+  deepseek:
+    enabled: true
+
+  mock:
+    enabled: false                  # 生产严禁启用
+
+# -----------------------------------------------------------------------------
+# Agent 运行时：更严格的护栏
+# -----------------------------------------------------------------------------
+agents:
+  max_concurrent: 32
+  default_timeout_seconds: 180
+  max_steps_per_run: 30
+  tools:
+    denylist:
+      - shell.exec_unrestricted
+      - filesystem.write_outside_workspace
+      - network.raw_socket
+    sandbox:
+      enabled: true
+      memory_limit_mb: 256
+      cpu_limit: 0.5
+      network: false
+  human_in_loop:
+    enabled: true
+    approval_timeout_seconds: 300
+    channels: [web, lark]
+
+# -----------------------------------------------------------------------------
+# 记忆 / 知识库：生产使用 pgvector
+# -----------------------------------------------------------------------------
+memory:
+  backend: postgres
+  store_url: postgresql://liuhao:CHANGE_ME@postgres:5432/liuhao_memory
+  long_term:
+    embedding_provider: openai
+    embedding_model: text-embedding-3-small
+    embedding_dim: 1536
+    top_k: 10
+    score_threshold: 0.7
+
+knowledge:
+  vector_store:
+    type: pgvector
+    url: postgresql://liuhao:CHANGE_ME@postgres:5432/liuhao_knowledge
+    dim: 1536
+  retrieval:
+    top_k: 8
+    rerank: true
+  ingestion:
+    ocr_enabled: true
+
+# -----------------------------------------------------------------------------
+# 成本：生产预算与硬性降级
+# -----------------------------------------------------------------------------
+cost:
+  enabled: true
+  monthly_budget_usd: 2000.0
+  daily_budget_usd: 100.0
+  on_budget_exceeded: degrade
+  degrade_target: ollama
+  per_user_daily_limit_usd: 5.0
+  alert_thresholds: [0.5, 0.75, 0.9, 0.98]
+
+# -----------------------------------------------------------------------------
+# 可观测性：全量指标 + 10% 追踪采样
+# -----------------------------------------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    persist: true
+  tracing:
+    enabled: true
+    exporter: otlp
+    endpoint: http://tempo:4317
+    sample_rate: 0.1
+
+# -----------------------------------------------------------------------------
+# 备份：每日加密备份 + 远端对象存储
+# -----------------------------------------------------------------------------
+backup:
+  enabled: true
+  schedule_cron: "30 3 * * *"
+  output_dir: /var/backups/liuhao
+  retention_days: 90
+  compress: gzip
+  encrypt: true
+  remote:
+    enabled: true
+    type: s3
+    bucket: liuhao-prod-backups
+    prefix: daily/
+
+# -----------------------------------------------------------------------------
+# 韧性：生产容量标定
+# -----------------------------------------------------------------------------
+resilience:
+  circuit_breaker:
+    failure_threshold: 3
+    timeout_seconds: 60
+  bulkhead:
+    max_concurrent_llm: 64
+    max_concurrent_db: 64
+    queue_size: 500
+  graceful_shutdown:
+    timeout_seconds: 45
+
+# -----------------------------------------------------------------------------
+# 插件：生产开启签名校验，关闭市场自动安装
+# -----------------------------------------------------------------------------
+plugins:
+  marketplace_enabled: false
+  signature_verification: true
+  auto_start: true
+
+frontend:
+  cache_static_seconds: 86400       # 静态资源强缓存一天（带指纹文件名）

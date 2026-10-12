@@ -1,0 +1,245 @@
+# =============================================================================
+# LiuHao AI OS — 测试环境配置 (testing.yaml)
+# =============================================================================
+# 用途：
+#   单元测试 / 集成测试 / CI（APP_ENV=testing）加载本文件。
+#   设计目标：快、确定性、完全隔离 —— 测试不得触碰任何外部服务或真实密钥。
+#
+# 核心原则：
+#   1. 数据库使用内存 SQLite（:memory:），每个测试进程独立
+#   2. 模型提供者全部指向 mock，零网络调用
+#   3. 所有超时尽量小、重试全部关闭 —— 测试要快速失败
+#   4. 随机性可控：固定 seed；时间可被冻结（freezegun 兼容）
+#   5. 审计 / 成本 / 指标使用临时目录，测试后自动清理
+#
+# CI 集成：
+#   pytest 通过 conftest.py 设置 APP_ENV=testing 后加载本文件；
+#   也可用环境变量覆盖个别键（如 TEST_PARALLEL=1 时切换文件级 SQLite）。
+# =============================================================================
+
+app:
+  environment: testing
+  debug: true
+  instance_id: test-instance
+
+# -----------------------------------------------------------------------------
+# HTTP 服务：随机端口 + 短超时
+# -----------------------------------------------------------------------------
+server:
+  host: 127.0.0.1
+  port: 0                           # 0 = 由 TestClient/系统分配随机端口
+  workers: 1
+  cors:
+    allow_origins: ["http://testserver"]
+  limits:
+    rate_limit_per_minute: 100000   # 测试不触发限流
+  timeouts:
+    read_seconds: 5
+    write_seconds: 5
+    idle_seconds: 5
+
+# -----------------------------------------------------------------------------
+# 数据库：纯内存 SQLite —— 测试间完全隔离
+# -----------------------------------------------------------------------------
+database:
+  url: "sqlite:///:memory:"
+  pool_size: 1                      # 内存库必须单连接，否则每个连接看到不同库
+  max_overflow: 0
+  echo: false
+  migration:
+    auto_run: true                  # 测试启动时自动建全部表
+
+# -----------------------------------------------------------------------------
+# Redis：fakeredis 内存实现；集成测试可经 TEST_REDIS_URL 指向真实实例
+# -----------------------------------------------------------------------------
+redis:
+  host: localhost
+  port: 6379
+  db: 15                            # 真实 Redis 场景下使用最高编号 db，避免污染
+  password: ""
+  max_connections: 5
+  key_prefix: "liuhao:test:"
+  socket_timeout_seconds: 1
+  ttl:
+    session_seconds: 60
+    cache_default_seconds: 5
+
+# -----------------------------------------------------------------------------
+# 日志：仅 WARNING 以上，失败时由 pytest 捕获重放
+# -----------------------------------------------------------------------------
+logging:
+  level: WARNING                    # 测试输出保持安静；单测可临时 caplog 到 DEBUG
+  format: text
+  output: stdout
+  access_log:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# 安全：固定测试密钥 + 最小 hashing 轮数（速度）
+# -----------------------------------------------------------------------------
+security:
+  jwt:
+    secret: "test-jwt-secret-fixed-for-deterministic-tokens"
+    access_token_expire_minutes: 5
+    refresh_token_expire_days: 1
+  api_keys:
+    storage_path: .pytest-tmp/security
+    default_expiry_days: 1
+  audit:
+    enabled: true                   # 审计逻辑本身也要被测试
+    store: sqlite:///.pytest-tmp/audit.db
+    retention_days: 1
+  rbac:
+    enabled: true                   # 权限测试需要 RBAC 可用
+    storage_path: .pytest-tmp/rbac.json
+  tls:
+    enabled: false
+  password_policy:
+    min_length: 4
+    require_upper: false
+    require_lower: false
+    require_digit: false
+    require_symbol: false
+    bcrypt_rounds: 4                # 测试速度优先
+
+# -----------------------------------------------------------------------------
+# 模型提供者：全部 mock，零网络
+# -----------------------------------------------------------------------------
+providers:
+  default: mock
+  fallback_chain: [mock]
+  request_timeout_seconds: 2
+  stream_timeout_seconds: 5
+  max_retries: 0
+
+  ollama:
+    enabled: false
+  openai:
+    enabled: false
+  anthropic:
+    enabled: false
+  google:
+    enabled: false
+  moonshot:
+    enabled: false
+  deepseek:
+    enabled: false
+
+  mock:
+    enabled: true
+    latency_ms: 0                   # 确定性优先：无人工延迟
+    response: "mock response"
+    # 测试可通过 mock.scripted_responses 注入脚本化应答序列
+    scripted_responses: []
+
+# -----------------------------------------------------------------------------
+# Agent 运行时：小限制 + 快速超时
+# -----------------------------------------------------------------------------
+agents:
+  max_concurrent: 2
+  default_timeout_seconds: 10
+  step_timeout_seconds: 5
+  max_steps_per_run: 10
+  planner:
+    reflect_on_error: false         # 测试中反射路径用显式用例覆盖
+  tools:
+    denylist:
+      - shell.exec_unrestricted
+      - network.raw_socket
+    sandbox:
+      enabled: false                # 沙箱路径由专项测试覆盖
+  human_in_loop:
+    enabled: false                  # 审批流程用 fake 通道测试
+
+# -----------------------------------------------------------------------------
+# 记忆 / 知识库：内存存储 + 假 embedding
+# -----------------------------------------------------------------------------
+memory:
+  backend: sqlite
+  store_url: "sqlite:///:memory:"
+  short_term:
+    max_messages: 10
+    summary_trigger: 8
+  long_term:
+    enabled: true
+    embedding_provider: mock        # 确定性伪向量（hash-based）
+    embedding_dim: 64
+    top_k: 3
+    score_threshold: 0.0
+  consolidation:
+    enabled: false                  # 固化流程由专项测试手动触发
+  personal_context_url: "sqlite:///:memory:"
+
+knowledge:
+  enabled: true
+  vector_store:
+    type: sqlite-vec
+    url: "sqlite:///:memory:"
+    dim: 64
+  chunking:
+    chunk_size: 100                 # 小块便于断言切分行为
+    chunk_overlap: 20
+  retrieval:
+    top_k: 3
+    rerank: false
+    hybrid: false
+  ingestion:
+    watch_dirs: []                  # 测试不做目录监听
+    max_file_mb: 1
+    ocr_enabled: false
+
+# -----------------------------------------------------------------------------
+# 成本：确定性定价 + 极低预算（便于测试超限降级路径）
+# -----------------------------------------------------------------------------
+cost:
+  enabled: true
+  monthly_budget_usd: 0.01          # 极小预算，一条用例即可触发超限分支
+  daily_budget_usd: 0.01
+  on_budget_exceeded: block
+  per_user_daily_limit_usd: 0.01
+  alert_thresholds: [0.5]
+  tracking:
+    persist: false                  # 不落盘，纯内存统计
+    flush_interval_seconds: 1
+
+# -----------------------------------------------------------------------------
+# 可观测性：指标开（供断言），追踪关
+# -----------------------------------------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    port: 0                         # 不监听真实端口，用 ASGI TestClient 抓 /metrics
+    persist: false
+  tracing:
+    enabled: false
+  health:
+    dependencies: []                # 测试 readiness 不依赖外部组件
+
+# -----------------------------------------------------------------------------
+# 备份 / 插件：测试关闭一切副作用
+# -----------------------------------------------------------------------------
+backup:
+  enabled: false
+
+resilience:
+  retry:
+    max_attempts: 1                 # 不重试，失败即暴露
+    backoff: fixed
+    base_seconds: 0.01
+  circuit_breaker:
+    enabled: true                   # 熔断器逻辑本身要可测
+    failure_threshold: 2
+    timeout_seconds: 1
+  graceful_shutdown:
+    timeout_seconds: 1
+
+plugins:
+  marketplace_enabled: false
+  signature_verification: false
+  auto_start: false                 # 插件由测试显式加载
+  sandbox:
+    enabled: false
+
+frontend:
+  static_dir: frontend/dist
+  cache_static_seconds: 0

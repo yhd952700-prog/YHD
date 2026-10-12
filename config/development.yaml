@@ -1,0 +1,226 @@
+# =============================================================================
+# LiuHao AI OS — 开发环境配置 (development.yaml)
+# =============================================================================
+# 用途：
+#   本地开发（APP_ENV=development）加载本文件，覆盖 default.yaml。
+#   设计目标：快速反馈、详细日志、零外部依赖即可启动。
+#
+# 与 default.yaml 的关键差异：
+#   1. debug 开启，热重载，SQL echo 可选，日志级别 DEBUG
+#   2. 全部使用本地 SQLite / 本地 Redis / 本地 Ollama
+#   3. 关闭 TLS、审计锚定、签名校验等生产级开销
+#   4. 允许 mock provider 与宽松的 CORS
+#   5. 成本追踪开启但预算设高，避免打扰开发
+#
+# 注意：development 配置永远不得用于生产部署。
+# =============================================================================
+
+app:
+  environment: development
+  debug: true                       # 开启 FastAPI/uvicorn debug 与详细错误页
+
+# -----------------------------------------------------------------------------
+# HTTP 服务：单 worker + 热重载 + 宽松 CORS
+# -----------------------------------------------------------------------------
+server:
+  workers: 1
+  reload: true                      # uvicorn --reload 等价
+  cors:
+    allow_origins:
+      - "http://localhost:3000"     # React dev server
+      - "http://localhost:5173"     # Vite dev server
+      - "http://127.0.0.1:5173"
+    allow_credentials: true
+  limits:
+    rate_limit_per_minute: 10000    # 开发基本不限流
+  timeouts:
+    read_seconds: 300               # 调试断点可能长时间挂起
+    write_seconds: 300
+
+# -----------------------------------------------------------------------------
+# 数据库：本地 SQLite，可打印 SQL
+# -----------------------------------------------------------------------------
+database:
+  url: sqlite:///./liuhao_ai_os.db
+  pool_size: 5
+  max_overflow: 5
+  echo: false                       # 排查 ORM 问题时改为 true
+  migration:
+    auto_run: true                  # 开发环境启动时自动建表
+
+# -----------------------------------------------------------------------------
+# Redis：本地无密码实例；没有 Redis 时可改 backend 为内存实现
+# -----------------------------------------------------------------------------
+redis:
+  host: localhost
+  port: 6379
+  db: 1                             # 与测试/生产隔离 db 编号
+  password: ""
+  ssl: false
+  key_prefix: "liuhao:dev:"
+
+# -----------------------------------------------------------------------------
+# 日志：DEBUG 级别，人类可读格式
+# -----------------------------------------------------------------------------
+logging:
+  level: DEBUG
+  format: text                      # 开发期彩色文本更易读
+  output: stdout
+  access_log:
+    enabled: true
+    exclude_paths: ["/healthz", "/readyz"]   # 保留 /metrics 便于验证指标
+
+# -----------------------------------------------------------------------------
+# 安全：开发便利优先
+# -----------------------------------------------------------------------------
+security:
+  jwt:
+    # 开发环境可用固定弱密钥，避免每次重启全端登出；
+    # 生产会通过 LIUHAO_JWT_SECRET 注入强密钥
+    secret: "dev-only-insecure-secret-do-not-use-in-prod"
+    access_token_expire_minutes: 1440   # 开发 token 一天有效，免频繁登录
+    refresh_token_expire_days: 30
+  tls:
+    enabled: false
+    mtls_enabled: false
+  audit:
+    enabled: true
+    retention_days: 30
+  rbac:
+    enabled: false                  # 开发期关闭 RBAC 免配置角色
+  password_policy:
+    min_length: 4                   # 开发账号密码从简
+    require_upper: false
+    require_digit: false
+    require_symbol: false
+
+# -----------------------------------------------------------------------------
+# 模型提供者：本地 Ollama 优先，mock 兜底
+# -----------------------------------------------------------------------------
+providers:
+  default: ollama
+  fallback_chain: [ollama, mock]
+  request_timeout_seconds: 120      # 本地小模型推理较慢
+  max_retries: 1
+
+  ollama:
+    enabled: true
+    base_url: http://localhost:11434
+    model: qwen2.5:3b               # 本地 3B 小模型，笔记本可跑
+
+  openai:
+    enabled: false                  # 需要时手动开启并配置 OPENAI_API_KEY
+
+  anthropic:
+    enabled: false
+
+  google:
+    enabled: false
+
+  moonshot:
+    enabled: false
+
+  deepseek:
+    enabled: false
+
+  mock:
+    enabled: true
+    latency_ms: 50                  # 模拟网络延迟，便于测试加载态
+
+# -----------------------------------------------------------------------------
+# Agent 运行时：宽松限制 + 完整调试信息
+# -----------------------------------------------------------------------------
+agents:
+  max_concurrent: 4
+  default_timeout_seconds: 600      # 开发允许长时间运行的实验
+  max_steps_per_run: 100
+  planner:
+    type: react
+    reflect_on_error: true
+    max_reflections: 3
+  tools:
+    allowlist: []                   # 开发环境开放全部工具
+    denylist: []
+    sandbox:
+      enabled: false                # 本地开发默认关沙箱，便于调试
+  human_in_loop:
+    enabled: false                  # 开发期不阻塞在人工审批
+    approval_timeout_seconds: 3600
+
+# -----------------------------------------------------------------------------
+# 记忆 / 知识库：本地 SQLite 全家桶
+# -----------------------------------------------------------------------------
+memory:
+  backend: sqlite
+  store_url: sqlite:///./memory_store.db
+  short_term:
+    max_messages: 100               # 开发期保留更长上下文
+  long_term:
+    enabled: true
+    embedding_provider: ollama
+    embedding_model: nomic-embed-text
+    top_k: 5
+    score_threshold: 0.5            # 放宽阈值便于观察检索行为
+
+knowledge:
+  enabled: true
+  vector_store:
+    type: sqlite-vec
+    url: sqlite:///./data/knowledge.db
+    dim: 768
+  retrieval:
+    rerank: false
+    hybrid: true
+  ingestion:
+    watch_dirs: [docs, examples]    # 开发期监听更多目录
+    ocr_enabled: false
+
+# -----------------------------------------------------------------------------
+# 成本：开启追踪（验证埋点），预算设高不触发降级
+# -----------------------------------------------------------------------------
+cost:
+  enabled: true
+  monthly_budget_usd: 10000.0
+  daily_budget_usd: 1000.0
+  on_budget_exceeded: warn          # 开发期只告警不降级
+  per_user_daily_limit_usd: 1000.0
+
+# -----------------------------------------------------------------------------
+# 可观测性：指标开，追踪采样 100% 便于调试
+# -----------------------------------------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    persist: false                  # 开发期不落盘
+  tracing:
+    enabled: true
+    exporter: otlp
+    endpoint: http://localhost:4317 # 需本地起 jaeger/tempo，否则忽略
+    sample_rate: 1.0                # 开发全量采样
+
+# -----------------------------------------------------------------------------
+# 备份：开发关闭
+# -----------------------------------------------------------------------------
+backup:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# 韧性：快速失败，便于发现 bug
+# -----------------------------------------------------------------------------
+resilience:
+  retry:
+    max_attempts: 1                 # 开发期不重试，立即暴露错误
+  circuit_breaker:
+    enabled: false
+  graceful_shutdown:
+    timeout_seconds: 5
+
+plugins:
+  marketplace_enabled: true         # 开发期可装实验插件
+  signature_verification: false
+  auto_start: true
+  sandbox:
+    enabled: false
+
+frontend:
+  cache_static_seconds: 0           # 开发期禁用静态缓存

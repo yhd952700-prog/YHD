@@ -1,0 +1,397 @@
+# =============================================================================
+# LiuHao AI OS — 系统默认配置 (default.yaml)
+# =============================================================================
+# 用途：
+#   本文件定义系统所有模块的「默认值」。环境特定配置（development.yaml /
+#   testing.yaml / production.yaml）通过深度合并（deep-merge）方式覆盖本文件。
+#
+# 加载顺序（后者覆盖前者）：
+#   default.yaml  →  {APP_ENV}.yaml  →  环境变量（LIUHAO_* 前缀） →  命令行参数
+#
+# 重要参数说明：
+#   - server.port          应用 HTTP 服务端口（默认 8080，与 Dockerfile 对应）
+#   - database.url         主数据库 DSN；生产环境必须为 PostgreSQL
+#   - security.jwt.secret  JWT 签名密钥；占位串（replace-me 等）会被应用拒绝
+#   - providers.default    默认模型提供者；可选 ollama/openai/anthropic/google/
+#                          moonshot/deepseek/mock
+#   - cost.monthly_budget_usd  月度预算上限；超限后按 cost.on_budget_exceeded 降级
+#
+# 注意：本文件不得包含任何真实密钥。密钥一律通过环境变量或密钥管理服务注入。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 应用元信息
+# -----------------------------------------------------------------------------
+app:
+  name: liuhao-ai-os
+  version: "1.0.0"
+  environment: development          # development / staging / production / testing
+  debug: false
+  timezone: Asia/Shanghai
+  instance_id: ""                   # 留空则启动时自动生成 UUID
+
+# -----------------------------------------------------------------------------
+# HTTP 服务
+# -----------------------------------------------------------------------------
+server:
+  host: 0.0.0.0
+  port: 8080
+  workers: 1                        # 生产建议 = CPU 核数；多 worker 需要共享 JWT 密钥
+  root_path: ""
+  cors:
+    enabled: true
+    allow_origins:
+      - "http://localhost:3000"
+      - "http://localhost:5173"
+    allow_methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    allow_headers: ["Authorization", "Content-Type", "X-Request-Id"]
+    allow_credentials: true
+    max_age: 600
+  timeouts:
+    read_seconds: 30
+    write_seconds: 60
+    idle_seconds: 120
+  limits:
+    max_body_bytes: 10485760        # 10 MiB 请求体上限
+    max_upload_bytes: 52428800      # 50 MiB 上传上限
+    rate_limit_per_minute: 300      # 单 IP 每分钟请求数
+  trusted_proxies: []               # 反代之后需填写，如 ["10.0.0.0/8"]
+  compression:
+    enabled: true
+    min_size_bytes: 1024
+    level: 6
+
+# -----------------------------------------------------------------------------
+# 数据库（主存储）
+# -----------------------------------------------------------------------------
+database:
+  # 默认 SQLite，便于零依赖启动；生产必须改为 postgresql://...
+  url: sqlite:///./liuhao_ai_os.db
+  pool_size: 10
+  max_overflow: 20
+  pool_timeout_seconds: 30
+  pool_recycle_seconds: 3600        # 防止 MySQL/PG 服务端断连后的僵尸连接
+  echo: false                       # 打印所有 SQL（仅排障时开启）
+  statement_timeout_ms: 30000
+  connect_retry:
+    max_attempts: 5
+    backoff_base_seconds: 0.5
+    backoff_max_seconds: 10
+  migration:
+    auto_run: false                 # 生产禁止自动迁移；由 alembic 手动/CI 执行
+    alembic_ini: alembic.ini
+
+# -----------------------------------------------------------------------------
+# Redis（缓存 / 队列 / 分布式锁）
+# -----------------------------------------------------------------------------
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  password: ""                      # 通过 REDIS_PASSWORD 注入
+  ssl: false
+  max_connections: 50
+  socket_timeout_seconds: 5
+  socket_connect_timeout_seconds: 5
+  retry_on_timeout: true
+  key_prefix: "liuhao:"
+  ttl:
+    session_seconds: 86400
+    cache_default_seconds: 300
+    idempotency_seconds: 3600
+
+# -----------------------------------------------------------------------------
+# 日志
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO                       # DEBUG / INFO / WARNING / ERROR / CRITICAL
+  format: json                      # json / text
+  output: stdout                    # stdout / file / both
+  file:
+    path: logs/app.log
+    max_size_mb: 100
+    backup_count: 10
+    compress_rotated: true
+  access_log:
+    enabled: true
+    exclude_paths: ["/healthz", "/readyz", "/metrics"]
+  sensitive_field_masking:          # 日志中自动脱敏的字段名（大小写不敏感）
+    - password
+    - secret
+    - token
+    - api_key
+    - authorization
+
+# -----------------------------------------------------------------------------
+# 安全
+# -----------------------------------------------------------------------------
+security:
+  jwt:
+    secret: ""                      # 必填；经 LIUHAO_JWT_SECRET 注入，占位串被拒绝
+    algorithm: HS256
+    access_token_expire_minutes: 30
+    refresh_token_expire_days: 7
+    issuer: liuhao-ai-os
+    audience: liuhao-clients
+  api_keys:
+    storage_path: data/security
+    default_expiry_days: 90
+    rotation_grace_days: 7
+  encryption:
+    algorithm: AES-256-GCM
+    master_key_env: LIUHAO_ENCRYPTION_MASTER_KEY
+  rbac:
+    enabled: true
+    storage_path: data/security/rbac.json
+    default_role: viewer            # viewer / operator / admin
+  tls:
+    enabled: false                  # 生产由 Nginx 终结 TLS；应用内默认关闭
+    cert_path: certs/server.crt
+    key_path: certs/server.key
+    ca_path: certs/ca.crt
+    mtls_enabled: false
+  audit:
+    enabled: true
+    store: sqlite:///./audit_store.db
+    retention_days: 365
+    anchored_log: config/external_anchor/anchored_log.jsonl
+  password_policy:
+    min_length: 12
+    require_upper: true
+    require_lower: true
+    require_digit: true
+    require_symbol: true
+    bcrypt_rounds: 12
+
+# -----------------------------------------------------------------------------
+# 模型提供者（LLM Providers）
+# -----------------------------------------------------------------------------
+providers:
+  default: ollama                   # 默认路由到的提供者
+  fallback_chain: [ollama, mock]    # 主提供者失败后的降级顺序
+  request_timeout_seconds: 60
+  stream_timeout_seconds: 120
+  max_retries: 2
+  retry_backoff_seconds: 1.0
+
+  ollama:
+    enabled: true
+    base_url: http://localhost:11434
+    model: qwen2.5:3b
+    keep_alive: 10m
+    num_ctx: 4096
+
+  openai:
+    enabled: false
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    organization: ""
+
+  anthropic:
+    enabled: false
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.anthropic.com
+    model: claude-sonnet-4-5
+    max_tokens: 4096
+
+  google:
+    enabled: false
+    api_key_env: GOOGLE_API_KEY
+    model: gemini-2.0-flash
+
+  moonshot:
+    enabled: false
+    api_key_env: MOONSHOT_API_KEY
+    base_url: https://api.moonshot.cn/v1
+    model: moonshot-v1-8k
+
+  deepseek:
+    enabled: false
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+
+  mock:                             # 测试专用；生产禁止启用
+    enabled: true
+    latency_ms: 0
+    response: "mock response"
+
+# -----------------------------------------------------------------------------
+# Agent 运行时
+# -----------------------------------------------------------------------------
+agents:
+  max_concurrent: 8                 # 单实例同时运行的 agent 数
+  default_timeout_seconds: 300
+  step_timeout_seconds: 60
+  max_steps_per_run: 50             # 防止失控循环
+  max_tool_calls_per_step: 5
+  planner:
+    type: react                     # react / plan-and-execute / tree-of-thought
+    reflect_on_error: true
+    max_reflections: 2
+  tools:
+    allowlist: []                   # 空 = 全部注册工具可用
+    denylist:
+      - shell.exec_unrestricted     # 默认禁用的危险工具
+    sandbox:
+      enabled: true
+      memory_limit_mb: 512
+      cpu_limit: 1.0
+      timeout_seconds: 30
+      network: false
+  human_in_loop:
+    enabled: true
+    approval_timeout_seconds: 600
+    channels: [web]                 # web / lark / cli
+
+# -----------------------------------------------------------------------------
+# 记忆系统
+# -----------------------------------------------------------------------------
+memory:
+  backend: sqlite                   # sqlite / postgres / redis
+  store_url: sqlite:///./memory_store.db
+  short_term:
+    max_messages: 40
+    summary_trigger: 32             # 超过即触发摘要压缩
+  long_term:
+    enabled: true
+    embedding_provider: ollama
+    embedding_model: nomic-embed-text
+    embedding_dim: 768
+    top_k: 8
+    score_threshold: 0.65
+  consolidation:
+    enabled: true
+    interval_minutes: 60            # 周期性把短期记忆固化为长期记忆
+    min_importance: 0.4
+  personal_context_url: sqlite:///./personal_context.db
+
+# -----------------------------------------------------------------------------
+# 知识库 / RAG
+# -----------------------------------------------------------------------------
+knowledge:
+  enabled: true
+  vector_store:
+    type: sqlite-vec                # sqlite-vec / pgvector / qdrant / milvus
+    url: sqlite:///./data/knowledge.db
+    collection: default
+    dim: 768
+    metric: cosine
+  chunking:
+    strategy: recursive             # fixed / recursive / semantic
+    chunk_size: 800
+    chunk_overlap: 120
+    separators: ["\n\n", "\n", "。", " "]
+  retrieval:
+    top_k: 6
+    rerank: false
+    hybrid: true                    # 向量 + 关键词混合检索
+    keyword_weight: 0.3
+  ingestion:
+    watch_dirs: [docs]
+    allowed_extensions: [".md", ".txt", ".pdf", ".docx"]
+    max_file_mb: 50
+    ocr_enabled: false
+
+# -----------------------------------------------------------------------------
+# 成本与配额
+# -----------------------------------------------------------------------------
+cost:
+  enabled: true
+  pricing_file: config/model_pricing.json
+  monthly_budget_usd: 100.0
+  daily_budget_usd: 10.0
+  on_budget_exceeded: degrade       # block / degrade（切换到更便宜模型）/ warn
+  degrade_target: ollama
+  per_user_daily_limit_usd: 1.0
+  alert_thresholds: [0.5, 0.8, 0.95]  # 预算使用比例告警点
+  tracking:
+    persist: true
+    flush_interval_seconds: 30
+
+# -----------------------------------------------------------------------------
+# 可观测性
+# -----------------------------------------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+    path: /metrics
+    persist: true                   # METRICS_PERSIST
+    buckets_seconds: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+  tracing:
+    enabled: false
+    exporter: otlp                  # otlp / jaeger / zipkin
+    endpoint: http://localhost:4317
+    sample_rate: 0.1
+  health:
+    liveness_path: /healthz
+    readiness_path: /readyz
+    dependencies: [database, redis] # readiness 检查的依赖项
+
+# -----------------------------------------------------------------------------
+# 备份
+# -----------------------------------------------------------------------------
+backup:
+  enabled: false
+  schedule_cron: "0 3 * * *"        # 每日 03:00
+  output_dir: backups
+  retention_days: 30
+  include:
+    - database
+    - memory
+    - knowledge
+    - audit_logs
+  compress: gzip
+  encrypt: false
+  remote:
+    enabled: false
+    type: s3                        # s3 / sftp / local
+    bucket: ""
+    prefix: liuhao-backups/
+
+# -----------------------------------------------------------------------------
+# 韧性（重试 / 熔断 / 限流 / 降级）
+# -----------------------------------------------------------------------------
+resilience:
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    base_seconds: 0.5
+    max_seconds: 30
+    jitter: true
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5            # 连续失败 N 次熔断
+    success_threshold: 2            # 半开状态下连续成功 N 次恢复
+    timeout_seconds: 30             # 熔断后多久进入半开
+  bulkhead:
+    max_concurrent_llm: 16
+    max_concurrent_db: 32
+    queue_size: 100
+  graceful_shutdown:
+    timeout_seconds: 30             # 收到 SIGTERM 后等待在途请求完成
+    drain_connections: true
+
+# -----------------------------------------------------------------------------
+# 插件系统
+# -----------------------------------------------------------------------------
+plugins:
+  dir: src/plugins
+  marketplace_enabled: false
+  auto_start: true
+  signature_verification: true
+  sandbox:
+    enabled: true
+    memory_limit_mb: 512
+    cpu_limit: 1.0
+    timeout_seconds: 30
+
+# -----------------------------------------------------------------------------
+# 前端 / UI
+# -----------------------------------------------------------------------------
+frontend:
+  static_dir: frontend/dist
+  spa_fallback: true
+  cache_static_seconds: 3600
