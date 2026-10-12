@@ -29,7 +29,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -80,8 +80,8 @@ class ProjectStore:
         )
         return os.path.join(repo_root, ".liuhao_projects.json")
 
-    def _save(self) -> None:
-        """原子写入项目库；持久化失败绝不打断请求。"""
+    def _save(self) -> bool:
+        """原子写入项目库；持久化失败绝不打断请求，但如实返回成败。"""
         path = self._default_path()
         try:
             directory = os.path.dirname(os.path.abspath(path))
@@ -98,8 +98,10 @@ class ProjectStore:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(serialized, fh, indent=2)
             os.replace(tmp, path)
+            return True
         except Exception as exc:  # persistence must never break a request
             logger.warning("ProjectStore: persist failed: %s", exc)
+            return False
 
     def _load(self) -> None:
         """从持久化 JSON 重新加载（不存在则 no-op）。"""
@@ -129,8 +131,11 @@ class ProjectStore:
         }
         with self._inner_lock:
             self._projects[pid] = project
-        self._save()
-        return project
+        persisted = self._save()
+        # 落盘结果只标注在响应副本上，不进内存态（避免 list/get 带出陈旧值）。
+        result = dict(project)
+        result["persisted"] = persisted
+        return result
 
     def get(self, project_id: str) -> Optional[Dict[str, Any]]:
         with self._inner_lock:
@@ -166,13 +171,14 @@ class ProjectStore:
         self._save()
         return True
 
-    def delete(self, project_id: str) -> bool:
+    def delete(self, project_id: str) -> Tuple[bool, bool]:
+        """删除项目。返回 (existed, persisted)：项目是否存在、落盘是否成功。"""
         with self._inner_lock:
             if project_id not in self._projects:
-                return False
+                return False, False
             del self._projects[project_id]
-        self._save()
-        return True
+        persisted = self._save()
+        return True, persisted
 
 
 # ── 目标↔项目 关联（读取真实目标，不发明） ─────────────────────
@@ -300,6 +306,6 @@ def delete_project(
             mgr._save_goals()
         except Exception as exc:  # cleanup must never break the delete
             logger.warning("delete_project: goal cleanup failed: %s", exc)
-    store.delete(project_id)
+    _, persisted = store.delete(project_id)
     logger.info("Project deleted by %s: %s", principal, project_id)
-    return {"removed": project_id, "ok": True}
+    return {"removed": project_id, "ok": True, "persisted": persisted}
