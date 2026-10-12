@@ -1,39 +1,109 @@
 """
-S2 多平台接入（Platform Intelligence）
+LiuHao AI OS Integration Adapters.
 
-统一管理 WhatsApp / Facebook / LinkedIn / 企业微信 4 大外贸触达渠道，
-提供账号绑定、消息收发、联系人管理与多语言自动翻译。
+This package provides integration adapters for various external services,
+all extending the BaseIntegrationAdapter abstract base class.
 
-The actual S2 implementation lives in ``src/knowledge`` (models / service /
-translation); this package is a thin facade that re-exports those symbols so
-callers can import the platform-intelligence types from ``src.integrations``.
-The legacy ORM/cloud integration layer (cloud_models) was superseded by this
-refactor and deleted on 2026-09-15; the decision is recorded as a history note
-in orphan-registry.yaml. The live SQLAlchemy Base/SessionManager stays in the
-sibling orm_models.py module.
+Available adapters:
+- SlackAdapter
+- DiscordAdapter
+- GitHubAdapter
+- GitLabAdapter
+- NotionAdapter
+- JiraAdapter
+- SalesforceAdapter
+- ShopifyAdapter
+- WordPressAdapter
+- TrelloAdapter
+- ZendeskAdapter
+- HubSpotAdapter
 """
 
-from src.knowledge.models import (
-    MessageDirection,
-    MessageStatus,
-    PlatformAccount,
-    PlatformAccountStatus,
-    PlatformContact,
-    PlatformMessage,
-    PlatformType,
+from .base_adapter import (
+    AuthType,
+    BaseIntegrationAdapter,
+    ConnectionStatus,
+    IntegrationConfig,
+    IntegrationError,
+    IntegrationStatus,
+    RateLimitError,
 )
-from src.knowledge.service import PlatformService
-from src.knowledge.translation import LANGUAGE_LIST, SUPPORTED_LANGUAGES
+from .registry import (
+    AdapterEntry,
+    IntegrationRegistry,
+    RegistryHealthReport,
+    get_global_registry,
+)
+from .slack_adapter import SlackAdapter
+from .discord_adapter import DiscordAdapter
+from .github_adapter import GitHubAdapter
+from .gitlab_adapter import GitlabAdapter
+from .notion_adapter import NotionAdapter
+from .jira_adapter import JiraAdapter
+from .salesforce_adapter import SalesforceAdapter
+from .shopify_adapter import ShopifyAdapter
+from .wordpress_adapter import WordPressAdapter
+from .trello_adapter import TrelloAdapter
+from .zendesk_adapter import ZendeskAdapter
+from .hubspot_adapter import HubSpotAdapter
+from .telegram_adapter import TelegramAdapter
+from .medium_adapter import MediumAdapter
+from .figma_adapter import FigmaAdapter
+from .linear_adapter import LinearAdapter
+from .clickup_adapter import ClickUpAdapter
+from .asana_adapter import AsanaAdapter
+from .monday_adapter import MondayAdapter
+from .airtable_adapter import AirtableAdapter
+from .stripe_adapter import StripeAdapter
+from .brevo_adapter import BrevoAdapter
+from .twilio_adapter import TwilioAdapter
+from .dropbox_adapter import DropboxAdapter
+from .box_adapter import BoxAdapter
+from .confluence_adapter import ConfluenceAdapter
+from .pagerduty_adapter import PagerDutyAdapter
 
 __all__ = [
-    "LANGUAGE_LIST",
-    "MessageDirection",
-    "MessageStatus",
-    "PlatformAccount",
-    "PlatformAccountStatus",
-    "PlatformContact",
-    "PlatformMessage",
-    "PlatformService",
-    "PlatformType",
-    "SUPPORTED_LANGUAGES",
+    # Base
+    "BaseIntegrationAdapter",
+    "IntegrationConfig",
+    "IntegrationStatus",
+    "ConnectionStatus",
+    "AuthType",
+    "IntegrationError",
+    "RateLimitError",
+    # Registry
+    "IntegrationRegistry",
+    "AdapterEntry",
+    "RegistryHealthReport",
+    "get_global_registry",
+    # Adapters
+    "SlackAdapter",
+    "DiscordAdapter",
+    "GitHubAdapter",
+    "GitlabAdapter",
+    "NotionAdapter",
+    "JiraAdapter",
+    "SalesforceAdapter",
+    "ShopifyAdapter",
+    "WordPressAdapter",
+    "TrelloAdapter",
+    "ZendeskAdapter",
+    "HubSpotAdapter",
+    "TelegramAdapter",
+    "MediumAdapter",
+    "FigmaAdapter",
+    "LinearAdapter",
+    "ClickUpAdapter",
+    "AsanaAdapter",
+    "MondayAdapter",
+    "AirtableAdapter",
+    "StripeAdapter",
+    "BrevoAdapter",
+    "TwilioAdapter",
+    "DropboxAdapter",
+    "BoxAdapter",
+    "ConfluenceAdapter",
+    "PagerDutyAdapter",
 ]
+
+__version__ = "1.0.0"

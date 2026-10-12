@@ -103,8 +103,10 @@ class ExecutionJournal:
         # Serialize all connection access: the journal may be written from a
         # background goal thread while read from the request thread, and
         # multiple concurrent background goals would otherwise race on the
-        # single shared connection.
-        self._lock = threading.Lock()
+        # single shared connection. Reentrant: ``failed_task_names`` composes
+        # ``completed_task_names`` and MUST hold the same lock across both
+        # SELECTs so the two sets are read from one consistent point.
+        self._lock = threading.RLock()
 
     # -- write -----------------------------------------------------------
 
@@ -154,9 +156,10 @@ class ExecutionJournal:
         return out
 
     def executions(self) -> List[str]:
-        rows = self._conn.execute(
-            "SELECT DISTINCT execution_id FROM journal_events ORDER BY execution_id"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT execution_id FROM journal_events ORDER BY execution_id"
+            ).fetchall()
         return [r[0] for r in rows]
 
     def completed_task_names(self, execution_id: str) -> Set[str]:
@@ -165,12 +168,13 @@ class ExecutionJournal:
         这是断点续跑的唯一依据：后续 `execute_goal` 会把计划里同名任务直接
         标成 COMPLETED 而不重新执行，从而跳过已完成的副作用。
         """
-        rows = self._conn.execute(
-            "SELECT DISTINCT task_name FROM journal_events"
-            " WHERE execution_id = ? AND event_type = 'task_completed'"
-            "   AND task_name IS NOT NULL",
-            (execution_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT task_name FROM journal_events"
+                " WHERE execution_id = ? AND event_type = 'task_completed'"
+                "   AND task_name IS NOT NULL",
+                (execution_id,),
+            ).fetchall()
         return {r[0] for r in rows if r[0]}
 
     def completed_task_artifacts(self, execution_id: str) -> Dict[str, str]:
@@ -181,12 +185,13 @@ class ExecutionJournal:
         completion is what lets recovery ask the harder question -- does it still
         exist? Tasks that declared no artifact are simply absent from the map.
         """
-        rows = self._conn.execute(
-            "SELECT task_name, payload FROM journal_events"
-            " WHERE execution_id = ? AND event_type = 'task_completed'"
-            "   AND task_name IS NOT NULL",
-            (execution_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT task_name, payload FROM journal_events"
+                " WHERE execution_id = ? AND event_type = 'task_completed'"
+                "   AND task_name IS NOT NULL",
+                (execution_id,),
+            ).fetchall()
         out: Dict[str, str] = {}
         for tname, payload in rows:
             if not tname:
@@ -201,14 +206,22 @@ class ExecutionJournal:
         return out
 
     def failed_task_names(self, execution_id: str) -> Set[str]:
-        rows = self._conn.execute(
-            "SELECT DISTINCT task_name FROM journal_events"
-            " WHERE execution_id = ? AND event_type = 'task_failed'"
-            "   AND task_name IS NOT NULL",
-            (execution_id,),
-        ).fetchall()
-        # 一条任务失败后又被重试成功时，以最后一次成功为准 —— 即不再算作失败。
-        return {r[0] for r in rows if r[0]} - self.completed_task_names(execution_id)
+        # Both SELECTs (this one and the composed ``completed_task_names``) run
+        # under ONE held lock so the "failed minus completed" subtraction is
+        # taken from a single consistent point -- otherwise a concurrent
+        # ``task_completed`` commit landing between them makes a task look both
+        # failed-and-superseded while a recovery decision reads it. RLock makes
+        # the composition reentrant without re-acquiring.
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT task_name FROM journal_events"
+                " WHERE execution_id = ? AND event_type = 'task_failed'"
+                "   AND task_name IS NOT NULL",
+                (execution_id,),
+            ).fetchall()
+            failed = {r[0] for r in rows if r[0]}
+            # 一条任务失败后又被重试成功时，以最后一次成功为准 —— 即不再算作失败。
+            return failed - self.completed_task_names(execution_id)
 
     # -- lifecycle -------------------------------------------------------
 
