@@ -291,7 +291,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "any non-production deployment that sets it gets a non-durable, "
             "non-audited secret store)"
         ),
-        "refs": ("src/security/encryption.py:98",),
+        "refs": ("src/security/encryption.py:962",),
     },
 )
 
