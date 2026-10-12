@@ -146,7 +146,7 @@ DEPLOY_TO_PROD = Capability(
 
 # 升级条件（何时停止并求助人类）
 - 连续 3 次检索无有效结果
-- 涉及法律合规判断
+- 涉及法律合规判断（合规框架未建立，HUMAN DECISION REQUIRED，见 U36/U37）
 - 任务超出能力声明范围
 ```
 

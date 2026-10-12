@@ -15,6 +15,7 @@ on:
       # reported 4 findings while a CI-mode run reported `targets: 0 ... PASS`.
       - 'MASTER_PROJECT_READINESS.md'
       - 'RELEASE-READINESS-CONTRACT.md'
+      - 'TUTORIAL.md'
       - 'scripts/lint_audit_claims.py'
       - 'scripts/lint_control_claims.py'
       - 'scripts/control_claim_baseline.txt'
@@ -34,6 +35,7 @@ on:
       - 'CONTRIBUTING.md'
       - 'MASTER_PROJECT_READINESS.md'
       - 'RELEASE-READINESS-CONTRACT.md'
+      - 'TUTORIAL.md'
       - 'apps/**/*.md'
       - 'libs/**/*.md'
       - 'oss-ecosystem/**/*.md'

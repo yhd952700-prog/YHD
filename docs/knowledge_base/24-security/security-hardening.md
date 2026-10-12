@@ -1,6 +1,6 @@
 # 安全加固指南
 
-本文档是 LiuHao AI OS 的安全加固清单，覆盖应用层、API、Kubernetes、网络与智能体特有的威胁（提示注入、工具滥用、记忆投毒）。配套文档：[密钥管理](secrets-management.md)、[审计日志](audit-logging.md)、[GDPR 合规](gdpr-compliance-guide.md)。
+本文档是 LiuHao AI OS 的安全加固清单，覆盖应用层、API、Kubernetes、网络与智能体特有的威胁（提示注入、工具滥用、记忆投毒）。配套文档：[密钥管理](secrets-management.md)、[审计日志](audit-logging.md)、[GDPR 合规](gdpr-compliance-guide.md)（框架未建立，HUMAN DECISION REQUIRED）。
 
 ---
 
@@ -356,4 +356,4 @@ headers:
 
 ---
 
-**相关文档**：[密钥管理](secrets-management.md) · [审计日志](audit-logging.md) · [GDPR 合规](gdpr-compliance-guide.md) · [自定义集成安全规范](../22-integrations/custom-integration-guide.md)
+**相关文档**：[密钥管理](secrets-management.md) · [审计日志](audit-logging.md) · [GDPR 合规](gdpr-compliance-guide.md)（框架未建立，HUMAN DECISION REQUIRED） · [自定义集成安全规范](../22-integrations/custom-integration-guide.md)

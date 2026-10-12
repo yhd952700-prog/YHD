@@ -368,11 +368,11 @@ class ResourceKernel:
 
 ### 13. Audit Kernel（审计内核）
 
-**职责**：不可篡改的审计记录。
+**职责**：审计记录（设计为不可篡改；运行时完整性当前 UNVERIFIED，见 HC-01）。
 
 **核心功能**：
 
-- 审计链（hash-chain，防篡改）
+- 审计链（hash-chain，设计为防篡改，当前 UNVERIFIED）
 - 审计事件记录
 - 关联查询（按实体、时间、操作类型）
 - 审计完整性验证

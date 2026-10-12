@@ -258,7 +258,7 @@ async def slack_interactions(request: Request):
         detail_url = f"{settings.console_url}/tasks/{task_id}"
         return {"response_type": "ephemeral", "text": f"详情：{detail_url}"}
 
-    # 更新原消息：移除按钮，留下不可篡改的审批记录
+    # 更新原消息：移除按钮，留下审批记录（设计为不可篡改；审计链运行时完整性当前 UNVERIFIED，见 HC-01）
     return {
         "replace_original": True,
         "text": f"任务 `{task_id}` {verdict}（审批人：<@{approver}>）",

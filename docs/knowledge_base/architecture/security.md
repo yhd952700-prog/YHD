@@ -15,7 +15,7 @@ LiuHao AI OS 的安全架构基于以下核心原则：
 3. **最小权限（Least Privilege）**：每个实体只拥有完成任务所需的最小权限
 4. **纵深防御（Defense in Depth）**：多层防护，一层失效不影响整体安全
 5. **默认安全（Secure by Default）**：默认配置就是最安全的配置
-6. **可审计性（Auditability）**：所有操作都有不可篡改的审计记录
+6. **可审计性（Auditability）**：所有操作都有审计记录，设计为不可篡改（运行时完整性当前 UNVERIFIED，见 HC-01）
 
 ### 安全分层
 
@@ -198,7 +198,7 @@ policy:
 
 ### 审计链（Audit Chain）
 
-LiuHao AI OS 使用哈希链（hash-chain）确保审计记录的不可篡改性。
+LiuHao AI OS 的哈希链（hash-chain）设计为确保审计记录的不可篡改性（运行时完整性当前 UNVERIFIED，见 HC-01）。
 
 #### 链结构
 
@@ -216,7 +216,7 @@ prev_hash         prev_hash         prev_hash
 - 时间戳
 - 当前区块哈希
 
-#### 防篡改原理
+#### 防篡改原理（设计目标；当前 UNVERIFIED）
 
 - 任何区块的数据改动都会导致该区块哈希变化
 - 哈希变化会导致后续所有区块的 `prev_hash` 不匹配
@@ -267,11 +267,13 @@ LiuHao AI OS 的安全设计参考以下合规框架：
 | 标准 | 说明 | 状态 |
 |------|------|------|
 | **GDPR** | 欧盟通用数据保护条例 | 设计对齐 |
-| **SOC 2 Type II** | 服务组织控制报告 | 设计对齐 |
-| **ISO 27001** | 信息安全管理体系 | 设计对齐 |
+| **SOC 2 Type II** | 服务组织控制报告 | 设计对齐（未认证；合规框架未建立，HUMAN DECISION REQUIRED） |
+| **ISO 27001** | 信息安全管理体系 | 设计对齐（未认证；合规框架未建立，HUMAN DECISION REQUIRED） |
 | **等保 2.0** | 中国网络安全等级保护 | 设计对齐 |
 | **HIPAA** | 美国健康保险流通与责任法案 | 可选配置 |
 | **PCI DSS** | 支付卡行业数据安全标准 | 不适用（不处理支付卡） |
+
+> 注：以上均为设计对齐目标；相关认证均未获得，合规框架未建立（HUMAN DECISION REQUIRED，见 U36/U37/HD-06）。
 
 ### GDPR 合规特性
 

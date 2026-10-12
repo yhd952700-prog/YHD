@@ -243,7 +243,7 @@ async def revalidate_expiring():
 
 ## 隐私与合规
 
-- **PII 检测前置**：含 PII 的记忆写入时打 `pii_class` 标签，参与 GDPR 删除流水线（见 [GDPR 合规](../knowledge_base/24-security/gdpr-compliance-guide.md)）
+- **PII 检测前置**：含 PII 的记忆写入时打 `pii_class` 标签，参与 GDPR 删除流水线（见 [GDPR 合规](../knowledge_base/24-security/gdpr-compliance-guide.md)，框架未建立，HUMAN DECISION REQUIRED）
 - **purpose 标签强制**：profiling 目的的记忆可一键全删（反对权）
 - **跨租户物理隔离**：向量索引按 tenant 分区，检索强制过滤
 - **删除要级联**：用户删除 → 四层记忆 + 向量索引 + 缓存全清，审计留存哈希证据
@@ -327,4 +327,4 @@ memory:
 
 ---
 
-**相关文档**：[智能体设计模式](agent-design-patterns.md) · [多智能体协作](multi-agent-coordination.md) · [GDPR 合规](../knowledge_base/24-security/gdpr-compliance-guide.md) · [记忆用户指南](../knowledge_base/user-guide/memory_guide.md)
+**相关文档**：[智能体设计模式](agent-design-patterns.md) · [多智能体协作](multi-agent-coordination.md) · [GDPR 合规](../knowledge_base/24-security/gdpr-compliance-guide.md)（框架未建立，HUMAN DECISION REQUIRED） · [记忆用户指南](../knowledge_base/user-guide/memory_guide.md)

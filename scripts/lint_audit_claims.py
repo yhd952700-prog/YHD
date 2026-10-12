@@ -528,6 +528,12 @@ OUTWARD_SURFACE_FILES = (
     "CONTRIBUTING.md",
     "MASTER_PROJECT_READINESS.md",
     "RELEASE-READINESS-CONTRACT.md",
+    # TUTORIAL.md is a top-level user-facing document; any un-caveated claim in
+    # it must fail CI exactly like the readiness documents above. Registered
+    # together with .github/workflows/doc-lint.yml paths (both push and
+    # pull_request blocks) — tests/scripts/test_lint_audit_claims_surface.py
+    # fails if either list misses it.
+    "TUTORIAL.md",
 )
 
 # Directory trees that are never walked (third-party / generated / VCS).

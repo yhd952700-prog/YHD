@@ -184,7 +184,7 @@ jobs:
 供应链三件套：
 
 - **SBOM**：镜像内软件物料清单，漏洞响应时快速定位影响面
-- **Provenance**：SLSA 构建来源证明，防篡改
+- **Provenance**：SLSA 构建来源证明，设计为防篡改（构建产物完整性验证当前 UNVERIFIED）
 - **Cosign 签名**：部署端校验，未签名镜像拒绝运行（见[安全加固](../24-security/security-hardening.md)）
 
 ---

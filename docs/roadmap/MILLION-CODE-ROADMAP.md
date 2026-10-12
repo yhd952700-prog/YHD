@@ -443,7 +443,7 @@
 
 | 子模块 | 代码量 | 文件路径 | 说明 |
 |--------|-------|---------|------|
-| 自我改进 | 5,000 | `src/evolution/self_improve/` | 系统自我优化 |
+| 自我改进 | 5,000 | `src/evolution/self_improve/` | 系统自我优化（规划模块，待实现，NOT_IMPLEMENTED） |
 | 自动 Bug 修复 | 4,000 | `src/evolution/auto_fix/` | 自动发现并修复问题 |
 | 性能自动调优 | 3,000 | `src/evolution/auto_tune/` | 参数自动调优 |
 | 功能自动扩展 | 3,000 | `src/evolution/auto_extend/` | 能力自动增长 |
