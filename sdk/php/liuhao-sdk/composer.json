@@ -1,0 +1,35 @@
+{
+    "name": "liuhao/liuhao-sdk",
+    "description": "Official PHP SDK for the LiuHao AI OS platform",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["liuhao", "ai", "agent", "sdk", "api"],
+    "homepage": "https://github.com/liuhao-ai/liuhao-os",
+    "authors": [
+        {
+            "name": "LiuHao Team",
+            "email": "team@liuhao.ai"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "guzzlehttp/guzzle": "^7.0",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.0 || ^10.0",
+        "mockery/mockery": "^1.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "LiuHao\\SDK\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "LiuHao\\SDK\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

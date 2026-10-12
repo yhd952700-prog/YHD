@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+
+    <AssemblyName>LiuHao.Sdk</AssemblyName>
+    <RootNamespace>LiuHao.Sdk</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+
+    <PackageId>LiuHao.Sdk</PackageId>
+    <Authors>LiuHao AI OS Team</Authors>
+    <Company>LiuHao</Company>
+    <Product>LiuHao AI OS SDK</Product>
+    <Description>Official C# (.NET) SDK for the LiuHao AI OS platform. Provides typed clients for agents, memory, knowledge bases, and task management.</Description>
+    <PackageTags>liuhao;ai;agents;memory;knowledge-base;sdk</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- System.Text.Json is built into .NET 6+, no external dependency required -->
+  </ItemGroup>
+
+</Project>
