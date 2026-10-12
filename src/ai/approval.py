@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from .observability import observe
+
+logger = logging.getLogger("liuhao.ai.approval")
 
 
 class ApprovalStatus(str, Enum):
@@ -108,12 +111,15 @@ class ApprovalWorkflow:
             return None  # 未知请求：诚实返回 None
         if req.status != ApprovalStatus.PENDING:
             return None  # 已决策：拒绝重复审批
-        req.status = status
-        req.decided_at = datetime.now(timezone.utc)
-        req.decided_by = approver
-        req.reason = reason
 
-        # 审计留痕：人类显式决策（human_sovereignty_override），非自动放行。
+        # 证据先于状态：人类主权审批只有在**可被持久留痕**时才算成立。
+        # 先写审计，成功后才落地决策。
+        #
+        # 旧顺序是先改状态、再「尽力而为」地写审计并吞掉异常，于是 approve()
+        # 返回一条已决策的请求（调用方读作「已批准且已留痕」），而这条人类决策
+        # 唯一的持久证据却可能静默缺失。一条记录可缺席的人类否决，正是本工作流
+        # 必须杜绝的「虚假人类授权」类缺陷。现在：无法留痕的决策不算决策——
+        # 请求保持 PENDING，调用方拿到诚实的 None（审计恢复后即可重试）。
         try:
             from src.kernels.audit import AuditEventType, AuditScope
 
@@ -129,9 +135,18 @@ class ApprovalWorkflow:
                     "reason": reason,
                 },
             )
-        except Exception:
-            # 审计失败不阻断审批决策本身（决策已落内存，审计尽力而为）。
-            pass
+        except Exception as exc:
+            logger.error(
+                "approval %s (%s) NOT applied: the human override could not be "
+                "recorded in the audit chain (%r); request stays PENDING",
+                request_id, outcome, exc,
+            )
+            return None
+
+        req.status = status
+        req.decided_at = datetime.now(timezone.utc)
+        req.decided_by = approver
+        req.reason = reason
         return req
 
     def status(self, request_id: str) -> Optional[str]:

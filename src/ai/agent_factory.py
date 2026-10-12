@@ -17,6 +17,10 @@ Implements MASTER-SPEC Phase 3 (Agent Runtime):
                            produced agent has a real identity, a working memory,
                            and a policy-governed action path.
 
+Additionally provides a role-specialization catalogue (``AgentRole`` /
+``RoleProfile`` / ``ROLE_PROFILES``) so callers can create role-persona agents
+(manager / researcher / analyst / ...) directly through the same factory.
+
 This module EXTENDS the existing agent model in ``employee.py`` — it reuses
 ``Agent`` / ``AgentStatus`` / ``get_provider`` and does not rewrite them.
 """
@@ -25,10 +29,11 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 
 from .employee import Agent, AgentStatus
-from .providers import get_provider
+from .providers import BaseProvider, get_provider
 from ..kernels.identity import get_identity_manager
 from .observability import observe
 from .audit import audited
@@ -330,6 +335,160 @@ def economy_inputs(
     return result
 
 
+# =====================================================================
+# Role specialization catalogue
+# =====================================================================
+
+
+class AgentRole(str, Enum):
+    """Specialized agent roles with clear responsibilities."""
+    MANAGER = "manager"
+    RESEARCHER = "researcher"
+    ANALYST = "analyst"
+    CRITIC = "critic"
+    CREATOR = "creator"
+    EXECUTOR = "executor"
+    QA = "qa"
+    PLANNER = "planner"
+    GENERAL = "general"
+
+
+@dataclass
+class RoleProfile:
+    """Configuration profile for a role specialization."""
+    role: AgentRole
+    description: str
+    strengths: List[str]
+    system_prompt_template: str
+    default_temperature: float = 0.7
+    capabilities: List[str] = field(default_factory=list)
+    max_concurrent_tasks: int = 3
+
+
+ROLE_PROFILES: Dict[AgentRole, RoleProfile] = {
+    AgentRole.MANAGER: RoleProfile(
+        role=AgentRole.MANAGER,
+        description="Coordinates work, delegates tasks, and synthesizes results",
+        strengths=["delegation", "synthesis", "prioritization", "coordination"],
+        system_prompt_template=(
+            "You are a MANAGER agent. Your job is to coordinate work, "
+            "delegate tasks to specialists, and synthesize results into "
+            "coherent deliverables. Think strategically, communicate clearly, "
+            "and ensure quality outcomes."
+        ),
+        default_temperature=0.5,
+        capabilities=["delegate", "synthesize", "prioritize", "review"],
+        max_concurrent_tasks=5,
+    ),
+    AgentRole.RESEARCHER: RoleProfile(
+        role=AgentRole.RESEARCHER,
+        description="Gathers information, finds facts, and explores topics",
+        strengths=["information_gathering", "fact_checking", "source_evaluation"],
+        system_prompt_template=(
+            "You are a RESEARCHER agent. Your job is to gather information, "
+            "find relevant facts, evaluate sources, and explore topics deeply. "
+            "Be thorough, cite sources, and distinguish between confirmed "
+            "facts and speculation."
+        ),
+        default_temperature=0.3,
+        capabilities=["search", "summarize", "fact_check", "cite"],
+        max_concurrent_tasks=4,
+    ),
+    AgentRole.ANALYST: RoleProfile(
+        role=AgentRole.ANALYST,
+        description="Analyzes data, identifies patterns, and draws insights",
+        strengths=["data_analysis", "pattern_recognition", "insight_extraction"],
+        system_prompt_template=(
+            "You are an ANALYST agent. Your job is to analyze data, identify "
+            "patterns, draw insights, and present findings clearly. Be "
+            "data-driven, quantify when possible, and support conclusions "
+            "with evidence."
+        ),
+        default_temperature=0.4,
+        capabilities=["analyze", "visualize", "predict", "evaluate"],
+        max_concurrent_tasks=3,
+    ),
+    AgentRole.CRITIC: RoleProfile(
+        role=AgentRole.CRITIC,
+        description="Reviews work, identifies gaps, and provides constructive feedback",
+        strengths=["critical_thinking", "gap_identification", "quality_assessment"],
+        system_prompt_template=(
+            "You are a CRITIC agent. Your job is to review work, identify "
+            "gaps, weaknesses, and potential problems, and provide "
+            "constructive feedback. Be thorough, fair, and specific — "
+            "criticize the work, not the person."
+        ),
+        default_temperature=0.5,
+        capabilities=["review", "audit", "validate", "find_gaps"],
+        max_concurrent_tasks=4,
+    ),
+    AgentRole.CREATOR: RoleProfile(
+        role=AgentRole.CREATOR,
+        description="Generates ideas, creates content, and builds solutions",
+        strengths=["ideation", "content_creation", "solution_design"],
+        system_prompt_template=(
+            "You are a CREATOR agent. Your job is to generate ideas, create "
+            "content, and design innovative solutions. Think creatively, "
+            "explore alternatives, and produce original work."
+        ),
+        default_temperature=0.9,
+        capabilities=["generate", "design", "brainstorm", "write"],
+        max_concurrent_tasks=3,
+    ),
+    AgentRole.EXECUTOR: RoleProfile(
+        role=AgentRole.EXECUTOR,
+        description="Implements solutions, executes tasks, and gets things done",
+        strengths=["implementation", "task_execution", "problem_solving"],
+        system_prompt_template=(
+            "You are an EXECUTOR agent. Your job is to implement solutions, "
+            "execute tasks efficiently, and get things done. Be practical, "
+            "action-oriented, and deliver working results."
+        ),
+        default_temperature=0.6,
+        capabilities=["implement", "execute", "build", "fix"],
+        max_concurrent_tasks=3,
+    ),
+    AgentRole.QA: RoleProfile(
+        role=AgentRole.QA,
+        description="Tests, validates, and ensures quality",
+        strengths=["testing", "validation", "quality_assurance", "edge_cases"],
+        system_prompt_template=(
+            "You are a QA agent. Your job is to test, validate, and ensure "
+            "quality. Look for bugs, edge cases, and quality issues. "
+            "Be systematic, thorough, and relentless in pursuit of quality."
+        ),
+        default_temperature=0.4,
+        capabilities=["test", "validate", "verify", "debug"],
+        max_concurrent_tasks=4,
+    ),
+    AgentRole.PLANNER: RoleProfile(
+        role=AgentRole.PLANNER,
+        description="Plans strategies, decomposes goals, and creates roadmaps",
+        strengths=["strategic_planning", "goal_decomposition", "roadmapping"],
+        system_prompt_template=(
+            "You are a PLANNER agent. Your job is to plan strategies, "
+            "decompose goals into actionable steps, and create clear roadmaps. "
+            "Think ahead, anticipate risks, and produce realistic plans."
+        ),
+        default_temperature=0.5,
+        capabilities=["plan", "decompose", "schedule", "risk_assess"],
+        max_concurrent_tasks=2,
+    ),
+    AgentRole.GENERAL: RoleProfile(
+        role=AgentRole.GENERAL,
+        description="General-purpose agent for miscellaneous tasks",
+        strengths=["adaptability", "general_knowledge", "versatility"],
+        system_prompt_template=(
+            "You are a GENERAL-purpose agent. Handle a variety of tasks "
+            "with competence and flexibility. Be helpful, accurate, and clear."
+        ),
+        default_temperature=0.7,
+        capabilities=["answer", "help", "assist"],
+        max_concurrent_tasks=5,
+    ),
+}
+
+
 class AgentFactory:
     """Goal → AgentSpec → Identity → Activate.
 
@@ -337,10 +496,31 @@ class AgentFactory:
     agent carries a real ``AgentIdentity``, a working ``AgentMemory`` and a
     policy-governed ``AgentPolicy`` — no self-declared identity, no detached
     memory, no policy-less action path.
+
+    Also supports role-persona creation: ``create(AgentRole.RESEARCHER, ...)``
+    builds an agent from the role catalogue (system prompt + capabilities).
     """
 
+    def __init__(self, provider: Optional[BaseProvider] = None):
+        self._provider = provider
+        self._created: Dict[str, Agent] = {}
+
     @observe("agent.create")
-    def create(self, spec: AgentSpec) -> Dict[str, Any]:
+    def create(self, spec: Union[AgentSpec, "AgentRole"], **kwargs) -> Dict[str, Any]:
+        """Instantiate an agent, its identity, memory, policy and runtime.
+
+        Accepts either an :class:`AgentSpec` (full Phase-3 pipeline) or an
+        :class:`AgentRole` (role-persona agent from the catalogue).
+        """
+        if isinstance(spec, AgentRole):
+            return self._create_role_agent(spec, **kwargs)
+        return self._create_from_spec(spec)
+
+    # ------------------------------------------------------------------
+    # Spec-based creation (MASTER-SPEC Phase 3)
+    # ------------------------------------------------------------------
+
+    def _create_from_spec(self, spec: AgentSpec) -> Dict[str, Any]:
         """Instantiate an agent, its identity, memory, policy and runtime."""
         manager = get_identity_manager()
 
@@ -356,7 +536,7 @@ class AgentFactory:
             )
 
         # 2. Agent — reuse the existing model (extend, don't rewrite).
-        provider = get_provider()
+        provider = self._provider or get_provider()
         agent = Agent(
             id=principal,
             agent_type=spec.agent_type,
@@ -394,3 +574,147 @@ class AgentFactory:
             "capabilities": list(spec.capabilities),
             "policy": policy,
         }
+
+    # ------------------------------------------------------------------
+    # Role-based creation (role specialization catalogue)
+    # ------------------------------------------------------------------
+
+    def _create_role_agent(
+        self,
+        role: AgentRole,
+        name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        provider: Optional[BaseProvider] = None,
+        custom_capabilities: Optional[List[str]] = None,
+    ) -> Agent:
+        """Create a role-specialized agent from the role catalogue."""
+        profile = ROLE_PROFILES.get(role, ROLE_PROFILES[AgentRole.GENERAL])
+
+        agent_id = agent_id or f"{role.value}_{uuid.uuid4().hex[:8]}"
+        name = name or f"{role.value.capitalize()} Agent"
+
+        prompt = system_prompt or profile.system_prompt_template
+
+        capabilities = list(profile.capabilities)
+        if custom_capabilities:
+            capabilities.extend(custom_capabilities)
+
+        agent = Agent(
+            id=agent_id,
+            agent_type=role.value,
+            name=name,
+            provider=provider or self._provider or get_provider(),
+            system_prompt=prompt,
+        )
+
+        # Store role profile info in agent metadata
+        agent._role_profile = profile
+        agent._capabilities = capabilities
+
+        self._created[agent_id] = agent
+        return agent
+
+    def create_team(
+        self,
+        roles: List[AgentRole],
+        team_name: str = "Team",
+        provider: Optional[BaseProvider] = None,
+    ) -> Dict[AgentRole, List[Agent]]:
+        """Create a team with one agent per role."""
+        team: Dict[AgentRole, List[Agent]] = {}
+        for role in roles:
+            agent = self._create_role_agent(
+                role,
+                name=f"{team_name}-{role.value.capitalize()}",
+                provider=provider,
+            )
+            team[role] = [agent]
+        return team
+
+    def create_pool(
+        self,
+        role: AgentRole,
+        count: int,
+        pool_name: str = "Pool",
+        provider: Optional[BaseProvider] = None,
+    ) -> List[Agent]:
+        """Create a pool of agents with the same role.
+
+        Useful for parallel work or committee-style voting.
+        """
+        agents = []
+        for i in range(count):
+            agent = self._create_role_agent(
+                role,
+                name=f"{pool_name}-{role.value}-{i+1}",
+                provider=provider,
+            )
+            agents.append(agent)
+        return agents
+
+    def get_profile(self, role: AgentRole) -> RoleProfile:
+        """Get the profile for a role."""
+        return ROLE_PROFILES.get(role, ROLE_PROFILES[AgentRole.GENERAL])
+
+    def available_roles(self) -> List[AgentRole]:
+        """List all available roles."""
+        return list(ROLE_PROFILES.keys())
+
+    @property
+    def created_count(self) -> int:
+        return len(self._created)
+
+    def get_agent(self, agent_id: str) -> Optional[Agent]:
+        return self._created.get(agent_id)
+
+    # ------------------------------------------------------------------
+    # Role capability queries
+    # ------------------------------------------------------------------
+
+    def can_do(self, role: AgentRole, capability: str) -> bool:
+        """Check if a role has a given capability."""
+        profile = ROLE_PROFILES.get(role)
+        if profile is None:
+            return False
+        return capability.lower() in [c.lower() for c in profile.capabilities]
+
+    def best_role_for(self, task_description: str) -> AgentRole:
+        """Heuristic: pick the best role for a task description.
+
+        Simple keyword-based matching. For production, use an LLM-based
+        router instead.
+        """
+        task_lower = task_description.lower()
+
+        # Keyword → role mapping
+        role_keywords = {
+            AgentRole.RESEARCHER: ["research", "search", "find", "investigate",
+                                   "gather", "fact", "information", "explore"],
+            AgentRole.ANALYST: ["analyze", "data", "pattern", "insight",
+                                "evaluate", "metrics", "statistics"],
+            AgentRole.CREATOR: ["create", "design", "write", "generate",
+                                "idea", "brainstorm", "build", "develop"],
+            AgentRole.EXECUTOR: ["execute", "implement", "do", "perform",
+                                 "run", "complete", "action"],
+            AgentRole.QA: ["test", "qa", "verify", "validate", "check",
+                           "debug", "quality"],
+            AgentRole.CRITIC: ["review", "critique", "audit", "assess",
+                               "feedback", "gap"],
+            AgentRole.PLANNER: ["plan", "strategy", "roadmap", "decompose",
+                                "schedule", "organize"],
+            AgentRole.MANAGER: ["manage", "coordinate", "delegate", "supervise",
+                                "lead", "organize"],
+        }
+
+        best_role = AgentRole.GENERAL
+        best_score = 0
+
+        for role, keywords in role_keywords.items():
+            score = sum(1 for kw in keywords if kw in task_lower)
+            if score > best_score:
+                best_score = score
+                best_role = role
+
+        return best_role

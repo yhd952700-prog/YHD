@@ -14,14 +14,14 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..kernels.audit import audit_query
-from ..kernels.memory import MemoryScope, filter_memory
-from .observability import observe
-from .personal_context import get_personal_context
-from .tool_registry import Tool
-from .tools_local import python_compute as _run_python_compute
-from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
-from .workspace import workspace_root
+from ...kernels.audit import audit_query
+from ...kernels.memory import MemoryScope, filter_memory
+from ..observability import observe
+from ..personal_context import get_personal_context
+from ..tool_registry import Tool
+from ..tools_local import python_compute as _run_python_compute
+from ..world_interface import FilesystemAdapter, WorldInterface, WorldRequest
+from ..workspace import workspace_root
 
 # 宽松解析用：小模型可能输出近似但非法的 JSON（如 ``"args: {...}"`` 缺引号），
 # 用正则兜底提取工具名与参数。

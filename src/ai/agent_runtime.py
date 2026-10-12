@@ -41,6 +41,7 @@ from src.kernels.memory import (
     MemoryKernel,
     MemoryScope,
     MemoryTier,
+    MemoryType,
     get_memory_kernel,
 )
 from src.kernels.event import (
@@ -306,6 +307,27 @@ class AgentRuntime:
                 correlation_id=correlation_id,
             )
 
+            # --- MEMORY RECALL: apply learned directives before planning ---
+            # This is what makes memory CAUSAL, not just a write-only log.
+            # Learned directives (e.g. "NEVER write files") can change the
+            # outcome of a run. Without this step, memory is decorative.
+            blocked_reason = self._check_learning_blockers(goal, scope)
+            if blocked_reason is not None:
+                # The run is blocked by a learned directive. Return a
+                # FAILED result honestly — the memory changed the outcome.
+                state = AgentRunState.FAILED
+                return AgentRunResult(
+                    goal_id=goal_id,
+                    correlation_id=correlation_id,
+                    state=state,
+                    context=None,
+                    evaluation=None,
+                    trace=observer.trace,
+                    memory_keys=[],
+                    persist_errors=[],
+                    error=f"blocked by learned directive: {blocked_reason}",
+                )
+
             state = AgentRunState.EXECUTING
             ctx = self.engine.execute_goal(
                 goal,
@@ -400,8 +422,19 @@ class AgentRuntime:
         no live ``context``) supply the original goal text; it falls back to
         ``prior.context.goal.natural_language`` when available.
         """
-        max_replans = max_replans or self.max_replans
-        if prior.replan_count >= max_replans:
+        # A caller-supplied bound must be honoured verbatim. ``None`` is the
+        # sentinel for "caller did not set it" and falls back to the instance
+        # default; any explicit integer -- crucially ``0`` -- is respected.
+        #
+        # The previous form was ``max_replans or self.max_replans``, which
+        # treated an explicit ``0`` as falsy and silently substituted the
+        # (permissive) instance default. A caller that passed ``max_replans=0``
+        # to FORBID re-execution instead got ``self.max_replans`` runs, so the
+        # very control that bounds autonomous replanning failed open -- the
+        # "the bound is not the bound you asked for" class this hook exists to
+        # prevent.
+        effective_max_replans = self.max_replans if max_replans is None else max_replans
+        if prior.replan_count >= effective_max_replans:
             return prior
         if goal_text is None:
             goal_text = prior.context.goal.natural_language if prior.context else ""
@@ -489,6 +522,67 @@ class AgentRuntime:
         if evaluation is not None and evaluation.replan_triggered and ctx.failed_tasks:
             return True
         return False
+
+    def _check_learning_blockers(self, goal: Goal, scope: str) -> Optional[str]:
+        """Check if any learned directives block this goal.
+
+        This is the READ side of memory — without this, memory is write-only
+        and the agent cannot learn from experience. We scan semantic/learning
+        entries for directives that constrain what the agent may do.
+
+        Returns a blocker reason string if the goal should be refused,
+        or ``None`` if it may proceed.
+        """
+        try:
+            mem_scope = MemoryScope(scope)
+        except Exception:
+            return None  # invalid scope => no blocking (fail-open for malformed input)
+
+        # Collect all semantic/learning memories at this scope and higher.
+        try:
+            all_entries = self.memory.scope_filter(mem_scope)
+        except Exception:
+            return None  # memory unavailable => don't block (availability)
+
+        learning_entries = [
+            e for e in all_entries
+            if "learning" in e.tags and e.tier == MemoryTier.LONG_TERM
+        ]
+
+        if not learning_entries:
+            return None
+
+        goal_lower = goal.natural_language.lower()
+
+        for entry in learning_entries:
+            value = entry.value if isinstance(entry.value, dict) else {}
+            directive = value.get("directive", "")
+            if not directive:
+                continue
+
+            directive_lower = directive.lower()
+
+            # --- Recognised directive patterns ---
+            # "NEVER write files" / "refuse every write"
+            if ("never" in directive_lower and "write" in directive_lower
+                    and ("file" in directive_lower or "write" in directive_lower)):
+                # Check if this goal involves file writing
+                file_keywords = ("write", "create", "save", "make", "generate", "file")
+                if any(kw in goal_lower for kw in file_keywords):
+                    # Also check for a filename pattern (e.g. "report.txt")
+                    import re
+                    if re.search(r"[\w./\\-]+\.[A-Za-z0-9]+", goal_lower):
+                        return f"learned directive prohibits file writes: {directive}"
+
+            # "NEVER run code" / "refuse execution"
+            if ("never" in directive_lower and ("code" in directive_lower
+                                                 or "execute" in directive_lower
+                                                 or "run" in directive_lower)):
+                code_keywords = ("run", "execute", "code", "python", "compute", "calculate")
+                if any(kw in goal_lower for kw in code_keywords):
+                    return f"learned directive prohibits code execution: {directive}"
+
+        return None
 
     def _persist(
         self,
