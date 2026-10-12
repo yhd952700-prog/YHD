@@ -63,7 +63,7 @@ def test_world_interface_calls_carry_actor(path: Path) -> None:
 def test_known_autonomous_sites_set_actor_autonomous() -> None:
     """Spot-check the known non-human sites wire actor='autonomous'."""
     for rel in (
-        "src/ai/tools.py",
+        "src/ai/tools/kernel_tools.py",
         "src/ai/e2e_demo.py",
         "src/ai/vhl_benchmark.py",
         "src/ai/hardening.py",
