@@ -32,7 +32,9 @@ def isolate_state(tmp_path, monkeypatch):
     db_path = str(tmp_path / "personal.db")
     fresh_mgr = pc_module.PersonalContextManager(db_path=db_path)
     import src.ai.tools as tools_module
+    from src.ai.tools import kernel_tools as kt_module
     monkeypatch.setattr(tools_module, "get_personal_context", lambda: fresh_mgr)
+    monkeypatch.setattr(kt_module, "get_personal_context", lambda: fresh_mgr)
     monkeypatch.setattr(pc_module, "get_personal_context", lambda: fresh_mgr)
 
     return {"conv": store, "personal": fresh_mgr}

@@ -47,6 +47,7 @@ from .executor import (
 # same-named module). ``liuhao.py`` imports these from the package root.
 from .kernel_tools import (
     build_tool_prompt,
+    get_personal_context,
     make_tools,
     parse_tool_call,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "BatchResult",
     # Legacy kernel-backed tools
     "build_tool_prompt",
+    "get_personal_context",
     "make_tools",
     "parse_tool_call",
 ]
