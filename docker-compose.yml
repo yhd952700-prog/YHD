@@ -28,6 +28,14 @@ services:
       # 身份与凭据文件路径 —— 指向持久卷，容器重建后身份不丢失
       LIUHAO_HUMAN_IDENTITIES_FILE: /app/data/human_identities.json
       LIUHAO_AUTH_SECRETS_FILE: /app/data/auth_secrets.json
+      # 对话历史数据库 —— 默认在 /app 根目录（非 root 不可写），必须指向持久卷
+      CONVERSATION_DB_PATH: /app/data/conversation_store.db
+      # Memory kernel 数据库
+      MEMORY_DB_PATH: /app/data/memory_store.db
+      # 个人画像数据库
+      PERSONAL_CONTEXT_DB_PATH: /app/data/personal_context.db
+      # 执行日志路径 —— AgentRuntime 的 journal 落点
+      LIUHAO_WORKSPACE_ROOT: /app/data
     volumes:
       - app_data:/app/data
     env_file:
