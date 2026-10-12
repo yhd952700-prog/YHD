@@ -86,6 +86,10 @@ COPY --from=console --chown=app:app /console/dist/ ./apps/console/console/dist/
 # 运行期状态（身份库、SQLite）落在这里；由 compose 挂卷持久化。
 RUN mkdir -p /app/data && chown -R app:app /app/data
 
+# 插件注册表默认写入 ./plugins（相对于 WORKDIR /app）。
+# 容器以非 root 用户运行，/app 根目录不可写，必须预建并赋权。
+RUN mkdir -p /app/plugins && chown -R app:app /app/plugins
+
 USER app
 
 ENV PATH=/home/app/.local/bin:$PATH

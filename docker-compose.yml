@@ -21,6 +21,10 @@ services:
       LIUHAO_JWT_SECRET: ${LIUHAO_JWT_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       METRICS_PERSIST: ${METRICS_PERSIST:-1}
+      # 审计数据库路径 —— 必须显式设置，默认路径被 HC-01 冻结保护
+      AUDIT_DB_PATH: /app/data/audit_store.db
+    volumes:
+      - app_data:/app/data
     env_file:
       - .env
     depends_on:
@@ -57,3 +61,4 @@ networks:
 
 volumes:
   postgres_data:
+  app_data:
