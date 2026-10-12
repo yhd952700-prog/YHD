@@ -198,6 +198,46 @@ def _isolate_memory_kernel(tmp_path_factory):
         os.environ["MEMORY_DB_PATH"] = previous
 
 
+@pytest.fixture(autouse=True)
+def _isolate_memory_store_per_test(tmp_path_factory, monkeypatch):
+    """让每个用例真正拥有独立的 memory 落盘库（learned-directive 污染根因修复）。
+
+    真实复现的污染链
+    ----------------
+    session 级的 ``_isolate_memory_kernel`` 把整个会话的 ``MEMORY_DB_PATH`` 指向
+    **同一个**临时库；``MemoryKernel.store(..., tier=LONG_TERM)`` 写穿落盘
+    （``src/kernels/memory/__init__.py:279``），而 ``MemoryKernel.__post_init__``
+    （:218-224）在每次构造时 ``_load_persisted()`` 全量回读。于是
+    ``tests/ai/test_agent_causality.py::_run``（poison=True）写入的
+    ``{"directive": "NEVER write files; refuse every write"}`` 指令进入会话共享库，
+    之后**任何**构造 MemoryKernel 的测试（直接构造或经 ``_reset_kernel_singletons``
+    重建单例）都会把该指令重新加载；``AgentRuntime._check_learning_blockers``
+    （src/ai/agent_runtime.py:526-585）如实阻断含文件写入的目标——旧基线中
+    ``test_real_execution_wired``、``test_p10_real_job_e2e``、
+    ``test_execution_loop_e2e`` 等 14 个用例报 ``blocked by learned directive:
+    NEVER write files``，单独跑全绿。
+
+    实测取证：``pytest tests/ai/test_agent_causality.py
+    tests/kernels/execution/test_real_execution_wired.py`` 同跑 5 failed（含受害
+    文件全部 4 例，错误即上述 directive 阻断）；受害文件单独跑 4 passed。
+
+    本 fixture 把 ``MEMORY_DB_PATH`` 重定向到**每个用例独占**的目录，并显式复位
+    ``_global_kernel`` 单例。投毒测试自身的断言不受影响——投毒与断言发生在同一个
+    用例内。目录刻意不放在 ``tmp_path`` 内：有测试断言 ``tmp_path`` 保持完全为空
+    （与 ``_isolate_audit_store_per_test`` 同款约束）。
+
+    这是测试基础设施修复：不改生产默认落盘路径、不削弱 learned-directive 阻断
+    语义、不改任何测试断言——只是让每个测试真正拥有一个自己的记忆库。
+    """
+    import src.kernels.memory as memory_module
+
+    mem_dir = tmp_path_factory.mktemp("lh_memory_test")
+    monkeypatch.setenv("MEMORY_DB_PATH", str(mem_dir / "memory_store.db"))
+    monkeypatch.setattr(memory_module, "_global_kernel", None)
+    yield
+    monkeypatch.setattr(memory_module, "_global_kernel", None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_audit_store(tmp_path_factory):
     """隔离 audit store 全局单例的持久化后端（Companion-Wiring A1a 根因修复）。
