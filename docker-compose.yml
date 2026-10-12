@@ -23,6 +23,11 @@ services:
       METRICS_PERSIST: ${METRICS_PERSIST:-1}
       # 审计数据库路径 —— 必须显式设置，默认路径被 HC-01 冻结保护
       AUDIT_DB_PATH: /app/data/audit_store.db
+      # 人类身份注册表完整性密钥 —— 不设则所有注册行被拒绝（fail-closed）
+      LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY: ${LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY:-dev-integrity-key-change-in-production}
+      # 身份与凭据文件路径 —— 指向持久卷，容器重建后身份不丢失
+      LIUHAO_HUMAN_IDENTITIES_FILE: /app/data/human_identities.json
+      LIUHAO_AUTH_SECRETS_FILE: /app/data/auth_secrets.json
     volumes:
       - app_data:/app/data
     env_file:
