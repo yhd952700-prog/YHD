@@ -210,62 +210,6 @@ async def create_memory(body: MemoryCreate) -> Dict[str, Any]:
     return memory
 
 
-@router.get("/{memory_id}", response_model=MemoryResponse)
-async def get_memory(memory_id: str) -> Dict[str, Any]:
-    """Get a memory entry by ID.
-
-    Args:
-        memory_id: Memory identifier.
-
-    Returns:
-        Memory entry details.
-
-    Raises:
-        HTTPException: 404 if not found.
-    """
-    mem = _get_memory_or_404(memory_id)
-    mem["access_count"] += 1
-    mem["last_accessed"] = datetime.utcnow().isoformat()
-    return mem
-
-
-@router.put("/{memory_id}", response_model=MemoryResponse)
-async def update_memory(memory_id: str, body: MemoryUpdate) -> Dict[str, Any]:
-    """Update a memory entry.
-
-    Args:
-        memory_id: Memory identifier.
-        body: Update request.
-
-    Returns:
-        Updated memory entry.
-
-    Raises:
-        HTTPException: 404 if not found.
-    """
-    mem = _get_memory_or_404(memory_id)
-    update_data = body.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        if value is not None:
-            mem[key] = value
-    return mem
-
-
-@router.delete("/{memory_id}", status_code=204)
-async def delete_memory(memory_id: str) -> None:
-    """Delete a memory entry.
-
-    Args:
-        memory_id: Memory identifier.
-
-    Raises:
-        HTTPException: 404 if not found.
-    """
-    if memory_id not in _memories:
-        raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
-    del _memories[memory_id]
-
-
 @router.get("/search", response_model=MemorySearchResponse)
 async def search_memories(
     query: str = Query(..., min_length=1, description="Search query"),
@@ -376,3 +320,65 @@ async def list_categories() -> Dict[str, Any]:
     """
     categories = sorted(set(m["category"] for m in _memories.values()))
     return {"categories": categories, "total": len(categories)}
+
+
+# NOTE: the ``/{memory_id}`` catch-all routes MUST stay below every fixed-path
+# route (``/search``, ``/batch``, ``/stats``, ``/categories``). FastAPI matches
+# routes in declaration order; declaring ``/{memory_id}`` first makes it swallow
+# the fixed paths (``/memory/search`` -> memory_id="search" -> 404).
+
+
+@router.get("/{memory_id}", response_model=MemoryResponse)
+async def get_memory(memory_id: str) -> Dict[str, Any]:
+    """Get a memory entry by ID.
+
+    Args:
+        memory_id: Memory identifier.
+
+    Returns:
+        Memory entry details.
+
+    Raises:
+        HTTPException: 404 if not found.
+    """
+    mem = _get_memory_or_404(memory_id)
+    mem["access_count"] += 1
+    mem["last_accessed"] = datetime.utcnow().isoformat()
+    return mem
+
+
+@router.put("/{memory_id}", response_model=MemoryResponse)
+async def update_memory(memory_id: str, body: MemoryUpdate) -> Dict[str, Any]:
+    """Update a memory entry.
+
+    Args:
+        memory_id: Memory identifier.
+        body: Update request.
+
+    Returns:
+        Updated memory entry.
+
+    Raises:
+        HTTPException: 404 if not found.
+    """
+    mem = _get_memory_or_404(memory_id)
+    update_data = body.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if value is not None:
+            mem[key] = value
+    return mem
+
+
+@router.delete("/{memory_id}", status_code=204)
+async def delete_memory(memory_id: str) -> None:
+    """Delete a memory entry.
+
+    Args:
+        memory_id: Memory identifier.
+
+    Raises:
+        HTTPException: 404 if not found.
+    """
+    if memory_id not in _memories:
+        raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+    del _memories[memory_id]

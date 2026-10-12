@@ -218,7 +218,9 @@ class TestMemoryAPI:
         response = client.get("/memory/search", params={"query": "Python"})
         assert response.status_code == 200
         data = response.json()
-        assert "results" in data
+        # Contract is ``items`` (MemorySearchResponse), consistent with the list
+        # endpoint and the JS SDK's PaginatedResponse.items.
+        assert "items" in data
         assert "total" in data
 
     def test_batch_create(self, client):
