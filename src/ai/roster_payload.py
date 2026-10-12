@@ -308,8 +308,11 @@ def _build_real_employees() -> List[Dict[str, Any]]:
 
     返回对象形如::
 
-        {"name", "agent_count", "agents":[{"id","agent_type","status"}],
+        {"id", "name", "agent_count", "agents":[{"id","agent_type","status"}],
          "total_tasks_submitted","total_tasks_completed","total_tasks_failed"}
+
+    ``id`` 与 ``name`` 同源：store 以员工名作为持久化键，因此该员工在真实
+    库中的可追溯身份就是其名称，这里在 ``id`` 键下如实透出。
 
     若 store 文件缺失、``employee_store`` 不可导入、或任意员工加载失败，
     一律返回 ``[]``（并打 warning）—— **持久化失败绝不能让名册端点崩溃**。
@@ -351,6 +354,12 @@ def _build_real_employees() -> List[Dict[str, Any]]:
         ]
         employees.append(
             {
+                # `id` is the traceable identity of the employee in the real
+                # store. The store keys employees by name, so the persisted
+                # identifier IS the name — expose it under both keys so a
+                # consumer can trace the row back to the store without having
+                # to know that the key happens to be the display name.
+                "id": emp.name,
                 "name": emp.name,
                 "agent_count": emp.agent_count,
                 "agents": agents,
