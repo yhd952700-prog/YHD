@@ -94,6 +94,29 @@ def test_replan_respects_max_bound():
     assert same is prior  # 不进入无限重规划
 
 
+def test_replan_refuses_when_max_replans_is_zero():
+    """An explicit ``max_replans=0`` (forbid replanning) must be honoured.
+
+    ``max_replans or self.max_replans`` treated 0 as "not provided" and fell
+    back to the permissive instance default, so a caller that meant to FORBID
+    re-execution silently got up to ``self.max_replans`` extra runs -- a control
+    bound that failed open. 0 must mean 0.
+    """
+    rt = _runtime()
+    prior = AgentRunResult(
+        goal_id="gz",
+        correlation_id="cz",
+        state=AgentRunState.FAILED,
+        context=None,
+        evaluation=None,
+        trace=ExecutionTrace(correlation_id="cz"),
+        replan_count=0,
+    )
+    same = rt.replan(prior, max_replans=0)
+    assert same is prior  # nothing re-ran
+    assert same.replan_count == 0
+
+
 def test_evaluator_wired():
     rt = _runtime()
     result = rt.run_goal("find the quarterly report", goal_id="g4")

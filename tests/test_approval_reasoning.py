@@ -17,6 +17,13 @@ class _RecordingAudit:
         return None
 
 
+class _FailingAudit:
+    """测试 stub：log_event 抛错，模拟审计链不可用。"""
+
+    def log_event(self, **kwargs):
+        raise RuntimeError("audit store unavailable")
+
+
 class TestApprovalWorkflow:
     def test_submit_is_pending(self):
         wf = ApprovalWorkflow(audit_store=_RecordingAudit())
@@ -54,6 +61,27 @@ class TestApprovalWorkflow:
         # 已决策：拒绝重复审批，诚实返回 None
         assert wf.reject(req.id, "carol") is None
         assert wf.approve(req.id, "carol") is None
+
+    def test_approve_without_audit_is_not_a_decision(self):
+        """人类主权审批无法留痕时不得报告成功（fail-closed）。
+
+        旧行为：先落地决策、再吞掉审计异常，approve() 返回一条已批准的请求，
+        而这条人类决策唯一的持久证据可能静默缺失 —— 虚假人类授权类缺陷。
+        """
+        wf = ApprovalWorkflow(audit_store=_FailingAudit())
+        req = wf.submit("deploy", "deploy:prod", "alice", risk_level="HIGH")
+
+        assert wf.approve(req.id, "bob", "reviewed ok") is None
+        # 决策未落地：请求仍为 PENDING，可在审计恢复后重试。
+        assert wf.status(req.id) == "pending"
+        assert [r.id for r in wf.pending()] == [req.id]
+
+    def test_reject_without_audit_is_not_a_decision(self):
+        wf = ApprovalWorkflow(audit_store=_FailingAudit())
+        req = wf.submit("delete", "delete:data", "alice")
+
+        assert wf.reject(req.id, "bob", "too risky") is None
+        assert wf.status(req.id) == "pending"
 
     def test_unknown_request_returns_none(self):
         wf = ApprovalWorkflow(audit_store=_RecordingAudit())

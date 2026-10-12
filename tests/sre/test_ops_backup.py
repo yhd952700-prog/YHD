@@ -220,5 +220,46 @@ class TestEncryptedRestoreFailsClosed:
         assert not list((tmp_path / "store").glob("*.decrypted"))
 
 
+class TestCreateRefusesSilentDowngrade:
+    """create_backup must not produce a restorable-looking artifact it cannot honor.
+
+    With the shipped defaults (``BackupConfig.encryption=True``,
+    ``encryption_key=None``) the old code logged a warning and wrote a PLAINTEXT
+    archive -- while the config still claimed encryption=True -- and a restore
+    using that same config could not open it. A backup you cannot restore is not
+    a backup; it is a false sense of safety.
+    """
+
+    def test_encryption_enabled_without_key_refuses_and_writes_nothing(
+        self, ops_backup, tmp_path
+    ):
+        manager = _manager(ops_backup, tmp_path, encryption=True, encryption_key="")
+
+        with pytest.raises(RuntimeError):
+            manager.create_backup("plaintext")
+
+        assert list((tmp_path / "backup-store").glob("*.tar.gz*")) == []
+        assert manager.list_backups() == []
+
+    def test_encryption_enabled_with_none_key_refuses(self, ops_backup, tmp_path):
+        manager = _manager(ops_backup, tmp_path, encryption=True, encryption_key=None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            manager.create_backup("plaintext")
+
+        assert "encryption" in str(excinfo.value).lower()
+
+    def test_a_failed_verification_leaves_no_artifact(self, ops_backup, tmp_path):
+        manager = _manager(ops_backup, tmp_path)
+        manager._verify_backup = lambda path: False  # force a failed verify
+
+        with pytest.raises(RuntimeError):
+            manager.create_backup("bad")
+
+        # The unusable archive must not linger, or list_backups would offer it.
+        assert manager.list_backups() == []
+        assert list((tmp_path / "backup-store").glob("*.tar.gz*")) == []
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-v"]))
