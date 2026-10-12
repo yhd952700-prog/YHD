@@ -146,6 +146,38 @@ def _reset_identity_global_manager(monkeypatch):
     monkeypatch.setattr(identity_module, "_global_manager", None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_kernel_singletons(monkeypatch):
+    """隔离全部内核单例的跨测试污染（policy / event / security / trust 等）。
+
+    真实复现的污染链：任何使用网关 ``TestClient`` 的测试在退出时触发 lifespan
+    shutdown → ``shutdown_all()`` → 所有已物料化的内核单例被置为 STOPPED。由于
+    ``get_policy_engine()`` / ``get_event_bus()`` 等只在全局变量为 ``None`` 时才
+    重建，后续测试拿到的是**同一个已停止的引擎**：policy 的 ``evaluate_simple``
+    走 lifecycle-gate 直接 ``DENY``（traceability=["lifecycle-gate:policy engine
+    is stopped"]），event 的 ``publish`` 抛 ``KernelNotServableError: event bus
+    is stopped``。在 2026-10-12 的全量基线中，这一类污染造成 policy 文件 51 个
+    失败与 execution 目录约 78 个失败——单独跑全部转绿。
+
+    上面的 ``_reset_identity_global_manager`` 只覆盖 identity；本 fixture 按
+    ``KERNEL_ENTRIES`` 把其余惰性单例一并戳回 ``None``（``var_name`` 为 None 的
+    factory-only 内核跳过）。每个测试从此拿到全新初始化的引擎，无法继承上一个
+    测试的 STOPPED 状态。monkeypatch 在 teardown 会恢复原值，因此也不会把
+    None 泄漏给别的测试框架状态。
+    """
+    from src.kernels._registry import KERNEL_ENTRIES
+
+    entries = [
+        e for e in KERNEL_ENTRIES
+        if e.module is not None and e.var_name is not None
+    ]
+    for e in entries:
+        monkeypatch.setattr(e.module, e.var_name, None)
+    yield
+    for e in entries:
+        monkeypatch.setattr(e.module, e.var_name, None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_memory_kernel(tmp_path_factory):
     """隔离 memory kernel 全局单例的持久化后端。
