@@ -211,6 +211,26 @@ def install_execution_alert_rules() -> None:
         add_alert_rule(rule)
 
 
+def _subscriptions_are_live() -> bool:
+    """True iff every recorded subscription still exists on the CURRENT bus.
+
+    Subscription ids belong to one :class:`EventBus` instance. The kernel
+    singleton can be replaced (restart / re-materialisation), and the ids we
+    stored then subscribe nothing on the new bus. Keying idempotency on the
+    module-level id list alone therefore silently disabled the whole alert
+    loop: ``install`` returned the stale ids and no handler was ever called.
+    """
+    if not _installed_sub_ids:
+        return False
+    try:
+        from src.kernels.event import get_event_bus
+
+        live = {sub.id for sub in get_event_bus().get_subscriptions()}
+    except Exception:  # noqa: BLE001 - unavailable bus => reinstall (fail-open)
+        return False
+    return all(sid in live for sid in _installed_sub_ids)
+
+
 def install_execution_alert_binding() -> List[str]:
     """Idempotently subscribe the execution-failure handler to the EventBus.
 
@@ -219,7 +239,11 @@ def install_execution_alert_binding() -> List[str]:
     list of subscription ids.
     """
     if _installed_sub_ids:
-        return list(_installed_sub_ids)
+        if _subscriptions_are_live():
+            return list(_installed_sub_ids)
+        # The bus carrying these subscriptions is gone; the ids are worthless
+        # on the replacement. Re-subscribe instead of returning dead handles.
+        _installed_sub_ids.clear()
 
     install_execution_alert_rules()
 

@@ -23,23 +23,21 @@ How the loop is driven:
   hang the test process at teardown (thread leak -> pytest exit 124). The
   synchronous entry point is the real production code path and is what we prove.
 
-IMPORTANT HONEST FINDING (do not "fix" by mocking):
+NOTE (natural-language compute):
   The deterministic keyword decomposer (src/kernels/execution/__init__.py:
   313-326) recognises compute keywords ("compute", "计算", "求和" ...) and
-  creates a ``python_compute`` task. BUT ``python_compute`` only accepts
-  EXECUTABLE code (a ``code``/``expression`` input, or a goal that starts with a
-  ``python:`` / ``code:`` directive — see _CODE_DIRECTIVE at
-  src/ai/tools_local.py:46). The decomposer passes only the raw goal text, so a
-  bare "compute 2+2" is REJECTED by the capability ("needs executable code").
-  End-to-end natural-language compute therefore does NOT auto-run today — it
-  requires a planner/LLM to turn the sentence into code. That is a REAL gap,
-  reported honestly below; we still prove the capability itself computes ("4")
-  with no LLM by invoking it directly with code.
+  creates a ``python_compute`` task carrying the goal text. The capability then
+  extracts the arithmetic expression from that text and executes it under
+  RestrictedPython, so a bare "compute 2+2" now COMPLETES end-to-end with the
+  real value ``4`` and no LLM on the path. That extraction contract is pinned by
+  tests/ai/test_compute_extraction.py; unsafe code (e.g. ``import``) is still
+  refused by the capability.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 import pytest
@@ -131,16 +129,18 @@ def test_goal_writes_real_file_into_workspace(_isolate_workspace_and_audit):
 
 
 def test_goal_routes_to_python_compute_and_capability_really_computes():
-    """Prove the compute capability is REAL (no LLM), and report the NL gap.
+    """Prove natural-language compute really runs, without any LLM on the path.
 
     Honest outcomes asserted here:
       * The loop ROUTES "compute 2+2" to a python_compute task (decomposition is
         real, not a stub).
-      * The bare natural-language compute goal does NOT silently report success:
-        python_compute requires executable code the keyword decomposer does not
-        generate, so the task is rejected. We assert that real failure.
-      * The python_compute capability ITSELF computes 2+2 == 4 with no LLM, by
-        invoking it directly with code (the honest "it really works" proof).
+      * The bare natural-language compute goal COMPLETES and the task result is
+        exactly 4 -- the decomposer/capability extract the expression and
+        RestrictedPython executes it, so a fabricated success would fail the
+        value check (see tests/ai/test_compute_extraction.py for the extraction
+        contract this relies on).
+      * The python_compute capability ITSELF also computes 2+2 == 4 with no LLM,
+        by invoking it directly with code (an independent witness).
       * A real audit event is recorded for the goal.
     """
     entry = _mgr().create_and_execute_goal("compute 2+2", background=False)
@@ -151,12 +151,12 @@ def test_goal_routes_to_python_compute_and_capability_really_computes():
                       if t.get("capability_id") == "python_compute"]
     assert compute_tasks, "decomposer did not route 'compute 2+2' to python_compute"
 
-    # Honest: the bare NL goal does not auto-compute; the capability rejects it
-    # for lack of generated code (proves no fake success).
-    assert entry["state"] == "failed", entry
-    assert "code" in (compute_tasks[0].get("error") or "").lower(), (
-        compute_tasks[0].get("error")
-    )
+    # The bare NL goal must not merely report success: the real value is checked.
+    assert entry["state"] == "completed", entry
+    compute = compute_tasks[0]
+    assert compute.get("status") == "completed", compute
+    result_text = str(compute.get("result"))
+    assert re.search(r"['\"]result['\"]\s*:\s*['\"]4['\"]", result_text), result_text
 
     # Real capability proof, no LLM: python_compute with explicit code.
     from src.ai.tools_local import python_compute

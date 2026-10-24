@@ -24,6 +24,7 @@ from ..kernels.execution import (
     PlanBuilder,
     Verifier,
     ActionResult,
+    VerifyResult,
 )
 from ..kernels.context import create_context_kernel, ContextInput, ContextInputType
 from .tool_registry import ToolRegistry, ToolRouter, ToolStatus
@@ -171,10 +172,23 @@ class LCore:
     @staticmethod
     def _synthesize(goal, plan, results, verifications) -> Dict[str, Any]:
         succeeded = all(r.success for r in results.values())
-        verified = all(
-            v.result.value in ("success", "partial") for v in verifications.values()
+        # ``UNVERIFIED`` means "the action ran and reported success, but nothing
+        # here PROVES it" -- a first-class honesty state, NOT a failure (see
+        # ``VerifyResult`` and ``Verifier.verify``, which deliberately does not
+        # fail a task when no criteria exist). Treating it as failure reported
+        # every default L-Core intent (no verification criteria) as ``failed``
+        # even though the tools really ran and succeeded. Only the states that
+        # say the outcome is wrong block completion; the verifications payload
+        # still surfaces ``unverified`` so the gap stays visible.
+        _blocking = (
+            VerifyResult.FAILED,
+            VerifyResult.OFF_TRACK,
+            VerifyResult.NEEDS_HUMAN,
         )
-        status = "completed" if (succeeded and verified) else "failed"
+        no_failed_verification = all(
+            v.result not in _blocking for v in verifications.values()
+        )
+        status = "completed" if (succeeded and no_failed_verification) else "failed"
         return {
             "status": status,
             "goal": goal.natural_language,

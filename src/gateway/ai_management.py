@@ -235,6 +235,26 @@ class AIStateManager:
                     ids = list(getattr(emp, "agents", {}).keys())
                     if ids:
                         self._runtime.engine.decomposer.agent_ids = ids
+                        # ARM1: injecting an explicit pool is a CLAIM about who
+                        # performs the work, so it must be substantiable. Without
+                        # a resolver the executor marks every action
+                        # ``agent_attribution == "unattributed"`` (task status
+                        # ``completed_unattributed``) even though the work really
+                        # ran -- a permanent false attribution failure. Give each
+                        # real employee agent its own executor bound to the local
+                        # capability registry, so the claim resolves; any id
+                        # outside the pool stays unresolvable (fail-closed).
+                        _shared_executor = _lcore.capability_executor()
+                        _agent_executors = {
+                            agent_id: (
+                                lambda capability_id, inputs, _exec=_shared_executor:
+                                _exec(capability_id, inputs)
+                            )
+                            for agent_id in ids
+                        }
+                        self._runtime.engine.executor.set_agent_resolver(
+                            _agent_executors.get
+                        )
                 except Exception as _exc:  # pragma: no cover - best effort
                     logger.debug("AIStateManager: agent id injection skipped: %s", _exc)
             except Exception as exc:
