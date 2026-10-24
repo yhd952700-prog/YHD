@@ -289,6 +289,38 @@ def _verdict_from_run(
 _LAST_FULL_RUN: dict | None = None
 
 
+#: Hard cap (seconds) for the full-suite pytest subprocess inside C3/C12.
+#: Measured on the reference Windows host (2026-10-24): the whole suite takes
+#: ~44m38s (~2678s, 6423 tests), so the previous 1800s cap sat BELOW the
+#: suite's real runtime -- the gate would kill a healthy pytest mid-run and
+#: the truncated JUnit could only surface as ERROR. 5400s (90 min) is ~2x the
+#: measured runtime, leaving headroom for slower CI runners and suite growth.
+#: The kill is kept on purpose: a genuinely wedged pytest must not hang the
+#: battery forever; it surfaces as rc=124 -> ERROR, never as a pass. The
+#: release-readiness.yml job timeout must exceed this plus install/collection
+#: overhead so the runner cannot preempt the gate's own honest classification
+#: (pinned by tests/scripts/test_readiness_full_timeout.py).
+_FULL_SUITE_TIMEOUT_S = 5400
+
+
+def _full_suite_timeout() -> int:
+    """Seconds the full pytest suite may run before the gate kills it.
+
+    Read at call time (not import time) so CI/tests can steer it via
+    ``LIUHAO_READINESS_FULL_TIMEOUT_S`` without reloading the module. A
+    missing, unparsable, or non-positive override falls back to the default.
+    """
+    raw = os.environ.get("LIUHAO_READINESS_FULL_TIMEOUT_S", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return _FULL_SUITE_TIMEOUT_S
+
+
 def _execute_full_suite() -> dict:
     """Execute the full suite once; return the raw run plus its JUnit verdict.
 
@@ -306,7 +338,7 @@ def _execute_full_suite() -> dict:
         sys.executable, "-m", "pytest", "tests/", "-p", "no:phoenix", "-q",
         "--timeout=60", f"--junitxml={xml_path}",
     ]
-    rc, out = _run(cmd, timeout=1800)
+    rc, out = _run(cmd, timeout=_full_suite_timeout())
     verdict = _pytest_verdict(xml_path)
     return {
         "rc": rc,

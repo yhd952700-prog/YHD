@@ -40,22 +40,24 @@ jobs:
       # 下游门禁（security / guardrails / guardrails-extended / lint / gate-check）
       # 全部 skipped。一个起不来的服务容器不是"etcd 相关测试跳过"，而是**整条 CI
       # 保护面静默归零**，这正是必须换掉而不是绕过去的理由。
-      # 实测替代：quay.io/coreos/etcd:v3.5.34 的 manifest HTTP 200（同 3.5 线）。
       #
-      # coreos 系镜像不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION /
-      # ETCD_ENABLE_V2），它们是 bitnami entrypoint 的参数包装；etcd 原生默认就是
-      # 无鉴权，所以直接删除而不是改名。health-cmd 必须显式给 ETCDCTL_API=3 和
-      # --endpoints，否则 etcdctl 可能落到 v2 或默认地址、健康探针恒失败。
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL，daemon 用 /bin/sh -c
+      # 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。故换回带 shell
+      # 的 bitnamilegacy/etcd:3.5.9（bitnami 弃用冻结的同一 lineage），并显式
+      # ALLOW_NONE_AUTHENTICATION=yes；etcdctl 路径改为镜像内真实存在的
+      # /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
       etcd:
-        image: quay.io/coreos/etcd:v3.5.34
+        image: bitnamilegacy/etcd:3.5.9
         ports:
           - 2379:2379
         env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
           ETCDCTL_API: "3"
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5

@@ -18,7 +18,12 @@ jobs:
   readiness:
     name: Release Readiness Contract (C1..C12)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 120 min = full-suite subprocess cap (90 min; _FULL_SUITE_TIMEOUT_S in
+    # scripts/verify_readiness.py, ~2x the measured 44m38s suite runtime) plus
+    # install/collection/other-check overhead. The job timeout must stay ABOVE
+    # the subprocess cap so the runner never preempts the gate's own honest
+    # rc=124 -> ERROR classification (pinned by test_readiness_full_timeout.py).
+    timeout-minutes: 120
 
     services:
       redis:
@@ -32,20 +37,32 @@ jobs:
           --health-retries 5
       # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
       # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
-      # 运行 0 成功）。改用 quay.io/coreos/etcd:v3.5.34（manifest 实测 HTTP 200）。
-      # coreos 系不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION / ETCD_ENABLE_V2），
-      # 无鉴权是 etcd 默认行为，故删除而非改名；health-cmd 必须显式给
-      # ETCDCTL_API=3 与 --endpoints，否则探针恒失败。
+      # 运行 0 成功）。
+      #
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL（docker/cli
+      # cli/command/container/opts.go: probe = []string{"CMD-SHELL", ...}），daemon
+      # 用 /bin/sh -c 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。
+      # 当时 etcd 本身启动 1 秒内即 SERVING（容器日志可证），坏的只是探针；该镜像
+      # 上任何 --health-cmd 都不可能工作，故必须换带 shell 的镜像。
+      #
+      # 现用 bitnamilegacy/etcd:3.5.9——bitnami 弃用时冻结的官方 legacy 命名空间
+      # （Debian 底，含 /bin/bash 与 etcdctl），即被下线前可用的同一 lineage；
+      # 3.5.9 是其中最新的 3.5.x（amd64+arm64，tag 已实测存在）。bitnami
+      # entrypoint 要求显式 ALLOW_NONE_AUTHENTICATION=yes 才肯无鉴权启动；监听/
+      # 公告地址用其默认（0.0.0.0:2379 / localhost:2379）即可。健康探针使用镜像内
+      # 真实存在的 /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
       etcd:
-        image: quay.io/coreos/etcd:v3.5.34
+        image: bitnamilegacy/etcd:3.5.9
         ports:
           - 2379:2379
         env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
           ETCDCTL_API: "3"
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -94,20 +111,32 @@ jobs:
           --health-retries 5
       # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
       # 服务容器起不来 -> 整个 job 在 setup 阶段就死，pytest 从未执行（实测 53 次
-      # 运行 0 成功）。改用 quay.io/coreos/etcd:v3.5.34（manifest 实测 HTTP 200）。
-      # coreos 系不认 bitnami 专属变量（ALLOW_NONE_AUTHENTICATION / ETCD_ENABLE_V2），
-      # 无鉴权是 etcd 默认行为，故删除而非改名；health-cmd 必须显式给
-      # ETCDCTL_API=3 与 --endpoints，否则探针恒失败。
+      # 运行 0 成功）。
+      #
+      # 2026-10-24 根因修复（run 40118666865 死于 Initialize containers）：
+      # quay.io/coreos/etcd:v3.5.34 是 scratch 镜像——registry config history 只有
+      # `ADD etcd / etcdctl / etcdutl /usr/local/bin/` 三条，镜像内没有 /bin/sh；
+      # 而 docker CLI 恒把 --health-cmd 包装为 CMD-SHELL（docker/cli
+      # cli/command/container/opts.go: probe = []string{"CMD-SHELL", ...}），daemon
+      # 用 /bin/sh -c 执行探针 -> 探针进程根本起不来 -> 重试耗尽判 unhealthy。
+      # 当时 etcd 本身启动 1 秒内即 SERVING（容器日志可证），坏的只是探针；该镜像
+      # 上任何 --health-cmd 都不可能工作，故必须换带 shell 的镜像。
+      #
+      # 现用 bitnamilegacy/etcd:3.5.9——bitnami 弃用时冻结的官方 legacy 命名空间
+      # （Debian 底，含 /bin/bash 与 etcdctl），即被下线前可用的同一 lineage；
+      # 3.5.9 是其中最新的 3.5.x（amd64+arm64，tag 已实测存在）。bitnami
+      # entrypoint 要求显式 ALLOW_NONE_AUTHENTICATION=yes 才肯无鉴权启动；监听/
+      # 公告地址用其默认（0.0.0.0:2379 / localhost:2379）即可。健康探针使用镜像内
+      # 真实存在的 /opt/bitnami/etcd/bin/etcdctl，退出码即健康判定。
       etcd:
-        image: quay.io/coreos/etcd:v3.5.34
+        image: bitnamilegacy/etcd:3.5.9
         ports:
           - 2379:2379
         env:
+          ALLOW_NONE_AUTHENTICATION: "yes"
           ETCDCTL_API: "3"
-          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
         options: >-
-          --health-cmd "/usr/local/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
+          --health-cmd "/opt/bitnami/etcd/bin/etcdctl --endpoints=http://127.0.0.1:2379 endpoint health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
