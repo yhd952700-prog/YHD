@@ -1,0 +1,101 @@
+name: Deployed Stack Verification
+
+# NIGHTLY + MANUAL ONLY -- declared in tests/test_guardrail_scripts.py
+# (SCHEDULED_ONLY_GATES). Both gates below need a LIVE stack that a per-push job
+# cannot stand up inside its budget:
+#   * verify_observability_loop  -> Prometheus + Alertmanager (+ the gateway on
+#                                   :8010 exporting /v1/metrics/prometheus);
+#   * verify_deployed_product_closure -> docker compose + a headless browser.
+# Reading "wired" as "protects every push" is the false assurance the
+# declaration exists to prevent, so this workflow deliberately has no push or
+# pull_request trigger.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 5 * * *'
+
+jobs:
+  observability-loop:
+    name: Observability closed loop (exporter -> Prometheus -> Alertmanager)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # Prometheus scrapes the gateway directly on :8010, so the process under
+      # test must already answer before the compose stack comes up. Loopback
+      # only: nothing here publishes to the runner's external interface.
+      - name: Start the gateway under test (loopback only)
+        run: |
+          python -m uvicorn src.gateway.main:app --host 127.0.0.1 --port 8010 --log-level warning &
+          echo $! > /tmp/gw.pid
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8010/v1/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8010/v1/metrics/prometheus >/dev/null \
+            || { echo "::error ::gateway did not export metrics on :8010"; exit 1; }
+
+      # --mode docker starts the Prometheus/Alertmanager stack itself, forces a
+      # real 404 burst, then asserts the alert reaches Alertmanager and is
+      # acknowledged. Exit 2 = blocked environment, exit 1 = broken loop: both
+      # are non-zero on purpose.
+      - name: Verify the closed loop
+        run: python scripts/verify_observability_loop.py --mode docker
+
+      - name: Stop the gateway
+        if: always()
+        run: kill "$(cat /tmp/gw.pid)" 2>/dev/null || true
+
+      - name: Tear down the observability stack
+        if: always()
+        run: docker compose -f infra/observability/docker-compose.yml down -v || true
+
+  deployed-product-closure:
+    name: Deployed product closure (compose + headless browser)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # playwright/selenium live in the optional `deploy-closure` extra; they are
+      # deliberately NOT runtime dependencies (they would weigh down the image).
+      - name: Install dependencies (deploy-closure extra)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[deploy-closure]"
+
+      - name: Install headless Chromium
+        run: python -m playwright install --with-deps chromium
+
+      # Builds docker-compose.prod.yml, waits for health, bootstraps the first
+      # human, drives the console in a headless browser, and asserts via
+      # `docker exec` that the artifact the browser produced really exists.
+      - name: Prove the deployed product closure
+        run: python scripts/verify_deployed_product_closure.py --host-port 18000
+
+      - name: Tear down the deployment
+        if: always()
+        run: docker compose -f docker-compose.prod.yml down -v || true

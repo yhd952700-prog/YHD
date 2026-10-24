@@ -108,6 +108,24 @@ SCHEDULED_ONLY_GATES: dict[str, str] = {
         "zero with no red check anywhere. Registration records that 'we accept "
         "this gate does not run per-commit'."
     ),
+    "verify_observability_loop.py": (
+        "Proves Prometheus -> Alertmanager -> ack is actually closed, which needs "
+        "a live Prometheus + Alertmanager stack plus the gateway exporting "
+        "/v1/metrics/prometheus on :8010. No per-push job can stand that stack up "
+        "inside its budget, so it runs in "
+        ".github/workflows/deployed-stack-verification.yml on a nightly schedule "
+        "and by hand. Registration records that 'we accept this gate does not run "
+        "per-commit'; what it catches is the invisible failure where alerts fire "
+        "into a receiver nobody reads."
+    ),
+    "verify_deployed_product_closure.py": (
+        "Boots docker-compose.prod.yml, drives the deployed console in a headless "
+        "browser, and asserts via `docker exec` that the artifact the browser "
+        "produced really exists. Needs a Docker daemon AND a browser plus several "
+        "minutes of image build, so it runs in "
+        ".github/workflows/deployed-stack-verification.yml nightly and by hand. "
+        "Registration records that 'we accept this gate does not run per-commit'."
+    ),
 }
 
 _BOOTSTRAP_RE = re.compile(r"sys\.path\.(insert|append)")
@@ -1217,11 +1235,13 @@ def test_previously_misflagged_conditional_gates_can_fail() -> None:
 # --------------------------------------------------------------------------- #
 # Exemption ledger: an honest record of gates this layer cannot verify green.
 #
-# This section does NOT make test_every_gate_script_is_wired_into_ci pass. Those
-# four assertions stay red on purpose: the gates are real, and an unwired real
-# gate protects nothing. What the ledger adds is (a) one visible place naming
-# each red gate, its owner and its unblock path, and (b) checks that the ledger
-# itself cannot rot or be used to launder a real gap into a fake green.
+# This section does NOT make test_every_gate_script_is_wired_into_ci pass. What
+# it adds is (a) one visible place naming each still-unprotected gate, its owner
+# and its unblock path, and (b) checks that the ledger itself cannot rot or be
+# used to launder a real gap into a fake green. Every gate is now invoked, so no
+# entry is left for the "never called" reason; the two remaining entries record
+# gates that run only from the nightly deployed-stack workflow and therefore
+# protect nothing on the next commit.
 #
 # The ledger lives in a Markdown file rather than here so it is reviewable as
 # prose; :func:`_load_ledger` parses it, so the record and the test cannot drift.

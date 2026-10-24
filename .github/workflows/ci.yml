@@ -674,15 +674,15 @@ jobs:
         run: python scripts/verify_persistence.py
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Guardrails, extended set: 27 more `scripts/verify_*.py` gates that were
+  # Guardrails, extended set: 28 more `scripts/verify_*.py` gates that were
   # written, cited as evidence in PRODUCT-READINESS.md, and yet never invoked
   # by any workflow -- i.e. protecting nothing. An unwired guardrail is decay.
   #
   # Split into its own job (not folded into `guardrails` above) because that job
-  # already carries 41 verify_* gates against a 15-minute budget; adding 27 more
+  # already carries 41 verify_* gates against a 15-minute budget; adding 28 more
   # would turn a timeout into a false red.
   #
-  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 27 -- both are
+  # GUARDRAILS-GATE-COUNT: 41 / GUARDRAILS-EXTENDED-GATE-COUNT: 28 -- both are
   # parsed by tests/test_guardrail_scripts.py and compared against counts
   # DERIVED FROM THE PARSED YAML (not from a line range). The first version of
   # this comment said 39, because it was measured with
@@ -690,56 +690,56 @@ jobs:
   # sees single-line `run:` steps and silently misses every multi-line `run: |`
   # block. 41 is the real number. Do not go back to line-range counting.
   #
-  # DELIBERATELY NOT WIRED -- 4 gates remain unwired, each with the measured
-  # reason it cannot produce a valid verdict on a GitHub-hosted runner. They
-  # stay unwired on purpose: hiding them behind DIAGNOSTIC_REPORTERS or
-  # `|| true` would suppress a true positive, which is the dishonesty this
-  # repo forbids. tests/test_guardrail_scripts.py therefore still reports
-  # them -- that red entry is the signal, not a nuisance. Each has its own
-  # remediation task.
+  # HISTORY -- this job used to say 4 gates stayed unwired on purpose because a
+  # GitHub-hosted runner could not produce a valid verdict for them. That is
+  # still the reason they need help, but "cannot run here" is not a licence to
+  # run nowhere. All four are now invoked through a real `run:` field, and none
+  # hides behind DIAGNOSTIC_REPORTERS or `|| true`:
+  #
+  #   * verify_image_build              -> ci.yml `build` (docker build + boot)
+  #   * verify_deployment_gate_vars     -> this job's last step
+  #   * verify_observability_loop       -> deployed-stack-verification.yml
+  #   * verify_deployed_product_closure -> deployed-stack-verification.yml
+  #
+  # The last two need a live stack (Prometheus + Alertmanager; docker compose +
+  # a headless browser), so they run nightly and by hand, never per push. That
+  # trade-off is declared in tests/test_guardrail_scripts.py
+  # (SCHEDULED_ONLY_GATES) instead of being discovered later, and the ledger
+  # keeps them as blocked-by-host for the per-push path. The first two are
+  # invoked from jobs that run on every push, so their ledger entries were
+  # deleted rather than kept -- a stale entry is the mirror image of a false
+  # green.
   #
   # SEPARATE, NEWER CLASS -- "invoked but unreachable". A gate can be named in a
   # workflow step and still run zero times for our work, when every job that
   # invokes it sits behind triggers or an `if:` that exclude the working branch.
   # `verify_go_readiness.py` is the live instance: it is invoked only from
   # ci-cd.yml:build, and ci-cd.yml triggers on main/develop only, so it has
-  # never run on p36. It is NOT in the four below because its blocker is a
-  # wiring/ownership decision, not a runner capability. Recorded in
-  # docs/ci/gate-exemptions.md entry 5 (pending-owner: g9-deploy).
+  # never run on p36. Its blocker is a wiring/ownership decision, not a runner
+  # capability. Recorded under "What is NOT in this ledger" in
+  # docs/ci/gate-exemptions.md (pending-owner: g9-deploy, was entry 5).
   #
   # `verify_deploy_readiness` was on this list until it was wired at the
   # `guardrails-extended` step below, after its alembic-invocation portability
   # defect was fixed. Kept out of the list deliberately: a stale entry here
-  # reads as "known broken" when the gate is in fact running, which is the
-  # mirror image of the false green this job exists to prevent.
+  # reads as "known broken" when the gate is in fact running.
   #
-  # NOTE ON FORMATTING: the names below are written WITHOUT the `.py` suffix
-  # on purpose. The meta-guardrail greps the raw workflow text for a script's
-  # basename, so spelling them out in full here would make four genuinely
-  # unwired gates read as wired -- a false green, i.e. the exact decay this
-  # job exists to prevent. Keep them suffix-less.
-  #   * verify_deployment_gate_vars     -- GENUINE FAIL (runs clean, reports
-  #                                        findings that are open human
-  #                                        decisions: unclassified gate-variable
-  #                                        candidates such as LIUHAO_CONSOLE_DIST
-  #                                        and LIUHAO_WORKSPACE_ROOT, plus
-  #                                        unarmed seed gates). Count re-measured
-  #                                        2026-10-07: 11 findings. The two
-  #                                        untracked artifacts (.env,
-  #                                        LiuHao-O/docker-compose.yml) are now
-  #                                        surfaced as INFO, not findings: both are
-  #                                        gitignored, and a gitignored path is
-  #                                        local state, not deployment -- letting
-  #                                        it move the exit code made the verdict
-  #                                        depend on the local machine. The 11 are
-  #                                        a human decision. The older "16
-  #                                        findings" figure here was stale.
-  #   * verify_deployed_product_closure -- needs a Docker daemon AND a
-  #                                        headless browser.
-  #   * verify_image_build              -- needs a Docker daemon.
-  #   * verify_observability_loop       -- needs a live Prometheus /
-  #                                        Alertmanager stack on
-  #                                        8010/9090/9093.
+  # NOTE ON FORMATTING: the names above are written WITHOUT the `.py` suffix.
+  # Comments are not read by the meta-guardrail at all (it reads only
+  # command-bearing fields), so the suffix-less form can no longer manufacture
+  # a false green -- that came from the older raw-text grep, which is gone.
+  # The form is kept because it marks these four as "wired with extra
+  # conditions", unlike an ordinary per-push gate.
+  #
+  # WHAT verify_deployment_gate_vars REPORTS HERE: now a per-push gate, and its
+  # exit 1 is a TRUE verdict, not a host gap. Measured 2026-10-07: 11 findings --
+  # unclassified gate-variable candidates (LIUHAO_CONSOLE_DIST,
+  # LIUHAO_WORKSPACE_ROOT) plus unarmed seed gates. They are open human
+  # decisions about that script's SEED_GATES/ALLOWLIST tables; moving them there
+  # is the fix, not loosening this job. Gitignored local artifacts (.env,
+  # LiuHao-O/docker-compose.yml) are surfaced as INFO, not findings, so the
+  # verdict does not depend on the machine that runs it.
+  #
   guardrails-extended:
     name: Guardrails Extended (audit/identity/execution/employee/user-surface)
     runs-on: ubuntu-latest
@@ -963,6 +963,14 @@ jobs:
       - name: Verify schema upgrade and rollback really run
         run: python scripts/verify_deploy_readiness.py
 
+      # Deployment gate variables: every control gated on an env var that no
+      # deployable artifact actually sets. Needs no docker and no browser, so it
+      # runs on every push; its non-zero exit is a verdict about the repository,
+      # not about the runner. Wiring it is also what removed its pending-owner
+      # ledger entry -- see the count/comment block above this job.
+      - name: Verify deployment gate variables are set by some artifact
+        run: python scripts/verify_deployment_gate_vars.py
+
   # Linting job
   lint:
     name: Linting
@@ -1160,6 +1168,16 @@ jobs:
       - name: Lint the console
         working-directory: apps/console/console
         run: npm run lint
+
+      # The Dockerfile was never executed by a build engine in CI, so a broken
+      # image could reach a deployment with every other gate green. This job
+      # already has a Docker daemon and the Python env, so G9b runs here for
+      # real: build the staging image, boot a container, wait for healthy, and
+      # probe /v1/health + /v1/ready + /v1/metrics/prometheus. The script
+      # self-reports exit 2 (NOT_VERIFIED) if the daemon is missing, so a
+      # vanished daemon can never read as a pass.
+      - name: Verify the staging image builds and boots
+        run: python scripts/verify_image_build.py --build-timeout 1200
 
   # Architecture gate (Semgrep) —— 本仓库**唯一会阻断**的静态检查作业。
   #
