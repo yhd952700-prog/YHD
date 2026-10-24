@@ -86,7 +86,13 @@ def test_no_env_warns_only_once(fresh_handler, caplog):
     with caplog.at_level(logging.WARNING, logger=jwt_mod.__name__):
         get_jwt_handler()
         get_jwt_handler()
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    # 断言「单例只应提示一次，不该每次取用都刷日志」针对的是 jwt_handler 这一
+    # 个 logger——caplog 按 propagation 捕获所有 logger，把 posture 等其他
+    # logger 的独立警告（部署姿态不可判定）一并收进来，那不是"每次取用都刷"。
+    warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name == jwt_mod.__name__
+    ]
     assert len(warnings) == 1, "单例只应提示一次，不该每次取用都刷日志"
 
 
