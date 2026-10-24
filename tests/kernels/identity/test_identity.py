@@ -21,6 +21,29 @@ from src.kernels.identity import (
 from src._time import utc_now
 
 
+@pytest.fixture(autouse=True)
+def isolated_identity_env(monkeypatch):
+    """Pin every test to "no human registry configured".
+
+    ``IdentityManager.__init__`` seeds the two built-ins *and* whatever the
+    ambient ``LIUHAO_HUMAN_IDENTITIES_*`` variables point at, so a fresh
+    manager is not a fixed-size manager: with a registry configured elsewhere
+    in the process, ``test_stats_counts`` sees those humans too. Deleting the
+    variables makes the seeded set exactly the two built-ins, and resetting the
+    module singleton keeps ``get_identity_manager()`` from handing back a
+    manager built under a previous test's configuration.
+    """
+    import src.kernels.identity as identity_module
+
+    for name in (
+        "LIUHAO_HUMAN_IDENTITIES_FILE",
+        "LIUHAO_HUMAN_IDENTITIES_DB",
+        "LIUHAO_HUMAN_IDENTITIES_BACKEND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+
+
 @pytest.fixture
 def manager() -> IdentityManager:
     """Fresh manager per test (seeded with the two built-in identities)."""
