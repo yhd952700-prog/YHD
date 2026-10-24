@@ -161,3 +161,56 @@ def test_etcd_service_uses_a_shell_bearing_image() -> None:
         )
         assert "ALLOW_NONE_AUTHENTICATION" in text, name
         assert "/opt/bitnami/etcd/bin/etcdctl" in text, name
+
+
+# --------------------------------------------------------------------------- #
+# Windows per-test timeout must not destroy the whole run's evidence
+# --------------------------------------------------------------------------- #
+def test_full_suite_per_test_timeout_floor(monkeypatch) -> None:
+    """pytest-timeout has no SIGALRM on Windows: timeout_method=thread, and a
+    breach dumps stacks then os._exit(1)s the WHOLE pytest process (see
+    timeout_timer() in pytest_timeout.py) -- no sessionfinish, no JUnit, no
+    terminal summary. With --timeout=60, ONE transient D: filesystem stall in
+    os.stat destroyed a healthy ~45min run on 2026-10-24 (twice; ~16min in,
+    0-byte JUnit, rc=1, ERROR). The per-test ceiling must stay >= 300s so a
+    transient stall survives; a genuinely wedged test still dies fast and
+    names itself in the persisted log."""
+    captured = {}
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = list(cmd)
+        return 0, ""
+
+    monkeypatch.delenv("LIUHAO_READINESS_FULL_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(MODULE, "_run", fake_run)
+    MODULE._execute_full_suite()
+    per_test = [a for a in captured["cmd"] if a.startswith("--timeout=")]
+    assert per_test, "full suite must keep an explicit per-test timeout"
+    value = int(per_test[0].split("=", 1)[1])
+    assert value >= 300, (
+        f"per-test timeout {value}s: on Windows pytest-timeout os._exit(1)s "
+        f"the whole process on breach; <300s lets one transient I/O stall "
+        f"destroy the entire run's evidence"
+    )
+
+
+def test_full_suite_output_is_persisted_to_disk(monkeypatch) -> None:
+    """A killed suite leaves no JUnit and no summary; the complete captured
+    stdout/stderr must be written to disk BEFORE classification so the stack
+    dump naming the stuck test survives the process."""
+    def fake_run(cmd, *a, **k):
+        return 1, "FAKE-OUTPUT-MARKER\n+++ Timeout +++\n"
+
+    monkeypatch.delenv("LIUHAO_READINESS_FULL_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(MODULE, "_run", fake_run)
+    run = MODULE._execute_full_suite()
+    assert run["log"], "run dict must carry the persisted log path"
+    log = pathlib.Path(run["log"])
+    assert log.is_file(), "full pytest output must be persisted to disk"
+    assert "FAKE-OUTPUT-MARKER" in log.read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    assert log.stem.startswith(pathlib.Path(run["xml"]).stem), (
+        "log must sit next to the JUnit path it belongs to"
+    )
+    log.unlink(missing_ok=True)

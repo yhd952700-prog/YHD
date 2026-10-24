@@ -336,14 +336,33 @@ def _execute_full_suite() -> dict:
     os.close(fd)  # pytest --junitxml opens and overwrites this path itself
     cmd = [
         sys.executable, "-m", "pytest", "tests/", "-p", "no:phoenix", "-q",
-        "--timeout=60", f"--junitxml={xml_path}",
+        # --timeout=300, NOT 60: pytest-timeout has no SIGALRM on Windows, so a
+        # breach dumps stacks and then os._exit(1)s the WHOLE pytest process
+        # (see timeout_timer() in pytest_timeout.py) -- no sessionfinish, no
+        # JUnit, no summary. With 60s, ONE transient D: filesystem stall in
+        # os.stat destroyed a healthy ~45min run (twice on 2026-10-24, ~16min
+        # in, 0-byte JUnit, rc=1). 300s lets transient stalls pass while still
+        # killing a genuinely wedged test fast -- and the dump names the
+        # culprit in the persisted .log below.
+        "--timeout=300", f"--junitxml={xml_path}",
     ]
     rc, out = _run(cmd, timeout=_full_suite_timeout())
+    # Persist the complete pytest output BEFORE classification. When the suite
+    # is force-killed mid-run (the os._exit path above), the process's captured
+    # stdout/stderr is otherwise reduced to a 200-char tail in the report and
+    # the stack dump naming the stuck test is lost forever.
+    log_path = xml_path + ".log"
+    try:
+        with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(out or "")
+    except OSError:
+        log_path = None
     verdict = _pytest_verdict(xml_path)
     return {
         "rc": rc,
         "out": out,
         "xml": xml_path,
+        "log": log_path,
         "tests": verdict[0] if verdict else None,
         "failures": verdict[1] if verdict else None,
         "errors": verdict[2] if verdict else None,
@@ -438,11 +457,14 @@ def check_tests(full=False):
         global _LAST_FULL_RUN
         run = _execute_full_suite()
         _LAST_FULL_RUN = run
-        return _verdict_from_run(
+        status, evidence = _verdict_from_run(
             run["rc"], run["out"], run["xml"],
             subject="full suite",
             pass_detail=f"full run: {collected} collected, 0 failed",
         )
+        if status != PASS and run.get("log"):
+            evidence += f" Full pytest output persisted at: {run['log']}"
+        return status, evidence
 
     baseline = SCRIPTS / "test_baseline.json"
     if baseline.exists():
@@ -889,9 +911,11 @@ def check_no_major_failures(full=False):
             f"(no unexplained major failure)"
         )
     if tests is None:
+        log = run.get("log")
         return NOT_VERIFIED, (
             f"full run produced no parseable JUnit verdict (rc={run['rc']}) -- "
             f"the session did not complete a clean run; cross-reference pending"
+            + (f"; full pytest output: {log}" if log else "")
         )
     return NOT_VERIFIED, (
         f"full run: {tests} tests, {failures} failed, {errors} errors -- each "
