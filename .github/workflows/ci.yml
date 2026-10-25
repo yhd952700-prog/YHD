@@ -763,10 +763,12 @@ jobs:
     # artifacts into the production workspace because the workspace root and
     # the assertion target diverged. Pinning the roots here makes that class of
     # mistake impossible for this job.
-    env:
-      LIUHAO_WORKSPACE_ROOT: ${{ runner.temp }}/liuhao-ws
-      AUDIT_DB_PATH: ${{ runner.temp }}/liuhao-audit/audit.db
-      LIUHAO_ALERTS_STORE_PATH: ${{ runner.temp }}/liuhao-alerts.json
+    #
+    # NOTE: ${{ runner.temp }} is NOT available in a job-level `env:` block
+    # (only github/inputs/matrix/needs/secrets/strategy/vars contexts are).
+    # The first step below writes the three paths into $GITHUB_ENV using the
+    # shell's $RUNNER_TEMP, so every subsequent `run:` step inherits them.
+    # This is the only portable way to pin runner-scoped paths job-wide.
 
     steps:
       # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
@@ -782,6 +784,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # Pin workspace / audit / alerts roots to runner temp before any gate
+      # runs. $GITHUB_ENV propagates to all later steps in this job.
+      - name: Pin workspace/audit/alerts roots to runner temp
+        run: |
+          echo "LIUHAO_WORKSPACE_ROOT=$RUNNER_TEMP/liuhao-ws" >> "$GITHUB_ENV"
+          echo "AUDIT_DB_PATH=$RUNNER_TEMP/liuhao-audit/audit.db" >> "$GITHUB_ENV"
+          echo "LIUHAO_ALERTS_STORE_PATH=$RUNNER_TEMP/liuhao-alerts.json" >> "$GITHUB_ENV"
 
       - name: Install Dependencies
         run: |
