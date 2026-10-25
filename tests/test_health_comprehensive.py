@@ -261,7 +261,11 @@ class TestFunctionHealthCheck:
     def test_duration_is_recorded(self):
         """Test that execution duration is recorded."""
         def slow_check():
-            time.sleep(0.01)
+            # Windows time.monotonic() has ~15.6ms resolution (GetTickCount64);
+            # a sleep shorter than that can round to 0.0 when both samples fall
+            # in the same tick. 50ms sits well above the resolution floor so the
+            # "duration was recorded" assertion is stable under load.
+            time.sleep(0.05)
             return HealthStatus.HEALTHY
 
         hc = FunctionHealthCheck("slow", slow_check)
@@ -431,7 +435,7 @@ class TestAggregatedHealthResult:
     def test_duration_recorded(self):
         """Test that total duration is recorded."""
         def slow():
-            time.sleep(0.01)
+            time.sleep(0.05)  # see test_duration_is_recorded: >15.6ms Win floor
             return HealthStatus.HEALTHY
 
         registry = HealthCheckRegistry()

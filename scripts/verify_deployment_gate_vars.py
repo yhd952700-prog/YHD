@@ -234,9 +234,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
             # and listed here so its line is drift-checked too: it shifted from
-            # :762 to :766 the moment the workflow's own comment grew, which is
+            # :762 to :766 the moment the workflow's own comment grew, and again
+            # to :768 when the etcd service block changed (2026-10-24), which is
             # exactly the rot a bare prose pointer would hide.
-            ".github/workflows/ci.yml:766",
+            ".github/workflows/ci.yml:768",
         ),
     },
     {
