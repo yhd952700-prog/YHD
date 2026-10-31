@@ -18,7 +18,7 @@ inputs:
   upstream-result:
     description: >-
       Result of the required upstream job, passed in as
-      `${{ needs.<job>.result }}`. One of: success | failure | cancelled |
+      `needs.<job>.result`. One of: success | failure | cancelled |
       skipped | "" (empty if the input was omitted).
     required: true
 
