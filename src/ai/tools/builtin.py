@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -87,11 +86,14 @@ class CalculatorTool(BaseTool):
     }
 
     def _execute(self, expression: str) -> Any:
-        """Evaluate a math expression safely."""
-        # Clean the expression
-        expr = expression.strip()
+        """Evaluate a math expression safely using AST (no eval/exec)."""
+        import ast
 
-        # Check for dangerous patterns
+        expr = expression.strip()
+        if not expr:
+            raise ValueError("Empty expression")
+
+        # Reject anything that doesn't look like a math expression early.
         dangerous = ["import", "__", "open(", "eval(", "exec(", "compile(",
                      "globals", "locals", "os.", "sys.", "subprocess", "lambda"]
         for pattern in dangerous:
@@ -99,18 +101,78 @@ class CalculatorTool(BaseTool):
                 raise ValueError(f"Expression contains disallowed pattern: {pattern}")
 
         try:
-            result = eval(expr, {"__builtins__": {}}, self._ALLOWED_NAMES)
-            return {
-                "expression": expression,
-                "result": result,
-                "type": type(result).__name__,
-            }
+            tree = ast.parse(expr, mode="eval")
         except SyntaxError as e:
             raise ValueError(f"Syntax error in expression: {e}")
+
+        def _eval_node(node: ast.AST) -> Any:
+            if isinstance(node, ast.Expression):
+                return _eval_node(node.body)
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float, complex)):
+                    return node.value
+                raise ValueError(f"Unsupported constant type: {type(node.value).__name__}")
+            if isinstance(node, ast.Name):
+                if node.id in self._ALLOWED_NAMES:
+                    return self._ALLOWED_NAMES[node.id]
+                raise ValueError(f"Unknown name: {node.id}")
+            if isinstance(node, ast.UnaryOp):
+                operand = _eval_node(node.operand)
+                if isinstance(node.op, ast.UAdd):
+                    return +operand
+                if isinstance(node.op, ast.USub):
+                    return -operand
+                raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+            if isinstance(node, ast.BinOp):
+                left = _eval_node(node.left)
+                right = _eval_node(node.right)
+                op = node.op
+                if isinstance(op, ast.Add):
+                    return left + right
+                if isinstance(op, ast.Sub):
+                    return left - right
+                if isinstance(op, ast.Mult):
+                    return left * right
+                if isinstance(op, ast.Div):
+                    if right == 0:
+                        raise ValueError("Division by zero")
+                    return left / right
+                if isinstance(op, ast.FloorDiv):
+                    if right == 0:
+                        raise ValueError("Division by zero")
+                    return left // right
+                if isinstance(op, ast.Mod):
+                    if right == 0:
+                        raise ValueError("Modulo by zero")
+                    return left % right
+                if isinstance(op, ast.Pow):
+                    return left ** right
+                raise ValueError(f"Unsupported binary operator: {type(op).__name__}")
+            if isinstance(node, ast.Call):
+                if not isinstance(node.func, ast.Name):
+                    raise ValueError("Only direct function calls are allowed")
+                func_name = node.func.id
+                if func_name not in self._ALLOWED_NAMES:
+                    raise ValueError(f"Unknown function: {func_name}")
+                func = self._ALLOWED_NAMES[func_name]
+                args = [_eval_node(a) for a in node.args]
+                if node.keywords:
+                    raise ValueError("Keyword arguments are not allowed")
+                return func(*args)
+            raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+
+        try:
+            result = _eval_node(tree)
         except ZeroDivisionError:
             raise ValueError("Division by zero")
-        except NameError as e:
-            raise ValueError(f"Unknown function or variable: {e}")
+        except (ValueError, TypeError) as e:
+            raise ValueError(str(e))
+
+        return {
+            "expression": expression,
+            "result": result,
+            "type": type(result).__name__,
+        }
 
 
 # ======================================================================
@@ -241,134 +303,62 @@ class CodeRunnerTool(BaseTool):
         ),
     ]
 
-    # Allowed built-in functions
-    _ALLOWED_BUILTINS = {
-        "abs": abs,
-        "all": all,
-        "any": any,
-        "bin": bin,
-        "bool": bool,
-        "chr": chr,
-        "dict": dict,
-        "dir": dir,
-        "divmod": divmod,
-        "enumerate": enumerate,
-        "float": float,
-        "format": format,
-        "hex": hex,
-        "int": int,
-        "isinstance": isinstance,
-        "issubclass": issubclass,
-        "iter": iter,
-        "len": len,
-        "list": list,
-        "map": map,
-        "max": max,
-        "min": min,
-        "next": next,
-        "oct": oct,
-        "ord": ord,
-        "pow": pow,
-        "print": print,
-        "range": range,
-        "repr": repr,
-        "reversed": reversed,
-        "round": round,
-        "set": set,
-        "slice": slice,
-        "sorted": sorted,
-        "str": str,
-        "sum": sum,
-        "tuple": tuple,
-        "type": type,
-        "zip": zip,
-        "True": True,
-        "False": False,
-        "None": None,
-    }
-
-    # Allowed modules
-    _ALLOWED_MODULES = {
-        "math": __import__("math"),
-        "random": __import__("random"),
-        "json": __import__("json"),
-        "re": __import__("re"),
-        "datetime": __import__("datetime"),
-        "collections": __import__("collections"),
-        "statistics": __import__("statistics"),
-        "itertools": __import__("itertools"),
-        "string": __import__("string"),
-    }
-
     def _execute(self, code: str, timeout: float = 5.0) -> Any:
-        """Execute Python code in a sandbox."""
-        import io
+        """Execute Python code via the RestrictedPython backend.
+
+        The backend provides capability isolation (no import / open / eval /
+        compile) and CPU timeout via a subprocess. It does NOT provide memory
+        or filesystem isolation — this is a capability sandbox, not a
+        container. For true resource isolation use the gVisor/Docker backends.
+        """
+        import ast
         import sys
-        import signal
+        import uuid
 
-        # Security checks
-        dangerous_patterns = [
-            r"\bimport\s+os\b",
-            r"\bimport\s+sys\b",
-            r"\bimport\s+subprocess\b",
-            r"\b__import__\b",
-            r"\bopen\s*\(",
-            r"\beval\s*\(",
-            r"\bexec\s*\(",
-            r"\bcompile\s*\(",
-            r"\bglobals\s*\(",
-            r"\blocals\s*\(",
-            r"\b__\w+__\b",  # dunder methods
-            r"\bgetattr\s*\(",
-            r"\bsetattr\s*\(",
-            r"\bdelattr\s*\(",
-        ]
+        from src.plugins.sandbox.backends.base import ExecutionStatus
+        from src.plugins.sandbox.backends.restricted_python_backend import (
+            RestrictedPythonBackend,
+        )
 
-        for pattern in dangerous_patterns:
-            if re.search(pattern, code):
-                raise ValueError(
-                    f"Code contains disallowed pattern: {pattern}"
-                )
+        backend = RestrictedPythonBackend(default_timeout=max(1, int(timeout)))
+        if not backend.is_available():
+            raise ValueError(
+                "Code runner backend unavailable: "
+                + (backend._unavailable_reason or "RestrictedPython not installed")
+            )
 
-        # Capture stdout
-        output_buffer = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = output_buffer
+        execution_id = f"coderunner-{uuid.uuid4().hex[:12]}"
+        exec_result = backend.execute(
+            execution_id=execution_id,
+            command=[sys.executable, "-c", code],
+            timeout=max(1, int(timeout)),
+        )
 
-        # Build the restricted namespace
-        namespace: Dict[str, Any] = dict(self._ALLOWED_BUILTINS)
-        namespace.update(self._ALLOWED_MODULES)
-        namespace["__builtins__"] = self._ALLOWED_BUILTINS
+        if not exec_result.success:
+            # 后端区分了「主动拒绝」(REJECTED) 与「执行失败」(FAILED)。
+            # 对工具调用方统一抛 ValueError；拒绝类错误前缀 "disallowed"
+            # 以便上层识别为安全拦截。
+            msg = exec_result.error or exec_result.status.value
+            if exec_result.status == ExecutionStatus.REJECTED:
+                raise ValueError(f"disallowed pattern rejected by sandbox: {msg}")
+            raise ValueError(f"Execution error: {msg}")
 
-        try:
-            # Set recursion limit for safety
-            old_limit = sys.getrecursionlimit()
-            sys.setrecursionlimit(500)
-
+        # 后端把 result 变量的值以 repr 形式经 stdout 传回。
+        # 尝试还原成 Python 字面量（int/float/str/list/dict/...），
+        # 还原失败时退回字符串 repr，保证信息不丢。
+        raw_result = exec_result.output
+        result_value: Any = raw_result
+        if raw_result:
             try:
-                exec(code, namespace, namespace)
-            finally:
-                sys.setrecursionlimit(old_limit)
+                result_value = ast.literal_eval(raw_result)
+            except (ValueError, SyntaxError):
+                result_value = raw_result
 
-            output = output_buffer.getvalue()
-
-            # Try to get a result variable if set
-            result_value = namespace.get("result", None)
-
-            return {
-                "output": output,
-                "result": result_value,
-                "success": True,
-            }
-
-        except RecursionError:
-            raise ValueError("Execution exceeded recursion limit")
-        except MemoryError:
-            raise ValueError("Execution exceeded memory limits")
-        except Exception as e:
-            raise ValueError(f"Execution error: {type(e).__name__}: {e}")
-        finally:
-            sys.stdout = old_stdout
+        return {
+            "output": exec_result.stdout,
+            "result": result_value,
+            "success": True,
+        }
 
 
 # ======================================================================

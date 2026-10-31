@@ -251,32 +251,40 @@ class HubSpotAdapter(BaseIntegrationAdapter):
         self._status = ConnectionStatus.CONNECTING
         self._logger.info("Connecting to HubSpot API...")
 
+        connected = False
+        primary_error: Optional[Exception] = None
+
+        # Primary: validate token via access tokens info endpoint
         try:
-            # Validate token using the access tokens info endpoint
             data = self._api_call("GET", "oauth/v1/access-tokens/info")
             self._hub_id = data.get("hub_id")
             self._app_id = data.get("app_id")
             self._token_info = data
+            connected = True
+        except Exception as e:
+            primary_error = e
+
+        # Fallback: try CRM API to validate token
+        if not connected:
+            try:
+                self._api_call(
+                    "GET", "crm/v3/objects/contacts",
+                    params={"limit": 1},
+                )
+                connected = True
+            except Exception:
+                pass
+
+        if connected:
             self._status = ConnectionStatus.CONNECTED
             self._connected_at = time.time()
             self._logger.info(
                 "Connected to HubSpot (Hub ID: %s)", self._hub_id,
             )
             return True
-        except Exception as e:
-            # Fallback: try CRM API to validate
-            try:
-                self._api_call(
-                    "GET", "crm/v3/objects/contacts",
-                    params={"limit": 1},
-                )
-                self._status = ConnectionStatus.CONNECTED
-                self._connected_at = time.time()
-                self._logger.info("Connected to HubSpot (via CRM API)")
-                return True
-            except Exception:
-                self._status = ConnectionStatus.ERROR
-                raise self._handle_error(f"Connection error: {e}")
+
+        self._status = ConnectionStatus.ERROR
+        raise self._handle_error(f"Connection error: {primary_error}")
 
     def disconnect(self) -> bool:
         """Disconnect from HubSpot."""
