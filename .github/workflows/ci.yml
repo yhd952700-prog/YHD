@@ -126,6 +126,7 @@ jobs:
       security-events: write
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog
@@ -133,7 +134,6 @@ jobs:
           upstream-name: test
           upstream-result: ${{ needs.test.result }}
 
-      - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scan
         run: |
@@ -209,13 +209,13 @@ jobs:
     if: always()
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'security' job did not succeed.
       - name: CRITICAL-5 gate watchdog (security)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: security
           upstream-result: ${{ needs.security.result }}
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -252,6 +252,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog
@@ -259,7 +260,6 @@ jobs:
           upstream-name: test
           upstream-result: ${{ needs.test.result }}
 
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -771,6 +771,7 @@ jobs:
     # This is the only portable way to pin runner-scoped paths job-wide.
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog
@@ -778,7 +779,6 @@ jobs:
           upstream-name: test
           upstream-result: ${{ needs.test.result }}
 
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -993,6 +993,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'test' job did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog
@@ -1000,7 +1001,6 @@ jobs:
           upstream-name: test
           upstream-result: ${{ needs.test.result }}
 
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -1075,13 +1075,13 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
       - name: CRITICAL-5 gate watchdog (build)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: build
           upstream-result: ${{ needs.build.result }}
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -1116,13 +1116,13 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'integration' job did not succeed.
       - name: CRITICAL-5 gate watchdog (integration)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: integration
           upstream-result: ${{ needs.integration.result }}
-      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
@@ -1395,6 +1395,7 @@ jobs:
     # 'observability' cannot silently SKIP this final gate.
     if: always()
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if any required upstream did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog

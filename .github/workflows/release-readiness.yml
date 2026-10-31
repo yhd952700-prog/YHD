@@ -142,13 +142,13 @@ jobs:
           --health-retries 5
 
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'readiness' job did not succeed.
       - name: CRITICAL-5 gate watchdog (readiness)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: readiness
           upstream-result: ${{ needs.readiness.result }}
-      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5

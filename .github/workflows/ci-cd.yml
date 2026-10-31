@@ -112,6 +112,7 @@ jobs:
       # Do NOT simplify this to a constant.
       LIUHAO_HOLD: ${{ vars.LIUHAO_HOLD || '1' }}
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if a required upstream did not succeed.
       - name: CRITICAL-5 gate watchdog (test)
         uses: ./.github/actions/ci-gate-watchdog
@@ -123,7 +124,6 @@ jobs:
         with:
           upstream-name: security
           upstream-result: ${{ needs.security.result }}
-      - uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to Container Registry
@@ -185,13 +185,13 @@ jobs:
     # Must stay a literal `always()` for that watchdog.
     if: always()
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'build' job did not succeed.
       - name: CRITICAL-5 gate watchdog (build)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: build
           upstream-result: ${{ needs.build.result }}
-      - uses: actions/checkout@v4
       - name: Deploy to Staging
         # ITEM-4: same safe form as the push step — success() gate preserved.
         if: ${{ success() && !cancelled() }}
@@ -212,13 +212,13 @@ jobs:
     # Must stay a literal `always()` for that watchdog.
     if: always()
     steps:
+      - uses: actions/checkout@v4
       # CRITICAL-5 watchdog: fail loudly if the required 'deploy-staging' job did not succeed.
       - name: CRITICAL-5 gate watchdog (deploy-staging)
         uses: ./.github/actions/ci-gate-watchdog
         with:
           upstream-name: deploy-staging
           upstream-result: ${{ needs.deploy-staging.result }}
-      - uses: actions/checkout@v4
       - name: Deploy to Production
         # ITEM-4: same safe form — success() gate preserved.
         if: ${{ success() && !cancelled() }}
