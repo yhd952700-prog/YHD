@@ -42,10 +42,8 @@ REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-VENV_PY = (
-    "D:/LiuHao-Data/UserRoot/.workbuddy/binaries/python/envs/default/"
-    "Scripts/python.exe"
-)
+# 同上：子进程工人用当前解释器（sys.executable），不要硬编码开发机 venv 路径。
+VENV_PY = sys.executable
 
 WORKER = str(Path(__file__).resolve().parent / "_ubx005_fence_worker.py")
 

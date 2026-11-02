@@ -45,10 +45,10 @@ REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-VENV_PY = (
-    "D:/LiuHao-Data/UserRoot/.workbuddy/binaries/python/envs/default/"
-    "Scripts/python.exe"
-)
+# 子进程工人必须用**当前运行 pytest 的解释器**：CI（ubuntu）上不存在任何
+# D:\LiuHao-Data\... 路径，硬编码开发机 venv 会让这些用例在 CI 上以
+# FileNotFoundError 全灭（实测 run 41397548427 的 3 处失败都是这个）。
+VENV_PY = sys.executable
 
 
 # =============================================================================
