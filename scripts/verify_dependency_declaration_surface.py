@@ -339,6 +339,10 @@ IMPORT_ROOT_ALIASES: Dict[str, str] = {
     # `google.genai` namespace). Without this alias the gate cannot tell the
     # declared distribution from the undeclared import root.
     "google": "google-generativeai",
+    # `import argon2` / `from argon2.profiles import ...` 由 argon2-cffi 提供
+    # （import 根名与 PyPI 分发名不同）。未装包时 packages_distributions 给不出
+    # 映射，没有这条别名会把**正确的** argon2-cffi 声明误判为未声明。
+    "argon2": "argon2-cffi",
 }
 
 

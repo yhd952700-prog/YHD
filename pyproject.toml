@@ -138,6 +138,16 @@ deploy-closure = [
 ops = [
     "websockets>=12.0",
 ]
+# 密码散列与 TOTP 的强实现。**可选**（惰性 import + 优雅降级）：
+# src/security/encryption.py 的 argon2/bcrypt 主路径缺失时退到 PBKDF2-SHA256，
+# src/security/authentication.py 的 pyotp 缺失时退到手写 HMAC-SHA1 TOTP。
+# 兜底让开发机不装也能跑，但"装没装"必须是声明过的选择而不是环境运气 ——
+# 生产部署想要 argon2id / RFC 6238 真实现时显式 `pip install -e .[security]`。
+security = [
+    "argon2-cffi>=23.1.0",
+    "bcrypt>=4.1.0",
+    "pyotp>=2.9.0",
+]
 # src/ai/providers.py:323 `GoogleProvider.generate()` 惰性导入
 # `google.generativeai`（Gemini 旧版 SDK）。之前在任何声明面里都**零 google\***
 # 声明，而锁文件只带 google-genai（提供互不相关的 `google.genai` 命名空间），
