@@ -105,7 +105,7 @@ dependencies = [
 # pytest-timeout 同理进 [tests]（不进运行期依赖）：scripts/verify_readiness.py 的
 # C3(--full：`pytest tests/ --timeout=60`) 与 C6(`--timeout=120`) 靠它给单测/混沌
 # 套件加挂起保护。它是 release-readiness CI 的运行期门禁依赖 —— 该 job 跑
-# `verify_readiness.py --full` 前先 `pip install -e .[tests,etcd]`，缺它时 pytest 报
+# `verify_readiness.py --full` 前先 `pip install -e .[tests]`，缺它时 pytest 报
 # `error: unrecognized arguments: --timeout` ⇒ rc=4 ⇒ C3/C6 根本无法执行。此前本机
 # 恰好装了、却从未出现在任何声明面，属依赖声明面缺失（见 #383）。
 [project.optional-dependencies]
@@ -114,12 +114,12 @@ tests = [
     "lupa>=2.0",
     "pytest-timeout>=2.3.0",
 ]
-# 第三个协调后端（etcd）。**可选**：不进默认运行期依赖、也不进 [tests]，避免
-# 在没装 etcd3 的环境里把安装拖垮。CI 上若想让 TestRealEtcdEndToEnd 从"skip"变
-# "真验证"，显式 `pip install -e .[etcd]` 即可（本仓库 venv 按任务约束未安装）。
-etcd = [
-    "etcd3>=0.12.0",
-]
+# 第三个协调后端（etcd）：**不需要额外的 pip 包**。实现走 etcd v3 的 HTTP/JSON
+# gateway（src/distribution/coordination.py 的 _EtcdHttpAdapter，复用运行期已声明的
+# requests），所以这里刻意**不设 [etcd] extra**。原先声明的 etcd3>=0.12.0 已移除：
+# 它自带 protoc 3.x 生成的 _pb2.py，在 protobuf>=4（CI 解析到 6.x）上一 import 就抛
+# "TypeError: Descriptors cannot be created directly"；降级 protobuf 或改用纯 Python
+# 实现都会伤到其它依赖，因此从客户端这一侧彻底去掉 protobuf 依赖。
 # scripts/verify_deployed_product_closure.py 的浏览器后端。**可选**，且不进运行期
 # 依赖：这个门禁跑在**宿主/CI runner** 上（它驱动浏览器去访问已部署的栈），
 # 进运行期依赖会把生产镜像和每个 CI job 的安装都拖垮。此前 playwright/selenium
@@ -152,7 +152,7 @@ google = [
 # 会白白加重生产镜像和每个 CI job。
 #
 # 此前它**只**出现在 requirements.txt:15（alembic==1.19.2），而 CI 走
-# `pip install -e .[tests,etcd]` 根本不读 requirements.txt，于是 ci.yml 里有两处
+# `pip install -e .[tests]` 根本不读 requirements.txt，于是 ci.yml 里有两处
 # 裸 `pip install alembic sqlalchemy` 兜底（不钉版本）。这是一个**脆弱契约**：
 # 声明面说没有这个依赖，真正在用它的人靠"记得手写一行 pip install"活着 ——
 # 任何新增需要 alembic 的 job 漏写那一行就会静默降级或失败，且报出来的错

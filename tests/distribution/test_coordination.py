@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -47,6 +48,7 @@ from src.distribution.coordination import (
     FileLockLease,
     FencingToken,
     RedisLease,
+    _EtcdHttpAdapter,
     get_distributed_lease,
     parse_token,
 )
@@ -504,14 +506,19 @@ class TestUnreachableBackendDenies:
         assert "consul" in str(exc.value)
 
     def test_etcd_backend_is_now_supported_and_fails_closed_without_etcd(self):
-        """etcd 现在是受支持的后端；但 etcd3 未安装 / 后端不可达时必须 fail-closed。
+        """etcd 现在是受支持的后端；live etcd 不可达时必须 fail-closed。
 
-        绝不能在 etcd3 缺失时崩溃，也不能偷偷降级成 file/memory。
+        绝不能在后端缺失时崩溃，也不能偷偷降级成 file/memory。
         """
-        # etcd3 在此 venv 未安装（任务约束：设计测试不依赖它），所以走到
-        # connect() 的 import etcd3 分支 → CoordinationUnavailableError。
+        # 显式指向一个几乎必定拒绝连接的端口（而不是依赖本机/CI 恰好没起 etcd：
+        # CI 的 etcd 服务容器是**起着的**，那样这条断言会变成"环境决定结果"）。
         with pytest.raises(CoordinationUnavailableError) as exc:
-            get_distributed_lease("x", backend="etcd")
+            get_distributed_lease(
+                "x",
+                backend="etcd",
+                etcd_endpoints=["127.0.0.1:6399"],
+                config={"connect_timeout": 0.3},
+            )
         assert "etcd" in str(exc.value).lower()
 
     def test_operations_on_a_closed_redis_lease_deny(self):
@@ -1986,14 +1993,6 @@ def _etcd_available() -> bool:
         sock.close()
 
 
-try:  # pragma: no cover - 取决于本机装没装
-    import etcd3 as _etcd3_mod  # noqa: F401
-
-    _HAS_ETCD3 = True
-except Exception:  # noqa: BLE001
-    _HAS_ETCD3 = False
-
-
 class TestEtcdLeaseWiring:
     """EtcdLease 的接线：验证「传给 etcd 的语义是否正确、返回值如何被解释」。
 
@@ -2167,21 +2166,164 @@ class TestEtcdLeaseFailClosed:
             fence.acquire_for("exec-x", "o", ["read"], ttl_sec=30.0)
 
 
+# =============================================================================
+# M2) etcd HTTP/JSON gateway 适配器 —— 不依赖 live etcd 的报文语义验证
+# =============================================================================
+
+_ETCD_BASE = "http://127.0.0.1:2379"
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+class _FakeEtcdHttpResponse:
+    def __init__(self, body, status_code: int = 200) -> None:
+        self._body = body
+        self.status_code = status_code
+        self.text = "" if status_code < 400 else json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+class _RecordingEtcdGateway:
+    """假 ``requests.Session``：记录请求并按 etcd gateway 的真实 JSON 形状回放。"""
+
+    def __init__(self, bodies=None, raise_error=None, status_code: int = 200) -> None:
+        self.bodies = bodies or {}
+        self.raise_error = raise_error
+        self.status_code = status_code
+        self.calls = []
+        self.closed = False
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url, json, timeout))
+        if self.raise_error is not None:
+            raise self.raise_error
+        return _FakeEtcdHttpResponse(self.bodies.get(url, {}), self.status_code)
+
+    def close(self):
+        self.closed = True
+
+    def path_calls(self, path: str):
+        return [payload for url, payload, _t in self.calls if url.endswith(path)]
+
+
+class TestEtcdHttpAdapter:
+    """验证发给 etcd HTTP/JSON gateway 的报文语义（无需 live etcd）。
+
+    这同时是 protobuf 冲突修复的回归保护：该实现不再 import etcd3 / protobuf，
+    所以这里在任何 protobuf 版本下都可执行；原先 CI 上
+    ``TypeError: Descriptors cannot be created directly`` 的导入路径已被彻底移除。
+    """
+
+    def _adapter(self, gateway: _RecordingEtcdGateway) -> _EtcdHttpAdapter:
+        adapter = _EtcdHttpAdapter(_ETCD_BASE + "/", connect_timeout=0.5)
+        adapter._session = gateway
+        return adapter
+
+    def test_get_decodes_value_and_version(self):
+        gateway = _RecordingEtcdGateway({
+            _ETCD_BASE + "/v3/kv/range": {
+                "kvs": [{"key": _b64(b"k"), "value": _b64(b"v"), "version": "3"}],
+            },
+        })
+        adapter = self._adapter(gateway)
+        assert adapter.get("k") == b"v"
+        assert adapter.version("k") == 3
+        assert gateway.path_calls("/v3/kv/range")[0] == {"key": _b64(b"k")}
+
+    def test_absent_key_is_none_and_version_zero(self):
+        gateway = _RecordingEtcdGateway({_ETCD_BASE + "/v3/kv/range": {"kvs": []}})
+        adapter = self._adapter(gateway)
+        assert adapter.get("missing") is None
+        assert adapter.version("missing") == 0
+
+    def test_grant_put_attach_lease_id(self):
+        gateway = _RecordingEtcdGateway({
+            _ETCD_BASE + "/v3/lease/grant": {"ID": "42", "TTL": "30"},
+        })
+        adapter = self._adapter(gateway)
+        assert adapter.grant_ttl(30.0) == 42
+        adapter.put("k", b"v", 42)
+        assert gateway.path_calls("/v3/lease/grant")[0] == {"TTL": 30}
+        assert gateway.path_calls("/v3/kv/put")[0] == {
+            "key": _b64(b"k"), "value": _b64(b"v"), "lease": "42",
+        }
+
+    def test_cas_compares_version_and_reports_succeeded(self):
+        gateway = _RecordingEtcdGateway({_ETCD_BASE + "/v3/kv/txn": {"succeeded": True}})
+        adapter = self._adapter(gateway)
+        assert adapter.cas_version("k", 4, b"v", 42) is True
+        txn = gateway.path_calls("/v3/kv/txn")[0]
+        assert txn["compare"] == [{
+            "key": _b64(b"k"), "target": "VERSION", "result": "EQUAL", "version": "4",
+        }]
+        assert txn["success"][0]["request_put"] == {
+            "key": _b64(b"k"), "value": _b64(b"v"), "lease": "42",
+        }
+
+    def test_cas_absent_compares_version_zero(self):
+        gateway = _RecordingEtcdGateway({_ETCD_BASE + "/v3/kv/txn": {"succeeded": False}})
+        adapter = self._adapter(gateway)
+        assert adapter.cas_absent("k", b"1") is False
+        txn = gateway.path_calls("/v3/kv/txn")[0]
+        assert txn["compare"][0]["version"] == "0"
+        assert "lease" not in txn["success"][0]["request_put"]
+
+    def test_prefix_scan_uses_next_byte_as_range_end(self):
+        gateway = _RecordingEtcdGateway({
+            _ETCD_BASE + "/v3/kv/range": {
+                "kvs": [
+                    {"key": _b64(b"liuhao:lease:a"), "value": _b64(b"1")},
+                    {"key": _b64(b"liuhao:lease:b"), "value": _b64(b"2")},
+                ],
+            },
+        })
+        adapter = self._adapter(gateway)
+        assert adapter.get_prefix("liuhao:lease:") == {
+            "liuhao:lease:a": b"1", "liuhao:lease:b": b"2",
+        }
+        assert gateway.path_calls("/v3/kv/range")[0]["range_end"] == _b64(b"liuhao:lease;")
+
+    def test_transport_error_fails_closed_and_ping_is_false(self):
+        gateway = _RecordingEtcdGateway(raise_error=ConnectionError("boom"))
+        adapter = self._adapter(gateway)
+        assert adapter.ping() is False
+        with pytest.raises(CoordinationUnavailableError) as exc:
+            adapter.get("k")
+        assert "etcd" in str(exc.value).lower()
+
+    def test_close_revokes_granted_leases(self):
+        gateway = _RecordingEtcdGateway({_ETCD_BASE + "/v3/lease/grant": {"ID": "7"}})
+        adapter = self._adapter(gateway)
+        adapter.grant_ttl(30.0)
+        adapter.close()
+        assert gateway.path_calls("/v3/lease/revoke")[0] == {"ID": "7"}
+        assert gateway.closed is True
+
+
 @pytest.mark.skipif(
-    not (_etcd_available() and _HAS_ETCD3),
-    reason="需要真实 etcd（127.0.0.1:2379）+ etcd3 库；否则跳过。",
+    not _etcd_available(),
+    reason="需要真实 etcd（127.0.0.1:2379）；否则跳过。",
 )
 class TestRealEtcdEndToEnd:
     """只有真实 etcd 才能真正验证事务语义（compare-and-put / TTL / 全局令牌）。
 
     跳过时请明确知道这意味着什么：EtcdLease 的**运行时**行为在本环境未被执行验证
-    （CI 上若 etcd 服务容器 + etcd3 就位，则会真正执行）。etcd 逻辑本身已用内存假
-    后端在 :class:`TestEtcdLeaseWiring` 真跑验证，不依赖 live etcd。
+    （CI 上 etcd 服务容器就位，因此会真正执行）。etcd 逻辑本身已用内存假后端在
+    :class:`TestEtcdLeaseWiring` 真跑验证，不依赖 live etcd。
     """
 
     def test_cross_node_mutual_exclusion(self):
-        a = get_distributed_lease("e2e-a", backend="etcd")
-        b = get_distributed_lease("e2e-a", backend="etcd")
+        # 唯一 lease 名，理由同上：用例结束时 b 仍持有租约（30s TTL，测试刻意不
+        # 释放第二次 acquire 的结果）。固定名字会让同一 etcd 数据目录上紧接着的
+        # 下一轮运行读到"node-b 仍持有" -> ok_a=False。两个客户端仍共用同一个名字，
+        # 跨节点互斥语义不变。
+        name = f"e2e-mutex-{uuid.uuid4().hex[:8]}"
+        a = get_distributed_lease(name, backend="etcd")
+        b = get_distributed_lease(name, backend="etcd")
         ok_a, tok_a = a.acquire("node-a", 30.0)
         ok_b, _ = b.acquire("node-b", 30.0)
         assert ok_a is True and ok_b is False
@@ -2190,7 +2332,12 @@ class TestRealEtcdEndToEnd:
         assert ok_b2 is True and int(tok_b2) > int(tok_a)
 
     def test_consume_dedups_a_replay(self):
-        lease = get_distributed_lease("e2e-consume", backend="etcd")
+        # 每次运行用唯一 lease 名：consume 写入的 consumed key 带 24h TTL，且刻意
+        # 不随进程退出清理（它就是跨节点共享的持久去重状态）。固定名字会让**同一
+        # etcd 数据目录**上的第二轮运行直接命中 "already consumed" —— CI 每次是
+        # 全新容器所以只在本机复现，但测试不可重复运行本身就是缺陷。
+        name = f"e2e-consume-{uuid.uuid4().hex[:8]}"
+        lease = get_distributed_lease(name, backend="etcd")
         lease.consume("exec-1", FencingToken(1), "c1")
         with pytest.raises(ValueError):
             lease.consume("exec-1", FencingToken(1), "c1")

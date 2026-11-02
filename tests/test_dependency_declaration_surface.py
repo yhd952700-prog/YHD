@@ -135,7 +135,7 @@ def test_requirements_without_the_extra_does_not_satisfy_the_test_surface():
 def test_any_install_command_may_satisfy_the_test_surface():
     """A job may install the lock AND then the extra; that is satisfied."""
     ok, _ = gate.job_installs_test_surface(
-        ["pip install -r requirements.txt", "pip install -e .[tests,etcd]"]
+        ["pip install -r requirements.txt", "pip install -e .[tests]"]
     )
     assert ok is True, "judging on the first command alone is a false red"
 

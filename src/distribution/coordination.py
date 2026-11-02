@@ -40,6 +40,7 @@ key，且 ``release()`` 完全不校验 ``lock_id``。``src/distribution/electio
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -1279,10 +1280,11 @@ if r then return 1 else return 0 end
 # 可选后端：Etcd（与 RedisLease 并列的第三个真实跨节点后端）
 # =============================================================================
 
-#: EtcdLease 需要的**最少** KV 操作面。生产用 :class:`_Etcd3Adapter` 包住
-#: ``etcd3`` 库；测试用内存假后端（见 ``tests/distribution/test_coordination.py``
-#: 的 ``_FakeEtcdClient``）实现同一面，因此"etcd 路径"可在**无 live etcd** 的环境
-#: 下被真执行验证（与 fakeredis 同理）。
+#: EtcdLease 需要的**最少** KV 操作面。生产用 :class:`_EtcdHttpAdapter` 直连
+#: etcd v3 的 HTTP/JSON gateway（与服务端同一个客户端端口）；测试用内存假后端
+#: （见 ``tests/distribution/test_coordination.py`` 的 ``_FakeEtcdClient``）实现
+#: 同一面，因此"etcd 路径"可在**无 live etcd** 的环境下被真执行验证（与 fakeredis
+#: 同理）。
 #:
 #: 关键不变量（与 RedisLease 完全一致）：
 #: * 租约键的"存活"由 etcd 的**租约 TTL** 判定 —— 不需要两台机器时钟一致。
@@ -1298,121 +1300,170 @@ class _EtcdContention(Exception):
     """
 
 
-class _Etcd3Adapter:
-    """把 ``etcd3`` 客户端适配成 EtcdLease 需要的极简 KV 面。
+class _EtcdHttpAdapter:
+    """etcd v3 HTTP/JSON gateway（``/v3/*``）上的极简 KV 适配器。
+
+    **为什么不用 etcd3**：etcd3 0.12.0 自带 protoc 3.x 生成的 ``*_pb2.py``，在
+    protobuf>=4（本仓 CI 解析到 6.33.6）上一 import 就抛 ``TypeError: Descriptors
+    cannot be created directly``。官方给的三条出路都会伤到别处：降级 protobuf
+    与 opentelemetry-proto 的运行期要求冲突；纯 Python 实现会让全进程的 protobuf
+    变慢；etcd3 已停止维护、也没有重新生成的存根。而 etcd **服务器本身**在客户端
+    端口（2379）同时提供 gRPC 与 HTTP/JSON gateway，走后者就完全不需要
+    protobuf / grpcio / etcd3 这三个包。
 
     任何方法在后端不可用时都抛 :class:`CoordinationUnavailableError`（不抛裸
     ``ConnectionError``）；EtcdLease 由此把一切后端故障翻译成 fail-closed。
+    键值在本地按 bytes 处理，base64 编码只在网关这一层发生。
     """
 
-    def __init__(self, client, connect_timeout: float = 2.0) -> None:
-        self._c = client
-        self._connect_timeout = connect_timeout
+    def __init__(self, base_url: str, connect_timeout: float = 2.0) -> None:
+        try:
+            import requests  # 运行期依赖，已声明在 pyproject 的 dependencies
+        except ImportError as exc:  # pragma: no cover - 声明面已保证装得上
+            raise CoordinationUnavailableError(
+                "etcd coordination backend needs the requests library"
+            ) from exc
+        self._base_url = base_url.rstrip("/") + "/v3"
+        self._connect_timeout = max(0.1, float(connect_timeout))
+        self._session = requests.Session()
         self._leases: Dict[int, Any] = {}
+
+    # -- 编码 / 请求 helpers ------------------------------------------------
+    @staticmethod
+    def _as_bytes(key: Any) -> bytes:
+        return key if isinstance(key, bytes) else str(key).encode()
+
+    @staticmethod
+    def _enc(data: bytes) -> str:
+        return base64.b64encode(data).decode("ascii")
+
+    @classmethod
+    def _dec(cls, text: str) -> bytes:
+        return base64.b64decode(text.encode("ascii")) if text else b""
+
+    @staticmethod
+    def _prefix_end(prefix: bytes) -> bytes:
+        """前缀扫描的 range_end：把最后一个非 0xFF 字节 +1（与 etcd 自身一致）。"""
+        end = bytearray(prefix)
+        while end:
+            if end[-1] < 0xFF:
+                end[-1] += 1
+                return bytes(end)
+            end.pop()
+        return b"\x00"
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            resp = self._session.post(
+                self._base_url + path, json=payload, timeout=self._connect_timeout
+            )
+            status = resp.status_code
+            if status >= 400:
+                raise ConnectionError(f"HTTP {status}: {resp.text[:200]}")
+            data = resp.json()
+        except CoordinationUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise CoordinationUnavailableError(
+                f"etcd {path} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise CoordinationUnavailableError(
+                f"etcd {path} returned a non-object JSON body"
+            )
+        return data
 
     def ping(self) -> bool:
         try:
-            self._c.get(b"__liuhao_ping__")
-        except Exception:  # noqa: BLE001
+            self._post("/kv/range", {"key": self._enc(b"__liuhao_ping__")})
+        except CoordinationUnavailableError:
             return False
         return True
 
-    def get(self, key: str):
-        try:
-            val, _meta = self._c.get(key)
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd get failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        return val
+    def get(self, key: str) -> Optional[bytes]:
+        data = self._post("/kv/range", {"key": self._enc(self._as_bytes(key))})
+        kvs = data.get("kvs") or []
+        if not kvs:
+            return None
+        return self._dec(kvs[0].get("value", ""))
 
     def version(self, key: str) -> int:
-        try:
-            _val, meta = self._c.get(key)
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd get failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        return int(meta.version) if meta is not None else 0
+        data = self._post("/kv/range", {"key": self._enc(self._as_bytes(key))})
+        kvs = data.get("kvs") or []
+        if not kvs:
+            return 0
+        return int(kvs[0].get("version", "0") or 0)
 
     def grant_ttl(self, ttl_sec: float) -> int:
-        try:
-            lease = self._c.lease(max(1, int(ttl_sec)))
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd grant lease failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        self._leases[lease.id] = lease
-        return lease.id
+        data = self._post("/lease/grant", {"TTL": max(1, int(ttl_sec))})
+        lease_id = data.get("ID")
+        if lease_id is None:
+            raise CoordinationUnavailableError("etcd lease grant returned no ID")
+        self._leases[int(lease_id)] = True
+        return int(lease_id)
 
     def put(self, key: str, value: bytes, lease_id: Optional[int] = None) -> None:
-        lease = self._leases.get(lease_id) if lease_id is not None else None
-        try:
-            self._c.put(key, value, lease=lease)
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd put failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        payload: Dict[str, Any] = {
+            "key": self._enc(self._as_bytes(key)),
+            "value": self._enc(self._as_bytes(value)),
+        }
+        if lease_id is not None:
+            payload["lease"] = str(int(lease_id))
+        self._post("/kv/put", payload)
 
     def delete(self, key: str) -> None:
-        try:
-            self._c.delete(key)
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd delete failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        self._post("/kv/deleterange", {"key": self._enc(self._as_bytes(key))})
+
+    def _cas(
+        self, key: str, expected_version: int, value: bytes,
+        lease_id: Optional[int] = None,
+    ) -> bool:
+        """compare-on-version + success-put 事务；返回 etcd 的 ``succeeded``。"""
+        k = self._enc(self._as_bytes(key))
+        put_req: Dict[str, Any] = {"key": k, "value": self._enc(self._as_bytes(value))}
+        if lease_id is not None:
+            put_req["lease"] = str(int(lease_id))
+        data = self._post("/kv/txn", {
+            "compare": [{
+                "key": k,
+                "target": "VERSION",
+                "result": "EQUAL",
+                "version": str(int(expected_version)),
+            }],
+            "success": [{"request_put": put_req}],
+        })
+        return bool(data.get("succeeded"))
 
     def cas_version(
         self, key: str, expected_version: int, value: bytes,
         lease_id: Optional[int] = None,
     ) -> bool:
-        lease = self._leases.get(lease_id) if lease_id is not None else None
-        try:
-            txn = self._c.transaction()
-            txn.compare(txn.key(key).version == expected_version)
-            txn.success(txn.put(key, value, lease=lease))
-            success, _ = txn.commit()
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd txn failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        return bool(success)
+        return self._cas(key, expected_version, value, lease_id)
 
     def cas_absent(self, key: str, value: bytes, lease_id: Optional[int] = None) -> bool:
-        lease = self._leases.get(lease_id) if lease_id is not None else None
-        try:
-            txn = self._c.transaction()
-            txn.compare(txn.key(key).version == 0)
-            txn.success(txn.put(key, value, lease=lease))
-            success, _ = txn.commit()
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd txn failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        return bool(success)
+        return self._cas(key, 0, value, lease_id)
 
     def get_prefix(self, prefix: str) -> Dict[str, bytes]:
-        try:
-            results = self._c.get_prefix(prefix)
-        except Exception as exc:  # noqa: BLE001
-            raise CoordinationUnavailableError(
-                f"etcd get_prefix failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        key = self._as_bytes(prefix)
+        data = self._post("/kv/range", {
+            "key": self._enc(key),
+            "range_end": self._enc(self._prefix_end(key)),
+        })
         out: Dict[str, bytes] = {}
-        for val, meta in results:
-            if meta is not None and meta.key is not None:
-                k = meta.key.decode() if isinstance(meta.key, bytes) else meta.key
-                out[k] = val
+        for item in data.get("kvs") or []:
+            raw_key = self._dec(item.get("key", ""))
+            out[raw_key.decode()] = self._dec(item.get("value", ""))
         return out
 
     def close(self) -> None:
-        for lease in self._leases.values():
+        for lease_id in list(self._leases):
             try:
-                lease.revoke()
-            except Exception:  # noqa: BLE001
-                pass
+                self._post("/lease/revoke", {"ID": str(int(lease_id))})
+            except CoordinationUnavailableError:
+                pass  # 关停时的 best-effort：租约本来就会在 TTL 后自行过期
+        self._leases.clear()
         try:
-            self._c.close()
+            self._session.close()
         except Exception:  # noqa: BLE001
             pass
 
@@ -1431,12 +1482,14 @@ class EtcdLease(DistributedLease):
     :class:`CoordinationUnavailableError`，绝不静默降级或放行重放。
 
     .. note::
-       ``etcd3`` 是**延迟导入**的依赖；``get_distributed_lease(backend="etcd")``
-       在 ``etcd3`` 未安装或 etcd 不可达时抛 :class:`CoordinationUnavailableError`
-       （而不是崩溃）。本仓库未把 ``etcd3`` 装进本机 venv（见任务约束），所以 CI 上
-       的 :class:`TestRealEtcdEndToEnd` 会跳过；但 etcd 逻辑**已用内存假后端真跑
-       验证**（见 ``tests/distribution/test_coordination.py`` 的
-       ``TestEtcdLeaseWiring`` 等），不需要 live etcd。
+       etcd 走的是 ``etcd3`` 之外的路径：:class:`_EtcdHttpAdapter` 直接用
+       ``requests`` 调 etcd v3 的 HTTP/JSON gateway，因此**不引入 protobuf /
+       grpcio**，也就不存在 ``etcd3`` 那份旧 protoc 存根与 protobuf>=4 的冲突。
+       ``get_distributed_lease(backend="etcd")`` 在 etcd 不可达时抛
+       :class:`CoordinationUnavailableError`（而不是崩溃）。etcd 逻辑**已用内存
+       假后端真跑验证**（见 ``tests/distribution/test_coordination.py`` 的
+       ``TestEtcdLeaseWiring`` 等）；装了 live etcd 的环境里
+       :class:`TestRealEtcdEndToEnd` 会再真跑一遍事务语义。
     """
 
     DEFAULT_ENDPOINTS = ("localhost:2379",)
@@ -1462,19 +1515,13 @@ class EtcdLease(DistributedLease):
         self._caps_key = f"{prefix}{name}:caps"
         self._epoch_key = f"{prefix}{name}:epoch"
         self._token_key = f"{prefix}__global_token__"
-        # 已是实现了极简 KV 面的对象（真实 _Etcd3Adapter 或测试假后端）。
+        # 已是实现了极简 KV 面的对象（真实 _EtcdHttpAdapter 或测试假后端）。
         self._client = client
         self._injected_client = client is not None
         self._connected = False
 
     def connect(self) -> None:
         if self._client is None:
-            try:
-                import etcd3  # 延迟导入
-            except ImportError as exc:
-                raise CoordinationUnavailableError(
-                    "etcd coordination backend needs etcd3: pip install 'etcd3>=0.12.0'"
-                ) from exc
             host, port = "localhost", 2379
             if self._endpoints:
                 first = self._endpoints[0]
@@ -1483,14 +1530,10 @@ class EtcdLease(DistributedLease):
                     port = int(port_s)
                 else:
                     host = first
-            try:
-                raw = etcd3.client(host=host, port=port, timeout=self._connect_timeout)
-            except Exception as exc:  # noqa: BLE001
-                raise CoordinationUnavailableError(
-                    f"cannot construct etcd client ({host}:{port}): "
-                    f"{type(exc).__name__}: {exc}"
-                ) from exc
-            self._client = _Etcd3Adapter(raw, connect_timeout=self._connect_timeout)
+            # 直连同一端口上的 HTTP/JSON gateway：不需要 etcd3 / protobuf / grpcio。
+            self._client = _EtcdHttpAdapter(
+                f"http://{host}:{port}", connect_timeout=self._connect_timeout
+            )
         # 无论注入还是新建，都先 ping 确认后端可达（不可达 ⇒ fail-closed）。
         if not self._client.ping():
             raise CoordinationUnavailableError(
@@ -1791,7 +1834,7 @@ def get_distributed_lease(
             prefix=config.get("prefix", EtcdLease.DEFAULT_PREFIX),
             connect_timeout=config.get("connect_timeout", 2.0),
         )
-        lease.connect()  # 连不上 / etcd3 未装 → CoordinationUnavailableError（不降级）
+        lease.connect()  # 连不上 etcd → CoordinationUnavailableError（不降级）
         return lease
 
     raise ValueError(

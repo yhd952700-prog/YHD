@@ -32,8 +32,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-      # 真 etcd：让 TestRealEtcdEndToEnd（real etcd）在 CI 上**真正执行**（前提
-      # 是 [etcd] extra 已装 etcd3）；CI 上若没装 etcd3，该组仍优雅 skip。
+      # 真 etcd：让 TestRealEtcdEndToEnd（real etcd）在 CI 上**真正执行**。客户端
+      # 走 etcd v3 的 HTTP/JSON gateway（_EtcdHttpAdapter），不需要任何额外 pip 包。
       #
       # 2026-10-07 换镜像：原 `bitnami/etcd:3.5` 的 manifest 已从 Docker Hub 下线，
       # 服务容器在起容器阶段就失败 -> test job 根本没跑起来 -> 所有 needs: test 的
@@ -78,7 +78,7 @@ jobs:
           # TestRedisLuaScriptsActuallyExecute 在 CI 上**真正执行**（不再 skip）。
           # 缺 lupa 时该组在测试内优雅 skip（nodes fixture 的 eval 自检），不会把
           # 收集搞挂；但 CI 显式装齐才能把"skip"变成"已验证"。
-          pip install -e .[tests,etcd]
+          pip install -e .[tests]
           pip install flake8
 
       - name: Verify test collection is complete

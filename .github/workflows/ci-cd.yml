@@ -37,10 +37,10 @@ jobs:
           # **不含** `[tests]` extra（fakeredis / lupa）。只装它，
           # tests/distribution/ 下的协调 / 围栏用例会静默 skip ——
           # 而"跳过的绿"比红更危险。所以这里显式追加 tests extra。
-          # （与 ci.yml 的 `pip install -e .[tests,etcd]` 保持同一安装面，
+          # （与 ci.yml 的 `pip install -e .[tests]` 保持同一安装面，
           #   避免两个 workflow 对"测试环境是什么"各说一套。）
           pip install -r requirements.txt
-          pip install -e .[tests,etcd]
+          pip install -e .[tests]
           pip install pytest-cov
       - name: Run unit tests
         run: python -m pytest tests/ -v --tb=short -m "not integration and not e2e"
@@ -71,7 +71,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[tests,etcd]
+          pip install -e .[tests]
       - name: Run security tests
         run: python -m pytest tests/ -v --tb=short -m security
       - name: Run bandit
