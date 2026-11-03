@@ -35,6 +35,7 @@
   --os-ok: #2ee6a8;
   --os-warn: #ffb74d;
   --os-danger: #ff5d6c;
+  --os-danger-ink: #ff5d6c;   /* 危险色文字放在 10% 危险色底上的墨色，需 ≥4.5:1 */
   --os-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
   --os-glow: 0 0 0 1px rgba(77, 141, 255, 0.22), 0 0 32px rgba(77, 141, 255, 0.16);
   --os-grid-line: rgba(77, 141, 255, 0.09);
@@ -61,6 +62,9 @@
   --os-ok: #0f9d76;
   --os-warn: #c47c14;
   --os-danger: #d93a4a;
+  /* 实测 #d93a4a 在 10% 混色底（rgb(251,235,237)）上只有 3.84:1，低于 AA 的 4.5:1。
+     文字单独用更深的墨色（5.6:1），底色/边框仍用 --os-danger 保持原视觉。 */
+  --os-danger-ink: #b4232f;
   --os-shadow: 0 12px 30px rgba(23, 43, 84, 0.1);
   --os-glow: 0 0 0 1px rgba(47, 111, 228, 0.16), 0 0 24px rgba(47, 111, 228, 0.1);
   --os-grid-line: rgba(47, 111, 228, 0.08);
@@ -1144,7 +1148,7 @@ select {
   margin-bottom: 14px;
   border: 1px solid color-mix(in srgb, var(--os-danger) 30%, transparent);
   background: color-mix(in srgb, var(--os-danger) 10%, transparent);
-  color: var(--os-danger);
+  color: var(--os-danger-ink);
 }
 
 .os-note {
