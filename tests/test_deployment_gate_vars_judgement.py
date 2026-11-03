@@ -496,7 +496,7 @@ _AUDIT_DB_PATH_EVIDENCE = (
     "src/kernels/audit/__init__.py:398",
     "docker-compose.prod.yml:69",
     "infra/staging/docker-compose.yml:59",
-    ".github/workflows/ci.yml:766",
+    ".github/workflows/ci.yml:793",
 )
 
 
@@ -567,7 +567,7 @@ class TestAuditDbPathIsAdjudicated:
         """A CI-only setter must not count: the deployment setters do the arming.
 
         Measured 2026-10-07 in an isolated worktree: with only the CI pin
-        (``.github/workflows/ci.yml:766``) standing -- the two compose lines
+        (``.github/workflows/ci.yml:793``) standing -- the two compose lines
         commented out -- the entry now reddens as ``seed-armed-only-in-ci``, and
         the two compose setters are what keep it green. Before that tightening
         the CI pin alone kept it green, which was the false green the tightening

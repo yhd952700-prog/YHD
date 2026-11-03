@@ -219,7 +219,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "recorded here instead of inferred from a green signal. Armed at "
             "docker-compose.prod.yml:69 and "
             "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
-            ".github/workflows/ci.yml:766 also pins a temp path, but a CI-only "
+            ".github/workflows/ci.yml:793 also pins a temp path, but a CI-only "
             "setter does NOT count as deployment arming (category "
             "`seed-armed-only-in-ci`), so the two compose setters are what keep "
             "this entry green -- removing both reddens it even while the CI pin "
@@ -234,10 +234,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
             # and listed here so its line is drift-checked too: it shifted from
-            # :762 to :766 the moment the workflow's own comment grew, and again
-            # to :768 when the etcd service block changed (2026-10-24), which is
-            # exactly the rot a bare prose pointer would hide.
-            ".github/workflows/ci.yml:768",
+            # :762 to :766 the moment the workflow's own comment grew, again
+            # to :768 when the etcd service block changed (2026-10-24), and to
+            # :793 when the console-readability job was added (2026-11-04).
+            ".github/workflows/ci.yml:793",
         ),
     },
     {
@@ -664,6 +664,15 @@ def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
             names.add(match.group(1))
         # compose pass-through form: `- NAME` (value supplied by the host)
         for match in re.finditer(r"(?m)^[ \t]*-[ \t]*([A-Z][A-Z0-9_]{1,})[ \t]*$", text):
+            names.add(match.group(1))
+        # shell one-liners that publish into $GITHUB_ENV:
+        #   echo "NAME=value" >> "$GITHUB_ENV"
+        # The quoted-name regex above requires a CLOSING quote right after the
+        # name (`"NAME":` / `"NAME"=`), so it never saw the form every workflow
+        # actually uses. Consequence: `_is_ci_artifact` had nothing to classify,
+        # and the "a CI-only setter must not arm a seed gate" rule silently did
+        # nothing (measured: AUDIT_DB_PATH appeared to have no CI setter at all).
+        for match in re.finditer(r"(?m)[\"']([A-Z][A-Z0-9_]{1,})[ \t]*=", text):
             names.add(match.group(1))
         # inline assignment forms inside python / yaml one-liners
         for match in re.finditer(r"[\"']([A-Z][A-Z0-9_]{1,})[\"'][ \t]*[:=]", text):
