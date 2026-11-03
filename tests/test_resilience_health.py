@@ -294,7 +294,10 @@ class TestRateLimiter:
         limiter = TokenBucketRateLimiter(rate=10, burst_capacity=10)
 
         assert limiter.try_acquire() is True
-        assert limiter.available_tokens == 9.0
+        # 不能断言精确的 9.0：取 token 与读 available_tokens 之间桶会按
+        # rate（10/s）继续补充，间隔几微秒就多出 0.000x。容差 0.5 token
+        # （50ms）仍足以证明"只扣掉一个 token"——若没扣，读数会趋近 10。
+        assert limiter.available_tokens == pytest.approx(9.0, abs=0.5)
         assert limiter.metrics.allowed_requests == 1
 
     def test_try_acquire_returns_false_when_empty(self):
@@ -316,7 +319,9 @@ class TestRateLimiter:
         # Drain all tokens
         for _ in range(10):
             limiter.try_acquire()
-        assert limiter.available_tokens == 0.0
+        # 同上：排空期间桶以 100/s 持续补充，几毫秒就是 0.x 个 token，
+        # 精确 0.0 是不成立的断言。容差 1 token 仍能证明"桶已排空"（满桶是 10）。
+        assert limiter.available_tokens == pytest.approx(0.0, abs=1.0)
 
         # Wait for refill
         time.sleep(0.05)  # 50ms should give ~5 tokens at 100/s

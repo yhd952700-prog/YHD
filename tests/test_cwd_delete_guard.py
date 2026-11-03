@@ -302,8 +302,34 @@ def test_allowlist_refuses_paths_outside_the_repo(allow_repo_deletion, tmp_path)
 
 #: 沙箱必须**既不在**任何临时根之下（否则护栏按判据就该放行，证不了任何事），
 #: **也不在**真实仓库之内（否则父进程要删它就必须走白名单，把两件事搅在一起）。
-#: tempfile.gettempdir() 的父目录正好满足这两条，且与临时根同盘、可写。
-_SANDBOX_PARENT = Path(tempfile.gettempdir()).resolve().parent
+#: 以前取 ``gettempdir()`` 的父目录：在 Windows（D:\cache\temp -> D:\cache）恰好
+#: 可写，但 Linux 上 gettempdir() 是 /tmp，其父是 / —— CI 直接 PermissionError。
+#: 现在按「家目录 → 仓库父目录」的顺序挑第一个**可写**且满足上述两条的位置。
+def _sandbox_parent() -> Path:
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    repo = REPO_ROOT.resolve()
+
+    def usable(candidate: Path) -> bool:
+        if candidate == temp_root or temp_root in candidate.parents:
+            return False
+        if candidate == repo or repo in candidate.parents:
+            return False
+        probe = candidate / ("guard_probe_%d" % int(time.time()))
+        try:
+            probe.mkdir()
+            probe.rmdir()
+        except OSError:
+            return False
+        return True
+
+    for candidate in (Path.home().resolve(), repo.parent):
+        if usable(candidate):
+            return candidate
+    raise AssertionError(
+        "找不到一个既不在临时根下、又不在仓库内、且可写的沙箱父目录；"
+        "本用例的双向证明无法进行（拒绝静默跳过）"
+    )
+
 
 _SUBPROCESS_TEST = '''
 import os
@@ -347,10 +373,10 @@ def test_guard_reports_the_offending_test_in_a_real_pytest_run():
     之后，一个普通的、看起来人畜无害的测试里的 ``os.remove('README.md')`` 真的会
     让整轮跑红，并且红在**这个测试自己身上**，而不是二十个不相干的测试身上。
 
-    沙箱放在临时根的**父目录**下：若沙箱落在 tmp_path 里，护栏按判据就该放行
+    沙箱放在临时根**之外**：若沙箱落在 tmp_path 里，护栏按判据就该放行
     （那是临时目录），这条测试会变成一个自己骗自己的假证明。
     """
-    sandbox = _SANDBOX_PARENT / ("guard_sandbox_%d" % int(time.time()))
+    sandbox = _sandbox_parent() / ("guard_sandbox_%d" % int(time.time()))
     if sandbox.exists():  # 极小概率的同名残留
         shutil.rmtree(str(sandbox), ignore_errors=True)
     (sandbox / "tests").mkdir(parents=True)
@@ -373,6 +399,12 @@ def test_guard_reports_the_offending_test_in_a_real_pytest_run():
                 sys.executable, "-m", "pytest",
                 str(sandbox / "tests" / "test_offender.py"),
                 "-q", "--no-header", "-p", "no:cacheprovider",
+                # 仓库根 pyproject 里有 addopts = "-p no:phoenix"（该插件在本仓
+                # 依赖组合下 import 即抛错）。沙箱没有 pyproject，子进程会重新
+                # 打开插件自动加载，于是 pytest 在收集用例前就被 phoenix 的
+                # ImportError 打断 —— 红是红了，却红在与护栏无关的地方，本条
+                # 证明就失效了。显式沿用同一策略。
+                "-p", "no:phoenix",
                 "--basetemp", str(sandbox / ".pytest_tmp"),
             ],
             cwd=str(sandbox),
