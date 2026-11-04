@@ -23,6 +23,7 @@ LIUHAO 能下目标、AI 员工能跑任务，但**没有任何"项目"概念把
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -81,26 +82,39 @@ class ProjectStore:
         return os.path.join(repo_root, ".liuhao_projects.json")
 
     def _save(self) -> bool:
-        """原子写入项目库；持久化失败绝不打断请求，但如实返回成败。"""
+        """把项目库原子落盘；持久化失败绝不打断请求，但如实返回成败。
+
+        快照在 ``_inner_lock`` 内取，序列化/写盘在锁外完成：直接在活字典上
+        迭代会与并发增删撞车（"dictionary changed size during iteration"），
+        写出半截状态。临时文件名每次唯一，两个并发写入不会互相覆盖。
+        """
+        with self._inner_lock:
+            snapshot = {pid: copy.deepcopy(p) for pid, p in self._projects.items()}
         path = self._default_path()
+        tmp_path = None
         try:
             directory = os.path.dirname(os.path.abspath(path))
             if directory:
                 os.makedirs(directory, exist_ok=True)
             serialized: Dict[str, Any] = {}
-            for pid, p in self._projects.items():
+            for pid, p in snapshot.items():
                 try:
                     json.dumps(p)
                     serialized[pid] = p
                 except (TypeError, ValueError):
                     serialized[pid] = {"__unserializable__": str(p)}
-            tmp = f"{path}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
+            tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(serialized, fh, indent=2)
-            os.replace(tmp, path)
+            os.replace(tmp_path, path)
             return True
         except Exception as exc:  # persistence must never break a request
-            logger.warning("ProjectStore: persist failed: %s", exc)
+            logger.error("ProjectStore: persist failed (%s): %s", path, exc)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
             return False
 
     def _load(self) -> None:

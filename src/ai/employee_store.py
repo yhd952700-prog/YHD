@@ -25,12 +25,17 @@ The store holds a dict of employees keyed by name in one file, so
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from .employee import Agent, AgentStatus, Employee, Task, TaskStatus
 from .providers import BaseProvider, get_provider
+
+logger = logging.getLogger(__name__)
 
 
 class EmployeeStore:
@@ -50,6 +55,10 @@ class EmployeeStore:
 
     def __init__(self, path: Optional[str] = None):
         self.path = path or self._default_store_path()
+        # Serialise read-modify-write cycles: two concurrent ``save`` calls
+        # otherwise both load the old document and the second silently drops
+        # the first employee.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ #
     # Path resolution (REDIR-able, mirrors the planner's helper)
@@ -90,10 +99,22 @@ class EmployeeStore:
         directory = os.path.dirname(os.path.abspath(self.path))
         if directory:
             os.makedirs(directory, exist_ok=True)
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, self.path)
+        # Unique temp file per write: a shared "<path>.tmp" lets two writers
+        # interleave and publish a truncated/foreign document.
+        tmp = f"{self.path}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as exc:
+            # Fail loudly in the logs; do not swallow, or the caller believes
+            # the employee was persisted when it was not.
+            logger.error("EmployeeStore: persist failed (%s): %s", self.path, exc)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     # ------------------------------------------------------------------ #
     # Serialization helpers
@@ -262,9 +283,12 @@ class EmployeeStore:
 
         Returns the path written.
         """
-        store = self._load_store()
-        store.setdefault("employees", {})[employee.name] = self._serialize_employee(employee)
-        self._write_store(store)
+        with self._lock:
+            store = self._load_store()
+            store.setdefault("employees", {})[employee.name] = self._serialize_employee(
+                employee
+            )
+            self._write_store(store)
         return self.path
 
     def load(self, name: str) -> Optional[Employee]:
@@ -281,9 +305,10 @@ class EmployeeStore:
 
     def remove(self, name: str) -> bool:
         """Remove an employee from the store. Returns True if it existed."""
-        store = self._load_store()
-        if name in store.get("employees", {}):
-            del store["employees"][name]
-            self._write_store(store)
-            return True
-        return False
+        with self._lock:
+            store = self._load_store()
+            if name in store.get("employees", {}):
+                del store["employees"][name]
+                self._write_store(store)
+                return True
+            return False

@@ -49,6 +49,11 @@ server:
     allow_headers: ["Authorization", "Content-Type", "X-Request-Id", "X-Liuhao-Token", "X-Trace-ID"]
     allow_credentials: true
     max_age: 600
+  # 限流（token bucket，既有 RateLimiter 的唯一真源）。只覆盖列出的前缀：
+  # chat 与 goals 成本高且写操作集中；健康探针/指标采集不受影响。
+  rate_limit:
+    enabled: true
+    paths: ["/v1/chat", "/v1/goals"]
   timeouts:
     read_seconds: 30
     write_seconds: 60

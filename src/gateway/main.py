@@ -105,6 +105,11 @@ def load_runtime_config() -> Dict[str, Any]:
 
     server_cfg = document.get("server") if isinstance(document.get("server"), dict) else {}
     cors_cfg = server_cfg.get("cors") if isinstance(server_cfg.get("cors"), dict) else {}
+    rate_cfg = (
+        server_cfg.get("rate_limit")
+        if isinstance(server_cfg.get("rate_limit"), dict)
+        else {}
+    )
 
     raw_origins = os.environ.get(CORS_ORIGINS_ENV)
     if raw_origins:
@@ -138,6 +143,13 @@ def load_runtime_config() -> Dict[str, Any]:
             ),
             "allow_credentials": bool(cors_cfg.get("allow_credentials", True)),
             "max_age": int(cors_cfg.get("max_age") or 600),
+        },
+        # 真正挂到 ASGI 的限流面。默认只覆盖 chat / goals：这两个面成本高、
+        # 且是写操作集中区；其它路由要加需显式写进配置（避免"全局限流"
+        # 突然把健康探针/指标采集也卡住）。
+        "rate_limit": {
+            "enabled": bool(rate_cfg.get("enabled", True)),
+            "paths": list(rate_cfg.get("paths") or ["/v1/chat", "/v1/goals"]),
         },
     }
 
@@ -619,6 +631,18 @@ def get_app() -> FastAPI:
     )
 
     # ==================== Middleware ====================
+
+    # Rate limiting —— 覆盖配置里列出的高成本/写入面（默认 chat + goals）。
+    # 必须比 CORS **先注册**：后注册的中间件在外层，这样 429 也会经过 CORS
+    # 拿到跨域响应头，控制台才能读懂"限流了"而不是只看到 CORS 报错。
+    rate_cfg = runtime.get("rate_limit") or {}
+    if rate_cfg.get("enabled", True):
+        from .rate_limiter import RateLimitMiddleware
+
+        app.add_middleware(
+            RateLimitMiddleware,
+            paths=tuple(rate_cfg.get("paths") or ("/v1/chat", "/v1/goals")),
+        )
 
     # CORS middleware —— 实际读取 config/default.yaml（+ APP_ENV 覆盖文件）的
     # server.cors.allow_origins。此前读的是 settings.get("api", {}).get(...)：

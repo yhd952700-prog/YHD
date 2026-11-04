@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -313,25 +314,42 @@ class AIStateManager:
         return os.path.join(repo_root, ".liuhao_goals.json")
 
     def _save_goals(self) -> None:
-        """Persist ``_goals`` to JSON so executed-goal history survives restart."""
+        """Persist ``_goals`` to JSON so executed-goal history survives restart.
+
+        Snapshot **inside** the goal lock, then serialize/write outside it:
+        iterating the live dict while a worker thread replaces entries could
+        otherwise dump a half-updated map (or raise "dictionary changed size
+        during iteration"). The temp file name is unique per write so two
+        concurrent savers cannot share/overwrite one another's in-flight file.
+        """
+        with self._goal_lock:
+            snapshot = copy.deepcopy(self._goals)
         path = self._default_goals_path()
+        tmp_path = None
         try:
             directory = os.path.dirname(os.path.abspath(path))
             if directory:
                 os.makedirs(directory, exist_ok=True)
             serialized: Dict[str, Any] = {}
-            for gid, entry in self._goals.items():
+            for gid, entry in snapshot.items():
                 try:
                     json.dumps(entry)
                     serialized[gid] = entry
                 except (TypeError, ValueError):
                     serialized[gid] = {"__unserializable__": str(entry)}
-            tmp = f"{path}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
+            tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(serialized, fh, indent=2)
-            os.replace(tmp, path)
+            os.replace(tmp_path, path)
         except Exception as exc:  # persistence must never break a request
-            logger.warning("AIStateManager: goals persist failed: %s", exc)
+            # error, not warning: a silent persistence failure is how goal
+            # history quietly disappears across restarts.
+            logger.error("AIStateManager: goals persist failed (%s): %s", path, exc)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _load_goals(self) -> None:
         """Reload ``_goals`` from the persisted JSON (no-op if absent)."""

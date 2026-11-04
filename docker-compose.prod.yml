@@ -40,7 +40,10 @@ services:
       # 应用当前不用 Postgres（默认 sqlite）。保留变量只为兼容既有 .env；
       # 若将来真的切库，驱动与迁移都要一并补上。
       - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/liuhao_ai_os.db}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      # 必填：不提供时 docker compose 直接拒绝启动（而不是带着空值上线后
+      # 由应用在第一次登录时才报错）。生产必须使用持久、随机、所有 worker
+      # 共享的签名密钥，否则重启即全端登出。
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set for production}
       - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
       - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY}
       # 身份持久化（Policy C-7）：默认 SQLite 后端。

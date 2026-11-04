@@ -10,6 +10,8 @@ Provides:
 """
 
 import os
+import sqlite3
+import threading
 import time
 import secrets
 import logging
@@ -137,6 +139,110 @@ class TokenPayload:
         return self.nbf <= now < self.exp
 
 
+#: Durable revocation blocklist location. Env-overridable so tests/containers
+#: never touch the repo-root default.
+JWT_REVOCATION_DB_ENV = "LIUHAO_JWT_REVOCATION_DB"
+
+
+def _default_revocation_path() -> str:
+    root = os.environ.get("LIUHAO_WORKSPACE_ROOT")
+    if root:
+        return os.path.join(root, "liuhao_jwt_revocation.db")
+    repo_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    return os.path.join(repo_root, ".liuhao_jwt_revocation.db")
+
+
+class RevocationStore:
+    """SQLite-backed JWT revocation blocklist with TTL cleanup.
+
+    The previous blocklist was a ``set`` on the handler instance: a restart
+    resurrected every revoked token, and a second worker (``server.workers`` is
+    >1 in production) never saw the first worker's revocations. Both are
+    security holes, not cache quirks. SQLite is stdlib-only and already the
+    deployment's durable local store, so it is the natural home.
+
+    Rows carry ``expires_at``: once the token would have expired anyway,
+    validating it fails on ``exp`` and the row is dead weight, so expired rows
+    are pruned on every write.
+    """
+
+    _SCHEMA = """
+        CREATE TABLE IF NOT EXISTS revoked_tokens (
+            jti TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            subject TEXT,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY (jti, kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_revoked_expires
+            ON revoked_tokens(expires_at);
+    """
+
+    def __init__(self, path: Optional[str] = None):
+        self.path = path or os.environ.get(JWT_REVOCATION_DB_ENV) or (
+            _default_revocation_path()
+        )
+        self._lock = threading.Lock()
+        directory = os.path.dirname(os.path.abspath(self.path))
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with self._connect() as conn:
+            conn.executescript(self._SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.path, timeout=5.0)
+
+    def add(
+        self,
+        jti: str,
+        kind: str = "access",
+        expires_at: Optional[float] = None,
+        subject: Optional[str] = None,
+    ) -> None:
+        # The row must outlive the token, never the reverse: a missing/NaN
+        # expiry would prune instantly and silently un-revoke the token.
+        expiry = float(expires_at) if expires_at else time.time() + 3600.0
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM revoked_tokens WHERE expires_at <= ?", (time.time(),)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO revoked_tokens (jti, kind, subject, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (str(jti), kind, subject, expiry),
+            )
+
+    def contains(self, jti: str, kind: str = "access") -> bool:
+        if not jti:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM revoked_tokens WHERE jti = ? AND kind = ? "
+                "AND expires_at > ?",
+                (str(jti), kind, time.time()),
+            ).fetchone()
+        return row is not None
+
+    def purge(self) -> int:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM revoked_tokens WHERE expires_at <= ?", (time.time(),)
+            )
+            return int(cursor.rowcount or 0)
+
+    def count(self, kind: Optional[str] = None) -> int:
+        query = "SELECT COUNT(*) FROM revoked_tokens"
+        params: tuple = ()
+        if kind:
+            query += " WHERE kind = ?"
+            params = (kind,)
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return int(row[0] if row else 0)
+
+
 class JWTHandler:
     """
     JWT Token handler with support for:
@@ -196,9 +302,10 @@ class JWTHandler:
         self.leeway = leeway
         self.encryption = encryption or get_encryption_manager()
 
-        # Token revocation blocklist (in-memory, use Redis for distributed)
-        self._revoked_tokens: Set[str] = set()
-        self._revoked_refresh_tokens: Set[str] = set()
+        # Token revocation blocklist: durable SQLite store (survives restart and
+        # is shared across worker processes). In-memory sets used to lose
+        # revocations on restart and leak them across workers.
+        self._revocations = RevocationStore()
 
         # Subject -> set of JTIs minted for that subject. Maintained in
         # create_token so revoke_all_user_tokens can actually revoke a user's
@@ -450,7 +557,7 @@ class JWTHandler:
                 options={"verify_signature": False},
             )
             jti = unverified.get("jti")
-            if jti and jti in self._revoked_tokens:
+            if jti and self._revocations.contains(jti, "access"):
                 raise jwt.InvalidTokenError("Token has been revoked")
         except jwt.InvalidTokenError:
             raise  # Re-raise revocation check result
@@ -492,7 +599,7 @@ class JWTHandler:
         payload = self.validate_token(token, expected_type=TokenType.REFRESH)
 
         # Check refresh token revocation
-        if payload.jti in self._revoked_refresh_tokens:
+        if self._revocations.contains(payload.jti, "refresh"):
             raise jwt.InvalidTokenError("Refresh token has been revoked")
 
         return payload
@@ -533,7 +640,7 @@ class JWTHandler:
         )
 
     def revoke_token(self, token: str) -> bool:
-        """Revoke a token by adding to blocklist"""
+        """Revoke a token by recording its JTI in the durable blocklist."""
         try:
             unverified = jwt.decode(
                 token,
@@ -541,19 +648,32 @@ class JWTHandler:
             )
             jti = unverified.get("jti")
             if jti:
-                self._revoked_tokens.add(jti)
+                token_type = str(unverified.get("token_type") or "access").lower()
+                kind = "refresh" if token_type.endswith("refresh") else "access"
+                self._revocations.add(
+                    jti,
+                    kind=kind,
+                    expires_at=unverified.get("exp"),
+                    subject=unverified.get("sub"),
+                )
                 return True
         except Exception:
             pass
         return False
 
+    def _revocation_ttl(self) -> float:
+        """Conservative lifetime for a JTI revoked without a known ``exp``."""
+        return time.time() + max(
+            3600.0, float(self.access_ttl or 0), float(self.refresh_ttl or 0)
+        )
+
     def revoke_token_by_jti(self, jti: str) -> None:
-        """Revoke token by JTI"""
-        self._revoked_tokens.add(jti)
+        """Revoke an access token by JTI."""
+        self._revocations.add(jti, kind="access", expires_at=self._revocation_ttl())
 
     def revoke_refresh_token(self, jti: str) -> None:
-        """Revoke refresh token by JTI"""
-        self._revoked_refresh_tokens.add(jti)
+        """Revoke a refresh token by JTI."""
+        self._revocations.add(jti, kind="refresh", expires_at=self._revocation_ttl())
 
     def revoke_all_user_tokens(self, subject: str) -> int:
         """Revoke every token currently minted for ``subject``.
@@ -564,19 +684,20 @@ class JWTHandler:
         revoke", NOT a silent success pretending tokens were killed.
 
         Scope/limitations (honest, not hidden):
-          * In-memory only. It does not survive a process restart and is not
-            shared across workers -- the same limitation as the rest of the
-            revocation blacklist in this class (see the module note on
-            per-process signing keys). A deployment that needs durable,
-            cross-worker revocation must back this with a shared store
-            (Redis/DB), at which point this method should be re-pointed there.
+          * Revocations are durable (SQLite) and therefore survive restarts and
+            are visible to every worker process sharing the store.
           * Only tokens minted *after* this handler instance started tracking
             are covered.
         """
         jtis = self._subject_tokens.pop(subject, set())
+        expiry = self._revocation_ttl()
         for jti in jtis:
-            self._revoked_tokens.add(jti)
-            self._revoked_refresh_tokens.add(jti)
+            self._revocations.add(
+                jti, kind="access", expires_at=expiry, subject=subject
+            )
+            self._revocations.add(
+                jti, kind="refresh", expires_at=expiry, subject=subject
+            )
         return len(jtis)
 
     def introspect_token(self, token: str) -> Dict[str, Any]:

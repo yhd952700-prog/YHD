@@ -13,6 +13,7 @@ import threading
 from typing import Dict, Optional, Tuple
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 
 
 class TokenBucket:
@@ -106,10 +107,24 @@ class RateLimiter:
         # Try to get from headers/api key first
         auth_header = request.headers.get(TOKEN_HEADER) or request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            from ..security.jwt_handler import validate_api_key
+            from ..security.api_keys import validate_api_key
             key_obj = validate_api_key(auth_header[7:])
             if key_obj and key_obj.id:
                 return f"key:{key_obj.id}"
+            # Authenticated humans share one bucket by IP otherwise -- one
+            # noisy session would throttle every other user behind it. Key
+            # JWT callers by their principal.
+            try:
+                from ..security.jwt_handler import get_jwt_handler
+
+                payload = get_jwt_handler().validate_token(
+                    auth_header[7:], expected_type="access"
+                )
+                subject = getattr(payload, "sub", None)
+                if subject:
+                    return f"sub:{subject}"
+            except Exception:  # noqa: BLE001 - invalid token => fall back to IP
+                pass
 
         # Fall back to IP address
         client_host = request.client.host if request.client else "unknown"
@@ -209,3 +224,66 @@ def check_rate_limit(request: Request) -> Tuple[bool, Dict[str, any]]:
 def add_rate_limit_headers(response: Response, allowed: bool, info: Dict[str, any]) -> None:
     """Convenience function to add rate limit headers."""
     get_rate_limiter().add_rate_limit_headers(response, allowed, info)
+
+
+def _rate_limit_headers(allowed: bool, info: Dict[str, any]) -> Dict[str, str]:
+    headers = {
+        "X-Rate-Limit-Limit": str(info.get("limit", 100)),
+        "X-Rate-Limit-Remaining": str(max(0, int(info.get("remaining", 0)) if allowed else 0)),
+        "X-Rate-Limit-Reset": str(info.get("reset", 0)),
+    }
+    if not allowed:
+        reset = info.get("reset", 0) or 0
+        wait = max(1, int(float(reset) - time.time())) if reset else 1
+        headers["Retry-After"] = str(wait)
+    return headers
+
+
+class RateLimitMiddleware:
+    """Pure-ASGI adapter that applies the existing ``RateLimiter``.
+
+    ``RateLimiter`` is a plain helper (not an ASGI callable), which is why
+    ``app.add_middleware(RateLimiter)`` never worked and the limiter stayed
+    dead code. This adapter is the missing wiring; it does not re-implement
+    limits, so there remains exactly one place that decides them.
+
+    Applied to prefixes from ``server.rate_limit.paths`` -- by default the two
+    costly, mutation-heavy businesses (chat and goals). Other routes are
+    unaffected until explicitly opted in.
+    """
+
+    def __init__(self, app, paths: Tuple[str, ...] = ("/v1/chat", "/v1/goals")):
+        self.app = app
+        self.paths = tuple(paths or ())
+
+    def _matches(self, path: str) -> bool:
+        return any(path == p or path.startswith(p.rstrip("/") + "/") for p in self.paths)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not self._matches(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        allowed, info = check_rate_limit(request)
+        headers = _rate_limit_headers(allowed, info)
+
+        if not allowed:
+            response = JSONResponse(
+                {"detail": "请求过于频繁，请稍后再试（rate limit exceeded）"},
+                status_code=429,
+                headers=headers,
+            )
+            await response(scope, receive, send)
+            return
+
+        from starlette.datastructures import MutableHeaders
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                mutable = MutableHeaders(raw=message.setdefault("headers", []))
+                for key, value in headers.items():
+                    mutable[key] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
