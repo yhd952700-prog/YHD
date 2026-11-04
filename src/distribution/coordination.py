@@ -324,7 +324,7 @@ def _safe_name(name: str) -> str:
     raw = str(name)
     out = "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in raw)
     out = out.strip(" .") or "default"
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
     stem = f"{out}-{digest}"[:120]
     if stem.split("-")[0].upper() in _WINDOWS_RESERVED:
         stem = f"_{stem}"

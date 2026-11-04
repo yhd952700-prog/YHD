@@ -331,7 +331,7 @@ class PlanMemory:
         Normalises whitespace and case to catch near-duplicates.
         """
         normalised = " ".join(goal_text.lower().split())
-        return hashlib.md5(normalised.encode("utf-8")).hexdigest()
+        return hashlib.md5(normalised.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:

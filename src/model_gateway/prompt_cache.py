@@ -588,7 +588,7 @@ class SemanticCache:
 
         # Hash-based pseudo embedding
         for i, char in enumerate(text.lower()):
-            h = int(hashlib.md5(f"{i}:{char}".encode()).hexdigest(), 16)
+            h = int(hashlib.md5(f"{i}:{char}".encode(), usedforsecurity=False).hexdigest(), 16)
             idx = h % vec_size
             vec[idx] += 1.0
 

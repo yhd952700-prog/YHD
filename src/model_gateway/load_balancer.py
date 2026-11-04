@@ -547,7 +547,9 @@ class ModelLoadBalancer:
         import hashlib
 
         hash_value = int(
-            hashlib.md5(f"{model_id}:{key}".encode()).hexdigest(), 16
+            hashlib.md5(
+                f"{model_id}:{key}".encode(), usedforsecurity=False
+            ).hexdigest(), 16
         )
         idx = hash_value % len(available)
         return available[idx]

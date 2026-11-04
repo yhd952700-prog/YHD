@@ -519,6 +519,10 @@ class WorldInterface:
                 raise ValueError("shell run requires a non-empty command")
         completed = subprocess.run(
             argv,
+            # nosec B602  # 与上方 _shell_run 同一契约：shell=True 只在调用方显式
+            # 传 params={"shell": True} 时触发，默认 shlex.split 不经 shell；
+            # 且必须穿过 HostCommandBroker 的能力目录 + 策略授权。属 opt-in 能力，
+            # 精确抑制此单行而非整类跳过。
             shell=use_shell,
             capture_output=True,
             text=True,
