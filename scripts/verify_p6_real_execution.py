@@ -131,7 +131,17 @@ try:
 except ValueError:
     pass
 f_out = [o for (a, o) in _captured]
-mech_ok = ("denied" in d_out) and ("success" in s_out) and ("failure" in f_out)
+mech_ok = (
+    ("denied" in d_out)
+    # C-1 是"记录型"（additive）姿态：test.demo_ok 没登记策略规则，判决为
+    # deny，但默认不拦截，身体照常返回 —— 此时审计写 ``unauthorized_success``
+    # 才是诚实的（"执行了，但从未被授权"），写 plain ``success`` 会把 deny
+    # 藏起来（见 src/kernels/_crosscutting.py 的 AUDIT TRUTHFULNESS 注释）。
+    # 这一步要证明的是三态机制（拒绝 / 正常返回 / 抛异常）可区分，
+    # 不是"策略是否授权"，所以把两种成功形态都算作"正常返回"。
+    and any(o in ("success", "unauthorized_success") for o in s_out)
+    and ("failure" in f_out)
+)
 print("5) DECORATOR_MECHANISM_OK:", mech_ok, dict(denied=d_out, success=s_out, failure=f_out))
 
 overall = all([real_ok, fail_closed_ok, policy_ok, alloc_denied_ok, mech_ok])

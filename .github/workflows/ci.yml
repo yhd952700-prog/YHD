@@ -266,6 +266,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      # 与 Guardrails Extended 同一做法：HIGH/CRITICAL 动作带强制审计证据
+      # （reraise=True），项目根 audit_store.db 是冻结的 HC-01 证据库，
+      # AuditStore 拒绝默认回落到它。本 job 没有证据通道时，C-3 的人工授权
+      # 窗口会在评估阶段 fail-closed 成 verdict=error（实测 run 41774999758：
+      # PolicyDeniedError verdict=error rule=human_sovereignty），看起来像策略
+      # 缺陷，实际是"没有审计库"。把根钉到 runner temp，后续每个 run 步骤继承。
+      - name: Pin workspace/audit/alerts roots to runner temp
+        run: |
+          echo "LIUHAO_WORKSPACE_ROOT=$RUNNER_TEMP/liuhao-ws" >> "$GITHUB_ENV"
+          echo "AUDIT_DB_PATH=$RUNNER_TEMP/liuhao-audit/audit.db" >> "$GITHUB_ENV"
+          echo "LIUHAO_ALERTS_STORE_PATH=$RUNNER_TEMP/liuhao-alerts.json" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/liuhao-ws" "$RUNNER_TEMP/liuhao-audit"
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
