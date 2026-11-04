@@ -14,11 +14,18 @@ contained here so ``src/model_gateway`` stays untouched and independently usable
    ``supports_*`` — passing the documented ``"vision"`` matched nothing. We
    normalize ``vision`` → ``supports_vision``.
 
-Everything is opt-in: unless ``LIUHAO_MODEL_ROUTER`` is truthy,
-``get_provider_for_task()`` returns the historical ``get_provider()`` unchanged.
+Two entry points:
+
+* ``get_provider_for_task()`` — legacy opt-in path (``LIUHAO_MODEL_ROUTER``
+  truthy), routed over the static catalog; unchanged.
+* ``provider_for_task()`` — the **live path** used by ``/v1/chat``. It routes
+  over the enabled models saved in model management and falls back to the
+  configured default model on any miss; ``LIUHAO_MODEL_ROUTER=off`` is the
+  rollout kill switch. Both paths log every decision with its reason.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from dataclasses import dataclass
@@ -30,6 +37,7 @@ from src.ai.providers import (
     ProviderFactory,
     ProviderType,
     get_provider,
+    resolve_provider,
 )
 from src.model_gateway import (
     ModelRegistry,
@@ -38,6 +46,8 @@ from src.model_gateway import (
     RegisteredModel,
     RouteResult,
 )
+
+logger = logging.getLogger("liuhao.ai.model_router")
 
 
 class ModelTier(str, Enum):
@@ -152,6 +162,19 @@ TASK_PROFILES: Dict[str, TaskProfile] = {
     "structured": TaskProfile(["structured_output"], min_context=8000, prefer_tier=ModelTier.CLOUD),
     "cheap_bulk": TaskProfile([], min_context=4000, max_cost_per_token=0.001),
     "privacy": TaskProfile([], min_context=4000, max_latency_ms=3000, prefer_tier=ModelTier.LOCAL),
+    "embedding": TaskProfile(["embeddings"], min_context=1024, prefer_tier=ModelTier.LOCAL),
+}
+
+#: The ``TaskType`` values already defined by ``src.model_gateway``
+#: (chat / summarization / embedding / ...) mapped onto the profiles above, so a
+#: live caller can pass the documented task name instead of an internal profile
+#: key. Aliases are additive: existing keys keep their exact semantics.
+TASK_PROFILE_ALIASES: Dict[str, str] = {
+    "chat": "default",
+    "text_generation": "default",
+    "summarization": "cheap_bulk",
+    "summarize": "cheap_bulk",
+    "embedding": "embedding",
 }
 
 _CATALOG_BY_ID: Dict[str, ModelProfile] = {p.model_id: p for p in DEFAULT_CATALOG}
@@ -276,12 +299,17 @@ def get_model_router() -> LiuhaoModelRouter:
     return _router_instance
 
 
-def route_task(task_type: Optional[str] = None, **overrides: Any) -> RouteResult:
-    """Route a logical task type to a model. Raises NoModelAvailableError if none fit."""
-    profile = TASK_PROFILES.get(task_type or "default")
+def _resolve_profile(task_type: Optional[str]) -> TaskProfile:
+    """Map a documented task type (incl. aliases) to its routing profile."""
+    key = task_type or "default"
+    key = TASK_PROFILE_ALIASES.get(key, key)
+    profile = TASK_PROFILES.get(key)
     if profile is None:
         raise NoModelAvailableError(f"Unknown task_type: {task_type!r}")
+    return profile
 
+
+def _profile_kwargs(profile: TaskProfile, overrides: Dict[str, Any]) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {
         "required_capabilities": profile.required_capabilities or None,
         "min_context": profile.min_context,
@@ -290,8 +318,125 @@ def route_task(task_type: Optional[str] = None, **overrides: Any) -> RouteResult
         "prefer_tier": profile.prefer_tier,
     }
     kwargs.update(overrides)
+    return kwargs
+
+
+def route_task(task_type: Optional[str] = None, **overrides: Any) -> RouteResult:
+    """Route a logical task type to a model. Raises NoModelAvailableError if none fit."""
+    profile = _resolve_profile(task_type)
     try:
-        return get_model_router().route(task_type=task_type, **kwargs)
+        return get_model_router().route(
+            task_type=task_type, **_profile_kwargs(profile, overrides)
+        )
+    except ValueError as exc:
+        raise NoModelAvailableError(
+            f"No model available for task_type={task_type!r}: {exc}"
+        ) from exc
+
+
+#: Providers whose APIs expose an embeddings endpoint. Capabilities of a saved
+#: model are not stored by model management, so routing uses these conservative
+#: provider-level traits -- never a claim about a specific model name.
+_EMBEDDING_PROVIDERS = frozenset({ProviderType.OPENAI, ProviderType.GOOGLE, ProviderType.OLLAMA})
+
+
+def _capabilities_for_provider(provider: str) -> ProviderCapabilities:
+    provider = provider.strip().lower()
+    return ProviderCapabilities(
+        supports_streaming=True,
+        supports_structured_output=provider in {"openai", "anthropic", "google"},
+        supports_function_calling=provider in {"openai", "anthropic", "deepseek"},
+        supports_vision=provider in {"openai", "anthropic", "google"},
+        supports_embeddings=provider in _EMBEDDING_PROVIDERS,
+        # Conservative window: enough for chat/embedding profiles, deliberately
+        # below the 32k ``reasoning`` floor so that task is NOT silently claimed
+        # for a model whose real window we do not know (it falls back instead).
+        max_context_tokens=8192,
+        max_output_tokens=4096,
+    )
+
+
+def _tier_for(provider: str) -> ModelTier:
+    provider = provider.strip().lower()
+    if provider == ProviderType.OLLAMA:
+        return ModelTier.LOCAL
+    if provider == ProviderType.MOCK:
+        return ModelTier.SPECIAL
+    return ModelTier.CLOUD
+
+
+def catalog_from_store(store: Any = None) -> Dict[str, ModelProfile]:
+    """Snapshot the **enabled** models saved in model management as profiles.
+
+    Returns ``{}`` when the store is empty or unreadable. The empty result is
+    meaningful: callers must fall back to the default model, never to an
+    arbitrary hard-coded catalog entry (that would silently call a provider the
+    operator never configured).
+    """
+    if store is None:
+        try:
+            from src.ai.model_config import get_model_config_store
+
+            store = get_model_config_store()
+        except Exception as exc:  # pragma: no cover - import/初始化故障
+            logger.warning(
+                "model router: model config store unavailable (%s)",
+                type(exc).__name__,
+            )
+            return {}
+    try:
+        records = store.list_models()
+    except Exception as exc:  # pragma: no cover - 存储故障
+        logger.warning(
+            "model router: reading model config failed (%s)", type(exc).__name__
+        )
+        return {}
+
+    profiles: Dict[str, ModelProfile] = {}
+    for record in records:
+        if not record.get("enabled", True):
+            continue
+        model_id = str(record.get("id") or "").strip()
+        provider = str(record.get("provider") or "").strip().lower()
+        model_name = str(record.get("model") or "").strip()
+        if not (model_id and provider and model_name):
+            continue
+        profiles[model_id] = ModelProfile(
+            model_id=model_id,
+            provider=provider,
+            model_name=model_name,
+            tier=_tier_for(provider),
+            capabilities=_capabilities_for_provider(provider),
+        )
+    return profiles
+
+
+def _router_for(profiles: Dict[str, ModelProfile]) -> LiuhaoModelRouter:
+    registry = ModelRegistry()
+    for profile in profiles.values():
+        registry.register(
+            RegisteredModel(
+                model_id=profile.model_id,
+                provider=profile.provider,
+                model_name=profile.model_name,
+                capabilities=profile.capabilities,
+            )
+        )
+    return LiuhaoModelRouter(registry, dict(profiles))
+
+
+def route_task_from_store(
+    task_type: Optional[str] = None, *, store: Any = None, **overrides: Any
+) -> RouteResult:
+    """Route against the live model-management store (not the static catalog)."""
+    profiles = catalog_from_store(store)
+    if not profiles:
+        raise NoModelAvailableError("model management has no enabled models")
+    profile = _resolve_profile(task_type)
+    try:
+        return _router_for(profiles).route(
+            task_type=task_type, **_profile_kwargs(profile, overrides)
+        )
     except ValueError as exc:
         raise NoModelAvailableError(
             f"No model available for task_type={task_type!r}: {exc}"
@@ -309,6 +454,60 @@ def _router_enabled() -> bool:
     }
 
 
+def _routing_disabled() -> bool:
+    """Explicit kill switch. Absent means "route" on the live path."""
+    raw = os.environ.get("LIUHAO_MODEL_ROUTER")
+    if not raw or not raw.strip():
+        return False
+    return raw.strip().lower() in {"0", "off", "false", "no", "disabled"}
+
+
+def provider_for_task(
+    task_type: Optional[str] = None, *, model_id: Optional[str] = None
+) -> BaseProvider:
+    """Provider for a **live** call, routed through model management.
+
+    Precedence: explicit ``model_id`` (caller override) > task routing over the
+    enabled models saved in model management > the configured default model.
+    Any miss (no saved models, capability miss, unreadable store) falls back to
+    the default, which is exactly the pre-routing behaviour -- so enabling this
+    on the live path cannot change behaviour unless the operator saved models.
+
+    Every branch logs its decision and reason; ``LIUHAO_MODEL_ROUTER=off``
+    remains available as a rollout rollback.
+    """
+    if model_id:
+        logger.info("model routing skipped: explicit model_id=%s", model_id)
+        return resolve_provider(model_id)
+
+    if _routing_disabled():
+        logger.info("model routing disabled by LIUHAO_MODEL_ROUTER; using default model")
+        return resolve_provider()
+
+    try:
+        result = route_task_from_store(task_type)
+    except NoModelAvailableError as exc:
+        logger.info(
+            "model routing fallback: task=%s reason=%s -> default model",
+            task_type or "default",
+            exc,
+        )
+        return resolve_provider()
+
+    selected = result.selected_model
+    logger.info(
+        "model routing decision: task=%s model_id=%s provider=%s model=%s "
+        "reason=%s fallbacks=%s",
+        task_type or "default",
+        selected.model_id,
+        selected.provider,
+        selected.model_name,
+        result.reason,
+        ",".join(result.fallback_models) or "-",
+    )
+    return resolve_provider(selected.model_id)
+
+
 def get_provider_for_task(task_type: Optional[str] = None, **overrides: Any) -> BaseProvider:
     """Select a provider for a task.
 
@@ -323,7 +522,9 @@ def get_provider_for_task(task_type: Optional[str] = None, **overrides: Any) -> 
     try:
         result = route_task(task_type, **overrides)
     except NoModelAvailableError as exc:
-        print(f"Warning: model routing failed ({exc}); falling back to default provider")
+        logger.info(
+            "model routing failed (%s); falling back to default provider", exc
+        )
         return get_provider()
 
     provider = provider_type_for(result)

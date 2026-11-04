@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..ai.liuhao import LiuHaoAssistant
-from ..ai.providers import resolve_provider
+from ..ai.model_router import provider_for_task
 from ..ai.conversation_store import get_conversation_store
 from .policy import require_human_principal
 
@@ -80,8 +80,9 @@ def get_assistant(
             if principal:
                 _session_users[key] = principal
         assistant = _sessions[key]
-        # 热加载：按当前配置即时构造（未配置时返回 .env 单例，行为不变）。
-        assistant.provider = resolve_provider(model_id)
+        # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里路由，
+        # 未命中回落默认模型（与旧行为一致），决策写日志便于核对。
+        assistant.provider = provider_for_task("chat", model_id=model_id)
         return assistant
 
 
