@@ -343,6 +343,13 @@ def check_alembic_rollback(tmp_db: Path) -> Check:
             [down.stdout.strip(), down.stderr.strip()],
         )
     # Inspect resulting schema: only alembic_version should remain.
+    #
+    # ``sqlite_sequence`` is SQLite's own bookkeeping table, created the moment
+    # the first AUTOINCREMENT table exists (revision 006 declares three: the
+    # verification checkpoints, journal and provider-metric samples). SQLite
+    # keeps it after the owning tables are dropped and refuses to let anyone
+    # drop it, so it is NOT an application table -- the assertion below is
+    # "no app table survived", which is what the rollback contract means.
     try:
         import sqlite3
         con = sqlite3.connect(str(tmp_db))
@@ -352,11 +359,14 @@ def check_alembic_rollback(tmp_db: Path) -> Check:
     except Exception as e:  # pragma: no cover
         tables = [f"<inspect-error:{e}>"]
     detail.append(f"after downgrade base, tables left: {tables}")
-    rollback_ok = tables == ["alembic_version"]
+    leftover_app_tables = [t for t in tables
+                           if t not in ("alembic_version", "sqlite_sequence")]
+    rollback_ok = not leftover_app_tables
     if not rollback_ok:
         return Check(
             "B. alembic upgrade/rollback", "FAIL",
-            "downgrade base did not fully revert (app tables still present)",
+            "downgrade base did not fully revert (app tables still present: "
+            f"{leftover_app_tables})",
             detail,
         )
 

@@ -52,6 +52,13 @@ COPY --chown=app:app src/ ./src/
 COPY --chown=app:app config/ ./config/
 COPY --chown=app:app scripts/ ./scripts/
 
+# 迁移图（alembic.ini + alembic/versions/*）。缺了它，镜像只能靠运行时的
+# ``CREATE TABLE IF NOT EXISTS`` 自建库表：那意味着上线前无法预建、无法
+# 审计真实 schema、也无法回滚（``alembic upgrade/downgrade`` 在容器里根本跑
+# 不起来）。revision 006 是运行时状态表的基线，001-005 是 ORM 表。
+COPY --chown=app:app alembic.ini ./alembic.ini
+COPY --chown=app:app alembic/ ./alembic/
+
 # 仓库根级的共享错误类型模块。src/ai/providers.py 的 `generate_with_retry` 在
 # 函数体内 `from error_types import classify_error, ProviderRateLimitError`，
 # 而该导入是**顶层模块名**（不是 `src.error_types`），所以它只在 CWD/镜像根下
@@ -107,4 +114,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c 'import os,urllib.request; urllib.request.urlopen("http://127.0.0.1:"+os.environ.get("PORT","8080")+"/v1/ready", timeout=5)' || exit 1
 
-CMD ["python", "-m", "src.gateway"]
+# 启动前先应用迁移（DATABASE_URL 由 compose 指向 /app/data 的卷，可写）。
+# ``&&`` 保证迁移失败时容器直接退出，而不是带着未迁移的 schema 提供服务。
+# 回滚路径保留在镜像里：``docker run ... python -m alembic downgrade <rev>``。
+CMD ["sh", "-c", "python -m alembic upgrade head && exec python -m src.gateway"]
