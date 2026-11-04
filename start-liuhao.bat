@@ -29,10 +29,21 @@ if not defined PY (
     exit /b 1
 )
 
-rem 2) Forward all arguments (e.g. --https, --backend-only) to the launcher.
+rem 2) 首次运行向导：检测到无管理员身份/无模型时引导补齐；已配置则秒退。
+rem    只在交互启动时跑（CI 请直接调 start_liuhao.py 或传 --skip）。
+"%PY%" scripts\first_run_wizard.py
+if errorlevel 1 (
+    echo.
+    echo [FAIL] 首次运行向导未通过，请按上方提示处理后重试。
+    echo.
+    pause
+    exit /b 1
+)
+
+rem 3) Forward all arguments (e.g. --https, --backend-only) to the launcher.
 "%PY%" scripts\start_liuhao.py %*
 
-rem 3) Keep the window open so the user can read startup output / errors.
+rem 4) Keep the window open so the user can read startup output / errors.
 echo.
 echo LiuHao stopped. Press any key to close.
 pause >nul
