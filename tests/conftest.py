@@ -883,6 +883,30 @@ for dir_path in OUTPUT_DIRS:
     Path(dir_path).mkdir(parents=True, exist_ok=True)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_model_config_per_test(tmp_path_factory, monkeypatch):
+    """隔离模型配置中心（SQLite + 加密密钥）到每个用例独占的临时目录。
+
+    模型管理是新增能力：默认库路径是仓库下的 ``data/model_registry.sqlite3``。
+    本机真实添加过模型后，如果测试直接读默认路径，全量测试会被本机配置
+    "污染"（例如聊天用例拿到真实云端 provider）。同理，加密 key 也绝不能
+    在跑测试时落到仓库 ``data/`` 里 —— 这里显式用固定测试口令，避免生成密钥文件。
+    """
+    import src.ai.model_config as model_config_module
+
+    base = tmp_path_factory.mktemp("lh_model_config")
+    monkeypatch.setenv(
+        model_config_module.MODEL_CONFIG_DB_ENV, str(base / "model_registry.sqlite3")
+    )
+    monkeypatch.setenv(model_config_module.MODEL_CONFIG_KEY_ENV, "pytest-model-config-key")
+    monkeypatch.setenv(
+        model_config_module.MODEL_CONFIG_KEY_FILE_ENV, str(base / "model_config.key")
+    )
+    model_config_module.reset_model_config_store()
+    yield
+    model_config_module.reset_model_config_store()
+
+
 # ==================== Export ====================
 
 __all__ = [
