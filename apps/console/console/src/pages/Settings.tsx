@@ -17,6 +17,7 @@ import type { Session } from '../lib/auth'
 import { humanDuration, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
 import { Card, Dot } from '../components/ui'
+import { ModelManager } from '../components/ModelManager'
 import {
   IconCheck,
   IconDesktop,
@@ -132,6 +133,14 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
             三端共用同一批端点与同一套鉴权 —— 断点里没有、也不该有权限边界。
           </span>
         </div>
+      </Card>
+
+      <Card
+        title="模型管理"
+        sub="新增 / 编辑 / 删除模型配置 —— 保存即生效；密钥只以脱敏形式显示"
+        span={12}
+      >
+        <ModelManager session={session} />
       </Card>
 
       <Card title="外观主题" sub="可跟随形态，也可手动指定" span={6}>

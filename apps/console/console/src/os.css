@@ -1285,6 +1285,144 @@ select {
 }
 
 /* ==========================================================================
+   模型管理
+   ========================================================================== */
+
+.os-model {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.os-model-form-title {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--os-text-dim);
+}
+
+.os-model-form-foot {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.os-model-form-foot .os-btn {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.os-model-scroll {
+  overflow-x: auto;
+}
+
+.os-model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.os-model-table th,
+.os-model-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--os-border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.os-model-table th {
+  font-size: 11px;
+  font-weight: 560;
+  color: var(--os-text-faint);
+  white-space: nowrap;
+}
+
+.os-model-table td {
+  color: var(--os-text-dim);
+}
+
+.os-model-name {
+  color: var(--os-text);
+  font-weight: 560;
+}
+
+.os-model-mono {
+  font-family: var(--os-font-mono, ui-monospace, 'SFMono-Regular', monospace);
+  word-break: break-all;
+}
+
+.os-model-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.os-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.os-model-actions .os-btn {
+  width: auto;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.os-model-probe {
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.os-model-error {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.os-model-probe-detail {
+  font-size: 11.5px;
+  color: var(--os-text-faint);
+  overflow-wrap: anywhere;
+}
+
+[data-mode='mobile'] .os-model-table,
+[data-mode='mobile'] .os-model-table tbody,
+[data-mode='mobile'] .os-model-table tr,
+[data-mode='mobile'] .os-model-table td {
+  display: block;
+  width: 100%;
+}
+
+[data-mode='mobile'] .os-model-table thead {
+  display: none;
+}
+
+[data-mode='mobile'] .os-model-table tr {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--os-border-soft);
+}
+
+[data-mode='mobile'] .os-model-table td {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 0;
+}
+
+[data-mode='mobile'] .os-model-table td::before {
+  content: attr(data-label);
+  color: var(--os-text-faint);
+  font-size: 11px;
+}
+
+/* ==========================================================================
    无障碍
    ========================================================================== */
 
