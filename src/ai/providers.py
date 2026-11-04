@@ -992,7 +992,6 @@ def _registry_config(model_id: Optional[str] = None) -> Optional[Dict[str, Any]]
         return None
 
 
-
 def set_provider(provider: BaseProvider) -> None:
     """Set the global provider instance explicitly."""
     global _provider_instance

@@ -28,7 +28,7 @@ from .agent_factory import (
     AgentPolicy,
     economy_inputs,
 )
-from .providers import BaseProvider, get_provider, resolve_provider
+from .providers import BaseProvider, resolve_provider
 from .conversation_store import get_conversation_store
 from .tool_registry import ToolRegistry
 from .tools import make_tools, build_tool_prompt, parse_tool_call
