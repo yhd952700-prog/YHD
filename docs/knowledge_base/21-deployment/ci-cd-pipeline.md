@@ -408,4 +408,4 @@ LiuHao AI OS 各组件独立版本化，但 Helm Chart 锁定一组**经过联�
 
 ---
 
-**相关文档**：[Kubernetes 部署](kubernetes-deployment.md) · [Helm Charts](helm-charts.md) · [监控栈](monitoring-stack.md) · [测试策略](../best-practices/testing-strategies.md)
+**相关文档**：[Kubernetes 部署](kubernetes-deployment.md) · [Helm Charts](helm-charts.md) · [监控栈](monitoring-stack.md) · [测试策略](../../best-practices/testing-strategies.md)

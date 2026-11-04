@@ -411,6 +411,6 @@ result = client.agents.execute(
 
 ## 下一步
 
-- [FAQ](faq.md) - 常见问题解答
+- [FAQ](../faq/faq.md) - 常见问题解答
 - [安装指南](../getting-started/installation.md#常见问题排查) - 安装相关问题
 - [联系支持](#) - 获取更多帮助

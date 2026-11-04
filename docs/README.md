@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-10-07 实测）**：活跃文档 **125** 篇（不含 `archive/` 与
-> `spec/incoming/`），本索引**逐一列全 125 篇**。该数字由
+> **覆盖状态（2026-11-04 实测）**：活跃文档 **187** 篇（不含 `archive/` 与
+> `spec/incoming/`），本索引**逐一列全 187 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -89,7 +89,7 @@
 
 ---
 
-## 2. 目录结构（14 个目录，实测）
+## 2. 目录结构（18 个目录，实测）
 
 ```text
 docs/
@@ -97,21 +97,26 @@ docs/
 ├── CODEX-CONTRACT.md            ← AI 编码代理执行契约（必读）
 ├── quickstart.md / QUICKSTART-RUN.md / RUN.md / HUMAN-DECISIONS.md
 ├── ARCHITECTURE.md              ← 架构导航门户
+├── GLOSSARY.md / SIDENAV.md     ← 术语表 / 站点导航
 ├── *-DESIGN.md 等 15 篇根级设计文档（见 §4）
 ├── adr/                (2)     架构决策记录
 ├── architecture/       (8)     架构
-├── autonomous/         (23)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
+├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
+├── best-practices/     (5)     编码/Agent/记忆/多智能体/测试最佳实践
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
-├── ci/                 (1)     CI 门禁豁免登记册
+├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
 ├── decisions/          (1)     悬而未决决策登记
 ├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
+├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
 ├── l10k/               (1)     L10K 基准设计
 ├── operations/         (5)     运维与上线
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
+├── roadmap/            (1)     百万行路线图
 ├── security/           (1)     安全威胁模型
 ├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
+├── tutorials/          (7)     从零构建 Agent / 多智能体 / 代码审查 / 数据流水线教程
 └── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
 
@@ -137,7 +142,7 @@ docs/
 
 ---
 
-## 4. 全量清单（125 篇，逐一列出）
+## 4. 全量清单（187 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -148,13 +153,15 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 
-### 4.2 根级设计与决策（15）
+### 4.2 根级设计与决策（17）
 
 | 文件 | 说明 |
 |---|---|
 | [`RUN.md`](RUN.md) | 把网关 + 驾驶舱真跑起来（实测跑通，含环境变量与 fail-closed 语义） |
 | [`QUICKSTART-RUN.md`](QUICKSTART-RUN.md) | 5 分钟快捷版（登录/门禁以 `RUN.md` 为准） |
 | [`HUMAN-DECISIONS.md`](HUMAN-DECISIONS.md) | 人类已作出的决策记录 |
+| [`GLOSSARY.md`](GLOSSARY.md) | 术语表：项目内高频但易混淆的术语 |
+| [`SIDENAV.md`](SIDENAV.md) | 站点导航（按主题聚合的入口清单） |
 | [`ORPHAN-AUDIT.md`](ORPHAN-AUDIT.md) | 孤儿资产审计 |
 | [`REPO-LINE-CLOSURE.md`](REPO-LINE-CLOSURE.md) | 仓库线索收敛 |
 | [`AGENT-RUNTIME-DESIGN.md`](AGENT-RUNTIME-DESIGN.md) | Agent 运行时设计 |
@@ -189,7 +196,7 @@ docs/
 | [`architecture/migration-matrix.md`](architecture/migration-matrix.md) | 迁移矩阵 |
 | [`architecture/phase-9-10-12-15-e2e-demo.md`](architecture/phase-9-10-12-15-e2e-demo.md) | Phase 9/10/12/15 端到端 demo |
 
-### 4.5 `autonomous/`（23）— 治理 · 决策 · 登记册 · 部署 · 基准
+### 4.5 `autonomous/`（24）— 治理 · 决策 · 登记册 · 部署 · 基准
 
 > ⚠️ **本目录包含项目最高治理文件 [`GOVERNANCE.md`](autonomous/GOVERNANCE.md)
 > （自主开发授权、硬边界、人类主权保留项）。旧版索引完全遗漏本目录。**
@@ -236,6 +243,12 @@ docs/
 | [`autonomous/PERFORMANCE-BASELINE.md`](autonomous/PERFORMANCE-BASELINE.md) | 性能基线 |
 | [`autonomous/EXPERIMENT-MATRIX-crash-powerloss.md`](autonomous/EXPERIMENT-MATRIX-crash-powerloss.md) | 崩溃/掉电实验矩阵 |
 | [`autonomous/FIX-B-capability-register-exemption-design.md`](autonomous/FIX-B-capability-register-exemption-design.md) | 能力注册豁免设计 |
+
+**批判性复核**
+
+| 文件 | 说明 |
+|---|---|
+| [`autonomous/CRITIC-REVIEW-p36-honestization-2026-10-07.md`](autonomous/CRITIC-REVIEW-p36-honestization-2026-10-07.md) | 对 p36「诚实化」阶段的独立批判性复核（保留异议，不并入结论） |
 
 ### 4.6 `blueprint-upgrades/`（29）— 蓝图自动升级机制（UBX）
 
@@ -303,11 +316,12 @@ docs/
 | [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md) | Shell 适配器威胁模型 |
 | [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) | 悬而未决决策登记 |
 
-### 4.10 `ci/`（1）— CI 门禁豁免登记
+### 4.10 `ci/`（2）— CI 门禁豁免登记 · 执行记录
 
 | 文件 | 说明 |
 |---|---|
 | [`ci/gate-exemptions.md`](ci/gate-exemptions.md) | gate 豁免登记册：**为什么** 4 条 meta-guardrail 断言保持红色、各自归属、以及转绿条件（不伪装成"通过"） |
+| [`ci/2026-11-04-execution-record.md`](ci/2026-11-04-execution-record.md) | 2026-11-04 收口执行记录：实际命令、关键输出、CI run 结论与未闭合阻塞 |
 
 ### 4.11 `governance/`（1）— 控制声明裁决登记
 
@@ -330,6 +344,111 @@ docs/
 > "当时路径指向何处"的忠实记录 —— 为了让 linter 变绿而改写历史快照，是**更坏的谎**。
 > 查现行路径请看本索引。
 
+### 4.13 `best-practices/`（5）— 工程最佳实践
+
+| 文件 | 说明 |
+|---|---|
+| [`best-practices/agent-design-patterns.md`](best-practices/agent-design-patterns.md) | Agent 设计模式 |
+| [`best-practices/error-handling-patterns.md`](best-practices/error-handling-patterns.md) | 错误处理模式 |
+| [`best-practices/memory-management-best-practices.md`](best-practices/memory-management-best-practices.md) | 记忆管理最佳实践 |
+| [`best-practices/multi-agent-coordination.md`](best-practices/multi-agent-coordination.md) | 多智能体协作 |
+| [`best-practices/testing-strategies.md`](best-practices/testing-strategies.md) | 测试策略 |
+
+### 4.14 `tutorials/`（7）— 从零构建教程
+
+| 文件 | 说明 |
+|---|---|
+| [`tutorials/README.md`](tutorials/README.md) | 教程索引 |
+| [`tutorials/build_your_first_agent.md`](tutorials/build_your_first_agent.md) | 第一个 Agent |
+| [`tutorials/build_a_code_reviewer.md`](tutorials/build_a_code_reviewer.md) | 构建代码审查 Agent |
+| [`tutorials/build_a_data_pipeline.md`](tutorials/build_a_data_pipeline.md) | 构建数据流水线 |
+| [`tutorials/build_a_research_bot.md`](tutorials/build_a_research_bot.md) | 构建研究机器人 |
+| [`tutorials/build_multi_agent_system.md`](tutorials/build_multi_agent_system.md) | 构建多智能体系统 |
+| [`tutorials/deploy_to_production.md`](tutorials/deploy_to_production.md) | 部署到生产 |
+
+### 4.15 `roadmap/`（1）— 长期路线图
+
+| 文件 | 说明 |
+|---|---|
+| [`roadmap/MILLION-CODE-ROADMAP.md`](roadmap/MILLION-CODE-ROADMAP.md) | 百万行规模路线图（目标态，不是现状） |
+
+### 4.16 `knowledge_base/`（45）— 知识库
+
+> ⚠️ 本目录是**面向使用者的知识库**（概念解释 · API 参考 · 部署 · 性能 · 安全 ·
+> 集成 · FAQ），与 `spec/`、`kernel-spec/` 的权威规格不是同一层级：发生冲突时
+> 仍以「代码事实 > KERNEL-CANON > 其余一切」裁决。入口见
+> [`knowledge_base/README.md`](knowledge_base/README.md)。
+
+**入门 · 概念**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/README.md`](knowledge_base/README.md) | 知识库索引 |
+| [`knowledge_base/getting-started/installation.md`](knowledge_base/getting-started/installation.md) | 安装指南 |
+| [`knowledge_base/getting-started/quickstart.md`](knowledge_base/getting-started/quickstart.md) | 快速上手 |
+| [`knowledge_base/core-concepts/agents.md`](knowledge_base/core-concepts/agents.md) | Agent 概念 |
+| [`knowledge_base/core-concepts/memory.md`](knowledge_base/core-concepts/memory.md) | 记忆概念 |
+| [`knowledge_base/core-concepts/multi_agent.md`](knowledge_base/core-concepts/multi_agent.md) | 多智能体概念 |
+| [`knowledge_base/core-concepts/planning.md`](knowledge_base/core-concepts/planning.md) | 规划概念 |
+| [`knowledge_base/architecture/overview.md`](knowledge_base/architecture/overview.md) | 架构总览 |
+| [`knowledge_base/architecture/kernels.md`](knowledge_base/architecture/kernels.md) | 内核说明（与 KERNEL-CANON 冲突时以 KERNEL-CANON 为准） |
+| [`knowledge_base/architecture/security.md`](knowledge_base/architecture/security.md) | 架构安全 |
+
+**使用指南 · API 参考**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/user-guide/agent_guide.md`](knowledge_base/user-guide/agent_guide.md) | Agent 使用指南 |
+| [`knowledge_base/user-guide/memory_guide.md`](knowledge_base/user-guide/memory_guide.md) | 记忆使用指南 |
+| [`knowledge_base/user-guide/pipeline_guide.md`](knowledge_base/user-guide/pipeline_guide.md) | 流水线指南 |
+| [`knowledge_base/user-guide/plugins_guide.md`](knowledge_base/user-guide/plugins_guide.md) | 插件指南 |
+| [`knowledge_base/user-guide/sdk_guide.md`](knowledge_base/user-guide/sdk_guide.md) | SDK 指南 |
+| [`knowledge_base/api-reference/agents_api.md`](knowledge_base/api-reference/agents_api.md) | Agent API |
+| [`knowledge_base/api-reference/health_api.md`](knowledge_base/api-reference/health_api.md) | 健康检查 API |
+| [`knowledge_base/api-reference/knowledge_api.md`](knowledge_base/api-reference/knowledge_api.md) | 知识 API |
+| [`knowledge_base/api-reference/memory_api.md`](knowledge_base/api-reference/memory_api.md) | 记忆 API |
+| [`knowledge_base/api-reference/tasks_api.md`](knowledge_base/api-reference/tasks_api.md) | 任务 API |
+
+**进阶模式**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/20-advanced-patterns/bulkhead-advanced.md`](knowledge_base/20-advanced-patterns/bulkhead-advanced.md) | 舱壁隔离进阶 |
+| [`knowledge_base/20-advanced-patterns/circuit-breaker-advanced.md`](knowledge_base/20-advanced-patterns/circuit-breaker-advanced.md) | 熔断器进阶 |
+| [`knowledge_base/20-advanced-patterns/cqrs-pattern.md`](knowledge_base/20-advanced-patterns/cqrs-pattern.md) | CQRS 模式 |
+| [`knowledge_base/20-advanced-patterns/event-sourcing.md`](knowledge_base/20-advanced-patterns/event-sourcing.md) | 事件溯源 |
+| [`knowledge_base/20-advanced-patterns/saga-pattern.md`](knowledge_base/20-advanced-patterns/saga-pattern.md) | Saga 模式 |
+
+**部署 · 性能 · 安全**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/21-deployment/ci-cd-pipeline.md`](knowledge_base/21-deployment/ci-cd-pipeline.md) | CI/CD 流水线 |
+| [`knowledge_base/21-deployment/docker-compose-setup.md`](knowledge_base/21-deployment/docker-compose-setup.md) | Docker Compose 配置 |
+| [`knowledge_base/21-deployment/helm-charts.md`](knowledge_base/21-deployment/helm-charts.md) | Helm Charts |
+| [`knowledge_base/21-deployment/kubernetes-deployment.md`](knowledge_base/21-deployment/kubernetes-deployment.md) | Kubernetes 部署 |
+| [`knowledge_base/21-deployment/monitoring-stack.md`](knowledge_base/21-deployment/monitoring-stack.md) | 监控栈 |
+| [`knowledge_base/23-performance/api-rate-optimization.md`](knowledge_base/23-performance/api-rate-optimization.md) | API 吞吐优化 |
+| [`knowledge_base/23-performance/caching-strategies.md`](knowledge_base/23-performance/caching-strategies.md) | 缓存策略 |
+| [`knowledge_base/23-performance/database-optimization.md`](knowledge_base/23-performance/database-optimization.md) | 数据库优化 |
+| [`knowledge_base/23-performance/performance-tuning.md`](knowledge_base/23-performance/performance-tuning.md) | 性能调优 |
+| [`knowledge_base/24-security/audit-logging.md`](knowledge_base/24-security/audit-logging.md) | 审计日志 |
+| [`knowledge_base/24-security/gdpr-compliance-guide.md`](knowledge_base/24-security/gdpr-compliance-guide.md) | GDPR 合规指南 |
+| [`knowledge_base/24-security/secrets-management.md`](knowledge_base/24-security/secrets-management.md) | 密钥管理 |
+| [`knowledge_base/24-security/security-hardening.md`](knowledge_base/24-security/security-hardening.md) | 安全加固 |
+
+**集成 · 排障 · 变更**
+
+| 文件 | 说明 |
+|---|---|
+| [`knowledge_base/22-integrations/custom-integration-guide.md`](knowledge_base/22-integrations/custom-integration-guide.md) | 自定义集成 |
+| [`knowledge_base/22-integrations/github-integration-guide.md`](knowledge_base/22-integrations/github-integration-guide.md) | GitHub 集成 |
+| [`knowledge_base/22-integrations/jira-integration-guide.md`](knowledge_base/22-integrations/jira-integration-guide.md) | Jira 集成 |
+| [`knowledge_base/22-integrations/slack-integration-guide.md`](knowledge_base/22-integrations/slack-integration-guide.md) | Slack 集成 |
+| [`knowledge_base/troubleshooting/common_issues.md`](knowledge_base/troubleshooting/common_issues.md) | 常见问题 |
+| [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
+| [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
+
 ---
 
 ## 5. 门禁：本文档的可核验性
@@ -339,7 +458,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 125 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 187 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |

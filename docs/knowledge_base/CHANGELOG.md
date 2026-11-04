@@ -198,5 +198,5 @@ python scripts/smoke_mvp.py
 
 ## 下一步
 
-- [发布就绪合约](../../../RELEASE-READINESS-CONTRACT.md) - 发布状态详情
-- [主项目就绪状态](../../../MASTER_PROJECT_READINESS.md) - 项目整体就绪状态
+- [发布就绪合约](../../RELEASE-READINESS-CONTRACT.md) - 发布状态详情
+- [主项目就绪状态](../../MASTER_PROJECT_READINESS.md) - 项目整体就绪状态
