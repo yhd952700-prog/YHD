@@ -26,6 +26,8 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "issue_console_token.py"
 def script(monkeypatch, tmp_path):
     """独立的身份库 + 固定的 JWT 密钥，避免读到本机真实状态。"""
     monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_FILE", str(tmp_path / "humans.json"))
+    # 凭据文件也隔离：注册人类会写密码哈希，不能让用例碰本机真实文件。
+    monkeypatch.setenv("LIUHAO_AUTH_SECRETS_FILE", str(tmp_path / "auth_secrets.json"))
     # 身份注册表的完整性密钥是强制的：没有它，行无法被认证。
     monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", "test-integrity-key")
     monkeypatch.delenv("LIUHAO_HUMAN_IDENTITIES_BACKEND", raising=False)
