@@ -384,11 +384,22 @@ def _human_identity(principal: str):
 
     The kernel owns the answer; this module only relays it. Returns ``None``
     when the principal is unknown, not human, or not ACTIVE.
+
+    Resolution order matters: a token's ``sub`` is the *identity id*
+    (``human:<name>`` / ``human:<hex>``) when minted by
+    ``scripts/issue_console_token.py``, but the *principal string* (``liuhao``)
+    when minted by ``POST /v1/auth/login``. Looking up only by principal made
+    every script-minted human token report ``still_human: false`` with null
+    scope/permissions -- the token was valid, the identity was simply looked up
+    in the wrong key space. Accept both, exactly as ``_sovereignty``'s
+    ``_validated_principal`` already does.
     """
     from ..kernels.identity import get_identity_manager, is_human_identity
 
     manager = get_identity_manager()
-    identity = manager.get_identity_by_principal(principal)
+    identity = manager.get_identity(principal) or manager.get_identity_by_principal(
+        principal
+    )
     if identity is None or not is_human_identity(identity):
         return None
     return identity
