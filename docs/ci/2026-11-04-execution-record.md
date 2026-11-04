@@ -186,6 +186,15 @@ wiring gap」。按硬边界（不得改验收标准造假绿、不得擅自武�
 | `33027b36` | test(models) | 45 条后端用例 + 8 条前端映射用例；模型库按用例隔离 |
 | `ebdd6cca` | fix(auth) | `issue_console_token.py` 签发的 claims 与身份记录同源（scope/permissions/metadata） |
 | `5026bd0b` | style(lint) | 清理模型管理引入的 flake8 告警，`src/` 恢复 0 告警 |
+| `06616ad5` | test(coordination) | 每个子进程用独立工人脚本，消除 CI 3.11 上 `exit=0 无结果文件` 的工装自竞争 |
+| `afd67c3a` | test(chat) | 离线桩改打 `resolve_provider` 接缝（热加载后旧的 `get_provider` 名已不参与网关路径） |
+| `f70c953c` | chore | `.gitignore` 忽略本地 `*.gguf` 权重（防止 1.8 GB 二进制误提交） |
+| `cd7c9fd3` | docs(ci) | 补本文件 §7 |
+| `4384059d` | test(auth) | 令牌脚本用例同时隔离 `LIUHAO_AUTH_SECRETS_FILE` |
+| `2b1ce894` | fix(api) | 用 `verify_openapi_contract.py --write` 同步 openapi.yaml（58 → 64 paths） |
+| `33145002` | test(audit) | 伪造签名用例改为"必然与原文不同"，修掉 1/64 概率的偶发失败 |
+| `401b7d59` | test(identity) | R-15b 运行时探针与 HC-11 / U6 的"强制密钥"语义对齐（16/22 → 24/24） |
+| `7149a540` | test(gate) | P08 状态矩阵 HC-01 不再把 gitignored 运行产物当证据；P08b HC-10 探针按 12 字段重建并修正探针自伤；A2 探针固定测试密钥 |
 
 ### 7.2 设计与关键取舍
 
@@ -254,4 +263,73 @@ WCAG-AA 审计（本地 Chrome + demo 人类 `ceo`，3 种视口 × 19 页）真
 ```
 
 其中 `settings` 页（新增「模型管理」所在）在 desktop/web/mobile 三档均 PASS。
+
+### 7.5 全量本地回归（最终树 `401b7d59`）
+
+先清除外部注入的身份环境变量（`LIUHAO_HUMAN_IDENTITIES_DB/_BACKEND/_INTEGRITY_KEY`），
+再跑 `python -m pytest tests/ -q --tb=short`：
+
+```
+6489 passed, 42 skipped, 3 xfailed, 435 warnings in 3017.63s (0:50:17)
+```
+
+唯一的 1 failed 是
+`tests/kernels/network/test_network.py::TestRouting::test_add_route_and_deliver`
+（向本机临时 HTTP 服务做真实 POST 并断言 `DELIVERED`）。它发生在全量跑分的
+后段、且当时还有其他 pytest 进程与 WCAG 浏览器审计并发占用 CPU —— 属于超时型
+环境抖动，不是产品行为：
+
+```
+单独重跑该用例          1 passed (20.45s)
+整个 tests/kernels/network/  35 passed (22.40s)
+CI 3.11 / 3.12 两腿该用例   均通过
+```
+
+### 7.6 Guardrails 收口（探针对齐 + 扩展门禁本地回放）
+
+上一轮 `guardrails` / `guardrails-extended` 里被更早的失败步挡住、从未真正执行到的
+脚本，这次全部本地跑了一遍（Windows 原生、`.venv`、按 CI 的隔离环境变量：
+`LIUHAO_WORKSPACE_ROOT` / `AUDIT_DB_PATH` / `LIUHAO_ALERTS_STORE_PATH` 指向临时目录，
+并清除本机 Trae shell 注入的 `LIUHAO_HUMAN_IDENTITIES_*`，以复现 CI 的无密钥姿态）。
+
+**三个探针漂移（代码已正确，探针过期）—— 已修并提交 `7149a540`：**
+
+| 脚本 | 修复前 | 修复后 | 根因 |
+|---|---|---|---|
+| `verify_p08b_chain_matrix.py` | 76/80，HC-10 4 条 FAIL | **81/81 passed, 0 failed** | 探针仍按 10 字段重建，实际 `compute_hash()` 已含 `metadata` + `canon_version`（12 字段）；且探针篡改 `metadata` 后未还原，导致后续 `verify_integrity()` 报 `broken=<uuid>` —— 是探针自伤，不是实现缺陷 |
+| `verify_p08_final_status_matrix.py` | `DRIFT -> HC-01: expected UNVERIFIED, derived COMPLIANT` | **0 drift**（COMPLIANT 7 / UNVERIFIED 4），HC-01 稳定 UNVERIFIED | 探针把仓库根 `audit_store.db`（gitignored 运行产物）的存在当成"链连续性已验证"；该文件只证明代码写得出链，且会让同一份代码在不同机器上给出不同状态 |
+| `verify_a2_audit_principal_identity.py` | 22/23 | **23/23 PASS** | HC-11 / U6 之后无完整性密钥时整库行在加载期被拒，探针重启后解析不到身份；改为固定 `backend=file` + 显式测试专用密钥（产品默认行为不变） |
+
+HC-09 / HC-10 的 durability 仍按设计记为 **UNVERIFIED（记录项，不是失败）**：
+两者都是内存链，没有持久化路径。
+
+**`guardrails-extended` 27 个 gate 本地全量回放（按 `ci.yml` 原顺序）：**
+
+```
+27/27 exit=0
+（含 verify_dependency_declaration_surface.py 221.6s、
+   verify_identity_user_surface.py 40.1s、verify_http_full_closure.py 29.8s、
+   verify_deploy_readiness.py 14.7s）
+```
+
+**该 job 的第 28 步 `verify_deployment_gate_vars.py` 仍 exit=1，是唯一红灯：**
+11 个门禁变量没有任何可部署工件设置，其中 8 个需要"缺省分支是否放行"的人工裁决
+（写入 `SEED_GATES` 还是带理由的 `ALLOWLIST`）：
+
+```
+LIUHAO_EXECUTOR_FENCE                     gate-var-never-set
+LIUHAO_REQUIRE_EXECUTOR_FENCE              gate-var-never-set
+LIUHAO_POSTURE_STRICT                      seed-entry-read-indirectly
+AUDIT_DB_BACKUP_PATH                       gate-var-never-set
+LIUHAO_EXECUTOR_FENCE_LEASE_DIR            gate-var-never-set
+LIUHAO_SANDBOX_ENFORCE                     gate-var-never-set
+LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS        gate-var-never-set
+LIUHAO_API_KEY_STORE                       gate-var-never-set
+LIUHAO_ALLOW_SIMULATED_EXECUTION           unclassified-gate-candidate
+LIUHAO_CONSOLE_DIST                        unclassified-gate-candidate
+LIUHAO_WORKSPACE_ROOT                      unclassified-gate-candidate
+```
+
+这 11 条是**人工决策项**：等于替产品决定"未设置时这个开关意味着开还是关"，
+属于验收标准本身，不能由实现方自行填写换取绿灯。按硬边界暂停并记录，不擅自武装。
 
