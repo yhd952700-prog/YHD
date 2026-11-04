@@ -13,9 +13,13 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import logging
+import os
 import re
 import socket
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -30,7 +34,13 @@ from ..ai.model_config import (
 )
 from ..ai.providers import ProviderFactory, provider_from_config
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1", tags=["models"])
+
+#: Same override the model registry uses, so the UI and the cost guard agree.
+PRICING_FILE_ENV = "LIUHAO_MODEL_PRICING_FILE"
+_DEFAULT_PRICING_FILE = Path(__file__).resolve().parents[2] / "config" / "model_pricing.json"
 
 _ADMIN_ROLES = {"admin", "administrator", "owner"}
 _ADMIN_SCOPES = {"L0"}
@@ -111,6 +121,76 @@ def _store():
     return get_model_config_store()
 
 
+# --------------------------------------------------------------------------- #
+# 价目（config/model_pricing.json）
+# --------------------------------------------------------------------------- #
+# 为什么模型管理必须谈价格：配额守卫算成本时会读这份文件；文件里没有的模型
+# 会被记为"未解析成本"，但那个信息只在决策里可见，管理者在**新增模型**时看不到。
+# 这里把同一份文件的状态直接标在每个模型响应上：定价了就说价格，没定价就明说
+# "未定价"——不允许"看起来能用但成本算不出来"这种沉默状态。
+
+def _pricing_path() -> Path:
+    override = (os.environ.get(PRICING_FILE_ENV) or "").strip()
+    return Path(override) if override else _DEFAULT_PRICING_FILE
+
+
+def _load_prices() -> Dict[str, float]:
+    """读取价目文件；任何读/解析问题都返回空表并记 warning（绝不让 UI 500）。"""
+    path = _pricing_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.info("model pricing file %s not found; all models are unpriced", path)
+        return {}
+    except Exception:  # noqa: BLE001 - 配置是不可信输入
+        logger.warning("model pricing file %s unreadable; treating all as unpriced", path,
+                       exc_info=True)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("model pricing file %s is not an object; treating all as unpriced", path)
+        return {}
+    prices: Dict[str, float] = {}
+    for model_id, price in data.items():
+        if model_id.startswith("_"):
+            continue
+        if not isinstance(price, (int, float)) or isinstance(price, bool) or price < 0:
+            logger.warning("model pricing: ignoring invalid price for %r (%r)", model_id, price)
+            continue
+        prices[str(model_id)] = float(price)
+    return prices
+
+
+def pricing_status(model_id: str) -> Dict[str, Any]:
+    """返回某模型的定价状态。``priced=False`` 就是"未定价"，不是"免费"。"""
+    price = _load_prices().get(model_id)
+    if price is None:
+        return {
+            "priced": False,
+            "price_per_1k_tokens": None,
+            "source": str(_pricing_path()),
+            "note": (
+                "未定价：config/model_pricing.json 中没有该模型；"
+                "配额守卫会把它记为未解析成本（不是 0，也不是免费）"
+            ),
+        }
+    return {
+        "priced": True,
+        "price_per_1k_tokens": price,
+        "source": str(_pricing_path()),
+        "note": "",
+    }
+
+
+def _with_pricing(record: Dict[str, Any]) -> Dict[str, Any]:
+    """给模型响应补 ``pricing`` 字段（不改存储、不改请求语义）。"""
+    if not isinstance(record, dict):
+        return record
+    model_id = str(record.get("model") or record.get("name") or "")
+    stamped = dict(record)
+    stamped["pricing"] = pricing_status(model_id)
+    return stamped
+
+
 def _run_guarded(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -121,10 +201,11 @@ def _run_guarded(fn, *args, **kwargs):
 @router.get("/models")
 def list_models() -> Dict[str, Any]:
     store = _store()
+    models = store.list_models()
     return {
-        "models": store.list_models(),
+        "models": [_with_pricing(m) for m in models],
         "default_id": store.default_id(),
-        "count": len(store.list_models()),
+        "count": len(models),
         "supported_providers": list(SUPPORTED_PROVIDERS),
         "encryption": store.encryption_posture(),
     }
@@ -148,12 +229,16 @@ def list_providers() -> Dict[str, Any]:
 
 @router.get("/models/{model_id}")
 def get_model(model_id: str) -> Dict[str, Any]:
-    return _run_guarded(_store().get_public, model_id)
+    return _with_pricing(_run_guarded(_store().get_public, model_id))
 
 
 @router.post("/models")
 def create_model(payload: ModelPayload, admin=Depends(require_model_admin)) -> Dict[str, Any]:
-    return _run_guarded(_store().create, payload.model_dump(), _principal(admin))
+    # 新增时就地标注定价状态（见 pricing_status）：管理者必须当场看到
+    # "这个模型在价目表里没有条目"，而不是等到成本算不出来才发现。
+    return _with_pricing(
+        _run_guarded(_store().create, payload.model_dump(), _principal(admin))
+    )
 
 
 @router.put("/models/{model_id}")
@@ -161,7 +246,9 @@ def update_model(
     model_id: str, payload: ModelUpdatePayload, admin=Depends(require_model_admin)
 ) -> Dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
-    return _run_guarded(_store().update, model_id, data, _principal(admin))
+    return _with_pricing(
+        _run_guarded(_store().update, model_id, data, _principal(admin))
+    )
 
 
 @router.delete("/models/{model_id}")

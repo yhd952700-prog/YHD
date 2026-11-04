@@ -292,12 +292,19 @@ def test_ready_exposes_executor_fence():
 # --------------------------------------------------------------------------- #
 # 8. /v1/metrics/prometheus exports the executor_fence metrics
 # --------------------------------------------------------------------------- #
-def test_prometheus_exports_fence_metrics():
+def test_prometheus_exports_fence_metrics(monkeypatch):
     from fastapi.testclient import TestClient
     from src.gateway.main import get_app
+    from src.gateway.observability import METRICS_TOKEN_ENV
 
+    # The scrape endpoint refuses non-internal callers unless a token is set
+    # (TestClient's source host is the literal "testclient", i.e. neither).
+    monkeypatch.setenv(METRICS_TOKEN_ENV, "test-scrape-token")
     with TestClient(get_app()) as client:
-        resp = client.get("/v1/metrics/prometheus")
+        resp = client.get(
+            "/v1/metrics/prometheus",
+            headers={"Authorization": "Bearer test-scrape-token"},
+        )
     assert resp.status_code == 200, resp.text
     text = resp.text
     for name in (

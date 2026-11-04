@@ -374,6 +374,23 @@ def client():
 
 
 class TestHttpEndpoints:
+    @pytest.fixture
+    def scrape_headers(self, monkeypatch):
+        """Metrics now need a token or an internal source; TestClient looks public."""
+        from src.gateway import observability as gateway_observability
+
+        monkeypatch.setenv(gateway_observability.METRICS_TOKEN_ENV, "test-scrape-token")
+        return {"Authorization": "Bearer test-scrape-token"}
+
+    @pytest.fixture
+    def human_headers(self):
+        from src.security import get_jwt_handler
+
+        token, _ = get_jwt_handler().create_token(
+            subject="ops", roles=["admin"], metadata={"scope": "L0"}
+        )
+        return {"Authorization": f"Bearer {token}"}
+
     def test_gateway_exposes_the_three_new_routes(self, client):
         """防孤儿：函数写好了不代表被接线。检查真实路由表。
 
@@ -390,35 +407,42 @@ class TestHttpEndpoints:
         assert "/v1/health" in paths
         assert "/v1/metrics" in paths
 
-    def test_prometheus_endpoint_serves_text_format(self, client):
-        response = client.get("/v1/metrics/prometheus")
+    def test_prometheus_endpoint_serves_text_format(self, client, scrape_headers):
+        response = client.get("/v1/metrics/prometheus", headers=scrape_headers)
         assert response.status_code == 200, response.text
         assert "text/plain" in response.headers["content-type"]
         assert "version=0.0.4" in response.headers["content-type"]
         assert "# HELP http_requests_total" in response.text
 
-    def test_prometheus_endpoint_can_be_disabled(self, client, monkeypatch):
+    def test_prometheus_endpoint_can_be_disabled(self, client, monkeypatch, scrape_headers):
         monkeypatch.setenv(production.PROMETHEUS_ENV, "0")
-        assert client.get("/v1/metrics/prometheus").status_code == 404
+        assert client.get(
+            "/v1/metrics/prometheus", headers=scrape_headers
+        ).status_code == 404
 
-    def test_subsystem_readiness_reports_all_kernels(self, client):
-        response = client.get("/v1/ready/subsystems")
+    def test_subsystem_readiness_reports_all_kernels(self, client, human_headers):
+        response = client.get("/v1/ready/subsystems", headers=human_headers)
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["total"] == len(_kernels_on_disk())
         assert body["counts"]["healthy"] == len(_kernels_on_disk())
         assert body["status"] == "ready"
 
-    def test_subsystem_readiness_503_when_a_kernel_is_unavailable(self, client, monkeypatch):
+    def test_subsystem_readiness_503_when_a_kernel_is_unavailable(
+        self, client, monkeypatch, human_headers
+    ):
         from src.observability import production as mod
 
         monkeypatch.setattr(
             mod, "SUBSYSTEM_PROBES",
             (("ghost", "src.kernels.nope", "get_x"),),
         )
-        response = client.get("/v1/ready/subsystems")
+        response = client.get("/v1/ready/subsystems", headers=human_headers)
         assert response.status_code == 503
         assert response.json()["status"] == "not_ready"
+
+    def test_subsystem_readiness_requires_a_human_principal(self, client):
+        assert client.get("/v1/ready/subsystems").status_code == 401
 
     def test_preflight_requires_a_human_principal(self, client):
         response = client.get("/v1/production/preflight")

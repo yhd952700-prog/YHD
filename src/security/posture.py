@@ -230,14 +230,40 @@ def describe_posture(
     Used by readiness/health reporting so operators can see *why* a posture was
     concluded, not just the boolean. Never raises: undeterminable is reported as
     ``determinable=False`` rather than failing the probe.
+
+    ``is_production()`` *does* raise in strict mode when the posture cannot be
+    determined. A readiness probe that starts throwing because the deployment
+    forgot to declare its posture is a worse failure than the probe reporting
+    the ambiguity -- so this readout catches that exception and records
+    ``strict_raised=True`` (with the exception text) instead of propagating it.
+    Callers that need the fail-closed behaviour must call ``is_production()``
+    directly, not this readout.
     """
     source = env if env is not None else os.environ
     posture = deployment_posture(source)
+    strict = _strict_enabled(source)
+    strict_raised = False
+    if posture.determinable:
+        try:
+            is_prod = is_production(source, strict=strict)
+        except PostureUndeterminable:  # pragma: no cover - determinable never raises
+            is_prod = posture.is_production
+    else:
+        try:
+            is_prod = is_production(source, strict=strict)
+        except PostureUndeterminable:
+            # Strict mode's whole point is to refuse to guess. The readout still
+            # has to answer, so it reports the non-strict compatibility default
+            # AND that strict mode rejected it -- operators can see the split.
+            strict_raised = True
+            is_prod = False
     return {
-        "is_production": is_production(source),
+        "is_production": is_prod,
         "source": posture.source,
         "raw": posture.raw,
         "determinable": posture.determinable,
         "conflict": posture.conflict,
+        "strict": strict,
+        "strict_raised": strict_raised,
         "vars": {n: source.get(n) for n in POSTURE_ENV_VARS},  # type: ignore[union-attr]
     }
