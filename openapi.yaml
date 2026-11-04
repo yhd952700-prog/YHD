@@ -62,6 +62,12 @@ components:
           minLength: 1
           title: Message
           type: string
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 模型配置 id 或名称；留空则用当前默认模型
+          title: Model Id
         session_id:
           anyOf:
           - type: string
@@ -207,6 +213,114 @@ components:
       - secret
       title: LoginRequest
       type: object
+    ModelPayload:
+      properties:
+        api_key:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          description: API Key（加密落盘；mock/ollama 可留空）
+          title: Api Key
+        base_url:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          description: 可选自定义端点
+          title: Base Url
+        enabled:
+          default: true
+          description: 是否启用
+          title: Enabled
+          type: boolean
+        is_default:
+          default: false
+          description: 是否设为默认（首个模型自动成为默认）
+          title: Is Default
+          type: boolean
+        model:
+          description: 模型名，如 qwen2.5:3b
+          maxLength: 128
+          minLength: 1
+          title: Model
+          type: string
+        name:
+          description: 显示名称（唯一）
+          maxLength: 64
+          minLength: 1
+          title: Name
+          type: string
+        provider:
+          description: provider 类型：mock, openai, anthropic, google, ollama, moonshot, deepseek
+          title: Provider
+          type: string
+        timeout:
+          default: 30.0
+          description: 请求超时（秒）
+          maximum: 600.0
+          minimum: 1.0
+          title: Timeout
+          type: number
+      required:
+      - name
+      - provider
+      - model
+      title: ModelPayload
+      type: object
+    ModelUpdatePayload:
+      properties:
+        api_key:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          description: 留空表示不修改
+          title: Api Key
+        base_url:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          title: Base Url
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+        is_default:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Default
+        model:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          title: Model
+        name:
+          anyOf:
+          - maxLength: 64
+            minLength: 1
+            type: string
+          - type: 'null'
+          title: Name
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        timeout:
+          anyOf:
+          - maximum: 600.0
+            minimum: 1.0
+            type: number
+          - type: 'null'
+          title: Timeout
+      title: ModelUpdatePayload
+      type: object
     ProfileUpdate:
       description: 画像写入请求：所有字段可选，只写传了的项。
       properties:
@@ -285,6 +399,46 @@ components:
       required:
       - name
       title: ProjectCreateRequest
+      type: object
+    TestPayload:
+      properties:
+        api_key:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          title: Api Key
+        base_url:
+          anyOf:
+          - maxLength: 512
+            type: string
+          - type: 'null'
+          title: Base Url
+        model:
+          description: 模型名
+          minLength: 1
+          title: Model
+          type: string
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 已保存配置的 id：用它填 base_url/密钥（表单可只改模型名）
+          title: Model Id
+        provider:
+          description: provider 类型
+          title: Provider
+          type: string
+        timeout:
+          default: 30.0
+          maximum: 600.0
+          minimum: 1.0
+          title: Timeout
+          type: number
+      required:
+      - provider
+      - model
+      title: TestPayload
       type: object
     ValidationError:
       properties:
@@ -2638,6 +2792,393 @@ paths:
       summary: Post Kernels Resume
       tags:
       - kernels
+  /v1/models:
+    get:
+      operationId: list_models_v1_models_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Models V1 Models Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Models
+      tags:
+      - models
+    post:
+      operationId: create_model_v1_models_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPayload'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Model V1 Models Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Model
+      tags:
+      - models
+  /v1/models/providers:
+    get:
+      operationId: list_providers_v1_models_providers_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Providers V1 Models Providers Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Providers
+      tags:
+      - models
+  /v1/models/test:
+    post:
+      operationId: test_connection_v1_models_test_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPayload'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Test Connection V1 Models Test Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Test Connection
+      tags:
+      - models
+  /v1/models/{model_id}:
+    delete:
+      operationId: delete_model_v1_models__model_id__delete
+      parameters:
+      - in: path
+        name: model_id
+        required: true
+        schema:
+          title: Model Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Delete Model V1 Models  Model Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Model
+      tags:
+      - models
+    get:
+      operationId: get_model_v1_models__model_id__get
+      parameters:
+      - in: path
+        name: model_id
+        required: true
+        schema:
+          title: Model Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Model V1 Models  Model Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Model
+      tags:
+      - models
+    put:
+      operationId: update_model_v1_models__model_id__put
+      parameters:
+      - in: path
+        name: model_id
+        required: true
+        schema:
+          title: Model Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelUpdatePayload'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Model V1 Models  Model Id  Put
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Model
+      tags:
+      - models
+  /v1/models/{model_id}/default:
+    post:
+      operationId: set_default_v1_models__model_id__default_post
+      parameters:
+      - in: path
+        name: model_id
+        required: true
+        schema:
+          title: Model Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Default V1 Models  Model Id  Default Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Default
+      tags:
+      - models
+  /v1/models/{model_id}/test:
+    post:
+      operationId: test_saved_model_v1_models__model_id__test_post
+      parameters:
+      - in: path
+        name: model_id
+        required: true
+        schema:
+          title: Model Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Test Saved Model V1 Models  Model Id  Test Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Test Saved Model
+      tags:
+      - models
   /v1/network/messages:
     get:
       description: '读取网络总线真实状态（只读）。
