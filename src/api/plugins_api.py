@@ -1,4 +1,4 @@
-"""Plugins API endpoints for LiuHao AI OS.
+"""LEGACY (not mounted by the gateway): Plugins API endpoints for LiuHao AI OS.
 
 RESTful API endpoints for plugin management:
 - Plugin listing (installed and registry)

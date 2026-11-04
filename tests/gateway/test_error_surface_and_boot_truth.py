@@ -88,6 +88,31 @@ class TestTheTraceIdBreadcrumbIsActuallyFollowable:
             "indistinguishable from 'no trace id was available'"
         )
 
+    def test_500_body_does_not_echo_internal_exception_text(self):
+        """500 响应只给固定文案 + trace_id，内部异常文本只进日志。"""
+        from fastapi.testclient import TestClient
+
+        from src.gateway.main import get_app
+
+        app = get_app()
+
+        @app.get("/__probe_boom")
+        def _boom():  # pragma: no cover - test-only route
+            raise RuntimeError("secret-internal-detail-MUST-NOT-LEAK")
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.get("/__probe_boom")
+
+        assert r.status_code == 500
+        body = r.json()
+        assert body["error"] == "internal_server_error"
+        assert body["trace_id"] and body["trace_id"] != "unknown"
+        assert r.headers.get("X-Trace-ID") == body["trace_id"]
+        assert "secret-internal-detail-MUST-NOT-LEAK" not in r.text, (
+            "the 500 body echoed the exception text; table names, paths and "
+            "connection strings leak to anyone who can trigger the error"
+        )
+
     def test_response_header_matches_the_state_so_the_two_agree(self):
         """The header and the body must name the SAME request.
 

@@ -933,12 +933,21 @@ def get_provider() -> BaseProvider:
         try:
             create_kwargs["timeout"] = float(timeout_raw)
         except ValueError:
-            print(f"Warning: invalid AI_PROVIDER_TIMEOUT={timeout_raw!r}; using default")
+            logger.warning(
+                "invalid AI_PROVIDER_TIMEOUT=%r; using default", timeout_raw
+            )
 
     _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
 
-    # Log provider info (masked)
-    print(f"Provider initialized: {provider_type} (name={name}, model={model}, key: {api_key[:8]}...)")
+    # Provider info (no key material — not even a prefix: stdout/stderr commonly
+    # end up in CI logs and support bundles).
+    logger.info(
+        "Provider initialized: %s (name=%s, model=%s, key=%s)",
+        provider_type,
+        name,
+        model,
+        "configured" if api_key else "none",
+    )
 
     return _provider_instance
 
@@ -988,7 +997,10 @@ def _registry_config(model_id: Optional[str] = None) -> Optional[Dict[str, Any]]
 
         return get_model_config_store().resolve(model_id)
     except Exception as exc:  # pragma: no cover - 存储故障
-        print(f"Warning: model config store unavailable ({type(exc).__name__}); falling back to .env")
+        logger.warning(
+            "model config store unavailable (%s); falling back to .env",
+            type(exc).__name__,
+        )
         return None
 
 

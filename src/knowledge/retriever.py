@@ -73,12 +73,12 @@ class Retriever:
             "results_count": len(search_results),
         }
 
-        for doc_id, similarity, metadata in search_results:
+        for doc_id, similarity, hit_meta in search_results:
             sources.append(doc_id)
             # In a real implementation, we'd fetch the original text from
-            # a document store. Here we use the metadata as context.
-            if metadata:
-                context_parts.append(str(metadata))
+            # a document store. Here we use the hit metadata as context.
+            if hit_meta:
+                context_parts.append(str(hit_meta))
 
         # Join context parts with a separator
         context = "\n\n".join(context_parts) if context_parts else ""

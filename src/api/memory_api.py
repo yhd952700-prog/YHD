@@ -1,4 +1,4 @@
-"""Memory API endpoints for LiuHao AI OS.
+"""LEGACY (not mounted by the gateway): Memory API endpoints for LiuHao AI OS.
 
 RESTful API endpoints for memory management:
 - CRUD operations on memory entries

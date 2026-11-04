@@ -767,17 +767,25 @@ def get_app() -> FastAPI:
             describe_exception(exc, limit=2000),
             exc_info=True,
         )
+        # Never echo the exception text to the caller: internal messages leak
+        # table names, paths, connection strings and business data to whoever
+        # can trigger the 500. The client gets a stable message + trace_id;
+        # the full exception and stack go to the server log only.
         return JSONResponse(
             status_code=500,
             content={
                 "error": "internal_server_error",
                 "detail": (
-                    f"服务端处理此请求时发生未预期错误（{describe_exception(exc)}）。"
-                    f"完整堆栈已写入服务端日志，请以 trace_id={trace_id} 检索定位；"
+                    "服务端处理此请求时发生未预期错误。"
+                    f"请以 trace_id={trace_id} 检索服务端日志定位；"
                     "排除成因后重试本请求。"
                 ),
                 "trace_id": trace_id,
             },
+            # The logging middleware only decorates responses that return
+            # normally; an exception response must still carry the same
+            # breadcrumb the body names, otherwise the two disagree.
+            headers={"X-Trace-ID": trace_id},
         )
 
     @app.exception_handler(ValueError)

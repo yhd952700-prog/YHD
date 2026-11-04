@@ -20,7 +20,13 @@ export class ApiError extends Error {
   }
 }
 
+/** 默认请求超时：没有超时的 fetch 会在后端卡住时永远悬着，界面一直转圈。 */
+const API_TIMEOUT_MS = 15000
+
 /** 发一个带会话的请求。401 会清会话并广播未认证。
+ *
+ * 所有请求统一带超时（`API_TIMEOUT_MS`）；调用方显式传入 `signal` 时以它为准
+ * （例如用户主动取消）。
  *
  * `acceptStatus` 允许调用方声明"这些非 2xx 也是有效响应"。唯一的用途是
  * ``/v1/ready``：它在降级时返回 503 **并且带着完整的检查项**，而"哪一项不健康"
@@ -38,7 +44,16 @@ export async function apiFetch<T>(
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(path, { ...init, headers, cache: 'no-store' })
+  const signal = init?.signal ?? AbortSignal.timeout(API_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(path, { ...init, headers, cache: 'no-store', signal })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new ApiError(408, `请求超时（>${API_TIMEOUT_MS / 1000}s），请稍后重试`)
+    }
+    throw err
+  }
 
   if (response.status === 401) {
     clearSession()

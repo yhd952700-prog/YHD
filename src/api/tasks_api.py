@@ -1,4 +1,4 @@
-"""Task management API endpoints for LiuHao AI OS.
+"""LEGACY (not mounted by the gateway): Task management API endpoints for LiuHao AI OS.
 
 RESTful API endpoints for task management:
 - Task CRUD operations

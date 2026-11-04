@@ -1,4 +1,4 @@
-"""Cost API endpoints for LiuHao AI OS.
+"""LEGACY (not mounted by the gateway): Cost API endpoints for LiuHao AI OS.
 
 RESTful API endpoints for cost management:
 - Cost overview

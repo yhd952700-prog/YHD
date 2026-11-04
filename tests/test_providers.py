@@ -216,8 +216,9 @@ def test_provider_timeout_env_applied(monkeypatch):
         reset_provider()
 
 
-def test_provider_timeout_env_invalid_keeps_default(monkeypatch, capsys):
-    """非法值不静默改行为：回落类默认超时，并打印提示（不抛异常）。"""
+def test_provider_timeout_env_invalid_keeps_default(monkeypatch, caplog):
+    """非法值不静默改行为：回落类默认超时，并在日志里留下提示（不抛异常）。"""
+    caplog.set_level("WARNING", logger="liuhao.ai.providers")
     _isolate(
         monkeypatch,
         env={
@@ -232,6 +233,6 @@ def test_provider_timeout_env_invalid_keeps_default(monkeypatch, capsys):
     try:
         p = get_provider()
         assert p.timeout == 30.0
-        assert "AI_PROVIDER_TIMEOUT" in capsys.readouterr().out
+        assert "AI_PROVIDER_TIMEOUT" in caplog.text
     finally:
         reset_provider()

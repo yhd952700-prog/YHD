@@ -1,4 +1,4 @@
-"""Admin API endpoints for LiuHao AI OS.
+"""LEGACY (not mounted by the gateway): Admin API endpoints for LiuHao AI OS.
 
 RESTful API endpoints for administration:
 - System configuration

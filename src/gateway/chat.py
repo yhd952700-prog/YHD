@@ -119,7 +119,7 @@ def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, description="用户消息")
+    message: str = Field(..., min_length=1, max_length=8000, description="用户消息")
     session_id: Optional[str] = Field("default", description="会话 ID（多轮独立）")
     model_id: Optional[str] = Field(
         None, description="模型配置 id 或名称；留空则用当前默认模型"
