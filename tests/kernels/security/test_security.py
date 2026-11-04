@@ -8,6 +8,8 @@ behavior REQUIRED BY SPEC (Definition Lock section 112: RBAC+ABAC with
 complete audit trail and human sovereignty override). They are expected
 to fail until the kernel is fixed; each failure is a recorded defect.
 """
+import tempfile
+
 import pytest
 
 from src.kernels.security import (
@@ -77,6 +79,13 @@ def _isolated_identity_manager(monkeypatch):
     from src.kernels import identity as identity_mod
 
     monkeypatch.delenv(identity_mod.HUMAN_IDENTITIES_FILE_ENV, raising=False)
+    # A private registry FILE, not the machine's default ``data/`` database:
+    # on a developer box that database already holds humans from previous
+    # runs, so "human-1" would already exist and creation would return None.
+    monkeypatch.setenv(
+        identity_mod.HUMAN_IDENTITIES_DB_ENV,
+        tempfile.mkdtemp(prefix="sec_registry_") + "/human_identities.sqlite3",
+    )
     mgr = identity_mod.IdentityManager()
     monkeypatch.setattr(identity_mod, "get_identity_manager", lambda: mgr)
     return mgr

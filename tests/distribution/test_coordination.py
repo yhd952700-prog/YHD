@@ -85,7 +85,10 @@ WORKER_SRC = textwrap.dedent(
     out = payload["out"]
     sys.path.insert(0, payload["repo"])
 
-    from src.distribution.coordination import FileLockLease
+    from src.distribution.coordination import (
+        CoordinationUnavailableError,
+        FileLockLease,
+    )
 
     lease = FileLockLease(payload["name"], directory=payload["dir"])
     owner = "proc-%d" % os.getpid()
@@ -112,22 +115,38 @@ WORKER_SRC = textwrap.dedent(
             fh.flush()
             os.fsync(fh.fileno())
 
+    def acquire(ttl):
+        """抢租约；只对**后端瞬时不可用**做有限重试。
+
+        后端把"瞬时冲突"内建重试到 200 次后抛 ``CoordinationUnavailableError``
+        （竞争 vs 被拒绝必须可区分）。在满负荷 CI 上仍有极小概率耗尽，而这一次
+        worker 会直接死掉、父进程读到"结果文件缺失"，看起来像租约缺陷。这里只对
+        **瞬时不可用**再补 3 次；真正的租约竞态（多赢/假令牌）照旧红。
+        """
+        last = None
+        for attempt in range(4):
+            try:
+                return lease.acquire(owner, ttl)
+            except CoordinationUnavailableError as exc:
+                last = exc
+                time.sleep(0.1 * (attempt + 1))
+        raise last
+
     if mode == "crash":
-        ok, token = lease.acquire(owner, payload.get("ttl", 3.0))
+        ok, token = acquire(payload.get("ttl", 3.0))
         finish({"ok": bool(ok),
                 "token": int(token) if token is not None else None})
         # 等价 kill -9：不跑 finally、不 flush stdio、不释放任何东西。
         os._exit(9)
 
     if mode == "hold":
-        ok, token = lease.acquire(owner, payload.get("ttl", 30.0))
+        ok, token = acquire(payload.get("ttl", 30.0))
         finish({"ok": bool(ok),
                 "token": int(token) if token is not None else None})
         time.sleep(float(payload.get("hold", 2.0)))
         if ok and token is not None:
             lease.release(owner, token)
         sys.exit(0)
-
     if mode == "reader":
         # 持续读，制造"围栏热路径"：ExecutorFence._enforce 每个动作都读。
         deadline = time.time() + float(payload.get("seconds", 3.0))
@@ -237,6 +256,19 @@ def _collect(pairs, timeout: int = 180):
     results = []
     for out, proc in pairs:
         proc.wait(timeout=timeout)
+        if not out.exists():
+            # A missing result file used to surface as a bare FileNotFoundError
+            # from the parent's ``read_text`` -- indistinguishable from "the
+            # lease is racy". Surface the worker's own exit code and stderr so
+            # the next failure names its cause instead of the symptom.
+            try:
+                stderr = proc.stderr.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001 - diagnostics must never mask
+                stderr = "<unreadable>"
+            raise AssertionError(
+                "worker produced no result file %r (exit=%s)\nstderr:\n%s"
+                % (str(out), proc.returncode, stderr.strip())
+            )
         results.append(json.loads(out.read_text(encoding="utf-8")))
     return results
 

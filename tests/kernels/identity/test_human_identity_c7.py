@@ -18,6 +18,7 @@ from typing import Any, Dict
 import pytest
 
 from src.kernels.identity import (
+    HUMAN_IDENTITIES_DB_ENV,
     HUMAN_IDENTITIES_FILE_ENV,
     HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
     HUMAN_KIND,
@@ -57,8 +58,21 @@ def _stamp(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @pytest.fixture
-def mgr():
-    """A manager with no seeded humans (env var is cleared)."""
+def mgr(monkeypatch, tmp_path):
+    """A manager with no seeded humans and a private, empty registry file.
+
+    The shipping default is ``data/human_identities.sqlite3``. CI's checkout
+    has no ``data/`` directory (it is gitignored), so the sqlite backend has
+    nowhere to persist and every manager starts empty there. On a machine that
+    has run the app once, that default *does* exist -- and identities created
+    by earlier cases persist into later ones, so "no seed" stops being true.
+    Isolation here restores the fixture's stated contract without touching
+    any assertion.
+    """
+    monkeypatch.delenv(HUMAN_IDENTITIES_FILE_ENV, raising=False)
+    monkeypatch.setenv(
+        HUMAN_IDENTITIES_DB_ENV, str(tmp_path / "human_identities.sqlite3")
+    )
     return IdentityManager()
 
 
@@ -122,6 +136,14 @@ class TestCreateHumanIdentity:
 
 
 class TestSovereigntyRefusesMachines:
+
+    @pytest.fixture(autouse=True)
+    def _private_registry(self, monkeypatch, tmp_path):
+        monkeypatch.delenv(HUMAN_IDENTITIES_FILE_ENV, raising=False)
+        monkeypatch.setenv(
+            HUMAN_IDENTITIES_DB_ENV, str(tmp_path / "human_identities.sqlite3")
+        )
+
     def test_the_builtin_system_identity_cannot_hold_sovereignty(self, monkeypatch):
         mgr = IdentityManager()
         monkeypatch.setattr("src.kernels.identity.get_identity_manager", lambda: mgr)
@@ -154,6 +176,12 @@ class TestSeedingMakesRegistrationSurviveRestart:
 
     def test_no_env_var_means_no_humans(self, monkeypatch, tmp_path):
         monkeypatch.delenv(HUMAN_IDENTITIES_FILE_ENV, raising=False)
+        # Private empty registry: the machine's default db (if the app has
+        # ever run here) holds humans from previous runs, which is not what
+        # "no seed file" is about.
+        monkeypatch.setenv(
+            HUMAN_IDENTITIES_DB_ENV, str(tmp_path / "human_identities.sqlite3")
+        )
         mgr = IdentityManager()
         assert [
             i for i in mgr.list_identities() if is_human_identity(i)
