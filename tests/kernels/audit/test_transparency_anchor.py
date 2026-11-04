@@ -52,6 +52,11 @@ def test_anchor_forged_signature_rejected():
     log = _fresh_log()
     receipt = _anchor_a_root(log, "deadbeef" * 8)
     # Flip the signature so it no longer validates against the anchor key.
+    # 首字符不能硬编码成 "A"：签名是随机 base64，首字符本就有 1/64 概率是 "A"，
+    # 那样"伪造"实为原签名，用例会偶发失败（CI 3.11 上真实命中过）。
+    # 这里显式选一个与首字符不同的字母，保证伪造必然发生。
+    original = receipt.entry.signature
+    forged = ("A" if original[0] != "A" else "B") + original[1:]
     bad = AnchorReceipt(
         entry=AnchorLogEntry(
             seq=receipt.entry.seq,
@@ -60,7 +65,7 @@ def test_anchor_forged_signature_rejected():
             gen_time=receipt.entry.gen_time,
             sig_alg=receipt.entry.sig_alg,
             key_id=receipt.entry.key_id,
-            signature="A" + receipt.entry.signature[1:],
+            signature=forged,
             digest=receipt.entry.digest,
         ),
         prev_entry=receipt.prev_entry,
