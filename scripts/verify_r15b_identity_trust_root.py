@@ -19,8 +19,10 @@ This probe asserts the containment that replaced it:
     (the principal-index dedup now guards this -- the original hole);
   * when the integrity key is configured, a row that does not authenticate is
     REFUSED (fail-closed), while a correctly tagged row is admitted;
-  * a legitimate human (well-formed principal, correct tag / no key) is still
-    admitted -- i.e. the opt-in integrity design does not break registration.
+  * per HC-11 / U6 (2026-09-25, superseding the earlier opt-in design) a
+    registry with NO key refuses every row as well, and never reports itself as
+    fully sovereign -- ``integrity_enforced`` stays False and the posture is
+    ``not_applicable`` (no admitted humans) rather than a clean pass.
 
 Exit codes:
   0  every security assertion passed
@@ -124,9 +126,18 @@ def _probe_seed_escalation(backend: str, tmp: str) -> None:
 
     # The attacking principal must NOT have become a human identity.
     by_principal = mgr.get_identity_by_principal("a1b2c3d4")
-    refused = any(
-        "a1b2c3d4" in r for r in namespaces.get("registry_refusals", [])
+    # 该场景没有配置密钥，HC-11 / U6 之后整库行在**加载期**即被拒（fail-closed），
+    # 记录在 registry_integrity.last_load.rejected；只有当密钥已配置且行走到
+    # seed 写入路径时，拒绝才会落到 registry_refusals。两个渠道都必须被承认，
+    # 但不能"看错渠道就当没发生"。
+    refusals = list(namespaces.get("registry_refusals", []))
+    rejected = list(
+        namespaces.get("registry_integrity", {}).get("last_load", {}).get(
+            "rejected", []
+        )
+        or []
     )
+    refused = any("a1b2c3d4" in r for r in refusals + rejected)
     _record(
         by_principal is None or not is_human_identity(by_principal),
         f"[{backend}] agent-shaped human principal 'a1b2c3d4' was NOT admitted "
@@ -134,8 +145,8 @@ def _probe_seed_escalation(backend: str, tmp: str) -> None:
     )
     _record(
         refused,
-        f"[{backend}] the refusal of 'a1b2c3d4' is recorded in "
-        f"registry_refusals (no silent overwrite)",
+        f"[{backend}] the refusal of 'a1b2c3d4' is recorded (registry_refusals "
+        f"or last_load.rejected -- no silent overwrite)",
     )
 
 
@@ -250,8 +261,8 @@ def _probe_integrity_fail_closed(backend: str, tmp: str) -> None:
     )
 
 
-def _probe_legitimate_human_without_key(backend: str, tmp: str) -> None:
-    """Without the key (opt-in default), a well-formed human is still admitted."""
+def _probe_no_key_is_fail_closed(backend: str, tmp: str) -> None:
+    """Without the key, rows are refused (HC-11 / U6), not silently admitted."""
     store_path = os.path.join(tmp, f"r15b_legacy_{backend}")
     if backend == BACKEND_FILE:
         _set_backend(BACKEND_FILE, store_path)
@@ -270,25 +281,33 @@ def _probe_legitimate_human_without_key(backend: str, tmp: str) -> None:
     mgr = IdentityManager()
     legacy = mgr.get_identity_by_principal("legacy_boss")
     _record(
-        legacy is not None and is_human_identity(legacy),
-        f"[{backend}] legacy (no-key) human 'legacy_boss' still admitted -- "
-        f"opt-in integrity does not break registration",
+        legacy is None or not is_human_identity(legacy),
+        f"[{backend}] without a key, 'legacy_boss' is REFUSED at load "
+        f"(fail-closed per HC-11 / U6)",
     )
-    # And the registry reports its posture HONESTLY (boss decision 2026-09-22):
-    # a registry in use with humans but no key must be DEGRADED / UNVERIFIED,
-    # never presented as fully sovereign.
+
     integrity_report = mgr.describe_identity_namespaces().get(
         "registry_integrity", {}
     )
+    rejected = (integrity_report.get("last_load") or {}).get("rejected", []) or []
+    _record(
+        any("legacy_boss" in r for r in rejected),
+        f"[{backend}] the refusal is reported in last_load.rejected, not silent",
+    )
+    # 没有密钥时注册表绝不能自称"已强制执行/完全主权"：integrity_enforced 必须
+    # 为 False，且因为零人类被接纳，posture 诚实落到 not_applicable。
     _record(
         integrity_report.get("integrity_enforced") is False,
         f"[{backend}] registry honestly reports integrity_enforced=False when "
         f"no key is configured",
     )
+    admitted = (integrity_report.get("last_load") or {}).get("admitted", 0)
     _record(
-        integrity_report.get("integrity_state") == "degraded_unverified",
-        f"[{backend}] registry in use WITHOUT a key reports "
-        f"integrity_state=degraded_unverified (not 'fully sovereign')",
+        integrity_report.get("integrity_state") != "enforced"
+        and integrity_report.get("integrity_state") == "not_applicable"
+        and admitted == 0,
+        f"[{backend}] registry in use WITHOUT a key never reports a sovereign "
+        f"posture (integrity_state=not_applicable, admitted=0)",
     )
 
 
@@ -302,7 +321,7 @@ def main() -> int:
             _probe_seed_escalation(backend, tmp)
             _probe_create_over_agent_slot(backend, tmp)
             _probe_integrity_fail_closed(backend, tmp)
-            _probe_legitimate_human_without_key(backend, tmp)
+            _probe_no_key_is_fail_closed(backend, tmp)
     finally:
         _clear_identity_env()
 
