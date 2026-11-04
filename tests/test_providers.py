@@ -13,6 +13,8 @@
 - ``OpenAIProvider`` 把 ``self.timeout`` 真的交给 SDK 客户端
 """
 
+import pytest
+
 
 def _clear_env(monkeypatch):
     for k in (
@@ -236,3 +238,78 @@ def test_provider_timeout_env_invalid_keeps_default(monkeypatch, caplog):
         assert "AI_PROVIDER_TIMEOUT" in caplog.text
     finally:
         reset_provider()
+
+
+# ==================== ProviderFactory 插件式注册 ====================
+
+
+@pytest.fixture
+def registry():
+    """暴露真实注册表，并在用例结束后恢复内置 7 种，避免污染其它测试。"""
+    from src.ai.providers import ProviderFactory
+
+    snapshot = dict(ProviderFactory._providers)
+    try:
+        yield ProviderFactory
+    finally:
+        ProviderFactory._providers.clear()
+        ProviderFactory._providers.update(snapshot)
+
+
+def test_register_provider_makes_it_creatable_without_editing_factory(registry):
+    from src.ai.providers import BaseProvider
+
+    class EchoProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return f"echo:{prompt}"
+
+    registry.register_provider("echo", EchoProvider)
+    provider = registry.create_provider("echo", name="t", model="m")
+    assert isinstance(provider, EchoProvider)
+    assert provider.generate("hi") == "echo:hi"
+
+
+def test_registered_name_is_case_insensitive(registry):
+    from src.ai.providers import BaseProvider
+
+    class VendorProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return "vendor"
+
+    registry.register_provider("  VenDor ", VendorProvider)
+    assert "vendor" in registry.get_supported_providers()
+    assert isinstance(registry.create_provider("VENDOR", name="t", model="m"), VendorProvider)
+
+
+def test_register_provider_can_override_a_builtin(registry):
+    from src.ai.providers import BaseProvider
+
+    class ReplacementProvider(BaseProvider):
+        def generate(self, prompt, **kwargs):
+            return "replacement"
+
+    registry.register_provider("mock", ReplacementProvider)
+    assert isinstance(registry.create_provider("mock", name="t", model="m"), ReplacementProvider)
+
+
+def test_unknown_provider_type_still_fails_and_lists_supported(registry):
+    """新规则不能让未知类型变成静默回落：仍是显式 ValueError，且带候选。"""
+    with pytest.raises(ValueError) as info:
+        registry.create_provider("not-a-provider", name="t", model="m")
+    message = str(info.value)
+    assert "Unknown provider type: not-a-provider" in message
+    assert "supported:" in message
+    assert "mock" in message
+
+
+def test_register_provider_rejects_a_non_provider_class(registry):
+    with pytest.raises(TypeError) as info:
+        registry.register_provider("bad", object)  # type: ignore[arg-type]
+    assert "BaseProvider" in str(info.value)
+
+
+def test_register_provider_rejects_an_empty_name(registry):
+    from src.ai.providers import MockProvider
+
+    with pytest.raises(ValueError):
+        registry.register_provider("   ", MockProvider)

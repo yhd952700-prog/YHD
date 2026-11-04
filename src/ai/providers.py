@@ -775,14 +775,38 @@ class ProviderFactory:
     }
 
     @classmethod
+    def register_provider(cls, name: str, provider_class: type) -> None:
+        """Register (or replace) a provider implementation.
+
+        The mapping below is the **built-in defaults**, not a closed set: a new
+        vendor or an internal OpenAI-compatible subclass can be wired in without
+        editing this module, and the existing 7 keep working unchanged.
+
+        Replacement is deliberate -- a deployment may shadow a built-in -- but
+        the replacement must still be a ``BaseProvider`` subclass, otherwise the
+        mistake only surfaces at the first ``generate()`` call on a live request.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("provider name must be a non-empty string")
+        if not isinstance(provider_class, type) or not issubclass(provider_class, BaseProvider):
+            raise TypeError(
+                f"provider class for {name!r} must subclass BaseProvider, "
+                f"got {provider_class!r}"
+            )
+        cls._providers[name.strip().lower()] = provider_class
+
+    @classmethod
     def create_provider(cls, provider_type: str = None, **kwargs) -> BaseProvider:
         """Create a provider instance by type."""
         if provider_type is None:
             provider_type = os.environ.get("AI_PROVIDER_TYPE", ProviderType.MOCK)
 
-        provider_class = cls._providers.get(provider_type)
+        provider_class = cls._providers.get(str(provider_type).strip().lower())
         if not provider_class:
-            raise ValueError(f"Unknown provider type: {provider_type}")
+            raise ValueError(
+                f"Unknown provider type: {provider_type}; supported: "
+                f"{', '.join(sorted(cls._providers))}"
+            )
 
         return provider_class(**kwargs)
 
