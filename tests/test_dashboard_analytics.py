@@ -86,6 +86,54 @@ class TestTimeseries:
         assert body["days"] == []
 
 
+class TestTruncation:
+    """内核把每次查询截在 1 万条：图表必须知道自己的样本代表多少条真实事件。
+
+    旧实现写死 ``_ANALYTICS_MAX_EVENTS = 200_000``，于是 ``truncated`` 永远
+    false，超过 1 万条时静默少计。这里锁定"用真实总数判定截断"的行为。
+    """
+
+    @staticmethod
+    def _fake_event() -> dict:
+        noon = datetime.combine(datetime.now().date(), datetime.min.time())
+        stamp = time.mktime(noon.timetuple()) + 12 * 3600
+        return {"timestamp": stamp, "event_type": "access_allowed", "outcome": "allow"}
+
+    def test_reports_actual_total_and_marks_truncated(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 3
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", lambda **kw: 10_000)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["sampled_events"] == 3
+        assert body["actual_events"] == 10_000
+        assert body["truncated"] is True
+
+    def test_not_truncated_when_every_event_was_returned(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 3
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", lambda **kw: 3)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["sampled_events"] == 3
+        assert body["actual_events"] == 3
+        assert body["truncated"] is False
+
+    def test_count_failure_degrades_honestly_to_the_sample(self, client, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("count unavailable")
+
+        monkeypatch.setattr(
+            "src.kernels.audit.audit_query", lambda **kw: [self._fake_event()] * 2
+        )
+        monkeypatch.setattr("src.kernels.audit.audit_count", boom)
+        body = client.get("/v1/dashboard/analytics").json()["timeseries"]
+        assert body["available"] is True
+        assert body["sampled_events"] == 2
+        # 不能谎报"没有截断"：计数失败时最多只能说"样本等于已知条数"。
+        assert body["actual_events"] == 2
+
+
 class TestBreakdown:
     def test_excludes_noise_and_reports_how_much(self, client, monkeypatch):
         monkeypatch.setattr(

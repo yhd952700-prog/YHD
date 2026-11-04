@@ -1958,6 +1958,85 @@ class AuditStore:
             )
         )
 
+    def count_events(
+        self,
+        principal_id: Optional[str] = None,
+        scope: Optional[AuditScope] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[AuditEventType] = None,
+        correlation_id: Optional[str] = None,
+    ) -> int:
+        """Count events matching the same filters as ``query_events``.
+
+        ``query_events`` caps every read at ``_QUERY_EVENTS_MAX_ROWS``. A caller
+        that renders "N of M" (dashboard analytics) therefore cannot infer M
+        from ``len(list)`` -- it would silently undercount everything past the
+        cap and report ``truncated=False`` forever. This runs the equivalent
+        COUNT(*) on the same pinned snapshot, without loading any rows.
+        """
+        where, params = self._events_where(
+            principal_id=principal_id,
+            scope=scope,
+            start_time=start_time,
+            end_time=end_time,
+            outcome=outcome,
+            event_type=event_type,
+            correlation_id=correlation_id,
+        )
+        return int(
+            self._read_only(
+                lambda conn: conn.execute(
+                    "SELECT COUNT(*) FROM audit_events WHERE 1=1" + where, params
+                ).fetchone()[0]
+            )
+        )
+
+    @staticmethod
+    def _events_where(
+        principal_id: Optional[str] = None,
+        scope: Optional[AuditScope] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[AuditEventType] = None,
+        correlation_id: Optional[str] = None,
+    ):
+        """Build the shared ``AND ...`` filter clause for event queries/counts."""
+        where = ""
+        params = []
+
+        if principal_id:
+            where += " AND principal_id = ?"
+            params.append(principal_id)
+
+        if scope:
+            where += " AND scope = ?"
+            params.append(scope.value)
+
+        if start_time is not None:
+            where += " AND timestamp >= ?"
+            params.append(start_time)
+
+        if end_time is not None:
+            where += " AND timestamp <= ?"
+            params.append(end_time)
+
+        if outcome:
+            where += " AND outcome = ?"
+            params.append(outcome)
+
+        if event_type:
+            where += " AND event_type = ?"
+            params.append(event_type.value)
+
+        if correlation_id:
+            where += " AND correlation_id = ?"
+            params.append(correlation_id)
+
+        return where, params
+
     def _query_events_on(
         self,
         conn,
@@ -1975,35 +2054,16 @@ class AuditStore:
                    timestamp, correlation_id, outcome, details,
                    event_hash, prev_event_hash, hash_alg
                    FROM audit_events WHERE 1=1"""
-        params = []
-
-        if principal_id:
-            query += " AND principal_id = ?"
-            params.append(principal_id)
-
-        if scope:
-            query += " AND scope = ?"
-            params.append(scope.value)
-
-        if start_time is not None:
-            query += " AND timestamp >= ?"
-            params.append(start_time)
-
-        if end_time is not None:
-            query += " AND timestamp <= ?"
-            params.append(end_time)
-
-        if outcome:
-            query += " AND outcome = ?"
-            params.append(outcome)
-
-        if event_type:
-            query += " AND event_type = ?"
-            params.append(event_type.value)
-
-        if correlation_id:
-            query += " AND correlation_id = ?"
-            params.append(correlation_id)
+        where, params = self._events_where(
+            principal_id=principal_id,
+            scope=scope,
+            start_time=start_time,
+            end_time=end_time,
+            outcome=outcome,
+            event_type=event_type,
+            correlation_id=correlation_id,
+        )
+        query += where
 
         # Order by the monotonic sequence number so the result order is
         # deterministic even when timestamps tie.
@@ -2269,6 +2329,27 @@ def audit_query(
         correlation_id=correlation_id,
         limit=limit,
         reverse=reverse,
+    )
+
+
+def audit_count(
+    principal_id: Optional[str] = None,
+    scope: Optional[AuditScope] = None,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    outcome: Optional[str] = None,
+    event_type: Optional[AuditEventType] = None,
+    correlation_id: Optional[str] = None,
+) -> int:
+    """Count audit events matching the same filters as ``audit_query``."""
+    return get_audit_store().count_events(
+        principal_id=principal_id,
+        scope=scope,
+        start_time=start_time,
+        end_time=end_time,
+        outcome=outcome,
+        event_type=event_type,
+        correlation_id=correlation_id,
     )
 
 

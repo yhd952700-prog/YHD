@@ -187,6 +187,7 @@ export interface AnalyticsPayload {
     error?: string
     days: TimeseriesPoint[]
     sampled_events?: number
+    actual_events?: number
     truncated?: boolean
   }
   breakdown: {

@@ -174,9 +174,11 @@ def dashboard_activity(limit: int = Query(8, ge=1, le=100)) -> Dict[str, Any]:
 #: 时序与分布都排除的噪声事件类型（kernel 内部 state_change 占比 >99%）。
 _ANALYTICS_NOISE = frozenset({"state_change"})
 
-#: 单次查询的事件上限。审计量级可达数万条；超过这个数只统计最近的部分，
-#: 并由 ``truncated`` 字段如实告知，避免悄悄给出偏低的数字。
-_ANALYTICS_MAX_EVENTS = 200_000
+#: 单次查询的事件上限来自内核（``audit_query`` 会把任何 limit 截到
+#: ``_QUERY_EVENTS_MAX_ROWS`` = 10000）。这里曾经写死 200_000，于是：
+#:   * ``truncated = len(events) >= 200_000`` 永远为 false；
+#:   * 事件超过 1 万条时图表静默少计，且没有任何提示。
+#: 现在上限直接引用内核常量，并用 ``audit_count`` 取真实条数来判定截断。
 
 
 def _day_key(timestamp: float) -> str:
@@ -185,7 +187,7 @@ def _day_key(timestamp: float) -> str:
 
 def event_timeseries(days: int = 14) -> Dict[str, Any]:
     """按天统计真实审计事件（total / allowed / denied）。"""
-    from ..kernels.audit import audit_query
+    from ..kernels.audit import _QUERY_EVENTS_MAX_ROWS, audit_count, audit_query
 
     days = max(1, min(90, int(days)))
     # 以本地"今天"为最后一天，向前取 days 个**日历日**。
@@ -201,7 +203,7 @@ def event_timeseries(days: int = 14) -> Dict[str, Any]:
     start = time.mktime(datetime.combine(first, datetime.min.time()).timetuple())
 
     try:
-        events = audit_query(start_time=start, limit=_ANALYTICS_MAX_EVENTS)
+        events = audit_query(start_time=start, limit=_QUERY_EVENTS_MAX_ROWS)
     except Exception as exc:
         logger.warning("event_timeseries query failed: %s", exc, exc_info=True)
         return {"available": False, "error": str(exc), "days": []}
@@ -233,11 +235,21 @@ def event_timeseries(days: int = 14) -> Dict[str, Any]:
         elif outcome in ("deny", "denied"):
             bucket["denied"] += 1
 
+    sampled = len(events)
+    # 真实条数用 COUNT(*) 取，而不是拿"返回条数"当总数：查询被内核截断在
+    # 1 万条，超出的部分必须能被 ``truncated`` 如实标出，否则图表会静默偏低。
+    try:
+        actual = audit_count(start_time=start)
+    except Exception as exc:
+        logger.warning("event_timeseries count failed: %s", exc, exc_info=True)
+        actual = sampled
+
     return {
         "available": True,
         "days": [buckets[key] for key in sorted(buckets)],
-        "sampled_events": len(events),
-        "truncated": len(events) >= _ANALYTICS_MAX_EVENTS,
+        "sampled_events": sampled,
+        "actual_events": actual,
+        "truncated": sampled < actual,
     }
 
 

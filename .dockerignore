@@ -25,6 +25,11 @@ apps/console/console/dist/
 # Runtime state: a baked-in identity database would ship real registrations in
 # the image and be silently reset on every redeploy.
 data/
+
+# 真实凭据与身份库绝不进镜像：运行时由 volume / secret 注入。
+# 打包进去等于把"谁可以批准高风险动作"的名单和签名密钥随镜像分发。
+config/auth_secrets.json
+config/human_identities.json
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm

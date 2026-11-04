@@ -99,9 +99,12 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
 EXPOSE 8080
 
-# python:3.11-slim 没有 curl，用标准库自检。端点 /v1/health 的 /v1 前缀来自
-# src/gateway/main.py 的 health_router(prefix="/v1")。
+# python:3.11-slim 没有 curl，用标准库自检。端点用 /v1/ready 而不是 /v1/health：
+# /v1/health 只表示"进程还在回 HTTP"，依赖（审计链、身份库、模型配置）全坏时
+# 它依然 200 —— 容器会被编排系统当成健康，把"假健康"传播到负载均衡后面。
+# /v1/ready 在依赖不健康时如实返回 503，HEALTHCHECK 才会真的失败并重启/摘流量。
+# /v1 前缀来自 src/gateway/main.py 的 health_router(prefix="/v1")。
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c 'import os,urllib.request; urllib.request.urlopen("http://127.0.0.1:"+os.environ.get("PORT","8080")+"/v1/health", timeout=5)' || exit 1
+    CMD python -c 'import os,urllib.request; urllib.request.urlopen("http://127.0.0.1:"+os.environ.get("PORT","8080")+"/v1/ready", timeout=5)' || exit 1
 
 CMD ["python", "-m", "src.gateway"]
