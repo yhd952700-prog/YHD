@@ -496,7 +496,7 @@ _AUDIT_DB_PATH_EVIDENCE = (
     "src/kernels/audit/__init__.py:398",
     "docker-compose.prod.yml:69",
     "infra/staging/docker-compose.yml:59",
-    ".github/workflows/ci.yml:793",
+    ".github/workflows/ci.yml:806",
 )
 
 

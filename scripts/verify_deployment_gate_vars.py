@@ -219,7 +219,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "recorded here instead of inferred from a green signal. Armed at "
             "docker-compose.prod.yml:69 and "
             "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
-            ".github/workflows/ci.yml:793 also pins a temp path, but a CI-only "
+            ".github/workflows/ci.yml:806 also pins a temp path, but a CI-only "
             "setter does NOT count as deployment arming (category "
             "`seed-armed-only-in-ci`), so the two compose setters are what keep "
             "this entry green -- removing both reddens it even while the CI pin "
@@ -235,9 +235,11 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
             # and listed here so its line is drift-checked too: it shifted from
             # :762 to :766 the moment the workflow's own comment grew, again
-            # to :768 when the etcd service block changed (2026-10-24), and to
-            # :793 when the console-readability job was added (2026-11-04).
-            ".github/workflows/ci.yml:793",
+            # to :768 when the etcd service block changed (2026-10-24), to
+            # :793 when the console-readability job was added (2026-11-04), and
+            # to :806 when the guardrails job grew its own pin-to-temp step in
+            # the same round (the same setter, now cited at both jobs).
+            ".github/workflows/ci.yml:806",
         ),
     },
     {
