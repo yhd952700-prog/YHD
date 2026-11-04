@@ -103,8 +103,15 @@ def client(app):
 
 
 def _token(subject: str, ttl: int = 600) -> str:
-    """Mint a real ACCESS token for ``subject`` using the gateway's own handler."""
-    token, _payload = create_access_token(subject, ttl=ttl)
+    """Mint a real ACCESS token for ``subject`` using the gateway's own handler.
+
+    Write endpoints (grant/revoke) now require an administrative claim
+    (``require_human_principal``, 2026-11-04). These tests exercise the grant
+    lifecycle over HTTP, so the token carries ``admin``. The service-account
+    case is still rejected by the handler on identity kind -- the claim does
+    not let a service account hold sovereignty.
+    """
+    token, _payload = create_access_token(subject, roles=["admin"], ttl=ttl)
     return token
 
 
