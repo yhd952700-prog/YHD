@@ -909,6 +909,23 @@ def _isolate_model_config_per_test(tmp_path_factory, monkeypatch):
     model_config_module.reset_model_config_store()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_knowledge_vector_store(tmp_path, monkeypatch):
+    """隔离知识库向量库到每个用例独占的临时文件，并复位进程级单例。"""
+    import src.knowledge.documents as knowledge_documents
+    import src.knowledge.vector_store as vector_store_module
+
+    monkeypatch.setenv(
+        vector_store_module.KNOWLEDGE_DB_ENV,
+        str(tmp_path / "knowledge_vectors.sqlite3"),
+    )
+    vector_store_module.reset_vector_store()
+    knowledge_documents.reset_knowledge_service()
+    yield
+    vector_store_module.reset_vector_store()
+    knowledge_documents.reset_knowledge_service()
+
+
 # ==================== Export ====================
 
 __all__ = [

@@ -1,15 +1,24 @@
-"""In-memory prototype vector store for the embedding pipeline.
+"""Vector stores for the knowledge base.
 
-Intentionally compatible with future pgvector adoption. Uses the
-Phase 2.1 registry-based provider interface and never hardwires
-OpenAI or another external provider into the embedding path.
-
-Supports insert, search, and delete operations on vector embeddings.
+``VectorStore`` is the original in-memory prototype (kept for tests and as the
+fallback type). ``PersistentVectorStore`` adds SQLite-backed durability with the
+same interface, and ``get_vector_store()`` exposes a **process-level singleton**
+so a request never opens a fresh, empty index.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import sqlite3
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("liuhao.knowledge.vector_store")
+
+KNOWLEDGE_DB_ENV = "LIUHAO_KNOWLEDGE_DB"
 
 
 class VectorStore:
@@ -105,3 +114,125 @@ class VectorStore:
         if doc_id in self._store:
             return self._store[doc_id]
         return None
+
+
+def default_db_path() -> Path:
+    """SQLite file for knowledge vectors (persisted under ``data/`` by default)."""
+    configured = (os.environ.get(KNOWLEDGE_DB_ENV) or "").strip()
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[2] / "data" / "knowledge_vectors.sqlite3"
+
+
+class PersistentVectorStore(VectorStore):
+    """SQLite-backed vector store: same interface, survives restarts.
+
+    The in-memory dict stays the read path (search is O(n) cosine either way);
+    every write is upserted to SQLite first so a crash cannot leave the process
+    serving vectors that were never persisted.
+    """
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        super().__init__()
+        self.db_path = Path(db_path) if db_path else default_db_path()
+        self._lock = threading.RLock()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_vectors (
+                doc_id TEXT PRIMARY KEY,
+                embedding TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        self._conn.commit()
+        self._load()
+
+    def _load(self) -> None:
+        rows = self._conn.execute(
+            "SELECT doc_id, embedding, metadata FROM knowledge_vectors"
+        ).fetchall()
+        for row in rows:
+            try:
+                embedding = json.loads(row["embedding"])
+                metadata = json.loads(row["metadata"] or "{}")
+                if not isinstance(embedding, list):
+                    raise ValueError("embedding is not a list")
+            except (TypeError, ValueError):
+                logger.error(
+                    "knowledge vector %r is corrupt; skipped on load", row["doc_id"]
+                )
+                continue
+            self._store[row["doc_id"]] = (embedding, metadata)
+
+    def insert(
+        self, doc_id: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        record_metadata = metadata if metadata is not None else {}
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO knowledge_vectors (doc_id, embedding, metadata, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    embedding = excluded.embedding,
+                    metadata = excluded.metadata,
+                    updated_at = datetime('now')
+                """,
+                (
+                    doc_id,
+                    json.dumps(list(embedding)),
+                    json.dumps(record_metadata, ensure_ascii=False, default=str),
+                ),
+            )
+            self._conn.commit()
+            self._store[doc_id] = (embedding, record_metadata)
+
+    def delete(self, doc_id: str) -> bool:
+        with self._lock:
+            removed = super().delete(doc_id)
+            if removed:
+                self._conn.execute(
+                    "DELETE FROM knowledge_vectors WHERE doc_id = ?", (doc_id,)
+                )
+                self._conn.commit()
+            return removed
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+_STORE: Optional[VectorStore] = None
+_STORE_LOCK = threading.Lock()
+
+
+def get_vector_store(db_path: Optional[str] = None) -> VectorStore:
+    """Process-level singleton; raises (fail-closed) if the DB cannot open."""
+    global _STORE
+    if _STORE is not None:
+        return _STORE
+    with _STORE_LOCK:
+        if _STORE is None:
+            try:
+                _STORE = PersistentVectorStore(db_path)
+            except (sqlite3.Error, OSError) as exc:
+                logger.error(
+                    "knowledge vector store unavailable at %s: %s",
+                    db_path or default_db_path(),
+                    exc,
+                )
+                raise
+    return _STORE
+
+
+def reset_vector_store() -> None:
+    """Test helper: drop the singleton (does not delete the file)."""
+    global _STORE
+    with _STORE_LOCK:
+        _STORE = None

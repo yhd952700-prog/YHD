@@ -881,9 +881,14 @@ def get_app() -> FastAPI:
     from .observability import router as observability_router
     app.include_router(observability_router)
 
-    # Business routers (Phase 2.3 RAG knowledge endpoints).
-    from src.api.routes.knowledge import router as knowledge_router
+    # Knowledge base: canonical /v1/knowledge (unified with the rest of the
+    # gateway) plus a deprecated /knowledge alias for existing clients.
+    from src.api.routes.knowledge import (
+        legacy_router as knowledge_legacy_router,
+        router as knowledge_router,
+    )
     app.include_router(knowledge_router, dependencies=[Depends(_require_human)])
+    app.include_router(knowledge_legacy_router, dependencies=[Depends(_require_human)])
 
     # 鎏灏对话端点（真实 LLM 对话闭环）。
     from .chat import router as chat_router
