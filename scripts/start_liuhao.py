@@ -3,10 +3,11 @@
 
 一条命令把「网关 + 驾驶舱」拉起来，并等健康探针真正通过后再交还控制权。
 
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py          # 全栈
+    .venv\\Scripts\\python.exe scripts\\start_liuhao.py          # 单端口（默认）
     .venv\\Scripts\\python.exe scripts\\start_liuhao.py --backend-only
     .venv\\Scripts\\python.exe scripts\\start_liuhao.py --no-browser
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --single-port --https   # 单端口 + 本地 HTTPS
+    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --vite   # vite 热更新开发模式
+    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --https  # 单端口 + 本地 HTTPS
 
 设计约束：
   * 不依赖 Docker（本机 Docker daemon 常常没起），走原生进程。
@@ -21,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import ipaddress
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -47,14 +50,75 @@ DEFAULT_CONSOLE_DIST = CONSOLE_DIR / "dist"
 IDENTITY_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
 AUTH_SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
 
-DEFAULT_API_HOST = "127.0.0.1"
+DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8080
 DEFAULT_UI_PORT = 5173
 
 STARTUP_TIMEOUT_S = 120.0
 POLL_INTERVAL_S = 0.5
 
+#: 自动换端口时往上最多扫多少个端口。
+PORT_SCAN_LIMIT = 100
+
 _children: list[subprocess.Popen] = []
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """True when ``host:port`` is already bound by another process."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        return True
+    finally:
+        sock.close()
+    return False
+
+
+def _ensure_free_port(host: str, requested: int, label: str) -> int:
+    """Return ``requested`` if free, else the next free port above it.
+
+    双击启动最常见的坑是"上次的进程没退干净、8080 被占着"，用户看到 uvicorn
+    报一句 ``address already in use`` 就懵了。这里在拉起前就把端口让出来，
+    并打印换到了哪个端口，避免用户再去查进程。
+    """
+    if not _port_in_use(host, requested):
+        return requested
+    for candidate in range(requested + 1, requested + 1 + PORT_SCAN_LIMIT):
+        if not _port_in_use(host, candidate):
+            print(
+                f"  [warn] {label} 端口 {requested} 被占用，已自动改用 {candidate}"
+            )
+            return candidate
+    raise SystemExit(
+        f"找不到可用端口：在 {requested}..{requested + PORT_SCAN_LIMIT} 之间都被占用"
+    )
+
+
+def _lan_addresses() -> list[str]:
+    """返回本机所有非回环的 IPv4 地址，供控制台打印局域网访问 URL。
+
+    手机连同一个 Wi-Fi 时用这些地址能直接访问；回环地址 127.0.0.1 只在本机
+    有效，打印出来对手机用户没意义。
+    """
+    found: list[str] = []
+    try:
+        hostname = socket.gethostname()
+        addrs = socket.getaddrinfo(hostname, None, socket.AF_INET)
+    except OSError:
+        addrs = []
+    for info in addrs:
+        ip = info[4][0]
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
+            continue
+        if ip not in found:
+            found.append(ip)
+    return found
 
 
 def _venv_python() -> str:
@@ -182,10 +246,10 @@ def _wait_https_ok(url: str, timeout: float, label: str) -> bool:
     return False
 
 
-def _start_https_proxy(args: argparse.Namespace) -> None:
+def _start_https_proxy(args: argparse.Namespace, single_port: bool) -> None:
     """在控制台之上叠加本地 TLS 反向代理（受管子进程，Ctrl+C 一起带走）。"""
     https_port = args.https_port
-    backend_port = args.api_port if args.single_port else args.ui_port
+    backend_port = args.api_port if single_port else args.ui_port
     cert = os.environ.get("LIUHAO_TLS_CERT") or str(
         ROOT / "deploy" / "cloud" / "certs" / "liuhao-local.pem"
     )
@@ -225,15 +289,14 @@ def _shutdown_all() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 驾驶舱")
-    parser.add_argument("--host", default=DEFAULT_API_HOST, help=f"绑定地址（默认 {DEFAULT_API_HOST}）")
+    parser.add_argument("--host", default=DEFAULT_API_HOST, help=f"绑定地址（默认 {DEFAULT_API_HOST}，监听所有网卡便于手机访问）")
     parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT)
     parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT)
-    parser.add_argument("--backend-only", action="store_true", help="只起网关")
+    parser.add_argument("--backend-only", action="store_true", help="只起网关，不起驾驶舱")
     parser.add_argument(
-        "--single-port",
+        "--vite",
         action="store_true",
-        help="单端口模式：只起网关，由网关直接服务驾驶舱构建产物（dist）。"
-             "适用于容器 / 只开放一个端口的部署。",
+        help="开发模式：用 vite 起驾驶舱（热更新），默认是单端口直接服务 dist。",
     )
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument(
@@ -244,8 +307,8 @@ def main() -> int:
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
     args = parser.parse_args()
 
-    if args.backend_only and args.single_port:
-        parser.error("--backend-only 与 --single-port 互斥（前者不含驾驶舱）")
+    if args.backend_only and args.vite:
+        parser.error("--backend-only 与 --vite 互斥（前者不含驾驶舱）")
 
     atexit.register(_shutdown_all)
 
@@ -254,8 +317,20 @@ def main() -> int:
     # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
     _point_at_console_stores()
 
+    # 自用版默认单端口：网关既服务 API 又服务驾驶舱 dist，对外只暴露一个端口，
+    # 对"双击就用"的场景最友好。vite 开发模式（--vite）需要 Node + 热更新。
+    single_port = not args.backend_only and not args.vite
+
+    # 启动前先把端口让出来。绑定 0.0.0.0 时端口占用检查用 127.0.0.1 探测即可。
+    probe_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
+    args.api_port = _ensure_free_port(probe_host, args.api_port, "网关")
+    if args.vite:
+        args.ui_port = _ensure_free_port(probe_host, args.ui_port, "驾驶舱(vite)")
+    if args.https:
+        args.https_port = _ensure_free_port(probe_host, args.https_port, "HTTPS 代理")
+
     api_base = f"http://{args.host}:{args.api_port}"
-    ui_base = api_base if args.single_port else f"http://{args.host}:{args.ui_port}"
+    ui_base = api_base if single_port else f"http://{args.host}:{args.ui_port}"
 
     print("=" * 62)
     print("鎏灏 LIUHAO X — 启动")
@@ -286,14 +361,16 @@ def main() -> int:
         print(f"网关已就绪：  {api_base}")
         print(f"API 文档：    {api_base}/docs")
         print("（--backend-only：驾驶舱未启动）")
+        _print_lan_urls(args.api_port, args.host)
         return _serve_forever()
 
-    if args.single_port:
+    if single_port:
         dist = _console_dist()
         if dist is None:
             print("  [FAIL] 单端口模式需要驾驶舱构建产物")
             print(f"         未找到 {os.environ.get(CONSOLE_DIST_ENV) or DEFAULT_CONSOLE_DIST}/index.html")
             print("         请先在 apps/console/console 下执行 npm run build")
+            print("         或用 --vite 启动开发模式（需 Node.js）")
             _shutdown_all()
             return 1
         print("[2/2] 驾驶舱由网关直接服务（单端口）")
@@ -302,12 +379,12 @@ def main() -> int:
             _shutdown_all()
             return 1
     else:
-        print("[2/2] 驾驶舱（vite）")
+        print("[2/2] 驾驶舱（vite 开发模式）")
         vite_entry = CONSOLE_DIR / "node_modules" / "vite" / "bin" / "vite.js"
         if not vite_entry.exists():
             print(f"  [FAIL] 没找到 {vite_entry}")
             print("         请先在 apps/console/console 下执行 npm install")
-            print("         或用 --single-port 让网关直接服务已构建的 dist")
+            print("         或用默认单端口模式（网关直接服务已构建的 dist）")
             _shutdown_all()
             return 1
         _spawn(
@@ -328,7 +405,7 @@ def main() -> int:
         _wait_http_ok(f"{ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
 
     if args.https:
-        _start_https_proxy(args)
+        _start_https_proxy(args, single_port)
 
     print()
     print("=" * 62)
@@ -336,6 +413,7 @@ def main() -> int:
     print(f"  驾驶舱    {ui_base}")
     print(f"  API       {api_base}     文档 {api_base}/docs")
     print(f"  健康探针  {api_base}/v1/health")
+    _print_lan_urls(args.api_port, args.host, args.https_port if args.https else None)
     print("  Ctrl+C 停止（子进程会被一起带走）")
     print("=" * 62)
 
@@ -346,6 +424,19 @@ def main() -> int:
             pass
 
     return _serve_forever()
+
+
+def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> None:
+    """在控制台打印局域网访问地址，方便手机扫码/手输。"""
+    lan_ips = _lan_addresses()
+    if not lan_ips:
+        return
+    print()
+    print("  局域网访问（手机连同一 Wi-Fi）：")
+    for ip in lan_ips:
+        print(f"    http://{ip}:{api_port}/")
+        if https_port is not None:
+            print(f"    https://{ip}:{https_port}/   (PWA，需信任自签证书)")
 
 
 def _serve_forever() -> int:
