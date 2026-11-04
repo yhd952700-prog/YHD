@@ -12,9 +12,13 @@ Usage:
 
 import os
 import json
+import logging
+import warnings
 from typing import Optional, Dict, Any
 
 from .observability import observe
+
+logger = logging.getLogger("liuhao.ai.providers")
 
 # Provider type enumeration
 
@@ -67,10 +71,14 @@ class BaseProvider:
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
+        base_url: Optional[str] = None,
     ):
         self.name = name
         self.model = model
         self.api_key = api_key or os.environ.get("AI_PROVIDER_KEY", "[REDACTED]")
+        # 模型配置中心保存的 base_url 需要随实例走：各 provider 的 ``generate``
+        # 历史上只读 ``os.environ``/kwargs，导致"界面上填的 base_url"不生效。
+        self.base_url = base_url or None
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
@@ -423,7 +431,9 @@ class OllamaProvider(BaseProvider):
         import requests
 
         model = kwargs.get("model", self.model)
-        base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "OLLAMA_BASE_URL", "http://localhost:11434"
+        )
 
         try:
             # Bypass any HTTP(S) proxy for the (usually localhost) Ollama
@@ -458,7 +468,9 @@ class OllamaProvider(BaseProvider):
         import requests
 
         model = kwargs.get("model", self.model)
-        base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "OLLAMA_BASE_URL", "http://localhost:11434"
+        )
 
         try:
             response = requests.post(
@@ -488,7 +500,9 @@ class OllamaProvider(BaseProvider):
         import requests
 
         model = kwargs.get("model", self.model)
-        base_url = kwargs.get("base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "OLLAMA_BASE_URL", "http://localhost:11434"
+        )
 
         response = requests.post(
             f"{base_url}/api/chat",
@@ -537,7 +551,9 @@ class MoonshotProvider(BaseProvider):
         import requests
 
         model = kwargs.get("model", self.model)
-        base_url = kwargs.get("base_url", os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"))
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"
+        )
         api_key = self.api_key or os.environ.get("MOONSHOT_API_KEY", "[REDACTED]")
 
         try:
@@ -581,7 +597,9 @@ class DeepSeekProvider(BaseProvider):
         import requests
 
         model = kwargs.get("model", self.model)
-        base_url = kwargs.get("base_url", os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"))
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+        )
         api_key = self.api_key or os.environ.get("DEEPSEEK_API_KEY", "[REDACTED]")
 
         try:
@@ -709,12 +727,31 @@ def ai_provider_status() -> Dict[str, Any]:
     Never silently pretends a simulation is real.
     """
     ptype = _provider_env("AI_PROVIDER_TYPE", "mock").lower()
-    # 判定委托给 provider_mode_for —— 权威只有一处，避免两处实现分叉。
-    mode = provider_mode_for(ptype)
+    source = "env"
+    # 模型配置中心优先：界面上的默认模型才是**实际**会被调用的 provider。
+    cfg = _registry_config()
+    if cfg is not None:
+        ptype = str(cfg.get("provider") or "").lower()
+        source = "model_config"
     simulated = (os.environ.get("LIUHAO_ALLOW_SIMULATED_EXECUTION") or "").strip().lower() in {
         "1", "true", "yes", "on",
     }
-    return {"type": ptype, "mode": mode, "simulated": simulated}
+    # 非法类型如实标记为 invalid：旧实现会在此处因 provider_mode_for() 只判断
+    # "是否 mock" 而把写错的类型显示成 real，而真正调用时又悄悄降级 —— 两端
+    # 都不诚实。现在调用处直接抛错，状态面同步反映 invalid。
+    if ptype not in ProviderFactory._providers:
+        return {
+            "type": ptype,
+            "mode": "invalid",
+            "simulated": simulated,
+            "source": source,
+            "error": (
+                f"Invalid provider type {ptype!r}; supported: "
+                f"{', '.join(sorted(ProviderFactory._providers))}"
+            ),
+        }
+    mode = provider_mode_for(ptype)
+    return {"type": ptype, "mode": mode, "simulated": simulated, "source": source}
 
 
 # Provider factory and registry
@@ -771,6 +808,41 @@ class ProviderFactory:
 # Global provider instance
 _provider_instance: BaseProvider = None
 
+#: 每个 provider 认可的密钥环境变量别名（与名册 ``PROVIDER_KEY_ENVS`` 同源）。
+#: ``AI_PROVIDER_KEY`` 是通用兜底，优先级最高；别名只在通用键缺失时才读，
+#: 因此既有部署（只写 AI_PROVIDER_KEY）行为不变。
+PROVIDER_KEY_ALIASES: Dict[str, tuple] = {
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "google": ("GOOGLE_API_KEY",),
+    "moonshot": ("MOONSHOT_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "ollama": (),
+    "mock": (),
+}
+
+
+class AIProviderConfigError(RuntimeError):
+    """provider 配置错误（如 ``AI_PROVIDER_TYPE`` 写错）。
+
+    为什么不在运行期静默降级 mock：静默降级会让界面/健康检查显示"已接入真实
+    模型"，而实际每次对话都由 mock 编造结果 —— 这正是本项目反复要消除的
+    "假的绿"。配置错误必须显式暴露（启动 warning + 调用处异常 + 健康检查
+    标记 invalid），让人立即修正环境变量。
+    """
+
+
+def _resolve_provider_api_key(provider_type: str) -> str:
+    """按 ``AI_PROVIDER_KEY`` > provider 专用别名 > 默认值的顺序读密钥。"""
+    generic = _provider_env("AI_PROVIDER_KEY")
+    if generic:
+        return generic
+    for alias in PROVIDER_KEY_ALIASES.get(provider_type, ()):
+        value = _provider_env(alias)
+        if value:
+            return value
+    return "[REDACTED]"
+
 
 def _provider_env(key: str, default: str = "") -> str:
     """Resolve a provider env var: ``os.environ`` first, then ``.env`` file.
@@ -804,51 +876,121 @@ def get_provider() -> BaseProvider:
     ProviderType (openai, anthropic, google, ollama, moonshot, deepseek) to
     use a real provider, or MOCK for development.
 
+    Model-config centre first
+    -------------------------
+    界面上新增/切换的模型配置（``src.ai.model_config``）**优先**于 ``.env``：
+    存在已启用的默认模型时，每次调用都按当前配置即时构造实例，因此保存后
+    无需重启即可生效。注册表为空时行为与旧实现逐字节一致（.env + 进程单例）。
+
     Example:
         export AI_PROVIDER_TYPE=openai
         export AI_PROVIDER_KEY=[REDACTED]
     """
     global _provider_instance
 
-    if _provider_instance is None:
-        # Get provider type from env var / .env, default to mock (safe, no
-        # fake-key network call; consistent with ProviderFactory.create_provider
-        # and detect_provider_type_from_env, which also default to MOCK).
-        provider_type = _provider_env("AI_PROVIDER_TYPE", ProviderType.MOCK).lower()
+    # 显式注入的实例（测试与嵌入场景）永远优先，不会被注册表覆盖。
+    if _provider_instance is not None:
+        return _provider_instance
 
-        # Validate provider type is supported
-        if provider_type not in ProviderFactory._providers:
-            print(f"Warning: Unknown provider type '{provider_type}', defaulting to MOCK")
-            provider_type = "mock"
+    cfg = _registry_config()
+    if cfg is not None:
+        return provider_from_config(cfg)
 
-        # Required args for all providers: name and model
-        # Use sensible defaults; override with env vars if needed
-        name = _provider_env("AI_PROVIDER_NAME", "liuhao-assistant")
-        model = _provider_env("AI_PROVIDER_MODEL", "mock-model")
-        api_key = _provider_env("AI_PROVIDER_KEY", "[REDACTED]")
+    # Get provider type from env var / .env, default to mock (safe, no
+    # fake-key network call; consistent with ProviderFactory.create_provider
+    # and detect_provider_type_from_env, which also default to MOCK).
+    provider_type = _provider_env("AI_PROVIDER_TYPE", ProviderType.MOCK).lower()
 
-        create_kwargs: Dict[str, Any] = {
-            "name": name,
-            "model": model,
-            "api_key": api_key,
-        }
+    # 非法类型：显式告警 + 抛错，绝不静默降级成 mock（详见 AIProviderConfigError）。
+    if provider_type not in ProviderFactory._providers:
+        message = (
+            f"Invalid AI_PROVIDER_TYPE={provider_type!r}; "
+            f"supported: {', '.join(sorted(ProviderFactory._providers))}. "
+            "Refusing to silently downgrade to mock -- fix the environment variable "
+            "(or configure a model in the console model manager)."
+        )
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        logger.error(message)
+        raise AIProviderConfigError(message)
 
-        # Opt-in timeout override. Slow upstreams (large hosted models behind a
-        # proxy, a busy local runner) need far more than the 30s default; when
-        # the var is unset we keep the class default rather than guessing.
-        timeout_raw = _provider_env("AI_PROVIDER_TIMEOUT", "")
-        if timeout_raw:
-            try:
-                create_kwargs["timeout"] = float(timeout_raw)
-            except ValueError:
-                print(f"Warning: invalid AI_PROVIDER_TIMEOUT={timeout_raw!r}; using default")
+    # Required args for all providers: name and model
+    # Use sensible defaults; override with env vars if needed
+    name = _provider_env("AI_PROVIDER_NAME", "liuhao-assistant")
+    model = _provider_env("AI_PROVIDER_MODEL", "mock-model")
+    api_key = _resolve_provider_api_key(provider_type)
 
-        _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
+    create_kwargs: Dict[str, Any] = {
+        "name": name,
+        "model": model,
+        "api_key": api_key,
+    }
 
-        # Log provider info (masked)
-        print(f"Provider initialized: {provider_type} (name={name}, model={model}, key: {api_key[:8]}...)")
+    # Opt-in timeout override. Slow upstreams (large hosted models behind a
+    # proxy, a busy local runner) need far more than the 30s default; when
+    # the var is unset we keep the class default rather than guessing.
+    timeout_raw = _provider_env("AI_PROVIDER_TIMEOUT", "")
+    if timeout_raw:
+        try:
+            create_kwargs["timeout"] = float(timeout_raw)
+        except ValueError:
+            print(f"Warning: invalid AI_PROVIDER_TIMEOUT={timeout_raw!r}; using default")
+
+    _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
+
+    # Log provider info (masked)
+    print(f"Provider initialized: {provider_type} (name={name}, model={model}, key: {api_key[:8]}...)")
 
     return _provider_instance
+
+
+def provider_from_config(cfg: Dict[str, Any]) -> BaseProvider:
+    """按模型配置中心的一条记录即时构造 provider（不缓存、不依赖单例）。
+
+    ``cfg`` 来自 ``ModelConfigStore.resolve()``，其中 ``api_key`` 已由存储层解密。
+    该函数**不打印**密钥；异常信息也不包含密钥。
+    """
+    provider_type = str(cfg.get("provider") or "").strip().lower()
+    if provider_type not in ProviderFactory._providers:
+        raise ValueError(f"Unknown provider type: {provider_type}")
+    kwargs: Dict[str, Any] = {
+        "name": cfg.get("name") or "liuhao-assistant",
+        "model": cfg.get("model") or "default",
+        "api_key": cfg.get("api_key") or "[REDACTED]",
+    }
+    if cfg.get("base_url"):
+        kwargs["base_url"] = cfg["base_url"]
+    timeout = cfg.get("timeout")
+    if timeout:
+        kwargs["timeout"] = float(timeout)
+    return ProviderFactory.create_provider(provider_type, **kwargs)
+
+
+def resolve_provider(model_id: Optional[str] = None) -> BaseProvider:
+    """按模型配置中心解析 provider；未配置或找不到时回退到 ``.env``。
+
+    每次调用都重新读取配置并构造实例 —— 这就是"保存后立即生效"的实现方式，
+    也刻意**不**复用进程级单例（单例会保留旧密钥/旧模型名）。
+    """
+    cfg = _registry_config(model_id)
+    if cfg is not None:
+        return provider_from_config(cfg)
+    return get_provider()
+
+
+def _registry_config(model_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """读取模型配置中心；任何存储异常都回退到 ``.env``（并记 warning）。
+
+    回退而不是抛出的理由：模型配置中心是**新增**能力，它的故障不应让原本可用的
+    ``.env`` 部署整体瘫痪。异常本身仍然可见（日志），不会被静默吞掉。
+    """
+    try:
+        from .model_config import get_model_config_store
+
+        return get_model_config_store().resolve(model_id)
+    except Exception as exc:  # pragma: no cover - 存储故障
+        print(f"Warning: model config store unavailable ({type(exc).__name__}); falling back to .env")
+        return None
+
 
 
 def set_provider(provider: BaseProvider) -> None:

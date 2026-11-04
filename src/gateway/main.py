@@ -815,6 +815,12 @@ def get_app() -> FastAPI:
     from .networks import router as networks_router
     app.include_router(networks_router, dependencies=[Depends(_require_human)])
 
+    # 模型管理面（模型配置中心）：界面新增/编辑/删除/设为默认 + 连通性测试。
+    # 读端点对所有已登录人类开放；写端点由 router 内的 require_model_admin
+    # 单独校验收敛（admin 权限或 L0 人类主权）。密钥只以脱敏形式返回。
+    from .models import router as models_router
+    app.include_router(models_router, dependencies=[Depends(_require_human)])
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

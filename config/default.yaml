@@ -165,6 +165,16 @@ security:
 
 # -----------------------------------------------------------------------------
 # 模型提供者（LLM Providers）
+#
+# ⚠️ 本段当前【未启用】——没有运行期读取路径：
+#   * 运行期只读环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_NAME / AI_PROVIDER_MODEL /
+#     AI_PROVIDER_KEY（以及 provider 专用别名 OPENAI_API_KEY、ANTHROPIC_API_KEY、
+#     GOOGLE_API_KEY、MOONSHOT_API_KEY、DEEPSEEK_API_KEY），或控制台「模型管理」
+#     写入数据库的模型配置；
+#   * 因此修改下面的 default / fallback_chain / 超时与各 provider 块
+#     **不会改变任何运行行为**；
+#   * 保留本段只为兼容既有配置文件的结构校验；要真正新增/切换模型，请使用控制台
+#     「Settings → 模型管理」（保存即生效，无需重启）。
 # -----------------------------------------------------------------------------
 providers:
   default: ollama                   # 默认路由到的提供者

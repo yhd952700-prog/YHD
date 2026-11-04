@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..ai.liuhao import LiuHaoAssistant
+from ..ai.providers import resolve_provider
 from ..ai.conversation_store import get_conversation_store
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -29,12 +30,18 @@ _session_users: Dict[str, str] = {}
 _sessions_lock = threading.Lock()
 
 
-def get_assistant(session_id: str, user_id: Optional[str] = None) -> LiuHaoAssistant:
+def get_assistant(
+    session_id: str, user_id: Optional[str] = None, model_id: Optional[str] = None
+) -> LiuHaoAssistant:
     """获取或创建会话实例（线程安全，多用户并发隔离）。
 
     ``user_id`` 存在时，画像主体取 ``user-{user_id}`` —— 同一用户的多个会话
     **共享画像**；会话历史仍按 ``liuhao-{session_id}`` 隔离（二者刻意解耦，
     否则共享画像会把多会话历史也串在一起）。
+
+    ``model_id`` 为空时按模型配置中心**当前的默认模型**解析 —— 每次请求都
+    重新解析，因此界面上切换默认模型/改密钥后，已存在的会话也会在下一轮
+    立即换用新配置（不需要重启后端）。
     """
     with _sessions_lock:
         if session_id in _sessions and user_id and _session_users.get(session_id) != user_id:
@@ -47,7 +54,10 @@ def get_assistant(session_id: str, user_id: Optional[str] = None) -> LiuHaoAssis
             )
             if user_id:
                 _session_users[session_id] = user_id
-        return _sessions[session_id]
+        assistant = _sessions[session_id]
+        # 热加载：按当前配置即时构造（未配置时返回 .env 单例，行为不变）。
+        assistant.provider = resolve_provider(model_id)
+        return assistant
 
 
 def list_sessions() -> List[str]:
@@ -72,6 +82,9 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="用户消息")
     session_id: Optional[str] = Field("default", description="会话 ID（多轮独立）")
     user_id: Optional[str] = Field(None, description="用户 ID（同用户跨会话共享画像）")
+    model_id: Optional[str] = Field(
+        None, description="模型配置 id 或名称；留空则用当前默认模型"
+    )
 
 
 class ChatResponse(BaseModel):
@@ -84,7 +97,7 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    assistant = get_assistant(req.session_id, req.user_id)
+    assistant = get_assistant(req.session_id, req.user_id, req.model_id)
     result = assistant.chat(req.message)
     return ChatResponse(
         reply=result["reply"],
@@ -105,7 +118,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     - ``{"type": "tool", "name": ..., "args": ..., "output": ...}``  工具调用
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
     """
-    assistant = get_assistant(req.session_id, req.user_id)
+    assistant = get_assistant(req.session_id, req.user_id, req.model_id)
 
     def event_stream():
         for item in assistant.chat_stream(req.message):

@@ -28,7 +28,7 @@ from .agent_factory import (
     AgentPolicy,
     economy_inputs,
 )
-from .providers import BaseProvider, get_provider
+from .providers import BaseProvider, get_provider, resolve_provider
 from .conversation_store import get_conversation_store
 from .tool_registry import ToolRegistry
 from .tools import make_tools, build_tool_prompt, parse_tool_call
@@ -156,7 +156,8 @@ class LiuHaoAssistant:
         # （会话历史仍按 self.principal 隔离，二者刻意解耦）。
         self.profile_principal = profile_principal or name
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        self.provider = provider or get_provider()
+        # 模型配置中心优先：界面上保存的默认模型即时生效；未配置时回退 .env。
+        self.provider = provider or resolve_provider()
         self.capabilities = list(capabilities or ["chat"])
         # 能力层可观测性：结构化日志 + trace/correlation 透传（第 12 轮审计增强）。
         self._log = get_logger("liuhao")
