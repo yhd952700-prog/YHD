@@ -84,6 +84,24 @@ def _console_dist() -> Path | None:
     return candidate
 
 
+def _load_dotenv() -> None:
+    """把仓库根的 `.env` 载入进程环境，且不覆盖已显式导出的变量。
+
+    没有这一步时 `.env` 里的 SECRET_KEY / APP_ENV 对网关完全不可见：
+    `/v1/production/preflight` 报 secret_key_missing，部署姿态被判为
+    UNDETERMINABLE —— 服务看着起来了，实际是一个没配好的实例。
+    `override=False` 保证运维显式导出的值永远优先。
+    """
+    env_file = ROOT / ".env"
+    if not env_file.is_file():
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # requirements.txt 已声明 python-dotenv
+        return
+    load_dotenv(env_file, override=False)
+
+
 def _point_at_console_stores() -> None:
     """当本机 config/ 里存在登记表/凭据时，把它们指给要拉起的网关。
 
@@ -231,6 +249,8 @@ def main() -> int:
 
     atexit.register(_shutdown_all)
 
+    # .env 里的 SECRET_KEY / APP_ENV 必须先可见，否则 preflight 与部署姿态都不成立。
+    _load_dotenv()
     # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
     _point_at_console_stores()
 
