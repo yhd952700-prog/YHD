@@ -43,7 +43,7 @@ services:
       # 必填：不提供时 docker compose 直接拒绝启动（而不是带着空值上线后
       # 由应用在第一次登录时才报错）。生产必须使用持久、随机、所有 worker
       # 共享的签名密钥，否则重启即全端登出。
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set for production}
+      - "JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set for production}"
       - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
       - API_KEY_MASTER_KEY=${API_KEY_MASTER_KEY}
       # 身份持久化（Policy C-7）：默认 SQLite 后端。
