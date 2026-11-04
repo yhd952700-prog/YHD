@@ -165,6 +165,93 @@ wiring gap」。按硬边界（不得改验收标准造假绿、不得擅自武�
 
 ## 6. 状态快照
 
-- 分支 `p36`，提交见 §2 + 本文件的提交
-- CI：等待最新 run（head 为含 `5118743e`/`0f4dcbda` 的提交）的 job 级结论；
-  预期仅剩 `verify_deployment_gate_vars.py` 的 11 条人工裁决项
+- 分支 `p36`，当前 HEAD `5026bd0b`（含模型管理功能与令牌声明修复，已推送）
+- CI：`41792630502`（head `33027b36`）在 **Verify Code Quality（flake8）** 处失败，
+  其余 job 多为 watchdog 级联；`Console Readability Audit (WCAG-AA)` 该轮已 success。
+  flake8 的 3 条告警是模型管理改动自身引入的（未使用导入 ×2、多余空行 ×1），
+  已在 `5026bd0b` 修复并推送，等待新 run。
+- `verify_deployment_gate_vars.py` 的 11 条人工裁决项仍按 §5.3 保留，未擅自武装。
+
+## 7. 模型管理功能轮（同日续做）
+
+### 7.1 提交（按时间顺序）
+
+| Commit | 主题 | 内容 |
+|---|---|---|
+| `3e5d9592` | fix(dashboard) | 时间轴按日历日构造，跨夏令时不再少一天 |
+| `93427248` | test(gate) | 门禁证据行号随 `ci.yml` 漂移同步（`:793` → `:806`） |
+| `deb52256` | test | 身份/安全测试隔离身份库；协调测试补瞬时重试与诊断 |
+| `72988cc5` | feat(models) | 后端：SQLite 持久化、AES-256-GCM 密钥加密、CRUD/测试连接 API、运行时热加载 |
+| `702dd5cb` | feat(console) | 前端：Settings 页「模型管理」列表/表单/测试/设为默认/删除 |
+| `33027b36` | test(models) | 45 条后端用例 + 8 条前端映射用例；模型库按用例隔离 |
+| `ebdd6cca` | fix(auth) | `issue_console_token.py` 签发的 claims 与身份记录同源（scope/permissions/metadata） |
+| `5026bd0b` | style(lint) | 清理模型管理引入的 flake8 告警，`src/` 恢复 0 告警 |
+
+### 7.2 设计与关键取舍
+
+- **存储**：stdlib `sqlite3` + WAL + `CREATE TABLE IF NOT EXISTS`，DB 默认
+  `data/model_registry.sqlite3`（`data/` 已 gitignore）；不引入 ORM 迁移框架，
+  与既有 `ConversationStore` 同款约定。
+- **密钥**：`AesGcmCipher`（AES-256-GCM），AAD=`ai-model:{id}`，密文
+  `enc:v1:<b64 nonce>:<b64 ct>`；密钥来源 `LIUHAO_MODEL_CONFIG_KEY`（SHA-256 派生）
+  或 `LIUHAO_MODEL_CONFIG_KEY_FILE`（默认 `data/model_config.key`，自动生成）。
+  拿不到密钥时**拒绝保存**（fail-closed），不以明文落盘。接口响应只返回
+  `api_key_masked`；非 `enc:v1:` 前缀的存量值拒绝按明文使用。
+- **热加载**：`resolve_provider(model_id)` 每次请求重新从注册表解析并即时构造
+  provider，不缓存；`get_provider()` 改为「注册表默认 → `.env` 兜底」，显式注入的
+  `_provider_instance` 仍最高优先（保护既有测试）。会话复用也不缓存实例，
+  默认模型/密钥变更对已存在会话立即生效。
+- **信任缺陷**：非法 `AI_PROVIDER_TYPE` 不再静默降级 mock，改为
+  `warnings.warn` + `logger.error` + 抛 `AIProviderConfigError`，`/v1/health`
+  如实返回 `mode=invalid`；API Key 支持 `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
+  等别名（与 roster `required_env` 一致，有单测锁定两边一致）；
+  `config/default.yaml` 的 providers/fallback_chain 已显式标注「未启用、无运行期读取路径」。
+
+### 7.3 真实运行证据（本机 Windows + 真实 Ollama `qwen2.5:3b`）
+
+端到端脚本 15/15 PASS（服务 `127.0.0.1:8099`，全程未重启）：
+
+```
+GET  /v1/models                         200 count=0
+POST /v1/models                         -> id e2b958b7be12 (ollama)
+POST /v1/models/{id}/test                ok, latency=3343ms（真实最小请求）
+POST /v1/chat/completions                '5'（保存后立即生效）
+POST /v1/models (mock + 假密钥)          -> 响应 sk-e…9876，无 enc:v1: 前缀
+sqlite api_key_enc                       密文，且整行不含明文
+同一会话即时切默认 → mock                 reply 以 "LiuHao AI OS status:" 开头
+model_id 指定 ollama                      '你好！有什么可以帮助你的吗？'
+DELETE 默认 mock → 提升 e2b958b7be12      对话即时回落 ollama '5'
+GET  /v1/health                          type=ollama mode=real simulated=false source=model_config
+最终 GET /v1/models                      1 条且为默认；列表/详情无密钥泄露
+```
+
+浏览器实机（登录会话注入 localStorage，使用构建后的真实 SPA）：
+
+- 设置页出现「模型管理」与既有模型；
+- 表单填 `ui-mock / mock / mock-model / timeout=5 / api_key=sk-ui-test` →
+  「连接成功（0 ms）」→「添加模型」后列表出现；
+- 密钥列仅脱敏，DOM 中无明文；
+- 刷新后配置仍在；删除后恢复 1 条。
+
+### 7.4 门禁与测试（本机）
+
+```
+tests/test_model_config.py + tests/test_gateway_models_api.py   45 passed
+provider/roster/chat 相关回归（7 文件）                          111 passed
+tests/test_issue_console_token_claims.py                          2 passed
+python -m flake8 src/ --max-line-length=100 --select=E,F,W \
+  --ignore=E501,W503                                              0 告警（exit 0）
+python -m py_compile scripts/ops/audit_console_readability.py     exit 0
+npm run build (tsc -b && vite build)                              exit 0
+npm run lint (oxlint)                                             0 error / 2 warning（exit 0）
+npm test (vitest)                                                 56 passed（6 文件）
+```
+
+WCAG-AA 审计（本地 Chrome + demo 人类 `ceo`，3 种视口 × 19 页）真实输出：
+
+```
+覆盖文本样本 8136 条；低对比违规 0 处；运行时问题 0 条   （exit 0）
+```
+
+其中 `settings` 页（新增「模型管理」所在）在 desktop/web/mobile 三档均 PASS。
+
