@@ -162,7 +162,23 @@ def main() -> int:
 
     from src.security.jwt_handler import create_access_token
 
-    token, payload = create_access_token(ident.id, ttl=args.ttl)
+    # 令牌声明必须与身份记录一致：脚本头部一直打印 scope=identity.scope，
+    # 但旧实现签发的是"空权限、空 metadata"令牌 —— 接口侧（/v1/auth/me、
+    # 管理员写操作）读不到 scope，于是"提示一套、读取一套"。这里与登录路径
+    # (src/gateway/auth.py::_issue_token) 保持同源，声明直接取自身份记录。
+    token, payload = create_access_token(
+        subject=ident.id,
+        scopes=["console"],
+        roles=sorted(ident.permissions),
+        permissions=sorted(ident.permissions),
+        ttl=args.ttl,
+        metadata={
+            "kind": "human",
+            "client": "console-token-script",
+            "scope": ident.scope.value,
+        },
+        device_id="console-token-script",
+    )
 
     print("Console approval token")
     print("=" * 60)
