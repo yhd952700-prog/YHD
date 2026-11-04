@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..kernels._enforcement import describe as describe_enforcement
@@ -109,16 +109,55 @@ def require_bearer_payload(
         raise HTTPException(status_code=401, detail=f"invalid bearer token: {exc}")
 
 
-def require_human_principal(payload=Depends(require_bearer_payload)) -> str:
+#: HTTP methods that mutate state. Read methods stay open to every authenticated
+#: human; writes additionally need an administrative role (least privilege).
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: Roles/permissions that authorise a write. Same vocabulary as the model
+#: management gate (``models.require_model_admin``), so there is one answer to
+#: "who is an administrator" rather than two that can drift apart.
+_WRITE_ROLES = frozenset({"admin", "administrator", "owner"})
+
+#: Highest human sovereignty scope. The seeded local human carries no
+#: permissions but ``scope=L0``; treating L0 as administrative keeps the
+#: single-human deployment usable without inventing a role nobody holds.
+_WRITE_SCOPES = frozenset({"L0"})
+
+
+def _claim_set(value) -> set:
+    return {str(item).lower() for item in (value or [])}
+
+
+def require_human_principal(
+    request: Request, payload=Depends(require_bearer_payload)
+) -> str:
     """Resolve the authenticated principal from the bearer token, or 401.
 
     Deliberately *only* the token can name the principal -- see the module
     docstring, point 1. This dependency never trusts a caller-supplied
     identity.
+
+    **Writes require an administrative claim.** Authentication (this is a
+    human) and authorisation (this human may change state) are different
+    questions; before this check every logged-in human could POST/DELETE every
+    gated surface. Reads are unchanged.
     """
     subject = getattr(payload, "sub", None)
     if not subject:
         raise HTTPException(status_code=401, detail="token has no subject claim")
+
+    if request.method.upper() in _WRITE_METHODS:
+        metadata = getattr(payload, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        scope = str(metadata.get("scope") or "")
+        claims = _claim_set(getattr(payload, "roles", None)) | _claim_set(
+            getattr(payload, "permissions", None)
+        )
+        if not (claims & _WRITE_ROLES) and scope not in _WRITE_SCOPES:
+            raise HTTPException(
+                status_code=403,
+                detail="写操作需要管理员权限（admin 角色或 L0 人类主权）",
+            )
     return str(subject)
 
 

@@ -85,7 +85,7 @@ def test_chat_history_endpoint_reads_persisted():
     # 模拟后端重启：清空进程内会话表，仅靠持久化 store 读历史。
     chat_module._sessions.clear()
 
-    result = chat_module.chat_history(session_id="hist")
+    result = chat_module.read_history(session_id="hist")
     assert result["session_id"] == "hist"
     assert result["count"] == 4  # 2 轮 × (user + assistant)
     roles = [h["role"] for h in result["history"]]

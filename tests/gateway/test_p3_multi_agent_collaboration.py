@@ -32,7 +32,9 @@ GOAL = "write '%s' to file ma.txt" % EXPECTED_CONTENT
 def _auth_headers() -> dict:
     from src.security import get_jwt_handler
 
-    token, _payload = get_jwt_handler().create_token(subject="p3-human")
+    token, _payload = get_jwt_handler().create_token(
+        subject="p3-human", metadata={"scope": "L0"}
+    )
     return {"Authorization": "Bearer %s" % token}
 
 

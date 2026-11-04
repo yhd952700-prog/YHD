@@ -13,14 +13,14 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request, APIRouter, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
-from ..config_manager import get_config
 from ..security import get_jwt_handler, get_rbac_manager
 from ..observability.tracing import get_tracer
 
@@ -47,6 +47,99 @@ except Exception:  # metrics unavailable; middleware becomes a no-op
     _get_metric_collector = None
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_CONFIG_DIR = _PROJECT_ROOT / "config"
+
+#: Comma-separated override for ``server.cors.allow_origins``.
+CORS_ORIGINS_ENV = "LIUHAO_CORS_ALLOW_ORIGINS"
+
+_CORS_DEFAULT_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _read_yaml(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        import yaml  # PyYAML is already a runtime dependency (logging/roster use it)
+
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return document if isinstance(document, dict) else {}
+    except Exception as exc:  # noqa: BLE001 - config problem must be visible, not fatal
+        logger.error("could not read %s: %s", path, exc)
+        return {}
+
+
+def load_runtime_config() -> Dict[str, Any]:
+    """Load ``config/default.yaml`` + ``config/{APP_ENV}.yaml`` (deep merge).
+
+    ``ConfigManager`` only reads ``configs/*.yml`` and its parser cannot express
+    nested lists, so the gateway's real HTTP settings (CORS, docs) previously
+    lived in the YAML files but were never read: the code fell back to
+    ``allow_origins=["*"]``. This loader is the missing bridge.
+
+    Returns the ``server``/``app`` slices the gateway actually consumes, plus a
+    normalised ``environment`` string and the ``allow_origins`` override.
+    """
+    environment = (os.environ.get("APP_ENV") or "development").strip().lower()
+    document = _read_yaml(_CONFIG_DIR / "default.yaml")
+    document = _deep_merge(document, _read_yaml(_CONFIG_DIR / f"{environment}.yaml"))
+
+    app_cfg = document.get("app") if isinstance(document.get("app"), dict) else {}
+    # The env var is authoritative; the file value only fills the gap.
+    environment = (
+        (os.environ.get("APP_ENV") or str(app_cfg.get("environment") or "development"))
+        .strip()
+        .lower()
+    )
+
+    server_cfg = document.get("server") if isinstance(document.get("server"), dict) else {}
+    cors_cfg = server_cfg.get("cors") if isinstance(server_cfg.get("cors"), dict) else {}
+
+    raw_origins = os.environ.get(CORS_ORIGINS_ENV)
+    if raw_origins:
+        allow_origins = [item.strip() for item in raw_origins.split(",") if item.strip()]
+    else:
+        allow_origins = [
+            str(item).strip()
+            for item in (cors_cfg.get("allow_origins") or [])
+            if str(item).strip()
+        ]
+    if not allow_origins:
+        logger.warning(
+            "No server.cors.allow_origins configured; falling back to localhost "
+            "development origins (%s)", ", ".join(_CORS_DEFAULT_ORIGINS),
+        )
+        allow_origins = list(_CORS_DEFAULT_ORIGINS)
+
+    return {
+        "environment": environment,
+        "production": environment == "production",
+        "cors": {
+            "enabled": bool(cors_cfg.get("enabled", True)),
+            "allow_origins": allow_origins,
+            "allow_methods": list(
+                cors_cfg.get("allow_methods")
+                or ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+            ),
+            "allow_headers": list(
+                cors_cfg.get("allow_headers")
+                or ["Authorization", "Content-Type", "X-Request-Id", "X-Liuhao-Token"]
+            ),
+            "allow_credentials": bool(cors_cfg.get("allow_credentials", True)),
+            "max_age": int(cors_cfg.get("max_age") or 600),
+        },
+    }
 
 
 # ==================== Routers ====================
@@ -504,7 +597,8 @@ def get_app() -> FastAPI:
     Returns:
         Configured FastAPI instance
     """
-    settings = get_config()
+    runtime = load_runtime_config()
+    production = bool(runtime["production"])
 
     # Policy Controlled: an enforced kernel action raises these. Map them to
     # honest HTTP statuses instead of letting the catch-all handler turn
@@ -516,25 +610,46 @@ def get_app() -> FastAPI:
         version="1.0.0",
         description="Unified API Gateway for LiuHao AI OS",
         lifespan=lifespan,
-        docs_url="/docs" if settings.get("api", {}).get("swagger_ui", True) else None,
-        redoc_url="/redoc" if settings.get("api", {}).get("swagger_ui", True) else None,
+        # OpenAPI/docs are a broad reconnaissance surface (every route, every
+        # schema, every query parameter). Development keeps them; production
+        # turns them off regardless of what the legacy config key says.
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
     )
 
     # ==================== Middleware ====================
 
-    # CORS middleware
-    cors_origins = settings.get("api", {}).get("cors_origins", ["*"])
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        # 不暴露 X-Trace-ID，跨域的浏览器 JS 就读不到它（CORS 默认只放开
-        # 简单响应头），于是"拿 trace_id 去查日志"这条唯一的排障路径在
-        # 跨域部署下直接断掉。跨域也要把它交出去。
-        expose_headers=["X-Trace-ID"],
-    )
+    # CORS middleware —— 实际读取 config/default.yaml（+ APP_ENV 覆盖文件）的
+    # server.cors.allow_origins。此前读的是 settings.get("api", {}).get(...)：
+    # ConfigManager 只扫 configs/（本仓库里没有该键），于是永远落回 ["*"]，
+    # 而 YAML 里写的白名单从未生效 -- "配置看起来能改，其实改不动"。
+    cors = runtime["cors"]
+    if production and "*" in cors["allow_origins"]:
+        # 通配 + allow_credentials 等于把任意站点都当成可信来源。生产必须
+        # 显式列名单，宁可在启动时报错，也不带病上线。
+        raise RuntimeError(
+            "生产环境禁止 CORS allow_origins='*'；请在 config/production.yaml "
+            "的 server.cors.allow_origins 显式列出前端域名"
+        )
+    if cors["enabled"]:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors["allow_origins"],
+            allow_credentials=cors["allow_credentials"],
+            allow_methods=cors["allow_methods"],
+            allow_headers=cors["allow_headers"],
+            max_age=cors["max_age"],
+            # 不暴露 X-Trace-ID，跨域的浏览器 JS 就读不到它（CORS 默认只放开
+            # 简单响应头），于是"拿 trace_id 去查日志"这条唯一的排障路径在
+            # 跨域部署下直接断掉。跨域也要把它交出去。
+            expose_headers=["X-Trace-ID"],
+        )
+    else:
+        logger.warning(
+            "CORS disabled by config (server.cors.enabled=false); cross-origin "
+            "console deployments will not work"
+        )
 
     # GZip compression
     app.add_middleware(GZipMiddleware, minimum_size=1000)

@@ -154,7 +154,8 @@ class TestConnectionProbe:
         ).json()
         assert result["ok"] is True
 
-    def test_unreachable_endpoint_is_classified_and_fast(self, client, admin_headers):
+    def test_loopback_base_url_is_rejected(self, client, admin_headers):
+        """SSRF 防护：调用方现填的回环/私网地址在探测前就被 400 拒绝。"""
         result = client.post(
             "/v1/models/test",
             json={
@@ -164,12 +165,23 @@ class TestConnectionProbe:
                 "timeout": 2,
             },
             headers=admin_headers,
-        ).json()
-        assert result["ok"] is False
-        # 端口 9 在不同环境可能"立刻拒绝"（unreachable）或被出口策略挂住（timeout）；
-        # 两者都是"连不上"的诚实分类，这里只要求不误报成功、不误报"密钥错误"。
-        assert result["reason"] in {"unreachable", "timeout"}
-        assert result["latency_ms"] < 5000
+        )
+        assert result.status_code == 400, result.text
+        assert "SSRF" in result.json()["detail"]
+
+    def test_non_http_scheme_is_rejected(self, client, admin_headers):
+        result = client.post(
+            "/v1/models/test",
+            json={
+                "provider": "ollama",
+                "model": "qwen2.5:3b",
+                "base_url": "file:///etc/passwd",
+                "timeout": 2,
+            },
+            headers=admin_headers,
+        )
+        assert result.status_code == 400, result.text
+        assert "http/https" in result.json()["detail"]
 
     def test_saved_model_probe_uses_stored_key_but_never_returns_it(self, client, admin_headers):
         secret = "sk-probe-saved-1234567890"

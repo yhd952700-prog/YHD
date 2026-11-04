@@ -137,6 +137,42 @@ class TestTheTraceIdBreadcrumbIsActuallyFollowable:
             "is then false. expose_headers=%r" % (expose,)
         )
 
+    def test_cors_origins_are_read_from_config(self):
+        """CORS 白名单必须真的来自 config/*.yaml，而不是恒为 '*'。"""
+        from src.gateway.main import get_app, load_runtime_config
+
+        app = get_app()
+        cors = [m for m in app.user_middleware if "CORS" in getattr(m, "cls", "").__name__]
+        assert cors
+        origins = cors[0].kwargs.get("allow_origins")
+        assert origins == load_runtime_config()["cors"]["allow_origins"]
+        assert "*" not in origins, "通配来源意味着任何站点都能带凭据访问网关"
+
+    def test_production_disables_docs(self, monkeypatch):
+        """生产环境不暴露 OpenAPI/Swagger/Redoc（减少侦察面）。"""
+        monkeypatch.setenv("APP_ENV", "production")
+        from src.gateway.main import get_app
+
+        app = get_app()
+        assert app.docs_url is None
+        assert app.redoc_url is None
+        assert app.openapi_url is None
+        # production.yaml 显式列出域名；CORS 必须据此生效。
+        cors = [m for m in app.user_middleware if "CORS" in getattr(m, "cls", "").__name__]
+        assert cors
+        assert "*" not in cors[0].kwargs["allow_origins"]
+
+    def test_production_refuses_wildcard_origins(self, monkeypatch):
+        """生产 + '*' 直接启动失败：不带病上线。"""
+        import pytest
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("LIUHAO_CORS_ALLOW_ORIGINS", "*")
+        from src.gateway.main import get_app
+
+        with pytest.raises(RuntimeError, match="allow_origins"):
+            get_app()
+
 
 @pytest.fixture
 def isolated_worker(monkeypatch, tmp_path):

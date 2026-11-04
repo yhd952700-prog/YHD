@@ -44,7 +44,9 @@ server:
       - "http://localhost:3000"
       - "http://localhost:5173"
     allow_methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-    allow_headers: ["Authorization", "Content-Type", "X-Request-Id"]
+    # 控制台跨域时必须显式允许它实际携带的令牌头（X-Liuhao-Token 优先，
+    # Authorization 兜底），否则浏览器预检会拦掉登录后的所有请求。
+    allow_headers: ["Authorization", "Content-Type", "X-Request-Id", "X-Liuhao-Token", "X-Trace-ID"]
     allow_credentials: true
     max_age: 600
   timeouts:

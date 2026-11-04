@@ -12,9 +12,12 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -266,6 +269,64 @@ def _audit_probe(cfg: Dict[str, Any], outcome: str, reason: str) -> None:
         pass
 
 
+_PRIVATE_IP_FLAGS = (
+    "is_private",
+    "is_loopback",
+    "is_link_local",
+    "is_reserved",
+    "is_unspecified",
+    "is_multicast",
+)
+
+
+def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
+    """校验待探测的 ``base_url``，堵住管理员 SSRF 面。
+
+    * 只接受 ``http`` / ``https``：``file://`` / ``gopher://`` 等一律 400；
+    * 调用方**现填**的地址必须是公网可达主机 —— 解析后任一地址落在私网/
+      回环/链路本地/保留段即 400（否则管理员端点可被用来探测内网与元数据
+      服务，例如 ``169.254.169.254``）。
+
+    ``allow_private=True`` 只用于**已保存配置**里的地址：它由管理员事先
+    落盘（本机 Ollama ``127.0.0.1`` 就是正常用法），不是本次请求现填的。
+    """
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"base_url 仅支持 http/https，收到：{parsed.scheme or '(空)'}",
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="base_url 缺少合法主机名")
+    if allow_private:
+        return value
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"base_url 主机无法解析：{host}（{exc}）"
+        )
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"base_url 主机解析结果异常：{host}")
+        if any(getattr(address, flag) for flag in _PRIVATE_IP_FLAGS):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）："
+                    f"{host} -> {address}"
+                ),
+            )
+    return value
+
+
 def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
     stored = None
     if payload.model_id:
@@ -278,11 +339,17 @@ def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
     api_key = payload.api_key
     if not api_key and stored:
         api_key = stored.get("api_key")
+    # 调用方现填的地址按公网收紧；回落到已保存配置则按管理员既有配置放行
+    # （本机模型服务的回环地址属于正常用法，不是本次请求构造的探测目标）。
+    caller_url = _assert_url_allowed(payload.base_url or "", allow_private=False)
+    stored_url = _assert_url_allowed(
+        (stored.get("base_url") or "") if stored else "", allow_private=True
+    )
     return {
         "name": stored.get("name") if stored else "connection-test",
         "provider": provider,
         "model": payload.model.strip(),
-        "base_url": payload.base_url or (stored.get("base_url") if stored else None),
+        "base_url": caller_url or stored_url or None,
         "api_key": api_key,
         "timeout": min(float(payload.timeout), 20.0),
     }
@@ -299,5 +366,7 @@ def test_saved_model(model_id: str, admin=Depends(require_model_admin)) -> Dict[
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"模型配置不存在或已禁用：{model_id}")
     cfg = dict(cfg)
+    # 已保存配置：仅补 scheme 校验，允许私网/回环（本机模型服务的常规部署）。
+    cfg["base_url"] = _assert_url_allowed(cfg.get("base_url") or "", allow_private=True)
     cfg["timeout"] = min(float(cfg.get("timeout") or 30.0), 20.0)
     return _probe(cfg)

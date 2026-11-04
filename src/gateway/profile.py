@@ -5,37 +5,36 @@
 - ``GET    /v1/profile/summary``  画像摘要（即注入 system prompt 的那段文本）
 - ``DELETE /v1/profile``          清空画像
 
-主体命名约定（与对话链路一致）：
-- 传 ``user_id``  → 主体 ``user-{user_id}``（跨会话共享）
-- 不传            → 主体取 ``principal`` 参数（默认 ``default``）
+主体命名约定（与对话链路一致，**只来自身份令牌**）：
+- 令牌主体 ``sub`` → 画像主体 ``user-{sub}``（跨会话共享）
+- 客户端提交的 ``principal`` / ``user_id`` / 查询参数一律不采信 ——
+  否则任何已登录用户都能读写、甚至清空别人的画像。
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ..ai.personal_context import get_personal_context
+from .policy import require_human_principal
 
 router = APIRouter(prefix="/v1", tags=["profile"])
 
-_DEFAULT_PRINCIPAL = "default"
 
-
-def _resolve(principal: Optional[str], user_id: Optional[str]) -> str:
-    """解析画像主体：user_id 优先，否则 principal，最后回退默认值。"""
-    if user_id:
-        return f"user-{user_id}"
-    return principal or _DEFAULT_PRINCIPAL
+def _resolve(principal: str) -> str:
+    """把令牌主体解析为画像主体（``user-{sub}``，与 chat 链路的绑定保持一致）。"""
+    return f"user-{principal}"
 
 
 class ProfileUpdate(BaseModel):
-    """画像写入请求：所有字段可选，只写传了的项。"""
+    """画像写入请求：所有字段可选，只写传了的项。
 
-    principal: Optional[str] = Field(None, description="画像主体（不传 user_id 时使用）")
-    user_id: Optional[str] = Field(None, description="用户 ID（优先，主体 user-{id}）")
+    **没有** ``principal`` / ``user_id`` 字段：主体只能来自令牌。
+    """
+
     display_name: Optional[str] = Field(None, description="称呼")
     preference: Optional[Dict[str, Any]] = Field(
         None, description="单条偏好 {key, value, confidence?}"
@@ -50,12 +49,9 @@ class ProfileUpdate(BaseModel):
 
 
 @router.get("/profile")
-def get_profile(
-    principal: Optional[str] = Query(None, description="画像主体"),
-    user_id: Optional[str] = Query(None, description="用户 ID（主体 user-{id}）"),
-) -> Dict[str, Any]:
-    """返回完整画像快照 + 摘要。"""
-    pid = _resolve(principal, user_id)
+def get_profile(principal: str = Depends(require_human_principal)) -> Dict[str, Any]:
+    """返回**当前主体**的完整画像快照 + 摘要。"""
+    pid = _resolve(principal)
     pcm = get_personal_context()
     profile = pcm.get_profile(pid)
     data = profile.to_dict()
@@ -67,12 +63,11 @@ def get_profile(
 
 @router.get("/profile/summary")
 def get_profile_summary(
-    principal: Optional[str] = Query(None, description="画像主体"),
-    user_id: Optional[str] = Query(None, description="用户 ID（主体 user-{id}）"),
+    principal: str = Depends(require_human_principal),
     max_items: int = Query(8, ge=1, le=50, description="摘要最大条目数"),
 ) -> Dict[str, Any]:
-    """返回画像摘要文本（即注入 system prompt 的那一段）。"""
-    pid = _resolve(principal, user_id)
+    """返回**当前主体**的画像摘要文本（即注入 system prompt 的那一段）。"""
+    pid = _resolve(principal)
     pcm = get_personal_context()
     has = pcm.has_profile(pid)
     return {
@@ -83,9 +78,11 @@ def get_profile_summary(
 
 
 @router.put("/profile")
-def update_profile(req: ProfileUpdate) -> Dict[str, Any]:
-    """写入画像项（真实落盘 + 写穿 Memory Kernel）。返回写入后的画像。"""
-    pid = _resolve(req.principal, req.user_id)
+def update_profile(
+    req: ProfileUpdate, principal: str = Depends(require_human_principal)
+) -> Dict[str, Any]:
+    """写入**当前主体**的画像项（真实落盘 + 写穿 Memory Kernel）。"""
+    pid = _resolve(principal)
     pcm = get_personal_context()
     written: List[str] = []
 
@@ -138,12 +135,13 @@ def update_profile(req: ProfileUpdate) -> Dict[str, Any]:
 
 
 @router.delete("/profile")
-def clear_profile(
-    principal: Optional[str] = Query(None, description="画像主体"),
-    user_id: Optional[str] = Query(None, description="用户 ID（主体 user-{id}）"),
-) -> Dict[str, Any]:
-    """清空某主体的画像（不可恢复）。"""
-    pid = _resolve(principal, user_id)
+def clear_profile(principal: str = Depends(require_human_principal)) -> Dict[str, Any]:
+    """清空**当前主体**的画像（不可恢复）。
+
+    主体只来自令牌：``DELETE /v1/profile?principal=someone`` 不会删掉别人，
+    查询参数被忽略。
+    """
+    pid = _resolve(principal)
     pcm = get_personal_context()
     pcm.clear(pid)
     return {"principal": pid, "cleared": True, "has_profile": pcm.has_profile(pid)}

@@ -37,7 +37,9 @@ def _auth_headers() -> dict:
     """真实 bearer 令牌（网关 validator 同一签发路径）；不是 stub。"""
     from src.security import get_jwt_handler
 
-    token, _payload = get_jwt_handler().create_token(subject="p10-human")
+    token, _payload = get_jwt_handler().create_token(
+        subject="p10-human", metadata={"scope": "L0"}
+    )
     return {"Authorization": "Bearer %s" % token}
 
 

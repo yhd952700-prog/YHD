@@ -449,7 +449,14 @@ class TestTokenIsReal:
         # kernel at grant time, not by whoever minted the token.
         from src.security.jwt_handler import create_access_token
 
-        token, _ = create_access_token(subject="svc.forged", scopes=["console"])
+        token, _ = create_access_token(
+            subject="svc.forged",
+            scopes=["console"],
+            # Give the forgery the *strongest* claim a token can carry: it must
+            # still be refused by the identity kernel, not merely by the coarse
+            # role gate in front of it.
+            metadata={"scope": "L0"},
+        )
         response = client.post(
             "/v1/policy/approvals",
             headers={"Authorization": f"Bearer {token}"},
