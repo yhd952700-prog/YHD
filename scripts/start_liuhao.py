@@ -271,8 +271,9 @@ def _start_https_proxy(args: argparse.Namespace, single_port: bool) -> None:
         print(f"  [skip] HTTPS 代理未启动：找不到 {https_proxy}")
         return
     _spawn([_venv_python(), "-u", str(https_proxy)], ROOT, "https-proxy", proxy_env)
-    _wait_https_ok(f"https://{args.host}:{https_port}/", 30.0, "HTTPS 代理")
-    print(f"      手机端安装地址： https://{args.host}:{https_port}/")
+    wait_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
+    _wait_https_ok(f"https://{wait_host}:{https_port}/", 30.0, "HTTPS 代理")
+    print(f"      手机端安装地址： https://<局域网IP>:{https_port}/")
 
 
 def _shutdown_all() -> None:
@@ -331,6 +332,10 @@ def main() -> int:
 
     api_base = f"http://{args.host}:{args.api_port}"
     ui_base = api_base if single_port else f"http://{args.host}:{args.ui_port}"
+    # Windows 下 urllib 无法 connect 到 0.0.0.0（WinError 10049），健康检查必须
+    # 用回环地址；用户可见的地址仍由 _print_lan_urls 打 LAN IP。
+    probe_api_base = f"http://{probe_host}:{args.api_port}"
+    probe_ui_base = probe_api_base if single_port else f"http://{probe_host}:{args.ui_port}"
 
     print("=" * 62)
     print("鎏灏 LIUHAO X — 启动")
@@ -352,7 +357,7 @@ def main() -> int:
         ROOT,
         "gateway",
     )
-    if not _wait_http_ok(f"{api_base}/v1/health", STARTUP_TIMEOUT_S, "网关"):
+    if not _wait_http_ok(f"{probe_api_base}/v1/health", STARTUP_TIMEOUT_S, "网关"):
         _shutdown_all()
         return 1
 
@@ -375,7 +380,7 @@ def main() -> int:
             return 1
         print("[2/2] 驾驶舱由网关直接服务（单端口）")
         print(f"      源: {dist}")
-        if not _wait_http_ok(api_base + "/", STARTUP_TIMEOUT_S, "驾驶舱（同端口）"):
+        if not _wait_http_ok(probe_api_base + "/", STARTUP_TIMEOUT_S, "驾驶舱（同端口）"):
             _shutdown_all()
             return 1
     else:
@@ -399,10 +404,10 @@ def main() -> int:
             CONSOLE_DIR,
             "console",
         )
-        if not _wait_http_ok(ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱"):
+        if not _wait_http_ok(probe_ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱"):
             _shutdown_all()
             return 1
-        _wait_http_ok(f"{ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
+        _wait_http_ok(f"{probe_ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
 
     if args.https:
         _start_https_proxy(args, single_port)
@@ -419,7 +424,7 @@ def main() -> int:
 
     if not args.no_browser:
         try:
-            webbrowser.open(ui_base)
+            webbrowser.open(probe_ui_base)
         except webbrowser.Error:
             pass
 
