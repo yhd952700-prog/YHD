@@ -46,8 +46,14 @@ _TMP = tempfile.mkdtemp(prefix="a2_probe_")
 _AUDIT_DB = os.path.join(_TMP, "audit_store.db")
 _REG_FILE = os.path.join(_TMP, "human_identities.json")
 os.environ["AUDIT_DB_PATH"] = _AUDIT_DB
+os.environ["LIUHAO_HUMAN_IDENTITIES_BACKEND"] = "file"
 os.environ["LIUHAO_HUMAN_IDENTITIES_FILE"] = _REG_FILE
-os.environ.pop("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", None)
+os.environ.pop("LIUHAO_HUMAN_IDENTITIES_DB", None)
+# HC-11 / U6 之后，未配置完整性密钥时**整库行在加载期即被拒**（fail-closed），
+# 于是"重启后仍能解析同一身份"这件事根本无从发生。探针显式配置一个**测试专用**
+# 密钥，让行带 tag 写入、重启后可被验证接纳，从而真正测到表示的持久性；
+# 产品默认行为不变（未配置密钥 = 拒绝一切行，见 verify_r15b_identity_trust_root.py）。
+os.environ["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = "a2-probe-integrity-key"
 
 from src.kernels._crosscutting import bind_acting_principal  # noqa: E402
 from src.kernels.audit import get_audit_store  # noqa: E402

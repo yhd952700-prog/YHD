@@ -356,7 +356,11 @@ def probe_hc10() -> None:
     a1 = kernel.log(etype, "principal-1", result="ok")
     a2 = kernel.log(etype, "principal-2", result="ok")
 
-    # --- canonicalization (exactly the 10 fields the code hashes) ----------
+    # --- canonicalization (exactly the 12 fields the code hashes) ----------
+    # Keep this dict in lockstep with AuditKernelEntry.compute_hash(): id,
+    # timestamp, event_type, principal_id, permission, scope, result, reason,
+    # correlation_id, prev_hash, metadata, canon_version. It grew from 10 to 12
+    # when metadata + canon_version entered the canonical form (D21 / HC-10).
     et = a2.event_type.value if isinstance(a2.event_type, Enum) else a2.event_type
     chain_data = {
         "id": a2.id,
@@ -369,36 +373,38 @@ def probe_hc10() -> None:
         "reason": a2.reason,
         "correlation_id": a2.correlation_id,
         "prev_hash": a2.prev_hash,
+        "metadata": a2.metadata,
+        "canon_version": a2.canon_version,
     }
     included = sha256_hex(canon(chain_data))
     excluded = sha256_hex(canon({k: v for k, v in chain_data.items() if k != "prev_hash"}))
 
-    check(f"{hc}: canonicalization = 10-field json(sort_keys, separators) "
-          "(timestamp isoformat, event_type=value)",
+    check(f"{hc}: canonicalization = 12-field json(sort_keys, separators) "
+          "(timestamp isoformat, event_type=value; metadata+canon_version included)",
           included == a2.hash, "independent recompute == entry.hash")
     check(f"{hc}: prev_hash IS part of the hash input (genesis='genesis_hash_0')",
           excluded != a2.hash and a1.prev_hash == "genesis_hash_0",
           "H(without prev_hash) != entry.hash")
 
-    # --- metadata is NOT covered by the hash -------------------------------
+    # --- metadata IS covered by the hash (12-field form) -------------------
+    # Metadata entered the canonical form, so the old "tampering metadata is
+    # undetectable" finding no longer holds: mutating it now breaks the hash.
     a2.metadata["injected"] = "TAMPERED"
     ok_m, _ = kernel.verify_integrity()
-    if ok_m:
-        mark_finding(hc, "entry.metadata is NOT covered by the entry hash, so "
-                         "tampering metadata is undetectable",
-                     "canonicalization truth; extending coverage would change "
-                     "every historical hash -> human decision, not assumed here")
+    check(f"{hc}: metadata IS covered by the entry hash (tamper DETECTED)",
+          ok_m is False, "verify_integrity() False after mutating entry.metadata")
+    a2.metadata.pop("injected", None)
 
     # --- declaration -------------------------------------------------------
     check(f"{hc}: hash_alg declared on the entry (P0-8c)",
           getattr(a2, "hash_alg", None) == "sha256",
           f"hash_alg={getattr(a2, 'hash_alg', None)!r}")
-    # The declaration is NOT part of ``chain_data`` (the 10 hashed fields), so
+    # The declaration is NOT part of ``chain_data`` (the 12 hashed fields), so
     # adding it changed no existing hash -- same discipline as HC-09.
-    check(f"{hc}: hash_alg is EXCLUDED from the 10 hashed fields",
+    check(f"{hc}: hash_alg is EXCLUDED from the 12 hashed fields",
           "hash_alg" not in chain_data and
           sha256_hex(canon(chain_data)) == a2.hash,
-          "recompute of the 10-field form still matches")
+          "recompute of the 12-field form still matches")
 
     # --- verify path -------------------------------------------------------
     ok, broken = kernel.verify_integrity()
@@ -421,6 +427,7 @@ def probe_hc10() -> None:
         "principal_id": q1.principal_id, "permission": q1.permission,
         "scope": q1.scope, "result": q1.result, "reason": q1.reason,
         "correlation_id": q1.correlation_id, "prev_hash": q1.prev_hash,
+        "metadata": q1.metadata, "canon_version": q1.canon_version,
     }
     check(f"{hc}: pre-condition -- entry is intact under sha256",
           sha256_hex(canon(qd)) == q1.hash,

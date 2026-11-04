@@ -119,6 +119,8 @@ def classify(hc: str):
         reasons.append("not durable (memory-only)")
     if f.get("continuity_ok") == "NO":
         reasons.append("persisted chain continuity broken (forked chain)")
+    if f.get("continuity_ok") == "N/A":
+        reasons.append("persisted chain continuity not demonstrated")
     if reasons:
         return "UNVERIFIED", "; ".join(reasons)
     if f["legacy_data"] == "PRESENT":
@@ -237,13 +239,17 @@ def probe_hc01() -> None:
         migration=migration + " | persisted continuity: " + continuity)
 
     # NOTE: the dimensions above were probed on a SYNTHETIC pristine store, which
-    # proves the implementation. The persisted-chain check below is what decides
-    # the reported status for real data; record it explicitly rather than letting
-    # a green synthetic run imply the deployment is clean.
+    # proves the implementation. The persisted-chain check below only decides
+    # whether we can say anything at all about real data.
+    #
+    # ``YES`` is deliberately NOT a value here: ``audit_store.db`` in the repo
+    # root is a gitignored RUNTIME ARTIFACT. Its presence on this laptop proves
+    # the code *can* write a chain; it is not reviewable release evidence, and
+    # the same code would derive a different status on a machine where the file
+    # happens to be absent. Folding ``YES`` into ``N/A`` keeps HC-01 "declaration
+    # coverage proven, persisted chain continuity NOT demonstrated" on every host.
     if "broken joins" in continuity and "0 broken joins" not in continuity:
         FACTS[hc]["continuity_ok"] = "NO"
-    elif os.path.isfile(os.path.join(REPO_ROOT, "audit_store.db")):
-        FACTS[hc]["continuity_ok"] = "YES"
     else:
         FACTS[hc]["continuity_ok"] = "N/A"
 
