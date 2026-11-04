@@ -51,6 +51,7 @@ if os.path.exists(TARGET):
 
 from src.ai.lcore import LCore  # noqa: E402
 from src.ai.agent_runtime import AgentRuntime, AgentRunState  # noqa: E402
+from src.kernels.execution import Action, ActionExecutor  # noqa: E402
 
 
 # 刻意**不**绑定 acting principal。
@@ -97,14 +98,38 @@ def main() -> int:
     # Negative check: P4 enforcement proof. A path that tries to escape the
     # workspace must be refused (fail-closed), proving the permission check is
     # ENFORCED, not merely present.
-    escape = lcore.capability_executor()(
-        "file_write",
-        {"path": "../../escape.txt", "content": "should not land"},
+    #
+    # 走 Execution Kernel 的 ActionExecutor，而不是直接调用
+    # ``capability_executor()``：后者的契约是「失败即 raise RuntimeError」，由
+    # 内核的 except 分支转成 ``success=False``。直接调用时，越界拒绝会以异常
+    # 逃逸，门禁看到的是异常类型而不是拒绝判决 —— 断言就被执行器契约带偏了。
+    # 这里断言的是内核真正对外暴露的结果形状（同网关执行路径）。
+    escape_name = f"escape_{uuid.uuid4().hex[:6]}.txt"
+    escape_target = os.path.normpath(os.path.join(WS, "..", "..", escape_name))
+    escape = ActionExecutor(
+        capability_executor=lcore.capability_executor()
+    ).execute(
+        Action(
+            id="p4-escape",
+            task_id="p4",
+            capability_id="file_write",
+            capability_namespace="kernel",
+            inputs={"path": "../../" + escape_name, "content": "should not land"},
+            correlation_id="p4-containment",
+            scope="L1",
+            timeout_seconds=15,
+        )
     )
-    escape_refused = bool(escape) and escape.get("success") is False
-    checks["P4_CONTAINMENT_REFUSED"] = escape_refused
-    print(f"\nescape attempt success = {escape.get('success') if escape else None}")
-    print(f"escape error           = {escape.get('error') if escape else None}")
+    escape_reason = escape.error or ""
+    checks["P4_CONTAINMENT_REFUSED"] = escape.success is False
+    # 拒绝原因必须真的指向越界，而不是"恰好因为别的错误失败"。
+    checks["P4_CONTAINMENT_EXPLICIT"] = (
+        "越界" in escape_reason or "workspace" in escape_reason.lower()
+    )
+    # 独立物证：越界目标位置不能真的出现文件。
+    checks["P4_NO_ESCAPED_ARTIFACT"] = not os.path.exists(escape_target)
+    print(f"\nescape attempt success = {escape.success}")
+    print(f"escape error           = {escape_reason or None}")
 
     print()
     for k, v in checks.items():

@@ -22,11 +22,28 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 import pathlib
 import sys
+import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+
+# HIGH/CRITICAL kernel actions carry mandatory audit evidence (``reraise=True``):
+# if the evidence channel is unavailable the action MUST fail-closed. The
+# project-root ``audit_store.db`` is deliberately frozen as the HC-01 evidence
+# store, so ``AuditStore()`` refuses to default to it -- without an explicit
+# path this script cannot exercise a HIGH default-off action at all, and the
+# failure it reports ("unexpectedly raised") would be about the missing evidence
+# channel rather than about C-2 enforcement.
+#
+# Give the check a throwaway store, exactly as ``tests/conftest.py`` does for
+# the suite. The gate semantics are untouched: this only supplies the audit
+# channel a real deployment supplies via ``AUDIT_DB_PATH``.
+if not os.environ.get("AUDIT_DB_PATH"):
+    _audit_dir = tempfile.mkdtemp(prefix="liuhao_c2_audit_")
+    os.environ["AUDIT_DB_PATH"] = os.path.join(_audit_dir, "audit.db")
 
 SRC_DIR = REPO_ROOT / "src"
 
