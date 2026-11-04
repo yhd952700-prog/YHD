@@ -20,9 +20,12 @@ def isolate(monkeypatch, tmp_path):
     store = ConversationStore(db_path=str(tmp_path / "conv.db"))
     monkeypatch.setattr(lh_module, "get_conversation_store", lambda: store)
     monkeypatch.setattr(chat_module, "get_conversation_store", lambda: store)
+    # get_assistant 现在每次请求都通过 resolve_provider() 重新解析模型（支持
+    # 运行时热加载），所以离线桩必须打在**这个真实接缝**上；打旧的
+    # get_provider 名已不再参与网关路径。
     monkeypatch.setattr(
-        lh_module, "get_provider",
-        lambda: MockProvider(name="test", model="mock-model"),
+        lh_module, "resolve_provider",
+        lambda *_a, **_k: MockProvider(name="test", model="mock-model"),
     )
     yield
     chat_module._sessions.clear()
