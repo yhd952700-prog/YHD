@@ -12,6 +12,8 @@ from pathlib import Path
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 from typing import Dict, List, Optional, Any
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
@@ -24,6 +26,14 @@ logger = logging.getLogger(__name__)
 # production default is unchanged; this only makes the path overridable.
 ALERTS_STORE_PATH_ENV = "LIUHAO_ALERTS_STORE_PATH"
 DEFAULT_ALERTS_STORE_PATH = "data/observability/alerts.json"
+
+# 多个 AlertStore 实例（网关守护线程 / 读取面 / install_production_rules）
+# 会写同一个 JSON 文件。`open('w')` 先截断再分多次写入，两次保存交错时
+# 读者可能读到空文件或半截 JSON —— `_load` 于是整库重置，规则凭空消失
+# （CI 3.11 实测：/v1/alerts/rules 返回 count=0，并打印
+# "Failed to load alert store: Expecting value: line 1 column 1"）。
+# 串行化保存 + 临时文件原子替换：读者要么看到旧的完整文件，要么看到新的。
+_SAVE_LOCK = threading.RLock()
 
 
 class AlertStore:
@@ -138,8 +148,25 @@ class AlertStore:
             "alerts": {k: v.to_dict() for k, v in self._alerts.items()},
             "rules": {k: v.to_dict() for k, v in self._rules.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        payload = json.dumps(data, indent=2, ensure_ascii=False)
+        # Serialise + atomic replace. See _SAVE_LOCK: interleaved writers used to
+        # leave a truncated/empty file, which _load then silently reset.
+        with _SAVE_LOCK:
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(self.storage_path.parent),
+                prefix=self.storage_path.name + ".",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_name, self.storage_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
 
     # ==================== Alert Operations ====================
 
