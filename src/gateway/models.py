@@ -287,8 +287,9 @@ def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
       回环/链路本地/保留段即 400（否则管理员端点可被用来探测内网与元数据
       服务，例如 ``169.254.169.254``）。
 
-    ``allow_private=True`` 只用于**已保存配置**里的地址：它由管理员事先
-    落盘（本机 Ollama ``127.0.0.1`` 就是正常用法），不是本次请求现填的。
+    ``allow_private=True`` 只用于**已保存配置**里的地址，或与已保存配置逐字
+    相同的地址：它们由管理员事先落盘批准（本机 Ollama ``127.0.0.1`` 就是
+    正常用法），不是本次请求凭空构造的探测目标。
     """
     value = (raw or "").strip()
     if not value:
@@ -339,12 +340,20 @@ def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
     api_key = payload.api_key
     if not api_key and stored:
         api_key = stored.get("api_key")
-    # 调用方现填的地址按公网收紧；回落到已保存配置则按管理员既有配置放行
-    # （本机模型服务的回环地址属于正常用法，不是本次请求构造的探测目标）。
-    caller_url = _assert_url_allowed(payload.base_url or "", allow_private=False)
-    stored_url = _assert_url_allowed(
-        (stored.get("base_url") or "") if stored else "", allow_private=True
+    # 调用方现填的地址按公网收紧；但若它**恰好等于**已保存配置里的地址，
+    # 说明该目标已被管理员落盘批准（本机 Ollama 就是这种正常用法），此时
+    # 放行私网/回环。这样既关掉了"任意地址探测内网"的 SSRF 面，又不至于把
+    # 模型管理界面的"测试当前编辑配置"对本地模型一刀切禁掉。
+    raw_caller = (payload.base_url or "").strip()
+    stored_url = (
+        _assert_url_allowed((stored.get("base_url") or ""), allow_private=True)
+        if stored
+        else ""
     )
+    approved_private = bool(
+        raw_caller and stored_url and raw_caller.rstrip("/") == stored_url.rstrip("/")
+    )
+    caller_url = _assert_url_allowed(raw_caller, allow_private=approved_private)
     return {
         "name": stored.get("name") if stored else "connection-test",
         "provider": provider,

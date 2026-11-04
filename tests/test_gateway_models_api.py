@@ -216,3 +216,65 @@ class TestConnectionProbe:
     )
     def test_error_classification(self, exc, expected):
         assert _classify_error(exc) == expected
+
+    def test_private_url_matching_saved_config_is_allowed(self, monkeypatch):
+        """已保存配置批准的本地地址（本机 Ollama）仍可测试连接。"""
+        from src.gateway import models as models_mod
+        from src.gateway.models import TestPayload
+
+        stored = {
+            "name": "local-ollama",
+            "provider": "ollama",
+            "model": "qwen2.5:3b",
+            "base_url": "http://127.0.0.1:11434",
+        }
+        monkeypatch.setattr(
+            models_mod,
+            "_store",
+            lambda: type(
+                "S", (), {"resolve": staticmethod(lambda mid: stored if mid == "local-ollama" else None)}
+            )(),
+        )
+        cfg = models_mod._test_cfg(
+            TestPayload(
+                provider="ollama",
+                model="qwen2.5:3b",
+                model_id="local-ollama",
+                base_url="http://127.0.0.1:11434",
+                timeout=2,
+            )
+        )
+        assert cfg["base_url"] == "http://127.0.0.1:11434"
+
+    def test_private_url_not_matching_saved_config_is_still_rejected(self, monkeypatch):
+        """同一已保存配置，但地址被改成另一个内网端口 -> 仍是 SSRF，拒绝。"""
+        from fastapi import HTTPException
+
+        from src.gateway import models as models_mod
+        from src.gateway.models import TestPayload
+
+        stored = {
+            "name": "local-ollama",
+            "provider": "ollama",
+            "model": "qwen2.5:3b",
+            "base_url": "http://127.0.0.1:11434",
+        }
+        monkeypatch.setattr(
+            models_mod,
+            "_store",
+            lambda: type(
+                "S", (), {"resolve": staticmethod(lambda mid: stored if mid == "local-ollama" else None)}
+            )(),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            models_mod._test_cfg(
+                TestPayload(
+                    provider="ollama",
+                    model="qwen2.5:3b",
+                    model_id="local-ollama",
+                    base_url="http://127.0.0.1:6379",
+                    timeout=2,
+                )
+            )
+        assert exc_info.value.status_code == 400
+        assert "SSRF" in exc_info.value.detail
