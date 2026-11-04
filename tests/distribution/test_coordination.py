@@ -236,7 +236,17 @@ WORKER_SRC = textwrap.dedent(
 
 
 def _worker_path(tmp_path: Path) -> str:
-    path = tmp_path / "_lease_worker.py"
+    """为**这一次** spawn 写一个独立的工人脚本。
+
+    早先所有子进程共用 ``tmp_path/_lease_worker.py``，而 ``_spawn`` 每启动一个
+    工人都会重写该文件（``open(..., "w")`` 先截断再写）。在截断与写入之间存在
+    一个空窗：恰好此时启动的子进程会读到 0 字节脚本，Python 于是**正常退出
+    0**、不产生任何结果文件，父进程看到的只是
+    ``worker produced no result file (exit=0)`` —— 一个看起来像租约竞态的测试
+    工装自竞争。CI 3.11 上两次都稳定复现（3.12 因启动时序不同而侥幸躲过），
+    因此按"每次 spawn 独立路径"根除，而不是靠 sleep 去撞运气。
+    """
+    path = tmp_path / ("_lease_worker_%s.py" % uuid.uuid4().hex)
     path.write_text(WORKER_SRC, encoding="utf-8")
     return str(path)
 
