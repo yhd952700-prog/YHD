@@ -112,43 +112,35 @@ class StorageBackend(ABC, Generic[T]):
     @abstractmethod
     def storage_type(self) -> StorageType:
         """Return the storage backend type."""
-        pass
 
     @property
     @abstractmethod
     def stats(self) -> StorageStats:
         """Return storage statistics."""
-        pass
 
     @abstractmethod
     def get(self, key: str) -> Optional[T]:
         """Get a value by key."""
-        pass
 
     @abstractmethod
     def put(self, key: str, value: T, ttl: Optional[float] = None) -> None:
         """Put a value with optional TTL."""
-        pass
 
     @abstractmethod
     def delete(self, key: str) -> bool:
         """Delete a value by key. Returns True if deleted."""
-        pass
 
     @abstractmethod
     def contains(self, key: str) -> bool:
         """Check if key exists and is not expired."""
-        pass
 
     @abstractmethod
     def cleanup(self) -> int:
         """Remove expired entries. Returns count of removed entries."""
-        pass
 
     @abstractmethod
     def get_stats(self) -> StorageStats:
         """Get storage statistics."""
-        pass
 
 
 # ==================== Concrete Implementations ====================

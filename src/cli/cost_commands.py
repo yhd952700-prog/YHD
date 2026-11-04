@@ -375,7 +375,7 @@ def register_cost_commands(
     p_budget = cost_sub.add_parser("budget", help="Budget management")
     budget_sub = p_budget.add_subparsers(dest="budget_command", required=True)
 
-    p_budget_list = budget_sub.add_parser("list", help="List budgets")
+    budget_sub.add_parser("list", help="List budgets")
 
     p_budget_create = budget_sub.add_parser("create", help="Create a budget")
     p_budget_create.add_argument("--name", required=True, help="Budget name")
@@ -389,7 +389,7 @@ def register_cost_commands(
     p_alerts = cost_sub.add_parser("alerts", help="Budget alerts")
     alerts_sub = p_alerts.add_subparsers(dest="alerts_command", required=True)
 
-    p_alert_list = alerts_sub.add_parser("list", help="List all alerts")
+    alerts_sub.add_parser("list", help="List all alerts")
 
     p_alert_add = alerts_sub.add_parser("add", help="Add a budget alert")
     p_alert_add.add_argument("--budget", required=True, help="Budget name")

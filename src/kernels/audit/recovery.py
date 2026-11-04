@@ -36,7 +36,6 @@ F1–F6 remediation lands and an independent verification confirms integrity.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 import uuid

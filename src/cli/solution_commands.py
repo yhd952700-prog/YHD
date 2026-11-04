@@ -170,7 +170,7 @@ class SolutionManager:
             ]
         solutions.sort(key=lambda s: s.name.lower())
         total = len(solutions)
-        solutions = solutions[offset : offset + limit]
+        solutions = solutions[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

@@ -188,7 +188,7 @@ async def list_agents(
     agents.sort(key=lambda a: a.get(sort_by, ""), reverse=reverse)
 
     total = len(agents)
-    items = agents[offset : offset + limit]
+    items = agents[offset: offset + limit]
 
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 

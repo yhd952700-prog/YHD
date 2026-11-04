@@ -215,7 +215,7 @@ class MemoryManager:
             entries = [e for e in entries if e.category == category]
         entries.sort(key=lambda e: e.created_at, reverse=True)
         total = len(entries)
-        entries = entries[offset : offset + limit]
+        entries = entries[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

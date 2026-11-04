@@ -8,7 +8,7 @@ fallback caching, and circuit breaker integration.
 import time
 import threading
 import functools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Any, Optional, List, Dict, Type, Tuple
 
@@ -272,7 +272,7 @@ class FallbackHandler:
                 source="primary",
                 duration_seconds=duration,
             )
-        except self._catch_exceptions as primary_exc:
+        except self._catch_exceptions:
             # Primary failed, try fallbacks
             pass
 

@@ -9,7 +9,6 @@ RESTful API endpoints for plugin management:
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -178,7 +177,7 @@ async def list_plugins(
         plugins = [p for p in plugins if p["category"] == category]
     plugins.sort(key=lambda p: p["name"].lower())
     total = len(plugins)
-    items = plugins[offset : offset + limit]
+    items = plugins[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 

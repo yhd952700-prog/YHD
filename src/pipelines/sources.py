@@ -22,7 +22,7 @@ import logging
 import os
 import xml.etree.ElementTree as ET
 from abc import abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
 
 from .base import PipelineContext, PipelineError, PipelineStage
@@ -721,7 +721,7 @@ class APISource(BaseSource):
         ):
             self._fetch_page()
 
-        batch = self._results[self._current_index : self._current_index + size]
+        batch = self._results[self._current_index: self._current_index + size]
         self._current_index += len(batch)
         return batch
 

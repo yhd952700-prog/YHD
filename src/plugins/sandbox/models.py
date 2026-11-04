@@ -285,7 +285,6 @@ class gVisorBackend(SandboxBackend):
     async def destroy_container(self, container_id: str) -> None:
         """销毁 gVisor 容器"""
         # Would run: runsc delete $container_id
-        pass
 
     async def get_resource_usage(self, container_id: str) -> Dict[str, Any]:
         """获取 gVisor 容器资源使用情况"""
@@ -310,7 +309,6 @@ class KataBackend(SandboxBackend):
 
     async def destroy_container(self, container_id: str) -> None:
         """销毁 Kata Containers VM"""
-        pass
 
     async def get_resource_usage(self, container_id: str) -> Dict[str, Any]:
         """获取 Kata 容器资源使用情况"""

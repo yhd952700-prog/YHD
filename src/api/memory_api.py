@@ -178,7 +178,7 @@ async def list_memories(
     items.sort(key=lambda m: m.get(sort_by, ""), reverse=reverse)
 
     total = len(items)
-    items = items[offset : offset + limit]
+    items = items[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 

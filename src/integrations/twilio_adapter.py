@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, unquote
+from urllib.parse import urlencode
 
 from .base_adapter import (
     AuthType,

@@ -31,10 +31,10 @@ from .semantic_network import (
 from .episodic import (
     EpisodicMemory,
     Episode,
-    EpisodeOutcome,
     EpisodeSequence,
     ReplayResult,
 )
+from .episodic import EpisodeOutcome  # noqa: F401 - public re-export (tests import it here)
 from .working_memory import (
     WorkingMemory,
     WorkingMemoryItem,

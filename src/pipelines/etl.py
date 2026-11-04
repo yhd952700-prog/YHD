@@ -48,17 +48,14 @@ class ETLStrategy(ABC):
     @abstractmethod
     def extract(self, source: str, **kwargs) -> List[Dict[str, Any]]:
         """Extract data from source."""
-        pass
 
     @abstractmethod
     def transform(self, records: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
         """Transform records."""
-        pass
 
     @abstractmethod
     def load(self, records: List[Dict[str, Any]], target: str, **kwargs) -> int:
         """Load records to target. Returns count of loaded records."""
-        pass
 
 
 class IncrementalETLPipeline:

@@ -31,9 +31,8 @@ import logging
 import os
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from .policy import require_human_principal
 
 router = APIRouter(prefix="/v1/files", tags=["files"])
 

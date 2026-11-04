@@ -296,7 +296,7 @@ class InMemoryAuditStore(AuditStore):
 
         # Apply pagination (most recent first)
         results = results[::-1]  # Reverse for newest first
-        return results[offset : offset + limit]
+        return results[offset: offset + limit]
 
     def count(
         self,

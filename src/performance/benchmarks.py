@@ -168,19 +168,16 @@ async def run_single_benchmark(
 def benchmark_cache_get():
     """Cache GET 操作基准测试"""
     # This will be measured at runtime
-    pass
 
 
 @benchmark(iterations=50, description="Model call latency")
 def benchmark_model_call():
     """模型调用延迟基准测试"""
-    pass
 
 
 @benchmark(iterations=30, description="Concurrent request throughput")
 def benchmark_concurrent_requests():
     """并发请求吞吐量基准测试"""
-    pass
 
 
 # Cache performance benchmarks

@@ -36,17 +36,23 @@ import shlex
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ..kernels.execution import ActionResult
 from .observability import observe as _observe
 from .audit import audited
 from .workspace import resolve_in_workspace
 
+if TYPE_CHECKING:  # pragma: no cover - typing-only imports
+    from .host_command.broker import HostCommandBroker
+    from .host_command.models import HostCommandRequest
+
 #: No-op audit sink for the WorldInterface-internal shell broker. The action's
 #: audit record is produced by the WorldInterface ``@audited`` wrapper, so the
 #: broker does not double-write. Callers who want broker-level fail-closed audit
 #: can inject a broker with a real sink via ``host_command_broker=``.
+
+
 def _noop_shell_sink(event: str, details: Dict[str, Any]) -> None:
     return None
 
@@ -69,7 +75,6 @@ class _ShellBrokerDelegatePolicy:
         from .host_command.models import (
             DecisionOutcome,
             HostCommandDecision,
-            HostCommandRequest,
         )
 
         wr = WorldRequest(

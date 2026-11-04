@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .approval import ApprovalInterface
 from .broker import CommandExecutor, HostCommandBroker
-from .capability import CapabilityCatalog, HostCommandCapability
+from .capability import CapabilityCatalog
 from .models import HostCommandRequest
 from .policy import CapabilityBasedPolicy
 

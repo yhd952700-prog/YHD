@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
 
 from .base import PipelineContext, PipelineError, PipelineStage
@@ -734,7 +734,7 @@ class WindowedAggregator(BaseAggregator):
 
         if self.window_type == "tumbling":
             for i in range(0, len(values), self.window_size):
-                window = values[i : i + self.window_size]
+                window = values[i: i + self.window_size]
                 agg_val = self._agg_func(window)
                 self._results.append(
                     AggregationResult(
@@ -754,7 +754,7 @@ class WindowedAggregator(BaseAggregator):
                 )
         elif self.window_type == "sliding":
             for i in range(0, len(values) - self.window_size + 1, self.slide):
-                window = values[i : i + self.window_size]
+                window = values[i: i + self.window_size]
                 agg_val = self._agg_func(window)
                 self._results.append(
                     AggregationResult(

@@ -7,13 +7,12 @@ inline keyboards, chat management, file operations, and bot commands.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .base_adapter import (
     AuthType,

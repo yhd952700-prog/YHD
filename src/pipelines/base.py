@@ -26,7 +26,6 @@ from typing import (
     Dict,
     Generator,
     Generic,
-    Iterable,
     List,
     Optional,
     Set,
@@ -247,7 +246,6 @@ class PipelineStage(ABC, Generic[T, R]):
         Args:
             context: Pipeline context.
         """
-        pass
 
     def teardown(self, context: PipelineContext) -> None:
         """Called once after the stage finishes processing.
@@ -257,7 +255,6 @@ class PipelineStage(ABC, Generic[T, R]):
         Args:
             context: Pipeline context.
         """
-        pass
 
     def __call__(self, data: T, context: PipelineContext) -> R:
         """Make the stage callable for functional composition.
@@ -701,7 +698,7 @@ class Pipeline:
                 duration_seconds=time.time() - start_time,
             )
 
-        except PipelineError as pe:
+        except PipelineError:
             self.status = PipelineStatus.FAILED
             result = PipelineResult(
                 status=PipelineStatus.FAILED,

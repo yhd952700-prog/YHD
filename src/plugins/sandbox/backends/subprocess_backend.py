@@ -11,6 +11,14 @@ import time
 import logging
 from typing import Dict, Any, Optional, List
 
+from .base import (
+    SandboxBackendBase,
+    SandboxBackendType,
+    SandboxBackendStatus,
+    ResourceLimits,
+    ExecutionResult,
+)
+
 logger = logging.getLogger(__name__)
 
 # Cross-platform resource limit support
@@ -21,14 +29,6 @@ try:
 except ImportError:
     IS_UNIX = False
     _unix_resource = None
-
-from .base import (
-    SandboxBackendBase,
-    SandboxBackendType,
-    SandboxBackendStatus,
-    ResourceLimits,
-    ExecutionResult,
-)
 
 
 class SubprocessBackend(SandboxBackendBase):

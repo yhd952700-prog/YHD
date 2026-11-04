@@ -1056,7 +1056,7 @@ class ZendeskAdapter(BaseIntegrationAdapter):
         )
 
     def _parse_satisfaction_rating(self, data: Dict[str, Any]
-                                    ) -> ZendeskSatisfactionRating:
+                                   ) -> ZendeskSatisfactionRating:
         return ZendeskSatisfactionRating(
             id=data.get("id", 0),
             score=data.get("score", ""),

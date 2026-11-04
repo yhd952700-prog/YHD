@@ -10,7 +10,6 @@ tiered rate limits (free/pro/enterprise).
 from __future__ import annotations
 
 import time
-import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass, field

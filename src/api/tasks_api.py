@@ -168,7 +168,7 @@ async def list_tasks(
     tasks.sort(key=lambda t: t.get(sort_by, ""), reverse=reverse)
 
     total = len(tasks)
-    items = tasks[offset : offset + limit]
+    items = tasks[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 

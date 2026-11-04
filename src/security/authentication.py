@@ -8,7 +8,6 @@ tracking with lockout, auth event logging, and token refresh/revocation.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import secrets
@@ -625,7 +624,7 @@ class TotpMfaProvider(MfaProvider):
             counter_bytes = struct.pack(">Q", counter)
             h = hmac.new(key, counter_bytes, hashlib.sha1).digest()
             offset_byte = h[-1] & 0x0F
-            binary = struct.unpack(">I", h[offset_byte : offset_byte + 4])[0] & 0x7FFFFFFF
+            binary = struct.unpack(">I", h[offset_byte: offset_byte + 4])[0] & 0x7FFFFFFF
             generated = str(binary % (10**self._digits)).zfill(self._digits)
             if hmac.compare_digest(generated, code):
                 return True
@@ -974,7 +973,7 @@ class AuthEventLogger:
         self._events.append(event)
         # Trim to max events
         if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events :]
+            self._events = self._events[-self._max_events:]
         return event
 
     def get_events(

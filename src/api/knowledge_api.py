@@ -146,7 +146,7 @@ async def list_knowledge_bases(
     if category:
         kbs = [k for k in kbs if k["category"] == category]
     total = len(kbs)
-    items = kbs[offset : offset + limit]
+    items = kbs[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
@@ -257,7 +257,7 @@ async def list_documents(
     _get_kb_or_404(kb_id)
     docs = [d for d in _documents.values() if d["kb_id"] == kb_id]
     total = len(docs)
-    items = docs[offset : offset + limit]
+    items = docs[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
@@ -386,7 +386,7 @@ async def list_collections(
     """
     items = list(_collections.values())
     total = len(items)
-    items = items[offset : offset + limit]
+    items = items[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 

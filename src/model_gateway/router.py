@@ -14,13 +14,11 @@ Enhanced routing engine with multiple strategies:
 
 from __future__ import annotations
 
-import hashlib
-import heapq
 import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .model_registry_extended import (
     Capability,

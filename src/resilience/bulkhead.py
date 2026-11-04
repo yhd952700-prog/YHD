@@ -10,11 +10,9 @@ affect other services.
 import time
 import threading
 import functools
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from typing import Callable, Any, Optional, Dict
 from collections import deque
-import queue
 
 
 class BulkheadFullError(Exception):

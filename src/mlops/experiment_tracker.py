@@ -13,13 +13,12 @@ Provides experiment tracking with:
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 

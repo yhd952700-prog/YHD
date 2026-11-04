@@ -13,15 +13,13 @@ Prompt caching system with:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import pickle
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from uuid import uuid4
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class CacheBackend(str, Enum):
@@ -1033,7 +1031,6 @@ class PromptCache:
         try:
             for filename in os.listdir(self._disk_cache._cache_dir):
                 if filename.endswith(".cache") and count < 100:
-                    key = filename[:-6]  # Remove .cache
                     # We can't easily get the original key, so skip
                     count += 1
         except Exception:

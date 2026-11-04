@@ -11,8 +11,8 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from .metrics import MetricAggregator, MetricCategory, MetricResult
@@ -685,7 +685,7 @@ class BenchmarkRunner:
             Markdown string
         """
         lines = [
-            f"# Benchmark Report",
+            "# Benchmark Report",
             "",
             f"- **Model**: {data['model_id']}",
             f"- **Dataset**: {data['dataset_id']}",

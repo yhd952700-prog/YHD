@@ -43,12 +43,10 @@ class DocumentParser(ABC):
     @abstractmethod
     def can_handle(self, file_path: str) -> bool:
         """Check if this parser can handle the given file."""
-        pass
 
     @abstractmethod
     def parse(self, file_path: str, config: ChunkingConfig = None) -> ParseResult:
         """Parse a document and return result."""
-        pass
 
     def chunk_text(self, text: str, config: ChunkingConfig = None) -> List[str]:
         """Chunk text using the specified strategy."""

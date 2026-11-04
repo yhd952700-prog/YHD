@@ -16,13 +16,12 @@ Sinks:
 from __future__ import annotations
 
 import csv
-import io
 import json
 import logging
 import os
 import sys
 from abc import abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TextIO
 
 from .base import PipelineContext, PipelineError, PipelineStage
@@ -378,7 +377,7 @@ class DatabaseSink(BaseSink):
 
         total_written = 0
         for i in range(0, len(records), self.batch_size):
-            batch = records[i : i + self.batch_size]
+            batch = records[i: i + self.batch_size]
             try:
                 written = self._insert_batch(batch)
                 total_written += written
@@ -525,7 +524,6 @@ class APISink(BaseSink):
 
     def flush(self) -> None:
         """No-op for API sink (data is sent immediately)."""
-        pass
 
     def close(self) -> None:
         """Close the API sink."""
@@ -579,7 +577,6 @@ class MemorySink(BaseSink):
 
     def flush(self) -> None:
         """No-op for memory sink."""
-        pass
 
     def close(self) -> None:
         """Close the memory sink."""

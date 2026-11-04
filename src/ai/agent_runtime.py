@@ -41,7 +41,6 @@ from src.kernels.memory import (
     MemoryKernel,
     MemoryScope,
     MemoryTier,
-    MemoryType,
     get_memory_kernel,
 )
 from src.kernels.event import (
@@ -576,8 +575,8 @@ class AgentRuntime:
 
             # "NEVER run code" / "refuse execution"
             if ("never" in directive_lower and ("code" in directive_lower
-                                                 or "execute" in directive_lower
-                                                 or "run" in directive_lower)):
+                                                or "execute" in directive_lower
+                                                or "run" in directive_lower)):
                 code_keywords = ("run", "execute", "code", "python", "compute", "calculate")
                 if any(kw in goal_lower for kw in code_keywords):
                     return f"learned directive prohibits code execution: {directive}"

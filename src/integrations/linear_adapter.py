@@ -648,7 +648,7 @@ class LinearAdapter(BaseIntegrationAdapter):
             team_key=team_data.get("key", ""),
             assignee_id=assignee_data.get("id", ""),
             assignee_name=assignee_data.get("name", ""),
-            labels=[l.get("name", "") for l in labels_data],
+            labels=[label.get("name", "") for label in labels_data],
             estimate=data.get("estimate", 0) or 0,
             due_date=data.get("dueDate", "") or "",
             created_at=data.get("createdAt", ""),

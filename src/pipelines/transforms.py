@@ -26,8 +26,7 @@ Transforms:
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .base import PipelineContext, PipelineError, PipelineStage
@@ -754,7 +753,7 @@ class JoinTransform(BaseTransform):
                 key = r.get(self.right_key)
                 if key not in matched_right_keys:
                     merged = dict(r)
-                    for k in set().union(*(l.keys() for l in left)) if left else []:
+                    for k in set().union(*(rec.keys() for rec in left)) if left else []:
                         if k not in merged:
                             merged[k] = None
                     result.append(merged)

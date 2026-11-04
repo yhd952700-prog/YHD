@@ -345,22 +345,22 @@ class PlanValidator:
 
         if et in ("string", "str"):
             if not isinstance(value, str):
-                return f"expected string"
+                return "expected string"
         elif et in ("integer", "int"):
             if not isinstance(value, int) or isinstance(value, bool):
-                return f"expected integer"
+                return "expected integer"
         elif et in ("number", "float"):
             if not isinstance(value, (int, float)) or isinstance(value, bool):
-                return f"expected number"
+                return "expected number"
         elif et == "boolean":
             if not isinstance(value, bool):
-                return f"expected boolean"
+                return "expected boolean"
         elif et in ("array", "list"):
             if not isinstance(value, list):
-                return f"expected list"
+                return "expected list"
         elif et == "object":
             if not isinstance(value, dict):
-                return f"expected object"
+                return "expected object"
         # "any" / "json" / unknown types — accept anything
 
         return None

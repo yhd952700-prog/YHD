@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class AgentStatus(str, Enum):
@@ -75,7 +75,7 @@ class AgentManager:
         if status:
             agents = [a for a in agents if a.status.value == status]
         total = len(agents)
-        agents = agents[offset : offset + limit]
+        agents = agents[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

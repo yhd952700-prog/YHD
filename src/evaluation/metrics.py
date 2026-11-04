@@ -16,8 +16,8 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from enum import Enum
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
 class MetricCategory(str, Enum):
@@ -90,7 +90,7 @@ def _ngrams(tokens: List[str], n: int) -> Counter:
     """
     ngrams = Counter()
     for i in range(len(tokens) - n + 1):
-        ngram = tuple(tokens[i : i + n])
+        ngram = tuple(tokens[i: i + n])
         ngrams[ngram] += 1
     return ngrams
 

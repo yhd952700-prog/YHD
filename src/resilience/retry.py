@@ -15,9 +15,9 @@ import time
 import random
 import functools
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Any, Optional, Tuple, Type, Union
+from typing import Callable, Any, Optional, Tuple, Type
 
 
 class BackoffStrategy(Enum):

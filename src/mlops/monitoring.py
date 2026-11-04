@@ -17,8 +17,8 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 

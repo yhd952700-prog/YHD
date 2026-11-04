@@ -8,7 +8,7 @@ both blocking and non-blocking acquisition modes, and decorator support.
 import time
 import threading
 import functools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Any, Optional
 

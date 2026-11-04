@@ -161,7 +161,7 @@ class BackupManager:
             backups = [b for b in backups if b.status.value == status]
         backups.sort(key=lambda b: b.created_at, reverse=True)
         total = len(backups)
-        backups = backups[offset : offset + limit]
+        backups = backups[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

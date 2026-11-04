@@ -878,7 +878,6 @@ class DataBreachManager:
 
     def get_pending_notifications(self) -> list[DataBreachRecord]:
         """Get breaches that may require supervisory authority notification."""
-        now = time.time()
         return [
             b for b in self._breaches.values()
             if not b.supervisory_authority_notified

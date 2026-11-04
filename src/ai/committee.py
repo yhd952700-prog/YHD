@@ -14,12 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import time
 import uuid
 
 from .employee import Agent
-from .agent_factory import AgentRole, AgentFactory
 
 
 class VotingMethod(str, Enum):
@@ -237,7 +236,7 @@ class AgentCommittee:
             tie=is_tie,
             duration_ms=0,
             reasoning=f"Winning choice '{winner}' with {top_count:.1f} votes "
-                      f"({majority_ratio*100:.0f}%)",
+                      f"({majority_ratio * 100:.0f}%)",
         )
 
     @property

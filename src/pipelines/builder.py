@@ -23,8 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 from .aggregation import (
     AverageAggregator,
@@ -45,7 +44,6 @@ from .sinks import (
     DatabaseSink,
     FileSink,
     MemorySink,
-    MultiSink,
 )
 from .sources import (
     APISource,
@@ -53,7 +51,6 @@ from .sources import (
     DatabaseSource,
     FileSource,
     MemorySource,
-    StreamSource,
 )
 from .transforms import (
     BaseTransform,
@@ -76,7 +73,6 @@ from .validation import (
     SchemaValidator,
     TypeValidator,
     UniqueValidator,
-    ValidationReport,
 )
 
 logger = logging.getLogger(__name__)

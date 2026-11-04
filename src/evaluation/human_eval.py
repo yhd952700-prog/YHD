@@ -11,8 +11,8 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 
@@ -292,9 +292,6 @@ def krippendorffs_alpha(
     """
     if not data or not data[0]:
         return 0.0
-
-    n_items = len(data)
-    n_annotators = len(data[0])
 
     # Filter items with at least 2 annotations
     valid_items = [
@@ -900,8 +897,8 @@ class HumanEvaluationManager:
             # For numerical ratings, compute Krippendorff's alpha
             # Convert to the expected format
             data_matrix = []
-            for annotations in all_annotations:
-                data_matrix.append(annotations)
+            for annotation_row in all_annotations:
+                data_matrix.append(annotation_row)
 
             alpha = krippendorffs_alpha([
                 [v if i < len(row) else None for i, v in enumerate(row)]
@@ -910,11 +907,11 @@ class HumanEvaluationManager:
 
             # Also compute average pairwise agreement
             pairwise_agreements = []
-            for annotations in all_annotations:
-                if len(annotations) >= 2:
+            for annotation_row in all_annotations:
+                if len(annotation_row) >= 2:
                     # Use mean absolute deviation as inverse agreement
-                    mean_val = sum(annotations) / len(annotations)
-                    mad = sum(abs(v - mean_val) for v in annotations) / len(annotations)
+                    mean_val = sum(annotation_row) / len(annotation_row)
+                    mad = sum(abs(v - mean_val) for v in annotation_row) / len(annotation_row)
                     agreement = max(0.0, 1.0 - mad / 5.0)
                     pairwise_agreements.append(agreement)
 

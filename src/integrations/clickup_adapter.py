@@ -552,7 +552,7 @@ class ClickUpAdapter(BaseIntegrationAdapter):
             orderindex=int(data.get("orderindex", 0)) if data.get("orderindex") else 0,
             override_statuses=data.get("override_statuses", False),
             statuses=data.get("statuses", []),
-            lists=[self._parse_list(l) for l in lists_data],
+            lists=[self._parse_list(item) for item in lists_data],
             extra=data,
         )
 

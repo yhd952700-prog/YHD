@@ -244,14 +244,14 @@ class EpisodicMemory:
             keep_first = self.max_events_per_episode // 2
             keep_last = self.max_events_per_episode // 2 - 1
             episode.events = (
-                episode.events[:keep_first] +
-                [EpisodeEvent(
+                episode.events[:keep_first]
+                + [EpisodeEvent(
                     id="evt_truncated",
                     timestamp=time.time(),
                     event_type="system",
                     content=f"... {len(episode.events) - keep_first - keep_last} events truncated ...",
-                )] +
-                episode.events[-keep_last:]
+                )]
+                + episode.events[-keep_last:]
             )
 
         event = episode.add_event(event_type, content, data)

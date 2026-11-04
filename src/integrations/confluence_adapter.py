@@ -7,8 +7,6 @@ content search, attachments, comments, labels, templates, and users/groups.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import time
 from dataclasses import dataclass, field
@@ -821,13 +819,13 @@ class ConfluenceAdapter(BaseIntegrationAdapter):
         results_data = result.get("results", [])
         return [
             ConfluenceLabel(
-                label=l.get("label", ""),
-                name=l.get("name", ""),
-                prefix=l.get("prefix", "global"),
-                id=l.get("id", ""),
-                extra=l,
+                label=entry.get("label", ""),
+                name=entry.get("name", ""),
+                prefix=entry.get("prefix", "global"),
+                id=entry.get("id", ""),
+                extra=entry,
             )
-            for l in results_data
+            for entry in results_data
         ]
 
     def list_labels(self, content_id: str,
@@ -842,13 +840,13 @@ class ConfluenceAdapter(BaseIntegrationAdapter):
         return {
             "labels": [
                 ConfluenceLabel(
-                    label=l.get("label", ""),
-                    name=l.get("name", ""),
-                    prefix=l.get("prefix", "global"),
-                    id=l.get("id", ""),
-                    extra=l,
+                    label=entry.get("label", ""),
+                    name=entry.get("name", ""),
+                    prefix=entry.get("prefix", "global"),
+                    id=entry.get("id", ""),
+                    extra=entry,
                 )
-                for l in labels_data
+                for entry in labels_data
             ],
             "size": result.get("size", 0),
             "limit": result.get("limit", 0),

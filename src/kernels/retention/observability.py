@@ -9,8 +9,8 @@ retention operation. Tests inject a fake sink to avoid touching the audit DB.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict
 
 #: event-name -> details. Sinks are callables with this signature.
 RetentionEventSink = Callable[[str, Dict[str, Any]], None]

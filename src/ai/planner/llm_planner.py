@@ -34,9 +34,9 @@ The LLMPlanner is designed to **fail gracefully**:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .parser import ParsedPlan, ParsedTask, PlanParser
 from .validator import PlanValidator, ValidationResult
@@ -45,7 +45,6 @@ from .plan_memory import PlanMemory, PlanRecord
 from .prompts import (
     build_decomposition_prompt,
     build_replanning_prompt,
-    build_strategy_selection_prompt,
 )
 from .multi_strategy import PlanningStrategy
 

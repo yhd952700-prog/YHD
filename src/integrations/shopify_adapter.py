@@ -761,7 +761,7 @@ class ShopifyAdapter(BaseIntegrationAdapter):
             )
         if location_ids:
             params["location_ids"] = ",".join(
-                str(l) for l in location_ids
+                str(loc) for loc in location_ids
             )
         if page_info:
             params["page_info"] = page_info
@@ -845,7 +845,7 @@ class ShopifyAdapter(BaseIntegrationAdapter):
             "customer_selection": customer_selection,
             "once_per_customer": once_per_customer,
             "starts_at": starts_at or time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                   time.gmtime()),
+                                                    time.gmtime()),
             **kwargs,
         }
         if ends_at:

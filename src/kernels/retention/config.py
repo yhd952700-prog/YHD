@@ -14,7 +14,7 @@ module only parses that switch and exposes a structured :class:`RetentionConfig`
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
 

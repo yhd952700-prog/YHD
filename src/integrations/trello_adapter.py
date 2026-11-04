@@ -13,7 +13,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .base_adapter import (
     AuthType,
@@ -391,7 +391,7 @@ class TrelloAdapter(BaseIntegrationAdapter):
         data = self._api_call(
             "GET", f"boards/{board_id}/lists", params=params,
         )
-        return [self._parse_list(l) for l in data]
+        return [self._parse_list(item) for item in data]
 
     def get_list(self, list_id: str) -> TrelloList:
         """Get a list by ID."""
@@ -528,9 +528,9 @@ class TrelloAdapter(BaseIntegrationAdapter):
         return self._parse_card(data)
 
     def move_card(self, card_id: str,
-                   list_id: Optional[str] = None,
-                   board_id: Optional[str] = None,
-                   pos: Optional[str] = None) -> TrelloCard:
+                  list_id: Optional[str] = None,
+                  board_id: Optional[str] = None,
+                  pos: Optional[str] = None) -> TrelloCard:
         """Move a card to another list/board."""
         params: Dict[str, Any] = {}
         if list_id:
@@ -685,7 +685,7 @@ class TrelloAdapter(BaseIntegrationAdapter):
     def list_labels(self, board_id: str) -> List[TrelloLabel]:
         """List all labels on a board."""
         data = self._api_call("GET", f"boards/{board_id}/labels")
-        return [self._parse_label(l) for l in data]
+        return [self._parse_label(item) for item in data]
 
     def get_label(self, label_id: str) -> TrelloLabel:
         """Get a label by ID."""

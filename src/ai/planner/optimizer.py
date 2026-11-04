@@ -10,7 +10,7 @@ Optimisation layers:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from .parser import ParsedPlan, ParsedTask
 
@@ -253,7 +253,6 @@ class PlanOptimizer:
         # Mark parallel groups (cap at max_parallel per group)
         parallel_count = 0
         for level, task_ids in level_tasks.items():
-            group_size = min(len(task_ids), self.max_parallel)
             if len(task_ids) > 1:
                 parallel_count += len(task_ids)
 

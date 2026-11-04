@@ -19,9 +19,9 @@ Error categories:
     - INTERNAL: Internal/unknown errors
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Dict, Any, Type, Callable
+from typing import Optional, Dict, Any
 import threading
 
 

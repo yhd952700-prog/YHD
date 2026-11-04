@@ -606,15 +606,15 @@ class BrevoAdapter(BaseIntegrationAdapter):
         lists_data = result.get("lists", [])
         lists = [
             BrevoList(
-                id=l.get("id", 0),
-                name=l.get("name", ""),
-                total_blacklisted=l.get("totalBlacklisted", 0),
-                total_subscribers=l.get("totalSubscribers", 0),
-                folder_id=l.get("folderId", 0),
-                created_at=l.get("createdAt", ""),
-                extra=l,
+                id=item.get("id", 0),
+                name=item.get("name", ""),
+                total_blacklisted=item.get("totalBlacklisted", 0),
+                total_subscribers=item.get("totalSubscribers", 0),
+                folder_id=item.get("folderId", 0),
+                created_at=item.get("createdAt", ""),
+                extra=item,
             )
-            for l in lists_data
+            for item in lists_data
         ]
         for lst in lists:
             if lst.id:
@@ -922,7 +922,7 @@ class BrevoAdapter(BaseIntegrationAdapter):
         return webhook
 
     def list_webhooks(self, webhook_type: str = "transactional"
-                       ) -> List[BrevoWebhook]:
+                      ) -> List[BrevoWebhook]:
         params = {"type": webhook_type}
         result = self._api_call("webhooks", params=params)
         webhooks_data = result.get("webhooks", [])

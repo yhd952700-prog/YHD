@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .employee import Agent
 
@@ -441,9 +441,9 @@ class DataAnalystAgent:
 
                 # Numeric field detection
                 numeric_fields = []
-                for field in fields:
-                    if len(data) > 0 and isinstance(data[0].get(field), (int, float)):
-                        numeric_fields.append(field)
+                for field_name in fields:
+                    if len(data) > 0 and isinstance(data[0].get(field_name), (int, float)):
+                        numeric_fields.append(field_name)
                 if numeric_fields:
                     insights.append(DataInsight(
                         title="Numeric Fields",

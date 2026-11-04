@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -129,7 +128,7 @@ class PluginManager:
             plugins = [p for p in plugins if p.category == category]
         plugins.sort(key=lambda p: p.name.lower())
         total = len(plugins)
-        plugins = plugins[offset : offset + limit]
+        plugins = plugins[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

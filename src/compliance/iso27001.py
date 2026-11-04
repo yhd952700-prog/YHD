@@ -244,169 +244,169 @@ class AnnexAFramework:
 
         # A.5: Information Security Policies
         self._add_control("A.5.1", "Information Security Policy", "A.5",
-            "Management direction for information security.",
-            "Policies", ["Policy document", "Management approval", "Regular review"])
+                          "Management direction for information security.",
+                          "Policies", ["Policy document", "Management approval", "Regular review"])
 
         self._add_control("A.5.2", "Information Security Policies Review", "A.5",
-            "Policies are reviewed at planned intervals.",
-            "Policies", ["Review schedule", "Update process"])
+                          "Policies are reviewed at planned intervals.",
+                          "Policies", ["Review schedule", "Update process"])
 
         # A.6: Organization of Information Security
         self._add_control("A.6.1", "Information Security Roles and Responsibilities", "A.6",
-            "Information security responsibilities are defined.",
-            "Organization", ["Roles defined", "Responsibilities assigned"])
+                          "Information security responsibilities are defined.",
+                          "Organization", ["Roles defined", "Responsibilities assigned"])
 
         self._add_control("A.6.2", "Segregation of Duties", "A.6",
-            "Conflicting duties and areas of responsibility are segregated.",
-            "Organization", ["SOD matrix", "Role design"])
+                          "Conflicting duties and areas of responsibility are segregated.",
+                          "Organization", ["SOD matrix", "Role design"])
 
         # A.7: Human Resource Security
         self._add_control("A.7.1", "Screening", "A.7",
-            "Background verification checks on all candidates.",
-            "HR Security", ["Background checks", "Reference verification"])
+                          "Background verification checks on all candidates.",
+                          "HR Security", ["Background checks", "Reference verification"])
 
         self._add_control("A.7.2", "Terms and Conditions of Employment", "A.7",
-            "Employees agree to relevant information security terms.",
-            "HR Security", ["Employment contracts", "Confidentiality agreements"])
+                          "Employees agree to relevant information security terms.",
+                          "HR Security", ["Employment contracts", "Confidentiality agreements"])
 
         self._add_control("A.7.3", "Information Security Awareness, Education and Training", "A.7",
-            "All employees receive security awareness training.",
-            "HR Security", ["Training program", "Awareness campaigns"])
+                          "All employees receive security awareness training.",
+                          "HR Security", ["Training program", "Awareness campaigns"])
 
         # A.8: Asset Management
         self._add_control("A.8.1", "Inventory of Assets", "A.8",
-            "Assets associated with information and information processing are identified.",
-            "Asset Management", ["Asset inventory", "Asset ownership"])
+                          "Assets associated with information and information processing are identified.",
+                          "Asset Management", ["Asset inventory", "Asset ownership"])
 
         self._add_control("A.8.2", "Classification of Information", "A.8",
-            "Information is classified in terms of legal requirements and business impact.",
-            "Asset Management", ["Classification scheme", "Labeling procedures"])
+                          "Information is classified in terms of legal requirements and business impact.",
+                          "Asset Management", ["Classification scheme", "Labeling procedures"])
 
         # A.9: Access Control
         self._add_control("A.9.1", "Business Requirement of Access Control", "A.9",
-            "Access control policy is defined and reviewed.",
-            "Access Control", ["Access policy", "Business needs"])
+                          "Access control policy is defined and reviewed.",
+                          "Access Control", ["Access policy", "Business needs"])
 
         self._add_control("A.9.2", "User Access Provisioning", "A.9",
-            "A formal user access provisioning process is implemented.",
-            "Access Control", ["Provisioning process", "Approval workflow"])
+                          "A formal user access provisioning process is implemented.",
+                          "Access Control", ["Provisioning process", "Approval workflow"])
 
         self._add_control("A.9.3", "Privileged Access Rights", "A.9",
-            "Allocation and use of privileged access rights is controlled.",
-            "Access Control", ["Privilege management", "Least privilege"])
+                          "Allocation and use of privileged access rights is controlled.",
+                          "Access Control", ["Privilege management", "Least privilege"])
 
         self._add_control("A.9.4", "Review of User Access Rights", "A.9",
-            "Asset owners review user access rights at regular intervals.",
-            "Access Control", ["Periodic reviews", "Access recertification"])
+                          "Asset owners review user access rights at regular intervals.",
+                          "Access Control", ["Periodic reviews", "Access recertification"])
 
         self._add_control("A.9.5", "Authentication of Users", "A.9",
-            "All users are required to authenticate before accessing systems.",
-            "Access Control", ["Password policy", "MFA", "Authentication methods"])
+                          "All users are required to authenticate before accessing systems.",
+                          "Access Control", ["Password policy", "MFA", "Authentication methods"])
 
         # A.10: Cryptography
         self._add_control("A.10.1", "Policy on the Use of Cryptographic Controls", "A.10",
-            "A policy on the use of cryptographic controls is developed.",
-            "Cryptography", ["Cryptography policy", "Key management"])
+                          "A policy on the use of cryptographic controls is developed.",
+                          "Cryptography", ["Cryptography policy", "Key management"])
 
         self._add_control("A.10.2", "Key Management", "A.10",
-            "A key management policy and system is implemented.",
-            "Cryptography", ["Key lifecycle", "Secure storage"])
+                          "A key management policy and system is implemented.",
+                          "Cryptography", ["Key lifecycle", "Secure storage"])
 
         # A.11: Physical and Environmental Security
         self._add_control("A.11.1", "Physical Security Perimeter", "A.11",
-            "Security perimeters are used to protect areas containing sensitive information.",
-            "Physical Security", ["Perimeter security", "Access control"])
+                          "Security perimeters are used to protect areas containing sensitive information.",
+                          "Physical Security", ["Perimeter security", "Access control"])
 
         self._add_control("A.11.2", "Equipment Security", "A.11",
-            "Equipment is sited and protected to reduce environmental threats.",
-            "Physical Security", ["Equipment placement", "Protection measures"])
+                          "Equipment is sited and protected to reduce environmental threats.",
+                          "Physical Security", ["Equipment placement", "Protection measures"])
 
         # A.12: Operations Security
         self._add_control("A.12.1", "Operational Procedures and Responsibilities", "A.12",
-            "Operating procedures for information processing facilities are documented.",
-            "Operations", ["Runbooks", "Change management"])
+                          "Operating procedures for information processing facilities are documented.",
+                          "Operations", ["Runbooks", "Change management"])
 
         self._add_control("A.12.2", "Protection Against Malware", "A.12",
-            "Detection, prevention, and recovery controls to protect against malware.",
-            "Operations", ["Anti-malware", "Detection tools"])
+                          "Detection, prevention, and recovery controls to protect against malware.",
+                          "Operations", ["Anti-malware", "Detection tools"])
 
         self._add_control("A.12.3", "Backup", "A.12",
-            "Backup copies of information are taken and tested regularly.",
-            "Operations", ["Backup policy", "Restore testing"])
+                          "Backup copies of information are taken and tested regularly.",
+                          "Operations", ["Backup policy", "Restore testing"])
 
         self._add_control("A.12.4", "Logging and Monitoring", "A.12",
-            "Event logs are recorded and monitored.",
-            "Operations", ["Audit logging", "Log review"])
+                          "Event logs are recorded and monitored.",
+                          "Operations", ["Audit logging", "Log review"])
 
         self._add_control("A.12.5", "Control of Operational Software", "A.12",
-            "Installation of software on operational systems is controlled.",
-            "Operations", ["Change management", "Approval process"])
+                          "Installation of software on operational systems is controlled.",
+                          "Operations", ["Change management", "Approval process"])
 
         # A.13: Communications Security
         self._add_control("A.13.1", "Network Security Management", "A.13",
-            "Networks are managed and controlled to protect information.",
-            "Communications", ["Network security", "Segmentation"])
+                          "Networks are managed and controlled to protect information.",
+                          "Communications", ["Network security", "Segmentation"])
 
         self._add_control("A.13.2", "Information Transfer", "A.13",
-            "Information transfer policies and procedures are in place.",
-            "Communications", ["Secure transfer", "Encryption in transit"])
+                          "Information transfer policies and procedures are in place.",
+                          "Communications", ["Secure transfer", "Encryption in transit"])
 
         # A.14: System Acquisition, Development and Maintenance
         self._add_control("A.14.1", "Security Requirements of Information Systems", "A.14",
-            "Security requirements are identified and agreed for each system.",
-            "Development", ["Secure SDLC", "Security requirements"])
+                          "Security requirements are identified and agreed for each system.",
+                          "Development", ["Secure SDLC", "Security requirements"])
 
         self._add_control("A.14.2", "Security in Development and Support Processes", "A.14",
-            "Security is embedded in the development lifecycle.",
-            "Development", ["Secure coding", "Security testing"])
+                          "Security is embedded in the development lifecycle.",
+                          "Development", ["Secure coding", "Security testing"])
 
         self._add_control("A.14.3", "Test Data", "A.14",
-            "Test data must be selected carefully and protected.",
-            "Development", ["Data masking", "Test environment security"])
+                          "Test data must be selected carefully and protected.",
+                          "Development", ["Data masking", "Test environment security"])
 
         # A.15: Supplier Relationships
         self._add_control("A.15.1", "Information Security in Supplier Relationships", "A.15",
-            "Information security risks from suppliers are addressed.",
-            "Supplier", ["Vendor assessment", "Contracts"])
+                          "Information security risks from suppliers are addressed.",
+                          "Supplier", ["Vendor assessment", "Contracts"])
 
         self._add_control("A.15.2", "Supplier Service Delivery Management", "A.15",
-            "Suppliers are monitored and reviewed.",
-            "Supplier", ["Supplier monitoring", "Audits"])
+                          "Suppliers are monitored and reviewed.",
+                          "Supplier", ["Supplier monitoring", "Audits"])
 
         # A.16: Information Security Incident Management
         self._add_control("A.16.1", "Management of Information Security Incidents", "A.16",
-            "A consistent approach to incident management is in place.",
-            "Incident", ["Incident response", "Escalation procedures"])
+                          "A consistent approach to incident management is in place.",
+                          "Incident", ["Incident response", "Escalation procedures"])
 
         self._add_control("A.16.2", "Reporting Information Security Events", "A.16",
-            "Events and weaknesses are reported through appropriate channels.",
-            "Incident", ["Reporting mechanism", "Incident classification"])
+                          "Events and weaknesses are reported through appropriate channels.",
+                          "Incident", ["Reporting mechanism", "Incident classification"])
 
         self._add_control("A.16.3", "Learning from Information Security Incidents", "A.16",
-            "Lessons learned from incidents are used to improve controls.",
-            "Incident", ["Post-incident review", "Continuous improvement"])
+                          "Lessons learned from incidents are used to improve controls.",
+                          "Incident", ["Post-incident review", "Continuous improvement"])
 
         # A.17: Business Continuity Management
         self._add_control("A.17.1", "Information Security Continuity", "A.17",
-            "Information security continuity is embedded in business continuity.",
-            "BCM", ["BCP", "Security in BC plans"])
+                          "Information security continuity is embedded in business continuity.",
+                          "BCM", ["BCP", "Security in BC plans"])
 
         self._add_control("A.17.2", "Redundancies", "A.17",
-            "Redundancies of information processing facilities are implemented.",
-            "BCM", ["High availability", "Disaster recovery"])
+                          "Redundancies of information processing facilities are implemented.",
+                          "BCM", ["High availability", "Disaster recovery"])
 
         # A.18: Compliance
         self._add_control("A.18.1", "Identification of Applicable Legislation", "A.18",
-            "All relevant legislative and regulatory requirements are identified.",
-            "Compliance", ["Legal register", "Compliance review"])
+                          "All relevant legislative and regulatory requirements are identified.",
+                          "Compliance", ["Legal register", "Compliance review"])
 
         self._add_control("A.18.2", "Intellectual Property Rights", "A.18",
-            "Procedures to ensure compliance with IPR legislation.",
-            "Compliance", ["License management", "IPR policy"])
+                          "Procedures to ensure compliance with IPR legislation.",
+                          "Compliance", ["License management", "IPR policy"])
 
         self._add_control("A.18.3", "Protection of Records", "A.18",
-            "Records are protected from loss, destruction, and falsification.",
-            "Compliance", ["Record retention", "Archive management"])
+                          "Records are protected from loss, destruction, and falsification.",
+                          "Compliance", ["Record retention", "Archive management"])
 
     def _add_control(
         self,

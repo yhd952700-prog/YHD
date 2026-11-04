@@ -336,17 +336,17 @@ class PhiAccessManager:
         logs = list(self._access_logs)
 
         if user_id:
-            logs = [l for l in logs if l.user_id == user_id]
+            logs = [entry for entry in logs if entry.user_id == user_id]
         if phi_id:
-            logs = [l for l in logs if l.phi_id == phi_id]
+            logs = [entry for entry in logs if entry.phi_id == phi_id]
         if patient_id:
-            logs = [l for l in logs if l.patient_id == patient_id]
+            logs = [entry for entry in logs if entry.patient_id == patient_id]
         if access_type:
-            logs = [l for l in logs if l.access_type == access_type]
+            logs = [entry for entry in logs if entry.access_type == access_type]
         if start_time:
-            logs = [l for l in logs if l.timestamp >= start_time]
+            logs = [entry for entry in logs if entry.timestamp >= start_time]
         if end_time:
-            logs = [l for l in logs if l.timestamp <= end_time]
+            logs = [entry for entry in logs if entry.timestamp <= end_time]
 
         return logs[-limit:]
 
@@ -355,9 +355,9 @@ class PhiAccessManager:
     ) -> list[PhiAccessLog]:
         """Get unauthorized PHI access attempts."""
         logs = self._access_logs if start_time is None else [
-            l for l in self._access_logs if l.timestamp >= start_time
+            entry for entry in self._access_logs if entry.timestamp >= start_time
         ]
-        return [l for l in logs if not l.authorized]
+        return [entry for entry in logs if not entry.authorized]
 
     # ---- PHI record management ----
 

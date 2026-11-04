@@ -81,7 +81,6 @@ def migrate(data: Dict[str, Any]) -> Dict[str, Any]:
     Each step migrates from version N to N+1. Today there is only the initial
     version, so this is a pass-through that stamps the current version.
     """
-    version = int(data.get("_retention_meta_version", CURRENT_RETENTION_METADATA_VERSION))
     # Future: while version < TARGET: data = _migrate_vN_to_vN1(data); version += 1
     data["_retention_meta_version"] = CURRENT_RETENTION_METADATA_VERSION
     return data

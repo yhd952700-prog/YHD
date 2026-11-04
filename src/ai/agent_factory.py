@@ -648,7 +648,7 @@ class AgentFactory:
         for i in range(count):
             agent = self._create_role_agent(
                 role,
-                name=f"{pool_name}-{role.value}-{i+1}",
+                name=f"{pool_name}-{role.value}-{i + 1}",
                 provider=provider,
             )
             agents.append(agent)

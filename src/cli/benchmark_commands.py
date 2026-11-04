@@ -177,7 +177,7 @@ class BenchmarkManager:
             runs = [r for r in runs if r.status.value == status]
         runs.sort(key=lambda r: r.started_at or "", reverse=True)
         total = len(runs)
-        runs = runs[offset : offset + limit]
+        runs = runs[offset: offset + limit]
         return {
             "total": total,
             "limit": limit,

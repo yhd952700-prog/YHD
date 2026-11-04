@@ -53,7 +53,6 @@ deployment can trade CPU for evidence freshness explicitly and visibly.
 """
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -243,7 +242,7 @@ class BackgroundVerifier:
             #               (uncovered events or not rooted at genesis)
             #   ok       -- the covered range is complete and genesis-rooted
             if not inc.get("segment_verified", False) or (
-                out.get("rolling") or {}).get("failures"):
+                    out.get("rolling") or {}).get("failures"):
                 status = "failed"
             elif (cov.get("uncovered_events") or 0) > 0 or not cov.get(
                 "rooted_at_genesis", False

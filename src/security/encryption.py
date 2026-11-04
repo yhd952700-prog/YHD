@@ -446,8 +446,8 @@ class HashUtils:
         """
         try:
             from argon2 import PasswordHasher  # type: ignore
-            from argon2.profiles import RFC_9106_LOW_MEMORY  # type: ignore
 
+            # Argon2's default profile is used; no RFC 9106 profile is pinned.
             ph = PasswordHasher(
                 time_cost=time_cost,
                 memory_cost=memory_cost,

@@ -199,7 +199,7 @@ async def list_users(
     if active is not None:
         users = [u for u in users if u["is_active"] == active]
     total = len(users)
-    items = users[offset : offset + limit]
+    items = users[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
@@ -335,12 +335,12 @@ async def list_audit_logs(
     """
     logs = list(_audit_logs)
     if action:
-        logs = [l for l in logs if l["action"] == action]
+        logs = [log for log in logs if log["action"] == action]
     if actor:
-        logs = [l for l in logs if l["actor"] == actor]
-    logs.sort(key=lambda l: l["timestamp"], reverse=True)
+        logs = [log for log in logs if log["actor"] == actor]
+    logs.sort(key=lambda log: log["timestamp"], reverse=True)
     total = len(logs)
-    items = logs[offset : offset + limit]
+    items = logs[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 

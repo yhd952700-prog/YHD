@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, Union
+from dataclasses import dataclass, field as dataclass_field
+from typing import Any, Dict, List, Optional, Pattern, Tuple, Union
 
 from .base import PipelineContext, PipelineError, PipelineStage
 
@@ -60,8 +60,8 @@ class ValidationReport:
         valid_count: Number of records with no errors.
     """
 
-    errors: List[ValidationIssue] = field(default_factory=list)
-    warnings: List[ValidationIssue] = field(default_factory=list)
+    errors: List[ValidationIssue] = dataclass_field(default_factory=list)
+    warnings: List[ValidationIssue] = dataclass_field(default_factory=list)
     total_records: int = 0
     valid_count: int = 0
 
@@ -471,7 +471,7 @@ class RegexValidator(BaseValidator):
         self.match_type = match_type
 
         if match_type not in ("fullmatch", "search", "match"):
-            raise ValueError(f"match_type must be 'fullmatch', 'search', or 'match'")
+            raise ValueError("match_type must be 'fullmatch', 'search', or 'match'")
 
     def validate(self, records: Records, report: ValidationReport) -> None:
         """Check regex patterns for each record."""

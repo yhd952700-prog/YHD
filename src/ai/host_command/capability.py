@@ -10,7 +10,7 @@ default-DENY guarantee at the capability layer.
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .models import HostCommandRequest, SandboxSpec

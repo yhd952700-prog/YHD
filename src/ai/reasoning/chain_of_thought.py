@@ -376,8 +376,8 @@ class ChainOfThought:
         """
         contradictions: List[Contradiction] = []
         contents = [(s.step_id, s.content.lower()) for s in self._steps
-                     if s.step_type in (StepType.PREMISE, StepType.INFERENCE,
-                                        StepType.SUB_CONCLUSION)]
+                    if s.step_type in (StepType.PREMISE, StepType.INFERENCE,
+                                       StepType.SUB_CONCLUSION)]
 
         for i, (id_a, content_a) in enumerate(contents):
             for id_b, content_b in contents[i + 1:]:

@@ -185,7 +185,7 @@ class SalesforceAdapter(BaseIntegrationAdapter):
         try:
             # Use the identity endpoint to validate token
             # First, try to get limits info (requires valid token)
-            limits = self._api_call("GET", "limits")
+            self._api_call("GET", "limits")
             # Get user info via SOQL
             result = self.query(
                 "SELECT Id, Username, Name, Email FROM User WHERE IsActive = true LIMIT 1"

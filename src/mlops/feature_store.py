@@ -12,13 +12,11 @@ Provides feature store interface with:
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
-from uuid import uuid4
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
 class FeatureType(str, Enum):
