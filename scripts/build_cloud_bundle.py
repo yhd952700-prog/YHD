@@ -247,13 +247,20 @@ def _mask(value: str) -> str:
     return f"{value[:7]}…{value[-4:]}"
 
 
-def _render_llm_block() -> str:
+def _render_llm_block(portable: bool = False) -> str:
     """Render the ``os.environ.setdefault`` lines injected into ``serve.py``.
 
     The key must travel inside the bundle because the publishing platform
     offers no secret store -- but ``deploy/cloud/`` is gitignored, so the key
     never reaches version control.
+
+    ``portable=True`` (自用版分发) **永远不**烘入 provider 配置：收件人通过
+    首次运行向导（scripts/first_run_wizard.py）把模型写进加密的模型配置存储，
+    API Key 以 AES-256-GCM 落盘，从不出现在 serve.py / .env 明文里。这样把包
+    发给别人绝不会带上构建者自己的 provider / base_url / key。
     """
+    if portable:
+        return ""
     env = _llm_env()
     if not env:
         return ""
@@ -390,7 +397,71 @@ def _floor(version: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else str(major)
 
 
-def build(out_dir: Path) -> int:
+#: 自用版分发（--portable）随包附带的脚本：首次运行向导、身份注册、启动器、
+#: HTTPS 代理、自签证书生成。收件人拿到包后双击 start.bat 即可。
+PORTABLE_SCRIPTS: Tuple[str, ...] = (
+    "scripts/first_run_wizard.py",
+    "scripts/register_human_identity.py",
+    "scripts/start_liuhao.py",
+    "scripts/ops/https_proxy.py",
+    "scripts/gen_local_cert.py",
+)
+PORTABLE_ROOT_FILES: Tuple[str, ...] = ("start-liuhao.bat",)
+
+_PORTABLE_START_BAT = '''@echo off
+rem 鎏灏 AI OS 自用版 — 双击启动。先跑首次运行向导，再起网关。
+setlocal
+cd /d "%~dp0"
+set "PY="
+if exist ".venv\\Scripts\\python.exe" (
+    set "PY=.venv\\Scripts\\python.exe"
+) else (
+    where python >nul 2>nul
+    if %errorlevel%==0 set "PY=python"
+)
+if not defined PY (
+    echo [FAIL] 没找到 Python 3.11+。
+    echo        安装后执行：  python -m venv .venv ^&^& .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+    pause
+    exit /b 1
+)
+if not exist ".venv\\Scripts\\python.exe" (
+    echo [setup] 首次运行：创建虚拟环境并安装依赖...
+    python -m venv .venv
+    .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+)
+"%PY%" scripts\\first_run_wizard.py
+if errorlevel 1 ( echo [FAIL] 向导未通过 ^& pause ^& exit /b 1 )
+"%PY%" scripts\\start_liuhao.py %*
+echo.
+echo LiuHao stopped. Press any key to close.
+pause >nul
+endlocal
+'''
+
+
+def _write_portable_assets(out_dir: Path) -> None:
+    """把自用版分发需要的脚本与启动器写进包。"""
+    scripts_dir = out_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "ops").mkdir(parents=True, exist_ok=True)
+    for rel in PORTABLE_SCRIPTS:
+        src = REPO_ROOT / rel
+        if src.is_file():
+            dest = out_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            print(f"      portable -> {rel}")
+    for name in PORTABLE_ROOT_FILES:
+        src = REPO_ROOT / name
+        if src.is_file():
+            shutil.copy2(src, out_dir / name)
+            print(f"      portable -> {name}")
+    (out_dir / "start.bat").write_text(_PORTABLE_START_BAT, encoding="utf-8")
+    print("      portable -> start.bat（双击：向导→网关）")
+
+
+def build(out_dir: Path, portable: bool = False) -> int:
     if not (CONSOLE_DIST_SRC / "index.html").is_file():
         print(
             f"!! 驾驶舱构建产物缺失：{CONSOLE_DIST_SRC}/index.html\n"
@@ -446,7 +517,7 @@ def build(out_dir: Path) -> int:
     console_target = out_dir / CONSOLE_DIST_REL
     console_count = _copy_tree(CONSOLE_DIST_SRC, console_target)
     print(f"      dist     -> {console_count} 个文件  →  {CONSOLE_DIST_REL}/")
-    launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block())
+    launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block(portable=portable))
     launcher_source = launcher_source.replace(JWT_PLACEHOLDER, _render_jwt_block())
     for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER):
         if placeholder in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
@@ -463,7 +534,9 @@ def build(out_dir: Path) -> int:
     print(f"      JWT 密钥 -> {_mask(_pinned) if _pinned else '(缺失!)'}  [{_source}]")
 
     llm_env = _llm_env()
-    if llm_env:
+    if portable:
+        print("      LLM      -> [portable] 未烘入 provider；收件人通过首次运行向导配置（加密存储）")
+    elif llm_env:
         provider = llm_env.get("AI_PROVIDER_TYPE", "?")
         model = llm_env.get("AI_PROVIDER_MODEL", "?")
         base = llm_env.get("OPENAI_BASE_URL", "(provider 默认)")
@@ -472,6 +545,9 @@ def build(out_dir: Path) -> int:
         print(f"      LLM      -> {provider} / {model} @ {base}  key={shown}")
     else:
         print("      LLM      -> 未配置 → 发布包用 mock provider（对话为演示模型）")
+
+    if portable:
+        _write_portable_assets(out_dir)
 
     lines = [
         "# 由 scripts/build_cloud_bundle.py 自动生成 —— 不要手改。",
@@ -506,10 +582,15 @@ def build(out_dir: Path) -> int:
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="构建可发布的单端口自包含包")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help=f"输出目录（默认 {DEFAULT_OUT}）")
+    parser.add_argument(
+        "--portable",
+        action="store_true",
+        help="自用版分发：不烘入 provider 配置，附带首次运行向导+启动脚本+start.bat",
+    )
     args = parser.parse_args(argv)
     # Keep bytecode out of the bundle for the measurement import.
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    return build(Path(args.out).expanduser().resolve())
+    return build(Path(args.out).expanduser().resolve(), portable=args.portable)
 
 
 if __name__ == "__main__":
