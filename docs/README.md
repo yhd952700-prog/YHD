@@ -433,7 +433,7 @@ docs/
 | [`knowledge_base/23-performance/database-optimization.md`](knowledge_base/23-performance/database-optimization.md) | 数据库优化 |
 | [`knowledge_base/23-performance/performance-tuning.md`](knowledge_base/23-performance/performance-tuning.md) | 性能调优 |
 | [`knowledge_base/24-security/audit-logging.md`](knowledge_base/24-security/audit-logging.md) | 审计日志 |
-| [`knowledge_base/24-security/gdpr-compliance-guide.md`](knowledge_base/24-security/gdpr-compliance-guide.md) | GDPR 合规指南 |
+| [`knowledge_base/24-security/gdpr-compliance-guide.md`](knowledge_base/24-security/gdpr-compliance-guide.md) | 欧盟数据保护（GDPR）相关资料（资料本身不构成合规结论） |
 | [`knowledge_base/24-security/secrets-management.md`](knowledge_base/24-security/secrets-management.md) | 密钥管理 |
 | [`knowledge_base/24-security/security-hardening.md`](knowledge_base/24-security/security-hardening.md) | 安全加固 |
 
