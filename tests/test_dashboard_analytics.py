@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,9 +39,14 @@ class TestTimeseries:
         assert len(set(dates)) == days, "each day appears exactly once"
 
         # Consecutive calendar days, not just sorted labels.
-        stamps = [time.mktime(time.strptime(d, "%Y-%m-%d")) for d in dates]
-        for earlier, later in zip(stamps, stamps[1:]):
-            assert later - earlier == pytest.approx(86400, abs=1)
+        #
+        # Compare DATES, not epoch seconds: in a DST zone one local day is 23 or
+        # 25 hours long, so ``later - earlier == 86400`` is a UTC-only claim --
+        # it reddens on any machine whose clock observes daylight saving while
+        # the axis itself (calendar days) is exactly right.
+        days_as_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d in dates]
+        for earlier, later in zip(days_as_dates, days_as_dates[1:]):
+            assert (later - earlier).days == 1, "axis must be consecutive calendar days"
 
     def test_last_point_is_today(self, client):
         rows = client.get("/v1/dashboard/analytics?days=3").json()["timeseries"]["days"]

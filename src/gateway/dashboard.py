@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query
@@ -187,12 +188,17 @@ def event_timeseries(days: int = 14) -> Dict[str, Any]:
     from ..kernels.audit import audit_query
 
     days = max(1, min(90, int(days)))
-    now = time.time()
-    # 以"今天"为最后一天，向前取 days 天。
-    start = now - (days - 1) * 86400
-    start = time.mktime(
-        time.strptime(_day_key(start), "%Y-%m-%d")
-    )
+    # 以本地"今天"为最后一天，向前取 days 个**日历日**。
+    #
+    # 不能用 ``now - (days-1)*86400`` 再加 86400 秒推日期：一天不总是 86400 秒。
+    # 在实行夏令时的时区（例如 US Pacific，2026-11-01 回拨一小时），跨过回拨点
+    # 后 "+86400s" 会落在前一天的 23:00，于是轴上少一天、且末点变成"昨天"——
+    # CI 跑在 UTC 永远看不到，用户机器在本地时区却每天都会看到。按日历日构造
+    # 才是唯一定义正确的做法。
+    today = date.today()
+    first = today - timedelta(days=days - 1)
+    axis = [first + timedelta(days=offset) for offset in range(days)]
+    start = time.mktime(datetime.combine(first, datetime.min.time()).timetuple())
 
     try:
         events = audit_query(start_time=start, limit=_ANALYTICS_MAX_EVENTS)
@@ -202,8 +208,8 @@ def event_timeseries(days: int = 14) -> Dict[str, Any]:
 
     # 预置全部日期：没有事件的日子显示 0 而不是从轴上消失（那会歪曲趋势）。
     buckets: Dict[str, Dict[str, Any]] = {}
-    for offset in range(days):
-        key = _day_key(start + offset * 86400)
+    for day in axis:
+        key = day.isoformat()
         buckets[key] = {
             "date": key,
             "total": 0,
