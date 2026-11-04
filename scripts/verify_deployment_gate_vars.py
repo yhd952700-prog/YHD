@@ -160,7 +160,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "un-fenced, log ERROR, keep serving) to fail-closed (abort boot); "
             "unset means the deployment keeps the fail-open default"
         ),
-        "refs": ("src/gateway/main.py:146",),
+        "refs": ("src/gateway/main.py:251",),
     },
     {
         "var": "LIUHAO_POSTURE_STRICT",
@@ -204,7 +204,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
         "why": (
             "configured path of the persisted audit hash-chain. Absence selects "
             "the permissive branch in two of its three readers: "
-            "src/gateway/main.py:314-322 logs 'AUDIT CHECKPOINTER SKIPPED' and "
+            "src/gateway/main.py:419-427 logs 'AUDIT CHECKPOINTER SKIPPED' and "
             "keeps serving (the background verifier never starts, so /v1/ready "
             "evidence_status stays 'unverified' forever), and "
             "src/gateway/health.py:280-298 calls unset a 'configuration state' "
@@ -214,10 +214,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "RuntimeError rather than defaulting to the frozen project-root "
             "store. Unset therefore does not stop the service -- it silently "
             "leaves the audit chain uncheckpointed. It is also NOT a readiness "
-            "gate by design (src/gateway/main.py:310-313: 'unverified' must not "
+            "gate by design (src/gateway/main.py:416-418: 'unverified' must not "
             "503 the deployment), which is exactly why the decision has to be "
             "recorded here instead of inferred from a green signal. Armed at "
-            "docker-compose.prod.yml:69 and "
+            "docker-compose.prod.yml:72 and "
             "infra/staging/docker-compose.yml:59. Measured 2026-10-07: "
             ".github/workflows/ci.yml:806 also pins a temp path, but a CI-only "
             "setter does NOT count as deployment arming (category "
@@ -227,10 +227,10 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/main.py:314",
+            "src/gateway/main.py:419",
             "src/gateway/health.py:280",
             "src/kernels/audit/__init__.py:398",
-            "docker-compose.prod.yml:69",
+            "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
             # and listed here so its line is drift-checked too: it shifted from
@@ -283,6 +283,55 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "in a container deployment"
         ),
         "refs": ("src/security/api_keys.py:325",),
+    },
+    {
+        "var": "LIUHAO_ALLOW_SIMULATED_EXECUTION",
+        "expect": "set",
+        "aliases": (),
+        "why": (
+            "dev-only opt-in for simulated execution. Production must record the "
+            "REFUSAL explicitly (0) rather than leave it unset: both values "
+            "disable simulation in code, but an explicit 0 is the only auditable "
+            "proof that the deployment decided against it, and it prevents a "
+            "host-level default of 1 from silently enabling fake results in the "
+            "shipped system"
+        ),
+        "refs": (
+            "src/ai/providers.py:736",
+            "src/gateway/dashboard.py:52",
+            "src/kernels/execution/__init__.py:67",
+        ),
+    },
+    {
+        "var": "LIUHAO_CONSOLE_DIST",
+        "expect": "set",
+        "aliases": (),
+        "why": (
+            "build output served by the single-port gateway. Unset falls back to "
+            "<repo>/apps/console/console/dist computed from __file__, which only "
+            "coincides with the image because Dockerfile:84 COPYs there; pinning "
+            "it makes the cockpit independent of source-tree layout (a moved "
+            "build would otherwise silently turn the single-port deployment into "
+            "API-only, with a 200-but-chromeless cockpit)"
+        ),
+        "refs": ("src/gateway/console_static.py:124",),
+    },
+    {
+        "var": "LIUHAO_WORKSPACE_ROOT",
+        "expect": "set",
+        "aliases": (),
+        "why": (
+            "the allowed root for goal artifacts, project metadata, the employee "
+            "store and every workspace-contained file write. Unset falls back to "
+            "a developer-chosen home/disk path (D:\\LiuHao-Workspace on Windows, "
+            "~/LiuHao-Workspace elsewhere), which inside a container is neither "
+            "persisted nor auditable -- all four stores would then live outside "
+            "the mounted volume and vanish on rebuild"
+        ),
+        "refs": (
+            "src/gateway/ai_management.py:214",
+            "src/ai/workspace.py:62",
+        ),
     },
     {
         "var": "LIUHAO_SECRET_DEV_EPHEMERAL",

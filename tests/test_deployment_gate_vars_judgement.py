@@ -27,21 +27,25 @@ G4  ``refs`` were emitted as evidence and never checked. 5 of them had drifted:
     LIUHAO_EXECUTOR_FENCE. A wrong pointer is worse than no pointer, because it
     looks checkable.
 
-What these tests deliberately do NOT assert: that the gate exits 0. It exits 1,
-and that is correct -- 8 seed gates are unset or read-indirectly in the
-deployment artifacts (7 ``gate-var-never-set`` plus ``LIUHAO_POSTURE_STRICT``,
-reported as ``seed-entry-read-indirectly``) and 3 scan-detected variables are
-unclassified (``LIUHAO_ALLOW_SIMULATED_EXECUTION``, ``LIUHAO_CONSOLE_DIST``,
-``LIUHAO_WORKSPACE_ROOT``). Measured 2026-10-07: the run is **11** findings. It
-was 16 before the two drifted-ref findings were fixed in ``2b8f802b``; then 13
-after ``AUDIT_DB_PATH`` was adjudicated into SEED_GATES (dropping the
-unclassified count from 4 to 3); then 11 when the two gitignored untracked
-artifacts -- ``.env`` and ``LiuHao-O/docker-compose.yml`` -- stopped being
-findings. A gitignored path is local state by the repo's own declared intent, so
-letting it move the exit code made the verdict depend on which files a machine
-happens to have. That residual red is a human decision, recorded in the task
-list, not something a test should paper over. Asserting "the gate is green" here
-would be exactly the fake-pass pattern these tests exist to prevent.
+What these tests deliberately do NOT assert: that the gate exits 0 for the
+mere sake of a green tick. The residual red is a human decision, recorded in
+the task list. Measured 2026-10-07: **11** findings (8 seed gates unset or
+read-indirectly, 3 scan-detected variables unclassified); it was 16 before the
+two drifted-ref findings were fixed in ``2b8f802b``, then 13 after
+``AUDIT_DB_PATH`` was adjudicated into SEED_GATES (dropping the unclassified
+count from 4 to 3), then 11 when the two gitignored untracked artifacts --
+``.env`` and ``LiuHao-O/docker-compose.yml`` -- stopped being findings. A
+gitignored path is local state by the repo's own declared intent, so letting it
+move the exit code made the verdict depend on which files a machine happens to
+have.
+
+2026-11-04: the project owner adjudicated all 11 and armed them in
+``docker-compose.prod.yml`` with fail-closed defaults (fence on + required,
+strict posture, sandbox enforcement, a conservative executor cap, persistent
+lease/audit-backup/API-key/workspace/console paths, and simulated execution
+explicitly 0). The gate now exits 0, and the real-run test below asserts that
+-- not because a green was requested, but because arming each control is the
+only thing that makes it true.
 """
 
 from __future__ import annotations
@@ -414,11 +418,14 @@ class TestIgnoredPathsAreDeterministic:
         import sys
         proc = subprocess.run([sys.executable, str(SCRIPT)], cwd=str(REPO_ROOT),
                               capture_output=True, text=True, timeout=180)
-        assert proc.returncode == 1, proc.stdout
         findings_part, sep, info_part = proc.stdout.partition("INFO --")
         assert "ARTIFACT:.env" not in findings_part, (
             "a gitignored artifact must not be a finding -- that made the exit "
             "code depend on local files:\n%s" % findings_part)
+        assert proc.returncode == 0, (
+            "every adjudicated gate variable is armed with a fail-closed "
+            "default; an unresolved one is a real finding, not expected red:\n%s"
+            % proc.stdout)
         if (REPO_ROOT / ".env").is_file():
             assert sep, "the ignored artifacts must still be surfaced as INFO"
             assert ".env" in info_part
@@ -491,10 +498,10 @@ class TestCiOnlyArming:
 #: The sites the entry's `why` claims. Kept next to the assertions so a reworded
 #: `why` that quietly drops one of them is caught.
 _AUDIT_DB_PATH_EVIDENCE = (
-    "src/gateway/main.py:314",
+    "src/gateway/main.py:419",
     "src/gateway/health.py:280",
     "src/kernels/audit/__init__.py:398",
-    "docker-compose.prod.yml:69",
+    "docker-compose.prod.yml:72",
     "infra/staging/docker-compose.yml:59",
     ".github/workflows/ci.yml:806",
 )
@@ -512,7 +519,7 @@ def tracked_artifact_vars(gate):
 class TestAuditDbPathIsAdjudicated:
     """Its absence is permissive, so it is a SEED entry -- not an exemption.
 
-    ``src/gateway/main.py:314-322`` logs "AUDIT CHECKPOINTER SKIPPED" and keeps
+    ``src/gateway/main.py:419-427`` logs "AUDIT CHECKPOINTER SKIPPED" and keeps
     serving; ``src/gateway/health.py:280-298`` calls unset a "configuration
     state" (healthy, note only). Only ``src/kernels/audit/__init__.py:398-407``
     fails closed. A variable whose absence is the permissive branch in two of
