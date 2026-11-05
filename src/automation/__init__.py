@@ -7,6 +7,7 @@
 from .audit import AutomationAudit, AutomationAuditError
 from .confirm import SqliteConfirmationBroker
 from .contracts import (
+    ActionCapability,
     ActionRequest,
     ActionResult,
     AutomationBackend,
@@ -15,6 +16,7 @@ from .contracts import (
     ConfirmationTicket,
     GuardDecision,
     Observation,
+    Reversibility,
     SessionStatus,
     TargetScope,
     TicketConsumeResult,
@@ -26,6 +28,7 @@ from .sessions import AutomationSession, AutomationSessionRegistry, get_session_
 from .tools import build_automation_tools
 
 __all__ = [
+    "ActionCapability",
     "ActionRequest",
     "ActionRule",
     "ActionResult",
@@ -44,6 +47,7 @@ __all__ = [
     "GuardDecision",
     "Observation",
     "ParamConstraint",
+    "Reversibility",
     "SessionStatus",
     "SqliteConfirmationBroker",
     "TargetScope",

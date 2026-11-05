@@ -53,6 +53,38 @@ class AutomationError(Exception):
         super().__init__(message or reason)
 
 
+class Reversibility(str, Enum):
+    """动作的可逆性。未知动作必须按 ``IRREVERSIBLE`` 处理（fail-closed）。"""
+
+    REVERSIBLE = "reversible"
+    IRREVERSIBLE = "irreversible"
+
+
+@dataclass(frozen=True)
+class ActionCapability:
+    """后端对某个动作的能力声明。
+
+    ``reversibility`` 默认 ``IRREVERSIBLE``：没有显式声明的动作一律不允许回滚，
+    避免"以为能撤"的误判。``reason`` 用于在执行前向人类解释为什么不可逆。
+    """
+
+    action: str
+    reversibility: Reversibility = Reversibility.IRREVERSIBLE
+    reason: str = ""
+
+    @property
+    def reversible(self) -> bool:
+        return self.reversibility is Reversibility.REVERSIBLE
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action,
+            "reversibility": self.reversibility.value,
+            "reversible": self.reversible,
+            "reason": self.reason,
+        }
+
+
 def canonical_json(value: Any) -> str:
     """稳定序列化（键排序、紧凑分隔符），用于指纹与摘要。"""
 
@@ -131,8 +163,14 @@ class AutomationBackend(Protocol):
     def observe(self, scope: TargetScope = TargetScope.SCREEN) -> Observation:
         """读取当前可观察状态。"""
 
+    def capability(self, request: ActionRequest) -> ActionCapability:
+        """声明该动作是否可逆；未知动作必须返回不可逆，不得假装能回滚。"""
+
     def execute(self, request: ActionRequest) -> ActionResult:
         """执行动作，返回真实结果（失败必须如实返回 ``failed``）。"""
+
+    def rollback(self, *, request: ActionRequest, result: ActionResult) -> ActionResult:
+        """对已执行的可逆动作做补偿；做不到时必须如实返回 ``failed``。"""
 
 
 @dataclass(frozen=True)

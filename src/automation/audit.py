@@ -85,6 +85,7 @@ class AutomationAudit:
         fingerprint: str = "",
         stage: str = "intent",
         error: Optional[str] = None,
+        reversibility: Optional[str] = None,
     ) -> str:
         """写入一条 AUTOMATION_ACTION 事件，返回 event_id。失败即抛异常。"""
 
@@ -101,6 +102,8 @@ class AutomationAudit:
             "action_fingerprint": str(fingerprint),
             "params": _sanitize_param("params", dict(params or {})),
         }
+        if reversibility is not None:
+            details["reversibility"] = str(reversibility)
         if error is not None:
             details["error"] = _text_digest(str(error))
 

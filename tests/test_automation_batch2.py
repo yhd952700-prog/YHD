@@ -14,7 +14,15 @@ import pytest
 from src.automation.audit import AutomationAudit
 from src.automation.backends.fake import FakeAutomationBackend
 from src.automation.confirm import SqliteConfirmationBroker
-from src.automation.contracts import ActionRequest, Observation, TargetScope
+from src.automation.contracts import (
+    ActionCapability,
+    ActionRequest,
+    ActionResult,
+    AutomationError,
+    Observation,
+    Reversibility,
+    TargetScope,
+)
 from src.automation.estop import EmergencyStop
 from src.automation.guard import ActionRule, Guard, ParamConstraint
 from src.automation.sessions import AutomationSessionRegistry
@@ -182,18 +190,18 @@ def test_multiple_rules_for_same_action_any_match_wins():
 
 
 # ---------------------------------------------------------------- 会话产物
-def _open_session(tmp_path, guard: Guard):
+def _open_session(tmp_path, guard: Guard, backend=None, audit=None, estop=None):
     store = AuditStore(db_path=str(tmp_path / "audit.db"))
     store.initialize()
     return (
         AutomationSessionRegistry().open(
             principal="liuhao",
             principal_kind="human",
-            backend=FakeAutomationBackend(),
+            backend=backend or FakeAutomationBackend(),
             guard=guard,
             broker=SqliteConfirmationBroker(str(tmp_path / "tickets.db")),
-            audit=AutomationAudit(store=store),
-            estop=EmergencyStop(),
+            audit=audit or AutomationAudit(store=store),
+            estop=estop or EmergencyStop(),
         ),
         store,
     )
@@ -239,3 +247,209 @@ def test_session_denies_action_not_in_rules(tmp_path):
 
     assert result.error == "guard_action_not_allowed"
     assert "type" in result.detail["message"]
+
+
+# ---------------------------------------------------------------- B 回滚
+class _IrreversibleClickBackend(FakeAutomationBackend):
+    """模拟"策略声明某动作不可逆"的后端。"""
+
+    def capability(self, request: ActionRequest) -> ActionCapability:
+        return ActionCapability(
+            action=str(request.action),
+            reversibility=Reversibility.IRREVERSIBLE,
+            reason="policy_marks_irreversible",
+        )
+
+
+class _FailingRollbackBackend(FakeAutomationBackend):
+    def rollback(self, *, request: ActionRequest, result: ActionResult) -> ActionResult:
+        return ActionResult(
+            status="failed",
+            action=request.action,
+            ok=False,
+            error="snapshot_corrupted",
+        )
+
+
+class _ExplodingRollbackBackend(FakeAutomationBackend):
+    def rollback(self, *, request: ActionRequest, result: ActionResult) -> ActionResult:
+        raise RuntimeError("rollback crashed")
+
+
+def test_capability_marks_known_actions_reversible_and_unknown_irreversible():
+    backend = FakeAutomationBackend()
+    click = backend.capability(_request("click"))
+    assert click.reversible is True
+    assert click.to_dict()["reversibility"] == "reversible"
+
+    delete = backend.capability(_request("delete"))
+    assert delete.reversible is False
+    assert delete.reason == "destructive_action"
+
+    unknown = backend.capability(_request("some_future_action"))
+    assert unknown.reversible is False
+    assert unknown.reason == "unknown_action"
+
+
+def test_irreversible_action_is_announced_before_execution(tmp_path):
+    session, _store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad",)),
+        backend=_IrreversibleClickBackend(),
+    )
+    plan = session.plan("click", target_ref="notepad")
+    assert session.describe(plan)["reversible"] is False
+    ticket = session.request_confirmation(plan)
+    assert "不可逆动作" in ticket.preview
+    assert "policy_marks_irreversible" in ticket.preview
+
+    result = session.execute(plan, ticket)
+    assert result.ok is True
+    assert result.detail["reversibility"] == "irreversible"
+    assert result.detail["irreversible_reason"] == "policy_marks_irreversible"
+
+
+def test_irreversible_action_cannot_be_rolled_back(tmp_path):
+    session, _store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad",)),
+        backend=_IrreversibleClickBackend(),
+    )
+    plan = session.plan("click", target_ref="notepad")
+    ticket = session.request_confirmation(plan)
+    result = session.execute(plan, ticket)
+    assert result.ok is True
+
+    with pytest.raises(AutomationError) as excinfo:
+        session.request_rollback_confirmation(plan, result)
+    assert excinfo.value.reason == "rollback_not_reversible"
+    assert "policy_marks_irreversible" in str(excinfo.value)
+
+
+def test_rollback_restores_snapshot_and_is_audited(tmp_path):
+    session, store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad", "calculator")),
+        backend=FakeAutomationBackend(initial_focus="notepad"),
+    )
+    plan = session.plan("focus", target_ref="calculator", params={"app": "calculator"})
+    ticket = session.request_confirmation(plan)
+    result = session.execute(plan, ticket)
+    assert result.ok is True
+    assert session.backend.focus == "calculator"
+
+    rollback_ticket = session.request_rollback_confirmation(plan, result)
+    rolled = session.rollback(plan, result, rollback_ticket)
+    assert rolled.ok is True
+    assert rolled.detail["rollback_completed"] is True
+    assert session.backend.focus == "notepad"
+
+    ok, total = store.verify_integrity()
+    assert ok is True
+    assert total == 4  # intent / result / rollback_intent / rollback_result
+
+    stages = [
+        event["details"]["stage"]
+        for event in store.query_events(event_type=AuditEventType.AUTOMATION_ACTION)
+    ]
+    assert stages == ["intent", "result", "rollback_intent", "rollback_result"]
+
+
+def test_rollback_requires_its_own_ticket(tmp_path):
+    session, _store = _open_session(tmp_path, Guard(allowlist=("notepad",)))
+    plan = session.plan("click", target_ref="notepad")
+    execute_ticket = session.request_confirmation(plan)
+    result = session.execute(plan, execute_ticket)
+    assert result.ok is True
+
+    rolled = session.rollback(plan, result, execute_ticket)
+    assert rolled.ok is False
+    assert rolled.error == "ticket_binding_mismatch"
+    assert rolled.detail["rollback_completed"] is False
+    assert "回滚票据无效" in rolled.detail["message"]
+
+
+def test_duplicate_rollback_is_rejected(tmp_path):
+    session, _store = _open_session(tmp_path, Guard(allowlist=("notepad",)))
+    plan = session.plan("click", target_ref="notepad")
+    result = session.execute(plan, session.request_confirmation(plan))
+    ticket = session.request_rollback_confirmation(plan, result)
+    assert session.rollback(plan, result, ticket).ok is True
+
+    with pytest.raises(AutomationError) as excinfo:
+        session.request_rollback_confirmation(plan, result)
+    assert excinfo.value.reason == "rollback_already_performed"
+
+    again = session.rollback(plan, result, ticket)
+    assert again.ok is False
+    assert again.error == "rollback_already_performed"
+    assert again.detail["rollback_completed"] is False
+
+
+def test_rollback_of_failed_action_is_rejected(tmp_path):
+    session, _store = _open_session(tmp_path, Guard(allowlist=("notepad",)))
+    plan = session.plan("future_action", target_ref="notepad")
+    result = session.execute(plan, session.request_confirmation(plan))
+    assert result.ok is False
+
+    rolled = session.rollback(plan, result, session.request_confirmation(plan))
+    assert rolled.ok is False
+    assert rolled.error == "rollback_of_failed_action"
+    assert rolled.detail["rollback_completed"] is False
+
+
+def test_rollback_of_unexecuted_step_is_rejected(tmp_path):
+    session, _store = _open_session(tmp_path, Guard(allowlist=("notepad",)))
+    first = session.plan("click", target_ref="notepad")
+    result = session.execute(first, session.request_confirmation(first))
+    assert result.ok is True
+
+    never_planned = session.plan("click", target_ref="notepad")
+    assert never_planned.step_no == 2
+    rolled = session.rollback(never_planned, result, session.request_confirmation(first))
+    assert rolled.ok is False
+    assert rolled.error == "rollback_target_not_executed"
+
+
+def test_rollback_failure_reports_incomplete_without_swallowing(tmp_path):
+    session, store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad",)),
+        backend=_FailingRollbackBackend(),
+    )
+    plan = session.plan("click", target_ref="notepad")
+    result = session.execute(plan, session.request_confirmation(plan))
+    ticket = session.request_rollback_confirmation(plan, result)
+
+    rolled = session.rollback(plan, result, ticket)
+    assert rolled.status == "failed"
+    assert rolled.error == "snapshot_corrupted"
+    assert rolled.detail["rollback_completed"] is False
+    assert "回滚未完成" in rolled.detail["message"]
+
+    events = store.query_events(event_type=AuditEventType.AUTOMATION_ACTION)
+    assert [event["details"]["stage"] for event in events] == [
+        "intent",
+        "result",
+        "rollback_intent",
+        "rollback_result",
+    ]
+    assert events[-1]["outcome"] == "failed"
+
+
+def test_rollback_backend_exception_is_reported(tmp_path):
+    session, _store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad",)),
+        backend=_ExplodingRollbackBackend(),
+    )
+    plan = session.plan("click", target_ref="notepad")
+    result = session.execute(plan, session.request_confirmation(plan))
+    ticket = session.request_rollback_confirmation(plan, result)
+
+    rolled = session.rollback(plan, result, ticket)
+    assert rolled.ok is False
+    assert rolled.error == "rollback_backend_exception"
+    assert rolled.detail["rollback_completed"] is False
+    assert "RuntimeError" in rolled.detail["message"]
+

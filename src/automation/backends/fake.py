@@ -11,13 +11,21 @@ import time
 from typing import Any, Dict, Optional
 
 from ..contracts import (
+    ActionCapability,
     ActionRequest,
     ActionResult,
     AutomationBackend,
     BackendKind,
     Observation,
+    Reversibility,
     TargetScope,
 )
+
+#: 明确可逆的假动作：执行前保存状态快照，回滚时恢复。
+_REVERSIBLE_ACTIONS = frozenset({"focus", "type", "click", "key", "noop"})
+
+#: 明确不可逆的假动作：执行后无法恢复，必须在确认前告知。
+_IRREVERSIBLE_ACTIONS = {"delete": "destructive_action"}
 
 
 class FakeAutomationBackend(AutomationBackend):
@@ -30,6 +38,8 @@ class FakeAutomationBackend(AutomationBackend):
         self._focus = initial_focus
         self._revision = 0
         self._last_typed_len: Optional[int] = None
+        # (session_id, step_no) -> 执行前状态快照，供回滚恢复。
+        self._undo: Dict[tuple, tuple] = {}
 
     @property
     def focus(self) -> Optional[str]:
@@ -48,9 +58,35 @@ class FakeAutomationBackend(AutomationBackend):
                 summary=summary,
             )
 
+    def capability(self, request: ActionRequest) -> ActionCapability:
+        action = str(request.action or "").strip().lower()
+        if action in _REVERSIBLE_ACTIONS:
+            return ActionCapability(
+                action=action,
+                reversibility=Reversibility.REVERSIBLE,
+                reason="state_snapshot_available",
+            )
+        if action in _IRREVERSIBLE_ACTIONS:
+            return ActionCapability(
+                action=action,
+                reversibility=Reversibility.IRREVERSIBLE,
+                reason=_IRREVERSIBLE_ACTIONS[action],
+            )
+        return ActionCapability(
+            action=action or "<empty>",
+            reversibility=Reversibility.IRREVERSIBLE,
+            reason="unknown_action",
+        )
+
     def execute(self, request: ActionRequest) -> ActionResult:
         with self._lock:
             action = str(request.action or "")
+            self._undo[(request.session_id, request.step_no)] = (
+                self._focus,
+                self._last_typed_len,
+            )
+            if action == "delete":
+                return self._failed(request, "irreversible_action")
             if action == "focus":
                 app = str(request.params.get("app") or request.target_ref or "")
                 if not app:
@@ -67,6 +103,20 @@ class FakeAutomationBackend(AutomationBackend):
             if action in ("key", "noop"):
                 return self._executed(request, "noop")
             return self._failed(request, "unsupported_action")
+
+    def rollback(self, *, request: ActionRequest, result: ActionResult) -> ActionResult:
+        """恢复执行前快照；找不到快照就如实失败，绝不假装回滚成功。"""
+
+        with self._lock:
+            if not result.ok:
+                return self._failed(request, "rollback_of_failed_action")
+            key = (request.session_id, request.step_no)
+            snapshot = self._undo.pop(key, None)
+            if snapshot is None:
+                return self._failed(request, "rollback_not_available")
+            self._focus, self._last_typed_len = snapshot
+            self._revision += 1
+            return self._executed(request, "rolled_back")
 
     # ---------------------------------------------------------------- helpers
     def _executed(self, request: ActionRequest, detail: str) -> ActionResult:
