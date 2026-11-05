@@ -1101,7 +1101,6 @@ html, body, #root {
   line-height: 1.5;
   background: rgba(4, 10, 24, 0.6);
   color: var(--text-hi);
-  outline: none;
 }
 
 .jarvis-input-wrap textarea:focus {
@@ -1170,7 +1169,6 @@ html, body, #root {
   border-radius: 6px;
   padding: 5px 8px;
   font-size: 11px;
-  outline: none;
 }
 
 .sess-user-input:focus {
@@ -1187,7 +1185,6 @@ html, body, #root {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
-  outline: none;
 }
 
 .sess-btn {
@@ -1314,7 +1311,6 @@ html, body, #root {
   color: var(--text);
   font-size: 11px;
   padding: 4px 7px;
-  outline: none;
 }
 
 .profile-select {
@@ -1624,4 +1620,20 @@ html, body, #root {
 .approval-busy {
   font-size: 10px;
   color: var(--text-dim);
+}
+
+/* ── 键盘焦点（a11y）───────────────────────────────────────────────
+   所有可交互元素统一使用 :focus-visible（键盘/读屏），鼠标点击不触发。
+   双环 = 2px 实色内环 + 2px 偏移，保证在深色面板与浅色卡片上都可见。
+   此前 App.css 里有 4 处 outline:none 把焦点直接抹掉（输入框、选择框、
+   档案输入），现已删除，这里统一接管。 */
+:where(button, a[href], input, select, textarea, [role='button'], [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--os-focus, #4d8dff);
+  outline-offset: 2px;
+}
+
+/* 旧 JARVIS / 审批面板是金色主题，焦点环跟随金色以免蓝色突兀。 */
+:where(.jarvis-input-wrap textarea, .sess-user-input, .sess-select, .profile-input, .profile-select):focus-visible {
+  outline: 2px solid var(--gold, #ffc93c);
+  outline-offset: 2px;
 }

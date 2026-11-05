@@ -31,6 +31,9 @@
   --os-badge-ink: #000000;   /* 彩色徽章实底上的文字 */
   --os-accent: #4d8dff;
   --os-accent-soft: rgba(77, 141, 255, 0.16);
+  /* 蓝色**文字**专用：深底上 #4d8dff 对 #0b1120 是 5.9:1，可直接当正文。 */
+  --os-accent-text: #4d8dff;
+  --os-focus: #4d8dff;
   --os-accent-2: #9b6bff;
   --os-ok: #2ee6a8;
   --os-warn: #ffb74d;
@@ -58,6 +61,10 @@
   --os-badge-ink: #000000;
   --os-accent: #2f6fe4;
   --os-accent-soft: rgba(47, 111, 228, 0.1);
+  /* #2f6fe4 当正文只有 4.4:1（不达 AA）。浅底文字改用更深的 #1f5bd0（5.7:1）；
+     实底填充仍用 --os-accent，视觉不漂移。 */
+  --os-accent-text: #1f5bd0;
+  --os-focus: #2f6fe4;
   --os-accent-2: #7c4ddb;
   --os-ok: #0f9d76;
   --os-warn: #c47c14;
@@ -259,7 +266,7 @@ select {
 }
 
 .os-nav-item[aria-current='page'] .os-nav-icon {
-  color: var(--os-accent);
+  color: var(--os-accent-text);
 }
 
 .os-nav-icon {
@@ -382,6 +389,15 @@ select {
   background: var(--os-panel-2);
   border: 1px solid var(--os-border-soft);
   color: var(--os-text-faint);
+}
+
+/* 焦点环由外层容器统一绘制（双环：2px 实色 + 4px 柔光）。
+   内层 <input> 因此保留 outline:none，避免出现"环中环"。 */
+.os-search:focus-within {
+  border-color: var(--os-focus);
+  box-shadow:
+    0 0 0 2px var(--os-focus),
+    0 0 0 4px var(--os-accent-soft);
 }
 
 .os-search input {
@@ -511,7 +527,7 @@ select {
 .os-link {
   border: 0;
   background: transparent;
-  color: var(--os-accent);
+  color: var(--os-accent-text);
   font-size: 11.5px;
   padding: 2px 0;
 }
@@ -928,7 +944,7 @@ select {
 }
 
 .os-bottom-item[aria-current='page'] {
-  color: var(--os-accent);
+  color: var(--os-accent-text);
   background: var(--os-accent-soft);
 }
 
@@ -1029,8 +1045,10 @@ select {
 }
 
 .os-input:focus-within {
-  border-color: var(--os-accent);
-  box-shadow: 0 0 0 3px var(--os-accent-soft);
+  border-color: var(--os-focus);
+  box-shadow:
+    0 0 0 2px var(--os-focus),
+    0 0 0 4px var(--os-accent-soft);
 }
 
 .os-input input {
@@ -1038,7 +1056,7 @@ select {
   border: 0;
   background: transparent;
   color: var(--os-text);
-  outline: none;
+  outline: none; /* 焦点环由 .os-input:focus-within 统一绘制，见上 */
   min-width: 0;
 }
 
