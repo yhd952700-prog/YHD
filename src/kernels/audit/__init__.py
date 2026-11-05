@@ -287,6 +287,8 @@ class AuditEventType(str, Enum):
     STATE_CHANGE = "state_change"
     #: 自动化动作审计（自动化模块只记哈希，不记明文）。
     AUTOMATION_ACTION = "automation_action"
+    #: 自动化只读观察审计（同样只记哈希，不记明文）。
+    AUTOMATION_OBSERVATION = "automation_observation"
 
 
 class AuditScope(str, Enum):

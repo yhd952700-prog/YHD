@@ -14,20 +14,32 @@ from .contracts import (
     AutomationError,
     BackendKind,
     ConfirmationTicket,
+    ElementInfo,
     GuardDecision,
     Observation,
     Reversibility,
     SessionStatus,
     TargetScope,
     TicketConsumeResult,
+    WindowInfo,
 )
 from .estop import EmergencyStop, HotkeyRegistrar, HotkeyRegistration, get_emergency_stop
 from .gate import AutomationGate, GateDecision
 from .guard import ActionRule, Guard, ParamConstraint, target_matches
 from .hotkey_windows import WindowsHotkeyRegistrar, configure_from_env, hotkey_enabled
+from .observe import (
+    FakeWindowObserver,
+    ObservationGate,
+    ObservationPolicy,
+    ObservationService,
+    build_observation_tools,
+    get_observation_policy,
+    observation_enabled,
+)
 from .replay import AuditReplay, ReplayStep, SessionReplay
 from .sessions import AutomationSession, AutomationSessionRegistry, get_session_registry
 from .tools import build_automation_tools
+from .windows_observer import WindowsObserver
 
 __all__ = [
     "ActionCapability",
@@ -44,13 +56,18 @@ __all__ = [
     "AutomationSessionRegistry",
     "BackendKind",
     "ConfirmationTicket",
+    "ElementInfo",
     "EmergencyStop",
+    "FakeWindowObserver",
     "GateDecision",
     "Guard",
     "GuardDecision",
     "HotkeyRegistrar",
     "HotkeyRegistration",
     "Observation",
+    "ObservationGate",
+    "ObservationPolicy",
+    "ObservationService",
     "ParamConstraint",
     "Reversibility",
     "SessionReplay",
@@ -58,12 +75,17 @@ __all__ = [
     "SqliteConfirmationBroker",
     "TargetScope",
     "TicketConsumeResult",
+    "WindowInfo",
     "WindowsHotkeyRegistrar",
+    "WindowsObserver",
     "build_automation_tools",
+    "build_observation_tools",
     "configure_from_env",
     "get_emergency_stop",
+    "get_observation_policy",
     "get_session_registry",
     "hotkey_enabled",
+    "observation_enabled",
     "ReplayStep",
     "target_matches",
 ]

@@ -125,19 +125,130 @@ class ActionRequest:
 
 
 @dataclass(frozen=True)
+class WindowInfo:
+    """一个顶层窗口的可观察信息。
+
+    这里只放"读得到的事实"，不放任何推测值：
+
+    * ``title`` / ``process_name`` / ``executable_path`` 读不到时为空字符串，
+      并用 ``process_error`` 说明原因，绝不编造；
+    * ``bounds`` 仅在真实取到窗口矩形时才非 None；
+    * ``elements_supported=False`` 表示该窗口的控件树读不到，此时
+      ``element_count`` 必须为 0。
+
+    注意 ``title`` / ``executable_path`` 可能包含文件名、聊天对象名等敏感
+    文本。它们允许回显给人类，但落审计时只记长度与哈希，见
+    :meth:`AutomationAudit.record_observation`。
+    """
+
+    handle: int
+    title: str = ""
+    process_name: str = ""
+    executable_path: str = ""
+    pid: Optional[int] = None
+    foreground: bool = False
+    fullscreen: bool = False
+    visible: bool = True
+    minimized: bool = False
+    bounds: Optional[Tuple[int, int, int, int]] = None
+    elements_supported: bool = False
+    element_count: int = 0
+    process_error: str = ""
+    fullscreen_error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "title": self.title,
+            "process_name": self.process_name,
+            "executable_path": self.executable_path,
+            "pid": self.pid,
+            "foreground": self.foreground,
+            "fullscreen": self.fullscreen,
+            "visible": self.visible,
+            "minimized": self.minimized,
+            "bounds": list(self.bounds) if self.bounds else None,
+            "elements_supported": self.elements_supported,
+            "element_count": self.element_count,
+            "process_error": self.process_error,
+            "fullscreen_error": self.fullscreen_error,
+        }
+
+
+@dataclass(frozen=True)
+class ElementInfo:
+    """窗口内的一个可枚举控件。
+
+    刻意**不包含控件文本**：控件文本可能是用户输入或聊天内容，读它超出
+    "只读观察窗口结构"的范围。需要内容时由人类显式授权，另行实现。
+    """
+
+    handle: int
+    class_name: str = ""
+    control_id: Optional[int] = None
+    enabled: bool = True
+    visible: bool = True
+    bounds: Optional[Tuple[int, int, int, int]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "class_name": self.class_name,
+            "control_id": self.control_id,
+            "enabled": self.enabled,
+            "visible": self.visible,
+            "bounds": list(self.bounds) if self.bounds else None,
+        }
+
+
+@dataclass(frozen=True)
 class Observation:
-    """当前可观察状态（不含明文内容）。"""
+    """当前可观察状态。
+
+    ``summary`` 只放低风险计数；窗口标题、进程名、可执行路径等结构化字段
+    放在 ``foreground`` / ``windows`` / ``elements`` 里，避免把明文塞进
+    ``summary`` 这种自由字典而绕过审计规则。
+    """
 
     focus: Optional[str] = None
     scope: TargetScope = TargetScope.SCREEN
     captured_at: float = field(default_factory=time.time)
     summary: Mapping[str, Any] = field(default_factory=dict)
+    backend: str = ""
+    foreground: Optional[WindowInfo] = None
+    windows: Tuple[WindowInfo, ...] = ()
+    elements: Tuple[ElementInfo, ...] = ()
+    elements_supported: bool = False
+    elements_reason: str = ""
+    truncated: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "focus": self.focus,
+            "scope": self.scope.value,
+            "captured_at": self.captured_at,
+            "summary": dict(self.summary),
+            "backend": self.backend,
+            "foreground": self.foreground.to_dict() if self.foreground else None,
+            "windows": [item.to_dict() for item in self.windows],
+            "elements": [item.to_dict() for item in self.elements],
+            "elements_supported": self.elements_supported,
+            "elements_reason": self.elements_reason,
+            "truncated": self.truncated,
+        }
 
     def digest(self) -> str:
         payload = {
             "focus": self.focus,
             "scope": self.scope.value,
             "summary": dict(self.summary),
+            "backend": self.backend,
+            "foreground": self.foreground.to_dict() if self.foreground else None,
+            "windows": [item.to_dict() for item in self.windows],
+            "elements": [item.to_dict() for item in self.elements],
+            "elements_supported": self.elements_supported,
+            "elements_reason": self.elements_reason,
+            "truncated": self.truncated,
         }
         return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
