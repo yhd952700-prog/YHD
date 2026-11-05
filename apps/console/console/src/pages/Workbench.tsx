@@ -26,6 +26,7 @@ export function Workbench({
         title="JARVIS 工作台"
         sub="真实流式对话；工具调用原样展示，不做摘要或美化"
         span={12}
+        className="sc-panel-active sc-hud"
       >
         <ChatPanel provider={provider} onConfigureModel={onConfigureModel} />
       </Card>

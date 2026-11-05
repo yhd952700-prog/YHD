@@ -11,9 +11,21 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), 'utf8')
+const readFromRoot = (name: string) => readFileSync(resolve(process.cwd(), name), 'utf8')
+
+/** 只取“科幻视觉层”这一段，避免 reduced-motion / 手机端同名选择器抢先命中。 */
+function sciCss(osCss: string): string {
+  // Windows 检出可能是 CRLF，先归一化再匹配多行选择器。
+  const css = osCss.replace(/\r\n/g, '\n')
+  return css.slice(
+    css.indexOf('科幻视觉层（规范'),
+    css.indexOf('键盘焦点（a11y）'),
+  )
+}
 
 /** 取出某个选择器后面第一条规则体（源码里的规则不嵌套，够用）。 */
 function ruleBody(css: string, selector: string): string {
@@ -106,6 +118,76 @@ describe('对比度令牌', () => {
 
     const textTokenUses = osCss.match(/color:\s*var\(--os-accent-text\)/gi) ?? []
     expect(textTokenUses.length).toBeGreaterThanOrEqual(4)
+  })
+})
+
+describe('科幻视觉层（P1 落地）', () => {
+  test('语义令牌双主题齐全，且不替换现有 --os-* 取值', () => {
+    const osCss = read('./os.css')
+    // 双主题都定义青/墨色与动效时长。
+    expect(osCss.match(/--sc-cyan:\s*#[0-9a-f]{6}/gi) ?? []).toHaveLength(2)
+    for (const token of ['--sc-dur-hover', '--sc-dur-state', '--sc-ease-out', '--sc-hairline']) {
+      expect(osCss).toMatch(new RegExp(`${token}:\\s`))
+    }
+    // 品牌主色与品牌名不动。
+    expect(osCss).toMatch(/--os-accent:\s*#2f6fe4/)
+    expect(osCss).toMatch(/--os-accent:\s*#4d8dff/)
+  })
+
+  test('HUD 角标只画两个伪元素、手机端关闭；活跃面板在浅色下不放大范围外发光', () => {
+    const sci = sciCss(read('./os.css'))
+    expect(ruleBody(sci, '.sc-hud::before {\n  top')).toMatch(/border-width:\s*1px 0 0 1px/)
+    expect(ruleBody(sci, '.sc-hud::after {\n  right')).toMatch(/border-width:\s*0 1px 1px 0/)
+
+    const mobile = ruleBody(sci, "[data-mode='mobile'] .sc-hud::before")
+    expect(mobile).toMatch(/display:\s*none/)
+
+    const lightActive = ruleBody(sci, "[data-theme='light'] .sc-panel-active")
+    expect(lightActive).toMatch(/0 0 0 2px var\(--os-accent-soft\)/)
+    // 浅色主题不得再叠 24px 外发光。
+    expect(lightActive).not.toMatch(/0 0 24px/)
+  })
+
+  test('状态环用形状+文字表达状态：只有执行中呼吸，失败态改实心环', () => {
+    const sci = sciCss(read('./os.css'))
+    expect(ruleBody(sci, ".sc-status[data-state='active']::after")).toMatch(
+      /animation:\s*sc-breathe/,
+    )
+    expect(ruleBody(sci, ".sc-status[data-state='failed']")).toMatch(/border-width:\s*2\.5px/)
+    expect(ruleBody(sci, ".sc-status[data-state='failed']::after")).toMatch(/display:\s*none/)
+    // 旧的 box-shadow 循环动画已移除（规范禁止每帧改阴影）。
+    expect(read('./os.css')).not.toMatch(/@keyframes\s+os-butler-pulse/)
+  })
+
+  test('流光只动 transform，且与不定进度条共用一条 animation 声明', () => {
+    const sci = sciCss(read('./os.css'))
+    const flow = sci.slice(sci.indexOf('@keyframes sc-flow'))
+    expect(flow.slice(0, 220)).toMatch(/transform:\s*translateX/)
+    expect(flow.slice(0, 220)).not.toMatch(/background-position|box-shadow|filter:/)
+
+    const shared = ruleBody(sci, '.sc-flow-line::before,')
+    expect(shared).toMatch(/animation:\s*sc-flow/)
+    expect(shared).toMatch(/linear infinite/)
+    // 三处流光没有各自再写 animation。
+    expect(sci.match(/animation:\s*sc-flow/g) ?? []).toHaveLength(1)
+  })
+
+  test('特效受真实状态门控：执行中才有流线，流式才有前沿，静态卡不挂光效', () => {
+    const butler = readFromRoot('src/pages/Butler.tsx')
+    const chat = readFromRoot('src/components/ChatPanel.tsx')
+
+    expect(butler).toMatch(/\{live && <div className="sc-flow-line"/)
+    expect(butler).toMatch(/className=\{live \? 'sc-panel-active sc-hud' : undefined\}/)
+    expect(chat).toMatch(/\{m\.streaming && <div className="sc-stream-frontier"/)
+  })
+
+  test('零新依赖：不引入动画库', () => {
+    const pkg = JSON.parse(readFromRoot('package.json')) as {
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+    const all = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })
+    expect(all.some((name) => /framer-motion|gsap|animejs|motion/i.test(name))).toBe(false)
   })
 })
 

@@ -1124,6 +1124,7 @@ export function Knowledge({
           title={`分块预览 · ${docDisplayName(selected)}`}
           sub="GET /documents/{id}/chunks · 服务端完整切分（不是检索拼凑）"
           span={5}
+          className="sc-panel-active sc-hud"
           action={
             <button className="os-link" onClick={() => setSelected(null)}>
               关闭

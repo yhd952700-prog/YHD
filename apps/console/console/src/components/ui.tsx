@@ -21,16 +21,19 @@ export function Card({
   sub,
   action,
   span = 6,
+  className,
   children,
 }: {
   title: string
   sub?: string
   action?: ReactNode
   span?: 3 | 4 | 5 | 6 | 7 | 8 | 12
+  /** 额外状态类（如 sc-panel-active / sc-hud），只给当前焦点容器用。 */
+  className?: string
   children: ReactNode
 }) {
   return (
-    <section className={`os-card os-span-${span}`}>
+    <section className={`os-card os-span-${span}${className ? ` ${className}` : ''}`}>
       <div className="os-card-head">
         <div>
           <h2 className="os-card-title">{title}</h2>

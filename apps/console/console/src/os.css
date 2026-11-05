@@ -1702,7 +1702,11 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .os-skeleton {
+  .os-skeleton,
+  .sc-status[data-state='active']::after,
+  .sc-flow-line::before,
+  .sc-stream-frontier::before,
+  .os-butler-progress[data-indeterminate='true'] > span::before {
     animation: none;
   }
   * {
@@ -2111,6 +2115,10 @@ select {
   gap: 12px;
 }
 
+.os-butler-run-head .sc-status {
+  margin-top: 4px;
+}
+
 .os-butler-run-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -2127,32 +2135,6 @@ select {
   flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 6px;
-}
-
-.os-butler-pulse {
-  width: 9px;
-  height: 9px;
-  margin-top: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--os-text-faint);
-}
-
-.os-butler-pulse[data-running='true'] {
-  background: var(--sc-cyan);
-  animation: os-butler-pulse 1.6s ease-out infinite;
-}
-
-@keyframes os-butler-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--sc-cyan) 42%, transparent);
-  }
-  70% {
-    box-shadow: 0 0 0 8px transparent;
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
 }
 
 .os-butler-progress {
@@ -2173,16 +2155,6 @@ select {
 
 .os-butler-progress[data-indeterminate='true'] > span {
   width: 34%;
-  animation: os-butler-indeterminate 1.5s var(--sc-ease-in) infinite;
-}
-
-@keyframes os-butler-indeterminate {
-  0% {
-    transform: translateX(-110%);
-  }
-  100% {
-    transform: translateX(320%);
-  }
 }
 
 .os-butler-summary {
@@ -2480,6 +2452,175 @@ select {
 
 .os-butler-gaps dd {
   margin-bottom: 10px;
+}
+
+/* ==========================================================================
+   科幻视觉层（规范 docs/ui-scifi-direction.md 4.2 / 4.3 / 4.5 / 4.6 / 4.7）
+   --------------------------------------------------------------------------
+   原则：科幻感来自“信息在发光”，不是“背景在动”。
+   - 只有真实状态（执行中 / 待确认 / 流式输出 / 当前焦点）才亮、才动；
+   - 循环动画与 os.css 其余项合计 3 个，全部只用 transform / opacity；
+   - 手机端只保留状态环（信息），HUD 角标与流光关闭。
+   ========================================================================== */
+
+/* 4.2 活跃面板微光：只给当前焦点容器（同屏 ≤2）。 */
+.sc-panel-active {
+  border-color: color-mix(in srgb, var(--os-accent) 45%, var(--os-border));
+  /* 用 1px 主色描边代替模糊光晕：24px / 10px 模糊都会在滚动时每帧重绘
+     （实测 24px 使知识页从 34.7fps 掉到 32.7fps），描边版本回到 34.8fps。 */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--os-accent) 24%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--os-accent) 55%, transparent),
+    var(--os-shadow);
+}
+
+/* 浅色主题禁止大范围外发光，改用 2px 主色柔边。 */
+[data-theme='light'] .sc-panel-active {
+  box-shadow:
+    0 0 0 2px var(--os-accent-soft),
+    var(--os-shadow);
+}
+
+/* 4.3 HUD 四角括号：当前焦点容器，两个伪元素、零动画。 */
+.sc-hud {
+  position: relative;
+}
+
+.sc-hud::before,
+.sc-hud::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 0 solid color-mix(in srgb, var(--os-accent) 70%, transparent);
+  pointer-events: none;
+}
+
+.sc-hud::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.sc-hud::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+/* 4.5 状态环：形状 + 文字共同表达状态，红绿色盲也能区分。
+   只有“执行中”呼吸；失败态用实心环，不靠颜色。 */
+.sc-status {
+  display: inline-grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  color: var(--os-text-faint);
+}
+
+.sc-status::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.sc-status[data-state='active'] {
+  color: var(--sc-cyan);
+}
+
+.sc-status[data-state='active']::after {
+  animation: sc-breathe 2.4s ease-in-out infinite;
+}
+
+.sc-status[data-state='waiting'] {
+  color: var(--os-warn);
+}
+
+.sc-status[data-state='failed'] {
+  color: var(--os-danger);
+  border-width: 2.5px;
+}
+
+.sc-status[data-state='failed']::after {
+  display: none;
+}
+
+.sc-status[data-state='degraded'] {
+  border-style: dashed;
+}
+
+@keyframes sc-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+}
+
+/* 4.6 / 4.7 数据流线 / 流式前沿：一条光带平移，只动 transform。
+   元素只在“真实执行中 / 真实流式期间”挂载，结束后立即移除。
+   三处流光共用同一条 animation 声明，保证同屏循环动画不超预算。 */
+.sc-flow-line,
+.sc-stream-frontier,
+.os-butler-progress > span {
+  position: relative;
+}
+
+.sc-flow-line {
+  height: 1px;
+  margin-top: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--sc-cyan) 10%, transparent);
+}
+
+.sc-flow-line::before,
+.sc-stream-frontier::before,
+.os-butler-progress[data-indeterminate='true'] > span::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--sc-cyan), transparent);
+  animation: sc-flow 2.2s linear infinite;
+}
+
+.sc-stream-frontier {
+  height: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+  opacity: 0.8;
+}
+
+.sc-stream-frontier::before {
+  width: 45%;
+}
+
+@keyframes sc-flow {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+/* 手机端：HUD 角标与流光关闭（14px 角标在小屏上就是脏点）。 */
+[data-mode='mobile'] .sc-hud::before,
+[data-mode='mobile'] .sc-hud::after,
+[data-mode='mobile'] .sc-flow-line,
+[data-mode='mobile'] .sc-stream-frontier {
+  display: none;
 }
 
 /* ==========================================================================

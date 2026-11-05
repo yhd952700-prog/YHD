@@ -776,6 +776,7 @@ export function Butler({
               : `目标 ${activeId}`
           }
           span={7}
+          className={live ? 'sc-panel-active sc-hud' : undefined}
           action={
             <div className="os-kb-actions">
               {live && (
@@ -810,8 +811,8 @@ export function Butler({
             <>
               <div className="os-butler-run-head">
                 <span
-                  className="os-butler-pulse"
-                  data-running={live ? 'true' : 'false'}
+                  className="sc-status"
+                  data-state={live ? 'active' : state === 'failed' ? 'failed' : 'idle'}
                   aria-hidden="true"
                 />
                 <div className="os-butler-run-text">
@@ -836,6 +837,8 @@ export function Butler({
                   </span>
                 </div>
               </div>
+
+              {live && <div className="sc-flow-line" aria-hidden="true" />}
 
               {live ? (
                 <>

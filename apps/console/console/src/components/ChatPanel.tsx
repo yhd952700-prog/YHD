@@ -333,6 +333,8 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                           ))}
                         </div>
                       )}
+                      {/* 只在真实流式期间出现；结束即移除，静态卡片不加扫描线。 */}
+                      {m.streaming && <div className="sc-stream-frontier" aria-hidden="true" />}
                     </div>
                   </div>
                 ))
