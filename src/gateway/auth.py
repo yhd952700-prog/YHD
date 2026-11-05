@@ -443,12 +443,13 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
 
     permissions = sorted(identity.permissions)
     ttl = _ttl_seconds()
-    token, payload = _issue_token(pid, identity, client_value, permissions, ttl)
+    scope = _effective_scope(identity)
+    token, payload = _issue_token(pid, identity, client_value, permissions, ttl, scope)
     _clear_failures(throttle_key)
     _audit(
         "login_success",
         pid,
-        {"client": client_value, "scope": identity.scope.value, "jti": payload.jti},
+        {"client": client_value, "scope": scope, "jti": payload.jti},
     )
     return {
         "access_token": token,
@@ -457,13 +458,36 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         "expires_at": payload.exp,
         "principal": pid,
         "display_name": (identity.metadata or {}).get("display_name"),
-        "scope": identity.scope.value,
+        "scope": scope,
         "permissions": permissions,
         "client": client_value,
     }
 
 
-def _issue_token(principal, identity, client, permissions, ttl):
+def _effective_scope(identity) -> str:
+    """Return the scope a *token* may carry for this identity.
+
+    The identity kernel registers every human as ``L0`` (human-only
+    sovereignty), which used to turn any newly created account into a
+    sovereign administrator. L0 is therefore downgraded unless the identity
+    was **explicitly** granted the ``owner`` permission:
+
+    * ``owner``  -> the stored scope (L0 allowed)
+    * ``admin``  -> ``L1`` (administrative role, but not sovereignty)
+    * anything else -> ``L7`` (lowest permission; login still works)
+
+    Authorisation checks only ever *add* requirements on top of this, so a
+    downgrade cannot be undone by an unknown claim.
+    """
+    permissions = {str(p).lower() for p in (identity.permissions or [])}
+    if "owner" in permissions:
+        return identity.scope.value
+    if permissions & {"admin", "administrator"}:
+        return "L1"
+    return "L7"
+
+
+def _issue_token(principal, identity, client, permissions, ttl, scope):
     from ..security.jwt_handler import create_access_token
 
     return create_access_token(
@@ -475,7 +499,7 @@ def _issue_token(principal, identity, client, permissions, ttl):
         metadata={
             "kind": "human",
             "client": client,
-            "scope": identity.scope.value,
+            "scope": scope,
         },
         device_id=client,
     )
@@ -540,15 +564,23 @@ def auth_logout(
         from ..security import get_jwt_handler
 
         handler = get_jwt_handler()
-        principal = ""
+        # Verify the signature before touching the blocklist. Revoking an
+        # expired token is still fine (verify_exp=False), but accepting
+        # arbitrary garbage would let an unauthenticated caller grow the
+        # revocation table without bound.
         try:
-            principal = str(getattr(handler.validate_access_token(token), "sub", "") or "")
-        except Exception:  # noqa: BLE001 - already-invalid token: still a logout
-            principal = ""
+            payload = handler.decode_signature_only(token, verify_exp=False)
+        except Exception as exc:  # noqa: BLE001 - any failure means "forged"
+            logger.warning("logout rejected unverifiable token: %s", exc)
+            raise HTTPException(status_code=401, detail="invalid bearer token")
+        principal = str(getattr(payload, "sub", "") or "")
         revoked = bool(handler.revoke_token(token))
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("logout revoke failed: %s", exc)
+        logger.error("logout revoke failed: %s", exc)
         revoked = False
+        principal = ""
     _audit("logout", principal, {"revoked": revoked})
     return {"logged_out": True, "revoked": revoked}
 

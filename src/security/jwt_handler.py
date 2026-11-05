@@ -42,6 +42,26 @@ from .posture import is_production  # unified posture source of truth
 # statement before it turns that import into an E402.
 logger = logging.getLogger(__name__)
 
+# Hard ceilings on token lifetimes. Callers may request a shorter TTL, but a
+# token can never outlive these values -- otherwise a bad call site could mint
+# an access token with `exp=9999999999` that survives every password reset.
+MAX_ACCESS_TTL_SECONDS = 7 * 24 * 60 * 60
+MAX_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60
+
+
+def _record_revocation_check_failure() -> None:
+    """Expose revocation-store failures as a metric without importing eagerly."""
+    try:
+        from ..observability.metrics import provider_errors_total
+
+        provider_errors_total.labels(
+            provider="security",
+            model="jwt",
+            error_type="revocation_check_failed",
+        ).inc()
+    except Exception:  # pragma: no cover - metrics must never break auth
+        pass
+
 
 class TokenType(Enum):
     """Token type enumeration"""
@@ -445,6 +465,24 @@ class JWTHandler:
         if ttl is None:
             ttl = self.access_ttl if token_type == TokenType.ACCESS else self.refresh_ttl
 
+        max_ttl = (
+            MAX_ACCESS_TTL_SECONDS
+            if token_type == TokenType.ACCESS
+            else MAX_REFRESH_TTL_SECONDS
+        )
+        try:
+            ttl = int(ttl)
+        except (TypeError, ValueError):
+            ttl = max_ttl
+        if ttl <= 0:
+            ttl = 1
+        if ttl > max_ttl:
+            logger.warning(
+                "clamping %s token ttl for subject=%s from %ss to %ss",
+                token_type.value, subject, ttl, max_ttl,
+            )
+            ttl = max_ttl
+
         payload = TokenPayload(
             sub=subject,
             iss=self.issuer,
@@ -550,7 +588,9 @@ class JWTHandler:
             jwt.InvalidTokenError: Token invalid
             jwt.InvalidAudienceError: Audience mismatch
         """
-        # Check revocation
+        # Check revocation first. If the blocklist cannot be read we must fail
+        # CLOSED: treating "unknown" as "not revoked" would let a revoked token
+        # through whenever the revocation store is unavailable.
         try:
             unverified = jwt.decode(
                 token,
@@ -561,8 +601,16 @@ class JWTHandler:
                 raise jwt.InvalidTokenError("Token has been revoked")
         except jwt.InvalidTokenError:
             raise  # Re-raise revocation check result
-        except Exception:
-            pass  # Will be caught by full validation
+        except Exception as exc:
+            logger.error(
+                "token revocation check failed; rejecting token (fail-closed): %s",
+                exc,
+                exc_info=True,
+            )
+            _record_revocation_check_failure()
+            raise jwt.InvalidTokenError(
+                "Token revocation status unavailable"
+            ) from exc
 
         # Full validation
         payload_data = jwt.decode(
@@ -593,6 +641,35 @@ class JWTHandler:
     def validate_access_token(self, token: str) -> TokenPayload:
         """Validate access token"""
         return self.validate_token(token, expected_type=TokenType.ACCESS)
+
+    def decode_signature_only(
+        self,
+        token: str,
+        verify_exp: bool = False,
+    ) -> TokenPayload:
+        """Verify the signature and standard claims but optionally ignore expiry.
+
+        Used by ``/auth/logout``: revoking an already-expired token is
+        harmless and idempotent, but we still refuse forged tokens. No
+        revocation lookup is performed here.
+        """
+        payload_data = jwt.decode(
+            token,
+            self._get_verification_key(),
+            algorithms=[self.algorithm],
+            issuer=self.issuer,
+            audience=self.audience,
+            options={
+                "verify_exp": verify_exp,
+                "verify_iss": True,
+                "verify_aud": True,
+                "require_exp": True,
+                "require_iat": True,
+                "require_nbf": False,
+            },
+            leeway=self.leeway,
+        )
+        return TokenPayload.from_dict(payload_data)
 
     def validate_refresh_token(self, token: str) -> TokenPayload:
         """Validate refresh token"""

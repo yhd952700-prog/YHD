@@ -22,7 +22,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .policy import require_human_principal
+from .policy import require_admin_principal, require_human_principal
 from src.kernels._base import KernelStateError
 from src.kernels._registry import (
     get_entry,
@@ -48,7 +48,7 @@ def get_kernels(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
 
 
 @kernels_router.post("/kernels/init")
-def post_kernels_init(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
+def post_kernels_init(_: str = Depends(require_admin_principal)) -> Dict[str, Any]:
     """主权主体显式驱动「已存在实例」进入 READY。
 
     只操作已存在的实例（绝不创建）。返回做了什么 / 跳过了什么 / 失败了的什么。
@@ -57,7 +57,7 @@ def post_kernels_init(_: str = Depends(require_human_principal)) -> Dict[str, An
 
 
 @kernels_router.post("/kernels/shutdown")
-def post_kernels_shutdown(_: str = Depends(require_human_principal)) -> Dict[str, Any]:
+def post_kernels_shutdown(_: str = Depends(require_admin_principal)) -> Dict[str, Any]:
     """主权主体显式驱动「已存在实例」进入 STOPPED。"""
     return shutdown_all()
 

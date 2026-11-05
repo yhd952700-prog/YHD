@@ -17,7 +17,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .policy import require_human_principal
+from .policy import require_admin_principal, require_human_principal
 from src.kernels.plugin import PluginStatus, get_plugin_registry
 
 router = APIRouter(prefix="/v1/plugins", tags=["plugins"])
@@ -53,7 +53,7 @@ def list_plugins(
 @router.post("/{plugin_id}/activate")
 def activate_plugin(
     plugin_id: str,
-    principal: str = Depends(require_human_principal),
+    principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """Activate a registered plugin (real import + instantiate)."""
     registry = get_plugin_registry()

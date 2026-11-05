@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..kernels._enforcement import describe as describe_enforcement
@@ -109,10 +109,6 @@ def require_bearer_payload(
         raise HTTPException(status_code=401, detail=f"invalid bearer token: {exc}")
 
 
-#: HTTP methods that mutate state. Read methods stay open to every authenticated
-#: human; writes additionally need an administrative role (least privilege).
-_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
 #: Roles/permissions that authorise a write. Same vocabulary as the model
 #: management gate (``models.require_model_admin``), so there is one answer to
 #: "who is an administrator" rather than two that can drift apart.
@@ -121,44 +117,73 @@ _WRITE_ROLES = frozenset({"admin", "administrator", "owner"})
 #: Highest human sovereignty scope. The seeded local human carries no
 #: permissions but ``scope=L0``; treating L0 as administrative keeps the
 #: single-human deployment usable without inventing a role nobody holds.
+#: Any unknown/absent scope is *not* promoted to L0: authorisation is an
+#: explicit claim, never a default.
 _WRITE_SCOPES = frozenset({"L0"})
+
+#: Every scope the identity kernel can issue. Anything else in a token's
+#: metadata is unknown and therefore non-authorising (fail-closed).
+_KNOWN_SCOPES = frozenset({"L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"})
 
 
 def _claim_set(value) -> set:
     return {str(item).lower() for item in (value or [])}
 
 
-def require_human_principal(
-    request: Request, payload=Depends(require_bearer_payload)
-) -> str:
-    """Resolve the authenticated principal from the bearer token, or 401.
+def _human_claims(payload) -> tuple[str, dict]:
+    """Return ``(subject, metadata)`` for a human token or raise 401/403."""
+    subject = getattr(payload, "sub", None)
+    if not subject:
+        raise HTTPException(status_code=401, detail="token has no subject claim")
+    metadata = getattr(payload, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("kind") != "human":
+        raise HTTPException(
+            status_code=403, detail="token does not represent a human identity"
+        )
+    return str(subject), metadata
+
+
+def _is_admin_claim(payload, metadata: dict) -> bool:
+    scope = str(metadata.get("scope") or "")
+    if scope not in _KNOWN_SCOPES:
+        return False
+    claims = _claim_set(getattr(payload, "roles", None)) | _claim_set(
+        getattr(payload, "permissions", None)
+    )
+    return bool(claims & _WRITE_ROLES) or scope in _WRITE_SCOPES
+
+
+def require_human_principal(payload=Depends(require_bearer_payload)) -> str:
+    """Resolve the authenticated human principal from the bearer token, or 401.
 
     Deliberately *only* the token can name the principal -- see the module
     docstring, point 1. This dependency never trusts a caller-supplied
     identity.
 
-    **Writes require an administrative claim.** Authentication (this is a
-    human) and authorisation (this human may change state) are different
-    questions; before this check every logged-in human could POST/DELETE every
-    gated surface. Reads are unchanged.
+    **Authentication only.** Authorisation is decided per business action by
+    ``require_admin_principal`` (or the surface's own gate), not by the HTTP
+    verb: ``POST /v1/chat``, ``POST /v1/profile`` and session creation are read
+    semantics and must not be blocked just because they use POST.
     """
-    subject = getattr(payload, "sub", None)
-    if not subject:
-        raise HTTPException(status_code=401, detail="token has no subject claim")
+    subject, _metadata = _human_claims(payload)
+    return subject
 
-    if request.method.upper() in _WRITE_METHODS:
-        metadata = getattr(payload, "metadata", None)
-        metadata = metadata if isinstance(metadata, dict) else {}
-        scope = str(metadata.get("scope") or "")
-        claims = _claim_set(getattr(payload, "roles", None)) | _claim_set(
-            getattr(payload, "permissions", None)
+
+def require_admin_principal(payload=Depends(require_bearer_payload)) -> str:
+    """Authenticate a human *and* require an explicit administrative claim.
+
+    Used by actions that genuinely change governance state (issuing/revoking
+    approval grants, kernel lifecycle, plugin activation) rather than by
+    ordinary business operations.
+    """
+    subject, metadata = _human_claims(payload)
+    if not _is_admin_claim(payload, metadata):
+        raise HTTPException(
+            status_code=403,
+            detail="该操作需要管理员权限（admin 角色或 L0 人类主权）",
         )
-        if not (claims & _WRITE_ROLES) and scope not in _WRITE_SCOPES:
-            raise HTTPException(
-                status_code=403,
-                detail="写操作需要管理员权限（admin 角色或 L0 人类主权）",
-            )
-    return str(subject)
+    return subject
 
 
 class ApprovalRequest(BaseModel):
@@ -200,7 +225,7 @@ class ApprovalRequest(BaseModel):
 @router.post("/policy/approvals", response_model=Dict[str, Any])
 def create_approval(
     req: ApprovalRequest,
-    principal: str = Depends(require_human_principal),
+    principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """签发一条审批凭据（审计留痕）。主体取自令牌，请求体无法指定。"""
     try:
@@ -250,7 +275,7 @@ def get_approval(grant_id: str, _: str = Depends(require_human_principal)) -> Di
 def revoke_approval(
     grant_id: str,
     reason: str = "",
-    principal: str = Depends(require_human_principal),
+    principal: str = Depends(require_admin_principal),
 ) -> Dict[str, Any]:
     """撤销一条审批凭据（审计留痕）。重复撤销幂等。"""
     try:
