@@ -343,6 +343,15 @@ IMPORT_ROOT_ALIASES: Dict[str, str] = {
     # （import 根名与 PyPI 分发名不同）。未装包时 packages_distributions 给不出
     # 映射，没有这条别名会把**正确的** argon2-cffi 声明误判为未声明。
     "argon2": "argon2-cffi",
+    # pywin32 的 Win32 子模块都由 PyPI 分发 `pywin32` 提供，但 import 根名
+    # 与分发名不同；且 `packages_distributions()` 在未安装 pywin32 的 Linux
+    # 门禁环境里给不出映射（`win32con` 甚至不会登记为顶层包）。没有这些别名
+    # 会把**正确的** pywin32 声明误判为未声明。
+    "win32api": "pywin32",
+    "win32con": "pywin32",
+    "win32gui": "pywin32",
+    "win32process": "pywin32",
+    "pywintypes": "pywin32",
 }
 
 
