@@ -12,6 +12,8 @@
  * 身份内核的人类判定）。这里存的只是一个令牌字符串，前端不做任何权限决策。
  */
 
+import { readErrorMessage } from './errorMessage'
+
 export type ClientMode = 'desktop' | 'web' | 'mobile'
 
 export const CLIENT_MODES: readonly ClientMode[] = ['desktop', 'web', 'mobile']
@@ -233,17 +235,6 @@ export function currentToken(): string {
   return getSession()?.token ?? ''
 }
 
-async function readError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { detail?: unknown }
-    if (typeof body?.detail === 'string') return body.detail
-    if (body?.detail) return JSON.stringify(body.detail)
-  } catch {
-    // 非 JSON 响应：退回状态文本。
-  }
-  return response.statusText || `HTTP ${response.status}`
-}
-
 /** 登录页需要的元信息。任何失败都降级为一份"未配置"的诚实描述。 */
 export async function loadAuthConfig(): Promise<AuthConfig | null> {
   try {
@@ -277,7 +268,7 @@ export async function login(
     throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
   }
   if (!response.ok) {
-    throw new AuthError(response.status, await readError(response))
+    throw new AuthError(response.status, await readErrorMessage(response))
   }
   const body = (await response.json()) as {
     access_token: string

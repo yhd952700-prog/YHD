@@ -20,7 +20,7 @@
  */
 
 import { clearSession, currentToken, decodeToken, saveSession, TOKEN_HEADER } from './auth';
-
+import { readErrorMessage } from './errorMessage';
 
 /** 内核层拦截配置快照（GET /v1/policy/enforcement 的真实形状）。 */
 export interface EnforcementSnapshot {
@@ -126,23 +126,12 @@ function authHeaders(token: string): Record<string, string> {
   };
 }
 
-async function readError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { detail?: unknown; error?: unknown };
-    if (typeof body.detail === 'string') return body.detail;
-    if (body.error) return String(body.error);
-  } catch {
-    // 落到下面的通用文案
-  }
-  return `HTTP ${res.status}`;
-}
-
 /** 统一的鉴权检查：401 单独成一类，UI 才能区分「没令牌」和「令牌坏了」。 */
 async function call<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   if (!token) throw new PolicyAuthError('未认证：缺少审批令牌');
   const res = await fetch(path, { ...init, headers: authHeaders(token), cache: 'no-store' });
-  if (res.status === 401) throw new PolicyAuthError(await readError(res));
-  if (!res.ok) throw new PolicyApiError(res.status, await readError(res));
+  if (res.status === 401) throw new PolicyAuthError(await readErrorMessage(res));
+  if (!res.ok) throw new PolicyApiError(res.status, await readErrorMessage(res));
   return (await res.json()) as T;
 }
 

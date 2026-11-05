@@ -26,8 +26,13 @@ export function describeDetail(detail: unknown): string {
   return String(detail)
 }
 
+export interface FailureText {
+  message: string
+  code: string | null
+}
+
 /**
- * 把一次非 2xx 响应解成「给人看的一句话 + 给程序判断的稳定错误码」。
+ * 把「已解析的响应体 + 状态」归一成一句话 + 稳定错误码。
  *
  * 为什么需要 `code`：`agent_not_found` 与 `agent_unavailable` 都是非 2xx，
  * 但**该做的事完全不同**（前者重新选人，后者先恢复员工）。只看文案做字符串
@@ -36,29 +41,29 @@ export function describeDetail(detail: unknown): string {
  *
  * `trace_id` 一并附上（回退到响应头 `X-Trace-ID`，跨域部署下也能拿到）。
  * 两者都没有时退回 HTTP 状态文本。
+ *
+ * fetch 路径走 `readError(response)`；拿不到 `Response` 的调用方（例如
+ * 知识库上传用的 XHR）直接用它 —— 复制一份兜底逻辑，下次修复就会分叉。
  */
-export async function readErrorParts(
-  response: Response,
-): Promise<{ message: string; code: string | null }> {
-  let detail = ''
-  let traceId = ''
-  let code: string | null = null
-  try {
-    const body = (await response.json()) as {
-      detail?: unknown
-      trace_id?: unknown
-    }
-    detail = describeDetail(body?.detail)
-    traceId = typeof body?.trace_id === 'string' ? body.trace_id : ''
-    if (body?.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
-      const raw = (body.detail as Record<string, unknown>).code
-      if (typeof raw === 'string' && raw.trim()) code = raw.trim()
-    }
-  } catch {
-    // 非 JSON 响应（例如边缘网关的纯文本 502）：退回状态文本。
+export function describeFailure(
+  body: unknown,
+  status: number,
+  statusText: string,
+  headerTraceId: string | null,
+): FailureText {
+  const record = (body && typeof body === 'object' ? body : {}) as {
+    detail?: unknown
+    trace_id?: unknown
   }
-  if (!traceId) traceId = response.headers.get('X-Trace-ID') ?? ''
-  const message = detail || response.statusText || `HTTP ${response.status}`
+  const detail = describeDetail(record.detail)
+  const bodyTraceId = typeof record.trace_id === 'string' ? record.trace_id : ''
+  const traceId = bodyTraceId || headerTraceId || ''
+  let code: string | null = null
+  if (record.detail && typeof record.detail === 'object' && !Array.isArray(record.detail)) {
+    const raw = (record.detail as Record<string, unknown>).code
+    if (typeof raw === 'string' && raw.trim()) code = raw.trim()
+  }
+  const message = detail || statusText || `HTTP ${status}`
   // 追踪 ID 单独一行：它是"去服务端日志里查完整堆栈"的唯一钥匙，必须让
   // 操作者能照抄。配合 Failure 的 `white-space: pre-line` 渲染成两行。
   return {
@@ -67,7 +72,23 @@ export async function readErrorParts(
   }
 }
 
-/** 只要面向人的一句话（旧调用方的兼容入口）。 */
-export async function readError(response: Response): Promise<string> {
-  return (await readErrorParts(response)).message
+/** 一次非 2xx `fetch` 响应 → 可读文案 + 稳定错误码。 */
+export async function readError(response: Response): Promise<FailureText> {
+  let body: unknown = null
+  try {
+    body = await response.json()
+  } catch {
+    // 非 JSON 响应（例如边缘网关的纯文本 502）：退回状态文本。
+  }
+  return describeFailure(
+    body,
+    response.status,
+    response.statusText,
+    response.headers.get('X-Trace-ID'),
+  )
+}
+
+/** 只要面向人的一句话（登录页、审批客户端等只展示文案的调用方）。 */
+export async function readErrorMessage(response: Response): Promise<string> {
+  return (await readError(response)).message
 }

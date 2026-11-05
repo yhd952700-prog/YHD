@@ -24,7 +24,7 @@
 
 import { ApiError, apiFetch } from './api'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
-import { describeDetail } from './errorMessage'
+import { describeFailure } from './errorMessage'
 
 /** 服务端 `IngestRequest.text` 的 `max_length`。 */
 export const MAX_INGEST_CHARS = 200_000
@@ -527,20 +527,21 @@ export function uploadKnowledgeDocument(
           // 非浏览器环境：忽略。
         }
       }
-      let detail = ''
-      let traceId = ''
+      let body: unknown = null
       try {
-        const body = JSON.parse(xhr.responseText) as { detail?: unknown; trace_id?: unknown }
-        detail = describeDetail(body?.detail)
-        traceId = typeof body?.trace_id === 'string' ? body.trace_id : ''
+        body = JSON.parse(xhr.responseText)
       } catch {
         // 非 JSON 响应（例如边缘网关的纯文本 502）：由状态码兜底。
       }
-      if (!traceId) traceId = xhr.getResponseHeader('X-Trace-ID') ?? ''
-      const message = detail || xhr.statusText || `HTTP ${xhr.status}`
-      finish(() =>
-        reject(new ApiError(xhr.status, traceId ? `${message}\n追踪 ID：${traceId}` : message)),
+      // XHR 拿不到 fetch 的 Response，但仍复用同一份错误归一化逻辑，
+      // 避免 trace_id / 对象 detail 的可读化在这里分叉。
+      const parts = describeFailure(
+        body,
+        xhr.status,
+        xhr.statusText,
+        xhr.getResponseHeader('X-Trace-ID'),
       )
+      finish(() => reject(new ApiError(xhr.status, parts.message)))
     }
 
     const form = new FormData()

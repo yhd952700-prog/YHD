@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
-import { readErrorParts } from './errorMessage'
+import { readError } from './errorMessage'
 
 export class ApiError extends Error {
   status: number
@@ -74,11 +74,11 @@ export async function apiFetch<T>(
     } catch {
       // 非浏览器环境：忽略。
     }
-    const parts = await readErrorParts(response)
+    const parts = await readError(response)
     throw new ApiError(401, parts.message, parts.code)
   }
   if (!response.ok && !acceptStatus?.includes(response.status)) {
-    const parts = await readErrorParts(response)
+    const parts = await readError(response)
     throw new ApiError(response.status, parts.message, parts.code)
   }
   return (await response.json()) as T
