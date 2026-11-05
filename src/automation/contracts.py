@@ -7,7 +7,10 @@
 * 每个动作是一个 :class:`ActionRequest`，其指纹只由动作语义决定（动作名 /
   目标 / 参数 / 焦点），**不含** principal、会话或步号 —— 这些由确认票据另行绑定。
 * 观察结果 :class:`Observation` 只保留可哈希摘要所需的最小字段，绝不携带
-  屏幕截图明文或输入文本。
+  屏幕截图明文或输入文本；窗口与元素明细分别用 :class:`WindowInfo` /
+  :class:`ElementInfo` 表达，读不到的字段留空并附 ``*_error`` / 原因说明，
+  不编造坐标。二者与 :class:`Observation` 一样从这里导出，调用方可直接
+  ``from src.automation.contracts import WindowInfo, ElementInfo``。
 """
 
 from __future__ import annotations
@@ -18,6 +21,35 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Mapping, Optional, Protocol, Tuple
+
+#: 显式导出契约类型，保证 ``from src.automation.contracts import ...`` 与
+#: ``from src.automation import ...`` 两级入口都能拿到新增的
+#: :class:`WindowInfo` / :class:`ElementInfo`。
+__all__ = [
+    "ActionCapability",
+    "ActionRequest",
+    "ActionResult",
+    "AutomationBackend",
+    "AutomationError",
+    "BackendKind",
+    "CONSECUTIVE_FAILURE_LIMIT",
+    "ConfirmationBroker",
+    "ConfirmationTicket",
+    "ElementInfo",
+    "FORBIDDEN_TARGET_MARKERS",
+    "GuardDecision",
+    "GuardProtocol",
+    "MAX_CONFIRMATION_TTL_SECONDS",
+    "Observation",
+    "RATE_LIMIT_MAX_ACTIONS",
+    "RATE_LIMIT_WINDOW_SECONDS",
+    "Reversibility",
+    "SessionStatus",
+    "TargetScope",
+    "TicketConsumeResult",
+    "WindowInfo",
+    "canonical_json",
+]
 
 
 class BackendKind(str, Enum):

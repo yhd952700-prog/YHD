@@ -12,6 +12,8 @@ import sys
 
 import pytest
 
+import src.automation.observe as observe_module
+from src.ai.tools.kernel_tools import make_tools
 from src.automation.audit import AutomationAudit
 from src.automation.contracts import (
     AutomationError,
@@ -524,3 +526,93 @@ def test_windows_observer_real_smoke():
         pytest.skip("当前会话没有前台窗口（无桌面环境）")
     assert observation.foreground.title is not None
     assert isinstance(observation.elements_supported, bool)
+
+
+# ---------------------------------------------------------------- 内核工具表接线
+_KERNEL_PRINCIPAL_BASE = "liuhao-kernel-observation"
+
+_READ_ONLY_OBSERVATION_TOOLS = {
+    "automation.observation.capture",
+    "automation.observation.disable",
+    "automation.observation.enable",
+    "automation.observation.status",
+}
+
+#: 任何含这些片段的工具名/能力/参数都意味着能产生输入或点击，观察面一律拒绝。
+_INPUT_SURFACE_TOKENS = (
+    "click",
+    "type",
+    "input",
+    "press",
+    "key",
+    "mouse",
+    "move",
+    "scroll",
+    "drag",
+    "execute",
+    "send",
+    "write",
+)
+
+
+def _reset_observation_policy(monkeypatch):
+    """复位进程级观察策略单例，让本测试的 env/monkeypatch 真正生效。"""
+    monkeypatch.setattr(observe_module, "_policy", None)
+
+
+def _register_identity(principal, kind):
+    """在身份内核里登记主体；kind=human 是观察工具的唯一放行类型。"""
+    from src.kernels.identity import get_identity_manager
+
+    return get_identity_manager().create_identity(
+        principal, metadata={"kind": kind}
+    )
+
+
+def _observation_tool_names(tools):
+    return [
+        item.name
+        for item in tools
+        if item.name.startswith("automation.observation.")
+    ]
+
+
+def test_kernel_tools_register_no_observation_when_switch_off(monkeypatch):
+    monkeypatch.setenv(OBSERVE_ENV, "0")
+    _reset_observation_policy(monkeypatch)
+    principal = f"{_KERNEL_PRINCIPAL_BASE}-off"
+    _register_identity(principal, "human")
+
+    assert _observation_tool_names(make_tools(principal)) == []
+
+
+def test_kernel_tools_register_exactly_four_read_only_observation_tools(monkeypatch):
+    monkeypatch.delenv(OBSERVE_ENV, raising=False)
+    _reset_observation_policy(monkeypatch)
+    principal = f"{_KERNEL_PRINCIPAL_BASE}-human"
+    _register_identity(principal, "human")
+
+    tools = make_tools(principal)
+    observation_tools = [
+        item
+        for item in tools
+        if item.name.startswith("automation.observation.")
+    ]
+
+    assert {item.name for item in observation_tools} == _READ_ONLY_OBSERVATION_TOOLS
+    assert all(item.risk == "LOW" for item in observation_tools)
+    for item in observation_tools:
+        # 只看工具名 / 能力 / 参数名；schema 的 ``"type": "object"`` 是 JSON
+        # Schema 元字段，不参与"是否有输入入口"的判断。
+        parameter_names = " ".join((item.schema.get("properties") or {}).keys())
+        surface = f"{item.name} {item.capability} {parameter_names}".lower()
+        assert not any(token in surface for token in _INPUT_SURFACE_TOKENS), item.name
+
+
+def test_kernel_tools_do_not_register_observation_for_non_human(monkeypatch):
+    monkeypatch.delenv(OBSERVE_ENV, raising=False)
+    _reset_observation_policy(monkeypatch)
+    principal = f"{_KERNEL_PRINCIPAL_BASE}-agent"
+    _register_identity(principal, "agent")
+
+    assert _observation_tool_names(make_tools(principal)) == []

@@ -370,6 +370,20 @@ def make_tools(
 
     tools.extend(build_automation_tools(principal))
 
+    # ============ 只读观察（门槛与动作工具不同，这是有意设计） ============
+    # 动作工具要求三重闸全部打开（装配 / fake 后端 / 人类主体）；只读观察
+    # **不要求**这三道全开，只需要两道：观察开关（环境变量缺省开，管理员可
+    # 硬关）+ 人类主体。理由：
+    #   1. 观察没有副作用，不注入键鼠、不截图、不写磁盘，装配闸与后端闸
+    #      是为"动手"设的，不该连"看"一起卡住；
+    #   2. 窗口标题/可执行路径仍属敏感信息，所以主体闸保留，非人类主体
+    #      （service / agent / 未知）一律不注册。
+    # 不要在这里补装配闸/后端闸：那不是漏了一道，而是两类能力的门槛本来就
+    # 不同。闸门不放行时 build_observation_tools 返回空列表，与动作工具一致。
+    from ...automation.observe import build_observation_tools
+
+    tools.extend(build_observation_tools(principal))
+
     return tools
 
 
