@@ -210,6 +210,12 @@ class TestConnectionProbe:
             (ConnectionError("connection refused"), "unreachable"),
             (RuntimeError("Ollama error 404: model not found"), "model_not_found"),
             (RuntimeError("401 Unauthorized"), "invalid_key"),
+            # 吊销/停用与“填错 Key”处理方式不同（换 Key vs 改 Key），必须分开。
+            (RuntimeError("401 this api key has been revoked"), "key_revoked"),
+            (RuntimeError("403 account deactivated"), "key_revoked"),
+            # 额度耗尽是充值问题，不是等一会儿的限流问题。
+            (RuntimeError("402 Payment Required: Insufficient Balance"), "quota_exhausted"),
+            (RuntimeError("429 quota exceeded"), "quota_exhausted"),
             (RuntimeError("429 Too Many Requests"), "rate_limited"),
             (RuntimeError("boom"), "upstream_error"),
         ],

@@ -383,13 +383,52 @@ def set_default(model_id: str, admin=Depends(require_model_admin)) -> Dict[str, 
 # --------------------------------------------------------------------------- #
 # 连通性测试
 # --------------------------------------------------------------------------- #
-_STATUS_RE = re.compile(r"\b(401|403|404|429|5\d\d)\b")
+_STATUS_RE = re.compile(r"\b(400|401|402|403|404|429|5\d\d)\b")
+
+#: 配额耗尽与“频率限制”是两件事：前者充值才能恢复，后者等一会儿就好。
+_QUOTA_TOKENS = (
+    "insufficient balance",
+    "insufficient_quota",
+    "quota exceeded",
+    "exceeded your current quota",
+    "out of credits",
+    "credit balance",
+    "billing",
+    "余额不足",
+    "配额",
+)
+
+#: 密钥被吊销/停用：换一把 Key 才能恢复，重试没有意义。
+_REVOKED_TOKENS = (
+    "revoked",
+    "deactivated",
+    "suspended",
+    "api key disabled",
+    "key disabled",
+    "key expired",
+    "已吊销",
+    "已停用",
+    "已被禁用",
+)
+
+#: 给用户下一步该怎么办；界面回落到 ``detail`` 时也能直接读到中文结论。
+_PROBE_HINTS = {
+    "invalid_key": "API Key 无效：请检查是否填错或复制不完整",
+    "key_revoked": "API Key 已被吊销/停用：请到提供方控制台重新生成",
+    "quota_exhausted": "账户额度已耗尽：请到提供方控制台充值或提升额度",
+    "rate_limited": "请求被上游限流：请稍后重试",
+    "model_not_found": "模型名不存在：请核对提供方支持的模型 ID",
+    "unreachable": "端点不可达：请检查 base_url、端口与网络",
+    "timeout": "连接超时：请检查网络或调大超时时间",
+}
 
 
 def _classify_error(exc: BaseException) -> str:
     """把上游异常归类成前端可区分的原因。
 
     分类只看**异常类型与状态码**，不依赖具体厂商文案；文案本身会变化。
+    但“额度耗尽”和“密钥吊销”在多数厂商都复用 401/402/429，必须读文案才能
+    区分——这两类处理方式完全不同（充值与换 Key），不能都叫“调用失败”。
     """
     name = type(exc).__name__.lower()
     message = str(exc).lower()
@@ -402,12 +441,18 @@ def _classify_error(exc: BaseException) -> str:
                       "unreachable", "no route to host")
     ):
         return "unreachable"
+    if any(token in message for token in _QUOTA_TOKENS):
+        return "quota_exhausted"
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
     code = status if isinstance(status, int) else None
     if code is None:
         match = _STATUS_RE.search(message)
         code = int(match.group(1)) if match else None
+    if code == 402:
+        return "quota_exhausted"
     if code in (401, 403):
+        if any(token in message for token in _REVOKED_TOKENS):
+            return "key_revoked"
         return "invalid_key"
     if code == 404:
         return "model_not_found"
@@ -513,11 +558,16 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         elapsed = round((time.monotonic() - started) * 1000.0, 1)
         reason = _classify_error(exc)
-        detail = _sanitize(f"{type(exc).__name__}: {exc}", api_key)
+        raw_detail = _sanitize(f"{type(exc).__name__}: {exc}", api_key)
+        # 结论先行：界面回落到 ``detail`` 时也能直接读到“该改什么”，
+        # 而不是一条笼统的英文上游报错。
+        hint = _PROBE_HINTS.get(reason)
+        detail = f"{hint}。后端原文：{raw_detail}" if hint else raw_detail
         _audit_probe(cfg, "failure", reason)
         return {
             "ok": False,
             "reason": reason,
+            "hint": hint or "",
             "detail": detail,
             "latency_ms": elapsed,
             "provider": cfg.get("provider"),
@@ -528,6 +578,7 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
         "reason": "",
+        "hint": "",
         "detail": _sanitize(str(reply)[:120], api_key),
         "latency_ms": elapsed,
         "provider": cfg.get("provider"),
