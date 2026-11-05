@@ -12,7 +12,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from .chunker import chunk_text
+from .chunker import chunk_document_structured
 from .embedding import EmbeddingUnavailableError, build_embedding_provider
 from .vector_store import get_vector_store
 
@@ -25,6 +25,15 @@ def _safe_document_id(raw: Optional[str]) -> str:
     if not raw or not raw.strip():
         return uuid.uuid4().hex
     return _ID_SAFE.sub("-", raw.strip())[:128]
+
+
+def _hit_text(metadata: Dict[str, Any]) -> str:
+    """Body plus heading breadcrumb; legacy rows (no header) still work."""
+    body = str(metadata.get("text", ""))
+    header = str(metadata.get("context_header") or "").strip()
+    if not header:
+        return body
+    return f"[{header}]\n{body}" if body else f"[{header}]"
 
 
 class KnowledgeDocumentService:
@@ -93,10 +102,12 @@ class KnowledgeDocumentService:
         embedder = self._embedding()
         store = self._store()
         document_id = _safe_document_id(doc_id)
-        chunks = chunk_text(text)
+        chunks = chunk_document_structured(text)
 
         static_metadata = dict(metadata or {})
-        vectors = embedder.embed(chunks)
+        # The heading breadcrumb is embedded together with the body so a chunk
+        # that starts with "如下所示" still carries its section topic.
+        vectors = embedder.embed([chunk.embed_text for chunk in chunks])
 
         # Replace the *whole* document revision atomically. Embeddings are
         # computed before touching the store, so an embedding failure leaves the
@@ -112,7 +123,9 @@ class KnowledgeDocumentService:
                     **static_metadata,
                     "document_id": document_id,
                     "chunk_index": index,
-                    "text": chunk,
+                    "text": chunk.text,
+                    "heading_path": list(chunk.heading_path),
+                    "context_header": chunk.context_header,
                 },
             )
             for index, (chunk, vector) in enumerate(zip(chunks, vectors))
@@ -143,7 +156,7 @@ class KnowledgeDocumentService:
             {
                 "doc_id": doc_id,
                 "score": round(score, 6),
-                "text": str((meta or {}).get("text", "")),
+                "text": _hit_text(meta or {}),
                 "metadata": meta or {},
             }
             for doc_id, score, meta in results
