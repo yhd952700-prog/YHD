@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import socket
 import urllib.error
 import urllib.request
@@ -51,9 +52,21 @@ def http_json(url: str, timeout: float = 3.0) -> dict[str, Any]:
 
 
 def port_is_free(port: int, host: str = "127.0.0.1") -> bool:
-    """``host:port`` 当前是否可绑定（可绑定即未被占用）。"""
+    """``host:port`` 当前是否可绑定（可绑定即未被占用）。
+
+    探测方式按平台对齐真实的监听行为：POSIX 上先关服务端连接（HTTP
+    keep-alive 收尾就是这样）会让内核保留 TIME_WAIT，此时**不带
+    ``SO_REUSEADDR``** 的 bind 返回 ``EADDRINUSE``，而 uvicorn/asyncio
+    自己就是带这个选项监听的 —— 实际能立刻重启。这里跟着服务端加同一个
+    选项，避免把 TIME_WAIT 误报成"被占用"（否则重启会平白换端口）。
+
+    Windows 不加：那边 ``SO_REUSEADDR`` 允许绑定到别人**正在监听**的端口，
+    会把真占用误判成空闲。
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
+    if os.name != "nt":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind((host, port))
     except OSError:

@@ -322,3 +322,60 @@ shutdown，**没有强杀**。但"就绪状态下停止所需的 `elapsed`/`exit
 * 安装目录整机自启：已用假安装布局单测 `runtime\pythonw.exe` +
   `launch_installed.py --no-browser`；但安装包当前不含 `scripts/liuhao_desktop.py`，
   无法在安装版验证"托盘自启"（见第 3 节限制）。
+
+### 8.1 CI 回归修复：`port_is_free` 把 TIME_WAIT 误判成"占用"（2026-11-06）
+
+**失败现场**（`origin/p36`，run `42127243953`，Python 3.11 与 3.12 各一次）：
+
+```
+tests/desktop/test_desktop_system_layer.py:425: in test_runner_drains_inflight_request_and_refuses_new_ones
+    assert port_is_free(port)
+E   assert False
+E    +  where False = port_is_free(8765)
+```
+
+同一用例里更靠前的断言（在途请求 200、`graceful=True`、`exit_code=0`、
+`elapsed<10s`）全部通过 —— 只有"停止后端口可重新绑定"这条在 Linux 上失败。
+托盘 / 防火墙 / 自启用例在 CI 是 `SKIPPED`（Windows-only），与本次无关。
+
+**根因**（不是"测试假设了有桌面"，是本层探测工具的跨平台口径错了）：
+uvicorn 收尾时会关掉 keep-alive 连接，**服务端先发 FIN**，内核在
+`127.0.0.1:<port>` 上留 TIME_WAIT。`port_is_free` 当时用**不带
+`SO_REUSEADDR`** 的 bind 判断，Linux 返回 `EADDRINUSE`（errno 98），
+于是把"没人监听、服务能立刻重绑"误报成"端口被占用"。Windows 不阻止
+这种 bind，所以本地一直绿。
+
+影响不止测试：`GatewayService.start()` 用同一函数选端口，Linux 上
+"停止后立刻重启"会平白跳到下一个端口；诊断包的端口表也会报错。
+
+**修复**（`src/desktop/probe.py`）：POSIX 上按服务端同样的方式探测（加
+`SO_REUSEADDR`），Windows 保持严格 bind —— 那边 `SO_REUSEADDR` 允许绑定到
+别人**正在监听**的端口，会把真占用误判成空闲，不能用。已实测：Linux 上带
+`SO_REUSEADDR` 时 TIME_WAIT 可绑、真监听仍 `EADDRINUSE`；Windows 上 TIME_WAIT
+本就不阻止 bind。
+
+**复验（真实数字）**
+
+```
+# Windows（本机，有桌面）
+pytest tests/desktop -q                  → 21 passed in 25.50s
+
+# Linux / 无桌面（WSL Ubuntu 24.04，无 GUI，system python3.12）
+pytest tests/desktop/test_desktop_system_layer.py -q
+                                        → 17 passed, 4 skipped（Windows-only 用例）in 5.58s
+```
+
+新增回归用例 `test_port_is_free_treats_time_wait_as_usable`：构造"服务端先关连接"
+留下 TIME_WAIT，断言端口仍算可用。Windows 上这条恒真（TIME_WAIT 不阻止 bind），
+真正的回归在 Linux CI 上跑。
+
+**取证脚本**（不进仓库）在同一 Linux 环境跑真 uvicorn runner，客户端**保持连接**
+让服务端先关：
+
+```
+旧口径 port_is_free = False   # errno=98 Address already in use
+新口径 port_is_free = True
+停止判定：stopped=True graceful=True forced=False elapsed=2.22s
+```
+
+与 CI 失败现象一致；修复后新口径为 True。

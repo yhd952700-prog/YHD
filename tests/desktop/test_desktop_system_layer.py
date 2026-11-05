@@ -158,6 +158,30 @@ def test_pick_port_skips_occupied_port() -> None:
         sock.close()
 
 
+def test_port_is_free_treats_time_wait_as_usable() -> None:
+    """服务端先关连接留下 TIME_WAIT 时，端口仍算可用（服务能立刻重绑）。
+
+    CI（Linux）在 ``test_runner_drains_inflight_request_and_refuses_new_ones``
+    上就栽在这里：uvicorn 收尾时关掉 keep-alive 连接，127.0.0.1:<port> 进入
+    TIME_WAIT，**不带 SO_REUSEADDR** 的 bind 报 EADDRINUSE，被误判成"端口还
+    被占用"。Windows 上 TIME_WAIT 不阻止 bind，所以这条在 Windows 恒真；
+    真正的回归验证在 Linux CI（以及 WSL）上跑。
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.listen(1)
+    client = socket.create_connection(("127.0.0.1", port), timeout=2)
+    accepted, _ = listener.accept()
+    accepted.close()  # 服务端先关 → 服务端持有 TIME_WAIT
+    time.sleep(0.1)
+    client.close()
+    listener.close()
+
+    assert port_is_free(port) is True
+
+
 @WINDOWS_ONLY
 def test_autostart_roundtrip_hkcu() -> None:
     value_name = f"LiuHaoAIOS_pytest_{os.getpid()}"
