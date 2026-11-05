@@ -43,6 +43,33 @@
   --os-glow: 0 0 0 1px rgba(77, 141, 255, 0.22), 0 0 32px rgba(77, 141, 255, 0.16);
   --os-grid-line: rgba(77, 141, 255, 0.09);
   color-scheme: dark;
+
+  /* ---- 科幻层语义令牌（叠加在 --os-* 之上，不替换现有取值）---- */
+  --sc-bg-deep: #03060e;
+  --sc-hairline: rgba(120, 190, 255, 0.14);
+  --sc-cyan: #35e0ff;
+  --sc-gold: #ffc93c;
+  --sc-accent-ink: #06121f;
+  --sc-font-ui: system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --sc-font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Consolas,
+    'Liberation Mono', monospace;
+  --sc-space-1: 4px;
+  --sc-space-2: 8px;
+  --sc-space-3: 12px;
+  --sc-space-4: 16px;
+  --sc-space-5: 20px;
+  --sc-space-6: 24px;
+  --sc-space-7: 32px;
+  --sc-space-8: 40px;
+  --sc-space-9: 48px;
+  --sc-space-10: 64px;
+  --sc-dur-hover: 80ms;
+  --sc-dur-state: 120ms;
+  --sc-dur-enter: 180ms;
+  --sc-dur-layout: 240ms;
+  --sc-ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --sc-ease-in: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ---------- 令牌：浅色（网页版默认） ---------- */
@@ -76,6 +103,15 @@
   --os-glow: 0 0 0 1px rgba(47, 111, 228, 0.16), 0 0 24px rgba(47, 111, 228, 0.1);
   --os-grid-line: rgba(47, 111, 228, 0.08);
   color-scheme: light;
+
+  --sc-bg-deep: #e9effa;
+  --sc-hairline: rgba(47, 111, 228, 0.1);
+  --sc-cyan: #0096b8;
+  --sc-gold: #a8730a;
+  --sc-accent-ink: #ffffff;
+  /* 浅底文字专用墨色（实底填充色不变）。 */
+  --os-ok-ink: #0a7a5b;
+  --os-warn-ink: #8a5606;
 }
 
 /* ---------- 基础 ---------- */
@@ -93,8 +129,9 @@ body {
 body {
   background: var(--os-bg);
   color: var(--os-text);
-  font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system,
-    'Segoe UI', sans-serif;
+  /* 只用系统字体栈：不下载字体、不引入未核实许可证的字体文件。
+     原先首选 'Inter' 但仓库没有自带字体，实际总是回落，属于死配置。 */
+  font-family: var(--sc-font-ui);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -128,6 +165,16 @@ select {
   background: var(--os-bg);
   background-image: var(--os-bg-grad);
   background-attachment: fixed;
+}
+
+/* 深色大画布铺一层 32px 静态网格 + 地平线光（规范 4.1）。
+   只做一次绘制、不带动画；手机端与浅色主题不铺（浅色网格像草稿纸）。 */
+[data-theme='dark']:not([data-mode='mobile']) .os-app {
+  background-image:
+    linear-gradient(var(--os-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--os-grid-line) 1px, transparent 1px),
+    var(--os-bg-grad);
+  background-size: 32px 32px, 32px 32px, auto;
 }
 
 [data-mode='web'] .os-app {
@@ -495,7 +542,10 @@ select {
   border-radius: 14px;
   background: var(--os-panel);
   border: 1px solid var(--os-border-soft);
-  box-shadow: var(--os-shadow);
+  /* 受光面 + 投影：比纯黑阴影更像一块实体面板（规范 4.4 L1）。 */
+  box-shadow:
+    inset 0 1px 0 var(--sc-hairline),
+    var(--os-shadow);
 }
 
 .os-card-head {
@@ -547,6 +597,50 @@ select {
   margin-bottom: 16px;
 }
 
+/* "需要我"：一条静态决策带。数字用等宽字形，便于快速扫读；
+   色调只表达"当前是否有异常"，不靠动画吸引注意。 */
+.os-attention {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 18px;
+  padding: 9px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--os-border-soft);
+  background: var(--os-panel-2);
+  font-size: 12px;
+  color: var(--os-text-dim);
+}
+
+.os-attention-lead {
+  font-weight: 650;
+  letter-spacing: 0.3px;
+  color: var(--os-text);
+}
+
+.os-attention-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.os-attention-item strong {
+  font-family: var(--sc-font-mono);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+  color: var(--os-ok-ink);
+}
+
+.os-attention-item[data-tone='warn'] strong {
+  color: var(--os-warn-ink);
+}
+
+.os-attention-clear {
+  margin-left: auto;
+  color: var(--os-text-faint);
+}
+
 [data-mode='web'] .os-kpis {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -556,7 +650,9 @@ select {
   border-radius: 14px;
   background: var(--os-panel);
   border: 1px solid var(--os-border-soft);
-  box-shadow: var(--os-shadow);
+  box-shadow:
+    inset 0 1px 0 var(--sc-hairline),
+    var(--os-shadow);
   position: relative;
   overflow: hidden;
 }
@@ -577,10 +673,14 @@ select {
 
 .os-kpi-value {
   margin-top: 6px;
-  font-size: 25px;
+  font-size: 28px;
   font-weight: 680;
   letter-spacing: -0.4px;
   font-variant-numeric: tabular-nums;
+}
+
+[data-mode='mobile'] .os-kpi-value {
+  font-size: 21px;
 }
 
 .os-kpi-foot {
@@ -977,6 +1077,123 @@ select {
   padding: 24px;
   background: var(--os-bg);
   background-image: var(--os-bg-grad);
+}
+
+/* 桌面端：左品牌/状态栏 + 右登录卡（规范 6.1）。网页/手机保持单卡居中。 */
+.os-login-aside {
+  display: none;
+}
+
+[data-theme='dark']:not([data-mode='mobile']) .os-login {
+  background-image:
+    linear-gradient(var(--os-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--os-grid-line) 1px, transparent 1px),
+    var(--os-bg-grad);
+  background-size: 32px 32px, 32px 32px, auto;
+  background-attachment: fixed;
+}
+
+[data-mode='desktop'] .os-login {
+  grid-template-columns: minmax(0, 1fr) 396px;
+  column-gap: 56px;
+  justify-items: center;
+  padding: 48px 64px;
+}
+
+[data-mode='desktop'] .os-login-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 520px;
+  justify-content: center;
+}
+
+[data-mode='desktop'] .os-login-card .os-login-brand {
+  /* 左栏已经承担品牌区，卡内不重复。 */
+  display: none;
+}
+
+.os-login-aside-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--os-accent);
+}
+
+.os-login-aside-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--os-accent) 35%, transparent);
+  background: var(--os-accent-soft);
+}
+
+.os-login-aside-title {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--os-text);
+}
+
+.os-login-aside-en {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--os-text-dim);
+}
+
+.os-login-status {
+  border-top: 1px solid var(--os-border-soft);
+  border-bottom: 1px solid var(--os-border-soft);
+  padding: 10px 0;
+}
+
+.os-login-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 34px;
+  font-size: 12.5px;
+  color: var(--os-text-dim);
+}
+
+.os-login-status-row > span:last-child {
+  color: var(--os-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.os-login-status-row > span[data-tone='ok'] {
+  color: var(--os-ok);
+}
+
+.os-login-status-row > span[data-tone='warn'] {
+  color: var(--os-warn);
+}
+
+.os-login-status-row > span[data-tone='muted'] {
+  color: var(--os-text-faint);
+}
+
+.os-login-aside-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-warn);
+}
+
+/* 地平线光：唯一装饰，静态，不参与动画。 */
+[data-mode='desktop'] .os-login-aside::after {
+  content: '';
+  display: block;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--sc-cyan), transparent);
+  opacity: 0.45;
 }
 
 .os-login-card {
@@ -1487,4 +1704,23 @@ select {
   * {
     transition: none !important;
   }
+}
+
+/* 手机端：输入控件字号 16px，避免 iOS 聚焦时页面缩放；决策带压缩间距。 */
+[data-mode='mobile'] .os-input input,
+[data-mode='mobile'] .os-input textarea {
+  font-size: 16px;
+}
+
+[data-mode='mobile'] .os-attention {
+  gap: 4px 12px;
+  padding: 8px 12px;
+}
+
+[data-mode='mobile'] .os-attention-item strong {
+  font-size: 15px;
+}
+
+[data-mode='mobile'] .os-attention-clear {
+  margin-left: 0;
 }

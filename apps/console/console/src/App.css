@@ -940,7 +940,6 @@ html, body, #root {
 
 .holo-ring.r1 {
   inset: 12px;
-  animation: spin 12s linear infinite;
 }
 
 .holo-ring.r1::before {
@@ -949,13 +948,11 @@ html, body, #root {
   inset: -5px;
   border-radius: 50%;
   border: 1px dashed rgba(56, 217, 255, 0.22);
-  animation: spin-rev 20s linear infinite;
 }
 
 .holo-ring.r2 {
   inset: 26px;
   border-color: rgba(47, 128, 255, 0.3);
-  animation: spin-rev 16s linear infinite;
 }
 
 .holo-human {
@@ -975,7 +972,6 @@ html, body, #root {
   color: rgba(234, 246, 255, 0.7);
   font-size: 11px;
   font-weight: 600;
-  animation: float 5s ease-in-out infinite;
 }
 
 .jarvis-intro { text-align: center; }
@@ -1715,4 +1711,95 @@ html, body, #root {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── 对话时间线 + 流式前沿（P1）────────────────────────────────── */
+/* 会话脊柱：一条 1px 竖线从第一条消息走到最后一条。静态、不闪烁。 */
+.chat-log { position: relative; }
+.chat-log::before {
+  content: '';
+  position: absolute;
+  left: 24px;
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(77, 141, 255, 0.35) 8%,
+    rgba(77, 141, 255, 0.35) 92%,
+    transparent
+  );
+  pointer-events: none;
+}
+
+.chat-row { position: relative; }
+.chat-row.assistant .chat-avatar {
+  /* 助手节点带一圈细环，和脊柱连成"执行节点"。 */
+  box-shadow: 0 0 0 1px rgba(53, 224, 255, 0.4);
+}
+
+/* 流式前沿：只在真实 streaming 状态出现（data-streaming 由 React 设置），
+   不是常驻动画。 */
+.chat-row[data-streaming='true'] .chat-bubble {
+  border-left: 2px solid var(--sc-cyan, #35e0ff);
+  box-shadow: -8px 0 14px -8px rgba(53, 224, 255, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
+}
+
+/* ── 主图 HUD 框（P1）──────────────────────────────────────────── */
+/* 只在审计趋势主图外框加两个角标，静态；不叠加扫描线/动画。 */
+.os-hud {
+  position: relative;
+  padding: 2px;
+}
+
+.os-hud::before,
+.os-hud::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.os-hud::before {
+  top: 0;
+  left: 0;
+  border-top: 1px solid var(--sc-cyan, #35e0ff);
+  border-left: 1px solid var(--sc-cyan, #35e0ff);
+}
+
+.os-hud::after {
+  right: 0;
+  bottom: 0;
+  border-right: 1px solid var(--sc-gold, #ffc93c);
+  border-bottom: 1px solid var(--sc-gold, #ffc93c);
+}
+
+/* ── 减弱动效（全局）───────────────────────────────────────────── */
+/* 系统偏好或设置页开关任一成立，就停掉动画与过渡：
+   这是"同屏动画 ≤3"之外的最后一道保险，也避免前庭不适。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-reduced-motion='true'] *,
+html[data-reduced-motion='true'] *::before,
+html[data-reduced-motion='true'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }

@@ -99,6 +99,57 @@ export function Login({ mode, onSuccess }: LoginProps) {
 
   return (
     <div className="os-login">
+      {/* 桌面端左栏：只放真实信息（凭据状态、可登录人数、当前形态），
+          不放"安全运行 99.9%"这类编造的 HUD 数字。手机/网页端整列隐藏。 */}
+      <aside className="os-login-aside">
+        <div className="os-login-aside-brand">
+          <div className="os-login-aside-mark">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 2.6l7.4 4.3v8.6L12 19.8 4.6 15.5V6.9z"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinejoin="round"
+              />
+              <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+            </svg>
+          </div>
+          <div>
+            <div className="os-login-aside-title">鎏灏智能中枢</div>
+            <div className="os-login-aside-en">LiuHao AI OS</div>
+          </div>
+        </div>
+
+        <div className="os-login-status">
+          <div className="os-login-status-row">
+            <span>登录凭据</span>
+            <span data-tone={config ? (notConfigured ? 'warn' : 'ok') : 'muted'}>
+              {config ? (notConfigured ? '未配置（无法登录）' : '已配置') : '读取中…'}
+            </span>
+          </div>
+          <div className="os-login-status-row">
+            <span>可登录人类</span>
+            <span>{config ? config.login_eligible_humans : '—'}</span>
+          </div>
+          <div className="os-login-status-row">
+            <span>当前形态</span>
+            <span>{CLIENT_LABEL[mode]}</span>
+          </div>
+          <div className="os-login-status-row">
+            <span>会话有效期</span>
+            <span>
+              {config ? `${Math.round(config.token.ttl_seconds / 3600)} 小时` : '—'}
+            </span>
+          </div>
+        </div>
+
+        {notConfigured && (
+          <p className="os-login-aside-note">
+            未配置凭据时登录会 fail-closed。先运行下方命令登记人类身份，再回到这里登录。
+          </p>
+        )}
+      </aside>
+
       <form className="os-login-card" onSubmit={submit}>
         <div className="os-login-brand">
           <div className="os-login-mark">

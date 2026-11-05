@@ -78,8 +78,63 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
     }
   }, [ready.data])
 
+  const attention = useMemo(() => {
+    const checks = ready.data?.checks ?? {}
+    const degraded = Object.keys(checks).filter(
+      (name) => checks[name]?.status !== 'healthy',
+    ).length
+    const recent = activity.data?.activity ?? []
+    const failed = recent.filter(
+      (item) =>
+        item.outcome === 'error' ||
+        item.outcome === 'failure' ||
+        item.outcome === 'failed' ||
+        item.outcome === 'deny',
+    ).length
+    return {
+      degraded,
+      failed,
+      recent: recent.length,
+      modelReady: provider.isReal,
+    }
+  }, [ready.data, activity.data, provider.isReal])
+
   return (
     <div className="os-grid">
+      {/* ---------- 需要我 ----------
+          只用可追溯的真实信号：/v1/ready 的异常检查、近 30 条审计里的失败/拒绝、
+          /v1/health 的模型真实性。没有"待审批"数据源就不编造它。 */}
+      <div className="os-span-12">
+        <div className="os-attention" role="status" aria-label="需要我关注">
+          <span className="os-attention-lead">需要我</span>
+          <span
+            className="os-attention-item"
+            data-tone={attention.degraded > 0 ? 'warn' : 'ok'}
+          >
+            <strong>{ready.data ? attention.degraded : '—'}</strong>
+            项依赖异常
+          </span>
+          <span
+            className="os-attention-item"
+            data-tone={attention.failed > 0 ? 'warn' : 'ok'}
+          >
+            <strong>{activity.data ? attention.failed : '—'}</strong>
+            条失败/拒绝（近 {attention.recent || 30} 条事件）
+          </span>
+          <span
+            className="os-attention-item"
+            data-tone={attention.modelReady ? 'ok' : 'warn'}
+          >
+            <strong>{attention.modelReady ? '真实' : '模拟'}</strong>
+            模型状态
+          </span>
+          {attention.degraded === 0 &&
+            attention.failed === 0 &&
+            attention.modelReady && (
+              <span className="os-attention-clear">当前无需处理</span>
+            )}
+        </div>
+      </div>
       {/* ---------- KPI ---------- */}
       <div className="os-span-12">
         <div className="os-kpis">
@@ -274,29 +329,31 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
             const labels = points.map((point) => point.date.slice(5))
             return (
               <>
-                <LineChart
-                  labels={labels}
-                  series={[
-                    {
-                      key: 'total',
-                      label: '全部事件',
-                      values: points.map((point) => point.total),
-                      color: '#4d8dff',
-                    },
-                    {
-                      key: 'allowed',
-                      label: '放行',
-                      values: points.map((point) => point.allowed),
-                      color: '#2ee6a8',
-                    },
-                    {
-                      key: 'denied',
-                      label: '拒绝',
-                      values: points.map((point) => point.denied),
-                      color: '#ff5d6c',
-                    },
-                  ]}
-                />
+                <div className="os-hud">
+                  <LineChart
+                    labels={labels}
+                    series={[
+                      {
+                        key: 'total',
+                        label: '全部事件',
+                        values: points.map((point) => point.total),
+                        color: '#4d8dff',
+                      },
+                      {
+                        key: 'allowed',
+                        label: '放行',
+                        values: points.map((point) => point.allowed),
+                        color: '#2ee6a8',
+                      },
+                      {
+                        key: 'denied',
+                        label: '拒绝',
+                        values: points.map((point) => point.denied),
+                        color: '#ff5d6c',
+                      },
+                    ]}
+                  />
+                </div>
                 <div className="os-legend">
                   <Dot tone="accent" label={<>全部事件</>} />
                   <Dot tone="ok" label={<>放行</>} />

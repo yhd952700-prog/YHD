@@ -18,6 +18,7 @@ import { humanDuration, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
 import { Card, Dot } from '../components/ui'
 import { ModelManager } from '../components/ModelManager'
+import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
 import {
   IconCheck,
   IconDesktop,
@@ -52,6 +53,8 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
   // 安装提示：桌面端会触发 beforeinstallprompt，手机端（iOS Safari）不会 —— 后者
   // 只能手动"添加到主屏幕"。拿不到事件时如实提示手动方式，而不是放一个按了没反应的按钮。
   const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null)
+  // 减弱动效：系统偏好默认生效；这里的手动开关会持久化并覆盖它。
+  const [reducedMotion, setReducedMotionState] = useState(() => getReducedMotion())
   // 初始值用惰性初始化器取：在 effect 里 setState 会多跑一轮渲染，而这里根本不需要
   // 订阅变化 —— `appinstalled` 事件已经覆盖了"装完之后变成 standalone"这一种变化。
   const [standalone, setStandalone] = useState(() => {
@@ -166,6 +169,23 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
               <IconRefresh size={15} /> 跟随形态
             </span>
             <span className="os-choice-desc">清除手动覆盖，回到形态默认</span>
+          </button>
+          <button
+            className="os-choice-option"
+            data-selected={reducedMotion ? 'true' : 'false'}
+            aria-pressed={reducedMotion}
+            onClick={() => {
+              const next = !reducedMotion
+              setReducedMotionState(next)
+              setReducedMotion(next)
+            }}
+          >
+            <span className="os-choice-title">
+              {reducedMotion && <IconCheck size={15} />} 减弱动效
+            </span>
+            <span className="os-choice-desc">
+              停掉脉冲、闪烁与旋转；系统「减少动态效果」开启时默认启用
+            </span>
           </button>
         </div>
       </Card>

@@ -304,7 +304,11 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                 </div>
               ) : (
                 messages.map((m, i) => (
-                  <div key={i} className={`chat-row ${m.role}`}>
+                  <div
+                    key={i}
+                    className={`chat-row ${m.role}`}
+                    data-streaming={m.streaming ? 'true' : undefined}
+                  >
                     <div className="chat-avatar">{m.role === 'user' ? '我' : 'J'}</div>
                     <div className="chat-bubble">
                       {m.content || (m.streaming ? <span className="cursor" /> : '…')}

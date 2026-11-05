@@ -40,6 +40,7 @@ import { useDeviceMode } from './lib/mode'
 import { useApi } from './lib/api'
 import type { HealthPayload, RosterPayload } from './lib/contracts'
 import { deriveProviderStatus } from './lib/providerStatus'
+import { applyReducedMotion, getReducedMotion } from './lib/reducedMotion'
 import {
   PolicyAuthError,
   describeToken,
@@ -123,6 +124,12 @@ function readInitialPage(): string {
 
 function App() {
   const device = useDeviceMode()
+
+  // 动效偏好：系统 reduced-motion 默认生效，设置页可手动覆盖。
+  useEffect(() => {
+    applyReducedMotion(getReducedMotion())
+  }, [])
+
   const [session, setSession] = useState<Session | null>(() => getSession())
   const [active, setActive] = useState<string>(() => readInitialPage())
   const [query, setQuery] = useState('')
