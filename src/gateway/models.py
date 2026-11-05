@@ -21,7 +21,7 @@ import socket
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -119,6 +119,96 @@ class TestPayload(BaseModel):
 
 def _store():
     return get_model_config_store()
+
+
+#: Built-in provider presets. Only defaults for base_url/model -- never keys.
+#: The console fills the form from these; a preset is not a credential source.
+_PROVIDER_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
+    "openai": {
+        "label": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+    },
+    "deepseek": {
+        "label": "DeepSeek",
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+    },
+    "moonshot": {
+        "label": "Moonshot",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-8k",
+    },
+    "anthropic": {
+        "label": "Anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "model": "claude-3-5-sonnet-latest",
+    },
+    "google": {
+        "label": "Google",
+        "base_url": None,
+        "model": "gemini-1.5-flash",
+    },
+    "ollama": {
+        "label": "Ollama（本地）",
+        "base_url": "http://127.0.0.1:11434",
+        "model": "llama3.1:8b",
+    },
+}
+
+
+def _normalize_url(value: Optional[str]) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+def _local_ollama_urls() -> set:
+    """URLs that are unambiguously the local Ollama service."""
+    configured = (
+        os.environ.get("OLLAMA_BASE_URL")
+        or os.environ.get("OLLAMA_HOST")
+        or ""
+    ).strip()
+    if configured and not configured.startswith(("http://", "https://")):
+        configured = f"http://{configured}"
+    urls = {
+        "http://127.0.0.1:11434",
+        "http://localhost:11434",
+    }
+    if configured:
+        urls.add(configured)
+    return {_normalize_url(u) for u in urls}
+
+
+def _is_local_ollama(raw: Optional[str]) -> bool:
+    return _normalize_url(raw) in _local_ollama_urls()
+
+
+def _validate_base_url(
+    raw: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    stored_url: Optional[str] = None,
+) -> str:
+    """Single validation entry point used by save/update/test/use paths.
+
+    * only ``http``/``https``;
+    * freshly supplied public targets must resolve to public addresses;
+    * the one narrow exception is the local Ollama service: either the
+      provider is ``ollama``, or the value is byte-identical to the stored
+      value and that stored value *is* the local Ollama URL (the historical
+      allowance). An arbitrary private address is never accepted.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    allow_private = _is_local_ollama(value) and (
+        str(provider or "").strip().lower() == "ollama"
+        or (
+            bool(stored_url)
+            and _normalize_url(value) == _normalize_url(stored_url)
+        )
+    )
+    return _assert_url_allowed(value, allow_private=allow_private)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +317,28 @@ def list_providers() -> Dict[str, Any]:
     }
 
 
+@router.get("/models/presets")
+def list_provider_presets() -> Dict[str, Any]:
+    """提供方预设：只填默认 ``base_url`` 与模型名，**不预填任何密钥**。
+
+    刻意放在 ``/models/{model_id}`` 之前注册，否则会被动态路由吞掉。
+    """
+    from ..ai.model_config import PROVIDERS_WITHOUT_KEY
+
+    return {
+        "presets": [
+            {
+                "provider": name,
+                **preset,
+                "requires_api_key": name not in PROVIDERS_WITHOUT_KEY,
+                "api_key": None,
+            }
+            for name, preset in _PROVIDER_PRESETS.items()
+        ],
+        "note": "预设仅用于填写端点与模型名；API Key 必须由用户自行输入。",
+    }
+
+
 @router.get("/models/{model_id}")
 def get_model(model_id: str) -> Dict[str, Any]:
     return _with_pricing(_run_guarded(_store().get_public, model_id))
@@ -236,6 +348,7 @@ def get_model(model_id: str) -> Dict[str, Any]:
 def create_model(payload: ModelPayload, admin=Depends(require_model_admin)) -> Dict[str, Any]:
     # 新增时就地标注定价状态（见 pricing_status）：管理者必须当场看到
     # "这个模型在价目表里没有条目"，而不是等到成本算不出来才发现。
+    payload.base_url = _validate_base_url(payload.base_url, provider=payload.provider) or None
     return _with_pricing(
         _run_guarded(_store().create, payload.model_dump(), _principal(admin))
     )
@@ -246,6 +359,12 @@ def update_model(
     model_id: str, payload: ModelUpdatePayload, admin=Depends(require_model_admin)
 ) -> Dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
+    if "base_url" in data:
+        stored = _run_guarded(_store().get_public, model_id) or {}
+        provider = data.get("provider") or stored.get("provider")
+        data["base_url"] = _validate_base_url(
+            data["base_url"], provider=provider, stored_url=stored.get("base_url")
+        ) or None
     return _with_pricing(
         _run_guarded(_store().update, model_id, data, _principal(admin))
     )
@@ -309,7 +428,83 @@ def _sanitize(message: str, api_key: Optional[str]) -> str:
     return message[:200]
 
 
+def _resolve_addresses(raw: str) -> frozenset:
+    """Resolve a probe target to a set of literal IP strings."""
+    parsed = urlparse((raw or "").strip())
+    if not parsed.hostname:
+        return frozenset()
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(parsed.hostname, port, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError, ValueError):
+        return frozenset()
+    return frozenset(str(info[4][0]) for info in infos)
+
+
+def _guard_probe_target(cfg: Dict[str, Any]) -> None:
+    """Reject cross-origin redirects and DNS changes before the real probe.
+
+    Two TOCTOU gaps are narrowed here:
+
+    1. ``_assert_url_allowed`` resolved the host earlier; if it resolves
+       differently now, a DNS-rebinding target is in play. Re-resolve and
+       refuse on mismatch.
+    2. Native SDKs may follow redirects. We issue a strict ``follow_redirects=
+       False`` preflight; a cross-origin 3xx is refused instead of being
+       followed into a private network.
+
+    Limitation (documented, not silently ignored): we do not pin the socket
+    used by the provider SDK itself, so a server that only redirects *after*
+    a specific request is not detectable here. Fully pinning would require
+    changing the provider HTTP clients (outside this module's ownership).
+    """
+    url = str(cfg.get("base_url") or "").strip()
+    if not url:
+        return
+    before = _resolve_addresses(url)
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx is an openai dependency
+        logger.warning("httpx unavailable; redirect/DNS preflight skipped for %s", url)
+        return
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(5.0),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.get(url)
+    except Exception as exc:  # noqa: BLE001 - connectivity is the probe's job
+        logger.debug("redirect preflight for %s failed: %s", url, exc)
+    else:
+        status = int(response.status_code)
+        if 300 <= status < 400:
+            location = response.headers.get("location") or ""
+            target = urljoin(url, location) if location else ""
+            origin = urlparse(url)
+            redirected = urlparse(target)
+            if (
+                not location
+                or redirected.scheme != origin.scheme
+                or redirected.netloc != origin.netloc
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "base_url 返回跨域重定向，已拒绝（防 SSRF 绕过）："
+                        f"{status} -> {target or '(no location)'}"
+                    ),
+                )
+    after = _resolve_addresses(url)
+    if before and after and before != after:
+        raise HTTPException(
+            status_code=400,
+            detail="base_url 解析结果在测试期间发生变化，疑似 DNS rebinding，已拒绝",
+        )
+
+
 def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    _guard_probe_target(cfg)
     api_key = cfg.get("api_key")
     provider = provider_from_config(cfg)
     started = time.monotonic()
@@ -352,8 +547,24 @@ def _audit_probe(cfg: Dict[str, Any], outcome: str, reason: str) -> None:
             provider=str(cfg.get("provider") or ""),
             model=str(cfg.get("model") or ""),
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # Never silently drop an audit write: it is the only durable record that
+        # a connection test happened at all.
+        logger.error(
+            "failed to emit model test-connection audit event: %s",
+            exc,
+            exc_info=True,
+        )
+        try:
+            from ..observability.metrics import provider_errors_total
+
+            provider_errors_total.labels(
+                provider=str(cfg.get("provider") or "unknown"),
+                model=str(cfg.get("model") or "unknown"),
+                error_type="audit_emit_failed",
+            ).inc()
+        except Exception:  # pragma: no cover - metrics must not break requests
+            pass
 
 
 _PRIVATE_IP_FLAGS = (
@@ -432,20 +643,20 @@ def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
     # 放行私网/回环。这样既关掉了"任意地址探测内网"的 SSRF 面，又不至于把
     # 模型管理界面的"测试当前编辑配置"对本地模型一刀切禁掉。
     raw_caller = (payload.base_url or "").strip()
-    stored_url = (
-        _assert_url_allowed((stored.get("base_url") or ""), allow_private=True)
-        if stored
-        else ""
+    stored_url = stored.get("base_url") if stored else None
+    caller_url = _validate_base_url(
+        raw_caller,
+        provider=provider,
+        stored_url=stored_url,
     )
-    approved_private = bool(
-        raw_caller and stored_url and raw_caller.rstrip("/") == stored_url.rstrip("/")
+    resolved_url = caller_url or _validate_base_url(
+        stored_url, provider=provider, stored_url=stored_url
     )
-    caller_url = _assert_url_allowed(raw_caller, allow_private=approved_private)
     return {
         "name": stored.get("name") if stored else "connection-test",
         "provider": provider,
         "model": payload.model.strip(),
-        "base_url": caller_url or stored_url or None,
+        "base_url": resolved_url or None,
         "api_key": api_key,
         "timeout": min(float(payload.timeout), 20.0),
     }
@@ -462,7 +673,11 @@ def test_saved_model(model_id: str, admin=Depends(require_model_admin)) -> Dict[
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"模型配置不存在或已禁用：{model_id}")
     cfg = dict(cfg)
-    # 已保存配置：仅补 scheme 校验，允许私网/回环（本机模型服务的常规部署）。
-    cfg["base_url"] = _assert_url_allowed(cfg.get("base_url") or "", allow_private=True)
+    # 已保存配置：仅对本机 Ollama 保留私网/回环放行；其他私网地址重新收紧。
+    cfg["base_url"] = _validate_base_url(
+        cfg.get("base_url") or "",
+        provider=cfg.get("provider"),
+        stored_url=cfg.get("base_url"),
+    )
     cfg["timeout"] = min(float(cfg.get("timeout") or 30.0), 20.0)
     return _probe(cfg)
