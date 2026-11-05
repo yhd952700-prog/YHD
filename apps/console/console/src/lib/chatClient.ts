@@ -212,3 +212,95 @@ export function getLocalSessions(): string[] {
 export function saveLocalSessions(list: string[]): void {
   localStorage.setItem(SESSIONS_KEY, JSON.stringify(list));
 }
+
+const META_KEY = 'liuhao.session_meta';
+
+/** 会话标题元数据：用"首条用户消息"而不是截断的会话 ID 展示。 */
+export interface SessionMeta {
+  title: string;
+  /** 秒级时间戳（与审计/页面其他时间字段一致）。 */
+  updatedAt: number;
+}
+
+/** 读取本地会话元数据（id → 标题 + 更新时间）。 */
+export function getSessionMeta(): Record<string, SessionMeta> {
+  try {
+    const raw = localStorage.getItem(META_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, SessionMeta>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 持久化本地会话元数据。 */
+export function saveSessionMeta(meta: Record<string, SessionMeta>): void {
+  try {
+    localStorage.setItem(META_KEY, JSON.stringify(meta));
+  } catch {
+    // 存储满/隐私模式：忽略，会话本身仍可用。
+  }
+}
+
+/** 从历史里取首条用户消息做标题（压掉换行与多余空白）。 */
+export function titleFromHistory(history: HistoryEntry[]): string {
+  const first = history.find(
+    (entry) => entry.role === 'user' && entry.content.trim(),
+  );
+  return makeSessionTitle(first?.content ?? '');
+}
+
+/** 截取一段可读标题（避免把整段业务指令塞进下拉框）。 */
+export function makeSessionTitle(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length > 16 ? `${clean.slice(0, 16)}…` : clean;
+}
+
+/**
+ * 把聊天的原始错误翻译成人话；原始文本留给"详情"折叠。
+ *
+ * 典型原始错误：`请求失败（404）：{"detail":"Ollama error 404: {...}"}` ——
+ * 直接展示等于让用户读后端内部 JSON，既看不懂也不知道该做什么。
+ */
+export function friendlyChatError(err: unknown): { text: string; raw: string } {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
+    return { text: '无法连接到后端服务，请确认服务已启动', raw };
+  }
+  if (raw.includes('401')) {
+    return { text: '会话已失效，请重新登录', raw };
+  }
+  if (raw.includes('403')) {
+    return { text: '当前账号没有对话权限', raw };
+  }
+  if (raw.includes('429')) {
+    return { text: '请求过于频繁，请稍后重试', raw };
+  }
+  if (raw.includes('408') || lower.includes('timeout') || lower.includes('超时')) {
+    return { text: '请求超时，请稍后重试', raw };
+  }
+  if (
+    lower.includes('ollama error 404') ||
+    lower.includes('model not found') ||
+    lower.includes('model_not_found') ||
+    lower.includes('不存在') ||
+    lower.includes('not found')
+  ) {
+    return { text: '模型不存在，请在模型管理中确认模型名', raw };
+  }
+  if (raw.includes('404')) {
+    return { text: '模型不存在，请在模型管理中确认模型名', raw };
+  }
+  if (/请求失败（5\d\d）/.test(raw) || lower.includes('server error')) {
+    return { text: 'AI 服务暂时不可用，请稍后重试', raw };
+  }
+  if (lower.includes('error')) {
+    return { text: 'AI 服务返回错误，请稍后重试；若持续出现请查看详情', raw };
+  }
+  return { text: '对话失败，请稍后重试', raw };
+}

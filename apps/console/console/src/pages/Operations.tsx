@@ -18,6 +18,7 @@ import type { AuthConfig } from '../lib/auth'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
 import { eventLabel, humanDuration, outcomeLabel, outcomeTone, safeText } from '../lib/format'
+import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { DonutChart, LineChart } from '../components/charts'
 import { Card, Dot, Guard } from '../components/ui'
 
@@ -245,7 +246,7 @@ interface MetricsPayload {
   }
 }
 
-export function SystemStatus() {
+export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
   // 503 必须接受：降级响应用的是同一个 body，丢掉它就等于把最关键的信息丢了。
   const ready = useApi<HealthPayload>('/v1/ready', REFRESH, [503])
   const metrics = useApi<MetricsPayload>('/v1/metrics', 60_000)
@@ -420,7 +421,17 @@ export function SystemStatus() {
               <dt>注册表条目</dt>
               <dd>{formatCompact(data.totals.registry_entries)}</dd>
               <dt>当前 provider</dt>
-              <dd>{data.providers.active?.type ?? '—'}</dd>
+              <dd>
+                {provider.provider?.type ?? '—'}
+                {provider.provider && (
+                  <>
+                    {' '}
+                    <span className="os-badge" data-tone={provider.posture.tone}>
+                      {provider.posture.badge}
+                    </span>
+                  </>
+                )}
+              </dd>
             </dl>
           )}
         </Guard>

@@ -222,6 +222,14 @@ export interface HealthPayload {
   checks?: Record<string, HealthCheckEntry>
   errors?: string[]
   timestamp?: number
+  /**
+   * `/v1/health` 的 `ai_provider`（后端 `ai_provider_status()` 原样返回）。
+   *
+   * 模型状态的**单一事实源**：总览的 provider 面板、对话页的"是否真实模型"、
+   * 运维页的"当前 provider"都读这一份，不再各自从名册或 summary 推导 ——
+   * 三处曾经互相矛盾，是因为三处各算各的。
+   */
+  ai_provider?: ProviderInfo
 }
 
 /** `/v1/ready` 的就绪载荷。

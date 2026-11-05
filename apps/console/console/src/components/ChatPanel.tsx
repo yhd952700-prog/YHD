@@ -1,16 +1,24 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   deleteSession,
+  friendlyChatError,
   getLocalSessions,
   getSessionId,
+  getSessionMeta,
   getUserId,
   loadHistory,
+  makeSessionTitle,
   newSessionId,
   saveLocalSessions,
+  saveSessionMeta,
   setSessionId,
   setUserId,
   streamChat,
+  titleFromHistory,
 } from '../lib/chatClient'
+import type { SessionMeta } from '../lib/chatClient'
+import { relativeTime } from '../lib/format'
+import type { ActiveProviderStatus } from '../lib/providerStatus'
 
 interface ToolCall {
   name: string
@@ -23,17 +31,21 @@ interface Message {
   content: string
   streaming?: boolean
   tools?: ToolCall[]
-}
-
-function shortId(id: string): string {
-  const s = id.startsWith('session-') ? id.slice('session-'.length) : id
-  return s.length > 10 ? `${s.slice(0, 10)}…` : s
+  /** 失败时的人话 + 原始错误（原始文本默认折叠）。 */
+  error?: { text: string; raw: string }
 }
 
 /** 快捷指令 chips（点击填入输入框）。 */
 const QUICK = ['市场分析', '销售机会', '客户策略', 'SEO优化', '数据分析']
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  /** 模型状态唯一来源（/v1/health → lib/providerStatus）。 */
+  provider: ActiveProviderStatus
+  /** "去配置模型"：跳到模型管理。 */
+  onConfigureModel: () => void
+}
+
+export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -45,11 +57,61 @@ export function ChatPanel() {
     const local = getLocalSessions()
     return local.includes(cur) ? local : [cur, ...local]
   })
+  // 会话标题：首条用户消息前 16 字 + 更新时间。绝不再展示截断的 session ID。
+  const [meta, setMeta] = useState<Record<string, SessionMeta>>(() => getSessionMeta())
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
+  /** 合并写一条会话元数据（标题只在为空时写入，更新时间每次都刷）。 */
+  const recordMeta = useCallback((id: string, patch: Partial<SessionMeta>) => {
+    setMeta((prev) => {
+      const next = {
+        ...prev,
+        [id]: {
+          title: patch.title ?? prev[id]?.title ?? '',
+          updatedAt: patch.updatedAt ?? prev[id]?.updatedAt ?? 0,
+        },
+      }
+      saveSessionMeta(next)
+      return next
+    })
+  }, [])
+
   const scrollToBottom = useCallback(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+  }, [])
+
+  // 首次进入把当前会话的历史接回来：否则刷新后对话记录"看起来消失了"，
+  // 下拉框也只能显示"未命名会话"。只取一次，且不覆盖用户已开始输入的内容。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const data = await loadHistory(sessionId, userId)
+        if (!alive) return
+        const historyMessages = data.history.map((h) => ({
+          role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
+          content: h.content,
+        }))
+        setMessages((prev) => (prev.length === 0 ? historyMessages : prev))
+        const title = titleFromHistory(data.history)
+        if (title) {
+          setMeta((prev) => {
+            if (prev[sessionId]?.title) return prev
+            const next = { ...prev, [sessionId]: { title, updatedAt: prev[sessionId]?.updatedAt ?? 0 } }
+            saveSessionMeta(next)
+            return next
+          })
+        }
+      } catch {
+        // 首次加载失败不阻塞输入；发送时仍会给出明确错误。
+      }
+    })()
+    return () => {
+      alive = false
+    }
+    // 只在挂载时恢复当前会话。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const switchSession = useCallback(
@@ -66,11 +128,13 @@ export function ChatPanel() {
             content: h.content,
           })),
         )
+        const title = titleFromHistory(data.history)
+        if (title) recordMeta(id, { title })
       } catch {
         setMessages([])
       }
     },
-    [sessionId, sending, userId],
+    [sessionId, sending, userId, recordMeta],
   )
 
   const newSession = useCallback(() => {
@@ -97,6 +161,13 @@ export function ChatPanel() {
         saveLocalSessions(next)
         return next
       })
+      setMeta((prev) => {
+        if (!prev[id]) return prev
+        const next = { ...prev }
+        delete next[id]
+        saveSessionMeta(next)
+        return next
+      })
       if (id === sessionId) newSession()
     },
     [sessionId, newSession],
@@ -108,6 +179,10 @@ export function ChatPanel() {
       if (!value || sending) return
       setInput('')
       setSending(true)
+      recordMeta(sessionId, {
+        title: meta[sessionId]?.title || makeSessionTitle(value),
+        updatedAt: Date.now() / 1000,
+      })
       setMessages((prev) => [
         ...prev,
         { role: 'user', content: value },
@@ -147,15 +222,16 @@ export function ChatPanel() {
           next[next.length - 1] = { ...last, streaming: false }
           return next
         })
+        recordMeta(sessionId, { updatedAt: Date.now() / 1000 })
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        // 原始错误（可能是整段后端 JSON）只进"详情"，正文给可行动的中文。
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           next[next.length - 1] = {
             ...last,
-            content: last.content + `\n\n[后端连接失败] ${msg}`,
             streaming: false,
+            error: friendlyChatError(err),
           }
           return next
         })
@@ -164,8 +240,20 @@ export function ChatPanel() {
         scrollToBottom()
       }
     },
-    [input, sending, sessionId, userId, scrollToBottom],
+    [input, sending, sessionId, userId, scrollToBottom, recordMeta, meta],
   )
+
+  /** 下拉框标签：首条消息 + 更新时间；没有标题时显示"未命名会话"（绝不显示 ID）。 */
+  const sessionLabel = useCallback(
+    (id: string) => {
+      const m = meta[id]
+      const title = m?.title || '未命名会话'
+      return m?.updatedAt ? `${title} · ${relativeTime(m.updatedAt)}` : title
+    },
+    [meta],
+  )
+
+  const showModelWarning = !provider.isReal
 
   return (
     <section className="jarvis-zone">
@@ -193,15 +281,42 @@ export function ChatPanel() {
           </div>
 
           <div className="jarvis-chat">
+            {/* 模型状态：未配置真实模型时必须在输入框上方明示，而不是让用户
+                以为对面是一个真实模型。判据来自 /v1/health（单一事实源）。 */}
+            {showModelWarning && (
+              <div className="chat-model-banner" role="status">
+                <span className="chat-model-badge">模拟回复</span>
+                <span className="chat-model-detail">
+                  {provider.label}。{provider.detail}
+                </span>
+                <button className="chat-model-action" onClick={onConfigureModel}>
+                  去配置模型
+                </button>
+              </div>
+            )}
+
             <div className="chat-log" ref={listRef}>
               {messages.length === 0 ? (
-                <div className="chat-empty">请下达业务指令，Jarvis 将为您实时分析。</div>
+                <div className="chat-empty">
+                  {provider.isReal
+                    ? '请下达业务指令，Jarvis 将为您实时分析。'
+                    : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
+                </div>
               ) : (
                 messages.map((m, i) => (
                   <div key={i} className={`chat-row ${m.role}`}>
                     <div className="chat-avatar">{m.role === 'user' ? '我' : 'J'}</div>
                     <div className="chat-bubble">
                       {m.content || (m.streaming ? <span className="cursor" /> : '…')}
+                      {m.error && (
+                        <div className="chat-error">
+                          <div className="chat-error-text">{m.error.text}</div>
+                          <details className="chat-error-raw">
+                            <summary>详情</summary>
+                            <pre>{m.error.raw}</pre>
+                          </details>
+                        </div>
+                      )}
                       {m.tools && m.tools.length > 0 && (
                         <div className="tool-calls">
                           {m.tools.map((t, j) => (
@@ -231,7 +346,11 @@ export function ChatPanel() {
                     send(input)
                   }
                 }}
-                placeholder="请输入您的业务指令..."
+                placeholder={
+                  provider.isReal
+                    ? '请输入您的业务指令...'
+                    : '未配置真实模型：当前发送将得到模拟回复'
+                }
                 rows={1}
                 disabled={sending}
               />
@@ -254,11 +373,11 @@ export function ChatPanel() {
               className="sess-select"
               value={sessionId}
               onChange={(e) => switchSession(e.target.value)}
-              title="切换会话"
+              title="切换会话（按首条消息命名）"
             >
               {sessions.map((id) => (
                 <option key={id} value={id}>
-                  {shortId(id)}
+                  {sessionLabel(id)}
                 </option>
               ))}
             </select>

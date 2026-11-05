@@ -1637,3 +1637,82 @@ html, body, #root {
   outline: 2px solid var(--gold, #ffc93c);
   outline-offset: 2px;
 }
+
+/* ── 对话：模型状态与错误（P0）──────────────────────────────────── */
+.chat-model-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 201, 60, 0.36);
+  border-radius: 8px;
+  background: rgba(255, 201, 60, 0.08);
+  font-size: 11px;
+  color: var(--text-hi);
+  line-height: 1.5;
+}
+
+.chat-model-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 201, 60, 0.2);
+  color: var(--gold);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.chat-model-detail {
+  flex: 1 1 180px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.chat-model-action {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 201, 60, 0.5);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gold);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.chat-model-action:hover {
+  background: rgba(255, 201, 60, 0.14);
+}
+
+.chat-error {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--red);
+  border-radius: 4px;
+  background: rgba(255, 93, 108, 0.07);
+}
+
+.chat-error-text {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #ffb3ba;
+}
+
+.chat-error-raw summary {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.chat-error-raw pre {
+  max-height: 180px;
+  margin: 4px 0 0;
+  overflow: auto;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

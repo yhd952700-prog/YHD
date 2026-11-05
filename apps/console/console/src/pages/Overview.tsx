@@ -25,14 +25,15 @@ import type {
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
 import { eventLabel, outcomeLabel, outcomeTone, relativeTime, safeText } from '../lib/format'
-import { providerPosture, providerRowSubtitle } from '../lib/honesty'
+import { providerRowSubtitle } from '../lib/honesty'
+import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { BrainMap, DonutChart, LineChart, NetworkGraph } from '../components/charts'
 import { Card, Dot, Guard } from '../components/ui'
 
 const REFRESH_LIVE = 15_000
 const REFRESH_SLOW = 60_000
 
-export function Overview({ query }: { query: string }) {
+export function Overview({ query, provider }: { query: string; provider: ActiveProviderStatus }) {
   const summary = useApi<DashboardSummary>('/v1/dashboard/summary', REFRESH_LIVE)
   const activity = useApi<ActivityPayload>('/v1/dashboard/activity?limit=30', REFRESH_LIVE)
   const roster = useApi<RosterPayload>('/v1/dashboard/roster', REFRESH_SLOW)
@@ -370,32 +371,25 @@ export function Overview({ query }: { query: string }) {
           onRetry={roster.reload}
         >
           {(data) => {
-            // 诚实性判据的**唯一来源**是当前生效的那个 provider。逐项渲染时用它，
-            // 而不是各算各的 —— 否则同一个"是不是真的"问题会在 7 行里得到 7 个
-            // 不同答案，那比全都不显示更糟。
-            const posture = providerPosture(data)
+            // 真实性判据**只**来自 /v1/health（见 lib/providerStatus.ts）。名册这里
+            // 只负责"每一项配没配密钥"以及"哪一项是当前生效的"两份事实。
+            // 此前这里逐行从名册的 mode/simulated 再推导一遍，和 /v1/health、
+            // /v1/dashboard/summary 各说各话，于是同一个问题有三个答案。
             return (
             <>
               <div className="os-list">
                 {data.items.map((item) => {
-                  const itemPosture = providerPosture({
-                    mode: data.mode,
-                    simulated: data.simulated,
-                  })
-                  // configured 仍决定"能不能接通"这一层事实（缺密钥就是接不通），
-                  // 但它绝不能替代诚实性 —— 下面那一行字两者都要说。
+                  const isActive = item.type === provider.provider?.type
                   const dotTone = !item.configured
                     ? item.registered
                       ? 'var(--os-warn)'
                       : 'var(--os-text-faint)'
-                    : itemPosture.tone === 'ok'
-                      ? 'var(--os-ok)'
-                      : itemPosture.tone === 'danger'
-                        ? 'var(--os-danger)'
-                        : 'var(--os-warn)'
-                  const badgeTone = !item.configured
-                    ? 'warn'
-                    : itemPosture.tone
+                    : isActive
+                      ? provider.isReal
+                        ? 'var(--os-ok)'
+                        : 'var(--os-danger)'
+                      : 'var(--os-text-dim)'
+                  const badgeTone = !item.configured ? 'warn' : isActive ? provider.posture.tone : 'muted'
                   return (
                   <div className="os-row" key={item.type}>
                     <span
@@ -407,7 +401,7 @@ export function Overview({ query }: { query: string }) {
                     <div className="os-row-main">
                       <div className="os-row-title">
                         {item.label}
-                        {item.active && (
+                        {isActive && (
                           <>
                             {' '}
                             <span className="os-badge" data-tone="accent">
@@ -425,22 +419,22 @@ export function Overview({ query }: { query: string }) {
                         )}
                       </div>
                       <div className="os-row-sub">
-                        {providerRowSubtitle({
-                          configured: item.configured,
-                          requiredEnv: item.required_env,
-                          // 逐项都以**当前生效 provider**的诚实性为准：现在生效的
-                          // 是不是假 provider，决定了界面上任何一句"可用于调用"
-                          // 该不该被相信，所以这里必须显式传，不能默认省略。
-                          posture: itemPosture,
-                        })}
+                        {item.configured && !isActive
+                          ? '已配置，但当前未生效'
+                          : providerRowSubtitle({
+                              configured: item.configured,
+                              requiredEnv: item.required_env,
+                              // 真实性只说一次、且只说当前生效 provider 的那份。
+                              posture: provider.posture,
+                            })}
                       </div>
                     </div>
                     <span className="os-badge" data-tone={badgeTone}>
                       {!item.configured
                         ? '未配置'
-                        : itemPosture.isReal
-                          ? '就绪'
-                          : itemPosture.badge}
+                        : isActive
+                          ? provider.posture.badge
+                          : '已配置'}
                     </span>
                   </div>
                   )
@@ -453,17 +447,17 @@ export function Overview({ query }: { query: string }) {
                     <>
                       当前 provider{' '}
                       <span className="os-legend-value">
-                        {roster.data?.providers.active.type ?? '—'}
+                        {provider.provider?.type ?? '—'}
                       </span>
                     </>
                   }
                 />
                 <Dot
-                  tone={posture.tone}
+                  tone={provider.posture.tone}
                   label={
                     <>
-                      {posture.isReal ? '真实调用' : '非真实调用'} ·{' '}
-                      <span className="os-legend-value">{posture.badge}</span>
+                      {provider.isReal ? '真实调用' : '非真实调用'} ·{' '}
+                      <span className="os-legend-value">{provider.posture.badge}</span>
                     </>
                   }
                 />
@@ -479,10 +473,9 @@ export function Overview({ query }: { query: string }) {
                   }
                 />
               </div>
-              {/* 一句话把"能否接通"和"是否真实"分开说清。这是后端三个诚实性字段
-                  第一次真正抵达人眼的地方 —— 在此之前它们从未被任何界面渲染过。 */}
+              {/* 一句话把"能否接通"和"是否真实"分开说清；来源固定为 /v1/health。 */}
               <p className="os-note" style={{ marginTop: 8 }}>
-                <span>{posture.verdict}。</span>
+                <span>{provider.detail}。</span>
               </p>
             </>
             )

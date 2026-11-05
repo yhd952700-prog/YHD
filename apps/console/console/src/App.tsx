@@ -39,7 +39,7 @@ import type { Session } from './lib/auth'
 import { useDeviceMode } from './lib/mode'
 import { useApi } from './lib/api'
 import type { HealthPayload, RosterPayload } from './lib/contracts'
-import { providerPosture } from './lib/honesty'
+import { deriveProviderStatus } from './lib/providerStatus'
 import {
   PolicyAuthError,
   describeToken,
@@ -344,6 +344,20 @@ function App() {
   const ready = useApi<HealthPayload>(authed ? '/v1/ready' : null, 30_000, [503])
   const roster = useApi<RosterPayload>(authed ? '/v1/dashboard/roster' : null, 60_000)
   const authConfig = useApi<AuthConfig>(authed ? '/v1/auth/config' : null, 0)
+  // 模型状态的单一事实源：只读 /v1/health 的 ai_provider。
+  // 名册仍负责"各项有没有密钥"，但**不再**提供"是不是真实模型"的判据 ——
+  // 两个问题分开回答，界面才不会出现三份互相矛盾的模型状态。
+  const health = useApi<HealthPayload>(authed ? '/v1/health' : null, 15_000)
+  const provider = useMemo(
+    () =>
+      deriveProviderStatus({
+        provider: health.data?.ai_provider,
+        error: health.error,
+        loading: health.loading,
+        reload: health.reload,
+      }),
+    [health.data, health.error, health.loading, health.reload],
+  )
 
   const notifications = useMemo<OsNotification[]>(() => {
     const items: OsNotification[] = []
@@ -441,44 +455,43 @@ function App() {
             .join('；'),
         })
       }
-
-      // 3b) 诚实性：现在生效的 provider 是不是假的。这不是"配置没配好"，而是
-      // "配置看起来是好的、但拿到的结果是编造的" —— 对信任的破坏更大，所以排在
-      // 配置类之后、但只要成立就用 danger。
-      //
-      // 此前这条事实完全没有出口：后端一直在 `/v1/health`、`/v1/ready`、
-      // `/v1/dashboard/summary` 里播报 `mode`/`simulated`（注释原文"Never silently
-      // pretends a simulation is real"），而名册端点没带、前端类型也没声明，于是
-      // 一个跑在内置 mock 上的部署在控制台上看起来和一个接了真模型的一模一样。
-      // 现在它是一条真会出现在通知栏里的字。
-      const posture = providerPosture({
-        mode: providers.mode ?? providers.active?.mode,
-        simulated: providers.simulated ?? providers.active?.simulated,
-      })
-      if (!posture.isReal) {
-        items.push({
-          id: 'provider-not-real',
-          tone: posture.tone === 'danger' ? 'danger' : 'warn',
-          title:
-            posture.simulated && posture.isMock
-              ? '当前为模拟输出（mock + 模拟执行）'
-              : posture.isMock
-                ? '当前生效的是 mock provider'
-                : '执行内核处于模拟路径',
-          detail: `${posture.verdict}。生效 provider：${providers.active?.type ?? '—'}。`,
-        })
-      }
     } else if (roster.error) {
       items.push({
         id: 'provider-error',
         tone: 'warn',
-        title: '无法读取 provider 状态',
+        title: '无法读取 provider 配置',
         detail: roster.error,
       })
     }
 
+    // 3b) 诚实性 **只** 来自 /v1/health 的 ai_provider（见 lib/providerStatus.ts）。
+    // 这里不再从名册 mode/simulated 推导 —— 那正是三处模型状态互相矛盾的来源。
+    if (!provider.provider) {
+      items.push({
+        id: 'provider-health-unknown',
+        tone: 'warn',
+        title: '无法读取模型状态',
+        detail: provider.detail,
+      })
+    } else if (!provider.isReal) {
+      items.push({
+        id: 'provider-not-real',
+        tone: provider.posture.tone === 'danger' ? 'danger' : 'warn',
+        title: provider.isMock ? '当前生效的是 mock provider（模拟回复）' : provider.label,
+        detail: `${provider.detail}（生效 provider：${provider.provider.type ?? '—'}）`,
+      })
+    }
+
     return items
-  }, [authConfig.data, authConfig.error, ready.data, ready.error, roster.data, roster.error])
+  }, [
+    authConfig.data,
+    authConfig.error,
+    ready.data,
+    ready.error,
+    roster.data,
+    roster.error,
+    provider,
+  ])
 
   // ---------------------------------------------------------------------
   // 渲染
@@ -508,11 +521,13 @@ function App() {
         <p className="os-page-sub">{meta.sub}</p>
       </div>
 
-      {active === 'overview' && <Overview query={query} />}
+      {active === 'overview' && <Overview query={query} provider={provider} />}
       {active === 'employees' && <Roster query={query} />}
       {active === 'business' && <BusinessCenter query={query} />}
       {active === 'knowledge' && <KnowledgeCenter query={query} />}
-      {active === 'workbench' && <Workbench />}
+      {active === 'workbench' && (
+        <Workbench provider={provider} onConfigureModel={() => navigate('settings')} />
+      )}
       {active === 'data' && <DataCenter query={query} />}
       {active === 'approval' && (
         <div className="os-grid">
@@ -530,7 +545,7 @@ function App() {
       {active === 'trust' && <Trust query={query} />}
       {active === 'network' && <Network query={query} />}
       {active === 'identity' && <Identity query={query} />}
-      {active === 'status' && <SystemStatus />}
+      {active === 'status' && <SystemStatus provider={provider} />}
       {active === 'preflight' && <Preflight />}
       {active === 'settings' && (
         <Settings
