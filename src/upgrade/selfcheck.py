@@ -115,7 +115,11 @@ def run_self_check(
             conn = sqlite3.connect(str(path))
             try:
                 conn.execute(f"PRAGMA busy_timeout={config.busy_timeout_ms}")
-                conn.execute("SELECT 1")
+                # ``SELECT 1`` is a constant expression: some SQLite builds
+                # never touch the file while preparing it, so a corrupt
+                # database passed the gate as healthy. Read the schema instead
+                # -- that forces page 1 to be parsed on every build.
+                conn.execute("SELECT count(*) FROM sqlite_master")
             finally:
                 conn.close()
         except sqlite3.Error as exc:
