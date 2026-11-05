@@ -95,6 +95,8 @@ class VectorStore:
     def __init__(self) -> None:
         # In-memory storage: doc_id -> (embedding, metadata)
         self._store: Dict[str, Tuple[List[float], Dict[str, Any]]] = {}
+        # content_hash -> document_id (content-level dedup across file names)
+        self._content_hashes: Dict[str, str] = {}
         # Protects both reads and writes: ``search`` iterates the dict while
         # ``insert`` may be mutating it (concurrent ingest + chat retrieval).
         self._lock = threading.RLock()
@@ -216,6 +218,33 @@ class VectorStore:
                 self._store[doc_id] = (embedding, metadata)
             return len(removed)
 
+    def upsert_document(
+        self,
+        prefix: str,
+        items: List[Tuple[str, List[float], Dict[str, Any]]],
+        content_hash: str,
+        document_id: str,
+    ) -> Dict[str, Any]:
+        """Content-addressed insert: identical text owned by another doc is skipped."""
+        with self._lock:
+            existing = self._content_hashes.get(content_hash)
+            if existing is not None and existing != document_id:
+                return {
+                    "deduplicated": True,
+                    "matched_document_id": existing,
+                    "removed": 0,
+                }
+            removed = self.replace_prefix(prefix, items)
+            for hash_value, owner in list(self._content_hashes.items()):
+                if owner == document_id:
+                    del self._content_hashes[hash_value]
+            self._content_hashes[content_hash] = document_id
+            return {
+                "deduplicated": False,
+                "matched_document_id": None,
+                "removed": removed,
+            }
+
     def count(self) -> int:
         """Return the number of stored embeddings."""
         with self._lock:
@@ -264,6 +293,15 @@ class PersistentVectorStore(VectorStore):
                 embedding TEXT NOT NULL,
                 metadata TEXT NOT NULL DEFAULT '{}',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_document_hashes (
+                content_hash TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
@@ -385,41 +423,108 @@ class PersistentVectorStore(VectorStore):
         payload = list(items)
         with self._lock:
             try:
-                self._conn.execute(
-                    "DELETE FROM knowledge_vectors "
-                    "WHERE substr(doc_id, 1, ?) = ?",
-                    (len(prefix), prefix),
-                )
-                self._fts_delete_prefix(prefix)
-                for doc_id, embedding, metadata in payload:
-                    self._fts_upsert(doc_id, metadata)
-                    self._conn.execute(
-                        """
-                        INSERT INTO knowledge_vectors
-                            (doc_id, embedding, metadata, updated_at)
-                        VALUES (?, ?, ?, datetime('now'))
-                        ON CONFLICT(doc_id) DO UPDATE SET
-                            embedding = excluded.embedding,
-                            metadata = excluded.metadata,
-                            updated_at = datetime('now')
-                        """,
-                        (
-                            doc_id,
-                            json.dumps(list(embedding)),
-                            json.dumps(metadata, ensure_ascii=False, default=str),
-                        ),
-                    )
+                self._write_chunks_locked(prefix, payload)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+            return self._swap_memory_locked(prefix, payload)
 
-            removed = [key for key in self._store if key.startswith(prefix)]
-            for key in removed:
-                del self._store[key]
-            for doc_id, embedding, metadata in payload:
-                self._store[doc_id] = (embedding, metadata)
-            return len(removed)
+    def _write_chunks_locked(
+        self,
+        prefix: str,
+        payload: List[Tuple[str, List[float], Dict[str, Any]]],
+    ) -> None:
+        """Delete+reinsert chunks under ``prefix``; caller owns lock/transaction."""
+        self._conn.execute(
+            "DELETE FROM knowledge_vectors WHERE substr(doc_id, 1, ?) = ?",
+            (len(prefix), prefix),
+        )
+        self._fts_delete_prefix(prefix)
+        for doc_id, embedding, metadata in payload:
+            self._fts_upsert(doc_id, metadata)
+            self._conn.execute(
+                """
+                INSERT INTO knowledge_vectors
+                    (doc_id, embedding, metadata, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    embedding = excluded.embedding,
+                    metadata = excluded.metadata,
+                    updated_at = datetime('now')
+                """,
+                (
+                    doc_id,
+                    json.dumps(list(embedding)),
+                    json.dumps(metadata, ensure_ascii=False, default=str),
+                ),
+            )
+
+    def _swap_memory_locked(
+        self,
+        prefix: str,
+        payload: List[Tuple[str, List[float], Dict[str, Any]]],
+    ) -> int:
+        """Replace in-memory chunks after a successful commit; caller owns lock."""
+        removed = [key for key in self._store if key.startswith(prefix)]
+        for key in removed:
+            del self._store[key]
+        for doc_id, embedding, metadata in payload:
+            self._store[doc_id] = (embedding, metadata)
+        return len(removed)
+
+    def upsert_document(
+        self,
+        prefix: str,
+        items: List[Tuple[str, List[float], Dict[str, Any]]],
+        content_hash: str,
+        document_id: str,
+    ) -> Dict[str, Any]:
+        """Content-level dedup + atomic replace, in one lock and one transaction.
+
+        If the same normalized text is already owned by a different
+        ``document_id`` nothing is written and the caller gets
+        ``matched_document_id`` back. Old hash rows for this document are
+        released on every successful re-import, so editing a document frees its
+        previous content.
+        """
+        if not prefix:
+            raise ValueError("upsert_document requires a non-empty prefix")
+        payload = list(items)
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT document_id FROM knowledge_document_hashes "
+                    "WHERE content_hash = ?",
+                    (content_hash,),
+                ).fetchone()
+                if row is not None and row["document_id"] != document_id:
+                    return {
+                        "deduplicated": True,
+                        "matched_document_id": row["document_id"],
+                        "removed": 0,
+                    }
+                self._conn.execute(
+                    "DELETE FROM knowledge_document_hashes WHERE document_id = ?",
+                    (document_id,),
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO knowledge_document_hashes "
+                    "(content_hash, document_id, created_at) "
+                    "VALUES (?, ?, datetime('now'))",
+                    (content_hash, document_id),
+                )
+                self._write_chunks_locked(prefix, payload)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            removed = self._swap_memory_locked(prefix, payload)
+            return {
+                "deduplicated": False,
+                "matched_document_id": None,
+                "removed": removed,
+            }
 
     def delete(self, doc_id: str) -> bool:
         with self._lock:

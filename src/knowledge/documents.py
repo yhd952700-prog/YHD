@@ -7,6 +7,7 @@ store is the process-level SQLite singleton, so a restart keeps the corpus.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import uuid
@@ -25,6 +26,12 @@ def _safe_document_id(raw: Optional[str]) -> str:
     if not raw or not raw.strip():
         return uuid.uuid4().hex
     return _ID_SAFE.sub("-", raw.strip())[:128]
+
+
+def content_hash(text: str) -> str:
+    """Whitespace-insensitive content hash (same text, different line endings)."""
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _hit_text(metadata: Dict[str, Any]) -> str:
@@ -130,7 +137,23 @@ class KnowledgeDocumentService:
             )
             for index, (chunk, vector) in enumerate(zip(chunks, vectors))
         ]
-        store.replace_prefix(f"{document_id}#", items)
+        outcome = store.upsert_document(
+            f"{document_id}#", items, content_hash(text), document_id
+        )
+        if outcome.get("deduplicated"):
+            matched = outcome.get("matched_document_id")
+            logger.info(
+                "knowledge ingest: document=%s skipped (duplicate of %s)",
+                document_id,
+                matched,
+            )
+            return {
+                "document_id": document_id,
+                "chunks": 0,
+                "vectors": store.count(),
+                "deduplicated": True,
+                "matched_document_id": matched,
+            }
 
         logger.info(
             "knowledge ingest: document=%s chunks=%d provider=%s",
@@ -142,6 +165,8 @@ class KnowledgeDocumentService:
             "document_id": document_id,
             "chunks": len(chunks),
             "vectors": store.count(),
+            "deduplicated": False,
+            "matched_document_id": None,
         }
 
     # -- read ---------------------------------------------------------------
