@@ -12,6 +12,7 @@ from src.knowledge.vector_store import (
     query_tokens,
     reciprocal_rank_fusion,
     tokenize_for_index,
+    weighted_reciprocal_rank_fusion,
 )
 
 
@@ -49,6 +50,22 @@ class TestRRF:
         fused = reciprocal_rank_fusion([["a", "b"], ["b", "c"]])
         assert [doc_id for doc_id, _ in fused][0] == "b"
 
+    def test_one_strong_lexical_hit_outranks_two_weak_siblings(self):
+        # 真实故障：正确章节词法第 1，相邻章节词法第 3/4 各拿一份向量名次，
+        # 平铺 RRF 会把正确章节排到后面；BM25 强度加权应让它回到第一。
+        strong = weighted_reciprocal_rank_fusion(
+            ["a", "b", "c", "d"], [("d", 1.0), ("a", 0.25), ("b", 0.2)]
+        )
+        assert [doc_id for doc_id, _ in strong][0] == "d"
+        flat = reciprocal_rank_fusion(
+            [["a", "b", "c", "d"], ["d", "a", "b"]]
+        )
+        assert [doc_id for doc_id, _ in flat][0] == "a"
+
+    def test_lexical_weight_is_bounded_and_monotonic(self):
+        fused = dict(weighted_reciprocal_rank_fusion(["a"], [("a", 1.0), ("b", 0.4)]))
+        assert fused["a"] > fused["b"] > 0.0
+
 
 class TestHybridSearch:
     def test_lexical_path_recovers_a_chunk_filtered_out_by_threshold(self, tmp_path):
@@ -76,6 +93,44 @@ class TestHybridSearch:
         results, info = store.hybrid_search("XG-9000", [1.0, 0.0], top_k=3)
         assert results[0][0] == "b#0"
         assert info["mode"] == "hybrid"
+        store.close()
+
+    def test_section_with_strong_bm25_is_promoted_over_vector_favourites(self, tmp_path):
+        # 真实模型曾出现 section_hit@5 = 0：文档对了、章节全错。这里用向量路
+        # 刻意压低正确章节（cos=0），相邻章节占满向量前几名，只有 BM25 强度
+        # 能把正确章节拉回第一。
+        store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
+        store.insert(
+            "manual#0",
+            [0.0, 1.0],
+            {"text": "数据库连接池耗尽导致超时，处理办法是调大 pool_size。", "document_id": "manual"},
+        )
+        store.insert(
+            "manual#1",
+            [1.0, 0.0],
+            {"text": "数据库连接池是应用访问数据库的入口。", "document_id": "manual"},
+        )
+        store.insert(
+            "manual#2",
+            [0.995, 0.0999],
+            {"text": "连接池参数包括最大连接数和空闲连接。", "document_id": "manual"},
+        )
+        store.insert(
+            "other#0",
+            [0.99, 0.14],
+            {"text": "其他章节讨论数据库备份策略。", "document_id": "other"},
+        )
+
+        results, info = store.hybrid_search(
+            "数据库连接池耗尽导致超时怎么处理",
+            [1.0, 0.0],
+            top_k=4,
+            abstain=False,
+        )
+        assert results[0][0] == "manual#0"
+        assert "manual#0" in [doc_id for doc_id, _, _ in results[:5]]
+        assert info["mode"] == "hybrid"
+        assert info["lexical_weighting"] == "bm25"
         store.close()
 
     def test_replacing_a_document_removes_stale_fts_terms(self, tmp_path):

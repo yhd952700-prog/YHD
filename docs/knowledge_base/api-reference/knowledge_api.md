@@ -403,6 +403,24 @@ Content-Type: application/json
 `confident = absolute and (relative or strong_match or lexical)`；不置信时返回
 空结果。
 
+### 混合检索：候选与重排是两个独立阶段
+
+- **候选阶段**：向量取 top `candidate_k = max(20, top_k * 4)` 个，FTS5/BM25 取同样
+  数量；两者决定“哪些片段有机会被看见”。
+- **重排阶段**：按 BM25 强度加权的 RRF。向量列表贡献 `1/(60 + rank)`；词法列表贡献
+  `bm25_weight/(60 + rank)`，`bm25_weight` 以本次最强命中为 1.0 归一化。这样
+  “一个精确命中”不会因为名次票数少而被“两三个近似命中”压过。
+  `retrieval.lexical_weighting` 为 `"bm25"`；无 FTS5 时降级为纯向量
+  （`mode = "vector"`，该字段为 `null`），行为与之前一致。
+
+修正依据（2026-11-06，同一套 34 篇 / 30 条评测集）：修复前真实模型
+`section_hit@5 = 0.0` —— 正确章节词法排第 1（BM25 `-22.6`）、向量排第 30，
+平铺 RRF 后被两个相邻章节（词法第 3/4，BM25 `-5.9`）反超，用户会看到
+“文档对了、段落全错”。修复后正确章节排第 1、`section_hit@5 = 1.0`。
+排查过程中“提高 candidate_k”“缩小 chunk”“去掉 `context_header` 或给
+nomic 加 `search_query:` / `search_document:` 前缀”都实测无效并已回滚
+（36 个 chunk 本来就全在 40 候选窗口内，正确章节从未缺席候选）。
+
 ### 阈值必须随 embedding 模型重测（硬性规则）
 
 `min_top_score` / `min_score_gap` / `strong_match_similarity` 是针对**某一个
@@ -423,16 +441,17 @@ python -m src.knowledge.evaluation --provider all    # hashing + 所有已检测
 
 当前默认 `0.08 / 0.05 / 0.85` **只适用于词面嵌入（hashing embedder）**：在 34
 篇文档、30 条查询（29 条有答案 + 1 条无答案）的评测集上，有答案召回 0.8621、
-无答案弃答 1.0、误弃答 0。
+无答案弃答 1.0、误弃答 0、`section_hit@5` 1.0；BM25 加权融合使 MRR 从 0.8621
+降到 0.8448（两条查询里 BM25 更偏好干扰文档，而词面嵌入本来排对了），这是记录
+在案的取舍，不改变任何阈值。
 
-真实模型（本机 Ollama `nomic-embed-text`，768 维，同一套评测集，2026-11-06）：
-有答案召回@5 `0.8793`、@10 `0.8966`、MRR `0.7023`；无答案弃答 `1.0`；误弃答
-`0/29`。扫描建议阈值为 **0.65 / 0.05 / 0.85**（`holds_abstention=true`）；起决定
-作用的是 0.65 的绝对下限，gap 保持词面默认值（评测数据无法区分备选值）。注意
-推荐余量很窄：有答案最低 top 分数 `0.6759`，无答案最高 top 分数 `0.6280`；
-`0.08` 在真实模型下几乎不筛任何候选，只能靠 gap 规则兜底。真实模型下
-`section_hit@5` 为 `0.0`（hashing 为 `1.0`），长文档的章节精度并未随语义召回
-一起提升，排查时不要只看召回。
+真实模型（本机 Ollama `nomic-embed-text`，768 维，同一套评测集，2026-11-06，
+BM25 加权融合之后）：有答案召回@5 `0.8966`、@10 `0.8966`、MRR `0.8534`；无答案
+弃答 `1.0`；误弃答 `0/29`；`section_hit@5` `1.0`。扫描建议阈值仍为
+**0.65 / 0.05 / 0.85**（`holds_abstention=true`）；起决定作用的是 0.65 的绝对
+下限，gap 保持词面默认值（评测数据无法区分备选值）。注意推荐余量很窄：有答案
+最低 top 分数 `0.6759`，无答案最高 top 分数 `0.6280`；`0.08` 在真实模型下几乎
+不筛任何候选，只能靠 gap 规则兜底。
 
 详细依据见
 [`src/knowledge/abstention.py`](../../../src/knowledge/abstention.py) 与

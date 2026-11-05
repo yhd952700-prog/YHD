@@ -55,16 +55,40 @@ a ``recommended`` threshold set produced by replaying the *same*
 embedding pass, and no re-implementation of the decision rule).
 
 Measured on 2026-11-06 with a real semantic model (Ollama ``nomic-embed-text``,
-768-dim cosine, same 34 documents / 30 queries):
+768-dim cosine, same 34 documents / 30 queries), **after** the BM25-weighted
+fusion fix described below:
 
-* ``answerable_recall@5`` **0.8793**, ``answerable_recall@10`` **0.8966**,
-  ``answerable_mrr`` **0.7023**;
+* ``answerable_recall@5`` **0.8966**, ``answerable_recall@10`` **0.8966**,
+  ``answerable_mrr`` **0.8534**;
 * ``no_answer_abstained`` **1.0**, ``false_abstention_rate`` **0.0**
   (``0/29``);
-* ``section_hit@5`` **0.0** -- a real regression versus the hashing baseline
-  (1.0): the long document is found, but the correct section is not in the
-  top 5. Semantic recall improved while section precision did not; do not
-  cherry-pick one number.
+* ``section_hit@5`` **1.0** -- the long document's correct section
+  (``pool_size``) is now first instead of absent from the top 5.
+
+Before the fix the same setup reported 0.8793 / 0.8966 / 0.7023, abstention
+1.0, no false abstentions, and ``section_hit@5`` **0.0**. The defect was not
+candidate coverage (all 36 chunks fit in the 40-candidate window), not chunk
+size, and not ``context_header`` placement; both of those were measured and
+reverted (see ``vector_store``). The cause was plain RRF discarding BM25
+magnitude: the correct chunk was lexical rank 1 (BM25 ``-22.6``) but two
+sibling sections at lexical ranks 3/4 (BM25 ``-5.9``) each collected vector
+rank contributions and outvoted it. Fusing the lexical list as
+``bm25_strength/(k+rank)`` puts the correct section first.
+
+The alternative fusion variants were measured one at a time on the same data
+(offline probe, document names not deduplicated, so its absolute MRR differs
+slightly from ``run_evaluation``): flat RRF -> section 0.0 / rank 6;
+``rrf + 0.01*bm25`` -> section 1.0 / rank 2; ``rrf + 0.02..0.10*bm25``,
+``bm25_strength/(k+rank)`` and ``0.5*cos + 0.5*bm25`` -> section 1.0 / rank 1
+with the best recall/MRR. The strength-weighted form was chosen because it
+adds no extra tuning constant; the alpha variants need one.
+
+The hashing (lexical) baseline deliberately keeps its own numbers rather than
+inheriting this model's result: recall 0.8621, no-answer abstention 1.0, false
+abstention 0.0, section 1.0, but ``answerable_mrr`` 0.8621 -> 0.8448 because on
+two queries BM25 prefers a distractor document that the lexical embedder had
+already ranked correctly. That is a recorded, accepted trade-off, not a
+threshold change.
 
 The sweep's recommended gate for that model is **min_top 0.65 / min_gap 0.05 /
 strong 0.85**, with ``holds_abstention=true``. The decisive rule is the 0.65
@@ -373,16 +397,22 @@ QUERIES: Tuple[EvalQuery, ...] = (
 # and compare against these numbers; "feels better" is not evidence.
 # This dict is **hashing-only**: real semantic models have their own score
 # distribution and their own recommended thresholds (see module docstring).
+# Measured 2026-11-06 after BM25-weighted fusion: ``mrr`` fell by 0.017
+# (0.8667 -> 0.85 mixed, 0.8621 -> 0.8448 answerable) because the lexical
+# embedder already ranked the answer first on two queries where BM25 prefers a
+# distractor document. Recall, section hit and both abstention groups are
+# unchanged, and the real semantic model gained on every group -- do not copy
+# that model's numbers onto this baseline.
 BASELINE: Dict[str, float] = {
     # legacy mixed averages (kept comparable with earlier commits)
     "recall@5": 0.8667,
     "recall@10": 0.8667,
-    "mrr": 0.8667,
+    "mrr": 0.85,
     "section_hit@5": 1.0,
     # group 1: recall over the 29 answerable queries
     "answerable_recall@5": 0.8621,
     "answerable_recall@10": 0.8621,
-    "answerable_mrr": 0.8621,
+    "answerable_mrr": 0.8448,
     # group 2: the 1 unanswerable query must be abstained (was 0.0 before the gate)
     "no_answer_abstained": 1.0,
     # group 3: answerable queries the gate must NOT reject

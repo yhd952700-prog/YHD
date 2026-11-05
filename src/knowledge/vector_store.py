@@ -12,6 +12,27 @@ vector table and fuses both rankings with Reciprocal Rank Fusion (RRF, k=60).
 Keyword-heavy queries (part numbers, ticket ids, product names) are where pure
 embeddings are weakest, so the lexical path is a real recall safety net.
 
+The lexical list is fused with its **BM25 strength**, not a flat rank weight
+(``weight/(rrf_k+rank)``, ``weight`` normalized so the best hit is 1.0). Plain
+RRF throws away BM25 magnitude, and that cost section precision on a real
+semantic model: one exact match (BM25 ``-22.6``) lost to two medium matches
+from sibling sections (BM25 ``-5.9``) because they occupied more ranks, so
+the document was found while the correct section was not in the top 5
+(``section_hit@5 = 0.0``). Measured 2026-11-06; the trade-off is recorded in
+``evaluation``: the hashing baseline keeps recall/abstention but loses ~0.017
+MRR because BM25 slightly prefers a distractor document, while the real model
+gained recall, MRR and section precision.
+
+Tried and ineffective for that defect (kept here so it is not re-attempted):
+
+* raising ``candidate_k`` -- the corpus has only 36 chunks and the correct
+  section was already inside the 40-candidate window; the stage was not the
+  bottleneck;
+* shrinking chunks -- the failing section is a single short paragraph;
+* dropping ``context_header`` or adding ``search_query:`` / ``search_document:``
+  prefixes -- the correct chunk stayed at vector rank 30+ in all four variants.
+
+
 Chinese tokenization is intentionally dependency-free: each CJK run is split
 into overlapping **bigrams** (``知识库`` -> ``知识 识库``) and ASCII words are
 kept verbatim. Known limits:
@@ -114,6 +135,27 @@ def reciprocal_rank_fusion(
     for ranked in ranked_lists:
         for rank, doc_id in enumerate(ranked, start=1):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def weighted_reciprocal_rank_fusion(
+    vector_ranked: Iterable[str],
+    lexical_ranked: Iterable[Tuple[str, float]],
+    rrf_k: int = 60,
+) -> List[Tuple[str, float]]:
+    """RRF with the lexical list scaled by its normalized BM25 strength.
+
+    The vector list contributes ``1/(k + rank)`` exactly as plain RRF. The
+    lexical list contributes ``weight/(k + rank)`` where ``weight`` is in
+    ``(0, 1]`` (1.0 for the best BM25 hit). A single strong keyword hit can
+    therefore outrank several weak sibling hits, which plain RRF cannot express
+    because it only sees positions.
+    """
+    scores: Dict[str, float] = {}
+    for rank, chunk_id in enumerate(vector_ranked, start=1):
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (rrf_k + rank)
+    for rank, (chunk_id, weight) in enumerate(lexical_ranked, start=1):
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (rrf_k + rank)
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
@@ -773,8 +815,16 @@ class PersistentVectorStore(VectorStore):
                     del self._content_hashes[value]
             return {"deleted": True, "chunks_removed": removed}
 
-    def _fts_search_ids(self, query_text: str, limit: int) -> List[str]:
-        """BM25-ordered chunk ids for ``query_text`` (empty when no FTS)."""
+    def _fts_search_scored(
+        self, query_text: str, limit: int
+    ) -> List[Tuple[str, float]]:
+        """BM25-ordered ``(chunk_id, weight)`` pairs (empty when no FTS).
+
+        SQLite's ``bm25()`` is negative (more negative = better), so weights are
+        normalized by the best score: 1.0 for the top hit, a fraction for weaker
+        matches. If ``bm25()`` ever returns non-negative values, fall back to
+        flat 1.0 weights (plain RRF behaviour) instead of dividing by ~0.
+        """
         if not self._fts_available:
             return []
         tokens = query_tokens(query_text)
@@ -784,7 +834,7 @@ class PersistentVectorStore(VectorStore):
         try:
             rows = self._conn.execute(
                 """
-                SELECT chunk_id FROM knowledge_fts
+                SELECT chunk_id, bm25(knowledge_fts) AS score FROM knowledge_fts
                 WHERE tokens MATCH ?
                 ORDER BY bm25(knowledge_fts)
                 LIMIT ?
@@ -794,7 +844,12 @@ class PersistentVectorStore(VectorStore):
         except sqlite3.OperationalError as exc:
             logger.warning("FTS query failed, falling back to vector-only: %s", exc)
             return []
-        return [row["chunk_id"] for row in rows]
+        if not rows:
+            return []
+        best = min(float(row["score"]) for row in rows)
+        if best >= 0.0:
+            return [(row["chunk_id"], 1.0) for row in rows]
+        return [(row["chunk_id"], float(row["score"]) / best) for row in rows]
 
     def hybrid_search(
         self,
@@ -807,6 +862,12 @@ class PersistentVectorStore(VectorStore):
         config: Optional[AbstentionConfig] = None,
     ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
         """Vector + BM25(FTS5) candidates fused with RRF, then gated.
+
+        The lexical list is fused with its normalized BM25 strength (see
+        ``weighted_reciprocal_rank_fusion``); this keeps the exact keyword hit
+        from being outvoted by several medium sibling hits. Both stages are
+        separate knobs: ``candidate_k`` decides what enters the fusion, the
+        weighted RRF decides the final top-``top_k``.
 
         Returns ``(hits, retrieval)``. ``retrieval`` exposes the finalized
         contract fields ``status`` (``"ok"`` / ``"no_relevant"``), ``reason``
@@ -823,7 +884,8 @@ class PersistentVectorStore(VectorStore):
                 query_embedding, top_k=candidate_k, threshold=threshold
             )
             vector_ids = [doc_id for doc_id, _, _ in vector_results]
-            lexical_ids = self._fts_search_ids(query_text, candidate_k)
+            lexical = self._fts_search_scored(query_text, candidate_k)
+            lexical_ids = [chunk_id for chunk_id, _ in lexical]
 
             similarities: Dict[str, float] = {}
             for chunk_id in set(vector_ids) | set(lexical_ids):
@@ -841,8 +903,8 @@ class PersistentVectorStore(VectorStore):
             )
 
             if lexical_ids:
-                fused = reciprocal_rank_fusion(
-                    [vector_ids, lexical_ids], rrf_k=rrf_k
+                fused = weighted_reciprocal_rank_fusion(
+                    vector_ids, lexical, rrf_k=rrf_k
                 )
                 ordered_ids = [doc_id for doc_id, _ in fused]
                 fused_scores = dict(fused)
@@ -881,6 +943,7 @@ class PersistentVectorStore(VectorStore):
                 "candidate_k": candidate_k,
                 "vector_candidates": len(vector_ids),
                 "lexical_candidates": len(lexical_ids),
+                "lexical_weighting": "bm25" if lexical_ids else None,
                 "rrf_k": rrf_k,
             }
         return results, info
