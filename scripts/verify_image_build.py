@@ -98,6 +98,11 @@ FORBIDDEN_HOST_PORTS = (8000, 8010, 9090, 9093)
 # Endpoints the contract promises.
 ENDPOINTS = ("/v1/health", "/v1/ready", "/v1/metrics/prometheus")
 
+#: Shared secret handed to the container AND presented on scrape. The metrics
+#: endpoint is fail-closed (403) without it, so an anonymous probe proves only
+#: that the gate works, not that export works. Dev-only value, NOT a credential.
+METRICS_TOKEN = "image-build-verify-token"
+
 # Substrings that indicate the process did NOT boot cleanly.
 LOG_ERROR_MARKERS = (
     "Traceback (most recent call last)",
@@ -147,10 +152,12 @@ def sha256_file(path: Path) -> Optional[str]:
     return h.hexdigest()
 
 
-def http_get(url: str, timeout: float = 5.0) -> tuple[int, str]:
+def http_get(url: str, timeout: float = 5.0,
+             headers: dict | None = None) -> tuple[int, str]:
     """Return (status_code, body). status_code 0 == transport-level failure."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", "replace")
             return int(resp.status), body
     except urllib.error.HTTPError as e:
@@ -366,6 +373,10 @@ def check_boot(image: str, container: str, host_port: int,
         "-e", "LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL",
         "-e", "AUDIT_DB_PATH=/app/data/audit_store.db",
         "-e", "DATABASE_URL=sqlite:////app/data/liuhao_ai_os.db",
+        # /v1/metrics/prometheus is fail-closed without this token, and this
+        # verifier is a legitimate scraper -- it must authenticate rather than
+        # ask the gateway to weaken its gate. Dev-only value; NOT a credential.
+        "-e", f"LIUHAO_METRICS_TOKEN={METRICS_TOKEN}",
         # dev-only placeholder, identical to the staging compose contract.
         # NOT a credential.
         "-e", "JWT_SECRET_KEY=staging-dev-only-insecure",
@@ -437,7 +448,9 @@ def check_boot(image: str, container: str, host_port: int,
     all_ok = True
     for ep in ENDPOINTS:
         url = base + ep
-        code, body = http_get(url, timeout=5.0)
+        headers = ({"Authorization": f"Bearer {METRICS_TOKEN}"}
+                   if ep == "/v1/metrics/prometheus" else None)
+        code, body = http_get(url, timeout=5.0, headers=headers)
         if ep == "/v1/metrics/prometheus":
             ok = code == 200 and bool(body.strip())
         else:

@@ -689,22 +689,29 @@ def check_observability():
         "import os, tempfile\n"
         "os.environ[\"AUDIT_DB_PATH\"] = os.path.join("
         "tempfile.mkdtemp(prefix=\"ready_audit_\"), \"audit_store.db\")\n"
+        # /v1/metrics/prometheus is fail-closed: it returns 403 unless
+        # LIUHAO_METRICS_TOKEN is set AND the scrape presents the matching
+        # bearer token (src/gateway/observability.py::_authorize_metrics).
+        # This harness is a legitimate scraper, so it configures a token and
+        # authenticates -- it must NOT be "fixed" by weakening that gate.
+        "os.environ[\"LIUHAO_METRICS_TOKEN\"] = \"readiness-scrape-token\"\n"
         "import sys\n"
         "sys.path.insert(0, '__REPO__')\n"
         "from fastapi.testclient import TestClient\n"
         "from src.gateway.main import get_app\n"
         "app = get_app()\n"
+        "_H = {'Authorization': 'Bearer readiness-scrape-token'}\n"
         "with TestClient(app) as c:\n"
         "    for _ in range(3):\n"
         "        c.get('/v1/health')\n"
-        "    r1 = c.get('/v1/metrics/prometheus')\n"
+        "    r1 = c.get('/v1/metrics/prometheus', headers=_H)\n"
         "    if r1.status_code != 200:\n"
         "        print('SCRAPE_STATUS', r1.status_code)\n"
         "        sys.exit(0)\n"
         "    b1 = r1.text\n"
         "    for _ in range(7):\n"
         "        c.get('/v1/health')\n"
-        "    b2 = c.get('/v1/metrics/prometheus').text\n"
+        "    b2 = c.get('/v1/metrics/prometheus', headers=_H).text\n"
         "    import re as _re\n"
         "    fams = sorted({ln.split()[2] for ln in b1.splitlines()\n"
         "                   if ln.startswith('# TYPE ')})\n"
