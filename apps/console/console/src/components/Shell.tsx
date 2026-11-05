@@ -158,15 +158,22 @@ export function Shell({
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          const label = item.key === 'settings' ? '我的' : item.label.replace('我AI', '')
+          // 底栏用短标签："我的"替代"系统设置"，"管家"替代"工作台"（对话入口）。
+          const label =
+            item.key === 'settings'
+              ? '我的'
+              : item.key === 'workbench'
+                ? '管家'
+                : item.label.replace('我AI', '')
           return (
             <button
               key={item.key}
               className="os-bottom-item"
+              data-key={item.key}
               aria-current={active === item.key ? 'page' : undefined}
               onClick={() => onNavigate(item.key)}
             >
-              <Icon size={19} />
+              <Icon size={item.key === 'workbench' ? 22 : 19} />
               <span>{label}</span>
             </button>
           )

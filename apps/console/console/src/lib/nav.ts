@@ -75,5 +75,11 @@ export const FOOTER_NAV: NavItem[] = [{ key: 'settings', label: '系统设置', 
 
 export const ALL_NAV: NavItem[] = [...PRIMARY_NAV, ...GOVERNANCE_NAV, ...FOOTER_NAV]
 
-/** 手机端底部导航：只放最常用的四个（含"我的"）。 */
-export const MOBILE_NAV_KEYS = ['overview', 'employees', 'approval', 'settings']
+/**
+ * 手机端底部导航：五项，含"我的"。
+ *
+ * `workbench`（管家 / 对话）必须在这里 —— 此前手机端四项里没有它，
+ * 于是"进入对话"在手机上没有任何一键入口，只能靠深层 URL 或外链。
+ * 五项是 390×844 下不换行的上限（每项一列，每项 ≥44px 热区）。
+ */
+export const MOBILE_NAV_KEYS = ['overview', 'employees', 'workbench', 'approval', 'settings']
