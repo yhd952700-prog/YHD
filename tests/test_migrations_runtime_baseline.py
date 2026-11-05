@@ -172,6 +172,46 @@ def test_upgrade_is_idempotent(db_path):
     assert RUNTIME_TABLES <= _tables(db_path)
 
 
+def test_running_alembic_does_not_silence_loggers_created_before_it(db_path):
+    """In-process alembic must not disable loggers that already exist.
+
+    Regression (found 2026-11-06): ``alembic/env.py`` called
+    ``fileConfig(config_file_name)``, whose default is
+    ``disable_existing_loggers=True``. Running one migration test in-process
+    disabled every logger created during collection for the rest of the pytest
+    process; ``caplog.at_level()`` only sets levels, so their warnings vanished
+    and 12 unrelated tests failed. The same leak would silence a real app that
+    applies migrations in-process.
+
+    ``fileConfig`` also swaps the root handlers for its own console handler.
+    That is per-test state pytest replaces on the next item, so it is not the
+    leak under test; this test attaches its own root handler after the upgrade
+    to prove the record still propagates.
+    """
+    import logging
+
+    sentinel = logging.getLogger("liuhao.tests.migration_logging_sentinel")
+    sentinel.disabled = False
+
+    _upgrade(db_path)
+
+    assert not sentinel.disabled, (
+        "alembic's fileConfig disabled a pre-existing logger; the whole "
+        "process is now deaf to it")
+
+    captured: list = []
+    root = logging.getLogger()
+    handler = logging.Handler()
+    handler.emit = captured.append
+    root.addHandler(handler)
+    try:
+        sentinel.warning("sentinel survived alembic")
+    finally:
+        root.removeHandler(handler)
+
+    assert any("sentinel survived alembic" in r.getMessage() for r in captured)
+
+
 def test_docker_image_ships_the_migration_graph_and_applies_it_before_start():
     dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
 

@@ -21,7 +21,13 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``fileConfig`` defaults to ``disable_existing_loggers=True``, which
+    # permanently disables every logger that already exists in the process.
+    # That is invisible in a one-shot CLI, but when alembic runs *in-process*
+    # (tests, or an embedded migration on startup) it silences the whole
+    # application from then on -- and ``caplog.at_level()`` cannot re-enable a
+    # disabled logger. Keep existing loggers intact.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Add your model's MetaData object here for 'autogenerate' support
 from src.integrations.orm_models import Base
