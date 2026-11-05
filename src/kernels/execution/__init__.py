@@ -24,6 +24,7 @@ import uuid
 import os
 import re
 import hashlib
+import logging
 import threading
 
 # Import dependencies
@@ -33,6 +34,8 @@ from src.kernels.event import get_event_bus, publish_event, EventScope, EventPri
 from src.kernels.resource import get_resource_manager, ResourceType, allocate_resource, release_resource  # noqa: F401
 from src.kernels._crosscutting import kernel_action, kernel_action_correlation_id
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
+
+logger = logging.getLogger("liuhao.kernel.execution")
 
 
 # Seam for real capability execution. The Execution Kernel must not depend on
@@ -1219,6 +1222,7 @@ class ExecutionEngine:
         scope: str = "L1",
         capability_executor: Optional[CapabilityExecutor] = None,
         journal: Optional[ExecutionJournal] = None,
+        artifact_index: Any = None,
     ) -> None:
         self.scope = scope
         self.decomposer = GoalDecomposer()
@@ -1229,6 +1233,9 @@ class ExecutionEngine:
         # journal=None 时行为与历史完全逐字节一致（不注入即不生效），
         # 与 capability_executor 那条接缝同一哲学 —— 见 Round 83。
         self.journal: Optional[ExecutionJournal] = journal
+        # 产物索引同样是可选旁路：None 时不做任何事，不改变执行语义。
+        # 类型刻意留 Any —— 内核层不得反向依赖 ai/gateway 层（见上方分层注释）。
+        self.artifact_index: Any = artifact_index
         self._execution_id: Optional[str] = None
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
@@ -1486,6 +1493,50 @@ class ExecutionEngine:
             # Journal write must never crash a cancellation.
             pass
 
+    def _record_task_artifacts(
+        self, task: Task, result: Any, execution_id: Optional[str]
+    ) -> None:
+        """把本任务声明的产物写入旁路索引（``artifact_index=None`` 时彻底 no-op）。
+
+        索引是观测旁路，不是执行依赖：任何异常（导入失败、磁盘满、库损坏）都
+        只记警告，绝不把一次已经成功的执行改判为失败。
+
+        ``execution_id`` 由调用方传 ``ctx.goal.id``：与 journal 的确定性
+        ``execution_id = goal.id`` 同一口径，且**不接 journal 时也不丢归属**。
+        """
+        if self.artifact_index is None:
+            return
+        try:
+            # 延迟导入：内核层不反向依赖 ai/gateway 层，且未接线时零成本。
+            from src.ai.workspace import workspace_root
+
+            # 与执行链同一口径：归属不成立的 agent 不许写进索引（否则索引会
+            # 替一个不存在的执行者背书，正是 COMPLETED_UNATTRIBUTED 要防的事）。
+            agent_id = None
+            if isinstance(result.output, dict) and (
+                result.output.get("agent_attribution") != "unattributed"
+            ):
+                agent_id = task.assigned_agent
+
+            self.artifact_index.record_from_task_output(
+                workspace=workspace_root(),
+                output=result.output,
+                execution_id=execution_id,
+                goal_id=task.goal_id,
+                correlation_id=task.correlation_id,
+                task_id=task.id,
+                task_name=task.name,
+                capability_id=task.capability_id,
+                agent_id=agent_id,
+                # journal.record() 不返回 seq，这里不编造序号。
+                journal_seq=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - 旁路失败不得上升为主流程失败
+            logger.warning(
+                "artifact index write failed (task=%s, goal=%s): %s",
+                task.id, task.goal_id, exc,
+            )
+
     def _execute_task(
         self,
         ctx: ExecutionContext,
@@ -1572,6 +1623,9 @@ class ExecutionEngine:
                     goal_id=task.goal_id,
                     artifact_path=artifact_path_from_output(result.output),
                 )
+
+                # 旁路：已正式标记 COMPLETED 之后记录产物归属；失败只记警告。
+                self._record_task_artifacts(task, result, ctx.goal.id)
 
                 # Verify
                 verification = self.verifier.verify(task, result, verification_criteria)

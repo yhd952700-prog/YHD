@@ -163,13 +163,13 @@ index.record_from_task_output(
 
 ---
 
-## 6. 接线交回（不自行修改）
+## 6. 接线（本轮已按此处实现）
 
-> 下面三处都在别人正在改的共享文件里。**未改**，只给方案。
+> 约束：**只加不改**。三处共享文件的改动全部是「新增可选参数 / 新增属性 / 新增一行挂载」，不传索引时走原路径。`journal_seq` 保持 `NULL`（见 8.2）。
 
 ### 6.1 `src/kernels/execution/__init__.py`
 
-**(a) `ExecutionEngine.__init__`，行 1217-1232**：新增可选参数与属性。
+**(a) `ExecutionEngine.__init__`**：新增 `artifact_index: Any = None`，并只多一行 `self.artifact_index = artifact_index`。不传即 `None`，`_record_task_artifacts` 第一行就返回。
 
 ```python
 def __init__(self, scope="L1", capability_executor=None, journal=None,
@@ -178,71 +178,74 @@ def __init__(self, scope="L1", capability_executor=None, journal=None,
     self.artifact_index = artifact_index    # ← 新增（None = 与历史行为一致）
 ```
 
-并在 `set_journal` 旁（行 1238-1240）加：
+刻意**没有**加 `set_artifact_index()`：本轮没有调用方需要在运行时替换，少一个公开面就少一处要维护的契约。
+
+**(b) `_execute_task`**：在 `self._journal_event(task, "task_completed", ...)` 之后、`# Verify` 之前调用 `self._record_task_artifacts(task, result, ctx.goal.id)`。实际逻辑收在独立方法里：
 
 ```python
-def set_artifact_index(self, artifact_index) -> None:
-    self.artifact_index = artifact_index
+def _record_task_artifacts(self, task, result, execution_id):
+    if self.artifact_index is None:
+        return
+    try:
+        from src.ai.workspace import workspace_root
+        # 归属不成立的 agent 不许写进索引（与 COMPLETED_UNATTRIBUTED 同口径）。
+        agent_id = None
+        if isinstance(result.output, dict) and (
+            result.output.get("agent_attribution") != "unattributed"
+        ):
+            agent_id = task.assigned_agent
+        self.artifact_index.record_from_task_output(
+            workspace=workspace_root(),
+            output=result.output,
+            execution_id=execution_id,
+            goal_id=task.goal_id,
+            correlation_id=task.correlation_id,
+            task_id=task.id,
+            task_name=task.name,
+            capability_id=task.capability_id,
+            agent_id=agent_id,
+            journal_seq=None,               # journal.record() 不返回 seq
+        )
+    except Exception as exc:                # 旁路失败不得上升为主流程失败
+        logger.warning(...)
 ```
 
-**(b) `_execute_task`，行 1568-1574 的 `self._journal_event(task, "task_completed", ...)` **之后**、行 1576 `# Verify` 之前**：加一段（缩进同 `_journal_event`）：
+相对设计稿的三处收紧（都是为了记录更诚实）：
 
-```python
-if self.artifact_index is not None:
-    self.artifact_index.record_from_task_output(
-        workspace=workspace_root(),          # 输出里的 workspace_root 会在内部优先
-        output=result.output,
-        execution_id=ctx.goal.id,            # 不要用 self._execution_id：不接 journal 时为 None
-        goal_id=ctx.goal.id,
-        correlation_id=task.correlation_id,
-        task_id=task.id,
-        task_name=task.name,
-        capability_id=task.capability_id,
-        agent_id=getattr(task, "agent_id", None),
-        journal_seq=None,                     # 见下方注意点
-    )
-```
+- `execution_id` 用调用方传的 `ctx.goal.id`，而不是 `self._execution_id`：后者只在接了 journal 时才非空；不接 journal 时也必须能回答「哪个执行写的」。
+- `agent_id` 只在归属成立时写。执行链会把解析不到的 agent 标成 `COMPLETED_UNATTRIBUTED`，索引不能替一个不存在的执行者背书。
+- 异常全吞并 `logger.warning`：索引写失败（磁盘满 / 库损坏 / 契约变更）不能让一次已经成功的执行改判为失败。
 
-三个注意点：
-- `workspace_root()` 需要从 `src.ai.workspace` import；不要硬编码仓库根。
-  工具输出里若带 `workspace_root`，`record_from_task_output` 会自动优先用它。
-- `_journal_event` 未确认有显式 `return`（未读到）；若要让 `journal_seq` 落库，
-  让它返回 `self.journal.record(...)` 的 seq（改动 3 行以内），否则先传 `None`。
-- 这段必须在 `task.status` 已被设为 `COMPLETED` 且 journal 已写之后执行，
-  否则产出文件的任务会被索引漏记。
-
-**(c) 多产物**：`artifact_path_from_output` 只返回一个路径。若要把“一个任务写多个文件”补齐，需要把该函数改为返回列表（会动到 936 行与既有调用方），**建议单独一轮做**，不要和索引接线混在一起。
+**(c) 多产物**：仍只记一个（`artifact_path_from_output` 的契约），见 8.3。
 
 ### 6.2 `src/ai/agent_runtime.py`
 
-**行 213-226 `AgentRuntime.__init__`**：新增 `artifact_index: Any = None` 参数，并在构造 `ExecutionEngine` 时透传：
+`AgentRuntime.__init__` 新增 `artifact_index: Any = None`，构造 `ExecutionEngine` 时透传：
 
 ```python
 self.engine = ExecutionEngine(
-    scope=scope, capability_executor=capability_executor, journal=journal,
+    scope=scope,
+    capability_executor=capability_executor,
+    journal=journal,
     artifact_index=artifact_index,
 )
 ```
 
 ### 6.3 `src/gateway/ai_management.py`
 
-**`_ensure_runtime`，行 196-229**：在 `journal = ExecutionJournal(journal_path)`（行 222）之后，用同一套根路径策略构造索引，并传入 `AgentRuntime`：
+`_ensure_runtime` 在 `journal = ExecutionJournal(journal_path)` 之后构造索引并传入。构造包在 `try/except`：索引库建不起来时退回 `None`（原行为），不阻塞网关启动。
 
 ```python
-from src.artifacts.index import ArtifactIndex, default_index_path
-artifact_index = ArtifactIndex(default_index_path())
-...
+try:
+    from src.artifacts.index import ArtifactIndex, default_index_path
+    artifact_index = ArtifactIndex(default_index_path())
+except Exception as exc:
+    logger.warning("AIStateManager: artifact index disabled: %s", exc)
+    artifact_index = None
 self._runtime = AgentRuntime(..., journal=journal, artifact_index=artifact_index)
 ```
 
-启动时补历史账（可选，与直连并存）：
-
-```python
-artifact_index.index_journal(journal)
-artifact_index.index_goal_file(os.path.join(root, "liuhao_goals.json"))  # 无根时用仓库根
-```
-
-`default_index_path()` 已按现有约定实现：`LIUHAO_WORKSPACE_ROOT/liuhao_artifacts.db` 优先，否则 `<repo_root>/.liuhao_artifacts.db`。若你们希望和 `liuhao_ai_os.db` 同库，把构造参数换成那个路径即可，表名 `artifact_writes` 已带前缀避免冲突。
+`default_index_path()` 已按现有约定实现：`LIUHAO_WORKSPACE_ROOT/liuhao_artifacts.db` 优先，否则 `<repo_root>/.liuhao_artifacts.db`。历史账仍可用对账入口补：`index_journal(journal)` / `index_goal_file(...)`。
 
 ### 6.4 读接口（可选，下一轮）
 
@@ -251,6 +254,8 @@ artifact_index.index_goal_file(os.path.join(root, "liuhao_goals.json"))  # 无�
 ---
 
 ## 7. 测试
+
+### 7.1 索引单元测试
 
 文件：[tests/artifacts/test_artifact_index.py](file:///d:/LiuHao-AI-OS/tests/artifacts/test_artifact_index.py)。13 条，全部通过：
 
@@ -277,12 +282,31 @@ python -m pytest tests/artifacts/test_artifact_index.py -q
 
 最后一条是这套设计的关键证据：它先断言 `journal.completed_task_artifacts("goal-e2e") == {"write-report": abs}`，再断言索引能从同一份 journal 反查出 `["report.md"]`，因此索引读的不是测试自造的 JSON 结构。
 
+### 7.2 接线验收
+
+文件：[tests/artifacts/test_artifact_wiring.py](file:///d:/LiuHao-AI-OS/tests/artifacts/test_artifact_wiring.py)。7 条，全部通过：
+
+```
+python -m pytest tests/artifacts/test_artifact_index.py tests/artifacts/test_artifact_wiring.py -q
+20 passed
+```
+
+| 用例 | 证明什么 |
+|---|---|
+| `test_without_index_execution_is_unchanged` | 不传索引 vs 挂了索引：journal 事件流（除 `plan_id`）、任务状态、输出、验证结果逐项相同 |
+| `test_unattached_index_stays_empty` | 索引对象存在但没挂上引擎 → 一次真实执行写 0 行（接线是显式的） |
+| `test_wired_index_answers_both_directions` | 传索引 → 执行成功；执行→产物、文件→执行都能反查；`verify` 为 `present_unchanged` |
+| `test_index_works_without_journal` | 不接 journal 时执行归属仍不丢（`execution_id = goal.id`） |
+| `test_index_failure_does_not_fail_execution` | 索引写抛异常 → 执行仍成功，journal 产物照常 |
+| `test_unattributed_agent_is_not_written_to_index` | 归属不成立的 agent 不进索引（与 `COMPLETED_UNATTRIBUTED` 同口径） |
+| `test_agent_runtime_passes_index_through` | `AgentRuntime` 只透传：给了就挂到引擎，不给仍是 `None` |
+
 ---
 
 ## 8. 已知边界与未验证
 
-1. **未验证**：直连模式（6.1/6.2/6.3）尚未接线，只有原型入口与对账模式被测。
-2. **未验证**：`_journal_event` 是否返回 `seq`；若否，直连记录的 `journal_seq` 只能先留空。
+1. **未验证**：网关 `_ensure_runtime` 的真实启动路径（需要起服务）尚未跑过；模块导入与参数透传已由测试覆盖。
+2. **未验证**：`_journal_event` 是否返回 `seq`（实测不返回），因此直连记录的 `journal_seq` 为 `NULL`。
 3. 一个任务写多文件仍只记一个（执行内核契约所致，见 6.1c）。
 4. 跨工作区根迁移后，旧记录不会自动迁移；`verify()` 会按旧 `abs_path` 报告 `missing`。
 5. 索引库本身不做加密/压缩；若含敏感路径，需按现有备份/权限策略处理。

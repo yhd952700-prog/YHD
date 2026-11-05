@@ -219,10 +219,14 @@ class AgentRuntime:
         memory: Optional[MemoryKernel] = None,
         max_replans: int = 2,
         executable_capabilities: Optional[Any] = None,
+        artifact_index: Any = None,
     ) -> None:
         self.scope = scope
         self.engine = ExecutionEngine(
-            scope=scope, capability_executor=capability_executor, journal=journal
+            scope=scope,
+            capability_executor=capability_executor,
+            journal=journal,
+            artifact_index=artifact_index,
         )
         # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
         # ids, or a zero-arg callable returning them. When supplied, the plan is

@@ -220,11 +220,20 @@ class AIStateManager:
                         ".liuhao_execution.journal",
                     )
                 journal = ExecutionJournal(journal_path)
+                # 产物索引（旁路观测）：构造失败不阻塞执行链，退回原行为。
+                try:
+                    from src.artifacts.index import ArtifactIndex, default_index_path
+
+                    artifact_index = ArtifactIndex(default_index_path())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("AIStateManager: artifact index disabled: %s", exc)
+                    artifact_index = None
                 self._runtime = AgentRuntime(
                     scope="L1",
                     capability_executor=_lcore.capability_executor(),
                     executable_capabilities=_lcore.executable_capabilities(),
                     journal=journal,
+                    artifact_index=artifact_index,
                 )
                 logger.info("AIStateManager: AgentRuntime initialized (real executor wired, journal=%s)", journal_path)
                 # Inject the real Employee's agent ids so the deterministic
