@@ -10,10 +10,11 @@
 > - **未做**：仓库中找不到实现。
 >
 > 本表为汇总方填写，事实以仓库实际状态与 commit 为准；各流仍在改代码，收尾时会再刷新一次。
-> 最后刷新：2026-11-06（基于推送后的 `origin/p36` `fd0d006f`）。
+> 最后刷新：2026-11-06（`origin/p36` 已推至 `a5508a2a`；本路随后提交 `c13fd026`）。
 > 本轮刷新：新增「30 方向逐条状态」全表（T-11 的细化）；更新 T-14（本轮推送与
 > CI 红点收敛过程）、T-15（门禁 ref 被他人流改漂后重新对齐）、C-5（用例簇修复与
-> 归属）。**仍标「部分完成」的，都是只有单测没有真实链路，或代码尚未提交。**
+> 归属，含 policy 端点面 4→5 的裁决 `c13fd026`）。**仍标「部分完成」的，都是只有
+> 单测没有真实链路，或代码尚未提交。**
 
 | 编号 | 要求（用户视角） | 落到哪一路 / 模块 | 关键代码或文档路径 | 状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
@@ -98,7 +99,7 @@
 | C-2 | Trivy / pip-audit 非阻断（`--exit-code 0` / `|| true`） | `.github/workflows/ci.yml:141`、`:189` | 扫了不拦，等于无 CVE 门禁 | 安全流水线流 |
 | C-3 | `uv` 版本低于 0.12.18 的 Windows 路径穿越问题 | 工作流中未固定 uv 版本 | Windows runner 可能被路径穿越影响 | CI 流 |
 | C-4（已修） | Semgrep 作业装完即崩：pip 默认拉 `mcp` 2.x，semgrep 运行时要 `mcp.server.fastmcp` ⇒ `ImportError`，扫描前退出 ⇒ CRITICAL-5 报「架构门禁失败」，**日志里一条 finding 都没有**（假红） | `.github/workflows/ci.yml:1235-1243`；本地隔离 venv 实测：只装 semgrep → 崩；`semgrep "mcp<2"` → `5 rules / 594 files / 0 findings` | 真问题被工具链崩溃掩盖，门禁形同虚设 | 本路已修（钉 `mcp<2`） |
-| C-5（部分已修，剩余属他人流） | 上一轮 CI 的 `Run Tests` 成簇红。**本路已修并推送 `202f2b29`**：`test_policy_approval_http.py`（令牌补 `metadata.kind`）**28 passed**、`test_contracts_drift_gate.py` **21 passed/3 skipped**、限流 lambda 参数（补 `trusted_proxies` 形参）**5 passed**。**他人流已修**：`test_chat_knowledge.py` **20 passed**、`tests/knowledge/test_documents_admin_api.py` **17 passed**。**仍红（他人流，本路不改）**：`tests/resilience/test_dbos_pilot.py::test_hard_kill_then_restart_resumes_workflow`（CI `exit 17 vs 1`；本地单跑 passed ⇒ 环境/时序敏感）、`tests/desktop/test_desktop_system_layer.py::test_runner_drains_inflight_request_and_refuses_new_ones` | `e18169e6` 推送前本地复跑：5 个文件合计 **77 passed, 3 skipped**；DBOS 单文件 **1 passed** | 全量红不代表本路失败；这两条需对应流在 CI 上复现并修 | 韧性流（DBOS）/ 桌面流 |
+| C-5（部分已修，剩余属他人流） | 上一轮 CI 的 `Run Tests` 成簇红。**本路已修并推送 `202f2b29`**：`test_policy_approval_http.py`（令牌补 `metadata.kind`）**28 passed**、`test_contracts_drift_gate.py` **21 passed/3 skipped**、限流 lambda 参数（补 `trusted_proxies` 形参）**5 passed**。**他人流已修**：`test_chat_knowledge.py` **20 passed**、`tests/knowledge/test_documents_admin_api.py` **17 passed**。**仍红（他人流，本路不改）**：`tests/resilience/test_dbos_pilot.py::test_hard_kill_then_restart_resumes_workflow`（CI `exit 17 vs 1`；本地单跑 passed ⇒ 环境/时序敏感）、`tests/desktop/test_desktop_system_layer.py::test_runner_drains_inflight_request_and_refuses_new_ones` | `e18169e6` 推送前本地复跑：5 个文件合计 **77 passed, 3 skipped**；DBOS 单文件 **1 passed**。`fd0d006f` 的 CI 另暴露 **收集期中断**（`Verify test collection is complete` 报 `tests/tasks/test_local_scheduler.py` 与 `tests/tasks/test_reminders.py` 两个 ERROR，导致整棵测试树未跑）；干净 worktree 在 `30304247` 上复跑收集 **33 tests collected, 0 error** ⇒ 已由任务流修复。**端点面 4→5 的裁决（本路 `c13fd026`）**：`GET /v1/policy/approvals/pending` 是只读待办队列（admin 门、不执行内核动作、不改状态），已作为第 5 个端点显式登记进 `tests/test_policy_approval_http.py::TestThePolicySurfaceIsFixedAndHasNoExecutionRoute`，注明 §10.8.3-1 未反转；单文件复跑 **28 passed**（18.55s） | 全量红不代表本路失败；剩余两条（DBOS/桌面）需对应流在 CI 上复现并修 | 韧性流（DBOS）/ 桌面流 / 任务流（已修）/ 本路（端点面裁决） |
 
 > 本表只记录诊断结论；C-1 涉及迁移与 `src/gateway` 他人领域，改动前需先报告。
 > C-2/C-3 未修：属安全流水线与 CI 的版本固定策略。C-5 中**本路能改的用例簇已收口**
