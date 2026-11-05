@@ -550,6 +550,45 @@ class ReminderStore:
             [user_id, int(limit)],
         )
 
+    def list_history(self, user_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """最近真正触发过的提醒（送达/错过），不含摘要、延后、失败。"""
+        return self._query_deliveries(
+            "SELECT * FROM reminder_deliveries WHERE user_id = ?"
+            " AND status IN ('delivered', 'missed') AND reminder_id != ?"
+            " ORDER BY id DESC LIMIT ?",
+            [user_id, DIGEST_REMINDER_ID, int(limit)],
+        )
+
+    def distinct_users(self) -> List[str]:
+        """所有出现过提醒/投递记录的用户（命令行默认看全部）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT user_id FROM reminders"
+                " UNION SELECT user_id FROM reminder_deliveries"
+                " ORDER BY user_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
+    def delivery_status_counts(
+        self, user_id: Optional[str] = None
+    ) -> Dict[str, Dict[str, int]]:
+        """按提醒聚合投递状态（只读；命令行判断「已错过/已完成」用）。"""
+        query = (
+            "SELECT reminder_id, status, COUNT(*) FROM reminder_deliveries"
+            " WHERE 1 = 1"
+        )
+        params: List[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " GROUP BY reminder_id, status"
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        summary: Dict[str, Dict[str, int]] = {}
+        for reminder_id, status, count in rows:
+            summary.setdefault(str(reminder_id), {})[str(status)] = int(count)
+        return summary
+
     def mark_digested(self, delivery_ids: List[int], now_iso: str) -> None:
         if not delivery_ids:
             return
