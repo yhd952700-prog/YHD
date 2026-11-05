@@ -582,6 +582,8 @@ pytz==2026.3.post1
     #   mcp
     #   portalocker
     # via keyring
+pywin32==311 ; sys_platform == 'win32'
+    # via liuhao-ai-os (pyproject.toml)
 pyyaml==6.0.3
     # via
     #   liuhao-ai-os (pyproject.toml)

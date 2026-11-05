@@ -110,7 +110,7 @@ docs/
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
 ├── l10k/               (1)     L10K 基准设计
-├── operations/         (5)     运维与上线
+├── operations/         (6)     运维与上线
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── roadmap/            (1)     百万行路线图
 ├── security/           (1)     安全威胁模型
@@ -296,7 +296,7 @@ docs/
 | [`spec/REPO-LINE-CONVERGE.md`](spec/REPO-LINE-CONVERGE.md) | 仓库线索收敛计划 |
 | [`spec/incoming/`](spec/incoming/) | ⚠️ **已被取代的合并草案**（6 篇，由同目录 `MERGE-LEDGER.md` 登记合并过程） |
 
-### 4.9 `operations/`（5）· `product/`（7）· `l10k/`（1）· `security/`（1）· `decisions/`（1）
+### 4.9 `operations/`（6）· `product/`（7）· `l10k/`（1）· `security/`（1）· `decisions/`（1）
 
 | 文件 | 说明 |
 |---|---|
@@ -305,6 +305,7 @@ docs/
 | [`operations/runbook.md`](operations/runbook.md) | 运行手册 |
 | [`operations/health-check-spec.md`](operations/health-check-spec.md) | 健康检查规范 |
 | [`operations/scenario-chatbot.md`](operations/scenario-chatbot.md) | 场景案例 |
+| [`operations/WINDOWS-DESKTOP.md`](operations/WINDOWS-DESKTOP.md) | Windows 桌面集成：托盘 / 自启 / 防火墙指引 / 诊断包 / 关于页数据源 |
 | [`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md) | 🔴 **产品门禁 P1–P10**（有代码 ≠ 可用） |
 | [`product/KERNEL-PRODUCT-CAPABILITY.md`](product/KERNEL-PRODUCT-CAPABILITY.md) | 14 内核逐个产品成熟度 |
 | [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md) | 产品需求 v3.0 |

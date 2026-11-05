@@ -359,3 +359,22 @@ components:
     action: >
       作为受限执行面后端使用；需要真资源隔离（内存/内核级）时走 gVisor/Docker，
       不得用本后端替代。
+
+  # ---------------- Windows 桌面 ----------------
+  - name: pywin32
+    import_name: win32api
+    license: Python Software Foundation License
+    category: desktop
+    used: guarded
+    risk: low
+    acknowledged: >
+      pywin32 是 Windows 平台专用的 Python Win32 绑定，许可证为 PSF（Python
+      Software Foundation License，OSI 批准、非 copyleft）。我们通过 PyPI 官方
+      包按原样依赖，仅用于系统托盘 / 注册表自启 / 只读进程探测；不修改、不
+      重新分发其源文件。为避开 LGPL 的 pystray，托盘直接用 pywin32 的
+      Shell_NotifyIcon 实现。依赖在 pyproject.toml 中以
+      `sys_platform == 'win32'` 标记，Linux CI / Docker 不安装；代码侧由
+      src/desktop/tray.py 平台限定加载（非 Windows 不 import win32 模块）。
+    action: >
+      保持；不得替换为 LGPL 的 pystray。新增桌面能力时复用本包，不另起
+      Win32 绑定依赖。

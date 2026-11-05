@@ -23,6 +23,9 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.43b0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
+    # Windows 桌面集成（系统托盘）使用 pywin32 直接调用 Win32；
+    # 仅 Windows 安装（Linux CI/Docker 不拉取），由 src/desktop/tray.py 平台限定加载。
+    "pywin32>=306; sys_platform == 'win32'",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     # hypothesis 驱动 Policy 执法链的属性测试（tests/test_policy_properties.py）。
