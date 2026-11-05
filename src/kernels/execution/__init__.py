@@ -1252,6 +1252,9 @@ class ExecutionEngine:
         plan_mode: str = "auto",
         verification_criteria: Optional[Dict[str, Any]] = None,
         stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        pinned_agent: Optional[str] = None,
+        only_task_name: Optional[str] = None,
     ) -> ExecutionContext:
         """Execute a goal through the full pipeline."""
         ctx = ExecutionContext(goal=goal, plan=None, context_kernel=self.context_kernel)
@@ -1276,6 +1279,22 @@ class ExecutionEngine:
             ctx.plan = plan
             plan.status = PlanStatus.ACTIVE
             plan.started_at = utc_now()
+
+            # Explicit assignment (``POST /v1/goals/assign``): the caller named a
+            # specific agent, so every task of this goal is claimed for it --
+            # never silently redistributed across the pool. ``agent_claimed=True``
+            # keeps the claim honest: the executor must be able to resolve it,
+            # or the task lands as ``completed_unattributed`` instead of
+            # pretending the named employee did the work.
+            if pinned_agent:
+                for t in plan.tasks:
+                    t.assigned_agent = pinned_agent
+                    t.agent_claimed = True
+
+            # Incremental progress: the caller gets the full plan as soon as
+            # tasks exist, so a UI can render queued cards instead of waiting
+            # for the run to finish.
+            self._notify_progress(on_task_progress, plan)
 
             # Step 2.5: Adopt durable progress (crash recovery)
             # execution_id 刻意取 goal.id（确定性）：同一个 goal 重启后再提交，
@@ -1304,8 +1323,16 @@ class ExecutionEngine:
                         scope=EventScope(goal.scope),
                     )
 
+            # Single-task retry: only the named task may run. Every other task
+            # still PENDING after journal adoption is SKIPPED, never executed --
+            # a retry of one failed card must not silently re-run the rest.
+            if only_task_name:
+                for t in plan.tasks:
+                    if t.name != only_task_name and t.status == TaskStatus.PENDING:
+                        t.status = TaskStatus.SKIPPED
+
             # Step 3: Execute
-            self._execute_plan(ctx, verification_criteria, stop_event)
+            self._execute_plan(ctx, verification_criteria, stop_event, on_task_progress)
 
             # Step 4: Final verification
             plan.completed_at = utc_now()
@@ -1313,6 +1340,10 @@ class ExecutionEngine:
                 plan.status = PlanStatus.FAILED if len(ctx.failed_tasks) == len(ctx.plan.tasks) else PlanStatus.PARTIAL
             else:
                 plan.status = PlanStatus.COMPLETED
+
+            # Terminal snapshot: guarantees the caller's last-recorded state is
+            # the real final task set, not the one before the last task landed.
+            self._notify_progress(on_task_progress, plan)
 
             if self.journal is not None and self._execution_id is not None:
                 self.journal.record(
@@ -1346,6 +1377,7 @@ class ExecutionEngine:
         ctx: ExecutionContext,
         verification_criteria: Optional[Dict[str, Any]] = None,
         stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> None:
         """Execute all tasks in the plan."""
         max_iterations = 100  # Prevent infinite loops
@@ -1373,6 +1405,7 @@ class ExecutionEngine:
                     task.status = TaskStatus.FAILED
                     task.error = "Circular dependency or deadlock detected"
                     ctx.failed_tasks.add(task.id)
+                self._notify_progress(on_task_progress, ctx.plan)
                 break
 
             # Execute ready tasks (in parallel conceptually)
@@ -1384,7 +1417,9 @@ class ExecutionEngine:
             # was only observed after the task's whole retry budget burned
             # down (~40s for a task that times out at 10s with max_retries=3).
             for task in ready_tasks:
-                self._execute_task(ctx, task, verification_criteria, stop_event)
+                self._execute_task(
+                    ctx, task, verification_criteria, stop_event, on_task_progress
+                )
 
         if iteration >= max_iterations:
             # Timeout
@@ -1393,6 +1428,7 @@ class ExecutionEngine:
                     task.status = TaskStatus.FAILED
                     task.error = "Execution timeout"
                     ctx.failed_tasks.add(task.id)
+            self._notify_progress(on_task_progress, ctx.plan)
 
     def _adopt_journaled_progress(self, ctx: ExecutionContext) -> int:
         """把 journal 里已完成的任务直接标成 COMPLETED —— 崩溃续跑的核心。
@@ -1540,12 +1576,52 @@ class ExecutionEngine:
                 task.id, task.goal_id, exc,
             )
 
+    @staticmethod
+    def _task_snapshots(plan: Any) -> List[Dict[str, Any]]:
+        """Serialize every plan task into the SAME shape ``GET /v1/goals/{id}``
+        already returns (see ``AIStateManager._result_to_dict``).
+
+        One contract for both the incremental and the terminal snapshot means a
+        UI never has to branch on "is this still running". Values are kept
+        JSON-safe here (datetimes stringified, results truncated) because this
+        list is written to disk by the caller while execution continues.
+        """
+        out: List[Dict[str, Any]] = []
+        for t in getattr(plan, "tasks", None) or []:
+            out.append({
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                "capability_id": t.capability_id,
+                "assigned_agent": t.assigned_agent,
+                "result": str(t.result)[:500] if t.result else None,
+                "error": t.error,
+                "started_at": str(t.started_at) if t.started_at else None,
+                "completed_at": str(t.completed_at) if t.completed_at else None,
+            })
+        return out
+
+    def _notify_progress(
+        self,
+        callback: Optional[Callable[[List[Dict[str, Any]]], None]],
+        plan: Any,
+    ) -> None:
+        """Hand a task snapshot to the caller. Never allowed to break a goal."""
+        if callback is None or plan is None:
+            return
+        try:
+            callback(self._task_snapshots(plan))
+        except Exception as exc:  # noqa: BLE001 - progress is an observer
+            logger.warning("task progress callback failed: %s", exc)
+
     def _execute_task(
         self,
         ctx: ExecutionContext,
         task: Task,
         verification_criteria: Optional[Dict[str, Any]] = None,
         stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> None:
         """Execute a single task with retries."""
         task.status = TaskStatus.RUNNING
@@ -1553,6 +1629,9 @@ class ExecutionEngine:
         # Join the goal's correlation chain so task lifecycle events are
         # traceable end to end (Definition Lock section 112).
         task.correlation_id = ctx.goal.correlation_id
+        # Queue → running is the transition a UI renders as "this card is now
+        # moving"; emit it before any work starts.
+        self._notify_progress(on_task_progress, ctx.plan)
 
         # 先记 task_started 再动手：崩溃时才能知道「当时正在跑哪个任务」，
         # 以及区分「从没开始」和「开始了但没完成」——后者可能需要人工看一眼副作用。
@@ -1650,6 +1729,7 @@ class ExecutionEngine:
                     correlation_id=task.correlation_id,
                     scope=EventScope(task.scope),
                 )
+                self._notify_progress(on_task_progress, ctx.plan)
                 return
 
             # Retry
@@ -1664,6 +1744,7 @@ class ExecutionEngine:
                     scope=EventScope(task.scope),
                     priority=EventPriority.HIGH,
                 )
+                self._notify_progress(on_task_progress, ctx.plan)
 
         # All retries exhausted - preserve the root cause of the last
         # failed attempt alongside the exhaustion notice.
@@ -1686,6 +1767,7 @@ class ExecutionEngine:
             scope=EventScope(task.scope),
             priority=EventPriority.CRITICAL,
         )
+        self._notify_progress(on_task_progress, ctx.plan)
 
     @kernel_action("execution.create_checkpoint")
     def create_checkpoint(self, ctx: ExecutionContext) -> Dict[str, Any]:

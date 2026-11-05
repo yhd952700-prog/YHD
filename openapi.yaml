@@ -148,6 +148,56 @@ components:
       - natural_language
       title: GoalCreateRequest
       type: object
+    AssignTaskRequest:
+      description: '把一件事**直接指派**给某位指定员工（与"一句话自动拆解"分开的入口）。
+
+
+        ``agent_id`` 必须是当前可见的真实 agent；不存在时 404，绝不静默换成
+        别的员工。'
+      properties:
+        agent_id:
+          description: '执行主体：真实存在的 agent id'
+          maxLength: 128
+          minLength: 1
+          title: Agent Id
+          type: string
+        background:
+          default: true
+          description: 'true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态'
+          title: Background
+          type: boolean
+        instruction:
+          description: 要交给这位员工执行的一句话
+          maxLength: 2000
+          minLength: 1
+          title: Instruction
+          type: string
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 可选：归属的项目 id（必须已存在，否则 404）
+          title: Project Id
+        scope:
+          default: L1
+          description: 执行范围 L0-L7
+          title: Scope
+          type: string
+      required:
+      - agent_id
+      - instruction
+      title: AssignTaskRequest
+      type: object
+    GoalWorkErrorResponse:
+      description: 'Goal 子操作的可读错误：``code`` 是稳定标识（供程序判断），
+        ``message`` 是给人看的中文说明。'
+      properties:
+        detail:
+          additionalProperties: true
+          type: object
+          title: Detail
+      title: GoalWorkErrorResponse
+      type: object
     HTTPValidationError:
       properties:
         detail:
@@ -2513,6 +2563,155 @@ paths:
       summary: Stop Goal
       tags:
       - ai-management
+  /v1/goals/assign:
+    post:
+      description: '把一件事**直接指派**给指定员工执行（独立于"一句话自动拆解"入口）。
+
+
+        与 ``POST /v1/goals`` 的差别只在"谁决定执行主体"：这里由调用方点名
+        ``agent_id``，必须真实存在且在可见范围内（否则 404 ``agent_not_found``），
+        绝不静默换成别的员工；``POST /v1/goals`` 仍由管家自己拆解、自己派活。
+
+
+        权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals`` 同一道
+        ``require_human_principal``），不因新增入口而放宽。
+
+
+        ``background=true``（默认）时立即返回 ``state:"running"``，随后
+        ``GET /v1/goals/{id}`` 会随任务状态变化逐条返回 ``tasks``。'
+      operationId: assign_goal_v1_goals_assign_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTaskRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Assign Goal V1 Goals Assign Post
+                type: object
+          description: Successful Response
+        '404':
+          description: >-
+            指定的员工不存在或不在当前可见范围。响应体 ``detail`` 为
+            ``{"code": "agent_not_found", "message": "..."}``。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalWorkErrorResponse'
+        '409':
+          description: >-
+            员工处于暂停状态（``agent_unavailable``）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalWorkErrorResponse'
+        '401':
+          description: 缺少或无效的 Bearer 令牌。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Assign Goal
+      tags:
+      - ai-management
+  /v1/goals/{goal_id}/tasks/{task_id}/retry:
+    post:
+      description: '只重跑一个**失败**任务，其余任务的结果原样保留，并记录审计。
+
+
+        明确拒绝的情况（都有稳定 ``code``）：``goal_not_found`` /
+        ``task_not_found``（404）、``goal_running``（409，等运行结束再来）、
+        ``task_not_retryable``（409，该任务不是 failed，例如已成功）。
+
+
+        重跑时其余任务在内核层被标记为 SKIPPED（``only_task_name``），因此
+        **物理上**不会执行它们；网关只回写被重试任务的那一张卡。'
+      operationId: retry_goal_task_v1_goals__goal_id__tasks__task_id__retry_post
+      parameters:
+      - in: path
+        name: goal_id
+        required: true
+        schema:
+          title: Goal Id
+          type: string
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          title: Task Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Retry Goal Task V1 Goals  Goal Id  Tasks  Task Id  Retry Post
+                type: object
+          description: Successful Response
+        '404':
+          description: >-
+            目标或任务不存在（``goal_not_found`` / ``task_not_found``）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalWorkErrorResponse'
+        '409':
+          description: >-
+            该任务不可重试（``goal_running`` / ``task_not_retryable``）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalWorkErrorResponse'
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Retry Goal Task
+      tags:
+      - ai-management
   /v1/identity/permissions:
     get:
       description: '扁平列出全部 grant（只读）：谁 -> 被授予了什么 -> 受哪个作用域上限约束。
@@ -3877,6 +4076,63 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Create Approval
+      tags:
+      - policy
+  /v1/policy/approvals/pending:
+    get:
+      description: '列出**等待当前人工确认**的动作（只读）。
+
+
+        数据来源是内核真实的拦截记录：HIGH/CRITICAL 动作被
+        ``PolicyEffect.DEFER`` 挂起时，审计链会写 ``outcome="blocked"``、
+        ``policy_decision="defer"`` 的事件（``deny`` / ``error`` 是硬拒绝，
+        不需要人批，因此不计入）。
+
+
+        已有一条有效凭据覆盖的动作不再算"待处理"。每条的 ``approve`` 字段给出
+        可照抄的下一步请求，页面可直接处理而不是只显示。
+
+        可见性：只有**能真正签发凭据**的人类主体才看得到这个队列
+        （与 ``POST /v1/policy/approvals`` 同一道门），其它主体 403 ——
+        跨主体不泄露。'
+      operationId: list_pending_approvals_v1_policy_approvals_pending_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Pending Approvals V1 Policy Approvals Pending Get
+                type: object
+          description: Successful Response
+        '403':
+          description: 当前主体没有签发审批凭据的权限（看不到别人的待办）。
+        '401':
+          description: 缺少或无效的 Bearer 令牌。
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Pending Approvals
       tags:
       - policy
   /v1/policy/approvals/{grant_id}:

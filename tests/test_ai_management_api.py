@@ -13,6 +13,8 @@
 - 鉴权：未携带令牌应 401
 """
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -226,3 +228,220 @@ class TestAuthGate:
         """未携带令牌 POST /v1/goals 应返回 401。"""
         resp = client.post("/v1/goals", json={"natural_language": "test"})
         assert resp.status_code == 401
+
+
+# ── 单独指派员工（POST /v1/goals/assign）─────────────────────────
+
+class TestAssignTask:
+    """“我也可以单独安排员工干活” —— 执行主体由调用方点名。"""
+
+    def test_assign_unknown_agent_is_rejected(self, client, auth_headers):
+        """指定不存在的员工：404 + 明确错误码，绝不静默换成别人。"""
+        resp = client.post(
+            "/v1/goals/assign",
+            json={"agent_id": "ghost-a999", "instruction": "整理今天的日报"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 404
+        detail = resp.json()["detail"]
+        assert detail["code"] == "agent_not_found"
+        assert "ghost-a999" in detail["message"]
+        # 明说"不会改用其他员工"，这是语义承诺，不只是文案
+        assert "不会改用其他员工" in detail["message"]
+
+    def test_assign_real_agent_pins_every_task_to_it(self, client, auth_headers):
+        """指派真实员工：任务落在被点名的那位身上（不再自动分配）。"""
+        agents = client.get("/v1/employees", headers=auth_headers).json()["agents"]
+        agent_id = agents[0]["id"]
+
+        resp = client.post(
+            "/v1/goals/assign",
+            json={
+                "agent_id": agent_id,
+                "instruction": "python: result = 1+1",
+                "background": False,
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["assigned_agent"] == agent_id
+        assert body["state"] in ("completed", "partial", "failed", "cancelled")
+        for task in body["tasks"]:
+            assert task["assigned_agent"] == agent_id
+
+    def test_assign_without_token_401(self, client):
+        resp = client.post(
+            "/v1/goals/assign",
+            json={"agent_id": "a1", "instruction": "test"},
+        )
+        assert resp.status_code == 401
+
+
+# ── 单任务重试（POST /v1/goals/{id}/tasks/{task_id}/retry）──────
+
+class _StubResult:
+    """只承载 _result_to_dict 会读的字段（该方法在用例里被替换）。"""
+
+    def __init__(self, tasks, replan_suggested=False):
+        self.tasks_payload = tasks
+        self.replan_suggested = replan_suggested
+
+
+class _StubRuntime:
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    def run_goal(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._result
+
+
+def _seed_failed_goal(mgr, goal_id="goal-retry"):
+    mgr._goals[goal_id] = {
+        "goal_id": goal_id,
+        "state": "failed",
+        "natural_language": "整理周报并发送",
+        "scope": "L1",
+        "error": "task failed",
+        "tasks": [
+            {"id": "t1", "name": "整理周报", "status": "completed",
+             "result": "已整理，保持原样", "error": None, "assigned_agent": "emp-a1"},
+            {"id": "t2", "name": "发送邮件", "status": "failed",
+             "result": None, "error": "smtp timeout", "assigned_agent": "emp-a2"},
+        ],
+    }
+    return goal_id
+
+
+class TestRetrySingleTask:
+    """失败任务单独重试：只跑这一个，其余结果原样保留。"""
+
+    def test_retry_rejects_non_failed_task(self):
+        """已成功的任务不能"重试"，否则就是顺带重跑。"""
+        from src.gateway.ai_management import GoalWorkError
+
+        mgr = AIStateManager()
+        goal_id = _seed_failed_goal(mgr)
+        with pytest.raises(GoalWorkError) as excinfo:
+            mgr.retry_task(goal_id, "t1")
+        assert excinfo.value.status_code == 409
+        assert excinfo.value.code == "task_not_retryable"
+
+    def test_retry_unknown_task_is_404(self):
+        from src.gateway.ai_management import GoalWorkError
+
+        mgr = AIStateManager()
+        goal_id = _seed_failed_goal(mgr)
+        with pytest.raises(GoalWorkError) as excinfo:
+            mgr.retry_task(goal_id, "t-ghost")
+        assert excinfo.value.status_code == 404
+        assert excinfo.value.code == "task_not_found"
+
+    def test_retry_does_not_rerun_or_overwrite_other_tasks(self, monkeypatch):
+        """核心承诺：只重跑这一个，其余任务既不执行、也不被覆盖。"""
+        mgr = AIStateManager()
+        goal_id = _seed_failed_goal(mgr)
+
+        retried = [{
+            "id": "new-task-id",  # 重跑会生成新的 task id —— 网关必须保留原卡片 id
+            "name": "发送邮件",
+            "status": "completed",
+            "result": "已发送",
+            "error": None,
+            "assigned_agent": "emp-a2",
+        }]
+        stub = _StubRuntime(_StubResult(retried))
+        monkeypatch.setattr(AIStateManager, "_ensure_runtime", lambda self: stub)
+        monkeypatch.setattr(
+            AIStateManager,
+            "_result_to_dict",
+            staticmethod(lambda result, nl, scope: {
+                "tasks": result.tasks_payload, "evaluation": None,
+            }),
+        )
+
+        entry = mgr.retry_task(goal_id, "t2", principal="human:test")
+
+        # 1) 内核被要求"只跑这个任务"，并锁定原执行主体
+        call = stub.calls[0]
+        assert call["only_task_name"] == "发送邮件"
+        assert call["pinned_agent"] == "emp-a2"
+        # 2) 其余任务原样保留（结果、状态、id 都没被动过）
+        t1 = next(t for t in entry["tasks"] if t["id"] == "t1")
+        assert t1["status"] == "completed"
+        assert t1["result"] == "已整理，保持原样"
+        # 3) 被重试的任务用原卡片 id 回填新结果
+        t2 = next(t for t in entry["tasks"] if t["id"] == "t2")
+        assert t2["status"] == "completed"
+        assert t2["result"] == "已发送"
+        assert len(entry["tasks"]) == 2
+        assert entry["state"] == "completed"
+
+
+# ── 运行中的逐任务进度（增量写回）───────────────────────────────
+
+class TestIncrementalTaskProgress:
+    """执行期间 GET /v1/goals/{id} 应该已经能看到逐条任务。"""
+
+    def test_snapshot_updates_slot_without_clobbering_others(self):
+        mgr = AIStateManager()
+        mgr._goals["g-progress"] = {
+            "goal_id": "g-progress",
+            "state": "running",
+            "tasks": [
+                {"id": "t1", "name": "第一步", "status": "completed", "result": "keep"},
+            ],
+        }
+        mgr._record_task_snapshot(
+            "g-progress",
+            [
+                {"id": "t1", "name": "第一步", "status": "completed", "result": "keep"},
+                {"id": "t2", "name": "第二步", "status": "running", "result": None},
+            ],
+        )
+        tasks = mgr._goals["g-progress"]["tasks"]
+        assert [t["id"] for t in tasks] == ["t1", "t2"]
+        assert tasks[0]["result"] == "keep"
+        assert tasks[1]["status"] == "running"
+
+    def test_late_snapshot_cannot_overwrite_terminal_state(self):
+        """终态落盘后，迟到的快照一律丢弃（不能把完成改回 running）。"""
+        mgr = AIStateManager()
+        mgr._goals["g-done"] = {
+            "goal_id": "g-done",
+            "state": "completed",
+            "tasks": [{"id": "t1", "name": "唯一任务", "status": "completed",
+                       "result": "done"}],
+        }
+        mgr._record_task_snapshot(
+            "g-done",
+            [{"id": "t1", "name": "唯一任务", "status": "running", "result": None}],
+        )
+        assert mgr._goals["g-done"]["tasks"][0]["status"] == "completed"
+        assert mgr._goals["g-done"]["tasks"][0]["result"] == "done"
+
+    def test_background_goal_exposes_tasks_while_running(self, client, auth_headers):
+        """HTTP 面：后台目标的 ``tasks`` 不再是"执行结束才一次性写入"。"""
+        resp = client.post(
+            "/v1/goals",
+            json={"natural_language": "python: result = 1+1", "background": True},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        goal_id = resp.json()["goal_id"]
+
+        # 刚提交时执行线程可能还没建好计划（如实为空）；轮询到任务出现或终态。
+        detail = {}
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            detail = client.get(f"/v1/goals/{goal_id}", headers=auth_headers).json()
+            if detail.get("tasks") or detail.get("state") != "running":
+                break
+            time.sleep(0.1)
+
+        assert isinstance(detail.get("tasks"), list)
+        assert detail["tasks"], "目标（运行中或已结束）都应返回逐条任务"
+        assert all("status" in t for t in detail["tasks"])
+

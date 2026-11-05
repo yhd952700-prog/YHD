@@ -28,6 +28,7 @@ C-4 把授权本身变成可审计凭据。本模块提供那个凭据的**真�
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -258,6 +259,95 @@ def list_approvals(
     return {
         "count": len(grants),
         "grants": [g.to_dict() for g in grants],
+        "enforcement": describe_enforcement(),
+    }
+
+
+#: How far back the pending queue looks. A blocked action older than this is
+#: still in the audit chain (queryable at ``/v1/audit/events``); it just stops
+#: being counted as "waiting on me right now" after a week.
+_PENDING_LOOKBACK_SECONDS = 7 * 24 * 3600
+_PENDING_SCAN_LIMIT = 500
+
+
+@router.get("/policy/approvals/pending", response_model=Dict[str, Any])
+def list_pending_approvals(
+    principal: str = Depends(require_admin_principal),
+) -> Dict[str, Any]:
+    """列出**等待当前人工确认**的动作（只读）。
+
+    审批中心此前只有"已签发凭据"，没有"还有什么在等我"。数据来源是内核
+    真实的拦截记录：HIGH/CRITICAL 动作被 ``PolicyEffect.DEFER`` 拦下时，审计
+    链会写一条 ``outcome="blocked"``、``policy_decision="defer"`` 的事件
+    （``deny`` / ``error`` 是硬拒绝，不需要人批，因此不计入）。
+
+    已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了。
+    ``approve`` 字段给出可照抄的下一步请求，使页面能直接处理而不是只显示。
+
+    可见性：只有**能真正签发凭据**的人类主体才看得到这个队列
+    （``require_admin_principal``，与 ``POST /v1/policy/approvals`` 同一道
+    门）。非管理员不是"看到空列表"，而是 403 —— 跨主体不泄露。
+    """
+    from .audit import _read_events
+
+    now = time.time()
+    events = _read_events(
+        outcome="blocked",
+        since=now - _PENDING_LOOKBACK_SECONDS,
+        limit=_PENDING_SCAN_LIMIT,
+        reverse=True,
+    )
+
+    # Actions already covered by a live grant are not waiting on anybody.
+    covered: Dict[str, str] = {}
+    for grant in list_grants():
+        for action in grant.actions:
+            covered.setdefault(action, grant.grant_id)
+
+    items: List[Dict[str, Any]] = []
+    seen: set = set()
+    for event in events:
+        details = event.get("details") or {}
+        if details.get("policy_decision") != "defer":
+            continue
+        action = details.get("action") or event.get("action")
+        if not action:
+            continue
+        dedupe_key = (action, event.get("correlation_id") or "")
+        if dedupe_key in seen:
+            # Same action blocked again in the same execution -- one card, not N.
+            continue
+        seen.add(dedupe_key)
+        if action in covered:
+            continue
+        risk = details.get("risk_level") or "UNKNOWN"
+        items.append({
+            "pending_id": f"pending:{event.get('seq')}",
+            "action": action,
+            "risk_level": risk,
+            "policy_rule": details.get("policy_rule"),
+            "correlation_id": event.get("correlation_id"),
+            "blocked_at": event.get("timestamp"),
+            "blocked_by": event.get("principal_id"),
+            "reason": "动作被策略挂起（defer），需要人工授权后才能继续执行",
+            "summary": f"{action}（风险 {risk}）正在等待你确认",
+            "approve": {
+                "method": "POST",
+                "path": "/v1/policy/approvals",
+                "body": {
+                    "actions": [action],
+                    "target": "*",
+                    "reason": "通过审批中心确认挂起的动作",
+                    "ttl_seconds": 900,
+                },
+            },
+        })
+
+    return {
+        "count": len(items),
+        "items": items,
+        "as_of": now,
+        "lookback_seconds": _PENDING_LOOKBACK_SECONDS,
         "enforcement": describe_enforcement(),
     }
 

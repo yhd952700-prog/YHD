@@ -20,13 +20,13 @@ import os
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any gateway<->ai cycle
     from .employee import Agent, Employee
     from .employee_store import EmployeeStore
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -148,6 +148,58 @@ class HireEmployeeRequest(BaseModel):
         default_factory=list,
         description="agent 类型列表（长度不足时按末位补齐）",
     )
+
+
+class AssignTaskRequest(BaseModel):
+    """把一件事**直接指派**给某位指定员工（与"一句话自动拆解"分开的入口）。
+
+    ``agent_id`` 必须是当前可见的真实 agent；不存在时 404，绝不静默换成
+    别的员工。
+    """
+    agent_id: str = Field(..., min_length=1, max_length=128,
+                          description="执行主体：真实存在的 agent id")
+    instruction: str = Field(..., min_length=1, max_length=2000,
+                             description="要交给这位员工执行的一句话")
+    scope: str = Field("L1", description="执行范围 L0-L7")
+    project_id: Optional[str] = Field(
+        None, description="可选：归属的项目 id（必须已存在，否则 404）"
+    )
+    background: bool = Field(
+        True,
+        description="true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态",
+    )
+
+
+class GoalWorkError(Exception):
+    """Goal 子操作的可读错误：带 HTTP 状态码与明确错误码。
+
+    ``code`` 是给程序判断的稳定标识（``agent_not_found`` /
+    ``agent_unavailable`` / ``task_not_retryable`` ...），``detail`` 是给人看的
+    中文说明——两者都不允许笼统成"操作失败"。
+    """
+
+    def __init__(self, status_code: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
+
+
+def _verified_principal(
+    x_liuhao_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> str:
+    """已校验令牌的 ``sub``（审计与归属用），复用策略模块那**同一道**校验。
+
+    刻意在函数体内导入：``policy`` 会牵连 gateway 包初始化，而本模块需要能被
+    独立加载（回归测试就是这么直接加载它的）。依赖声明只需要函数对象，不需要
+    执行体，因此延迟导入既安全又保证只有一套令牌校验实现。
+    """
+    from src.gateway.policy import _human_claims, require_bearer_payload
+
+    payload = require_bearer_payload(x_liuhao_token, authorization)
+    subject, _metadata = _human_claims(payload)
+    return subject
 
 
 class EmployeeSummary(BaseModel):
@@ -383,6 +435,7 @@ class AIStateManager:
         verification_criteria: Optional[Dict[str, Any]] = None,
         background: bool = False,
         project_id: Optional[str] = None,
+        pinned_agent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建并执行一个 Goal，返回执行结果。
 
@@ -431,6 +484,7 @@ class AIStateManager:
                 "evaluation": None,
                 "created_at": time.time(),
                 "project_id": project_id,
+                "assigned_agent": pinned_agent,
             }
             with self._goal_lock:
                 self._goals[goal_id] = running_entry
@@ -438,7 +492,7 @@ class AIStateManager:
             t = threading.Thread(
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
-                      verification_criteria, True, project_id),
+                      verification_criteria, True, project_id, pinned_agent),
                 name=f"goal-{goal_id}",
                 daemon=True,
             )
@@ -450,7 +504,7 @@ class AIStateManager:
 
         entry = self._run_bound_goal(
             goal_id, natural_language, scope, plan_mode, verification_criteria, True,
-            project_id,
+            project_id, pinned_agent,
         )
         # Register the link once the goal exists (sync path).
         self._link_goal_to_project(project_id, goal_id)
@@ -478,6 +532,9 @@ class AIStateManager:
         verification_criteria: Optional[Dict[str, Any]],
         persist: bool,
         project_id: Optional[str] = None,
+        pinned_agent: Optional[str] = None,
+        only_task_name: Optional[str] = None,
+        on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> Dict[str, Any]:
         """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。"""
         try:
@@ -489,6 +546,13 @@ class AIStateManager:
                 plan_mode=plan_mode,
                 verification_criteria=verification_criteria,
                 persist=persist,
+                on_task_progress=(
+                    on_progress
+                    if on_progress is not None
+                    else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
+                ),
+                pinned_agent=pinned_agent,
+                only_task_name=only_task_name,
             )
         except Exception as exc:
             logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
@@ -521,15 +585,259 @@ class AIStateManager:
                 "evaluation": None,
                 "created_at": time.time(),
                 "project_id": project_id,
+                "assigned_agent": pinned_agent,
             }
         else:
             entry = self._result_to_dict(result, natural_language, scope)
             entry["project_id"] = project_id
+            entry["assigned_agent"] = pinned_agent
         with self._goal_lock:
             self._goals[goal_id] = entry
         self._save_goals()
         self._goal_threads.pop(goal_id, None)
         return entry
+
+    # ── 运行中的逐任务进度 ──
+
+    def _record_task_snapshot(self, goal_id: str, tasks: List[Dict[str, Any]]) -> None:
+        """把执行内核的**当前**任务快照增量落进 ``_goals[goal_id]["tasks"]``。
+
+        为什么不是"整份覆盖"：执行期间每个 task 的状态由内核自己推进，网关
+        只做**按 task id 的槽位更新** —— 只替换快照里出现的那几条，其它任务
+        的既有结果原样保留。这样即便两次快照交错（或某次回调晚到），也不会
+        用一份不含某个任务结果的旧列表盖掉它。
+
+        竞态保护：
+        * 只在目标仍为 ``running`` 时写入 —— 终态一旦落盘，迟到的回调一律
+          丢弃，绝不把已完成的任务改回 ``running``；
+        * 锁内只做内存合并，序列化写在锁外（``_save_goals`` 自己取快照），
+          避免持锁做磁盘 IO。
+        """
+        if not tasks:
+            return
+        changed = False
+        with self._goal_lock:
+            entry = self._goals.get(goal_id)
+            if entry is None or entry.get("state") != "running":
+                return
+            current = list(entry.get("tasks") or [])
+            positions = {
+                t.get("id"): i for i, t in enumerate(current) if t.get("id")
+            }
+            for snapshot in tasks:
+                task_id = snapshot.get("id")
+                if not task_id:
+                    continue
+                position = positions.get(task_id)
+                if position is not None:
+                    if current[position] != snapshot:
+                        current[position] = snapshot
+                        changed = True
+                else:
+                    positions[task_id] = len(current)
+                    current.append(snapshot)
+                    changed = True
+            if changed:
+                entry["tasks"] = current
+        if changed:
+            self._save_goals()
+
+    # ── 单独指派员工 / 单任务重试 ──
+
+    def assign_task(
+        self,
+        agent_id: str,
+        instruction: str,
+        scope: str = "L1",
+        project_id: Optional[str] = None,
+        background: bool = True,
+        principal: str = "",
+    ) -> Dict[str, Any]:
+        """把一件事直接指派给指定员工执行（不经"一句话自动拆解"入口）。
+
+        与 ``POST /v1/goals`` 是**两个独立入口**：这里执行主体由调用方点名，
+        不存在就报错，绝不静默换成别的员工；``POST /v1/goals`` 仍由管家自己
+        决定怎么拆、派给谁。
+        """
+        employee, agent = self._find_employee_with_agent(agent_id)
+        if agent is None or employee is None:
+            raise GoalWorkError(
+                404,
+                "agent_not_found",
+                f"指定的员工不存在或不在当前可见范围：{agent_id}（不会改用其他员工执行）",
+            )
+        status = agent.status.value if hasattr(agent.status, "value") else str(agent.status)
+        if status == "paused":
+            raise GoalWorkError(
+                409,
+                "agent_unavailable",
+                f"员工 {agent_id} 处于暂停状态，无法接受指派；请先恢复后再派活",
+            )
+
+        entry = self.create_and_execute_goal(
+            natural_language=instruction,
+            scope=scope,
+            project_id=project_id,
+            background=background,
+            pinned_agent=agent_id,
+        )
+        entry["assigned_agent"] = agent_id
+        self._audit_goal_action(
+            goal_id=str(entry.get("goal_id") or ""),
+            action="assign_task",
+            principal=principal,
+            details={"agent_id": agent_id, "background": bool(background)},
+        )
+        return entry
+
+    def retry_task(
+        self,
+        goal_id: str,
+        task_id: str,
+        principal: str = "",
+    ) -> Dict[str, Any]:
+        """只重跑一个失败任务，其余任务的结果原样保留。
+
+        实现要点：
+        * 目标必须存在、任务必须存在、任务状态必须是 ``failed``；
+          "已成功"或"仍在运行"的任务明确拒绝（409），不会顺带重跑；
+        * 重跑时把其余任务标成 SKIPPED（内核层 ``only_task_name``），
+          因此**物理上**不会执行它们；
+        * 进度回调只接受这一个任务的快照，按原 ``task_id`` 回写，
+          其余任务在网关侧完全不被触碰 —— "重试一个不影响其他"。
+        """
+        with self._goal_lock:
+            entry = self._goals.get(goal_id)
+            tasks = list(entry.get("tasks") or []) if entry else []
+        if entry is None:
+            raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
+        target = next((t for t in tasks if t.get("id") == task_id), None)
+        if target is None:
+            raise GoalWorkError(
+                404, "task_not_found", f"目标 {goal_id} 下不存在任务 {task_id}"
+            )
+        if entry.get("state") == "running":
+            raise GoalWorkError(
+                409, "goal_running", f"目标 {goal_id} 仍在运行，请等它结束后再重试单个任务"
+            )
+        if target.get("status") != "failed":
+            raise GoalWorkError(
+                409,
+                "task_not_retryable",
+                f"任务 {task_id} 当前状态为 {target.get('status')!r}，只有失败任务可以重试",
+            )
+
+        task_name = str(target.get("name") or "")
+        original_agent = target.get("assigned_agent")
+        natural_language = str(entry.get("natural_language") or "")
+        scope = str(entry.get("scope") or "L1")
+
+        # 标记为 running，让轮询方看到"这次重试正在进行"。
+        with self._goal_lock:
+            running_entry = dict(entry)
+            running_entry["state"] = "running"
+            running_entry["error"] = None
+            self._goals[goal_id] = running_entry
+        self._save_goals()
+
+        def _progress(snapshots: List[Dict[str, Any]]) -> None:
+            for snapshot in snapshots:
+                if snapshot.get("name") != task_name:
+                    continue
+                # 保留原卡片 id：前端按 id 渲染，重跑不应换一张卡。
+                snapshot = dict(snapshot, id=task_id)
+                with self._goal_lock:
+                    live = self._goals.get(goal_id)
+                    if live is None or live.get("state") != "running":
+                        return
+                    live_tasks = list(live.get("tasks") or [])
+                    for index, item in enumerate(live_tasks):
+                        if item.get("id") == task_id:
+                            live_tasks[index] = snapshot
+                            break
+                    else:
+                        live_tasks.append(snapshot)
+                    live["tasks"] = live_tasks
+                # 单任务快照很小，但也不在锁内落盘。
+                self._save_goals()
+
+        result: Any = None
+        error: Optional[str] = None
+        try:
+            runtime = self._ensure_runtime()
+            result = runtime.run_goal(
+                goal_text=natural_language,
+                goal_id=goal_id,
+                scope=scope,
+                persist=True,
+                pinned_agent=original_agent,
+                only_task_name=task_name,
+                on_task_progress=_progress,
+            )
+        except Exception as exc:  # noqa: BLE001 - 真实原因要回给调用方
+            error = str(exc)
+            logger.error("retry_task failed (%s/%s): %s", goal_id, task_id, exc)
+
+        # 合并：只替换被重试的那一个任务，其余任务取**旧**值。
+        merged = [dict(t) for t in tasks]
+        if result is not None:
+            new_tasks = self._result_to_dict(result, natural_language, scope)["tasks"]
+            replaced = next((t for t in new_tasks if t.get("name") == task_name), None)
+            if replaced is not None:
+                replaced = dict(replaced, id=task_id)
+                for index, item in enumerate(merged):
+                    if item.get("id") == task_id:
+                        merged[index] = replaced
+                        break
+                else:
+                    merged.append(replaced)
+            for new_task in new_tasks:
+                if any(item.get("id") == new_task.get("id") for item in merged) or \
+                        any(item.get("name") == new_task.get("name") for item in merged):
+                    continue
+                merged.append(new_task)
+            final_state = (
+                "completed"
+                if all(
+                    item.get("status") in (
+                        "completed", "completed_unattributed", "skipped"
+                    )
+                    for item in merged
+                )
+                else "failed"
+            )
+            final_error = None if final_state == "completed" else (
+                (replaced or {}).get("error") or entry.get("error")
+            )
+        else:
+            final_state = "failed"
+            final_error = error or entry.get("error")
+
+        final_entry = dict(entry)
+        final_entry["tasks"] = merged
+        final_entry["state"] = final_state
+        final_entry["error"] = final_error
+        if result is not None:
+            final_entry["replan_suggested"] = bool(getattr(result, "replan_suggested", False))
+            final_entry["evaluation"] = self._result_to_dict(
+                result, natural_language, scope
+            ).get("evaluation")
+        with self._goal_lock:
+            self._goals[goal_id] = final_entry
+        self._save_goals()
+
+        self._audit_goal_action(
+            goal_id=goal_id,
+            action="retry_task",
+            principal=principal,
+            details={
+                "task_id": task_id,
+                "task_name": task_name,
+                "assigned_agent": original_agent,
+                "outcome": final_state,
+            },
+        )
+        return final_entry
 
     def replan_goal(self, goal_id: str) -> Dict[str, Any]:
         """对已失败的 Goal 执行 replan。"""
@@ -713,6 +1021,35 @@ class AIStateManager:
             },
             correlation_id=goal_id,
         )
+
+    def _audit_goal_action(
+        self,
+        goal_id: str,
+        action: str,
+        principal: str = "",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record "who did what to which goal" -- assignment and single-task retry.
+
+        Attributed to the **verified** principal from the bearer token, not a
+        literal: an audit chain that names nobody cannot answer "who re-ran
+        this". Audit failure never blocks the operation it describes.
+        """
+        from src.kernels.audit import log_event, AuditEventType, AuditScope
+
+        payload: Dict[str, Any] = {"goal_id": goal_id, "action": action}
+        payload.update(details or {})
+        try:
+            log_event(
+                AuditEventType.GOAL_CONTROL,
+                principal_id=principal or "unknown",
+                scope=AuditScope.L1,
+                outcome="allow",
+                details=payload,
+                correlation_id=goal_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - audit must not break control flow
+            logger.warning("goal audit failed (%s/%s): %s", goal_id, action, exc)
 
     # ── Employee / Agent 操作 ──
 
@@ -1137,6 +1474,75 @@ def stop_goal(goal_id: str) -> Dict[str, Any]:
         return mgr.stop_goal(goal_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/goals/assign", status_code=201)
+def assign_goal(
+    req: AssignTaskRequest,
+    principal: str = Depends(_verified_principal),
+) -> Dict[str, Any]:
+    """把一件事**直接指派**给指定员工执行（独立于"一句话自动拆解"入口）。
+
+    与 ``POST /v1/goals`` 的差别只在"谁决定执行主体"：
+    * 这里由调用方点名 ``agent_id``，**必须真实存在**（否则 404
+      ``agent_not_found``），绝不静默换成别的员工；
+    * ``POST /v1/goals`` 仍由管家自己拆解、自己派活。
+
+    权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals`` 同一道
+    ``require_human_principal``），不因为多了这个入口而放宽。
+    ``background=true``（默认）时立即返回 ``running``，随后
+    ``GET /v1/goals/{id}`` 会逐条给出任务进度。
+    """
+    mgr = AIStateManager()
+    try:
+        entry = mgr.assign_task(
+            agent_id=req.agent_id,
+            instruction=req.instruction,
+            scope=req.scope,
+            project_id=req.project_id,
+            background=req.background,
+            principal=principal,
+        )
+        return entry
+    except GoalWorkError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.detail},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Assignment failed: {exc}"
+        ) from exc
+
+
+@router.post("/goals/{goal_id}/tasks/{task_id}/retry")
+def retry_goal_task(
+    goal_id: str,
+    task_id: str,
+    principal: str = Depends(_verified_principal),
+) -> Dict[str, Any]:
+    """只重跑一个失败任务，其余任务的结果原样保留，并记录审计。
+
+    明确拒绝的情况（都有稳定 ``code``）：
+    * ``goal_not_found`` / ``task_not_found`` — 目标或任务不存在（404）；
+    * ``goal_running`` — 目标还在跑，等结束再重试（409）；
+    * ``task_not_retryable`` — 该任务不是 ``failed``（例如已成功），
+      绝不顺带重跑其它任务（409）。
+    """
+    mgr = AIStateManager()
+    try:
+        return mgr.retry_task(goal_id=goal_id, task_id=task_id, principal=principal)
+    except GoalWorkError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.detail},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Task retry failed: {exc}"
+        ) from exc
 
 
 @router.get("/employees")

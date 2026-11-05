@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.kernels.execution import (
     ExecutionEngine,
@@ -279,6 +279,9 @@ class AgentRuntime:
         persist: bool = True,
         correlation_id: Optional[str] = None,
         stop_event: Optional[threading.Event] = None,
+        on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        pinned_agent: Optional[str] = None,
+        only_task_name: Optional[str] = None,
     ) -> AgentRunResult:
         """Run one goal end-to-end: plan → execute → evaluate → (persist).
 
@@ -337,6 +340,9 @@ class AgentRuntime:
                 plan_mode=plan_mode,
                 verification_criteria=verification_criteria,
                 stop_event=stop_event,
+                on_task_progress=on_task_progress,
+                pinned_agent=pinned_agent,
+                only_task_name=only_task_name,
             )
 
             state = AgentRunState.VERIFYING
