@@ -318,6 +318,20 @@ def _seed_failed_goal(mgr, goal_id="goal-retry"):
 class TestRetrySingleTask:
     """失败任务单独重试：只跑这一个，其余结果原样保留。"""
 
+    def test_retry_route_reports_goal_not_found(self, client, auth_headers):
+        """HTTP 面：路由可达、鉴权生效、错误码明确。"""
+        resp = client.post(
+            "/v1/goals/goal-ghost/tasks/task-ghost/retry", headers=auth_headers
+        )
+        assert resp.status_code == 404
+        detail = resp.json()["detail"]
+        assert detail["code"] == "goal_not_found"
+        assert "goal-ghost" in detail["message"]
+
+    def test_retry_without_token_401(self, client):
+        resp = client.post("/v1/goals/goal-ghost/tasks/task-ghost/retry")
+        assert resp.status_code == 401
+
     def test_retry_rejects_non_failed_task(self):
         """已成功的任务不能"重试"，否则就是顺带重跑。"""
         from src.gateway.ai_management import GoalWorkError
