@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -52,47 +51,20 @@ class BenchmarkRun:
 
 
 class BenchmarkManager:
-    """In-memory benchmark manager for CLI operations.
+    """Benchmark manager for CLI operations.
 
-    Provides benchmark execution, listing, comparison, and reporting.
+    There is no benchmark execution wired to this CLI. It used to fabricate
+    results: five seeded runs and ``score = 85.0 + hash(name) % 150 / 10``.
+    A fake score is worse than a missing feature, so ``run_benchmark`` now
+    fails explicitly and the listing surfaces only runs that actually exist
+    (none, unless a runner registers them). The real evaluation machinery
+    lives in ``src/evaluation/benchmark_runner.py`` and
+    ``src/benchmarks/sizing.py``; neither is driven by this argparse surface.
     """
 
     def __init__(self) -> None:
         self._runs: Dict[str, BenchmarkRun] = {}
         self._baselines: Dict[str, BenchmarkRun] = {}
-        self._seed_sample_data()
-
-    def _seed_sample_data(self) -> None:
-        """Seed with sample benchmark data."""
-        runs = [
-            ("run-001", "API Performance Test", BenchmarkType.PERFORMANCE, 1500.5, 92.5, True),
-            ("run-002", "Agent Quality Test", BenchmarkType.QUALITY, 30000.0, 87.3, False),
-            ("run-003", "Memory Throughput", BenchmarkType.PERFORMANCE, 800.2, 95.1, False),
-            ("run-004", "Cost Efficiency", BenchmarkType.COST, 500.0, 78.5, False),
-            ("run-005", "Integration Suite", BenchmarkType.INTEGRATION, 45000.0, 90.0, False),
-        ]
-        now = datetime.utcnow()
-        for i, (rid, name, btype, dur, score, baseline) in enumerate(runs):
-            started = now.replace(hour=i * 2)
-            run = BenchmarkRun(
-                run_id=rid,
-                name=name,
-                benchmark_type=btype,
-                status=BenchmarkStatus.COMPLETED,
-                duration_ms=dur,
-                score=score,
-                started_at=started.isoformat(),
-                completed_at=started.isoformat(),
-                baseline=baseline,
-                metrics={
-                    "requests_per_second": 1000 + i * 100,
-                    "error_rate": 0.01 * i,
-                    "p95_latency_ms": 50 + i * 10,
-                },
-            )
-            self._runs[rid] = run
-            if baseline:
-                self._baselines[btype.value] = run
 
     def run_benchmark(
         self,
@@ -102,55 +74,20 @@ class BenchmarkManager:
         concurrency: int = 1,
         description: str = "",
     ) -> Dict[str, Any]:
-        """Run a benchmark.
+        """Refuse to fabricate a result.
 
-        Args:
-            name: Benchmark name.
-            benchmark_type: Type of benchmark.
-            duration: Duration in seconds.
-            concurrency: Concurrency level.
-            description: Optional description.
-
-        Returns:
-            Dict with benchmark run details.
+        Raises:
+            NotImplementedError: always. No benchmark harness is wired to this
+                CLI; the previous implementation derived ``score`` from
+                ``hash(name)``, which looks like a measurement but is not one.
         """
-        run_id = f"run-{uuid.uuid4().hex[:8]}"
-        run = BenchmarkRun(
-            run_id=run_id,
-            name=name,
-            benchmark_type=BenchmarkType(benchmark_type),
-            status=BenchmarkStatus.RUNNING,
-            started_at=datetime.utcnow().isoformat(),
-            description=description,
+        raise NotImplementedError(
+            "`benchmark run` is not implemented: this CLI has no wired "
+            "benchmark harness (no dataset, no eval function, no target model). "
+            "The old scores were derived from hash(name), not measured. Use "
+            "src/evaluation/benchmark_runner.py or src/benchmarks/sizing.py "
+            "directly for real benchmarking."
         )
-        self._runs[run_id] = run
-
-        # Simulate completion
-        run.status = BenchmarkStatus.COMPLETED
-        run.duration_ms = duration * 1000.0
-        run.score = 85.0 + hash(name) % 150 / 10
-        run.completed_at = datetime.utcnow().isoformat()
-        run.metrics = {
-            "duration_seconds": duration,
-            "concurrency": concurrency,
-            "requests_per_second": 500 + hash(name) % 500,
-            "error_rate": 0.005,
-            "p50_latency_ms": 25.0,
-            "p95_latency_ms": 80.0,
-            "p99_latency_ms": 150.0,
-        }
-
-        return {
-            "run_id": run.run_id,
-            "name": run.name,
-            "type": run.benchmark_type.value,
-            "status": run.status.value,
-            "score": run.score,
-            "duration_ms": run.duration_ms,
-            "started_at": run.started_at,
-            "completed_at": run.completed_at,
-            "metrics": run.metrics,
-        }
 
     def list_benchmarks(
         self,
@@ -471,5 +408,8 @@ def handle_benchmark_command(
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
     except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, ensure_ascii=False))
+        return 1
+    except NotImplementedError as exc:
         print(json.dumps({"error": str(exc)}, indent=2, ensure_ascii=False))
         return 1

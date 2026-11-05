@@ -70,6 +70,13 @@ services:
       # 整条审计哈希链归零。改指到卷内、且已 chown app:app 的 /app/data。
       # Rollback: 删掉这一行即回到默认行为。
       - AUDIT_DB_PATH=/app/data/audit_store.db
+      # JWT 吊销黑名单（SQLite，重启/多 worker 共享）。默认路径是
+      # <bundle_root>/.liuhao_jwt_revocation.db（容器内 /app/.liuhao_jwt_revocation.db），
+      # 既不在唯一卷 liuhao_data:/app/data 内，也不一定可写（USER app）——
+      # 容器启动时会直接死掉：sqlite3.OperationalError: unable to open database file。
+      # 必须落在卷内。
+      # Rollback: 删掉这一行即回到默认行为（仅适用于单次运行）。
+      - LIUHAO_JWT_REVOCATION_DB=${LIUHAO_JWT_REVOCATION_DB:-/app/data/jwt_revocations.db}
       # Policy Controlled (C-6 decision, 2026-09-12; D24 narrow, 2026-09-12):
       # arm every CRITICAL kernel action except the audited exemptions recorded
       # in src/kernels/_enforcement.py (EXEMPT_ACTIONS). D24 narrowed the

@@ -290,44 +290,75 @@ class TestCostCommands:
 
 
 class TestBackupCommands:
-    """Tests for backup CLI commands."""
+    """Tests for backup CLI commands.
+
+    The adapter is backed by the real BackupManager; these assertions touch
+    the archive on disk instead of trusting an in-memory story.
+    """
 
     @pytest.fixture
-    def manager(self):
-        return BackupManager()
+    def manager(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "notes.txt").write_text("real payload", encoding="utf-8")
+        return BackupManager(
+            backup_dir=str(tmp_path / "backups"),
+            data_dir=str(data_dir),
+        )
 
     def test_create_backup(self, manager):
         result = manager.create_backup(backup_type="full", description="Test backup")
         assert result["type"] == "full"
         assert result["status"] == "completed"
         assert "backup_id" in result
+        archive = Path(result["file_path"])
+        assert archive.is_file()
+        assert archive.stat().st_size == result["size_bytes"]
+        assert result["size_bytes"] > 0
 
     def test_list_backups(self, manager):
+        manager.create_backup(description="first")
         result = manager.list_backups()
         assert "total" in result
-        assert result["total"] > 0  # seeded with sample data
+        assert result["total"] == 1  # no seeded fake backups
+        assert result["items"][0]["backup_id"]
 
     def test_get_backup_info(self, manager):
         created = manager.create_backup(backup_type="incremental")
         result = manager.get_backup_info(created["backup_id"])
         assert result["backup_id"] == created["backup_id"]
         assert "size_human" in result
+        assert Path(result["file_path"]).is_file()
 
     def test_restore_backup(self, manager):
         created = manager.create_backup()
+        notes = Path(manager._data_dir) / "notes.txt"
+        notes.write_text("clobbered", encoding="utf-8")
         result = manager.restore_backup(created["backup_id"])
         assert result["status"] == "restored"
+        assert notes.read_text(encoding="utf-8") == "real payload"
+        assert result["files_restored"] >= 1
 
     def test_verify_backup(self, manager):
         created = manager.create_backup()
         result = manager.verify_backup(created["backup_id"])
         assert result["verified"] is True
         assert result["checksum_match"] is True
+        assert result["size_match"] is True
+
+    def test_verify_backup_detects_tampering(self, manager):
+        created = manager.create_backup()
+        Path(created["file_path"]).write_bytes(b"tampered archive")
+        result = manager.verify_backup(created["backup_id"])
+        assert result["verified"] is False
+        assert result["checksum_match"] is False
 
     def test_prune_backups(self, manager):
-        result = manager.prune_backups(keep_last=3)
-        assert "pruned" in result
-        assert "remaining" in result
+        for i in range(4):
+            manager.create_backup(description=f"backup {i}")
+        result = manager.prune_backups(keep_last=2)
+        assert result["pruned"] == 2
+        assert result["remaining"] == 2
 
     def test_backup_not_found(self, manager):
         with pytest.raises(ValueError, match="Backup not found"):
@@ -501,44 +532,47 @@ class TestSolutionCommands:
 
 
 class TestBenchmarkCommands:
-    """Tests for benchmark CLI commands."""
+    """Tests for the benchmark CLI.
+
+    There is no wired harness, so execution must say so explicitly rather than
+    return a hash-derived 'score'. These tests lock that honesty in.
+    """
 
     @pytest.fixture
     def manager(self):
         return BenchmarkManager()
 
-    def test_run_benchmark(self, manager):
-        result = manager.run_benchmark(name="Test Benchmark", benchmark_type="performance")
-        assert result["name"] == "Test Benchmark"
-        assert result["status"] == "completed"
-        assert "score" in result
+    def test_run_benchmark_reports_not_implemented(self, manager):
+        with pytest.raises(NotImplementedError, match="not implemented"):
+            manager.run_benchmark(name="Test Benchmark", benchmark_type="performance")
 
-    def test_list_benchmarks(self, manager):
+    def test_list_benchmarks_has_no_seed_data(self, manager):
         result = manager.list_benchmarks()
         assert "total" in result
-        assert result["total"] > 0
+        assert result["total"] == 0
+        assert result["items"] == []
 
-    def test_compare_benchmarks(self, manager):
-        result = manager.compare_benchmarks(["run-001", "run-002"])
-        assert "score_comparison" in result
-        assert "winner" in result
+    def test_compare_unknown_runs_is_an_error(self, manager):
+        with pytest.raises(ValueError, match="Benchmark run not found"):
+            manager.compare_benchmarks(["run-001", "run-002"])
 
-    def test_generate_report(self, manager):
-        result = manager.generate_report(run_id="run-001")
-        assert result["format"] == "json"
-        assert "run" in result
+    def test_generate_report_unknown_run_is_an_error(self, manager):
+        with pytest.raises(ValueError, match="Benchmark run not found"):
+            manager.generate_report(run_id="run-001")
 
     def test_generate_report_type_filter(self, manager):
         result = manager.generate_report(benchmark_type="performance")
         assert "by_type" in result
+        assert result["total_runs"] == 0
 
     def test_get_baseline(self, manager):
         result = manager.get_baseline()
         assert "baselines" in result
+        assert result["baselines"] == {}
 
-    def test_set_baseline(self, manager):
-        result = manager.set_baseline("run-002")
-        assert result["status"] == "baseline_set"
+    def test_set_baseline_unknown_run_is_an_error(self, manager):
+        with pytest.raises(ValueError, match="Benchmark run not found"):
+            manager.set_baseline("run-002")
 
     def test_benchmark_not_found(self, manager):
         with pytest.raises(ValueError, match="Benchmark run not found"):
