@@ -20,6 +20,11 @@ from pydantic import BaseModel, Field
 from ..ai.liuhao import LiuHaoAssistant
 from ..ai.model_router import provider_for_task
 from ..ai.conversation_store import get_conversation_store
+from .knowledge_context import (
+    build_knowledge_context,
+    knowledge_prompt,
+    public_metadata,
+)
 from .policy import require_human_principal
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -125,6 +130,13 @@ class ChatRequest(BaseModel):
     model_id: Optional[str] = Field(
         None, description="模型配置 id 或名称；留空则用当前默认模型"
     )
+    use_knowledge: Optional[bool] = Field(
+        None,
+        description=(
+            "是否检索知识库并注入上下文。null/省略=自动（有文档就开），"
+            "false=本次关闭，true=本次启用。"
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -133,6 +145,8 @@ class ChatResponse(BaseModel):
     turn: int
     correlation_id: str
     agent: str
+    #: 始终存在：说明本次是否使用知识库、命中来源；未使用必有原因。
+    knowledge: Dict[str, object]
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -141,13 +155,17 @@ def chat(
 ) -> ChatResponse:
     # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
     assistant = get_assistant(req.session_id, principal, req.model_id)
-    result = assistant.chat(req.message)
+    # 先检索再生成：空库/不可用/检索失败都静默降级，元信息如实说明。
+    knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
+    with knowledge_prompt(assistant, knowledge):
+        result = assistant.chat(req.message)
     return ChatResponse(
         reply=result["reply"],
         status=result["status"],
         turn=result["turn"],
         correlation_id=result["correlation_id"],
         agent=result["agent"],
+        knowledge=public_metadata(knowledge),
     )
 
 
@@ -164,20 +182,24 @@ def chat_stream(
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
     """
     assistant = get_assistant(req.session_id, principal, req.model_id)
+    knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
 
     def event_stream():
-        for item in assistant.chat_stream(req.message):
-            if isinstance(item, dict):
-                # 工具调用事件：结构化透传（type/name/args/output）。
-                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            else:
-                payload = {"type": "token", "content": item}
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
+        with knowledge_prompt(assistant, knowledge):
+            for item in assistant.chat_stream(req.message):
+                if isinstance(item, dict):
+                    # 工具调用事件：结构化透传（type/name/args/output）。
+                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                else:
+                    payload = {"type": "token", "content": item}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         # 生成器耗尽时 chat_stream 已完成落盘 + 审计，发结束帧。
         done = {
             "type": "done",
             "turn": assistant.turn,
             "session_id": req.session_id,
+            "knowledge": public_metadata(knowledge),
         }
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
 
