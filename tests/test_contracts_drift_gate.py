@@ -222,7 +222,13 @@ def responses():
     """
     from src.security import get_jwt_handler
 
-    token, _ = get_jwt_handler().create_token(subject="contract-gate")
+    # 仪表盘等端点现在要求「令牌声明为人类主体」（src/gateway/policy.py 的
+    # _human_claims），否则 403。契约证据用的令牌必须走与真实人类同一口径。
+    token, _ = get_jwt_handler().create_token(
+        subject="contract-gate",
+        metadata={"kind": "human", "scope": "L0"},
+        roles=["admin"],
+    )
     seen: dict[str, dict] = {}
     with TestClient(get_app(), headers={"Authorization": f"Bearer {token}"}) as c:
         for endpoint in {ep for ep, _ in TYPE_TO_ENDPOINT.values()}:

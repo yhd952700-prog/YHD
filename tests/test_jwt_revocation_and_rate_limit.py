@@ -91,7 +91,10 @@ def test_rate_limit_middleware_returns_429_with_headers(monkeypatch):
     monkeypatch.setattr(
         rate_limiter,
         "check_rate_limit",
-        lambda request: (False, {"limit": 100, "remaining": 0, "reset": time.time() + 30}),
+        lambda request, trusted_proxies=(): (
+            False,
+            {"limit": 100, "remaining": 0, "reset": time.time() + 30},
+        ),
     )
     client = TestClient(get_app())
     response = client.post("/v1/chat", json={"message": "hi"})

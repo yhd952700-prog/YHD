@@ -111,7 +111,18 @@ def _token(subject: str, ttl: int = 600) -> str:
     case is still rejected by the handler on identity kind -- the claim does
     not let a service account hold sovereignty.
     """
-    token, _payload = create_access_token(subject, roles=["admin"], ttl=ttl)
+    # ``require_human_principal``（src/gateway/policy.py:133-143）现在从**令牌
+    # 声明**判定主体类型：metadata.kind 不是 "human" 直接 403。这不是新加的
+    # 授权，而是把「令牌是唯一主体来源」写进契约；服务账号必须显式是 service，
+    # 人类必须显式是 human。测试令牌因此必须带上同样的声明，否则测的是
+    # 「没声明 kind 的令牌被拒」，而不是下面要断言的 grant 生命周期。
+    metadata = (
+        {"kind": "service"} if subject.startswith("svc-")
+        else {"kind": "human", "scope": "L0"}
+    )
+    token, _payload = create_access_token(
+        subject, roles=["admin"], ttl=ttl, metadata=metadata
+    )
     return token
 
 
