@@ -67,7 +67,9 @@ persisted chain continuity not demonstrated
 
 ### 4.4 非 HC-01 但同矩阵的未决项（不计入 HC-01）
 
-- `HC-09`、`HC-10`：`UNVERIFIED`，原因是审计事件只存在内存 list，无持久化调用（P08b 明确记录）。
+- `HC-09`、`HC-10`：`UNVERIFIED`。审计事件只存在内存 list（IN-MEMORY-ONLY，
+  VOLATILE / NON-AUTHORITATIVE —— not persisted, not audit-grade；属于遥测，
+  不是证据），无持久化调用（P08b 明确记录）。
 - `HC-11`：机制 `FAIL-CLOSED`；部署姿态取决于是否配置完整性密钥（见 §4.2）。
 
 ## 5. 本轮改了什么（HC-01 相关）
