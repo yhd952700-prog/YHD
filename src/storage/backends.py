@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import json
+from src.common.atomic_write import atomic_write_text
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 import time
 
@@ -241,8 +242,10 @@ class JSONFileBackend(StorageBackend[StorageEntry]):
             "hash_chain": self._hash_chain,
             "entries": {k: v.to_dict() for k, v in self._entries.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        # Whole-file replacement via temp file + fsync + os.replace: a
+        # `open(..., 'w')` here truncated the live store BEFORE writing, so
+        # an interruption left a half-written JSON file that no longer loads.
+        atomic_write_text(self.storage_path, json.dumps(data, indent=2))
 
     def verify_integrity(self) -> bool:
         """Verify the hash chain integrity using the declared hash algorithm.

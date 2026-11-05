@@ -11,6 +11,7 @@ Provides:
 from pathlib import Path
 import json
 import time
+from src.common.atomic_write import atomic_write_text
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
@@ -109,8 +110,9 @@ class ObservabilityStore:
             "spans": {k: v.to_dict() for k, v in self._spans.items()},
             "metrics": {k: v.to_dict() for k, v in self._metrics.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        # Temp file + fsync + os.replace: the old full rewrite truncated the
+        # store first, so a crash mid-write lost every previously recorded span.
+        atomic_write_text(self.storage_path, json.dumps(data, indent=2))
 
     # ==================== Span Operations ====================
 
