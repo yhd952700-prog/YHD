@@ -37,14 +37,25 @@ dependencies = [
     "langchain-community>=0.3.0",
     "langfuse>=4.0.0",
     "arize-phoenix>=3.0.0",
-    # MCP SDK：src/adapters/mcp/mcp_adapter.py 在**模块顶层**
-    # `from mcp import ClientSession, StdioServerParameters, stdio_client`，
+    # MCP SDK：src/adapters/mcp/mcp_adapter.py 顶层 `from mcp.types import ...`，
     # 因此它是硬依赖，不是可选依赖。此前未在此声明，只靠
     # arize-phoenix → fastmcp-slim[client,server] → mcp 这条**受 extras 控制**的
-    # 传递链"碰巧"带进来：上游一旦取消该 extra，或解析结果换档
-    # （本机实测 1.29.1，而 requirements.txt 锁到 2.1.1），模块就会 ImportError。
-    # 下界 1.24.0 取自 fastmcp-slim 对 mcp 的声明；不设上界，与锁文件解析结果兼容。
-    "mcp>=1.24.0",
+    # 传递链"碰巧"带进来：上游一旦取消该 extra，或解析结果换档，模块就会 ImportError。
+    #
+    # 2026-11-05（阶段 B1）上界收到 2.x：适配层已改用 FastMCP，而
+    # `fastmcp-slim[client,server]==4.0.3` 明确要求 `mcp>=2.0,<3.0`；requirements.txt
+    # 锁定的也正是 mcp==2.1.1。⚠️ 本机 .venv 原为 mcp 1.29.0（由 CI 用的独立扫描器
+    # semgrep 1.183.0 的 `mcp==1.29.0` 硬钉造成漂移），升级后 semgrep CLI 在本机
+    # .venv 内会因 `import mcp.server.fastmcp` 失败；semgrep 不是本项目的声明依赖
+    # （CI 的 architecture-gate 在**独立 job 独立环境**里 `pip install semgrep`），
+    # 故不影响门禁。本地要用 semgrep 请装到独立环境（如 pipx）。
+    "mcp>=2.0.0,<3.0.0",
+    # FastMCP：MCP 适配层的客户端（stdio / streamable HTTP）与服务端实现。
+    # Apache-2.0，已登记 oss-registry.yaml。必须显式声明：mcp_adapter.py 顶层
+    # `from fastmcp import Client` / `from fastmcp.server import FastMCP`。
+    # 版本钉死与 requirements.txt（fastmcp-slim==4.0.3）一致 —— 不钉会随 phoenix
+    # 的 `<5,>=4` 约束漂到其它 4.x；也不能降到 3.x（phoenix 要求 >=4）。
+    "fastmcp-slim[client,server]==4.0.3",
     "hvac>=2.0.0",
     "cryptography>=42.0.0",
     # kernel foundation（LiuHao-O/packages/kernel）显式依赖：

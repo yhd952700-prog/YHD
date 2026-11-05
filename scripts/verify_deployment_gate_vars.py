@@ -376,6 +376,13 @@ ALLOWLIST: Dict[str, str] = {
         "artifact sets today; unset yields a localhost default. Becomes a real "
         "gate the moment redis is selected as the backend -- reclassify then."
     ),
+    "LIUHAO_MCP_ADAPTER_ENABLED": (
+        "runtime switch for the MCP adapter layer. Unset means the adapter loads "
+        "configuration but establishes NO connection and exposes no server "
+        "(fail-closed); only an explicit truthy value starts connecting the "
+        "servers listed in configs/mcp/servers.json. The unset branch is the "
+        "strict one, so this switch cannot widen a safety control by omission."
+    ),
     "LIUHAO_MODEL_ROUTER": (
         "model-router strategy selection with a documented default strategy; "
         "absence changes routing behaviour, not whether a safety control "
