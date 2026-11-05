@@ -2,25 +2,35 @@
 
 职责边界：
 
-* 判断是否有可用知识库（**有文档才检索**，空库直接降级）；
+* 判断是否有可用知识库（未启用/不可用时直接降级）；
 * 检索相关片段，并按固定 token 预算裁剪（绝不把整库塞进提示词）；
 * 把片段拼成带编号来源的 system 提示词块；
-* 生成响应里的引用元信息；检索失败/为空时**静默降级**为普通对话，
+* 生成响应里的引用元信息；检索失败/弃答时**静默降级**为普通对话，
   但元信息必须说明"本次未使用知识库"及原因。
 
-**为什么不能"有命中就注入"**：检索侧在无答案时也可能返回凑数的 top_k 片段。
-把这些片段喂给模型，会让它基于无关上下文编出 *带引用的错误答案* —— 比不带
-引用更可信、也更危险。因此本模块有两道闸：
+**为什么不能"有命中就注入"**：top-k 检索总会返回点什么。把凑数片段喂给
+模型，会让它基于无关上下文编出 *带引用的错误答案* —— 比不带引用更可信、
+也更危险。
 
-1. **检索侧信号**：检索结果显式声明"无相关内容"（``no_relevant`` /
-   ``has_relevant=false`` / ``reason=no_relevant`` 等，具体键以知识库返回为准）
-   时，一个片段都不注入；
-2. **网关侧保险**：即使检索侧给了候选，最高分低于门槛，或与亚军分差过小
-   （评分是"一锅平铺"，说明没有真正的相关项）时，同样不注入。
+**权威判定在知识库侧**（``src.knowledge.abstention``，字段定稿）：
 
-两种情况在 ``knowledge`` 元信息里分别说明：前者是"未找到相关内容"，
-后者是"知识库为空"或"相关度不足" —— 对用户的含义完全不同，不能混用。
-决定理由会写入日志与元信息 ``diagnostics``，便于排查"为什么这次没引用"。
+* ``retrieval.status`` 只会是 ``"ok"`` / ``"no_relevant"``；
+* ``retrieval.reason`` 三选一：``empty_corpus`` / ``below_threshold`` /
+  ``ambiguous``（``status="ok"`` 时为 ``None``）；
+* ``no_relevant`` 时 ``retrieval.hits`` 一定是空数组，另有
+  ``top_score`` / ``runner_up_score`` / ``thresholds``。
+
+因此本模块的闸门顺序是：
+
+1. ``status == "no_relevant"`` → 一个片段都不注入，``reason`` 原样透传；
+2. ``status == "ok"`` → **以知识库判定为准**（它的阈值有评测数据支撑），网关
+   只在分数缺失/异常/与状态矛盾时兜底否决；
+3. 没有权威字段的旧实现 → 走网关自己的分数门槛（``_score_gate``），仅作兼容。
+
+三种弃答原因对用户的含义完全不同，文案不能混用：
+``empty_corpus`` → "知识库为空"，``below_threshold`` → "未找到相关内容"，
+``ambiguous`` → "找到的内容不够确定"。决定理由同时写入日志与元信息
+``diagnostics``，便于排查"为什么这次没引用"。
 
 本模块不修改 ``src.knowledge``；检索依赖真实 embedding provider，任何
 不可用/异常都只降级、不伪造结果。
@@ -29,6 +39,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import weakref
@@ -50,13 +61,26 @@ _CITATION_PREVIEW_CHARS = 200
 
 _DEFAULT_TOP_K = 4
 
-#: 相关度阈值（低于它的候选一律丢弃）。
+#: 网关侧兜底门槛：**只在检索侧没有权威判定时**使用（兼容旧实现）。
+#: 知识库侧 ``retrieval.status`` 存在时以它为准，见模块 docstring。
 _MIN_SCORE_ENV = "LIUHAO_CHAT_KNOWLEDGE_MIN_SCORE"
 _DEFAULT_MIN_SCORE = 0.25
 
-#: 最高分与亚军分的最小差距。低于它说明评分“平铺”，没有真正的相关项。
+#: 最高分与亚军分的最小差距（同上，仅兼容旧实现）。
 _MIN_MARGIN_ENV = "LIUHAO_CHAT_KNOWLEDGE_MIN_MARGIN"
 _DEFAULT_MIN_MARGIN = 0.02
+
+#: 知识库弃答契约（``src.knowledge.abstention`` 定稿字段）。
+_STATUS_OK = "ok"
+_STATUS_NO_RELEVANT = "no_relevant"
+_ABSTAIN_REASONS = frozenset({"empty_corpus", "below_threshold", "ambiguous"})
+
+#: 三种弃答原因对用户的含义完全不同，文案不可混用。
+_ABSTAIN_MESSAGES = {
+    "empty_corpus": "知识库为空（暂无可检索文档）",
+    "below_threshold": "未找到相关内容",
+    "ambiguous": "找到的内容不够确定",
+}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -117,16 +141,86 @@ def _not_used(
     }
 
 
-#: 检索侧可能使用的“无相关内容”表达。知识库最终以哪个键为准以实际返回为准，
-#: 这里做并集匹配：只认显式否定，不把缺失字段解释成“无相关内容”。
+#: 旧实现的“无相关内容”表达（兼容用）。权威字段存在时不会走到这里。
 _NEGATIVE_FLAGS = ("no_relevant", "no_relevant_content", "no_answer", "not_relevant")
 _NEGATIVE_STATUS = frozenset(
     {"no_relevant", "no_relevant_content", "no_match", "not_found", "not_relevant"}
 )
 
 
-def _says_no_relevant(result: Dict[str, Any]) -> bool:
-    """检索结果是否**显式**声明“无相关内容”。
+def _retrieval_info(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    retrieval = result.get("retrieval")
+    return retrieval if isinstance(retrieval, dict) else None
+
+
+def _authoritative_verdict(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """读取知识库定稿契约；返回 ``None`` 表示没有权威字段（走旧逻辑）。
+
+    权威字段一旦存在就压过旧的并集匹配：``status="ok"`` 永远不算弃答，
+    即使某个遗留标记为真。``no_relevant`` 时 ``reason`` 只认三选一，
+    缺失/未知一律按 ``below_threshold`` 处理（不夸大成“知识库为空”）。
+    """
+    retrieval = _retrieval_info(result)
+    if retrieval is None:
+        return None
+    status = str(retrieval.get("status") or "").strip().lower()
+    if status not in (_STATUS_OK, _STATUS_NO_RELEVANT):
+        return None
+    raw_reason = retrieval.get("reason")
+    reason = str(raw_reason).strip().lower() if raw_reason is not None else None
+    if status == _STATUS_OK:
+        reason = None
+    elif reason not in _ABSTAIN_REASONS:
+        reason = "below_threshold"
+    thresholds = retrieval.get("thresholds")
+    return {
+        "status": status,
+        "reason": reason,
+        "top_score": retrieval.get("top_score"),
+        "runner_up_score": retrieval.get("runner_up_score"),
+        "thresholds": dict(thresholds) if isinstance(thresholds, dict) else {},
+    }
+
+
+def _retrieval_diagnostics(
+    verdict: Dict[str, Any], hits: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """元信息里的“为什么这样决定”：原样带上知识库的分数与阈值。"""
+    return {
+        "gate": "knowledge",
+        "retrieval_status": verdict["status"],
+        "retrieval_reason": verdict["reason"],
+        "candidates": len(hits),
+        "top_score": verdict["top_score"],
+        "runner_up_score": verdict["runner_up_score"],
+        "thresholds": verdict["thresholds"],
+    }
+
+
+def _score_anomaly(hits: List[Dict[str, Any]]) -> bool:
+    """分数缺失/非数值/非有限/负数时返回 True（网关此时才保留否决权）。
+
+    知识库判 ``ok`` 时分数只用于展示与引用；只要数据可用，就不该用网关
+    自己的门槛二次否决——两套阈值尺度不同（RRF 融合分 vs 余弦分）。
+    """
+    if not hits:
+        return True
+    for hit in hits:
+        # 注意：这里的 True 是「检测到异常」，不是「成功」。仍然不把 return
+        # 放进 except 分支——门禁 liuhao-swallow-exception-return-success 无法
+        # 区分两者，而放宽规则等于给真正的「谎报成功」开口子。
+        value = None
+        try:
+            value = float(hit.get("score"))
+        except (TypeError, ValueError):
+            value = None
+        if value is None or not math.isfinite(value) or value < 0:
+            return True
+    return False
+
+
+def _legacy_says_no_relevant(result: Dict[str, Any]) -> bool:
+    """旧实现的“无相关内容”并集匹配；仅在缺少权威 ``status`` 时使用。
 
     只接受显式信号：布尔标记、``has_relevant/has_relevance=False``、
     ``status`` 命中否定集合、或 ``reason`` 文本包含否定语义。缺失字段不算否定，
@@ -192,8 +286,8 @@ def build_knowledge_context(
     """检索与 ``query`` 相关的知识片段，返回注入用的上下文与引用。
 
     ``enabled=False`` 时完全跳过（用户显式关闭）。``enabled=None`` 时自动：
-    知识库可用且**有文档**才检索。任何失败都返回 ``used=False`` 并说明原因，
-    不抛异常、不影响普通对话。
+    知识库可用才检索；空库/弃答由知识库侧的 ``retrieval`` 判定并原样透传。
+    任何失败都返回 ``used=False`` 并说明原因，不抛异常、不影响普通对话。
     """
     if enabled is False:
         return _not_used("disabled_by_user", "用户已关闭本次检索")
@@ -210,77 +304,123 @@ def build_knowledge_context(
     if not status.get("enabled"):
         reason = str(status.get("reason") or "未配置 embedding provider")
         return _not_used("unavailable", f"知识库未启用（{reason}）")
-    if int(status.get("vectors") or 0) <= 0:
-        # “库里没有文档”与“库里有文档但没有答案”是两件事，文案不能混用。
-        return _not_used("empty", "知识库为空（暂无可检索文档）")
 
     try:
-        result = service.search(
-            query, top_k=_DEFAULT_TOP_K, threshold=_min_score()
-        )
+        # 相关度阈值归知识库侧（有评测数据支撑），网关不再混入自己的门槛。
+        # 唯一例外：显式声明接受 0 分（zero-vector 测试 provider）时传 0.0，
+        # 这是知识库文档里约定的测试逃生门。
+        threshold = 0.0 if _min_score() <= 0.0 else None
+        result = service.search(query, top_k=_DEFAULT_TOP_K, threshold=threshold)
     except Exception as exc:  # 检索失败：静默降级，但记录真实原因
         logger.warning("knowledge_context: retrieval failed: %s", exc, exc_info=True)
         return _not_used("error", f"检索失败（{type(exc).__name__}）")
 
+    retrieval = _retrieval_info(result)
+    raw_hits = result.get("hits")
+    if raw_hits is None and retrieval is not None:
+        # 契约里的 ``retrieval.hits`` 与顶层 ``hits`` 是同一份列表。
+        raw_hits = retrieval.get("hits")
     hits: List[Dict[str, Any]] = [
-        hit for hit in (result.get("hits") or []) if isinstance(hit, dict)
+        hit for hit in (raw_hits or []) if isinstance(hit, dict)
     ]
-    candidate_diagnostics = {"candidates": len(hits)}
+    verdict = _authoritative_verdict(result)
 
-    # 闸 1：检索侧显式说“无相关内容”——候选一个都不看，直接不注入。
-    if _says_no_relevant(result):
-        logger.info(
-            "knowledge injection skipped: decision=no_relevant candidates=%d",
-            len(hits),
-        )
-        return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
-
-    if not hits:
-        # 非空库里检索不到任何片段，同样是“未找到相关内容”，不是“库为空”。
-        logger.info("knowledge injection skipped: decision=no_relevant candidates=0")
-        return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
-
-    # 闸 2：网关自己的相关度保险。评分过低或“平铺无区分度”一律不注入。
-    injectable, decision, score_diagnostics = _score_gate(hits)
-    if not injectable:
-        min_score = score_diagnostics["min_score"]
-        top = score_diagnostics["top_score"]
-        runner_up = score_diagnostics["runner_up_score"]
-        if decision == "ambiguous":
-            human_reason = (
-                f"未找到足够相关的内容（最高分 {top} 与次高 {runner_up} 分差 "
-                f"小于 {score_diagnostics['min_margin']}，候选无区分度）"
+    if verdict is not None:
+        # ---- 权威判定：以知识库侧为准 ----
+        diagnostics = _retrieval_diagnostics(verdict, hits)
+        if verdict["status"] == _STATUS_NO_RELEVANT:
+            reason = verdict["reason"] or "below_threshold"
+            logger.info(
+                "knowledge injection skipped: gate=knowledge reason=%s "
+                "top_score=%s runner_up=%s candidates=%d",
+                reason,
+                verdict["top_score"],
+                verdict["runner_up_score"],
+                len(hits),
             )
-        else:
-            human_reason = f"未找到足够相关的内容（最高分 {top} 低于门槛 {min_score}）"
-        logger.info(
-            "knowledge injection skipped: decision=%s top_score=%s "
-            "runner_up=%s min_score=%s min_margin=%s candidates=%d",
-            decision,
-            top,
-            runner_up,
-            min_score,
-            score_diagnostics["min_margin"],
-            len(hits),
-        )
-        return _not_used(decision, human_reason, score_diagnostics)
+            return _not_used(reason, _ABSTAIN_MESSAGES[reason], diagnostics)
 
-    # 通过保险后，再丢弃低于门槛的候选，绝不拿低分片段凑数。
-    min_score = score_diagnostics["min_score"]
-    qualified: List[Dict[str, Any]] = []
-    for hit in hits:
-        try:
-            score = float(hit.get("score") or 0.0)
-        except (TypeError, ValueError):
-            score = 0.0
-        if score >= min_score:
-            qualified.append(hit)
-    if not qualified:
-        return _not_used(
-            "low_score",
-            f"未找到足够相关的内容（最高分 {score_diagnostics['top_score']} 低于门槛 {min_score}）",
-            score_diagnostics,
-        )
+        # status=ok：不再用网关的 0.25 门槛二次否决（两套分数尺度不同）。
+        # 网关只在数据不可用时兜底。
+        if not hits:
+            logger.warning(
+                "knowledge_context: retrieval status=ok but hits empty; skipping"
+            )
+            return _not_used(
+                "inconsistent", "检索结果标记为相关但没有任何片段", diagnostics
+            )
+        if _score_anomaly(hits):
+            logger.warning(
+                "knowledge_context: retrieval status=ok but scores unusable; skipping"
+            )
+            return _not_used(
+                "score_anomaly", "检索结果的相关度分数缺失或异常", diagnostics
+            )
+        qualified = hits
+        score_diagnostics = diagnostics
+    else:
+        # ---- 兼容旧实现：没有权威 status，才启用网关自己的门槛 ----
+        candidate_diagnostics = {"candidates": len(hits), "gate": "gateway"}
+        if _legacy_says_no_relevant(result):
+            logger.info(
+                "knowledge injection skipped: gate=gateway legacy=no_relevant "
+                "candidates=%d",
+                len(hits),
+            )
+            return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
+
+        if not hits:
+            # 非空库里检索不到任何片段，同样是“未找到相关内容”，不是“库为空”。
+            logger.info(
+                "knowledge injection skipped: gate=gateway legacy=no_relevant "
+                "candidates=0"
+            )
+            return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
+
+        injectable, decision, score_diagnostics = _score_gate(hits)
+        score_diagnostics["gate"] = "gateway"
+        if not injectable:
+            min_score = score_diagnostics["min_score"]
+            top = score_diagnostics["top_score"]
+            runner_up = score_diagnostics["runner_up_score"]
+            if decision == "ambiguous":
+                human_reason = (
+                    f"未找到足够相关的内容（最高分 {top} 与次高 {runner_up} 分差 "
+                    f"小于 {score_diagnostics['min_margin']}，候选无区分度）"
+                )
+            else:
+                human_reason = (
+                    f"未找到足够相关的内容（最高分 {top} 低于门槛 {min_score}）"
+                )
+            logger.info(
+                "knowledge injection skipped: gate=gateway decision=%s "
+                "top_score=%s runner_up=%s min_score=%s min_margin=%s candidates=%d",
+                decision,
+                top,
+                runner_up,
+                min_score,
+                score_diagnostics["min_margin"],
+                len(hits),
+            )
+            return _not_used(decision, human_reason, score_diagnostics)
+
+        # 通过保险后，再丢弃低于门槛的候选，绝不拿低分片段凑数。
+        min_score = score_diagnostics["min_score"]
+        qualified = []
+        for hit in hits:
+            try:
+                score = float(hit.get("score") or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            if score >= min_score:
+                qualified.append(hit)
+        if not qualified:
+            return _not_used(
+                "low_score",
+                f"未找到足够相关的内容（最高分 "
+                f"{score_diagnostics['top_score']} 低于门槛 {min_score}）",
+                score_diagnostics,
+            )
 
     # 按 token 预算拼装：每条先截断，累计超过预算即停止，保证不超上限。
     blocks: List[str] = []

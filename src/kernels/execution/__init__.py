@@ -1507,8 +1507,9 @@ class ExecutionEngine:
         if self.artifact_index is None:
             return
         try:
-            # 内核层不得反向 import src.ai（分层门禁 B1，`.semgrep/liuhao.yml`
-            # 的 liuhao-kernel-imports-ai-layer；AST 护栏同禁）。工作区根的
+            # 内核层不得反向 import AI 应用层（分层门禁 B1，
+            # `.semgrep/liuhao.yml` 的 liuhao-kernel-imports-ai-layer；
+            # 文本护栏 tests/test_execution_tool_bridge.py 同禁）。工作区根的
             # 解析由索引模块自己完成（``workspace=None`` 时它自己取），
             # 内核只传事实（output/ids），不把应用层依赖带进来。
 

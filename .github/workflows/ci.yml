@@ -1235,7 +1235,12 @@ jobs:
       - name: Install Semgrep
         run: |
           python -m pip install --upgrade pip
-          python -m pip install semgrep
+          # 必须同时钉 mcp<2：semgrep 运行时要 import mcp.server.fastmcp，而 pip
+          # 默认会拉 mcp 2.x ⇒ ImportError 让作业在**扫描开始前**就崩。
+          # 实测（2026-11-06）：只装 semgrep 时作业 install 后立刻退出，日志里
+          # 一条 finding 都没有，却被 CRITICAL-5 判成"架构门禁失败"——那是假红。
+          # 钉 mcp<2 后本仓实测 5 rules / 593 files / 0 findings。
+          python -m pip install semgrep "mcp<2"
 
       # 关键：必须带 --error，否则 semgrep 在命中时仍 exit 0，门禁形同虚设。
       # 实测：默认 exit 0（即便 4 条 blocking findings），加 --error 后命中即 exit 1。
