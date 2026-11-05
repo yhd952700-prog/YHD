@@ -137,10 +137,11 @@ class AutomationBackend(Protocol):
 
 @dataclass(frozen=True)
 class GuardDecision:
-    """守卫判决。``allowed`` 为 False 时 ``reason`` 必须可解释。"""
+    """守卫判决。``allowed`` 为 False 时 ``reason`` 与 ``message`` 必须可解释。"""
 
     allowed: bool
     reason: str = ""
+    message: str = ""
     detail: Mapping[str, Any] = field(default_factory=dict)
 
 

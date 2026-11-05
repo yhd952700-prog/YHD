@@ -21,12 +21,13 @@ from .contracts import (
 )
 from .estop import EmergencyStop, get_emergency_stop
 from .gate import AutomationGate, GateDecision
-from .guard import Guard
+from .guard import ActionRule, Guard, ParamConstraint, target_matches
 from .sessions import AutomationSession, AutomationSessionRegistry, get_session_registry
 from .tools import build_automation_tools
 
 __all__ = [
     "ActionRequest",
+    "ActionRule",
     "ActionResult",
     "AutomationAudit",
     "AutomationAuditError",
@@ -42,6 +43,7 @@ __all__ = [
     "Guard",
     "GuardDecision",
     "Observation",
+    "ParamConstraint",
     "SessionStatus",
     "SqliteConfirmationBroker",
     "TargetScope",
@@ -49,4 +51,5 @@ __all__ = [
     "build_automation_tools",
     "get_emergency_stop",
     "get_session_registry",
+    "target_matches",
 ]

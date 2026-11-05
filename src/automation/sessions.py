@@ -157,7 +157,13 @@ class AutomationSession:
             observation = self.backend.observe(plan.target)
             decision = self.guard.check(plan, observation)
             if not decision.allowed:
-                return self._reject(plan, f"guard_{decision.reason}", observation)
+                return self._reject(
+                    plan,
+                    f"guard_{decision.reason}",
+                    observation,
+                    message=decision.message,
+                    detail=dict(decision.detail),
+                )
 
             consumed: TicketConsumeResult = self.broker.consume(
                 ticket=ticket.ticket,
@@ -232,6 +238,9 @@ class AutomationSession:
         plan: ActionRequest,
         reason: str,
         observation: Optional[Observation] = None,
+        *,
+        message: str = "",
+        detail: Optional[Dict[str, object]] = None,
     ) -> ActionResult:
         self.audit.record_action(
             principal=self.principal,
@@ -247,12 +256,18 @@ class AutomationSession:
             stage="intent",
             error=reason,
         )
+        payload: Dict[str, object] = {}
+        if message:
+            payload["message"] = message
+        if detail:
+            payload.update(detail)
         return ActionResult(
             status="rejected",
             action=plan.action,
             ok=False,
             observation=observation,
             error=reason,
+            detail=payload,
         )
 
 
