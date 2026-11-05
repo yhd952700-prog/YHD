@@ -340,6 +340,12 @@ Content-Type: application/json
     "top_score": 0.5012,
     "runner_up_score": 0.4137,
     "thresholds": {"min_top_score": 0.08, "min_score_gap": 0.05},
+    "abstention_calibration": {
+      "embedder": "hashing:sha256-bigram-512",
+      "calibrated": true,
+      "thresholds_from": "hashing:sha256-bigram-512",
+      "reason": null
+    },
     "hits": [
       {
         "doc_id": "doc-def456#3",
@@ -352,8 +358,8 @@ Content-Type: application/json
     ],
     "mode": "hybrid",
     "fts_available": true,
-    "candidate_k": 20,
-    "vector_candidates": 20,
+    "candidate_k": 40,
+    "vector_candidates": 40,
     "lexical_candidates": 2,
     "rrf_k": 60
   }
@@ -378,6 +384,12 @@ Content-Type: application/json
     "top_score": 0.145,
     "runner_up_score": 0.124,
     "thresholds": {"min_top_score": 0.08, "min_score_gap": 0.05},
+    "abstention_calibration": {
+      "embedder": "hashing:sha256-bigram-512",
+      "calibrated": true,
+      "thresholds_from": "hashing:sha256-bigram-512",
+      "reason": null
+    },
     "hits": [],
     "mode": "hybrid",
     "fts_available": true
@@ -405,8 +417,9 @@ Content-Type: application/json
 
 ### 混合检索：候选与重排是两个独立阶段
 
-- **候选阶段**：向量取 top `candidate_k = max(20, top_k * 4)` 个，FTS5/BM25 取同样
-  数量；两者决定“哪些片段有机会被看见”。
+- **候选阶段**：向量取 top `candidate_k = max(40, top_k * 4)` 个，FTS5/BM25 取同样
+  数量；两者决定“哪些片段有机会被看见”。下限 40 而非 16/20，是因为网关默认
+  `top_k=4`，旧窗口会把向量名次 30+ 的正确章节挡在向量列表外（只剩词法一票）。
 - **重排阶段**：按 BM25 强度加权的 RRF。向量列表贡献 `1/(60 + rank)`；词法列表贡献
   `bm25_weight/(60 + rank)`，`bm25_weight` 以本次最强命中为 1.0 归一化。这样
   “一个精确命中”不会因为名次票数少而被“两三个近似命中”压过。
@@ -433,11 +446,43 @@ python -m src.knowledge.evaluation --provider ollama
 python -m src.knowledge.evaluation --provider all    # hashing + 所有已检测到的真实源
 ```
 
-报告里的 `providers[].recommended.env` 给出可直接使用的三个环境变量值；对比表
+报告里的 `providers[].recommended.env` 给出可直接使用的四个环境变量值（三个阈值
+加上 `LIUHAO_KB_ABSTAIN_CALIBRATED_FOR`）；对比表
 输出到 stderr，JSON 报告输出到 stdout。若本机没有任何真实 embedding 源，报告会
 明确写出“本机无可用 embedding 源，真实模型下阈值未验证”，并把
 `real_provider_available` / `real_model_verified` 置为 `false`，不会用伪造数字
 填空。
+
+#### 没有评测证据的 provider：宽松弃答，绝不沿用别人的阈值
+
+用户新填一个 OpenAI 兼容 embedding 时，它的余弦分布与 nomic / hashing 无关，
+`0.65` 或 `0.08` 都没有依据。代码里按 **实际 embedder 身份**
+（`provider:model`）选择闸门（`resolve_abstention_config`）：
+
+| embedder 身份 | 阈值来源 | 行为 |
+|---|---|---|
+| `hashing:sha256-bigram-512` / `mock` | 本仓库评测 | `0.08 / 0.05 / 0.85` |
+| `ollama:nomic-embed-text` | 本仓库评测 | `0.65 / 0.05 / 0.85` |
+| 其它任何 provider/model | **uncalibrated** | `-1.0 / 0.0 / 0.85`：非空库不弃答 |
+
+未校准时宁可不弃答，也不把有答案的问题判成“没找到”。
+`retrieval.abstention_calibration` 如实说明来源：
+
+```json
+{
+  "embedder": "openai:text-embedding-3-small",
+  "calibrated": false,
+  "thresholds_from": "uncalibrated",
+  "reason": "该 embedding provider/model 没有评测证据：使用宽松弃答……"
+}
+```
+
+启用严格弃答必须完成一次校准：运行评测后，同时设置
+`LIUHAO_KB_ABSTAIN_CALIBRATED_FOR=<provider>:<model>` 和三个阈值环境变量。
+声明身份与当前 embedder 不匹配、或三个阈值缺任何一个，都会**保持**
+uncalibrated（半个校准比没有更危险）。`thresholds_from` 只会是
+`<provider>:<model>`（有证据）、`uncalibrated`（无证据）或 `explicit`
+（调用方显式固定，仅评测/测试）。
 
 当前默认 `0.08 / 0.05 / 0.85` **只适用于词面嵌入（hashing embedder）**：在 34
 篇文档、30 条查询（29 条有答案 + 1 条无答案）的评测集上，有答案召回 0.8621、
@@ -456,6 +501,38 @@ BM25 加权融合之后）：有答案召回@5 `0.8966`、@10 `0.8966`、MRR `0.
 详细依据见
 [`src/knowledge/abstention.py`](../../../src/knowledge/abstention.py) 与
 [`src/knowledge/evaluation.py`](../../../src/knowledge/evaluation.py) 模块文档。
+
+### 端到端引用正确性（真实 embedding + 真实对话模型，2026-11-06）
+
+验证“文档对了、段落错了”不会再发生：用真实模型通过网关 HTTP 提问，检查
+**引用片段本身**是否来自正确章节，而不只看命中文档。
+
+| 项目 | 值 |
+|---|---|
+| 传输 | `POST /v1/chat`，`use_knowledge=true`，本机 uvicorn（真实链路，无桩） |
+| Embedding | Ollama `nomic-embed-text`（768 维） |
+| 对话模型 | Ollama `qwen2.5:3b`（网关模型路由选择） |
+| 问题 | `数据库连接池耗尽导致超时怎么处理` |
+| 期望出处 | `kb-032#0`，章节 `连接故障手册 / 数据库连接超时`，标志词 `pool_size` |
+| 实际第一引用 | `kb-032#0`，`score=0.027505`，片段含 `pool_size` |
+| 是否命中 | **是**（第一来源即正确章节） |
+
+实际引用顺序：`kb-032#0`（正确章节，含 `pool_size`）→ `kb-033#0`（干扰文档）→
+`kb-032#1`（缓存连接超时）→ `kb-032#2`（消息队列连接超时）。回答原文包含
+“调大 pool_size 并重启”，与期望章节一致。`knowledge.diagnostics`：
+`retrieval_status=ok`、`top_score=0.7831`、`runner_up=0.7824`、
+`thresholds={min_top_score:0.65,min_score_gap:0.05}`。
+
+同时如实记录两点：
+
+1. **修复前同一条链路第一来源是干扰文档 `kb-033#0`**（正确章节只排第 4），
+   这正是候选窗口下限 20 导致正确块的向量贡献被挡掉；改为 40 后第一来源回到
+   正确章节。
+2. 本次未能使用 DeepSeek：本机环境变量与 `.env` 都没有 `DEEPSEEK_API_KEY`，
+   `config/default.yaml` 仅声明了 `api_key_env: DEEPSEEK_API_KEY`。因此对话模型
+   用本机 Ollama `qwen2.5:3b`，embedding 用真实 `nomic-embed-text`；
+   **没有用桩数据替代缺失的 DeepSeek**。用户提供 Key 后重跑同一脚本即可得到
+   DeepSeek 版本的记录。
 
 ---
 

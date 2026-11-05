@@ -97,6 +97,22 @@ class TestSweep:
         # bought with false abstentions.
         assert recommended["metrics"]["answerable_recall@5"] == 1.0
 
+    def test_recommended_env_binds_thresholds_to_the_measured_embedder(self):
+        rows = [
+            _raw_row("fact", ["kb-001"], ["kb-001"], 0.80, 0.70, 1),
+            _raw_row("unanswerable", [], [], 0.60, 0.58, 0),
+        ]
+        sweep = evaluation.sweep_thresholds(
+            rows,
+            min_top_values=(0.70,),
+            min_gap_values=(0.05,),
+            strong_match_values=(0.85,),
+            calibrated_for="ollama:nomic-embed-text",
+        )
+        env = sweep["recommended"]["env"]
+        assert env[evaluation.ENV_CALIBRATED_FOR] == "ollama:nomic-embed-text"
+        assert env[evaluation.ENV_MIN_SIMILARITY] == "0.70"
+
     def test_observed_scores_are_reported_next_to_thresholds(self):
         rows = [
             _raw_row("fact", ["kb-001"], ["kb-001"], 0.80, 0.70, 1),

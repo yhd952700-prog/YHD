@@ -7,13 +7,21 @@ from typing import List
 import pytest
 
 from src.knowledge.abstention import (
+    CALIBRATED_PROFILES,
+    ENV_CALIBRATED_FOR,
+    ENV_MIN_GAP,
+    ENV_MIN_SIMILARITY,
+    ENV_STRONG_MATCH,
     NO_RELEVANT,
     REASON_AMBIGUOUS,
     REASON_BELOW_THRESHOLD,
     REASON_EMPTY_CORPUS,
     STATUS_OK,
+    UNCALIBRATED_CONFIG,
     AbstentionConfig,
     assess_confidence,
+    embedder_identity,
+    resolve_abstention_config,
 )
 from src.knowledge.documents import KnowledgeDocumentService
 from src.knowledge import evaluation
@@ -213,15 +221,133 @@ class TestServiceMirrorsHits:
         )
         service.ingest("局域网访问设置。", doc_id="lan")
 
-        hit = service.search("局域网", top_k=3)
+        hit = service.search("局域网", top_k=3, abstention_config=_config())
         assert hit["retrieval"]["status"] == STATUS_OK
         assert hit["retrieval"]["hits"] == hit["hits"]
         assert hit["hits"]
 
-        miss = service.search("员工年假怎么申请", top_k=10)
+        miss = service.search(
+            "员工年假怎么申请", top_k=10, abstention_config=_config()
+        )
         assert miss["retrieval"]["status"] == NO_RELEVANT
         assert miss["retrieval"]["hits"] == []
         assert miss["hits"] == []
+        store.close()
+
+
+class TestCalibrationProvenance:
+    """没有该 provider 的评测证据时，不得沿用别的模型的阈值。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for name in (
+            ENV_CALIBRATED_FOR,
+            ENV_MIN_SIMILARITY,
+            ENV_MIN_GAP,
+            ENV_STRONG_MATCH,
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_unknown_provider_gets_lenient_uncalibrated_gate(self):
+        gate, meta = resolve_abstention_config("openai", "text-embedding-3-large")
+        assert gate == UNCALIBRATED_CONFIG
+        assert meta["embedder"] == "openai:text-embedding-3-large"
+        assert meta["calibrated"] is False
+        assert meta["thresholds_from"] == "uncalibrated"
+        assert "没有评测证据" in meta["reason"]
+
+    def test_known_profiles_report_their_own_calibration(self):
+        gate, meta = resolve_abstention_config("ollama", "nomic-embed-text")
+        assert gate == CALIBRATED_PROFILES["ollama:nomic-embed-text"]
+        assert meta["calibrated"] is True
+        assert meta["thresholds_from"] == "ollama:nomic-embed-text"
+
+        hashing, hashing_meta = resolve_abstention_config(
+            "hashing", "sha256-bigram-512"
+        )
+        assert hashing.min_top_similarity == 0.08
+        assert hashing_meta["thresholds_from"] == "hashing:sha256-bigram-512"
+
+    def test_identity_is_normalized(self):
+        assert embedder_identity(" Ollama ", "Nomic-Embed-Text") == (
+            "ollama:nomic-embed-text"
+        )
+        assert embedder_identity("mock", None) == "mock"
+        assert embedder_identity(None, None) == "unknown"
+
+    def test_declaration_for_another_provider_is_rejected(self, monkeypatch):
+        monkeypatch.setenv(ENV_CALIBRATED_FOR, "ollama:nomic-embed-text")
+        monkeypatch.setenv(ENV_MIN_SIMILARITY, "0.65")
+        monkeypatch.setenv(ENV_MIN_GAP, "0.05")
+        monkeypatch.setenv(ENV_STRONG_MATCH, "0.85")
+
+        gate, meta = resolve_abstention_config("openai", "text-embedding-3-large")
+        assert gate == UNCALIBRATED_CONFIG
+        assert meta["thresholds_from"] == "uncalibrated"
+        assert "另一个 embedding" in meta["reason"]
+
+    def test_declaration_without_all_thresholds_is_uncalibrated(self, monkeypatch):
+        monkeypatch.setenv(ENV_CALIBRATED_FOR, "openai:text-embedding-3-large")
+        monkeypatch.setenv(ENV_MIN_SIMILARITY, "0.5")
+        # gap / strong 缺失：半个校准不可用
+        gate, meta = resolve_abstention_config(
+            "openai", "text-embedding-3-large"
+        )
+        assert gate == UNCALIBRATED_CONFIG
+        assert meta["calibrated"] is False
+        assert "半个校准" in meta["reason"]
+
+    def test_complete_declaration_enables_its_thresholds(self, monkeypatch):
+        monkeypatch.setenv(ENV_CALIBRATED_FOR, "openai:text-embedding-3-large")
+        monkeypatch.setenv(ENV_MIN_SIMILARITY, "0.71")
+        monkeypatch.setenv(ENV_MIN_GAP, "0.06")
+        monkeypatch.setenv(ENV_STRONG_MATCH, "0.9")
+
+        gate, meta = resolve_abstention_config(
+            "openai", "text-embedding-3-large"
+        )
+        assert gate.min_top_similarity == 0.71
+        assert meta["calibrated"] is True
+        assert meta["thresholds_from"] == "openai:text-embedding-3-large"
+
+    def test_pinned_config_is_marked_explicit_not_calibrated(self):
+        pinned = _config()
+        gate, meta = resolve_abstention_config(
+            "openai", "text-embedding-3-large", pinned=pinned
+        )
+        assert gate is pinned
+        assert meta["thresholds_from"] == "explicit"
+        assert meta["calibrated"] is False
+
+    def test_unknown_embedder_never_false_abstains(self, tmp_path):
+        store = PersistentVectorStore(str(tmp_path / "uncalibrated.sqlite3"))
+        service = KnowledgeDocumentService(
+            vector_store=store, embedder=_KeywordEmbedder()
+        )
+        service.ingest("局域网访问设置。", doc_id="lan")
+
+        miss = service.search("员工年假怎么申请", top_k=10)
+        assert miss["hits"], "宽松弃答不能把没命中的问题也判成没找到"
+        assert miss["retrieval"]["status"] == STATUS_OK
+        assert miss["retrieval"]["thresholds"]["min_top_score"] == -1.0
+        calibration = miss["retrieval"]["abstention_calibration"]
+        assert calibration["embedder"] == "keyword-test:keyword-test"
+        assert calibration["calibrated"] is False
+        assert calibration["thresholds_from"] == "uncalibrated"
+        store.close()
+
+    def test_calibrated_embedder_exposes_profile_source(self, tmp_path):
+        store = PersistentVectorStore(str(tmp_path / "hashing.sqlite3"))
+        service = KnowledgeDocumentService(
+            vector_store=store, embedder=evaluation.HashingEmbedder()
+        )
+        service.ingest("局域网访问设置。", doc_id="lan")
+
+        calibration = service.search("局域网", top_k=3)["retrieval"][
+            "abstention_calibration"
+        ]
+        assert calibration["calibrated"] is True
+        assert calibration["thresholds_from"] == "hashing:sha256-bigram-512"
         store.close()
 
 

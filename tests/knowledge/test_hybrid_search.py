@@ -192,6 +192,19 @@ class TestLegacyCorpusBackfill:
         assert info["lexical_candidates"] >= 1
         store.close()
 
+    def test_candidate_window_floor_covers_the_gateway_top_k(self, tmp_path):
+        # 修复契约：网关默认 top_k=4，旧的 top_k*4=16 / 下限 20 会把向量名次
+        # 30+ 的正确章节挡在向量列表外，只剩词法一票。下限固定为 40。
+        store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
+        store.insert("doc#0", [1.0, 0.0], {"text": "普通文档", "document_id": "doc"})
+        _, info = store.hybrid_search("数据库", [1.0, 0.0], top_k=4, abstain=False)
+        assert info["candidate_k"] == 40
+        _, info_large = store.hybrid_search(
+            "数据库", [1.0, 0.0], top_k=20, abstain=False
+        )
+        assert info_large["candidate_k"] == 80
+        store.close()
+
 
 class TestServiceSearchExposesRetrievalMode:
     def test_search_reports_hybrid_and_keyword_hit(self):

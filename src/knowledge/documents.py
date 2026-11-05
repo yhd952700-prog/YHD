@@ -14,7 +14,7 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .abstention import AbstentionConfig
+from .abstention import AbstentionConfig, resolve_abstention_config
 from .chunker import chunk_document_structured, chunk_paged_document
 from .embedding import EmbeddingUnavailableError, build_embedding_provider
 from .vector_store import get_vector_store
@@ -313,17 +313,26 @@ class KnowledgeDocumentService:
         production callers must leave the default.
 
         ``abstention_config`` pins the gate thresholds for this call only
-        (evaluation/system checks use it). Production leaves it ``None`` so the
-        process environment decides; thresholds are tied to the embedding
-        model, so never change the model without re-running the evaluation.
+        (evaluation/system checks use it). Production leaves it ``None``: the
+        gate is then chosen by the **actual** embedder identity, never by
+        another model's numbers. An embedder with no evaluation evidence gets
+        the lenient gate (never abstain on a non-empty corpus) and
+        ``retrieval.abstention_calibration`` says ``thresholds_from=
+        "uncalibrated"`` so the caller can surface that honestly.
         """
         embedder = self._embedding()
         store = self._store()
+        pinned = abstention_config
+        gate, calibration = resolve_abstention_config(
+            getattr(embedder, "name", None),
+            getattr(embedder, "model", None),
+            pinned=pinned,
+        )
         query_vector = embedder.embed([query])[0]
         if hasattr(store, "hybrid_search"):
             results, retrieval = store.hybrid_search(
                 query, query_vector, top_k=top_k, threshold=threshold,
-                abstain=abstain, config=abstention_config,
+                abstain=abstain, config=gate,
             )
         else:  # pragma: no cover - third-party stores without the hybrid API
             results = store.search(query_vector, top_k=top_k, threshold=threshold)
@@ -334,9 +343,10 @@ class KnowledgeDocumentService:
                 "reason": None if results else "below_threshold",
                 "top_score": None,
                 "runner_up_score": None,
-                "thresholds": {},
+                "thresholds": gate.as_dict(),
                 "abstained": False,
             }
+        retrieval["abstention_calibration"] = calibration
         hits: List[Dict[str, Any]] = [
             {
                 "doc_id": doc_id,

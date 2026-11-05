@@ -25,9 +25,11 @@ gained recall, MRR and section precision.
 
 Tried and ineffective for that defect (kept here so it is not re-attempted):
 
-* raising ``candidate_k`` -- the corpus has only 36 chunks and the correct
-  section was already inside the 40-candidate window; the stage was not the
-  bottleneck;
+* raising ``candidate_k`` at the evaluation's ``top_k=10`` -- all 36 chunks
+  already fit the 40-candidate window, so it changed nothing there. But at the
+  gateway's ``top_k=4`` the old floor of 20 dropped the correct chunk from the
+  vector list, leaving it lexical-only and behind a distractor; the floor is
+  now 40 and the E2E citation points at the correct section first;
 * shrinking chunks -- the failing section is a single short paragraph;
 * dropping ``context_header`` or adding ``search_query:`` / ``search_document:``
   prefixes -- the correct chunk stayed at vector rank 30+ in all four variants.
@@ -877,7 +879,12 @@ class PersistentVectorStore(VectorStore):
         before truncation so an irrelevant list is never padded out to
         ``top_k``.
         """
-        candidate_k = max(20, top_k * 4)
+        # Both stages need a *fair* rank: with a 20-candidate window and
+        # ``top_k=4`` (the gateway's default) the correct-but-semantically-
+        # misranked chunk (vector rank 30) was absent from the vector list, so
+        # its fused score was lexical-only and a distractor document took the
+        # first citation slot. 40 keeps such a lexical winner in both lists.
+        candidate_k = max(40, top_k * 4)
         with self._lock:
             empty_corpus = self.count() == 0
             vector_results = self.search(

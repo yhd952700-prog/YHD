@@ -121,6 +121,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .abstention import (
+    ENV_CALIBRATED_FOR,
     ENV_MIN_GAP,
     ENV_MIN_SIMILARITY,
     ENV_STRONG_MATCH,
@@ -128,6 +129,7 @@ from .abstention import (
     STATUS_OK,
     AbstentionConfig,
     assess_confidence,
+    embedder_identity,
 )
 from .documents import KnowledgeDocumentService
 from .embedding import (
@@ -986,6 +988,7 @@ def sweep_thresholds(
     min_top_values: Sequence[float] = DEFAULT_MIN_TOP_GRID,
     min_gap_values: Sequence[float] = DEFAULT_MIN_GAP_GRID,
     strong_match_values: Sequence[float] = DEFAULT_STRONG_GRID,
+    calibrated_for: Optional[str] = None,
 ) -> Dict[str, object]:
     """Grid-search gate thresholds on already-collected observations.
 
@@ -1036,13 +1039,19 @@ def sweep_thresholds(
     ranked = sorted(entries, key=key, reverse=True)
     best = ranked[0]
     best_thresholds = best["thresholds"]
+    env = {
+        ENV_MIN_SIMILARITY: f"{best_thresholds['min_top_similarity']:.2f}",
+        ENV_MIN_GAP: f"{best_thresholds['min_top_gap']:.2f}",
+        ENV_STRONG_MATCH: f"{best_thresholds['strong_match_similarity']:.2f}",
+    }
+    # The numeric values alone would be applied to any embedder that happens to
+    # be configured next; the declaration binds them to the model they were
+    # measured on (a mismatching declaration stays uncalibrated and lenient).
+    if calibrated_for:
+        env[ENV_CALIBRATED_FOR] = calibrated_for
     recommended = {
         "thresholds": dict(best_thresholds),
-        "env": {
-            ENV_MIN_SIMILARITY: f"{best_thresholds['min_top_similarity']:.2f}",
-            ENV_MIN_GAP: f"{best_thresholds['min_top_gap']:.2f}",
-            ENV_STRONG_MATCH: f"{best_thresholds['strong_match_similarity']:.2f}",
-        },
+        "env": env,
         "metrics": dict(best["metrics"]),
         "holds_abstention": best["metrics"]["no_answer_abstained"] >= 1.0,
         "observed_scores": _observed_scores(rows),
@@ -1157,7 +1166,13 @@ def compare_providers(
             )
             continue
 
-        sweep = sweep_thresholds(run["rows"])
+        embedder_info = run.get("embedder") or {}
+        sweep = sweep_thresholds(
+            run["rows"],
+            calibrated_for=embedder_identity(
+                embedder_info.get("name"), embedder_info.get("model")
+            ),
+        )
         rows.append(
             {
                 "provider": spec.key,
@@ -1235,7 +1250,13 @@ def baseline_report(
         key: round(float(metrics[key]) - BASELINE[key], 4)
         for key in BASELINE
     }
-    sweep = sweep_thresholds(run["rows"])  # type: ignore[arg-type]
+    embedder_info = run.get("embedder") or {}
+    sweep = sweep_thresholds(  # type: ignore[arg-type]
+        run["rows"],
+        calibrated_for=embedder_identity(
+            embedder_info.get("name"), embedder_info.get("model")
+        ),
+    )
     return {
         "embedder": run["embedder"],
         "metrics": metrics,

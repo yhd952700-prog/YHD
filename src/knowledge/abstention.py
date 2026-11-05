@@ -95,15 +95,47 @@ alternatives. Its margin is narrow and visible in
 ``recommended.observed_scores``: lowest answerable top score ``0.6759`` vs
 highest unanswerable top score ``0.6280``. With the default ``0.08`` floor the
 same run still abstained, but only because the gap rule fired -- the absolute
-floor itself did not discriminate. Env vars below still default to the
-hashing-tuned values; a deployment that switches to a real provider must set
-them to the evaluated values.
+floor itself did not discriminate. The numeric env defaults below remain
+hashing-tuned; a semantic provider never inherits them implicitly -- its own
+calibration profile (or an explicit declaration) decides, see the next
+paragraph.
+
+**Which thresholds apply?** Not "whatever is in the env" -- the *actual*
+embedder decides (``resolve_abstention_config``):
+
+* ``hashing:sha256-bigram-512`` -> ``0.08 / 0.05 / 0.85`` (the measured
+  lexical baseline);
+* ``ollama:nomic-embed-text`` -> ``0.65 / 0.05 / 0.85`` (the measured real
+  model profile);
+* ``mock`` (dev-only zero vectors) -> the hashing profile, but the degenerate
+  branch below stays in charge;
+* any other provider/model (for example an OpenAI-compatible embedding the
+  user just configured) -> **uncalibrated**: a lenient gate
+  (``-1.0 / 0.0 / 0.85``) that never abstains on a non-empty corpus. Copying
+  another model's cosine thresholds here is forbidden: scores are a property
+  of the embedding model, not of this module.
+
+To enable strict abstention for a new provider: run
+``python -m src.knowledge.evaluation --provider <provider>``, then set
+``LIUHAO_KB_ABSTAIN_CALIBRATED_FOR=<provider>:<model>`` **and all three**
+threshold env vars from the run's ``recommended.env``. A declaration whose
+identity does not match the live embedder, or that omits any threshold, stays
+uncalibrated -- a half-set calibration is worse than none. The retrieval
+metadata always states where the effective thresholds came from:
+``retrieval.abstention_calibration`` = ``{"embedder", "calibrated",
+"thresholds_from", "reason"}``, with ``thresholds_from="uncalibrated"`` when
+there is no evidence for this embedder.
 
 Environment overrides (all optional, checked per call so tests can pin them):
 
+* ``LIUHAO_KB_ABSTAIN_CALIBRATED_FOR`` (e.g. ``ollama:nomic-embed-text``)
 * ``LIUHAO_KB_ABSTAIN_MIN_SIMILARITY`` (default ``0.08``)
 * ``LIUHAO_KB_ABSTAIN_MIN_GAP`` (default ``0.05``)
 * ``LIUHAO_KB_ABSTAIN_STRONG_MATCH`` (default ``0.85``)
+
+The three numeric defaults only apply to the hashing profile (and to a
+declared calibration that completes all three); they are **not** reused for an
+unknown provider.
 
 Known limits (stated, not hidden): the gap is computed over chunk-level scores,
 so two chunks of the same document can tie and look like a weak lead; a real
@@ -118,7 +150,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 STATUS_OK = "ok"
 NO_RELEVANT = "no_relevant"
@@ -130,6 +162,7 @@ REASON_EMPTY_CORPUS = "empty_corpus"
 ENV_MIN_SIMILARITY = "LIUHAO_KB_ABSTAIN_MIN_SIMILARITY"
 ENV_MIN_GAP = "LIUHAO_KB_ABSTAIN_MIN_GAP"
 ENV_STRONG_MATCH = "LIUHAO_KB_ABSTAIN_STRONG_MATCH"
+ENV_CALIBRATED_FOR = "LIUHAO_KB_ABSTAIN_CALIBRATED_FOR"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -166,6 +199,121 @@ class AbstentionConfig:
         }
 
 
+#: Gate for embedders with **no evaluation evidence**: a -1.0 floor and a zero
+#: gap clear for every cosine pair, so a non-empty corpus is never judged
+#: "not found". Losing recall is worse than answering from the best available
+#: (possibly imperfect) chunk; strict abstention requires a calibration.
+UNCALIBRATED_CONFIG = AbstentionConfig(
+    min_top_similarity=-1.0,
+    min_top_gap=0.0,
+    strong_match_similarity=0.85,
+)
+
+#: Profiles with measured evidence in this repository, keyed by
+#: ``provider:model`` (or the bare provider when it has no model name).
+#: Add an entry only after running ``python -m src.knowledge.evaluation``.
+CALIBRATED_PROFILES: Dict[str, AbstentionConfig] = {
+    "hashing:sha256-bigram-512": AbstentionConfig(0.08, 0.05, 0.85),
+    "mock": AbstentionConfig(0.08, 0.05, 0.85),
+    "ollama:nomic-embed-text": AbstentionConfig(0.65, 0.05, 0.85),
+}
+
+
+def embedder_identity(provider: Optional[str], model: Optional[str]) -> str:
+    """Normalized ``provider:model`` key used for calibration matching."""
+    provider = (provider or "").strip().lower()
+    model = (model or "").strip().lower()
+    if provider and model:
+        return f"{provider}:{model}"
+    return provider or model or "unknown"
+
+
+def _thresholds_env_complete() -> bool:
+    return all(
+        (os.environ.get(name) or "").strip()
+        for name in (ENV_MIN_SIMILARITY, ENV_MIN_GAP, ENV_STRONG_MATCH)
+    )
+
+
+def resolve_abstention_config(
+    provider: Optional[str],
+    model: Optional[str],
+    *,
+    pinned: Optional[AbstentionConfig] = None,
+) -> Tuple[AbstentionConfig, Dict[str, Any]]:
+    """Pick the gate for the live embedder and explain where it came from.
+
+    Order of precedence:
+
+    1. ``pinned`` -- an explicit caller override (evaluation replay, tests).
+       It is *not* evidence, so the metadata says ``thresholds_from="explicit"``.
+    2. ``LIUHAO_KB_ABSTAIN_CALIBRATED_FOR`` -- an operator declaration. It only
+       counts when it names the live embedder **and** all three threshold env
+       vars are set; otherwise the embedder stays uncalibrated.
+    3. A built-in profile with in-repo evidence (hashing, nomic).
+    4. Anything else -- :data:`UNCALIBRATED_CONFIG`, never another model's
+       thresholds, and the metadata says so.
+    """
+    identity = embedder_identity(provider, model)
+    if pinned is not None:
+        return pinned, {
+            "embedder": identity,
+            "calibrated": False,
+            "thresholds_from": "explicit",
+            "reason": "调用方显式固定阈值（评测重放或测试），不是该 provider 的评测证据",
+        }
+
+    declared = (os.environ.get(ENV_CALIBRATED_FOR) or "").strip().lower()
+    if declared:
+        if declared != identity:
+            return UNCALIBRATED_CONFIG, {
+                "embedder": identity,
+                "calibrated": False,
+                "thresholds_from": "uncalibrated",
+                "reason": (
+                    f"{ENV_CALIBRATED_FOR}={declared} 是另一个 embedding 的校准；"
+                    f"当前是 {identity}，不沿用它的阈值"
+                ),
+            }
+        if not _thresholds_env_complete():
+            return UNCALIBRATED_CONFIG, {
+                "embedder": identity,
+                "calibrated": False,
+                "thresholds_from": "uncalibrated",
+                "reason": (
+                    f"{ENV_CALIBRATED_FOR} 声明了 {identity}，但三个阈值环境变量"
+                    "没有全部设置；半个校准不可用"
+                ),
+            }
+        return AbstentionConfig.from_env(), {
+            "embedder": identity,
+            "calibrated": True,
+            "thresholds_from": identity,
+            "reason": None,
+        }
+
+    profile = CALIBRATED_PROFILES.get(identity)
+    if profile is not None:
+        return profile, {
+            "embedder": identity,
+            "calibrated": True,
+            "thresholds_from": identity,
+            "reason": None,
+        }
+
+    return UNCALIBRATED_CONFIG, {
+        "embedder": identity,
+        "calibrated": False,
+        "thresholds_from": "uncalibrated",
+        "reason": (
+            "该 embedding provider/model 没有评测证据：使用宽松弃答（宁可少弃答，"
+            "也不把有答案的问题判成没找到）；先运行 "
+            "python -m src.knowledge.evaluation --provider <provider>，再设置 "
+            f"{ENV_CALIBRATED_FOR}={identity} 和三个阈值环境变量以启用严格弃答"
+        ),
+    }
+
+
 def assess_confidence(
     similarities: Mapping[str, float],
     lexical_candidates: int,
@@ -185,6 +333,10 @@ def assess_confidence(
     caller can explain *why* it abstained.
     """
     config = config or AbstentionConfig.from_env()
+    # A non-positive floor means "don't gate on similarity": it is what the
+    # uncalibrated default uses. Zero/degenerate vectors must then be accepted
+    # too, otherwise an uncalibrated provider could still falsely abstain.
+    zero_score_allowed = zero_score_allowed or config.min_top_similarity <= 0.0
     ordered = sorted(
         ((chunk_id, float(score)) for chunk_id, score in similarities.items()),
         key=lambda item: item[1],
