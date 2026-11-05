@@ -36,6 +36,13 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .abstention import (
+    NO_RELEVANT,
+    STATUS_OK,
+    AbstentionConfig,
+    assess_confidence,
+)
+
 logger = logging.getLogger("liuhao.knowledge.vector_store")
 
 KNOWLEDGE_DB_ENV = "LIUHAO_KNOWLEDGE_DB"
@@ -71,6 +78,16 @@ def _tokens_for_metadata(metadata: Dict[str, Any]) -> str:
     body = str(metadata.get("text", ""))
     header = str(metadata.get("context_header") or "").strip()
     return tokenize_for_index(f"{header}\n{body}" if header else body)
+
+
+def cosine_similarity(left: List[float], right: List[float]) -> float:
+    """Cosine similarity in [-1, 1]; 0.0 when either vector is all zeros."""
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_left = sum(a * a for a in left) ** 0.5
+    norm_right = sum(b * b for b in right) ** 0.5
+    if norm_left <= 0 or norm_right <= 0:
+        return 0.0
+    return dot / (norm_left * norm_right)
 
 
 def _document_id_of(chunk_id: str, metadata: Dict[str, Any]) -> str:
@@ -159,15 +176,7 @@ class VectorStore:
         results: List[Tuple[str, float, Dict[str, Any]]] = []
 
         for doc_id, (stored_embedding, metadata) in snapshot:
-            # Compute cosine similarity
-            dot = sum(a * b for a, b in zip(query_embedding, stored_embedding))
-            norm_a = sum(a * a for a in query_embedding) ** 0.5
-            norm_b = sum(b * b for b in stored_embedding) ** 0.5
-            if norm_a > 0 and norm_b > 0:
-                similarity = dot / (norm_a * norm_b)
-            else:
-                similarity = 0.0
-
+            similarity = cosine_similarity(query_embedding, stored_embedding)
             if threshold is None or similarity >= threshold:
                 results.append((doc_id, similarity, metadata))
 
@@ -182,15 +191,43 @@ class VectorStore:
         top_k: int = 4,
         threshold: Optional[float] = None,
         rrf_k: int = 60,
+        abstain: bool = True,
+        config: Optional[AbstentionConfig] = None,
     ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
-        """Vector-only fallback for stores without an FTS index."""
+        """Vector-only fallback for stores without an FTS index.
+
+        Returns ``(hits, retrieval)``. ``retrieval`` carries the finalized
+        contract fields (``status`` / ``reason`` / ``top_score`` /
+        ``runner_up_score`` / ``thresholds``); ``hits`` is empty whenever the
+        status is ``no_relevant``.
+        """
         results = self.search(query_embedding, top_k=top_k, threshold=threshold)
+        with self._lock:
+            empty_corpus = not self._store
+        assessment = assess_confidence(
+            {doc_id: score for doc_id, score, _ in results},
+            0,
+            config=config,
+            empty_corpus=empty_corpus,
+            zero_score_allowed=threshold is not None and threshold <= 0.0,
+        )
+        gated = abstain and not assessment["confident"]
+        if gated:
+            results = []
+        no_relevant = gated or not results
         info = {
             "mode": "vector",
             "fts_available": False,
-            "reason": "this store has no FTS5 side index",
+            "status": NO_RELEVANT if no_relevant else STATUS_OK,
+            "reason": assessment["reason"] if no_relevant else None,
+            "top_score": assessment["top_score"],
+            "runner_up_score": assessment["runner_up_score"],
+            "thresholds": assessment["thresholds"],
+            "abstained": gated,
+            "confidence": assessment,
+            "notes": "this store has no FTS5 side index",
             "candidate_k": top_k,
-            "vector_candidates": len(results),
+            "vector_candidates": assessment["candidate_count"],
             "lexical_candidates": 0,
             "rrf_k": rrf_k,
         }
@@ -748,33 +785,81 @@ class PersistentVectorStore(VectorStore):
         top_k: int = 4,
         threshold: Optional[float] = None,
         rrf_k: int = 60,
+        abstain: bool = True,
+        config: Optional[AbstentionConfig] = None,
     ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
-        """Vector + BM25(FTS5) candidates fused with RRF."""
+        """Vector + BM25(FTS5) candidates fused with RRF, then gated.
+
+        Returns ``(hits, retrieval)``. ``retrieval`` exposes the finalized
+        contract fields ``status`` (``"ok"`` / ``"no_relevant"``), ``reason``
+        (``"below_threshold"`` / ``"ambiguous"`` / ``"empty_corpus"``, or
+        ``None``), ``top_score``, ``runner_up_score`` and ``thresholds``.
+        ``hits`` is empty whenever the status is ``no_relevant``; the gate runs
+        before truncation so an irrelevant list is never padded out to
+        ``top_k``.
+        """
         candidate_k = max(20, top_k * 4)
         with self._lock:
+            empty_corpus = self.count() == 0
             vector_results = self.search(
                 query_embedding, top_k=candidate_k, threshold=threshold
             )
             vector_ids = [doc_id for doc_id, _, _ in vector_results]
             lexical_ids = self._fts_search_ids(query_text, candidate_k)
 
+            similarities: Dict[str, float] = {}
+            for chunk_id in set(vector_ids) | set(lexical_ids):
+                stored = self._store.get(chunk_id)
+                if stored is not None:
+                    similarities[chunk_id] = cosine_similarity(
+                        query_embedding, stored[0]
+                    )
+            assessment = assess_confidence(
+                similarities,
+                len(lexical_ids),
+                config=config,
+                empty_corpus=empty_corpus,
+                zero_score_allowed=threshold is not None and threshold <= 0.0,
+            )
+
             if lexical_ids:
                 fused = reciprocal_rank_fusion(
                     [vector_ids, lexical_ids], rrf_k=rrf_k
                 )
-                results: List[Tuple[str, float, Dict[str, Any]]] = []
-                for doc_id, score in fused[:top_k]:
-                    stored = self._store.get(doc_id)
-                    if stored is not None:
-                        results.append((doc_id, score, stored[1]))
+                ordered_ids = [doc_id for doc_id, _ in fused]
+                fused_scores = dict(fused)
                 mode = "hybrid"
             else:
-                results = vector_results[:top_k]
+                ordered_ids = list(vector_ids)
+                fused_scores = {
+                    doc_id: score for doc_id, score, _ in vector_results
+                }
                 mode = "vector"
 
+            ranked: List[Tuple[str, float, Dict[str, Any]]] = []
+            for chunk_id in ordered_ids:
+                stored = self._store.get(chunk_id)
+                if stored is None:
+                    continue
+                ranked.append(
+                    (chunk_id, fused_scores.get(chunk_id, 0.0), stored[1])
+                )
+                if len(ranked) >= top_k:
+                    break
+
+            gated = abstain and not assessment["confident"]
+            results = [] if gated else ranked
+            no_relevant = gated or not results
             info = {
                 "mode": mode,
                 "fts_available": self._fts_available,
+                "status": NO_RELEVANT if no_relevant else STATUS_OK,
+                "reason": assessment["reason"] if no_relevant else None,
+                "top_score": assessment["top_score"],
+                "runner_up_score": assessment["runner_up_score"],
+                "thresholds": assessment["thresholds"],
+                "abstained": gated,
+                "confidence": assessment,
                 "candidate_k": candidate_k,
                 "vector_candidates": len(vector_ids),
                 "lexical_candidates": len(lexical_ids),

@@ -125,13 +125,8 @@ Content-Type: application/json
 ```json
 {
   "query": "如何配置 API 认证？",
-  "base_ids": ["kb-abc123"],
-  "limit": 5,
-  "threshold": 0.7,
-  "options": {
-    "include_metadata": true,
-    "highlight": true
-  }
+  "top_k": 5,
+  "threshold": 0.7
 }
 ```
 
@@ -140,23 +135,88 @@ Content-Type: application/json
 ```json
 {
   "query": "如何配置 API 认证？",
-  "total": 12,
-  "results": [
+  "top_k": 5,
+  "count": 12,
+  "hits": [
     {
-      "id": "chunk-xxx",
-      "document_id": "doc-def456",
-      "document_name": "product_manual.pdf",
-      "content": "API 认证配置步骤如下：1. 进入管理后台...",
-      "score": 0.91,
-      "page": 15,
+      "doc_id": "doc-def456#3",
+      "score": 0.0107,
+      "text": "API 认证配置步骤如下：1. 进入管理后台...",
       "metadata": {
-        "section": "3.2 API 认证"
-      },
-      "highlight": "API <em>认证</em>配置步骤如下..."
+        "document_id": "doc-def456",
+        "chunk_index": 3,
+        "heading_path": ["3.2 API 认证"]
+      }
     }
-  ]
+  ],
+  "retrieval": {
+    "status": "ok",
+    "reason": null,
+    "top_score": 0.5012,
+    "runner_up_score": 0.4137,
+    "thresholds": {"min_top_score": 0.08, "min_score_gap": 0.05},
+    "hits": [
+      {
+        "doc_id": "doc-def456#3",
+        "score": 0.0107,
+        "text": "API 认证配置步骤如下：1. 进入管理后台...",
+        "metadata": {"document_id": "doc-def456"}
+      }
+    ],
+    "mode": "hybrid",
+    "fts_available": true,
+    "candidate_k": 20,
+    "vector_candidates": 20,
+    "lexical_candidates": 2,
+    "rrf_k": 60
+  }
 }
 ```
+
+### 弃答（无相关内容）响应
+
+`retrieval.status` 只有两个取值：`"ok"` 或 `"no_relevant"`。判为
+`"no_relevant"` 时 `hits`（以及 `retrieval.hits`）**必须是空数组**，不会为了
+凑满 `top_k` 返回低分片段：
+
+```json
+{
+  "query": "员工年假怎么申请",
+  "top_k": 5,
+  "count": 12,
+  "hits": [],
+  "retrieval": {
+    "status": "no_relevant",
+    "reason": "ambiguous",
+    "top_score": 0.145,
+    "runner_up_score": 0.124,
+    "thresholds": {"min_top_score": 0.08, "min_score_gap": 0.05},
+    "hits": [],
+    "mode": "hybrid",
+    "fts_available": true
+  }
+}
+```
+
+`retrieval.reason` 的取值与含义（上层要给用户说不同的话，**不能合并**）：
+
+| reason | 含义 | 典型情况 |
+|---|---|---|
+| `below_threshold` | 最高分低于绝对阈值 | 库里有文档，但没有任何片段够格 |
+| `ambiguous` | 最高分过线，但与次高分的差距不足 | 候选彼此太像，无法确定相关 |
+| `empty_corpus` | 库里一个文档都没有 | 尚未入库，不是“没搜到” |
+
+判定规则（所有比较均为 `>=`，恰好等于阈值算通过）：
+
+1. 绝对阈值 `top_score >= min_top_score`；
+2. 相对差距 `top_score - runner_up_score >= min_score_gap`，或
+   `top_score >= strong_match_similarity`（近乎完全匹配时允许并列）；
+3. 词法佐证：FTS5/BM25 路径至少命中一个候选。
+
+`confident = absolute and (relative or strong_match or lexical)`；不置信时返回
+空结果。阈值默认 `0.08 / 0.05`，是在 34 篇文档、30 条查询（29 条有答案 +
+1 条无答案）的评测集上扫描得到的，详细依据见
+[`src/knowledge/abstention.py`](../../../src/knowledge/abstention.py) 模块文档。
 
 ---
 

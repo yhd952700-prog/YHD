@@ -148,7 +148,9 @@ class TestIngestUsesStructuredChunks:
         # 模拟批次 1 之前写入的旧行：只有 text，没有 heading_path/context_header
         service._store().insert("legacy#0", [1.0, 0.0, 0.0], {"text": "旧数据内容"})
 
-        hits = service.search("旧数据", top_k=5)["hits"]
+        # 本用例只验证旧行元数据可读；假 embedder 的低余弦会被弃答闸挡掉，
+        # 这里显式关闭闸门，避免把“读取旧行”的断言混进检索质量断言。
+        hits = service.search("旧数据", top_k=5, abstain=False)["hits"]
         legacy = [item for item in hits if item["metadata"].get("document_id") is None]
         assert legacy and legacy[0]["text"] == "旧数据内容"
         assert "heading_path" not in legacy[0]["metadata"]

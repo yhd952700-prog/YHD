@@ -14,8 +14,23 @@ each case): zero-token-overlap paraphrases, near-miss distractor documents
 (same topic, different answer), adjacent version/model identifiers
 (``v1.2.3`` vs ``v1.2.4``, ``XG-9001`` vs ``XG-9002``), one long document with
 three similar sections (graded with an answer marker), and an unanswerable
-query used to expose "hard-fitting" (the retriever has no abstention, so it
-returns top-k anyway and scores 0 for that query).
+query that the relevance gate (``abstention``) must reject with an empty
+result.
+
+The report deliberately carries **three groups of numbers**, because any one
+of them alone is misleading:
+
+* ``answerable_recall@5/@10`` and ``answerable_mrr`` -- recall over the 29
+  queries that do have an answer;
+* ``no_answer_abstained`` -- fraction of the 1 unanswerable query that
+  correctly came back empty;
+* ``false_abstention_rate`` -- fraction of answerable queries the gate wrongly
+  rejected. A high recall is worthless if it is bought by letting garbage
+  through, and a high abstention rate is worthless if it rejects real answers.
+
+The legacy mixed averages (``recall@5``/``recall@10``/``mrr``) are kept for
+continuity with earlier commits; they count an abstained unanswerable query as
+1.0 and remain comparable to the previous baseline.
 
 The embedder is a dependency-free hashing embedder (signed SHA-256 hashing of
 the same CJK-bigram/ASCII tokens the FTS side uses). It is *not* a semantic
@@ -287,22 +302,31 @@ QUERIES: Tuple[EvalQuery, ...] = (
         "section",
         answer_marker="pool_size",
     ),
-    # 库内无答案：检索器没有弃答能力，返回任何内容都算硬凑
+    # 库内无答案：弃答闸必须返回空结果；返回任何内容都算硬凑
     EvalQuery("员工年假怎么申请", (), "unanswerable"),
 )
 
 # Measured 2026-11-06 on the deterministic hard set (30 queries, 34 docs).
 # Hard by design: 4 zero-overlap paraphrases + 1 unanswerable query are expected
 # to fail with the lexical-only hashing embedder; see module docstring.
-# Any retrieval change MUST re-run ``python -m src.knowledge.evaluation`` and
-# compare against these numbers; "feels better" is not evidence.
+# Three groups are reported together: answerable recall, unanswerable
+# abstention, and false abstention. A single good number would be self-deceiving.
+# Any retrieval/gate change MUST re-run ``python -m src.knowledge.evaluation``
+# and compare against these numbers; "feels better" is not evidence.
 BASELINE: Dict[str, float] = {
-    "recall@5": 0.8333,
-    "recall@10": 0.8333,
-    "mrr": 0.8333,
+    # legacy mixed averages (kept comparable with earlier commits)
+    "recall@5": 0.8667,
+    "recall@10": 0.8667,
+    "mrr": 0.8667,
     "section_hit@5": 1.0,
-    # 0.0 = 对无答案查询仍然硬凑；这是已知缺口，不是笔误。
-    "no_answer_abstained": 0.0,
+    # group 1: recall over the 29 answerable queries
+    "answerable_recall@5": 0.8621,
+    "answerable_recall@10": 0.8621,
+    "answerable_mrr": 0.8621,
+    # group 2: the 1 unanswerable query must be abstained (was 0.0 before the gate)
+    "no_answer_abstained": 1.0,
+    # group 3: answerable queries the gate must NOT reject
+    "false_abstention_rate": 0.0,
 }
 
 
@@ -370,6 +394,7 @@ def run_evaluation() -> Dict[str, object]:
             rows: List[Dict[str, object]] = []
             for query in QUERIES:
                 response = service.search(query.query, top_k=10)
+                retrieval = response.get("retrieval") or {}
                 ranked = _ranked_doc_ids(response["hits"])
                 hit_texts = [str(hit.get("text", "")) for hit in response["hits"]]
                 first_rank = next(
@@ -407,37 +432,63 @@ def run_evaluation() -> Dict[str, object]:
                         "reciprocal_rank": reciprocal_rank,
                         "marker_hit@5": marker_hit,
                         "returned": len(hit_texts),
-                        "mode": response.get("retrieval", {}).get("mode"),
+                        "mode": retrieval.get("mode"),
+                        "status": retrieval.get("status", "ok"),
+                        "abstained": bool(retrieval.get("abstained", False)),
                     }
                 )
         finally:
             store.close()
 
     marker_rows = [row for row in rows if row["marker_hit@5"] is not None]
+    answerable_rows = [row for row in rows if row["relevant"]]
     no_answer_rows = [row for row in rows if row["category"] == "unanswerable"]
+
+    def _mean(subset: List[Dict[str, object]], key: str) -> float:
+        if not subset:
+            return 0.0
+        return round(sum(float(row[key]) for row in subset) / len(subset), 4)
+
     metrics = {
         "queries": len(rows),
         "documents": len(CORPUS),
-        "recall@5": round(sum(float(row["recall@5"]) for row in rows) / len(rows), 4),
-        "recall@10": round(sum(float(row["recall@10"]) for row in rows) / len(rows), 4),
-        "mrr": round(sum(float(row["reciprocal_rank"]) for row in rows) / len(rows), 4),
-        "section_hit@5": round(
-            sum(float(row["marker_hit@5"]) for row in marker_rows)
-            / len(marker_rows),
-            4,
-        )
-        if marker_rows
-        else 0.0,
+        # legacy mixed averages (unanswerable counts as 1.0 when abstained)
+        "recall@5": _mean(rows, "recall@5"),
+        "recall@10": _mean(rows, "recall@10"),
+        "mrr": _mean(rows, "reciprocal_rank"),
+        "section_hit@5": _mean(marker_rows, "marker_hit@5"),
+        # group 1: answerable recall
+        "answerable_queries": len(answerable_rows),
+        "answerable_recall@5": _mean(answerable_rows, "recall@5"),
+        "answerable_recall@10": _mean(answerable_rows, "recall@10"),
+        "answerable_mrr": _mean(answerable_rows, "reciprocal_rank"),
+        # group 2: unanswerable abstention
+        "no_answer_queries": len(no_answer_rows),
         "no_answer_abstained": round(
-            sum(1.0 for row in no_answer_rows if int(row["returned"]) == 0)
+            sum(
+                1.0
+                for row in no_answer_rows
+                if int(row["returned"]) == 0 and bool(row["abstained"])
+            )
             / len(no_answer_rows),
             4,
         )
         if no_answer_rows
         else 1.0,
+        # group 3: false abstention (gate wrongly rejected a real answer)
+        "false_abstention_count": sum(
+            1 for row in answerable_rows if bool(row["abstained"])
+        ),
+        "false_abstention_rate": round(
+            sum(1 for row in answerable_rows if bool(row["abstained"]))
+            / len(answerable_rows),
+            4,
+        )
+        if answerable_rows
+        else 0.0,
     }
 
-    per_category: Dict[str, Dict[str, float]] = {}
+    per_category: Dict[str, Dict[str, object]] = {}
     for category in (
         "fact",
         "identifier",
@@ -460,6 +511,7 @@ def run_evaluation() -> Dict[str, object]:
             "mrr": round(
                 sum(float(row["reciprocal_rank"]) for row in subset) / len(subset), 4
             ),
+            "abstained": sum(1 for row in subset if bool(row["abstained"])),
         }
 
     return {"metrics": metrics, "per_category": per_category, "rows": rows}

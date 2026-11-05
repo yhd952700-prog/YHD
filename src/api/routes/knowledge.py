@@ -9,6 +9,19 @@ Retrieval and ingest go through :class:`KnowledgeDocumentService`, which uses
 the process-level SQLite vector store and a **real** embedding provider. When no
 provider is configured the endpoints answer 503 with "未启用" -- they never
 return fabricated vectors or a mock-written answer.
+
+``POST /v1/knowledge/search`` returns the finalized relevance-gate contract
+(owned by :mod:`src.knowledge.abstention`; do not rename):
+
+* ``retrieval.status`` -- exactly ``"ok"`` or ``"no_relevant"``;
+* ``retrieval.reason`` -- ``null`` when ok, otherwise ``"below_threshold"`` /
+  ``"ambiguous"`` / ``"empty_corpus"`` (``empty_corpus`` means the library has
+  zero documents and must never be merged with "no match");
+* ``retrieval.top_score`` / ``retrieval.runner_up_score`` -- highest and second
+  cosine score, ``null`` when absent;
+* ``retrieval.thresholds`` -- effective ``min_top_score`` / ``min_score_gap``;
+* ``retrieval.hits`` -- mirrors the top-level ``hits`` and **must be empty**
+  when the status is ``no_relevant``; low-score padding is forbidden.
 """
 
 from __future__ import annotations

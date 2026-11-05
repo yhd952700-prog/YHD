@@ -201,18 +201,41 @@ class KnowledgeDocumentService:
 
     # -- read ---------------------------------------------------------------
     def search(
-        self, query: str, top_k: int = 4, threshold: Optional[float] = None
+        self,
+        query: str,
+        top_k: int = 4,
+        threshold: Optional[float] = None,
+        abstain: bool = True,
     ) -> Dict[str, Any]:
+        """Retrieve chunks, with the relevance gate on by default.
+
+        ``retrieval`` always carries the finalized contract fields
+        (``status`` / ``reason`` / ``top_score`` / ``runner_up_score`` /
+        ``thresholds``) and mirrors the returned ``hits`` so callers that read
+        ``retrieval.hits`` see exactly the same list. ``abstain=False`` is an
+        escape hatch for diagnostics; it can return low-score chunks, so
+        production callers must leave the default.
+        """
         embedder = self._embedding()
         store = self._store()
         query_vector = embedder.embed([query])[0]
         if hasattr(store, "hybrid_search"):
             results, retrieval = store.hybrid_search(
-                query, query_vector, top_k=top_k, threshold=threshold
+                query, query_vector, top_k=top_k, threshold=threshold,
+                abstain=abstain,
             )
         else:  # pragma: no cover - third-party stores without the hybrid API
             results = store.search(query_vector, top_k=top_k, threshold=threshold)
-            retrieval = {"mode": "vector", "fts_available": False}
+            retrieval = {
+                "mode": "vector",
+                "fts_available": False,
+                "status": "ok" if results else "no_relevant",
+                "reason": None if results else "below_threshold",
+                "top_score": None,
+                "runner_up_score": None,
+                "thresholds": {},
+                "abstained": False,
+            }
         hits: List[Dict[str, Any]] = [
             {
                 "doc_id": doc_id,
@@ -222,11 +245,14 @@ class KnowledgeDocumentService:
             }
             for doc_id, score, meta in results
         ]
+        retrieval["hits"] = hits
         logger.info(
-            "knowledge search: top_k=%d hits=%d provider=%s",
+            "knowledge search: top_k=%d hits=%d provider=%s status=%s reason=%s",
             top_k,
             len(hits),
             getattr(embedder, "name", "unknown"),
+            retrieval.get("status"),
+            retrieval.get("reason"),
         )
         return {
             "query": query,

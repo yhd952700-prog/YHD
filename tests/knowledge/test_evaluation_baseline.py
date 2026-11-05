@@ -106,3 +106,23 @@ class TestReproducibility:
         assert report["regression"] is False, report["delta"]
         for key, floor in evaluation.BASELINE.items():
             assert float(report["metrics"][key]) >= floor - 1e-4
+
+
+class TestThreeMetricGroups:
+    """三组数必须同时出现：只报召回等于自欺。"""
+
+    def test_denominators_are_reported(self):
+        metrics = evaluation.run_evaluation()["metrics"]
+        assert metrics["answerable_queries"] == 29
+        assert metrics["no_answer_queries"] == 1
+
+    def test_abstention_is_reported_next_to_recall(self):
+        metrics = evaluation.run_evaluation()["metrics"]
+        assert metrics["answerable_recall@5"] >= 0.8
+        assert metrics["no_answer_abstained"] == 1.0
+        assert metrics["false_abstention_rate"] == 0.0
+
+    def test_baseline_carries_all_three_groups(self):
+        assert "answerable_recall@5" in evaluation.BASELINE
+        assert "no_answer_abstained" in evaluation.BASELINE
+        assert "false_abstention_rate" in evaluation.BASELINE
