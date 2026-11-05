@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 DEFAULT_HOTKEYS: Tuple[Tuple[str, ...], ...] = (
     ("ctrl", "alt", "esc"),
@@ -44,10 +44,25 @@ class HotkeyRegistration:
     reason: str = ""
 
 
+class HotkeyRegistrar(Protocol):
+    """真实热键注册器的接口。
+
+    实现方必须如实返回注册结果：占用/无权限/平台不支持都应返回 ``False``，
+    绝不能假装已经注册。``unregister`` 负责释放全局热键。
+    """
+
+    def register(self, combo: Sequence[str]) -> bool:
+        ...
+
+    def unregister(self) -> None:
+        ...
+
+
 class EmergencyStop:
     """急停开关。
 
-    ``registrar(combo) -> bool``：尝试注册一组组合键，返回是否成功。
+    ``registrar``：既可以是 ``HotkeyRegistrar`` 对象，也可以是
+    ``registrar(combo) -> bool`` 的可调用对象（兼容第 1 批的用法）。
     ``modifier_releaser(key)``：释放单个修饰键，返回 None，失败时抛异常。
     两者默认均为 None——此时必须如实报告"未配置"，不能伪造已注册。
     """
@@ -55,7 +70,7 @@ class EmergencyStop:
     def __init__(
         self,
         *,
-        registrar: Optional[Callable[[Sequence[str]], bool]] = None,
+        registrar: Optional[object] = None,
         modifier_releaser: Optional[Callable[[str], None]] = None,
         hotkeys: Iterable[Sequence[str]] = DEFAULT_HOTKEYS,
     ) -> None:
@@ -68,7 +83,28 @@ class EmergencyStop:
         self._triggered_at: Optional[float] = None
 
     # ---------------------------------------------------------------- 热键
+    def set_registrar(self, registrar: object, *, replace: bool = False) -> bool:
+        """注入/替换注册器。已成功注册时默认拒绝覆盖，避免悄悄换掉热键。"""
+
+        with self._lock:
+            if registrar is self._registrar:
+                return True
+            if self._registration is not None and self._registration.registered and not replace:
+                return False
+            self._registrar = registrar
+            self._registration = None
+            return True
+
+    def _call_register(self, combo: Sequence[str]) -> bool:
+        method = getattr(self._registrar, "register", None)
+        if callable(method):
+            return bool(method(combo))
+        return bool(self._registrar(combo))  # type: ignore[operator]
+
     def register(self) -> HotkeyRegistration:
+        with self._lock:
+            if self._registration is not None and self._registration.registered:
+                return self._registration
         attempts: List[Dict[str, object]] = []
         if self._registrar is None:
             registration = HotkeyRegistration(
@@ -82,9 +118,10 @@ class EmergencyStop:
         for combo in self._hotkeys:
             label = "+".join(combo)
             try:
-                ok = bool(self._registrar(combo))
+                ok = self._call_register(combo)
             except Exception as exc:  # noqa: BLE001 - 注册失败要上报，不能吞
-                attempts.append({"combo": label, "ok": False, "error": type(exc).__name__})
+                message = f"{type(exc).__name__}: {exc}"[:200]
+                attempts.append({"combo": label, "ok": False, "error": message})
                 continue
             attempts.append({"combo": label, "ok": ok})
             if ok:
@@ -104,6 +141,35 @@ class EmergencyStop:
         )
         self._registration = registration
         return registration
+
+    def unregister(self) -> Dict[str, object]:
+        """释放已注册的热键，并如实报告是否真的释放成功。"""
+
+        with self._lock:
+            registrar = self._registrar
+            registration = self._registration
+            if registrar is None or registration is None or not registration.registered:
+                return {"unregistered": False, "reason": "not_registered"}
+            self._registration = None
+        release = getattr(registrar, "unregister", None)
+        if not callable(release):
+            return {
+                "unregistered": False,
+                "reason": "registrar_cannot_unregister",
+                "combo": registration.combo,
+            }
+        try:
+            release()
+        except Exception as exc:  # noqa: BLE001 - 释放失败也要如实上报
+            with self._lock:
+                self._registration = registration
+            return {
+                "unregistered": False,
+                "reason": f"unregister_failed:{type(exc).__name__}",
+                "error": str(exc)[:200],
+                "combo": registration.combo,
+            }
+        return {"unregistered": True, "reason": "unregistered", "combo": registration.combo}
 
     @property
     def registration(self) -> Optional[HotkeyRegistration]:

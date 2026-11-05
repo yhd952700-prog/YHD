@@ -69,6 +69,11 @@ def build_automation_tools(
     broker = broker or get_confirmation_broker()
     audit = audit or AutomationAudit()
 
+    # 只有闸门放行后才尝试接入真实热键；默认环境变量缺省 → 不注册。
+    from .hotkey_windows import configure_from_env
+
+    configure_from_env(estop)
+
     def _json(payload: Dict[str, Any]) -> str:
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -113,6 +118,7 @@ def build_automation_tools(
                     "registered": estop.registration.registered,
                     "combo": estop.registration.combo,
                     "reason": estop.registration.reason,
+                    "attempts": [dict(item) for item in estop.registration.attempts],
                 }
                 if estop.registration
                 else None

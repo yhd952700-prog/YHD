@@ -21,9 +21,10 @@ from .contracts import (
     TargetScope,
     TicketConsumeResult,
 )
-from .estop import EmergencyStop, get_emergency_stop
+from .estop import EmergencyStop, HotkeyRegistrar, HotkeyRegistration, get_emergency_stop
 from .gate import AutomationGate, GateDecision
 from .guard import ActionRule, Guard, ParamConstraint, target_matches
+from .hotkey_windows import WindowsHotkeyRegistrar, configure_from_env, hotkey_enabled
 from .replay import AuditReplay, ReplayStep, SessionReplay
 from .sessions import AutomationSession, AutomationSessionRegistry, get_session_registry
 from .tools import build_automation_tools
@@ -47,6 +48,8 @@ __all__ = [
     "GateDecision",
     "Guard",
     "GuardDecision",
+    "HotkeyRegistrar",
+    "HotkeyRegistration",
     "Observation",
     "ParamConstraint",
     "Reversibility",
@@ -55,9 +58,12 @@ __all__ = [
     "SqliteConfirmationBroker",
     "TargetScope",
     "TicketConsumeResult",
+    "WindowsHotkeyRegistrar",
     "build_automation_tools",
+    "configure_from_env",
     "get_emergency_stop",
     "get_session_registry",
+    "hotkey_enabled",
     "ReplayStep",
     "target_matches",
 ]

@@ -15,6 +15,7 @@ import sqlite3
 
 import pytest
 
+from src.automation import hotkey_windows
 from src.automation.audit import AutomationAudit
 from src.automation.backends.fake import FakeAutomationBackend
 from src.automation.confirm import SqliteConfirmationBroker
@@ -28,9 +29,11 @@ from src.automation.contracts import (
     TargetScope,
 )
 from src.automation.estop import EmergencyStop
+from src.automation.gate import AutomationGate
 from src.automation.guard import ActionRule, Guard, ParamConstraint
 from src.automation.replay import AuditReplay
 from src.automation.sessions import AutomationSessionRegistry
+from src.automation.tools import build_automation_tools
 from src.kernels.audit import AuditEventType, AuditStore
 
 
@@ -579,5 +582,170 @@ def test_replay_reports_broken_chain_honestly(tmp_path):
     assert replay.chain_verified is False
     assert "audit_hash_chain_verification_failed" in replay.warnings
     assert replay.steps  # 仍然给出轨迹，但明确标注链已不可信
+
+
+# ---------------------------------------------------------------- D 热键注册接缝
+class _ObjectRegistrar:
+    """实现 HotkeyRegistrar 接口的替身。"""
+
+    def __init__(self, outcomes=None, exc=None):
+        self.outcomes = list(outcomes or [])
+        self.exc = exc
+        self.calls = []
+        self.register_calls = 0
+        self.unregister_calls = 0
+
+    def register(self, combo) -> bool:
+        self.calls.append(tuple(combo))
+        self.register_calls += 1
+        if self.exc is not None:
+            raise self.exc
+        if not self.outcomes:
+            return True
+        return bool(self.outcomes.pop(0))
+
+    def unregister(self) -> None:
+        self.unregister_calls += 1
+
+
+class _FakeWin32Backend:
+    def __init__(self, *, fail_with=None, messages=None):
+        self.fail_with = fail_with
+        self.messages = list(messages or [])
+        self.register_calls = 0
+        self.unregister_calls = 0
+
+    def register(self, hotkey_id, modifiers, virtual_key):
+        self.register_calls += 1
+        if self.fail_with is not None:
+            raise self.fail_with
+
+    def unregister(self, hotkey_id):
+        self.unregister_calls += 1
+
+    def peek(self):
+        return self.messages.pop(0) if self.messages else None
+
+
+def test_hotkeys_are_disabled_by_default(monkeypatch):
+    estop = EmergencyStop()
+    assert hotkey_windows.hotkey_enabled({}) is False
+    assert hotkey_windows.hotkey_enabled({"LIUHAO_AUTOMATION_HOTKEY_ENABLED": "0"}) is False
+    assert hotkey_windows.hotkey_enabled({"LIUHAO_AUTOMATION_HOTKEY_ENABLED": "yes"}) is True
+
+    assert hotkey_windows.configure_from_env(estop, env={}) is None
+    assert estop.registration is None
+    assert estop._registrar is None  # noqa: SLF001 - 明确断言没有注入任何注册器
+
+
+def test_object_registrar_interface_and_fallback(monkeypatch):
+    registrar = _ObjectRegistrar(outcomes=[False, True])
+    estop = EmergencyStop(
+        registrar=registrar,
+        hotkeys=[("ctrl", "alt", "esc"), ("ctrl", "shift", "esc")],
+    )
+    registration = estop.register()
+    assert registration.registered is True
+    assert registration.combo == "ctrl+shift+esc"
+    assert registration.attempts[0]["ok"] is False
+    assert "error" not in registration.attempts[0]
+
+    again = estop.register()
+    assert again == registration
+    assert registrar.register_calls == 2  # 已注册后不再重复尝试
+
+    released = estop.unregister()
+    assert released["unregistered"] is True
+    assert registrar.unregister_calls == 1
+    assert estop.registration is None
+
+
+def test_registrar_failure_is_reported_not_hidden():
+    registrar = _ObjectRegistrar(exc=RuntimeError("hotkey occupied by another app"))
+    estop = EmergencyStop(registrar=registrar, hotkeys=[("ctrl", "alt", "esc")])
+    registration = estop.register()
+    assert registration.registered is False
+    assert registration.reason == "all_combinations_unavailable"
+    assert "RuntimeError" in registration.attempts[0]["error"]
+    assert "hotkey occupied" in registration.attempts[0]["error"]
+
+
+def test_set_registrar_refuses_to_replace_active_registration():
+    first = _ObjectRegistrar()
+    second = _ObjectRegistrar()
+    estop = EmergencyStop(registrar=first, hotkeys=[("ctrl", "alt", "esc")])
+    assert estop.register().registered is True
+    assert estop.set_registrar(second) is False
+    assert estop.set_registrar(first) is True
+    assert estop.set_registrar(second, replace=True) is True
+    assert estop.registration is None
+
+
+def test_parse_combo():
+    modifiers, vk = hotkey_windows.parse_combo(("ctrl", "alt", "esc"))
+    assert modifiers == hotkey_windows.MOD_CONTROL | hotkey_windows.MOD_ALT
+    assert vk == 0x1B
+
+    with pytest.raises(ValueError, match="hotkey_combo_requires_exactly_one_key"):
+        hotkey_windows.parse_combo(("ctrl", "alt"))
+    with pytest.raises(ValueError, match="hotkey_requires_modifier"):
+        hotkey_windows.parse_combo(("esc",))
+    with pytest.raises(ValueError, match="unsupported_hotkey_key"):
+        hotkey_windows.parse_combo(("ctrl", "alt", "volume-up"))
+
+
+def test_windows_registrar_reports_occupied_hotkey():
+    backend = _FakeWin32Backend(fail_with=RuntimeError("occupied:1409"))
+    registrar = hotkey_windows.WindowsHotkeyRegistrar(backend=backend, ready_timeout=2.0)
+    assert registrar.register(("ctrl", "alt", "esc")) is False
+    assert registrar.registered is False
+    assert "occupied" in registrar.last_error
+    assert backend.unregister_calls == 1  # 失败后仍然清理，不留半注册状态
+
+
+def test_windows_registrar_success_and_unregister_without_touching_real_hotkeys():
+    backend = _FakeWin32Backend()
+    registrar = hotkey_windows.WindowsHotkeyRegistrar(backend=backend, ready_timeout=2.0)
+    assert registrar.register(("ctrl", "alt", "esc")) is True
+    assert registrar.registered is True
+
+    registrar.unregister()
+    assert registrar.registered is False
+    assert backend.unregister_calls == 1
+
+
+def test_configure_from_env_uses_registrar_only_when_enabled(monkeypatch):
+    class _AutoRegistrar(_ObjectRegistrar):
+        def __init__(self, **_kwargs):
+            super().__init__()
+
+    monkeypatch.setattr(hotkey_windows, "WindowsHotkeyRegistrar", _AutoRegistrar)
+    estop = EmergencyStop()
+    registration = hotkey_windows.configure_from_env(
+        estop,
+        env={"LIUHAO_AUTOMATION_HOTKEY_ENABLED": "1"},
+    )
+    assert registration.registered is True
+    assert estop.registration.registered is True
+    assert isinstance(estop._registrar, _AutoRegistrar)  # noqa: SLF001
+
+
+def test_tools_do_not_touch_hotkeys_when_gate_is_closed(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        hotkey_windows,
+        "configure_from_env",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    estop = EmergencyStop()
+    tools = build_automation_tools(
+        "liuhao",
+        gate=AutomationGate(env={}),
+        estop=estop,
+    )
+    assert tools == []
+    assert calls == []
+    assert estop.registration is None
+
 
 
