@@ -1,4 +1,4 @@
-﻿"""Low-priority hardening items from the audit.
+"""Low-priority hardening items from the audit.
 
 Four independent gaps, each pinned by a real-behaviour test:
 
