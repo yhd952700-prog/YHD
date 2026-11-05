@@ -6,6 +6,8 @@
 
 ---
 
+> 落地优先级与可排期四列表：见 [strategy-priority-matrix.md](./strategy-priority-matrix.md)。
+
 ## 0. 判定摘要
 
 ### 0.1 30 方向完成度分布（按当前代码）
