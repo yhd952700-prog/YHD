@@ -365,6 +365,11 @@ def make_tools(
         )
     )
 
+    # ============ 自动化（默认三重关闭：闸门不满足时不注册任何工具） ============
+    from ...automation.tools import build_automation_tools
+
+    tools.extend(build_automation_tools(principal))
+
     return tools
 
 

@@ -585,6 +585,7 @@ def build_mcp_server(
     from ...ai.tools.kernel_tools import make_tools
 
     tools = {t.capability: t for t in make_tools(principal, status_fn)}
+    tools = {k: v for k, v in tools.items() if not k.startswith("automation.")}
     server = FastMCP(name=name, instructions="鎏灏 AI OS 内置工具（只读，风险 LOW）")
 
     if "memory.search" in tools:

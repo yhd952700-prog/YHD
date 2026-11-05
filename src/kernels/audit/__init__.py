@@ -285,6 +285,8 @@ class AuditEventType(str, Enum):
     KERNEL_STATUS = "kernel_status"
     PHASE_GATE = "phase_gate"
     STATE_CHANGE = "state_change"
+    #: 自动化动作审计（自动化模块只记哈希，不记明文）。
+    AUTOMATION_ACTION = "automation_action"
 
 
 class AuditScope(str, Enum):
