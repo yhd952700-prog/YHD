@@ -112,6 +112,13 @@ dependencies = [
     # pydantic-monty-client（import pydantic_monty）：
     #   src/plugins/sandbox/backends/monty_backend.py —— 受限执行后端。
     "pydantic-monty-client>=0.0.20",
+    # taskiq：src/tasks/{broker,sqlite_broker,registry}.py 与 src/workers/*
+    #   顶层 import（AsyncBroker / Receiver / LabelScheduleSource）。supervisor
+    #   默认拉起 worker + scheduler，缺它队列整段不工作 => 运行期硬依赖。
+    #   MIT，已登记 oss-registry.yaml；requirements.txt 锁定 0.13.0。
+    #   只设下界：本仓用到的 AsyncBroker/kick/listen + AckableMessage 在 0.11+
+    #   已稳定；上界留给上游（若未来破坏这些原语，测试会先红）。
+    "taskiq>=0.11.0",
 ]
 
 # 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮
@@ -192,6 +199,21 @@ google = [
 # sqlalchemy 不需要在这里重复声明：它已是运行期依赖。
 migrations = [
     "alembic>=1.19.2",
+]
+# Redis 任务队列后端（**可选，默认关闭**）：默认 broker 是本地 SQLite
+# （src/tasks/sqlite_broker.py，不需要 Redis/Postgres）。只有显式设置
+# LIUHAO_TASK_BROKER=redis 时才需要此 extra；未安装时 build_broker() 抛
+# 明确错误而不是静默降级。taskiq-redis 1.1.0 要求 redis>=6,<7。
+taskiq-redis = [
+    "taskiq-redis>=1.1.0",
+]
+# DBOS pilot（**可选，默认关闭**）：只做「杀进程重启续跑」验证
+# （src/resilience/dbos_pilot.py，见其模块文档）。dbos 3.4.0 的
+# psycopg[binary] 是硬 pip 依赖，但 SQLite system database 模式不需要
+# Postgres 服务，App 有 aiosqlite，本地可跑通。不放进运行期依赖：
+# 不为一个试点拖慢生产安装。
+dbos = [
+    "dbos>=3.4.0,<4.0",
 ]
 
 [build-system]

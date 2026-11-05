@@ -498,6 +498,8 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.0
     # via cffi
+pycron==3.3.0
+    # via taskiq
 pydantic==2.13.5
     # via
     #   liuhao-ai-os (pyproject.toml)
@@ -670,6 +672,10 @@ strawberry-graphql==0.327.0
     # via arize-phoenix
 structlog==26.1.0
     # via liuhao-ai-os (pyproject.toml)
+taskiq==0.13.0
+    # via liuhao-ai-os (pyproject.toml)
+taskiq-dependencies==1.5.7
+    # via taskiq
 tenacity==9.1.4
     # via
     #   google-genai

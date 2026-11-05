@@ -194,6 +194,25 @@ components:
       版本钉死 ==4.0.3，与 requirements.txt 一致；上界受 arize-phoenix 的
       fastmcp-slim<5,>=4 约束，不能降到 3.x。Apache-2.0，无 copyleft 传染。
 
+  - name: taskiq
+    import_name: taskiq
+    license: MIT
+    category: task-queue
+    used: "yes"
+    risk: low
+    action: >-
+      任务队列与执行（src/tasks/**、src/workers/** 顶层 import AsyncBroker /
+      Receiver / LabelScheduleSource / AckableMessage）。与 src/distribution/msg_bus.py
+      的**事件总线**职责严格分开：taskiq 是「执行这个任务一次」的点对点队列，
+      msg_bus 是「这件事发生了」的广播扇出，界限写在 src/tasks/broker.py 模块文档。
+      默认 broker 是自实现的 SQLite 持久化队列（src/tasks/sqlite_broker.py），
+      **不要求 Redis/Postgres**；Redis broker 仅在显式 LIUHAO_TASK_BROKER=redis 且
+      安装可选 extra taskiq-redis 时启用，未安装时抛明确错误、不做静默降级。
+      worker 侧强制审计（AUDIT_DB_PATH 缺失即拒绝启动）。MIT，无 copyleft 约束。
+      补充：单机的时间点执行/指数退避重试/死信不走 taskiq 调度，由自研
+      src/tasks/local_scheduler.py（仅 SQLite + 标准库）负责；taskiq 只做跨进程
+      队列与周期投递，不存在第二套调度器。
+
   # ---------------- LLM / Agent ----------------
   # ⚠️ 2026-09-13 更正：以下三项原记为 `used: no`（「声明了但 src/ 零引用」）属**误判** ——
   #    初版扫描只认顶层 import，漏掉了 try/except ImportError 保护块内的受保护导入。
