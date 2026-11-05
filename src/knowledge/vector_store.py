@@ -4,6 +4,25 @@
 fallback type). ``PersistentVectorStore`` adds SQLite-backed durability with the
 same interface, and ``get_vector_store()`` exposes a **process-level singleton**
 so a request never opens a fresh, empty index.
+
+Hybrid retrieval (no new dependencies)
+--------------------------------------
+``PersistentVectorStore`` maintains an SQLite **FTS5** side index next to the
+vector table and fuses both rankings with Reciprocal Rank Fusion (RRF, k=60).
+Keyword-heavy queries (part numbers, ticket ids, product names) are where pure
+embeddings are weakest, so the lexical path is a real recall safety net.
+
+Chinese tokenization is intentionally dependency-free: each CJK run is split
+into overlapping **bigrams** (``知识库`` -> ``知识 识库``) and ASCII words are
+kept verbatim. Known limits:
+
+* single-character CJK queries usually miss (the index stores bigrams, not
+  unigrams), unless the document itself contains a one-character run;
+* no synonyms / morphological analysis -- ``服务器`` will not match ``主机``;
+* the index is larger than a word-segmented one (roughly N bigrams per run);
+* FTS5 is compiled into CPython's bundled SQLite on all supported platforms, but
+  if it is missing the store degrades to vector-only and reports that in
+  ``retrieval.fts_available`` instead of failing.
 """
 
 from __future__ import annotations
@@ -11,14 +30,58 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger("liuhao.knowledge.vector_store")
 
 KNOWLEDGE_DB_ENV = "LIUHAO_KNOWLEDGE_DB"
+
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+_ASCII_WORD_RE = re.compile(r"[a-z0-9_]+")
+
+
+def tokenize_for_index(text: str) -> str:
+    """Cheap, dependency-free tokenization: ASCII words + CJK bigrams."""
+    lowered = (text or "").lower()
+    tokens: List[str] = list(_ASCII_WORD_RE.findall(lowered))
+    for run in _CJK_RUN_RE.findall(lowered):
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[index:index + 2] for index in range(len(run) - 1))
+    return " ".join(tokens)
+
+
+def query_tokens(text: str, limit: int = 32) -> List[str]:
+    """Deduplicated query terms, capped so a long query cannot blow up FTS."""
+    tokens: List[str] = []
+    for token in tokenize_for_index(text).split():
+        if token not in tokens:
+            tokens.append(token)
+        if len(tokens) >= limit:
+            break
+    return tokens
+
+
+def _tokens_for_metadata(metadata: Dict[str, Any]) -> str:
+    body = str(metadata.get("text", ""))
+    header = str(metadata.get("context_header") or "").strip()
+    return tokenize_for_index(f"{header}\n{body}" if header else body)
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: Iterable[Iterable[str]], rrf_k: int = 60
+) -> List[Tuple[str, float]]:
+    """Fuse ranked id lists; ``1/(k + rank)`` makes small score scales moot."""
+    scores: Dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked, start=1):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank)
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
 class VectorStore:
@@ -93,6 +156,27 @@ class VectorStore:
         # Sort by similarity descending
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: List[float],
+        top_k: int = 4,
+        threshold: Optional[float] = None,
+        rrf_k: int = 60,
+    ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
+        """Vector-only fallback for stores without an FTS index."""
+        results = self.search(query_embedding, top_k=top_k, threshold=threshold)
+        info = {
+            "mode": "vector",
+            "fts_available": False,
+            "reason": "this store has no FTS5 side index",
+            "candidate_k": top_k,
+            "vector_candidates": len(results),
+            "lexical_candidates": 0,
+            "rrf_k": rrf_k,
+        }
+        return results, info
 
     def delete(self, doc_id: str) -> bool:
         """Delete a document by ID.
@@ -184,7 +268,64 @@ class PersistentVectorStore(VectorStore):
             """
         )
         self._conn.commit()
+        self._fts_available = self._create_fts_table()
         self._load()
+
+    def _create_fts_table(self) -> bool:
+        """Create the FTS5 side index, degrading to vector-only if unavailable."""
+        try:
+            self._conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts
+                USING fts5(
+                    chunk_id UNINDEXED,
+                    document_id UNINDEXED,
+                    tokens
+                )
+                """
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "FTS5 unavailable at %s (%s); hybrid search degrades to vector-only",
+                self.db_path,
+                exc,
+            )
+            return False
+
+    def _fts_delete_prefix(self, prefix: str) -> None:
+        if not self._fts_available:
+            return
+        # chunk ids only contain [A-Za-z0-9_.:-] + '#', so LIKE is unambiguous.
+        self._conn.execute(
+            "DELETE FROM knowledge_fts WHERE chunk_id LIKE ?", (f"{prefix}%",)
+        )
+
+    def _fts_upsert(self, doc_id: str, metadata: Dict[str, Any]) -> None:
+        if not self._fts_available:
+            return
+        self._conn.execute(
+            "DELETE FROM knowledge_fts WHERE chunk_id = ?", (doc_id,)
+        )
+        self._conn.execute(
+            "INSERT INTO knowledge_fts (chunk_id, document_id, tokens) VALUES (?, ?, ?)",
+            (
+                doc_id,
+                str(metadata.get("document_id", "")),
+                _tokens_for_metadata(metadata),
+            ),
+        )
+
+    def _rebuild_fts(self) -> None:
+        """Index every row loaded from disk (old corpora need no rebuild script)."""
+        if not self._fts_available:
+            return
+        with self._lock:
+            self._conn.execute("DELETE FROM knowledge_fts")
+            for chunk_id, (_, metadata) in self._store.items():
+                self._fts_upsert(chunk_id, metadata)
+            self._conn.commit()
 
     def _load(self) -> None:
         rows = self._conn.execute(
@@ -202,6 +343,7 @@ class PersistentVectorStore(VectorStore):
                 )
                 continue
             self._store[row["doc_id"]] = (embedding, metadata)
+        self._rebuild_fts()
 
     def insert(
         self, doc_id: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None
@@ -223,6 +365,7 @@ class PersistentVectorStore(VectorStore):
                     json.dumps(record_metadata, ensure_ascii=False, default=str),
                 ),
             )
+            self._fts_upsert(doc_id, record_metadata)
             self._conn.commit()
             self._store[doc_id] = (embedding, record_metadata)
 
@@ -247,7 +390,9 @@ class PersistentVectorStore(VectorStore):
                     "WHERE substr(doc_id, 1, ?) = ?",
                     (len(prefix), prefix),
                 )
+                self._fts_delete_prefix(prefix)
                 for doc_id, embedding, metadata in payload:
+                    self._fts_upsert(doc_id, metadata)
                     self._conn.execute(
                         """
                         INSERT INTO knowledge_vectors
@@ -283,8 +428,76 @@ class PersistentVectorStore(VectorStore):
                 self._conn.execute(
                     "DELETE FROM knowledge_vectors WHERE doc_id = ?", (doc_id,)
                 )
+                if self._fts_available:
+                    self._conn.execute(
+                        "DELETE FROM knowledge_fts WHERE chunk_id = ?", (doc_id,)
+                    )
                 self._conn.commit()
             return removed
+
+    def _fts_search_ids(self, query_text: str, limit: int) -> List[str]:
+        """BM25-ordered chunk ids for ``query_text`` (empty when no FTS)."""
+        if not self._fts_available:
+            return []
+        tokens = query_tokens(query_text)
+        if not tokens:
+            return []
+        expression = " OR ".join(f'"{token}"' for token in tokens)
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT chunk_id FROM knowledge_fts
+                WHERE tokens MATCH ?
+                ORDER BY bm25(knowledge_fts)
+                LIMIT ?
+                """,
+                (expression, limit),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            logger.warning("FTS query failed, falling back to vector-only: %s", exc)
+            return []
+        return [row["chunk_id"] for row in rows]
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: List[float],
+        top_k: int = 4,
+        threshold: Optional[float] = None,
+        rrf_k: int = 60,
+    ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
+        """Vector + BM25(FTS5) candidates fused with RRF."""
+        candidate_k = max(20, top_k * 4)
+        with self._lock:
+            vector_results = self.search(
+                query_embedding, top_k=candidate_k, threshold=threshold
+            )
+            vector_ids = [doc_id for doc_id, _, _ in vector_results]
+            lexical_ids = self._fts_search_ids(query_text, candidate_k)
+
+            if lexical_ids:
+                fused = reciprocal_rank_fusion(
+                    [vector_ids, lexical_ids], rrf_k=rrf_k
+                )
+                results: List[Tuple[str, float, Dict[str, Any]]] = []
+                for doc_id, score in fused[:top_k]:
+                    stored = self._store.get(doc_id)
+                    if stored is not None:
+                        results.append((doc_id, score, stored[1]))
+                mode = "hybrid"
+            else:
+                results = vector_results[:top_k]
+                mode = "vector"
+
+            info = {
+                "mode": mode,
+                "fts_available": self._fts_available,
+                "candidate_k": candidate_k,
+                "vector_candidates": len(vector_ids),
+                "lexical_candidates": len(lexical_ids),
+                "rrf_k": rrf_k,
+            }
+        return results, info
 
     def close(self) -> None:
         with self._lock:

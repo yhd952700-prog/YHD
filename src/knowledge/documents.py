@@ -151,7 +151,13 @@ class KnowledgeDocumentService:
         embedder = self._embedding()
         store = self._store()
         query_vector = embedder.embed([query])[0]
-        results = store.search(query_vector, top_k=top_k, threshold=threshold)
+        if hasattr(store, "hybrid_search"):
+            results, retrieval = store.hybrid_search(
+                query, query_vector, top_k=top_k, threshold=threshold
+            )
+        else:  # pragma: no cover - third-party stores without the hybrid API
+            results = store.search(query_vector, top_k=top_k, threshold=threshold)
+            retrieval = {"mode": "vector", "fts_available": False}
         hits: List[Dict[str, Any]] = [
             {
                 "doc_id": doc_id,
@@ -167,7 +173,13 @@ class KnowledgeDocumentService:
             len(hits),
             getattr(embedder, "name", "unknown"),
         )
-        return {"query": query, "top_k": top_k, "hits": hits, "count": store.count()}
+        return {
+            "query": query,
+            "top_k": top_k,
+            "hits": hits,
+            "count": store.count(),
+            "retrieval": retrieval,
+        }
 
 
 _SERVICE: Optional[KnowledgeDocumentService] = None
