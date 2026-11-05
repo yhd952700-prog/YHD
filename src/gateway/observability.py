@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import logging
 import os
 from typing import Any, Dict
@@ -40,66 +39,43 @@ logger = logging.getLogger("liuhao.gateway.observability")
 
 router = APIRouter(prefix="/v1", tags=["observability"])
 
-#: Optional shared secret for Prometheus scrapes.
+#: Shared secret for Prometheus scrapes (mandatory).
 METRICS_TOKEN_ENV = "LIUHAO_METRICS_TOKEN"
-
-_LOOPBACK_NAMES = {"localhost"}
 
 
 def _metrics_token() -> str:
     return (os.environ.get(METRICS_TOKEN_ENV) or "").strip()
 
 
-def _is_internal_source(request: Request) -> bool:
-    """True only for loopback / private / link-local clients.
-
-    Prometheus in ``docker-compose.observability.yml`` scrapes over the compose
-    network, so its source address is a private bridge IP -- this keeps the
-    default deployment working while refusing public clients.
-    """
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", "") or ""
-    if host in _LOOPBACK_NAMES:
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_private or address.is_link_local
-
-
 def _authorize_metrics(request: Request) -> None:
-    """Minimal auth/restriction for the scrape endpoint.
+    """Minimal auth for the scrape endpoint.
 
-    Two modes, deliberately:
-    * ``LIUHAO_METRICS_TOKEN`` set -> require that exact bearer token. This is
-      the mode to use when the endpoint is reachable from outside the host.
-    * unset -> only loopback/private/link-local callers are allowed. Public
-      callers get 403 that says how to enable token mode.
-
-    Metrics describe internals (subsystem names, error counters), so an
-    unauthenticated public scrape is a leak, not a feature.
+    ``LIUHAO_METRICS_TOKEN`` is **mandatory**. There is deliberately no
+    "private network is trusted" fallback any more: metrics describe internals
+    (subsystem names, error counters), and a private source address is
+    attacker-controllable in several deployment topologies (proxies, shared
+    bridge networks, SSRF pivot). No token configured means no scrape -- fail
+    closed, with an operational hint in the response.
     """
     token = _metrics_token()
-    if token:
-        supplied = request.headers.get("authorization", "")
-        if supplied.lower().startswith("bearer "):
-            supplied = supplied[7:]
-        if not supplied:
-            supplied = request.headers.get("x-liuhao-metrics-token", "")
-        if not hmac.compare_digest(supplied.strip(), token):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Prometheus 导出需要有效的 bearer token",
-            )
-        return
-    if not _is_internal_source(request):
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Prometheus 导出仅允许回环/私网来源；跨网抓取请设置 "
-                f"{METRICS_TOKEN_ENV} 并用 Authorization: Bearer <token> 抓取"
+                "Prometheus 导出已禁用：未配置 "
+                f"{METRICS_TOKEN_ENV}。请设置该环境变量，并用 "
+                "Authorization: Bearer <token> 抓取。"
             ),
+        )
+    supplied = request.headers.get("authorization", "")
+    if supplied.lower().startswith("bearer "):
+        supplied = supplied[7:]
+    if not supplied:
+        supplied = request.headers.get("x-liuhao-metrics-token", "")
+    if not hmac.compare_digest(supplied.strip(), token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Prometheus 导出需要有效的 bearer token",
         )
 
 

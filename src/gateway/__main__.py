@@ -63,10 +63,41 @@ def resolve_bind() -> tuple:
     return host, port
 
 
+def resolve_timeout_options() -> dict:
+    """Return uvicorn kwargs derived from ``server.timeouts``.
+
+    Imported lazily so ``python -m src.gateway`` keeps working even if the
+    runtime config is unreadable; in that case uvicorn's defaults apply and
+    nothing silently claims otherwise.
+    """
+    try:
+        from .main import (
+            load_runtime_config,
+            uvicorn_timeout_kwargs,
+            unenforced_timeouts,
+        )
+
+        runtime = load_runtime_config()
+    except Exception as exc:  # noqa: BLE001 - never block startup on config
+        logger.warning("could not load server.timeouts: %s", exc)
+        return {}
+    options = uvicorn_timeout_kwargs(runtime)
+    unenforced = unenforced_timeouts(runtime)
+    if unenforced:
+        logger.warning(
+            "server.timeouts.%s are socket-level deadlines not exposed by "
+            "uvicorn; they are NOT enforced by this process -- configure them "
+            "at the reverse proxy / socket layer if required",
+            "/".join(unenforced),
+        )
+    return options
+
+
 def main() -> int:
     host, port = resolve_bind()
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timeout_options = resolve_timeout_options()
     print(f"鎏灏网关启动： http://{host}:{port}  (log_level={log_level})")
     uvicorn.run(
         "src.gateway.main:app",
@@ -74,6 +105,7 @@ def main() -> int:
         port=port,
         log_level=log_level,
         log_config=str(LOG_CONFIG) if LOG_CONFIG.is_file() else None,
+        **timeout_options,
     )
     return 0
 

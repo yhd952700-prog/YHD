@@ -8,12 +8,86 @@ Token Bucket algorithm implementation with:
 - Graceful degradation when Redis unavailable
 """
 
+import ipaddress
 import time
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+
+#: Paths limited by default, in addition to whatever ``server.rate_limit.paths``
+#: configures. Config can *extend* this set but can never shrink it, so a
+#: missing/old config file cannot silently leave the gateway unmetered.
+DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = (
+    "/v1/auth/login",
+    "/v1/chat",
+    "/v1/goals",
+    "/v1/models",
+    "/v1/knowledge",
+    "/v1/events",
+    "/v1/audit",
+    "/v1/ai",
+    "/v1/projects",
+    "/v1/profile",
+    "/v1/plugins",
+    "/v1/files",
+    "/v1/identity",
+    "/v1/trust",
+    "/v1/networks",
+    "/v1/kernels",
+    "/v1/alerts",
+    "/v1/observability",
+    "/v1/policy",
+    "/v1/production",
+    "/v1/dashboard",
+    "/v1/roster",
+)
+
+
+def _parse_trusted_proxies(values: Iterable[str]) -> Tuple:
+    networks = []
+    for raw in values or ():
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def resolve_client_ip(peer_host: str, forwarded_for: Optional[str],
+                      trusted_proxies: Iterable[str]) -> str:
+    """Return the effective client address, honouring ``X-Forwarded-For`` only
+    when the *direct peer* is an explicitly configured trusted proxy.
+
+    Without this, any caller can spoof ``X-Forwarded-For`` and either frame
+    another IP or dodge per-IP throttling.
+    """
+    peer = str(peer_host or "unknown")
+    networks = _parse_trusted_proxies(trusted_proxies)
+    if not networks:
+        return peer
+    try:
+        peer_addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    if not any(peer_addr in net for net in networks):
+        return peer
+    hops = [h.strip() for h in (forwarded_for or "").split(",") if h.strip()]
+    if not hops:
+        return peer
+    # Walk right-to-left: the right-most untrusted hop is the client.
+    for hop in reversed(hops):
+        try:
+            hop_addr = ipaddress.ip_address(hop)
+        except ValueError:
+            continue
+        if not any(hop_addr in net for net in networks):
+            return str(hop_addr)
+    return hops[0]
 
 
 class TokenBucket:
@@ -33,6 +107,7 @@ class TokenBucket:
         self.refill_rate = refill_rate  # tokens per second
         self.tokens = float(capacity)
         self.last_refill = time.time()
+        self.last_used = self.last_refill
         self.lock = threading.Lock()
 
     def _refill(self, now: float) -> None:
@@ -53,6 +128,7 @@ class TokenBucket:
         with self.lock:
             now = time.time()
             self._refill(now)
+            self.last_used = now
 
             allowed = self.tokens >= n
 
@@ -88,13 +164,58 @@ class RateLimiter:
         "custom": (100, 1.0),
     }
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        default_capacity: int = 100,
+        default_rate: float = 1.0,
+        max_buckets: int = 4096,
+        idle_ttl_seconds: float = 600.0,
+    ):
         self._buckets: Dict[str, TokenBucket] = {}
         self._lock = threading.Lock()
-        self._default_capacity = 100
-        self._default_rate = 1.0  # 1 token per second default
+        self._default_capacity = default_capacity
+        self._default_rate = default_rate
+        self._max_buckets = max(1, int(max_buckets))
+        self._idle_ttl = max(1.0, float(idle_ttl_seconds))
+        self._last_sweep = 0.0
 
-    def _get_key_id(self, request: Request) -> str:
+    def _sweep_locked(self, now: float) -> None:
+        """Evict idle, fully-refilled buckets. Caller must hold ``self._lock``.
+
+        Without reclamation a caller rotating API keys / source addresses
+        grows the dict without bound -- a memory-exhaustion vector. A bucket
+        that is full again carries no state worth keeping (a fresh bucket
+        would behave identically).
+
+        Sweeping is amortised (at most every 10s, immediately when over cap)
+        so the hot path stays O(1).
+        """
+        if len(self._buckets) < self._max_buckets and now - self._last_sweep < 10.0:
+            return
+        self._last_sweep = now
+        stale = [
+            key
+            for key, bucket in self._buckets.items()
+            if now - bucket.last_used >= self._idle_ttl
+            and bucket.tokens >= bucket.capacity
+        ]
+        for key in stale:
+            self._buckets.pop(key, None)
+        if len(self._buckets) < self._max_buckets:
+            return
+        # Still over the cap: drop the oldest buckets regardless of fill level.
+        over = len(self._buckets) - self._max_buckets + 1
+        for key in sorted(
+            self._buckets.keys(), key=lambda k: self._buckets[k].last_used
+        )[:max(1, over)]:
+            self._buckets.pop(key, None)
+
+    def bucket_count(self) -> int:
+        with self._lock:
+            return len(self._buckets)
+
+    def _get_key_id(self, request: Request, trusted_proxies: Iterable[str] = ()) -> str:
         """Extract key identifier from request (API key or IP).
 
         The key is read from the private header first: on the managed host a
@@ -126,13 +247,15 @@ class RateLimiter:
             except Exception:  # noqa: BLE001 - invalid token => fall back to IP
                 pass
 
-        # Fall back to IP address
+        # Fall back to IP address (XFF trusted only behind a configured proxy)
         client_host = request.client.host if request.client else "unknown"
-        return f"ip:{client_host}"
+        forwarded = request.headers.get("x-forwarded-for")
+        return f"ip:{resolve_client_ip(client_host, forwarded, trusted_proxies)}"
 
     def _get_bucket(self, key_id: str, scopes: list) -> TokenBucket:
         """Get or create a token bucket for the given key and scopes."""
         with self._lock:
+            self._sweep_locked(time.time())
             # Determine limit based on scopes
             capacity = self._default_capacity
             rate = self._default_rate
@@ -147,14 +270,16 @@ class RateLimiter:
 
             return self._buckets[key_id]
 
-    def check_rate_limit(self, request: Request) -> Tuple[bool, Dict[str, any]]:
+    def check_rate_limit(
+        self, request: Request, trusted_proxies: Iterable[str] = ()
+    ) -> Tuple[bool, Dict[str, any]]:
         """
         Check rate limit for the request.
 
         Returns:
             (allowed, info_dict)
         """
-        key_id = self._get_key_id(request)
+        key_id = self._get_key_id(request, trusted_proxies)
 
         # Get API key scopes if available
         from ..security.api_keys import validate_api_key
@@ -216,9 +341,11 @@ def get_rate_limiter() -> RateLimiter:
     return _default_limiter
 
 
-def check_rate_limit(request: Request) -> Tuple[bool, Dict[str, any]]:
+def check_rate_limit(
+    request: Request, trusted_proxies: Iterable[str] = ()
+) -> Tuple[bool, Dict[str, any]]:
     """Convenience function to check rate limit."""
-    return get_rate_limiter().check_rate_limit(request)
+    return get_rate_limiter().check_rate_limit(request, trusted_proxies)
 
 
 def add_rate_limit_headers(response: Response, allowed: bool, info: Dict[str, any]) -> None:
@@ -247,14 +374,20 @@ class RateLimitMiddleware:
     dead code. This adapter is the missing wiring; it does not re-implement
     limits, so there remains exactly one place that decides them.
 
-    Applied to prefixes from ``server.rate_limit.paths`` -- by default the two
-    costly, mutation-heavy businesses (chat and goals). Other routes are
-    unaffected until explicitly opted in.
+    Applied to prefixes from ``server.rate_limit.paths`` **merged with**
+    ``DEFAULT_PROTECTED_PATHS``: config may add paths but cannot shrink the
+    protected set, so an old config file cannot silently unmeter the gateway.
     """
 
-    def __init__(self, app, paths: Tuple[str, ...] = ("/v1/chat", "/v1/goals")):
+    def __init__(
+        self,
+        app,
+        paths: Tuple[str, ...] = DEFAULT_PROTECTED_PATHS,
+        trusted_proxies: Iterable[str] = (),
+    ):
         self.app = app
-        self.paths = tuple(paths or ())
+        self.paths = tuple(paths or DEFAULT_PROTECTED_PATHS)
+        self.trusted_proxies = tuple(trusted_proxies or ())
 
     def _matches(self, path: str) -> bool:
         return any(path == p or path.startswith(p.rstrip("/") + "/") for p in self.paths)
@@ -265,7 +398,7 @@ class RateLimitMiddleware:
             return
 
         request = Request(scope, receive=receive)
-        allowed, info = check_rate_limit(request)
+        allowed, info = check_rate_limit(request, self.trusted_proxies)
         headers = _rate_limit_headers(allowed, info)
 
         if not allowed:
@@ -287,3 +420,58 @@ class RateLimitMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+class GlobalRateLimitMiddleware:
+    """Per-client budget for **all** API traffic.
+
+    ``server.limits.rate_limit_per_minute`` used to be dead config. This
+    adapter implements it as a per-IP (or per-key) budget over every ``/v1``
+    route, on top of the per-business limits above. Health/readiness probes
+    and the authenticated metrics scrape are excluded so monitoring is never
+    throttled by product traffic.
+    """
+
+    _EXEMPT_PREFIXES = ("/v1/health", "/v1/ready", "/v1/metrics/prometheus")
+
+    def __init__(
+        self,
+        app,
+        limit_per_minute: int = 0,
+        trusted_proxies: Iterable[str] = (),
+        max_buckets: int = 4096,
+    ):
+        self.app = app
+        self.trusted_proxies = tuple(trusted_proxies or ())
+        self.limit = max(0, int(limit_per_minute or 0))
+        self._limiter = RateLimiter(
+            default_capacity=max(1, self.limit),
+            default_rate=max(self.limit, 1) / 60.0,
+            max_buckets=max_buckets,
+            idle_ttl_seconds=300.0,
+        )
+
+    def _applies(self, path: str) -> bool:
+        if self.limit <= 0 or not path.startswith("/v1"):
+            return False
+        return not any(
+            path == p or path.startswith(p.rstrip("/") + "/")
+            for p in self._EXEMPT_PREFIXES
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not self._applies(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        allowed, info = self._limiter.check_rate_limit(request, self.trusted_proxies)
+        if not allowed:
+            await JSONResponse(
+                {"detail": "请求过于频繁，请稍后再试（global rate limit exceeded）"},
+                status_code=429,
+                headers=_rate_limit_headers(allowed, info),
+            )(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)

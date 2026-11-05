@@ -110,6 +110,9 @@ def load_runtime_config() -> Dict[str, Any]:
         if isinstance(server_cfg.get("rate_limit"), dict)
         else {}
     )
+    limits_cfg = (
+        server_cfg.get("limits") if isinstance(server_cfg.get("limits"), dict) else {}
+    )
 
     raw_origins = os.environ.get(CORS_ORIGINS_ENV)
     if raw_origins:
@@ -151,7 +154,54 @@ def load_runtime_config() -> Dict[str, Any]:
             "enabled": bool(rate_cfg.get("enabled", True)),
             "paths": list(rate_cfg.get("paths") or ["/v1/chat", "/v1/goals"]),
         },
+        # 请求体上限与全局单 IP 限流。此前 ``server.limits.*`` 只存在于
+        # YAML，没有任何代码读取；现在由 BodyLimitMiddleware /
+        # GlobalRateLimitMiddleware 真正执行。
+        "limits": {
+            "max_body_bytes": int((limits_cfg or {}).get("max_body_bytes") or 0),
+            "max_upload_bytes": int((limits_cfg or {}).get("max_upload_bytes") or 0),
+            "rate_limit_per_minute": int(
+                (limits_cfg or {}).get("rate_limit_per_minute") or 0
+            ),
+        },
+        "trusted_proxies": [
+            str(item).strip()
+            for item in (server_cfg.get("trusted_proxies") or [])
+            if str(item).strip()
+        ],
+        # ``idle_seconds`` 由 ``__main__.py`` 映射为 uvicorn 的
+        # ``timeout_keep_alive``（真实生效）；``read_seconds/write_seconds``
+        # 是套接字级 deadline，uvicorn 不提供对应参数，启动时会显式告警
+        # “未在应用层启用”，不允许静默装作已生效。
+        "timeouts": dict(server_cfg.get("timeouts") or {}),
     }
+
+
+def uvicorn_timeout_kwargs(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Map ``server.timeouts`` onto uvicorn kwargs that actually exist.
+
+    ``idle_seconds`` is the keep-alive/idle socket timeout and maps onto
+    ``timeout_keep_alive`` — implemented, not decorative. ``read_seconds`` /
+    ``write_seconds`` are per-socket read/write deadlines that uvicorn does not
+    expose as options; they must be configured at the reverse proxy or socket
+    layer. :func:`unenforced_timeouts` names them so startup can say so out
+    loud instead of leaving them looking active.
+    """
+    timeouts = runtime.get("timeouts") or {}
+    kwargs: Dict[str, Any] = {}
+    try:
+        idle = float(timeouts.get("idle_seconds") or 0)
+    except (TypeError, ValueError):
+        idle = 0
+    if idle > 0:
+        kwargs["timeout_keep_alive"] = max(1, int(idle))
+    return kwargs
+
+
+def unenforced_timeouts(runtime: Dict[str, Any]) -> list:
+    """``server.timeouts.*`` keys configured but not enforceable in-app."""
+    timeouts = runtime.get("timeouts") or {}
+    return [name for name in ("read_seconds", "write_seconds") if timeouts.get(name)]
 
 
 # ==================== Routers ====================
@@ -636,12 +686,36 @@ def get_app() -> FastAPI:
     # 必须比 CORS **先注册**：后注册的中间件在外层，这样 429 也会经过 CORS
     # 拿到跨域响应头，控制台才能读懂"限流了"而不是只看到 CORS 报错。
     rate_cfg = runtime.get("rate_limit") or {}
+    trusted_proxies = tuple(runtime.get("trusted_proxies") or ())
     if rate_cfg.get("enabled", True):
-        from .rate_limiter import RateLimitMiddleware
+        from .rate_limiter import DEFAULT_PROTECTED_PATHS, RateLimitMiddleware
 
+        # union：配置只能“加”路径，不能“减”——旧配置文件不能让网关失守。
+        configured_paths = tuple(rate_cfg.get("paths") or ())
         app.add_middleware(
             RateLimitMiddleware,
-            paths=tuple(rate_cfg.get("paths") or ("/v1/chat", "/v1/goals")),
+            paths=tuple(dict.fromkeys(DEFAULT_PROTECTED_PATHS + configured_paths)),
+            trusted_proxies=trusted_proxies,
+        )
+
+    # 请求体上限（server.limits.max_body_bytes / max_upload_bytes）。
+    limits = runtime.get("limits") or {}
+    from .http_limits import BodyLimitMiddleware
+
+    app.add_middleware(
+        BodyLimitMiddleware,
+        max_body_bytes=int(limits.get("max_body_bytes") or 0),
+        max_upload_bytes=int(limits.get("max_upload_bytes") or 0),
+    )
+
+    # 全局单客户端每分钟预算（server.limits.rate_limit_per_minute）。
+    if int(limits.get("rate_limit_per_minute") or 0) > 0:
+        from .rate_limiter import GlobalRateLimitMiddleware
+
+        app.add_middleware(
+            GlobalRateLimitMiddleware,
+            limit_per_minute=int(limits.get("rate_limit_per_minute") or 0),
+            trusted_proxies=trusted_proxies,
         )
 
     # CORS middleware —— 实际读取 config/default.yaml（+ APP_ENV 覆盖文件）的
