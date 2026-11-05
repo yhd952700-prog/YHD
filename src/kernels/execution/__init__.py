@@ -1507,8 +1507,10 @@ class ExecutionEngine:
         if self.artifact_index is None:
             return
         try:
-            # 延迟导入：内核层不反向依赖 ai/gateway 层，且未接线时零成本。
-            from src.ai.workspace import workspace_root
+            # 内核层不得反向 import src.ai（分层门禁 B1，`.semgrep/liuhao.yml`
+            # 的 liuhao-kernel-imports-ai-layer；AST 护栏同禁）。工作区根的
+            # 解析由索引模块自己完成（``workspace=None`` 时它自己取），
+            # 内核只传事实（output/ids），不把应用层依赖带进来。
 
             # 与执行链同一口径：归属不成立的 agent 不许写进索引（否则索引会
             # 替一个不存在的执行者背书，正是 COMPLETED_UNATTRIBUTED 要防的事）。
@@ -1519,7 +1521,7 @@ class ExecutionEngine:
                 agent_id = task.assigned_agent
 
             self.artifact_index.record_from_task_output(
-                workspace=workspace_root(),
+                workspace=None,
                 output=result.output,
                 execution_id=execution_id,
                 goal_id=task.goal_id,

@@ -311,7 +311,7 @@ class ArtifactIndex:
     def record_from_task_output(
         self,
         *,
-        workspace: str,
+        workspace: Optional[str] = None,
         output: Any,
         execution_id: Optional[str] = None,
         goal_id: Optional[str] = None,
@@ -335,11 +335,17 @@ class ArtifactIndex:
         claimed = artifact_path_from_output(output)
         if not claimed:
             return None
-        root = workspace
+        root = workspace or ""
         if isinstance(output, dict):
             reported = output.get("workspace_root")
             if isinstance(reported, str) and reported.strip():
                 root = reported
+        if not root:
+            # 调用方（内核层）不许反向 import src.ai，产物索引是本层模块，
+            # 由这里解析默认工作区根即可（与 LIUHAO_WORKSPACE_ROOT 同一口径）。
+            from src.ai.workspace import workspace_root
+
+            root = workspace_root()
         return self.record(
             workspace=root,
             path=claimed,
