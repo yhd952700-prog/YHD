@@ -126,6 +126,16 @@ SCHEDULED_ONLY_GATES: dict[str, str] = {
         ".github/workflows/deployed-stack-verification.yml nightly and by hand. "
         "Registration records that 'we accept this gate does not run per-commit'."
     ),
+    "verify_first_run_e2e.py": (
+        "Starts a real gateway process and walks the user's first-run path "
+        "(blank data dir -> login -> POST /v1/models with a real vendor key -> "
+        "test connection -> chat without restart -> hard restart with the same "
+        "data dir). It needs a real key (LIUHAO_E2E_API_KEY) and a built "
+        "console/dist, neither of which a per-push job on a fork PR can obtain. "
+        "It therefore runs in .github/workflows/first-run-e2e.yml nightly and by "
+        "hand; a missing key fails that workflow loudly rather than faking green. "
+        "Registration records that 'we accept this gate does not run per-commit'."
+    ),
 }
 
 _BOOTSTRAP_RE = re.compile(r"sys\.path\.(insert|append)")

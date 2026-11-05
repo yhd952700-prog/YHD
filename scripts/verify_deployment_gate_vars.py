@@ -341,7 +341,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "the mounted volume and vanish on rebuild"
         ),
         "refs": (
-            "src/gateway/ai_management.py:214",
+            "src/gateway/ai_management.py:266",
             "src/ai/workspace.py:62",
         ),
     },
