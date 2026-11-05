@@ -65,9 +65,12 @@ added to the same environment.
 
 **为什么延后。** 让产品改自己的代码并热更新，是最高风险能力：一旦被提示注入
 或错误模型输出驱动，等于把「已被审计约束的系统」换成「能重写审计约束的
-系统」。先在安全侧补齐签名、审批、回滚与沙箱，再谈自动改码。仓库中目前
-**没有任何实现**（全仓库检索 `self[-_]update` / `self[-_]upgrade` /
-`auto[-_]update` / `自升级` 均无代码命中）。
+系统」。先在安全侧补齐签名、审批、回滚与沙箱，再谈自动改码。**已提交历史中
+没有任何实现**（检索 `self[-_]update` / `self[-_]upgrade` / `auto[-_]update` /
+`自升级` 均无代码命中）。
+> 本轮工作树里已出现**未提交**的 `src/upgrade/`（manager/dataguard/backups/
+> selfcheck 等），属他人流在建。未提交、未跑验收前**不算实现**；本项状态以
+> 最终 commit 与 `docs/requirements-traceability.md` 的 T-04 为准。
 
 **依赖什么。**
 1. 发布物签名与哈希校验（安装器/打包流）；
