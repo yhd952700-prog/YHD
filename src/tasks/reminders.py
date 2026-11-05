@@ -21,6 +21,17 @@
 取消会把提醒标成 ``cancelled`` 并按前缀取消排程器里尚未执行的 job；
 修改会 ``version + 1``、取消旧 job、按新时间重新入队。触发时 handler 会再次
 核对 ``status``/``version``，因此旧版本即使已被领取也会被跳过 —— 取消后不会响。
+
+## 真实使用里的三种兜底
+
+* **错过合并** —— 到点后超过阈值（默认 6 小时）仍未响的，不单独弹；记成
+  ``missed`` 并触发一条 ``liuhao.reminder.digest`` 摘要（"你有 N 条错过的提醒
+  最近一条：…"），明细在 ``missed()`` 里逐条可查。关机几天后开机不会轰炸。
+* **勿扰时段** —— 默认 23:00–07:00（本地时间，可关闭/可改）。静默期内的提醒
+  不丢弃，而是延后到静默结束投递；"延后"本身也记账（``status='deferred'``），
+  进程中途崩溃重启不会误判成错过。
+* **完成 / 稍后** —— 每次投递可被标记 ``done`` 或 ``snoozed``（默认 10 分钟）。
+  标记落在投递记录上（``ack_status``），跨重启保留；清单不会只增不减。
 """
 
 from __future__ import annotations
@@ -49,6 +60,8 @@ from src.tasks.reminder_time import (
 )
 
 REMINDER_FIRE_JOB = "liuhao.reminder.fire"
+# 错过提醒合并成一条摘要（关机几天后开机不轰炸）。
+REMINDER_DIGEST_JOB = "liuhao.reminder.digest"
 
 # 提醒的"下一次/这一次"全部用这个前缀做 job_key，取消时按前缀批量取消。
 REMINDER_KEY_PREFIX = "reminder"
@@ -57,6 +70,27 @@ DEFAULT_FIRE_MAX_ATTEMPTS = 5
 DEFAULT_FIRE_BACKOFF_SECONDS = 5.0
 DEFAULT_FIRE_BACKOFF_MULTIPLIER = 2.0
 DEFAULT_FIRE_MAX_BACKOFF_SECONDS = 60.0
+
+# 错过判定：到点后超过这么久还没响，就不再单独弹，合并成摘要。
+DEFAULT_MISSED_THRESHOLD_HOURS = 6.0
+# 勿扰时段（本地时间，默认 23:00–07:00）。
+DEFAULT_QUIET_START_MINUTES = 23 * 60
+DEFAULT_QUIET_END_MINUTES = 7 * 60
+# 响过之后默认"稍后再提醒"的间隔。
+DEFAULT_SNOOZE_MINUTES = 10
+# 合并摘要稍微延迟一下，让同一批错过的提醒全部到齐，只弹一条。
+DIGEST_DELAY_SECONDS = 3.0
+DIGEST_JOB_KEY = f"{REMINDER_KEY_PREFIX}:digest"
+# 摘要不是某一条提醒，"完成/稍后"不能作用在它身上，避免误标后明细还在。
+DIGEST_REMINDER_ID = "__digest__"
+
+_SETTINGS_DEFAULTS = {
+    "quiet_enabled": "1",
+    "quiet_start_minutes": str(DEFAULT_QUIET_START_MINUTES),
+    "quiet_end_minutes": str(DEFAULT_QUIET_END_MINUTES),
+    "missed_threshold_minutes": str(int(DEFAULT_MISSED_THRESHOLD_HOURS * 60)),
+    "snooze_minutes": str(DEFAULT_SNOOZE_MINUTES),
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
@@ -96,6 +130,12 @@ CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_user
     ON reminder_deliveries(user_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_deliveries_delivered
     ON reminder_deliveries(reminder_id, occurrence) WHERE status = 'delivered';
+
+CREATE TABLE IF NOT EXISTS reminder_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -131,6 +171,40 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _hhmm(minutes: int) -> str:
+    return f"{int(minutes) // 60:02d}:{int(minutes) % 60:02d}"
+
+
+def _setting_minutes(
+    raw: Any, key: str, *, minimum: int = 0, maximum: int = 24 * 60 - 1
+) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} 必须是整数分钟，收到 {raw!r}") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} 必须在 {minimum}–{maximum} 之间，收到 {value}")
+    return value
+
+
+def _parse_hhmm(raw: Any, key: str) -> int:
+    text = str(raw).strip()
+    parts = text.replace("：", ":").split(":")
+    if len(parts) != 2:
+        raise ValueError(f"{key} 需要 HH:MM 格式，收到 {raw!r}")
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"{key} 需要 HH:MM 格式，收到 {raw!r}") from exc
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"{key} 不是有效时刻：{raw!r}")
+    return hour * 60 + minute
+
+
 class ReminderStore:
     """提醒与投递记录的 SQLite 存储（WAL，跨进程可读）。"""
 
@@ -145,8 +219,59 @@ class ReminderStore:
         )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=15000")
-        self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
+        self._conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """给老库补列（SQLite 的 CREATE TABLE IF NOT EXISTS 不会加新列）。"""
+        with self._lock:
+            columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(reminder_deliveries)"
+                ).fetchall()
+            }
+            additions = (
+                ("ack_status", "TEXT"),
+                ("acked_at", "TEXT"),
+                ("digested_at", "TEXT"),
+                ("lateness_seconds", "REAL"),
+            )
+            for name, kind in additions:
+                if name not in columns:
+                    self._conn.execute(
+                        f"ALTER TABLE reminder_deliveries ADD COLUMN {name} {kind}"
+                    )
+
+    # -- settings ---------------------------------------------------------
+
+    def get_settings(self) -> Dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM reminder_settings"
+            ).fetchall()
+        values = dict(_SETTINGS_DEFAULTS)
+        values.update({str(key): str(value) for key, value in rows})
+        return values
+
+    def set_settings(self, values: Dict[str, str], now_iso: str) -> Dict[str, str]:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for key, value in values.items():
+                    self._conn.execute(
+                        "INSERT INTO reminder_settings (key, value, updated_at)"
+                        " VALUES (?, ?, ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+                        " updated_at = excluded.updated_at",
+                        (key, str(value), now_iso),
+                    )
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+        return self.get_settings()
 
     # -- reminders --------------------------------------------------------
 
@@ -216,7 +341,7 @@ class ReminderStore:
         with self._lock:
             cursor = self._conn.execute(
                 "UPDATE reminders SET status = 'cancelled', updated_at = ?"
-                " WHERE id = ? AND user_id = ? AND status = 'active'",
+                " WHERE id = ? AND user_id = ? AND status IN ('active', 'completed')",
                 (now_iso, reminder_id, user_id),
             )
             return int(cursor.rowcount) > 0
@@ -309,6 +434,17 @@ class ReminderStore:
             ).fetchone()
         return row is not None
 
+    def has_recorded(self, reminder_id: str, occurrence: str) -> bool:
+        """该 occurrence 是否已经记过账（送达/错过/已延后都算，避免重复处理）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM reminder_deliveries"
+                " WHERE reminder_id = ? AND occurrence = ?"
+                " AND status IN ('delivered', 'missed', 'deferred') LIMIT 1",
+                (reminder_id, occurrence),
+            ).fetchone()
+        return row is not None
+
     def record_delivery(
         self,
         *,
@@ -319,14 +455,16 @@ class ReminderStore:
         channels: List[Dict[str, Any]],
         error: Optional[str],
         now_iso: str,
+        lateness_seconds: Optional[float] = None,
     ) -> bool:
         """写入投递记录；已存在同一 occurrence 的成功记录时返回 False。"""
         with self._lock:
             try:
                 self._conn.execute(
                     "INSERT INTO reminder_deliveries"
-                    " (reminder_id, user_id, occurrence, status, channels, error, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    " (reminder_id, user_id, occurrence, status, channels, error,"
+                    "  lateness_seconds, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         reminder_id,
                         user_id,
@@ -334,6 +472,7 @@ class ReminderStore:
                         status,
                         json.dumps(channels, ensure_ascii=False, default=str),
                         error,
+                        lateness_seconds,
                         now_iso,
                     ),
                 )
@@ -359,6 +498,72 @@ class ReminderStore:
             params.append(status)
         query += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
+        items = self._query_deliveries(query, params)
+        return items
+
+    def get_delivery(self, delivery_id: int, user_id: str) -> Optional[Dict[str, Any]]:
+        items = self._query_deliveries(
+            "SELECT * FROM reminder_deliveries WHERE id = ? AND user_id = ?",
+            [int(delivery_id), user_id],
+        )
+        return items[0] if items else None
+
+    def latest_pending_ack(
+        self, user_id: str, *, reminder_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        query = (
+            "SELECT * FROM reminder_deliveries WHERE user_id = ?"
+            " AND ack_status IS NULL AND status IN ('delivered', 'missed')"
+            " AND reminder_id != ?"
+        )
+        params: List[Any] = [user_id, DIGEST_REMINDER_ID]
+        if reminder_id:
+            query += " AND reminder_id = ?"
+            params.append(reminder_id)
+        query += " ORDER BY id DESC LIMIT 1"
+        items = self._query_deliveries(query, params)
+        return items[0] if items else None
+
+    def ack_delivery(
+        self, delivery_id: int, user_id: str, ack_status: str, now_iso: str
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE reminder_deliveries SET ack_status = ?, acked_at = ?"
+                " WHERE id = ? AND user_id = ? AND ack_status IS NULL",
+                (ack_status, now_iso, int(delivery_id), user_id),
+            )
+            return int(cursor.rowcount) > 0
+
+    def list_undigested_missed(self, user_id: str) -> List[Dict[str, Any]]:
+        return self._query_deliveries(
+            "SELECT * FROM reminder_deliveries WHERE user_id = ?"
+            " AND status = 'missed' AND digested_at IS NULL"
+            " ORDER BY occurrence DESC, id DESC",
+            [user_id],
+        )
+
+    def list_missed(self, user_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        return self._query_deliveries(
+            "SELECT * FROM reminder_deliveries WHERE user_id = ? AND status = 'missed'"
+            " ORDER BY id DESC LIMIT ?",
+            [user_id, int(limit)],
+        )
+
+    def mark_digested(self, delivery_ids: List[int], now_iso: str) -> None:
+        if not delivery_ids:
+            return
+        placeholders = ",".join("?" for _ in delivery_ids)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE reminder_deliveries SET digested_at = ?"
+                f" WHERE id IN ({placeholders}) AND digested_at IS NULL",
+                (now_iso, *[int(item) for item in delivery_ids]),
+            )
+
+    def _query_deliveries(
+        self, query: str, params: List[Any]
+    ) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(query, tuple(params)).fetchall()
             columns = [item[0] for item in self._conn.execute(
@@ -444,7 +649,8 @@ class ReminderService:
         record = self.store.get(reminder_id, user_id=user_id)
         if record is None:
             return {"status": "not_found", "message": "没有这个提醒。"}
-        if record["status"] != "active":
+        # 一次性提醒响过（completed）仍可能有"稍后提醒"在排队，取消要能把它撤掉。
+        if record["status"] not in ("active", "completed"):
             return {
                 "status": "noop",
                 "message": f"提醒已经是「{record['status']}」，无需取消。",
@@ -517,6 +723,282 @@ class ReminderService:
         )
         return {"status": "updated", "reminder": self.describe(rearmed)}
 
+    # -- settings ---------------------------------------------------------
+
+    def settings(self) -> Dict[str, Any]:
+        """当前配置（全部落 SQLite，重启后保持）。"""
+        raw = self.store.get_settings()
+        quiet_enabled = _truthy(raw.get("quiet_enabled"))
+        start = _setting_minutes(
+            raw.get("quiet_start_minutes"), "quiet_start_minutes"
+        )
+        end = _setting_minutes(raw.get("quiet_end_minutes"), "quiet_end_minutes")
+        threshold = _setting_minutes(
+            raw.get("missed_threshold_minutes"),
+            "missed_threshold_minutes",
+            minimum=1,
+            maximum=7 * 24 * 60,
+        )
+        snooze = _setting_minutes(
+            raw.get("snooze_minutes"), "snooze_minutes", minimum=1, maximum=24 * 60
+        )
+        return {
+            "quiet_enabled": quiet_enabled,
+            "quiet_start": _hhmm(start),
+            "quiet_end": _hhmm(end),
+            "quiet_start_minutes": start,
+            "quiet_end_minutes": end,
+            "missed_threshold_minutes": threshold,
+            "missed_threshold_hours": round(threshold / 60, 2),
+            "snooze_minutes": snooze,
+            "quiet_text": (
+                f"勿扰 {_hhmm(start)}–{_hhmm(end)}" if quiet_enabled else "勿扰已关闭"
+            ),
+        }
+
+    def update_settings(self, changes: Dict[str, Any]) -> Dict[str, Any]:
+        """更新配置；非法值直接报错，不静默改成"差不多"的值。"""
+        updates: Dict[str, str] = {}
+        allowed = {
+            "quiet_enabled",
+            "quiet_start",
+            "quiet_end",
+            "quiet_start_minutes",
+            "quiet_end_minutes",
+            "missed_threshold_minutes",
+            "missed_threshold_hours",
+            "snooze_minutes",
+        }
+        unknown = [key for key in changes if key not in allowed]
+        if unknown:
+            return {
+                "status": "error",
+                "error": f"不支持的设置项：{', '.join(unknown)}；可用：{', '.join(sorted(allowed))}。",
+            }
+
+        if changes.get("quiet_enabled") is not None:
+            value = changes["quiet_enabled"]
+            if isinstance(value, bool):
+                updates["quiet_enabled"] = "1" if value else "0"
+            elif str(value).strip().lower() in {"0", "false", "no", "off", "disabled"}:
+                updates["quiet_enabled"] = "0"
+            elif _truthy(value):
+                updates["quiet_enabled"] = "1"
+            else:
+                return {
+                    "status": "error",
+                    "error": f"quiet_enabled 应是开启/关闭，收到 {value!r}。",
+                }
+
+        for key in ("quiet_start", "quiet_end"):
+            if changes.get(key) is not None:
+                updates[f"{key}_minutes"] = str(_parse_hhmm(changes[key], key))
+        for source in ("quiet_start_minutes", "quiet_end_minutes"):
+            if changes.get(source) is not None:
+                updates[source] = str(
+                    _setting_minutes(changes[source], source)
+                )
+
+        if changes.get("missed_threshold_minutes") is not None:
+            updates["missed_threshold_minutes"] = str(
+                _setting_minutes(
+                    changes["missed_threshold_minutes"],
+                    "missed_threshold_minutes",
+                    minimum=1,
+                    maximum=7 * 24 * 60,
+                )
+            )
+        if changes.get("missed_threshold_hours") is not None:
+            try:
+                hours = float(changes["missed_threshold_hours"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "missed_threshold_hours 必须是数字，"
+                    f"收到 {changes['missed_threshold_hours']!r}"
+                ) from exc
+            if not 0 < hours <= 7 * 24:
+                raise ValueError("missed_threshold_hours 必须在 0–168 之间（不含 0）")
+            updates["missed_threshold_minutes"] = str(max(1, int(round(hours * 60))))
+
+        if changes.get("snooze_minutes") is not None:
+            updates["snooze_minutes"] = str(
+                _setting_minutes(
+                    changes["snooze_minutes"],
+                    "snooze_minutes",
+                    minimum=1,
+                    maximum=24 * 60,
+                )
+            )
+
+        if not updates:
+            return {"status": "noop", "settings": self.settings()}
+
+        self.store.set_settings(updates, _iso(self.scheduler.now()))
+        self._audit("reminder.settings_updated", "success", updates)
+        return {"status": "updated", "settings": self.settings()}
+
+    # -- acknowledge ------------------------------------------------------
+
+    def done(
+        self,
+        user_id: str,
+        *,
+        reminder_id: Optional[str] = None,
+        delivery_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """标记"已完成"（响过的那一次），清单不会无限堆积。"""
+        now_iso = _iso(self.scheduler.now())
+        target, error = self._ack_target(user_id, reminder_id, delivery_id)
+        if error is not None:
+            return error
+        assert target is not None
+        if not self.store.ack_delivery(target["id"], user_id, "done", now_iso):
+            return {"status": "noop", "message": "这条提醒已经处理过了。"}
+        self._audit(
+            "reminder.done",
+            "success",
+            {"reminder_id": target["reminder_id"], "delivery_id": target["id"]},
+        )
+        return {
+            "status": "done",
+            "message": "已标记完成。",
+            "delivery": self.store.get_delivery(target["id"], user_id),
+        }
+
+    def snooze(
+        self,
+        user_id: str,
+        *,
+        reminder_id: Optional[str] = None,
+        delivery_id: Optional[int] = None,
+        minutes: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """稍后再提醒（默认 10 分钟）；只对"真的响过"的那一次生效。"""
+        target, error = self._ack_target(user_id, reminder_id, delivery_id)
+        if error is not None:
+            return error
+        assert target is not None
+        if target["status"] != "delivered":
+            return {
+                "status": "noop",
+                "message": "错过的提醒不能稍后提醒；请标记完成，或重新创建一条。",
+                "delivery": target,
+            }
+        record = self.store.get(target["reminder_id"], user_id=user_id)
+        if record is None:
+            return {"status": "not_found", "message": "没有这个提醒。"}
+        if record["status"] == "cancelled":
+            return {"status": "noop", "message": "提醒已取消，不会再响。"}
+        if record["status"] not in ("active", "completed"):
+            return {
+                "status": "noop",
+                "message": f"提醒已经是「{record['status']}」，不能稍后提醒。",
+            }
+        default_minutes = self.settings()["snooze_minutes"]
+        delay = default_minutes if minutes is None else int(minutes)
+        if delay < 1:
+            return {"status": "error", "error": "稍后提醒的分钟数必须 >= 1。"}
+
+        now_dt = self.scheduler.now()
+        if not self.store.ack_delivery(target["id"], user_id, "snoozed", _iso(now_dt)):
+            return {"status": "noop", "message": "这条提醒已经处理过了。"}
+
+        run_at = now_dt + timedelta(minutes=delay)
+        token = uuid.uuid4().hex[:10]
+        occurrence = f"snooze:{token}"
+        version = int(record["version"])
+        self.scheduler.enqueue(
+            REMINDER_FIRE_JOB,
+            run_at=run_at,
+            job_key=f"{reminder_key_prefix(record['id'])}v{version}:{occurrence}",
+            payload={
+                "reminder_id": record["id"],
+                "version": version,
+                "occurrence": occurrence,
+                "scheduled_at": run_at.isoformat(),
+                "snooze": True,
+                "user_id": record["user_id"],
+                "title": record["title"],
+            },
+            max_attempts=self.max_attempts,
+            backoff_seconds=self.backoff_seconds,
+            backoff_multiplier=self.backoff_multiplier,
+            max_backoff_seconds=self.max_backoff_seconds,
+        )
+        self._audit(
+            "reminder.snoozed",
+            "success",
+            {
+                "reminder_id": record["id"],
+                "delivery_id": target["id"],
+                "run_at": run_at.isoformat(),
+                "minutes": delay,
+            },
+        )
+        return {
+            "status": "snoozed",
+            "message": f"{delay} 分钟后再次提醒：{record['title']}",
+            "run_at": run_at.isoformat(),
+            "minutes": delay,
+            "reminder": self.describe(record),
+        }
+
+    def missed(self, user_id: str, *, limit: int = 100) -> Dict[str, Any]:
+        """错过的提醒明细（摘要里提示的那批，逐条可查）。"""
+        rows = self.store.list_missed(user_id, limit=limit)
+        pending = [item for item in rows if not item.get("digested_at")]
+        return {
+            "status": "ok",
+            "count": len(rows),
+            "pending_digest": len(pending),
+            "missed": rows,
+        }
+
+    def _ack_target(
+        self,
+        user_id: str,
+        reminder_id: Optional[str],
+        delivery_id: Optional[int],
+    ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if delivery_id:
+            try:
+                delivery_id = int(delivery_id)
+            except (TypeError, ValueError):
+                return None, {"status": "error", "error": "delivery_id 必须是整数。"}
+            row = self.store.get_delivery(delivery_id, user_id)
+            if row is None:
+                return None, {"status": "not_found", "message": "没有这条提醒记录。"}
+            if row.get("reminder_id") == DIGEST_REMINDER_ID:
+                return None, {
+                    "status": "noop",
+                    "message": "这条是错过提醒的汇总，不能单独标记；请用 missed 查看明细后逐条处理。",
+                    "delivery": row,
+                }
+            if row.get("ack_status"):
+                return None, {
+                    "status": "noop",
+                    "message": f"这条提醒已经标记为「{row['ack_status']}」。",
+                    "delivery": row,
+                }
+            if row.get("status") not in ("delivered", "missed"):
+                return None, {
+                    "status": "noop",
+                    "message": "这条记录不是响过的提醒，不能标记。",
+                    "delivery": row,
+                }
+            return row, None
+        if reminder_id:
+            record = self.store.get(reminder_id, user_id=user_id)
+            if record is None:
+                return None, {"status": "not_found", "message": "没有这个提醒。"}
+        row = self.store.latest_pending_ack(user_id, reminder_id=reminder_id or None)
+        if row is None:
+            return None, {
+                "status": "not_found",
+                "message": "没有待处理的提醒；可以用 action=list 重新创建。",
+            }
+        return row, None
+
     def list_deliveries(
         self,
         user_id: str,
@@ -536,7 +1018,7 @@ class ReminderService:
         )
         dead_jobs = []
         for job in self.scheduler.list_dead_letters(limit=max(limit, 100)):
-            if job.get("job_name") != REMINDER_FIRE_JOB:
+            if job.get("job_name") not in (REMINDER_FIRE_JOB, REMINDER_DIGEST_JOB):
                 continue
             payload = job.get("payload") or {}
             if payload.get("user_id") != user_id:
@@ -544,6 +1026,7 @@ class ReminderService:
             dead_jobs.append(
                 {
                     "job_id": job.get("id"),
+                    "job_name": job.get("job_name"),
                     "reminder_id": payload.get("reminder_id"),
                     "title": payload.get("title"),
                     "attempts": job.get("attempts"),
@@ -561,7 +1044,7 @@ class ReminderService:
     # -- firing -----------------------------------------------------------
 
     def handle_fire(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """排程器调用：核对状态/版本 → 通知 → 记账 → 排下一次。"""
+        """排程器调用：核对状态/版本 → 错过/勿扰判定 → 通知 → 记账 → 排下一次。"""
         reminder_id = str(payload.get("reminder_id") or "")
         try:
             version = int(payload.get("version") or 0)
@@ -569,21 +1052,53 @@ class ReminderService:
             version = 0
         occurrence = str(payload.get("occurrence") or "")
         user_id = str(payload.get("user_id") or "")
+        is_snooze = bool(payload.get("snooze"))
+        quiet_deferred = bool(payload.get("quiet_deferred"))
 
         record = self.store.get(reminder_id) if reminder_id else None
         if record is None:
             return {"status": "skipped", "reason": "reminder not found"}
         if record["user_id"] != user_id:
             return {"status": "skipped", "reason": "user mismatch"}
-        if record["status"] != "active":
+        # 一次性提醒响过之后是 completed；此时只允许"稍后提醒"这一次补响。
+        if record["status"] != "active" and not (
+            is_snooze
+            and record["status"] == "completed"
+            and record["repeat_kind"] == "once"
+        ):
             return {"status": "skipped", "reason": f"reminder is {record['status']}"}
         if int(record["version"]) != version:
             return {"status": "skipped", "reason": "stale version"}
-        if self.store.has_delivered(reminder_id, occurrence):
-            return {"status": "skipped", "reason": "occurrence already delivered"}
+        # 静默延后本身也要记账：万一进程在延后中途崩溃，重启后原 job 被回收重跑，
+        # 不能因为"又晚了 8 小时"就误判成错过（延后是用户可预期的行为）。
+        already_recorded = (
+            self.store.has_delivered(reminder_id, occurrence)
+            if quiet_deferred
+            else self.store.has_recorded(reminder_id, occurrence)
+        )
+        if already_recorded:
+            return {"status": "skipped", "reason": "occurrence already handled"}
 
         now_dt = self.scheduler.now()
         now_iso = _iso(now_dt)
+        scheduled_at = self._scheduled_at(payload, occurrence)
+        lateness = max(0.0, (now_dt - scheduled_at).total_seconds())
+
+        # 1) 错过：到点太久没响，不单独弹，合并成一条摘要（关机几天也不会轰炸）。
+        threshold_seconds = self.settings()["missed_threshold_minutes"] * 60
+        if not quiet_deferred and lateness > threshold_seconds:
+            return self._handle_missed(
+                record, occurrence, lateness, now_dt, now_iso, is_snooze
+            )
+
+        # 2) 勿扰：延后到静默结束投递，不丢弃、不变成"从来没响过"。
+        # 用户主动要的"稍后再提醒"不因勿扰再往后拖（他此刻明确醒着）。
+        quiet_until = self._quiet_defer_until(now_dt) if not is_snooze else None
+        if quiet_until is not None:
+            return self._defer_for_quiet(
+                record, payload, occurrence, quiet_until, now_iso
+            )
+
         title = "鎏灏提醒"
         body = f"{record['title']}（{self._human_time(record)}）"
 
@@ -607,6 +1122,7 @@ class ReminderService:
                 channels=channels,
                 error=error,
                 now_iso=now_iso,
+                lateness_seconds=lateness,
             )
             self.store.set_error(reminder_id, error, now_iso)
             self._audit(
@@ -615,7 +1131,8 @@ class ReminderService:
                 {"reminder_id": reminder_id, "occurrence": occurrence, "error": error},
             )
             # 重复提醒：这一次失败不能把整条序列断掉，下一次仍然要排上。
-            if record["repeat_kind"] != "once":
+            # 稍后提醒（snooze）不改变原序列，失败只让这一次重试/进死信。
+            if record["repeat_kind"] != "once" and not is_snooze:
                 self._schedule_next(record, after=now_dt)
             raise ReminderDeliveryError(error)
 
@@ -627,12 +1144,20 @@ class ReminderService:
             channels=channels,
             error=None,
             now_iso=now_iso,
+            lateness_seconds=lateness,
         )
         if not recorded:
             return {"status": "skipped", "reason": "duplicate delivery"}
 
         self.store.clear_error(reminder_id)
-        if record["repeat_kind"] == "once":
+        if is_snooze:
+            # 用户主动要的那一次已响完，原提醒的序列/状态都不动。
+            self._audit(
+                "reminder.snooze_delivered",
+                "success",
+                {"reminder_id": reminder_id, "occurrence": occurrence},
+            )
+        elif record["repeat_kind"] == "once":
             self.store.mark_fired(
                 reminder_id, now_iso, next_run_at=None, now_iso=now_iso
             )
@@ -649,6 +1174,7 @@ class ReminderService:
                 "reminder_id": reminder_id,
                 "occurrence": occurrence,
                 "channels": [item.channel for item in results if item.ok],
+                "lateness_seconds": round(lateness, 1),
             },
         )
         return {
@@ -658,7 +1184,291 @@ class ReminderService:
             "channels": channels,
         }
 
+    def handle_digest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """把一段时间内错过的提醒合并成一条摘要（只弹一次，明细仍可查）。"""
+        user_id = str(payload.get("user_id") or "")
+        if not user_id:
+            return {"status": "skipped", "reason": "missing user_id"}
+        now_dt = self.scheduler.now()
+        now_iso = _iso(now_dt)
+
+        quiet_until = self._quiet_defer_until(now_dt)
+        if quiet_until is not None:
+            self._enqueue_digest(user_id, run_at=quiet_until)
+            self._audit(
+                "reminder.digest_deferred",
+                "success",
+                {"user_id": user_id, "until": quiet_until.isoformat()},
+            )
+            return {"status": "deferred", "until": quiet_until.isoformat()}
+
+        rows = self.store.list_undigested_missed(user_id)
+        if not rows:
+            return {"status": "skipped", "reason": "nothing to digest"}
+
+        count = len(rows)
+        latest = rows[0]
+        latest_title = self._delivery_title(latest)
+        latest_time = self._delivery_time_text(latest)
+        title = "鎏灏提醒：错过的提醒"
+        body = (
+            f"你有 {count} 条错过的提醒。最近一条：{latest_title}"
+            f"（{latest_time}）。明细可在「错过的提醒」里查看。"
+        )
+
+        try:
+            results: List[NotifyResult] = list(self.notifier.notify(title, body))
+        except Exception as exc:  # noqa: BLE001
+            results = [NotifyResult("notifier", False, f"{type(exc).__name__}: {exc}")]
+        channels = [item.as_dict() for item in results]
+
+        occurrence = f"digest:{min(item['id'] for item in rows)}-{max(item['id'] for item in rows)}"
+        if not any(item.ok for item in results):
+            error = "; ".join(
+                f"{item.channel}: {item.detail}" for item in results if not item.ok
+            ) or "no notification channel"
+            self.store.record_delivery(
+                reminder_id=DIGEST_REMINDER_ID,
+                user_id=user_id,
+                occurrence=occurrence,
+                status="failed",
+                channels=channels,
+                error=error,
+                now_iso=now_iso,
+            )
+            self._audit(
+                "reminder.digest_failed",
+                "failure",
+                {"user_id": user_id, "count": count, "error": error},
+            )
+            # 抛给排程器：重试成功后这批错过的提醒才会被标记已合并。
+            raise ReminderDeliveryError(error)
+
+        recorded = self.store.record_delivery(
+            reminder_id=DIGEST_REMINDER_ID,
+            user_id=user_id,
+            occurrence=occurrence,
+            status="delivered",
+            channels=channels,
+            error=None,
+            now_iso=now_iso,
+        )
+        if not recorded:
+            return {"status": "skipped", "reason": "duplicate digest"}
+        self.store.mark_digested([item["id"] for item in rows], now_iso)
+        # 并发下可能有新的 missed 在"取数→标记"之间落库；补一条后续摘要，
+        # 否则它会永远停在未合并状态（用户看不到、也没人再触发摘要）。
+        remaining = self.store.list_undigested_missed(user_id)
+        if remaining:
+            self._enqueue_digest(
+                user_id,
+                key_suffix=f"followup:{max(item['id'] for item in remaining)}",
+            )
+        self._audit(
+            "reminder.digest_delivered",
+            "success",
+            {
+                "user_id": user_id,
+                "count": count,
+                "channels": [item.channel for item in results if item.ok],
+            },
+        )
+        return {
+            "status": "digested",
+            "count": count,
+            "occurrence": occurrence,
+            "channels": channels,
+        }
+
     # -- internals --------------------------------------------------------
+
+    def _handle_missed(
+        self,
+        record: Dict[str, Any],
+        occurrence: str,
+        lateness: float,
+        now_dt: datetime,
+        now_iso: str,
+        is_snooze: bool,
+    ) -> Dict[str, Any]:
+        """补记一次"错过"：不单独弹，交给摘要；重复提醒继续排下一次。"""
+        recorded = self.store.record_delivery(
+            reminder_id=record["id"],
+            user_id=record["user_id"],
+            occurrence=occurrence,
+            status="missed",
+            channels=[],
+            error=None,
+            now_iso=now_iso,
+            lateness_seconds=lateness,
+        )
+        if not recorded:
+            return {"status": "skipped", "reason": "duplicate missed"}
+        self.store.clear_error(record["id"])
+        if record["repeat_kind"] != "once":
+            next_at = self._next_run_at(record, now_dt)
+            if next_at:
+                self._schedule_next(record, next_run_at=next_at)
+        elif record["status"] == "active" and not is_snooze:
+            self.store.mark_fired(
+                record["id"], now_iso, next_run_at=None, now_iso=now_iso
+            )
+        self._enqueue_digest(record["user_id"])
+        self._audit(
+            "reminder.missed",
+            "attention",
+            {
+                "reminder_id": record["id"],
+                "occurrence": occurrence,
+                "lateness_seconds": round(lateness, 1),
+            },
+        )
+        return {
+            "status": "missed",
+            "reminder_id": record["id"],
+            "occurrence": occurrence,
+            "lateness_seconds": round(lateness, 1),
+        }
+
+    def _defer_for_quiet(
+        self,
+        record: Dict[str, Any],
+        payload: Dict[str, Any],
+        occurrence: str,
+        quiet_until: datetime,
+        now_iso: str,
+    ) -> Dict[str, Any]:
+        """静默期内的提醒延后到静默结束再投递（原 occurrence 不变）。"""
+        quiet_iso = quiet_until.isoformat()
+        version = int(record["version"])
+        new_payload = {
+            "reminder_id": record["id"],
+            "version": version,
+            "occurrence": occurrence,
+            # 延后后的"到点时刻"就是静默结束，迟到分钟数从这一刻算，不误导后续查询。
+            "scheduled_at": quiet_iso,
+            "quiet_deferred": True,
+            "user_id": record["user_id"],
+            "title": record["title"],
+        }
+        if payload.get("snooze"):
+            new_payload["snooze"] = True
+        self.scheduler.enqueue(
+            REMINDER_FIRE_JOB,
+            run_at=quiet_iso,
+            job_key=f"{reminder_job_key(record['id'], version, occurrence)}:quiet:{quiet_iso}",
+            payload=new_payload,
+            max_attempts=self.max_attempts,
+            backoff_seconds=self.backoff_seconds,
+            backoff_multiplier=self.backoff_multiplier,
+            max_backoff_seconds=self.max_backoff_seconds,
+        )
+        # 先入队（job_key 幂等），再记"已延后"：即使中途崩溃，重启后也不会误判成错过。
+        self.store.record_delivery(
+            reminder_id=record["id"],
+            user_id=record["user_id"],
+            occurrence=occurrence,
+            status="deferred",
+            channels=[],
+            error=None,
+            now_iso=now_iso,
+        )
+        self._audit(
+            "reminder.deferred_for_quiet",
+            "success",
+            {
+                "reminder_id": record["id"],
+                "occurrence": occurrence,
+                "until": quiet_iso,
+                "at": now_iso,
+            },
+        )
+        return {
+            "status": "deferred",
+            "reminder_id": record["id"],
+            "occurrence": occurrence,
+            "until": quiet_iso,
+        }
+
+    def _quiet_defer_until(self, now_dt: datetime) -> Optional[datetime]:
+        """当前是否在静默期；是则返回静默结束的 naive UTC 时刻。"""
+        cfg = self.settings()
+        if not cfg["quiet_enabled"]:
+            return None
+        start = int(cfg["quiet_start_minutes"])
+        end = int(cfg["quiet_end_minutes"])
+        if start == end:
+            return None
+        local_now = self._to_local(now_dt)
+        minute_of_day = local_now.hour * 60 + local_now.minute
+        if start < end:
+            in_quiet = start <= minute_of_day < end
+        else:  # 跨零点，例如 23:00–07:00
+            in_quiet = minute_of_day >= start or minute_of_day < end
+        if not in_quiet:
+            return None
+        end_local = local_now.replace(
+            hour=end // 60, minute=end % 60, second=0, microsecond=0
+        )
+        if end_local <= local_now:
+            end_local = end_local + timedelta(days=1)
+        return self._to_utc_naive(end_local)
+
+    def _scheduled_at(self, payload: Dict[str, Any], occurrence: str) -> datetime:
+        raw = payload.get("scheduled_at") or occurrence
+        try:
+            value = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return self.scheduler.now()
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def _enqueue_digest(
+        self,
+        user_id: str,
+        *,
+        run_at: Optional[datetime] = None,
+        key_suffix: str = "",
+    ) -> int:
+        """摘要 job 幂等：同一用户同一时刻最多一条待发（重复登记不会多弹）。
+
+        静默延后必须用带结束时刻的 key，否则会和**正在运行**的那条摘要撞 key，
+        幂等逻辑会把它当成"已入队"而悄悄吞掉，摘要就永远发不出去。
+        """
+        kwargs: Dict[str, Any] = {}
+        job_key = f"{DIGEST_JOB_KEY}:{user_id}"
+        if run_at is None:
+            kwargs["delay_seconds"] = DIGEST_DELAY_SECONDS
+        else:
+            kwargs["run_at"] = run_at
+            job_key = f"{job_key}:quiet:{run_at.isoformat()}"
+        if key_suffix:
+            job_key = f"{job_key}:{key_suffix}"
+        return self.scheduler.enqueue(
+            REMINDER_DIGEST_JOB,
+            job_key=job_key,
+            payload={"user_id": user_id},
+            max_attempts=self.max_attempts,
+            backoff_seconds=self.backoff_seconds,
+            backoff_multiplier=self.backoff_multiplier,
+            max_backoff_seconds=self.max_backoff_seconds,
+            **kwargs,
+        )
+
+    def _delivery_title(self, delivery: Dict[str, Any]) -> str:
+        record = self.store.get(str(delivery.get("reminder_id") or ""))
+        return str(record["title"]) if record else "（已删除的提醒）"
+
+    def _delivery_time_text(self, delivery: Dict[str, Any]) -> str:
+        occurrence = str(delivery.get("occurrence") or "")
+        if occurrence.startswith("snooze:"):
+            return "稍后提醒"
+        try:
+            scheduled = datetime.fromisoformat(occurrence)
+        except ValueError:
+            return occurrence or "未知时间"
+        return self._to_local(scheduled).strftime("%Y-%m-%d %H:%M")
 
     def _enqueue(self, record: Dict[str, Any], occurrence: str) -> int:
         version = int(record["version"])
@@ -782,6 +1592,11 @@ def get_reminder_service(
 
 
 __all__ = [
+    "DEFAULT_MISSED_THRESHOLD_HOURS",
+    "DEFAULT_QUIET_END_MINUTES",
+    "DEFAULT_QUIET_START_MINUTES",
+    "DEFAULT_SNOOZE_MINUTES",
+    "REMINDER_DIGEST_JOB",
     "REMINDER_FIRE_JOB",
     "ReminderDeliveryError",
     "ReminderService",

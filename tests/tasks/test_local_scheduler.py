@@ -470,11 +470,17 @@ async def test_heartbeat_job_chains_and_is_dedupe_safe(tmp_path):
     def heartbeats() -> int:
         return sum(1 for event in events if event[0] == "local_scheduler.heartbeat")
 
+    def heartbeat_pending() -> list[dict]:
+        return [
+            job
+            for job in sched.list_jobs(PENDING, 50)
+            if job["job_name"] == LOCAL_HEARTBEAT_JOB
+        ]
+
     assert await _drive(sched, lambda: heartbeats() == 1, timeout=3.0)
     # 心跳完成后把下一次按「下一次运行时刻」入队 —— 且只有一条 pending
-    pending = sched.list_jobs(PENDING)
+    pending = heartbeat_pending()
     assert len(pending) == 1
-    assert pending[0]["job_name"] == LOCAL_HEARTBEAT_JOB
     assert pending[0]["job_key"].startswith(HEARTBEAT_KEY_PREFIX)
     assert pending[0]["run_at"] == (clock() + timedelta(seconds=300)).isoformat()
 
@@ -482,12 +488,12 @@ async def test_heartbeat_job_chains_and_is_dedupe_safe(tmp_path):
     first = await local_heartbeat(sched, 300.0)
     second = await local_heartbeat(sched, 300.0)
     assert first == second
-    assert len(sched.list_jobs(PENDING)) == 1
+    assert len(heartbeat_pending()) == 1
 
     before = heartbeats()
     clock.advance(300)
     assert await _drive(sched, lambda: heartbeats() == before + 1, timeout=3.0)
-    assert len(sched.list_jobs(PENDING)) == 1  # 第二次心跳又续上了下一条
+    assert len(heartbeat_pending()) == 1  # 第二次心跳又续上了下一条
     sched.close()
 
 

@@ -22,7 +22,18 @@ from src.ai.tool_registry import Tool
 from src.tasks.reminders import ReminderService, get_reminder_service
 from src.tasks.reminder_time import NeedsClarification
 
-_ACTIONS = ("create", "list", "cancel", "update", "failures", "history")
+_ACTIONS = (
+    "create",
+    "list",
+    "cancel",
+    "update",
+    "failures",
+    "history",
+    "missed",
+    "done",
+    "snooze",
+    "settings",
+)
 _ALIASES = {
     "add": "create",
     "new": "create",
@@ -39,7 +50,28 @@ _ALIASES = {
     "失败": "failures",
     "history": "history",
     "记录": "history",
+    "错过": "missed",
+    "错过的提醒": "missed",
+    "完成": "done",
+    "已完成": "done",
+    "稍后": "snooze",
+    "延后": "snooze",
+    "稍后再提醒": "snooze",
+    "设置": "settings",
+    "配置": "settings",
+    "勿扰": "settings",
 }
+
+_SETTING_KEYS = (
+    "quiet_enabled",
+    "quiet_start",
+    "quiet_end",
+    "quiet_start_minutes",
+    "quiet_end_minutes",
+    "missed_threshold_minutes",
+    "missed_threshold_hours",
+    "snooze_minutes",
+)
 
 
 def _dumps(payload: Dict[str, Any]) -> str:
@@ -136,6 +168,41 @@ def build_reminder_tool(
                     {"status": "ok", "count": len(deliveries), "deliveries": deliveries}
                 )
 
+            if act == "missed":
+                return _dumps(svc.missed(principal))
+
+            if act == "done":
+                return _dumps(
+                    svc.done(
+                        principal,
+                        reminder_id=target_id or None,
+                        delivery_id=kwargs.get("delivery_id"),
+                    )
+                )
+
+            if act == "snooze":
+                minutes = kwargs.get("minutes")
+                if minutes in (None, ""):
+                    minutes = None
+                return _dumps(
+                    svc.snooze(
+                        principal,
+                        reminder_id=target_id or None,
+                        delivery_id=kwargs.get("delivery_id"),
+                        minutes=minutes,
+                    )
+                )
+
+            if act == "settings":
+                changes = {
+                    key: kwargs[key]
+                    for key in _SETTING_KEYS
+                    if kwargs.get(key) is not None
+                }
+                if not changes:
+                    return _dumps({"status": "ok", "settings": svc.settings()})
+                return _dumps(svc.update_settings(changes))
+
             return _dumps(
                 {
                     "status": "error",
@@ -161,6 +228,8 @@ def build_reminder_tool(
             "创建/查看/取消/修改定时提醒。用户说「X点提醒我Y」「每天/每周…提醒我」"
             "时调用。时间含糊（如「下周那个会」「晚点」）会返回 "
             "needs_clarification，必须把 question 原样问用户，不要猜时间。"
+            "提醒响过之后用 action=done 标记完成，或 action=snooze 稍后再提醒；"
+            "错过的提醒用 action=missed 查明细；勿扰时段/错过阈值用 action=settings 查看或修改。"
             "失败原因用 action=failures 查询。"
         ),
         capability="reminder.manage",
@@ -170,7 +239,10 @@ def build_reminder_tool(
                 "action": {
                     "type": "string",
                     "enum": list(_ACTIONS),
-                    "description": "create / list / cancel / update / failures / history",
+                    "description": (
+                        "create / list / cancel / update / failures / history /"
+                        " missed / done / snooze / settings"
+                    ),
                 },
                 "text": {
                     "type": "string",
@@ -178,7 +250,35 @@ def build_reminder_tool(
                 },
                 "reminder_id": {
                     "type": "string",
-                    "description": "取消/修改/查历史时使用；可先用 action=list 获取",
+                    "description": "取消/修改/查历史/完成/稍后时使用；可先用 action=list 获取",
+                },
+                "delivery_id": {
+                    "type": "integer",
+                    "description": "完成/稍后指定某一次投递；不填则取最近一条待处理的",
+                },
+                "minutes": {
+                    "type": "integer",
+                    "description": "snooze 的延后分钟数，默认取设置的 snooze_minutes（10）",
+                },
+                "quiet_enabled": {
+                    "type": "boolean",
+                    "description": "settings：是否启用勿扰时段",
+                },
+                "quiet_start": {
+                    "type": "string",
+                    "description": "settings：勿扰开始，HH:MM，例如 23:00",
+                },
+                "quiet_end": {
+                    "type": "string",
+                    "description": "settings：勿扰结束，HH:MM，例如 07:00",
+                },
+                "missed_threshold_hours": {
+                    "type": "number",
+                    "description": "settings：到点后多久算错过，单位小时，默认 6",
+                },
+                "snooze_minutes": {
+                    "type": "integer",
+                    "description": "settings：稍后提醒的默认分钟数",
                 },
             },
             "required": ["action"],

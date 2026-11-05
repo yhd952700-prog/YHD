@@ -35,6 +35,8 @@ import json
 from src.tasks.reminders import get_reminder_service
 
 service = get_reminder_service()
+# 测试用真实时钟：关掉勿扰，避免在夜里跑 CI 时被延后到早上。
+service.update_settings({"quiet_enabled": False})
 record = service.create("user-restart", "3秒后提醒我重启续跑")
 print(json.dumps({"id": record["id"], "run_at": record["run_at"]}, ensure_ascii=False))
 """

@@ -25,6 +25,7 @@ from src.tasks.local_scheduler import (
     CANCELLED,
     PENDING,
     RETRY_WAIT,
+    RUNNING,
     LocalScheduler,
 )
 from src.tasks.reminder_notify import (
@@ -91,6 +92,23 @@ async def _drive(scheduler: LocalScheduler, predicate, *, timeout: float = 1.0) 
         await asyncio.wait_for(runner, timeout=3.0)
 
 
+def _settled(scheduler: LocalScheduler, predicate):
+    """谓词成立且 handler 已退出（没有 running job）才算完成。
+
+    否则 ``_drive`` 可能在 handler 写库后、入队下一次之前就停掉调度器，
+    把"已完成一半"的任务误当成最终状态（测试会随机挂）。
+    """
+
+    def check() -> bool:
+        if not predicate():
+            return False
+        return not any(
+            job["status"] == RUNNING for job in scheduler.list_jobs(None, 50)
+        )
+
+    return check
+
+
 async def test_reminder_really_fires_after_two_seconds(tmp_path):
     """真到点触发：容器内跑真实排程循环，2 秒后才响。"""
     scheduler = LocalScheduler(
@@ -102,6 +120,8 @@ async def test_reminder_really_fires_after_two_seconds(tmp_path):
     store = _store(tmp_path)
     notifier = RecordingNotifier()
     service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    # 这条用真实时钟，必须关掉勿扰，否则在夜里跑测试会被延后到早上。
+    service.update_settings({"quiet_enabled": False})
     register_local_jobs(scheduler, reminder_service=service)
 
     created = service.create("u1", "2秒后提醒我喝水")
@@ -340,6 +360,338 @@ def test_default_notifier_console_only_when_os_channel_disabled(tmp_path, monkey
     ]
 
 
+async def test_missed_reminders_coalesce_into_one_digest(tmp_path):
+    """关机三天：三条错过的提醒只弹一条摘要，不一次性全炸出来。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))  # 本地 08:00，不在勿扰
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    texts = ["2秒后提醒我喝水", "4秒后提醒我交材料", "6秒后提醒我开会"]
+    created = [service.create("u1", text) for text in texts]
+
+    # 关机三天，期间三条都到点了。
+    clock.advance(3 * 24 * 3600)
+    missed = lambda: service.missed("u1")["missed"]  # noqa: E731
+    assert await _drive(
+        scheduler, _settled(scheduler, lambda: len(missed()) == 3), timeout=2.0
+    )
+    assert notifier.calls == [], "错过的提醒不许单独弹"
+
+    rows = missed()
+    assert {row["status"] for row in rows} == {"missed"}
+    assert [row["channels"] for row in rows] == [[], [], []]
+    assert all(row["lateness_seconds"] > 6 * 3600 for row in rows)
+    assert all(row["digested_at"] is None for row in rows)
+
+    # 摘要稍微延迟（3 秒）后只弹一次。
+    clock.advance(3.1)
+    digested = lambda: all(row["digested_at"] for row in missed())  # noqa: E731
+    assert await _drive(scheduler, _settled(scheduler, digested), timeout=2.0)
+
+    assert len(notifier.calls) == 1, notifier.calls
+    body = notifier.calls[0][1]
+    assert "3 条" in body
+    assert "开会" in body, "摘要里要带最近一条，方便用户知道最要紧的是什么"
+    assert service.missed("u1")["pending_digest"] == 0
+    for item in created:
+        assert service.get("u1", item["id"])["status"] == "completed"
+
+    # 错过的提醒也要能"做完"，否则清单只增不减。
+    assert service.done("u1")["status"] == "done"
+    acked = [
+        row
+        for row in service.list_deliveries("u1")
+        if row["status"] == "missed" and row["ack_status"] == "done"
+    ]
+    assert len(acked) == 1
+    scheduler.close()
+    store.close()
+
+
+async def test_digest_is_not_fired_in_the_middle_of_the_night(tmp_path):
+    """关机后开机正好在半夜：错过的提醒也不能半夜弹，摘要同样延后到早上。"""
+    clock = FakeClock(datetime(2026, 1, 1, 10, 0))  # 本地 18:00
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    service.create("u1", "2秒后提醒我喝水")
+    # 6.5 小时后（本地 00:30）才开机：已算错过，且此刻在静默期。
+    clock.advance(6 * 3600 + 1810)
+    missed = lambda: service.missed("u1")["missed"]  # noqa: E731
+    assert await _drive(
+        scheduler, _settled(scheduler, lambda: len(missed()) == 1), timeout=1.0
+    )
+    assert notifier.calls == []
+
+    # 摘要 job 3 秒后执行，仍处于静默期 → 自己延后到 07:00（UTC 23:00）。
+    clock.advance(3.1)
+    digest_deferred = lambda: any(  # noqa: E731
+        job["job_name"] == "liuhao.reminder.digest"
+        and job["payload"].get("user_id") == "u1"
+        and job["run_at"].startswith("2026-01-01T23:00")
+        for job in scheduler.list_jobs(PENDING, 20)
+    )
+    assert await _drive(scheduler, _settled(scheduler, digest_deferred), timeout=1.0)
+    assert notifier.calls == [], "错过的摘要不能在半夜炸"
+
+    clock.advance((datetime(2026, 1, 1, 23, 0) - clock.current).total_seconds())
+    assert await _drive(
+        scheduler,
+        _settled(
+            scheduler,
+            lambda: bool(notifier.calls) and missed()[0]["digested_at"] is not None,
+        ),
+        timeout=1.0,
+    )
+    assert len(notifier.calls) == 1
+    assert "1 条" in notifier.calls[0][1]
+    scheduler.close()
+    store.close()
+
+
+async def test_quiet_period_defers_then_delivers(tmp_path):
+    """静默期内注册 → 静默结束投递（不丢弃、不变成从没响过）。"""
+    clock = FakeClock(datetime(2026, 1, 1, 15, 0))  # 本地 23:00，默认勿扰开始
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    created = service.create("u1", "2分钟后提醒我喝水")
+    clock.advance(121)  # 本地 23:02，仍在静默期
+
+    deferred = lambda: any(  # noqa: E731
+        job["payload"].get("quiet_deferred") for job in scheduler.list_jobs(PENDING, 20)
+    )
+    assert await _drive(scheduler, _settled(scheduler, deferred), timeout=1.0)
+    assert notifier.calls == [], "静默期不能弹"
+    assert service.get("u1", created["id"])["status"] == "active"
+    pending = service.list_deliveries("u1")
+    assert [row["status"] for row in pending] == ["deferred"], "延后不是丢弃，也不是提前送达"
+
+    # 跨到本地次日 07:00（UTC 23:00）静默结束，延后的那条这时才响。
+    quiet_end = datetime(2026, 1, 1, 23, 0)
+    clock.advance((quiet_end - clock.current).total_seconds())
+    assert await _drive(
+        scheduler,
+        _settled(
+            scheduler,
+            lambda: len(notifier.calls) == 1
+            and service.get("u1", created["id"])["status"] == "completed",
+        ),
+        timeout=1.0,
+    )
+    assert "喝水" in notifier.calls[0][1]
+    delivery = service.list_deliveries("u1")[0]
+    assert delivery["status"] == "delivered"
+    assert delivery["lateness_seconds"] < 6 * 3600
+    scheduler.close()
+    store.close()
+
+
+async def test_cancel_during_quiet_prevents_deferred_delivery(tmp_path):
+    """静默期内取消 → 延后的那条也不再投递。"""
+    clock = FakeClock(datetime(2026, 1, 1, 15, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    created = service.create("u1", "2分钟后提醒我喝水")
+    clock.advance(121)
+    deferred = lambda: any(  # noqa: E731
+        job["payload"].get("quiet_deferred") for job in scheduler.list_jobs(PENDING, 20)
+    )
+    assert await _drive(scheduler, _settled(scheduler, deferred), timeout=1.0)
+
+    cancelled = service.cancel("u1", created["id"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["cancelled_jobs"] >= 1, "延后的 job 必须一并撤掉"
+
+    clock.advance((datetime(2026, 1, 1, 23, 0) - clock.current).total_seconds())
+    assert await _drive(scheduler, lambda: bool(notifier.calls), timeout=1.0) is False
+    assert notifier.calls == []
+    fire_jobs = [
+        job
+        for job in scheduler.list_jobs(PENDING, 20)
+        if job["job_name"] == "liuhao.reminder.fire"
+    ]
+    assert fire_jobs == [], "取消后不应再有待发的提醒"
+    scheduler.close()
+    store.close()
+
+
+async def test_done_marks_fired_occurrence_and_shrinks_backlog(tmp_path):
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    clock.advance(3)
+    assert await _drive(
+        scheduler,
+        _settled(
+            scheduler,
+            lambda: len(notifier.calls) == 1
+            and service.get("u1", created["id"])["status"] == "completed",
+        ),
+        timeout=0.6,
+    )
+
+    assert service.done("u1")["status"] == "done"
+    delivery = service.list_deliveries("u1")[0]
+    assert delivery["ack_status"] == "done"
+    assert delivery["acked_at"]
+    assert service.done("u1")["status"] == "not_found", "没有待处理的了，不能再重复标记"
+    scheduler.close()
+    store.close()
+
+
+async def test_snooze_refires_then_done(tmp_path):
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+    service.update_settings({"snooze_minutes": 10})
+
+    created = service.create("u1", "2秒后提醒我交材料")
+    clock.advance(3)
+    assert await _drive(
+        scheduler, _settled(scheduler, lambda: len(notifier.calls) == 1), timeout=0.6
+    )
+
+    snoozed = service.snooze("u1", reminder_id=created["id"])
+    assert snoozed["status"] == "snoozed"
+    assert snoozed["minutes"] == 10
+    assert snoozed["reminder"]["status"] == "completed"
+    first = service.list_deliveries("u1")[0]
+    assert first["ack_status"] == "snoozed"
+
+    clock.advance(10 * 60 + 1)
+    assert await _drive(
+        scheduler, _settled(scheduler, lambda: len(notifier.calls) == 2), timeout=0.6
+    )
+    assert "交材料" in notifier.calls[1][1]
+    deliveries = service.list_deliveries("u1")
+    assert len(deliveries) == 2
+    latest = deliveries[0]
+    assert latest["status"] == "delivered"
+    assert latest["occurrence"].startswith("snooze:")
+    assert latest["ack_status"] is None, "补响的这一次仍可被标记完成"
+
+    assert service.done("u1", delivery_id=latest["id"])["status"] == "done"
+    assert service.list_deliveries("u1")[0]["ack_status"] == "done"
+    scheduler.close()
+    store.close()
+
+
+async def test_snoozed_once_reminder_can_still_be_cancelled(tmp_path):
+    """一次性提醒响过并"稍后再提醒"后，取消也要能撤掉那条补响。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    clock.advance(3)
+    assert await _drive(
+        scheduler, _settled(scheduler, lambda: len(notifier.calls) == 1), timeout=0.6
+    )
+    assert service.snooze("u1", reminder_id=created["id"], minutes=5)["status"] == "snoozed"
+
+    cancelled = service.cancel("u1", created["id"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["cancelled_jobs"] >= 1
+
+    clock.advance(5 * 60 + 1)
+    assert await _drive(scheduler, lambda: len(notifier.calls) == 2, timeout=0.6) is False
+    assert len(notifier.calls) == 1
+    scheduler.close()
+    store.close()
+
+
+async def test_settings_and_ack_survive_store_restart(tmp_path):
+    """设置有落 SQLite；重开库后仍生效，已完成的记账也还在。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    register_local_jobs(scheduler, reminder_service=service)
+
+    settings = service.update_settings(
+        {"quiet_start": "22:30", "quiet_end": "06:30", "snooze_minutes": 7}
+    )
+    assert settings["status"] == "updated"
+    assert settings["settings"]["quiet_start"] == "22:30"
+    assert settings["settings"]["snooze_minutes"] == 7
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    clock.advance(3)
+    assert await _drive(
+        scheduler,
+        _settled(
+            scheduler,
+            lambda: len(notifier.calls) == 1
+            and service.get("u1", created["id"])["status"] == "completed",
+        ),
+        timeout=0.6,
+    )
+    assert service.done("u1")["status"] == "done"
+
+    scheduler.close()
+    store.close()
+    store2 = ReminderStore(str(tmp_path / "reminders.db"))
+    raw = store2.get_settings()
+    assert raw["quiet_start_minutes"] == str(22 * 60 + 30)
+    assert raw["quiet_end_minutes"] == str(6 * 60 + 30)
+    assert raw["snooze_minutes"] == "7"
+    assert store2.list_deliveries("u1")[0]["ack_status"] == "done"
+    assert store2.latest_pending_ack("u1") is None
+    store2.close()
+
+
+def test_tool_exposes_settings_done_and_snooze(tmp_path):
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+    tool = build_reminder_tool("u1", service=service)
+
+    current = json.loads(tool.fn(action="settings"))
+    assert current["status"] == "ok"
+    assert current["settings"]["quiet_text"].startswith("勿扰 23:00–07:00")
+
+    updated = json.loads(
+        tool.fn(action="settings", quiet_enabled=False, missed_threshold_hours=3)
+    )
+    assert updated["status"] == "updated"
+    assert updated["settings"]["quiet_enabled"] is False
+    assert updated["settings"]["missed_threshold_minutes"] == 180
+
+    assert json.loads(tool.fn(action="done"))["status"] == "not_found"
+    assert json.loads(tool.fn(action="snooze"))["status"] == "not_found"
+    assert json.loads(tool.fn(action="missed"))["count"] == 0
+    scheduler.close()
+    store.close()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows 托盘气泡只在 Windows 可用")
 def test_windows_balloon_is_a_real_os_channel():
     """真实弹一次托盘气泡（不是 mock）：返回 BALLOON_OK 才算用户看得到。"""
@@ -347,3 +699,4 @@ def test_windows_balloon_is_a_real_os_channel():
         "鎏灏提醒测试", "这是一条真实的托盘气泡通知"
     )
     assert any(item.ok for item in results), results
+
