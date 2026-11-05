@@ -36,10 +36,10 @@
 
 ## 刻意做的取舍
 
-1. **默认不接线**。本模块不修改执行内核；它提供两条只读的「对账」入口
-   （:meth:`ArtifactIndex.index_journal` / :meth:`ArtifactIndex.index_goal_file`），
-   以及一个给未来直连用的 :meth:`ArtifactIndex.record`。执行内核查阅
-   ``docs/artifact-index-design.md`` 的「接线交回」一节。
+1. **接线是显式可选的**。执行内核的 ``ExecutionEngine`` 增加了
+   ``artifact_index=None`` 接缝：不传时行为与历史一致，传了才在任务完成后
+   记一次写入观测。另有两条只读的「对账」入口
+   (:meth:`ArtifactIndex.index_journal` / :meth:`ArtifactIndex.index_goal_file`)，用于补历史账。
 2. **路径 fail-closed**。所有路径都过 ``src/ai/workspace.resolve_in_workspace``
    （realpath 消解 ``..`` 与符号链接）后必须落在工作区根之内；越界抛
    ``WorkspaceViolation``，绝不「看起来像相对路径就放行」。
