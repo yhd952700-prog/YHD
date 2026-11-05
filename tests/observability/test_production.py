@@ -387,7 +387,7 @@ class TestHttpEndpoints:
         from src.security import get_jwt_handler
 
         token, _ = get_jwt_handler().create_token(
-            subject="ops", roles=["admin"], metadata={"scope": "L0"}
+            subject="ops", roles=["admin"], metadata={"kind": "human", "scope": "L0"}
         )
         return {"Authorization": f"Bearer {token}"}
 

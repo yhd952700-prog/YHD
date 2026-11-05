@@ -29,7 +29,7 @@ def client(monkeypatch, tmp_path):
 def _token(roles=None, scope=None):
     from src.security import get_jwt_handler
 
-    metadata = {"scope": scope} if scope else {}
+    metadata = {"kind": "human", "scope": scope} if scope else {"kind": "human"}
     token, _ = get_jwt_handler().create_token(
         subject="model-admin", roles=roles or [], metadata=metadata
     )

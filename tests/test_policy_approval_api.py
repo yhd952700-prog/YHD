@@ -58,7 +58,7 @@ def _auth(subject: str) -> dict:
     # Write endpoints require an administrative claim (policy writes); the
     # seeded local human is authorised via L0 sovereignty, not via roles.
     token, _payload = get_jwt_handler().create_token(
-        subject=subject, metadata={"scope": "L0"}
+        subject=subject, metadata={"kind": "human", "scope": "L0"}
     )
     return {"Authorization": f"Bearer {token}"}
 

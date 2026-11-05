@@ -47,7 +47,9 @@ def _reader_headers() -> dict:
     """已登录但没有管理员角色的令牌（只允许读）。"""
     from src.security import get_jwt_handler
 
-    token, _payload = get_jwt_handler().create_token(subject="reader-human")
+    token, _payload = get_jwt_handler().create_token(
+        subject="reader-human", metadata={"kind": "human"}
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -152,16 +154,31 @@ def test_delete_only_affects_own_profile(client):
     assert pcm.has_profile("user-victim")
 
 
-def test_write_requires_admin_claim_but_read_does_not(client):
-    """最小权限：读不拦，写必须带 admin 角色或 L0 人类主权。"""
+def test_profile_operations_follow_business_semantics_not_http_verbs(client):
+    """画像读写属于**业务读语义**：任何已登录人类都能读写自己的画像。
+
+    授权按业务动作判定，不能因为用了 PUT/DELETE 就当成管理员写操作；
+    真正的管理动作（审批凭据）仍必须显式 admin/L0。
+    """
     reader = _reader_headers()
     assert client.get("/v1/profile", headers=reader).status_code == 200
-    resp = client.put(
-        "/v1/profile", json={"display_name": "x"}, headers=reader
+    assert (
+        client.put("/v1/profile", json={"display_name": "x"}, headers=reader).status_code
+        == 200
+    )
+    assert client.delete("/v1/profile", headers=reader).status_code == 200
+
+    resp = client.post(
+        "/v1/policy/approvals",
+        headers=reader,
+        json={
+            "actions": ["identity.grant_permission"],
+            "target": "another-resource",
+            "reason": "must not work",
+        },
     )
     assert resp.status_code == 403
     assert "管理员" in resp.json()["detail"]
-    assert client.delete("/v1/profile", headers=reader).status_code == 403
 
 
 def test_profile_principal_shared_across_sessions(client):

@@ -249,7 +249,9 @@ class TestAuthenticate:
 
         assert result["principal"] == "xin.hongda"
         assert result["display_name"] == "张三"
-        assert result["scope"] == "L0"
+        # 新注册人类默认最低权限：内核给人形身份写的是 L0（人类主权），但
+        # 网关只在显式授予 owner 时才允许令牌携带 L0。没有权限 → L7。
+        assert result["scope"] == "L7"
         assert result["client"] == "mobile"
         assert result["token_type"] == "bearer"
         assert result["expires_in"] > 0
@@ -260,6 +262,11 @@ class TestAuthenticate:
         assert payload.sub == "xin.hongda"
         assert payload.metadata.get("kind") == "human"
         assert payload.metadata.get("client") == "mobile"
+
+    def test_explicit_owner_permission_keeps_l0(self, auth_env):
+        _register_human("xin.hongda", permissions=["owner"])
+        result = authenticate("xin.hongda", PASSWORD)
+        assert result["scope"] == "L0"
 
     def test_blank_inputs_are_400(self, auth_env):
         for principal, secret in (("", PASSWORD), ("xin.hongda", ""), ("  ", PASSWORD)):
@@ -454,8 +461,10 @@ class TestTokenIsReal:
             scopes=["console"],
             # Give the forgery the *strongest* claim a token can carry: it must
             # still be refused by the identity kernel, not merely by the coarse
-            # role gate in front of it.
-            metadata={"scope": "L0"},
+            # role gate in front of it. ``kind=human`` is asserted so the
+            # refusal happens at the kernel (which knows the principal is
+            # unregistered), not at the gateway's human-kind check.
+            metadata={"kind": "human", "scope": "L0"},
         )
         response = client.post(
             "/v1/policy/approvals",
@@ -474,8 +483,9 @@ class TestTokenIsReal:
     ):
         # Positive control for the test above: without it, "400" could just
         # mean the chosen action was not enforceable and the pair of tests
-        # would prove nothing.
-        _register_human("xin.hongda")
+        # would prove nothing. Granting approver status is an explicit owner
+        # act -- new humans default to the lowest scope (L7), not L0.
+        _register_human("xin.hongda", permissions={"owner"})
         token = client.post(
             "/v1/auth/login", json={"principal": "xin.hongda", "secret": PASSWORD}
         ).json()["access_token"]

@@ -40,7 +40,7 @@ def _auth_headers() -> dict:
     from src.security import get_jwt_handler
 
     token, _payload = get_jwt_handler().create_token(
-        subject="test-human", metadata={"scope": "L0"}
+        subject="test-human", metadata={"kind": "human", "scope": "L0"}
     )
     return {"Authorization": f"Bearer {token}"}
 

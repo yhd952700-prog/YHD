@@ -3,9 +3,10 @@
 Four independent gaps, each pinned by a real-behaviour test:
 
 1. ``/v1/metrics/prometheus`` and ``/v1/ready/subsystems`` were reachable with no
-   auth at all. The metrics scrape now requires either a configured bearer token
-   or an internal (loopback/private) source; the subsystem report now sits behind
-   the same human-principal gate as every other read surface.
+   auth at all. The metrics scrape now *always* requires the configured
+   ``LIUHAO_METRICS_TOKEN`` (no "private source is trusted" fallback); the
+   subsystem report sits behind the same human-principal gate as every other
+   read surface.
 2. ``/v1/events/history`` reads the durable audit store instead of pretending the
    in-memory ring buffer is history.
 3. Model management stamps pricing state on every model response, so a new model
@@ -51,7 +52,7 @@ def client(monkeypatch, tmp_path):
 def _headers(roles=None, scope=None):
     from src.security import get_jwt_handler
 
-    metadata = {"scope": scope} if scope else {}
+    metadata = {"kind": "human", "scope": scope} if scope else {"kind": "human"}
     token, _ = get_jwt_handler().create_token(
         subject="reader", roles=roles or [], metadata=metadata
     )
@@ -94,10 +95,12 @@ class TestMetricsScrapeRestriction:
         assert getattr(exc.value, "status_code", None) == 403
         assert METRICS_TOKEN_ENV in str(exc.value.detail)
 
-    def test_loopback_and_private_sources_are_allowed(self, monkeypatch):
+    def test_private_sources_are_not_trusted_without_a_token(self, monkeypatch):
         monkeypatch.delenv(METRICS_TOKEN_ENV, raising=False)
         for host in ("127.0.0.1", "::1", "10.1.2.3", "172.18.0.5", "192.168.1.20"):
-            _authorize_metrics(_request(host))  # must not raise
+            with pytest.raises(Exception) as exc:
+                _authorize_metrics(_request(host))
+            assert getattr(exc.value, "status_code", None) == 403
 
     def test_token_mode_requires_the_exact_bearer(self, monkeypatch):
         monkeypatch.setenv(METRICS_TOKEN_ENV, "scrape-secret")

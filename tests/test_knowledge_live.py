@@ -174,7 +174,7 @@ def _l0_headers():
     from src.security import get_jwt_handler
 
     token, _ = get_jwt_handler().create_token(
-        subject="kb-human", metadata={"scope": "L0"}
+        subject="kb-human", metadata={"kind": "human", "scope": "L0"}
     )
     return {"Authorization": f"Bearer {token}"}
 
