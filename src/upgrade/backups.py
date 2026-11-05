@@ -29,7 +29,7 @@ from src.kernels.audit.durability import vacuum_into
 
 from .archive import _atomic_stream_copy, atomic_copy_file, safe_relpath, validate_release_zip
 from .dataguard import check_sqlite, is_sqlite_file, iter_files
-from .errors import RollbackError, SnapshotError
+from .errors import BackupCorrupt, BackupNotFound, RollbackError, SnapshotError
 
 _DATA_BACKUP_SCHEMA = "liuhao.data-backup/1"
 _CODE_BACKUP_SCHEMA = "liuhao.code-backup/1"
@@ -77,6 +77,55 @@ def _remove_sqlite_sidecars(path: Path) -> None:
     for suffix in _SQLITE_SIDECARS:
         sidecar = path.with_name(path.name + suffix)
         sidecar.unlink(missing_ok=True)
+
+
+def verify_backup(backup_dir: Path) -> None:
+    """Prove a backup is usable *before* anything is moved or overwritten.
+
+    A rollback that starts restoring and only then discovers a corrupted
+    ``code.zip`` would leave the user half-old/half-new. This check runs first,
+    so a damaged backup is refused with the current installation untouched.
+    """
+    backup_dir = Path(backup_dir)
+    code_zip = backup_dir / "code.zip"
+    code_manifest_path = backup_dir / "code-backup.json"
+    if not code_zip.is_file() or not code_manifest_path.is_file():
+        raise BackupNotFound(
+            "备份中缺少旧版本代码包（code.zip 或 code-backup.json 不存在）"
+        )
+    try:
+        code_manifest = json.loads(code_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupCorrupt(f"代码备份清单无法读取：{exc}") from exc
+    if code_manifest.get("schema") != _CODE_BACKUP_SCHEMA:
+        raise BackupCorrupt("代码备份清单 schema 不匹配")
+    expected = str(code_manifest.get("sha256", "")).lower()
+    actual = _sha256(code_zip)
+    if expected and actual != expected:
+        raise BackupCorrupt(
+            f"代码备份包 SHA256 与记录不符（记录 {expected[:16]}…，实际 {actual[:16]}…）"
+        )
+
+    data_manifest_path = backup_dir / "data-backup.json"
+    if not data_manifest_path.is_file():
+        raise BackupNotFound("备份中缺少数据快照清单（data-backup.json 不存在）")
+    try:
+        data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupCorrupt(f"数据备份清单无法读取：{exc}") from exc
+    if data_manifest.get("schema") != _DATA_BACKUP_SCHEMA:
+        raise BackupCorrupt("数据备份清单 schema 不匹配")
+    for entry in data_manifest.get("entries", []):
+        kind = str(entry.get("kind") or "")
+        if kind not in ("data", "extra"):
+            raise BackupCorrupt(f"数据备份条目类型非法：{kind!r}")
+        rel = safe_relpath(str(entry.get("relpath") or ""))
+        source = backup_dir / kind / rel
+        if not source.is_file():
+            raise BackupNotFound(f"数据备份缺少文件：{rel}")
+        expected = str(entry.get("sha256", "")).lower()
+        if expected and _sha256(source) != expected:
+            raise BackupCorrupt(f"数据备份文件 SHA256 与记录不符：{rel}")
 
 
 def _backup_one(source: Path, target: Path, *, sqlite: bool) -> int:

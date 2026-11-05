@@ -41,12 +41,24 @@ class PreflightError(UpgradeError):
     """Data integrity preflight failed; nothing was modified."""
 
 
+class DiskSpaceError(UpgradeError):
+    """There is not enough free space; the upgrade stopped before mutation."""
+
+
 class ApplyError(UpgradeError):
     """Applying the release failed (the manager has already rolled back)."""
 
 
 class RollbackError(UpgradeError):
     """Restoring the previous version failed."""
+
+
+class BackupNotFound(RollbackError):
+    """The pre-upgrade backup (or the old version package inside it) is missing."""
+
+
+class BackupCorrupt(RollbackError):
+    """A backup exists but its SHA256 no longer matches, so it is unusable."""
 
 
 class NotConfiguredError(UpgradeError):

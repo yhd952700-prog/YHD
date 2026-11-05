@@ -69,6 +69,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     p_check = sub.add_parser("check", parents=[common, source], help="检查更新")
     p_upgrade = sub.add_parser("upgrade", parents=[common, source], help="检查→下载→校验→应用")
+    p_upgrade.add_argument(
+        "--allow-same-or-downgrade",
+        action="store_true",
+        help="允许安装相同或更低版本（用于重新下载旧版本安装包后恢复）",
+    )
     sub.add_parser("status", parents=[common], help="查看当前升级状态")
     p_history = sub.add_parser("history", parents=[common], help="查看升级记录")
     p_history.add_argument("--limit", type=int, default=20)
@@ -127,6 +132,9 @@ def _manager(args: argparse.Namespace) -> UpgradeManager:
         extra_state_files=tuple(args.extra_state or ()),
         source=source,
         public_key=_load_public_key(getattr(args, "public_key", None)),
+        allow_same_or_downgrade=bool(
+            getattr(args, "allow_same_or_downgrade", False)
+        ),
     )
     return UpgradeManager(config)
 

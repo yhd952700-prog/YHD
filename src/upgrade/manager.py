@@ -12,6 +12,7 @@ Safety properties enforced here (each is covered by a test):
 
 from __future__ import annotations
 
+import errno
 import json
 import shutil
 import tempfile
@@ -32,12 +33,22 @@ from .archive import (
     safe_relpath,
     validate_release_zip,
 )
-from .backups import backup_code, backup_data, export_data_snapshot, restore_code, restore_data
+from .backups import (
+    backup_code,
+    backup_data,
+    export_data_snapshot,
+    restore_code,
+    restore_data,
+    verify_backup,
+)
 from .dataguard import capture_table_inventory, verify_data_paths
 from .downloader import _sha256_file, download_release, verify_signature
 from .errors import (
     ApplyError,
+    BackupCorrupt,
+    BackupNotFound,
     ChecksumMismatch,
+    DiskSpaceError,
     ManifestError,
     PreflightError,
     RollbackError,
@@ -85,6 +96,7 @@ _DEFAULT_INSTALL_ROOTS = (
     # `versioning.read_current_version` keeps working without pyproject edits.
     "LIUHAO_RELEASE.json",
 )
+_IN_FLIGHT_PHASES = ("backing_up", "applying", "self_checking", "rolling_back")
 
 
 @dataclass
@@ -139,6 +151,10 @@ class UpgradeManager:
         self.check_state_path = self.config.state_dir / "last-check.json"
         self._current_version: Optional[str] = None
         self._check_trigger = "manual"
+        # A process that was killed mid-apply leaves status at 应用中/自检中 and
+        # an unfinished `apply/in_progress` ledger row. Recover immediately:
+        # never let the user restart into an undecidable "unknown" state.
+        self._recover_interrupted_upgrade()
 
     # ------------------------------------------------------------------
     # Introspection / user-visible state
@@ -158,6 +174,168 @@ class UpgradeManager:
             return json.loads(self.status_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return {"phase": "unknown", "message": "状态文件无法读取", "updated_at": ""}
+
+    def _recover_interrupted_upgrade(self) -> None:
+        """Resolve a previous process that died mid-upgrade.
+
+        Called from ``__init__`` so a restart (or a plain ``status`` command)
+        turns 应用中/自检中/回滚中 into a definite outcome. The backup recorded
+        in the unfinished ledger row is verified first, then restored; a bad
+        backup is reported as such instead of being pretended away.
+        """
+        state = self.status()
+        phase = str(state.get("phase") or "")
+        marker = (
+            self.ledger.list_records(kind="apply", status="in_progress", limit=1)
+            or [None]
+        )[0]
+        if phase not in _IN_FLIGHT_PHASES and marker is None and phase != "unknown":
+            return
+
+        phase_text = "升级"
+        try:
+            phase_text = PHASE_TEXT.get(Phase(phase), "升级")
+        except ValueError:
+            phase_text = "升级"
+        backup_id = str((marker or {}).get("backup_id") or "")
+        if not backup_id and phase in ("applying", "self_checking", "rolling_back"):
+            # Never trust a stale backup id from a previous upgrade: backing_up
+            # clears it, so any id present here belongs to the current attempt.
+            backup_id = str(state.get("backup_id") or "")
+        record_id = str((marker or {}).get("id") or "")
+        from_version = str((marker or {}).get("from_version") or "")
+        if not from_version and phase in ("applying", "self_checking"):
+            from_version = str(state.get("current_version") or "")
+        target_version = str((marker or {}).get("to_version") or "")
+
+        if not backup_id:
+            reason = (
+                f"上次升级在{phase_text}阶段被中断，未能定位升级前备份；"
+                "代码与数据可能未被修改，可直接重新执行升级或回滚"
+            )
+            if marker is not None:
+                self.ledger.update(
+                    str(marker["id"]),
+                    status="interrupted",
+                    reason=reason,
+                    detail={"mutation_started": False, "interrupted_phase": phase},
+                )
+            else:
+                self.ledger.record(
+                    kind="apply",
+                    status="interrupted",
+                    from_version=from_version or None,
+                    reason=reason,
+                    detail={"mutation_started": False, "interrupted_phase": phase},
+                )
+            self._set_status(
+                Phase.FAILED,
+                "失败："
+                + reason
+                + f"。请执行：python -m src.upgrade status --app-root {self.config.app_root}",
+                error=reason,
+            )
+            return
+
+        try:
+            if phase == "rolling_back" and marker is None:
+                # The status only stored "current version"; the backup knows
+                # which version we were rolling back to.
+                meta = self._read_backup(backup_id)
+                from_version = str(meta.get("from_version") or from_version)
+            self._restore_backup(backup_id)
+            restored, _ = self.current_version()
+            if from_version and Version(restored) != Version(from_version):
+                raise RollbackError(
+                    f"回滚后版本为 {restored}，预期 {from_version}"
+                )
+        except (BackupNotFound, BackupCorrupt) as exc:
+            reason = (
+                f"上次升级在{phase_text}阶段被中断，且升级前备份不可用（{exc}）。"
+                f"当前版本可能不完整，未自动修改任何文件。请重新下载 "
+                f"{from_version or '旧版本'} 安装包后执行："
+                f"python -m src.upgrade upgrade --app-root {self.config.app_root} "
+                "--release-dir <发布目录> --allow-same-or-downgrade"
+            )
+            if record_id:
+                self.ledger.update(
+                    record_id,
+                    status="interrupted_rollback_failed",
+                    reason=reason,
+                    detail={"interrupted_phase": phase, "backup_id": backup_id},
+                )
+            self.ledger.record(
+                kind="rollback",
+                status="failed",
+                from_version=from_version or None,
+                to_version=target_version or None,
+                reason=reason,
+                backup_id=backup_id,
+                detail={"interrupted_phase": phase, "backup_unusable": True},
+            )
+            self._set_status(
+                Phase.FAILED,
+                "失败：" + reason,
+                backup_id=backup_id,
+                error=reason,
+                record_id=record_id or None,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            reason = (
+                f"上次升级在{phase_text}阶段被中断，自动回滚失败：{exc}。"
+                f"请执行：python -m src.upgrade rollback --app-root "
+                f"{self.config.app_root} --backup-id {backup_id}"
+            )
+            if record_id:
+                self.ledger.update(
+                    record_id,
+                    status="interrupted_rollback_failed",
+                    reason=reason,
+                    detail={"interrupted_phase": phase, "backup_id": backup_id},
+                )
+            self.ledger.record(
+                kind="rollback",
+                status="failed",
+                from_version=from_version or None,
+                to_version=target_version or None,
+                reason=reason,
+                backup_id=backup_id,
+            )
+            self._set_status(
+                Phase.FAILED,
+                "失败：" + reason,
+                backup_id=backup_id,
+                error=reason,
+                record_id=record_id or None,
+            )
+            return
+
+        reason = f"升级进程在{phase_text}阶段被中断，重启后已自动回滚"
+        if record_id:
+            self.ledger.update(
+                record_id,
+                status="interrupted_rolled_back",
+                reason=reason,
+                detail={"interrupted_phase": phase, "backup_id": backup_id},
+            )
+        rollback_record = self.ledger.record(
+            kind="rollback",
+            status="rolled_back",
+            from_version=from_version or None,
+            to_version=restored,
+            reason=reason,
+            backup_id=backup_id,
+            detail={"interrupted_phase": phase},
+        )
+        self._set_status(
+            Phase.ROLLED_BACK,
+            f"已回滚：上次升级在{phase_text}阶段被中断，已自动恢复到 "
+            f"{restored}（备份 {backup_id}）",
+            target_version=restored,
+            backup_id=backup_id,
+            record_id=rollback_record.get("id"),
+        )
 
     def history(self, *, limit: int = 50, kind: Optional[str] = None) -> List[Dict[str, Any]]:
         return self.ledger.list_records(kind=kind, limit=limit)
@@ -289,7 +467,9 @@ class UpgradeManager:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "current_version": self._current_version,
             "target_version": target_version or previous.get("target_version"),
-            "backup_id": backup_id or previous.get("backup_id"),
+            "backup_id": (
+                previous.get("backup_id") if backup_id is None else backup_id
+            ),
             "last_error": error,
             "record_id": record_id or previous.get("record_id"),
         }
@@ -303,6 +483,71 @@ class UpgradeManager:
         for rel in self.config.extra_state_files:
             paths.append(self.config.app_root / safe_relpath(rel))
         return paths
+
+    # ------------------------------------------------------------------
+    # Disk-space preflight (before the first real byte is written)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _tree_bytes(paths: Sequence[Path]) -> int:
+        total = 0
+        for path in paths:
+            path = Path(path)
+            if path.is_file():
+                total += path.stat().st_size
+                continue
+            if not path.is_dir():
+                continue
+            for candidate in path.rglob("*"):
+                if not candidate.is_file() or candidate.is_symlink():
+                    continue
+                try:
+                    total += candidate.stat().st_size
+                except OSError:
+                    continue
+        return total
+
+    @staticmethod
+    def _mb(value: int) -> str:
+        return f"{value / (1024 * 1024):.1f} MB"
+
+    def _disk_space_requirement(self, install_bytes: int) -> int:
+        install_roots = [self.config.app_root / root for root in self.config.install_roots]
+        code_bytes = self._tree_bytes(install_roots)
+        data_bytes = self._tree_bytes(self._data_guard_paths())
+        # 8 MiB covers per-file temp copies, backup manifests and filesystem
+        # slack; it is deliberately conservative so we stop early.
+        return install_bytes + code_bytes + data_bytes + 8 * 1024 * 1024
+
+    def _check_disk_space(self, install_bytes: int) -> None:
+        required = self._disk_space_requirement(install_bytes)
+        volumes = (
+            ("应用目录", self.config.app_root),
+            ("备份目录", self.config.backup_root),
+            ("临时目录", Path(tempfile.gettempdir())),
+        )
+        for label, path in volumes:
+            try:
+                usage = shutil.disk_usage(str(path))
+            except OSError:
+                continue
+            if usage.free < required:
+                current = self._current_version or "原版本"
+                raise DiskSpaceError(
+                    f"磁盘空间不足：升级至少需要约 {self._mb(required)}，"
+                    f"{label} {path} 仅剩 {self._mb(usage.free)}。"
+                    f"尚未修改任何文件，当前版本 {current} 仍完整。"
+                    f"请清理磁盘后重新执行：python -m src.upgrade upgrade "
+                    f"--app-root {self.config.app_root}"
+                )
+
+    def _disk_error(self, exc: OSError, during: str) -> DiskSpaceError:
+        current = self._current_version or "原版本"
+        return DiskSpaceError(
+            f"磁盘空间不足：{during}写入失败（{exc}）。"
+            f"尚未修改任何文件，当前版本 {current} 仍完整。"
+            f"请清理磁盘后重新执行：python -m src.upgrade upgrade "
+            f"--app-root {self.config.app_root}"
+        )
 
     # ------------------------------------------------------------------
     # 1. Check
@@ -571,9 +816,10 @@ class UpgradeManager:
         # drops a table would look fine.
         key_tables = capture_table_inventory(self._data_guard_paths())
 
-        staging = Path(tempfile.mkdtemp(prefix="liuhao-upgrade-stage-"))
+        staging: Optional[Path] = None
         backup_id = ""
         mutation_started = False
+        marker: Optional[Dict[str, Any]] = None
         try:
             with zipfile.ZipFile(artifact, "r") as archive:
                 members = validate_release_zip(
@@ -582,7 +828,18 @@ class UpgradeManager:
                     protected_prefixes=self.config.protected_paths,
                     max_uncompressed_bytes=self.config.max_uncompressed_bytes,
                 )
-                installed = extract_zip_members(archive, members, staging)
+                # Stop here - before any backup, staging or install - when the
+                # disk cannot hold the new tree plus both backups.
+                self._check_disk_space(
+                    sum(int(info.file_size) for _, info in members)
+                )
+                staging = Path(tempfile.mkdtemp(prefix="liuhao-upgrade-stage-"))
+                try:
+                    installed = extract_zip_members(archive, members, staging)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == errno.ENOSPC:
+                        raise self._disk_error(exc, "解压发布包到临时目录时") from exc
+                    raise
             staged_version = read_package_version(staging)
             if Version(staged_version) != Version(release.version):
                 raise ApplyError(
@@ -593,19 +850,39 @@ class UpgradeManager:
                 Phase.BACKING_UP,
                 "备份中：正在分别备份代码与数据",
                 target_version=release.version,
+                backup_id="",
             )
-            backup_id = self._create_backup(
-                current_version, release, preflight.to_dict(), key_tables=key_tables
-            )
+            try:
+                backup_id = self._create_backup(
+                    current_version, release, preflight.to_dict(), key_tables=key_tables
+                )
+            except OSError as exc:
+                if getattr(exc, "errno", None) == errno.ENOSPC:
+                    raise self._disk_error(exc, "写入升级备份时") from exc
+                raise
             # Re-read the metadata immediately: a backup we cannot parse is not
             # a backup we can roll back to, and this must fail before mutation.
             self._read_backup(backup_id)
 
+            # Durable "we are about to touch real files" marker. If this
+            # process dies (or is killed) now, the next start sees it and
+            # resolves the interrupted upgrade instead of showing "unknown".
+            marker = self.ledger.record(
+                kind="apply",
+                status="in_progress",
+                from_version=current_version,
+                to_version=release.version,
+                reason="",
+                backup_id=backup_id,
+                artifact_path=str(artifact),
+                detail={"mutation_started": False, "phase": "applying"},
+            )
             self._set_status(
                 Phase.APPLYING,
                 f"应用中：正在安装 {len(installed)} 个文件",
                 target_version=release.version,
                 backup_id=backup_id,
+                record_id=marker.get("id"),
             )
             mutation_started = True
             with zipfile.ZipFile(artifact, "r") as archive:
@@ -628,6 +905,7 @@ class UpgradeManager:
                 "自检中：正在临时端口真实启动服务，并检查数据库与关键表",
                 target_version=release.version,
                 backup_id=backup_id,
+                record_id=marker.get("id"),
             )
             self_check = run_self_check(
                 self.config.app_root,
@@ -656,14 +934,11 @@ class UpgradeManager:
             # Do not leave a stale failure log that contradicts this success.
             (self.config.state_dir / "last-selfcheck.log").unlink(missing_ok=True)
 
-            record = self.ledger.record(
-                kind="apply",
+            record = self.ledger.update(
+                marker["id"],
                 status="completed",
-                from_version=current_version,
-                to_version=release.version,
                 reason=signature_note,
                 backup_id=backup_id,
-                artifact_path=str(artifact),
                 detail={
                     "backup_dir": str(self.config.backup_root / backup_id),
                     "installed_files": len(installed),
@@ -673,7 +948,7 @@ class UpgradeManager:
                     "key_tables": key_tables,
                     "selfcheck": self_check.to_dict(),
                 },
-            )
+            ) or marker
             self._set_status(
                 Phase.COMPLETED,
                 f"完成：已升级 {current_version} → {release.version}",
@@ -700,6 +975,7 @@ class UpgradeManager:
                     f"回滚中：应用失败，正在恢复 {current_version}",
                     target_version=release.version,
                     backup_id=backup_id,
+                    record_id=(marker or {}).get("id"),
                 )
                 try:
                     self._restore_backup(backup_id)
@@ -712,22 +988,32 @@ class UpgradeManager:
                 except Exception as rollback_exc:  # noqa: BLE001 - reported to user
                     rollback_error = str(rollback_exc)
             reason = str(exc) + (f"；回滚失败：{rollback_error}" if rollback_error else "")
-            record = self.ledger.record(
-                kind="apply",
-                status="failed_rolled_back" if rollback_ok else "failed",
-                from_version=current_version,
-                to_version=release.version,
-                reason=reason,
-                backup_id=backup_id or None,
-                artifact_path=str(artifact),
-                detail={
-                    "mutation_started": mutation_started,
-                    "rollback_ok": rollback_ok,
-                    "rollback_error": rollback_error,
-                    "signature_verified": signature_verified,
-                    "signature_note": signature_note,
-                },
-            )
+            detail = {
+                "mutation_started": mutation_started,
+                "rollback_ok": rollback_ok,
+                "rollback_error": rollback_error,
+                "signature_verified": signature_verified,
+                "signature_note": signature_note,
+            }
+            if marker is not None:
+                record = self.ledger.update(
+                    marker["id"],
+                    status="failed_rolled_back" if rollback_ok else "failed",
+                    reason=reason,
+                    backup_id=backup_id or None,
+                    detail=detail,
+                ) or marker
+            else:
+                record = self.ledger.record(
+                    kind="apply",
+                    status="failed_rolled_back" if rollback_ok else "failed",
+                    from_version=current_version,
+                    to_version=release.version,
+                    reason=reason,
+                    backup_id=backup_id or None,
+                    artifact_path=str(artifact),
+                    detail=detail,
+                )
             if rollback_ok:
                 self._set_status(
                     Phase.ROLLED_BACK,
@@ -750,16 +1036,18 @@ class UpgradeManager:
                 raise ApplyError(
                     f"应用失败且回滚失败，当前状态可能不一致：{exc}；回滚错误：{rollback_error}"
                 ) from exc
+            message = str(exc)
             self._set_status(
                 Phase.FAILED,
-                f"失败：应用未开始（{exc}）",
+                f"失败：应用未开始（{message}）",
                 target_version=release.version,
-                error=str(exc),
+                error=message,
                 record_id=record.get("id"),
             )
-            raise ApplyError(f"应用失败（未修改任何文件）：{exc}") from exc
+            raise ApplyError(f"应用失败（未修改任何文件）：{message}") from exc
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
 
     def _fail_before_mutation(
         self,
@@ -867,10 +1155,15 @@ class UpgradeManager:
     def _restore_backup(self, backup_id: str) -> None:
         backup_dir = self.config.backup_root / backup_id
         meta = self._read_backup(backup_id)
+        # Verify every backup artefact *before* moving any real file: a
+        # corrupted backup must be refused, not "restored" halfway.
+        verify_backup(backup_dir)
         expected_sha = str(meta.get("code_zip_sha256", "")).lower()
         zip_path = backup_dir / "code.zip"
         if expected_sha and _sha256_file(zip_path) != expected_sha:
-            raise RollbackError("代码备份 ZIP 哈希与备份元数据不符")
+            raise BackupCorrupt(
+                "代码备份包 SHA256 与备份元数据不符（备份不可用）"
+            )
         restore_code(
             self.config.app_root,
             backup_dir,
@@ -887,27 +1180,41 @@ class UpgradeManager:
         backup_id: Optional[str] = None,
         record_id: Optional[str] = None,
     ) -> RollbackResult:
-        self._set_status(Phase.ROLLING_BACK, "回滚中：正在定位升级前备份")
+        self._set_status(Phase.ROLLING_BACK, "回滚中：正在定位升级前备份", backup_id="")
+        current = ""
+        target_version = ""
+        source_version = ""
         try:
             # Resolving the backup happens inside the try: "no rollback record"
             # is a failure that must leave the status at 失败, not stuck at
             # 回滚中 forever.
             backup_id = self._resolve_backup_id(backup_id, record_id)
+            hint = self._apply_record_for_backup(backup_id)
+            target_version = str((hint or {}).get("from_version") or "")
             meta = self._read_backup(backup_id)
-            from_version = str(meta.get("to_version", ""))
-            to_version = str(meta.get("from_version", ""))
+            source_version = str(meta.get("to_version", ""))
+            target_version = str(meta.get("from_version", "") or target_version)
             current, _ = self.current_version()
+            # Record the resolved backup id before touching files, so a kill
+            # during the restore itself is recoverable on next start.
+            self._set_status(
+                Phase.ROLLING_BACK,
+                f"回滚中：正在恢复 {target_version or '升级前版本'}",
+                target_version=target_version or None,
+                backup_id=backup_id,
+                record_id="",
+            )
             self._restore_backup(backup_id)
             restored_version, _ = self.current_version()
-            if to_version and Version(restored_version) != Version(to_version):
+            if target_version and Version(restored_version) != Version(target_version):
                 raise RollbackError(
-                    f"回滚后版本为 {restored_version}，预期 {to_version}"
+                    f"回滚后版本为 {restored_version}，预期 {target_version}"
                 )
             record = self.ledger.record(
                 kind="rollback",
                 status="rolled_back",
-                from_version=from_version or current,
-                to_version=to_version or restored_version,
+                from_version=source_version or current,
+                to_version=target_version or restored_version,
                 backup_id=backup_id,
                 detail={
                     "backup_dir": str(self.config.backup_root / backup_id),
@@ -917,33 +1224,76 @@ class UpgradeManager:
             )
             self._set_status(
                 Phase.ROLLED_BACK,
-                f"已回滚：{from_version or current} → {to_version or restored_version}",
-                target_version=to_version or restored_version,
+                f"已回滚：{source_version or current} → {target_version or restored_version}",
+                target_version=target_version or restored_version,
                 backup_id=backup_id,
                 record_id=record.get("id"),
             )
             return RollbackResult(
                 record_id=record["id"],
                 backup_id=backup_id,
-                from_version=from_version or current,
-                to_version=to_version or restored_version,
+                from_version=source_version or current,
+                to_version=target_version or restored_version,
                 restored_files=int(meta.get("code_file_count", 0))
                 + int(meta.get("data_file_count", 0)),
             )
         except Exception as exc:
+            current = current or self._safe_current_version()
+            old = target_version or "旧版本"
+            upgrade_command = (
+                f"python -m src.upgrade upgrade --app-root {self.config.app_root} "
+                "--release-dir <发布目录> --allow-same-or-downgrade"
+            )
+            if isinstance(exc, BackupNotFound):
+                message = (
+                    f"无法回滚：{old} 的升级前备份已不存在（备份可能已被清理），"
+                    f"无法用它回滚。当前版本 {current or '未知'} 仍可正常使用，"
+                    f"未做任何修改。需要回到 {old}，需要重新下载 {old} 版本安装包，"
+                    f"放到发布目录后执行：{upgrade_command}"
+                )
+            elif isinstance(exc, BackupCorrupt):
+                message = (
+                    f"无法回滚：{old} 的备份不可用（{exc}）。"
+                    f"当前版本 {current or '未知'} 仍完整，未做任何修改，没有假装回滚成功。"
+                    f"可以换一个备份：python -m src.upgrade snapshots "
+                    f"--app-root {self.config.app_root} --limit 20；"
+                    f"或重新下载 {old} 版本安装包后执行：{upgrade_command}"
+                )
+            else:
+                message = f"失败：回滚失败（{exc}）"
             record = self.ledger.record(
                 kind="rollback",
                 status="failed",
+                from_version=source_version or current or None,
+                to_version=target_version or None,
                 backup_id=backup_id,
-                reason=str(exc),
+                reason=message,
             )
             self._set_status(
                 Phase.FAILED,
-                f"失败：回滚失败（{exc}）",
+                message,
                 backup_id=backup_id,
-                error=str(exc),
+                error=message,
                 record_id=record.get("id"),
             )
             if isinstance(exc, RollbackError):
-                raise
-            raise RollbackError(f"回滚失败：{exc}") from exc
+                if str(exc) == message:
+                    raise
+                raise RollbackError(message) from exc
+            raise RollbackError(message) from exc
+
+    def _safe_current_version(self) -> str:
+        try:
+            return read_current_version(self.config.app_root)[0]
+        except VersionReadError:
+            return ""
+
+    def _apply_record_for_backup(self, backup_id: str) -> Optional[Dict[str, Any]]:
+        for item in self.ledger.list_records(kind="apply", limit=200):
+            if item.get("backup_id") == backup_id and item.get("status") in (
+                "completed",
+                "failed_rolled_back",
+                "interrupted_rolled_back",
+            ):
+                return item
+        return None

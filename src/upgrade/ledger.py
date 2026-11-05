@@ -97,6 +97,41 @@ class UpgradeLedger:
             ).fetchone()
         return self._row_to_dict(row) if row else None
 
+    def update(
+        self,
+        record_id: str,
+        *,
+        status: str,
+        reason: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+        backup_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Finalize a row that was inserted as ``in_progress``.
+
+        This lets a killed process leave a durable "apply started" marker that
+        the next start can either complete or mark as interrupted, instead of
+        silently disappearing.
+        """
+        fields: List[str] = ["status = ?"]
+        params: List[Any] = [status]
+        if reason is not None:
+            fields.append("reason = ?")
+            params.append(reason)
+        if detail is not None:
+            fields.append("detail_json = ?")
+            params.append(json.dumps(detail, ensure_ascii=False, sort_keys=True))
+        if backup_id is not None:
+            fields.append("backup_id = ?")
+            params.append(backup_id)
+        params.append(record_id)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE upgrade_records SET {', '.join(fields)} WHERE id = ?",
+                params,
+            )
+            self._conn.commit()
+        return self.get(record_id)
+
     def list_records(
         self,
         *,

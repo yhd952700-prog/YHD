@@ -15,7 +15,10 @@ See ``docs/self-upgrade.md`` for the capability boundary and rollback steps.
 from .downloader import cleanup_download, download_release
 from .errors import (
     ApplyError,
+    BackupCorrupt,
+    BackupNotFound,
     ChecksumMismatch,
+    DiskSpaceError,
     ManifestError,
     PackageValidationError,
     PreflightError,
@@ -49,9 +52,12 @@ from .versioning import is_newer, read_current_version
 __all__ = [
     "ApplyError",
     "ApplyResult",
+    "BackupCorrupt",
+    "BackupNotFound",
     "CheckResult",
     "CheckStatus",
     "ChecksumMismatch",
+    "DiskSpaceError",
     "DownloadResult",
     "HttpManifestSource",
     "LocalDirectorySource",

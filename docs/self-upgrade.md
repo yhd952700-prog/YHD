@@ -307,7 +307,8 @@ python -m src.selfmod list
 3. 数据预检：`data/` 及 `extra_state_files` 中每个 SQLite 执行 `PRAGMA integrity_check`，JSON/YAML 必须可解析，符号链接报问题；
 4. ZIP 安全校验：只允许安装根（默认 `src`、`docs`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、根目录 `LIUHAO_RELEASE.json`），拒绝 `data/`、`.git`、`.venv`、`.env`、`secrets`、`*.pem`、`*.key`、`*.crt`，拒绝绝对路径/`..`/盘符、符号链接、重复路径、超量文件（10 万）与超量解压（2 GiB）；
 5. 解压到 staging 后读取包内版本，必须与清单版本一致；
-6. 记录每个受保护 SQLite 的**表清单**（`capture_table_inventory`），随备份元数据落盘，供升级后自检对比。
+6. **磁盘空间预检**：按“发布包解压后大小 + 当前安装根 + 当前数据目录”估算所需空间（另加 8 MiB 余量），检查应用目录、备份目录、临时目录所在磁盘；不足时**在创建备份、解压 staging、修改任何真实文件之前**失败退出；
+7. 记录每个受保护 SQLite 的**表清单**（`capture_table_inventory`），随备份元数据落盘，供升级后自检对比。
 
 ### 4.2 备份（代码与数据分开）
 
@@ -384,12 +385,15 @@ python -m src.upgrade selfcheck --app-root . --startup-port 8080   # 诊断：�
 安装开始后任何异常（包括“安装后版本不对”“安装后数据校验失败”“升级后自检未通过”）都会：
 
 1. 把状态置为 `rolling_back`；
-2. 用**本次升级前的备份**恢复代码与数据；
+2. 用**本次升级前的备份**恢复代码与数据（恢复前先校验备份完整性）；
 3. 校验恢复后的版本；
 4. 账本记录 `failed_rolled_back`（成功回滚）或 `failed`（回滚也失败，附两个原因）；
 5. 状态文件写 `rolled_back` 或 `failed`，消息包含失败原因。
 
-`tests/test_upgrade_apply_rollback.py::test_failure_after_install_triggers_automatic_rollback` 通过注入“安装完成后抛异常”真实跑通了自动回滚，断言版本、源码字节、SQLite 内容都回到升级前。
+**中途被杀（断电/任务管理器结束进程/蓝屏）**：在真实替换文件之前，账本会先落一条 `apply/in_progress` 记录，状态同时进入 `applying`。下一次启动（包括执行 `status`）时，管理器会识别这条未完成记录：先校验备份，再自动恢复升级前的代码与数据，把该记录改为 `interrupted_rolled_back`、补一条 `rollback/rolled_back`，状态写 `rolled_back` 并明确提示“上次升级在应用中阶段被中断，已自动恢复到 0.1.0（备份 …）”。因此重启后**不会**落成 `unknown`，也不会停在一个“升级了一半”的版本。若备份同时损坏/缺失，则状态写 `failed` 并给出重新下载旧版本安装包的命令（见 4.8）。
+
+`tests/test_upgrade_apply_rollback.py::test_failure_after_install_triggers_automatic_rollback` 通过注入“安装完成后抛异常”真实跑通了自动回滚，断言版本、源码字节、SQLite 内容都回到升级前。`tests/test_upgrade_disaster_recovery.py::test_kill_during_file_replacement_is_recovered_on_restart` 则在**子进程真实替换两个文件后用 `os._exit(23)` 直接杀死自己**，再新建管理器模拟重启，断言自动恢复、账本与状态。
+
 
 ### 4.6 显式一键回滚
 
@@ -399,13 +403,17 @@ python -m src.upgrade rollback --app-root .
 
 - 不指定 ID 时取**最近一次 `apply/completed` 记录**的备份；
 - 指定 `--record-id` 时用该记录的 `backup_id`；指定 `--backup-id` 时直接使用；
-- 恢复前校验代码备份 ZIP 哈希；
+- **在移动/覆盖任何文件之前**，按 `code-backup.json` 与 `data-backup.json` 逐项校验 `code.zip`、数据快照的存在性与 SHA256；任何一项不符都直接拒绝回滚；
 - 恢复代码：先把当前安装根移到 `rollback-trash/`（失败可移回），再解压备份；
 - 恢复数据：先删除目标路径上的 SQLite 侧车文件，再原子复制备份；恢复后逐个 `integrity_check`；
 - 校验恢复后的版本等于备份中的 `from_version`；
 - 写账本 `rollback/rolled_back`，状态 `rolled_back`。
 
-**回滚会恢复升级前的数据快照，因此升级后新写入的数据会丢失。** 升级前的数据不会丢；这是“回到上一版本”的定义。需要保留升级后数据时，应在回滚前先手动导出（该能力仍未实现，见第 8 节）。如果你只是想要**升级前**的数据，用 4.7 的快照导出，不需要回滚。
+**回滚会恢复升级前的数据快照，因此升级后新写入的数据会丢失。** 升级前的数据不会丢；这是“回到上一版本”的定义。如果你只是想要**升级前**的数据，用 4.7 的快照导出，不需要回滚。
+
+**备份损坏时**：不会开始恢复，状态 `failed`，消息形如“无法回滚：0.1.0 的备份不可用（代码备份包 SHA256 与记录不符…）。当前版本 0.2.0 仍完整，未做任何修改，没有假装回滚成功。”账本记录 `rollback/failed`，磁盘上代码与数据一个字节都不会变。
+
+**备份/旧版本包缺失时**：消息形如“无法回滚：0.1.0 的升级前备份已不存在…。当前版本 0.2.0 仍可正常使用，未做任何修改。需要回到 0.1.0，需要重新下载 0.1.0 版本安装包，放到发布目录后执行：`python -m src.upgrade upgrade --app-root . --release-dir <发布目录> --allow-same-or-downgrade`”。这是一个明确的“去下载”指引，不会把用户留在既不能升级也不能回滚的状态：下载旧包后可用 `--allow-same-or-downgrade` 重新安装，或直接安装更新的版本。
 
 **没有可回滚记录时**：清空状态是 `failed`，账本记录 `rollback/failed`，消息“没有可回滚的升级记录”，不会卡在 `rolling_back`（有回归测试）。
 
@@ -435,7 +443,21 @@ python -m src.upgrade export-snapshot --app-root . --dest D:\snap --record-id <�
 
 `tests/test_upgrade_snapshot.py` 覆盖：升级后往线上库写入新数据 → 导出的库仍然只有升级前的数据；`snapshot.json` 的哈希与导出文件一致；导出不改动线上库；目标目录已存在被拒绝且首次导出不受影响；无备份时明确报错；可按 `--backup-id` 指定。
 
+### 4.8 灾难演练与人工恢复（四种场景）
+
+以下四项都在临时目录 + 临时端口/临时数据里真跑过，**没有碰真实安装目录或真实数据**，测试见 `tests/test_upgrade_disaster_recovery.py`。
+
+| 场景 | 系统行为 | 用户看到的文案 | 人工恢复命令 |
+| --- | --- | --- | --- |
+| 升级替换文件时进程被杀 | 替换前先写 `apply/in_progress` 账本 + `applying` 状态；下次启动识别未完成记录，校验备份后**自动回滚**，账本改为 `interrupted_rolled_back` 并补 `rollback/rolled_back` | “已回滚：上次升级在应用中阶段被中断，已自动恢复到 0.1.0（备份 …）” | 通常无需人工。若想重试：`python -m src.upgrade upgrade --app-root . --release-dir <发布目录>`；查看：`python -m src.upgrade status --app-root .`、`python -m src.upgrade history --app-root .` |
+| 磁盘空间不足 | 在**备份/解压 staging/改真实文件之前**做空间预检；若写入阶段仍遇到 ENOSPC（如并发占用），立刻中止并清理 staging，真实文件未改 | “失败：应用未开始（磁盘空间不足：升级至少需要约 120.0 MB，应用目录 … 仅剩 1.0 MB。尚未修改任何文件，当前版本 0.1.0 仍完整。请清理磁盘后重新执行…）” | 清理磁盘后原命令重跑：`python -m src.upgrade upgrade --app-root . --release-dir <发布目录>` |
+| 备份 SHA256 与实际不符 | 回滚前逐项校验 `code.zip` 与数据快照；不符即拒绝，**不移动任何文件**，账本 `rollback/failed` | “无法回滚：0.1.0 的备份不可用（代码备份包 SHA256 与记录不符…）。当前版本 0.2.0 仍完整，未做任何修改，没有假装回滚成功。” | 换一个已知可用的备份：`python -m src.upgrade snapshots --app-root . --limit 20`，再 `python -m src.upgrade rollback --app-root . --backup-id <备份 ID>`；若没有可用备份，重新下载 0.1.0 安装包后执行 `python -m src.upgrade upgrade --app-root . --release-dir <发布目录> --allow-same-or-downgrade` |
+| 回滚时旧版本包缺失 | 明确报错，说明需要重新下载；当前版本保持可用，不写“假回滚成功” | “无法回滚：0.1.0 的升级前备份已不存在…。当前版本 0.2.0 仍可正常使用，未做任何修改。需要回到 0.1.0，需要重新下载 0.1.0 版本安装包，放到发布目录后执行：`python -m src.upgrade upgrade --app-root . --release-dir <发布目录> --allow-same-or-downgrade`” | 下载 0.1.0 安装包 → 放到发布目录（含清单）→ `python -m src.upgrade upgrade --app-root . --release-dir <发布目录> --allow-same-or-downgrade`；或直接安装更新版本 |
+
+> `--allow-same-or-downgrade` 只用于“重新下载旧版本安装包后恢复”这类人工恢复，平时升级保持默认（只允许更新版本）。
+
 ---
+
 
 ## 5. 用户可见状态
 
@@ -457,7 +479,9 @@ python -m src.upgrade export-snapshot --app-root . --dest D:\snap --record-id <�
 
 阶段：`checking`（检查中）、`downloading`（下载中）、`verifying`（校验中）、`backing_up`（备份中）、`applying`（应用中）、`self_checking`（自检中）、`rolling_back`（回滚中）、`completed`（完成）、`failed`（失败）、`rolled_back`（已回滚），空闲为 `idle`。
 
-账本：`upgrade-state/upgrade-ledger.db`（SQLite WAL），表 `upgrade_records` 持久保存 `check/download/preflight/backup/apply/selfcheck/rollback` 的 `created_at/kind/status/from_version/to_version/reason/detail_json/backup_id/artifact_path`。进程重启后仍可查。
+**重启后的状态是可判定的**：`applying/self_checking/rolling_back` 是“进行中”阶段；进程若在这些阶段消失，下一次管理器启动会依据账本里的 `apply/in_progress`（或状态里的 `backup_id`）自动收尾为 `rolled_back` 或 `failed`，并写入明确的中文消息，不会停在 `unknown`。`backing_up` 阶段被打断且尚未落 `apply/in_progress` 时，会明确说明“代码与数据未被修改，可直接重新执行升级”。
+
+账本：`upgrade-state/upgrade-ledger.db`（SQLite WAL），表 `upgrade_records` 持久保存 `check/download/preflight/backup/apply/selfcheck/rollback` 的 `created_at/kind/status/from_version/to_version/reason/detail_json/backup_id/artifact_path`。`apply` 记录会在替换真实文件前先以 `in_progress` 落库，成功后原地更新为 `completed`，中断后更新为 `interrupted_rolled_back`/`failed`，因此账本能看出“这次升级到底有没有开始改文件”。进程重启后仍可查。
 
 ### 5.1 上次检查更新时间与结果（手动/每周共用）
 
@@ -591,10 +615,12 @@ propose（生成 diff，不改工作区）
 | 有签名但无公钥 | 继续，但明确“未验证签名（仅哈希校验）” | 无 |
 | 有公钥且签名不匹配 | `SignatureError`，中止 | 无 |
 | 应用前数据预检失败 | `PreflightError`，不备份、不改文件 | 无 |
+| 磁盘空间不足（预检或写入时 ENOSPC） | `DiskSpaceError`，在备份/解压/替换真实文件之前中止；消息含所需/剩余空间与重跑命令 | 无（staging 清理） |
 | 发布包试图覆盖 `data/` 或受保护路径 | ZIP 校验拒绝（`ApplyError`） | 无 |
 | 包内版本与清单不符 / 包内无版本 | 拒绝 | 无 |
 | 备份创建或元数据读取失败 | 拒绝，未开始安装 | 无 |
 | 安装过程中/后异常 | 自动回滚到升级前代码与数据 | 代码/数据恢复原状 |
+| 应用文件替换阶段进程被杀 | 重启后识别 `apply/in_progress`，校验备份并自动回滚；账本记 `interrupted_rolled_back` + `rollback/rolled_back` | 恢复升级前状态 |
 | 安装后版本或数据复核失败 | 自动回滚 | 恢复原状 |
 | 升级后自检失败（真实启动失败：端口冲突/迁移失败/依赖缺失/lifespan 异常/超时/关闭异常；或库打不开/关键表缺失） | `SelfCheckError`，**自动回滚，无需用户点**；`upgrade-state/last-selfcheck.log` 保留脱敏日志尾部 | 代码/数据恢复原状 |
 | 快照导出目标目录已存在 | `SnapshotError`，拒绝覆盖 | 无 |
@@ -603,7 +629,8 @@ propose（生成 diff，不改工作区）
 | 周检查失败（断网/目录缺失/管理器异常） | 记为 `unreachable`/`error`，绝不写“已是最新” | 无 |
 | 自动回滚也失败 | 状态 `failed`，账本记录两个原因，需人工介入 | 可能不一致（明确告知） |
 | 无可用回滚记录 | `RollbackError`，状态 `failed`，账本 `rollback/failed` | 无 |
-| 回滚备份 ZIP 哈希不符 | 拒绝回滚 | 保持当前状态 |
+| 回滚前校验发现代码包或数据快照 SHA256 不符 | `BackupCorrupt`，拒绝回滚，消息“备份不可用、当前版本仍完整”，文件零改动 | 保持当前状态 |
+| 回滚备份 / 旧版本包缺失 | `BackupNotFound`，消息“需要重新下载 X 版本安装包”并给出 `--allow-same-or-downgrade` 命令；当前版本仍可用 | 保持当前状态 |
 
 ### 7.2 受控自改
 
@@ -669,14 +696,17 @@ propose（生成 diff，不改工作区）
   tests/test_upgrade_snapshot.py `
   tests/test_upgrade_weekly_check.py `
   tests/test_selfmod_diff_confirm.py `
-  tests/test_selfmod_copy_test.py -q
+  tests/test_selfmod_copy_test.py `
+  tests/test_upgrade_disaster_recovery.py -q
 ```
 
 最近一次实际结果（2026-11-06）：
 
 ```
-72 passed in 55.73s
+79 passed in 66.55s
 ```
+
+新增的灾难演练用例是**真跑**：杀进程用子进程 `os._exit(23)`；磁盘不足在真实 apply 过程中注入 `ENOSPC`；备份损坏是真的往 `code.zip` 里追加字节；旧包缺失是真的删除 `code.zip`，随后继续升级到 0.3.0 证明没有卡死。
 
 耗时上升来自自检用例**真的启动 uvicorn 子进程**（成功/端口冲突/迁移失败/缺依赖/lifespan 异常/超时各跑一次），不是 mock。
 
@@ -691,6 +721,7 @@ propose（生成 diff，不改工作区）
 - `test_upgrade_weekly_check.py`：用真实 `LocalScheduler` + 固定时钟跑完整 tick；发现新版本只通知（正文含“不会自动安装”）、版本/源码/备份/账本均未变化，下一次运行精确等于 `now + 7 天`；发布目录缺失记为 `unreachable` 且不含“已是最新”；同版本才 `up_to_date` 且不通知；管理器异常记为 `error` 且不谎报最新；`seed` 幂等且未配置源不 seed；`register_local_jobs` 已注册作业。
 - `test_selfmod_diff_confirm.py`：diff 生成但工作区不变；路径拒绝；一次性令牌；陈旧提案拒绝；缺测试命令拒绝。
 - `test_selfmod_copy_test.py`：副本测试通过且真实工作区无 `marker.txt`；测试失败拒绝；超时杀进程；CPU 上限杀进程；密钥形状环境变量不进子进程；默认禁止 promote；必须 `passed` + 第二次令牌；`finalize`/`rollback` 后文件字节回到原状。
+- `test_upgrade_disaster_recovery.py`：子进程在替换两个真实文件后 `os._exit(23)`，重启后状态从 `applying` 变成 `rolled_back`、版本/源码/SQLite 回到 0.1.0、账本有 `apply/interrupted_rolled_back` 与 `rollback/rolled_back`；磁盘预检与 staging 写入 `ENOSPC` 都在真实文件改动前中止，且没有生成备份；篡改 `code.zip` 或数据快照后回滚被拒，当前 0.2.0 的字节完全不变、状态 `failed`；删除 `code.zip` 后回滚提示“需要重新下载 0.1.0 版本安装包”，随后安装 0.3.0 成功，证明不会卡死；CLI 接受 `--allow-same-or-downgrade`。
 
 用真实 CLI（不是测试）复跑的一次成功 + 两次失败证据（2026-11-06）：
 
