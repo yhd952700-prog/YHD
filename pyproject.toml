@@ -119,6 +119,19 @@ dependencies = [
     #   只设下界：本仓用到的 AsyncBroker/kick/listen + AckableMessage 在 0.11+
     #   已稳定；上界留给上游（若未来破坏这些原语，测试会先红）。
     "taskiq>=0.11.0",
+    # ---- 知识库文件导入（src/knowledge/extractors.py）----
+    # pypdf：PDF 文本层提取 + 逐页页码。BSD-3-Clause（PyPI 元数据实测
+    #   License-Expression，无 copyleft）。选择它而不是 pymupdf（AGPL，本项目
+    #   明确禁止）、pdfminer.six / pdfplumber（MIT 但更低层/额外拉影像依赖）：
+    #   纯 Python、无需系统 poppler 二进制、逐页 API 稳定、有 is_encrypted /
+    #   decrypt 与可映射的类型化错误。
+    # python-docx：DOCX 正文与段落 **样式名**（Heading 1..6），正好是结构化
+    #   分块需要的标题层级。MIT（包元数据实测 License）。docx2txt 会丢层级，
+    #   mammoth 转 HTML 并引入额外依赖。其传递依赖 lxml 为 BSD-3-Clause。
+    # HTML 走标准库 html.parser，不新增第三方依赖，因此不增加许可证面。
+    # 三者均已登记 oss-registry.yaml；requirements.txt 已锁定实测版本。
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
 ]
 
 # 测试/验证专用依赖（不进运行期依赖，避免 lupa 这种需要编译的扩展拖慢/拖垮

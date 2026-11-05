@@ -12,9 +12,9 @@ import logging
 import re
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .chunker import chunk_document_structured
+from .chunker import chunk_document_structured, chunk_paged_document
 from .embedding import EmbeddingUnavailableError, build_embedding_provider
 from .vector_store import get_vector_store
 
@@ -50,13 +50,23 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _page_label(metadata: Dict[str, Any]) -> Optional[str]:
+    """Human-readable page label for a chunk ("第 3 页"), if it has one."""
+    page = metadata.get("page")
+    if isinstance(page, int) and page > 0:
+        return f"第 {page} 页"
+    return None
+
+
 def _hit_text(metadata: Dict[str, Any]) -> str:
-    """Body plus heading breadcrumb; legacy rows (no header) still work."""
+    """Body plus provenance breadcrumb; legacy rows (no header/page) still work."""
     body = str(metadata.get("text", ""))
     header = str(metadata.get("context_header") or "").strip()
-    if not header:
+    page = _page_label(metadata)
+    prefix = " / ".join(part for part in (page, header) if part)
+    if not prefix:
         return body
-    return f"[{header}]\n{body}" if body else f"[{header}]"
+    return f"[{prefix}]\n{body}" if body else f"[{prefix}]"
 
 
 class KnowledgeDocumentService:
@@ -122,13 +132,25 @@ class KnowledgeDocumentService:
         doc_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         *,
+        pages: Optional[List[Tuple[int, str]]] = None,
         on_progress: Optional[Callable[[int, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
+        """Ingest already-extracted text (and, for PDFs, per-page text).
+
+        ``text`` is the **extracted** body for every format -- the content hash
+        used for dedup is computed on it, so renaming ``manual.pdf`` to
+        ``manual-copy.pdf`` still hits the duplicate path. ``pages`` is the
+        paged form ``[(1, page_text), ...]``: when present each chunk is tagged
+        with its 1-based page number in metadata.
+        """
         embedder = self._embedding()
         store = self._store()
         document_id = _safe_document_id(doc_id)
-        chunks = chunk_document_structured(text)
+        if pages:
+            chunks = chunk_paged_document(list(pages))
+        else:
+            chunks = chunk_document_structured(text)
 
         static_metadata = dict(metadata or {})
         # The heading breadcrumb is embedded together with the body so a chunk
@@ -163,6 +185,11 @@ class KnowledgeDocumentService:
                     "text": chunk.text,
                     "heading_path": list(chunk.heading_path),
                     "context_header": chunk.context_header,
+                    **(
+                        {"page": chunk.page, "page_label": f"第 {chunk.page} 页"}
+                        if chunk.page is not None
+                        else {}
+                    ),
                 },
             )
             for index, (chunk, vector) in enumerate(zip(chunks, vectors))
@@ -242,6 +269,10 @@ class KnowledgeDocumentService:
                 "score": round(score, 6),
                 "text": _hit_text(meta or {}),
                 "metadata": meta or {},
+                # Explicit provenance fields so a client never has to dig into
+                # metadata to show "来自第 N 页".
+                "page": (meta or {}).get("page"),
+                "location": _page_label(meta or {}),
             }
             for doc_id, score, meta in results
         ]

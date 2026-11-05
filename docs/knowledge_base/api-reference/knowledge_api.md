@@ -68,46 +68,106 @@ Content-Type: application/json
 
 ---
 
-## 上传文档
+## 上传文档（当前实现）
 
-向知识库中上传文档，支持多种格式。
-
-### 请求
+> `/v1/knowledge/bases/...` 为规划中的多知识库形态；**当前可用的上传端点是下面这个**
+> （落在进程级 SQLite 向量库，单库）。不带前缀的 `/knowledge/...` 是兼容别名。
 
 ```
-POST /v1/knowledge/bases/{kb_id}/documents
+POST /v1/knowledge/documents/upload
 Content-Type: multipart/form-data
+Authorization: Bearer <human token, scope L0 或 admin>
 ```
 
 表单字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file` | file | 是 | 文档文件 |
-| `metadata` | string | 否 | JSON 格式的元数据 |
+| `file` | file | 是 | 文件本体 |
+| `doc_id` | string | 否 | 文档 id；缺省用文件名 |
 
-支持的文件格式：
-- 文本：`.txt`, `.md`, `.markdown`
-- 文档：`.pdf`, `.docx`, `.doc`
-- 数据：`.csv`, `.json`, `.jsonl`
-- 网页：`.html`, `.htm`
+支持的文件格式（**真实解析，不支持的类型会明确拒绝**）：
 
-### 响应（201 Created）
+| 后缀 | 解析方式 | 说明 |
+|------|----------|------|
+| `.txt` / `.md` | UTF-8 解码 | Markdown 标题层级进入 `heading_path` |
+| `.pdf` | pypdf 文本层 | 逐页提取；每个 chunk 带 `page`（1 起） |
+| `.docx` | python-docx | 正文、表格；`Heading 1..6` 层级进入 `heading_path` |
+| `.html` / `.htm` | 标准库 `html.parser` | `h1..h6` 层级、脚本/样式内容丢弃 |
+
+### 上限（超限在解析前拒绝，不会等到 OOM）
+
+| 限制 | 值 | 超限返回 |
+|------|----|----------|
+| 上传文件大小 | 20 MB | `413 文件过大：…` |
+| PDF 页数 | 300 页 | `413 PDF 页数超过上限：N 页，最多 300 页…` |
+| DOCX 解压后总大小 | 150 MB | `413 DOCX 解压后体积过大…` |
+| 提取后正文字符数 | 2,000,000 | `413 提取出的正文过长：…` |
+
+### 响应（200 OK）
 
 ```json
 {
-  "id": "doc-def456",
-  "filename": "product_manual.pdf",
-  "size_bytes": 1048576,
-  "status": "processing",
-  "chunk_count": 0,
-  "metadata": {
-    "author": "技术团队",
-    "version": "2.0"
-  },
-  "created_at": "2026-10-07T12:00:00Z"
+  "document_id": "product_manual.pdf",
+  "chunks": 24,
+  "vectors": 24,
+  "deduplicated": false,
+  "matched_document_id": null,
+  "source": "product_manual.pdf",
+  "extraction": {
+    "file_type": "pdf",
+    "page_count": 12,
+    "text_chars": 18342,
+    "title": null,
+    "paged": true
+  }
 }
 ```
+
+### 去重语义
+
+内容哈希在 **提取后的文本** 上计算（空白归一化后 SHA-256），因此同一份 PDF
+改名为 `product_manual-copy.pdf` 再传不会重复入库：第二次返回
+`deduplicated: true` 与 `matched_document_id`（首次入库的 id），不会新增分块。
+
+### 失败文案（原文，前端可直接展示）
+
+| 情况 | 状态码 | `detail` |
+|------|--------|----------|
+| 扫描版 / 纯图片 PDF（无文本层） | 422 | `该 PDF 无文本层，需要 OCR，暂不支持` |
+| 加密 PDF | 422 | `PDF 已加密，无法读取文本层；请上传未加密的 PDF 或先解除加密` |
+| 损坏 PDF | 422 | `PDF 文件损坏或格式不合法，无法解析：…` |
+| 损坏 DOCX | 422 | `DOCX 文件损坏（不是有效的 zip 包）：…` |
+| 空文件 / 空正文 | 400 | `文件为空` / `文件未包含任何正文文本` |
+| 非 UTF-8 文本 | 400 | `文件不是 UTF-8 编码：…` |
+| 不支持的后缀 | 415 | `不支持的文件类型：.xlsx；支持 .txt / .md / .pdf / .docx / .html / .htm` |
+
+**扫描版 PDF 绝不会以空字符串“成功入库”**：没有文本层就是 422，避免后续检索
+永远搜不到却看不出原因。
+
+### 依赖与许可证
+
+`pypdf`（BSD-3-Clause）、`python-docx`（MIT，传递依赖 `lxml` BSD-3-Clause）。
+HTML 走标准库，不新增依赖。选型理由见
+[`src/knowledge/extractors.py`](../../../src/knowledge/extractors.py) 模块文档与
+`oss-registry.yaml` 的 `document-parsing` 段。
+
+---
+
+## 规划中的多知识库端点（未实现）
+
+以下端点是设计稿，尚未接线，调用会 404；保留在此仅作接口规划参考。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/v1/knowledge/bases` | 列出知识库 |
+| `POST` | `/v1/knowledge/bases` | 创建知识库 |
+| `GET` | `/v1/knowledge/bases/{id}` | 获取知识库详情 |
+| `PUT` | `/v1/knowledge/bases/{id}` | 更新知识库 |
+| `DELETE` | `/v1/knowledge/bases/{id}` | 删除知识库 |
+| `GET` | `/v1/knowledge/bases/{id}/documents` | 列出文档 |
+| `POST` | `/v1/knowledge/bases/{id}/import-url` | 从 URL 导入 |
+| `POST` | `/v1/knowledge/bases/{id}/reindex` | 重建索引 |
 
 ---
 
@@ -141,10 +201,13 @@ Content-Type: application/json
     {
       "doc_id": "doc-def456#3",
       "score": 0.0107,
-      "text": "API 认证配置步骤如下：1. 进入管理后台...",
+      "text": "[第 3 页 / 3.2 API 认证]\nAPI 认证配置步骤如下：1. 进入管理后台...",
+      "page": 3,
+      "location": "第 3 页",
       "metadata": {
         "document_id": "doc-def456",
         "chunk_index": 3,
+        "page": 3,
         "heading_path": ["3.2 API 认证"]
       }
     }
@@ -159,8 +222,10 @@ Content-Type: application/json
       {
         "doc_id": "doc-def456#3",
         "score": 0.0107,
-        "text": "API 认证配置步骤如下：1. 进入管理后台...",
-        "metadata": {"document_id": "doc-def456"}
+        "text": "[第 3 页 / 3.2 API 认证]\nAPI 认证配置步骤如下：1. 进入管理后台...",
+        "page": 3,
+        "location": "第 3 页",
+        "metadata": {"document_id": "doc-def456", "page": 3}
       }
     ],
     "mode": "hybrid",

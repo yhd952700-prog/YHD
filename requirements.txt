@@ -796,3 +796,15 @@ zstandard==0.25.0
 # 下次在有 Docker 的环境执行 `uv pip compile pyproject.toml -o requirements.txt`。
 restrictedpython==8.5
     # via liuhao-ai-os (D:/LiuHao-AI-OS)
+
+# 知识库文件导入（src/knowledge/extractors.py）。同样是对 uv pip compile 产物的
+# **手工最小补齐**（本机未重跑全量 compile，原因同上）。版本为本机 .venv 实测：
+#   pypdf 6.21.4       BSD-3-Clause
+#   python-docx 1.2.0  MIT（其依赖 lxml 为 BSD-3-Clause）
+# 下次在有完整环境时执行 `uv pip compile pyproject.toml -o requirements.txt`。
+pypdf==6.21.4
+    # via liuhao-ai-os (pyproject.toml)
+python-docx==1.2.0
+    # via liuhao-ai-os (pyproject.toml)
+lxml==6.1.3
+    # via python-docx

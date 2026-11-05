@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 def chunk_text(
@@ -132,11 +132,15 @@ class TextChunk:
 
     ``text`` is the body only; ``context_header`` is the breadcrumb that makes a
     fragment such as "如下所示：" meaningful once it leaves its section.
+    ``page`` is the 1-based source page for paged formats (PDF); ``None`` for
+    formats without pages. It is stored in chunk metadata so a search hit can
+    say "来自第 N 页".
     """
 
     text: str
     heading_path: Tuple[str, ...] = ()
     index: int = 0
+    page: Optional[int] = None
 
     @property
     def context_header(self) -> str:
@@ -317,4 +321,34 @@ def chunk_document_structured(
         buffer_len = projected
 
     flush_buffer()
+    return chunks
+
+
+def chunk_paged_document(
+    pages: List[Tuple[int, str]],
+    chunk_size: int = 512,
+    chunk_overlap: int = 50,
+) -> List[TextChunk]:
+    """Chunk a paged document one page at a time, tagging every chunk's page.
+
+    Chunking per page (rather than joining pages and splitting the blob) keeps
+    the page number exact: a chunk never straddles two pages and never needs a
+    guessed "which page did this come from" heuristic. The trade-off is that a
+    paragraph continued across a page break becomes two chunks -- an acceptable
+    loss for the provenance gain, and the page number makes it obvious.
+    """
+    chunks: List[TextChunk] = []
+    for page_number, page_text in pages:
+        page_chunks = chunk_document_structured(
+            page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        for chunk in page_chunks:
+            chunks.append(
+                TextChunk(
+                    chunk.text,
+                    chunk.heading_path,
+                    len(chunks),
+                    page=page_number,
+                )
+            )
     return chunks

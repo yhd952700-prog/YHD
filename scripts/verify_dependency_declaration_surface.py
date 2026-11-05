@@ -333,6 +333,10 @@ IMPORT_ROOT_ALIASES: Dict[str, str] = {
     "opentelemetry": "opentelemetry-api",
     "phoenix": "arize-phoenix",
     "pydantic_monty": "pydantic-monty-client",
+    # python-docx 的 import 根名是 `docx`，PyPI 分发名是 `python-docx`。
+    # 门禁在未安装它的环境里跑时 packages_distributions() 给不出映射，
+    # 没有这条别名会把**正确的** python-docx 声明误判为未声明。
+    "docx": "python-docx",
     # google.generativeai is the legacy Gemini SDK; the import namespace is
     # `google.generativeai` but the distribution is `google-generativeai`
     # (distinct from `google-genai`, which provides the unrelated

@@ -338,6 +338,8 @@ class VectorStore:
                     "chunks": 0,
                     "source": meta.get("source") or meta.get("filename"),
                     "title": meta.get("title"),
+                    "file_type": meta.get("file_type"),
+                    "page_count": meta.get("page_count"),
                     "content_hash": owned_hashes.get(document_id),
                     "ingested_at": None,
                 }
@@ -363,6 +365,12 @@ class VectorStore:
                 "text": str(meta.get("text", "")),
                 "heading_path": list(meta.get("heading_path") or []),
                 "context_header": str(meta.get("context_header") or ""),
+                "page": meta.get("page"),
+                "page_label": (
+                    f"第 {meta['page']} 页"
+                    if isinstance(meta.get("page"), int)
+                    else None
+                ),
             }
             for chunk_id, meta in entries
         ]
@@ -694,6 +702,8 @@ class PersistentVectorStore(VectorStore):
                     "chunks": 0,
                     "source": meta.get("source") or meta.get("filename"),
                     "title": meta.get("title"),
+                    "file_type": meta.get("file_type"),
+                    "page_count": meta.get("page_count"),
                     "content_hash": hashes.get(document_id),
                     "ingested_at": row["updated_at"],
                 }

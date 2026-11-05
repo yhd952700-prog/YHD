@@ -277,6 +277,36 @@ components:
     action: 声明了但零引用；若要上 RAG，优先评估 sqlite-vec(MIT/Apache-2.0 双许可)
       或 LanceDB(Apache-2.0) 这类嵌入式方案，避免额外运维
 
+  # ---------------- 文档解析（知识库导入） ----------------
+  - name: pypdf
+    import_name: pypdf
+    license: BSD-3-Clause
+    category: document-parsing
+    used: "yes"
+    risk: low
+    action: >-
+      知识库 PDF 文本层提取与逐页页码（src/knowledge/extractors.py）。选型时
+      明确排除 pymupdf（AGPL，本项目禁 GPL 系）与 pdfplumber（额外影像依赖）；
+      pypdf 纯 Python、无需系统 poppler 二进制，且提供 is_encrypted / decrypt
+      与可映射为可读错误的类型化异常。BSD-3-Clause，无 copyleft 传染。
+  - name: python-docx
+    import_name: docx
+    license: MIT
+    category: document-parsing
+    used: "yes"
+    risk: low
+    action: >-
+      知识库 DOCX 正文与段落样式名（Heading 1..6）提取，供结构化分块生成
+      heading_path（src/knowledge/extractors.py）。选 docx2txt 会丢失标题层级，
+      mammoth 转 HTML 并引入额外依赖。MIT，无 copyleft 传染。
+  - name: lxml
+    import_name: lxml
+    license: BSD-3-Clause
+    category: document-parsing
+    used: "no"
+    risk: low
+    action: python-docx 的传递依赖（requirements.txt 一并锁定）；src/ 不直接导入。
+
   # ---------------- 安全 ----------------
   - name: hvac
     import_name: hvac

@@ -22,12 +22,17 @@ return fabricated vectors or a mock-written answer.
 * ``retrieval.thresholds`` -- effective ``min_top_score`` / ``min_score_gap``;
 * ``retrieval.hits`` -- mirrors the top-level ``hits`` and **must be empty**
   when the status is ``no_relevant``; low-score padding is forbidden.
+
+``POST /v1/knowledge/documents/upload`` accepts **files**, not just JSON text:
+``.pdf`` / ``.docx`` / ``.html`` / ``.htm`` / ``.txt`` / ``.md``. Extraction is
+owned by :mod:`src.knowledge.extractors`; a scanned PDF is a 422
+(``该 PDF 无文本层，需要 OCR，暂不支持``), never an empty success. PDF chunks
+carry ``page`` metadata and search hits expose ``page`` / ``location``.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import (
@@ -44,6 +49,12 @@ from pydantic import BaseModel, Field
 
 from src.knowledge.documents import get_knowledge_service
 from src.knowledge.embedding import EmbeddingUnavailableError
+from src.knowledge.extractors import (
+    DEFAULT_LIMITS,
+    ExtractionError,
+    FileTooLarge,
+    extract_document,
+)
 from src.knowledge.ingest_jobs import get_ingest_job_manager
 
 core = APIRouter(tags=["knowledge"])
@@ -151,8 +162,8 @@ legacy_router.include_router(core, deprecated=True)
 # merge conflict inside an existing handler would be a regression neither side
 # asked for.
 
-_MAX_UPLOAD_BYTES = 5 * 1024 * 1024
-_ALLOWED_UPLOAD_SUFFIXES = {".txt", ".md"}
+_MAX_UPLOAD_BYTES = DEFAULT_LIMITS.max_file_bytes
+_READ_CHUNK_BYTES = 1024 * 1024
 
 #: New routes live on their own router because ``core`` was already included
 #: into ``router`` / ``legacy_router`` above: routes appended to ``core`` after
@@ -225,51 +236,65 @@ def knowledge_delete_document(
     return result
 
 
+async def _read_upload_limited(file: UploadFile, limit: int) -> bytes:
+    """Read in chunks and refuse past ``limit`` instead of buffering to OOM."""
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > limit:
+            raise FileTooLarge(
+                f"文件过大：已读取超过上限 "
+                f"{limit // (1024 * 1024)}MB；请压缩或拆分后再上传"
+            )
+    return bytes(buffer)
+
+
 @documents_admin.post("/documents/upload")
 async def knowledge_upload_document(
     file: UploadFile = File(...),
     doc_id: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
-    """Multipart upload for plain text only; other types are refused explicitly."""
+    """Multipart upload for PDF / DOCX / HTML / plain text.
+
+    Every format is reduced to extracted text **before** it reaches the index,
+    so the content hash (and therefore dedup) is computed on what the library
+    actually says, not on the file name or bytes. PDF chunks carry ``page``
+    metadata and search hits expose ``page`` / ``location``.
+
+    Errors are the extractor's own readable messages:
+      * 413 -- file size / PDF page count / extracted length over the cap;
+      * 415 -- unsupported suffix;
+      * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt file, empty
+        document. A scanned PDF never returns an empty string as "success".
+    """
     filename = (file.filename or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="缺少文件名")
-    suffix = Path(filename).suffix.lower()
-    if suffix not in _ALLOWED_UPLOAD_SUFFIXES:
-        reason = (
-            "PDF 等二进制格式需要专用解析器，本服务未接入，不会假装解析"
-            if suffix == ".pdf"
-            else "本接口只接收纯文本"
-        )
-        raise HTTPException(
-            status_code=415,
-            detail=(
-                f"不支持的文件类型：{suffix or '未知后缀'}。{reason}；"
-                "请上传 .txt 或 .md 文件"
-            ),
-        )
 
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="文件为空")
-    if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
-        )
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件不是 UTF-8 编码：{exc}",
-        )
+        data = await _read_upload_limited(file, _MAX_UPLOAD_BYTES)
+        extracted = extract_document(data, filename)
+    except ExtractionError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc))
+
+    metadata: Dict[str, Any] = {
+        "source": filename,
+        "filename": filename,
+        "file_type": extracted.file_type,
+        **extracted.metadata,
+    }
+    if extracted.title:
+        metadata["title"] = extracted.title
 
     try:
         result = get_knowledge_service().ingest(
-            text,
+            extracted.text,
             doc_id=doc_id or filename,
-            metadata={"source": filename, "filename": filename},
+            metadata=metadata,
+            pages=extracted.pages or None,
         )
     except EmbeddingUnavailableError as exc:
         raise _unavailable(exc)
@@ -277,6 +302,7 @@ async def knowledge_upload_document(
         raise _storage_error(exc)
 
     result["source"] = filename
+    result["extraction"] = extracted.summary()
     return result
 
 

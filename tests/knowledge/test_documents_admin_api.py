@@ -278,15 +278,18 @@ class TestAdminHttpFlow:
         sources = {doc["source"] for doc in listed["documents"]}
         assert sources == {"handbook.txt", "notes.md"}
 
-    def test_upload_rejects_pdf_explicitly(self, client):
+    def test_upload_reports_corrupt_pdf_instead_of_calling_it_unsupported(self, client):
         response = client.post(
             "/v1/knowledge/documents/upload",
             files={"file": ("manual.pdf", b"%PDF-1.4", "application/pdf")},
             headers=_headers(),
         )
-        assert response.status_code == 415
+        # PDF is now a supported type: a truncated file is a *corrupt* PDF,
+        # not an unsupported format. Detailed scanned/encrypted coverage lives
+        # in tests/knowledge/test_document_import.py.
+        assert response.status_code == 422, response.text
         detail = response.json()["detail"]
-        assert "PDF" in detail and "不会假装解析" in detail
+        assert "损坏" in detail
 
     def test_upload_rejects_binary_and_empty_files(self, client):
         headers = _headers()
