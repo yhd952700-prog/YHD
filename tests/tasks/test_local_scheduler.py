@@ -461,7 +461,10 @@ async def test_heartbeat_job_chains_and_is_dedupe_safe(tmp_path):
         audit_sink=lambda action, outcome, details: events.append((action, outcome, details)),
     )
 
-    assert register_local_jobs(sched) == [LOCAL_HEARTBEAT_JOB]
+    registered = register_local_jobs(sched)
+    assert LOCAL_HEARTBEAT_JOB in registered
+    # 提醒作业也由同一个排程器执行（不另起调度器）。
+    assert "liuhao.reminder.fire" in registered
     seed_local_jobs(sched)
 
     def heartbeats() -> int:

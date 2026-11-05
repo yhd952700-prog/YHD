@@ -4,19 +4,23 @@
 （SQLite + 指数退避 + 死信）。跨进程 / 多 worker 的任务投递仍走
 `src/tasks/handlers.py` + taskiq 队列，两套不重复写调度逻辑。
 
-当前只注册一个真实作业：
+当前注册两个真实作业：
 
 * `liuhao.local.heartbeat` —— 周期性心跳，写审计、并把下一次心跳按
   「下一次运行时刻」为 `job_key` 重新入队（重试不会产生重复心跳）。
+* `liuhao.reminder.fire` —— 定时提醒到点触发（`src/tasks/reminders.py`），
+  通知走托盘气泡/控制台，失败由排程器重试并最终进死信。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from src.tasks.local_scheduler import LocalScheduler
+from src.tasks.reminders import REMINDER_FIRE_JOB, get_reminder_service
 
 AuditSink = Callable[[str, str, Dict[str, Any]], None]
 
@@ -68,9 +72,19 @@ async def local_heartbeat(
     return {"interval_seconds": interval, "next_run_at": next_run_at.isoformat()}
 
 
-def register_local_jobs(scheduler: LocalScheduler) -> List[str]:
-    """Register every local job handler; idempotent."""
+def register_local_jobs(
+    scheduler: LocalScheduler, *, reminder_service=None
+) -> List[str]:
+    """Register every local job handler; idempotent.
+
+    ``reminder_service`` is only for tests: production resolves the process-wide
+    service lazily so the scheduler process and the AI tool share one store
+    (same SQLite database).
+    """
     scheduler.register(LOCAL_HEARTBEAT_JOB, _make_heartbeat_handler(scheduler))
+    scheduler.register(
+        REMINDER_FIRE_JOB, _make_reminder_handler(scheduler, reminder_service)
+    )
     return scheduler.registered_jobs()
 
 
@@ -103,5 +117,14 @@ def seed_local_jobs(scheduler: LocalScheduler) -> List[int]:
 def _make_heartbeat_handler(scheduler: LocalScheduler):
     async def handler(interval_seconds: float | None = None, **_: Any) -> Dict[str, Any]:
         return await local_heartbeat(scheduler, interval_seconds)
+
+    return handler
+
+
+def _make_reminder_handler(scheduler: LocalScheduler, service=None):
+    async def handler(**payload: Any) -> Dict[str, Any]:
+        svc = service or get_reminder_service(scheduler=scheduler)
+        # 通知会阻塞（PowerShell 气泡/文件写入），放线程池执行，别卡住 tick 循环。
+        return await asyncio.to_thread(svc.handle_fire, payload)
 
     return handler

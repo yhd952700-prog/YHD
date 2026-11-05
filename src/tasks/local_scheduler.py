@@ -58,6 +58,7 @@ RUNNING = "running"
 RETRY_WAIT = "retry_wait"
 COMPLETED = "completed"
 DEAD = "dead"
+CANCELLED = "cancelled"
 ACTIVE_STATUSES = (PENDING, RUNNING, RETRY_WAIT)
 
 DEFAULT_MAX_CONCURRENCY = 4
@@ -309,6 +310,26 @@ class LocalScheduler:
                     raise
                 return int(row[0])
             return int(cur.lastrowid)
+
+    def cancel_jobs_by_prefix(self, prefix: str) -> int:
+        """按 ``job_key`` 前缀取消尚未完成的 job，返回取消条数。
+
+        提醒取消/修改时用它把已经排在队列里的后续触发一并撤销：只动
+        ``pending/running/retry_wait``（未来工作），已完成/已死信的历史记录
+        保留不动。正在执行的 job 即使被标成 cancelled，handler 也会在业务层
+        （提醒状态/版本）再次核对并跳过，不会重复响。
+        """
+        if not prefix:
+            raise ValueError("prefix must be non-empty")
+        now = self._now().isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE local_jobs SET status = ?, updated_at = ?,"
+                " lease_owner = NULL, lease_expires_at = NULL"
+                " WHERE job_key LIKE ? AND status IN ('pending','running','retry_wait')",
+                (CANCELLED, now, f"{prefix}%"),
+            )
+            return int(cursor.rowcount)
 
     # -- claim / state transitions ----------------------------------------
 

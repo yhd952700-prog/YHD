@@ -384,6 +384,11 @@ def make_tools(
 
     tools.extend(build_observation_tools(principal))
 
+    # ============ 定时提醒（复用进程内排程器，不另起调度） ============
+    from ...tasks.reminder_tool import build_reminder_tool
+
+    tools.append(build_reminder_tool(principal))
+
     return tools
 
 
