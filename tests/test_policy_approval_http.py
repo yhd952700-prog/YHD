@@ -15,9 +15,14 @@ Pinned here:
 * **The posture snapshot is authenticated.** ``GET /v1/policy/enforcement``
   enumerates the *armed* surface, which is a map of what is **not** gated. It
   must not be readable anonymously.
-* **The surface is exactly four endpoints.** No "execute a kernel action over
-  HTTP" route may appear without this list changing — design decision
-  §10.8.3-1 deliberately refuses remote kernel-action execution.
+* **The surface is exactly five endpoints, and none of them executes.** No
+  "execute a kernel action over HTTP" route may appear without this list
+  changing — design decision §10.8.3-1 deliberately refuses remote
+  kernel-action execution. The fifth entry (``GET
+  /v1/policy/approvals/pending``, added 2026-11-06) is a read-only queue of
+  actions already blocked by policy: admin-gated, no execution, no state
+  change. Registering it is the decision §10.8.3-1 requires; it does not
+  reverse that decision.
 * **The loop is honest.** Issuing a grant does **not** make an HTTP retry
   succeed; execution stays in-process inside ``grant_window``. Measured
   2026-09-12: ``no-grant=defer`` -> ``after-grant=defer`` ->
@@ -461,7 +466,7 @@ class TestTheLoopIsHonestOverHttp:
         assert before["enabled"] == after["enabled"]
 
 
-class TestThePolicySurfaceIsExactlyFourEndpoints:
+class TestThePolicySurfaceIsFixedAndHasNoExecutionRoute:
     """Design decision §10.8.3-1: no remote kernel-action execution, ever."""
 
     def test_no_extra_policy_route_appeared(self, app):
@@ -476,6 +481,11 @@ class TestThePolicySurfaceIsExactlyFourEndpoints:
         assert surface == [
             ("DELETE", "/v1/policy/approvals/{grant_id}"),
             ("GET", "/v1/policy/approvals"),
+            # 只读待办队列（2026-11-06 新增，审批中心显示"还在等我批什么"）：
+            # 需要 admin 主体、不执行任何内核动作、不改状态，故不构成
+            # §10.8.3-1 意义上的"远程执行路由"。把它登记在这里本身就是该
+            # 设计条款要求的决定，而不是绕过它。
+            ("GET", "/v1/policy/approvals/pending"),
             ("GET", "/v1/policy/approvals/{grant_id}"),
             ("GET", "/v1/policy/enforcement"),
             ("POST", "/v1/policy/approvals"),
