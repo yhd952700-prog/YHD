@@ -12,8 +12,10 @@
  *    （不是 ISO 时间）。直接 `new Date("1780000000.1")` 会得到 Invalid Date，旧页面
  *    因此把原始数字当时间显示。这里按 Unix 秒解析，并区分「未开始 / 进行中 /
  *    已结束」。
- * 3. 进度。只按**已经终结**的任务计数；运行中的目标后端不落盘任务清单，进度未知
- *    就是未知，不拿「已运行时长」冒充完成百分比。
+ * 3. 进度。只按**已经终结**的任务计数。运行中的目标会给出**增量**任务快照
+ *    （可能只包含刚变化的任务），`mergeTaskSnapshots` 按 id 合并，绝不因为
+ *    某次快照缺字段或少了某些任务就把已有卡片清空；没有任务时进度未知，
+ *    不拿「已运行时长」冒充完成百分比。
  */
 
 import type { GoalDetail, GoalTask } from './operator'
@@ -94,10 +96,15 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
 }
 
 /**
- * 解析任务时间。后端把 `time.time()` 直接 `str()` 成 `"1780000000.123"`。
- * 同时兼容 ISO 串与毫秒数，返回 Unix 秒；无法解析返回 null。
+ * 解析任务 / 审计时间。后端把 `time.time()` 直接 `str()` 成 `"1780000000.123"`；
+ * 审计事件的 `blocked_at` 则通常是数字。两种都按 Unix 秒解析，同时兼容 ISO 串
+ * 与毫秒数；无法解析返回 null。
  */
-export function parseTaskTime(value: string | null | undefined): number | null {
+export function parseTaskTime(value: string | number | null | undefined): number | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    return value > 1e12 ? value / 1000 : value
+  }
   if (typeof value !== 'string') return null
   const text = value.trim()
   if (!text) return null
@@ -109,6 +116,58 @@ export function parseTaskTime(value: string | null | undefined): number | null {
   const ms = Date.parse(text)
   if (!Number.isFinite(ms) || ms <= 0) return null
   return ms / 1000
+}
+
+/**
+ * 把增量任务快照合并进已有卡片。
+ *
+ * 后端在运行期间只**按 task id 更新槽位**，某次快照可能只包含刚变化的任务，
+ * 甚至某个字段暂时缺失。规则：
+ *   * 以 task id 为键；快照里没出现的任务原样保留（不清空）；
+ *   * 快照里值为 `undefined` 的字段保留旧值（缺字段 ≠ 该字段被清空）；
+ *   * 值为 `null` 的字段照常覆盖（后端明确说过「现在是空的」）；
+ *   * 新任务按到达顺序追加。
+ * 返回新数组，不修改入参。
+ */
+export function mergeTaskSnapshots(
+  previous: GoalTask[],
+  incoming: GoalTask[],
+): GoalTask[] {
+  const result = previous.map((task) => ({ ...task }))
+  const positions = new Map<string, number>()
+  result.forEach((task, index) => {
+    if (task?.id) positions.set(task.id, index)
+  })
+
+  for (const snapshot of incoming) {
+    if (!snapshot || typeof snapshot.id !== 'string' || !snapshot.id) continue
+    const fields = Object.fromEntries(
+      Object.entries(snapshot).filter(([, value]) => value !== undefined),
+    ) as Partial<GoalTask>
+    const position = positions.get(snapshot.id)
+    if (position === undefined) {
+      positions.set(snapshot.id, result.length)
+      result.push({ ...snapshot })
+      continue
+    }
+    result[position] = { ...result[position], ...fields }
+  }
+  return result
+}
+
+/** 风险级别 → 语调。未知级别保持中性，不猜成高危。 */
+export function riskTone(risk: string): ButlerTone {
+  switch ((risk ?? '').toUpperCase()) {
+    case 'CRITICAL':
+    case 'HIGH':
+      return 'danger'
+    case 'MEDIUM':
+      return 'warn'
+    case 'LOW':
+      return 'ok'
+    default:
+      return 'muted'
+  }
 }
 
 /** 单任务耗时（秒）。已结束按真实起止；进行中按「开始到现在」；未开始返回 null。 */
@@ -288,7 +347,9 @@ export function failedTasks(tasks: GoalTask[]): GoalTask[] {
  * 缺失时只用**可数事实**拼一句，不替后端编造结论。
  */
 export function buildGoalSummary(detail: GoalDetail): string {
-  if (isGoalActive(detail.state)) return '管家还在执行，任务清单尚未落盘。'
+  if (isGoalActive(detail.state)) {
+    return '管家还在执行；任务会随增量快照逐条出现，结束后再给出一段完整汇总。'
+  }
   const stats = taskStats(detail.tasks)
   const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : []
   const parts: string[] = []

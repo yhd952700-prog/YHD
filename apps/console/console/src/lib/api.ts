@@ -10,13 +10,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
-import { readError } from './errorMessage'
+import { readErrorParts } from './errorMessage'
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /**
+   * 后端 `detail.code` 的稳定错误码（如 `agent_not_found`）。
+   * 某些端点的 `detail` 是纯字符串，此时为 null —— 界面按原始文案展示，
+   * 绝不自己从人类可读句子里猜测错误类型。
+   */
+  code: string | null
+  constructor(status: number, message: string, code: string | null = null) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -67,10 +74,12 @@ export async function apiFetch<T>(
     } catch {
       // 非浏览器环境：忽略。
     }
-    throw new ApiError(401, await readError(response))
+    const parts = await readErrorParts(response)
+    throw new ApiError(401, parts.message, parts.code)
   }
   if (!response.ok && !acceptStatus?.includes(response.status)) {
-    throw new ApiError(response.status, await readError(response))
+    const parts = await readErrorParts(response)
+    throw new ApiError(response.status, parts.message, parts.code)
   }
   return (await response.json()) as T
 }
@@ -78,6 +87,12 @@ export async function apiFetch<T>(
 export interface ApiState<T> {
   data: T | null
   error: string | null
+  /**
+   * 最近一次失败的真实 HTTP 状态。403 与「空列表」是两件事：队列只对能签发
+   * 凭据的主体可见，非管理员不是“没有待办”，而是“你看不到”。调用方需要
+   * 状态码才能说对话。
+   */
+  status: number | null
   /** 首次加载尚未完成 */
   loading: boolean
   reload: () => void
@@ -97,6 +112,7 @@ export function useApi<T>(
 ): ApiState<T> {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [status, setStatus] = useState<number | null>(null)
   const [nonce, setNonce] = useState(0)
   const requestId = useRef(0)
 
@@ -120,9 +136,11 @@ export function useApi<T>(
         if (!alive || id !== requestId.current) return
         setData(payload)
         setError(null)
+        setStatus(null)
       } catch (err) {
         if (!alive || id !== requestId.current) return
         setError(err instanceof Error ? err.message : '请求失败')
+        setStatus(err instanceof ApiError ? err.status : null)
       }
     }
 
@@ -145,6 +163,7 @@ export function useApi<T>(
   return {
     data: idle ? null : data,
     error: idle ? null : error,
+    status: idle ? null : status,
     loading: idle ? false : data === null && error === null,
     reload,
   }

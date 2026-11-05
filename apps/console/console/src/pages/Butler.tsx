@@ -1,28 +1,33 @@
 /**
- * 鎏灏管家 —— 一句话吩咐 → 自动拆解 → 员工执行 → 人话汇总。
+ * 鎏灏管家 —— 一句话吩咐 → 自动拆解 → 员工执行 → 人话汇总；
+ * 也支持点名把一件事直接派给某个员工。
  *
  * 这一页**只用真实端点**：
  *   * POST /v1/goals（background=true）     一句话交给管家，立刻进入 running；
- *   * GET  /v1/goals/{id}                    轮询目标真实状态与任务清单；
+ *   * POST /v1/goals/assign                 点名派给指定员工（不走管家拆解）；
+ *   * GET  /v1/goals/{id}                    轮询目标真实状态与**增量**任务快照；
  *   * POST /v1/goals/{id}/stop               人类主权中止；
- *   * POST /v1/goals/{id}/replan             整目标重新规划（失败后的重试路径）；
+ *   * POST /v1/goals/{id}/replan             整目标重新规划；
+ *   * POST /v1/goals/{goal_id}/tasks/{task_id}/retry  只重跑一个失败任务（同步）；
+ *   * GET  /v1/policy/approvals/pending      待审批队列（只对能签发凭据的主体可见）；
+ *   * POST /v1/policy/approvals              采用队列返回的请求体签发凭据；
  *   * GET  /v1/goals                          历史执行；
- *   * GET  /v1/employees                      员工名册（单独指派的选择器数据源）；
+ *   * GET  /v1/employees                      员工名册（指派选择器）；
  *   * GET  /v1/projects                       可选的归属项目；
  *   * GET  /v1/files/content                  点开看产物正文。
  *
- * 后端没有的三件事，在界面上**显式禁用并标注「等待后端接口」**，不编造：
- *   1. 把一条任务直接指派给指定员工；
- *   2. 运行中逐任务进度（后台执行期间 tasks 恒为空，结束时才落盘）；
- *   3. 单任务重试（只有整目标 replan）。
- * 另外，审批中心只有「已签发凭据」，没有「待审批请求」队列；被策略拦截的动作
- * 只能在任务错误里看到，入口指到审批中心，但不能在这里代为批准。
+ * 诚实约束：
+ *   * 运行中的任务快照可能是**增量**的（只包含刚变化的任务）。按 id 合并，
+ *     缺字段保留旧值，已出现的卡片绝不会因为某次快照不完整而被清空；
+ *   * 只有全部终结才给总进度百分比；运行中只报「已出现 N 项 / 已结束 M 项」；
+ *   * 待审批队列的授权模板 `target` 是 `*`，后端要求 `confirm_wildcard` 显式
+ *     二次确认；页面把这件事摆到明面上，不藏在一次无意识点击里。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useApi } from '../lib/api'
+import { ApiError, useApi } from '../lib/api'
 import type { EmployeesPayload } from '../lib/contracts'
-import { relativeTime, useNow, safeText } from '../lib/format'
+import { relativeTime, safeText, useNow } from '../lib/format'
 import {
   approvalTasks,
   buildGoalSummary,
@@ -35,22 +40,31 @@ import {
   goalStateLabel,
   goalStateTone,
   isGoalActive,
+  mergeTaskSnapshots,
+  parseTaskTime,
+  riskTone,
   sortGoalSummaries,
   taskDurationSeconds,
   taskPhaseInfo,
   taskStats,
 } from '../lib/butler'
 import {
+  approvePending,
+  assignTask,
   createGoal,
   readFile,
   replanGoal,
+  retryGoalTask,
   stopGoal,
 } from '../lib/operator'
 import type {
   GoalDetail,
   GoalSummary,
+  GoalTask,
   GoalsResponse,
   Json,
+  PendingApprovalItem,
+  PendingApprovalsResponse,
   ProjectsResponse,
 } from '../lib/operator'
 import { Card, Empty, Failure, Guard, Loading } from '../components/ui'
@@ -63,6 +77,10 @@ type ArtifactPreview = {
   error: string | null
 }
 
+type GoalMode = 'butler' | 'assigned'
+
+const PENDING_POLL_MS = 30_000
+
 function goalIdOf(raw: Json): string {
   const value = raw.goal_id
   return typeof value === 'string' ? value : ''
@@ -74,6 +92,66 @@ function errorText(error: unknown): string {
 
 function acceptanceTone(state: string): 'ok' | 'warn' | 'danger' | 'accent' | 'muted' {
   return goalStateTone(state)
+}
+
+/**
+ * 把后端稳定错误码翻译成**下一步该做什么**。
+ *
+ * 关键差别（不能笼统报「提交失败」）：
+ *   * `agent_not_found` → 这个人不存在，重新选；
+ *   * `agent_unavailable` → 这个人被暂停，先去恢复；
+ *   * `task_not_retryable` → 不是失败态，没东西可重试；
+ *   * `goal_running` → 目标还在跑，等结束再单任务重试。
+ */
+function goalWorkMessage(error: unknown, fallback: string): string {
+  const code = error instanceof ApiError ? error.code : null
+  switch (code) {
+    case 'agent_not_found':
+      return '指定的员工不存在，或不在当前可见的名册里。不会换成其他员工执行，请重新选择。'
+    case 'agent_unavailable':
+      return '这位员工当前处于暂停状态，不能接受指派。请先到员工页恢复这位员工，再重新派活。'
+    case 'task_not_retryable':
+      return '这个任务当前不是失败态，没有可重试的内容。只有失败任务能单独重试。'
+    case 'goal_running':
+      return '这个目标还在运行。等它结束后，再回来单独重试失败的任务。'
+    case 'task_not_found':
+      return '后端已经找不到这个任务（可能已被清理）。刷新目标后按最新任务卡操作。'
+    case 'goal_not_found':
+      return '这个目标已经不存在（可能已被清理）。'
+    default:
+      return `${fallback}：${errorText(error)}`
+  }
+}
+
+function approveFailureMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 403) {
+    return '你没有签发权限：后端只允许管理员 / L0 人类主权主体签发授权。这不是队列为空。'
+  }
+  return errorText(error)
+}
+
+function grantIdOf(raw: Json): string {
+  const grant = raw.grant
+  if (grant && typeof grant === 'object' && !Array.isArray(grant)) {
+    const id = (grant as Record<string, unknown>).grant_id
+    if (typeof id === 'string') return id
+  }
+  return ''
+}
+
+function approvalBodyOf(item: PendingApprovalItem): Json {
+  const body = item.approve?.body
+  return body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+}
+
+/** 队列模板的 target 是 `"*"`（审计事件没有记录具体目标）。 */
+function isWildcardBody(body: Json): boolean {
+  return typeof body.target === 'string' && body.target === '*'
+}
+
+function blockedAtText(value: number | string | null | undefined): string {
+  const seconds = parseTaskTime(value)
+  return seconds === null ? '拦截时间未记录' : `${relativeTime(seconds)}被拦`
 }
 
 export function Butler({
@@ -95,7 +173,29 @@ export function Butler({
   const [activePrompt, setActivePrompt] = useState('')
   const [activeStartedAt, setActiveStartedAt] = useState<number | null>(null)
   const [activeRunning, setActiveRunning] = useState(false)
+  const [activeMode, setActiveMode] = useState<GoalMode>('butler')
+  const [activeEmployee, setActiveEmployee] = useState<string | null>(null)
   const autoAttached = useRef(false)
+
+  // ── 任务快照缓存（增量合并，不允许越刷越少） ─────────────────
+  const [taskCache, setTaskCache] = useState<{ goalId: string; tasks: GoalTask[] } | null>(null)
+
+  // ── 单独指派 ─────────────────────────────────────────────────
+  const [assignAgentId, setAssignAgentId] = useState('')
+  const [assignInstruction, setAssignInstruction] = useState('')
+  const [assigning, setAssigning] = useState(false)
+  const [assignError, setAssignError] = useState<string | null>(null)
+  const [assignNotice, setAssignNotice] = useState<string | null>(null)
+
+  // ── 单任务重试 ───────────────────────────────────────────────
+  const [retryingId, setRetryingId] = useState<string | null>(null)
+  const [retryErrors, setRetryErrors] = useState<Record<string, string>>({})
+
+  // ── 待审批 ───────────────────────────────────────────────────
+  const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [approveErrors, setApproveErrors] = useState<Record<string, string>>({})
+  const [approveNotices, setApproveNotices] = useState<Record<string, string>>({})
+  const [wildcardConfirmed, setWildcardConfirmed] = useState<Record<string, boolean>>({})
 
   // ── 主权动作 ─────────────────────────────────────────────────
   const [stopping, setStopping] = useState(false)
@@ -114,6 +214,10 @@ export function Butler({
   const projects = useApi<ProjectsResponse>('/v1/projects', 60_000)
   const employees = useApi<EmployeesPayload>('/v1/employees', 30_000)
   const goals = useApi<GoalsResponse>('/v1/goals', BUTLER_LIST_POLL_MS)
+  const pendingApi = useApi<PendingApprovalsResponse>(
+    '/v1/policy/approvals/pending',
+    PENDING_POLL_MS,
+  )
 
   const detailApi = useApi<GoalDetail>(
     activeId ? `/v1/goals/${encodeURIComponent(activeId)}` : null,
@@ -125,7 +229,27 @@ export function Butler({
   // 最终态与 `activeRunning` 之间有一帧的时差（effect 还没来得及清零）。
   // 界面一律以**后端真实 state** 为准，否则会出现「徽标写成功、却还在转圈」。
   const live = activeRunning && (!detail || isGoalActive(detail.state))
-  const tasks = useMemo(() => (detail && Array.isArray(detail.tasks) ? detail.tasks : []), [detail])
+
+  // 增量快照合并。注意：某一帧快照只包含刚变化的任务、甚至缺字段，
+  // 这里按 id 合并并保留旧值；`detail` 自己仍原样保留，供汇总使用。
+  useEffect(() => {
+    if (!detail) return
+    const incoming = Array.isArray(detail.tasks) ? detail.tasks : []
+    setTaskCache((previous) => {
+      if (!previous || previous.goalId !== detail.goal_id) {
+        return { goalId: detail.goal_id, tasks: mergeTaskSnapshots([], incoming) }
+      }
+      return {
+        goalId: detail.goal_id,
+        tasks: mergeTaskSnapshots(previous.tasks, incoming),
+      }
+    })
+  }, [detail])
+
+  const tasks = useMemo(
+    () => (taskCache && taskCache.goalId === activeId ? taskCache.tasks : []),
+    [taskCache, activeId],
+  )
   const stats = useMemo(() => taskStats(tasks), [tasks])
   const awaiting = useMemo(() => approvalTasks(tasks), [tasks])
   const failed = useMemo(() => failedTasks(tasks), [tasks])
@@ -138,6 +262,8 @@ export function Butler({
   const activeSummary = list.find((item) => item.goal_id === activeId) ?? null
   const state = detail?.state ?? activeSummary?.state ?? (activeRunning ? 'running' : '')
   const promptText = detail?.natural_language ?? activePrompt ?? activeSummary?.natural_language ?? ''
+  const pendingItems =
+    pendingApi.data && Array.isArray(pendingApi.data.items) ? pendingApi.data.items : []
 
   /** 运行中：以后端 running 记录里的 created_at 为起点；没有就退回本地提交时刻。 */
   const runningElapsed = useMemo(() => {
@@ -148,6 +274,27 @@ export function Butler({
   }, [live, activeStartedAt, detail?.created_at, now])
 
   const terminalElapsed = useMemo(() => (detail ? goalElapsedSeconds(tasks, now / 1000) : null), [detail, tasks, now])
+
+  // 任务上的 `assigned_agent` 是 **agent id**（后端 `goal_task_graph` 的赋值口径），
+  // 不是员工名。能通过名册反查时显示「员工（agent）」；查不到就原样显示 id，
+  // 不假装它是员工名。
+  const agentOwners = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const employee of employees.data?.employees ?? []) {
+      for (const agent of employee.agents ?? []) {
+        map.set(agent.id, `${employee.name}（${agent.name || agent.id}）`)
+      }
+    }
+    return map
+  }, [employees.data])
+
+  /** 这个目标是不是「点名派给某人」而不是管家自动拆解。 */
+  const assignedAgentId =
+    detail?.assigned_agent || (activeMode === 'assigned' ? activeEmployee : null) || ''
+  const assignedGoal = Boolean(assignedAgentId)
+  const assignedLabel = assignedAgentId
+    ? agentOwners.get(assignedAgentId) ?? assignedAgentId
+    : ''
 
   // ── 首个仍在运行的目标：刷新页面后自动接上，不用人去历史里翻 ──────
   useEffect(() => {
@@ -160,16 +307,19 @@ export function Butler({
     setActivePrompt(running.natural_language)
     setActiveStartedAt(running.created_at ?? null)
     setActiveRunning(true)
+    setActiveMode('butler')
+    setActiveEmployee(null)
   }, [activeId, list])
 
-  // 目标进入终态：停止 2 秒轮询，并刷新历史列表（真实状态）。
+  // 目标进入终态：停止 2 秒轮询，并刷新历史列表与待审批队列（真实状态）。
   useEffect(() => {
     if (!detail) return
     if (!isGoalActive(detail.state) && activeRunning) {
       setActiveRunning(false)
       goals.reload()
+      pendingApi.reload()
     }
-  }, [detail, activeRunning, goals.reload])
+  }, [detail, activeRunning, goals.reload, pendingApi.reload])
 
   useEffect(() => {
     // 切换目标时清掉上一个目标遗留的产物预览与动作提示。
@@ -178,6 +328,10 @@ export function Butler({
     setStopError(null)
     setReplanNotice(null)
     setReplanError(null)
+    setAssignError(null)
+    setAssignNotice(null)
+    setRetryErrors({})
+    setRetryingId(null)
   }, [activeId])
 
   const submit = useCallback(async () => {
@@ -204,20 +358,71 @@ export function Butler({
       setActivePrompt(text)
       setActiveStartedAt(Date.now() / 1000)
       setActiveRunning(true)
+      setActiveMode('butler')
+      setActiveEmployee(null)
       setPrompt('')
       goals.reload()
+      pendingApi.reload()
     } catch (error) {
       setSubmitError(errorText(error))
     } finally {
       setSubmitting(false)
     }
-  }, [goals.reload, projectId, prompt, scope])
+  }, [goals.reload, pendingApi.reload, projectId, prompt, scope])
+
+  const assign = useCallback(async () => {
+    const agentId = assignAgentId
+    const instruction = assignInstruction.trim()
+    if (!agentId) {
+      setAssignError('先选一位员工，再派活。')
+      return
+    }
+    if (!instruction) {
+      setAssignError('写一句要这位员工做的事。')
+      return
+    }
+    setAssigning(true)
+    setAssignError(null)
+    setAssignNotice(null)
+    try {
+      const raw = await assignTask({
+        agent_id: agentId,
+        instruction,
+        scope,
+        project_id: projectId || null,
+        background: true,
+      })
+      const id = goalIdOf(raw)
+      if (!id) {
+        setAssignError('后端返回了指派结果但没有 goal_id：无法追踪这次执行。')
+        return
+      }
+      const label = agentOwners.get(agentId) ?? agentId
+      setActiveId(id)
+      setActivePrompt(instruction)
+      setActiveStartedAt(Date.now() / 1000)
+      setActiveRunning(true)
+      setActiveMode('assigned')
+      setActiveEmployee(agentId)
+      setAssignInstruction('')
+      setAssignNotice(`已点名派给 ${label}（目标 ${id}）。这次不经过管家拆解，下面只显示这位员工的任务。`)
+      goals.reload()
+      pendingApi.reload()
+    } catch (error) {
+      setAssignError(goalWorkMessage(error, '指派失败'))
+    } finally {
+      setAssigning(false)
+    }
+  }, [agentOwners, assignAgentId, assignInstruction, goals.reload, pendingApi.reload, projectId, scope])
 
   const openFromHistory = useCallback((item: GoalSummary) => {
     setActiveId(item.goal_id)
     setActivePrompt(item.natural_language)
     setActiveStartedAt(item.created_at ?? null)
     setActiveRunning(isGoalActive(item.state))
+    setActiveMode('butler')
+    setActiveEmployee(null)
+    setAssignNotice(null)
   }, [])
 
   const stop = useCallback(async () => {
@@ -233,12 +438,13 @@ export function Butler({
       setActiveRunning(true)
       detailApi.reload()
       goals.reload()
+      pendingApi.reload()
     } catch (error) {
       setStopError(errorText(error))
     } finally {
       setStopping(false)
     }
-  }, [activeId, detailApi.reload, goals.reload])
+  }, [activeId, detailApi.reload, goals.reload, pendingApi.reload])
 
   const retryWholeGoal = useCallback(async () => {
     if (!activeId) return
@@ -252,13 +458,81 @@ export function Butler({
       setActiveRunning(true)
       detailApi.reload()
       goals.reload()
+      pendingApi.reload()
     } catch (error) {
       setReplanError(errorText(error))
     } finally {
       setReplanning(false)
       setReplanStartedAt(null)
     }
-  }, [activeId, detailApi.reload, goals.reload])
+  }, [activeId, detailApi.reload, goals.reload, pendingApi.reload])
+
+  const retryTask = useCallback(
+    async (task: GoalTask) => {
+      if (!activeId) return
+      setRetryingId(task.id)
+      setRetryErrors((current) => {
+        if (!(task.id in current)) return current
+        const next = { ...current }
+        delete next[task.id]
+        return next
+      })
+      try {
+        // 后端这个调用是同步的：返回时这个任务已经跑完，其余任务不受影响。
+        await retryGoalTask(activeId, task.id)
+        setActiveRunning(true)
+        setReplanNotice('单任务重试已完成（同步执行）；下面刷新为该目标的最新任务清单。')
+        detailApi.reload()
+        goals.reload()
+        pendingApi.reload()
+      } catch (error) {
+        setRetryErrors((current) => ({
+          ...current,
+          [task.id]: goalWorkMessage(error, '任务重试失败'),
+        }))
+      } finally {
+        setRetryingId(null)
+      }
+    },
+    [activeId, detailApi.reload, goals.reload, pendingApi.reload],
+  )
+
+  const approve = useCallback(
+    async (item: PendingApprovalItem, body: Json, wildcard: boolean) => {
+      setApprovingId(item.pending_id)
+      setApproveErrors((current) => {
+        const next = { ...current }
+        delete next[item.pending_id]
+        return next
+      })
+      setApproveNotices((current) => {
+        const next = { ...current }
+        delete next[item.pending_id]
+        return next
+      })
+      try {
+        // 「采用队列返回的请求体」：只追加后端要求的通配二次确认，不改其它字段。
+        const requestBody = wildcard ? { ...body, confirm_wildcard: true } : body
+        const raw = await approvePending(requestBody)
+        const grantId = grantIdOf(raw)
+        setApproveNotices((current) => ({
+          ...current,
+          [item.pending_id]: `已签发授权${grantId ? `（${grantId}）` : ''}。授权不会自动继续执行：回到失败任务点「重试此任务」，或「重新规划并重跑」。`,
+        }))
+        setWildcardConfirmed((current) => ({ ...current, [item.pending_id]: false }))
+        pendingApi.reload()
+        detailApi.reload()
+      } catch (error) {
+        setApproveErrors((current) => ({
+          ...current,
+          [item.pending_id]: approveFailureMessage(error),
+        }))
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [detailApi.reload, pendingApi.reload],
+  )
 
   const openArtifact = useCallback(async (path: string) => {
     setArtifact({ path, loading: true, content: null, size: null, error: null })
@@ -287,24 +561,28 @@ export function Butler({
     )
   }, [list, query])
 
+  const assignOptions = useMemo(
+    () =>
+      (employees.data?.employees ?? []).flatMap((employee) =>
+        (employee.agents ?? []).map((agent) => ({
+          employee: employee.name,
+          agent,
+          label: `${employee.name} · ${agent.name || agent.id}`,
+        })),
+      ),
+    [employees.data],
+  )
+  const selectedAssignOption =
+    assignOptions.find((option) => option.agent.id === assignAgentId) ?? null
   const employeeNames = (employees.data?.employees ?? []).map((item) => item.name)
   const projectOptions = projects.data?.projects ?? []
   const replanElapsed = replanStartedAt
     ? formatElapsed(Math.max(0, (now - replanStartedAt) / 1000))
     : null
 
-  // 任务上的 `assigned_agent` 是 **agent id**（后端 `goal_task_graph` 的赋值口径），
-  // 不是员工名。能通过名册反查时显示「员工（agent）」；查不到就原样显示 id，
-  // 不假装它是员工名。
-  const agentOwners = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const employee of employees.data?.employees ?? []) {
-      for (const agent of employee.agents ?? []) {
-        map.set(agent.id, `${employee.name}（${agent.name || agent.id}）`)
-      }
-    }
-    return map
-  }, [employees.data])
+  const scrollToPending = useCallback(() => {
+    document.getElementById('butler-pending')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [])
 
   return (
     <div className="os-grid">
@@ -387,9 +665,105 @@ export function Butler({
         )}
 
         <p className="os-hint" style={{ marginTop: 10 }}>
-          提交后管家在后台执行，页面每 2 秒向 GET /v1/goals/&#123;goal_id&#125; 确认一次状态；
-          不会用假的分块进度冒充实时进度。
+          提交后管家在后台执行，页面每 2 秒向 GET /v1/goals/&#123;goal_id&#125; 确认一次状态。
+          任务卡会随增量快照逐条出现；只有全部终结后才给总进度百分比，不用假进度充数。
         </p>
+      </Card>
+
+      {/* ── 单独指派（点名执行） ─────────────────────────────── */}
+      <Card
+        title="单独指派（点名执行）"
+        sub="不走管家拆解：你选员工、写任务，直接派给这个人"
+        span={activeId ? 5 : 12}
+      >
+        <div className="os-butler-assign-flag" aria-label="指定执行，不经过自动拆解">
+          <span className="os-badge" data-tone="accent">指定执行</span>
+          <span>这条任务不会交给管家自动拆解，也不会换人执行。</span>
+        </div>
+
+        <div className="os-field">
+          <label htmlFor="butler-assign-employee">员工</label>
+          <select
+            id="butler-assign-employee"
+            className="os-input"
+            value={assignAgentId}
+            onChange={(event) => setAssignAgentId(event.target.value)}
+            disabled={assigning || employees.loading || assignOptions.length === 0}
+          >
+            <option value="">
+              {employees.loading
+                ? '员工名册加载中…'
+                : assignOptions.length === 0
+                  ? '没有可用员工'
+                  : '选择员工'}
+            </option>
+            {assignOptions.map((option) => {
+              const paused = option.agent.status === 'paused'
+              return (
+                <option key={option.agent.id} value={option.agent.id} disabled={paused}>
+                  {option.label}
+                  {paused ? '（暂停中）' : ''}
+                </option>
+              )
+            })}
+          </select>
+        </div>
+
+        <div className="os-field">
+          <label htmlFor="butler-assign-task">任务</label>
+          <input
+            id="butler-assign-task"
+            className="os-input"
+            value={assignInstruction}
+            onChange={(event) => setAssignInstruction(event.target.value)}
+            placeholder="比如：把 reports/ 下的周报合并成一份"
+            disabled={assigning}
+            autoComplete="off"
+          />
+        </div>
+
+        {selectedAssignOption && (
+          <p className="os-hint" style={{ marginTop: 6 }}>
+            执行主体：{selectedAssignOption.label}
+            {' · '}
+            范围 {scope}
+            {' · '}
+            {projectId
+              ? `项目 ${projectOptions.find((project) => project.project_id === projectId)?.name ?? projectId}`
+              : '独立目标（不挂项目）'}
+          </p>
+        )}
+
+        <div className="os-kb-actions">
+          <button
+            className="os-btn"
+            type="button"
+            onClick={() => void assign()}
+            disabled={assigning || !assignAgentId || !assignInstruction.trim()}
+          >
+            {assigning ? '指派中…' : `派给 ${selectedAssignOption ? selectedAssignOption.label : '所选员工'}`}
+          </button>
+          {employees.error && (
+            <span className="os-kb-error">员工名册不可用：{employees.error}</span>
+          )}
+        </div>
+
+        {assignError && (
+          <p className="os-kb-error" role="alert" style={{ marginTop: 8 }}>
+            {assignError}
+          </p>
+        )}
+        {assignNotice && (
+          <p className="os-note" role="status" style={{ marginTop: 8 }}>
+            {assignNotice}
+          </p>
+        )}
+
+        {employeeNames.length > 0 && (
+          <p className="os-hint" style={{ marginTop: 8 }}>
+            当前名册：{employeeNames.join('、')}
+          </p>
+        )}
       </Card>
 
       {/* ── 当前目标 / 汇总 ─────────────────────────────────── */}
@@ -398,10 +772,10 @@ export function Butler({
           title="管家汇总"
           sub={
             state
-              ? `${goalStateLabel(state)} · 目标 ${activeId}`
+              ? `${assignedGoal ? '单独指派' : '管家自动拆解'} · ${goalStateLabel(state)} · 目标 ${activeId}`
               : `目标 ${activeId}`
           }
-          span={12}
+          span={7}
           action={
             <div className="os-kb-actions">
               {live && (
@@ -423,7 +797,7 @@ export function Butler({
                 </button>
               )}
               <button className="os-link" onClick={() => detailApi.reload()}>
-                刷新
+                刷新状态
               </button>
             </div>
           }
@@ -444,42 +818,56 @@ export function Butler({
                   <strong>{promptText || '（目标没有自然语言描述）'}</strong>
                   <p className="os-hint">
                     {live
-                      ? `管家正在拆解并安排员工执行 · 已运行 ${formatElapsed(runningElapsed)}`
+                      ? `管家正在执行 · 已运行 ${formatElapsed(runningElapsed)} · 已出现 ${stats.total} 项任务`
                       : `总耗时 ${formatTaskDuration(terminalElapsed)} · ${stats.total} 项任务`}
                   </p>
+                  {assignedGoal && (
+                    <p className="os-hint">
+                      执行主体：{assignedLabel}（这是你点名指派的，不是管家自动拆解）
+                    </p>
+                  )}
                 </div>
-                <span className="os-badge" data-tone={acceptanceTone(state)}>
-                  {goalStateLabel(state)}
-                </span>
+                <div className="os-butler-run-badges">
+                  <span className="os-badge" data-tone={assignedGoal ? 'accent' : 'muted'}>
+                    {assignedGoal ? '单独指派' : '管家自动拆解'}
+                  </span>
+                  <span className="os-badge" data-tone={acceptanceTone(state)}>
+                    {goalStateLabel(state)}
+                  </span>
+                </div>
               </div>
 
               {live ? (
                 <>
                   <div
                     className="os-butler-progress"
-                    data-indeterminate={tasks.length === 0 ? 'true' : 'false'}
+                    data-indeterminate="true"
                     role="progressbar"
-                    aria-valuetext={
-                      tasks.length === 0
-                        ? '进度未知：后端运行期间不返回任务清单'
-                        : `已结束 ${stats.finished} / ${stats.total} 项`
-                    }
-                    aria-valuenow={tasks.length === 0 ? undefined : stats.percent}
+                    aria-valuetext={`已出现 ${stats.total} 项任务，其中已结束 ${stats.finished} 项；总数以最终清单为准`}
                   >
-                    <span style={{ width: tasks.length === 0 ? undefined : `${stats.percent}%` }} />
+                    <span />
                   </div>
-                  {tasks.length === 0 && (
+                  <p className="os-hint" style={{ marginTop: 6 }}>
+                    已出现 {stats.total} 项 · 已结束 {stats.finished} 项 · 进行中 {stats.running} 项
+                    {stats.awaiting > 0 ? ` · 待确认 ${stats.awaiting}` : ''}
+                    {stats.skipped > 0 ? ` · 跳过 ${stats.skipped}` : ''}
+                  </p>
+                  {tasks.length === 0 ? (
                     <div className="os-note" role="status" style={{ marginTop: 10 }}>
-                      <strong>为什么现在看不到任务卡？</strong>
+                      <strong>管家正在拆解并安排员工</strong>
                       <p style={{ margin: '4px 0 0' }}>
-                        后端在后台执行期间不落盘任务清单：GET /v1/goals/&#123;goal_id&#125; 会返回
-                        tasks: []，直到执行结束才一次性写入。所以这里只能显示「仍在运行」
-                        和计时；不是页面卡死，也不会伪造逐任务进度。
+                        第一张任务卡到达后会逐条出现。后端现在会在执行期间返回增量任务快照，
+                        不需要等整次执行结束；在此之前不伪造任何任务级进度。
                       </p>
                       <p className="os-hint" style={{ marginTop: 4 }}>
                         如果你不想等了，可以「中止本次执行」；中止后下面会显示后端真实终态。
                       </p>
                     </div>
+                  ) : (
+                    <p className="os-hint" style={{ marginTop: 8 }}>
+                      任务卡按增量快照更新：某次快照可能只包含刚变化的任务，
+                      已出现的卡不会被清空，也不会因为字段暂缺而消失。
+                    </p>
                   )}
                 </>
               ) : (
@@ -506,24 +894,24 @@ export function Butler({
                       <div>
                         <strong>有 {awaiting.length} 个动作需要你确认</strong>
                         <p style={{ margin: '4px 0 0' }}>
-                          这些任务是被策略拦截后失败的，不是普通报错。授权入口在审批中心。
-                          当前网关没有「待审批请求」队列接口，所以这里只列出执行时被拦下的
-                          动作，不能在这里代为批准。
+                          这些任务是被策略拦截后失败的，不是普通报错。待审批入口在下方
+                          「待我确认」；批准后回到任务卡点「重试此任务」，授权才会生效。
                         </p>
-                        <button
-                          className="os-btn"
-                          style={{ marginTop: 8 }}
-                          onClick={onOpenApproval}
-                        >
-                          去审批中心授权
-                        </button>
+                        <div className="os-kb-actions" style={{ marginTop: 8 }}>
+                          <button className="os-btn" onClick={scrollToPending}>
+                            去「待我确认」
+                          </button>
+                          <button className="os-link" onClick={onOpenApproval}>
+                            查看已签发凭据
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
 
                   {failed.length > 0 && (
                     <div className="os-butler-failures">
-                      <strong>失败项（可整目标重跑，单任务重试等待后端接口）</strong>
+                      <strong>失败项（可单独重试，或重新规划整目标）</strong>
                       <ul>
                         {failed.map((task) => (
                           <li key={task.id}>
@@ -600,13 +988,118 @@ export function Butler({
         </Card>
       )}
 
+      {/* ── 待我确认（真实待审批队列） ────────────────────────── */}
+      <Card
+        title="待我确认"
+        sub="策略拦截后真实待签发的动作 · 采用队列给出的请求体批准"
+        span={12}
+        action={
+          <button className="os-link" onClick={pendingApi.reload}>
+            刷新
+          </button>
+        }
+      >
+        <div id="butler-pending" />
+        {pendingApi.status === 403 ? (
+          <div className="os-alert" role="alert">
+            <div>
+              <strong>你没有签发权限</strong>
+              <p style={{ margin: '4px 0 0' }}>
+                待审批队列只对能签发凭据的主体可见（管理员 / L0 人类主权）。
+                这不是「队列为空」，也不代表没有动作在等你 —— 只是当前账号看不到。
+              </p>
+              {pendingApi.error && <p className="os-hint">{pendingApi.error}</p>}
+            </div>
+          </div>
+        ) : pendingApi.error && !pendingApi.data ? (
+          <Failure message={pendingApi.error} onRetry={pendingApi.reload} />
+        ) : pendingApi.loading ? (
+          <Loading rows={2} />
+        ) : pendingItems.length === 0 ? (
+          <Empty
+            title="没有等待你确认的动作"
+            hint="队列只显示最近被策略 defer 拦下的真实事件；普通失败不会出现在这里。"
+          />
+        ) : (
+          <div className="os-butler-pending">
+            {pendingItems.map((item) => {
+              const body = approvalBodyOf(item)
+              const wildcard = isWildcardBody(body)
+              const confirmed = Boolean(wildcardConfirmed[item.pending_id])
+              const busy = approvingId === item.pending_id
+              return (
+                <article
+                  key={item.pending_id}
+                  className="os-butler-pending-item"
+                  data-tone={riskTone(item.risk_level)}
+                >
+                  <header className="os-butler-pending-head">
+                    <span className="os-badge" data-tone={riskTone(item.risk_level)}>
+                      风险 {item.risk_level || '未知'}
+                    </span>
+                    <strong className="os-butler-pending-action">{item.action}</strong>
+                    <span className="os-hint">{blockedAtText(item.blocked_at)}</span>
+                  </header>
+                  <p className="os-butler-pending-reason">{item.reason || item.summary || '后端未给出拦截原因'}</p>
+                  <p className="os-hint">
+                    规则 {item.policy_rule ?? '未记录'} · 关联 {item.correlation_id ?? '未记录'} ·
+                    拦截主体 {item.blocked_by ?? '未记录'}
+                  </p>
+                  {wildcard && (
+                    <label className="os-butler-pending-confirm">
+                      <input
+                        type="checkbox"
+                        checked={confirmed}
+                        onChange={(event) =>
+                          setWildcardConfirmed((current) => ({
+                            ...current,
+                            [item.pending_id]: event.target.checked,
+                          }))
+                        }
+                      />
+                      我确认这条授权覆盖所有目标（target = *）
+                    </label>
+                  )}
+                  <div className="os-kb-actions">
+                    <button
+                      className="os-btn"
+                      onClick={() => void approve(item, body, wildcard)}
+                      disabled={busy || (wildcard && !confirmed)}
+                    >
+                      {busy ? '批准中…' : '采用此请求体批准'}
+                    </button>
+                    <span className="os-hint">
+                      {wildcard
+                        ? '后端要求通配授权显式二次确认；请求体仅追加 confirm_wildcard。'
+                        : '按队列给出的动作与目标签发，不改参数。'}
+                    </span>
+                  </div>
+                  {approveErrors[item.pending_id] && (
+                    <p className="os-kb-error" role="alert">
+                      {approveErrors[item.pending_id]}
+                    </p>
+                  )}
+                  {approveNotices[item.pending_id] && (
+                    <p className="os-note" role="status">
+                      {approveNotices[item.pending_id]}
+                    </p>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
       {/* ── 任务分解 ─────────────────────────────────────────── */}
       {activeId && (
         <Card
           title="任务分解"
           sub={
             detail
-              ? `总进度 ${stats.percent}% · 已结束 ${stats.finished} / ${stats.total} 项`
+              ? live
+                ? `执行中 · 已出现 ${stats.total} 项 · 已结束 ${stats.finished} 项`
+                : `总进度 ${stats.percent}% · 已结束 ${stats.finished} / ${stats.total} 项`
               : '等待管家的任务清单'
           }
           span={12}
@@ -619,15 +1112,15 @@ export function Butler({
             ) : (
               <Empty
                 title="还没有任务清单"
-                hint="运行中的目标后端不返回任务；等管家执行结束，这里会一次性出现完整的任务卡。"
+                hint="管家开始拆解后，任务卡会随着增量快照逐条出现；第一张卡到达前这里保持为空。"
               />
             )
           ) : tasks.length === 0 ? (
             <Empty
-              title={live ? '管家仍在执行，任务清单尚未落盘' : '本次没有分解出任务'}
+              title={live ? '管家正在拆解，第一张任务卡还没到' : '本次没有分解出任务'}
               hint={
                 live
-                  ? '后端在运行期间返回 tasks: []；结束后才会写入任务卡。这是后端当前的能力边界，不是页面故障。'
+                  ? '运行期间后端会返回增量快照；已收到的任务卡会保留，不会因为某次快照不完整而被清空。'
                   : '目标已结束但没有任何任务：可能需要换一种更具体的说法，或检查员工是否可用。'
               }
             />
@@ -635,10 +1128,20 @@ export function Butler({
             <div className="os-butler-tasks">
               {tasks.map((task) => {
                 const info = taskPhaseInfo(task)
+                const retryable = info.phase === 'failed' || info.phase === 'awaiting'
+                const busy = retryingId === task.id
                 return (
-                  <article key={task.id} className="os-butler-task" data-tone={info.tone}>
+                  <article
+                    key={task.id}
+                    className="os-butler-task"
+                    data-tone={info.tone}
+                    data-live={info.phase === 'running' ? 'true' : 'false'}
+                  >
                     <header className="os-butler-task-head">
                       <span className="os-badge" data-tone={info.tone}>
+                        {info.phase === 'running' && (
+                          <span className="os-butler-task-dot" aria-hidden="true" />
+                        )}
                         {info.label}
                       </span>
                       <strong className="os-butler-task-name">
@@ -667,17 +1170,33 @@ export function Butler({
                     )}
                     {task.error && <p className="os-kb-error">失败原因：{task.error}</p>}
                     {info.phase === 'awaiting' && (
-                      <button className="os-btn os-btn-ghost" onClick={onOpenApproval}>
-                        去审批中心授权
-                      </button>
+                      <div className="os-kb-actions">
+                        <button className="os-btn os-btn-ghost" onClick={scrollToPending}>
+                          去「待我确认」授权
+                        </button>
+                        <button
+                          className="os-btn os-btn-ghost"
+                          onClick={() => void retryTask(task)}
+                          disabled={busy}
+                          title="若审批队列已签发授权，可在这里重新执行这个任务"
+                        >
+                          {busy ? '重试中…（同步执行）' : '授权后重试此任务'}
+                        </button>
+                      </div>
+                    )}
+                    {retryable && retryErrors[task.id] && (
+                      <p className="os-kb-error" role="alert">
+                        {retryErrors[task.id]}
+                      </p>
                     )}
                     {info.phase === 'failed' && (
                       <button
                         className="os-btn os-btn-ghost"
-                        disabled
-                        title="后端没有「只重试一个任务」的端点；目前只能 POST /v1/goals/{goal_id}/replan 重跑整个目标"
+                        onClick={() => void retryTask(task)}
+                        disabled={busy}
+                        title="只重跑这一个任务；其余任务的结果不变。后端这个调用是同步的，完成才返回。"
                       >
-                        重试此任务（等待后端接口）
+                        {busy ? '重试中…（同步执行）' : '重试此任务'}
                       </button>
                     )}
                   </article>
@@ -688,65 +1207,11 @@ export function Butler({
         </Card>
       )}
 
-      {/* ── 单独指派（后端缺失，显式禁用） ──────────────────────── */}
-      <Card
-        title="单独指派"
-        sub="绕过管家的自动拆解，直接点一名员工做一件事"
-        span={5}
-      >
-        <fieldset className="os-butler-assign" disabled aria-describedby="butler-assign-gap">
-          <div className="os-field">
-            <label htmlFor="butler-assign-employee">员工</label>
-            <select id="butler-assign-employee" className="os-input" defaultValue="">
-              <option value="">
-                {employees.loading
-                  ? '员工名册加载中…'
-                  : employeeNames.length === 0
-                    ? '没有可用员工'
-                    : '选择员工'}
-              </option>
-              {employeeNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="os-field">
-            <label htmlFor="butler-assign-task">任务</label>
-            <input
-              id="butler-assign-task"
-              className="os-input"
-              placeholder="比如：把 reports/ 下的周报合并成一份"
-            />
-          </div>
-          <button className="os-btn" type="button">
-            指派并开始
-          </button>
-        </fieldset>
-        <div className="os-alert" id="butler-assign-gap" style={{ marginTop: 10 }}>
-          <div>
-            <strong>等待后端接口</strong>
-            <p style={{ margin: '4px 0 0' }}>
-              当前网关没有「把一条任务直接指派给指定员工」的端点。可用的写入口只有
-              `POST /v1/goals`（由管家自动拆解、交给默认员工执行）。所以本节保持禁用，
-              不做假数据演示。
-            </p>
-          </div>
-        </div>
-        {/* 名册只做展示，让空选择器不至于看起来像坏了。 */}
-        {employeeNames.length > 0 && (
-          <p className="os-hint" style={{ marginTop: 8 }}>
-            当前名册：{employeeNames.join('、')}
-          </p>
-        )}
-      </Card>
-
       {/* ── 历史 ─────────────────────────────────────────────── */}
       <Card
         title="历史执行"
         sub="最近的目标 · 点一条查看它的任务分解与汇总"
-        span={7}
+        span={12}
         action={
           <button className="os-link" onClick={goals.reload}>
             刷新
@@ -766,7 +1231,7 @@ export function Butler({
                 hint={
                   query.trim()
                     ? '搜索只匹配目标描述、id 与状态；清空搜索框可看到全部。'
-                    : '在上面输入一句话并交给管家；执行记录会出现在这里。'
+                    : '在上面输入一句话并交给管家，或点名派活；执行记录会出现在这里。'
                 }
               />
             ) : (
@@ -802,31 +1267,16 @@ export function Butler({
         span={12}
       >
         <dl className="os-kv os-butler-gaps">
-          <dt>单独指派</dt>
+          <dt>待审批授权的目标粒度</dt>
           <dd>
-            缺端点：没有「把一条任务直接指派给某个员工」的接口。现在只能发
-            `POST /v1/goals`，由管家自动拆解并交给默认员工。本节已禁用，等后端补口。
+            队列的授权模板使用 target=*（审计事件没有记录具体目标），所以无法只批准
+            「某一个路径 / 某一个项目」。页面要求你显式勾选「覆盖所有目标」，后端才签发
+            通配授权；这是当前真实边界。
           </dd>
-          <dt>运行中逐任务进度</dt>
+          <dt>产物内联预览</dt>
           <dd>
-            缺数据：后台目标在运行期间 `GET /v1/goals/{'{goal_id}'}` 的 `tasks` 恒为空，
-            结束才写入。页面用计时与不定进度条证明任务还活着，但不伪造任务级百分比。
-          </dd>
-          <dt>单任务重试</dt>
-          <dd>
-            缺端点：只有整目标 `POST /v1/goals/{'{goal_id}'}/replan`。失败任务卡上的
-            「重试此任务」因此禁用，并标注等待后端接口。
-          </dd>
-          <dt>待审批队列</dt>
-          <dd>
-            缺队列：审批中心展示的是**已签发**的授权凭据，没有「待审批请求」列表。
-            被策略拦截的动作只能在任务错误里看到；可以在任务卡与汇总里看到
-            「待确认」与去审批中心的入口，但无法在这里代为批准。
-          </dd>
-          <dt>产物</dt>
-          <dd>
-            已可用：汇总里点文件名会读 `GET /v1/files/content` 显示正文；二进制或超大文件
-            会显示后端的真实拒绝原因，不会伪装成空内容。
+            文本文件可在汇总里点开，走 GET /v1/files/content 显示正文；二进制或超大文件
+            会被后端拒绝，页面如实显示拒绝原因，不会伪装成空内容。
           </dd>
         </dl>
       </Card>

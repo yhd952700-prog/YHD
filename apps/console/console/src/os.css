@@ -2115,6 +2115,13 @@ select {
   line-height: 1.55;
 }
 
+.os-butler-run-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .os-butler-pulse {
   width: 9px;
   height: 9px;
@@ -2264,6 +2271,20 @@ select {
   border-left-color: var(--sc-cyan);
 }
 
+.os-butler-task[data-live='true'] {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sc-cyan) 16%, transparent);
+}
+
+.os-butler-task-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--sc-cyan);
+  animation: os-butler-pulse 1.6s ease-out infinite;
+}
+
 .os-butler-task-head {
   display: flex;
   align-items: center;
@@ -2307,13 +2328,91 @@ select {
   font-size: 12px;
 }
 
-.os-butler-assign {
+.os-butler-assign-flag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--sc-cyan) 34%, transparent);
+  background: color-mix(in srgb, var(--sc-cyan) 6%, transparent);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-text-muted);
+}
+
+.os-butler-pending {
   display: grid;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  opacity: 0.55;
+}
+
+.os-butler-pending-item {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--os-border);
+  border-left: 2px solid var(--os-text-faint);
+  background: var(--os-panel-2);
+}
+
+.os-butler-pending-item[data-tone='ok'] {
+  border-left-color: var(--os-ok);
+}
+
+.os-butler-pending-item[data-tone='warn'] {
+  border-left-color: var(--os-warn);
+}
+
+.os-butler-pending-item[data-tone='danger'] {
+  border-left-color: var(--os-danger);
+}
+
+.os-butler-pending-item[data-tone='accent'] {
+  border-left-color: var(--sc-cyan);
+}
+
+.os-butler-pending-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.os-butler-pending-action {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--os-font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.os-butler-pending-reason {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.os-butler-pending-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--os-text-muted);
+  cursor: pointer;
+}
+
+.os-butler-pending-item .os-kb-actions {
+  margin-top: 10px;
+}
+
+.os-butler-pending-item .os-btn {
+  width: auto;
+  padding: 5px 11px;
+  font-size: 12px;
 }
 
 .os-butler-history {

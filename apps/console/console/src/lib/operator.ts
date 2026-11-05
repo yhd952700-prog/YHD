@@ -90,6 +90,45 @@ export function replanGoal(goalId: string): Promise<Json> {
   })
 }
 
+// ─── 单独指派 / 单任务重试 ───────────────────────────────────
+//
+// 与 `POST /v1/goals` 的关键差别：执行主体由调用方点名。不存在（404
+// `agent_not_found`）或暂停（409 `agent_unavailable`）都必须原样报错，
+// 绝不静默换成别的员工 —— 所以这里不做任何兜底重试。
+
+export interface AssignTaskBody {
+  agent_id: string
+  instruction: string
+  scope?: string
+  project_id?: string | null
+  background?: boolean
+}
+
+export function assignTask(body: AssignTaskBody): Promise<Json> {
+  return apiFetch<Json>('/v1/goals/assign', {
+    method: 'POST',
+    body: JSON.stringify({
+      agent_id: body.agent_id,
+      instruction: body.instruction,
+      scope: body.scope ?? 'L1',
+      project_id: body.project_id ?? null,
+      background: body.background ?? true,
+    }),
+  })
+}
+
+/**
+ * 只重跑一个失败任务。后端这个调用是**同步**的：请求返回时该任务已经跑完，
+ * 其余任务的结果不变。409 `goal_running` / `task_not_retryable` 是两种不同
+ * 拒绝，调用方必须分别提示。
+ */
+export function retryGoalTask(goalId: string, taskId: string): Promise<Json> {
+  return apiFetch<Json>(
+    `/v1/goals/${encodeURIComponent(goalId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    { method: 'POST' },
+  )
+}
+
 // ─── 暂停 / 恢复单个 agent ───────────────────────────────────
 
 export function pauseAgent(agentId: string): Promise<Json> {
@@ -317,6 +356,12 @@ export interface GoalDetail {
    * 存在的历史目标记录** fail-safe：缺失时界面显示「未记录归属」，不假装成 null。
    */
   project_id?: string | null
+  /**
+   * 单独指派入口的执行主体（agent id）。`POST /v1/goals/assign` 与后台执行
+   * 都会写入；`POST /v1/goals` 的管家自动拆解目标为 null/缺失。
+   * 界面据此区分「你点名派给某人」与「管家自己拆解」。
+   */
+  assigned_agent?: string | null
   /** 真实工作区产物（相对路径）。空数组 = 该目标没有向工作区写入任何文件。 */
   artifacts: string[]
   evaluation: {
@@ -731,4 +776,60 @@ export function listPermissions(): Promise<PermissionsResponse> {
 /** 身份总览：随轮询自动刷新。 */
 export function getIdentitySummary(): Promise<IdentitySummary> {
   return apiFetch<IdentitySummary>('/v1/identity/summary')
+}
+
+// ─── 待审批队列（策略 defer 的真实拦截记录） ──────────────────
+//
+// 端点与 `src/gateway/policy.py` 严格对齐：
+//   * GET  /v1/policy/approvals/pending —— 只对**能签发凭据**的主体可见；
+//     非管理员是 403（不是空列表），跨主体不泄露；
+//   * POST /v1/policy/approvals —— 签发凭据。请求体原样来自队列的
+//     `approve.body`（页面提供「采用此请求体批准」）。
+//
+// 后端模板里的 `target` 是 `"*"`（审计事件没有记录具体目标）。签发通配授权
+// 必须显式 `confirm_wildcard: true`，否则 400；页面据此要求一次明确勾选，
+// 不把「覆盖所有目标」藏进一次无意识的点击。
+
+export interface PendingApprovalItem {
+  pending_id: string
+  action: string
+  risk_level: string
+  policy_rule: string | null
+  correlation_id: string | null
+  /** 审计事件时间戳（Unix 秒） */
+  blocked_at: number | string | null
+  blocked_by: string | null
+  reason: string
+  summary: string
+  approve: {
+    method: string
+    path: string
+    body: Json
+  }
+}
+
+export interface PendingApprovalsResponse {
+  count: number
+  items: PendingApprovalItem[]
+  as_of: number | null
+  lookback_seconds: number
+  enforcement: Record<string, unknown>
+}
+
+/** 待审批队列：随轮询自动刷新（被拦动作会随执行出现）。 */
+export function listPendingApprovals(): Promise<PendingApprovalsResponse> {
+  return apiFetch<PendingApprovalsResponse>('/v1/policy/approvals/pending')
+}
+
+/**
+ * 采用队列返回的请求体签发凭据。
+ *
+ * 调用方负责把 `approve.body` 原样递进来（页面只允许追加
+ * `confirm_wildcard` 这一项显式确认）。403 = 没有签发权限，不是队列为空。
+ */
+export function approvePending(body: Json): Promise<Json> {
+  return apiFetch<Json>('/v1/policy/approvals', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }

@@ -17,7 +17,9 @@ import {
   goalStateTone,
   isGoalActive,
   looksLikeApproval,
+  mergeTaskSnapshots,
   parseTaskTime,
+  riskTone,
   sortGoalSummaries,
   taskDurationSeconds,
   taskPhaseInfo,
@@ -73,6 +75,53 @@ describe('任务状态映射', () => {
     expect(looksLikeApproval('action requires human approval')).toBe(true)
     expect(looksLikeApproval(null)).toBe(false)
   })
+
+  test('风险级别只按后端原值给色调，未知保持中性', () => {
+    expect(riskTone('HIGH')).toBe('danger')
+    expect(riskTone('CRITICAL')).toBe('danger')
+    expect(riskTone('MEDIUM')).toBe('warn')
+    expect(riskTone('LOW')).toBe('ok')
+    expect(riskTone('whatever')).toBe('muted')
+  })
+})
+
+describe('增量任务快照', () => {
+  test('按 id 合并且缺字段保留旧值，缺任务不清空', () => {
+    const original = [
+      task({ id: 't1', name: '查资料', status: 'pending', assigned_agent: 'agent-1' }),
+      task({ id: 't2', name: '写报告', status: 'pending' }),
+    ]
+
+    // 快照只包含 t1 的变化，且只有 id / status。
+    const partial = mergeTaskSnapshots(original, [
+      { id: 't1', status: 'running' } as GoalTask,
+    ])
+    expect(partial).toHaveLength(2)
+    expect(partial[0].status).toBe('running')
+    expect(partial[0].name).toBe('查资料')
+    expect(partial[0].assigned_agent).toBe('agent-1')
+    expect(partial[1].name).toBe('写报告')
+  })
+
+  test('新任务追加；值为 null 是明确清空', () => {
+    const merged = mergeTaskSnapshots(
+      [task({ id: 't1', result: 'ok' })],
+      [
+        task({ id: 't2', name: '归档', status: 'ready' }),
+        { id: 't1', result: null } as GoalTask,
+      ],
+    )
+    expect(merged.map((item) => item.id)).toEqual(['t1', 't2'])
+    expect(merged[0].result).toBeNull()
+    expect(merged[1].name).toBe('归档')
+  })
+
+  test('不修改入参', () => {
+    const original = [task({ id: 't1', status: 'pending' })]
+    const merged = mergeTaskSnapshots(original, [{ id: 't1', status: 'completed' } as GoalTask])
+    expect(original[0].status).toBe('pending')
+    expect(merged[0].status).toBe('completed')
+  })
 })
 
 describe('耗时', () => {
@@ -82,6 +131,12 @@ describe('耗时', () => {
     expect(parseTaskTime('2026-11-06T12:00:00Z')).toBeTypeOf('number')
     expect(parseTaskTime('')).toBeNull()
     expect(parseTaskTime('not-a-time')).toBeNull()
+  })
+
+  test('审计的 blocked_at 是数字，也按 Unix 秒解析', () => {
+    expect(parseTaskTime(1780000000.5)).toBeCloseTo(1780000000.5)
+    expect(parseTaskTime(1780000000123)).toBeCloseTo(1780000000.123)
+    expect(parseTaskTime(0)).toBeNull()
   })
 
   test('已完成按真实起止，进行中按现在，未开始为 null', () => {
