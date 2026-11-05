@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -53,10 +55,27 @@ def test_dbos_is_optional_extra_not_a_runtime_dependency():
 
 
 def test_hard_kill_then_restart_resumes_workflow(tmp_path):
+    # DBOS 是可选 extra（`pip install -e ".[dbos]"`），CI 的 unit job 只装
+    # `.[tests]`，没有 dbos。没有依赖时这个用例无法成立 —— 跳过并说明原因，
+    # 不要让它以"exit 1 vs 17"的假失败形式红掉（那正是 CI run 42127243953 的根因：
+    # ModuleNotFoundError: No module named 'dbos' → RuntimeError → 退出码 1）。
+    pytest.importorskip(
+        "dbos", reason='DBOS pilot 依赖可选 extra：pip install -e ".[dbos]"'
+    )
     db_dir = tmp_path / "pilot"
 
     first = _run(db_dir, "--kill-at", "2", enabled=True)
-    assert first.returncode == 17, f"expected hard kill exit 17, got {first.returncode}\n{first.stderr}"
+    # 硬杀只保证"非零 + 停在 step 2"，不钉死具体数字：POSIX 下被信号终止时
+    # subprocess 的 returncode 表现与 Windows 不同（本机 Windows 实测 17，
+    # 即 os._exit(17) 原样返回；POSIX 若真是信号终止会是 -N）。
+    # 真正的失败形态是"没杀掉却正常走完(0)"或被依赖缺失伪装成别的退出码(1)。
+    assert first.returncode != 0, (
+        f"expected the process to die inside step 2, got exit {first.returncode}\n"
+        f"stdout:\n{first.stdout}\nstderr:\n{first.stderr}"
+    )
+    assert "HARD KILL inside step 2" in first.stdout, first.stdout
+    assert "DBOS pilot is DISABLED" not in first.stdout
+    assert "ModuleNotFoundError" not in first.stderr, first.stderr
     log = (db_dir / "pilot_steps.log").read_text(encoding="utf-8").splitlines()
     assert log == ["step1"]
 
@@ -66,5 +85,7 @@ def test_hard_kill_then_restart_resumes_workflow(tmp_path):
 
     resumed = (db_dir / "pilot_steps.log").read_text(encoding="utf-8").splitlines()
     # 关键证据：step1 只有一份（恢复重放跳过了已完成的步骤），step2/3 续跑完成。
+    # 也就是说硬杀后重启不会产生重复执行。
     assert resumed == ["step1", "step2", "step3"]
     assert resumed.count("step1") == 1
+
