@@ -6,14 +6,20 @@
   * 默认**关闭**；必须由用户在设置里显式开启（``enable``）。
   * 提供"自启但不自动打开浏览器"的默认行为（``open_browser=False``）；
     需要开机直接弹浏览器时才传 ``open_browser=True``。
-  * 写入的命令使用 ``pythonw.exe``（无控制台窗口），并带 ``--autostart``，
-    由 ``scripts/liuhao_desktop.py`` 装配桌面壳。
+  * 写入的命令使用 ``pythonw.exe``（无控制台窗口）。解释器按布局解析：
+    开发目录用 ``.venv\\Scripts\\pythonw.exe``；安装目录用
+    ``runtime\\pythonw.exe``（安装包没有 .venv）；都没有时退回当前解释器
+    同目录的 pythonw。入口同理：源码目录用 ``scripts/liuhao_desktop.py``
+    （带 ``--autostart``，起托盘）；安装目录退回
+    ``scripts/launch_installed.py``（安装包未收录桌面入口脚本），行为是
+    "自启网关与控制台、不弹浏览器"。
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +28,9 @@ from . import REPO_ROOT
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "LiuHaoAIOS"
 DESKTOP_ENTRY = Path("scripts") / "liuhao_desktop.py"
+INSTALLED_ENTRY = Path("scripts") / "launch_installed.py"
 PYTHONW = Path(".venv") / "Scripts" / "pythonw.exe"
+INSTALLED_PYTHONW = Path("runtime") / "pythonw.exe"
 
 
 def supported() -> bool:
@@ -31,18 +39,41 @@ def supported() -> bool:
 
 
 def _pythonw(root: Path) -> str:
-    candidate = root / PYTHONW
-    if candidate.is_file():
-        return str(candidate)
+    for candidate in (root / PYTHONW, root / INSTALLED_PYTHONW):
+        if candidate.is_file():
+            return str(candidate)
+    current = Path(sys.executable)
+    sibling = current.with_name("pythonw.exe")
+    if os.name == "nt" and sibling.is_file():
+        return str(sibling)
     return "pythonw.exe" if os.name == "nt" else "python"
+
+
+def _entry(root: Path) -> Path:
+    desktop = root / DESKTOP_ENTRY
+    if desktop.is_file():
+        return desktop
+    installed = root / INSTALLED_ENTRY
+    if installed.is_file():
+        return installed
+    raise RuntimeError(
+        "找不到桌面入口：源码目录需要 scripts/liuhao_desktop.py，"
+        "安装目录需要 scripts/launch_installed.py；请重装或从完整目录登记自启。"
+    )
 
 
 def build_command(root: Path | None = None, *, open_browser: bool = False) -> str:
     """构造写入注册表的完整命令行（Windows 参数引用规则）。"""
     base = Path(root or REPO_ROOT)
-    args = [str(_pythonw(base)), str(base / DESKTOP_ENTRY), "--autostart"]
-    if open_browser:
-        args.append("--open-browser")
+    entry = _entry(base)
+    args = [str(_pythonw(base)), str(entry)]
+    if entry.name == DESKTOP_ENTRY.name:
+        args.append("--autostart")
+        if open_browser:
+            args.append("--open-browser")
+    elif not open_browser:
+        # 安装入口默认会打开浏览器；自启场景默认不打扰用户。
+        args.append("--no-browser")
     return subprocess.list2cmdline(args)
 
 

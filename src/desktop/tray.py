@@ -25,11 +25,14 @@ from __future__ import annotations
 import contextlib
 import importlib
 import os
+import struct
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 #: 菜单动作（对外稳定名称）。
@@ -42,14 +45,27 @@ ACTION_QUIT = "quit"
 ACTION_TOGGLE_STATUS = "toggle_status"
 
 #: 菜单项顺序即产品要求：打开控制台 / 查看状态 / 停止服务 / 退出。
+#: 「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止网关并移除托盘 ——
+#: 标签里写清楚，避免用户把"停止"当成"退出"。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
     (1001, ACTION_OPEN_CONSOLE, "打开控制台"),
     (1002, ACTION_SHOW_STATUS, "查看状态"),
-    (1003, ACTION_STOP_SERVICE, "停止服务"),
-    (1004, ACTION_QUIT, "退出"),
+    (1003, ACTION_STOP_SERVICE, "停止服务（仅停网关，托盘保留）"),
+    (1004, ACTION_QUIT, "退出（停止网关并关闭托盘）"),
 )
 
+#: 图标状态：运行中（绿）/ 有错误（红）/ 已停止（灰）。
+STATE_RUNNING = "running"
+STATE_ERROR = "error"
+STATE_STOPPED = "stopped"
+STATE_COLORS: dict[str, tuple[int, int, int]] = {
+    STATE_RUNNING: (46, 160, 67),
+    STATE_ERROR: (218, 54, 51),
+    STATE_STOPPED: (120, 120, 120),
+}
+
 _TIP_MAX = 127
+_ICON_SIZE = 16
 
 
 def available() -> bool:
@@ -70,6 +86,41 @@ def _load_win32() -> tuple[Any, Any, Any]:
         raise RuntimeError("未安装 pywin32，无法创建系统托盘（pip install pywin32）") from exc
 
 
+def state_icon_path(state: str) -> Path:
+    """状态图标文件落点（临时目录，跨进程复用；只含颜色，不含任何用户数据）。"""
+    base = Path(tempfile.gettempdir()) / "liuhao-tray-icons"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"liuhao-{state}.ico"
+
+
+def write_state_icon(path: Path, rgb: tuple[int, int, int], size: int = _ICON_SIZE) -> Path:
+    """手写一个 32bpp 圆点 ICO（绿=运行中 / 红=有错误 / 灰=已停止）。
+
+    为什么不用 Pillow / 图片资源：托盘只依赖 pywin32，仓库不引入新依赖，也不
+    想把二进制图标塞进仓库。ICO 是公开格式，这里按规范拼 ICONDIR + 32bpp
+    DIB，Windows 的 ``LoadImage`` 可直接读取（含 alpha 通道，圆外透明）。
+    """
+    pixels = bytearray()
+    for y in range(size - 1, -1, -1):  # ICO 的 XOR 位图自下而上
+        for x in range(size):
+            dx = x - (size - 1) / 2
+            dy = y - (size - 1) / 2
+            inside = dx * dx + dy * dy <= (size * 0.44) ** 2
+            alpha = 255 if inside else 0
+            pixels += bytes((rgb[2], rgb[1], rgb[0], alpha))
+    mask = b"\x00" * (4 * size)  # 1bpp AND 掩码，全 0；透明由 alpha 决定
+    bitmap_header = struct.pack(
+        "<IiiHHIIiiII",
+        40, size, size * 2, 1, 32, 0, len(pixels) + len(mask), 0, 0, 0, 0,
+    )
+    directory = struct.pack("<HHH", 0, 1, 1)
+    entry = struct.pack(
+        "<BBBBHHII", size, size, 0, 0, 1, 32, 40 + len(pixels) + len(mask), 22
+    )
+    path.write_bytes(directory + entry + bitmap_header + bytes(pixels) + mask)
+    return path
+
+
 class SystemTray:
     """一个只在 Windows 上真正工作的托盘图标。"""
 
@@ -86,6 +137,9 @@ class SystemTray:
         self._class_name = ""
         self._icon_added = False
         self._error: str | None = None
+        self.last_notify_error: str | None = None
+        self._state = ""
+        self._icon_cache: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -137,6 +191,89 @@ class SystemTray:
             win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, self._nid)
         except Exception:  # noqa: BLE001
             pass
+
+    def notify(self, title: str, message: str, *, timeout: float = 8.0, warning: bool = False) -> bool:
+        """弹一次托盘气泡通知，返回是否成功提交给 Shell。
+
+        只用于状态切换（服务已启动 / 已停止 / 已强制停止），不做业务通知。
+        **是否真的显示由 Windows 通知设置决定**（专注助手、通知开关、通知
+        历史策略都会吞掉气泡），代码层只能保证把 NIF_INFO 交给 Explorer。
+        """
+        if not self._icon_added or self._nid is None or self._w32 is None:
+            return False
+        _, _, win32gui = self._w32
+        info_flags = win32gui.NIIF_WARNING if warning else win32gui.NIIF_INFO
+        timeout_ms = int(max(1.0, timeout) * 1000)
+        # pywin32 的 PyNOTIFYICONDATA 元组顺序（官方文档）：
+        # (hWnd, ID, Flags, CallbackMessage, hIcon, Tip, Info, Timeout, InfoTitle, InfoFlags)
+        nid = (
+            self._nid[0],
+            self._nid[1],
+            self._nid[2] | win32gui.NIF_INFO,
+            self._nid[3],
+            self._nid[4],
+            self._nid[5],
+            message[:255],
+            timeout_ms,
+            title[:63],
+            info_flags,
+        )
+        try:
+            result = win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, nid)
+        except Exception as exc:  # noqa: BLE001
+            self.last_notify_error = f"{type(exc).__name__}: {exc}"
+            return False
+        return result is None or bool(result)
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def set_state(self, state: str) -> bool:
+        """切换图标颜色：运行中（绿）/ 有错误（红）/ 已停止（灰）。
+
+        失败（图标未添加、图标文件不可读）时只返回 False，不抛异常 ——
+        状态图标是**辅助信息**，不能因为它把服务或消息循环拖垮。
+        """
+        if state not in STATE_COLORS:
+            return False
+        self._state = state
+        if not self._icon_added or self._nid is None or self._w32 is None:
+            return False
+        _, win32con, win32gui = self._w32
+        hicon = self._ensure_icon(win32gui, win32con, state)
+        if not hicon:
+            return False
+        self._nid = self._nid[:4] + (hicon,) + self._nid[5:]
+        try:
+            result = win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, self._nid)
+        except Exception:  # noqa: BLE001
+            return False
+        return result is None or bool(result)
+
+    def _ensure_icon(self, win32gui: Any, win32con: Any, state: str) -> Any:
+        cached = self._icon_cache.get(state)
+        if cached:
+            return cached
+        hicon = 0
+        try:
+            path = write_state_icon(state_icon_path(state), STATE_COLORS[state])
+            hicon = win32gui.LoadImage(
+                0, str(path), win32con.IMAGE_ICON, 0, 0,
+                win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE,
+            )
+        except Exception:  # noqa: BLE001 - 退回系统内置图标
+            hicon = 0
+        if not hicon:
+            stock_name = {
+                STATE_RUNNING: "IDI_APPLICATION",
+                STATE_ERROR: "IDI_ERROR",
+                STATE_STOPPED: "IDI_INFORMATION",
+            }[state]
+            hicon = win32gui.LoadIcon(0, getattr(win32con, stock_name, win32con.IDI_APPLICATION))
+        if hicon:
+            self._icon_cache[state] = hicon
+        return hicon
 
     # ------------------------------------------------------------------ #
     # 消息循环（托盘线程）
@@ -274,6 +411,11 @@ __all__ = [
     "ACTION_STOP_SERVICE",
     "ACTION_TOGGLE_STATUS",
     "MENU_ITEMS",
+    "STATE_COLORS",
+    "STATE_ERROR",
+    "STATE_RUNNING",
+    "STATE_STOPPED",
     "SystemTray",
     "available",
+    "write_state_icon",
 ]

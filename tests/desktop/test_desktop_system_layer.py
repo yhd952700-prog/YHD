@@ -1,10 +1,16 @@
-"""桌面系统层测试：关于页、自启、托盘、诊断包脱敏、防火墙只读检测。"""
+"""桌面系统层测试：关于页、自启、托盘、优雅停机、诊断包脱敏、防火墙只读检测。"""
 
 from __future__ import annotations
 
 import json
 import os
+import socket
+import struct
+import subprocess
 import sys
+import threading
+import time
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -22,7 +28,8 @@ from src.desktop.diagnostics import (  # noqa: E402
     verify_bundle,
 )
 from src.desktop.firewall import AUTO_MODIFY_FIREWALL, inspect_firewall  # noqa: E402
-from src.desktop.probe import pick_port, port_is_free  # noqa: E402
+from src.desktop.probe import http_json, pick_port, port_is_free  # noqa: E402
+from src.desktop.service import GRACEFUL_TIMEOUT, SHUTDOWN_LOG_MARKER, stop_process  # noqa: E402
 
 WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="Windows 系统层能力")
 
@@ -174,11 +181,255 @@ def test_autostart_command_quotes_pythonw_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo with space"
     (repo / ".venv" / "Scripts").mkdir(parents=True)
     (repo / "scripts").mkdir()
+    (repo / "scripts" / "liuhao_desktop.py").touch()
     (repo / ".venv" / "Scripts" / "pythonw.exe").touch()
     command = autostart.build_command(repo)
     assert command.startswith('"')
     assert "--autostart" in command
     assert f'"{repo / "scripts" / "liuhao_desktop.py"}"' in command
+
+
+def test_autostart_command_uses_installed_runtime(tmp_path: Path) -> None:
+    """安装布局（app/runtime、无 .venv）也必须落到可执行的 pythonw。"""
+    app = tmp_path / "app with space"
+    (app / "runtime").mkdir(parents=True)
+    (app / "scripts").mkdir()
+    (app / "runtime" / "pythonw.exe").touch()
+    (app / "scripts" / "launch_installed.py").touch()
+
+    command = autostart.build_command(app)
+    assert f'"{app / "runtime" / "pythonw.exe"}"' in command
+    assert f'"{app / "scripts" / "launch_installed.py"}"' in command
+    assert "--no-browser" in command
+    assert "--autostart" not in command
+
+    with_browser = autostart.build_command(app, open_browser=True)
+    assert "--no-browser" not in with_browser
+
+
+def test_autostart_command_refuses_when_entry_missing(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    (app / "runtime").mkdir(parents=True)
+    (app / "runtime" / "pythonw.exe").touch()
+    with pytest.raises(RuntimeError):
+        autostart.build_command(app)
+
+
+def test_state_icon_files_are_valid_ico(tmp_path: Path) -> None:
+    for state, rgb in tray.STATE_COLORS.items():
+        path = tray.write_state_icon(tmp_path / f"{state}.ico", rgb)
+        data = path.read_bytes()
+        assert data[:6] == struct.pack("<HHH", 0, 1, 1), state
+        assert data[22:26] == struct.pack("<I", 40), state
+        assert len(data) == 22 + 40 + 16 * 16 * 4 + 4 * 16
+
+
+class _FakeStdin:
+    """最小的 stdin 替身：收到 shutdown 就触发子进程"自行退出"。"""
+
+    closed = False
+
+    def __init__(self, proc: _FakeProc) -> None:
+        self._proc = proc
+        self.data = b""
+
+    def write(self, data: bytes) -> None:
+        self.data += data
+
+    def flush(self) -> None:
+        if self.data.strip() == b"shutdown":
+            self._proc.shutdown_from_stdin()
+
+
+class _FakeProc:
+    """模拟网关子进程：可优雅退出、可故意无视停止指令（触发强杀）。"""
+
+    def __init__(self, *, ignore_stdin: bool = False, on_shutdown=None) -> None:
+        self._done = threading.Event()
+        self._exit_code = -9
+        self._ignore_stdin = ignore_stdin
+        self._on_shutdown = on_shutdown
+        self.returncode: int | None = None
+        self.killed = False
+        self.stdin = _FakeStdin(self)
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is not None:
+            return self.returncode
+        if not self._done.wait(timeout):
+            raise subprocess.TimeoutExpired("fake-gateway", timeout or 0)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self._done.set()
+
+    def shutdown_from_stdin(self) -> None:
+        if self._ignore_stdin:
+            return
+        if self._on_shutdown is not None:
+            self._on_shutdown()
+        self._exit_code = 0
+        self.returncode = 0
+        self._done.set()
+
+
+def test_stop_process_is_graceful_when_shutdown_is_confirmed(tmp_path: Path) -> None:
+    log = tmp_path / "gateway.log"
+    log.write_text("INFO:     Started server process\n", encoding="utf-8")
+    offset = log.stat().st_size
+
+    def mark_shutdown() -> None:
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(f"INFO:     {SHUTDOWN_LOG_MARKER}.\nINFO:     Finished server process\n")
+
+    proc = _FakeProc(on_shutdown=mark_shutdown)
+    result = stop_process(proc, timeout=1.0, log_path=log, log_offset=offset)
+
+    assert result["stopped"] is True
+    assert result["forced"] is False
+    assert result["shutdown_confirmed"] is True
+    assert result["graceful"] is True
+    assert result["exit_code"] == 0
+    assert proc.killed is False
+
+
+def test_stop_process_flags_inflight_tasks_cancelled_by_timeout(tmp_path: Path) -> None:
+    log = tmp_path / "gateway.log"
+    log.write_text("INFO:     Started server process\n", encoding="utf-8")
+    offset = log.stat().st_size
+
+    def mark_shutdown() -> None:
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "WARNING:  Cancel 1 running task(s), timeout graceful shutdown exceeded\n"
+                f"INFO:     {SHUTDOWN_LOG_MARKER}.\n"
+            )
+
+    proc = _FakeProc(on_shutdown=mark_shutdown)
+    result = stop_process(proc, timeout=1.0, log_path=log, log_offset=offset)
+
+    assert result["stopped"] is True
+    assert result["forced"] is False
+    assert result["shutdown_confirmed"] is True
+    assert result["inflight_cancelled"] is True
+    # 进程正常退出但确有任务被取消，不能报"优雅停止"
+    assert result["graceful"] is False
+    assert proc.killed is False
+
+
+def test_stop_process_forces_kill_when_timeout_and_without_confirming(tmp_path: Path) -> None:
+    log = tmp_path / "gateway.log"
+    log.write_text("INFO:     Started server process\n", encoding="utf-8")
+    proc = _FakeProc(ignore_stdin=True)
+    started = time.monotonic()
+    result = stop_process(proc, timeout=0.2, log_path=log, log_offset=0)
+    elapsed = time.monotonic() - started
+
+    assert result["forced"] is True
+    assert proc.killed is True
+    assert result["shutdown_confirmed"] is False
+    assert result["graceful"] is False
+    assert result["elapsed"] >= 0.2
+    assert elapsed < 5.0
+
+
+def test_stop_process_reports_error_when_stdin_unavailable() -> None:
+    proc = _FakeProc(ignore_stdin=True)
+    proc.stdin.closed = True  # type: ignore[attr-defined]
+    result = stop_process(proc, timeout=0.1)
+
+    assert result["error"]
+    assert result["forced"] is True
+    assert result["graceful"] is False
+
+
+def test_stop_result_wording_is_honest() -> None:
+    from src.desktop.app import _describe_stop
+
+    assert _describe_stop({"stopped": False}) == "服务本来未运行"
+    assert "优雅" in _describe_stop({"stopped": True, "graceful": True, "elapsed": 1.2})
+    assert "强杀" in _describe_stop({"stopped": True, "forced": True, "elapsed": 10.0})
+    assert "取消" in _describe_stop({"stopped": True, "inflight_cancelled": True, "elapsed": 8.1})
+    assert "未确认" in _describe_stop({"stopped": True, "graceful": False, "forced": False, "elapsed": 0.3})
+
+
+def _wait_for_port(port: int, timeout: float = 90.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except OSError:
+            time.sleep(0.2)
+    raise AssertionError(f"runner 未在 {timeout:.0f}s 内监听 {port}")
+
+
+def test_runner_drains_inflight_request_and_refuses_new_ones(tmp_path: Path) -> None:
+    """真 uvicorn + 真 TCP：在途请求被收尾、新请求被拒、进程自己退出。"""
+    port = pick_port(8765)
+    log_path = tmp_path / "runner.log"
+    log_handle = log_path.open("wb")
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-m",
+            "src.desktop._runner",
+            "--app",
+            "tests.desktop.slow_app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        cwd=str(REPO_ROOT),
+        stdin=subprocess.PIPE,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+    )
+    outcome: dict[str, object] = {}
+
+    def call_slow() -> None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/slow", timeout=30) as resp:
+                outcome["body"] = resp.read().decode("utf-8", "replace")
+                outcome["status"] = resp.status
+        except Exception as exc:  # noqa: BLE001 - 把失败原因带进断言
+            outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        _wait_for_port(port)
+        worker = threading.Thread(target=call_slow, name="slow-request", daemon=True)
+        worker.start()
+        time.sleep(1.0)  # slow_app 会睡 3s，确保停止信号到达时请求仍在途
+        result = stop_process(proc, timeout=GRACEFUL_TIMEOUT + 3, log_path=log_path, log_offset=0)
+        worker.join(timeout=20)
+        assert not worker.is_alive()
+        assert outcome.get("status") == 200, outcome
+        assert json.loads(str(outcome.get("body"))) == {"done": True}
+
+        assert result["stopped"] is True
+        assert result["exit_code"] == 0
+        assert result["shutdown_confirmed"] is True
+        assert result["forced"] is False
+        assert result["graceful"] is True
+        assert result["elapsed"] < GRACEFUL_TIMEOUT
+
+        # 停止后新请求已无法被接受：本机对已关闭端口可能回 RST、也可能被
+        # 安全软件吞成超时，所以用"端口可重新绑定 + HTTP 失败"双重断言。
+        assert port_is_free(port)
+        info = http_json(f"http://127.0.0.1:{port}/slow", timeout=2.0)
+        assert info["ok"] is False, info
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        log_handle.close()
 
 
 @WINDOWS_ONLY
@@ -199,6 +450,18 @@ def test_tray_adds_icon_handles_menu_and_stops() -> None:
         assert received[-1] == tray.ACTION_QUIT
         widget.set_tooltip("运行中")
         widget.set_tooltip("运行中")
+        # 三态图标：绿/红/灰，用户一眼看得出服务状态
+        assert widget.set_state(tray.STATE_RUNNING) is True
+        assert widget.state == tray.STATE_RUNNING
+        assert widget.set_state(tray.STATE_ERROR) is True
+        assert widget.state == tray.STATE_ERROR
+        assert widget.set_state(tray.STATE_STOPPED) is True
+        assert widget.state == tray.STATE_STOPPED
+        assert widget.set_state("unknown") is False
+        # 气泡通知：只验证 Shell 接受了 NIF_INFO 请求；系统是否展示取决于
+        # Windows 通知设置（专注助手等），代码层无法断言。
+        assert widget.notify("测试通知", "服务状态通知探针") is True
+        assert widget.notify("测试警告", "强制停止探针", warning=True) is True
     finally:
         widget.stop()
     assert widget.icon_added is False

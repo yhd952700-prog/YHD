@@ -1,0 +1,87 @@
+"""网关子进程入口：把「停止」变成 uvicorn 的优雅收尾。
+
+为什么需要这一层
+----------------
+Windows 的 ``TerminateProcess``（``Popen.terminate()``）没有可捕获的退出信号，
+被结束的进程来不及 flush 或关库。uvicorn 又没有"停止"HTTP 端点。因此桌面壳
+不直接杀进程，而是**往本进程 stdin 写一行** ``shutdown``：
+
+  1. 本模块用 ``uvicorn.Config`` 拉起与启动器相同的 ASGI 入口
+     ``src.gateway.main:app``（不复制任何网关代码）；
+  2. 守护线程读 stdin，收到 ``shutdown`` 或读到 EOF（父进程消失/崩溃）时
+     置 ``server.should_exit = True``；
+  3. uvicorn 随即停止接收新请求、等待在途请求结束
+     （``GRACEFUL_INSIDE`` 秒上限，给父进程的 ``GRACEFUL_TIMEOUT`` 留量），
+     再执行 lifespan shutdown —— 网关在这里 flush、关库；
+  4. 进程自行退出，父进程拿到真实退出码，不会产生孤儿进程。
+
+本模块只被 ``src.desktop.service`` 以 ``python -m src.desktop._runner`` 拉起。
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import threading
+from typing import Any
+
+import uvicorn
+
+from .service import GRACEFUL_INSIDE
+
+#: 父进程管道里可接受的停止指令（大小写不敏感）。
+SHUTDOWN_WORDS = frozenset({"shutdown", "stop", "quit"})
+
+#: 默认 ASGI 入口（与 ``scripts/start_liuhao.py`` 相同）。
+DEFAULT_APP = "src.gateway.main:app"
+
+
+def _watch_stdin(server: uvicorn.Server) -> None:
+    """等父进程的停止指令；EOF 同样视为停止（父进程已消失，不做孤儿）。"""
+    try:
+        for line in sys.stdin:
+            if line.strip().lower() in SHUTDOWN_WORDS:
+                break
+    finally:
+        server.should_exit = True
+
+
+def build_config(
+    host: str,
+    port: int,
+    log_config: str | None = None,
+    app: str = DEFAULT_APP,
+) -> uvicorn.Config:
+    kwargs: dict[str, Any] = {}
+    if log_config:
+        kwargs["log_config"] = log_config
+    return uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=GRACEFUL_INSIDE,
+        **kwargs,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m src.desktop._runner")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--log-config", default=None, help="uvicorn 日志配置路径（通常为 config/logging.yaml）")
+    parser.add_argument("--app", default=DEFAULT_APP, help="ASGI 应用路径（测试时可替换）")
+    args = parser.parse_args(argv)
+
+    server = uvicorn.Server(build_config(args.host, args.port, args.log_config, args.app))
+    threading.Thread(
+        target=_watch_stdin,
+        args=(server,),
+        name="liuhao-shutdown-watch",
+        daemon=True,
+    ).start()
+    server.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

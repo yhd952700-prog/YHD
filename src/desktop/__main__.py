@@ -7,6 +7,7 @@
     python -m src.desktop diagnose [--out DIR] [--verify]
     python -m src.desktop firewall [--port 8080]
     python -m src.desktop status [--base-url URL]
+    python -m src.desktop tray-demo [--seconds 30]   # 手工验证右键菜单（打印选中动作）
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 from typing import Any
 
 from . import REPO_ROOT
@@ -63,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_help = sub.add_parser("help", help="显示帮助")
     p_help.set_defaults(command="help")
+
+    p_tray = sub.add_parser("tray-demo", help="启动托盘并打印选中动作（手工验证右键菜单用）")
+    p_tray.add_argument("--seconds", type=float, default=0.0, help="自动退出秒数（0 = 一直等到选「退出」）")
     return parser
 
 
@@ -131,6 +137,65 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tray_demo(args: argparse.Namespace) -> int:
+    """手工验证托盘右键菜单：把用户选中的菜单项打印到控制台。
+
+    TrackPopupMenu 会阻塞等待真人选择，无法自动化点击；这个探针让"照着做
+    一遍"可复现，且不改动任何服务状态。
+    """
+    from .tray import (
+        MENU_ITEMS,
+        STATE_ERROR,
+        STATE_RUNNING,
+        STATE_STOPPED,
+        SystemTray,
+        available,
+    )
+
+    if not available():
+        print("托盘仅支持 Windows（需要 pywin32）", file=sys.stderr)
+        return 2
+    finished = threading.Event()
+
+    def on_action(action: str) -> None:
+        label = next((text for _id, name, text in MENU_ITEMS if name == action), action)
+        print(f"[tray] action={action} label={label}", flush=True)
+        if action == "quit":
+            finished.set()
+
+    tray = SystemTray(on_action, tooltip="鎏灏 LIUHAO X（托盘手工验证）")
+    if not tray.start():
+        print(f"托盘启动失败：{tray.error}", file=sys.stderr)
+        return 1
+    print("托盘已启动。请在任务栏通知区找到「鎏灏」图标（可能收在 ^ 折叠区）：", flush=True)
+    for _id, name, label in MENU_ITEMS:
+        print(f"  - [{_id}] {label} -> {name}", flush=True)
+    print("右键应出现以上四项；单击 / 双击应分别触发 toggle_status / open_console。", flush=True)
+    print("选中后本进程会打印 action。选择「退出」或按 Ctrl+C 结束。", flush=True)
+    states = (STATE_RUNNING, STATE_ERROR, STATE_STOPPED)
+    state_index = 0
+    tray.set_state(states[state_index])
+    print("图标每 3 秒循环一次：绿=运行中 → 红=有错误 → 灰=已停止。", flush=True)
+    last_switch = time.monotonic()
+    deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
+    try:
+        while not finished.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            if time.monotonic() - last_switch >= 3.0:
+                state_index = (state_index + 1) % len(states)
+                tray.set_state(states[state_index])
+                print(f"[tray] state={states[state_index]}", flush=True)
+                last_switch = time.monotonic()
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        tray.stop()
+    print("托盘已移除。", flush=True)
+    return 0
+
+
 def _cmd_app(args: argparse.Namespace) -> int:
     from .app import DesktopApp
 
@@ -163,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_firewall(args)
     if command == "status":
         return _cmd_status(args)
+    if command == "tray-demo":
+        return _cmd_tray_demo(args)
     parser.print_help()
     return 2
 

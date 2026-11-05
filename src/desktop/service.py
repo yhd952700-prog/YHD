@@ -9,14 +9,21 @@
     ``config/human_identities.json`` / ``config/auth_secrets.json`` 指给网关
     （内核在未设置时 fail-closed 加载零个用户，会导致"谁都进不去"）。
   * 端口：默认 8080；被占用时向上找空闲端口并在 UI 显示实际端口。
-  * 停止：调用 ``terminate()`` 结束子进程。Windows 的 ``TerminateProcess``
-    没有可以捕获的优雅退出信号，因此停止是**立即结束**；SQLite WAL 本身
-    可安全恢复。停止后托盘仍驻留，用户可退出后重新启动。
+  * 停止：**先优雅、超时才强杀**。Windows 的 ``TerminateProcess`` 没有可捕获
+    的退出信号，所以子进程入口改成 ``src.desktop._runner``：桌面壳往它的
+    stdin 写一行 ``shutdown``，子进程置 ``server.should_exit = True``，uvicorn
+    随即停止接新请求、等在途请求结束（子进程侧上限 ``GRACEFUL_INSIDE`` 秒）、
+    执行 lifespan shutdown（网关在此 flush 并关库），然后自行退出。
+  * 父进程最多等 ``GRACEFUL_TIMEOUT`` 秒；超时才 ``kill()``，并把
+    ``forced=True`` 写进日志与界面 —— **不静默降级**。判定依据是子进程日志里
+    的 uvicorn ``Application shutdown complete``：拿不到它就如实报"未确认
+    优雅收尾"，不假装成功。
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import subprocess
 import threading
@@ -27,11 +34,30 @@ from typing import Any
 from . import LOG_DIR, REPO_ROOT
 from .probe import http_json, lan_addresses, pick_port, port_is_free
 
+logger = logging.getLogger(__name__)
+
 IDENTITY_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
 SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 120.0
+
+#: 父进程等待子进程自行退出的上限（秒）。超过才强杀并记录。
+GRACEFUL_TIMEOUT = 10.0
+
+#: 子进程内 uvicorn 等待在途请求的上限（秒）。比 ``GRACEFUL_TIMEOUT`` 少 2s，
+#: 留出 lifespan shutdown（flush / 关库）与进程退出的时间。
+GRACEFUL_INSIDE = 8.0
+
+#: 与 ``src.desktop._runner`` 约定的停止指令（写到子进程 stdin）。
+SHUTDOWN_COMMAND = b"shutdown\n"
+
+#: uvicorn 完成 lifespan shutdown 的标志串；拿不到就说明"未确认优雅收尾"。
+SHUTDOWN_LOG_MARKER = "Application shutdown complete"
+
+#: uvicorn 在途请求超出等待上限时的日志（WARNING，落进子进程抓取文件）。
+#: 出现它说明进程虽正常退出，但**有任务被取消** —— 也算降级，必须如实展示。
+SHUTDOWN_CANCEL_MARKER = "timeout graceful shutdown exceeded"
 
 #: 网关子进程的 stdout/stderr 抓取文件上限。运行中不轮转（Windows 下子进程
 #: 持有该句柄，重命名会失败），只在启动前把超限文件滚成 ``.1`` 并只留一份。
@@ -54,6 +80,83 @@ def _rotate_capture_if_large(path: Path, max_bytes: int = GATEWAY_LOG_MAX_BYTES)
 
 def _no_window_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def _read_log_since(path: Path | None, offset: int) -> str:
+    """读子进程日志里 offset 之后的新增内容（用于确认 lifespan shutdown）。"""
+    if path is None:
+        return ""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, offset))
+            data = handle.read()
+    except (OSError, ValueError):
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def stop_process(
+    proc: Any,
+    *,
+    timeout: float = GRACEFUL_TIMEOUT,
+    log_path: Path | None = None,
+    log_offset: int = 0,
+) -> dict[str, Any]:
+    """按 stdin 停止协议停止子进程，返回可展示、可记录的判定结果。
+
+    ``forced=True`` 只在超过 ``timeout`` 后 kill 时出现；``graceful=True``
+    要求进程自己退出、日志里出现 uvicorn 的 ``Application shutdown complete``，
+    且**没有**在途任务被取消。任一不满足时，调用方必须如实展示对应原因。
+    """
+    result: dict[str, Any] = {
+        "stopped": False,
+        "graceful": False,
+        "forced": False,
+        "inflight_cancelled": False,
+        "elapsed": 0.0,
+        "exit_code": None,
+        "shutdown_confirmed": False,
+        "error": None,
+    }
+    if proc is None:
+        return result
+    if proc.poll() is not None:
+        result.update(stopped=True, exit_code=proc.returncode)
+        return result
+
+    started = time.monotonic()
+    stdin = getattr(proc, "stdin", None)
+    if stdin is None or getattr(stdin, "closed", False):
+        result["error"] = "子进程没有可用的 stdin，无法发送优雅停止指令"
+    else:
+        try:
+            stdin.write(SHUTDOWN_COMMAND)
+            stdin.flush()
+        except (OSError, ValueError) as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        result["forced"] = True
+        with contextlib.suppress(Exception):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=2.0)
+
+    result["elapsed"] = round(time.monotonic() - started, 2)
+    result["exit_code"] = proc.returncode
+    result["stopped"] = proc.returncode is not None
+    new_log = _read_log_since(log_path, log_offset)
+    result["shutdown_confirmed"] = SHUTDOWN_LOG_MARKER in new_log
+    result["inflight_cancelled"] = SHUTDOWN_CANCEL_MARKER in new_log.lower()
+    result["graceful"] = (
+        result["stopped"]
+        and not result["forced"]
+        and result["shutdown_confirmed"]
+        and not result["inflight_cancelled"]
+    )
+    return result
 
 
 def _load_dotenv(root: Path) -> None:
@@ -88,6 +191,8 @@ class GatewayService:
         self._root = Path(root or REPO_ROOT)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_handle: Any = None
+        self._log_path: Path | None = None
+        self._log_offset = 0
         self._lock = threading.Lock()
         self.last_error: str | None = None
 
@@ -140,19 +245,25 @@ class GatewayService:
         log_path = LOG_DIR / "desktop-gateway.log"
         _rotate_capture_if_large(log_path)
         try:
+            self._log_offset = log_path.stat().st_size
+        except OSError:
+            self._log_offset = 0
+        self._log_path = log_path
+        try:
             self._log_handle = open(log_path, "ab")  # noqa: SIM115 - 由 stop() 关闭
         except OSError:
             self._log_handle = subprocess.DEVNULL
 
         # 应用日志由网关自己按 config/logging.yaml 轮转（10 MiB × 5）。
         # 这个抓取文件只承接控制台 WARNING 及以上与启动崩溃栈，增长很小。
+        # 入口是 src.desktop._runner：它负责把 stdin 的 shutdown 转成
+        # uvicorn 的 should_exit，从而让停止可以优雅收尾（见模块文档）。
         log_config = self._root / "config" / "logging.yaml"
         cmd = [
             os.environ.get("LIUHAO_DESKTOP_PYTHON") or self._venv_python(),
             "-u",
             "-m",
-            "uvicorn",
-            "src.gateway.main:app",
+            "src.desktop._runner",
             "--host",
             self.host,
             "--port",
@@ -165,6 +276,7 @@ class GatewayService:
                 self._proc = subprocess.Popen(
                     cmd,
                     cwd=str(self._root),
+                    stdin=subprocess.PIPE,
                     stdout=self._log_handle,
                     stderr=subprocess.STDOUT,
                     creationflags=_no_window_flags(),
@@ -187,7 +299,9 @@ class GatewayService:
         return str(candidate) if candidate.is_file() else sys.executable
 
     def _wait_health(self, timeout: float) -> bool:
-        assert self.base_url is not None
+        base = self.base_url
+        if not base:
+            return False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
@@ -195,26 +309,47 @@ class GatewayService:
             if proc is not None and proc.poll() is not None:
                 self.last_error = f"网关进程提前退出（code={proc.returncode}），详见 logs/desktop-gateway.log"
                 return False
-            info = http_json(f"{self.base_url}/v1/health", timeout=1.0)
+            # 2s 而不是 1s：机器繁忙时 /v1/health 自身可能超过 1s，误判成"没起来"。
+            info = http_json(f"{base}/v1/health", timeout=2.0)
             if info["ok"]:
                 return True
             time.sleep(0.5)
         return False
 
-    def stop(self, timeout: float = 8.0) -> None:
-        """立即结束网关子进程（见模块文档的停止语义）。"""
+    def stop(self, timeout: float = GRACEFUL_TIMEOUT) -> dict[str, Any]:
+        """先优雅停（stdin shutdown），超时才强杀；返回判定结果（见模块文档）。"""
         with self._lock:
             proc = self._proc
             self._proc = None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    proc.wait(timeout=2.0)
+        result = stop_process(
+            proc,
+            timeout=timeout,
+            log_path=self._log_path,
+            log_offset=self._log_offset,
+        )
+        if result["forced"]:
+            logger.warning(
+                "网关未在 %.0fs 内优雅退出，已强制结束（exit_code=%s，日志见 logs/desktop-gateway.log）",
+                timeout,
+                result["exit_code"],
+            )
+        elif result["stopped"]:
+            logger.info(
+                "网关已停止：graceful=%s，在途任务被取消=%s，用时 %.2fs，shutdown_确认=%s",
+                result["graceful"],
+                result["inflight_cancelled"],
+                result["elapsed"],
+                result["shutdown_confirmed"],
+            )
+            if result["inflight_cancelled"]:
+                logger.warning(
+                    "网关退出时有在途任务因超出 %.0fs 宽限被取消（日志见 logs/desktop-gateway.log）",
+                    GRACEFUL_INSIDE,
+                )
+        if result["error"]:
+            logger.warning("优雅停止指令发送失败：%s", result["error"])
         self._close_log()
+        return result
 
     def _close_log(self) -> None:
         handle = self._log_handle
@@ -224,4 +359,13 @@ class GatewayService:
                 handle.close()
 
 
-__all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "GatewayService"]
+__all__ = [
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "GRACEFUL_INSIDE",
+    "GRACEFUL_TIMEOUT",
+    "SHUTDOWN_CANCEL_MARKER",
+    "SHUTDOWN_LOG_MARKER",
+    "GatewayService",
+    "stop_process",
+]
