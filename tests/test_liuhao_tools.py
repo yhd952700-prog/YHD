@@ -49,14 +49,18 @@ def test_make_tools_builtin_set_is_exact():
         # 2026-09-24 新增：受工作区闸门约束的只读文件工具
         "read_file",
         "list_files",
+        # 2026-11-05 新增：定时提醒（复用本地排程器，含糊时间会反问）
+        "manage_reminders",
     }
     assert {t.name for t in tools} == expected
 
 
 def test_tools_registered_active():
     a = make_assistant()
-    # 9 = 原 7 个内置 + read_file / list_files（只读；写入工具要等审批链路接通）
-    assert len(a._tool_list) == 9
+    # 10 = 原 7 个内置 + read_file / list_files（只读）+ manage_reminders
+    # （293ace94/393ace94 的定时提醒技能）。自动化观测工具默认不出现：三闸关闭时
+    # build_observation_tools 返回空列表。
+    assert len(a._tool_list) == 10
     for t in a._tool_list:
         assert a.tools.status(t.tool_id).value == "active"
 
