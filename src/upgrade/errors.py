@@ -51,3 +51,11 @@ class RollbackError(UpgradeError):
 
 class NotConfiguredError(UpgradeError):
     """No update source was configured, so checking is impossible."""
+
+
+class SelfCheckError(UpgradeError):
+    """The post-install self-check failed; the manager has rolled back."""
+
+
+class SnapshotError(UpgradeError):
+    """A pre-upgrade data snapshot could not be resolved or exported."""

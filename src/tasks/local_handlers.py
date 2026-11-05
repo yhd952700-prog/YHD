@@ -15,14 +15,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from src.tasks.local_scheduler import LocalScheduler
-from src.tasks.reminders import REMINDER_FIRE_JOB, get_reminder_service
+from src.tasks.reminders import (
+    REMINDER_DIGEST_JOB,
+    REMINDER_FIRE_JOB,
+    get_reminder_service,
+)
+from src.upgrade.update_check import register_update_check_job, seed_update_check_job
 
 AuditSink = Callable[[str, str, Dict[str, Any]], None]
+
+logger = logging.getLogger(__name__)
 
 LOCAL_HEARTBEAT_JOB = "liuhao.local.heartbeat"
 HEARTBEAT_KEY_PREFIX = "liuhao.local.heartbeat"
@@ -85,7 +93,41 @@ def register_local_jobs(
     scheduler.register(
         REMINDER_FIRE_JOB, _make_reminder_handler(scheduler, reminder_service)
     )
+    scheduler.register(
+        REMINDER_DIGEST_JOB, _make_reminder_digest_handler(scheduler, reminder_service)
+    )
+    # 每周自动检查更新：只提示新版本，绝不自动安装（src/upgrade/update_check.py）。
+    register_update_check_job(scheduler)
+    _register_intel_weekly_jobs(scheduler)
     return scheduler.registered_jobs()
+
+
+def _register_intel_weekly_jobs(scheduler: LocalScheduler) -> bool:
+    """注册并预约情报周报；情报模块缺失/导入失败不能拖垮 worker 启动。
+
+    失败只记一条 WARNING 并继续（不循环重试，避免启动时刷日志）。
+    """
+    try:
+        from src.intel.scheduling import register_weekly_jobs, seed_weekly_jobs
+    except Exception as exc:  # noqa: BLE001 - 可选模块，任何导入失败都不该阻断启动
+        logger.warning(
+            "情报周报未注册：无法导入 src.intel.scheduling（%s: %s）。"
+            "本次启动继续，不做重试。",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    try:
+        register_weekly_jobs(scheduler)
+        seed_weekly_jobs(scheduler)
+    except Exception as exc:  # noqa: BLE001 - 注册失败同样不能阻断启动
+        logger.warning(
+            "情报周报未注册：注册/预约失败（%s: %s）。本次启动继续，不做重试。",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    return True
 
 
 def build_local_scheduler(audit_sink: Optional[AuditSink] = None) -> LocalScheduler:
@@ -99,6 +141,7 @@ def build_local_scheduler(audit_sink: Optional[AuditSink] = None) -> LocalSchedu
     scheduler = LocalScheduler(audit_sink=audit_sink)
     register_local_jobs(scheduler)
     seed_local_jobs(scheduler)
+    seed_update_check_job(scheduler)
     return scheduler
 
 
@@ -126,5 +169,13 @@ def _make_reminder_handler(scheduler: LocalScheduler, service=None):
         svc = service or get_reminder_service(scheduler=scheduler)
         # 通知会阻塞（PowerShell 气泡/文件写入），放线程池执行，别卡住 tick 循环。
         return await asyncio.to_thread(svc.handle_fire, payload)
+
+    return handler
+
+
+def _make_reminder_digest_handler(scheduler: LocalScheduler, service=None):
+    async def handler(**payload: Any) -> Dict[str, Any]:
+        svc = service or get_reminder_service(scheduler=scheduler)
+        return await asyncio.to_thread(svc.handle_digest, payload)
 
     return handler

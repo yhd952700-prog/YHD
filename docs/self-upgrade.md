@@ -20,7 +20,7 @@
 python -m src.upgrade check --app-root . --release-dir D:\releases
 
 # 或使用 HTTP 清单
-python -m src.upgrade check --app-root . --manifest-url https://example.com/release-manifest.json
+python -m src.upgrade check --app-root . --manifest-url https://example.com/LIUHAO_RELEASE.json
 
 # 检查 → 下载 → 校验 → 备份 → 应用（失败自动回滚）
 python -m src.upgrade upgrade --app-root . --release-dir D:\releases
@@ -37,6 +37,19 @@ python -m src.upgrade rollback --app-root .
 # 回滚到指定备份 / 指定升级记录
 python -m src.upgrade rollback --app-root . --backup-id 20261106T010203Z-abcd1234
 python -m src.upgrade rollback --app-root . --record-id <升级记录 ID>
+
+# 列出升级前数据快照（每次升级都会自动做一份）
+python -m src.upgrade snapshots --app-root . --limit 20
+
+# 单独取出升级前的数据快照（目标目录必须不存在）
+python -m src.upgrade export-snapshot --app-root . --dest D:\liuhao-snapshot-20261106
+python -m src.upgrade export-snapshot --app-root . --dest D:\snap --backup-id <备份 ID>
+
+# 对当前安装做一次自检（服务入口可导入、数据库可打开、关键表可读）
+python -m src.upgrade selfcheck --app-root .
+
+# 查看“上次检查更新”的时间和结果（手动检查与每周自动检查共用）
+python -m src.upgrade last-check --app-root .
 ```
 
 退出码：`0` 表示检查成功（有更新或已是最新）或操作成功；`2` 表示“无法检查更新/清单无效/未配置源”；`1` 表示执行失败（下载、校验、应用、回滚失败）。
@@ -93,18 +106,143 @@ python -m src.selfmod list
 
 全部失败时抛 `VersionReadError`，检查结果状态为 `version_unknown`，消息为“无法确定当前版本，无法检查更新”。**不会猜测版本，也不会误报已是最新。**
 
-### 2.2 发布清单格式
+### 2.2 发布清单规范 v1（定稿：2026-11-06）
+
+> 本节是**交给打包流水线照做**的唯一规范。字段名、大小写、单位以此为准。升级器不读取的字段会在表中明确标注，打包侧可以写，但不要依赖它们产生任何升级行为。
+
+#### 2.2.1 每次发布的产物
+
+三个文件放在**同一个发布目录**（本地源就是该目录；HTTP 源就是同一 URL 前缀）：
+
+| 文件 | 作用 | 必需 |
+| --- | --- | --- |
+| `LIUHAO_RELEASE.json` | 发布清单（本规范 2.2.2 定义的索引），升级器读它判断是否存在新版本 | 必需 |
+| `liuhao-<version>.zip` | 完整安装包；文件名可自定义，但必须与清单里的 `artifact` 完全一致 | 必需 |
+| （可选）签名 | 写在清单的 `signature` 字段里（见 2.2.6），不单独出文件 | 可选 |
+
+- **文件名定稿为 `LIUHAO_RELEASE.json`。** `release-manifest.json` 仍被兼容读取（优先找 `LIUHAO_RELEASE.json`），但新流水线必须产出前者。
+- 清单和安装包必须在同一目录/同一路径前缀下；HTTP 源的 `artifact` 按相对 URL 解析。
+
+#### 2.2.2 清单字段（根节点）
+
+| 字段 | 类型 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `schema` | string | 否（强烈建议写） | 必须为 `liuhao.release-manifest/1`；省略视为 v1；其它值直接拒绝 |
+| `releases` | array | 是 | 非空数组，每项见 2.2.3；同一清单内版本不得重复 |
+| `channel` / `generated_at` / 其它自定义字段 | 任意 | 否 | **升级器忽略**，仅供人看 |
+
+#### 2.2.3 清单里每个 `release` 的字段
+
+| 字段 | 类型 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `version` | string | 是 | PEP 440 版本号（见 2.2.4） |
+| `artifact` | string | 是 | ZIP 文件名或相对 URL。本地源必须位于发布目录内（拒绝目录穿越/越界）；HTTP 源仅允许 `http`/`https` |
+| `sha256` | string | 是 | **整包** SHA256，64 位小写十六进制（见 2.2.5） |
+| `size` | int | 否（强烈建议） | ZIP 字节数；提供时下载与安装前都会复核 |
+| `signature` | string | 否 | Ed25519 签名，base64（见 2.2.6） |
+| `signature_algorithm` | string | `signature` 存在时 | 定稿只允许 `ed25519`（省略按 `ed25519` 处理，其它值明确拒绝） |
+| `notes` | string | 否 | 展示用说明 |
+| `released_at` | string | 否 | ISO 8601 时间 |
+| `files` / `delta` / `min_version` / `max_version` | — | — | **v1 不读取**（见 2.2.5 / 2.2.7）；写入也不会改变升级行为 |
+
+#### 2.2.4 版本号规则（定稿）
+
+- 必须能被 `packaging.version.Version` 解析（PEP 440）。合法例：`0.2.0`、`1.0.0rc1`、`1.0.0.post1`、`2026.11.6`。
+- 非法例：`v0.2.0`（不要带 `v` 前缀）、`0.2.0-beta`、中文/空格、空字符串。`0.2` 能被解析但不推荐，请统一三段式。
+- 同一清单内版本不得重复（重复直接判清单无效）。
+- 比较按 PEP 440 全序；**只有目标版本严格大于当前版本才会提示升级**，相同版本不会重复提示。
+- 安装包内的版本（`pyproject.toml` 的 `[project].version` 或包根 `LIUHAO_RELEASE.json` 的 `version`）必须与清单 `version` **完全相等**，否则拒绝安装。
+- 推荐统一 `MAJOR.MINOR.PATCH` 语义化版本。
+
+#### 2.2.5 包内文件布局（定稿）
+
+- ZIP 根目录**直接就是安装树**，不要多包一层 `liuhao-0.2.0/`。
+- 允许写入（安装根）：`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，以及根目录的 `LIUHAO_RELEASE.json`。
+- 明确禁止：`data/`、`.git/`、`.venv/`、`.env`、`secrets/`、`*.pem`/`*.key`/`*.crt`，以及 `upgrade-backups/`、`upgrade-state/` 所在的路径。
+- 包内必须能确定版本：`pyproject.toml [project].version` 或根目录 `LIUHAO_RELEASE.json` 的 `version`；**推荐两者都写且一致**。
+- 包根 `LIUHAO_RELEASE.json` 是**包内版本标记**（与发布目录里的清单同名但不同物，位置不同、结构不同）：
+
+```json
+{
+  "schema": "liuhao.release-package/1",
+  "product": "liuhao-ai-os",
+  "version": "0.2.0",
+  "released_at": "2026-11-06T00:00:00Z"
+}
+```
+
+升级器只读其中的 `version`；`schema`/`product`/`released_at` 为保留字段，便于人工核对。安装后它会成为应用根目录的版本标记，`src/upgrade/versioning.py` 在没有 `pyproject.toml` 时靠它取版本。
+
+- 安全限制（不满足直接拒绝，不会部分安装）：不允许符号链接、绝对路径、`..`、盘符、重复成员、空包；条目数 ≤ 100,000；解压总量 ≤ 2 GiB（可配置）。
+
+#### 2.2.6 SHA256 计算方式（定稿：整包，不是逐文件）
+
+**定稿采用“整包 SHA256”**：
+
+1. 先打出最终的 `.zip`；
+2. 对**该文件完整字节**计算 `hashlib.sha256`，取小写十六进制；
+3. 把结果写进清单的 `sha256`；
+4. 打包完成后**禁止再修改 ZIP**（任何重新压缩/改时间戳都会改变哈希）。
+
+选择整包而不是逐文件的理由（哪个更抗篡改）：
+
+- 逐文件哈希清单本身与安装包处在**同一个可替换通道**（同一个发布目录/HTTP 路径）。能替换安装包的人通常也能替换清单；只校验逐文件时，攻击者只要同步改清单就能通过。
+- 逐文件校验天然漏掉“新增文件”：除非同时强制“文件集合完全一致”，多塞一个 `src/sitecustomize.py` 这类文件不会被发现。整包哈希把成员列表、顺序、ZIP 中央目录、压缩参数全部绑定，增/删/改任意字节都会失败。
+- 整包哈希实现简单、只有一个值，不存在“清单里漏写某个文件”的问题。
+- 升级器在**下载后**和**安装前**各复核一次整包 SHA256（外加 `size`），覆盖“下载后被替换”的窗口。
+
+逐文件清单（`files[]`）在 v1 **不读取、不用于放行或拒绝**；打包侧若要产出，只能当作人工排障信息，不能依赖它通过校验。
+
+#### 2.2.7 签名（可选，定稿结构）
+
+- 算法：**仅 Ed25519**。
+- 签名对象：**发布包 ZIP 的完整字节**（原始字节，不做预哈希）；不是清单，也不是逐文件哈希。
+- 结构（写在清单对应 release 项里，扁平字段，不嵌套）：
+
+```json
+{
+  "signature": "<base64( Ed25519_sign(private_key, zip_bytes) )>",
+  "signature_algorithm": "ed25519"
+}
+```
+
+- base64 使用标准字母表、`validate=True` 解码；非法 base64 直接拒绝。
+- 客户端必须显式配置可信公钥（PEM 文件路径或 base64 原始公钥字节）才会真正验签：
+  - 未配置公钥：升级仍可进行，但状态/CLI 必须显示“发布清单包含签名，但未配置可信公钥，未验证签名（仅哈希校验）”，绝不冒充“已验证”。
+  - 已配置公钥：签名不匹配抛 `SignatureError` 并中止，不写任何文件。
+  - 发布包 > 512 MiB 时拒绝在内存中验签（明确报错），不会假装通过。
+- **签名只覆盖安装包，不覆盖清单本身**。清单的完整性依赖 HTTPS 和可选的 `--manifest-sha256` 固定值（把清单哈希提前钉在客户端配置里）。这是 v1 的真实边界，见第 8 节。
+
+#### 2.2.8 增量：v1 不需要
+
+- **v1 只支持完整 ZIP 包，不做增量/差量。** 清单里不需要 `delta`/`base`/`patch` 之类字段；写了也不读。
+- 理由：增量包要额外定义“基线版本 + 逐文件补丁 + 删除清单 + 冲突处理”，任何一环缺失都会产生“升级后状态不可预测”；而当前安装/回滚本来就是整包原子替换，增量不会减少失败面，只会增加校验与回滚复杂度。
+- 代价是每次升级要下载完整包（当前体量可接受）。若未来确需增量，必须同时升级 `schema`（例如 `liuhao.release-manifest/2`），旧客户端因 schema 不识别而拒绝，避免“新包被老逻辑误读”。
+
+#### 2.2.9 打包流水线检查清单（照做即可）
+
+1. 改 `pyproject.toml [project].version` 为目标版本；
+2. 只打包安装根（`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，可选根目录 `LIUHAO_RELEASE.json`），不要带 `data/`、`.env`、密钥、`.git`、缓存；
+3. 生成 `liuhao-<version>.zip`；
+4. 对 ZIP 完整字节算 SHA256 与字节数（**此时之后不再改 ZIP**）；
+5. （可选）用 Ed25519 私钥对 ZIP 完整字节签名，base64 写入 `signature`，`signature_algorithm` 写 `ed25519`；
+6. 生成 `LIUHAO_RELEASE.json`（`schema` + `releases[]`，字段见 2.2.2/2.2.3），与 ZIP 同目录；
+7. 自检：把清单喂给 `python -m src.upgrade check --app-root . --release-dir <目录>`，确认返回 `update_available` 且退出码 0；若返回 `invalid_manifest`，按消息修字段；
+8. 客户端首次部署时配置可信公钥（`--public-key`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`）。
+
+完整示例：
 
 ```json
 {
   "schema": "liuhao.release-manifest/1",
+  "channel": "stable",
   "releases": [
     {
       "version": "0.2.0",
       "artifact": "liuhao-0.2.0.zip",
       "sha256": "<发布包 ZIP 的 64 位十六进制 SHA256>",
       "size": 123456,
-      "signature": "<对发布包完整字节的 Ed25519 签名，base64>",
+      "signature": "<对 ZIP 完整字节的 Ed25519 签名，base64>",
       "signature_algorithm": "ed25519",
       "notes": "可选",
       "released_at": "2026-11-06T00:00:00Z"
@@ -113,13 +251,7 @@ python -m src.selfmod list
 }
 ```
 
-约束：
-
-- `schema` 可省略；出现时必须是 `liuhao.release-manifest/1`；
-- `releases` 必须非空，版本号必须能被 `packaging.version.Version` 解析，重复版本拒绝；
-- `sha256` 必须 64 位十六进制；`size` 若存在必须是整数；
-- `artifact` 在本地源中必须位于发布目录内（路径穿越/越界拒绝）；在 HTTP 源中按相对 URL 解析，仅允许 `http/https`；
-- 签名是**对发布包完整字节**的签名，不是对清单的签名。签名可选。
+约束回顾：`releases` 必须非空；版本号必须能被 `packaging.version.Version` 解析且不重复；`sha256` 必须 64 位十六进制；`size` 若存在必须是整数；`artifact` 在本地源中必须位于发布目录内，在 HTTP 源中按相对 URL 解析且仅允许 `http/https`。
 
 ### 2.3 离线语义（重要）
 
@@ -128,7 +260,7 @@ python -m src.selfmod list
 | 未配置任何更新源 | `not_configured` | 未配置更新源（本地发布目录或 HTTP 清单），无法检查更新 |
 | HTTP 网络不可用 / 超时 | `unreachable`，`offline=true` | 无法检查更新：网络不可用（…） |
 | HTTP 返回非 200 | `unreachable` | 无法检查更新：更新源返回 HTTP 404 |
-| 本地发布目录不存在 / 缺少清单 | `unreachable` | 无法检查更新：发布目录不存在 / 发布目录中没有 release-manifest.json |
+| 本地发布目录不存在 / 缺少清单 | `unreachable` | 无法检查更新：发布目录不存在 / 发布目录中没有 LIUHAO_RELEASE.json（或 release-manifest.json） |
 | 清单 JSON/schema/字段非法 | `invalid_manifest` | 无法检查更新：发布清单无效（…） |
 
 **只有真正加载到合法清单并且版本不高于当前版本时，才返回“已是最新版本”。** `tests/test_upgrade_version_source.py` 用真实的本地 HTTP server 和 monkeypatch 断网覆盖了这些分支。
@@ -164,8 +296,9 @@ python -m src.selfmod list
 1. 当前版本可读，且目标版本必须更新（除非显式 `allow_same_or_downgrade=True`）；
 2. 发布包 SHA256/大小/签名复核；
 3. 数据预检：`data/` 及 `extra_state_files` 中每个 SQLite 执行 `PRAGMA integrity_check`，JSON/YAML 必须可解析，符号链接报问题；
-4. ZIP 安全校验：只允许安装根（默认 `src`、`docs`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`），拒绝 `data/`、`.git`、`.venv`、`.env`、`secrets`、`*.pem`、`*.key`、`*.crt`，拒绝绝对路径/`..`/盘符、符号链接、重复路径、超量文件（10 万）与超量解压（2 GiB）；
-5. 解压到 staging 后读取包内版本，必须与清单版本一致。
+4. ZIP 安全校验：只允许安装根（默认 `src`、`docs`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、根目录 `LIUHAO_RELEASE.json`），拒绝 `data/`、`.git`、`.venv`、`.env`、`secrets`、`*.pem`、`*.key`、`*.crt`，拒绝绝对路径/`..`/盘符、符号链接、重复路径、超量文件（10 万）与超量解压（2 GiB）；
+5. 解压到 staging 后读取包内版本，必须与清单版本一致；
+6. 记录每个受保护 SQLite 的**表清单**（`capture_table_inventory`），随备份元数据落盘，供升级后自检对比。
 
 ### 4.2 备份（代码与数据分开）
 
@@ -173,7 +306,7 @@ python -m src.selfmod list
 
 - **代码**：把安装根打包成 `code.zip`，排除 `__pycache__`、`.pyc`、SQLite 侧车文件，`testzip()` 校验；元数据记录 SHA256 与文件数。
 - **数据**：每个 SQLite 用 `src.kernels.audit.durability.vacuum_into()`（`VACUUM INTO`）做事务一致快照，快照后再做一次 `integrity_check`；非 SQLite 文件按字节流复制，**不做 UTF-8 文本读写**；`-wal`/`-shm`/`-journal` 不复制（避免把旧 WAL 重放进恢复后的主文件）。
-- 备份目录 `upgrade-backups/<backup-id>/` 内含 `backup.json`、`code.zip`、`data/...`；账本另外记录 `backup` 事件。
+- 备份目录 `upgrade-backups/<backup-id>/` 内含 `backup.json`、`code.zip`、`data/...`；账本另外记录 `backup` 事件。`backup.json` 里的 `key_tables` 保存升级前每个库的表清单，是升级后自检的对照基准。
 
 > 复用说明：`vacuum_into` 要求目标文件不存在，内部执行 `VACUUM INTO`；不是文件拷贝，也不是文本读取。`tests/test_upgrade_data_guard.py` 已验证 WAL 中已提交的数据会进入快照，且快照旁不会出现 `-wal`。
 
@@ -182,11 +315,39 @@ python -m src.selfmod list
 - 先解压到临时 staging，校验通过后逐文件原子写入（临时文件 + `os.replace`）；
 - 安装完成后重新读取版本，必须等于目标版本；
 - 再执行一次数据预检，必须通过；
+- **执行升级后自检**（见 4.4）；
 - 成功后写账本 `apply/completed`，状态文件写 `completed`。
 
-### 4.4 失败自动回滚
+### 4.4 升级后自检与自动回滚
 
-安装开始后任何异常（包括“安装后版本不对”“安装后数据校验失败”）都会：
+`src/upgrade/selfcheck.py`，在安装完成、数据预检通过之后立即执行，**不需要用户确认**：
+
+1. **服务入口**：在**独立子进程**中用当前安装的代码执行 `import src.gateway.main`（模块/属性可配），要求 `app` 存在且 `routes` 数量 > 0；设置超时（默认 90 秒）。用子进程而不是在本进程 `import`，是为了让“坏代码”即使有导入副作用也只影响一次性进程，同时让超时真正可执行。**不启动 uvicorn、不跑 lifespan、不监听端口**。
+2. **数据库可打开**：对升级前记录的每个 SQLite 执行 `SELECT 1`（带 `busy_timeout`）。
+3. **关键表可读**：与升级前 `capture_table_inventory` 的表清单逐库对比；缺失库文件、缺失表、`SELECT 1 FROM "<表>" LIMIT 1` 失败都记为问题。
+
+任一问题都会让自检失败：
+
+- 账本记录 `selfcheck/failed`（附完整 `SelfCheckReport`）；
+- 抛出 `SelfCheckError`，走与安装异常相同的自动回滚路径：恢复升级前代码与数据、校验恢复后的版本、账本记录 `apply/failed_rolled_back`、状态 `rolled_back`；
+- 用户消息明确包含“升级后自检未通过：…”和“已自动回滚”，不需要用户手动点回滚。
+
+通过时账本记录 `selfcheck/passed`，`ApplyResult` 带 `self_check_passed=true` / `self_check_issues=0`，状态继续到 `completed`。
+
+也可以随时手动复检当前安装：
+
+```powershell
+python -m src.upgrade selfcheck --app-root .
+python -m src.upgrade selfcheck --app-root . --no-service   # 只查数据库，不导入服务
+```
+
+退出码 `0` 通过、`1` 失败；`--json` 输出 `SelfCheckReport`（`service_ok/service_routes/databases_checked/tables_checked/issues`）。
+
+`tests/test_upgrade_selfcheck.py` 覆盖：健康服务+库+表通过、坏服务模块失败、关键表缺失失败、数据库损坏失败、**自检失败触发自动回滚**（断言版本、源码字节、SQLite 内容全部恢复）、成功升级记录 `selfcheck/passed`。
+
+### 4.5 失败自动回滚
+
+安装开始后任何异常（包括“安装后版本不对”“安装后数据校验失败”“升级后自检未通过”）都会：
 
 1. 把状态置为 `rolling_back`；
 2. 用**本次升级前的备份**恢复代码与数据；
@@ -196,7 +357,7 @@ python -m src.selfmod list
 
 `tests/test_upgrade_apply_rollback.py::test_failure_after_install_triggers_automatic_rollback` 通过注入“安装完成后抛异常”真实跑通了自动回滚，断言版本、源码字节、SQLite 内容都回到升级前。
 
-### 4.5 显式一键回滚
+### 4.6 显式一键回滚
 
 ```powershell
 python -m src.upgrade rollback --app-root .
@@ -210,9 +371,35 @@ python -m src.upgrade rollback --app-root .
 - 校验恢复后的版本等于备份中的 `from_version`；
 - 写账本 `rollback/rolled_back`，状态 `rolled_back`。
 
-**回滚会恢复升级前的数据快照，因此升级后新写入的数据会丢失。** 升级前的数据不会丢；这是“回到上一版本”的定义。需要保留升级后数据时，应先手动导出（该能力未实现，见第 8 节）。
+**回滚会恢复升级前的数据快照，因此升级后新写入的数据会丢失。** 升级前的数据不会丢；这是“回到上一版本”的定义。需要保留升级后数据时，应在回滚前先手动导出（该能力仍未实现，见第 8 节）。如果你只是想要**升级前**的数据，用 4.7 的快照导出，不需要回滚。
 
 **没有可回滚记录时**：清空状态是 `failed`，账本记录 `rollback/failed`，消息“没有可回滚的升级记录”，不会卡在 `rolling_back`（有回归测试）。
+
+### 4.7 升级前数据快照的单独取出
+
+每次升级都会在 `upgrade-backups/<backup-id>/data/` 留下升级前的数据副本（`VACUUM INTO` 事务快照 + 原始文件），**升级完成后不会被删除**。用户发现数据不对时，可以把它导出成一个独立目录，不需要回滚、不会改动当前安装：
+
+```powershell
+# 先看有哪些快照（按时间倒序）
+python -m src.upgrade snapshots --app-root . --limit 20
+
+# 取出最近一次成功升级之前的快照
+python -m src.upgrade export-snapshot --app-root . --dest D:\liuhao-snapshot-20261106
+
+# 指定某次备份 / 某条升级记录
+python -m src.upgrade export-snapshot --app-root . --dest D:\snap --backup-id <备份 ID>
+python -m src.upgrade export-snapshot --app-root . --dest D:\snap --record-id <升级记录 ID>
+```
+
+实现（`src/upgrade/backups.py::export_data_snapshot`）保证：
+
+- 目标是**必须不存在**的目录；已存在直接拒绝，绝不覆盖用户文件；
+- 逐文件复制前后各算一次 SHA256，必须与 `backup.json` 记录一致，不一致抛出 `SnapshotError` 并删除半成品；
+- 导出目录里生成 `snapshot.json`（schema `liuhao.snapshot-export/1`），记录 `backup_id`、`from_version`、`to_version`、每个文件的大小与 SHA256，便于事后核对；
+- 导出是只读复制，**不改动** `upgrade-backups/` 与当前 `data/`；
+- 没有任何备份时明确报“没有可回滚的升级记录”，不会创建一个空目录冒充成功。
+
+`tests/test_upgrade_snapshot.py` 覆盖：升级后往线上库写入新数据 → 导出的库仍然只有升级前的数据；`snapshot.json` 的哈希与导出文件一致；导出不改动线上库；目标目录已存在被拒绝且首次导出不受影响；无备份时明确报错；可按 `--backup-id` 指定。
 
 ---
 
@@ -234,9 +421,71 @@ python -m src.upgrade rollback --app-root .
 }
 ```
 
-阶段：`checking`（检查中）、`downloading`（下载中）、`verifying`（校验中）、`backing_up`（备份中）、`applying`（应用中）、`rolling_back`（回滚中）、`completed`（完成）、`failed`（失败）、`rolled_back`（已回滚），空闲为 `idle`。
+阶段：`checking`（检查中）、`downloading`（下载中）、`verifying`（校验中）、`backing_up`（备份中）、`applying`（应用中）、`self_checking`（自检中）、`rolling_back`（回滚中）、`completed`（完成）、`failed`（失败）、`rolled_back`（已回滚），空闲为 `idle`。
 
-账本：`upgrade-state/upgrade-ledger.db`（SQLite WAL），表 `upgrade_records` 持久保存 `check/download/preflight/backup/apply/rollback` 的 `created_at/kind/status/from_version/to_version/reason/detail_json/backup_id/artifact_path`。进程重启后仍可查。
+账本：`upgrade-state/upgrade-ledger.db`（SQLite WAL），表 `upgrade_records` 持久保存 `check/download/preflight/backup/apply/selfcheck/rollback` 的 `created_at/kind/status/from_version/to_version/reason/detail_json/backup_id/artifact_path`。进程重启后仍可查。
+
+### 5.1 上次检查更新时间与结果（手动/每周共用）
+
+`upgrade-state/last-check.json`（schema `liuhao.update-check/1`）由**手动 `check`** 和**每周自动检查**共同写入，用户随时可查：
+
+```powershell
+python -m src.upgrade last-check --app-root .
+```
+
+字段：
+
+```json
+{
+  "schema": "liuhao.update-check/1",
+  "checked_at": "2026-11-06T09:00:00+00:00",
+  "trigger": "weekly",                 // manual | weekly
+  "status": "update_available",        // update_available | up_to_date | not_configured | unreachable | invalid_manifest | version_unknown | error
+  "message": "发现新版本 0.2.0（当前 0.1.0）",
+  "current_version": "0.1.0",
+  "latest_version": "0.2.0",
+  "source": "本地发布目录 …",
+  "offline": false,
+  "notified": true,
+  "notify_results": [{"channel": "windows_balloon", "ok": true, "detail": "…"}],
+  "next_check_at": "2026-11-13T09:00:00",
+  "job_id": 42,
+  "record_id": "…"
+}
+```
+
+**检查失败时 `status` 绝不会是 `up_to_date`**：网络/目录/清单失败分别记为 `unreachable`/`invalid_manifest`，消息以“无法检查更新”开头；周任务自身异常（例如管理器构造失败）记为 `error`，同样不谎报“已是最新”。
+
+### 5.2 每周自动检查更新（用户不用主动点）
+
+入口：`src/upgrade/update_check.py`，注册到已有的进程内排程器 `src/tasks/local_scheduler.py`（单实例独占库；`liuhao-scheduler` 进程启用，2 进程 worker 组禁用）。
+
+- 作业名 `liuhao.upgrade.weekly-check`，默认间隔 7 天（`LIUHAO_UPDATE_CHECK_INTERVAL` 秒可调，最小 60 秒）；
+- 每次执行后（成功或失败）都会按 `run_at = 现在 + 间隔` 重新入队，`job_key` 用下一次运行时刻，重启/重试不会重复入队；
+- `max_attempts=1`：检查失败不重试，避免通知风暴，等下一周再试；
+- 只调用 `manager.check(trigger="weekly")`，**绝不 download、绝不 apply**。发现新版本只发一条提示，文案明确“请打开鎏灏确认升级；不会自动安装”；
+- 提示通道复用 `src/tasks/reminder_notify.build_default_notifier()`：Windows 托盘气泡 + 控制台 outbox；任一通道成功即视为用户已看到，逐通道结果写进 `last-check.json` 的 `notify_results`；
+- 只有配置了更新源才会 seed 作业（`LIUHAO_UPGRADE_RELEASE_DIR` 或 `LIUHAO_UPGRADE_MANIFEST_URL`），避免未配置环境每次启动写库。
+
+相关环境变量（周任务读取）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `LIUHAO_WORKSPACE_ROOT` | 应用根目录（默认仓库根） |
+| `LIUHAO_UPGRADE_RELEASE_DIR` | 本地发布目录 |
+| `LIUHAO_UPGRADE_MANIFEST_URL` | HTTP(S) 清单地址 |
+| `LIUHAO_UPGRADE_PUBLIC_KEY` | Ed25519 公钥（PEM 路径或 base64） |
+| `LIUHAO_DATA_DIR` / `LIUHAO_UPGRADE_BACKUP_ROOT` / `LIUHAO_UPGRADE_STATE_DIR` | 数据/备份/状态目录 |
+| `LIUHAO_UPDATE_CHECK_INTERVAL` | 检查间隔秒数（默认 604800） |
+| `LIUHAO_REMINDER_OS_NOTIFY=0` | 测试/无桌面环境关掉托盘气泡，保留控制台通道 |
+
+`tests/test_upgrade_weekly_check.py` 用**真实 `LocalScheduler` + 固定时钟**跑完整 tick，覆盖：
+
+- 发现 `0.2.0` → 只发通知（标题含 `0.2.0`、正文含“不会自动安装”），版本仍是 `0.1.0`、源码未变、无备份、无 `apply`/`download` 账本记录，下一次运行精确等于“现在 + 7 天”；
+- 发布目录缺失 → `unreachable`，消息含“无法检查更新”，**不含“已是最新”**，不通知，仍排下一周；
+- 版本相同 → `up_to_date`，不通知（这才是允许说“已是最新”的唯一场景）；
+- 管理器构造抛异常 → 记录 `error` + 异常原因，不谎报最新，仍排下一周；
+- `seed` 幂等、未配置源时不入队；`register_local_jobs` 确实注册了周检查作业。
 
 ---
 
@@ -313,6 +562,11 @@ propose（生成 diff，不改工作区）
 | 备份创建或元数据读取失败 | 拒绝，未开始安装 | 无 |
 | 安装过程中/后异常 | 自动回滚到升级前代码与数据 | 代码/数据恢复原状 |
 | 安装后版本或数据复核失败 | 自动回滚 | 恢复原状 |
+| 升级后自检失败（服务无法导入/无路由/库打不开/关键表缺失） | `SelfCheckError`，**自动回滚，无需用户点** | 代码/数据恢复原状 |
+| 快照导出目标目录已存在 | `SnapshotError`，拒绝覆盖 | 无 |
+| 快照导出时源文件哈希不符 | `SnapshotError`，删除半成品 | 无 |
+| 周检查发现新版本 | 只发提示，不下载、不安装 | 无 |
+| 周检查失败（断网/目录缺失/管理器异常） | 记为 `unreachable`/`error`，绝不写“已是最新” | 无 |
 | 自动回滚也失败 | 状态 `failed`，账本记录两个原因，需人工介入 | 可能不一致（明确告知） |
 | 无可用回滚记录 | `RollbackError`，状态 `failed`，账本 `rollback/failed` | 无 |
 | 回滚备份 ZIP 哈希不符 | 拒绝回滚 | 保持当前状态 |
@@ -347,8 +601,8 @@ propose（生成 diff，不改工作区）
 2. **没有自动补丁生成**：`propose` 接收的是“整文件内容或删除”列表，不接受 unified diff/hunk 文本，也没有“由大模型自动写代码”的接线。自然语言 → 代码这一步不在本模块内。
 3. **没有前端/网关接线**：按任务约束未修改 `apps/console/**`、`src/gateway/**`、`src/ai/**`、`installer/**`；目前用户可见面是 CLI、`status.json` 和 SQLite 账本，**没有网页按钮/API 端点**。
 4. **没有升级并发锁**：两个升级进程同时运行可能竞争；未实现跨进程互斥锁/租约。请勿并发执行升级。
-5. **没有保留升级后新数据**：回滚恢复升级前数据快照，升级后写入的数据会丢失；没有“导出升级后差异再回滚”的能力。
-6. **没有增量/差量升级**：只支持完整 ZIP 发布包，不支持 delta 补丁、断点续传（失败会删除临时包重新下载）。
+5. **没有保留升级后新数据**：回滚恢复升级前数据快照，升级后写入的数据会丢失；没有“导出升级后差异再回滚”的能力。**升级前**的数据可以用 `export-snapshot` 单独取出（4.7，已实现），但那是升级前的副本，不是升级后的增量。
+6. **没有增量/差量升级**：只支持完整 ZIP 发布包（见 2.2.8），不支持 delta 补丁、断点续传（失败会删除临时包重新下载）。
 7. **没有公钥分发/信任引导**：签名验证要求调用方显式配置可信公钥（PEM 文件或 base64）。没有密钥轮换、过期、吊销机制。
 8. **签名只支持 Ed25519**，且验证时整包读入内存，>512 MiB 会被拒绝验证（仅哈希路径仍可用）。
 9. **没有数据库/状态迁移框架**：升级只保证数据文件被备份与恢复，不会执行 schema 迁移脚本；发布包也不应包含 `data/`。
@@ -357,6 +611,12 @@ propose（生成 diff，不改工作区）
 12. **没有升级过程的 UI 进度条**：状态是文本/JSON+SQLite，不是实时推送；CLI 只在阶段切换时打印。
 13. **未做真实 HTTPS/代理/证书固定测试**：HTTP 清单路径只用本地 HTTP server 测过；TLS、代理、企业证书场景未验证。
 14. **未做多版本连续升级的长时间浸泡测试**：已有测试覆盖单次升级/回滚和一次失败自动回滚；未验证连续数十次升级的备份清理与磁盘增长。备份不会自动清理，长期使用需人工清理 `upgrade-backups/`。
+15. **自检不等于“服务真的能跑”**：只验证 `src.gateway.main:app` 可导入、`app` 非空、`routes` 数量 > 0，**不启动 uvicorn、不跑 lifespan、不监听端口、不发真实请求**。依赖数据库连接池/外部服务/端口的启动期错误，自检抓不到。
+16. **自检子进程不是隔离沙箱**：导入过程以当前用户身份执行，可能产生文件/网络等导入副作用；它只是“不污染活进程 + 可超时”，不是安全边界。
+17. **自检失败会回滚到旧代码**：如果新版本来就依赖新的数据格式，而旧版读不了新数据，回滚后仍可能起不来——自检只能保证“回到升级前状态”，不保证“旧代码兼容新数据”。
+18. **周检查只在单实例排程器进程内生效**：依赖 `liuhao-scheduler` 正常运行（`local_scheduler` 单实例独占库）。该进程没起来时不会自动检查；多进程 worker 组按约定禁用排程器。
+19. **托盘提示依赖桌面会话**：无桌面/服务账户下只有控制台 outbox + `last-check.json`，用户需要主动查看；没有邮件/短信等离线外发通道。
+20. **没有“检查结果已读/忽略”状态**：`last-check.json` 只记录最近一次检查，不保存历史列表，也不支持用户标记“已忽略此版本”。重复检查发现同一版本会再次提示（每周最多一次）。
 
 ---
 
@@ -370,14 +630,17 @@ propose（生成 diff，不改工作区）
   tests/test_upgrade_download_verify.py `
   tests/test_upgrade_data_guard.py `
   tests/test_upgrade_apply_rollback.py `
+  tests/test_upgrade_selfcheck.py `
+  tests/test_upgrade_snapshot.py `
+  tests/test_upgrade_weekly_check.py `
   tests/test_selfmod_diff_confirm.py `
   tests/test_selfmod_copy_test.py -q
 ```
 
-最近一次实际结果：
+最近一次实际结果（2026-11-06）：
 
 ```
-40 passed in 10.32s
+57 passed in 23.66s
 ```
 
 覆盖的关键真实行为（不是“方法返回了字典”的断言）：
@@ -386,6 +649,9 @@ propose（生成 diff，不改工作区）
 - `test_upgrade_download_verify.py`：SHA256 通过；校验失败清理临时文件；有签名无公钥的如实文案；真实生成 Ed25519 密钥并验签；签名篡改失败；artifact 路径越界拒绝。
 - `test_upgrade_data_guard.py`：非法 JSON、损坏 SQLite；WAL 中已提交数据进入 `VACUUM INTO` 快照且不产生 `-wal`；恢复前删除 stale WAL；额外状态文件；按文件头识别 SQLite。
 - `test_upgrade_apply_rollback.py`：成功应用并生成代码/数据分离备份；显式回滚后源码与 SQLite 字节回到升级前；注入“安装后异常”自动回滚；数据损坏预检中止且不产生备份；发布包不得覆盖 `data/`；包内无版本拒绝；下载后篡改 artifact 拒绝；无回滚记录时状态落在 `failed` 而不是卡住。
+- `test_upgrade_selfcheck.py`：真实子进程导入健康服务入口通过（`routes` 数 > 0）；坏服务模块、关键表缺失、损坏数据库分别失败并给出可读原因；**发布包带坏服务入口时升级后自检失败 → 自动回滚**，断言版本、源码字节、SQLite 内容全部恢复，账本同时有 `selfcheck/failed` 与 `apply/failed_rolled_back`；正常升级记录 `selfcheck/passed`。
+- `test_upgrade_snapshot.py`：升级后往线上库写入新数据，再导出快照，导出的库仍然只有升级前的数据；`snapshot.json` 中每个文件的 SHA256 与实际导出文件一致；导出不改动线上库；目标目录已存在时拒绝且首次导出不受影响；无备份时明确报错；可按 `backup_id` 指定。
+- `test_upgrade_weekly_check.py`：用真实 `LocalScheduler` + 固定时钟跑完整 tick；发现新版本只通知（正文含“不会自动安装”）、版本/源码/备份/账本均未变化，下一次运行精确等于 `now + 7 天`；发布目录缺失记为 `unreachable` 且不含“已是最新”；同版本才 `up_to_date` 且不通知；管理器异常记为 `error` 且不谎报最新；`seed` 幂等且未配置源不 seed；`register_local_jobs` 已注册作业。
 - `test_selfmod_diff_confirm.py`：diff 生成但工作区不变；路径拒绝；一次性令牌；陈旧提案拒绝；缺测试命令拒绝。
 - `test_selfmod_copy_test.py`：副本测试通过且真实工作区无 `marker.txt`；测试失败拒绝；超时杀进程；CPU 上限杀进程；密钥形状环境变量不进子进程；默认禁止 promote；必须 `passed` + 第二次令牌；`finalize`/`rollback` 后文件字节回到原状。
 
@@ -400,11 +666,11 @@ propose（生成 diff，不改工作区）
 
 ## 10. 发布一个版本的维护者步骤
 
-1. 修改 `pyproject.toml` 的 `[project].version` 为目标版本；
-2. 打包发布 ZIP，**只包含安装根**（`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`），不要包含 `data/`、`.env`、密钥、`.git`；
-3. 计算 `sha256` 与字节数；
+1. 修改 `pyproject.toml` 的 `[project].version` 为目标版本（推荐同时在包根写 `LIUHAO_RELEASE.json` 版本标记，两者一致，见 2.2.5）；
+2. 打包发布 ZIP，**只包含安装根**（`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，可选根目录 `LIUHAO_RELEASE.json`），不要包含 `data/`、`.env`、密钥、`.git`；
+3. 计算**整包** `sha256` 与字节数（算完后不要再改 ZIP，见 2.2.6）；
 4. （可选但推荐）用 Ed25519 私钥对 ZIP 完整字节签名，填入 `signature`（base64，`signature_algorithm` 为 `ed25519`）；
-5. 写入 `release-manifest.json`，与 ZIP 放在同一发布目录（HTTP 源同理，`artifact` 可为相对路径）；
-6. 在客户端配置可信公钥：`--public-key <PEM 文件或 base64>`。
+5. 写入 `LIUHAO_RELEASE.json`（schema `liuhao.release-manifest/1` + `releases[]`），与 ZIP 放在同一发布目录（HTTP 源同理，`artifact` 可为相对路径）；旧名 `release-manifest.json` 仍兼容，但新流水线用前者；
+6. 在客户端配置可信公钥：`--public-key <PEM 文件或 base64>`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`。
 
 未配置公钥时，升级仍可进行，但界面/CLI 会明确显示“仅哈希校验，无签名”或“未验证签名（仅哈希校验）”，不会冒充签名已验证。

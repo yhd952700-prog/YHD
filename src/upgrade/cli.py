@@ -17,10 +17,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .dataguard import capture_table_inventory
 from .downloader import cleanup_download
 from .errors import UpgradeError
 from .manager import UpgradeConfig, UpgradeManager
 from .models import CheckStatus
+from .selfcheck import SelfCheckConfig, run_self_check
 from .sources import build_source
 
 
@@ -60,6 +62,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rollback = sub.add_parser("rollback", parents=[common], help="回滚到升级前版本")
     p_rollback.add_argument("--backup-id", default=None, help="指定备份 ID")
     p_rollback.add_argument("--record-id", default=None, help="指定升级记录 ID")
+    p_snapshots = sub.add_parser("snapshots", parents=[common], help="列出升级前数据快照")
+    p_snapshots.add_argument("--limit", type=int, default=20)
+    p_export = sub.add_parser("export-snapshot", parents=[common], help="单独取出升级前数据快照")
+    p_export.add_argument("--dest", required=True, help="导出目标目录（必须不存在）")
+    p_export.add_argument("--backup-id", default=None, help="指定备份 ID（默认最近一次成功升级）")
+    p_export.add_argument("--record-id", default=None, help="指定升级记录 ID")
+    p_selfcheck = sub.add_parser("selfcheck", parents=[common], help="对当前安装执行自检")
+    p_selfcheck.add_argument("--service-module", default="src.gateway.main")
+    p_selfcheck.add_argument("--service-attr", default="app")
+    p_selfcheck.add_argument("--selfcheck-timeout", type=float, default=90.0)
+    p_selfcheck.add_argument("--no-service", action="store_true", help="只检查数据库，不导入服务")
+    sub.add_parser("last-check", parents=[common], help="查看上次检查更新的时间与结果")
     return parser
 
 
@@ -74,10 +88,10 @@ def _load_public_key(value: Optional[str]) -> Optional[str | bytes]:
 
 def _manager(args: argparse.Namespace) -> UpgradeManager:
     source = build_source(
-        release_dir=args.release_dir,
-        manifest_url=args.manifest_url,
-        timeout=args.timeout,
-        manifest_sha256=args.manifest_sha256,
+        release_dir=getattr(args, "release_dir", None),
+        manifest_url=getattr(args, "manifest_url", None),
+        timeout=getattr(args, "timeout", 5.0),
+        manifest_sha256=getattr(args, "manifest_sha256", None),
     )
     config = UpgradeConfig(
         app_root=args.app_root,
@@ -86,7 +100,7 @@ def _manager(args: argparse.Namespace) -> UpgradeManager:
         state_dir=args.state_dir,
         extra_state_files=tuple(args.extra_state or ()),
         source=source,
-        public_key=_load_public_key(args.public_key),
+        public_key=_load_public_key(getattr(args, "public_key", None)),
     )
     return UpgradeManager(config)
 
@@ -118,6 +132,45 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.command == "history":
             manager = _manager(args)
             _emit(args, {"records": manager.history(limit=args.limit)})
+            return 0
+
+        if args.command == "snapshots":
+            manager = _manager(args)
+            _emit(args, {"backups": manager.list_backups(limit=args.limit)})
+            return 0
+
+        if args.command == "export-snapshot":
+            manager = _manager(args)
+            exported = manager.export_snapshot(
+                args.dest, backup_id=args.backup_id, record_id=args.record_id
+            )
+            _emit(args, exported)
+            return 0
+
+        if args.command == "selfcheck":
+            manager = _manager(args)
+            paths = manager.data_paths()
+            expected = capture_table_inventory(paths)
+            report = run_self_check(
+                manager.config.app_root,
+                paths,
+                expected_tables=expected,
+                config=SelfCheckConfig(
+                    service_module=args.service_module,
+                    service_attr=args.service_attr,
+                    service_timeout_seconds=args.selfcheck_timeout,
+                    check_service=not args.no_service,
+                ),
+            )
+            _emit(args, report.to_dict())
+            return 0 if report.ok else 1
+
+        if args.command == "last-check":
+            manager = _manager(args)
+            state = manager.last_check()
+            if not state:
+                state = {"status": "never", "message": "尚未执行过检查更新"}
+            _emit(args, state)
             return 0
 
         if args.command == "rollback":

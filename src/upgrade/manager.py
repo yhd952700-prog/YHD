@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -32,8 +32,8 @@ from .archive import (
     safe_relpath,
     validate_release_zip,
 )
-from .backups import backup_code, backup_data, restore_code, restore_data
-from .dataguard import verify_data_paths
+from .backups import backup_code, backup_data, export_data_snapshot, restore_code, restore_data
+from .dataguard import capture_table_inventory, verify_data_paths
 from .downloader import _sha256_file, download_release, verify_signature
 from .errors import (
     ApplyError,
@@ -41,11 +41,14 @@ from .errors import (
     ManifestError,
     PreflightError,
     RollbackError,
+    SelfCheckError,
+    SnapshotError,
     UpdateUnreachableError,
     UpgradeError,
     VersionReadError,
 )
 from .ledger import UpgradeLedger
+from .selfcheck import SelfCheckConfig, run_self_check
 from .models import (
     PHASE_TEXT,
     ApplyResult,
@@ -60,6 +63,7 @@ from .sources import ReleaseSource, select_latest
 from .versioning import is_newer, parse_version, read_current_version
 
 _BACKUP_SCHEMA = "liuhao.upgrade-backup/1"
+_CHECK_STATE_SCHEMA = "liuhao.update-check/1"
 _DEFAULT_PROTECTED = (
     ".git",
     ".venv",
@@ -77,6 +81,9 @@ _DEFAULT_INSTALL_ROOTS = (
     "pyproject.toml",
     "requirements.txt",
     "oss-registry.yaml",
+    # Package-internal version marker; installed at the app root so
+    # `versioning.read_current_version` keeps working without pyproject edits.
+    "LIUHAO_RELEASE.json",
 )
 
 
@@ -94,6 +101,7 @@ class UpgradeConfig:
     max_artifact_bytes: int = 2 * 1024 * 1024 * 1024
     max_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
     allow_same_or_downgrade: bool = False
+    self_check: SelfCheckConfig = field(default_factory=SelfCheckConfig)
 
     def __post_init__(self) -> None:
         self.app_root = Path(self.app_root).resolve()
@@ -128,7 +136,9 @@ class UpgradeManager:
         self.config.backup_root.mkdir(parents=True, exist_ok=True)
         self.ledger = UpgradeLedger(self.config.state_dir / "upgrade-ledger.db")
         self.status_path = self.config.state_dir / "status.json"
+        self.check_state_path = self.config.state_dir / "last-check.json"
         self._current_version: Optional[str] = None
+        self._check_trigger = "manual"
 
     # ------------------------------------------------------------------
     # Introspection / user-visible state
@@ -151,6 +161,110 @@ class UpgradeManager:
 
     def history(self, *, limit: int = 50, kind: Optional[str] = None) -> List[Dict[str, Any]]:
         return self.ledger.list_records(kind=kind, limit=limit)
+
+    def last_check(self) -> Dict[str, Any]:
+        """Last update check time/result, shared by manual and weekly checks."""
+        if not self.check_state_path.is_file():
+            return {}
+        try:
+            return json.loads(self.check_state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {"status": "unreadable", "message": "上次检查记录无法读取"}
+
+    def annotate_last_check(
+        self,
+        *,
+        notified: bool,
+        notify_results: Sequence[Dict[str, Any]] = (),
+        next_check_at: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add notification details to the last check record (weekly job)."""
+        state = self.last_check() or {"schema": _CHECK_STATE_SCHEMA}
+        state["notified"] = bool(notified)
+        state["notify_results"] = list(notify_results)
+        if next_check_at:
+            state["next_check_at"] = next_check_at
+        if job_id:
+            state["job_id"] = job_id
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        atomic_write_text(
+            self.check_state_path,
+            json.dumps(state, ensure_ascii=False, indent=2),
+        )
+        return state
+
+    def data_paths(self) -> List[Path]:
+        """Public view of the SQLite/state paths guarded by preflight/self-check."""
+        return self._data_guard_paths()
+
+    def list_backups(self, *, limit: int = 50) -> List[Dict[str, Any]]:
+        """User-visible list of pre-upgrade snapshots, newest first."""
+        items: List[Dict[str, Any]] = []
+        for meta_path in self.config.backup_root.glob("*/backup.json"):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if meta.get("schema") != _BACKUP_SCHEMA:
+                continue
+            backup_dir = meta_path.parent
+            items.append(
+                {
+                    "backup_id": meta.get("backup_id") or backup_dir.name,
+                    "created_at": meta.get("created_at", ""),
+                    "from_version": meta.get("from_version", ""),
+                    "to_version": meta.get("to_version", ""),
+                    "code_file_count": int(meta.get("code_file_count") or 0),
+                    "data_file_count": int(meta.get("data_file_count") or 0),
+                    "data_sqlite_count": int(meta.get("data_sqlite_count") or 0),
+                    "data_total_bytes": int(meta.get("data_total_bytes") or 0),
+                    "key_tables": meta.get("key_tables") or {},
+                    "has_data_snapshot": (backup_dir / "data-backup.json").is_file(),
+                    "path": str(backup_dir),
+                }
+            )
+        items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return items[: max(1, int(limit))]
+
+    def export_snapshot(
+        self,
+        dest_dir: str | Path,
+        *,
+        backup_id: Optional[str] = None,
+        record_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Export the pre-upgrade data snapshot to a standalone directory."""
+        resolved = self._resolve_backup_id(backup_id, record_id)
+        meta = self._read_backup(resolved)
+        exported = export_data_snapshot(
+            self.config.backup_root / resolved,
+            Path(dest_dir),
+            backup_meta=meta,
+        )
+        return {
+            "backup_id": exported.backup_id,
+            "destination": str(exported.destination),
+            "manifest_path": str(exported.manifest_path),
+            "file_count": exported.file_count,
+            "sqlite_count": exported.sqlite_count,
+            "total_bytes": exported.total_bytes,
+        }
+
+    def _resolve_backup_id(
+        self, backup_id: Optional[str], record_id: Optional[str] = None
+    ) -> str:
+        if record_id:
+            record = self.ledger.get(record_id)
+            if not record:
+                raise RollbackError(f"升级记录不存在：{record_id}")
+            backup_id = record.get("backup_id")
+        if not backup_id:
+            latest = self.ledger.latest_successful_apply()
+            if not latest or not latest.get("backup_id"):
+                raise RollbackError("没有可回滚的升级记录")
+            backup_id = str(latest["backup_id"])
+        return str(backup_id)
 
     def _set_status(
         self,
@@ -193,7 +307,8 @@ class UpgradeManager:
     # ------------------------------------------------------------------
     # 1. Check
     # ------------------------------------------------------------------
-    def check(self) -> CheckResult:
+    def check(self, *, trigger: str = "manual") -> CheckResult:
+        self._check_trigger = str(trigger or "manual")
         self._set_status(Phase.CHECKING, "检查中：正在读取当前版本与更新源")
         source = self.config.source
         if source is None:
@@ -307,6 +422,24 @@ class UpgradeManager:
                 error=result.message,
                 record_id=record.get("id"),
             )
+        state = {
+            "schema": _CHECK_STATE_SCHEMA,
+            "checked_at": result.checked_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "trigger": self._check_trigger,
+            "status": result.status.value,
+            "message": result.message,
+            "current_version": result.current_version,
+            "latest_version": result.latest_version,
+            "source": result.source,
+            "offline": bool(result.offline),
+            "notified": False,
+            "record_id": record.get("id"),
+        }
+        atomic_write_text(
+            self.check_state_path,
+            json.dumps(state, ensure_ascii=False, indent=2),
+        )
 
     # ------------------------------------------------------------------
     # 2. Download + verify
@@ -433,6 +566,11 @@ class UpgradeManager:
             )
             raise PreflightError(f"升级前数据校验未通过：{details}")
 
+        # Record what each DB contained *before* the upgrade. The post-install
+        # self-check compares against this; otherwise a release that silently
+        # drops a table would look fine.
+        key_tables = capture_table_inventory(self._data_guard_paths())
+
         staging = Path(tempfile.mkdtemp(prefix="liuhao-upgrade-stage-"))
         backup_id = ""
         mutation_started = False
@@ -456,7 +594,9 @@ class UpgradeManager:
                 "备份中：正在分别备份代码与数据",
                 target_version=release.version,
             )
-            backup_id = self._create_backup(current_version, release, preflight.to_dict())
+            backup_id = self._create_backup(
+                current_version, release, preflight.to_dict(), key_tables=key_tables
+            )
             # Re-read the metadata immediately: a backup we cannot parse is not
             # a backup we can roll back to, and this must fail before mutation.
             self._read_backup(backup_id)
@@ -483,6 +623,35 @@ class UpgradeManager:
                 )
                 raise ApplyError(f"应用后数据校验未通过：{details}")
 
+            self._set_status(
+                Phase.SELF_CHECKING,
+                "自检中：正在检查服务入口、数据库与关键表",
+                target_version=release.version,
+                backup_id=backup_id,
+            )
+            self_check = run_self_check(
+                self.config.app_root,
+                self._data_guard_paths(),
+                expected_tables=key_tables,
+                config=self.config.self_check,
+            )
+            self_check_reason = "; ".join(
+                f"{issue.kind}:{issue.path}:{issue.detail}" for issue in self_check.issues
+            )
+            self.ledger.record(
+                kind="selfcheck",
+                status="passed" if self_check.ok else "failed",
+                from_version=current_version,
+                to_version=release.version,
+                reason=self_check_reason if not self_check.ok else "",
+                backup_id=backup_id,
+                detail=self_check.to_dict(),
+            )
+            if not self_check.ok:
+                raise SelfCheckError(
+                    "升级后自检未通过：" + (self_check_reason or "未知原因")
+                )
+
             record = self.ledger.record(
                 kind="apply",
                 status="completed",
@@ -497,6 +666,8 @@ class UpgradeManager:
                     "signature_verified": signature_verified,
                     "signature_note": signature_note,
                     "preflight": preflight.to_dict(),
+                    "key_tables": key_tables,
+                    "selfcheck": self_check.to_dict(),
                 },
             )
             self._set_status(
@@ -513,6 +684,8 @@ class UpgradeManager:
                 to_version=release.version,
                 installed_files=len(installed),
                 data_checked_files=preflight.files_checked,
+                self_check_passed=bool(self_check.ok),
+                self_check_issues=len(self_check.issues),
             )
         except Exception as exc:
             rollback_ok = False
@@ -610,7 +783,11 @@ class UpgradeManager:
     # Backup / restore internals
     # ------------------------------------------------------------------
     def _create_backup(
-        self, from_version: str, release: ReleaseInfo, preflight_detail: Dict[str, Any]
+        self,
+        from_version: str,
+        release: ReleaseInfo,
+        preflight_detail: Dict[str, Any],
+        key_tables: Optional[Dict[str, List[str]]] = None,
     ) -> str:
         backup_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
         backup_dir = self.config.backup_root / backup_id
@@ -639,6 +816,7 @@ class UpgradeManager:
             "data_sqlite_count": data.sqlite_count,
             "data_total_bytes": data.total_bytes,
             "preflight": preflight_detail,
+            "key_tables": key_tables or {},
         }
         atomic_write_bytes(
             backup_dir / "backup.json",
@@ -692,16 +870,7 @@ class UpgradeManager:
             # Resolving the backup happens inside the try: "no rollback record"
             # is a failure that must leave the status at 失败, not stuck at
             # 回滚中 forever.
-            if record_id:
-                record = self.ledger.get(record_id)
-                if not record:
-                    raise RollbackError(f"升级记录不存在：{record_id}")
-                backup_id = record.get("backup_id")
-            if not backup_id:
-                latest = self.ledger.latest_successful_apply()
-                if not latest or not latest.get("backup_id"):
-                    raise RollbackError("没有可回滚的升级记录")
-                backup_id = str(latest["backup_id"])
+            backup_id = self._resolve_backup_id(backup_id, record_id)
             meta = self._read_backup(backup_id)
             from_version = str(meta.get("to_version", ""))
             to_version = str(meta.get("from_version", ""))

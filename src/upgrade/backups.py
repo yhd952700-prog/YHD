@@ -27,12 +27,13 @@ from typing import List, Sequence
 from src.common.atomic_write import atomic_write_bytes
 from src.kernels.audit.durability import vacuum_into
 
-from .archive import _atomic_stream_copy, safe_relpath, validate_release_zip
+from .archive import _atomic_stream_copy, atomic_copy_file, safe_relpath, validate_release_zip
 from .dataguard import check_sqlite, is_sqlite_file, iter_files
-from .errors import RollbackError
+from .errors import RollbackError, SnapshotError
 
 _DATA_BACKUP_SCHEMA = "liuhao.data-backup/1"
 _CODE_BACKUP_SCHEMA = "liuhao.code-backup/1"
+_SNAPSHOT_EXPORT_SCHEMA = "liuhao.snapshot-export/1"
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 
 
@@ -52,6 +53,16 @@ class CodeBackup:
     roots: Sequence[str]
     file_count: int
     sha256: str
+
+
+@dataclass
+class SnapshotExport:
+    destination: Path
+    manifest_path: Path
+    backup_id: str
+    file_count: int
+    sqlite_count: int
+    total_bytes: int
 
 
 def _sha256(path: Path) -> str:
@@ -163,6 +174,99 @@ def backup_data(
         backup_dir=dest_dir,
         manifest_path=manifest_path,
         file_count=len(entries),
+        sqlite_count=sqlite_count,
+        total_bytes=total,
+    )
+
+
+def export_data_snapshot(
+    backup_dir: Path,
+    dest_dir: Path,
+    *,
+    backup_meta: dict | None = None,
+) -> SnapshotExport:
+    """Copy a pre-upgrade data snapshot into a standalone directory.
+
+    The export is byte-for-byte the backup (each file's SHA256 is verified
+    before and after the copy), plus a ``snapshot.json`` describing it. It never
+    touches the live database; the destination must not exist so an accidental
+    second export cannot overwrite the first.
+    """
+    backup_dir = Path(backup_dir)
+    dest = Path(dest_dir)
+    manifest_path = backup_dir / "data-backup.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SnapshotError(f"数据快照清单无法读取：{exc}") from exc
+    if manifest.get("schema") != _DATA_BACKUP_SCHEMA:
+        raise SnapshotError("数据快照清单 schema 不匹配")
+    if dest.exists():
+        raise SnapshotError(f"目标目录已存在，拒绝覆盖：{dest}")
+
+    dest.mkdir(parents=True, exist_ok=False)
+    entries_out: List[dict] = []
+    total = 0
+    sqlite_count = 0
+    try:
+        for entry in manifest.get("entries", []):
+            kind = str(entry.get("kind") or "")
+            if kind not in ("data", "extra"):
+                raise SnapshotError(f"数据快照条目类型非法：{kind!r}")
+            rel = safe_relpath(str(entry.get("relpath") or ""))
+            source = backup_dir / kind / rel
+            if not source.is_file():
+                raise SnapshotError(f"数据快照文件缺失：{source}")
+            expected = str(entry.get("sha256") or "").lower()
+            actual = _sha256(source)
+            if expected and actual != expected:
+                raise SnapshotError(f"数据快照文件哈希不符：{rel}")
+            target = dest / kind / rel
+            atomic_copy_file(source, target)
+            copied = _sha256(target)
+            if copied != actual:
+                raise SnapshotError(f"导出后文件哈希不符：{rel}")
+            size = target.stat().st_size
+            sqlite = bool(entry.get("sqlite"))
+            sqlite_count += int(sqlite)
+            total += size
+            entries_out.append(
+                {
+                    "kind": kind,
+                    "relpath": rel,
+                    "sqlite": sqlite,
+                    "size": size,
+                    "sha256": copied,
+                }
+            )
+
+        meta = backup_meta or {}
+        snapshot = {
+            "schema": _SNAPSHOT_EXPORT_SCHEMA,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "backup_id": meta.get("backup_id") or backup_dir.name,
+            "from_version": meta.get("from_version", ""),
+            "to_version": meta.get("to_version", ""),
+            "source_backup_dir": str(backup_dir),
+            "file_count": len(entries_out),
+            "sqlite_count": sqlite_count,
+            "total_bytes": total,
+            "entries": entries_out,
+        }
+        exported_manifest = dest / "snapshot.json"
+        atomic_write_bytes(
+            exported_manifest,
+            json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+
+    return SnapshotExport(
+        destination=dest,
+        manifest_path=dest / "snapshot.json",
+        backup_id=str(snapshot["backup_id"]),
+        file_count=len(entries_out),
         sqlite_count=sqlite_count,
         total_bytes=total,
     )

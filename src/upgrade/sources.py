@@ -125,12 +125,28 @@ class ReleaseSource:
 
 
 class LocalDirectorySource(ReleaseSource):
-    """A directory containing ``release-manifest.json`` and the artifact."""
+    """A directory containing ``LIUHAO_RELEASE.json`` and the artifact.
 
-    def __init__(self, directory: str | Path, manifest_name: str = "release-manifest.json") -> None:
+    ``release-manifest.json`` is accepted as a legacy alias so already-built
+    release directories keep working after the 2026-11 file-name finalisation.
+    """
+
+    MANIFEST_NAMES = ("LIUHAO_RELEASE.json", "release-manifest.json")
+
+    def __init__(
+        self, directory: str | Path, manifest_name: Optional[str] = None
+    ) -> None:
         self.directory = Path(directory)
         self.manifest_name = manifest_name
         self.description = f"本地发布目录 {self.directory}"
+
+    def _manifest_path(self) -> Optional[Path]:
+        names = (self.manifest_name,) if self.manifest_name else self.MANIFEST_NAMES
+        for name in names:
+            candidate = self.directory / name
+            if candidate.is_file():
+                return candidate
+        return None
 
     def load_manifest(self) -> ManifestLoad:
         if not self.directory.is_dir():
@@ -138,11 +154,12 @@ class LocalDirectorySource(ReleaseSource):
                 ok=False,
                 reason=f"无法检查更新：发布目录不存在（{self.directory}）",
             )
-        manifest_path = self.directory / self.manifest_name
-        if not manifest_path.is_file():
+        manifest_path = self._manifest_path()
+        if manifest_path is None:
+            expected = self.manifest_name or "或".join(self.MANIFEST_NAMES)
             return ManifestLoad(
                 ok=False,
-                reason=f"无法检查更新：发布目录中没有 {self.manifest_name}",
+                reason=f"无法检查更新：发布目录中没有 {expected}",
             )
         try:
             payload = manifest_path.read_bytes()

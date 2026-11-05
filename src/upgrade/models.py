@@ -34,6 +34,7 @@ class Phase(str, Enum):
     VERIFYING = "verifying"
     BACKING_UP = "backing_up"
     APPLYING = "applying"
+    SELF_CHECKING = "self_checking"
     ROLLING_BACK = "rolling_back"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -46,6 +47,7 @@ PHASE_TEXT: Dict[Phase, str] = {
     Phase.VERIFYING: "校验中",
     Phase.BACKING_UP: "备份中",
     Phase.APPLYING: "应用中",
+    Phase.SELF_CHECKING: "自检中",
     Phase.ROLLING_BACK: "回滚中",
     Phase.COMPLETED: "完成",
     Phase.FAILED: "失败",
@@ -136,6 +138,8 @@ class ApplyResult:
     installed_files: int
     data_checked_files: int
     message: str = "升级完成"
+    self_check_passed: bool = True
+    self_check_issues: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -146,6 +150,8 @@ class ApplyResult:
             "installed_files": self.installed_files,
             "data_checked_files": self.data_checked_files,
             "message": self.message,
+            "self_check_passed": self.self_check_passed,
+            "self_check_issues": self.self_check_issues,
         }
 
 

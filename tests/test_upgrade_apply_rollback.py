@@ -32,6 +32,12 @@ def _setup_app(root: Path, version: str = "0.1.0") -> Path:
     )
     (root / "src").mkdir(exist_ok=True)
     (root / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # Minimal importable service entry point: the post-install self-check probes
+    # the same `src.gateway.main:app` contract production uses.
+    (root / "src" / "gateway").mkdir(exist_ok=True)
+    (root / "src" / "gateway" / "main.py").write_text(
+        "class _App:\n    routes = [object()]\n\napp = _App()\n", encoding="utf-8"
+    )
     (root / "data").mkdir(exist_ok=True)
     conn = sqlite3.connect(root / "data" / "app.db")
     conn.execute("CREATE TABLE t(v TEXT)")
