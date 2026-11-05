@@ -28,11 +28,36 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.kernels.event import Event, EventScope, get_event_bus
-from .policy import require_human_principal
+from .policy import require_bearer_payload
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/events", tags=["events"])
+
+
+def _caller(payload) -> tuple[str, bool]:
+    """Return ``(subject, is_L0)`` from the verified token."""
+    subject = str(getattr(payload, "sub", "") or "")
+    metadata = getattr(payload, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return subject, str(metadata.get("scope") or "") == "L0"
+
+
+def _belongs_to(event: Event, subject: str) -> bool:
+    """True when an in-memory event can be attributed to ``subject``.
+
+    Event-bus payloads are produced by kernels; a human only ever sees
+    events whose payload names them as the principal (or whose source is
+    their own identity). Everything else is treated as cross-subject and
+    withheld unless the caller holds L0.
+    """
+    data = event.data
+    if isinstance(data, dict):
+        for key in ("principal", "principal_id", "subject", "user_id", "human"):
+            if str(data.get(key) or "") == subject:
+                return True
+    return str(getattr(event, "source", "") or "") == subject
 
 
 def _json_safe(value: Any) -> Any:
@@ -67,6 +92,8 @@ def _event_summary_text(event: Event) -> str:
 
 def _summarize(event: Event) -> Dict[str, Any]:
     """把一个真实 Event 收缩成前端友好的只读摘要。"""
+    from .audit import _redact
+
     return {
         "id": event.correlation_id,
         "type": event.type,
@@ -75,22 +102,28 @@ def _summarize(event: Event) -> Dict[str, Any]:
         "scope": event.scope.value if isinstance(event.scope, EventScope) else str(event.scope),
         "priority": event.priority.value if hasattr(event.priority, "value") else str(event.priority),
         "summary": _event_summary_text(event),
-        "data": _json_safe(event.data),
+        "data": _redact(_json_safe(event.data)),
     }
 
 
 @router.get("")
 def list_events(
     limit: int = Query(50, ge=1, le=1000),
-    principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
     """近期真实事件（只读）。
 
     直接复用事件内核的内存近期事件缓冲 ``get_event_history`` —— 内核已保真地记录了
     总线上的真实事件；这里只呈现，不复制、不修饰。``limit`` 取最近 N 条。
+
+    非 ``L0`` 调用者只看到能归属到自己的事件（见 ``_belongs_to``）；拿不到
+    归属的事件按跨主体处理，一律不下发。
     """
+    subject, sovereign = _caller(payload)
     bus = get_event_bus()
     events = bus.get_event_history(limit=limit)
+    if not sovereign:
+        events = [e for e in events if _belongs_to(e, subject)]
     summaries = [_summarize(e) for e in events]
     truncated = len(summaries) == limit
     return {
@@ -115,7 +148,7 @@ def list_persisted_event_history(
     until: Optional[float] = Query(None, ge=0, description="结束 Unix 时间戳（秒，含）"),
     limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
     reverse: bool = Query(True, description="true = 最新的在前"),
-    _principal: str = Depends(require_human_principal),
+    payload=Depends(require_bearer_payload),
 ) -> Dict[str, Any]:
     """持久事件历史（只读，来自审计库）。
 
@@ -125,8 +158,19 @@ def list_persisted_event_history(
 
     读库失败时返回 503 与真实原因 —— **绝不**返回空列表，否则调用方分不清
     "没有历史"和"历史读不出来"。
+
+    非 ``L0`` 调用者的 ``principal`` 被强制为令牌主体；显式查询别人 → 403。
     """
     from .audit import _read_events, _unreadable_detail
+
+    subject, sovereign = _caller(payload)
+    if not sovereign:
+        if principal and principal != subject:
+            raise HTTPException(
+                status_code=403,
+                detail="跨主体审计查询需要 L0 人类主权",
+            )
+        principal = subject
 
     try:
         events = _read_events(
