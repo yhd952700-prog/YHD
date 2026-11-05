@@ -152,6 +152,29 @@ stdin 管道协议**：
   桌面壳默认给 120 秒，超时会判「启动失败」并在窗口/日志给出原因。这是
   启动耗时问题，与停机链路无关；干净机器上通常 20 秒内就绪。
 
+### 2.6 首启：启动门（不给用户看错误页）
+
+网关在导入路由、跑完 lifespan 之后才绑定端口；在此之前浏览器只能拿到
+**连接失败**。所以"启动完再打开浏览器"不能只看进程是否拉起，必须看网关自己
+的 `GET /v1/startup`（契约见 `docs/startup-profile.md`）。
+
+| 探测结果 | 用户看到 | 是否进控制台 |
+|---|---|---|
+| 连接失败 / `state=starting` | 窗口「启动：端口尚未监听（已 Xs）」；托盘「正在启动…」 | 否，继续等 |
+| `state=ready` | 「启动：已就绪（Xs）」+ 气泡「鎏灏已就绪」 | 是 |
+| `state=degraded` | 「核心可用，但后台组件未就绪：<真实 errors>」+ 警告气泡 | **是**（核心可用，不卡门口） |
+| 到点未就绪 | 「等待 Xs 仍未就绪（最后阶段：…）」+ 日志路径与 `python -m src.desktop diagnose --verify` | 否 |
+| 网关进程中途退出 | 「网关进程在启动过程中退出」+ 同样的日志/诊断指引 | 否 |
+| 旧版网关（`/v1/startup` 404） | 退回 `/v1/health` 判定，通了就算 ready | 是 |
+
+* 探测间隔 250ms 起、每次翻倍、上限 500ms；启动门自身上限 60s（`start()` 已等
+  `/v1/health` 最多 120s，正常情况下到这一步已经就绪）。
+* 窗口**先出现**（"正在启动…"），网关启动与启动门在后台线程跑，界面不冻结；
+  启动门结果经队列回到 UI 线程。这样慢启动时用户看到的是进度，而不是空白。
+* `degraded` 把 `background.errors` 原样写进窗口与气泡（步骤：原因），
+  不吞成"启动失败"。
+* 无法自动化验证的部分（真实浏览器/真实窗口）见 8.2 的手工步骤。
+
 ## 3. 开机自启
 
 * 只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，
@@ -379,3 +402,61 @@ pytest tests/desktop/test_desktop_system_layer.py -q
 ```
 
 与 CI 失败现象一致；修复后新口径为 True。
+
+### 8.2 启动门验证（2026-11-06）
+
+**实现**（`src/desktop/startup.py` + `src/desktop/app.py`）
+
+* 新增 `wait_until_ready()`：按 `/v1/startup` 判定，连接失败=starting，
+  250ms→500ms 退避；`ready`/`degraded` 才允许进控制台；超时给出日志与
+  `diagnose` 命令；进程退出判 `exited`；旧版网关 404 退回 `/v1/health`。
+* `DesktopApp.run()` 改成「窗口先出、启动在后台线程」：窗口立刻显示
+  「启动：等待网关端口就绪…」，启动门结果经队列回到 UI 线程再更新界面/托盘/浏览器。
+  以前 `service.start()` 在 UI 线程同步阻塞（最长 120s，窗口都不出现）。
+* 只有 `console_ok`（ready / degraded）才 `webbrowser.open`；degraded 同时把
+  `background.errors` 原样显示（窗口「启动：」行 + 警告气泡）。
+
+**测试**（`tests/desktop/test_startup_gate.py`，13 个用例；慢启动用真 uvicorn，
+lifespan 先睡 2s，此时端口**未监听**，与线上冷启动同一现象）
+
+```
+# Windows（本机，有桌面）
+pytest tests/desktop -q        → 34 passed in 39.44s
+# Linux / 无桌面（WSL Ubuntu 24.04）
+pytest tests/desktop -q        → 30 passed, 4 skipped in 16.17s
+```
+
+三种状态的实测（脚本不进仓库，跑的是真 runner + 真 TCP）：
+
+```
+=== slow（lifespan 睡 2s）===
+  t= 2.11s state=starting reachable=False
+  t= 3.95s state=ready    reachable=True  stage=核心
+  结果：state=ready console_ok=True elapsed=3.95s polls=2
+
+=== degraded ===
+  t= 1.59s state=degraded reachable=True
+  结果：state=degraded console_ok=True elapsed=1.59s
+  用户看到：核心可用，但后台组件未就绪（1.59s）：情报：SMTP 未配置：缺少 smtp_host。
+           日志：logs/desktop.log、logs/desktop-gateway.log；诊断包：python -m src.desktop diagnose --verify
+
+=== stuck（启动门上限设 3s）===
+  t= 1.59/1.89/2.42/2.97/3.48s state=starting
+  结果：state=timeout console_ok=False elapsed=3.48s polls=5
+  用户看到：等待 3s 仍未就绪（最后阶段：核心）。日志：…；诊断包：python -m src.desktop diagnose --verify
+```
+
+说明：慢启动那条在本机第一个探测就吃满了 2s 连接超时（本机连接未监听回环端口
+会挂起而不是立即拒绝），所以 `polls` 只有 2；墙钟 3.95s（导入约 1.9s + lifespan 2s）
+仍证明"端口监听前一直在等、就绪后才放行"。
+
+**无法自动化的部分（手工一遍即可）**：真实窗口/真实浏览器。
+
+1. 冷启动（建议先 `autostart disable` 避免开机干扰）：
+   `.\venv\Scripts\python.exe -m src.desktop app --open-browser`
+2. 窗口应**立刻出现**并显示「启动：等待网关端口就绪…」，期间不应弹出浏览器；
+3. 「启动：已就绪（Xs）」出现后才打开控制台，页面不是错误页；
+4. 托盘气泡依次为「鎏灏 · 正在启动…」（tooltip）→「鎏灏已就绪」。
+
+degraded / 超时的真实窗口表现见上表（自动化已覆盖文案与"是否叫浏览器"的决策，
+窗口渲染本身需要真人看一遍）。

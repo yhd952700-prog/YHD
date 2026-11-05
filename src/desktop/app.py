@@ -31,6 +31,7 @@ from typing import Any
 from . import CONSOLE_DIST, DATA_DIR, LOG_DIR
 from .probe import http_json
 from .service import GRACEFUL_TIMEOUT, GatewayService
+from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
 from .tray import (
     ACTION_OPEN_CONSOLE,
     ACTION_QUIT,
@@ -112,6 +113,9 @@ class DesktopApp:
         self._stopping = False
         self._stop_result: dict[str, Any] | None = None
         self._stop_thread: threading.Thread | None = None
+        self._boot_thread: threading.Thread | None = None
+        self._boot_pending = True
+        self._boot_result: dict[str, Any] | None = None
         self._tray: SystemTray | None = None
         self._root: tk.Tk | None = None
         self._labels: dict[str, tk.Label] = {}
@@ -121,13 +125,9 @@ class DesktopApp:
     # ------------------------------------------------------------------ #
     def run(self) -> int:
         _configure_logging()
-        started = self.service.start()
-        if not started:
-            logger.error("网关启动失败：%s", self.service.last_error)
-
         self._root = tk.Tk()
         self._root.title("鎏灏 LIUHAO X")
-        self._root.geometry("500x320+120+120")
+        self._root.geometry("500x360+120+120")
         self._root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
         self._build_ui()
 
@@ -141,23 +141,106 @@ class DesktopApp:
         else:
             self._labels["tray"].config(text="托盘：已启用（右键菜单可用）")
 
-        self._refresh_status_text(running=started)
-        threading.Thread(target=self._poll_health, name="liuhao-health", daemon=True).start()
-        self._root.after(300, self._drain_events)
+        # 窗口先显示"正在启动…"，网关启动与启动门放在后台线程：
+        # 冷启动期间用户看到的是进度，而不是空白窗口，更不是浏览器的错误页。
+        self._labels["service"].config(text="网关：正在启动…")
+        self._labels["startup"].config(
+            text=f"启动：等待网关端口就绪（最多 {STARTUP_TIMEOUT:.0f} 秒；连接失败按启动中处理）…"
+        )
+        self._labels["health"].config(text="健康：等待网关端口绑定")
 
+        self._root.after(300, self._drain_events)
         if self.hidden:
             self._root.withdraw()
-        if self.open_browser and started:
-            webbrowser.open(self._console_url())
-        if self._tray is not None:
-            if started:
-                self._tray.notify("鎏灏已就绪", f"服务运行在 {self._console_url()}")
-            else:
-                reason = (self.service.last_error or "未知原因")[:200]
-                self._tray.notify("鎏灏启动失败", f"网关未就绪：{reason}", warning=True)
+        self._boot_thread = threading.Thread(target=self._boot, name="liuhao-boot", daemon=True)
+        self._boot_thread.start()
 
         self._root.mainloop()
-        return 0 if started else 1
+        return 0 if (self._boot_result or {}).get("started") else 1
+
+    def _boot(self) -> None:
+        """后台启动网关并过启动门；结果经 ``events`` 交回 UI 线程。"""
+        try:
+            started = self.service.start()
+        except Exception as exc:  # noqa: BLE001 - 启动异常不能把 UI 线程带下水
+            logger.exception("网关启动异常")
+            self._boot_result = {
+                "started": False,
+                "gate": unavailable_gate(f"启动异常：{type(exc).__name__}: {exc}", log_dir=LOG_DIR),
+            }
+            self.events.put(("boot", self._boot_result))
+            return
+        if self._closing:
+            with contextlib.suppress(Exception):
+                self.service.stop()
+            return
+        if started:
+            gate = wait_until_ready(
+                self.service.base_url or "",
+                timeout=STARTUP_TIMEOUT,
+                log_dir=LOG_DIR,
+                is_alive=self.service.is_running,
+                on_progress=self._on_startup_progress,
+            )
+        else:
+            logger.error("网关启动失败：%s", self.service.last_error)
+            gate = unavailable_gate(self.service.last_error, log_dir=LOG_DIR)
+        self._boot_result = {"started": started, "gate": gate}
+        self.events.put(("boot", self._boot_result))
+
+    def _on_startup_progress(self, snapshot: dict[str, Any]) -> None:
+        if not self._closing:
+            self.events.put(("startup", snapshot))
+
+    def _render_startup_progress(self, snapshot: dict[str, Any]) -> None:
+        if not self._boot_pending or self._closing:
+            return
+        stage = snapshot.get("last_stage") or (
+            "端口尚未监听" if not snapshot.get("reachable") else "等待核心就绪"
+        )
+        self._labels["startup"].config(
+            text=f"启动：{stage}（已 {snapshot.get('elapsed', 0)}s；连接失败按启动中处理）"
+        )
+
+    def _apply_boot_result(self, result: dict[str, Any]) -> None:
+        """把启动门结论写进界面与托盘（ready / degraded / 超时 / 失败）。"""
+        gate = result.get("gate") or {}
+        started = bool(result.get("started"))
+        self._boot_pending = False
+        logger.info("启动门结论：%s", gate)
+        if self._stop_result is not None and not started:
+            # 用户在启动过程中点了「停止」/「退出」：以停止结论为准，不要
+            # 再弹"启动失败"把真实原因盖掉。
+            self._labels["startup"].config(text="启动：启动过程被中断（见「最近停止」）")
+            self._sync_tray_state(running=False)
+            return
+        self._labels["startup"].config(text=f"启动：{gate.get('detail') or '未完成'}")
+        if started:
+            self._labels["service"].config(text=f"网关：运行中（127.0.0.1:{self.service.port}）")
+        else:
+            self._labels["service"].config(text=f"网关：启动失败（{self.service.last_error or '未知原因'}）")
+        self._sync_tray_state(running=started)
+        if self._tray is not None and not self._closing:
+            self._tray.set_tooltip(self._tooltip_text())
+
+        if gate.get("console_ok"):
+            # 只在"能进门"之后才开始健康轮询，避免启动中把文案覆盖成"未探测"。
+            threading.Thread(target=self._poll_health, name="liuhao-health", daemon=True).start()
+            if self.open_browser:
+                webbrowser.open(self._console_url())
+
+        if self._tray is None or self._closing:
+            return
+        state = gate.get("state")
+        detail = str(gate.get("detail") or "")[:250]
+        if state == "ready":
+            self._tray.notify("鎏灏已就绪", f"服务运行在 {self._console_url()}")
+        elif state == "degraded":
+            self._tray.notify("鎏灏已启动（部分组件未就绪）", detail, warning=True)
+        elif state == "timeout":
+            self._tray.notify("鎏灏启动超时", detail, warning=True)
+        else:
+            self._tray.notify("鎏灏启动失败", detail, warning=True)
 
     def _build_ui(self) -> None:
         assert self._root is not None
@@ -167,6 +250,7 @@ class DesktopApp:
         tk.Label(frame, text="鎏灏 LIUHAO X", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         for key, label in (
             ("service", "网关："),
+            ("startup", "启动："),
             ("health", "健康："),
             ("provider", "Provider："),
             ("console", "控制台："),
@@ -212,6 +296,8 @@ class DesktopApp:
         return (self.service.base_url or "http://127.0.0.1:8080").rstrip("/") + "/"
 
     def _tooltip_text(self) -> str:
+        if self._boot_pending:
+            return "鎏灏 · 正在启动…"
         if self.service.is_running():
             return f"鎏灏 · 运行中 · {self._console_url()}"
         if self.service.last_error:
@@ -297,6 +383,11 @@ class DesktopApp:
             return
         self._closing = True
         self._stop_event.set()
+        boot = self._boot_thread
+        if boot is not None and boot.is_alive():
+            # 启动线程若还在 start()/启动门里，给它一点时间退出；它自己会看到
+            # _closing，并在 start() 返回后停掉刚拉起的网关（不留孤儿进程）。
+            boot.join(timeout=2.0)
         if "stop" in self._labels:
             self._labels["stop"].config(
                 text=f"最近停止：正在优雅退出（最多 {GRACEFUL_TIMEOUT:.0f} 秒）…"
@@ -356,6 +447,10 @@ class DesktopApp:
                 kind, payload = self.events.get_nowait()
                 if kind == "status":
                     self._render_status(payload)
+                elif kind == "startup":
+                    self._render_startup_progress(payload)
+                elif kind == "boot":
+                    self._apply_boot_result(payload)
                 elif kind == "stopped":
                     self._stopping = False
                     self._apply_stop_result(payload)
