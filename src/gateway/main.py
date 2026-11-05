@@ -13,6 +13,19 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+
+# 启动阶段计时：必须最先导入（它持有进程内最早的时钟基准 T0）。
+from .startup_profile import (
+    mark as _startup_mark,
+    mark_ready as _startup_ready,
+    begin_run as _startup_begin_run,
+    report as _startup_report,
+    background_started as _bg_started,
+    background_step as _bg_step,
+    background_finished as _bg_finished,
+)
+
+_startup_mark("src.gateway.main 开始导入（接下来是 FastAPI / security / metrics）")
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -22,7 +35,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from ..security import get_jwt_handler, get_rbac_manager
-from ..observability.tracing import get_tracer
+# 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
+# 顶层导入 —— 追踪只服务可观测性，不属于"登录/对话/模型配置"的就绪条件。
+# 它在 lifespan 末尾随后台预热一起初始化，失败会告警并出现在 /v1/startup。
 
 # HTTP request metrics (families declared in ``src/observability/metrics.py``).
 # Historically these were never fed, so ``/v1/metrics/prometheus`` exported their
@@ -47,6 +62,7 @@ except Exception:  # metrics unavailable; middleware becomes a no-op
     _get_metric_collector = None
 
 logger = logging.getLogger(__name__)
+_startup_mark("main 顶层依赖导入完成（fastapi / security / prometheus metrics）")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = _PROJECT_ROOT / "config"
@@ -229,7 +245,9 @@ async def lifespan(app: FastAPI):
     """Lifecycle management for the gateway."""
 
     # Startup
+    _startup_begin_run()
     logger.info("Starting LiuHao AI OS Gateway...")
+    _startup_mark("lifespan 启动开始")
 
     # Initialize security managers
     from ..security.api_keys import get_api_key_manager as _get_key_mgr
@@ -242,9 +260,7 @@ async def lifespan(app: FastAPI):
     rbac_mgr = get_rbac_manager()
     logger.info(f"RBAC Manager initialized: {len(rbac_mgr._roles)} roles")
 
-    # Initialize observability
-    get_tracer()
-    logger.info("Tracer initialized")
+    _startup_mark("密钥 / JWT / RBAC 初始化完成")
 
     # UBX-005: install the production executor fence AND bind a process-wide
     # executor lease *before* any in-process kernel action runs (identity
@@ -308,6 +324,8 @@ async def lifespan(app: FastAPI):
                 f"{type(_fence_exc).__name__}: {_fence_exc}"
             ) from _fence_exc
 
+    _startup_mark("执行器围栏安装完成")
+
     # Policy Controlled: surface the kernel enforcement selection at boot.
     # A mistyped selection is fail-loud (parse_spec raises, which would reject
     # every HIGH/CRITICAL action), so it must never be discovered only at the
@@ -336,6 +354,7 @@ async def lifespan(app: FastAPI):
     # here would be invisible in exactly the deployment that needs it. "Zero
     # humans" is a legitimate state but never a quiet one -- otherwise it is
     # discovered only when a HIGH/CRITICAL action is first attempted.
+    _startup_mark("策略执法快照完成")
     from ..kernels.identity import get_identity_manager, is_human_identity
     _identity_manager = get_identity_manager()
     _store = _identity_manager.describe_store()
@@ -344,6 +363,7 @@ async def lifespan(app: FastAPI):
         for identity in _identity_manager.list_identities()
         if is_human_identity(identity)
     )
+    _startup_mark("身份存储加载完成", humans=len(_humans))
     if _humans:
         logger.info(
             "Human identity store: %s @ %s -- %d registered human(s): %s",
@@ -391,7 +411,9 @@ async def lifespan(app: FastAPI):
     # and surfaced below loudly.
     from ..kernels._registry import initialize_all, shutdown_all
 
+    _startup_mark("内核生命周期 initialize_all 开始")
     _init_report = initialize_all()
+    _startup_mark("内核生命周期 initialize_all 完成")
     _init_initialized = _init_report.get("initialized", [])
     _init_skipped = _init_report.get("skipped_not_present", [])
     _init_no_canonical = _init_report.get("no_canonical_instance", [])
@@ -447,6 +469,8 @@ async def lifespan(app: FastAPI):
             _alert_exc,
             exc_info=True,
         )
+
+    _startup_mark("执行→告警绑定完成")
 
     # C2 audit-chain checkpointer: start the ONLY producer of verification
     # checkpoints. Without this, `verify_incremental` / `verify_rolling` have no
@@ -508,6 +532,7 @@ async def lifespan(app: FastAPI):
                 "be checkpointed and evidence_status stays 'unverified': %s",
                 _ckpt_exc, exc_info=True,
             )
+    _startup_mark("审计 checkpointer 启动完成")
 
     # Register the production alert RULES into the store at boot. The rules are
     # all enabled=False (their metric emitters are not wired yet) -- this makes
@@ -523,6 +548,7 @@ async def lifespan(app: FastAPI):
             _rules_exc,
             exc_info=True,
         )
+    _startup_mark("生产告警规则注册完成")
 
     # Plugin loader (Top-3 #2): register the built-in, loadable plugins so that
     # GET /v1/plugins and the Apps surface have at least one real, activatable
@@ -538,6 +564,7 @@ async def lifespan(app: FastAPI):
             _plugin_exc,
             exc_info=True,
         )
+    _startup_mark("内置插件注册完成")
 
     # OB / blocker #3: drive the REAL metrics -> alert evaluation loop.
     # install_production_rules() now registers *enabled* rules and
@@ -582,6 +609,61 @@ async def lifespan(app: FastAPI):
             "NOT be evaluated (observability closed loop broken): %s",
             _eval_start_exc, exc_info=True,
         )
+    _startup_mark("指标评估循环启动完成")
+
+    # 核心就绪：登录（密钥/JWT/RBAC/身份）、对话路由、模型配置路由此时都已
+    # 真实可用。下面的"对话链预热"只是让第一次发消息不必再等导入，**不**阻塞
+    # 就绪；预热失败必须响（日志 + /v1/startup.background.errors），绝不能
+    # 悄悄变成"第一次发消息才 500"。
+    _startup_ready()
+
+    def _warm_observability() -> None:
+        from ..observability.tracing import get_tracer
+
+        get_tracer()
+
+    def _run_background_step(name: str, action) -> None:
+        started = time.perf_counter()
+        try:
+            action()
+        except Exception as _step_exc:  # noqa: BLE001 - 必须响，不能让就绪失败
+            logger.error(
+                "BACKGROUND STARTUP STEP FAILED（%s）-- 该组件稍后首次使用时"
+                "会同步重试；功能不会因此失真：%s",
+                name,
+                _step_exc,
+                exc_info=True,
+            )
+            _bg_step(
+                name,
+                False,
+                (time.perf_counter() - started) * 1000,
+                f"{type(_step_exc).__name__}: {_step_exc}",
+            )
+        else:
+            _bg_step(name, True, (time.perf_counter() - started) * 1000)
+            logger.info("Background startup step done: %s (%.2fs)", name,
+                        time.perf_counter() - started)
+
+    def _warm_chat() -> None:
+        from .chat import warmup as _impl
+
+        _impl()
+
+    def _warm_chat_stack() -> None:
+        _bg_started()
+        _run_background_step("初始化追踪（OpenTelemetry SDK）", _warm_observability)
+        _run_background_step("预热对话链（LLM/provider/会话存储）", _warm_chat)
+        _bg_finished()
+
+    _warm_thread = threading.Thread(
+        target=_warm_chat_stack, name="chat-stack-warmup", daemon=True
+    )
+    _warm_thread.start()
+    app.state.chat_warmup_thread = _warm_thread
+    _startup_mark("核心就绪（登录/对话/模型配置可用），对话链转入后台预热")
+
+    _startup_report()
 
     yield  # App runs here
 
@@ -659,8 +741,10 @@ def get_app() -> FastAPI:
     Returns:
         Configured FastAPI instance
     """
+    _startup_mark("get_app 开始")
     runtime = load_runtime_config()
     production = bool(runtime["production"])
+    _startup_mark("运行配置加载完成（config/default.yaml + APP_ENV）")
 
     # Policy Controlled: an enforced kernel action raises these. Map them to
     # honest HTTP statuses instead of letting the catch-all handler turn
@@ -933,6 +1017,8 @@ def get_app() -> FastAPI:
 
     # ==================== Include routers ====================
 
+    _startup_mark("中间件注册完成，开始注册路由")
+
     # 鉴权闸门：单个依赖实例，供下面所有"登录后才能用"的路由复用。
     #
     # 为什么在 include_router 这一层挂，而不是逐个端点加参数：
@@ -948,12 +1034,20 @@ def get_app() -> FastAPI:
     from .policy import require_human_principal as _require_human
 
     app.include_router(health_router)
+
+    # 启动状态（只读、免鉴权）：前端在网关启动期间用它显示"正在启动"。
+    # 契约见 src/gateway/startup.py 的模块文档与 docs/startup-profile.md。
+    from .startup import router as startup_router
+
+    app.include_router(startup_router)
+
     app.include_router(api_router, prefix="/api")
 
     # 生产化就绪端点（Phase 7a）：/v1/metrics/prometheus、/v1/ready/subsystems
     # 公开；/v1/production/preflight 内部自带 require_human_principal 闸门。
     from .observability import router as observability_router
     app.include_router(observability_router)
+    _startup_mark("路由：health / observability 完成")
 
     # Knowledge base: canonical /v1/knowledge (unified with the rest of the
     # gateway) plus a deprecated /knowledge alias for existing clients.
@@ -963,10 +1057,12 @@ def get_app() -> FastAPI:
     )
     app.include_router(knowledge_router, dependencies=[Depends(_require_human)])
     app.include_router(knowledge_legacy_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：knowledge 完成")
 
     # 鎏灏对话端点（真实 LLM 对话闭环）。
     from .chat import router as chat_router
     app.include_router(chat_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：chat 完成")
 
     # 驾驶舱遥测端点（console CEO Command Center 的真实数据源）。
     from .dashboard import router as dashboard_router
@@ -987,6 +1083,7 @@ def get_app() -> FastAPI:
     # AI Employee / Goal / Workflow 管理端点（真实 AgentRuntime + Employee 状态面）。
     from .ai_management import router as ai_mgmt_router
     app.include_router(ai_mgmt_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：ai_management / dashboard / roster / profile / kernels 完成")
 
     # 审计可解释性查询面（P8）：真实哈希链的**只读**查询/校验入口。
     # 只读是硬约束：任何"修复链"的能力都会摧毁 tamper-evidence（见 audit.py
@@ -1046,6 +1143,7 @@ def get_app() -> FastAPI:
     # 单独校验收敛（admin 权限或 L0 人类主权）。密钥只以脱敏形式返回。
     from .models import router as models_router
     app.include_router(models_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：models（模型配置中心）完成")
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
@@ -1062,6 +1160,8 @@ def get_app() -> FastAPI:
     # 自动跳过，API-only 部署行为不变。
     from .console_static import mount_console
     mount_console(app)
+
+    _startup_mark("全部路由 + 静态驾驶舱挂载完成")
 
     return app
 

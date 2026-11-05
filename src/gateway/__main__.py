@@ -28,11 +28,18 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
 
+from . import startup_profile as _startup_profile
+
 logger = logging.getLogger(__name__)
+
+_startup_profile.enable_from_env()
+_startup_profile.enable_from_argv(sys.argv[1:])
+_startup_profile.mark("入口模块导入完成（uvicorn 已导入）")
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
@@ -97,8 +104,11 @@ def main() -> int:
     host, port = resolve_bind()
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _startup_profile.mark("入口 main() 开始（解析 server.timeouts）")
     timeout_options = resolve_timeout_options()
+    _startup_profile.mark("入口配置解析完成")
     print(f"鎏灏网关启动： http://{host}:{port}  (log_level={log_level})")
+    _startup_profile.mark("uvicorn.run：绑定端口并运行 lifespan 启动")
     uvicorn.run(
         "src.gateway.main:app",
         host=host,

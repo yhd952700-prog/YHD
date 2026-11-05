@@ -17,9 +17,6 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..ai.liuhao import LiuHaoAssistant
-from ..ai.model_router import provider_for_task
-from ..ai.conversation_store import get_conversation_store
 from .knowledge_context import (
     build_knowledge_context,
     knowledge_prompt,
@@ -28,6 +25,50 @@ from .knowledge_context import (
 from .policy import require_human_principal
 
 router = APIRouter(prefix="/v1", tags=["chat"])
+
+
+# ─── 重量级依赖的惰性接缝 ────────────────────────────────────
+#
+# 为什么**不能**在模块顶层 ``from ..ai.liuhao import LiuHaoAssistant``：
+# ``src.ai.liuhao`` → ``.employee`` → ``..knowledge.memory`` → ``mem0``，而
+# mem0 会连带导入 qdrant_client / openai / opentelemetry / grpc / numpy。
+# 实测这一步在冷启动里占 **4.4 秒**（本机，空数据目录），但它只在"真的要
+# 对话"时才需要，与"登录 / 健康检查 / 模型配置"无关。把它留在启动路径上
+# 就是拿用户等待时间换模块整洁。
+#
+# 保留同名模块级函数而不是在端点内直接 import，是因为测试把
+# ``chat_module.LiuHaoAssistant`` / ``chat_module.get_conversation_store``
+# 当作真实接缝替换（monkeypatch）；这些名字必须继续可被替换、可被调用。
+def LiuHaoAssistant(*args, **kwargs):  # noqa: N802 - 保持原类名以兼容测试接缝
+    from ..ai.liuhao import LiuHaoAssistant as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def provider_for_task(task_type: str, *, model_id=None):
+    from ..ai.model_router import provider_for_task as _impl
+
+    return _impl(task_type, model_id=model_id)
+
+
+def get_conversation_store():
+    from ..ai.conversation_store import get_conversation_store as _impl
+
+    return _impl()
+
+
+def warmup() -> None:
+    """后台预热对话链的重依赖（不阻塞就绪；失败由调用方如实上报）。
+
+    只做导入，不创建实例、不读模型配置 —— 因此不会产生额外副作用，也不会
+    因为"用户还没配模型"而失败。如果这里失败，第一次真实对话也会以同样的
+    方式失败，而且错误会在启动日志与 ``/v1/startup`` 的 background.errors 里
+    出现，不会被拖到用户按下发送键才暴露。
+    """
+    from ..ai.conversation_store import get_conversation_store as _store  # noqa: F401
+    from ..ai.liuhao import LiuHaoAssistant as _assistant  # noqa: F401
+    from ..ai.model_router import provider_for_task as _router  # noqa: F401
+
 
 # 进程内会话表：**principal 与 session_id 的复合键** -> 鎏灏实例。
 #
