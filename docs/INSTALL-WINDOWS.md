@@ -8,14 +8,14 @@
 | 项目 | 状态 |
 | --- | --- |
 | payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：10,958 文件 / 197.3 MB |
-| payload 冒烟（启动→首页→注册→登录→发消息） | 🟡 本轮构建用 `-SkipSmoke` 跳过，**未重跑**；上一轮同结构包曾通过 |
+| payload 冒烟（启动→首页→注册→登录→发消息） | 🟢 本轮实跑通过（payload 内，mock 提供商） |
 | Inno Setup 安装器脚本 | 🟢 已交付 `installer/liuhao.iss` |
-| **`.exe` 安装包** | 🟢 已在本机生成：43,746,172 字节（约 41.7 MB）<br>SHA256 `F041280C8BE687E566E1F31C4841B430F61513F9AB2FAB7F2D4CCA9D5D60BDAD` |
-| 升级发布包 `liuhao-0.1.0.zip` | 🟢 已生成：3,606,204 字节，整包 SHA256 `deaefaf22057bbebd243730428607d028dfa2ad01a2816fe7e0b1a4ea265241d` |
-| 升级发布清单 `LIUHAO_RELEASE.json` | 🟢 已生成，`python -m src.upgrade check` 可读取（本轮为「已是最新 0.1.0」） |
+| **`.exe` 安装包** | 🟢 已在本机生成：43,756,495 字节（约 41.7 MiB）<br>SHA256 `D8FD0BC9FAC18092521284B93537520E2F7DBA8A45D4B9B6A2092D1C8A440461` |
+| 升级发布包 `liuhao-0.1.0.zip` | 🟢 已生成（约 3.6 MB）；精确体积与整包 SHA256 以同目录 `LIUHAO_RELEASE.json` 为准 |
+| 升级发布清单 `LIUHAO_RELEASE.json` | 🟢 已生成，`python -m src.upgrade check --manifest/--release-dir` 均可读取（本轮为「已是最新 0.1.0」） |
 | 安装后开机自启（托盘） | 🟢 已在真实安装目录验证：注册表值指向安装目录内的 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py`，托盘窗口可创建 |
-| 安装后的整机冒烟（双击 exe 安装→启动→发消息） | 🟡 上一轮旧包（34,199,800 字节）已通过；**本轮的 43,746,172 字节包未重跑** |
-| 卸载器「保留数据 / 删除数据」实机行为 | 🔴 交互式卸载**未验证** |
+| 安装后的整机冒烟（安装 exe→启动→登录→发消息） | 🟢 本轮 43,756,495 字节包实跑通过（服务层，真实 Ollama 回复）；渲染后前端表单点击未做 |
+| 卸载器「保留数据 / 删除数据」实机行为 | 🟡 静默卸载已验证：程序与快捷方式移除、数据保留；交互式“删除数据”分支未验证 |
 | 代码签名 | 🔴 未签名（Windows 会提示「未知发布者」） |
 
 > 前端（`apps/console`）正在重写，本轮产物会过时；最终安装包需在前端稳定后
@@ -161,18 +161,22 @@ iscc /DAppVersion=0.1.0 installer\liuhao.iss
    （约 2GB，自行安装 Ollama 并 `ollama pull`）或填云 API Key。
 3. **首次启动有命令行窗口**：向导需要交互输入；关闭窗口即停止服务（托盘入口除外）。
 4. **默认端口 8080**：被占用时启动器会自动顺延，控制台会打印实际地址。
-5. **本轮未重跑整机冒烟**：这次构建用了 `-SkipSmoke`，安装包（43,746,172 字节）
-   未重新执行「安装→打开页面→登录→发消息」；上一轮旧包（34,199,800 字节）曾通过。
-6. **卸载器交互未验证**：自动卸载停在「是否删除数据」确认框，需真人点选；
-   保留/删除两种分支没有在本轮重测。
-7. **升级链路只验证到「检查更新」**：清单可读、`up_to_date` / `update_available` /
-   `invalid_manifest` 三种结果均已实测；但「下载→校验→备份→应用→回滚」未在安装版上实跑。
-8. **开发目录路径字面量仍有 8 个源码文件（9 处）**：打包扫描会如实记录到
-   `dist\release\dev-path-report.txt`，其中 `src/plugins/registry.py:46`、
-   `src/workflow/checkpoint.py:99` 是默认落盘路径（`D:\LiuHao-AI-OS\...`），
-   属于源码归属方的缺陷；打包侧无法修改 `src/`，`-StrictReleaseDevPaths` 可在清理后作为门禁。
-9. **清单版本号校验比文档宽松**：`packaging.version.Version` 实际接受 `v0.2.0`、
-   `0.2.0-beta`（会归一化），与 `docs/self-upgrade.md` §2.2.4 的「非法例」不一致；
-   打包侧只输出 `pyproject.toml` 的原样版本号（不带 `v`）。
+5. **本轮已做真实安装冒烟（服务层）**：这一次的安装包（43,756,495 字节，
+   SHA256 `D8FD0BC9…4461`）已实跑「静默安装到临时目录 → 启动服务 → 取得控制台首页
+   → 注册并登录 → 配置本机 Ollama → 模型连通性探测 → `POST /v1/chat` 拿到真实回复
+   → 静默卸载」。未点击渲染后的前端表单：登录/发消息走的是控制台同一套 HTTP API，
+   前端视觉仍在改动，UI 点击回归留待前端冻结后做。
+6. **卸载器**：静默卸载已验证——程序目录、桌面/开始菜单快捷方式、卸载注册表项移除，
+   用户数据目录（`%LOCALAPPDATA%\LiuHao\data`）原样保留；交互式「是否删除数据」
+   确认框的“删除”分支未验证（静默卸载会跳过该分支）。
+7. **升级链路只验证到「检查更新」**：清单可读，`up_to_date` / `update_available` /
+   `invalid_manifest` 三种结果均已实测（`--release-dir`、`--manifest` 两种入口都跑过）；
+   但「下载→校验→备份→应用→回滚」未在安装版上实跑。
+8. **开发目录路径**：运行文件命中 0（`-StrictReleaseDevPaths` 门禁通过）。
+   `docs/` 里仍有开发机历史链接（如 `D:\LiuHao-AI-OS`、`.venv\Scripts\python.exe`），
+   不影响安装与升级，构建报告会列在“文档引用命中”里。
+9. **清单版本号规则已与代码对齐**：`packaging.version.Version` 接受并归一化
+   `v0.2.0`、`0.2.0-beta`；`docs/self-upgrade.md` §2.2.4 已改成一致描述，
+   真正非法的是无法解析的字符串（如 `not-a-version`）。
 10. **清单不能用 UTF-8 BOM**：升级器按 UTF-8 直接解析，带 BOM 会被判为非法清单；
     打包脚本写出的清单不带 BOM。

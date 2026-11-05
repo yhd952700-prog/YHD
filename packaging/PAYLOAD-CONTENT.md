@@ -68,6 +68,7 @@
 同目录的 `LIUHAO_RELEASE.json` 是发布清单（整包 SHA256 + 字节数），
 规范见 [docs/self-upgrade.md](../docs/self-upgrade.md) §2.2。
 
-本轮打包扫描：8 个运行文件仍有 9 处开发目录路径字面量（`src/plugins/registry.py`、
-`src/workflow/checkpoint.py` 的默认落盘路径等），已记录在
-`dist\release\dev-path-report.txt`；`docs/` 中的历史链接单独归类，不影响安装与升级。
+本轮打包扫描：运行文件命中 0（`src/plugins/registry.py`、`src/workflow/checkpoint.py`
+的默认落盘路径已改为按 `LIUHAO_WORKSPACE_ROOT` / 仓库 `data` 解析）；
+`docs/` 中的历史开发机链接单独归类，不影响安装与升级，详见
+`dist\release\dev-path-report.txt`。
