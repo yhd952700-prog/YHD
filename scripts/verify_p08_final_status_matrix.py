@@ -36,13 +36,17 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Declared expectation per chain. Changing one of these IS the decision; the
 # script only reports when reality no longer matches it.
 EXPECTED = {
-    # IMPORTANT: HC-01 is NOT "COMPLIANT". Its code detects tampering correctly,
-    # but the persisted database that ships in this working tree has a forked
-    # chain (concurrent writers stamped two successors off one parent). Verifying
-    # a freshly created temp database proved the IMPLEMENTATION -- it said
-    # nothing about the DATA. Keeping this entry honest is the whole point of
-    # the matrix, so the expected status reflects the real, persisted state.
-    "HC-01": "UNVERIFIED",   # declaration coverage COMPLIANT, persisted chain continuity NOT VERIFIED
+    # IMPORTANT: HC-01 is NOT "COMPLIANT". Its code detects tampering correctly
+    # and the single-writer lease prevents new forks; a freshly created temp
+    # database proves the IMPLEMENTATION. It says nothing about the DATA.
+    #
+    # A healthy ``audit_store.db`` on this dev host is still NOT evidence: the
+    # file is a gitignored RUNTIME ARTIFACT, so its presence/health cannot gate
+    # a release (the same code would derive a different status on a host where
+    # the file is absent). Continuity therefore stays "N/A" on every host and
+    # HC-01 stays UNVERIFIED until an explicitly supplied, reviewable database
+    # is checked. Keeping this entry honest is the whole point of the matrix.
+    "HC-01": "UNVERIFIED",   # declaration coverage COMPLIANT, persisted chain continuity NOT DEMONSTRATED
     "HC-02": "COMPLIANT",
     "HC-03": "COMPLIANT",
     "HC-04": "COMPLIANT",
@@ -178,6 +182,9 @@ def probe_hc01() -> None:
     undeclared = 0
     total_rows = 0
     continuity = "no persisted database to check"
+    #: Observed on THIS host only. Printed for forensics, NEVER used as
+    #: release evidence (see the note before ``continuity_ok`` below).
+    runtime_artifact = "absent (no audit_store.db in repo root)"
     persistence = "DURABLE (SQLite file)"
     if os.path.isfile(real):
         try:
@@ -227,6 +234,9 @@ def probe_hc01() -> None:
         except sqlite3.Error as exc:
             continuity = "unreadable (%s)" % exc
 
+    # Only the on-host observation; deliberately NOT folded into the verdict.
+    runtime_artifact = continuity
+
     put(hc,
         declaration="DECLARED sha256" if declared == {"sha256"} else "OTHER " + str(sorted(declared)),
         canonicalization="8-field json(sort_keys,separators); event_hash/prev_event_hash excluded",
@@ -236,18 +246,23 @@ def probe_hc01() -> None:
         tamper="DETECTED" if ok_t is False else "NOT DETECTED",
         unknown_alg="FAIL_CLOSED" if ok_u is False else "FAIL_OPEN",
         legacy_data="PRESENT" if undeclared else "NONE",
-        migration=migration + " | persisted continuity: " + continuity)
+        migration=migration,
+        runtime_artifact=runtime_artifact)
 
     # NOTE: the dimensions above were probed on a SYNTHETIC pristine store, which
     # proves the implementation. The persisted-chain check below only decides
     # whether we can say anything at all about real data.
     #
-    # ``YES`` is deliberately NOT a value here: ``audit_store.db`` in the repo
-    # root is a gitignored RUNTIME ARTIFACT. Its presence on this laptop proves
-    # the code *can* write a chain; it is not reviewable release evidence, and
-    # the same code would derive a different status on a machine where the file
-    # happens to be absent. Folding ``YES`` into ``N/A`` keeps HC-01 "declaration
-    # coverage proven, persisted chain continuity NOT demonstrated" on every host.
+    # Neither outcome of a repo-root ``audit_store.db`` may become release
+    # evidence, because that file is a gitignored RUNTIME ARTIFACT:
+    #
+    #   * healthy  -> N/A (presence proves only that this laptop wrote a chain)
+    #   * absent   -> N/A (nothing to inspect)
+    #   * broken   -> "NO" is kept ONLY as a local forensics signal; HC-01 is
+    #                 already UNVERIFIED because continuity is not reviewable,
+    #                 so this cannot turn a red into a green or vice versa.
+    #
+    # The observation itself is printed separately as ``runtime_artifact``.
     if "broken joins" in continuity and "0 broken joins" not in continuity:
         FACTS[hc]["continuity_ok"] = "NO"
     else:
@@ -506,6 +521,8 @@ def main() -> int:
         print("   tamper detection     : %s" % f["tamper"])
         print("   unknown algorithm    : %s" % f["unknown_alg"])
         print("   migration status     : %s" % f["migration"])
+        if "runtime_artifact" in f:
+            print("   runtime artifact     : %s  [NOT release evidence]" % f["runtime_artifact"])
         if "mechanism" in f:
             print("   mechanism            : %s" % f["mechanism"])
         print("   why                  : %s" % why)
