@@ -9,6 +9,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+
 import pytest
 
 from src.automation.audit import AutomationAudit
@@ -25,6 +29,7 @@ from src.automation.contracts import (
 )
 from src.automation.estop import EmergencyStop
 from src.automation.guard import ActionRule, Guard, ParamConstraint
+from src.automation.replay import AuditReplay
 from src.automation.sessions import AutomationSessionRegistry
 from src.kernels.audit import AuditEventType, AuditStore
 
@@ -452,4 +457,127 @@ def test_rollback_backend_exception_is_reported(tmp_path):
     assert rolled.error == "rollback_backend_exception"
     assert rolled.detail["rollback_completed"] is False
     assert "RuntimeError" in rolled.detail["message"]
+
+
+# ---------------------------------------------------------------- C 审计回放
+def _run_two_step_session(tmp_path, *, backend=None):
+    session, store = _open_session(
+        tmp_path,
+        Guard(allowlist=("notepad", "calculator")),
+        backend=backend or FakeAutomationBackend(initial_focus="notepad"),
+    )
+    first = session.plan(
+        "focus",
+        target_ref="calculator",
+        params={"app": "calculator"},
+    )
+    first_result = session.execute(first, session.request_confirmation(first))
+    assert first_result.ok is True
+    rollback_ticket = session.request_rollback_confirmation(first, first_result)
+    assert session.rollback(first, first_result, rollback_ticket).ok is True
+
+    second = session.plan("future_action", target_ref="notepad")
+    second_result = session.execute(second, session.request_confirmation(second))
+    assert second_result.ok is False
+    return session, store, first, second
+
+
+def test_replay_rebuilds_session_from_cold_store(tmp_path):
+    session, store, first, second = _run_two_step_session(tmp_path)
+    db_path = str(tmp_path / "audit.db")
+    store.shutdown()
+
+    replay = AuditReplay(db_path=db_path).rebuild(
+        principal="liuhao",
+        session_id=session.session_id,
+    )
+
+    assert replay.principal == "liuhao"
+    assert replay.chain_verified is True
+    assert replay.truncated is False
+    assert replay.events == 6
+    assert [step.step_no for step in replay.steps] == [1, 2]
+
+    step_one = replay.steps[0]
+    assert step_one.action == "focus"
+    assert step_one.target == "screen"
+    assert step_one.target_ref_sha256 == hashlib.sha256(b"calculator").hexdigest()
+    assert step_one.action_fingerprint == first.fingerprint()
+    assert step_one.result == "rolled_back"
+    assert step_one.stages == (
+        "intent",
+        "result",
+        "rollback_intent",
+        "rollback_result",
+    )
+
+    step_two = replay.steps[1]
+    assert step_two.action == "future_action"
+    assert step_two.action_fingerprint == second.fingerprint()
+    assert step_two.result == "failed"
+    assert step_two.reversibility == "irreversible"
+
+    state = replay.derive_state()
+    assert state["steps"] == 2
+    assert state["failed"] == 1
+    assert state["rolled_back"] == 1
+    assert state["frozen"] is False
+    assert replay.first_seen_at <= replay.last_seen_at
+
+
+def test_replay_unknown_session_returns_empty_trace(tmp_path):
+    _session, store, _first, _second = _run_two_step_session(tmp_path)
+    store.shutdown()
+
+    replay = AuditReplay(db_path=str(tmp_path / "audit.db")).rebuild(
+        principal="liuhao",
+        session_id="not-a-real-session",
+    )
+    assert replay.events == 0
+    assert replay.steps == []
+    assert replay.warnings == []
+
+
+def test_replay_marks_truncated_queries(tmp_path):
+    session, store, _first, _second = _run_two_step_session(tmp_path)
+    store.shutdown()
+
+    replay = AuditReplay(db_path=str(tmp_path / "audit.db")).rebuild(
+        principal="liuhao",
+        session_id=session.session_id,
+        limit=1,
+    )
+    assert replay.truncated is True
+    assert replay.events == 1
+    assert "audit_query_truncated" in replay.warnings
+
+
+def test_replay_reports_broken_chain_honestly(tmp_path):
+    session, store, _first, _second = _run_two_step_session(tmp_path)
+    db_path = str(tmp_path / "audit.db")
+    store.shutdown()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT event_id, details FROM audit_events ORDER BY seq LIMIT 1"
+        ).fetchone()
+        details = json.loads(row[1])
+        details["tampered"] = True
+        conn.execute(
+            "UPDATE audit_events SET details = ? WHERE event_id = ?",
+            (json.dumps(details), row[0]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    replay = AuditReplay(db_path=db_path).rebuild(
+        principal="liuhao",
+        session_id=session.session_id,
+    )
+    assert replay.chain_verified is False
+    assert "audit_hash_chain_verification_failed" in replay.warnings
+    assert replay.steps  # 仍然给出轨迹，但明确标注链已不可信
+
 

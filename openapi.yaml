@@ -59,6 +59,7 @@ components:
       properties:
         message:
           description: 用户消息
+          maxLength: 8000
           minLength: 1
           title: Message
           type: string
@@ -75,12 +76,6 @@ components:
           default: default
           description: 会话 ID（多轮独立）
           title: Session Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 用户 ID（同用户跨会话共享画像）
-          title: User Id
       required:
       - message
       title: ChatRequest
@@ -187,6 +182,27 @@ components:
       required:
       - name
       title: HireEmployeeRequest
+      type: object
+    IngestRequest:
+      properties:
+        doc_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Doc Id
+        metadata:
+          additionalProperties: true
+          title: Metadata
+          type: object
+        text:
+          maxLength: 200000
+          minLength: 1
+          title: Text
+          type: string
+      required:
+      - text
+      title: IngestRequest
       type: object
     LoginRequest:
       properties:
@@ -322,7 +338,10 @@ components:
       title: ModelUpdatePayload
       type: object
     ProfileUpdate:
-      description: 画像写入请求：所有字段可选，只写传了的项。
+      description: '画像写入请求：所有字段可选，只写传了的项。
+
+
+        **没有** ``principal`` / ``user_id`` 字段：主体只能来自令牌。'
       properties:
         behavior_pattern:
           anyOf:
@@ -359,12 +378,6 @@ components:
           - type: 'null'
           description: 单条偏好 {key, value, confidence?}
           title: Preference
-        principal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 画像主体（不传 user_id 时使用）
-          title: Principal
         relationship:
           anyOf:
           - additionalProperties:
@@ -373,12 +386,6 @@ components:
           - type: 'null'
           description: 关系 {who, relation}
           title: Relationship
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 用户 ID（优先，主体 user-{id}）
-          title: User Id
       title: ProfileUpdate
       type: object
     ProjectCreateRequest:
@@ -399,6 +406,30 @@ components:
       required:
       - name
       title: ProjectCreateRequest
+      type: object
+    SearchRequest:
+      properties:
+        query:
+          maxLength: 8000
+          minLength: 1
+          title: Query
+          type: string
+        threshold:
+          anyOf:
+          - maximum: 1.0
+            minimum: -1.0
+            type: number
+          - type: 'null'
+          title: Threshold
+        top_k:
+          default: 4
+          maximum: 20.0
+          minimum: 1.0
+          title: Top K
+          type: integer
+      required:
+      - query
+      title: SearchRequest
       type: object
     TestPayload:
       properties:
@@ -482,19 +513,11 @@ info:
   version: 1.0.0
 openapi: 3.1.0
 paths:
-  /knowledge/query:
+  /knowledge/documents:
     post:
-      description: "Run a full RAG query: retrieve context and generate answer.\n\nArgs:\n    query: The\
-        \ user's natural language question.\n\nReturns:\n    Dict with query, sources, context, answer,\
-        \ and metadata matching\n    the Phase 2.4 RAG contract."
-      operationId: knowledge_query_knowledge_query_post
+      deprecated: true
+      operationId: knowledge_ingest_knowledge_documents_post
       parameters:
-      - in: query
-        name: query
-        required: true
-        schema:
-          title: Query
-          type: string
       - in: header
         name: x-liuhao-token
         required: false
@@ -511,6 +534,66 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Ingest Knowledge Documents Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Ingest
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/query:
+    post:
+      deprecated: true
+      description: 'Retrieval-only RAG contract. Generation stays on ``/v1/chat``.
+
+
+        The old handler answered with a mock-written ``answer``; returning that from
+
+        a production endpoint is exactly the "pretend it works" failure this pass
+
+        removes. ``answer`` is therefore empty and the hits are real.'
+      operationId: knowledge_query_knowledge_query_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+        required: true
       responses:
         '200':
           content:
@@ -529,18 +612,59 @@ paths:
       summary: Knowledge Query
       tags:
       - knowledge
+      - knowledge
   /knowledge/search:
     post:
-      description: "Perform a knowledge search query.\n\nArgs:\n    query: The user's knowledge query.\n\
-        \nReturns:\n    Dict with sources, context, and metadata."
+      deprecated: true
       operationId: knowledge_search_knowledge_search_post
       parameters:
-      - in: query
-        name: query
-        required: true
+      - in: header
+        name: x-liuhao-token
+        required: false
         schema:
-          title: Query
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Search Knowledge Search Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Search
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/status:
+    get:
+      deprecated: true
+      description: 'Always 200: lets the console show "未启用" instead of hiding the feature.'
+      operationId: knowledge_status_knowledge_status_get
+      parameters:
       - in: header
         name: x-liuhao-token
         required: false
@@ -563,7 +687,7 @@ paths:
             application/json:
               schema:
                 additionalProperties: true
-                title: Response Knowledge Search Knowledge Search Post
+                title: Response Knowledge Status Knowledge Status Get
                 type: object
           description: Successful Response
         '422':
@@ -572,8 +696,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
-      summary: Knowledge Search
+      summary: Knowledge Status
       tags:
+      - knowledge
       - knowledge
   /v1/alerts:
     get:
@@ -1157,12 +1282,7 @@ paths:
       - chat
   /v1/chat/history:
     get:
-      description: '返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
-
-
-        历史按会话隔离；``profile_principal`` 单独给出该会话读写的画像主体
-
-        （传 ``user_id`` 时为 ``user-{user_id}``，跨会话共享）。'
+      description: 返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
       operationId: chat_history_v1_chat_history_get
       parameters:
       - in: query
@@ -1172,14 +1292,6 @@ paths:
           default: default
           title: Session Id
           type: string
-      - in: query
-        name: user_id
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
       - in: header
         name: x-liuhao-token
         required: false
@@ -1216,12 +1328,12 @@ paths:
       - chat
   /v1/chat/sessions:
     get:
-      description: '列出活跃会话（多用户隔离可见性）。
+      description: '列出**当前主体**的活跃会话（不会暴露别人的会话名）。
 
 
-        ``users`` 给出 会话→用户 归属（``null`` 表示该会话未声明 user_id，
+        ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
 
-        画像主体回退为会话自身）。'
+        不再接受客户端声明。'
       operationId: chat_sessions_v1_chat_sessions_get
       parameters:
       - in: header
@@ -1260,7 +1372,7 @@ paths:
       - chat
   /v1/chat/sessions/{session_id}:
     delete:
-      description: 删除会话（清空历史 + 移除实例）。
+      description: 删除**自己的**会话（清空历史 + 移除实例）；别人的会话按不存在处理。
       operationId: chat_delete_session_v1_chat_sessions__session_id__delete
       parameters:
       - in: path
@@ -1912,6 +2024,139 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: List Events
+      tags:
+      - events
+  /v1/events/history:
+    get:
+      description: '持久事件历史（只读，来自审计库）。
+
+
+        与 ``/v1/events`` 的区别：那个读内存环形缓冲，只覆盖"本进程运行期间"；
+
+        这里读审计库 ``audit_events``，覆盖"这个部署写过的全部事件"。两个都有
+
+        存在的理由，但只有后者能回答"昨天发生了什么"。
+
+
+        读库失败时返回 503 与真实原因 —— **绝不**返回空列表，否则调用方分不清
+
+        "没有历史"和"历史读不出来"。'
+      operationId: list_persisted_event_history_v1_events_history_get
+      parameters:
+      - description: 按主体过滤
+        in: query
+        name: principal
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按主体过滤
+          title: Principal
+      - description: 按事件类型过滤
+        in: query
+        name: event_type
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按事件类型过滤
+          title: Event Type
+      - description: 按结果过滤（success/denied/...）
+        in: query
+        name: outcome
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按结果过滤（success/denied/...）
+          title: Outcome
+      - description: 按关联 ID 过滤 —— 一次目标执行产生的全部事件
+        in: query
+        name: correlation_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按关联 ID 过滤 —— 一次目标执行产生的全部事件
+          title: Correlation Id
+      - description: 起始 Unix 时间戳（秒，含）
+        in: query
+        name: since
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: number
+          - type: 'null'
+          description: 起始 Unix 时间戳（秒，含）
+          title: Since
+      - description: 结束 Unix 时间戳（秒，含）
+        in: query
+        name: until
+        required: false
+        schema:
+          anyOf:
+          - minimum: 0
+            type: number
+          - type: 'null'
+          description: 结束 Unix 时间戳（秒，含）
+          title: Until
+      - description: 返回条数上限
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 100
+          description: 返回条数上限
+          maximum: 1000
+          minimum: 1
+          title: Limit
+          type: integer
+      - description: true = 最新的在前
+        in: query
+        name: reverse
+        required: false
+        schema:
+          default: true
+          description: true = 最新的在前
+          title: Reverse
+          type: boolean
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Persisted Event History V1 Events History Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Persisted Event History
       tags:
       - events
   /v1/files:
@@ -2792,6 +3037,190 @@ paths:
       summary: Post Kernels Resume
       tags:
       - kernels
+  /v1/knowledge/documents:
+    post:
+      operationId: knowledge_ingest_v1_knowledge_documents_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Ingest V1 Knowledge Documents Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Ingest
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/query:
+    post:
+      deprecated: true
+      description: 'Retrieval-only RAG contract. Generation stays on ``/v1/chat``.
+
+
+        The old handler answered with a mock-written ``answer``; returning that from
+
+        a production endpoint is exactly the "pretend it works" failure this pass
+
+        removes. ``answer`` is therefore empty and the hits are real.'
+      operationId: knowledge_query_v1_knowledge_query_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Query V1 Knowledge Query Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Query
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/search:
+    post:
+      operationId: knowledge_search_v1_knowledge_search_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Search V1 Knowledge Search Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Search
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/status:
+    get:
+      description: 'Always 200: lets the console show "未启用" instead of hiding the feature.'
+      operationId: knowledge_status_v1_knowledge_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Status V1 Knowledge Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Status
+      tags:
+      - knowledge
+      - knowledge
   /v1/models:
     get:
       operationId: list_models_v1_models_get
@@ -3626,29 +4055,14 @@ paths:
       - observability
   /v1/profile:
     delete:
-      description: 清空某主体的画像（不可恢复）。
+      description: '清空**当前主体**的画像（不可恢复）。
+
+
+        主体只来自令牌：``DELETE /v1/profile?principal=someone`` 不会删掉别人，
+
+        查询参数被忽略。'
       operationId: clear_profile_v1_profile_delete
       parameters:
-      - description: 画像主体
-        in: query
-        name: principal
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 画像主体
-          title: Principal
-      - description: 用户 ID（主体 user-{id}）
-        in: query
-        name: user_id
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 用户 ID（主体 user-{id}）
-          title: User Id
       - in: header
         name: x-liuhao-token
         required: false
@@ -3684,29 +4098,9 @@ paths:
       tags:
       - profile
     get:
-      description: 返回完整画像快照 + 摘要。
+      description: 返回**当前主体**的完整画像快照 + 摘要。
       operationId: get_profile_v1_profile_get
       parameters:
-      - description: 画像主体
-        in: query
-        name: principal
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 画像主体
-          title: Principal
-      - description: 用户 ID（主体 user-{id}）
-        in: query
-        name: user_id
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 用户 ID（主体 user-{id}）
-          title: User Id
       - in: header
         name: x-liuhao-token
         required: false
@@ -3742,7 +4136,7 @@ paths:
       tags:
       - profile
     put:
-      description: 写入画像项（真实落盘 + 写穿 Memory Kernel）。返回写入后的画像。
+      description: 写入**当前主体**的画像项（真实落盘 + 写穿 Memory Kernel）。
       operationId: update_profile_v1_profile_put
       parameters:
       - in: header
@@ -3787,29 +4181,9 @@ paths:
       - profile
   /v1/profile/summary:
     get:
-      description: 返回画像摘要文本（即注入 system prompt 的那一段）。
+      description: 返回**当前主体**的画像摘要文本（即注入 system prompt 的那一段）。
       operationId: get_profile_summary_v1_profile_summary_get
       parameters:
-      - description: 画像主体
-        in: query
-        name: principal
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 画像主体
-          title: Principal
-      - description: 用户 ID（主体 user-{id}）
-        in: query
-        name: user_id
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 用户 ID（主体 user-{id}）
-          title: User Id
       - description: 摘要最大条目数
         in: query
         name: max_items

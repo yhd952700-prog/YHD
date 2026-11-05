@@ -61,6 +61,14 @@ services:
       # Human-identity persistence (Policy C-7): default SQLite backend.
       - LIUHAO_HUMAN_IDENTITIES_DB=${LIUHAO_HUMAN_IDENTITIES_DB:-/app/data/human_identities.sqlite3}
 
+      # JWT revocation blocklist (SQLite, shared by restarts/workers): the
+      # in-image default is <bundle_root>/.liuhao_jwt_revocation.db, i.e.
+      # /app/.liuhao_jwt_revocation.db, which is NOT on the volume and is not
+      # writable by the non-root app user -- the container then dies at startup
+      # with "sqlite3.OperationalError: unable to open database file". Point it
+      # at the volume instead.
+      - LIUHAO_JWT_REVOCATION_DB=${LIUHAO_JWT_REVOCATION_DB:-/app/data/jwt_revocations.db}
+
       # Kernel policy enforcement: keep CRITICAL-armed posture in staging too, so
       # the fail-closed gate is exercised (see docker-compose.prod.yml comment).
       - LIUHAO_KERNEL_POLICY_ENFORCE=${LIUHAO_KERNEL_POLICY_ENFORCE:-CRITICAL}

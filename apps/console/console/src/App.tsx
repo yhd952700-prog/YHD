@@ -60,7 +60,8 @@ import { Events } from './pages/Events'
 import { Trust } from './pages/Trust'
 import { Network } from './pages/Network'
 import { Identity } from './pages/Identity'
-import { BusinessCenter, KnowledgeCenter, Roster } from './pages/Directory'
+import { BusinessCenter, Roster } from './pages/Directory'
+import { Knowledge } from './pages/Knowledge'
 import { DataCenter, SystemStatus } from './pages/Operations'
 import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
@@ -82,7 +83,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: '总览', sub: '真实运行态 —— 每一项都可追溯到后端数据源' },
   employees: { title: '我 AI 员工', sub: '14 内核 + 14 能力层 + provider 服务面' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
-  knowledge: { title: '知识中心', sub: '运行中服务的真实知识端点' },
+  knowledge: { title: '知识中心', sub: '真实知识库 —— 导入 / 分块预览 / 检索测试' },
   workbench: { title: '工作台', sub: 'JARVIS 流式对话与工具调用' },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除内核噪声）' },
   approval: { title: '审批中心', sub: '内核层拦截的人工授权 —— 需人类令牌' },
@@ -531,7 +532,13 @@ function App() {
       {active === 'overview' && <Overview query={query} provider={provider} />}
       {active === 'employees' && <Roster query={query} />}
       {active === 'business' && <BusinessCenter query={query} />}
-      {active === 'knowledge' && <KnowledgeCenter query={query} />}
+      {active === 'knowledge' && (
+        <Knowledge
+          query={query}
+          principal={session.principal}
+          onOpenSettings={() => navigate('settings')}
+        />
+      )}
       {active === 'workbench' && (
         <Workbench provider={provider} onConfigureModel={() => navigate('settings')} />
       )}
