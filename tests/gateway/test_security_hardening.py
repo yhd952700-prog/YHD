@@ -353,6 +353,37 @@ class TestGatewayGuards:
         assert resp.status_code == 200
 
 
+class TestAuditProbeLoudFailure:
+    def test_audit_emit_failure_logs_error_and_increments_metric(
+        self, monkeypatch, caplog
+    ):
+        import src.ai.audit as audit_module
+        import src.observability.metrics as metrics_module
+        from src.gateway import models as models_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("audit backend down")
+
+        monkeypatch.setattr(audit_module, "emit", _boom)
+        recorded = []
+
+        class _FakeCounter:
+            def labels(self, **kwargs):
+                recorded.append(kwargs)
+                return self
+
+            def inc(self):
+                pass
+
+        monkeypatch.setattr(metrics_module, "provider_errors_total", _FakeCounter())
+        with caplog.at_level("ERROR"):
+            models_module._audit_probe(
+                {"provider": "deepseek", "model": "deepseek-chat"}, "success", "ok"
+            )
+        assert any("audit" in record.getMessage().lower() for record in caplog.records)
+        assert recorded and recorded[0]["error_type"] == "audit_emit_failed"
+
+
 class TestServerTimeoutConfig:
     """``server.timeouts`` 不再是死配置：idle 真实映射，其余显式标注未启用。"""
 
