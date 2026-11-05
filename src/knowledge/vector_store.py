@@ -366,8 +366,16 @@ class VectorStore:
                 "heading_path": list(meta.get("heading_path") or []),
                 "context_header": str(meta.get("context_header") or ""),
                 "page": meta.get("page"),
+                "pages": (
+                    meta.get("pages")
+                    or ([meta["page"]] if isinstance(meta.get("page"), int) else [])
+                ),
                 "page_label": (
-                    f"第 {meta['page']} 页"
+                    (
+                        f"第 {meta['pages'][0]}-{meta['pages'][-1]} 页"
+                        if len(meta.get("pages") or []) > 1
+                        else f"第 {meta['page']} 页"
+                    )
                     if isinstance(meta.get("page"), int)
                     else None
                 ),

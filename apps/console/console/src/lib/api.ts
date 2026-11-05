@@ -40,7 +40,12 @@ export async function apiFetch<T>(
   // 令牌走「私有头 + 标准头」双写（见 auth.TOKEN_HEADER）：托管边缘网关会
   // 改写 `Authorization`，只有它不认识的私有头能原样穿过。
   const headers = tokenHeaders(init?.headers)
-  if (init?.body && !headers.has('Content-Type')) {
+  // FormData 的 Content-Type 必须由浏览器自己写（带 multipart boundary）。
+  if (
+    init?.body &&
+    !(init.body instanceof FormData) &&
+    !headers.has('Content-Type')
+  ) {
     headers.set('Content-Type', 'application/json')
   }
 

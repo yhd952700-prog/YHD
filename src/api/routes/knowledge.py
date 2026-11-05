@@ -27,7 +27,19 @@ return fabricated vectors or a mock-written answer.
 ``.pdf`` / ``.docx`` / ``.html`` / ``.htm`` / ``.txt`` / ``.md``. Extraction is
 owned by :mod:`src.knowledge.extractors`; a scanned PDF is a 422
 (``该 PDF 无文本层，需要 OCR，暂不支持``), never an empty success. PDF chunks
-carry ``page`` metadata and search hits expose ``page`` / ``location``.
+carry ``page`` metadata and search hits expose ``page`` / ``pages`` /
+``location``; a sentence that crosses a page boundary stays in one chunk whose
+``pages`` is ``[2, 3]``.
+
+``POST /v1/knowledge/documents/upload/jobs`` is the async twin (202 + job id):
+extraction and embedding run in a worker, progress is counted in real pages
+(``total_pages`` / ``extracted_pages`` / ``embedded_pages``), and cancelling is
+a full rollback -- nothing is written until the whole document is embedded.
+
+A text layer that is mostly replacement/block glyphs is refused with
+``该文件可能是扫描件或字体嵌入异常，提取质量差`` (422,
+``error_code="low_quality_extraction"``); resubmitting with
+``allow_low_quality=true`` is the explicit "store it anyway" decision.
 """
 
 from __future__ import annotations
@@ -256,8 +268,9 @@ async def _read_upload_limited(file: UploadFile, limit: int) -> bytes:
 async def knowledge_upload_document(
     file: UploadFile = File(...),
     doc_id: Optional[str] = Form(default=None),
+    allow_low_quality: bool = Form(default=False),
 ) -> Dict[str, Any]:
-    """Multipart upload for PDF / DOCX / HTML / plain text.
+    """Multipart upload for PDF / DOCX / HTML / plain text (synchronous).
 
     Every format is reduced to extracted text **before** it reaches the index,
     so the content hash (and therefore dedup) is computed on what the library
@@ -268,7 +281,12 @@ async def knowledge_upload_document(
       * 413 -- file size / PDF page count / extracted length over the cap;
       * 415 -- unsupported suffix;
       * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt file, empty
-        document. A scanned PDF never returns an empty string as "success".
+        document, or a text layer full of broken glyphs. A scanned PDF never
+        returns an empty string as "success", and a garbled text layer is never
+        stored silently: the caller must retry with ``allow_low_quality=true``.
+
+    Large files belong on ``POST /documents/upload/jobs``: this handler blocks
+    until extraction + embedding finish.
     """
     filename = (file.filename or "").strip()
     if not filename:
@@ -276,7 +294,9 @@ async def knowledge_upload_document(
 
     try:
         data = await _read_upload_limited(file, _MAX_UPLOAD_BYTES)
-        extracted = extract_document(data, filename)
+        extracted = extract_document(
+            data, filename, allow_low_quality=allow_low_quality
+        )
     except ExtractionError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc))
 
@@ -312,9 +332,54 @@ class IngestJobRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+@documents_admin.post("/documents/upload/jobs", status_code=202)
+async def knowledge_submit_upload_job(
+    file: UploadFile = File(...),
+    doc_id: Optional[str] = Form(default=None),
+    allow_low_quality: bool = Form(default=False),
+) -> Dict[str, Any]:
+    """Queue a **file** ingest job and return immediately with a job id.
+
+    This is the async twin of ``POST /documents/upload``: the bytes are read
+    here, then extraction and embedding happen in the worker. A 300-page PDF
+    therefore answers 202 instantly and reports real page progress via
+    ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
+    ``embedded_pages`` / ``progress_percent``). Cancel with
+    ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
+    document is embedded, so a cancel is a full rollback (全回滚).
+
+    Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
+    do not fail the *request* -- they are reported on the job as
+    ``status=failed`` with ``error_code`` and the extractor's message. For a
+    garbled text layer the job keeps the measured ``quality`` and the caller
+    can resubmit with ``allow_low_quality=true`` after inspecting it.
+    """
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
+
+    status = get_knowledge_service().status()
+    if not status.get("enabled"):
+        raise HTTPException(
+            status_code=503, detail=f"知识库未启用：{status.get('reason')}"
+        )
+
+    try:
+        data = await _read_upload_limited(file, _MAX_UPLOAD_BYTES)
+    except ExtractionError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc))
+
+    return get_ingest_job_manager().submit_file(
+        data,
+        filename,
+        doc_id=doc_id,
+        allow_low_quality=allow_low_quality,
+    )
+
+
 @documents_admin.post("/ingest/jobs", status_code=202)
 def knowledge_submit_ingest_job(payload: IngestJobRequest) -> Dict[str, Any]:
-    """Queue an ingest job; cancellation is honoured at chunk boundaries."""
+    """Queue a raw-text ingest job; cancellation lands at chunk boundaries."""
     status = get_knowledge_service().status()
     if not status.get("enabled"):
         raise HTTPException(

@@ -46,11 +46,12 @@ from __future__ import annotations
 
 import io
 import re
+import threading
 import zipfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 _TEXT_SUFFIXES = frozenset({".txt", ".md"})
 _PDF_SUFFIXES = frozenset({".pdf"})
@@ -79,6 +80,10 @@ class ExtractionLimits:
     max_pdf_pages: int = 300
     max_uncompressed_bytes: int = 150 * 1024 * 1024
     max_extracted_chars: int = 2_000_000
+    #: Garbled-text gate. A handful of replacement glyphs in a short note is
+    #: noise; 20+ glyphs at a 15% ratio means the text layer is unusable.
+    min_garbled_chars: int = 20
+    max_garbled_ratio: float = 0.15
 
 
 DEFAULT_LIMITS = ExtractionLimits()
@@ -126,6 +131,92 @@ class CorruptedDocument(ExtractionError):
     http_status = 422
 
 
+class ExtractionCancelled(ExtractionError):
+    """Raised between pages when an async job is cancelled during extraction.
+
+    Nothing has been written at this point, so the job is a full rollback.
+    """
+
+    code = "extraction_cancelled"
+    http_status = 409
+
+    def __init__(self, processed: int, total: int) -> None:
+        super().__init__(
+            f"提取已取消（已处理 {processed}/{total} 页，未写入任何数据）"
+        )
+        self.processed = processed
+        self.total = total
+
+
+class LowQualityText(ExtractionError):
+    """Text extracted with too many replacement/block glyphs to be trusted."""
+
+    code = "low_quality_extraction"
+    http_status = 422
+
+    def __init__(self, message: str, quality: "TextQuality") -> None:
+        super().__init__(message)
+        self.quality = quality
+
+
+#: Characters that signal a broken text layer: U+FFFD replacement glyphs,
+#: geometric squares/rectangles (font-missing "tofu"), and Private Use Area
+#: codepoints that embedded subset fonts often leak.
+_GARBLED_RE = re.compile("[\ufffd\u25a0\u25a1\u25a2\u25a3\ue000-\uf8ff]")
+
+
+@dataclass(frozen=True)
+class TextQuality:
+    """Measured garbled-text ratio for one extracted document."""
+
+    garbled_chars: int
+    total_chars: int
+    ratio: float
+    low_quality: bool
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "garbled_chars": self.garbled_chars,
+            "total_chars": self.total_chars,
+            "garbled_ratio": round(self.ratio, 4),
+            "low_quality": self.low_quality,
+        }
+
+
+def assess_text_quality(
+    text: str, limits: Optional[ExtractionLimits] = None
+) -> TextQuality:
+    """Measure broken glyphs; never guesses, just counts what is there."""
+    caps = limits or DEFAULT_LIMITS
+    total_chars = len(re.sub(r"\s+", "", text or ""))
+    garbled_chars = len(_GARBLED_RE.findall(text or ""))
+    ratio = (garbled_chars / total_chars) if total_chars else 0.0
+    low_quality = (
+        garbled_chars >= caps.min_garbled_chars
+        and ratio >= caps.max_garbled_ratio
+    )
+    return TextQuality(
+        garbled_chars=garbled_chars,
+        total_chars=total_chars,
+        ratio=ratio,
+        low_quality=low_quality,
+    )
+
+
+def _quality_or_raise(
+    text: str, limits: ExtractionLimits, allow_low_quality: bool
+) -> TextQuality:
+    quality = assess_text_quality(text, limits)
+    if quality.low_quality and not allow_low_quality:
+        raise LowQualityText(
+            "该文件可能是扫描件或字体嵌入异常，提取质量差"
+            f"（乱码 {quality.garbled_chars} 字符，占比 {quality.ratio:.1%}）；"
+            "如确认仍需入库，请重试并设置 allow_low_quality=true",
+            quality,
+        )
+    return quality
+
+
 @dataclass
 class ExtractedDocument:
     """Extracted text plus the provenance needed by chunk metadata.
@@ -141,15 +232,17 @@ class ExtractedDocument:
     title: Optional[str] = None
     page_count: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    quality: Optional[TextQuality] = None
 
     def summary(self) -> Dict[str, Any]:
-        """Small, JSON-safe description for the upload response."""
+        """Small, JSON-safe description for the upload / job response."""
         return {
             "file_type": self.file_type,
             "page_count": self.page_count,
             "text_chars": len(self.text),
             "title": self.title,
             "paged": bool(self.pages),
+            "quality": self.quality.summary() if self.quality else None,
         }
 
 
@@ -180,8 +273,18 @@ def extract_document(
     filename: str,
     *,
     limits: Optional[ExtractionLimits] = None,
+    allow_low_quality: bool = False,
+    on_page: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> ExtractedDocument:
     """Extract ``data`` according to the filename suffix.
+
+    ``allow_low_quality=False`` (default) refuses a text layer full of
+    replacement/block glyphs with a readable 422; passing ``True`` is the user
+    explicitly saying "I know it is bad, store it anyway". ``on_page`` and
+    ``cancel_event`` exist for async jobs: progress is reported per extracted
+    page and cancellation is checked at the same boundary, before anything is
+    written.
 
     Raises :class:`ExtractionError` subclasses with a readable message; the
     caller maps ``http_status`` directly onto its response. Never returns an
@@ -192,13 +295,19 @@ def extract_document(
     _check_size(len(data), caps)
 
     if suffix in _TEXT_SUFFIXES:
-        return _extract_plain_text(data, suffix, caps)
+        return _extract_plain_text(data, suffix, caps, allow_low_quality)
     if suffix in _PDF_SUFFIXES:
-        return _extract_pdf(data, caps)
+        return _extract_pdf(
+            data,
+            caps,
+            allow_low_quality=allow_low_quality,
+            on_page=on_page,
+            cancel_event=cancel_event,
+        )
     if suffix in _DOCX_SUFFIXES:
-        return _extract_docx(data, caps)
+        return _extract_docx(data, caps, allow_low_quality)
     if suffix in _HTML_SUFFIXES:
-        return _extract_html(data, caps)
+        return _extract_html(data, caps, allow_low_quality)
 
     raise UnsupportedFileType(
         f"不支持的文件类型：{suffix or '未知后缀'}；"
@@ -212,7 +321,10 @@ def extract_document(
 
 
 def _extract_plain_text(
-    data: bytes, suffix: str, limits: ExtractionLimits
+    data: bytes,
+    suffix: str,
+    limits: ExtractionLimits,
+    allow_low_quality: bool,
 ) -> ExtractedDocument:
     try:
         text = data.decode("utf-8-sig")
@@ -223,7 +335,13 @@ def _extract_plain_text(
     if not text.strip():
         raise EmptyDocument("文件未包含任何正文文本")
     _check_chars(text, limits)
-    return ExtractedDocument(text=text, file_type=suffix.lstrip("."), metadata={})
+    quality = _quality_or_raise(text, limits, allow_low_quality)
+    return ExtractedDocument(
+        text=text,
+        file_type=suffix.lstrip("."),
+        metadata={},
+        quality=quality,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +349,14 @@ def _extract_plain_text(
 # ---------------------------------------------------------------------------
 
 
-def _extract_pdf(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
+def _extract_pdf(
+    data: bytes,
+    limits: ExtractionLimits,
+    *,
+    allow_low_quality: bool = False,
+    on_page: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> ExtractedDocument:
     # Imported lazily so the knowledge module still imports (and reports a
     # clear error) in an environment where the optional parser is missing.
     try:
@@ -273,6 +398,10 @@ def _extract_pdf(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
 
     pages: List[Tuple[int, str]] = []
     for index in range(page_count):
+        # Cancellation during extraction is a full rollback too: nothing has
+        # been written yet, so the job simply reports how many pages it read.
+        if cancel_event is not None and cancel_event.is_set():
+            raise ExtractionCancelled(index, page_count)
         try:
             page_text = reader.pages[index].extract_text() or ""
         except Exception as exc:
@@ -280,12 +409,17 @@ def _extract_pdf(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
                 f"PDF 第 {index + 1} 页解析失败：{exc}"
             )
         pages.append((index + 1, page_text))
+        if on_page is not None:
+            # Progress is counted in real pages, blank ones included: they were
+            # genuinely parsed and skipping them would fake the percentage.
+            on_page(index + 1, page_count)
 
     text = "\n\n".join(page_text for _, page_text in pages).strip()
     if not text:
         # This is the line that keeps "success with an empty string" impossible.
         raise ScannedPdfError(SCANNED_PDF_MESSAGE)
     _check_chars(text, limits)
+    quality = _quality_or_raise(text, limits, allow_low_quality)
 
     text_pages = sum(1 for _, page_text in pages if page_text.strip())
     return ExtractedDocument(
@@ -298,6 +432,7 @@ def _extract_pdf(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
             "pages_with_text": text_pages,
             "parser": "pypdf",
         },
+        quality=quality,
     )
 
 
@@ -344,7 +479,9 @@ def _iter_docx_blocks(document) -> Iterator[Any]:
             yield Table(child, document)
 
 
-def _extract_docx(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
+def _extract_docx(
+    data: bytes, limits: ExtractionLimits, allow_low_quality: bool = False
+) -> ExtractedDocument:
     _zip_is_safe(data, limits)
     try:
         from docx import Document
@@ -390,6 +527,7 @@ def _extract_docx(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
     if not body:
         raise EmptyDocument("DOCX 文件未提取到任何正文文本")
     _check_chars(body, limits)
+    quality = _quality_or_raise(body, limits, allow_low_quality)
 
     core_title = getattr(document.core_properties, "title", None)
     if not (core_title or "").strip():
@@ -399,6 +537,7 @@ def _extract_docx(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
         file_type="docx",
         title=core_title or title,
         metadata={"parser": "python-docx"},
+        quality=quality,
     )
 
 
@@ -537,7 +676,9 @@ class _HtmlTextParser(HTMLParser):
         return "\n\n".join(self.blocks).strip()
 
 
-def _extract_html(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
+def _extract_html(
+    data: bytes, limits: ExtractionLimits, allow_low_quality: bool = False
+) -> ExtractedDocument:
     try:
         raw = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -559,9 +700,11 @@ def _extract_html(data: bytes, limits: ExtractionLimits) -> ExtractedDocument:
     if not body:
         raise EmptyDocument("HTML 文件未提取到任何正文文本")
     _check_chars(body, limits)
+    quality = _quality_or_raise(body, limits, allow_low_quality)
     return ExtractedDocument(
         text=body,
         file_type="html",
         title=parser.title,
         metadata={"parser": "stdlib-html.parser"},
+        quality=quality,
     )

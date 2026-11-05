@@ -9,6 +9,11 @@ splitter used by the knowledge ingest path:
 * paragraphs stay intact and are grouped up to ``chunk_size``;
 * tables (``|`` rows) and fenced code blocks are never split;
 * only overlong paragraphs degrade to a hard cut with overlap.
+
+``chunk_paged_document`` adds the paged rule for PDF: a page whose last chunk
+does not end with sentence-final punctuation absorbs the next page's opening
+chunk (``page`` = start page, ``pages`` = the span), so a sentence is never
+retrievable as only its first half.
 """
 
 from __future__ import annotations
@@ -141,6 +146,10 @@ class TextChunk:
     heading_path: Tuple[str, ...] = ()
     index: int = 0
     page: Optional[int] = None
+    #: Page range covered by this chunk, e.g. ``(2, 3)`` for a chunk that
+    #: starts on page 2 and continues onto page 3. Single-page chunks carry
+    #: ``(page,)``; non-paged formats carry ``()``.
+    pages: Tuple[int, ...] = ()
 
     @property
     def context_header(self) -> str:
@@ -324,31 +333,103 @@ def chunk_document_structured(
     return chunks
 
 
+_SENTENCE_END = frozenset("。！？.!?…")
+_CLOSING_MARKS = "\"'”’）)】]」』》"
+
+
+def _ends_with_sentence(text: str) -> bool:
+    """True when the text ends with sentence-final punctuation (ignoring closers).
+
+    A page that ends mid-sentence must not become its own chunk: the next page
+    opening is the second half of the same sentence, and a search hit that
+    stops halfway is worse than a slightly larger chunk.
+    """
+    stripped = text.rstrip()
+    while stripped and stripped[-1] in _CLOSING_MARKS:
+        stripped = stripped[:-1].rstrip()
+    return bool(stripped) and stripped[-1] in _SENTENCE_END
+
+
+def _is_mergeable(text: str) -> bool:
+    """Tables and code blocks keep their integrity; never merge across pages."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("```") or stripped.endswith("```"):
+        return False
+    lines = [line for line in stripped.splitlines() if line.strip()]
+    return not all(_is_table_line(line) for line in lines)
+
+
 def chunk_paged_document(
     pages: List[Tuple[int, str]],
     chunk_size: int = 512,
     chunk_overlap: int = 50,
 ) -> List[TextChunk]:
-    """Chunk a paged document one page at a time, tagging every chunk's page.
+    """Chunk a paged document and stitch sentences that cross a page boundary.
 
-    Chunking per page (rather than joining pages and splitting the blob) keeps
-    the page number exact: a chunk never straddles two pages and never needs a
-    guessed "which page did this come from" heuristic. The trade-off is that a
-    paragraph continued across a page break becomes two chunks -- an acceptable
-    loss for the provenance gain, and the page number makes it obvious.
+    Rule (documented so the next maintainer does not have to reverse-engineer it):
+
+    * Each page is chunked independently first, keeping an exact page number.
+    * If a page's **last** chunk does not end with sentence-final punctuation
+      (``。！？.!?…``), the **first** chunk of the next page is appended to it.
+      The merged chunk's ``page`` is the start page and ``pages`` records the
+      range (``(2, 3)``), so retrieval can show "第 2-3 页".
+    * Tables and code blocks are never merged; they must stay whole.
+    * Merging stops at ``2 * chunk_size`` characters, so a pathological PDF
+      without punctuation cannot produce one giant embedding input.
+    * The merged text is the actual continuation (no duplicated overlap); the
+      next page's opening is included in full within the size cap, which is
+      what "带 overlap" means here: the reader sees the boundary sentence end.
     """
-    chunks: List[TextChunk] = []
+    flat: List[Tuple[int, TextChunk]] = []
     for page_number, page_text in pages:
-        page_chunks = chunk_document_structured(
+        for chunk in chunk_document_structured(
             page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        )
-        for chunk in page_chunks:
-            chunks.append(
-                TextChunk(
-                    chunk.text,
-                    chunk.heading_path,
-                    len(chunks),
-                    page=page_number,
-                )
+        ):
+            flat.append((page_number, chunk))
+
+    chunks: List[TextChunk] = []
+    max_merged_chars = max(chunk_size * 2, chunk_size)
+    cursor = 0
+    while cursor < len(flat):
+        start_page, start_chunk = flat[cursor]
+        text = start_chunk.text
+        page_numbers: List[int] = [start_page]
+        last_page = start_page
+        mergeable_tail = _is_mergeable(start_chunk.text)
+
+        while (
+            mergeable_tail
+            and not _ends_with_sentence(text)
+            and cursor + 1 < len(flat)
+            and flat[cursor + 1][0] != last_page
+        ):
+            next_page, next_chunk = flat[cursor + 1]
+            if not _is_mergeable(next_chunk.text):
+                break
+            if len(text) + 2 + len(next_chunk.text) > max_merged_chars:
+                break
+            text = text.rstrip() + "\n\n" + next_chunk.text.lstrip()
+            for skipped in range(last_page + 1, next_page + 1):
+                if skipped not in page_numbers:
+                    page_numbers.append(skipped)
+            last_page = next_page
+            cursor += 1
+            # Only keep stitching when the absorbed chunk was the page's last
+            # chunk; otherwise we already took the page opening we needed.
+            if cursor + 1 < len(flat) and flat[cursor + 1][0] == last_page:
+                break
+
+        chunks.append(
+            TextChunk(
+                text.strip(),
+                start_chunk.heading_path,
+                len(chunks),
+                page=start_page,
+                pages=tuple(page_numbers),
             )
+        )
+        cursor += 1
+
     return chunks

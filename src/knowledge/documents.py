@@ -51,7 +51,12 @@ def content_hash(text: str) -> str:
 
 
 def _page_label(metadata: Dict[str, Any]) -> Optional[str]:
-    """Human-readable page label for a chunk ("第 3 页"), if it has one."""
+    """Human-readable page label ("第 3 页" / "第 2-3 页"), if the chunk has one."""
+    pages = metadata.get("pages")
+    if isinstance(pages, (list, tuple)) and pages:
+        first, last = pages[0], pages[-1]
+        if isinstance(first, int) and isinstance(last, int) and first > 0:
+            return f"第 {first} 页" if first == last else f"第 {first}-{last} 页"
     page = metadata.get("page")
     if isinstance(page, int) and page > 0:
         return f"第 {page} 页"
@@ -67,6 +72,50 @@ def _hit_text(metadata: Dict[str, Any]) -> str:
     if not prefix:
         return body
     return f"[{prefix}]\n{body}" if body else f"[{prefix}]"
+
+
+def _embed_pages(
+    embedder,
+    chunks,
+    pages: List[Tuple[int, str]],
+    on_progress: Optional[Callable[[int, int], None]],
+    on_page_progress: Callable[[int, int], None],
+    cancel_event: Optional[threading.Event],
+) -> List[List[float]]:
+    """Embed paged chunks one source page at a time.
+
+    Progress is reported in **pages**, not a fabricated percentage: blank pages
+    still advance the counter because they were really processed. Cancellation
+    is checked at each page boundary, and since no vector has been written to
+    the store yet, cancelling here is an all-or-nothing rollback.
+    """
+    vectors: List[List[float]] = []
+    offset = 0
+    processed_chunks = 0
+    total_pages = len(pages)
+    for ordinal, (page_number, _page_text) in enumerate(pages, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            raise IngestCancelled(processed_chunks, len(chunks))
+        group = []
+        while offset < len(chunks) and chunks[offset].page == page_number:
+            group.append(chunks[offset])
+            offset += 1
+        if group:
+            vectors.extend(embedder.embed([chunk.embed_text for chunk in group]))
+            processed_chunks += len(group)
+            if on_progress is not None:
+                on_progress(processed_chunks, len(chunks))
+        on_page_progress(ordinal, total_pages)
+    # Defensive: a paged chunk with no page tag would otherwise be dropped.
+    while offset < len(chunks):
+        if cancel_event is not None and cancel_event.is_set():
+            raise IngestCancelled(processed_chunks, len(chunks))
+        vectors.append(embedder.embed([chunks[offset].embed_text])[0])
+        processed_chunks += 1
+        offset += 1
+        if on_progress is not None:
+            on_progress(processed_chunks, len(chunks))
+    return vectors
 
 
 class KnowledgeDocumentService:
@@ -134,6 +183,7 @@ class KnowledgeDocumentService:
         *,
         pages: Optional[List[Tuple[int, str]]] = None,
         on_progress: Optional[Callable[[int, int], None]] = None,
+        on_page_progress: Optional[Callable[[int, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         """Ingest already-extracted text (and, for PDFs, per-page text).
@@ -155,7 +205,16 @@ class KnowledgeDocumentService:
         static_metadata = dict(metadata or {})
         # The heading breadcrumb is embedded together with the body so a chunk
         # that starts with "如下所示" still carries its section topic.
-        if on_progress is None and cancel_event is None:
+        if pages and on_page_progress is not None:
+            vectors = _embed_pages(
+                embedder,
+                chunks,
+                list(pages),
+                on_progress,
+                on_page_progress,
+                cancel_event,
+            )
+        elif on_progress is None and cancel_event is None:
             vectors = embedder.embed([chunk.embed_text for chunk in chunks])
         else:
             # Cancellable path: one embedding per chunk so a cancel request is
@@ -186,7 +245,15 @@ class KnowledgeDocumentService:
                     "heading_path": list(chunk.heading_path),
                     "context_header": chunk.context_header,
                     **(
-                        {"page": chunk.page, "page_label": f"第 {chunk.page} 页"}
+                        {
+                            "page": chunk.page,
+                            "page_label": (
+                                f"第 {chunk.pages[0]}-{chunk.pages[-1]} 页"
+                                if len(chunk.pages) > 1
+                                else f"第 {chunk.page} 页"
+                            ),
+                            "pages": list(chunk.pages),
+                        }
                         if chunk.page is not None
                         else {}
                     ),
@@ -270,8 +337,9 @@ class KnowledgeDocumentService:
                 "text": _hit_text(meta or {}),
                 "metadata": meta or {},
                 # Explicit provenance fields so a client never has to dig into
-                # metadata to show "来自第 N 页".
+                # metadata to show "来自第 N 页" / "第 2-3 页".
                 "page": (meta or {}).get("page"),
+                "pages": (meta or {}).get("pages"),
                 "location": _page_label(meta or {}),
             }
             for doc_id, score, meta in results

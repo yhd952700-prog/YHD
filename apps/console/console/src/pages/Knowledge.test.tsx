@@ -129,17 +129,17 @@ describe('知识中心 · 服务端文档账本', () => {
     expect(listCall).toBeTruthy()
   })
 
-  test('PDF 在本地被拦下，原话包含「不会假装解析」', async () => {
+  test('本地预检拦下不支持的类型，不发上传请求', async () => {
     const { container } = renderPage()
     await waitForDocs()
     const input = container.querySelector('input[type="file"]') as HTMLInputElement
     expect(input).toBeTruthy()
     fireEvent.change(input, {
-      target: { files: [new File(['%PDF'], 'report.pdf', { type: 'application/pdf' })] },
+      target: { files: [new File(['PK'], 'archive.zip', { type: 'application/zip' })] },
     })
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('类型不支持')
-    expect(alert.textContent).toContain('不会假装解析')
+    expect(alert.textContent).toContain('.pdf')
     // 本地预检失败不应该发起上传请求。
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes('/documents/upload')),

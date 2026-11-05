@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import time
 from typing import List
@@ -55,6 +56,35 @@ _LONG_BODY = (
     "# 第一节\n\n" + "段落甲。" * 140 + "\n\n"
     "## 第二节\n\n" + "段落乙。" * 140 + "\n"
 )
+
+
+def _pdf(pages: List[str]) -> bytes:
+    """A real PDF with a text layer on every page (pypdf writer, not byte soup)."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    for text in pages:
+        page = writer.add_blank_page(width=612, height=792)
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        font_ref = writer._add_object(font)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+        )
+        content = DecodedStreamObject()
+        content.set_data(
+            ("BT /F1 24 Tf 72 720 Td (%s) Tj ET" % text).encode("latin-1")
+        )
+        page[NameObject("/Contents")] = writer._add_object(content)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -335,6 +365,125 @@ class TestAsyncIngestJobs:
             client.get("/v1/knowledge/documents", headers=headers).json()["total"]
             == 1
         )
+
+    def test_upload_job_endpoint_accepts_a_file_and_reports_pages(self, client):
+        headers = _headers()
+        submitted = client.post(
+            "/v1/knowledge/documents/upload/jobs",
+            files={
+                "file": (
+                    "manual.pdf",
+                    _pdf(["Page one text.", "Page two text."]),
+                    "application/pdf",
+                )
+            },
+            headers=headers,
+        )
+        assert submitted.status_code == 202, submitted.text
+        queued = submitted.json()
+        assert queued["source"] == "file"
+        assert queued["file_name"] == "manual.pdf"
+
+        from src.knowledge.ingest_jobs import get_ingest_job_manager
+
+        finished = get_ingest_job_manager().wait(queued["job_id"], timeout=10)
+        assert finished["status"] == "succeeded", finished
+        assert finished["total_pages"] == 2
+        assert finished["extracted_pages"] == 2
+        assert finished["embedded_pages"] == 2
+        assert finished["progress_percent"] == 100.0
+        assert finished["result"]["extraction"]["page_count"] == 2
+
+        chunks = client.get(
+            f"/v1/knowledge/documents/{finished['document_id']}/chunks",
+            headers=headers,
+        ).json()["chunks"]
+        assert {chunk["page"] for chunk in chunks} == {1, 2}
+
+
+class TestFileJobProgressAndCancellation:
+    def test_progress_is_counted_in_real_pages_not_a_timer(self):
+        slow = _SlowEmbedder()
+        service = _service(slow)
+        manager = IngestJobManager(service_factory=lambda: service)
+        try:
+            submitted = manager.submit_file(
+                _pdf(["Page one text.", "Page two text.", "Page three text."]),
+                "manual.pdf",
+            )
+            assert slow.started.wait(5), "worker 未开始嵌入"
+            running = manager.get(submitted["job_id"])
+            assert running["status"] == "running"
+            assert running["phase"] == "embedding"
+            # Extraction really parsed all 3 pages; embedding has done none yet.
+            assert running["total_pages"] == 3
+            assert running["extracted_pages"] == 3
+            assert running["embedded_pages"] == 0
+            assert running["progress_percent"] == 50.0
+
+            slow.release.set()
+            finished = manager.wait(submitted["job_id"], timeout=10)
+            assert finished["status"] == "succeeded", finished
+            assert finished["total_pages"] == 3
+            assert finished["embedded_pages"] == 3
+            assert finished["progress_percent"] == 100.0
+            assert service.document_chunks("manual.pdf")["count"] == 3
+        finally:
+            manager.shutdown()
+
+    def test_cancelling_a_file_job_is_a_full_rollback(self):
+        slow = _SlowEmbedder()
+        service = _service(slow)
+        manager = IngestJobManager(service_factory=lambda: service)
+        try:
+            submitted = manager.submit_file(
+                _pdf(["Page one text.", "Page two text.", "Page three text."]),
+                "cancel-manual.pdf",
+            )
+            assert slow.started.wait(5), "worker 未开始嵌入"
+            accepted = manager.cancel(submitted["job_id"])
+            assert accepted["cancel_accepted"] is True
+            slow.release.set()
+
+            finished = manager.wait(submitted["job_id"], timeout=10)
+            assert finished["status"] == "cancelled", finished
+            assert finished["result"]["committed_chunks"] == 0
+            assert "全回滚" in finished["note"]
+            assert finished["extracted_pages"] == 3
+
+            assert service.document_chunks("cancel-manual.pdf")["count"] == 0
+            assert service.list_documents()["total"] == 0
+            store = service._store()
+            assert store._conn.execute(
+                "SELECT COUNT(*) FROM knowledge_document_hashes "
+                "WHERE document_id = ?",
+                ("cancel-manual.pdf",),
+            ).fetchone()[0] == 0
+        finally:
+            manager.shutdown()
+
+    def test_garbled_file_job_fails_with_quality_and_can_be_resubmitted(self):
+        service = _service()
+        manager = IngestJobManager(service_factory=lambda: service)
+        garbled = ("正常文本。" * 5 + "\ufffd" * 40).encode("utf-8")
+        try:
+            refused = manager.submit_file(garbled, "broken.txt")
+            finished = manager.wait(refused["job_id"], timeout=10)
+            assert finished["status"] == "failed", finished
+            assert finished["error_code"] == "low_quality_extraction"
+            assert finished["quality"]["low_quality"] is True
+            assert "allow_low_quality=true" in finished["note"]
+            assert service.list_documents()["total"] == 0
+
+            allowed = manager.submit_file(
+                garbled, "broken.txt", allow_low_quality=True
+            )
+            retried = manager.wait(allowed["job_id"], timeout=10)
+            assert retried["status"] == "succeeded", retried
+            assert retried["quality"]["low_quality"] is True
+            assert service.list_documents()["total"] == 1
+        finally:
+            manager.shutdown()
 
 
 class TestJobCancellation:

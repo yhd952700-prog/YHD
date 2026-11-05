@@ -9,6 +9,7 @@ failure modes honest instead of asserting on hand-written byte soup.
 from __future__ import annotations
 
 import io
+import threading
 from typing import List, Tuple
 
 import pytest
@@ -21,12 +22,15 @@ from src.knowledge.extractors import (
     CorruptedDocument,
     EncryptedPdfError,
     EmptyDocument,
+    ExtractionCancelled,
     ExtractionLimits,
     FileTooLarge,
+    LowQualityText,
     SCANNED_PDF_MESSAGE,
     ScannedPdfError,
     TooManyPages,
     UnsupportedFileType,
+    assess_text_quality,
     extract_document,
 )
 
@@ -226,6 +230,63 @@ class TestPlainTextAndSuffix:
         assert raised.value.http_status == 415
 
 
+class TestTextQualityGate:
+    """Garbled text layers must be surfaced, never silently indexed."""
+
+    _GARBLED = "正常文本。" * 5 + "\ufffd" * 40
+
+    def test_quality_measurement_counts_replacement_glyphs(self):
+        quality = assess_text_quality(self._GARBLED)
+        assert quality.garbled_chars == 40
+        assert quality.low_quality is True
+
+    def test_low_quality_text_is_refused_with_the_user_facing_reason(self):
+        with pytest.raises(LowQualityText) as caught:
+            extract_document(self._GARBLED.encode("utf-8"), "broken.txt")
+        assert caught.value.http_status == 422
+        assert caught.value.code == "low_quality_extraction"
+        assert "该文件可能是扫描件或字体嵌入异常，提取质量差" in str(caught.value)
+        assert caught.value.quality.garbled_chars == 40
+
+    def test_allow_low_quality_is_the_explicit_opt_in(self):
+        extracted = extract_document(
+            self._GARBLED.encode("utf-8"), "broken.txt", allow_low_quality=True
+        )
+        assert extracted.quality is not None
+        assert extracted.quality.low_quality is True
+        assert extracted.text == self._GARBLED
+
+    def test_ordinary_text_with_a_few_bad_glyphs_is_accepted(self):
+        extracted = extract_document(
+            ("正常文本。" * 100 + "\ufffd").encode("utf-8"), "ok.txt"
+        )
+        assert extracted.quality is not None
+        assert extracted.quality.low_quality is False
+
+    def test_pdf_page_progress_is_reported_per_real_page(self):
+        calls: List[Tuple[int, int]] = []
+        extracted = extract_document(
+            pdf_with_text(["Page one text.", "Page two text.", "Page three text."]),
+            "three.pdf",
+            on_page=lambda processed, total: calls.append((processed, total)),
+        )
+        assert calls == [(1, 3), (2, 3), (3, 3)]
+        assert extracted.page_count == 3
+
+    def test_cancelled_extraction_reports_pages_read_and_writes_nothing(self):
+        cancel = threading.Event()
+        cancel.set()
+        with pytest.raises(ExtractionCancelled) as caught:
+            extract_document(
+                pdf_with_text(["Page one.", "Page two."]),
+                "two.pdf",
+                cancel_event=cancel,
+            )
+        assert caught.value.processed == 0
+        assert caught.value.total == 2
+        assert "未写入任何数据" in str(caught.value)
+
+
 class TestPagedChunking:
     def test_every_chunk_keeps_its_page_number(self):
         pages: List[Tuple[int, str]] = [
@@ -237,6 +298,39 @@ class TestPagedChunking:
         assert any(chunk.page == 1 and "甲" in chunk.text for chunk in chunks)
         assert any(chunk.page == 2 and "乙" in chunk.text for chunk in chunks)
         assert [chunk.index for chunk in chunks] == list(range(len(chunks)))
+
+    def test_sentence_spanning_a_page_break_stays_in_one_chunk(self):
+        pages: List[Tuple[int, str]] = [
+            (1, "Alpha setup starts here and"),
+            (2, "continues on the next page."),
+        ]
+        chunks = chunk_paged_document(pages)
+        assert len(chunks) == 1
+        assert chunks[0].text == (
+            "Alpha setup starts here and\n\ncontinues on the next page."
+        )
+        # ``page`` is the start page; ``pages`` records the whole span.
+        assert chunks[0].page == 1
+        assert chunks[0].pages == (1, 2)
+
+    def test_page_ending_with_sentence_punctuation_is_not_merged(self):
+        pages: List[Tuple[int, str]] = [
+            (1, "第一页到这里结束。"),
+            (2, "第二页从新句子开始。"),
+        ]
+        chunks = chunk_paged_document(pages)
+        assert [chunk.page for chunk in chunks] == [1, 2]
+        assert [chunk.pages for chunk in chunks] == [(1,), (2,)]
+
+    def test_table_at_the_page_tail_is_never_merged(self):
+        pages: List[Tuple[int, str]] = [
+            (1, "| 键 | 值 |\n| token | abc |"),
+            (2, "下一页正文。"),
+        ]
+        chunks = chunk_paged_document(pages)
+        assert chunks[0].text.startswith("| 键")
+        assert chunks[0].pages == (1,)
+        assert chunks[1].pages == (2,)
 
 
 class TestServicePageMetadata:
@@ -269,6 +363,34 @@ class TestServicePageMetadata:
         assert hit["location"] == "第 1 页"
         assert hit["metadata"]["page_label"] == "第 1 页"
         assert hit["text"].startswith("[第 1 页]")
+
+    def test_cross_page_sentence_is_readable_from_a_single_hit(self):
+        service = self._service()
+        pages = [
+            (1, "The backup policy is described on the"),
+            (2, "next page: run it every night at 02:00."),
+        ]
+        service.ingest(
+            "\n\n".join(page_text for _, page_text in pages),
+            doc_id="cross-page",
+            metadata={"source": "policy.pdf", "file_type": "pdf", "page_count": 2},
+            pages=pages,
+        )
+        chunks = service.document_chunks("cross-page")["chunks"]
+        assert len(chunks) == 1
+        assert chunks[0]["page"] == 1
+        assert chunks[0]["pages"] == [1, 2]
+        assert chunks[0]["page_label"] == "第 1-2 页"
+
+        result = service.search("backup policy every night", top_k=5)
+        assert result["hits"], result["retrieval"]
+        hit = result["hits"][0]
+        # One hit carries the *whole* sentence, not just the first half.
+        assert "described on the" in hit["text"]
+        assert "run it every night at 02:00" in hit["text"]
+        assert hit["page"] == 1
+        assert hit["pages"] == [1, 2]
+        assert hit["location"] == "第 1-2 页"
 
     def test_same_pdf_under_a_different_filename_is_deduplicated(self):
         service = self._service()
@@ -363,7 +485,10 @@ class TestUploadHttp:
                 "file": (
                     "manual.pdf",
                     pdf_with_text(
-                        ["LAN Alpha installation", "LAN Beta backup"]
+                        [
+                            "LAN Alpha installation is complete.",
+                            "LAN Beta backup runs nightly.",
+                        ]
                     ),
                     "application/pdf",
                 )
@@ -479,6 +604,69 @@ class TestUploadHttp:
         assert response.status_code == 413
         detail = response.json()["detail"]
         assert "2 页" in detail and "最多 1 页" in detail
+
+    def test_pdf_upload_keeps_cross_page_sentence_in_one_chunk(self, client):
+        headers = _headers()
+        data = pdf_with_text(
+            [
+                "The backup policy is described on the",
+                "next page: run it every night at 02:00.",
+            ]
+        )
+        uploaded = client.post(
+            "/v1/knowledge/documents/upload",
+            files={"file": ("policy.pdf", data, "application/pdf")},
+            headers=headers,
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        document_id = uploaded.json()["document_id"]
+
+        chunks = client.get(
+            f"/v1/knowledge/documents/{document_id}/chunks", headers=headers
+        ).json()["chunks"]
+        assert len(chunks) == 1
+        assert chunks[0]["page"] == 1
+        assert chunks[0]["pages"] == [1, 2]
+        assert "02:00" in chunks[0]["text"]
+
+        searched = client.post(
+            "/v1/knowledge/search",
+            json={"query": "backup policy every night", "top_k": 5},
+            headers=headers,
+        )
+        assert searched.status_code == 200, searched.text
+        hits = searched.json()["hits"]
+        assert hits, searched.json()["retrieval"]
+        hit = hits[0]
+        assert hit["location"] == "第 1-2 页"
+        assert "described on the" in hit["text"]
+        assert "run it every night at 02:00" in hit["text"]
+
+    def test_garbled_upload_is_refused_until_the_user_opts_in(self, client):
+        headers = _headers()
+        data = ("正常文本。" * 5 + "\ufffd" * 40).encode("utf-8")
+
+        refused = client.post(
+            "/v1/knowledge/documents/upload",
+            files={"file": ("broken.txt", data, "text/plain")},
+            headers=headers,
+        )
+        assert refused.status_code == 422, refused.text
+        assert "该文件可能是扫描件或字体嵌入异常，提取质量差" in (
+            refused.json()["detail"]
+        )
+        assert client.get(
+            "/v1/knowledge/documents", headers=headers
+        ).json()["total"] == 0
+
+        allowed = client.post(
+            "/v1/knowledge/documents/upload",
+            files={"file": ("broken.txt", data, "text/plain")},
+            data={"allow_low_quality": "true"},
+            headers=headers,
+        )
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["extraction"]["quality"]["low_quality"] is True
 
     def test_unsupported_file_type_is_still_refused(self, client):
         response = client.post(

@@ -112,30 +112,43 @@ describe('文档列表请求参数', () => {
 })
 
 describe('上传预检与失败话术', () => {
-  test('PDF 必须原样说出「不会假装解析」，且标题是类型不支持', () => {
-    const failure = validateUploadFile({ name: 'report.pdf', size: 10 })
+  test('PDF / Word / 网页 / 纯文本都放行（真解析，不假装）', () => {
+    expect(validateUploadFile({ name: 'report.pdf', size: 10 })).toBeNull()
+    expect(validateUploadFile({ name: 'slides.docx', size: 10 })).toBeNull()
+    expect(validateUploadFile({ name: 'page.html', size: 10 })).toBeNull()
+    expect(validateUploadFile({ name: 'page.htm', size: 10 })).toBeNull()
+    expect(validateUploadFile({ name: 'notes.txt', size: 10 })).toBeNull()
+    expect(validateUploadFile({ name: 'notes.md', size: 10 })).toBeNull()
+  })
+
+  test('真正不支持的类型才在本地拦下，并列出支持范围', () => {
+    const failure = validateUploadFile({ name: 'archive.zip', size: 10 })
     expect(failure?.kind).toBe('unsupported-type')
     expect(failure?.title).toBe('类型不支持')
-    expect(failure?.message).toContain('不会假装解析')
-    expect(failure?.message).toContain('.txt')
+    expect(failure?.message).toContain('.pdf')
+    expect(failure?.message).toContain('.docx')
   })
 
-  test('其它二进制 / 富文本类型也不假装解析', () => {
-    const failure = validateUploadFile({ name: 'slides.docx', size: 10 })
-    expect(failure?.kind).toBe('unsupported-type')
-    expect(failure?.message).toContain('不会假装解析')
-  })
-
-  test('.md / .txt 放行，超过 5MB 与空文件在本地就拦下', () => {
-    expect(validateUploadFile({ name: 'a.md', size: 100 })).toBeNull()
-    expect(validateUploadFile({ name: 'a.txt', size: 100 })).toBeNull()
-
-    const tooBig = validateUploadFile({ name: 'a.txt', size: UPLOAD_MAX_BYTES + 1 })
+  test('超过 20MB 与空文件在本地就拦下', () => {
+    const tooBig = validateUploadFile({ name: 'a.pdf', size: UPLOAD_MAX_BYTES + 1 })
     expect(tooBig?.kind).toBe('too-large')
     expect(tooBig?.title).toBe('文件太大')
-    expect(tooBig?.message).toContain('5MB')
+    expect(tooBig?.message).toContain('20.0 MB')
 
     expect(validateUploadFile({ name: 'a.txt', size: 0 })?.kind).toBe('empty')
+  })
+
+  test('提取质量差的 422 有单独话术，保留服务端原话', () => {
+    const failure = classifyUploadFailure(
+      new ApiError(
+        422,
+        '该文件可能是扫描件或字体嵌入异常，提取质量差（乱码 40 字符，占比 61.5%）；如确认仍需入库，请重试并设置 allow_low_quality=true',
+      ),
+      { name: 'broken.txt', size: 100 },
+    )
+    expect(failure.kind).toBe('low-quality')
+    expect(failure.title).toBe('提取质量差')
+    expect(failure.message).toContain('allow_low_quality=true')
   })
 
   test('四类失败给四套不同的话术', () => {

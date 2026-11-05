@@ -20,6 +20,10 @@
 | `POST` | `/v1/knowledge/rag` | RAG 查询 |
 | `POST` | `/v1/knowledge/bases/{id}/import-url` | 从 URL 导入 |
 | `POST` | `/v1/knowledge/bases/{id}/reindex` | 重建索引 |
+| `POST` | `/v1/knowledge/documents/upload` | 上传文件（同步，小文件） |
+| `POST` | `/v1/knowledge/documents/upload/jobs` | 上传文件（异步，大文件，按页进度/可取消） |
+| `GET` | `/v1/knowledge/ingest/jobs/{job_id}` | 查询异步入库任务进度 |
+| `POST` | `/v1/knowledge/ingest/jobs/{job_id}/cancel` | 取消异步入库（全回滚） |
 
 ---
 
@@ -85,13 +89,17 @@ Authorization: Bearer <human token, scope L0 或 admin>
 |------|------|------|------|
 | `file` | file | 是 | 文件本体 |
 | `doc_id` | string | 否 | 文档 id；缺省用文件名 |
+| `allow_low_quality` | bool | 否 | 默认 `false`；仅当用户确认“乱码也要入库”时传 `true`，见下文质量闸 |
+
+> 本接口是**同步**的：从提取到嵌入全部完成后才返回，适合小文件。大文件（例如
+> 300 页 PDF）请走下面的异步任务接口，否则用户只能干等、看不到进度也无法取消。
 
 支持的文件格式（**真实解析，不支持的类型会明确拒绝**）：
 
 | 后缀 | 解析方式 | 说明 |
 |------|----------|------|
 | `.txt` / `.md` | UTF-8 解码 | Markdown 标题层级进入 `heading_path` |
-| `.pdf` | pypdf 文本层 | 逐页提取；每个 chunk 带 `page`（1 起） |
+| `.pdf` | pypdf 文本层 | 逐页提取；每个 chunk 带 `page`（1 起），跨页时带 `pages` 范围 |
 | `.docx` | python-docx | 正文、表格；`Heading 1..6` 层级进入 `heading_path` |
 | `.html` / `.htm` | 标准库 `html.parser` | `h1..h6` 层级、脚本/样式内容丢弃 |
 
@@ -119,10 +127,43 @@ Authorization: Bearer <human token, scope L0 或 admin>
     "page_count": 12,
     "text_chars": 18342,
     "title": null,
-    "paged": true
+    "paged": true,
+    "quality": {
+      "garbled_chars": 0,
+      "total_chars": 18342,
+      "garbled_ratio": 0.0,
+      "low_quality": false
+    }
   }
 }
 ```
+
+### 跨页段落规则（PDF）
+
+PDF 会按页提取，但**一段话不会被页边界切成两个 chunk**：
+
+1. 每页先独立分块，页码保持精确；
+2. 如果某一页的**最后一个 chunk 结尾不是句末标点**（`。！？.!?…`，可容忍后置引号/
+   括号），就把下一页开头的第一个 chunk 追加进来，补全整句；
+3. 合并后 `page` 记为**起始页**，`pages` 记录跨页范围，例如 `[2, 3]`，
+   `page_label` / `location` 显示为 `第 2-3 页`；
+4. 表格与代码块不参与合并（宁可保持整块）；合并上限为 `2 * chunk_size`
+   字符，防止无标点的超长 PDF 产生一个巨大的 embedding 输入。
+
+效果：检索命中“前半句”时，返回的 `text` 已经包含后半句，模型不会拿到半句话。
+
+### 提取质量闸（乱码检测）
+
+提取正文后会统计替换符 `\ufffd`、方块字符 `□■` 与私用区字符的比例。若同时满足
+“乱码字符 ≥ 20”且“乱码占比 ≥ 15%”，默认**拒绝入库**并返回：
+
+| 情况 | 状态码 | `detail` |
+|------|--------|----------|
+| 乱码比例过高（字体缺字 / 扫描件） | 422 | `该文件可能是扫描件或字体嵌入异常，提取质量差（乱码 N 字符，占比 x%）；如确认仍需入库，请重试并设置 allow_low_quality=true` |
+
+这是**让用户自己决定**，而不是悄悄把劣质语料存进知识库。用户确认后可用同名文件
+加 `allow_low_quality=true` 重新上传；响应里 `extraction.quality.low_quality`
+会保留为 `true`，便于前端/审计看到这份文档的质量标记。少量乱码（低于阈值）正常入库。
 
 ### 去重语义
 
@@ -151,6 +192,86 @@ Authorization: Bearer <human token, scope L0 或 admin>
 HTML 走标准库，不新增依赖。选型理由见
 [`src/knowledge/extractors.py`](../../../src/knowledge/extractors.py) 模块文档与
 `oss-registry.yaml` 的 `document-parsing` 段。
+
+---
+
+## 异步上传任务（大文件）
+
+大文件不要在同步接口里干等。异步接口立即返回 `202` 和 `job_id`，提取与嵌入在
+后台 worker 里执行，进度是**真实按页计数**，不是定时器假进度。
+
+```
+POST /v1/knowledge/documents/upload/jobs
+Content-Type: multipart/form-data
+Authorization: Bearer <human token, scope L0 或 admin>
+```
+
+表单字段与同步上传一致：`file`（必填）、`doc_id`（可选）、
+`allow_low_quality`（可选，默认 `false`）。
+
+### 响应（202 Accepted）
+
+```json
+{
+  "job_id": "3f2a9c...",
+  "document_id": "product_manual.pdf",
+  "source": "file",
+  "file_name": "product_manual.pdf",
+  "status": "queued",
+  "phase": "queued",
+  "total_pages": 0,
+  "extracted_pages": 0,
+  "embedded_pages": 0,
+  "processed_pages": 0,
+  "progress_percent": 0.0,
+  "partial_commit_policy": "all-or-nothing（取消后不写入任何分块，不会留下半成品）",
+  "note": null
+}
+```
+
+### 查询进度
+
+```
+GET /v1/knowledge/ingest/jobs/{job_id}
+```
+
+关键字段：
+
+| 字段 | 说明 |
+|------|------|
+| `phase` | `queued` → `extracting` → `embedding` → `committing` → `done` / `cancelled` / `failed` |
+| `total_pages` | 该文件的总页数（PDF 在解析页目录后即确定；空页也计入） |
+| `extracted_pages` | 已真正解析完的页数 |
+| `embedded_pages` | 已完成嵌入的页数 |
+| `processed_pages` | 上面两者之和 |
+| `progress_percent` | 由“已处理页数 / (2 × 总页数)”计算；未真正成功前最高 99.0，`succeeded` 才给 100 |
+| `quality` | 提取质量统计（乱码字符数 / 占比 / 是否低质量） |
+| `error_code` | 失败时的稳定错误码，如 `pdf_no_text_layer` / `low_quality_extraction` |
+
+DOCX / HTML / TXT 没有页的概念：`total_pages` 为 `0`，进度回退为分块计数
+（`total_chunks` / `processed_chunks`），仍然不是假百分比。
+
+### 取消
+
+```
+POST /v1/knowledge/ingest/jobs/{job_id}/cancel
+```
+
+* 提取阶段：在**下一页边界**生效（290/300 页取消，只读到第 290 页就停）；
+* 嵌入阶段：在当前页/分块边界生效；
+* **取消 = 全回滚**：向量在写入前全部算完，写入是一次事务替换。取消后
+  `result.committed_chunks = 0`，知识库中不会留下该文档的任何分块、向量、
+  FTS 行或内容哈希行；`note` 会写明“未写入任何数据/分块（全回滚）”。
+* 任务已结束才取消：返回 `cancel_accepted: false`，不会误报成功。
+
+### 任务失败不占 HTTP 状态码
+
+扫描版 PDF、加密/损坏文件、乱码比例过高、嵌入服务不可用等，都体现在任务上：
+`status = "failed"`、`error_code`、可读的 `error` 文案。乱码场景还会带上
+`quality`，用户查看后可以用 `allow_low_quality=true` 重新提交。
+
+> 任务记录保存在进程内存中：进程重启会丢失未完成任务的状态（已入库的数据本身
+> 是持久的）。已完成任务保留供查询，但不会被恢复。
 
 ---
 
@@ -203,6 +324,7 @@ Content-Type: application/json
       "score": 0.0107,
       "text": "[第 3 页 / 3.2 API 认证]\nAPI 认证配置步骤如下：1. 进入管理后台...",
       "page": 3,
+      "pages": [3],
       "location": "第 3 页",
       "metadata": {
         "document_id": "doc-def456",

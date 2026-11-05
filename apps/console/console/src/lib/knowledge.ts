@@ -8,10 +8,11 @@
  *   GET    /v1/knowledge/documents?limit&offset      服务端文档账本（分页）
  *   GET    /v1/knowledge/documents/{id}/chunks       按文档读**全部**分块（带序号 + 标题路径）
  *   DELETE /v1/knowledge/documents/{id}              整篇删除（管理员权限，chunks + 向量 + 哈希一起删）
- *   POST   /v1/knowledge/documents/upload            multipart 上传（仅 .txt/.md、UTF-8、≤5MB）
- *   POST   /v1/knowledge/ingest/jobs                 异步入库（202，返回 job id）
+ *   POST   /v1/knowledge/documents/upload            multipart 上传（PDF/DOCX/HTML/TXT/MD，≤20MB）
+ *   POST   /v1/knowledge/documents/upload/jobs       异步收文件（大文件：按页进度 + 可取消 + 全回滚）
+ *   POST   /v1/knowledge/ingest/jobs                 异步纯文本入库（202，返回 job id）
  *   GET    /v1/knowledge/ingest/jobs/{job_id}        任务快照（进度 / 阶段 / 结果）
- *   POST   /v1/knowledge/ingest/jobs/{job_id}/cancel 请求取消（下一个分块边界生效，全回滚）
+ *   POST   /v1/knowledge/ingest/jobs/{job_id}/cancel 请求取消（下一个页/分块边界生效，全回滚）
  *
  * 三条必须守住的诚实边界：
  *   1. 文档列表是**服务端真相**，不再是本机 localStorage 记录；
@@ -34,9 +35,11 @@ export const DOC_PAGE_SIZE = 20
 /** 分块预览默认每页条数：几千条分块一次进 DOM 会卡死，必须分页渲染。 */
 export const CHUNK_PAGE_SIZE = 20
 /** 上传大小上限，与后端 `_MAX_UPLOAD_BYTES` 一致。 */
-export const UPLOAD_MAX_BYTES = 5 * 1024 * 1024
-/** 允许上传的后缀，与后端 `_ALLOWED_UPLOAD_SUFFIXES` 一致。 */
-export const UPLOAD_SUFFIXES = ['.txt', '.md'] as const
+export const UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+/** 超过这个大小走异步文件任务：小文件同步快进快出，大文件要进度和取消。 */
+export const SYNC_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+/** 允许上传的后缀，与后端 `SUPPORTED_SUFFIXES` 一致。 */
+export const UPLOAD_SUFFIXES = ['.pdf', '.docx', '.html', '.htm', '.txt', '.md'] as const
 export const UPLOAD_ACCEPT = UPLOAD_SUFFIXES.join(',')
 /** 上传 + 同步入库可能很慢，超时必须比普通请求宽。 */
 const UPLOAD_TIMEOUT_MS = 180_000
@@ -301,6 +304,7 @@ export type UploadFailureKind =
   | 'too-large'
   | 'empty'
   | 'bad-encoding'
+  | 'low-quality'
   | 'unauthorized'
   | 'forbidden'
   | 'unavailable'
@@ -327,21 +331,21 @@ export function fileSuffix(name: string): string {
 export function validateUploadFile(file: { name: string; size: number }): UploadFailure | null {
   const suffix = fileSuffix(file.name)
   if (!UPLOAD_SUFFIXES.includes(suffix as (typeof UPLOAD_SUFFIXES)[number])) {
-    const reason =
-      suffix === '.pdf'
-        ? 'PDF 等二进制格式需要专用解析器，本服务未接入，不会假装解析'
-        : '本服务没有二进制 / 富文本解析器，不会假装解析'
     return {
       kind: 'unsupported-type',
       title: '类型不支持',
-      message: `不支持的文件类型：${suffix || '未知后缀'}。${reason}；请上传 .txt 或 .md 文件。`,
+      message: `不支持的文件类型：${
+        suffix || '未知后缀'
+      }。支持 ${UPLOAD_SUFFIXES.join(' / ')}；自扫描 PDF 与加密文件会另外单独报错。`,
     }
   }
   if (file.size > UPLOAD_MAX_BYTES) {
     return {
       kind: 'too-large',
       title: '文件太大',
-      message: `文件过大（上限 5MB）：当前 ${formatBytes(file.size)}。请拆分后再上传。`,
+      message: `文件过大（上限 ${formatBytes(UPLOAD_MAX_BYTES)}）：当前 ${formatBytes(
+        file.size,
+      )}。请压缩或拆分后再上传。`,
     }
   }
   if (file.size === 0) {
@@ -367,17 +371,32 @@ export function classifyUploadFailure(
   const suffix = fileSuffix(file.name)
 
   if (status === 415) {
-    const fallback =
-      suffix === '.pdf'
-        ? '不支持的文件类型：.pdf。PDF 等二进制格式需要专用解析器，本服务未接入，不会假装解析；请上传 .txt 或 .md 文件。'
-        : `不支持的文件类型：${suffix || '未知后缀'}。本服务没有二进制 / 富文本解析器，不会假装解析；请上传 .txt 或 .md 文件。`
-    return { kind: 'unsupported-type', title: '类型不支持', message: detail || fallback }
+    return {
+      kind: 'unsupported-type',
+      title: '类型不支持',
+      message:
+        detail ||
+        `不支持的文件类型：${
+          suffix || '未知后缀'
+        }。支持 ${UPLOAD_SUFFIXES.join(' / ')}，不会假装解析。`,
+    }
+  }
+  if (status === 422 && detail.includes('提取质量差')) {
+    return {
+      kind: 'low-quality',
+      title: '提取质量差',
+      message: detail,
+    }
   }
   if (status === 413) {
     return {
       kind: 'too-large',
       title: '文件太大',
-      message: detail || `文件过大（上限 5MB）：当前 ${formatBytes(file.size)}，请拆分后再上传。`,
+      message:
+        detail ||
+        `文件过大（上限 ${formatBytes(UPLOAD_MAX_BYTES)}）：当前 ${formatBytes(
+          file.size,
+        )}，请压缩或拆分后再上传。`,
     }
   }
   if (status === 400) {
@@ -454,6 +473,8 @@ export function uploadKnowledgeDocument(
   file: File,
   options: {
     docId?: string
+    /** 用户确认“乱码也要入库”时才传 true，服务端才会放行低质量文本。 */
+    allowLowQuality?: boolean
     signal?: AbortSignal
     onProgress?: (loaded: number, total: number) => void
   } = {},
@@ -526,6 +547,7 @@ export function uploadKnowledgeDocument(
     form.append('file', file, file.name)
     const docId = options.docId?.trim()
     if (docId) form.append('doc_id', docId)
+    if (options.allowLowQuality) form.append('allow_low_quality', 'true')
     xhr.send(form)
   })
 }
@@ -541,17 +563,42 @@ export interface IngestJobResult {
   deduplicated?: boolean
   matched_document_id?: string | null
   committed_chunks?: number
+  extraction?: {
+    file_type?: string
+    page_count?: number
+    text_chars?: number
+    paged?: boolean
+    quality?: IngestQuality | null
+  }
+}
+
+export interface IngestQuality {
+  garbled_chars: number
+  total_chars: number
+  garbled_ratio: number
+  low_quality: boolean
 }
 
 export interface IngestJob {
   jobId: string
   documentId: string
+  /** `text`（粘贴文本）或 `file`（上传文件）。 */
+  source: string
+  fileName: string | null
+  fileType: string | null
   /** 原样保留服务端状态串：新增状态不会被误标成"完成"。 */
   status: string
   phase: string
   totalChunks: number
   processedChunks: number
+  /** 文件任务才有页数；纯文本任务为 0。 */
+  totalPages: number
+  extractedPages: number
+  embeddedPages: number
+  processedPages: number
   progressPercent: number
+  quality: IngestQuality | null
+  errorCode: string | null
   cancelRequested: boolean
   createdAt: string | null
   startedAt: string | null
@@ -580,6 +627,7 @@ export function jobStatusLabel(status: string): string {
 
 const PHASE_LABELS: Record<string, string> = {
   queued: '排队',
+  extracting: '解析文件',
   embedding: '向量化',
   committing: '写入分块',
   done: '完成',
@@ -591,17 +639,40 @@ export function jobPhaseLabel(phase: string): string {
   return PHASE_LABELS[phase] ?? phase
 }
 
+function asQuality(raw: unknown): IngestQuality | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Record<string, unknown>
+  const garbledChars = Number(row.garbled_chars)
+  const totalChars = Number(row.total_chars)
+  const ratio = Number(row.garbled_ratio)
+  return {
+    garbled_chars: Number.isFinite(garbledChars) ? garbledChars : 0,
+    total_chars: Number.isFinite(totalChars) ? totalChars : 0,
+    garbled_ratio: Number.isFinite(ratio) ? ratio : 0,
+    low_quality: row.low_quality === true,
+  }
+}
+
 export function toIngestJob(raw: unknown): IngestJob {
   const row = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   const percent = Number(row.progress_percent)
   return {
     jobId: String(row.job_id ?? ''),
     documentId: String(row.document_id ?? ''),
+    source: String(row.source ?? 'text'),
+    fileName: asText(row.file_name),
+    fileType: asText(row.file_type),
     status: String(row.status ?? ''),
     phase: String(row.phase ?? ''),
     totalChunks: asCount(row.total_chunks),
     processedChunks: asCount(row.processed_chunks),
+    totalPages: asCount(row.total_pages),
+    extractedPages: asCount(row.extracted_pages),
+    embeddedPages: asCount(row.embedded_pages),
+    processedPages: asCount(row.processed_pages),
     progressPercent: Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0,
+    quality: asQuality(row.quality),
+    errorCode: asText(row.error_code),
     cancelRequested: row.cancel_requested === true,
     createdAt: asText(row.created_at),
     startedAt: asText(row.started_at),
@@ -614,6 +685,28 @@ export function toIngestJob(raw: unknown): IngestJob {
     note: asText(row.note),
     partialCommitPolicy: asText(row.partial_commit_policy),
   }
+}
+
+/** 大文件：立刻拿到 job id，进度按服务端解析/嵌入的真实页数推进。 */
+export async function submitFileIngestJob(
+  file: File,
+  options: {
+    docId?: string
+    allowLowQuality?: boolean
+    signal?: AbortSignal
+  } = {},
+): Promise<IngestJob> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const docId = options.docId?.trim()
+  if (docId) form.append('doc_id', docId)
+  if (options.allowLowQuality) form.append('allow_low_quality', 'true')
+  const raw = await apiFetch<unknown>('/v1/knowledge/documents/upload/jobs', {
+    method: 'POST',
+    body: form,
+    signal: options.signal,
+  })
+  return toIngestJob(raw)
 }
 
 export async function submitIngestJob(

@@ -3,7 +3,8 @@
  *
  * 这一页现在做六件事，每一件都对应一个真实端点：
  *   1. 状态：`GET /v1/knowledge/status`（可用性、provider、向量总数）；
- *   2. 上传：`POST /v1/knowledge/documents/upload`（multipart，只收 .txt/.md）；
+ *   2. 上传：`POST /v1/knowledge/documents/upload`（multipart，PDF/DOCX/HTML/TXT/MD）；
+ *      大文件走 `POST /documents/upload/jobs`（按页进度 + 可取消 + 全回滚）；
  *   3. 文本入库：同步 `POST /documents` 或异步 `POST /ingest/jobs`（进度 + 取消）；
  *   4. 文档列表：`GET /documents?limit&offset`（服务端分页账本，不再是本机记录）；
  *   5. 分块预览：`GET /documents/{id}/chunks`（完整切分，带序号与标题路径，分页渲染）；
@@ -42,7 +43,9 @@ import {
   scoreNote,
   searchKnowledge,
   sortChunks,
+  submitFileIngestJob,
   submitIngestJob,
+  SYNC_UPLOAD_MAX_BYTES,
   UPLOAD_ACCEPT,
   UPLOAD_MAX_BYTES,
   uploadKnowledgeDocument,
@@ -115,6 +118,9 @@ export function Knowledge({
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [dragging, setDragging] = useState(false)
   const uploadRef = useRef<AbortController | null>(null)
+  /** 提取质量差被拦下的文件：保留 File 引用，用户确认后原样重试。 */
+  const [lowQualityFile, setLowQualityFile] = useState<File | null>(null)
+  const jobFileRef = useRef<File | null>(null)
 
   // ── 文本入库（同步 + 异步任务） ───────────────────────────────
   const [text, setText] = useState('')
@@ -170,9 +176,10 @@ export function Knowledge({
 
   // ── 上传文件 ─────────────────────────────────────────────────
   const startUpload = useCallback(
-    (file: File) => {
+    (file: File, allowLowQuality = false) => {
       setActionError(null)
       setNotice(null)
+      setLowQualityFile(null)
       setUploading(true)
       setUploadProgress({ loaded: 0, total: file.size })
       const controller = new AbortController()
@@ -182,6 +189,7 @@ export function Knowledge({
         try {
           const result = await uploadKnowledgeDocument(file, {
             docId,
+            allowLowQuality,
             signal: controller.signal,
             onProgress: (loaded, progressTotal) =>
               setUploadProgress({ loaded, total: progressTotal }),
@@ -210,7 +218,10 @@ export function Knowledge({
             status.reload()
             documents.reload()
           } else {
-            setActionError(classifyUploadFailure(err, file))
+            const failure = classifyUploadFailure(err, file)
+            setActionError(failure)
+            // 低质量不是错误终点：把文件留着，用户可确认后加 allow_low_quality 重试。
+            if (failure.kind === 'low-quality') setLowQualityFile(file)
           }
         } finally {
           uploadRef.current = null
@@ -222,18 +233,68 @@ export function Knowledge({
     [docId, documents.reload, status.reload],
   )
 
+  /** 大文件走异步文件任务：立刻返回 job id，进度按真实页数推进且可取消。 */
+  const startFileJob = useCallback(
+    (file: File, allowLowQuality = false) => {
+      setActionError(null)
+      setNotice(null)
+      setJobError(null)
+      setLowQualityFile(null)
+      setJobSubmitting(true)
+      jobFileRef.current = file
+      const controller = new AbortController()
+      uploadRef.current = controller
+
+      void (async () => {
+        try {
+          const snapshot = await submitFileIngestJob(file, {
+            docId,
+            allowLowQuality,
+            signal: controller.signal,
+          })
+          setJob(snapshot)
+        } catch (err) {
+          setJobError(
+            isAbortError(err)
+              ? '已取消提交：任务尚未创建。'
+              : classifyUploadFailure(err, file).message,
+          )
+        } finally {
+          uploadRef.current = null
+          setJobSubmitting(false)
+        }
+      })()
+    },
+    [docId],
+  )
+
+  /** 用户确认“乱码也要入库”后，用同一个文件重试（同步/异步取决于大小）。 */
+  const retryLowQuality = useCallback(() => {
+    if (!lowQualityFile) return
+    if (lowQualityFile.size > SYNC_UPLOAD_MAX_BYTES) {
+      startFileJob(lowQualityFile, true)
+    } else {
+      startUpload(lowQualityFile, true)
+    }
+  }, [lowQualityFile, startFileJob, startUpload])
+
   const acceptFile = useCallback(
     (file: File) => {
       setDragging(false)
       const local = validateUploadFile(file)
       if (local) {
         setNotice(null)
+        setLowQualityFile(null)
         setActionError({ title: local.title, message: local.message })
         return
       }
-      startUpload(file)
+      if (file.size > SYNC_UPLOAD_MAX_BYTES) {
+        startFileJob(file)
+      } else {
+        startUpload(file)
+      }
     },
-    [startUpload],
+    [startFileJob, startUpload],
   )
 
   const onDrop = useCallback(
@@ -405,7 +466,12 @@ export function Knowledge({
       setJobError(null)
     } else if (job.status === 'failed') {
       setJobError(job.error ?? '任务失败（服务端未给出原因）')
+      // 乱码被拦住不是死路：保留文件，界面给出“确认继续入库”的重试按钮。
+      if (job.errorCode === 'low_quality_extraction' && jobFileRef.current) {
+        setLowQualityFile(jobFileRef.current)
+      }
     }
+    if (job.status === 'succeeded') jobFileRef.current = null
   }, [documents.reload, job, status.reload])
 
   const cancelJob = useCallback(() => {
@@ -609,7 +675,7 @@ export function Knowledge({
 
       <Card
         title="导入文档"
-        sub="上传 .txt / .md（multipart），或粘贴文本（同步 / 后台任务）"
+        sub="上传 PDF / Word / 网页 / 纯文本；大文件自动走后台任务（按页进度、可取消）"
         span={8}
         action={
           <button
@@ -648,10 +714,12 @@ export function Knowledge({
             onChange={onPick}
             disabled={disabled || uploading}
           />
-          <strong>把 .txt / .md 拖到这里，或点击选择</strong>
+          <strong>把 PDF / Word / 网页 / 纯文本拖到这里，或点击选择</strong>
           <span>
-            仅支持纯文本 · UTF-8 · 单个文件 ≤ {formatBytes(UPLOAD_MAX_BYTES)}。PDF
-            等二进制格式没有解析器，不会假装解析。
+            支持 {UPLOAD_ACCEPT.replaceAll(',', ' / ')} · 单个文件 ≤{' '}
+            {formatBytes(UPLOAD_MAX_BYTES)}；超过 {formatBytes(SYNC_UPLOAD_MAX_BYTES)}{' '}
+            自动转后台任务，进度按真实页数推进、可取消。扫描版 PDF 会明确报“无文本层”，
+            不会空着入库。
           </span>
         </label>
 
@@ -666,7 +734,7 @@ export function Knowledge({
                 ? `（${formatBytes(uploadProgress.loaded)} / ${formatBytes(uploadProgress.total)}）`
                 : ''}
             </span>
-            <span>② 服务端分块与向量化（这一步没有独立进度接口，等待响应）</span>
+            <span>② 服务端解析、分块与向量化（等待响应；大文件请改用后台任务）</span>
             <button className="os-link" onClick={() => uploadRef.current?.abort()}>
               取消上传
             </button>
@@ -679,6 +747,23 @@ export function Knowledge({
               <strong>{actionError.title}：</strong>
               {actionError.message}
             </span>
+          </div>
+        )}
+        {lowQualityFile && (
+          <div className="os-kb-actions" style={{ marginTop: 8 }}>
+            <button className="os-btn os-btn-ghost" onClick={retryLowQuality}>
+              确认继续入库（接受低质量文本）
+            </button>
+            <button
+              className="os-link"
+              onClick={() => {
+                setLowQualityFile(null)
+                setActionError(null)
+                setJobError(null)
+              }}
+            >
+              不入库
+            </button>
           </div>
         )}
         {notice && (
@@ -761,9 +846,11 @@ export function Knowledge({
               )}
               {job && !isTerminalJobStatus(job.status) && (
                 <span className="os-kb-score">
-                  {job.totalChunks
-                    ? `${job.processedChunks} / ${job.totalChunks} 分块 · ${job.progressPercent}%`
-                    : '等待服务端分块…'}
+                  {job.totalPages > 0
+                    ? `解析 ${job.extractedPages}/${job.totalPages} 页 · 嵌入 ${job.embeddedPages}/${job.totalPages} 页 · ${job.progressPercent}%`
+                    : job.totalChunks
+                      ? `${job.processedChunks} / ${job.totalChunks} 分块 · ${job.progressPercent}%`
+                      : '等待服务端解析…'}
                 </span>
               )}
               {job && isTerminalJobStatus(job.status) && (
@@ -795,7 +882,10 @@ export function Knowledge({
                 )}
                 {job.cancelRequested && !isTerminalJobStatus(job.status) && (
                   <p className="os-hint">
-                    取消请求已记录：会在下一个分块边界生效，已算出的向量不会写入。
+                    取消请求已记录：{job.source === 'file'
+                      ? '会在下一个页边界生效'
+                      : '会在下一个分块边界生效'}
+                    ，尚未写入的内容不会落库。
                   </p>
                 )}
                 {job.status === 'succeeded' && (
@@ -813,6 +903,15 @@ export function Knowledge({
                   </p>
                 )}
                 {job.error && <p className="os-kb-error">失败原因：{job.error}</p>}
+                {job.quality?.low_quality && (
+                  <p className="os-hint">
+                    提取质量：乱码 {job.quality.garbled_chars} 字符（
+                    {(job.quality.garbled_ratio * 100).toFixed(1)}%）。
+                    {job.errorCode === 'low_quality_extraction'
+                      ? '服务端未入库；确认要用这份文本可点下面的“确认继续入库”。'
+                      : '已按你的确认入库，检索时可能命中乱码段落。'}
+                  </p>
+                )}
                 {job.note && <p className="os-hint">{job.note}</p>}
                 <p className="os-hint">
                   取消策略：全回滚 —— 取消后本次不会留下任何数据（不会出现「部分入库」）。
