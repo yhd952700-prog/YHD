@@ -70,9 +70,34 @@ answerable + 1 unanswerable). ``strong_match_similarity`` was fixed at 0.85.
 
 The chosen point is ``0.08 / 0.05``: it keeps the highest answerable recall
 (0.8621) with zero false abstentions while rejecting the unanswerable query
-(abstention 1.0). This is a **lexical retrieval baseline** -- real
-semantic-model numbers are unmeasured, and these thresholds MUST be re-tuned
-for any real provider via the environment variables below.
+(abstention 1.0). This is a **lexical retrieval baseline**.
+
+Hard rule -- thresholds belong to the embedding model, not to this module:
+
+* changing ``LIUHAO_EMBEDDING_PROVIDER`` / ``LIUHAO_EMBEDDING_MODEL`` (or the
+  model behind an OpenAI-compatible endpoint) **requires** re-running
+  ``python -m src.knowledge.evaluation --provider <provider>`` and adopting its
+  ``recommended`` thresholds;
+* a real model's cosine scores sit in a different range, so a lexical floor
+  such as ``0.08`` becomes a near no-op (almost every candidate clears it);
+  the gate then only abstains via the gap rule, and recall/abstention can
+  silently degrade on other corpora;
+* do not copy the numbers below onto a semantic model, and do not report the
+  hashing baseline as a semantic quality claim.
+
+Measured on 2026-11-06 with a real semantic model (Ollama ``nomic-embed-text``,
+768-dim, same 34 docs / 30 queries): answerable recall@5 ``0.8793``, @10
+``0.8966``, MRR ``0.7023``; no-answer abstained ``1.0``; false abstention
+``0/29``. The sweep recommends **min_top 0.65 / min_gap 0.05 / strong 0.85**
+(``holds_abstention=true``); the 0.65 absolute floor is the decisive rule, while
+the gap keeps its lexical default because the measured data cannot distinguish
+alternatives. Its margin is narrow and visible in
+``recommended.observed_scores``: lowest answerable top score ``0.6759`` vs
+highest unanswerable top score ``0.6280``. With the default ``0.08`` floor the
+same run still abstained, but only because the gap rule fired -- the absolute
+floor itself did not discriminate. Env vars below still default to the
+hashing-tuned values; a deployment that switches to a real provider must set
+them to the evaluated values.
 
 Environment overrides (all optional, checked per call so tests can pin them):
 

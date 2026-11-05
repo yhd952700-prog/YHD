@@ -14,6 +14,7 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .abstention import AbstentionConfig
 from .chunker import chunk_document_structured, chunk_paged_document
 from .embedding import EmbeddingUnavailableError, build_embedding_provider
 from .vector_store import get_vector_store
@@ -300,6 +301,7 @@ class KnowledgeDocumentService:
         top_k: int = 4,
         threshold: Optional[float] = None,
         abstain: bool = True,
+        abstention_config: Optional[AbstentionConfig] = None,
     ) -> Dict[str, Any]:
         """Retrieve chunks, with the relevance gate on by default.
 
@@ -309,6 +311,11 @@ class KnowledgeDocumentService:
         ``retrieval.hits`` see exactly the same list. ``abstain=False`` is an
         escape hatch for diagnostics; it can return low-score chunks, so
         production callers must leave the default.
+
+        ``abstention_config`` pins the gate thresholds for this call only
+        (evaluation/system checks use it). Production leaves it ``None`` so the
+        process environment decides; thresholds are tied to the embedding
+        model, so never change the model without re-running the evaluation.
         """
         embedder = self._embedding()
         store = self._store()
@@ -316,7 +323,7 @@ class KnowledgeDocumentService:
         if hasattr(store, "hybrid_search"):
             results, retrieval = store.hybrid_search(
                 query, query_vector, top_k=top_k, threshold=threshold,
-                abstain=abstain,
+                abstain=abstain, config=abstention_config,
             )
         else:  # pragma: no cover - third-party stores without the hybrid API
             results = store.search(query_vector, top_k=top_k, threshold=threshold)

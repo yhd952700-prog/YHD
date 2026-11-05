@@ -32,13 +32,51 @@ The legacy mixed averages (``recall@5``/``recall@10``/``mrr``) are kept for
 continuity with earlier commits; they count an abstained unanswerable query as
 1.0 and remain comparable to the previous baseline.
 
-The embedder is a dependency-free hashing embedder (signed SHA-256 hashing of
-the same CJK-bigram/ASCII tokens the FTS side uses). It is *not* a semantic
-model: zero-overlap synonym queries are expected to fail. **This baseline
-therefore covers lexical retrieval only; real semantic-model numbers are
-unmeasured** until a hosted provider is wired in and the set is re-run.
-The numbers below must be re-measured in the same change that touches
-retrieval; never report them as a semantic-quality claim.
+The default embedder is a dependency-free hashing embedder (signed SHA-256 hashing
+of the same CJK-bigram/ASCII tokens the FTS side uses). It is *not* a semantic
+model: zero-overlap synonym queries are expected to fail. ``BASELINE`` therefore
+describes **lexical retrieval only** and must never be reported as a semantic
+quality claim.
+
+Re-running on a real provider is one command, and it is mandatory whenever the
+embedding model changes (the gate thresholds are tied to the score distribution
+of that model, not to the retrieval code)::
+
+    python -m src.knowledge.evaluation                     # hashing baseline + sweep
+    python -m src.knowledge.evaluation --provider ollama   # local Ollama
+    python -m src.knowledge.evaluation --provider all      # hashing + every detected real provider
+
+``--provider`` accepts ``hashing`` / ``ollama`` / ``openai`` / ``auto`` / ``all``
+(comma-separated allowed), plus ``--model`` / ``--base-url`` / ``--api-key``
+overrides. The comparison table goes to stderr and the JSON report to stdout:
+per provider it carries the three metric groups, the effective thresholds, and
+a ``recommended`` threshold set produced by replaying the *same*
+``assess_confidence`` gate over every observed top/runner-up pair (no second
+embedding pass, and no re-implementation of the decision rule).
+
+Measured on 2026-11-06 with a real semantic model (Ollama ``nomic-embed-text``,
+768-dim cosine, same 34 documents / 30 queries):
+
+* ``answerable_recall@5`` **0.8793**, ``answerable_recall@10`` **0.8966**,
+  ``answerable_mrr`` **0.7023**;
+* ``no_answer_abstained`` **1.0**, ``false_abstention_rate`` **0.0**
+  (``0/29``);
+* ``section_hit@5`` **0.0** -- a real regression versus the hashing baseline
+  (1.0): the long document is found, but the correct section is not in the
+  top 5. Semantic recall improved while section precision did not; do not
+  cherry-pick one number.
+
+The sweep's recommended gate for that model is **min_top 0.65 / min_gap 0.05 /
+strong 0.85**, with ``holds_abstention=true``. The decisive rule is the 0.65
+absolute floor; the gap keeps its lexical default because the measured data
+cannot distinguish alternatives (metric-identical sets prefer the least change).
+The margin is narrow and is
+reported in ``recommended.observed_scores``: lowest answerable top score 0.6759
+vs highest unanswerable top score 0.6280. The lexical baseline's 0.08 floor is
+meaningless for this model (almost every cosine score clears it); the gate only
+abstained because the gap rule fired. That is exactly why thresholds must be
+re-tuned per model -- copying 0.08 onto a semantic model weakens the absolute
+floor to a no-op.
 
 Chinese tokenization limitations (bigram, no segmentation/synonyms) also apply
 here; see ``vector_store`` module documentation.
@@ -46,13 +84,33 @@ here; see ``vector_store`` module documentation.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
+import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .abstention import (
+    ENV_MIN_GAP,
+    ENV_MIN_SIMILARITY,
+    ENV_STRONG_MATCH,
+    NO_RELEVANT,
+    STATUS_OK,
+    AbstentionConfig,
+    assess_confidence,
+)
 from .documents import KnowledgeDocumentService
+from .embedding import (
+    EmbeddingUnavailableError,
+    OllamaEmbedder,
+    OpenAICompatibleEmbedder,
+)
 from .vector_store import PersistentVectorStore, tokenize_for_index
 
 # ---------------------------------------------------------------------------
@@ -313,6 +371,8 @@ QUERIES: Tuple[EvalQuery, ...] = (
 # abstention, and false abstention. A single good number would be self-deceiving.
 # Any retrieval/gate change MUST re-run ``python -m src.knowledge.evaluation``
 # and compare against these numbers; "feels better" is not evidence.
+# This dict is **hashing-only**: real semantic models have their own score
+# distribution and their own recommended thresholds (see module docstring).
 BASELINE: Dict[str, float] = {
     # legacy mixed averages (kept comparable with earlier commits)
     "recall@5": 0.8667,
@@ -360,6 +420,197 @@ class HashingEmbedder:
 
 
 # ---------------------------------------------------------------------------
+# Embedding provider selection (real-model re-runs)
+# ---------------------------------------------------------------------------
+
+#: Local Ollama defaults; ``nomic-embed-text`` is a real embedding model
+#: (``qwen2.5`` and the chat models are NOT -- ``/api/embed`` answers HTTP 501).
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_MODEL = "nomic-embed-text"
+DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+OLLAMA_TAGS_TIMEOUT = 3.0
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """A resolved embedder plus the metadata the report prints."""
+
+    key: str
+    embedder: object
+    model: str
+    source: str
+    note: Optional[str] = None
+
+
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    value = (os.environ.get(name) or "").strip()
+    return value or default
+
+
+def ollama_base_url(base_url: Optional[str] = None) -> str:
+    """Resolve the Ollama base URL (explicit flag > env > localhost default)."""
+    return (
+        (base_url or "").strip()
+        or _env("OLLAMA_BASE_URL")
+        or _env("LIUHAO_OLLAMA_BASE_URL")
+        or DEFAULT_OLLAMA_BASE_URL
+    )
+
+
+def probe_ollama(
+    base_url: Optional[str] = None, timeout: float = OLLAMA_TAGS_TIMEOUT
+) -> Optional[List[str]]:
+    """Return installed Ollama model names, or ``None`` when unreachable."""
+    url = f"{ollama_base_url(base_url).rstrip('/')}/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+    return sorted(
+        str(item.get("name")) for item in models if isinstance(item, dict)
+    )
+
+
+def _model_present(models: Sequence[str], model: str) -> bool:
+    return any(name == model or name.startswith(f"{model}:") for name in models)
+
+
+def openai_api_key(api_key: Optional[str] = None) -> str:
+    return (
+        (api_key or "").strip()
+        or (_env("LIUHAO_EMBEDDING_API_KEY") or "")
+        or (_env("OPENAI_API_KEY") or "")
+    )
+
+
+def build_provider(
+    provider: str = "hashing",
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> ProviderSpec:
+    """Resolve a provider name into a **real** embedder (never a fake one).
+
+    ``hashing`` is the deterministic lexical baseline; ``ollama`` and
+    ``openai`` are real HTTP providers; ``auto`` prefers a configured
+    OpenAI-compatible key, then a reachable local Ollama. When nothing is
+    available this raises :class:`EmbeddingUnavailableError` instead of
+    silently substituting a fake embedder.
+    """
+    key = (provider or "hashing").strip().lower()
+
+    if key in {"hashing", "lexical", "baseline"}:
+        return ProviderSpec(
+            "hashing", HashingEmbedder(), HashingEmbedder.model, "builtin"
+        )
+
+    if key == "ollama":
+        base = ollama_base_url(base_url)
+        resolved = model or _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OLLAMA_MODEL
+        return ProviderSpec(
+            "ollama",
+            OllamaEmbedder(model=resolved, base_url=base),
+            resolved,
+            "local",
+            note=f"{base}/api/embed",
+        )
+
+    if key in {"openai", "openai_compatible"}:
+        resolved = model or _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OPENAI_MODEL
+        base = (
+            (base_url or "").strip()
+            or _env("OPENAI_BASE_URL")
+            or DEFAULT_OPENAI_BASE_URL
+        )
+        secret = openai_api_key(api_key)
+        if not secret:
+            raise EmbeddingUnavailableError(
+                "provider 'openai' 需要 API key：设置 LIUHAO_EMBEDDING_API_KEY "
+                "或 OPENAI_API_KEY，或用 --api-key 传入"
+            )
+        return ProviderSpec(
+            "openai",
+            OpenAICompatibleEmbedder(
+                model=resolved, base_url=base, api_key=secret
+            ),
+            resolved,
+            "env",
+            note=f"{base.rstrip('/')}/embeddings",
+        )
+
+    if key == "auto":
+        if openai_api_key(api_key):
+            return build_provider(
+                "openai", model=model, base_url=base_url, api_key=api_key
+            )
+        base = ollama_base_url(base_url)
+        if probe_ollama(base) is not None:
+            return build_provider("ollama", model=model, base_url=base)
+        raise EmbeddingUnavailableError(
+            "本机无可用 embedding 源：未配置 OpenAI 兼容服务，且 Ollama "
+            f"({base}) 不可达"
+        )
+
+    raise EmbeddingUnavailableError(
+        f"未知 embedding provider {provider!r}；可选 hashing / ollama / "
+        "openai / auto / all"
+    )
+
+
+def detect_providers(base_url: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Probe what this machine can actually use (no fabricated availability)."""
+    base = ollama_base_url(base_url)
+    models = probe_ollama(base)
+    ollama_model = _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OLLAMA_MODEL
+    key = openai_api_key()
+    return {
+        "hashing": {
+            "available": True,
+            "model": HashingEmbedder.model,
+            "source": "builtin",
+            "semantic": False,
+        },
+        "ollama": {
+            "available": models is not None,
+            "model": ollama_model,
+            "model_present": bool(models and _model_present(models, ollama_model)),
+            "base_url": base,
+            "models": models or [],
+            "source": "local",
+            "semantic": True,
+            "reason": (
+                None
+                if models is not None
+                else f"Ollama 不可达：{base}"
+            ),
+        },
+        "openai": {
+            "available": bool(key),
+            "model": _env("LIUHAO_EMBEDDING_MODEL") or DEFAULT_OPENAI_MODEL,
+            "base_url": _env("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL,
+            "source": "env",
+            "semantic": True,
+            "reason": None if key else "未配置 LIUHAO_EMBEDDING_API_KEY / OPENAI_API_KEY",
+        },
+    }
+
+
+def _embedder_identity(embedder: object) -> Dict[str, Any]:
+    return {
+        "name": getattr(embedder, "name", type(embedder).__name__),
+        "model": getattr(embedder, "model", None),
+        "dimensions": getattr(embedder, "dimensions", None),
+        "semantic": not isinstance(embedder, HashingEmbedder),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Runner + metrics
 # ---------------------------------------------------------------------------
 
@@ -380,71 +631,107 @@ def _recall_at(ranked: Sequence[str], relevant: Sequence[str], k: int) -> float:
     return len(set(ranked[:k]) & set(relevant)) / len(set(relevant))
 
 
-def run_evaluation() -> Dict[str, object]:
-    """Ingest ``CORPUS`` and score ``QUERIES``; deterministic by construction."""
-    with tempfile.TemporaryDirectory(prefix="liuhao-kb-eval-") as workdir:
-        store = PersistentVectorStore(str(f"{workdir}/eval.sqlite3"))
-        service = KnowledgeDocumentService(
-            vector_store=store, embedder=HashingEmbedder()
+def _signals_from_retrieval(retrieval: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the two scores and lexical count the gate actually consumes."""
+    top = retrieval.get("top_score")
+    runner = retrieval.get("runner_up_score")
+    lexical = retrieval.get("lexical_candidates")
+    if top is None:
+        confidence = retrieval.get("confidence") or {}
+        top = confidence.get("top_score")
+        runner = confidence.get("runner_up_score")
+        if lexical is None:
+            lexical = confidence.get("lexical_candidates")
+    return {
+        "top_score": None if top is None else float(top),
+        "runner_up_score": None if runner is None else float(runner),
+        "lexical_candidates": int(lexical or 0),
+    }
+
+
+def _replay_gate(raw_row: Dict[str, Any], config: AbstentionConfig) -> Dict[str, Any]:
+    """Re-run the *same* gate function over the observed top/runner signals.
+
+    Replaying is what makes a threshold sweep possible without re-embedding:
+    ``assess_confidence`` is a pure function of the top score, the runner-up
+    score and the lexical-candidate count. Scores are the 4-decimal values the
+    retrieval response exposes, so a sweep is exact to that precision.
+    """
+    similarities: Dict[str, float] = {}
+    top = raw_row.get("top_score")
+    if top is not None:
+        similarities["__top__"] = float(top)
+        runner = raw_row.get("runner_up_score")
+        if runner is not None:
+            similarities["__runner_up__"] = float(runner)
+    return assess_confidence(
+        similarities,
+        int(raw_row.get("lexical_candidates") or 0),
+        config=config,
+        empty_corpus=False,
+        zero_score_allowed=False,
+    )
+
+
+def _derive_row(raw_row: Dict[str, Any], config: AbstentionConfig) -> Dict[str, Any]:
+    """Apply a gate config to one raw observation and produce a graded row."""
+    verdict = _replay_gate(raw_row, config)
+    confident = bool(verdict["confident"])
+    relevant = list(raw_row["relevant"])
+    ranked = list(raw_row["raw_ranked"]) if confident else []
+    first_rank = next(
+        (
+            rank
+            for rank, doc_id in enumerate(ranked, start=1)
+            if doc_id in relevant
+        ),
+        0,
+    )
+    if not relevant:
+        reciprocal_rank = 1.0 if not ranked else 0.0
+    else:
+        reciprocal_rank = 1.0 / first_rank if first_rank else 0.0
+
+    marker_hit: Optional[float] = None
+    if raw_row.get("answer_marker"):
+        marker_hit = (
+            1.0
+            if confident and bool(raw_row.get("marker_in_top5"))
+            else 0.0
         )
-        try:
-            for document in CORPUS:
-                service.ingest(document.text, doc_id=document.doc_id)
+    return {
+        "query": raw_row["query"],
+        "category": raw_row["category"],
+        "relevant": relevant,
+        "ranked": ranked,
+        "recall@5": _recall_at(ranked, relevant, 5),
+        "recall@10": _recall_at(ranked, relevant, 10),
+        "reciprocal_rank": reciprocal_rank,
+        "marker_hit@5": marker_hit,
+        "returned": len(ranked),
+        "mode": raw_row.get("mode"),
+        "status": STATUS_OK if confident else NO_RELEVANT,
+        "abstained": not confident,
+        "reason": verdict.get("reason"),
+        # Raw (pre-gate) signals; kept so a sweep can replay any threshold set.
+        "top_score": raw_row.get("top_score"),
+        "runner_up_score": raw_row.get("runner_up_score"),
+        "gap": verdict.get("gap"),
+        "lexical_candidates": int(raw_row.get("lexical_candidates") or 0),
+        "raw_ranked": list(raw_row["raw_ranked"]),
+        "raw_returned": len(raw_row["raw_ranked"]),
+        "answer_marker": raw_row.get("answer_marker"),
+        "marker_in_top5": raw_row.get("marker_in_top5"),
+    }
 
-            rows: List[Dict[str, object]] = []
-            for query in QUERIES:
-                response = service.search(query.query, top_k=10)
-                retrieval = response.get("retrieval") or {}
-                ranked = _ranked_doc_ids(response["hits"])
-                hit_texts = [str(hit.get("text", "")) for hit in response["hits"]]
-                first_rank = next(
-                    (
-                        rank
-                        for rank, doc_id in enumerate(ranked, start=1)
-                        if doc_id in query.relevant_doc_ids
-                    ),
-                    0,
-                )
-                if not query.relevant_doc_ids:
-                    # 无答案：返回任何 chunk 都算硬凑
-                    reciprocal_rank = 1.0 if not ranked else 0.0
-                else:
-                    reciprocal_rank = 1.0 / first_rank if first_rank else 0.0
 
-                marker_hit = None
-                if query.answer_marker:
-                    marker_hit = (
-                        1.0
-                        if any(
-                            query.answer_marker in text
-                            for text in hit_texts[:5]
-                        )
-                        else 0.0
-                    )
-                rows.append(
-                    {
-                        "query": query.query,
-                        "category": query.category,
-                        "relevant": list(query.relevant_doc_ids),
-                        "ranked": ranked,
-                        "recall@5": _recall_at(ranked, query.relevant_doc_ids, 5),
-                        "recall@10": _recall_at(ranked, query.relevant_doc_ids, 10),
-                        "reciprocal_rank": reciprocal_rank,
-                        "marker_hit@5": marker_hit,
-                        "returned": len(hit_texts),
-                        "mode": retrieval.get("mode"),
-                        "status": retrieval.get("status", "ok"),
-                        "abstained": bool(retrieval.get("abstained", False)),
-                    }
-                )
-        finally:
-            store.close()
-
+def _summarize(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate the three metric groups (recall / abstention / false abst.)."""
     marker_rows = [row for row in rows if row["marker_hit@5"] is not None]
     answerable_rows = [row for row in rows if row["relevant"]]
     no_answer_rows = [row for row in rows if row["category"] == "unanswerable"]
 
-    def _mean(subset: List[Dict[str, object]], key: str) -> float:
+    def _mean(subset: Sequence[Dict[str, Any]], key: str) -> float:
         if not subset:
             return 0.0
         return round(sum(float(row[key]) for row in subset) / len(subset), 4)
@@ -514,28 +801,497 @@ def run_evaluation() -> Dict[str, object]:
             "abstained": sum(1 for row in subset if bool(row["abstained"])),
         }
 
-    return {"metrics": metrics, "per_category": per_category, "rows": rows}
+    return {"metrics": metrics, "per_category": per_category}
 
 
-def baseline_report(result: Dict[str, object] | None = None) -> Dict[str, object]:
+def run_evaluation(
+    embedder: object = None,
+    config: Optional[AbstentionConfig] = None,
+) -> Dict[str, object]:
+    """Ingest ``CORPUS`` and score ``QUERIES`` with the given provider.
+
+    Retrieval is executed **ungated** (``abstain=False``) so every row keeps its
+    raw ranking and gate signals; the gate verdict is then derived here with
+    ``assess_confidence``. That is what lets :func:`sweep_thresholds` re-score
+    the same observations under other thresholds without paying for another
+    embedding pass. With the default ``HashingEmbedder`` the run is
+    deterministic and reproduces ``BASELINE``.
+    """
+    embedder = embedder if embedder is not None else HashingEmbedder()
+    config = config or AbstentionConfig.from_env()
+    raw_rows: List[Dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="liuhao-kb-eval-") as workdir:
+        store = PersistentVectorStore(str(f"{workdir}/eval.sqlite3"))
+        service = KnowledgeDocumentService(vector_store=store, embedder=embedder)
+        try:
+            for document in CORPUS:
+                service.ingest(document.text, doc_id=document.doc_id)
+
+            for query in QUERIES:
+                response = service.search(query.query, top_k=10, abstain=False)
+                retrieval = response.get("retrieval") or {}
+                ranked = _ranked_doc_ids(response["hits"])
+                hit_texts = [str(hit.get("text", "")) for hit in response["hits"]]
+                marker_in_top5 = (
+                    any(query.answer_marker in text for text in hit_texts[:5])
+                    if query.answer_marker
+                    else None
+                )
+                raw_rows.append(
+                    {
+                        "query": query.query,
+                        "category": query.category,
+                        "relevant": list(query.relevant_doc_ids),
+                        "mode": retrieval.get("mode"),
+                        "raw_ranked": ranked,
+                        "answer_marker": query.answer_marker,
+                        "marker_in_top5": marker_in_top5,
+                        **_signals_from_retrieval(retrieval),
+                    }
+                )
+        finally:
+            store.close()
+
+    rows = [_derive_row(raw, config) for raw in raw_rows]
+    summary = _summarize(rows)
+    return {
+        "embedder": _embedder_identity(embedder),
+        "config": {
+            "min_top_similarity": config.min_top_similarity,
+            "min_top_gap": config.min_top_gap,
+            "strong_match_similarity": config.strong_match_similarity,
+        },
+        **summary,
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Threshold sweep (same observations, re-scored under other thresholds)
+# ---------------------------------------------------------------------------
+
+# Wide enough to cover both the lexical baseline (0.08) and real semantic
+# models whose cosine scores sit far higher. The sweep is cheap (pure replay).
+DEFAULT_MIN_TOP_GRID: Tuple[float, ...] = (
+    0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40,
+    0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80,
+)
+DEFAULT_MIN_GAP_GRID: Tuple[float, ...] = (
+    0.01, 0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25,
+)
+DEFAULT_STRONG_GRID: Tuple[float, ...] = (0.70, 0.75, 0.80, 0.85, 0.90)
+
+_SWEEP_METRIC_KEYS = (
+    "answerable_recall@5",
+    "answerable_recall@10",
+    "answerable_mrr",
+    "no_answer_abstained",
+    "false_abstention_count",
+    "false_abstention_rate",
+)
+
+
+def _observed_scores(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Surface the raw score ranges so a recommendation is auditable.
+
+    Thresholds are only as trustworthy as the margin between the lowest
+    answerable top score and the highest unanswerable one; hiding that margin
+    would make a 0.65 floor look safer than it is.
+    """
+    answerable = sorted(
+        float(row["top_score"])
+        for row in rows
+        if row.get("relevant") and row.get("top_score") is not None
+    )
+    unanswerable = [
+        row
+        for row in rows
+        if row.get("category") == "unanswerable"
+        and row.get("top_score") is not None
+    ]
+    observed: Dict[str, Any] = {
+        "answerable_top_min": answerable[0] if answerable else None,
+        "answerable_top_median": (
+            answerable[len(answerable) // 2] if answerable else None
+        ),
+        "unanswerable_top_max": (
+            max(float(row["top_score"]) for row in unanswerable)
+            if unanswerable
+            else None
+        ),
+        "unanswerable_lexical_max": (
+            max(int(row.get("lexical_candidates") or 0) for row in unanswerable)
+            if unanswerable
+            else None
+        ),
+    }
+    return observed
+
+
+def _sweep_sort_key(metrics: Dict[str, float], thresholds: Dict[str, float]):
+    """Abstention first, then lowest false abstention, then highest recall.
+
+    Tie-breaks avoid gratuitous change: a *higher* absolute floor is safer (it
+    is the only rule that rejects high-scoring junk), while the gap and
+    strong-match thresholds stay as close as possible to the documented
+    lexical defaults (``0.05`` / ``0.85``) when the data cannot tell two
+    candidates apart -- an unnecessarily large gap rejects valid answers whose
+    neighbouring chunk is nearly identical.
+    """
+    return (
+        1 if metrics["no_answer_abstained"] >= 1.0 else 0,
+        -metrics["false_abstention_rate"],
+        metrics["answerable_recall@5"],
+        metrics["answerable_recall@10"],
+        metrics["answerable_mrr"],
+        thresholds["min_top_similarity"],
+        -abs(thresholds["min_top_gap"] - 0.05),
+        -abs(thresholds["strong_match_similarity"] - 0.85),
+    )
+
+
+def sweep_thresholds(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    min_top_values: Sequence[float] = DEFAULT_MIN_TOP_GRID,
+    min_gap_values: Sequence[float] = DEFAULT_MIN_GAP_GRID,
+    strong_match_values: Sequence[float] = DEFAULT_STRONG_GRID,
+) -> Dict[str, object]:
+    """Grid-search gate thresholds on already-collected observations.
+
+    ``rows`` must be ``run_evaluation`` rows (they carry raw rankings and gate
+    signals). The objective is exactly the one the product promises: the
+    unanswerable query must stay abstained; among configurations that achieve
+    that, keep false abstentions lowest, then answerable recall highest.
+    """
+    entries: List[Dict[str, Any]] = []
+    for min_top in min_top_values:
+        for min_gap in min_gap_values:
+            for strong in strong_match_values:
+                if strong < min_top:
+                    continue
+                config = AbstentionConfig(
+                    min_top_similarity=min_top,
+                    min_top_gap=min_gap,
+                    strong_match_similarity=strong,
+                )
+                metrics = _summarize(
+                    [_derive_row(row, config) for row in rows]
+                )["metrics"]
+                thresholds = {
+                    "min_top_similarity": min_top,
+                    "min_top_gap": min_gap,
+                    "strong_match_similarity": strong,
+                }
+                entries.append(
+                    {
+                        "thresholds": thresholds,
+                        "metrics": {
+                            key: metrics[key] for key in _SWEEP_METRIC_KEYS
+                        },
+                    }
+                )
+
+    if not entries:  # pragma: no cover - grids are constants, not empty
+        return {
+            "objective": "",
+            "evaluated": 0,
+            "recommended": None,
+            "frontier": [],
+        }
+
+    def key(entry: Dict[str, Any]):
+        return _sweep_sort_key(entry["metrics"], entry["thresholds"])
+
+    ranked = sorted(entries, key=key, reverse=True)
+    best = ranked[0]
+    best_thresholds = best["thresholds"]
+    recommended = {
+        "thresholds": dict(best_thresholds),
+        "env": {
+            ENV_MIN_SIMILARITY: f"{best_thresholds['min_top_similarity']:.2f}",
+            ENV_MIN_GAP: f"{best_thresholds['min_top_gap']:.2f}",
+            ENV_STRONG_MATCH: f"{best_thresholds['strong_match_similarity']:.2f}",
+        },
+        "metrics": dict(best["metrics"]),
+        "holds_abstention": best["metrics"]["no_answer_abstained"] >= 1.0,
+        "observed_scores": _observed_scores(rows),
+    }
+    return {
+        "objective": (
+            "无答案弃答率必须保持 1.0；在误弃答最少的前提下最大化有答案召回"
+        ),
+        "evaluated": len(entries),
+        "recommended": recommended,
+        "frontier": ranked[:5],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider comparison
+# ---------------------------------------------------------------------------
+
+def _format_metric(value: Optional[float]) -> str:
+    return "-" if value is None else f"{float(value):.4f}"
+
+
+def comparison_table(rows: Sequence[Dict[str, Any]]) -> str:
+    """Compact provider comparison (English headers: no CJK width guessing)."""
+    header = (
+        f"{'provider':<9} {'model':<22} {'recall@5':>9} {'recall@10':>9} "
+        f"{'abstain':>8} {'FA':>6} {'min_top':>8} {'min_gap':>8} "
+        f"{'strong':>7} {'status':>10}"
+    )
+    lines = [header, "-" * len(header)]
+    for row in rows:
+        metrics = row.get("metrics") or {}
+        recommended = row.get("recommended") or {}
+        thresholds = recommended.get("thresholds") or {}
+        lines.append(
+            f"{str(row.get('provider') or '?'):<9} "
+            f"{str(row.get('model') or '-'):<22} "
+            f"{_format_metric(metrics.get('answerable_recall@5')):>9} "
+            f"{_format_metric(metrics.get('answerable_recall@10')):>9} "
+            f"{_format_metric(metrics.get('no_answer_abstained')):>8} "
+            f"{_format_metric(metrics.get('false_abstention_rate')):>6} "
+            f"{_format_metric(thresholds.get('min_top_similarity')):>8} "
+            f"{_format_metric(thresholds.get('min_top_gap')):>8} "
+            f"{_format_metric(thresholds.get('strong_match_similarity')):>7} "
+            f"{str(row.get('status') or '?'):>10}"
+        )
+    return "\n".join(lines)
+
+
+def _expand_providers(
+    providers: Sequence[str], detection: Dict[str, Dict[str, Any]]
+) -> List[str]:
+    names: List[str] = []
+    for raw in providers:
+        for part in str(raw).split(","):
+            name = part.strip().lower()
+            if not name:
+                continue
+            if name == "all":
+                candidates = ["hashing"] + [
+                    key
+                    for key in ("ollama", "openai")
+                    if detection.get(key, {}).get("available")
+                ]
+            else:
+                candidates = [name]
+            for candidate in candidates:
+                if candidate not in names:
+                    names.append(candidate)
+    return names or ["hashing"]
+
+
+def compare_providers(
+    providers: Sequence[str] = ("hashing",),
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    config: Optional[AbstentionConfig] = None,
+) -> Dict[str, object]:
+    """Run the same 34-doc / 30-query set per provider and compare them.
+
+    A provider that cannot be built or reached is reported as
+    ``unavailable`` / ``endpoint_failed`` with its reason; it is never replaced
+    by a fake embedder and never contributes fabricated numbers.
+    """
+    config = config or AbstentionConfig.from_env()
+    detection = detect_providers(base_url)
+    rows: List[Dict[str, Any]] = []
+    for name in _expand_providers(providers, detection):
+        try:
+            spec = build_provider(
+                name, model=model, base_url=base_url, api_key=api_key
+            )
+        except EmbeddingUnavailableError as exc:
+            rows.append(
+                {"provider": name, "status": "unavailable", "reason": str(exc)}
+            )
+            continue
+
+        started = time.perf_counter()
+        try:
+            run = run_evaluation(embedder=spec.embedder, config=config)
+        except EmbeddingUnavailableError as exc:
+            rows.append(
+                {
+                    "provider": spec.key,
+                    "model": spec.model,
+                    "status": "endpoint_failed",
+                    "reason": str(exc),
+                }
+            )
+            continue
+
+        sweep = sweep_thresholds(run["rows"])
+        rows.append(
+            {
+                "provider": spec.key,
+                "status": "ok",
+                "source": spec.source,
+                "endpoint": spec.note,
+                "model": spec.model,
+                "embedder": run["embedder"],
+                "baseline_applicable": spec.key == "hashing",
+                "current_thresholds": run["config"],
+                "metrics": run["metrics"],
+                "per_category": run["per_category"],
+                "recommended": sweep["recommended"],
+                "sweep": {
+                    "objective": sweep["objective"],
+                    "evaluated": sweep["evaluated"],
+                    "frontier": sweep["frontier"],
+                },
+                "elapsed_seconds": round(time.perf_counter() - started, 2),
+            }
+        )
+
+    openai_ready = bool(detection.get("openai", {}).get("available"))
+    ollama_ready = bool(
+        detection.get("ollama", {}).get("available")
+        and detection.get("ollama", {}).get("model_present")
+    )
+    real_provider_available = openai_ready or ollama_ready
+    real_model_verified = any(
+        row.get("status") == "ok"
+        and (row.get("embedder") or {}).get("semantic")
+        and bool((row.get("recommended") or {}).get("holds_abstention"))
+        for row in rows
+    )
+    if not real_provider_available:
+        note = (
+            "本机无可用 embedding 源，真实模型下阈值未验证；"
+            "当前阈值仅适用于词面嵌入（hashing embedder）。"
+        )
+    elif not real_model_verified:
+        note = (
+            "检测到真实 embedding 源，但本次未成功在其上完成评测；"
+            "真实模型下阈值仍未验证，请查看 providers 里的失败原因。"
+        )
+    else:
+        note = (
+            "真实 embedding 源已完成同一套 34 篇 / 30 条查询评测；"
+            "建议阈值见各 provider 的 recommended 字段。"
+        )
+
+    return {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "detected": detection,
+        "providers": rows,
+        "comparison_table": comparison_table(rows),
+        "real_provider_available": real_provider_available,
+        "real_model_verified": real_model_verified,
+        "real_model_note": note,
+        "baseline_note": (
+            "BASELINE 数字仅对 hashing（词面）嵌入有效，"
+            "不得用于真实语义模型。"
+        ),
+    }
+
+
+def baseline_report(
+    result: Dict[str, object] | None = None,
+    config: Optional[AbstentionConfig] = None,
+) -> Dict[str, object]:
     """Metrics plus the stored baseline and a pass/fail regression delta."""
-    run = result or run_evaluation()
+    run = result or run_evaluation(config=config)
     metrics = dict(run["metrics"])  # type: ignore[arg-type]
+    applicable = (run.get("embedder") or {}).get("name") == "hashing"
     delta = {
         key: round(float(metrics[key]) - BASELINE[key], 4)
         for key in BASELINE
     }
+    sweep = sweep_thresholds(run["rows"])  # type: ignore[arg-type]
     return {
+        "embedder": run["embedder"],
         "metrics": metrics,
         "baseline": dict(BASELINE),
         "delta": delta,
-        "regression": any(value < 0 for value in delta.values()),
+        "regression": (
+            any(value < 0 for value in delta.values()) if applicable else None
+        ),
+        "baseline_applicable": applicable,
+        "current_thresholds": run["config"],
+        "recommended_thresholds": sweep["recommended"],
         "per_category": run["per_category"],
     }
 
 
-def main() -> None:
-    print(json.dumps(baseline_report(), ensure_ascii=False, indent=2))
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m src.knowledge.evaluation",
+        description=(
+            "在指定 embedding provider 上重跑 34 篇 / 30 条评测集，"
+            "输出三组数、阈值建议与对比表。"
+        ),
+    )
+    parser.add_argument(
+        "--provider",
+        help=(
+            "hashing / ollama / openai / auto / all，可用逗号分隔多个；"
+            "不指定时只跑 hashing 基线"
+        ),
+    )
+    parser.add_argument("--model", help="覆盖 embedding 模型名")
+    parser.add_argument("--base-url", help="覆盖 provider base URL")
+    parser.add_argument("--api-key", help="OpenAI 兼容服务的 API key")
+    parser.add_argument(
+        "--min-top-similarity", type=float, help="只改本次报告的绝对下限"
+    )
+    parser.add_argument("--min-gap", type=float, help="只改本次报告的分数差下限")
+    parser.add_argument(
+        "--strong-match", type=float, help="只改本次报告的强匹配阈值"
+    )
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = _build_parser().parse_args(argv)
+    config = None
+    if any(
+        value is not None
+        for value in (args.min_top_similarity, args.min_gap, args.strong_match)
+    ):
+        current = AbstentionConfig.from_env()
+        config = AbstentionConfig(
+            min_top_similarity=(
+                args.min_top_similarity
+                if args.min_top_similarity is not None
+                else current.min_top_similarity
+            ),
+            min_top_gap=(
+                args.min_gap
+                if args.min_gap is not None
+                else current.min_top_gap
+            ),
+            strong_match_similarity=(
+                args.strong_match
+                if args.strong_match is not None
+                else current.strong_match_similarity
+            ),
+        )
+
+    if not args.provider:
+        print(
+            json.dumps(
+                baseline_report(config=config), ensure_ascii=False, indent=2
+            )
+        )
+        return
+
+    report = compare_providers(
+        [args.provider],
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        config=config,
+    )
+    print(report["comparison_table"], file=sys.stderr)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -10,6 +10,20 @@ Two layers live here:
   operator is *explicitly* in development mode **and** opted in; otherwise the
   builder raises :class:`EmbeddingUnavailableError` (fail-closed) so the
   knowledge base reports "未启用" instead of pretending to answer.
+
+**Switching provider or model is not a free change.** The relevance gate
+(``abstention``) is tuned against the cosine-score distribution of a specific
+embedding model; a lexical floor such as ``0.08`` is a near no-op under a real
+semantic model, so recall and abstention can degrade silently while every
+request still returns "ok". After changing ``LIUHAO_EMBEDDING_PROVIDER`` /
+``LIUHAO_EMBEDDING_MODEL`` (or the backend behind an OpenAI-compatible
+endpoint), re-run::
+
+    python -m src.knowledge.evaluation --provider <provider>
+
+and set ``LIUHAO_KB_ABSTAIN_MIN_SIMILARITY`` / ``LIUHAO_KB_ABSTAIN_MIN_GAP`` /
+``LIUHAO_KB_ABSTAIN_STRONG_MATCH`` from that report's ``recommended.env``.
+Do not change the model without changing the thresholds.
 """
 
 from __future__ import annotations

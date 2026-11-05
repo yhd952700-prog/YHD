@@ -401,9 +401,42 @@ Content-Type: application/json
 3. 词法佐证：FTS5/BM25 路径至少命中一个候选。
 
 `confident = absolute and (relative or strong_match or lexical)`；不置信时返回
-空结果。阈值默认 `0.08 / 0.05`，是在 34 篇文档、30 条查询（29 条有答案 +
-1 条无答案）的评测集上扫描得到的，详细依据见
-[`src/knowledge/abstention.py`](../../../src/knowledge/abstention.py) 模块文档。
+空结果。
+
+### 阈值必须随 embedding 模型重测（硬性规则）
+
+`min_top_score` / `min_score_gap` / `strong_match_similarity` 是针对**某一个
+embedding 模型的分数分布**调出来的，不是检索代码的固定属性。更换
+`LIUHAO_EMBEDDING_PROVIDER` 或 `LIUHAO_EMBEDDING_MODEL`（包括更换 OpenAI 兼容
+服务背后的模型）后，**必须先重跑评测并更新阈值**，否则检索可能静默变差：
+
+```bash
+python -m src.knowledge.evaluation --provider ollama
+python -m src.knowledge.evaluation --provider all    # hashing + 所有已检测到的真实源
+```
+
+报告里的 `providers[].recommended.env` 给出可直接使用的三个环境变量值；对比表
+输出到 stderr，JSON 报告输出到 stdout。若本机没有任何真实 embedding 源，报告会
+明确写出“本机无可用 embedding 源，真实模型下阈值未验证”，并把
+`real_provider_available` / `real_model_verified` 置为 `false`，不会用伪造数字
+填空。
+
+当前默认 `0.08 / 0.05 / 0.85` **只适用于词面嵌入（hashing embedder）**：在 34
+篇文档、30 条查询（29 条有答案 + 1 条无答案）的评测集上，有答案召回 0.8621、
+无答案弃答 1.0、误弃答 0。
+
+真实模型（本机 Ollama `nomic-embed-text`，768 维，同一套评测集，2026-11-06）：
+有答案召回@5 `0.8793`、@10 `0.8966`、MRR `0.7023`；无答案弃答 `1.0`；误弃答
+`0/29`。扫描建议阈值为 **0.65 / 0.05 / 0.85**（`holds_abstention=true`）；起决定
+作用的是 0.65 的绝对下限，gap 保持词面默认值（评测数据无法区分备选值）。注意
+推荐余量很窄：有答案最低 top 分数 `0.6759`，无答案最高 top 分数 `0.6280`；
+`0.08` 在真实模型下几乎不筛任何候选，只能靠 gap 规则兜底。真实模型下
+`section_hit@5` 为 `0.0`（hashing 为 `1.0`），长文档的章节精度并未随语义召回
+一起提升，排查时不要只看召回。
+
+详细依据见
+[`src/knowledge/abstention.py`](../../../src/knowledge/abstention.py) 与
+[`src/knowledge/evaluation.py`](../../../src/knowledge/evaluation.py) 模块文档。
 
 ---
 
