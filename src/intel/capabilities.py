@@ -1,155 +1,292 @@
-"""能力缺口分析：候选仓库 → 鎏灏现有能力的**粗粒度**对照。
+"""能力缺口对照：**唯一对照源**是 ``docs/capability-map.md``。
 
-判定口径（必须如实写进报告，不能包装成语义级判断）：
+规则（按用户要求，不允许凭候选仓库 README 猜本仓能力）：
 
-* 在 ``src/``、``apps/console/src``、``frontend/src``、``scripts/`` 中按
-  **文件名 + 文本关键词**匹配；
-* 命中文件 >= 3 记为「已有」，1-2 个记为「半成品」，0 个记为「缺失」；
-* 列出命中文件的真实相对路径作为证据。
+* 只解析该 Markdown 的层级标题与表格行；
+* 状态严格四态：🟢 真接线 / 🟡 半成品 / 🔴 假实现 / ⚫ 完全没有；
+* 证据只取表格里已经写明的文件路径（关 2/关 3/关 4 三列）；
+* 每个候选都落全量对照；报告只展示与候选主题相关的那几行，并注明来源。
 
-这是只读分析：不修改任何被扫描的文件。
+找不到能力地图时直接抛 ``FileNotFoundError``，不退回关键词扫描，也不编造。
 """
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.intel.models import Candidate, GapStatus
+from src.intel.models import Candidate, GapRecord, GapStatus
 
-_SCAN_ROOTS: Sequence[str] = ("src", "apps/console/src", "frontend/src", "scripts")
-_TEXT_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".js", ".jsx", ".md"})
-_SKIP_PARTS = frozenset(
-    {"__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".git"}
+CAPABILITY_MAP_RELATIVE = "docs/capability-map.md"
+
+_STATE_MAP = (
+    ("🟢", GapStatus.EXISTING, "真接线"),
+    ("🟡", GapStatus.PARTIAL, "半成品"),
+    ("🔴", GapStatus.FAKE, "假实现"),
+    ("⚫", GapStatus.MISSING, "完全没有"),
 )
 
-_EXISTING_MIN_FILES = 3
-_PARTIAL_MIN_FILES = 1
-_MAX_FILE_BYTES = 200_000
-_MAX_FILES = 3000
-_MAX_EVIDENCE_FILES = 5
+_ROW_ID_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+_LAYER_RE = re.compile(r"^##\s+(?P<number>[0-9]+)\.\s*(?P<title>.+?)\s*$")
+_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<path>(?:src|apps|scripts|docs|plugins|installer|packaging)/[A-Za-z0-9_./-]+)"
+)
+_ENGLISH_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]{2,}")
+_CHINESE_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+_MAX_EVIDENCE_CHARS = 600
+
+#: 泛化词不参与主题匹配，否则 ``http``/``python``/``for`` 会命中几乎所有行。
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "api",
+        "apis",
+        "app",
+        "apps",
+        "are",
+        "async",
+        "asyncio",
+        "based",
+        "built",
+        "but",
+        "can",
+        "client",
+        "code",
+        "data",
+        "easy",
+        "fast",
+        "file",
+        "files",
+        "for",
+        "framework",
+        "frameworks",
+        "from",
+        "generation",
+        "has",
+        "have",
+        "http",
+        "https",
+        "into",
+        "javascript",
+        "library",
+        "libraries",
+        "model",
+        "models",
+        "new",
+        "next",
+        "not",
+        "of",
+        "on",
+        "open",
+        "over",
+        "platform",
+        "platforms",
+        "project",
+        "projects",
+        "python",
+        "server",
+        "simple",
+        "source",
+        "support",
+        "supports",
+        "system",
+        "systems",
+        "test",
+        "tests",
+        "than",
+        "that",
+        "the",
+        "then",
+        "this",
+        "to",
+        "tool",
+        "tools",
+        "typescript",
+        "under",
+        "use",
+        "used",
+        "using",
+        "via",
+        "was",
+        "web",
+        "were",
+        "will",
+        "with",
+        "you",
+        "your",
+    }
+)
 
 
 @dataclass(frozen=True)
-class Capability:
-    key: str
-    label: str
-    keywords: tuple[str, ...]
+class CapabilityRow:
+    """能力地图里的一行。"""
+
+    row_id: str
+    layer: str
+    title: str
+    state: GapStatus
+    state_label: str
+    evidence: str
+    file_paths: tuple[str, ...]
 
 
-#: 与 Y1.0 蓝图对齐的能力清单；关键词刻意保持宽泛，便于粗对照。
-CAPABILITIES: Sequence[Capability] = (
-    Capability("agent-orchestration", "AI Agent 编排", ("agent", "orchestrat", "workflow", "planner")),
-    Capability("memory-retrieval", "记忆与检索", ("memory", "retriev", "embedding", "vector")),
-    Capability("knowledge-rag", "知识与 RAG", ("knowledge", "rag", "chunk")),
-    Capability(
-        "security-compliance",
-        "安全与合规",
-        ("security", "permission", "rbac", "compliance", "audit"),
-    ),
-    Capability(
-        "observability-metrics",
-        "可观测与指标",
-        ("observ", "metric", "trace", "telemetry"),
-    ),
-    Capability("sandbox-plugin", "沙箱与插件", ("sandbox", "plugin", "restricted")),
-    Capability(
-        "deployment-distribution",
-        "部署与分发",
-        ("deploy", "distribution", "container", "docker"),
-    ),
-    Capability("data-pipeline", "数据管道", ("pipeline", "ingest", "etl")),
-)
+def _split_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-@dataclass
-class CapabilityFinding:
-    capability: str
-    status: GapStatus
-    files: list[str]
-    scanned_files: int
-    truncated: bool
+def _extract_paths(text: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    for match in _PATH_RE.finditer(text):
+        value = match.group("path").rstrip(".,;:)")
+        if value and value not in paths:
+            paths.append(value)
+    return tuple(paths)
 
 
-def _iter_text_files(base: Path, budget: list[int]) -> Iterable[tuple[Path, str]]:
-    """在当前根目录下遍历可读文本文件；超过总文件预算即停止。"""
-    if not base.is_dir():
-        return
-    for current_root, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_PARTS]
-        for filename in filenames:
-            if budget[0] >= _MAX_FILES:
-                return
-            path = Path(current_root) / filename
-            if path.suffix.lower() not in _TEXT_SUFFIXES:
-                continue
-            try:
-                if path.stat().st_size > _MAX_FILE_BYTES:
-                    continue
-                text = path.read_text(encoding="utf-8", errors="replace").lower()
-            except OSError:
-                continue
-            budget[0] += 1
-            yield path, text
+def parse_capability_map(text: str) -> list[CapabilityRow]:
+    """解析能力地图；无法识别的行直接跳过，不猜测状态。"""
+    rows: list[CapabilityRow] = []
+    current_layer = "未分层"
 
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        layer_match = _LAYER_RE.match(line)
+        if layer_match:
+            current_layer = f"{layer_match.group('number')} {layer_match.group('title')}"
+            continue
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
 
-def analyze_capabilities(repo_root: Path | str) -> list[CapabilityFinding]:
-    """扫描本仓库现状，返回每个能力的粗粒度状态与证据文件。"""
-    root = Path(repo_root)
-    budget = [0]
-    truncated = False
-    matches: dict[str, list[str]] = {cap.key: [] for cap in CAPABILITIES}
+        cells = _split_cells(line)
+        if len(cells) < 3 or not _ROW_ID_RE.match(cells[0]):
+            continue
 
-    for root_name in _SCAN_ROOTS:
-        base = root / root_name
-        for path, text in _iter_text_files(base, budget):
-            try:
-                relative = path.relative_to(root).as_posix()
-            except ValueError:
-                relative = path.as_posix()
-            haystack = f"{relative.lower()}\n{text}"
-            for cap in CAPABILITIES:
-                if len(matches[cap.key]) >= _MAX_EVIDENCE_FILES:
-                    continue
-                if any(keyword in haystack for keyword in cap.keywords):
-                    matches[cap.key].append(relative)
-        if budget[0] >= _MAX_FILES:
-            truncated = True
-            break
+        state: GapStatus | None = None
+        state_label = ""
+        for icon, status, label in _STATE_MAP:
+            if icon in cells[2]:
+                state = status
+                state_label = label
+                break
+        if state is None:
+            continue
 
-    findings: list[CapabilityFinding] = []
-    for cap in CAPABILITIES:
-        files = matches[cap.key]
-        if len(files) >= _EXISTING_MIN_FILES:
-            status = GapStatus.EXISTING
-        elif len(files) >= _PARTIAL_MIN_FILES:
-            status = GapStatus.PARTIAL
-        else:
-            status = GapStatus.MISSING
-        findings.append(
-            CapabilityFinding(
-                capability=cap.key,
-                status=status,
-                files=files,
-                scanned_files=budget[0],
-                truncated=truncated,
+        evidence = " | ".join(cell for cell in cells[3:] if cell)
+        rows.append(
+            CapabilityRow(
+                row_id=cells[0],
+                layer=current_layer,
+                title=cells[1],
+                state=state,
+                state_label=state_label,
+                evidence=evidence,
+                file_paths=_extract_paths(evidence),
             )
         )
-    return findings
+    return rows
 
 
-def select_capabilities(candidate: Candidate) -> list[Capability]:
-    """按候选的 topics/描述/名称挑选相关能力；识别不出时退回全量粗对照。"""
+def load_capability_map(path: Path | str) -> list[CapabilityRow]:
+    """读取并解析能力地图；文件不存在时明确报错。"""
+    map_path = Path(path)
+    if not map_path.is_file():
+        raise FileNotFoundError(
+            f"能力对照唯一来源不存在：{map_path}；不会退回关键词扫描或凭 README 猜测"
+        )
+    rows = parse_capability_map(map_path.read_text(encoding="utf-8"))
+    if not rows:
+        raise ValueError(f"能力地图 {map_path} 中没有可解析的能力行")
+    return rows
+
+
+def _candidate_tokens(candidate: Candidate) -> set[str]:
     haystack = " ".join(
-        [
-            candidate.name or "",
-            candidate.description or "",
-            " ".join(candidate.topics or []),
-        ]
+        [candidate.name or "", candidate.description or "", *candidate.topics]
     ).lower()
-    matched = [
-        cap for cap in CAPABILITIES if any(keyword in haystack for keyword in cap.keywords)
-    ]
-    return matched if matched else list(CAPABILITIES)
+    tokens = {
+        match.group(0).strip("._-")
+        for match in _ENGLISH_TOKEN_RE.finditer(haystack)
+        if match.group(0).strip("._-") not in _STOPWORDS
+    }
+    tokens.update(
+        token
+        for token in _CHINESE_TOKEN_RE.findall(haystack)
+        if token not in _STOPWORDS
+    )
+    return {token for token in tokens if token}
+
+
+def _row_tokens(row: CapabilityRow) -> set[str]:
+    """只取标题、层级与证据路径，不把整段说明里的 URL/泛化词当匹配依据。"""
+    haystack = f"{row.layer} {row.title}".lower()
+    tokens = {match.group(0) for match in _ENGLISH_TOKEN_RE.finditer(haystack)}
+    tokens.update(_CHINESE_TOKEN_RE.findall(haystack))
+    # 文件路径按 / _ . - 切开，避免把 agent_runtime.py 当成一个整词。
+    for part in re.split(r"[^a-z0-9]+", " ".join(row.file_paths).lower()):
+        if len(part) >= 3:
+            tokens.add(part)
+    return tokens
+
+
+def select_relevant_rows(
+    candidate: Candidate, rows: Sequence[CapabilityRow]
+) -> list[CapabilityRow]:
+    """按候选 topics/描述/名称挑相关能力行。
+
+    匹配对象是能力地图自己的标题、层级与证据路径，不读候选仓库 README。
+    一个都匹配不上时返回空列表：报告会明确写「未在能力地图中定位到对应
+    能力」，而不是拿泛化词硬凑出「缺失/半成品」再据此提建议。
+    """
+    tokens = _candidate_tokens(candidate)
+    if not tokens:
+        return []
+    return [row for row in rows if tokens & _row_tokens(row)]
+
+
+def build_gap_records(
+    candidate: Candidate,
+    rows: Sequence[CapabilityRow],
+    assessed_at: str,
+    *,
+    map_path: str = CAPABILITY_MAP_RELATIVE,
+) -> list[GapRecord]:
+    """把一个候选与能力地图的对照写成 ``osi_gap_analysis`` 记录。
+
+    全量行都落库（便于追溯），``relevant`` 标记只影响报告的展示与建议策略。
+    """
+    relevant_ids = {row.row_id for row in select_relevant_rows(candidate, rows)}
+    topic_note = "主题匹配：是" if relevant_ids else "主题匹配：否（能力地图无对应项）"
+    records: list[GapRecord] = []
+    for row in rows:
+        evidence = row.evidence[:_MAX_EVIDENCE_CHARS] or "-"
+        records.append(
+            GapRecord(
+                repo_url=candidate.repo_url,
+                capability=f"{row.row_id} {row.title}",
+                status=row.state.value,
+                file_paths=list(row.file_paths),
+                assessed_at=assessed_at,
+                note=(
+                    f"唯一对照源：{map_path}；层：{row.layer}；"
+                    f"状态：{row.state_label}；{topic_note}；证据：{evidence}"
+                ),
+                relevant=row.row_id in relevant_ids,
+            )
+        )
+    return records
+
+
+__all__ = [
+    "CAPABILITY_MAP_RELATIVE",
+    "CapabilityRow",
+    "build_gap_records",
+    "load_capability_map",
+    "parse_capability_map",
+    "select_relevant_rows",
+]

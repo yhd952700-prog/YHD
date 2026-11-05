@@ -1,7 +1,7 @@
 """OSI 命令行入口：``python -m src.intel --repos ...``。
 
 真实网络默认关闭；显式 ``--allow-network`` 或环境变量
-``LIUHAO_INTEL_ALLOW_NETWORK=1`` 才会发起 GitHub 请求。``GITHUB_TOKEN``
+``LIUHAO_INTEL_ALLOW_NETWORK=1`` 才会发起 GitHub 与 OSV 请求。``GITHUB_TOKEN``
 只在内存中用于本次请求头，绝不落盘、不写日志、不进入任何记录。
 """
 
@@ -13,6 +13,7 @@ from collections.abc import Sequence
 
 from src.intel.github_client import GitHubClient
 from src.intel.models import LicenseCategory, ScanBudget
+from src.intel.osv_client import OsvClient
 from src.intel.scanner import IntelScanner
 from src.intel.store import IntelStore
 
@@ -65,7 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=os.environ.get("GITHUB_TOKEN") or None,
     )
     try:
-        scanner = IntelScanner(store, client)
+        osv = OsvClient(allow_network=allow_network, budget=budget)
+        scanner = IntelScanner(store, client, osv_client=osv)
         result = scanner.scan(
             args.repos,
             category=args.category,
@@ -76,8 +78,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         client.close()
         store.close()
+        if "osv" in locals():
+            osv.close()
 
     print(f"仓库：{len(result.repo_urls)}；候选：{len(result.candidates)}")
+    print(f"安全公告记录：{len(result.advisories)}；版本变更：{len(result.changes)}")
     print(f"建议采用/改造：{len(result.adoptable)}；未获取记录见报告")
     if result.report_path:
         print(f"报告：{result.report_path}")

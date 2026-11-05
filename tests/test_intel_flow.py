@@ -161,7 +161,7 @@ def test_full_discovery_judgement_proposal_report_flow(tmp_path):
     # 报告：unknown 不得出现在「建议采用」段落。
     text = report_path.read_text(encoding="utf-8")
     adopt_section = text.split("## 建议采用 / 改造")[1].split("## 不建议采用")[0]
-    rejected_section = text.split("## 不建议采用")[1].split("## 未获取记录")[0]
+    rejected_section = text.split("## 不建议采用")[1].split("## 本轮未获取仓库/资源及原因")[0]
     assert "https://github.com/alpha/agent" in adopt_section
     assert "https://github.com/gamma/unknown" not in adopt_section
     assert "https://github.com/gamma/unknown" in rejected_section

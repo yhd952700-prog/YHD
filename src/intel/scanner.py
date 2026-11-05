@@ -14,10 +14,14 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from src._time import utc_now
-from src.intel.capabilities import analyze_capabilities, select_capabilities
+from src.intel.capabilities import (
+    CAPABILITY_MAP_RELATIVE,
+    build_gap_records,
+    load_capability_map,
+)
+from src.intel.changes import detect_change
 from src.intel.github_client import (
     FetchRecord,
     GitHubClient,
@@ -32,6 +36,7 @@ from src.intel.licenses import (
 from src.intel.models import (
     AdvisoryRecord,
     Candidate,
+    ChangeRecord,
     FetchStatus,
     GapRecord,
     LicenseCategory,
@@ -40,6 +45,14 @@ from src.intel.models import (
     ProvenanceRecord,
     ScanBudget,
     Snapshot,
+)
+from src.intel.osv_client import (
+    MANIFEST_FILENAMES,
+    OsvClient,
+    advisory_records,
+    resolve_package,
+    unresolved_advisory,
+    version_for_osv,
 )
 from src.intel.proposals import DISCLAIMER, build_proposal
 from src.intel.report import default_report_path, render_report, write_report
@@ -60,6 +73,7 @@ class ScanResult:
     gaps: list[GapRecord] = field(default_factory=list)
     proposals: list[ProposalRecord] = field(default_factory=list)
     provenance: list[ProvenanceRecord] = field(default_factory=list)
+    changes: list[ChangeRecord] = field(default_factory=list)
     quota_notes: list[str] = field(default_factory=list)
     report_text: str = ""
     report_path: str | None = None
@@ -83,12 +97,16 @@ class IntelScanner:
         *,
         repo_root: Path | str | None = None,
         disclaimer: str = DISCLAIMER,
+        osv_client: OsvClient | None = None,
     ):
         self._store = store
         self._client = client
         self._repo_root = Path(repo_root) if repo_root is not None else _PROJECT_ROOT
         self._disclaimer = disclaimer
-        self._capability_findings = None
+        # 默认不联网：避免测试或误调用时打到 api.osv.dev；CLI/周报显式注入。
+        self._osv = osv_client or OsvClient(allow_network=False, budget=client.budget)
+        self._capability_rows_cache = None
+        self._capability_map_path: Path | None = None
 
     def scan(
         self,
@@ -155,10 +173,12 @@ class IntelScanner:
             gaps=result.gaps,
             proposals=result.proposals,
             provenance=result.provenance,
+            changes=result.changes,
             budget=budget,
             category=category.value,
             repo_urls=result.repo_urls,
             quota_notes=result.quota_notes,
+            capability_map_source=self._map_path_text(),
             generated_at=timestamp,
         )
         if write_report_file:
@@ -234,13 +254,15 @@ class IntelScanner:
 
         manifest_rec: FetchRecord | None = None
         manifest_text: str | None = None
-        for filename in ("pyproject.toml", "package.json"):
+        manifest_filename: str | None = None
+        for filename in MANIFEST_FILENAMES:
             record, text = self._client.get_text_file(owner, name, filename)
             if manifest_rec is None:
                 manifest_rec = record
             if text is not None:
                 manifest_rec = record
                 manifest_text = text
+                manifest_filename = filename
                 break
 
         critical_records = [repo_rec, commit_rec, license_rec]
@@ -270,9 +292,21 @@ class IntelScanner:
             error_reason="; ".join(failures) if failures else None,
             details=details,
         )
-        previous = self._store.latest_snapshot(repo_url)
+        previous = self._store.latest_comparable_snapshot(repo_url)
+        change = detect_change(
+            previous,
+            tag,
+            commit_sha,
+            current_available=fetch_status != FetchStatus.NOT_FETCHED.value,
+        )
         self._store.insert_snapshot(snapshot)
         result.snapshots.append(snapshot)
+        change_record = change.to_record(
+            repo_url, source_url=repo_rec.url, detected_at=timestamp
+        )
+        if change_record is not None:
+            self._store.insert_change(change_record)
+            result.changes.append(change_record)
 
         license_record = LicenseRecord(
             repo_url=repo_url,
@@ -289,16 +323,29 @@ class IntelScanner:
         self._store.insert_license(license_record)
         result.licenses.append(license_record)
 
-        advisory = AdvisoryRecord(
-            repo_url=repo_url,
-            source="github-advisory",
-            source_url=GitHubClient.advisory_url(owner, name),
-            fetch_status=FetchStatus.NOT_FETCHED.value,
-            fetched_at=timestamp,
-            error_reason="advisory_endpoint_not_wired_in_this_round",
+        package = (
+            resolve_package(manifest_text, manifest_filename)
+            if manifest_text and manifest_filename
+            else None
         )
-        self._store.insert_advisory(advisory)
-        result.advisories.append(advisory)
+        if package is None:
+            advisory_batch = [
+                unresolved_advisory(
+                    repo_url,
+                    "package_unresolved",
+                    fetched_at=timestamp,
+                )
+            ]
+        else:
+            osv_result = self._osv.query(package, version=version_for_osv(tag, commit_sha))
+            advisory_batch = advisory_records(
+                osv_result,
+                repo_url=repo_url,
+                package=package,
+            )
+        for advisory in advisory_batch:
+            self._store.insert_advisory(advisory)
+            result.advisories.append(advisory)
 
         first_seen = self._first_seen(repo_url, timestamp)
         candidate = Candidate(
@@ -317,7 +364,6 @@ class IntelScanner:
         self._store.upsert_candidate(candidate)
         result.candidates.append(candidate)
 
-        change_history = self._change_history(previous, version, commit_sha)
         provenance = ProvenanceRecord(
             repo_url=repo_url,
             source="github",
@@ -325,30 +371,25 @@ class IntelScanner:
             captured_at=timestamp,
             license_id=assessment.license_id,
             version=version,
-            change_history=change_history,
+            change_history=change.history(timestamp),
         )
         self._store.insert_provenance(provenance)
         result.provenance.append(provenance)
 
-        findings = self._findings()
-        relevant = select_capabilities(candidate)
-        gap_records: list[GapRecord] = []
-        for finding in findings:
-            if finding.capability not in {cap.key for cap in relevant}:
-                continue
-            gap = GapRecord(
-                repo_url=repo_url,
-                capability=finding.capability,
-                status=finding.status.value,
-                file_paths=list(finding.files),
-                assessed_at=timestamp,
-                note="按文件名/文本关键词粗对照，非语义判断",
-            )
+        # 唯一对照源：docs/capability-map.md。全量落库，报告只展示相关行。
+        rows = self._load_capability_rows()
+        gap_records = build_gap_records(
+            candidate,
+            rows,
+            timestamp,
+            map_path=self._map_path_text(),
+        )
+        for gap in gap_records:
             self._store.insert_gap(gap)
             result.gaps.append(gap)
-            gap_records.append(gap)
 
-        proposal = build_proposal(candidate, decision, gap_records, timestamp)
+        relevant_gaps = [gap for gap in gap_records if gap.relevant]
+        proposal = build_proposal(candidate, decision, relevant_gaps, timestamp)
         proposal.disclaimer = self._disclaimer
         self._store.insert_proposal(proposal)
         result.proposals.append(proposal)
@@ -421,11 +462,12 @@ class IntelScanner:
 
         advisory = AdvisoryRecord(
             repo_url=repo_url,
-            source="github-advisory",
+            source="OSV",
             source_url=source_url or repo_url,
             fetch_status=FetchStatus.NOT_FETCHED.value,
             fetched_at=timestamp,
-            error_reason="advisory_endpoint_not_wired_in_this_round",
+            error_reason=f"repo_not_fetched:{reason}",
+            note="仓库未获取，未查询 OSV，不能视为安全",
         )
         self._store.insert_advisory(advisory)
         result.advisories.append(advisory)
@@ -457,26 +499,25 @@ class IntelScanner:
             return str(existing["first_seen_at"])
         return timestamp
 
-    def _findings(self):
-        if self._capability_findings is None:
-            self._capability_findings = analyze_capabilities(self._repo_root)
-        return self._capability_findings
+    def _load_capability_rows(self):
+        if self._capability_rows_cache is None:
+            candidate_paths = [
+                self._repo_root / CAPABILITY_MAP_RELATIVE,
+                _PROJECT_ROOT / CAPABILITY_MAP_RELATIVE,
+            ]
+            map_path = next((path for path in candidate_paths if path.is_file()), candidate_paths[0])
+            self._capability_rows_cache = load_capability_map(map_path)
+            self._capability_map_path = map_path
+        return self._capability_rows_cache
 
-    @staticmethod
-    def _change_history(
-        previous: dict[str, Any] | None, version: str | None, commit_sha: str | None
-    ) -> dict[str, Any]:
-        if previous is None:
-            return {"first_capture": True}
-        previous_version = previous.get("version")
-        previous_commit = previous.get("commit_sha")
-        return {
-            "previous_version": previous_version,
-            "current_version": version,
-            "previous_commit": previous_commit,
-            "current_commit": commit_sha,
-            "changed": previous_version != version or previous_commit != commit_sha,
-        }
+    def _map_path_text(self) -> str:
+        if self._capability_map_path is None:
+            self._load_capability_rows()
+        path = self._capability_map_path or _PROJECT_ROOT / CAPABILITY_MAP_RELATIVE
+        try:
+            return path.relative_to(_PROJECT_ROOT).as_posix()
+        except ValueError:
+            return path.as_posix()
 
 
 __all__ = ["IntelScanner", "ScanResult"]

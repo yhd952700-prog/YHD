@@ -26,7 +26,7 @@ class GapFindingLike:
 
 def _effort(findings: Sequence[GapFindingLike]) -> str:
     statuses = {finding.status for finding in findings}
-    if GapStatus.MISSING.value in statuses:
+    if GapStatus.MISSING.value in statuses or GapStatus.FAKE.value in statuses:
         return "高"
     if GapStatus.PARTIAL.value in statuses:
         return "中"
@@ -56,7 +56,10 @@ def build_proposal(
             disclaimer=DISCLAIMER,
         )
 
-    missing = any(finding.status == GapStatus.MISSING.value for finding in findings)
+    missing = any(
+        finding.status in {GapStatus.MISSING.value, GapStatus.FAKE.value}
+        for finding in findings
+    )
     partial = any(finding.status == GapStatus.PARTIAL.value for finding in findings)
 
     if missing:

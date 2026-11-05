@@ -37,10 +37,16 @@ class FetchStatus(StrEnum):
 
 
 class GapStatus(StrEnum):
-    """候选仓库能力 vs 鎏灏现有能力。"""
+    """候选仓库能力 vs 鎏灏现有能力。
+
+    四态与 ``docs/capability-map.md`` 一一对应：真接线 / 半成品 / 假实现 /
+    完全没有。``FAKE`` 是阶段二新增的第四态，不能并入 ``MISSING``：假实现
+    有代码但没有真实后端，和仓库里完全没有实现是两件事。
+    """
 
     EXISTING = "existing"
     PARTIAL = "partial"
+    FAKE = "fake"
     MISSING = "missing"
 
 
@@ -167,6 +173,11 @@ class AdvisoryRecord:
     affected_range: str | None = None
     severity: str | None = None
     error_reason: str | None = None
+    # 阶段二补充：按仓库的生态与包名查询 OSV，必须能追溯到底查了谁。
+    ecosystem: str | None = None
+    package: str | None = None
+    # 查询成功但为空、查询失败、包名无法解析，必须用不同文字记录，不能混为一谈。
+    note: str | None = None
 
 
 @dataclass
@@ -179,6 +190,8 @@ class GapRecord:
     file_paths: list[str]
     assessed_at: str
     note: str = ""
+    # 是否与本候选的主题相关；全量对照都落库，报告只展示相关行。
+    relevant: bool = True
 
 
 @dataclass
@@ -194,6 +207,25 @@ class ProposalRecord:
     summary: str
     created_at: str
     disclaimer: str = ""
+
+
+@dataclass
+class ChangeRecord:
+    """osi_changes：版本变更记录。
+
+    只有「上一次可比快照 → 本次」确实发生变化时才写一条；无变化不写。
+    必须写清从哪版到哪版、什么时候发现。
+    """
+
+    repo_url: str
+    source: str
+    source_url: str
+    previous_version: str | None
+    current_version: str | None
+    previous_commit: str | None
+    current_commit: str | None
+    detected_at: str
+    note: str = ""
 
 
 @dataclass

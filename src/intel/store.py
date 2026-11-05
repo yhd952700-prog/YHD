@@ -19,6 +19,7 @@ from typing import Any
 from src.intel.models import (
     AdvisoryRecord,
     Candidate,
+    ChangeRecord,
     GapRecord,
     LicenseRecord,
     ProposalRecord,
@@ -82,6 +83,9 @@ CREATE TABLE IF NOT EXISTS osi_advisories (
     advisory_id     TEXT,
     affected_range  TEXT,
     severity        TEXT,
+    ecosystem       TEXT,
+    package         TEXT,
+    note            TEXT,
     source_url      TEXT NOT NULL,
     fetch_status    TEXT NOT NULL,
     fetched_at      TEXT NOT NULL,
@@ -125,7 +129,36 @@ CREATE TABLE IF NOT EXISTS osi_provenance (
     captured_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_osi_provenance_repo ON osi_provenance(repo_url);
+
+CREATE TABLE IF NOT EXISTS osi_changes (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_url           TEXT NOT NULL,
+    source             TEXT NOT NULL,
+    source_url         TEXT NOT NULL,
+    previous_version   TEXT,
+    current_version    TEXT,
+    previous_commit    TEXT,
+    current_commit     TEXT,
+    note               TEXT,
+    detected_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_osi_changes_repo ON osi_changes(repo_url);
 """
+
+#: 阶段二给已有库补列用；只动本模块自己的 ``osi_advisories`` 表。
+_ADVISORY_ADDED_COLUMNS = {
+    "ecosystem": "TEXT",
+    "package": "TEXT",
+    "note": "TEXT",
+}
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """幂等地给已存在的旧库补列（不改其它表）。"""
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, declaration in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
 class IntelStore:
@@ -151,6 +184,7 @@ class IntelStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SCHEMA)
+        _ensure_columns(conn, "osi_advisories", _ADVISORY_ADDED_COLUMNS)
         conn.commit()
         self._conn = conn
 
@@ -264,6 +298,24 @@ class IntelStore:
         )
         return rows[0] if rows else None
 
+    def latest_comparable_snapshot(self, repo_url: str) -> dict[str, Any] | None:
+        """最近一次**可用于版本比较**的快照。
+
+        抓取失败（``not_fetched`` / ``partial`` 且没有版本与提交）的行不能作为
+        比较基线，否则一次断网就会被误判成「版本从 v1.0.0 变成 None」。
+        """
+        rows = self._fetch_rows(
+            """
+            SELECT * FROM osi_snapshots
+            WHERE repo_url = ?
+              AND fetch_status != 'not_fetched'
+              AND (version IS NOT NULL OR commit_sha IS NOT NULL)
+            ORDER BY id DESC LIMIT 1
+            """,
+            (repo_url,),
+        )
+        return rows[0] if rows else None
+
     # ------------------------------------------------------------------ #
     # osi_licenses
     # ------------------------------------------------------------------ #
@@ -308,8 +360,9 @@ class IntelStore:
                 """
                 INSERT INTO osi_advisories (
                     repo_url, source, advisory_id, affected_range, severity,
-                    source_url, fetch_status, fetched_at, error_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ecosystem, package, note, source_url, fetch_status,
+                    fetched_at, error_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.repo_url,
@@ -317,6 +370,9 @@ class IntelStore:
                     record.advisory_id,
                     record.affected_range,
                     record.severity,
+                    record.ecosystem,
+                    record.package,
+                    record.note,
                     record.source_url,
                     record.fetch_status,
                     record.fetched_at,
@@ -428,6 +484,47 @@ class IntelStore:
         return self._fetch_rows(
             "SELECT * FROM osi_provenance WHERE repo_url = ? ORDER BY id", (repo_url,)
         )
+
+    # ------------------------------------------------------------------ #
+    # osi_changes
+    # ------------------------------------------------------------------ #
+    def insert_change(self, record: ChangeRecord) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO osi_changes (
+                    repo_url, source, source_url, previous_version, current_version,
+                    previous_commit, current_commit, note, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.repo_url,
+                    record.source,
+                    record.source_url,
+                    record.previous_version,
+                    record.current_version,
+                    record.previous_commit,
+                    record.current_commit,
+                    record.note,
+                    record.detected_at,
+                ),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_changes(self, repo_url: str | None = None) -> list[dict[str, Any]]:
+        if repo_url is None:
+            return self._fetch_rows("SELECT * FROM osi_changes ORDER BY id")
+        return self._fetch_rows(
+            "SELECT * FROM osi_changes WHERE repo_url = ? ORDER BY id", (repo_url,)
+        )
+
+    def latest_change(self, repo_url: str) -> dict[str, Any] | None:
+        rows = self._fetch_rows(
+            "SELECT * FROM osi_changes WHERE repo_url = ? ORDER BY id DESC LIMIT 1",
+            (repo_url,),
+        )
+        return rows[0] if rows else None
 
     # ------------------------------------------------------------------ #
     # 只读诊断

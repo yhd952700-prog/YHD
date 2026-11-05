@@ -111,6 +111,10 @@ class GitHubClient:
     def network_enabled(self) -> bool:
         return self._client is not None
 
+    @property
+    def budget(self) -> ScanBudget | None:
+        return self._budget
+
     def close(self) -> None:
         if self._client is not None:
             self._client.close()
