@@ -202,8 +202,12 @@ RULES: List[dict] = [
                        r"(?:tamper[- ]?(?:proof|evident)|evidence[- ]grade|"
                        r"audit[- ]grade|防篡改|不可篡改)",
                        re.IGNORECASE),
-            # Chinese: negation must be adjacent to the claim term.
-            re.compile(r"(?:没有|尚无|并无|不具备|不具|未具备|并非)"
+            # Chinese: negation must be adjacent to the claim term. Bare
+            # "无 / 不 / 非" are included because the honest disclosures this
+            # repo actually writes use them ("无防篡改", "不防篡改",
+            # "不是防篡改", "非审计级"); the adjacency rule still keeps an
+            # unrelated negation from suppressing a real claim.
+            re.compile(r"(?:没有|尚无|并无|不具备|不具|未具备|并非|不是|无|不|非)"
                        r"(?:已|的|任何|完全)?"
                        r"(?:防篡改|不可篡改|证据级|审计级)"),
             # An honest "not evidence-grade" style disclosure.
@@ -263,6 +267,8 @@ RULES: List[dict] = [
             re.compile(r"telemetry"),
             re.compile(r"不视为证据|非证据"),
             re.compile(r"不具防篡改链"),
+            # "not audit-grade" written as 非审计级 / 非证据级.
+            re.compile(r"非\s*(审计级|证据级)"),
         ],
     },
     {

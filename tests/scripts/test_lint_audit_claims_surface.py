@@ -251,6 +251,23 @@ def test_honest_negative_no_evidence_grade_does_not_fire() -> None:
     assert _hc01_fires("There is no evidence-grade audit source here.\n") is False
 
 
+def test_honest_negative_chinese_bare_negations_do_not_fire() -> None:
+    """Bare 无 / 不 / 非 next to the term are disclosures, not claims.
+
+    Regression (2026-11-06): the guard fired on three real rows in
+    ``docs/oss-radar/*`` that read "无防降级、防篡改", "record_hash 不防篡改"
+    and "明确说 record_hash 不是防篡改". None of them claims we have
+    tamper-evident audit; they say the opposite. The negation list only knew
+    the longer idioms (没有/不具备/并非), so the surface gate went red on
+    honest text.
+    """
+    assert _hc01_fires("便携包/自动更新既无防降级，亦无防篡改。\n") is False
+    assert _hc01_fires("自述 record_hash 不防篡改。\n") is False
+    assert _hc01_fires("明确说 record_hash 不是防篡改。\n") is False
+    assert _hc01_fires("明确声明非防篡改。\n") is False
+    assert _hc01_fires("仅内存哈希链，进程重启即丢，明确声明非审计级证据。\n") is False
+
+
 def test_existing_unverified_caveat_still_suppresses() -> None:
     """The pre-existing caveat path must keep working (no regression)."""
     assert _hc01_fires(
