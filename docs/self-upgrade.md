@@ -19,6 +19,9 @@
 # 检查更新（本地发布目录；离线时明确报“无法检查更新”，不会说“已是最新”）
 python -m src.upgrade check --app-root . --release-dir D:\releases
 
+# 也可以直接指向清单文件（发布包与清单同目录即可）
+python -m src.upgrade check --app-root . --manifest D:\releases\LIUHAO_RELEASE.json
+
 # 或使用 HTTP 清单
 python -m src.upgrade check --app-root . --manifest-url https://example.com/LIUHAO_RELEASE.json
 
@@ -45,7 +48,7 @@ python -m src.upgrade snapshots --app-root . --limit 20
 python -m src.upgrade export-snapshot --app-root . --dest D:\liuhao-snapshot-20261106
 python -m src.upgrade export-snapshot --app-root . --dest D:\snap --backup-id <备份 ID>
 
-# 对当前安装做一次自检（服务入口可导入、数据库可打开、关键表可读）
+# 对当前安装做一次自检（在临时端口真实启动服务并等健康检查，再查数据库与关键表）
 python -m src.upgrade selfcheck --app-root .
 
 # 查看“上次检查更新”的时间和结果（手动检查与每周自动检查共用）
@@ -147,12 +150,18 @@ python -m src.selfmod list
 
 #### 2.2.4 版本号规则（定稿）
 
-- 必须能被 `packaging.version.Version` 解析（PEP 440）。合法例：`0.2.0`、`1.0.0rc1`、`1.0.0.post1`、`2026.11.6`。
-- 非法例：`v0.2.0`（不要带 `v` 前缀）、`0.2.0-beta`、中文/空格、空字符串。`0.2` 能被解析但不推荐，请统一三段式。
-- 同一清单内版本不得重复（重复直接判清单无效）。
+- 评判标准只有一个：字符串能交给 `packaging.version.Version` 解析（PEP 440）。代码不额外加“必须三段式”“不许带 v”之类的限制。
+- 会被**接受并归一化**的写法（清单里可以这样写，比较时按归一化后的版本）：
+  - `v0.2.0` → 归一化为 `0.2.0`（前导 `v` 被忽略）
+  - `0.2.0-beta` → 归一化为 `0.2.0b0`
+  - `0.2` → 归一化为 `0.2`
+  - `1.0.0rc1`、`1.0.0.post1`、`2026.11.6` 原样可解析
+- 真正会被判**非法**（`invalid_manifest`）的：`packaging.version.Version` 解析失败的字符串，例如 `not-a-version`、`完全中文化`、`0.2 .0`、空字符串。
+- 注意：清单里的 `version` 原样保留在 `ReleaseInfo`，只在比较时归一化。因此 `v0.2.0` 能通过检查；安装时也会把包内版本与清单版本各自归一化后比较（`Version(a) != Version(b)`），`v0.2.0` 与 `0.2.0` 视为同一版。发布工具默认写出规范三段式，避免这种歧义。
+- 同一清单内版本不得重复（**字面重复**直接判清单无效；`v0.2.0` 与 `0.2.0` 因字面不同不会被这条拦下，但归一化后相等，比较结果相同）。
 - 比较按 PEP 440 全序；**只有目标版本严格大于当前版本才会提示升级**，相同版本不会重复提示。
-- 安装包内的版本（`pyproject.toml` 的 `[project].version` 或包根 `LIUHAO_RELEASE.json` 的 `version`）必须与清单 `version` **完全相等**，否则拒绝安装。
-- 推荐统一 `MAJOR.MINOR.PATCH` 语义化版本。
+- 安装包内的版本（`pyproject.toml` 的 `[project].version` 或包根 `LIUHAO_RELEASE.json` 的 `version`）必须与清单 `version` **归一化后相等**，否则拒绝安装。
+- 推荐统一 `MAJOR.MINOR.PATCH` 语义化版本（不带 `v` 前缀），减少归一化带来的困惑。
 
 #### 2.2.5 包内文件布局（定稿）
 
@@ -227,7 +236,7 @@ python -m src.selfmod list
 4. 对 ZIP 完整字节算 SHA256 与字节数（**此时之后不再改 ZIP**）；
 5. （可选）用 Ed25519 私钥对 ZIP 完整字节签名，base64 写入 `signature`，`signature_algorithm` 写 `ed25519`；
 6. 生成 `LIUHAO_RELEASE.json`（`schema` + `releases[]`，字段见 2.2.2/2.2.3），与 ZIP 同目录；
-7. 自检：把清单喂给 `python -m src.upgrade check --app-root . --release-dir <目录>`，确认返回 `update_available` 且退出码 0；若返回 `invalid_manifest`，按消息修字段；
+7. 自检：把清单喂给 `python -m src.upgrade check --app-root . --manifest <目录>/LIUHAO_RELEASE.json`（或 `--release-dir <目录>`），确认返回 `update_available` 且退出码 0；若返回 `invalid_manifest`，按消息修字段；
 8. 客户端首次部署时配置可信公钥（`--public-key`，或每周检查用的 `LIUHAO_UPGRADE_PUBLIC_KEY`）。
 
 完整示例：
@@ -318,19 +327,42 @@ python -m src.selfmod list
 - **执行升级后自检**（见 4.4）；
 - 成功后写账本 `apply/completed`，状态文件写 `completed`。
 
-### 4.4 升级后自检与自动回滚
+### 4.4 升级后自检（真实启动）与自动回滚
 
-`src/upgrade/selfcheck.py`，在安装完成、数据预检通过之后立即执行，**不需要用户确认**：
+`src/upgrade/selfcheck.py` + `src/upgrade/startup_probe.py`，在安装完成、数据预检通过之后立即执行，**不需要用户确认**：
 
-1. **服务入口**：在**独立子进程**中用当前安装的代码执行 `import src.gateway.main`（模块/属性可配），要求 `app` 存在且 `routes` 数量 > 0；设置超时（默认 90 秒）。用子进程而不是在本进程 `import`，是为了让“坏代码”即使有导入副作用也只影响一次性进程，同时让超时真正可执行。**不启动 uvicorn、不跑 lifespan、不监听端口**。
-2. **数据库可打开**：对升级前记录的每个 SQLite 执行 `SELECT 1`（带 `busy_timeout`）。
-3. **关键表可读**：与升级前 `capture_table_inventory` 的表清单逐库对比；缺失库文件、缺失表、`SELECT 1 FROM "<表>" LIMIT 1` 失败都记为问题。
+1. **真实启动服务**：在**独立子进程**里用当前安装的代码导入 `src.gateway.main:app`（模块/属性可配），以 `uvicorn` 在**临时空闲端口**上启动，`lifespan="on"`（完整执行应用的启动/关闭生命周期），然后轮询健康检查（默认依次试 `/v1/health`、`/health`、`/healthz`、`/openapi.json`，2xx/3xx 视为就绪），直到就绪或超时（默认 90 秒）。
+2. **确认能正常退出**：就绪后写停止标记，让子进程走 uvicorn 的优雅关闭路径；必须自己退出且退出码为 `0`，才判定成功（Windows 上不依赖 CTRL_C/terminate，避免把“被强杀”当成“正常关闭”）。
+3. **数据库可打开**：对升级前记录的每个 SQLite 执行 `SELECT 1`（带 `busy_timeout`）。
+4. **关键表可读**：与升级前 `capture_table_inventory` 的表清单逐库对比；缺失库文件、缺失表、`SELECT 1 FROM "<表>" LIMIT 1` 失败都记为问题。
+
+**隔离（自检本身不能破坏线上）**：
+
+- 安装树（`src`、`config`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LIUHAO_RELEASE.json`，以及根目录 `*.py` 顶层模块）会被**复制**（不是硬链接，避免沙箱内的写入改到真实文件）到系统临时目录，子进程的 `cwd` 就是沙箱；
+- `HOME`/`USERPROFILE`、`LIUHAO_DATA_DIR` 重定向到沙箱；**环境变量里任何指向真实安装根的绝对路径**（例如部署时配置的 `LIUHAO_HUMAN_IDENTITIES_DB=<app_root>/data/...sqlite3`）都会被改写为沙箱内同构路径，避免自检读写用户真实数据；
+- 端口由系统分配的空闲端口（诊断时才用 `--startup-port` 指定固定端口）；
+- 结束后删除沙箱（`PYTHONDONTWRITEBYTECODE=1`，不往安装树写 `.pyc`）。
+
+**失败分类**（每一类给可读原因，不是笼统“启动失败”）：
+
+| `failure_kind` | 触发 | 用户看到的原因 |
+| --- | --- | --- |
+| `port_conflict` | `attempting to bind` / `10048` / `address already in use` | 端口冲突：端口 N 已被占用，服务无法绑定（附 uvicorn 原始行） |
+| `dependency_import` | `ModuleNotFoundError` / `No module named` / `ImportError` | 依赖导入失败：具体缺哪个模块 |
+| `migration_failed` | `migrat` / `alembic` / `数据库迁移` | 数据库迁移失败：附具体异常行 |
+| `lifespan_failed` | `Application startup failed` / lifespan 异常 | lifespan 启动异常：附 traceback 最后一行 |
+| `timeout` | 超时前未就绪 | 启动超时：未在限定时间内就绪（附最后日志） |
+| `shutdown_failed` | 已就绪但未优雅退出/退出码非 0 | 关闭异常：服务未能正常关闭（退出码 N） |
+| `startup_failed` | 其余情况 | 服务启动失败（退出码 N）：附最后错误行 |
+
+判定顺序是“端口 → 依赖 → 迁移 → lifespan → 超时 → 关闭 → 其他”，所以端口占用不会被误判成 lifespan；uvicorn 在 lifespan 启动失败时可能以退出码 `0` 返回，因此**只看退出码不可靠**，未就绪前进程退出的一律按日志分类。
 
 任一问题都会让自检失败：
 
-- 账本记录 `selfcheck/failed`（附完整 `SelfCheckReport`）；
+- 账本记录 `selfcheck/failed`（附完整 `SelfCheckReport`，含 `startup` 子报告）；
+- **启动日志尾部会脱敏后落盘**到 `upgrade-state/last-selfcheck.log`（默认保留最后 200 行/20000 字符；`authorization`、`bearer`、`password`、`token`、`api_key`、URL 中的用户名密码替换为 `<已脱敏>`），便于排查；
 - 抛出 `SelfCheckError`，走与安装异常相同的自动回滚路径：恢复升级前代码与数据、校验恢复后的版本、账本记录 `apply/failed_rolled_back`、状态 `rolled_back`；
-- 用户消息明确包含“升级后自检未通过：…”和“已自动回滚”，不需要用户手动点回滚。
+- 用户消息明确包含“升级后自检未通过：…”“已自动回滚”和日志文件路径，不需要用户手动点回滚。
 
 通过时账本记录 `selfcheck/passed`，`ApplyResult` 带 `self_check_passed=true` / `self_check_issues=0`，状态继续到 `completed`。
 
@@ -338,12 +370,14 @@ python -m src.selfmod list
 
 ```powershell
 python -m src.upgrade selfcheck --app-root .
-python -m src.upgrade selfcheck --app-root . --no-service   # 只查数据库，不导入服务
+python -m src.upgrade selfcheck --app-root . --no-service     # 只查数据库，不启动服务
+python -m src.upgrade selfcheck --app-root . --health-path /custom/health
+python -m src.upgrade selfcheck --app-root . --startup-port 8080   # 诊断：固定端口
 ```
 
-退出码 `0` 通过、`1` 失败；`--json` 输出 `SelfCheckReport`（`service_ok/service_routes/databases_checked/tables_checked/issues`）。
+退出码 `0` 通过、`1` 失败；`--json` 输出 `SelfCheckReport`（`service_ok/service_detail/startup{ok,failure_kind,failure_label,reason,port,health_path,http_status,startup_seconds,exit_code,shutdown_ok,log_tail}/databases_checked/tables_checked/issues`）。
 
-`tests/test_upgrade_selfcheck.py` 覆盖：健康服务+库+表通过、坏服务模块失败、关键表缺失失败、数据库损坏失败、**自检失败触发自动回滚**（断言版本、源码字节、SQLite 内容全部恢复）、成功升级记录 `selfcheck/passed`。
+`tests/test_upgrade_selfcheck.py` 覆盖：真实启动 + 健康检查 200 + 优雅退出（退出码 0）、临时目录/真实数据目录隔离、环境变量绝对路径改写、端口冲突、缺依赖、迁移失败、lifespan 异常、超时、关闭失败不影响启动判断的分类函数、日志脱敏与截断、关键表缺失、数据库损坏、**迁移失败导致自检失败 → 自动回滚且保留脱敏日志**、成功升级记录 `selfcheck/passed` 且 `startup.ok=true`。
 
 ### 4.5 失败自动回滚
 
@@ -562,7 +596,7 @@ propose（生成 diff，不改工作区）
 | 备份创建或元数据读取失败 | 拒绝，未开始安装 | 无 |
 | 安装过程中/后异常 | 自动回滚到升级前代码与数据 | 代码/数据恢复原状 |
 | 安装后版本或数据复核失败 | 自动回滚 | 恢复原状 |
-| 升级后自检失败（服务无法导入/无路由/库打不开/关键表缺失） | `SelfCheckError`，**自动回滚，无需用户点** | 代码/数据恢复原状 |
+| 升级后自检失败（真实启动失败：端口冲突/迁移失败/依赖缺失/lifespan 异常/超时/关闭异常；或库打不开/关键表缺失） | `SelfCheckError`，**自动回滚，无需用户点**；`upgrade-state/last-selfcheck.log` 保留脱敏日志尾部 | 代码/数据恢复原状 |
 | 快照导出目标目录已存在 | `SnapshotError`，拒绝覆盖 | 无 |
 | 快照导出时源文件哈希不符 | `SnapshotError`，删除半成品 | 无 |
 | 周检查发现新版本 | 只发提示，不下载、不安装 | 无 |
@@ -611,12 +645,13 @@ propose（生成 diff，不改工作区）
 12. **没有升级过程的 UI 进度条**：状态是文本/JSON+SQLite，不是实时推送；CLI 只在阶段切换时打印。
 13. **未做真实 HTTPS/代理/证书固定测试**：HTTP 清单路径只用本地 HTTP server 测过；TLS、代理、企业证书场景未验证。
 14. **未做多版本连续升级的长时间浸泡测试**：已有测试覆盖单次升级/回滚和一次失败自动回滚；未验证连续数十次升级的备份清理与磁盘增长。备份不会自动清理，长期使用需人工清理 `upgrade-backups/`。
-15. **自检不等于“服务真的能跑”**：只验证 `src.gateway.main:app` 可导入、`app` 非空、`routes` 数量 > 0，**不启动 uvicorn、不跑 lifespan、不监听端口、不发真实请求**。依赖数据库连接池/外部服务/端口的启动期错误，自检抓不到。
-16. **自检子进程不是隔离沙箱**：导入过程以当前用户身份执行，可能产生文件/网络等导入副作用；它只是“不污染活进程 + 可超时”，不是安全边界。
-17. **自检失败会回滚到旧代码**：如果新版本来就依赖新的数据格式，而旧版读不了新数据，回滚后仍可能起不来——自检只能保证“回到升级前状态”，不保证“旧代码兼容新数据”。
-18. **周检查只在单实例排程器进程内生效**：依赖 `liuhao-scheduler` 正常运行（`local_scheduler` 单实例独占库）。该进程没起来时不会自动检查；多进程 worker 组按约定禁用排程器。
-19. **托盘提示依赖桌面会话**：无桌面/服务账户下只有控制台 outbox + `last-check.json`，用户需要主动查看；没有邮件/短信等离线外发通道。
-20. **没有“检查结果已读/忽略”状态**：`last-check.json` 只记录最近一次检查，不保存历史列表，也不支持用户标记“已忽略此版本”。重复检查发现同一版本会再次提示（每周最多一次）。
+15. **自检是真实启动，但覆盖面有限**：只验证“能导入、能跑完整 lifespan、默认健康路径可访问、能优雅退出”，**不跑业务流程、不调用写接口、不做端到端测试**。健康端点不在默认四个路径（`/v1/health`、`/health`、`/healthz`、`/openapi.json`）时，需要显式 `--health-path`，否则会被判为超时。
+16. **自检沙箱不是安全边界**：以当前用户身份执行；隔离的是**路径与端口**（临时目录 + 临时端口 + 改写指向安装根的绝对路径），不做网络/注册表/系统临时目录隔离。启动期仍可能访问外部服务（模型、HTTP 依赖等），失败会记为本次自检失败。镜像会把 `config/`（含 `auth_secrets.json` 等）复制到系统临时目录，结束后删除；这不是容器/gVisor 级隔离。
+17. **启动期迁移只在沙箱空库上验证**：如果新版在 lifespan 里跑 schema 迁移，自检用的是沙箱里的空数据库，**不能证明**同样的迁移在用户真实数据上也能成功。真实数据的可读性由“数据库可打开/关键表可读”保证，不做迁移兼容性验证。
+18. **自检失败会回滚到旧代码**：如果新版本来就依赖新的数据格式，而旧版读不了新数据，回滚后仍可能起不来——自检只能保证“回到升级前状态”，不保证“旧代码兼容新数据”。
+19. **周检查只在单实例排程器进程内生效**：依赖 `liuhao-scheduler` 正常运行（`local_scheduler` 单实例独占库）。该进程没起来时不会自动检查；多进程 worker 组按约定禁用排程器。
+20. **托盘提示依赖桌面会话**：无桌面/服务账户下只有控制台 outbox + `last-check.json`，用户需要主动查看；没有邮件/短信等离线外发通道。
+21. **没有“检查结果已读/忽略”状态**：`last-check.json` 只记录最近一次检查，不保存历史列表，也不支持用户标记“已忽略此版本”。重复检查发现同一版本会再次提示（每周最多一次）。
 
 ---
 
@@ -640,8 +675,10 @@ propose（生成 diff，不改工作区）
 最近一次实际结果（2026-11-06）：
 
 ```
-57 passed in 23.66s
+72 passed in 55.73s
 ```
+
+耗时上升来自自检用例**真的启动 uvicorn 子进程**（成功/端口冲突/迁移失败/缺依赖/lifespan 异常/超时各跑一次），不是 mock。
 
 覆盖的关键真实行为（不是“方法返回了字典”的断言）：
 
@@ -649,11 +686,27 @@ propose（生成 diff，不改工作区）
 - `test_upgrade_download_verify.py`：SHA256 通过；校验失败清理临时文件；有签名无公钥的如实文案；真实生成 Ed25519 密钥并验签；签名篡改失败；artifact 路径越界拒绝。
 - `test_upgrade_data_guard.py`：非法 JSON、损坏 SQLite；WAL 中已提交数据进入 `VACUUM INTO` 快照且不产生 `-wal`；恢复前删除 stale WAL；额外状态文件；按文件头识别 SQLite。
 - `test_upgrade_apply_rollback.py`：成功应用并生成代码/数据分离备份；显式回滚后源码与 SQLite 字节回到升级前；注入“安装后异常”自动回滚；数据损坏预检中止且不产生备份；发布包不得覆盖 `data/`；包内无版本拒绝；下载后篡改 artifact 拒绝；无回滚记录时状态落在 `failed` 而不是卡住。
-- `test_upgrade_selfcheck.py`：真实子进程导入健康服务入口通过（`routes` 数 > 0）；坏服务模块、关键表缺失、损坏数据库分别失败并给出可读原因；**发布包带坏服务入口时升级后自检失败 → 自动回滚**，断言版本、源码字节、SQLite 内容全部恢复，账本同时有 `selfcheck/failed` 与 `apply/failed_rolled_back`；正常升级记录 `selfcheck/passed`。
+- `test_upgrade_selfcheck.py`：**真实 FastAPI 子进程启动**，健康检查 `/health` 返回 200、优雅关闭、退出码 0；沙箱隔离（相对路径写入与 `LIUHAO_DATA_DIR` 写入都留在临时目录，真实 `data/` 无新文件；环境变量里指向安装根的绝对路径被改写）；端口冲突、`ModuleNotFoundError`、迁移异常、lifespan 异常、超时分别映射到 `port_conflict/dependency_import/migration_failed/lifespan_failed/timeout` 并给出可读原因；日志尾部脱敏（`password=`、`Bearer`、`api_key`、URL 用户密码）与截断；关键表缺失、损坏数据库仍失败；**发布包 lifespan 迁移失败 → 自检失败 → 自动回滚**，断言版本、源码字节、SQLite 内容全部恢复，账本同时有 `selfcheck/failed` 与 `apply/failed_rolled_back`，`upgrade-state/last-selfcheck.log` 存在、含脱敏日志且不含明文密码；正常升级记录 `selfcheck/passed` 且 `startup.ok=true`。
 - `test_upgrade_snapshot.py`：升级后往线上库写入新数据，再导出快照，导出的库仍然只有升级前的数据；`snapshot.json` 中每个文件的 SHA256 与实际导出文件一致；导出不改动线上库；目标目录已存在时拒绝且首次导出不受影响；无备份时明确报错；可按 `backup_id` 指定。
 - `test_upgrade_weekly_check.py`：用真实 `LocalScheduler` + 固定时钟跑完整 tick；发现新版本只通知（正文含“不会自动安装”）、版本/源码/备份/账本均未变化，下一次运行精确等于 `now + 7 天`；发布目录缺失记为 `unreachable` 且不含“已是最新”；同版本才 `up_to_date` 且不通知；管理器异常记为 `error` 且不谎报最新；`seed` 幂等且未配置源不 seed；`register_local_jobs` 已注册作业。
 - `test_selfmod_diff_confirm.py`：diff 生成但工作区不变；路径拒绝；一次性令牌；陈旧提案拒绝；缺测试命令拒绝。
 - `test_selfmod_copy_test.py`：副本测试通过且真实工作区无 `marker.txt`；测试失败拒绝；超时杀进程；CPU 上限杀进程；密钥形状环境变量不进子进程；默认禁止 promote；必须 `passed` + 第二次令牌；`finalize`/`rollback` 后文件字节回到原状。
+
+用真实 CLI（不是测试）复跑的一次成功 + 两次失败证据（2026-11-06）：
+
+```powershell
+# 成功：对真实安装做自检（临时 data/state/backup 目录，未碰用户数据）
+python -m src.upgrade selfcheck --app-root D:\LiuHao-AI-OS --data-dir <临时> --state-dir <临时> --selfcheck-timeout 90 --json
+# ok=true service_ok=true startup.ok=true health=/v1/health http=200 seconds=10.05 exit_code=0 shutdown_ok=true port=56364
+
+# 失败①：人为占用端口（真实安装）
+# ok=false failure_kind=port_conflict exit_code=3
+# reason: 端口冲突：端口 56444 已被占用，服务无法绑定（ERROR: [Errno 10048] error while attempting to bind ... ）
+
+# 失败②：临时安装里让 lifespan 抛迁移异常
+# ok=false failure_kind=migration_failed exit_code=3
+# reason: 数据库迁移失败：RuntimeError: database migration failed: alembic upgrade head failed (password=<已脱敏>)
+```
 
 依赖与许可证：
 

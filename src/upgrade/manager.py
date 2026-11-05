@@ -625,7 +625,7 @@ class UpgradeManager:
 
             self._set_status(
                 Phase.SELF_CHECKING,
-                "自检中：正在检查服务入口、数据库与关键表",
+                "自检中：正在临时端口真实启动服务，并检查数据库与关键表",
                 target_version=release.version,
                 backup_id=backup_id,
             )
@@ -648,9 +648,13 @@ class UpgradeManager:
                 detail=self_check.to_dict(),
             )
             if not self_check.ok:
+                log_path = self._write_selfcheck_log(self_check)
+                suffix = f"；启动日志尾部已保存到 {log_path}" if log_path else ""
                 raise SelfCheckError(
-                    "升级后自检未通过：" + (self_check_reason or "未知原因")
+                    "升级后自检未通过：" + (self_check_reason or "未知原因") + suffix
                 )
+            # Do not leave a stale failure log that contradicts this success.
+            (self.config.state_dir / "last-selfcheck.log").unlink(missing_ok=True)
 
             record = self.ledger.record(
                 kind="apply",
@@ -778,6 +782,24 @@ class UpgradeManager:
             target_version=release.version,
             error=message,
         )
+
+    def _write_selfcheck_log(self, report: Any) -> Optional[Path]:
+        """Persist the redacted startup tail so the user can investigate."""
+        startup = getattr(report, "startup", None)
+        tail = getattr(startup, "log_tail", "") if startup else ""
+        if not tail:
+            return None
+        path = self.config.state_dir / "last-selfcheck.log"
+        header = (
+            "# 升级后自检启动日志（脱敏后的尾部）\n"
+            f"# checked_at: {getattr(report, 'checked_at', '')}\n"
+            f"# failure_kind: {getattr(startup, 'failure_kind', '')}\n"
+            f"# reason: {getattr(startup, 'reason', '')}\n"
+            f"# port: {getattr(startup, 'port', 0)}\n"
+            "# 说明：不包含用户数据目录内容；密钥/令牌已替换为 <已脱敏>。\n\n"
+        )
+        atomic_write_text(path, header + tail + "\n")
+        return path
 
     # ------------------------------------------------------------------
     # Backup / restore internals

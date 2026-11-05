@@ -1,9 +1,10 @@
-"""Release manifest sources: a local directory or an HTTP(S) manifest.
+"""Release manifest sources: a local directory, a local manifest file, or an
+HTTP(S) manifest.
 
-The two sources deliberately share one contract so the rest of the module does
-not care where a release comes from. Both distinguish "cannot check" from
-"there is no newer version": an unreachable HTTP source and a missing local
-directory are *not* reported as "已是最新".
+The sources deliberately share one contract so the rest of the module does not
+care where a release comes from. They distinguish "cannot check" from "there is
+no newer version": an unreachable HTTP source and a missing local file are
+*not* reported as "已是最新".
 """
 
 from __future__ import annotations
@@ -184,6 +185,50 @@ class LocalDirectorySource(ReleaseSource):
         return str(candidate)
 
 
+class LocalManifestFileSource(ReleaseSource):
+    """A single manifest file; artifacts are resolved next to it.
+
+    This is the source a release directory produces, but pointed at one
+    explicit file instead of a directory listing. It lets users run the
+    documented command::
+
+        python -m src.upgrade check --manifest dist/release/LIUHAO_RELEASE.json
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.description = f"本地发布清单 {self.path}"
+
+    def load_manifest(self) -> ManifestLoad:
+        if not self.path.is_file():
+            return ManifestLoad(
+                ok=False,
+                reason=f"无法检查更新：发布清单不存在（{self.path}）",
+            )
+        try:
+            payload = self.path.read_bytes()
+        except OSError as exc:
+            return ManifestLoad(ok=False, reason=f"无法检查更新：读取发布清单失败（{exc}）")
+        if len(payload) > _MAX_MANIFEST_BYTES:
+            return ManifestLoad(ok=False, reason="发布清单过大，拒绝加载")
+        try:
+            manifest = parse_manifest(payload)
+        except ManifestError as exc:
+            return ManifestLoad(ok=False, reason=f"无法检查更新：发布清单无效（{exc}）")
+        return ManifestLoad(ok=True, manifest=manifest)
+
+    def resolve_artifact(self, release: ReleaseInfo) -> str:
+        base = self.path.parent.resolve()
+        candidate = (base / release.artifact).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError as exc:
+            raise ManifestError(
+                f"发布清单 artifact 指向目录之外：{release.artifact!r}"
+            ) from exc
+        return str(candidate)
+
+
 class HttpManifestSource(ReleaseSource):
     """An HTTP(S) manifest URL. Artifacts are resolved relative to it."""
 
@@ -257,14 +302,26 @@ def build_source(
     *,
     release_dir: str | Path | None = None,
     manifest_url: str | None = None,
+    manifest_path: str | Path | None = None,
     timeout: float = 5.0,
     manifest_sha256: str | None = None,
 ) -> Optional[ReleaseSource]:
     """Factory used by the CLI; returns ``None`` when nothing is configured."""
-    if release_dir and manifest_url:
-        raise ManifestError("release_dir 与 manifest_url 只能配置一个")
+    configured = [
+        name
+        for name, value in (
+            ("release_dir", release_dir),
+            ("manifest_url", manifest_url),
+            ("manifest_path", manifest_path),
+        )
+        if value
+    ]
+    if len(configured) > 1:
+        raise ManifestError("release_dir、manifest_url 与 manifest_path 只能配置一个")
     if release_dir:
         return LocalDirectorySource(release_dir)
+    if manifest_path:
+        return LocalManifestFileSource(manifest_path)
     if manifest_url:
         return HttpManifestSource(
             manifest_url, timeout=timeout, manifest_sha256=manifest_sha256

@@ -29,7 +29,12 @@ def _make_app(root: Path, *, version: str = "0.1.0") -> Path:
     (root / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "src" / "gateway").mkdir(exist_ok=True)
     (root / "src" / "gateway" / "main.py").write_text(
-        "class _App:\n    routes = [object()]\n\napp = _App()\n", encoding="utf-8"
+        "from fastapi import FastAPI\n\n"
+        "app = FastAPI()\n\n"
+        "@app.get('/health')\n"
+        "def health():\n"
+        "    return {'ok': True}\n",
+        encoding="utf-8",
     )
     (root / "data").mkdir(exist_ok=True)
     conn = sqlite3.connect(root / "data" / "app.db")
