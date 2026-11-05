@@ -10,9 +10,10 @@
 > - **未做**：仓库中找不到实现。
 >
 > 本表为汇总方填写，事实以仓库实际状态与 commit 为准；各流仍在改代码，收尾时会再刷新一次。
-> 最后刷新：2026-11-06（基于 `p36` HEAD `230b6e25`，工作区含其他流的未提交改动）。
-> 本轮刷新：按 `docs/strategy-30-directions.md` 的真实核对结果补全 T-11、T-19～T-24，
-> 并新增「红线清单」与「启动触发条件」；T-15 门禁安全值锁定已完成并通过实跑。
+> 最后刷新：2026-11-06（基于推送后的 `origin/p36` `7d4d9aa0`）。
+> 本轮刷新：按仓库真实 commit 更新 T-14（CI 三个红的根因与修复）、T-15/16
+> 的实测数字、T-19～T-22（知识闭环/排程器/备份/产物索引均已有代码入库但未 E2E）、
+> T-12（`src/intel/` 已入库）。**仍标「部分完成」的，都是只有单测没有真实链路。**
 
 | 编号 | 要求（用户视角） | 落到哪一路 / 模块 | 关键代码或文档路径 | 状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
@@ -24,20 +25,20 @@
 | T-06 | 界面科幻、未来风；品牌条款不许改 | 控制台视觉（前端流） | `docs/ui-scifi-direction.md`、`docs/ui-reference-terse.md`、`apps/console/console/src/os.css` | 部分完成 | 视觉规范文档已写（深色主基调、`--sc-*` 令牌、品牌不复制第三方资产）；主题令牌已在 `os.css:17-79` 落地 | 未做整站视觉走查；无「品牌条款不可改」的自动化校验 |
 | T-07 | 独立代码中发现的隐患要处理完善（不是只写报告） | 各工程流 | 最近提交 | 部分完成 | `230b6e25`（焦点双环/AA 对比度）、`db0db76c`（手机底栏补管家入口）、`d768fa56`（中文否定审计措辞）、`6a6060ae`（测试身份隔离） | 仍有已知缺口：006 迁移 SQLite-only、扫描器 `exit-code 0`、CI 仅 SQLite 路径等 |
 | T-08 | 能并行的任务就并行，别串行磨时间 | 编排（当前为人工多流） | 8 条工程流并行；CI job 并行 | 部分完成 | 本轮同一仓库 8 条流并行改代码；`.github/workflows/ci.yml` 多 job 并行 | 缺工具层面的自动分片/并行调度；本次靠人分流 |
-| T-09 | 全量开源资源系统性研究：多平台多领域，记录地址/版本/许可证/依赖/维护/安全；未验证必须标注 | 开源情报流 | `docs/oss-radar/`（8 份，约 395 KB）、`oss-registry.yaml` | 部分完成 | `docs/oss-radar/` 覆盖安全合规、供应链、质量成本、工程品质、数据网络、Agent 编排、UI 交互、记忆检索；`oss-registry.yaml` 已跟踪并有 `tests/test_oss_registry_used_field.py` | `docs/oss-radar/` **未提交**；未证明逐项核对过版本/许可证/维护状态；「未验证」标注需抽查 |
+| T-09 | 全量开源资源系统性研究：多平台多领域，记录地址/版本/许可证/依赖/维护/安全；未验证必须标注 | 开源情报流 | `docs/oss-radar/`（8 份，约 395 KB）、`oss-registry.yaml` | 部分完成 | 8 份文档覆盖安全合规、供应链、质量成本、工程品质、数据网络、Agent 编排、UI 交互、记忆检索（文件大小 36–70 KB/份），**本轮已随文档提交入库**；`oss-registry.yaml` 已跟踪并有 `tests/test_oss_registry_used_field.py` | 未证明逐项核对过版本/许可证/维护状态；「未验证」标注只做了 lint 层面保证，内容抽查未做 |
 | T-10 | 每个候选回答九问（是否已有同类能力/不足/能解决什么/源码借鉴/能否封装/是否破坏接口/许可证/安全维护成本/集成与回归测试） | 开源情报流 | `src/intel/proposals.py`、`src/intel/capabilities.py`、`docs/oss-radar/*.md` | 部分完成 | 提案生成器带免责声明（`src/intel/proposals.py:13-14`）；能力对照在 `capabilities.py` | 九问是否逐条落表未验证；多数候选文档未确认九问齐全 |
 | T-11 | 30 个方向 + 用户没想到的方向，外加五大战略中心 | 战略/架构流 | `docs/strategy-30-directions.md` | 部分完成（研究完成，工程未完成） | `strategy-30-directions.md:11-18` 逐方向判定：**真有 8**（1、8、16、22、23、25、29、30）、**半成品 11**（2、3、7、13、17、20、21、24、26、27、28）、**假实现 4**（5 多模态、6 电脑操作、18 教育、19 创意）、**无实现 7**（4 科研、9 情报平台、10 数字孪生、11 IoT、12 机器人、14 空间智能、15 工业自动化）；逐条证据见 `:48-86` 矩阵 | 研究已完成且给出完成度；「真有」只是静态代码判定，报告 `:224-233` 明确未跑运行时 E2E，不能当已完成 |
-| T-12 | 独立内部模块 LIUHAO Open Source Intelligence（发现分类/跟踪版本/许可证与依赖漏洞/找缺口/生成方案/自动测试/记录来源） | 开源情报模块 | `src/intel/`（models/github_client/scanner/licenses/proposals/report/store/capabilities/__main__） | 部分完成 | 模块有 CLI 入口（`src/intel/__main__.py`）与测试 `tests/test_intel_flow.py`、`tests/test_intel_licenses.py`、`tests/test_intel_store.py`；只发现不建议（`src/intel/__init__.py:3-18`） | `src/intel/` 整目录**未提交**；未接入 gateway；未用真实 GitHub API 跑过一次完整扫描（无运行证据）；不接控制台是战略结论（`strategy-30-directions.md:184`） |
+| T-12 | 独立内部模块 LIUHAO Open Source Intelligence（发现分类/跟踪版本/许可证与依赖漏洞/找缺口/生成方案/自动测试/记录来源） | 开源情报模块 | `src/intel/`（models/github_client/scanner/licenses/proposals/report/store/capabilities/__main__） | 部分完成 | 已入库（`0535d321`）；CLI 入口 `src/intel/__main__.py`，测试 `tests/test_intel_flow.py`、`tests/test_intel_licenses.py`、`tests/test_intel_store.py`；只发现不建议（`src/intel/__init__.py:3-18`） | 未接入 gateway；未用真实 GitHub API 跑过一次完整扫描（无运行证据）；不接控制台是战略结论（`strategy-30-directions.md:184`） |
 | T-13 | 边界：尽可能广泛发现、严格筛选、只吸收有价值且合法兼容的 | 开源情报模块 | `src/intel/licenses.py`、`oss-registry.yaml` | 部分完成 | `licenses.py:143-161` 按 runtime/build/tool 场景判定；runtime 下 GPL/AGPL/unknown 一律拒绝；测试 `tests/test_intel_licenses.py:42-104` | 「有价值」评分与人工复核流程未实现 |
-| T-14 | 推送 origin、修 CI（原任务书第 10、11 条） | 交付/CI（本路） | `.github/workflows/*.yml` | 部分完成 | 已推送 `af5b0989..230b6e25` 到 `origin/p36`；CI run `42104380309`（push 后排队/进行中） | 待看 CI 结果；已知隐患见下方「CI 隐患」，未修前不标完成 |
-| T-15 | 11 个门禁变量按「安全优先」默写 | 配置/门禁（本路） | `scripts/verify_deployment_gate_vars.py`（`SEED_GATES`/`safe` 规则）、`docker-compose.prod.yml:37-127` | 已完成 | 门禁脚本实际运行 exit=0（PASS）；11+2 个变量在 `SEED_GATES` 增加 `safe` 规则并锁定；`tests/test_deployment_gate_vars_judgement.py` 43 项通过，`TestSafeValueLock` 锁定生产值（模拟执行=0、围栏=on、cap=4、路径都在 `/app/data`） | 安全值只在生产 bundle 上判定；staging 允许宽松（设计如此）。路径另用 Dockerfile 的 `mkdir -p /app/data` 与 console dist 校验 |
-| T-16 | Windows 兼容 / pytest 超时 / etcd 健康检查 | 平台兼容（本路） | `tests/`、`scripts/verify_readiness.py`、`.github/workflows/ci.yml` | 部分完成 | BOM 致 `ast.parse` 失败已修（`19fadf35`）；etcd 健康检查改用含 shell 的 `bitnamilegacy/etcd:3.5.9` 并指向真实 `etcdctl`（`ci.yml:45-60`）；`pytest-timeout` 已进 `[tests]`（`pyproject.toml:130`） | 本机无 etcd，etcd 路径只能标「需 CI 环境验证」；慢用例识别未完成；Windows 路径/编码需继续抽查 |
-| T-17 | 手机端实测（同一 Wi-Fi 打开 → 登录 → 发消息） | 运行验证（本路） | 待实测 | 未验证 | 暂无真实手机实测记录 | 需区分虚拟网卡地址，写清用户该用哪个地址；做不到的部分如实标注原因 |
+| T-14 | 推送 origin、修 CI（原任务书第 10、11 条） | 交付/CI（本路） | `.github/workflows/*.yml`、`scripts/verify_readiness.py`、`scripts/verify_image_build.py`、`Dockerfile` | 部分完成 | 已推送 `af5b0989..230b6e25`、`230b6e25..5a4576df`；本地历史被其他流改写后，用**合并提交** `4b57c9fb` 与 `origin/p36` 对齐（fast-forward 推送，**未强推、未 reset**），随后推送修复 `7d4d9aa0`。三个 CI 红已定位并修：①readiness C8 因指标端点改为 fail-closed 而 403 → 校验器带 token 抓取，**本机实跑 200 / 10027 bytes / 48 families**；②两条单测红（`test_full_repo_surface_has_no_uncaveated_claims`、`TestIgnoredPathsAreDeterministic`）→ 补 caveat + 去掉漂移 ref，**复跑 5 passed**；③Build Verification 因镜像内 `/app/logs` 不存在（`PermissionError`）→ Dockerfile 预建并 chown，另给镜像补 `LIUHAO_JWT_REVOCATION_DB` 落 `/app/data` | `doc-audit-claim-lint` 在 `4b57c9fb` 上已 success；Build Verification 与主 CI 的修复**尚未在 CI 复验**，故不标完成。隐患 C-1/C-2/C-3 仍未修（见下表） |
+| T-15 | 11 个门禁变量按「安全优先」默写 | 配置/门禁（本路） | `scripts/verify_deployment_gate_vars.py`（`SEED_GATES`/`safe` 规则）、`docker-compose.prod.yml:37-127` | 已完成 | 门禁脚本实际运行 **exit=0**（`RESULT: PASS`，11+2 个变量全部解析）；`TestSafeValueLock` 实跑 **7 passed / 37 deselected / 6.07s**，锁定生产值（模拟执行=0、围栏=on、cap=4、路径都在 `/app/data`）；另有一条真实运行断言复跑通过（`TestIgnoredPathsAreDeterministic` 5 passed） | 安全值只在生产 bundle 上判定；staging 允许宽松（设计如此）。路径另用 Dockerfile 的 `mkdir -p /app/data` 与 console dist 校验。**没有为让门禁变绿而调低任何阈值** |
+| T-16 | Windows 兼容 / pytest 超时 / etcd 健康检查 | 平台兼容（本路） | `tests/`、`scripts/verify_readiness.py`、`.github/workflows/ci.yml`、`Dockerfile` | 部分完成 | BOM 致 `ast.parse` 失败已修（`19fadf35`）；etcd 健康检查用 `bitnamilegacy/etcd:3.5.9` + 真实 `etcdctl`（`ci.yml:45-60`）；**慢用例实测**：4 个 sleep/超时相关文件全跑 **117 passed, 1 skipped, 40.27s**，最慢 3.75s（`--timeout=60` 下无逼近用例，无需调大超时）；Windows 侧另修镜像内 `/app/logs` 缺失导致的启动即崩（本轮） | **etcd 未验证**：本机无 docker daemon、无 etcd，只能标「需 CI 环境验证」（不假装通过）；`packaging/build_windows_installer.ps1` 保留 UTF-8 BOM 是 PowerShell 5.1 承载中文所必需，非缺陷；Windows 路径/编码仍需继续抽查 |
+| T-17 | 手机端实测（同一 Wi-Fi 打开 → 登录 → 发消息） | 运行验证（本路） | `docs/mobile-access.md` | 未验证（仅服务侧已验证） | 服务侧实测：`127.0.0.1:8000` 与 LAN `192.168.31.171:8000` 均返回 200；默认路由 `Get-NetRoute 0.0.0.0/0` → WLAN；虚拟网卡 `172.31.48.1`(WSL)、`172.25.48.1`(Default Switch)、`169.254.*` 已识别并排除 | **手机侧打开/登录/发消息未验证**（无设备）；已记录可信的登录阻塞：`LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 未设置 ⇒ 所有人身份行被拒 ⇒「无人可登录」，附启动日志原文与处理步骤 |
 | T-18 | 延后项不得消失，必须登记 | 文档（本路） | `docs/known-gaps.md` | 部分完成 | 已有清单与 semgrep 缺口（`ca900b99`）；本轮扩充为 D-1～D-10 + 红线清单 + 不做清单 | 见 `docs/known-gaps.md` 的「已明确延后、不得遗忘」 |
 | T-19 | 知识闭环：知识入库 UI + 检索 + 对话注入（方向 3） | 知识 / 控制台 / 对话 | `apps/console/console/src/pages/Directory.tsx`、`src/gateway/chat.py:159,185`、`src/gateway/knowledge_context.py`、`src/knowledge/` | 部分完成 | `69db011e` 把知识中心改为可用的导入/文档/分块预览/检索测试界面；`chat.py` 通过 `build_knowledge_context` 注入，带 `use_knowledge` 开关 | 代码链路已在；**未跑真实 embedding provider 下的 E2E**（上传→切分→向量→对话引用来源），「未配置时 503」也未实测。触发条件 K-1 |
-| T-20 | 进程内排程器：定时/循环 Goal（方向 8/20） | 目标执行 / 自动化 | `src/reliability/checkpointer.py`（只调度审计检查点）、无 taskiq/apscheduler 生产调用 | 未做 | `strategy-30-directions.md:23,158-160` | 不引入 Redis/外部队列；SQLite 持久化 + 单进程。触发条件 K-2 |
-| T-21 | 备份/恢复/导出一键化（方向 28/23） | 运维 / 设置页 | `scripts/ops/backup.py:11`（自述「CLI but no production caller wired」） | 未做 | `strategy-30-directions.md:24,162-164` | **主线程正在改这块**，收尾时以最终状态刷新本行，不要按旧结论判断 |
-| T-22 | 产物索引 + 目标→文件回溯（方向 26/7） | 执行 / 文件 | `src/gateway/files.py`（只读浏览）、`src/ai/workspace.py` | 未做 | `strategy-30-directions.md:25,166-168` | 触发条件 K-3 |
+| T-20 | 进程内排程器：定时/循环 Goal（方向 8/20） | 目标执行 / 任务调度 | `src/tasks/`（`3bda8c7d`：进程内 SQLite 排程器、重试退避、死信、重启恢复） | 部分完成（代码入库，E2E 未验证） | 代码 `src/tasks/local_scheduler.py`；单测 `tests/tasks/test_local_scheduler.py`、`tests/tasks/test_taskiq_queue.py` | **只有单测，没有真实定时 Goal 跑满周期 + 重启恢复的验证**；也尚未接 Goal 创建入口。不引入 Redis/外部队列。触发条件 K-2 |
+| T-21 | 备份/恢复/导出一键化（方向 28/23） | 运维 / 设置页 | `src/cli/backup_commands.py`（`dcf025c3`）、`scripts/ops/backup.py:11`（自述无生产调用方） | 部分完成（CLI 真了，一键化未做） | `dcf025c3`：CLI 备份命令改为操作真实归档（SQLite `VACUUM INTO`、元数据随包）；`scripts/ops/backup.py` 仍有「no production caller wired」声明 | 无设置页入口、无恢复流程、无版本兼容校验 ⇒ 不标完成。触发条件 K-3 |
+| T-22 | 产物索引 + 目标→文件回溯（方向 26/7） | 执行 / 文件 | `src/artifacts/`（`c14ab20c` 索引 CLI/报表；`82f95450` 接入执行链，可选、默认不变） | 部分完成（代码入库，无 UI/权限过滤） | 代码 `src/artifacts/index.py`；单测 `tests/artifacts/test_artifact_index.py`、`test_artifact_report.py`、`test_artifact_wiring.py` | 未做：按权限过滤（越权不可见）、控制台入口、执行回放界面。触发条件 K-3 |
 | T-23 | 明确不做清单（电脑自主操作 / 任意仓库改码提 PR / 金融交易 / 外部 KYC / 全网常驻采集 / 机器人 IoT 工业执行） | 战略（决策） | `docs/strategy-30-directions.md:188-220` | 延后（明确不做） | 分节理由：物理硬件依赖、高风险强监管、个人单机无日常价值、与产品形态冲突 | 不是「以后做」，是「不做」；重新捡起必须先改本节并给出安全/合规前提 |
 | T-24 | 五大战略中心的决策：只做信息架构、命名与权限边界，不拆五套后端 | 战略 / 架构 | `docs/strategy-30-directions.md:42-46`、`:87-147` | 已完成（决策） | 理由：1 进程 1 主库 + 至少 9 个 SQLite，与「双击即用、零运维」冲突；中心边界不干净（知识被执链消费、安全拦执行、进化评估执行） | 若未来改为多服务，必须先解除「零运维」承诺并给出迁移与运维方案 |
 
@@ -76,8 +77,8 @@
 | 编号 | 对应 | 启动条件 | 启动后第一步 |
 |---|---|---|---|
 | K-1 | T-19 知识闭环 | 已配置可用 embedding provider（代码已在：UI + `/v1/chat` 注入） | 跑真实 E2E：上传→切分→向量→对话引用来源；并验证未配置时返回 503 |
-| K-2 | T-20 排程器 | 出现「每天/每周自动执行」的真实 Goal 需求 | 进程内调度 + SQLite 持久化，不引入 Redis/外部队列 |
-| K-3 | T-21/T-22 备份与产物索引 | 用户要求「换机迁移/可恢复」或「从目标反查产物」 | 先接现有 `scripts/ops/backup.py`（主线程改完后以最终状态为准），再做产物索引 |
+| K-2 | T-20 排程器 | 出现「每天/每周自动执行」的真实 Goal 需求 | 把已入库的 `src/tasks/` 排程器接到 Goal 创建入口，跑真实定时 + 重启恢复验收（不引入 Redis/外部队列） |
+| K-3 | T-21/T-22 备份与产物索引 | 用户要求「换机迁移/可恢复」或「从目标反查产物」 | 备份：把已真实化的 `src/cli/backup_commands.py` 接到设置页 + 做恢复流程；产物索引：补权限过滤与控制台入口 |
 | K-4 | D-1 自升级 | 签名校验、审批票据、回滚与沙箱四件套齐备 | 只允许「生成 diff → 人工审批 → 沙箱测试 → 原子替换」 |
 | K-5 | D-6 情报中心后续 | 拿到真实 advisory 配额，且用户需要订阅式漏洞/更新提醒 | 先接 advisory 查询，再做订阅通知 |
 | K-6 | D-5 30 方向服务化 | 明确解除「双击即用、零运维」承诺并给出迁移/运维方案 | 否则维持 T-24 决策：只做信息架构 |
