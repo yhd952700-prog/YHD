@@ -1628,8 +1628,9 @@ html, body, #root {
   outline-offset: 2px;
 }
 
-/* 旧 JARVIS / 审批面板是金色主题，焦点环跟随金色以免蓝色突兀。 */
-:where(.jarvis-input-wrap textarea, .sess-user-input, .sess-select, .profile-input, .profile-select):focus-visible {
+/* 旧 JARVIS / 审批面板是金色主题，焦点环跟随金色以免蓝色突兀。
+   这 7 个选择器逐一对应旧清单里的 6 处 outline:none（发送按钮与输入框成对出现）。 */
+:where(.jarvis-input-wrap textarea, .jarvis-send, .sess-user-input, .sess-select, .sess-btn, .profile-input, .profile-select):focus-visible {
   outline: 2px solid var(--gold, #ffc93c);
   outline-offset: 2px;
 }

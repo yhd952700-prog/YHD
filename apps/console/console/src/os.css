@@ -438,13 +438,14 @@ select {
   color: var(--os-text-faint);
 }
 
-/* 焦点环由外层容器统一绘制（双环：2px 实色 + 4px 柔光）。
-   内层 <input> 因此保留 outline:none，避免出现"环中环"。 */
+/* 焦点环由外层容器统一绘制（双环：2px 背景色间隙 + 4px 实色环）。
+   内层 <input> 因此保留 outline:none，避免出现"环中环"。
+   旧实现的外环是 16% 柔光，在浅色底上不足 3:1；改为实色后两套主题都可见。 */
 .os-search:focus-within {
   border-color: var(--os-focus);
   box-shadow:
-    0 0 0 2px var(--os-focus),
-    0 0 0 4px var(--os-accent-soft);
+    0 0 0 2px var(--os-bg),
+    0 0 0 4px var(--os-focus);
 }
 
 .os-search input {
@@ -553,6 +554,8 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  /* 标题 + 徽标/按钮在 390px 下先换行，而不是把按钮挤出卡片。 */
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
@@ -1118,7 +1121,8 @@ select {
   display: flex;
   align-items: center;
   gap: 14px;
-  color: var(--os-accent);
+  /* 品牌文字同样按"彩色文字"口径取深蓝；--os-accent 只用于实底填充。 */
+  color: var(--os-accent-text);
 }
 
 .os-login-aside-mark {
@@ -1264,8 +1268,8 @@ select {
 .os-input:focus-within {
   border-color: var(--os-focus);
   box-shadow:
-    0 0 0 2px var(--os-focus),
-    0 0 0 4px var(--os-accent-soft);
+    0 0 0 2px var(--os-bg),
+    0 0 0 4px var(--os-focus);
 }
 
 .os-input input {
@@ -1737,6 +1741,8 @@ select {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--os-text-faint);
+  /* 文档 id / 文件名可能很长且无空格，窄屏必须允许断行。 */
+  overflow-wrap: anywhere;
 }
 
 .os-select {
@@ -1932,6 +1938,7 @@ select {
   font-size: 10.5px;
   color: var(--os-text-faint);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .os-kb-doclabel {
@@ -2214,6 +2221,13 @@ select {
   margin-top: 6px;
 }
 
+/* 产物路径可能很长且没有空格：给它断行权限，窄屏才不会撑破卡片。 */
+.os-butler-artifacts .os-link {
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .os-butler-preview {
   margin-top: 10px;
   padding: 10px 12px;
@@ -2275,6 +2289,8 @@ select {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--sc-cyan) 16%, transparent);
 }
 
+/* 任务卡上的运行点保持静态：每个任务都脉冲会让同屏动画数随任务数线性增长
+   （规范上限 3 个）。运行感由顶部的单个脉冲点 + 不定进度条承担。 */
 .os-butler-task-dot {
   display: inline-block;
   width: 6px;
@@ -2282,7 +2298,6 @@ select {
   margin-right: 5px;
   border-radius: 50%;
   background: var(--sc-cyan);
-  animation: os-butler-pulse 1.6s ease-out infinite;
 }
 
 .os-butler-task-head {
@@ -2295,6 +2310,7 @@ select {
 .os-butler-task-name {
   flex: 1 1 200px;
   min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13.5px;
   line-height: 1.5;
 }
@@ -2309,6 +2325,7 @@ select {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--os-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .os-butler-task-result {
@@ -2464,4 +2481,38 @@ select {
 .os-butler-gaps dd {
   margin-bottom: 10px;
 }
+
+/* ==========================================================================
+   键盘焦点（a11y）
+   --------------------------------------------------------------------------
+   全站统一 :focus-visible：鼠标点击不画环，键盘 / 读屏一定看得见。
+   此前 6 处 `outline: none` 的输入框已全部处理 ——
+     · 顶栏搜索、登录输入：外层容器画「2px 背景间隙 + 4px 实色环」双环（见上）；
+     · 对话 / 会话 / 画像的输入与下拉：App.css 的 :focus-visible 金色环；
+   这里只补剩余两个边缘情况：底栏贴着屏幕下沿（外扩环被视口裁掉），
+   以及窄屏下长文本的断行兜底。
+   ========================================================================== */
+
+:where(button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--os-focus);
+  outline-offset: 2px;
+}
+
+/* 底栏项下沿紧贴视口，outline-offset 2px 会有一半不可见 → 内缩 3px 画在项内。 */
+.os-bottom-item:focus-visible {
+  outline-offset: -3px;
+  border-radius: 10px;
+  background: var(--os-accent-soft);
+}
+
+/* 窄屏兜底：任务名独占一行，搜索框整行占位；动作按钮换行而不是把页面撑宽。 */
+[data-mode='mobile'] .os-butler-task-name {
+  flex-basis: 100%;
+}
+
+[data-mode='mobile'] .os-kb-search .os-input {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
 
