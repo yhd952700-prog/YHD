@@ -120,7 +120,11 @@ def test_empty_knowledge_degrades_and_reports_it(client, fake_llm):
     body = response.json()
     knowledge = body["knowledge"]
     assert knowledge["used"] is False
-    assert knowledge["reason"] == "empty"
+    # 空库由知识库侧判为 no_relevant / empty_corpus，原因原样透传。
+    assert knowledge["reason"] == "empty_corpus"
+    assert knowledge["decision"] == "empty_corpus"
+    assert knowledge["diagnostics"]["gate"] == "knowledge"
+    assert knowledge["diagnostics"]["retrieval_status"] == "no_relevant"
     assert "本次未使用知识库" in knowledge["message"]
     # “库里没有文档”与“库里没有答案”必须说清楚，不能混用同一句文案。
     assert "知识库为空" in knowledge["message"]
@@ -269,18 +273,16 @@ def _install(monkeypatch, result):
     [
         {"no_relevant": True},
         {"has_relevant": False},
-        {"retrieval": {"status": "no_relevant"}},
         {"reason": "no_relevant_content"},
     ],
 )
-def test_explicit_no_relevant_signal_skips_injection(
+def test_legacy_no_relevant_shapes_still_skip_injection(
     client, fake_llm, monkeypatch, signal
 ):
-    """检索侧显式说“无相关内容”时，即使凑了 10 条高分片段也不注入。"""
+    """没有权威 ``retrieval.status`` 的旧实现仍按并集匹配兼容。"""
     result = {
         "query": "部署口令应该放在哪里？",
         "count": 10,
-        "retrieval": {"mode": "vector"},
         "hits": _unrelated_hits([0.9] * 10),
         **signal,
     }
@@ -292,7 +294,6 @@ def test_explicit_no_relevant_signal_skips_injection(
     assert response.status_code == 200, response.text
     knowledge = response.json()["knowledge"]
     assert knowledge["used"] is False
-    # 元信息必须说“未找到相关内容”，而不是“知识库为空”——两者含义不同。
     assert knowledge["reason"] == "no_relevant"
     assert knowledge["decision"] == "no_relevant"
     assert "未找到相关内容" in knowledge["message"]
@@ -300,6 +301,7 @@ def test_explicit_no_relevant_signal_skips_injection(
     assert knowledge["sources"] == []
     assert knowledge["context_tokens"] == 0
     assert knowledge["diagnostics"]["candidates"] == 10
+    assert knowledge["diagnostics"]["gate"] == "gateway"
     # 对话照常进行，且垃圾片段一个字都没进提示词。
     assert response.json()["reply"] == "ok"
     assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
@@ -379,3 +381,171 @@ def test_gate_pass_injects_and_reports_diagnostics(client, fake_llm, monkeypatch
     assert knowledge["diagnostics"]["top_score"] == pytest.approx(0.91)
     assert knowledge["diagnostics"]["runner_up_score"] == pytest.approx(0.62)
     assert "[知识库上下文]" in fake_llm[0].seen_prompts[0]
+
+
+# ==================== 知识库定稿契约的集成测试 ====================
+
+
+def _retrieval(status, reason=None, hits=None, top_score=None, runner_up=None):
+    """``src.knowledge.abstention`` 的定稿结构（逐字段照抄）。"""
+    return {
+        "mode": "hybrid",
+        "fts_available": True,
+        "status": status,
+        "reason": reason,
+        "top_score": top_score,
+        "runner_up_score": runner_up,
+        "thresholds": {"min_top_score": 0.08, "min_score_gap": 0.05},
+        "abstained": status == "no_relevant",
+        "hits": list(hits or []),
+    }
+
+
+def test_contract_ok_injects_even_below_gateway_threshold(
+    client, fake_llm, monkeypatch
+):
+    """知识库判 ok 时以它为准：RRF 分数低于网关 0.25 也照常注入。"""
+    hits = _unrelated_hits([0.032, 0.016])
+    result = {
+        "query": "部署口令",
+        "count": 10,
+        "hits": hits,
+        "retrieval": _retrieval(
+            "ok", None, hits, top_score=0.18, runner_up=0.09
+        ),
+    }
+    _install(monkeypatch, result)
+    # 网关旧门槛保持默认 0.25（fixture 里是 0，这里显式恢复成生产值）。
+    monkeypatch.setenv("LIUHAO_CHAT_KNOWLEDGE_MIN_SCORE", "0.25")
+    monkeypatch.setenv("LIUHAO_CHAT_KNOWLEDGE_MIN_MARGIN", "0.02")
+
+    response = client.post("/v1/chat", headers=_token(), json={"message": "部署口令"})
+    assert response.status_code == 200, response.text
+    knowledge = response.json()["knowledge"]
+    assert knowledge["used"] is True
+    assert knowledge["decision"] == "inject"
+    assert knowledge["hits"] == 2
+    assert [source["document_id"] for source in knowledge["sources"]] == [
+        "noise-0",
+        "noise-1",
+    ]
+    diagnostics = knowledge["diagnostics"]
+    assert diagnostics["gate"] == "knowledge"
+    assert diagnostics["retrieval_status"] == "ok"
+    assert diagnostics["top_score"] == pytest.approx(0.18)
+    assert diagnostics["runner_up_score"] == pytest.approx(0.09)
+    assert diagnostics["thresholds"] == {
+        "min_top_score": 0.08,
+        "min_score_gap": 0.05,
+    }
+    assert "[知识库上下文]" in fake_llm[0].seen_prompts[0]
+
+
+@pytest.mark.parametrize(
+    "reason,message,forbidden",
+    [
+        (
+            "below_threshold",
+            "本次未使用知识库：未找到相关内容",
+            "知识库为空",
+        ),
+        (
+            "ambiguous",
+            "本次未使用知识库：找到的内容不够确定",
+            "知识库为空",
+        ),
+        (
+            "empty_corpus",
+            "本次未使用知识库：知识库为空（暂无可检索文档）",
+            "未找到相关内容",
+        ),
+    ],
+)
+def test_contract_abstention_reasons_pass_through(
+    client, fake_llm, monkeypatch, reason, message, forbidden
+):
+    """三种弃答原因必须原样透传，且各自对应不同的用户文案。"""
+    result = {
+        "query": "员工年假怎么申请？",
+        "count": 10,
+        "hits": [],
+        "retrieval": _retrieval("no_relevant", reason, [], 0.04, 0.03),
+    }
+    _install(monkeypatch, result)
+
+    response = client.post(
+        "/v1/chat", headers=_token(), json={"message": "员工年假怎么申请？"}
+    )
+    assert response.status_code == 200, response.text
+    knowledge = response.json()["knowledge"]
+    assert knowledge["used"] is False
+    assert knowledge["reason"] == reason
+    assert knowledge["decision"] == reason
+    assert knowledge["message"] == message
+    assert forbidden not in knowledge["message"]
+    assert knowledge["sources"] == []
+    assert knowledge["hits"] == 0
+    assert knowledge["context_tokens"] == 0
+    diagnostics = knowledge["diagnostics"]
+    assert diagnostics["gate"] == "knowledge"
+    assert diagnostics["retrieval_status"] == "no_relevant"
+    assert diagnostics["retrieval_reason"] == reason
+    assert diagnostics["candidates"] == 0
+    assert diagnostics["top_score"] == pytest.approx(0.04)
+    assert diagnostics["thresholds"]["min_top_score"] == pytest.approx(0.08)
+    # 对话照常，且没有任何片段进入提示词。
+    assert response.json()["reply"] == "ok"
+    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+
+
+def test_authoritative_status_beats_legacy_flags(client, fake_llm, monkeypatch):
+    """``status="ok"`` 是权威字段，旧的否定标记不能反过来盖住它。"""
+    hits = _unrelated_hits([0.4])
+    result = {
+        "query": "q",
+        "count": 5,
+        "hits": hits,
+        # 旧实现的标记，与权威 status 冲突；必须以 status 为准。
+        "has_relevant": False,
+        "retrieval": _retrieval("ok", None, hits, 0.3, None),
+    }
+    _install(monkeypatch, result)
+
+    response = client.post("/v1/chat", headers=_token(), json={"message": "q"})
+    assert response.status_code == 200, response.text
+    knowledge = response.json()["knowledge"]
+    assert knowledge["used"] is True
+    assert knowledge["decision"] == "inject"
+    assert knowledge["sources"][0]["document_id"] == "noise-0"
+
+
+@pytest.mark.parametrize("bad_score", [None, "not-a-number", -0.1])
+def test_contract_ok_with_unusable_scores_falls_back(
+    client, fake_llm, monkeypatch, bad_score
+):
+    """分数缺失/异常是网关唯一的否决权；此时按弃答处理并说明原因。"""
+    hits = [
+        {
+            "doc_id": "noise-0#0",
+            "score": bad_score,
+            "text": "正文",
+            "metadata": {"document_id": "noise-0", "chunk_index": 0},
+        }
+    ]
+    result = {
+        "query": "q",
+        "count": 1,
+        "hits": hits,
+        "retrieval": _retrieval("ok", None, hits, 0.2, None),
+    }
+    _install(monkeypatch, result)
+
+    response = client.post("/v1/chat", headers=_token(), json={"message": "q"})
+    assert response.status_code == 200, response.text
+    knowledge = response.json()["knowledge"]
+    assert knowledge["used"] is False
+    assert knowledge["reason"] == "score_anomaly"
+    assert "分数缺失或异常" in knowledge["message"]
+    assert knowledge["sources"] == []
+    assert response.json()["reply"] == "ok"
+    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
