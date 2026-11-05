@@ -78,7 +78,7 @@
 | 4.5 | 推理/反思链 | 🔴 假实现 | `git grep "from .reasoning\|import reasoning" -- src` **0 命中** | 不可达 | `src/ai/reasoning/` 仅测试导入 |
 | 4.6 | 多智能体委员会 / 黑板 | 🔴 假实现 | `committee`/`blackboard` 仅命中自身文件 | 不可达 | 无编排消费方；生产是单员工 resolver |
 | 4.7 | 结果评估 | 🟢 真接线 | `src/ai/agent_runtime.py:36` `src.kernels.evaluation`；`src/ai/agent_factory.py:243` `evaluate_simple` | 是 | 真实评估内核（非 LLM 打分） |
-| 4.8 | 自进化/自我改进 | 🔴 假实现 | `EvolutionEngine` 仅命中 `src/ai/evolution.py` 自身 | 不可达 | 仅测试 |
+| 4.8 | 自进化/自我改进（未实现，仅测试导入） | 🔴 假实现 | `EvolutionEngine` 仅命中 `src/ai/evolution.py` 自身 | 不可达 | 仅测试 |
 | 4.9 | 用户反馈学习 | 🔴 假实现 | `src/feedback/feedback_api.py` 未挂载到网关；服务为内存 `dict` | 不可达 | 无持久化、无 API 路由 |
 | 4.10 | 成本核算（token 记账） | 🟢 真接线 | `src/ai/agent_factory.py` 使用 `src/ai/economy.py` 的 Budget/Billing | 是（有定价时） | 真实算术；无定价时如实返回 None |
 

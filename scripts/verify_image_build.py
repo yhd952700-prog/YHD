@@ -372,6 +372,11 @@ def check_boot(image: str, container: str, host_port: int,
         "-e", "ENVIRONMENT=staging",
         "-e", "LIUHAO_KERNEL_POLICY_ENFORCE=CRITICAL",
         "-e", "AUDIT_DB_PATH=/app/data/audit_store.db",
+        # The revocation store defaults to <bundle_root>/.liuhao_jwt_revocation.db
+        # (/app/…), which the non-root process cannot open => boot-time
+        # sqlite3.OperationalError. Same fix and same reasoning as the compose
+        # contract: keep it inside the writable state directory.
+        "-e", "LIUHAO_JWT_REVOCATION_DB=/app/data/jwt_revocations.db",
         "-e", "DATABASE_URL=sqlite:////app/data/liuhao_ai_os.db",
         # /v1/metrics/prometheus is fail-closed without this token, and this
         # verifier is a legitimate scraper -- it must authenticate rather than

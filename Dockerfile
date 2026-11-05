@@ -91,7 +91,12 @@ COPY --chown=app:app capability-registry.yaml ./capability-registry.yaml
 COPY --from=console --chown=app:app /console/dist/ ./apps/console/console/dist/
 
 # 运行期状态（身份库、SQLite）落在这里；由 compose 挂卷持久化。
-RUN mkdir -p /app/data && chown -R app:app /app/data
+# /app/logs：config/logging.yaml 的 FileHandler 指向相对路径 logs/liuhao.log，
+# 运行时 CWD 是 /app，即 /app/logs。该目录此前从未创建，且 /app 由 root 拥有、
+# 进程以 USER app 运行 ⇒ 容器启动即 PermissionError: '/app/logs' 并退出
+# （Build Verification 实测 state=exited, health=unhealthy）。日志是运行必需品，
+# 目录必须在镜像里就存在且属主正确；不进卷（日志随容器生命周期，避免卷里堆积）。
+RUN mkdir -p /app/data /app/logs && chown -R app:app /app/data /app/logs
 
 # 插件注册表默认写入 ./plugins（相对于 WORKDIR /app）。
 # 容器以非 root 用户运行，/app 根目录不可写，必须预建并赋权。
