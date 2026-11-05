@@ -29,6 +29,7 @@ from .base import (
 from .builtin import (
     CalculatorTool,
     SearchTool,
+    KnowledgeSearchTool,
     CodeRunnerTool,
     MemoryTool,
     DateTimeTool,
@@ -64,6 +65,7 @@ __all__ = [
     # Built-in tools
     "CalculatorTool",
     "SearchTool",
+    "KnowledgeSearchTool",
     "CodeRunnerTool",
     "MemoryTool",
     "DateTimeTool",

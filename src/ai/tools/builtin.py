@@ -263,6 +263,68 @@ class SearchTool(BaseTool):
 
 
 # ======================================================================
+# Knowledge Search Tool
+# ======================================================================
+
+class KnowledgeSearchTool(BaseTool):
+    """Search the *real* knowledge base (vector retrieval), not a fake corpus.
+
+    Delegates to :func:`src.knowledge.tool.knowledge_search`, which embeds the
+    query and searches the persisted SQLite vector index. When no embedding
+    provider is configured the tool fails explicitly ("知识库未启用") instead of
+    returning hardcoded results.
+    """
+
+    name = "knowledge_search"
+    description = (
+        "Search the local knowledge base with vector retrieval and return the "
+        "most relevant document chunks."
+    )
+    category = ToolCategory.INFORMATION
+    parameters = [
+        ParameterSchema(
+            name="query",
+            type=str,
+            description="The natural-language query",
+            required=True,
+            min_length=1,
+            max_length=500,
+        ),
+        ParameterSchema(
+            name="top_k",
+            type=int,
+            description="Maximum number of chunks to return",
+            required=False,
+            default=4,
+            min_value=1,
+            max_value=20,
+        ),
+        ParameterSchema(
+            name="threshold",
+            type=float,
+            description="Optional minimum cosine similarity",
+            required=False,
+            default=None,
+        ),
+    ]
+
+    def _execute(self, query: str, top_k: int = 4, threshold: Optional[float] = None) -> Any:
+        from src.knowledge.tool import KnowledgeSearchUnavailable, knowledge_search
+
+        payload = knowledge_search(query, top_k=top_k, threshold=threshold)
+        if not payload["available"]:
+            raise KnowledgeSearchUnavailable(
+                f"知识库未启用：{payload['reason']}"
+            )
+        return {
+            "query": payload["query"],
+            "total_results": len(payload["results"]),
+            "results": payload["results"],
+            "knowledge_vectors": payload["count"],
+        }
+
+
+# ======================================================================
 # Code Runner Tool
 # ======================================================================
 

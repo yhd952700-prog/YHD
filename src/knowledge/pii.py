@@ -1,7 +1,20 @@
 """Rule-based PII (Personally Identifiable Information) detector for the knowledge pipeline.
 
-Detects common PII types including emails, phone numbers, and general identity/address markers
-without relying on third-party services. Output masking uses a canonical [REDACTED] value.
+Detects common PII types -- including Chinese mobile numbers, mainland ID
+numbers, emails, labelled names and mailing addresses -- without relying on
+third-party services. Output masking uses a canonical ``[REDACTED]`` value.
+
+Design notes:
+
+* Detection returns *spans* (start/end offsets in the original text); redaction
+  rewrites the original text from those spans instead of recomputing a regex
+  (the previous implementation computed ``re.sub`` results and threw them
+  away, so nothing was ever actually redacted).
+* Name detection is deliberately conservative. Treating every capitalised
+  English word as a person name redacts ordinary prose ("Python", "Monday") on
+  a massive scale; missing an unlabelled name is the lesser evil, so names are
+  only matched after an explicit label (``姓名:``, ``Name:``) or an honorific
+  (``Mr.``/``Ms.``/``Dr.``).
 """
 
 from __future__ import annotations
@@ -12,6 +25,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+REDACTION_TOKEN = "[REDACTED]"
+
+
 class PIIType(str, Enum):
     """Enum of PII types that can be detected."""
     EMAIL = "email"
@@ -19,6 +35,7 @@ class PIIType(str, Enum):
     ADDRESS = "address"
     NAME = "name"
     CREDIT_CARD = "credit_card"
+    ID_CARD = "id_card"
 
 
 @dataclass
@@ -38,6 +55,77 @@ class PIIResult:
         self.pii_types = pii_types
         self.matches = matches
         self.redacted_text = redacted_text
+
+
+# --- patterns ---------------------------------------------------------------
+# Basic email shape (ASCII local part / domain, mirroring the previous rule).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+# Mainland China mobile numbers, optionally prefixed by +86 / 0086 / 86.
+_CN_MOBILE_RE = re.compile(
+    r"(?<!\d)(?:(?:\+|00)?86[- ]?)?1[3-9]\d{9}(?!\d)"
+)
+# Mainland landline numbers (area code 0xx + 7/8 digit local number).
+_CN_LANDLINE_RE = re.compile(r"(?<!\d)0\d{2,3}[- ]?\d{7,8}(?!\d)")
+# International format kept intentionally strict: leading + and separators.
+_INTL_PHONE_RE = re.compile(r"(?<!\d)\+[1-9]\d{0,2}[- ]?\d{2,4}[- ]?\d{3,4}[- ]?\d{3,4}(?!\d)")
+
+# 18-digit mainland resident ID (the shape most commonly leaked).
+_CN_ID_RE = re.compile(
+    r"(?<!\d)[1-9]\d{5}(?:18|19|20)\d{2}"
+    r"(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)"
+)
+# 16-digit card number, optionally grouped by fours.
+_CREDIT_CARD_RE = re.compile(r"(?<!\d)(?:\d{4}[- ]?){3}\d{4}(?!\d)")
+
+# English-style mailing address: number + street + suffix + (city, state) + ZIP.
+_ADDRESS_RE = re.compile(
+    r"\d+\s+[A-Za-z0-9.\s]+"
+    r"(?:street|st|rd|road|ave|avenue|blvd|drive|lane|ct|court)\b"
+    r"[A-Za-z0-9,\s]{0,40}\d{5}(?:-\d{4})?",
+    re.IGNORECASE,
+)
+
+# Only extract the *name* part after an explicit label / honorific.
+_CN_NAME_LABEL_RE = re.compile(
+    r"(?:姓名|联系人|作者|收件人|申请人|负责人|审核人|签到人)\s*[:：]\s*"
+    r"([\u4e00-\u9fa5·]{2,4})"
+)
+_EN_NAME_LABEL_RE = re.compile(
+    r"(?:name|contact|author|recipient)\s*[:：]\s*"
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",
+)
+_EN_NAME_HONORIFIC_RE = re.compile(
+    r"(?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,1})"
+)
+
+
+def _collect(regex: "re.Pattern[str]", text: str, include_group: Optional[int] = None) -> Tuple[List[str], List[Tuple[int, int]]]:
+    """Return matched strings and spans; optionally only a capture group's span."""
+    matches: List[str] = []
+    positions: List[Tuple[int, int]] = []
+    for match in regex.finditer(text):
+        start, end = match.span(include_group if include_group is not None else 0)
+        if start < 0 or end <= start:
+            continue
+        matches.append(text[start:end])
+        positions.append((start, end))
+    return matches, positions
+
+
+def _merge_spans(spans: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Merge overlapping/adjacent spans so one token replaces one region."""
+    if not spans:
+        return []
+    ordered = sorted(spans)
+    merged: List[Tuple[int, int]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 class KnowledgeSecurityPolicy:
@@ -69,133 +157,130 @@ class KnowledgeSecurityPolicy:
             return text
 
         result = self.detect_pii(text)
-        redacted = result.redacted_text
-        return redacted
+        return result.redacted_text
 
     def detect_pii(self, text: str) -> PIIResult:
         """Detect PII in the given text and return a PIIResult."""
         matches: Dict[PIIType, PIIMatch] = {}
         all_pii_types: List[PIIType] = []
 
-        # Detect emails
-        email_matches = self._detect_email(text)
-        if email_matches.matches:
-            matches[PIIType.EMAIL] = email_matches
-            all_pii_types.append(PIIType.EMAIL)
+        for pii_type, detector in (
+            (PIIType.EMAIL, self._detect_email),
+            (PIIType.PHONE, self._detect_phone),
+            (PIIType.ID_CARD, self._detect_id_card),
+            (PIIType.CREDIT_CARD, self._detect_credit_card),
+            (PIIType.ADDRESS, self._detect_address),
+            (PIIType.NAME, self._detect_name),
+        ):
+            found = detector(text)
+            if found.matches:
+                matches[pii_type] = found
+                all_pii_types.append(pii_type)
 
-        # Detect phone numbers
-        phone_matches = self._detect_phone(text)
-        if phone_matches.matches:
-            matches[PIIType.PHONE] = phone_matches
-            all_pii_types.append(PIIType.PHONE)
-
-        # Detect addresses (simple pattern)
-        address_matches = self._detect_address(text)
-        if address_matches.matches:
-            matches[PIIType.ADDRESS] = address_matches
-            all_pii_types.append(PIIType.ADDRESS)
-
-        # Detect names (simple pattern - capitalized words)
-        name_matches = self._detect_name(text)
-        if name_matches.matches:
-            matches[PIIType.NAME] = name_matches
-            all_pii_types.append(PIIType.NAME)
-
-        # Build redacted text
         redacted = self._apply_redaction(text, matches)
 
-        result = PIIResult(
+        return PIIResult(
             detected=len(all_pii_types) > 0,
             pii_types=all_pii_types,
             matches=matches,
             redacted_text=redacted,
         )
-        return result
 
     def _detect_email(self, text: str) -> PIIMatch:
         """Detect email addresses in text."""
-        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        matches = re.findall(email_pattern, text)
-        positions = [(m.start(), m.end()) for m in re.finditer(email_pattern, text)]
-
-        # Redact emails in text for the return
-        re.sub(email_pattern, '[REDACTED]', text)
-
+        matches, positions = _collect(_EMAIL_RE, text)
         return PIIMatch(
             pii_type=PIIType.EMAIL,
-            detected=len(matches) > 0,
-            matches={PIIType.EMAIL: matches},
+            detected=bool(matches),
+            matches=matches,
             positions=positions,
         )
 
     def _detect_phone(self, text: str) -> PIIMatch:
-        """Detect phone numbers in text."""
-        phone_pattern = r'(\+\d{1,3}[- ]?)?\d{3,4}[- ]?\d{3,4}[- ]?\d{3,4}'
-        clean_matches = []
-        for m in re.finditer(phone_pattern, text):
-            clean_matches.append(m.group(0))
-        positions = [(m.start(), m.end()) for m in re.finditer(phone_pattern, text)]
-
-        re.sub(phone_pattern, '[REDACTED]', text)
-
+        """Detect Chinese mobile/landline and international phone numbers."""
+        combined: List[Tuple[int, int, str]] = []
+        for regex in (_CN_MOBILE_RE, _CN_LANDLINE_RE, _INTL_PHONE_RE):
+            for match in regex.finditer(text):
+                combined.append((match.start(), match.end(), match.group(0)))
+        # Deduplicate spans that several patterns matched at the same place.
+        combined.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+        unique: List[Tuple[int, int, str]] = []
+        for start, end, value in combined:
+            if unique and start <= unique[-1][1]:
+                continue
+            unique.append((start, end, value))
         return PIIMatch(
             pii_type=PIIType.PHONE,
-            detected=len(clean_matches) > 0,
-            matches={PIIType.PHONE: clean_matches},
+            detected=bool(unique),
+            matches=[value for _, _, value in unique],
+            positions=[(start, end) for start, end, _ in unique],
+        )
+
+    def _detect_id_card(self, text: str) -> PIIMatch:
+        """Detect 18-digit mainland resident ID numbers."""
+        matches, positions = _collect(_CN_ID_RE, text)
+        return PIIMatch(
+            pii_type=PIIType.ID_CARD,
+            detected=bool(matches),
+            matches=matches,
+            positions=positions,
+        )
+
+    def _detect_credit_card(self, text: str) -> PIIMatch:
+        """Detect 16-digit card numbers (grouped or plain)."""
+        matches, positions = _collect(_CREDIT_CARD_RE, text)
+        return PIIMatch(
+            pii_type=PIIType.CREDIT_CARD,
+            detected=bool(matches),
+            matches=matches,
             positions=positions,
         )
 
     def _detect_address(self, text: str) -> PIIMatch:
-        """Detect address patterns in text."""
-        # Simple address pattern - street number + street name + city/state/zip
-        address_pattern = r'\d+\s+[A-Za-z0-9\s]+(?:street|street|rd|ave|blvd|drive|lane|ct)\s+[A-Za-z\s]+(?:,\s*[A-Z]{2})\s+\d{5}(?:-\d{4})?'
-        matches_iter = re.finditer(address_pattern, text, re.IGNORECASE)
-        matches = list(matches_iter)
-        positions = [(m.start(), m.end()) for m in matches]
-
-        re.sub(address_pattern, '[REDACTED]', text, flags=re.IGNORECASE)
-
+        """Detect English-style mailing addresses."""
+        matches, positions = _collect(_ADDRESS_RE, text)
         return PIIMatch(
             pii_type=PIIType.ADDRESS,
-            detected=len(matches) > 0,
-            matches={PIIType.ADDRESS: list(matches)},
+            detected=bool(matches),
+            matches=matches,
             positions=positions,
         )
 
     def _detect_name(self, text: str) -> PIIMatch:
-        """Detect personal names (simple heuristic: capitalized words)."""
-        # Simple heuristic - words that start with uppercase and are followed by lowercase
-        name_pattern = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b'
-        matches = re.findall(name_pattern, text)
-        positions = [(m.start(), m.end()) for m in re.finditer(name_pattern, text)]
+        """Detect names only when explicitly labelled or honorific-prefixed.
 
-        # Filter out common words that aren't names
-        common_words = {'The', 'This', 'That', 'With', 'From', 'Have', 'Each', 'Which', 'Would', 'Could', 'Should'}
-        filtered_matches = [m for m in matches if m not in common_words]
-
-        re.sub(name_pattern, '[REDACTED]', text)
-
+        Generic capitalised words are *not* names -- redacting every ``The``/
+        ``Python``/``Monday`` destroys ordinary text while still missing most
+        real names.
+        """
+        matches: List[str] = []
+        positions: List[Tuple[int, int]] = []
+        for regex in (_CN_NAME_LABEL_RE, _EN_NAME_LABEL_RE, _EN_NAME_HONORIFIC_RE):
+            found, spans = _collect(regex, text, include_group=1)
+            matches.extend(found)
+            positions.extend(spans)
         return PIIMatch(
             pii_type=PIIType.NAME,
-            detected=len(filtered_matches) > 0,
-            matches={PIIType.NAME: filtered_matches},
+            detected=bool(matches),
+            matches=matches,
             positions=positions,
         )
 
     def _apply_redaction(self, text: str, matches: Dict[PIIType, PIIMatch]) -> str:
-        """Apply redaction to text based on matches."""
+        """Rewrite the original text from collected spans (never from scratch).
+
+        Spans are merged and replaced right-to-left so earlier offsets stay
+        valid; this is what makes detection results actually reach the output.
+        """
+        spans: List[Tuple[int, int]] = []
+        for match in matches.values():
+            spans.extend(match.positions)
+        if not spans:
+            return text
+
         redacted = text
-        for pii_type, match in matches.items():
-            if match.matches:
-                for match_str in match.matches:
-                    pattern_map = {
-                        PIIType.EMAIL: r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-                        PIIType.PHONE: r'(\+\d{1,3}[- ]?)?\d{3,4}[- ]?\d{3,4}[- ]?\d{3,4}',
-                        PIIType.ADDRESS: r'\d+\s+[A-Za-z0-9\s]+(?:street|street|rd|ave|blvd|drive|lane|ct)\s+[A-Za-z\s]+(?:,\s*[A-Z]{2})\s+\d{5}(?:-\d{4})?',
-                        PIIType.NAME: r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b',
-                    }
-                    pattern = pattern_map.get(pii_type, r'[REDACTED]')
-                    redacted = re.sub(pattern, '[REDACTED]', redacted)
+        for start, end in reversed(_merge_spans(spans)):
+            redacted = f"{redacted[:start]}{REDACTION_TOKEN}{redacted[end:]}"
         return redacted
 
 
@@ -241,6 +326,7 @@ __all__ = [
     "PIIType",
     "PIIMatch",
     "PIIResult",
+    "REDACTION_TOKEN",
     "get_knowledge_security_policy",
     "set_knowledge_security_policy",
     "redact_text",

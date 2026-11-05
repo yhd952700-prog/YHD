@@ -32,6 +32,9 @@ class VectorStore:
     def __init__(self) -> None:
         # In-memory storage: doc_id -> (embedding, metadata)
         self._store: Dict[str, Tuple[List[float], Dict[str, Any]]] = {}
+        # Protects both reads and writes: ``search`` iterates the dict while
+        # ``insert`` may be mutating it (concurrent ingest + chat retrieval).
+        self._lock = threading.RLock()
 
     def insert(self, doc_id: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None) -> None:
         """Insert an embedding vector associated with a document ID.
@@ -41,7 +44,8 @@ class VectorStore:
             embedding: Float vector (typically 1536-dimensional for OpenAI).
             metadata: Optional metadata dict (source, title, tags, etc.).
         """
-        self._store[doc_id] = (embedding, metadata if metadata is not None else {})
+        with self._lock:
+            self._store[doc_id] = (embedding, metadata if metadata is not None else {})
 
     def search(
         self,
@@ -65,9 +69,15 @@ class VectorStore:
         if not self._store:
             return []
 
+        # Take an immutable snapshot under the lock, then score outside it: a
+        # concurrent ``insert`` must not be able to resize the dict while we
+        # iterate (``RuntimeError: dictionary changed size during iteration``).
+        with self._lock:
+            snapshot = tuple(self._store.items())
+
         results: List[Tuple[str, float, Dict[str, Any]]] = []
 
-        for doc_id, (stored_embedding, metadata) in self._store.items():
+        for doc_id, (stored_embedding, metadata) in snapshot:
             # Compute cosine similarity
             dot = sum(a * b for a, b in zip(query_embedding, stored_embedding))
             norm_a = sum(a * a for a in query_embedding) ** 0.5
@@ -93,14 +103,39 @@ class VectorStore:
         Returns:
             True if the document was found and deleted, False otherwise.
         """
-        if doc_id in self._store:
-            del self._store[doc_id]
-            return True
-        return False
+        with self._lock:
+            if doc_id in self._store:
+                del self._store[doc_id]
+                return True
+            return False
+
+    def replace_prefix(
+        self,
+        prefix: str,
+        items: List[Tuple[str, List[float], Dict[str, Any]]],
+    ) -> int:
+        """Atomically replace every chunk whose id starts with ``prefix``.
+
+        Re-importing a document must not leave the tail chunks of a longer
+        previous version behind (they stay retrievable and poison answers). The
+        whole swap is one operation: on failure nothing changes.
+
+        Returns the number of prior chunk ids removed.
+        """
+        if not prefix:
+            raise ValueError("replace_prefix requires a non-empty prefix")
+        with self._lock:
+            removed = [key for key in self._store if key.startswith(prefix)]
+            for key in removed:
+                del self._store[key]
+            for doc_id, embedding, metadata in items:
+                self._store[doc_id] = (embedding, metadata)
+            return len(removed)
 
     def count(self) -> int:
         """Return the number of stored embeddings."""
-        return len(self._store)
+        with self._lock:
+            return len(self._store)
 
     def get(self, doc_id: str) -> Optional[Tuple[List[float], Dict[str, Any]]]:
         """Get embedding and metadata for a document ID.
@@ -111,9 +146,8 @@ class VectorStore:
         Returns:
             Tuple of (embedding, metadata) or None if not found.
         """
-        if doc_id in self._store:
-            return self._store[doc_id]
-        return None
+        with self._lock:
+            return self._store.get(doc_id)
 
 
 def default_db_path() -> Path:
@@ -135,7 +169,6 @@ class PersistentVectorStore(VectorStore):
     def __init__(self, db_path: Optional[str] = None) -> None:
         super().__init__()
         self.db_path = Path(db_path) if db_path else default_db_path()
-        self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -192,6 +225,56 @@ class PersistentVectorStore(VectorStore):
             )
             self._conn.commit()
             self._store[doc_id] = (embedding, record_metadata)
+
+    def replace_prefix(
+        self,
+        prefix: str,
+        items: List[Tuple[str, List[float], Dict[str, Any]]],
+    ) -> int:
+        """Atomically replace all chunks under ``prefix`` (DB + memory).
+
+        The SQL delete/upserts run in a single transaction and the in-memory
+        dict is only swapped *after* the commit succeeds, so a failure midway
+        leaves both the database and the read path on the previous version.
+        """
+        if not prefix:
+            raise ValueError("replace_prefix requires a non-empty prefix")
+        payload = list(items)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "DELETE FROM knowledge_vectors "
+                    "WHERE substr(doc_id, 1, ?) = ?",
+                    (len(prefix), prefix),
+                )
+                for doc_id, embedding, metadata in payload:
+                    self._conn.execute(
+                        """
+                        INSERT INTO knowledge_vectors
+                            (doc_id, embedding, metadata, updated_at)
+                        VALUES (?, ?, ?, datetime('now'))
+                        ON CONFLICT(doc_id) DO UPDATE SET
+                            embedding = excluded.embedding,
+                            metadata = excluded.metadata,
+                            updated_at = datetime('now')
+                        """,
+                        (
+                            doc_id,
+                            json.dumps(list(embedding)),
+                            json.dumps(metadata, ensure_ascii=False, default=str),
+                        ),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            removed = [key for key in self._store if key.startswith(prefix)]
+            for key in removed:
+                del self._store[key]
+            for doc_id, embedding, metadata in payload:
+                self._store[doc_id] = (embedding, metadata)
+            return len(removed)
 
     def delete(self, doc_id: str) -> bool:
         with self._lock:

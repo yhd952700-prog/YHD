@@ -97,8 +97,15 @@ class KnowledgeDocumentService:
 
         static_metadata = dict(metadata or {})
         vectors = embedder.embed(chunks)
-        for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            store.insert(
+
+        # Replace the *whole* document revision atomically. Embeddings are
+        # computed before touching the store, so an embedding failure leaves the
+        # previous revision intact. Swapping (delete old ids + insert new ones)
+        # in one call also drops tail chunks from a longer prior version -- the
+        # old implementation only overwrote ``doc#0..n`` and stale tail chunks
+        # kept leaking into retrieval.
+        items = [
+            (
                 f"{document_id}#{index}",
                 vector,
                 {
@@ -108,6 +115,9 @@ class KnowledgeDocumentService:
                     "text": chunk,
                 },
             )
+            for index, (chunk, vector) in enumerate(zip(chunks, vectors))
+        ]
+        store.replace_prefix(f"{document_id}#", items)
 
         logger.info(
             "knowledge ingest: document=%s chunks=%d provider=%s",

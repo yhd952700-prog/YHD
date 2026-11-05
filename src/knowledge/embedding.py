@@ -165,6 +165,19 @@ class EmbeddingUnavailableError(RuntimeError):
     """Embedding is not configured. Fail-closed; never fabricate a vector."""
 
 
+class EmbeddingEndpointError(EmbeddingUnavailableError):
+    """The endpoint answered, but with an HTTP error.
+
+    Carries the status code so callers can tell "this Ollama build does not
+    expose the endpoint" (404/400, fall back to the legacy API) from a genuine
+    transport/auth failure, without having to parse the message text.
+    """
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _environment() -> str:
     return (
         (os.environ.get("LIUHAO_ENV") or os.environ.get("APP_ENV") or "")
@@ -200,8 +213,9 @@ def _post_json(
         with urllib.request.urlopen(request, timeout=timeout or _timeout()) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise EmbeddingUnavailableError(
-            f"embedding endpoint {url} returned HTTP {exc.code}"
+        raise EmbeddingEndpointError(
+            f"embedding endpoint {url} returned HTTP {exc.code}",
+            status_code=exc.code,
         ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise EmbeddingUnavailableError(
@@ -261,15 +275,45 @@ class OllamaEmbedder:
         return "ollama"
 
     def embed(self, texts: Sequence[str]) -> List[List[float]]:
-        data = _post_json(
-            f"{self.base_url}/api/embed",
-            {"model": self.model, "input": list(texts)},
-        )
+        """Embed ``texts``, falling back to the legacy single-prompt endpoint.
+
+        Older Ollama builds do not expose ``/api/embed`` at all and answer
+        HTTP 404/400 (rather than 200 with an unexpected shape). Those two
+        statuses mean "this build lacks the endpoint", so we retry one text at
+        a time against ``/api/embeddings``. Any other HTTP status (auth,
+        upstream 5xx) is a real fault and propagates unchanged.
+        """
+        try:
+            data = _post_json(
+                f"{self.base_url}/api/embed",
+                {"model": self.model, "input": list(texts)},
+            )
+        except EmbeddingEndpointError as exc:
+            if exc.status_code not in (400, 404):
+                raise
+            return self._embed_legacy(texts)
+
         embeddings = data.get("embeddings")
         if isinstance(embeddings, list) and len(embeddings) == len(texts):
             return embeddings
-        # Older Ollama builds only expose the single-prompt endpoint.
-        return [self._embed_one(text) for text in texts]
+        # 200 but the payload is not what ``/api/embed`` promises: same fix.
+        return self._embed_legacy(texts)
+
+    def _embed_legacy(self, texts: Sequence[str]) -> List[List[float]]:
+        """One-by-one ``/api/embeddings`` for Ollama builds without ``/api/embed``."""
+        vectors: List[List[float]] = []
+        for text in texts:
+            try:
+                vectors.append(self._embed_one(text))
+            except EmbeddingEndpointError as exc:
+                if exc.status_code == 404:
+                    raise EmbeddingUnavailableError(
+                        "provider 'ollama' 版本不支持 embedding 接口："
+                        f"本机 Ollama 既没有 /api/embed 也没有 /api/embeddings"
+                        f"（{exc}）；这属于版本不兼容，不是未配置"
+                    ) from exc
+                raise
+        return vectors
 
     def _embed_one(self, text: str) -> List[float]:
         data = _post_json(
