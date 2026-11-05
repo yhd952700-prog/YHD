@@ -209,6 +209,10 @@ describe('知识中心 · 异步入库取消', () => {
     await waitFor(() =>
       expect(screen.getByText(/后台任务已取消：本次未写入任何数据（全回滚）/)).toBeTruthy(),
     )
+    // 取消/失败后原文要留着，用户可以直接重试。
+    expect((screen.getByLabelText('或直接粘贴文本') as HTMLTextAreaElement).value).toBe(
+      '一段要后台入库的文本',
+    )
     // 取消后要刷新列表，让用户看到真实状态。
     await waitFor(() =>
       expect(

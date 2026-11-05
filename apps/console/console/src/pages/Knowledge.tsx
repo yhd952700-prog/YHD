@@ -338,7 +338,7 @@ export function Knowledge({
           docId,
         })
         setJob(snapshot)
-        setText('')
+        // 不在这里清空文本：任务失败 / 取消时把原文留给用户重试。
       } catch (err) {
         setJobError(err instanceof Error ? err.message : '提交后台任务失败')
       } finally {
@@ -382,6 +382,7 @@ export function Knowledge({
     documents.reload()
 
     if (job.status === 'succeeded') {
+      setText('')
       if (job.result?.deduplicated) {
         setNotice(
           `内容与已有文档「${
