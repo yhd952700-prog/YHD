@@ -385,6 +385,24 @@ components:
     used: "yes"
     risk: low
     action: 保持；注意始终使用 yaml.safe_load
+  - name: packaging
+    import_name: packaging
+    license: Apache-2.0 OR BSD-2-Clause
+    category: versioning
+    used: "yes"
+    risk: low
+    action: >-
+      PEP 440 版本比较（src/upgrade 检查更新、src/kernels/plugin 插件版本）。
+      宽松双许可，无 copyleft 传染。
+  - name: psutil
+    import_name: psutil
+    license: BSD-3-Clause
+    category: observability/process
+    used: "yes"
+    risk: low
+    action: >-
+      主机指标采集（src/observability/metrics.py）与受控自改测试进程树的
+      RSS/CPU 监控（src/selfmod/sandbox.py）。BSD-3-Clause，无 copyleft 传染。
   - name: httpx
     import_name: httpx
     license: BSD-3-Clause
