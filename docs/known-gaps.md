@@ -73,8 +73,12 @@ added to the same environment.
 | 决定延后（deferred-by-decision） | 2 个主条目 + 3 个子项 | D-4、D-6；子项：D-1 受控自改代码、D-3 本地语音、D-3 操作前预览 |
 | 未验证（附原因） | 0 个独立条目 | 未验证内容写在各条目正文（D-2 真实一句话链路、D-7 真实 embedding E2E、D-8 真实定时/重启恢复、E-1～E-9） |
 
-### 决定不现在做（deferred-by-decision）清单
+**接手方（按仓库实际流）。** D-1 = upgrade 流；D-2 = console + gateway 流；D-3 =
+tasks 流（提醒已落），语音与预览需新任务；D-4 = automation 流；D-5 = 战略流；
+D-6 = intel 流；D-7 = knowledge 流；D-8 = tasks 流；D-9 = ops 流；D-10 =
+artifacts 流。
 
+### 决定不现在做（deferred-by-decision）清单
 > **来源与一个事实差异。** 任务要求对齐一张「30 方向优先级表（能不能做 /
 > 值不值得做 / 依赖顺序 / 最早可开始 四列，12 项判为现在不该做）」；该表
 > **当前不在仓库**：`docs/strategy-30-directions.md` 及其同目录配套文件里没有
