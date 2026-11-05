@@ -83,7 +83,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: '总览', sub: '真实运行态 —— 每一项都可追溯到后端数据源' },
   employees: { title: '我 AI 员工', sub: '14 内核 + 14 能力层 + provider 服务面' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
-  knowledge: { title: '知识中心', sub: '真实知识库 —— 导入 / 分块预览 / 检索测试' },
+  knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
   workbench: { title: '工作台', sub: 'JARVIS 流式对话与工具调用' },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除内核噪声）' },
   approval: { title: '审批中心', sub: '内核层拦截的人工授权 —— 需人类令牌' },
@@ -533,11 +533,7 @@ function App() {
       {active === 'employees' && <Roster query={query} />}
       {active === 'business' && <BusinessCenter query={query} />}
       {active === 'knowledge' && (
-        <Knowledge
-          query={query}
-          principal={session.principal}
-          onOpenSettings={() => navigate('settings')}
-        />
+        <Knowledge query={query} onOpenSettings={() => navigate('settings')} />
       )}
       {active === 'workbench' && (
         <Workbench provider={provider} onConfigureModel={() => navigate('settings')} />

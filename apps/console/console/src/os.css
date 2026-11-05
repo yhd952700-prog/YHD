@@ -1997,3 +1997,60 @@ select {
 [data-mode='mobile'] .os-select {
   font-size: 16px;
 }
+
+/* 后台入库任务（进度 / 取消）与分页 / 行内动作。
+   进度条只画服务端真实返回的 progress_percent；没有总数时宁可显示文案也不画满。 */
+.os-kb-job {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--os-border);
+  background: var(--os-panel-2);
+}
+
+.os-kb-progress {
+  height: 6px;
+  margin: 10px 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--os-text-faint) 18%, transparent);
+  overflow: hidden;
+}
+
+.os-kb-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--sc-cyan), var(--os-accent));
+  transition: width var(--sc-dur-state) var(--sc-ease-out);
+}
+
+.os-kb-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.os-kb-actions .os-btn {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.os-kb-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--os-text-faint);
+}
+
+.os-kb-pager .os-btn {
+  width: auto;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 560;
+}
