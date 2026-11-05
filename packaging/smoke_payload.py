@@ -1,0 +1,302 @@
+#!/usr/bin/env python
+"""对组装好的 payload 做真实冒烟：起进程、开页面、登录、发消息。
+
+验证链路（全部走 staged payload 自带的离线运行时，不依赖构建机 venv）：
+
+    启动 → /v1/health → 首页（驾驶舱）→ 注册人类身份 → 重启
+         → /v1/auth/login → 携带令牌访问 /v1/dashboard/summary
+         → POST /v1/chat（未配置 provider 时如实记录结果）
+
+结果写入 ``<out>/smoke-report.json``；核心链路失败时返回非零。
+
+用法：
+    .venv\\Scripts\\python.exe packaging\\smoke_payload.py --payload dist\\payload\\app
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PAYLOAD = REPO_ROOT / "dist" / "payload" / "app"
+DEFAULT_REPORT = REPO_ROOT / "dist" / "smoke-report.json"
+
+SMOKE_PRINCIPAL = "smoke"
+SMOKE_PASSWORD = "Smoke-Only-Passw0rd!"
+
+#: 冒烟环境严禁把构建机的仓库配置带进来，否则测的就不是 payload 自己了。
+_CLEARED_ENV = (
+    "LIUHAO_HUMAN_IDENTITIES_FILE", "LIUHAO_AUTH_SECRETS_FILE",
+    "AUDIT_DB_PATH", "AUDIT_DB_BACKUP_PATH", "LIUHAO_WORKSPACE_ROOT",
+    "CONVERSATION_DB_PATH", "LIUHAO_CONSOLE_DIST", "LIUHAO_MODEL_CONFIG_DB",
+    "LIUHAO_MODEL_CONFIG_KEY_FILE", "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY",
+    "MEMORY_DB_PATH", "PERSONAL_CONTEXT_DB_PATH", "LIUHAO_KNOWLEDGE_DB",
+    "LIUHAO_ALERTS_STORE_PATH", "LIUHAO_JWT_REVOCATION_DB",
+)
+
+
+def _free_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """本机探测必须绕代理，否则 127.0.0.1 会被 http_proxy 拦掉。"""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _http(
+    url: str,
+    method: str = "GET",
+    body: Optional[Dict[str, Any]] = None,
+    token: Optional[str] = None,
+    timeout: float = 10.0,
+) -> Tuple[int, bytes]:
+    data = None
+    headers: Dict[str, str] = {}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with _opener().open(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        # 进程还没起来时属于正常轮询状态，返回 0 让调用方继续等。
+        return 0, b""
+
+
+def _wait_ready(base: str, child: subprocess.Popen, log_path: Path, timeout: float = 180.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            return False
+        status, _ = _http(f"{base}/v1/health", timeout=3.0)
+        if status == 200:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Windows 下必须杀进程树：启动器会再拉一个 uvicorn 子进程。"""
+    if process.poll() is not None:
+        return
+    subprocess.run(
+        ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+        capture_output=True,
+    )
+
+
+def _start(payload: Path, data_dir: Path, port: int, log_path: Path) -> subprocess.Popen:
+    env = dict(os.environ)
+    env.update({
+        "LIUHAO_DATA_DIR": str(data_dir),
+        "NO_PROXY": "localhost,127.0.0.1",
+        "no_proxy": "localhost,127.0.0.1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    # 冒烟环境严禁把构建机的仓库配置带进来。
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    log = open(log_path, "a", encoding="utf-8")
+    return subprocess.Popen(
+        [str(payload / "runtime" / "python.exe"),
+         str(payload / "scripts" / "launch_installed.py"),
+         "--skip-wizard", "--no-browser",
+         "--host", "127.0.0.1", "--api-port", str(port)],
+        cwd=str(payload), env=env, stdout=log, stderr=subprocess.STDOUT,
+    )
+
+
+def _register(payload: Path, data_dir: Path, log_path: Path) -> int:
+    env = dict(os.environ)
+    env.update({
+        "LIUHAO_DATA_DIR": str(data_dir),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    integrity_path = data_dir / "config" / "integrity.key"
+    if not integrity_path.is_file():
+        raise SystemExit(
+            f"首次启动没有生成 {integrity_path} —— 启动器的数据目录初始化有缺陷"
+        )
+    integrity = integrity_path.read_text(encoding="utf-8").strip()
+    env["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity
+    command = [
+        str(payload / "runtime" / "python.exe"),
+        str(payload / "scripts" / "register_human_identity.py"),
+        "--principal", SMOKE_PRINCIPAL,
+        "--display-name", "Smoke Test",
+        "--permissions", "admin",
+        "--password-stdin",
+        "--file", str(data_dir / "config" / "human_identities.json"),
+        "--secrets-file", str(data_dir / "config" / "auth_secrets.json"),
+    ]
+    with open(log_path, "a", encoding="utf-8") as log:
+        return subprocess.run(
+            command, cwd=str(payload), env=env,
+            input=SMOKE_PASSWORD + "\n", text=True,
+            stdout=log, stderr=subprocess.STDOUT,
+        ).returncode
+
+
+def _tail(path: Path, lines: int = 25) -> str:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(content[-lines:])
+
+
+def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
+    report: Dict[str, Any] = {"payload": str(payload), "steps": {}}
+    if not (payload / "runtime" / "python.exe").is_file():
+        report["steps"]["runtime_present"] = False
+        return report, 1
+
+    data_dir = Path(tempfile.mkdtemp(prefix="liuhao-smoke-"))
+    log_path = data_dir / "smoke.log"
+    port = _free_port()
+    base = f"http://127.0.0.1:{port}"
+    report["data_dir"] = str(data_dir)
+    report["base_url"] = base
+    report["log"] = str(log_path)
+
+    try:
+        # ---- 第一次启动：健康探针 + 驾驶舱首页 ----
+        child = _start(payload, data_dir, port, log_path)
+        ready = _wait_ready(base, child, log_path)
+        report["steps"]["health"] = "PASS" if ready else "FAIL"
+        if not ready:
+            report["steps"]["first_start_log_tail"] = _tail(log_path)
+            _kill_tree(child)
+            return report, 1
+
+        status, body = _http(base + "/", timeout=10)
+        console_ok = status == 200 and b"<" in body and b"root" in body
+        report["steps"]["console_index"] = "PASS" if console_ok else f"FAIL(http {status})"
+
+        _kill_tree(child)
+        time.sleep(2.0)
+
+        # ---- 注册人类身份（与向导等价的最小路径） ----
+        code = _register(payload, data_dir, log_path)
+        report["steps"]["register_identity"] = "PASS" if code == 0 else f"FAIL(exit {code})"
+        if code != 0:
+            report["steps"]["register_log_tail"] = _tail(log_path)
+            return report, 1
+
+        # ---- 第二次启动：登录 + 鉴权端点 + 发消息 ----
+        port = _free_port()
+        base = f"http://127.0.0.1:{port}"
+        report["base_url"] = base
+        child = _start(payload, data_dir, port, log_path)
+        ready = _wait_ready(base, child, log_path)
+        report["steps"]["restart_health"] = "PASS" if ready else "FAIL"
+        if not ready:
+            report["steps"]["restart_log_tail"] = _tail(log_path)
+            _kill_tree(child)
+            return report, 1
+
+        status, body = _http(
+            base + "/v1/auth/login", "POST",
+            {"principal": SMOKE_PRINCIPAL, "secret": SMOKE_PASSWORD},
+        )
+        token = ""
+        if status == 200:
+            try:
+                token = json.loads(body).get("access_token", "")
+            except json.JSONDecodeError:
+                token = ""
+        report["steps"]["login"] = "PASS" if token else f"FAIL(http {status})"
+
+        if token:
+            status, _ = _http(base + "/v1/dashboard/summary", token=token)
+            report["steps"]["authenticated_dashboard"] = "PASS" if status == 200 else f"FAIL(http {status})"
+
+            status, body = _http(
+                base + "/v1/chat", "POST",
+                {"message": "你好，用一句话介绍你自己", "session_id": "smoke"},
+                token=token, timeout=120.0,
+            )
+            detail = ""
+            try:
+                parsed = json.loads(body)
+                detail = str(parsed.get("reply") or parsed.get("detail") or "")[:160]
+                provider = parsed.get("provider") or parsed.get("model")
+                if provider:
+                    detail = f"[{provider}] {detail}"
+            except json.JSONDecodeError:
+                detail = body[:160].decode("utf-8", "replace")
+            report["steps"]["chat"] = "PASS" if status == 200 else f"FAIL(http {status})"
+            report["steps"]["chat_detail"] = detail
+            # 未配置 provider 时这里必然失败；不算安装包问题，只如实记录。
+            report["steps"]["chat_note"] = (
+                "干净安装默认没有 provider；PASS 表示网关返回了回复（可能是 mock），"
+                "FAIL 属预期，需在向导里配置模型后再验真实 LLM。"
+            )
+
+        _kill_tree(child)
+        time.sleep(1.0)
+
+        core = [report["steps"].get(k) for k in
+                ("health", "console_index", "register_identity", "restart_health", "login")]
+        return report, 0 if all(item == "PASS" for item in core) else 1
+    finally:
+        try:
+            import shutil
+
+            (REPO_ROOT / "dist").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(log_path, REPO_ROOT / "dist" / "smoke.log")
+        except OSError:
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="payload 冒烟验证")
+    parser.add_argument("--payload", default=str(DEFAULT_PAYLOAD))
+    parser.add_argument("--report", default=str(DEFAULT_REPORT))
+    args = parser.parse_args(argv)
+
+    report, code = smoke(Path(args.payload).expanduser().resolve())
+    target = Path(args.report)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8")
+
+    print("=" * 66)
+    print("payload 冒烟结果")
+    print("=" * 66)
+    for name, value in report["steps"].items():
+        if name.endswith("_tail"):
+            continue
+        print(f"  {name:24s} {value}")
+    print(f"  报告：{target}")
+    if code != 0:
+        for key in ("first_start_log_tail", "restart_log_tail", "register_log_tail"):
+            if key in report["steps"]:
+                print(f"\n--- {key} ---\n{report['steps'][key]}")
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
