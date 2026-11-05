@@ -54,16 +54,22 @@ def _count_audit_events(path: str) -> int:
         conn.close()
 
 
-def snapshot_audit_db(
+def vacuum_into(
     src_path: str,
     dst_path: str,
     *,
     busy_timeout_ms: int = 5000,
-) -> Tuple[int, int]:
+) -> None:
     """Copy ``src_path`` to ``dst_path`` as a transaction-consistent snapshot.
 
     Uses ``VACUUM INTO`` (SQLite >= 3.27). ``dst_path`` must not already exist.
-    Returns ``(source_event_count, dest_event_count)`` for verification.
+
+    This is the ONE snapshot primitive in the tree: the audit-specific
+    :func:`snapshot_audit_db` wraps it, and the backup manager calls it
+    directly for any SQLite file it backs up. Deliberately NOT a file copy --
+    a plain ``cp`` of a WAL-mode database with an uncheckpointed ``-wal``
+    loses committed data (the R11 hazard), and a ``cp``-ed ``-wal`` replayed
+    against a different main file corrupts it.
     """
     if os.path.exists(dst_path):
         raise FileExistsError(
@@ -82,6 +88,19 @@ def snapshot_audit_db(
         src.execute(f"VACUUM INTO '{dst_path}'")
     finally:
         src.close()
+
+
+def snapshot_audit_db(
+    src_path: str,
+    dst_path: str,
+    *,
+    busy_timeout_ms: int = 5000,
+) -> Tuple[int, int]:
+    """Copy ``src_path`` to ``dst_path`` as a transaction-consistent snapshot.
+
+    Returns ``(source_event_count, dest_event_count)`` for verification.
+    """
+    vacuum_into(src_path, dst_path, busy_timeout_ms=busy_timeout_ms)
 
     src_n = _count_audit_events(src_path)
     dst_n = _count_audit_events(dst_path)

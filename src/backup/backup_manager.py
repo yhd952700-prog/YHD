@@ -6,17 +6,32 @@ Provides comprehensive backup management including:
 - Manual and periodic scheduling
 - Backup metadata (timestamp, size, checksum, type, sources)
 - Gzip compression support
-- Encryption support flag
 - Restore capability with integrity verification
 - Selective and full restore
 - Backup retention policy (count-based and time-based)
 - Backup statistics and reporting
+
+Payload encoding is BYTE-ACCURATE: every file is stored as base64 of its
+bytes, never as decoded UTF-8 text. The previous text encoding silently
+mangled SQLite databases (and their ``-wal``), binary attachments and any
+non-UTF-8 file: the backup "succeeded", the damage only surfaced at restore
+time. Silent corruption is worse than a failed backup.
+
+SQLite files are not copied byte-for-byte: they are snapshotted with
+``VACUUM INTO`` (``src/kernels/audit/durability.py``), which is
+transaction-consistent even with an uncheckpointed WAL. Their ``-wal`` /
+``-shm`` / ``-journal`` sidecars are deliberately excluded from the archive
+and removed on restore, because replaying a stale WAL against a restored
+main file corrupts it.
 """
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
+import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +39,42 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+
+from src.kernels.audit.durability import vacuum_into
+
+
+# =====================================================================
+# Byte-accurate file helpers
+# =====================================================================
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def _is_sqlite_file(path: Path) -> bool:
+    """Detect SQLite by its on-disk header, not by extension."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(16) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def _is_sqlite_sidecar(path: Path) -> bool:
+    """True iff ``path`` is a ``-wal``/``-shm``/``-journal`` of a SQLite DB."""
+    for suffix in _SQLITE_SIDECAR_SUFFIXES:
+        if path.name.endswith(suffix):
+            base = path.with_name(path.name[: -len(suffix)])
+            return base.exists() and _is_sqlite_file(base)
+    return False
+
+
+def _read_sqlite_snapshot(path: Path) -> bytes:
+    """Return a transaction-consistent copy of a SQLite DB as bytes."""
+    with tempfile.TemporaryDirectory(prefix="liuhao_backup_snapshot_") as tmp:
+        dst = Path(tmp) / "snapshot.db"
+        vacuum_into(str(path), str(dst))
+        return dst.read_bytes()
 
 
 # =====================================================================
@@ -247,7 +298,8 @@ class BackupManager:
         backups: Registry of all known backups (by ID).
         retention_policy: Policy for pruning old backups.
         compression_level: Gzip compression level (1-9).
-        encryption_enabled: Whether encryption is enabled (flag only).
+        encryption_enabled: Not implemented; ``True`` makes ``create_backup``
+            raise rather than write a plaintext archive labelled as encrypted.
     """
 
     backup_dir: Path
@@ -291,6 +343,16 @@ class BackupManager:
         """
         if sources is None:
             sources = list(self.source_paths.keys())
+
+        # Fail loudly instead of writing a plaintext archive that claims to be
+        # encrypted. ``encryption_enabled`` used to be a flag only: the metadata
+        # said encrypted=True while the bytes on disk were plaintext.
+        if self.encryption_enabled:
+            raise NotImplementedError(
+                "encryption_enabled=True is not implemented in this manager: it "
+                "writes plaintext archives. Set encryption_enabled=False (the "
+                "default), or use scripts/ops/backup.py for encrypted archives."
+            )
 
         backup_id = f"backup_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         timestamp = time.time()
@@ -374,34 +436,35 @@ class BackupManager:
     ) -> Dict[str, Any]:
         """Collect data from a backup source.
 
-        For file sources, reads file contents or directory listings.
+        Files are captured as bytes (base64 in the JSON envelope). SQLite
+        databases are captured through ``VACUUM INTO`` so the archive always
+        holds one consistent snapshot instead of a main file plus a WAL that
+        may or may not belong to it.
         """
         if source_path.is_file():
-            content = source_path.read_text(encoding="utf-8", errors="replace")
+            file_info = self._read_source_file(source_path)
             return {
                 "exists": True,
                 "type": "file",
                 "path": str(source_path),
-                "content": content,
-                "size_bytes": len(content.encode("utf-8")),
-                "modified": source_path.stat().st_mtime,
+                **file_info,
             }
         elif source_path.is_dir():
             files: Dict[str, Any] = {}
             total_size = 0
             for fpath in sorted(source_path.rglob("*")):
-                if fpath.is_file():
-                    rel = fpath.relative_to(source_path).as_posix()
-                    try:
-                        content = fpath.read_text(encoding="utf-8", errors="replace")
-                    except Exception:
-                        content = ""
-                    files[rel] = {
-                        "content": content,
-                        "size_bytes": len(content.encode("utf-8")),
-                        "modified": fpath.stat().st_mtime,
-                    }
-                    total_size += len(content.encode("utf-8"))
+                if not fpath.is_file():
+                    continue
+                # Sidecars of a SQLite DB are captured as part of the
+                # VACUUM INTO snapshot of the main file, not separately:
+                # archiving a -wal byte-for-byte would let a later restore
+                # replay it against a different main file and corrupt it.
+                if _is_sqlite_sidecar(fpath):
+                    continue
+                rel = fpath.relative_to(source_path).as_posix()
+                file_info = self._read_source_file(fpath)
+                files[rel] = file_info
+                total_size += file_info["size_bytes"]
             return {
                 "exists": True,
                 "type": "directory",
@@ -417,6 +480,18 @@ class BackupManager:
                 "path": str(source_path),
                 "size_bytes": 0,
             }
+
+    def _read_source_file(self, path: Path) -> Dict[str, Any]:
+        """Read one file byte-accurately (SQLite via VACUUM INTO)."""
+        is_sqlite = _is_sqlite_file(path)
+        raw = _read_sqlite_snapshot(path) if is_sqlite else path.read_bytes()
+        return {
+            "encoding": "base64",
+            "content_b64": base64.b64encode(raw).decode("ascii"),
+            "size_bytes": len(raw),
+            "modified": path.stat().st_mtime,
+            "sqlite": is_sqlite,
+        }
 
     def _compute_checksum(self, filepath: Path) -> str:
         """Compute SHA-256 checksum of a file."""
@@ -602,22 +677,20 @@ class BackupManager:
                 target.parent.mkdir(parents=True, exist_ok=True)
 
                 if source_data.get("type") == "file":
-                    target.write_text(source_data.get("content", ""), encoding="utf-8")
+                    restored = self._write_restored_file(
+                        target, source_data, source_data.get("sqlite", False)
+                    )
                     total_files += 1
-                    total_bytes += len(source_data.get("content", "").encode("utf-8"))
+                    total_bytes += restored
                 elif source_data.get("type") == "directory":
                     files = source_data.get("files", {})
                     for rel_path, file_info in files.items():
                         file_target = target / rel_path
-                        file_target.parent.mkdir(parents=True, exist_ok=True)
-                        file_target.write_text(
-                            file_info.get("content", ""),
-                            encoding="utf-8",
+                        restored = self._write_restored_file(
+                            file_target, file_info, file_info.get("sqlite", False)
                         )
                         total_files += 1
-                        total_bytes += len(
-                            file_info.get("content", "").encode("utf-8")
-                        )
+                        total_bytes += restored
 
                 restored_sources.append(source)
 
@@ -639,6 +712,56 @@ class BackupManager:
                 duration_seconds=time.time() - start_time,
                 status=RestoreStatus.FAILED,
             )
+
+    @staticmethod
+    def _decode_file_entry(entry: Dict[str, Any]) -> bytes:
+        """Decode one archived file entry without losing any byte.
+
+        Supports the legacy text format (``content``) so archives written
+        before this fix still restore; new archives always carry
+        ``content_b64``.
+        """
+        if "content_b64" in entry and entry["content_b64"] is not None:
+            return base64.b64decode(entry["content_b64"])
+        if "content" in entry:
+            return str(entry.get("content") or "").encode("utf-8")
+        raise ValueError(
+            "backup entry carries neither content_b64 nor content; refusing "
+            "to restore a file whose bytes are unknown"
+        )
+
+    @staticmethod
+    def _write_restored_file(
+        target: Path,
+        entry: Dict[str, Any],
+        is_sqlite: bool,
+    ) -> int:
+        """Write restored bytes atomically and return the byte count.
+
+        ``os.replace`` means a restore interrupted halfway leaves the old file
+        intact rather than a truncated one. For SQLite, stale sidecars are
+        removed *after* the main file is in place: a leftover ``-wal`` from the
+        pre-restore DB would be replayed against the restored file and corrupt
+        it, which is exactly the failure a backup is supposed to undo.
+        """
+        raw = BackupManager._decode_file_entry(entry)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".restore-tmp")
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+        if is_sqlite:
+            for suffix in _SQLITE_SIDECAR_SUFFIXES:
+                sidecar = target.with_name(target.name + suffix)
+                if sidecar.exists():
+                    sidecar.unlink(missing_ok=True)
+        return len(raw)
 
     # ------------------------------------------------------------------
     # Retention policy
