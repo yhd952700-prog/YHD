@@ -137,11 +137,12 @@ $env:LIUHAO_UPGRADE_SIGNING_KEY = "D:\keys\liuhao-release-ed25519.pem"   # 未�
 
 ```powershell
 .venv\Scripts\python.exe -m src.upgrade check --app-root . --release-dir dist\release
+# 等价写法：直接指向清单文件
+.venv\Scripts\python.exe -m src.upgrade check --app-root . --manifest dist\release\LIUHAO_RELEASE.json
 ```
 
-> 说明：规范文档把参数写成 `check --manifest <路径>`，当前升级器实际只提供
-> `--release-dir`（目录内找 `LIUHAO_RELEASE.json`）与 `--manifest-url`，没有 `--manifest`。
-> 打包侧使用 `--release-dir`，效果等价（读取的就是刚产出的这份清单）。
+> `--release-dir`、`--manifest`、`--manifest-url` 三者互斥，选一个即可；
+> `--manifest` 读取指定文件，并从该文件所在目录解析 `artifact`。
 
 手动编译：
 

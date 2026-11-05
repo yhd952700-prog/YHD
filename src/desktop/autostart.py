@@ -7,8 +7,8 @@
   * 提供"自启但不自动打开浏览器"的默认行为（``open_browser=False``）；
     需要开机直接弹浏览器时才传 ``open_browser=True``。
   * 写入的命令使用 ``pythonw.exe``（无控制台窗口）。解释器按布局解析：
-    开发目录用 ``.venv\\Scripts\\pythonw.exe``；安装目录用
-    ``runtime\\pythonw.exe``（安装包没有 .venv）；都没有时退回当前解释器
+    开发目录用虚拟环境里的 ``pythonw.exe``；安装目录用
+    ``runtime\\pythonw.exe``（安装包没有虚拟环境）；都没有时退回当前解释器
     同目录的 pythonw。入口同理：源码目录用 ``scripts/liuhao_desktop.py``
     （带 ``--autostart``，起托盘）；安装目录退回
     ``scripts/launch_installed.py``（安装包未收录桌面入口脚本），行为是

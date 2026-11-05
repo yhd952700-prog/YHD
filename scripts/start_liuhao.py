@@ -3,11 +3,11 @@
 
 一条命令把「网关 + 驾驶舱」拉起来，并等健康探针真正通过后再交还控制权。
 
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py          # 单端口（默认）
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --backend-only
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --no-browser
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --vite   # vite 热更新开发模式
-    .venv\\Scripts\\python.exe scripts\\start_liuhao.py --https  # 单端口 + 本地 HTTPS
+    python scripts\\start_liuhao.py          # 单端口（默认）
+    python scripts\\start_liuhao.py --backend-only
+    python scripts\\start_liuhao.py --no-browser
+    python scripts\\start_liuhao.py --vite   # vite 热更新开发模式
+    python scripts\\start_liuhao.py --https  # 单端口 + 本地 HTTPS
 
 设计约束：
   * 不依赖 Docker（本机 Docker daemon 常常没起），走原生进程。

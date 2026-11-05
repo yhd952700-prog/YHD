@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Repository root, resolved from this file (src/models/registry.py -> parents[2]).
 # Used to make every default path below *portable*: the historical hard-coded
-# ``D:\LiuHao-AI-OS\...`` path does not exist inside the Linux release bundle
-# (``deploy/cloud/``), which is why model prices never reached production.
+# absolute development-machine path does not exist inside the Linux release
+# bundle (``deploy/cloud/``), which is why model prices never reached production.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Override for the registry's persistent state file.

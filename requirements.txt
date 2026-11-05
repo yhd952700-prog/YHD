@@ -795,7 +795,7 @@ zstandard==0.25.0
 # （本机无 Docker，改动 Dockerfile 消费的锁文件无法验证）。
 # 下次在有 Docker 的环境执行 `uv pip compile pyproject.toml -o requirements.txt`。
 restrictedpython==8.5
-    # via liuhao-ai-os (D:/LiuHao-AI-OS)
+    # via liuhao-ai-os (pyproject.toml)
 
 # 知识库文件导入（src/knowledge/extractors.py）。同样是对 uv pip compile 产物的
 # **手工最小补齐**（本机未重跑全量 compile，原因同上）。版本为本机 .venv 实测：

@@ -71,6 +71,8 @@ API Key 无法解密。
 ```powershell
 cd $env:LOCALAPPDATA\LiuHao\app
 runtime\python.exe -m src.upgrade check --app-root . --release-dir D:\releases
+# 也可以直接指向清单文件
+runtime\python.exe -m src.upgrade check --app-root . --manifest D:\releases\LIUHAO_RELEASE.json
 ```
 
 结果只有三种：「发现新版本 X」「已是最新版本 X」「无法检查更新（原因）」。没有更新源时

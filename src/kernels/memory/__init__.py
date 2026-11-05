@@ -205,8 +205,8 @@ class MemoryKernel:
     """Complete Memory Kernel implementation.
 
     持久化：``db_path=None`` 时走默认落盘路径（env ``MEMORY_DB_PATH``，兜底
-    ``D:/LiuHao-AI-OS/memory_store.db``），跨进程重启保留记忆；传 ``":memory:"``
-    为纯内存（测试隔离用）。
+    ``data/memory_store.db``；安装版为 ``%LOCALAPPDATA%\\LiuHao\\data``），
+    跨进程重启保留记忆；传 ``":memory:"`` 为纯内存（测试隔离用）。
     """
 
     _entries: Dict[str, MemoryEntry] = field(default_factory=dict, init=False)

@@ -16,6 +16,7 @@ is retained as defense-in-depth).
 """
 
 import json
+import os
 import sqlite3
 import time
 import threading
@@ -95,10 +96,14 @@ class CheckpointManager:
             db_path: Path to SQLite database file
             expiration_days: Default checkpoint expiration in days
         """
-        self.db_path = Path(db_path) if db_path else Path(
-            "D:\\LiuHao-AI-OS\\data\\workflow_checkpoints.db"
-        )
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path) if db_path else self._default_db_path()
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"无法创建检查点数据库目录 {self.db_path.parent}：{exc}。"
+                "请设置 LIUHAO_WORKSPACE_ROOT 指向可写目录后重试。"
+            ) from exc
         self.expiration_days = expiration_days
 
         self._lock = threading.RLock()
@@ -107,6 +112,19 @@ class CheckpointManager:
 
         # Initialize database
         self._init_db()
+
+    @staticmethod
+    def _default_db_path() -> Path:
+        """默认检查点库位置：与执行 journal / 产物索引同一套解析策略。
+
+        ``LIUHAO_WORKSPACE_ROOT`` 优先（安装版由启动器指向用户数据目录），
+        否则回落到仓库的 ``data/workflow_checkpoints.db``；不写死盘符。
+        """
+        root = (os.environ.get("LIUHAO_WORKSPACE_ROOT") or "").strip()
+        if root:
+            return Path(root) / "workflow_checkpoints.db"
+        repo_root = Path(__file__).resolve().parents[2]
+        return repo_root / "data" / "workflow_checkpoints.db"
 
     def _init_db(self) -> None:
         """Initialize the SQLite database schema."""

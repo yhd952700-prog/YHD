@@ -2,8 +2,8 @@
 
 前端只负责展示；这里提供**只读**读取入口，可被脚本或后端直接调用：
 
-    .venv\\Scripts\\python.exe -m src.desktop about          # 人读
-    .venv\\Scripts\\python.exe -m src.desktop about --json    # 机读
+    python -m src.desktop about          # 人读
+    python -m src.desktop about --json    # 机读
 
 字段全部是本机真实值，取不到就返回 ``None`` 并在 ``*_source`` 里注明来源，
 不编造构建时间。

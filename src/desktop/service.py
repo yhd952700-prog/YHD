@@ -295,7 +295,9 @@ class GatewayService:
     def _venv_python(self) -> str:
         import sys
 
-        candidate = self._root / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+        venv_dir = self._root / ".venv"
+        scripts_dir = "Scripts" if os.name == "nt" else "bin"
+        candidate = venv_dir / scripts_dir / "python.exe"
         return str(candidate) if candidate.is_file() else sys.executable
 
     def _wait_health(self, timeout: float) -> bool:
