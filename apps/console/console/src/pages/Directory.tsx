@@ -1,10 +1,13 @@
 /**
- * 目录类页面：我AI员工 / 业务中心 / 知识中心。
+ * 目录类页面：我AI员工 / 业务中心。
  *
- * 三者都是**同一份能力注册表**的不同切面：
+ * 两者都是**同一份能力注册表**的不同切面：
  *   - 我AI员工  → 14 内核 + 14 能力层 + provider 服务面（全量）
  *   - 业务中心  → 14 能力层（= 系统实际具备的业务能力），按阶段带分组
- *   - 知识中心  → 与知识/记忆相关的内核 + OpenAPI 里真实的 /knowledge/* 端点
+ *
+ * 知识中心已迁到 `pages/Knowledge.tsx`：旧实现只把 OpenAPI 的 /knowledge/*
+ * 路由列表摊开，用户看不到自己的文档，既不能导入也不能验收检索 —— 那不是
+ * "知识库"，只是一份端点清单。
  *
  * 没有数据源的地方如实说明，不用占位条目撑满表格。
  */
@@ -22,8 +25,6 @@ import {
   HireEmployeeForm,
 } from '../components/OperatorControls'
 import { Card, Dot, Empty, Guard } from '../components/ui'
-
-type OpenApiPaths = { paths?: Record<string, Record<string, unknown>> }
 
 const STATUS_TONE: Record<string, string> = {
   idle: 'ok',
@@ -479,119 +480,6 @@ export function BusinessCenter({ query }: { query: string }) {
             <br />
             已接入的真实业务数据在 <strong>数据中心</strong> 与 <strong>总览</strong>：
             会话、审计事件、事件分布、依赖健康度。
-          </span>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-export function KnowledgeCenter({ query }: { query: string }) {
-  const roster = useApi<RosterPayload>('/v1/dashboard/roster', 60_000)
-  const spec = useApi<OpenApiPaths>('/openapi.json', 0)
-  const need = query.trim().toLowerCase()
-
-  const knowledgePaths = useMemo(() => {
-    const paths = Object.keys(spec.data?.paths ?? {})
-    return paths.filter((path) => path.startsWith('/knowledge')).sort()
-  }, [spec.data])
-
-  const relatedKernels = useMemo(() => {
-    const wanted = new Set(['context', 'memory', 'capability', 'evaluation'])
-    return (roster.data?.kernels ?? []).filter((kernel) => wanted.has(kernel.kernel))
-  }, [roster.data])
-
-  const filtered = need
-    ? knowledgePaths.filter((path) => path.toLowerCase().includes(need))
-    : knowledgePaths
-
-  return (
-    <div className="os-grid">
-      <Card title="知识检索 API" sub="来自运行中服务的 OpenAPI 定义（真实路由）" span={7}>
-        <Guard
-          loading={spec.loading}
-          error={spec.error}
-          data={spec.data}
-          isEmpty={() => filtered.length === 0}
-          emptyTitle="没有知识相关端点"
-          emptyHint={need ? `没有端点匹配「${query}」` : undefined}
-          onRetry={spec.reload}
-        >
-          {() => (
-            <div className="os-list">
-              {filtered.map((path) => {
-                const methods = Object.keys(spec.data?.paths?.[path] ?? {}).filter((key) =>
-                  ['get', 'post', 'put', 'delete', 'patch'].includes(key),
-                )
-                const detail = spec.data?.paths?.[path] ?? {}
-                const summary =
-                  typeof detail.get === 'object' &&
-                  detail.get !== null &&
-                  'summary' in (detail.get as Record<string, unknown>)
-                    ? String((detail.get as Record<string, unknown>).summary)
-                    : ''
-                return (
-                  <div className="os-row" key={path}>
-                    <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
-                    <div className="os-row-main">
-                      <div className="os-row-title">
-                        <code>{path}</code>
-                      </div>
-                      {summary && <div className="os-row-sub">{summary}</div>}
-                    </div>
-                    {methods.map((method) => (
-                      <span className="os-badge" data-tone="accent" key={method}>
-                        {method.toUpperCase()}
-                      </span>
-                    ))}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </Guard>
-      </Card>
-
-      <Card title="相关知识内核" sub="与知识/记忆/能力直接相关的内核" span={5}>
-        <Guard
-          loading={roster.loading}
-          error={roster.error}
-          data={roster.data}
-          isEmpty={() => relatedKernels.length === 0}
-          emptyTitle="注册表不可用"
-          onRetry={roster.reload}
-        >
-          {() => (
-            <div className="os-list">
-              {relatedKernels.map((kernel) => (
-                <div className="os-row" key={kernel.id}>
-                  <span className="os-dot" style={{ background: 'var(--os-accent-2)' }} />
-                  <div className="os-row-main">
-                    <div className="os-row-title">{kernel.name}</div>
-                    <div className="os-row-sub">
-                      {kernel.id} · {kernel.domain_label}
-                    </div>
-                  </div>
-                  <span
-                    className="os-badge"
-                    data-tone={kernel.status === 'implemented' ? 'ok' : 'muted'}
-                  >
-                    {kernel.status ?? '未知'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Guard>
-      </Card>
-
-      <Card title="说明" span={12}>
-        <div className="os-note">
-          <span>
-            知识检索端点是真实的（直接读自运行中服务的 OpenAPI 定义），但**能否返回结果**
-            取决于是否配置了可用的 LLM provider。provider 的配置状态见
-            <strong> 我AI员工 → 服务面 </strong>或 <strong>总览 → 系统通知</strong>。
-            未配置时端点会如实报错，而不是返回伪造的答案。
           </span>
         </div>
       </Card>
