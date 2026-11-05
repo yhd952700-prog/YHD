@@ -352,6 +352,36 @@ def _isolate_metric_collector(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_human_identity_store_env(monkeypatch):
+    """不让开发者本机的身份库环境变量泄漏进测试。
+
+    根因（2026-11-06 实测）：外层 shell 设了
+    ``LIUHAO_HUMAN_IDENTITIES_DB=D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3``
+    与 ``LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY``，而
+    ``resolve_human_identity_store()``（src/kernels/identity/_persistence.py:822）
+    在**每次调用时**读环境：只设置 ``..._FILE`` 的用例照样被选中 SQLite 后端，
+    于是打开真实的用户身份库。密钥不匹配的行被拒（`test_seeded_humans_are_loaded`
+    等 5 条读到 0 行），断言 `list_humans() == []` 的用例则真的拿到了真人记录
+    （`test_a_malformed_file_loads_nothing_and_does_not_crash` 等 3 条）。
+
+    这既让结果随机器环境漂移，也违反了"测试不碰真实用户数据"。修法：每个用例前
+    清掉四个选择变量，并复位 `_global_manager` 单例（否则首个用例构造出的、绑定
+    真实库的 manager 会一直服务后续用例）。需要存储的用例自己 `monkeypatch.setenv`
+    显式声明。
+    """
+    import src.kernels.identity as identity_module
+
+    for var in (
+        "LIUHAO_HUMAN_IDENTITIES_BACKEND",
+        "LIUHAO_HUMAN_IDENTITIES_DB",
+        "LIUHAO_HUMAN_IDENTITIES_FILE",
+        "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
     """让每个用例自己的 ``AUDIT_DB_PATH`` 重定向真正生效（F1 根因修复）。
 
