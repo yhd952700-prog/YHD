@@ -322,6 +322,36 @@ def _isolate_alert_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_metric_collector(monkeypatch):
+    """隔离进程级指标单例 ``_metric_collector`` 的跨测试污染。
+
+    根因（2026-11-06 实测复现）：``src/observability/metrics.py:802`` 的
+    ``_metric_collector`` 是模块级单例，请求总数与 5xx 计数在**整个 pytest 进程**内
+    累积，任何一次 ``monkeypatch`` 都无法把它归零。``tests/gateway`` 里那些有意制造
+    失败路径的用例累计出 ``error_percent = 5.26``（19 次请求 / 1 次 5xx）。随后
+    ``tests/observability/test_alert_store_isolation.py::test_honest_empty_assertion_has_teeth``
+    启动 app 时，lifespan 的告警评估线程在第一批 tick 就用这份**陈旧**指标判定
+    ``err_rate_high`` 成立，把一条真实告警写进该用例刚隔离出来的 store，于是
+    ``before.json()["count"] == 0`` 变成 1。
+
+    复现命令（修复前，最小组合）::
+
+        pytest tests/gateway tests/observability tests/test_quota_accounting.py \
+               tests/test_providers.py tests/test_model_pricing.py \
+               tests/test_model_routing_live_path.py -q
+        -> 1 failed, 250 passed
+           FAILED tests/observability/test_alert_store_isolation.py::test_honest_empty_assertion_has_teeth
+           AssertionError: {'count': 1, 'alert_type': 'error_rate', ...}
+
+    修复方式是**测试隔离**，不是改断言：每个用例前后把单例戳回 ``None``。
+    生产语义不变——单例本就应当在整个进程生命周期内累积指标。
+    """
+    import src.observability.metrics as metrics_module
+
+    monkeypatch.setattr(metrics_module, "_metric_collector", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
     """让每个用例自己的 ``AUDIT_DB_PATH`` 重定向真正生效（F1 根因修复）。
 
