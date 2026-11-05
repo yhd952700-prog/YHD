@@ -14,13 +14,24 @@ return fabricated vectors or a mock-written answer.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
 from src.knowledge.documents import get_knowledge_service
 from src.knowledge.embedding import EmbeddingUnavailableError
+from src.knowledge.ingest_jobs import get_ingest_job_manager
 
 core = APIRouter(tags=["knowledge"])
 
@@ -118,3 +129,181 @@ router.include_router(core)
 #: list and existing clients still reference ``/knowledge``.
 legacy_router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 legacy_router.include_router(core, deprecated=True)
+
+
+# ==================== Document administration (append-only) ====================
+#
+# Everything below was appended for the knowledge-center UI. The handlers above
+# are intentionally untouched: another workstream is editing the gateway, and a
+# merge conflict inside an existing handler would be a regression neither side
+# asked for.
+
+_MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+_ALLOWED_UPLOAD_SUFFIXES = {".txt", ".md"}
+
+#: New routes live on their own router because ``core`` was already included
+#: into ``router`` / ``legacy_router`` above: routes appended to ``core`` after
+#: that point would never be mounted. These are included at the end of the file.
+documents_admin = APIRouter(tags=["knowledge"])
+
+
+def _require_knowledge_admin(request: Request) -> None:
+    """Admin gate for destructive writes.
+
+    Imported lazily: importing ``src.gateway`` at module load would pull in
+    ``gateway.main``, which imports this module -- a circular import. The token
+    is still parsed by the single gateway implementation, so there is no second
+    auth path.
+    """
+    from src.gateway.policy import (
+        STANDARD_TOKEN_HEADER,
+        TOKEN_HEADER,
+        require_admin_principal,
+        require_bearer_payload,
+    )
+
+    payload = require_bearer_payload(
+        x_liuhao_token=request.headers.get(TOKEN_HEADER),
+        authorization=request.headers.get(STANDARD_TOKEN_HEADER),
+    )
+    require_admin_principal(payload=payload)
+
+
+def _storage_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail=f"向量库不可用：{exc}")
+
+
+@documents_admin.get("/documents")
+def knowledge_list_documents(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    """Paged document ledger (chunk count, ingest time, source, content hash)."""
+    try:
+        return get_knowledge_service().list_documents(limit=limit, offset=offset)
+    except (OSError, sqlite3.Error) as exc:
+        raise _storage_error(exc)
+
+
+@documents_admin.get("/documents/{document_id}/chunks")
+def knowledge_document_chunks(document_id: str) -> Dict[str, Any]:
+    """Every chunk of one document (ordered), not just the top-k search hits."""
+    try:
+        result = get_knowledge_service().document_chunks(document_id)
+    except (OSError, sqlite3.Error) as exc:
+        raise _storage_error(exc)
+    if result["count"] == 0:
+        raise HTTPException(status_code=404, detail=f"未找到文档：{document_id}")
+    return result
+
+
+@documents_admin.delete("/documents/{document_id}")
+def knowledge_delete_document(
+    document_id: str,
+    _admin: str = Depends(_require_knowledge_admin),
+) -> Dict[str, Any]:
+    """Delete a document: chunks, vectors, FTS rows and content hash at once."""
+    try:
+        result = get_knowledge_service().delete_document(document_id)
+    except (OSError, sqlite3.Error) as exc:
+        raise _storage_error(exc)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail=f"未找到文档：{document_id}")
+    return result
+
+
+@documents_admin.post("/documents/upload")
+async def knowledge_upload_document(
+    file: UploadFile = File(...),
+    doc_id: Optional[str] = Form(default=None),
+) -> Dict[str, Any]:
+    """Multipart upload for plain text only; other types are refused explicitly."""
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _ALLOWED_UPLOAD_SUFFIXES:
+        reason = (
+            "PDF 等二进制格式需要专用解析器，本服务未接入，不会假装解析"
+            if suffix == ".pdf"
+            else "本接口只接收纯文本"
+        )
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"不支持的文件类型：{suffix or '未知后缀'}。{reason}；"
+                "请上传 .txt 或 .md 文件"
+            ),
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
+        )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件不是 UTF-8 编码：{exc}",
+        )
+
+    try:
+        result = get_knowledge_service().ingest(
+            text,
+            doc_id=doc_id or filename,
+            metadata={"source": filename, "filename": filename},
+        )
+    except EmbeddingUnavailableError as exc:
+        raise _unavailable(exc)
+    except (OSError, sqlite3.Error) as exc:
+        raise _storage_error(exc)
+
+    result["source"] = filename
+    return result
+
+
+class IngestJobRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=200_000)
+    doc_id: Optional[str] = Field(default=None, max_length=128)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+@documents_admin.post("/ingest/jobs", status_code=202)
+def knowledge_submit_ingest_job(payload: IngestJobRequest) -> Dict[str, Any]:
+    """Queue an ingest job; cancellation is honoured at chunk boundaries."""
+    status = get_knowledge_service().status()
+    if not status.get("enabled"):
+        raise HTTPException(
+            status_code=503, detail=f"知识库未启用：{status.get('reason')}"
+        )
+    return get_ingest_job_manager().submit(
+        payload.text, doc_id=payload.doc_id, metadata=payload.metadata
+    )
+
+
+@documents_admin.get("/ingest/jobs/{job_id}")
+def knowledge_get_ingest_job(job_id: str) -> Dict[str, Any]:
+    job = get_ingest_job_manager().get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"未找到任务：{job_id}")
+    return job
+
+
+@documents_admin.post("/ingest/jobs/{job_id}/cancel")
+def knowledge_cancel_ingest_job(job_id: str) -> Dict[str, Any]:
+    """Request cancellation; it lands at the next chunk boundary."""
+    job = get_ingest_job_manager().cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"未找到任务：{job_id}")
+    return job
+
+
+# Mounted last on purpose: the routers above were built before these routes
+# existed, so a second include is the append-only way to publish them.
+router.include_router(documents_admin)
+legacy_router.include_router(documents_admin, deprecated=True)

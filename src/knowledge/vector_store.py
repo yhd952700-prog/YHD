@@ -73,6 +73,22 @@ def _tokens_for_metadata(metadata: Dict[str, Any]) -> str:
     return tokenize_for_index(f"{header}\n{body}" if header else body)
 
 
+def _document_id_of(chunk_id: str, metadata: Dict[str, Any]) -> str:
+    """Document id for a chunk row; legacy rows only have the ``doc#n`` id."""
+    value = metadata.get("document_id")
+    if isinstance(value, str) and value:
+        return value
+    return chunk_id.split("#", 1)[0]
+
+
+def _chunk_index_of(chunk_id: str, metadata: Dict[str, Any]) -> int:
+    value = metadata.get("chunk_index")
+    if isinstance(value, int):
+        return value
+    suffix = chunk_id.rsplit("#", 1)[-1]
+    return int(suffix) if suffix.isdigit() else 0
+
+
 def reciprocal_rank_fusion(
     ranked_lists: Iterable[Iterable[str]], rrf_k: int = 60
 ) -> List[Tuple[str, float]]:
@@ -261,6 +277,75 @@ class VectorStore:
         """
         with self._lock:
             return self._store.get(doc_id)
+
+    # -- document administration (list / read all chunks / delete) ---------
+    def list_documents(
+        self, limit: int = 50, offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Document summaries aggregated from chunks (in-memory store)."""
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        with self._lock:
+            snapshot = tuple(self._store.items())
+            owned_hashes = {
+                owner: value for value, owner in self._content_hashes.items()
+            }
+        documents: Dict[str, Dict[str, Any]] = {}
+        for chunk_id, (_, metadata) in snapshot:
+            meta = metadata or {}
+            document_id = _document_id_of(chunk_id, meta)
+            entry = documents.get(document_id)
+            if entry is None:
+                entry = {
+                    "document_id": document_id,
+                    "chunks": 0,
+                    "source": meta.get("source") or meta.get("filename"),
+                    "title": meta.get("title"),
+                    "content_hash": owned_hashes.get(document_id),
+                    "ingested_at": None,
+                }
+                documents[document_id] = entry
+            entry["chunks"] += 1
+        ordered = sorted(documents.values(), key=lambda item: item["document_id"])
+        return ordered[offset:offset + limit], len(ordered)
+
+    def get_document_chunks(self, document_id: str) -> List[Dict[str, Any]]:
+        """Every chunk of one document, ordered by ``chunk_index``."""
+        prefix = f"{document_id}#"
+        with self._lock:
+            entries = [
+                (chunk_id, metadata or {})
+                for chunk_id, (_, metadata) in self._store.items()
+                if chunk_id.startswith(prefix)
+            ]
+        entries.sort(key=lambda item: _chunk_index_of(item[0], item[1]))
+        return [
+            {
+                "chunk_id": chunk_id,
+                "chunk_index": _chunk_index_of(chunk_id, meta),
+                "text": str(meta.get("text", "")),
+                "heading_path": list(meta.get("heading_path") or []),
+                "context_header": str(meta.get("context_header") or ""),
+            }
+            for chunk_id, meta in entries
+        ]
+
+    def delete_document(self, document_id: str) -> Dict[str, Any]:
+        """Delete one document and every index entry that points at it."""
+        prefix = f"{document_id}#"
+        with self._lock:
+            keys = [key for key in self._store if key.startswith(prefix)]
+            for key in keys:
+                del self._store[key]
+            had_hash = False
+            for value, owner in list(self._content_hashes.items()):
+                if owner == document_id:
+                    del self._content_hashes[value]
+                    had_hash = True
+            return {
+                "deleted": bool(keys) or had_hash,
+                "chunks_removed": len(keys),
+            }
 
 
 def default_db_path() -> Path:
@@ -539,6 +624,99 @@ class PersistentVectorStore(VectorStore):
                     )
                 self._conn.commit()
             return removed
+
+    def list_documents(
+        self, limit: int = 50, offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Document summaries with ingest time and content hash from SQLite."""
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT doc_id, metadata, updated_at FROM knowledge_vectors"
+            ).fetchall()
+            hashes = {
+                row["document_id"]: row["content_hash"]
+                for row in self._conn.execute(
+                    "SELECT document_id, content_hash FROM knowledge_document_hashes"
+                ).fetchall()
+            }
+        documents: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+            except (TypeError, ValueError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            document_id = _document_id_of(row["doc_id"], meta)
+            entry = documents.get(document_id)
+            if entry is None:
+                entry = {
+                    "document_id": document_id,
+                    "chunks": 0,
+                    "source": meta.get("source") or meta.get("filename"),
+                    "title": meta.get("title"),
+                    "content_hash": hashes.get(document_id),
+                    "ingested_at": row["updated_at"],
+                }
+                documents[document_id] = entry
+            entry["chunks"] += 1
+            previous = entry["ingested_at"]
+            if row["updated_at"] and (previous is None or row["updated_at"] < previous):
+                entry["ingested_at"] = row["updated_at"]
+        ordered = sorted(
+            documents.values(),
+            key=lambda item: (item["ingested_at"] or "", item["document_id"]),
+            reverse=True,
+        )
+        return ordered[offset:offset + limit], len(ordered)
+
+    def delete_document(self, document_id: str) -> Dict[str, Any]:
+        """Delete chunks, FTS rows and the content hash in one transaction.
+
+        The in-memory dict is only mutated after the commit succeeds, so a
+        failure midway leaves both the database and the read path unchanged.
+        """
+        prefix = f"{document_id}#"
+        with self._lock:
+            existed = bool(
+                self._conn.execute(
+                    "SELECT 1 FROM knowledge_vectors "
+                    "WHERE substr(doc_id, 1, ?) = ? LIMIT 1",
+                    (len(prefix), prefix),
+                ).fetchone()
+            ) or bool(
+                self._conn.execute(
+                    "SELECT 1 FROM knowledge_document_hashes "
+                    "WHERE document_id = ? LIMIT 1",
+                    (document_id,),
+                ).fetchone()
+            )
+            if not existed:
+                return {"deleted": False, "chunks_removed": 0}
+            try:
+                cursor = self._conn.execute(
+                    "DELETE FROM knowledge_vectors "
+                    "WHERE substr(doc_id, 1, ?) = ?",
+                    (len(prefix), prefix),
+                )
+                removed = int(cursor.rowcount or 0)
+                self._fts_delete_prefix(prefix)
+                self._conn.execute(
+                    "DELETE FROM knowledge_document_hashes WHERE document_id = ?",
+                    (document_id,),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            for key in [key for key in self._store if key.startswith(prefix)]:
+                del self._store[key]
+            for value, owner in list(self._content_hashes.items()):
+                if owner == document_id:
+                    del self._content_hashes[value]
+            return {"deleted": True, "chunks_removed": removed}
 
     def _fts_search_ids(self, query_text: str, limit: int) -> List[str]:
         """BM25-ordered chunk ids for ``query_text`` (empty when no FTS)."""

@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .chunker import chunk_document_structured
 from .embedding import EmbeddingUnavailableError, build_embedding_provider
@@ -20,6 +21,21 @@ from .vector_store import get_vector_store
 logger = logging.getLogger("liuhao.knowledge.documents")
 
 _ID_SAFE = re.compile(r"[^A-Za-z0-9_.:-]+")
+
+
+class IngestCancelled(Exception):
+    """Raised at a chunk boundary when a cancellable ingest is aborted.
+
+    Nothing has been written to the store at that point: vectors are computed
+    before the swap, so cancellation is **all-or-nothing** (全回滚).
+    """
+
+    def __init__(self, processed: int, total: int) -> None:
+        super().__init__(
+            f"入库已取消（已处理 {processed}/{total} 个分块，未写入任何分块）"
+        )
+        self.processed = processed
+        self.total = total
 
 
 def _safe_document_id(raw: Optional[str]) -> str:
@@ -105,6 +121,9 @@ class KnowledgeDocumentService:
         text: str,
         doc_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         embedder = self._embedding()
         store = self._store()
@@ -114,7 +133,18 @@ class KnowledgeDocumentService:
         static_metadata = dict(metadata or {})
         # The heading breadcrumb is embedded together with the body so a chunk
         # that starts with "如下所示" still carries its section topic.
-        vectors = embedder.embed([chunk.embed_text for chunk in chunks])
+        if on_progress is None and cancel_event is None:
+            vectors = embedder.embed([chunk.embed_text for chunk in chunks])
+        else:
+            # Cancellable path: one embedding per chunk so a cancel request is
+            # honoured at the next chunk boundary, and progress is observable.
+            vectors = []
+            for index, chunk in enumerate(chunks):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise IngestCancelled(index, len(chunks))
+                vectors.append(embedder.embed([chunk.embed_text])[0])
+                if on_progress is not None:
+                    on_progress(index + 1, len(chunks))
 
         # Replace the *whole* document revision atomically. Embeddings are
         # computed before touching the store, so an embedding failure leaves the
@@ -204,6 +234,39 @@ class KnowledgeDocumentService:
             "hits": hits,
             "count": store.count(),
             "retrieval": retrieval,
+        }
+
+    # -- document administration (no embedder needed) -----------------------
+    def list_documents(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        store = self._store()
+        documents, total = store.list_documents(limit=limit, offset=offset)
+        return {
+            "documents": documents,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def document_chunks(self, document_id: str) -> Dict[str, Any]:
+        chunks = self._store().get_document_chunks(document_id)
+        return {
+            "document_id": document_id,
+            "chunks": chunks,
+            "count": len(chunks),
+        }
+
+    def delete_document(self, document_id: str) -> Dict[str, Any]:
+        outcome = self._store().delete_document(document_id)
+        logger.info(
+            "knowledge delete: document=%s deleted=%s chunks_removed=%s",
+            document_id,
+            outcome.get("deleted"),
+            outcome.get("chunks_removed"),
+        )
+        return {
+            "document_id": document_id,
+            "deleted": bool(outcome.get("deleted")),
+            "chunks_removed": int(outcome.get("chunks_removed") or 0),
         }
 
 
