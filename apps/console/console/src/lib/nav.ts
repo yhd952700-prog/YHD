@@ -13,6 +13,7 @@ import type { IconProps } from '../components/icons'
 import {
   IconActivity,
   IconBusiness,
+  IconButler,
   IconDashboard,
   IconData,
   IconEmployees,
@@ -41,6 +42,7 @@ export interface NavItem {
 
 export const PRIMARY_NAV: NavItem[] = [
   { key: 'overview', label: '总览', icon: IconDashboard },
+  { key: 'butler', label: '鎏灏管家', icon: IconButler },
   { key: 'employees', label: '我AI员工', icon: IconEmployees },
   { key: 'business', label: '业务中心', icon: IconBusiness },
   { key: 'knowledge', label: '知识中心', icon: IconKnowledge },

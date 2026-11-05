@@ -76,6 +76,15 @@ export const IconWorkbench = (p: IconProps) => (
   </Glyph>
 )
 
+/** 管家：主星代表「一句话」，两颗小星代表被拆出来、派给员工的子任务。 */
+export const IconButler = (p: IconProps) => (
+  <Glyph {...p}>
+    <path d="M11 3.4l1.5 4.1 4.1 1.5-4.1 1.5L11 14.6l-1.5-4.1L5.4 9l4.1-1.5z" />
+    <path d="M18 14.2l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1L15.1 17l2.1-.8z" />
+    <path d="M5.6 16.4l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5L4 18.5l1.6-.6z" />
+  </Glyph>
+)
+
 export const IconData = (p: IconProps) => (
   <Glyph {...p}>
     <ellipse cx="12" cy="5.6" rx="7.6" ry="2.9" />

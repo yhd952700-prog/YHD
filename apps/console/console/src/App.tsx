@@ -51,6 +51,7 @@ import {
 } from './lib/policyClient'
 import type { ApprovalGrant, EnforcementSnapshot } from './lib/policyClient'
 import { Overview } from './pages/Overview'
+import { Butler } from './pages/Butler'
 import { Audit } from './pages/Audit'
 import { Files } from './pages/Files'
 import { Goals } from './pages/Goals'
@@ -81,6 +82,7 @@ const EMPTY_STATE: ApprovalUiState = {
 /** 页面标题。与 `lib/nav.ts` 的导航项一一对应，key 是唯一的关联方式。 */
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: '总览', sub: '真实运行态 —— 每一项都可追溯到后端数据源' },
+  butler: { title: '鎏灏管家', sub: '一句话吩咐 → 自动拆解 → 员工执行 → 人话汇总' },
   employees: { title: '我 AI 员工', sub: '14 内核 + 14 能力层 + provider 服务面' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
@@ -530,6 +532,9 @@ function App() {
       </div>
 
       {active === 'overview' && <Overview query={query} provider={provider} />}
+      {active === 'butler' && (
+        <Butler query={query} onOpenApproval={() => navigate('approval')} />
+      )}
       {active === 'employees' && <Roster query={query} />}
       {active === 'business' && <BusinessCenter query={query} />}
       {active === 'knowledge' && (
