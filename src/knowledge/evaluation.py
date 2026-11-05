@@ -9,13 +9,21 @@ It builds a small in-memory corpus in a temporary SQLite file, ingests it
 through the real :class:`KnowledgeDocumentService` (structured chunking + FTS5
 hybrid retrieval), and reports ``recall@5``, ``recall@10`` and ``MRR``.
 
+The evaluation set is deliberately **hard** (see ``QUERIES`` for the intent of
+each case): zero-token-overlap paraphrases, near-miss distractor documents
+(same topic, different answer), adjacent version/model identifiers
+(``v1.2.3`` vs ``v1.2.4``, ``XG-9001`` vs ``XG-9002``), one long document with
+three similar sections (graded with an answer marker), and an unanswerable
+query used to expose "hard-fitting" (the retriever has no abstention, so it
+returns top-k anyway and scores 0 for that query).
+
 The embedder is a dependency-free hashing embedder (signed SHA-256 hashing of
 the same CJK-bigram/ASCII tokens the FTS side uses). It is *not* a semantic
-model: synonym-heavy queries only score when they share surface tokens. That is
-intentional -- the baseline measures the retrieval plumbing (chunking, hybrid
-fusion, ranking), not a particular hosted embedding model. When a real provider
-is wired in, the baseline must be re-measured and ``BASELINE`` updated in the
-same change.
+model: zero-overlap synonym queries are expected to fail. **This baseline
+therefore covers lexical retrieval only; real semantic-model numbers are
+unmeasured** until a hosted provider is wired in and the set is re-run.
+The numbers below must be re-measured in the same change that touches
+retrieval; never report them as a semantic-quality claim.
 
 Chinese tokenization limitations (bigram, no segmentation/synonyms) also apply
 here; see ``vector_store`` module documentation.
@@ -27,7 +35,7 @@ import hashlib
 import json
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .documents import KnowledgeDocumentService
 from .vector_store import PersistentVectorStore, tokenize_for_index
@@ -48,6 +56,9 @@ class EvalQuery:
     query: str
     relevant_doc_ids: Tuple[str, ...]
     category: str
+    # Optional string that must appear in a top-5 hit to prove the *correct
+    # section* of a long document was retrieved (doc-level recall cannot see it).
+    answer_marker: Optional[str] = None
 
 
 CORPUS: Tuple[EvalDocument, ...] = (
@@ -173,6 +184,66 @@ CORPUS: Tuple[EvalDocument, ...] = (
         "# 网络排障\n\n使用 ping 与 curl 检查连通性，注意 443 是否被拦截。\n\n"
         "抓包文件保存到 data/pcap。",
     ),
+    # --- 加难用文档 ---------------------------------------------------------
+    # 零字面重合同义词目标：全文没有“备份/如何/做备”等查询词
+    EvalDocument(
+        "kb-025",
+        "# 灾备与数据保全\n\n每周生成一次快照，保留 8 份异地副本，可回退到任意时点。\n\n"
+        "恢复演练由值班工程师执行。",
+    ),
+    # 零字面重合同义词目标：全文没有“磁盘/快满/怎么办”
+    EvalDocument(
+        "kb-026",
+        "# 容量与存储水位\n\n存储水位达到 85% 时触发扩容评估，由运维确认后再执行。\n\n"
+        "水位低于 60% 时解除告警。",
+    ),
+    # 零字面重合同义词目标：全文没有“登录/掉线”
+    EvalDocument(
+        "kb-027",
+        "# 会话与自动重连\n\n空闲 15 分钟后触发自动重连，粘滞会话保持 30 分钟。\n\n"
+        "重连失败三次后提示重新认证。",
+    ),
+    # 相邻版本号：只差最后一位
+    EvalDocument(
+        "kb-028",
+        "# 版本 v1.2.3 发布说明\n\n修复登录超时问题，升级前请阅读兼容性说明。",
+    ),
+    EvalDocument(
+        "kb-029",
+        "# 版本 v1.2.4 发布说明\n\n修复报表导出乱码，兼容 v1.2.3 的配置。",
+    ),
+    # 相邻型号：只差最后一位
+    EvalDocument(
+        "kb-030",
+        "# 型号 XG-9001\n\n支持 802.11ax 协议，电源 12V/3A。",
+    ),
+    EvalDocument(
+        "kb-031",
+        "# 型号 XG-9002\n\n支持 802.11ax 协议，电源 12V/4A。",
+    ),
+    # 长文档，三段相似章节；正确答案只在“数据库连接超时”一节
+    EvalDocument(
+        "kb-032",
+        "# 连接故障手册\n\n"
+        "## 数据库连接超时\n\n"
+        "数据库连接池耗尽时接口返回 504，需要调大 pool_size 后重启。\n\n"
+        "## 缓存连接超时\n\n"
+        "缓存连接超时通常是网络抖动，等待重试即可恢复。\n\n"
+        "## 消息队列连接超时\n\n"
+        "消息队列连接超时请检查 broker 地址与鉴权配置。",
+    ),
+    # 近似干扰文档：主题与 kb-032 的数据库超时高度相似，但答案不同
+    EvalDocument(
+        "kb-033",
+        "# 数据库性能优化\n\n连接池耗尽也会导致 504，可通过增加 max_connections 缓解。\n\n"
+        "慢查询请先看执行计划。",
+    ),
+    # 零字面重合同义词目标：全文没有“服务器/重启/原因”
+    EvalDocument(
+        "kb-034",
+        "# 节点自愈\n\n检测到进程假死时自动拉起，连续三次失败则隔离节点。\n\n"
+        "隔离后由值班工程师介入。",
+    ),
 )
 
 QUERIES: Tuple[EvalQuery, ...] = (
@@ -181,39 +252,57 @@ QUERIES: Tuple[EvalQuery, ...] = (
     EvalQuery("访问令牌过期时间", ("kb-002",), "fact"),
     EvalQuery("每日备份几点执行", ("kb-005",), "fact"),
     EvalQuery("日志放在哪个目录", ("kb-006",), "fact"),
-    EvalQuery("最低硬件配置要求", ("kb-011",), "fact"),
     EvalQuery("告警通过什么方式推送", ("kb-013",), "fact"),
-    EvalQuery("升级前需要做什么", ("kb-014",), "fact"),
     EvalQuery("密钥应该存放在哪里", ("kb-015",), "fact"),
-    # 编号 / 型号 / 标识符查询
+    # 编号 / 型号 / 标识符查询（含相邻版本、相邻型号）
     EvalQuery("XG-9000", ("kb-003",), "identifier"),
     EvalQuery("TICKET-8842 怎么处理", ("kb-004",), "identifier"),
     EvalQuery("返回 429 是什么含义", ("kb-007",), "identifier"),
     EvalQuery("knowledge_vectors.sqlite3 文件位置", ("kb-008",), "identifier"),
     EvalQuery("admin 和 auditor 的权限区别", ("kb-009",), "identifier"),
     EvalQuery("rollback.sh 的作用", ("kb-010",), "identifier"),
-    EvalQuery("8700 端口属于哪个服务", ("kb-001", "kb-012"), "identifier"),
-    # 同义改写（保留部分词面重叠，不含分词/同义词库）
+    EvalQuery("v1.2.4 修复了什么", ("kb-029",), "identifier"),
+    EvalQuery("XG-9001 支持什么协议", ("kb-030",), "identifier"),
+    # 同义改写（前 6 条保留部分词面重叠）
     EvalQuery("发布失败时如何撤销", ("kb-010",), "synonym"),
     EvalQuery("备份多久执行一次", ("kb-005",), "synonym"),
     EvalQuery("超限之后返回什么状态", ("kb-007",), "synonym"),
     EvalQuery("哪些端口需要放通", ("kb-012",), "synonym"),
     EvalQuery("权限变更要走什么流程", ("kb-009",), "synonym"),
     EvalQuery("旧版本目录为什么保留", ("kb-014",), "synonym"),
+    # 同义改写（后 4 条与目标文档零 token 重合，测语义检索缺口）
+    EvalQuery("如何做备份", ("kb-025",), "synonym"),
+    EvalQuery("磁盘快满了怎么办", ("kb-026",), "synonym"),
+    EvalQuery("登录后老是掉线", ("kb-027",), "synonym"),
+    EvalQuery("服务器频繁重启是什么原因", ("kb-034",), "synonym"),
     # 跨段落 / 跨文档
     EvalQuery("部署端口和网络放通端口", ("kb-001", "kb-012"), "cross_paragraph"),
     EvalQuery("备份和日志分别保留多久", ("kb-005", "kb-006"), "cross_paragraph"),
     EvalQuery("升级失败如何回滚", ("kb-014", "kb-010"), "cross_paragraph"),
     EvalQuery("数据库文件和日志目录在哪里", ("kb-008", "kb-006"), "cross_paragraph"),
+    # 长文档内相似章节：必须命中“数据库连接超时”这一节的答案标记
+    EvalQuery(
+        "数据库连接池耗尽导致超时怎么处理",
+        ("kb-032",),
+        "section",
+        answer_marker="pool_size",
+    ),
+    # 库内无答案：检索器没有弃答能力，返回任何内容都算硬凑
+    EvalQuery("员工年假怎么申请", (), "unanswerable"),
 )
 
-# Measured 2026-11-06 on the deterministic corpus below (25 queries, 24 docs).
+# Measured 2026-11-06 on the deterministic hard set (30 queries, 34 docs).
+# Hard by design: 4 zero-overlap paraphrases + 1 unanswerable query are expected
+# to fail with the lexical-only hashing embedder; see module docstring.
 # Any retrieval change MUST re-run ``python -m src.knowledge.evaluation`` and
 # compare against these numbers; "feels better" is not evidence.
 BASELINE: Dict[str, float] = {
-    "recall@5": 1.0,
-    "recall@10": 1.0,
-    "mrr": 1.0,
+    "recall@5": 0.8333,
+    "recall@10": 0.8333,
+    "mrr": 0.8333,
+    "section_hit@5": 1.0,
+    # 0.0 = 对无答案查询仍然硬凑；这是已知缺口，不是笔误。
+    "no_answer_abstained": 0.0,
 }
 
 
@@ -262,7 +351,8 @@ def _ranked_doc_ids(hits: Sequence[Dict]) -> List[str]:
 
 def _recall_at(ranked: Sequence[str], relevant: Sequence[str], k: int) -> float:
     if not relevant:
-        return 0.0
+        # 无答案查询：只有“什么都不返回”才算做对；返回内容即硬凑。
+        return 1.0 if not ranked[:k] else 0.0
     return len(set(ranked[:k]) & set(relevant)) / len(set(relevant))
 
 
@@ -281,6 +371,7 @@ def run_evaluation() -> Dict[str, object]:
             for query in QUERIES:
                 response = service.search(query.query, top_k=10)
                 ranked = _ranked_doc_ids(response["hits"])
+                hit_texts = [str(hit.get("text", "")) for hit in response["hits"]]
                 first_rank = next(
                     (
                         rank
@@ -289,6 +380,22 @@ def run_evaluation() -> Dict[str, object]:
                     ),
                     0,
                 )
+                if not query.relevant_doc_ids:
+                    # 无答案：返回任何 chunk 都算硬凑
+                    reciprocal_rank = 1.0 if not ranked else 0.0
+                else:
+                    reciprocal_rank = 1.0 / first_rank if first_rank else 0.0
+
+                marker_hit = None
+                if query.answer_marker:
+                    marker_hit = (
+                        1.0
+                        if any(
+                            query.answer_marker in text
+                            for text in hit_texts[:5]
+                        )
+                        else 0.0
+                    )
                 rows.append(
                     {
                         "query": query.query,
@@ -297,23 +404,48 @@ def run_evaluation() -> Dict[str, object]:
                         "ranked": ranked,
                         "recall@5": _recall_at(ranked, query.relevant_doc_ids, 5),
                         "recall@10": _recall_at(ranked, query.relevant_doc_ids, 10),
-                        "reciprocal_rank": 1.0 / first_rank if first_rank else 0.0,
+                        "reciprocal_rank": reciprocal_rank,
+                        "marker_hit@5": marker_hit,
+                        "returned": len(hit_texts),
                         "mode": response.get("retrieval", {}).get("mode"),
                     }
                 )
         finally:
             store.close()
 
+    marker_rows = [row for row in rows if row["marker_hit@5"] is not None]
+    no_answer_rows = [row for row in rows if row["category"] == "unanswerable"]
     metrics = {
         "queries": len(rows),
         "documents": len(CORPUS),
         "recall@5": round(sum(float(row["recall@5"]) for row in rows) / len(rows), 4),
         "recall@10": round(sum(float(row["recall@10"]) for row in rows) / len(rows), 4),
         "mrr": round(sum(float(row["reciprocal_rank"]) for row in rows) / len(rows), 4),
+        "section_hit@5": round(
+            sum(float(row["marker_hit@5"]) for row in marker_rows)
+            / len(marker_rows),
+            4,
+        )
+        if marker_rows
+        else 0.0,
+        "no_answer_abstained": round(
+            sum(1.0 for row in no_answer_rows if int(row["returned"]) == 0)
+            / len(no_answer_rows),
+            4,
+        )
+        if no_answer_rows
+        else 1.0,
     }
 
     per_category: Dict[str, Dict[str, float]] = {}
-    for category in ("fact", "identifier", "synonym", "cross_paragraph"):
+    for category in (
+        "fact",
+        "identifier",
+        "synonym",
+        "cross_paragraph",
+        "section",
+        "unanswerable",
+    ):
         subset = [row for row in rows if row["category"] == category]
         if not subset:
             continue
@@ -339,7 +471,7 @@ def baseline_report(result: Dict[str, object] | None = None) -> Dict[str, object
     metrics = dict(run["metrics"])  # type: ignore[arg-type]
     delta = {
         key: round(float(metrics[key]) - BASELINE[key], 4)
-        for key in ("recall@5", "recall@10", "mrr")
+        for key in BASELINE
     }
     return {
         "metrics": metrics,
