@@ -92,7 +92,7 @@ _CN_NAME_LABEL_RE = re.compile(
     r"([\u4e00-\u9fa5·]{2,4})"
 )
 _EN_NAME_LABEL_RE = re.compile(
-    r"(?:name|contact|author|recipient)\s*[:：]\s*"
+    r"(?i:name|contact|author|recipient)\s*[:：]\s*"
     r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",
 )
 _EN_NAME_HONORIFIC_RE = re.compile(

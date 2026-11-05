@@ -57,6 +57,11 @@ class TestNameDetectionIsConservative:
         assert "John Smith" not in redacted
         assert "[REDACTED]" in redacted
 
+    def test_labelled_english_name_is_redacted(self):
+        redacted = pii.redact_text("Name: Alice Johnson; role: engineer")
+        assert "Alice Johnson" not in redacted
+        assert "role" in redacted
+
 
 class TestRedactionFailureIsFailClosed:
     def test_filter_content_never_returns_raw_text_when_redaction_raises(
