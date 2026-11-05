@@ -10,7 +10,7 @@
 > - **未做**：仓库中找不到实现。
 >
 > 本表为汇总方填写，事实以仓库实际状态与 commit 为准；各流仍在改代码，收尾时会再刷新一次。
-> 最后刷新：2026-11-06（基于推送后的 `origin/p36` `e18169e6`）。
+> 最后刷新：2026-11-06（基于推送后的 `origin/p36` `fd0d006f`）。
 > 本轮刷新：新增「30 方向逐条状态」全表（T-11 的细化）；更新 T-14（本轮推送与
 > CI 红点收敛过程）、T-15（门禁 ref 被他人流改漂后重新对齐）、C-5（用例簇修复与
 > 归属）。**仍标「部分完成」的，都是只有单测没有真实链路，或代码尚未提交。**
@@ -41,6 +41,7 @@
 | T-22 | 产物索引 + 目标→文件回溯（方向 26/7） | 执行 / 文件 | `src/artifacts/`（`c14ab20c` 索引 CLI/报表；`82f95450` 接入执行链，可选、默认不变） | 部分完成（代码入库，无 UI/权限过滤） | 代码 `src/artifacts/index.py`；单测 `tests/artifacts/test_artifact_index.py`、`test_artifact_report.py`、`test_artifact_wiring.py` | 未做：按权限过滤（越权不可见）、控制台入口、执行回放界面。触发条件 K-3 |
 | T-23 | 明确不做清单（电脑自主操作 / 任意仓库改码提 PR / 金融交易 / 外部 KYC / 全网常驻采集 / 机器人 IoT 工业执行） | 战略（决策） | `docs/strategy-30-directions.md:188-220` | 延后（明确不做） | 分节理由：物理硬件依赖、高风险强监管、个人单机无日常价值、与产品形态冲突 | 不是「以后做」，是「不做」；重新捡起必须先改本节并给出安全/合规前提 |
 | T-24 | 五大战略中心的决策：只做信息架构、命名与权限边界，不拆五套后端 | 战略 / 架构 | `docs/strategy-30-directions.md:42-46`、`:87-147` | 已完成（决策） | 理由：1 进程 1 主库 + 至少 9 个 SQLite，与「双击即用、零运维」冲突；中心边界不干净（知识被执链消费、安全拦执行、进化评估执行） | 若未来改为多服务，必须先解除「零运维」承诺并给出迁移与运维方案 |
+| T-25 | 文档说的事和程序做的事必须是一件：`openapi.yaml` 以运行时真实路由为准，且错误码与代码一致 | 网关契约 / CI | `openapi.yaml`、`scripts/verify_openapi_contract.py`、`.github/workflows/ci.yml:410-411` | 已完成 | `fd0d006f`：补齐 **15 个 missing path + 2 个 method（GET `/knowledge/documents`）** 与 5 个缺失 schema，运行时 **89 paths / 0 ghost / 0 missing**；核对 `assign`/`retry`/`pending` 的 404 `agent_not_found`、409 `agent_unavailable`、409 `task_not_retryable`、409 `goal_running` 与代码一致；校验脚本已在 CI 作为**必过**步骤 | 手工补写的响应说明由合并保留（`--write` 会重排/丢说明，超集合并脚本见报告）；若他流改路由后 CI 该步骤会转红，必须重新对齐而不是跳过 |
 
 ---
 
