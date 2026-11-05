@@ -198,6 +198,9 @@ def _failed_delivery_items(
     rows: List[Dict[str, Any]] = []
     for user_id in users:
         rows.extend(store.list_deliveries(user_id, status="failed", limit=limit))
+        # unknown：进程死在投递中途，无法确认是否响过。按"最多一次"不再重响，
+        # 用户必须能在这里看到（否则就是静默漏响）。
+        rows.extend(store.list_deliveries(user_id, status="unknown", limit=limit))
     rows.sort(key=lambda item: int(item["id"]), reverse=True)
     rows = rows[:limit]
     return [
@@ -209,6 +212,10 @@ def _failed_delivery_items(
             "occurrence": row["occurrence"],
             "fired_at": row["created_at"],
             "fired_at_local": _local(row["created_at"], tz),
+            "status": row.get("status"),
+            "status_label": (
+                "结果不明" if row.get("status") == "unknown" else "投递失败"
+            ),
             "reason": row.get("error") or "",
             "channels": row.get("channels") or [],
         }
@@ -321,10 +328,11 @@ def _print_failures(
     if not failed and not dead:
         print("没有失败的投递或死信，提醒都正常。")
         return
-    print(f"失败投递 {len(failed)} 条，死信 {len(dead)} 个。")
+    print(f"失败/不明投递 {len(failed)} 条，死信 {len(dead)} 个。")
     for item in failed:
+        label = item.get("status_label") or "投递失败"
         print(
-            f"[投递失败] {item['fired_at_local'] or item['fired_at']}  "
+            f"[{label}] {item['fired_at_local'] or item['fired_at']}  "
             f"{item['title']}  原因：{item['reason']}"
         )
     for item in dead:

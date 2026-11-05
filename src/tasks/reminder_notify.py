@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from typing import List, Optional, Protocol
 
@@ -46,7 +47,39 @@ class NotifyResult:
 class Notifier(Protocol):
     channel: str
 
-    def notify(self, title: str, body: str) -> List[NotifyResult]: ...
+    def notify(
+        self,
+        title: str,
+        body: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> List[NotifyResult]: ...
+
+
+def maybe_test_crash(point: str) -> None:
+    """仅测试/冒烟：在指定投递阶段模拟进程硬死。
+
+    ``LIUHAO_TEST_FAULT_FILE`` 指向一个文本文件，内容是要命中的点
+    （``before_notify`` / ``during_notify`` / ``after_notify``）。命中后先打印
+    ``FAULT_READY`` 再卡住，等外部 ``kill -9``（超时则硬退出）。未设置该环境
+    变量或内容不匹配时**什么都不做**，生产行为零变化。
+    """
+
+    path = os.environ.get("LIUHAO_TEST_FAULT_FILE")
+    if not path:
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            target = handle.read().strip()
+    except OSError:
+        return
+    if target != point:
+        return
+    print(f"FAULT_READY point={point} pid={os.getpid()}", file=sys.stderr, flush=True)
+    time.sleep(120)
+    # 外部没能及时 kill 时自己硬退出：带着"通知已发出、终态未落盘"的半截状态
+    # 继续跑会让后续判断失真，宁可让进程直接死掉。
+    os._exit(98)
 
 
 def default_reminder_outbox() -> str:
@@ -63,6 +96,25 @@ def default_reminder_outbox() -> str:
     return os.path.join(base, "reminders_outbox.jsonl")
 
 
+def _outbox_has_key(path: str, idempotency_key: str) -> bool:
+    """出站队列里是否已有同一幂等键（O(行数)，提醒量级下可忽略）。"""
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if idempotency_key not in line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except ValueError:
+                    continue
+                if payload.get("idempotency_key") == idempotency_key:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 class ConsoleOutboxNotifier:
     """落地 + 控制台横幅：无桌面时也能让用户看到。"""
 
@@ -71,12 +123,30 @@ class ConsoleOutboxNotifier:
     def __init__(self, outbox_path: Optional[str] = None) -> None:
         self.outbox_path = outbox_path or default_reminder_outbox()
 
-    def notify(self, title: str, body: str) -> List[NotifyResult]:
+    def notify(
+        self,
+        title: str,
+        body: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> List[NotifyResult]:
+        if idempotency_key and _outbox_has_key(self.outbox_path, idempotency_key):
+            # 同一幂等键已经落过盘：说明这条提醒在本进程或上一个进程里已经响过，
+            # 不再重复打印横幅 / 追加第二行。
+            return [
+                NotifyResult(
+                    self.channel,
+                    True,
+                    f"duplicate suppressed: {idempotency_key}",
+                )
+            ]
         record = {
             "created_at": utc_now().isoformat(),
             "title": title,
             "body": body,
         }
+        if idempotency_key:
+            record["idempotency_key"] = idempotency_key
         try:
             os.makedirs(os.path.dirname(os.path.abspath(self.outbox_path)) or ".", exist_ok=True)
             with open(self.outbox_path, "a", encoding="utf-8") as handle:
@@ -127,7 +197,15 @@ class WindowsBalloonNotifier:
         self._script_path = path
         return path
 
-    def notify(self, title: str, body: str) -> List[NotifyResult]:
+    def notify(
+        self,
+        title: str,
+        body: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> List[NotifyResult]:
+        # 托盘气泡是系统级弹窗，没有可复用的去重 token；跨进程去重由调用方的
+        # dispatch marker 保证（这里只接受参数，保持接口一致）。
         if os.name != "nt":
             return [NotifyResult(self.channel, False, "not Windows")]
         executable = shutil.which("powershell") or shutil.which("powershell.exe")
@@ -179,11 +257,19 @@ class MultiNotifier:
     def __init__(self, notifiers: List[Notifier]) -> None:
         self.notifiers = list(notifiers)
 
-    def notify(self, title: str, body: str) -> List[NotifyResult]:
+    def notify(
+        self,
+        title: str,
+        body: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> List[NotifyResult]:
         results: List[NotifyResult] = []
         for notifier in self.notifiers:
             try:
-                results.extend(notifier.notify(title, body))
+                results.extend(
+                    notifier.notify(title, body, idempotency_key=idempotency_key)
+                )
             except Exception as exc:  # noqa: BLE001 - 单通道异常不能拖垮其它通道
                 results.append(
                     NotifyResult(
@@ -192,6 +278,9 @@ class MultiNotifier:
                         f"{type(exc).__name__}: {exc}",
                     )
                 )
+            # 冒烟用：第一条通道成功后再卡住，模拟"响了一次、终态还没落盘"。
+            if any(result.ok for result in results):
+                maybe_test_crash("during_notify")
         return results
 
 

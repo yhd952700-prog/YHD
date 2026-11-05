@@ -59,7 +59,9 @@ class RecordingNotifier:
         self.fail = fail
         self.detail = detail
 
-    def notify(self, title: str, body: str) -> list[NotifyResult]:
+    def notify(
+        self, title: str, body: str, *, idempotency_key: str | None = None
+    ) -> list[NotifyResult]:
         self.calls.append((title, body))
         return [NotifyResult(self.channel, not self.fail, "" if not self.fail else self.detail)]
 
@@ -699,4 +701,251 @@ def test_windows_balloon_is_a_real_os_channel():
         "鎏灏提醒测试", "这是一条真实的托盘气泡通知"
     )
     assert any(item.ok for item in results), results
+
+
+# -- 崩溃 / 幂等（at-most-once）------------------------------------------------
+#
+# 进程硬死（SIGKILL / 断电）是 BaseException 级别的消失，不会被
+# ``except Exception`` 兜住，所以测试里用 ``KeyboardInterrupt`` 模拟。
+# 每个测试都会"重启"一遍（新 store + 新 service 指向同一个库），模拟真实重启。
+
+
+def _dispatch_row(store: ReminderStore, reminder_id: str, occurrence: str):
+    with store._lock:
+        row = store._conn.execute(
+            "SELECT status, attempts FROM reminder_dispatch"
+            " WHERE reminder_id = ? AND occurrence = ?",
+            (reminder_id, occurrence),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"status": str(row[0]), "attempts": int(row[1])}
+
+
+def _payload(created, user_id: str = "u1"):
+    return {
+        "reminder_id": created["id"],
+        "version": int(created["version"]),
+        "occurrence": created["run_at"],
+        "user_id": user_id,
+    }
+
+
+async def test_crash_before_notify_never_repeats_and_is_queryable(tmp_path, monkeypatch):
+    """通知前硬死：重启后最多响一次（这里是 0 次），并可在 failures 里查到。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))  # 本地 08:00，不在勿扰
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    payload = _payload(created)
+    clock.advance(3)
+
+    import src.tasks.reminders as reminders_module
+
+    original = reminders_module.maybe_test_crash
+
+    def crash(point: str) -> None:
+        if point == "before_notify":
+            raise KeyboardInterrupt("simulated hard kill before notify")
+        original(point)
+
+    monkeypatch.setattr(reminders_module, "maybe_test_crash", crash)
+    with pytest.raises(KeyboardInterrupt):
+        service.handle_fire(payload)
+    assert notifier.calls == [], "通知前就死了，不该响"
+    assert _dispatch_row(store, created["id"], created["run_at"]) == {
+        "status": "intent",
+        "attempts": 1,
+    }
+
+    # 进程重启：同一个库、新的 store/service/notifier。
+    store2 = ReminderStore(str(tmp_path / "reminders.db"))
+    scheduler2 = _scheduler(tmp_path, clock)
+    notifier2 = RecordingNotifier()
+    service2 = ReminderService(
+        scheduler2, store=store2, notifier=notifier2, tz=TZ
+    )
+    result = service2.handle_fire(payload)
+
+    assert result["status"] == "unknown", result
+    assert notifier2.calls == [], "宁可少响一次，也不能重响"
+    assert _dispatch_row(store2, created["id"], created["run_at"])["status"] == "unknown"
+    assert service2.get("u1", created["id"])["status"] == "completed"
+    deliveries = service2.list_deliveries("u1")
+    assert [row["status"] for row in deliveries] == ["unknown"]
+    failures = service2.failures("u1")
+    assert [row["status"] for row in failures["failed_deliveries"]] == ["unknown"]
+    assert failures["failed_deliveries"][0]["error"]
+
+    scheduler.close()
+    scheduler2.close()
+    store.close()
+    store2.close()
+
+
+async def test_crash_during_notify_never_repeats(tmp_path):
+    """通知中硬死（已经弹了一次）：重启后封口 unknown，绝不再弹第二次。"""
+
+    class CrashingNotifier(RecordingNotifier):
+        def notify(self, title, body, *, idempotency_key=None):
+            self.calls.append((title, body))
+            raise KeyboardInterrupt("simulated hard kill during notify")
+
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = CrashingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    payload = _payload(created)
+    clock.advance(3)
+
+    with pytest.raises(KeyboardInterrupt):
+        service.handle_fire(payload)
+    assert len(notifier.calls) == 1, "这一次真的响了"
+    assert _dispatch_row(store, created["id"], created["run_at"])["status"] == "intent"
+
+    store2 = ReminderStore(str(tmp_path / "reminders.db"))
+    scheduler2 = _scheduler(tmp_path, clock)
+    notifier2 = RecordingNotifier()
+    service2 = ReminderService(scheduler2, store=store2, notifier=notifier2, tz=TZ)
+    result = service2.handle_fire(payload)
+
+    assert result["status"] == "unknown", result
+    assert notifier2.calls == [], "已经响过一次，不能补响第二次"
+    assert _dispatch_row(store2, created["id"], created["run_at"])["status"] == "unknown"
+    failures = service2.failures("u1")
+    assert failures["failed_deliveries"][0]["status"] == "unknown"
+    assert "不再重响" in failures["failed_deliveries"][0]["error"]
+
+    scheduler.close()
+    scheduler2.close()
+    store.close()
+    store2.close()
+
+
+async def test_crash_after_notify_before_terminal_record_never_repeats(
+    tmp_path, monkeypatch
+):
+    """通知成功后、写终态前硬死：重启同样封口 unknown，不再重响。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    payload = _payload(created)
+    clock.advance(3)
+
+    def crash(**kwargs):
+        raise KeyboardInterrupt("simulated hard kill after notify")
+
+    monkeypatch.setattr(store, "record_outcome_and_advance", crash)
+    with pytest.raises(KeyboardInterrupt):
+        service.handle_fire(payload)
+    assert len(notifier.calls) == 1, "通知已经发出去了"
+    assert _dispatch_row(store, created["id"], created["run_at"])["status"] == "intent"
+
+    store2 = ReminderStore(str(tmp_path / "reminders.db"))
+    scheduler2 = _scheduler(tmp_path, clock)
+    notifier2 = RecordingNotifier()
+    service2 = ReminderService(scheduler2, store=store2, notifier=notifier2, tz=TZ)
+    result = service2.handle_fire(payload)
+
+    assert result["status"] == "unknown", result
+    assert notifier2.calls == []
+    assert service2.get("u1", created["id"])["status"] == "completed"
+    assert service2.failures("u1")["failed_deliveries"][0]["status"] == "unknown"
+
+    scheduler.close()
+    scheduler2.close()
+    store.close()
+    store2.close()
+
+
+async def test_all_channels_failed_can_retry_with_same_idempotency_key(tmp_path):
+    """所有通道都明确失败（没响）= 允许重试；重试用同一个幂等键。"""
+    from src.tasks.reminders import (
+        ReminderDeliveryError,
+        reminder_dispatch_key,
+    )
+
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier(fail=True, detail="boom")
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+
+    created = service.create("u1", "2秒后提醒我喝水")
+    payload = _payload(created)
+    clock.advance(3)
+
+    with pytest.raises(ReminderDeliveryError):
+        service.handle_fire(payload)
+    assert _dispatch_row(store, created["id"], created["run_at"])["status"] == "failed"
+    assert [row["status"] for row in service.list_deliveries("u1")] == ["failed"]
+
+    notifier.fail = False
+    result = service.handle_fire(payload)
+    assert result["status"] == "delivered", result
+    assert len(notifier.calls) == 2, "第一次没响，第二次才真的响"
+    assert _dispatch_row(store, created["id"], created["run_at"])["status"] == "delivered"
+    assert service.get("u1", created["id"])["status"] == "completed"
+    assert service.list_deliveries("u1")[0]["status"] == "delivered"
+
+    # 幂等键只由 id/版本/时刻决定，跨进程/时钟变化都不变。
+    key = reminder_dispatch_key(created["id"], int(created["version"]), created["run_at"])
+    other = ReminderStore(str(tmp_path / "reminders.db"))
+    assert key == reminder_dispatch_key(
+        created["id"], 1, created["run_at"]
+    ), "换个进程/时钟重算也必须是同一个键"
+    other.close()
+
+    scheduler.close()
+    store.close()
+
+
+async def test_repeat_schedule_is_repaired_when_delivered_but_not_advanced(tmp_path):
+    """已响并记 delivered，但死在"排下一次"之前：重启后补齐下一次。"""
+    clock = FakeClock(datetime(2026, 1, 1, 0, 0))  # 本地 08:00
+    scheduler = _scheduler(tmp_path, clock)
+    store = _store(tmp_path)
+    notifier = RecordingNotifier()
+    service = ReminderService(scheduler, store=store, notifier=notifier, tz=TZ)
+
+    created = service.create("u1", "每天十点提醒我喝水")
+    payload = _payload(created)
+    clock.advance(2 * 3600)  # 本地 10:00，到点
+
+    # 模拟"响过并写了 delivered，但进程死在推进提醒状态之前"。
+    store.record_delivery(
+        reminder_id=created["id"],
+        user_id="u1",
+        occurrence=payload["occurrence"],
+        status="delivered",
+        channels=[{"channel": "test", "ok": True}],
+        error=None,
+        now_iso=clock.current.isoformat(),
+    )
+
+    result = service.handle_fire(payload)
+    assert result["status"] == "skipped", result
+    assert result["outcome"] == "delivered"
+    assert notifier.calls == [], "已经响过，不能重响"
+    reminder = service.get("u1", created["id"])
+    assert reminder["status"] == "active"
+    assert reminder["run_at"] == "2026-01-02T02:00:00"
+    pending = scheduler.list_jobs(PENDING, 20)
+    assert any(
+        job["payload"].get("reminder_id") == created["id"]
+        and job["run_at"] == "2026-01-02T02:00:00"
+        for job in pending
+    ), pending
+    scheduler.close()
+    store.close()
 

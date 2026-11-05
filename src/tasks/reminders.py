@@ -50,6 +50,7 @@ from src.tasks.reminder_notify import (
     Notifier,
     NotifyResult,
     build_default_notifier,
+    maybe_test_crash,
 )
 from src.tasks.reminder_time import (
     WEEKDAY_NAMES,
@@ -83,6 +84,21 @@ DIGEST_DELAY_SECONDS = 3.0
 DIGEST_JOB_KEY = f"{REMINDER_KEY_PREFIX}:digest"
 # 摘要不是某一条提醒，"完成/稍后"不能作用在它身上，避免误标后明细还在。
 DIGEST_REMINDER_ID = "__digest__"
+
+# 投递前的幂等标记（"最多响一次"的结构性保证）：
+#   intent    —— 已领取、正在通知；进程在此时硬死 → 重启后不再重响，记 unknown
+#   delivered —— 已确认通知成功并落账
+#   failed    —— 所有通道都明确失败（没有响），允许下一次重试
+#   unknown   —— 进程死在投递中途，无法确认是否已响；按"宁可少响"封口，且可在
+#                `failures` 里查到
+DISPATCH_INTENT = "intent"
+DISPATCH_DELIVERED = "delivered"
+DISPATCH_FAILED = "failed"
+DISPATCH_UNKNOWN = "unknown"
+DISPATCH_UNKNOWN_REASON = (
+    "进程在投递阶段退出，无法确认是否已经响过；按「最多一次」不再重响"
+    "（可能已响，也可能漏响一次）"
+)
 
 _SETTINGS_DEFAULTS = {
     "quiet_enabled": "1",
@@ -130,6 +146,27 @@ CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_user
     ON reminder_deliveries(user_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_deliveries_delivered
     ON reminder_deliveries(reminder_id, occurrence) WHERE status = 'delivered';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_deliveries_unknown
+    ON reminder_deliveries(reminder_id, occurrence) WHERE status = 'unknown';
+
+CREATE TABLE IF NOT EXISTS reminder_dispatch (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL,
+    reminder_id     TEXT NOT NULL,
+    user_id         TEXT NOT NULL,
+    occurrence      TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    owner           TEXT,
+    attempts        INTEGER NOT NULL DEFAULT 1,
+    channels        TEXT,
+    error           TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_dispatch_key
+    ON reminder_dispatch(idempotency_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_dispatch_occurrence
+    ON reminder_dispatch(reminder_id, occurrence);
 
 CREATE TABLE IF NOT EXISTS reminder_settings (
     key        TEXT PRIMARY KEY,
@@ -163,6 +200,16 @@ def reminder_job_key(reminder_id: str, version: int, occurrence: str) -> str:
 
 def reminder_key_prefix(reminder_id: str) -> str:
     return f"{REMINDER_KEY_PREFIX}:{reminder_id}:"
+
+
+def reminder_dispatch_key(reminder_id: str, version: int, occurrence: str) -> str:
+    """通知幂等键：只由提醒 id / 版本 / 触发时刻决定。
+
+    不含时钟、进程 id、主机名 —— 换进程、改系统时间、重启机器之后都还是同一个
+    键，因此可以跨进程复用。
+    """
+
+    return f"{reminder_job_key(reminder_id, version, occurrence)}:dispatch"
 
 
 def _iso(value: Any) -> str:
@@ -479,6 +526,272 @@ class ReminderStore:
             except sqlite3.IntegrityError:
                 return False
         return True
+
+    def occurrence_status(self, reminder_id: str, occurrence: str) -> Optional[str]:
+        """该 occurrence 最近一次投递记录的状态（没有记录时返回 None）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM reminder_deliveries"
+                " WHERE reminder_id = ? AND occurrence = ?"
+                " ORDER BY id DESC LIMIT 1",
+                (reminder_id, occurrence),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    # -- dispatch markers (at-most-once) ---------------------------------
+
+    def claim_dispatch(
+        self,
+        *,
+        reminder_id: str,
+        user_id: str,
+        occurrence: str,
+        idempotency_key: str,
+        owner: str,
+        now_iso: str,
+    ) -> Dict[str, Any]:
+        """通知前原子地领取该 occurrence 的投递权。
+
+        返回值：
+        * ``claimed``    —— 首次领取（或上一轮"所有通道明确失败"后的重试）；
+        * ``interrupted``—— 上一个进程死在投递中途，调用方必须按 unknown 封口；
+        * ``duplicate``  —— 已经投递/已判不明，不能再响。
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT status, attempts FROM reminder_dispatch"
+                    " WHERE reminder_id = ? AND occurrence = ?",
+                    (reminder_id, occurrence),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute(
+                        "INSERT INTO reminder_dispatch"
+                        " (idempotency_key, reminder_id, user_id, occurrence, status,"
+                        "  owner, attempts, created_at, updated_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                        (
+                            idempotency_key,
+                            reminder_id,
+                            user_id,
+                            occurrence,
+                            DISPATCH_INTENT,
+                            owner,
+                            now_iso,
+                            now_iso,
+                        ),
+                    )
+                    self._conn.execute("COMMIT")
+                    return {"status": "claimed", "attempts": 1, "retry": False}
+                status, attempts = str(row[0]), int(row[1])
+                if status == DISPATCH_FAILED:
+                    # 上一轮所有通道都明确失败（没有响），允许再试一次。
+                    self._conn.execute(
+                        "UPDATE reminder_dispatch SET status = ?, owner = ?,"
+                        " attempts = attempts + 1, channels = NULL, error = NULL,"
+                        " updated_at = ?"
+                        " WHERE reminder_id = ? AND occurrence = ?",
+                        (
+                            DISPATCH_INTENT,
+                            owner,
+                            now_iso,
+                            reminder_id,
+                            occurrence,
+                        ),
+                    )
+                    self._conn.execute("COMMIT")
+                    return {
+                        "status": "claimed",
+                        "attempts": attempts + 1,
+                        "retry": True,
+                    }
+                self._conn.execute("COMMIT")
+                if status == DISPATCH_INTENT:
+                    return {"status": "interrupted", "attempts": attempts}
+                return {"status": "duplicate", "existing": status}
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def resolve_interrupted_dispatch(
+        self,
+        *,
+        reminder_id: str,
+        user_id: str,
+        occurrence: str,
+        idempotency_key: str,
+        now_iso: str,
+        lateness_seconds: Optional[float],
+        next_run_at: Optional[str],
+        complete: bool,
+    ) -> Dict[str, Any]:
+        """把上一个进程留下的 intent 标记一次性封口为 unknown。
+
+        投递记录、提醒状态（完成/排下一次）与 dispatch 状态在**同一个事务**里
+        写完，避免"已经封口但没记账"再被下一次重启漏掉。
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT status FROM reminder_dispatch"
+                    " WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("COMMIT")
+                    return {"status": "missing"}
+                if str(row[0]) != DISPATCH_INTENT:
+                    self._conn.execute("COMMIT")
+                    return {"status": "already_handled", "existing": str(row[0])}
+                self._conn.execute(
+                    "UPDATE reminder_dispatch SET status = ?, channels = '[]',"
+                    " error = ?, updated_at = ? WHERE idempotency_key = ?",
+                    (DISPATCH_UNKNOWN, DISPATCH_UNKNOWN_REASON, now_iso,
+                     idempotency_key),
+                )
+                try:
+                    self._conn.execute(
+                        "INSERT INTO reminder_deliveries"
+                        " (reminder_id, user_id, occurrence, status, channels, error,"
+                        "  lateness_seconds, created_at)"
+                        " VALUES (?, ?, ?, ?, '[]', ?, ?, ?)",
+                        (
+                            reminder_id,
+                            user_id,
+                            occurrence,
+                            DISPATCH_UNKNOWN,
+                            DISPATCH_UNKNOWN_REASON,
+                            lateness_seconds,
+                            now_iso,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    # 同一 occurrence 已经有一条 unknown 记录（极端重复重启），
+                    # 不挡状态推进。
+                    pass
+                self._advance_reminder_locked(
+                    reminder_id=reminder_id,
+                    fired_at=now_iso,
+                    next_run_at=next_run_at,
+                    complete=complete,
+                    now_iso=now_iso,
+                )
+                self._conn.execute("COMMIT")
+                return {"status": "unknown"}
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def close_dispatch(
+        self,
+        idempotency_key: str,
+        *,
+        status: str,
+        channels: List[Dict[str, Any]],
+        error: Optional[str],
+        now_iso: str,
+    ) -> bool:
+        """把 intent 标记推进到终态（delivered / failed）。只能改 intent 行。"""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE reminder_dispatch SET status = ?, channels = ?, error = ?,"
+                " updated_at = ? WHERE idempotency_key = ? AND status = ?",
+                (
+                    status,
+                    json.dumps(channels, ensure_ascii=False, default=str),
+                    error,
+                    now_iso,
+                    idempotency_key,
+                    DISPATCH_INTENT,
+                ),
+            )
+            return int(cursor.rowcount) > 0
+
+    def record_outcome_and_advance(
+        self,
+        *,
+        reminder_id: str,
+        user_id: str,
+        occurrence: str,
+        status: str,
+        channels: List[Dict[str, Any]],
+        error: Optional[str],
+        now_iso: str,
+        lateness_seconds: Optional[float],
+        next_run_at: Optional[str] = None,
+        complete: bool = False,
+    ) -> bool:
+        """投递记录与提醒状态在同一个事务里落盘。
+
+        进程死在两者之间会变成"已响但没排下一次"，这种静默流失比重复响更难查，
+        所以这里不拆成两次写。
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                try:
+                    self._conn.execute(
+                        "INSERT INTO reminder_deliveries"
+                        " (reminder_id, user_id, occurrence, status, channels, error,"
+                        "  lateness_seconds, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            reminder_id,
+                            user_id,
+                            occurrence,
+                            status,
+                            json.dumps(channels, ensure_ascii=False, default=str),
+                            error,
+                            lateness_seconds,
+                            now_iso,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    self._conn.execute("ROLLBACK")
+                    return False
+                self._advance_reminder_locked(
+                    reminder_id=reminder_id,
+                    fired_at=now_iso,
+                    next_run_at=next_run_at,
+                    complete=complete,
+                    now_iso=now_iso,
+                )
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+        return True
+
+    def _advance_reminder_locked(
+        self,
+        *,
+        reminder_id: str,
+        fired_at: str,
+        next_run_at: Optional[str],
+        complete: bool,
+        now_iso: str,
+    ) -> None:
+        """推进提醒状态（调用方必须已持有写事务）。"""
+        if complete:
+            self._conn.execute(
+                "UPDATE reminders SET status = 'completed', last_fired_at = ?,"
+                " last_error = NULL, updated_at = ? WHERE id = ?",
+                (fired_at, now_iso, reminder_id),
+            )
+        elif next_run_at is not None:
+            self._conn.execute(
+                "UPDATE reminders SET run_at = ?, last_fired_at = ?,"
+                " last_error = NULL, updated_at = ? WHERE id = ?",
+                (next_run_at, fired_at, now_iso, reminder_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE reminders SET last_fired_at = ?, last_error = NULL,"
+                " updated_at = ? WHERE id = ?",
+                (fired_at, now_iso, reminder_id),
+            )
 
     def list_deliveries(
         self,
@@ -1052,9 +1365,13 @@ class ReminderService:
 
     def failures(self, user_id: str, *, limit: int = 50) -> Dict[str, Any]:
         """失败的提醒：投递失败原因 + 排程器死信，两者都能说明为什么没响。"""
+        # unknown = 进程死在投递中途、无法确认是否响过；同样属于"可能没响"，
+        # 必须让用户在 failures 里看得到。
         deliveries = self.store.list_deliveries(
             user_id, status="failed", limit=limit
-        )
+        ) + self.store.list_deliveries(user_id, status="unknown", limit=limit)
+        deliveries.sort(key=lambda item: int(item.get("id") or 0), reverse=True)
+        deliveries = deliveries[:limit]
         dead_jobs = []
         for job in self.scheduler.list_dead_letters(limit=max(limit, 100)):
             if job.get("job_name") not in (REMINDER_FIRE_JOB, REMINDER_DIGEST_JOB):
@@ -1116,7 +1433,24 @@ class ReminderService:
             else self.store.has_recorded(reminder_id, occurrence)
         )
         if already_recorded:
-            return {"status": "skipped", "reason": "occurrence already handled"}
+            outcome = self.store.occurrence_status(reminder_id, occurrence)
+            if outcome in ("delivered", "missed"):
+                # 上一次可能死在"记账成功 → 排下一次/标记完成"之间：这里幂等补齐，
+                # 避免重复提醒序列因为一次崩溃静默断掉。
+                self._reconcile_after_recorded(record, occurrence)
+                if outcome == "delivered":
+                    self.store.close_dispatch(
+                        reminder_dispatch_key(reminder_id, version, occurrence),
+                        status=DISPATCH_DELIVERED,
+                        channels=[],
+                        error=None,
+                        now_iso=_iso(self.scheduler.now()),
+                    )
+            return {
+                "status": "skipped",
+                "reason": "occurrence already handled",
+                "outcome": outcome,
+            }
 
         now_dt = self.scheduler.now()
         now_iso = _iso(now_dt)
@@ -1141,18 +1475,91 @@ class ReminderService:
         title = "鎏灏提醒"
         body = f"{record['title']}（{self._human_time(record)}）"
 
+        # 先落 intent 标记再通知：进程死在通知的任何阶段，重启后看到 intent
+        # 就按"最多响一次"封口 —— 宁可少响一次，也不在重启后补响第二次。
+        idempotency_key = reminder_dispatch_key(reminder_id, version, occurrence)
+        claim = self.store.claim_dispatch(
+            reminder_id=reminder_id,
+            user_id=user_id,
+            occurrence=occurrence,
+            idempotency_key=idempotency_key,
+            owner=self.scheduler.owner,
+            now_iso=now_iso,
+        )
+        if claim["status"] == "duplicate":
+            self._reconcile_after_recorded(record, occurrence)
+            return {
+                "status": "skipped",
+                "reason": f"dispatch already {claim.get('existing', 'handled')}",
+                "outcome": claim.get("existing"),
+            }
+        if claim["status"] == "interrupted":
+            # 上一个进程死在投递中途，无法确认是否已经响过。不再重响，记 unknown
+            # 并推进提醒状态；unknown 会出现在 `failures` 里，漏响可查。
+            next_at = (
+                None
+                if (is_snooze or record["repeat_kind"] == "once")
+                else self._next_run_at(record, now_dt)
+            )
+            self.store.resolve_interrupted_dispatch(
+                reminder_id=reminder_id,
+                user_id=user_id,
+                occurrence=occurrence,
+                idempotency_key=idempotency_key,
+                now_iso=now_iso,
+                lateness_seconds=lateness,
+                next_run_at=next_at,
+                complete=(
+                    record["status"] == "active"
+                    and record["repeat_kind"] == "once"
+                    and not is_snooze
+                ),
+            )
+            if next_at:
+                self._enqueue({**record, "run_at": next_at}, next_at)
+            self._audit(
+                "reminder.dispatch_unknown",
+                "attention",
+                {
+                    "reminder_id": reminder_id,
+                    "occurrence": occurrence,
+                    "attempts": claim.get("attempts"),
+                },
+            )
+            return {
+                "status": "unknown",
+                "reminder_id": reminder_id,
+                "occurrence": occurrence,
+                "reason": DISPATCH_UNKNOWN_REASON,
+            }
+
+        maybe_test_crash("before_notify")
         try:
-            results: List[NotifyResult] = list(self.notifier.notify(title, body))
+            results: List[NotifyResult] = list(
+                self.notifier.notify(
+                    title, body, idempotency_key=idempotency_key
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - 通知器自身异常也算投递失败
             results = [
                 NotifyResult("notifier", False, f"{type(exc).__name__}: {exc}")
             ]
+        maybe_test_crash("after_notify")
         channels = [item.as_dict() for item in results]
 
         if not any(item.ok for item in results):
             error = "; ".join(
                 f"{item.channel}: {item.detail}" for item in results if not item.ok
             ) or "no notification channel"
+            # 所有通道都明确失败 = 这一轮没有响；先封口 failed（允许同一 job 重试），
+            # 再写失败明细。死在两者之间最多少一条明细，不会重响。
+            self.store.close_dispatch(
+                idempotency_key,
+                status=DISPATCH_FAILED,
+                channels=channels,
+                error=error,
+                now_iso=now_iso,
+            )
             self.store.record_delivery(
                 reminder_id=reminder_id,
                 user_id=user_id,
@@ -1175,7 +1582,56 @@ class ReminderService:
                 self._schedule_next(record, after=now_dt)
             raise ReminderDeliveryError(error)
 
-        recorded = self.store.record_delivery(
+        if is_snooze:
+            recorded = self.store.record_delivery(
+                reminder_id=reminder_id,
+                user_id=user_id,
+                occurrence=occurrence,
+                status="delivered",
+                channels=channels,
+                error=None,
+                now_iso=now_iso,
+                lateness_seconds=lateness,
+            )
+            if not recorded:
+                # 已有一条 delivered（极端竞态）：标记封口，不再响。
+                self.store.close_dispatch(
+                    idempotency_key,
+                    status=DISPATCH_DELIVERED,
+                    channels=channels,
+                    error=None,
+                    now_iso=now_iso,
+                )
+                return {"status": "skipped", "reason": "duplicate delivery"}
+            self.store.clear_error(reminder_id)
+            self.store.close_dispatch(
+                idempotency_key,
+                status=DISPATCH_DELIVERED,
+                channels=channels,
+                error=None,
+                now_iso=now_iso,
+            )
+            # 用户主动要的那一次已响完，原提醒的序列/状态都不动。
+            self._audit(
+                "reminder.snooze_delivered",
+                "success",
+                {"reminder_id": reminder_id, "occurrence": occurrence},
+            )
+            return {
+                "status": "delivered",
+                "reminder_id": reminder_id,
+                "occurrence": occurrence,
+                "channels": channels,
+            }
+
+        next_at = (
+            None
+            if record["repeat_kind"] == "once"
+            else self._next_run_at(record, now_dt)
+        )
+        # 投递记录 + 提醒状态（完成/排下一次）在同一个事务里写：不会出现
+        # "已经响过，但下一次没排上"的静默断档。
+        recorded = self.store.record_outcome_and_advance(
             reminder_id=reminder_id,
             user_id=user_id,
             occurrence=occurrence,
@@ -1184,28 +1640,28 @@ class ReminderService:
             error=None,
             now_iso=now_iso,
             lateness_seconds=lateness,
+            next_run_at=next_at,
+            complete=record["repeat_kind"] == "once",
         )
         if not recorded:
+            self.store.close_dispatch(
+                idempotency_key,
+                status=DISPATCH_DELIVERED,
+                channels=channels,
+                error=None,
+                now_iso=now_iso,
+            )
             return {"status": "skipped", "reason": "duplicate delivery"}
-
-        self.store.clear_error(reminder_id)
-        if is_snooze:
-            # 用户主动要的那一次已响完，原提醒的序列/状态都不动。
-            self._audit(
-                "reminder.snooze_delivered",
-                "success",
-                {"reminder_id": reminder_id, "occurrence": occurrence},
-            )
-        elif record["repeat_kind"] == "once":
-            self.store.mark_fired(
-                reminder_id, now_iso, next_run_at=None, now_iso=now_iso
-            )
-        else:
-            next_at = self._next_run_at(record, now_dt)
-            self.store.mark_fired(
-                reminder_id, now_iso, next_run_at=next_at, now_iso=now_iso
-            )
-            self._schedule_next(record, next_run_at=next_at)
+        self.store.close_dispatch(
+            idempotency_key,
+            status=DISPATCH_DELIVERED,
+            channels=channels,
+            error=None,
+            now_iso=now_iso,
+        )
+        if next_at:
+            # enqueue 按 job_key 幂等；即使上一次死在这里，重跑时也会补齐。
+            self._enqueue({**record, "run_at": next_at}, next_at)
         self._audit(
             "reminder.delivered",
             "success",
@@ -1331,7 +1787,12 @@ class ReminderService:
         is_snooze: bool,
     ) -> Dict[str, Any]:
         """补记一次"错过"：不单独弹，交给摘要；重复提醒继续排下一次。"""
-        recorded = self.store.record_delivery(
+        next_at = (
+            None
+            if (is_snooze or record["repeat_kind"] == "once")
+            else self._next_run_at(record, now_dt)
+        )
+        recorded = self.store.record_outcome_and_advance(
             reminder_id=record["id"],
             user_id=record["user_id"],
             occurrence=occurrence,
@@ -1340,18 +1801,17 @@ class ReminderService:
             error=None,
             now_iso=now_iso,
             lateness_seconds=lateness,
+            next_run_at=next_at,
+            complete=(
+                record["status"] == "active"
+                and record["repeat_kind"] == "once"
+                and not is_snooze
+            ),
         )
         if not recorded:
             return {"status": "skipped", "reason": "duplicate missed"}
-        self.store.clear_error(record["id"])
-        if record["repeat_kind"] != "once":
-            next_at = self._next_run_at(record, now_dt)
-            if next_at:
-                self._schedule_next(record, next_run_at=next_at)
-        elif record["status"] == "active" and not is_snooze:
-            self.store.mark_fired(
-                record["id"], now_iso, next_run_at=None, now_iso=now_iso
-            )
+        if next_at:
+            self._enqueue({**record, "run_at": next_at}, next_at)
         self._enqueue_digest(record["user_id"])
         self._audit(
             "reminder.missed",
@@ -1527,6 +1987,39 @@ class ReminderService:
             backoff_multiplier=self.backoff_multiplier,
             max_backoff_seconds=self.max_backoff_seconds,
         )
+
+    def _reconcile_after_recorded(
+        self, record: Dict[str, Any], occurrence: str
+    ) -> None:
+        """幂等跳过时补齐崩溃留下的收尾：标记完成 / 排下一次。
+
+        只处理"当前 occurrence 已经记账"的情况；重复提醒若 run_at 还停在这个
+        occurrence，说明上一次死在推进之前，先算下一次再排；若 run_at 已经前进，
+        则按 job_key 幂等补一次 enqueue（补回"记账成功后、enqueue 前"崩溃丢的 job）。
+        """
+
+        if record["status"] != "active":
+            return
+        now_iso = _iso(self.scheduler.now())
+        if record["repeat_kind"] == "once":
+            self.store.mark_fired(
+                record["id"], now_iso, next_run_at=None, now_iso=now_iso
+            )
+            return
+        try:
+            run_at = datetime.fromisoformat(str(record["run_at"]))
+            current = datetime.fromisoformat(occurrence)
+        except (TypeError, ValueError):
+            return
+        if run_at <= current:
+            next_at = self._next_run_at(record, self.scheduler.now())
+            if next_at:
+                self.store.mark_fired(
+                    record["id"], now_iso, next_run_at=next_at, now_iso=now_iso
+                )
+                self._enqueue({**record, "run_at": next_at}, next_at)
+        else:
+            self._enqueue(record, record["run_at"])
 
     def _schedule_next(
         self,

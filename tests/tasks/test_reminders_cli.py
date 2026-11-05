@@ -286,7 +286,7 @@ async def test_failures_shows_reason_and_dead_letters(tmp_path, monkeypatch, cap
 
     assert main(["failures"]) == 0
     out = capsys.readouterr().out
-    assert "失败投递 1 条，死信 1 个" in out
+    assert "失败/不明投递 1 条，死信 1 个" in out
     assert "托盘气泡不可用" in out
     assert "通知通道全部失败" in out
     assert "重试 1/1 后放弃" in out

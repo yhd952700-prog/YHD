@@ -43,7 +43,9 @@ class RecordingNotifier:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def notify(self, title: str, body: str) -> list[NotifyResult]:
+    def notify(
+        self, title: str, body: str, *, idempotency_key: str | None = None
+    ) -> list[NotifyResult]:
         self.calls.append((title, body))
         return [NotifyResult(self.channel, True, "recorded")]
 
