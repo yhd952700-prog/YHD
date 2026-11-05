@@ -249,8 +249,8 @@ def run_wizard(skip: bool = False) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
     elif choice == "2":
-        base_url = _prompt("API base_url（如 https://api.openai.com/v1）")
-        model = _prompt("模型名（如 gpt-5.6-sol）")
+        base_url = _prompt("API base_url（以 /v1 结尾，如 https://api.deepseek.com/v1）")
+        model = _prompt("模型名（如 deepseek-chat；OpenAI 填 gpt-4o-mini）")
         api_key = getpass.getpass("  API Key: ")
         if not base_url or not model or not api_key:
             print("  base_url / 模型名 / API Key 缺一不可，跳过。", file=sys.stderr)
