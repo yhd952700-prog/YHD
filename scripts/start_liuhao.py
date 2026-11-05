@@ -37,6 +37,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 
+#: 唯一生效的日志配置。网关以 ``--log-config`` 加载它：10 MiB × 5 份轮转，
+#: INFO 进 logs/liuhao.log，ERROR 另进 logs/error.log（见配置文件头注释）。
+LOG_CONFIG = ROOT / "config" / "logging.yaml"
+LOG_DIR = ROOT / "logs"
+
 #: 单端口模式下由网关服务的前端构建产物。
 #: 权威实现在 src/gateway/console_static.py；这里重复声明只是为了让启动器
 #: 能在**拉起进程之前**就给出可读的报错，而不是等健康探针超时。
@@ -313,6 +318,10 @@ def main() -> int:
 
     atexit.register(_shutdown_all)
 
+    # 配置里的 handler 使用相对路径 ``logs/...``；先建目录再交给 uvicorn，
+    # 否则首次写入时 handler 打不开文件、日志被静默丢弃。
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
     # .env 里的 SECRET_KEY / APP_ENV 必须先可见，否则 preflight 与部署姿态都不成立。
     _load_dotenv()
     # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
@@ -353,6 +362,8 @@ def main() -> int:
             args.host,
             "--port",
             str(args.api_port),
+            "--log-config",
+            str(LOG_CONFIG),
         ],
         ROOT,
         "gateway",

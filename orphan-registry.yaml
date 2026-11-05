@@ -67,20 +67,10 @@ acknowledged:
       8 request-validation helpers. Not referenced: the gateway validates via
       pydantic request models declared inline on its routes.
 
-  - module: src.logging_config
-    classification: library-staged
-    reason: >-
-      Logging setup helper with zero importers. Runtime logging is configured
-      without an explicit setup_logging()/dictConfig() call site (verified in
-      src/gateway/main.py, main.py, serve.py). Coexists with the equally
-      unwired src/observability/logging_utils.py.
-
-  - module: src.observability.logging_utils
-    classification: library-staged
-    reason: >-
-      Structured-logging helpers (correlation ids, structlog bridge) with zero
-      importers. Same situation as src/logging_config.py -- two unwired logging
-      modules; neither is currently the configured path.
+  # 注：src.logging_config 与 src.observability.logging_utils 已被删除。
+  # 运行期日志现在只有一条生效路径：config/logging.yaml（由三个入口以
+  # uvicorn --log-config / log_config= 加载）。保留两套“看起来能用、实际无人
+  # 调用”的日志配置，等于给后来者留下两个错误答案，所以删掉而不是登记。
 
   - module: src.observability.alerts
     classification: library-staged

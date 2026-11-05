@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 import uvicorn
 
@@ -35,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
+
+#: 唯一生效的日志配置（轮转参数见文件头注释）。
+LOG_CONFIG = Path(__file__).resolve().parents[2] / "config" / "logging.yaml"
+#: 配置里的 handler 用的是相对路径，先确保目录存在再交给 uvicorn。
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 
 
 def resolve_bind() -> tuple:
@@ -60,12 +66,14 @@ def resolve_bind() -> tuple:
 def main() -> int:
     host, port = resolve_bind()
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     print(f"鎏灏网关启动： http://{host}:{port}  (log_level={log_level})")
     uvicorn.run(
         "src.gateway.main:app",
         host=host,
         port=port,
         log_level=log_level,
+        log_config=str(LOG_CONFIG) if LOG_CONFIG.is_file() else None,
     )
     return 0
 
