@@ -587,3 +587,115 @@ class TestAuditDbPathIsAdjudicated:
         assert deploy, (
             "the compose setters are the actual arming of this entry; "
             "setters=%r" % (setters,))
+
+
+# --------------------------------------------------------------------------- #
+# Safe-value lock -- "armed" is not the same as "armed on the strict side"
+# --------------------------------------------------------------------------- #
+#: The eleven variables the owner adjudicated as "safe-first" plus the posture
+#: inputs that decide what "production" means. Exact literals on purpose: a
+#: looser assertion would let a future edit quietly flip the value back.
+_PRODUCTION_SAFE_VALUES = {
+    "LIUHAO_ENV": "production",
+    "LIUHAO_EXECUTOR_FENCE": "on",
+    "LIUHAO_REQUIRE_EXECUTOR_FENCE": "1",
+    "LIUHAO_POSTURE_STRICT": "1",
+    "LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS": "4",
+    "LIUHAO_EXECUTOR_FENCE_LEASE_DIR": "/app/data/executor_fence_leases",
+    "LIUHAO_SANDBOX_ENFORCE": "on",
+    "LIUHAO_ALLOW_SIMULATED_EXECUTION": "0",
+    "AUDIT_DB_PATH": "/app/data/audit_store.db",
+    "AUDIT_DB_BACKUP_PATH": "/app/data/audit_store.db.backup",
+    "LIUHAO_API_KEY_STORE": "/app/data/api_keys.json",
+    "LIUHAO_CONSOLE_DIST": "/app/apps/console/console/dist",
+    "LIUHAO_WORKSPACE_ROOT": "/app/data/workspace",
+}
+
+
+class TestSafeValueLock:
+    """Pin the shipped defaults so a "make CI green" edit cannot flip them.
+
+    Presence-only arming was the original hole: ``LIUHAO_POSTURE_STRICT=0`` or
+    ``LIUHAO_ALLOW_SIMULATED_EXECUTION=1`` satisfies "the variable is set"
+    while re-opening the exact branch the control was added to close. The gate
+    now carries a ``safe`` rule per entry; these tests pin both the rule table
+    and the concrete values in ``docker-compose.prod.yml``.
+    """
+
+    def test_production_compose_locks_the_adjudicated_values(self, gate):
+        values = gate.scan_artifact_values(
+            [REPO_ROOT / "docker-compose.prod.yml"])
+        for var, expected in _PRODUCTION_SAFE_VALUES.items():
+            hits = [v for label, v in values.get(var, [])
+                    if gate._is_production_artifact(label)]
+            assert hits == [expected], (
+                "%s must be exactly %r in the production bundle (and exactly "
+                "once); got %r" % (var, expected, hits))
+
+    def test_production_defaults_are_off_not_silent(self, gate):
+        """The safety switches default to the strict side, not to "unset=allow"."""
+        values = gate.scan_artifact_values(
+            [REPO_ROOT / "docker-compose.prod.yml"])
+        sim = [v for _, v in values.get("LIUHAO_ALLOW_SIMULATED_EXECUTION", [])]
+        fence = [v for _, v in values.get("LIUHAO_EXECUTOR_FENCE", [])]
+        assert sim == ["0"], sim
+        assert fence == ["on"], fence
+
+    def test_unsafe_production_value_is_a_finding(self, gate, monkeypatch):
+        """Teeth: presence with the permissive value must go red."""
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "PROBE_SAFE_LOCK", "aliases": (), "expect": "set",
+            "safe": "falsy", "why": "probe", "refs": (),
+        },))
+        findings = gate.evaluate(
+            {"PROBE_SAFE_LOCK": ["docker-compose.prod.yml"]},
+            {"PROBE_SAFE_LOCK": [("src/app.py", 10)]}, {}, {},
+            {"PROBE_SAFE_LOCK": [("docker-compose.prod.yml", "1")]})
+        kinds = [f.kind for f in findings if f.var == "PROBE_SAFE_LOCK"]
+        assert "gate-var-unsafe-value" in kinds, kinds
+
+    def test_staging_laxness_is_not_judged_as_production(self, gate, monkeypatch):
+        """Staging is allowed to run on the laxer side by design."""
+        monkeypatch.setattr(gate, "SEED_GATES", gate.SEED_GATES + ({
+            "var": "PROBE_SAFE_STAGING", "aliases": (), "expect": "set",
+            "safe": "production", "why": "probe", "refs": (),
+        },))
+        findings = gate.evaluate(
+            {"PROBE_SAFE_STAGING": ["infra/staging/docker-compose.yml"]},
+            {"PROBE_SAFE_STAGING": [("src/app.py", 10)]}, {}, {},
+            {"PROBE_SAFE_STAGING": [
+                ("infra/staging/docker-compose.yml", "staging")]})
+        assert not [f for f in findings if f.var == "PROBE_SAFE_STAGING"]
+
+    def test_every_safe_rule_in_the_table_is_implemented(self, gate):
+        rules = {str(e["safe"]) for e in gate.SEED_GATES if e.get("safe")}
+        assert rules, "no entry carries a safe rule -- the value lock is off"
+        probes = {"truthy": "on", "falsy": "0", "production": "production",
+                  "positive_int_leq_4": "4", "path_app_data": "/app/data/x",
+                  "console_dist": "/app/apps/console/console/dist"}
+        for rule in rules:
+            assert rule in probes, "safe rule %r has no probe; add a test" % rule
+            assert gate.value_is_safe(rule, probes[rule]), rule
+
+    def test_executor_cap_rejects_zero_and_unbounded(self, gate):
+        assert gate.value_is_safe("positive_int_leq_4", "4")
+        assert not gate.value_is_safe("positive_int_leq_4", "0")
+        assert not gate.value_is_safe("positive_int_leq_4", "999")
+        assert not gate.value_is_safe("positive_int_leq_4", "no-cap")
+
+    def test_path_variables_point_at_directories_the_image_creates(self, gate):
+        """A path pointing at a directory the image never creates is paper-only."""
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        assert "mkdir -p /app/data" in dockerfile, (
+            "/app/data must be created in the image or every path variable "
+            "below points at nothing")
+        assert "apps/console/console/dist/" in dockerfile, (
+            "LIUHAO_CONSOLE_DIST must match the Dockerfile COPY target")
+        for var in ("AUDIT_DB_PATH", "AUDIT_DB_BACKUP_PATH",
+                    "LIUHAO_EXECUTOR_FENCE_LEASE_DIR", "LIUHAO_API_KEY_STORE",
+                    "LIUHAO_WORKSPACE_ROOT"):
+            rule = {str(e["var"]): str(e.get("safe") or "")
+                    for e in gate.SEED_GATES}.get(var)
+            assert rule == "path_app_data", (var, rule)
+            assert gate.value_is_safe(rule, _PRODUCTION_SAFE_VALUES[var]), var
+

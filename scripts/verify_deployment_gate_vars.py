@@ -143,6 +143,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_EXECUTOR_FENCE",
         "expect": "set",
+        "safe": "truthy",
         "aliases": (),
         "why": (
             "the runtime default-deny autonomous-action gate is opt-in; unset "
@@ -154,17 +155,19 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_REQUIRE_EXECUTOR_FENCE",
         "expect": "set",
+        "safe": "truthy",
         "aliases": (),
         "why": (
             "converts an executor-fence install failure from fail-open (boot "
             "un-fenced, log ERROR, keep serving) to fail-closed (abort boot); "
             "unset means the deployment keeps the fail-open default"
         ),
-        "refs": ("src/gateway/main.py:251",),
+        "refs": ("docker-compose.prod.yml:106",),
     },
     {
         "var": "LIUHAO_POSTURE_STRICT",
         "expect": "set",
+        "safe": "truthy",
         "aliases": (),
         "why": (
             "makes an undeterminable deployment posture a hard failure; unset "
@@ -176,6 +179,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_ENV",
         "expect": "set",
+        "safe": "production",
         "aliases": ("ENVIRONMENT", "APP_ENV"),
         "why": (
             "production-posture primary alias; satisfied when ANY alias is set "
@@ -188,18 +192,22 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "AUDIT_DB_BACKUP_PATH",
         "expect": "set",
+        "safe": "path_app_data",
         "aliases": (),
         "why": (
             "transaction-consistent backup consumed by audit corruption "
             "auto-restore; unset means the path defaults to <db>.backup, which no "
             "production code ever writes, so the restore branch is inert and a "
-            "corruption event silently starts a new hash chain"
+            "corruption event silently starts a new hash chain. Armed at "
+            "docker-compose.prod.yml:125 with the same volume lifecycle as the "
+            "audit DB itself"
         ),
-        "refs": ("src/kernels/audit/__init__.py:414",),
+        "refs": ("docker-compose.prod.yml:125",),
     },
     {
         "var": "AUDIT_DB_PATH",
         "expect": "set",
+        "safe": "path_app_data",
         "aliases": (),
         "why": (
             "configured path of the persisted audit hash-chain. Absence selects "
@@ -227,9 +235,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/main.py:419",
             "src/gateway/health.py:280",
-            "src/kernels/audit/__init__.py:398",
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
@@ -245,6 +251,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_EXECUTOR_FENCE_LEASE_DIR",
         "expect": "set",
+        "safe": "path_app_data",
         "aliases": (),
         "why": (
             "with backend=file and this unset, attach_default_executor_fence() "
@@ -257,6 +264,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_SANDBOX_ENFORCE",
         "expect": "set",
+        "safe": "truthy",
         "aliases": (),
         "why": (
             "arms genuine-isolation enforcement for HIGH/CRITICAL sandbox "
@@ -267,6 +275,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_EXECUTOR_FENCE_MAX_EXECUTORS",
         "expect": "set",
+        "safe": "positive_int_leq_4",
         "aliases": (),
         "why": (
             "the N+1 concurrent-executor cap; unset means no cap"
@@ -276,6 +285,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_API_KEY_STORE",
         "expect": "set",
+        "safe": "path_app_data",
         "aliases": (),
         "why": (
             "persistent (hash-only) API-key registry path; unset means the "
@@ -287,6 +297,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_ALLOW_SIMULATED_EXECUTION",
         "expect": "set",
+        "safe": "falsy",
         "aliases": (),
         "why": (
             "dev-only opt-in for simulated execution. Production must record the "
@@ -305,6 +316,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_CONSOLE_DIST",
         "expect": "set",
+        "safe": "console_dist",
         "aliases": (),
         "why": (
             "build output served by the single-port gateway. Unset falls back to "
@@ -319,6 +331,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
     {
         "var": "LIUHAO_WORKSPACE_ROOT",
         "expect": "set",
+        "safe": "path_app_data",
         "aliases": (),
         "why": (
             "the allowed root for goal artifacts, project metadata, the employee "
@@ -376,6 +389,17 @@ ALLOWLIST: Dict[str, str] = {
         "artifact sets today; unset yields a localhost default. Becomes a real "
         "gate the moment redis is selected as the backend -- reclassify then."
     ),
+    "LIUHAO_DBOS_PILOT": (
+        "explicit opt-in for the DBOS crash-recovery pilot. Unset means the "
+        "pilot is disabled and run_pilot() raises instead of running "
+        "(fail-closed); only '1'/'true'/'yes'/'on' enables it, and nothing "
+        "shipped selects it today."
+    ),
+    "LIUHAO_INTEL_ALLOW_NETWORK": (
+        "opt-in for outbound GitHub calls in the intel scanner. Unset means "
+        "network access is disabled (fail-closed); only an explicit '1' enables "
+        "it. The unset branch is the strict one."
+    ),
     "LIUHAO_MCP_ADAPTER_ENABLED": (
         "runtime switch for the MCP adapter layer. Unset means the adapter loads "
         "configuration but establishes NO connection and exposes no server "
@@ -386,6 +410,17 @@ ALLOWLIST: Dict[str, str] = {
     "LIUHAO_MODEL_ROUTER": (
         "model-router strategy selection with a documented default strategy; "
         "absence changes routing behaviour, not whether a safety control "
+        "applies."
+    ),
+    "LIUHAO_REDIS_URL": (
+        "connection string read only when LIUHAO_TASK_BROKER=redis. Unset then "
+        "raises an explicit configuration error instead of silently falling "
+        "back to an in-process broker (fail-closed); no artifact selects redis "
+        "today, so this is not a shipped gate."
+    ),
+    "LIUHAO_TASK_QUEUE": (
+        "queue name for the sqlite/memory task broker; unset falls back to the "
+        "literal 'default' queue. It labels a queue, not whether a control "
         "applies."
     ),
     "LIUHAO_SECRET_STORE_DIR": (
@@ -761,6 +796,131 @@ def scan_artifact_vars(artifacts: Sequence[Path]) -> Dict[str, List[str]]:
 
 
 # --------------------------------------------------------------------------- #
+# Safe-value lock
+#
+# "Set" is not the same as "set to the strict side". A deployment can arm
+# LIUHAO_ALLOW_SIMULATED_EXECUTION and still set it to 1, or set
+# LIUHAO_POSTURE_STRICT=0 -- both satisfy a presence-only check while
+# re-opening exactly the hole the variable was added to close. Each seed entry
+# that has a safe value carries a `safe` rule; anything a non-CI artifact sets
+# must satisfy that rule, so a future "just make CI green" edit to an unsafe
+# value turns the gate red instead of silently shipping.
+# --------------------------------------------------------------------------- #
+_TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
+_FALSY = frozenset({"0", "false", "no", "off", "disabled"})
+_PRODUCTION = frozenset({"production", "prod"})
+
+ValueEntry = Tuple[str, str]  # (artifact label, raw value)
+
+
+def _clean_value(raw: str) -> str:
+    value = raw.strip()
+    if value[:1] in ("'", '"') and value[-1:] == value[:1] and len(value) >= 2:
+        value = value[1:-1]
+    # compose/.env allow `NAME=value  # comment`
+    value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+    return value
+
+
+def scan_artifact_values(artifacts: Sequence[Path]) -> Dict[str, List[ValueEntry]]:
+    """Explicit ``NAME=value`` / ``NAME: value`` assignments, per artifact."""
+    out: Dict[str, List[ValueEntry]] = {}
+    for path in artifacts:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (UnicodeDecodeError, OSError):
+            continue
+        label = _label(path)
+        for match in re.finditer(
+                r"(?m)^[ \t]*-?[ \t]*[\"']?([A-Z][A-Z0-9_]{1,})[\"']?[ \t]*=(.*)$",
+                text):
+            out.setdefault(match.group(1), []).append(
+                (label, _clean_value(match.group(2))))
+        for match in re.finditer(
+                r"(?m)^[ \t]*([A-Z][A-Z0-9_]{1,})[ \t]*:[ \t]*(.*)$", text):
+            out.setdefault(match.group(1), []).append(
+                (label, _clean_value(match.group(2))))
+    return out
+
+
+def _dockerfile_text() -> str:
+    path = REPO_ROOT / "Dockerfile"
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _dockerfile_creates_app_data() -> bool:
+    return "mkdir -p /app/data" in _dockerfile_text()
+
+
+def value_is_safe(rule: str, value: str) -> bool:
+    """Whether ``value`` is the strict side of ``rule``.
+
+    Every rule here is deliberately exact rather than "truthy-ish": a lock that
+    accepts anything loosely is not a lock. ``path_app_data`` additionally
+    requires the Dockerfile to actually create ``/app/data``, because a path
+    variable pointing at a directory the image never creates is armed on paper
+    only -- the very defect this gate exists to catch.
+    """
+    v = value.strip().lower()
+    if rule == "truthy":
+        return v in _TRUTHY
+    if rule == "falsy":
+        return v in _FALSY
+    if rule == "production":
+        return v in _PRODUCTION
+    if rule == "positive_int_leq_4":
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return False
+        # 4 is the conservative cap chosen in docker-compose.prod.yml. Raising
+        # it is a capacity decision, not a "make the gate pass" edit, so it
+        # must be made here with this comment and a new test.
+        return 1 <= n <= 4
+    if rule == "path_app_data":
+        return _dockerfile_creates_app_data() and (
+            value == "/app/data" or value.startswith("/app/data/"))
+    if rule == "console_dist":
+        return ("apps/console/console/dist" in value
+                and value.startswith("/app/")
+                and "apps/console/console/dist/" in _dockerfile_text())
+    return False
+
+
+# The safe-value lock is a *production* claim. docker-compose.yml and
+# infra/staging/docker-compose.yml are allowed to run on the laxer side (staging
+# sets LIUHAO_ENV=staging by design); checking them here would demand production
+# posture from a dev file and turn a correct staging setup into a red gate.
+_PRODUCTION_ARTIFACTS = ("docker-compose.prod.yml",)
+
+
+def _is_production_artifact(label: str) -> bool:
+    return any(name in label for name in _PRODUCTION_ARTIFACTS)
+
+
+def unsafe_deploy_values(var: str, aliases: Sequence[str], rule: str,
+                         values: Dict[str, List[ValueEntry]]) -> List[ValueEntry]:
+    """Production-set values that do not satisfy ``rule``.
+
+    Only the production bundle is judged: a throwaway CI runner proves nothing
+    about what ships, and staging is deliberately allowed a laxer posture. The
+    check still fires on the production file itself, which is the only place
+    where "shipped default" has a meaning.
+    """
+    bad: List[ValueEntry] = []
+    for name in (var,) + tuple(aliases):
+        for label, value in values.get(name, []):
+            if not _is_production_artifact(label):
+                continue
+            if not value_is_safe(rule, value):
+                bad.append((label, "%s=%s" % (name, value)))
+    return bad
+
+
+# --------------------------------------------------------------------------- #
 # Evaluation
 # --------------------------------------------------------------------------- #
 class Finding(object):
@@ -893,11 +1053,13 @@ def _ci_only_finding(var: str, why: str, refs: Sequence[str],
 def evaluate(artifact_vars: Dict[str, List[str]],
              reads: Dict[str, List[Tuple[str, int]]],
              candidates: Dict[str, List[Tuple[str, int]]],
-             mentions: Optional[Dict[str, List[Tuple[str, int]]]] = None
+             mentions: Optional[Dict[str, List[Tuple[str, int]]]] = None,
+             artifact_values: Optional[Dict[str, List[ValueEntry]]] = None
              ) -> List[Finding]:
     findings: List[Finding] = []
     seed_vars = {str(entry["var"]) for entry in SEED_GATES}
     mentions = mentions or {}
+    artifact_values = artifact_values or {}
     const_map = constant_aliases(sorted(
         {str(e["var"]) for e in SEED_GATES}
         | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
@@ -1009,6 +1171,21 @@ def evaluate(artifact_vars: Dict[str, List[str]],
 
         if expect == "set":
             if deploy_setters:
+                safe_rule = str(entry.get("safe") or "")
+                if safe_rule:
+                    unsafe = unsafe_deploy_values(
+                        var, aliases, safe_rule, artifact_values)
+                    if unsafe:
+                        findings.append(Finding(
+                            var, "gate-var-unsafe-value",
+                            "armed, but a deployment artefact sets the unsafe "
+                            "side of this control: %s. Presence alone is not "
+                            "safety -- the strict side is required." % "; ".join(
+                                "%s (%s)" % (v, label)
+                                for label, v in unsafe),
+                            refs,
+                            "set %s to its safe side (%s) in the same artefact"
+                            % (var, safe_rule)))
                 continue
             if ci_setters:
                 # Armed, but only where a throwaway runner can see it: report
@@ -1176,6 +1353,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if untracked:
         artifacts = [p for p in artifacts if p not in untracked]
     artifact_vars = scan_artifact_vars(artifacts)
+    artifact_values = scan_artifact_values(artifacts)
     reads = scan_env_reads()
     candidates = scan_gate_candidates()
     # Every seed/allowlist name, so an entry whose variable is read through a
@@ -1184,7 +1362,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                      | {str(a) for e in SEED_GATES for a in (e.get("aliases") or ())}
                      | set(ALLOWLIST))
     mentions = scan_literal_mentions(tracked)
-    findings = evaluate(artifact_vars, reads, candidates, mentions)
+    findings = evaluate(artifact_vars, reads, candidates, mentions,
+                        artifact_values)
     for path in untracked_findings:
         findings.append(Finding(
             "ARTIFACT:%s" % path.name, "untracked-artifact-ignored",
