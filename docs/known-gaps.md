@@ -56,7 +56,7 @@ added to the same environment.
 | D-4 | 自动化真实后端（浏览器 / 安卓 / Windows 桌面键鼠） | 延后（当前仅 fake 后端） |
 | D-5 | 30 方向战略落地 | 部分落地，其余延后 |
 | D-6 | 情报中心后续阶段（漏洞查询、缺口对照、更新提醒） | 延后（advisory 接口本轮未接线） |
-| D-7 | 知识闭环（入库 UI + 检索 + 对话注入） | 未做 |
+| D-7 | 知识闭环（入库 UI + 检索 + 对话注入） | 部分完成（代码已入库，真实 E2E 未验证） |
 | D-8 | 进程内排程器（定时/循环 Goal） | 未做 |
 | D-9 | 备份 / 恢复 / 导出（一键化） | 未做（主线程正在改，以最终状态为准） |
 | D-10 | 产物索引与执行回溯 | 未做 |
@@ -162,13 +162,14 @@ added to the same environment.
 
 ## D-7 知识闭环（入库 UI → 检索 → 对话注入）
 
-**为什么延后。** 后端 chunk→embedding→向量入库是真链路，但控制台的「知识中心」
-只是 OpenAPI 端点清单（`apps/console/console/src/pages/Directory.tsx:489`），
-`/v1/chat` 与 AgentRuntime 都没有注入检索结果。半套 UI 会让人以为知识库已可用，
-所以整项延后。
+**当前状态。** `69db011e` 已把知识中心做成可用的导入/文档/分块预览/检索测试
+界面，`/v1/chat` 也通过 `build_knowledge_context` 注入检索上下文
+（`src/gateway/chat.py:159,185`，带 `use_knowledge` 开关）。**仍未验证**的是
+真实 embedding provider 下的端到端链路（上传→切分→向量→对话引用来源），
+以及「未配置 provider 时返回 503」的实际行为。
 
 **依赖什么。** 可用的 embedding provider（未配置时必须返回 503「未启用」，
-不得 mock 伪装）；控制台知识入库/检索界面；对话侧检索注入与引用来源展示。
+不得 mock 伪装）；对话侧引用来源展示。
 
 **验收标准。** 上传文档 → 真实切分 → 真实 embedding → 落库 → 对话能引用
 检索片段并显示来源；未配置 provider 时明确 503 而非假装可用。
@@ -216,7 +217,7 @@ wired」；备份是运维能力，接线要与设置页、恢复流程、版本
 | R-1 | 顶层 61 个 `plugins/` 目录 | 插件管理器默认只扫 `src/plugins`，顶层目录运行时不加载；主程序只注册 builtin | `src/plugins/manager.py:48`；实测 61 个目录 |
 | R-2 | `solutions/industry/` 38 个行业方案 | 只有 `tests/test_all_industry_solutions.py` 导入，`src/` 无引用，产品运行时不加载 | `tests/test_all_industry_solutions.py:32+`；`src/` 检索无命中 |
 | R-3 | `src/automation/` 体系完整 | 后端只有 `fake.py`，三重闸门默认关闭，无真实浏览器/键鼠/安卓执行 | `src/automation/backends/`、`src/automation/gate.py:19`、`src/automation/__init__.py:1-6` |
-| R-4 | 「知识中心」页面存在 | `Directory.tsx` 只是端点清单，不是知识库管理；`/v1/chat` 未注入检索 | `apps/console/console/src/pages/Directory.tsx:489` |
+| R-4 | ~~「知识中心」只是端点清单~~ **已解除** | `69db011e` 后已是导入/文档/分块预览/检索测试界面，且 `/v1/chat` 注入检索上下文；剩余是真实 embedding E2E 未验证 | `apps/console/console/src/pages/Directory.tsx`、`src/gateway/chat.py:159` |
 | R-5 | 反馈服务有接口 | 进程内 `dict` 存储，重启即丢 | `src/feedback/feedback_service.py:13` |
 | R-6 | 控制台 dist 已构建 | 源码改动后是否重建未验证 | `docs/strategy-30-directions.md:232` |
 

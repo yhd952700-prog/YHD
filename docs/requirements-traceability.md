@@ -33,8 +33,8 @@
 | T-15 | 11 个门禁变量按「安全优先」默写 | 配置/门禁（本路） | `scripts/verify_deployment_gate_vars.py`（`SEED_GATES`/`safe` 规则）、`docker-compose.prod.yml:37-127` | 已完成 | 门禁脚本实际运行 exit=0（PASS）；11+2 个变量在 `SEED_GATES` 增加 `safe` 规则并锁定；`tests/test_deployment_gate_vars_judgement.py` 43 项通过，`TestSafeValueLock` 锁定生产值（模拟执行=0、围栏=on、cap=4、路径都在 `/app/data`） | 安全值只在生产 bundle 上判定；staging 允许宽松（设计如此）。路径另用 Dockerfile 的 `mkdir -p /app/data` 与 console dist 校验 |
 | T-16 | Windows 兼容 / pytest 超时 / etcd 健康检查 | 平台兼容（本路） | `tests/`、`scripts/verify_readiness.py`、`.github/workflows/ci.yml` | 部分完成 | BOM 致 `ast.parse` 失败已修（`19fadf35`）；etcd 健康检查改用含 shell 的 `bitnamilegacy/etcd:3.5.9` 并指向真实 `etcdctl`（`ci.yml:45-60`）；`pytest-timeout` 已进 `[tests]`（`pyproject.toml:130`） | 本机无 etcd，etcd 路径只能标「需 CI 环境验证」；慢用例识别未完成；Windows 路径/编码需继续抽查 |
 | T-17 | 手机端实测（同一 Wi-Fi 打开 → 登录 → 发消息） | 运行验证（本路） | 待实测 | 未验证 | 暂无真实手机实测记录 | 需区分虚拟网卡地址，写清用户该用哪个地址；做不到的部分如实标注原因 |
-| T-18 | 延后项不得消失，必须登记 | 文档（本路） | `docs/known-gaps.md` | 部分完成 | 已有清单与 semgrep 缺口（`ca900b99`）；本轮补充 6 项延后清单 | 见 `docs/known-gaps.md` 的「已明确延后、不得遗忘」 |
-| T-19 | 知识闭环：知识入库 UI + 检索 + 对话注入（方向 3） | 知识 / 控制台 / 对话 | `src/knowledge/documents.py`、`vector_store.py`、`embedding.py`、`apps/console/console/src/pages/Directory.tsx:489`、`src/gateway/chat.py`、`src/ai/liuhao.py` | 未做 | 后端 chunk→embedding→向量入库是真链路；「知识中心」只是 OpenAPI 端点清单；`/v1/chat` 与 AgentRuntime 未注入检索结果（`strategy-30-directions.md:22,154-156`） | 触发条件见下方「启动触发条件」K-1 |
+| T-18 | 延后项不得消失，必须登记 | 文档（本路） | `docs/known-gaps.md` | 部分完成 | 已有清单与 semgrep 缺口（`ca900b99`）；本轮扩充为 D-1～D-10 + 红线清单 + 不做清单 | 见 `docs/known-gaps.md` 的「已明确延后、不得遗忘」 |
+| T-19 | 知识闭环：知识入库 UI + 检索 + 对话注入（方向 3） | 知识 / 控制台 / 对话 | `apps/console/console/src/pages/Directory.tsx`、`src/gateway/chat.py:159,185`、`src/gateway/knowledge_context.py`、`src/knowledge/` | 部分完成 | `69db011e` 把知识中心改为可用的导入/文档/分块预览/检索测试界面；`chat.py` 通过 `build_knowledge_context` 注入，带 `use_knowledge` 开关 | 代码链路已在；**未跑真实 embedding provider 下的 E2E**（上传→切分→向量→对话引用来源），「未配置时 503」也未实测。触发条件 K-1 |
 | T-20 | 进程内排程器：定时/循环 Goal（方向 8/20） | 目标执行 / 自动化 | `src/reliability/checkpointer.py`（只调度审计检查点）、无 taskiq/apscheduler 生产调用 | 未做 | `strategy-30-directions.md:23,158-160` | 不引入 Redis/外部队列；SQLite 持久化 + 单进程。触发条件 K-2 |
 | T-21 | 备份/恢复/导出一键化（方向 28/23） | 运维 / 设置页 | `scripts/ops/backup.py:11`（自述「CLI but no production caller wired」） | 未做 | `strategy-30-directions.md:24,162-164` | **主线程正在改这块**，收尾时以最终状态刷新本行，不要按旧结论判断 |
 | T-22 | 产物索引 + 目标→文件回溯（方向 26/7） | 执行 / 文件 | `src/gateway/files.py`（只读浏览）、`src/ai/workspace.py` | 未做 | `strategy-30-directions.md:25,166-168` | 触发条件 K-3 |
@@ -65,7 +65,7 @@
 | R-1 | 仓库顶层有 **61 个** `plugins/` 目录 | 插件管理器默认只扫描 `src/plugins`，顶层 `plugins/` **运行时不加载**；主程序只注册 builtin。把能力放进顶层 plugins 等于没接上 | 数量实测 61；默认目录 `src/plugins/manager.py:48`；入口只注册 builtin（`src/gateway/main.py`） |
 | R-2 | `solutions/industry/` 有 **38 个**行业方案 | 只有 `tests/test_all_industry_solutions.py` 逐个导入；`src/` 中无任何引用，**产品运行时不加载行业模板** | 目录数实测 38；`src/` 检索 `solutions.industry` 无命中；测试 `tests/test_all_industry_solutions.py:32+` |
 | R-3 | `src/automation/` 有完整动作/审批/围栏体系 | 后端只有 `fake.py`；三重闸门默认关闭；没有任何真实浏览器/键鼠/安卓执行 | `src/automation/backends/` 仅有 `fake.py`；`src/automation/gate.py:19`；`src/automation/__init__.py:1-6` |
-| R-4 | 「知识中心」页面存在 | 前端 `Directory.tsx` 只是 OpenAPI 端点清单，不是知识库管理/检索界面；`/v1/chat` 不带检索上下文 | `apps/console/console/src/pages/Directory.tsx:489`；T-19 |
+| R-4 | ~~「知识中心」页面存在，但只是端点清单~~ **已解除** | `69db011e` 后知识中心已是导入/文档/分块预览/检索测试界面，`/v1/chat` 也注入检索上下文（`chat.py:159,185`）；剩下的是**真实 embedding E2E 未验证**，不再属于「假能力」 | `Directory.tsx`、`src/gateway/chat.py:159` |
 | R-5 | 反馈服务有接口 | 数据存在进程内 `dict`，重启即丢；没接数据库，不能算闭环 | `src/feedback/feedback_service.py:13` |
 | R-6 | 控制台 dist 已构建 | 源码变更后是否重新构建**未验证**；不重建就看不到新 UI（属于部署纪律，不是功能缺失） | `strategy-30-directions.md:232` 标未验证 |
 
@@ -75,7 +75,7 @@
 
 | 编号 | 对应 | 启动条件 | 启动后第一步 |
 |---|---|---|---|
-| K-1 | T-19 知识闭环 | 已配置可用 embedding provider，且用户提出「让 AI 用我的知识库回答」 | 先做知识入库 UI + `/v1/chat` 检索注入，再谈自动分类 |
+| K-1 | T-19 知识闭环 | 已配置可用 embedding provider（代码已在：UI + `/v1/chat` 注入） | 跑真实 E2E：上传→切分→向量→对话引用来源；并验证未配置时返回 503 |
 | K-2 | T-20 排程器 | 出现「每天/每周自动执行」的真实 Goal 需求 | 进程内调度 + SQLite 持久化，不引入 Redis/外部队列 |
 | K-3 | T-21/T-22 备份与产物索引 | 用户要求「换机迁移/可恢复」或「从目标反查产物」 | 先接现有 `scripts/ops/backup.py`（主线程改完后以最终状态为准），再做产物索引 |
 | K-4 | D-1 自升级 | 签名校验、审批票据、回滚与沙箱四件套齐备 | 只允许「生成 diff → 人工审批 → 沙箱测试 → 原子替换」 |

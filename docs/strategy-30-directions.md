@@ -32,7 +32,7 @@
 
 - **电脑自主操作（6）**：仓库有两层：`src/ai/host_command/` 的授权管线与 `src/ai/world_interface_shell_gate.py`；以及 `src/automation/` 的三重闸门、确认票据（SQLite）、急停、守卫、审计。**接线点是真的**——`src/ai/tools/kernel_tools.py:369` 的 `build_automation_tools` 被 `src/ai/liuhao.py:202` 的 `make_tools` 调用；但 `src/automation/tools.py:59-65` 在三闸未全开时返回 `[]`（`gate.py:15-20` 的 `LIUHAO_AUTOMATION_ENABLED` / `LIUHAO_AUTOMATION_BACKEND`），且 `src/automation/backends/` 只有 `fake.py`（文件头写明“不接触真实屏幕/键鼠”）。所以准确说法是：**接了线，但默认可用工具数为 0，执行后端是假的**。真正开放 OS 级控制需要用户授权、持续权限与不可运维的故障面，安全上不可接受。
 - **AI 软件工厂（7）的“任意仓库自动改代码/跑测试/提 PR”**：当前只有受限 Python 计算与工作区写文件；放开等于供应链与任意代码执行风险。
-- **金融建议/交易（17）**：需要实时行情、券商接口与合规定位，产品形态与法律责任都不成立。
+- **金融建议/交易（17）**：需要实时行情、券商接口与合规定位，产品形态与法律责任都不成立（法律责任边界为 HUMAN DECISION REQUIRED，本项目尚无已实现的责任/合规框架，TBD）。
 - **医疗/法律建议（18/行业模板）**：`solutions/industry/{healthcare,legal}` 只有测试可导入的模板，不能作为产品能力露出。
 - **数字身份/KYC（22 的外部身份层）**：本地 JWT/RBAC 是真的，但身份证件核验、外部 IdP 信任链不在单机产品范围内。
 - **全网情报采集（9）**：常驻爬取涉及 ToS、反爬、隐私与运维，和“双击即用、无需运维”冲突。
