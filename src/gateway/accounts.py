@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..kernels.identity import _accounts, get_identity_manager
+from . import account_settings
 from .account_context import (
     AccountContext,
     deny,
@@ -87,6 +88,21 @@ class BackupExportRequest(BaseModel):
 class BackupImportRequest(BaseModel):
     bundle: Dict[str, Any]
     passphrase: str = Field(..., min_length=8, max_length=256)
+
+
+class SelfRegisterRequest(BaseModel):
+    """自助注册只接受"我是谁"与密码；父子/深度/权限字段一律丢弃。"""
+
+    # 显式 ignore：请求体里出现 parent_id/depth/root_id/permissions 也不生效。
+    model_config = {"extra": "ignore"}
+
+    principal: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=256)
+    display_name: Optional[str] = Field(None, max_length=80)
+
+
+class SelfRegistrationSettingsRequest(BaseModel):
+    allow: bool
 
 
 # --------------------------------------------------------------------------- #
@@ -178,6 +194,67 @@ def recovery_reset(payload: RecoveryResetRequest) -> Dict[str, Any]:
         "access_token": token["access_token"],
         "account": _public_member(manager.get_account(principal)),
     }
+
+
+@router.post("/self-register")
+def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
+    """自助注册：用户名 + 密码即可，无需邀请码、无需主账号批准。
+
+    * 上级恒为本机根账号的第 1 层（不接受请求体里的父子/深度字段）；
+    * 作用域恒为最小集合（不能建下级、不能授权、不能借 Key）；
+    * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。
+    """
+    if not account_settings.allow_self_registration():
+        raise deny(
+            403, _accounts.CODE_SELF_REGISTER_DISABLED, "管理员已关闭自助注册"
+        )
+    manager = get_identity_manager()
+    node = _kernel_call(
+        manager.register_self_service_account,
+        payload.principal,
+        display_name=payload.display_name,
+    )
+    if not rotate_credential(payload.principal, payload.password):
+        raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
+    token = issue_token_for(payload.principal, client="web")
+    return {
+        "account": _public_member(node),
+        "token": token["access_token"],
+        "access_token": token["access_token"],
+        "notice": "账号已创建并自动登录；使用的是最小权限，如需更多能力请联系管理员。",
+    }
+
+
+@router.get("/self-registration")
+def get_self_registration(
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """查询"是否允许自助注册"（仅主账号）。"""
+    if not context.is_root or context.standalone:
+        raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
+    return {"allow": account_settings.allow_self_registration()}
+
+
+@router.patch("/self-registration")
+def set_self_registration(
+    payload: SelfRegistrationSettingsRequest,
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """开关自助注册（仅主账号；持久化，默认开启）。"""
+    if not context.is_root or context.standalone:
+        raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
+    settings = account_settings.set_allow_self_registration(payload.allow)
+    try:
+        get_identity_manager().record_event(
+            action="account.self_registration.toggle",
+            actor=context.principal,
+            target=context.principal,
+            outcome="allowed",
+            details={"allow": bool(settings.get("allow_self_registration"))},
+        )
+    except Exception:  # noqa: BLE001 - 审计失败不改变策略已生效的事实
+        logger.exception("could not audit self-registration toggle")
+    return {"allow": bool(settings.get("allow_self_registration"))}
 
 
 @router.get("")

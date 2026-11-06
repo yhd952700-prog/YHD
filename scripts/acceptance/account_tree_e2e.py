@@ -103,6 +103,7 @@ class Instance:
                 "LIUHAO_ACCOUNT_USAGE_DB": os.path.join(self.root, "usage.sqlite3"),
                 "LIUHAO_ACCOUNT_MEMORY_DB": os.path.join(self.root, "memory.sqlite3"),
                 "LIUHAO_ACCOUNT_BACKUP_DB": os.path.join(self.root, "backup.sqlite3"),
+                "LIUHAO_ACCOUNT_SETTINGS_FILE": os.path.join(self.root, "account_settings.json"),
                 # 隔离单实例锁：否则第二/第三个实例会被第一实例的锁挡住。
                 "LIUHAO_INSTANCE_DIR": self.root,
             }
@@ -1076,6 +1077,141 @@ def root_only_surface(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
         report.check(item, "根按 seq 直读整树审计", status, 200)
 
 
+SELF_PASSWORD = "selfpass123"
+MINIMAL_SCOPES = ["account:audit_read", "account:read", "account:usage_read",
+                  "model:manage", "model:use"]
+
+
+def self_registration(
+    report: Report, inst: Instance, tokens: Dict[str, Any], model_id: str
+) -> None:
+    """产品变更：成员自助注册（无邀请码），并实测最小权限与开关。"""
+    item = "自助注册"
+    base = inst.base
+
+    # 默认开启；成员无权读/改这个开关。
+    status, body = request("GET", base + "/v1/accounts/self-registration",
+                           token=tokens["root"])
+    report.check(item, "默认允许自助注册", (status, body.get("allow")), (200, True))
+    status, body = request("GET", base + "/v1/accounts/self-registration",
+                           token=tokens["member"])
+    report.check(item, "成员读开关被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("PATCH", base + "/v1/accounts/self-registration",
+                           {"allow": False}, token=tokens["member"])
+    report.check(item, "成员改开关被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+
+    # 主账号关闭 → 自助注册结构化拒绝；邀请码路径不受影响。
+    status, body = request("PATCH", base + "/v1/accounts/self-registration",
+                           {"allow": False}, token=tokens["root"])
+    report.check(item, "主账号关闭自助注册", (status, body.get("allow")), (200, False))
+    status, body = request("POST", base + "/v1/accounts/self-register",
+                           {"principal": "self1", "password": SELF_PASSWORD})
+    message = str(body.get("message") or "")
+    report.check(item, "关闭后自助注册被拒", (status, body.get("code")),
+                 (403, "ACCOUNT_SELF_REGISTER_DISABLED"))
+    report.check(item, "关闭拒绝文案中性", neutral(message), True, message)
+
+    status, invited = request(
+        "POST", base + "/v1/accounts",
+        {"principal": "invitee1", "role": "viewer"}, token=tokens["root"],
+    )
+    report.check(item, "关闭期间主账号建成员仍可用", status, 200,
+                 f"code={bool(invited.get('activation_code'))}")
+    status, activated = request(
+        "POST", base + "/v1/accounts/activate",
+        {"principal": "invitee1", "code": invited.get("activation_code") or "",
+         "password": "inviteepass123"},
+    )
+    report.check(item, "邀请码激活仍可用",
+                 (status, isinstance(activated.get("access_token"), str)), (200, True))
+
+    status, body = request("PATCH", base + "/v1/accounts/self-registration",
+                           {"allow": True}, token=tokens["root"])
+    report.check(item, "恢复允许自助注册", (status, body.get("allow")), (200, True))
+
+    # 自助注册成功：请求体故意夹带父子/深度/权限字段，必须被忽略。
+    status, created = request(
+        "POST", base + "/v1/accounts/self-register",
+        {"principal": "self1", "password": SELF_PASSWORD, "display_name": "自助成员",
+         "parent_id": "member1", "parent_account_id": "member1",
+         "depth": 0, "root_id": "self1",
+         "permissions": ["account:grant", "account:manage_children"]},
+    )
+    self_token = created.get("access_token") or ""
+    account = created.get("account") or {}
+    report.check(item, "自助注册成功", (status, account.get("principal")), (200, "self1"))
+    report.check(item, "自助注册直接返回令牌", isinstance(self_token, str) and bool(self_token), True)
+    report.check(item, "请求体父子/深度/权限被忽略",
+                 sorted(account.get("permissions") or []), MINIMAL_SCOPES)
+
+    # 位置：根的直接成员（一级），不是根。
+    status, body = request("GET", base + "/v1/accounts/tree", token=tokens["root"])
+    tree = body.get("tree") or {}
+    direct = {str(child.get("principal")) for child in tree.get("children") or []}
+    report.check(item, "自助账号挂在根的第一层", "self1" in direct, True, str(sorted(direct)))
+    report.check(item, "根可见自助账号", tree.get("principal"), "root1")
+
+    # 最小权限实测：跨账号读/写全部 404 或中性拒绝。
+    status, body = request("GET", base + "/v1/accounts/tree", token=self_token)
+    report.check(item, "自助账号读整树被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("POST", base + "/v1/accounts",
+                           {"principal": "selfchild", "role": "viewer"}, token=self_token)
+    report.check(item, "自助账号不能建下级", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("GET", base + "/v1/accounts/member1", token=self_token)
+    report.check(item, "自助账号读他人账号被拒", status, 404)
+    status, body = request("GET", base + "/v1/accounts/member1/usage", token=self_token)
+    report.check(item, "自助账号读他人用量被拒", status, 404)
+    status, body = request("GET", base + "/v1/memory/entries?scope=subtree", token=self_token)
+    report.check(item, "自助账号读他人记忆被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("POST", base + "/v1/memory/export",
+                           {"scope": "subtree", "format": "json"}, token=self_token)
+    report.check(item, "自助账号导出他人记忆被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("GET", base + "/v1/files?account=root1", token=self_token)
+    report.check(item, "自助账号读他人文件被拒", status, 404)
+    status, body = request("GET", base + "/v1/chat/history?session_id=root-session",
+                           token=self_token)
+    report.check(item, "自助账号读他人会话被拒", status, 404)
+    status, body = request("GET", base + "/v1/audit/events?principal=root1", token=self_token)
+    report.check(item, "自助账号读他人审计被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+    status, body = request("GET", base + "/v1/audit/events", token=self_token)
+    report.check(item, "自助账号审计范围仅本人",
+                 (body.get("read_scope") or {}).get("mode"), "self")
+
+    # 他人 Key / 他人模型：不可见、不可改。
+    status, body = request("GET", base + "/v1/models", token=self_token)
+    report.check(item, "自助账号看不到他人模型",
+                 (status, body.get("count"), body.get("models")), (200, 0, []))
+    status, body = request("PUT", f"{base}/v1/models/{model_id}",
+                           {"name": "hijack"}, token=self_token)
+    report.check(item, "自助账号改他人 Key 被拒",
+                 (status, body.get("code")), (403, "ACCOUNT_KEY_NOT_OWNED"))
+
+    # 主账号可见并可停用；停用后登录中性拒绝。
+    status, body = request("GET", base + "/v1/accounts", token=tokens["root"])
+    entry = next((m for m in body.get("members") or []
+                  if m.get("principal") == "self1"), None)
+    report.check(item, "主账号列表可见自助账号", bool(entry), True)
+    report.check(item, "主账号可见其 Key 未授权",
+                 (entry or {}).get("allow_superior_key_use"), False)
+    status, body = request("PATCH", base + "/v1/accounts/self1/status",
+                           {"status": "suspended", "reason": "acceptance"},
+                           token=tokens["root"])
+    report.check(item, "主账号可停用自助账号", status, 200)
+    status, body = request("POST", base + "/v1/auth/login",
+                           {"principal": "self1", "secret": SELF_PASSWORD})
+    message = str(body.get("message") or "")
+    report.check(item, "停用后登录被中性拒绝",
+                 (status, body.get("code")), (403, "ACCOUNT_UNAVAILABLE"))
+    report.check(item, "停用文案中性", neutral(message), True, message)
+
+
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "删除"
     status, body = request(
@@ -1149,6 +1285,7 @@ def main() -> int:
         frontend_feedback(report, inst, tokens)
         scope_equivalence(report, inst, tokens)
         root_only_surface(report, inst, tokens)
+        self_registration(report, inst, tokens, usage["model_id"])
 
         export_path = os.path.join(inst.root, "export-all.json")
         with open(export_path, "w", encoding="utf-8") as handle:

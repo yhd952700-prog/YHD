@@ -1601,6 +1601,70 @@ class IdentityManager:
             )
             return node, activation_code
 
+    def register_self_service_account(
+        self,
+        principal: str,
+        display_name: Optional[str] = None,
+    ) -> _accounts.AccountNode:
+        """自助注册：无邀请码、无审批，直接挂在**本机根账号的第 1 层**。
+
+        硬边界（不随请求体变化）：
+
+        * 上级恒为根账号，``depth`` 恒为 1；
+        * 作用域恒为 :data:`_accounts.SELF_SERVICE_SCOPES`（最小权限，不能建下级/授权/借 Key）；
+        * 不接受任何父子/深度/权限参数，调用方即使传入也一律忽略。
+
+        没有根账号时拒绝（先走 ``register_root_account``）；重名返回 409。
+        """
+        principal = normalize_principal(principal).strip()
+        if not principal:
+            raise _accounts.AccountError(400, "ACCOUNT_PRINCIPAL_INVALID", "账号名无效")
+        with self._lock:
+            root = self.account_root()
+            if root is None:
+                raise _accounts.AccountError(
+                    409,
+                    _accounts.CODE_SELF_REGISTER_UNAVAILABLE,
+                    "系统尚未初始化，请先设置主账号",
+                )
+            if not root.is_active:
+                raise _accounts.AccountError(
+                    403, "ACCOUNT_UNAVAILABLE", "该账号当前不可用"
+                )
+            if self.get_identity_by_principal(principal) is not None:
+                raise _accounts.AccountError(409, "ACCOUNT_EXISTS", "该账号已存在")
+            wanted = frozenset(_accounts.SELF_SERVICE_SCOPES)
+            identity = self.create_member_identity(
+                principal=principal,
+                permissions=set(wanted),
+                display_name=display_name,
+            )
+            if identity is None:
+                raise _accounts.AccountError(409, "ACCOUNT_EXISTS", "该账号已存在")
+            node = _accounts.AccountNode(
+                principal=principal,
+                parent_id=root.principal,
+                depth=1,
+                root_id=root.principal,
+                permissions=wanted,
+                allow_superior_key_use=False,
+                key_auth_source="not_granted",
+                activation_hash="",
+                activation_expires_at=None,
+                created_at=self._identity_registered_at(principal),
+                updated_at=utc_now().isoformat(),
+                source="self_service",
+            )
+            self._store_account(node)
+            self._account_audit(
+                action="account.self_registered",
+                actor=principal,
+                target=principal,
+                outcome="allowed",
+                details={"permissions": sorted(wanted), "source": "self_service"},
+            )
+            return node
+
     def _identity_has_scope(self, principal: str, scope: str) -> bool:
         node = self._accounts.get(principal)
         if node is None:
