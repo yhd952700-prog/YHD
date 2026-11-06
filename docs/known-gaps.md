@@ -310,6 +310,9 @@ SQLite `VACUUM INTO`、归档元数据随包、跨进程可读）；本轮实测
 | E-8 | 安装包未做代码签名 | Windows 首次运行提示「未知发布者」，部分杀软误报 | 未做（见 D-1 的签名依赖） |
 | E-9 | 真实双击路径未逐字实跑：本轮 E2E 用 `launch_installed.py --skip-wizard --no-browser` 复用向导函数，没有在命令行窗口里逐条键入答案，也没有复验「向导成功后浏览器自动打开」 | 向导提示文案、输入容错与自动开浏览器三处只有代码依据，没有本轮实测输出 | 未验证；组件函数与 UI 可达性已单独验证 |
 | E-10 | 测试删除护栏的整体失效条件：`tests/conftest.py` 以 `tempfile.gettempdir()` 为放行根，若仓库工作树本身位于该目录之下，护栏会把仓库内删除全部放行 | 本轮把回归工作树放在 `D:\cache\temp\liuhao-regression` 时，`test_cwd_delete_guard.py` 未拦截，真的删掉了 `README.md`、`oss-ecosystem/capabilities/*.yaml`、`src/knowledge/memory.py`，连带 19 failed + 9 errors 全是假失败 | 未修；本轮改用 temp 之外的 worktree 重跑。修法：护栏在放行前先排除 `REPO_ROOT` 子树（与现有反向断言对称） |
+| E-11 | `tests/kernels/network/test_network.py::TestRouting::test_add_route_and_deliver` 在全量负载下会抖动 | 全量回归 1 次失败（delivered 变 failed）；单跑 2.67s 通过，属回环 HTTP 在满负载下的时序抖动 | 未修；已记录，单跑通过 |
+| E-12 | 全量回归基线落后交付 HEAD：跑在 `cc3af30d`，报告时 HEAD 已到 `de1b0d87`（12 个提交） | 全量结果不覆盖期间的 desktop 启动门、升级 API、可观测性、reminder、console 错误读取器修复 | 已补跑这些提交改动的 15 个测试文件（123 passed / 80.85s），但未再跑第二次全量 |
+| E-13 | 交付安装包的源码快照早于当前 HEAD 12 个提交 | 包内不含 `/v1/startup` 启动门、错误读取器统一、升级 API 等修复 | 未重建；交付前必须用当前脚本重建并复验 E2E |
 
 ---
 

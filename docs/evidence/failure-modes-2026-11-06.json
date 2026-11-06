@@ -1,0 +1,43 @@
+{
+  "models_response": {
+    "status": 200,
+    "body": "{\"models\":[{\"id\":\"d4da925975ce\",\"name\":\"stub-model\",\"provider\":\"openai\",\"model\":\"stub-model\",\"base_url\":\"http://127.0.0.1:18110/v1\",\"timeout\":30.0,\"is_default\":true,\"enabled\":true,\"api_key_set\":true,\"api_key_masked\":\"sk-e…-key\",\"created_at\":\"2026-11-05T21:45:14+00:00\",\"updated_at\":\"2026-11-05T21:45:"
+  },
+  "model_id": "d4da925975ce",
+  "baseline_test": {
+    "detail": "base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：127.0.0.1 -> 127.0.0.1"
+  },
+  "baseline_chat": [
+    200,
+    "completed",
+    "E2E-REPLY-OK from stub-model"
+  ],
+  "bad_key_test": {
+    "detail": "base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：127.0.0.1 -> 127.0.0.1"
+  },
+  "bad_key_chat": [
+    200,
+    "error",
+    "[生成失败] Error code: 401 - {'error': {'message': 'Incorrect API key provided: the key you passed is invalid.', 'type': 'invalid_request_error', 'code': 'invalid_api_key'}}"
+  ],
+  "bad_model_test": {
+    "detail": "base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：127.0.0.1 -> 127.0.0.1"
+  },
+  "bad_model_chat": [
+    200,
+    "error",
+    "[生成失败] Error code: 404 - {'error': {'message': 'The model `no-such-model-xyz` does not exist.', 'type': 'invalid_request_error', 'code': 'model_not_found'}}"
+  ],
+  "unreachable_test": {
+    "detail": "base_url 指向私网/回环/链路本地地址，已拒绝（SSRF 防护）：127.0.0.1 -> 127.0.0.1"
+  },
+  "unreachable_chat": [
+    200,
+    "error",
+    "[生成失败] Error code: 503"
+  ],
+  "service_down_probe": {
+    "status": null,
+    "body": "TRANSPORT:URLError: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>"
+  }
+}
