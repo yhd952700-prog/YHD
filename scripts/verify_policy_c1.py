@@ -52,7 +52,14 @@ print("=" * 72)
 print("[1] importing every module under src/")
 print("=" * 72)
 
-modules = sorted(p for p in SRC.rglob("*.py") if "__pycache__" not in p.parts)
+# ``__main__.py`` 是 ``python -m <pkg>`` 的入口，导入即执行 CLI（多个包以
+# ``raise SystemExit(main())`` 结尾）。它们不是可导入的库模块；放进导入扫描
+# 会把校验器直接终止，且 SystemExit 不是 Exception，下面的 except 捕获不到。
+modules = sorted(
+    p
+    for p in SRC.rglob("*.py")
+    if "__pycache__" not in p.parts and p.name != "__main__.py"
+)
 ok = failed = 0
 for path in modules:
     name = _module_name(path)
@@ -80,7 +87,7 @@ print("=" * 72)
 # ai.execute_planner_task），窄扫描根会让它们绕过本检查。
 kernel_modules = sorted(
     _module_name(p) for p in SRC.rglob("*.py")
-    if p.name != "__init__.py" or True
+    if p.name != "__main__.py"
 )
 seen = 0
 bad = 0
