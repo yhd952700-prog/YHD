@@ -62,7 +62,14 @@ print("=" * 72)
 print("[1] importing every module under src/")
 print("=" * 72)
 
-modules = sorted(p for p in SRC.rglob("*.py") if "__pycache__" not in p.parts)
+# ``__main__.py`` 是 ``python -m <pkg>`` 的入口，导入即执行 CLI（多个包以
+# ``raise SystemExit(main())`` 结尾，argparse 缺参时直接 exit 2）。它们不是
+# 可导入的库模块；SystemExit 不是 Exception，下面的 except 捕获不到。
+modules = sorted(
+    p
+    for p in SRC.rglob("*.py")
+    if "__pycache__" not in p.parts and p.name != "__main__.py"
+)
 ok = failed = 0
 for path in modules:
     name = _module_name(path)
