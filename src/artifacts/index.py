@@ -193,7 +193,8 @@ def _hash_file(abs_path: str) -> Tuple[Optional[str], Optional[int]]:
 
 def _artifact_id(workspace: str, path_key: str, version: int) -> str:
     raw = f"{workspace}\x00{path_key}\x00{version}".encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()[:20]
+    # 非安全用途：只生成稳定的短 ID，不做完整性/防篡改校验。
+    return hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:20]
 
 
 def _row_to_record(row: sqlite3.Row) -> ArtifactRecord:
