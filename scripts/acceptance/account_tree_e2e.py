@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -163,6 +164,8 @@ class Instance:
             self._log.close()
         except Exception:
             pass
+        # 跑完回收：隔离实例的临时目录不留在 %TEMP%。
+        shutil.rmtree(self.root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -1668,7 +1671,7 @@ def main() -> int:
         plaintext_scan(report, dirs, export_files)
     finally:
         inst.stop()
-        print("\ntemp dir:", inst.root)
+        print("\ntemp dir recycled:", inst.root)
 
     failed = report.failed()
     print("\n=== 汇总 ===")
