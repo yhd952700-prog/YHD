@@ -27,6 +27,7 @@ import re
 import hashlib
 import logging
 import threading
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import dependencies
@@ -1537,7 +1538,12 @@ class ExecutionEngine:
             )
             try:
                 futures = [
+                    # worker 线程默认**不继承** ContextVar：裸 submit 会让
+                    # KERNEL_ACTION_CORRELATION_ID 在任务线程里为空，execution.execute
+                    # 的审计事件退回随机 id，goal -> action 的链路在并发路径上悄然断开
+                    # （串行路径看不出问题）。逐次复制调用方上下文再 run。
                     executor.submit(
+                        contextvars.copy_context().run,
                         self._execute_task,
                         ctx,
                         task,
