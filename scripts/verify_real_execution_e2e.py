@@ -11,8 +11,11 @@ unset), this verifies:
   1. A natural-language FILE-WRITE goal produces a REAL on-disk side effect
      inside the (redirected) workspace — not a simulation.
   2. A python: CODE-DIRECTIVE compute goal produces a REAL computation result.
-  3. A capability the system cannot serve (e.g. "search the web") FAILS HONESTLY
+  3. A capability the system cannot serve FAILS HONESTLY
      (success=False, never a silent success) — proving fail-closed honesty.
+     "search the web" is no longer such a capability (``network_bus`` now has a
+     real live-web research tool), so the probe SUSPENDS that tool and checks
+     the run refuses instead of quietly reporting success.
   4. Every real action leaves a REAL audit trail (no fake success entries).
 
 CRITICAL: never touches the frozen HC-01 evidence. AUDIT_DB_PATH and
@@ -94,6 +97,17 @@ def main() -> int:
     check("T2 goal reported real completion", t2_ok, f"state={res2.state.value}")
 
     # ---- Test 3: HONEST failure for unserved capability -----------------
+    # 2026-11-07: "search the web" 不再是「系统服务不了」的例子 —— network_bus
+    # 已有真实联网检索工具（live_web 来源）。继续拿它当反例只会证明「能服务的能力
+    # 成功了」，与 fail-closed 无关。这里做**确定性的**不可服务状态：把该能力的
+    # 唯一执行工具置为 SUSPENDED（真实运维动作：工具被策略停用），同一 goal 必须
+    # 诚实失败。本探针之后只剩只读审计，无需恢复工具状态。
+    unserved_capability = "network_bus"
+    serving = lcore.tools.list_active_by_capability(unserved_capability)
+    check("T3 premise: the capability had a tool to suspend",
+          bool(serving), f"capability={unserved_capability} tools={len(serving)}")
+    for tool in serving:
+        lcore.tools.suspend(tool.tool_id)
     goal3 = "search the web for today's weather in Shenzhen"
     res3 = runtime.run_goal(goal_text=goal3, goal_id="t3", scope="L1")
     honest_fail = bool(res3.context and res3.context.failed_tasks) or res3.state.value == "failed"
