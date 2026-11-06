@@ -5,6 +5,29 @@
 # Verify with: python scripts/verify_openapi_contract.py
 components:
   schemas:
+    ActivateRequest:
+      properties:
+        code:
+          maxLength: 64
+          minLength: 4
+          title: Code
+          type: string
+        password:
+          maxLength: 256
+          minLength: 8
+          title: Password
+          type: string
+        principal:
+          maxLength: 64
+          minLength: 1
+          title: Principal
+          type: string
+      required:
+      - principal
+      - code
+      - password
+      title: ActivateRequest
+      type: object
     ApplyRequest:
       properties:
         confirm:
@@ -74,21 +97,29 @@ components:
       description: '把一件事**直接指派**给某位指定员工（与"一句话自动拆解"分开的入口）。
 
 
-        ``agent_id`` 必须是当前可见的真实 agent；不存在时 404，绝不静默换成
+        执行主体二选一：``agent_id``（agent 级）或 ``employee_name``（员工级，取其
 
-        别的员工。'
+        第一个可用 agent）。两者都不给或都给出 → 400，绝不静默换成别的员工。'
       properties:
         agent_id:
-          description: 执行主体：真实存在的 agent id
-          maxLength: 128
-          minLength: 1
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          description: 执行主体：真实存在的 agent id（与 employee_name 二选一）
           title: Agent Id
-          type: string
         background:
           default: true
           description: 'true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态'
           title: Background
           type: boolean
+        employee_name:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          description: 执行主体：员工名（与 agent_id 二选一，取其第一个可用 agent）
+          title: Employee Name
         instruction:
           description: 要交给这位员工执行的一句话
           maxLength: 2000
@@ -107,9 +138,40 @@ components:
           title: Scope
           type: string
       required:
-      - agent_id
       - instruction
       title: AssignTaskRequest
+      type: object
+    BackupExportRequest:
+      properties:
+        passphrase:
+          maxLength: 256
+          minLength: 8
+          title: Passphrase
+          type: string
+        scope:
+          default: all
+          description: all（全部可见范围）或 self
+          title: Scope
+          type: string
+      required:
+      - passphrase
+      title: BackupExportRequest
+      type: object
+    BackupImportRequest:
+      properties:
+        bundle:
+          additionalProperties: true
+          title: Bundle
+          type: object
+        passphrase:
+          maxLength: 256
+          minLength: 8
+          title: Passphrase
+          type: string
+      required:
+      - bundle
+      - passphrase
+      title: BackupImportRequest
       type: object
     Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post:
       properties:
@@ -248,6 +310,82 @@ components:
       - knowledge
       title: ChatResponse
       type: object
+    CreateMemberRequest:
+      properties:
+        allow_key_sharing:
+          default: false
+          description: 允许团队共享我的 Key（默认关闭）
+          title: Allow Key Sharing
+          type: boolean
+        display_name:
+          anyOf:
+          - maxLength: 80
+            type: string
+          - type: 'null'
+          title: Display Name
+        permissions:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Permissions
+        principal:
+          maxLength: 64
+          minLength: 1
+          title: Principal
+          type: string
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 角色预设：viewer / operator / manager
+          title: Role
+      required:
+      - principal
+      title: CreateMemberRequest
+      type: object
+    CustodyRequest:
+      properties:
+        enabled:
+          title: Enabled
+          type: boolean
+      required:
+      - enabled
+      title: CustodyRequest
+      type: object
+    EmployeeUpdateRequest:
+      description: 改名 / 改职责 / 停用或启用 / 改默认能力（只作用于自己的员工）。
+      properties:
+        default_capabilities:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Default Capabilities
+        employment_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: active（在职）/ disabled（停用）
+          title: Employment Status
+        name:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          description: 新名字（改名时必填）
+          title: Name
+        role_description:
+          anyOf:
+          - maxLength: 2000
+            type: string
+          - type: 'null'
+          title: Role Description
+      title: EmployeeUpdateRequest
+      type: object
     GoalCreateRequest:
       description: 创建+执行 Goal 的请求体。
       properties:
@@ -258,6 +396,13 @@ components:
             false (default): execute synchronously and return the terminal state.'
           title: Background
           type: boolean
+        employee_name:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          description: 可选：把这次目标指名交给某位员工执行（其全部子任务都归该员工）
+          title: Employee Name
         natural_language:
           description: 自然语言目标描述
           maxLength: 2000
@@ -316,11 +461,23 @@ components:
             type: string
           title: Agent Types
           type: array
+        default_capabilities:
+          description: 默认能力 id 列表（必须是已注册执行器的 capability）
+          items:
+            type: string
+          title: Default Capabilities
+          type: array
         name:
           description: 员工名（唯一键，全局不可重复）
           maxLength: 128
           minLength: 1
           title: Name
+          type: string
+        role_description:
+          default: ''
+          description: 职责描述（这位员工负责什么）
+          maxLength: 2000
+          title: Role Description
           type: string
       required:
       - name
@@ -368,6 +525,15 @@ components:
       - text
       title: IngestRequest
       type: object
+    KeySharingRequest:
+      properties:
+        allow:
+          title: Allow
+          type: boolean
+      required:
+      - allow
+      title: KeySharingRequest
+      type: object
     LoginRequest:
       properties:
         client:
@@ -392,6 +558,41 @@ components:
       - principal
       - secret
       title: LoginRequest
+      type: object
+    MemoryExportRequest:
+      properties:
+        format:
+          default: json
+          description: json 或 md
+          title: Format
+          type: string
+        scope:
+          default: self
+          description: self 或 subtree
+          title: Scope
+          type: string
+      title: MemoryExportRequest
+      type: object
+    MemoryWriteRequest:
+      properties:
+        source:
+          default: user
+          maxLength: 64
+          title: Source
+          type: string
+        tags:
+          items:
+            type: string
+          title: Tags
+          type: array
+        text:
+          maxLength: 8000
+          minLength: 1
+          title: Text
+          type: string
+      required:
+      - text
+      title: MemoryWriteRequest
       type: object
     ModelPayload:
       properties:
@@ -431,6 +632,13 @@ components:
           minLength: 1
           title: Name
           type: string
+        owner_principal:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          description: 归属账号；默认是创建者自己，根账号可指定自己管辖范围内的账号
+          title: Owner Principal
         provider:
           description: provider 类型：mock, openai, anthropic, google, ollama, moonshot, deepseek
           title: Provider
@@ -487,6 +695,13 @@ components:
             type: string
           - type: 'null'
           title: Name
+        owner_principal:
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          description: 转移 Key 归属
+          title: Owner Principal
         provider:
           anyOf:
           - type: string
@@ -500,6 +715,31 @@ components:
           - type: 'null'
           title: Timeout
       title: ModelUpdatePayload
+      type: object
+    PasswordResetRequest:
+      properties:
+        password:
+          maxLength: 256
+          minLength: 8
+          title: Password
+          type: string
+      required:
+      - password
+      title: PasswordResetRequest
+      type: object
+    PermissionsRequest:
+      properties:
+        grant:
+          items:
+            type: string
+          title: Grant
+          type: array
+        revoke:
+          items:
+            type: string
+          title: Revoke
+          type: array
+      title: PermissionsRequest
       type: object
     ProfileUpdate:
       description: '画像写入请求：所有字段可选，只写传了的项。
@@ -571,6 +811,46 @@ components:
       - name
       title: ProjectCreateRequest
       type: object
+    RecoveryResetRequest:
+      properties:
+        password:
+          maxLength: 256
+          minLength: 8
+          title: Password
+          type: string
+        recovery_code:
+          maxLength: 64
+          minLength: 4
+          title: Recovery Code
+          type: string
+      required:
+      - recovery_code
+      - password
+      title: RecoveryResetRequest
+      type: object
+    RegisterRootRequest:
+      properties:
+        display_name:
+          anyOf:
+          - maxLength: 80
+            type: string
+          - type: 'null'
+          title: Display Name
+        password:
+          maxLength: 256
+          minLength: 8
+          title: Password
+          type: string
+        principal:
+          maxLength: 64
+          minLength: 1
+          title: Principal
+          type: string
+      required:
+      - principal
+      - password
+      title: RegisterRootRequest
+      type: object
     RollbackRequest:
       properties:
         backup_id:
@@ -609,6 +889,54 @@ components:
       required:
       - query
       title: SearchRequest
+      type: object
+    SelfRegisterRequest:
+      description: 自助注册只接受"我是谁"与密码；父子/深度/权限字段一律丢弃。
+      properties:
+        display_name:
+          anyOf:
+          - maxLength: 80
+            type: string
+          - type: 'null'
+          title: Display Name
+        password:
+          maxLength: 256
+          minLength: 8
+          title: Password
+          type: string
+        principal:
+          maxLength: 64
+          minLength: 1
+          title: Principal
+          type: string
+      required:
+      - principal
+      - password
+      title: SelfRegisterRequest
+      type: object
+    SelfRegistrationSettingsRequest:
+      properties:
+        allow:
+          title: Allow
+          type: boolean
+      required:
+      - allow
+      title: SelfRegistrationSettingsRequest
+      type: object
+    StatusRequest:
+      properties:
+        reason:
+          default: ''
+          maxLength: 200
+          title: Reason
+          type: string
+        status:
+          description: active / suspended / deleted
+          title: Status
+          type: string
+      required:
+      - status
+      title: StatusRequest
       type: object
     TestPayload:
       properties:
@@ -1299,6 +1627,873 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /v1/accounts:
+    get:
+      description: '任何账号都只返回**直接成员**；整棵树只走 ``/tree``（仅根可用）。
+
+
+        不返回 parent/depth/root：界面只需要"谁归我直接管"，层级结构不外泄。
+
+        ``is_direct`` 恒为 ``true``，供前端区分"这是可直接管理的成员列表"。'
+      operationId: list_accounts_v1_accounts_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Accounts V1 Accounts Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Accounts
+      tags:
+      - accounts
+    post:
+      operationId: create_member_v1_accounts_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMemberRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Member V1 Accounts Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Member
+      tags:
+      - accounts
+  /v1/accounts/activate:
+    post:
+      description: 用一次性激活码设置密码并登录（一次性 + 限时 + 限次）。
+      operationId: activate_v1_accounts_activate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivateRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Activate V1 Accounts Activate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Activate
+      tags:
+      - accounts
+  /v1/accounts/backup/export:
+    post:
+      description: 导出加密凭据包；``scope=all`` 仅根账号可用。
+      operationId: backup_export_v1_accounts_backup_export_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupExportRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Backup Export V1 Accounts Backup Export Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Backup Export
+      tags:
+      - accounts
+  /v1/accounts/backup/import:
+    post:
+      description: 在本机没有账号树时认领凭据包（口令校验 + 防重放 + 限次 + 审计）。
+      operationId: backup_import_v1_accounts_backup_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupImportRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Backup Import V1 Accounts Backup Import Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Backup Import
+      tags:
+      - accounts
+  /v1/accounts/migrate:
+    post:
+      operationId: migrate_v1_accounts_migrate_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Migrate V1 Accounts Migrate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Migrate
+      tags:
+      - accounts
+  /v1/accounts/migrate/rollback:
+    post:
+      operationId: migrate_rollback_v1_accounts_migrate_rollback_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Migrate Rollback V1 Accounts Migrate Rollback Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Migrate Rollback
+      tags:
+      - accounts
+  /v1/accounts/recovery/reset:
+    post:
+      description: 用根恢复码重置密码；消费即作废，失败限次。
+      operationId: recovery_reset_v1_accounts_recovery_reset_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoveryResetRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Recovery Reset V1 Accounts Recovery Reset Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Recovery Reset
+      tags:
+      - accounts
+  /v1/accounts/recovery/rotate:
+    post:
+      description: 轮换恢复码（仅根账号；旧码立即失效）。
+      operationId: recovery_rotate_v1_accounts_recovery_rotate_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Recovery Rotate V1 Accounts Recovery Rotate Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Recovery Rotate
+      tags:
+      - accounts
+  /v1/accounts/register:
+    post:
+      description: 首个注册者成为唯一根；已存在根时 409（并写审计）。
+      operationId: register_root_v1_accounts_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRootRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Register Root V1 Accounts Register Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Register Root
+      tags:
+      - accounts
+  /v1/accounts/roles:
+    get:
+      description: 角色预设：前端直接渲染，不暴露任何层级信息。
+      operationId: list_roles_v1_accounts_roles_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Roles V1 Accounts Roles Get
+                type: object
+          description: Successful Response
+      summary: List Roles
+      tags:
+      - accounts
+  /v1/accounts/self-register:
+    post:
+      description: '自助注册：用户名 + 密码即可，无需邀请码、无需主账号批准。
+
+
+        * 上级恒为本机根账号的第 1 层（不接受请求体里的父子/深度字段）；
+
+        * 作用域恒为最小集合（不能建下级、不能授权、不能借 Key）；
+
+        * 主账号关闭开关后返回结构化拒绝 ``ACCOUNT_SELF_REGISTER_DISABLED``。'
+      operationId: self_register_v1_accounts_self_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelfRegisterRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Self Register V1 Accounts Self Register Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Self Register
+      tags:
+      - accounts
+  /v1/accounts/self-registration:
+    get:
+      description: 查询"是否允许自助注册"（仅主账号）。
+      operationId: get_self_registration_v1_accounts_self_registration_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Self Registration V1 Accounts Self Registration Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Self Registration
+      tags:
+      - accounts
+    patch:
+      description: 开关自助注册（仅主账号；持久化，默认开启）。
+      operationId: set_self_registration_v1_accounts_self_registration_patch
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelfRegistrationSettingsRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Self Registration V1 Accounts Self Registration Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Self Registration
+      tags:
+      - accounts
+  /v1/accounts/tree:
+    get:
+      description: 成员树视图：仅根账号可用（成员的视角永远是"只有自己这一层"）。
+      operationId: account_tree_v1_accounts_tree_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Account Tree V1 Accounts Tree Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Account Tree
+      tags:
+      - accounts
+  /v1/accounts/{principal}:
+    get:
+      operationId: get_account_v1_accounts__principal__get
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Account V1 Accounts  Principal  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Account
+      tags:
+      - accounts
+  /v1/accounts/{principal}/activation-code:
+    post:
+      operationId: reissue_activation_v1_accounts__principal__activation_code_post
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reissue Activation V1 Accounts  Principal  Activation Code Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reissue Activation
+      tags:
+      - accounts
+  /v1/accounts/{principal}/key-sharing:
+    patch:
+      description: 自己可以随时开启/撤回共享；管理者可代为调整（均写审计）。
+      operationId: update_key_sharing_v1_accounts__principal__key_sharing_patch
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeySharingRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Key Sharing V1 Accounts  Principal  Key Sharing Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Key Sharing
+      tags:
+      - accounts
+  /v1/accounts/{principal}/password:
+    post:
+      description: 管理者重置成员密码：写凭据 + 立即吊销旧令牌 + 哈希链审计。
+      operationId: reset_password_v1_accounts__principal__password_post
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Reset Password V1 Accounts  Principal  Password Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reset Password
+      tags:
+      - accounts
+  /v1/accounts/{principal}/permissions:
+    patch:
+      operationId: update_permissions_v1_accounts__principal__permissions_patch
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionsRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Permissions V1 Accounts  Principal  Permissions Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Permissions
+      tags:
+      - accounts
+  /v1/accounts/{principal}/status:
+    patch:
+      operationId: update_status_v1_accounts__principal__status_patch
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Status V1 Accounts  Principal  Status Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Status
+      tags:
+      - accounts
+  /v1/accounts/{principal}/usage:
+    get:
+      description: 用量按 Key 归属记账、按实际调用者展示；成员只见自己。
+      operationId: account_usage_v1_accounts__principal__usage_get
+      parameters:
+      - in: path
+        name: principal
+        required: true
+        schema:
+          title: Principal
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Account Usage V1 Accounts  Principal  Usage Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Account Usage
+      tags:
+      - accounts
   /v1/alerts:
     get:
       description: '列出告警（只读）。返回 firing 告警与最近告警；库为空时 count=0，不是错误。
@@ -1401,9 +2596,11 @@ paths:
         本身就是要展示给人的信息 —— 空结果到底是没有事件还是筛错了，必须可分。
 
 
-        非 ``L0`` 调用者只能读自己的事件：``principal`` 会被强制为令牌主体，显式
+        非根调用者只能读自己：``principal`` 显式指定别人一律 404（与不存在不可区分）；
 
-        指定别人的主体直接 403。跨主体读取是主权操作。'
+        根账号未指定时读整棵子树，并在 ``read_scope`` 与每条事件的 ``is_self`` 上
+
+        明确标记"这是跨账号读取"。'
       operationId: list_events_v1_audit_events_get
       parameters:
       - description: 按主体过滤
@@ -1540,7 +2737,9 @@ paths:
         标注 ``duplicate_seq`` —— 隐藏第二行等于替攻击者保守秘密。
 
 
-        非 ``L0`` 调用者读取他人的事件一律 404（不暴露"该 seq 存在但你不能看"）。'
+        非根调用者读取他人的事件一律 404（不暴露"该 seq 存在但你不能看"）；根账号
+
+        读子树内成员的事件返回 200，并带 ``read_scope`` 与 ``event.is_self`` 标记。'
       operationId: get_event_v1_audit_events__seq__get
       parameters:
       - in: path
@@ -1593,7 +2792,9 @@ paths:
         30 万行量级）。要结论就显式打 ``/v1/audit/verify``。
 
 
-        非 ``L0`` 调用者只看自己主体的事件计数，避免通过聚合数字横向推断他人活动。'
+        非根调用者只看自己主体的事件计数，避免通过聚合数字横向推断他人活动；
+
+        根账号看整棵子树，并在 ``principal_scope`` 上标明 ``subtree``。'
       operationId: summary_v1_audit_summary_get
       parameters:
       - in: header
@@ -1892,7 +3093,10 @@ paths:
       - chat
   /v1/chat/history:
     get:
-      description: 返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
+      description: '返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
+
+
+        别人占用的会话名一律 404（与"没有历史"不可区分）。'
       operationId: chat_history_v1_chat_history_get
       parameters:
       - in: query
@@ -1982,7 +3186,7 @@ paths:
       - chat
   /v1/chat/sessions/{session_id}:
     delete:
-      description: 删除**自己的**会话（清空历史 + 移除实例）；别人的会话按不存在处理。
+      description: 删除**自己的**会话（清空历史 + 移除实例）；别人的会话按不存在处理（404）。
       operationId: chat_delete_session_v1_chat_sessions__session_id__delete
       parameters:
       - in: path
@@ -2307,12 +3511,14 @@ paths:
       - dashboard
   /v1/employees:
     get:
-      description: '列出**所有**真实 AI Employee（来自 EmployeeStore，按名）。
+      description: '列出**当前账号可见**的真实 AI Employee（来自 EmployeeStore，按名）。
 
+
+        成员只看自己的员工；账号树根可以看整棵树（``read_only=True``）。
 
         返回 ``employees``（全员摘要列表）作为 P1「按名员工名册」的真实契约；
 
-        同时保留 ``agents``/``count``/``stats``（默认员工的 agent pool），
+        同时保留 ``agents``/``count``/``stats``（可见员工的 agent pool），
 
         以保持现有 console 运行时 Tab 的向后兼容。'
       operationId: list_employees_v1_employees_get
@@ -2352,7 +3558,7 @@ paths:
       tags:
       - ai-management
     post:
-      description: '按名雇佣一个新 AI Employee。
+      description: '按名雇佣一个新 AI Employee（归属调用方账号）。
 
 
         若 ``name`` 已存在 → 409（绝不静默覆盖）；创建成功 → 201。'
@@ -2398,9 +3604,53 @@ paths:
       summary: Hire Employee
       tags:
       - ai-management
+  /v1/employees/capabilities:
+    get:
+      description: '可选的"默认能力"清单：只列**已注册且 ACTIVE**的本地执行器。
+
+
+        创建员工时 ``default_capabilities`` 只能从这份清单里选，未知能力会被
+
+        400 拒绝并逐条列出 —— 不让人以为随便写个字符串就能用。'
+      operationId: list_employee_capabilities_v1_employees_capabilities_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Employee Capabilities V1 Employees Capabilities Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Employee Capabilities
+      tags:
+      - ai-management
   /v1/employees/{agent_id}:
     get:
-      description: 获取单个 AI Employee（agent）详情（跨所有员工按 id 解析）。
+      description: 获取单个 AI Employee（agent）详情（不可见 = 404）。
       operationId: get_employee_v1_employees__agent_id__get
       parameters:
       - in: path
@@ -2445,7 +3695,7 @@ paths:
       - ai-management
   /v1/employees/{agent_id}/pause:
     post:
-      description: 暂停一个 AI Employee。
+      description: 暂停一个 AI Employee 的 agent（只能动自己的员工）。
       operationId: pause_employee_v1_employees__agent_id__pause_post
       parameters:
       - in: path
@@ -2490,7 +3740,7 @@ paths:
       - ai-management
   /v1/employees/{agent_id}/resume:
     post:
-      description: 恢复一个暂停的 AI Employee。
+      description: 恢复一个暂停的 AI Employee 的 agent（只能动自己的员工）。
       operationId: resume_employee_v1_employees__agent_id__resume_post
       parameters:
       - in: path
@@ -2535,12 +3785,12 @@ paths:
       - ai-management
   /v1/employees/{name}:
     delete:
-      description: '移除一名按名员工。
+      description: '移除一名按名员工（只能删自己的）。
 
 
         - 删除 seed 默认 ``liuhao-default`` → 403（保护网关依赖）；
 
-        - 不存在 → 404；成功 → 200。'
+        - 不存在/不可见/别人的员工 → 404；成功 → 200。'
       operationId: remove_employee_v1_employees__name__delete
       parameters:
       - in: path
@@ -2581,6 +3831,61 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Remove Employee
+      tags:
+      - ai-management
+    patch:
+      description: '改名 / 改职责 / 改默认能力 / 停用启用（只能改自己的员工）。
+
+
+        - 别人的员工与不存在的员工统一 404（不暴露存在与否）；
+
+        - ``{"employment_status": "disabled"}`` 停用；``"active"`` 启用。'
+      operationId: update_employee_v1_employees__name__patch
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          title: Name
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeUpdateRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Update Employee V1 Employees  Name  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update Employee
       tags:
       - ai-management
   /v1/events:
@@ -2782,24 +4087,30 @@ paths:
       description: '列出某目录下的条目（名称 / 类型 / 大小 / 修改时间）。
 
 
-        诚实行为：
+        诚实行为：物理空间尚不存在时，成员得到空列表（还没产出文件）；根得到
 
-        * ``path`` 越界 → 400。
-
-        * ``path`` 不是目录（是文件或不存在）→ 404，并说明它是什么。
-
-        * 空目录 → 返回 ``entries=[]``、``count=0``，不伪装。'
+        空列表而不是 500。``path`` 是文件或不存在 → 404。'
       operationId: list_files_v1_files_get
       parameters:
-      - description: 工作区内的相对路径；空字符串=根目录
+      - description: 账号空间内的相对路径；空字符串=空间根
         in: query
         name: path
         required: false
         schema:
           default: ''
-          description: 工作区内的相对路径；空字符串=根目录
+          description: 账号空间内的相对路径；空字符串=空间根
           title: Path
           type: string
+      - description: 根账号可指定子树成员；成员只能省略或填自己
+        in: query
+        name: account
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 根账号可指定子树成员；成员只能省略或填自己
+          title: Account
       - in: header
         name: x-liuhao-token
         required: false
@@ -2836,28 +4147,34 @@ paths:
       - files
   /v1/files/content:
     get:
-      description: '读取一个文本文件的内容（带大小上限与二进制探测）。
+      description: '读取一个文本文件（带大小上限与二进制探测）。
 
 
-        诚实行为：
+        * 越界 / 跨账号 → 404，与"文件不存在"完全相同的错误体；
 
-        * ``path`` 越界 → 400。
+        * 不是文件 → 404；超过上限 → 413 并透传真实大小；
 
-        * 不是文件（是目录或不存在）→ 404。
-
-        * 超过 ``_MAX_READ_BYTES`` → 413，并透传真实大小。
-
-        * 不是合法 UTF-8 文本（二进制）→ 415，不假装成文本。'
+        * 不是合法 UTF-8 → 415。'
       operationId: read_file_v1_files_content_get
       parameters:
-      - description: 工作区内的相对文件路径
+      - description: 账号空间内的相对文件路径
         in: query
         name: path
         required: true
         schema:
-          description: 工作区内的相对文件路径
+          description: 账号空间内的相对文件路径
           title: Path
           type: string
+      - description: 根账号可指定子树成员
+        in: query
+        name: account
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 根账号可指定子树成员
+          title: Account
       - in: header
         name: x-liuhao-token
         required: false
@@ -2894,7 +4211,7 @@ paths:
       - files
   /v1/goals:
     get:
-      description: 列出所有已执行的 Goal 及其状态。
+      description: 列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。
       operationId: list_goals_v1_goals_get
       parameters:
       - in: header
@@ -2992,9 +4309,10 @@ paths:
   /v1/goals/assign:
     post:
       description: "把一件事**直接指派**给指定员工执行（独立于\"一句话自动拆解\"入口）。\n\n与 ``POST /v1/goals`` 的差别只在\"谁决定执行主体\"：\n\
-        * 这里由调用方点名 ``agent_id``，**必须真实存在**（否则 404\n  ``agent_not_found``），绝不静默换成别的员工；\n* ``POST /v1/goals``\
-        \ 仍由管家自己拆解、自己派活。\n\n权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals`` 同一道\n``require_human_principal``），不因为多了这个入口而放宽。\n\
-        ``background=true``（默认）时立即返回 ``running``，随后\n``GET /v1/goals/{id}`` 会逐条给出任务进度。"
+        * 这里由调用方点名 ``employee_name`` 或 ``agent_id``，**必须真实存在**\n  （否则 404），绝不静默换成别的员工；\n* ``POST /v1/goals``\
+        \ 仍由管家自己拆解、自己派活（可选 ``employee_name``\n  把整个目标钉给某位员工）。\n\n权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals``\
+        \ 同一道\n``require_human_principal``），不因为多了这个入口而放宽。\n``background=true``（默认）时立即返回 ``running``，随后\n\
+        ``GET /v1/goals/{id}`` 会逐条给出任务进度。"
       operationId: assign_goal_v1_goals_assign_post
       parameters:
       - in: header
@@ -3039,7 +4357,7 @@ paths:
       - ai-management
   /v1/goals/{goal_id}:
     get:
-      description: 获取 Goal 执行详情。
+      description: 获取 Goal 执行详情（不可见与不存在返回同一个 404）。
       operationId: get_goal_v1_goals__goal_id__get
       parameters:
       - in: path
@@ -3084,7 +4402,7 @@ paths:
       - ai-management
   /v1/goals/{goal_id}/replan:
     post:
-      description: 对失败的 Goal 执行 replan。
+      description: 对失败的 Goal 执行 replan（只限自己的目标）。
       operationId: replan_goal_v1_goals__goal_id__replan_post
       parameters:
       - in: path
@@ -3136,7 +4454,9 @@ paths:
 
         会在任务边界干净抛出 GoalCancelled，目标被置为 ``cancelled``（绝不伪造成功）；
 
-        若目标已结束则幂等标记为 ``cancelled``。人类喊停动作会被审计。'
+        若目标已结束则幂等标记为 ``cancelled``。人类喊停动作会被审计。
+
+        只允许中止自己的目标（别人的一律 404）。'
       operationId: stop_goal_v1_goals__goal_id__stop_post
       parameters:
       - in: path
@@ -3181,9 +4501,9 @@ paths:
       - ai-management
   /v1/goals/{goal_id}/tasks/{task_id}/retry:
     post:
-      description: "只重跑一个失败任务，其余任务的结果原样保留，并记录审计。\n\n明确拒绝的情况（都有稳定 ``code``）：\n* ``goal_not_found`` / ``task_not_found``\
-        \ — 目标或任务不存在（404）；\n* ``goal_running`` — 目标还在跑，等结束再重试（409）；\n* ``task_not_retryable`` — 该任务不是\
-        \ ``failed``（例如已成功），\n  绝不顺带重跑其它任务（409）。"
+      description: "只重跑一个失败任务，其余任务的结果原样保留，并记录审计。\n\n只允许重试**自己的**任务；别人的目标（以及不存在的目标）统一 404，\n文案相同 —— 不暴露存在与否。\n\
+        \n明确拒绝的情况（都有稳定 ``code``）：\n* ``goal_not_found`` / ``task_not_found`` — 目标或任务不存在（404）；\n* ``goal_running``\
+        \ — 目标还在跑，等结束再重试（409）；\n* ``task_not_retryable`` — 该任务不是 ``failed``（例如已成功），\n  绝不顺带重跑其它任务（409）。"
       operationId: retry_goal_task_v1_goals__goal_id__tasks__task_id__retry_post
       parameters:
       - in: path
@@ -4353,6 +5673,279 @@ paths:
       tags:
       - knowledge
       - knowledge
+  /v1/memory/custody:
+    get:
+      operationId: read_custody_v1_memory_custody_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Read Custody V1 Memory Custody Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read Custody
+      tags:
+      - memory
+    post:
+      description: 本人显式开启/关闭"由上级代管记忆"；开关写审计，绝不静默变更。
+      operationId: set_custody_v1_memory_custody_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustodyRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Set Custody V1 Memory Custody Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Set Custody
+      tags:
+      - memory
+  /v1/memory/entries:
+    get:
+      description: 列表与检索共用同一过滤：先按 owner 收敛，再做关键词匹配。
+      operationId: list_entries_v1_memory_entries_get
+      parameters:
+      - description: self 或 subtree
+        in: query
+        name: scope
+        required: false
+        schema:
+          default: self
+          description: self 或 subtree
+          title: Scope
+          type: string
+      - description: 关键词；匹配正文/来源/标签
+        in: query
+        name: q
+        required: false
+        schema:
+          default: ''
+          description: 关键词；匹配正文/来源/标签
+          title: Q
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Entries V1 Memory Entries Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Entries
+      tags:
+      - memory
+    post:
+      description: 只写**自己**的记忆；主账号也不能借这个端点改写子账号记忆。
+      operationId: write_entry_v1_memory_entries_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryWriteRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Write Entry V1 Memory Entries Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Write Entry
+      tags:
+      - memory
+  /v1/memory/entries/{entry_id}:
+    get:
+      description: 单条读取：不是自己的条目与"不存在"完全相同（404）。
+      operationId: get_entry_v1_memory_entries__entry_id__get
+      parameters:
+      - in: path
+        name: entry_id
+        required: true
+        schema:
+          title: Entry Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Entry V1 Memory Entries  Entry Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Entry
+      tags:
+      - memory
+  /v1/memory/export:
+    post:
+      description: 导出可见记忆（成员仅自己，主账号可整棵子树），带来源标注。
+      operationId: export_entries_v1_memory_export_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryExportRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Export Entries V1 Memory Export Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Export Entries
+      tags:
+      - memory
   /v1/models:
     get:
       operationId: list_models_v1_models_get
@@ -5642,14 +7235,11 @@ paths:
       - projects
   /v1/startup:
     get:
-      description: '只读启动状态探针（免鉴权、无副作用）。注意：源路由
-        `src/gateway/startup.py` 用 `include_in_schema=False` 把它从
-        `GET /openapi.json` 隐藏，这里仍按对外可见接口登记（白名单与理由见
-        `scripts/verify_openapi_contract.py`）。
+      description: '只读启动状态探针（免鉴权、无副作用）。注意：源路由 `src/gateway/startup.py` 用 `include_in_schema=False` 把它从
+        `GET /openapi.json` 隐藏，这里仍按对外可见接口登记（白名单与理由见 `scripts/verify_openapi_contract.py`）。
 
 
-        响应字段：`state`（starting/ready/degraded）、`core_ready`、
-        `elapsed_ms`、`started_at_unix`、`stages`、`background`。
+        响应字段：`state`（starting/ready/degraded）、`core_ready`、 `elapsed_ms`、`started_at_unix`、`stages`、`background`。
         `state=degraded` 表示核心可用（能登录/对话）但后台预热失败。'
       operationId: get_startup_status_v1_startup_get
       responses:
@@ -5878,7 +7468,7 @@ paths:
       - upgrade
   /v1/workflows:
     get:
-      description: 列出所有 Workflow 执行状态（以 Goal 为维度）。
+      description: 列出**当前账号可见**的 Workflow 执行状态（以 Goal 为维度）。
       operationId: list_workflows_v1_workflows_get
       parameters:
       - in: header
@@ -5917,7 +7507,7 @@ paths:
       - ai-management
   /v1/workflows/{goal_id}:
     get:
-      description: 获取某个 Goal 的 Workflow 执行状态。
+      description: 获取某个 Goal 的 Workflow 执行状态（不可见 = 404）。
       operationId: get_workflow_v1_workflows__goal_id__get
       parameters:
       - in: path

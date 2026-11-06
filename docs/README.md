@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-06 实测）**：活跃文档 **214** 篇（不含 `archive/` 与
-> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 214 篇**。该数字由
+> **覆盖状态（2026-11-06 实测）**：活跃文档 **223** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 223 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -106,7 +106,7 @@ docs/
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
 ├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
 ├── decisions/          (1)     悬而未决决策登记
-├── evidence/           (1)     实测证据快照（可复现的基线/差量记录）
+├── evidence/           (7)     实测证据快照（可复现的基线/差量记录）
 ├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
@@ -144,7 +144,7 @@ docs/
 
 ---
 
-## 4. 全量清单（214 篇，逐一列出）
+## 4. 全量清单（223 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -155,7 +155,7 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 
-### 4.2 根级设计与决策（35）
+### 4.2 根级设计与决策（37）
 
 | 文件 | 说明 |
 |---|---|
@@ -194,13 +194,16 @@ docs/
 | [`USER-GUIDE.md`](USER-GUIDE.md) | 使用指南（Windows 安装版） |
 | [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
 | [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
+| [`MASTER-TASK-LEDGER.md`](MASTER-TASK-LEDGER.md) | 总任务台账：用户历次要求的逐条状态与证据（**唯一不漏项的真相源**） |
+| [`account-hierarchy.md`](account-hierarchy.md) | 账号层级体系规格（当前为规格文档，不含代码改动） |
 
-### 4.3 `adr/`（2）— 架构决策记录
+### 4.3 `adr/`（3）— 架构决策记录
 
 | 文件 | 说明 |
 |---|---|
 | [`adr/ADR-HOLD-SCOPE.md`](adr/ADR-HOLD-SCOPE.md) | D27：HOLD 范围决策 |
 | [`adr/ADR-root-of-trust-hd05.md`](adr/ADR-root-of-trust-hd05.md) | HD-05：预留根信任provider |
+| [`adr/ADR-HC01-baseline-binding.md`](adr/ADR-HC01-baseline-binding.md) | HC-01：基线绑定、保管处置与迁移路径裁决 |
 
 ### 4.4 `architecture/`（8）— 架构
 
@@ -469,11 +472,17 @@ docs/
 | [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
 | [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
 
-### 4.17 `evidence/`（1）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+### 4.17 `evidence/`（7）与 `oss-radar/`（8）— 实测证据与开源技术雷达
 
 | 文件 | 说明 |
 |---|---|
 | [`evidence/regression-baseline-coverage-2026-11-06.md`](evidence/regression-baseline-coverage-2026-11-06.md) | 全量回归基线覆盖（2026-11-06） |
+| [`evidence/c7-performance-baseline-2026-11-06.md`](evidence/c7-performance-baseline-2026-11-06.md) | C7 性能基线：从「无基线只能 SKIP」到可判定 |
+| [`evidence/c9-console-payload-2026-11-06.md`](evidence/c9-console-payload-2026-11-06.md) | C9 缺陷修复：升级载荷缺前端 `console/` |
+| [`evidence/c9-installed-upgrade-2026-11-06.md`](evidence/c9-installed-upgrade-2026-11-06.md) | C9 部署/升级/回滚：两套口径并列的实测记录 |
+| [`evidence/cross-verify-3fa88be0.md`](evidence/cross-verify-3fa88be0.md) | 交叉验证过程凭证 @`3fa88be0`（含 31 条失败归因） |
+| [`evidence/fault-surfaces-2026-11-06.md`](evidence/fault-surfaces-2026-11-06.md) | 故障面实测：单实例/休眠断网/时间跳变/存储/并发 |
+| [`evidence/hc01-pending-decisions-2026-11-06.md`](evidence/hc01-pending-decisions-2026-11-06.md) | HC-01 待裁决 5 项（附建议答案） |
 | [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：智能体与编排 |
 | [`oss-radar/memory-retrieval.md`](oss-radar/memory-retrieval.md) | 开源技术雷达 · 第 2 路：记忆与检索 |
 | [`oss-radar/security-compliance.md`](oss-radar/security-compliance.md) | 开源技术雷达 · 第 3 路：安全、合规与隔离 |
@@ -492,7 +501,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 214 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 223 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |
