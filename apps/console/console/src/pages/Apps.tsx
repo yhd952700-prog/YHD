@@ -25,13 +25,30 @@ import {
   type AppsResponse,
 } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
-import { safeArray } from '../lib/format'
+import { capabilityLabel, friendlyPluginError, safeArray } from '../lib/format'
 
 /** 状态色：与 goals / projects 的色调约定一致。 */
 function statusTone(status: string): 'accent' | 'danger' | 'muted' {
   if (status === 'active') return 'accent'
   if (status === 'failed') return 'danger'
   return 'muted'
+}
+
+const APP_STATUS_LABELS: Record<string, string> = {
+  active: '已启用',
+  inactive: '未启用',
+  failed: '异常',
+  error: '异常',
+  loading: '加载中',
+  disabled: '已停用',
+}
+
+const KERNEL_TYPE_LABELS: Record<string, string> = {
+  agent: '智能体',
+  service: '服务',
+  tool: '工具',
+  plugin: '插件',
+  kernel: '系统组件',
 }
 
 export function Apps({ query }: { query: string }) {
@@ -86,8 +103,8 @@ export function Apps({ query }: { query: string }) {
     <div className="os-grid">
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
-          <li>这里是人类主权面：已注册插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
-          <li>列表如实显示每个插件的真实状态（registered / active / failed）；激活后状态会变 active。</li>
+          <li>这里是插件与工具：已注册插件由系统列出，激活动作由你触发（真实加载，非占位）。</li>
+          <li>列表如实显示每个插件的真实状态（未启用 / 运行中 / 异常）；激活后状态会变为运行中。</li>
           <li>没有插件是真没有，显示「暂无应用」；激活失败会带真实原因，不假装成功。</li>
         </ul>
       </Card>
@@ -134,18 +151,18 @@ export function Apps({ query }: { query: string }) {
                         <td>{app.plugin_id}</td>
                         <td>{app.name}</td>
                         <td>{app.version}</td>
-                        <td>{app.kernel_type}</td>
+                        <td>{KERNEL_TYPE_LABELS[app.kernel_type] ?? '其他'}</td>
                         <td>
                           <span className={`os-dot os-tone-${statusTone(app.status)}`} />
-                          {app.status}
+                          {APP_STATUS_LABELS[app.status] ?? '未知状态'}
                           {app.error && (
-                            <span className="os-error"> · {app.error}</span>
+                            <span className="os-error"> · {friendlyPluginError(app.error)}</span>
                           )}
                         </td>
                         <td>
                           {caps.length === 0
                             ? '—'
-                            : caps.join(', ')}
+                            : caps.map((cap) => capabilityLabel(cap)).join('、')}
                         </td>
                         <td>
                           {app.active ? (

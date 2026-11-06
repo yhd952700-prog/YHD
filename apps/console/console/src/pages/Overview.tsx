@@ -24,8 +24,21 @@ import type {
 } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { eventLabel, outcomeLabel, outcomeTone, relativeTime, safeText } from '../lib/format'
+import {
+  eventLabel,
+  outcomeLabel,
+  outcomeTone,
+  principalLabel,
+  relativeTime,
+  safeText,
+} from '../lib/format'
 import { providerRowSubtitle } from '../lib/honesty'
+import {
+  partitionProviders,
+  providerSummary,
+  recentRunTitle,
+  trendView,
+} from '../lib/overviewModel'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { BrainMap, DonutChart, LineChart, NetworkGraph } from '../components/charts'
 import { Card, Dot, Guard } from '../components/ui'
@@ -119,7 +132,8 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
             data-tone={attention.failed > 0 ? 'warn' : 'ok'}
           >
             <strong>{activity.data ? attention.failed : '—'}</strong>
-            条失败/拒绝（近 {attention.recent || 30} 条事件）
+            条失败/拒绝（
+            {attention.recent > 0 ? `近 ${attention.recent} 条事件` : '暂无事件'}）
           </span>
           <span
             className="os-attention-item"
@@ -131,7 +145,12 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           {attention.degraded === 0 &&
             attention.failed === 0 &&
             attention.modelReady && (
-              <span className="os-attention-clear">当前无需处理</span>
+              <span className="os-attention-clear">
+                当前无异常
+                {attention.recent === 0
+                  ? ' · 下一步：到工作台发起一条任务，或到「模型」页确认服务连通。'
+                  : ' · 下一步：可在事件流查看明细。'}
+              </span>
             )}
         </div>
       </div>
@@ -183,7 +202,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
       {/* ---------- 能力层分布 ---------- */}
       <Card
         title="能力层分布"
-        sub="capability-registry.yaml 能力层按阶段带分布"
+        sub="能力模块按阶段分组；悬停查看名称"
         span={5}
       >
         <Guard
@@ -203,7 +222,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                   id: layer.id,
                   label: layer.name,
                   group: layer.band,
-                  groupLabel: layer.band_label,
+                  groupLabel: friendlyBand(layer.band_label),
                 }))}
               />
               <div className="os-legend">
@@ -213,7 +232,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                     tone="accent"
                     label={
                       <>
-                        {band.label}{' '}
+                        {friendlyBand(band.label)}{' '}
                         <span className="os-legend-value">
                           {data.layers.filter((layer) => layer.band === band.key).length}
                         </span>
@@ -229,8 +248,8 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
 
       {/* ---------- 实时任务流 ---------- */}
       <Card
-        title="实时任务流"
-        sub="真实审计事件（已过滤 kernel 噪声）"
+        title={recentRunTitle(filteredActivity)}
+        sub="最近的真实运行记录（已隐藏系统内部名称）"
         span={4}
         action={
           <button className="os-link" onClick={activity.reload}>
@@ -243,8 +262,12 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           error={activity.error}
           data={activity.data}
           isEmpty={() => filteredActivity.length === 0}
-          emptyTitle={need ? '没有匹配的事件' : '暂无事件'}
-          emptyHint={need ? `没有事件匹配「${query}」` : undefined}
+          emptyTitle={need ? '没有匹配的事件' : '暂无运行记录'}
+          emptyHint={
+            need
+              ? `没有事件匹配「${query}」`
+              : '这里会显示员工最近做过的事。下一步：到工作台发起一条任务。'
+          }
           onRetry={activity.reload}
         >
           {() => (
@@ -258,7 +281,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                   <div className="os-row-main">
                     <div className="os-row-title">{eventLabel(item.type)}</div>
                     <div className="os-row-sub">
-                      {item.principal} · {outcomeLabel(item.outcome)}
+                      {principalLabel(item.principal)} · {outcomeLabel(item.outcome)}
                     </div>
                   </div>
                   <span className="os-row-tail">{relativeTime(item.timestamp)}</span>
@@ -270,7 +293,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
       </Card>
 
       {/* ---------- AI 大脑地图 ---------- */}
-      <Card title="AI 大脑地图" sub="14 内核按职责域分布" span={3}>
+      <Card title="AI 能力全景" sub="按职责分组的 14 个能力模块；悬停查看名称" span={3}>
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -325,39 +348,29 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           onRetry={analytics.reload}
         >
           {(data) => {
-            const points = data.timeseries.days
-            const labels = points.map((point) => point.date.slice(5))
+            const view = trendView(data.timeseries.days)
+            // 稀疏数据不画贴地线：一条几乎为 0 的线会被读成"系统很安静"，
+            // 而事实是"还没有足够证据"。空状态必须把下一步说出来。
+            if (view.sparse) {
+              return (
+                <div className="os-empty" role="status">
+                  <div className="os-empty-title">{view.emptyTitle}</div>
+                  <div className="os-empty-hint">{view.emptyHint}</div>
+                </div>
+              )
+            }
             return (
               <>
                 <div className="os-hud">
-                  <LineChart
-                    labels={labels}
-                    series={[
-                      {
-                        key: 'total',
-                        label: '全部事件',
-                        values: points.map((point) => point.total),
-                        color: '#4d8dff',
-                      },
-                      {
-                        key: 'allowed',
-                        label: '放行',
-                        values: points.map((point) => point.allowed),
-                        color: '#2ee6a8',
-                      },
-                      {
-                        key: 'denied',
-                        label: '拒绝',
-                        values: points.map((point) => point.denied),
-                        color: '#ff5d6c',
-                      },
-                    ]}
-                  />
+                  <LineChart labels={view.labels} series={view.series} />
                 </div>
                 <div className="os-legend">
-                  <Dot tone="accent" label={<>全部事件</>} />
-                  <Dot tone="ok" label={<>放行</>} />
-                  <Dot tone="danger" label={<>拒绝</>} />
+                  {view.series.map((series) => (
+                    <span className="os-legend-item" key={series.key}>
+                      <span className="os-dot" style={{ background: series.color }} />
+                      {series.label}
+                    </span>
+                  ))}
                   {data.timeseries.truncated && (
                     <span className="os-badge" data-tone="warn">
                       样本已截断（{formatCompact(data.timeseries.sampled_events ?? 0)} 条）
@@ -380,7 +393,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           emptyTitle="暂无审计事件"
           emptyHint={
             analytics.data?.breakdown.available
-              ? `排除 kernel 噪声 ${formatCompact(analytics.data.breakdown.excluded_noise_events ?? 0)} 条后没有剩余事件`
+              ? `排除系统内部记录 ${formatCompact(analytics.data.breakdown.excluded_noise_events ?? 0)} 条后没有剩余事件`
               : analytics.data?.breakdown.error
           }
           onRetry={analytics.reload}
@@ -417,124 +430,144 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
         </Guard>
       </Card>
 
-      {/* ---------- 系统通知 ---------- */}
-      <Card title="系统通知" sub="已接入服务面（provider 真实配置状态）" span={12}>
+      {/* ---------- 模型服务商连通状态 ----------
+          标题必须如实描述卡片内容：这里列出的是"哪些服务商配了、哪家正在生效"，
+          与"系统通知"无关。未配置项默认折叠，避免把真正需要注意的两条挤下去。 */}
+      <Card
+        title="模型服务商连通状态"
+        sub="已配置优先；未配置的服务商折叠在下方"
+        span={12}
+      >
         <Guard
           loading={roster.loading}
           error={roster.error}
           data={roster.data?.providers ?? null}
           isEmpty={(data) => data.items.length === 0}
-          emptyTitle="没有已注册的 provider"
+          emptyTitle="没有登记的模型服务商"
+          emptyHint="到「模型」页添加服务商并测试连通后，这里会显示连通状态。"
           onRetry={roster.reload}
         >
           {(data) => {
             // 真实性判据**只**来自 /v1/health（见 lib/providerStatus.ts）。名册这里
             // 只负责"每一项配没配密钥"以及"哪一项是当前生效的"两份事实。
-            // 此前这里逐行从名册的 mode/simulated 再推导一遍，和 /v1/health、
-            // /v1/dashboard/summary 各说各话，于是同一个问题有三个答案。
-            return (
-            <>
-              <div className="os-list">
-                {data.items.map((item) => {
-                  const isActive = item.type === provider.provider?.type
-                  const dotTone = !item.configured
-                    ? item.registered
-                      ? 'var(--os-warn)'
-                      : 'var(--os-text-faint)'
-                    : isActive
-                      ? provider.isReal
-                        ? 'var(--os-ok)'
-                        : 'var(--os-danger)'
-                      : 'var(--os-text-dim)'
-                  const badgeTone = !item.configured ? 'warn' : isActive ? provider.posture.tone : 'muted'
-                  return (
-                  <div className="os-row" key={item.type}>
-                    <span
-                      className="os-dot"
-                      style={{
-                        background: dotTone,
-                      }}
-                    />
-                    <div className="os-row-main">
-                      <div className="os-row-title">
-                        {item.label}
-                        {isActive && (
-                          <>
-                            {' '}
-                            <span className="os-badge" data-tone="accent">
-                              当前生效
-                            </span>
-                          </>
-                        )}
-                        {item.is_mock && (
-                          <>
-                            {' '}
-                            <span className="os-badge" data-tone="danger">
-                              模拟
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      <div className="os-row-sub">
-                        {item.configured && !isActive
-                          ? '已配置，但当前未生效'
-                          : providerRowSubtitle({
-                              configured: item.configured,
-                              requiredEnv: item.required_env,
-                              // 真实性只说一次、且只说当前生效 provider 的那份。
-                              posture: provider.posture,
-                            })}
-                      </div>
+            const sections = partitionProviders(data.items, provider.provider?.type)
+            const prominent = [
+              ...(sections.active ? [sections.active] : []),
+              ...sections.configured,
+            ]
+            const renderRow = (item: (typeof data.items)[number], isActive: boolean) => {
+              const dotTone = !item.configured
+                ? item.registered
+                  ? 'var(--os-warn)'
+                  : 'var(--os-text-faint)'
+                : isActive
+                  ? provider.isReal
+                    ? 'var(--os-ok)'
+                    : 'var(--os-danger)'
+                  : 'var(--os-text-dim)'
+              const badgeTone = !item.configured
+                ? 'warn'
+                : isActive
+                  ? provider.posture.tone
+                  : 'muted'
+              return (
+                <div className="os-row" key={item.type}>
+                  <span className="os-dot" style={{ background: dotTone }} />
+                  <div className="os-row-main">
+                    <div className="os-row-title">
+                      {item.label}
+                      {isActive && (
+                        <>
+                          {' '}
+                          <span className="os-badge" data-tone="accent">
+                            当前生效
+                          </span>
+                        </>
+                      )}
+                      {item.is_mock && (
+                        <>
+                          {' '}
+                          <span className="os-badge" data-tone="danger">
+                            模拟
+                          </span>
+                        </>
+                      )}
                     </div>
-                    <span className="os-badge" data-tone={badgeTone}>
-                      {!item.configured
-                        ? '未配置'
-                        : isActive
-                          ? provider.posture.badge
-                          : '已配置'}
-                    </span>
+                    <div className="os-row-sub">
+                      {item.configured && !isActive
+                        ? '已配置，但当前未生效'
+                        : providerRowSubtitle({
+                            configured: item.configured,
+                            requiredEnv: item.required_env,
+                            // 真实性只说一次、且只说当前生效服务商的那份。
+                            posture: provider.posture,
+                          })}
+                    </div>
                   </div>
-                  )
-                })}
-              </div>
-              <div className="os-legend" style={{ marginTop: 10 }}>
-                <Dot
-                  tone="accent"
-                  label={
-                    <>
-                      当前 provider{' '}
-                      <span className="os-legend-value">
-                        {provider.provider?.type ?? '—'}
-                      </span>
-                    </>
-                  }
-                />
-                <Dot
-                  tone={provider.posture.tone}
-                  label={
-                    <>
-                      {provider.isReal ? '真实调用' : '非真实调用'} ·{' '}
-                      <span className="os-legend-value">{provider.posture.badge}</span>
-                    </>
-                  }
-                />
-                <Dot
-                  tone="ok"
-                  label={
-                    <>
-                      已配置{' '}
-                      <span className="os-legend-value">
-                        {data.configured_count}/{data.registered_count}
-                      </span>
-                    </>
-                  }
-                />
-              </div>
-              {/* 一句话把"能否接通"和"是否真实"分开说清；来源固定为 /v1/health。 */}
-              <p className="os-note" style={{ marginTop: 8 }}>
-                <span>{provider.detail}。</span>
-              </p>
-            </>
+                  <span className="os-badge" data-tone={badgeTone}>
+                    {!item.configured
+                      ? '未配置'
+                      : isActive
+                        ? provider.posture.badge
+                        : '已配置'}
+                  </span>
+                </div>
+              )
+            }
+            return (
+              <>
+                <div className="os-list">
+                  {prominent.map((item) =>
+                    renderRow(item, item.type === provider.provider?.type),
+                  )}
+                </div>
+                {sections.unconfigured.length > 0 && (
+                  <details className="os-fold">
+                    <summary>
+                      未配置 {sections.unconfigured.length} 家 · 展开
+                    </summary>
+                    <div className="os-list">
+                      {sections.unconfigured.map((item) => renderRow(item, false))}
+                    </div>
+                  </details>
+                )}
+                <div className="os-legend" style={{ marginTop: 10 }}>
+                  <Dot
+                    tone="accent"
+                    label={
+                      <>
+                        当前服务商{' '}
+                        <span className="os-legend-value">
+                          {provider.provider?.type ?? '—'}
+                        </span>
+                      </>
+                    }
+                  />
+                  <Dot
+                    tone={provider.posture.tone}
+                    label={
+                      <>
+                        {provider.isReal ? '真实调用' : '非真实调用'} ·{' '}
+                        <span className="os-legend-value">{provider.posture.badge}</span>
+                      </>
+                    }
+                  />
+                  <Dot
+                    tone="ok"
+                    label={
+                      <>
+                        已配置{' '}
+                        <span className="os-legend-value">
+                          {data.configured_count}/{data.registered_count}
+                        </span>
+                      </>
+                    }
+                  />
+                </div>
+                <p className="os-note" style={{ marginTop: 8 }}>
+                  <span>{providerSummary(sections)}。{provider.detail}</span>
+                </p>
+              </>
             )
           }}
         </Guard>
@@ -546,6 +579,18 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
 function chartColor(index: number): string {
   const palette = ['#4d8dff', '#9b6bff', '#2ee6a8', '#ffb74d', '#ff5d6c', '#41c7e0']
   return palette[index % palette.length]
+}
+
+/**
+ * 能力阶段名 → 用户能读懂的写法。
+ *
+ * 「组织与任务」是后端注册表里的阶段名，但"组织"在账号界面里会被读成层级归属。
+ * 只改展示层，不动后端数据与品牌文案。
+ */
+function friendlyBand(label: string | undefined): string {
+  if (!label) return '未分组'
+  if (label === '组织与任务') return '协作与任务'
+  return label
 }
 
 function Kpi({

@@ -10,8 +10,10 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
-import { ALL_NAV, FOOTER_NAV, GOVERNANCE_NAV, MOBILE_NAV_KEYS, PRIMARY_NAV } from '../lib/nav'
+import { ALL_NAV, navFor, mobileNavKeysFor } from '../lib/nav'
 import type { NavItem } from '../lib/nav'
+import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
+import { identityBarRole } from '../lib/accountCaps'
 import { IconActivity, IconBell, IconLogout, IconSearch, IconSparkle } from './icons'
 
 export interface OsNotification {
@@ -25,6 +27,8 @@ export interface ShellProps {
   mode: DeviceMode
   theme: Theme
   session: Session
+  profile: AccountProfile
+  caps: AccountCaps
   active: string
   onNavigate: (key: string) => void
   onToggleTheme: () => void
@@ -39,6 +43,8 @@ export function Shell({
   mode,
   theme,
   session,
+  profile,
+  caps,
   active,
   onNavigate,
   onToggleTheme,
@@ -50,6 +56,9 @@ export function Shell({
 }: ShellProps) {
   const initial = (session.displayName || session.principal || '?').trim().charAt(0).toUpperCase()
   const displayName = session.displayName || session.principal
+  const navigation = navFor(caps)
+  const mobileKeys = mobileNavKeysFor(caps)
+  const roleLabel = identityBarRole(profile)
 
   return (
     <div className="os-app">
@@ -74,7 +83,7 @@ export function Shell({
 
         <nav className="os-nav">
           <div className="os-nav-label">业务</div>
-          {PRIMARY_NAV.map((item) => (
+          {navigation.primary.map((item) => (
             <NavButton
               key={item.key}
               item={item}
@@ -84,7 +93,7 @@ export function Shell({
           ))}
 
           <div className="os-nav-label">治理</div>
-          {GOVERNANCE_NAV.map((item) => (
+          {navigation.governance.map((item) => (
             <NavButton
               key={item.key}
               item={item}
@@ -96,7 +105,7 @@ export function Shell({
 
         <div className="os-sidebar-foot">
           <nav className="os-nav" aria-label="设置">
-            {FOOTER_NAV.map((item) => (
+            {navigation.footer.map((item) => (
               <NavButton
                 key={item.key}
                 item={item}
@@ -111,9 +120,7 @@ export function Shell({
             </div>
             <div style={{ minWidth: 0 }}>
               <div className="os-user-name">{displayName}</div>
-              <div className="os-user-role">
-                {session.scope ? `${session.scope} · 人类主权` : '人类身份'}
-              </div>
+              <div className="os-user-role">{roleLabel}</div>
             </div>
             <button className="os-logout" onClick={onLogout} title="退出登录" aria-label="退出登录">
               <IconLogout size={16} />
@@ -154,13 +161,13 @@ export function Shell({
       </div>
 
       <nav className="os-bottom-nav" aria-label="底部导航">
-        {MOBILE_NAV_KEYS.map((key) => {
+        {mobileKeys.map((key) => {
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          // 底栏用短标签："我的"替代"系统设置"，"管家"替代"工作台"（对话入口）。
+          // 底栏用短标签："我的"替代设置入口，"管家"替代"工作台"（对话入口）。
           const label =
-            item.key === 'settings'
+            item.key === 'settings' || item.key === 'my-keys'
               ? '我的'
               : item.key === 'workbench'
                 ? '管家'
@@ -198,6 +205,7 @@ function NavButton({
     <button
       className="os-nav-item"
       aria-current={active ? 'page' : undefined}
+      title={item.hint}
       onClick={() => onSelect(item.key)}
     >
       <span className="os-nav-icon">

@@ -18,7 +18,19 @@ export function describeDetail(detail: unknown): string {
     return detail.map(describeDetail).filter(Boolean).join('；')
   }
   if (typeof detail === 'object') {
-    return Object.entries(detail as Record<string, unknown>)
+    const record = detail as Record<string, unknown>
+    // GoalWorkError 的线路格式是 `{ code, message }`：`message` 已经是给人看的
+    // 中文说明（例如「员工 X 已停用，无法接受指派」）。优先整句展示它，只把
+    // 其它有信息量的字段附在后面；`code` 由调用方单独取用，不塞进人话里。
+    const message = record.message
+    if (typeof message === 'string' && message.trim()) {
+      const extras = Object.entries(record)
+        .filter(([key]) => key !== 'message' && key !== 'code')
+        .filter(([, value]) => value !== null && value !== undefined && value !== '')
+        .map(([key, value]) => `${key}：${describeDetail(value)}`)
+      return extras.length > 0 ? `${message}；${extras.join('；')}` : message
+    }
+    return Object.entries(record)
       .filter(([, value]) => value !== null && value !== undefined && value !== '')
       .map(([key, value]) => `${key}：${describeDetail(value)}`)
       .join('；')
@@ -63,7 +75,10 @@ export function describeFailure(
     const raw = (record.detail as Record<string, unknown>).code
     if (typeof raw === 'string' && raw.trim()) code = raw.trim()
   }
-  const message = detail || statusText || `HTTP ${status}`
+  // 429 的原始文案带着英文实现细节（`rate limit exceeded`），对用户没有信息量；
+  // 统一成一句中性中文，保留下面的追踪 ID 以便排障。
+  const message =
+    status === 429 ? '请求过于频繁，请稍后再试' : detail || statusText || `HTTP ${status}`
   // 追踪 ID 单独一行：它是"去服务端日志里查完整堆栈"的唯一钥匙，必须让
   // 操作者能照抄。配合 Failure 的 `white-space: pre-line` 渲染成两行。
   return {

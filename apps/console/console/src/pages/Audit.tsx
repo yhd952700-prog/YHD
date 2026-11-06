@@ -28,7 +28,9 @@ import {
   type AuditSummary,
   type AuditVerifyResult,
 } from '../lib/operator'
+import type { AccountProfile } from '../lib/accountCaps'
 import { Card, Empty, Guard } from '../components/ui'
+import { actionLabel, eventLabel, outcomeLabel, principalLabel } from '../lib/format'
 
 /** 事件条数上限。后端默认 100、硬上限 1000；这里取 200 足够人读。 */
 const EVENT_LIMIT = 200
@@ -50,9 +52,21 @@ function outcomeTone(outcome: string): string {
   return 'muted'
 }
 
-export function Audit({ query }: { query: string }) {
-  const summary = useApi<AuditSummary>('/v1/audit/summary', 30_000)
-  const events = useApi<AuditEventsResponse>(`/v1/audit/events?limit=${EVENT_LIMIT}`, 30_000)
+export function Audit({ query, profile }: { query: string; profile: AccountProfile }) {
+  /**
+   * 范围筛选：根可选"全部 / 仅自己"；非根只保留"仅自己"。
+   * 后端对非 L0 主体强制按令牌主体过滤（audit.py:270-280），
+   * 因此界面不提供一个按不动的按钮 —— 只显示真正生效的那一档。
+   */
+  const [scope, setScope] = useState<'all' | 'self'>('all')
+  const effectiveScope = profile.isRoot ? scope : 'self'
+  const eventsPath =
+    effectiveScope === 'all'
+      ? `/v1/audit/events?limit=${EVENT_LIMIT}`
+      : `/v1/audit/events?limit=${EVENT_LIMIT}&principal=${encodeURIComponent(profile.principal)}`
+
+  const summary = useApi<AuditSummary>(profile.isRoot ? '/v1/audit/summary' : null, 30_000)
+  const events = useApi<AuditEventsResponse>(eventsPath, 30_000)
 
   // 链校验刻意是**手动触发**的：它要扫全链，不该每 30 秒自动跑一次。
   const [verify, setVerify] = useState<AuditVerifyResult | null>(null)
@@ -107,6 +121,8 @@ export function Audit({ query }: { query: string }) {
 
   return (
     <div className="os-grid">
+      {profile.isRoot && (
+        <>
       <Card
         title="审计链完整性"
         sub="只读校验 —— 后端只 SELECT，从不修复"
@@ -195,7 +211,7 @@ export function Audit({ query }: { query: string }) {
                 .slice(0, 12)
                 .map(([action, count]) => (
                   <li key={action}>
-                    <span>{action}</span>
+                    <span>{actionLabel(action)}</span>
                     <span className="os-legend-value">{count}</span>
                   </li>
                 ))}
@@ -220,7 +236,7 @@ export function Audit({ query }: { query: string }) {
                 .map(([outcome, count]) => (
                   <li key={outcome}>
                     <span className={`os-dot os-tone-${outcomeTone(outcome)}`} />
-                    <span>{outcome || '(空)'}</span>
+                    <span>{outcomeLabel(outcome)}</span>
                     <span className="os-legend-value">{count}</span>
                   </li>
                 ))}
@@ -228,6 +244,8 @@ export function Audit({ query }: { query: string }) {
           )}
         </Guard>
       </Card>
+        </>
+      )}
 
       <Card
         title={correlation ? `关联事件 · ${correlation}` : '审计事件'}
@@ -238,6 +256,15 @@ export function Audit({ query }: { query: string }) {
             <button className="os-btn" onClick={() => setCorrelation(null)}>
               返回全部
             </button>
+          ) : profile.isRoot ? (
+            <select
+              aria-label="审计范围"
+              value={scope}
+              onChange={(event) => setScope(event.target.value as 'all' | 'self')}
+            >
+              <option value="all">全部</option>
+              <option value="self">仅自己</option>
+            </select>
           ) : undefined
         }
       >
@@ -267,14 +294,14 @@ export function Audit({ query }: { query: string }) {
                     <tr key={event.seq}>
                       <td>{event.seq}</td>
                       <td>{formatTime(event.timestamp)}</td>
-                      <td>{event.principal_id || '—'}</td>
+                      <td>{principalLabel(event.principal_id) || '—'}</td>
                       <td>
-                        {event.event_type}
-                        {event.action ? ` · ${event.action}` : ''}
+                        {eventLabel(event.event_type)}
+                        {event.action ? ` · ${actionLabel(event.action)}` : ''}
                       </td>
                       <td>
                         <span className={`os-dot os-tone-${outcomeTone(event.outcome)}`} />
-                        {event.outcome || '—'}
+                        {outcomeLabel(event.outcome)}
                       </td>
                       <td>
                         {event.correlation_id ? (

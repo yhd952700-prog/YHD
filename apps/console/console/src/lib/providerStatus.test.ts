@@ -9,13 +9,14 @@ import { describe, expect, test } from 'vitest'
 import { deriveProviderStatus, UNKNOWN_PROVIDER } from './providerStatus'
 
 describe('deriveProviderStatus', () => {
-  test('内置 mock：明确标注模拟回复，不得显示为可用真实模型', () => {
+  test('内置 mock：明确标注尚未接入真实模型', () => {
     const status = deriveProviderStatus({
       provider: { type: 'mock', mode: 'mock', simulated: false },
     })
     expect(status.isReal).toBe(false)
     expect(status.isMock).toBe(true)
-    expect(status.label).toContain('模拟回复')
+    expect(status.label).toBe('尚未接入真实模型')
+    expect(status.detail).toContain('演示内容')
     expect(status.posture.tone).toBe('danger')
   })
 
@@ -39,7 +40,7 @@ describe('deriveProviderStatus', () => {
     const status = deriveProviderStatus({
       provider: { type: 'unknown-provider', mode: 'invalid', error: 'unsupported provider' },
     })
-    expect(status.label).toBe('Provider 配置无效')
+    expect(status.label).toBe('模型服务配置无效')
     expect(status.detail).toContain('unsupported provider')
   })
 
@@ -48,10 +49,11 @@ describe('deriveProviderStatus', () => {
     expect(UNKNOWN_PROVIDER.label).toBe('模型状态未知')
   })
 
-  test('health 请求失败：详情里带上失败原因', () => {
+  test('health 请求失败：诚实说读不到，并给出下一步', () => {
     const status = deriveProviderStatus({ error: '请求失败（500）' })
     expect(status.label).toBe('模型状态未知')
-    expect(status.detail).toContain('请求失败')
+    expect(status.detail).toContain('暂时无法读取')
+    expect(status.detail).toContain('稍后重试')
   })
 
   test('mode 缺失：不把它当成 mock，也不当成真实', () => {

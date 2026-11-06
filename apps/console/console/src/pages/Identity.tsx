@@ -33,6 +33,8 @@ import {
   type PrincipalView,
   type PrincipalsResponse,
 } from '../lib/operator'
+import type { AccountProfile } from '../lib/accountCaps'
+import { permissionLabel, principalLabel, safeText } from '../lib/format'
 import { Card, Empty, Guard } from '../components/ui'
 
 /** 状态 -> 徽标色调。active 是正常态，suspended / deactivated 是危险态。 */
@@ -69,26 +71,64 @@ function RegistryReport({ registry }: { registry: IdentityRegistry }) {
       </ul>
       {refused.length > 0 && (
         <div className="os-alert">
-          注册表在加载时拒收了 {refused.length} 行，因此未出现在清单中：{refused.join('、')}。
-          设置 {registry.integrity_key_env} 并重新注册这些人类才能接纳它们。
+          注册表在加载时拒收了 {refused.length} 行，因此未出现在清单中：{refused.map((item) => principalLabel(item)).join('、')}。
+          请配置完整性密钥后重新注册这些账号。
         </div>
       )}
     </div>
   )
 }
 
+/**
+ * 后端说明偶尔是英文实现细节（`identity kernel stores grants ...`）。
+ * 界面只保留结论，不把实现层描述铺给用户。
+ */
+function plainNote(text: string): string {
+  const value = safeText(text).trim()
+  if (!value) return ''
+  if (/[A-Za-z]{5,}/.test(value) && !/[\u4e00-\u9fa5]/.test(value)) {
+    return '权限串按「:」拆分后展示；服务端保存的原始权限串才是权威，派生字段已标注来源。'
+  }
+  return value
+}
+
 /** 一组警告（fail-closed / 派生声明等）逐条诚实展示，不吞成「暂无数据」。 */
 function Warnings({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) return null
+  const readable = warnings.map(plainNote)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {warnings.map((warning, index) => (
+      {readable.filter(Boolean).map((warning, index) => (
         <div className="os-alert" key={index}>
           {warning}
         </div>
       ))}
     </div>
   )
+}
+
+const KIND_LABELS: Record<string, string> = {
+  human: '真人账号',
+  service: '系统服务',
+  agent: '智能体',
+  kernel: '系统组件',
+  plugin: '插件',
+}
+
+const SCOPE_LABELS: Record<string, string> = {
+  global: '全局',
+  workspace: '工作空间',
+  account: '账号',
+  subtree: '子树',
+  self: '仅本人',
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  active: '正常',
+  paused: '已暂停',
+  disabled: '已停用',
+  revoked: '已撤销',
+  pending: '待激活',
 }
 
 function formatTime(iso: string | null): string {
@@ -102,10 +142,20 @@ function formatTime(iso: string | null): string {
   }
 }
 
-export function Identity({ query }: { query: string }) {
-  const summary = useApi<IdentitySummary>('/v1/identity/summary', 30_000)
-  const principals = useApi<PrincipalsResponse>('/v1/identity/principals', 30_000)
-  const permissions = useApi<PermissionsResponse>('/v1/identity/permissions', 30_000)
+export function Identity({ query, profile }: { query: string; profile: AccountProfile }) {
+  /**
+   * 全站主体清单只对根开放；非根不请求这三个端点（它们描述的是整台机器，
+   * 不是"你的范围"）。path 为 null 时 `useApi` 不发请求。
+   */
+  const summary = useApi<IdentitySummary>(profile.isRoot ? '/v1/identity/summary' : null, 30_000)
+  const principals = useApi<PrincipalsResponse>(
+    profile.isRoot ? '/v1/identity/principals' : null,
+    30_000,
+  )
+  const permissions = useApi<PermissionsResponse>(
+    profile.isRoot ? '/v1/identity/permissions' : null,
+    30_000,
+  )
 
   // 单个主体查询 —— 手动触发（输入 id / principal 才取），不轮询。
   // 404 原样展示为「主体不存在或已被清除」，不退化成空对象。
@@ -153,6 +203,46 @@ export function Identity({ query }: { query: string }) {
     )
   }, [permissions.data, need])
 
+  /**
+   * 非根只显示"我的范围"。
+   *
+   * 不是把全站清单置灰 —— 那等于告诉对方"这里有你看不到的东西"。整块卡片
+   * 直接不渲染，页面里也不存在任何其他账号的信息。
+   */
+  if (!profile.isRoot) {
+    return (
+      <div className="os-grid">
+        <Card
+          title="我的范围"
+          sub="你在本机可以执行的动作范围，由服务端授予"
+          span={12}
+        >
+          <div className="os-kv">
+            <div className="os-kv-row">
+              <span className="os-kv-key">账号</span>
+              <span className="os-kv-value">{profile.principal}</span>
+            </div>
+            <div className="os-kv-row">
+              <span className="os-kv-key">显示名</span>
+              <span className="os-kv-value">{profile.displayName || '—'}</span>
+            </div>
+            <div className="os-kv-row">
+              <span className="os-kv-key">可执行范围</span>
+              <span className="os-kv-value">
+                {profile.accountPermissions.length > 0
+                  ? profile.accountPermissions.map((value) => permissionLabel(value)).join(' · ')
+                  : '（暂无额外范围）'}
+              </span>
+            </div>
+          </div>
+          <p className="os-hint">
+            这里只展示服务端当前生效的范围；如需调整，请联系设备负责人。
+          </p>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="os-grid">
       {/* ─── 身份总览 ─── */}
@@ -188,7 +278,7 @@ export function Identity({ query }: { query: string }) {
                 <ul className="os-list">
                   {Object.entries(data.by_kind).map(([kind, value]) => (
                     <li key={kind}>
-                      <span>{kind}</span>
+                      <span>{KIND_LABELS[kind] ?? '未知类型'}</span>
                       <span className="os-legend-value">{value}</span>
                     </li>
                   ))}
@@ -200,7 +290,7 @@ export function Identity({ query }: { query: string }) {
                 <ul className="os-list">
                   {Object.entries(data.by_status).map(([status, value]) => (
                     <li key={status}>
-                      <span>{status}</span>
+                      <span>{STATUS_LABELS[status] ?? '未知'}</span>
                       <span className="os-legend-value">{value}</span>
                     </li>
                   ))}
@@ -212,7 +302,7 @@ export function Identity({ query }: { query: string }) {
                 <ul className="os-list">
                   {Object.entries(data.by_scope).map(([scope, value]) => (
                     <li key={scope}>
-                      <span>{scope}</span>
+                      <span>{SCOPE_LABELS[scope] ?? '未知'}</span>
                       <span className="os-legend-value">{value}</span>
                     </li>
                   ))}
@@ -251,11 +341,10 @@ export function Identity({ query }: { query: string }) {
                   <table className="os-table">
                     <thead>
                       <tr>
-                        <th>主体 id</th>
-                        <th>principal</th>
+                        <th>名称</th>
                         <th>类型</th>
                         <th>作用域上限</th>
-                        <th>是否人</th>
+                        <th>是否真人</th>
                         <th>状态</th>
                         <th>权限数</th>
                         <th>创建于</th>
@@ -264,22 +353,17 @@ export function Identity({ query }: { query: string }) {
                     <tbody>
                       {shownPrincipals.map((principal) => (
                         <tr key={principal.id}>
-                          <td>{principal.id}</td>
-                          <td>{principal.principal}</td>
+                          <td>{principalLabel(principal.principal || principal.id)}</td>
                           <td>
-                            {principal.kind}
+                            {KIND_LABELS[principal.kind] ?? '未知类型'}
                             {principal.kind_marked ? '' : '（推断）'}
                           </td>
-                          <td>{principal.scope}</td>
+                          <td>{SCOPE_LABELS[principal.scope] ?? '未知'}</td>
                           <td>{principal.kind === 'human' ? '是' : '否'}</td>
                           <td>
-                            {statusTone(principal.status) ? (
-                              <span className="os-badge" data-tone={statusTone(principal.status)}>
-                                {principal.status}
-                              </span>
-                            ) : (
-                              principal.status
-                            )}
+                            <span className="os-badge" data-tone={statusTone(principal.status) ?? 'muted'}>
+                              {STATUS_LABELS[principal.status] ?? '未知'}
+                            </span>
                           </td>
                           <td>{principal.permission_count}</td>
                           <td>{formatTime(principal.created_at)}</td>
@@ -319,7 +403,7 @@ export function Identity({ query }: { query: string }) {
               <Warnings warnings={data.warnings} />
               {data.notes.map((note, index) => (
                 <div className="os-note" key={index}>
-                  {note}
+                  {plainNote(note)}
                 </div>
               ))}
               {shownGrants.length === 0 ? (
@@ -369,15 +453,15 @@ export function Identity({ query }: { query: string }) {
       {/* ─── 单个主体查询（手动触发，演示 404 诚实态） ─── */}
       <Card
         title="主体详情查询"
-        sub="按 id / principal 查询单个主体（未知 -> 404）"
+        sub="按名称或标识查询单个主体；查不到时如实提示「主体不存在或已被清除」"
         span={12}
       >
         <div className="os-form">
           <label className="os-field">
-            <span className="os-field-label">主体 id 或 principal</span>
+            <span className="os-field-label">主体名称或标识</span>
             <input
               className="os-input"
-              placeholder="例如 system / human:xxx / agent 的 hex id"
+              placeholder="输入主体名称或标识"
               value={lookupId}
               onChange={(event) => setLookupId(event.target.value)}
               onKeyDown={(event) => {

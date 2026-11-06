@@ -30,6 +30,10 @@ const EMPLOYEES = {
     {
       name: '小鎏',
       agent_count: 1,
+      role_description: '执行日常事务',
+      default_capabilities: [],
+      employment_status: 'active',
+      read_only: false,
       agents: [
         {
           id: 'agent-1',
@@ -304,7 +308,7 @@ afterEach(() => {
 })
 
 function renderPage(onOpenApproval = vi.fn()) {
-  return render(<Butler query="" onOpenApproval={onOpenApproval} />)
+  return render(<Butler query="" onOpenApproval={onOpenApproval} canApproveQueue />)
 }
 
 async function submitCommand(text: string) {
@@ -350,6 +354,35 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
         fetchMock.mock.calls.some(([url]) => String(url) === '/v1/goals/g1/stop'),
       ).toBe(true),
     )
+  })
+
+  test('指定员工后，POST /v1/goals 带上 employee_name，汇总显示归属与员工汇总', async () => {
+    detailPlan = [
+      {
+        ...FINAL_DETAIL,
+        assigned_employee: '小鎏',
+        employees: [
+          { employee: '小鎏', tasks: 2, completed: 2, failed: 0, total_duration_ms: 9000 },
+        ],
+      },
+    ]
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('指定员工（可选）'), { target: { value: '小鎏' } })
+    await submitCommand('把这周的会议记录整理成周报')
+
+    const post = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/v1/goals' && init?.method === 'POST',
+    )
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
+      natural_language: '把这周的会议记录整理成周报',
+      employee_name: '小鎏',
+      background: true,
+    })
+
+    await waitFor(() => expect(screen.getByText(/执行主体：小鎏/)).toBeTruthy())
+    expect(screen.getByText('员工汇总（按真实任务归属统计）')).toBeTruthy()
+    expect(screen.getByText(/小鎏 · 做了 2 项 · 成功 2 · 失败 0 · 合计耗时 9\.0 秒/)).toBeTruthy()
   })
 
   test('增量快照只给变化字段时，已有任务卡保留旧字段与已出现任务', async () => {
@@ -462,7 +495,7 @@ describe('鎏灏管家 · 单独指派', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent-1' } })
+    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent:agent-1' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '把周报合并成一份' } })
     fireEvent.click(screen.getByRole('button', { name: /派给 小鎏 · 鎏灏执行体/ }))
 
@@ -477,6 +510,25 @@ describe('鎏灏管家 · 单独指派', () => {
     expect(screen.getByText(/你点名指派的，不是管家自动拆解/)).toBeTruthy()
   })
 
+  test('按员工指派发 employee_name（不送 agent_id）', async () => {
+    detailPlan = [{ ...RUNNING_DETAIL, assigned_employee: '小鎏' }]
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'employee:小鎏' } })
+    fireEvent.change(screen.getByLabelText('任务'), { target: { value: '把周报合并成一份' } })
+    fireEvent.click(screen.getByRole('button', { name: /派给 小鎏（整位员工）/ }))
+    await waitFor(() => expect(assignBodies.length).toBe(1))
+    expect(assignBodies[0]).toMatchObject({
+      employee_name: '小鎏',
+      instruction: '把周报合并成一份',
+      background: true,
+    })
+    expect(assignBodies[0].agent_id).toBeUndefined()
+
+    await waitFor(() => expect(screen.getByText(/执行主体：小鎏/)).toBeTruthy())
+  })
+
   test('agent_not_found 与 agent_unavailable 给出不同下一步', async () => {
     assignResponses = [
       { status: 404, body: errorBody('agent_not_found', 'agent not found') },
@@ -485,7 +537,7 @@ describe('鎏灏管家 · 单独指派', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent-1' } })
+    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent:agent-1' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '整理日志' } })
 
     fireEvent.click(screen.getByRole('button', { name: /派给/ }))
@@ -495,7 +547,7 @@ describe('鎏灏管家 · 单独指派', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /派给/ }))
     await waitFor(() =>
-      expect(screen.getByText(/当前处于暂停状态/)).toBeTruthy(),
+      expect(screen.getByText(/没有可用的执行个体/)).toBeTruthy(),
     )
     expect(assignBodies.length).toBe(2)
   })
@@ -545,5 +597,15 @@ describe('鎏灏管家 · 待我确认', () => {
     await waitFor(() => expect(screen.getByText('你没有签发权限')).toBeTruthy())
     expect(screen.getByText(/这不是「队列为空」/)).toBeTruthy()
     expect(screen.queryByText('没有等待你确认的动作')).toBeNull()
+  })
+
+  test('没有签发范围的账号：整块不渲染，也不请求待审批端点', async () => {
+    render(<Butler query="" onOpenApproval={vi.fn()} canApproveQueue={false} />)
+
+    expect(screen.queryByText('待我确认')).toBeNull()
+    expect(screen.queryByText(/签发权限/)).toBeNull()
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/v1/policy/approvals/pending')),
+    ).toBe(false)
   })
 })

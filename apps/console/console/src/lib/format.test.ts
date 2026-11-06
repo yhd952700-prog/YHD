@@ -15,10 +15,12 @@
 
 import { describe, expect, test } from 'vitest'
 import {
+  capabilityLabel,
   eventLabel,
   humanDuration,
   outcomeLabel,
   outcomeTone,
+  permissionLabel,
   relativeTime,
   safeArray,
   safeText,
@@ -171,5 +173,23 @@ describe('safeArray 是契约落差兜底', () => {
     expect(() => [...safeArray<string>(undefined)]).not.toThrow()
     expect(safeArray(undefined).length).toBe(0)
     expect(safeArray(undefined).join(', ')).toBe('')
+  })
+})
+
+describe('实现层标识 → 人话', () => {
+  test('已知能力与权限翻译成中文', () => {
+    expect(capabilityLabel('create_identity')).toBe('创建身份')
+    expect(capabilityLabel('scope_filter')).toBe('范围过滤')
+    // 员工默认能力来自后端 agent_type，不能让 `planner` 直接出现在界面上。
+    expect(capabilityLabel('planner')).toBe('规划')
+    expect(permissionLabel('account:manage_children')).toBe('创建与维护账号')
+  })
+
+  test('未知英文标识不原样铺给用户', () => {
+    // 子账号界面曾直接显示 `account:grant`、`grant_permission` 这类后端串。
+    expect(capabilityLabel('some_new_thing')).toBe('其他能力')
+    expect(permissionLabel('unknown:scope')).toBe('其他已授予范围')
+    expect(capabilityLabel(undefined)).toBe('')
+    expect(permissionLabel(null)).toBe('')
   })
 })

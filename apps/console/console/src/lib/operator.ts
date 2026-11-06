@@ -19,6 +19,10 @@ export interface HireEmployeeBody {
   name: string
   agent_count?: number
   agent_types?: string[]
+  /** 后端真实字段：这位员工负责什么（`HireEmployeeRequest.role_description`）。 */
+  role_description?: string
+  /** 默认能力 id，只能从 `GET /v1/employees/capabilities` 的清单里选。 */
+  default_capabilities?: string[]
 }
 
 export function hireEmployee(body: HireEmployeeBody): Promise<Json> {
@@ -28,6 +32,8 @@ export function hireEmployee(body: HireEmployeeBody): Promise<Json> {
       name: body.name,
       agent_count: body.agent_count ?? 3,
       agent_types: body.agent_types ?? [],
+      role_description: body.role_description ?? '',
+      default_capabilities: body.default_capabilities ?? [],
     }),
   })
 }
@@ -53,6 +59,12 @@ export interface CreateGoalBody {
    * 留空表示独立目标，不属于任何项目。
    */
   project_id?: string | null
+  /**
+   * 指名派活（`GoalCreateRequest.employee_name`）：把整个目标钉给某位员工，
+   * 后端解析成该员工的一个真实 agent。不存在/不可见 → 404，停用 → 409。
+   * 留空 = 管家自己拆解、自己派活。
+   */
+  employee_name?: string | null
 }
 
 export function createGoal(body: CreateGoalBody): Promise<Json> {
@@ -69,6 +81,7 @@ export function createGoal(body: CreateGoalBody): Promise<Json> {
       // （tsc）全程是绿的。类型声明 ≠ 已接线；这里补上真正的接线。
       // null = 独立目标（后端语义），与后端 `Optional[str] = None` 一致。
       project_id: body.project_id ?? null,
+      employee_name: body.employee_name ?? null,
       background: body.background ?? false,
     }),
   })
@@ -97,7 +110,10 @@ export function replanGoal(goalId: string): Promise<Json> {
 // 绝不静默换成别的员工 —— 所以这里不做任何兜底重试。
 
 export interface AssignTaskBody {
-  agent_id: string
+  /** 执行主体二选一：员工名（取其第一个可用 agent）。 */
+  employee_name?: string
+  /** 执行主体二选一：精确到某个 agent。 */
+  agent_id?: string
   instruction: string
   scope?: string
   project_id?: string | null
@@ -108,6 +124,7 @@ export function assignTask(body: AssignTaskBody): Promise<Json> {
   return apiFetch<Json>('/v1/goals/assign', {
     method: 'POST',
     body: JSON.stringify({
+      employee_name: body.employee_name,
       agent_id: body.agent_id,
       instruction: body.instruction,
       scope: body.scope ?? 'L1',
@@ -327,6 +344,19 @@ export interface GoalSummary {
   task_count: number
   completed_tasks: number
   failed_tasks: number
+  /** 员工归属：列表里就能看出"这单是谁做的"（后端 list_goals 已返回）。 */
+  assigned_employee?: string | null
+  assigned_employees?: string[]
+  employees?: EmployeeRollup[]
+}
+
+/** 后端 `_attach_employee_attribution` 的 goal 级汇总（每人一行）。 */
+export interface EmployeeRollup {
+  employee: string | null
+  tasks: number
+  completed: number
+  failed: number
+  total_duration_ms: number
 }
 
 export interface GoalTask {
@@ -336,6 +366,12 @@ export interface GoalTask {
   status: string
   capability_id: string | null
   assigned_agent: string | null
+  /** agent id → 真实员工名；解析不到时为 null（不假装是某人）。 */
+  assigned_employee?: string | null
+  /** 内核时间戳算出的真实耗时；拿不到为 null（不估算）。 */
+  duration_ms?: number | null
+  /** 后端判据：completed / completed_unattributed → true。 */
+  success?: boolean
   result: string | null
   error: string | null
   started_at: string | null
@@ -362,6 +398,12 @@ export interface GoalDetail {
    * 界面据此区分「你点名派给某人」与「管家自己拆解」。
    */
   assigned_agent?: string | null
+  /** 指名派活时钉住的那位员工（`POST /v1/goals` 的 employee_name / assign）。 */
+  assigned_employee?: string | null
+  /** 不是单人指派时，任务里真实出现过的员工集合。 */
+  assigned_employees?: string[]
+  /** 每人一行：做了几项、成几项、败几项、合计耗时。 */
+  employees?: EmployeeRollup[]
   /** 真实工作区产物（相对路径）。空数组 = 该目标没有向工作区写入任何文件。 */
   artifacts: string[]
   evaluation: {

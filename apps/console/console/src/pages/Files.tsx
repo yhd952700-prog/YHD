@@ -108,15 +108,20 @@ export function Files({ query }: { query: string }) {
   }, [])
 
   const need = query.trim().toLowerCase()
+  // 数据库与其临时文件是运行期存储，不属于 AI 员工的业务产物；不在目录里铺给用户。
+  const visibleEntries = useMemo(
+    () => (listing.data?.entries ?? []).filter((entry) => !isStorageArtifact(entry.name)),
+    [listing.data],
+  )
+  const hiddenCount = (listing.data?.entries.length ?? 0) - visibleEntries.length
   const shown = useMemo(() => {
-    const entries = listing.data?.entries ?? []
-    if (!need) return entries
-    return entries.filter((entry) =>
+    if (!need) return visibleEntries
+    return visibleEntries.filter((entry) =>
       [entry.name, entry.rel_path, entry.type].some((value) =>
         safeText(value).toLowerCase().includes(need),
       ),
     )
-  }, [listing.data, need])
+  }, [visibleEntries, need])
 
   const crumbs = breadcrumbs(currentPath)
 
@@ -164,12 +169,14 @@ export function Files({ query }: { query: string }) {
             loading={listing.loading}
             error={listing.error}
             data={listing.data}
-            isEmpty={(data) => data.count === 0}
-            emptyTitle="此目录为空"
-            emptyHint="AI 员工尚未在此处写出任何文件；目录真实存在，只是没有条目。"
+            isEmpty={(data) =>
+              data.entries.filter((entry) => !isStorageArtifact(entry.name)).length === 0
+            }
+            emptyTitle="此目录没有业务文件"
+            emptyHint="目录真实存在，但 AI 员工尚未写出任何业务文件；系统存储文件不在列表中显示。"
             onRetry={listing.reload}
           >
-            {(data) => (
+            {() => (
               <>
                 <div className="os-table-wrap">
                   <table className="os-table">
@@ -200,9 +207,14 @@ export function Files({ query }: { query: string }) {
                     </tbody>
                   </table>
                 </div>
-                {shown.length !== data.entries.length && (
+                {shown.length !== visibleEntries.length && (
                   <p className="os-hint">
-                    搜索「{query}」过滤后显示 {shown.length} / {data.entries.length} 项。
+                    搜索「{query}」过滤后显示 {shown.length} / {visibleEntries.length} 项。
+                  </p>
+                )}
+                {hiddenCount > 0 && (
+                  <p className="os-hint">
+                    另有 {hiddenCount} 个系统存储文件未列出（数据库及其临时文件，不属于业务产物）。
                   </p>
                 )}
               </>
@@ -223,8 +235,8 @@ export function Files({ query }: { query: string }) {
             <li>列出的每一项都来自工作区真实文件系统，由后端实时 enum，无缓存、无模拟。</li>
             <li>点目录进入、点文件读取；右侧预览区只在真实读回文本后出现。</li>
             <li>
-              越界路径（如 <code>../</code> 逃逸）会被后端 400 拒绝；文件不存在 404；过大 413；
-              二进制 415 —— 这些都会如实显示，不会伪装成空内容。
+              越界路径（如 <code>../</code> 逃逸）会被后端拒绝；文件不存在、体积过大、或内容不是
+              文本时，同样会如实说明原因，不会伪装成空内容。
             </li>
             <li>整个面只读：没有任何写入口，写仍由 AI 员工的 file_write 工具经执行围栏完成。</li>
           </ul>
@@ -238,4 +250,9 @@ export function Files({ query }: { query: string }) {
       )}
     </div>
   )
+}
+
+/** 运行期存储文件：数据库文件及其 `-shm` / `-wal` 临时文件。 */
+function isStorageArtifact(name: string): boolean {
+  return /(?:\.db|\.sqlite|\.sqlite3)(?:-shm|-wal)?$/i.test(name)
 }

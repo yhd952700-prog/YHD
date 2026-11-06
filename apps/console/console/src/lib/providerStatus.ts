@@ -62,18 +62,18 @@ export function deriveProviderStatus(input: {
   if (!provider) {
     label = '模型状态未知'
     detail = input.error
-      ? `无法读取 /v1/health：${input.error}`
-      : '正在读取 /v1/health…'
+      ? '暂时无法读取模型服务状态，请稍后重试。'
+      : '正在读取模型服务状态…'
   } else if (mode === 'invalid') {
-    label = 'Provider 配置无效'
-    detail = provider.error || '后端报告的 provider 类型不受支持，请到模型管理修正。'
+    label = '模型服务配置无效'
+    detail = provider.error || '当前服务商类型不受支持，请到「模型」页修正后重新测试连通。'
   } else if (isReal) {
     label = '真实模型'
-    detail = `当前生效 provider：${provider.type ?? '—'}`
+    detail = `当前使用服务商：${provider.type ?? '—'}`
   } else if (isMock) {
-    label = '模拟回复（未配置真实模型）'
+    label = '尚未接入真实模型'
     detail =
-      '后端当前使用内置 mock provider：不会调用任何真实模型，回复是编造内容。请先配置真实模型。'
+      '当前回复为演示内容，不会调用真实模型。到「模型」页填写密钥并测试连通后，下一条消息即可使用真实模型。'
   } else if (posture.simulated) {
     label = '模拟执行'
     detail = posture.verdict

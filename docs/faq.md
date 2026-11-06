@@ -1,0 +1,197 @@
+# 鎏灏 LiuHao AI OS 常见问题（Windows 安装版）
+
+> 面向普通用户。短句、按步骤做。
+> 文中标 **待确认** 的地方，表示当前仓库里没有已验证的实现或定稿方案，发布前需要人工确认；没有写成“已支持”。
+
+## 1. 填完 API Key，为什么不生效
+
+按这个顺序排查，通常 1～2 分钟能定位。
+
+### 1.1 先确认“保存”和“默认模型”
+
+1. 到 **系统设置 → 模型管理**，确认模型卡片已经保存。
+2. 确认这个模型被 **设为默认**。
+3. 回到工作台，重新发一条消息。模型配置在下一次请求生效，不需要重启程序。
+4. 如果工作台里能选模型，确认当前会话没有选中旧模型；有就切回刚配置的模型再试。
+
+### 1.2 点“测试连接”
+
+测试连接成功，说明 Key 和地址基本可用；测试失败，按错误码处理（见第 2 节）。
+
+### 1.3 检查最常见的四个填写问题
+
+| 检查项 | 正确做法 |
+| --- | --- |
+| `base_url` 少了 `/v1` | 多数 OpenAI 兼容服务要写到 `https://.../v1`；以服务商文档为准 |
+| 模型名填错 | 必须和服务商控制台里的模型 ID 一字不差，大小写、日期后缀都要对 |
+| Key 不完整 | 重新复制完整 Key，去掉前后的空格和换行；模型管理列表只显示掩码，不会回显完整 Key |
+| Key 没有模型权限 | 到服务商控制台确认这个 Key 能调用这个模型，或换一个有权限的 Key |
+
+### 1.4 Ollama 本地模型
+
+1. 确认 Ollama 正在运行（托盘有 Ollama 图标，或浏览器能打开 `http://127.0.0.1:11434`）。
+2. 确认模型已经拉下来：`ollama list` 能看到对应模型。
+3. 模型名要填 Ollama 里的名字，例如 `qwen2.5:7b`，不要填服务商的商品名。
+4. 本地 LM Studio 这类服务，**测试连接可能被安全策略拒绝**，但聊天仍可用；以实际发一条消息为准。
+
+### 1.5 还是不行
+
+- 看回复里的错误码，对照第 2 节。
+- 看日志：`%LOCALAPPDATA%\LiuHao\data\logs\liuhao.log`。
+- 看诊断记录：`%LOCALAPPDATA%\LiuHao\diagnostics`。
+- 发问题求助时，只发错误码和日志片段，**不要发完整 API Key**。
+
+---
+
+## 2. 401、404、503 分别是什么意思
+
+这三个是 HTTP 状态码。放在鎏灏里，常见含义如下。
+
+| 状态码 | HTTP 本意 | 在鎏灏里通常表示 | 你要做什么 |
+| --- | --- | --- | --- |
+| `401 Unauthorized` | 身份没通过 | API Key 无效、过期、复制不完整，或没有权限。登录页则通常是账号或密码不对 | 重新填 Key 或重新登录；确认 Key 没有多余空格；确认 Key 有模型权限 |
+| `403 Forbidden` | 身份通过了，但没权限 | Key 没有调用该模型的权限，或账号被限制。界面可能和 401 合并显示为“API Key 无效或没有权限” | 到服务商控制台开通权限；换有权限的 Key；账号问题找管理员 |
+| `404 Not Found` | 地址或资源不存在 | 模型名不存在，或这个端点不支持该模型；也可能是 `base_url` 写错、少了 `/v1` | 核对模型 ID；核对 `base_url`；到服务商文档确认端点 |
+| `503 Service Unavailable` | 服务不可用 | 模型服务连不上、过载或暂时不可用；Ollama 用户常见于 Ollama 没启动 | 检查网络；确认 Ollama 正在运行；稍后再试或换模型 |
+
+补充两种：
+
+- `429 Too Many Requests`：触发限流。等一会儿再发，或降低频率。
+- 知识库/嵌入模型返回 `503 未启用`：通常表示还没有配置可用的嵌入模型，不是网络坏了。设计要求是未配置时明确返回 `503 未启用`、不能伪装可用；当前版本这条链路的真实端到端表现仍是 **待确认**。
+
+---
+
+## 3. 断网或没有模型时，还能做什么
+
+分三种情况，不要混在一起。
+
+### 3.1 有本地 Ollama，且模型已经拉好，断网
+
+- 对话可以继续用。本地 Ollama 的推理在本机完成，不需要外网。
+- 登录、查看历史会话、改设置、管理模型都能用。
+- 前提是 Ollama 服务本身正常；Ollama 也需要本机端口可用。
+
+### 3.2 用云端 API，但断网
+
+- 发消息会失败，通常是连接错误或 `503`。
+- 登录、查看已有会话、查看审计、改设置仍然可用，因为这些都在本机。
+- 网络恢复后直接再发，不需要重装或重建账号。
+
+### 3.3 完全没有配置真实模型
+
+- 对话页可能显示 `Mock response to: ...`。这是**演示模式的回显，不是模型回答**，不能当成真实结果。
+- 目标、工具、员工执行这类需要真实模型的链路，会明确报“默认模型未配置”，不会拿 Mock 结果冒充成功。
+- 本地已有的账号、设置、历史记录和模型管理仍然可用；配好真实模型后再聊天。
+
+### 3.4 断网时不能做什么
+
+- 不能调用云端模型。
+- 不能检查远程更新。检查更新需要发布目录或更新源；没配置时会明确提示，不会假装“已是最新”。
+- 知识库检索依赖可用的嵌入模型；没有配置时不要期待它能检索。真实链路是否可用，以实际测试为准（**待确认**）。
+
+---
+
+## 4. 更新失败，怎么回滚
+
+先记住一句话：**升级前先备份 `data`；回滚会把程序和数据恢复到升级前，升级后新写的数据会丢失。**
+
+### 4.1 最稳妥的做法：覆盖安装旧版本
+
+适合大多数用户。
+
+1. 升级前，按 [END-USER-GUIDE.md](END-USER-GUIDE.md) 的“数据在哪里、怎么备份”复制整个 `data` 文件夹。
+2. 退出鎏灏。
+3. 运行新版本安装包，覆盖安装。
+4. 如果新版本起不来或明显异常：退出程序，直接运行**上一版本安装包**覆盖安装。
+5. 数据目录默认保留；但新版本已经写入的数据不会自动消失。如果数据也被新版本改坏，先退出程序，再用升级前的 `data` 备份覆盖恢复。
+
+### 4.2 用升级器升级的，可以显式回滚
+
+如果你是用命令行升级器升级的：
+
+```powershell
+cd "$env:LOCALAPPDATA\LiuHao\app"
+.\runtime\python.exe -m src.upgrade status --app-root .
+.\runtime\python.exe -m src.upgrade rollback --app-root .
+```
+
+- `status` 先看当前版本和升级状态。
+- `rollback` 默认取最近一次成功升级前的备份。
+- 升级过程中断电、被杀进程，下次启动会识别未完成记录并自动恢复；这是升级器已有的保护。
+- 回滚会恢复升级前的数据快照，**升级后新写入的数据会丢失**。
+- 如果提示“没有可回滚的升级记录”或备份缺失：重新安装上一版本安装包，或按升级器提示下载旧版本包。
+
+### 4.3 当前版本的边界
+
+- 设置页的“检查更新”已可用。
+- 安装版上的完整“下载 → 应用 → 回滚”链路还没有做过端到端实测，属于 **待确认**。
+- 所以发布阶段建议普通用户优先用“退出 → 备份 → 覆盖安装”的方式；不要只依赖界面上的更新按钮。
+
+---
+
+## 5. 忘记密码怎么办
+
+### 5.1 当前版本的处理方式
+
+当前版本**没有**“忘记密码”按钮，也没有已上线的邮件/短信找回。
+
+可以用安装目录里的命令行脚本，重设**同一个账号**的密码。做法如下，建议让懂电脑的人操作：
+
+1. 先退出鎏灏。
+2. 打开 PowerShell，执行：
+
+```powershell
+$env:LIUHAO_DATA_DIR = "$env:LOCALAPPDATA\LiuHao\data"
+$env:LIUHAO_NEW_PASSWORD = "你的新密码"
+cd "$env:LOCALAPPDATA\LiuHao\app"
+.\runtime\python.exe scripts\register_human_identity.py `
+  --principal 你的登录名 `
+  --permissions admin `
+  --file "$env:LOCALAPPDATA\LiuHao\data\config\human_identities.json" `
+  --secrets-file "$env:LOCALAPPDATA\LiuHao\data\config\auth_secrets.json"
+```
+
+3. 看到 `verified: an actual sign-in with this credential succeeded.`，说明新密码可用。
+4. 清掉临时变量，避免密码留在当前窗口：
+
+```powershell
+Remove-Item Env:LIUHAO_NEW_PASSWORD
+```
+
+说明：
+
+- 这条命令只覆盖这个账号的登录凭据，不会删除聊天记录、模型 Key 或工作区文件。
+- `--permissions admin` 用于保留管理员权限；如果这个账号原本不是管理员，不要照抄，找维护者确认原权限。
+- 不知道登录名，先列出已有账号：
+
+```powershell
+cd "$env:LOCALAPPDATA\LiuHao\app"
+.\runtime\python.exe scripts\register_human_identity.py --list `
+  --file "$env:LOCALAPPDATA\LiuHao\data\config\human_identities.json" `
+  --secrets-file "$env:LOCALAPPDATA\LiuHao\data\config\auth_secrets.json"
+```
+
+- 密码只保存为加盐哈希，不保存明文。
+
+### 5.2 当前版本没有恢复码入口
+
+当前版本没有恢复码、恢复文件或在线找回入口。这些只是设计稿，未上线，**待确认**。不要按网上教程修改身份文件。
+
+### 5.3 如果账号文件和凭据文件都丢了
+
+当前版本没有自动重建入口。按这个顺序处理：
+
+1. 先恢复 `data` 备份；这是最可靠的方式。
+2. 没有备份时，不要直接删除 `data`，先找维护者按支持流程处理。
+
+---
+
+## 维护者依据（发布时可删除）
+
+本页说法来自以下仓库内容，未在代码或文档中找到依据的，已标 **待确认**：
+
+- 安装、端口、杀软、数据目录、卸载保留数据：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
+- 模型配置、测试连接、错误码、Mock 回退：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[USER-GUIDE.md](USER-GUIDE.md)、[capability-map.md](capability-map.md)、`src/ai/llm_support.py`
+- 升级与回滚、断电恢复、回滚会丢升级后数据：[self-upgrade.md](self-upgrade.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
+- 忘记密码命令行重设、恢复码仅为设计：[USER-GUIDE.md](USER-GUIDE.md)、[account-hierarchy.md](account-hierarchy.md)、`scripts/register_human_identity.py`、`scripts/first_run_wizard.py`
+- 安装版完整更新链路、知识库嵌入真实 E2E 未验证：[known-gaps.md](known-gaps.md)

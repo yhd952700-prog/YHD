@@ -359,18 +359,20 @@ export function NetworkGraph({ nodes, hubLabel = '鎏灏 OS', height = 232 }: Ne
         y={cy + 30}
         textAnchor="middle"
         fill="var(--os-text-dim)"
-        fontSize="9.5"
+        fontSize="11"
       >
         {hubLabel}
       </text>
 
       {placed.map((node) => (
-        <g key={node.id}>
-          <circle cx={node.x} cy={node.y} r={5.4} fill={node.color} />
+        <g key={node.id} className="os-chart-node">
+          {/* 1024 宽下不铺标签，改为悬停显示名称 —— 既不糊成一团，也不用猜。 */}
+          <title>{node.label}</title>
+          <circle cx={node.x} cy={node.y} r={6.5} fill={node.color} />
           <circle
             cx={node.x}
             cy={node.y}
-            r={9.5}
+            r={11}
             fill="none"
             stroke={node.color}
             strokeOpacity={0.32}
@@ -394,7 +396,7 @@ export interface BrainRegion {
 export function BrainMap({ regions, height = 232 }: { regions: BrainRegion[]; height?: number }) {
   const width = 340
   if (regions.length === 0) {
-    return <EmptyChart height={height} hint="暂无内核注册" />
+    return <EmptyChart height={height} hint="暂无能力模块注册" />
   }
 
   const cx = width / 2
@@ -422,7 +424,7 @@ export function BrainMap({ regions, height = 232 }: { regions: BrainRegion[]; he
         className="os-chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label={`大脑地图：${regions.length} 个内核`}
+        aria-label={`能力全景：${regions.length} 个能力模块`}
       >
         <defs>
           <radialGradient id="os-brain-core">
@@ -444,12 +446,13 @@ export function BrainMap({ regions, height = 232 }: { regions: BrainRegion[]; he
         <circle cx={cx} cy={cy} r={7} fill="var(--os-accent)" />
 
         {dots.map((dot) => (
-          <g key={dot.id}>
-            <circle cx={dot.x} cy={dot.y} r={3.6} fill={dot.color} />
+          <g key={dot.id} className="os-chart-node">
+            <title>{dot.label}</title>
+            <circle cx={dot.x} cy={dot.y} r={5} fill={dot.color} />
             <circle
               cx={dot.x}
               cy={dot.y}
-              r={7}
+              r={9}
               fill="none"
               stroke={dot.color}
               strokeOpacity={0.3}

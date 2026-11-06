@@ -222,6 +222,17 @@ describe('窄屏与预算', () => {
     expect(mobileTable).toMatch(/display:\s*block/)
   })
 
+  test('1024 宽下图表刻度、图例与页面定位句达到可读字号', () => {
+    const osCss = read('./os.css')
+    // 身份层（旧值 9.5px）在 1024 宽下几乎不可读；正文色 + 11.5px 是下限。
+    expect(ruleBody(osCss, '.os-chart-axis')).toMatch(/font-size:\s*11\.5px/)
+    expect(ruleBody(osCss, '.os-chart-axis')).toMatch(/var\(--os-text-dim\)/)
+    expect(ruleBody(osCss, '.os-legend-item')).toMatch(/font-size:\s*12\.5px/)
+    expect(ruleBody(osCss, '.os-legend-item')).toMatch(/var\(--os-text\)/)
+    expect(ruleBody(osCss, '.os-position {')).toMatch(/font-size:\s*12\.5px/)
+    expect(ruleBody(osCss, '.os-onboard-steps')).toMatch(/font-size:\s*12\.5px/)
+  })
+
   test('同屏动画不超过 3 个，且新增焦点/断行规则不带动画', () => {
     const osCss = read('./os.css')
     // `animation: none` 是 reduced-motion 的关闭项，不算一个动画。

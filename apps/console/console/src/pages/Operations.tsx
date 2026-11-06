@@ -17,12 +17,29 @@ import type {
 import type { AuthConfig } from '../lib/auth'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { eventLabel, humanDuration, outcomeLabel, outcomeTone, safeText } from '../lib/format'
+import { componentLabel, eventLabel, humanDuration, outcomeLabel, outcomeTone, safeText } from '../lib/format'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { DonutChart, LineChart } from '../components/charts'
+import { providerLabel } from '../components/ModelManager'
 import { Card, Dot, Guard } from '../components/ui'
 
 const REFRESH = 30_000
+
+/** 探针状态值 → 中文。未知值不猜，统一显示「未知」。 */
+function healthText(status: string | undefined): string {
+  switch (status) {
+    case 'healthy':
+    case 'ok':
+      return '正常'
+    case 'degraded':
+      return '降级'
+    case 'unhealthy':
+    case 'error':
+      return '异常'
+    default:
+      return '未知'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 数据中心
@@ -146,8 +163,8 @@ export function DataCenter({ query }: { query: string }) {
                 </div>
                 <div className="os-note" style={{ marginTop: 12 }}>
                   <span>
-                    已排除 kernel 噪声 <strong>{formatCompact(data.breakdown.excluded_noise_events ?? 0)}</strong> 条
-                    （state_change，占比通常 &gt;99%，对业务无意义）。
+                    已排除后台状态变更 <strong>{formatCompact(data.breakdown.excluded_noise_events ?? 0)}</strong> 条
+                    （后台状态变更类事件，占比通常 &gt;99%，对业务无意义）。
                   </span>
                 </div>
               </>
@@ -277,13 +294,13 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
                         style={{ background: healthy ? 'var(--os-ok)' : 'var(--os-danger)' }}
                       />
                       <div className="os-row-main">
-                        <div className="os-row-title">{name}</div>
+                        <div className="os-row-title">{componentLabel(name)}</div>
                         {!healthy && detail?.error && (
-                          <div className="os-row-sub">{detail.error}</div>
+                          <div className="os-row-sub">{safeText(detail.error)}</div>
                         )}
                       </div>
                       <span className="os-badge" data-tone={healthy ? 'ok' : 'danger'}>
-                        {detail?.status ?? '未知'}
+                        {healthText(detail?.status)}
                       </span>
                     </div>
                   )
@@ -420,9 +437,9 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
               </dd>
               <dt>注册表条目</dt>
               <dd>{formatCompact(data.totals.registry_entries)}</dd>
-              <dt>当前 provider</dt>
+              <dt>当前模型服务</dt>
               <dd>
-                {provider.provider?.type ?? '—'}
+                {provider.provider?.type ? providerLabel(provider.provider.type) : '—'}
                 {provider.provider && (
                   <>
                     {' '}

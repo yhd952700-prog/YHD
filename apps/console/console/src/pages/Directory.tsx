@@ -353,13 +353,13 @@ export function Roster({ query }: { query: string }) {
         )}
       </Card>
 
-      <Card title="服务面" sub="LLM provider 真实配置状态" span={12}>
+      <Card title="服务面" sub="模型服务商的真实配置状态" span={12}>
         <Guard
           loading={roster.loading}
           error={roster.error}
           data={roster.data?.providers ?? null}
           isEmpty={(data) => data.items.length === 0}
-          emptyTitle="没有已注册的 provider"
+          emptyTitle="还没有注册任何服务商"
           onRetry={roster.reload}
         >
           {(data) => (

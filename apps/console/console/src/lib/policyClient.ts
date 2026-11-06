@@ -90,6 +90,9 @@ export function setToken(token: string): void {
       permissions: [],
       expiresAt: decoded.expiresAt,
       client: decoded.client ?? 'web',
+      parentAccountId: null,
+      path: '',
+      depth: 0,
     },
     false,
   );

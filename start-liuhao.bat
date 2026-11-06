@@ -3,6 +3,8 @@ rem LIUHAO X launcher - double click to start the gateway (single-port).
 rem This file is ASCII-only on purpose (Windows batch mangles non-ASCII paths).
 
 setlocal
+rem Keep the program directory clean: no Python bytecode cache.
+set PYTHONDONTWRITEBYTECODE=1
 cd /d "%~dp0"
 
 rem 1) Locate a Python interpreter: project venv first, then system python.

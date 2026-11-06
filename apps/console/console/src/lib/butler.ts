@@ -33,6 +33,7 @@ export type TaskPhase =
   | 'awaiting'
   | 'succeeded'
   | 'failed'
+  | 'interrupted'
   | 'skipped'
   | 'unknown'
 
@@ -79,6 +80,16 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
   }
   if (value === 'running') {
     return { phase: 'running', label: '进行中', tone: 'accent', raw }
+  }
+  if (value === 'interrupted') {
+    // 进程被杀时仍在执行的任务：结果未知，但可以单独重试。
+    return {
+      phase: 'interrupted',
+      label: '已中断',
+      tone: 'danger',
+      raw,
+      note: '进程中断时该任务仍在执行，结果未知；可单独重试',
+    }
   }
   if (value === 'skipped') {
     return { phase: 'skipped', label: '已跳过', tone: 'muted', raw }
@@ -251,6 +262,10 @@ export function taskStats(tasks: GoalTask[]): TaskStats {
       case 'failed':
         stats.failed += 1
         break
+      case 'interrupted':
+        // 中断 = 未成功且可重试，与失败一起计入"已终结/需处理"。
+        stats.failed += 1
+        break
       case 'skipped':
         stats.skipped += 1
         break
@@ -287,6 +302,8 @@ export function goalStateLabel(state: string): string {
       return '部分成功'
     case 'failed':
       return '失败'
+    case 'interrupted':
+      return '已中断（进程重启）'
     case 'cancelled':
       return '已中止'
     case 'replan_suggested':
@@ -300,7 +317,7 @@ export function goalStateTone(state: string): ButlerTone {
   const value = (state ?? '').toLowerCase()
   if (value === 'completed') return 'ok'
   if (value === 'partial' || value === 'replan_suggested') return 'warn'
-  if (value === 'failed' || value === 'cancelled') return 'danger'
+  if (value === 'failed' || value === 'cancelled' || value === 'interrupted') return 'danger'
   if (value === 'running' || value === 'planning' || value === 'decomposing' || value === 'executing') {
     return 'accent'
   }
@@ -337,9 +354,12 @@ export function approvalTasks(tasks: GoalTask[]): GoalTask[] {
   return tasks.filter((task) => taskPhaseInfo(task).phase === 'awaiting')
 }
 
-/** 失败任务（不含待确认）。 */
+/** 失败/中断任务（不含待确认）。中断任务结果未知，同样允许单独重试。 */
 export function failedTasks(tasks: GoalTask[]): GoalTask[] {
-  return tasks.filter((task) => taskPhaseInfo(task).phase === 'failed')
+  return tasks.filter((task) => {
+    const phase = taskPhaseInfo(task).phase
+    return phase === 'failed' || phase === 'interrupted'
+  })
 }
 
 /**
@@ -353,6 +373,11 @@ export function buildGoalSummary(detail: GoalDetail): string {
   const stats = taskStats(detail.tasks)
   const artifacts = Array.isArray(detail.artifacts) ? detail.artifacts : []
   const parts: string[] = []
+  // The conclusion is the deliverable: lead with the synthesized evaluation
+  // summary, then the factual counts/artifacts as supporting detail. Before
+  // this change the summary was always empty, so users only ever saw "成功 N 项".
+  const evaluation = detail.evaluation?.summary?.trim()
+  if (evaluation) parts.push(`评估：${evaluation}`)
   if (stats.total === 0) {
     parts.push('本次没有分解出任务。')
   } else {
@@ -369,8 +394,6 @@ export function buildGoalSummary(detail: GoalDetail): string {
       ? `向工作区写入 ${artifacts.length} 个文件。`
       : '没有向工作区写入任何文件。',
   )
-  const evaluation = detail.evaluation?.summary?.trim()
-  if (evaluation) parts.push(`评估：${evaluation}`)
   if (detail.error) parts.push(`错误：${detail.error}`)
   return parts.join(' ')
 }

@@ -566,3 +566,75 @@ degraded 原因原样打印、timeout/exited 返回 None 且打印终点、日�
 **分发流需重测**：安装包重新构建后，双击桌面快捷方式（或安装完成页「立即启动」）
 首启应看到控制台逐行进度、就绪后才打开控制台页面；`logs\liuhao.log` 与
 `logs\error.log` 出现在数据目录。托盘自启路径未改，但建议一并确认自启进托盘。
+
+### 8.4 中文/空格路径安装实测 + 程序目录首启零残留（2026-11-06）
+
+以下均为本机 Windows 实测数字，未做推断。
+
+**A. 中文/空格路径（候选包 `bb6b654c`）**
+
+| 项目 | 实测值 |
+|---|---|
+| 安装路径 | `D:\测试 路径\鎏灏`（同时含中文与空格） |
+| 静默安装 | exit 0；7,684 个文件 / 134,200,920 B；24.3–25.3 s |
+| 数据目录 | `%LOCALAPPDATA%\LiuHao\data`（程序目录内无 `data/`、`*.db`、`*.log`、`app.env`） |
+| 首启启动门 | `state=ready`，网关就绪 3.58 s（应用自计 7,344.8 ms） |
+| 控制台首页 | `GET /` 200，1,628 B；浏览器在就绪后约 0.8 s 打开 |
+| 安装树 CLI | `up_to_date`（不是 `version_unknown`） |
+| 日志 | `liuhao.log` 按 UTF-8 写入，无乱码/`UnicodeDecodeError`（6,173 B；中文数据目录 4,723 B） |
+| 卸载 | exit 0；8.2–9.2 s；数据目录 27 个文件保全 |
+
+**B. 程序目录首启残留（本轮修复后重测）**
+
+修复前首启后程序目录多出空 `logs\` 与若干 `__pycache__`（`.pyc`）。根因与改法：
+
+* `scripts/launch_installed.py` 在导入应用模块之前直接置 `sys.dont_write_bytecode = True`
+  （环境变量只对子进程生效，当前解释器必须就地关闭）；
+* 安装包生成的 `LiuHao.bat`（`packaging/stage_payload.py`）与仓库根
+  `start-liuhao.bat` 在 `setlocal` 后设置 `PYTHONDONTWRITEBYTECODE=1`；
+* `src/gateway/__main__.py` 新增 `resolve_log_dir()`：只 `mkdir` 日志配置里
+  `handler.filename` 的真实父目录（安装版=数据目录），不再无条件创建程序目录
+  `logs/`。
+
+重测流程：新构建安装到 `D:\修复 验证\鎏灏`（7,694 个文件 / 134,460,747 B，
+安装 exit 0）→ 记录文件清单 → 经 `LiuHao.bat` 真实首启到 `state=ready`
+（6,691.9 ms）→ 结束进程后再次对比清单：
+
+```
+程序目录新增文件数：0
+新增目录：无（logs 不存在，__pycache__ 0 个）
+```
+
+**C. 控制台打印地址**
+
+同一轮首启控制台原文：
+
+```
+==============================================================
+鎏灏 LiuHao AI OS — 安装版
+  程序目录  D:\修复 验证\鎏灏
+  数据目录  C:\Users\Administrator\AppData\Local\LiuHao\data
+==============================================================
+鎏灏网关启动： http://127.0.0.1:8080  (log_level=info)
+```
+
+打印地址由实际绑定配置派生（`scripts/start_liuhao.py` 的 `_display_host()`、
+`src/gateway/__main__.py` 的 `display_host()`）：通配绑定 `0.0.0.0`/`::` 展示为
+`127.0.0.1`，真实监听地址不变（子进程 `HOST` 仍是用户显式选择的值），
+`已对外暴露` 警告路径保留。防硬编码断言：把 `--host` 换成 `10.9.8.7`，打印必须
+变成 `http://10.9.8.7:<port>`。
+
+**D. 相关测试**
+
+```
+pytest tests/test_start_liuhao.py tests/gateway/test_gateway_log_dir.py \
+       tests/test_installed_launcher_hygiene.py \
+       tests/gateway/test_loopback_defaults_and_host_guard.py \
+       tests/test_gateway_logging_encoding.py -q
+→ 44 passed
+```
+
+新增用例覆盖：默认/显式对外/任意网卡地址三种打印、`HOST` 环境变量与打印值分离、
+`resolve_log_dir` 取配置父目录且只建该目录、入口源码不得出现 `LOG_DIR.mkdir(`、
+导入 `launch_installed` 即关闭字节码、安装包 `LiuHao.bat` 含
+`PYTHONDONTWRITEBYTECODE=1` 且仍为 ASCII。

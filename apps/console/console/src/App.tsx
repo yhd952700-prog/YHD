@@ -67,6 +67,19 @@ import { DataCenter, SystemStatus } from './pages/Operations'
 import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
 import { Workbench } from './pages/Workbench'
+import { Backup } from './pages/Backup'
+import { Members } from './pages/Members'
+import { Memory } from './pages/Memory'
+import { MyEmployees } from './pages/MyEmployees'
+import { MyKeys } from './pages/MyKeys'
+import { PermissionMatrix } from './pages/PermissionMatrix'
+import { Recovery } from './pages/Recovery'
+import { RoleTemplates } from './pages/RoleTemplates'
+import { ReadOnlyBanner } from './components/AccountChrome'
+import { buildProfile, deriveCaps } from './lib/accountCaps'
+import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
+import type { AccountNode, AccountsPayload } from './lib/accounts'
+import { visibleNavKeys } from './lib/nav'
 
 /** 未认证时的诚实初值 —— 绝不假装"安全运行"。 */
 const EMPTY_STATE: ApprovalUiState = {
@@ -82,17 +95,18 @@ const EMPTY_STATE: ApprovalUiState = {
 /** 页面标题。与 `lib/nav.ts` 的导航项一一对应，key 是唯一的关联方式。 */
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   overview: { title: '总览', sub: '真实运行态 —— 每一项都可追溯到后端数据源' },
-  butler: { title: '鎏灏管家', sub: '一句话吩咐 → 自动拆解 → 员工执行 → 人话汇总' },
-  employees: { title: '我 AI 员工', sub: '14 内核 + 14 能力层 + provider 服务面' },
+  butler: { title: '鎏灏管家', sub: '你下目标，它拆解分派，给结论' },
+  employees: { title: '能力注册表', sub: '14 个能力模块与 14 个执行层；只读' },
+  'my-employees': { title: '我的员工', sub: '创建、调整、停用，或直接把一件事派给它' },
   business: { title: '业务中心', sub: '注册表中已登记的业务能力' },
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
-  workbench: { title: '工作台', sub: 'JARVIS 流式对话与工具调用' },
-  data: { title: '数据中心', sub: '审计存储的真实内容（已排除内核噪声）' },
+  workbench: { title: '工作台', sub: '你自己看任务、看文件、看产出，也可以直接对话' },
+  data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
   approval: { title: '审批中心', sub: '内核层拦截的人工授权 —— 需人类令牌' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
   files: { title: '工作区文件', sub: 'AI 员工写出的真实产物（只读浏览 / 读取）' },
   goals: { title: '目标与任务', sub: 'AI 员工真实执行过的目标与任务分解（只读）' },
-  projects: { title: '项目', sub: '人类主权面：把 AI 员工的目标分类到真实项目之下' },
+  projects: { title: '项目', sub: '把 AI 员工的目标分类到真实项目之下' },
   apps: { title: '应用', sub: '真实插件与应用 —— 由你激活' },
   events: { title: '事件流', sub: '真实系统事件流 —— 内核总线实况' },
   trust: { title: '信任', sub: '信任内核真实状态（只读）—— 撤销标记 / 信任分 / 自信任链' },
@@ -104,6 +118,15 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
     sub: '真实配置预检结果 —— 只读，不含任何配置值',
   },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
+  // ── 账号面（§9.8）──────────────────────────────────────────────────
+  members: { title: '成员与权限管理', sub: '成员、状态与 Key 授权；写操作都由服务端记录审计' },
+  matrix: { title: '权限矩阵', sub: '按成员调整可执行范围' },
+  templates: { title: '角色模板', sub: '预设模板只读；成员范围以权限矩阵为准' },
+  backup: { title: '备份与迁移', sub: '导出加密包 / 从备份迁移到本机' },
+  recovery: { title: '恢复码', sub: '忘记密码时重置；轮换后旧码立即失效' },
+  'my-members': { title: '我的账号', sub: '你创建的账号及状态' },
+  'my-keys': { title: '我的 Key', sub: 'Key 归属与用量' },
+  memory: { title: '记忆', sub: '只读检索与导出' },
 }
 
 /** 合法页面 key。用于校验深链参数，避免 `?p=<乱码>` 把界面带到一个空壳。 */
@@ -136,6 +159,41 @@ function App() {
   const [session, setSession] = useState<Session | null>(() => getSession())
   const [active, setActive] = useState<string>(() => readInitialPage())
   const [query, setQuery] = useState('')
+
+  /**
+   * 只读查看：只禁用写操作，**不切换数据源**。
+   *
+   * 服务端没有"生效视角"端点（IA C1）；横幅会明确写出"当前仍是你自己的数据"，
+   * 这样不会被误读成已经切到对方账号。
+   */
+  const [viewAs, setViewAs] = useState<string | null>(null)
+  const readOnly = viewAs !== null
+
+  // 账号位置来自 `/auth/me` 的 parent/path/depth；这里只用于裁剪入口。
+  const rootPosition =
+    session !== null && session.parentAccountId === null && session.depth === 0
+  const accounts = useAccountData<AccountsPayload>(
+    () =>
+      session
+        ? loadAccounts({ principal: session.principal, isRoot: rootPosition })
+        : Promise.resolve({ data: { members: [], count: 0 }, source: 'live' as const }),
+    session?.principal ?? null,
+  )
+  // `/v1/accounts` 只返回直接成员；根账号的"可管理 N 位成员"必须按整棵树计。
+  const tree = useAccountData<{ tree: AccountNode }>(
+    () => (session && rootPosition ? loadTree({ principal: session.principal, isRoot: true }) : null),
+    session?.principal ?? null,
+  )
+  const subtreeMemberCount =
+    tree.data?.tree !== undefined ? countTreeMembers(tree.data.tree) - 1 : undefined
+  const profile = useMemo(
+    () =>
+      session
+        ? buildProfile(session, accounts.data, accounts.source, accounts.error, subtreeMemberCount)
+        : null,
+    [session, accounts.data, accounts.source, accounts.error, subtreeMemberCount],
+  )
+  const caps = useMemo(() => deriveCaps(profile), [profile])
 
   // Policy 审批真实状态 —— 由 App 单一持有，因为侧栏与审批面板显示的是同一份真相。
   const [acl, setAcl] = useState<ApprovalUiState>(EMPTY_STATE)
@@ -226,6 +284,9 @@ function App() {
               displayName: info.display_name ?? prev.displayName,
               scope: info.scope ?? prev.scope,
               expiresAt: info.expires_at ?? prev.expiresAt,
+              parentAccountId: info.parent_account_id ?? prev.parentAccountId,
+              path: info.path ?? prev.path,
+              depth: Number.isFinite(Number(info.depth)) ? Number(info.depth) : prev.depth,
             }
           : prev,
       )
@@ -248,9 +309,21 @@ function App() {
     }
   }, [])
 
+  /**
+   * 深链白名单：`?p=` 只接受当前身份可见的页面。
+   *
+   * 等账号数据落定后再校验，避免"成员权限还没回来就把 my-members 弹回总览"。
+   * 不可见页一律回落总览，而不是渲染一个只有标题的空壳。
+   */
+  useEffect(() => {
+    if (!profile?.loaded) return
+    if (!visibleNavKeys(caps).has(active)) navigate('overview')
+  }, [profile?.loaded, caps, active, navigate])
+
   const doLogout = useCallback(async () => {
     await performLogout()
     setSession(null)
+    setViewAs(null)
     setQuery('')
     navigate('overview')
   }, [navigate])
@@ -278,6 +351,9 @@ function App() {
         permissions: [],
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
+        parentAccountId: null,
+        path: '',
+        depth: 0,
       },
       false,
     )
@@ -452,14 +528,14 @@ function App() {
         items.push({
           id: 'provider-none',
           tone: 'warn',
-          title: '没有已注册的 LLM provider',
+          title: '还没有可用的模型服务商',
           detail: '对话与知识检索将无法工作。',
         })
       } else if (unconfigured.length === providers.registered_count) {
         items.push({
           id: 'provider-all-unconfigured',
           tone: 'warn',
-          title: '所有 provider 都缺少密钥',
+          title: '所有服务商都缺少密钥',
           detail: unconfigured
             .map((item) => `${item.label}（${item.required_env.join(' / ') || '无需密钥'}）`)
             .join('；'),
@@ -469,7 +545,7 @@ function App() {
       items.push({
         id: 'provider-error',
         tone: 'warn',
-        title: '无法读取 provider 配置',
+        title: '无法读取模型服务配置',
         detail: roster.error,
       })
     }
@@ -480,15 +556,17 @@ function App() {
       items.push({
         id: 'provider-health-unknown',
         tone: 'warn',
-        title: '无法读取模型状态',
+        title: '暂时无法读取模型服务状态',
         detail: provider.detail,
       })
     } else if (!provider.isReal) {
       items.push({
         id: 'provider-not-real',
         tone: provider.posture.tone === 'danger' ? 'danger' : 'warn',
-        title: provider.isMock ? '当前生效的是 mock provider（模拟回复）' : provider.label,
-        detail: `${provider.detail}（生效 provider：${provider.provider.type ?? '—'}）`,
+        title: provider.isMock ? '当前尚未接入真实模型' : provider.label,
+        detail: provider.isMock
+          ? provider.detail
+          : `${provider.detail}（服务商：${provider.provider.type ?? '—'}）`,
       })
     }
 
@@ -507,17 +585,22 @@ function App() {
   // 渲染
   // ---------------------------------------------------------------------
 
-  if (!session) {
+  if (!session || !profile) {
     return <Login mode={device.mode} onSuccess={setSession} />
   }
 
-  const meta = PAGE_META[active] ?? PAGE_META.overview
+  const meta =
+    active === 'my-keys' && caps.isRoot
+      ? { title: '全部 Key', sub: '每人一条授权记录；标注可代用的成员其 Key 可在模型路由中被你使用' }
+      : (PAGE_META[active] ?? PAGE_META.overview)
 
   return (
     <Shell
       mode={device.mode}
       theme={device.theme}
       session={session}
+      profile={profile}
+      caps={caps}
       active={active}
       onNavigate={navigate}
       onToggleTheme={() => device.setTheme(device.theme === 'dark' ? 'light' : 'dark')}
@@ -526,6 +609,8 @@ function App() {
       onQueryChange={setQuery}
       notifications={notifications}
     >
+      {viewAs && <ReadOnlyBanner principal={viewAs} onExit={() => setViewAs(null)} />}
+
       <div className="os-page-head">
         <h1 className="os-page-title">{meta.title}</h1>
         <p className="os-page-sub">{meta.sub}</p>
@@ -533,15 +618,24 @@ function App() {
 
       {active === 'overview' && <Overview query={query} provider={provider} />}
       {active === 'butler' && (
-        <Butler query={query} onOpenApproval={() => navigate('approval')} />
+        <Butler
+          query={query}
+          onOpenApproval={() => navigate('approval')}
+          canApproveQueue={caps.canApproveQueue}
+        />
       )}
       {active === 'employees' && <Roster query={query} />}
+      {active === 'my-employees' && <MyEmployees query={query} />}
       {active === 'business' && <BusinessCenter query={query} />}
       {active === 'knowledge' && (
         <Knowledge query={query} onOpenSettings={() => navigate('settings')} />
       )}
       {active === 'workbench' && (
-        <Workbench provider={provider} onConfigureModel={() => navigate('settings')} />
+        <Workbench
+          provider={provider}
+          onNavigate={(key) => navigate(key)}
+          onConfigureModel={() => navigate('settings')}
+        />
       )}
       {active === 'data' && <DataCenter query={query} />}
       {active === 'approval' && (
@@ -551,7 +645,7 @@ function App() {
           </div>
         </div>
       )}
-      {active === 'audit' && <Audit query={query} />}
+      {active === 'audit' && <Audit query={query} profile={profile} />}
       {active === 'files' && <Files query={query} />}
       {active === 'goals' && <Goals query={query} />}
       {active === 'projects' && <Projects query={query} />}
@@ -559,7 +653,33 @@ function App() {
       {active === 'events' && <Events query={query} />}
       {active === 'trust' && <Trust query={query} />}
       {active === 'network' && <Network query={query} />}
-      {active === 'identity' && <Identity query={query} />}
+      {active === 'identity' && <Identity query={query} profile={profile} />}
+      {active === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
+      {active === 'my-keys' && <MyKeys profile={profile} caps={caps} readOnly={readOnly} />}
+      {active === 'members' && (
+        <Members
+          profile={profile}
+          caps={caps}
+          variant="root"
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+        />
+      )}
+      {active === 'my-members' && (
+        <Members
+          profile={profile}
+          caps={caps}
+          variant="member"
+          readOnly={readOnly}
+          onViewAs={setViewAs}
+        />
+      )}
+      {active === 'matrix' && (
+        <PermissionMatrix profile={profile} caps={caps} readOnly={readOnly} />
+      )}
+      {active === 'templates' && <RoleTemplates caps={caps} />}
+      {active === 'backup' && <Backup profile={profile} caps={caps} readOnly={readOnly} />}
+      {active === 'recovery' && <Recovery caps={caps} readOnly={readOnly} />}
       {active === 'status' && <SystemStatus provider={provider} />}
       {active === 'preflight' && <Preflight />}
       {active === 'settings' && (

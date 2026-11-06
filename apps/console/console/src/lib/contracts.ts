@@ -278,15 +278,48 @@ export interface EmployeeStats {
   total_tasks_submitted: number
   total_tasks_completed: number
   total_tasks_failed: number
+  /** 后端 `_summarize_employee` 还会给出目标级计数；缺失时按 0 读。 */
+  total_goals_submitted?: number
+  total_goals_completed?: number
+  total_goals_failed?: number
   task_queue_length: number
 }
 
-/** 按名员工名册中的单条摘要（与后端 GET /v1/employees 的 employees[] 对应）。 */
+/** 按名员工名册中的单条摘要（与后端 GET /v1/employees 的 employees[] 对应）。
+ *
+ * `role_description` / `default_capabilities` / `employment_status` / `read_only`
+ * 都来自 `_summarize_employee` 的真实字段。`read_only=true` 表示登录者能看到
+ * 但**不能改**（例如设备负责人查看其他账号名下的员工）——界面必须据此隐藏
+ * 编辑与删除入口，而不是让按钮点下去才吃 404。
+ */
 export interface EmployeeSummary {
   name: string
   agent_count: number
   agents: AgentInfo[]
+  role_description: string
+  /** 已注册执行器的 capability id 列表（创建时只能从该清单选）。 */
+  default_capabilities: string[]
+  owner_account_id?: string
+  /** `active`（在职）/ `disabled`（停用）。停用员工不能接受派活。 */
+  employment_status: 'active' | 'disabled' | string
+  /** 当前登录者只能看、不能改。 */
+  read_only: boolean
   stats: EmployeeStats
+}
+
+/** GET /v1/employees/capabilities 的响应（只能从已注册且 ACTIVE 的能力里选）。 */
+export interface EmployeeCapability {
+  id: string
+  name: string
+  tool_id: string
+  description?: string
+  risk?: string
+}
+
+export interface EmployeeCapabilitiesPayload {
+  capabilities: EmployeeCapability[]
+  count: number
+  ids?: string[]
 }
 
 export interface EmployeesPayload {

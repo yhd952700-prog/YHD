@@ -29,7 +29,39 @@ import {
   type GoalSummary,
   type GoalTask,
 } from '../lib/operator'
+import { capabilityLabel } from '../lib/format'
 import { Card, Empty, Guard } from '../components/ui'
+
+/** 任务状态 → 人话（成 / 败 / 进行中）。 */
+function taskStatusLabel(status: string): string {
+  const value = (status || '').toLowerCase()
+  if (value === 'completed') return '成功'
+  if (value === 'failed') return '失败'
+  if (value === 'running') return '执行中'
+  if (value === 'pending') return '等待'
+  if (value === 'skipped') return '跳过'
+  if (value === 'cancelled' || value === 'interrupted') return '中断'
+  return status || '—'
+}
+
+/** 真实耗时（毫秒）→ 人话；缺失显示「—」，不估算。 */
+function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '—'
+  const value = Number(ms)
+  if (!Number.isFinite(value) || value < 0) return '—'
+  if (value < 1000) return `${Math.round(value)} 毫秒`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  return `${Math.floor(value / 60_000)} 分 ${Math.round((value % 60_000) / 1000)} 秒`
+}
+
+/** goal 级"谁做的"：单人指派优先，其次任务里真实出现过的员工集合。 */
+function goalEmployees(goal: GoalSummary | GoalDetail): string {
+  if (goal.assigned_employee) return goal.assigned_employee
+  if (goal.assigned_employees && goal.assigned_employees.length > 0) {
+    return goal.assigned_employees.join('、')
+  }
+  return '—'
+}
 
 /** goal 状态 → 圆点色调后缀（与 Audit/Files 共用 `os-tone-*` 约定）。 */
 function stateTone(state: string): string {
@@ -156,7 +188,8 @@ export function Goals({ query }: { query: string }) {
     const list = goals.data?.goals ?? []
     if (!need) return list
     return list.filter((goal) =>
-      [goal.natural_language, goal.state, goal.scope]
+      [goal.natural_language, goal.state, goal.scope, goal.assigned_employee ?? '',
+        ...(goal.assigned_employees ?? [])]
         .filter((value): value is string => typeof value === 'string')
         .some((value) => value.toLowerCase().includes(need)),
     )
@@ -207,6 +240,7 @@ export function Goals({ query }: { query: string }) {
                     <tr>
                       <th>目标</th>
                       <th>状态</th>
+                      <th>员工</th>
                       <th>进度</th>
                       <th>范围</th>
                       <th>创建时间</th>
@@ -225,6 +259,9 @@ export function Goals({ query }: { query: string }) {
                         <td>
                           <span className={`os-dot os-tone-${stateTone(goal.state)}`} />
                           {goal.state || '—'}
+                        </td>
+                        <td>
+                          <Truncated text={goalEmployees(goal)} max={160} />
                         </td>
                         <td>
                           {goal.completed_tasks}/{goal.task_count}
@@ -279,6 +316,28 @@ export function Goals({ query }: { query: string }) {
                     <span className="os-kv-key">范围</span>
                     <span className="os-kv-value">{data.scope || '—'}</span>
                   </div>
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">谁做的</span>
+                    <span className="os-kv-value">{goalEmployees(data)}</span>
+                  </div>
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">成功 / 失败</span>
+                    <span className="os-kv-value">
+                      成功{' '}
+                      {
+                        data.tasks.filter(
+                          (task) => task.success === true || task.status === 'completed',
+                        ).length
+                      }{' '}
+                      · 失败{' '}
+                      {
+                        data.tasks.filter(
+                          (task) => task.success === false || task.status === 'failed',
+                        ).length
+                      }{' '}
+                      · 共 {data.tasks.length} 项
+                    </span>
+                  </div>
                   {/* 归属项目：我的新创建入口能把目标挂到项目下，这里必须让归属**可见**，
                       否则"归属了但看不到"= 又一次 surface 与真相不一致。
                       undefined（历史目标）与 null（独立目标）刻意分开表述，不糊成一个"—"。 */}
@@ -296,6 +355,32 @@ export function Goals({ query }: { query: string }) {
                     <div className="os-kv-row">
                       <span className="os-kv-key">评估</span>
                       <span className="os-kv-value">{data.evaluation.summary}</span>
+                    </div>
+                  )}
+
+                  {/* 员工汇总：每人做了几项、成几项、败几项、合计多久。
+                      这是后端按真实任务归属聚合出来的数字；没有归属就如实说没有。 */}
+                  {data.employees && data.employees.length > 0 ? (
+                    <div className="os-kv-row os-kv-col">
+                      <span className="os-kv-key">员工汇总</span>
+                      <span className="os-kv-value">
+                        <ul className="os-list">
+                          {data.employees.map((row) => (
+                            <li key={row.employee ?? 'unattributed'}>
+                              {row.employee ?? '未归属'} · 做了 {row.tasks} 项 · 成功{' '}
+                              {row.completed} · 失败 {row.failed} · 合计耗时{' '}
+                              {formatDuration(row.total_duration_ms)}
+                            </li>
+                          ))}
+                        </ul>
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="os-kv-row">
+                      <span className="os-kv-key">员工汇总</span>
+                      <span className="os-kv-value os-hint">
+                        此目标没有可归属到员工的已完成任务。
+                      </span>
                     </div>
                   )}
 
@@ -343,9 +428,10 @@ export function Goals({ query }: { query: string }) {
                     <thead>
                       <tr>
                         <th>任务名</th>
-                        <th>状态</th>
+                        <th>成 / 败</th>
+                        <th>谁做的</th>
+                        <th>耗时</th>
                         <th>能力</th>
-                        <th>代理</th>
                         <th>结果 / 错误</th>
                         <th>起止时间</th>
                       </tr>
@@ -358,10 +444,11 @@ export function Goals({ query }: { query: string }) {
                           </td>
                           <td>
                             <span className={`os-dot os-tone-${taskStatusTone(task.status)}`} />
-                            {task.status || '—'}
+                            {taskStatusLabel(task.status)}
                           </td>
-                          <td>{task.capability_id || '—'}</td>
-                          <td>{task.assigned_agent || '—'}</td>
+                          <td>{task.assigned_employee || task.assigned_agent || '—'}</td>
+                          <td>{formatDuration(task.duration_ms)}</td>
+                          <td>{task.capability_id ? capabilityLabel(task.capability_id) : '—'}</td>
                           <td>
                             {task.error ? (
                               <span className="os-error">{task.error}</span>

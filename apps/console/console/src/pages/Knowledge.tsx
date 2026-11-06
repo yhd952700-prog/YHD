@@ -61,8 +61,22 @@ import type {
   KnowledgeStatus,
 } from '../lib/knowledge'
 import { formatBytes } from '../lib/knowledge'
-import { relativeTime } from '../lib/format'
+import { relativeTime, safeText } from '../lib/format'
 import { Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import { providerLabel } from '../components/ModelManager'
+
+/**
+ * 后端会透传实现层原因（`没有可用的 embedding provider`、环境变量名、`mock` 等）。
+ * 这些是工程语言，用户只需要知道「缺什么、去哪里配」。
+ */
+function friendlyReason(reason: string | undefined | null): string {
+  const text = safeText(reason).trim()
+  if (!text) return '尚未配置向量模型，因此暂时无法导入或检索。'
+  if (/provider|embedding|mock|LIUHAO_|env|api[_ ]?key/i.test(text)) {
+    return '尚未配置向量模型，因此暂时无法导入或检索。到「系统设置」选择向量模型并填写密钥后再试。'
+  }
+  return text
+}
 
 type UploadProgress = { loaded: number; total: number }
 type ActionError = { title: string; message: string }
@@ -562,7 +576,7 @@ export function Knowledge({
       } catch (err) {
         if (err instanceof ApiError && err.status === 403) {
           setDeleteError(
-            '该操作需要管理员权限（admin 角色或 L0 人类主权）。当前账号不是管理员，无法删除。',
+            '该操作需要更高的权限。当前账号没有该权限，无法删除。',
           )
         } else if (err instanceof ApiError && err.status === 404) {
           setDeleteError(`${err.message}（可能已被其他人删除）`)
@@ -625,7 +639,7 @@ export function Knowledge({
 
   return (
     <div className="os-grid">
-      <Card title="知识库状态" sub="GET /v1/knowledge/status · 每 30 秒刷新" span={4}>
+      <Card title="知识库状态" sub="来自后端的真实状态，每 30 秒自动刷新" span={4}>
         <Guard
           loading={status.loading}
           error={status.error}
@@ -645,18 +659,18 @@ export function Knowledge({
                 <dd>{normalizedPage ? normalizedPage.total : '—'}</dd>
                 <dt>向量总数</dt>
                 <dd>{data.vectors}</dd>
-                <dt>Embedding</dt>
+                <dt>向量模型</dt>
                 <dd>
-                  {data.provider ?? '—'}
+                  {data.provider ? providerLabel(data.provider) : '—'}
                   {data.model ? ` · ${data.model}` : ''}
                 </dd>
                 <dt>不可用原因</dt>
-                <dd className="os-model-error">{data.reason ?? '—'}</dd>
+                <dd className="os-model-error">{friendlyReason(data.reason)}</dd>
               </dl>
               {!data.enabled && (
                 <div className="os-alert" style={{ marginTop: 12 }}>
                   <span>
-                    {data.message}
+                    {friendlyReason(data.reason)}
                     <br />
                     未启用时不会有任何检索结果 —— 这里不会用模拟向量凑数。
                     <button className="os-link" onClick={onOpenSettings}>
@@ -692,7 +706,7 @@ export function Knowledge({
       >
         {disabled && (
           <div className="os-alert">
-            <span>知识库未启用，导入与检索都会失败。先配置 embedding provider 再来。</span>
+            <span>知识库未启用，导入与检索都会失败。先到「系统设置」配置向量模型。</span>
           </div>
         )}
 
@@ -1195,7 +1209,7 @@ export function Knowledge({
 
       <Card title="检索测试" sub="输入一句话，看命中哪些片段、分数多少" span={12}>
         {disabled ? (
-          <Empty title="知识库未启用，无法检索" hint="先配置 embedding provider，再回到这里测试。" />
+          <Empty title="知识库未启用，无法检索" hint="先到「系统设置」配置向量模型，再回到这里测试。" />
         ) : (
           <>
             <div className="os-kb-search">
@@ -1257,7 +1271,7 @@ export function Knowledge({
                 {searchResult.hits.length === 0 ? (
                   <Empty
                     title="没有命中任何片段"
-                    hint="可能原因：库里还没有相关文档；查询与正文用词差异过大；或本身没有配置真实 embedding。"
+                    hint="可能原因：库里还没有相关文档；查询与正文用词差异过大；或本身没有配置真实向量模型。"
                   />
                 ) : (
                   <div className="os-kb-chunks">
@@ -1311,7 +1325,7 @@ export function Knowledge({
             进度与结果无法再查；已经成功入库的文档本身在 SQLite 中，不受影响。
           </li>
           <li>
-            <strong>删除权限与粒度</strong>：删除需要管理员权限（admin 角色或 L0 人类主权）；
+            <strong>删除权限与粒度</strong>：删除需要更高的权限；
             只能整篇删除，没有批量删除或单分块删除，也没有改名 / 编辑接口（同一 doc_id
             重新导入会整体替换）。
           </li>

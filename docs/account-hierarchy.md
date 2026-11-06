@@ -18,8 +18,8 @@
 补充定稿（登录与界面）：
 
 5. **同一个登录页、同一个控制台，按身份裁权限；不做两套入口、不做两套客户端。**
-6. **首次安装：第一个注册者自动成为主账号（根）；此后关闭自助注册根账号，子账号只能由上级创建。**
-7. **成员开通：创建者生成一次性邀请码；首次登录强制改密，改密后才进控制台。**
+6. **首次安装：第一个注册者自动成为主账号（根）；根一旦存在，永久关闭"注册根"入口（不允许再注册成根）。成员改为自助注册（本条第 22 项，覆盖早期"子账号只能由上级创建"的表述）：注册即以 `depth = 1` 挂到本机根，无需邀请码、无需批准。**
+7. **成员开通（两条并存，权限等价）**：①**自助注册**（用户名 + 密码即建号，立即可登录）；②**主账号创建成员 + 激活码**（一次性 + 限时 + 强制改密后进控制台）。
 8. **顶部固定"身份条"**：根账号显示"主账号 · 可管理 N 位成员"；**非根账号显示中性身份条，不含任何层级字样**（本条第 11 项修订，旧版"子账号 · 上级 XXX"作废）。
 9. **"主账号使用子账号的 Key"是模型路由，不是身份切换**；审计记在主账号名下并标注所用 Key 的归属账号。
 10. **"以成员视角只读查看"只读、带明显横幅、写审计，禁止静默以他人身份执行写操作。**
@@ -40,6 +40,17 @@
 19. **层级上限默认 3 层**（根 → 成员 → 该成员的下级），可配置（`max_depth`）；超过上限给**可读拒绝理由**，且文案不得暴露结构（§4.4）。
 20. **文案中性化**：子账号界面的 Key 授权开关写"**允许团队共享我的 Key**"，不得出现"上级/子账号/层级/越级"。
 21. **备份隐私边界（覆盖上一版"默认不含成员记忆"）**：**主账号导出完整备份 = 整棵树全部数据**（所有成员的会话、记忆、文件、任务、Key 密文）；换机导入后成员身份与数据完整恢复。导出前**二次确认**，确认框必须列明"包含 N 位成员的个人记忆、N 个文件、总体积"；导出包用**口令加密**（口令不落盘、不写日志），每次全量导出写审计；**子账号导出仍只含自己的个人数据**；导入同样要口令，并防重放、限尝试次数（见 §9.12）。
+
+补充定稿（四，2026-11-06）：
+
+22. **成员自助注册（覆盖第 6 项中"子账号只能由上级创建"的旧口径）**：
+    - **两条路径并存**：①登录页"创建账户"自助注册（用户名 + 密码即建号，立即 `active`）；②主账号在「成员管理」创建成员并发放激活码（保留，见 §9.4）。
+    - **注册开关**：`allow_self_registration` **持久化、默认开启、仅根账号可改**；关闭后注册接口一律中性拒绝（`ACCOUNT_SELF_REGISTER_DISABLED`，HTTP 403，文案"当前无法创建账户。"，不提"管理员/开关/层级"）。
+    - **硬边界**：自助注册**不能自选上级**（请求体中的 `parent_account_id` / `role_kind` / `depth` 一律**忽略且不参与建号**，不接受为上级或角色）、**不能注册成根**（根已存在；`role=root` 不允许）、**默认不能建下级**；新账号固定 `depth = 1`，层级与深度规则（第 16、19 项）不变。
+    - **默认最小权限（模板"协作者"）**：不可使用他人/根账号的 Key；他人模型不可见；他人记忆、文件、会话、审计不可见；不可建下级（§3.12）。
+    - **主账号可随时停用/删除**自助注册账号；停用后登录与请求均中性拒绝，且旧令牌**下一次请求即失效**（第 18 项）。
+    - **登录页文案**：只出现"**登录 / 创建账户**"；不得出现"邀请码、加入、成员、子账号、上级、层级"（§9.9）。
+    - **口径优先级**：第 22 项覆盖第 6 项的旧表述；与代码现状冲突时（后端 `POST /v1/accounts/self-register` 与 `GET/PATCH /v1/accounts/self-registration` 已实现，`/v1/auth/config` 尚未暴露开关、登录页仍把"创建账户"绑在"无根"上，见 §12）**以本文为准**。
 
 ---
 
@@ -65,7 +76,8 @@
 | `depth` | 根 = 0，子 = 1，孙 = 2，以此类推 |
 | `status` | `pending_activation` / `active` / `suspended` / `deleting` / `deleted` |
 | `role_kind` | `root` / `member`（孙及更深统一为 `member`，不新增第四种角色） |
-| `credential_state` | `none` / `activation_pending` / `password_set` |
+| `credential_state` | `none` / `activation_pending` / `password_set`（自助注册直接为 `password_set`） |
+| `origin` | `bootstrap_root` / `self_signup` / `created_by_admin`（仅审计与迁移用，**不展示给非根账号**） |
 
 不变量：
 
@@ -74,6 +86,7 @@
 - **单机单树**：一台机器只允许一个根；禁止"森林"（多根）。检测到多个根即 fail-closed：拒绝登录并记 `ACCOUNT_MULTI_ROOT_DETECTED`，不做"自动挑一个"的猜测。
 - **深度上限**：**默认 3 层**（根 depth 0 → 成员 depth 1 → 成员的下级 depth 2），由 `max_depth` 配置；默认拒绝 depth 3 及更深。超过返回 `ACCOUNT_DEPTH_EXCEEDED`（默认配置下即"第 3 层成员再建下级"被拒）。
 - **子树包含判定**：`subtree_contains(ancestor_path, target_path) := target_path.startswith(ancestor_path + "/") or target_path == ancestor_path`。**这是唯一判定式**，不靠 `scope`、不靠名字前缀、不靠请求体。
+- **自助注册落点**：`origin = self_signup`（代码字段 `source = self_service`）的账号一律 `parent_account_id = <本机根>`、`depth = 1`、`status = active`、`credential_state = password_set`；请求体中的 `parent_account_id`/`role_kind`/`depth` **一律忽略且不生效**（现状 `SelfRegisterRequest.model_config = {"extra": "ignore"}`，不得把它们当作上级/角色/深度来源）。
 
 ### 1.3 四档关系（可见性矩阵的列）
 
@@ -106,12 +119,12 @@
 
 | 能力 | 主账号（depth 0） | 子账号（depth 1） | 孙账号（depth >= 2） |
 |---|---|---|---|
-| 创建下级账号 | 可（创建 depth 1 成员；更深层由各自直接上级创建） | 仅可创建自己的直接下级 | 不可（默认上限） |
+| 创建下级账号 | 可（创建 depth 1 成员；更深层由各自直接上级创建） | 仅可创建自己的直接下级（需模板含成员管理；**自助注册默认不可**） | 不可（默认上限） |
 | 停用 / 恢复下级 | 可（整棵子树） | 仅可直接下级 | 不可 |
 | 删除下级账号 | 可（**仅叶子**；非叶子须先移交/级联停用） | 仅可直接下级且为叶子 | 不可 |
 | 重置下级密码 | 可（整棵子树） | 仅可直接下级 | 不可 |
 | 修改下级权限/角色 | 可（整棵子树） | 仅可直接下级，且**不得超过自己已有的能力** | 不可 |
-| 查看下级账号列表 | 可（整棵子树） | 仅可直接下级 | 不可 |
+| 查看下级账号列表 | 可（整棵子树） | 仅可直接下级（**自助注册默认无下级，只看自己**） | 不可 |
 | 使用下级模型 Key | 可（整棵子树，按 §5） | **不可**（只能用自己个人的 Key） | **不可** |
 | 新建 / 吊销自己的 Key | 可 | 可（仅自己） | 可（仅自己） |
 | 读自己记忆 | 可读写 | 可读写 | 可读写 |
@@ -135,6 +148,7 @@
 - **向下不放大**：任何账号授予下级的权限，必须是它自己权限的子集（`grant ⊆ actor.effective_permissions`），否则 `ACCOUNT_PRIVILEGE_ESCALATION`。
 - **向上不继承**：下级永远不自动获得上级的任何权限；只有显式授予才生效，且授予可撤销、可审计。
 - **模板可收窄**：上表中子账号的"管理类"能力（创建/停用/删除/重置/查看下级、授予技能）以角色模板已包含该能力为前提（§7.5）；"协作者/只读访客"模板不含成员管理，此时对应行为一律不可用，但**不影响**其日常能力。
+- **自助注册默认**：固定"协作者"模板——只拥有日常能力与自有 Key；**不可建下级、不可见任何他人资源**（§3.12）；若需管理下级，必须由主账号显式修改模板/权限（写审计 `ACCOUNT_PERMISSION_CHANGED`，`ACCOUNT_SELF_REGISTERED` 只记建号来源）。
 
 ### 2.2 与现有 RBAC / ABAC 的衔接
 
@@ -188,10 +202,11 @@
 | 模块 | 现状位置 | 需要动的点 |
 |---|---|---|
 | `src/gateway/policy.py` | `require_human_principal:158`、`require_admin_principal:174`、`_is_admin_claim:148` | 新增 `AccountContext` 依赖与"相对目标的管理员"判定；保留原依赖以兼容既有路由 |
-| `src/gateway/auth.py` | `_effective_scope:467`、`authenticate:408`、`/auth/login:519`、`/auth/me:528`、`/auth/config:588` | scope 按 depth 派生；登录返回值增加 `parent_account_id/path/depth`；`/auth/config` 增加根账号存在性与注册开关 |
+| `src/gateway/auth.py` | `_effective_scope:467`、`authenticate:408`、`/auth/login:519`、`/auth/me:528`、`/auth/config:728` | scope 按 depth 派生；登录返回值增加 `parent_account_id/path/depth`（现状 `_account_position:579` 已返回）；`/auth/config` 需拆成 `bootstrap_required`（无根）与 `self_registration_enabled`（根存在时的持久化开关，默认 true）——**后者尚未返回** |
+| `src/gateway/accounts.py` | `register_root:134`、`self_register:200`、`get/set_self_registration:229/239` | **已实现**成员自助注册与开关（`GET/PATCH /v1/accounts/self-registration`，仅根可改）；保留激活码路径；需补 `/register` 对"已有根"语义的说明，避免与 `/self-register` 混淆 |
 | `src/kernels/identity/__init__.py` | `IdentityScope:297`、`AgentIdentity:317`、`is_human_identity:274`、`_persist_human_identity:842` | 身份增加 `parent_account_id/path/depth/status` 持久化字段（现库无此列） |
 | `src/gateway/account_context.py` | 已存在（未跟踪）：`AccountContext:33`、`NEUTRAL_DENIED:29` | 接到路由；补 `require_account_admin_of(target)`；`standalone` 兼容路径只允许"只有自己"，不得成为提权通道 |
-| `src/kernels/identity/_accounts.py` | 已存在（未跟踪）：`DEFAULT_MAX_DEPTH=3:90`、`max_depth:371`、`NEUTRAL_FORBIDDEN_MESSAGE:108`、`ACCOUNT_SCOPE_DENIED` | **默认改 `2`（3 层）**；错误码按 §4.3 细分（不能只回一个通用码）；激活码 TTL 默认 24h（`:94`）需与 §9.4 的 72h 对齐 |
+| `src/kernels/identity/_accounts.py` | `DEFAULT_MAX_DEPTH=2:101`、`SELF_SERVICE_SCOPES:72`、`CODE_*:121-158`、`max_depth:371` | 默认 3 层已对齐本文；错误码已细分；**激活码 TTL 代码为 24h（`:107`），本文 §9.4 写 72h** → 以代码 24h 为当前口径，若产品要 72h 需改 `DEFAULT_ACTIVATION_TTL_SECONDS` |
 | `src/kernels/identity/_backup.py` | 已存在（未跟踪）：PBKDF2-200k + AES-256-GCM、`bundle_id` 防重放 | 已满足 §9.12 的口令与防重放骨架；需接线导入尝试计数与 `BACKUP_EXPORTED/IMPORTED/REJECTED` 审计 |
 | `src/kernels/security/__init__.py` | `set_principal_scope:226`、`_enforce_principal_scope:238`、`_principal_roles:189` | 角色/属性绑定加 `account_id` 维度；新增路径包含判定（与 scope 上限串联） |
 | `src/kernels/security/_permission_map.py` | `PERMISSION_MAP:113-133` | 权限到动作的可见性映射补账户维度说明（不改映射语义） |
@@ -205,9 +220,9 @@
 | `src/kernels/memory/__init__.py` + `store.py` | `store:236`、`recall:286`、`key_hash` 主键（`store.py:65`） | 增 `owner_account_id`，**`key_hash` 必须改为 `H(account_id || key)`**，否则两个账号同名 key 互踩 |
 | `src/cost/cost_tracker.py` | `record_cost:245`（无 principal/payer 参数） | 增 `payer_account_id`(=key_owner)、`usage_account_id`(=actor)、`key_owner_account_id` |
 | `src/ai/employee_store.py` | `EmployeeStore:41`、单文件按 name 索引 | 增 `owner_account_id`；同 name 不同账号不得覆盖 |
-| `apps/console/.../components/Login.tsx` | `notConfigured:96`、`noEligible:97` | 增加"未初始化/已初始化"两态与首启引导、激活改密页 |
+| `apps/console/.../components/Login.tsx` | `notConfigured:143`、`noEligible:144`、`registrationOpen:147`、`register` 页签与 `SelfRegisterForm:255,395` | 已有"登录 / 创建账户"页签；需补 **S1c（开关关闭隐藏创建账户）**、读 `self_registration.enabled`，并把注册请求字段改为 `password`（§12） |
 | `apps/console/.../lib/nav.ts` / `Shell.tsx` / `App.tsx` | `nav.ts:44-76`、`Shell.tsx:108-117`、`App.tsx:534-572` | 导航按身份裁剪；顶部身份条；视角横幅；成员管理/权限矩阵两个新入口（仅主账号可见） |
-| `openapi.yaml` | 实测**无** `/v1/accounts`、`/v1/users`、`/v1/members`、`/v1/keys`、`/v1/tenants` 路径 | 后续需补账户域接口契约 |
+| `openapi.yaml` | 实测**无** `/v1/accounts`、`/v1/users`、`/v1/members`、`/v1/keys`、`/v1/tenants` 路径 | 后续需补账户域接口契约，含 `POST /v1/accounts/self-register`（`{principal, password, display_name}`）与 `GET/PATCH /v1/accounts/self-registration` |
 
 ---
 
@@ -216,6 +231,8 @@
 图例：**可读** = 可查看（含掩码/汇总）；**可写** = 可创建、修改、删除、授权；**不可见** = 列表不返回、详情返回 404、不可枚举。
 
 ### 3.1 账号与成员树
+
+> **自助注册默认（协作者模板）**：下表"直接下级 / 子树其它 / 子树外"三列一律**不可见**；成员树只显示自己（§3.12）。
 
 | 资源 | 自己 | 直接下级 | 子树其它 | 子树外 |
 |---|---|---|---|---|
@@ -333,6 +350,27 @@
 
 > 非根账号的"自己"列中，这些资源一律**不可见**；它们在自己的工作空间里只看到日常能力（对话/管家/知识库/文件/自动化/自有 Key），且界面不解释"为什么没有"。
 
+### 3.12 自助注册账号的默认最小权限
+
+> 适用：`origin = self_signup`、模板"协作者"（§7.5）。**默认全隔离**；主账号的聚合只读是口径 4 的显式例外（§6.2），不随本条下放给其他成员。
+
+| 资源域 | 自助注册默认 | 实现要点 / 错误码 |
+|---|---|---|
+| 账号列表 / 成员树 | 只自己 | 列表过滤；直连他人返回 404 `ACCOUNT_SUBTREE_DENIED` |
+| 账号详情 / 权限 | 只自己（不可改自己权限） | 同上 |
+| 模型 Key | 只自有 Key；他人/根 Key 不可见、不可用 | `ACCOUNT_KEY_NOT_OWNED` / `ACCOUNT_KEY_UPWARD_DENIED` |
+| 模型目录 | 只显示自有 Key 可见的模型；他人私有模型不可见 | 404 `ACCOUNT_MODEL_FOREIGN_DENIED` |
+| 会话 | 只自己 | 404 `ACCOUNT_SUBTREE_DENIED` |
+| 记忆 | 只自己；不可聚合读 | 403 `ACCOUNT_MEMORY_FOREIGN_DENIED` |
+| 文件 / 工作区 | 只自己分区 | 404 `ACCOUNT_SUBTREE_DENIED` |
+| 审计 | 只自己 | 他人事件不返回（空列表，不区分"不存在"） |
+| 用量 / 费用 | 只自己 Key 的额度消耗；不显示调用者 | §5.6 |
+| 技能 | 只自己已安装；上级技能内容不可见 | 404 `SKILL_VISIBILITY_DENIED` |
+| **创建下级** | **不可**（默认模板无成员管理） | 403 `CORE_CAPABILITY_DENIED` |
+| 成员管理入口 | **不显示** | §9.6 导航裁剪 |
+
+> 与"主账号拥有子树记忆/技能"（口径 4）的关系：**主账号**可读（§6.2/§7.3），**自助注册成员**不可读任何他人数据；两者不矛盾。
+
 ---
 
 ## 4. 越级判定
@@ -382,9 +420,13 @@
 | `ACCOUNT_DEPTH_EXCEEDED` | 409 | 当前工作区暂不能再添加成员。 | 可读理由，不暴露层数 |
 | `ACCOUNT_DELETE_HAS_CHILDREN` | 409 | 该成员仍有归属对象，请先处理后再移除。 | 删除约束 |
 | `ACCOUNT_DELETE_ROOT_FORBIDDEN` | 409 | 该账号为系统账号，不能移除。 | 根保护 |
-| `ACCOUNT_ROOT_REGISTRATION_CLOSED` | 409 | 系统已完成初始化，请使用已有账号登录。 | 关闭自助注册；不显示根名 |
-| `ACCOUNT_ACTIVATION_REQUIRED` | 403 | 该账号尚未开通，请使用邀请码完成开通。 | 未激活 |
-| `ACCOUNT_ACTIVATION_CODE_INVALID` | 400 | 邀请码无效或已失效。 | 激活 |
+| `ACCOUNT_ROOT_REGISTRATION_CLOSED` | 409 | 系统已完成初始化，请使用已有账号登录。 | 关闭"注册根"（已有根时再注册根）；**不等于**成员注册开关 |
+| `ACCOUNT_SELF_REGISTER_DISABLED` | 403 | 当前无法创建账户。 | 成员自助注册开关关闭；不提管理员/开关/层级。**前端不得再按 `ACCOUNT_SELF_REGISTRATION_CLOSED` 匹配**（该名为早期草案） |
+| `ACCOUNT_SELF_REGISTER_UNAVAILABLE` | 409 | 系统尚未初始化，请先设置主账号。 | 尚无根账号时调自助注册（不得绕过 S0 建号） |
+| `ACCOUNT_MODEL_FOREIGN_DENIED` | 404 | 资源不存在或无权访问。 | 他人私有模型；404 防枚举 |
+| `ACCOUNT_EXISTS` | 409 | 该登录账号不可用。 | 注册重名或保留名（代码原文案"该账号已存在"，按中性准则统一为本行文案）；不提示是谁占用 |
+| `ACCOUNT_ACTIVATION_REQUIRED` | 403 | 该账号尚未开通，请使用激活码完成开通。 | 未激活（仅"主账号创建"路径） |
+| `ACCOUNT_ACTIVATION_CODE_INVALID` | 400 | 激活码无效或已失效。 | 激活（仅"主账号创建"路径） |
 | `ACCOUNT_ACTIVATION_LOCKED` | 429 | 尝试次数过多，请稍后再试。 | 失败锁定 |
 | `ACCOUNT_PASSWORD_CHANGE_REQUIRED` | 403 | 请先设置新密码。 | 强制改密 |
 | `ACCOUNT_INACTIVE` | 403 | 该账号暂不可用，请联系系统管理员。 | 状态 |
@@ -412,6 +454,8 @@
 | 只描述"能不能做" | 对外文案只说"无权/不可用/请稍后再试"，**不描述"你是谁、谁管谁、在第几层、谁在上"** |
 | 禁用词（非根用户可见的响应与界面） | 子账号、孙账号、上级、下级、层级、越级、主账号、根账号、root、parent、depth、子树、继承、被管理 |
 | 允许词 | 当前工作区、账号、成员、资源、权限、Key、共享、只读、不可用 |
+| **登录 / 注册页只允许** | **"登录"、"创建账户"**（以及"忘记密码？""从备份迁移到本机"两个中性链接） |
+| **登录 / 注册页额外禁用词** | **邀请码、加入、成员、子账号、上级、层级、加入我们、组织**（"成员"仅在认证页禁用；管理页可正常使用） |
 | 结构与真实原因 | 只写入审计 `reason_code` / `details`（如 `violation=V1`、`actor_path`、`target_path`），**不得出现在响应体或界面提示** |
 | 响应结构 | 统一 `{code, message, request_id}`；`code` 可为机器码，`message` 必须中性 |
 | 防枚举 | 无权访问他人资源一律 **404**（不返回 403 的"存在但拒绝"语义） |
@@ -523,6 +567,8 @@
 - 主键是 `key_hash`，且哈希只由 key 派生（`src/kernels/memory/store.py:65`），两个账号用同名 key 会互相覆盖 → **必须改为 `H(account_id || key)`**。
 - `recall`（`__init__.py:286`）/`scope_filter`（`:371`）只按 scope 过滤，不认账号 → 新检索路径必须"先账号分区、再 scope 过滤"。
 
+**自助注册账号的分区落点**：建号即写入自己的 `owner_account_id`，默认作用域 `SELF_SERVICE_SCOPES`（`account:read` / `account:audit_read` / `account:usage_read` / `model:use` / `model:manage`，见 `src/kernels/identity/_accounts.py:72-78`）——**不含** `account:manage_children`、`account:grant`、`account:key_borrow`。因此它既不能聚合读他人记忆，也不能把自己的记忆命名空间共享给他人；主账号对它的只读聚合属于 §6.2 的显式例外。
+
 ### 6.2 聚合读取（主账号）
 
 | 行为 | 规则 |
@@ -533,12 +579,13 @@
 | 删除 | 主账号**不得单条删除他人记忆**；仅可随账号删除**归档**（二次确认 + `MEMORY_ARCHIVED`，30 天可恢复）；单条删除仅限 owner 本人 |
 | 导出 | 主账号可导出整棵子树（含原始条目 + 来源账号标注）；子账号不可导出下级记忆；任何导出写 `MEMORY_EXPORTED` 审计并记条目数、字节数、范围 |
 | 子账号 | 无聚合权；只能读自己；`ACCOUNT_MEMORY_FOREIGN_DENIED` |
+| **自助注册账号** | 只读写自己的命名空间；**无聚合权、不可导出他人、不可被其他成员聚合**；根账号可按本表"读取范围"只读聚合（§3.12） |
 | 整机备份 | 与"记忆导出"不同：整机备份是**全量**（含所有成员会话/记忆/文件/任务/Key 密文），见 §9.12；仍受"口令加密 + 二次确认 + 审计"约束 |
 
 ### 6.3 写路径
 
 - 写入必须显式携带 `owner_account_id`（默认 = actor），**不得由请求体指定**（防伪造）。
-- 跨账号写入仅两种合法情形：主账号的"代管授权"（限时）、系统级迁移任务（`actor = system`，需审计）。
+- 跨账号写入仅两种合法情形：主账号的"代管授权"（限时）、系统级迁移任务（`actor = system`，需审计）。**自助注册账号不享有任何一种**：既不能代管他人，也不能被授予写入他人命名空间的权限。
 - 删除账号时的记忆**归档而非销毁**：`archived_at` 置位（默认保留 30 天、仅根可读、不可再写）；超期物理清理需再次确认并写 `MEMORY_ARCHIVE_PURGED`。归档期内主账号可恢复。
 
 ---
@@ -646,13 +693,16 @@ can_see_skill(A, S) :=
 |---|---|---|---|---|
 | `ROOT_BOOTSTRAP_COMPLETED` | 首个注册者 | 根账号 | allowed | `client`, `ip`, `source=first_run` |
 | `ROOT_SELF_REGISTRATION_REJECTED` | 匿名/任意 | 拟注册名 | denied | `reason_code=ACCOUNT_ROOT_REGISTRATION_CLOSED`, `existing_root` |
-| `ACCOUNT_CREATED` | 上级 | 新账号 | allowed | `target_path`, `depth`, `activation_code_id`（不含码明文） |
+| `ACCOUNT_SELF_REGISTERED` | 自助注册者 | 新账号 | allowed | `origin=self_signup`（代码 `source=self_service`）, `parent_account_id`(=根), `target_path`, `depth=1`, `template=collaborator`, `client`, `ip`；现状事件名 `account.self_registered` |
+| `ACCOUNT_SELF_REGISTRATION_REJECTED` | 匿名 | 拟注册名 | denied | `reason_code`（`closed` / `duplicate` / `no_root`）, `client`, `ip`。**不带 `parent_forbidden`/`role_forbidden`**：这两类字段按 §1.2 被忽略而非拒绝 |
+| `ACCOUNT_SELF_REGISTRATION_TOGGLED` | 根 | 设置项 | allowed | `enabled`, `before`, `after`, `effective_immediately=true`；现状事件名 `account.self_registration.toggle` |
+| `ACCOUNT_CREATED` | 根/上级 | 新账号 | allowed | `origin=created_by_admin`, `target_path`, `depth`, `activation_code_id`（不含码明文） |
 | `ACCOUNT_ACTIVATED` | 子账号本人 | 自己 | allowed | `activation_code_id`, `consumed_at` |
 | `ACCOUNT_PASSWORD_CHANGED` | 子账号本人/上级 | 目标账号 | allowed | `forced=true/false`, `by_admin` |
 | `ACCOUNT_LOGIN_SUCCESS` | 任意账号 | 自己 | allowed | `client`, `jti` |
 | `ACCOUNT_LOGIN_FAILED` | 任意 | 自己 | denied | `reason`（不泄露账号是否存在） |
 | `ACCOUNT_SUSPENDED` | 祖先 | 目标账号 | allowed | `target_path`, `cascade` |
-| `ACCOUNT_DELETED` | 祖先 | 目标账号 | allowed | `target_path`, `mode=soft/cascade`, `keys_revoked` |
+| `ACCOUNT_DELETED` | 祖先 | 目标账号 | allowed | `target_path`, `mode=leaf_only`, `keys_revoked` |
 | `ACCOUNT_TREE_VIOLATION` | 任意 | 目标 | denied | `violation=V1/V2/V3/V4`, `reason_code` |
 | `ACCOUNT_PRIVILEGE_GRANTED` | 祖先 | 目标账号 | allowed | `before`, `after`, `subset_check=true` |
 | `ACCOUNT_PRIVILEGE_REVOKED` | 祖先 | 目标账号 | allowed | `before`, `after` |
@@ -706,23 +756,25 @@ can_see_skill(A, S) :=
 | 状态 | 判定条件（建议由 `GET /v1/auth/config` 返回） | 界面 | 可用动作 |
 |---|---|---|---|
 | **S0 未初始化** | `registered_humans == 0` 或 `secret_store.configured == false` 或 `root.exists == false` | 不显示登录表单；显示"安装初始化"卡片与创建主账号入口 | 「创建主账号」 |
-| **S1 已有账号** | `root.exists == true` 且 `root.status == active` | 账号 + 密码表单；**不显示任何注册入口**；下方固定两个中性链接："忘记密码？"、"从备份迁移到本机" | 「登录」「重置密码」「迁移」 |
+| **S1 已有账号 · 可自助注册** | `root.exists == true` 且 `root.status == active` 且 `self_registration.enabled == true` | 账号 + 密码表单；与"登录"并列显示"**创建账户**"；下方固定两个中性链接："忘记密码？"、"从备份迁移到本机" | 「登录」「创建账户」「重置密码」「迁移」 |
+| **S1c 已有账号 · 注册关闭** | 同 S1，但 `self_registration.enabled == false` | 账号 + 密码表单；**不渲染"创建账户"**；旧链接进入统一中性提示（§9.5） | 「登录」「重置密码」「迁移」 |
 | **S1b 身份不可用** | `root.exists == true` 且 `root.status != active`（`suspended` / `deleting`） | 不显示登录表单；只显示"暂不可用，请联系系统管理员。" | 无自助动作；不显示重建入口 |
 | **S2 已登录** | 持有有效令牌 | 进入控制台；顶部身份条；导航按能力裁剪 | 正常业务操作 |
-| **S2a 待激活** | 账号 `status == pending_activation` 且邀请码有效 | 邀请码页 → 强制改密页 | 「使用邀请码」「设置新密码」 |
+| **S2a 待激活** | 账号 `status == pending_activation` 且激活码有效 | 激活码页 → 强制改密页 | 「使用激活码」「设置新密码」 |
 | **S2b 待改密** | `credential_state == activation_pending`（已激活未改密） | 登录成功后**只**显示改密页，无侧栏、无业务入口 | 「设置新密码」 |
 | **S3 重置密码** | 用户点"忘记密码？" | 输入账号 + 恢复码（或上传恢复文件）；**不允许跳过验证** | 「重置密码」 |
 | **S4 从备份迁移到本机** | 用户点"从备份迁移到本机" | 上传迁移包 + 输入备份口令 → 校验 → 认领 | 「导入并认领」 |
 | **S5 重建身份体系** | 恢复码与恢复文件均不可用（S3 失败后引导） | 风险说明 + 二次确认 + 运维口令 → 重建 | 「重建」（默认不开放给普通用户） |
 
 补充：
-- **失败锁定**：邀请码 / 恢复码 / 备份口令均限尝试次数（建议 5 次），超限锁定 15 分钟（`ACCOUNT_ACTIVATION_LOCKED` / `ACCOUNT_RECOVERY_LOCKED` / `BACKUP_IMPORT_REJECTED(attempts)`）。
+- **失败锁定**：激活码 / 恢复码 / 备份口令均限尝试次数（建议 5 次），超限锁定 15 分钟（`ACCOUNT_ACTIVATION_LOCKED` / `ACCOUNT_RECOVERY_LOCKED` / `BACKUP_IMPORT_REJECTED(attempts)`）；自助注册按 IP + 账号维度限流（不泄露账号是否存在，超限统一"尝试次数过多"）。
 - S3、S4、S5 必须与登录页同域同组件，不做独立入口页。
-- 所有状态页的标题、说明**不得出现层级词**（§9.9）。
+- 所有状态页的标题、说明**不得出现层级词**（§9.9）；S1/S1c 的按钮只允许"登录 / 创建账户"两个主词。
+- **页面文案冲突以本节为准**：登录页不得出现"邀请码、加入、成员、子账号、上级、层级"。
 
-现状可复用：`/v1/auth/config`（`auth.py:588`）已返回 `secret_store.configured`、`registered_humans`、`login_eligible_humans`、`token.ttl_seconds`；**需新增** `root.exists`、`registration.open`、`recovery.available`、`migration.allowed`（本文要求，尚未实现）。
+现状可复用：`/v1/auth/config`（`auth.py:728-798`）已返回 `secret_store.configured`、`registered_humans`、`login_eligible_humans`、`token.ttl_seconds`，以及 `root.exists` / `registration.open` / `recovery.available` / `migration.allowed`（扁平与嵌套双写）。**仍需新增** `self_registration.enabled`（现状未暴露，前端无法判定 S1c）。注意：`registration_open` 现状语义仍是"**是否还能注册根**"（`= not root_exists`，`auth.py:790-792`），本文要求改为"**根存在时是否允许成员自助注册**"；两套语义并存期，前端必须同时读开关字段，不能把"有根"直接当成"注册关闭"。
 
-前端现状：`Login.tsx:96-98` 只有 `notConfigured` 与 `noEligible` 两态，缺 S2a/S2b/S3/S4/S5 与首启创建。
+前端现状：`Login.tsx` 已有 ``login`` / ``register`` 两个页签与 `SelfRegisterForm`（`Login.tsx:56-63,255-282,395-405`），但页签显示条件仍是 `!noAccount`、`registrationOpen` 仍绑定 `!root.exists`（`Login.tsx:147-149`）→ **有根时不会出现成员自助注册，只会出现"首次使用，创建本机账号"**；S1c 尚未接线。另：`lib/auth.ts:330-341` 的 `registerSelf` 发送 `{principal, secret, client}`，而后端 `SelfRegisterRequest` 接收 `password` → 契约不一致（会 422）；本文以**后端字段 `password`** 为准（改名属前端实现，见 §12）。
 
 ### 9.3 首启创建主账号（S0）文案要点
 
@@ -730,36 +782,50 @@ can_see_skill(A, S) :=
 - 说明（三段，必须写全）：
   1. "这台设备还没有主账号。第一个完成注册的人将成为**主账号（根）**。"
   2. "主账号拥有全部子账号的权限、记忆与技能，可创建子账号、查看整棵子树。"
-  3. "创建后**将关闭自助注册**，之后所有成员必须由上级在「成员管理」中创建。"
+  3. "创建后**永久关闭"注册根"**；其他成员可在登录页点"创建账户"自助注册（默认开启），也可由主账号在「成员管理」中创建。"
 - 表单：显示名、登录账号、密码（≥ 建议 10 位）、二次确认密码。
 - 二次确认：勾选"我理解主账号拥有最高权限，且此操作不可撤销（可转移）"。
 - 成功后：直接登录进入控制台。
 - **紧接一次性恢复材料页（不可跳过）**：展示恢复码（仅此一次）并提供「下载恢复文件」；必须勾选"我已妥善保存"才能继续；文案与不可逆边界见 §9.11。
 - 主账号身份条显示"主账号 · 可管理 0 位成员"。
 
-### 9.4 成员开通与激活
+### 9.4 成员开通与激活（两条路径）
 
-流程：
+**路径 A · 自助注册（默认开启，主路径）**
+
+1. 登录页 S1 点"**创建账户**"→ 表单只收集：登录账号、显示名、密码、确认密码（**不询问任何组织/上级信息**，页面上不出现"邀请码/加入/成员/上级/层级"）。
+2. 服务端判定：`root.exists && self_registration.enabled && account_id 未被占用`；请求体中的 `parent_account_id` / `role_kind` / `depth` **一律忽略且不参与建号**（现状 `extra=ignore`），不得据此改变上级或角色。
+3. 建号：`origin=self_signup`、`parent_account_id=根`、`depth=1`、`status=active`、`credential_state=password_set`、模板"协作者"（§7.5）。
+4. 直接签发令牌进入控制台；**无激活、无邀请码、无强制改密**；审计 `ACCOUNT_SELF_REGISTERED`。
+5. 关闭开关后：S1 不渲染"创建账户"，接口返回 `403 ACCOUNT_SELF_REGISTER_DISABLED`（§9.5）。
+
+**路径 B · 主账号创建 + 激活码（保留）**
 
 1. 创建者在「成员管理」→「新建成员」：填登录账号、显示名、选择**角色预设模板**（§7.5）、初始权限（只能是创建者权限子集）、勾选"**允许团队共享我的 Key**"（建议默认勾选，可取消）。
-2. 系统生成**一次性邀请码**：建议 72 小时有效、一次性、只显示一次、可复制；同一账号重新生成时**旧码立即失效**。
-3. 被邀请人打开同一登录页 → S2a：输入账号 + 邀请码。
-4. 开通成功后跳转**强制改密页**（不能跳过、不能返回、不能进侧栏）；页面文案："首次登录必须设置你自己的密码，之后邀请码作废。"
+2. 系统生成**一次性激活码**：默认 **24 小时**有效（代码 `DEFAULT_ACTIVATION_TTL_SECONDS`，可用 `LIUHAO_ACCOUNT_ACTIVATION_TTL_SECONDS` 调整）、一次性、只显示一次、可复制；同一账号重新生成时**旧码立即失效**。
+3. 被创建人打开同一登录页 → S2a：输入账号 + 激活码。
+4. 开通成功后跳转**强制改密页**（不能跳过、不能返回、不能进侧栏）；页面文案："首次登录必须设置你自己的密码，之后激活码作废。"
 5. 改密成功 → 签发令牌 → 进入控制台（界面按能力裁剪，**不显示任何层级信息**）。
-6. 失败锁定：同一账号连续 5 次邀请码错误 → 锁定 15 分钟（`ACCOUNT_ACTIVATION_LOCKED`），锁定期间不再提示"正确/错误"，统一"尝试次数过多"。
+6. 失败锁定：同一账号连续 5 次激活码错误 → 锁定 15 分钟（`ACCOUNT_ACTIVATION_LOCKED`），锁定期间不再提示"正确/错误"，统一"尝试次数过多"。
 
-界面要求：创建成功的弹层必须给出"复制邀请码 / 复制邀请说明"两个动作，并警告"关闭后无法再次查看，只能重新生成"。**邀请说明不得出现层级词**。
+界面要求：创建成功的弹层必须给出"复制激活码 / 复制激活说明"两个动作，并警告"关闭后无法再次查看，只能重新生成"。**激活说明不得出现层级词**；登录页本身不出现"激活码"字样（只出现在 S2a 激活页）。
 
-### 9.5 关闭自助注册根账号：判定与提示
+### 9.5 两个开关：注册根（永久关闭）与成员自助注册（可改）
 
-- 判定：`root.exists == true`（根账号存在，无论是否 active 之外的过渡态）。
-- 服务端：任何"注册根/自助注册"入口返回 `409 ACCOUNT_ROOT_REGISTRATION_CLOSED`。
-- 前端：登录页**不渲染**注册入口；若用户通过旧链接进入，页面直接展示：
+| 项 | 判定 | 服务端 | 前端 |
+|---|---|---|---|
+| **注册根** | `root.exists == true` | 任何"注册根"请求返回 `409 ACCOUNT_ROOT_REGISTRATION_CLOSED` | 登录页**永不**渲染"创建主账号"入口 |
+| **成员自助注册** | `allow_self_registration`（持久化，默认 `true`） | 关闭时所有注册请求返回 `403 ACCOUNT_SELF_REGISTER_DISABLED` | S1 隐藏"创建账户"；S1c 只保留登录/重置/迁移 |
 
-> **系统已完成初始化** · 请使用已有账号登录。
-> 如需新增成员，请登录后在「成员管理」中创建。
+- 开关位置：根账号「成员管理」→「设置」；**仅根可改**；变更立即生效并写审计 `ACCOUNT_SELF_REGISTRATION_TOGGLED`；非根账号看不到该设置项。
+- 关闭**不删除**已注册账号：已注册成员可正常登录，除非被停用（`ACCOUNT_UNAVAILABLE`）。
+- **现状差距**：后端（`src/gateway/accounts.py:205-210`）关闭文案为"管理员已关闭自助注册"，非中性；按本文统一为下一行的唯一文案（仅改文案，不改状态码/错误码）。
+- 关闭后的中性文案（不得提"管理员关闭/开关/层级"）：
 
-- 不显示根账号姓名、不显示成员数量、不提示"谁是管理员"。
+> **当前无法创建账户。**
+
+- 若用户通过旧链接直达注册接口，同样只显示上面这一句；真实原因只进审计 `reason_code=closed`。
+- **口径冲突**：早期"根创建后关闭自助注册，成员只能由上级创建"与 2026-11-06 定稿冲突，**以 §0 第 22 项为准**。
 - 唯一例外：`root.status == deleted` 的灾难恢复路径不开放给普通用户，只能由运维脚本处理（本文不定义该流程）。
 
 ### 9.6 同一控制台的导航裁剪
@@ -784,7 +850,7 @@ can_see_skill(A, S) :=
 | **全部 Key 统一管理**（核心） | 可见 | **不可见**（只有"我的 Key"） |
 | **角色预设模板**（核心） | 可见 | **不可见** |
 | **恢复码 / 恢复文件**（核心） | 可见 | **不可见** |
-| 我的成员（仅直接下级，限"团队负责人"模板） | — | 可见（无权限矩阵、无全树视图） |
+| 我的成员（仅直接下级，限"团队负责人"模板） | — | 可见；**自助注册默认（协作者）不可见**，无可管理下级 |
 | 我的 Key（创建/轮换/吊销/共享开关） | 可见 | 可见 |
 | 系统状态 / 生产预检 / 系统设置 | 可见 | **不可见** |
 
@@ -832,11 +898,11 @@ can_see_skill(A, S) :=
 
 | 页面 | 状态 | 要求 |
 |---|---|---|
-| 登录页 | 已有（`Login.tsx`） | 增加 S0/S1/S1b/S2/S2a/S2b/S3/S4/S5；S0 隐藏登录表单；S1 隐藏注册并给"忘记密码？""从备份迁移到本机"两个中性链接；S1b 只显示中性不可用提示 |
+| 登录页 | 已有（`Login.tsx`） | 增加 S0/S1/S1b/S1c/S2/S2a/S2b/S3/S4/S5；S0 隐藏登录表单；S1 显示"登录 / 创建账户"两个页签 + "忘记密码？""从备份迁移到本机"两个中性链接；S1c 隐藏"创建账户"；S1b 只显示中性不可用提示 |
 | 首启创建主账号 | 新增 | 仅 S0 可见；成功后进入恢复材料页；不可再进 |
 | 备份导出 / 迁移认领 | 新增 | 仅根可见；二次确认框列明 N 位成员记忆 / N 个文件 / 总体积；口令输入 |
 | 忘记密码 / 重建引导 | 新增 | 恢复码或恢复文件；S5 风险说明与二次确认 |
-| 成员与权限管理（根） | 新增 | 树形列表；新建/停用/删除/重置密码/发邀请码/移交/角色模板 |
+| 成员与权限管理（根） | 新增 | 树形列表；新建/停用/删除/重置密码/发激活码/移交/角色模板；**"允许自助注册"开关**（`GET/PATCH /v1/accounts/self-registration`，仅根可改） |
 | 权限矩阵（根） | 新增 | 行=成员，列=能力；只显示"可授予"的项；不显示"越级项"（避免暴露结构） |
 | 我的成员（非根，限团队负责人） | 新增 | 仅直接下级；无权限矩阵、无全树视图、无层级词 |
 | 我的 Key | 改造 | 创建/轮换/吊销 + 共享开关"允许团队共享我的 Key" |
@@ -854,6 +920,8 @@ can_see_skill(A, S) :=
 | 禁止解释性文案 | 不写"该功能仅主账号可用""你的权限由上级分配""你属于某团队"；**缺少入口时保持沉默** |
 | 身份条 | 非根账号只显示 `<display_name> · 工作空间`，不显示路径、不显示成员数、不显示"人类主权" |
 | 空状态 | 列表为空时写"暂无内容"，不写"暂无可见成员/无权限查看" |
+| 登录 / 注册页 | 只允许出现"**登录**"与"**创建账户**"两个主词；**禁止**"邀请码、加入、成员、子账号、上级、层级、加入我们、组织"；辅助说明、占位符、校验与错误文案一并计入；见 §4.4、D23 |
+| 控制台（非认证页） | "成员"一词可在成员管理页正常使用；但不得出现层级/越级/上级等结构词 |
 | 自检方式 | 控制台构建产物做**禁用词扫描**（grep 级），命中即失败；见验收 D23 |
 
 ### 9.10 跨机认领（换机迁移）
@@ -866,7 +934,7 @@ can_see_skill(A, S) :=
 | 导入即认领 | 新机导入成功后，本机身份体系 = 包内身份体系；原机器仍可独立运行（**不做实时同步**） |
 | 单根约束 | 目标机若已有根账号 → `ACCOUNT_MIGRATION_CONFLICT`，不得合并、不得覆盖 |
 | 实时同步 | **待决策 / 不做**。任何文案不得出现"多设备实时同步/云端同步/自动漫游" |
-| 导入后 | 所有旧会话令牌失效；根账号重新登录；成员保持原状态（active 可直接登录，pending 仍需邀请码）；写 `BACKUP_IMPORTED` |
+| 导入后 | 所有旧会话令牌失效；根账号重新登录；成员保持原状态（active 可直接登录，pending 仍需激活码）；写 `BACKUP_IMPORTED` |
 
 ### 9.11 忘记密码与"重建身份体系"
 
@@ -891,7 +959,7 @@ can_see_skill(A, S) :=
 **S5 重建身份体系（两者皆失）**：
 
 1. 展示上述不可逆说明 + 二次确认 + 输入运维口令（仅本机运维可执行）。
-2. 重建后：根凭据重置；成员账号记录保留，但其登录凭据全部失效，需由根重新发邀请码；恢复码重新生成；旧恢复码/文件永久失效。
+2. 重建后：根凭据重置；成员账号记录保留，但其登录凭据全部失效——**自助注册账号可在开关开启时重新自助注册同名账号**，其他成员需由根重新发激活码；恢复码重新生成；旧恢复码/文件永久失效。
 3. 审计 `IDENTITY_REBUILT`（`data_retained=true`，记录成员数、保留条目数）。
 4. **不承诺**"数据零丢失"之外的任何自动化恢复；不做"忘记密码自动找回"。
 
@@ -932,8 +1000,8 @@ can_see_skill(A, S) :=
 | ID | 场景 | 操作 | 期望结果 |
 |---|---|---|---|
 | N1 | 首启创建根账号 | 全新库，S0 页面提交创建 | 创建成功；`ROOT_BOOTSTRAP_COMPLETED`；自动登录；展示恢复码与恢复文件下载；身份条"主账号 · 可管理 0 位成员" |
-| N2 | 根账号创建成员 | 新建成员、选模板、勾选"允许团队共享我的 Key"、生成邀请码 | 成员 `pending_activation`；返回一次性邀请码；`ACCOUNT_CREATED` 不含码明文；成员树可见 |
-| N3 | 成员激活并强制改密 | 用邀请码登录 | 先开通，再强制改密；未改密访问业务接口 403 `ACCOUNT_PASSWORD_CHANGE_REQUIRED`；改密后进入控制台 |
+| N2 | 根账号创建成员（路径 B 保留） | 新建成员、选模板、勾选"允许团队共享我的 Key"、生成激活码 | 成员 `pending_activation`；返回一次性激活码；`ACCOUNT_CREATED` 不含码明文；成员树可见 |
+| N3 | 成员激活并强制改密 | 用激活码登录 | 先开通，再强制改密；未改密访问业务接口 403 `ACCOUNT_PASSWORD_CHANGE_REQUIRED`；改密后进入控制台 |
 | N4 | 成员创建自己的下级 | depth=1 成员新建直接下级（默认上限 depth 2） | 成功；新账号 depth=2；成员树可见；**成员界面不显示任何层级信息** |
 | N5 | 成员管理自己的成员 | 成员把"自己已持有"的技能授予直接下级 | 成功；`ACCOUNT_PRIVILEGE_GRANTED`；下级权限生效；界面无层级词 |
 | N6 | 根账号使用共享 Key | 根账号选择已授权共享的成员 Key 发起对话 | 调用成功；`ACCOUNT_KEY_USED` **双记**：用量 `actor=根`、账单 `key_owner=成员`、`payer=成员`；仅根界面显示 chip；成员侧只看到自己 Key 额度下降、不显示调用者；身份条仍为根 |
@@ -953,6 +1021,11 @@ can_see_skill(A, S) :=
 | N20 | 删除成员连锁 | 根账号删除一个无下级的成员 | Key 立即吊销 + 解绑提示；记忆归档（仅根可读）；审计保留；`ACCOUNT_DELETED`/`MEMORY_ARCHIVED` |
 | N21 | 角色模板建成员 | 用"协作者/只读访客/团队负责人"模板创建 | 初始权限为模板子集；模板不含 core；`ROLE_TEMPLATE_CHANGED` 仅在模板被编辑时记 |
 | N22 | 成员导出自己的数据 | 非根账号导出"我的数据" | 仅含自己的会话/记忆/文件/任务/自有 Key；`MEMORY_EXPORTED` 记范围为自己 |
+| N23 | 成员自助注册（路径 A，主路径） | 已有根且开关开启；登录页「创建账户」提交账号 + 密码 | 建号成功：`origin=self_signup`、`parent=根`、`depth=1`、`status=active`、模板"协作者"；自动登录；`ACCOUNT_SELF_REGISTERED`；**界面零层级词** |
+| N24 | 自助注册开关关闭 | 根在「成员管理」关闭"允许自助注册"；登录页再试 | 开关持久化（重启仍关闭）；S1 不渲染"创建账户"（S1c）；直连接口 403 `ACCOUNT_SELF_REGISTER_DISABLED`，文案"当前无法创建账户。"；`ACCOUNT_SELF_REGISTRATION_TOGGLED`（含 before/after） |
+| N25 | 两条路径权限一致 | 同模板下，分别用自助注册与"根创建 + 激活码"建号 | 除 `origin` / `credential_state` 外权限集**完全相同**（均为模板子集）；无"自助注册少拿/多拿"差异 |
+| N26 | 自助注册默认最小权限 | 新账号登录后依次打开会话、记忆、文件、Key、模型、审计、用量 | 全部只显示自己的；无他人/根资源；无成员管理入口；无聚合入口；无"受限"提示 |
+| N27 | 根停用/删除自助注册账号 | 根在成员管理停用后删除（叶子） | 停用即时生效（旧令牌下一请求 403 `ACCOUNT_INACTIVE`）；删除后账号不可登录；`ACCOUNT_STATE_CHANGED` / `ACCOUNT_DELETED`（`mode=leaf_only`）；其 Key 吊销、记忆归档 |
 
 ### 10.2 反例（必须被拒）
 
@@ -972,19 +1045,19 @@ can_see_skill(A, S) :=
 | D11 | **删除父账号** | 成员尝试删除根账号 | **404** `ACCOUNT_UPWARD_DENIED`；无任何删除；文案中性 |
 | D12 | **删除有下级的账号** | 根删除仍有下级的成员 | 409 `ACCOUNT_DELETE_HAS_CHILDREN`；提示先移交或级联停用 |
 | D13 | **删除根账号** | 根删除自己 | 409 `ACCOUNT_DELETE_ROOT_FORBIDDEN`；文案"该账号为系统账号，不能移除。" |
-| D14 | **初始化后自助注册根** | 已有根时访问注册根入口 | 409 `ACCOUNT_ROOT_REGISTRATION_CLOSED`；文案"系统已完成初始化，请使用已有账号登录。"；**不显示根名/成员数** |
+| D14 | **初始化后再注册根**（区别于成员自助注册） | 已有根时访问"注册根"入口 | 409 `ACCOUNT_ROOT_REGISTRATION_CLOSED`；文案"系统已完成初始化，请使用已有账号登录。"；**不显示根名/成员数**；成员自助注册不受此限（走 `/self-register`） |
 | D15 | **未激活登录** | 未开通账号直接登录 | 403 `ACCOUNT_ACTIVATION_REQUIRED`；不签发令牌 |
-| D16 | **邀请码复用/过期** | 同一邀请码第二次使用 / 超 72 小时 | 400 `ACCOUNT_ACTIVATION_CODE_INVALID`；文案"邀请码无效或已失效。" |
+| D16 | **激活码复用/过期** | 同一激活码第二次使用 / 超有效期（默认 24 小时，可配置） | 400 `ACCOUNT_ACTIVATION_CODE_INVALID`；文案"激活码无效或已失效。" |
 | D17 | **停用账号旧令牌** | 已停用账号用旧令牌访问 | 403 `ACCOUNT_INACTIVE`；旧令牌**下一次请求即失效**（吊销预检 fail-closed） |
 | D18 | **深度超限** | 在 depth=2（默认上限）账号下创建下级 | 409 `ACCOUNT_DEPTH_EXCEEDED`；文案"当前工作区暂不能再添加成员。"；不暴露层数 |
 | D19 | **权限放大** | 成员把"管理成员"授予下级，但自己无该权限 | 403 `ACCOUNT_PRIVILEGE_ESCALATION`；文案"无权授予该权限。" |
 | D20 | **迁移旧库** | 旧库（仅 `human_identities`，无 parent）启动 | 见 §10.3；不得把所有人类当主账号 |
 | D21 | **看上级/兄弟技能** | 成员查看未授权技能 | 清单不出现；直接请求 404 `SKILL_VISIBILITY_DENIED`（中性文案） |
 | D22 | **Key 明文导出** | 任意角色请求 Key 明文 | 403 `ACCOUNT_KEY_PLAINTEXT_FORBIDDEN`；响应永不含明文 |
-| D23 | **界面禁用词** | 构建产物做禁用词扫描（§9.9） | 命中"子账号/上级/层级/越级/被管理/受限"等即失败；非根页面零命中 |
+| D23 | **界面禁用词** | 构建产物做禁用词扫描（§9.9） | 非根页面命中"子账号/上级/层级/越级/被管理/受限"等即失败；**登录/注册页另加"邀请码/加入/成员/子账号/上级/层级"零命中**（按钮、占位符、校验与错误文案、辅助说明全部计入） |
 | D24 | **核心能力越权** | 非根直接调**全树**成员管理 / 权限矩阵 / 备份 / 系统升级 / 全部 Key 管理接口 | 403 `CORE_CAPABILITY_DENIED`；文案"无权执行该操作。"；最小"我的成员"接口不在其列 |
 | D25 | **错误文案中性** | 抽查 D2/D5/D11/D18 响应与界面 | 响应体 `message` 无层级词；真实原因只在审计 |
-| D26 | **邀请码失败锁定** | 连续 5 次错误邀请码 | 第 6 次起 429 `ACCOUNT_ACTIVATION_LOCKED`；锁定期间不区分对错 |
+| D26 | **激活码失败锁定** | 连续 5 次错误激活码 | 第 6 次起 429 `ACCOUNT_ACTIVATION_LOCKED`；锁定期间不区分对错 |
 | D27 | **备份口令错误 / 重放** | 错误口令 5 次；已导入包再次导入 | 前者锁定 `BACKUP_IMPORT_REJECTED(attempts)`；后者 `ACCOUNT_MIGRATION_REPLAY_DENIED` |
 | D28 | **迁移包损坏 / 冲突** | 上传损坏包；本机已有根时导入 | 400 `ACCOUNT_MIGRATION_PACKAGE_INVALID`；409 `ACCOUNT_MIGRATION_CONFLICT`；不合并、不覆盖 |
 | D29 | **恢复码失效 / 两者皆失** | 使用已用过的恢复码；无码无文件点"重建" | 400 `ACCOUNT_RECOVERY_CODE_INVALID`；S5 展示不可逆说明并要求二次确认，默认不执行 |
@@ -993,6 +1066,13 @@ can_see_skill(A, S) :=
 | D32 | **多根检测** | 手工向库写入第二个根 | 启动/登录 fail-closed；409 `ACCOUNT_MULTI_ROOT_DETECTED`；不自动挑选 |
 | D33 | **删除后数据仍可被搜到** | 删除成员后，其他成员检索记忆/向量 | 检索结果 0 条；归档仅根可读 |
 | D34 | **子账号导出他人数据** | 成员构造导出参数指向他人 | 服务端强制按 `owner_account_id` 过滤；结果只含自己；越权字段被忽略而非报错泄露 |
+| D35 | **自助注册自选上级** | 注册请求体带 `parent_account_id` / `role_kind` / `depth`（含指向兄弟或更上层） | 字段被**忽略且不参与建号**；新账号仍为 `parent=根`、`depth=1`、成员角色；响应不含父/深度；审计 `source=self_service` |
+| D36 | **已有根再注册根** | 有根时调用自助注册并传 `role=root` / 复用注册根接口 | 409 `ACCOUNT_ROOT_REGISTRATION_CLOSED`（注册根接口）或按成员建号（自助注册）；**任何路径都不得产生第二个根**；审计 `ROOT_SELF_REGISTRATION_REJECTED` |
+| D37 | **自助注册默认建下级** | 新自助注册账号直接调"新建成员"接口 | 403 `CORE_CAPABILITY_DENIED`；模板无 `account:manage_children`；不得因 `model:manage` 被误判为可管成员 |
+| D38 | **自助注册使用根/他人 Key** | 新账号请求根账号或兄弟的 Key | 403 `ACCOUNT_KEY_UPWARD_DENIED` / `ACCOUNT_KEY_NOT_OWNED`；调用不发生；`SELF_SERVICE_SCOPES` 无 `account:key_borrow` |
+| D39 | **自助注册读他人数据** | 新账号构造会话/记忆/文件/审计/模型查询指向他人或根 | 404 `ACCOUNT_SUBTREE_DENIED` 或 403 `ACCOUNT_MEMORY_FOREIGN_DENIED` / `ACCOUNT_MODEL_FOREIGN_DENIED`；结果 0 条；响应不泄露目标存在 |
+| D40 | **停用/删除后仍访问** | 根停用该账号；账号用旧令牌请求；再用账号密码登录；根删除该账号 | 旧令牌下一次请求 403 `ACCOUNT_INACTIVE`；登录 403 `ACCOUNT_UNAVAILABLE`（中性文案）；删除仅叶子，非叶子 409 `ACCOUNT_DELETE_HAS_CHILDREN` |
+| D41 | **自助注册重名** | 用已存在（含保留名）的登录账号注册 | 409 `ACCOUNT_EXISTS`；文案"该登录账号不可用。"；不提示占用者；不覆盖原账号 |
 
 ### 10.3 迁移旧库（D20 展开）
 
@@ -1079,9 +1159,14 @@ can_see_skill(A, S) :=
 | 费用记录无 principal/payer | `src/cost/cost_tracker.py:245` | 无法按账号结算 |
 | AI 员工单文件按 name 索引 | `src/ai/employee_store.py:41,67` | 同名跨账号会覆盖 |
 | 能力注册无 owner/grant | `src/kernels/capability/__init__.py:116`、`capability-registry.yaml:42+` | 技能继承无法判定 |
-| 前端登录只有两态；导航固定不裁剪；身份展示为"人类主权" | `Login.tsx:96-98`、`nav.ts:44-76`、`Shell.tsx:108-117` | 需按 §9 改造 |
-| 已有账号树/备份雏形，但**未接线** | `src/gateway/account_context.py`、`src/kernels/identity/_accounts.py`、`src/kernels/identity/_backup.py`（均为未跟踪新文件） | 本文可落地的骨架；**未挂路由即非安全边界**；`DEFAULT_MAX_DEPTH=3`（4 层）与"默认 3 层"冲突，以本文 `max_depth=2` 为准 |
-| 账号错误码粒度过粗 | `src/kernels/identity/_accounts.py:108,126` 仅 `ACCOUNT_SCOPE_DENIED` | §4.3 的多错误码需在网关映射，否则前端无法区分"不可见 / 越级 / Key" |
+| 登录页已有 `login` / `register` 页签与 `SelfRegisterForm`，但入口仍绑"无根" | `Login.tsx:56-63,147-149,255-282,395-405` | 有根时"创建账户"不可达；需改为读 `self_registration.enabled`（§9.2 S1/S1c） |
+| 自助注册前端请求体与后端契约不一致 | `apps/console/console/src/lib/auth.ts:330-341`（发 `secret`） vs `src/gateway/accounts.py:105-115`（收 `password`） | 现状注册会 422；**以本文 §9.4 的字段 `password` 为准**，前端改名属实现，不在本轮 |
+| 自助注册开关后端已实现、持久化 | `src/gateway/accounts.py:229-257`（`GET/PATCH /v1/accounts/self-registration`，仅根）、`src/gateway/account_settings.py:20-75`（`data/account_settings.json`，默认 `true`） | 开关能力已具备；**控制台尚无设置项 UI**（§9.8 待新增） |
+| 自助注册建号已实现，落点固定 | `src/gateway/accounts.py:199-222`、`src/kernels/identity/__init__.py:1604-1666` | `parent=根`、`depth=1`、`source=self_service`、`activation_hash=""`；无根时 409 `ACCOUNT_SELF_REGISTER_UNAVAILABLE`；重名 409 `ACCOUNT_EXISTS`；请求体父子/深度字段 `extra=ignore` |
+| 关闭开关的错误码与文案 | `src/gateway/accounts.py:205-210`（`403 ACCOUNT_SELF_REGISTER_DISABLED`，文案"管理员已关闭自助注册"） | 状态码/错误码与本文一致；**文案非中性**，按 §4.3/§9.5 应为"当前无法创建账户。"（以本文为准） |
+| 自助注册默认作用域 | `src/kernels/identity/_accounts.py:72-78`（`read/audit_read/usage_read/model_use/model_manage`） | 与 §3.12 一致（无 `manage_children`/`grant`/`key_borrow`）；`model:manage` 仅限自有 Key |
+| 已有账号树/备份雏形 | `src/gateway/account_context.py`、`src/kernels/identity/_accounts.py`、`src/kernels/identity/_backup.py` | 账号面路由已接线（`accounts.py`）；**其余业务面尚未接 `require_account_principal`**，未接线处仍非安全边界 |
+| 账号错误码已细化 | `src/kernels/identity/_accounts.py:121-158` | §4.3 的码已在核心里定义；网关仍需保证**文案中性**（现状个别文案含"管理员"） |
 | `openapi.yaml` 无账户域路径 | 实测 `/v1/accounts|users|members|keys|tenants` 均无 | 契约层需新增 |
 
 ---
@@ -1094,5 +1179,8 @@ can_see_skill(A, S) :=
 - 不提供 Key 明文导出接口。
 - 不允许"只读查看"执行写操作，也不允许把它当成"身份切换"。
 - **不做多根/森林**；**不做跨设备实时同步**（待决策，不写进任何承诺）。
+- **不把"邀请码 / 上级批准"恢复成成员注册的前置条件**；成员默认自助注册，激活码只是保留的第二条路径。
+- **不做"自助注册者可选上级/可选角色/可选深度"**；这些字段即使出现在请求体也不参与建号。
+- **不在登录 / 注册页出现组织与层级词**（§0-22、§9.9）。
 - **不承诺"子账号完全不知道 Key 被使用"**（只承诺界面不暴露调用细节）。
 - 不修改任何代码、不迁移任何数据库、不提交、不 push（本轮只交付本文档）。

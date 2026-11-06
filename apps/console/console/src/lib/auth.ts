@@ -12,7 +12,7 @@
  * 身份内核的人类判定）。这里存的只是一个令牌字符串，前端不做任何权限决策。
  */
 
-import { readErrorMessage } from './errorMessage'
+import { readErrorMessage, readError } from './errorMessage'
 
 export type ClientMode = 'desktop' | 'web' | 'mobile'
 
@@ -28,6 +28,10 @@ export interface Session {
   /** epoch 秒 */
   expiresAt: number
   client: ClientMode
+  /** 账号在树中的位置。仅用于前端裁剪入口，不构成授权依据。 */
+  parentAccountId: string | null
+  path: string
+  depth: number
 }
 
 /** `GET /v1/auth/config` 的响应：登录页据此解释当前状态。 */
@@ -41,6 +45,10 @@ export interface AuthConfig {
   client_modes: string[]
   token: { ttl_seconds: number }
   message: string
+  /** 是否已存在本机初始账号；决定登录页是否展示"首次使用"。 */
+  root_account_exists?: boolean
+  /** 自助创建初始账号是否开放（存在初始账号后恒为 false）。 */
+  registration_open?: boolean
 }
 
 /** 登录/接口失败。`status` 直接来自后端，用于区分 401 与 429。 */
@@ -136,6 +144,10 @@ function parseSession(raw: string | null): Session | null {
       client: CLIENT_MODES.includes(parsed.client as ClientMode)
         ? (parsed.client as ClientMode)
         : 'web',
+      parentAccountId:
+        typeof parsed.parentAccountId === 'string' ? parsed.parentAccountId : null,
+      path: typeof parsed.path === 'string' ? parsed.path : '',
+      depth: Number.isFinite(Number(parsed.depth)) ? Number(parsed.depth) : 0,
     }
   } catch {
     return null
@@ -176,6 +188,9 @@ export function getSession(): Session | null {
         permissions: [],
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
+        parentAccountId: null,
+        path: '',
+        depth: 0,
       }
       saveSession(adopted, false)
       safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
@@ -268,7 +283,12 @@ export async function login(
     throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
   }
   if (!response.ok) {
-    throw new AuthError(response.status, await readErrorMessage(response))
+    const message = await readErrorMessage(response)
+    // 403 在本服务里表示"账号被暂停/不可用"，后端会带回实现细节，界面只给中性说明。
+    throw new AuthError(
+      response.status,
+      response.status === 403 ? '该账号当前不可用，无法登录' : message,
+    )
   }
   const body = (await response.json()) as {
     access_token: string
@@ -278,6 +298,9 @@ export async function login(
     permissions: string[]
     expires_at: number
     client: string
+    parent_account_id?: string | null
+    path?: string
+    depth?: number
   }
   const session: Session = {
     token: body.access_token,
@@ -289,6 +312,100 @@ export async function login(
     client: CLIENT_MODES.includes(body.client as ClientMode)
       ? (body.client as ClientMode)
       : options.client,
+    parentAccountId: body.parent_account_id ?? null,
+    path: body.path ?? '',
+    depth: Number.isFinite(Number(body.depth)) ? Number(body.depth) : 0,
+  }
+  saveSession(session, options.remember)
+  return session
+}
+
+/**
+ * 登录页「创建账户」：只用用户名 + 密码自助创建，不发送邀请码或任何归属字段。
+ *
+ * 契约（后端实现中，前端先按此写）：`POST /v1/accounts/self-register`，
+ * 请求 `{principal, secret, client}`，成功返回与激活接口相同的 `token`
+ * （兼容 `access_token`）。层级与权限完全由服务端决定，前端不补字段。
+ */
+export async function registerSelf(
+  principal: string,
+  secret: string,
+  options: LoginOptions,
+): Promise<Session> {
+  let response: Response
+  try {
+    response = await fetch('/v1/accounts/self-register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ principal, secret, client: options.client }),
+    })
+  } catch {
+    throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
+  }
+  if (!response.ok) {
+    throw new AuthError(response.status, await selfRegistrationMessage(response))
+  }
+  const body = (await response.json()) as { token?: string; access_token?: string }
+  const token = body.token || body.access_token || ''
+  if (!token) throw new AuthError(0, '账户已创建，但未能取得登录状态，请重新登录')
+  return sessionFromToken(token, options)
+}
+
+/** 自助注册失败文案：关闭/未启用一律中性，不透出层级或实现细节。 */
+async function selfRegistrationMessage(response: Response): Promise<string> {
+  const { code, message } = await readError(response)
+  const closed = '当前不允许自行创建账户，请联系设备管理员'
+  if (code && /CLOSED|SELF_REGISTRATION/i.test(code)) return closed
+  if (response.status === 403) return closed
+  if (response.status === 404 || response.status === 501) {
+    return '当前暂时无法创建账户，请稍后再试'
+  }
+  if (response.status === 409) return '该用户名已被使用，请换一个'
+  return message || '创建失败，请稍后再试'
+}
+
+/**
+ * 用后端直接签发的令牌建立会话（激活 / 恢复码重置 / 迁移导入都走这条路）。
+ *
+ * 必须再取一次 `/v1/auth/me`：激活接口只返回 token + account，不返回
+ * display_name/scope/permissions；缺了这些，界面会把"已登录"渲染成空白身份。
+ */
+export async function sessionFromToken(
+  token: string,
+  options: LoginOptions,
+): Promise<Session> {
+  const decoded = decodeToken(token)
+  if (!decoded) throw new AuthError(401, '登录信息不正确。')
+  const response = await fetch('/v1/auth/me', {
+    headers: { [TOKEN_HEADER]: `Bearer ${token}`, Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    if (response.status === 401) throw new AuthError(401, '登录状态已失效，请重新登录')
+    if (response.status === 403) throw new AuthError(403, '该账号当前不可用，无法登录')
+    throw new AuthError(response.status, await readErrorMessage(response))
+  }
+  const body = (await response.json()) as {
+    principal?: string
+    display_name?: string | null
+    scope?: string | null
+    permissions?: string[]
+    expires_at?: number | null
+    parent_account_id?: string | null
+    path?: string
+    depth?: number
+  }
+  const session: Session = {
+    token,
+    principal: body.principal || decoded.subject,
+    displayName: body.display_name ?? null,
+    scope: body.scope ?? null,
+    permissions: Array.isArray(body.permissions) ? body.permissions : [],
+    expiresAt: Number(body.expires_at ?? decoded.expiresAt) || decoded.expiresAt,
+    client: options.client,
+    parentAccountId: body.parent_account_id ?? null,
+    path: body.path ?? '',
+    depth: Number.isFinite(Number(body.depth)) ? Number(body.depth) : 0,
   }
   saveSession(session, options.remember)
   return session
@@ -318,6 +435,9 @@ export async function refreshIdentity(): Promise<{
   display_name: string | null
   scope: string | null
   expires_at: number | null
+  parent_account_id?: string | null
+  path?: string
+  depth?: number
 } | null> {
   const token = currentToken()
   if (!token) return null

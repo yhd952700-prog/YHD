@@ -65,16 +65,36 @@ export function mapProbeReason(reason: string, latencyMs: number, detail: string
     case 'model_not_found':
       return '模型名不存在或该端点不支持这个模型（404）'
     case 'unreachable':
-      return '端点不可达：检查 base_url、端口与网络（连接被拒绝/域名解析失败）'
+      return '端点不可达：检查端点地址、端口与网络（连接被拒绝或域名解析失败）'
     case 'timeout':
-      return '连接超时：端点响应太慢，或 base_url 不可达'
+      return '连接超时：端点响应太慢，或端点地址不可达'
     case 'rate_limited':
       return '被上游限流（429），请稍后重试'
     case 'upstream_error':
       return detail || '上游返回错误'
     default:
-      return detail || `上游返回错误（${reason || '未知原因'}）`
+      // `reason` 是机器码，不直接上屏；能给出的最确定的一句话就是"连接失败"。
+      return detail || '连接失败：请检查服务商、模型名与端点设置后重试'
   }
+}
+
+/**
+ * 服务商标识 → 界面名。选项里不能只出现 `ollama` 这种机器名，
+ * 否则用户无法判断"本地"还是"云端"。
+ */
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI（云端）',
+  anthropic: 'Anthropic（云端）',
+  claude: 'Anthropic（云端）',
+  deepseek: 'DeepSeek（云端）',
+  azure: 'Azure OpenAI（云端）',
+  ollama: '本地 Ollama',
+  mock: '内置演示（不调用真实模型）',
+}
+
+export function providerLabel(type: string): string {
+  const key = String(type ?? '').toLowerCase()
+  return PROVIDER_LABELS[key] ?? (type || '未指定')
 }
 
 interface FormState {
@@ -128,6 +148,13 @@ export function ModelManager({ session }: { session: Session }) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [probe, setProbe] = useState<ProbeState>({ state: 'idle' })
+  // 最近一次连通测试的结论（按 provider|model|base_url 记指纹）。
+  // 保存前如果"同一份参数"刚测过且失败，直接拦下 —— 绝不把已知失败画成"已保存"。
+  const [lastTest, setLastTest] = useState<{
+    ok: boolean
+    message: string
+    signature: string
+  } | null>(null)
 
   const providers = list.data?.supported_providers ?? []
   const busy = saving || rowBusy !== null
@@ -149,6 +176,7 @@ export function ModelManager({ session }: { session: Session }) {
     // apiKey 只存在于这份临时状态；重置即清空，避免残留到下一次提交。
     setForm(EMPTY_FORM)
     setEditingId(null)
+    setLastTest(null)
   }
 
   function beginEdit(item: ModelRecord) {
@@ -157,6 +185,7 @@ export function ModelManager({ session }: { session: Session }) {
     setError(null)
     setNotice(null)
     setProbe({ state: 'idle' })
+    setLastTest(null)
   }
 
   function fail(err: unknown, fallback: string) {
@@ -167,7 +196,13 @@ export function ModelManager({ session }: { session: Session }) {
     event.preventDefault()
     if (!canWrite || busy) return
     if (!form.provider) {
-      setError('请选择 provider')
+      setError('请选择服务商')
+      return
+    }
+    // 同一份参数刚测过且失败：先修好再保存，避免"保存成功、调用失败"的两套状态。
+    const signature = `${form.provider}|${form.model.trim()}|${form.baseUrl.trim()}`
+    if (lastTest && lastTest.signature === signature && !lastTest.ok) {
+      setError(`未保存：连通测试未通过（${lastTest.message}）。请修正后重试。`)
       return
     }
     setSaving(true)
@@ -212,7 +247,7 @@ export function ModelManager({ session }: { session: Session }) {
   async function testForm() {
     if (!canWrite || busy) return
     if (!form.provider || !form.model.trim()) {
-      setError('请先填写 provider 与模型名再测试')
+      setError('请先选择服务商并填写模型名再测试')
       return
     }
     setRowBusy('test-form')
@@ -234,6 +269,11 @@ export function ModelManager({ session }: { session: Session }) {
         body: JSON.stringify(payload),
       })
       setProbe({ state: 'done', source: editingId ? '当前编辑配置' : '表单草稿', result })
+      setLastTest({
+        ok: result.ok,
+        message: mapProbeReason(result.reason, result.latency_ms, result.detail),
+        signature: `${form.provider}|${form.model.trim()}|${form.baseUrl.trim()}`,
+      })
     } catch (err) {
       setProbe({ state: 'idle' })
       fail(err, '测试连接失败')
@@ -255,6 +295,11 @@ export function ModelManager({ session }: { session: Session }) {
         { method: 'POST' },
       )
       setProbe({ state: 'done', source: `已保存配置「${item.name}」`, result })
+      setLastTest({
+        ok: result.ok,
+        message: mapProbeReason(result.reason, result.latency_ms, result.detail),
+        signature: `${item.provider}|${item.model}|${item.base_url ?? ''}`,
+      })
     } catch (err) {
       setProbe({ state: 'idle' })
       fail(err, '测试连接失败')
@@ -306,13 +351,31 @@ export function ModelManager({ session }: { session: Session }) {
     <div className="os-model">
       {!canWrite && (
         <p className="os-note" role="note">
-          当前账号没有管理员权限（需要 admin 权限或 L0 人类主权）。模型列表只读；
-          添加、编辑、删除、测试连接与设为默认均由后端拒绝非管理员。
+          当前账号没有模型管理权限。下面的列表只读；添加、编辑、删除与测试连接都会被服务端拒绝。
         </p>
       )}
 
       {canWrite && (
         <>
+          {/* 让"填 Key 就能用"这条路径在界面上可见，而不是靠人猜。 */}
+          <div className="os-onboard" role="note" aria-label="模型接入路径">
+            <div className="os-onboard-title">从填写密钥到生效，共四步</div>
+            <ol className="os-onboard-steps">
+              <li>
+                <strong>填写密钥</strong>：选择服务商、填写模型名；本地模型可以留空。
+              </li>
+              <li>
+                <strong>测试连通</strong>：失败会当场显示可读原因，不会先报"已保存"。
+              </li>
+              <li>
+                <strong>保存并设为默认</strong>：勾选"设为默认模型"再保存。
+              </li>
+              <li>
+                <strong>下一条消息立即生效</strong>，无需重启。
+              </li>
+            </ol>
+          </div>
+
           <h3 className="os-model-form-title">
             {editingId ? '编辑模型' : '添加模型'}
           </h3>
@@ -333,7 +396,7 @@ export function ModelManager({ session }: { session: Session }) {
             </div>
 
             <div className="os-field">
-              <label htmlFor="model-form-provider">provider（必填）</label>
+              <label htmlFor="model-form-provider">服务商（必填）</label>
               <div className="os-input">
                 <select
                   id="model-form-provider"
@@ -345,7 +408,7 @@ export function ModelManager({ session }: { session: Session }) {
                   <option value="">请选择</option>
                   {providers.map((provider) => (
                     <option key={provider} value={provider}>
-                      {provider}
+                      {providerLabel(provider)}
                     </option>
                   ))}
                 </select>
@@ -368,7 +431,7 @@ export function ModelManager({ session }: { session: Session }) {
             </div>
 
             <div className="os-field os-field-wide">
-              <label htmlFor="model-form-base-url">base_url（可选，自定义端点）</label>
+              <label htmlFor="model-form-base-url">端点地址（可选，自定义服务地址）</label>
               <div className="os-input">
                 <input
                   id="model-form-base-url"
@@ -389,7 +452,7 @@ export function ModelManager({ session }: { session: Session }) {
                   autoComplete="new-password"
                   maxLength={512}
                   value={form.apiKey}
-                  placeholder={editingId ? '留空表示不修改' : '可留空（mock / ollama 无需密钥）'}
+                  placeholder={editingId ? '留空表示不修改' : '可留空（本地模型无需密钥）'}
                   onChange={(event) => update('apiKey', event.target.value)}
                 />
               </div>
@@ -489,11 +552,11 @@ export function ModelManager({ session }: { session: Session }) {
             <strong>{probe.source}：</strong>
             {probeMessage}
           </span>
-          {probeDetail && <span className="os-model-probe-detail">后端详情：{probeDetail}</span>}
+          {probeDetail && <span className="os-model-probe-detail">服务端返回：{probeDetail}</span>}
         </div>
       )}
 
-      <h3 className="os-model-form-title">已保存模型</h3>
+      <h3 className="os-model-form-title">已配置的模型</h3>
       <Guard
         loading={list.loading}
         error={list.error}
@@ -503,7 +566,7 @@ export function ModelManager({ session }: { session: Session }) {
         emptyHint={
           canWrite
             ? '用上方表单添加第一个模型；首个模型会自动成为默认。'
-            : '管理员添加模型后会显示在这里。'
+            : '有管理权限的账号添加模型后会显示在这里。'
         }
         onRetry={list.reload}
       >
@@ -513,7 +576,7 @@ export function ModelManager({ session }: { session: Session }) {
               <thead>
                 <tr>
                   <th scope="col">名称</th>
-                  <th scope="col">provider</th>
+                  <th scope="col">服务商</th>
                   <th scope="col">模型</th>
                   <th scope="col">端点</th>
                   <th scope="col">超时</th>
@@ -528,7 +591,7 @@ export function ModelManager({ session }: { session: Session }) {
                     <td data-label="名称">
                       <span className="os-model-name">{item.name}</span>
                     </td>
-                    <td data-label="provider">{item.provider}</td>
+                    <td data-label="服务商">{providerLabel(item.provider)}</td>
                     <td data-label="模型" className="os-model-mono">
                       {item.model}
                     </td>

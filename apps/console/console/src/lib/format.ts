@@ -94,7 +94,11 @@ const EVENT_LABELS: Record<string, string> = {
 export function eventLabel(type: string): string {
   const key = typeof type === 'string' ? type : ''
   if (!key) return '未知'
-  return EVENT_LABELS[key] ?? key
+  const label = EVENT_LABELS[key]
+  if (label) return label
+  // 后端偶尔会把内部事件名（含命名空间点号）原样透传；展示层不暴露工程命名。
+  if (key.includes('.') || key.includes('_internal')) return '系统事件'
+  return key
 }
 
 /** 审计 outcome → 中文标签。未知原样显示；字段缺失显示「未知」。 */
@@ -110,6 +114,17 @@ const OUTCOME_LABELS: Record<string, string> = {
   login_success: '登录成功',
   login_denied: '登录失败',
   logout: '登出',
+  // 执行结果：后端会直接把 `success` / `error` 这类机器值透传，界面必须翻译，
+  // 否则用户会在卡片里看到一行英文内部状态。
+  success: '成功',
+  ok: '成功',
+  completed: '完成',
+  error: '失败',
+  failure: '失败',
+  failed: '失败',
+  interrupted: '已中断',
+  pending: '等待中',
+  running: '进行中',
 }
 
 export function outcomeLabel(outcome: string): string {
@@ -118,11 +133,178 @@ export function outcomeLabel(outcome: string): string {
   return OUTCOME_LABELS[key] ?? key
 }
 
+/**
+ * 主体标识 → 人能看懂的名字。
+ *
+ * 审计事件里的 `principal` 可能是 `service.liuhao-internal-service` 这类内部服务
+ * 标识。把原字符串直接铺到卡片上，等于把工程命名暴露给用户。这里只做**展示层**
+ * 翻译：内部服务统一显示「系统服务」，其余主体原样显示（不能替用户改名）。
+ */
+export function principalLabel(principal: unknown): string {
+  const text = safeText(principal).trim()
+  if (!text) return '未知'
+  const lower = text.toLowerCase()
+  if (
+    lower.startsWith('service.') ||
+    lower.startsWith('kernel.') ||
+    lower.startsWith('system.') ||
+    lower.includes('internal-service') ||
+    lower.startsWith('mock.')
+  ) {
+    return '系统服务'
+  }
+  return text
+}
+
+/** 审计动作名（点号命名空间）→ 中文短语。未知片段返回「系统操作」，不露工程名。 */
+const ACTION_SEGMENTS: Record<string, string> = {
+  account: '账号',
+  member: '账号',
+  root: '根',
+  register: '注册',
+  activated: '激活',
+  activated_by: '激活',
+  created: '新增',
+  deleted: '删除',
+  updated: '修改',
+  state_change: '状态变更',
+  access: '访问',
+  login: '登录',
+  logout: '登出',
+  success: '成功',
+  denied: '拒绝',
+  allowed: '允许',
+  read: '读取',
+  write: '写入',
+  grant: '授权',
+  revoke: '撤销',
+  policy: '策略',
+  eval: '评估',
+  human: '人类',
+  sovereignty: '主权',
+  model: '模型',
+  key: '密钥',
+}
+
+export function actionLabel(action: unknown): string {
+  const text = safeText(action).trim()
+  if (!text) return ''
+  const direct = EVENT_LABELS[text]
+  if (direct) return direct
+  if (!text.includes('.')) return text
+  const pieces = text
+    .split('.')
+    .map((part) => ACTION_SEGMENTS[part] ?? '')
+    .filter(Boolean)
+  // `account.member.created` 逐段翻译会得到「账号 账号 新增」；相邻重复只留一个。
+  const deduped = pieces.filter((part, index) => index === 0 || part !== pieces[index - 1])
+  return deduped.length > 0 ? deduped.join('') : '系统操作'
+}
+
+/**
+ * 系统组件的内部名 → 用户能读懂的名字。
+ *
+ * 就绪探针与运维页会返回 `ai_provider`、`kernel_policy_enforcement` 这类实现名。
+ * 页面上原样铺开等于让用户读代码。未知组件统一显示「系统组件」，不猜语义。
+ */
+const COMPONENT_LABELS: Record<string, string> = {
+  api_key_manager: '密钥管理',
+  jwt_handler: '登录令牌',
+  rbac_manager: '权限校验',
+  encryption_manager: '数据加密',
+  rate_limiter: '请求限流',
+  audit_store: '审计存储',
+  audit_checkpoint: '审计检查点',
+  executor: '任务执行器',
+  executor_fence: '执行围栏',
+  ai_provider: '模型服务',
+  kernel_policy_enforcement: '策略执行',
+  schema_registry: '结构注册表',
+  plugin_registry: '插件注册表',
+  scheduler: '任务调度',
+  knowledge_store: '知识库存储',
+  memory_store: '记忆存储',
+}
+
+export function componentLabel(name: unknown): string {
+  const text = safeText(name).trim()
+  if (!text) return '系统组件'
+  return COMPONENT_LABELS[text] ?? '系统组件'
+}
+
+/** 后端透传的插件错误（英文实现细节）→ 中性可读原因。 */
+export function friendlyPluginError(message: unknown): string {
+  const text = safeText(message).trim()
+  if (!text) return ''
+  if (text.includes('module_path') || /^No module/i.test(text)) {
+    return '该插件缺少可加载的模块入口，暂不可用'
+  }
+  if (/[A-Za-z]{6,}/.test(text) && !/[\u4e00-\u9fa5]/.test(text)) {
+    return '插件加载失败，暂不可用'
+  }
+  return text
+}
+
+/** 插件能力标识（后端 snake_case）→ 人话。未知英文标识不硬译，归入「其他能力」。 */
+const CAPABILITY_LABELS: Record<string, string> = {
+  create_identity: '创建身份',
+  grant_permission: '授予权限',
+  audit_trail: '审计记录',
+  store: '存储',
+  recall: '召回',
+  scope_filter: '范围过滤',
+  'multi-tier': '多层记忆',
+  ttl: '过期清理',
+  planner: '规划',
+  executor: '执行',
+  researcher: '调研',
+  research: '调研',
+  writer: '写作',
+  doc: '文档写作',
+  python_compute: '本地计算',
+  file_write: '写本地文件',
+  network_bus: '联网调研',
+  execution_pipeline: '综合整理',
+  reviewer: '审阅',
+  analyst: '分析',
+  coder: '编码',
+}
+
+export function capabilityLabel(name: unknown): string {
+  const text = safeText(name).trim()
+  if (!text) return ''
+  const known = CAPABILITY_LABELS[text]
+  if (known) return known
+  return /[\u4e00-\u9fa5]/.test(text) ? text : '其他能力'
+}
+
+/** 权限串 → 人话。未知英文权限不原样铺给用户，归入「其他已授予范围」。 */
+const PERMISSION_LABELS: Record<string, string> = {
+  'account:manage_children': '创建与维护账号',
+  'account:grant': '签发放行',
+  'account:read': '查看账号',
+  'account:write': '修改账号',
+  'memory:read': '读取记忆',
+  'memory:write': '写入记忆',
+}
+
+export function permissionLabel(value: unknown): string {
+  const text = safeText(value).trim()
+  if (!text) return ''
+  const known = PERMISSION_LABELS[text]
+  if (known) return known
+  // 带冒号的原始权限串与纯英文标识都属于实现层写法，不直接展示。
+  if (text.includes(':') || /^[A-Za-z_]+$/.test(text)) return '其他已授予范围'
+  return text
+}
+
 export function outcomeTone(outcome: string): Tone {
   if (outcome === 'allow' || outcome === 'allowed' || outcome === 'granted') return 'ok'
   if (outcome === 'deny' || outcome === 'denied' || outcome === 'login_denied') return 'danger'
   if (outcome === 'defer' || outcome === 'conditional') return 'warn'
   if (outcome === 'login_success') return 'accent'
+  if (outcome === 'success' || outcome === 'ok' || outcome === 'completed') return 'ok'
+  if (outcome === 'error' || outcome === 'failure' || outcome === 'failed') return 'danger'
   return 'muted'
 }
 

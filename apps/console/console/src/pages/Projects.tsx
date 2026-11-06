@@ -152,13 +152,13 @@ export function Projects({ query }: { query: string }) {
     <div className="os-grid">
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
-          <li>这里是人类主权面：项目由你创建、删除，并把 AI 员工的目标归类到项目之下。</li>
+          <li>这里是项目：项目由你创建、删除，并把 AI 员工的目标归类到项目之下。</li>
           <li>目标在「我AI员工 → 运行时 → 创建 Goal」的「归属项目」里选择本项目，这里就会显示该项目下的真实目标数量与摘要。</li>
           <li>没有目标是真没有，显示「该项目下还没有目标」，不编造进展。</li>
         </ul>
       </Card>
 
-      <Card title="新建项目" sub="人类主权：由你命名与描述" span={selectedId ? 8 : 12}>
+      <Card title="新建项目" sub="由你命名与描述" span={selectedId ? 8 : 12}>
         <div className="os-form">
           <label className="os-field">
             <span className="os-field-label">项目名称</span>

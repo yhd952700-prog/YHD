@@ -18,7 +18,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { createGoal, createProject, hireEmployee } from './operator'
+import { assignTask, createGoal, createProject, hireEmployee } from './operator'
 
 /** 后端 `GoalCreateRequest` / `HireEmployeeRequest` / `ProjectCreateRequest` 的字段集。 */
 const GOAL_FIELDS = [
@@ -27,6 +27,7 @@ const GOAL_FIELDS = [
   'plan_mode',
   'verification_criteria',
   'project_id',
+  'employee_name',
   'background',
 ].sort()
 
@@ -89,12 +90,38 @@ describe('createGoal 请求体：声明 = 接线', () => {
 })
 
 describe('其它写端点的请求体也已接线（防止同类缺陷在新函数里复发）', () => {
-  test('hireEmployee 发 name / agent_count / agent_types', async () => {
+  test('hireEmployee 发后端真实字段（含 role_description / default_capabilities）', async () => {
     const f = stubFetch()
-    await hireEmployee({ name: 'team-a', agent_count: 2, agent_types: ['coder'] })
+    await hireEmployee({
+      name: 'team-a',
+      agent_count: 2,
+      agent_types: ['coder'],
+      role_description: '整理会议纪要',
+      default_capabilities: ['writer'],
+    })
     expect(Object.keys(f.body()).sort()).toEqual(
-      ['agent_count', 'agent_types', 'name'].sort(),
+      ['agent_count', 'agent_types', 'name', 'role_description', 'default_capabilities'].sort(),
     )
+  })
+
+  test('assignTask 按员工派活时只发 employee_name', async () => {
+    const f = stubFetch()
+    await assignTask({ employee_name: '小周', instruction: '整理周报' })
+    const body = f.body<Record<string, unknown>>()
+    expect(body.employee_name).toBe('小周')
+    expect(body.instruction).toBe('整理周报')
+    expect('agent_id' in body).toBe(false)
+    expect((fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0]).toBe(
+      '/v1/goals/assign',
+    )
+  })
+
+  test('assignTask 按个体派活时只发 agent_id', async () => {
+    const f = stubFetch()
+    await assignTask({ agent_id: 'agent-1', instruction: '整理周报' })
+    const body = f.body<Record<string, unknown>>()
+    expect(body.agent_id).toBe('agent-1')
+    expect('employee_name' in body).toBe(false)
   })
 
   test('createProject 发 name / description', async () => {

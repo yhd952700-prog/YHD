@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
 import type { EmployeesPayload } from '../lib/contracts'
-import { relativeTime, safeText, useNow } from '../lib/format'
+import { capabilityLabel, relativeTime, safeText, useNow } from '../lib/format'
 import {
   approvalTasks,
   buildGoalSummary,
@@ -81,6 +81,28 @@ type GoalMode = 'butler' | 'assigned'
 
 const PENDING_POLL_MS = 30_000
 
+/** 后端 `duration_ms` 是真实时间戳差；没有就退回由时间戳推算的口径。 */
+function durationLabel(task: GoalTask, nowSeconds: number): string {
+  const ms = Number(task.duration_ms)
+  if (task.duration_ms !== undefined && task.duration_ms !== null && Number.isFinite(ms) && ms >= 0) {
+    if (ms < 1000) return `${Math.round(ms)} 毫秒`
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`
+    const minutes = Math.floor(ms / 60_000)
+    const seconds = Math.round((ms % 60_000) / 1000)
+    return `${minutes} 分 ${seconds} 秒`
+  }
+  return formatTaskDuration(taskDurationSeconds(task, nowSeconds))
+}
+
+/** 员工汇总行里的合计耗时（真实相加，不估算）。 */
+function totalDurationLabel(ms: number | null | undefined): string {
+  const value = Number(ms)
+  if (!Number.isFinite(value) || value <= 0) return '—'
+  if (value < 1000) return `${Math.round(value)} 毫秒`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  return `${Math.floor(value / 60_000)} 分 ${Math.round((value % 60_000) / 1000)} 秒`
+}
+
 function goalIdOf(raw: Json): string {
   const value = raw.goal_id
   return typeof value === 'string' ? value : ''
@@ -107,9 +129,15 @@ function goalWorkMessage(error: unknown, fallback: string): string {
   const code = error instanceof ApiError ? error.code : null
   switch (code) {
     case 'agent_not_found':
+    case 'employee_not_found':
       return '指定的员工不存在，或不在当前可见的名册里。不会换成其他员工执行，请重新选择。'
+    case 'employee_disabled':
+      return '这位员工已停用，不能接受指派。请先到员工页启用它，再重新派活。'
     case 'agent_unavailable':
-      return '这位员工当前处于暂停状态，不能接受指派。请先到员工页恢复这位员工，再重新派活。'
+    case 'employee_unavailable':
+      return '这位员工当前没有可用的执行个体（暂停中），不能接受指派。请先到员工页恢复，再重新派活。'
+    case 'assign_target_required':
+      return '必须且只能指定一个执行主体：员工，或某个执行个体。请重新选择。'
     case 'task_not_retryable':
       return '这个任务当前不是失败态，没有可重试的内容。只有失败任务能单独重试。'
     case 'goal_running':
@@ -125,7 +153,7 @@ function goalWorkMessage(error: unknown, fallback: string): string {
 
 function approveFailureMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) {
-    return '你没有签发权限：后端只允许管理员 / L0 人类主权主体签发授权。这不是队列为空。'
+    return '你没有签发权限：只有具备签发范围的主体能签发授权。这不是队列为空。'
   }
   return errorText(error)
 }
@@ -157,14 +185,18 @@ function blockedAtText(value: number | string | null | undefined): string {
 export function Butler({
   query,
   onOpenApproval,
+  canApproveQueue,
 }: {
   query: string
   onOpenApproval: () => void
+  canApproveQueue: boolean
 }) {
   // ── 一句话输入 ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState('')
   const [scope, setScope] = useState('L1')
   const [projectId, setProjectId] = useState('')
+  /** 可选：把整个目标指名交给某位员工（`POST /v1/goals` 的 employee_name）。 */
+  const [promptEmployee, setPromptEmployee] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -181,7 +213,8 @@ export function Butler({
   const [taskCache, setTaskCache] = useState<{ goalId: string; tasks: GoalTask[] } | null>(null)
 
   // ── 单独指派 ─────────────────────────────────────────────────
-  const [assignAgentId, setAssignAgentId] = useState('')
+  /** 执行主体：`employee:<名字>`（整位员工）或 `agent:<id>`（精确到个体）。 */
+  const [assignTarget, setAssignTarget] = useState('')
   const [assignInstruction, setAssignInstruction] = useState('')
   const [assigning, setAssigning] = useState(false)
   const [assignError, setAssignError] = useState<string | null>(null)
@@ -215,7 +248,7 @@ export function Butler({
   const employees = useApi<EmployeesPayload>('/v1/employees', 30_000)
   const goals = useApi<GoalsResponse>('/v1/goals', BUTLER_LIST_POLL_MS)
   const pendingApi = useApi<PendingApprovalsResponse>(
-    '/v1/policy/approvals/pending',
+    canApproveQueue ? '/v1/policy/approvals/pending' : null,
     PENDING_POLL_MS,
   )
 
@@ -289,12 +322,15 @@ export function Butler({
   }, [employees.data])
 
   /** 这个目标是不是「点名派给某人」而不是管家自动拆解。 */
-  const assignedAgentId =
-    detail?.assigned_agent || (activeMode === 'assigned' ? activeEmployee : null) || ''
-  const assignedGoal = Boolean(assignedAgentId)
-  const assignedLabel = assignedAgentId
-    ? agentOwners.get(assignedAgentId) ?? assignedAgentId
-    : ''
+  const assignedEmployeeName =
+    detail?.assigned_employee || (activeMode === 'assigned' ? activeEmployee : null) || ''
+  const assignedAgentId = detail?.assigned_agent ?? ''
+  const assignedGoal = Boolean(assignedEmployeeName || assignedAgentId)
+  const assignedLabel = assignedEmployeeName
+    ? assignedEmployeeName
+    : assignedAgentId
+      ? agentOwners.get(assignedAgentId) ?? assignedAgentId
+      : ''
 
   // ── 首个仍在运行的目标：刷新页面后自动接上，不用人去历史里翻 ──────
   useEffect(() => {
@@ -347,8 +383,10 @@ export function Butler({
         natural_language: text,
         scope,
         project_id: projectId || null,
+        employee_name: promptEmployee || null,
         background: true,
       })
+      if (promptEmployee) setPromptEmployee('')
       const id = goalIdOf(raw)
       if (!id) {
         setSubmitError('后端返回了目标但没有 goal_id：无法追踪这次执行，请检查网关版本。')
@@ -368,13 +406,13 @@ export function Butler({
     } finally {
       setSubmitting(false)
     }
-  }, [goals.reload, pendingApi.reload, projectId, prompt, scope])
+  }, [goals.reload, pendingApi.reload, projectId, prompt, promptEmployee, scope])
 
   const assign = useCallback(async () => {
-    const agentId = assignAgentId
+    const target = assignTarget
     const instruction = assignInstruction.trim()
-    if (!agentId) {
-      setAssignError('先选一位员工，再派活。')
+    if (!target) {
+      setAssignError('先选一位员工或一个执行个体，再派活。')
       return
     }
     if (!instruction) {
@@ -385,25 +423,50 @@ export function Butler({
     setAssignError(null)
     setAssignNotice(null)
     try {
-      const raw = await assignTask({
-        agent_id: agentId,
-        instruction,
-        scope,
-        project_id: projectId || null,
-        background: true,
-      })
+      const employeeTarget = target.startsWith('employee:')
+        ? target.slice('employee:'.length)
+        : ''
+      const agentId = target.startsWith('agent:') ? target.slice('agent:'.length) : ''
+      const raw = await assignTask(
+        employeeTarget
+          ? {
+              employee_name: employeeTarget,
+              instruction,
+              scope,
+              project_id: projectId || null,
+              background: true,
+            }
+          : {
+              agent_id: agentId,
+              instruction,
+              scope,
+              project_id: projectId || null,
+              background: true,
+            },
+      )
       const id = goalIdOf(raw)
       if (!id) {
         setAssignError('后端返回了指派结果但没有 goal_id：无法追踪这次执行。')
         return
       }
-      const label = agentOwners.get(agentId) ?? agentId
+      let label = employeeTarget
+      if (!label && agentId) {
+        const roster = employees.data?.employees ?? []
+        for (const employee of roster) {
+          const agent = (employee.agents ?? []).find((item) => item.id === agentId)
+          if (agent) {
+            label = `${employee.name} · ${agent.name || agent.id}`
+            break
+          }
+        }
+        if (!label) label = agentId
+      }
       setActiveId(id)
       setActivePrompt(instruction)
       setActiveStartedAt(Date.now() / 1000)
       setActiveRunning(true)
       setActiveMode('assigned')
-      setActiveEmployee(agentId)
+      setActiveEmployee(label)
       setAssignInstruction('')
       setAssignNotice(`已点名派给 ${label}（目标 ${id}）。这次不经过管家拆解，下面只显示这位员工的任务。`)
       goals.reload()
@@ -413,7 +476,15 @@ export function Butler({
     } finally {
       setAssigning(false)
     }
-  }, [agentOwners, assignAgentId, assignInstruction, goals.reload, pendingApi.reload, projectId, scope])
+  }, [
+    assignInstruction,
+    assignTarget,
+    employees.data,
+    goals.reload,
+    pendingApi.reload,
+    projectId,
+    scope,
+  ])
 
   const openFromHistory = useCallback((item: GoalSummary) => {
     setActiveId(item.goal_id)
@@ -557,23 +628,49 @@ export function Butler({
     const sorted = sortGoalSummaries(list)
     if (!needle) return sorted
     return sorted.filter((item) =>
-      `${item.natural_language} ${item.goal_id} ${item.state}`.toLowerCase().includes(needle),
+      `${item.natural_language} ${item.goal_id} ${item.state} ${item.assigned_employee ?? ''}`
+        .toLowerCase()
+        .includes(needle),
     )
   }, [list, query])
 
-  const assignOptions = useMemo(
+  /** 可接活的员工：在职、非只读、至少一个执行个体没暂停。 */
+  const assignableEmployees = useMemo(
     () =>
-      (employees.data?.employees ?? []).flatMap((employee) =>
-        (employee.agents ?? []).map((agent) => ({
-          employee: employee.name,
-          agent,
-          label: `${employee.name} · ${agent.name || agent.id}`,
-        })),
+      (employees.data?.employees ?? []).filter(
+        (employee) =>
+          !employee.read_only &&
+          String(employee.employment_status).toLowerCase() !== 'disabled' &&
+          (employee.agents ?? []).some((agent) => agent.status !== 'paused'),
       ),
     [employees.data],
   )
+  /** 单独指派的下拉：整位员工（employee_name）与个体（agent_id）都能选。 */
+  const assignOptions = useMemo(() => {
+    const employeeOptions: Array<{ value: string; label: string; paused: boolean }> = []
+    const agentOptions: Array<{ value: string; label: string; paused: boolean }> = []
+    for (const employee of employees.data?.employees ?? []) {
+      if (employee.read_only) continue
+      const disabled = String(employee.employment_status).toLowerCase() === 'disabled'
+      employeeOptions.push({
+        value: `employee:${employee.name}`,
+        label: `${employee.name}（整位员工）`,
+        paused: disabled || !(employee.agents ?? []).some((agent) => agent.status !== 'paused'),
+      })
+      for (const agent of employee.agents ?? []) {
+        agentOptions.push({
+          value: `agent:${agent.id}`,
+          label: `${employee.name} · ${agent.name || agent.id}`,
+          paused: disabled || agent.status === 'paused',
+        })
+      }
+    }
+    return { employees: employeeOptions, agents: agentOptions }
+  }, [employees.data])
   const selectedAssignOption =
-    assignOptions.find((option) => option.agent.id === assignAgentId) ?? null
+    [...assignOptions.employees, ...assignOptions.agents].find(
+      (option) => option.value === assignTarget,
+    ) ?? null
   const employeeNames = (employees.data?.employees ?? []).map((item) => item.name)
   const projectOptions = projects.data?.projects ?? []
   const replanElapsed = replanStartedAt
@@ -586,6 +683,14 @@ export function Butler({
 
   return (
     <div className="os-grid">
+      <div className="os-span-12">
+        <div className="os-position" role="note">
+          <span>
+            <strong>鎏灏管家</strong>：你下目标，它拆解分派，给结论。
+            想自己看任务、看文件、看产出，去「工作台」。
+          </span>
+        </div>
+      </div>
       {/* ── 一句话吩咐 ───────────────────────────────────────── */}
       <Card
         title="一句话吩咐"
@@ -649,12 +754,37 @@ export function Butler({
               ))}
             </select>
           </div>
+          <div className="os-field">
+            <label htmlFor="butler-employee">指定员工（可选）</label>
+            <select
+              id="butler-employee"
+              className="os-input"
+              value={promptEmployee}
+              onChange={(event) => setPromptEmployee(event.target.value)}
+              disabled={employees.loading || assignableEmployees.length === 0}
+            >
+              <option value="">
+                {employees.loading
+                  ? '员工名册加载中…'
+                  : assignableEmployees.length === 0
+                    ? '没有可接活的员工'
+                    : '不指定（管家自动拆解与分派）'}
+              </option>
+              {assignableEmployees.map((employee) => (
+                <option key={employee.name} value={employee.name}>
+                  {employee.name}
+                </option>
+              ))}
+            </select>
+          </div>
           <p className="os-hint os-butler-options-hint">
-            {projects.error
-              ? `项目列表不可用（${projects.error}）；本次按独立目标提交。`
-              : projectOptions.length === 0
-                ? '还没有项目；本次按独立目标提交。'
-                : '挂到项目后，项目页会同步看到这条目标。'}
+            {promptEmployee
+              ? `整个目标会钉给「${promptEmployee}」执行，不再由管家改派；它的子任务都归这位员工。`
+              : projects.error
+                ? `项目列表不可用（${projects.error}）；本次按独立目标提交。`
+                : projectOptions.length === 0
+                  ? '还没有项目；本次按独立目标提交。'
+                  : '挂到项目后，项目页会同步看到这条目标。'}
           </p>
         </div>
 
@@ -686,26 +816,41 @@ export function Butler({
           <select
             id="butler-assign-employee"
             className="os-input"
-            value={assignAgentId}
-            onChange={(event) => setAssignAgentId(event.target.value)}
-            disabled={assigning || employees.loading || assignOptions.length === 0}
+            value={assignTarget}
+            onChange={(event) => setAssignTarget(event.target.value)}
+            disabled={
+              assigning ||
+              employees.loading ||
+              assignOptions.employees.length + assignOptions.agents.length === 0
+            }
           >
             <option value="">
               {employees.loading
                 ? '员工名册加载中…'
-                : assignOptions.length === 0
+                : assignOptions.employees.length + assignOptions.agents.length === 0
                   ? '没有可用员工'
                   : '选择员工'}
             </option>
-            {assignOptions.map((option) => {
-              const paused = option.agent.status === 'paused'
-              return (
-                <option key={option.agent.id} value={option.agent.id} disabled={paused}>
-                  {option.label}
-                  {paused ? '（暂停中）' : ''}
-                </option>
-              )
-            })}
+            {assignOptions.employees.length > 0 && (
+              <optgroup label="按员工（整位）">
+                {assignOptions.employees.map((option) => (
+                  <option key={option.value} value={option.value} disabled={option.paused}>
+                    {option.label}
+                    {option.paused ? '（停用或无可执行个体）' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {assignOptions.agents.length > 0 && (
+              <optgroup label="按执行个体（精确到个体）">
+                {assignOptions.agents.map((option) => (
+                  <option key={option.value} value={option.value} disabled={option.paused}>
+                    {option.label}
+                    {option.paused ? '（暂停中）' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </div>
 
@@ -739,7 +884,7 @@ export function Butler({
             className="os-btn"
             type="button"
             onClick={() => void assign()}
-            disabled={assigning || !assignAgentId || !assignInstruction.trim()}
+            disabled={assigning || !assignTarget || !assignInstruction.trim()}
           >
             {assigning ? '指派中…' : `派给 ${selectedAssignOption ? selectedAssignOption.label : '所选员工'}`}
           </button>
@@ -892,22 +1037,39 @@ export function Butler({
                   </p>
                   <p className="os-butler-summary">{buildGoalSummary(detail)}</p>
 
+                  {detail.employees && detail.employees.length > 0 && (
+                    <div className="os-note" role="status" style={{ marginTop: 10 }}>
+                      <strong>员工汇总（按真实任务归属统计）</strong>
+                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {detail.employees.map((row) => (
+                          <li key={row.employee ?? 'unattributed'}>
+                            {row.employee ?? '未归属'} · 做了 {row.tasks} 项 · 成功 {row.completed} · 失败{' '}
+                            {row.failed} · 合计耗时 {totalDurationLabel(row.total_duration_ms)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {awaiting.length > 0 && (
                     <div className="os-alert" role="alert" style={{ marginTop: 12 }}>
                       <div>
                         <strong>有 {awaiting.length} 个动作需要你确认</strong>
                         <p style={{ margin: '4px 0 0' }}>
-                          这些任务是被策略拦截后失败的，不是普通报错。待审批入口在下方
-                          「待我确认」；批准后回到任务卡点「重试此任务」，授权才会生效。
+                          {canApproveQueue
+                            ? '这些任务是被策略拦截后失败的，不是普通报错。待审批入口在下方「待我确认」；批准后回到任务卡点「重试此任务」，授权才会生效。'
+                            : '这些任务被策略拦下，需要确认后才能重试。确认完成后再回到任务卡点「重试此任务」，无需其他操作。'}
                         </p>
-                        <div className="os-kb-actions" style={{ marginTop: 8 }}>
-                          <button className="os-btn" onClick={scrollToPending}>
-                            去「待我确认」
-                          </button>
-                          <button className="os-link" onClick={onOpenApproval}>
-                            查看已签发凭据
-                          </button>
-                        </div>
+                        {canApproveQueue && (
+                          <div className="os-kb-actions" style={{ marginTop: 8 }}>
+                            <button className="os-btn" onClick={scrollToPending}>
+                              去「待我确认」
+                            </button>
+                            <button className="os-link" onClick={onOpenApproval}>
+                              查看已签发凭据
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -991,7 +1153,8 @@ export function Butler({
         </Card>
       )}
 
-      {/* ── 待我确认（真实待审批队列） ────────────────────────── */}
+      {/* ── 待我确认（真实待审批队列；无签发范围时整块不渲染） ── */}
+      {canApproveQueue && (
       <Card
         title="待我确认"
         sub="策略拦截后真实待签发的动作 · 采用队列给出的请求体批准"
@@ -1008,7 +1171,7 @@ export function Butler({
             <div>
               <strong>你没有签发权限</strong>
               <p style={{ margin: '4px 0 0' }}>
-                待审批队列只对能签发凭据的主体可见（管理员 / L0 人类主权）。
+                待审批队列只对具备签发范围的主体可见。
                 这不是「队列为空」，也不代表没有动作在等你 —— 只是当前账号看不到。
               </p>
               {pendingApi.error && <p className="os-hint">{pendingApi.error}</p>}
@@ -1093,8 +1256,7 @@ export function Butler({
           </div>
         )}
       </Card>
-
-      {/* ── 任务分解 ─────────────────────────────────────────── */}
+      )}
       {activeId && (
         <Card
           title="任务分解"
@@ -1131,7 +1293,8 @@ export function Butler({
             <div className="os-butler-tasks">
               {tasks.map((task) => {
                 const info = taskPhaseInfo(task)
-                const retryable = info.phase === 'failed' || info.phase === 'awaiting'
+                const retryable =
+                  info.phase === 'failed' || info.phase === 'awaiting' || info.phase === 'interrupted'
                 const busy = retryingId === task.id
                 return (
                   <article
@@ -1151,17 +1314,19 @@ export function Butler({
                         {task.name || '（未命名任务）'}
                       </strong>
                       <span className="os-butler-task-time" title={`原始状态：${info.raw || '缺失'}`}>
-                        {formatTaskDuration(taskDurationSeconds(task, now / 1000))}
+                        {durationLabel(task, now / 1000)}
                       </span>
                     </header>
                     <p className="os-butler-task-meta">
                       指派给{' '}
                       <strong>
-                        {task.assigned_agent
-                          ? agentOwners.get(task.assigned_agent) ?? task.assigned_agent
-                          : '后端未记录'}
+                        {task.assigned_employee
+                          ? task.assigned_employee
+                          : task.assigned_agent
+                            ? agentOwners.get(task.assigned_agent) ?? task.assigned_agent
+                            : '后端未记录'}
                       </strong>
-                      {task.capability_id ? ` · 能力 ${task.capability_id}` : ''}
+                      {task.capability_id ? ` · 能力 ${capabilityLabel(task.capability_id)}` : ''}
                     </p>
                     {info.note && <p className="os-hint">{info.note}</p>}
                     {task.description && <p className="os-hint">{task.description}</p>}
@@ -1171,7 +1336,12 @@ export function Butler({
                         <pre className="os-pre">{task.result}</pre>
                       </details>
                     )}
-                    {task.error && <p className="os-kb-error">失败原因：{task.error}</p>}
+                    {task.error && (
+                      <p className="os-kb-error">
+                        {info.phase === 'interrupted' ? '中断说明：' : '失败原因：'}
+                        {task.error}
+                      </p>
+                    )}
                     {info.phase === 'awaiting' && (
                       <div className="os-kb-actions">
                         <button className="os-btn os-btn-ghost" onClick={scrollToPending}>
@@ -1192,7 +1362,7 @@ export function Butler({
                         {retryErrors[task.id]}
                       </p>
                     )}
-                    {info.phase === 'failed' && (
+                    {(info.phase === 'failed' || info.phase === 'interrupted') && (
                       <button
                         className="os-btn os-btn-ghost"
                         onClick={() => void retryTask(task)}
@@ -1254,6 +1424,7 @@ export function Butler({
                       {relativeTime(item.created_at ?? 0)} · 完成 {item.completed_tasks}/
                       {item.task_count}
                       {item.failed_tasks > 0 ? ` · 失败 ${item.failed_tasks}` : ''}
+                      {item.assigned_employee ? ` · ${item.assigned_employee}` : ''}
                     </span>
                   </button>
                 ))}

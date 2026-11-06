@@ -59,7 +59,7 @@ export function providerPosture(input: {
       isMock,
       simulated,
       isReal,
-      verdict: '内置 mock provider + 执行内核模拟已开启：输出为编造，不产生任何真实调用',
+      verdict: '当前为演示模式：输出由本地样例生成，不会调用真实模型。',
       tone: 'danger',
       badge: '模拟输出',
     }
@@ -70,8 +70,8 @@ export function providerPosture(input: {
       simulated,
       isReal,
       verdict: unknown
-        ? '后端未播报 provider 诚实性判据，无法判定是否为真实调用'
-        : '内置 mock provider：不调用真实模型，返回编造结果',
+        ? '暂时无法判定当前输出是否来自真实模型。'
+        : '尚未接入真实模型：回复为演示内容，不会产生真实调用。',
       tone: 'danger',
       badge: unknown ? '真实性未知' : '模拟',
     }
@@ -81,7 +81,7 @@ export function providerPosture(input: {
       isMock,
       simulated,
       isReal,
-      verdict: 'provider 是真实的，但执行内核显式开启了模拟路径：结果并非真实执行产物',
+      verdict: '已接入真实模型，但当前开启了演示路径：结果并非真实执行产物。',
       tone: 'danger',
       badge: '模拟执行',
     }
@@ -91,7 +91,7 @@ export function providerPosture(input: {
       isMock,
       simulated,
       isReal,
-      verdict: '真实 provider，未开启模拟：调用会产生真实结果',
+      verdict: '已接入真实模型，调用会产生真实结果。',
       tone: 'ok',
       badge: '真实',
     }
@@ -101,7 +101,7 @@ export function providerPosture(input: {
     isMock,
     simulated,
     isReal,
-    verdict: `后端播报了未知的 provider 模式「${mode}」，无法判定真实性`,
+    verdict: '当前模型运行模式无法判定，请到「模型」页确认服务商与连通状态。',
     tone: 'warn',
     badge: '无法判定',
   }
@@ -114,9 +114,8 @@ export function providerRowSubtitle(input: {
   posture: ProviderPosture
 }): string {
   if (!input.configured) {
-    return input.requiredEnv.length > 0
-      ? `缺少密钥：${input.requiredEnv.join(' / ')}`
-      : '无需密钥'
+    // 环境变量名属于部署细节，不铺到界面上；只说"缺什么"这件事。
+    return input.requiredEnv.length > 0 ? '缺少访问密钥' : '无需密钥'
   }
   // configured 只说明"环境齐了"。接通之后是真是假，必须另说一句 —— 一句都不能省。
   return input.posture.verdict

@@ -915,8 +915,8 @@ select {
 }
 
 .os-chart-axis {
-  fill: var(--os-text-faint);
-  font-size: 9.5px;
+  fill: var(--os-text-dim);
+  font-size: 11.5px;
 }
 
 .os-legend {
@@ -930,8 +930,8 @@ select {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: var(--os-text-dim);
+  font-size: 12.5px;
+  color: var(--os-text);
 }
 
 .os-legend-value {
@@ -1296,6 +1296,67 @@ select {
 
 .os-input button:hover {
   color: var(--os-text-dim);
+}
+
+/* 账号面：无图标输入框与登录页链接行（沿用同一组 token，不引入新配色）。 */
+.os-input-plain {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--os-panel-2);
+  border: 1px solid var(--os-border);
+  color: var(--os-text);
+  outline: none;
+  min-width: 0;
+}
+
+.os-input-plain::placeholder {
+  color: var(--os-text-faint);
+}
+
+.os-input-plain:focus {
+  border-color: var(--os-focus);
+  box-shadow:
+    0 0 0 2px var(--os-bg),
+    0 0 0 4px var(--os-focus);
+}
+
+.os-login-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  background: var(--os-panel-2);
+  border: 1px solid var(--os-border);
+}
+
+.os-login-tabs button {
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--os-text-dim);
+  font-size: 13px;
+  font-weight: 580;
+}
+
+.os-login-tabs button[data-active='true'] {
+  background: var(--os-panel);
+  border-color: var(--os-border-soft);
+  color: var(--os-text);
+}
+
+.os-login-tabs button:hover:not([data-active='true']) {
+  color: var(--os-text);
+}
+
+.os-login-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
 }
 
 .os-btn {
@@ -2655,5 +2716,146 @@ select {
   flex-basis: 100%;
   min-width: 0;
 }
+
+/* ==========================================================================
+   页面定位 / 模型接入路径 / 折叠 / 员工页
+   --------------------------------------------------------------------------
+   1024 宽下这些文字是"页面的第一句话"，字号不得低于 12.5px，颜色用正文色；
+   此前用 --os-text-faint 的 11px 在深底上对比度不足。
+   ========================================================================== */
+
+.os-position {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--os-border);
+  background: var(--os-panel-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--os-text);
+}
+
+.os-position strong {
+  color: var(--os-accent-ink);
+  font-weight: 600;
+}
+
+.os-position-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.os-onboard {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--os-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--os-accent) 6%, transparent);
+}
+
+.os-onboard-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--os-text);
+}
+
+.os-onboard-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--os-text);
+}
+
+.os-onboard-steps li::marker {
+  color: var(--os-accent-ink);
+}
+
+.os-fold {
+  margin-top: 10px;
+  border-top: 1px solid var(--os-border);
+}
+
+.os-fold summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--os-text-dim);
+}
+
+.os-fold summary:hover {
+  color: var(--os-text);
+}
+
+.os-emp-row {
+  display: grid;
+  gap: 4px;
+}
+
+.os-emp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.os-emp-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.os-emp-meta {
+  font-size: 12.5px;
+  color: var(--os-text-dim);
+}
+
+.os-emp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.os-emp-run {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--os-border);
+  font-size: 12.5px;
+}
+
+.os-emp-run-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.os-emp-run-meta {
+  color: var(--os-text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.os-emp-create {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 1180px) {
+  .os-emp-create {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 
 

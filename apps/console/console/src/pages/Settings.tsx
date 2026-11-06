@@ -140,7 +140,7 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
 
       <Card
         title="模型管理"
-        sub="新增 / 编辑 / 删除模型配置 —— 保存即生效；密钥只以脱敏形式显示"
+        sub="新增 / 编辑 / 删除模型配置；测试连通并保存后，下一条消息即生效。密钥只显示首尾几位，不显示完整值。"
         span={12}
       >
         <ModelManager session={session} />

@@ -63,6 +63,12 @@ describe('任务状态映射', () => {
     expect(taskPhaseInfo(task({ status: 'completed' })).label).toBe('成功')
     expect(taskPhaseInfo(task({ status: 'failed' })).label).toBe('失败')
     expect(taskPhaseInfo(task({ status: 'skipped' })).label).toBe('已跳过')
+    // 进程被杀后重启的收敛状态：不是 running，也不是普通失败
+    const interrupted = taskPhaseInfo(task({ status: 'interrupted' }))
+    expect(interrupted.phase).toBe('interrupted')
+    expect(interrupted.label).toBe('已中断')
+    expect(interrupted.tone).toBe('danger')
+    expect(interrupted.note).toContain('可单独重试')
     expect(taskPhaseInfo(task({ status: 'what_is_this' })).label).toBe('what_is_this')
   })
 
@@ -182,6 +188,16 @@ describe('进度与汇总', () => {
     expect(stats.percent).toBe(50)
   })
 
+  test('已中断计为已终结且需要处理，不会被当成仍在进行', () => {
+    const stats = taskStats([
+      task({ id: 'a', status: 'interrupted' }),
+      task({ id: 'b', status: 'running' }),
+      task({ id: 'c', status: 'pending' }),
+    ])
+    expect(stats.finished).toBe(1)
+    expect(stats.failed).toBe(1)
+  })
+
   test('总耗时取最早开始与最晚结束', () => {
     expect(goalElapsedSeconds([])).toBeNull()
     expect(
@@ -225,16 +241,21 @@ describe('进度与汇总', () => {
     const tasks = [
       task({ id: 'a', status: 'failed', error: 'policy_approval_required' }),
       task({ id: 'b', status: 'failed', error: 'boom' }),
+      task({ id: 'c', status: 'interrupted', error: '进程中断时该任务仍在执行' }),
     ]
     expect(approvalTasks(tasks).map((t) => t.id)).toEqual(['a'])
-    expect(failedTasks(tasks).map((t) => t.id)).toEqual(['b'])
+    // 中断任务结果未知，但同样要出现在"需要处理"里，才有点重试的入口
+    expect(failedTasks(tasks).map((t) => t.id)).toEqual(['b', 'c'])
   })
 
   test('目标状态中文化与活跃判定', () => {
     expect(goalStateLabel('completed')).toBe('成功')
     expect(goalStateLabel('cancelled')).toBe('已中止')
+    expect(goalStateLabel('interrupted')).toBe('已中断（进程重启）')
     expect(goalStateTone('failed')).toBe('danger')
+    expect(goalStateTone('interrupted')).toBe('danger')
     expect(isGoalActive('running')).toBe(true)
+    expect(isGoalActive('interrupted')).toBe(false)
     expect(isGoalActive('completed')).toBe(false)
     expect(isGoalActive('tomato')).toBe(false)
   })
