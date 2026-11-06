@@ -745,7 +745,8 @@ propose（生成 diff，不改工作区）
 - `test_upgrade_weekly_check.py`：用真实 `LocalScheduler` + 固定时钟跑完整 tick；发现新版本只通知（正文含“不会自动安装”）、版本/源码/备份/账本均未变化，下一次运行精确等于 `now + 7 天`；发布目录缺失记为 `unreachable` 且不含“已是最新”；同版本才 `up_to_date` 且不通知；管理器异常记为 `error` 且不谎报最新；`seed` 幂等且未配置源不 seed；`register_local_jobs` 已注册作业。
 - `test_selfmod_diff_confirm.py`：diff 生成但工作区不变；路径拒绝；一次性令牌；陈旧提案拒绝；缺测试命令拒绝。
 - `test_selfmod_copy_test.py`：副本测试通过且真实工作区无 `marker.txt`；测试失败拒绝；超时杀进程；CPU 上限杀进程；密钥形状环境变量不进子进程；默认禁止 promote；必须 `passed` + 第二次令牌；`finalize`/`rollback` 后文件字节回到原状。
-- `test_upgrade_disaster_recovery.py`：子进程在替换两个真实文件后 `os._exit(23)`，重启后状态从 `applying` 变成 `rolled_back`、版本/源码/SQLite 回到 0.1.0、账本有 `apply/interrupted_rolled_back` 与 `rollback/rolled_back`；磁盘预检与 staging 写入 `ENOSPC` 都在真实文件改动前中止，且没有生成备份；篡改 `code.zip` 或数据快照后回滚被拒，当前 0.2.0 的字节完全不变、状态 `failed`；删除 `code.zip` 后回滚提示“需要重新下载 0.1.0 版本安装包”，随后安装 0.3.0 成功，证明不会卡死；CLI 接受 `--allow-same-or-downgrade`。
+- `test_upgrade_disaster_recovery.py`：子进程在替换两个真实文件后 `os._exit(23)`，重启后状态从 `applying` 变成 `rolled_back`、版本/源码/SQLite 回到 0.1.0、账本有 `apply/interrupted_rolled_back` 与 `rollback/rolled_back`；磁盘预检与 staging 写入 `ENOSPC` 都在真实文件改动前中止，且没有生成备份；篡改 `code.zip` 或数据快照后回滚被拒，当前 0.2.0 的字节完全不变、状态 `failed`；删除 `code.zip` 后回滚提示“需要重新下载 0.1.0 版本安装包”，随后安装 0.3.0 成功，证明不会卡死。
+- `test_upgrade_cli.py`：同版本重装（带开关真实安装、不带开关 `up_to_date` 且零写入）、降级（带开关 0.2.0→0.1.0、不带开关拒绝）、数据目录解析（便携/安装树/`LIUHAO_DATA_DIR`/显式参数/CLI/API 同一套）、安装版数据目录里损坏的库在 CLI 预检阶段中止、`--json` 输出可直接解析、`upgrade --help` 能正常渲染。
 
 用真实 CLI（不是测试）复跑的一次成功 + 两次失败证据（2026-11-06）：
 
@@ -762,6 +763,22 @@ python -m src.upgrade selfcheck --app-root D:\LiuHao-AI-OS --data-dir <临时> -
 # ok=false failure_kind=migration_failed exit_code=3
 # reason: 数据库迁移失败：RuntimeError: database migration failed: alembic upgrade head failed (password=<已脱敏>)
 ```
+
+2026-11-06 重装/降级与安装版数据目录实跑（安装版布局：`%LOCALAPPDATA%\LiuHao\app` + `%LOCALAPPDATA%\LiuHao\data`；CLI 用当前工作区代码）：
+
+- 重装/降级四行在安装版布局的沙箱里跑，数据是真实库的 SQLite 在线备份副本（对比前后 SHA256）；
+- 最后两行直接指向本机真实安装：`apply` 只读取真实数据做备份（写入落在沙箱程序目录），`selfcheck` 只读；真实数据文件的大小/mtime 前后未变。
+
+| 场景 | 结果 | 退出码 | 耗时 |
+| --- | --- | --- | --- |
+| 同版本重装（先把 `src/upgrade/sources.py` 追加垃圾字节） | 747 文件重装，损坏文件 SHA256 恢复为包内值，版本仍 0.1.0，7 个数据文件逐字节不变 | 0 | 18.51s |
+| 同版本、不带开关 | `up_to_date`，不写任何文件 | 0 | 0.68s |
+| 降级、不带开关（当前 0.2.0，清单最高 0.1.0） | `up_to_date`，消息“当前版本 0.2.0 高于发布清单中的最高版本 0.1.0；如需降级请显式允许” | 0 | 0.66s |
+| 降级、带开关 | 0.2.0 → 0.1.0，747 文件，自检通过，7 个数据文件逐字节不变 | 0 | 18.55s |
+| 安装版真实数据目录 apply | 27 个数据文件 / 12 个 SQLite（816,646 字节）进入备份；`key_tables` 路径全部是 `...\LiuHao\data\...`；应用后真实数据的大小/mtime 未变 | 0 | 19.99s |
+| 安装版真实数据目录 check（只读） | `selfcheck --no-service`：12 个库 / 45 张表，`issues: []` | 0 | 0.82s |
+
+已知分发侧缺口：本机已安装的 `runtime/python.exe` 运行的是 0.1.0 包里的旧代码，且安装树没有 `pyproject.toml`/`LIUHAO_RELEASE.json`、runtime 也没有包元数据，因此旧 CLI 的 `check` 返回 `version_unknown`（退出码 2）、`selfcheck` 只检查到 0 个库。下一次安装包/发布包必须带上版本标记并包含本次修复；本次验证使用工作区当前代码 + 安装版布局完成。
 
 依赖与许可证：
 
