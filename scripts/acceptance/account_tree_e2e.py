@@ -36,10 +36,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 PY = os.path.join(REPO, ".venv", "Scripts", "python.exe")
 sys.path.insert(0, REPO)
 
+from src.gateway.display import ACCOUNT_HIERARCHY_WORDS, machine_fragments  # noqa: E402
+
 PASSWORDS = ["rootpass123", "memberpass123", "grandpass123"]
 MODEL_KEYS = ["sk-root-plain-key-123456", "sk-member-plain-key-abcdef"]
 BUNDLE_PASSPHRASE = "bundle-passphrase-123"
-NEUTRAL_WORDS = ("上级", "子账号", "层级", "越级", "depth", "parent_id")
+NEUTRAL_WORDS = tuple(ACCOUNT_HIERARCHY_WORDS) + ("depth", "parent_id")
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +189,26 @@ class Report:
 def neutral(message: Any) -> bool:
     text = str(message or "")
     return not any(word in text for word in NEUTRAL_WORDS)
+
+
+def machine_free(text: Any) -> bool:
+    """主界面文案不含 ``key=value`` / 点号链 / snake_case 机器串。"""
+    return not machine_fragments(text)
+
+
+def user_texts(value: Any, key: Optional[str] = None) -> List[str]:
+    """递归收集响应里承载"给用户看的话"的字段。"""
+    found: List[str] = []
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if name in ("detail", "notice", "message", "user_message", "hint") \
+                    and isinstance(item, str):
+                found.append(item)
+            found.extend(user_texts(item, name))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(user_texts(item, key))
+    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -1143,6 +1165,8 @@ def self_registration(
     account = created.get("account") or {}
     report.check(item, "自助注册成功", (status, account.get("principal")), (200, "self1"))
     report.check(item, "自助注册直接返回令牌", isinstance(self_token, str) and bool(self_token), True)
+    report.check(item, "自助注册 notice 不含层级词",
+                 neutral(created.get("notice")), True, str(created.get("notice")))
     report.check(item, "请求体父子/深度/权限被忽略",
                  sorted(account.get("permissions") or []), MINIMAL_SCOPES)
 
@@ -1184,6 +1208,28 @@ def self_registration(
     report.check(item, "自助账号审计范围仅本人",
                  (body.get("read_scope") or {}).get("mode"), "self")
 
+    # 成员可见文案全量扫描：所有 detail/notice/message 均不得出现层级词。
+    wording_calls = [
+        ("读整树", "GET", "/v1/accounts/tree", None),
+        ("读他人账号", "GET", "/v1/accounts/root1", None),
+        ("建号", "POST", "/v1/accounts", {"principal": "wording-child"}),
+        ("读开关", "GET", "/v1/accounts/self-registration", None),
+        ("改开关", "PATCH", "/v1/accounts/self-registration", {"allow": True}),
+        ("跨主体审计", "GET", "/v1/audit/events?principal=root1", None),
+        ("子树记忆", "GET", "/v1/memory/entries?scope=subtree", None),
+        ("整树备份", "POST", "/v1/accounts/backup/export",
+         {"scope": "all", "passphrase": "wording-passphrase"}),
+    ]
+    wording_hits: List[Dict[str, str]] = []
+    for label, method, path, payload in wording_calls:
+        status, body = request(method, base + path, payload, token=self_token)
+        for text in user_texts(body):
+            for word in NEUTRAL_WORDS:
+                if word in text:
+                    wording_hits.append({"call": label, "word": word, "text": text})
+    report.check(item, "成员可见文案禁用词全量扫描", wording_hits, [],
+                 json.dumps(wording_hits[:3], ensure_ascii=False))
+
     # 他人 Key / 他人模型：不可见、不可改。
     status, body = request("GET", base + "/v1/models", token=self_token)
     report.check(item, "自助账号看不到他人模型",
@@ -1222,13 +1268,15 @@ def display_fields(
     status, body = request("GET", base + "/v1/health")
     provider = body.get("ai_provider") or {}
     report.check(item, "健康：一句人话 + 中文状态",
-                 (status, bool(body.get("user_message")), body.get("status_label")),
-                 (200, True, "正常"))
+                 (status, bool(body.get("user_message")), body.get("status_label"),
+                  machine_free(body.get("user_message"))),
+                 (200, True, "正常", True))
     report.check(item, "健康：服务商展示名与状态",
                  (bool(provider.get("display_name")),
                   "·" in str(provider.get("display_status")),
-                  bool(provider.get("status_label")), provider.get("type")),
-                 (True, True, True, provider.get("type")),
+                  bool(provider.get("status_label")), provider.get("type"),
+                  machine_free(provider.get("display_status"))),
+                 (True, True, True, provider.get("type"), True),
                  str(provider.get("display_status")))
 
     status, body = request("GET", base + "/v1/models", token=tokens["root"])
@@ -1252,8 +1300,10 @@ def display_fields(
     events = body.get("events") or []
     report.check(item, "事件列表：标题与状态为中文",
                  (status, bool(events),
-                  all(e.get("display_title") and e.get("status_label") for e in events)),
-                 (200, True, True))
+                  all(e.get("display_title") and e.get("status_label") for e in events),
+                  all(machine_free(e.get("display_title")) and machine_free(e.get("status_label"))
+                      for e in events)),
+                 (200, True, True, True))
     sample = events[0] if events else {}
     report.check(item, "事件：标题不是裸英文枚举",
                  ("success" not in str(sample.get("display_title"))
@@ -1275,19 +1325,33 @@ def display_fields(
     report.check(item, "告警规则：人话字段齐全",
                  (status, bool(rules),
                   all(r.get("severity_label") and r.get("status_label")
-                      and r.get("user_message") for r in rules)),
+                      and r.get("user_message") and machine_free(r.get("user_message"))
+                      for r in rules)),
                  (200, True, True))
     status, body = request("GET", base + "/v1/alerts", token=tokens["root"])
     report.check(item, "告警列表：顶层一句人话",
-                 (status, bool(body.get("user_message")), body.get("status_label")),
-                 (200, True, "正常"))
+                 (status, bool(body.get("user_message")), body.get("status_label"),
+                  machine_free(body.get("user_message"))),
+                 (200, True, "正常", True))
 
     status, body = request("GET", base + "/v1/ready")
     checks = body.get("checks") or {}
     report.check(item, "就绪检查：逐项 user_message + technical_detail",
                  (all(c.get("user_message") and c.get("technical_detail")
-                      for c in checks.values()), bool(body.get("user_message"))),
-                 (True, True))
+                      and machine_free(c.get("user_message")) for c in checks.values()),
+                  bool(body.get("user_message")), machine_free(body.get("user_message"))),
+                 (True, True, True))
+
+    status, body = request("GET", base + "/v1/production/preflight", token=tokens["root"])
+    findings = body.get("findings") or []
+    report.check(item, "预检：人话标题/说明，原始串只在技术细节",
+                 (status, bool(body.get("user_message")),
+                  all(f.get("display_title") and f.get("user_message")
+                      and machine_free(f.get("display_title"))
+                      and machine_free(f.get("user_message"))
+                      and f.get("message") not in f.get("user_message")
+                      for f in findings)),
+                 (200, True, True), f"findings={len(findings)}")
 
 
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:

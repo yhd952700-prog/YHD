@@ -81,7 +81,7 @@ class RecoveryResetRequest(BaseModel):
 
 
 class BackupExportRequest(BaseModel):
-    scope: str = Field("all", description="all（整棵树，仅主账号）或 self")
+    scope: str = Field("all", description="all（全部可见范围）或 self")
     passphrase: str = Field(..., min_length=8, max_length=256)
 
 
@@ -206,7 +206,7 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
     """
     if not account_settings.allow_self_registration():
         raise deny(
-            403, _accounts.CODE_SELF_REGISTER_DISABLED, "管理员已关闭自助注册"
+            403, _accounts.CODE_SELF_REGISTER_DISABLED, "当前已关闭自助注册"
         )
     manager = get_identity_manager()
     node = _kernel_call(
@@ -221,7 +221,7 @@ def self_register(payload: SelfRegisterRequest) -> Dict[str, Any]:
         "account": _public_member(node),
         "token": token["access_token"],
         "access_token": token["access_token"],
-        "notice": "账号已创建并自动登录；使用的是最小权限，如需更多能力请联系管理员。",
+        "notice": "账号已创建并自动登录；当前使用的是最小权限，如需更多能力可在账号设置中查看。",
     }
 
 

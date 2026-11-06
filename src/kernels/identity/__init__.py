@@ -1625,7 +1625,7 @@ class IdentityManager:
                 raise _accounts.AccountError(
                     409,
                     _accounts.CODE_SELF_REGISTER_UNAVAILABLE,
-                    "系统尚未初始化，请先设置主账号",
+                    "系统尚未初始化，请先完成首次设置",
                 )
             if not root.is_active:
                 raise _accounts.AccountError(
@@ -1966,7 +1966,7 @@ class IdentityManager:
                     raise _accounts.AccountError(
                         409,
                         _accounts.CODE_DELETE_ROOT_FORBIDDEN,
-                        "主账号不能删除",
+                        "该账号不能删除",
                     )
                 if len(_accounts.subtree_of(self._accounts, target)) > 1:
                     self._audit_denial(
@@ -1976,7 +1976,7 @@ class IdentityManager:
                     raise _accounts.AccountError(
                         409,
                         _accounts.CODE_DELETE_HAS_CHILDREN,
-                        "该账号下还有其他成员，请先移交或选择级联停用",
+                        "该账号仍有关联的其他账号，请先处理关联账号或选择一并停用",
                     )
             affected: List[str] = []
             for principal in _accounts.subtree_of(self._accounts, target):

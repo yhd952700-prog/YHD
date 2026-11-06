@@ -16,7 +16,31 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Mapping, Optional
+import re
+from typing import Any, Dict, List, Mapping, Tuple
+
+#: 用户可见的账号文案禁用词：任何 ``detail`` / ``notice`` / 提示里都不应出现
+#: 这些层级或角色结构词（主账号自己的管理页除外，见产品约定）。
+ACCOUNT_HIERARCHY_WORDS: Tuple[str, ...] = (
+    "管理员",
+    "主账号",
+    "子账号",
+    "上级",
+    "下级",
+    "层级",
+    "加入",
+    "邀请",
+    "越级",
+)
+
+#: 机器串特征：``key=value``、``a.b.c`` 点号链、``snake_case``。
+#: 只用于检查"用户主界面文案"（``user_message`` / ``display_title`` /
+#: ``status_label``），不检查 ``technical_detail``。
+_MACHINE_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b[a-z][a-z0-9_.-]*\s*=\s*\S+"),
+    re.compile(r"\b[a-z][a-z0-9_-]*(?:[.][a-z][a-z0-9_-]*)+\b"),
+    re.compile(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b"),
+)
 
 #: provider 类型 -> 人话名称。新增 provider 时在此补一行即可。
 PROVIDER_LABELS: Dict[str, str] = {
@@ -136,6 +160,99 @@ HEALTH_CHECK_LABELS: Dict[str, str] = {
     "kernel_policy_enforcement": "内核策略",
 }
 
+#: 就绪页子系统名 -> 人话名称。
+SUBSYSTEM_LABELS: Dict[str, str] = {
+    "identity": "账号身份",
+    "memory": "记忆",
+    "context": "上下文",
+    "capability": "能力目录",
+    "policy": "策略",
+    "security": "安全",
+    "execution": "执行",
+    "evaluation": "评估",
+    "resource": "资源",
+    "event": "事件总线",
+    "network": "网络",
+    "audit": "审计",
+    "trust": "信任",
+    "plugin": "插件",
+    "retention": "数据保留",
+}
+
+#: 指标机器名 -> 人话名称（告警 ``user_message`` 只用人话）。
+METRIC_LABELS: Dict[str, str] = {
+    "cpu_usage": "CPU 使用率",
+    "cpu_percent": "CPU 使用率",
+    "memory_usage": "内存使用率",
+    "memory_percent": "内存使用率",
+    "disk_usage": "磁盘使用率",
+    "disk_percent": "磁盘使用率",
+    "error_rate": "错误率",
+    "latency_p99": "99 分位响应时间",
+    "request_rate": "请求速率",
+    "queue_depth": "队列积压",
+    "active_connections": "活跃连接数",
+}
+
+#: 比较方向 -> 人话。
+OPERATOR_WORDS: Dict[str, str] = {
+    "gt": "超过",
+    "gte": "超过",
+    ">": "超过",
+    ">=": "超过",
+    "lt": "低于",
+    "<": "低于",
+    "lte": "低于",
+    "<=": "低于",
+    "eq": "等于",
+    "=": "等于",
+    "ne": "不等于",
+}
+
+#: 预检发现代码 -> 人话标题。原始 ``message`` 只进 ``technical_detail``。
+CONFIG_FINDING_LABELS: Dict[str, str] = {
+    "secret_key_missing": "缺少会话加密密钥",
+    "secret_key_placeholder": "会话加密密钥仍是公开占位值",
+    "jwt_secret_missing": "缺少持久登录签名密钥",
+    "jwt_secret_placeholder": "登录签名密钥仍是公开占位值",
+    "sqlite_in_production": "生产环境仍在使用本地单机数据库",
+    "debug_logging_in_production": "生产环境开启了调试日志",
+    "policy_enforcement_off": "生产环境未开启内核策略强制",
+}
+
+#: 从告警原始文案里抽取 ``指标 / 当前值 / 阈值 / 比较方向``。
+_METRIC_VALUE_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?P<metric>[a-z][a-z0-9_.-]*)\s*=\s*"
+        r"(?P<value>\d+(?:\.\d+)?(?:%|ms|s|毫秒|秒)?)\s*"
+        r"(?P<op>\>=|\<=|>|<)\s*"
+        r"(?P<threshold>\d+(?:\.\d+)?(?:%|ms|s|毫秒|秒)?)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<metric>[a-z][a-z0-9_.-]*)\s*=\s*"
+        r"(?P<value>\d+(?:\.\d+)?(?:%|ms|s|毫秒|秒)?)\s*"
+        r"(?:exceeds|above|大于|超过)\s*(?:threshold|阈值)?\s*"
+        r"(?P<threshold>\d+(?:\.\d+)?(?:%|ms|s|毫秒|秒)?)"
+        r"\s*(?:\(\s*(?P<op>[a-z]+)\s*\))?",
+        re.IGNORECASE,
+    ),
+)
+
+
+def machine_fragments(text: Any) -> List[str]:
+    """返回文案里的机器串片段；空列表表示"看起来是人话"。
+
+    只用来检查用户主界面字段，不检查 ``technical_detail``。
+    """
+    raw = str(text or "")
+    return [match.group(0) for pattern in _MACHINE_PATTERNS for match in pattern.finditer(raw)]
+
+
+def subsystem_label(name: Any) -> str:
+    raw = str(name or "").strip()
+    return SUBSYSTEM_LABELS.get(raw.lower(), "子系统")
+
 
 def status_label(value: Any) -> str:
     """机器状态 -> 中文；未知值回落到"未知状态"（原值留在 technical_detail）。"""
@@ -211,7 +328,7 @@ def event_status_label(event: Mapping[str, Any]) -> str:
 
 
 def health_check_user_message(name: str, check: Mapping[str, Any]) -> str:
-    label = HEALTH_CHECK_LABELS.get(name, name or "检查项")
+    label = HEALTH_CHECK_LABELS.get(name, "检查项")
     state = str(check.get("status") or "").strip()
     readable = status_label(state)
     if state == "healthy":
@@ -240,13 +357,38 @@ def decorate_health_check(name: str, check: Dict[str, Any]) -> Dict[str, Any]:
     return check
 
 
+def _metric_reading(alert: Mapping[str, Any]) -> Tuple[str, str, str, str]:
+    """从告警结构化字段/原始文案里抽 ``(指标, 当前值, 阈值, 方向)``。
+
+    原始 ``message`` 只用于抽取，绝不整段进入 ``user_message``。
+    """
+    metric = str(alert.get("metric_name") or "").strip()
+    message = str(alert.get("message") or "")
+    for pattern in _METRIC_VALUE_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+        metric = metric or str(match.group("metric") or "")
+        op = str(match.groupdict().get("op") or "")
+        return metric, match.group("value") or "", match.group("threshold") or "", op
+    return metric, "", "", ""
+
+
 def alert_user_message(alert: Mapping[str, Any]) -> str:
+    """告警主界面文案：只有人话，机器串只留在 ``technical_detail``。"""
     name = str(alert.get("name") or "系统告警").strip()
     severity = severity_label(alert.get("severity"))
     state = status_label(alert.get("state"))
-    message = str(alert.get("message") or "").strip()
-    head = f"{name}：{severity}告警，当前{state}"
-    return f"{head}（{message}）" if message else head
+    metric, value, threshold, op = _metric_reading(alert)
+    label = METRIC_LABELS.get(metric.lower(), "")
+    if label and value and threshold:
+        direction = OPERATOR_WORDS.get(op.lower(), "超过")
+        body = f"{label} {value}，{direction}阈值 {threshold}"
+    elif label:
+        body = f"{label}超出正常范围"
+    else:
+        body = name
+    return f"{severity}告警：{body}，当前{state}"
 
 
 def decorate_alert(alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -274,14 +416,15 @@ def decorate_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def decorate_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
-    """配置预检结论：补中文级别与人话标题，原始 message 进技术细节。"""
+    """配置预检结论：补中文级别与人话标题，原始 message 只进技术细节。"""
     if not isinstance(finding, dict):
         return finding
     label = severity_label(finding.get("severity"))
-    message = str(finding.get("message") or "").strip()
+    code = str(finding.get("code") or "").strip().lower()
+    title = CONFIG_FINDING_LABELS.get(code, "存在一条需要处理的安全配置问题")
     finding.setdefault("severity_label", label)
-    finding.setdefault("display_title", f"{label} · {message}" if message else label)
-    finding.setdefault("user_message", finding["display_title"])
+    finding.setdefault("display_title", title)
+    finding.setdefault("user_message", f"{label}：{title}，请到诊断页查看技术细节")
     if "technical_detail" not in finding:
         raw = {key: value for key, value in finding.items()
                if key not in ("user_message", "technical_detail", "severity_label",
@@ -291,5 +434,4 @@ def decorate_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def subsystem_user_message(name: str, status: str) -> str:
-    label = HEALTH_CHECK_LABELS.get(name, name or "子系统")
-    return f"{label}{status_label(status)}"
+    return f"{subsystem_label(name)}{status_label(status)}"

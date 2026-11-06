@@ -38,6 +38,7 @@ from .display import (
     decorate_finding,
     severity_label,
     status_label,
+    subsystem_label,
     subsystem_user_message,
     technical_detail,
 )
@@ -135,7 +136,7 @@ async def subsystem_readiness() -> JSONResponse:
     # 只增字段：中文名、中文状态、一句人话与诊断细节。
     for subsystem in body.get("subsystems") or []:
         name = str(subsystem.get("name") or "")
-        subsystem["display_name"] = name
+        subsystem["display_name"] = subsystem_label(name)
         subsystem["status_label"] = status_label(subsystem.get("status"))
         subsystem["user_message"] = subsystem_user_message(name, str(subsystem.get("status") or ""))
         subsystem.setdefault("technical_detail", technical_detail(

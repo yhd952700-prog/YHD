@@ -380,7 +380,7 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     if manager.account_root() is not None:
         raise _account_error(
             409, "ACCOUNT_ALREADY_INITIALIZED",
-            "本机已存在账号树，备份包只能在全新实例上认领，不能用于覆盖现有账号",
+            "本机已完成初始化，备份包只能在全新实例上导入，不能覆盖现有数据",
         )
 
     try:

@@ -20,6 +20,7 @@ os.environ.setdefault("LIUHAO_WORKSPACE_ROOT", os.environ.get("LIUHAO_WORKSPACE_
 import pytest
 from fastapi.testclient import TestClient
 
+from src.gateway.display import machine_fragments
 from src.gateway.main import get_app
 
 
@@ -115,6 +116,9 @@ def test_event_list_has_display_title(client):
     assert event["display_title"] == "账号 · 自助注册（成功）"
     assert event["status_label"] == "成功"
     assert "success" not in event["display_title"]
+    # 事件主界面字段不能出现 key=value / 点号链 / snake_case 机器串。
+    assert machine_fragments(event["display_title"]) == []
+    assert machine_fragments(event["status_label"]) == []
 
 
 def test_alerts_have_user_message_and_technical_detail(client):
@@ -156,6 +160,11 @@ def test_alerts_have_user_message_and_technical_detail(client):
     assert alert["severity_label"] == "严重"
     assert alert["status_label"] == "正在告警"
     assert "严重告警" in alert["user_message"]
+    assert "CPU 使用率 93%" in alert["user_message"]
+    assert "超过阈值 90%" in alert["user_message"]
+    # 人话里不得出现 ``cpu_usage=93% > 90%`` 这类机器串；原始串只在技术细节里。
+    assert machine_fragments(alert["user_message"]) == []
+    assert "cpu_usage=93%" not in alert["user_message"]
     assert "cpu_usage=93%" in alert["technical_detail"]
 
     rules = handle.get("/v1/alerts/rules", headers=headers).json()["rules"]
@@ -164,6 +173,7 @@ def test_alerts_have_user_message_and_technical_detail(client):
         assert rule["severity_label"] in ("提示", "注意", "严重", "紧急")
         assert rule["status_label"] in ("已启用", "未启用")
         assert rule["user_message"]
+        assert machine_fragments(rule["user_message"]) == []
 
 
 def test_health_and_ready_expose_user_message(client):
@@ -174,11 +184,13 @@ def test_health_and_ready_expose_user_message(client):
     assert health["status"] == "ok"  # 旧字段
     assert health["status_label"] == "正常"
     assert "运行" in health["user_message"]
+    assert machine_fragments(health["user_message"]) == []
     provider = health["ai_provider"]
     assert provider["type"] and provider["mode"]  # 旧字段
     assert provider["display_name"]
     assert "·" in provider["display_status"]
     assert provider["status_label"]
+    assert machine_fragments(provider["display_status"]) == []
 
     ready = handle.get("/v1/ready")
     assert ready.status_code in (200, 503)
@@ -190,6 +202,14 @@ def test_health_and_ready_expose_user_message(client):
         assert check["user_message"], name
         assert check["status_label"], name
         assert isinstance(check["technical_detail"], str) and check["technical_detail"], name
+        assert machine_fragments(check["user_message"]) == [], name
+
+    subsystems = handle.get("/v1/ready/subsystems", headers=headers).json()
+    assert subsystems["user_message"]
+    for subsystem in subsystems["subsystems"]:
+        assert subsystem["display_name"]
+        assert subsystem["user_message"]
+        assert machine_fragments(subsystem["user_message"]) == [], subsystem["name"]
 
 
 def test_preflight_findings_are_readable(client):
@@ -205,4 +225,9 @@ def test_preflight_findings_are_readable(client):
         assert finding["severity_label"] in ("提示", "注意", "严重", "紧急")
         assert finding["display_title"]
         assert finding["user_message"]
+        # 主界面只放人话：字段名/原始 message 不得混入 user_message。
+        assert machine_fragments(finding["user_message"]) == []
+        assert machine_fragments(finding["display_title"]) == []
+        assert finding["message"] not in finding["user_message"]
+        assert finding["message"] in finding["technical_detail"]
         assert isinstance(finding["technical_detail"], str) and finding["technical_detail"]

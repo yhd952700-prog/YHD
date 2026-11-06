@@ -55,7 +55,7 @@ class MemoryWriteRequest(BaseModel):
 
 
 class MemoryExportRequest(BaseModel):
-    scope: str = Field("self", description="self 或 subtree（后者仅主账号）")
+    scope: str = Field("self", description="self 或 subtree")
     format: str = Field("json", description="json 或 md")
 
 
@@ -143,7 +143,7 @@ def _query_entries(owners: Iterable[str], query: str) -> List[Dict[str, Any]]:
 
 @router.get("/entries")
 def list_entries(
-    scope: str = Query("self", description="self 或 subtree（后者仅主账号）"),
+    scope: str = Query("self", description="self 或 subtree"),
     q: str = Query("", description="关键词；匹配正文/来源/标签"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
