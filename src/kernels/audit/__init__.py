@@ -480,6 +480,17 @@ class AuditStore:
                 break
             except sqlite3.OperationalError as exc:
                 code = getattr(exc, "sqlite_errorcode", None)
+                # sqlite_errorcode may be an EXTENDED result code (e.g. 1546 =
+                # SQLITE_IOERR_*), while _RETRYABLE_SQLITE_CODES holds the
+                # primary codes (10 = SQLITE_IOERR). Comparing the raw value
+                # made every IOERR skip the retry loop below: measured while
+                # re-opening a crash.db left by a hard-killed writer, where the
+                # first PRAGMA journal_mode=WAL raises IOERR 1546 and the same
+                # open succeeds ~0.5s later. Mask to the primary code so the
+                # bounded retry actually applies (it still re-raises after the
+                # last attempt, so a genuinely broken disk is not hidden).
+                if code is not None:
+                    code &= 0xFF
                 if code not in _RETRYABLE_SQLITE_CODES:
                     raise
                 last = exc

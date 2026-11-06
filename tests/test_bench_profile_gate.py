@@ -28,7 +28,7 @@ _SPEC.loader.exec_module(bench)
 
 
 def _fake_run(eps, lost_appends=False, intact_after_kill=True,
-              contiguous_seq=True, chain_verifies=True):
+              contiguous_seq=True, chain_verifies=True, recovery_seconds=0.5):
     """A minimal `run()`-shaped result for exercising the gate logic."""
     return {
         "single_append": {"events_per_sec": eps, "latency_ms_p95": 1.0},
@@ -45,7 +45,7 @@ def _fake_run(eps, lost_appends=False, intact_after_kill=True,
             "rows_expected": 100,
         },
         "recovery": {
-            "recovery_seconds": 0.5,
+            "recovery_seconds": recovery_seconds,
             "chain_intact_after_kill": intact_after_kill,
         },
         "chain_verifies": chain_verifies,
@@ -54,6 +54,45 @@ def _fake_run(eps, lost_appends=False, intact_after_kill=True,
 
 PROFILE_A = "Linux|py3.12|Intel|t4|quick"
 PROFILE_B = "Windows|py3.13|AMD|t16|quick"
+
+
+def test_recovery_jitter_within_absolute_floor_does_not_block(tmp_path):
+    """A tens-of-ms recovery baseline must not turn fsync jitter into a red gate.
+
+    Measured on the reference machine: 0.044 baseline, 0.044-0.070 across five
+    repeated runs. The old bound was 0.044 * 1.25 = 0.055, i.e. 11ms -- below
+    the jitter of a single hard-kill recovery.
+    """
+    baseline = tmp_path / "bench_baseline.json"
+    doc = {
+        "schema": bench.BASELINE_SCHEMA,
+        "default_profile": PROFILE_A,
+        "profiles": {PROFILE_A: _fake_run(1000, recovery_seconds=0.044)},
+    }
+    baseline.write_text(json.dumps(doc), encoding="utf-8")
+
+    status, failures, _, _ = bench.decide_gate(
+        str(baseline), PROFILE_A, _fake_run(1000, recovery_seconds=0.070), 0.25)
+
+    assert status == "GATE"
+    assert failures == [], f"jitter must not block, got {failures}"
+
+
+def test_recovery_real_regression_still_blocks(tmp_path):
+    """The floor must not hide a real slowdown: 0.12s vs a 0.044s baseline."""
+    baseline = tmp_path / "bench_baseline.json"
+    doc = {
+        "schema": bench.BASELINE_SCHEMA,
+        "default_profile": PROFILE_A,
+        "profiles": {PROFILE_A: _fake_run(1000, recovery_seconds=0.044)},
+    }
+    baseline.write_text(json.dumps(doc), encoding="utf-8")
+
+    status, failures, _, _ = bench.decide_gate(
+        str(baseline), PROFILE_A, _fake_run(1000, recovery_seconds=0.120), 0.25)
+
+    assert status == "GATE"
+    assert any("recovery.recovery_seconds" in f for f in failures), failures
 
 
 def test_profile_mismatch_skips_numeric_gate(tmp_path):
