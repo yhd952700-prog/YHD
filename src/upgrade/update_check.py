@@ -64,8 +64,16 @@ def update_check_interval_seconds() -> float:
 
 
 def default_app_root() -> Path:
-    raw = os.environ.get("LIUHAO_WORKSPACE_ROOT")
-    return Path(raw).resolve() if raw else Path(__file__).resolve().parents[2]
+    """程序根目录（安装树 / 源码仓库），不是用户工作区。
+
+    ``LIUHAO_APP_ROOT`` 可显式覆盖（测试与自定义安装用）。**不能**用
+    ``LIUHAO_WORKSPACE_ROOT``：安装版启动器把它指向 ``<data>/workspace``，
+    拿它当程序根会让升级检查错目录。
+    """
+    raw = os.environ.get("LIUHAO_APP_ROOT")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path(__file__).resolve().parents[2]
 
 
 def default_state_dir(app_root: Path | None = None) -> Path:
@@ -92,7 +100,9 @@ def build_manager_from_env() -> UpgradeManager:
     )
     config = UpgradeConfig(
         app_root=app_root,
-        data_dir=os.environ.get("LIUHAO_DATA_DIR") or None,
+        # 与 CLI 共用同一套解析：显式参数 > LIUHAO_DATA_DIR > 安装树默认
+        # （%LOCALAPPDATA%\LiuHao\data）> 便携/开发 <app>/data。
+        data_dir=None,
         backup_root=os.environ.get("LIUHAO_UPGRADE_BACKUP_ROOT") or None,
         state_dir=default_state_dir(app_root),
         source=source,

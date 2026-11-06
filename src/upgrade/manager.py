@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import shutil
 import tempfile
 import uuid
@@ -111,6 +112,39 @@ INSTALL_ROOTS = (
 _DEFAULT_INSTALL_ROOTS = INSTALL_ROOTS
 _IN_FLIGHT_PHASES = ("backing_up", "applying", "self_checking", "rolling_back")
 
+#: 安装树标志。``installer/liuhao.iss`` 把解释器装进 ``<app>/runtime``，
+#: 源码仓库与便携版没有这个目录。
+_INSTALL_MARKER = Path("runtime") / "python.exe"
+
+
+def default_data_dir(app_root: str | Path) -> Path:
+    """按安装器的真实规则解析用户数据目录。
+
+    安装树（``<app>/runtime/python.exe`` 存在）的数据固定落在
+    ``%LOCALAPPDATA%\\LiuHao\\data`` —— 与 ``installer/liuhao.iss`` 和
+    ``scripts/launch_installed.py`` 一致，不随程序目录升级移动；开发/便携
+    版没有安装器，运行数据仍在 ``<app-root>/data``。
+    """
+    root = Path(app_root).resolve()
+    if (root / _INSTALL_MARKER).is_file():
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        return (base / "LiuHao" / "data").resolve()
+    return root / "data"
+
+
+def resolve_data_dir(
+    app_root: str | Path, data_dir: str | Path | None = None
+) -> Path:
+    """显式参数 > ``LIUHAO_DATA_DIR`` > 安装树/便携默认。
+
+    CLI、HTTP API 和直接构造 ``UpgradeConfig`` 的调用方都走这里，避免
+    出现“CLI 检查一个库、API 检查另一个库”。
+    """
+    raw = data_dir if data_dir else os.environ.get("LIUHAO_DATA_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return default_data_dir(app_root)
+
 
 @dataclass
 class UpgradeConfig:
@@ -130,7 +164,7 @@ class UpgradeConfig:
 
     def __post_init__(self) -> None:
         self.app_root = Path(self.app_root).resolve()
-        self.data_dir = Path(self.data_dir).resolve() if self.data_dir else self.app_root / "data"
+        self.data_dir = resolve_data_dir(self.app_root, self.data_dir)
         self.backup_root = (
             Path(self.backup_root).resolve()
             if self.backup_root
@@ -644,10 +678,37 @@ class UpgradeManager:
                 source=source.description,
                 checked_at=datetime.now(timezone.utc).isoformat(),
             )
+        elif self.config.allow_same_or_downgrade:
+            # 允许重装/降级时，同版本或更低版本也是可安装目标：用户明确
+            # 要求“重装同一版修损坏”或回退到旧版，这里不能提前判成
+            # up_to_date，否则 --allow-same-or-downgrade 形同不存在。
+            direction = (
+                "低于当前版本"
+                if is_newer(current, latest.version)
+                else "与当前版本相同"
+            )
+            result = CheckResult(
+                status=CheckStatus.UPDATE_AVAILABLE,
+                message=f"目标版本 {latest.version} {direction} {current}，"
+                "已按允许重装/降级放行",
+                current_version=current,
+                latest_version=latest.version,
+                release=latest,
+                source=source.description,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+            )
         else:
+            message = f"已是最新版本 {current}"
+            if is_newer(current, latest.version):
+                # 清单里的最高版本比当前还低：不是“已是最新”，而是用户
+                # 手里版本更高。降级必须显式允许，不能悄悄装。
+                message = (
+                    f"当前版本 {current} 高于发布清单中的最高版本 {latest.version}；"
+                    "如需降级请显式允许（CLI：--allow-same-or-dowgrade）"
+                )
             result = CheckResult(
                 status=CheckStatus.UP_TO_DATE,
-                message=f"已是最新版本 {current}",
+                message=message,
                 current_version=current,
                 latest_version=latest.version,
                 release=latest,

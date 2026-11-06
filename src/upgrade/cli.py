@@ -35,7 +35,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--app-root", default=".", help="应用根目录（默认当前目录）")
-    common.add_argument("--data-dir", default=None, help="用户数据目录（默认 <app-root>/data）")
+    common.add_argument(
+        "--data-dir",
+        default=None,
+        help=(
+            "用户数据目录（默认按安装器规则解析：安装版 %LOCALAPPDATA%\\LiuHao\\data，"
+            "开发/便携版 <app-root>/data；LIUHAO_DATA_DIR 可覆盖）"
+        ),
+    )
     common.add_argument("--backup-root", default=None, help="备份目录（默认 <app-root>/upgrade-backups）")
     common.add_argument("--state-dir", default=None, help="状态目录（默认 <app-root>/upgrade-state）")
     common.add_argument(
@@ -223,7 +230,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         manager = _manager(args)
         check = manager.check()
-        _print_progress(check.message)
+        if not args.json:
+            _print_progress(check.message)
         if args.command == "check":
             _emit(args, check.to_dict())
             return 0 if check.status in (
@@ -234,7 +242,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             _emit(args, check.to_dict())
             return 0 if check.status is CheckStatus.UP_TO_DATE else 2
         download = manager.download(check.release)
-        _print_progress(download.signature_note)
+        if not args.json:
+            _print_progress(download.signature_note)
         try:
             result = manager.apply(download.path, check.release)
         finally:

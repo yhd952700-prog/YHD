@@ -121,14 +121,17 @@ def test_manager_from_env_reads_the_documented_variables(
     app_root = _setup_app(tmp_path / "app")
     release_dir = tmp_path / "releases"
     _release(release_dir, version="0.2.0")
-    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(app_root))
+    monkeypatch.setenv("LIUHAO_APP_ROOT", str(app_root))
     monkeypatch.setenv("LIUHAO_UPGRADE_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("LIUHAO_UPGRADE_BACKUP_ROOT", str(tmp_path / "backups"))
     monkeypatch.setenv("LIUHAO_UPGRADE_RELEASE_DIR", str(release_dir))
+    monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
 
     manager = build_manager_from_env()
     try:
         assert manager.config.app_root == app_root.resolve()
+        # 没有安装树标志 → 便携/开发规则：<app-root>/data
+        assert manager.config.data_dir == (app_root / "data").resolve()
         assert manager.config.source is not None
         assert manager.current_version()[0] == "0.1.0"
     finally:

@@ -46,7 +46,14 @@ Authorization: Bearer <token>
 | `LIUHAO_UPGRADE_RELEASE_DIR` | 本地发布目录（内含 `release-manifest.json` 与安装包） |
 | `LIUHAO_UPGRADE_MANIFEST_URL` | HTTP(S) 发布清单地址 |
 
-可选：`LIUHAO_UPGRADE_PUBLIC_KEY`（清单签名公钥）、`LIUHAO_UPGRADE_STATE_DIR`、`LIUHAO_UPGRADE_BACKUP_ROOT`、`LIUHAO_DATA_DIR`。
+可选：`LIUHAO_UPGRADE_PUBLIC_KEY`（清单签名公钥）、`LIUHAO_UPGRADE_STATE_DIR`、`LIUHAO_UPGRADE_BACKUP_ROOT`、`LIUHAO_DATA_DIR`、`LIUHAO_APP_ROOT`。
+
+**程序根与数据目录**与 CLI 使用同一套解析（`src.upgrade.manager.resolve_data_dir`）：
+
+- 程序根：`LIUHAO_APP_ROOT` > 代码所在安装根（`src/upgrade/update_check.py` 的 `parents[2]`）。**不要**用 `LIUHAO_WORKSPACE_ROOT`——安装版启动器把它指向 `<data>/workspace`，不是程序目录。
+- 数据目录：`LIUHAO_DATA_DIR` > 安装树（`<app-root>/runtime/python.exe` 存在）→ `%LOCALAPPDATA%\LiuHao\data` > 开发/便携版 `<app-root>/data`。
+- 因此安装版 API 检查/备份的是 `%LOCALAPPDATA%\LiuHao\data`，不是不存在的 `<app>/data`；CLI 与 API 不会再各检查一个库。
+- API 没有“允许重装/降级”入口：目标版本不高于当前版本时 `/apply` 仍返回 `409`（`code: "no_update_available"`），不会悄悄覆盖当前安装。需要重装/降级请用 CLI 的 `--allow-same-or-dowgrade`。
 
 没有配置更新源时**不会假装成功**：
 

@@ -28,6 +28,9 @@ python -m src.upgrade check --app-root . --manifest-url https://example.com/LIUH
 # 检查 → 下载 → 校验 → 备份 → 应用（失败自动回滚）
 python -m src.upgrade upgrade --app-root . --release-dir D:\releases
 
+# 重装同一版本（修损坏）或显式降级；不带这个开关时同版本/低版本一律不安装
+python -m src.upgrade upgrade --app-root . --release-dir D:\releases --allow-same-or-dowgrade
+
 # 查看当前状态（检查中/下载中/校验中/备份中/应用中/完成/失败/已回滚）
 python -m src.upgrade status --app-root .
 
@@ -57,7 +60,28 @@ python -m src.upgrade last-check --app-root .
 
 退出码：`0` 表示检查成功（有更新或已是最新）或操作成功；`2` 表示“无法检查更新/清单无效/未配置源”；`1` 表示执行失败（下载、校验、应用、回滚失败）。
 
-### 1.2 受控自改代码
+`--allow-same-or-dowgrade` 的真实行为：
+
+| 场景 | 不带开关 | 带开关 |
+| --- | --- | --- |
+| 清单最高版本 > 当前 | 正常升级，退出码 0 | 同左 |
+| 清单最高版本 = 当前 | `up_to_date`，退出码 0，**不写任何文件**（不会修复损坏） | `update_available`，真实下载/备份/应用/自检，退出码 0，版本不变 |
+| 清单最高版本 < 当前 | `up_to_date`，退出码 0，消息“当前版本 X 高于发布清单中的最高版本 Y；如需降级请显式允许” | `update_available`，真实降级，退出码 0，版本回退 |
+
+这个开关只放行“目标版本不高于当前版本”，不跳过任何校验：SHA256、版本可读、数据预检、磁盘空间、自检失败自动回滚都照旧执行。
+
+### 1.2 数据目录解析（安装版与开发版）
+
+升级器读写的是**用户数据目录**。CLI、HTTP API 与直接构造 `UpgradeConfig` 的调用方共用同一实现（`src.upgrade.manager.resolve_data_dir`），优先级：
+
+1. 显式 `--data-dir`（CLI）或 `UpgradeConfig(data_dir=...)`；
+2. 环境变量 `LIUHAO_DATA_DIR`；
+3. **安装树**（`<app-root>/runtime/python.exe` 存在）→ `%LOCALAPPDATA%\LiuHao\data`（与 `installer/liuhao.iss`、`scripts/launch_installed.py` 的规则一致）；
+4. 开发/便携版 → `<app-root>/data`。
+
+`--app-root` 是**程序目录**（安装版为 `%LOCALAPPDATA%\LiuHao\app`）。不要把 `LIUHAO_WORKSPACE_ROOT` 当程序根：安装版启动器把它指向 `<data>/workspace`。周检查/HTTP API 的程序根默认取代码所在安装根，可用 `LIUHAO_APP_ROOT` 覆盖。
+
+### 1.3 受控自改代码
 
 `edits.json` 是整文件编辑列表，`content: null` 表示删除文件：
 
@@ -272,7 +296,7 @@ python -m src.selfmod list
 | 本地发布目录不存在 / 缺少清单 | `unreachable` | 无法检查更新：发布目录不存在 / 发布目录中没有 LIUHAO_RELEASE.json（或 release-manifest.json） |
 | 清单 JSON/schema/字段非法 | `invalid_manifest` | 无法检查更新：发布清单无效（…） |
 
-**只有真正加载到合法清单并且版本不高于当前版本时，才返回“已是最新版本”。** `tests/test_upgrade_version_source.py` 用真实的本地 HTTP server 和 monkeypatch 断网覆盖了这些分支。
+**只有真正加载到合法清单时，才可能返回“已是最新版本”。** 版本不高于当前时分三种情况：同版本且未允许重装 → `up_to_date`“已是最新版本”；同版本且 `--allow-same-or-dowgrade` → `update_available`（重装）；清单最高版本低于当前 → `up_to_date`，但消息明确写“当前版本 X 高于发布清单中的最高版本 Y；如需降级请显式允许”，不会伪装成“已是最新”。`tests/test_upgrade_version_source.py` 用真实的本地 HTTP server 和 monkeypatch 断网覆盖了这些分支，`tests/test_upgrade_cli.py` 覆盖重装/降级开关。
 
 ---
 
@@ -529,7 +553,7 @@ python -m src.upgrade last-check --app-root .
 
 | 变量 | 作用 |
 | --- | --- |
-| `LIUHAO_WORKSPACE_ROOT` | 应用根目录（默认仓库根） |
+| `LIUHAO_APP_ROOT` | 程序根目录（默认代码所在安装根；**不要**用 `LIUHAO_WORKSPACE_ROOT`，它指向用户工作区） |
 | `LIUHAO_UPGRADE_RELEASE_DIR` | 本地发布目录 |
 | `LIUHAO_UPGRADE_MANIFEST_URL` | HTTP(S) 清单地址 |
 | `LIUHAO_UPGRADE_PUBLIC_KEY` | Ed25519 公钥（PEM 路径或 base64） |
