@@ -87,7 +87,11 @@ def _errors_text(errors: list[dict[str, Any]]) -> str:
     return "；".join(parts)
 
 
-def _log_hint(log_dir: Path | str | None) -> str:
+def _log_hint(log_dir: Path | str | None, hint: str | None = None) -> str:
+    # 不同壳的日志文件名不同（桌面壳是 desktop*.log，安装版启动器是
+    # liuhao.log/error.log），所以允许调用方自带提示，避免指到不存在的文件。
+    if hint:
+        return hint
     if log_dir:
         base = str(log_dir).rstrip("/\\")
         return f"{base}/desktop.log、{base}/desktop-gateway.log"
@@ -98,7 +102,8 @@ def describe_startup(result: dict[str, Any]) -> str:
     """把启动门结果翻译成用户能看懂的一句话（含可执行的下一步）。"""
     state = result.get("state")
     elapsed = result.get("elapsed", 0.0)
-    hint = _log_hint(result.get("log_dir"))
+    hint = _log_hint(result.get("log_dir"), result.get("log_hint") or None)
+    diag = result.get("diagnose_hint") or DIAGNOSE_HINT
     if state == "ready":
         text = f"已就绪（{elapsed}s）"
         if result.get("legacy"):
@@ -108,17 +113,17 @@ def describe_startup(result: dict[str, Any]) -> str:
         errors = _errors_text(list(result.get("errors") or []))
         return (
             f"核心可用，但后台组件未就绪（{elapsed}s）：{errors or '原因未上报'}"
-            f"。日志：{hint}；诊断包：{DIAGNOSE_HINT}"
+            f"。日志：{hint}；诊断包：{diag}"
         )
     if state == "timeout":
         stage = result.get("last_stage") or "未知"
         waited = float(result.get("timeout") or 0.0)
         return (
             f"等待 {waited:.0f}s 仍未就绪（最后阶段：{stage}）"
-            f"。日志：{hint}；诊断包：{DIAGNOSE_HINT}"
+            f"。日志：{hint}；诊断包：{diag}"
         )
     if state == "exited":
-        return f"网关进程在启动过程中退出。日志：{hint}；诊断包：{DIAGNOSE_HINT}"
+        return f"网关进程在启动过程中退出。日志：{hint}；诊断包：{diag}"
     return str(result.get("detail") or "启动未完成")
 
 
@@ -141,6 +146,8 @@ def _build_result(
     polls: int,
     timeout: float,
     log_dir: Path | str | None,
+    log_hint: str | None = None,
+    diagnose_hint: str | None = None,
 ) -> dict[str, Any]:
     body = snapshot.get("body")
     if not isinstance(body, dict):
@@ -161,15 +168,24 @@ def _build_result(
         "last_stage": _last_stage(snapshot),
         "console_ok": state in ENTER_STATES,
         "log_dir": str(log_dir) if log_dir else "",
+        "log_hint": log_hint or "",
+        "diagnose_hint": diagnose_hint or "",
     }
     result["detail"] = describe_startup(result)
     return result
 
 
-def unavailable_gate(reason: str | None, *, log_dir: Path | str | None = None) -> dict[str, Any]:
+def unavailable_gate(
+    reason: str | None,
+    *,
+    log_dir: Path | str | None = None,
+    log_hint: str | None = None,
+    diagnose_hint: str | None = None,
+) -> dict[str, Any]:
     """网关根本没起来（``start()`` 返回 False）时的统一结果。"""
-    hint = _log_hint(log_dir)
-    detail = f"{reason or '网关未启动'}。日志：{hint}；诊断包：{DIAGNOSE_HINT}"
+    hint = _log_hint(log_dir, log_hint)
+    diag = diagnose_hint or DIAGNOSE_HINT
+    detail = f"{reason or '网关未启动'}。日志：{hint}；诊断包：{diag}"
     return {
         "state": "failed",
         "elapsed": 0.0,
@@ -182,6 +198,8 @@ def unavailable_gate(reason: str | None, *, log_dir: Path | str | None = None) -
         "last_stage": "",
         "console_ok": False,
         "log_dir": str(log_dir) if log_dir else "",
+        "log_hint": log_hint or "",
+        "diagnose_hint": diagnose_hint or "",
         "detail": detail,
     }
 
@@ -191,6 +209,8 @@ def wait_until_ready(
     *,
     timeout: float = STARTUP_TIMEOUT,
     log_dir: Path | str | None = None,
+    log_hint: str | None = None,
+    diagnose_hint: str | None = None,
     is_alive: Callable[[], bool] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -228,6 +248,8 @@ def wait_until_ready(
                 polls=polls,
                 timeout=timeout,
                 log_dir=log_dir,
+                log_hint=log_hint,
+                diagnose_hint=diagnose_hint,
             )
         if is_alive is not None and not is_alive():
             return _build_result(
@@ -237,6 +259,8 @@ def wait_until_ready(
                 polls=polls,
                 timeout=timeout,
                 log_dir=log_dir,
+                log_hint=log_hint,
+                diagnose_hint=diagnose_hint,
             )
         if clock() - started_at >= timeout:
             return _build_result(
@@ -246,6 +270,8 @@ def wait_until_ready(
                 polls=polls,
                 timeout=timeout,
                 log_dir=log_dir,
+                log_hint=log_hint,
+                diagnose_hint=diagnose_hint,
             )
         sleep(interval)
         interval = min(MAX_INTERVAL, interval * 2)

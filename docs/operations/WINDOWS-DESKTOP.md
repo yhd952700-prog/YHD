@@ -175,6 +175,39 @@ stdin 管道协议**：
   不吞成"启动失败"。
 * 无法自动化验证的部分（真实浏览器/真实窗口）见 8.2 的手工步骤。
 
+### 2.7 安装器 / 快捷方式 / 托盘的真实链路（启动门覆盖到哪）
+
+用户点哪个图标、走哪条代码，必须能对上号，否则"首启不给错误页"只覆盖了一半：
+
+| 入口 | 实际链路 | 可见反馈 | 启动门 |
+|---|---|---|---|
+| 桌面 / 开始菜单快捷方式、安装完成页「立即启动」 | `{app}\LiuHao.bat` → `runtime\python.exe scripts\launch_installed.py` →（首次运行向导）→ `scripts/start_liuhao.py` | **控制台窗口**（阶段与进度逐行打印） | 是（`/v1/startup`，ready/degraded 才开浏览器） |
+| 托盘 / 开机自启 | `scripts/liuhao_desktop.py` → `src.desktop app` | 状态窗口 + 托盘图标 | 是（同一模块 `src/desktop/startup.py`） |
+
+证据（当前代码）：
+
+* `installer/liuhao.iss` 的 `[Icons]`（开始菜单）、桌面快捷方式与 `[Run]`
+  的「立即启动」三项都指向 `{app}\LiuHao.bat`；
+* `packaging/stage_payload.py` 生成的 `LiuHao.bat` 内容是
+  `runtime\python.exe scripts\launch_installed.py %*`；
+* `scripts/launch_installed.py` 的 `main()` 把参数原样交给
+  `scripts.start_liuhao.main()`（首次运行时先跑 `first_run_wizard`）；
+* `src/desktop/autostart.py` 的 `_entry()` 优先取 `scripts/liuhao_desktop.py`，
+  该脚本已在 `PAYLOAD_SCRIPTS` 里，因此安装版自启也是托盘壳。
+
+两条壳共用 `src/desktop/startup.py` 里的同一套判定（连接失败=`starting`、
+250→500ms 退避、ready/degraded 才放行、超时给日志与诊断命令），不会出现
+"快捷方式正常、托盘报错页"的分裂。差异只在**外壳形态**：快捷方式是控制台
+（首次运行向导需要交互），托盘是状态窗口。
+
+启动器侧的日志提示指向它真正写的文件（`logs/liuhao.log`、`logs/error.log`，
+安装版在 `%LOCALAPPDATA%\LiuHao\data\logs`），诊断命令统一走
+`scripts\liuhao_desktop.py diagnose --verify`——该入口会先把日志目录切到安装版
+布局，不会把用户指到空目录。
+
+**没有覆盖到的**：`LiuHao.bat` 本身仍是控制台启动器，不是托盘壳；改成托盘
+需要在打包侧换快捷方式目标，且首次运行向导会失去交互宿主，暂不做。
+
 ## 3. 开机自启
 
 * 只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，
@@ -186,11 +219,13 @@ stdin 管道协议**：
   | 布局 | 解释器 | 入口 | 行为 |
   |---|---|---|---|
   | 源码/开发目录 | `.venv\Scripts\pythonw.exe` | `scripts\liuhao_desktop.py` | 带 `--autostart`，常驻托盘，不弹浏览器 |
-  | 安装目录（无 `.venv`） | `runtime\pythonw.exe` | `scripts\launch_installed.py` | 带 `--no-browser`，自启网关与控制台 |
+  | 安装目录（无 `.venv`） | `runtime\pythonw.exe` | `scripts\liuhao_desktop.py` | 带 `--autostart`，常驻托盘（走启动门） |
+  | 旧载荷（缺桌面入口脚本） | `runtime\pythonw.exe` | `scripts\launch_installed.py` | 带 `--no-browser`，自启网关与控制台 |
   | 都找不到入口 | — | — | `autostart enable` **明确报错并拒绝写入**，不写一条注定失败的注册表命令 |
 
-  安装目录的 `runtime\pythonw.exe` 与 `launch_installed.py` 已在 `dist/payload/app`
-  实际存在；`build_command` 对两种布局都有单元测试（含路径带空格的引用）。
+  安装目录的 `runtime\pythonw.exe`、`scripts\liuhao_desktop.py` 与
+  `launch_installed.py` 已在构建产物 `dist-mid-20261106\payload\app` 实际存在；
+  `build_command` 对两种布局都有单元测试（含路径带空格的引用）。
 
 ```powershell
 # 开启（默认不打开浏览器）
@@ -209,15 +244,20 @@ stdin 管道协议**：
 # 源码目录
 "C:\...\.venv\Scripts\pythonw.exe" "C:\...\scripts\liuhao_desktop.py" --autostart
 
-# 安装目录（当前安装包未收录桌面入口脚本，只能走安装版启动器）
+# 安装目录（载荷已收录桌面入口：自启进托盘）
+"C:\...\app\runtime\pythonw.exe" "C:\...\app\scripts\liuhao_desktop.py" --autostart
+
+# 旧载荷没有桌面入口脚本时的退路（自启网关 + 控制台，不弹浏览器）
 "C:\...\app\runtime\pythonw.exe" "C:\...\app\scripts\launch_installed.py" --no-browser
 ```
 
-**安装版已知限制（如实记录）**：当前 `packaging/stage_payload.py` 的
-`PAYLOAD_SCRIPTS` 只收录 `start_liuhao.py` 与 `launch_installed.py`，**没有**
-`scripts/liuhao_desktop.py`。因此安装目录下无法"开机直接进托盘"，只能自启
-网关 + 控制台（`launch_installed.py --no-browser`）。要变成托盘自启，需要打包侧
-把 `scripts/liuhao_desktop.py` 加进载荷（不在本模块文件所有权内，已在此登记）。
+**安装版的入口选择**：`packaging/stage_payload.py` 的 `PAYLOAD_SCRIPTS` 已收录
+`scripts/liuhao_desktop.py`，`src/desktop/autostart.py` 的 `_entry()` 会优先选
+它，因此安装目录下自启走**托盘壳**（带启动门、不弹浏览器）；只有旧载荷缺这个
+脚本时才退回 `launch_installed.py`（控制台启动器）。构建产物已实测：
+`dist-mid-20261106\payload\app\scripts\liuhao_desktop.py` 与
+`runtime\pythonw.exe` 都在，`autostart enable` 的前置校验（安装目录内解释器
++ 安装目录内入口）能通过。
 
 ## 4. 防火墙与局域网可达性
 
@@ -342,9 +382,9 @@ shutdown，**没有强杀**。但"就绪状态下停止所需的 `elapsed`/`exit
 * 右键菜单的真实鼠标点击：`TrackPopupMenu` 阻塞等真人，按 2.3 的手工步骤验证。
 * 气泡肉眼可见性：只能断言 `Shell_NotifyIcon(NIF_INFO)` 提交成功，系统通知设置
   可能吞掉气泡。
-* 安装目录整机自启：已用假安装布局单测 `runtime\pythonw.exe` +
-  `launch_installed.py --no-browser`；但安装包当前不含 `scripts/liuhao_desktop.py`，
-  无法在安装版验证"托盘自启"（见第 3 节限制）。
+* 安装目录整机自启：假安装布局单测覆盖 `runtime\pythonw.exe` + 两个入口；
+  构建产物已含 `scripts\liuhao_desktop.py`，托盘自启链路由 `autostart enable`
+  的写前校验兜住；真机开机自启仍需装一次实测。
 
 ### 8.1 CI 回归修复：`port_is_free` 把 TIME_WAIT 误判成"占用"（2026-11-06）
 
@@ -460,3 +500,69 @@ pytest tests/desktop -q        → 30 passed, 4 skipped in 16.17s
 
 degraded / 超时的真实窗口表现见上表（自动化已覆盖文案与"是否叫浏览器"的决策，
 窗口渲染本身需要真人看一遍）。
+
+### 8.3 安装版快捷方式接上启动门（2026-11-06）
+
+**核实结论**：安装器交付的快捷方式**不是**桌面壳，而是控制台启动器；启动门
+原先只覆盖托盘链路，首启"错误页"风险实际落在快捷方式这条线上。
+
+| 入口 | 代码链路 | 修复前 | 修复后 |
+|---|---|---|---|
+| 桌面 / 开始菜单快捷方式、安装完成页「立即启动」 | `installer/liuhao.iss` → `{app}\LiuHao.bat` → `runtime\python.exe scripts\launch_installed.py` →（首跑向导）→ `scripts/start_liuhao.py` | 等 `/v1/health` 200 后开浏览器；degraded 的后台失败原因看不到；超时只说"详见上方进程输出" | 等 `/v1/startup`：连接失败=启动中，ready/degraded 才开浏览器，degraded 原样打印 `background.errors`，超时/退出给日志路径 + 诊断命令 |
+| 托盘 / 开机自启 | `scripts/liuhao_desktop.py` → `src.desktop app` | 已有启动门 | 不变（与上面共用 `src/desktop/startup.py`） |
+
+**改动**
+
+* `src/desktop/startup.py`：`wait_until_ready()` / `unavailable_gate()` /
+  `describe_startup()` 增加可选 `log_hint`、`diagnose_hint`。不同外壳日志文件名
+  不同（桌面壳 `desktop*.log`、安装版启动器 `liuhao.log/error.log`），否则会把
+  用户指到不存在的文件。默认值不变，桌面壳行为无改动。
+* `scripts/start_liuhao.py`：新增 `_wait_gateway_ready()`，用同一启动门；
+  `main()` 从"等 `/v1/health`"改为"等 `/v1/startup`"，只有 ready/degraded 才
+  继续走到开浏览器；超时/进程退出返回非零并打印终点提示。单端口驾驶舱检查
+  失败时也补上日志路径。
+* `src/desktop/autostart.py`：只更正文档字符串（载荷已收录桌面入口，安装版自启
+  是托盘链路）。
+
+**真实复验**（本机 Windows，跑真网关 / 真 uvicorn；脚本不进仓库）
+
+```
+=== [1] installer 链路：launch_installed --skip-wizard → start_liuhao（真网关，端口 8125）===
+  [..] 网关启动中：连接失败按「启动中」处理，就绪后才打开浏览器
+       等待端口监听（已 2.0s）
+       核心就绪（登录/对话/模型配置可用），对话链转入后台预热（已 3.4s）
+  [ok] 网关就绪（3.39s）
+  [ok] 驾驶舱（同端口） 就绪（0.0s，HTTP 200）
+  main exit=0  wall=3.92s
+  开浏览器那一刻再次探测 /v1/startup：state=ready
+  → 浏览器在"未就绪"时一次都没被打开
+
+=== [degraded] 真网关（background.errors 有真实原因）===
+  [warn] 核心可用，但后台组件未就绪（1.58s）：情报：SMTP 未配置：缺少 smtp_host
+  wall=1.58s，console_ok=True（仍进控制台，不卡门口）
+  → 超时/退出会返回 None（不开浏览器）并打印日志与诊断命令
+
+=== [timeout] stuck 网关（启动门上限压到 3s）===
+  [FAIL] 等待 3s 仍未就绪（最后阶段：核心）。日志：…\logs\liuhao.log、…\logs\error.log
+         ；诊断包：<python> scripts\liuhao_desktop.py diagnose --verify
+  wall=3.48s，返回 None
+
+=== [exited] 网关进程中途退出 ===
+  [FAIL] 网关进程在启动过程中退出。日志：…；诊断包：…
+```
+
+自动化：
+
+```
+pytest tests/desktop tests/test_start_liuhao.py -q  → 44 passed in 38.22s
+ruff check src/desktop scripts/start_liuhao.py tests/test_start_liuhao.py
+                                                    → All checks passed!
+```
+
+新增 5 个启动器用例（`tests/test_start_liuhao.py`）：ready/degraded 才返回结果、
+degraded 原因原样打印、timeout/exited 返回 None 且打印终点、日志提示指向
+`liuhao.log/error.log` 而非 `desktop.log`、`describe_startup` 优先用调用方提示。
+
+**分发流需重测**：安装包重新构建后，双击桌面快捷方式（或安装完成页「立即启动」）
+首启应看到控制台逐行进度、就绪后才打开控制台页面；`logs\liuhao.log` 与
+`logs\error.log` 出现在数据目录。托盘自启路径未改，但建议一并确认自启进托盘。

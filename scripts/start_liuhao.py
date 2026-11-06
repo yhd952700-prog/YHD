@@ -12,6 +12,9 @@
 设计约束：
   * 不依赖 Docker（本机 Docker daemon 常常没起），走原生进程。
   * 本机有 HTTP 代理，所有本机探测必须显式绕代理，否则会误报不通。
+  * 就绪判定走与桌面壳同一套启动门（``src/desktop/startup.py``）：网关在导入
+    路由之后才绑定端口，绑定前浏览器只能拿到连接失败，因此**连接失败按
+    「启动中」处理**，只有 ``/v1/startup`` 的 ready/degraded 才打开浏览器。
   * Ctrl+C 时把子进程一起带走，不留孤儿 uvicorn / vite。
   * --https 会在控制台之上叠加一个本地 TLS 反向代理（scripts/ops/https_proxy.py），
     用于让手机端 PWA 处于安全上下文、从而能「安装应用 / 添加到主屏幕」。
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import ipaddress
 import os
 import shutil
@@ -199,7 +203,7 @@ def _no_proxy_opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _wait_http_ok(url: str, timeout: float, label: str) -> bool:
+def _wait_http_ok(url: str, timeout: float, label: str, hint: str = "") -> bool:
     opener = _no_proxy_opener()
     deadline = time.monotonic() + timeout
     waited = 0.0
@@ -213,8 +217,70 @@ def _wait_http_ok(url: str, timeout: float, label: str) -> bool:
             pass
         time.sleep(POLL_INTERVAL_S)
         waited += POLL_INTERVAL_S
-    print(f"  [FAIL] {label} 在 {timeout:.0f}s 内没起来，详见上方进程输出")
+    print(f"  [FAIL] {label} 在 {timeout:.0f}s 内没起来")
+    if hint:
+        print(f"         {hint}")
     return False
+
+
+def _gate_log_hint() -> str:
+    """启动失败时给用户看的日志路径（安装版落在数据目录，不是程序目录）。"""
+    base = str(LOG_DIR).rstrip("/\\")
+    return f"{os.path.join(base, 'liuhao.log')}、{os.path.join(base, 'error.log')}"
+
+
+def _gate_diagnose_hint() -> str:
+    """可照抄执行的诊断命令：走与托盘同一个入口，日志目录才不会被指错。"""
+    entry = Path(__file__).resolve().parent / "liuhao_desktop.py"
+    return f'"{_venv_python()}" "{entry}" diagnose --verify'
+
+
+def _wait_gateway_ready(
+    probe_base: str, proc: subprocess.Popen, label: str = "网关"
+) -> dict | None:
+    """等网关 ``GET /v1/startup`` 到 ready/degraded。
+
+    与桌面壳共用 ``src/desktop/startup.py``：端口绑定前浏览器拿到的是**连接失败**，
+    这里把它当 ``starting`` 继续等；只有 ``ready``/``degraded`` 才返回结果
+    （调用方据此才允许打开浏览器）。``degraded`` 会把 ``background.errors``
+    原样打出来，不吞成"启动失败"。
+
+    超时或进程中途退出时返回 None，并打印终点提示（日志路径 + 诊断命令），
+    不无限转圈。
+    """
+    from src.desktop.startup import wait_until_ready
+
+    print(f"  [..] {label}启动中：连接失败按「启动中」处理，就绪后才打开浏览器")
+    state = {"stage": "", "elapsed": -5.0}
+
+    def on_progress(snapshot: dict) -> None:
+        stage = snapshot.get("last_stage") or (
+            "等待端口监听" if not snapshot.get("reachable") else "等待核心就绪"
+        )
+        elapsed = float(snapshot.get("elapsed") or 0.0)
+        # 阶段变化立刻打印；同一阶段每 5 秒报一次进度，避免刷屏。
+        if stage != state["stage"] or elapsed - state["elapsed"] >= 5.0:
+            print(f"       {stage}（已 {elapsed:.1f}s）", flush=True)
+            state["stage"] = stage
+            state["elapsed"] = elapsed
+
+    result = wait_until_ready(
+        probe_base,
+        timeout=STARTUP_TIMEOUT_S,
+        log_dir=LOG_DIR,
+        log_hint=_gate_log_hint(),
+        diagnose_hint=_gate_diagnose_hint(),
+        is_alive=lambda: proc.poll() is None,
+        on_progress=on_progress,
+    )
+    if result.get("console_ok"):
+        if result.get("state") == "degraded":
+            print(f"  [warn] {result.get('detail')}", flush=True)
+        else:
+            print(f"  [ok] {label}就绪（{result.get('elapsed')}s）", flush=True)
+        return result
+    print(f"  [FAIL] {result.get('detail')}", flush=True)
+    return None
 
 
 def _spawn(cmd: list[str], cwd: Path, label: str, env: dict | None = None) -> subprocess.Popen:
@@ -351,7 +417,7 @@ def main() -> int:
     print("=" * 62)
 
     print("[1/2] 网关（FastAPI / uvicorn）")
-    _spawn(
+    gateway = _spawn(
         [
             _venv_python(),
             "-u",
@@ -368,7 +434,8 @@ def main() -> int:
         ROOT,
         "gateway",
     )
-    if not _wait_http_ok(f"{probe_api_base}/v1/health", STARTUP_TIMEOUT_S, "网关"):
+    # 连接失败 = 还在启动（端口在路由导入后才绑定），必须等 /v1/startup 给结论。
+    if _wait_gateway_ready(probe_api_base, gateway) is None:
         _shutdown_all()
         return 1
 
@@ -391,7 +458,12 @@ def main() -> int:
             return 1
         print("[2/2] 驾驶舱由网关直接服务（单端口）")
         print(f"      源: {dist}")
-        if not _wait_http_ok(probe_api_base + "/", STARTUP_TIMEOUT_S, "驾驶舱（同端口）"):
+        if not _wait_http_ok(
+            probe_api_base + "/",
+            STARTUP_TIMEOUT_S,
+            "驾驶舱（同端口）",
+            hint=f"日志：{_gate_log_hint()}",
+        ):
             _shutdown_all()
             return 1
     else:
@@ -415,7 +487,9 @@ def main() -> int:
             CONSOLE_DIR,
             "console",
         )
-        if not _wait_http_ok(probe_ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱"):
+        if not _wait_http_ok(
+            probe_ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱", hint=f"日志：{_gate_log_hint()}"
+        ):
             _shutdown_all()
             return 1
         _wait_http_ok(f"{probe_ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
@@ -434,10 +508,8 @@ def main() -> int:
     print("=" * 62)
 
     if not args.no_browser:
-        try:
+        with contextlib.suppress(webbrowser.Error):
             webbrowser.open(probe_ui_base)
-        except webbrowser.Error:
-            pass
 
     return _serve_forever()
 

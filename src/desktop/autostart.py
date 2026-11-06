@@ -9,10 +9,11 @@
   * 写入的命令使用 ``pythonw.exe``（无控制台窗口）。解释器按布局解析：
     开发目录用虚拟环境里的 ``pythonw.exe``；安装目录用
     ``runtime\\pythonw.exe``（安装包没有虚拟环境）；都没有时退回当前解释器
-    同目录的 pythonw。入口同理：源码目录用 ``scripts/liuhao_desktop.py``
-    （带 ``--autostart``，起托盘）；安装目录退回
-    ``scripts/launch_installed.py``（安装包未收录桌面入口脚本），行为是
-    "自启网关与控制台、不弹浏览器"。
+    同目录的 pythonw。
+  * 入口优先 ``scripts/liuhao_desktop.py``（带 ``--autostart``，起托盘，走
+    启动门）；安装包载荷已收录该脚本，所以安装版自启同样是托盘链路。
+    只有该脚本确实不存在（旧载荷）时才退回 ``scripts/launch_installed.py``
+    （控制台启动器，安装版首次运行向导也由它负责）。
 """
 
 from __future__ import annotations

@@ -83,3 +83,121 @@ def test_backend_only_and_vite_are_mutually_exclusive(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         sl.main()
     assert exc.value.code != 0
+
+
+class _Proc:
+    """网关子进程的最小替身：``_wait_gateway_ready`` 只用到 poll()。"""
+
+    def __init__(self, code: int | None = None) -> None:
+        self._code = code
+
+    def poll(self) -> int | None:
+        return self._code
+
+
+def _gate_result(**overrides):
+    base = {
+        "state": "ready",
+        "elapsed": 3.71,
+        "polls": 12,
+        "timeout": sl.STARTUP_TIMEOUT_S,
+        "reachable": True,
+        "legacy": False,
+        "errors": [],
+        "background": {},
+        "last_stage": "核心就绪",
+        "console_ok": True,
+        "log_dir": "",
+        "log_hint": "",
+        "diagnose_hint": "",
+        "detail": "已就绪（3.71s）",
+    }
+    base.update(overrides)
+    return base
+
+
+def _patch_gate(monkeypatch, result, seen: dict | None = None):
+    def fake_wait(base_url, **kwargs):
+        if seen is not None:
+            seen.update(kwargs)
+        return result
+
+    monkeypatch.setattr("src.desktop.startup.wait_until_ready", fake_wait)
+
+
+def test_launcher_enters_on_ready_and_degraded_only(monkeypatch, capsys):
+    """安装版快捷方式链路：ready/degraded 才返回结果（调用方据此开浏览器）。"""
+    _patch_gate(monkeypatch, _gate_result())
+    result = sl._wait_gateway_ready("http://127.0.0.1:8080", _Proc(), "网关")
+    assert result is not None
+    assert result["console_ok"] is True
+    out = capsys.readouterr().out
+    assert "启动中：连接失败按「启动中」处理" in out
+    assert "[ok] 网关就绪（3.71s）" in out
+
+    degraded = _gate_result(
+        state="degraded",
+        detail="核心可用，但后台组件未就绪（1.5s）：情报：SMTP 未配置：缺少 smtp_host",
+        console_ok=True,
+    )
+    _patch_gate(monkeypatch, degraded)
+    result = sl._wait_gateway_ready("http://127.0.0.1:8080", _Proc(), "网关")
+    assert result is not None
+    assert result["state"] == "degraded"
+    out = capsys.readouterr().out
+    assert "[warn]" in out
+    # 真实原因必须原样打出来，不许吞成"启动失败"。
+    assert "SMTP 未配置：缺少 smtp_host" in out
+
+
+def test_launcher_timeout_and_exit_stop_with_hints(monkeypatch, capsys):
+    """超时/进程退出必须返回 None（不开浏览器），并给出日志与诊断终点。"""
+    timeout_result = _gate_result(
+        state="timeout",
+        console_ok=False,
+        detail="等待 120s 仍未就绪（最后阶段：核心初始化）。日志：logs/liuhao.log、logs/error.log",
+    )
+    _patch_gate(monkeypatch, timeout_result)
+    assert sl._wait_gateway_ready("http://127.0.0.1:8080", _Proc(), "网关") is None
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "liuhao.log" in out
+    assert "仍未就绪" in out
+
+    _patch_gate(monkeypatch, _gate_result(state="exited", console_ok=False, detail="网关进程在启动过程中退出"))
+    assert sl._wait_gateway_ready("http://127.0.0.1:8080", _Proc(code=1), "网关") is None
+    out = capsys.readouterr().out
+    assert "网关进程在启动过程中退出" in out
+
+
+def test_launcher_gate_uses_launcher_logs_and_same_diagnose_entry(monkeypatch):
+    """日志提示必须指向启动器真实写的文件，诊断命令走托盘同一入口。"""
+    seen: dict = {}
+    _patch_gate(monkeypatch, _gate_result(), seen)
+    proc = _Proc()
+    sl._wait_gateway_ready("http://127.0.0.1:8080", proc, "网关")
+    assert seen["timeout"] == sl.STARTUP_TIMEOUT_S
+    assert "liuhao.log" in seen["log_hint"]
+    assert "desktop.log" not in seen["log_hint"]
+    assert "liuhao_desktop.py" in seen["diagnose_hint"]
+    assert "diagnose --verify" in seen["diagnose_hint"]
+    assert seen["log_dir"] == sl.LOG_DIR
+    assert seen["is_alive"]() is True
+
+
+def test_describe_startup_prefers_caller_log_hint():
+    from src.desktop.startup import describe_startup
+
+    text = describe_startup(
+        {
+            "state": "timeout",
+            "elapsed": 120.0,
+            "timeout": 120.0,
+            "last_stage": "核心初始化",
+            "log_hint": "data/logs/liuhao.log、data/logs/error.log",
+            "diagnose_hint": "runtime/python.exe scripts/liuhao_desktop.py diagnose --verify",
+        }
+    )
+    assert "liuhao.log" in text
+    assert "liuhao_desktop.py diagnose --verify" in text
+    assert "desktop.log" not in text
