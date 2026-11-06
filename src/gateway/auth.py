@@ -110,7 +110,7 @@ _failures_lock = threading.Lock()
 class AuthError(Exception):
     """A login failure carrying the HTTP status the endpoint should report."""
 
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, detail: Any):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
@@ -450,7 +450,17 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
             pid,
             {"reason": "not_a_human_identity", "client": client_value},
         )
-        raise AuthError(403, "该主体不是可登录的人类身份（需 metadata.kind=human 且状态 ACTIVE）")
+        node = _account_node(pid)
+        if node is not None and node.status != "active":
+            # 停用/删除的账号：登录阶段就拒绝，并给出稳定业务码与中性文案
+            # （不暴露"已被谁停用/为什么"）。
+            raise AuthError(
+                403, {"code": "ACCOUNT_UNAVAILABLE", "message": "该账号当前不可用"}
+            )
+        raise AuthError(
+            403,
+            {"code": "AUTH_NOT_HUMAN", "message": "该主体不是可登录的账号"},
+        )
 
     permissions = sorted(identity.permissions)
     ttl = _ttl_seconds()
@@ -479,24 +489,45 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
 def _effective_scope(identity) -> str:
     """Return the scope a *token* may carry for this identity.
 
-    The identity kernel registers every human as ``L0`` (human-only
-    sovereignty), which used to turn any newly created account into a
-    sovereign administrator. L0 is therefore downgraded unless the identity
-    was **explicitly** granted the ``owner`` permission:
+    **定稿（docs/account-hierarchy.md §2.4）**：账号树内的 scope 由 **depth**
+    派生 —— 根 L0、子 L1、孙 L2……封顶 L7。这样成员的 clearance 与"能管理
+    自己直接下级"一致，而不是被一律压成 L7。
 
-    * ``owner``  -> the stored scope (L0 allowed)
-    * ``admin``  -> ``L1`` (administrative role, but not sovereignty)
-    * anything else -> ``L7`` (lowest permission; login still works)
-
-    Authorisation checks only ever *add* requirements on top of this, so a
-    downgrade cannot be undone by an unknown claim.
+    没有账号节点的老部署保持原语义：显式 ``owner`` 保留存库 scope；
+    ``admin/administrator`` → L1；其余 → L7（最低权限；登录仍可用）。
+    派生失败或 depth 越界时 fail-closed 到 L7，绝不默认提升。
     """
+    depth_scope = _depth_scope(identity)
+    if depth_scope is not None:
+        return depth_scope
     permissions = {str(p).lower() for p in (identity.permissions or [])}
     if "owner" in permissions:
         return identity.scope.value
     if permissions & {"admin", "administrator"}:
         return "L1"
     return "L7"
+
+
+def _depth_scope(identity) -> Optional[str]:
+    """账号树内按 depth 派生 clearance；树外 / 异常返回 ``None``（走旧口径）。"""
+    principal = str(getattr(identity, "principal", "") or "")
+    if not principal:
+        return None
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        node = get_identity_manager().get_account(principal)
+    except Exception:  # noqa: BLE001 - 派生失败不得阻断登录
+        return None
+    if node is None:
+        return None
+    try:
+        depth = int(node.depth)
+    except (TypeError, ValueError):
+        return "L7"
+    if depth < 0:
+        return "L7"
+    return f"L{min(depth, 7)}"
 
 
 def _issue_token(principal, identity, client, permissions, ttl, scope):
@@ -518,6 +549,16 @@ def _issue_token(principal, identity, client, permissions, ttl, scope):
         },
         device_id=client,
     )
+
+
+def _account_node(principal: str):
+    """账号节点（不存在时 ``None``）；账号内核异常不得影响认证。"""
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        return get_identity_manager().get_account(principal)
+    except Exception:  # noqa: BLE001 - 账号内核不可用按老部署处理
+        return None
 
 
 def _account_epoch(principal: str) -> int:
@@ -621,10 +662,18 @@ def auth_me(payload=Depends(require_bearer_payload)) -> Dict[str, Any]:
     principal = str(getattr(payload, "sub", "") or "")
     identity = _human_identity(principal)
     metadata = (identity.metadata or {}) if identity is not None else {}
+    token_metadata = getattr(payload, "metadata", None)
+    token_metadata = token_metadata if isinstance(token_metadata, dict) else {}
+    # 口径统一：``/auth/login`` 返回的是**签进令牌**的 scope，``/auth/me`` 也读
+    # 同一份令牌声明（而不是身份库里另一个 clearance 字段），否则同一主体会
+    # 出现"登录 L7、自述 L3"的两套答案。令牌缺失该声明时才按当前规则派生。
+    effective_scope = token_metadata.get("scope")
+    if not effective_scope and identity is not None:
+        effective_scope = _effective_scope(identity)
     return {
         "principal": principal,
         "display_name": metadata.get("display_name"),
-        "scope": identity.scope.value if identity is not None else None,
+        "scope": effective_scope,
         "permissions": sorted(identity.permissions) if identity is not None else [],
         "status": identity.status.value if identity is not None else None,
         "registered_at": metadata.get("registered_at"),

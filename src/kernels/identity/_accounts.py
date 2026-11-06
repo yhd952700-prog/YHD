@@ -604,6 +604,8 @@ def tree_view(
             "principal": node.principal,
             "permissions": sorted(node.permissions),
             "status": node.status,
+            "created_at": node.created_at,
+            "key_auth_source": node.key_auth_source,
             "allow_superior_key_use": bool(node.allow_superior_key_use),
             "children": children,
         }

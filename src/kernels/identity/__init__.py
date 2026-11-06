@@ -1808,11 +1808,20 @@ class IdentityManager:
     def set_key_sharing(
         self, actor: str, target: str, allow: bool
     ) -> _accounts.AccountNode:
-        """设置成员是否允许其 Key 被上方账号使用（可撤销）。"""
+        """设置成员是否允许其 Key 被上方账号使用（可撤销）。
+
+        规格 §5.2：本人可在自己的 Key 设置中随时开启/撤销，不需要管理者身份；
+        管理者也可代为调整。
+        """
         with self._lock:
-            node = self._require_can_manage(
-                actor=actor, target=target, action="key.sharing.update"
-            )
+            if actor == target:
+                node = self._accounts.get(actor)
+                if node is None:
+                    raise _accounts.neutral_denied()
+            else:
+                node = self._require_can_manage(
+                    actor=actor, target=target, action="key.sharing.update"
+                )
             if node.parent_id is None:
                 # 根没有"上方账号"，该开关对根没有意义。
                 raise _accounts.AccountError(
@@ -1821,7 +1830,11 @@ class IdentityManager:
             updated = node.with_changes(
                 allow_superior_key_use=bool(allow),
                 key_auth_source="explicit_toggle",
-            ).bump("key-sharing")
+            )
+            if actor != target:
+                # 管理者代改他人共享 → 对方旧令牌即时失效（需要重新登录）。
+                # 本人改自己的开关不影响自己的凭据，不 bump，避免自锁。
+                updated = updated.bump("key-sharing")
             self._accounts[target] = updated
             self._persist_account(updated)
             self._account_audit(

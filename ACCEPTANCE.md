@@ -31,8 +31,8 @@
    - `GET :5173/v1/health` → 200（代理转发到 :8080 正常）；
    - `GET :5173/v1/ready` → 200（代理转发到 :8080 正常）。
 4. **鉴权门是活的**（对受保护路由生效）：
-   - `POST /v1/chat` 无令牌 → **401** `missing bearer token`；
-   - `POST /v1/chat` 带伪造令牌 → **401** `invalid bearer token: Not enough segments`；
+   - `POST /v1/chat` 无令牌 → **401** `{code: AUTH_UNAUTHORIZED, message: 未提供访问令牌，请先登录}`；
+   - `POST /v1/chat` 带伪造令牌 → **401** `{code: AUTH_TOKEN_INVALID, message: 访问令牌无效或已过期，请重新登录}`；
    - `POST /v1/auth/login {principal:boss,secret:x}` → **401** `凭据无效`（端点可达，凭据不可伪造）。
 5. **模型后端真实可用（非 mock）**：直连 Ollama `qwen2.5:3b` 生成，返回真实推理文本
    `我是一个阿里云开发的预训练模型，今天是星期五。`（`eval_count=16`）。

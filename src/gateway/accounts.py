@@ -331,7 +331,13 @@ def update_key_sharing(
     node = _kernel_call(
         get_identity_manager().set_key_sharing, context.principal, principal, payload.allow
     )
-    return {"account": _public_member(node)}
+    response: Dict[str, Any] = {"account": _public_member(node)}
+    if principal != context.principal:
+        # 共享授权变化会 +1 security_epoch：对方已签发的令牌在下一个请求失效。
+        # 这是有意保留的安全行为（权限变更即时生效），但必须显式告知操作者。
+        response["requires_reauth"] = True
+        response["notice"] = "共享设置已更新；该成员当前的登录凭据已失效，需要重新登录。"
+    return response
 
 
 @router.patch("/{principal}/status")

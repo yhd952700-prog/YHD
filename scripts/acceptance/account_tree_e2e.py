@@ -679,6 +679,103 @@ def audit_isolation(report: Report, inst: Instance, tokens: Dict[str, Any]) -> N
     report.check(item, "读隔离不破坏哈希链", (status, body.get("ok")), (200, True))
 
 
+def frontend_feedback(
+    report: Report, inst: Instance, tokens: Dict[str, Any]
+) -> None:
+    """前端联调六项（B1-B6）的真实 HTTP 验证。"""
+    item = "前端联调 B1-B6"
+
+    # B4：无令牌 / 坏令牌 → 401 + 业务码 + 中文中性文案
+    status, body = request("GET", inst.base + "/v1/auth/me")
+    message = str(body.get("message") or body.get("detail") or "")
+    report.check(item, "B4 无令牌 401 结构化", (status, body.get("code")), (401, "AUTH_UNAUTHORIZED"))
+    report.check(item, "B4 文案中文且无协议细节", "bearer" not in message.lower(), True, message)
+
+    status, body = request(
+        "GET", inst.base + "/v1/auth/me", token="not.a.jwt"
+    )
+    message = str(body.get("message") or body.get("detail") or "")
+    report.check(item, "B4 坏令牌 401 结构化", (status, body.get("code")), (401, "AUTH_TOKEN_INVALID"))
+    report.check(item, "B4 坏令牌文案不泄漏解析细节", "segment" not in message.lower(), True, message)
+
+    # B5：登录 scope 与 /auth/me 必须同一口径（账号树内按 depth 派生）
+    status, login = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "member1", "secret": PASSWORDS[1]},
+    )
+    login_scope = login.get("scope")
+    status, me = request("GET", inst.base + "/v1/auth/me", token=login.get("access_token") or "")
+    report.check(item, "B5 登录/自述 scope 一致", (login_scope, me.get("scope")), (login_scope, login_scope))
+    report.check(item, "B5 成员 scope 按 depth 派生", login_scope, "L1")
+    tokens["member"] = login.get("access_token") or tokens["member"]
+
+    # B1：本人可开关自己的 Key 共享，且不吊销自己的令牌
+    status, body = request(
+        "PATCH", inst.base + "/v1/accounts/member1/key-sharing",
+        {"allow": True}, token=tokens["member"],
+    )
+    report.check(item, "B1 本人开关共享 200", status, 200, f"code={body.get('code')}")
+    account = body.get("account") or {}
+    report.check(item, "B1 开关已生效", account.get("allow_superior_key_use"), True)
+    status, _ = request("GET", inst.base + "/v1/auth/me", token=tokens["member"])
+    report.check(item, "B1 本人令牌未被吊销", status, 200)
+
+    # B2：管理者代改共享 → 对方旧令牌失效，响应显式告知需重新登录
+    status, body = request(
+        "PATCH", inst.base + "/v1/accounts/member1/key-sharing",
+        {"allow": False}, token=tokens["root"],
+    )
+    report.check(item, "B2 代改共享 200 + requires_reauth", (status, body.get("requires_reauth")), (200, True))
+    report.check(item, "B2 响应含重新登录提示", "重新登录" in str(body.get("notice") or ""), True, body.get("notice"))
+    status, body = request("GET", inst.base + "/v1/auth/me", token=tokens["member"])
+    report.check(item, "B2 对方旧令牌即时失效", (status, body.get("code")), (401, "CREDENTIAL_STALE"))
+
+    status, relogin = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "member1", "secret": PASSWORDS[1]},
+    )
+    report.check(item, "B2 对方重新登录成功", status, 200)
+    tokens["member"] = relogin.get("access_token") or tokens["member"]
+
+    # B6：根侧树节点补齐 created_at / key_auth_source
+    status, body = request("GET", inst.base + "/v1/accounts/tree", token=tokens["root"])
+    nodes: List[Dict[str, Any]] = []
+
+    def walk(node: Dict[str, Any]) -> None:
+        nodes.append(node)
+        for child in node.get("children") or []:
+            walk(child)
+
+    walk((body.get("tree") or {}))
+    report.check(item, "B6 树节点带 created_at", all(n.get("created_at") for n in nodes), True)
+    report.check(item, "B6 树节点带 key_auth_source", all(n.get("key_auth_source") for n in nodes), True)
+
+    # B3：暂停账号登录 403 + 业务码 + 中性文案；恢复后可登录
+    status, body = request(
+        "PATCH", inst.base + "/v1/accounts/grand1/status",
+        {"status": "suspended", "reason": "acceptance"}, token=tokens["root"],
+    )
+    report.check(item, "B3 暂停账号", status, 200)
+    status, body = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "grand1", "secret": PASSWORDS[2]},
+    )
+    message = str(body.get("message") or body.get("detail") or "")
+    report.check(item, "B3 暂停登录 403 + 业务码", (status, body.get("code")), (403, "ACCOUNT_UNAVAILABLE"))
+    report.check(item, "B3 暂停文案中性", neutral(message), True, message)
+
+    status, _ = request(
+        "PATCH", inst.base + "/v1/accounts/grand1/status",
+        {"status": "active", "reason": "acceptance"}, token=tokens["root"],
+    )
+    status, relogin = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "grand1", "secret": PASSWORDS[2]},
+    )
+    report.check(item, "B3 恢复后可登录", (status, relogin.get("principal")), (200, "grand1"))
+    tokens["grand"] = relogin.get("access_token") or tokens["grand"]
+
+
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "删除"
     status, body = request(
@@ -749,6 +846,7 @@ def main() -> int:
         file_isolation(report, inst, tokens)
         session_isolation(report, inst, tokens, usage["model_id"])
         audit_isolation(report, inst, tokens)
+        frontend_feedback(report, inst, tokens)
 
         export_path = os.path.join(inst.root, "export-all.json")
         with open(export_path, "w", encoding="utf-8") as handle:

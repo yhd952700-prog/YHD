@@ -98,16 +98,84 @@ def require_bearer_payload(
 
     The JWT signature is verified by ``src.security``; a caller-supplied
     identity is never trusted (see the module docstring, point 1).
+
+    On top of signature verification this performs the **account revocation
+    precheck** (fail-closed): a suspended/deleted account, or a token whose
+    ``account_epoch`` no longer matches the account, is refused immediately --
+    downgrades and suspensions therefore bite on the very next request instead
+    of waiting for the token to expire.
     """
     token = extract_bearer_token(x_liuhao_token, authorization)
     if token is None:
-        raise HTTPException(status_code=401, detail="missing bearer token")
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "AUTH_UNAUTHORIZED", "message": "未提供访问令牌，请先登录"},
+        )
     try:
         from ..security import get_jwt_handler
 
-        return get_jwt_handler().validate_access_token(token)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"invalid bearer token: {exc}")
+        payload = get_jwt_handler().validate_access_token(token)
+    except Exception:  # noqa: BLE001 - 具体原因不外泄（可能含解析细节）
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "AUTH_TOKEN_INVALID", "message": "访问令牌无效或已过期，请重新登录"},
+        )
+    _account_revocation_precheck(payload)
+    return payload
+
+
+def optional_bearer_payload(
+    x_liuhao_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Like :func:`require_bearer_payload`, but ``None`` when no token is sent.
+
+    A *present but invalid* token is still rejected: silently treating it as
+    anonymous would widen visibility exactly when someone is probing.
+    """
+    token = extract_bearer_token(x_liuhao_token, authorization)
+    if token is None:
+        return None
+    return require_bearer_payload(x_liuhao_token, authorization)
+
+
+def _account_revocation_precheck(payload) -> None:
+    """Refuse tokens whose account is no longer valid (fail-closed).
+
+    Principals without an account node are **not** refused: that is the legacy
+    single-account / standalone-peer path, whose behaviour must stay identical.
+    """
+    subject = str(getattr(payload, "sub", "") or "").strip()
+    if not subject:
+        return
+    try:
+        from ..kernels.identity import get_identity_manager
+    except Exception:  # noqa: BLE001 - kernel unavailable -> old behaviour
+        return
+    node = get_identity_manager().get_account(subject)
+    if node is None:
+        return
+    if node.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "ACCOUNT_UNAVAILABLE", "message": "该账号当前不可用"},
+        )
+    metadata = getattr(payload, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if "account_epoch" not in metadata:
+        return  # legacy token minted before the tree existed
+    try:
+        token_epoch = int(metadata.get("account_epoch"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "CREDENTIAL_STALE", "message": "凭据已失效，请重新登录"},
+        )
+    if token_epoch != int(node.security_epoch):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "CREDENTIAL_STALE", "message": "凭据已失效，请重新登录"},
+        )
 
 
 #: Roles/permissions that authorise a write. Same vocabulary as the model

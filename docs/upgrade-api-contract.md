@@ -26,10 +26,10 @@ Authorization: Bearer <token>
 
 - 令牌主体必须是**人类**（`metadata.kind == "human"`）。
 - 并且必须是管理员：`metadata.scope` 为 `L0` 或 `L7`（人类主权），或 `roles`/`permissions` 含 `admin` / `administrator` / `owner`。
-- `401`：缺失或无效令牌。`detail` 是字符串（如 `missing bearer token`）。
-- `403`：是合法令牌但非人类主体，或权限不足。`detail` 是字符串。
+- `401`：缺失或无效令牌，统一结构化 `{code, message}`：无令牌 `AUTH_UNAUTHORIZED`，签名/格式/吊销失败 `AUTH_TOKEN_INVALID`（中文中性文案，不暴露解析细节）。
+- `403`：是合法令牌但非人类主体，或权限不足。`detail` 是字符串或 `{code, message}`。
 
-除 `401` 外，业务错误的响应体统一为：
+所有业务错误（含 `401`）的响应体统一为：
 
 ```json
 {"detail": {"code": "…", "message": "…", "...": "附加字段"}}
