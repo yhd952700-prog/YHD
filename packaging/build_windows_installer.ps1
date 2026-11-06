@@ -123,7 +123,31 @@ if ($SkipSmoke) {
     }
 }
 
-# ------------------------------------------- 4. 升级发布包与发布清单
+# -------------------------- 4. 清理运行残留 + 交付树硬门禁
+# payload 冒烟与升级器自检会在 app 目录留下 __pycache__、upgrade-state、data
+# 与 .db；Inno Setup 会原样复制整个目录，这些绝不能装进用户机器。
+# 顺序很关键：必须在**生成升级包之前**清理，否则残留会同时进入 ZIP。
+Write-Step "清理 payload 运行残留（__pycache__ / upgrade-state / data / *.db / *.log）"
+$purged = 0
+Get-ChildItem $PayloadApp -Recurse -Directory -Filter "__pycache__" -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; $purged++ }
+foreach ($junk in @("upgrade-state", "upgrade-backups", "data", "logs")) {
+    $junkPath = Join-Path $PayloadApp $junk
+    if (Test-Path $junkPath) { Remove-Item $junkPath -Recurse -Force; $purged++ }
+}
+Get-ChildItem $PayloadApp -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".db", ".db-wal", ".db-shm", ".sqlite3",
+                                      ".sqlite3-wal", ".sqlite3-shm", ".log", ".pyc", ".pyo") } |
+    ForEach-Object { Remove-Item $_.FullName -Force; $purged++ }
+Write-Host "  已清理 $purged 项"
+
+Write-Step "交付树硬门禁（残留 / 凭据 / 明文密钥）"
+& $Python (Join-Path $Root "packaging\verify_payload_clean.py") --app-root $PayloadApp --label "payload"
+if ($LASTEXITCODE -ne 0) {
+    throw "交付树卫生检查未通过，构建中止（不生成升级包与安装器）。"
+}
+
+# ------------------------------------------- 5. 升级发布包与发布清单
 $releaseDir = Join-Path $OutRoot "release"
 $releaseZip = $null
 $releaseManifest = $null
@@ -149,23 +173,7 @@ if ($SkipRelease) {
     $releaseManifest = Join-Path $releaseDir "LIUHAO_RELEASE.json"
 }
 
-# ------------------------------------- 4.5 清理 payload 运行残留（构建机痕迹）
-# payload 冒烟与升级器自检会在 app 目录留下 __pycache__、upgrade-state、data
-# 与 .db；Inno Setup 会原样复制整个目录，这些绝不能装进用户机器。
-Write-Step "清理 payload 运行残留（__pycache__ / upgrade-state / data / *.db）"
-$purged = 0
-Get-ChildItem $PayloadApp -Recurse -Directory -Filter "__pycache__" -Force -ErrorAction SilentlyContinue |
-    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; $purged++ }
-foreach ($junk in @("upgrade-state", "upgrade-backups", "data")) {
-    $junkPath = Join-Path $PayloadApp $junk
-    if (Test-Path $junkPath) { Remove-Item $junkPath -Recurse -Force; $purged++ }
-}
-Get-ChildItem $PayloadApp -File -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -in @(".db", ".db-wal", ".db-shm") } |
-    ForEach-Object { Remove-Item $_.FullName -Force; $purged++ }
-Write-Host "  已清理 $purged 项"
-
-# --------------------------------------------------------- 5. 安装器编译
+# --------------------------------------------------------- 6. 安装器编译
 if ($SkipInstaller) {
     Write-Step "跳过安装器编译（-SkipInstaller）"
     if ($releaseZip) {

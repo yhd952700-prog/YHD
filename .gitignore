@@ -143,6 +143,16 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 
+# ===== 本地构建与演练产物（只应留在开发机，绝不进交付树）=====
+# dist/ 已在上方忽略；这里补上按轮次命名的中间产物目录（dist-mid-<hash>/）。
+dist-mid-*/
+# UI 验收截图：尺寸大、随分辨率变化，属本机证据而非源码。
+ui-evidence/
+# 升级器运行期状态（last-check.json / status.json / upgrade-ledger.db）。
+# 由 src/upgrade 在 --app-root . 时写进仓库根；含本机发布目录绝对路径。
+upgrade-state/
+upgrade-backups/
+
 # ===== 本地模型权重（运行资产，非受跟踪输入）=====
 # 用 Ollama 做真实联调时会把 gguf 拉到仓库根（例如 qwen2.5:3b，约 1.8 GB）。
 # 它不是源码也不是测试基线，提交它只会把仓库撑爆；权重应由 `ollama pull`
