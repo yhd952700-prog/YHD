@@ -222,6 +222,180 @@ ON CONFLICT(principal) DO UPDATE SET
 """
 
 
+# --------------------------------------------------------------------------- #
+# 账号树（单机单根）
+# --------------------------------------------------------------------------- #
+#
+# 账号树刻意放在**独立表 / 独立文档键**里，而不是给 human_identities 加列：
+#
+# * 旧库的 ``human_identities`` 行有既有 integrity tag，改动其 canonical 形状会
+#   让所有已签名行立即失效（等于把老部署锁在门外）；
+# * 迁移是"派生"而非"改写"：旧身份原样保留，树只是把它标记为根账号。回滚
+#   时删掉 account_tree / 文档里的 accounts 键即可，身份一个都不丢。
+#
+# 每一行同样带算法标识的 HMAC tag（复用 human 行的 MAC 原语），覆盖所有决定
+# 权限位置的字段（父、深度、根、作用域、Key 共享授权、状态、epoch、一次性
+# 码哈希）。
+
+FIELD_PARENT_ID = "parent_id"
+FIELD_DEPTH = "depth"
+FIELD_ROOT_ID = "root_id"
+FIELD_ALLOW_SUPERIOR_KEY_USE = "allow_superior_key_use"
+FIELD_KEY_AUTH_SOURCE = "key_auth_source"
+FIELD_ACCOUNT_STATUS = "status"
+FIELD_SECURITY_EPOCH = "security_epoch"
+FIELD_ACTIVATION_HASH = "activation_hash"
+FIELD_ACTIVATION_EXPIRES_AT = "activation_expires_at"
+FIELD_ACTIVATION_ATTEMPTS = "activation_attempts"
+FIELD_RECOVERY_HASH = "recovery_hash"
+FIELD_CREATED_AT = "created_at"
+FIELD_UPDATED_AT = "updated_at"
+
+#: 账号树行里参与 tag 的字段（bookkeeping 的 created/updated/source 不参与）。
+_ACCOUNT_TAGGED_FIELDS = (
+    "principal",
+    FIELD_PARENT_ID,
+    FIELD_DEPTH,
+    FIELD_ROOT_ID,
+    FIELD_PERMISSIONS,
+    FIELD_ALLOW_SUPERIOR_KEY_USE,
+    FIELD_KEY_AUTH_SOURCE,
+    FIELD_ACCOUNT_STATUS,
+    FIELD_SECURITY_EPOCH,
+    FIELD_ACTIVATION_HASH,
+    FIELD_ACTIVATION_EXPIRES_AT,
+    FIELD_ACTIVATION_ATTEMPTS,
+    FIELD_RECOVERY_HASH,
+)
+
+_SQLITE_ACCOUNT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS account_tree (
+    principal                TEXT PRIMARY KEY,
+    parent_id                TEXT,
+    depth                    INTEGER NOT NULL DEFAULT 0,
+    root_id                  TEXT NOT NULL DEFAULT '',
+    permissions              TEXT NOT NULL DEFAULT '[]',
+    allow_superior_key_use   INTEGER NOT NULL DEFAULT 1,
+    key_auth_source          TEXT NOT NULL DEFAULT '',
+    status                   TEXT NOT NULL DEFAULT 'active',
+    security_epoch           INTEGER NOT NULL DEFAULT 0,
+    activation_hash          TEXT NOT NULL DEFAULT '',
+    activation_expires_at    TEXT,
+    activation_attempts      INTEGER NOT NULL DEFAULT 0,
+    recovery_hash            TEXT NOT NULL DEFAULT '',
+    created_at               TEXT NOT NULL DEFAULT '',
+    updated_at               TEXT NOT NULL DEFAULT '',
+    source                   TEXT NOT NULL DEFAULT '',
+    integrity                TEXT
+)
+"""
+
+_SQLITE_ACCOUNT_UPSERT = """
+INSERT INTO account_tree
+    (principal, parent_id, depth, root_id, permissions,
+     allow_superior_key_use, key_auth_source, status, security_epoch,
+     activation_hash, activation_expires_at, activation_attempts, recovery_hash,
+     created_at, updated_at, source, integrity)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(principal) DO UPDATE SET
+    parent_id              = excluded.parent_id,
+    depth                  = excluded.depth,
+    root_id                = excluded.root_id,
+    permissions            = excluded.permissions,
+    allow_superior_key_use = excluded.allow_superior_key_use,
+    key_auth_source        = excluded.key_auth_source,
+    status                 = excluded.status,
+    security_epoch         = excluded.security_epoch,
+    activation_hash        = excluded.activation_hash,
+    activation_expires_at  = excluded.activation_expires_at,
+    activation_attempts    = excluded.activation_attempts,
+    recovery_hash          = excluded.recovery_hash,
+    updated_at             = excluded.updated_at,
+    source                 = excluded.source,
+    integrity              = excluded.integrity
+"""
+
+_SQLITE_IMPORT_RECEIPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS account_import_receipts (
+    bundle_id  TEXT PRIMARY KEY,
+    imported_at TEXT NOT NULL DEFAULT ''
+)
+"""
+
+
+def _coerce_bool_int(raw: Any) -> int:
+    return 1 if bool(raw) else 0
+
+
+def _canonical_account(record: Dict[str, Any]) -> str:
+    """账号树行参与 tag 的权威字段的规范化序列化。"""
+    try:
+        depth = int(record.get(FIELD_DEPTH) or 0)
+    except (TypeError, ValueError):
+        depth = 0
+    try:
+        epoch = int(record.get(FIELD_SECURITY_EPOCH) or 0)
+    except (TypeError, ValueError):
+        epoch = 0
+    try:
+        attempts = int(record.get(FIELD_ACTIVATION_ATTEMPTS) or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    payload = {
+        "principal": str(record.get(FIELD_PRINCIPAL) or "").strip(),
+        FIELD_PARENT_ID: (
+            str(record.get(FIELD_PARENT_ID)).strip()
+            if record.get(FIELD_PARENT_ID)
+            else None
+        ),
+        FIELD_DEPTH: depth,
+        FIELD_ROOT_ID: str(record.get(FIELD_ROOT_ID) or "").strip(),
+        FIELD_PERMISSIONS: sorted(
+            {str(p) for p in (record.get(FIELD_PERMISSIONS) or [])}
+        ),
+        FIELD_ALLOW_SUPERIOR_KEY_USE: bool(
+            record.get(FIELD_ALLOW_SUPERIOR_KEY_USE, True)
+        ),
+        FIELD_KEY_AUTH_SOURCE: str(record.get(FIELD_KEY_AUTH_SOURCE) or ""),
+        FIELD_ACCOUNT_STATUS: str(record.get(FIELD_ACCOUNT_STATUS) or "active"),
+        FIELD_SECURITY_EPOCH: epoch,
+        FIELD_ACTIVATION_HASH: str(record.get(FIELD_ACTIVATION_HASH) or ""),
+        FIELD_ACTIVATION_EXPIRES_AT: (
+            str(record.get(FIELD_ACTIVATION_EXPIRES_AT))
+            if record.get(FIELD_ACTIVATION_EXPIRES_AT)
+            else None
+        ),
+        FIELD_ACTIVATION_ATTEMPTS: attempts,
+        FIELD_RECOVERY_HASH: str(record.get(FIELD_RECOVERY_HASH) or ""),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def compute_account_tag(record: Dict[str, Any], key: str) -> Optional[str]:
+    if not key:
+        return None
+    digest = MAC_ALGORITHMS[DEFAULT_MAC_ALG](
+        key.encode("utf-8"), _canonical_account(record).encode("utf-8")
+    )
+    return f"{DEFAULT_MAC_ALG}{_MAC_ALG_SEPARATOR}{digest}"
+
+
+def account_tag_matches(record: Dict[str, Any], key: str, tag: Any) -> bool:
+    """账号树行认证。语义与 :func:`tag_matches` 完全一致（fail-closed）。"""
+    if not key or not isinstance(tag, str) or not tag:
+        return False
+    alg_name, sep, _declared = tag.partition(_MAC_ALG_SEPARATOR)
+    if not sep:
+        return False
+    produce = MAC_ALGORITHMS.get(alg_name)
+    if produce is None:
+        return False
+    expected = f"{alg_name}{_MAC_ALG_SEPARATOR}" + produce(
+        key.encode("utf-8"), _canonical_account(record).encode("utf-8")
+    )
+    return hmac.compare_digest(tag, expected)
+
+
 def _decode_permissions(raw: Any) -> List[str]:
     """Decode the ``permissions`` column, tolerating hand-edited rows."""
     if isinstance(raw, list):
@@ -394,6 +568,53 @@ def tag_matches(entry: Dict[str, Any], key: str, tag: Any) -> bool:
     return hmac.compare_digest(tag, expected)
 
 
+def _normalize_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """把一条账号树记录收敛成存储形状（缺省值集中在一处）。"""
+    principal = str(record.get(FIELD_PRINCIPAL) or "").strip()
+    parent = record.get(FIELD_PARENT_ID)
+    stamp = utc_now().isoformat()
+    try:
+        depth = max(0, int(record.get(FIELD_DEPTH) or 0))
+    except (TypeError, ValueError):
+        depth = 0
+    try:
+        epoch = max(0, int(record.get(FIELD_SECURITY_EPOCH) or 0))
+    except (TypeError, ValueError):
+        epoch = 0
+    try:
+        attempts = max(0, int(record.get(FIELD_ACTIVATION_ATTEMPTS) or 0))
+    except (TypeError, ValueError):
+        attempts = 0
+    return {
+        FIELD_PRINCIPAL: principal,
+        FIELD_PARENT_ID: str(parent).strip() if parent else None,
+        FIELD_DEPTH: depth,
+        FIELD_ROOT_ID: str(record.get(FIELD_ROOT_ID) or principal).strip() or principal,
+        FIELD_PERMISSIONS: sorted(
+            {str(p) for p in (record.get(FIELD_PERMISSIONS) or []) if str(p).strip()}
+        ),
+        FIELD_ALLOW_SUPERIOR_KEY_USE: bool(
+            record.get(FIELD_ALLOW_SUPERIOR_KEY_USE, True)
+        ),
+        FIELD_KEY_AUTH_SOURCE: str(
+            record.get(FIELD_KEY_AUTH_SOURCE) or "created_default"
+        ),
+        FIELD_ACCOUNT_STATUS: str(record.get(FIELD_ACCOUNT_STATUS) or "active"),
+        FIELD_SECURITY_EPOCH: epoch,
+        FIELD_ACTIVATION_HASH: str(record.get(FIELD_ACTIVATION_HASH) or ""),
+        FIELD_ACTIVATION_EXPIRES_AT: (
+            str(record.get(FIELD_ACTIVATION_EXPIRES_AT))
+            if record.get(FIELD_ACTIVATION_EXPIRES_AT)
+            else None
+        ),
+        FIELD_ACTIVATION_ATTEMPTS: attempts,
+        FIELD_RECOVERY_HASH: str(record.get(FIELD_RECOVERY_HASH) or ""),
+        FIELD_CREATED_AT: str(record.get(FIELD_CREATED_AT) or stamp),
+        FIELD_UPDATED_AT: str(record.get(FIELD_UPDATED_AT) or stamp),
+        FIELD_SOURCE: str(record.get(FIELD_SOURCE) or "runtime"),
+    }
+
+
 class JsonFileStore:
     """The original JSON seed file, unchanged in behaviour.
 
@@ -408,6 +629,14 @@ class JsonFileStore:
         #: Verdict of the most recent :meth:`load_all`, so a caller can tell
         #: "the store offered 3 rows and 1 was refused" without parsing logs.
         self.last_load_report: Dict[str, Any] = {
+            "backend": BACKEND_FILE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
+        #: Verdict of the most recent :meth:`load_accounts` (separate report so
+        #: the pinned human-registry shape stays untouched).
+        self.last_account_report: Dict[str, Any] = {
             "backend": BACKEND_FILE,
             "integrity_enforced": integrity_enforced(),
             "admitted": 0,
@@ -587,6 +816,109 @@ class JsonFileStore:
         document["humans"] = kept
         return self._write_document(document)
 
+    # ---- 账号树 -------------------------------------------------------
+
+    def load_accounts(self) -> List[Dict[str, Any]]:
+        """返回通过完整性校验的账号树行；未配置密钥时全部拒收（fail-closed）。"""
+        self.last_account_report = {
+            "backend": BACKEND_FILE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
+        if not self.location:
+            return []
+        document = self._read_document()
+        raw = document.get("accounts") or {}
+        if not isinstance(raw, dict):
+            return []
+        key = integrity_key()
+        admitted: List[Dict[str, Any]] = []
+        for principal, record in raw.items():
+            if not isinstance(record, dict):
+                self.last_account_report["rejected"].append(
+                    {"principal": str(principal), "reason": "not_object"}
+                )
+                continue
+            normalized = _normalize_account_record({**record, FIELD_PRINCIPAL: principal})
+            tag = record.get(FIELD_INTEGRITY)
+            if not account_tag_matches(normalized, key, tag):
+                self.last_account_report["rejected"].append(
+                    {"principal": normalized[FIELD_PRINCIPAL], "reason": "integrity"}
+                )
+                logger.warning(
+                    "account tree row %r failed integrity verification; refusing it",
+                    normalized[FIELD_PRINCIPAL],
+                )
+                continue
+            admitted.append(normalized)
+        self.last_account_report["admitted"] = len(admitted)
+        return admitted
+
+    def upsert_account(self, record: Dict[str, Any]) -> bool:
+        if not self.location:
+            return False
+        document = self._read_document()
+        accounts = document.get("accounts")
+        if not isinstance(accounts, dict):
+            accounts = {}
+        normalized = _normalize_account_record(record)
+        principal = normalized[FIELD_PRINCIPAL]
+        existing = accounts.get(principal)
+        if isinstance(existing, dict) and existing.get(FIELD_CREATED_AT):
+            normalized[FIELD_CREATED_AT] = existing[FIELD_CREATED_AT]
+        if isinstance(existing, dict):
+            normalized[FIELD_SOURCE] = existing.get(FIELD_SOURCE) or normalized[FIELD_SOURCE]
+        key = integrity_key()
+        if key:
+            normalized[FIELD_INTEGRITY] = compute_account_tag(normalized, key)
+        else:
+            normalized.pop(FIELD_INTEGRITY, None)
+        accounts[principal] = normalized
+        document["accounts"] = accounts
+        return self._write_document(document)
+
+    def remove_account(self, principal: str) -> bool:
+        if not self.location:
+            return False
+        document = self._read_document()
+        accounts = document.get("accounts")
+        if not isinstance(accounts, dict) or principal not in accounts:
+            return False
+        accounts.pop(principal, None)
+        document["accounts"] = accounts
+        return self._write_document(document)
+
+    def drop_accounts(self) -> bool:
+        """回滚：移除账号树（身份行保持原样）。"""
+        if not self.location:
+            return False
+        document = self._read_document()
+        if "accounts" in document:
+            document.pop("accounts", None)
+            return self._write_document(document)
+        return False
+
+    def record_import_receipt(self, bundle_id: str) -> bool:
+        if not self.location or not bundle_id:
+            return False
+        document = self._read_document()
+        receipts = document.get("import_receipts")
+        if not isinstance(receipts, dict):
+            receipts = {}
+        if bundle_id in receipts:
+            return False
+        receipts[bundle_id] = utc_now().isoformat()
+        document["import_receipts"] = receipts
+        return self._write_document(document)
+
+    def has_import_receipt(self, bundle_id: str) -> bool:
+        if not self.location or not bundle_id:
+            return False
+        document = self._read_document()
+        receipts = document.get("import_receipts")
+        return bool(isinstance(receipts, dict) and bundle_id in receipts)
+
 
 class SqliteHumanIdentityStore:
     """A single-file SQLite table of registered humans.
@@ -604,6 +936,12 @@ class SqliteHumanIdentityStore:
         self._lock = threading.Lock()
         #: Verdict of the most recent :meth:`load_all`; see the file backend.
         self.last_load_report: Dict[str, Any] = {
+            "backend": BACKEND_SQLITE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
+        self.last_account_report: Dict[str, Any] = {
             "backend": BACKEND_SQLITE,
             "integrity_enforced": integrity_enforced(),
             "admitted": 0,
@@ -642,6 +980,10 @@ class SqliteHumanIdentityStore:
             connection = self._connect()
             try:
                 connection.execute(_SQLITE_SCHEMA)
+                # 账号树与导入回执：独立的表，旧库升级只是"建表 + 派生根节点"，
+                # 不改写既有 human_identities 行（回滚时删表即可，不丢身份）。
+                connection.execute(_SQLITE_ACCOUNT_SCHEMA)
+                connection.execute(_SQLITE_IMPORT_RECEIPT_SCHEMA)
                 # In-place migration for databases created before the
                 # containment columns existed. ``CREATE TABLE IF NOT EXISTS``
                 # is a no-op on an existing table, so these ALTERs are what
@@ -817,6 +1159,176 @@ class SqliteHumanIdentityStore:
             logger.error("could not update %r: %s", self.location, error)
             return False
         return rowcount > 0
+
+    # ---- 账号树 -------------------------------------------------------
+
+    def load_accounts(self) -> List[Dict[str, Any]]:
+        self.last_account_report = {
+            "backend": BACKEND_SQLITE,
+            "integrity_enforced": integrity_enforced(),
+            "admitted": 0,
+            "rejected": [],
+        }
+        if not os.path.exists(self.location):
+            return []
+        try:
+            with self._session() as connection:
+                rows = connection.execute(
+                    "SELECT principal, parent_id, depth, root_id, permissions, "
+                    "allow_superior_key_use, key_auth_source, status, "
+                    "security_epoch, activation_hash, activation_expires_at, "
+                    "activation_attempts, recovery_hash, created_at, updated_at, "
+                    "source, integrity FROM account_tree ORDER BY principal"
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001 - config problem, not a crash
+            logger.error(
+                "could not read account tree from %r: %s -- no member loaded",
+                self.location, exc,
+            )
+            return []
+        key = integrity_key()
+        admitted: List[Dict[str, Any]] = []
+        for row in rows:
+            record = _normalize_account_record(
+                {
+                    FIELD_PRINCIPAL: row["principal"],
+                    FIELD_PARENT_ID: row["parent_id"],
+                    FIELD_DEPTH: row["depth"],
+                    FIELD_ROOT_ID: row["root_id"],
+                    FIELD_PERMISSIONS: _decode_permissions(row["permissions"]),
+                    FIELD_ALLOW_SUPERIOR_KEY_USE: bool(row["allow_superior_key_use"]),
+                    FIELD_KEY_AUTH_SOURCE: row["key_auth_source"],
+                    FIELD_ACCOUNT_STATUS: row["status"],
+                    FIELD_SECURITY_EPOCH: row["security_epoch"],
+                    FIELD_ACTIVATION_HASH: row["activation_hash"],
+                    FIELD_ACTIVATION_EXPIRES_AT: row["activation_expires_at"],
+                    FIELD_ACTIVATION_ATTEMPTS: row["activation_attempts"],
+                    FIELD_RECOVERY_HASH: row["recovery_hash"],
+                    FIELD_CREATED_AT: row["created_at"],
+                    FIELD_UPDATED_AT: row["updated_at"],
+                    FIELD_SOURCE: row["source"],
+                }
+            )
+            if not account_tag_matches(record, key, row["integrity"]):
+                self.last_account_report["rejected"].append(
+                    {"principal": record[FIELD_PRINCIPAL], "reason": "integrity"}
+                )
+                logger.error(
+                    "REFUSING account tree row %r: it does not authenticate "
+                    "against %s",
+                    record[FIELD_PRINCIPAL], HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+                )
+                continue
+            admitted.append(record)
+        self.last_account_report["admitted"] = len(admitted)
+        return admitted
+
+    def upsert_account(self, record: Dict[str, Any]) -> bool:
+        normalized = _normalize_account_record(record)
+        principal = normalized[FIELD_PRINCIPAL]
+        if not principal:
+            return False
+        key = integrity_key()
+        tag = compute_account_tag(normalized, key) if key else None
+        existing_created = self._account_created_at(principal)
+        if existing_created:
+            normalized[FIELD_CREATED_AT] = existing_created
+        params = (
+            principal,
+            normalized[FIELD_PARENT_ID],
+            normalized[FIELD_DEPTH],
+            normalized[FIELD_ROOT_ID],
+            json.dumps(normalized[FIELD_PERMISSIONS]),
+            _coerce_bool_int(normalized[FIELD_ALLOW_SUPERIOR_KEY_USE]),
+            normalized[FIELD_KEY_AUTH_SOURCE],
+            normalized[FIELD_ACCOUNT_STATUS],
+            normalized[FIELD_SECURITY_EPOCH],
+            normalized[FIELD_ACTIVATION_HASH],
+            normalized[FIELD_ACTIVATION_EXPIRES_AT],
+            normalized[FIELD_ACTIVATION_ATTEMPTS],
+            normalized[FIELD_RECOVERY_HASH],
+            normalized[FIELD_CREATED_AT],
+            normalized[FIELD_UPDATED_AT],
+            normalized[FIELD_SOURCE],
+            tag,
+        )
+        _, error = self._write_with_retry(
+            lambda connection: connection.execute(_SQLITE_ACCOUNT_UPSERT, params)
+        )
+        if error is not None:
+            logger.error("could not write account tree to %r: %s", self.location, error)
+            return False
+        return True
+
+    def _account_created_at(self, principal: str) -> str:
+        if not os.path.exists(self.location):
+            return ""
+        try:
+            with self._session() as connection:
+                row = connection.execute(
+                    "SELECT created_at FROM account_tree WHERE principal = ?",
+                    (principal,),
+                ).fetchone()
+        except Exception:  # noqa: BLE001 - best-effort bookkeeping
+            return ""
+        return str(row["created_at"]) if row else ""
+
+    def remove_account(self, principal: str) -> bool:
+        if not os.path.exists(self.location):
+            return False
+        rowcount, error = self._write_with_retry(
+            lambda connection: connection.execute(
+                "DELETE FROM account_tree WHERE principal = ?", (principal,)
+            ).rowcount
+        )
+        if error is not None:
+            logger.error("could not update account tree: %s", error)
+            return False
+        return rowcount > 0
+
+    def drop_accounts(self) -> bool:
+        """回滚：删除账号树与导入回执表；身份行保持原样。"""
+        if not os.path.exists(self.location):
+            return False
+        _, error = self._write_with_retry(
+            lambda connection: (
+                connection.execute("DROP TABLE IF EXISTS account_tree"),
+                connection.execute("DROP TABLE IF EXISTS account_import_receipts"),
+            )
+        )
+        if error is not None:
+            logger.error("could not drop account tree: %s", error)
+            return False
+        self._schema_ready = False
+        return True
+
+    def record_import_receipt(self, bundle_id: str) -> bool:
+        if not bundle_id:
+            return False
+        rowcount, error = self._write_with_retry(
+            lambda connection: connection.execute(
+                "INSERT OR IGNORE INTO account_import_receipts "
+                "(bundle_id, imported_at) VALUES (?, ?)",
+                (bundle_id, utc_now().isoformat()),
+            ).rowcount
+        )
+        if error is not None:
+            logger.error("could not record import receipt: %s", error)
+            return False
+        return rowcount > 0
+
+    def has_import_receipt(self, bundle_id: str) -> bool:
+        if not bundle_id or not os.path.exists(self.location):
+            return False
+        try:
+            with self._session() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM account_import_receipts WHERE bundle_id = ?",
+                    (bundle_id,),
+                ).fetchone()
+        except Exception:  # noqa: BLE001 - table may not exist yet
+            return False
+        return row is not None
 
 
 def resolve_human_identity_store() -> JsonFileStore | SqliteHumanIdentityStore:

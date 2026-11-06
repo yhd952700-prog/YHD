@@ -26,13 +26,16 @@ from src._time import utc_now
 from enum import Enum
 import hashlib
 import logging
+import os
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import uuid
 import threading
 
 from src.kernels._crosscutting import kernel_action, mark_action_denied
 from . import _persistence
+from . import _accounts
+from . import _backup
 
 logger = logging.getLogger("liuhao.kernel.identity")
 
@@ -446,6 +449,10 @@ class IdentityManager:
         #: store claimed more humans than the kernel admitted -- surfaced by
         #: :meth:`describe_identity_namespaces` so it cannot be a silent fact.
         self._registry_refusals: List[str] = []
+        #: 账号树（principal -> AccountNode）。单机单根；由 store 派生 + 运行时
+        #: 写入。空 dict 表示"尚未 bootstrap"，不是"没有账号"。
+        self._accounts: Dict[str, _accounts.AccountNode] = {}
+        self._accounts_booted = False
         if self._store.location and not _persistence.integrity_enforced():
             # A registry is in use but no integrity key is configured. Per the
             # "enforce key" posture (HC-11 / U6) the store therefore refuses
@@ -464,6 +471,7 @@ class IdentityManager:
                 _persistence.HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
             )
         self._seed_human_identities()
+        self._bootstrap_account_tree()
 
     # ------------------------------------------------------------------ #
     # PHASE 3.6 / A1: the single guarded writer
@@ -1054,6 +1062,1110 @@ class IdentityManager:
             if identity_id is None:
                 return None
             return self._identities.get(identity_id)
+
+    # ------------------------------------------------------------------ #
+    # 账号树（单机单根）
+    # ------------------------------------------------------------------ #
+    #
+    # 与既有 RBAC/ABAC 的关系：这里**不另起一套权限系统**。identity 仍然回答
+    # "你是谁 / 你的 scope 和 permission 是什么"；账号树只回答"你能作用于谁"。
+    # 两者在 gateway 组合成最终判定（见 ``gateway/account_context.py``）。
+    #
+    # 所有写操作都遵循同一套顺序：定位 -> 树判定 -> 防提权 -> 持久化 -> 审计。
+    # 任何一步拒绝都抛 :class:`AccountError`（稳定 code + 中性文案），绝不返回
+    # 一个"看起来成功"的空结果。
+
+    def _human_identities(self) -> List[AgentIdentity]:
+        with self._lock:
+            return [
+                identity
+                for identity in self._identities.values()
+                if identity.namespace == NAMESPACE_HUMAN
+            ]
+
+    def _account_of(self, principal: str) -> Optional[_accounts.AccountNode]:
+        with self._lock:
+            return self._accounts.get(str(principal or "").strip())
+
+    def get_account(self, principal: str) -> Optional[_accounts.AccountNode]:
+        """公开读接口：未知主体返回 ``None``（调用方负责中性化）。"""
+        return self._account_of(principal)
+
+    def account_nodes(self) -> Dict[str, _accounts.AccountNode]:
+        with self._lock:
+            return dict(self._accounts)
+
+    def account_root(self) -> Optional[_accounts.AccountNode]:
+        with self._lock:
+            roots = _accounts.roots(self._accounts)
+        if not roots:
+            return None
+        return sorted(roots, key=lambda node: (node.created_at, node.principal))[0]
+
+    def list_accounts(self) -> List[_accounts.AccountNode]:
+        with self._lock:
+            return sorted(self._accounts.values(), key=lambda node: node.principal)
+
+    def subtree_principals(self, principal: str) -> List[str]:
+        with self._lock:
+            return _accounts.subtree_of(self._accounts, principal)
+
+    def account_denial_reason(self, actor: str, target: str) -> Optional[str]:
+        """返回写操作被拒的稳定 code；允许时返回 ``None``。"""
+        with self._lock:
+            if self._accounts.get(actor) is None:
+                return _accounts.CODE_SUBTREE_DENIED
+            if self._accounts.get(target) is None:
+                return _accounts.CODE_SUBTREE_DENIED
+            if not _accounts.is_within_subtree(self._accounts, actor, target):
+                return _accounts.CODE_UPWARD_DENIED
+            if not _accounts.can_manage(self._accounts, actor, target):
+                return _accounts.CODE_LEAPFROG_DENIED
+        return None
+
+    def _persist_account(self, node: _accounts.AccountNode) -> bool:
+        try:
+            return bool(self._store.upsert_account(node.to_record()))
+        except Exception as exc:  # noqa: BLE001 - 存储问题不能吞掉安全判定
+            logger.error("could not persist account %r: %s", node.principal, exc)
+            return False
+
+    def _store_account(self, node: _accounts.AccountNode, *, persist: bool = True) -> None:
+        with self._lock:
+            self._accounts[node.principal] = node
+        if persist:
+            self._persist_account(node)
+
+    def _account_audit(
+        self,
+        *,
+        action: str,
+        actor: str,
+        target: str,
+        outcome: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """账号树事件写入**哈希链审计**（不是内存日志）。
+
+        ``log_event`` 失败时必须显式报错到日志，但不能反向让业务操作失败：
+        审计不可用是运维问题，安全判定已在调用前完成。
+        """
+        payload: Dict[str, Any] = {
+            "action": action,
+            "actor": actor,
+            "target": target,
+        }
+        if details:
+            payload.update(details)
+        try:
+            from src.kernels.audit import AuditEventType, AuditScope, log_event
+
+            event_type = (
+                AuditEventType.ACCESS_DENIED
+                if outcome == "denied"
+                else AuditEventType.STATE_CHANGE
+            )
+            if action.startswith("account.permission"):
+                event_type = (
+                    AuditEventType.ROLE_REVOKE
+                    if outcome == "revoked"
+                    else AuditEventType.ROLE_GRANT
+                )
+            elif outcome == "allowed" and action.startswith("key."):
+                event_type = AuditEventType.ACCESS_ALLOWED
+            scope_name = "L0"
+            identity = self.get_identity_by_principal(actor)
+            if identity is not None:
+                scope_name = identity.scope.value
+            log_event(
+                event_type=event_type,
+                principal_id=actor,
+                scope=AuditScope(scope_name),
+                outcome=outcome,
+                details=payload,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("account audit event lost (action=%s)", action)
+
+    def _audit_denial(
+        self, *, action: str, actor: str, target: str, code: str, **extra: Any
+    ) -> None:
+        self._account_audit(
+            action=action,
+            actor=actor,
+            target=target,
+            outcome="denied",
+            details={"error_code": code, **extra},
+        )
+
+    def record_event(
+        self,
+        *,
+        action: str,
+        actor: str,
+        target: str,
+        outcome: str = "allowed",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """网关层账号/Key 事件的公共入口（写入同一哈希链，不另起审计流）。"""
+        self._account_audit(
+            action=action,
+            actor=actor,
+            target=target,
+            outcome=outcome,
+            details=details,
+        )
+
+    # ---- 启动 / 迁移 ---------------------------------------------------
+
+    def _bootstrap_account_tree(self) -> int:
+        """从身份库派生账号树；旧库自动迁移且幂等。
+
+        规则：
+        * 每个人类身份至多一个账号节点；
+        * 树上只允许一个根；历史多人类库选"最早注册者"为根，其余改为它的
+          直接成员（身份与权限原样保留，不丢失登录能力）；
+        * 父不存在 / 成环的行被**拒收**（fail-closed），并记录到
+          ``registry_refusals``；
+        * 已存在的合法节点不会因为重启被改写（幂等）。
+        """
+        with self._lock:
+            humans = {identity.principal for identity in self._human_identities()}
+            loaded: Dict[str, _accounts.AccountNode] = {}
+            for record in self._store.load_accounts():
+                try:
+                    node = _accounts.AccountNode.from_record(record)
+                except Exception:  # noqa: BLE001
+                    continue
+                if node.principal not in humans:
+                    self._registry_refusals.append(
+                        f"account node {node.principal!r} has no human identity"
+                    )
+                    continue
+                loaded[node.principal] = node
+
+            nodes = dict(loaded)
+            # 父缺失的行（含它的后代）无法证明位置，拒收。
+            changed = True
+            while changed:
+                changed = False
+                for principal, node in list(nodes.items()):
+                    if node.parent_id and node.parent_id not in nodes:
+                        nodes.pop(principal, None)
+                        self._registry_refusals.append(
+                            f"account node {principal!r} refers to a missing parent"
+                        )
+                        changed = True
+            cycles = set(_accounts.detect_cycles(nodes))
+            if cycles:
+                for principal in cycles:
+                    for doomed in _accounts.subtree_of(nodes, principal):
+                        nodes.pop(doomed, None)
+                self._registry_refusals.append(
+                    "account tree contained a cycle; affected nodes were refused"
+                )
+
+            root_nodes = _accounts.roots(nodes)
+            elected: Optional[_accounts.AccountNode] = None
+            preferred_root = (
+                os.environ.get("LIUHAO_ACCOUNT_ROOT_PRINCIPAL") or ""
+            ).strip()
+            if preferred_root:
+                candidate = nodes.get(preferred_root)
+                if candidate is not None and candidate.is_root:
+                    elected = candidate
+            if elected is None and root_nodes:
+                elected = sorted(
+                    root_nodes, key=lambda node: (node.created_at, node.principal)
+                )[0]
+            for node in root_nodes:
+                if elected and node.principal != elected.principal:
+                    # 历史多根：收敛为单根。深度/根随新父重建。
+                    nodes[node.principal] = node.with_changes(
+                        parent_id=elected.principal, depth=1
+                    )
+                    self._registry_refusals.append(
+                        f"historical root {node.principal!r} attached under "
+                        f"{elected.principal!r} (single-tree migration)"
+                    )
+
+            # 未入树的人类身份：首个成为根，其余挂在根下。
+            for principal in sorted(humans):
+                if principal in nodes:
+                    continue
+                if elected is None:
+                    node = _accounts.AccountNode(
+                        principal=principal,
+                        parent_id=None,
+                        depth=0,
+                        root_id=principal,
+                        permissions=frozenset(
+                            self._identity_permissions(principal)
+                        ),
+                        created_at=self._identity_registered_at(principal),
+                        updated_at=utc_now().isoformat(),
+                        source="migration",
+                    )
+                    elected = node
+                else:
+                    node = _accounts.AccountNode(
+                        principal=principal,
+                        parent_id=elected.principal,
+                        depth=1,
+                        root_id=elected.principal,
+                        permissions=frozenset(
+                            self._identity_permissions(principal)
+                        ),
+                        created_at=self._identity_registered_at(principal),
+                        updated_at=utc_now().isoformat(),
+                        source="migration",
+                    )
+                nodes[principal] = node
+                self._persist_account(node)
+
+            # 重算根/深度（只对发生了收敛的树生效；正常树不变）。
+            if elected is not None:
+                self._recompute_tree(nodes, elected.principal)
+
+            self._accounts = nodes
+            self._accounts_booted = True
+            return len(nodes)
+
+    def _identity_permissions(self, principal: str) -> Set[str]:
+        identity = self.get_identity_by_principal(principal)
+        return set(identity.permissions) if identity is not None else set()
+
+    def _identity_registered_at(self, principal: str) -> str:
+        identity = self.get_identity_by_principal(principal)
+        if identity is None:
+            return utc_now().isoformat()
+        metadata = identity.metadata or {}
+        stamp = metadata.get("registered_at")
+        if isinstance(stamp, str) and stamp.strip():
+            return stamp
+        return identity.created_at.isoformat()
+
+    def _recompute_tree(
+        self, nodes: Dict[str, _accounts.AccountNode], root_principal: str
+    ) -> None:
+        """按 parent 链重算 root_id / depth，并写回发生变化的节点。"""
+        changed: List[_accounts.AccountNode] = []
+        for node in list(nodes.values()):
+            depth = 0
+            cursor: Optional[_accounts.AccountNode] = node
+            guard = 0
+            while cursor is not None and cursor.parent_id and guard <= len(nodes):
+                cursor = nodes.get(cursor.parent_id)
+                depth += 1
+                guard += 1
+            if node.depth != depth or node.root_id != root_principal:
+                updated = node.with_changes(depth=depth, root_id=root_principal)
+                nodes[node.principal] = updated
+                changed.append(updated)
+        for node in changed:
+            self._persist_account(node)
+
+    def migrate_account_tree(self) -> Dict[str, Any]:
+        """显式执行迁移（幂等），返回可展示的迁移报告。"""
+        before = len(self.account_nodes())
+        count = self._bootstrap_account_tree()
+        nodes = self.account_nodes()
+        return {
+            "admitted": count,
+            "before": before,
+            "after": count,
+            "roots": sorted(node.principal for node in nodes.values() if node.is_root),
+            "backend": self._store.backend_name,
+            "location": self._store.location,
+            "next_step": "rollback: identity_manager.rollback_account_tree() "
+            "(identities are never touched)",
+        }
+
+    def rollback_account_tree(self) -> Dict[str, Any]:
+        """回滚账号树。
+
+        只删除 ``account_tree`` / 文档里的 ``accounts`` 键；**身份行一个不动**，
+        因此老账号仍能按原方式登录（会被下次 bootstrap 重新派生成根）。
+        """
+        store_ok = False
+        try:
+            store_ok = bool(self._store.drop_accounts())
+        except Exception as exc:  # noqa: BLE001
+            logger.error("could not drop account tree: %s", exc)
+        with self._lock:
+            self._accounts = {}
+            self._accounts_booted = False
+        return {
+            "rolled_back": True,
+            "store_purged": store_ok,
+            "identities_preserved": len(self._human_identities()),
+        }
+
+    # ---- 根 / 成员创建 -------------------------------------------------
+
+    def register_root_account(
+        self,
+        principal: str,
+        permissions: Optional[Set[str]] = None,
+        display_name: Optional[str] = None,
+    ) -> Tuple[_accounts.AccountNode, str]:
+        """创建**唯一**根账号。已存在根时返回 403（并写审计）。
+
+        首个注册者自动成为主账号；此后自助注册根一律关闭。
+        """
+        principal = normalize_principal(principal).strip()
+        if not principal:
+            raise _accounts.AccountError(400, "ACCOUNT_PRINCIPAL_INVALID", "账号名无效")
+        with self._lock:
+            existing_root = self.account_root()
+            if existing_root is not None:
+                self._audit_denial(
+                    action="account.root.register",
+                    actor=principal,
+                    target=existing_root.principal,
+                    code=_accounts.CODE_ROOT_REGISTRATION_CLOSED,
+                )
+                raise _accounts.AccountError(
+                    409,
+                    _accounts.CODE_ROOT_REGISTRATION_CLOSED,
+                    "系统已完成初始化，请使用已有账号登录",
+                )
+            identity = self.get_identity_by_principal(principal)
+            if identity is not None and is_human_identity(identity):
+                raise _accounts.AccountError(
+                    409, "ACCOUNT_EXISTS", "该账号已存在"
+                )
+            if identity is not None:
+                raise _accounts.AccountError(
+                    409, "ACCOUNT_EXISTS", "该账号名已被占用"
+                )
+            created = self.create_human_identity(
+                principal=principal,
+                permissions=set(permissions or set()),
+                display_name=display_name,
+            )
+            if created is None:
+                raise _accounts.AccountError(409, "ACCOUNT_EXISTS", "该账号已存在")
+            recovery_code = _accounts.generate_code("RC")
+            node = _accounts.AccountNode(
+                principal=principal,
+                parent_id=None,
+                depth=0,
+                root_id=principal,
+                permissions=frozenset(created.permissions),
+                allow_superior_key_use=True,
+                key_auth_source="root",
+                recovery_hash=_accounts.hash_code(
+                    recovery_code, (_persistence.integrity_key() or "")
+                ),
+                created_at=self._identity_registered_at(principal),
+                updated_at=utc_now().isoformat(),
+                source="bootstrap",
+            )
+            self._store_account(node)
+            self._account_audit(
+                action="account.root.registered",
+                actor=principal,
+                target=principal,
+                outcome="allowed",
+                details={"has_recovery_code": True},
+            )
+            return node, recovery_code
+
+    def create_member_identity(
+        self,
+        principal: str,
+        permissions: Set[str],
+        display_name: Optional[str] = None,
+    ) -> Optional[AgentIdentity]:
+        """创建成员身份：仍是 human（可登录），但 scope=L3，不继承主权。"""
+        metadata: Dict[str, Any] = {
+            METADATA_KIND_KEY: HUMAN_KIND,
+            "registered_at": utc_now().isoformat(),
+            "account_role": "member",
+        }
+        if display_name:
+            metadata[METADATA_DISPLAY_NAME_KEY] = display_name
+        identity = self.create_identity(
+            principal=principal,
+            permissions=set(permissions),
+            scope=IdentityScope.L3,
+            trust_score=0.5,
+            metadata=metadata,
+        )
+        if identity is not None:
+            self._persist_human_identity(identity)
+        return identity
+
+    def create_member_account(
+        self,
+        actor: str,
+        principal: str,
+        permissions: Optional[Iterable[str]] = None,
+        role: Optional[str] = None,
+        display_name: Optional[str] = None,
+        allow_key_sharing: bool = False,
+    ) -> Tuple[_accounts.AccountNode, str]:
+        """创建 ``actor`` 的直接下级（成员），返回一次性激活码。
+
+        * 成员只能建自己的孩子；根账号可以建任意深度（仍受层级上限约束）。
+        * 新建者不能授出自己没有的 scope（防提权）。
+        * 激活码只返回一次，库里只存哈希。
+        """
+        principal = normalize_principal(principal).strip()
+        if not principal:
+            raise _accounts.AccountError(400, "ACCOUNT_PRINCIPAL_INVALID", "账号名无效")
+        with self._lock:
+            actor_node = self._accounts.get(actor)
+            if actor_node is None:
+                self._audit_denial(
+                    action="account.member.create", actor=actor, target=principal,
+                    code="ACCOUNT_SCOPE_DENIED",
+                )
+                raise _accounts.neutral_denied()
+            if not actor_node.is_active:
+                raise _accounts.AccountError(
+                    403, "ACCOUNT_UNAVAILABLE", "该账号当前不可用"
+                )
+            if not self._identity_has_scope(actor, _accounts.SCOPE_MANAGE_CHILDREN):
+                self._audit_denial(
+                    action="account.member.create", actor=actor, target=principal,
+                    code="ACCOUNT_SCOPE_DENIED",
+                )
+                raise _accounts.neutral_denied()
+            existing = self.get_identity_by_principal(principal)
+            if existing is not None:
+                raise _accounts.AccountError(409, "ACCOUNT_EXISTS", "该账号已存在")
+            try:
+                wanted = _accounts.resolve_role(role, permissions)
+            except _accounts.AccountError as exc:
+                self._audit_denial(
+                    action="account.member.create", actor=actor, target=principal,
+                    code=exc.code,
+                )
+                raise
+            decision, code = _accounts.grant_decision(
+                self._accounts, actor, principal, wanted
+            )
+            if decision != "allow":
+                self._audit_denial(
+                    action="account.member.create", actor=actor, target=principal,
+                    code=code or _accounts.CODE_PRIVILEGE_ESCALATION,
+                )
+                raise _accounts.AccountError(
+                    403, _accounts.CODE_PRIVILEGE_ESCALATION, "无权授予该权限"
+                )
+            depth = actor_node.depth + 1
+            if depth > _accounts.max_depth():
+                self._audit_denial(
+                    action="account.member.create", actor=actor, target=principal,
+                    code=_accounts.CODE_DEPTH_EXCEEDED,
+                )
+                raise _accounts.depth_exceeded()
+            identity = self.create_member_identity(
+                principal=principal,
+                permissions=set(wanted),
+                display_name=display_name,
+            )
+            if identity is None:
+                raise _accounts.AccountError(409, "ACCOUNT_EXISTS", "该账号已存在")
+            activation_code = _accounts.generate_code("AC")
+            node = _accounts.AccountNode(
+                principal=principal,
+                parent_id=actor_node.principal,
+                depth=depth,
+                root_id=actor_node.root_id,
+                permissions=frozenset(wanted),
+                allow_superior_key_use=bool(allow_key_sharing),
+                key_auth_source=(
+                    "created_default" if allow_key_sharing else "not_granted"
+                ),
+                activation_hash=_accounts.hash_code(
+                    activation_code, (_persistence.integrity_key() or "")
+                ),
+                activation_expires_at=_accounts.expires_at(),
+                created_at=self._identity_registered_at(principal),
+                updated_at=utc_now().isoformat(),
+                source="runtime",
+            )
+            self._store_account(node)
+            self._account_audit(
+                action="account.member.created",
+                actor=actor,
+                target=principal,
+                outcome="allowed",
+                details={
+                    "permissions": sorted(wanted),
+                    "activation_expires_at": node.activation_expires_at,
+                },
+            )
+            return node, activation_code
+
+    def _identity_has_scope(self, principal: str, scope: str) -> bool:
+        node = self._accounts.get(principal)
+        if node is None:
+            return False
+        return node.has(scope)
+
+    # ---- 激活 / 一次性码 -----------------------------------------------
+
+    def verify_activation_code(self, principal: str, code: str) -> _accounts.AccountNode:
+        """校验激活码但不消费；失败计数落库（限次）。"""
+        key = f"activate:{principal}"
+        _accounts.limiter.check(
+            key, limit=_accounts.MAX_ACTIVATION_ATTEMPTS, window=3600
+        )
+        with self._lock:
+            node = self._accounts.get(principal)
+            if (
+                node is None
+                or not node.activation_hash
+                or node.status == _accounts.ACCOUNT_STATUS_DELETED
+            ):
+                _accounts.limiter.register(key)
+                raise _accounts.AccountError(
+                    401, "ACTIVATION_CODE_INVALID", "激活信息无效或已过期"
+                )
+            if _accounts.is_expired(node.activation_expires_at):
+                _accounts.limiter.register(key)
+                raise _accounts.AccountError(
+                    401, "ACTIVATION_CODE_INVALID", "激活信息无效或已过期"
+                )
+            if node.activation_attempts >= _accounts.MAX_ACTIVATION_ATTEMPTS:
+                raise _accounts.AccountError(
+                    429, "ACCOUNT_RATE_LIMITED", "尝试次数过多，请稍后重试"
+                )
+            if not _accounts.code_matches(
+                code, node.activation_hash, (_persistence.integrity_key() or "")
+            ):
+                updated = node.with_changes(
+                    activation_attempts=node.activation_attempts + 1
+                )
+                self._accounts[principal] = updated
+                self._persist_account(updated)
+                _accounts.limiter.register(key)
+                self._audit_denial(
+                    action="account.activate", actor=principal, target=principal,
+                    code="ACTIVATION_CODE_INVALID",
+                )
+                raise _accounts.AccountError(
+                    401, "ACTIVATION_CODE_INVALID", "激活信息无效或已过期"
+                )
+            return node
+
+    def consume_activation_code(self, principal: str) -> _accounts.AccountNode:
+        """消费已校验的激活码（一次性）。"""
+        with self._lock:
+            node = self._accounts.get(principal)
+            if node is None:
+                raise _accounts.AccountError(
+                    401, "ACTIVATION_CODE_INVALID", "激活信息无效或已过期"
+                )
+            updated = node.with_changes(
+                activation_hash="",
+                activation_expires_at=None,
+                activation_attempts=0,
+                status=_accounts.ACCOUNT_STATUS_ACTIVE,
+            ).bump()
+            self._accounts[principal] = updated
+            self._persist_account(updated)
+            _accounts.limiter.reset(f"activate:{principal}")
+            self._account_audit(
+                action="account.activated",
+                actor=principal,
+                target=principal,
+                outcome="allowed",
+            )
+            return updated
+
+    def issue_activation_code(
+        self, actor: str, target: str
+    ) -> Tuple[str, Optional[str]]:
+        """重新签发一次性激活码（只能作用于自己可管理的成员）。"""
+        code = _accounts.generate_code("AC")
+        stamp = _accounts.expires_at()
+        with self._lock:
+            self._require_can_manage(
+                actor=actor, target=target, action="account.activation.issue"
+            )
+            node = self._accounts[target]
+            updated = node.with_changes(
+                activation_hash=_accounts.hash_code(
+                    code, (_persistence.integrity_key() or "")
+                ),
+                activation_expires_at=stamp,
+                activation_attempts=0,
+            )
+            self._accounts[target] = updated
+            self._persist_account(updated)
+            _accounts.limiter.reset(f"activate:{target}")
+            self._account_audit(
+                action="account.activation.issued",
+                actor=actor,
+                target=target,
+                outcome="allowed",
+                details={"activation_expires_at": stamp},
+            )
+            return code, stamp
+
+    def _require_can_manage(self, *, actor: str, target: str, action: str) -> _accounts.AccountNode:
+        if actor == target:
+            raise _accounts.neutral_denied()
+        with self._lock:
+            actor_node = self._accounts.get(actor)
+            target_node = self._accounts.get(target)
+            if actor_node is None or target_node is None:
+                self._audit_denial(
+                    action=action, actor=actor, target=target,
+                    code=_accounts.CODE_SUBTREE_DENIED,
+                )
+                raise _accounts.subtree_denied()
+            if actor_node.root_id != target_node.root_id:
+                self._audit_denial(
+                    action=action, actor=actor, target=target,
+                    code=_accounts.CODE_CROSS_SUBTREE_DENIED,
+                )
+                raise _accounts.subtree_denied(_accounts.CODE_CROSS_SUBTREE_DENIED)
+            if target_node.status == _accounts.ACCOUNT_STATUS_DELETED:
+                self._audit_denial(
+                    action=action, actor=actor, target=target,
+                    code=_accounts.CODE_SUBTREE_DENIED,
+                )
+                raise _accounts.subtree_denied()
+            if not _accounts.can_manage(self._accounts, actor, target):
+                self._audit_denial(
+                    action=action, actor=actor, target=target,
+                    code=_accounts.CODE_LEAPFROG_DENIED,
+                )
+                raise _accounts.neutral_denied()
+            return target_node
+
+    # ---- 权限 / Key 授权 -------------------------------------------------
+
+    def grant_account_permissions(
+        self,
+        actor: str,
+        target: str,
+        grant: Optional[Iterable[str]] = None,
+        revoke: Optional[Iterable[str]] = None,
+    ) -> _accounts.AccountNode:
+        """调整成员权限（只能调整自己可管理的位置；防提权）。"""
+        grant_list = sorted({str(s).strip() for s in (grant or []) if str(s).strip()})
+        revoke_list = sorted({str(s).strip() for s in (revoke or []) if str(s).strip()})
+        if not grant_list and not revoke_list:
+            raise _accounts.AccountError(400, "ACCOUNT_NO_CHANGE", "没有需要变更的权限")
+        with self._lock:
+            node = self._require_can_manage(
+                actor=actor, target=target, action="account.permission.update"
+            )
+            decision, code = _accounts.grant_decision(
+                self._accounts, actor, target, grant_list
+            )
+            if decision != "allow":
+                self._audit_denial(
+                    action="account.permission.grant", actor=actor, target=target,
+                    code=code or _accounts.CODE_PRIVILEGE_ESCALATION,
+                )
+                raise _accounts.AccountError(
+                    403, _accounts.CODE_PRIVILEGE_ESCALATION, "无权授予该权限"
+                )
+            decision, code = _accounts.revoke_decision(
+                self._accounts, actor, target, revoke_list
+            )
+            if decision != "allow":
+                self._audit_denial(
+                    action="account.permission.revoke", actor=actor, target=target,
+                    code=code or _accounts.CODE_PRIVILEGE_ESCALATION,
+                )
+                raise _accounts.AccountError(
+                    403, _accounts.CODE_PRIVILEGE_ESCALATION, "无权授予该权限"
+                )
+            current = set(node.permissions)
+            updated_permissions = frozenset((current | set(grant_list)) - set(revoke_list))
+            updated = node.with_changes(permissions=updated_permissions).bump(
+                "permission-change"
+            )
+            self._accounts[target] = updated
+            self._persist_account(updated)
+            if grant_list:
+                self._account_audit(
+                    action="account.permission.granted",
+                    actor=actor,
+                    target=target,
+                    outcome="allowed",
+                    details={"granted": grant_list, "permissions": sorted(updated_permissions)},
+                )
+            if revoke_list:
+                self._account_audit(
+                    action="account.permission.revoked",
+                    actor=actor,
+                    target=target,
+                    outcome="revoked",
+                    details={"revoked": revoke_list, "permissions": sorted(updated_permissions)},
+                )
+            return updated
+
+    def set_key_sharing(
+        self, actor: str, target: str, allow: bool
+    ) -> _accounts.AccountNode:
+        """设置成员是否允许其 Key 被上方账号使用（可撤销）。"""
+        with self._lock:
+            node = self._require_can_manage(
+                actor=actor, target=target, action="key.sharing.update"
+            )
+            if node.parent_id is None:
+                # 根没有"上方账号"，该开关对根没有意义。
+                raise _accounts.AccountError(
+                    400, "ACCOUNT_NO_CHANGE", "该操作不适用于当前账号"
+                )
+            updated = node.with_changes(
+                allow_superior_key_use=bool(allow),
+                key_auth_source="explicit_toggle",
+            ).bump("key-sharing")
+            self._accounts[target] = updated
+            self._persist_account(updated)
+            self._account_audit(
+                action="key.sharing.updated",
+                actor=actor,
+                target=target,
+                outcome="allowed",
+                details={"allow": bool(allow), "source": "explicit_toggle"},
+            )
+            return updated
+
+    def key_borrow_status(self, actor: str, owner: str) -> Tuple[bool, Optional[str]]:
+        """Key 借用判定，返回 ``(allowed, reason_code)``。
+
+        定稿码（docs/account-hierarchy.md §5.2）：
+        * ``ACCOUNT_KEY_UPWARD_DENIED`` / ``ACCOUNT_KEY_NOT_OWNED`` -- 越出子树；
+        * ``ACCOUNT_KEY_CONSENT_REQUIRED`` -- 目标未开启共享授权（403）。
+        """
+        with self._lock:
+            if not _accounts.can_borrow_key(self._accounts, actor, owner):
+                actor_node = self._accounts.get(actor)
+                owner_node = self._accounts.get(owner)
+                if actor_node is None or owner_node is None:
+                    return False, _accounts.CODE_KEY_UPWARD_DENIED
+                if actor_node.depth > owner_node.depth:
+                    return False, _accounts.CODE_KEY_UPWARD_DENIED
+                return False, _accounts.CODE_KEY_NOT_OWNED
+            if actor != owner and not _accounts.key_borrow_authorized(
+                self._accounts, owner
+            ):
+                return False, _accounts.CODE_KEY_CONSENT_REQUIRED
+            return True, None
+
+    # ---- 状态：停用 / 删除 / 级联 ---------------------------------------
+
+    def set_account_status(
+        self,
+        actor: str,
+        target: str,
+        status: str,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """停用 / 删除成员，级联整棵子树。
+
+        * 审计记录**永不删除**（这里只改状态）；
+        * 记忆与文件保留（"归档"而非抹除），返回 ``memory_archived=True``；
+        * Key 只是标记 ``key_unbound_hint``，不物理删除，避免误删不可恢复。
+        """
+        if status not in (
+            _accounts.ACCOUNT_STATUS_ACTIVE,
+            _accounts.ACCOUNT_STATUS_SUSPENDED,
+            _accounts.ACCOUNT_STATUS_DELETED,
+        ):
+            raise _accounts.AccountError(400, "ACCOUNT_STATUS_INVALID", "状态无效")
+        with self._lock:
+            target_node = self._require_can_manage(
+                actor=actor, target=target, action="account.status.update"
+            )
+            if status == _accounts.ACCOUNT_STATUS_DELETED:
+                if target_node.is_root:
+                    self._audit_denial(
+                        action="account.delete", actor=actor, target=target,
+                        code=_accounts.CODE_DELETE_ROOT_FORBIDDEN,
+                    )
+                    raise _accounts.AccountError(
+                        409,
+                        _accounts.CODE_DELETE_ROOT_FORBIDDEN,
+                        "主账号不能删除",
+                    )
+                if len(_accounts.subtree_of(self._accounts, target)) > 1:
+                    self._audit_denial(
+                        action="account.delete", actor=actor, target=target,
+                        code=_accounts.CODE_DELETE_HAS_CHILDREN,
+                    )
+                    raise _accounts.AccountError(
+                        409,
+                        _accounts.CODE_DELETE_HAS_CHILDREN,
+                        "该账号下还有其他成员，请先移交或选择级联停用",
+                    )
+            affected: List[str] = []
+            for principal in _accounts.subtree_of(self._accounts, target):
+                node = self._accounts[principal]
+                updated = node.with_changes(status=status).bump(f"status:{status}")
+                self._accounts[principal] = updated
+                self._persist_account(updated)
+                affected.append(principal)
+                identity = self.get_identity_by_principal(principal)
+                if identity is not None:
+                    if status == _accounts.ACCOUNT_STATUS_ACTIVE:
+                        identity.status = IdentityStatus.ACTIVE
+                    else:
+                        identity.status = IdentityStatus.SUSPENDED
+            self._account_audit(
+                action="account.status.updated",
+                actor=actor,
+                target=target,
+                outcome="allowed",
+                details={
+                    "status": status,
+                    "affected_count": len(affected),
+                    "reason": reason,
+                    "audit_retained": True,
+                    "memory_archived": True,
+                    "key_unbound_hint": status != _accounts.ACCOUNT_STATUS_ACTIVE,
+                },
+            )
+            return {
+                "target": target,
+                "status": status,
+                "affected": affected,
+                "audit_retained": True,
+                "memory_archived": True,
+                "key_unbound_hint": status != _accounts.ACCOUNT_STATUS_ACTIVE,
+            }
+
+    def bump_account_epoch(self, principal: str, reason: str = "") -> Optional[_accounts.AccountNode]:
+        """让已签发凭据在下一个请求失效（权限/归属变更后调用）。"""
+        with self._lock:
+            node = self._accounts.get(principal)
+            if node is None:
+                return None
+            updated = node.bump(reason)
+            self._accounts[principal] = updated
+            self._persist_account(updated)
+            return updated
+
+    # ---- 根恢复 / 备份 ---------------------------------------------------
+
+    def rotate_recovery_code(self, principal: str) -> Tuple[str, str]:
+        """为根账号轮换一次性恢复码（只存哈希，明文只返回一次）。"""
+        with self._lock:
+            root = self.account_root()
+            if root is None or root.principal != principal:
+                self._audit_denial(
+                    action="account.recovery.rotate", actor=principal,
+                    target=principal, code="ACCOUNT_SCOPE_DENIED",
+                )
+                raise _accounts.neutral_denied()
+            code = _accounts.generate_code("RC")
+            node = self._accounts[principal]
+            updated = node.with_changes(
+                recovery_hash=_accounts.hash_code(
+                    code, (_persistence.integrity_key() or "")
+                )
+            )
+            self._accounts[principal] = updated
+            self._persist_account(updated)
+            self._account_audit(
+                action="account.recovery.rotated",
+                actor=principal,
+                target=principal,
+                outcome="allowed",
+            )
+            return code, updated.updated_at
+
+    def consume_recovery_code(self, code: str) -> str:
+        """校验并消费根恢复码；返回根 principal。"""
+        key = "recover:root"
+        _accounts.limiter.check(
+            key, limit=_accounts.MAX_RECOVERY_ATTEMPTS,
+            window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
+        )
+        with self._lock:
+            root = self.account_root()
+            if root is None or not root.recovery_hash:
+                _accounts.limiter.register(key)
+                raise _accounts.AccountError(
+                    401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
+                )
+            if not _accounts.code_matches(
+                code, root.recovery_hash, (_persistence.integrity_key() or "")
+            ):
+                _accounts.limiter.register(key)
+                self._audit_denial(
+                    action="account.recovery.use", actor="anonymous",
+                    target=root.principal, code="RECOVERY_CODE_INVALID",
+                )
+                raise _accounts.AccountError(
+                    401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
+                )
+            updated = root.with_changes(recovery_hash="", status=_accounts.ACCOUNT_STATUS_ACTIVE).bump(
+                "recovery"
+            )
+            self._accounts[root.principal] = updated
+            self._persist_account(updated)
+            _accounts.limiter.reset(key)
+            self._account_audit(
+                action="account.recovery.used",
+                actor=root.principal,
+                target=root.principal,
+                outcome="allowed",
+            )
+            return root.principal
+
+    def build_backup_payload(
+        self, actor: str, scope: str = "all"
+    ) -> Dict[str, Any]:
+        """组装身份/账号部分的备份清单。
+
+        ``scope="all"`` 仅根账号可用（整棵树）；成员只能 ``scope="self"``。
+        凭据、模型 Key、文件、记忆由 gateway 对应 store 追加，见
+        ``gateway/accounts.py``。
+        """
+        with self._lock:
+            actor_node = self._accounts.get(actor)
+            if actor_node is None:
+                raise _accounts.neutral_denied()
+            wanted = str(scope or "all").strip().lower()
+            if wanted not in ("all", "self"):
+                raise _accounts.AccountError(
+                    400, "ACCOUNT_SCOPE_INVALID", "导出范围无效"
+                )
+            if wanted == "all":
+                if not actor_node.is_root:
+                    self._audit_denial(
+                        action="account.backup.export", actor=actor, target=actor,
+                        code="ACCOUNT_SCOPE_DENIED",
+                    )
+                    raise _accounts.neutral_denied()
+                principals = sorted(self._accounts)
+            else:
+                # ``self`` 就是"只有本人"：成员不能借 self 带走整棵子树，
+                # 根账号也不会因为 self 把全树打包。
+                principals = [actor]
+            identities = []
+            for principal in principals:
+                identity = self.get_identity_by_principal(principal)
+                if identity is None:
+                    continue
+                identities.append(
+                    {
+                        "principal": principal,
+                        "id": identity.id,
+                        "permissions": sorted(identity.permissions),
+                        "scope": identity.scope.value,
+                        "trust_score": identity.trust_score,
+                        "status": identity.status.value,
+                        "metadata": dict(identity.metadata or {}),
+                        "created_at": identity.created_at.isoformat(),
+                    }
+                )
+            accounts = [self._accounts[p].to_record() for p in principals]
+            return {
+                "root_principal": self.account_root().principal
+                if self.account_root()
+                else actor,
+                "scope": wanted,
+                "identities": identities,
+                "accounts": accounts,
+            }
+
+    def apply_backup_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """把备份里的身份与账号树写回本机。
+
+        仅允许在**本机没有根账号**时认领（防"把别人整机覆盖"）；恢复后仍保持
+        单根。防重放由 gateway 的 bundle_id 回执负责。
+        """
+        if not isinstance(payload, dict):
+            raise _accounts.AccountError(400, "BACKUP_INVALID", "凭据包无效")
+        identities = payload.get("identities") or []
+        accounts = payload.get("accounts") or []
+        if not isinstance(identities, list) or not isinstance(accounts, list):
+            raise _accounts.AccountError(400, "BACKUP_INVALID", "凭据包无效")
+        with self._lock:
+            if self.account_root() is not None:
+                self._audit_denial(
+                    action="account.backup.import", actor="anonymous",
+                    target="-", code="IMPORT_NOT_ALLOWED",
+                )
+                raise _accounts.AccountError(
+                    409, "IMPORT_NOT_ALLOWED", "本机已存在账号，无法导入"
+                )
+            nodes: Dict[str, _accounts.AccountNode] = {}
+            for record in accounts:
+                try:
+                    node = _accounts.AccountNode.from_record(record)
+                except Exception:  # noqa: BLE001
+                    continue
+                nodes[node.principal] = node
+            if not nodes:
+                raise _accounts.AccountError(400, "BACKUP_INVALID", "凭据包无效")
+            roots_found = _accounts.roots(nodes)
+            if len(roots_found) != 1:
+                raise _accounts.AccountError(400, "BACKUP_INVALID", "凭据包无效")
+            failures = _accounts.detect_cycles(nodes)
+            if failures:
+                raise _accounts.AccountError(400, "BACKUP_INVALID", "凭据包无效")
+            restored = 0
+            for entry in identities:
+                if not isinstance(entry, dict):
+                    continue
+                principal = normalize_principal(str(entry.get("principal") or "")).strip()
+                if principal not in nodes:
+                    continue
+                if self.get_identity_by_principal(principal) is not None:
+                    continue
+                try:
+                    scope = IdentityScope(str(entry.get("scope") or "L3"))
+                except ValueError:
+                    scope = IdentityScope.L3
+                metadata = dict(entry.get("metadata") or {})
+                metadata[METADATA_KIND_KEY] = HUMAN_KIND
+                identity = self.create_identity(
+                    principal=principal,
+                    permissions=set(entry.get("permissions") or []),
+                    scope=scope,
+                    trust_score=float(entry.get("trust_score") or 0.5),
+                    metadata=metadata,
+                )
+                if identity is not None:
+                    self._persist_human_identity(identity)
+                    restored += 1
+            for node in nodes.values():
+                self._accounts[node.principal] = node
+                self._persist_account(node)
+            self._accounts_booted = True
+            self._account_audit(
+                action="account.backup.imported",
+                actor="anonymous",
+                target=nodes[roots_found[0].principal].principal,
+                outcome="allowed",
+                details={"accounts": len(nodes), "identities": restored},
+            )
+            return {
+                "accounts": len(nodes),
+                "identities": restored,
+                "root_principal": roots_found[0].principal,
+            }
+
+    def record_import_receipt(self, bundle_id: str) -> bool:
+        return bool(self._store.record_import_receipt(bundle_id))
+
+    def has_import_receipt(self, bundle_id: str) -> bool:
+        return bool(self._store.has_import_receipt(bundle_id))
+
+    def account_registry_report(self) -> Dict[str, Any]:
+        nodes = self.account_nodes()
+        return {
+            "accounts": len(nodes),
+            "roots": sorted(n.principal for n in nodes.values() if n.is_root),
+            "max_depth": _accounts.max_depth(),
+            "store": self.describe_store(),
+            "last_account_load": getattr(self._store, "last_account_report", {}),
+        }
 
     def suspend_identity(self, principal: str, reason: str = "") -> bool:
         """Revoke ``principal``'s standing as a human who may hold sovereignty.

@@ -13,7 +13,7 @@ import json
 import threading
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,9 @@ from .knowledge_context import (
     public_metadata,
 )
 from .policy import require_human_principal
+from .account_context import audit_key_use, key_scope_for
+from .account_usage import record_usage
+from ..ai.model_config import ModelConfigError
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -45,10 +48,19 @@ def LiuHaoAssistant(*args, **kwargs):  # noqa: N802 - 保持原类名以兼容�
     return _impl(*args, **kwargs)
 
 
-def provider_for_task(task_type: str, *, model_id=None):
+def provider_for_task(task_type: str, *, model_id=None, key_scope=None):
     from ..ai.model_router import provider_for_task as _impl
 
-    return _impl(task_type, model_id=model_id)
+    if key_scope is None:
+        return _impl(task_type, model_id=model_id)
+    return _impl(
+        task_type,
+        model_id=model_id,
+        visible_to=list(key_scope.visible_to),
+        allow_unowned=key_scope.allow_unowned,
+        allow_owners=list(key_scope.allow_owners),
+        allow_env_fallback=key_scope.is_root,
+    )
 
 
 def get_conversation_store():
@@ -99,7 +111,10 @@ def _bare_session_id(key: str) -> str:
 
 
 def get_assistant(
-    session_id: str, principal: Optional[str] = None, model_id: Optional[str] = None
+    session_id: str,
+    principal: Optional[str] = None,
+    model_id: Optional[str] = None,
+    key_scope=None,
 ) -> LiuHaoAssistant:
     """获取或创建会话实例（线程安全，按主体隔离）。
 
@@ -128,7 +143,9 @@ def get_assistant(
         assistant = _sessions[key]
         # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里路由，
         # 未命中回落默认模型（与旧行为一致），决策写日志便于核对。
-        assistant.provider = provider_for_task("chat", model_id=model_id)
+        assistant.provider = provider_for_task(
+            "chat", model_id=model_id, key_scope=key_scope
+        )
         return assistant
 
 
@@ -190,16 +207,79 @@ class ChatResponse(BaseModel):
     knowledge: Dict[str, object]
 
 
+def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
+    """按账号 Key 作用域构造会话；越级/冒用在此转成稳定错误码。"""
+    scope = key_scope_for(principal=principal)
+    try:
+        assistant = get_assistant(
+            req.session_id, principal, req.model_id, key_scope=scope
+        )
+    except ModelConfigError as exc:
+        audit_key_use(
+            scope,
+            None,
+            outcome="denied",
+            source="explicit",
+            extra={"model_config_id": req.model_id, "error_code": exc.code},
+        )
+        detail: object = (
+            {"code": exc.code, "message": exc.detail} if exc.code else exc.detail
+        )
+        raise HTTPException(status_code=exc.status_code, detail=detail)
+    owner = str(getattr(assistant.provider, "owner_principal", "") or "")
+    if owner and owner != principal and scope.can_use(owner):
+        # 主账号使用成员 Key：actor 仍是主账号，另记 key_owner 与授权来源。
+        audit_key_use(scope, owner, outcome="allowed", source="authorized_share")
+    return assistant
+
+
+def _record_chat_usage(
+    assistant: LiuHaoAssistant,
+    principal: str,
+    req: "ChatRequest",
+    *,
+    tokens_in: int,
+    tokens_out: int,
+    correlation_id: str,
+) -> None:
+    """记一行用量：账单归 ``key_owner``，用量归真实 actor。失败不阻断对话。"""
+    owner = str(getattr(assistant.provider, "owner_principal", "") or "") or principal
+    model = str(getattr(assistant.provider, "model", "") or req.model_id or "")
+    record_usage(
+        actor=principal,
+        key_owner=owner,
+        model=model,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        session_id=req.session_id,
+        correlation_id=correlation_id,
+    )
+
+
+def _estimate_tokens(text: str) -> int:
+    """无 provider usage 时的保守估算；账本里标记 ``estimated=1``。"""
+    return max(1, len(str(text or "")) // 4)
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest, principal: str = Depends(require_human_principal)
 ) -> ChatResponse:
     # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
-    assistant = get_assistant(req.session_id, principal, req.model_id)
+    assistant = _assistant_for(req, principal)
     # 先检索再生成：空库/不可用/检索失败都静默降级，元信息如实说明。
     knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
     with knowledge_prompt(assistant, knowledge):
         result = assistant.chat(req.message)
+    if result.get("status") != "denied":
+        _record_chat_usage(
+            assistant,
+            principal,
+            req,
+            tokens_in=_estimate_tokens(req.message),
+            tokens_out=_estimate_tokens(result.get("reply")),
+            correlation_id=str(result.get("correlation_id") or ""),
+        )
     return ChatResponse(
         reply=result["reply"],
         status=result["status"],
@@ -222,20 +302,31 @@ def chat_stream(
     - ``{"type": "tool", "name": ..., "args": ..., "output": ...}``  工具调用
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
     """
-    assistant = get_assistant(req.session_id, principal, req.model_id)
+    assistant = _assistant_for(req, principal)
     knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
 
     def event_stream():
         # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
+        reply_chars = 0
         with knowledge_prompt(assistant, knowledge):
             for item in assistant.chat_stream(req.message):
                 if isinstance(item, dict):
                     # 工具调用事件：结构化透传（type/name/args/output）。
                     yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
                 else:
+                    reply_chars += len(str(item))
                     payload = {"type": "token", "content": item}
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-        # 生成器耗尽时 chat_stream 已完成落盘 + 审计，发结束帧。
+        # 生成器耗尽时 chat_stream 已完成落盘 + 审计，先记用量再发结束帧。
+        _record_chat_usage(
+            assistant,
+            principal,
+            req,
+            tokens_in=_estimate_tokens(req.message),
+            tokens_out=max(1, reply_chars // 4),
+            correlation_id="",
+        )
+        # 发结束帧。
         done = {
             "type": "done",
             "turn": assistant.turn,
@@ -251,7 +342,8 @@ def chat_stream(
 def chat_stats(
     session_id: str = "default", principal: str = Depends(require_human_principal)
 ) -> Dict[str, object]:
-    assistant = get_assistant(session_id, principal)
+    scope = key_scope_for(principal=principal)
+    assistant = get_assistant(session_id, principal, key_scope=scope)
     return assistant.stats()
 
 

@@ -40,7 +40,7 @@ from pathlib import Path
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger("liuhao.ai.model_config")
 
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS ai_model_configs (
     model         TEXT NOT NULL,
     base_url      TEXT,
     api_key_enc   TEXT,
+    owner_principal TEXT NOT NULL DEFAULT '',
     timeout       REAL NOT NULL DEFAULT 30.0,
     is_default    INTEGER NOT NULL DEFAULT 0,
     enabled       INTEGER NOT NULL DEFAULT 1,
@@ -87,12 +88,17 @@ CREATE TABLE IF NOT EXISTS ai_model_configs (
 
 
 class ModelConfigError(Exception):
-    """配置层错误：带 HTTP 状态码与可直接展示的中文原因。"""
+    """配置层错误：带 HTTP 状态码与可直接展示的中文原因。
 
-    def __init__(self, status_code: int, detail: str):
+    ``code`` 是稳定的机器可读错误码（账号/Key 归属类错误必填）；普通校验错误
+    可以留空，保持既有 ``detail`` 字符串契约不变。
+    """
+
+    def __init__(self, status_code: int, detail: str, code: Optional[str] = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.code = code
 
 
 def _now_iso() -> str:
@@ -110,6 +116,24 @@ def mask_secret(secret: Optional[str]) -> Optional[str]:
 
 def _derive_key(passphrase: str) -> bytes:
     return hashlib.sha256(passphrase.encode("utf-8")).digest()
+
+
+def _row_owner(row: sqlite3.Row) -> str:
+    """安全读取归属列：旧库/测试手工表可能还没有这一列。"""
+    try:
+        return str(row["owner_principal"] or "")
+    except (IndexError, KeyError):
+        return ""
+
+
+def _visible(owner: str, visible_to: Optional[Sequence[str]], allow_unowned: bool) -> bool:
+    """Key 可见性：``visible_to=None`` 表示进程内部调用，不设限。"""
+    if visible_to is None:
+        return True
+    if not owner:
+        # 空归属 = 账号体系上线前创建，归根账号所有；只有根视角可见。
+        return allow_unowned
+    return owner in visible_to
 
 
 class ModelConfigStore:
@@ -134,15 +158,49 @@ class ModelConfigStore:
     def _connect(self) -> sqlite3.Connection:
         with self._lock:
             if self._conn is None:
-                parent = os.path.dirname(os.path.abspath(self._db_path))
-                os.makedirs(parent, exist_ok=True)
-                self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-                self._conn.row_factory = sqlite3.Row
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
-                self._conn.executescript(_SCHEMA)
-                self._conn.commit()
+                try:
+                    parent = os.path.dirname(os.path.abspath(self._db_path))
+                    os.makedirs(parent, exist_ok=True)
+                    conn = sqlite3.connect(self._db_path, check_same_thread=False)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.executescript(_SCHEMA)
+                    self._migrate_schema(conn)
+                    conn.commit()
+                except (sqlite3.Error, OSError) as exc:
+                    raise ModelConfigError(
+                        self._storage_status,
+                        f"无法打开模型配置库 {self._db_path}：{exc}。"
+                        "磁盘可能已满、数据目录只读，或文件被其它程序独占；"
+                        "为避免写坏已有配置，本次操作已拒绝。",
+                    ) from exc
+                self._conn = conn
             return self._conn
+
+    #: 存储不可写（磁盘满/只读/被占用）时对外的状态码与文案前缀。
+    _storage_status = 503
+
+    def _storage_error(self, exc: Exception) -> ModelConfigError:
+        return ModelConfigError(
+            self._storage_status,
+            f"无法写入模型配置（磁盘可能已满、数据目录只读或文件被占用）：{exc}。"
+            "已有配置保持不变。",
+        )
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection) -> None:
+        """就地补列（幂等）：旧库没有 ``owner_principal`` 时加上，不重建表。
+
+        用 ``ADD COLUMN ... DEFAULT ''`` 而不是回填：空归属表示"迁移前创建"，
+        由可见性规则把它归给根账号，因此不会把历史模型划给错误的账号。
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_model_configs)")}
+        if "owner_principal" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_model_configs "
+                "ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''"
+            )
 
     def _encryption_key(self) -> bytes:
         """解析/生成 32 字节密钥；无法获得密钥时抛 ``ModelConfigError``。"""
@@ -228,6 +286,7 @@ class ModelConfigStore:
             "provider": row["provider"],
             "model": row["model"],
             "base_url": row["base_url"],
+            "owner_principal": _row_owner(row),
             "timeout": row["timeout"],
             "is_default": bool(row["is_default"]),
             "enabled": bool(row["enabled"]),
@@ -245,7 +304,16 @@ class ModelConfigStore:
             return "（密文无法解密）"
         return mask_secret(plain)
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(
+        self,
+        *,
+        visible_to: Optional[Sequence[str]] = None,
+        allow_unowned: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """列出配置；给定 ``visible_to`` 时只返回该视角可见的 Key 归属。
+
+        默认（``visible_to=None``）与旧行为完全一致，供进程内部与旧调用方使用。
+        """
         with self._lock:
             if not Path(self._db_path).exists():
                 return []
@@ -255,6 +323,8 @@ class ModelConfigStore:
             ).fetchall()
         out = []
         for row in rows:
+            if not _visible(_row_owner(row), visible_to, allow_unowned):
+                continue
             item = self._row_to_public(row)
             item["api_key_masked"] = self._masked_from_cipher(self, row)
             out.append(item)
@@ -272,23 +342,45 @@ class ModelConfigStore:
         item["api_key_masked"] = self._masked_from_cipher(self, row)
         return item
 
-    def default_id(self) -> Optional[str]:
+    def default_id(
+        self,
+        *,
+        visible_to: Optional[Sequence[str]] = None,
+        allow_unowned: bool = False,
+    ) -> Optional[str]:
+        """当前视角下的默认模型 id。
+
+        受限视角下不能直接返回全局 ``is_default`` 行 —— 那会把别人的 Key 当成
+        "默认"用掉。若不可见，退而选择可见范围内最新的启用模型；全都不可见时
+        返回 ``None``。
+        """
         with self._lock:
             if not Path(self._db_path).exists():
                 return None
             conn = self._connect()
-            row = conn.execute(
-                "SELECT id FROM ai_model_configs WHERE enabled = 1 AND is_default = 1 "
-                "ORDER BY updated_at DESC LIMIT 1"
-            ).fetchone()
-        return row["id"] if row else None
+            rows = conn.execute(
+                "SELECT * FROM ai_model_configs WHERE enabled = 1 "
+                "ORDER BY is_default DESC, updated_at DESC"
+            ).fetchall()
+        for row in rows:
+            if _visible(_row_owner(row), visible_to, allow_unowned):
+                return row["id"]
+        return None
 
-    def resolve(self, model_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def resolve(
+        self,
+        model_id: Optional[str] = None,
+        *,
+        visible_to: Optional[Sequence[str]] = None,
+        allow_unowned: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """解析出可直接构造 provider 的配置（含**解密后**密钥，仅供进程内使用）。
 
-        * ``model_id`` 为空：用已启用的默认模型；没有默认时返回 ``None``，
-          调用方回退到 ``.env``（向后兼容）。
+        * ``model_id`` 为空：用当前视角下的默认模型；没有可用模型时返回
+          ``None``，调用方回退到 ``.env``（向后兼容）。
         * ``model_id`` 可传配置 id 或名称；找不到返回 ``None``。
+        * 给定 ``visible_to`` 且命中**他人 Key** 时一律 403 ``KEY_OWNER_DENIED``。
+          绝不静默改用它 Key —— 静默替换就是 Key 冒用。
         禁用（``enabled=0``）的模型不参与解析。
         """
         with self._lock:
@@ -301,21 +393,108 @@ class ModelConfigStore:
                     (model_id, model_id),
                 ).fetchone()
             else:
-                row = conn.execute(
-                    "SELECT * FROM ai_model_configs WHERE enabled = 1 AND is_default = 1 "
-                    "ORDER BY updated_at DESC LIMIT 1"
-                ).fetchone()
+                rows = conn.execute(
+                    "SELECT * FROM ai_model_configs WHERE enabled = 1 "
+                    "ORDER BY is_default DESC, updated_at DESC"
+                ).fetchall()
+                row = next(
+                    (r for r in rows if _visible(_row_owner(r), visible_to, allow_unowned)),
+                    None,
+                )
         if row is None:
             return None
+        owner = _row_owner(row)
+        if not _visible(owner, visible_to, allow_unowned):
+            raise ModelConfigError(
+                403, "无权使用该模型配置", code="ACCOUNT_KEY_NOT_OWNED"
+            )
         return {
             "id": row["id"],
             "name": row["name"],
             "provider": row["provider"],
             "model": row["model"],
             "base_url": row["base_url"],
+            "owner_principal": owner,
             "timeout": row["timeout"],
             "api_key": self._decrypt_secret(row["id"], row["api_key_enc"]),
         }
+
+    # ------------------------------------------------------------------ #
+    # 备份导出 / 导入（密文原样搬运，不在备份里解密）
+    # ------------------------------------------------------------------ #
+    _BACKUP_COLUMNS = (
+        "id", "name", "provider", "model", "base_url", "api_key_enc",
+        "owner_principal", "timeout", "is_default", "enabled",
+        "created_at", "updated_at",
+    )
+
+    def export_encrypted_rows(
+        self, owners: Optional[Sequence[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """导出模型配置行（``api_key_enc`` 保持密文）；``owners`` 限定归属。"""
+        allowed = set(owners) if owners is not None else None
+        with self._lock:
+            rows = self._connect().execute(
+                "SELECT * FROM ai_model_configs"
+            ).fetchall()
+        exported: List[Dict[str, Any]] = []
+        for row in rows:
+            owner = str(row["owner_principal"] or "")
+            if allowed is not None and owner and owner not in allowed:
+                continue
+            exported.append({key: row[key] for key in self._BACKUP_COLUMNS})
+        return exported
+
+    def import_encrypted_rows(self, rows: List[Dict[str, Any]]) -> int:
+        """恢复模型配置行；只写密文，不触碰明文。返回成功条数。"""
+        written = 0
+        with self._lock:
+            connection = self._connect()
+            for row in rows or []:
+                if not isinstance(row, dict) or not row.get("id"):
+                    continue
+                values = [row.get(key) for key in self._BACKUP_COLUMNS]
+                try:
+                    connection.execute(
+                        "INSERT OR REPLACE INTO ai_model_configs ("
+                        + ", ".join(self._BACKUP_COLUMNS) + ") VALUES ("
+                        + ", ".join(["?"] * len(self._BACKUP_COLUMNS)) + ")",
+                        values,
+                    )
+                    written += 1
+                except sqlite3.Error as exc:
+                    logger.warning("could not restore model row %s: %s", row.get("id"), exc)
+            connection.commit()
+        return written
+
+    def export_key_material(self) -> Optional[bytes]:
+        """模型主密钥（用于让备份里的 ``api_key_enc`` 在目标机仍可解密）。"""
+        try:
+            return self._encryption_key()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not export model key material: %s", exc)
+            return None
+
+    def import_key_material(self, raw: bytes) -> bool:
+        """写回模型主密钥；环境变量已显式配置时不覆盖。"""
+        if os.environ.get(MODEL_CONFIG_KEY_ENV):
+            return False
+        if not raw or len(raw) != 32:
+            return False
+        path = Path(self._key_path)
+        if path.exists():
+            return True
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(bytes(raw))
+            try:
+                os.chmod(str(path), 0o600)
+            except OSError:
+                pass
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not restore model key material: %s", exc)
+            return False
 
     # ------------------------------------------------------------------ #
     # 写
@@ -346,12 +525,19 @@ class ModelConfigStore:
         if not 1 <= timeout <= 600:
             raise ModelConfigError(400, "timeout 必须在 1–600 秒之间")
 
-    def create(self, payload: Dict[str, Any], actor: str) -> Dict[str, Any]:
+    def create(
+        self,
+        payload: Dict[str, Any],
+        actor: str,
+        *,
+        owner_principal: Optional[str] = None,
+    ) -> Dict[str, Any]:
         self._validate(payload, require_key=False)
         import uuid as _uuid
 
         model_id = _uuid.uuid4().hex[:12]
         now = _now_iso()
+        owner = str(owner_principal or payload.get("owner_principal") or "")
         with self._lock:
             conn = self._connect()
             has_default = conn.execute(
@@ -366,8 +552,9 @@ class ModelConfigStore:
             try:
                 conn.execute(
                     "INSERT INTO ai_model_configs (id, name, provider, model, base_url, "
-                    "api_key_enc, timeout, is_default, enabled, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "api_key_enc, owner_principal, timeout, is_default, enabled, "
+                    "created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         model_id,
                         str(payload["name"]).strip(),
@@ -375,6 +562,7 @@ class ModelConfigStore:
                         str(payload["model"]).strip(),
                         payload.get("base_url") or None,
                         encrypted,
+                        owner,
                         float(payload.get("timeout", 30.0)),
                         is_default,
                         1 if payload.get("enabled", True) else 0,
@@ -386,23 +574,29 @@ class ModelConfigStore:
             except sqlite3.IntegrityError as exc:
                 conn.rollback()
                 raise ModelConfigError(409, "同名的模型配置已存在") from exc
-        self._audit("ai.model_config.create", actor, model_id, payload)
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
+        self._audit("ai.model_config.create", actor, model_id, {**payload, "owner": owner})
         return self.get_public(model_id)
 
     def update(self, model_id: str, payload: Dict[str, Any], actor: str) -> Dict[str, Any]:
-        current = self.get_public(model_id)
-        merged = {
-            "name": payload.get("name", current["name"]),
-            "provider": payload.get("provider", current["provider"]),
-            "model": payload.get("model", current["model"]),
-            "base_url": payload.get("base_url", current["base_url"]),
-            "timeout": payload.get("timeout", current["timeout"]),
-            "api_key": payload.get("api_key"),
-        }
-        self._validate(merged, require_key=False)
-        now = _now_iso()
+        # 读-改-写必须在同一把锁内完成：两个窗口同时改同一个模型的不同字段时，
+        # 若在读与写之间插入另一次更新，后写者会把先写者的字段整行覆盖回去
+        # （典型 lost update）。这里把读取挪进锁内，SQLite 层也只有一个写者。
         with self._lock:
+            current = self.get_public(model_id)
+            merged = {
+                "name": payload.get("name", current["name"]),
+                "provider": payload.get("provider", current["provider"]),
+                "model": payload.get("model", current["model"]),
+                "base_url": payload.get("base_url", current["base_url"]),
+                "timeout": payload.get("timeout", current["timeout"]),
+                "api_key": payload.get("api_key"),
+            }
+            self._validate(merged, require_key=False)
             conn = self._connect()
+            now = _now_iso()
             wants_default = payload.get("is_default")
             enabled = payload.get("enabled")
             sets = [
@@ -424,6 +618,9 @@ class ModelConfigStore:
             if payload.get("api_key"):
                 params.append(self._encrypt_secret(model_id, str(payload["api_key"])))
                 sets.append("api_key_enc = ?")
+            if "owner_principal" in payload and payload["owner_principal"] is not None:
+                params.append(str(payload["owner_principal"]))
+                sets.append("owner_principal = ?")
             if enabled is not None:
                 params.append(1 if enabled else 0)
                 sets.append("enabled = ?")
@@ -445,6 +642,9 @@ class ModelConfigStore:
             except sqlite3.IntegrityError as exc:
                 conn.rollback()
                 raise ModelConfigError(409, "同名的模型配置已存在") from exc
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
         self._audit("ai.model_config.update", actor, model_id, merged)
         return self.get_public(model_id)
 
@@ -455,7 +655,11 @@ class ModelConfigStore:
             row = conn.execute(
                 "SELECT is_default FROM ai_model_configs WHERE id = ?", (model_id,)
             ).fetchone()
-            conn.execute("DELETE FROM ai_model_configs WHERE id = ?", (model_id,))
+            try:
+                conn.execute("DELETE FROM ai_model_configs WHERE id = ?", (model_id,))
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
             promoted = None
             if row and row["is_default"]:
                 nxt = conn.execute(
@@ -468,22 +672,51 @@ class ModelConfigStore:
                         (nxt["id"],),
                     )
                     promoted = nxt["id"]
-            conn.commit()
+            try:
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
         self._audit("ai.model_config.delete", actor, model_id, {})
         return {"deleted": model_id, "default_id": promoted}
 
-    def set_default(self, model_id: str, actor: str) -> Dict[str, Any]:
+    def set_default(
+        self,
+        model_id: str,
+        actor: str,
+        *,
+        visible_to: Optional[Sequence[str]] = None,
+        allow_unowned: bool = False,
+    ) -> Dict[str, Any]:
         current = self.get_public(model_id)
         if not current["enabled"]:
             raise ModelConfigError(409, "禁用的模型不能设为默认")
         with self._lock:
             conn = self._connect()
-            conn.execute("UPDATE ai_model_configs SET is_default = 0")
-            conn.execute(
-                "UPDATE ai_model_configs SET is_default = 1, updated_at = ? WHERE id = ?",
-                (_now_iso(), model_id),
-            )
-            conn.commit()
+            if visible_to is None:
+                conn.execute("UPDATE ai_model_configs SET is_default = 0")
+            else:
+                # 受限视角只能在自己的可见集合内改默认，绝不重置别人的默认。
+                ids = [
+                    r["id"]
+                    for r in conn.execute("SELECT id, owner_principal FROM ai_model_configs")
+                    if _visible(_row_owner(r), visible_to, allow_unowned)
+                ]
+                if ids:
+                    conn.execute(
+                        "UPDATE ai_model_configs SET is_default = 0 WHERE id IN "
+                        f"({', '.join('?' for _ in ids)})",
+                        ids,
+                    )
+            try:
+                conn.execute(
+                    "UPDATE ai_model_configs SET is_default = 1, updated_at = ? WHERE id = ?",
+                    (_now_iso(), model_id),
+                )
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
         self._audit("ai.model_config.set_default", actor, model_id, {})
         return self.get_public(model_id)
 

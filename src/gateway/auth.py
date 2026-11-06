@@ -283,6 +283,17 @@ class SecretStore:
         entries[pid] = hash_credential(secret, iterations=iterations)
         return self._write(entries)
 
+    def import_credentials(self, entries: Dict[str, Dict[str, Any]]) -> int:
+        """备份恢复入口：合并（同 principal 覆盖）凭据记录，返回写入条数。"""
+        incoming = {
+            str(k): v for k, v in (entries or {}).items() if isinstance(v, dict)
+        }
+        if not incoming:
+            return 0
+        current = self.load()
+        current.update(incoming)
+        return len(incoming) if self._write(current) else 0
+
     def remove_credential(self, principal: str) -> bool:
         entries = self.load()
         if principal not in entries:

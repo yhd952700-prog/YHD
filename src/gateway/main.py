@@ -1415,6 +1415,12 @@ def get_app() -> FastAPI:
     app.include_router(accounts_router)
     _startup_mark("路由：accounts（账号树）完成")
 
+    # 记忆面（列表 / 检索 / 导出 / 代管开关）。每个端点都按令牌主体 + 账号树
+    # 收敛 owner：别人的条目一律 404；主账号只读聚合整棵子树，不提供改写入口。
+    from .account_memory import router as memory_router
+    app.include_router(memory_router)
+    _startup_mark("路由：memory（账号记忆）完成")
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

@@ -182,14 +182,23 @@ def recovery_reset(payload: RecoveryResetRequest) -> Dict[str, Any]:
 
 @router.get("")
 def list_accounts(context: AccountContext = Depends(require_account_principal)) -> Dict[str, Any]:
-    """只返回自己的子树；不含 parent/depth/root 字段。"""
+    """任何账号都只返回**直接成员**；整棵树只走 ``/tree``（仅根可用）。
+
+    不返回 parent/depth/root：界面只需要"谁归我直接管"，层级结构不外泄。
+    ``is_direct`` 恒为 ``true``，供前端区分"这是可直接管理的成员列表"。
+    """
+    if context.standalone:
+        return {"members": [], "count": 0}
     manager = get_identity_manager()
-    members = []
-    for principal in context.subtree:
-        node = manager.get_account(principal)
-        if node is None:
+    nodes = manager.account_nodes()
+    members: List[Dict[str, Any]] = []
+    for principal in sorted(nodes):
+        node = nodes[principal]
+        if node.parent_id != context.principal:
             continue
-        members.append(_public_member(node))
+        entry = _public_member(node)
+        entry["is_direct"] = True
+        members.append(entry)
     return {"members": members, "count": len(members)}
 
 
@@ -209,10 +218,7 @@ def backup_export(
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
     """导出加密凭据包；``scope=all`` 仅根账号可用。"""
-    try:
-        from .account_backup import export_bundle
-    except ImportError:
-        raise deny(501, "ACCOUNT_FEATURE_UNAVAILABLE", "该功能尚未启用")
+    from .account_backup import export_bundle
 
     return _kernel_call(
         export_bundle,
@@ -227,10 +233,7 @@ def backup_export(
 @router.post("/backup/import")
 def backup_import(payload: BackupImportRequest) -> Dict[str, Any]:
     """在本机没有账号树时认领凭据包（口令校验 + 防重放 + 限次 + 审计）。"""
-    try:
-        from .account_backup import import_bundle
-    except ImportError:
-        raise deny(501, "ACCOUNT_FEATURE_UNAVAILABLE", "该功能尚未启用")
+    from .account_backup import import_bundle
 
     return _kernel_call(import_bundle, bundle=payload.bundle, passphrase=payload.passphrase)
 
@@ -337,6 +340,14 @@ def update_status(
     payload: StatusRequest,
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
+    # 根账号是整棵树的锚点：先于"只能管直接下级"的判定给出明确结论。
+    # 只有根查自己时才会走到这里；非根请求根账号仍被 require_visible 挡成 404。
+    if payload.status == "deleted" and context.is_root and principal == context.principal:
+        raise deny(
+            409,
+            _accounts.CODE_DELETE_ROOT_FORBIDDEN,
+            "根账号不可删除",
+        )
     require_manage(context, principal)
     result = _kernel_call(
         get_identity_manager().set_account_status,
@@ -377,12 +388,19 @@ def account_usage(
 ) -> Dict[str, Any]:
     """用量按 Key 归属记账、按实际调用者展示；成员只见自己。"""
     require_visible(context, principal)
-    try:
-        from .account_usage import usage_summary
-    except ImportError:
-        raise deny(501, "ACCOUNT_FEATURE_UNAVAILABLE", "该功能尚未启用")
+    from .account_usage import usage_summary
 
-    return usage_summary(principal, include_callers=context.is_root)
+    manager = get_identity_manager()
+    if context.is_root:
+        # 根账号：可见目标账号的整棵子树（查询自己时就是全树）。
+        owners = tuple(manager.subtree_principals(principal)) or (principal,)
+        return usage_summary(
+            principal, include_callers=True, owners=owners
+        )
+    # 成员：只看自己 Key 的额度消耗；响应里没有 by_actor（不暴露调用者）。
+    return usage_summary(
+        principal, include_callers=False, owners=(context.principal,)
+    )
 
 
 # --------------------------------------------------------------------------- #
