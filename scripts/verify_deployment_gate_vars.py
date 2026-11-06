@@ -422,6 +422,12 @@ ALLOWLIST: Dict[str, str] = {
         "literal 'default' queue. It labels a queue, not whether a control "
         "applies."
     ),
+    "LIUHAO_STARTUP_PROFILE": (
+        "diagnostic-only switch for the startup stage profiler "
+        "(src/gateway/startup_profile.py:89). Unset means no stage table is "
+        "printed; only a truthy value enables timing logs. It changes what is "
+        "logged, not whether a safety control applies."
+    ),
     "LIUHAO_SECRET_STORE_DIR": (
         "directory override for the encrypted local secret store with a "
         "documented default (~/.liuhao/secrets). Durability of the store is "
