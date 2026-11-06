@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-06 实测）**：活跃文档 **223** 篇（不含 `archive/` 与
-> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 223 篇**。该数字由
+> **覆盖状态（2026-11-06 实测）**：活跃文档 **230** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 230 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -89,7 +89,7 @@
 
 ---
 
-## 2. 目录结构（20 个目录，实测）
+## 2. 目录结构（21 个目录，实测）
 
 ```text
 docs/
@@ -99,7 +99,7 @@ docs/
 ├── ARCHITECTURE.md              ← 架构导航门户
 ├── GLOSSARY.md / SIDENAV.md     ← 术语表 / 站点导航
 ├── *-DESIGN.md 等其余根级文档（设计/指南/清单，详见 §4.2）
-├── adr/                (2)     架构决策记录
+├── adr/                (3)     架构决策记录
 ├── architecture/       (8)     架构
 ├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
 ├── best-practices/     (5)     编码/Agent/记忆/多智能体/测试最佳实践
@@ -119,6 +119,7 @@ docs/
 ├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
 ├── tutorials/          (7)     从零构建 Agent / 多智能体 / 代码审查 / 数据流水线教程
+├── ui-audit-20261106/  (1)     控制台全页巡检与多账号验收报告
 └── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
 
@@ -144,7 +145,7 @@ docs/
 
 ---
 
-## 4. 全量清单（223 篇，逐一列出）
+## 4. 全量清单（230 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -155,7 +156,7 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 
-### 4.2 根级设计与决策（37）
+### 4.2 根级设计与决策（42）
 
 | 文件 | 说明 |
 |---|---|
@@ -196,6 +197,11 @@ docs/
 | [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
 | [`MASTER-TASK-LEDGER.md`](MASTER-TASK-LEDGER.md) | 总任务台账：用户历次要求的逐条状态与证据（**唯一不漏项的真相源**） |
 | [`account-hierarchy.md`](account-hierarchy.md) | 账号层级体系规格（当前为规格文档，不含代码改动） |
+| [`account-ui-ia.md`](account-ui-ia.md) | 多账号界面信息架构与页面清单（依据 account-hierarchy §9） |
+| [`ACCEPTANCE-BUTLER-REAL-MODEL.md`](ACCEPTANCE-BUTLER-REAL-MODEL.md) | 管家真实模型验收：一条命令跑完三类关键场景并给 PASS/FAIL/SKIP |
+| [`release-announcement.md`](release-announcement.md) | 发布文案草稿（官网/网盘分享说明） |
+| [`ui-scifi-direction.md`](ui-scifi-direction.md) | 控制台科幻未来风视觉规范（Y1.0） |
+| [`ui-reference-terse.md`](ui-reference-terse.md) | 竞品 UI 参考规格：Terse |
 
 ### 4.3 `adr/`（3）— 架构决策记录
 
@@ -492,6 +498,12 @@ docs/
 | [`oss-radar/compliance-supplychain.md`](oss-radar/compliance-supplychain.md) | 开源技术雷达 · 第 7 路：合规、供应链与内容安全 |
 | [`oss-radar/quality-cost.md`](oss-radar/quality-cost.md) | 开源技术雷达 · 第 8 路：质量、成本与可靠性 |
 
+### 4.18 `ui-audit-20261106/`（1）— 控制台巡检
+
+| 文件 | 说明 |
+|---|---|
+| [`ui-audit-20261106/report.md`](ui-audit-20261106/report.md) | 控制台全页巡检与多账号验收报告（2026-11-06） |
+
 ---
 
 ## 5. 门禁：本文档的可核验性
@@ -501,7 +513,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 223 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 230 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |

@@ -161,7 +161,7 @@ def parse_json_payload(text: str) -> Any:
     if stripped.startswith("```"):
         first_newline = stripped.find("\n")
         if first_newline != -1:
-            stripped = stripped[first_newline + 1 :]
+            stripped = stripped[first_newline + 1:]
         if stripped.rstrip().endswith("```"):
             stripped = stripped.rstrip()[:-3]
     decoder = json.JSONDecoder()
