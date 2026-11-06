@@ -116,6 +116,13 @@ EXPLICIT_DISTS: Tuple[str, ...] = (
     "jiter",             # openai 的 JSON 解析器，只在首次请求时导入
     "httpx",             # src/ai/providers.py 自建 Client（openai 只带 httpx2）
     "httpcore",          # httpx 的底层传输实现
+    "anthropic",         # Anthropic provider（providers.py 方法体内延迟导入）
+    "python-docx",       # .docx 知识导入（模块名 docx）
+    "lxml",              # python-docx 的 XML 后端
+    "pypdf",             # .pdf 知识导入
+    "sqlalchemy",        # 记忆/知识库 ORM（方法体内延迟导入）
+    "greenlet",          # SQLAlchemy 的协程运行时
+    "taskiq",            # src/tasks/broker.py 任务代理（方法体内延迟导入）
     "pywin32",           # 系统托盘 win32api/win32gui（importlib 延迟导入）
 )
 
@@ -166,6 +173,15 @@ import truststore  # noqa: F401
 # 漏掉时线上表现是「No module named 'httpx'」、对话与目标拆解全部失败。
 import httpx  # noqa: F401
 import httpcore  # noqa: F401
+# 同类问题：以下第三方包只在业务函数体内延迟导入，启动图看不到，
+# 但都属于 requirements.txt 里的运行期硬依赖，缺了就会在真实使用时抛
+# ModuleNotFoundError（不是优雅降级）。放在这里让实测 import 图带上它们
+# 及各自的传递依赖（docx->lxml、sqlalchemy->greenlet 等）。
+import anthropic  # noqa: F401  # src/ai/providers.py 的 Anthropic provider
+import docx  # noqa: F401       # python-docx：.docx 知识导入
+import pypdf  # noqa: F401      # .pdf 知识导入
+import sqlalchemy  # noqa: F401  # 记忆/知识库 ORM
+import taskiq  # noqa: F401     # src/tasks/broker.py 任务代理
 import uvicorn  # noqa: F401
 import uvicorn.main  # noqa: F401
 import uvicorn.protocols.http.auto  # noqa: F401
@@ -522,7 +538,8 @@ def _validate_runtime(app_dir: Path) -> None:
         "import sys, tkinter, win32api, win32gui, win32con, pywintypes, "
         "uvicorn, uvicorn.main, uvicorn.protocols.http.auto, "
         "dotenv, aiosqlite, src.gateway.main, src.desktop.app, "
-        "openai, httpx2, httpcore2, truststore, jiter, httpx, httpcore; "
+        "openai, httpx2, httpcore2, truststore, jiter, httpx, httpcore, "
+        "anthropic, docx, pypdf, sqlalchemy, taskiq; "
         "tkinter.Tcl().eval('info patchlevel'); "
         "print(sys.version.split()[0])"
     )
