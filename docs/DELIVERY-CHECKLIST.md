@@ -139,7 +139,15 @@
 
 ## 5. 全量回归（独立报告）
 
-### 5.1 有效基线
+### 5.0 本轮基线与覆盖（2026-11-06）
+
+- 本轮全量回归基线：`c5c2b792`。`bc1d7b2b`、`747af1fd`、`b664cfc2` 都已是它的祖先（`merge-base --is-ancestor` 全部为 0）。
+- 决策时 HEAD 为 `e9c1b618`；`c5c2b792..e9c1b618` 只改 `docs/self-upgrade.md`（纯文档）。
+- 因此本轮诚实表述是「**全量基线 `c5c2b792` + 文档级差异 + 指定增量核验**」，**不是**「全量覆盖最终 HEAD」。
+- 覆盖表：[regression-baseline-coverage-2026-11-06.md](evidence/regression-baseline-coverage-2026-11-06.md)。
+- 本轮结果：跑完回填（日志 `D:\cache\temp\verify-full-c5c2b792.log`）。
+
+### 5.1 有效基线（上一轮：`cc3af30d`）
 
 - 工作树：`D:\copilot-worktrees\liuhao-regression`（**在 `tempfile.gettempdir()` 之外**，
   避免 E-10 的护栏失效），detached 到 `cc3af30d`。
