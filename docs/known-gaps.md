@@ -300,7 +300,7 @@ SQLite `VACUUM INTO`、归档元数据随包、跨进程可读）；本轮实测
 
 | 编号 | 缺口 | 影响 | 状态 |
 |---|---|---|---|
-| E-1 | `packaging/stage_payload.py` 的延迟依赖修复尚未提交（该目录整体未跟踪） | 用旧脚本重建安装包会再次缺 `httpcore2/truststore/jiter`，聊天报 `[生成失败]` | 工作树已修，待提交 |
+| E-1 | ~~`packaging/stage_payload.py` 的延迟依赖修复尚未提交~~ **已解除**：修复随 `b789d244` 入库（含 `jiter`、`httpx2/httpcore2/truststore` 与运行自检） | — | 已提交（`b789d244`） |
 | E-2 | 首次运行向导只保存 Key，不做连通性测试 | Key 无效/模型名错要到发第一条消息才暴露 | 未改产品；文档改为引导去「模型管理 → 测试连接」 |
 | E-3 | 本机非 Ollama 的 OpenAI 兼容端点：聊天可用，但 `/v1/models/{id}/test` 仍按 SSRF 拒绝 | 「测试连接」与聊天两套校验不一致，本地 LM Studio 用户会被误判 | 安全相关，本轮未改 |
 | E-4 | 静默卸载（`/VERYSILENT`）停在“保留数据”确认框 | 批量部署/自动化卸载会挂住 | 未修；交互式卸载未验证 |

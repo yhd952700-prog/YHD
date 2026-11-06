@@ -66,7 +66,7 @@
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
 | 6 | 端口占用自动顺延 | 已完成 | 同一份 E2E 日志：`[warn] 网关 端口 18130 被占用，已自动改用 18131` | — |
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
-| 8 | 打包延迟依赖修复 | 部分完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`，安装版聊天报 `httpcore2` 缺包的问题已消失 | 修复在 `packaging/stage_payload.py`，但 `packaging/` 整体仍未纳入版本控制（E-1）；用旧脚本重建会退回缺包 |
+| 8 | 打包延迟依赖修复 | 已完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`；修复随 `b789d244` 入库，安装版聊天不再报 `httpcore2` 缺包 | 已解除（E-1）；该目录另有未提交的升级元数据改动，与依赖修复无关 |
 | 9 | 真实厂商 Key 对话 | 未验证 | 网关流的可复现脚本 [verify_first_run_e2e.py](../scripts/verify_first_run_e2e.py)（commit `250456cd`，说明见 [first-run-e2e.md](first-run-e2e.md)）需要真实 Key；本流没有 Key，只用本地 OpenAI 兼容桩验证了真实 HTTP 请求路径 | 本流无真实厂商 Key 的原始输出（E-5）；网关流报称用 DeepSeek 跑过，只能算旁证 |
 | 10 | 静默卸载 | 未验证 | 本轮实测：`unins000.exe /VERYSILENT` 与 `/S` 都停在“是否保留数据”确认框，进程需强制结束 | 交互式卸载未测；自动化卸载会被确认框挂住（E-4） |
 | 11 | 代码签名 | 未做 | 安装包未签名，Windows 显示「未知发布者」 | 需证书与签名流水线（E-8） |
@@ -82,8 +82,8 @@
   “测试连接 → `invalid_key` / `key_revoked` / `quota_exhausted`”三类，因为本机
   桩是回环地址，测试连接被 SSRF 防护拦下，而聊天不受影响。差额部分由
   `tests/test_gateway_models_api.py` 的归类单测与真实云 Key 场景覆盖。
-- **第 8 项 打包修复**：产物已验证包含缺失依赖；差额只是**源码修复未提交**，
-  不影响当前这个安装包，影响的是“下次用仓库脚本重建”。
+- **第 8 项 打包修复**：已解除。产物包含全部缺失依赖，源码修复随 `b789d244`
+  入库，用仓库脚本重建也不会再退回缺包。
 
 ## 4. 未做项去向
 
@@ -93,7 +93,7 @@
 | 静默卸载 | E-4 |
 | 代码签名 | E-8；依赖 D-1 的签名前提 |
 | 前端重建 | E-7 |
-| 打包修复提交 | E-1 |
+| ~~打包修复提交~~ | E-1 已解除（`b789d244`） |
 | 本机端点测试连接与聊天校验不一致 | E-3（安全相关，本轮未改） |
 | 打包冒烟只接受 Mock | E-6 |
 | 向导交互逐字键入 + 自动开浏览器 | E-9 |
