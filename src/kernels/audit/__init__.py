@@ -782,6 +782,11 @@ class AuditStore:
                     return result
                 except sqlite3.OperationalError as exc:
                     code = getattr(exc, "sqlite_errorcode", None)
+                    # Same extended-vs-primary trap as _init_db: 1546 is
+                    # SQLITE_IOERR_* (primary 10). Unmasked, corruption handling
+                    # below was skipped entirely.
+                    if code is not None:
+                        code &= 0xFF
                     if code not in _RETRYABLE_SQLITE_CODES:
                         raise
                     last = exc
@@ -818,6 +823,8 @@ class AuditStore:
         # we retried (in case space freed up) and now fail closed with a CLEAR
         # error so evidence is never silently dropped.
         code = getattr(last, "sqlite_errorcode", None) if last is not None else None
+        if code is not None:
+            code &= 0xFF  # primary code, see the mask note in _init_db
         if code == _SQLITE_FULL:
             raise AuditDiskFullError(
                 "audit store write failed: the database or its disk is full "

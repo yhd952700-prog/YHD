@@ -319,19 +319,12 @@ def check_gate(baseline: dict, current: dict, tolerance: float) -> list:
                 f"{path}: throughput regressed {cur} < {limit:.1f} "
                 f"(baseline {base}, tolerance {tolerance:.0%})")
 
-    def upper(path, base, cur, floor=0.0):
-        # `floor` is an ABSOLUTE allowance added to the relative bound, for
-        # metrics whose baseline is tens of milliseconds. At that magnitude a
-        # 25% relative bound is ~11ms -- smaller than the fsync + scheduler
-        # jitter of a single hard-kill recovery, so it turns ordinary noise into
-        # a red gate. A floor must stay far below any regression worth failing:
-        # it only absorbs jitter, it never hides a real slowdown.
-        limit = max(base * (1.0 + tolerance), base + floor)
+    def upper(path, base, cur):
+        limit = base * (1.0 + tolerance)
         if cur > limit:
             failures.append(
                 f"{path}: latency regressed {cur} > {limit:.3f} "
-                f"(baseline {base}, tolerance {tolerance:.0%}, "
-                f"absolute floor {floor:.3f})")
+                f"(baseline {base}, tolerance {tolerance:.0%})")
 
     b, c = baseline["single_append"], current["single_append"]
     lower("single_append.events_per_sec", b["events_per_sec"], c["events_per_sec"])
@@ -358,15 +351,9 @@ def check_gate(baseline: dict, current: dict, tolerance: float) -> list:
             failures.append("multi_process: seq is not contiguous -- chain forked")
 
     if "recovery" in baseline and "recovery" in current:
-        # Measured on this machine: 0.044 baseline, 0.044-0.070 across 5
-        # repeated runs (first-open PRAGMA after a hard kill pays a WAL/IOERR
-        # retry; 2 of the 5 crossed the old 0.055 relative bound). +0.04 floor
-        # => 0.084 ceiling absorbs that jitter while a 0.12s recovery (a real
-        # ~3x slowdown) still fails.
         upper("recovery.recovery_seconds",
               baseline["recovery"]["recovery_seconds"],
-              current["recovery"]["recovery_seconds"],
-              floor=0.04)
+              current["recovery"]["recovery_seconds"])
         if not current["recovery"]["chain_intact_after_kill"]:
             failures.append("recovery: chain NOT intact after a hard kill")
 
