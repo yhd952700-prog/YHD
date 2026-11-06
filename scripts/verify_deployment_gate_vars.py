@@ -422,6 +422,12 @@ ALLOWLIST: Dict[str, str] = {
         "literal 'default' queue. It labels a queue, not whether a control "
         "applies."
     ),
+    "LOCALAPPDATA": (
+        "Windows install-root hint for the upgrade data directory "
+        "(src/upgrade/manager.py:130). Absent falls back to Path.home(), i.e. "
+        "the unset branch only relocates the data directory; it never "
+        "enables or disables a safety control."
+    ),
     "LIUHAO_STARTUP_PROFILE": (
         "diagnostic-only switch for the startup stage profiler "
         "(src/gateway/startup_profile.py:89). Unset means no stage table is "
