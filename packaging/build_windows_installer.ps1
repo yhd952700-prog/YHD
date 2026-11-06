@@ -131,14 +131,15 @@ if ($SkipRelease) {
     Write-Step "跳过升级发布包（-SkipRelease）"
 } else {
     Write-Step "生成升级发布包与清单（规范：docs/self-upgrade.md §2.2）"
+    $releaseTreeNote = "安装树整包（含根级模块与 config/，不含 runtime/ 与数据目录）"
     if (-not $SkipSmoke -and $smokeCode -eq 0) {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：源码与文档整包；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建 payload 冒烟通过。"
+        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建 payload 冒烟通过。"
     } elseif ($SkipSmoke) {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：源码与文档整包；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建跳过冒烟（未验证运行）。"
+        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建跳过冒烟（未验证运行）。"
     } else {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：源码与文档整包；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建冒烟未通过，产物未验证。"
+        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建冒烟未通过，产物未验证。"
     }
-    $releaseArgs = @((Join-Path $Root "packaging\make_release.py"), "--out", $releaseDir, "--notes", $releaseNotes)
+    $releaseArgs = @((Join-Path $Root "packaging\make_release.py"), "--app-root", $PayloadApp, "--out", $releaseDir, "--notes", $releaseNotes)
     if ($StrictReleaseDevPaths) { $releaseArgs += "--strict-dev-paths" }
     if ($Version) { $releaseArgs += @("--version", $Version) }
     & $Python @releaseArgs
@@ -147,6 +148,22 @@ if ($SkipRelease) {
         Sort-Object LastWriteTime | Select-Object -Last 1
     $releaseManifest = Join-Path $releaseDir "LIUHAO_RELEASE.json"
 }
+
+# ------------------------------------- 4.5 清理 payload 运行残留（构建机痕迹）
+# payload 冒烟与升级器自检会在 app 目录留下 __pycache__、upgrade-state、data
+# 与 .db；Inno Setup 会原样复制整个目录，这些绝不能装进用户机器。
+Write-Step "清理 payload 运行残留（__pycache__ / upgrade-state / data / *.db）"
+$purged = 0
+Get-ChildItem $PayloadApp -Recurse -Directory -Filter "__pycache__" -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; $purged++ }
+foreach ($junk in @("upgrade-state", "upgrade-backups", "data")) {
+    $junkPath = Join-Path $PayloadApp $junk
+    if (Test-Path $junkPath) { Remove-Item $junkPath -Recurse -Force; $purged++ }
+}
+Get-ChildItem $PayloadApp -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".db", ".db-wal", ".db-shm") } |
+    ForEach-Object { Remove-Item $_.FullName -Force; $purged++ }
+Write-Host "  已清理 $purged 项"
 
 # --------------------------------------------------------- 5. 安装器编译
 if ($SkipInstaller) {

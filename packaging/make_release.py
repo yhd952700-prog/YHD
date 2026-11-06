@@ -31,8 +31,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import zipfile
 from datetime import datetime, timezone
@@ -48,9 +50,31 @@ PACKAGE_SCHEMA = "liuhao.release-package/1"
 MANIFEST_SCHEMA = "liuhao.release-manifest/1"
 PRODUCT = "liuhao-ai-os"
 
+#: 旧「仓库根」模式的打包输入（仅在显式 ``--root <仓库>`` 时使用）。
 PACKAGE_ROOTS = ("src", "docs", "pyproject.toml", "requirements.txt", "oss-registry.yaml")
+
+#: 「安装树」模式的打包输入。升级包就是安装树本身，必须与
+#: ``packaging/stage_payload.py`` 组装出的 ``payload/app`` 一致：
+#: 根级模块（``error_types.py``）、``config/``、启动脚本都在里面，
+#: 否则干净机器 apply 后自检会以 ModuleNotFoundError 失败。
+APP_TREE_DIRS = ("src", "config", "scripts", "console", "assets", "docs")
+APP_TREE_ROOT_FILES = (
+    "capability-registry.yaml",
+    "pyproject.toml",
+    "requirements.txt",
+    "oss-registry.yaml",
+    "LiuHao.bat",
+    "START-HERE.txt",
+)
+APP_TREE_ROOT_GLOBS = ("*.py",)
+APP_TREE_SKIP_SUFFIXES = {
+    ".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm",
+}
+APP_TREE_SKIP_PREFIXES = ("unins", "upgrade-backups", "upgrade-state", ".liuhao")
+
 # 与 src/upgrade/manager.py 的默认 install_roots / protected_paths 保持一致。
-INSTALL_ROOTS = PACKAGE_ROOTS + (MANIFEST_NAME,)
+from src.upgrade.manager import INSTALL_ROOTS  # noqa: E402
+
 PROTECTED_PATHS = (
     "data",
     ".git",
@@ -116,37 +140,66 @@ def _validate_version(version: str, context: str) -> None:
         raise BuildError(f"{context} 不是合法的 PEP 440 版本号：{version!r}") from exc
 
 
-def _collect_files(root: Path) -> List[Tuple[str, Path]]:
+def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Path]]:
     """按白名单收集待打包文件（相对 POSIX 路径 + 绝对路径），排序保证可复现。"""
     items: List[Tuple[str, Path]] = []
     seen: set[str] = set()
-    for entry in PACKAGE_ROOTS:
-        path = root / entry
-        if not path.exists():
-            if entry in ("requirements.txt", "oss-registry.yaml"):
-                _log(f"  [跳过] 未找到 {entry}（允许缺失）")
+    candidates: List[Path] = []
+    if app_tree:
+        for entry in APP_TREE_DIRS:
+            path = root / entry
+            if path.is_dir():
+                candidates.extend(sorted(path.rglob("*")))
+            elif entry == "src":
+                raise BuildError(f"安装树缺少目录：{entry}")
+            else:
+                _log(f"  [跳过] 安装树没有 {entry}/")
+        for name in APP_TREE_ROOT_FILES:
+            path = root / name
+            if path.is_file():
+                candidates.append(path)
+            elif name == "pyproject.toml":
+                raise BuildError(f"安装树缺少 {name}，升级包无法确定版本")
+            else:
+                _log(f"  [跳过] 安装树没有 {name}")
+        for pattern in APP_TREE_ROOT_GLOBS:
+            candidates.extend(sorted(root.glob(pattern)))
+    else:
+        for entry in PACKAGE_ROOTS:
+            path = root / entry
+            if not path.exists():
+                if entry in ("requirements.txt", "oss-registry.yaml"):
+                    _log(f"  [跳过] 未找到 {entry}（允许缺失）")
+                    continue
+                raise BuildError(f"缺少打包输入：{entry}")
+            if path.is_dir():
+                candidates.extend(sorted(path.rglob("*")))
+            else:
+                candidates.append(path)
+
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise BuildError(f"不允许符号链接：{candidate.relative_to(root).as_posix()}")
+        if not candidate.is_file():
+            continue
+        parts = candidate.relative_to(root).parts
+        if any(part in SKIP_DIR_NAMES for part in parts):
+            continue
+        if app_tree:
+            # 安装树里的运行时、用户数据、卸载器、升级状态与冒烟残留都不进升级包。
+            if candidate.suffix.lower() in APP_TREE_SKIP_SUFFIXES:
                 continue
-            raise BuildError(f"缺少打包输入：{entry}")
-        candidates: List[Path] = []
-        if path.is_dir():
-            candidates = sorted(path.rglob("*"))
-        else:
-            candidates = [path]
-        for candidate in candidates:
-            if candidate.is_symlink():
-                raise BuildError(f"不允许符号链接：{candidate.relative_to(root).as_posix()}")
-            if not candidate.is_file():
+            if parts[0].startswith(APP_TREE_SKIP_PREFIXES):
                 continue
-            parts = candidate.relative_to(root).parts
-            if any(part in SKIP_DIR_NAMES for part in parts):
+            if candidate.relative_to(root).as_posix() == MANIFEST_NAME:
                 continue
-            if candidate.suffix.lower() in SKIP_SUFFIXES:
-                continue
-            rel = candidate.relative_to(root).as_posix()
-            if rel in seen:
-                raise BuildError(f"重复路径：{rel}")
-            seen.add(rel)
-            items.append((rel, candidate))
+        elif candidate.suffix.lower() in SKIP_SUFFIXES:
+            continue
+        rel = candidate.relative_to(root).as_posix()
+        if rel in seen:
+            raise BuildError(f"重复路径：{rel}")
+        seen.add(rel)
+        items.append((rel, candidate))
     items.sort(key=lambda item: item[0])
     if not items:
         raise BuildError("没有可打包的文件")
@@ -328,7 +381,16 @@ def _verify_manifest_file(manifest_path: Path, zip_path: Path, version: str) -> 
 
 
 def _run_cli_check(root: Path, out_dir: Path) -> Tuple[int, str]:
-    """用真实升级 CLI 读一遍刚产出的清单（版本与当前源码一致时应为“已是最新”）。"""
+    """用真实升级 CLI 读一遍刚产出的清单（版本与当前源码一致时应为“已是最新”）。
+
+    检查过程不得往安装树写任何东西：状态/备份目录指向临时目录，且禁止
+    生成 ``.pyc``。否则构建流水线会把 ``upgrade-state/``、``__pycache__``
+    直接打进安装包。
+    """
+    state_dir = Path(tempfile.mkdtemp(prefix="liuhao-release-check-"))
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
     cmd = [
         sys.executable,
         "-m",
@@ -338,21 +400,38 @@ def _run_cli_check(root: Path, out_dir: Path) -> Tuple[int, str]:
         str(root),
         "--release-dir",
         str(out_dir),
+        "--state-dir",
+        str(state_dir / "state"),
+        "--backup-root",
+        str(state_dir / "backups"),
     ]
-    completed = subprocess.run(
-        cmd,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+    finally:
+        shutil.rmtree(state_dir, ignore_errors=True)
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 
 def build(args: argparse.Namespace) -> int:
-    root = Path(args.root).resolve()
-    out_dir = Path(args.out).resolve() if args.out else root / "dist" / "release"
+    app_tree = bool(getattr(args, "app_root", None))
+    root = (
+        Path(args.app_root).resolve()
+        if app_tree
+        else Path(args.root).resolve()
+    )
+    out_dir = (
+        Path(args.out).resolve()
+        if args.out
+        else REPO_ROOT / "dist" / "release"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pyproject = root / "pyproject.toml"
@@ -372,10 +451,10 @@ def build(args: argparse.Namespace) -> int:
     manifest_path = out_dir / MANIFEST_NAME
 
     _log(f"鎏灏发布包构建  version={version}")
-    _log(f"  仓库    {root}")
+    _log(f"  来源    {'安装树 ' if app_tree else '仓库 '}{root}")
     _log(f"  输出    {out_dir}")
 
-    entries = _collect_files(root)
+    entries = _collect_files(root, app_tree=app_tree)
     total_bytes = sum(path.stat().st_size for _rel, path in entries)
     _log(f"  输入    {len(entries)} 个文件 / {total_bytes / 1024 / 1024:.1f} MB（未压缩）")
 
@@ -487,7 +566,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description="生成升级发布包 ZIP 与 LIUHAO_RELEASE.json（规范见 docs/self-upgrade.md §2.2）",
     )
     parser.add_argument("--root", default=str(REPO_ROOT), help="仓库根目录（默认脚本上级目录）")
-    parser.add_argument("--out", default=None, help="输出目录（默认 <root>/dist/release）")
+    parser.add_argument(
+        "--app-root",
+        default=None,
+        help="按安装树打包（指向 payload/app）；升级包从此目录收集，与安装后结构一致",
+    )
+    parser.add_argument("--out", default=None, help="输出目录（默认仓库根 dist/release）")
     parser.add_argument("--version", default=None, help="发布版本号（默认读 pyproject.toml，必须一致）")
     parser.add_argument("--signing-key", default=None, help="Ed25519 私钥 PEM；也可用环境变量 LIUHAO_UPGRADE_SIGNING_KEY")
     parser.add_argument("--notes", default=None, help="清单 notes（默认自动生成）")

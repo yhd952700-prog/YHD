@@ -166,7 +166,7 @@ python -m src.selfmod list
 #### 2.2.5 包内文件布局（定稿）
 
 - ZIP 根目录**直接就是安装树**，不要多包一层 `liuhao-0.2.0/`。
-- 允许写入（安装根）：`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，以及根目录的 `LIUHAO_RELEASE.json`。
+- 允许写入（安装根，与 `stage_payload` 产出的安装树一致）：`src/`、`config/`、`scripts/`、`console/`、`assets/`、`docs/`（可选）、根级 `*.py`（如 `error_types.py`）、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，以及根目录的 `LIUHAO_RELEASE.json`。**不要**按“源码仓库”只打 `src/`——根级模块被 `src/` 裸名导入，缺了会让干净机器 apply 后自检 `ModuleNotFoundError`。
 - 明确禁止：`data/`、`.git/`、`.venv/`、`.env`、`secrets/`、`*.pem`/`*.key`/`*.crt`，以及 `upgrade-backups/`、`upgrade-state/` 所在的路径。
 - 包内必须能确定版本：`pyproject.toml [project].version` 或根目录 `LIUHAO_RELEASE.json` 的 `version`；**推荐两者都写且一致**。
 - 包根 `LIUHAO_RELEASE.json` 是**包内版本标记**（与发布目录里的清单同名但不同物，位置不同、结构不同）：
@@ -231,7 +231,7 @@ python -m src.selfmod list
 #### 2.2.9 打包流水线检查清单（照做即可）
 
 1. 改 `pyproject.toml [project].version` 为目标版本；
-2. 只打包安装根（`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，可选根目录 `LIUHAO_RELEASE.json`），不要带 `data/`、`.env`、密钥、`.git`、缓存；
+2. 只打包安装根（`src/`、`config/`、`scripts/`、`console/`、`assets/`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，可选 `docs/` 与根目录 `LIUHAO_RELEASE.json`），不要带 `runtime/`、`data/`、`.env`、密钥、`.git`、缓存；构建流水线用 `make_release.py --app-root <payload/app>`，直接从安装树收集，保证与安装后目录一致；
 3. 生成 `liuhao-<version>.zip`；
 4. 对 ZIP 完整字节算 SHA256 与字节数（**此时之后不再改 ZIP**）；
 5. （可选）用 Ed25519 私钥对 ZIP 完整字节签名，base64 写入 `signature`，`signature_algorithm` 写 `ed25519`；
@@ -305,7 +305,7 @@ python -m src.selfmod list
 1. 当前版本可读，且目标版本必须更新（除非显式 `allow_same_or_downgrade=True`）；
 2. 发布包 SHA256/大小/签名复核；
 3. 数据预检：`data/` 及 `extra_state_files` 中每个 SQLite 执行 `PRAGMA integrity_check`，JSON/YAML 必须可解析，符号链接报问题；
-4. ZIP 安全校验：只允许安装根（默认 `src`、`docs`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、根目录 `LIUHAO_RELEASE.json`），拒绝 `data/`、`.git`、`.venv`、`.env`、`secrets`、`*.pem`、`*.key`、`*.crt`，拒绝绝对路径/`..`/盘符、符号链接、重复路径、超量文件（10 万）与超量解压（2 GiB）；
+4. ZIP 安全校验：只允许安装根（默认 `src`、`config`、`scripts`、`console`、`assets`、`docs`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`、根目录 `LIUHAO_RELEASE.json`），拒绝 `data/`、`.git`、`.venv`、`.env`、`secrets`、`*.pem`、`*.key`、`*.crt`，拒绝绝对路径/`..`/盘符、符号链接、重复路径、超量文件（10 万）与超量解压（2 GiB）；
 5. 解压到 staging 后读取包内版本，必须与清单版本一致；
 6. **磁盘空间预检**：按“发布包解压后大小 + 当前安装根 + 当前数据目录”估算所需空间（另加 8 MiB 余量），检查应用目录、备份目录、临时目录所在磁盘；不足时**在创建备份、解压 staging、修改任何真实文件之前**失败退出；
 7. 记录每个受保护 SQLite 的**表清单**（`capture_table_inventory`），随备份元数据落盘，供升级后自检对比。
@@ -751,7 +751,7 @@ python -m src.upgrade selfcheck --app-root D:\LiuHao-AI-OS --data-dir <临时> -
 ## 10. 发布一个版本的维护者步骤
 
 1. 修改 `pyproject.toml` 的 `[project].version` 为目标版本（推荐同时在包根写 `LIUHAO_RELEASE.json` 版本标记，两者一致，见 2.2.5）；
-2. 打包发布 ZIP，**只包含安装根**（`src/`、`docs/`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`，可选根目录 `LIUHAO_RELEASE.json`），不要包含 `data/`、`.env`、密钥、`.git`；
+2. 打包发布 ZIP，**只包含安装根**（`src/`、`config/`、`scripts/`、`console/`、`assets/`、根级 `*.py`、`capability-registry.yaml`、`pyproject.toml`、`requirements.txt`、`oss-registry.yaml`、`LiuHao.bat`、`START-HERE.txt`，可选 `docs/` 与根目录 `LIUHAO_RELEASE.json`），不要包含 `runtime/`、`data/`、`.env`、密钥、`.git`；
 3. 计算**整包** `sha256` 与字节数（算完后不要再改 ZIP，见 2.2.6）；
 4. （可选但推荐）用 Ed25519 私钥对 ZIP 完整字节签名，填入 `signature`（base64，`signature_algorithm` 为 `ed25519`）；
 5. 写入 `LIUHAO_RELEASE.json`（schema `liuhao.release-manifest/1` + `releases[]`），与 ZIP 放在同一发布目录（HTTP 源同理，`artifact` 可为相对路径）；旧名 `release-manifest.json` 仍兼容，但新流水线用前者；

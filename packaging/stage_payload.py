@@ -62,6 +62,14 @@ CONFIG_EXCLUDES: Tuple[str, ...] = (
 #: 仓库根需要随包的文件（roster 从包根读取；内核顶层模块被 src 直接 import）。
 ROOT_FILES: Tuple[str, ...] = ("capability-registry.yaml", "error_types.py")
 
+#: 版本/依赖声明。安装目录必须能自行确定版本：升级包应用的第一个前置就是
+#: 读当前版本，缺了 ``pyproject.toml`` 会直接以“无法确定当前版本”失败。
+ROOT_METADATA_FILES: Tuple[str, ...] = (
+    "pyproject.toml",
+    "requirements.txt",
+    "oss-registry.yaml",
+)
+
 #: 开发机路径标记。仓库绝对路径出现在随包文件里属于打包缺陷（硬拦截）；
 #: ``.venv`` 相关的是布局探测常量/用法示例，安装目录永远不会命中，记录备查。
 DEV_PATH_MARKERS: Tuple[str, ...] = (
@@ -558,6 +566,13 @@ def build(out_dir: Path, version: str) -> int:
     print(f"      config   -> {count} 个文件（已剔除凭据/私钥/容器配置）")
     for name in ROOT_FILES:
         shutil.copy2(REPO_ROOT / name, app_dir / name)
+        print(f"      {name} -> 1 个文件")
+    for name in ROOT_METADATA_FILES:
+        source = REPO_ROOT / name
+        if not source.is_file():
+            print(f"      {name} -> 缺失（可选，跳过）")
+            continue
+        shutil.copy2(source, app_dir / name)
         print(f"      {name} -> 1 个文件")
 
     print("[3/5] 复制驾驶舱构建产物与脚本")

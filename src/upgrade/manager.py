@@ -86,9 +86,21 @@ _DEFAULT_PROTECTED = (
     "*.key",
     "*.crt",
 )
-_DEFAULT_INSTALL_ROOTS = (
+#: 升级包允许写入的安装根。必须与 ``packaging/stage_payload.py`` 组装出的
+#: 安装目录一致 —— 升级包就是“安装树”，不是“源码仓库”。早先只允许
+#: ``src/`` 等目录，导致根级模块（``error_types.py``，被 ``src`` 裸名导入）
+#: 与 ``config/`` 永远不进包，干净机器升级后自检直接 ModuleNotFoundError。
+INSTALL_ROOTS = (
     "src",
+    "config",
+    "scripts",
+    "console",
+    "assets",
     "docs",
+    "capability-registry.yaml",
+    "error_types.py",
+    "LiuHao.bat",
+    "START-HERE.txt",
     "pyproject.toml",
     "requirements.txt",
     "oss-registry.yaml",
@@ -96,6 +108,7 @@ _DEFAULT_INSTALL_ROOTS = (
     # `versioning.read_current_version` keeps working without pyproject edits.
     "LIUHAO_RELEASE.json",
 )
+_DEFAULT_INSTALL_ROOTS = INSTALL_ROOTS
 _IN_FLIGHT_PHASES = ("backing_up", "applying", "self_checking", "rolling_back")
 
 
