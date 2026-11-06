@@ -72,6 +72,8 @@ Thumbs.db
 *.log
 *.tmp
 logs/*.log
+# 轮转日志（liuhao.log.1 … .5）：上面的 *.log 只匹配到 .log 结尾，轮转副本漏网。
+logs/*.log.*
 
 # ===== CI/CD / 构建产物 =====
 *.pyc
