@@ -334,7 +334,7 @@ python -m src.selfmod list
 
 1. **真实启动服务**：在**独立子进程**里用当前安装的代码导入 `src.gateway.main:app`（模块/属性可配），以 `uvicorn` 在**临时空闲端口**上启动，`lifespan="on"`（完整执行应用的启动/关闭生命周期），然后轮询健康检查（默认依次试 `/v1/health`、`/health`、`/healthz`、`/openapi.json`，2xx/3xx 视为就绪），直到就绪或超时（默认 90 秒）。
 2. **确认能正常退出**：就绪后写停止标记，让子进程走 uvicorn 的优雅关闭路径；必须自己退出且退出码为 `0`，才判定成功（Windows 上不依赖 CTRL_C/terminate，避免把“被强杀”当成“正常关闭”）。
-3. **数据库可打开**：对升级前记录的每个 SQLite 执行 `SELECT 1`（带 `busy_timeout`）。
+3. **数据库可打开**：对升级前记录的每个 SQLite 执行 `SELECT count(*) FROM sqlite_master`（带 `busy_timeout`）。用读 schema 而不是 `SELECT 1`：后者是常数表达式，部分 SQLite 构建在准备阶段根本不读文件，损坏的库会被误判为健康。
 4. **关键表可读**：与升级前 `capture_table_inventory` 的表清单逐库对比；缺失库文件、缺失表、`SELECT 1 FROM "<表>" LIMIT 1` 失败都记为问题。
 
 **隔离（自检本身不能破坏线上）**：
@@ -405,7 +405,7 @@ python -m src.upgrade rollback --app-root .
 - 指定 `--record-id` 时用该记录的 `backup_id`；指定 `--backup-id` 时直接使用；
 - **在移动/覆盖任何文件之前**，按 `code-backup.json` 与 `data-backup.json` 逐项校验 `code.zip`、数据快照的存在性与 SHA256；任何一项不符都直接拒绝回滚；
 - 恢复代码：先把当前安装根移到 `rollback-trash/`（失败可移回），再解压备份；
-- 恢复数据：先删除目标路径上的 SQLite 侧车文件，再原子复制备份；恢复后逐个 `integrity_check`；
+- 恢复数据：先删除目标路径上的 SQLite 侧车文件，再原子复制备份；恢复后逐个 `integrity_check`。**服务正在运行、数据库仍被占用时**（Windows 上 WAL 库的 `-shm` 被映射，`os.replace` 会报 `WinError 5`），自动改用 SQLite 在线备份 API 把快照写回同一个库：不需要替换文件，写入在一个事务内完成，失败时旧库保持不变；此时不删除运行中服务正在使用的 `-wal`/`-shm`；
 - 校验恢复后的版本等于备份中的 `from_version`；
 - 写账本 `rollback/rolled_back`，状态 `rolled_back`。
 

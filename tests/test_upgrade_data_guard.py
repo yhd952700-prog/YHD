@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from src.upgrade import backups
 from src.upgrade.backups import backup_data, restore_data
 from src.upgrade.dataguard import is_sqlite_file, verify_data_paths
 
@@ -87,6 +88,44 @@ def test_restore_removes_stale_sidecars_and_restores_bytes(tmp_path: Path) -> No
         conn.close()
     assert rows == ["original"]
     assert backup.file_count == 1
+
+
+def test_restore_uses_sqlite_backup_when_a_running_service_holds_the_database(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Windows refuses ``os.replace`` while a WAL DB is open (WinError 5).
+
+    The upgrade runs against a live service, so rollback must restore the
+    content *through* SQLite instead of replacing the file. The simulation is
+    deterministic and cross-platform: replacement is forced to fail exactly
+    the way Windows does, while the live connection stays open.
+    """
+    root = _make_app(tmp_path)
+    db = root / "data" / "live.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t(v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('original')")
+    conn.commit()
+    conn.close()
+
+    backup_data(root, root / "data", [], tmp_path / "backup")
+
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA journal_mode=WAL").fetchone()
+    live.execute("DELETE FROM t")
+    live.execute("INSERT INTO t VALUES ('changed-by-running-service')")
+    live.commit()
+
+    def _refuse_replace(source: Path, target: Path) -> None:
+        raise PermissionError(5, "拒绝访问", str(target))
+
+    monkeypatch.setattr(backups, "atomic_copy_path", _refuse_replace)
+    restore_data(root, root / "data", tmp_path / "backup")
+
+    rows = live.execute("SELECT v FROM t").fetchall()
+    live.close()
+    assert rows == [("original",)]
 
 
 def test_extra_state_files_are_backed_up_and_restored(tmp_path: Path) -> None:

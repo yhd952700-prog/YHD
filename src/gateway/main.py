@@ -1145,6 +1145,14 @@ def get_app() -> FastAPI:
     app.include_router(models_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：models（模型配置中心）完成")
 
+    # 升级管理面（状态/检查/升级/回滚）：界面不再需要命令行。
+    # 闸门沿用 require_human_principal；router 内部再收敛到 L0/L7 主权或
+    # admin 角色，并对 apply/rollback 强制二次确认。api 模块只做轻量导入，
+    # 重模块在请求内延迟加载（见 src/upgrade/api.py），冷启动增量约 20ms。
+    from ..upgrade.api import router as upgrade_router
+    app.include_router(upgrade_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：upgrade（升级管理）完成")
+
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
     from .policy import router as policy_router

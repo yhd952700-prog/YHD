@@ -112,6 +112,29 @@ def client(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # permission / confirmation
 # ---------------------------------------------------------------------------
+def test_manager_from_env_reads_the_documented_variables(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The API builds its manager from env; this is the only production path."""
+    from src.upgrade.update_check import build_manager_from_env
+
+    app_root = _setup_app(tmp_path / "app")
+    release_dir = tmp_path / "releases"
+    _release(release_dir, version="0.2.0")
+    monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(app_root))
+    monkeypatch.setenv("LIUHAO_UPGRADE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("LIUHAO_UPGRADE_BACKUP_ROOT", str(tmp_path / "backups"))
+    monkeypatch.setenv("LIUHAO_UPGRADE_RELEASE_DIR", str(release_dir))
+
+    manager = build_manager_from_env()
+    try:
+        assert manager.config.app_root == app_root.resolve()
+        assert manager.config.source is not None
+        assert manager.current_version()[0] == "0.1.0"
+    finally:
+        manager.close()
+
+
 def test_all_endpoints_require_a_bearer_token(client) -> None:
     test_client, *_ = client
     for method, path, body in (
@@ -317,6 +340,31 @@ def test_failure_is_queryable_from_status_with_category_and_readable_text(
     }
     assert status["error"]["message"]
     assert manager.current_version()[0] == "0.1.0"
+
+
+def test_gateway_mounts_upgrade_router_behind_the_human_gate() -> None:
+    """The production app really exposes the four endpoints, human-gated."""
+    from src.gateway.main import get_app
+
+    app = get_app()
+    paths = app.openapi().get("paths", {})
+    for path in (
+        "/v1/upgrade/status",
+        "/v1/upgrade/check",
+        "/v1/upgrade/apply",
+        "/v1/upgrade/rollback",
+    ):
+        assert path in paths, f"{path} 未出现在 /openapi.json"
+
+    client = TestClient(app)
+    # 闸门先于 manager 构建执行：未登录/非管理员都不会碰真实升级状态文件。
+    assert client.get("/v1/upgrade/status").status_code == 401
+    assert (
+        client.get(
+            "/v1/upgrade/status", headers=_headers(scope="L1", kind="human")
+        ).status_code
+        == 403
+    )
 
 
 def test_rollback_without_source_is_local_but_explicitly_labelled(tmp_path: Path) -> None:

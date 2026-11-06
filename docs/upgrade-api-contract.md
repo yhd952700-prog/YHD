@@ -4,7 +4,13 @@
 
 ## 1. 挂载与鉴权
 
-网关按普通路由挂载即可：
+已挂在生产单端口应用上（`src/gateway/main.py` 的 `get_app()`），路线：先过网关的 `require_human_principal`（人类身份），再由本 router 收敛到 L0/L7 主权或 admin 角色。`/openapi.json` 中可见 4 个端点：
+
+```
+/v1/upgrade/status   /v1/upgrade/check   /v1/upgrade/apply   /v1/upgrade/rollback
+```
+
+冷启动开销可忽略：api 模块只做轻量导入，manager/selfcheck/downloader 在请求内才导入（增量约 20ms）。若在其他应用里复用：
 
 ```python
 from src.upgrade.api import router

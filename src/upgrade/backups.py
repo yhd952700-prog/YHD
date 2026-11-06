@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -321,6 +322,33 @@ def export_data_snapshot(
     )
 
 
+def _restore_locked_sqlite(source: Path, target: Path, busy_timeout_ms: int = 5000) -> None:
+    """Restore a database the running service still has open.
+
+    On Windows ``os.replace`` is refused while a WAL-mode database is open
+    (``-shm`` is mapped by the live connection, WinError 5/32), so an upgrade
+    applied while the service runs could not roll back its data. Writing the
+    snapshot through SQLite's online-backup API needs no file replacement and
+    is atomic: the destination content is replaced inside one transaction, so a
+    failure leaves the previous database intact.
+    """
+    try:
+        src = sqlite3.connect(str(source))
+        try:
+            dst = sqlite3.connect(str(target))
+            try:
+                dst.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+    except sqlite3.Error as exc:
+        raise RollbackError(
+            f"数据库回滚失败（{target} 被运行中的服务占用，且无法通过 SQLite 恢复）：{exc}"
+        ) from exc
+
+
 def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
     """Restore the files captured by :func:`backup_data`.
 
@@ -356,8 +384,21 @@ def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
             raise RollbackError(f"数据备份文件哈希不符：{source}")
         target.parent.mkdir(parents=True, exist_ok=True)
         if sqlite:
-            _remove_sqlite_sidecars(target)
-        atomic_copy_path(source, target)
+            try:
+                _remove_sqlite_sidecars(target)
+            except OSError:
+                # A running service holds -wal/-shm open (Windows refuses the
+                # unlink). The SQLite-level restore below does not need them
+                # removed, and must not delete files the live DB is using.
+                pass
+        try:
+            atomic_copy_path(source, target)
+        except PermissionError:
+            if not sqlite:
+                raise
+            # File replacement is refused because the service has the
+            # database open; restore the content through SQLite instead.
+            _restore_locked_sqlite(source, target)
         if sqlite:
             sqlite_targets.append(target)
         restored += 1

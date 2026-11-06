@@ -87,8 +87,8 @@ def build_manager_from_env() -> UpgradeManager:
     release_dir = os.environ.get("LIUHAO_UPGRADE_RELEASE_DIR")
     manifest_url = os.environ.get("LIUHAO_UPGRADE_MANIFEST_URL")
     source = build_source(
-        Path(release_dir) if release_dir else None,
-        manifest_url or None,
+        release_dir=Path(release_dir) if release_dir else None,
+        manifest_url=manifest_url or None,
     )
     config = UpgradeConfig(
         app_root=app_root,

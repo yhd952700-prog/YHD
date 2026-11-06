@@ -15,19 +15,20 @@ the final failure are persisted by the manager and can be polled through
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from packaging.version import InvalidVersion, Version
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from ..gateway.policy import require_bearer_payload
-from .downloader import cleanup_download
 from .errors import RollbackError, UpgradeError, VersionReadError
-from .manager import UpgradeManager
-from .models import CheckStatus
-from .update_check import build_manager_from_env
-from .versioning import is_newer
+
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from .manager import UpgradeManager
+
+# Heavy upgrade modules (manager -> selfcheck -> startup_probe, downloader,
+# packaging) are imported inside the handlers instead of at module scope. The
+# gateway mounts this router during cold start, and paying ~80ms of import cost
+# before the first request would undo the startup work done in 4c6a7eb0.
 
 SOURCE_NOT_CONFIGURED = (
     "未配置更新源：请设置 LIUHAO_UPGRADE_RELEASE_DIR（本地发布目录）或 "
@@ -66,7 +67,22 @@ class RollbackRequest(BaseModel):
     )
 
 
-def require_upgrade_admin(payload=Depends(require_bearer_payload)) -> str:
+def _bearer_payload(
+    x_liuhao_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Defer ``src.gateway.policy`` import until a request actually arrives.
+
+    Importing the gateway policy at module scope pulls in ``src.gateway`` ->
+    ``main`` -> ``app = get_app()``, which imports this module back — a
+    circular import whenever ``src.upgrade.api`` is imported first.
+    """
+    from ..gateway.policy import require_bearer_payload
+
+    return require_bearer_payload(x_liuhao_token, authorization)
+
+
+def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
     """Allow only a human administrator (L0/L7 sovereignty or admin role)."""
     subject = getattr(payload, "sub", None)
     if not subject:
@@ -103,8 +119,10 @@ router = APIRouter(
 )
 
 
-def get_upgrade_manager() -> Iterator[UpgradeManager]:
+def get_upgrade_manager() -> Iterator[Any]:
     """Build a manager from the documented environment variables."""
+    from .update_check import build_manager_from_env
+
     manager = build_manager_from_env()
     try:
         yield manager
@@ -172,6 +190,11 @@ def _operation_view(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
 
 def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
+    from packaging.version import InvalidVersion
+
+    from .models import CheckStatus
+    from .versioning import is_newer
+
     state_file = manager.status()
     last_check = manager.last_check() or {}
     last_apply = _operation_view((manager.history(kind="apply", limit=1) or [None])[0])
@@ -254,6 +277,8 @@ def _require_source(manager: UpgradeManager) -> None:
 
 
 def _normalized_version(value: str) -> Version:
+    from packaging.version import InvalidVersion, Version
+
     try:
         return Version(value)
     except InvalidVersion:
@@ -266,14 +291,14 @@ def _normalized_version(value: str) -> Version:
 
 @router.get("/status", summary="当前升级状态（只读）")
 def upgrade_status(
-    manager: UpgradeManager = Depends(get_upgrade_manager),
+    manager=Depends(get_upgrade_manager),
 ) -> Dict[str, Any]:
     return _status_payload(manager)
 
 
 @router.post("/check", summary="检查更新（只检查，不下载不安装）")
 def upgrade_check(
-    manager: UpgradeManager = Depends(get_upgrade_manager),
+    manager=Depends(get_upgrade_manager),
 ) -> Dict[str, Any]:
     _require_source(manager)
     result = manager.check(trigger="api")
@@ -289,8 +314,11 @@ def upgrade_check(
 @router.post("/apply", summary="开始升级（同步执行，需二次确认）")
 def upgrade_apply(
     body: ApplyRequest,
-    manager: UpgradeManager = Depends(get_upgrade_manager),
+    manager=Depends(get_upgrade_manager),
 ) -> Dict[str, Any]:
+    from .downloader import cleanup_download
+    from .models import CheckStatus
+
     if not body.confirm:
         _http_error(
             400,
@@ -361,7 +389,7 @@ def upgrade_apply(
 @router.post("/rollback", summary="回滚到最近一次备份（同步执行，需二次确认）")
 def upgrade_rollback(
     body: RollbackRequest,
-    manager: UpgradeManager = Depends(get_upgrade_manager),
+    manager=Depends(get_upgrade_manager),
 ) -> Dict[str, Any]:
     if not body.confirm:
         _http_error(
