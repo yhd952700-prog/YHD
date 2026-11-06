@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PY = os.path.join(REPO, ".venv", "Scripts", "python.exe")
+sys.path.insert(0, REPO)
 
 PASSWORDS = ["rootpass123", "memberpass123", "grandpass123"]
 MODEL_KEYS = ["sk-root-plain-key-123456", "sk-member-plain-key-abcdef"]
@@ -352,6 +353,7 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
     report.check(item, "根查自己=整树账单", (status, root_self.get("calls")), (200, 2))
     status, grand_usage = request("GET", inst.base + "/v1/accounts/grand1/usage", token=tokens["root"])
     report.check(item, "无用量节点 calls=0", (status, grand_usage.get("calls")), (200, 0))
+    return {"model_id": model_id}
 
 
 def memory_visibility(report: Report, inst: Instance, tokens: Dict[str, Any]) -> Dict[str, Any]:
@@ -492,6 +494,191 @@ def backup_roundtrip(
     return {"bundle": exported.get("bundle") or {}, "manifest": manifest}
 
 
+def file_isolation(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """§3.5 工作区文件按账号分区：HTTP 读面 + 工具落盘。"""
+    item = "文件分区"
+    ws = os.path.join(inst.root, "workspace")
+    planted = {
+        "accounts/root1/root-file.txt": "root-own",
+        "accounts/member1/member-file.txt": "member-own",
+        "accounts/grand1/grand-file.txt": "grand-own",
+        "public-file.txt": "public",
+    }
+    for rel, text in planted.items():
+        path = os.path.join(ws, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    status, body = request("GET", inst.base + "/v1/files", token=tokens["member"])
+    names = sorted(entry.get("name") for entry in body.get("entries") or [])
+    report.check(item, "成员只见自己的空间", (status, names), (200, ["member-file.txt"]))
+    report.check(item, "成员空间标记 self", (body.get("scope") or {}).get("mode"), "self")
+
+    status, body = request(
+        "GET", inst.base + "/v1/files/content?path=member-file.txt", token=tokens["member"]
+    )
+    report.check(item, "成员读自己的文件", (status, body.get("content")), (200, "member-own"))
+
+    status, body = request(
+        "GET", inst.base + "/v1/files/content?path=../root1/root-file.txt",
+        token=tokens["member"],
+    )
+    report.check(item, "成员越界读上级文件 404", status, 404)
+    report.check(item, "文件越权文案中性", neutral(body.get("message")), True)
+
+    status, body = request(
+        "GET", inst.base + "/v1/files/content?path=public-file.txt", token=tokens["member"]
+    )
+    report.check(item, "成员读公共区 404", status, 404)
+
+    status, body = request(
+        "GET", inst.base + "/v1/files?account=root1", token=tokens["member"]
+    )
+    report.check(item, "成员指定上级空间 404", status, 404)
+
+    status, body = request(
+        "GET", inst.base + "/v1/files?account=grand1", token=tokens["member"]
+    )
+    report.check(item, "成员浏览下级空间 404", status, 404)
+
+    status, body = request("GET", inst.base + "/v1/files", token=tokens["root"])
+    names = sorted(entry.get("name") for entry in body.get("entries") or [])
+    report.check(
+        item,
+        "根可见公共区与账号目录",
+        (status, "accounts" in names and "public-file.txt" in names),
+        (200, True),
+        str(names),
+    )
+    report.check(item, "根默认视图标记 all", (body.get("scope") or {}).get("mode"), "all")
+
+    status, body = request(
+        "GET", inst.base + "/v1/files?account=member1", token=tokens["root"]
+    )
+    names = sorted(entry.get("name") for entry in body.get("entries") or [])
+    report.check(item, "根只读浏览成员空间", (status, names), (200, ["member-file.txt"]))
+    report.check(item, "根浏览成员标记 subtree", (body.get("scope") or {}).get("mode"), "subtree")
+
+    status, body = request(
+        "GET", inst.base + "/v1/files/content?path=member-file.txt&account=member1",
+        token=tokens["root"],
+    )
+    report.check(item, "根读成员文件", (status, body.get("content")), (200, "member-own"))
+
+    status, body = request(
+        "GET", inst.base + "/v1/files?account=nosuch", token=tokens["root"]
+    )
+    report.check(item, "根访问树外账号 404", status, 404)
+
+    # 工具级落盘：执行侧带 owner_account_id 时必须写进 accounts/<owner>/。
+    from src.ai.tools_local import _make_file_write
+
+    writer = _make_file_write(ws)
+    result = writer(path="tool-out.txt", content="tool-owned", owner_account_id="member1")
+    report.check(item, "file_write 按 owner 落盘", result.get("rel_path"), "accounts/member1/tool-out.txt")
+    report.check(
+        item,
+        "物理文件在成员空间",
+        os.path.isfile(os.path.join(ws, "accounts", "member1", "tool-out.txt")),
+        True,
+    )
+    status, body = request("GET", inst.base + "/v1/files", token=tokens["member"])
+    names = sorted(entry.get("name") for entry in body.get("entries") or [])
+    report.check(item, "成员可见工具产物", names, ["member-file.txt", "tool-out.txt"])
+
+
+def session_isolation(
+    report: Report, inst: Instance, tokens: Dict[str, Any], model_id: str
+) -> None:
+    """§3.3 会话列表/历史/删除按 owner 过滤，越权 404。"""
+    item = "会话隔离"
+    status, body = request("GET", inst.base + "/v1/chat/sessions", token=tokens["member"])
+    names = sorted(body.get("sessions") or [])
+    report.check(item, "成员列表只含自己的会话", (status, names), (200, ["member-session"]))
+
+    status, body = request(
+        "GET", inst.base + "/v1/chat/history?session_id=member-session", token=tokens["root"]
+    )
+    report.check(item, "根读成员会话名 404", status, 404)
+    report.check(item, "会话越权文案中性", neutral(body.get("message")), True)
+
+    status, body = request(
+        "GET", inst.base + "/v1/chat/history?session_id=root-session", token=tokens["member"]
+    )
+    report.check(item, "成员读根会话名 404", status, 404)
+
+    status, body = request(
+        "DELETE", inst.base + "/v1/chat/sessions/root-session", token=tokens["member"]
+    )
+    report.check(item, "成员删根会话 404", status, 404)
+
+    # 同机同名会话不能串号：两边都用 "shared"，历史必须各自独立。
+    request(
+        "POST", inst.base + "/v1/chat",
+        {"message": "shared-root-msg", "session_id": "shared",
+         "model_id": model_id, "use_knowledge": False},
+        token=tokens["root"],
+    )
+    request(
+        "POST", inst.base + "/v1/chat",
+        {"message": "shared-member-msg", "session_id": "shared",
+         "model_id": model_id, "use_knowledge": False},
+        token=tokens["member"],
+    )
+    status, body = request(
+        "GET", inst.base + "/v1/chat/history?session_id=shared", token=tokens["root"]
+    )
+    text = json.dumps(body.get("history") or [], ensure_ascii=False)
+    report.check(item, "同名会话根历史不串号", "shared-root-msg" in text and "shared-member-msg" not in text, True)
+    status, body = request(
+        "GET", inst.base + "/v1/chat/history?session_id=shared", token=tokens["member"]
+    )
+    text = json.dumps(body.get("history") or [], ensure_ascii=False)
+    report.check(item, "同名会话成员历史不串号", "shared-member-msg" in text and "shared-root-msg" not in text, True)
+
+
+def audit_isolation(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """§3.9 审计读隔离：成员只看自己，根看整树且明确标记。"""
+    item = "审计读隔离"
+    status, body = request("GET", inst.base + "/v1/audit/events", token=tokens["member"])
+    principals = {event.get("principal_id") for event in body.get("events") or []}
+    report.check(item, "成员只读到自己的事件", (status, principals in ({"member1"}, set())), (200, True), str(sorted(principals)))
+    report.check(item, "成员读取范围标记 self", (body.get("read_scope") or {}).get("mode"), "self")
+
+    status, body = request(
+        "GET", inst.base + "/v1/audit/events?principal=root1", token=tokens["member"]
+    )
+    report.check(item, "成员指定他人 404", status, 404)
+    report.check(item, "审计越权文案中性", neutral(body.get("message")), True)
+
+    status, body = request("GET", inst.base + "/v1/audit/events", token=tokens["root"])
+    report.check(item, "根读取范围标记 subtree", (body.get("read_scope") or {}).get("mode"), "subtree")
+    report.check(item, "根视图标记 root_view", (body.get("read_scope") or {}).get("root_view"), True)
+    others = [e for e in (body.get("events") or []) if not e.get("is_self")]
+    report.check(item, "根能读到跨账号事件", len(others) > 0, True, f"{len(others)} 条非本人事件")
+
+    member_seq = next(
+        (e.get("seq") for e in (body.get("events") or [])
+         if e.get("principal_id") == "member1"),
+        None,
+    )
+    root_seq = next(
+        (e.get("seq") for e in (body.get("events") or []) if e.get("is_self")),
+        None,
+    )
+    status, body = request("GET", f"{inst.base}/v1/audit/events/{root_seq}", token=tokens["member"])
+    report.check(item, "成员读根本人事件 404", status, 404)
+
+    status, body = request("GET", f"{inst.base}/v1/audit/events/{member_seq}", token=tokens["root"])
+    report.check(item, "根读成员事件 200", status, 200)
+    report.check(item, "单条读取标记 subtree", (body.get("read_scope") or {}).get("mode"), "subtree")
+    report.check(item, "单条标记 root_view", (body.get("read_scope") or {}).get("root_view"), True)
+
+    status, body = request("GET", inst.base + "/v1/audit/verify", token=tokens["root"])
+    report.check(item, "读隔离不破坏哈希链", (status, body.get("ok")), (200, True))
+
+
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "删除"
     status, body = request(
@@ -556,9 +743,12 @@ def main() -> int:
         tokens = bootstrap(report, inst)
         direct_members(report, inst, tokens)
         enumeration(report, inst, tokens)
-        usage_double_entry(report, inst, tokens)
+        usage = usage_double_entry(report, inst, tokens)
         memory_visibility(report, inst, tokens)
         backup = backup_roundtrip(report, inst, tokens)
+        file_isolation(report, inst, tokens)
+        session_isolation(report, inst, tokens, usage["model_id"])
+        audit_isolation(report, inst, tokens)
 
         export_path = os.path.join(inst.root, "export-all.json")
         with open(export_path, "w", encoding="utf-8") as handle:

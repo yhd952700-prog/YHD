@@ -39,6 +39,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..kernels.identity import _accounts
+from .account_context import (
+    NEUTRAL_DENIED,
+    AccountContext,
+    deny,
+    require_account_principal,
+)
 from .policy import require_bearer_payload, require_human_principal
 
 router = APIRouter(prefix="/v1/audit", tags=["audit"])
@@ -91,13 +98,66 @@ def _redact(value: Any, depth: int = 0) -> Any:
 def _caller_identity(payload) -> tuple[str, bool]:
     """Return ``(subject, is_L0)`` for the authenticated caller.
 
-    Cross-subject audit reads are a sovereignty operation: only an explicit
-    ``L0`` scope may look at other principals' events.
+    Kept for the chain-verification endpoints; tree-aware reads use
+    :func:`_account_scope` instead so the账号树 decides who may read whom.
     """
     subject = str(getattr(payload, "sub", "") or "")
     metadata = getattr(payload, "metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
     return subject, str(metadata.get("scope") or "") == "L0"
+
+
+def _account_scope(payload) -> tuple[AccountContext, bool]:
+    """``(账号上下文, 是否 L0 独立主权令牌)``。
+
+    账号节点存在时以**账号树**为准：成员只看自己，根看整棵子树。没有账号
+    节点的老部署仍按 L0 主权处理（仅影响本机单账号场景，不会多看到任何树内
+    账号的数据）。
+    """
+    _subject, sovereign = _caller_identity(payload)
+    context = require_account_principal(payload)
+    return context, sovereign and context.standalone
+
+
+def _neutral_not_found() -> HTTPException:
+    """越权读一律 404：不暴露"存在但你不能看"。"""
+    return HTTPException(
+        status_code=404,
+        detail={"code": _accounts.CODE_SUBTREE_DENIED,
+                "message": _accounts.NEUTRAL_NOT_FOUND_MESSAGE},
+    )
+
+
+def _scope_filter(
+    context: AccountContext, sovereign: bool, requested: Optional[str]
+) -> tuple[Optional[List[str]], str]:
+    """把请求的 ``principal`` 收敛成允许读取的主体集合。
+
+    * 成员：集合恒为 ``(自己,)``；显式请求别人 → 404（防枚举）；
+    * 根：未指定 = 整棵子树；指定子树内某一成员 = 该成员；子树外 → 404；
+    * L0 独立主权令牌（无账号节点）：未指定 = 不设限（``None``），这是既有
+      单机行为，不涉及任何树内账号。
+    """
+    if context.standalone:
+        # 没有账号节点的老部署：保留上线前的契约（非 L0 越权 403，L0 不设限）。
+        if sovereign:
+            return ([requested], "all") if requested else (None, "all")
+        if requested and requested != context.principal:
+            raise deny(403, _accounts.CODE_SUBTREE_DENIED, NEUTRAL_DENIED)
+        return [context.principal], "self"
+    if context.is_root:
+        if requested:
+            if requested not in context.subtree:
+                raise _neutral_not_found()
+            return [requested], "subtree"
+        return list(context.subtree), "subtree"
+    if sovereign:
+        # 没有账号节点的 L0 单机令牌：保留既有"不设限"语义。
+        return ([requested], "all") if requested else (None, "all")
+    if requested and requested != context.principal:
+        # 普通账号读别人：与不存在完全一致。
+        raise _neutral_not_found()
+    return [context.principal], "self"
 
 
 # ``seq`` 定位与事件列表都读同一批列，保证 /events 与 /events/{seq} 返回同构。
@@ -175,6 +235,7 @@ def _row_to_event(row) -> Dict[str, Any]:
 def _read_events(
     *,
     principal: Optional[str] = None,
+    principals: Optional[List[str]] = None,
     action: Optional[str] = None,
     outcome: Optional[str] = None,
     correlation_id: Optional[str] = None,
@@ -193,7 +254,13 @@ def _read_events(
     clauses = ["1=1"]
     params: List[Any] = []
 
-    if principal:
+    if principals is not None:
+        if not principals:
+            return []
+        placeholders = ",".join(["?"] * len(principals))
+        clauses.append(f"principal_id IN ({placeholders})")
+        params.extend(principals)
+    elif principal:
         clauses.append("principal_id = ?")
         params.append(principal)
     if outcome:
@@ -267,20 +334,24 @@ def list_events(
     返回值带 ``filters`` 回声，因为"我看到的列表是哪个过滤条件下看到的"
     本身就是要展示给人的信息 —— 空结果到底是没有事件还是筛错了，必须可分。
 
-    非 ``L0`` 调用者只能读自己的事件：``principal`` 会被强制为令牌主体，显式
-    指定别人的主体直接 403。跨主体读取是主权操作。
+    非根调用者只能读自己：``principal`` 显式指定别人一律 404（与不存在不可区分）；
+    根账号未指定时读整棵子树，并在 ``read_scope`` 与每条事件的 ``is_self`` 上
+    明确标记"这是跨账号读取"。
     """
-    subject, sovereign = _caller_identity(payload)
-    if not sovereign:
-        if principal and principal != subject:
-            raise HTTPException(
-                status_code=403,
-                detail="跨主体审计查询需要 L0 人类主权",
-            )
-        principal = subject
+    context, sovereign = _account_scope(payload)
+    read_principals, mode = _scope_filter(context, sovereign, principal)
+    # 老部署（无账号节点）沿用旧查询口径：``principal`` 单值过滤；账号树内
+    # 一律用 ``principals`` 集合，两者的隔离强度相同，只是参数形状不同。
+    if context.standalone:
+        query_principal = principal if sovereign else context.principal
+        query_principals = None
+    else:
+        query_principal = principal
+        query_principals = read_principals
     try:
         events = _read_events(
-            principal=principal,
+            principal=query_principal,
+            principals=query_principals,
             action=action,
             outcome=outcome,
             correlation_id=correlation_id,
@@ -296,9 +367,17 @@ def list_events(
             status_code=503,
             detail=_unreadable_detail(exc),
         )
+    for event in events:
+        event["is_self"] = str(event.get("principal_id") or "") == context.principal
     return {
         "events": events,
         "count": len(events),
+        # 读取范围必须显式标记：根的整树视图不能与"只看自己"长得一样。
+        "read_scope": {
+            "mode": mode,
+            "principals": read_principals if read_principals is not None else "all",
+            "root_view": context.is_root and mode == "subtree",
+        },
         "filters": {
             "principal": principal,
             "action": action,
@@ -325,9 +404,10 @@ def get_event(
     同一 seq 若存在多行（RCA-1 分叉特征），只返回 rowid 最小的一行并如实
     标注 ``duplicate_seq`` —— 隐藏第二行等于替攻击者保守秘密。
 
-    非 ``L0`` 调用者读取他人的事件一律 404（不暴露"该 seq 存在但你不能看"）。
+    非根调用者读取他人的事件一律 404（不暴露"该 seq 存在但你不能看"）；根账号
+    读子树内成员的事件返回 200，并带 ``read_scope`` 与 ``event.is_self`` 标记。
     """
-    subject, sovereign = _caller_identity(payload)
+    context, sovereign = _account_scope(payload)
     try:
         event = _read_event_by_seq(seq)
     except Exception as exc:  # noqa: BLE001
@@ -336,8 +416,15 @@ def get_event(
 
     if event is None:
         raise HTTPException(status_code=404, detail=f"no audit event at seq={seq}")
-    if not sovereign and str(event.get("principal_id") or "") != subject:
-        raise HTTPException(status_code=404, detail=f"no audit event at seq={seq}")
+    fake = str(event.get("principal_id") or "")
+    visible = (
+        (context.is_root and fake in context.subtree)
+        or sovereign
+        or fake == context.principal
+    )
+    if not visible:
+        raise _neutral_not_found()
+    event["is_self"] = fake == context.principal
 
     duplicate = False
     try:
@@ -349,7 +436,17 @@ def get_event(
     except Exception:  # noqa: BLE001 - 计数失败不影响已经取到的事件
         duplicate = None  # type: ignore[assignment]
 
-    return {"event": event, "duplicate_seq": duplicate}
+    return {
+        "event": event,
+        "duplicate_seq": duplicate,
+        "read_scope": {
+            "mode": (
+                "self" if event["is_self"]
+                else ("all" if sovereign else "subtree")
+            ),
+            "root_view": context.is_root and not event["is_self"],
+        },
+    }
 
 
 def _run_verification() -> Dict[str, Any]:
@@ -450,17 +547,25 @@ def summary(
     这里**故意不**附带 verify 结果 —— 那会为每个轮询请求扫一遍全链（生产库
     30 万行量级）。要结论就显式打 ``/v1/audit/verify``。
 
-    非 ``L0`` 调用者只看自己主体的事件计数，避免通过聚合数字横向推断他人活动。
+    非根调用者只看自己主体的事件计数，避免通过聚合数字横向推断他人活动；
+    根账号看整棵子树，并在 ``principal_scope`` 上标明 ``subtree``。
     """
-    subject, sovereign = _caller_identity(payload)
-    where = "" if sovereign else " WHERE principal_id = ?"
-    args = () if sovereign else (subject,)
+    context, sovereign = _account_scope(payload)
+    principals, mode = _scope_filter(context, sovereign, None)
+    if principals is None:
+        where = ""
+        args: tuple = ()
+    else:
+        placeholders = ",".join(["?"] * len(principals))
+        where = f" WHERE principal_id IN ({placeholders})"
+        args = tuple(principals)
     try:
         def _run(conn):
             total = conn.execute(
                 "SELECT COUNT(*) FROM audit_events" + where, args).fetchone()[0]
             tail = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM audit_events").fetchone()[0]
+                "SELECT COALESCE(MAX(seq), 0) FROM audit_events" + where, args
+            ).fetchone()[0]
             by_outcome = {
                 r[0]: r[1] for r in conn.execute(
                     "SELECT outcome, COUNT(*) FROM audit_events" + where
@@ -483,7 +588,9 @@ def summary(
                 "by_outcome": by_outcome,
                 "by_action": by_action,
                 "distinct_correlation_ids": int(correlations),
-                "principal_scope": "all" if sovereign else subject,
+                "principal_scope": mode,
+                "principals": principals if principals is not None else "all",
+                "root_view": context.is_root and mode == "subtree",
             }
 
         data = _store()._read_only(_run)

@@ -23,7 +23,14 @@ from .knowledge_context import (
     public_metadata,
 )
 from .policy import require_human_principal
-from .account_context import audit_key_use, key_scope_for
+from .account_context import (
+    AccountContext,
+    audit_key_use,
+    deny,
+    key_scope_for,
+    require_account_principal,
+)
+from ..kernels.identity import _accounts
 from .account_usage import record_usage
 from ..ai.model_config import ModelConfigError
 
@@ -338,29 +345,53 @@ def chat_stream(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+def _session_owned_by_other(principal: str, session_id: str) -> bool:
+    """该会话名是否被**其他主体**占用（用于把越权读取判成 404）。
+
+    只看活跃实例：持久化层按主体分键（``liuhao-<principal>-<session>``），
+    别人无法枚举，也不需要由此推断"某个名字是否存在"。
+    """
+    key = _session_key(principal, session_id)
+    if key in _sessions:
+        return False
+    with _sessions_lock:
+        for other_key in _sessions:
+            owner = _owner_of(other_key)
+            if owner and owner != principal and _bare_session_id(other_key) == session_id:
+                return True
+    return False
+
+
+def _neutral_not_found() -> HTTPException:
+    return deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
+
+
 @router.get("/chat/stats")
 def chat_stats(
-    session_id: str = "default", principal: str = Depends(require_human_principal)
+    session_id: str = "default",
+    context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    scope = key_scope_for(principal=principal)
-    assistant = get_assistant(session_id, principal, key_scope=scope)
+    if _session_owned_by_other(context.principal, session_id):
+        raise _neutral_not_found()
+    scope = key_scope_for(context)
+    assistant = get_assistant(session_id, context.principal, key_scope=scope)
     return assistant.stats()
 
 
 @router.get("/chat/sessions")
 def chat_sessions(
-    principal: str = Depends(require_human_principal),
+    context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
     """列出**当前主体**的活跃会话（不会暴露别人的会话名）。
 
     ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
     不再接受客户端声明。
     """
-    sessions = list_sessions(principal)
+    sessions = list_sessions(context.principal)
     return {
         "sessions": sessions,
         "count": len(sessions),
-        "users": {s: principal for s in sessions},
+        "users": {s: context.principal for s in sessions},
     }
 
 
@@ -390,16 +421,24 @@ def read_history(
 
 @router.get("/chat/history")
 def chat_history(
-    session_id: str = "default", principal: str = Depends(require_human_principal)
+    session_id: str = "default",
+    context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    """返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。"""
-    return read_history(session_id, principal)
+    """返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
+
+    别人占用的会话名一律 404（与"没有历史"不可区分）。
+    """
+    if _session_owned_by_other(context.principal, session_id):
+        raise _neutral_not_found()
+    return read_history(session_id, context.principal)
 
 
 @router.delete("/chat/sessions/{session_id}")
 def chat_delete_session(
-    session_id: str, principal: str = Depends(require_human_principal)
+    session_id: str,
+    context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
-    """删除**自己的**会话（清空历史 + 移除实例）；别人的会话按不存在处理。"""
-    deleted = delete_session(session_id, principal)
-    return {"session_id": session_id, "deleted": deleted}
+    """删除**自己的**会话（清空历史 + 移除实例）；别人的会话按不存在处理（404）。"""
+    if not delete_session(session_id, context.principal):
+        raise _neutral_not_found()
+    return {"session_id": session_id, "deleted": True}
