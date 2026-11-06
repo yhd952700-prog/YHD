@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +26,7 @@ from .account_context import (
     require_manage,
     require_visible,
 )
-from .auth import issue_token_for, resolve_secret_store, rotate_credential
+from .auth import issue_token_for, rotate_credential
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])

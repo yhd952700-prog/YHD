@@ -35,7 +35,6 @@ import threading
 from src.kernels._crosscutting import kernel_action, mark_action_denied
 from . import _persistence
 from . import _accounts
-from . import _backup
 
 logger = logging.getLogger("liuhao.kernel.identity")
 

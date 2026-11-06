@@ -40,7 +40,7 @@ from pathlib import Path
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger("liuhao.ai.model_config")
 

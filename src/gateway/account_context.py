@@ -17,7 +17,7 @@ Why this module exists
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import Depends, HTTPException
 

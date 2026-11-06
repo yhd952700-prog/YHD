@@ -37,6 +37,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+# Used to turn a produced file's absolute path into a workspace-relative,
+# honest artifact reference (never inventing a path that isn't real).
+from src.ai.workspace import workspace_root
+# 真实信任决议：雇佣前先查信任内核的撤销注册表。``src.kernels.trust`` 不反向
+# import ``src.gateway``，故此处取顶层 import 无循环风险（已验证）。
+from src.kernels.trust import get_trust_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,12 +67,6 @@ def _outcome_label(value: str) -> str:
     except Exception:  # noqa: BLE001 - keep a usable string either way
         return value
 
-# Used to turn a produced file's absolute path into a workspace-relative,
-# honest artifact reference (never inventing a path that isn't real).
-from src.ai.workspace import workspace_root
-# 真实信任决议：雇佣前先查信任内核的撤销注册表。``src.kernels.trust`` 不反向
-# import ``src.gateway``，故此处取顶层 import 无循环风险（已验证）。
-from src.kernels.trust import get_trust_manager
 
 router = APIRouter(prefix="/v1", tags=["ai-management"])
 

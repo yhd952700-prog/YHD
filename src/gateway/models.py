@@ -32,7 +32,6 @@ from .account_context import (
     NEUTRAL_DENIED,
     deny,
     key_scope_for,
-    require_account_principal,
 )
 from ..kernels.identity import _accounts
 from ..ai.model_config import (
