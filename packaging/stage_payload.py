@@ -114,6 +114,8 @@ EXPLICIT_DISTS: Tuple[str, ...] = (
     "websockets",        # 网关 WebSocket 路由（按需导入）
     "python-multipart",  # 表单/文件上传路由（按需导入）
     "jiter",             # openai 的 JSON 解析器，只在首次请求时导入
+    "httpx",             # src/ai/providers.py 自建 Client（openai 只带 httpx2）
+    "httpcore",          # httpx 的底层传输实现
     "pywin32",           # 系统托盘 win32api/win32gui（importlib 延迟导入）
 )
 
@@ -159,6 +161,11 @@ import openai  # noqa: F401
 import httpx2  # noqa: F401
 import httpcore2  # noqa: F401
 import truststore  # noqa: F401
+# ``src/ai/providers.py`` 另建一个 httpx.Client（代理/超时）后再交给 openai；
+# 该导入发生在 ``provider.chat()`` 内部，启动图与 openai 的 httpx2 都覆盖不到，
+# 漏掉时线上表现是「No module named 'httpx'」、对话与目标拆解全部失败。
+import httpx  # noqa: F401
+import httpcore  # noqa: F401
 import uvicorn  # noqa: F401
 import uvicorn.main  # noqa: F401
 import uvicorn.protocols.http.auto  # noqa: F401
@@ -515,7 +522,7 @@ def _validate_runtime(app_dir: Path) -> None:
         "import sys, tkinter, win32api, win32gui, win32con, pywintypes, "
         "uvicorn, uvicorn.main, uvicorn.protocols.http.auto, "
         "dotenv, aiosqlite, src.gateway.main, src.desktop.app, "
-        "openai, httpx2, httpcore2, truststore, jiter; "
+        "openai, httpx2, httpcore2, truststore, jiter, httpx, httpcore; "
         "tkinter.Tcl().eval('info patchlevel'); "
         "print(sys.version.split()[0])"
     )
