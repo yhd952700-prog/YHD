@@ -3,7 +3,7 @@ Real (non-faked) verification of the alert-engine closed loop (blocker #3).
 
 These tests prove, with REAL behaviour only:
 
-1. The 6 production system-health rules are now ``enabled=True`` (honest status).
+1. The 7 production system-health rules are now ``enabled=True`` (honest status).
 2. A REAL metric breach (memory_usage_percent=99.0 in a snapshot) produces a
    REAL persisted alert via ``AlertManager.evaluate_all`` -> ``AlertStore``.
    This is the honest proof that the loop is real, not decorative: no flag is
@@ -12,7 +12,7 @@ These tests prove, with REAL behaviour only:
 3. ``MetricCollector`` computes error_rate_percent and latency_p99_ms correctly
    from real recorded request data (no psutil / no mem / no cpu assertions here).
 
-No data is faked. The metric names fed to evaluate_all are the same six the
+No data is faked. The metric names fed to evaluate_all are the same seven the
 rules reference; the values are either taken from the real collector or, in the
 breach proof, set to a deliberately-breaching real number.
 """
@@ -30,7 +30,7 @@ from src.observability.alerts import (
 from src.observability.metrics import MetricCollector
 
 
-# Expected metric names referenced by the 6 production rules.
+# Expected metric names referenced by the 7 production rules.
 _EXPECTED_METRIC_NAMES = {
     "service_heartbeat_interval",
     "error_rate_percent",
@@ -38,6 +38,7 @@ _EXPECTED_METRIC_NAMES = {
     "memory_usage_percent",
     "cpu_usage_percent",
     "audit_log_lag_seconds",
+    "audit_write_failing",
 }
 
 # Severity each rule must carry (from install_production_rules).
@@ -48,6 +49,7 @@ _EXPECTED_SEVERITY = {
     "mem_usage_high": AlertSeverity.HIGH,
     "cpu_usage_high": AlertSeverity.MEDIUM,
     "audit_lag_high": AlertSeverity.HIGH,
+    "audit_write_failing": AlertSeverity.HIGH,
 }
 
 
@@ -83,8 +85,8 @@ def _redirect_stores(tmp_path, monkeypatch):
     yield
 
 
-def test_all_six_rules_enabled_and_have_real_metric_names():
-    """All 6 production rules are live (enabled=True) with unmodified names."""
+def test_all_production_rules_enabled_and_have_real_metric_names():
+    """All production rules are live (enabled=True) with real metric names."""
     rules = get_alert_manager().rules
     # The 6 rule ids must all be present and enabled.
     for rule_id in _EXPECTED_SEVERITY:

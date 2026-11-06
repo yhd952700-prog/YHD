@@ -951,7 +951,7 @@ paths:
       description: '列出已注册的告警规则及其真实 enabled 状态。
 
 
-        诚实说明：install_production_rules() 注册的 6 条系统健康规则现已全部
+        诚实说明：install_production_rules() 注册的 7 条系统健康规则现已全部
 
         enabled=True —— 真正的指标发射器（MetricCollector）已接线，网关 lifespan
 

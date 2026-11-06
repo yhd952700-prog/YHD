@@ -6,7 +6,7 @@
 只落 JSON / 日志，没有任何 API 或 UI 能读取。本测试证明新加的两个只读端点真的
 返回 store 里**真实存在**的内容，而不是 mock 或装饰性数据：
 
-- ``/v1/alerts/rules`` 经 ``install_production_rules()`` 注册进 store 的 6 条规则，
+- ``/v1/alerts/rules`` 经 ``install_production_rules()`` 注册进 store 的 7 条规则，
   全部 ``enabled=True``（诚实：真实指标发射器 MetricCollector 已接线，闭环真实，
   仅在指标真的越界时才产生 firing 告警，而非装饰性启用）；
 - ``/v1/alerts`` 在没有任何执行失败时如实返回 ``count == 0``、``firing_count == 0``、
@@ -59,7 +59,7 @@ def client():
         yield c, _auth_headers()
 
 
-# install_production_rules() 注册的 6 条系统健康规则（现已 enabled=True，
+# install_production_rules() 注册的 7 条系统健康规则（现已 enabled=True，
 # 因为真实指标发射器 MetricCollector 已接线，闭环真实；装饰性由下方
 # test_enabled_rule_fires_on_breach 反证）。
 PRODUCTION_RULE_IDS = {
@@ -69,15 +69,16 @@ PRODUCTION_RULE_IDS = {
     "mem_usage_high",
     "cpu_usage_high",
     "audit_lag_high",
+    "audit_write_failing",
 }
 
 
 def test_alert_rules_visible_and_emitter_backed(client, tmp_path):
-    """6 条生产规则被注册且全部 enabled=True（诚实：真实闭环，非装饰性启用）。
+    """7 条生产规则被注册且全部 enabled=True（诚实：真实闭环，非装饰性启用）。
 
-    注意：读取面如实返回 store 里的全部规则。除这 6 条生产规则外，启动流程还会
-    注册 3 条 execution-binding 规则（真实可用路径，enabled=True），所以总数 >= 6，
-    而非恰好 6。本测试只校验"诚实不变量"：6 条生产规则都在，且每条都
+    注意：读取面如实返回 store 里的全部规则。除这 7 条生产规则外，启动流程还会
+    注册 3 条 execution-binding 规则（真实可用路径，enabled=True），所以总数 >= 7，
+    而非恰好 7。本测试只校验"诚实不变量"：7 条生产规则都在，且每条都
     enabled=True（因为 MetricCollector 真实发射器已接线，越界才 firing，闭环真实）。
     enabled 是否为装饰性的反证见 test_enabled_rule_fires_on_breach。
     """
@@ -85,8 +86,8 @@ def test_alert_rules_visible_and_emitter_backed(client, tmp_path):
     r = c.get("/v1/alerts/rules", headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
-    # 至少包含 6 条生产规则（可能还有 execution-binding 注册的真实规则）。
-    assert body["count"] >= 6, body
+    # 至少包含 7 条生产规则（可能还有 execution-binding 注册的真实规则）。
+    assert body["count"] >= 7, body
     by_id = {rule["id"]: rule for rule in body["rules"]}
     for rid in PRODUCTION_RULE_IDS:
         assert rid in by_id, f"缺失生产规则 {rid}"

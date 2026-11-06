@@ -13,7 +13,7 @@ from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry
 import threading
 import time
 from collections import deque
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 # Create custom registry
@@ -575,9 +575,10 @@ def generate_metrics() -> bytes:
 # ============================================================
 # Real metric emitters for the alert engine (OB / blocker #3)
 # ============================================================
-# The 6 production alert rules (install_production_rules) reference metrics
+# The production alert rules (install_production_rules) reference metrics
 # error_rate_percent / memory_usage_percent / cpu_usage_percent /
-# latency_p99_ms / service_heartbeat_interval / audit_log_lag_seconds. Until
+# latency_p99_ms / service_heartbeat_interval / audit_log_lag_seconds /
+# audit_write_failing. Until
 # now nothing produced those names, so evaluate_all() was inert. The classes
 # below are the HONEST emitters: every value is measured from the real process
 # / OS / audit store. No value is invented or hard-coded to "look healthy".
@@ -636,11 +637,11 @@ def _system_memory_total_bytes() -> float:
 
 
 class MetricCollector:
-    """Thread-safe collector of the 6 real metrics feeding the alert engine.
+    """Thread-safe collector of the 7 real metrics feeding the alert engine.
 
     ``record_request`` is called by the gateway HTTP middleware for every
     completed response. ``collect_snapshot`` computes the current value of each
-    of the 6 metrics against real sources. A daemon thread in the gateway
+    of the 7 metrics against real sources. A daemon thread in the gateway
     lifespan drives ``collect_snapshot`` -> ``AlertManager.evaluate_all`` every
     15s.
     """
@@ -753,39 +754,51 @@ class MetricCollector:
             self._last_heartbeat = now
         return float(delta)
 
-    def _audit_log_lag_seconds(self) -> float:
-        """Seconds since the most recent audit event. 0.0 if no events yet.
-
-        Reads the REAL audit store (sqlite) for MAX(timestamp). Never invents a
-        lag: an empty store means "no data, no lag" -> 0.0.
-        """
+    def _audit_write_health(self) -> Dict[str, Any]:
+        """Read-only write-health watermarks recorded by the audit store."""
         try:
-            from ..kernels.audit import get_audit_store
+            from ..kernels.audit import get_audit_write_health
 
-            store = get_audit_store()
-
-            def _run(conn):
-                row = conn.execute(
-                    "SELECT MAX(timestamp) FROM audit_events"
-                ).fetchone()
-                return row[0] if row else None
-
-            last_ts = store._read_only(_run)
-            if last_ts is None:
-                return 0.0
-            return float(time.time() - last_ts)
+            return get_audit_write_health()
         except Exception:
-            # Audit store genuinely unavailable -> report 0.0 (honest: we
-            # cannot prove a lag we cannot measure), never a fake large number.
-            return 0.0
+            # Cannot reach the audit module -> we cannot prove a lag, so report
+            # "no lag" rather than inventing one. (A dead PROCESS is the
+            # service-heartbeat rule's job; this metric is about the write path.)
+            return {}
+
+    def _audit_log_lag_seconds(self) -> float:
+        """Age of the OLDEST audit-write request that has not landed yet.
+
+        This measures write backlog, not event silence. An idle system issues no
+        audit writes, so there is no backlog and the value is 0.0 -- it can run
+        idle for ten minutes (or ten days) without firing. A genuine stall
+        (writer blocked, DB write lock held by another process, disk wedged)
+        leaves a real request uncommitted, and that request's age is the lag.
+
+        A failed write ENDS its request; it is reported by
+        ``audit_write_failing`` (failure streak, cleared only by a later
+        successful write) rather than folded into this age.
+        """
+        health = self._audit_write_health()
+        return float(health.get("oldest_inflight_age_seconds") or 0.0)
+
+    def _audit_write_failing(self) -> float:
+        """1.0 while an audit write has failed and no later write has succeeded.
+
+        This is positive proof of a failed write plus absence of proof of
+        recovery, so it stays 1.0 until a real successful append clears the
+        streak. It is deliberately NOT time-based: a failure does not "age out".
+        """
+        health = self._audit_write_health()
+        return 1.0 if health.get("failing") else 0.0
 
     # -- snapshot -----------------------------------------------------------
 
     def collect_snapshot(self) -> Dict[str, float]:
-        """Compute the current value of all 6 metrics from real sources.
+        """Compute the current value of all 7 metrics from real sources.
 
-        Every key is always present (these 6 have real emitters). Each helper
-        is independently defended so one failing source yields 0.0 for that key
+        Every key is always present (all have real emitters). Each helper is
+        independently defended so one failing source yields 0.0 for that key
         instead of crashing the whole snapshot.
         """
         return {
@@ -795,6 +808,7 @@ class MetricCollector:
             "latency_p99_ms": self._latency_p99_ms(),
             "service_heartbeat_interval": self._service_heartbeat_interval(),
             "audit_log_lag_seconds": self._audit_log_lag_seconds(),
+            "audit_write_failing": self._audit_write_failing(),
         }
 
 

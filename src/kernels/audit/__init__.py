@@ -830,9 +830,20 @@ class AuditStore:
         线程安全：审计 store 是全局单例，而 FastAPI 同步端点跑在线程池里，
         hash-chain 的 seq / prev_event_hash 必须串行推进，故整个写路径加锁。
         """
-        return self._log_event_locked(
-            event_type, principal_id, scope, outcome, details, correlation_id
-        )
+        # Bracket the request BEFORE taking the append lock: a thread waiting
+        # behind a blocked writer is already "an audit write that has not
+        # landed", which is exactly the backlog the health metric reports.
+        token = _begin_audit_write()
+        try:
+            event = self._log_event_locked(
+                event_type, principal_id, scope, outcome, details, correlation_id
+            )
+        except BaseException as exc:
+            _end_audit_write(token, False, exc)
+            raise
+        else:
+            _end_audit_write(token, True)
+            return event
 
     def _log_event_locked(
         self,
@@ -1033,7 +1044,15 @@ class AuditStore:
         if not events:
             return AuditBatchResult(appended=[], duplicates=[])
 
-        return self._log_event_batch_locked(events)
+        token = _begin_audit_write()
+        try:
+            result = self._log_event_batch_locked(events)
+        except BaseException as exc:
+            _end_audit_write(token, False, exc)
+            raise
+        else:
+            _end_audit_write(token, True)
+            return result
 
     def _log_event_batch_locked(self, events: List[AuditEvent]) -> "AuditBatchResult":
         try:
@@ -2242,6 +2261,132 @@ def get_audit_failure_count() -> int:
 def audit_failure_occurred() -> bool:
     """True once any audit write has failed this process (monotonic)."""
     return _audit_failure_ever
+
+
+# --- write-health watermarks -------------------------------------------------
+# Why this exists (and why it is NOT "time since the last event"):
+# an idle system has no audit traffic at all, so "time since MAX(timestamp)"
+# grows forever and says nothing about write health. The honest question is
+# "is a write request that some caller already issued still not committed?".
+# Every public event append therefore brackets itself with begin/end here:
+#
+#   * ``inflight``      -> writes issued but not yet committed (the real backlog)
+#   * ``failure_streak``-> a write failed and no later write has succeeded
+#
+# That yields: idle -> 0; blocked/stalled writer -> oldest in-flight age;
+# failing writer -> failing signal. It is process-local by design: audit writes
+# are synchronous in the writing process, so this is the health of THIS
+# process's write path. If the whole process dies, its own metrics die with
+# it and the service-heartbeat rule is the honest detector.
+#
+# Cost is one uncontended lock + a dict insert/remove per append (or per batch,
+# not per event), which is noise next to the SQLite transaction itself.
+@dataclass
+class _WriteHealthState:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    # token -> start timestamp of each append request not yet finished.
+    inflight: Dict[int, float] = field(default_factory=dict)
+    next_token: int = 0
+    attempted: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    last_attempt_ts: Optional[float] = None
+    last_success_ts: Optional[float] = None
+    last_failure_ts: Optional[float] = None
+    # Consecutive failed appends since the last success. Non-zero == "failing":
+    # we have positive proof of a failed write and no proof of recovery yet.
+    failure_streak: int = 0
+    last_failure_kind: Optional[str] = None
+
+
+_write_health_state = _WriteHealthState()
+
+
+def _begin_audit_write() -> int:
+    """Mark one event-append request as in-flight. Never raises."""
+    try:
+        state = _write_health_state
+        now = time.time()
+        with state.lock:
+            token = state.next_token
+            state.next_token += 1
+            state.inflight[token] = now
+            state.attempted += 1
+            state.last_attempt_ts = now
+            return token
+    except Exception:  # noqa: BLE001 - observability must not fail writes
+        return -1
+
+
+def _end_audit_write(token: int, ok: bool, error: Optional[BaseException] = None) -> None:
+    """Mark one event-append request as finished. Never raises."""
+    if token < 0:
+        return
+    try:
+        state = _write_health_state
+        now = time.time()
+        with state.lock:
+            state.inflight.pop(token, None)
+            if ok:
+                state.succeeded += 1
+                state.last_success_ts = now
+                state.failure_streak = 0
+                state.last_failure_kind = None
+            else:
+                state.failed += 1
+                state.last_failure_ts = now
+                state.failure_streak += 1
+                state.last_failure_kind = _classify_write_error(error)
+    except Exception:  # noqa: BLE001 - observability must not fail writes
+        pass
+
+
+def _classify_write_error(error: Optional[BaseException]) -> str:
+    """Name the failure mode so an operator can tell disk from lock from fence."""
+    if isinstance(error, AuditDiskFullError):
+        return "disk_full"
+    if isinstance(error, AuditCorruptionError):
+        return "corruption"
+    code = getattr(error, "sqlite_errorcode", None) if error is not None else None
+    if code in (_SQLITE_BUSY, _SQLITE_LOCKED, _SQLITE_READONLY):
+        return "db_locked"
+    if code == _SQLITE_IOERR:
+        return "io_error"
+    return type(error).__name__ if error is not None else "unknown"
+
+
+def get_audit_write_health(now: Optional[float] = None) -> Dict[str, Any]:
+    """Read-only snapshot of the audit write path's health watermarks.
+
+    ``now`` exists so diagnostics/tests can evaluate ages against a chosen
+    instant; production callers omit it and get real wall-clock ages.
+
+    Keys:
+      inflight / oldest_inflight_age_seconds -- issued-but-uncommitted backlog
+      failing / failure_streak / last_failure_kind -- unproven-recovery failures
+      attempted / succeeded / failed -- cumulative outcomes since process start
+      last_attempt_ts / last_success_ts / last_failure_ts -- raw watermarks
+    """
+    state = _write_health_state
+    now_ts = time.time() if now is None else float(now)
+    with state.lock:
+        oldest = min(state.inflight.values()) if state.inflight else None
+        return {
+            "inflight": len(state.inflight),
+            "oldest_inflight_started_ts": oldest,
+            "oldest_inflight_age_seconds": (
+                max(0.0, now_ts - oldest) if oldest is not None else 0.0
+            ),
+            "attempted": state.attempted,
+            "succeeded": state.succeeded,
+            "failed": state.failed,
+            "last_attempt_ts": state.last_attempt_ts,
+            "last_success_ts": state.last_success_ts,
+            "last_failure_ts": state.last_failure_ts,
+            "failure_streak": state.failure_streak,
+            "failing": state.failure_streak > 0,
+            "last_failure_kind": state.last_failure_kind,
+        }
 
 
 # A-01: append-lock hold duration -- a root-cause signal for R-G2-07c (a backfill
