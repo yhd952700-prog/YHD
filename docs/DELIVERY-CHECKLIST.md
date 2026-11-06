@@ -109,7 +109,7 @@
 | 1 | 四步用户文档 | 已完成 | [END-USER-GUIDE.md](END-USER-GUIDE.md)，commit `a97d5862` | — |
 | 2 | 安装包构建 | **已作废 / 待重出** | 上一版记录指向不存在的文件；当前 `dist/installer` 为空。构建脚本本身可用 | 见 0.1；待最终包回填路径/字节/SHA256 与对应源码提交 |
 | 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | 历史日志 `dist/obsolete/installer-20261105-1506/install.log`（该目录已随旧包清理，不在仓库内）：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
-| 4 | 安装版首启 E2E | 已完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13） |
+| 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
 | 6 | 端口占用自动顺延 | 已完成 | 同一份 E2E 日志：`[warn] 网关 端口 18130 被占用，已自动改用 18131` | — |
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
@@ -120,8 +120,8 @@
 | 12 | 前端重建 | 未做 | 安装包内是构建时的 `console/dist`；前端仍在重写 | 前端稳定后必须重建安装包（E-7） |
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
-| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-13（E-9～E-13 为本轮追加） | — |
-| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞） | 差额：基线 `bb6b654c` 之后 HEAD 已推进，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
+| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-16（E-9～E-16 为本轮追加） | — |
+| 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
@@ -363,6 +363,22 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 - 未执行边界（状态 **未验证**，已登记到 [known-gaps.md](known-gaps.md)）：
   真 OS 睡眠/真拔网线/真实 ENOSPC/真实托盘点击/两个浏览器窗口 E2E/真实全局时钟跳变。
 - 未动账号树与前端在改文件（`apps/console/**`、`scripts/acceptance/account_tree_e2e.py`）。
+
+### 5.9 交叉验证（`3fa88be0`，2026-11-06）——**过程凭证，不是交付凭证**
+
+> 账号、管家、韧性、安全四路各自绿，但从没在同一 HEAD 上一起跑过。本轮在
+> `D:\copilot-worktrees\` 下的干净 worktree 钉死 `3fa88be0`，用仓库 venv 跑
+> `scripts/verify_readiness.py --full`，日志落 `D:\cache\temp\`。
+> 报告：[cross-verify-3fa88be0.md](evidence/cross-verify-3fa88be0.md)。
+
+| 项目 | 结果 |
+|---|---|
+| 基线 hash | `3fa88be0`（跑前 `git status` clean） |
+| C1–C12 | PASS 7 / FAIL 2（C3、C12）/ BLOCKED 1（C11）/ NOT_VERIFIED 2（C9、C7 首轮瞬时后单跑 PASS） |
+| 用例 | 7521 collected：31 failed / 7433 passed / 54 skipped / 3 xfailed；主跑 3965.78s + 补充 3535.59s |
+| 归因 | 27 条失败 + 1 条采集错误同根因：**账号/知识切片提交了测试与调用方，把被调用实现留在工作区**（`model_router.visible_to`、`ai_management.GoalViewer`、结构化错误体）⇒ E-15；C7 为满负载瞬时 I/O，单跑 PASS |
+| 真回归 | 无新增真回归；本轮另修的 4 条（`launch_installed.py` 宿主校验分支 + 3 个单测）已复核 66 passed / 1 skipped |
+| 结论 | **不能当交付凭证**；`RELEASE READY=False` 不变。账号/知识切片提交实现后，必须在最终冻结 HEAD 上重跑（E-15、E-16） |
 
 ## 6. 产物核对（2026-11-06 全篇扫描）
 

@@ -1,8 +1,8 @@
 # Known gaps
 
 > 需求逐条追溯（哪些做了、哪些只是文档、哪些延后）见
-> [需求追溯表](requirements-traceability.md)。本文件负责登记「已明确延后、
-> 不得遗忘」的事项；两者互补，缺一不可。
+> [需求追溯表](requirements-traceability.md) 与 [总任务台账](MASTER-TASK-LEDGER.md)。
+> 本文件负责登记「已明确延后、不得遗忘」的事项；三者互补，缺一不可。
 
 Facts about this checkout that are true today and that we are **not** fixing
 now. Each entry says what is broken, how we know, what it affects, and what
@@ -69,10 +69,14 @@ added to the same environment.
 | 登记范围 | 已完成 | 部分完成 | 决定延后或不做 | 未验证 |
 |---|---|---|---|---|
 | D-1～D-10 交付待办 | 0 | 8（D-1、2、3、5、7、8、9、10） | 2 主条目（D-4、D-6）+ 3 子项（自改代码、语音、操作前预览） | 0 个独立条目（原因在正文） |
-| 30 方向（矩阵口径） | 0（未跑运行时 E2E，不标已完成） | 8（「现在」8 项 = in-progress） | 22（「下一阶段」9 = planned-next；「不现在做」13 = 不做 8 + 仅设计 5） | 0 |
-| **合计（去重前）** | **0** | **16** | **24** | **0** |
+| 30 方向（矩阵口径） | 0（未跑运行时 E2E，不标已完成） | 8（「现在」8 项 = in-progress） | 13（「不现在做」= 不做 8 + 仅设计 5） | 0 |
+| **合计（去重前）** | **0** | **16** | **18**（2 主条目 + 3 子项 + 13「不现在做」） | **0** |
 
 > 合计是登记条目数，不是独立能力数：D-7 与方向 3、D-8 与方向 8 等有重叠。
+> **「下一阶段」9 项（2、5、7、9、16、17、20、24、29）是 planned-next、计划做，不是
+> 「决定延后」**，故不在上表「决定延后或不做」列里；它们记「待做」，见
+> [总任务台账](MASTER-TASK-LEDGER.md) D-04。原表把 9 项并入延后且合计写 24，与
+> 「2 主条目 + 3 子项 + 22 方向 = 27」自相矛盾，本次一并修正。
 
 **接手方（按仓库实际流）。** D-1 = upgrade 流；D-2 = console + gateway 流；D-3 =
 tasks 流（提醒已落），语音与预览需新任务；D-4 = automation 流；D-5 = 战略流；
@@ -84,6 +88,12 @@ artifacts 流。
 标签口径：**in-progress**（「现在」且未完成）/ **planned-next**（下一阶段）/
 **deferred-by-decision**（决定不做）/ **design-only**（只做设计不落地）。
 来源均为 `docs/strategy-priority-matrix.md` §1（`:20-52`）。
+
+> **与 T-11「真有 8」不是同一把尺子**：T-11 的「真有 / 半成品 / 假实现 / 无实现」
+> 是**静态存在判定**；本节的 in-progress / planned-next / design-only 是**排期优先级**。
+> 因此 25 可以是「真有」（有 CLI）同时是 `design-only`（不现在投入）；16、29 同理。
+> 「现在 8」= 1、3、8、22、23、26、28、30，与 T-11 的「真有 8」（1、8、16、22、23、25、29、30）
+> **集合不同**，两轴不可相加。原文档未写这条，易被误读为矛盾。
 
 | # | 方向 | 标签 | 当前到哪一步 / 理由 |
 |---|---|---|---|
@@ -243,7 +253,8 @@ artifacts 流。
 `build_knowledge_context` 注入检索上下文（`src/gateway/chat.py:159,185`，
 带 `use_knowledge` 开关）。**仍未验证**的是真实 embedding provider 下的端到端
 链路（上传→切分→向量→对话引用来源），以及「未配置 provider 时返回 503」的
-实际行为；另外 `tests/knowledge` 本轮复跑有 2 项 422 vs 400 失败（属知识流在改）。
+实际行为。`tests/knowledge/test_documents_admin_api.py` 复跑 **17 passed**
+（此前 422 vs 400 的失败已收口，见 requirements T-19）。
 
 **依赖什么。** 可用的 embedding provider（未配置时必须返回 503「未启用」，
 不得 mock 伪装）；对话侧引用来源展示。
@@ -313,6 +324,9 @@ SQLite `VACUUM INTO`、归档元数据随包、跨进程可读）；本轮实测
 | E-11 | `tests/kernels/network/test_network.py::TestRouting::test_add_route_and_deliver` 在全量负载下会抖动 | 全量回归 1 次失败（delivered 变 failed）；单跑 2.67s 通过，属回环 HTTP 在满负载下的时序抖动 | 未修；已记录，单跑通过 |
 | E-12 | 全量回归基线落后交付 HEAD：跑在 `cc3af30d`，报告时 HEAD 已到 `de1b0d87`（12 个提交） | 全量结果不覆盖期间的 desktop 启动门、升级 API、可观测性、reminder、console 错误读取器修复 | 已补跑这些提交改动的 15 个测试文件（123 passed / 80.85s），但未再跑第二次全量 |
 | E-13 | 交付清单曾把临时构建的数值写到 `dist/installer/LiuHao-Setup-0.1.0.exe`，该路径下从未存在该文件；当前 `dist/installer` 为空。2026-11-05 的安装版 E2E 实际安装的是 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），其 payload `scripts/launch_installed.py`（blob `a90272cf…`）不属于任何提交 | 清单点击即 404；E2E 证据的行为结论仍成立，但对应安装器无法从任何提交复现，不能当作“最终包已验证”的证据 | 已更正为「无有效安装包（待最终包回填）」。最终包出来后必须回填路径/字节/SHA256 + 对应源码提交，并重跑同一 E2E 绑定到该提交 |
+| E-14 | **手机端真机未验证**：服务侧 LAN `192.168.31.171:8000` 返回 200，但手机侧「打开 → 登录 → 发消息」从未跑过；且 `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 未设置时身份行全被拒 ⇒「无人可登录」 | 普通用户换机/手机访问会直接卡在登录；T-17 的「仅服务侧已验证」不能当手机可用 | **未验证**。关闭：安装版启动器自动生成并注入该密钥；用真机在同一 Wi-Fi 完成一次登录+发消息并留存日志/截图 |
+| E-15 | **交叉验证 `3fa88be0` 的 C3/C12 FAIL、31 failed**：账号/知识切片提交了测试与调用方，却把被调用实现（`src/ai/model_router.py` 的 `visible_to`、`src/gateway/ai_management.py` 的 `GoalViewer` 与结构化错误体）留在工作区 | 27 条失败 + 1 条采集错误同根因；同一 HEAD 上测试必红；该轮报告只能算**过程凭证，不是交付凭证** | **未关闭（归属账号/知识切片）**。关闭：两切片提交实现 → 干净 worktree 重跑 `verify_readiness.py --full`，C3/C12 转 PASS。证据 `docs/evidence/cross-verify-3fa88be0.md` |
+| E-16 | **最终冻结 HEAD 没有交付级全量凭证**：现有全量是 `bb6b654c` 基线（7458 passed）与 `3fa88be0` 过程凭证（C3/C12 FAIL），均不是最终 HEAD | `RELEASE READY=False`；不能据此对外宣布可交付 | **待做**。关闭：四路停止提交 → 记下最终 hash → `--full` 跑完 → `RELEASE READY=True`（C9/C11 的既定判定事实照实写） |
 
 ---
 
