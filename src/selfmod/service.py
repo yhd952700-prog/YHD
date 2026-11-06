@@ -38,7 +38,7 @@ from .errors import (
     TestCommandMissing,
 )
 from .ledger import SelfModLedger
-from .models import FileEdit, ProposalStatus, ResourceLimits, RunResult
+from .models import FileEdit, ProposalStatus, ResourceLimits
 from .patcher import apply_edits, generate_diff, hash_text, read_text, render
 from .paths import PathPolicy
 from .sandbox import command_from, run_isolated

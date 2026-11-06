@@ -54,7 +54,6 @@ from .errors import (
     PreflightError,
     RollbackError,
     SelfCheckError,
-    SnapshotError,
     UpdateUnreachableError,
     UpgradeError,
     VersionReadError,
@@ -72,7 +71,7 @@ from .models import (
     RollbackResult,
 )
 from .sources import ReleaseSource, select_latest
-from .versioning import is_newer, parse_version, read_current_version
+from .versioning import is_newer, read_current_version
 
 _BACKUP_SCHEMA = "liuhao.upgrade-backup/1"
 _CHECK_STATE_SCHEMA = "liuhao.update-check/1"

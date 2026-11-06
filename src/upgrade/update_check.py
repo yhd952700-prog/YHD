@@ -34,7 +34,6 @@ from src.tasks.local_scheduler import ACTIVE_STATUSES, LocalScheduler
 from src.tasks.reminder_notify import build_default_notifier
 
 from .manager import UpgradeConfig, UpgradeManager
-from .models import CheckStatus
 from .sources import build_source
 
 UPDATE_CHECK_JOB = "liuhao.upgrade.weekly-check"

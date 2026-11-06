@@ -74,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
     source.add_argument("--public-key", default=None, help="Ed25519 公钥（PEM 文件路径或 base64）")
 
     sub = parser.add_subparsers(dest="command", required=True)
-    p_check = sub.add_parser("check", parents=[common, source], help="检查更新")
+    sub.add_parser("check", parents=[common, source], help="检查更新")
     p_upgrade = sub.add_parser("upgrade", parents=[common, source], help="检查→下载→校验→应用")
     p_upgrade.add_argument(
         "--allow-same-or-downgrade",

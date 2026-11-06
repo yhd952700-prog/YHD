@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from .errors import RollbackError, UpgradeError, VersionReadError
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from packaging.version import Version
+
     from .manager import UpgradeManager
 
 # Heavy upgrade modules (manager -> selfcheck -> startup_probe, downloader,
