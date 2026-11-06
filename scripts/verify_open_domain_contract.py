@@ -35,6 +35,15 @@ This script proves the contract's observable effect end-to-end through the real
 That last point is the key honesty guarantee: the workspace for ``multi_shape``
 must contain NO ``notes.txt``, proving the file-write half never ran.
 
+2026-11-07 update: ``network_bus`` / ``multi_tier_memory`` / ``execution_pipeline``
+now DO have real executors (live-web research, memory runtime, execution runtime),
+so "asking today's inventory which capabilities lack an executor" no longer
+constructs the condition this gate exists to test. The probe therefore
+**withholds** them explicitly (``WITHHELD_CAPABILITIES``) -- modelling a
+deployment where those tools are absent, which is exactly the shape the planner
+contract must survive. The assertions are unchanged: refusal must still happen at
+plan stage, name the capability, and leave the workspace empty.
+
 Run:
     CODEBUDDY_SAFE_DELETE_ENABLED=0 .venv/Scripts/python.exe \\
         scripts/verify_open_domain_contract.py
@@ -83,6 +92,12 @@ GOAL_SHAPES = [
 
 CONTRACT_MESSAGE = "no executor is registered for capability"
 
+#: 这三项现在都有真实执行器，真实清单里已经不存在「无执行器」实例；探针显式扣留
+#: 它们，模拟「该部署缺失这些工具」的形态，让契约的可观测效果保持可复现。
+WITHHELD_CAPABILITIES = frozenset(
+    {"network_bus", "multi_tier_memory", "execution_pipeline"}
+)
+
 
 def _disk(ws: str) -> dict:
     out = {}
@@ -104,10 +119,12 @@ def _run(label: str, text: str) -> dict:
     # env MUST be set before LCore is constructed.
     os.environ["LIUHAO_WORKSPACE_ROOT"] = ws
     lcore = LCore(scope="L1", register_local_tools=True)
+    provider = lcore.executable_capabilities()
+    real = set(provider())
     rt = AgentRuntime(
         scope="L1",
         capability_executor=lcore.capability_executor(),
-        executable_capabilities=lcore.executable_capabilities(),
+        executable_capabilities=lambda: real - WITHHELD_CAPABILITIES,
     )
     r = rt.run_goal(text, goal_id=f"g_{label}")
     return {
