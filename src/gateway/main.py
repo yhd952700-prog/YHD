@@ -26,15 +26,17 @@ from .startup_profile import (
 )
 
 _startup_mark("src.gateway.main 开始导入（接下来是 FastAPI / security / metrics）")
-from pathlib import Path
-from typing import Any, Dict, Optional
+# 上一行 mark 必须先于下面这些导入执行：它持有进程内最早的时钟基准 T0，
+# 启动耗时统计以此为起点。因此这些导入不能移到文件顶部，逐行 E402 是有意为之。
+from pathlib import Path  # noqa: E402
+from typing import Any, Dict, Optional  # noqa: E402
 
-from fastapi import FastAPI, Request, APIRouter, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, APIRouter, Depends  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 
-from ..security import get_jwt_handler, get_rbac_manager
+from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
 # 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
 # 顶层导入 —— 追踪只服务可观测性，不属于"登录/对话/模型配置"的就绪条件。
 # 它在 lifespan 末尾随后台预热一起初始化，失败会告警并出现在 /v1/startup。

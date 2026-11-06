@@ -99,6 +99,7 @@ def _caller_identity(payload) -> tuple[str, bool]:
     metadata = metadata if isinstance(metadata, dict) else {}
     return subject, str(metadata.get("scope") or "") == "L0"
 
+
 # ``seq`` 定位与事件列表都读同一批列，保证 /events 与 /events/{seq} 返回同构。
 _EVENT_COLUMNS = (
     "seq, event_id, event_type, principal_id, scope, timestamp, "
