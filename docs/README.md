@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-04 实测）**：活跃文档 **187** 篇（不含 `archive/` 与
-> `spec/incoming/`），本索引**逐一列全 187 篇**。该数字由
+> **覆盖状态（2026-11-06 实测）**：活跃文档 **214** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 214 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -89,7 +89,7 @@
 
 ---
 
-## 2. 目录结构（18 个目录，实测）
+## 2. 目录结构（20 个目录，实测）
 
 ```text
 docs/
@@ -98,7 +98,7 @@ docs/
 ├── quickstart.md / QUICKSTART-RUN.md / RUN.md / HUMAN-DECISIONS.md
 ├── ARCHITECTURE.md              ← 架构导航门户
 ├── GLOSSARY.md / SIDENAV.md     ← 术语表 / 站点导航
-├── *-DESIGN.md 等 15 篇根级设计文档（见 §4）
+├── *-DESIGN.md 等其余根级文档（设计/指南/清单，详见 §4.2）
 ├── adr/                (2)     架构决策记录
 ├── architecture/       (8)     架构
 ├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
@@ -106,11 +106,13 @@ docs/
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
 ├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
 ├── decisions/          (1)     悬而未决决策登记
+├── evidence/           (1)     实测证据快照（可复现的基线/差量记录）
 ├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
 ├── l10k/               (1)     L10K 基准设计
 ├── operations/         (6)     运维与上线
+├── oss-radar/          (8)     开源技术雷达（按路分工的选型与风险记录）
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── roadmap/            (1)     百万行路线图
 ├── security/           (1)     安全威胁模型
@@ -142,7 +144,7 @@ docs/
 
 ---
 
-## 4. 全量清单（187 篇，逐一列出）
+## 4. 全量清单（214 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -153,7 +155,7 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 
-### 4.2 根级设计与决策（17）
+### 4.2 根级设计与决策（35）
 
 | 文件 | 说明 |
 |---|---|
@@ -175,6 +177,23 @@ docs/
 | [`POSTGRES-BACKEND-DESIGN.md`](POSTGRES-BACKEND-DESIGN.md) | Postgres 后端设计 |
 | [`PRODUCTION-READINESS-DESIGN.md`](PRODUCTION-READINESS-DESIGN.md) | 生产就绪探测设计 |
 | [`QUOTA-ACCOUNTING-DESIGN.md`](QUOTA-ACCOUNTING-DESIGN.md) | 配额计费设计 |
+| [`artifact-index-design.md`](artifact-index-design.md) | 产物索引与执行回溯 —— 设计说明 |
+| [`automation-design.md`](automation-design.md) | 鎏灏自动化设计稿 |
+| [`capability-map.md`](capability-map.md) | 能力地图（2026-11-06 复核） |
+| [`startup-profile.md`](startup-profile.md) | 网关冷启动：测量、优化与前端契约 |
+| [`self-upgrade.md`](self-upgrade.md) | 鎏灏自我升级与受控自改代码 |
+| [`upgrade-api-contract.md`](upgrade-api-contract.md) | 升级 HTTP 接口契约（前端对接） |
+| [`first-run-e2e.md`](first-run-e2e.md) | 首次安装端到端自检（可复现步骤记录） |
+| [`hc01-status.md`](hc01-status.md) | HC-01 审计链状态（事实与缺口） |
+| [`known-gaps.md`](known-gaps.md) | 已知缺口登记（Known gaps） |
+| [`requirements-traceability.md`](requirements-traceability.md) | 需求追溯表（Requirements Traceability） |
+| [`strategy-30-directions.md`](strategy-30-directions.md) | 30 个方向 × 五大中心的战略架构研究 |
+| [`strategy-priority-matrix.md`](strategy-priority-matrix.md) | 30 个方向 × 落地优先级矩阵（可排期） |
+| [`DELIVERY-CHECKLIST.md`](DELIVERY-CHECKLIST.md) | 交付清单（实测版） |
+| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | 鎏灏 LiuHao AI OS 使用指南 |
+| [`USER-GUIDE.md`](USER-GUIDE.md) | 使用指南（Windows 安装版） |
+| [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
+| [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
 
 ### 4.3 `adr/`（2）— 架构决策记录
 
@@ -450,6 +469,20 @@ docs/
 | [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
 | [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
 
+### 4.17 `evidence/`（1）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+
+| 文件 | 说明 |
+|---|---|
+| [`evidence/regression-baseline-coverage-2026-11-06.md`](evidence/regression-baseline-coverage-2026-11-06.md) | 全量回归基线覆盖（2026-11-06） |
+| [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：智能体与编排 |
+| [`oss-radar/memory-retrieval.md`](oss-radar/memory-retrieval.md) | 开源技术雷达 · 第 2 路：记忆与检索 |
+| [`oss-radar/security-compliance.md`](oss-radar/security-compliance.md) | 开源技术雷达 · 第 3 路：安全、合规与隔离 |
+| [`oss-radar/data-network.md`](oss-radar/data-network.md) | 开源技术雷达 · 第 4 路：数据、存储与网络 |
+| [`oss-radar/ui-interaction.md`](oss-radar/ui-interaction.md) | 开源技术雷达 · 第 5 路：界面、交互与多模态 |
+| [`oss-radar/engineering-quality.md`](oss-radar/engineering-quality.md) | 开源技术雷达 · 第 6 路：工程质量、成本与观测 |
+| [`oss-radar/compliance-supplychain.md`](oss-radar/compliance-supplychain.md) | 开源技术雷达 · 第 7 路：合规、供应链与内容安全 |
+| [`oss-radar/quality-cost.md`](oss-radar/quality-cost.md) | 开源技术雷达 · 第 8 路：质量、成本与可靠性 |
+
 ---
 
 ## 5. 门禁：本文档的可核验性
@@ -459,7 +492,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 187 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 214 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |
