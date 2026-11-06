@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .console_contract import FrontendContractError, verify_health_contract, verify_installed
 from .dataguard import is_sqlite_file, iter_files, verify_expected_tables
 from .startup_probe import StartupCheckConfig, StartupReport, run_startup_check
 
@@ -55,6 +56,7 @@ class SelfCheckReport:
     service_ok: bool = False
     service_detail: str = ""
     startup: Optional[StartupReport] = None
+    frontend_contract: Dict[str, Any] = field(default_factory=dict)
     databases_checked: int = 0
     tables_checked: int = 0
     issues: List[SelfCheckIssue] = field(default_factory=list)
@@ -67,6 +69,7 @@ class SelfCheckReport:
             "service_ok": self.service_ok,
             "service_detail": self.service_detail,
             "startup": self.startup.to_dict() if self.startup else None,
+            "frontend_contract": dict(self.frontend_contract),
             "databases_checked": self.databases_checked,
             "tables_checked": self.tables_checked,
             "issues": [issue.to_dict() for issue in self.issues],
@@ -105,6 +108,29 @@ def run_self_check(
             report.issues.append(
                 SelfCheckIssue("service", str(root), startup.reason)
             )
+
+    # Front-end/back-end contract gate. A package without the console build
+    # output upgrades the service but leaves the browser on the old UI; the
+    # service is healthy, so nothing else catches it.
+    try:
+        applicable, stamp, note = verify_installed(root)
+        report.frontend_contract = {
+            "applicable": applicable,
+            "checked": applicable,
+            "api_contract": stamp.get("api_contract"),
+            "frontend_version": stamp.get("frontend_version"),
+            "console_files": stamp.get("console_files"),
+            "console_fingerprint": stamp.get("console_fingerprint"),
+            "note": note,
+        }
+        if applicable and report.startup is not None and report.startup.ok:
+            verify_health_contract(stamp, report.startup.health_body)
+            report.frontend_contract["running_api_contract"] = (
+                report.startup.health_body.get("api_contract")
+            )
+    except FrontendContractError as exc:
+        report.ok = False
+        report.issues.append(SelfCheckIssue("frontend_contract", str(root), str(exc)))
 
     paths = [Path(path) for path in data_paths]
     for path in iter_files(paths):

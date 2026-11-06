@@ -1,0 +1,9 @@
+[C11] HC-01 real verification: BLOCKED — HC-01 BLOCKED / GO=BLOCKED — HUMAN DECISION PENDING (Decision Isolation active; not an engineering blocker)
+
+========================================================================
+RELEASE-READINESS verdict
+========================================================================
+  PASS=0  FAIL=0  BLOCKED=1  NOT_VERIFIED=0  ERROR=0
+  RELEASE READY = False
+========================================================================
+  report written: D:\LiuHao-AI-OS\scripts\readiness_report.json

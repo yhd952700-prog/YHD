@@ -1,0 +1,341 @@
+{
+  "records": [
+    {
+      "id": "60370bdc5c4f42039508a7fb5befa634",
+      "created_at": "2026-11-06T05:51:24.980200+00:00",
+      "kind": "selfcheck",
+      "status": "passed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.2",
+      "reason": "",
+      "backup_id": "20261106T055113Z-53a124b5",
+      "artifact_path": null,
+      "detail": {
+        "checked_at": "2026-11-06T05:51:18.793077+00:00",
+        "databases_checked": 2,
+        "frontend_contract": {
+          "api_contract": "1",
+          "applicable": true,
+          "checked": true,
+          "console_files": 11,
+          "console_fingerprint": "7dc9741d12380940b2c1aca05d4cb7bf9bcb1fd57effbe05f8bede40413596f6",
+          "frontend_version": "0.1.2",
+          "note": "",
+          "running_api_contract": "1"
+        },
+        "issues": [],
+        "ok": true,
+        "service_checked": true,
+        "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.8 秒）",
+        "service_ok": true,
+        "startup": {
+          "exit_code": 0,
+          "failure_kind": "",
+          "failure_label": "",
+          "health_body": {
+            "ai_provider": {
+              "mode": "mock",
+              "simulated": false,
+              "source": "env",
+              "type": "mock"
+            },
+            "api_contract": "1",
+            "service": "liuhao-gateway",
+            "status": "ok",
+            "timestamp": 1793944284.1553104,
+            "trace_id": "unknown",
+            "version": "1.0.0"
+          },
+          "health_path": "/v1/health",
+          "http_status": 200,
+          "log_tail": "Debug API surface ENABLED (APP_ENV=development): /docs, /redoc, /openapi.json are readable on this listener -- set APP_ENV=production to turn them off\nINFO:     Started server process [24352]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nHuman identity store: file @ (unconfigured) -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). Register one with scripts/register_human_identity.py\n{\"ts\": 1793944283.9304059, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_started\", \"segment_events\": 5000, \"incremental_interval_sec\": 300.0, \"rolling_every_n_ticks\": 12, \"predicted_seconds_per_tick\": 0.15}\n{\"ts\": 1793944283.9424815, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"checkpoint_tick_complete\", \"status\": \"ok\", \"checkpoints\": 1, \"uncovered\": 0, \"coverage_ratio\": 1.0, \"rooted_at_genesis\": true}\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:59223 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n{\"ts\": 1793944284.364465, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_stopped\", \"stats\": {\"ticks\": 1, \"incremental_runs\": 1, \"rolling_runs\": 0, \"events_verified\": 12, \"events_reverified\": 0, \"checkpoints_written\": 1, \"segment_failures\": 0, \"tick_errors\": 0, \"last_tick_at\": 1793944283.9424815, \"last_error\": null, \"last_status\": \"ok\", \"status_counts\": {\"ok\": 1}, \"last_coverage\": {\"tail_seq\": 12, \"covered_through\": 12, \"uncovered_events\": 0, \"coverage_ratio\": 1.0, \"checkpoint_count\": 1, \"uncovered_ranges\": [], \"oldest_verified_at\": 1793944283.9329274, \"newest_verified_at\": 1793944283.9329274, \"rooted_at_genesis\": true}}}\nINFO:     Application shutdown complete.\nINFO:     Finished server process [24352]",
+          "ok": true,
+          "port": 59223,
+          "reason": "",
+          "shutdown_ok": true,
+          "startup_seconds": 5.75
+        },
+        "tables_checked": 8
+      }
+    },
+    {
+      "id": "0a7fd4cd1fcd486a8381ad08c979d09c",
+      "created_at": "2026-11-06T05:51:14.582918+00:00",
+      "kind": "apply",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.2",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": "20261106T055113Z-53a124b5",
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-gockcaef\\liuhao-0.1.2.zip",
+      "detail": {
+        "backup_dir": "D:\\copilot-worktrees\\liuhao-c9-installed-20261106\\upgrade-backups\\20261106T055113Z-53a124b5",
+        "frontend_contract": {
+          "api_contract": "1",
+          "applicable": true,
+          "checked": true,
+          "console_files": 11,
+          "console_fingerprint": "7dc9741d12380940b2c1aca05d4cb7bf9bcb1fd57effbe05f8bede40413596f6",
+          "frontend_version": "0.1.2"
+        },
+        "installed_files": 685,
+        "key_tables": {
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\audit_store.db": [
+            "audit_events",
+            "chain_state",
+            "executor_fence",
+            "executor_fence_consumed",
+            "fence_epoch",
+            "verification_checkpoints",
+            "writer_lease"
+          ],
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\c9-userdata.sqlite3": [
+            "note"
+          ]
+        },
+        "preflight": {
+          "checked_at": "2026-11-06T05:51:07.622533+00:00",
+          "files_checked": 4,
+          "issues": [],
+          "json_checked": 1,
+          "ok": true,
+          "sqlite_checked": 2,
+          "yaml_checked": 0
+        },
+        "selfcheck": {
+          "checked_at": "2026-11-06T05:51:18.793077+00:00",
+          "databases_checked": 2,
+          "frontend_contract": {
+            "api_contract": "1",
+            "applicable": true,
+            "checked": true,
+            "console_files": 11,
+            "console_fingerprint": "7dc9741d12380940b2c1aca05d4cb7bf9bcb1fd57effbe05f8bede40413596f6",
+            "frontend_version": "0.1.2",
+            "note": "",
+            "running_api_contract": "1"
+          },
+          "issues": [],
+          "ok": true,
+          "service_checked": true,
+          "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.8 秒）",
+          "service_ok": true,
+          "startup": {
+            "exit_code": 0,
+            "failure_kind": "",
+            "failure_label": "",
+            "health_body": {
+              "ai_provider": {
+                "mode": "mock",
+                "simulated": false,
+                "source": "env",
+                "type": "mock"
+              },
+              "api_contract": "1",
+              "service": "liuhao-gateway",
+              "status": "ok",
+              "timestamp": 1793944284.1553104,
+              "trace_id": "unknown",
+              "version": "1.0.0"
+            },
+            "health_path": "/v1/health",
+            "http_status": 200,
+            "log_tail": "Debug API surface ENABLED (APP_ENV=development): /docs, /redoc, /openapi.json are readable on this listener -- set APP_ENV=production to turn them off\nINFO:     Started server process [24352]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nHuman identity store: file @ (unconfigured) -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). Register one with scripts/register_human_identity.py\n{\"ts\": 1793944283.9304059, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_started\", \"segment_events\": 5000, \"incremental_interval_sec\": 300.0, \"rolling_every_n_ticks\": 12, \"predicted_seconds_per_tick\": 0.15}\n{\"ts\": 1793944283.9424815, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"checkpoint_tick_complete\", \"status\": \"ok\", \"checkpoints\": 1, \"uncovered\": 0, \"coverage_ratio\": 1.0, \"rooted_at_genesis\": true}\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:59223 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n{\"ts\": 1793944284.364465, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_stopped\", \"stats\": {\"ticks\": 1, \"incremental_runs\": 1, \"rolling_runs\": 0, \"events_verified\": 12, \"events_reverified\": 0, \"checkpoints_written\": 1, \"segment_failures\": 0, \"tick_errors\": 0, \"last_tick_at\": 1793944283.9424815, \"last_error\": null, \"last_status\": \"ok\", \"status_counts\": {\"ok\": 1}, \"last_coverage\": {\"tail_seq\": 12, \"covered_through\": 12, \"uncovered_events\": 0, \"coverage_ratio\": 1.0, \"checkpoint_count\": 1, \"uncovered_ranges\": [], \"oldest_verified_at\": 1793944283.9329274, \"newest_verified_at\": 1793944283.9329274, \"rooted_at_genesis\": true}}}\nINFO:     Application shutdown complete.\nINFO:     Finished server process [24352]",
+            "ok": true,
+            "port": 59223,
+            "reason": "",
+            "shutdown_ok": true,
+            "startup_seconds": 5.75
+          },
+          "tables_checked": 8
+        },
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false
+      }
+    },
+    {
+      "id": "a7e3caee2b7a452ebec48944dd9c52e9",
+      "created_at": "2026-11-06T05:51:14.581909+00:00",
+      "kind": "backup",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.2",
+      "reason": "",
+      "backup_id": "20261106T055113Z-53a124b5",
+      "artifact_path": null,
+      "detail": {
+        "backup_id": "20261106T055113Z-53a124b5",
+        "code_file_count": 512,
+        "code_zip_sha256": "7fbe677689dd6c41d078dd4964c2191bb294963b8c1aa2debff58aac07a77fce",
+        "created_at": "2026-11-06T05:51:14.579294+00:00",
+        "data_file_count": 4,
+        "data_sqlite_count": 2,
+        "data_total_bytes": 113182,
+        "from_version": "0.1.0",
+        "key_tables": {
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\audit_store.db": [
+            "audit_events",
+            "chain_state",
+            "executor_fence",
+            "executor_fence_consumed",
+            "fence_epoch",
+            "verification_checkpoints",
+            "writer_lease"
+          ],
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\c9-userdata.sqlite3": [
+            "note"
+          ]
+        },
+        "preflight": {
+          "checked_at": "2026-11-06T05:51:07.622533+00:00",
+          "files_checked": 4,
+          "issues": [],
+          "json_checked": 1,
+          "ok": true,
+          "sqlite_checked": 2,
+          "yaml_checked": 0
+        },
+        "schema": "liuhao.upgrade-backup/1",
+        "to_version": "0.1.2"
+      }
+    },
+    {
+      "id": "2daa34b3742c406689a77034b759c9a8",
+      "created_at": "2026-11-06T05:51:07.599201+00:00",
+      "kind": "download",
+      "status": "verified",
+      "from_version": null,
+      "to_version": "0.1.2",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": null,
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-gockcaef\\liuhao-0.1.2.zip",
+      "detail": {
+        "path": "D:\\cache\\temp\\liuhao-upgrade-download-gockcaef\\liuhao-0.1.2.zip",
+        "release": {
+          "artifact": "liuhao-0.1.2.zip",
+          "notes": "鎏灏 LiuHao AI OS 0.1.2：源码与文档整包；不含模型权重、不含任何密钥。安装器未做代码签名，Windows 首次运行需选择“仍要运行”。（打包扫描发现 35 处运行文件里的开发目录路径字面量，见 dev-path-report.txt）",
+          "released_at": "2026-11-06T06:30:00Z",
+          "sha256": "ca46fc7664bcea137b787adb3d88cd72c5d0c53dfe1fb3ed8b480c0033945d0a",
+          "signature": false,
+          "signature_algorithm": null,
+          "size": 2961979,
+          "version": "0.1.2"
+        },
+        "sha256": "ca46fc7664bcea137b787adb3d88cd72c5d0c53dfe1fb3ed8b480c0033945d0a",
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false,
+        "size": 2961979,
+        "temporary": true
+      }
+    },
+    {
+      "id": "8de31da68ab44e56b47f7c92951b041b",
+      "created_at": "2026-11-06T05:51:07.516664+00:00",
+      "kind": "check",
+      "status": "update_available",
+      "from_version": "0.1.0",
+      "to_version": "0.1.2",
+      "reason": "",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "offline": false,
+        "result": {
+          "checked_at": "2026-11-06T05:51:07.516664+00:00",
+          "current_version": "0.1.0",
+          "latest_version": "0.1.2",
+          "message": "发现新版本 0.1.2（当前 0.1.0）",
+          "offline": false,
+          "release": {
+            "artifact": "liuhao-0.1.2.zip",
+            "notes": "鎏灏 LiuHao AI OS 0.1.2：源码与文档整包；不含模型权重、不含任何密钥。安装器未做代码签名，Windows 首次运行需选择“仍要运行”。（打包扫描发现 35 处运行文件里的开发目录路径字面量，见 dev-path-report.txt）",
+            "released_at": "2026-11-06T06:30:00Z",
+            "sha256": "ca46fc7664bcea137b787adb3d88cd72c5d0c53dfe1fb3ed8b480c0033945d0a",
+            "signature": false,
+            "signature_algorithm": null,
+            "size": 2961979,
+            "version": "0.1.2"
+          },
+          "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9b-release",
+          "status": "update_available"
+        }
+      }
+    },
+    {
+      "id": "17ccaff2cafb4e86a7b1680d6dbb1cd5",
+      "created_at": "2026-11-06T05:50:55.298574+00:00",
+      "kind": "apply",
+      "status": "failed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "升级包缺少控制台构建产物 console/index.html：安装后界面会停留在旧版本（或直接空白），已拒绝继续。请用包含前端的安装树重新打包：packaging/stage_payload.py → packaging/make_release.py --app-root。",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "mutation_started": false
+      }
+    },
+    {
+      "id": "968b743d206e4055bb7936341b318736",
+      "created_at": "2026-11-06T05:50:55.242400+00:00",
+      "kind": "download",
+      "status": "verified",
+      "from_version": null,
+      "to_version": "0.1.1",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": null,
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-8rfd05j3\\liuhao-0.1.1.zip",
+      "detail": {
+        "path": "D:\\cache\\temp\\liuhao-upgrade-download-8rfd05j3\\liuhao-0.1.1.zip",
+        "release": {
+          "artifact": "liuhao-0.1.1.zip",
+          "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+          "released_at": null,
+          "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+          "signature": false,
+          "signature_algorithm": null,
+          "size": 2741388,
+          "version": "0.1.1"
+        },
+        "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false,
+        "size": 2741388,
+        "temporary": true
+      }
+    },
+    {
+      "id": "ba5dda2815fc4d89b4bbc2a46e23c264",
+      "created_at": "2026-11-06T05:50:55.197070+00:00",
+      "kind": "check",
+      "status": "update_available",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "offline": false,
+        "result": {
+          "checked_at": "2026-11-06T05:50:55.197070+00:00",
+          "current_version": "0.1.0",
+          "latest_version": "0.1.1",
+          "message": "发现新版本 0.1.1（当前 0.1.0）",
+          "offline": false,
+          "release": {
+            "artifact": "liuhao-0.1.1.zip",
+            "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+            "released_at": null,
+            "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+            "signature": false,
+            "signature_algorithm": null,
+            "size": 2741388,
+            "version": "0.1.1"
+          },
+          "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9-release",
+          "status": "update_available"
+        }
+      }
+    }
+  ]
+}

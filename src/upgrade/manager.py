@@ -42,6 +42,7 @@ from .backups import (
     restore_data,
     verify_backup,
 )
+from .console_contract import FrontendContractError, verify_package
 from .dataguard import capture_table_inventory, verify_data_paths
 from .downloader import _sha256_file, download_release, verify_signature
 from .errors import (
@@ -889,6 +890,34 @@ class UpgradeManager:
         # drops a table would look fine.
         key_tables = capture_table_inventory(self._data_guard_paths())
 
+        # Front-end/back-end contract gate, before any backup or mutation.
+        # Without it a package assembled from a tree that has no console build
+        # output installs a new backend and leaves the old UI in place: the
+        # service is healthy, the browser is stale, and API shape changes show
+        # up as random 400s. Refusing here is the only safe option.
+        console_gate: Dict[str, Any] = {}
+        if (self.config.app_root / "console" / "index.html").is_file():
+            try:
+                with zipfile.ZipFile(artifact, "r") as contract_archive:
+                    stamp = verify_package(contract_archive, release.version)
+            except FrontendContractError as exc:
+                self._fail_before_mutation(release, str(exc), from_version=current_version)
+                raise PreflightError(str(exc)) from exc
+            console_gate = {
+                "applicable": True,
+                "checked": True,
+                "api_contract": stamp.get("api_contract"),
+                "frontend_version": stamp.get("frontend_version"),
+                "console_files": stamp.get("console_files"),
+                "console_fingerprint": stamp.get("console_fingerprint"),
+            }
+        else:
+            console_gate = {
+                "applicable": False,
+                "checked": False,
+                "note": "安装根没有 console/（开发/便携布局），前后端契约门禁不适用",
+            }
+
         staging: Optional[Path] = None
         backup_id = ""
         mutation_started = False
@@ -1019,6 +1048,7 @@ class UpgradeManager:
                     "signature_note": signature_note,
                     "preflight": preflight.to_dict(),
                     "key_tables": key_tables,
+                    "frontend_contract": console_gate,
                     "selfcheck": self_check.to_dict(),
                 },
             ) or marker
@@ -1067,6 +1097,7 @@ class UpgradeManager:
                 "rollback_error": rollback_error,
                 "signature_verified": signature_verified,
                 "signature_note": signature_note,
+                "frontend_contract": console_gate,
             }
             if marker is not None:
                 record = self.ledger.update(

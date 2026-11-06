@@ -1,0 +1,9 @@
+[C9] Deployment / upgrade / rollback: NOT VERIFIED — Dockerfile + alembic present; real CD absent=True (honest)
+
+========================================================================
+RELEASE-READINESS verdict
+========================================================================
+  PASS=0  FAIL=0  BLOCKED=0  NOT_VERIFIED=1  ERROR=0
+  RELEASE READY = False
+========================================================================
+  report written: D:\LiuHao-AI-OS\scripts\readiness_report.json

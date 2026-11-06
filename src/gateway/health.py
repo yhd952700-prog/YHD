@@ -16,6 +16,7 @@ import os
 
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
 from ..gateway.rate_limiter import get_rate_limiter
+from ..gateway.contract import API_CONTRACT_VERSION
 
 
 health_router = APIRouter(prefix="/v1", tags=["health"])
@@ -50,6 +51,7 @@ async def liveness_probe(request: Request) -> JSONResponse:
             "timestamp": time.time(),
             "trace_id": trace_id,
             "version": "1.0.0",
+            "api_contract": API_CONTRACT_VERSION,
             "ai_provider": ai_provider,
         },
         status_code=status.HTTP_200_OK,

@@ -44,6 +44,15 @@ DEFAULT_OUT = REPO_ROOT / "dist" / "payload"
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
 ICON_PNG = REPO_ROOT / "apps" / "console" / "console" / "public" / "icon-192.png"
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.upgrade.console_contract import (  # noqa: E402
+    build_stamp,
+    console_files_under,
+    read_backend_contract_from_source,
+)
+
 #: 随程序走的源码目录。
 SOURCE_DIRS: Tuple[str, ...] = ("src",)
 
@@ -241,6 +250,8 @@ def _write_start_bat(app_dir: Path) -> None:
     bat = """@echo off
 rem LiuHao AI OS - installed launcher. ASCII-only on purpose.
 setlocal
+rem Keep the install tree read-only: never write __pycache__ next to the app.
+set PYTHONDONTWRITEBYTECODE=1
 cd /d "%~dp0"
 if not exist "runtime\\python.exe" (
     echo [FAIL] runtime\\python.exe is missing - the installation is incomplete.
@@ -583,6 +594,28 @@ def build(out_dir: Path, version: str) -> int:
         )
     console_count = _copy_tree(CONSOLE_DIST, app_dir / "console")
     print(f"      console  -> {console_count} 个文件")
+    backend_contract = read_backend_contract_from_source(
+        (app_dir / "src" / "gateway" / "contract.py").read_text(encoding="utf-8")
+    )
+    console_files = console_files_under(
+        {
+            path.relative_to(app_dir).as_posix(): path.read_bytes()
+            for path in (app_dir / "console").rglob("*")
+            if path.is_file()
+        }
+    )
+    console_stamp = build_stamp(
+        console_files, backend_contract=backend_contract, version=version
+    )
+    (app_dir / "console" / "console-contract.json").write_text(
+        json.dumps(console_stamp, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"      console 契约签章 -> api_contract={console_stamp['api_contract']}，"
+        f"{console_stamp['console_files']} 个文件，"
+        f"指纹 {console_stamp['console_fingerprint'][:12]}…"
+    )
     script_count = _copy_scripts(app_dir)
     print(f"      scripts  -> {script_count} 个文件")
 

@@ -74,6 +74,14 @@ APP_TREE_SKIP_PREFIXES = ("unins", "upgrade-backups", "upgrade-state", ".liuhao"
 
 # 与 src/upgrade/manager.py 的默认 install_roots / protected_paths 保持一致。
 from src.upgrade.manager import INSTALL_ROOTS  # noqa: E402
+from src.upgrade.console_contract import (  # noqa: E402
+    CONTRACT_RELPATH,
+    FrontendContractError,
+    build_stamp,
+    console_files_under,
+    read_backend_contract_from_source,
+    verify_package as verify_console_contract,
+)
 
 PROTECTED_PATHS = (
     "data",
@@ -287,7 +295,7 @@ def _verify_with_updater(zf: zipfile.ZipFile) -> None:
         raise BuildError("发布包内缺少 pyproject.toml")
 
 
-def _verify_package(zip_path: Path, expected_version: str) -> Tuple[str, int]:
+def _verify_package(zip_path: Path, expected_version: str, *, require_console: bool = False) -> Tuple[str, int]:
     """回读 ZIP，校验版本标记与 pyproject 版本；返回 (sha256, size)。"""
     sha = hashlib.sha256()
     with open(zip_path, "rb") as handle:
@@ -297,6 +305,12 @@ def _verify_package(zip_path: Path, expected_version: str) -> Tuple[str, int]:
 
     with zipfile.ZipFile(zip_path) as zf:
         _verify_with_updater(zf)
+        if require_console:
+            # 同一个校验函数升级器落盘前也会跑：打包端与安装端共用一套规则。
+            try:
+                verify_console_contract(zf, expected_version)
+            except FrontendContractError as exc:
+                raise BuildError(str(exc)) from exc
         try:
             marker = json.loads(zf.read(MANIFEST_NAME).decode("utf-8"))
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -455,6 +469,12 @@ def build(args: argparse.Namespace) -> int:
     _log(f"  输出    {out_dir}")
 
     entries = _collect_files(root, app_tree=app_tree)
+    if app_tree and not any(rel == "console/index.html" for rel, _path in entries):
+        raise BuildError(
+            "安装树缺少驾驶舱构建产物 console/index.html："
+            "此包升级后界面不会更新，且可能与新后端接口错配，拒绝产出。"
+            "请先在 apps/console/console 执行 npm install && npm run build，再重建安装树。"
+        )
     total_bytes = sum(path.stat().st_size for _rel, path in entries)
     _log(f"  输入    {len(entries)} 个文件 / {total_bytes / 1024 / 1024:.1f} MB（未压缩）")
 
@@ -481,15 +501,42 @@ def build(args: argparse.Namespace) -> int:
     }
     marker_bytes = (json.dumps(marker, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
+    # 重新签章：安装树里的旧签章带着旧版本号/旧指纹，不能原样带进新包。
+    console_stamp_bytes = b""
+    if app_tree:
+        console_files = console_files_under(
+            {rel: path.read_bytes() for rel, path in entries if rel.startswith("console/")}
+        )
+        backend_contract = read_backend_contract_from_source(
+            (root / "src" / "gateway" / "contract.py").read_text(encoding="utf-8")
+        )
+        stamp = build_stamp(
+            console_files,
+            backend_contract=backend_contract,
+            version=version,
+            built_at=released_at,
+        )
+        console_stamp_bytes = (
+            json.dumps(stamp, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        _log(
+            f"  前端    console {stamp['console_files']} 个文件，"
+            f"api_contract={stamp['api_contract']}，指纹 {stamp['console_fingerprint'][:12]}…"
+        )
+
     tmp_zip = out_dir / f".{zip_name}.tmp"
     tmp_zip.unlink(missing_ok=True)
     with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         _zip_write(zf, MANIFEST_NAME, marker_bytes)
         for rel, path in entries:
+            if rel == CONTRACT_RELPATH:
+                continue
             _zip_write(zf, rel, path.read_bytes())
+        if console_stamp_bytes:
+            _zip_write(zf, CONTRACT_RELPATH, console_stamp_bytes)
     os.replace(tmp_zip, zip_path)
 
-    sha256, size = _verify_package(zip_path, version)
+    sha256, size = _verify_package(zip_path, version, require_console=app_tree)
     _log(f"  产物    {zip_name}  {size} 字节（{size / 1024 / 1024:.1f} MB）")
     _log(f"  SHA256  {sha256}")
 

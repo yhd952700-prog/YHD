@@ -391,6 +391,19 @@ python -m src.selfmod list
 
 通过时账本记录 `selfcheck/passed`，`ApplyResult` 带 `self_check_passed=true` / `self_check_issues=0`，状态继续到 `completed`。
 
+**前后端契约门禁（`console/` 签章）**：`src/upgrade/console_contract.py` 在**任何备份/改动之前**校验升级包：
+
+- 包内必须有 `console/index.html` 与 `console/console-contract.json`（schema `liuhao.console-contract/1`）；
+- 签章 `api_contract` 必须等于包内 `src/gateway/contract.py` 的 `API_CONTRACT_VERSION`（当前 `"1"`）；
+- `console_fingerprint` 必须等于包内 `console/` 实际字节（与文件顺序无关）；
+- `frontend_version` 必须等于本次发布版本。
+
+任一不符 → `PreflightError`，账本记 `apply/failed`（`detail.mutation_started=false`），**安装目录零改动**，
+用户看到中文原因（缺前端 / 签章不符 / 契约不符 / 版本不符）。自检阶段再把真实 `/v1/health` 返回的
+`api_contract` 与安装目录签章比对；健康探测同时解析 JSON 正文（`startup.health_body`）。
+安装根没有 `console/` 的开发/便携布局不适用该门禁，但账本记 `{"applicable": false, "checked": false}`。
+覆盖用例：`tests/test_upgrade_console_contract.py`（10 项）。
+
 也可以随时手动复检当前安装：
 
 ```powershell
@@ -400,7 +413,7 @@ python -m src.upgrade selfcheck --app-root . --health-path /custom/health
 python -m src.upgrade selfcheck --app-root . --startup-port 8080   # 诊断：固定端口
 ```
 
-退出码 `0` 通过、`1` 失败；`--json` 输出 `SelfCheckReport`（`service_ok/service_detail/startup{ok,failure_kind,failure_label,reason,port,health_path,http_status,startup_seconds,exit_code,shutdown_ok,log_tail}/databases_checked/tables_checked/issues`）。
+退出码 `0` 通过、`1` 失败；`--json` 输出 `SelfCheckReport`（`service_ok/service_detail/startup{ok,failure_kind,failure_label,reason,port,health_path,http_status,startup_seconds,exit_code,shutdown_ok,health_body,log_tail}/frontend_contract/databases_checked/tables_checked/issues`）。
 
 `tests/test_upgrade_selfcheck.py` 覆盖：真实启动 + 健康检查 200 + 优雅退出（退出码 0）、临时目录/真实数据目录隔离、环境变量绝对路径改写、端口冲突、缺依赖、迁移失败、lifespan 异常、超时、关闭失败不影响启动判断的分类函数、日志脱敏与截断、关键表缺失、数据库损坏、**迁移失败导致自检失败 → 自动回滚且保留脱敏日志**、成功升级记录 `selfcheck/passed` 且 `startup.ok=true`。
 

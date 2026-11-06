@@ -27,6 +27,7 @@ log tail are always kept so a human can confirm.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -167,6 +168,7 @@ class StartupReport:
     port: int = 0
     health_path: str = ""
     http_status: int = 0
+    health_body: Dict[str, object] = field(default_factory=dict)
     startup_seconds: float = 0.0
     exit_code: Optional[int] = None
     shutdown_ok: bool = False
@@ -185,6 +187,7 @@ class StartupReport:
             "port": self.port,
             "health_path": self.health_path,
             "http_status": self.http_status,
+            "health_body": dict(self.health_body),
             "startup_seconds": round(self.startup_seconds, 3),
             "exit_code": self.exit_code,
             "shutdown_ok": self.shutdown_ok,
@@ -443,38 +446,51 @@ def classify_failure(
 _HEALTH_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _parse_json_object(raw: bytes) -> Dict[str, object]:
+    """Best-effort JSON body parse; a non-object body is treated as empty."""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _probe_health(
     host: str, port: int, paths: Tuple[str, ...], timeout: float
-) -> Tuple[str, int]:
+) -> Tuple[str, int, Dict[str, object]]:
     for path in paths:
         url = f"http://{host}:{port}{path}"
+        raw = b""
         try:
             with _HEALTH_OPENER.open(url, timeout=timeout) as response:
                 status = int(getattr(response, "status", 0) or 0)
                 # Drain the body before closing: an abrupt close while the
                 # server is still writing resets the TCP connection, and on
                 # Windows that reset can make uvicorn's graceful shutdown hang
-                # in `wait_closed()` (asyncio proactor). Best-effort only.
+                # in `wait_closed()` (asyncio proactor). The bytes are also the
+                # health payload used for the front-end contract check.
                 try:
-                    response.read()
+                    raw = response.read()
                 except Exception:
-                    pass
+                    raw = b""
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             try:
-                exc.read()
+                raw = exc.read()
             except Exception:
-                pass
+                raw = b""
             finally:
                 exc.close()
             if 200 <= status < 400:
-                return path, status
+                return path, status, _parse_json_object(raw)
             continue
         except (urllib.error.URLError, OSError, ValueError):
             continue
         if 200 <= status < 400:
-            return path, status
-    return "", 0
+            return path, status, _parse_json_object(raw)
+    return "", 0, {}
 
 
 def run_startup_check(
@@ -532,11 +548,12 @@ def run_startup_check(
             deadline = time.monotonic() + max(1.0, float(config.startup_timeout_seconds))
             health_path = ""
             http_status = 0
+            health_body: Dict[str, object] = {}
             timed_out = False
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     break
-                health_path, http_status = _probe_health(
+                health_path, http_status, health_body = _probe_health(
                     config.host,
                     port,
                     tuple(config.health_paths),
@@ -592,6 +609,7 @@ def run_startup_check(
                 port=port,
                 health_path=health_path,
                 http_status=http_status,
+                health_body=health_body,
                 startup_seconds=time.monotonic() - started,
                 exit_code=exit_code,
                 shutdown_ok=True,
@@ -608,6 +626,7 @@ def run_startup_check(
             port=port,
             health_path=health_path,
             http_status=http_status,
+            health_body=health_body,
             startup_seconds=time.monotonic() - started,
             exit_code=exit_code,
             shutdown_ok=False,

@@ -6,6 +6,18 @@
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
 > 只挂一个名字。
 
+> **一眼可见的披露（2026-11-06，无需翻到 §5.7）**
+>
+> 1. **HC-01 保管链断裂**：冻结快照在取证之后被**未查明身份的进程**以读写方式打开
+>    （`-wal` / `-shm` 的 mtime 晚于取证时刻）。可证的是主文件字节、`page_count`、
+>    freelist 未变，`-wal` 0 字节，`integrity_check=ok`；**不可证的是行为人是谁**。
+>    本清单及所有引用该快照的文档一律写作「**保管链断裂、行为人未查明**」。
+>    裁决见 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)。
+> 2. **C11 = BLOCKED 是判定事实，不是工程阻塞**：`check_hc01` 把 HC-01 当作冻结的
+>    人类主权门，工程侧不自行改判；记录 ADR **不会**让 C11 变绿，也不应为了好看去改。
+> 3. **`RELEASE READY = False`**：最终 hash 全量跑完之前一直是 False；本轮补证
+>    （C7 基线、C9 安装树两轮、C9 前端缺陷修复、C11 裁决）都没有改变这个结论。
+
 ## 0. 安装包
 
 **当前状态：无有效安装包（待最终包回填）。** `dist/installer/` 现在为空；
@@ -109,7 +121,7 @@
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-13（E-9～E-13 为本轮追加） | — |
-| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列；C11 5 项裁决已摊平并附建议 | 差额：基线 `bb6b654c` 之后 HEAD 已推进，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
+| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞） | 差额：基线 `bb6b654c` 之后 HEAD 已推进，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
@@ -229,6 +241,9 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
   `636.8 事件/秒 / p95 2.654 ms` → `=== PERFORMANCE GATE: PASS ===`。
 - **方差如实**：单条吞吐极差/中位数 **80.0%**、p95 **1594.4%**、batch100 **90.1%**、
   多进程不含启动 **142.6%**、恢复 **76.4%**。基线代表安静窗口，繁忙时门禁会失败，**不是稳定 CI 门禁**。
+- **定位（owner 2026-11-06 裁决）**：维持「**本机安静窗口可判定、非 CI 阻断门禁**」；
+  方差数字保留原样；**不许为了让门禁好看去调阈值**（`±25%` 容差与 `scripts/bench_baseline.json`
+  本轮均未改，只新增 py3.12.14 profile 作为可比基线）。
 - 机器：Xeon E5-2673 v3 @2.40GHz，12 核/24 线程，34,205,548,544 字节内存（31.9 GiB），Windows 10.0.19045。
 - 证据：[c7-performance-baseline-2026-11-06.md](evidence/c7-performance-baseline-2026-11-06.md)、
   [bench-baseline-py312-2026-11-06.json](evidence/bench-baseline-py312-2026-11-06.json)（6,249 字节）、
@@ -249,18 +264,48 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 - 数据保全：哨兵 `c9-sentinel.txt` SHA256 `051F79B9…A4A9` 升级与回滚后不变；用户库行
   `(1, 'keep-across-upgrade-and-rollback')` 全程在。
 - 披露：回滚是**覆盖恢复**而非字节级还原（备份后新建的 `audit_store.db*` 会保留）；
-  载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**；
-  升级只校验 SHA256、无签名。
+  旧载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**
+  ——该缺陷已单独修复，见下一条；升级只校验 SHA256、无签名。
 - 证据：[c9-installed-upgrade-2026-11-06.md](evidence/c9-installed-upgrade-2026-11-06.md)、
   [c9-check.json](evidence/c9-check.json)、[c9-upgrade-1.json](evidence/c9-upgrade-1.json)、
   [c9-rollback-1.json](evidence/c9-rollback-1.json)、[c9-upgrade-2.json](evidence/c9-upgrade-2.json)、
   [c9-rollback-2.json](evidence/c9-rollback-2.json)、[c9-history.json](evidence/c9-history.json)（42,617 字节）、
   [c9-restart-0.1.1.err.log](evidence/c9-restart-0.1.1.err.log)（1,243 字节）、
-  [c9-restart-0.1.0.err.log](evidence/c9-restart-0.1.0.err.log)（1,244 字节）。
+  [c9-restart-0.1.0.err.log](evidence/c9-restart-0.1.0.err.log)（1,244 字节）、
+  [c9-readiness-only-2026-11-06.log](evidence/c9-readiness-only-2026-11-06.log)（510 字节：
+  `[C9] ... NOT VERIFIED ... real CD absent=True (honest)`）。
 
-**C11 HC-01：5 项裁决已摊平并附建议**
+**C9 缺陷修复：升级载荷缺前端 `console/`（2026-11-06 补，已修）**
 
-| # | 裁什么 | 建议 |
+- 缺陷：旧载荷 **0 个 `console/` 成员**。升级器仍把后端换新、前端保持旧版；
+  `/v1/health` 依旧 200，浏览器加载旧界面，接口一变就是随机 400 / 空面板——**静默失败**。
+- 修复三层：① `console/` 与控制台签章 `console/console-contract.json` 随包；
+  ② 升级前门禁（缺 `index.html` / 签章不符 / 后端契约不符 / 前端版本不符 → **拒绝升级并给出中文原因，安装目录零改动**）；
+  ③ 自检把真实启动服务 `/v1/health` 的 `api_contract` 与签章比对；构建期缺前端直接拒绝产出。
+- **包体数字**：新包 `liuhao-0.1.2.zip` —— **685 成员**（其中 `console/` **12** = 11 个产物 + 1 个签章）/
+  **2,961,979 字节** / 解压 **10,047,927** / sha256 `ca46fc76…5D0A`；同参数复跑 SHA256 逐字节相同。
+  旧包对照：662 成员 / 0 `console/` / 2,741,388 字节。
+- **拒绝旧包**：退出码 **1**，`console/` 保持 **10 文件 / 496,026 字节 / `B6CCEB84…E5DAB8`**，
+  版本仍 `0.1.0`，新增备份 **0**。
+- **装新包**：**18.72s**、安装 **685 文件**、自检真实启动 **5.75s** + `/v1/health` 200（`api_contract="1"`）；
+  `console/` 落盘后 **12 文件 / 496,344 字节**，`index.html` 由 `B6CCEB84…` 变为 **`6F4F0C53…F05F3C`**。
+- **重启**：**5.07s**，`GET /`、`GET /dashboard` 都返回新 index（含 `<!-- frontend build 0.1.2 -->`），新增资源 **200**。
+- **回滚**：**2.67s**、恢复 **516 文件**，`console/` 精确回到 **10 文件 / 496,026 字节 / `B6CCEB84…`**，
+  新增文件残留 **0**；数据哨兵与用户库行不变。
+- 边界：前端用**模拟构建标记**（非真实 `npm run build`）；未签名；端到端只跑同契约（`api_contract=1`），
+  跨契约拒绝由单测覆盖。
+- 证据：[c9-console-payload-2026-11-06.md](evidence/c9-console-payload-2026-11-06.md)、
+  [c9b-console-contract-2026-11-06.json](evidence/c9b-console-contract-2026-11-06.json)、
+  [c9b-build-0.1.2.txt](evidence/c9b-build-0.1.2.txt)、[c9b-reject-0.1.1.txt](evidence/c9b-reject-0.1.1.txt)、
+  [c9b-upgrade-0.1.2.json](evidence/c9b-upgrade-0.1.2.json)、[c9b-rollback-0.1.0.json](evidence/c9b-rollback-0.1.0.json)、
+  [c9b-history-0.1.2.json](evidence/c9b-history-0.1.2.json)、[c9b-health-0.1.2.json](evidence/c9b-health-0.1.2.json)、
+  [c9b-restart-0.1.2.err.log](evidence/c9b-restart-0.1.2.err.log)、[c9b-restart-0.1.2.out.log](evidence/c9b-restart-0.1.2.out.log)。
+- 单测：`tests/test_upgrade_console_contract.py` **10 passed**（合法包 / 缺 index / 缺签章 /
+  后端契约不符 / 字节篡改 / 版本不符 / 健康契约 / 不适用布局 / 安装树回读 / manager 拒绝且零改动）。
+
+**C11 HC-01：5 项裁决已由 owner 裁决并记录 ADR**
+
+| # | 裁什么 | 裁决 |
 |---|---|---|
 | 1 | Baseline binding：A live / B 旧快照 / C 重采 | **A**（live 作运行源，旧快照仅作历史证据） |
 | 2 | 快照保管断裂：接受并披露 / 隔离替换 / 标 UNRESOLVED | **接受并披露**（内容完整性有证，缺的是操作者归因） |
@@ -268,10 +313,15 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | 4 | Schema：v1→v9 / 不做 / 双路 | **随第 1 项选 A ⇒ 不做 v1→v9** |
 | 5 | 是否授权重采冻结基线 | **推迟，条件写死**：F1–F6 单写者/围栏上线并 soak 通过后按只读 ACL + operator + 前后 hash 重采 |
 
-- 建议组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
-- 在 ADR 记录前 C11 仍派生 `BLOCKED`（判定事实，非工程待办）。
+- 裁决组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
+- **已记录 ADR**：[ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)（含保管断裂事实与「行为人未查明」、
+  5 项裁决、后果与引用规则）。
+- **C11 仍派生 `BLOCKED`**：这是判定事实（`check_hc01` 恒把 HC-01 当冻结人类主权门），
+  **不是工程阻塞**；记录 ADR 不改变 `RELEASE READY`，本轮也没有为了让门禁变绿去改判定。
 - 证据：[hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)、
-  [hc01-status.md](hc01-status.md) §4.1 指针。
+  [hc01-status.md](hc01-status.md) §4.1 指针、
+  [c11-readiness-only-2026-11-06.log](evidence/c11-readiness-only-2026-11-06.log)（549 字节：
+  `[C11] ... BLOCKED ... not an engineering blocker`，`RELEASE READY = False`）。
 
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
@@ -291,13 +341,13 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §2 #9 | `scripts/verify_first_run_e2e.py` / `docs/first-run-e2e.md` | — | 存在，20,237 / 3,559 字节 | 一致 |
 | §2 #1 | `docs/END-USER-GUIDE.md` | — | 存在，9,107 字节 | 一致 |
 | §2 #13 | `docs/capability-map.md` | — | 存在，18,738 字节 | 一致 |
-| §2 #14 | `docs/hc01-status.md` | — | 存在，7,903 字节 | 一致（§4.1 已加裁决项指针） |
+| §2 #14 | `docs/hc01-status.md` | — | 存在，8,514 字节 | 一致（§4.1 已改为“已裁决 + ADR 指针”） |
 | §2 #15 | `docs/known-gaps.md` | — | 存在，27,684 字节 | 一致 |
 | §5.3 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致（上一轮全量原始输出） |
 | §5.5 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
 | §5.6 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
 | §5.1 | `docs/evidence/regression-bb6b654c.txt` | 2,303 字节 | 存在，2,303 字节 | 一致（`verify-full-bb6b654c.log` 的逐字节副本） |
-| §5.2 | `docs/evidence/regression-baseline-coverage-2026-11-06.md` | — | 存在，11,894 字节 | 一致（覆盖表本体，已追加 §7 三格补证） |
+| §5.2 | `docs/evidence/regression-baseline-coverage-2026-11-06.md` | — | 存在，14,202 字节 | 一致（覆盖表本体，已追加 §7 三格补证与 §7.2.1） |
 | §5.2 | `docs/evidence/regression-delta-bb6b654c.xml` | 532 条 | 存在，67,855 字节 | 一致 |
 | §5.2 | `docs/evidence/regression-delta-d2a62b0e.txt` | — | 存在，104 字节 | 一致 |
 | §5.2 | `docs/evidence/regression-c1-d2a62b0e.txt` | — | 存在，8,356 字节 | 一致 |
@@ -307,11 +357,23 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §5.7 / §7.1 | `scripts/bench_baseline.json` | 新增 py3.12.14 profile | 存在，+70 行 | 一致（C7 实际读取的基线） |
 | §5.7 / §7.1 | `docs/evidence/c7-gate-validation-2026-11-06.log` | — | 存在，1,785 字节 | 一致（`PERFORMANCE GATE: PASS`） |
 | §5.7 / §7.1 | `docs/evidence/c7-readiness-only-2026-11-06.log` | — | 存在，493 字节 | 一致（`--only C7` PASS） |
-| §5.7 / §7.2 | `docs/evidence/c9-installed-upgrade-2026-11-06.md` | — | 存在，9,999 字节 | 一致（C9 双口径报告） |
+| §5.7 / §7.2 | `docs/evidence/c9-installed-upgrade-2026-11-06.md` | — | 存在，10,967 字节 | 一致（C9 双口径报告，含 §2.6 缺陷修复指针） |
 | §5.7 / §7.2 | `docs/evidence/c9-check.json` | — | 存在，678 字节 | 一致 |
 | §5.7 / §7.2 | `docs/evidence/c9-upgrade-1.json` / `c9-rollback-1.json` | — | 存在，301 / 230 字节 | 一致 |
 | §5.7 / §7.2 | `docs/evidence/c9-upgrade-2.json` / `c9-rollback-2.json` | — | 存在，301 / 230 字节 | 一致 |
 | §5.7 / §7.2 | `docs/evidence/c9-history.json` | — | 存在，42,617 字节 | 一致（完整升级 ledger） |
 | §5.7 / §7.2 | `docs/evidence/c9-restart-0.1.1.err.log` / `c9-restart-0.1.0.err.log` | — | 存在，1,243 / 1,244 字节 | 一致 |
-| §5.7 / §7.3 | `docs/evidence/hc01-pending-decisions-2026-11-06.md` | — | 存在，6,324 字节 | 一致（5 项裁决 + 建议） |
+| §5.7 / §7.3 | `docs/evidence/hc01-pending-decisions-2026-11-06.md` | — | 存在，6,324 字节 | 一致（5 项裁决原件：裁什么 / 选项 / 后果 / 建议） |
+| §5.7 / §7.3 / §0 披露 | `docs/adr/ADR-HC01-baseline-binding.md` | — | 存在，6,877 字节 | 一致（5 项裁决 + 保管断裂/行为人未查明 + C11 口径） |
+| §5.7 C9 修复 | `docs/evidence/c9-console-payload-2026-11-06.md` | — | 存在，8,533 字节 | 一致（缺陷修复报告） |
+| §5.7 C9 修复 | `docs/evidence/c9b-console-contract-2026-11-06.json` | — | 存在，3,325 字节 | 一致（机读汇总） |
+| §5.7 C9 修复 | `docs/evidence/c9b-build-0.1.2.txt` | — | 存在，937 字节 | 一致（构建日志，含签章 11 文件 / 指纹） |
+| §5.7 C9 修复 | `docs/evidence/c9b-check-old-0.1.1.json` | — | 存在，675 字节 | 一致（旧包 check） |
+| §5.7 C9 修复 | `docs/evidence/c9b-reject-0.1.1.txt` | — | 存在，651 字节 | 一致（拒绝原文） |
+| §5.7 C9 修复 | `docs/evidence/c9b-upgrade-0.1.2.json` / `c9b-rollback-0.1.0.json` | — | 存在，298 / 227 字节 | 一致 |
+| §5.7 C9 修复 | `docs/evidence/c9b-history-0.1.2.json` | — | 存在，17,794 字节 | 一致（含前端契约自检细节） |
+| §5.7 C9 修复 | `docs/evidence/c9b-health-0.1.2.json` | `api_contract="1"` | 存在，402 字节，字段一致 | 一致 |
+| §5.7 C9 修复 | `docs/evidence/c9b-restart-0.1.2.err.log` / `.out.log` | — | 存在，1,599 / 62 字节 | 一致 |
+| §5.7 / §7.3 | `docs/evidence/c11-readiness-only-2026-11-06.log` | `RELEASE READY = False` | 存在，549 字节 | 一致（`BLOCKED` + `not an engineering blocker`） |
+| §5.7 / §7.2 | `docs/evidence/c9-readiness-only-2026-11-06.log` | `RELEASE READY = False` | 存在，510 字节 | 一致（`NOT VERIFIED`，`real CD absent=True`） |
 

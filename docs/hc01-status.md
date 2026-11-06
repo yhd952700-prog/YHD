@@ -51,7 +51,14 @@ persisted chain continuity not demonstrated
 - 影响：HC-01 永远停在 `UNVERIFIED`，即使数据完全健康。
 - 缺口边界：缺少一个**由复核人显式指定路径**的校验入口（例如 `--db <path>`），让发布流程可以对一份受控数据库生成并归档证据。当前矩阵刻意**不自动发现**任何运行产物，所以没有这个入口。
 - 本轮**未新增**该入口：它会改变 `EXPECTED` 的判定语义（显式库健康时是否允许 `COMPLIANT`），属于产品负责人的判定口径决定，不在本切片自行改断言。
-- **待裁决项已单独整理**：[hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)（5 行：裁什么 / 选项 / 后果 / 建议答案），供 owner 直接裁决；ADR 记录后 C11 才可能离开 `BLOCKED`。
+- **裁决状态（2026-11-06）：已裁决并记录 ADR** → [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)
+  （Path A / accept-with-disclosure / 固定-参数化拆分 / 不做 v1→v9 / 暂不重采）。
+  裁决包原件见 [hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)。
+- **保管断裂披露（随 ADR 一起看）**：冻结快照在取证之后被**未查明身份的进程**以读写打开
+  （`-wal` / `-shm` mtime 晚于取证）；主文件字节 / `page_count` / freelist 未变、`-wal` 0 字节、
+  `integrity_check=ok`。**内容完整不等于保管完好，行为人未查明。**
+- **C11 判定不随 ADR 改变**：`check_hc01` 仍恒返回 `BLOCKED`——这是判定事实
+  （HC-01 是冻结的人类主权门），不是工程阻塞，也没有为了变绿去改口径。
 
 ### 4.2 最终矩阵 exit 1 的原因不在 HC-01
 

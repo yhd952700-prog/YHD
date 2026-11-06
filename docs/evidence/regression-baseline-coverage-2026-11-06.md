@@ -111,6 +111,9 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
   独立验证样本 `636.8 事件/秒 / p95 2.654 ms` → `PERFORMANCE GATE: PASS`。
 - **方差如实**：单条吞吐极差/中位数 **80.0%**、p95 **1594.4%**、batch100 **90.1%**、
   多进程不含启动 **142.6%**、恢复 **76.4%**。基线代表「安静窗口」，忙碌时门禁会失败。
+- **定位（owner 2026-11-06 裁决）**：维持「**本机安静窗口可判定、非 CI 阻断门禁**」；
+  方差数字原样保留；**不许为了让门禁好看去调阈值**（`±25%` 容差未动，`scripts/bench_baseline.json`
+  本轮只新增 py3.12.14 profile）。
 - 证据：[c7-performance-baseline-2026-11-06.md](c7-performance-baseline-2026-11-06.md)、
   [bench-baseline-py312-2026-11-06.json](bench-baseline-py312-2026-11-06.json)（6,249 字节）、
   [c7-gate-validation-2026-11-06.log](c7-gate-validation-2026-11-06.log)（1,785 字节）、
@@ -130,8 +133,8 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 - 数据保全：哨兵 `c9-sentinel.txt` SHA256 `051F79B9…A4A9` 升级与回滚后不变；
   用户库行 `(1, 'keep-across-upgrade-and-rollback')` 全程在。
 - 披露：回滚是**覆盖恢复**不是字节级还原（备份后新建的 `audit_store.db*` 会保留）。
-- 边界：载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**；
-  升级只校验 SHA256、无签名；未覆盖真实 CD。
+- 边界：载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**
+  ——该缺陷已单独修复（下一条）；升级只校验 SHA256、无签名；未覆盖真实 CD。
 - **不合并**：把安装树验证写成 C9 PASS 会掩盖「镜像未构建 / CD 不存在」；
   把原口径写成覆盖了升级链会掩盖本轮真做过的安装树验证。
 - 证据：[c9-installed-upgrade-2026-11-06.md](c9-installed-upgrade-2026-11-06.md)、
@@ -139,9 +142,29 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
   [c9-upgrade-2.json](c9-upgrade-2.json)、[c9-rollback-2.json](c9-rollback-2.json)、
   [c9-history.json](c9-history.json)（42,617 字节）、两份重启 stderr 日志。
 
-### 7.3 C11：5 项裁决已摊平并附建议（不再是「等」）
+**7.2.1 C9 缺陷修复：升级载荷缺前端 `console/`（2026-11-06 后续）**
 
-| # | 裁什么 | 建议 |
+- 缺陷：旧载荷 0 个 `console/` 成员 → 后端换新、前端不换，`/v1/health` 仍 200，
+  界面静默不更新；接口形状一变就是随机 400 / 空面板。
+- 修复：`console/` + 签章 `console/console-contract.json` 随包；升级前门禁
+  （缺 index / 签章不符 / 契约不符 / 版本不符 → 拒绝并给中文原因，零改动）；
+  自检比对真实 `/v1/health.api_contract`；构建期缺前端直接拒绝产出。
+- 数字：新包 `liuhao-0.1.2.zip` **685 成员**（`console/` **12**）/ **2,961,979 字节** /
+  解压 **10,047,927** / sha256 `ca46fc76…5D0A`，同参数复跑逐字节相同；
+  旧包被拒绝（退出码 1，`console/` 保持 10 文件 / 496,026 字节 / `B6CCEB84…`，新增备份 0）；
+  升级 18.72s / 安装 685 文件 / 自检启动 5.75s + health 200 / `console/` 变 **12 文件 / 496,344 字节**、
+  `index.html` `B6CCEB84…` → `6F4F0C53…`；重启 5.07s 后 `/` 与 `/dashboard` 提供新 index；
+  回滚 2.67s 精确回到 10 文件 / 496,026 字节 / `B6CCEB84…`，残留 0，数据不变。
+- 边界：前端是模拟构建标记（非真实 `npm run build`）；未签名；只跑同契约。
+- 证据：[c9-console-payload-2026-11-06.md](c9-console-payload-2026-11-06.md)、
+  [c9b-console-contract-2026-11-06.json](c9b-console-contract-2026-11-06.json)、
+  `c9b-build-0.1.2.txt`、`c9b-reject-0.1.1.txt`、`c9b-upgrade-0.1.2.json`、`c9b-rollback-0.1.0.json`、
+  `c9b-history-0.1.2.json`、`c9b-health-0.1.2.json`、`c9b-restart-0.1.2.err.log` / `.out.log`。
+- 单测：`tests/test_upgrade_console_contract.py` **10 passed**。
+
+### 7.3 C11：5 项裁决已由 owner 裁决并记录 ADR
+
+| # | 裁什么 | 裁决 |
 |---|---|---|
 | 1 | Baseline binding：A live / B 旧快照 / C 重采 | **A**（live 作运行源，旧快照仅作历史证据） |
 | 2 | 快照保管断裂：接受并披露 / 隔离替换 / 标 UNRESOLVED | **接受并披露**（内容完整性有证，缺的只是操作者归因） |
@@ -149,9 +172,11 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 | 4 | Schema：v1→v9 / 不做 / 双路 | **随第 1 项选 A ⇒ 不做 v1→v9** |
 | 5 | 是否授权重采冻结基线 | **推迟，条件写死**：F1–F6 单写者/围栏上线并 soak 通过后，按只读 ACL + operator + 前后 hash 重采 |
 
-- 建议组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
-- 裁决落点：写成 ADR（建议 `docs/adr/ADR-HC01-baseline-binding.md`）；
-  在 ADR 记录前 C11 仍派生 `BLOCKED`（判定事实，非工程待办）。
+- 裁决组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
+- 裁决落点：**已记录** [ADR-HC01-baseline-binding.md](../adr/ADR-HC01-baseline-binding.md)（2026-11-06）。
+- **C11 判定未变**：`check_hc01` 仍恒派生 `BLOCKED`——这是**判定事实**
+  （HC-01 是冻结的人类主权门），不是工程阻塞；记录 ADR 不改变 `RELEASE READY`，
+  也没有为了让门禁变绿去改口径。保管断裂按「**保管链断裂、行为人未查明**」披露。
 - 证据：[hc01-pending-decisions-2026-11-06.md](hc01-pending-decisions-2026-11-06.md)；
-  `docs/hc01-status.md` §4.1 已加指针。
+  `docs/hc01-status.md` §4.1 已加裁决指针。
 
