@@ -247,6 +247,16 @@ class GatewayService:
         self.last_error = None
         _load_dotenv(self._root)
         _point_at_console_stores(self._root)
+
+        # 单实例前置检查：托盘和命令行各起一个时，别先拉起一个注定被网关
+        # 拒绝的子进程。真正的互斥由子进程持有（src/desktop/_runner.py），
+        # 这里只把提示做早、做可读。
+        from ..common.instance_lock import InstanceLock, InstanceLockBusy, instance_root
+
+        holder = InstanceLock(instance_root(self._root)).probe()
+        if holder is not None:
+            self.last_error = InstanceLockBusy(holder).describe()
+            return False
         if not is_loopback_host(self.host):
             logger.warning(
                 "网关绑定到 %s —— 已对外暴露，局域网可访问；"
@@ -295,6 +305,9 @@ class GatewayService:
             cmd += ["--log-config", str(log_config)]
         try:
             with self._lock:
+                child_env = dict(os.environ)
+                # 托盘被强杀时，别把网关留成孤儿继续占端口/持锁。
+                child_env["LIUHAO_PARENT_PID"] = str(os.getpid())
                 self._proc = subprocess.Popen(
                     cmd,
                     cwd=str(self._root),
@@ -302,6 +315,7 @@ class GatewayService:
                     stdout=self._log_handle,
                     stderr=subprocess.STDOUT,
                     creationflags=_no_window_flags(),
+                    env=child_env,
                 )
         except (OSError, subprocess.SubprocessError) as exc:
             self.last_error = f"拉起网关失败：{type(exc).__name__}: {exc}"

@@ -323,6 +323,47 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
   [c11-readiness-only-2026-11-06.log](evidence/c11-readiness-only-2026-11-06.log)（549 字节：
   `[C11] ... BLOCKED ... not an engineering blocker`，`RELEASE READY = False`）。
 
+### 5.8 故障面补测（2026-11-06，单跑相关套件）
+
+> 补的是「没人覆盖、用户一定会撞上」的五类故障面：单实例/多开、休眠断网、时间跳变、
+> 磁盘满/只读/占用、并发一致性。**只报本轮亲跑数字**，不改 §5.1 的全量结论与
+> `RELEASE READY=False`。详细版：[fault-surfaces-2026-11-06.md](evidence/fault-surfaces-2026-11-06.md)。
+
+| 故障面 | 结论 | 实测要点 |
+|---|---|---|
+| 单实例/多开 | **修复** | 双进程同数据目录：第二个 `exit=3` + 可读提示（pid/URL/启动时间），第二端口未监听，第一个继续服务；杀第一个后端口/锁释放，残留 `instance.json` 不误报；托盘在 CLI 持锁时拒绝且不拉子进程 |
+| 休眠唤醒/断网 | **无缺陷（未改代码）** | 正常 188ms；断开 `ConnectTimeout` 2000ms；恢复后 16ms 自愈；黑洞 `ReadTimeout` 2030ms；网关 suspend 8s 后 `/v1/health` 两次均 200（0ms） |
+| 时间跳变 | **修复 2 处** | PyJWT 默认 `verify_iat` 会让回拨后的旧令牌被踢下线 → 显式关闭、`exp` 仍用稳定时钟；旧审计链第二次 emit 起 `verify_integrity=False` → 链长不一致即重建。前进/后退/吊销/真过期/审计回拨 5 条用例全绿 |
+| 磁盘满/只读/占用 | **修复 4 处** | 6 个真实 case 全部 fail-closed：审计旧文件不变 + 内存事件回滚；模型配置 503 可读文案；启动器 `DataDirectoryUnavailable`；记忆 `MemoryStoreError` + 内存回滚 |
+| 并发一致性 | **修复 2 处** | 模型配置读-改-写同锁（两个窗口改不同字段不再丢更新）；升级/回滚加线程+跨进程互斥（第二个得到可读拒绝）。对话并发 400/400 条、重复 0 |
+
+- 单跑数字：**501 passed, 19 skipped in 230.93s**；新增故障面用例 **16 passed**（4.59s）；
+  桌面真进程/真 TCP 子集 **34 passed in 49.48s**。
+- 新增 16 条用例已纳入回归清单（逐条见下方，改动测试文件时必须一起跑）：
+
+  | # | 测试文件::用例 | 覆盖 |
+  |---|---|---|
+  | 1 | `tests/test_single_instance.py::test_second_process_is_refused_with_readable_message` | 第二个实例退出码 3 + 可读提示 |
+  | 2 | `tests/test_single_instance.py::test_lock_is_released_when_holder_dies` | 持锁进程死亡后锁释放 |
+  | 3 | `tests/test_single_instance.py::test_gateway_leaves_when_launcher_is_killed` | 父进程消失后网关退出 |
+  | 4 | `tests/test_single_instance.py::test_stale_metadata_without_lock_is_not_treated_as_running` | 残留 `instance.json` 不误报 |
+  | 5 | `tests/test_single_instance.py::test_tray_refuses_when_cli_instance_holds_lock` | 托盘不空跑子进程 |
+  | 6 | `tests/test_fault_hardening.py::test_stable_clock_ignores_forward_and_backward_jumps` | 时钟前进/后退 |
+  | 7 | `tests/test_fault_hardening.py::test_jwt_survives_forward_and_backward_clock_jumps` | JWT 不被踢下线 |
+  | 8 | `tests/test_fault_hardening.py::test_revocation_still_applies_after_forward_clock_jump` | 吊销仍生效 |
+  | 9 | `tests/test_fault_hardening.py::test_expired_token_is_still_rejected` | 真过期仍拒绝 |
+  | 10 | `tests/test_fault_hardening.py::test_audit_chain_survives_clock_rollback` | 审计链回拨完整 |
+  | 11 | `tests/test_fault_hardening.py::test_audit_write_failure_keeps_previous_file_and_rolls_back` | 审计原子写 + 内存回滚 |
+  | 12 | `tests/test_fault_hardening.py::test_memory_store_write_failure_is_readable_and_keeps_old_rows` | 记忆可读失败 + 旧行不变 |
+  | 13 | `tests/test_fault_hardening.py::test_memory_kernel_rolls_back_memory_when_persist_fails` | 记忆内存态回滚 |
+  | 14 | `tests/test_fault_hardening.py::test_concurrent_model_config_updates_do_not_lose_each_other` | 模型配置并发不丢更新 |
+  | 15 | `tests/test_fault_hardening.py::test_upgrade_is_exclusive_across_threads` | 升级跨线程互斥 |
+  | 16 | `tests/test_fault_hardening.py::test_upgrade_lock_is_visible_to_another_process` | 升级跨进程互斥 |
+
+- 未执行边界（状态 **未验证**，已登记到 [known-gaps.md](known-gaps.md)）：
+  真 OS 睡眠/真拔网线/真实 ENOSPC/真实托盘点击/两个浏览器窗口 E2E/真实全局时钟跳变。
+- 未动账号树与前端在改文件（`apps/console/**`、`scripts/acceptance/account_tree_e2e.py`）。
+
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
 > 逐个核实清单里引用的每个产物：文件是否存在、字节是否对得上。

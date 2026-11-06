@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -32,6 +33,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # --------------------------------------------------------------------------- #
 def _start_runner(app_path: str, port: int, log_path: Path) -> tuple[subprocess.Popen[bytes], Any]:
     handle = log_path.open("wb")
+    env = dict(os.environ)
+    # 每个 runner 用独立实例目录：它们是"多个网关"的测试替身，不能互相抢锁。
+    env["LIUHAO_INSTANCE_ROOT"] = str(log_path.parent / f"instance-{port}")
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -49,6 +53,7 @@ def _start_runner(app_path: str, port: int, log_path: Path) -> tuple[subprocess.
         stdin=subprocess.PIPE,
         stdout=handle,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     return proc, handle
 

@@ -18,6 +18,12 @@ import pytest
 from scripts import start_liuhao as sl
 
 
+@pytest.fixture(autouse=True)
+def _isolate_instance_probe(monkeypatch):
+    """本文件的用例只验证 main() 的输出与参数，不依赖本机是否真有实例在跑。"""
+    monkeypatch.setattr(sl, "_probe_running_instance", lambda: None)
+
+
 def test_port_in_use_detects_a_bound_socket():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
@@ -210,6 +216,84 @@ def test_launcher_gate_uses_launcher_logs_and_same_diagnose_entry(monkeypatch):
     assert "diagnose --verify" in seen["diagnose_hint"]
     assert seen["log_dir"] == sl.LOG_DIR
     assert seen["is_alive"]() is True
+
+
+def test_display_host_derives_from_effective_binding_config():
+    """展示地址必须来自实际绑定配置；只有通配地址映射为回环。"""
+    assert sl._display_host("127.0.0.1") == "127.0.0.1"
+    assert sl._display_host("0.0.0.0") == "127.0.0.1"
+    assert sl._display_host("::") == "127.0.0.1"
+    assert sl._display_host("[::]") == "127.0.0.1"
+    assert sl._display_host("10.9.8.7") == "10.9.8.7"
+
+
+def _run_main_for_url(monkeypatch, tmp_path, argv: list[str], spawned: list[dict]):
+    """把 main() 的子进程/等待/常驻全部替换成替身，只留控制台打印可观察。"""
+    monkeypatch.setattr(sl, "_ensure_free_port", lambda host, requested, label: requested)
+    monkeypatch.setattr(sl, "LOG_DIR", tmp_path / "logs")
+
+    def fake_spawn(cmd, cwd, label, env=None):
+        spawned.append(env or {})
+        return _Proc()
+
+    monkeypatch.setattr(sl, "_spawn", fake_spawn)
+    monkeypatch.setattr(
+        sl, "_wait_gateway_ready", lambda base, proc, label="网关": _gate_result()
+    )
+    monkeypatch.setattr(sl, "_wait_http_ok", lambda *a, **k: True)
+    monkeypatch.setattr(sl, "_serve_forever", lambda: 0)
+    monkeypatch.setattr("sys.argv", ["start_liuhao.py", *argv])
+    return sl.main()
+
+
+def test_main_prints_loopback_url_by_default(monkeypatch, tmp_path, capsys):
+    """默认配置下打印的地址是回环，绝不出现浏览器打不开的 0.0.0.0。"""
+    spawned: list[dict] = []
+    assert _run_main_for_url(
+        monkeypatch,
+        tmp_path,
+        ["--backend-only", "--api-port", "18124"],
+        spawned,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:18124" in out
+    assert "http://0.0.0.0" not in out
+    assert spawned[0]["HOST"] == "127.0.0.1"
+
+
+def test_main_explicit_public_bind_warns_and_prints_openable_url(
+    monkeypatch, tmp_path, capsys
+):
+    """显式 --host 0.0.0.0：警告保留，控制台仍给可打开的地址，真实绑定不丢。"""
+    spawned: list[dict] = []
+    assert _run_main_for_url(
+        monkeypatch,
+        tmp_path,
+        ["--backend-only", "--host", "0.0.0.0", "--api-port", "18125"],
+        spawned,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "已对外暴露" in out
+    assert "http://0.0.0.0" not in out
+    assert "http://127.0.0.1:18125" in out
+    # 打印可以换展示形式，但传给网关的 HOST 必须还是用户显式选择。
+    assert spawned[0]["HOST"] == "0.0.0.0"
+
+
+def test_main_printed_host_follows_config_not_a_hardcoded_literal(
+    monkeypatch, tmp_path, capsys
+):
+    """防硬编码：换一个网卡地址，打印必须跟着变。"""
+    spawned: list[dict] = []
+    assert _run_main_for_url(
+        monkeypatch,
+        tmp_path,
+        ["--backend-only", "--host", "10.9.8.7", "--api-port", "18126"],
+        spawned,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "http://10.9.8.7:18126" in out
+    assert spawned[0]["HOST"] == "10.9.8.7"
 
 
 def test_describe_startup_prefers_caller_log_hint():

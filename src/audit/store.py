@@ -10,6 +10,7 @@ Provides:
 from pathlib import Path
 import json
 import time
+from src.common.atomic_write import atomic_write_text
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 import uuid
 from typing import Dict, List, Optional, Any
@@ -91,9 +92,15 @@ class AuditStore:
 
     def _save(self) -> None:
         """Persist events to storage with hash chain."""
-        # Ensure hash chain is built
-        if self._hash_alg and self._hash_chain is None:
+        # Ensure hash chain is built/updated. 只在缺失时重建是不够的：每次新增
+        # 事件后链长度都会落后，`verify_integrity()` 会立刻返回 False，直到进程
+        # 重启重载才自愈。长度不一致就重建（重建本身幂等，且只依赖事件内容）。
+        if self._hash_alg and (
+            self._hash_chain is None or len(self._hash_chain) != len(self._events)
+        ):
+            # 重建内部会调用 _save() 落盘，这里直接返回，避免同一内容写两遍。
             self._build_hash_chain()
+            return
 
         data = {
             "version": 1,
@@ -102,8 +109,9 @@ class AuditStore:
             "hash_chain": self._hash_chain,
             "events": {k: v.to_dict() for k, v in self._events.items()},
         }
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        # 原子替换：磁盘满/中途异常时宁可保留上一版完整文件，也不能把已经
+        # 成功落盘的审计链截断成半个 JSON（那会让整库永久不可读）。
+        atomic_write_text(str(self.storage_path), json.dumps(data, indent=2))
 
     # ==================== Event Operations ====================
 
@@ -120,7 +128,15 @@ class AuditStore:
         """
         eid = event.event_id
         self._events[eid] = event
-        self._save()
+        try:
+            self._save()
+        except Exception:
+            # fail-closed：落盘失败就把内存里的这条事件撤回，并重新计算链，
+            # 避免"调用方收到失败、但下次成功写入时却把这条带进去了"。
+            self._events.pop(eid, None)
+            if self._hash_alg:
+                self._hash_chain = None
+            raise
         return eid
 
     def emit_simple(self, event_type: str, source: str, **kwargs) -> str:

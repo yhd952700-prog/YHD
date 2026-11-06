@@ -34,6 +34,11 @@ from pathlib import Path
 APP_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_ROOT))
 
+# 程序目录视为只读：本进程启动后再导入的模块（start_liuhao / src.desktop /
+# logging_config 等）一律不落 __pycache__。环境变量只对子进程生效，当前解释器
+# 的字节码开关必须在导入前就地关掉——否则首启后程序目录会多出若干 .pyc。
+sys.dont_write_bytecode = True
+
 #: 用户数据根。测试/排障可用 ``LIUHAO_DATA_DIR`` 指到临时目录。
 DATA_DIR_ENV = "LIUHAO_DATA_DIR"
 DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LiuHao" / "data"
@@ -281,6 +286,10 @@ def _ensure_logging_config(data_dir: Path) -> Path:
     return target
 
 
+class DataDirectoryUnavailable(RuntimeError):
+    """数据目录不可写（只读、磁盘满、被占用）——fail-closed，不降级运行。"""
+
+
 def prepare_environment() -> tuple[Path, Path]:
     """准备安装版运行环境（幂等，可被多个入口重复调用）。
 
@@ -289,22 +298,53 @@ def prepare_environment() -> tuple[Path, Path]:
     """
     # 程序目录视为只读：不往里面写 __pycache__（子进程继承该变量）。
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    sys.dont_write_bytecode = True
 
     data_dir = _data_dir()
-    _ensure_layout(data_dir)
-    _migrate_legacy_state(data_dir)
 
-    app_env = data_dir / APP_ENV_FILE
-    _ensure_app_env(app_env)
-    _load_dotenv_file(app_env)
+    # 首次启动要在这里写目录、密钥、日志配置。数据目录只读/磁盘满/被别的
+    # 进程独占时，裸 OSError 会把用户甩到一段 traceback 上；这里统一转成
+    # 可读原因并**拒绝继续启动**（fail-closed）——半套配置启动只会更糟。
+    try:
+        _ensure_layout(data_dir)
+    except OSError as exc:
+        raise DataDirectoryUnavailable(
+            f"无法创建数据目录 {data_dir}（{type(exc).__name__}: {exc}）。"
+            "请确认磁盘没有写满、路径没有被只读挂载，"
+            f"或用环境变量 {DATA_DIR_ENV} 指向另一个可写目录。"
+        ) from exc
 
-    integrity_key = _ensure_integrity_key(data_dir / INTEGRITY_KEY_FILE)
+    # 旧便携版数据搬运是**尽力而为**：某个旧文件正被其它程序打开时，跳过它、
+    # 继续启动（数据还在原处，下次再搬）。这不属于"数据目录不可写"。
+    try:
+        _migrate_legacy_state(data_dir)
+    except OSError as exc:
+        print(f"[warn] 旧数据迁移未完成（不会阻断启动）：{exc}", file=sys.stderr)
+
+    try:
+        app_env = data_dir / APP_ENV_FILE
+        _ensure_app_env(app_env)
+        _load_dotenv_file(app_env)
+
+        integrity_key = _ensure_integrity_key(data_dir / INTEGRITY_KEY_FILE)
+    except OSError as exc:
+        raise DataDirectoryUnavailable(
+            f"数据目录不可写：{data_dir}（{type(exc).__name__}: {exc}）。"
+            "请确认磁盘没有写满、目录没有被设为只读、也没有被其它进程独占；"
+            f"或用环境变量 {DATA_DIR_ENV} 指向另一个可写目录。"
+        ) from exc
+
     os.environ.setdefault("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", integrity_key)
     os.environ.setdefault("APP_ENV", "staging")
     os.environ.setdefault("LOG_LEVEL", "info")
 
     _configure_paths(data_dir)
-    logging_config = _ensure_logging_config(data_dir)
+    try:
+        logging_config = _ensure_logging_config(data_dir)
+    except OSError as exc:
+        raise DataDirectoryUnavailable(
+            f"无法写入运行日志配置：{data_dir / 'config' / 'logging.yaml'}（{exc}）"
+        ) from exc
 
     # 身份内核在 ``sqlite`` 后端且未显式给 DB 路径时，默认写到程序目录的
     # ``data/human_identities.sqlite3``（源码里以仓库根为锚点）。安装版必须
@@ -336,7 +376,12 @@ def main(argv: list[str] | None = None) -> int:
     skip_wizard = "--skip-wizard" in args
     forwarded = [a for a in args if a != "--skip-wizard"]
 
-    data_dir, logging_config = prepare_environment()
+    try:
+        data_dir, logging_config = prepare_environment()
+    except DataDirectoryUnavailable as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        print("        已停止启动，未写入任何运行数据。", file=sys.stderr)
+        return 3
 
     print("=" * 62)
     print("鎏灏 LiuHao AI OS — 安装版")

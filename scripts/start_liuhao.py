@@ -47,6 +47,8 @@ CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.common.instance_lock import InstanceLockBusy, InstanceLock, instance_root  # noqa: E402
+
 #: 唯一生效的日志配置。由 ``python -m src.gateway`` 子进程按 UTF-8 读取后
 #: 以映射交给 uvicorn：10 MiB × 5 份轮转，INFO 进 logs/liuhao.log，ERROR
 #: 另进 logs/error.log（见配置文件头注释）。
@@ -393,6 +395,36 @@ def _warn_if_exposed(host: str, port: int) -> None:
     print("!" * 62)
 
 
+#: 通配绑定：服务端用它监听所有网卡，但浏览器无法打开这种地址。
+WILDCARD_HOSTS = ("0.0.0.0", "::", "[::]", "::0")
+
+
+def _display_host(host: str) -> str:
+    """控制台展示用的地址：通配绑定按回环展示，避免打印打不开的 URL。
+
+    打印的 host 始终派生自实际生效的绑定配置（``args.host`` 同时就是传给网关
+    ``HOST`` 的值），不允许在打印处硬编码字面量。
+    """
+    value = (host or "").strip()
+    if value in WILDCARD_HOSTS:
+        return "127.0.0.1"
+    return value
+
+
+def _probe_running_instance() -> tuple[str, dict] | None:
+    """探测同一份数据目录是否已经有网关在跑。
+
+    返回 ``(可读提示, 持有者元信息)``；空闲返回 ``None``。锁文件本身不可用
+    （数据目录只读等）时返回 ``None``，交给网关在启动阶段给出 fail-closed 报错，
+    避免启动器把「目录不可写」误报成「已在运行」。
+    """
+    lock = InstanceLock(instance_root(ROOT))
+    holder = lock.probe()
+    if holder is None:
+        return None
+    return InstanceLockBusy(holder).describe(), holder
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 驾驶舱")
     parser.add_argument(
@@ -437,11 +469,31 @@ def main() -> int:
     # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
     _point_at_console_stores()
 
+    print("=" * 62)
+    print("鎏灏 LIUHAO X — 启动")
+    print("=" * 62)
+
+    # 单实例前置检查：双击两次、托盘与命令行同时启动时，第二个入口在拉起
+    # 任何子进程之前就停住，并告诉用户「已经在哪儿跑着」。
+    # 真正的互斥由网关进程持有（见 src/common/instance_lock.py），这里的探测
+    # 只负责把提示做早、做可读；即使探测与启动之间有竞态，网关也会兜住。
+    busy = _probe_running_instance()
+    if busy is not None:
+        message, holder = busy
+        print(f"[instance] {message}")
+        url = (holder.get("url") or "").strip()
+        if url and not args.no_browser:
+            with contextlib.suppress(webbrowser.Error):
+                webbrowser.open(url)
+        return 0
+
     # 自用版默认单端口：网关既服务 API 又服务驾驶舱 dist，对外只暴露一个端口，
     # 对"双击就用"的场景最友好。vite 开发模式（--vite）需要 Node + 热更新。
     single_port = not args.backend_only and not args.vite
 
     # 启动前先把端口让出来。绑定 0.0.0.0 时端口占用检查用 127.0.0.1 探测即可。
+    # 顺序很重要：先确认「没有第二个鎏灏在跑」，再看端口，否则会出现
+    # "已自动改用 18081" + "已经在运行" 两句自相矛盾的提示。
     probe_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
     args.api_port = _ensure_free_port(probe_host, args.api_port, "网关")
     if args.vite:
@@ -452,16 +504,16 @@ def main() -> int:
     # 只有显式绑定非回环地址才算"对外"；默认 127.0.0.1 不告警。
     _warn_if_exposed(args.host, args.api_port)
 
-    api_base = f"http://{args.host}:{args.api_port}"
-    ui_base = api_base if single_port else f"http://{args.host}:{args.ui_port}"
+    # 展示地址取自实际生效的绑定配置：通配绑定（0.0.0.0/::）换成回环，
+    # 否则用户看到的 URL 打不开；真正监听地址仍由 args.host 决定。
+    shown_host = _display_host(args.host)
+    api_base = f"http://{shown_host}:{args.api_port}"
+    ui_base = api_base if single_port else f"http://{shown_host}:{args.ui_port}"
     # Windows 下 urllib 无法 connect 到 0.0.0.0（WinError 10049），健康检查必须
     # 用回环地址；用户可见的地址仍由 _print_lan_urls 打 LAN IP。
     probe_api_base = f"http://{probe_host}:{args.api_port}"
     probe_ui_base = probe_api_base if single_port else f"http://{probe_host}:{args.ui_port}"
 
-    print("=" * 62)
-    print("鎏灏 LIUHAO X — 启动")
-    print("=" * 62)
     print("[1/2] 网关（FastAPI / uvicorn）")
     # 不再把 ``--log-config`` 路径交给 uvicorn CLI：uvicorn 的 YAML 分支用
     # ``open()`` 不带 encoding，中文 Windows 下会按 cp936 解码 UTF-8 的
@@ -470,6 +522,8 @@ def main() -> int:
     gateway_env = dict(os.environ)
     gateway_env["HOST"] = args.host
     gateway_env["PORT"] = str(args.api_port)
+    # 直接关掉启动器窗口（不按 Ctrl+C）时，网关不能变成占着端口的孤儿进程。
+    gateway_env["LIUHAO_PARENT_PID"] = str(os.getpid())
     if LOG_CONFIG.is_file():
         gateway_env["LIUHAO_LOG_CONFIG"] = str(LOG_CONFIG)
     python_path = os.pathsep.join(
@@ -484,6 +538,21 @@ def main() -> int:
     )
     # 连接失败 = 还在启动（端口在路由导入后才绑定），必须等 /v1/startup 给结论。
     if _wait_gateway_ready(probe_api_base, gateway) is None:
+        _shutdown_all()
+        return 1
+    # 端口探针可能被「已经在这个端口上的另一个鎏灏」满足（双击竞态时第二个
+    # 启动器正是这种情况）。自己的子进程若已退出，就不能宣称启动成功，
+    # 而要给出和网关入口同一句可读提示。
+    if gateway.poll() is not None:
+        busy = _probe_running_instance()
+        if busy is not None:
+            print(f"[instance] {busy[0]}", flush=True)
+            return 0
+        print(
+            "[FAIL] 网关在报告就绪后立即退出，请查看日志："
+            f"{_gate_log_hint()}",
+            flush=True,
+        )
         _shutdown_all()
         return 1
 

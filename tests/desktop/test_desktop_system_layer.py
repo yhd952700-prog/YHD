@@ -398,6 +398,9 @@ def test_runner_drains_inflight_request_and_refuses_new_ones(tmp_path: Path) -> 
     port = pick_port(8765)
     log_path = tmp_path / "runner.log"
     log_handle = log_path.open("wb")
+    env = dict(os.environ)
+    # 这里是"直接拉起一个网关"的替身：用独立实例目录，避免与本机真实实例抢锁。
+    env["LIUHAO_INSTANCE_ROOT"] = str(tmp_path / f"instance-{port}")
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -415,6 +418,7 @@ def test_runner_drains_inflight_request_and_refuses_new_ones(tmp_path: Path) -> 
         stdin=subprocess.PIPE,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     outcome: dict[str, object] = {}
 

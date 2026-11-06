@@ -12,11 +12,13 @@ Safety properties enforced here (each is covered by a test):
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -27,6 +29,11 @@ from typing import Any, Dict, List, Optional, Sequence
 from packaging.version import Version
 
 from src.common.atomic_write import atomic_write_bytes, atomic_write_text
+from src.common.instance_lock import (
+    InstanceGuardUnavailable,
+    InstanceLock,
+    InstanceLockBusy,
+)
 
 from .archive import (
     extract_zip_members,
@@ -202,6 +209,40 @@ class UpgradeManager:
         # an unfinished `apply/in_progress` ledger row. Recover immediately:
         # never let the user restart into an undecidable "unknown" state.
         self._recover_interrupted_upgrade()
+
+    # ------------------------------------------------------------------
+    # 互斥：同一安装根只允许一个升级/回滚在跑
+    # ------------------------------------------------------------------
+    _operation_thread_lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def _exclusive(self, action: str, error_cls):
+        """跨线程 + 跨进程的升级互斥。
+
+        web 端两个窗口同时点「升级」会落到两个线程（FastAPI 的同步路由跑在
+        线程池里），命令行与托盘也可能各起一个进程；升级会先备份、再逐个替换
+        文件，两个执行体交错时备份与还原都不可信。这里用 OS 文件锁保证同一
+        安装根只有一个执行体，第二个直接得到可读拒绝。
+        """
+        if not self._operation_thread_lock.acquire(blocking=False):
+            raise error_cls(f"另一个{action}正在进行中，请等它结束后重试")
+        guard = InstanceLock(self.config.state_dir, subdir="", name="upgrade-op")
+        try:
+            try:
+                guard.acquire()
+            except InstanceLockBusy as exc:
+                raise error_cls(
+                    f"另一个{action}正在进行中（可能是另一个窗口或命令行进程），"
+                    "请等它结束后重试"
+                ) from exc
+            except InstanceGuardUnavailable as exc:
+                raise error_cls(f"无法锁定升级工作目录：{exc}") from exc
+            try:
+                yield
+            finally:
+                guard.release()
+        finally:
+            self._operation_thread_lock.release()
 
     # ------------------------------------------------------------------
     # Introspection / user-visible state
@@ -822,7 +863,8 @@ class UpgradeManager:
     # 3. Apply
     # ------------------------------------------------------------------
     def apply(self, artifact_path: str | Path, release: ReleaseInfo) -> ApplyResult:
-        return self._apply(Path(artifact_path), release)
+        with self._exclusive("升级操作", ApplyError):
+            return self._apply(Path(artifact_path), release)
 
     def _apply(self, artifact: Path, release: ReleaseInfo) -> ApplyResult:
         self._set_status(
@@ -1279,6 +1321,15 @@ class UpgradeManager:
     # 4. Explicit rollback (one click / one command)
     # ------------------------------------------------------------------
     def rollback(
+        self,
+        *,
+        backup_id: Optional[str] = None,
+        record_id: Optional[str] = None,
+    ) -> RollbackResult:
+        with self._exclusive("回滚操作", RollbackError):
+            return self._rollback(backup_id=backup_id, record_id=record_id)
+
+    def _rollback(
         self,
         *,
         backup_id: Optional[str] = None,

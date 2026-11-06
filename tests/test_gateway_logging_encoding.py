@@ -107,12 +107,35 @@ def test_gateway_entry_passes_a_mapping_to_uvicorn(
     import src.gateway.__main__ as entry
 
     captured: dict = {}
-    monkeypatch.setattr(entry.uvicorn, "run", lambda *a, **kw: captured.update(kw))
+
+    class _CaptureConfig:
+        """替代真实 ``uvicorn.Config``：它一构造就会 ``dictConfig``。
+
+        真实启动时那是正确行为；在本进程里会换掉 root handler，污染后续
+        用例的 ``caplog``。这里只取构造参数，验证传给 uvicorn 的是映射。
+        """
+
+        def __init__(self, app, **kwargs):
+            self.app = app
+            captured.update(kwargs)
+
+    class _NoRunServer:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit = False
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(entry.uvicorn, "Config", _CaptureConfig)
+    monkeypatch.setattr(entry.uvicorn, "Server", _NoRunServer)
     monkeypatch.setattr(entry, "resolve_timeout_options", lambda: {})
     monkeypatch.setattr(entry, "LOG_DIR", tmp_path)
     monkeypatch.setenv("LIUHAO_LOG_CONFIG", str(DEFAULT_LOG_CONFIG))
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "8080")
+    # 单实例锁按数据目录生效：用临时目录，避免与同机真实/并行实例抢锁。
+    monkeypatch.setenv("LIUHAO_INSTANCE_ROOT", str(tmp_path / "instance"))
 
     assert entry.main() == 0
     assert isinstance(captured.get("log_config"), dict)

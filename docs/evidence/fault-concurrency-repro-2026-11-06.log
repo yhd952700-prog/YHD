@@ -1,0 +1,822 @@
+﻿.\.venv\Scripts\python.exe : 2026-11-06 00:56:28,229 INFO liuhao.conversation_store [tid=e3052b07df7c4ef7 cid=-] EXIT  
+conversation.append ok=none elapsed_ms=147.9
+所在位置 行:15 字符: 1410
++ ... M = 'dumb'; .\.venv\Scripts\python.exe D:\cache\temp\repro_concurrenc ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-11-06 00:5...lapsed_ms=147.9:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-11-06 00:56:28,231 INFO liuhao.conversation_store [tid=1b120ca430cc430a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,232 INFO liuhao.conversation_store [tid=a5718426aa6f46ca cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,233 INFO liuhao.conversation_store [tid=ff032e253818405d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,236 INFO liuhao.conversation_store [tid=d70747372d4d4c78 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,237 INFO liuhao.conversation_store [tid=f6a13d722b634357 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,239 INFO liuhao.conversation_store [tid=241775cc7d4147b2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,240 INFO liuhao.conversation_store [tid=1cca8e5f561b4148 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,241 INFO liuhao.conversation_store [tid=3095fc7c3ee544fe cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,243 INFO liuhao.conversation_store [tid=40c7c19aa39d452c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,244 INFO liuhao.conversation_store [tid=68b0107a5db14f57 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,246 INFO liuhao.conversation_store [tid=408f4ccf0b654b13 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,247 INFO liuhao.conversation_store [tid=b27060e3486547b7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,248 INFO liuhao.conversation_store [tid=199ebc29c46844ae cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,250 INFO liuhao.conversation_store [tid=0e7f935779e34e8b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,251 INFO liuhao.conversation_store [tid=4ee81ba8f7c24c2e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,253 INFO liuhao.conversation_store [tid=feefdb0c74274191 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,255 INFO liuhao.conversation_store [tid=257eb03a1f01402c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,257 INFO liuhao.conversation_store [tid=df5433a3ddd94da1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,257 INFO liuhao.conversation_store [tid=1becad4c7df843f0 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,260 INFO liuhao.conversation_store [tid=abe3501d8196402e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,261 INFO liuhao.conversation_store [tid=1625bb3ec93f4a6d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,263 INFO liuhao.conversation_store [tid=69457f60fb964a75 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,264 INFO liuhao.conversation_store [tid=4a104df98f5645a7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,266 INFO liuhao.conversation_store [tid=5125886707d446c1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,267 INFO liuhao.conversation_store [tid=f55f0091934b45a3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,269 INFO liuhao.conversation_store [tid=515177cd37644ada cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.7
+2026-11-06 00:56:28,270 INFO liuhao.conversation_store [tid=0ed46364b6ce4c1b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,272 INFO liuhao.conversation_store [tid=3ff42848a5ad437e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,275 INFO liuhao.conversation_store [tid=066c35a1cc704d06 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.4
+2026-11-06 00:56:28,276 INFO liuhao.conversation_store [tid=7a47d4a535db4120 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,278 INFO liuhao.conversation_store [tid=2dd314afaa0f4f26 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,279 INFO liuhao.conversation_store [tid=db69902e0e6e4d74 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,281 INFO liuhao.conversation_store [tid=75584be3390545db cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,283 INFO liuhao.conversation_store [tid=b8a53ad73d46442a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,284 INFO liuhao.conversation_store [tid=152dfd95039e47af cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,285 INFO liuhao.conversation_store [tid=323d94af4e4d4a86 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,287 INFO liuhao.conversation_store [tid=154d37e2b5914573 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,288 INFO liuhao.conversation_store [tid=3b18accc276d484d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,291 INFO liuhao.conversation_store [tid=48006abd9ba54b8f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.3
+2026-11-06 00:56:28,294 INFO liuhao.conversation_store [tid=df22100e036b4284 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,296 INFO liuhao.conversation_store [tid=caec8ae93213428f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,298 INFO liuhao.conversation_store [tid=f3e9c09d93d14783 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,300 INFO liuhao.conversation_store [tid=f99efce1be294359 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.2
+2026-11-06 00:56:28,302 INFO liuhao.conversation_store [tid=0fceb047a3474ccf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,304 INFO liuhao.conversation_store [tid=0891a120a8214c0a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,306 INFO liuhao.conversation_store [tid=3a6dfd5503ec460a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,307 INFO liuhao.conversation_store [tid=ee21ebcc5b5f415e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,310 INFO liuhao.conversation_store [tid=b491c0d7041d4a4b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,312 INFO liuhao.conversation_store [tid=7b4154c2713541d8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,313 INFO liuhao.conversation_store [tid=3be188758a6c4671 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.7
+2026-11-06 00:56:28,315 INFO liuhao.conversation_store [tid=73bd37881f10475c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,316 INFO liuhao.conversation_store [tid=65475e695dc240c4 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,319 INFO liuhao.conversation_store [tid=72cb460767184026 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.1
+2026-11-06 00:56:28,321 INFO liuhao.conversation_store [tid=77146f449dee4c19 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.2
+2026-11-06 00:56:28,323 INFO liuhao.conversation_store [tid=7a02814190e5438e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,324 INFO liuhao.conversation_store [tid=602ff82030544474 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,326 INFO liuhao.conversation_store [tid=76e07854e73c4363 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,327 INFO liuhao.conversation_store [tid=7a943a0881b14882 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,329 INFO liuhao.conversation_store [tid=7a4fa4d7a91d435f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,331 INFO liuhao.conversation_store [tid=857243614eae469d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,333 INFO liuhao.conversation_store [tid=c2b213c3f0f64dff cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,334 INFO liuhao.conversation_store [tid=b2310b91fafe424e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,335 INFO liuhao.conversation_store [tid=9d7bfb87076c420f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,336 INFO liuhao.conversation_store [tid=aff692cd82cb498e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,338 INFO liuhao.conversation_store [tid=d4301f8f266941e6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,340 INFO liuhao.conversation_store [tid=7615fce698904a25 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,341 INFO liuhao.conversation_store [tid=2e055519fbd1428d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,342 INFO liuhao.conversation_store [tid=5b02797baeaf455e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,344 INFO liuhao.conversation_store [tid=25986d11fd104763 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,345 INFO liuhao.conversation_store [tid=e48a628ca88e430f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,347 INFO liuhao.conversation_store [tid=c92a29563e4b4dfe cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,348 INFO liuhao.conversation_store [tid=b813304ecb8c4d94 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,351 INFO liuhao.conversation_store [tid=f0de106e5b2a4297 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,352 INFO liuhao.conversation_store [tid=59718a0c4d98413d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,353 INFO liuhao.conversation_store [tid=b03bb6dc5e1c4614 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,355 INFO liuhao.conversation_store [tid=04785006e6bc4568 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.2
+2026-11-06 00:56:28,358 INFO liuhao.conversation_store [tid=5ce7194276714519 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,359 INFO liuhao.conversation_store [tid=7e6bc1571d7b4c4e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,361 INFO liuhao.conversation_store [tid=6c465e6396c74661 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,362 INFO liuhao.conversation_store [tid=3fc5f181ab1b46a0 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,363 INFO liuhao.conversation_store [tid=de409df660184789 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,365 INFO liuhao.conversation_store [tid=f1120be95b064066 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,367 INFO liuhao.conversation_store [tid=80931b605f8a426b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,369 INFO liuhao.conversation_store [tid=d37f4d2e7bb843dd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,371 INFO liuhao.conversation_store [tid=e579a5411b6f4cd7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,372 INFO liuhao.conversation_store [tid=f80f7c58566b4302 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,373 INFO liuhao.conversation_store [tid=b5377be021354a5b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,375 INFO liuhao.conversation_store [tid=0b009ddb204742e3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,377 INFO liuhao.conversation_store [tid=096cade0767c4476 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.2
+2026-11-06 00:56:28,379 INFO liuhao.conversation_store [tid=1240b4e590134782 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,380 INFO liuhao.conversation_store [tid=e55874f32bae4556 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,382 INFO liuhao.conversation_store [tid=e4222fbf38b3402e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,383 INFO liuhao.conversation_store [tid=5401f840a17642a0 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,384 INFO liuhao.conversation_store [tid=172e1ca732184fdf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,386 INFO liuhao.conversation_store [tid=08d6a5a8c73142cd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,388 INFO liuhao.conversation_store [tid=4536580431994e27 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,390 INFO liuhao.conversation_store [tid=978798e077534d5f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,391 INFO liuhao.conversation_store [tid=890eca22fb4c4406 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,393 INFO liuhao.conversation_store [tid=a7e64f01522d4280 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,396 INFO liuhao.conversation_store [tid=656e7fdb59dd4a52 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,403 INFO liuhao.conversation_store [tid=9b9c559fe91f4ab7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.9
+2026-11-06 00:56:28,408 INFO liuhao.conversation_store [tid=d9c2579e10bc4913 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,409 INFO liuhao.conversation_store [tid=20a26623f2994cd6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,412 INFO liuhao.conversation_store [tid=92897aec294e4def cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,415 INFO liuhao.conversation_store [tid=8bdf36007eec449f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.9
+2026-11-06 00:56:28,417 INFO liuhao.conversation_store [tid=ff3d624ec71240bf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.9
+2026-11-06 00:56:28,418 INFO liuhao.conversation_store [tid=ee548c0751db4284 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,420 INFO liuhao.conversation_store [tid=ff3722745e76412c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,422 INFO liuhao.conversation_store [tid=f4bf0b34d55a4b14 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,424 INFO liuhao.conversation_store [tid=fe22011895cf4a92 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,425 INFO liuhao.conversation_store [tid=77de83d8e7fc4b30 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.9
+2026-11-06 00:56:28,429 INFO liuhao.conversation_store [tid=bda836e827ff4d0b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=348.2
+2026-11-06 00:56:28,433 INFO liuhao.conversation_store [tid=84c3d70b50f04596 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,435 INFO liuhao.conversation_store [tid=2ea4720258194921 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,438 INFO liuhao.conversation_store [tid=017ec971fd88451c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.6
+2026-11-06 00:56:28,440 INFO liuhao.conversation_store [tid=059ceadd5c614a70 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,442 INFO liuhao.conversation_store [tid=95a97ae838f94d35 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.3
+2026-11-06 00:56:28,444 INFO liuhao.conversation_store [tid=32be4d33cff741b3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.7
+2026-11-06 00:56:28,447 INFO liuhao.conversation_store [tid=2370fc2866524f0c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.7
+2026-11-06 00:56:28,450 INFO liuhao.conversation_store [tid=d6dec6ece3404a07 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,452 INFO liuhao.conversation_store [tid=612fe131e82a41d8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,455 INFO liuhao.conversation_store [tid=3c38f26a03d94c1f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.5
+2026-11-06 00:56:28,458 INFO liuhao.conversation_store [tid=098cef942f8444b1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,461 INFO liuhao.conversation_store [tid=bdf78e75fa7f4e2c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,462 INFO liuhao.conversation_store [tid=16973c0f6df04c8a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,466 INFO liuhao.conversation_store [tid=56bfc8c28e714149 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,468 INFO liuhao.conversation_store [tid=3191ac3280c74c8b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.7
+2026-11-06 00:56:28,471 INFO liuhao.conversation_store [tid=0eee6375c7914fdf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,473 INFO liuhao.conversation_store [tid=9774736c74544255 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.2
+2026-11-06 00:56:28,476 INFO liuhao.conversation_store [tid=8273590a1af44744 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=49.8
+2026-11-06 00:56:28,491 INFO liuhao.conversation_store [tid=1c37820bab054463 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=17.9
+2026-11-06 00:56:28,494 INFO liuhao.conversation_store [tid=bb0aa545ef6f449d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=17.8
+2026-11-06 00:56:28,497 INFO liuhao.conversation_store [tid=c6a2f957a2ad4a59 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.0
+2026-11-06 00:56:28,504 INFO liuhao.conversation_store [tid=116cc79c436a495b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=9.7
+2026-11-06 00:56:28,507 INFO liuhao.conversation_store [tid=611eb16350ae49d2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=10.1
+2026-11-06 00:56:28,510 INFO liuhao.conversation_store [tid=cb542ac791ff4ed3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.6
+2026-11-06 00:56:28,512 INFO liuhao.conversation_store [tid=fd57acbcc6c549ba cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.5
+2026-11-06 00:56:28,515 INFO liuhao.conversation_store [tid=507f42cecbec484d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,517 INFO liuhao.conversation_store [tid=dcca24e5f77d4157 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,520 INFO liuhao.conversation_store [tid=1f84f9e7010b43fe cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.5
+2026-11-06 00:56:28,522 INFO liuhao.conversation_store [tid=41c0e9e9d9904fd5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,525 INFO liuhao.conversation_store [tid=2c813731400d458e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.7
+2026-11-06 00:56:28,527 INFO liuhao.conversation_store [tid=20874b82071b4de5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,529 INFO liuhao.conversation_store [tid=668f4e4c31d2494f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,532 INFO liuhao.conversation_store [tid=1687ddfe28cc49ff cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,534 INFO liuhao.conversation_store [tid=95411ae00b3d4d6d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,536 INFO liuhao.conversation_store [tid=309608ba7be34379 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,539 INFO liuhao.conversation_store [tid=c3110ae5f4c74862 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.8
+2026-11-06 00:56:28,542 INFO liuhao.conversation_store [tid=25333ca7723b496e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.8
+2026-11-06 00:56:28,544 INFO liuhao.conversation_store [tid=c7df7683a8364a40 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,547 INFO liuhao.conversation_store [tid=008e400e72c845a9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.8
+2026-11-06 00:56:28,549 INFO liuhao.conversation_store [tid=808f2b9e5d2047c8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,551 INFO liuhao.conversation_store [tid=0673c94a2def4086 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,553 INFO liuhao.conversation_store [tid=3de9ff3d64f349e7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,555 INFO liuhao.conversation_store [tid=b6ea444779b74fac cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.7
+2026-11-06 00:56:28,557 INFO liuhao.conversation_store [tid=83786537d2dc4d55 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,558 INFO liuhao.conversation_store [tid=86d66ed506594892 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,561 INFO liuhao.conversation_store [tid=643c41a425d94ad7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,564 INFO liuhao.conversation_store [tid=2381d0f4216c4165 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.7
+2026-11-06 00:56:28,566 INFO liuhao.conversation_store [tid=945874f164994cfe cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.7
+2026-11-06 00:56:28,569 INFO liuhao.conversation_store [tid=fd792733523f47ba cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.5
+2026-11-06 00:56:28,571 INFO liuhao.conversation_store [tid=de93272ecb894a87 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.2
+2026-11-06 00:56:28,574 INFO liuhao.conversation_store [tid=be7171d022724812 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.2
+2026-11-06 00:56:28,576 INFO liuhao.conversation_store [tid=fdf5f294df884bd6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.0
+2026-11-06 00:56:28,579 INFO liuhao.conversation_store [tid=69945934d8f14453 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,582 INFO liuhao.conversation_store [tid=df22e910ba1048c1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,584 INFO liuhao.conversation_store [tid=05808e1831414fe2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.1
+2026-11-06 00:56:28,587 INFO liuhao.conversation_store [tid=2037eefbf2184db2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.1
+2026-11-06 00:56:28,590 INFO liuhao.conversation_store [tid=08061ef5fd2c4088 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.1
+2026-11-06 00:56:28,593 INFO liuhao.conversation_store [tid=8f9da48e89464bce cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.1
+2026-11-06 00:56:28,595 INFO liuhao.conversation_store [tid=ea395218b5854b1b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.6
+2026-11-06 00:56:28,599 INFO liuhao.conversation_store [tid=1aee9c7e5e264521 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,600 INFO liuhao.conversation_store [tid=1490c821ab474e8f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,603 INFO liuhao.conversation_store [tid=dda6567e65624258 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,605 INFO liuhao.conversation_store [tid=798f2e3db5c641ef cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,609 INFO liuhao.conversation_store [tid=25120738e7ab49b4 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.3
+2026-11-06 00:56:28,612 INFO liuhao.conversation_store [tid=b48102afd98d4941 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.4
+2026-11-06 00:56:28,615 INFO liuhao.conversation_store [tid=db82f68bc5eb4090 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.7
+2026-11-06 00:56:28,617 INFO liuhao.conversation_store [tid=4f430f479aa54826 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.7
+2026-11-06 00:56:28,620 INFO liuhao.conversation_store [tid=c31b47737ffd4e9c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,622 INFO liuhao.conversation_store [tid=bc89aaf571984bcb cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,625 INFO liuhao.conversation_store [tid=fb2259c841604e79 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.2
+2026-11-06 00:56:28,627 INFO liuhao.conversation_store [tid=0d25ca3184bf4a21 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,630 INFO liuhao.conversation_store [tid=fec934bd26d34fc5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.8
+2026-11-06 00:56:28,632 INFO liuhao.conversation_store [tid=0a689359a4984ee8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,634 INFO liuhao.conversation_store [tid=e125163ebf2e4429 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,638 INFO liuhao.conversation_store [tid=2bb8159fd8c243c7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.5
+2026-11-06 00:56:28,640 INFO liuhao.conversation_store [tid=844a9fabd93846e9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.8
+2026-11-06 00:56:28,643 INFO liuhao.conversation_store [tid=47f44df92e884bd8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,645 INFO liuhao.conversation_store [tid=430e6e819b8a4611 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.7
+2026-11-06 00:56:28,647 INFO liuhao.conversation_store [tid=1f496f80c2c64df3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.7
+2026-11-06 00:56:28,649 INFO liuhao.conversation_store [tid=e91b141f8fde4b74 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.1
+2026-11-06 00:56:28,651 INFO liuhao.conversation_store [tid=c03814e5c3994149 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,652 INFO liuhao.conversation_store [tid=04aca4c93d2b48b1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,655 INFO liuhao.conversation_store [tid=94eac6ed78814317 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.1
+2026-11-06 00:56:28,657 INFO liuhao.conversation_store [tid=dc0e0643f9454d3d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,659 INFO liuhao.conversation_store [tid=32c32c592ded4c2d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,661 INFO liuhao.conversation_store [tid=608d7fae34074fff cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,663 INFO liuhao.conversation_store [tid=5d2c5dcaa7964ef3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,664 INFO liuhao.conversation_store [tid=a45506af90e54890 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,666 INFO liuhao.conversation_store [tid=214e8f1e1bf64128 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.3
+2026-11-06 00:56:28,672 INFO liuhao.conversation_store [tid=ffa9afe306e3404e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.8
+2026-11-06 00:56:28,675 INFO liuhao.conversation_store [tid=7decfcbfac5c4133 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=8.6
+2026-11-06 00:56:28,677 INFO liuhao.conversation_store [tid=92db7b081645457c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.7
+2026-11-06 00:56:28,680 INFO liuhao.conversation_store [tid=4411df476183492d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,681 INFO liuhao.conversation_store [tid=3577dd1c99934c1e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,683 INFO liuhao.conversation_store [tid=1ccc3064eda94aee cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,685 INFO liuhao.conversation_store [tid=7660af59dd9542db cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,686 INFO liuhao.conversation_store [tid=adfe4e2da73d4698 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,688 INFO liuhao.conversation_store [tid=f919771ec4514dd3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.8
+2026-11-06 00:56:28,689 INFO liuhao.conversation_store [tid=28d74f038a42409f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.8
+2026-11-06 00:56:28,691 INFO liuhao.conversation_store [tid=56abcb074d5e4ae9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,692 INFO liuhao.conversation_store [tid=4678c702260e4ae7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.3
+2026-11-06 00:56:28,695 INFO liuhao.conversation_store [tid=994cc9bdab5e4496 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.1
+2026-11-06 00:56:28,697 INFO liuhao.conversation_store [tid=daac092ca1bb40e7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,698 INFO liuhao.conversation_store [tid=af955b4d7f8b4bec cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,700 INFO liuhao.conversation_store [tid=db4ac65338544b04 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,703 INFO liuhao.conversation_store [tid=2be01fc007a04fb0 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,704 INFO liuhao.conversation_store [tid=7e70e3a17d0145f9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,706 INFO liuhao.conversation_store [tid=5cc52f25f5074d7a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,708 INFO liuhao.conversation_store [tid=1ec2ec2bf9d8425d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,709 INFO liuhao.conversation_store [tid=27c24d554c474296 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,711 INFO liuhao.conversation_store [tid=a02204c8f0bf45bf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,714 INFO liuhao.conversation_store [tid=ef06d3114c7745de cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.7
+2026-11-06 00:56:28,717 INFO liuhao.conversation_store [tid=61aa294533ac4118 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.6
+2026-11-06 00:56:28,719 INFO liuhao.conversation_store [tid=91e3c9b7393041b5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.8
+2026-11-06 00:56:28,722 INFO liuhao.conversation_store [tid=bb37c9ab42a148b3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.5
+2026-11-06 00:56:28,725 INFO liuhao.conversation_store [tid=6b647121b3394f52 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.3
+2026-11-06 00:56:28,728 INFO liuhao.conversation_store [tid=e93f1b9961fd4124 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.6
+2026-11-06 00:56:28,730 INFO liuhao.conversation_store [tid=6e4bd0a76f8746f9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,732 INFO liuhao.conversation_store [tid=0e74ec02787741a3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,735 INFO liuhao.conversation_store [tid=fa495f9449434439 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,737 INFO liuhao.conversation_store [tid=b6d7d10707574ab6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.6
+2026-11-06 00:56:28,739 INFO liuhao.conversation_store [tid=bd7e806edc014a82 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.2
+2026-11-06 00:56:28,743 INFO liuhao.conversation_store [tid=1e3b535a529b4314 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.8
+2026-11-06 00:56:28,745 INFO liuhao.conversation_store [tid=e5ca2fa225034d3e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.9
+2026-11-06 00:56:28,747 INFO liuhao.conversation_store [tid=b27a1ed6a1394792 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,750 INFO liuhao.conversation_store [tid=9fd77193423f4838 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.5
+2026-11-06 00:56:28,752 INFO liuhao.conversation_store [tid=7e3f6ad3fec64a7d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.2
+2026-11-06 00:56:28,754 INFO liuhao.conversation_store [tid=214470ab1e9a4f8b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,757 INFO liuhao.conversation_store [tid=d87bb1296bf94e94 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.4
+2026-11-06 00:56:28,760 INFO liuhao.conversation_store [tid=be4e5f35582d4f59 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.8
+2026-11-06 00:56:28,763 INFO liuhao.conversation_store [tid=b5fc0f0ebeea4a07 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.9
+2026-11-06 00:56:28,766 INFO liuhao.conversation_store [tid=4fdbfb58ac174434 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.1
+2026-11-06 00:56:28,769 INFO liuhao.conversation_store [tid=53da510f9c934745 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=6.1
+2026-11-06 00:56:28,771 INFO liuhao.conversation_store [tid=7b95c79eff194e7d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.3
+2026-11-06 00:56:28,774 INFO liuhao.conversation_store [tid=f25d80c771ac451f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,776 INFO liuhao.conversation_store [tid=ad266c81aff140dd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,778 INFO liuhao.conversation_store [tid=5e0a0f7e4cee4e17 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,779 INFO liuhao.conversation_store [tid=819b357a7ebf4b64 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.3
+2026-11-06 00:56:28,781 INFO liuhao.conversation_store [tid=23555d8d4a834a26 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,783 INFO liuhao.conversation_store [tid=6565ce5051d2435e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,785 INFO liuhao.conversation_store [tid=34deefb552844f53 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,787 INFO liuhao.conversation_store [tid=495704a8eaaf4cf7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,789 INFO liuhao.conversation_store [tid=83cde971d8d846be cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,791 INFO liuhao.conversation_store [tid=13a7b63aa9c74ebf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,793 INFO liuhao.conversation_store [tid=514d1e5632e04cde cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,795 INFO liuhao.conversation_store [tid=c11a213943c64ec9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,797 INFO liuhao.conversation_store [tid=7f71047cba0842ec cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,799 INFO liuhao.conversation_store [tid=556665e187094252 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,800 INFO liuhao.conversation_store [tid=d53acbe0a10248ad cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,802 INFO liuhao.conversation_store [tid=6720161ef43643d6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,803 INFO liuhao.conversation_store [tid=a6a9b52cc8da447b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,806 INFO liuhao.conversation_store [tid=da1940f906314a11 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,807 INFO liuhao.conversation_store [tid=a21c6ed8515f4f13 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,809 INFO liuhao.conversation_store [tid=601d624ddf2846dc cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,811 INFO liuhao.conversation_store [tid=88e4ef33c8844a4f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,814 INFO liuhao.conversation_store [tid=00a215d796b54589 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,817 INFO liuhao.conversation_store [tid=95a92529a37440d5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,818 INFO liuhao.conversation_store [tid=a588fd5ac27143a1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=5.0
+2026-11-06 00:56:28,821 INFO liuhao.conversation_store [tid=37bbec3f6b6b4c95 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.3
+2026-11-06 00:56:28,824 INFO liuhao.conversation_store [tid=9c06afb7f4344af1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.1
+2026-11-06 00:56:28,825 INFO liuhao.conversation_store [tid=51e84574c0b74b00 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=4.0
+2026-11-06 00:56:28,827 INFO liuhao.conversation_store [tid=0274115ae4274643 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,828 INFO liuhao.conversation_store [tid=b3772287711e429a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.9
+2026-11-06 00:56:28,831 INFO liuhao.conversation_store [tid=0be9cef7086f433c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,832 INFO liuhao.conversation_store [tid=0eff449d424a4d86 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.3
+2026-11-06 00:56:28,834 INFO liuhao.conversation_store [tid=1ef30f2477694457 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,835 INFO liuhao.conversation_store [tid=9839e70351cc4ca2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,838 INFO liuhao.conversation_store [tid=26d3ebab494941f5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,839 INFO liuhao.conversation_store [tid=7221f6da0d06485d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,841 INFO liuhao.conversation_store [tid=1e57f9613e584502 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.3
+2026-11-06 00:56:28,843 INFO liuhao.conversation_store [tid=8237775295144336 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.1
+2026-11-06 00:56:28,844 INFO liuhao.conversation_store [tid=cdd8dbb9745c4574 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,846 INFO liuhao.conversation_store [tid=6ed4c18c494f4302 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,849 INFO liuhao.conversation_store [tid=e39703ab56914190 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,851 INFO liuhao.conversation_store [tid=ec0520bd052a4931 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,853 INFO liuhao.conversation_store [tid=c6e38b7bad514180 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,854 INFO liuhao.conversation_store [tid=fb1f0e5ee5a34d69 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,856 INFO liuhao.conversation_store [tid=e30da41013184ad3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,858 INFO liuhao.conversation_store [tid=05b5fe66f3f34c39 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,860 INFO liuhao.conversation_store [tid=d74db94440e24f0a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.8
+2026-11-06 00:56:28,861 INFO liuhao.conversation_store [tid=8cdbb543e51446a3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.5
+2026-11-06 00:56:28,863 INFO liuhao.conversation_store [tid=96274279b8b94523 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.7
+2026-11-06 00:56:28,864 INFO liuhao.conversation_store [tid=5db7ecda83fc4d02 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.8
+2026-11-06 00:56:28,866 INFO liuhao.conversation_store [tid=7c7ba7539a084760 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.8
+2026-11-06 00:56:28,867 INFO liuhao.conversation_store [tid=98353f36206d41da cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.7
+2026-11-06 00:56:28,869 INFO liuhao.conversation_store [tid=7f66fbf976a1431f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,871 INFO liuhao.conversation_store [tid=f898a8cb1e724bca cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.7
+2026-11-06 00:56:28,873 INFO liuhao.conversation_store [tid=99d2b758616b44e7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.0
+2026-11-06 00:56:28,875 INFO liuhao.conversation_store [tid=ad439de97d1a47ce cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.4
+2026-11-06 00:56:28,877 INFO liuhao.conversation_store [tid=79825901de064640 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.9
+2026-11-06 00:56:28,879 INFO liuhao.conversation_store [tid=ac69e2cfc35c4699 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.6
+2026-11-06 00:56:28,884 INFO liuhao.conversation_store [tid=e390e32734024aee cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=7.4
+2026-11-06 00:56:28,887 INFO liuhao.conversation_store [tid=b35242ec4e6d479e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=8.5
+2026-11-06 00:56:28,889 INFO liuhao.conversation_store [tid=41e3fee718f74d75 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,891 INFO liuhao.conversation_store [tid=0534f5513cc44791 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,892 INFO liuhao.conversation_store [tid=943b673d18d6433c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,894 INFO liuhao.conversation_store [tid=95fec9d935a9453d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,895 INFO liuhao.conversation_store [tid=92c7663c399749dc cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,897 INFO liuhao.conversation_store [tid=07fb7b16c7324a68 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,898 INFO liuhao.conversation_store [tid=1afccb994f784644 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,900 INFO liuhao.conversation_store [tid=fc59a7ddde024547 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,902 INFO liuhao.conversation_store [tid=f411eef534824281 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,904 INFO liuhao.conversation_store [tid=c94ae8df6853483d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,905 INFO liuhao.conversation_store [tid=031f2c5f54404c04 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,908 INFO liuhao.conversation_store [tid=954b209d5bfb4a76 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,909 INFO liuhao.conversation_store [tid=3e5a84e303ee47ef cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:28,910 INFO liuhao.conversation_store [tid=e827871b85c346c3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,912 INFO liuhao.conversation_store [tid=816388d3dbe54acd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,914 INFO liuhao.conversation_store [tid=42796a5743eb43c8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,916 INFO liuhao.conversation_store [tid=7390b8688aa94e1e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,917 INFO liuhao.conversation_store [tid=d684efaaff4b4dee cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,918 INFO liuhao.conversation_store [tid=228e50636b304bd8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,920 INFO liuhao.conversation_store [tid=00bd8f30b8904335 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,921 INFO liuhao.conversation_store [tid=51cddedab626493b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,923 INFO liuhao.conversation_store [tid=d925036589b44a42 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,945 INFO liuhao.conversation_store [tid=266f72a0126d48b5 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=22.4
+2026-11-06 00:56:28,949 INFO liuhao.conversation_store [tid=f01a21943aee4b5c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=3.2
+2026-11-06 00:56:28,951 INFO liuhao.conversation_store [tid=a2e8b984fe424cb3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,952 INFO liuhao.conversation_store [tid=df458045d15f49c3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,954 INFO liuhao.conversation_store [tid=b35304a855f348ba cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,956 INFO liuhao.conversation_store [tid=f849bd1d0cbb4e12 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,957 INFO liuhao.conversation_store [tid=944661cde4ec4baf cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,959 INFO liuhao.conversation_store [tid=ad210e5004594b5f cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,961 INFO liuhao.conversation_store [tid=b91b76d27a484d83 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,962 INFO liuhao.conversation_store [tid=2ade2c7324e54221 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:28,964 INFO liuhao.conversation_store [tid=ff51dc4fc7234cc7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,965 INFO liuhao.conversation_store [tid=1b7889622ac44a99 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,967 INFO liuhao.conversation_store [tid=a8216160c8ea4a66 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,969 INFO liuhao.conversation_store [tid=a9bf5175924e493c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,970 INFO liuhao.conversation_store [tid=90b1f3d40e7041f4 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,972 INFO liuhao.conversation_store [tid=4db82e92d4634871 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,973 INFO liuhao.conversation_store [tid=8626dc0fb52f40bb cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,975 INFO liuhao.conversation_store [tid=64fe8c36404f4e6d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,977 INFO liuhao.conversation_store [tid=3d368d33a7ce4f65 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,978 INFO liuhao.conversation_store [tid=c06e418aa1b14be4 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,980 INFO liuhao.conversation_store [tid=f16a277c119e466e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,981 INFO liuhao.conversation_store [tid=d1c485c55cda43e8 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,983 INFO liuhao.conversation_store [tid=aeb0cf4de3c44c1d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.0
+2026-11-06 00:56:28,986 INFO liuhao.conversation_store [tid=77f2a0b1e57e4d71 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.9
+2026-11-06 00:56:28,987 INFO liuhao.conversation_store [tid=94e68dde4ef14f81 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,989 INFO liuhao.conversation_store [tid=48a1fb773f8c4480 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,991 INFO liuhao.conversation_store [tid=cb9cadb8f3514257 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,992 INFO liuhao.conversation_store [tid=25fc503b01754a9a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:28,993 INFO liuhao.conversation_store [tid=1cbc5294fe934058 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,995 INFO liuhao.conversation_store [tid=3cd206fcd5114953 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,997 INFO liuhao.conversation_store [tid=8eb4e83524f74a0a cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:28,998 INFO liuhao.conversation_store [tid=200bdfe2c0d24ce2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,000 INFO liuhao.conversation_store [tid=d7bf24a85dd94a5b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,001 INFO liuhao.conversation_store [tid=1823a1bcd5ef4360 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,003 INFO liuhao.conversation_store [tid=a82b2b67b81f4349 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,006 INFO liuhao.conversation_store [tid=5d560294b2cc4c7d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.1
+2026-11-06 00:56:29,008 INFO liuhao.conversation_store [tid=77fb048c792d46d3 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=2.1
+2026-11-06 00:56:29,010 INFO liuhao.conversation_store [tid=d1c59e3aaad0463b cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.7
+2026-11-06 00:56:29,011 INFO liuhao.conversation_store [tid=6ede01c4d72143f1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,013 INFO liuhao.conversation_store [tid=44ec1415e76c46bd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,014 INFO liuhao.conversation_store [tid=1791f4bd5e6a405c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,016 INFO liuhao.conversation_store [tid=3b20b91a349d4848 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,018 INFO liuhao.conversation_store [tid=74c3861e683540dd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,019 INFO liuhao.conversation_store [tid=cb8de581ae3843dd cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,021 INFO liuhao.conversation_store [tid=3e7bd8a40d114e04 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,022 INFO liuhao.conversation_store [tid=67b6302ecf82401c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,024 INFO liuhao.conversation_store [tid=5c004dd54efc4ffb cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,026 INFO liuhao.conversation_store [tid=79536e4658d24368 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,027 INFO liuhao.conversation_store [tid=acf6ae8c9f2141be cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,028 INFO liuhao.conversation_store [tid=ae4f5d4dd3fa4ae6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,030 INFO liuhao.conversation_store [tid=a2648bc5406b42af cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,032 INFO liuhao.conversation_store [tid=dbff20a7f8904763 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.6
+2026-11-06 00:56:29,034 INFO liuhao.conversation_store [tid=fe6dc8bc9abf4ab9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,036 INFO liuhao.conversation_store [tid=99a8aa10d6e44717 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.3
+2026-11-06 00:56:29,037 INFO liuhao.conversation_store [tid=ea7fb4eb50354a08 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,039 INFO liuhao.conversation_store [tid=861a0941d7034284 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,040 INFO liuhao.conversation_store [tid=5a638abbad674eb2 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,042 INFO liuhao.conversation_store [tid=a1a83cec41da47df cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,044 INFO liuhao.conversation_store [tid=fa3bce5ca2c34260 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,045 INFO liuhao.conversation_store [tid=6256c8064fa64268 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,046 INFO liuhao.conversation_store [tid=83bb092a84564707 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,048 INFO liuhao.conversation_store [tid=84946bc7f3f94cb1 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,049 INFO liuhao.conversation_store [tid=da97a58ffdad485e cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,051 INFO liuhao.conversation_store [tid=ee9c542313c04e64 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,053 INFO liuhao.conversation_store [tid=2372e9ec8b434eb6 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,054 INFO liuhao.conversation_store [tid=accadcbea01642b9 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,056 INFO liuhao.conversation_store [tid=31a0b8602b2746ca cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,057 INFO liuhao.conversation_store [tid=b4df306040c84c1c cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,059 INFO liuhao.conversation_store [tid=62d9db472e1a4579 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,060 INFO liuhao.conversation_store [tid=6ff13eecd7fc4ce7 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,062 INFO liuhao.conversation_store [tid=d6f640320ec0459d cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.4
+2026-11-06 00:56:29,064 INFO liuhao.conversation_store [tid=35876ac526ee4d26 cid=-] EXIT  conversation.append ok=none e
+lapsed_ms=1.5
+2026-11-06 00:56:29,066 INFO liuhao.conversation_store [tid=c87bfbbc97c24732 cid=-] EXIT  conversation.load ok=ok elaps
+ed_ms=1.7
+{
+  "root": "D:\\cache\\temp\\liuhao-concurrency-repro-n4g08104",
+  "conversation": {
+    "expected": 400,
+    "stored": 400,
+    "duplicate_turns": 0
+  },
+  "model_config": {
+    "errors": [],
+    "timeout": 45.0,
+    "base_url": "http://127.0.0.1:9",
+    "both_updates_kept": true
+  }
+}

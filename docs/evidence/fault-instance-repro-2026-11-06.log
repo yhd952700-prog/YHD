@@ -1,0 +1,12 @@
+﻿{
+  "root": "D:\\cache\\temp\\liuhao-instance-repro-_73vmxqd",
+  "first_health_s": 3.53,
+  "second_exit_code": 3,
+  "second_stderr": [
+    "Debug API surface ENABLED (APP_ENV=development): /docs, /redoc, /openapi.json are readable on this listener -- set APP_ENV=production to turn them off",
+    "[instance] 鎏灏已经在运行（pid=6728，http://127.0.0.1:18180，启动于 2026-11-06T00:52:58-08:00）。为避免两个进程同时写同一份数据，本次启动已退出；如需重启，请先关闭已经运行的那个鎏灏。"
+  ],
+  "second_port_listening": false,
+  "port_a_still_serving": true
+}
+AFTER_KILL {"a_port_closed": true, "lock_probe_free": true, "metadata_present": true}

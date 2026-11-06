@@ -112,6 +112,8 @@ deploy/cloud/
 # ===== 运行期状态（身份库等）=====
 # *.sqlite3 已在上面忽略；补上 SQLite WAL 模式的伴生文件。
 data/
+# 单实例锁 / 持有者元信息（src/common/instance_lock.py 运行时生成）。
+run/
 *.sqlite3-wal
 *.sqlite3-shm
 

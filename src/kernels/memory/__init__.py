@@ -273,10 +273,19 @@ class MemoryKernel:
 
             # Store in appropriate tier
             key_hash = f"{tier.value}:{key}"
+            previous = self._entries.get(key_hash)
             self._entries[key_hash] = entry
 
-            # 写穿落盘（跨进程重启保留记忆）。
-            self._store.persist(_entry_to_row(entry, key_hash))
+            # 写穿落盘（跨进程重启保留记忆）。失败时把内存态回滚到写之前：
+            # 否则"调用方收到失败、但内存里却认为已记住"，重启前后行为不一致。
+            try:
+                self._store.persist(_entry_to_row(entry, key_hash))
+            except Exception:
+                if previous is None:
+                    self._entries.pop(key_hash, None)
+                else:
+                    self._entries[key_hash] = previous
+                raise
 
             return entry
 
@@ -502,14 +511,30 @@ class MemoryKernel:
 
             # Store the target, then remove the compressed-away sources.
             target_key_hash = f"{target_tier.value}:{key}"
+            previous_target = self._entries.get(target_key_hash)
+            removed = {
+                f"{e.tier.value}:{e.key}": self._entries.pop(
+                    f"{e.tier.value}:{e.key}", None
+                )
+                for e in candidates
+            }
             self._entries[target_key_hash] = entry
-            for e in candidates:
-                self._entries.pop(f"{e.tier.value}:{e.key}", None)
 
-            # 落盘：写入合并后的 target，删除被合并的 source。
-            self._store.persist(_entry_to_row(entry, target_key_hash))
-            for e in candidates:
-                self._store.delete(f"{e.tier.value}:{e.key}")
+            # 落盘：写入合并后的 target，删除被合并的 source。失败时整体回滚，
+            # 绝不出现"内存里已合并、库里还是旧的分条记忆"的撕裂状态。
+            try:
+                self._store.persist(_entry_to_row(entry, target_key_hash))
+                for e in candidates:
+                    self._store.delete(f"{e.tier.value}:{e.key}")
+            except Exception:
+                if previous_target is None:
+                    self._entries.pop(target_key_hash, None)
+                else:
+                    self._entries[target_key_hash] = previous_target
+                for key_hash, old in removed.items():
+                    if old is not None:
+                        self._entries[key_hash] = old
+                raise
 
             return MemoryCompression(
                 source_ids=source_ids,
@@ -538,9 +563,16 @@ class MemoryKernel:
                 if entry.expires_at is not None and entry.expires_at <= now:
                     dead.append(key_hash)
                     per_tier[entry.tier.value] += 1
-            for key_hash in dead:
-                self._entries.pop(key_hash, None)
-                self._store.delete(key_hash)
+            removed = {key_hash: self._entries.pop(key_hash, None) for key_hash in dead}
+            try:
+                for key_hash in dead:
+                    self._store.delete(key_hash)
+            except Exception:
+                # 清理失败：把内存态还原，避免"内存里已删、库里还在"。
+                for key_hash, old in removed.items():
+                    if old is not None:
+                        self._entries[key_hash] = old
+                raise
             return per_tier
 
     def clear(self) -> None:
@@ -549,8 +581,14 @@ class MemoryKernel:
         供「重置会话」与测试隔离使用；身份/审计等其它 kernel 不受影响。
         """
         with self._lock:
+            snapshot = dict(self._entries)
             self._entries.clear()
-            self._store.clear()
+            try:
+                self._store.clear()
+            except Exception:
+                # 清库失败：内存态还原，内存与库保持一致。
+                self._entries.update(snapshot)
+                raise
 
     def initialize(self) -> None:
         self.lifecycle = KernelLifecycle.READY

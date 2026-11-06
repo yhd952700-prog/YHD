@@ -33,6 +33,22 @@ _PROJECT_ROOT = os.path.dirname(
 DEFAULT_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
 
 
+class MemoryStoreError(RuntimeError):
+    """记忆落盘失败：带可读原因，调用方必须据此失败（fail-closed）。
+
+    不吞异常、不假装成功：磁盘满 / 数据目录只读 / 文件被独占时，调用方拿到
+    的是一条能看懂的中文原因，并且已成功落盘的旧记忆保持不变。
+    """
+
+    def __init__(self, db_path: str, exc: Exception):
+        super().__init__(
+            f"无法写入记忆库 {db_path}（磁盘可能已满、数据目录只读或文件被占用）："
+            f"{exc}。本次记忆未保存，已有记忆保持不变。"
+        )
+        self.db_path = db_path
+        self.original = exc
+
+
 class MemoryStore:
     """SQLite-backed persistence for MemoryKernel entries."""
 
@@ -42,10 +58,21 @@ class MemoryStore:
         self._db_path = db_path
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
-        if db_path != ":memory:":
-            parent = os.path.dirname(os.path.abspath(db_path))
-            os.makedirs(parent, exist_ok=True)
-        self._init_db()
+        try:
+            if db_path != ":memory:":
+                parent = os.path.dirname(os.path.abspath(db_path))
+                os.makedirs(parent, exist_ok=True)
+            self._init_db()
+        except (sqlite3.Error, OSError) as exc:
+            raise MemoryStoreError(db_path, exc) from exc
+
+    def _rollback_quietly(self) -> None:
+        """失败路径的回滚：本身再失败也不能掩盖原始异常。"""
+        try:
+            if self._conn is not None:
+                self._conn.rollback()
+        except sqlite3.Error:
+            pass
 
     # ------------------------------------------------------------------ #
     # 建表
@@ -89,59 +116,71 @@ class MemoryStore:
         ``entry`` 是 ``MemoryEntry`` 的字段字典，字段名约定见模块 docstring。
         """
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO memory_entries (
-                    key_hash, entry_id, key, value, tier, scope, created_at,
-                    expires_at, tags, correlation_id, access_count,
-                    last_accessed, provenance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(key_hash) DO UPDATE SET
-                    entry_id = excluded.entry_id,
-                    key = excluded.key,
-                    value = excluded.value,
-                    tier = excluded.tier,
-                    scope = excluded.scope,
-                    created_at = excluded.created_at,
-                    expires_at = excluded.expires_at,
-                    tags = excluded.tags,
-                    correlation_id = excluded.correlation_id,
-                    access_count = excluded.access_count,
-                    last_accessed = excluded.last_accessed,
-                    provenance = excluded.provenance
-                """,
-                (
-                    entry["key_hash"],
-                    entry["entry_id"],
-                    entry["key"],
-                    entry["value"],
-                    entry["tier"],
-                    entry["scope"],
-                    entry["created_at"],
-                    entry["expires_at"],
-                    entry["tags"],
-                    entry["correlation_id"],
-                    entry["access_count"],
-                    entry["last_accessed"],
-                    entry["provenance"],
-                ),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO memory_entries (
+                        key_hash, entry_id, key, value, tier, scope, created_at,
+                        expires_at, tags, correlation_id, access_count,
+                        last_accessed, provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(key_hash) DO UPDATE SET
+                        entry_id = excluded.entry_id,
+                        key = excluded.key,
+                        value = excluded.value,
+                        tier = excluded.tier,
+                        scope = excluded.scope,
+                        created_at = excluded.created_at,
+                        expires_at = excluded.expires_at,
+                        tags = excluded.tags,
+                        correlation_id = excluded.correlation_id,
+                        access_count = excluded.access_count,
+                        last_accessed = excluded.last_accessed,
+                        provenance = excluded.provenance
+                    """,
+                    (
+                        entry["key_hash"],
+                        entry["entry_id"],
+                        entry["key"],
+                        entry["value"],
+                        entry["tier"],
+                        entry["scope"],
+                        entry["created_at"],
+                        entry["expires_at"],
+                        entry["tags"],
+                        entry["correlation_id"],
+                        entry["access_count"],
+                        entry["last_accessed"],
+                        entry["provenance"],
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     @observe("kernels.memory.store.delete")
     def delete(self, key_hash: str) -> None:
         """按 ``key_hash`` 删除一条条目（compress 合并后移除源条目时用）。"""
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM memory_entries WHERE key_hash = ?", (key_hash,)
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "DELETE FROM memory_entries WHERE key_hash = ?", (key_hash,)
+                )
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     def clear(self) -> None:
         """清空持久化存储（重置会话 / 测试隔离时用）。"""
         with self._lock:
-            self._conn.execute("DELETE FROM memory_entries")
-            self._conn.commit()
+            try:
+                self._conn.execute("DELETE FROM memory_entries")
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._rollback_quietly()
+                raise MemoryStoreError(self._db_path, exc) from exc
 
     # ------------------------------------------------------------------ #
     # 读

@@ -36,6 +36,7 @@ except ImportError:
 from .encryption import EncryptionManager, get_encryption_manager
 from .secret_store import SecretBackendUnavailable
 from .posture import is_production  # unified posture source of truth
+from .._time import stable_now_epoch
 
 # Defined after the guarded import above on purpose: pycodestyle tolerates a
 # module-level import placed after a try/except import guard, but any *other*
@@ -82,7 +83,7 @@ class TokenPayload:
     iss: str = "liuhao-ai-os"                   # Issuer
     aud: Union[str, List[str]] = "liuhao-api"   # Audience
     exp: int = 0                                # Expiration timestamp
-    iat: int = field(default_factory=lambda: int(time.time()))  # Issued at
+    iat: int = field(default_factory=lambda: int(stable_now_epoch()))  # Issued at
     nbf: int = 0                                # Not before
     jti: str = field(default_factory=lambda: str(uuid.uuid4()))  # JWT ID
 
@@ -135,7 +136,7 @@ class TokenPayload:
             iss=data.get("iss", "liuhao-ai-os"),
             aud=data.get("aud", "liuhao-api"),
             exp=data.get("exp", 0),
-            iat=data.get("iat", int(time.time())),
+            iat=data.get("iat", int(stable_now_epoch())),
             nbf=data.get("nbf", 0),
             jti=data.get("jti", str(uuid.uuid4())),
             token_type=TokenType(data.get("token_type", "access")),
@@ -150,12 +151,12 @@ class TokenPayload:
         )
 
     def is_expired(self, leeway: int = 0) -> bool:
-        """Check if token is expired"""
-        return time.time() + leeway >= self.exp
+        """Check if token is expired（用抗跳变的时钟，见 ``stable_now_epoch``）"""
+        return stable_now_epoch() + leeway >= self.exp
 
     def is_valid_now(self, leeway: int = 0) -> bool:
         """Check if token is valid at current time"""
-        now = time.time() + leeway
+        now = stable_now_epoch() + leeway
         return self.nbf <= now < self.exp
 
 
@@ -223,10 +224,11 @@ class RevocationStore:
     ) -> None:
         # The row must outlive the token, never the reverse: a missing/NaN
         # expiry would prune instantly and silently un-revoke the token.
-        expiry = float(expires_at) if expires_at else time.time() + 3600.0
+        expiry = float(expires_at) if expires_at else stable_now_epoch() + 3600.0
         with self._lock, self._connect() as conn:
             conn.execute(
-                "DELETE FROM revoked_tokens WHERE expires_at <= ?", (time.time(),)
+                "DELETE FROM revoked_tokens WHERE expires_at <= ?",
+                (stable_now_epoch(),),
             )
             conn.execute(
                 "INSERT OR REPLACE INTO revoked_tokens (jti, kind, subject, expires_at) "
@@ -241,14 +243,15 @@ class RevocationStore:
             row = conn.execute(
                 "SELECT 1 FROM revoked_tokens WHERE jti = ? AND kind = ? "
                 "AND expires_at > ?",
-                (str(jti), kind, time.time()),
+                (str(jti), kind, stable_now_epoch()),
             ).fetchone()
         return row is not None
 
     def purge(self) -> int:
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
-                "DELETE FROM revoked_tokens WHERE expires_at <= ?", (time.time(),)
+                "DELETE FROM revoked_tokens WHERE expires_at <= ?",
+                (stable_now_epoch(),),
             )
             return int(cursor.rowcount or 0)
 
@@ -460,7 +463,7 @@ class JWTHandler:
         Returns:
             Tuple of (encoded JWT string, TokenPayload)
         """
-        now = int(time.time())
+        now = int(stable_now_epoch())
 
         if ttl is None:
             ttl = self.access_ttl if token_type == TokenType.ACCESS else self.refresh_ttl
@@ -612,7 +615,9 @@ class JWTHandler:
                 "Token revocation status unavailable"
             ) from exc
 
-        # Full validation
+        # Full validation。过期判定**不交给 PyJWT**：它内部直接读系统墙钟，
+        # 用户调时间或从休眠恢复时会把一批有效令牌判成过期、全员踢下线。
+        # 这里改成先验签名/iss/aud，再用抗跳变的 ``stable_now_epoch`` 比对 exp。
         payload_data = jwt.decode(
             token,
             self._get_verification_key(),
@@ -620,7 +625,8 @@ class JWTHandler:
             issuer=self.issuer,
             audience=self.audience if verify_aud else None,
             options={
-                "verify_exp": verify_exp,
+                "verify_exp": False,
+                "verify_iat": False,
                 "verify_iss": True,
                 "verify_aud": verify_aud,
                 "require_exp": True,
@@ -631,6 +637,8 @@ class JWTHandler:
         )
 
         payload = TokenPayload.from_dict(payload_data)
+        if verify_exp and payload.exp and stable_now_epoch() >= payload.exp + self.leeway:
+            raise jwt.ExpiredSignatureError("Signature has expired")
 
         # Check token type
         if expected_type and payload.token_type != expected_type:
@@ -660,7 +668,8 @@ class JWTHandler:
             issuer=self.issuer,
             audience=self.audience,
             options={
-                "verify_exp": verify_exp,
+                "verify_exp": False,
+                "verify_iat": False,
                 "verify_iss": True,
                 "verify_aud": True,
                 "require_exp": True,
@@ -669,7 +678,10 @@ class JWTHandler:
             },
             leeway=self.leeway,
         )
-        return TokenPayload.from_dict(payload_data)
+        payload = TokenPayload.from_dict(payload_data)
+        if verify_exp and payload.exp and stable_now_epoch() >= payload.exp + self.leeway:
+            raise jwt.ExpiredSignatureError("Signature has expired")
+        return payload
 
     def validate_refresh_token(self, token: str) -> TokenPayload:
         """Validate refresh token"""
@@ -740,7 +752,7 @@ class JWTHandler:
 
     def _revocation_ttl(self) -> float:
         """Conservative lifetime for a JTI revoked without a known ``exp``."""
-        return time.time() + max(
+        return stable_now_epoch() + max(
             3600.0, float(self.access_ttl or 0), float(self.refresh_ttl or 0)
         )
 

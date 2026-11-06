@@ -24,10 +24,18 @@ import argparse
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 
+from ..common.instance_lock import (
+    InstanceGuardUnavailable,
+    InstanceLock,
+    InstanceLockBusy,
+    instance_root,
+)
+from ..common.parent_watch import watch_parent
 from ..logging_config import ensure_utf8_streams, load_uvicorn_log_config
 from .service import GRACEFUL_INSIDE
 
@@ -86,14 +94,41 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["HOST"] = args.host
 
     ensure_utf8_streams()
-    server = uvicorn.Server(build_config(args.host, args.port, args.log_config, args.app))
-    threading.Thread(
-        target=_watch_stdin,
-        args=(server,),
-        name="liuhao-shutdown-watch",
-        daemon=True,
-    ).start()
-    server.run()
+
+    # 与 ``python -m src.gateway`` 共用同一把锁：托盘壳和命令行各自拉起网关时，
+    # 第二个进程必须在这里被挡住，不能先绑上端口再和第一个进程写同一份数据。
+    guard = InstanceLock(instance_root(Path.cwd()))
+    try:
+        guard.acquire()
+    except InstanceLockBusy as busy:
+        print(f"[instance] {busy.describe()}", file=sys.stderr, flush=True)
+        return 3
+    except InstanceGuardUnavailable as exc:
+        print(f"[instance] {exc}", file=sys.stderr, flush=True)
+        return 3
+    try:
+        from datetime import datetime
+
+        guard.publish(
+            pid=os.getpid(),
+            url=f"http://{args.host}:{args.port}",
+            host=args.host,
+            port=args.port,
+            started_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+        server = uvicorn.Server(build_config(args.host, args.port, args.log_config, args.app))
+        threading.Thread(
+            target=_watch_stdin,
+            args=(server,),
+            name="liuhao-shutdown-watch",
+            daemon=True,
+        ).start()
+        # 托盘壳崩溃/被强杀时，网关随之优雅退出（否则孤儿进程会一直占着端口）。
+        watch_parent(server)
+        server.run()
+    finally:
+        guard.clear_metadata()
+        guard.release()
     return 0
 
 
