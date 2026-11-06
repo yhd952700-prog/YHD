@@ -67,6 +67,7 @@ DEFAULT_CONSOLE_DIST = CONSOLE_DIR / "dist"
 #: 本机启动就是一个"没人能通过的登录墙"。详见 `_point_at_console_stores`。
 IDENTITY_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
 AUTH_SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
+INTEGRITY_KEY_ENV = "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"
 
 #: 默认只绑回环（127.0.0.1）：本机能用，局域网上的其它设备访问不到。
 #: 手机/其它电脑要用时必须显式 ``--host 0.0.0.0``（或指定网卡地址），
@@ -204,6 +205,35 @@ def _point_at_console_stores() -> None:
     ):
         if not (os.environ.get(env_name) or "").strip() and path.is_file():
             os.environ[env_name] = str(path)
+
+
+def _ensure_identity_integrity_key() -> bool:
+    """无环境变量时把身份注册表签名密钥自举到数据目录。
+
+    身份内核在 ``LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY`` 未设置时拒绝加载
+    任何身份（fail-closed）。安装版由 ``launch_installed.prepare_environment``
+    提前注入；这里覆盖直接运行本启动器（源码/自用版）的情形，保证「全新安装
+    第一次启动」不会卡在无人可登录。密钥值不会打印，落盘权限见
+    ``src/common/integrity_key``。
+    """
+    if (os.environ.get(INTEGRITY_KEY_ENV) or "").strip():
+        return True
+    from src.common.integrity_key import ensure_integrity_key, resolve_data_dir
+
+    registry = ROOT / "config" / "human_identities.json"
+    try:
+        key = ensure_integrity_key(
+            data_dir=resolve_data_dir(),
+            registry_path=registry if registry.is_file() else None,
+        )
+    except OSError as exc:
+        print(f"[FAIL] 无法生成/写入人类身份完整性密钥：{exc}", file=sys.stderr)
+        print("        已停止启动；请确认数据目录可写，"
+              f"或用 {os.environ.get('LIUHAO_DATA_DIR') or 'LIUHAO_DATA_DIR'} 指向可写目录。",
+              file=sys.stderr)
+        return False
+    os.environ[INTEGRITY_KEY_ENV] = key
+    return True
 
 
 def _no_proxy_opener():
@@ -466,6 +496,9 @@ def main() -> int:
 
     # .env 里的 SECRET_KEY / APP_ENV 必须先可见，否则 preflight 与部署姿态都不成立。
     _load_dotenv()
+    # 没有密钥时身份行会被内核全部拒绝（= 无人可登录）。首次启动必须先自举。
+    if not _ensure_identity_integrity_key():
+        return 1
     # 网关带鉴权闸门；把本机登记表/凭据指过去，否则没人能登录。
     _point_at_console_stores()
 

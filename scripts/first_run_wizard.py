@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -89,21 +88,21 @@ def _ensure_integrity_key() -> bool:
     """确保 ``LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY`` 有值。
 
     没有这个 key 时，注册表的每一行在加载时都会被内核拒绝（fail-closed，
-    HC-11 / U6）—— 也就是说"注册成功"但内核一个人都不承认。向导在这里补一个
-    随机 key，写进 ``.env``（机器级签名密钥，不是用户凭据；启动器会加载它）。
+    HC-11 / U6）—— 也就是说"注册成功"但内核一个人都不承认。
 
-    返回 True 表示已有或已生成；False 表示无法写入。
+    密钥由 ``src/common/integrity_key`` 统一生成，落在**数据目录**
+    （``config/integrity.key``，run 时权限 0600/仅当前用户），不再写进程序
+    目录的 ``.env``；密钥值不会打印。返回 True 表示已有或已生成。
     """
-    if os.environ.get(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV):
-        return True
-    env_file = REPO_ROOT / ".env"
-    key = secrets.token_hex(32)
+    from src.common.integrity_key import ensure_integrity_key, resolve_data_dir
+
     try:
-        with open(env_file, "a", encoding="utf-8") as fh:
-            fh.write("\n# 生成于 first_run_wizard.py：人类身份注册表的签名密钥\n")
-            fh.write(f"{HUMAN_IDENTITIES_INTEGRITY_KEY_ENV}={key}\n")
+        key = ensure_integrity_key(
+            data_dir=resolve_data_dir(),
+            registry_path=DEFAULT_IDENTITY_FILE if DEFAULT_IDENTITY_FILE.is_file() else None,
+        )
     except OSError as exc:
-        print(f"  [FAIL] 无法写入 {env_file}: {exc}", file=sys.stderr)
+        print(f"  [FAIL] 无法生成/写入身份完整性密钥: {exc}", file=sys.stderr)
         return False
     os.environ[HUMAN_IDENTITIES_INTEGRITY_KEY_ENV] = key
     return True

@@ -218,17 +218,14 @@ def _ensure_app_env(path: Path) -> None:
 
 
 def _ensure_integrity_key(path: Path) -> str:
-    """读取或生成人类身份注册表签名密钥。"""
-    existing = (os.environ.get("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY") or "").strip()
-    if existing:
-        return existing
-    if path.is_file():
-        key = path.read_text(encoding="utf-8").strip()
-        if key:
-            return key
-    key = secrets.token_hex(32)
-    path.write_text(key + "\n", encoding="utf-8")
-    return key
+    """读取或生成人类身份注册表签名密钥（实现见 ``src/common/integrity_key``）。
+
+    三条路径（全新安装 / 旧数据升级 / 密钥丢失但身份库仍在）的判定与可读
+    提示都在那里；这里只负责把数据目录位置传进去。
+    """
+    from src.common.integrity_key import ensure_integrity_key
+
+    return ensure_integrity_key(data_dir=path.parent.parent)
 
 
 def _configure_paths(data_dir: Path) -> None:

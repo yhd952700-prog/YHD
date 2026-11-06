@@ -1,7 +1,8 @@
 """首次运行向导（自用版分发）的行为测试。
 
-只断言行为：密钥写进 .env、空注册表无人、模型配置以密文落库、跳过模式明确提示、
-已配置时自动退出不打断用户。不与真实 Ollama/云 provider 通信。
+只断言行为：密钥落进数据目录（不是程序目录 .env）、空注册表无人、模型配置以
+密文落库、跳过模式明确提示、已配置时自动退出不打断用户。不与真实 Ollama/云
+provider 通信。
 """
 from __future__ import annotations
 
@@ -40,20 +41,25 @@ def isolated_env(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_integrity_key_writes_env_file(tmp_path, monkeypatch):
+def test_ensure_integrity_key_writes_data_dir_file(tmp_path, monkeypatch):
     monkeypatch.delenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, raising=False)
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(frw, "REPO_ROOT", tmp_path)
 
     assert frw._ensure_integrity_key() is True
 
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert f"{HUMAN_IDENTITIES_INTEGRITY_KEY_ENV}=" in env_text
-    # 进程内也已设置，后续 IdentityManager 能加载行。
-    assert os.environ.get(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV)
+    key_file = tmp_path / "data" / "config" / "integrity.key"
+    assert key_file.is_file()
+    assert key_file.read_text(encoding="utf-8").strip() == os.environ.get(
+        HUMAN_IDENTITIES_INTEGRITY_KEY_ENV
+    )
+    # 不再写进程序目录。
+    assert not (tmp_path / ".env").exists()
 
 
 def test_ensure_integrity_key_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, "already-set")
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(frw, "REPO_ROOT", tmp_path)
 
     assert frw._ensure_integrity_key() is True
@@ -136,10 +142,10 @@ def test_wizard_auto_skips_when_fully_configured(capsys, isolated_env, monkeypat
 
 def test_wizard_stops_when_integrity_key_unwritable(isolated_env, monkeypatch, tmp_path):
     monkeypatch.delenv(HUMAN_IDENTITIES_INTEGRITY_KEY_ENV, raising=False)
-    # 指向一个无法创建文件的路径（用文件当目录）。
+    # 指向一个无法创建目录的位置（用文件当目录），密钥落盘必然失败。
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(frw, "REPO_ROOT", blocker)
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(blocker / "data"))
 
     rc = frw.run_wizard(skip=False)
 

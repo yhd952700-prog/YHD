@@ -32,9 +32,9 @@
 - 手机浏览器下的布局/滚动/输入法：**未验证**。
 - 登录态在手机浏览器切换/刷新后是否保持：**未验证**。
 
-## 4. 已知阻塞：登录需要完整性密钥
+## 4. 身份完整性密钥（已改为启动自举）
 
-启动日志实际出现（本机复现）：
+历史现象（未自举时的开发库，本机复现）：
 
 ```
 REFUSING registry row 'liuhao' in 'data/human_identities.sqlite3':
@@ -43,15 +43,23 @@ the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY
 ```
 
 含义：未设置 `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 时，已有的人类身份行
-**全部被拒绝**，手机上即使打开页面也无法登录。处理方式：
+**全部被拒绝**——手机和换机场景会卡在「无人可登录」。
 
-1. 设置 `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY`（首次运行向导会处理）；
-2. 用 `scripts/register_human_identity.py` 重新登记该身份（让行带上有效
-   `integrity` 标签）；
-3. 再启动服务并验证登录。
+现在的处理（`src/common/integrity_key.py`，安装版与源码启动器都会调用）：
 
-首次运行向导（`scripts/first_run_wizard.py`）会自动生成并保存该密钥，所以
-「按向导走完」的机器不会遇到此问题；本次验证用的开发库没走向导，才暴露出来。
+1. **全新安装**：无环境变量、无密钥文件时自动生成 32 字节随机密钥，写到
+   数据目录 `config/integrity.key`（不是程序目录、不进安装包）；密钥值不打印。
+   权限：POSIX `0600`；Windows 用 `icacls /inheritance:r` 只授予当前用户。
+2. **已有数据升级**：登记表里旧版（无 `integrity` 标签）的行会用新密钥补签，
+   并打印一行可读说明；旧行从此可被内核接纳。
+3. **密钥缺失但身份库仍有已签名行**：不会静默锁死——打印恢复步骤
+   （找回旧密钥 / 重新注册管理员），旧行仍按 fail-closed 拒绝，新密钥只用于
+   后续注册。
+
+显式设置了环境变量时以环境变量为准，并把它固化到上述文件，避免“环境丢了”
+就再次变成无人可登录。回归见 `tests/test_identity_key_bootstrap.py`。
+
+手机侧「打开 → 登录 → 发消息」仍需真机验证，见 §3 与 `docs/known-gaps.md` E-14。
 
 ## 5. 防火墙
 
