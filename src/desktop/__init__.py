@@ -26,6 +26,7 @@ DATA_DIR = REPO_ROOT / "data"
 LOG_DIR = REPO_ROOT / "logs"
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
 
+
 #: 诊断包与桌面日志的默认落点（可用 ``LIUHAO_DIAGNOSTICS_DIR`` 覆盖）。
 def diagnostics_dir() -> Path:
     """诊断包默认输出目录：``%LOCALAPPDATA%\\LiuHao\\diagnostics``。"""

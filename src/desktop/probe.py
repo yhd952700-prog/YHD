@@ -43,7 +43,7 @@ def http_json(url: str, timeout: float = 3.0) -> dict[str, Any]:
         result["error"] = f"HTTP {exc.code}"
         try:
             body = exc.read().decode("utf-8", "replace")
-            result["body"] = json.loads(body) if body.strip().startswith(("{", "[") ) else body[:2000]
+            result["body"] = json.loads(body) if body.strip().startswith(("{", "[")) else body[:2000]
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             result["body"] = None
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
