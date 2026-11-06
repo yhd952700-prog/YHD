@@ -21,6 +21,7 @@ Windows 的 ``TerminateProcess``（``Popen.terminate()``）没有可捕获的退
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 from typing import Any
@@ -69,11 +70,20 @@ def build_config(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.desktop._runner")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="绑定地址（默认 127.0.0.1，只本机可达；对外需显式指定）",
+    )
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--log-config", default=None, help="uvicorn 日志配置路径（通常为 config/logging.yaml）")
     parser.add_argument("--app", default=DEFAULT_APP, help="ASGI 应用路径（测试时可替换）")
     args = parser.parse_args(argv)
+
+    # 让网关应用层（Host 白名单）知道真实绑定地址：显式对外时该地址必须
+    # 被允许，否则启动成功但每个请求都会因 Host 校验被 400。
+    os.environ["LIUHAO_LISTEN_HOST"] = args.host
+    os.environ["HOST"] = args.host
 
     ensure_utf8_streams()
     server = uvicorn.Server(build_config(args.host, args.port, args.log_config, args.app))

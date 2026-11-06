@@ -4,7 +4,9 @@
 目的：让 PWA 在手机端 / 局域网桌面端也能走「安全上下文」，从而弹出
 「安装应用 / 添加到主屏幕」提示（PWA 可安装性要求 HTTPS 或 localhost）。
 
-- 监听 0.0.0.0:<PORT>（默认 8443），TLS 终止。
+- 监听 <LISTEN_HOST>:<PORT>（默认 127.0.0.1:8443），TLS 终止。
+  默认只绑回环，不额外放大暴露面；需要手机/局域网访问时显式设置
+  ``LIUHAO_TLS_HOST=0.0.0.0``（或指定网卡地址），启动时会打印醒目警告。
 - 反向代理到 http://127.0.0.1:<BACKEND_PORT>（默认 8099，即控制台）。
 - 证书为自签（SAN 含局域网 IP / 127.0.0.1 / localhost）；
   手机端需先信任该证书（见交付说明），否则会报安全警告且安装提示不出现。
@@ -45,6 +47,9 @@ DEFAULT_CERT_DIR = os.environ.get(
 )
 BACKEND_HOST = os.environ.get("LIUHAO_PROXY_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("LIUHAO_PROXY_BACKEND_PORT", "8099"))
+#: 默认只监听回环：这个代理会终止 TLS 并把请求转发给控制台，默认对外等于
+#: 凭空多开一个局域网入口。对外暴露必须是显式选择（LIUHAO_TLS_HOST）。
+LISTEN_HOST = os.environ.get("LIUHAO_TLS_HOST", "127.0.0.1").strip() or "127.0.0.1"
 LISTEN_PORT = int(os.environ.get("LIUHAO_TLS_PORT", "8443"))
 CERT = os.environ.get("LIUHAO_TLS_CERT", os.path.join(DEFAULT_CERT_DIR, "liuhao-local.pem"))
 KEY = os.environ.get("LIUHAO_TLS_KEY", os.path.join(DEFAULT_CERT_DIR, "liuhao-local.key"))
@@ -122,10 +127,21 @@ def main() -> int:
     ctx.load_cert_chain(CERT, KEY)
 
     socketserver.ThreadingTCPServer.allow_reuse_address = True
-    httpd = socketserver.ThreadingTCPServer(("0.0.0.0", LISTEN_PORT), ProxyHandler)
+    httpd = socketserver.ThreadingTCPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    if LISTEN_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        print(
+            "!" * 62,
+            flush=True,
+        )
+        print(
+            f"!! 警告：HTTPS 代理已绑定 {LISTEN_HOST}:{LISTEN_PORT}，"
+            "已对外暴露，局域网可访问。",
+            flush=True,
+        )
+        print("!" * 62, flush=True)
     print(
-        f"[https_proxy] HTTPS on 0.0.0.0:{LISTEN_PORT} -> "
+        f"[https_proxy] HTTPS on {LISTEN_HOST}:{LISTEN_PORT} -> "
         f"http://{BACKEND_HOST}:{BACKEND_PORT} (Ctrl+C 退出)",
         flush=True,
     )

@@ -24,7 +24,11 @@ from .probe import discover_service, http_json
 
 
 def _add_app_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", default="0.0.0.0", help="网关绑定地址（默认 0.0.0.0，手机可访问）")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="网关绑定地址（默认 127.0.0.1，只本机可达；手机访问需显式传 0.0.0.0）",
+    )
     parser.add_argument("--port", type=int, default=None, help="网关端口（默认 8080，占用时自动顺延）")
     parser.add_argument("--open-browser", action="store_true", help="启动后打开浏览器（自启场景不要加）")
     parser.add_argument("--hidden", action="store_true", help="启动后只驻留托盘，不显示窗口")

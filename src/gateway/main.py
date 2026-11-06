@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional  # noqa: E402
 from fastapi import FastAPI, Request, APIRouter, Depends  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.responses import JSONResponse, PlainTextResponse  # noqa: E402
 
 from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
 # 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
@@ -71,8 +71,105 @@ _CONFIG_DIR = _PROJECT_ROOT / "config"
 
 #: Comma-separated override for ``server.cors.allow_origins``.
 CORS_ORIGINS_ENV = "LIUHAO_CORS_ALLOW_ORIGINS"
+#: Comma-separated override for the Host allow-list (防 DNS rebinding)。
+#: 不设时按"回环 + 实际绑定地址 + CORS 白名单域名"推导，绝不含 ``*``。
+TRUSTED_HOSTS_ENV = "LIUHAO_TRUSTED_HOSTS"
 
 _CORS_DEFAULT_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
+
+#: 永远可信的本机主机名。``testserver`` 是 Starlette TestClient 的默认 Host，
+#: 不是可被公网 DNS 解析的名字（DNS rebinding 用不到它），只在非生产放行。
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def hostname_of(value: str) -> str:
+    """把 ``Host`` / URL / origin 里的主机名规范化（去端口、去方括号、小写）。
+
+    ``[::1]:8080`` -> ``::1``；``LocalHost:5173`` -> ``localhost``。
+    """
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        return text[1:end] if end != -1 else text
+    return text.split(":", 1)[0]
+
+
+def _origin_hostname(origin: str) -> str:
+    """从 Origin URL 取主机名；非法/``null`` 返回空串。"""
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit((origin or "").strip())
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https"):
+        return ""
+    return (parsed.hostname or "").lower()
+
+
+def _lan_ipv4_addresses() -> list:
+    """本机非回环 IPv4 地址（显式对外绑 0.0.0.0 时用于 Host 白名单）。"""
+    import ipaddress
+    import socket
+
+    found: list = []
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return found
+    for info in infos:
+        ip = info[4][0]
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except (ValueError, IndexError):
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
+            continue
+        if ip not in found:
+            found.append(ip)
+    return found
+
+
+def resolve_trusted_hosts(allow_origins: list, production: bool) -> list:
+    """推导 Host 白名单：回环 + 实际绑定地址 + 已配置的 CORS 域名。
+
+    DNS rebinding 的手法是让恶意域名解析到 127.0.0.1，浏览器随后带着
+    ``Host: evil.example.com`` 发请求。只允许本机名字即可挡住它；这里**不使用
+    ``*``**。显式对外绑定（``HOST=0.0.0.0`` / 指定网卡）时把该地址与局域网
+    IPv4 加进来，避免"能启动但所有请求 400"。``LIUHAO_TRUSTED_HOSTS`` 可覆盖
+    这份推导（例如自定义反代域名）。
+    """
+    raw = (os.environ.get(TRUSTED_HOSTS_ENV) or "").strip()
+    if raw:
+        hosts = [hostname_of(item) for item in raw.split(",")]
+        return [h for h in dict.fromkeys(hosts) if h]
+
+    hosts = list(_LOOPBACK_HOSTS)
+    if not production:
+        hosts.append("testserver")
+    for origin in allow_origins or []:
+        name = _origin_hostname(str(origin))
+        if name:
+            hosts.append(name)
+
+    listen = (
+        os.environ.get("LIUHAO_LISTEN_HOST") or os.environ.get("HOST") or ""
+    ).strip().lower()
+    if listen in ("0.0.0.0", "::", "*"):
+        hosts.extend(_lan_ipv4_addresses())
+        try:
+            import socket
+
+            hosts.append(socket.gethostname().strip().lower())
+        except OSError:  # pragma: no cover - hostname lookup is best-effort
+            pass
+    elif listen:
+        name = hostname_of(listen)
+        if name:
+            hosts.append(name)
+    return [h for h in dict.fromkeys(hosts) if h]
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -141,16 +238,42 @@ def load_runtime_config() -> Dict[str, Any]:
             for item in (cors_cfg.get("allow_origins") or [])
             if str(item).strip()
         ]
+    production = environment == "production"
     if not allow_origins:
-        logger.warning(
-            "No server.cors.allow_origins configured; falling back to localhost "
-            "development origins (%s)", ", ".join(_CORS_DEFAULT_ORIGINS),
-        )
-        allow_origins = list(_CORS_DEFAULT_ORIGINS)
+        if production:
+            # 生产不注入 localhost 开发来源：同源部署根本不需要 CORS，
+            # 跨域部署则必须显式列名单（宁可跨域不可用，也不下发开发白名单）。
+            logger.warning(
+                "No server.cors.allow_origins configured in production; "
+                "cross-origin consoles will be refused (same-origin is unaffected)"
+            )
+        else:
+            logger.warning(
+                "No server.cors.allow_origins configured; falling back to localhost "
+                "development origins (%s)", ", ".join(_CORS_DEFAULT_ORIGINS),
+            )
+            allow_origins = list(_CORS_DEFAULT_ORIGINS)
 
+    if production:
+        # 生产即便配置文件里残留开发来源，也不把它们下发给浏览器。
+        allow_origins = [
+            origin
+            for origin in allow_origins
+            if _origin_hostname(origin) not in ("localhost", "127.0.0.1", "::1")
+        ]
+
+    listen = (
+        os.environ.get("LIUHAO_LISTEN_HOST") or os.environ.get("HOST") or ""
+    ).strip().lower()
     return {
         "environment": environment,
-        "production": environment == "production",
+        "production": production,
+        # Host 头白名单（防 DNS rebinding）；不含 ``*``。
+        "trusted_hosts": resolve_trusted_hosts(allow_origins, production),
+        # 显式对外绑 0.0.0.0 时无法枚举"所有可达域名"，但 IP 字面量访问必须
+        # 放行（容器/局域网都靠 IP 访问）。DNS rebinding 用的是域名，所以放行
+        # IP 字面量不会削弱这道闸；域名仍需进白名单（LIUHAO_TRUSTED_HOSTS）。
+        "host_guard_allow_ip_literals": listen in ("0.0.0.0", "::", "*"),
         "cors": {
             "enabled": bool(cors_cfg.get("enabled", True)),
             "allow_origins": allow_origins,
@@ -220,6 +343,90 @@ def unenforced_timeouts(runtime: Dict[str, Any]) -> list:
     """``server.timeouts.*`` keys configured but not enforceable in-app."""
     timeouts = runtime.get("timeouts") or {}
     return [name for name in ("read_seconds", "write_seconds") if timeouts.get(name)]
+
+
+#: 走"带副作用"判定的写方法。GET/HEAD/OPTIONS 不参与 Origin 拦截。
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class HostGuardMiddleware:
+    """Host 白名单 + 写请求 Origin 校验（纵深防御，纯 ASGI）。
+
+    1) **Host**：只放行白名单里的主机名（去端口、大小写不敏感、支持 IPv6）。
+       陌生 Host 返回 400。这是 DNS rebinding 的第一道闸：恶意域名解析到
+       127.0.0.1 后，浏览器发来的请求就是 ``Host: evil.example.com``。
+    2) **Origin**：写方法若带 ``Origin`` 且不在白名单，直接 403 并写安全
+       日志。不能只靠 CORS —— CORS 只限制"浏览器能不能读到响应"，一个被
+       放行的简单请求其副作用在服务端已经发生（CSRF 的经典盲区）。
+    """
+
+    def __init__(self, app, allowed_hosts, allowed_origins=(), allow_ip_literals=False):
+        self.app = app
+        self.allowed_hosts = {str(h).lower() for h in allowed_hosts if h}
+        self.allowed_origins = {
+            str(o).strip().lower().rstrip("/") for o in allowed_origins if o
+        }
+        self.allow_ip_literals = bool(allow_ip_literals)
+
+    def _host_allowed(self, host: str) -> bool:
+        if host in self.allowed_hosts:
+            return True
+        if not self.allow_ip_literals:
+            return False
+        try:
+            import ipaddress
+
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return False
+
+    def _origin_allowed(self, origin: str) -> bool:
+        value = (origin or "").strip().lower().rstrip("/")
+        if value and value in self.allowed_origins:
+            return True
+        return self._host_allowed(_origin_hostname(value))
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        from starlette.datastructures import Headers
+
+        headers = Headers(scope=scope)
+        raw_host = headers.get("host", "")
+        host = hostname_of(raw_host)
+        client = scope.get("client") or ("", 0)
+        if not host or not self._host_allowed(host):
+            logger.warning(
+                "SECURITY_REJECTED reason=untrusted_host method=%s path=%s "
+                "host=%r client=%s",
+                scope.get("method"), scope.get("path"), raw_host, client[0],
+            )
+            response = PlainTextResponse("Invalid host header", status_code=400)
+            await response(scope, receive, send)
+            return
+
+        method = (scope.get("method") or "GET").upper()
+        origin = headers.get("origin")
+        if method in _WRITE_METHODS and origin and not self._origin_allowed(origin):
+            logger.warning(
+                "SECURITY_REJECTED reason=cross_site_write method=%s path=%s "
+                "origin=%r client=%s",
+                method, scope.get("path"), origin, client[0],
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={
+                    "error": "origin_not_allowed",
+                    "detail": "跨站写请求被拒绝：Origin 不在白名单内。",
+                },
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 # ==================== Routers ====================
@@ -765,6 +972,18 @@ def get_app() -> FastAPI:
         redoc_url=None if production else "/redoc",
         openapi_url=None if production else "/openapi.json",
     )
+    if production:
+        logger.info(
+            "Debug API surface DISABLED (APP_ENV=production): "
+            "/docs, /redoc, /openapi.json return 404"
+        )
+    else:
+        logger.warning(
+            "Debug API surface ENABLED (APP_ENV=%s): /docs, /redoc, "
+            "/openapi.json are readable on this listener -- set "
+            "APP_ENV=production to turn them off",
+            runtime["environment"],
+        )
 
     # ==================== Middleware ====================
 
@@ -837,6 +1056,19 @@ def get_app() -> FastAPI:
 
     # GZip compression
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # Host 白名单 + 写方法 Origin 校验（最外层安全闸，见类文档）。
+    # 不论 CORS 是否启用都必须挂：两者保护的不是同一件事。
+    app.add_middleware(
+        HostGuardMiddleware,
+        allowed_hosts=runtime["trusted_hosts"],
+        allowed_origins=cors["allow_origins"],
+        allow_ip_literals=runtime["host_guard_allow_ip_literals"],
+    )
+    logger.info(
+        "Host allow-list (DNS-rebinding guard): %s",
+        ", ".join(runtime["trusted_hosts"]),
+    )
 
     # ==================== Request logging middleware ====================
 

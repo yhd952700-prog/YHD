@@ -66,7 +66,10 @@ DEFAULT_CONSOLE_DIST = CONSOLE_DIR / "dist"
 IDENTITY_FILE_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
 AUTH_SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
 
-DEFAULT_API_HOST = "0.0.0.0"
+#: 默认只绑回环（127.0.0.1）：本机能用，局域网上的其它设备访问不到。
+#: 手机/其它电脑要用时必须显式 ``--host 0.0.0.0``（或指定网卡地址），
+#: 启动器会打印"已对外暴露"的醒目警告。
+DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8080
 DEFAULT_UI_PORT = 5173
 
@@ -341,6 +344,9 @@ def _start_https_proxy(args: argparse.Namespace, single_port: bool) -> None:
     proxy_env = dict(os.environ)
     proxy_env["LIUHAO_PROXY_BACKEND_HOST"] = args.host
     proxy_env["LIUHAO_PROXY_BACKEND_PORT"] = str(backend_port)
+    # 代理的监听地址跟随网关：默认同样只绑回环，不额外放大暴露面；
+    # 只有用户显式 --host 对外时才跟着对外。
+    proxy_env["LIUHAO_TLS_HOST"] = args.host
     proxy_env["LIUHAO_TLS_PORT"] = str(https_port)
     proxy_env["LIUHAO_TLS_CERT"] = cert
     proxy_env["LIUHAO_TLS_KEY"] = key
@@ -366,9 +372,37 @@ def _shutdown_all() -> None:
             proc.kill()
 
 
+def _is_loopback(host: str) -> bool:
+    """绑定地址是否只覆盖本机回环。"""
+    value = (host or "").strip()
+    if value in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _warn_if_exposed(host: str, port: int) -> None:
+    """显式对外绑定时打印醒目警告（默认 127.0.0.1 不会触发）。"""
+    if _is_loopback(host):
+        return
+    print("!" * 62)
+    print(f"!! 警告：网关已绑定 {host}:{port}，已对外暴露，局域网可访问。")
+    print("!! 如非必要，请改用默认的 127.0.0.1（只本机可达）。")
+    print("!" * 62)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 驾驶舱")
-    parser.add_argument("--host", default=DEFAULT_API_HOST, help=f"绑定地址（默认 {DEFAULT_API_HOST}，监听所有网卡便于手机访问）")
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_API_HOST,
+        help=(
+            f"绑定地址（默认 {DEFAULT_API_HOST}，只本机可达）。"
+            "需要手机/其它电脑访问时显式传 0.0.0.0 或指定网卡地址"
+        ),
+    )
     parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT)
     parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT)
     parser.add_argument("--backend-only", action="store_true", help="只起网关，不起驾驶舱")
@@ -414,6 +448,9 @@ def main() -> int:
         args.ui_port = _ensure_free_port(probe_host, args.ui_port, "驾驶舱(vite)")
     if args.https:
         args.https_port = _ensure_free_port(probe_host, args.https_port, "HTTPS 代理")
+
+    # 只有显式绑定非回环地址才算"对外"；默认 127.0.0.1 不告警。
+    _warn_if_exposed(args.host, args.api_port)
 
     api_base = f"http://{args.host}:{args.api_port}"
     ui_base = api_base if single_port else f"http://{args.host}:{args.ui_port}"
@@ -526,7 +563,12 @@ def main() -> int:
 
 
 def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> None:
-    """在控制台打印局域网访问地址，方便手机扫码/手输。"""
+    """在控制台打印局域网访问地址，方便手机扫码/手输。
+
+    默认只绑回环时这些地址根本连不上，打印出来只会误导用户，所以直接跳过。
+    """
+    if _is_loopback(host):
+        return
     lan_ips = _lan_addresses()
     if not lan_ips:
         return

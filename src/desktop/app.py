@@ -99,7 +99,7 @@ class DesktopApp:
     def __init__(
         self,
         *,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int | None = None,
         open_browser: bool = False,
         hidden: bool = False,

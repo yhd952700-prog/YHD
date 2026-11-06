@@ -38,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 IDENTITY_ENV = "LIUHAO_HUMAN_IDENTITIES_FILE"
 SECRETS_ENV = "LIUHAO_AUTH_SECRETS_FILE"
-DEFAULT_HOST = "0.0.0.0"
+#: 默认只绑回环：托盘壳拉起的网关不该默认对局域网开放。
+#: 需要手机/其它电脑访问时必须显式指定非回环地址，并在日志里告警。
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 120.0
 
@@ -58,6 +60,20 @@ SHUTDOWN_LOG_MARKER = "Application shutdown complete"
 #: uvicorn 在途请求超出等待上限时的日志（WARNING，落进子进程抓取文件）。
 #: 出现它说明进程虽正常退出，但**有任务被取消** —— 也算降级，必须如实展示。
 SHUTDOWN_CANCEL_MARKER = "timeout graceful shutdown exceeded"
+
+
+def is_loopback_host(host: str) -> bool:
+    """绑定地址是否只覆盖本机回环。"""
+    value = (host or "").strip()
+    if value in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
 
 #: 网关子进程的 stdout/stderr 抓取文件上限。运行中不轮转（Windows 下子进程
 #: 持有该句柄，重命名会失败），只在启动前把超限文件滚成 ``.1`` 并只留一份。
@@ -231,6 +247,12 @@ class GatewayService:
         self.last_error = None
         _load_dotenv(self._root)
         _point_at_console_stores(self._root)
+        if not is_loopback_host(self.host):
+            logger.warning(
+                "网关绑定到 %s —— 已对外暴露，局域网可访问；"
+                "仅在确实需要从其它设备访问时才这样启动。",
+                self.host,
+            )
 
         requested = self.port or DEFAULT_PORT
         if not port_is_free(requested):

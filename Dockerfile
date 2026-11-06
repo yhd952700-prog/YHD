@@ -109,6 +109,9 @@ ENV PYTHONUNBUFFERED=1
 
 # 平台注入端口；本文件不再把 8080 写死在启动命令里（见 src/gateway/__main__.py）。
 ENV PORT=8080
+# 网关默认只绑 127.0.0.1（桌面产品：只本机可达）。容器必须能从外部访问，
+# 所以这里**显式**选择对外绑定 —— 这是唯一能让镜像可用的方式，而不是默认。
+ENV HOST=0.0.0.0
 EXPOSE 8080
 
 # python:3.11-slim 没有 curl，用标准库自检。端点用 /v1/ready 而不是 /v1/health：
