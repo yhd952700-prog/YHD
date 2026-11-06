@@ -1,0 +1,194 @@
+{
+  "schema": "liuhao-bench-baseline/v1",
+  "default_profile": "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+  "profiles": {
+    "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick": {
+      "generated_at": "2026-11-05T21:06:02-0800",
+      "python": "3.12.14",
+      "platform": "win32",
+      "quick": true,
+      "single_append": {
+        "events": 500,
+        "events_per_sec": 644.25,
+        "latency_ms_p50": 1.417,
+        "latency_ms_p95": 2.577,
+        "latency_ms_p99": 4.526,
+        "cpu_seconds": 0.32,
+        "wall_seconds": 0.776
+      },
+      "batched_append": [
+        {
+          "events": 2000,
+          "events_per_sec": 4639.1,
+          "batch_latency_ms_p50": 2.04,
+          "batch_latency_ms_p95": 3.369,
+          "batch_latency_ms_p99": 5.119,
+          "per_event_ms_p95": 0.337,
+          "cpu_seconds": 0.242,
+          "wall_seconds": 0.432,
+          "batches": 200,
+          "batch_size": 10
+        },
+        {
+          "events": 2000,
+          "events_per_sec": 11156.4,
+          "batch_latency_ms_p50": 7.296,
+          "batch_latency_ms_p95": 12.998,
+          "batch_latency_ms_p99": 15.006,
+          "per_event_ms_p95": 0.13,
+          "cpu_seconds": 0.148,
+          "wall_seconds": 0.179,
+          "batches": 20,
+          "batch_size": 100
+        }
+      ],
+      "verify": {
+        "verify_ms_at_6500_events": 202.365,
+        "verify_ms_at_10500_events": 316.65
+      },
+      "chain_verifies": true,
+      "events_in_database": 10500,
+      "disk_bytes_per_event": 724.1,
+      "database_bytes": 7697376,
+      "multi_process": {
+        "processes": 2,
+        "batch_size": 25,
+        "aggregate_events_per_sec_including_startup": 2004.7,
+        "aggregate_events_per_sec_excluding_startup": 8015.85,
+        "wall_seconds": 0.499,
+        "slowest_child_seconds": 0.124,
+        "startup_overhead_seconds": 0.428,
+        "rows_committed": 1000,
+        "rows_expected": 1000,
+        "no_lost_appends": true,
+        "contiguous_seq": true
+      },
+      "recovery": {
+        "recovery_seconds": 0.044,
+        "chain_intact_after_kill": true
+      },
+      "profile": "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+      "captured_at": "2026-11-05T21:06:02-0800",
+      "machine": "Windows-10-10.0.19045-SP0 / Intel(R) Xeon(R) CPU E5-2673 v3 @ 2.40GHz / 12 cores 24 threads / 34,205,548,544 bytes RAM (31.9 GiB) / repo venv CPython 3.12.14"
+    }
+  },
+  "capture_method": "6 samples of `python scripts/bench_audit_append.py --quick` on 2026-11-05/06; median per metric; invariant booleans require all 6 true. RUN4/RUN5 were captured while another pytest process (PID 20996) was generating disk/CPU spikes and are 3x slower; kept in the sample set rather than discarded, and reflected in the variance table.",
+  "samples": [
+    {
+      "run": 1,
+      "single_events_per_sec": 658.1,
+      "single_p95_ms": 2.629,
+      "batched_100_events_per_sec": 12463.2,
+      "multi_process_excluding_startup": 16149.9,
+      "recovery_seconds": 0.04,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    },
+    {
+      "run": 2,
+      "single_events_per_sec": 690.5,
+      "single_p95_ms": 2.324,
+      "batched_100_events_per_sec": 11201.0,
+      "multi_process_excluding_startup": 7913.0,
+      "recovery_seconds": 0.03,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    },
+    {
+      "run": 3,
+      "single_events_per_sec": 706.8,
+      "single_p95_ms": 2.516,
+      "batched_100_events_per_sec": 14509.3,
+      "multi_process_excluding_startup": 12532.4,
+      "recovery_seconds": 0.027,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    },
+    {
+      "run": 4,
+      "single_events_per_sec": 220.1,
+      "single_p95_ms": 41.297,
+      "batched_100_events_per_sec": 4695.4,
+      "multi_process_excluding_startup": 5878.5,
+      "recovery_seconds": 0.05,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    },
+    {
+      "run": 5,
+      "single_events_per_sec": 191.4,
+      "single_p95_ms": 43.411,
+      "batched_100_events_per_sec": 4462.8,
+      "multi_process_excluding_startup": 4722.5,
+      "recovery_seconds": 0.061,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    },
+    {
+      "run": 6,
+      "single_events_per_sec": 630.4,
+      "single_p95_ms": 2.525,
+      "batched_100_events_per_sec": 11111.8,
+      "multi_process_excluding_startup": 8118.7,
+      "recovery_seconds": 0.049,
+      "chain_verifies": true,
+      "no_lost_appends": true,
+      "contiguous_seq": true,
+      "chain_intact_after_kill": true
+    }
+  ],
+  "variance": {
+    "single_append.events_per_sec": {
+      "min": 191.4,
+      "max": 706.8,
+      "median": 644.25,
+      "spread_pct_of_median": 80.0
+    },
+    "single_append.latency_ms_p95": {
+      "min": 2.324,
+      "max": 43.411,
+      "median": 2.577,
+      "spread_pct_of_median": 1594.4
+    },
+    "batched[10].events_per_sec": {
+      "min": 1183.0,
+      "max": 5163.0,
+      "median": 4639.1,
+      "spread_pct_of_median": 85.8
+    },
+    "batched[100].events_per_sec": {
+      "min": 4462.8,
+      "max": 14509.3,
+      "median": 11156.4,
+      "spread_pct_of_median": 90.1
+    },
+    "multi_process.excluding_startup": {
+      "min": 4722.5,
+      "max": 16149.9,
+      "median": 8015.85,
+      "spread_pct_of_median": 142.6
+    },
+    "multi_process.including_startup": {
+      "min": 1356.5,
+      "max": 2187.4,
+      "median": 2004.7,
+      "spread_pct_of_median": 41.4
+    },
+    "recovery.recovery_seconds": {
+      "min": 0.027,
+      "max": 0.061,
+      "median": 0.044,
+      "spread_pct_of_median": 76.4
+    }
+  }
+}

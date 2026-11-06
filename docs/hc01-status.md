@@ -51,6 +51,7 @@ persisted chain continuity not demonstrated
 - 影响：HC-01 永远停在 `UNVERIFIED`，即使数据完全健康。
 - 缺口边界：缺少一个**由复核人显式指定路径**的校验入口（例如 `--db <path>`），让发布流程可以对一份受控数据库生成并归档证据。当前矩阵刻意**不自动发现**任何运行产物，所以没有这个入口。
 - 本轮**未新增**该入口：它会改变 `EXPECTED` 的判定语义（显式库健康时是否允许 `COMPLIANT`），属于产品负责人的判定口径决定，不在本切片自行改断言。
+- **待裁决项已单独整理**：[hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)（5 行：裁什么 / 选项 / 后果 / 建议答案），供 owner 直接裁决；ADR 记录后 C11 才可能离开 `BLOCKED`。
 
 ### 4.2 最终矩阵 exit 1 的原因不在 HC-01
 

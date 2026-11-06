@@ -109,7 +109,7 @@
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-13（E-9～E-13 为本轮追加） | — |
-| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**） | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0） | 差额：基线 `bb6b654c` 之后 HEAD 已推进到 `d2a62b0e`，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖 |
+| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列；C11 5 项裁决已摊平并附建议 | 差额：基线 `bb6b654c` 之后 HEAD 已推进，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
@@ -212,6 +212,67 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 假失败并真的删掉仓库文件，已整轮作废；工作树已移到 temp 之外重跑。
 作废日志：`D:\cache\temp\verify-full-e18169e6-INVALID.log`（存在，3,498 字节）。
 
+### 5.7 三格补证（2026-11-06，不重跑全量、不改判定口径）
+
+> 只补 C7 / C9 / C11 的证据；§5.1 的 `PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2`、
+> `RELEASE READY=False` 仍是 `bb6b654c` 那一轮的事实，不回填成 PASS。
+> 详细版：[regression-baseline-coverage-2026-11-06.md](evidence/regression-baseline-coverage-2026-11-06.md) §7。
+
+**C7 性能门禁（从 SKIP 变为可判定）**
+
+- worktree `D:\copilot-worktrees\liuhao-final-bb6b654c`（temp 根之外，clean），仓库 venv py3.12.14，
+  `bench_audit_append.py --quick` **6 次取中位数**；异常样本未丢弃。
+- 基线（写入 `scripts/bench_baseline.json` 的新 profile `Windows|py3.12.14|...|t24|quick`）：
+  单条 **644.25 事件/秒**、p95 **2.577 ms**、batch10 **4,639.1**、batch100 **11,156.4**、
+  多进程不含启动 **8,015.85** / 含启动 **2,004.7**、恢复 **0.0445 s**；四个不变量全 true。
+- 判定：`python scripts/verify_readiness.py --only C7` → **PASS**；独立验证样本
+  `636.8 事件/秒 / p95 2.654 ms` → `=== PERFORMANCE GATE: PASS ===`。
+- **方差如实**：单条吞吐极差/中位数 **80.0%**、p95 **1594.4%**、batch100 **90.1%**、
+  多进程不含启动 **142.6%**、恢复 **76.4%**。基线代表安静窗口，繁忙时门禁会失败，**不是稳定 CI 门禁**。
+- 机器：Xeon E5-2673 v3 @2.40GHz，12 核/24 线程，34,205,548,544 字节内存（31.9 GiB），Windows 10.0.19045。
+- 证据：[c7-performance-baseline-2026-11-06.md](evidence/c7-performance-baseline-2026-11-06.md)、
+  [bench-baseline-py312-2026-11-06.json](evidence/bench-baseline-py312-2026-11-06.json)（6,249 字节）、
+  [c7-gate-validation-2026-11-06.log](evidence/c7-gate-validation-2026-11-06.log)（1,785 字节）、
+  [c7-readiness-only-2026-11-06.log](evidence/c7-readiness-only-2026-11-06.log)（493 字节）。
+
+**C9 部署 / 升级 / 回滚（两条结论同时存在，不许合并成一条 PASS）**
+
+| 口径 | 结论 |
+|---|---|
+| **原口径（Docker / CD）** | **`C9 = NOT_VERIFIED`，判定未改动**（compose v2 插件缺失、镜像未构建、真实 CD 缺失 `cd_absent=True`） |
+| **分发形态（安装树）** | **已独立验证**：真实安装树副本 10,769 文件 / 204,834,804 字节（自带 py3.12.14 runtime）上两轮 `check → apply → 重启 → rollback` |
+
+- 第 1 轮：check 0.71s → apply **12.50s**（备份 512 文件、安装 **662 文件**、自检真实启动 5.48s + `/v1/health` 200）→
+  0.1.1 重启 **5.34s** health 200 → rollback **2.29s**（恢复 513 文件）→ 0.1.0 重启 9.87–9.90s health 200。
+- 第 2 轮（带真实用户 SQLite）：apply **12.62s**（数据 3 文件 / 14,878 字节，`databases_checked=1`、
+  `tables_checked=1`）→ rollback **2.45s**（恢复 515 文件）。
+- 数据保全：哨兵 `c9-sentinel.txt` SHA256 `051F79B9…A4A9` 升级与回滚后不变；用户库行
+  `(1, 'keep-across-upgrade-and-rollback')` 全程在。
+- 披露：回滚是**覆盖恢复**而非字节级还原（备份后新建的 `audit_store.db*` 会保留）；
+  载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**；
+  升级只校验 SHA256、无签名。
+- 证据：[c9-installed-upgrade-2026-11-06.md](evidence/c9-installed-upgrade-2026-11-06.md)、
+  [c9-check.json](evidence/c9-check.json)、[c9-upgrade-1.json](evidence/c9-upgrade-1.json)、
+  [c9-rollback-1.json](evidence/c9-rollback-1.json)、[c9-upgrade-2.json](evidence/c9-upgrade-2.json)、
+  [c9-rollback-2.json](evidence/c9-rollback-2.json)、[c9-history.json](evidence/c9-history.json)（42,617 字节）、
+  [c9-restart-0.1.1.err.log](evidence/c9-restart-0.1.1.err.log)（1,243 字节）、
+  [c9-restart-0.1.0.err.log](evidence/c9-restart-0.1.0.err.log)（1,244 字节）。
+
+**C11 HC-01：5 项裁决已摊平并附建议**
+
+| # | 裁什么 | 建议 |
+|---|---|---|
+| 1 | Baseline binding：A live / B 旧快照 / C 重采 | **A**（live 作运行源，旧快照仅作历史证据） |
+| 2 | 快照保管断裂：接受并披露 / 隔离替换 / 标 UNRESOLVED | **接受并披露**（内容完整性有证，缺的是操作者归因） |
+| 3 | I1–I10：固定/参数化拆分 / 维持现状 / 全部参数化 | **固定/参数化拆分**（否则 `live=331,611` 长期假红） |
+| 4 | Schema：v1→v9 / 不做 / 双路 | **随第 1 项选 A ⇒ 不做 v1→v9** |
+| 5 | 是否授权重采冻结基线 | **推迟，条件写死**：F1–F6 单写者/围栏上线并 soak 通过后按只读 ACL + operator + 前后 hash 重采 |
+
+- 建议组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
+- 在 ADR 记录前 C11 仍派生 `BLOCKED`（判定事实，非工程待办）。
+- 证据：[hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)、
+  [hc01-status.md](hc01-status.md) §4.1 指针。
+
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
 > 逐个核实清单里引用的每个产物：文件是否存在、字节是否对得上。
@@ -230,15 +291,27 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §2 #9 | `scripts/verify_first_run_e2e.py` / `docs/first-run-e2e.md` | — | 存在，20,237 / 3,559 字节 | 一致 |
 | §2 #1 | `docs/END-USER-GUIDE.md` | — | 存在，9,107 字节 | 一致 |
 | §2 #13 | `docs/capability-map.md` | — | 存在，18,738 字节 | 一致 |
-| §2 #14 | `docs/hc01-status.md` | — | 存在，7,651 字节 | 一致 |
+| §2 #14 | `docs/hc01-status.md` | — | 存在，7,903 字节 | 一致（§4.1 已加裁决项指针） |
 | §2 #15 | `docs/known-gaps.md` | — | 存在，27,684 字节 | 一致 |
 | §5.3 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致（上一轮全量原始输出） |
 | §5.5 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
 | §5.6 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
 | §5.1 | `docs/evidence/regression-bb6b654c.txt` | 2,303 字节 | 存在，2,303 字节 | 一致（`verify-full-bb6b654c.log` 的逐字节副本） |
-| §5.2 | `docs/evidence/regression-baseline-coverage-2026-11-06.md` | — | 存在，6,665 字节 | 一致（覆盖表本体） |
+| §5.2 | `docs/evidence/regression-baseline-coverage-2026-11-06.md` | — | 存在，11,894 字节 | 一致（覆盖表本体，已追加 §7 三格补证） |
 | §5.2 | `docs/evidence/regression-delta-bb6b654c.xml` | 532 条 | 存在，67,855 字节 | 一致 |
 | §5.2 | `docs/evidence/regression-delta-d2a62b0e.txt` | — | 存在，104 字节 | 一致 |
 | §5.2 | `docs/evidence/regression-c1-d2a62b0e.txt` | — | 存在，8,356 字节 | 一致 |
 | §0 / §2 #2 | `D:\cache\temp\liuhao-e2e\build\installer\manifest.json` | 8,596 文件 / 165.5 MB / 84 dist | 存在，数值一致 | 一致（非交付物，仅溯源） |
+| §5.7 / §7.1 | `docs/evidence/c7-performance-baseline-2026-11-06.md` | — | 存在，8,464 字节 | 一致（C7 基线报告） |
+| §5.7 / §7.1 | `docs/evidence/bench-baseline-py312-2026-11-06.json` | 6 次样本 + 方差 | 存在，6,249 字节 | 一致（可读证据副本） |
+| §5.7 / §7.1 | `scripts/bench_baseline.json` | 新增 py3.12.14 profile | 存在，+70 行 | 一致（C7 实际读取的基线） |
+| §5.7 / §7.1 | `docs/evidence/c7-gate-validation-2026-11-06.log` | — | 存在，1,785 字节 | 一致（`PERFORMANCE GATE: PASS`） |
+| §5.7 / §7.1 | `docs/evidence/c7-readiness-only-2026-11-06.log` | — | 存在，493 字节 | 一致（`--only C7` PASS） |
+| §5.7 / §7.2 | `docs/evidence/c9-installed-upgrade-2026-11-06.md` | — | 存在，9,999 字节 | 一致（C9 双口径报告） |
+| §5.7 / §7.2 | `docs/evidence/c9-check.json` | — | 存在，678 字节 | 一致 |
+| §5.7 / §7.2 | `docs/evidence/c9-upgrade-1.json` / `c9-rollback-1.json` | — | 存在，301 / 230 字节 | 一致 |
+| §5.7 / §7.2 | `docs/evidence/c9-upgrade-2.json` / `c9-rollback-2.json` | — | 存在，301 / 230 字节 | 一致 |
+| §5.7 / §7.2 | `docs/evidence/c9-history.json` | — | 存在，42,617 字节 | 一致（完整升级 ledger） |
+| §5.7 / §7.2 | `docs/evidence/c9-restart-0.1.1.err.log` / `c9-restart-0.1.0.err.log` | — | 存在，1,243 / 1,244 字节 | 一致 |
+| §5.7 / §7.3 | `docs/evidence/hc01-pending-decisions-2026-11-06.md` | — | 存在，6,324 字节 | 一致（5 项裁决 + 建议） |
 

@@ -1,0 +1,19 @@
+﻿{
+  "status": "update_available",
+  "message": "发现新版本 0.1.1（当前 0.1.0）",
+  "current_version": "0.1.0",
+  "latest_version": "0.1.1",
+  "release": {
+    "version": "0.1.1",
+    "artifact": "liuhao-0.1.1.zip",
+    "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+    "size": 2741388,
+    "signature": false,
+    "signature_algorithm": null,
+    "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+    "released_at": null
+  },
+  "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9-release",
+  "offline": false,
+  "checked_at": "2026-11-06T05:12:37.064331+00:00"
+}

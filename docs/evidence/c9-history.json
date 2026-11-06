@@ -1,0 +1,435 @@
+﻿{
+  "records": [
+    {
+      "id": "f9c7f5cfcf274cfbb36d5e5748a04ab6",
+      "created_at": "2026-11-06T05:15:47.224510+00:00",
+      "kind": "rollback",
+      "status": "rolled_back",
+      "from_version": "0.1.1",
+      "to_version": "0.1.0",
+      "reason": "",
+      "backup_id": "20261106T051506Z-40ae47c1",
+      "artifact_path": null,
+      "detail": {
+        "backup_dir": "D:\\copilot-worktrees\\liuhao-c9-installed-20261106\\upgrade-backups\\20261106T051506Z-40ae47c1",
+        "current_before_rollback": "0.1.1",
+        "restored_version": "0.1.0"
+      }
+    },
+    {
+      "id": "70fac1b6c7c64ec7a4affd92c87069f2",
+      "created_at": "2026-11-06T05:15:16.135892+00:00",
+      "kind": "selfcheck",
+      "status": "passed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": "20261106T051506Z-40ae47c1",
+      "artifact_path": null,
+      "detail": {
+        "checked_at": "2026-11-06T05:15:10.298803+00:00",
+        "databases_checked": 1,
+        "issues": [],
+        "ok": true,
+        "service_checked": true,
+        "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.5 秒）",
+        "service_ok": true,
+        "startup": {
+          "exit_code": 0,
+          "failure_kind": "",
+          "failure_label": "",
+          "health_path": "/v1/health",
+          "http_status": 200,
+          "log_tail": "INFO:     Started server process [22984]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nEXECUTOR FENCE INSTALL FAILED -- autonomous actions will run UN-FENCED (fail-open risk): AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nTraceback (most recent call last):\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\gateway\\main.py\", line 286, in lifespan\n    _fence = attach_default_executor_fence()\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\execution\\fence.py\", line 1168, in attach_default_executor_fence\n    conn = get_audit_connection()\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 2439, in get_audit_connection\n    return get_audit_store()._conn\n           ^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 2427, in get_audit_store\n    _audit_store = AuditStore()\n                   ^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 404, in __init__\n    raise RuntimeError(\nRuntimeError: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nHuman identity store: file @ (unconfigured) -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). Register one with scripts/register_human_identity.py\nPOLICY RULE MUTATION NOT RECORDED rule=human_sovereignty change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=internal_service_allow change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=default_deny change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=scope_enforcement change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=capability_required change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=quota_enforcement change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nAUDIT CHECKPOINTER SKIPPED -- AUDIT_DB_PATH is not set. The audit chain will NOT be checkpointed, so /v1/ready evidence_status stays 'unverified'. Set AUDIT_DB_PATH to a volume path to enable it (the default project-root store is frozen evidence and is never written by this background thread).\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:54224 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\nINFO:     Application shutdown complete.\nINFO:     Finished server process [22984]",
+          "ok": true,
+          "port": 54224,
+          "reason": "",
+          "shutdown_ok": true,
+          "startup_seconds": 5.531
+        },
+        "tables_checked": 1
+      }
+    },
+    {
+      "id": "ce5458db9f36448284e7974aa63806a9",
+      "created_at": "2026-11-06T05:15:08.119776+00:00",
+      "kind": "apply",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": "20261106T051506Z-40ae47c1",
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-g1vv90v2\\liuhao-0.1.1.zip",
+      "detail": {
+        "backup_dir": "D:\\copilot-worktrees\\liuhao-c9-installed-20261106\\upgrade-backups\\20261106T051506Z-40ae47c1",
+        "installed_files": 662,
+        "key_tables": {
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\c9-userdata.sqlite3": [
+            "note"
+          ]
+        },
+        "preflight": {
+          "checked_at": "2026-11-06T05:15:04.552210+00:00",
+          "files_checked": 3,
+          "issues": [],
+          "json_checked": 1,
+          "ok": true,
+          "sqlite_checked": 1,
+          "yaml_checked": 0
+        },
+        "selfcheck": {
+          "checked_at": "2026-11-06T05:15:10.298803+00:00",
+          "databases_checked": 1,
+          "issues": [],
+          "ok": true,
+          "service_checked": true,
+          "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.5 秒）",
+          "service_ok": true,
+          "startup": {
+            "exit_code": 0,
+            "failure_kind": "",
+            "failure_label": "",
+            "health_path": "/v1/health",
+            "http_status": 200,
+            "log_tail": "INFO:     Started server process [22984]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nEXECUTOR FENCE INSTALL FAILED -- autonomous actions will run UN-FENCED (fail-open risk): AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nTraceback (most recent call last):\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\gateway\\main.py\", line 286, in lifespan\n    _fence = attach_default_executor_fence()\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\execution\\fence.py\", line 1168, in attach_default_executor_fence\n    conn = get_audit_connection()\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 2439, in get_audit_connection\n    return get_audit_store()._conn\n           ^^^^^^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 2427, in get_audit_store\n    _audit_store = AuditStore()\n                   ^^^^^^^^^^^^\n  File \"D:\\cache\\temp\\liuhao-selfcheck-2_w2hxvn\\src\\kernels\\audit\\__init__.py\", line 404, in __init__\n    raise RuntimeError(\nRuntimeError: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nHuman identity store: file @ (unconfigured) -- 0 registered humans, so NOBODY CAN APPROVE a HIGH/CRITICAL action (fail-closed, OD-010). Register one with scripts/register_human_identity.py\nPOLICY RULE MUTATION NOT RECORDED rule=human_sovereignty change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=internal_service_allow change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=default_deny change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=scope_enforcement change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=capability_required change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY RULE MUTATION NOT RECORDED rule=quota_enforcement change=rule_added reason=None: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nPOLICY DECISION NOT RECORDED decision=allow rule=internal_service_allow action=event.subscribe: AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nkernel_action audit failed for 'event.subscribe': AUDIT_DB_PATH is not set and no db_path was supplied. Refusing to default to the project-root audit_store.db, which is the frozen HC-01 evidence store. Set AUDIT_DB_PATH explicitly (production: docker-compose sets /app/data/audit_store.db; tests: conftest redirects to a temp file) or pass db_path to AuditStore().\nAUDIT CHECKPOINTER SKIPPED -- AUDIT_DB_PATH is not set. The audit chain will NOT be checkpointed, so /v1/ready evidence_status stays 'unverified'. Set AUDIT_DB_PATH to a volume path to enable it (the default project-root store is frozen evidence and is never written by this background thread).\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:54224 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\nINFO:     Application shutdown complete.\nINFO:     Finished server process [22984]",
+            "ok": true,
+            "port": 54224,
+            "reason": "",
+            "shutdown_ok": true,
+            "startup_seconds": 5.531
+          },
+          "tables_checked": 1
+        },
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false
+      }
+    },
+    {
+      "id": "42b83202554f4cb69e5e1ec4449d6e0e",
+      "created_at": "2026-11-06T05:15:08.118674+00:00",
+      "kind": "backup",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": "20261106T051506Z-40ae47c1",
+      "artifact_path": null,
+      "detail": {
+        "backup_id": "20261106T051506Z-40ae47c1",
+        "code_file_count": 512,
+        "code_zip_sha256": "06baccd1dfffd6a060695d454cd33e60464cc159e41468c0853743999b8cc989",
+        "created_at": "2026-11-06T05:15:08.113078+00:00",
+        "data_file_count": 3,
+        "data_sqlite_count": 1,
+        "data_total_bytes": 14878,
+        "from_version": "0.1.0",
+        "key_tables": {
+          "d:\\copilot-worktrees\\liuhao-c9-installed-20261106\\data\\c9-userdata.sqlite3": [
+            "note"
+          ]
+        },
+        "preflight": {
+          "checked_at": "2026-11-06T05:15:04.552210+00:00",
+          "files_checked": 3,
+          "issues": [],
+          "json_checked": 1,
+          "ok": true,
+          "sqlite_checked": 1,
+          "yaml_checked": 0
+        },
+        "schema": "liuhao.upgrade-backup/1",
+        "to_version": "0.1.1"
+      }
+    },
+    {
+      "id": "0999c29830314dbc8312a1efdd5f2def",
+      "created_at": "2026-11-06T05:15:04.528692+00:00",
+      "kind": "download",
+      "status": "verified",
+      "from_version": null,
+      "to_version": "0.1.1",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": null,
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-g1vv90v2\\liuhao-0.1.1.zip",
+      "detail": {
+        "path": "D:\\cache\\temp\\liuhao-upgrade-download-g1vv90v2\\liuhao-0.1.1.zip",
+        "release": {
+          "artifact": "liuhao-0.1.1.zip",
+          "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+          "released_at": null,
+          "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+          "signature": false,
+          "signature_algorithm": null,
+          "size": 2741388,
+          "version": "0.1.1"
+        },
+        "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false,
+        "size": 2741388,
+        "temporary": true
+      }
+    },
+    {
+      "id": "d4f6a98e5aeb4908a238747cf6cad88f",
+      "created_at": "2026-11-06T05:15:04.490344+00:00",
+      "kind": "check",
+      "status": "update_available",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "offline": false,
+        "result": {
+          "checked_at": "2026-11-06T05:15:04.490344+00:00",
+          "current_version": "0.1.0",
+          "latest_version": "0.1.1",
+          "message": "发现新版本 0.1.1（当前 0.1.0）",
+          "offline": false,
+          "release": {
+            "artifact": "liuhao-0.1.1.zip",
+            "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+            "released_at": null,
+            "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+            "signature": false,
+            "signature_algorithm": null,
+            "size": 2741388,
+            "version": "0.1.1"
+          },
+          "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9-release",
+          "status": "update_available"
+        }
+      }
+    },
+    {
+      "id": "260bb82730ff4649bd7a3d4501061d72",
+      "created_at": "2026-11-06T05:14:20.864309+00:00",
+      "kind": "rollback",
+      "status": "rolled_back",
+      "from_version": "0.1.1",
+      "to_version": "0.1.0",
+      "reason": "",
+      "backup_id": "20261106T051249Z-89fd3963",
+      "artifact_path": null,
+      "detail": {
+        "backup_dir": "D:\\copilot-worktrees\\liuhao-c9-installed-20261106\\upgrade-backups\\20261106T051249Z-89fd3963",
+        "current_before_rollback": "0.1.1",
+        "restored_version": "0.1.0"
+      }
+    },
+    {
+      "id": "fd1621e4b20646b7a8f5054c30b345c4",
+      "created_at": "2026-11-06T05:12:58.182466+00:00",
+      "kind": "selfcheck",
+      "status": "passed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": "20261106T051249Z-89fd3963",
+      "artifact_path": null,
+      "detail": {
+        "checked_at": "2026-11-06T05:12:52.407941+00:00",
+        "databases_checked": 0,
+        "issues": [],
+        "ok": true,
+        "service_checked": true,
+        "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.5 秒）",
+        "service_ok": true,
+        "startup": {
+          "exit_code": 0,
+          "failure_kind": "",
+          "failure_label": "",
+          "health_path": "/v1/health",
+          "http_status": 200,
+          "log_tail": "INFO:     Started server process [23112]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nREFUSING registry row 'alice' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'audit.operator' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'bob' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'http.closure.operator' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'identity-reviewer' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'persist0-human' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'persist1-human' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'smoke' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\n{\"ts\": 1793941977.2778199, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_started\", \"segment_events\": 5000, \"incremental_interval_sec\": 300.0, \"rolling_every_n_ticks\": 12, \"predicted_seconds_per_tick\": 0.15}\n{\"ts\": 1793941977.3390684, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"checkpoint_tick_complete\", \"status\": \"ok\", \"checkpoints\": 130, \"uncovered\": 0, \"coverage_ratio\": 1.0, \"rooted_at_genesis\": true}\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:53838 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n{\"ts\": 1793941977.6919022, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_stopped\", \"stats\": {\"ticks\": 1, \"incremental_runs\": 1, \"rolling_runs\": 0, \"events_verified\": 1034, \"events_reverified\": 0, \"checkpoints_written\": 1, \"segment_failures\": 0, \"tick_errors\": 0, \"last_tick_at\": 1793941977.3390684, \"last_error\": null, \"last_status\": \"ok\", \"status_counts\": {\"ok\": 1}, \"last_coverage\": {\"tail_seq\": 4213, \"covered_through\": 4213, \"uncovered_events\": 0, \"coverage_ratio\": 1.0, \"checkpoint_count\": 130, \"uncovered_ranges\": [], \"oldest_verified_at\": 1793769163.0372677, \"newest_verified_at\": 1793941977.3328042, \"rooted_at_genesis\": true}}}\nINFO:     Application shutdown complete.\nINFO:     Finished server process [23112]",
+          "ok": true,
+          "port": 53838,
+          "reason": "",
+          "shutdown_ok": true,
+          "startup_seconds": 5.484
+        },
+        "tables_checked": 0
+      }
+    },
+    {
+      "id": "cf5b6ea391e242beaa90d1b2a218e0fc",
+      "created_at": "2026-11-06T05:12:50.338137+00:00",
+      "kind": "backup",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": "20261106T051249Z-89fd3963",
+      "artifact_path": null,
+      "detail": {
+        "backup_id": "20261106T051249Z-89fd3963",
+        "code_file_count": 512,
+        "code_zip_sha256": "38e7d05d615715ada9f638af9f3ffb9f19a7945489a5ca4b36911a8692917727",
+        "created_at": "2026-11-06T05:12:50.335047+00:00",
+        "data_file_count": 1,
+        "data_sqlite_count": 0,
+        "data_total_bytes": 29,
+        "from_version": "0.1.0",
+        "key_tables": {},
+        "preflight": {
+          "checked_at": "2026-11-06T05:12:46.762645+00:00",
+          "files_checked": 1,
+          "issues": [],
+          "json_checked": 0,
+          "ok": true,
+          "sqlite_checked": 0,
+          "yaml_checked": 0
+        },
+        "schema": "liuhao.upgrade-backup/1",
+        "to_version": "0.1.1"
+      }
+    },
+    {
+      "id": "828d5920cf464060a2dafa702939760c",
+      "created_at": "2026-11-06T05:12:50.338137+00:00",
+      "kind": "apply",
+      "status": "completed",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": "20261106T051249Z-89fd3963",
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-edt_sgos\\liuhao-0.1.1.zip",
+      "detail": {
+        "backup_dir": "D:\\copilot-worktrees\\liuhao-c9-installed-20261106\\upgrade-backups\\20261106T051249Z-89fd3963",
+        "installed_files": 662,
+        "key_tables": {},
+        "preflight": {
+          "checked_at": "2026-11-06T05:12:46.762645+00:00",
+          "files_checked": 1,
+          "issues": [],
+          "json_checked": 0,
+          "ok": true,
+          "sqlite_checked": 0,
+          "yaml_checked": 0
+        },
+        "selfcheck": {
+          "checked_at": "2026-11-06T05:12:52.407941+00:00",
+          "databases_checked": 0,
+          "issues": [],
+          "ok": true,
+          "service_checked": true,
+          "service_detail": "服务已真实启动并通过健康检查（/v1/health，5.5 秒）",
+          "service_ok": true,
+          "startup": {
+            "exit_code": 0,
+            "failure_kind": "",
+            "failure_label": "",
+            "health_path": "/v1/health",
+            "http_status": 200,
+            "log_tail": "INFO:     Started server process [23112]\nINFO:     Waiting for application startup.\nDeployment posture UNDETERMINABLE: none of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') are set to a non-empty value. Falling back to NON-production semantics for compatibility, but this is NOT a verified non-production deployment. Set one of ('LIUHAO_ENV', 'ENVIRONMENT', 'APP_ENV') explicitly, or set LIUHAO_POSTURE_STRICT=1 to make an unknown posture a hard failure.\nno LIUHAO_JWT_SECRET in the environment: signing keys are generated for this process only, so tokens do not survive a restart and are not shared across workers. Set LIUHAO_JWT_SECRET for a durable deployment.\nREFUSING registry row 'alice' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'audit.operator' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'bob' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'http.closure.operator' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'identity-reviewer' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'persist0-human' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'persist1-human' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\nREFUSING registry row 'smoke' in 'D:\\\\LiuHao-AI-OS\\\\data\\\\human_identities.sqlite3': the row does not authenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_identity.py so the row carries a valid tag; no human is recognised until then.\n{\"ts\": 1793941977.2778199, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_started\", \"segment_events\": 5000, \"incremental_interval_sec\": 300.0, \"rolling_every_n_ticks\": 12, \"predicted_seconds_per_tick\": 0.15}\n{\"ts\": 1793941977.3390684, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"checkpoint_tick_complete\", \"status\": \"ok\", \"checkpoints\": 130, \"uncovered\": 0, \"coverage_ratio\": 1.0, \"rooted_at_genesis\": true}\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://127.0.0.1:53838 (Press CTRL+C to quit)\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n{\"ts\": 1793941977.6919022, \"level\": \"INFO\", \"logger\": \"liuhao.reliability.checkpointer\", \"msg\": \"background_verifier_stopped\", \"stats\": {\"ticks\": 1, \"incremental_runs\": 1, \"rolling_runs\": 0, \"events_verified\": 1034, \"events_reverified\": 0, \"checkpoints_written\": 1, \"segment_failures\": 0, \"tick_errors\": 0, \"last_tick_at\": 1793941977.3390684, \"last_error\": null, \"last_status\": \"ok\", \"status_counts\": {\"ok\": 1}, \"last_coverage\": {\"tail_seq\": 4213, \"covered_through\": 4213, \"uncovered_events\": 0, \"coverage_ratio\": 1.0, \"checkpoint_count\": 130, \"uncovered_ranges\": [], \"oldest_verified_at\": 1793769163.0372677, \"newest_verified_at\": 1793941977.3328042, \"rooted_at_genesis\": true}}}\nINFO:     Application shutdown complete.\nINFO:     Finished server process [23112]",
+            "ok": true,
+            "port": 53838,
+            "reason": "",
+            "shutdown_ok": true,
+            "startup_seconds": 5.484
+          },
+          "tables_checked": 0
+        },
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false
+      }
+    },
+    {
+      "id": "7418e1a690904a8493535dfbd2516e69",
+      "created_at": "2026-11-06T05:12:46.739402+00:00",
+      "kind": "download",
+      "status": "verified",
+      "from_version": null,
+      "to_version": "0.1.1",
+      "reason": "仅哈希校验，无签名",
+      "backup_id": null,
+      "artifact_path": "D:\\cache\\temp\\liuhao-upgrade-download-edt_sgos\\liuhao-0.1.1.zip",
+      "detail": {
+        "path": "D:\\cache\\temp\\liuhao-upgrade-download-edt_sgos\\liuhao-0.1.1.zip",
+        "release": {
+          "artifact": "liuhao-0.1.1.zip",
+          "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+          "released_at": null,
+          "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+          "signature": false,
+          "signature_algorithm": null,
+          "size": 2741388,
+          "version": "0.1.1"
+        },
+        "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+        "signature_note": "仅哈希校验，无签名",
+        "signature_verified": false,
+        "size": 2741388,
+        "temporary": true
+      }
+    },
+    {
+      "id": "81f81bfac69b429f860d206bc1cae502",
+      "created_at": "2026-11-06T05:12:46.700587+00:00",
+      "kind": "check",
+      "status": "update_available",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "offline": false,
+        "result": {
+          "checked_at": "2026-11-06T05:12:46.700587+00:00",
+          "current_version": "0.1.0",
+          "latest_version": "0.1.1",
+          "message": "发现新版本 0.1.1（当前 0.1.0）",
+          "offline": false,
+          "release": {
+            "artifact": "liuhao-0.1.1.zip",
+            "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+            "released_at": null,
+            "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+            "signature": false,
+            "signature_algorithm": null,
+            "size": 2741388,
+            "version": "0.1.1"
+          },
+          "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9-release",
+          "status": "update_available"
+        }
+      }
+    },
+    {
+      "id": "16a334304283449292ca2bcd5c822945",
+      "created_at": "2026-11-06T05:12:37.064331+00:00",
+      "kind": "check",
+      "status": "update_available",
+      "from_version": "0.1.0",
+      "to_version": "0.1.1",
+      "reason": "",
+      "backup_id": null,
+      "artifact_path": null,
+      "detail": {
+        "offline": false,
+        "result": {
+          "checked_at": "2026-11-06T05:12:37.064331+00:00",
+          "current_version": "0.1.0",
+          "latest_version": "0.1.1",
+          "message": "发现新版本 0.1.1（当前 0.1.0）",
+          "offline": false,
+          "release": {
+            "artifact": "liuhao-0.1.1.zip",
+            "notes": "C9 installed-tree upgrade drill; payload built from clean worktree at d2a62b0e",
+            "released_at": null,
+            "sha256": "1a56e7a83991841921c8b3496344fa0d5ce9ac425744b4e1691f5d6ca3af9c10",
+            "signature": false,
+            "signature_algorithm": null,
+            "size": 2741388,
+            "version": "0.1.1"
+          },
+          "source": "本地发布目录 D:\\copilot-worktrees\\liuhao-c9-release",
+          "status": "update_available"
+        }
+      }
+    }
+  ]
+}

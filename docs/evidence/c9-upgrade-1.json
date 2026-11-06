@@ -1,0 +1,11 @@
+﻿{
+  "record_id": "828d5920cf464060a2dafa702939760c",
+  "backup_id": "20261106T051249Z-89fd3963",
+  "from_version": "0.1.0",
+  "to_version": "0.1.1",
+  "installed_files": 662,
+  "data_checked_files": 1,
+  "message": "升级完成",
+  "self_check_passed": true,
+  "self_check_issues": 0
+}

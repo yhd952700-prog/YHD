@@ -16,7 +16,9 @@
     C5 审计链 32/32、C6 崩溃/恢复、C8 指标 48 家族、C10 独立验证、C12 无未解释的重大失败。
   - NOT VERIFIED（2）：C7 数值性能门禁（本机 profile 无基线，数值门禁 SKIP，不变量仍检查）、
     C9 无真实 CD（Dockerfile + alembic 在）。
-  - BLOCKED（1）：C11 HC-01 等待人类裁决（决策隔离，不是工程阻断）。
+    **补证（不改写上述历史结果）：**C7 已补采基线、C9 已补安装树验证，见 §7；`bb6b654c` 那一轮
+    的判定文本仍是它当时的事实，不回填成 PASS。
+  - BLOCKED（1）：C11 HC-01 待裁决（决策隔离，不是工程阻断）；5 项裁决与建议见 §7.3。
 - **失败归因：无。** `FAIL=0`，C3/C12 均 `0 failed`，没有需要区分「假失败 / 真红」的条目。
 - 决策时 HEAD：`d2a62b0e`。基线之后已有 `e0163d59`、`d2a62b0e` 两个提交；
   此外工作区还有未提交的安全修复、管家链路、多账号体系改动。
@@ -90,3 +92,66 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 用仓库 venv 解释器跑完 `scripts/verify_readiness.py --full`，并回填该轮的逐关结果。**
 在此之前，本文与 `docs/DELIVERY-CHECKLIST.md` §5 里的任何数字都只代表基线覆盖，
 不得对外表述为「最终版本已通过全量回归」。
+
+## 7. 三格补证（2026-11-06）
+
+> 本节只补 C7 / C9 / C11 的证据，**不重跑全量、不改写 §1 的 `bb6b654c` 结论，
+> 也不改任何判定口径**。因此 `PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2`、`RELEASE READY=False`
+> 仍是 `bb6b654c` 那一轮的事实；真正改变它们的是下一轮冻结 hash 后的全量。
+
+### 7.1 C7：从「无基线只能 SKIP」到「有基线可判定」
+
+- 采集：worktree `D:\copilot-worktrees\liuhao-final-bb6b654c`（temp 根之外，clean），
+  仓库 venv py3.12.14，`bench_audit_append.py --quick` **6 次取中位数**（异常样本未丢弃）。
+- 写入：`scripts/bench_baseline.json` 新增 profile
+  `Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick`（保留旧 py3.13 条目）。
+- 中位数基线：单条 **644.25 事件/秒**、p95 **2.577 ms**、batch10 **4,639.1**、batch100 **11,156.4**、
+  多进程不含启动 **8,015.85** / 含启动 **2,004.7**、恢复 **0.0445 s**；四个不变量全 true。
+- 判定：`python scripts/verify_readiness.py --only C7` → **PASS**；
+  独立验证样本 `636.8 事件/秒 / p95 2.654 ms` → `PERFORMANCE GATE: PASS`。
+- **方差如实**：单条吞吐极差/中位数 **80.0%**、p95 **1594.4%**、batch100 **90.1%**、
+  多进程不含启动 **142.6%**、恢复 **76.4%**。基线代表「安静窗口」，忙碌时门禁会失败。
+- 证据：[c7-performance-baseline-2026-11-06.md](c7-performance-baseline-2026-11-06.md)、
+  [bench-baseline-py312-2026-11-06.json](bench-baseline-py312-2026-11-06.json)（6,249 字节）、
+  [c7-gate-validation-2026-11-06.log](c7-gate-validation-2026-11-06.log)（1,785 字节）、
+  [c7-readiness-only-2026-11-06.log](c7-readiness-only-2026-11-06.log)（493 字节）。
+
+### 7.2 C9：**原口径 NOT_VERIFIED + 分发形态已独立验证**（两条结论同时存在）
+
+| 口径 | 结论 | 依据 |
+|---|---|---|
+| **原口径（Docker / CD）** | **`C9 = NOT_VERIFIED`（判定未改动）** | compose v2 插件缺失、镜像未构建、真实 CD 按设计缺失（`cd_absent=True`） |
+| **分发形态（安装树）** | **已独立验证** | 真实安装树副本（10,769 文件 / 204,834,804 字节，自带 py3.12.14 runtime）上两轮 `check → apply → 重启 → rollback` |
+
+- 第 1 轮：check 0.71s → apply **12.50s**（备份 512 文件、安装 **662 文件**、自检真实启动 5.48s 且 `/v1/health`=200）→
+  0.1.1 重启 **5.34s** health 200 → rollback **2.29s**（恢复 513 文件）→ 0.1.0 重启 9.87–9.90s health 200。
+- 第 2 轮（带真实用户 SQLite）：apply **12.62s**（数据 3 文件 / 14,878 字节、`databases_checked=1`、`tables_checked=1`）→
+  rollback **2.45s**（恢复 515 文件）。
+- 数据保全：哨兵 `c9-sentinel.txt` SHA256 `051F79B9…A4A9` 升级与回滚后不变；
+  用户库行 `(1, 'keep-across-upgrade-and-rollback')` 全程在。
+- 披露：回滚是**覆盖恢复**不是字节级还原（备份后新建的 `audit_store.db*` 会保留）。
+- 边界：载荷 `liuhao-0.1.1.zip`（662 文件 / 2,741,388 字节 / sha256 `1a56e7a8…9c10`）**不含前端 `console/`**；
+  升级只校验 SHA256、无签名；未覆盖真实 CD。
+- **不合并**：把安装树验证写成 C9 PASS 会掩盖「镜像未构建 / CD 不存在」；
+  把原口径写成覆盖了升级链会掩盖本轮真做过的安装树验证。
+- 证据：[c9-installed-upgrade-2026-11-06.md](c9-installed-upgrade-2026-11-06.md)、
+  [c9-check.json](c9-check.json)、[c9-upgrade-1.json](c9-upgrade-1.json)、[c9-rollback-1.json](c9-rollback-1.json)、
+  [c9-upgrade-2.json](c9-upgrade-2.json)、[c9-rollback-2.json](c9-rollback-2.json)、
+  [c9-history.json](c9-history.json)（42,617 字节）、两份重启 stderr 日志。
+
+### 7.3 C11：5 项裁决已摊平并附建议（不再是「等」）
+
+| # | 裁什么 | 建议 |
+|---|---|---|
+| 1 | Baseline binding：A live / B 旧快照 / C 重采 | **A**（live 作运行源，旧快照仅作历史证据） |
+| 2 | 快照保管断裂：接受并披露 / 隔离替换 / 标 UNRESOLVED | **接受并披露**（内容完整性有证，缺的只是操作者归因） |
+| 3 | I1–I10：固定/参数化拆分 / 维持现状 / 全部参数化 | **固定/参数化拆分**（否则 `live=331,611` 会长期假红） |
+| 4 | Schema：v1→v9 / 不做 / 双路 | **随第 1 项选 A ⇒ 不做 v1→v9** |
+| 5 | 是否授权重采冻结基线 | **推迟，条件写死**：F1–F6 单写者/围栏上线并 soak 通过后，按只读 ACL + operator + 前后 hash 重采 |
+
+- 建议组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
+- 裁决落点：写成 ADR（建议 `docs/adr/ADR-HC01-baseline-binding.md`）；
+  在 ADR 记录前 C11 仍派生 `BLOCKED`（判定事实，非工程待办）。
+- 证据：[hc01-pending-decisions-2026-11-06.md](hc01-pending-decisions-2026-11-06.md)；
+  `docs/hc01-status.md` §4.1 已加指针。
+

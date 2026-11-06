@@ -70,6 +70,75 @@
       "profile": "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
       "captured_at": "2026-10-01T04:04:22-0700",
       "machine": "Windows-10-10.0.19045-SP0"
+    },
+    "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick": {
+      "generated_at": "2026-11-05T21:06:02-0800",
+      "python": "3.12.14",
+      "platform": "win32",
+      "quick": true,
+      "single_append": {
+        "events": 500,
+        "events_per_sec": 644.25,
+        "latency_ms_p50": 1.417,
+        "latency_ms_p95": 2.577,
+        "latency_ms_p99": 4.526,
+        "cpu_seconds": 0.32,
+        "wall_seconds": 0.776
+      },
+      "batched_append": [
+        {
+          "events": 2000,
+          "events_per_sec": 4639.1,
+          "batch_latency_ms_p50": 2.04,
+          "batch_latency_ms_p95": 3.369,
+          "batch_latency_ms_p99": 5.119,
+          "per_event_ms_p95": 0.337,
+          "cpu_seconds": 0.242,
+          "wall_seconds": 0.432,
+          "batches": 200,
+          "batch_size": 10
+        },
+        {
+          "events": 2000,
+          "events_per_sec": 11156.4,
+          "batch_latency_ms_p50": 7.296,
+          "batch_latency_ms_p95": 12.998,
+          "batch_latency_ms_p99": 15.006,
+          "per_event_ms_p95": 0.13,
+          "cpu_seconds": 0.148,
+          "wall_seconds": 0.179,
+          "batches": 20,
+          "batch_size": 100
+        }
+      ],
+      "verify": {
+        "verify_ms_at_6500_events": 202.365,
+        "verify_ms_at_10500_events": 316.65
+      },
+      "chain_verifies": true,
+      "events_in_database": 10500,
+      "disk_bytes_per_event": 724.1,
+      "database_bytes": 7697376,
+      "multi_process": {
+        "processes": 2,
+        "batch_size": 25,
+        "aggregate_events_per_sec_including_startup": 2004.7,
+        "aggregate_events_per_sec_excluding_startup": 8015.85,
+        "wall_seconds": 0.499,
+        "slowest_child_seconds": 0.124,
+        "startup_overhead_seconds": 0.428,
+        "rows_committed": 1000,
+        "rows_expected": 1000,
+        "no_lost_appends": true,
+        "contiguous_seq": true
+      },
+      "recovery": {
+        "recovery_seconds": 0.044,
+        "chain_intact_after_kill": true
+      },
+      "profile": "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+      "captured_at": "2026-11-05T21:06:02-0800",
+      "machine": "Windows-10-10.0.19045-SP0 / Intel(R) Xeon(R) CPU E5-2673 v3 @ 2.40GHz / 12 cores 24 threads / 34,205,548,544 bytes RAM (31.9 GiB) / repo venv CPython 3.12.14"
     }
   }
 }
