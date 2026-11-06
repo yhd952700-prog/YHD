@@ -39,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--data-dir",
         default=None,
         help=(
-            "用户数据目录（默认按安装器规则解析：安装版 %LOCALAPPDATA%\\LiuHao\\data，"
+            "用户数据目录（默认按安装器规则解析：安装版 %%LOCALAPPDATA%%\\LiuHao\\data，"
             "开发/便携版 <app-root>/data；LIUHAO_DATA_DIR 可覆盖）"
         ),
     )

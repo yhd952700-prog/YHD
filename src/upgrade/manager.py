@@ -704,7 +704,7 @@ class UpgradeManager:
                 # 手里版本更高。降级必须显式允许，不能悄悄装。
                 message = (
                     f"当前版本 {current} 高于发布清单中的最高版本 {latest.version}；"
-                    "如需降级请显式允许（CLI：--allow-same-or-dowgrade）"
+                    "如需降级请显式允许（CLI：--allow-same-or-downgrade）"
                 )
             result = CheckResult(
                 status=CheckStatus.UP_TO_DATE,

@@ -127,6 +127,18 @@ def _run(*argv: object, fast_selfcheck: bool = True) -> int:
             cli.UpgradeManager = real_manager
 
 
+def test_upgrade_help_lists_the_flag_and_renders_paths(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Guard both the option name and argparse's ``%``-formatting in help."""
+    with pytest.raises(SystemExit) as exc:
+        main(["upgrade", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--allow-same-or-downgrade" in out
+    assert "%LOCALAPPDATA%\\LiuHao\\data" in out
+
+
 # ---------------------------------------------------------------------------
 # --allow-same-or-downgrade must actually take effect
 # ---------------------------------------------------------------------------
