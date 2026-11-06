@@ -315,7 +315,7 @@ class RBACManager:
         store = Path(self.store_path)
         if store.exists():
             try:
-                data = json.loads(store.read_text())
+                data = json.loads(store.read_text(encoding="utf-8"))
                 for role_data in data.get("roles", []):
                     role = Role.from_dict(role_data, self)
                     role._rbac_manager = self
@@ -333,7 +333,7 @@ class RBACManager:
             "roles": [role.to_dict() for role in self._roles.values()],
         }
         Path(self.store_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(self.store_path).write_text(json.dumps(data, indent=2))
+        Path(self.store_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # ==================== Role Management ====================
 

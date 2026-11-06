@@ -98,13 +98,27 @@ def test_wired_config_really_rotates(tmp_path: Path) -> None:
 
 
 def test_every_gateway_entry_point_loads_the_config() -> None:
-    """A config nobody loads is the defect this change removed."""
+    """A config nobody loads is the defect this change removed.
+
+    读取路径已从「把 YAML 路径交给 uvicorn」改成「按 UTF-8 读成映射后交给
+    uvicorn」：uvicorn 的路径分支用 ``open()`` 不带 encoding，中文 Windows
+    的 cp936 会在首启时解码 UTF-8 文件失败。因此这里断言每个入口要么引用
+    配置文件并自带 UTF-8 读取，要么确实是安装版的路径参数生产者。
+    """
     entry_points = {
-        "scripts/start_liuhao.py": "--log-config",
-        "src/desktop/service.py": "--log-config",
-        "src/gateway/__main__.py": "log_config",
+        "scripts/start_liuhao.py": ("logging.yaml", "LIUHAO_LOG_CONFIG"),
+        "src/desktop/service.py": ("--log-config", "logging.yaml"),
+        "src/desktop/_runner.py": ("load_uvicorn_log_config", "log_config"),
+        "src/gateway/__main__.py": ("load_uvicorn_log_config", "logging.yaml"),
     }
-    for relative, flag in entry_points.items():
+    for relative, markers in entry_points.items():
         text = (REPO_ROOT / relative).read_text(encoding="utf-8")
-        assert "logging.yaml" in text, f"{relative} does not reference config/logging.yaml"
-        assert flag in text, f"{relative} does not pass {flag} to uvicorn"
+        for marker in markers:
+            assert marker in text, f"{relative} does not reference {marker}"
+    # 启动器不再把路径交给 uvicorn 的 CLI：那会按 cp936 读 UTF-8 YAML。
+    launcher = (REPO_ROOT / "scripts" / "start_liuhao.py").read_text(encoding="utf-8")
+    child_block = launcher.split("gateway_env = dict(os.environ)")[1].split(
+        "_wait_gateway_ready"
+    )[0]
+    assert '"-m", "uvicorn"' not in child_block
+    assert "--log-config" not in child_block

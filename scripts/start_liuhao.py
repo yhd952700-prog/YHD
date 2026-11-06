@@ -41,8 +41,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CONSOLE_DIR = ROOT / "apps" / "console" / "console"
 
-#: 唯一生效的日志配置。网关以 ``--log-config`` 加载它：10 MiB × 5 份轮转，
-#: INFO 进 logs/liuhao.log，ERROR 另进 logs/error.log（见配置文件头注释）。
+#: 以 ``python scripts/start_liuhao.py`` 方式运行时，``sys.path[0]`` 是 scripts/
+#: 而不是仓库根，稍后的 ``import src.*``（启动门、日志配置）会 ModuleNotFoundError。
+#: 安装版由 launch_installed.py 设置 PYTHONPATH；开发/自测路径在这里补上。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+#: 唯一生效的日志配置。由 ``python -m src.gateway`` 子进程按 UTF-8 读取后
+#: 以映射交给 uvicorn：10 MiB × 5 份轮转，INFO 进 logs/liuhao.log，ERROR
+#: 另进 logs/error.log（见配置文件头注释）。
 LOG_CONFIG = ROOT / "config" / "logging.yaml"
 LOG_DIR = ROOT / "logs"
 
@@ -382,6 +389,9 @@ def main() -> int:
     if args.backend_only and args.vite:
         parser.error("--backend-only 与 --vite 互斥（前者不含驾驶舱）")
 
+    from src.logging_config import ensure_utf8_streams
+
+    ensure_utf8_streams()
     atexit.register(_shutdown_all)
 
     # 配置里的 handler 使用相对路径 ``logs/...``；先建目录再交给 uvicorn，
@@ -415,24 +425,25 @@ def main() -> int:
     print("=" * 62)
     print("鎏灏 LIUHAO X — 启动")
     print("=" * 62)
-
     print("[1/2] 网关（FastAPI / uvicorn）")
+    # 不再把 ``--log-config`` 路径交给 uvicorn CLI：uvicorn 的 YAML 分支用
+    # ``open()`` 不带 encoding，中文 Windows 下会按 cp936 解码 UTF-8 的
+    # logging.yaml 并在导入 app 前崩溃。改由 ``src.gateway`` 入口按 UTF-8
+    # 读成映射后交给 uvicorn（见 src/logging_config.py）。
+    gateway_env = dict(os.environ)
+    gateway_env["HOST"] = args.host
+    gateway_env["PORT"] = str(args.api_port)
+    if LOG_CONFIG.is_file():
+        gateway_env["LIUHAO_LOG_CONFIG"] = str(LOG_CONFIG)
+    python_path = os.pathsep.join(
+        [str(ROOT), gateway_env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
+    gateway_env["PYTHONPATH"] = python_path
     gateway = _spawn(
-        [
-            _venv_python(),
-            "-u",
-            "-m",
-            "uvicorn",
-            "src.gateway.main:app",
-            "--host",
-            args.host,
-            "--port",
-            str(args.api_port),
-            "--log-config",
-            str(LOG_CONFIG),
-        ],
+        [_venv_python(), "-u", "-m", "src.gateway"],
         ROOT,
         "gateway",
+        env=gateway_env,
     )
     # 连接失败 = 还在启动（端口在路由导入后才绑定），必须等 /v1/startup 给结论。
     if _wait_gateway_ready(probe_api_base, gateway) is None:

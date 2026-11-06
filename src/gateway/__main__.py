@@ -16,6 +16,8 @@ So the port (and host) come from the environment:
                                   when the process should not be reachable
                                   from outside this machine)
     LOG_LEVEL  uvicorn log level (default info)
+    LIUHAO_LOG_CONFIG  path to the UTF-8 logging YAML (installed builds point
+                       this at their data directory; see ``logging_config``)
 
 ``0.0.0.0`` is the default because that is what a container or sandbox needs;
 binding the loopback interface by default would make the image appear broken.
@@ -34,6 +36,7 @@ from pathlib import Path
 import uvicorn
 
 from . import startup_profile as _startup_profile
+from ..logging_config import load_uvicorn_log_config, resolve_log_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,9 @@ def main() -> int:
     host, port = resolve_bind()
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # 读成映射：uvicorn 的 YAML 路径分支用 open() 不带 encoding，中文
+    # Windows 下会按 cp936 解码 UTF-8 文件并直接崩（见 logging_config）。
+    log_config = load_uvicorn_log_config(resolve_log_config_path(LOG_CONFIG))
     _startup_profile.mark("入口 main() 开始（解析 server.timeouts）")
     timeout_options = resolve_timeout_options()
     _startup_profile.mark("入口配置解析完成")
@@ -114,7 +120,7 @@ def main() -> int:
         host=host,
         port=port,
         log_level=log_level,
-        log_config=str(LOG_CONFIG) if LOG_CONFIG.is_file() else None,
+        log_config=log_config,
         **timeout_options,
     )
     return 0

@@ -27,6 +27,7 @@ from typing import Any
 
 import uvicorn
 
+from ..logging_config import ensure_utf8_streams, load_uvicorn_log_config
 from .service import GRACEFUL_INSIDE
 
 #: 父进程管道里可接受的停止指令（大小写不敏感）。
@@ -54,7 +55,9 @@ def build_config(
 ) -> uvicorn.Config:
     kwargs: dict[str, Any] = {}
     if log_config:
-        kwargs["log_config"] = log_config
+        # 传映射而不是路径：uvicorn 的 YAML 分支用 open() 不带 encoding，
+        # 中文 Windows 下会把 UTF-8 的 logging.yaml 按 cp936 解码并崩溃。
+        kwargs["log_config"] = load_uvicorn_log_config(log_config)
     return uvicorn.Config(
         app,
         host=host,
@@ -72,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app", default=DEFAULT_APP, help="ASGI 应用路径（测试时可替换）")
     args = parser.parse_args(argv)
 
+    ensure_utf8_streams()
     server = uvicorn.Server(build_config(args.host, args.port, args.log_config, args.app))
     threading.Thread(
         target=_watch_stdin,

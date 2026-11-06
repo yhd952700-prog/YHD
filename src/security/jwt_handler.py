@@ -373,7 +373,7 @@ class JWTHandler:
         path = Path(path)
         if path.suffix == ".pem":
             # Single file with both keys
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             if "PRIVATE KEY" in content:
                 self._private_key = content.encode()
             if "PUBLIC KEY" in content:
