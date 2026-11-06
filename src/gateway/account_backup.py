@@ -28,6 +28,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..kernels.identity import _accounts, _backup, get_identity_manager
 
+#: 备份与登录令牌的边界：导出只读，不轮换本机签名密钥。
+_TOKEN_POLICY: Dict[str, Any] = {
+    "scope": "instance",
+    "export_revokes_tokens": False,
+    "source_tokens_stay_valid_on_source": True,
+    "source_tokens_valid_on_target": False,
+    "reason": "登录令牌绑定本实例的签名密钥；导出不轮换密钥，也不把令牌带到别的实例。",
+}
+
 logger = logging.getLogger(__name__)
 
 #: 明文清单总量上限（加密前）；超过即 413，避免一次导出/导入打爆内存。
@@ -313,6 +322,7 @@ def export_bundle(
         "exported_at": payload["issued_at"],
         "members": len(members),
         "manifest": payload["manifest"],
+        "token_policy": dict(_TOKEN_POLICY),
     }
 
 
@@ -455,4 +465,6 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         "models": model_count,
         "files": file_report,
         "manifest": payload.get("manifest") or {},
+        "token_policy": dict(_TOKEN_POLICY),
+        "notice": "导入完成；本机使用自己的登录签名密钥，其他实例已签发的令牌不能在本机使用。",
     }

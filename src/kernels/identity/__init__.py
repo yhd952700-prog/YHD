@@ -1455,9 +1455,9 @@ class IdentityManager:
                 permissions=frozenset(created.permissions),
                 allow_superior_key_use=True,
                 key_auth_source="root",
-                recovery_hash=_accounts.hash_code(
-                    recovery_code, (_persistence.integrity_key() or "")
-                ),
+                # 恢复码不带本机完整性密钥：它必须能随备份包搬到另一台电脑上
+                # 继续可用。码本身约 100 bit 高熵，无密钥哈希也足以抵抗枚举。
+                recovery_hash=_accounts.hash_code(recovery_code),
                 created_at=self._identity_registered_at(principal),
                 updated_at=utc_now().isoformat(),
                 source="bootstrap",
@@ -2039,11 +2039,7 @@ class IdentityManager:
                 raise _accounts.neutral_denied()
             code = _accounts.generate_code("RC")
             node = self._accounts[principal]
-            updated = node.with_changes(
-                recovery_hash=_accounts.hash_code(
-                    code, (_persistence.integrity_key() or "")
-                )
-            )
+            updated = node.with_changes(recovery_hash=_accounts.hash_code(code))
             self._accounts[principal] = updated
             self._persist_account(updated)
             self._account_audit(
@@ -2068,8 +2064,12 @@ class IdentityManager:
                 raise _accounts.AccountError(
                     401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
                 )
-            if not _accounts.code_matches(
-                code, root.recovery_hash, (_persistence.integrity_key() or "")
+            # 兼容旧版本：早期恢复码绑定本机完整性密钥；新码不再绑定。
+            stored = root.recovery_hash
+            legacy_key = _persistence.integrity_key() or ""
+            if not (
+                _accounts.code_matches(code, stored)
+                or (legacy_key and _accounts.code_matches(code, stored, legacy_key))
             ):
                 _accounts.limiter.register(key)
                 self._audit_denial(

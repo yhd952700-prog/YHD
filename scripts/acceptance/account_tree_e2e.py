@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -80,6 +81,11 @@ def request(
 class Instance:
     def __init__(self, prefix: str) -> None:
         self.root = tempfile.mkdtemp(prefix=prefix)
+        # 每台"机器"独立的登录签名密钥：跨机令牌不应被另一实例接受。
+        self.jwt_secret = f"isolated-jwt-secret-{secrets.token_hex(16)}"
+        # 身份注册表完整性密钥同样是每机独立的（与真实安装一致），
+        # 用它检验恢复码/凭据包是否真的能跨机使用。
+        self.integrity_key = f"isolated-integrity-{secrets.token_hex(16)}"
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         env = os.environ.copy()
@@ -92,9 +98,9 @@ class Instance:
                 "APP_ENV": "development",
                 "LIUHAO_HUMAN_IDENTITIES_BACKEND": "file",
                 "LIUHAO_HUMAN_IDENTITIES_FILE": os.path.join(self.root, "identities.json"),
-                "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY": "isolated-acceptance-key",
+                "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY": self.integrity_key,
                 "LIUHAO_AUTH_SECRETS_FILE": os.path.join(self.root, "auth_secrets.json"),
-                "LIUHAO_JWT_SECRET": "isolated-jwt-secret-for-acceptance",
+                "LIUHAO_JWT_SECRET": self.jwt_secret,
                 "AUDIT_DB_PATH": os.path.join(self.root, "audit_store.db"),
                 "LIUHAO_MODEL_CONFIG_DB": os.path.join(self.root, "models.sqlite3"),
                 "LIUHAO_MODEL_CONFIG_KEY": "isolated-model-key",
@@ -191,6 +197,12 @@ def neutral(message: Any) -> bool:
     return not any(word in text for word in NEUTRAL_WORDS)
 
 
+def tree_count(node: Any) -> int:
+    if not isinstance(node, dict):
+        return 0
+    return 1 + sum(tree_count(child) for child in node.get("children") or [])
+
+
 def machine_free(text: Any) -> bool:
     """主界面文案不含 ``key=value`` / 点号链 / snake_case 机器串。"""
     return not machine_fragments(text)
@@ -220,6 +232,7 @@ def user_texts(value: Any, key: Optional[str] = None) -> List[str]:
 # 换成 L7 的令牌，然后对同一组真实端点各打一遍，比较 (状态码, 错误码)。
 # 若两套档位逐条完全一致，则"变宽/变窄"均不存在。
 
+#: 兼容旧调用；真实实例使用 ``Instance.jwt_secret``（每机独立）。
 JWT_SECRET = "isolated-jwt-secret-for-acceptance"
 
 
@@ -236,7 +249,7 @@ def _b64url_encode(value: Dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
 
 
-def mint_scope_variant(token: str, scope: str) -> str:
+def mint_scope_variant(token: str, scope: str, secret: str = JWT_SECRET) -> str:
     """同一主体 / 同一 epoch，只替换 ``metadata.scope`` 的等价令牌。"""
     header_segment, _, _ = str(token).split(".")
     header = json.loads(_b64url_decode(header_segment))
@@ -249,7 +262,7 @@ def mint_scope_variant(token: str, scope: str) -> str:
     payload["exp"] = now + 900
     head, body = _b64url_encode(header), _b64url_encode(payload)
     signature = hmac.new(
-        JWT_SECRET.encode("utf-8"), f"{head}.{body}".encode("utf-8"), hashlib.sha256
+        secret.encode("utf-8"), f"{head}.{body}".encode("utf-8"), hashlib.sha256
     ).digest()
     return f"{head}.{body}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
 
@@ -321,7 +334,7 @@ def scope_equivalence(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
 
     def compare(subject: str, token: str, legacy_scope: str, matrix) -> List[str]:
         """旧档位（改动前）打一遍，当前档位（改动后）打一遍，逐条判方向。"""
-        legacy = mint_scope_variant(token, legacy_scope)
+        legacy = mint_scope_variant(token, legacy_scope, secret=inst.jwt_secret)
         verdicts: List[str] = []
         for name, method, path, payload in matrix:
             old_obs = _observe(inst, legacy, method, path, payload)
@@ -448,6 +461,8 @@ def bootstrap(report: Report, inst: Instance) -> Dict[str, Any]:
         "member": member_token,
         "grand": grand_token,
         "grand_principal": "grand1",
+        # 恢复码明文只在注册响应里出现一次；跨机重置密码要用它。
+        "recovery": registed.get("recovery_code") or "",
     }
 
 
@@ -541,6 +556,51 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
     report.check(item, "根查自己=整树账单", (status, root_self.get("calls")), (200, 2))
     status, grand_usage = request("GET", inst.base + "/v1/accounts/grand1/usage", token=tokens["root"])
     report.check(item, "无用量节点 calls=0", (status, grand_usage.get("calls")), (200, 0))
+
+    # 借用方的身份不能以任何形式出现在被借用方的界面里：逐个打真实接口，
+    # 在完整响应文本里搜 root1。
+    surfaces = (
+        ("登录自述", "GET", "/v1/auth/me"),
+        ("成员列表", "GET", "/v1/accounts"),
+        ("本人资料", "GET", "/v1/accounts/member1"),
+        ("用量", "GET", "/v1/accounts/member1/usage"),
+        ("文件", "GET", "/v1/files"),
+        ("记忆", "GET", "/v1/memory/entries?scope=self"),
+        ("会话列表", "GET", "/v1/chat/sessions"),
+        ("会话统计", "GET", "/v1/chat/stats?session_id=member-session"),
+        ("审计事件", "GET", "/v1/audit/events"),
+        ("事件历史", "GET", "/v1/events/history"),
+        ("模型配置", "GET", "/v1/models"),
+    )
+    def without_position(body: Any) -> str:
+        """去掉"本人位置"字段后再扫描。
+
+        ``parent_account_id`` / ``path`` 描述的是**成员自己**在目录里的位置，
+        是前端裁剪能力所必需的自述信息；它不是"谁用过我的 Key"的痕迹。
+        其余任何字段出现借用方都算泄漏。
+        """
+        if isinstance(body, dict):
+            return json.dumps(
+                {k: json.loads(without_position(v)) if isinstance(v, (dict, list)) else v
+                 for k, v in body.items() if k not in ("parent_account_id", "path")},
+                ensure_ascii=False,
+            )
+        if isinstance(body, list):
+            return json.dumps([json.loads(without_position(item)) for item in body],
+                              ensure_ascii=False)
+        return json.dumps(body, ensure_ascii=False)
+
+    leaks: List[Tuple[str, int, str]] = []
+    for name, method, path in surfaces:
+        status, body = request(method, inst.base + path, token=tokens["member"])
+        raw = without_position(body)
+        if "root1" in raw:
+            leaks.append((name, status, raw[:120]))
+    report.check(item, "成员 11 个界面 0 次出现借用方", leaks, [], f"surfaces={len(surfaces)}")
+    report.check(item, "成员用量只有自己的总额度",
+                 (member_view.get("calls"),
+                  [entry.get("key_owner") for entry in member_view.get("by_key_owner") or []]),
+                 (2, ["member1"]))
     return {"model_id": model_id}
 
 
@@ -643,6 +703,27 @@ def backup_roundtrip(
     own_manifest = own.get("manifest") or {}
     report.check(item, "成员 self 只导出本人", (status, own_manifest.get("members")), (200, ["member1"]))
 
+    # ---- 跨机令牌策略：导出只读，不吊销 A 机旧令牌 ----------------------- #
+    policy = exported.get("token_policy") or {}
+    report.check(
+        item, "导出响应写明令牌策略",
+        (policy.get("scope"), policy.get("export_revokes_tokens"),
+         policy.get("source_tokens_stay_valid_on_source"),
+         policy.get("source_tokens_valid_on_target")),
+        ("instance", False, True, False), str(policy),
+    )
+    status, body = request("GET", inst.base + "/v1/accounts/tree", token=tokens["root"])
+    report.check(
+        item, "导出后 A 机旧令牌仍有效",
+        (status, (body.get("tree") or {}).get("principal")), (200, "root1"),
+    )
+
+    status, a_me = request("GET", inst.base + "/v1/auth/me", token=tokens["root"])
+    a_scope = a_me.get("scope")
+    a_permissions = sorted(a_me.get("permissions") or [])
+    status, a_root = request("GET", inst.base + "/v1/accounts/root1", token=tokens["root"])
+    a_account = a_root.get("account") or {}
+
     second = Instance("liuhao-acct-import-")
     try:
         bundle = exported.get("bundle") or {}
@@ -652,11 +733,98 @@ def backup_roundtrip(
         )
         report.check(item, "新机导入成功", (status, imported.get("root_principal")), (200, "root1"))
         report.check(item, "导入恢复账号数", imported.get("accounts"), 3)
+        imported_policy = imported.get("token_policy") or {}
+        report.check(item, "导入响应重申令牌策略",
+                     imported_policy.get("source_tokens_valid_on_target"), False, str(imported_policy))
+        report.check(item, "导入提示中性且可读",
+                     (neutral(imported.get("notice")), machine_free(imported.get("notice"))),
+                     (True, True), str(imported.get("notice")))
+
+        # A 机三个令牌在 B 机全部无效（B 用自己生成的签名密钥）。
+        foreign = []
+        for who in ("root", "member", "grand"):
+            status, body = request("GET", second.base + "/v1/auth/me", token=tokens[who])
+            foreign.append((who, status, body.get("code") or body.get("detail")))
+        report.check(item, "A 机旧令牌在 B 机全部被拒",
+                     {row[1] for row in foreign}, {401}, str(foreign))
+        report.check(item, "跨机令牌拒绝文案中性",
+                     all(neutral(row[2]) for row in foreign), True, str(foreign))
+
+        # B 机根账号：原密码可登录，权限/可见范围与 A 机一致。
         status, login = request(
             "POST", second.base + "/v1/auth/login",
             {"principal": "root1", "secret": PASSWORDS[0]},
         )
         report.check(item, "导入后原凭据可登录", status, 200)
+        b_token = login.get("access_token") or ""
+        status, b_me = request("GET", second.base + "/v1/auth/me", token=b_token)
+        report.check(item, "跨机后同一份权限",
+                     (b_me.get("scope"), sorted(b_me.get("permissions") or [])),
+                     (a_scope, a_permissions), f"scope={b_me.get('scope')}")
+        status, b_tree = request("GET", second.base + "/v1/accounts/tree", token=b_token)
+        report.check(item, "跨机后整棵树仍完整",
+                     (status, tree_count(b_tree.get("tree"))), (200, 3))
+        status, b_root = request("GET", second.base + "/v1/accounts/root1", token=b_token)
+        b_account = b_root.get("account") or {}
+        report.check(item, "跨机后账号属性一致",
+                     {k: b_account.get(k) for k in
+                      ("permissions", "status", "allow_superior_key_use", "key_auth_source")},
+                     {k: a_account.get(k) for k in
+                      ("permissions", "status", "allow_superior_key_use", "key_auth_source")})
+
+        # B 机成员：只能看到自己的直接下级，读不到别人的数据。
+        status, mlogin = request(
+            "POST", second.base + "/v1/auth/login",
+            {"principal": "member1", "secret": PASSWORDS[1]},
+        )
+        m_token = mlogin.get("access_token") or ""
+        report.check(item, "成员跨机原凭据可登录", status, 200)
+        status, body = request("GET", second.base + "/v1/accounts", token=m_token)
+        report.check(item, "成员跨机只看到直接下级",
+                     (status, sorted(m.get("principal") for m in body.get("members") or [])),
+                     (200, ["grand1"]))
+        status, body = request("GET", second.base + "/v1/accounts/tree", token=m_token)
+        report.check(item, "成员跨机读树 404", (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request("GET", second.base + "/v1/accounts/root1", token=m_token)
+        report.check(item, "成员跨机读上级 404", (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request("GET", second.base + "/v1/memory/entries?scope=self", token=m_token)
+        accounts = sorted(entry.get("account_id") for entry in body.get("entries") or [])
+        report.check(item, "成员跨机看不到他人记忆",
+                     (status, sorted(set(accounts) - {"member1"})), (200, []), str(accounts))
+        status, body = request("GET", second.base + "/v1/accounts/member1/usage", token=m_token)
+        report.check(item, "成员跨机用量无调用者字段", (status, "by_actor" in body), (200, False))
+
+        # ---- 忘记主账号密码：用恢复码在 B 机重置，数据保留 ----------------- #
+        old_b_token = b_token
+        status, reset = request(
+            "POST", second.base + "/v1/accounts/recovery/reset",
+            {"recovery_code": tokens.get("recovery") or "", "password": "recovered123"},
+        )
+        new_token = reset.get("access_token") or reset.get("token") or ""
+        report.check(item, "B 机用 A 机恢复码重置根密码", status, 200,
+                     f"code={reset.get('code')}")
+        status, body = request("GET", second.base + "/v1/accounts/tree", token=new_token)
+        report.check(item, "重置后数据完整保留",
+                     (status, tree_count(body.get("tree"))), (200, 3))
+        status, body = request("GET", second.base + "/v1/auth/me", token=old_b_token)
+        report.check(item, "重置后旧 B 机令牌立即失效", status, 401, f"code={body.get('code')}")
+        status, body = request(
+            "POST", second.base + "/v1/auth/login",
+            {"principal": "root1", "secret": PASSWORDS[0]},
+        )
+        report.check(item, "重置后原密码不可登录", status, 401)
+        status, body = request(
+            "POST", second.base + "/v1/auth/login",
+            {"principal": "root1", "secret": "recovered123"},
+        )
+        report.check(item, "重置后新密码可登录", status, 200)
+        status, body = request(
+            "POST", second.base + "/v1/accounts/recovery/reset",
+            {"recovery_code": tokens.get("recovery") or "", "password": "recovered456"},
+        )
+        report.check(item, "恢复码一次性（重复使用被拒）", (status, body.get("code")),
+                     (401, "RECOVERY_CODE_INVALID"))
+
         status, replay = request(
             "POST", second.base + "/v1/accounts/backup/import",
             {"bundle": bundle, "passphrase": BUNDLE_PASSPHRASE},
@@ -1039,7 +1207,7 @@ def root_only_surface(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
 
     def escalation_checks(subject: str, token: str) -> None:
         """把令牌里的 ``scope`` 伪造成最高档 L0，仍不得跨过主账号专属端点。"""
-        forged = mint_scope_variant(token, "L0")
+        forged = mint_scope_variant(token, "L0", secret=inst.jwt_secret)
         status, body = request("GET", inst.base + "/v1/accounts/tree", token=forged)
         report.check(item, f"{subject}(scope=L0) 整树读取仍被拒",
                      (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
@@ -1377,6 +1545,63 @@ def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     report.check(item, "根账号不可删除 409", (status, body.get("code")), (409, "ACCOUNT_DELETE_ROOT_FORBIDDEN"))
 
 
+def failure_paths(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """三条失败路径：吊销、停用、删除有下级；文案必须中性。"""
+    item = "失败路径"
+
+    # 1) 令牌被吊销（主动登出）→ 401，提示不透露账号关系。
+    status, body = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "member1", "secret": PASSWORDS[1]},
+    )
+    revoke_token = body.get("access_token") or ""
+    status, _ = request("POST", inst.base + "/v1/auth/logout", token=revoke_token)
+    report.check(item, "登出成功", status, 200)
+    status, body = request("GET", inst.base + "/v1/auth/me", token=revoke_token)
+    report.check(item, "吊销后旧令牌 401", (status, body.get("code")), (401, "AUTH_TOKEN_INVALID"))
+    report.check(item, "吊销提示中性",
+                 neutral(json.dumps(body, ensure_ascii=False)), True, str(body))
+
+    # 2) 停用账号 → 旧令牌立刻 403；用一次性临时账号，不影响主树。
+    status, created = request(
+        "POST", inst.base + "/v1/accounts",
+        {"principal": "temp1", "role": "viewer"}, token=tokens["root"],
+    )
+    status, activated = request(
+        "POST", inst.base + "/v1/accounts/activate",
+        {"principal": "temp1", "code": created.get("activation_code") or "",
+         "password": "temppass123"},
+    )
+    temp_token = activated.get("token") or ""
+    status, _ = request("GET", inst.base + "/v1/auth/me", token=temp_token)
+    report.check(item, "临时账号初始可用", status, 200)
+    status, _ = request(
+        "PATCH", inst.base + "/v1/accounts/temp1/status",
+        {"status": "suspended", "reason": "acceptance"}, token=tokens["root"],
+    )
+    report.check(item, "停用账号", status, 200)
+    status, body = request("GET", inst.base + "/v1/auth/me", token=temp_token)
+    report.check(item, "停用后旧令牌立即失效",
+                 (status, body.get("code")), (403, "ACCOUNT_UNAVAILABLE"))
+    report.check(item, "停用提示中性",
+                 neutral(json.dumps(body, ensure_ascii=False)), True, str(body))
+    status, _ = request(
+        "PATCH", inst.base + "/v1/accounts/temp1/status",
+        {"status": "deleted", "reason": "acceptance"}, token=tokens["root"],
+    )
+    report.check(item, "临时账号可清理", status, 200)
+
+    # 3) 删除有下级的账号 → 一律 409（不做级联、不猜测意图）。
+    status, body = request(
+        "PATCH", inst.base + "/v1/accounts/member1/status",
+        {"status": "deleted", "reason": "acceptance"}, token=tokens["root"],
+    )
+    report.check(item, "删除有下级 409",
+                 (status, body.get("code")), (409, "ACCOUNT_DELETE_HAS_CHILDREN"))
+    report.check(item, "删除拒绝文案中性",
+                 neutral(json.dumps(body, ensure_ascii=False)), True, str(body))
+
+
 def plaintext_scan(report: Report, dirs: List[str], export_files: List[str]) -> None:
     item = "明文扫描"
     needles = PASSWORDS + MODEL_KEYS + [BUNDLE_PASSPHRASE]
@@ -1438,6 +1663,7 @@ def main() -> int:
             )
         export_files.append(export_path)
 
+        failure_paths(report, inst, tokens)
         deletion(report, inst, tokens)
         plaintext_scan(report, dirs, export_files)
     finally:
