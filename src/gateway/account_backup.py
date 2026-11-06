@@ -373,6 +373,15 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         raise _account_error(
             429, "ACCOUNT_BACKUP_LOCKED", "尝试次数过多，请更换备份包或稍后再试"
         )
+    # 认领只能在"还没有账号树"的全新实例上做。一旦本机已有根账号，任何
+    # 成员（甚至匿名）都不能用备份包改写本机账号树 —— 否则子账号可借
+    # ``/backup/import`` 绕过 root-only 边界。重放检查在前面，故已导入过的
+    # 包仍返回 409 REPLAYED（这是更精确的答案）。
+    if manager.account_root() is not None:
+        raise _account_error(
+            409, "ACCOUNT_ALREADY_INITIALIZED",
+            "本机已存在账号树，备份包只能在全新实例上认领，不能用于覆盖现有账号",
+        )
 
     try:
         payload = _backup.decrypt_bundle(bundle, passphrase)

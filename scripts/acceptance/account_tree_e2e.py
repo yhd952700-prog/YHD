@@ -18,6 +18,9 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -183,6 +186,168 @@ class Report:
 def neutral(message: Any) -> bool:
     text = str(message or "")
     return not any(word in text for word in NEUTRAL_WORDS)
+
+
+# --------------------------------------------------------------------------- #
+# 档位等价性探针：同一主体、同一 epoch，只改令牌里的 scope 声明
+# --------------------------------------------------------------------------- #
+#
+# 目的：证明"B5 把成员从 L7 改成 depth 派生"没有放宽任何 HTTP 可达权限。
+# 做法：解出登录令牌的 payload，用同一个签名密钥重新签一份只把 metadata.scope
+# 换成 L7 的令牌，然后对同一组真实端点各打一遍，比较 (状态码, 错误码)。
+# 若两套档位逐条完全一致，则"变宽/变窄"均不存在。
+
+JWT_SECRET = "isolated-jwt-secret-for-acceptance"
+
+
+def _b64url_decode(segment: str) -> str:
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)).decode("utf-8")
+
+
+def decode_jwt(token: str) -> Dict[str, Any]:
+    return json.loads(_b64url_decode(str(token).split(".")[1]))
+
+
+def _b64url_encode(value: Dict[str, Any]) -> str:
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def mint_scope_variant(token: str, scope: str) -> str:
+    """同一主体 / 同一 epoch，只替换 ``metadata.scope`` 的等价令牌。"""
+    header_segment, _, _ = str(token).split(".")
+    header = json.loads(_b64url_decode(header_segment))
+    payload = decode_jwt(token)
+    metadata = dict(payload.get("metadata") or {})
+    metadata["scope"] = scope
+    payload["metadata"] = metadata
+    now = int(time.time())
+    payload["iat"] = now
+    payload["exp"] = now + 900
+    head, body = _b64url_encode(header), _b64url_encode(payload)
+    signature = hmac.new(
+        JWT_SECRET.encode("utf-8"), f"{head}.{body}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    return f"{head}.{body}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
+
+SCOPE_MATRIX: Tuple[Tuple[str, str, str, Any], ...] = (
+    ("GET /v1/auth/me", "GET", "/v1/auth/me", None),
+    ("GET /v1/accounts", "GET", "/v1/accounts", None),
+    ("GET /v1/accounts/tree", "GET", "/v1/accounts/tree", None),
+    ("GET /v1/accounts/member1/usage", "GET", "/v1/accounts/member1/usage", None),
+    ("POST /v1/accounts/backup/export all", "POST", "/v1/accounts/backup/export",
+     {"scope": "all", "passphrase": BUNDLE_PASSPHRASE}),
+    ("POST /v1/accounts/backup/export self", "POST", "/v1/accounts/backup/export",
+     {"scope": "self", "passphrase": BUNDLE_PASSPHRASE}),
+    ("GET /v1/files", "GET", "/v1/files", None),
+    ("GET /v1/chat/sessions", "GET", "/v1/chat/sessions", None),
+    ("GET /v1/chat/stats", "GET", "/v1/chat/stats", None),
+    ("GET /v1/goals", "GET", "/v1/goals", None),
+    ("GET /v1/audit/events", "GET", "/v1/audit/events?limit=5", None),
+    ("GET /v1/audit/events?principal=root1", "GET",
+     "/v1/audit/events?principal=root1", None),
+    ("POST /v1/audit/verify", "POST", "/v1/audit/verify", {}),
+    ("GET /v1/memory/entries self", "GET", "/v1/memory/entries?scope=self", None),
+    ("GET /v1/memory/entries subtree", "GET", "/v1/memory/entries?scope=subtree", None),
+    ("POST /v1/memory/export self", "POST", "/v1/memory/export",
+     {"scope": "self", "format": "json"}),
+    ("POST /v1/memory/export subtree", "POST", "/v1/memory/export",
+     {"scope": "subtree", "format": "json"}),
+)
+
+
+def _observe(inst: Instance, token: str, method: str, path: str, payload: Any) -> Tuple[int, Any]:
+    status, body = request(method, inst.base + path, payload, token=token)
+    code = body.get("code") if isinstance(body, dict) else None
+    if code is None and isinstance(body, dict):
+        detail = body.get("detail")
+        code = detail if isinstance(detail, str) else (detail or {}).get("code")
+    return status, code
+
+
+def _verdict(old: Tuple[int, Any], now: Tuple[int, Any]) -> str:
+    """同一主体、同一 epoch 下，仅 scope 声明不同导致的权限方向判定。"""
+    if old == now:
+        return "不变"
+    old_ok, now_ok = old[0] < 400, now[0] < 400
+    if not old_ok and now_ok:
+        return "变宽"
+    if old_ok and not now_ok:
+        return "变窄"
+    # 状态码同档但错误码不同：权限边界未移动。
+    return "不变（错误码不同）"
+
+
+def scope_equivalence(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """需求 1/2：L7 vs depth 派生档位，逐端点比较；并确认根最高、子严格递减。
+
+    ``tokens`` 里还有非 JWT 的辅助字段（如 ``grand_principal``），这里只取三个
+    登录令牌，避免把普通字符串当成令牌解析。
+    """
+    item = "档位等价性"
+    scope_of = {
+        principal: decode_jwt(tokens[key]).get("metadata", {}).get("scope")
+        for key, principal in (("root", "root1"), ("member", "member1"), ("grand", "grand1"))
+    }
+    report.check(
+        item, "层级档位严格递减",
+        (scope_of["root1"], scope_of["member1"], scope_of["grand1"]),
+        ("L0", "L1", "L2"),
+    )
+
+    def compare(subject: str, token: str, legacy_scope: str, matrix) -> List[str]:
+        """旧档位（改动前）打一遍，当前档位（改动后）打一遍，逐条判方向。"""
+        legacy = mint_scope_variant(token, legacy_scope)
+        verdicts: List[str] = []
+        for name, method, path, payload in matrix:
+            old_obs = _observe(inst, legacy, method, path, payload)
+            now_obs = _observe(inst, token, method, path, payload)
+            label = _verdict(old_obs, now_obs)
+            verdicts.append(label)
+            report.check(
+                item,
+                f"{subject} · {name} → {label}（{legacy_scope}={old_obs} / "
+                f"{scope_of[subject]}={now_obs}）",
+                label not in ("变宽",), True,
+                f"old={old_obs} now={now_obs}",
+            )
+        return verdicts
+
+    member_verdicts = compare("member1", tokens["member"], "L7", SCOPE_MATRIX)
+    # 孙账号：只挑会触及层级/共享/备份/审计边界的端点，避免重复耗时。
+    grand_matrix = tuple(row for row in SCOPE_MATRIX if any(
+        key in row[0] for key in ("tree", "backup", "usage", "audit", "subtree", "scope=self")
+    ))
+    grand_verdicts = compare("grand1", tokens["grand"], "L7", grand_matrix)
+
+    # 需求 2：根必须仍是最高档 —— 子账号能过的，根必须能过；根专属端点根必过。
+    hierarchy_matrix = SCOPE_MATRIX
+    for name, method, path, payload in hierarchy_matrix:
+        root_obs = _observe(inst, tokens["root"], method, path, payload)
+        child_obs = _observe(inst, tokens["grand"], method, path, payload)
+        child_ok, root_ok = child_obs[0] < 400, root_obs[0] < 400
+        report.check(
+            item,
+            f"root1 ⊇ grand1 · {name} → {'不变' if child_ok == root_ok else ('根更宽' if root_ok else '根更窄(越权!)')}",
+            (not child_ok) or root_ok,
+            True,
+            f"root={root_obs} grand={child_obs}",
+        )
+        if any(key in name for key in ("tree", "backup/export all", "audit?principal=root1",
+                                       "memory/entries subtree", "memory/export subtree")):
+            report.check(
+                item, f"根专属可用 · {name}", root_ok, True, f"root={root_obs}",
+            )
+
+    # 打印紧凑对照表，供报告直接引用（不计入 PASS/FAIL）。
+    print("\n--- 档位对照表（old=L7 / new=depth 派生）---")
+    for name, label in zip([row[0] for row in SCOPE_MATRIX], member_verdicts):
+        print(f"member1\t{label}\t{name}")
+    for name, label in zip([row[0] for row in grand_matrix], grand_verdicts):
+        print(f"grand1\t{label}\t{name}")
+    print("--- 对照表结束 ---\n")
+
 
 
 # --------------------------------------------------------------------------- #
@@ -776,6 +941,141 @@ def frontend_feedback(
     tokens["grand"] = relogin.get("access_token") or tokens["grand"]
 
 
+def root_only_surface(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """需求 3：子账号在任何档位下都不能通过主账号专属端点。
+
+    "任何情况"覆盖三层：当前签发令牌、伪造更高档位（``scope=L0``）的令牌、
+    以及审计整树的按 ``seq`` 直读。判权只认账号树位置，不认令牌里的声明。
+    """
+    item = "主账号专属端点"
+
+    _, root_events = request(
+        "GET", inst.base + "/v1/audit/events?limit=20", token=tokens["root"]
+    )
+    root_seq = next(
+        (e.get("seq") for e in (root_events.get("events") or [])
+         if e.get("principal_id") == "root1"),
+        None,
+    )
+    report.check(item, "定位根账号审计 seq", isinstance(root_seq, int), True, f"seq={root_seq}")
+
+    def deny_checks(subject: str, token: str) -> None:
+        status, body = request("GET", inst.base + "/v1/accounts/tree", token=token)
+        message = str(body.get("message") or body.get("detail") or "")
+        report.check(item, f"{subject} 整树读取被拒", (status, body.get("code")),
+                     (404, "ACCOUNT_SUBTREE_DENIED"), f"message={message}")
+        report.check(item, f"{subject} 整树读取文案中性", neutral(message), True, message)
+
+        status, body = request(
+            "POST", inst.base + "/v1/accounts/backup/export",
+            {"scope": "all", "passphrase": BUNDLE_PASSPHRASE}, token=token,
+        )
+        report.check(item, f"{subject} 全量导出被拒", (status, body.get("code")),
+                     (403, "ACCOUNT_SCOPE_DENIED"))
+
+        # 成员自备份（新 bundle_id）→ 已有账号树的实例必须拒绝认领
+        status, exported = request(
+            "POST", inst.base + "/v1/accounts/backup/export",
+            {"scope": "self", "passphrase": BUNDLE_PASSPHRASE}, token=token,
+        )
+        bundle = exported.get("bundle") or {}
+        status, body = request(
+            "POST", inst.base + "/v1/accounts/backup/import",
+            {"bundle": bundle, "passphrase": BUNDLE_PASSPHRASE}, token=token,
+        )
+        report.check(item, f"{subject} 对已建树实例导入被拒", (status, body.get("code")),
+                     (409, "ACCOUNT_ALREADY_INITIALIZED"))
+
+        status, body = request(
+            "GET", inst.base + "/v1/memory/entries?scope=subtree", token=token
+        )
+        report.check(item, f"{subject} 记忆整树被拒", (status, body.get("code")),
+                     (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request(
+            "POST", inst.base + "/v1/memory/export",
+            {"scope": "subtree", "format": "json"}, token=token,
+        )
+        report.check(item, f"{subject} 记忆整树导出被拒", (status, body.get("code")),
+                     (404, "ACCOUNT_SUBTREE_DENIED"))
+
+        status, body = request(
+            "GET", inst.base + "/v1/audit/events?principal=root1", token=token
+        )
+        report.check(item, f"{subject} 审计他账号读被拒", (status, body.get("code")),
+                     (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request("GET", inst.base + "/v1/audit/events", token=token)
+        report.check(item, f"{subject} 审计默认范围仅为本人",
+                     (body.get("read_scope") or {}).get("mode"), "self")
+        if root_seq is not None:
+            status, body = request(
+                "GET", f"{inst.base}/v1/audit/events/{root_seq}", token=token
+            )
+            report.check(item, f"{subject} 审计整树按 seq 读被拒",
+                         (status, body.get("code")),
+                         (404, "ACCOUNT_SUBTREE_DENIED"))
+
+    def escalation_checks(subject: str, token: str) -> None:
+        """把令牌里的 ``scope`` 伪造成最高档 L0，仍不得跨过主账号专属端点。"""
+        forged = mint_scope_variant(token, "L0")
+        status, body = request("GET", inst.base + "/v1/accounts/tree", token=forged)
+        report.check(item, f"{subject}(scope=L0) 整树读取仍被拒",
+                     (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request(
+            "POST", inst.base + "/v1/accounts/backup/export",
+            {"scope": "all", "passphrase": BUNDLE_PASSPHRASE}, token=forged,
+        )
+        report.check(item, f"{subject}(scope=L0) 全量导出仍被拒",
+                     (status, body.get("code")), (403, "ACCOUNT_SCOPE_DENIED"))
+        status, body = request(
+            "GET", inst.base + "/v1/memory/entries?scope=subtree", token=forged
+        )
+        report.check(item, f"{subject}(scope=L0) 记忆整树仍被拒",
+                     (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request(
+            "GET", inst.base + "/v1/audit/events?principal=root1", token=forged
+        )
+        report.check(item, f"{subject}(scope=L0) 审计他账号读仍被拒",
+                     (status, body.get("code")), (404, "ACCOUNT_SUBTREE_DENIED"))
+        status, body = request("GET", inst.base + "/v1/audit/events", token=forged)
+        report.check(item, f"{subject}(scope=L0) 审计默认范围仍仅本人",
+                     (body.get("read_scope") or {}).get("mode"), "self")
+        if root_seq is not None:
+            status, body = request(
+                "GET", f"{inst.base}/v1/audit/events/{root_seq}", token=forged
+            )
+            report.check(item, f"{subject}(scope=L0) 审计整树 seq 仍被拒",
+                         (status, body.get("code")),
+                         (404, "ACCOUNT_SUBTREE_DENIED"))
+
+    deny_checks("member1", tokens["member"])
+    deny_checks("grand1", tokens["grand"])
+    escalation_checks("member1", tokens["member"])
+    escalation_checks("grand1", tokens["grand"])
+
+    # 根：以上端点全部可用，且带 root_view 标记
+    status, _ = request("GET", inst.base + "/v1/accounts/tree", token=tokens["root"])
+    report.check(item, "根读取整树", status, 200)
+    status, _ = request(
+        "POST", inst.base + "/v1/accounts/backup/export",
+        {"scope": "all", "passphrase": BUNDLE_PASSPHRASE}, token=tokens["root"],
+    )
+    report.check(item, "根全量导出", status, 200)
+    status, body = request(
+        "GET", inst.base + "/v1/memory/entries?scope=subtree", token=tokens["root"]
+    )
+    report.check(item, "根读取记忆整树", status, 200)
+    status, body = request("GET", inst.base + "/v1/audit/events", token=tokens["root"])
+    report.check(item, "根读取审计整树",
+                 (status, (body.get("read_scope") or {}).get("mode"),
+                  (body.get("read_scope") or {}).get("root_view")),
+                 (200, "subtree", True))
+    if root_seq is not None:
+        status, _ = request(
+            "GET", f"{inst.base}/v1/audit/events/{root_seq}", token=tokens["root"]
+        )
+        report.check(item, "根按 seq 直读整树审计", status, 200)
+
+
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "删除"
     status, body = request(
@@ -847,6 +1147,8 @@ def main() -> int:
         session_isolation(report, inst, tokens, usage["model_id"])
         audit_isolation(report, inst, tokens)
         frontend_feedback(report, inst, tokens)
+        scope_equivalence(report, inst, tokens)
+        root_only_surface(report, inst, tokens)
 
         export_path = os.path.join(inst.root, "export-all.json")
         with open(export_path, "w", encoding="utf-8") as handle:

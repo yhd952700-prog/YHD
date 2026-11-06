@@ -389,6 +389,7 @@
 | `ACCOUNT_PASSWORD_CHANGE_REQUIRED` | 403 | 请先设置新密码。 | 强制改密 |
 | `ACCOUNT_INACTIVE` | 403 | 该账号暂不可用，请联系系统管理员。 | 状态 |
 | `ACCOUNT_UNAVAILABLE` | 403 | 该账号当前不可用。 | 登录/请求期停用或删除（登录与鉴权同一文案） |
+| `ACCOUNT_ALREADY_INITIALIZED` | 409 | 本机已存在账号树，备份包只能在全新实例上认领，不能用于覆盖现有账号 | 已有根账号后再调 `/v1/accounts/backup/import`（重放仍返回 `ACCOUNT_BACKUP_REPLAYED`） |
 | `AUTH_UNAUTHORIZED` | 401 | 未提供访问令牌，请先登录。 | 无令牌；前端按 `code` 回登录页 |
 | `AUTH_TOKEN_INVALID` | 401 | 访问令牌无效或已过期，请重新登录。 | 签名/格式/吊销失败；不暴露解析细节 |
 | `ACCOUNT_VIEW_AS_WRITE_FORBIDDEN` | 403 | 当前为只读查看，无法执行该操作。 | 视角 |
