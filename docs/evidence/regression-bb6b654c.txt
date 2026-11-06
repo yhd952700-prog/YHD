@@ -1,0 +1,20 @@
+﻿[C1] Build passes: PASS — compileall clean; 4 entry modules import OK
+[C2] Clean-environment runnable: PASS — clean-env boot + GET /v1/health = 200
+[C3] Stable tests: PASS — full run: 7458 collected, 0 failed (7458 tests, 0 failed, 0 errors, 58 skipped)
+[C4] Critical security blocker = 0: PASS — no high-confidence secrets; fail-closed present; CI gates ['bandit:high', 'semgrep:error']
+[C5] Data integrity passes: PASS — hash-chain sig/alg 32/32 COMPLIANT (HC-02..08 + HC-11)
+[C6] Crash / recovery / failover: PASS — reliability/failure-mode suites pass (6 files, temp-DB only; live audit_store.db untouched)
+[C7] Performance meets scale: NOT VERIFIED — numeric gate SKIPped -- no baseline captured for this machine profile (current: Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick). Not Linux-specific: the baseline holds only Windows|py3.13.14|... and this repo's venv is py3.12.14, so the numeric gate does not run here either. Invariants were still checked; what is missing is the throughput comparison.
+[C8] Observability + operations: PASS — runtime scrape /v1/metrics/prometheus = 200, 10033 bytes, 48 real metric families exported (floor 40); http_requests_total PRESENT+FED; UBX005 all present; error-visibility present (incl. executor_fence_denials_total,executor_fence_active_leases,coordinator_admission_contention_total)
+[C9] Deployment / upgrade / rollback: NOT VERIFIED — Dockerfile + alembic present; real CD absent=True (honest)
+[C10] Independent verification: PASS — independent verification harness present
+[C11] HC-01 real verification: BLOCKED — HC-01 BLOCKED / GO=BLOCKED — HUMAN DECISION PENDING (Decision Isolation active; not an engineering blocker)
+[C12] No unexplained major failures: PASS — full run cross-reference: 7458 tests, 0 failed, 0 errors (no unexplained major failure)
+
+========================================================================
+RELEASE-READINESS verdict
+========================================================================
+  PASS=9  FAIL=0  BLOCKED=1  NOT_VERIFIED=2  ERROR=0
+  RELEASE READY = False
+========================================================================
+  report written: D:\copilot-worktrees\liuhao-final-bb6b654c\scripts\readiness_report.json

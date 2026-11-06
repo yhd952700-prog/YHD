@@ -109,7 +109,7 @@
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-13（E-9～E-13 为本轮追加） | — |
-| 16 | 全量回归 | 已完成（基线 `cc3af30d`，详见第 5 节） | C1/C2/C4/C5/C6/C8/C10 PASS；C3 `7334 passed / 46 skipped / 3 xfailed / 2 failed`；C7/C9 NOT VERIFIED；C11 BLOCKED；C12 NOT VERIFIED | 差额：基线落后报告时 HEAD 12 个提交，只补跑了那批提交改动的 15 个测试文件（`123 passed / 80.85s`），没有第二次全量（E-12） |
+| 16 | 全量回归 | 已完成（基线 `bb6b654c`，详见 5.1；**不是最终 HEAD 的交付凭证**） | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0） | 差额：基线 `bb6b654c` 之后 HEAD 已推进到 `d2a62b0e`，最终 hash 冻结后需再跑一轮全量作为交付凭证；本轮只作基线覆盖 |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
@@ -139,15 +139,43 @@
 
 ## 5. 全量回归（独立报告）
 
-### 5.0 本轮基线与覆盖（2026-11-06）
+### 5.1 本轮全量（基线 `bb6b654c`）
 
-- 本轮全量回归基线：`c5c2b792`。`bc1d7b2b`、`747af1fd`、`b664cfc2` 都已是它的祖先（`merge-base --is-ancestor` 全部为 0）。
-- 决策时 HEAD 为 `e9c1b618`；`c5c2b792..e9c1b618` 只改 `docs/self-upgrade.md`（纯文档）。
-- 因此本轮诚实表述是「**全量基线 `c5c2b792` + 文档级差异 + 指定增量核验**」，**不是**「全量覆盖最终 HEAD」。
-- 覆盖表：[regression-baseline-coverage-2026-11-06.md](evidence/regression-baseline-coverage-2026-11-06.md)。
-- 本轮结果：跑完回填（日志 `D:\cache\temp\verify-full-c5c2b792.log`）。
+- 基线提交：`bb6b654c16265cb78a0f247253517d949990bbaf`。
+  worktree：`D:\copilot-worktrees\liuhao-final-bb6b654c`（`git status` 为空，在 temp 根之外）。
+- 解释器：`d:\LiuHao-AI-OS\.venv\Scripts\python.exe`（py3.12.14）；
+  命令 `python -u scripts/verify_readiness.py --full`。
+- 日志：`D:\cache\temp\verify-full-bb6b654c.log`（2,303 字节，进程退出码 0）；
+  仓库内逐字节副本 [regression-bb6b654c.txt](evidence/regression-bb6b654c.txt)（2,303 字节）。
+- 测试：`7458 tests` → `0 failed, 0 errors, 58 skipped`。
+- 逐关结果：`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY = False`。
+  - PASS（9）：C1 编译/导入、C2 干净环境可启动、C3 稳定测试、C4 无高危密钥且失败关闭、
+    C5 审计链 32/32、C6 崩溃/恢复、C8 指标 48 家族、C10 独立验证、C12 无未解释的重大失败。
+  - NOT VERIFIED（2）：C7 数值性能门禁在本机 profile 无基线（SKIP，不变量仍检查）、
+    C9 无真实 CD（Dockerfile + alembic 在）。
+  - BLOCKED（1）：C11 HC-01 等待人类裁决（决策隔离，不是工程阻断）。
+- **失败归因：无。** `FAIL=0`，C3/C12 均 0 failed，不存在需要区分“假失败/真红”的条目。
+- **口径**：`bb6b654c` 不是最终 HEAD（当时 HEAD 已到 `d2a62b0e`，之后还有安全修复、
+  管家链路、多账号体系提交）。本轮只是「基线覆盖」，**不是最终交付凭证**；
+  最终 hash 冻结后必须再跑一轮全量。
 
-### 5.1 有效基线（上一轮：`cc3af30d`）
+### 5.2 覆盖表与增量（`bb6b654c`）
+
+- 覆盖方式与逐提交状态：[regression-baseline-coverage-2026-11-06.md](evidence/regression-baseline-coverage-2026-11-06.md)。
+- 增量核验（**只用于快速核验，不替代全量**）：`531 passed, 1 skipped, 0 failed`，
+  332.36 秒；JUnit [regression-delta-bb6b654c.xml](evidence/regression-delta-bb6b654c.xml)（532 条）。
+- 增量范围：upgrade 全部 10 个文件、desktop 启动门、UTF-8 日志、gate vars、
+  tasks/reminders、automation、intel、selfmod、cli、gateway；覆盖
+  `bc1d7b2b`、`747af1fd`、`bf062ee8`、`d7ee01b3` 与 7 条 lint 触及的模块。
+- 增量与全量的关系：全量已包含上述全部提交，增量只是定向复核，**不能**把两者相加说成
+  “全量覆盖最终 HEAD”。
+- 基线之后的两个提交（`e0163d59`、`d2a62b0e`，合计只动 2 个文件）在 `d2a62b0e` 上做定向增量：
+  `tests/artifacts` `30 passed in 5.15s`（退出码 0）、`scripts/verify_policy_c1.py` `RESULT: ALL GREEN`；
+  日志 [regression-delta-d2a62b0e.txt](evidence/regression-delta-d2a62b0e.txt)（104 字节）、
+  [regression-c1-d2a62b0e.txt](evidence/regression-c1-d2a62b0e.txt)（8,356 字节）。
+  **这仍不是全量**：没有重跑 7458 条测试，也没有重跑 C2/C4/C5/C6/C8/C10 的端到端门禁。
+
+### 5.3 上一轮全量（基线 `cc3af30d`，历史，已被 5.1 取代）
 
 - 工作树：`D:\copilot-worktrees\liuhao-regression`（**在 `tempfile.gettempdir()` 之外**，
   避免 E-10 的护栏失效），detached 到 `cc3af30d`。
@@ -163,21 +191,21 @@
   - BLOCKED：C11（HC-01 等待人类裁决，属决策隔离，不是工程阻断）。
 - 逐关原始输出：[regression-cc3af30d.txt](evidence/regression-cc3af30d.txt)。
 
-### 5.2 两个失败的归因
+### 5.4 两个历史失败的归因（上一轮 `cc3af30d`）
 
 | 失败 | 归因 | 证据 |
 |---|---|---|
 | `test_console_invariants.py::test_api_uses_the_shared_error_reader` | **测试断言过期，非产品问题**：前端在 `3510cab3` 把共享读取器拆成 `readError` + `readErrorParts`，断言仍只认 `readError`；上游 `26565ea2` 已把 `api.ts` 统一回 `readError` | 在 `de1b0d87` 上跑 `tests/test_console_invariants.py`：`11 passed in 1.92s` |
 | `test_network.py::test_add_route_and_deliver` | **满负载下的回环 HTTP 抖动**，非产品回归 | 单跑该用例：`1 passed in 2.67s` |
 
-### 5.3 基线之后的增量
+### 5.5 上一轮基线之后的增量
 
 `cc3af30d..de1b0d87` 共 12 个提交（desktop 启动门、升级 API、可观测性、
 reminder 稳定性、console 错误读取器统一等）。这些提交改动的 14 个测试文件 +
 1 个辅助文件补跑：`123 passed, 1 warning in 80.85s`。
 JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 
-### 5.4 作废的第一次尝试
+### 5.6 作废的第一次尝试
 
 同一 baseline 曾在 `D:\cache\temp\liuhao-regression` 跑过一次，因 E-10
 （仓库位于 temp 根下、删除护栏整体失效）产生 `19 failed + 9 errors` 的
@@ -204,8 +232,13 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §2 #13 | `docs/capability-map.md` | — | 存在，18,738 字节 | 一致 |
 | §2 #14 | `docs/hc01-status.md` | — | 存在，7,651 字节 | 一致 |
 | §2 #15 | `docs/known-gaps.md` | — | 存在，27,684 字节 | 一致 |
-| §5.1 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致 |
-| §5.3 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
-| §5.4 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
+| §5.3 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致（上一轮全量原始输出） |
+| §5.5 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
+| §5.6 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
+| §5.1 | `docs/evidence/regression-bb6b654c.txt` | 2,303 字节 | 存在，2,303 字节 | 一致（`verify-full-bb6b654c.log` 的逐字节副本） |
+| §5.2 | `docs/evidence/regression-baseline-coverage-2026-11-06.md` | — | 存在，6,665 字节 | 一致（覆盖表本体） |
+| §5.2 | `docs/evidence/regression-delta-bb6b654c.xml` | 532 条 | 存在，67,855 字节 | 一致 |
+| §5.2 | `docs/evidence/regression-delta-d2a62b0e.txt` | — | 存在，104 字节 | 一致 |
+| §5.2 | `docs/evidence/regression-c1-d2a62b0e.txt` | — | 存在，8,356 字节 | 一致 |
 | §0 / §2 #2 | `D:\cache\temp\liuhao-e2e\build\installer\manifest.json` | 8,596 文件 / 165.5 MB / 84 dist | 存在，数值一致 | 一致（非交付物，仅溯源） |
 

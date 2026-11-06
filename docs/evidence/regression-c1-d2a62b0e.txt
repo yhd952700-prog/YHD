@@ -1,0 +1,113 @@
+﻿python.exe : D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\agents_api.py:165: FastAPIDeprecationWarning: `regex` h
+as been deprecated, please use `pattern` instead
+所在位置 行:15 字符: 1667
++ ... g' -Tail 5; & $py scripts/verify_policy_c1.py *> 'D:\cache\temp\delta ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\copilot-work...attern` instead:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\agents_api.py:381: FastAPIDeprecationWarning: `regex` has been depre
+cated, please use `pattern` instead
+  level: str = Query("info", regex="^(debug|info|warning|error)$", description="Log level"),
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\cost_api.py:68: DeprecationWarning: datetime.datetime.utcnow() is de
+precated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datet
+ime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\cost_api.py:117: FastAPIDeprecationWarning: `regex` has been depreca
+ted, please use `pattern` instead
+  period: str = Query("monthly", regex="^(daily|weekly|monthly)$", description="Aggregation period"),
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\memory_api.py:153: FastAPIDeprecationWarning: `regex` has been depre
+cated, please use `pattern` instead
+  sort_order: str = Query("desc", regex="^(asc|desc)$"),
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\plugins_api.py:99: DeprecationWarning: datetime.datetime.utcnow() is
+ deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: da
+tetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().isoformat()
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\api\tasks_api.py:143: FastAPIDeprecationWarning: `regex` has been deprec
+ated, please use `pattern` instead
+  sort_order: str = Query("desc", regex="^(asc|desc)$"),
+C:\Users\Administrator\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\importlib\__init__.py:90: Depreca
+tionWarning: src.audit is a deprecated legacy compatibility layer and is NOT the tamper-evident audit chain. Use src.ke
+rnels.audit (SQLite + hash chain) for authoritative, evidence-grade audit logging.
+  return _bootstrap._gcd_import(name[level:], package, level)
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\gateway\validation.py:17: PydanticDeprecatedSince20: Support for class-b
+ased `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2
+ Migration Guide at https://errors.pydantic.dev/2.13/migration/
+  class APIError(BaseModel):
+D:\LiuHao-AI-OS\.venv\Lib\site-packages\pydantic\_internal\_config.py:386: UserWarning: Valid config keys have changed 
+in V2:
+* 'schema_extra' has been renamed to 'json_schema_extra'
+  warnings.warn(message, UserWarning)
+D:\copilot-worktrees\liuhao-delta-d2a62b0e\src\integrations\orm_models.py:29: MovedIn20Warning: The ``declarative_base(
+)`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2
+.0 at: https://sqlalche.me/e/b8d9)
+  Base = declarative_base()
+REFUSING registry row 'audit.operator' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not authenti
+cate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authen
+ticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_
+human_identity.py so the row carries a valid tag; no human is recognised until then.
+REFUSING registry row 'http.closure.operator' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not a
+uthenticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be
+ authenticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/re
+gister_human_identity.py so the row carries a valid tag; no human is recognised until then.
+REFUSING registry row 'identity-reviewer' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not authe
+nticate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be aut
+henticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/regist
+er_human_identity.py so the row carries a valid tag; no human is recognised until then.
+REFUSING registry row 'persist0-human' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not authenti
+cate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authen
+ticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_
+human_identity.py so the row carries a valid tag; no human is recognised until then.
+REFUSING registry row 'persist1-human' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not authenti
+cate against LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authen
+ticated cannot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_
+human_identity.py so the row carries a valid tag; no human is recognised until then.
+REFUSING registry row 'smoke' in 'D:\\LiuHao-AI-OS\\data\\human_identities.sqlite3': the row does not authenticate agai
+nst LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY (missing or mismatched 'integrity' tag). A row that cannot be authenticated c
+annot decide who holds sovereignty. Remedy: set that variable and re-register the human with scripts/register_human_ide
+ntity.py so the row carries a valid tag; no human is recognised until then.
+========================================================================
+[1] importing every module under src/
+========================================================================
+  modules: 507  OK: 507  FAILED: 0
+
+========================================================================
+[2] @kernel_action decorated callables still expose __wrapped__
+========================================================================
+  decorated callables found: 180  unusable signatures: 0
+
+========================================================================
+[3] verdict is allow-list driven (not a constant)
+========================================================================
+  allow-listed actions allowed : 24/24
+  denied actions denied        : 23/23
+  identity: id=liuhao-internal-service status=active kind=service
+
+========================================================================
+[4] self-declared service claims cannot obtain an allow
+========================================================================
+  {'type': 'service'}                                          -> deny
+  {'type': 'service', 'principal': 'does-not-exist'}           -> deny
+  {'type': 'service', 'principal': 'system'}                   -> deny
+  {'type': 'system', 'verified': True}                         -> deny
+  {'type': 'service', 'principal': 'liuhao-internal-service'   -> allow   (control: must allow)
+
+========================================================================
+[5] verification is revocable (kill switch)
+========================================================================
+  status=suspended    -> deny
+  status=deactivated  -> deny
+  status=active       -> allow
+
+========================================================================
+[6] allow-list covers every decorated kernel action under src/ (no drift)
+========================================================================
+  decorated actions      : 47
+  allow-list entries     : 24 allowed + 23 denied = 47
+  overlap                : []
+  unclassified (must be []) : []
+  stale       (must be []) : []
+
+========================================================================
+RESULT: ALL GREEN
