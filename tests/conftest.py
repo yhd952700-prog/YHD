@@ -109,6 +109,19 @@ _hyp_env.environ.setdefault(
     _hyp_tempfile.mkdtemp(prefix="liuhao_hypothesis_"),
 )
 
+# The butler path may call the configured default model for decomposition and
+# summary. Tests isolate the model registry, but ``resolve_provider()`` still
+# falls back to ``.env`` (e.g. a developer's local Ollama), which would make the
+# suite network-dependent and non-deterministic. Product default stays ON;
+# tests opt out globally and opt back in explicitly when they exercise the
+# model-backed layers with an injected generator.
+_hyp_env.environ.setdefault("LIUHAO_BUTLER_MODEL", "0")
+# Live web retrieval is ON in the product. Tests must never reach the internet:
+# that would make them slow, flaky and dependent on the developer's network.
+# Tests that exercise retrieval enable it explicitly (with a fake provider or
+# a local HTTP server).
+_hyp_env.environ.setdefault("LIUHAO_WEB_RESEARCH", "0")
+
 
 @pytest_asyncio.fixture
 async def event_loop():

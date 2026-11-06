@@ -1,7 +1,8 @@
 """模型管理 HTTP 面：鉴权/管理员收敛、脱敏、连通性测试分类。
 
 用真实 ``TestClient`` + 真 JWT（与 ``tests/test_gateway_auth.py`` 同款），
-不 stub 掉签名校验；这样"写权限只给管理员"是经过真实鉴权链验证的。
+不 stub 掉签名校验；这样"管理写入只给管理员或持有账号作用域的账号"是经过
+真实鉴权链验证的。成员只能维护自己的 Key 归属，由账号树用例覆盖。
 """
 from __future__ import annotations
 
@@ -65,7 +66,8 @@ class TestAccessControl:
         assert client.get("/v1/models", headers=reader_headers).status_code == 200
         response = client.post("/v1/models", json=_payload(), headers=reader_headers)
         assert response.status_code == 403
-        assert "管理员" in response.json()["detail"]
+        # 定稿契约：权限拒绝一律中性文案，不泄露角色/层级信息。
+        assert response.json()["detail"] == "无权执行该操作"
 
     def test_admin_role_can_create(self, client, admin_headers):
         response = client.post("/v1/models", json=_payload(), headers=admin_headers)

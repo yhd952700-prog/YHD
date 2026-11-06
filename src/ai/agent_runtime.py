@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.kernels.execution import (
     ExecutionEngine,
@@ -34,9 +34,11 @@ from src.kernels.execution import (
     GoalCancelled,
 )
 from src.kernels.evaluation import (
+    EvaluationOutcome,
     EvaluationResult,
     get_evaluator,
 )
+from .llm_support import compose_execution_summary, default_generate
 from src.kernels.memory import (
     MemoryKernel,
     MemoryScope,
@@ -220,6 +222,8 @@ class AgentRuntime:
         max_replans: int = 2,
         executable_capabilities: Optional[Any] = None,
         artifact_index: Any = None,
+        enable_model_planning: bool = False,
+        model_generator: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.scope = scope
         self.engine = ExecutionEngine(
@@ -228,19 +232,42 @@ class AgentRuntime:
             journal=journal,
             artifact_index=artifact_index,
         )
-        # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
-        # ids, or a zero-arg callable returning them. When supplied, the plan is
-        # validated BEFORE any task runs, so a goal needing an unregistered
-        # capability fails fast with a named reason instead of executing part of
-        # the work and failing afterwards. Unsupplied => unchanged behaviour.
+        # Capability provider for both the planner contract and the LLM planner.
+        provider = None
         if executable_capabilities is not None:
-            from .planner_contract import ExecutableAwareDecomposer
-
             provider = (
                 executable_capabilities
                 if callable(executable_capabilities)
                 else lambda: executable_capabilities
             )
+
+        # Model-first decomposition (opt-in). It sits INSIDE the executable-aware
+        # wrapper below, so a model plan is still validated against the real
+        # capability registry before any task runs. Every failure inside the
+        # LLM planner degrades to the deterministic keyword plan.
+        self.enable_model_planning = bool(enable_model_planning)
+        self._model_generator: Optional[Callable[[str], str]] = (
+            model_generator
+            if model_generator is not None
+            else (default_generate if enable_model_planning else None)
+        )
+        if enable_model_planning:
+            from .llm_decomposer import LLMTaskDecomposer
+
+            self.engine.decomposer = LLMTaskDecomposer(
+                self.engine.decomposer,
+                generator=self._model_generator,
+                capability_provider=provider,
+            )
+
+        # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
+        # ids, or a zero-arg callable returning them. When supplied, the plan is
+        # validated BEFORE any task runs, so a goal needing an unregistered
+        # capability fails fast with a named reason instead of executing part of
+        # the work and failing afterwards. Unsupplied => unchanged behaviour.
+        if provider is not None:
+            from .planner_contract import ExecutableAwareDecomposer
+
             self.engine.decomposer = ExecutableAwareDecomposer(
                 self.engine.decomposer, capability_provider=provider
             )
@@ -282,6 +309,8 @@ class AgentRuntime:
         on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         pinned_agent: Optional[str] = None,
         only_task_name: Optional[str] = None,
+        only_task_names: Optional[Sequence[str]] = None,
+        pinned_tasks: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> AgentRunResult:
         """Run one goal end-to-end: plan → execute → evaluate → (persist).
 
@@ -343,6 +372,8 @@ class AgentRuntime:
                 on_task_progress=on_task_progress,
                 pinned_agent=pinned_agent,
                 only_task_name=only_task_name,
+                only_task_names=only_task_names,
+                pinned_tasks=pinned_tasks,
             )
 
             state = AgentRunState.VERIFYING
@@ -517,11 +548,58 @@ class AgentRuntime:
             },
         }
         try:
-            return self.evaluator.evaluate(
+            evaluation = self.evaluator.evaluate(
                 intended, actual, scope=goal.scope, correlation_id=correlation_id
             )
         except Exception:
             return None
+        self._attach_summary(goal, ctx, evaluation)
+        return evaluation
+
+    def _attach_summary(
+        self,
+        goal: Goal,
+        ctx: ExecutionContext,
+        evaluation: Optional[EvaluationResult],
+    ) -> None:
+        """Synthesize the user-facing conclusion from REAL task outputs.
+
+        The evaluator scores criteria; it does not write prose. Previously
+        ``EvaluationResult`` had no ``summary`` field at all, so the gateway
+        serialized ``""`` and the UI could only count tasks. Here the summary is
+        produced from the actual per-task outputs (model first, deterministic
+        evidence-only fallback), and the outcome is reconciled with the real
+        task result set so a failed task can never be labelled SUCCESS.
+        """
+        if evaluation is None or getattr(ctx, "plan", None) is None:
+            return
+        records: List[Dict[str, Any]] = []
+        for task in ctx.plan.tasks:
+            result = ctx.task_results.get(task.id)
+            records.append(
+                {
+                    "name": task.name,
+                    "capability": task.capability_id,
+                    "status": getattr(task.status, "value", str(task.status)),
+                    "result": result.output if result is not None else None,
+                    "error": task.error,
+                }
+            )
+        try:
+            evaluation.summary = compose_execution_summary(
+                goal.natural_language, records, self._model_generator
+            )
+        except Exception:
+            # Summary generation must never take down a completed goal.
+            evaluation.summary = ""
+        if ctx.failed_tasks:
+            completed_count = len(ctx.completed_tasks)
+            evaluation.outcome = (
+                EvaluationOutcome.PARTIAL if completed_count else EvaluationOutcome.FAILED
+            )
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["failed_task_count"] = len(ctx.failed_tasks)
+            evaluation.metadata["completed_task_count"] = completed_count
 
     def _needs_replan(
         self, ctx: ExecutionContext, evaluation: Optional[EvaluationResult]

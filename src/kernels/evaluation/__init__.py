@@ -132,6 +132,9 @@ class EvaluationResult:
     escalation_required: bool = False
     human_checkpoint: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    #: User-facing conclusion synthesized from the REAL task outputs. Empty
+    #: means "not synthesized yet"; consumers must not invent one in that case.
+    summary: str = ""
     evaluated_at: datetime = field(default_factory=utc_now)
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 

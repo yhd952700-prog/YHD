@@ -27,7 +27,9 @@ class FakeStore:
     def __init__(self, records):
         self._records = records
 
-    def list_models(self):
+    def list_models(self, *, visible_to=None, allow_unowned=False):
+        # 与 ModelConfigStore.list_models 的新签名保持一致；测试桩不做过滤，
+        # 归属过滤由 tests/ai 下的真实存储用例覆盖。
         return list(self._records)
 
 
@@ -107,7 +109,7 @@ class TestLiveProviderEntry:
         calls = []
         sentinel = object()
 
-        def fake_resolve(model_id=None):
+        def fake_resolve(model_id=None, **kwargs):
             calls.append(model_id)
             return sentinel
 
@@ -117,7 +119,9 @@ class TestLiveProviderEntry:
     def test_routes_then_resolves_the_selected_model(self, monkeypatch, resolved, caplog):
         calls, sentinel = resolved
         profiles = routing.catalog_from_store(store=FakeStore(RECORDS))
-        monkeypatch.setattr(routing, "catalog_from_store", lambda store=None: dict(profiles))
+        monkeypatch.setattr(
+            routing, "catalog_from_store", lambda store=None, **kwargs: dict(profiles)
+        )
 
         with caplog.at_level(logging.INFO, logger="liuhao.ai.model_router"):
             provider = routing.provider_for_task("chat")
@@ -133,7 +137,9 @@ class TestLiveProviderEntry:
     ):
         calls, sentinel = resolved
         monkeypatch.setattr(
-            routing, "catalog_from_store", lambda store=None: {"x": _profile("x", "mock", "m")}
+            routing,
+            "catalog_from_store",
+            lambda store=None, **kwargs: {"x": _profile("x", "mock", "m")},
         )
         with caplog.at_level(logging.INFO, logger="liuhao.ai.model_router"):
             provider = routing.provider_for_task("chat", model_id="m-explicit")
@@ -146,7 +152,7 @@ class TestLiveProviderEntry:
         self, monkeypatch, resolved, caplog
     ):
         calls, sentinel = resolved
-        monkeypatch.setattr(routing, "catalog_from_store", lambda store=None: {})
+        monkeypatch.setattr(routing, "catalog_from_store", lambda store=None, **kwargs: {})
         with caplog.at_level(logging.INFO, logger="liuhao.ai.model_router"):
             provider = routing.provider_for_task("chat")
 
@@ -158,7 +164,9 @@ class TestLiveProviderEntry:
         calls, sentinel = resolved
         monkeypatch.setenv("LIUHAO_MODEL_ROUTER", "off")
         monkeypatch.setattr(
-            routing, "catalog_from_store", lambda store=None: {"x": _profile("x", "mock", "m")}
+            routing,
+            "catalog_from_store",
+            lambda store=None, **kwargs: {"x": _profile("x", "mock", "m")},
         )
         with caplog.at_level(logging.INFO, logger="liuhao.ai.model_router"):
             provider = routing.provider_for_task("chat")

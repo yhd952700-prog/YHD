@@ -22,6 +22,13 @@ from src.gateway.main import get_app
 from src.gateway.ai_management import AIStateManager
 
 
+def _error_detail(resp) -> dict:
+    """兼容两种错误体：结构化展开后 code/message 在顶层，老格式在 detail 里。"""
+    body = resp.json()
+    detail = body.get("detail")
+    return detail if isinstance(detail, dict) else body
+
+
 @pytest.fixture
 def client():
     """创建带鉴权的测试客户端。"""
@@ -243,7 +250,7 @@ class TestAssignTask:
             headers=auth_headers,
         )
         assert resp.status_code == 404
-        detail = resp.json()["detail"]
+        detail = _error_detail(resp)
         assert detail["code"] == "agent_not_found"
         assert "ghost-a999" in detail["message"]
         # 明说"不会改用其他员工"，这是语义承诺，不只是文案
@@ -324,7 +331,7 @@ class TestRetrySingleTask:
             "/v1/goals/goal-ghost/tasks/task-ghost/retry", headers=auth_headers
         )
         assert resp.status_code == 404
-        detail = resp.json()["detail"]
+        detail = _error_detail(resp)
         assert detail["code"] == "goal_not_found"
         assert "goal-ghost" in detail["message"]
 
@@ -458,4 +465,105 @@ class TestIncrementalTaskProgress:
         assert isinstance(detail.get("tasks"), list)
         assert detail["tasks"], "目标（运行中或已结束）都应返回逐条任务"
         assert all("status" in t for t in detail["tasks"])
+
+
+class TestRetryRecomputesWholeGoal:
+    """重试后必须按真实子任务结果重算 goal 状态、artifacts 和 evaluation。"""
+
+    def _seed_with_two_failures(self, mgr, goal_id="goal-retry-whole"):
+        mgr._goals[goal_id] = {
+            "goal_id": goal_id,
+            "state": "failed",
+            "natural_language": "整理周报并发送",
+            "scope": "L1",
+            "error": "task failed",
+            "artifacts": ["reports/weekly.md"],
+            "evaluation": {
+                "outcome": "EvaluationOutcome.SUCCESS",
+                "summary": "只看到一项任务，误报成功",
+            },
+            "tasks": [
+                {"id": "t1", "name": "整理周报", "status": "completed",
+                 "result": "已整理", "error": None, "assigned_agent": "emp-a1"},
+                {"id": "t2", "name": "发送邮件", "status": "failed",
+                 "result": None, "error": "smtp timeout", "assigned_agent": "emp-a2"},
+                {"id": "t3", "name": "归档副本", "status": "failed",
+                 "result": None, "error": "disk full", "assigned_agent": "emp-a3"},
+            ],
+        }
+        return goal_id
+
+    def test_retry_keeps_goal_failed_and_evaluation_not_success(self, monkeypatch):
+        mgr = AIStateManager()
+        goal_id = self._seed_with_two_failures(mgr)
+
+        retried = [{
+            "id": "new-task-id",
+            "name": "发送邮件",
+            "status": "completed",
+            "result": "已发送",
+            "error": None,
+            "assigned_agent": "emp-a2",
+        }]
+        stub = _StubRuntime(_StubResult(retried))
+        monkeypatch.setattr(AIStateManager, "_ensure_runtime", lambda self: stub)
+        monkeypatch.setattr(
+            AIStateManager,
+            "_result_to_dict",
+            staticmethod(lambda result, nl, scope: {
+                "tasks": result.tasks_payload,
+                "artifacts": ["outbox/sent.log"],
+                "evaluation": {
+                    "outcome": "EvaluationOutcome.SUCCESS",
+                    "summary": "这一项成功了",
+                },
+            }),
+        )
+
+        entry = mgr.retry_task(goal_id, "t2", principal="human:test")
+
+        # t3 仍然失败 -> goal 必须仍是 failed，evaluation 不能是 SUCCESS
+        assert entry["state"] == "failed"
+        assert entry["evaluation"]["outcome"] != "EvaluationOutcome.SUCCESS"
+        assert entry["evaluation"]["outcome"] == "EvaluationOutcome.PARTIAL"
+        # 结论必须覆盖整个 goal：成功与仍失败都要出现
+        summary = entry["evaluation"]["summary"]
+        assert "已发送" in summary
+        assert "归档副本" in summary
+        # artifacts 是真实产物清单：原来的 + 重试产生的，去重后都在
+        assert entry["artifacts"] == ["reports/weekly.md", "outbox/sent.log"]
+
+    def test_retry_becomes_completed_and_artifacts_non_empty(self, monkeypatch):
+        mgr = AIStateManager()
+        goal_id = self._seed_with_two_failures(mgr)
+
+        retried = [{
+            "id": "new-task-id",
+            "name": "发送邮件",
+            "status": "completed",
+            "result": "已发送",
+            "error": None,
+            "assigned_agent": "emp-a2",
+        }]
+        # 让另一个失败任务也成功重试（真实场景：先修一个，再修另一个）
+        mgr._goals[goal_id]["tasks"][2]["status"] = "completed"
+        mgr._goals[goal_id]["tasks"][2]["result"] = "已归档"
+
+        stub = _StubRuntime(_StubResult(retried))
+        monkeypatch.setattr(AIStateManager, "_ensure_runtime", lambda self: stub)
+        monkeypatch.setattr(
+            AIStateManager,
+            "_result_to_dict",
+            staticmethod(lambda result, nl, scope: {
+                "tasks": result.tasks_payload,
+                "artifacts": ["outbox/sent.log"],
+                "evaluation": {"outcome": "EvaluationOutcome.SUCCESS", "summary": ""},
+            }),
+        )
+
+        entry = mgr.retry_task(goal_id, "t2", principal="human:test")
+
+        assert entry["state"] == "completed"
+        assert entry["artifacts"] == ["reports/weekly.md", "outbox/sent.log"]
+        assert entry["evaluation"]["summary"].strip(), "重试后必须有结论"
 

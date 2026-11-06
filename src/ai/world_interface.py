@@ -31,9 +31,11 @@ GENUINE enforcement (as of p36-wi-safety)
 
 from __future__ import annotations
 
+import glob
 import os
 import shlex
 import subprocess
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
@@ -180,8 +182,35 @@ class FilesystemAdapter(WorldAdapter):
         if action == "write":
             content = request.params.get("content", "")
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            # A crashed process may leave ``<path>.<...>.tmp`` siblings behind.
+            # A fresh write supersedes them: clean best-effort so a retry does
+            # not accumulate orphan half-written files next to the target.
+            try:
+                directory = os.path.dirname(path) or "."
+                base = os.path.basename(path)
+                for stale in glob.glob(
+                    os.path.join(glob.escape(directory), f"{glob.escape(base)}.*.tmp")
+                ):
+                    os.unlink(stale)
+            except OSError:
+                pass
+            # Atomic publish: write to a sibling temp file, fsync, then os.replace.
+            # A process killed mid-write must never leave a half-written target
+            # that could later be mistaken for a successful artifact.
+            tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             return {"written": path}
         raise ValueError(f"filesystem has no execute action {action!r}")
 

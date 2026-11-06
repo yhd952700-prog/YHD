@@ -79,13 +79,18 @@ def test_input_layer_is_the_gate_not_something_else(lcore):
 
 
 def test_missing_capability_still_raises_base_error(lcore):
-    """Layer 1 unaffected: a truly missing capability raises the base error, not input error."""
+    """Layer 1 unaffected: a truly missing capability raises the base error, not input error.
+
+    ``network_bus`` and ``execution_pipeline`` now have real executors, so this
+    deliberately uses ``multi_tier_memory`` -- the remaining capability the
+    deterministic planner can emit without a registered executor.
+    """
     with pytest.raises(PlannerContractError) as ei:
         _wrapped(lcore).decompose(
-            Goal(id="g4", natural_language="search for information about quantum", scope="L1")
+            Goal(id="g4", natural_language="remember my favorite color", scope="L1")
         )
     assert not isinstance(ei.value, PlannerInputError)
-    assert "network_bus" in str(ei.value)
+    assert "multi_tier_memory" in str(ei.value)
 
 
 def test_input_error_is_a_contract_error(lcore):

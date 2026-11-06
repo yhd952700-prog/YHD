@@ -61,7 +61,9 @@ class PlannerContractError(Exception):
             f"goal {goal_id or '<unknown>'} cannot be executed: no executor is "
             f"registered for capability {listed}. The planner must not emit work "
             f"it cannot perform -- register an executor for {listed}, or restate "
-            f"the goal in terms of a capability that exists."
+            f"the goal in terms of a capability that exists. "
+            f"中文说明：计划需要「{listed}」能力，但当前没有可用的执行器；"
+            f"请先注册对应工具，或换一种说法描述目标。"
         )
 
 
@@ -110,6 +112,12 @@ DEFAULT_INPUT_REQUIREMENTS: dict = {
     # python_compute executes code / evaluates an expression; it refuses to
     # guess Python from prose, so a task carrying only `goal` is doomed.
     "python_compute": ("code", "expression"),
+    # network_bus is backed by the model research executor: it needs something
+    # to research. A bare task with no query cannot produce an answer.
+    "network_bus": ("query", "goal", "instruction"),
+    # execution_pipeline synthesizes an answer; without an instruction/goal it
+    # has nothing to organize.
+    "execution_pipeline": ("instruction", "goal", "query"),
 }
 
 
@@ -160,6 +168,15 @@ class ExecutableAwareDecomposer:
     @agent_ids.setter
     def agent_ids(self, value: Any) -> None:
         setattr(self._inner, "agent_ids", value)
+
+    # -- only_task_name proxy: the engine sets this hint before decompose -----
+    @property
+    def only_task_name(self) -> Any:
+        return getattr(self._inner, "only_task_name", None)
+
+    @only_task_name.setter
+    def only_task_name(self, value: Any) -> None:
+        setattr(self._inner, "only_task_name", value)
 
     def __getattr__(self, name: str) -> Any:
         # Only called when normal lookup fails, so __init__-set attributes and

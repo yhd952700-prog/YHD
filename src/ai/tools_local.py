@@ -29,11 +29,18 @@ from __future__ import annotations
 import os
 import re
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .tool_registry import Tool, ToolRegistry
 from .workspace import workspace_root, WorkspaceViolation
 from .world_interface import FilesystemAdapter, WorldInterface, WorldRequest
+from . import web_research
+from .llm_support import (
+    ModelUnavailable,
+    default_generate,
+    generate_with_timeout,
+    tool_timeout_seconds,
+)
 from ..plugins.sandbox.backends.restricted_python_backend import (
     RestrictedPythonBackend,
     RESULT_VAR,
@@ -131,6 +138,276 @@ def python_compute(**inputs: Any) -> Dict[str, Any]:
     }
 
 
+def _model_call(prompt: str) -> str:
+    """One bounded call to the configured default model (prose budget)."""
+    return generate_with_timeout(
+        default_generate, prompt, timeout=tool_timeout_seconds()
+    )
+
+
+def _model_failure(exc: BaseException) -> Dict[str, Any]:
+    """Turn a model failure into a readable, actionable tool failure."""
+    if isinstance(exc, ModelUnavailable):
+        error = str(exc)
+    elif isinstance(exc, TimeoutError):
+        error = (
+            f"默认模型调用超时：{exc}。请检查模型服务，或调大 "
+            "LIUHAO_LLM_TOOL_TIMEOUT_SECONDS 后重试。"
+        )
+    else:
+        error = (
+            f"默认模型调用失败（{type(exc).__name__}）：{exc}。"
+            "请检查「设置 → 模型管理」里的模型服务与网络后重试。"
+        )
+    return {"success": False, "status": "failed", "error": error}
+
+
+def _live_research_answer(query: str, report: "web_research.ResearchReport") -> Dict[str, Any]:
+    """Answer from REAL retrieved sources, with citations the user can check.
+
+    The model is allowed to *summarise* the retrieved material only. If it
+    fails, the deterministic source list is returned instead — the retrieval
+    succeeded, so the task must not be marked failed just because the summary
+    model was unavailable.
+    """
+    source_block = web_research.format_sources(report.sources, report.fetched_at)
+    prompt = (
+        "你是「鎏灏管家」里的调研执行体。下面是一次真实联网检索的结果。"
+        "请只用这些来源回答问题：先给结论，再给 3-5 条依据（总长不超过 300 字）。"
+        "严格要求：不得编造任何链接、日期、项目名或版本号；"
+        "提到具体项目时必须保留其来源编号；如果来源不足以回答，直接说“未查到”。\n\n"
+        f"问题：{query.strip()}\n\n"
+        f"真实检索结果：\n{source_block}\n"
+    )
+    sources = [item.as_dict() for item in report.sources]
+    meta = {
+        "basis": "live_web",
+        "sources": sources,
+        "fetched_at": report.fetched_at,
+        "providers": list(report.providers),
+        "search_phrase": report.search_phrase,
+    }
+    try:
+        text = _model_call(prompt).strip()
+    except BaseException as exc:  # noqa: BLE001 - retrieval succeeded, summary did not
+        return {
+            "success": True,
+            "status": "executed",
+            "result": (
+                f"已联网检索到以下真实来源（抓取时间 {report.fetched_at}）。"
+                "默认模型本次未能生成摘要，以下直接列出原始来源，未做任何推断：\n"
+                + source_block
+            ),
+            **meta,
+            "model_error": type(exc).__name__,
+            "summary": f"已检索到 {len(report.sources)} 条真实来源，抓取于 {report.fetched_at}。",
+        }
+    return {
+        "success": True,
+        "status": "executed",
+        "result": f"{text}\n\n{source_block}",
+        **meta,
+        "summary": text[:300],
+    }
+
+
+def llm_research(**inputs: Any) -> Dict[str, Any]:
+    """Research a question, preferring LIVE retrieval over model memory.
+
+    Live retrieval (``LIUHAO_WEB_RESEARCH``, default ON) is read-only and uses
+    key-free public endpoints. When it is disabled, blocked, empty or times out,
+    this falls back to the original model-knowledge path and keeps its honest
+    "未接入实时联网检索" label — a retrieval problem is never a task failure.
+    """
+    query = (
+        inputs.get("query")
+        or inputs.get("goal")
+        or inputs.get("instruction")
+        or ""
+    )
+    if not isinstance(query, str) or not query.strip():
+        return {
+            "success": False,
+            "status": "rejected",
+            "error": "network_bus needs a `query` (the concrete question to research).",
+        }
+
+    retrieval_error = ""
+    if web_research.enabled():
+        report = web_research.search(query)
+        if report.ok:
+            return _live_research_answer(query, report)
+        retrieval_error = report.error or "检索没有返回任何来源"
+
+    label = "（说明：本次由默认模型基于已有知识生成，未接入实时联网检索。）"
+    if retrieval_error:
+        label = (
+            "（说明：实时联网检索本次未取得结果"
+            f"（{retrieval_error}）；以下由默认模型基于已有知识生成，"
+            "请勿当作今天的实时结果。）"
+        )
+    prompt = (
+        "你是「鎏灏管家」里的调研执行体。请围绕下面的问题，给出尽可能具体、"
+        "可核实的回答：先给结论，再给 3-5 条依据或候选（总长不超过 300 字）；"
+        "如果涉及“今天/最新”而你无法确认实时信息，必须明确说明这一点并给出核实建议。\n\n"
+        f"问题：{query.strip()}"
+    )
+    try:
+        text = _model_call(prompt)
+    except BaseException as exc:  # noqa: BLE001 - surfaced as failure
+        return _model_failure(exc)
+    return {
+        "success": True,
+        "status": "executed",
+        "result": label + "\n" + text.strip(),
+        "basis": "model_knowledge",
+        "retrieval_error": retrieval_error,
+        "summary": text.strip()[:300],
+    }
+
+
+def _upstream_citations(upstream: Any) -> Tuple[List[Dict[str, Any]], str]:
+    """Collect only citations the upstream executors really returned.
+
+    The synthesis model is allowed to summarise; it is *not* allowed to be the
+    only carrier of the links. Anything here comes from a real tool output, so
+    appending it back to the final text is honest even when the model drops it.
+    """
+    sources: List[Dict[str, Any]] = []
+    fetched_at = ""
+    seen: set = set()
+    if not isinstance(upstream, list):
+        return sources, fetched_at
+    for item in upstream:
+        if not isinstance(item, dict):
+            continue
+        output = item.get("output")
+        if not isinstance(output, dict):
+            continue
+        if not fetched_at:
+            fetched_at = str(output.get("fetched_at") or "")
+        for raw in output.get("sources") or []:
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            sources.append({
+                "title": str(raw.get("title") or ""),
+                "url": url,
+                "site": str(raw.get("site") or ""),
+                "published_at": str(raw.get("published_at") or ""),
+            })
+            if len(sources) >= 12:
+                return sources, fetched_at
+    return sources, fetched_at
+
+
+def llm_synthesis(**inputs: Any) -> Dict[str, Any]:
+    """Turn upstream results / a goal into the user-facing deliverable.
+
+    This backs the abstract ``execution_pipeline`` capability. Unlike a
+    hard-coded formatter it uses the real upstream outputs (injected by the
+    Execution Kernel as ``upstream``) so the conclusion is grounded in what the
+    earlier tasks actually produced.
+    """
+    goal = inputs.get("goal") or ""
+    instruction = (
+        inputs.get("instruction")
+        or inputs.get("description")
+        or inputs.get("query")
+        or ""
+    )
+    if not isinstance(goal, str):
+        goal = str(goal)
+    if not isinstance(instruction, str):
+        instruction = str(instruction)
+    if not (goal.strip() or instruction.strip()):
+        return {
+            "success": False,
+            "status": "rejected",
+            "error": "execution_pipeline needs a `goal` or `instruction` to synthesize.",
+        }
+
+    upstream_blocks = []
+    upstream = inputs.get("upstream")
+    if isinstance(upstream, list):
+        for item in upstream:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("task") or item.get("name") or "上游任务"
+            output = item.get("output")
+            if isinstance(output, dict):
+                output = output.get("result") or output.get("summary") or output
+            text = str(output).strip()
+            if text:
+                upstream_blocks.append(f"【{name}】\n{text[:1500]}")
+    citations, fetched_at = _upstream_citations(upstream)
+
+    def _with_citations(text: str) -> str:
+        """Always carry the real links, even when the model drops them."""
+        if not citations:
+            return text
+        needed = min(3, len(citations))
+        present = sum(1 for item in citations if str(item.get("url")) in text)
+        has_time = (fetched_at in text) if fetched_at else True
+        if present >= needed and has_time:
+            return text
+        block = web_research.format_source_dicts(citations, fetched_at)
+        return f"{text}\n\n{block}" if text.strip() else block
+
+    prompt = (
+        "你是「鎏灏管家」的结果整理执行体。请完成下面这个任务，直接产出"
+        "用户可用的最终内容（中文，结构清晰，有明确结论，总长不超过 500 字，"
+        "不要只复述过程）。\n\n"
+        f"用户目标：{goal.strip() or '（未提供）'}\n"
+        f"本任务：{instruction.strip() or '整理上游结果并给出最终结论'}\n"
+    )
+    if upstream_blocks:
+        prompt += "\n上游任务的真实结果：\n" + "\n\n".join(upstream_blocks) + "\n"
+    prompt += (
+        "\n如果上游结果不足以完成任务，请明确说明缺什么，不要编造。"
+        "如果上游给出了来源（站点/链接/抓取时间），最终结论必须保留至少 3 条来源，"
+        "并且不得新增或改写任何链接、日期、项目名。"
+    )
+
+    try:
+        text = _model_call(prompt)
+    except BaseException as exc:  # noqa: BLE001 - surfaced as failure
+        if upstream_blocks:
+            # The upstream work really happened and is citable; losing the
+            # summary model must not turn that into a failed task.
+            fallback = (
+                "（说明：整理模型本次不可用，以下直接保留上游真实结果，未做推断。）\n\n"
+                + "\n\n".join(upstream_blocks)
+            )
+            if citations:
+                block = web_research.format_source_dicts(citations, fetched_at)
+                if block:
+                    fallback += "\n\n" + block
+            return {
+                "success": True,
+                "status": "executed",
+                "result": fallback,
+                "model_error": type(exc).__name__,
+                "summary": "整理模型不可用，已直接保留上游真实结果。",
+                **({"sources": citations, "fetched_at": fetched_at} if citations else {}),
+            }
+        return _model_failure(exc)
+    final_text = _with_citations(text.strip())
+    return {
+        "success": True,
+        "status": "executed",
+        "result": final_text,
+        "summary": final_text[:300],
+        **(
+            {"basis": "live_web", "sources": citations, "fetched_at": fetched_at}
+            if citations else {}
+        ),
+    }
+
+
 def _make_file_write(root: str):
     """Build the ``file_write`` callable bound to a **fixed** workspace root.
 
@@ -187,11 +464,31 @@ def _make_file_write(root: str):
                 ),
             }
 
+        # 账号分区（§3.5）：执行侧若带 owner 字段，产物落到 ``accounts/<owner>/``。
+        # 调度逻辑不在这里改——这里只负责"按 owner 落盘"。
+        owner_text = ""
+        raw_owner = inputs.get("owner_account_id") or inputs.get("owner")
+        if raw_owner is not None:
+            owner_text = str(raw_owner).strip()
+            if owner_text and (
+                "/" in owner_text
+                or "\\" in owner_text
+                or owner_text in (".", "..")
+            ):
+                return {
+                    "success": False,
+                    "status": "rejected",
+                    "error": "owner_account_id 含有非法路径字符，拒绝写入。",
+                }
+        rel_path = path.strip().lstrip("/")
+        if owner_text and not rel_path.startswith("accounts/"):
+            rel_path = f"accounts/{owner_text}/{rel_path}"
+
         result = fs_world.execute(
             WorldRequest(
                 adapter="filesystem",
                 action="write",
-                params={"path": path.strip(), "content": content},
+                params={"path": rel_path, "content": content},
             )
         )
         if not result.success:
@@ -211,13 +508,15 @@ def _make_file_write(root: str):
             try:
                 from .workspace import resolve_in_workspace
 
-                written = resolve_in_workspace(path.strip(), fs_root)
+                written = resolve_in_workspace(rel_path, fs_root)
             except WorkspaceViolation:
                 written = None
         return {
             "success": True,
             "status": "executed",
             "path": written,
+            "rel_path": rel_path,
+            "owner_account_id": owner_text or None,
             "bytes": len(content.encode("utf-8")),
             "workspace_root": fs_root,
         }
@@ -287,3 +586,50 @@ def register_default_local_tools(
         registry.validate("local_file_write")
         registry.approve("local_file_write")
         registry.activate("local_file_write")
+
+    # Abstract capabilities that the planner has always been able to emit but
+    # nothing could execute. They are backed by the *configured default model*
+    # (resolved per call), so "research" and "organize" are real executions
+    # rather than phantom tasks that doom the whole plan at validation time.
+    if registry.get("local_llm_research") is None:
+        registry.register(Tool(
+            tool_id="local_llm_research",
+            name="LLM Research (network_bus)",
+            version="1.0.0",
+            description=(
+                "Research a concrete question with the configured default model. "
+                "Requires `query` (or `goal`). Returns a model-knowledge answer "
+                "explicitly labelled as such — this is not a live web crawler, so "
+                "it must not be presented as today's internet result."
+            ),
+            capability="network_bus",
+            schema={"query": "str", "goal": "str", "instruction": "str"},
+            fn=llm_research,
+            risk="MEDIUM",
+            sandbox_policy="model_provider",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_llm_research")
+        registry.approve("local_llm_research")
+        registry.activate("local_llm_research")
+
+    if registry.get("local_llm_synthesis") is None:
+        registry.register(Tool(
+            tool_id="local_llm_synthesis",
+            name="LLM Synthesis (execution_pipeline)",
+            version="1.0.0",
+            description=(
+                "Produce the user-facing deliverable from the goal, the task "
+                "instruction, and the REAL upstream task outputs injected by the "
+                "Execution Kernel. Requires `instruction` or `goal`."
+            ),
+            capability="execution_pipeline",
+            schema={"instruction": "str", "goal": "str", "description": "str"},
+            fn=llm_synthesis,
+            risk="MEDIUM",
+            sandbox_policy="model_provider",
+            audit_policy="p9.tool.execute",
+        ))
+        registry.validate("local_llm_synthesis")
+        registry.approve("local_llm_synthesis")
+        registry.activate("local_llm_synthesis")

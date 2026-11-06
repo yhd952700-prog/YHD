@@ -166,20 +166,22 @@ def test_unwired_goal_fails_and_does_not_report_success():
 def test_unbacked_capability_fails_honestly():
     """A goal needing a capability with no executor fails with a named reason.
 
-    ``search the web`` maps to ``network_bus``, which has no local tool. With the
+    ``network_bus`` / ``execution_pipeline`` now have real (model-backed)
+    executors, so this uses ``multi_tier_memory`` — the remaining capability the
+    deterministic planner can emit without a registered local tool. With the
     planner<->executor contract (``executable_capabilities``), the run fails fast
     at plan time and names the missing capability. It must never report success.
     """
     rt = _wired_runtime()
     res = rt.run_goal(
-        "search the web for the latest AI news",
+        "remember the latest AI news",
         goal_id="unbacked-1",
         persist=False,
     )
     assert res.state == AgentRunState.FAILED, (
         f"unbacked capability must not be reported as success; got {res.state}"
     )
-    assert res.error is not None and "network_bus" in res.error, (
+    assert res.error is not None and "multi_tier_memory" in res.error, (
         f"missing capability not named: {res.error!r}"
     )
 

@@ -19,13 +19,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from src._time import utc_now
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
+import json
 import uuid
 import os
 import re
 import hashlib
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import dependencies
 from src.kernels.context import ContextKernel, ContextInput, ContextInputType, create_context_kernel  # noqa: F401
@@ -36,6 +38,20 @@ from src.kernels._crosscutting import kernel_action, kernel_action_correlation_i
 from ._journal import ExecutionJournal, JournalEvent, new_execution_id  # noqa: F401
 
 logger = logging.getLogger("liuhao.kernel.execution")
+
+
+def _json_safe_inputs(value: Any) -> Dict[str, Any]:
+    """任务快照会写入 JSON，inputs 必须可序列化；异常值降级为字符串。
+
+    崩溃恢复要靠快照里的 inputs 原样重建任务（重启后拆解器可能给出不同
+    的任务名），因此这里不能把整个快照写成不可序列化而丢失。
+    """
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return {str(k): str(v) for k, v in value.items()}
 
 
 # Seam for real capability execution. The Execution Kernel must not depend on
@@ -478,8 +494,13 @@ class GoalDecomposer:
         mentions = lambda kws: self._mentions(search_text, kws)  # noqa: E731
 
         # Example decomposition patterns
-        if mentions(("search", "find", "lookup", "query")):
-            tasks.append(Task(
+        search_task: Optional[Task] = None
+        plan_task: Optional[Task] = None
+        if mentions((
+            "search", "find", "lookup", "query",
+            "查一下", "查询", "搜索", "搜一搜", "检索", "调研", "了解一下",
+        )):
+            search_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Search",
@@ -488,19 +509,29 @@ class GoalDecomposer:
                 capability_namespace="kernel",
                 inputs={"query": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            tasks.append(search_task)
 
-        if mentions(("plan", "schedule", "organize")):
-            tasks.append(Task(
+        if mentions((
+            "plan", "schedule", "organize",
+            "整理", "汇总", "总结", "归纳", "要点", "大纲", "梳理",
+        )):
+            plan_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Plan",
-                description="Create execution plan",
+                description="Organize upstream findings into the final deliverable",
                 capability_id="execution_pipeline",
                 capability_namespace="kernel",
                 inputs={"goal": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            # "Research, then organize" is a real data dependency: the
+            # organization step consumes the research output. Without it the
+            # two tasks would race and the conclusion would be ungrounded.
+            if search_task is not None:
+                plan_task.dependencies.append(search_task.id)
+            tasks.append(plan_task)
 
         # "save" is AMBIGUOUS: it is a FILE verb here (``_FILE_WRITE_A`` /
         # ``_FILE_WRITE_B`` match "save a file named X") and a MEMORY verb
@@ -517,7 +548,7 @@ class GoalDecomposer:
         if not (file_write_inputs and file_write_inputs.get("path")):
             memory_keywords = memory_keywords + ("save",)
         if mentions(memory_keywords):
-            tasks.append(Task(
+            memory_task = Task(
                 id=str(uuid.uuid4())[:8],
                 goal_id=goal.id,
                 name="Memory Store",
@@ -526,7 +557,17 @@ class GoalDecomposer:
                 capability_namespace="kernel",
                 inputs={"content": goal.natural_language},
                 scope=goal.scope,
-            ))
+            )
+            # "store the result" stores what the previous steps produced, so it
+            # is a real downstream consumer. Making that dependency explicit also
+            # keeps crash-recovery semantics deterministic: Search -> Plan ->
+            # Memory is a chain, so a process killed during Plan has exactly the
+            # already-completed Search on disk.
+            if plan_task is not None:
+                memory_task.dependencies.append(plan_task.id)
+            elif search_task is not None:
+                memory_task.dependencies.append(search_task.id)
+            tasks.append(memory_task)
 
         # Local computation: route to the real RestrictedPython-backed tool.
         #
@@ -1237,6 +1278,10 @@ class ExecutionEngine:
         # 类型刻意留 Any —— 内核层不得反向依赖 ai/gateway 层（见上方分层注释）。
         self.artifact_index: Any = artifact_index
         self._execution_id: Optional[str] = None
+        # Progress callbacks are called from parallel worker threads; serialising
+        # them keeps a gateway observer from racing on its own snapshot list while
+        # still letting the tasks themselves run concurrently.
+        self._progress_lock = threading.Lock()
 
     def set_capability_executor(self, capability_executor: Optional[CapabilityExecutor]) -> None:
         """Inject (or clear) the real capability executor used by the pipeline."""
@@ -1255,8 +1300,19 @@ class ExecutionEngine:
         on_task_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         pinned_agent: Optional[str] = None,
         only_task_name: Optional[str] = None,
+        only_task_names: Optional[Sequence[str]] = None,
+        pinned_tasks: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> ExecutionContext:
-        """Execute a goal through the full pipeline."""
+        """Execute a goal through the full pipeline.
+
+        ``pinned_tasks`` 用于崩溃后的单任务重试：重启后拆解器可能给出与
+        原计划不同的任务名，按名重试会找不到目标。调用方传入**原计划快照**
+        时，这里原样重建任务（保留 id/依赖/inputs），不再重新拆解。
+
+        ``only_task_names`` 是重试范围：目标任务 + 因中断而从未执行的
+        下游任务（它们的依赖刚被补跑）。范围内的任务会执行，其余排队任务
+        一律 SKIPPED —— 绝不顺带重跑已完成任务。
+        """
         ctx = ExecutionContext(goal=goal, plan=None, context_kernel=self.context_kernel)
         # Audit traceability: thread the goal's correlation id into every
         # kernel-action audit event so the hash-chain audit can tie each action
@@ -1272,7 +1328,37 @@ class ExecutionEngine:
                 scope=EventScope(goal.scope),
             )
 
-            tasks = self.decomposer.decompose(goal)
+            # A single-task retry needs the *same* task names as the original
+            # plan (the gateway retries by name). The hint is proxied to the
+            # innermost decomposer so an LLM planner can defer to the deterministic
+            # one when it has no cached plan for this goal.
+            if pinned_tasks:
+                tasks = self._tasks_from_pinned_specs(goal, pinned_tasks)
+            else:
+                if only_task_name:
+                    try:
+                        self.decomposer.only_task_name = only_task_name  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001 - hint is best-effort
+                        logger.debug("decomposer does not accept only_task_name hint")
+                try:
+                    tasks = self.decomposer.decompose(goal)
+                finally:
+                    if only_task_name:
+                        try:
+                            self.decomposer.only_task_name = None  # type: ignore[attr-defined]
+                        except Exception:  # noqa: BLE001
+                            pass
+
+            # Never let an empty plan masquerade as an executed goal. This is the
+            # last line of defence: every decomposer path is expected to produce
+            # at least one task, but a silent "0 tasks / success" must be
+            # impossible even if one does not.
+            if not tasks:
+                raise ValueError(
+                    f"goal {goal.id} cannot be executed: the planner produced no "
+                    f"executable subtasks for '{goal.natural_language}'. "
+                    "请补充更明确的目标，或检查默认模型/拆解器配置后重试。"
+                )
 
             # Step 2: Plan
             plan = self.planner.build(goal, tasks, mode=plan_mode)
@@ -1323,12 +1409,15 @@ class ExecutionEngine:
                         scope=EventScope(goal.scope),
                     )
 
-            # Single-task retry: only the named task may run. Every other task
+            # Single-task retry: only the named task(s) may run. Every other task
             # still PENDING after journal adoption is SKIPPED, never executed --
             # a retry of one failed card must not silently re-run the rest.
+            retry_scope: Set[str] = set(only_task_names or ())
             if only_task_name:
+                retry_scope.add(only_task_name)
+            if retry_scope:
                 for t in plan.tasks:
-                    if t.name != only_task_name and t.status == TaskStatus.PENDING:
+                    if t.name not in retry_scope and t.status == TaskStatus.PENDING:
                         t.status = TaskStatus.SKIPPED
 
             # Step 3: Execute
@@ -1400,26 +1489,78 @@ class ExecutionEngine:
                 break  # All done
 
             if not ready_tasks and pending_tasks:
-                # Deadlock or circular dependency
+                # No task can start. Distinguish the two genuinely different
+                # causes: (a) a dependency FAILED -- that is not a deadlock, it
+                # is a real upstream failure and the message must say so;
+                # (b) the dependency graph is actually cyclic/unresolvable.
+                # Statuses must be read from ONE snapshot: mutating a task to
+                # FAILED inside this loop would otherwise make the next pending
+                # task look like it failed because of a dependency, turning a
+                # genuine cycle into a misleading "依赖任务失败".
+                statuses = {t.id: t.status for t in ctx.plan.tasks}
                 for task in pending_tasks:
+                    failed_deps = [
+                        dep for dep in ctx.plan.tasks
+                        if dep.id in task.dependencies
+                        and statuses.get(dep.id) in (TaskStatus.FAILED, TaskStatus.RETRYING)
+                    ]
+                    if failed_deps:
+                        names = "、".join(dep.name for dep in failed_deps)
+                        task.error = f"依赖任务失败（任务 {names}）"
+                    else:
+                        task.error = "Circular dependency or deadlock detected"
                     task.status = TaskStatus.FAILED
-                    task.error = "Circular dependency or deadlock detected"
                     ctx.failed_tasks.add(task.id)
+                    self._journal_event(
+                        task,
+                        "task_failed",
+                        task_id=task.id,
+                        goal_id=task.goal_id,
+                        error=task.error,
+                    )
                 self._notify_progress(on_task_progress, ctx.plan)
                 break
 
-            # Execute ready tasks (in parallel conceptually)
-            #
-            # ``stop_event`` MUST be forwarded: it is what makes aborting a
-            # goal responsive. Without it the "honour a stop request before
-            # each attempt" check inside ``_execute_task`` saw ``None`` and was
-            # dead code, so a human STOP arriving during a long-running task
-            # was only observed after the task's whole retry budget burned
-            # down (~40s for a task that times out at 10s with max_retries=3).
-            for task in ready_tasks:
-                self._execute_task(
-                    ctx, task, verification_criteria, stop_event, on_task_progress
-                )
+            # Execute the ready wave concurrently. Tasks with no dependency run
+            # at the same time (bounded by LIUHAO_EXECUTION_MAX_PARALLEL), while
+            # dependent tasks still wait for their predecessors -- the plan's DAG
+            # semantics are unchanged.
+            try:
+                max_parallel = int(os.environ.get("LIUHAO_EXECUTION_MAX_PARALLEL", "4"))
+            except (TypeError, ValueError):
+                max_parallel = 4
+            max_parallel = max(1, max_parallel)
+            workers = min(max_parallel, len(ready_tasks))
+            first_error: Optional[BaseException] = None
+            executor = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix=f"goal-{ctx.goal.id}"
+            )
+            try:
+                futures = [
+                    executor.submit(
+                        self._execute_task,
+                        ctx,
+                        task,
+                        verification_criteria,
+                        stop_event,
+                        on_task_progress,
+                    )
+                    for task in ready_tasks
+                ]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except BaseException as exc:  # noqa: BLE001 - re-raised below
+                        if first_error is None:
+                            first_error = exc
+                        else:
+                            logger.error("parallel task failed: %s", exc)
+            finally:
+                # Waiting here is intentional: a goal must not be reported
+                # finished while a worker is still writing an artifact.
+                executor.shutdown(wait=True, cancel_futures=True)
+            if first_error is not None:
+                raise first_error
 
         if iteration >= max_iterations:
             # Timeout
@@ -1577,6 +1718,37 @@ class ExecutionEngine:
             )
 
     @staticmethod
+    def _tasks_from_pinned_specs(
+        goal: Goal, specs: Sequence[Dict[str, Any]]
+    ) -> List[Task]:
+        """用调用方给的原计划快照重建任务（崩溃恢复场景，不再重新拆解）。
+
+        保留原 ``id`` 与 ``dependencies``，让日志/产物里完成的任务仍能按名
+        被采纳；``status`` 一律回到 PENDING，完成度由 journal 决定。
+        """
+        tasks: List[Task] = []
+        for spec in specs:
+            name = str(spec.get("name") or "").strip()
+            capability = str(
+                spec.get("capability_id") or spec.get("capability") or ""
+            ).strip()
+            if not name or not capability:
+                raise ValueError("重试计划快照缺少任务名或能力 id")
+            tasks.append(Task(
+                id=str(spec.get("id") or uuid.uuid4()),
+                goal_id=goal.id,
+                name=name,
+                description=str(spec.get("description") or name),
+                capability_id=capability,
+                dependencies=[str(d) for d in (spec.get("dependencies") or [])],
+                inputs=_json_safe_inputs(spec.get("inputs")),
+                scope=goal.scope,
+                max_retries=int(spec.get("max_retries") or 3),
+                timeout_seconds=int(spec.get("timeout_seconds") or 300),
+            ))
+        return tasks
+
+    @staticmethod
     def _task_snapshots(plan: Any) -> List[Dict[str, Any]]:
         """Serialize every plan task into the SAME shape ``GET /v1/goals/{id}``
         already returns (see ``AIStateManager._result_to_dict``).
@@ -1595,6 +1767,10 @@ class ExecutionEngine:
                 "status": t.status.value if hasattr(t.status, "value") else str(t.status),
                 "capability_id": t.capability_id,
                 "assigned_agent": t.assigned_agent,
+                "inputs": _json_safe_inputs(t.inputs),
+                "dependencies": list(t.dependencies or []),
+                "max_retries": t.max_retries,
+                "timeout_seconds": t.timeout_seconds,
                 "result": str(t.result)[:500] if t.result else None,
                 "error": t.error,
                 "started_at": str(t.started_at) if t.started_at else None,
@@ -1611,9 +1787,42 @@ class ExecutionEngine:
         if callback is None or plan is None:
             return
         try:
-            callback(self._task_snapshots(plan))
+            with self._progress_lock:
+                callback(self._task_snapshots(plan))
         except Exception as exc:  # noqa: BLE001 - progress is an observer
             logger.warning("task progress callback failed: %s", exc)
+
+    @staticmethod
+    def _task_inputs(ctx: ExecutionContext, task: Task) -> Dict[str, Any]:
+        """Task inputs plus the REAL outputs of its dependencies.
+
+        A synthesis task cannot produce a grounded conclusion if it cannot see
+        what the upstream research task actually returned. We inject the
+        dependency outputs under ``upstream`` without mutating ``task.inputs``
+        (so retries and snapshots stay stable; executors that ignore extra keys
+        keep working).
+        """
+        inputs: Dict[str, Any] = dict(task.inputs or {})
+        if not task.dependencies:
+            return inputs
+        upstream: List[Dict[str, Any]] = []
+        for dependency_id in task.dependencies:
+            dependency = ctx.plan.get_task(dependency_id)
+            if dependency is None:
+                continue
+            result = ctx.task_results.get(dependency_id)
+            if result is None or not result.success:
+                continue
+            upstream.append(
+                {
+                    "task": dependency.name,
+                    "capability": dependency.capability_id,
+                    "output": result.output,
+                }
+            )
+        if upstream:
+            inputs["upstream"] = upstream
+        return inputs
 
     def _execute_task(
         self,
@@ -1653,7 +1862,7 @@ class ExecutionEngine:
             task_id=task.id,
             capability_id=task.capability_id,
             capability_namespace=task.capability_namespace,
-            inputs=task.inputs,
+            inputs=self._task_inputs(ctx, task),
             correlation_id=task.correlation_id,
             scope=task.scope,
             timeout_seconds=task.timeout_seconds,
