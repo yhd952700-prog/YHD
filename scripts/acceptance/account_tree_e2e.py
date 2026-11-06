@@ -1212,6 +1212,84 @@ def self_registration(
     report.check(item, "停用文案中性", neutral(message), True, message)
 
 
+def display_fields(
+    report: Report, inst: Instance, tokens: Dict[str, Any], model_id: str
+) -> None:
+    """界面可读字段：模型清单 / 事件列表 / 告警与健康（真实 HTTP 形态）。"""
+    item = "界面可读字段"
+    base = inst.base
+
+    status, body = request("GET", base + "/v1/health")
+    provider = body.get("ai_provider") or {}
+    report.check(item, "健康：一句人话 + 中文状态",
+                 (status, bool(body.get("user_message")), body.get("status_label")),
+                 (200, True, "正常"))
+    report.check(item, "健康：服务商展示名与状态",
+                 (bool(provider.get("display_name")),
+                  "·" in str(provider.get("display_status")),
+                  bool(provider.get("status_label")), provider.get("type")),
+                 (True, True, True, provider.get("type")),
+                 str(provider.get("display_status")))
+
+    status, body = request("GET", base + "/v1/models", token=tokens["root"])
+    models = body.get("models") or []
+    target = next((m for m in models if m.get("id") == model_id), None)
+    report.check(item, "模型清单：新增字段齐全",
+                 (status, bool(models)), (200, True))
+    report.check(item, "模型：展示名/服务商/状态",
+                 (bool((target or {}).get("display_name")),
+                  bool((target or {}).get("provider_display_name")),
+                  "·" in str((target or {}).get("display_status")),
+                  (target or {}).get("status_label") in ("可用", "已启用", "未启用")),
+                 (True, True, True, True), str((target or {}).get("display_status")))
+    report.check(item, "模型：旧字段保留",
+                 bool((target or {}).get("provider"))
+                 and (target or {}).get("model") is not None,
+                 True, str((target or {}).get("provider")))
+
+    status, body = request("GET", base + "/v1/events/history?limit=20",
+                           token=tokens["root"])
+    events = body.get("events") or []
+    report.check(item, "事件列表：标题与状态为中文",
+                 (status, bool(events),
+                  all(e.get("display_title") and e.get("status_label") for e in events)),
+                 (200, True, True))
+    sample = events[0] if events else {}
+    report.check(item, "事件：标题不是裸英文枚举",
+                 ("success" not in str(sample.get("display_title"))
+                  and "blocked" not in str(sample.get("display_title"))),
+                 True, str(sample.get("display_title")))
+    report.check(item, "事件：旧字段保留",
+                 bool(sample.get("action") or sample.get("event_type")), True,
+                 str(sample.get("action") or sample.get("event_type")))
+
+    status, body = request("GET", base + "/v1/audit/events?limit=5",
+                           token=tokens["root"])
+    audits = body.get("events") or []
+    report.check(item, "审计事件：也有 display_title",
+                 (status, bool(audits), all(e.get("display_title") for e in audits)),
+                 (200, True, True))
+
+    status, body = request("GET", base + "/v1/alerts/rules", token=tokens["root"])
+    rules = body.get("rules") or []
+    report.check(item, "告警规则：人话字段齐全",
+                 (status, bool(rules),
+                  all(r.get("severity_label") and r.get("status_label")
+                      and r.get("user_message") for r in rules)),
+                 (200, True, True))
+    status, body = request("GET", base + "/v1/alerts", token=tokens["root"])
+    report.check(item, "告警列表：顶层一句人话",
+                 (status, bool(body.get("user_message")), body.get("status_label")),
+                 (200, True, "正常"))
+
+    status, body = request("GET", base + "/v1/ready")
+    checks = body.get("checks") or {}
+    report.check(item, "就绪检查：逐项 user_message + technical_detail",
+                 (all(c.get("user_message") and c.get("technical_detail")
+                      for c in checks.values()), bool(body.get("user_message"))),
+                 (True, True))
+
+
 def deletion(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "删除"
     status, body = request(
@@ -1286,6 +1364,7 @@ def main() -> int:
         scope_equivalence(report, inst, tokens)
         root_only_surface(report, inst, tokens)
         self_registration(report, inst, tokens, usage["model_id"])
+        display_fields(report, inst, tokens, usage["model_id"])
 
         export_path = os.path.join(inst.root, "export-all.json")
         with open(export_path, "w", encoding="utf-8") as handle:

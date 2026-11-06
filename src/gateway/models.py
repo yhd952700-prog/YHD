@@ -26,7 +26,15 @@ from urllib.parse import urljoin, urlparse
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .policy import require_bearer_payload
+from .display import model_display_name, model_display_status, provider_label
+from .policy import optional_bearer_payload, require_bearer_payload
+from .account_context import (
+    NEUTRAL_DENIED,
+    deny,
+    key_scope_for,
+    require_account_principal,
+)
+from ..kernels.identity import _accounts
 from ..ai.model_config import (
     ModelConfigError,
     SUPPORTED_PROVIDERS,
@@ -93,6 +101,9 @@ class ModelPayload(BaseModel):
     timeout: float = Field(30.0, ge=1.0, le=600.0, description="请求超时（秒）")
     enabled: bool = Field(True, description="是否启用")
     is_default: bool = Field(False, description="是否设为默认（首个模型自动成为默认）")
+    owner_principal: Optional[str] = Field(
+        None, max_length=64, description="归属账号；默认是创建者自己，根账号可指定自己管辖范围内的账号"
+    )
 
 
 class ModelUpdatePayload(BaseModel):
@@ -104,6 +115,7 @@ class ModelUpdatePayload(BaseModel):
     timeout: Optional[float] = Field(None, ge=1.0, le=600.0)
     enabled: Optional[bool] = None
     is_default: Optional[bool] = None
+    owner_principal: Optional[str] = Field(None, max_length=64, description="转移 Key 归属")
 
 
 class TestPayload(BaseModel):
@@ -278,6 +290,12 @@ def _with_pricing(record: Dict[str, Any]) -> Dict[str, Any]:
     model_id = str(record.get("model") or record.get("name") or "")
     stamped = dict(record)
     stamped["pricing"] = pricing_status(model_id)
+    # 界面直接展示这三项，不再原样显示 ``provider=ollama`` 这类机器值。
+    stamped["display_name"] = model_display_name(stamped)
+    stamped["provider_display_name"] = provider_label(stamped.get("provider"))
+    stamped["display_status"] = model_display_status(stamped)
+    enabled = stamped.get("enabled")
+    stamped["status_label"] = "可用" if enabled is None else ("已启用" if enabled else "未启用")
     return stamped
 
 
@@ -285,16 +303,106 @@ def _run_guarded(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except ModelConfigError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        detail: object = (
+            {"code": exc.code, "message": exc.detail} if exc.code else exc.detail
+        )
+        raise HTTPException(status_code=exc.status_code, detail=detail)
+
+
+def require_model_manager(payload=Depends(require_bearer_payload)):
+    """写闸门：管理员，或持有 ``model:manage`` 的账号（只能维护自己的 Key）。"""
+    claims = _claims(payload)
+    if claims["roles"] & _ADMIN_ROLES or claims["permissions"] & _ADMIN_ROLES:
+        return payload
+    if claims["scope"] in _ADMIN_SCOPES:
+        return payload
+    ctx = _context(payload)
+    # 仅真实账号节点享有账号作用域；合成节点（老工具令牌）不得因此提权。
+    if ctx.node.source != "standalone" and ctx.has_scope(_accounts.SCOPE_MODEL_MANAGE):
+        return payload
+    raise HTTPException(status_code=403, detail="无权执行该操作")
+
+
+def _context(payload):
+    """由令牌构造账号上下文；无账号节点的老令牌视为"只有自己"的根。"""
+    from .account_context import AccountContext
+    from ..kernels.identity import get_identity_manager
+
+    principal = _principal(payload)
+    manager = get_identity_manager()
+    node = manager.get_account(principal)
+    if node is None:
+        from .account_context import _standalone_node
+
+        node = _standalone_node(principal)
+        subtree = (principal,)
+    else:
+        subtree = tuple(manager.subtree_principals(principal)) or (principal,)
+    return AccountContext(
+        principal=principal,
+        node=node,
+        subtree=subtree,
+        standalone=node.source == "standalone",
+    )
+
+
+def _guard_owner_assign(ctx, owner: Optional[str]) -> None:
+    """归属分配：根可指定子树内任意账号；其他账号只能指向自己。"""
+    if not owner or owner == ctx.principal:
+        return
+    if ctx.is_root and owner in ctx.subtree:
+        return
+    raise deny(403, _accounts.CODE_KEY_NOT_OWNED, NEUTRAL_DENIED)
+
+
+def _guard_visible(scope, owner: Optional[str]) -> None:
+    if scope.can_use(owner or ""):
+        return
+    raise deny(403, _accounts.CODE_KEY_NOT_OWNED, NEUTRAL_DENIED)
+
+
+def _audit_owner_change(actor: str, model_id: str, owner: str, previous: str) -> None:
+    if owner == previous:
+        return
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        get_identity_manager().record_event(
+            action="key.owner",
+            actor=actor,
+            target=owner or actor,
+            outcome="allowed",
+            details={
+                "key_owner": owner,
+                "previous_owner": previous,
+                "model_config_id": model_id,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("key ownership audit failed for model %s", model_id, exc_info=True)
 
 
 @router.get("/models")
-def list_models() -> Dict[str, Any]:
+def list_models(payload=Depends(optional_bearer_payload)) -> Dict[str, Any]:
     store = _store()
-    models = store.list_models()
+    if payload is None:
+        # 未认证请求由上游鉴权中间件拦截；这里保持既有语义（空列表）。
+        return {
+            "models": [],
+            "default_id": None,
+            "count": 0,
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "encryption": store.encryption_posture(),
+        }
+    scope = key_scope_for(principal=_principal(payload))
+    models = store.list_models(
+        visible_to=scope.visible_to, allow_unowned=scope.allow_unowned
+    )
     return {
         "models": [_with_pricing(m) for m in models],
-        "default_id": store.default_id(),
+        "default_id": store.default_id(
+            visible_to=scope.visible_to, allow_unowned=scope.allow_unowned
+        ),
         "count": len(models),
         "supported_providers": list(SUPPORTED_PROVIDERS),
         "encryption": store.encryption_posture(),
@@ -309,6 +417,10 @@ def list_providers() -> Dict[str, Any]:
         "providers": [
             {
                 "type": name,
+                "display_name": provider_label(name),
+                "display_status": (
+                    "需要 API Key" if name not in PROVIDERS_WITHOUT_KEY else "无需 API Key"
+                ),
                 "requires_api_key": name not in PROVIDERS_WITHOUT_KEY,
                 "supports_base_url": name not in ("mock", "google"),
             }
@@ -340,44 +452,88 @@ def list_provider_presets() -> Dict[str, Any]:
 
 
 @router.get("/models/{model_id}")
-def get_model(model_id: str) -> Dict[str, Any]:
-    return _with_pricing(_run_guarded(_store().get_public, model_id))
+def get_model(model_id: str, payload=Depends(optional_bearer_payload)) -> Dict[str, Any]:
+    record = _run_guarded(_store().get_public, model_id)
+    if payload is not None:
+        _guard_visible(
+            key_scope_for(principal=_principal(payload)),
+            record.get("owner_principal"),
+        )
+    return _with_pricing(record)
 
 
 @router.post("/models")
-def create_model(payload: ModelPayload, admin=Depends(require_model_admin)) -> Dict[str, Any]:
+def create_model(
+    payload: ModelPayload, manager=Depends(require_model_manager)
+) -> Dict[str, Any]:
     # 新增时就地标注定价状态（见 pricing_status）：管理者必须当场看到
     # "这个模型在价目表里没有条目"，而不是等到成本算不出来才发现。
+    ctx = _context(manager)
+    owner = payload.owner_principal or ctx.principal
+    _guard_owner_assign(ctx, owner)
     payload.base_url = _validate_base_url(payload.base_url, provider=payload.provider) or None
-    return _with_pricing(
-        _run_guarded(_store().create, payload.model_dump(), _principal(admin))
+    actor = _principal(manager)
+    created = _run_guarded(
+        _store().create,
+        payload.model_dump(),
+        actor,
+        owner_principal=owner,
     )
+    _audit_owner_change(actor, created["id"], owner, "")
+    return _with_pricing(created)
 
 
 @router.put("/models/{model_id}")
 def update_model(
-    model_id: str, payload: ModelUpdatePayload, admin=Depends(require_model_admin)
+    model_id: str,
+    payload: ModelUpdatePayload,
+    manager=Depends(require_model_manager),
 ) -> Dict[str, Any]:
+    stored = _run_guarded(_store().get_public, model_id)
+    ctx = _context(manager)
+    scope = key_scope_for(principal=ctx.principal)
+    _guard_visible(scope, stored.get("owner_principal"))
     data = payload.model_dump(exclude_unset=True)
     if "base_url" in data:
-        stored = _run_guarded(_store().get_public, model_id) or {}
         provider = data.get("provider") or stored.get("provider")
         data["base_url"] = _validate_base_url(
             data["base_url"], provider=provider, stored_url=stored.get("base_url")
         ) or None
-    return _with_pricing(
-        _run_guarded(_store().update, model_id, data, _principal(admin))
+    if "owner_principal" in data:
+        _guard_owner_assign(ctx, data["owner_principal"])
+    updated = _run_guarded(
+        _store().update, model_id, data, _principal(manager)
     )
+    _audit_owner_change(
+        _principal(manager),
+        model_id,
+        str(updated.get("owner_principal") or ""),
+        str(stored.get("owner_principal") or ""),
+    )
+    return _with_pricing(updated)
 
 
 @router.delete("/models/{model_id}")
-def delete_model(model_id: str, admin=Depends(require_model_admin)) -> Dict[str, Any]:
-    return _run_guarded(_store().delete, model_id, _principal(admin))
+def delete_model(model_id: str, manager=Depends(require_model_manager)) -> Dict[str, Any]:
+    stored = _run_guarded(_store().get_public, model_id)
+    _guard_visible(
+        key_scope_for(principal=_principal(manager)), stored.get("owner_principal")
+    )
+    return _run_guarded(_store().delete, model_id, _principal(manager))
 
 
 @router.post("/models/{model_id}/default")
-def set_default(model_id: str, admin=Depends(require_model_admin)) -> Dict[str, Any]:
-    return _run_guarded(_store().set_default, model_id, _principal(admin))
+def set_default(model_id: str, manager=Depends(require_model_manager)) -> Dict[str, Any]:
+    stored = _run_guarded(_store().get_public, model_id)
+    scope = key_scope_for(principal=_principal(manager))
+    _guard_visible(scope, stored.get("owner_principal"))
+    return _run_guarded(
+        _store().set_default,
+        model_id,
+        _principal(manager),
+        visible_to=scope.visible_to,
+        allow_unowned=scope.allow_unowned,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -677,10 +833,18 @@ def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
     return value
 
 
-def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
+def _test_cfg(payload: TestPayload, scope=None) -> Dict[str, Any]:
     stored = None
     if payload.model_id:
-        stored = _run_guarded(_store().resolve, payload.model_id)
+        if scope is None:
+            stored = _run_guarded(_store().resolve, payload.model_id)
+        else:
+            stored = _run_guarded(
+                _store().resolve,
+                payload.model_id,
+                visible_to=scope.visible_to,
+                allow_unowned=scope.allow_unowned,
+            )
         if stored is None:
             raise HTTPException(status_code=404, detail=f"模型配置不存在：{payload.model_id}")
     provider = payload.provider.strip().lower()
@@ -714,13 +878,24 @@ def _test_cfg(payload: TestPayload) -> Dict[str, Any]:
 
 
 @router.post("/models/test")
-def test_connection(payload: TestPayload, admin=Depends(require_model_admin)) -> Dict[str, Any]:
-    return _probe(_test_cfg(payload))
+def test_connection(
+    payload: TestPayload, manager=Depends(require_model_manager)
+) -> Dict[str, Any]:
+    scope = key_scope_for(principal=_principal(manager))
+    return _probe(_test_cfg(payload, scope))
 
 
 @router.post("/models/{model_id}/test")
-def test_saved_model(model_id: str, admin=Depends(require_model_admin)) -> Dict[str, Any]:
-    cfg = _run_guarded(_store().resolve, model_id)
+def test_saved_model(
+    model_id: str, manager=Depends(require_model_manager)
+) -> Dict[str, Any]:
+    scope = key_scope_for(principal=_principal(manager))
+    cfg = _run_guarded(
+        _store().resolve,
+        model_id,
+        visible_to=scope.visible_to,
+        allow_unowned=scope.allow_unowned,
+    )
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"模型配置不存在或已禁用：{model_id}")
     cfg = dict(cfg)

@@ -46,6 +46,7 @@ from .account_context import (
     deny,
     require_account_principal,
 )
+from .display import event_display_title, status_label
 from .policy import require_bearer_payload, require_human_principal
 
 router = APIRouter(prefix="/v1/audit", tags=["audit"])
@@ -369,6 +370,9 @@ def list_events(
         )
     for event in events:
         event["is_self"] = str(event.get("principal_id") or "") == context.principal
+        # 界面直接展示；旧字段（action/outcome/...）保持不变。
+        event["display_title"] = event_display_title(event)
+        event["status_label"] = status_label(event.get("outcome"))
     return {
         "events": events,
         "count": len(events),

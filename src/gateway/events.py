@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.kernels.event import Event, EventScope, get_event_bus
+from .display import decorate_event, event_display_title, status_label
 from .policy import require_bearer_payload
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,9 @@ def _summarize(event: Event) -> Dict[str, Any]:
     """把一个真实 Event 收缩成前端友好的只读摘要。"""
     from .audit import _redact
 
-    return {
+    data = event.data if isinstance(event.data, dict) else {}
+    outcome = data.get("outcome") or data.get("status")
+    summary = {
         "id": event.correlation_id,
         "type": event.type,
         "source": event.source,
@@ -104,6 +107,10 @@ def _summarize(event: Event) -> Dict[str, Any]:
         "summary": _event_summary_text(event),
         "data": _redact(_json_safe(event.data)),
     }
+    # 界面直接展示派生的标题/状态，不再把 ``type`` 里的英文枚举原样贴出来。
+    summary["display_title"] = event_display_title({"type": event.type, "outcome": outcome})
+    summary["status_label"] = status_label(outcome) if outcome else "已记录"
+    return summary
 
 
 @router.get("")
@@ -187,11 +194,12 @@ def list_persisted_event_history(
         logger.warning("persisted event history query failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
+    decorated = [decorate_event(dict(event)) for event in events]
     return {
-        "events": events,
-        "count": len(events),
+        "events": decorated,
+        "count": len(decorated),
         "limit": limit,
-        "truncated": len(events) >= limit,
+        "truncated": len(decorated) >= limit,
         "source": "audit_store",
         "durable": True,
         "filters": {

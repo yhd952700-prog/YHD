@@ -33,6 +33,14 @@ from ..observability.production import (
     validate_production_config,
 )
 from ..observability.alerts.store import AlertStore
+from .display import (
+    decorate_alert,
+    decorate_finding,
+    severity_label,
+    status_label,
+    subsystem_user_message,
+    technical_detail,
+)
 from .policy import require_human_principal
 
 logger = logging.getLogger("liuhao.gateway.observability")
@@ -123,8 +131,24 @@ async def subsystem_readiness() -> JSONResponse:
     ``unavailable`` = 导入或实例化失败 → HTTP 503。
     """
     report = check_subsystems()
+    body = report.to_dict()
+    # 只增字段：中文名、中文状态、一句人话与诊断细节。
+    for subsystem in body.get("subsystems") or []:
+        name = str(subsystem.get("name") or "")
+        subsystem["display_name"] = name
+        subsystem["status_label"] = status_label(subsystem.get("status"))
+        subsystem["user_message"] = subsystem_user_message(name, str(subsystem.get("status") or ""))
+        subsystem.setdefault("technical_detail", technical_detail(
+            {key: value for key, value in subsystem.items()
+             if key not in ("user_message", "technical_detail", "status_label", "display_name")}
+        ))
+    body["status_label"] = status_label(body.get("status"))
+    body["user_message"] = (
+        "全部子系统运行正常" if report.ready
+        else f"有 {sum(1 for s in report.subsystems if s.status != 'healthy')} 个子系统需要关注"
+    )
     return JSONResponse(
-        content=report.to_dict(),
+        content=body,
         status_code=(
             status.HTTP_200_OK if report.ready else status.HTTP_503_SERVICE_UNAVAILABLE
         ),
@@ -138,7 +162,15 @@ async def production_preflight() -> JSONResponse:
     报告**只含键名、代码与严重级别，不含任何配置值**。
     """
     report = validate_production_config()
-    return JSONResponse(content=report.to_dict(), status_code=status.HTTP_200_OK)
+    body = report.to_dict()
+    body["findings"] = [decorate_finding(dict(f)) for f in body.get("findings") or []]
+    body["status_label"] = "通过" if report.ok else "存在阻断项"
+    body["user_message"] = (
+        "配置预检通过，没有阻断项"
+        if report.ok
+        else f"配置预检发现 {report.critical_count} 条阻断项、{report.warning_count} 条提醒，请到诊断页处理"
+    )
+    return JSONResponse(content=body, status_code=status.HTTP_200_OK)
 
 
 @router.get("/alerts", dependencies=[Depends(require_human_principal)])
@@ -153,10 +185,17 @@ def list_alerts() -> Dict[str, Any]:
     firing = store.list_firing()
     # 最近 50 条，按 fired_at 倒序。
     recent = sorted(all_alerts, key=lambda a: a.fired_at or 0, reverse=True)[:50]
+    alerts = [decorate_alert(a.to_dict()) for a in recent]
     return {
         "count": len(all_alerts),
         "firing_count": len(firing),
-        "alerts": [a.to_dict() for a in recent],
+        "alerts": alerts,
+        "status_label": "正在告警" if firing else "正常",
+        "user_message": (
+            f"当前有 {len(all_alerts)} 条告警记录，其中 {len(firing)} 条正在触发"
+            if all_alerts
+            else "当前没有告警"
+        ),
     }
 
 
@@ -182,6 +221,12 @@ def list_alert_rules() -> Dict[str, Any]:
                 "alert_type": r.alert_type.value if hasattr(r.alert_type, "value") else str(r.alert_type),
                 "metric_name": r.metric_name,
                 "description": r.description,
+                "display_name": r.name,
+                "severity_label": severity_label(
+                    r.severity.name if hasattr(r.severity, "name") else r.severity),
+                "status_label": "已启用" if r.enabled else "未启用",
+                "user_message": f"{r.name}（{severity_label(getattr(r.severity, 'name', r.severity))}）"
+                                + ("已启用" if r.enabled else "未启用"),
             }
             for r in rules
         ],

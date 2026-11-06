@@ -17,6 +17,26 @@ import os
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
 from ..gateway.rate_limiter import get_rate_limiter
 from ..gateway.contract import API_CONTRACT_VERSION
+from .display import decorate_health_check, provider_label, status_label
+
+
+def _decorate_ai_provider(ai: Dict[str, Any]) -> Dict[str, Any]:
+    """给 ``ai_provider`` 补人话字段；旧字段（type/mode/source）保持不变。"""
+    if not isinstance(ai, dict):
+        return ai
+    ai = dict(ai)
+    provider = provider_label(ai.get("type"))
+    mode = str(ai.get("mode") or "").strip().lower()
+    if mode == "invalid":
+        state = "配置有误"
+    elif mode == "mock":
+        state = "模拟模式（不会产生真实模型调用）"
+    else:
+        state = "真实模型"
+    ai["display_name"] = provider
+    ai["display_status"] = f"{provider} · {state}"
+    ai["status_label"] = state
+    return ai
 
 
 health_router = APIRouter(prefix="/v1", tags=["health"])
@@ -52,7 +72,9 @@ async def liveness_probe(request: Request) -> JSONResponse:
             "trace_id": trace_id,
             "version": "1.0.0",
             "api_contract": API_CONTRACT_VERSION,
-            "ai_provider": ai_provider,
+            "ai_provider": _decorate_ai_provider(ai_provider),
+            "status_label": status_label("ok"),
+            "user_message": "服务正在运行，可以接收请求",
         },
         status_code=status.HTTP_200_OK,
     )
@@ -450,6 +472,16 @@ async def readiness_probe(request: Request) -> JSONResponse:
         }
         errors.append(f"Kernel Policy Enforcement: arming self-check error: {str(e)}")
 
+    # 逐项补"人话"字段；status 等机器字段原样保留（诊断页/旧调用方不受影响）。
+    for name, check in checks.items():
+        decorate_health_check(name, check)
+    checks["ai_provider"] = _decorate_ai_provider(checks.get("ai_provider") or {})
+    decorate_health_check("ai_provider", checks["ai_provider"])
+    checks["ai_provider"]["user_message"] = (
+        checks["ai_provider"].get("display_status")
+        or checks["ai_provider"]["user_message"]
+    )
+
     # Determine overall status
     unhealthy_checks = [k for k, v in checks.items() if v.get("status") != "healthy"]
 
@@ -457,6 +489,12 @@ async def readiness_probe(request: Request) -> JSONResponse:
 
     response_data = {
         "status": overall_status,
+        "status_label": status_label(overall_status),
+        "user_message": (
+            "系统就绪，全部检查通过"
+            if overall_status == "ready"
+            else f"系统未完全就绪：{len(unhealthy_checks)} 项检查需要关注"
+        ),
         "service": "liuhao-gateway",
         "timestamp": time.time(),
         "trace_id": trace_id,
