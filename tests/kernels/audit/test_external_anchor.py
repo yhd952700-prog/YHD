@@ -98,6 +98,10 @@ def test_external_anchor_forged_sth_signature_rejected():
     anchor = ExternalTransparencyAnchor(external_pub_pem=pub, transport=log, self_attested=True)
     receipt = anchor.publish("ab" * 32)
     # Mutate the STH signature so it no longer verifies against the pinned key.
+    # 首字符必须换成**不同**的字符：写死 "A" + signature[1:] 时，如果按签名算法
+    # 生成的签名首字符恰好就是 "A"，"伪造" 与原签名逐字节相同，verify 会正常
+    # 通过 —— 断言随机翻红（实测 CI 3.11 腿命中过一次，日志见 run 42309968668）。
+    forged_first = "B" if receipt.sth.signature[0] == "A" else "A"
     forged = ExternalAnchorReceipt(
         index=receipt.index,
         proof=receipt.proof,
@@ -107,7 +111,7 @@ def test_external_anchor_forged_sth_signature_rejected():
             timestamp=receipt.sth.timestamp,
             sig_alg=receipt.sth.sig_alg,
             key_id=receipt.sth.key_id,
-            signature="A" + receipt.sth.signature[1:],
+            signature=forged_first + receipt.sth.signature[1:],
         ),
         self_attested=receipt.self_attested,
     )
