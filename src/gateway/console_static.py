@@ -71,6 +71,9 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import JSONResponse
+
+from .account_context import structured_error_body
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -164,6 +167,15 @@ def mount_console(app: FastAPI, dist: Optional[Path] = None) -> Optional[str]:
         if exc.status_code != 404 or method not in ("GET", "HEAD") \
                 or _is_reserved(path):
             # Not ours: keep the platform's JSON body and status exactly.
+            # 结构化错误（``detail={"code","message"}``）要摊平到顶层，否则
+            # 本 handler 覆盖了账号面的结构化异常处理，驾驶舱读不到 ``code``。
+            body = structured_error_body(exc.detail)
+            if body is not None:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content=body,
+                    headers=getattr(exc, "headers", None),
+                )
             return await http_exception_handler(request, exc)
         try:
             return await static.get_response(path.lstrip("/"), request.scope)

@@ -461,6 +461,7 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         "scope": scope,
         "permissions": permissions,
         "client": client_value,
+        **_account_position(pid),
     }
 
 
@@ -500,9 +501,87 @@ def _issue_token(principal, identity, client, permissions, ttl, scope):
             "kind": "human",
             "client": client,
             "scope": scope,
+            # 账号树 epoch：权限/停用/Key 归属变化会 +1，网关在每个请求上比对，
+            # 已签发凭据因此"下一个请求即失效"，不需要等重新登录。
+            "account_epoch": _account_epoch(principal),
         },
         device_id=client,
     )
+
+
+def _account_epoch(principal: str) -> int:
+    """Read the account security epoch, 0 for principals outside the tree.
+
+    0 is also what legacy tokens (and standalone peers) carry, so an old
+    deployment sees no behaviour change until an account actually exists.
+    """
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        node = get_identity_manager().get_account(principal)
+        return int(node.security_epoch) if node is not None else 0
+    except Exception:  # noqa: BLE001 - auth must not fail because of the tree
+        return 0
+
+
+def _account_position(principal: str) -> Dict[str, Any]:
+    """本人在账号树中的位置（``parent_account_id`` / ``path`` / ``depth``）。
+
+    只返回**本人**的位置：前端做能力裁剪需要它，但它不构成"看别人"的通道。
+    没有账号节点的老部署按独立根处理（与 ``account_context`` 的兼容路径一致）。
+    """
+    fallback = {
+        "parent_account_id": None,
+        "path": f"/{principal}" if principal else "",
+        "depth": 0,
+    }
+    try:
+        from ..kernels.identity import _accounts, get_identity_manager
+
+        manager = get_identity_manager()
+        node = manager.get_account(principal)
+        if node is None:
+            return fallback
+        return {
+            "parent_account_id": node.parent_id,
+            "path": _accounts.account_path(manager.account_nodes(), principal)
+            or fallback["path"],
+            "depth": int(node.depth),
+        }
+    except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述
+        return fallback
+
+
+def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
+    """Mint a token for an already-authenticated principal.
+
+    Used by activation / recovery flows: the caller has just proven possession
+    of a one-time code, so no credential record is required yet.
+    """
+    identity = _human_identity(principal)
+    if identity is None:
+        raise AuthError(403, "该主体不是可登录的人类身份（需 metadata.kind=human 且状态 ACTIVE）")
+    permissions = sorted(identity.permissions)
+    ttl = _ttl_seconds()
+    scope = _effective_scope(identity)
+    token, payload = _issue_token(principal, identity, client, permissions, ttl, scope)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": ttl,
+        "expires_at": payload.exp,
+        "principal": principal,
+        "display_name": (identity.metadata or {}).get("display_name"),
+        "scope": scope,
+        "permissions": permissions,
+        "client": client,
+        **_account_position(principal),
+    }
+
+
+def rotate_credential(principal: str, secret: str) -> bool:
+    """Set/replace a human credential (activation, reset, recovery)."""
+    return resolve_secret_store().set_credential(principal, secret)
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +622,7 @@ def auth_me(payload=Depends(require_bearer_payload)) -> Dict[str, Any]:
         "still_human": identity is not None,
         "expires_at": getattr(payload, "exp", None),
         "client": (getattr(payload, "metadata", None) or {}).get("client"),
+        **_account_position(principal),
     }
 
 
@@ -608,6 +688,13 @@ def auth_config() -> Dict[str, Any]:
         logger.warning("could not enumerate human identities: %s", exc)
         humans = []
 
+    root_exists = False
+    try:
+        root_exists = get_identity_manager().account_root() is not None
+    except Exception as exc:  # noqa: BLE001 - 状态不明按"已初始化"处理，不放开注册
+        logger.warning("could not read account root: %s", exc)
+        root_exists = True
+
     eligible = [h for h in humans if h.principal in credentials]
     secret_configured = bool(credentials)
     if not secret_configured:
@@ -635,6 +722,16 @@ def auth_config() -> Dict[str, Any]:
         },
         "registered_humans": len(humans),
         "login_eligible_humans": len(eligible),
+        # 登录页据此决定是否展示"首次初始化"入口：已存在主账号时自助注册根
+        # 一律关闭（后端也会 409 拒绝并写审计），前端不得自行猜测。
+        # 扁平字段是驾驶舱 `AuthConfig` 契约（已上线），嵌套字段是文档 §2.5 契约；
+        # 两个都返回，避免任一消费方读到 undefined 后自己猜。
+        "root_account_exists": root_exists,
+        "registration_open": not root_exists,
+        "root": {"exists": root_exists},
+        "registration": {"open": not root_exists},
+        "recovery": {"available": root_exists},
+        "migration": {"allowed": not root_exists},
         "client_modes": list(CLIENT_MODES),
         "token": {"ttl_seconds": _ttl_seconds()},
         "message": message,

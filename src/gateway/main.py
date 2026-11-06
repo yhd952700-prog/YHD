@@ -35,6 +35,8 @@ from fastapi import FastAPI, Request, APIRouter, Depends  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, PlainTextResponse  # noqa: E402
+from fastapi.exception_handlers import http_exception_handler  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
 # 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
@@ -1142,6 +1144,23 @@ def get_app() -> FastAPI:
 
     # ==================== Exception handlers ====================
 
+    # 账号面／策略面用 ``HTTPException(detail={"code","message"})`` 表达稳定错误码。
+    # 默认 FastAPI 只吐 ``{"detail": {...}}``，驾驶舱读的是顶层 ``code``；这里把
+    # 结构化错误**同时**摊到顶层（``code`` / ``message`` / ``detail``），非结构化
+    # detail（普通字符串）完全沿用默认行为，不影响既有端点。
+    from .account_context import structured_error_body
+
+    @app.exception_handler(StarletteHTTPException)
+    async def structured_http_error_handler(request: Request, exc: StarletteHTTPException):
+        body = structured_error_body(exc.detail)
+        if body is not None:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=body,
+                headers=getattr(exc, "headers", None),
+            )
+        return await http_exception_handler(request, exc)
+
     # 兜底 500 的文案必须是**可行动**的：说清哪里坏了 + 怎么查 + 怎么办。
     # 此前这里是 "An unexpected error occurred" —— 与 "Internal Server Error"
     # 是同一类：说了一半（"坏了"）却不说另外两半，操作者只能干瞪眼。这里
@@ -1386,6 +1405,15 @@ def get_app() -> FastAPI:
     from ..upgrade.api import router as upgrade_router
     app.include_router(upgrade_router, dependencies=[Depends(_require_human)])
     _startup_mark("路由：upgrade（升级管理）完成")
+
+    # 账号树面（注册 / 成员 / 权限 / Key 共享 / 状态 / 恢复 / 备份）。
+    # 不挂全局人类闸门：``/register``、``/activate``、``/recovery/reset``、
+    # ``/backup/import``、``/roles`` 必须在登录前可用（首个注册者就是主账号）；
+    # 其余端点在 router 内逐个依赖 ``require_account_principal``（令牌 → 主体），
+    # 未鉴权即 401，越权一律中性 404/403。挂载顺序必须早于静态驾驶舱的 404 兜底。
+    from .accounts import router as accounts_router
+    app.include_router(accounts_router)
+    _startup_mark("路由：accounts（账号树）完成")
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。
