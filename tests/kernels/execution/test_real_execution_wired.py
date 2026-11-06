@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import tempfile
 
 # REDIR all data to temp BEFORE any module resolves workspace/audit paths.
@@ -65,6 +66,11 @@ def _load_gateway_manager():
     path = os.path.join(here, "src", "gateway", "ai_management.py")
     spec = importlib.util.spec_from_file_location("ai_management_standalone", path)
     module = importlib.util.module_from_spec(spec)
+    # 必须先登记进 sys.modules 再执行：``ai_management`` 里现在有 @dataclass，
+    # dataclasses 在解析 ClassVar/InitVar 时会做
+    # ``sys.modules.get(cls.__module__).__dict__``；模块未登记时取到 None，
+    # 直接 AttributeError: 'NoneType' object has no attribute '__dict__'。
+    sys.modules["ai_management_standalone"] = module
     spec.loader.exec_module(module)
     # Fresh singleton so the workspace root resolved at construction == _TMP.
     module.AIStateManager._instance = None
