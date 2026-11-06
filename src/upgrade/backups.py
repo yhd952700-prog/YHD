@@ -385,22 +385,31 @@ def restore_data(app_root: Path, data_dir: Path, backup_dir: Path) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         if sqlite:
             try:
-                _remove_sqlite_sidecars(target)
-            except OSError:
-                # A running service holds -wal/-shm open (Windows refuses the
-                # unlink). The SQLite-level restore below does not need them
-                # removed, and must not delete files the live DB is using.
-                pass
-        try:
-            atomic_copy_path(source, target)
-        except PermissionError:
-            if not sqlite:
-                raise
-            # File replacement is refused because the service has the
-            # database open; restore the content through SQLite instead.
-            _restore_locked_sqlite(source, target)
-        if sqlite:
+                atomic_copy_path(source, target)
+            except PermissionError:
+                # The service still holds the database open, so the replacement
+                # was refused (Windows: WinError 5/32). The old -wal/-shm
+                # sidecars are exactly what the live connection needs; deleting
+                # them first would discard committed frames and leave the live
+                # database unusable ("disk I/O error" once SQLite re-opens it).
+                # Restore the content through SQLite instead, privileges intact.
+                _restore_locked_sqlite(source, target)
+            else:
+                # Only after the main file was actually replaced is it safe to
+                # drop the sidecars: they describe the *previous* main file. If
+                # the replacement had failed, removing them first would leave a
+                # half-restored database (old main file, committed WAL frames
+                # gone). A failure to clean up here is reported, never ignored.
+                try:
+                    _remove_sqlite_sidecars(target)
+                except OSError as exc:
+                    raise RollbackError(
+                        f"数据库已替换但旧 WAL/SHM 无法清理（{target}）：{exc}；"
+                        "请停止服务后重新执行回滚"
+                    ) from exc
             sqlite_targets.append(target)
+        else:
+            atomic_copy_path(source, target)
         restored += 1
     for target in sqlite_targets:
         errors = check_sqlite(target)

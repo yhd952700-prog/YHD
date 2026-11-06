@@ -429,7 +429,7 @@ python -m src.upgrade rollback --app-root .
 - 指定 `--record-id` 时用该记录的 `backup_id`；指定 `--backup-id` 时直接使用；
 - **在移动/覆盖任何文件之前**，按 `code-backup.json` 与 `data-backup.json` 逐项校验 `code.zip`、数据快照的存在性与 SHA256；任何一项不符都直接拒绝回滚；
 - 恢复代码：先把当前安装根移到 `rollback-trash/`（失败可移回），再解压备份；
-- 恢复数据：先删除目标路径上的 SQLite 侧车文件，再原子复制备份；恢复后逐个 `integrity_check`。**服务正在运行、数据库仍被占用时**（Windows 上 WAL 库的 `-shm` 被映射，`os.replace` 会报 `WinError 5`），自动改用 SQLite 在线备份 API 把快照写回同一个库：不需要替换文件，写入在一个事务内完成，失败时旧库保持不变；此时不删除运行中服务正在使用的 `-wal`/`-shm`；
+- 恢复数据：先原子复制备份覆盖主库，**替换成功之后**才清理该库的 `-wal`/`-shm`/`-journal` 侧车（侧车描述的是旧主文件；先删再替换，一旦替换失败就把已提交但未 checkpoint 的 WAL 帧丢了，留下半损坏的库）；恢复后逐个 `integrity_check`。**服务正在运行、数据库仍被占用时**（Windows 上 WAL 库的 `-shm` 被映射，`os.replace` 会报 `WinError 5`），改为直接走 SQLite 在线备份 API 把快照写回同一个库：不替换文件，写入在一个事务内完成，失败时旧库保持不变；走这条路径时**不删除**运行中服务正在使用的 `-wal`/`-shm`（Linux 上先删侧车会让在线备份报 `disk I/O error`；`test_restore_uses_sqlite_backup_when_a_running_service_holds_the_database` 在 Linux 与 Windows 上都锁住这一点）；
 - 校验恢复后的版本等于备份中的 `from_version`；
 - 写账本 `rollback/rolled_back`，状态 `rolled_back`。
 
@@ -738,7 +738,7 @@ propose（生成 diff，不改工作区）
 
 - `test_upgrade_version_source.py`：读取版本、未配置源、有更新/已是最新、目录缺失、无效清单、`urlopen` 抛 `URLError` 的离线语义、真实本地 HTTP server 的清单与相对 artifact 下载。
 - `test_upgrade_download_verify.py`：SHA256 通过；校验失败清理临时文件；有签名无公钥的如实文案；真实生成 Ed25519 密钥并验签；签名篡改失败；artifact 路径越界拒绝。
-- `test_upgrade_data_guard.py`：非法 JSON、损坏 SQLite；WAL 中已提交数据进入 `VACUUM INTO` 快照且不产生 `-wal`；恢复前删除 stale WAL；额外状态文件；按文件头识别 SQLite。
+- `test_upgrade_data_guard.py`：非法 JSON、损坏 SQLite；WAL 中已提交数据进入 `VACUUM INTO` 快照且不产生 `-wal`；恢复时替换成功后才清理 stale WAL、被占用时保留侧车并走 SQLite 在线备份（Linux/Windows 双平台跑过）；额外状态文件；按文件头识别 SQLite。
 - `test_upgrade_apply_rollback.py`：成功应用并生成代码/数据分离备份；显式回滚后源码与 SQLite 字节回到升级前；注入“安装后异常”自动回滚；数据损坏预检中止且不产生备份；发布包不得覆盖 `data/`；包内无版本拒绝；下载后篡改 artifact 拒绝；无回滚记录时状态落在 `failed` 而不是卡住。
 - `test_upgrade_selfcheck.py`：**真实 FastAPI 子进程启动**，健康检查 `/health` 返回 200、优雅关闭、退出码 0；沙箱隔离（相对路径写入与 `LIUHAO_DATA_DIR` 写入都留在临时目录，真实 `data/` 无新文件；环境变量里指向安装根的绝对路径被改写）；端口冲突、`ModuleNotFoundError`、迁移异常、lifespan 异常、超时分别映射到 `port_conflict/dependency_import/migration_failed/lifespan_failed/timeout` 并给出可读原因；日志尾部脱敏（`password=`、`Bearer`、`api_key`、URL 用户密码）与截断；关键表缺失、损坏数据库仍失败；**发布包 lifespan 迁移失败 → 自检失败 → 自动回滚**，断言版本、源码字节、SQLite 内容全部恢复，账本同时有 `selfcheck/failed` 与 `apply/failed_rolled_back`，`upgrade-state/last-selfcheck.log` 存在、含脱敏日志且不含明文密码；正常升级记录 `selfcheck/passed` 且 `startup.ok=true`。
 - `test_upgrade_snapshot.py`：升级后往线上库写入新数据，再导出快照，导出的库仍然只有升级前的数据；`snapshot.json` 中每个文件的 SHA256 与实际导出文件一致；导出不改动线上库；目标目录已存在时拒绝且首次导出不受影响；无备份时明确报错；可按 `backup_id` 指定。
