@@ -166,6 +166,11 @@ class EmployeeStore:
             "agent_types": list(employee.agent_types),
             "system_prompts": employee.system_prompts,
             "enable_observability": employee.enable_observability,
+            # 员工实体字段：重启后必须还原，不能只恢复 agent 池。
+            "role_description": employee.role_description,
+            "default_capabilities": list(employee.default_capabilities),
+            "owner_account_id": employee.owner_account_id,
+            "employment_status": employee.employment_status,
             "agents": [self._serialize_agent(a) for a in employee.agents.values()],
             "tasks": [self._serialize_task(t) for t in employee.tasks.values()],
             "task_queue": list(employee.task_queue),
@@ -191,6 +196,12 @@ class EmployeeStore:
             agent_types=list(data.get("agent_types", [])) or None,
             system_prompts=data.get("system_prompts") or None,
             enable_observability=bool(data.get("enable_observability", True)),
+            # 老数据缺字段时按"在职、无职责、无归属"还原，不报错。
+            role_description=data.get("role_description", "") or "",
+            default_capabilities=list(data.get("default_capabilities") or []),
+            owner_account_id=data.get("owner_account_id", "") or "",
+            employment_status=data.get("employment_status", Employee.ACTIVE)
+            or Employee.ACTIVE,
         )
 
         # Reconstruct agents (overwrite the freshly-built pool).
@@ -257,6 +268,10 @@ class EmployeeStore:
         agent_types: Optional[List[str]] = None,
         system_prompts: Optional[Dict[str, str]] = None,
         enable_observability: bool = True,
+        role_description: str = "",
+        default_capabilities: Optional[List[str]] = None,
+        owner_account_id: str = "",
+        employment_status: str = "active",
     ) -> Employee:
         """Get (or seed) an employee by ``name``.
 
@@ -274,6 +289,10 @@ class EmployeeStore:
             agent_types=agent_types,
             system_prompts=system_prompts,
             enable_observability=enable_observability,
+            role_description=role_description,
+            default_capabilities=default_capabilities,
+            owner_account_id=owner_account_id,
+            employment_status=employment_status,
         )
         self.save(emp)
         return emp
@@ -302,6 +321,27 @@ class EmployeeStore:
     def list_employees(self) -> List[str]:
         """Names of all employees present in the store."""
         return list(self._load_store().get("employees", {}).keys())
+
+    def rename(self, old_name: str, new_name: str) -> Optional[Employee]:
+        """改名，但**保留 agent id 不变**（历史任务的归属仍能解析）。
+
+        返回改名后的员工；原名不存在返回 ``None``；新名已存在抛 ``ValueError``
+        （绝不静默覆盖另一个员工）。
+        """
+        with self._lock:
+            store = self._load_store()
+            employees = store.get("employees", {})
+            data = employees.get(old_name)
+            if data is None:
+                return None
+            if new_name in employees:
+                raise ValueError(f"employee {new_name!r} already exists")
+            data = dict(data)
+            data["name"] = new_name
+            del employees[old_name]
+            employees[new_name] = data
+            self._write_store(store)
+            return self._deserialize_employee(data)
 
     def remove(self, name: str) -> bool:
         """Remove an employee from the store. Returns True if it existed."""

@@ -211,6 +211,10 @@ class Employee:
     - Observability integration (metrics, tracing, memory)
     """
 
+    #: ``employment_status`` 的合法取值：在职 / 停用。
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
     def __init__(
         self,
         name: str,
@@ -219,6 +223,10 @@ class Employee:
         agent_types: Optional[List[str]] = None,
         system_prompts: Optional[Dict[str, str]] = None,
         enable_observability: bool = True,
+        role_description: str = "",
+        default_capabilities: Optional[List[str]] = None,
+        owner_account_id: str = "",
+        employment_status: str = "active",
     ):
         """
         Initialize an Employee.
@@ -230,6 +238,10 @@ class Employee:
             agent_types: List of agent types (defaults to ["general"] * agent_count)
             system_prompts: Custom system prompts per agent type
             enable_observability: Enable metrics/tracing/memory integration
+            role_description: 职责描述（人可读）
+            default_capabilities: 默认能力（已注册执行器的 capability id）
+            owner_account_id: 归属账号（决定谁能看到/改/派活）
+            employment_status: ``active``（在职）/ ``disabled``（停用）
         """
         self.name = name
         self.provider = provider or get_provider()
@@ -237,6 +249,16 @@ class Employee:
         self.agent_types = agent_types or ["general"] * agent_count
         self.system_prompts = system_prompts or {}
         self.enable_observability = enable_observability
+        # 员工实体字段（不只是"agent 池"）：职责、默认能力、归属账号、在职状态。
+        # 这些字段全部持久化，因此重启后仍是同一个"员工"，不是重新生成的编号。
+        self.role_description = role_description or ""
+        self.default_capabilities = list(default_capabilities or [])
+        self.owner_account_id = owner_account_id or ""
+        self.employment_status = (
+            employment_status
+            if employment_status in (self.ACTIVE, self.DISABLED)
+            else self.ACTIVE
+        )
 
         # Validate agent_types length
         if len(self.agent_types) < agent_count:
@@ -293,6 +315,10 @@ class Employee:
                 system_prompt=system_prompt,
             )
             self.agents[agent_id] = agent
+
+    def is_active(self) -> bool:
+        """在职员工才接受派活；停用只是"还在名册里，但不再接活"。"""
+        return self.employment_status == self.ACTIVE
 
     def add_task(self, description: str, task_type: str = "general",
                  priority: int = 0, depends_on: Optional[List[str]] = None) -> str:

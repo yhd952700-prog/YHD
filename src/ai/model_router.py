@@ -365,13 +365,22 @@ def _tier_for(provider: str) -> ModelTier:
     return ModelTier.CLOUD
 
 
-def catalog_from_store(store: Any = None) -> Dict[str, ModelProfile]:
+def catalog_from_store(
+    store: Any = None,
+    *,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+) -> Dict[str, ModelProfile]:
     """Snapshot the **enabled** models saved in model management as profiles.
 
     Returns ``{}`` when the store is empty or unreadable. The empty result is
     meaningful: callers must fall back to the default model, never to an
     arbitrary hard-coded catalog entry (that would silently call a provider the
     operator never configured).
+
+    ``visible_to`` / ``allow_unowned`` 按 Key 归属过滤；``allow_owners`` 再收窄
+    到"本次允许借用其 Key 的账号集合"（未授权借用不进入候选，绝不静默借用）。
     """
     if store is None:
         try:
@@ -385,16 +394,26 @@ def catalog_from_store(store: Any = None) -> Dict[str, ModelProfile]:
             )
             return {}
     try:
-        records = store.list_models()
+        records = store.list_models(
+            visible_to=visible_to, allow_unowned=allow_unowned
+        )
     except Exception as exc:  # pragma: no cover - 存储故障
         logger.warning(
             "model router: reading model config failed (%s)", type(exc).__name__
         )
         return {}
 
+    allowed = set(allow_owners) if allow_owners is not None else None
     profiles: Dict[str, ModelProfile] = {}
     for record in records:
         if not record.get("enabled", True):
+            continue
+        owner = str(record.get("owner_principal") or "")
+        if allowed is not None and owner and owner not in allowed:
+            logger.info(
+                "model router: skipping model %s owned by %s (not authorized)",
+                record.get("id"), owner,
+            )
             continue
         model_id = str(record.get("id") or "").strip()
         provider = str(record.get("provider") or "").strip().lower()
@@ -426,10 +445,21 @@ def _router_for(profiles: Dict[str, ModelProfile]) -> LiuhaoModelRouter:
 
 
 def route_task_from_store(
-    task_type: Optional[str] = None, *, store: Any = None, **overrides: Any
+    task_type: Optional[str] = None,
+    *,
+    store: Any = None,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+    **overrides: Any,
 ) -> RouteResult:
     """Route against the live model-management store (not the static catalog)."""
-    profiles = catalog_from_store(store)
+    profiles = catalog_from_store(
+        store,
+        visible_to=visible_to,
+        allow_unowned=allow_unowned,
+        allow_owners=allow_owners,
+    )
     if not profiles:
         raise NoModelAvailableError("model management has no enabled models")
     profile = _resolve_profile(task_type)
@@ -463,7 +493,13 @@ def _routing_disabled() -> bool:
 
 
 def provider_for_task(
-    task_type: Optional[str] = None, *, model_id: Optional[str] = None
+    task_type: Optional[str] = None,
+    *,
+    model_id: Optional[str] = None,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+    allow_env_fallback: bool = True,
 ) -> BaseProvider:
     """Provider for a **live** call, routed through model management.
 
@@ -473,26 +509,47 @@ def provider_for_task(
     the default, which is exactly the pre-routing behaviour -- so enabling this
     on the live path cannot change behaviour unless the operator saved models.
 
+    ``visible_to`` / ``allow_owners`` 是 Key 归属视角（见 ``catalog_from_store``）；
+    给定后未命中不再回退到 ``.env`` 的机器级 Key，而是明确 409。
+
     Every branch logs its decision and reason; ``LIUHAO_MODEL_ROUTER=off``
     remains available as a rollout rollback.
     """
     if model_id:
         logger.info("model routing skipped: explicit model_id=%s", model_id)
-        return resolve_provider(model_id)
+        return resolve_provider(
+            model_id,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_env_fallback=allow_env_fallback,
+        )
 
     if _routing_disabled():
         logger.info("model routing disabled by LIUHAO_MODEL_ROUTER; using default model")
-        return resolve_provider()
+        return resolve_provider(
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_env_fallback=allow_env_fallback,
+        )
 
     try:
-        result = route_task_from_store(task_type)
+        result = route_task_from_store(
+            task_type,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
     except NoModelAvailableError as exc:
         logger.info(
             "model routing fallback: task=%s reason=%s -> default model",
             task_type or "default",
             exc,
         )
-        return resolve_provider()
+        return resolve_provider(
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_env_fallback=allow_env_fallback,
+        )
 
     selected = result.selected_model
     logger.info(
@@ -505,7 +562,12 @@ def provider_for_task(
         result.reason,
         ",".join(result.fallback_models) or "-",
     )
-    return resolve_provider(selected.model_id)
+    return resolve_provider(
+        selected.model_id,
+        visible_to=visible_to,
+        allow_unowned=allow_unowned,
+        allow_env_fallback=allow_env_fallback,
+    )
 
 
 def get_provider_for_task(task_type: Optional[str] = None, **overrides: Any) -> BaseProvider:

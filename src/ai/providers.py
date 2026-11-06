@@ -14,7 +14,7 @@ import os
 import json
 import logging
 import warnings
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Sequence
 
 from .observability import observe
 
@@ -995,31 +995,83 @@ def provider_from_config(cfg: Dict[str, Any]) -> BaseProvider:
     timeout = cfg.get("timeout")
     if timeout:
         kwargs["timeout"] = float(timeout)
-    return ProviderFactory.create_provider(provider_type, **kwargs)
+    provider = ProviderFactory.create_provider(provider_type, **kwargs)
+    # 只作为**运行期归属标记**：供网关写"谁用了谁的 Key"的审计，不参与请求。
+    provider.model_config_id = cfg.get("id") or ""
+    provider.owner_principal = cfg.get("owner_principal") or ""
+    return provider
 
 
-def resolve_provider(model_id: Optional[str] = None) -> BaseProvider:
+def resolve_provider(
+    model_id: Optional[str] = None,
+    *,
+    visible_to: Optional[Sequence[str]] = None,
+    allow_unowned: bool = False,
+    allow_env_fallback: bool = True,
+) -> BaseProvider:
     """按模型配置中心解析 provider；未配置或找不到时回退到 ``.env``。
 
     每次调用都重新读取配置并构造实例 —— 这就是"保存后立即生效"的实现方式，
     也刻意**不**复用进程级单例（单例会保留旧密钥/旧模型名）。
+
+    ``visible_to`` 是 Key 归属视角：给定后，指向他人 Key 的显式请求会抛出
+    ``ModelConfigError(403, KEY_OWNER_DENIED)``，绝不静默回退到 ``.env``。
+
+    ``allow_env_fallback=False``（成员账号）时，明明有其他模型却都不可见的情况下
+    返回 409，而不是拿机器级 ``.env`` Key 顶上 —— 成员只能用自己的 Key。
+    单账号老部署（``allow_env_fallback=True``）行为不变。
     """
-    cfg = _registry_config(model_id)
+    cfg = _registry_config(
+        model_id, visible_to=visible_to, allow_unowned=allow_unowned
+    )
     if cfg is not None:
         return provider_from_config(cfg)
+    if visible_to is not None and (not allow_env_fallback or _has_enabled_models()):
+        raise _no_visible_model_error()
     return get_provider()
 
 
-def _registry_config(model_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _has_enabled_models() -> bool:
+    """配置中心里是否存在任何启用的模型（区分"空库"与"全不可见"）。"""
+    try:
+        from .model_config import get_model_config_store
+
+        return bool(get_model_config_store().list_models())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _no_visible_model_error():
+    from .model_config import ModelConfigError
+
+    return ModelConfigError(
+        409,
+        "当前工作区暂未配置可用模型，请先添加自己的模型",
+        code="ACCOUNT_KEY_NOT_CONFIGURED",
+    )
+
+
+def _registry_config(
+    model_id: Optional[str] = None,
+    *,
+    visible_to: Optional[Sequence[str]] = None,
+    allow_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """读取模型配置中心；任何存储异常都回退到 ``.env``（并记 warning）。
 
     回退而不是抛出的理由：模型配置中心是**新增**能力，它的故障不应让原本可用的
     ``.env`` 部署整体瘫痪。异常本身仍然可见（日志），不会被静默吞掉。
+
+    唯一例外是权限类 ``ModelConfigError``：它必须原样上抛，不能被"回退"吞掉。
     """
     try:
-        from .model_config import get_model_config_store
+        from .model_config import ModelConfigError, get_model_config_store
 
-        return get_model_config_store().resolve(model_id)
+        return get_model_config_store().resolve(
+            model_id, visible_to=visible_to, allow_unowned=allow_unowned
+        )
+    except ModelConfigError:
+        raise
     except Exception as exc:  # pragma: no cover - 存储故障
         logger.warning(
             "model config store unavailable (%s); falling back to .env",
