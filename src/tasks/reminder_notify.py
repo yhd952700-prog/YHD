@@ -53,7 +53,8 @@ class Notifier(Protocol):
         body: str,
         *,
         idempotency_key: Optional[str] = None,
-    ) -> List[NotifyResult]: ...
+    ) -> List[NotifyResult]:
+        ...
 
 
 def maybe_test_crash(point: str) -> None:

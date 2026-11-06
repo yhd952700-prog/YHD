@@ -44,7 +44,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from src._time import utc_now
 from src.tasks.local_scheduler import LocalScheduler
 from src.tasks.reminder_notify import (
     Notifier,
@@ -52,9 +51,10 @@ from src.tasks.reminder_notify import (
     build_default_notifier,
     maybe_test_crash,
 )
+# 由本模块转出：tests/tasks/test_reminders.py 从这里导入它，删掉会断测试收集。
+from src.tasks.reminder_time import NeedsClarification  # noqa: F401
 from src.tasks.reminder_time import (
     WEEKDAY_NAMES,
-    NeedsClarification,
     ReminderSpec,
     local_timezone,
     parse_reminder,
