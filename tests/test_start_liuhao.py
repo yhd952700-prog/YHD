@@ -125,6 +125,33 @@ def _patch_gate(monkeypatch, result, seen: dict | None = None):
     monkeypatch.setattr("src.desktop.startup.wait_until_ready", fake_wait)
 
 
+def test_main_waits_on_startup_gate_before_anything_else(monkeypatch):
+    """护栏：``main()`` 必须先等 ``/v1/startup``，不能退回"先等 /v1/health"。
+
+    网关入口换成 ``python -m src.gateway`` 后端口来源变成 ``HOST``/``PORT`` 环境
+    变量，这条用例锁住"启动门仍被调用且排在健康探针之前"，防止两条流再撞车。
+    """
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(sl, "_spawn", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(
+        sl,
+        "_wait_gateway_ready",
+        lambda base, proc, label="网关": calls.append(("gate", base)) or None,
+    )
+    monkeypatch.setattr(
+        sl,
+        "_wait_http_ok",
+        lambda url, timeout, label, hint="": calls.append(("health", url)) or True,
+    )
+    monkeypatch.setattr(sl, "_serve_forever", lambda: 0)
+    monkeypatch.setattr(
+        "sys.argv", ["start_liuhao.py", "--backend-only", "--api-port", "18123"]
+    )
+    assert sl.main() == 1, "启动门未通过时必须返回非零，不能继续开浏览器"
+    assert [kind for kind, _ in calls] == ["gate"], "main() 不应在启动门前等 /v1/health"
+    assert calls[0][1].startswith("http://127.0.0.1:")
+
+
 def test_launcher_enters_on_ready_and_degraded_only(monkeypatch, capsys):
     """安装版快捷方式链路：ready/degraded 才返回结果（调用方据此开浏览器）。"""
     _patch_gate(monkeypatch, _gate_result())
