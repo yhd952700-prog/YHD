@@ -161,7 +161,11 @@ class TestDurableEventHistory:
         assert body["source"] == "audit_store"
         assert body["durable"] is True
         assert body["count"] == 1
-        assert body["events"] == recorded
+        # 契约是「只增不改」：原有字段必须原样保留，界面可读字段是加在上面的。
+        event = body["events"][0]
+        for key, value in recorded[0].items():
+            assert event[key] == value
+        assert event["display_title"] and event["status_label"]
         assert body["filters"]["outcome"] == "success"
         assert calls["limit"] == 5 and calls["reverse"] is True
 

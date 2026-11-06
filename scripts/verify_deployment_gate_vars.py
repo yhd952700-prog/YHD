@@ -235,7 +235,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/health.py:282",
+            "src/gateway/health.py:304",
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
@@ -341,7 +341,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "the mounted volume and vanish on rebuild"
         ),
         "refs": (
-            "src/gateway/ai_management.py:266",
+            "src/gateway/ai_management.py:579",
             "src/ai/workspace.py:62",
         ),
     },
@@ -448,6 +448,30 @@ ALLOWLIST: Dict[str, str] = {
         "their own lifecycle, and no artifact sets it. The unset branch only "
         "disables a convenience shutdown path; it never enables or disables a "
         "safety control."
+    ),
+    "LIUHAO_DATA_DIR": (
+        "data-directory override for local state (identity registry, account "
+        "settings, upgrade data). Unset falls back to the platform default "
+        "(LOCALAPPDATA/LiuHao/data on Windows, XDG data home elsewhere) or the "
+        "repo-relative 'data' folder in dev. Relocating local state does not "
+        "enable or disable any safety control."
+    ),
+    "LIUHAO_HUMAN_IDENTITIES_BACKEND": (
+        "storage-backend selector for the human identity registry "
+        "(src/kernels/identity/_persistence.py). Unset selects the JSON-file "
+        "backend; 'sqlite' is only used when explicitly set. Both backends "
+        "enforce the same integrity-key check, so omission cannot widen trust."
+    ),
+    "LIUHAO_LLM_TIMEOUT_SECONDS": (
+        "global tool/prose timeout override (src/ai/llm_support.py:66). Unset "
+        "falls back to the documented DEFAULT_TOOL_TIMEOUT_SECONDS; only a "
+        "timing value, never a safety switch."
+    ),
+    "USERNAME": (
+        "operating-system-provided Windows account name used to tighten the "
+        "identity-key file ACL (src/common/integrity_key.py). Unset falls back "
+        "to getpass and, if that also fails, only skips the ACL hardening with "
+        "a warning; it never enables or disables a safety control."
     ),
 }
 

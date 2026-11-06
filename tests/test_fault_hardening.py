@@ -133,11 +133,11 @@ def test_audit_write_failure_keeps_previous_file_and_rolls_back(tmp_path, monkey
         raise OSError(errno.ENOSPC, "No space left on device (simulated)")
 
     with monkeypatch.context() as m:
-        # 打到 AuditStore 类实际所属的模块，而不是字符串 "src.audit.store"：
-        # tests/test_audit_single_source_of_truth.py 会 pop 该模块再重新 import，
-        # 之后字符串目标解析到的是新模块对象，旧类持有的 globals 没被替换，
-        # 全量套件里因此表现为 DID NOT RAISE（单跑却是绿的）。
-        m.setattr(sys.modules[type(store).__module__], "atomic_write_text", boom)
+        # 打补丁到 AuditStore 方法实际持有的 globals 字典。tests/test_audit_single_source_of_truth.py
+        # 会 pop 该模块再重新 import，之后 sys.modules 里是新模块对象，而旧类的方法
+        # 仍解析旧字典 —— 按模块名打补丁会静默失效（全量套件里 DID NOT RAISE，
+        # 单跑却是绿的）。
+        m.setitem(type(store)._save.__globals__, "atomic_write_text", boom)
         with pytest.raises(OSError):
             store.emit(_event("evt-2"))
 

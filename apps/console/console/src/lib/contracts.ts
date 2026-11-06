@@ -424,5 +424,9 @@ export interface PreflightPayload {
   app_env: string
   critical_count: number
   warning_count: number
+  /** 界面可读状态标签（只增不改，后端 `PreflightReport.to_dict()` 同名下发）。 */
+  status_label?: string
+  /** 给人看的一句话结论；不含任何配置值。 */
+  user_message?: string
   findings: PreflightFinding[]
 }
