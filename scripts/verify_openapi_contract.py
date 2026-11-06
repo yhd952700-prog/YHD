@@ -60,6 +60,18 @@ CONTRACT_PATH = os.path.join(REPO_ROOT, "openapi.yaml")
 # must never be able to break CI, otherwise nobody will re-generate.
 IGNORED_TOP_LEVEL_KEYS = ("info", "servers", "tags", "externalDocs")
 
+# Paths deliberately hidden from ``GET /openapi.json`` (``include_in_schema=False``)
+# that are still part of the product's public HTTP surface and MUST stay
+# documented. Each entry needs a reason. The exemption is only honoured when the
+# route still exists in the mounted app's route table, so it can never hide a
+# deleted endpoint.
+SCHEMA_EXCLUDED_BUT_DOCUMENTED = {
+    "/v1/startup": (
+        "免鉴权只读启动探针（src/gateway/startup.py 用 include_in_schema=False 隐藏）；"
+        "前端在登录前轮询它，所以不进 /openapi.json，但仍必须对外登记。"
+    ),
+}
+
 
 def _load_runtime_spec():
     # Use the shared helper instead of a bare ``get_app().openapi()``: it wraps
@@ -70,6 +82,13 @@ def _load_runtime_spec():
     from _gateway_app import gateway_openapi_spec
 
     return gateway_openapi_spec()
+
+
+def _probe_whitelisted(path: str) -> int:
+    """Hit a schema-excluded path for real; returns the HTTP status code."""
+    from _gateway_app import gateway_probe_status
+
+    return gateway_probe_status(path)
 
 
 def _load_committed(path: str):
@@ -177,6 +196,13 @@ def main(argv=None) -> int:
             "tags": committed.get("tags") or [],
             "paths": runtime.get("paths") or {},
         }
+        # Carry over the documented-but-schema-excluded paths: regeneration must
+        # not silently drop a real endpoint just because FastAPI hides it.
+        for path in SCHEMA_EXCLUDED_BUT_DOCUMENTED:
+            entry = (committed.get("paths") or {}).get(path)
+            if entry:
+                out["paths"][path] = entry
+
         if runtime.get("components"):
             out["components"] = runtime["components"]
 
@@ -207,7 +233,27 @@ def main(argv=None) -> int:
 
     committed_paths = _normalise(_paths_of(committed))
 
-    ghosts = sorted(committed_paths - runtime_paths)
+    documented_excluded = set(SCHEMA_EXCLUDED_BUT_DOCUMENTED) & committed_paths
+    if documented_excluded:
+        try:
+            for path in sorted(documented_excluded):
+                status = _probe_whitelisted(path)
+                print(
+                    f"NOTE: {path} is documented but excluded from /openapi.json "
+                    f"by design -- {SCHEMA_EXCLUDED_BUT_DOCUMENTED[path]} "
+                    f"(unauthenticated GET -> {status})"
+                )
+                if not 200 <= status < 300:
+                    print(
+                        f"FAIL: {path} is whitelisted as schema-excluded but a real "
+                        f"unauthenticated GET returned {status}, not 2xx."
+                    )
+                    documented_excluded.discard(path)
+        except Exception as exc:
+            print(f"FAIL: could not probe the whitelisted paths: {type(exc).__name__}: {exc}")
+            return 2
+
+    ghosts = sorted((committed_paths - runtime_paths) - documented_excluded)
     absent = sorted(runtime_paths - committed_paths)
 
     rt_ops = _operations({p: runtime["paths"][p] for p in runtime_paths if p in runtime["paths"]})
@@ -243,7 +289,8 @@ def main(argv=None) -> int:
 
     if ok:
         print(
-            f"PASS: contract matches runtime -- {len(runtime_paths)} paths, "
+            f"PASS: contract matches runtime -- {len(runtime_paths)} paths "
+            f"(+{len(documented_excluded)} documented schema-excluded), "
             f"0 ghosts, 0 missing, methods agree."
         )
         print("      (freshness only: this does NOT assert the endpoints work)")

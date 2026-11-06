@@ -101,7 +101,7 @@ artifacts 流。
 | 12 | 机器人与具身智能 | deferred-by-decision | 无 ROS/Gazebo/运动控制，安全关键作动需硬件与认证 |
 | 13 | 云端与边缘计算 | design-only | 只设计可选出口；默认形态单进程单端口、不依赖 Docker |
 | 14 | 空间智能 | deferred-by-decision | 无 GIS/地图/点云/3D 代码，缺空间数据与 GPU |
-| 15 | 工业自动化 | deferred-by-decision | 无 PLC/SCADA/OPC-UA，缺设备与资质，法律责任不可承担 |
+| 15 | 工业自动化 | deferred-by-decision | 无 PLC/SCADA/OPC-UA，缺设备与资质；法律责任边界 HUMAN DECISION REQUIRED（本项目尚无已实现的责任框架） |
 | 16 | 企业管理智能体 | planned-next | 依赖 22、8；内部运营可用，外部连接器只设计（依赖 27） |
 | 17 | 金融经济分析 | planned-next | 依赖 16、23；只保留 token 成本账本，交易/投资建议不做 |
 | 18 | 个性化教育 | deferred-by-decision | 38 个行业模板仅测试导入，无学生模型/课程 |

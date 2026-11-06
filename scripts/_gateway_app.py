@@ -84,3 +84,17 @@ def gateway_openapi_spec() -> dict:
     """
     with gateway_client() as client:
         return dict(client.app.openapi())
+
+
+def gateway_probe_status(path: str) -> int:
+    """Issue one unauthenticated GET to ``path`` and return its status code.
+
+    ``include_in_schema=False`` hides a route from ``GET /openapi.json``, so a
+    schema-only diff cannot tell "deliberately undocumented" apart from
+    "deleted". Probing the real app is the honest substitute: the contract
+    verifier's whitelist is only honoured when the path answers 2xx without
+    credentials (all whitelisted entries must be read-only, unauthenticated
+    probes by definition).
+    """
+    with gateway_client() as client:
+        return int(client.get(path).status_code)

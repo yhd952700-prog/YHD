@@ -5,6 +5,21 @@
 # Verify with: python scripts/verify_openapi_contract.py
 components:
   schemas:
+    ApplyRequest:
+      properties:
+        confirm:
+          default: false
+          description: 必须为 true；缺少时返回 400，防止误触升级。
+          title: Confirm
+          type: boolean
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 必须明确指定要安装的版本号；与当前可升级版本不一致时返回 400。
+          title: Version
+      title: ApplyRequest
+      type: object
     ApprovalRequest:
       description: '审批凭据签发请求。
 
@@ -55,6 +70,123 @@ components:
       - target
       title: ApprovalRequest
       type: object
+    AssignTaskRequest:
+      description: '把一件事**直接指派**给某位指定员工（与"一句话自动拆解"分开的入口）。
+
+
+        ``agent_id`` 必须是当前可见的真实 agent；不存在时 404，绝不静默换成
+
+        别的员工。'
+      properties:
+        agent_id:
+          description: 执行主体：真实存在的 agent id
+          maxLength: 128
+          minLength: 1
+          title: Agent Id
+          type: string
+        background:
+          default: true
+          description: 'true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态'
+          title: Background
+          type: boolean
+        instruction:
+          description: 要交给这位员工执行的一句话
+          maxLength: 2000
+          minLength: 1
+          title: Instruction
+          type: string
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 可选：归属的项目 id（必须已存在，否则 404）
+          title: Project Id
+        scope:
+          default: L1
+          description: 执行范围 L0-L7
+          title: Scope
+          type: string
+      required:
+      - agent_id
+      - instruction
+      title: AssignTaskRequest
+      type: object
+    Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post:
+      properties:
+        allow_low_quality:
+          default: false
+          title: Allow Low Quality
+          type: boolean
+        doc_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Doc Id
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post
+      type: object
+    Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post:
+      properties:
+        allow_low_quality:
+          default: false
+          title: Allow Low Quality
+          type: boolean
+        doc_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Doc Id
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post
+      type: object
+    Body_knowledge_upload_document_knowledge_documents_upload_post:
+      properties:
+        allow_low_quality:
+          default: false
+          title: Allow Low Quality
+          type: boolean
+        doc_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Doc Id
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_knowledge_upload_document_knowledge_documents_upload_post
+      type: object
+    Body_knowledge_upload_document_v1_knowledge_documents_upload_post:
+      properties:
+        allow_low_quality:
+          default: false
+          title: Allow Low Quality
+          type: boolean
+        doc_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Doc Id
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: Body_knowledge_upload_document_v1_knowledge_documents_upload_post
+      type: object
     ChatRequest:
       properties:
         message:
@@ -76,6 +208,12 @@ components:
           default: default
           description: 会话 ID（多轮独立）
           title: Session Id
+        use_knowledge:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: 是否检索知识库并注入上下文。null/省略=自动（有文档就开），false=本次关闭，true=本次启用。
+          title: Use Knowledge
       required:
       - message
       title: ChatRequest
@@ -88,6 +226,10 @@ components:
         correlation_id:
           title: Correlation Id
           type: string
+        knowledge:
+          additionalProperties: true
+          title: Knowledge
+          type: object
         reply:
           title: Reply
           type: string
@@ -103,6 +245,7 @@ components:
       - turn
       - correlation_id
       - agent
+      - knowledge
       title: ChatResponse
       type: object
     GoalCreateRequest:
@@ -148,54 +291,6 @@ components:
       - natural_language
       title: GoalCreateRequest
       type: object
-    AssignTaskRequest:
-      description: '把一件事**直接指派**给某位指定员工（与"一句话自动拆解"分开的入口）。
-
-
-        ``agent_id`` 必须是当前可见的真实 agent；不存在时 404，绝不静默换成 别的员工。'
-      properties:
-        agent_id:
-          description: 执行主体：真实存在的 agent id
-          maxLength: 128
-          minLength: 1
-          title: Agent Id
-          type: string
-        background:
-          default: true
-          description: 'true: 立即返回 running 并可轮询逐任务进度；false: 同步执行到终态'
-          title: Background
-          type: boolean
-        instruction:
-          description: 要交给这位员工执行的一句话
-          maxLength: 2000
-          minLength: 1
-          title: Instruction
-          type: string
-        project_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: 可选：归属的项目 id（必须已存在，否则 404）
-          title: Project Id
-        scope:
-          default: L1
-          description: 执行范围 L0-L7
-          title: Scope
-          type: string
-      required:
-      - agent_id
-      - instruction
-      title: AssignTaskRequest
-      type: object
-    GoalWorkErrorResponse:
-      description: Goal 子操作的可读错误：``code`` 是稳定标识（供程序判断）， ``message`` 是给人看的中文说明。
-      properties:
-        detail:
-          additionalProperties: true
-          type: object
-          title: Detail
-      title: GoalWorkErrorResponse
-      type: object
     HTTPValidationError:
       properties:
         detail:
@@ -230,6 +325,27 @@ components:
       required:
       - name
       title: HireEmployeeRequest
+      type: object
+    IngestJobRequest:
+      properties:
+        doc_id:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          title: Doc Id
+        metadata:
+          additionalProperties: true
+          title: Metadata
+          type: object
+        text:
+          maxLength: 200000
+          minLength: 1
+          title: Text
+          type: string
+      required:
+      - text
+      title: IngestJobRequest
       type: object
     IngestRequest:
       properties:
@@ -455,6 +571,21 @@ components:
       - name
       title: ProjectCreateRequest
       type: object
+    RollbackRequest:
+      properties:
+        backup_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 可选；不传时回滚到最近一次成功升级前的备份。
+          title: Backup Id
+        confirm:
+          default: false
+          description: 必须为 true；缺少时返回 400，防止误触回滚。
+          title: Confirm
+          type: boolean
+      title: RollbackRequest
+      type: object
     SearchRequest:
       properties:
         query:
@@ -545,103 +676,6 @@ components:
       - type
       title: ValidationError
       type: object
-    Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post:
-      properties:
-        allow_low_quality:
-          default: false
-          title: Allow Low Quality
-          type: boolean
-        doc_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Doc Id
-        file:
-          contentMediaType: application/octet-stream
-          title: File
-          type: string
-      required:
-      - file
-      title: Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post
-      type: object
-    Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post:
-      properties:
-        allow_low_quality:
-          default: false
-          title: Allow Low Quality
-          type: boolean
-        doc_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Doc Id
-        file:
-          contentMediaType: application/octet-stream
-          title: File
-          type: string
-      required:
-      - file
-      title: Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post
-      type: object
-    Body_knowledge_upload_document_knowledge_documents_upload_post:
-      properties:
-        allow_low_quality:
-          default: false
-          title: Allow Low Quality
-          type: boolean
-        doc_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Doc Id
-        file:
-          contentMediaType: application/octet-stream
-          title: File
-          type: string
-      required:
-      - file
-      title: Body_knowledge_upload_document_knowledge_documents_upload_post
-      type: object
-    Body_knowledge_upload_document_v1_knowledge_documents_upload_post:
-      properties:
-        allow_low_quality:
-          default: false
-          title: Allow Low Quality
-          type: boolean
-        doc_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Doc Id
-        file:
-          contentMediaType: application/octet-stream
-          title: File
-          type: string
-      required:
-      - file
-      title: Body_knowledge_upload_document_v1_knowledge_documents_upload_post
-      type: object
-    IngestJobRequest:
-      properties:
-        doc_id:
-          anyOf:
-          - maxLength: 128
-            type: string
-          - type: 'null'
-          title: Doc Id
-        metadata:
-          additionalProperties: true
-          title: Metadata
-          type: object
-        text:
-          maxLength: 200000
-          minLength: 1
-          title: Text
-          type: string
-      required:
-      - text
-      title: IngestJobRequest
-      type: object
 info:
   description: "GENERATED SNAPSHOT of the REAL runtime contract, exported from\n`src.gateway.main.get_app().openapi()`\
     \ by `scripts/verify_openapi_contract.py --write`.\n\nWHY THIS FILE USED TO BE WRONG: the previous\
@@ -659,51 +693,6 @@ info:
 openapi: 3.1.0
 paths:
   /knowledge/documents:
-    post:
-      deprecated: true
-      operationId: knowledge_ingest_knowledge_documents_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IngestRequest'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Ingest Knowledge Documents Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Ingest
-      tags:
-      - knowledge
-      - knowledge
     get:
       deprecated: true
       description: Paged document ledger (chunk count, ingest time, source, content hash).
@@ -758,6 +747,414 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Knowledge List Documents
+      tags:
+      - knowledge
+      - knowledge
+    post:
+      deprecated: true
+      operationId: knowledge_ingest_knowledge_documents_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Ingest Knowledge Documents Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Ingest
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/documents/upload:
+    post:
+      deprecated: true
+      description: "Multipart upload for PDF / DOCX / HTML / plain text (synchronous).\n\nEvery format\
+        \ is reduced to extracted text **before** it reaches the index,\nso the content hash (and therefore\
+        \ dedup) is computed on what the library\nactually says, not on the file name or bytes. PDF chunks\
+        \ carry ``page``\nmetadata and search hits expose ``page`` / ``location``.\n\nErrors are the extractor's\
+        \ own readable messages:\n  * 413 -- file size / PDF page count / extracted length over the cap;\n\
+        \  * 415 -- unsupported suffix;\n  * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt\
+        \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
+        \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
+        \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
+        \ this handler blocks\nuntil extraction + embedding finish."
+      operationId: knowledge_upload_document_knowledge_documents_upload_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_knowledge_upload_document_knowledge_documents_upload_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Upload Document Knowledge Documents Upload Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Upload Document
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/documents/upload/jobs:
+    post:
+      deprecated: true
+      description: 'Queue a **file** ingest job and return immediately with a job id.
+
+
+        This is the async twin of ``POST /documents/upload``: the bytes are read
+
+        here, then extraction and embedding happen in the worker. A 300-page PDF
+
+        therefore answers 202 instantly and reports real page progress via
+
+        ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
+
+        ``embedded_pages`` / ``progress_percent``). Cancel with
+
+        ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
+
+        document is embedded, so a cancel is a full rollback (全回滚).
+
+
+        Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
+
+        do not fail the *request* -- they are reported on the job as
+
+        ``status=failed`` with ``error_code`` and the extractor''s message. For a
+
+        garbled text layer the job keeps the measured ``quality`` and the caller
+
+        can resubmit with ``allow_low_quality=true`` after inspecting it.'
+      operationId: knowledge_submit_upload_job_knowledge_documents_upload_jobs_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Submit Upload Job Knowledge Documents Upload Jobs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Submit Upload Job
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/documents/{document_id}:
+    delete:
+      deprecated: true
+      description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.'
+      operationId: knowledge_delete_document_knowledge_documents__document_id__delete
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Delete Document Knowledge Documents  Document Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Delete Document
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/documents/{document_id}/chunks:
+    get:
+      deprecated: true
+      description: Every chunk of one document (ordered), not just the top-k search hits.
+      operationId: knowledge_document_chunks_knowledge_documents__document_id__chunks_get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Document Chunks Knowledge Documents  Document Id  Chunks Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Document Chunks
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/ingest/jobs:
+    post:
+      deprecated: true
+      description: Queue a raw-text ingest job; cancellation lands at chunk boundaries.
+      operationId: knowledge_submit_ingest_job_knowledge_ingest_jobs_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestJobRequest'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Submit Ingest Job Knowledge Ingest Jobs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Submit Ingest Job
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/ingest/jobs/{job_id}:
+    get:
+      deprecated: true
+      operationId: knowledge_get_ingest_job_knowledge_ingest_jobs__job_id__get
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Get Ingest Job Knowledge Ingest Jobs  Job Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Get Ingest Job
+      tags:
+      - knowledge
+      - knowledge
+  /knowledge/ingest/jobs/{job_id}/cancel:
+    post:
+      deprecated: true
+      description: Request cancellation; it lands at the next chunk boundary.
+      operationId: knowledge_cancel_ingest_job_knowledge_ingest_jobs__job_id__cancel_post
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Cancel Ingest Job Knowledge Ingest Jobs  Job Id  Cancel Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Cancel Ingest Job
       tags:
       - knowledge
       - knowledge
@@ -1001,7 +1398,12 @@ paths:
 
         返回值带 ``filters`` 回声，因为"我看到的列表是哪个过滤条件下看到的"
 
-        本身就是要展示给人的信息 —— 空结果到底是没有事件还是筛错了，必须可分。'
+        本身就是要展示给人的信息 —— 空结果到底是没有事件还是筛错了，必须可分。
+
+
+        非 ``L0`` 调用者只能读自己的事件：``principal`` 会被强制为令牌主体，显式
+
+        指定别人的主体直接 403。跨主体读取是主权操作。'
       operationId: list_events_v1_audit_events_get
       parameters:
       - description: 按主体过滤
@@ -1135,7 +1537,10 @@ paths:
 
         同一 seq 若存在多行（RCA-1 分叉特征），只返回 rowid 最小的一行并如实
 
-        标注 ``duplicate_seq`` —— 隐藏第二行等于替攻击者保守秘密。'
+        标注 ``duplicate_seq`` —— 隐藏第二行等于替攻击者保守秘密。
+
+
+        非 ``L0`` 调用者读取他人的事件一律 404（不暴露"该 seq 存在但你不能看"）。'
       operationId: get_event_v1_audit_events__seq__get
       parameters:
       - in: path
@@ -1185,7 +1590,10 @@ paths:
 
         这里**故意不**附带 verify 结果 —— 那会为每个轮询请求扫一遍全链（生产库
 
-        30 万行量级）。要结论就显式打 ``/v1/audit/verify``。'
+        30 万行量级）。要结论就显式打 ``/v1/audit/verify``。
+
+
+        非 ``L0`` 调用者只看自己主体的事件计数，避免通过聚合数字横向推断他人活动。'
       operationId: summary_v1_audit_summary_get
       parameters:
       - in: header
@@ -2182,7 +2590,12 @@ paths:
 
         直接复用事件内核的内存近期事件缓冲 ``get_event_history`` —— 内核已保真地记录了
 
-        总线上的真实事件；这里只呈现，不复制、不修饰。``limit`` 取最近 N 条。'
+        总线上的真实事件；这里只呈现，不复制、不修饰。``limit`` 取最近 N 条。
+
+
+        非 ``L0`` 调用者只看到能归属到自己的事件（见 ``_belongs_to``）；拿不到
+
+        归属的事件按跨主体处理，一律不下发。'
       operationId: list_events_v1_events_get
       parameters:
       - in: query
@@ -2242,7 +2655,10 @@ paths:
 
         读库失败时返回 503 与真实原因 —— **绝不**返回空列表，否则调用方分不清
 
-        "没有历史"和"历史读不出来"。'
+        "没有历史"和"历史读不出来"。
+
+
+        非 ``L0`` 调用者的 ``principal`` 被强制为令牌主体；显式查询别人 → 403。'
       operationId: list_persisted_event_history_v1_events_history_get
       parameters:
       - description: 按主体过滤
@@ -2573,6 +2989,54 @@ paths:
       summary: Create Goal
       tags:
       - ai-management
+  /v1/goals/assign:
+    post:
+      description: "把一件事**直接指派**给指定员工执行（独立于\"一句话自动拆解\"入口）。\n\n与 ``POST /v1/goals`` 的差别只在\"谁决定执行主体\"：\n\
+        * 这里由调用方点名 ``agent_id``，**必须真实存在**（否则 404\n  ``agent_not_found``），绝不静默换成别的员工；\n* ``POST /v1/goals``\
+        \ 仍由管家自己拆解、自己派活。\n\n权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals`` 同一道\n``require_human_principal``），不因为多了这个入口而放宽。\n\
+        ``background=true``（默认）时立即返回 ``running``，随后\n``GET /v1/goals/{id}`` 会逐条给出任务进度。"
+      operationId: assign_goal_v1_goals_assign_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTaskRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Assign Goal V1 Goals Assign Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Assign Goal
+      tags:
+      - ai-management
   /v1/goals/{goal_id}:
     get:
       description: 获取 Goal 执行详情。
@@ -2715,85 +3179,11 @@ paths:
       summary: Stop Goal
       tags:
       - ai-management
-  /v1/goals/assign:
-    post:
-      description: '把一件事**直接指派**给指定员工执行（独立于"一句话自动拆解"入口）。
-
-
-        与 ``POST /v1/goals`` 的差别只在"谁决定执行主体"：这里由调用方点名 ``agent_id``，必须真实存在且在可见范围内（否则 404 ``agent_not_found``），
-        绝不静默换成别的员工；``POST /v1/goals`` 仍由管家自己拆解、自己派活。
-
-
-        权限沿用现有模型：要求人类主权令牌（与 ``POST /v1/goals`` 同一道 ``require_human_principal``），不因新增入口而放宽。
-
-
-        ``background=true``（默认）时立即返回 ``state:"running"``，随后 ``GET /v1/goals/{id}`` 会随任务状态变化逐条返回 ``tasks``。'
-      operationId: assign_goal_v1_goals_assign_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AssignTaskRequest'
-        required: true
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Assign Goal V1 Goals Assign Post
-                type: object
-          description: Successful Response
-        '404':
-          description: '指定的员工不存在或不在当前可见范围。响应体 ``detail`` 为 ``{"code": "agent_not_found", "message": "..."}``。'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GoalWorkErrorResponse'
-        '409':
-          description: 员工处于暂停状态（``agent_unavailable``）。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GoalWorkErrorResponse'
-        '401':
-          description: 缺少或无效的 Bearer 令牌。
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Assign Goal
-      tags:
-      - ai-management
   /v1/goals/{goal_id}/tasks/{task_id}/retry:
     post:
-      description: '只重跑一个**失败**任务，其余任务的结果原样保留，并记录审计。
-
-
-        明确拒绝的情况（都有稳定 ``code``）：``goal_not_found`` / ``task_not_found``（404）、``goal_running``（409，等运行结束再来）、
-        ``task_not_retryable``（409，该任务不是 failed，例如已成功）。
-
-
-        重跑时其余任务在内核层被标记为 SKIPPED（``only_task_name``），因此 **物理上**不会执行它们；网关只回写被重试任务的那一张卡。'
+      description: "只重跑一个失败任务，其余任务的结果原样保留，并记录审计。\n\n明确拒绝的情况（都有稳定 ``code``）：\n* ``goal_not_found`` / ``task_not_found``\
+        \ — 目标或任务不存在（404）；\n* ``goal_running`` — 目标还在跑，等结束再重试（409）；\n* ``task_not_retryable`` — 该任务不是\
+        \ ``failed``（例如已成功），\n  绝不顺带重跑其它任务（409）。"
       operationId: retry_goal_task_v1_goals__goal_id__tasks__task_id__retry_post
       parameters:
       - in: path
@@ -2833,18 +3223,6 @@ paths:
                 title: Response Retry Goal Task V1 Goals  Goal Id  Tasks  Task Id  Retry Post
                 type: object
           description: Successful Response
-        '404':
-          description: 目标或任务不存在（``goal_not_found`` / ``task_not_found``）。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GoalWorkErrorResponse'
-        '409':
-          description: 该任务不可重试（``goal_running`` / ``task_not_retryable``）。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GoalWorkErrorResponse'
         '422':
           content:
             application/json:
@@ -3379,50 +3757,6 @@ paths:
       tags:
       - kernels
   /v1/knowledge/documents:
-    post:
-      operationId: knowledge_ingest_v1_knowledge_documents_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IngestRequest'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Ingest V1 Knowledge Documents Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Ingest
-      tags:
-      - knowledge
-      - knowledge
     get:
       description: Paged document ledger (chunk count, ingest time, source, content hash).
       operationId: knowledge_list_documents_v1_knowledge_documents_get
@@ -3476,6 +3810,407 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Knowledge List Documents
+      tags:
+      - knowledge
+      - knowledge
+    post:
+      operationId: knowledge_ingest_v1_knowledge_documents_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Ingest V1 Knowledge Documents Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Ingest
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/documents/upload:
+    post:
+      description: "Multipart upload for PDF / DOCX / HTML / plain text (synchronous).\n\nEvery format\
+        \ is reduced to extracted text **before** it reaches the index,\nso the content hash (and therefore\
+        \ dedup) is computed on what the library\nactually says, not on the file name or bytes. PDF chunks\
+        \ carry ``page``\nmetadata and search hits expose ``page`` / ``location``.\n\nErrors are the extractor's\
+        \ own readable messages:\n  * 413 -- file size / PDF page count / extracted length over the cap;\n\
+        \  * 415 -- unsupported suffix;\n  * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt\
+        \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
+        \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
+        \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
+        \ this handler blocks\nuntil extraction + embedding finish."
+      operationId: knowledge_upload_document_v1_knowledge_documents_upload_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_knowledge_upload_document_v1_knowledge_documents_upload_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Upload Document V1 Knowledge Documents Upload Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Upload Document
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/documents/upload/jobs:
+    post:
+      description: 'Queue a **file** ingest job and return immediately with a job id.
+
+
+        This is the async twin of ``POST /documents/upload``: the bytes are read
+
+        here, then extraction and embedding happen in the worker. A 300-page PDF
+
+        therefore answers 202 instantly and reports real page progress via
+
+        ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
+
+        ``embedded_pages`` / ``progress_percent``). Cancel with
+
+        ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
+
+        document is embedded, so a cancel is a full rollback (全回滚).
+
+
+        Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
+
+        do not fail the *request* -- they are reported on the job as
+
+        ``status=failed`` with ``error_code`` and the extractor''s message. For a
+
+        garbled text layer the job keeps the measured ``quality`` and the caller
+
+        can resubmit with ``allow_low_quality=true`` after inspecting it.'
+      operationId: knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Submit Upload Job V1 Knowledge Documents Upload Jobs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Submit Upload Job
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/documents/{document_id}:
+    delete:
+      description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.'
+      operationId: knowledge_delete_document_v1_knowledge_documents__document_id__delete
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Delete Document V1 Knowledge Documents  Document Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Delete Document
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/documents/{document_id}/chunks:
+    get:
+      description: Every chunk of one document (ordered), not just the top-k search hits.
+      operationId: knowledge_document_chunks_v1_knowledge_documents__document_id__chunks_get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Document Chunks V1 Knowledge Documents  Document Id  Chunks
+                  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Document Chunks
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/ingest/jobs:
+    post:
+      description: Queue a raw-text ingest job; cancellation lands at chunk boundaries.
+      operationId: knowledge_submit_ingest_job_v1_knowledge_ingest_jobs_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestJobRequest'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Submit Ingest Job V1 Knowledge Ingest Jobs Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Submit Ingest Job
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/ingest/jobs/{job_id}:
+    get:
+      operationId: knowledge_get_ingest_job_v1_knowledge_ingest_jobs__job_id__get
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Get Ingest Job V1 Knowledge Ingest Jobs  Job Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Get Ingest Job
+      tags:
+      - knowledge
+      - knowledge
+  /v1/knowledge/ingest/jobs/{job_id}/cancel:
+    post:
+      description: Request cancellation; it lands at the next chunk boundary.
+      operationId: knowledge_cancel_ingest_job_v1_knowledge_ingest_jobs__job_id__cancel_post
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Knowledge Cancel Ingest Job V1 Knowledge Ingest Jobs  Job Id  Cancel Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Knowledge Cancel Ingest Job
       tags:
       - knowledge
       - knowledge
@@ -3697,6 +4432,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Create Model
+      tags:
+      - models
+  /v1/models/presets:
+    get:
+      description: '提供方预设：只填默认 ``base_url`` 与模型名，**不预填任何密钥**。
+
+
+        刻意放在 ``/models/{model_id}`` 之前注册，否则会被动态路由吞掉。'
+      operationId: list_provider_presets_v1_models_presets_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Provider Presets V1 Models Presets Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Provider Presets
       tags:
       - models
   /v1/models/providers:
@@ -4281,13 +5058,25 @@ paths:
       description: '列出**等待当前人工确认**的动作（只读）。
 
 
-        数据来源是内核真实的拦截记录：HIGH/CRITICAL 动作被 ``PolicyEffect.DEFER`` 挂起时，审计链会写 ``outcome="blocked"``、 ``policy_decision="defer"``
-        的事件（``deny`` / ``error`` 是硬拒绝， 不需要人批，因此不计入）。
+        审批中心此前只有"已签发凭据"，没有"还有什么在等我"。数据来源是内核
+
+        真实的拦截记录：HIGH/CRITICAL 动作被 ``PolicyEffect.DEFER`` 拦下时，审计
+
+        链会写一条 ``outcome="blocked"``、``policy_decision="defer"`` 的事件
+
+        （``deny`` / ``error`` 是硬拒绝，不需要人批，因此不计入）。
 
 
-        已有一条有效凭据覆盖的动作不再算"待处理"。每条的 ``approve`` 字段给出 可照抄的下一步请求，页面可直接处理而不是只显示。
+        已有一条有效凭据覆盖的动作不再算"待处理"——它已经批过了。
 
-        可见性：只有**能真正签发凭据**的人类主体才看得到这个队列 （与 ``POST /v1/policy/approvals`` 同一道门），其它主体 403 —— 跨主体不泄露。'
+        ``approve`` 字段给出可照抄的下一步请求，使页面能直接处理而不是只显示。
+
+
+        可见性：只有**能真正签发凭据**的人类主体才看得到这个队列
+
+        （``require_admin_principal``，与 ``POST /v1/policy/approvals`` 同一道
+
+        门）。非管理员不是"看到空列表"，而是 403 —— 跨主体不泄露。'
       operationId: list_pending_approvals_v1_policy_approvals_pending_get
       parameters:
       - in: header
@@ -4315,10 +5104,6 @@ paths:
                 title: Response List Pending Approvals V1 Policy Approvals Pending Get
                 type: object
           description: Successful Response
-        '403':
-          description: 当前主体没有签发审批凭据的权限（看不到别人的待办）。
-        '401':
-          description: 缺少或无效的 Bearer 令牌。
         '422':
           content:
             application/json:
@@ -4855,6 +5640,30 @@ paths:
       summary: Get Project
       tags:
       - projects
+  /v1/startup:
+    get:
+      description: '只读启动状态探针（免鉴权、无副作用）。注意：源路由
+        `src/gateway/startup.py` 用 `include_in_schema=False` 把它从
+        `GET /openapi.json` 隐藏，这里仍按对外可见接口登记（白名单与理由见
+        `scripts/verify_openapi_contract.py`）。
+
+
+        响应字段：`state`（starting/ready/degraded）、`core_ready`、
+        `elapsed_ms`、`started_at_unix`、`stages`、`background`。
+        `state=degraded` 表示核心可用（能登录/对话）但后台预热失败。'
+      operationId: get_startup_status_v1_startup_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Startup Status V1 Startup Get
+                type: object
+          description: 启动阶段快照（HTTP 200 恒定返回，状态在响应体内）
+      summary: 只读启动状态
+      tags:
+      - startup
   /v1/trust/{entity_id}:
     get:
       description: '读取某个实体的真实信任状态（只读）。
@@ -4903,6 +5712,170 @@ paths:
       summary: Get Trust
       tags:
       - trust
+  /v1/upgrade/apply:
+    post:
+      operationId: upgrade_apply_v1_upgrade_apply_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upgrade Apply V1 Upgrade Apply Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 开始升级（同步执行，需二次确认）
+      tags:
+      - upgrade
+  /v1/upgrade/check:
+    post:
+      operationId: upgrade_check_v1_upgrade_check_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upgrade Check V1 Upgrade Check Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 检查更新（只检查，不下载不安装）
+      tags:
+      - upgrade
+  /v1/upgrade/rollback:
+    post:
+      operationId: upgrade_rollback_v1_upgrade_rollback_post
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upgrade Rollback V1 Upgrade Rollback Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 回滚到最近一次备份（同步执行，需二次确认）
+      tags:
+      - upgrade
+  /v1/upgrade/status:
+    get:
+      operationId: upgrade_status_v1_upgrade_status_get
+      parameters:
+      - in: header
+        name: x-liuhao-token
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Liuhao-Token
+      - in: header
+        name: authorization
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upgrade Status V1 Upgrade Status Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: 当前升级状态（只读）
+      tags:
+      - upgrade
   /v1/workflows:
     get:
       description: 列出所有 Workflow 执行状态（以 Goal 为维度）。
@@ -4987,768 +5960,6 @@ paths:
       summary: Get Workflow
       tags:
       - ai-management
-  /knowledge/documents/upload:
-    post:
-      deprecated: true
-      description: "Multipart upload for PDF / DOCX / HTML / plain text (synchronous).\n\nEvery format\
-        \ is reduced to extracted text **before** it reaches the index,\nso the content hash (and therefore\
-        \ dedup) is computed on what the library\nactually says, not on the file name or bytes. PDF chunks\
-        \ carry ``page``\nmetadata and search hits expose ``page`` / ``location``.\n\nErrors are the extractor's\
-        \ own readable messages:\n  * 413 -- file size / PDF page count / extracted length over the cap;\n\
-        \  * 415 -- unsupported suffix;\n  * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt\
-        \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
-        \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
-        \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
-        \ this handler blocks\nuntil extraction + embedding finish."
-      operationId: knowledge_upload_document_knowledge_documents_upload_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_knowledge_upload_document_knowledge_documents_upload_post'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Upload Document Knowledge Documents Upload Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Upload Document
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/documents/upload/jobs:
-    post:
-      deprecated: true
-      description: 'Queue a **file** ingest job and return immediately with a job id.
-
-
-        This is the async twin of ``POST /documents/upload``: the bytes are read
-
-        here, then extraction and embedding happen in the worker. A 300-page PDF
-
-        therefore answers 202 instantly and reports real page progress via
-
-        ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
-
-        ``embedded_pages`` / ``progress_percent``). Cancel with
-
-        ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
-
-        document is embedded, so a cancel is a full rollback (全回滚).
-
-
-        Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
-
-        do not fail the *request* -- they are reported on the job as
-
-        ``status=failed`` with ``error_code`` and the extractor''s message. For a
-
-        garbled text layer the job keeps the measured ``quality`` and the caller
-
-        can resubmit with ``allow_low_quality=true`` after inspecting it.'
-      operationId: knowledge_submit_upload_job_knowledge_documents_upload_jobs_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_knowledge_submit_upload_job_knowledge_documents_upload_jobs_post'
-        required: true
-      responses:
-        '202':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Submit Upload Job Knowledge Documents Upload Jobs Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Submit Upload Job
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/documents/{document_id}:
-    delete:
-      deprecated: true
-      description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.'
-      operationId: knowledge_delete_document_knowledge_documents__document_id__delete
-      parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Delete Document Knowledge Documents  Document Id  Delete
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Delete Document
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/documents/{document_id}/chunks:
-    get:
-      deprecated: true
-      description: Every chunk of one document (ordered), not just the top-k search hits.
-      operationId: knowledge_document_chunks_knowledge_documents__document_id__chunks_get
-      parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Document Chunks Knowledge Documents  Document Id  Chunks Get
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Document Chunks
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/ingest/jobs:
-    post:
-      deprecated: true
-      description: Queue a raw-text ingest job; cancellation lands at chunk boundaries.
-      operationId: knowledge_submit_ingest_job_knowledge_ingest_jobs_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IngestJobRequest'
-        required: true
-      responses:
-        '202':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Submit Ingest Job Knowledge Ingest Jobs Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Submit Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/ingest/jobs/{job_id}:
-    get:
-      deprecated: true
-      operationId: knowledge_get_ingest_job_knowledge_ingest_jobs__job_id__get
-      parameters:
-      - in: path
-        name: job_id
-        required: true
-        schema:
-          title: Job Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Get Ingest Job Knowledge Ingest Jobs  Job Id  Get
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Get Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /knowledge/ingest/jobs/{job_id}/cancel:
-    post:
-      deprecated: true
-      description: Request cancellation; it lands at the next chunk boundary.
-      operationId: knowledge_cancel_ingest_job_knowledge_ingest_jobs__job_id__cancel_post
-      parameters:
-      - in: path
-        name: job_id
-        required: true
-        schema:
-          title: Job Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Cancel Ingest Job Knowledge Ingest Jobs  Job Id  Cancel Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Cancel Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/documents/upload:
-    post:
-      description: "Multipart upload for PDF / DOCX / HTML / plain text (synchronous).\n\nEvery format\
-        \ is reduced to extracted text **before** it reaches the index,\nso the content hash (and therefore\
-        \ dedup) is computed on what the library\nactually says, not on the file name or bytes. PDF chunks\
-        \ carry ``page``\nmetadata and search hits expose ``page`` / ``location``.\n\nErrors are the extractor's\
-        \ own readable messages:\n  * 413 -- file size / PDF page count / extracted length over the cap;\n\
-        \  * 415 -- unsupported suffix;\n  * 422 -- scanned PDF (no text layer), encrypted PDF, corrupt\
-        \ file, empty\n    document, or a text layer full of broken glyphs. A scanned PDF never\n    returns\
-        \ an empty string as \"success\", and a garbled text layer is never\n    stored silently: the\
-        \ caller must retry with ``allow_low_quality=true``.\n\nLarge files belong on ``POST /documents/upload/jobs``:\
-        \ this handler blocks\nuntil extraction + embedding finish."
-      operationId: knowledge_upload_document_v1_knowledge_documents_upload_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_knowledge_upload_document_v1_knowledge_documents_upload_post'
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Upload Document V1 Knowledge Documents Upload Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Upload Document
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/documents/upload/jobs:
-    post:
-      description: 'Queue a **file** ingest job and return immediately with a job id.
-
-
-        This is the async twin of ``POST /documents/upload``: the bytes are read
-
-        here, then extraction and embedding happen in the worker. A 300-page PDF
-
-        therefore answers 202 instantly and reports real page progress via
-
-        ``GET /ingest/jobs/{job_id}`` (``total_pages`` / ``extracted_pages`` /
-
-        ``embedded_pages`` / ``progress_percent``). Cancel with
-
-        ``POST /ingest/jobs/{job_id}/cancel``: nothing is written until the whole
-
-        document is embedded, so a cancel is a full rollback (全回滚).
-
-
-        Extraction failures (scanned PDF, encrypted/corrupt file, garbled text layer)
-
-        do not fail the *request* -- they are reported on the job as
-
-        ``status=failed`` with ``error_code`` and the extractor''s message. For a
-
-        garbled text layer the job keeps the measured ``quality`` and the caller
-
-        can resubmit with ``allow_low_quality=true`` after inspecting it.'
-      operationId: knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_knowledge_submit_upload_job_v1_knowledge_documents_upload_jobs_post'
-        required: true
-      responses:
-        '202':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Submit Upload Job V1 Knowledge Documents Upload Jobs Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Submit Upload Job
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/documents/{document_id}:
-    delete:
-      description: 'Delete a document: chunks, vectors, FTS rows and content hash at once.'
-      operationId: knowledge_delete_document_v1_knowledge_documents__document_id__delete
-      parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Delete Document V1 Knowledge Documents  Document Id  Delete
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Delete Document
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/documents/{document_id}/chunks:
-    get:
-      description: Every chunk of one document (ordered), not just the top-k search hits.
-      operationId: knowledge_document_chunks_v1_knowledge_documents__document_id__chunks_get
-      parameters:
-      - in: path
-        name: document_id
-        required: true
-        schema:
-          title: Document Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Document Chunks V1 Knowledge Documents  Document Id  Chunks
-                  Get
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Document Chunks
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/ingest/jobs:
-    post:
-      description: Queue a raw-text ingest job; cancellation lands at chunk boundaries.
-      operationId: knowledge_submit_ingest_job_v1_knowledge_ingest_jobs_post
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IngestJobRequest'
-        required: true
-      responses:
-        '202':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Submit Ingest Job V1 Knowledge Ingest Jobs Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Submit Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/ingest/jobs/{job_id}:
-    get:
-      operationId: knowledge_get_ingest_job_v1_knowledge_ingest_jobs__job_id__get
-      parameters:
-      - in: path
-        name: job_id
-        required: true
-        schema:
-          title: Job Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Get Ingest Job V1 Knowledge Ingest Jobs  Job Id  Get
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Get Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /v1/knowledge/ingest/jobs/{job_id}/cancel:
-    post:
-      description: Request cancellation; it lands at the next chunk boundary.
-      operationId: knowledge_cancel_ingest_job_v1_knowledge_ingest_jobs__job_id__cancel_post
-      parameters:
-      - in: path
-        name: job_id
-        required: true
-        schema:
-          title: Job Id
-          type: string
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response Knowledge Cancel Ingest Job V1 Knowledge Ingest Jobs  Job Id  Cancel Post
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: Knowledge Cancel Ingest Job
-      tags:
-      - knowledge
-      - knowledge
-  /v1/models/presets:
-    get:
-      description: '提供方预设：只填默认 ``base_url`` 与模型名，**不预填任何密钥**。
-
-
-        刻意放在 ``/models/{model_id}`` 之前注册，否则会被动态路由吞掉。'
-      operationId: list_provider_presets_v1_models_presets_get
-      parameters:
-      - in: header
-        name: x-liuhao-token
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: X-Liuhao-Token
-      - in: header
-        name: authorization
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                title: Response List Provider Presets V1 Models Presets Get
-                type: object
-          description: Successful Response
-        '422':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-          description: Validation Error
-      summary: List Provider Presets
-      tags:
-      - models
 servers:
 - description: Local gateway. Each path below carries its own prefix (e.g. `/v1/...`); the server URL
     has no extra `/v1` suffix.
