@@ -523,7 +523,11 @@ def expires_at(seconds: Optional[int] = None) -> str:
 def is_expired(stamp: Optional[str]) -> bool:
     if not stamp:
         return True
-    try:
+    # 这里的 return True 是**fail-closed**，不是「谎报成功」：时间戳解析不出来
+    # 就无法证明它还新鲜，只能按已过期处理（要求重新激活），调用方不会因此拿到
+    # 一个本不该有效的码。Semgrep 的 liuhao-swallow-exception-return-success 只能
+    # 看到「except 分支 return True」这个形状，故显式结辩。
+    try:  # nosemgrep: liuhao-swallow-exception-return-success
         parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
     except ValueError:
         return True

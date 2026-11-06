@@ -102,6 +102,14 @@ RUN mkdir -p /app/data /app/logs && chown -R app:app /app/data /app/logs
 # 容器以非 root 用户运行，/app 根目录不可写，必须预建并赋权。
 RUN mkdir -p /app/plugins && chown -R app:app /app/plugins
 
+# 单实例锁默认落在 <instance_root>/run/instance.lock（src/common/instance_lock.py），
+# 而网关的 instance_root 在容器里解析成 CWD（/app）。/app 由 root 拥有、进程以
+# USER app 运行 ⇒ 启动即 "无法创建单实例锁文件 /app/run/instance.lock
+# ([Errno 13] Permission denied: '/app/run')" 并 fail-closed 退出
+# （Build Verification 实测 state=exited, health=unhealthy）。锁是运行必需品，
+# 目录必须在镜像里就存在且属主正确。
+RUN mkdir -p /app/run && chown -R app:app /app/run
+
 USER app
 
 ENV PATH=/home/app/.local/bin:$PATH
