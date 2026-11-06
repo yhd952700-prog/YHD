@@ -100,7 +100,7 @@ def _parse_go_mod(text: str) -> str | None:
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("module "):
-            value = stripped[len("module ") :].strip().strip('"')
+            value = stripped[len("module "):].strip().strip('"')
             return value or None
     return None
 
