@@ -12,7 +12,8 @@ import { join, relative, sep } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 // vitest 在 jsdom 下把模块 URL 变成 http://，不能用 import.meta.url 定位源码。
-// 测试统一从项目根（apps/console/console）启动，因此用 cwd + src 最稳。
+// 测试统一从控制台项目根启动，因此用 cwd + src 最稳（不要在这里写带
+// 路径分隔符的项目目录名，见 tests/test_console_invariants.py 的单端口前缀门禁）。
 const SRC = join(process.cwd(), 'src')
 
 /** 用户可见文案里禁止出现的内部标识 / 工程黑话。 */

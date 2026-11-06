@@ -1096,6 +1096,27 @@ def _isolate_model_config_per_test(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limiter_singleton():
+    """复位进程级限流单例，隔离「前一个用例把桶打空」的跨用例污染。
+
+    ``RateLimitMiddleware`` 走的是 ``get_rate_limiter()`` 的**模块级单例**
+    （src/gateway/rate_limiter.py:333），桶按 token / 来源 IP 共享且容量有限。
+    全量跑时，前面的批量请求会把某个 token 的桶打空；随后 ``/v1/dashboard``、
+    ``/v1/roster`` 等受保护路径的请求就会拿到 429「请求过于频繁」。
+
+    run 42283620800 的 3.12 腿就是这样红的（5 个 provider 诚实面用例全 429），
+    而 3.11 腿只是恰好错开了 60 秒的补桶窗口 —— 同一份代码、两条腿一绿一红，
+    根因是用例间共享状态，不是被测代码本身。限流用例在**单个用例内部**连续
+    请求，逐用例复位不影响它们真正要验证的行为。
+    """
+    import src.gateway.rate_limiter as rate_limiter_module
+
+    rate_limiter_module._default_limiter = None
+    yield
+    rate_limiter_module._default_limiter = None
+
+
+@pytest.fixture(autouse=True)
 def _isolate_knowledge_vector_store(tmp_path, monkeypatch):
     """隔离知识库向量库到每个用例独占的临时文件，并复位进程级单例。"""
     import src.knowledge.documents as knowledge_documents
