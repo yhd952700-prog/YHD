@@ -118,9 +118,11 @@ def test_profile_extraction_helper() -> None:
     assert MODULE._c7_profile_from("no profile here") is None
 
 
-def test_baseline_really_has_only_the_py313_profile() -> None:
-    """Pin the premise. If a Linux/py3.12 profile is ever captured, this fails
-    and the reason text above must be updated rather than left to rot."""
+def test_baseline_holds_the_py313_default_and_the_measured_py312_profile() -> None:
+    """Pin the premise. py3.13 is the cross-machine default; the py3.12 profile
+    was captured on this repo's own Windows venv (docs/evidence/
+    bench-baseline-py312-2026-11-06.json). A third profile must update the C7
+    reason text rather than being left to rot."""
     import json
 
     path = _REPO_ROOT / "scripts" / "bench_baseline.json"
@@ -128,5 +130,6 @@ def test_baseline_really_has_only_the_py313_profile() -> None:
     doc = json.loads(path.read_text(encoding="utf-8"))
     profiles = sorted(doc.get("profiles", {}))
     assert profiles == [
-        "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick"
+        "Windows|py3.12.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
+        "Windows|py3.13.14|Intel64_Family_6_Model_63_Stepping_2,_GenuineIntel|t24|quick",
     ], profiles

@@ -35,6 +35,8 @@ secrets/
 *.sqlite3
 verify_metrics.db
 liuhao_ai_os.db
+# 目标存储的进程锁（运行期文件，不该进仓库）
+.liuhao_goals.json.lock
 
 # ===== 运行时 / 测试产物（测试生成的记忆/审计/密钥数据，不纳入版本管理） =====
 .pytest-tmp/

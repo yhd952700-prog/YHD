@@ -235,7 +235,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "is exactly the false green the tightening removes."
         ),
         "refs": (
-            "src/gateway/health.py:280",
+            "src/gateway/health.py:282",
             "docker-compose.prod.yml:72",
             "infra/staging/docker-compose.yml:59",
             # The CI pin is cited as a *non*-arming setter (see `_is_ci_artifact`),
@@ -325,7 +325,7 @@ SEED_GATES: Tuple[Dict[str, object], ...] = (
             "build would otherwise silently turn the single-port deployment into "
             "API-only, with a 200-but-chromeless cockpit)"
         ),
-        "refs": ("src/gateway/console_static.py:124",),
+        "refs": ("src/gateway/console_static.py:127",),
     },
     {
         "var": "LIUHAO_WORKSPACE_ROOT",
@@ -439,6 +439,15 @@ ALLOWLIST: Dict[str, str] = {
         "documented default (~/.liuhao/secrets). Durability of the store is "
         "governed by the fail-closed backend gate, which RAISES when no backend "
         "is configured, so this override is not the permissive path."
+    ),
+    "LIUHAO_PARENT_PID": (
+        "runtime hint set by the desktop launcher (scripts/start_liuhao.py) so "
+        "the gateway can stop when the window that spawned it exits "
+        "(src/common/parent_watch.py:37). Unset means no parent watch -- "
+        "manual `python -m src.gateway`, tests and system services rely on "
+        "their own lifecycle, and no artifact sets it. The unset branch only "
+        "disables a convenience shutdown path; it never enables or disables a "
+        "safety control."
     ),
 }
 
