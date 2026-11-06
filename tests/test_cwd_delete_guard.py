@@ -300,34 +300,39 @@ def test_allowlist_refuses_paths_outside_the_repo(allow_repo_deletion, tmp_path)
 
 # ==================== 双向证明：真实 pytest 生命周期里的红/绿 ====================
 
-#: 沙箱必须**既不在**任何临时根之下（否则护栏按判据就该放行，证不了任何事），
-#: **也不在**真实仓库之内（否则父进程要删它就必须走白名单，把两件事搅在一起）。
-#: 以前取 ``gettempdir()`` 的父目录：在 Windows（D:\cache\temp -> D:\cache）恰好
-#: 可写，但 Linux 上 gettempdir() 是 /tmp，其父是 / —— CI 直接 PermissionError。
-#: 现在按「家目录 → 仓库父目录」的顺序挑第一个**可写**且满足上述两条的位置。
-def _sandbox_parent() -> Path:
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    repo = REPO_ROOT.resolve()
+def _make_sandbox(label: str) -> Path:
+    """在**临时根之内**造一个沙箱仓库（E-10 的原始现场）。
 
-    def usable(candidate: Path) -> bool:
-        if candidate == temp_root or temp_root in candidate.parents:
-            return False
-        if candidate == repo or repo in candidate.parents:
-            return False
-        probe = candidate / ("guard_probe_%d" % int(time.time()))
-        try:
-            probe.mkdir()
-            probe.rmdir()
-        except OSError:
-            return False
-        return True
+    旧护栏先判"在不在 temp 根下"，于是 temp 根内的仓库整树放行。新判据要求
+    仓库归属优先于临时根：沙箱放在 temp 根里，越界删除必须仍然被拒；同时父
+    进程清理沙箱本身属于临时区，仍被放行（否则本测试没法收尾）。
 
-    for candidate in (Path.home().resolve(), repo.parent):
-        if usable(candidate):
-            return candidate
-    raise AssertionError(
-        "找不到一个既不在临时根下、又不在仓库内、且可写的沙箱父目录；"
-        "本用例的双向证明无法进行（拒绝静默跳过）"
+    ``tempfile.mkdtemp`` 保证位置落在 ``gettempdir()`` 之下；返回的是空目录，
+    调用方再往里建 ``tests/conftest.py`` 与肇事测试。
+    """
+    return Path(tempfile.mkdtemp(prefix="guard_%s_" % label))
+
+
+def _cleanup_without_guard(path: Path) -> None:
+    """在**未安装护栏**的独立解释器里清理测试自建产物。
+
+    护栏在 pytest 进程内拒绝越界删除（这正是被测行为）。测试自己造出来的
+    临时候选目录（家目录下的无标记目录、符号链接）不能指望被测护栏来删，
+    否则要么测试失败、要么把垃圾留在用户目录。清理交给不加载 conftest 的子进程。
+    """
+    script = (
+        "import os, shutil, sys\n"
+        "p = sys.argv[1]\n"
+        "if os.path.islink(p) or os.path.isfile(p):\n"
+        "    os.remove(p)\n"
+        "elif os.path.isdir(p):\n"
+        "    shutil.rmtree(p, ignore_errors=True)\n"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -365,6 +370,36 @@ def _guard_source() -> str:
     )
 
 
+def _run_pytest_in_sandbox(sandbox: Path):
+    """在沙箱仓库里跑一个真实的 pytest 子进程，返回 CompletedProcess。"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO_ROOT / "src"), str(REPO_ROOT), env.get("PYTHONPATH", "")]
+    )
+    return subprocess.run(
+        [
+            sys.executable, "-m", "pytest",
+            str(sandbox / "tests" / "test_offender.py"),
+            "-q", "--no-header", "-p", "no:cacheprovider",
+            # 仓库根 pyproject 里有 addopts = "-p no:phoenix"（该插件在本仓
+            # 依赖组合下 import 即抛错）。沙箱没有 pyproject，子进程会重新
+            # 打开插件自动加载，于是 pytest 在收集用例前就被 phoenix 的
+            # ImportError 打断 —— 红是红了，却红在与护栏无关的地方，本条
+            # 证明就失效了。显式沿用同一策略。
+            "-p", "no:phoenix",
+            # basetemp 放进沙箱内：避开宿主 safe-delete shim 对 pytest 旧
+            # basetemp 的批量回收（它会抛 SystemExit(1) 污染输出），同时走一遍
+            # 护栏的"显式声明临时根"分支（这个 basetemp 落在"仓库"内）。
+            "--basetemp", str(sandbox / ".pytest_tmp"),
+        ],
+        cwd=str(sandbox),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
 def test_guard_reports_the_offending_test_in_a_real_pytest_run():
     """把越界删除放进**真实的 pytest 子进程**跑一遍，证明护栏会当场变红。
 
@@ -373,12 +408,13 @@ def test_guard_reports_the_offending_test_in_a_real_pytest_run():
     之后，一个普通的、看起来人畜无害的测试里的 ``os.remove('README.md')`` 真的会
     让整轮跑红，并且红在**这个测试自己身上**，而不是二十个不相干的测试身上。
 
-    沙箱放在临时根**之外**：若沙箱落在 tmp_path 里，护栏按判据就该放行
-    （那是临时目录），这条测试会变成一个自己骗自己的假证明。
+    沙箱刻意放在临时根**之内**：E-10 的漏洞正是"仓库在 temp 根下 → 整树放行"。
+    新判据要求仓库归属优先于临时根，因此这条证明同时钉住了 2026-11-06 的漏洞。
     """
-    sandbox = _sandbox_parent() / ("guard_sandbox_%d" % int(time.time()))
-    if sandbox.exists():  # 极小概率的同名残留
-        shutil.rmtree(str(sandbox), ignore_errors=True)
+    sandbox = _make_sandbox("lifecycle")
+    assert Path(tempfile.gettempdir()).resolve() in sandbox.parents, (
+        "沙箱必须落在临时根内，才能复现 E-10 的现场"
+    )
     (sandbox / "tests").mkdir(parents=True)
     (sandbox / "tests" / "conftest.py").write_text(_guard_source(), encoding="utf-8")
     (sandbox / "tests" / "test_offender.py").write_text(
@@ -386,33 +422,8 @@ def test_guard_reports_the_offending_test_in_a_real_pytest_run():
     )
     (sandbox / "README.md").write_text("sandbox readme\n", encoding="utf-8")
 
-    env = dict(os.environ)
-    # basetemp 放进沙箱内：既避开宿主 safe-delete shim 对 pytest 旧 basetemp 的
-    # 批量回收（它会抛 SystemExit(1) 污染子进程输出），又顺带走一遍护栏的
-    # --basetemp 登记分支（沙箱在"仓库"内，所以 basetemp 不在 gettempdir 之下）。
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(REPO_ROOT / "src"), str(REPO_ROOT), env.get("PYTHONPATH", "")]
-    )
     try:
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "pytest",
-                str(sandbox / "tests" / "test_offender.py"),
-                "-q", "--no-header", "-p", "no:cacheprovider",
-                # 仓库根 pyproject 里有 addopts = "-p no:phoenix"（该插件在本仓
-                # 依赖组合下 import 即抛错）。沙箱没有 pyproject，子进程会重新
-                # 打开插件自动加载，于是 pytest 在收集用例前就被 phoenix 的
-                # ImportError 打断 —— 红是红了，却红在与护栏无关的地方，本条
-                # 证明就失效了。显式沿用同一策略。
-                "-p", "no:phoenix",
-                "--basetemp", str(sandbox / ".pytest_tmp"),
-            ],
-            cwd=str(sandbox),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        result = _run_pytest_in_sandbox(sandbox)
         output = result.stdout + result.stderr
         assert result.returncode != 0, (
             "护栏没拦住子进程里的越界删除，护栏是假的：\n" + output
@@ -430,6 +441,139 @@ def test_guard_reports_the_offending_test_in_a_real_pytest_run():
         )
     finally:
         shutil.rmtree(str(sandbox), ignore_errors=True)
+
+
+def test_repo_inside_the_temp_root_still_denies_deletion():
+    """E-10 回归锁：仓库工作树落在 temp 根下时，仓库内删除必须仍被拒。
+
+    旧实现解析路径后**先**判 ``_is_under(target, _TEMP_ROOT)`` 就 return；于是
+    "仓库建在 %TEMP% 里"这一种布局会把整棵树划进放行区。2026-11-06 的回归就是
+    这样真删了 README.md / oss-ecosystem/capabilities/*.yaml /
+    src/knowledge/memory.py，再级联出 19 failed + 9 errors 假失败。
+
+    本用例把沙箱仓库放进 temp 根，跑一个删除自己 README 的测试：子进程必须红，
+    且报错必须写明"护栏拒绝 / 不是产品错误"，文件必须还在。
+    """
+    sandbox = _make_sandbox("repo_under_temp")
+    assert Path(tempfile.gettempdir()).resolve() in sandbox.parents, (
+        "沙箱必须落在 temp 根内，才是 E-10 的现场；否则这条证明无效"
+    )
+    (sandbox / "tests").mkdir(parents=True)
+    (sandbox / "tests" / "conftest.py").write_text(_guard_source(), encoding="utf-8")
+    (sandbox / "tests" / "test_offender.py").write_text(
+        "import os\n\n\ndef test_deletes_its_own_readme():\n"
+        "    os.remove('README.md')\n",
+        encoding="utf-8",
+    )
+    (sandbox / "README.md").write_text("sandbox readme\n", encoding="utf-8")
+
+    try:
+        result = _run_pytest_in_sandbox(sandbox)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, (
+            "仓库在 temp 根下时护栏整体放行了 —— E-10 没有修好：\n" + output
+        )
+        assert "test_deletes_its_own_readme" in output, (
+            "护栏拦下了删除，但没有点名肇事的测试：\n" + output
+        )
+        assert "护栏拒绝" in output, f"报错没有标明是护栏拒绝：\n{output}"
+        assert "不是产品错误" in output, f"报错没写明不是产品错误：\n{output}"
+        assert (sandbox / "README.md").is_file(), (
+            "README.md 真的被删了 —— 仓库归属优先于 temp 根这条不成立"
+        )
+    finally:
+        shutil.rmtree(str(sandbox), ignore_errors=True)
+
+
+def test_deletion_in_an_unmarked_directory_is_refused():
+    """仓库外、任何声明临时根外的目录 = 无归属标记，必须拒绝删除。
+
+    这类路径旧实现是直接放行的（"仓库之外不属本护栏管辖"）。fail-closed 之后，
+    "看起来不在仓库里"不再构成放行理由：归属无法确认就不删。
+    """
+    home = Path.home().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if home == temp_root or temp_root in home.parents:
+        pytest.skip("家目录落在临时根内，构造不出'无标记目录'")
+    if home == REPO_ROOT or REPO_ROOT in home.parents:
+        pytest.skip("家目录落在仓库内，构造不出'无标记目录'")
+    try:
+        probe_dir = Path(tempfile.mkdtemp(prefix="guard_unmarked_", dir=str(home)))
+    except OSError as exc:
+        pytest.skip("家目录不可写，无法构造'无标记目录'：%s" % exc)
+    victim = probe_dir / "victim.txt"
+    victim.write_text("keep me\n", encoding="utf-8")
+    try:
+        with pytest.raises(BaseException) as excinfo:
+            os.remove(str(victim))
+        message = str(excinfo.value)
+        assert "护栏拒绝" in message, f"报错没有标明是护栏拒绝：\n{message}"
+        assert "不是产品错误" in message, f"报错没写明不是产品错误：\n{message}"
+        assert "无归属" in message or "无法确认归属" in message, (
+            f"报错没有解释为什么拒绝：\n{message}"
+        )
+        assert victim.is_file(), "无标记目录里的文件被删了 —— fail-closed 不成立"
+    finally:
+        _cleanup_without_guard(probe_dir)
+
+
+def test_symlink_pointing_outside_the_scratch_area_is_refused(tmp_path):
+    """符号链接把"临时区里的安全路径"指向外部时，删除必须被拒。
+
+    删除的是目录项（链接本身），但解析后目标越出了声明临时根。旧实现只看解析
+    结果，等于允许"在临时区删链接、实际改写外部归属"；fail-closed 要求两侧都
+    有归属标记。
+    """
+    home = Path.home().resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if home == temp_root or temp_root in home.parents:
+        pytest.skip("家目录落在临时根内，构造不出'外部目标'")
+    try:
+        outside = Path(tempfile.mkdtemp(prefix="guard_outside_", dir=str(home)))
+    except OSError as exc:
+        pytest.skip("家目录不可写，无法构造外部目标：%s" % exc)
+
+    target = outside / "target.txt"
+    target.write_text("outside target\n", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip("当前环境不允许创建符号链接：%s" % exc)
+        with pytest.raises(BaseException) as excinfo:
+            link.unlink()
+        message = str(excinfo.value)
+        assert "护栏拒绝" in message, f"报错没有标明是护栏拒绝：\n{message}"
+        assert "不是产品错误" in message, f"报错没写明不是产品错误：\n{message}"
+        assert "target.txt" in message, f"报错没有显示链接最终指向的目标：\n{message}"
+        assert link.is_symlink(), "符号链接被删了 —— fail-closed 不成立"
+        assert target.is_file(), "链接目标被删了"
+    finally:
+        _cleanup_without_guard(link)
+        _cleanup_without_guard(outside)
+
+
+def test_os_rmdir_is_guarded():
+    """裸 ``os.rmdir`` 也是删除接口：旧护栏只拦了 ``Path.rmdir``。"""
+    probe = REPO_ROOT / "tests" / ("_zz_guard_rmdir_%d" % time.time_ns())
+    probe.mkdir()
+    try:
+        with pytest.raises(BaseException) as excinfo:
+            os.rmdir(str(probe))
+        assert "os.rmdir" in str(excinfo.value)
+        assert probe.is_dir(), "仓库内的空目录被 os.rmdir 删了 —— 护栏有缺口"
+    finally:
+        _cleanup_without_guard(probe)
+
+
+def test_normal_scratch_cleanup_still_works():
+    """正常场景仍能清理：tmp_path 内的目录树可以整棵 rmtree。"""
+    tree = Path(tempfile.mkdtemp(prefix="guard_normal_"))
+    (tree / "sub").mkdir()
+    (tree / "sub" / "artifact.txt").write_text("x", encoding="utf-8")
+    shutil.rmtree(str(tree))
+    assert not tree.exists()
 
 
 def test_the_temporary_injection_used_for_proof_is_gone():
@@ -454,8 +598,8 @@ def test_the_guard_is_wired_into_the_real_conftest():
     source = CONFTEST.read_text(encoding="utf-8")
     assert "def _forbid_deleting_repository_files(" in source
     assert 'scope="session", autouse=True' in source
-    for symbol in ("guarded_remove", "guarded_unlink", "guarded_rmtree",
-                   "guarded_path_unlink", "guarded_path_rmdir"):
+    for symbol in ("guarded_remove", "guarded_unlink", "guarded_rmdir",
+                   "guarded_rmtree", "guarded_path_unlink", "guarded_path_rmdir"):
         assert symbol in source, "护栏漏掉了 %s" % symbol
 
 

@@ -510,13 +510,29 @@ def _isolate_knowledge_memory_dir(tmp_path, monkeypatch):
 # 本护栏把这种间接因果变成**就地失败**：谁删、删哪个路径、调用栈在哪一行，当场
 # 报错。宁可误报（能看懂即可），不可漏报。
 #
-# 判据
+# 判据（fail-closed）
 # ----
-#   放行：位于 ``tempfile.gettempdir()``（本机 D:\\cache\\temp）之下——
-#         pytest 的 tmp_path / tmp_path_factory / basetemp 都在这里；
-#         以及完全在仓库工作树之外的路径（不属于本护栏管辖范围）。
-#   拒绝：位于仓库工作树之内（仓库根 = 本文件上溯一级）的任何路径，
-#         除非该路径已由测试通过 ``allow_repo_deletion`` 显式登记。
+#   一次删除只在**归属已被确认**时放行。归属确认只有两种来源：
+#     1. 路径（目录项本身 + 解析后的最终目标）都落在**声明的临时根**内：
+#        ``tempfile.gettempdir()``（隐式），或 pytest ``--basetemp``（显式）；
+#     2. 路径位于仓库工作树内，且已由 ``allow_repo_deletion`` 登记（一次一用）。
+#
+#   **仓库归属优先于临时根**：若仓库工作树本身就在临时根之下（例如把工作树
+#   建在 %TEMP% 里），仓库内的删除仍然拒绝。旧实现先判"在不在 temp 根下"再判
+#   仓库，于是 temp 根内的仓库整树放行 —— 2026-11-06 实测真的删掉了
+#   README.md / oss-ecosystem/capabilities/*.yaml / src/knowledge/memory.py，
+#   级联出 19 failed + 9 errors 假失败，且整轮结论作废。
+#
+#   其余一切（不在仓库、也不在任何声明的临时根内）一律拒绝：无法确认归属时
+#   宁可让测试红，也不删除文件。
+#
+#   符号链接：同时检查目录项路径（不解析）与最终目标（解析后）。任一侧落在
+#   仓库内即按仓库归属处理；放行到临时根要求两侧都在临时根内，堵住
+#   "临时区里的链接指向仓库外/仓库内"这类用链接改变归属的绕过。
+#
+#   拒绝统一以 ``pytest.fail(..., pytrace=False)`` 呈现，信息固定以
+#   「护栏拒绝（fail-closed）」开头并注明「这不是产品错误」，避免把测试清理
+#   越界误读成产品缺陷。
 #
 # 顺带收益：仓库根的 ``audit_store.db``（冻结的 HC-01 证据）也落在拒绝面内。
 # 任何测试试图删除/覆盖它都会当场变红，而不是悄悄毁掉证据。
@@ -539,11 +555,13 @@ from pathlib import Path as _GuardPath  # noqa: E402
 REPO_ROOT = _GuardPath(__file__).resolve().parent.parent
 
 #: pytest 临时根。本机为 D:\\cache\\temp，恰好也是宿主 safe-delete shim 的 bypass 目录。
+#: 它是**隐式**的归属标记：路径落在它下面即视为测试自己的临时区。
 _TEMP_ROOT = _GuardPath(_guard_tempfile.gettempdir()).resolve()
 
-#: 额外放行的临时根。若 pytest 启动时带了 ``--basetemp``（不在 gettempdir 之下），
-#: 该目录由 ``_forbid_deleting_repository_files`` 在会话开始时登记进来。
-_EXTRA_TEMP_ROOTS: set = set()
+#: **显式**声明的临时根（目前只有 pytest ``--basetemp``）。显式声明比隐式 temp
+#: 根更强：即使仓库工作树本身落在这些根里，该根内的删除也放行——运行者明确
+#: 声明过"这块归 pytest 管"。仓库本身（或仓库的祖先）永远不允许被登记。
+_DECLARED_SCRATCH_ROOTS: set = set()
 
 #: 当前正在运行的用例 nodeid。由 ``_record_current_test`` 逐用例更新，
 #: 仅为让报错信息能直接点名是哪个测试干的（调用栈之外的第二重定位）。
@@ -570,13 +588,21 @@ _CURRENT_NODEID = {"nodeid": "<session setup>"}
 _guard_state = _guard_threading.local()
 
 
-def _norm_target(path) -> _GuardPath:
-    """把删除目标解析成绝对路径。
+def _norm_lexical(path) -> _GuardPath:
+    """删除目标的**目录项**路径：绝对化，但不跟随符号链接。
 
-    相对路径按**进程 CWD** 解析——这正是事故的成因：CWD 相对路径会静默地指向
-    仓库内的真实文件，所以这里必须用 ``abspath`` 而不是要求调用方传绝对路径。
+    相对路径按**进程 CWD** 解析——这正是 2026-10-04 事故的成因：CWD 相对路径
+    会静默地指向仓库内的真实文件，所以必须先用 ``abspath``。
+
+    不解析符号链接是刻意的：``os.remove`` / ``unlink`` 删的是**目录项本身**。
+    仓库里一个指向外部的链接，解析后落在仓库外，删掉它却仍然在删仓库内容。
     """
-    return _GuardPath(_guard_os.path.abspath(_guard_os.fspath(path))).resolve()
+    return _GuardPath(_guard_os.path.abspath(_guard_os.fspath(path)))
+
+
+def _norm_target(path) -> _GuardPath:
+    """删除目标**最终指向的对象**（跟随符号链接）。用于白名单键与归属确认。"""
+    return _norm_lexical(path).resolve()
 
 
 def _is_under(child: _GuardPath, parent: _GuardPath) -> bool:
@@ -617,32 +643,64 @@ def _describe_stack(skip_frames: int = 2, keep: int = 8) -> str:
     return header + "".join(kept).rstrip()
 
 
-def _repo_deletion_violation(kind: str, target: _GuardPath, registered):
-    """就地失败：路径 + 是谁 + 调用栈 + 怎么豁免。``pytest.fail`` 不返回。"""
-    rel = os.path.relpath(str(target), str(REPO_ROOT))
+def _guard_violation(kind: str, lexical: _GuardPath, resolved: _GuardPath, *,
+                     in_repo: bool, registered=None):
+    """就地失败（fail-closed）：路径 + 判定 + 是谁 + 调用栈 + 怎么豁免。
+
+    报文固定以「护栏拒绝（fail-closed）」开头，并明确写「这不是产品错误」。
+    没有这两句，一条护栏拒绝会被读成产品缺陷，排查方向直接跑偏。
+    """
+    if in_repo:
+        reason = (
+            "路径位于仓库工作树内（或符号链接指向仓库内）：%s"
+            % os.path.relpath(str(lexical), str(REPO_ROOT))
+        )
+    else:
+        reason = (
+            "路径不在任何已声明的临时根内（仓库之外、temp 根之外），"
+            "无法确认归属，按 fail-closed 拒绝"
+        )
     lines = [
         "",
         "=" * 78,
-        "护栏拦截：测试试图删除仓库工作树内的文件/目录。",
+        "护栏拒绝（fail-closed）：测试试图删除归属无法确认的路径。",
         "=" * 78,
         "  删除接口  : %s" % kind,
-        "  完整路径  : %s" % target,
-        "  仓库内位置: %s" % rel,
+        "  目录项路径: %s" % lexical,
+        "  解析后目标: %s" % resolved,
         "  当前用例  : %s" % _CURRENT_NODEID["nodeid"],
+        "  拒绝原因  : %s" % reason,
         "",
-        "判据：允许删除 tempfile.gettempdir() (%s) 之下的一切" % _TEMP_ROOT,
-        "      （tmp_path / tmp_path_factory / basetemp 都在那里）；",
-        "      仓库工作树 (%s) 内的一切默认拒绝。" % REPO_ROOT,
+        "这不是产品错误：产品代码没有报错，是测试的清理目标越界了；",
+        "本护栏无法确认该路径归属于本次测试，因此拒绝删除而不是放行。",
         "",
-        "如果这个路径确实是**本次测试自己创建**的产物，",
-        "请用 allow_repo_deletion 显式登记并写明原因，例如：",
-        "",
-        "    def test_x(self, allow_repo_deletion):",
-        "        allow_repo_deletion.register(CORPUS / '_probe.yaml',",
-        "            reason='注入探针，验证门禁会变红')",
-        "        (CORPUS / '_probe.yaml').unlink()",
+        "判据：",
+        "  1) 目录项与解析后目标都在 tempfile.gettempdir() (%s)" % _TEMP_ROOT,
+        "     或 pytest --basetemp 声明的临时根内 → 放行；",
+        "  2) 路径在仓库工作树 (%s) 内 → 默认拒绝，" % REPO_ROOT,
+        "     除非用 allow_repo_deletion 登记过（一次登记只放行一次删除）；",
+        "  3) 仓库归属优先于临时根：仓库建在 temp 根里，仓库内删除仍然拒绝；",
+        "  4) 其余一切（仓库外、任何临时根外）→ 拒绝：无法确认归属时不删。",
         "",
     ]
+    if in_repo:
+        lines += [
+            "如果这个路径确实是**本次测试自己创建**的产物，",
+            "请用 allow_repo_deletion 显式登记并写明原因，例如：",
+            "",
+            "    def test_x(self, allow_repo_deletion):",
+            "        allow_repo_deletion.register(CORPUS / '_probe.yaml',",
+            "            reason='注入探针，验证门禁会变红')",
+            "        (CORPUS / '_probe.yaml').unlink()",
+            "",
+        ]
+    else:
+        lines += [
+            "如果这是测试自己创建的临时数据，请改用 pytest 的 tmp_path /",
+            "tmp_path_factory（它们位于 tempfile.gettempdir() 之下）；",
+            "不要用「看起来像临时目录」的路径来推断安全。",
+            "",
+        ]
     if registered:
         lines += [
             "注意：该路径**已经**登记在白名单里，但登记已被消费过",
@@ -678,8 +736,19 @@ class _RepoDeletionAllowlist:
                 "allow_repo_deletion.register(%s) 缺少原因：reason 必须是非空字符串。"
                 "没有原因的豁免无法被复核，等于没有豁免。" % (path,)
             )
-        target = _norm_target(path)
-        if not _is_under(target, REPO_ROOT):
+        lexical = _norm_lexical(path)
+        target = lexical.resolve()
+        lexical_in_repo = _is_under(lexical, REPO_ROOT)
+        resolved_in_repo = _is_under(target, REPO_ROOT)
+        if lexical_in_repo != resolved_in_repo:
+            # 符号链接两侧归属不一致：链接是仓库的一部分，最终目标却不是（或相反）。
+            # 登记它等于允许借链接改写归属，直接拒绝（fail-closed）。
+            raise AssertionError(
+                "allow_repo_deletion.register(%s)：符号链接两侧归属不一致"
+                "（目录项=%s，解析后=%s）。这种路径不允许登记，删除会被拒绝。"
+                % (path, lexical, target)
+            )
+        if not resolved_in_repo:
             raise AssertionError(
                 "allow_repo_deletion.register(%s)：该路径不在仓库工作树 (%s) 之内，"
                 "删除它本来就被放行，无需登记。登记是给「必须删仓库内路径」的用例用的。"
@@ -757,6 +826,21 @@ class _RepoDeletionAllowlist:
 _ACTIVE_ALLOWLIST = [_RepoDeletionAllowlist()]
 
 
+def _register_scratch_root(path) -> None:
+    """登记一个由运行者**显式声明**的临时根（目前只有 pytest ``--basetemp``）。
+
+    fail-closed 的第二道闸：登记本身也可能被滥用。若声明的是仓库本身、或仓库的
+    祖先目录，登记它等于把整棵树划进放行区，因此直接忽略这条声明。
+    """
+    try:
+        root = _GuardPath(str(path)).resolve()
+    except OSError:
+        return
+    if root == REPO_ROOT or _is_under(REPO_ROOT, root):
+        return
+    _DECLARED_SCRATCH_ROOTS.add(root)
+
+
 @pytest.fixture
 def allow_repo_deletion():
     """显式豁免"本次测试自己创建、跑完即删"的仓库内路径。
@@ -798,8 +882,8 @@ def _record_current_test(request):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_deleting_repository_files(tmp_path_factory):
-    """拦截 os.remove / os.unlink / pathlib.Path.unlink/rmdir / shutil.rmtree
-    对仓库工作树内路径的删除。
+    """拦截 os.remove / os.unlink / os.rmdir / pathlib.Path.unlink/rmdir /
+    shutil.rmtree 对归属无法确认的路径的删除（fail-closed）。
 
     判据与设计理由见本文件上方"Guard: tests must not delete files in the work
     tree"注释块（含 2026-10-04 那次 28 failed + 16 errors 的完整因果链）。
@@ -823,30 +907,47 @@ def _forbid_deleting_repository_files(tmp_path_factory):
     originals = {
         "os.remove": _guard_os.remove,
         "os.unlink": _guard_os.unlink,
+        "os.rmdir": _guard_os.rmdir,
         "pathlib.Path.unlink": _guard_pathlib.Path.unlink,
         "pathlib.Path.rmdir": _guard_pathlib.Path.rmdir,
         "shutil.rmtree": _guard_shutil.rmtree,
     }
+
+    def _declared(p):
+        return any(_is_under(p, root) for root in _DECLARED_SCRATCH_ROOTS)
+
+    def _scratch(p):
+        return _is_under(p, _TEMP_ROOT) or _declared(p)
 
     def _check(kind, path):
         if getattr(_guard_state, "depth", 0):
             # 同一次已授权删除的内层路由（Path.unlink→os.unlink、rmtree 子项）：
             # 外层包装已完成校验/消费登记，内层直通，避免一次删除被记两笔账。
             return
-        target = _norm_target(path)
-        if _is_under(target, _TEMP_ROOT):
-            return
-        for root in _EXTRA_TEMP_ROOTS:
-            if _is_under(target, root):
+        # 目录项与最终目标都要看：删除作用在目录项上，但链接可能把"安全路径"
+        # 指向仓库内，或把"仓库内路径"指向外部。任一侧越界都按越界处理。
+        lexical = _norm_lexical(path)
+        resolved = lexical.resolve()
+        in_repo = _is_under(lexical, REPO_ROOT) or _is_under(resolved, REPO_ROOT)
+
+        if in_repo:
+            # 显式声明的临时根优先（例如 --basetemp 落在工作树内）：那里的内容
+            # 是 pytest 自己管理的，不是仓库资产。仅凭"在 temp 根下"不够。
+            if _declared(lexical) and _declared(resolved):
                 return
-        if not _is_under(target, REPO_ROOT):
-            return  # 仓库之外：不属本护栏管辖
-        allowlist = _ACTIVE_ALLOWLIST[0]
-        entry = allowlist.lookup(target)
-        if entry is not None and not entry["consumed"]:
-            allowlist.consume(target)
+            allowlist = _ACTIVE_ALLOWLIST[0]
+            entry = allowlist.lookup(resolved)
+            if entry is not None and not entry["consumed"]:
+                allowlist.consume(resolved)
+                return
+            _guard_violation(
+                kind, lexical, resolved, in_repo=True, registered=entry
+            )
+
+        # 仓库之外：只有两侧都在声明的临时根内才放行；否则归属无法确认 → 拒绝。
+        if _scratch(lexical) and _scratch(resolved):
             return
-        _repo_deletion_violation(kind, target, entry)
+        _guard_violation(kind, lexical, resolved, in_repo=False)
 
     def _call_original(fn, *args, **kwargs):
         """调用被包装的原生实现；期间深度加一，内层路由（见 _guard_state）直通。"""
@@ -866,6 +967,13 @@ def _forbid_deleting_repository_files(tmp_path_factory):
             _check("os.unlink", path)
         return _call_original(originals["os.unlink"], path, *args, **kwargs)
 
+    def guarded_rmdir(path, *args, **kwargs):
+        # os.rmdir 是旧版护栏漏掉的删除接口：Path.rmdir 被拦住了，裸 os.rmdir
+        # 没有，一个空仓库目录可以被它悄悄删掉。
+        if kwargs.get("dir_fd") is None and not args:
+            _check("os.rmdir", path)
+        return _call_original(originals["os.rmdir"], path, *args, **kwargs)
+
     def guarded_path_unlink(self, missing_ok=False):
         _check("pathlib.Path.unlink", self)
         return _call_original(
@@ -883,25 +991,30 @@ def _forbid_deleting_repository_files(tmp_path_factory):
 
     _guard_os.remove = guarded_remove
     _guard_os.unlink = guarded_unlink
+    _guard_os.rmdir = guarded_rmdir
     _guard_shutil.rmtree = guarded_rmtree
     _guard_pathlib.Path.unlink = guarded_path_unlink
     _guard_pathlib.Path.rmdir = guarded_path_rmdir
-    # pytest 若被指定了 --basetemp（在 gettempdir 之外），把它的根也登记为放行区。
-    _EXTRA_TEMP_ROOTS.clear()
+    # --basetemp 是运行者**显式声明**的临时根，登记为"有主"区。
+    # 必须赶在访问 tmp_path_factory.basetemp 之前登记：该属性首次求值时会
+    # rm_rf 旧 basetemp，若旧目录恰在仓库内，迟一步登记就会触发护栏拒绝。
+    _DECLARED_SCRATCH_ROOTS.clear()
+    given = getattr(tmp_path_factory, "_given_basetemp", None)
+    if given is not None:
+        _register_scratch_root(given)
     basetemp = getattr(tmp_path_factory, "basetemp", None)
     if basetemp is not None:
-        resolved = _GuardPath(str(basetemp)).resolve()
-        if not _is_under(resolved, _TEMP_ROOT):
-            _EXTRA_TEMP_ROOTS.add(resolved)
+        _register_scratch_root(basetemp)
     try:
         yield
     finally:
         _guard_os.remove = originals["os.remove"]
         _guard_os.unlink = originals["os.unlink"]
+        _guard_os.rmdir = originals["os.rmdir"]
         _guard_shutil.rmtree = originals["shutil.rmtree"]
         _guard_pathlib.Path.unlink = originals["pathlib.Path.unlink"]
         _guard_pathlib.Path.rmdir = originals["pathlib.Path.rmdir"]
-        _EXTRA_TEMP_ROOTS.clear()
+        _DECLARED_SCRATCH_ROOTS.clear()
 
 
 # ==================== Console auth (bearer token) ====================
