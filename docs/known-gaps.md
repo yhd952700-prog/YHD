@@ -312,7 +312,7 @@ SQLite `VACUUM INTO`、归档元数据随包、跨进程可读）；本轮实测
 | E-10 | ~~测试删除护栏在“仓库位于 temp 根下”时整体放行~~ **已修**：`tests/conftest.py` 改为 fail-closed。放行只认两种归属：目录项与解析后目标都在声明的临时根内（`gettempdir` 或显式 `--basetemp`），或仓库内路径经 `allow_repo_deletion` 登记；仓库归属优先于临时根，符号链接两侧都校验，无法确认归属一律拒绝。顺带补上原护栏漏掉的 `os.rmdir` 接口 | 事故记录（修复前）：回归工作树放在 `D:\cache\temp\liuhao-regression` 时，测试清理逻辑真的删掉了 `README.md`、`oss-ecosystem/capabilities/*.yaml`、`src/knowledge/memory.py`，连带 19 failed + 9 errors 全是假失败 | 已修（`392055f7`）。`tests/test_cwd_delete_guard.py` 覆盖：仓库在 temp 根下、无标记目录、链接指向外部、`os.rmdir`、正常 `tmp_path` 清理，整文件 26 passed。同类扫描：全仓无第二处“按路径推断归属”的删除；scripts 里的删除都基于显式 `mkdtemp`/具名目录 |
 | E-11 | `tests/kernels/network/test_network.py::TestRouting::test_add_route_and_deliver` 在全量负载下会抖动 | 全量回归 1 次失败（delivered 变 failed）；单跑 2.67s 通过，属回环 HTTP 在满负载下的时序抖动 | 未修；已记录，单跑通过 |
 | E-12 | 全量回归基线落后交付 HEAD：跑在 `cc3af30d`，报告时 HEAD 已到 `de1b0d87`（12 个提交） | 全量结果不覆盖期间的 desktop 启动门、升级 API、可观测性、reminder、console 错误读取器修复 | 已补跑这些提交改动的 15 个测试文件（123 passed / 80.85s），但未再跑第二次全量 |
-| E-13 | 交付安装包的源码快照早于当前 HEAD 12 个提交 | 包内不含 `/v1/startup` 启动门、错误读取器统一、升级 API 等修复 | 未重建；交付前必须用当前脚本重建并复验 E2E |
+| E-13 | 交付清单曾把临时构建的数值写到 `dist/installer/LiuHao-Setup-0.1.0.exe`，该路径下从未存在该文件；当前 `dist/installer` 为空。2026-11-05 的安装版 E2E 实际安装的是 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），其 payload `scripts/launch_installed.py`（blob `a90272cf…`）不属于任何提交 | 清单点击即 404；E2E 证据的行为结论仍成立，但对应安装器无法从任何提交复现，不能当作“最终包已验证”的证据 | 已更正为「无有效安装包（待最终包回填）」。最终包出来后必须回填路径/字节/SHA256 + 对应源码提交，并重跑同一 E2E 绑定到该提交 |
 
 ---
 

@@ -1,6 +1,6 @@
 # 交付清单（实测版）
 
-> 生成时间：2026-11-05（本机时间）。
+> 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）。
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
@@ -8,26 +8,61 @@
 
 ## 0. 安装包
 
+**当前状态：无有效安装包（待最终包回填）。** `dist/installer/` 现在为空；
+上一版写的 `dist/installer/LiuHao-Setup-0.1.0.exe` 在该路径下**从未存在**。
+数值本身是真的，但取自一个临时构建，路径写错了——原记录已作废，见 0.1。
+
 | 项目 | 值 |
 |---|---|
-| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.0.exe` |
-| 大小 | 34,199,800 字节（约 32.6 MiB） |
-| SHA256 | `314839ED69F9B6D5F2C25B898C9BDFA5609E92B29B1D8DE11E79591D3B3125A2` |
-| 校验文件 | `dist/installer/SHA256SUMS.txt` |
-| 解包后体积 | 8,596 个文件 / 165.5 MB（84 个 dist 包） |
+| 安装包路径 | 待最终包回填（当前无有效安装包） |
+| 大小 | 待最终包回填 |
+| SHA256 | 待最终包回填 |
+| 校验文件 | 待最终包回填 |
+| **这版安装包对应的源码提交** | **待最终包回填** |
+| 解包后体积 | 8,596 个文件 / 165.5 MB（84 个 dist 包）；来自历史 E2E 临时构建的 `manifest.json`，**仅作参考，不是交付物** |
 | 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir> -SkipFrontend -SkipSmoke` |
-| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt` |
+| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，1,651 字节） |
 
-已核对包内确实包含本轮修复：`scripts/first_run_wizard.py` 含
-`deepseek-chat` 示例；`runtime/Lib/site-packages` 下
-`openai / httpx2 / httpcore2 / truststore / jiter` 均存在。
+### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 
-**注意**：包内源码快照比当前 HEAD 早 12 个提交（不含 `/v1/startup` 启动门、
-统一错误读取器、升级 API 等），交付前必须用当前脚本重建并复验（E-13）。
+**旧记录错在哪。** 上一版把
+`D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`
+（34,199,800 字节 / `314839ED69F9B6D5F2C25B898C9BDFA5609E92B29B1D8DE11E79591D3B3125A2`）
+的数值写成了 `dist/installer/LiuHao-Setup-0.1.0.exe`。数值是真的，路径是假的：
+该文件从未被放进 `dist/installer`，`dist/installer` 现为空目录。
+
+**“照着文档从零走一遍”实际装的是哪个文件。**
+
+| 项目 | 事实 |
+|---|---|
+| 安装器路径 | `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe` |
+| 构建时间 | 2026-11-05 13:43:02（同目录 `SHA256SUMS.txt` 写于 13:43:04） |
+| 字节数 / SHA256 | 34,199,800 字节 / `314839ED…B3125A2`（与 `SHA256SUMS.txt` 一致） |
+| 安装目标 | `D:\cache\temp\liuhao-e2e\installed`（`unins000.exe` 13:43:15、`unins000.dat` 13:43:39 可证） |
+| E2E 运行时间 | 2026-11-05 13:45:39（`driver-installed.log`），与证据 JSON 一致 |
+| 现在还在不在 | **还在，但只在临时目录**；不在仓库、不在 `dist/`，不能作为交付物 |
+| 能否从提交复现 | **不能。** payload 的 `scripts/launch_installed.py`（blob `a90272cf…`）不属于任何提交；`scripts/start_liuhao.py`（`e4df9332…`）直到 `797dbd16`（15:14）才入库，晚于构建时间 13:43 |
+
+**结论：该 E2E 结果对应的产物已不可复现。** 证据 JSON 里的行为结论
+（建号 8.7s、健康 8.4s、首条消息 2.4s、重启 8.8s 后历史仍在、端口 18130→18131 顺延）
+可以保留，但它验证的是 **2026-11-05 13:43 的一份未提交工作区快照**，不是任何
+可追溯的提交或最终安装包。交付时不能引用它作为“最终包已验证”的证据；最终包
+必须重跑同一 E2E，并把结果绑定到「这版安装包对应的源码提交」。
+
+**另一次安装（12:59，无 SHA）。** `dist/obsolete/installer-20261105-1506/install.log`
+记录 `Original Setup EXE: D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，
+12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条。该安装器**已不存在**，
+日志里没有字节数与 SHA256，因此那次安装同样不可复现。上一版写的
+“25.3 秒 / 落盘 8,599 个文件”无法从任何留存证据复核，本版不再保留这两个数。
+
+**已作废包。** `dist/obsolete/installer-20261105-1506/LiuHao-Setup-0.1.0.exe`
+（43,756,495 字节 / `D8FD0BC9FAC18092521284B93537520E2F7DBA8A45D4B9B6A2092D1C8A440461`，
+构建于 2026-11-05 15:06:38）的 payload 三个文件均对不上任何提交
+（`start_liuhao.py` / `manager.py` / `startup.py`，见同目录 `WHY-OBSOLETE.txt`），已作废。
 
 ## 1. 三步使用说明（最终用户只需要这三步）
 
-1. **下载并安装**：校验 SHA256 后双击 `LiuHao-Setup-0.1.0.exe`。Windows 提示
+1. **下载并安装**（最终包回填后生效）：校验 SHA256 后双击 `LiuHao-Setup-0.1.0.exe`。Windows 提示
    「未知发布者」时选「更多信息 → 仍要运行」。装到 `%LOCALAPPDATA%\LiuHao\app`，
    不需要管理员权限。
 2. **填 Key**：首次启动会打开命令行向导。先建管理员账号，再选 `1`（本机
@@ -60,9 +95,9 @@
 | # | 项目 | 状态 | 证据 | 部分完成差哪一部分 |
 |---|---|---|---|---|
 | 1 | 四步用户文档 | 已完成 | [END-USER-GUIDE.md](END-USER-GUIDE.md)，commit `a97d5862` | — |
-| 2 | 安装包构建 | 已完成 | 34,199,800 字节；SHA256 `314839…25A2`；payload 自检通过（8,596 文件 / 165.5 MB） | — |
-| 3 | 真实安装（静默） | 已完成 | 本轮实测：安装 25.3 秒，落盘 8,599 个文件到安装目录 | — |
-| 4 | 安装版首启 E2E | 已完成（本地桩；复用向导函数，未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；链路本身的所有组件函数与页面可达性都已验证 |
+| 2 | 安装包构建 | **已作废 / 待重出** | 上一版记录指向不存在的文件；当前 `dist/installer` 为空。构建脚本本身可用 | 见 0.1；待最终包回填路径/字节/SHA256 与对应源码提交 |
+| 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | [install.log](../dist/obsolete/installer-20261105-1506/install.log)：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
+| 4 | 安装版首启 E2E | 已完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13） |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
 | 6 | 端口占用自动顺延 | 已完成 | 同一份 E2E 日志：`[warn] 网关 端口 18130 被占用，已自动改用 18131` | — |
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
@@ -100,7 +135,7 @@
 | 回归工作树放在 temp 下会让删除护栏失效 | E-10（已改用 temp 之外的干净工作树重跑） |
 | 回环网络测试在满负载下抖动 | E-11 |
 | 全量基线落后交付 HEAD 12 个提交 | E-12（已补跑改动测试，未再全量） |
-| 安装包源码快照落后当前 HEAD | E-13（交付前必须重建） |
+| 安装包记录曾指向不存在的文件，当前无有效安装包 | E-13（待最终包回填，并写死对应源码提交后重跑 E2E） |
 
 ## 5. 全量回归（独立报告）
 
@@ -139,5 +174,30 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 同一 baseline 曾在 `D:\cache\temp\liuhao-regression` 跑过一次，因 E-10
 （仓库位于 temp 根下、删除护栏整体失效）产生 `19 failed + 9 errors` 的
 假失败并真的删掉仓库文件，已整轮作废；工作树已移到 temp 之外重跑。
-作废日志：`D:\cache\temp\verify-full-e18169e6-INVALID.log`。
+作废日志：`D:\cache\temp\verify-full-e18169e6-INVALID.log`（存在，3,498 字节）。
+
+## 6. 产物核对（2026-11-06 全篇扫描）
+
+> 逐个核实清单里引用的每个产物：文件是否存在、字节是否对得上。
+> `known-gaps.md` 同批扫描：未引用任何具体产物文件（无 `.exe` / `.zip` / `evidence/` 路径命中），无需更正。
+
+| 引用位置 | 引用的产物 | 记录值 | 实测 | 结论 |
+|---|---|---|---|---|
+| §0 | `dist/installer/LiuHao-Setup-0.1.0.exe` | 34,199,800 / `314839ED…` | **不存在**（`dist/installer` 为 0 条目） | **已更正**：改为“待最终包回填”；真实数值属于 temp 构建（见 0.1） |
+| §0 | `dist/installer/SHA256SUMS.txt` | — | **不存在** | **已更正**：改为“待最终包回填” |
+| §0 | `installer/assets/BEFORE-INSTALL.txt` | — | 存在，1,651 字节 | 一致 |
+| §2 #2 | 安装包 + payload manifest | 34,199,800 / 8,596 文件 / 165.5 MB | 仓库内无；temp `manifest.json` 与数值一致 | **已更正**：标“已作废 / 待重出” |
+| §2 #3 | `install.log` | 25.3 秒 / 8,599 文件 | 存在于 `dist/obsolete/installer-20261105-1506/`，8,478 条 File entry，34.7 秒 | **已更正**：改按日志实测值，并注明不可复现 |
+| §2 #4 / §1.1 / §5 | `docs/evidence/e2e-installed-2026-11-06.json` | — | 存在，1,553 字节 | 一致（产物溯源见 0.1） |
+| §2 #7 | `docs/evidence/failure-modes-2026-11-06.json` | — | 存在，1,856 字节 | 一致 |
+| §1.1 | `docs/evidence/secret-scan-2026-11-06.json` | — | 存在，346 字节 | 一致 |
+| §2 #9 | `scripts/verify_first_run_e2e.py` / `docs/first-run-e2e.md` | — | 存在，20,237 / 3,559 字节 | 一致 |
+| §2 #1 | `docs/END-USER-GUIDE.md` | — | 存在，9,107 字节 | 一致 |
+| §2 #13 | `docs/capability-map.md` | — | 存在，18,738 字节 | 一致 |
+| §2 #14 | `docs/hc01-status.md` | — | 存在，7,651 字节 | 一致 |
+| §2 #15 | `docs/known-gaps.md` | — | 存在，27,684 字节 | 一致 |
+| §5.1 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致 |
+| §5.3 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
+| §5.4 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
+| §0 / §2 #2 | `D:\cache\temp\liuhao-e2e\build\installer\manifest.json` | 8,596 文件 / 165.5 MB / 84 dist | 存在，数值一致 | 一致（非交付物，仅溯源） |
 
