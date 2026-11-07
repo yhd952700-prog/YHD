@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import io
 import json
@@ -145,6 +146,35 @@ def test_readme_says_the_bundle_has_no_keys(tmp_path, fake_probes):
     assert "这个包不含你的密钥" in texts
 
 
+def test_summary_reports_runtime_data_dir_not_the_repo_default(
+    tmp_path, fake_probes, monkeypatch
+):
+    """``data_dir`` 必须取运行期生效的目录，并与 ``log_dir`` 同源。
+
+    安装版的数据目录在用户目录下，仓库里的 ``data/`` 只是开发默认值；把开发机
+    路径写进诊断包会把排查带偏。这里用 ``LIUHAO_DATA_DIR`` 模拟真实运行目录，
+    顺便覆盖"路径含中文/空格时用户名仍被遮罩"。
+    """
+    data_dir = tmp_path / getpass.getuser() / "张三 数据"
+    data_dir.mkdir(parents=True)
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("LIUHAO_LOG_DIR", raising=False)
+    monkeypatch.delenv("LIUHAO_LOG_CONFIG", raising=False)
+
+    members = _members(build_bundle(root=tmp_path))
+    summary = json.loads(members["summary.json"].decode("utf-8"))
+
+    # 等于运行期实际目录（按既有规则遮掉用户名后的写法）。
+    assert summary["data_dir"] == bundle.sanitize_text(str(data_dir.resolve()))
+    assert summary["data_dir"].endswith("张三 数据")
+    assert summary["data_dir"] != bundle.sanitize_text(bundle.REPO_ROOT / "data")
+    # 用户名所在路径段必须被遮；中文与空格目录名保持原样。
+    assert "<用户>" in summary["data_dir"]
+    assert f"\\{getpass.getuser()}\\" not in summary["data_dir"]
+    # 同源：默认日志配置落在数据目录的 logs/ 下，父目录就是 data_dir。
+    assert Path(summary["log_dir"]).parent == Path(summary["data_dir"])
+
+
 def test_unknown_member_is_refused():
     with pytest.raises(ValueError):
         _assert_whitelisted(["summary.json", "../outside.json"])
@@ -156,6 +186,24 @@ def test_export_is_refused_when_a_secret_survives_redaction(tmp_path, fake_probe
     monkeypatch.setattr(bundle, "contains_secret", lambda _text: True)
     with pytest.raises(ValueError):
         build_bundle(root=tmp_path, log_dir=tmp_path / "missing")
+
+
+def test_export_is_refused_by_the_independent_leak_check(tmp_path, fake_probes, monkeypatch):
+    """脱敏规则被绕过时，独立的正向泄漏清单仍必须拦住导出。
+
+    这里把 ``sanitize_text`` 换成恒等函数（模拟"某条脱敏规则以后回退"），并让
+    运行期数据目录落在含真实用户名的位置。如果自检谓词和脱敏共用一套规则，
+    这个包会被放出去；独立清单则必须抛错。
+    """
+    monkeypatch.setattr(bundle, "sanitize_text", lambda value: str(value))
+    monkeypatch.setattr(bundle, "resolve_data_dir", lambda: Path("C:/Users/张三/data"))
+
+    with pytest.raises(ValueError) as excinfo:
+        build_bundle(root=tmp_path, log_dir=tmp_path / "missing")
+
+    message = str(excinfo.value)
+    assert "泄漏特征" in message
+    assert "用户名路径" in message
 
 
 @pytest.mark.parametrize(

@@ -42,6 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
+from ..common.redaction import redact_text
+
 # Failure kinds surfaced to the user and the ledger.
 PORT_CONFLICT = "port_conflict"
 DEPENDENCY_IMPORT = "dependency_import"
@@ -235,20 +237,11 @@ class _LogCapture:
 
 
 def _redact(text: str) -> str:
-    patterns = (
-        (r"(?i)(authorization\s*:\s*)(\S+(?:\s+\S+)?)", r"\1<已脱敏>"),
-        (r"(?i)(bearer\s+)(\S+)", r"\1<已脱敏>"),
-        (
-            r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|cookie|"
-            r"private[_-]?key|access[_-]?key)\s*[:=]\s*)(\S+)",
-            r"\1<已脱敏>",
-        ),
-        (r"(\bhttps?://)([^:/\s]+):([^@/\s]+)@", r"\1\2:<已脱敏>@"),
-    )
-    redacted = text
-    for pattern, replacement in patterns:
-        redacted = re.sub(pattern, replacement, redacted)
-    return redacted
+    """与诊断包共用同一套脱敏：用户名 / 环境变量名 / 脚本路径 / 各类密钥。
+
+    占位符统一成 ``<已脱敏>``，保持启动探针既有报告的可读性。
+    """
+    return redact_text(text or "").replace("***REDACTED***", "<已脱敏>")
 
 
 def _cap(text: str) -> str:

@@ -412,7 +412,10 @@ def test_lifespan_exception_is_named_as_lifespan(tmp_path: Path) -> None:
     assert startup is not None
     assert startup.failure_kind == LIFESPAN_FAILED
     assert "lifespan 启动异常" in startup.reason
-    assert "LIUHAO_MODE" in startup.reason
+    # 环境变量名本身也是泄漏面：报告里只能出现占位符。
+    assert "LIUHAO_MODE" not in startup.reason
+    assert "<环境变量>" in startup.reason
+    assert "LIUHAO_MODE" not in startup.log_tail
 
 
 def test_service_that_never_becomes_ready_is_named_as_timeout(tmp_path: Path) -> None:
@@ -545,7 +548,13 @@ def test_application_records_a_passed_startup_self_check(tmp_path: Path) -> None
     release_dir = tmp_path / "releases"
     _release(release_dir)
     manager = UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+        UpgradeConfig(
+            app_root=app_root,
+            # 显式钉到应用自己的 data/：测试内的 LIUHAO_DATA_DIR 被隔离到别处，
+            # 这里要断言的是"升级状态落在应用数据目录"，不是环境变量。
+            data_dir=app_root / "data",
+            source=LocalDirectorySource(release_dir),
+        )
     )
     try:
         check = manager.check()
@@ -578,7 +587,13 @@ def test_migration_failure_rolls_back_and_keeps_a_redacted_log(tmp_path: Path) -
     release_dir = tmp_path / "releases"
     _release(release_dir, service=MIGRATION_FAILURE_SERVICE)
     manager = UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+        UpgradeConfig(
+            app_root=app_root,
+            # 显式钉到应用自己的 data/：测试内的 LIUHAO_DATA_DIR 被隔离到别处，
+            # 这里要断言的是"升级状态落在应用数据目录"，不是环境变量。
+            data_dir=app_root / "data",
+            source=LocalDirectorySource(release_dir),
+        )
     )
     try:
         check = manager.check()

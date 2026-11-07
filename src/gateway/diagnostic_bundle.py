@@ -21,7 +21,6 @@
 """
 from __future__ import annotations
 
-import getpass
 import hashlib
 import io
 import json
@@ -38,8 +37,17 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 
 from ..desktop.about import APP_NAME, collect_about
-from ..desktop.diagnostics import contains_secret, redact_text
-from ..logging_config import load_uvicorn_log_config, resolve_log_config_path
+from ..desktop.diagnostics import (
+    contains_secret,
+    leak_violations,
+    mask_user_path,
+    sanitize_text,
+)
+from ..logging_config import (
+    load_uvicorn_log_config,
+    resolve_data_dir,
+    resolve_log_config_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,20 +68,6 @@ _MAX_LOG_FILES = 5
 _MAX_LOG_LINES = 200
 _MAX_LOG_BYTES = 200_000
 
-_USER_PATH_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    # C:\Users\name  /  D:/Users/name  /  C:\Documents and Settings\name
-    # 用户名段允许空格（"张 三"），边界只认路径分隔符/引号，避免把整句正文当成路径。
-    re.compile(
-        r"(?i)(?P<prefix>[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+)"
-        r"(?P<name>[^\\/\r\n\"'<>|]+)"
-    ),
-    # /home/name  /  /Users/name
-    re.compile(
-        r"(?i)(?P<prefix>/(?:home|Users)/)"
-        r"(?P<name>[^/\s\"'<>|]+)"
-    ),
-)
-
 #: 就绪检查里允许进包的字段。``error`` / ``technical_detail`` 故意不在其中。
 _READINESS_CHECK_FIELDS: Tuple[str, ...] = (
     "status",
@@ -82,32 +76,6 @@ _READINESS_CHECK_FIELDS: Tuple[str, ...] = (
     "availability",
     "evidence_status",
 )
-
-
-def mask_user_path(text: Any) -> str:
-    """把路径里的用户名换成 ``<用户>``（只动路径段，不碰正常文本）。"""
-    out = str(text or "")
-    # /root 本身就是家目录，整段替换，而不是把下一级当成用户名。
-    out = re.sub(r"/root(?=/|\s|$)", "/<用户>", out)
-    for pattern in _USER_PATH_PATTERNS:
-        out = pattern.sub(lambda m: f"{m.group('prefix')}<用户>", out)
-    # 兜底：当前系统用户名以独立词出现时也遮掉（例如日志里的 user=name）。
-    try:
-        username = getpass.getuser().strip()
-    except Exception:  # noqa: BLE001 - 取不到用户名时不做兜底
-        username = ""
-    if len(username) >= 3:
-        out = re.sub(
-            rf"(?i)(?<![A-Za-z0-9_.-]){re.escape(username)}(?![A-Za-z0-9_.-])",
-            "<用户>",
-            out,
-        )
-    return out
-
-
-def sanitize_text(value: Any) -> str:
-    """用户要发出去的任何文本都走这里：先遮路径用户名，再遮密钥。"""
-    return redact_text(mask_user_path(value))
 
 
 def _safe_mapping(payload: Mapping[str, Any], allowed: Iterable[str]) -> Dict[str, Any]:
@@ -161,7 +129,10 @@ def _summary(root: Path, log_dir: Path) -> Dict[str, Any]:
         },
         "python_version": sys.version.split()[0],
         "install_method": _install_method(root),
-        "data_dir": sanitize_text(about.get("data_dir") or root / "data"),
+        # 必须取运行期实际生效的数据目录（LIUHAO_DATA_DIR / 安装版用户目录），
+        # 不能用仓库里的默认值：安装版跑起来后程序目录是只读的，拿它去排查
+        # 会把人带偏。日志目录也由同一处契约推导，两者天然同源。
+        "data_dir": sanitize_text(resolve_data_dir()),
         "log_dir": sanitize_text(log_dir),
         "note": "路径中的用户名已替换为 <用户>；本包不含任何密钥或令牌。",
     }
@@ -356,11 +327,12 @@ def _write_member(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
 def build_bundle(root: Path | None = None, log_dir: Path | None = None) -> bytes:
     """生成诊断包字节流。任何成员命中密钥特征都会抛 ``ValueError`` 拒绝导出。"""
     base = Path(root or REPO_ROOT)
-    logs = _collect_logs(Path(log_dir) if log_dir else _log_dir())
+    effective_log_dir = Path(log_dir) if log_dir else _log_dir()
+    logs = _collect_logs(effective_log_dir)
 
     payload: Dict[str, Any] = {
         "README.txt": _README,
-        "summary.json": _summary(base, Path(log_dir) if log_dir else _log_dir()),
+        "summary.json": _summary(base, effective_log_dir),
         "health.json": _health_payload(),
         "readiness.json": _readiness_payload(),
         "selfcheck.json": _selfcheck_payload(),
@@ -374,8 +346,12 @@ def build_bundle(root: Path | None = None, log_dir: Path | None = None) -> bytes
         else:
             text = str(content)
         text = sanitize_text(text)
-        if contains_secret(text):
-            raise ValueError(f"诊断成员 {name} 仍含疑似密钥，已拒绝导出")
+        # 双保险：``leak_violations`` 是独立于脱敏规则的正向清单；即使某条脱敏
+        # 规则以后回退，这里仍会拒绝导出。
+        leaked = leak_violations(text)
+        if leaked or contains_secret(text):
+            labels = "、".join(leaked) or "疑似密钥"
+            raise ValueError(f"诊断成员 {name} 仍含泄漏特征（{labels}），已拒绝导出")
         files[name] = text.encode("utf-8")
 
     _assert_whitelisted(files)

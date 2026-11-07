@@ -17,7 +17,6 @@ import importlib.metadata as metadata
 import json
 import os
 import platform
-import re
 import sqlite3
 import sys
 import zipfile
@@ -26,11 +25,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from . import LOG_DIR, REPO_ROOT, diagnostics_dir
+from ..common.redaction import (
+    REDACTION_VERSION,
+    contains_secret,
+    leak_violations,
+    mask_user_path,
+    redact_text,
+    sanitize_text,
+)
+from ..logging_config import resolve_data_dir
+from . import REPO_ROOT, diagnostics_dir
 from .about import collect_about
 from .probe import DEFAULT_PORTS, discover_service, http_json, port_is_free
 
-REDACTION_VERSION = "1"
 _MAX_LOG_FILES = 5
 _MAX_LOG_LINES = 200
 _MAX_LOG_BYTES = 200_000
@@ -49,44 +56,9 @@ _FORBIDDEN_NAME_TOKENS = (
     "api_key",
 )
 
-#: 脱敏规则。顺序即优先级；`sk-` / Bearer / JWT / PEM / 键值对依次处理。
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
-     "***PRIVATE-KEY-REDACTED***"),
-    (re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,})"), "sk-***REDACTED***"),
-    (re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1***REDACTED***"),
-    (re.compile(r"(?i)\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,})"),
-     "***JWT-REDACTED***"),
-    (
-        re.compile(
-            r"(?i)((?:api[_-]?key|access[_-]?key|secret[_-]?key|integrity[_-]?key|"
-            r"signing[_-]?key|private[_-]?key|token|password|passwd)\s*[\"']?\s*[=:]\s*)"
-            r"(\"[^\"]*\"|'[^']*'|[^\s,;\"'）)]+)"
-        ),
-        r"\1***REDACTED***",
-    ),
-    (re.compile(r"(?i)\b(AI_PROVIDER_KEY\s*=\s*)([^\s\"']+)"), r"\1***REDACTED***"),
-)
-
-
-def redact_text(text: str) -> str:
-    """把常见密钥形态替换为固定占位串（幂等）。"""
-    if not text:
-        return ""
-    out = text
-    for pattern, replacement in _SECRET_PATTERNS:
-        out = pattern.sub(replacement, out)
-    return out
-
-
-def contains_secret(text: str) -> bool:
-    """写入后自检用：文本里是否仍有疑似密钥形态（已脱敏占位符不算）。"""
-    for pattern, _ in _SECRET_PATTERNS:
-        for match in pattern.finditer(text):
-            if "REDACTED" in match.group(0):
-                continue
-            return True
-    return False
+#: 脱敏与自检的**唯一实现**在 ``src/common/redaction.py``：桌面与网关两个诊断
+#: 入口共用同一份规则和同一个自检谓词，自检清单独立于脱敏规则单独维护。
+#: 这里只保留模块级别名，方便既有调用方（``from .diagnostics import redact_text``）。
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -135,11 +107,14 @@ def _collect_ports(ports: list[int]) -> dict[str, Any]:
     }
 
 
-def _read_providers(root: Path) -> dict[str, Any]:
+def _read_providers() -> dict[str, Any]:
     """只读打开模型配置库，**只取名称/类型/模型/地址**，从不解密密钥。"""
-    db_path = Path(os.environ.get("LIUHAO_MODEL_CONFIG_DB") or root / "data" / "model_registry.sqlite3")
+    db_path = Path(
+        os.environ.get("LIUHAO_MODEL_CONFIG_DB")
+        or resolve_data_dir() / "model_registry.sqlite3"
+    )
     if not db_path.is_file():
-        return {"source": str(db_path), "available": False, "models": []}
+        return {"source": db_path.name, "available": False, "models": []}
     uri = f"file:{db_path.as_posix()}?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True)
@@ -149,12 +124,13 @@ def _read_providers(root: Path) -> dict[str, Any]:
             ).fetchall()
         finally:
             conn.close()
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, OSError):
+        # 异常原文可能带绝对路径；诊断包里只留结论，细节进本地日志。
         return {
-            "source": str(db_path),
+            "source": db_path.name,
             "available": False,
             "models": [],
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "模型配置库只读打开失败",
         }
     models = [
         {
@@ -167,17 +143,21 @@ def _read_providers(root: Path) -> dict[str, Any]:
         }
         for row in rows
     ]
-    return {"source": str(db_path), "available": True, "models": models}
+    return {"source": db_path.name, "available": True, "models": models}
 
 
-def _collect_environment(root: Path) -> dict[str, Any]:
-    allowed_env = {
-        key: os.environ.get(key)
-        for key in ("APP_ENV", "AI_PROVIDER_TYPE", "AI_PROVIDER_MODEL", "OLLAMA_BASE_URL")
-        if os.environ.get(key)
-    }
-    if allowed_env.get("OLLAMA_BASE_URL"):
-        allowed_env["OLLAMA_BASE_URL"] = _sanitize_url(allowed_env["OLLAMA_BASE_URL"])
+def _collect_environment() -> dict[str, Any]:
+    """只保留中性标签 + 值；**环境变量名本身也是泄漏面**，不再原样写入。"""
+    hints: dict[str, str] = {}
+    if os.environ.get("APP_ENV"):
+        hints["运行环境"] = str(os.environ["APP_ENV"])
+    if os.environ.get("AI_PROVIDER_TYPE"):
+        hints["提供方类型"] = str(os.environ["AI_PROVIDER_TYPE"])
+    if os.environ.get("AI_PROVIDER_MODEL"):
+        hints["提供方模型"] = str(os.environ["AI_PROVIDER_MODEL"])
+    if os.environ.get("OLLAMA_BASE_URL"):
+        hints["本地模型地址"] = _sanitize_url(os.environ["OLLAMA_BASE_URL"]) or ""
+    runtime_data_dir = resolve_data_dir()
     return {
         "platform": platform.platform(),
         "system": platform.system(),
@@ -185,11 +165,10 @@ def _collect_environment(root: Path) -> dict[str, Any]:
         "version": platform.version(),
         "machine": platform.machine(),
         "python_version": sys.version.split()[0],
-        "python_executable": sys.executable,
-        "repo_root": str(root),
-        "data_dir": str(root / "data"),
-        "log_dir": str(root / "logs"),
-        "app_env": allowed_env,
+        # 运行期实际目录（不是仓库默认值），用户名按统一规则遮掉。
+        "data_dir": sanitize_text(str(runtime_data_dir)),
+        "log_dir": sanitize_text(str(runtime_data_dir / "logs")),
+        "app_env": hints,
     }
 
 
@@ -270,7 +249,8 @@ def create_bundle(
 ) -> Path:
     """生成诊断 zip，返回其绝对路径。生成后自动自检。"""
     base = Path(root or REPO_ROOT)
-    logs = Path(log_dir) if log_dir is not None else (LOG_DIR if root is None else base / "logs")
+    runtime_data_dir = resolve_data_dir()
+    logs = Path(log_dir) if log_dir is not None else runtime_data_dir / "logs"
     checked_ports = list(ports or DEFAULT_PORTS)
     service = _collect_service_snapshot(base_url)
     if service.get("base_url"):
@@ -281,16 +261,27 @@ def create_bundle(
         except (TypeError, ValueError):
             pass
 
+    environment = _collect_environment()
+    # about.json 走白名单：``collect_about`` 里的 python_executable / repo_root /
+    # diagnostics_dir 都是安装机绝对路径（含用户名），不进诊断包。
+    about = collect_about(root)
+    about_payload = {
+        key: about.get(key)
+        for key in ("app", "version", "commit", "build_time", "build_time_source", "python_version")
+    }
+    about_payload["data_dir"] = environment["data_dir"]
+    about_payload["log_dir"] = environment["log_dir"]
+
     payloads: dict[str, Any] = {
-        "about.json": collect_about(root),
-        "environment.json": _collect_environment(base),
+        "about.json": about_payload,
+        "environment.json": environment,
         "ports.json": _collect_ports(checked_ports),
         "providers.json": {
-            "registry": _read_providers(base),
+            "registry": _read_providers(),
             "env_provider_hint": {
                 key: value
-                for key, value in _collect_environment(base)["app_env"].items()
-                if key in {"AI_PROVIDER_TYPE", "AI_PROVIDER_MODEL"}
+                for key, value in environment["app_env"].items()
+                if key in {"提供方类型", "提供方模型"}
             },
         },
         "service.json": service,
@@ -368,11 +359,22 @@ def verify_bundle(path: str | Path) -> list[str]:
                     if token in lowered:
                         violations.append(f"{name}: 成员名含敏感标识 {token!r}")
                 content = archive.read(name).decode("utf-8", "replace")
-                if contains_secret(content):
-                    violations.append(f"{name}: 内容仍匹配疑似密钥规则")
+                leaked = leak_violations(content)
+                if leaked or contains_secret(content):
+                    labels = "、".join(leaked) or "疑似密钥"
+                    violations.append(f"{name}: 内容仍含泄漏特征（{labels}）")
     except (OSError, zipfile.BadZipFile) as exc:
         return [f"无法读取诊断包：{type(exc).__name__}: {exc}"]
     return violations
 
 
-__all__ = ["REDACTION_VERSION", "contains_secret", "create_bundle", "redact_text", "verify_bundle"]
+__all__ = [
+    "REDACTION_VERSION",
+    "contains_secret",
+    "create_bundle",
+    "leak_violations",
+    "mask_user_path",
+    "redact_text",
+    "sanitize_text",
+    "verify_bundle",
+]

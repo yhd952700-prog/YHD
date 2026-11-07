@@ -132,6 +132,60 @@ def test_diagnostics_bundle_is_whitelisted_and_redacted(tmp_path: Path, monkeypa
         assert "api_key" not in json.dumps(model)
 
 
+def test_bundle_has_no_env_names_scripts_or_usernames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """中文用户名 + 空格路径 + env 名 + 脚本/安装路径 + 层级字段，一律不进包。"""
+    fake_root = tmp_path / "repo"
+    fake_root.mkdir()
+    fake_logs = tmp_path / "logs"
+    fake_logs.mkdir()
+    (fake_logs / "app.log").write_text(
+        "\n".join(
+            [
+                r"C:\Users\张三 三\AppData\Roaming\liuhao\data",
+                "LIUHAO_AUTH_TTL_SECONDS=3600",
+                "LIUHAO_MODEL_ROUTER=auto",
+                "APP_ENV=production",
+                r"D:\LiuHao-AI-OS\scripts\register_human_identity.py",
+                "scripts/register_human_identity.py",
+                r"C:\Program Files\LiuHao\runtime\python.exe",
+                "parent_id=12 root_id=0 depth=3 ancestor=root",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(diagnostics, "discover_service", lambda *args, **kwargs: None)
+    # 避免读到本机真实模型库，保证包内容只由本用例决定。
+    monkeypatch.setenv("LIUHAO_MODEL_CONFIG_DB", str(tmp_path / "missing.sqlite3"))
+
+    bundle_path = create_bundle(
+        tmp_path / "out", root=fake_root, log_dir=fake_logs, ports=[65530]
+    )
+    assert verify_bundle(bundle_path) == []
+
+    with zipfile.ZipFile(bundle_path) as archive:
+        joined = "\n".join(
+            archive.read(name).decode("utf-8", "replace") for name in archive.namelist()
+        )
+
+    for leaked in (
+        "张三",
+        "LIUHAO_AUTH_TTL_SECONDS",
+        "LIUHAO_MODEL_ROUTER",
+        "APP_ENV",
+        "register_human_identity.py",
+        "Program Files",
+        "parent_id",
+        "root_id",
+        "depth",
+        "ancestor",
+    ):
+        assert leaked not in joined, f"诊断包泄漏了 {leaked!r}"
+    assert "<用户>" in joined
+    assert "<环境变量>" in joined
+
+
 def test_verify_bundle_catches_injected_secret(tmp_path: Path) -> None:
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as archive:

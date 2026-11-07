@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from ..common.redaction import sanitize_text
 from .console_contract import FrontendContractError, verify_health_contract, verify_installed
 from .dataguard import is_sqlite_file, iter_files, verify_expected_tables
 from .startup_probe import StartupCheckConfig, StartupReport, run_startup_check
@@ -111,7 +112,7 @@ def run_self_check(
         if not startup.ok:
             report.ok = False
             report.issues.append(
-                SelfCheckIssue("service", str(root), startup.reason)
+                SelfCheckIssue("service", sanitize_text(str(root)), startup.reason)
             )
 
     # Front-end/back-end contract gate. A package without the console build
@@ -135,7 +136,11 @@ def run_self_check(
             )
     except FrontendContractError as exc:
         report.ok = False
-        report.issues.append(SelfCheckIssue("frontend_contract", str(root), str(exc)))
+        report.issues.append(
+            SelfCheckIssue(
+                "frontend_contract", sanitize_text(str(root)), sanitize_text(str(exc))
+            )
+        )
 
     paths = [Path(path) for path in data_paths]
     for path in iter_files(paths):
@@ -155,7 +160,13 @@ def run_self_check(
                 conn.close()
         except sqlite3.Error as exc:
             report.ok = False
-            report.issues.append(SelfCheckIssue("sqlite", str(path), f"数据库无法打开：{exc}"))
+            report.issues.append(
+                SelfCheckIssue(
+                    "sqlite",
+                    sanitize_text(str(path)),
+                    sanitize_text(f"数据库无法打开：{exc}"),
+                )
+            )
 
     if expected_tables:
         table_issues = verify_expected_tables(
@@ -166,7 +177,9 @@ def run_self_check(
             report.ok = False
             for issue in table_issues:
                 report.issues.append(
-                    SelfCheckIssue(issue.kind, issue.path, issue.detail)
+                    SelfCheckIssue(
+                        issue.kind, sanitize_text(issue.path), sanitize_text(issue.detail)
+                    )
                 )
 
     return report
