@@ -311,6 +311,66 @@ def test_runtime_guard_rejects_private_and_rebinding(monkeypatch):
         net_guard.assert_safe_runtime_target("http://internal.example.com")
 
 
+def test_openai_public_endpoint_still_generates(monkeypatch):
+    """加了运行时校验与"不跟随重定向"后，正常公网端点必须照常可用。"""
+    _isolate(monkeypatch)
+    from types import SimpleNamespace
+
+    from src.ai import net_guard
+    from src.ai.providers import OpenAIProvider
+
+    monkeypatch.setattr(
+        net_guard.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    class _Completions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="pong"))]
+            )
+
+    p = OpenAIProvider(
+        name="t",
+        model="m",
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        timeout=5,
+    )
+    p._client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    assert p.generate("ping") == "pong"
+
+
+def test_ollama_successful_response_still_returned(monkeypatch):
+    """Ollama 正常 200 不受重定向策略影响，仍照常返回正文。"""
+    _isolate(monkeypatch)
+    import requests
+
+    from src.ai.providers import OllamaProvider
+
+    captured = {}
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"response": "pong", "prompt_eval_count": 1, "eval_count": 1}
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    p = OllamaProvider(
+        name="o", model="qwen2.5:3b", base_url="http://127.0.0.1:11434", timeout=5
+    )
+    assert p.generate("ping") == "pong"
+    assert captured["allow_redirects"] is False
+
+
 def test_provider_timeout_env_applied(monkeypatch):
     """``AI_PROVIDER_TIMEOUT`` 可选覆盖默认超时（慢上游需要更久）。"""
     _isolate(
