@@ -351,4 +351,30 @@ P-5 管家页可用化、P-6 两腿 + CI 绿、P-7 `--full` 凭证绑定 hash。
 **一句话结论**：机器 `True` 卡在 C9（可达）与 C11（需新 ADR）两条口径上；**交付**能不能发布
 卡在 P-1～P-7；其余九项属于「登记 + 披露即可发布」的缺口，一条都不许写成「已全部验证」。
 
+## 11.2 新 tip（`416f7109`）的全量凭证
+
+| 项 | 事实 |
+|---|---|
+| 判定对象 | `416f7109`（代码 tip；`origin/p36` 在合并前的 tip） |
+| worktree | `D:\copilot-worktrees\liuhao-delivery-416f7109`（pin 到 `416f7109`，跑前 `git status --porcelain` 为空） |
+| 解释器 / 命令 | `.venv` Python 3.12.14 / `python -u scripts/verify_readiness.py --only C1,C2,C4,C5,C6,C7,C8,C9,C10,C11` |
+| 机器 verdict | `PASS=7  FAIL=0  BLOCKED=1  NOT_VERIFIED=2  ERROR=0` → **`RELEASE READY = False`** |
+| 逐关数字 | [DELIVERY-CHECKLIST §5.12](DELIVERY-CHECKLIST.md#512-新-tip-416f7109-的就绪凭证2026-11-08) 与 [evidence/verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md) |
+| C3 / C12 | **本轮未取得凭证**：三次全量尝试都被本机并发清理杀掉（JUnit 0 字节 → 按完整性规则不能读成零失败）。上一可比凭证：CI `b4406497` = `17 failed / 7705 passed / 40 skipped / 3 xfailed`，失败集合 F-01～F-05；F-01～F-05 未修，C12 必红 |
+| C7 | 两次：**1057.0** 与（单独重跑）**1380.1**，阈值 1503.5（基线 2004.7，容差 25%）→ `NOT VERIFIED`（负载不可判，不是回归） |
+| C9 | `NOT VERIFIED`（worktree 无 `.venv`，落 `Dockerfile + alembic` 兜底；`real CD absent=True`） |
+| C11 | `BLOCKED`（状态不变）；本轮只改证据文案，见 ADR-HC01 §1.2 的 2026-11-08 补充 |
+| 文档提交 | `576f46b6`（+ 本次补正提交），新 tip = 该提交 |
+
+**纯文档校验（提交前实跑，原文）**：
+
+```text
+$ git diff --name-only 416f7109..HEAD -- src/ apps/ contracts/ installer/ packaging/
+(无输出)
+```
+
+即：`416f7109` 之后只有文档、证据与就绪脚本（`scripts/verify_readiness.py` 的 C11 文案与
+`CONDITION_META`）变化，`src/ apps/ contracts/ installer/ packaging/` **零改动**。
+`scripts/` 不在上面五个受保护目录内，属本轮明确允许的「就绪脚本判定口径」改动。
+
 
