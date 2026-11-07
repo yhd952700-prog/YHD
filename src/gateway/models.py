@@ -216,15 +216,22 @@ def _validate_base_url(
 
     * only ``http``/``https``;
     * freshly supplied public targets must resolve to public addresses;
-    * the one narrow exception is the local Ollama service (including its
-      OpenAI-compatible ``/v1`` endpoint): users may wire an arbitrary
-      OpenAI-compatible model to their own machine without weakening SSRF
-      protection for any other private address.
+    * the one narrow exception is the **Ollama provider** pointed at the local
+      Ollama service (including its OpenAI-compatible ``/v1`` endpoint): users
+      may wire a model to their own machine without weakening SSRF protection
+      for any other private address.
+
+    私网放行必须同时满足 ``provider == "ollama"``：``OLLAMA_BASE_URL`` 是给
+    Ollama 服务本身的配置，不能让 ``provider=openai/deepseek`` 借它把
+    ``base_url`` 指向内网（那等于给所有 provider 开了私网白名单）。
     """
     value = (raw or "").strip()
     if not value:
         return ""
-    return _assert_url_allowed(value, allow_private=_is_local_ollama(value))
+    is_ollama = (provider or "").strip().lower() == "ollama"
+    return _assert_url_allowed(
+        value, allow_private=is_ollama and _is_local_ollama(value)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -479,13 +486,17 @@ def list_provider_presets() -> Dict[str, Any]:
 
 
 @router.get("/models/{model_id}")
-def get_model(model_id: str, payload=Depends(optional_bearer_payload)) -> Dict[str, Any]:
+def get_model(model_id: str, payload=Depends(require_bearer_payload)) -> Dict[str, Any]:
+    """详情必须登录：匿名可读会泄露 base_url / owner / api_key_masked。
+
+    已登录路径的可见性规则与列表一致（``_guard_visible`` 按归属判定），
+    所以这里只是把"匿名"从可读集合里去掉，登录后的行为不变。
+    """
     record = _run_guarded(_store().get_public, model_id)
-    if payload is not None:
-        _guard_visible(
-            key_scope_for(principal=_principal(payload)),
-            record.get("owner_principal"),
-        )
+    _guard_visible(
+        key_scope_for(principal=_principal(payload)),
+        record.get("owner_principal"),
+    )
     return _with_pricing(record)
 
 

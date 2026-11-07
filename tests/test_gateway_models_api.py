@@ -81,6 +81,28 @@ class TestAccessControl:
         response = client.post("/v1/models", json=_payload(), headers=l0_headers)
         assert response.status_code == 200, response.text
 
+    def test_anonymous_cannot_read_model_detail(self, client, admin_headers):
+        """P2-3：详情接口必须登录。
+
+        匿名可读会泄露 ``base_url`` / ``owner_principal`` / ``api_key_masked``，
+        还能跨归属读别人的模型；登录后的可见性规则保持不变。
+        """
+        created = client.post(
+            "/v1/models", json=_payload(api_key="sk-anon-123456"), headers=admin_headers
+        ).json()
+
+        anonymous = client.get(f"/v1/models/{created['id']}")
+        assert anonymous.status_code == 401, anonymous.text
+        assert "sk-anon" not in anonymous.text
+        assert "owner" not in anonymous.text
+
+        authed = client.get(f"/v1/models/{created['id']}", headers=admin_headers)
+        assert authed.status_code == 200, authed.text
+        body = authed.json()
+        assert body["owner_principal"] == created["owner_principal"]
+        assert body["base_url"] == created["base_url"]
+        assert body["api_key_set"] is True
+
 
 class TestCrudAndMasking:
     secret = "sk-console-secret-abcdefghijklmnop"
@@ -232,8 +254,14 @@ class TestCrudAndMasking:
             == "sk-real-secret-123456"
         )
 
-    def test_local_ollama_openai_compatible_endpoint_is_allowed(self, client, admin_headers):
-        """本机 Ollama 的 /v1 入口也是"本机 Ollama"，可用于 OpenAI 兼容接入。"""
+    def test_openai_provider_cannot_reach_local_ollama(self, client, admin_headers):
+        """P2-6 的取舍：私网放行只给 provider=ollama。
+
+        即便目标是 ``127.0.0.1:11434``，``provider=openai`` 也按公网规则拒绝；
+        本机 Ollama 仍可用，但要走 ``provider=ollama``（见
+        ``test_local_ollama_target_is_still_allowed``），避免
+        ``OLLAMA_BASE_URL`` 之类的配置把私网白名单扩散到所有 provider。
+        """
         created = client.post(
             "/v1/models",
             json=_payload(
@@ -245,8 +273,8 @@ class TestCrudAndMasking:
             ),
             headers=admin_headers,
         )
-        assert created.status_code == 200, created.text
-        assert created.json()["base_url"] == "http://127.0.0.1:11434/v1"
+        assert created.status_code == 400, created.text
+        assert "SSRF" in created.json()["detail"]
 
 
 class TestPresets:
@@ -346,6 +374,57 @@ class TestConnectionProbe:
     )
     def test_error_classification(self, exc, expected):
         assert _classify_error(exc) == expected
+
+    @pytest.mark.parametrize("provider", ["openai", "deepseek", "anthropic"])
+    def test_ollama_env_does_not_widen_other_providers(
+        self, client, admin_headers, monkeypatch, provider
+    ):
+        """P2-6：``OLLAMA_BASE_URL`` 只对 provider=ollama 生效。
+
+        之前 ``allow_private`` 只判断"地址是否等于 ``OLLAMA_BASE_URL``"，
+        于是 provider=openai/deepseek 也能借这条配置把 base_url 指向内网。
+        """
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://10.0.0.5:11434")
+
+        probed = client.post(
+            "/v1/models/test",
+            json={
+                "provider": provider,
+                "model": "some-model",
+                "base_url": "http://10.0.0.5:11434/v1",
+                "api_key": "sk-test-123456",
+                "timeout": 2,
+            },
+            headers=admin_headers,
+        )
+        assert probed.status_code == 400, probed.text
+        assert "SSRF" in probed.json()["detail"]
+
+        # 保存路径同样收紧，不是只挡"测试连接"。
+        saved = client.post(
+            "/v1/models",
+            json=_payload(
+                name=f"private-{provider}",
+                provider=provider,
+                model="some-model",
+                base_url="http://10.0.0.5:11434/v1",
+                api_key="sk-test-123456",
+            ),
+            headers=admin_headers,
+        )
+        assert saved.status_code == 400, saved.text
+        assert "SSRF" in saved.json()["detail"]
+
+    def test_local_ollama_target_is_still_allowed(self):
+        """provider=ollama 指本机 11434（含 OpenAI 兼容 /v1）仍放行。"""
+        from src.gateway.models import _validate_base_url
+
+        for url in (
+            "http://127.0.0.1:11434",
+            "http://localhost:11434",
+            "http://127.0.0.1:11434/v1",
+        ):
+            assert _validate_base_url(url, provider="ollama") == url
 
     def test_private_url_matching_saved_config_is_allowed(self, monkeypatch):
         """已保存配置批准的本地地址（本机 Ollama）仍可测试连接。"""
