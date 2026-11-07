@@ -42,6 +42,136 @@ export function isLocalServiceOffline(message: string): boolean {
   return message.includes('鎏灏的本地服务没有运行')
 }
 
+/**
+ * 字段名 → 用户能看懂的称呼。
+ *
+ * 422 的 `loc` 里是 Pydantic 字段名（`password` / `principal` / `natural_language`）。
+ * 这些英文标识符**不能上屏**；没登记的字段退回中性称呼，绝不显示英文名。
+ */
+const FIELD_LABELS: Record<string, string> = {
+  principal: '账号',
+  account: '账号',
+  username: '账号',
+  name: '名称',
+  as_name: '新名字',
+  password: '密码',
+  new_password: '新密码',
+  old_password: '当前密码',
+  current_password: '当前密码',
+  secret: '密码',
+  recovery_code: '恢复码',
+  passphrase: '口令短语',
+  message: '消息内容',
+  natural_language: '任务描述',
+  instruction: '指令',
+  employee_name: '员工姓名',
+  agent_id: '执行个体',
+  project_id: '项目',
+  scope: '执行范围',
+  plan_mode: '计划方式',
+  role_description: '职责描述',
+  agent_count: '员工数量',
+  agent_types: '员工类型',
+  default_capabilities: '默认能力',
+  owner: '所属账号',
+  format: '格式',
+  session_id: '会话',
+  client_request_id: '请求编号',
+  model_id: '模型',
+  api_key: '密钥',
+  target: '授权对象',
+  actions: '授权动作',
+}
+
+/** Pydantic 校验项（后端已脱敏：敏感字段没有 input / ctx）。 */
+type ValidationItem = {
+  loc?: unknown
+  msg?: unknown
+  type?: unknown
+  ctx?: unknown
+}
+
+function isValidationItem(value: unknown): value is ValidationItem {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return 'loc' in record || 'msg' in record
+}
+
+function fieldLabel(name: string): string {
+  return FIELD_LABELS[name.toLowerCase()] ?? ''
+}
+
+function numberFromContext(ctx: unknown, key: string): number | null {
+  if (!ctx || typeof ctx !== 'object') return null
+  const raw = (ctx as Record<string, unknown>)[key]
+  const num = Number(raw)
+  return Number.isFinite(num) ? num : null
+}
+
+/** Pydantic 的英文前缀（`Value error, `）不进入界面。 */
+function stripEnglishPrefix(msg: string): string {
+  return msg.replace(/^value error,\s*/i, '').trim()
+}
+
+/**
+ * 把一条 422 校验错误翻成「哪一项 + 什么规则」。
+ *
+ * 后端只回 `{loc, msg, type}`，敏感字段连 `ctx` 都会去掉（防回显口令），
+ * 所以阈值还要能从英文 msg 里取（`at least 8 characters`）。两处都拿不到
+ * 时才给中性兜底 —— 不允许出现「操作没有完成」这种什么都说明不了的句子。
+ */
+function describeValidationItem(item: ValidationItem): string {
+  const loc = Array.isArray(item.loc) ? item.loc : []
+  const names = loc
+    .map((part) => String(part))
+    .filter(
+      (part) =>
+        !/^(body|query|path|json|header|cookie)$/i.test(part) && !/^\d+$/.test(part),
+    )
+  const subject = fieldLabel(names[names.length - 1] ?? '') || '填写内容'
+  const type = typeof item.type === 'string' ? item.type : ''
+  const rawMsg = typeof item.msg === 'string' ? stripEnglishPrefix(item.msg) : ''
+
+  // 后端自定义校验器直接给了中文规则（如「密码至少 8 位」）：原样采用。
+  if (rawMsg && HAS_CJK.test(rawMsg)) return rawMsg
+
+  if (type === 'missing' || type === 'value_error.missing') {
+    return `${subject}不能为空`
+  }
+  if (type === 'string_too_short' || type === 'too_short') {
+    const atLeast = rawMsg.match(/at least (\d+)/i)
+    const min =
+      numberFromContext(item.ctx, 'min_length') ??
+      numberFromContext(item.ctx, 'min_items') ??
+      (atLeast ? Number(atLeast[1]) : null)
+    return min === null ? `${subject}太短` : `${subject}至少 ${min} 位`
+  }
+  if (type === 'string_too_long' || type === 'too_long') {
+    const atMost = rawMsg.match(/at most (\d+)/i)
+    const max =
+      numberFromContext(item.ctx, 'max_length') ??
+      numberFromContext(item.ctx, 'max_items') ??
+      (atMost ? Number(atMost[1]) : null)
+    return max === null ? `${subject}太长` : `${subject}不能超过 ${max} 位`
+  }
+  if (type === 'string_pattern_mismatch') return `${subject}格式不正确`
+  if (type === 'enum') return `${subject}的取值不在允许范围内`
+  if (
+    type === 'int_parsing' ||
+    type === 'float_parsing' ||
+    type === 'int_type' ||
+    type === 'float_type'
+  ) {
+    return `${subject}必须是数字`
+  }
+  if (type === 'bool_parsing' || type === 'bool_type') {
+    return `${subject}只能填「是」或「否」`
+  }
+  if (type === 'json_invalid') return '提交的内容格式不正确，请刷新页面后重试'
+  if (type === 'extra_forbidden') return `${subject}不需要填写，请去掉后重试`
+  return `${subject}填写不符合要求`
+}
+
 export function describeDetail(detail: unknown): string {
   if (detail === null || detail === undefined) return ''
   if (typeof detail === 'string') {
@@ -50,7 +180,13 @@ export function describeDetail(detail: unknown): string {
   }
   if (typeof detail === 'number' || typeof detail === 'boolean') return ''
   if (Array.isArray(detail)) {
-    return detail.map(describeDetail).filter(Boolean).join('；')
+    const parts = detail
+      .map((item) =>
+        isValidationItem(item) ? describeValidationItem(item) : describeDetail(item),
+      )
+      .filter(Boolean)
+    // 同一条规则命中多个字段时只保留一句，避免「不能为空；不能为空」。
+    return Array.from(new Set(parts)).join('；')
   }
   if (typeof detail === 'object') {
     const record = detail as Record<string, unknown>
@@ -91,18 +227,20 @@ export function describeFailure(
   _statusText: string,
   headerTraceId: string | null,
 ): FailureText {
-  const record = (body && typeof body === 'object' ? body : {}) as {
+  const record = (body && typeof body === 'object' && !Array.isArray(body) ? body : {}) as {
     detail?: unknown
+    message?: unknown
+    code?: unknown
     trace_id?: unknown
   }
-  const detail = describeDetail(record.detail)
+  // 文案来源按真实线序取：服务端结构化错误会把 `message` 摊到顶层（`detail`
+  // 同时保留一封等价副本）；422 则把校验数组放在 `detail` 里。
+  const detail = Array.isArray(body)
+    ? describeDetail(body)
+    : describeDetail(record.detail) || describeDetail(record.message)
   const bodyTraceId = typeof record.trace_id === 'string' ? record.trace_id : ''
   const traceId = bodyTraceId || headerTraceId || ''
-  let code: string | null = null
-  if (record.detail && typeof record.detail === 'object' && !Array.isArray(record.detail)) {
-    const raw = (record.detail as Record<string, unknown>).code
-    if (typeof raw === 'string' && raw.trim()) code = raw.trim()
-  }
+  const code = pickErrorCode(record)
   // 429 的原始文案带着英文实现细节（`rate limit exceeded`），对用户没有信息量；
   // 统一成一句中性中文，保留下面的追踪 ID 以便排障。
   //
@@ -121,6 +259,28 @@ export function describeFailure(
   }
 }
 
+/**
+ * 稳定错误码：**顶层优先，兼容旧的 `detail.code`**。
+ *
+ * 服务端已把 `{"code","message"}` 摊平到顶层（`structured_error_body`），
+ * 旧端点仍可能只放在 `detail.code` 里。只读其中一处会让 `ApiError.code`
+ * 静默变成 null，依赖它分支的界面（项目强制删除、管家派活指引）就永远不触发。
+ */
+function pickErrorCode(record: {
+  detail?: unknown
+  code?: unknown
+}): string | null {
+  if (typeof record.code === 'string' && record.code.trim()) {
+    return record.code.trim()
+  }
+  const nested = record.detail
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    const legacy = (nested as Record<string, unknown>).code
+    if (typeof legacy === 'string' && legacy.trim()) return legacy.trim()
+  }
+  return null
+}
+
 /** 响应里没有可读文案时的兜底：中性中文 + 下一步动作。 */
 function noDetailFallback(status: number): string {
   if (status === 0) {
@@ -131,6 +291,9 @@ function noDetailFallback(status: number): string {
   }
   if (status === 404) {
     return '要访问的内容不存在，可能已被删除或移动。请返回上一页后重试。'
+  }
+  if (status === 422) {
+    return '填写的内容有一项不符合要求，请检查后重试。'
   }
   if (status === 502 || status === 503 || status === 504) {
     return '服务暂时不可用，可能是本地服务没启动或正在重启。请稍后重试；持续出现时可导出诊断包。'

@@ -71,4 +71,92 @@ describe('后端错误文案可读化', () => {
     expect(failure.code).toBe('agent_unavailable')
     expect(failure.message).not.toContain('agent_unavailable')
   })
+
+  // ── 结构化错误：后端已把 code 摊平到顶层 ─────────────────────
+  test('顶层 code 优先（后端 structured_error_body 的真实形状）', () => {
+    const failure = describeFailure(
+      {
+        code: 'project_has_goals',
+        message: '该项目下还有 2 个目标：删除项目只会解除归属，目标与产出都会保留。',
+        detail: '该项目下还有 2 个目标：删除项目只会解除归属，目标与产出都会保留。',
+      },
+      409,
+      '',
+      null,
+    )
+    expect(failure.code).toBe('project_has_goals')
+    expect(failure.message).toContain('该项目下还有 2 个目标')
+  })
+
+  test('兼容旧的 detail.code（未摊平的端点仍能拿到错误码）', () => {
+    const failure = describeFailure(
+      { detail: { code: 'agent_not_found', message: '指定的员工不存在' } },
+      404,
+      '',
+      null,
+    )
+    expect(failure.code).toBe('agent_not_found')
+  })
+
+  // ── 422：从 [{loc,msg,type}] 数组里取字段名 + 中文规则 ─────────
+  test('422 数组给出「哪一项 + 什么规则」，不显示英文原文与字段名', () => {
+    const failure = describeFailure(
+      {
+        detail: [
+          {
+            loc: ['body', 'password'],
+            msg: 'String should have at least 8 characters',
+            type: 'string_too_short',
+            ctx: { min_length: 8 },
+          },
+          { loc: ['body', 'name'], msg: 'Field required', type: 'missing' },
+        ],
+      },
+      422,
+      '',
+      null,
+    )
+    expect(failure.message).toContain('密码至少 8 位')
+    expect(failure.message).toContain('名称不能为空')
+    expect(failure.message).not.toContain('String should')
+    expect(failure.message).not.toContain('password')
+  })
+
+  test('422 敏感字段没有 ctx 时，仍能从英文 msg 取出阈值', () => {
+    const failure = describeFailure(
+      {
+        detail: [
+          {
+            loc: ['body', 'password'],
+            msg: 'String should have at least 12 characters',
+            type: 'string_too_short',
+          },
+        ],
+      },
+      422,
+      '',
+      null,
+    )
+    expect(failure.message).toBe('密码至少 12 位')
+  })
+
+  test('422 后端自定义中文规则原样采用', () => {
+    const failure = describeFailure(
+      {
+        detail: [
+          { loc: ['body', 'name'], msg: 'Value error, 名称不能包含斜杠', type: 'value_error' },
+        ],
+      },
+      422,
+      '',
+      null,
+    )
+    expect(failure.message).toBe('名称不能包含斜杠')
+  })
+
+  test('422 完全取不到信息时才用中性兜底', () => {
+    const failure = describeFailure({ detail: [] }, 422, '', null)
+    expect(failure.message).toContain('不符合要求')
+    expect(failure.message).toContain('检查')
+  })
 })
