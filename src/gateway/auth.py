@@ -483,7 +483,7 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
     """
     pid = str(principal or "").strip()
     if not pid or not secret:
-        raise AuthError(400, "principal 与 secret 均不能为空")
+        raise AuthError(400, "账号和密码均不能为空")
 
     client_value = str(client or "web").strip().lower()
     if client_value not in CLIENT_MODES:
@@ -497,9 +497,9 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
     if not ok:
         _register_failure(throttle_key)
         _audit("login_denied", pid, {"reason": "bad_credential", "client": client_value})
-        # Same message whether the principal is unknown or the secret is wrong:
-        # a different message would turn this endpoint into a principal oracle.
-        raise AuthError(401, "凭据无效")
+        # Same message whether the account is unknown or the password is wrong:
+        # a different message would let callers probe which accounts exist.
+        raise AuthError(401, "账号或密码不正确")
 
     identity = _human_identity(pid)
     if identity is None:
@@ -518,7 +518,7 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
             )
         raise AuthError(
             403,
-            {"code": "AUTH_NOT_HUMAN", "message": "该主体不是可登录的账号"},
+            {"code": "AUTH_NOT_HUMAN", "message": "该账号不是可登录的账号"},
         )
 
     permissions = sorted(identity.permissions)
@@ -671,7 +671,7 @@ def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
     """
     identity = _human_identity(principal)
     if identity is None:
-        raise AuthError(403, "该主体不是可登录的人类身份（需 metadata.kind=human 且状态 ACTIVE）")
+        raise AuthError(403, "该账号不是可登录的账号")
     permissions = sorted(identity.permissions)
     ttl = _ttl_seconds()
     scope = _effective_scope(identity)
@@ -771,7 +771,7 @@ def auth_logout(
             payload = handler.decode_signature_only(token, verify_exp=False)
         except Exception as exc:  # noqa: BLE001 - any failure means "forged"
             logger.warning("logout rejected unverifiable token: %s", exc)
-            raise HTTPException(status_code=401, detail="invalid bearer token")
+            raise HTTPException(status_code=401, detail="登录信息已失效，请重新登录")
         principal = str(getattr(payload, "sub", "") or "")
         revoked = bool(handler.revoke_token(token))
     except HTTPException:
@@ -833,21 +833,18 @@ def auth_config() -> Dict[str, Any]:
     secret_configured = bool(credentials)
     if initialization_incomplete:
         message = (
-            f"初始化未完成：账号 “{root_principal}” 已创建，但还没有登录凭据。"
+            f"初始化未完成：账号 “{root_principal}” 已创建，但还没有设置登录密码。"
             "请用该名称重新完成初始化（密码可以重新设置）。"
         )
     elif not secret_configured:
         message = (
-            "尚未配置登录凭据：任何人都无法登录（fail-closed，OD-010）。"
-            "用 scripts/register_human_identity.py --password 设置。"
+            "还没有设置登录密码，目前任何人都无法登录。"
+            "请为需要登录的账号设置密码。"
         )
     elif not eligible:
-        message = (
-            f"已登记 {len(humans)} 个人类身份，但没有一个设置了凭据 —— "
-            "请为要登录的主体设置密码。"
-        )
+        message = "还没有可以登录的账号 —— 请为需要登录的账号设置密码。"
     else:
-        message = f"已登记 {len(humans)} 个人类身份，其中 {len(eligible)} 个可登录。"
+        message = f"已登记 {len(humans)} 个账号，其中 {len(eligible)} 个可以登录。"
 
     return {
         "auth_required": True,

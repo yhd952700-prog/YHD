@@ -215,7 +215,7 @@ class TestAuthenticate:
         assert caught.value.status_code == 401
         # Same wording as a wrong password: a distinct message would make this
         # endpoint an oracle for which principals exist.
-        assert caught.value.detail == "凭据无效"
+        assert caught.value.detail == "账号或密码不正确"
 
     def test_wrong_password_is_401(self, auth_env):
         _register_human("xin.hongda")
