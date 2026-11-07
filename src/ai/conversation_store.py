@@ -46,6 +46,11 @@ class ConversationStore:
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
+    @property
+    def db_path(self) -> str:
+        """实际落盘的库路径（账号备份按此路径取一致快照）。"""
+        return self._db_path
+
     def _init_db(self) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)

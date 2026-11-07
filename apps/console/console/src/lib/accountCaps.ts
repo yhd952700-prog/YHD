@@ -125,14 +125,13 @@ export function deriveCaps(profile: AccountProfile | null): AccountCaps {
 }
 
 /**
- * 身份条文案。
+ * 身份条文案：所有账号**完全一致**（品牌栏 + `我的工作空间`）。
  *
- * 根：`主账号 · 可管理 N 位成员`（规格 §9.7，仅根可见）。
- * 非根：`工作空间` —— 不含任何层级、来源或结构字样。
+ * 顶部不承载任何层级信息：`主账号 · 可管理 N 位成员` 这类文案本身就是
+ * "我是子账号"的破绽。可管理范围只在有权限的管理页里出现。
  */
-export function identityBarRole(profile: AccountProfile): string {
-  if (!profile.isRoot) return '工作空间'
-  return `主账号 · 可管理 ${profile.memberCount} 位成员`
+export function identityBarRole(_profile: AccountProfile): string {
+  return '我的工作空间'
 }
 
 /** 成员页的 Key 授权文案；只有根能看到真实归属与代用标记。 */

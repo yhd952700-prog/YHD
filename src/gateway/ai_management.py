@@ -192,6 +192,15 @@ class HireEmployeeRequest(BaseModel):
     )
 
 
+class AdoptEmployeeRequest(BaseModel):
+    """根的"取用"：把子账号员工/技能复制到根自己的空间。"""
+    name: str = Field(..., min_length=1, max_length=128, description="要取用的员工名")
+    owner: str = Field("", max_length=128, description="来源账号（可选，用于消歧）")
+    as_name: str = Field(
+        "", max_length=128, description="复制到根空间后的名字（省略则自动生成）"
+    )
+
+
 class EmployeeUpdateRequest(BaseModel):
     """改名 / 改职责 / 停用或启用 / 改默认能力（只作用于自己的员工）。"""
     name: Optional[str] = Field(None, min_length=1, max_length=128,
@@ -2391,6 +2400,89 @@ class AIStateManager:
             "employee": self._summarize_employee(emp),
         }
 
+    def adopt_employee(
+        self,
+        name: str,
+        viewer: Optional[GoalViewer] = None,
+        *,
+        as_name: str = "",
+        owner_account_id: str = "",
+    ) -> Dict[str, Any]:
+        """根账号把子树员工/技能**复制**到自己的空间（只读源，不改源）。
+
+        刻意不实现"根直接往子账号空间里派活"：那样会让子账号看到主账号的
+        动作。取用后的副本 ``owner_account_id`` 是根自己，任务在根空间执行，
+        子账号侧员工列表、任务列表与用量都不出现任何痕迹。
+
+        来源（账号 + 员工名）只回给调用方并写审计，用于追溯。
+        """
+        if viewer is None or not viewer.is_root:
+            raise GoalWorkError(
+                404, "employee_not_found",
+                "员工不存在或不在当前可见范围（不会改用其他员工）",
+            )
+        source = self._visible_employee(name, viewer)
+        if source is None:
+            raise GoalWorkError(
+                404, "employee_not_found",
+                "员工不存在或不在当前可见范围（不会改用其他员工）",
+            )
+        source_owner = self._employee_owner(source)
+        root_owner = viewer.principal
+        if owner_account_id and normalise_owner(owner_account_id) != source_owner:
+            raise GoalWorkError(
+                404, "employee_not_found",
+                "员工不存在或不在当前可见范围（不会改用其他员工）",
+            )
+        if source_owner == root_owner:
+            raise GoalWorkError(
+                400, "employee_already_owned",
+                "该员工已在你的工作空间，无需取用",
+            )
+
+        target_name = (as_name or "").strip() or f"{source.name}-{source_owner}"
+        if self._store().load(target_name) is not None:
+            raise GoalWorkError(
+                409, "employee_exists",
+                f"员工 {target_name!r} 已存在；请换一个名字再取用（不会覆盖已有员工）",
+            )
+
+        agent_types = [
+            str(getattr(agent, "agent_type", "") or "general")
+            for agent in (source.agents or {}).values()
+        ] or [str(item) for item in (getattr(source, "agent_types", []) or [])]
+        result = self.hire_employee(
+            name=target_name,
+            agent_count=max(1, len(agent_types)),
+            agent_types=agent_types,
+            role_description=source.role_description,
+            default_capabilities=list(source.default_capabilities or []),
+            owner_account_id=root_owner,
+        )
+        from src.kernels.identity import get_identity_manager
+
+        get_identity_manager().record_event(
+            action="employee.adopt",
+            actor=root_owner,
+            target=root_owner,
+            outcome="allowed",
+            details={
+                "source_account": source_owner,
+                "source_employee": source.name,
+                "target_employee": target_name,
+            },
+        )
+        return {
+            **result,
+            "employee": {
+                **result["employee"],
+                "adopted_from": {
+                    "account_id": source_owner,
+                    "employee_name": source.name,
+                },
+            },
+        }
+
     def list_all_employees(
         self, viewer: Optional[GoalViewer] = None
     ) -> List[Dict[str, Any]]:
@@ -3010,6 +3102,31 @@ def hire_employee(
             detail=f"employee {req.name!r} already exists",
         )
     return JSONResponse(status_code=201, content=result["employee"])
+
+
+@router.post("/employees/adopt", status_code=201)
+def adopt_employee(
+    req: AdoptEmployeeRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """根把子账号员工/技能复制到自己的空间（仅根可用；成员一律 404）。
+
+    副本归属根自己，任务在根空间执行；来源账号与员工名只回给根并写审计，
+    子账号侧员工列表、任务列表与用量都不会出现这次取用。
+    """
+    viewer = _as_viewer(viewer)
+    mgr = AIStateManager()
+    try:
+        return mgr.adopt_employee(
+            req.name,
+            viewer,
+            as_name=req.as_name,
+            owner_account_id=req.owner,
+        )
+    except GoalWorkError as exc:
+        raise _http_from_goal_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.patch("/employees/{name}")

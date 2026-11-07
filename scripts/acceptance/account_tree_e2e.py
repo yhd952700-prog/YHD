@@ -553,7 +553,9 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
     )
     report.check(item, "成员只见自己账单", (status, member_view.get("by_key_owner") and [x.get("key_owner") for x in member_view["by_key_owner"]]), (200, ["member1"]))
     report.check(item, "成员响应无 by_actor", "by_actor" in member_view, False)
-    report.check(item, "成员 calls=2", member_view.get("calls"), 2)
+    # 成员侧只统计本人发起的调用：根借用 1 次不改变成员的 calls（仍在账本
+    # 里、仍归 member1 的 Key），根视角同时看到真实总量 2。
+    report.check(item, "成员 calls=1（借用不被计入）", member_view.get("calls"), 1)
 
     status, root_self = request("GET", inst.base + "/v1/accounts/root1/usage", token=tokens["root"])
     report.check(item, "根查自己=整树账单", (status, root_self.get("calls")), (200, 2))
@@ -600,10 +602,10 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
         if "root1" in raw:
             leaks.append((name, status, raw[:120]))
     report.check(item, "成员 11 个界面 0 次出现借用方", leaks, [], f"surfaces={len(surfaces)}")
-    report.check(item, "成员用量只有自己的总额度",
+    report.check(item, "成员用量只算本人调用",
                  (member_view.get("calls"),
                   [entry.get("key_owner") for entry in member_view.get("by_key_owner") or []]),
-                 (2, ["member1"]))
+                 (1, ["member1"]))
     return {"model_id": model_id}
 
 
@@ -677,6 +679,104 @@ def memory_visibility(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
     return {"ids": ids, "texts": texts}
 
 
+def employee_adoption(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """§ 根的取用：子账号员工/技能复制到根空间；子账号侧零痕迹。"""
+    item = "员工取用"
+    status, body = request(
+        "POST", inst.base + "/v1/employees",
+        {"name": "member-writer", "agent_count": 2,
+         "agent_types": ["planner", "executor"],
+         "role_description": "成员负责整理日报"},
+        token=tokens["member"],
+    )
+    report.check(item, "成员创建自己的员工", (status, body.get("name")), (201, "member-writer"))
+
+    status, body = request("GET", inst.base + "/v1/employees", token=tokens["root"])
+    names = sorted(emp.get("name") for emp in body.get("employees") or [])
+    report.check(item, "根可见子账号员工（只读）", (status, "member-writer" in names), (200, True))
+
+    status, body = request(
+        "POST", inst.base + "/v1/employees/adopt",
+        {"name": "member-writer", "as_name": "adopted-writer"},
+        token=tokens["root"],
+    )
+    adopted = body.get("employee") or {}
+    report.check(item, "根取用子账号员工", (status, adopted.get("name")), (201, "adopted-writer"))
+    report.check(item, "副本归属根自己", adopted.get("owner_account_id"), "root1")
+    report.check(item, "取用保留职责描述", adopted.get("role_description"), "成员负责整理日报")
+    report.check(item, "取用保留默认能力",
+                 {a.get("agent_type") for a in adopted.get("agents") or []},
+                 {"planner", "executor"})
+    report.check(item, "取用可追溯来源",
+                 adopted.get("adopted_from"),
+                 {"account_id": "member1", "employee_name": "member-writer"})
+
+    status, body = request("GET", inst.base + "/v1/employees", token=tokens["member"])
+    names = sorted(emp.get("name") for emp in body.get("employees") or [])
+    report.check(item, "子账号员工列表无副本", (status, names), (200, ["member-writer"]))
+
+    # 子账号能看到的界面里不能出现主账号痕迹（员工/目标/审计）。
+    # 只剔除"本人位置"自述字段（parent_account_id/path），其余都算泄漏。
+    def visible_text(body: Any) -> str:
+        if isinstance(body, dict):
+            return json.dumps(
+                {k: v for k, v in body.items() if k not in ("parent_account_id", "path")},
+                ensure_ascii=False, default=str,
+            )
+        return json.dumps(body, ensure_ascii=False, default=str)
+
+    leaks = []
+    for path in ("/v1/employees", "/v1/goals", "/v1/audit/events"):
+        status, body = request("GET", inst.base + path, token=tokens["member"])
+        raw = visible_text(body)
+        if "root1" in raw or "adopted-writer" in raw:
+            leaks.append((path, status, raw[:120]))
+    report.check(item, "子账号侧无主账号痕迹", leaks, [], str(leaks))
+
+    # 成员不能取用；非根一律 404（与不存在不可区分）。
+    status, body = request(
+        "POST", inst.base + "/v1/employees/adopt",
+        {"name": "adopted-writer"}, token=tokens["member"],
+    )
+    report.check(item, "成员取用被拒", (status, body.get("code")), (404, "employee_not_found"))
+
+
+def memory_adoption(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """§ 记忆取用：根把子树记忆复制进自己的库；源数据与成员侧完全不变。"""
+    item = "记忆取用"
+    status, body = request(
+        "POST", inst.base + "/v1/memory/adopt",
+        {"account_id": "member1"}, token=tokens["root"],
+    )
+    report.check(item, "根取用成员记忆", (status, body.get("imported")), (200, 1), str(body))
+
+    status, body = request(
+        "GET", inst.base + "/v1/memory/entries?scope=self&q=member-secret", token=tokens["root"]
+    )
+    entries = body.get("entries") or []
+    report.check(item, "取用后可搜索", (status, len(entries)), (200, 1), str(entries)[:160])
+    report.check(item, "取用条目带来源标注",
+                 (entries[0].get("source"), entries[0].get("account_id")),
+                 ("adopt:member1", "root1"), str(entries)[:160])
+
+    status, body = request("GET", inst.base + "/v1/memory/entries?scope=self", token=tokens["member"])
+    texts = [entry.get("text") for entry in body.get("entries") or []]
+    report.check(item, "成员记忆原样未动", (status, texts), (200, ["member-secret-memory"]))
+
+    status, body = request(
+        "POST", inst.base + "/v1/memory/adopt", {}, token=tokens["member"]
+    )
+    report.check(item, "成员取用被拒", (status, body.get("code")),
+                 (404, "ACCOUNT_SUBTREE_DENIED"))
+
+    # 重复取用幂等：不会产生第二份副本。
+    status, body = request(
+        "POST", inst.base + "/v1/memory/adopt",
+        {"account_id": "member1"}, token=tokens["root"],
+    )
+    report.check(item, "重复取用不产生副本", (status, body.get("imported")), (200, 0), str(body))
+
+
 def backup_roundtrip(
     report: Report, inst: Instance, tokens: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -691,6 +791,15 @@ def backup_roundtrip(
     report.check(item, "清单成员数=3", manifest.get("member_count"), 3)
     report.check(item, "清单含成员列表", sorted(manifest.get("members") or []), ["grand1", "member1", "root1"])
     report.check(item, "清单含文件数/字节数", ("files" in manifest and "bytes" in manifest), True, str({k: manifest.get(k) for k in ("files", "bytes")}))
+    store_manifest = manifest.get("stores") or {}
+    memory_store = store_manifest.get("account_memory") or {}
+    conversation_store = store_manifest.get("conversation") or {}
+    report.check(item, "清单写明记忆库与条数",
+                 (memory_store.get("db"), memory_store.get("entries")),
+                 ("account_memory.sqlite3", 3), str(memory_store))
+    report.check(item, "清单写明会话库与条数",
+                 (conversation_store.get("db"), conversation_store.get("turns", 0) > 0),
+                 ("conversation_store.db", True), str(conversation_store))
 
     status, body = request(
         "POST", inst.base + "/v1/accounts/backup/export",
@@ -736,6 +845,12 @@ def backup_roundtrip(
         )
         report.check(item, "新机导入成功", (status, imported.get("root_principal")), (200, "root1"))
         report.check(item, "导入恢复账号数", imported.get("accounts"), 3)
+        memory_import = imported.get("memory") or {}
+        conversation_import = imported.get("conversations") or {}
+        report.check(item, "导入带回全部记忆", memory_import.get("imported"),
+                     memory_store.get("entries"), str(memory_import))
+        report.check(item, "导入带回全部会话", conversation_import.get("imported"),
+                     conversation_store.get("turns"), str(conversation_import))
         imported_policy = imported.get("token_policy") or {}
         report.check(item, "导入响应重申令牌策略",
                      imported_policy.get("source_tokens_valid_on_target"), False, str(imported_policy))
@@ -794,6 +909,17 @@ def backup_roundtrip(
         accounts = sorted(entry.get("account_id") for entry in body.get("entries") or [])
         report.check(item, "成员跨机看不到他人记忆",
                      (status, sorted(set(accounts) - {"member1"})), (200, []), str(accounts))
+        # 记忆与会话真的落到了新实例：能读、能搜（不是只有账号壳子）。
+        status, body = request(
+            "GET", second.base + "/v1/memory/entries?scope=self&q=member-secret", token=m_token
+        )
+        report.check(item, "跨机成员记忆可搜",
+                     (status, len(body.get("entries") or [])), (200, 1), str(body.get("entries"))[:120])
+        status, body = request(
+            "GET", second.base + "/v1/chat/history?session_id=member-session", token=m_token
+        )
+        report.check(item, "跨机会话历史可读",
+                     (status, (body.get("count") or 0) > 0), (200, True), str(body)[:120])
         status, body = request("GET", second.base + "/v1/accounts/member1/usage", token=m_token)
         report.check(item, "成员跨机用量无调用者字段", (status, "by_actor" in body), (200, False))
 
@@ -1648,7 +1774,9 @@ def main() -> int:
         enumeration(report, inst, tokens)
         usage = usage_double_entry(report, inst, tokens)
         memory_visibility(report, inst, tokens)
+        employee_adoption(report, inst, tokens)
         backup = backup_roundtrip(report, inst, tokens)
+        memory_adoption(report, inst, tokens)
         file_isolation(report, inst, tokens)
         session_isolation(report, inst, tokens, usage["model_id"])
         audit_isolation(report, inst, tokens)

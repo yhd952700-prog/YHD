@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import sqlite3
+import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -166,6 +168,131 @@ def _normalise_rel(path: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# 记忆库 / 会话库快照
+# --------------------------------------------------------------------------- #
+
+#: 两个库都在工作区之外，必须单独纳入备份；列清单是"能带走什么"的唯一定义。
+_MEMORY_TABLES: Dict[str, Tuple[str, ...]] = {
+    "account_memory_entries": ("id", "owner", "text", "source", "tags", "created_at"),
+    "account_memory_custody": ("owner", "enabled", "updated_at", "updated_by"),
+}
+_CONVERSATION_TABLES: Dict[str, Tuple[str, ...]] = {
+    "conversation_turns": ("seq", "principal_id", "turn", "role", "content", "created_at"),
+}
+
+
+def _snapshot_tables(
+    db_path: str, tables: Dict[str, Tuple[str, ...]]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """用 SQLite backup API 取一致快照，再逐表读成行。
+
+    绝不直接拷 ``-wal`` 文件：正在写入的库直接复制会得到撕裂快照；``backup``
+    在源库上加共享锁并复制到临时库，读的是同一事务视图。
+    """
+    empty = {name: [] for name in tables}
+    if not db_path or not os.path.exists(db_path):
+        return empty
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot = os.path.join(tmp, "snapshot.sqlite3")
+        source = sqlite3.connect(db_path, timeout=10)
+        try:
+            target = sqlite3.connect(snapshot)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+        connection = sqlite3.connect(snapshot)
+        connection.row_factory = sqlite3.Row
+        try:
+            result: Dict[str, List[Dict[str, Any]]] = {}
+            for name, columns in tables.items():
+                try:
+                    rows = connection.execute(
+                        f"SELECT {','.join(columns)} FROM {name}"
+                    ).fetchall()
+                except sqlite3.Error:
+                    rows = []
+                result[name] = [dict(row) for row in rows]
+            return result
+        finally:
+            connection.close()
+
+
+def _conversation_owner(principal_id: str, allowed: Sequence[str]) -> Optional[str]:
+    """把会话行主体映射回账号。
+
+    网关的会话主体是 ``liuhao-{账号}-{会话名}``（见 ``chat.read_history``），
+    不是裸账号名；直接按账号名过滤会把真实对话全部漏掉。
+    """
+    if principal_id in allowed:
+        return principal_id
+    prefix = "liuhao-"
+    if not principal_id.startswith(prefix):
+        return None
+    rest = principal_id[len(prefix):]
+    for owner in allowed:
+        if rest.startswith(owner + "-"):
+            return owner
+    return None
+
+
+def _collect_stores(principals: Sequence[str]) -> Dict[str, Any]:
+    """收集记忆库与会话库中**归属这些账号**的行（含来源清单）。"""
+    from ..ai.conversation_store import get_conversation_store
+    from .account_memory import db_path as memory_db_path
+
+    allowed = set(principals)
+    memory_rows = _snapshot_tables(memory_db_path(), _MEMORY_TABLES)
+    entries = [
+        row for row in memory_rows.get("account_memory_entries", [])
+        if str(row.get("owner") or "") in allowed
+    ]
+    custody = [
+        row for row in memory_rows.get("account_memory_custody", [])
+        if str(row.get("owner") or "") in allowed
+    ]
+
+    conversation_rows = _snapshot_tables(
+        get_conversation_store().db_path, _CONVERSATION_TABLES
+    )
+    turns = [
+        row for row in conversation_rows.get("conversation_turns", [])
+        if _conversation_owner(str(row.get("principal_id") or ""), principals)
+    ]
+    conversation_owners = sorted(
+        {
+            owner
+            for row in turns
+            if (owner := _conversation_owner(
+                str(row.get("principal_id") or ""), principals
+            ))
+        }
+    )
+
+    return {
+        "payload": {
+            "memory": {"entries": entries, "custody": custody},
+            "conversations": {"turns": turns},
+        },
+        "manifest": {
+            "account_memory": {
+                "db": "account_memory.sqlite3",
+                "entries": len(entries),
+                "custody": len(custody),
+                "owners": sorted({str(row.get("owner") or "") for row in entries}),
+            },
+            "conversation": {
+                "db": "conversation_store.db",
+                "turns": len(turns),
+                "principals": conversation_owners,
+            },
+        },
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 导出
 # --------------------------------------------------------------------------- #
 
@@ -272,6 +399,17 @@ def export_bundle(
     files, total_bytes, skipped = _collect_files(
         principals=principals, include_public=include_public
     )
+    stores = _collect_stores(principals)
+    store_bytes = len(
+        json.dumps(stores["payload"], ensure_ascii=False).encode("utf-8")
+    )
+    if total_bytes + store_bytes > MAX_PAYLOAD_BYTES:
+        raise _account_error(
+            413, "ACCOUNT_BACKUP_TOO_LARGE", "备份内容过大，无法一次导出"
+        )
+    total_bytes += store_bytes
+    memory_manifest = stores["manifest"]["account_memory"]
+    conversation_manifest = stores["manifest"]["conversation"]
 
     members = sorted(
         str(item.get("principal") or "") for item in identity_part["accounts"]
@@ -288,11 +426,18 @@ def export_bundle(
             "models": len(rows),
             "credentials": len(credentials),
             "skipped": skipped,
+            # 带上哪些库、各多少条：导入方据此核对，用户侧也能一眼看懂。
+            "stores": {
+                "account_memory": memory_manifest,
+                "conversation": conversation_manifest,
+            },
         },
         "identity": identity_part,
         "credentials": credentials,
         "models": {"rows": rows, "key_material": key_material},
         "files": files,
+        "memory": stores["payload"]["memory"],
+        "conversations": stores["payload"]["conversations"],
     }
 
     # 审计写 actor 与成员清单；口令绝不出现在 details 里。
@@ -308,6 +453,8 @@ def export_bundle(
             "bytes": total_bytes,
             "models": len(rows),
             "credentials": len(credentials),
+            "memory": memory_manifest["entries"],
+            "conversations": conversation_manifest["turns"],
         },
     )
 
@@ -365,6 +512,128 @@ def _restore_files(entries: List[Dict[str, Any]]) -> Dict[str, int]:
         except OSError:
             skipped += 1
     return {"restored": restored, "skipped": skipped}
+
+
+def _restore_memory(memory: Any) -> Dict[str, int]:
+    """把记忆行写回本机记忆库：按主键合并，**已存在的行永不覆盖**。
+
+    * ``account_memory_entries`` 以 ``id`` 为主键 → ``INSERT OR IGNORE``；
+    * ``account_memory_custody`` 以 ``owner`` 为主键 → 已存在即保留现场值；
+    * 坏行（缺 id/owner/text）计数为 ``skipped``，不猜、不补默认值。
+    """
+    from . import account_memory
+
+    report = {"imported": 0, "skipped": 0, "custody_imported": 0, "custody_skipped": 0}
+    if not isinstance(memory, dict):
+        return report
+    entries = memory.get("entries") or []
+    custody = memory.get("custody") or []
+    with account_memory._connect() as connection:  # noqa: SLF001 - 同包共享库连接
+        for row in entries if isinstance(entries, list) else []:
+            if not isinstance(row, dict):
+                report["skipped"] += 1
+                continue
+            values = (
+                str(row.get("id") or ""),
+                str(row.get("owner") or ""),
+                str(row.get("text") or ""),
+                str(row.get("source") or ""),
+                str(row.get("tags") or "[]"),
+                str(row.get("created_at") or ""),
+            )
+            if not values[0] or not values[1] or not values[2]:
+                report["skipped"] += 1
+                continue
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO account_memory_entries "
+                "(id, owner, text, source, tags, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                values,
+            )
+            if cursor.rowcount:
+                report["imported"] += 1
+            else:
+                report["skipped"] += 1
+        for row in custody if isinstance(custody, list) else []:
+            if not isinstance(row, dict) or not str(row.get("owner") or ""):
+                report["custody_skipped"] += 1
+                continue
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO account_memory_custody "
+                "(owner, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?)",
+                (
+                    str(row.get("owner") or ""),
+                    1 if row.get("enabled") else 0,
+                    str(row.get("updated_at") or ""),
+                    str(row.get("updated_by") or ""),
+                ),
+            )
+            if cursor.rowcount:
+                report["custody_imported"] += 1
+            else:
+                report["custody_skipped"] += 1
+        connection.commit()
+    return report
+
+
+def _restore_conversations(conversations: Any) -> Dict[str, int]:
+    """把对话追加回本机会话库：同内容同轮次视为已存在，不重复写入。
+
+    ``seq`` 由本机自增，不携带源实例行号（避免与现场数据主键冲突）。
+    """
+    from ..ai.conversation_store import get_conversation_store
+
+    report = {"imported": 0, "skipped": 0}
+    if not isinstance(conversations, dict):
+        return report
+    turns = conversations.get("turns") or []
+    store = get_conversation_store()
+    connection = sqlite3.connect(store.db_path, timeout=10)
+    try:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS conversation_turns ("
+            " seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " principal_id TEXT NOT NULL,"
+            " turn INTEGER NOT NULL,"
+            " role TEXT NOT NULL,"
+            " content TEXT NOT NULL,"
+            " created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))"
+            ")"
+        )
+        for row in turns if isinstance(turns, list) else []:
+            if not isinstance(row, dict):
+                report["skipped"] += 1
+                continue
+            principal_id = str(row.get("principal_id") or "")
+            role = str(row.get("role") or "")
+            content = str(row.get("content") or "")
+            if not principal_id or not role:
+                report["skipped"] += 1
+                continue
+            existing = connection.execute(
+                "SELECT 1 FROM conversation_turns WHERE principal_id = ? "
+                "AND turn = ? AND role = ? AND content = ? LIMIT 1",
+                (principal_id, int(row.get("turn") or 0), role, content),
+            ).fetchone()
+            if existing is not None:
+                report["skipped"] += 1
+                continue
+            connection.execute(
+                "INSERT INTO conversation_turns "
+                "(principal_id, turn, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    principal_id,
+                    int(row.get("turn") or 0),
+                    role,
+                    content,
+                    float(row.get("created_at") or 0) or 0,
+                ),
+            )
+            report["imported"] += 1
+        connection.commit()
+    finally:
+        connection.close()
+    return report
 
 
 def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
@@ -433,6 +702,11 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     files = payload.get("files") or []
     file_report = _restore_files(files if isinstance(files, list) else [])
 
+    # 记忆库 / 会话库在**工作区之外**，必须落回本机对应路径；合并策略：
+    # 记忆按主键去重、对话按（主体/轮次/角色/正文）去重，绝不覆盖现场数据。
+    memory_report = _restore_memory(payload.get("memory"))
+    conversation_report = _restore_conversations(payload.get("conversations"))
+
     manager.record_import_receipt(bundle_id)
     _clear_attempts(bundle_id)
 
@@ -454,6 +728,10 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
             "models": model_count,
             "files": file_report["restored"],
             "files_skipped": file_report["skipped"],
+            "memory": memory_report["imported"],
+            "memory_skipped": memory_report["skipped"],
+            "conversations": conversation_report["imported"],
+            "conversations_skipped": conversation_report["skipped"],
         },
     )
 
@@ -464,7 +742,12 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         "credentials": credential_count,
         "models": model_count,
         "files": file_report,
+        "memory": memory_report,
+        "conversations": conversation_report,
         "manifest": payload.get("manifest") or {},
         "token_policy": dict(_TOKEN_POLICY),
-        "notice": "导入完成；本机使用自己的登录签名密钥，其他实例已签发的令牌不能在本机使用。",
+        "notice": (
+            "导入完成；本机使用自己的登录签名密钥，其他实例已签发的令牌不能在本机使用。"
+            "已有数据按主键合并，不会被覆盖。"
+        ),
     }

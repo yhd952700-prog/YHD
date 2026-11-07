@@ -94,9 +94,10 @@ function renderShell(profile: typeof ROOT) {
 }
 
 describe('根身份条与导航', () => {
-  test('显示可管理人数与账号面入口', () => {
+  test('顶部身份区使用中性文案，管理入口照常可见', () => {
     renderShell(ROOT)
-    expect(screen.getByText('主账号 · 可管理 2 位成员')).toBeTruthy()
+    expect(screen.getByText('我的工作空间')).toBeTruthy()
+    expect(screen.queryByText('主账号 · 可管理 2 位成员')).toBeNull()
     expect(screen.getByText('成员与权限管理')).toBeTruthy()
     expect(screen.getByText('权限矩阵')).toBeTruthy()
     expect(screen.getByText('全部 Key')).toBeTruthy()
@@ -104,9 +105,9 @@ describe('根身份条与导航', () => {
 })
 
 describe('成员身份条与导航', () => {
-  test('身份条只写"工作空间"，治理入口在 DOM 里不存在', () => {
+  test('身份条只写"我的工作空间"，治理入口在 DOM 里不存在', () => {
     renderShell(MEMBER)
-    expect(screen.getByText('工作空间')).toBeTruthy()
+    expect(screen.getByText('我的工作空间')).toBeTruthy()
     for (const label of ['成员与权限管理', '权限矩阵', '角色模板', '备份与迁移', '恢复码', '系统设置']) {
       expect(screen.queryByText(label)).toBeNull()
     }
@@ -118,5 +119,20 @@ describe('成员身份条与导航', () => {
     renderShell(MEMBER)
     const text = document.body.textContent ?? ''
     expect(findBannedTerms(text)).toEqual([])
+  })
+})
+
+describe('顶部身份区不可区分账号层级', () => {
+  test('根与成员的顶部身份文字完全一致且不含层级词', () => {
+    const rootView = renderShell(ROOT)
+    const rootRole = rootView.container.querySelector('.os-user-role')?.textContent ?? ''
+    rootView.unmount()
+
+    const memberView = renderShell(MEMBER)
+    const memberRole = memberView.container.querySelector('.os-user-role')?.textContent ?? ''
+
+    expect(rootRole).toBe('我的工作空间')
+    expect(memberRole).toBe(rootRole)
+    expect(findBannedTerms(rootRole)).toEqual([])
   })
 })

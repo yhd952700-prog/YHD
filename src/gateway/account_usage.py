@@ -134,7 +134,12 @@ def usage_summary(
     """返回某账号可见的用量。
 
     ``include_callers=True`` 仅用于根账号：按 actor 与 key_owner 两个维度都
-    返回；成员只按 ``key_owner`` 聚合，且响应里没有 ``by_actor``。
+    返回；成员只看到**由本人发起的调用**，且响应里没有 ``by_actor``。
+
+    成员视角刻意不按 ``key_owner`` 全量计数：主账号借用成员 Key 时，计费与
+    额度仍记在 Key 主人名下（根视角能看到真实总量与代用记录），但成员侧
+    的 ``calls`` / token 只统计 ``actor = 本人`` 的事件，避免"我的 Key 被谁
+    用过"从计数里被察觉。
 
     ``owners`` 把账单限定在给定账号集合内（根=目标子树，成员=本人）；不传
     表示不做归属过滤（仅供进程内诊断，不暴露给 HTTP）。
@@ -158,6 +163,10 @@ def usage_summary(
             )
             params = scope_owners
         rows = connection.execute(sql, params).fetchall()
+
+    if not include_callers:
+        # 成员侧只统计本人发起的调用；借用记录仍留在账本里供根账号核对。
+        rows = [row for row in rows if str(row["actor"] or "") == pid]
 
     summary: Dict[str, Any] = {
         "principal": pid,

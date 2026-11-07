@@ -218,13 +218,14 @@ describe('导航裁剪：不渲染而不是置灰', () => {
 })
 
 describe('身份条与 Key 归属文案', () => {
-  test('根显示可管理人数；非根只写"工作空间"', () => {
+  test('根与非根身份条文案完全一致，且不含任何层级词', () => {
     const rootProfile = buildProfile(makeSession(), PAYLOAD, 'live', null)
-    expect(identityBarRole(rootProfile)).toBe('主账号 · 可管理 2 位成员')
-
     const member = makeSession({ principal: 'member-a', parentAccountId: 'root', depth: 1 })
     const memberProfile = buildProfile(member, PAYLOAD, 'live', null)
-    expect(identityBarRole(memberProfile)).toBe('工作空间')
+
+    expect(identityBarRole(rootProfile)).toBe('我的工作空间')
+    expect(identityBarRole(memberProfile)).toBe(identityBarRole(rootProfile))
+    expect(findBannedTerms(identityBarRole(rootProfile))).toEqual([])
     expect(findBannedTerms(identityBarRole(memberProfile))).toEqual([])
   })
 

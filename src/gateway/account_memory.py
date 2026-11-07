@@ -63,6 +63,15 @@ class CustodyRequest(BaseModel):
     enabled: bool
 
 
+class MemoryAdoptRequest(BaseModel):
+    """根的"取用"：把子树账号的记忆复制到根自己的记忆库。
+
+    ``account_id`` 留空表示整棵子树；无论哪种，都只写入**根自己的 owner**，
+    子账号侧数据与可见性完全不变（子账号看不到根的动作）。
+    """
+    account_id: str = Field("", max_length=128, description="来源账号；空=整棵子树")
+
+
 def db_path() -> str:
     explicit = (os.environ.get(_ENV_DB) or "").strip()
     if explicit:
@@ -242,6 +251,81 @@ def export_entries(
         details={"scope": scope_name, "entries": len(entries), "format": fmt},
     )
     return {"content": content, "filename": filename, "entries": len(entries)}
+
+
+@router.post("/adopt")
+def adopt_entries(
+    payload: MemoryAdoptRequest,
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """主账号把子树记忆**复制**进自己的记忆库（可搜索、可引用）。
+
+    只新增 ``owner = 主账号`` 的条目，并给每条打上来源标签
+    （``from:<来源账号>`` / ``origin:<原条目 id>``），返回与审计都能追溯；
+    子账号的记忆行本身不会被改写，也不会收到任何通知 —— 子账号侧不可见。
+    重复取用同一条目按 ``origin:<id>`` 去重，不产生副本。
+    """
+    if not context.is_root:
+        raise deny(
+            404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+        )
+    wanted = str(payload.account_id or "").strip()
+    if wanted:
+        if wanted == context.principal or wanted not in context.subtree:
+            raise deny(
+                404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+            )
+        owners = (wanted,)
+    else:
+        owners = tuple(item for item in context.subtree if item != context.principal)
+    entries = _query_entries(owners, "")
+    imported = 0
+    skipped = 0
+    adopted_at = _now_iso()
+    with _connect() as connection:
+        for entry in entries:
+            marker = '%"origin:' + str(entry["id"]) + '"%'
+            existing = connection.execute(
+                "SELECT 1 FROM account_memory_entries WHERE owner = ? AND tags LIKE ? LIMIT 1",
+                (context.principal, marker),
+            ).fetchone()
+            if existing is not None:
+                skipped += 1
+                continue
+            tags = list(entry["tags"]) + [
+                f"from:{entry['account_id']}",
+                f"origin:{entry['id']}",
+            ]
+            connection.execute(
+                "INSERT INTO account_memory_entries "
+                "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    context.principal,
+                    entry["text"],
+                    f"adopt:{entry['account_id']}",
+                    json.dumps(tags, ensure_ascii=False),
+                    adopted_at,
+                ),
+            )
+            imported += 1
+        connection.commit()
+    get_identity_manager().record_event(
+        action="memory.adopt",
+        actor=context.principal,
+        target=context.principal,
+        outcome="allowed",
+        details={
+            "accounts": list(owners),
+            "imported": imported,
+            "skipped": skipped,
+        },
+    )
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "accounts": list(owners),
+    }
 
 
 @router.get("/custody")
