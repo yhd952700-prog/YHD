@@ -52,7 +52,8 @@ Authorization: Bearer <token>
 
 - 程序根：`LIUHAO_APP_ROOT` > 代码所在安装根（`src/upgrade/update_check.py` 的 `parents[2]`）。**不要**用 `LIUHAO_WORKSPACE_ROOT`——安装版启动器把它指向 `<data>/workspace`，不是程序目录。
 - 数据目录：`LIUHAO_DATA_DIR` > 安装树（`<app-root>/runtime/python.exe` 存在）→ `%LOCALAPPDATA%\LiuHao\data` > 开发/便携版 `<app-root>/data`。
-- 因此安装版 API 检查/备份的是 `%LOCALAPPDATA%\LiuHao\data`，不是不存在的 `<app>/data`；CLI 与 API 不会再各检查一个库。
+- 安装器会把实际数据目录写进程序根 `data-dir.txt`（新装默认 `D:\LiuHaoData`，D 盘不可用时回退 `%LOCALAPPDATA%\LiuHao\data`；老用户覆盖安装保留原位置）。`LiuHao.bat` 读取该文件并以 `LIUHAO_DATA_DIR` 传给启动器与升级器；只有绕过 `LiuHao.bat` 直接调 CLI/API 且未设置该变量时，才会回落到 `%LOCALAPPDATA%\LiuHao\data`。
+- 因此安装版 API 检查/备份的是 `data-dir.txt` 记录的实际数据目录（默认 `D:\LiuHaoData`），不是不存在的 `<app>/data`；CLI 与 API 不会再各检查一个库。
 - API 没有“允许重装/降级”入口：目标版本不高于当前版本时 `/apply` 仍返回 `409`（`code: "no_update_available"`），不会悄悄覆盖当前安装。需要重装/降级请用 CLI 的 `--allow-same-or-downgrade`。
 
 没有配置更新源时**不会假装成功**：
