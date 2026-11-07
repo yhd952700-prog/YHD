@@ -75,9 +75,10 @@ logging:
 # -----------------------------------------------------------------------------
 security:
   jwt:
-    # 开发环境可用固定弱密钥，避免每次重启全端登出；
-    # 生产会通过 LIUHAO_JWT_SECRET 注入强密钥
-    secret: "dev-only-insecure-secret-do-not-use-in-prod"
+    # 不留固定密钥：开发环境同样必须显式注入 LIUHAO_JWT_SECRET。
+    # 空值不会被替换成默认密钥；运行时未注入时只生成进程内临时密钥并告警
+    # （生产环境则直接拒绝启动，见 src/security/jwt_handler.py）。
+    secret: ""
     access_token_expire_minutes: 1440   # 开发 token 一天有效，免频繁登录
     refresh_token_expire_days: 30
   tls:

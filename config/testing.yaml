@@ -79,7 +79,8 @@ logging:
 # -----------------------------------------------------------------------------
 security:
   jwt:
-    secret: "test-jwt-secret-fixed-for-deterministic-tokens"
+    # 不随包携带固定签名密钥；测试请显式注入 LIUHAO_JWT_SECRET。
+    secret: ""
     access_token_expire_minutes: 5
     refresh_token_expire_days: 1
   api_keys:
