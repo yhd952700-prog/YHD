@@ -276,6 +276,10 @@ setlocal
 rem Keep the install tree read-only: never write __pycache__ next to the app.
 set PYTHONDONTWRITEBYTECODE=1
 cd /d "%~dp0"
+rem The installer decides the data directory (default D:\\LiuHaoData, falling
+rem back to %LOCALAPPDATA%\\LiuHao\\data) and records it in data-dir.txt.
+rem Passing it as LIUHAO_DATA_DIR keeps launcher and upgrader on the same path.
+if not defined LIUHAO_DATA_DIR if exist "%~dp0data-dir.txt" for /f "usebackq delims=" %%D in ("%~dp0data-dir.txt") do set "LIUHAO_DATA_DIR=%%D"
 if not exist "runtime\\python.exe" (
     echo [FAIL] runtime\\python.exe is missing - the installation is incomplete.
     pause
@@ -299,7 +303,10 @@ def _write_start_here(app_dir: Path, version: str) -> None:
    - 选 OpenAI 兼容云：填 base_url、模型名、API Key（加密保存在数据目录）。
 3. 向导结束后浏览器会自动打开 http://127.0.0.1:8080 。
 
-数据目录：%LOCALAPPDATA%\\LiuHao\\data（卸载默认保留）。
+程序目录：默认 D:\\LiuHao（D 盘不可用时回退到 %LOCALAPPDATA%\\Programs\\LiuHao，
+          当前用户目录，不需要管理员权限）。
+数据目录：默认 D:\\LiuHaoData（D 盘不可用时回退到 %LOCALAPPDATA%\\LiuHao\\data）。
+          实际位置见程序目录下的 data-dir.txt；卸载默认保留。
 本安装包不含任何模型权重，也不含任何密钥。
 程序未做代码签名，Windows 可能提示“未知发布者”，选择“仍要运行”即可。
 """

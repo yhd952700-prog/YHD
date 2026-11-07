@@ -84,8 +84,14 @@ def _release(
 
 
 def _manager(app_root: Path, release_dir: Path) -> UpgradeManager:
+    # 显式指定数据目录：conftest 会把 LIUHAO_DATA_DIR 指到 pytest 的 tmp，
+    # 若跟随环境变量，备份会落在用例看不到的位置，断言也会失去意义。
     return UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+        UpgradeConfig(
+            app_root=app_root,
+            data_dir=app_root / "data",
+            source=LocalDirectorySource(release_dir),
+        )
     )
 
 
@@ -303,6 +309,57 @@ def test_rollback_without_record_reports_failure_not_stuck(tmp_path: Path) -> No
         assert status["phase"] == "failed", status
         assert manager.history(kind="rollback")[0]["status"] == "failed"
         assert read_current_version(app_root)[0] == "0.1.0"
+    finally:
+        manager.close()
+
+
+def test_reapply_after_rollback_skips_historical_backups(tmp_path: Path) -> None:
+    """A retry must not back up ``<data>/upgrade-backups`` itself.
+
+    After a failed/rolled-back upgrade the old bucket contains rollback-trash
+    entries whose source files no longer exist. Walking them nested the backup
+    tree and made every later apply fail with FileNotFoundError.
+    """
+    app_root = _setup_app(tmp_path / "app")
+    release_dir = tmp_path / "releases"
+    _release(release_dir)
+    manager = _manager(app_root, release_dir)
+    try:
+        check = manager.check()
+        assert check.release is not None
+        download = manager.download(check.release)
+        first = manager.apply(download.path, check.release)
+        assert first.to_version == "0.2.0"
+
+        rolled = manager.rollback()
+        assert rolled.to_version == "0.1.0"
+
+        # Reproduce the historical shape: an old bucket with a nested data
+        # copy and a rollback-trash file that has already been cleaned up.
+        stale = (
+            app_root
+            / "data"
+            / "upgrade-backups"
+            / "20260101T000000Z-deadbeef"
+        )
+        (stale / "data" / "nested").mkdir(parents=True, exist_ok=True)
+        (stale / "data" / "nested" / "copy.json").write_text("{}", encoding="utf-8")
+        ghost = stale / "rollback-trash" / "gone" / "dashboard.json"
+        ghost.parent.mkdir(parents=True, exist_ok=True)
+        ghost.write_text("stale", encoding="utf-8")
+        ghost.unlink()
+
+        check = manager.check()
+        assert check.release is not None
+        download = manager.download(check.release)
+        second = manager.apply(download.path, check.release)
+        assert second.to_version == "0.2.0"
+
+        second_backup = app_root / "data" / "upgrade-backups" / second.backup_id
+        assert (second_backup / "backup.json").is_file()
+        # The whole backups parent is excluded, so no nested upgrade-backups.
+        assert not (second_backup / "data" / "upgrade-backups").exists()
+        assert not (second_backup / "data" / "20260101T000000Z-deadbeef").exists()
     finally:
         manager.close()
 

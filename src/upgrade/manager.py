@@ -1317,7 +1317,11 @@ class UpgradeManager:
             self.config.data_dir,
             extra_paths,
             backup_dir,
-            exclude_dirs=(self.config.state_dir,),
+            # 除运行期状态目录外，整个 upgrade-backups 父目录也必须排除：
+            # 历史备份（尤其是失败/回滚后留下的 rollback-trash）本身就在数据
+            # 目录里，若被再次遍历，会形成嵌套备份，并可能在遍历过程中读到
+            # 已被回滚清理删除的文件，导致之后每次 apply 都失败。
+            exclude_dirs=(self.config.state_dir, self.config.backup_root),
         )
         meta = {
             "schema": _BACKUP_SCHEMA,
