@@ -204,7 +204,7 @@ begin
           CP := ((B and $1F) shl 6) or (Ord(S[I + 1]) and $3F);
           Result := Result + Chr(CP);
         end;
-        Inc(I, 2);
+        I := I + 2;
       end
       else if (B and $F0) = $E0 then
       begin
@@ -215,13 +215,13 @@ begin
                 (Ord(S[I + 2]) and $3F);
           Result := Result + Chr(CP);
         end;
-        Inc(I, 3);
+        I := I + 3;
       end
       else if (B and $F8) = $F0 then
       begin
         { BMP 之外的字符（emoji 等）不会出现在合法安装路径里，替换掉。 }
         Result := Result + '?';
-        Inc(I, 4);
+        I := I + 4;
       end
       else
       begin
