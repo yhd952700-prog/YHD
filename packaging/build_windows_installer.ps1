@@ -79,15 +79,23 @@ if ($SkipFrontend) {
 } else {
     Write-Step "构建驾驶舱（npm run build）"
     $consoleDir = Join-Path $Root "apps\console\console"
-    if (-not (Test-Path (Join-Path $consoleDir "node_modules"))) {
-        Write-Host "  首次构建：npm install（可能需要几分钟）"
+    # npm/vite 会把体积告警写到 stderr；本脚本 EAP=Stop 时会被当成终止错误。
+    # 临时放行 stderr，是否成功仍以 $LASTEXITCODE 为准。
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if (-not (Test-Path (Join-Path $consoleDir "node_modules"))) {
+            Write-Host "  首次构建：npm install（可能需要几分钟）"
+            Push-Location $consoleDir
+            try { & npm.cmd install } finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { throw "npm install 失败（exit $LASTEXITCODE）" }
+        }
         Push-Location $consoleDir
-        try { & npm.cmd install } finally { Pop-Location }
-        if ($LASTEXITCODE -ne 0) { throw "npm install 失败（exit $LASTEXITCODE）" }
+        try { & npm.cmd run build } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build 失败（exit $LASTEXITCODE）" }
+    } finally {
+        $ErrorActionPreference = $previousEap
     }
-    Push-Location $consoleDir
-    try { & npm.cmd run build } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "npm run build 失败（exit $LASTEXITCODE）" }
 }
 
 # ------------------------------------------------------- 2. payload 组装
@@ -290,7 +298,7 @@ if ($releaseZip) {
 }
 Write-Host ""
 Write-Host "提醒：安装包不含模型权重；安装器未签名，Windows 会提示「未知发布者」。" -ForegroundColor Yellow
-Write-Host "提醒：前端正在重写，最终安装包需在前端稳定后重建一次。" -ForegroundColor Yellow
+Write-Host "提醒：前端产物已参与本次同源构建，指纹见 payload\console\console-contract.json。" -ForegroundColor Yellow
 
 if ($smokeCode -ne 0) {
     Write-Host "冒烟未通过：产物已生成，但运行链路**未验证通过**。" -ForegroundColor Yellow
