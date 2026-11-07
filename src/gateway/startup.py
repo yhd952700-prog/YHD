@@ -45,10 +45,21 @@ router = APIRouter(prefix="/v1", tags=["startup"])
 
 @router.get("/startup", include_in_schema=False)
 def get_startup_status() -> JSONResponse:
-    """返回真实的启动阶段快照（见模块文档中的契约）。"""
+    """返回真实的启动阶段快照（见模块文档中的契约）。
+
+    ``degraded`` 与 ``startup_check`` 直接取自
+    :mod:`src.observability.boot_report`，与启动日志里的 ``evt=startup.degraded``
+    / ``evt=startup.check`` 是同一份数据——用户不必在"页面显示正常"和"日志说
+    降级"之间猜哪个是真的。
+    """
+    from ..observability import boot_report
+
     snapshot = startup_profile.snapshot()
     state = snapshot["state"]
     if state == "ready" and snapshot["background"]["status"] == "failed":
+        state = "degraded"
+    degraded = boot_report.degraded_components()
+    if degraded:
         state = "degraded"
     return JSONResponse(
         content={
@@ -58,6 +69,8 @@ def get_startup_status() -> JSONResponse:
             "started_at_unix": snapshot["started_at_unix"],
             "stages": snapshot["stages"],
             "background": snapshot["background"],
+            "degraded": degraded,
+            "startup_check": boot_report.last_startup_check(),
         },
         headers={"Cache-Control": "no-store"},
     )

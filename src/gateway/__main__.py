@@ -193,6 +193,7 @@ def main() -> int:
         print(f"[instance] {busy.describe()}", file=sys.stderr, flush=True)
         return 3
     except InstanceGuardUnavailable as exc:
+        _record_boot_instance_failure(exc)
         print(f"[instance] {exc}", file=sys.stderr, flush=True)
         return 3
     try:
@@ -211,10 +212,130 @@ def main() -> int:
         guard.release()
 
 
+def _record_boot_instance_failure(exc: BaseException) -> None:
+    """数据目录不可写导致「抢单实例锁」失败时的最后证据。
+
+    这条路径发生在日志系统初始化**之前**：实测把数据目录设为只读时，用户只看到
+    一行 stderr，``logs/`` 根本不存在。所以这里必须自己写 ``bootstrap.log``。
+    """
+    target = (
+        (os.environ.get("LIUHAO_INSTANCE_DIR") or "").strip()
+        or (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+        or str(LOG_DIR)
+    )
+    cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+    winerror = getattr(cause, "winerror", None)
+    errno_v = getattr(cause, "errno", None)
+    try:
+        import shutil
+
+        probe = Path(target)
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        free = int(shutil.disk_usage(str(probe)).free)
+    except Exception:  # noqa: BLE001
+        free = None
+    try:
+        from .. import bootstrap_log
+
+        written = bootstrap_log.write_event(
+            "boot.instance_lock.failed",
+            path=target,
+            winerror=winerror,
+            errno=errno_v,
+            free_bytes=free,
+            action="授予数据目录写权限 / 更换 LIUHAO_DATA_DIR 或 LIUHAO_INSTANCE_DIR "
+            "/ 清理磁盘 / 关闭安全软件拦截后重试",
+        )
+    except Exception:  # noqa: BLE001
+        written = ""
+    if written:
+        print("[boot] 启动诊断已记录到本机引导日志。", file=sys.stderr, flush=True)
+
+
+def _record_boot_logdir_failure(exc: BaseException, log_config: dict | None) -> None:
+    """把「日志目录建不出来」写进与业务数据无关的 ``bootstrap.log``。
+
+    这是故障 2A 的唯一证据来源：数据目录与日志目录同时不可写时，``liuhao.log``
+    根本不存在，只剩这条带 ``path/winerror/errno/free_bytes/action`` 的记录。
+    """
+    try:
+        target = resolve_log_dir(log_config)
+    except Exception:  # noqa: BLE001 - 目标路径本身不可解析时退回默认值
+        target = LOG_DIR
+    winerror = getattr(exc, "winerror", None)
+    errno_v = getattr(exc, "errno", None)
+    try:
+        import shutil
+
+        probe = Path(target)
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        free = int(shutil.disk_usage(str(probe)).free)
+    except Exception:  # noqa: BLE001
+        free = None
+    try:
+        from .. import bootstrap_log
+
+        written = bootstrap_log.write_event(
+            "boot.logdir.failed",
+            path=str(target),
+            winerror=winerror,
+            errno=errno_v,
+            free_bytes=free,
+            action="授予写权限 / 更换数据目录 / 关闭安全软件拦截 / 清理磁盘后重试",
+        )
+    except Exception:  # noqa: BLE001 - 引导日志失败不改变启动结论
+        written = ""
+    if written:
+        print(
+            "[boot] 启动诊断已记录到本机引导日志（与数据目录无关，数据目录不可写时仍可查看）。",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _record_boot_startup_failure() -> None:
+    """核心启动阶段失败时，也留一条不依赖业务目录的记录。"""
+    data_dir = (os.environ.get("LIUHAO_DATA_DIR") or "").strip() or str(LOG_DIR.parent)
+    try:
+        from ..observability.boot_report import free_bytes, probe_writable
+
+        writable, exc = probe_writable(data_dir)
+        winerror = getattr(exc, "winerror", None) if exc else None
+        errno_v = getattr(exc, "errno", None) if exc else None
+        remaining = free_bytes(data_dir)
+    except Exception:  # noqa: BLE001 - 自检失败不能掩盖原始退出
+        writable, winerror, errno_v, remaining = None, None, None, None
+    try:
+        from .. import bootstrap_log
+
+        written = bootstrap_log.write_event(
+            "boot.startup.failed",
+            data_dir=data_dir,
+            data_writable=writable,
+            winerror=winerror,
+            errno=errno_v,
+            free_bytes=remaining,
+            action="数据目录不可写时：授予写权限 / 更换数据目录 / 清理磁盘；"
+            "其它原因见数据目录 logs/liuhao.log 的 ERROR 行",
+        )
+    except Exception:  # noqa: BLE001
+        written = ""
+    if written:
+        print(
+            "[boot] 启动诊断已记录到本机引导日志（与数据目录无关，数据目录不可写时仍可查看）。",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _run(host: str, port: int) -> int:
     # 让应用层（Host 白名单）知道真实的绑定地址：显式对外时把该地址加入
     # 允许的 Host，否则启动器"能启动、但每个请求都被 Host 校验 400"。
     os.environ["LIUHAO_LISTEN_HOST"] = host
+    # 端口同样交给应用层：生产环境的回环写请求按"本次实际监听端口"放行。
+    os.environ["LIUHAO_LISTEN_PORT"] = str(port)
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
     # 读成映射：uvicorn 的 YAML 路径分支用 open() 不带 encoding，中文
     # Windows 下会按 cp936 解码 UTF-8 文件并直接崩（见 logging_config）。
@@ -225,6 +346,7 @@ def _run(host: str, port: int) -> int:
     except (OSError, ValueError) as exc:
         # 数据目录不可写 / 磁盘满 / 安全软件拦截目录创建，都会在这里变成
         # 一条英文 traceback。用户看不懂，也给不出下一步动作。
+        _record_boot_logdir_failure(exc, log_config)
         print(
             "[FAIL] 无法准备日志目录：数据目录可能不可写、磁盘空间不足，"
             "或安全软件拦截了写入。请确认数据目录可写、磁盘有余量后重试。",
@@ -263,6 +385,7 @@ def _run(host: str, port: int) -> int:
             if _port_in_use(host, port):
                 _print_bind_failure(host, port)
             else:
+                _record_boot_startup_failure()
                 print(
                     "[FAIL] 网关启动失败：端口正常，问题出在核心启动阶段。"
                     "常见原因是数据目录不可写、磁盘空间不足，或安全软件拦截了程序。"

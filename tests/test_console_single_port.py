@@ -192,6 +192,28 @@ class TestConsoleIsServed:
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
 
+    def test_a_missing_asset_is_a_real_404_and_logs_a_warning(
+        self, client, console_dist, caplog
+    ):
+        """故障 6 的回归：缺失 JS 曾被兜底成 200 text/html（白屏却日志全绿）。
+
+        现在必须返回真 404（JSON，带 code），并留下一条 WARNING，说明缺的是
+        哪个资源、下一步该做什么。
+        """
+        missing = "/assets/__definitely-missing__.js"
+        with caplog.at_level("WARNING", logger="src.gateway.console_static"):
+            response = client.get(missing)
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["detail"]["code"] == "CONSOLE_ASSET_NOT_FOUND"
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "src.gateway.console_static"
+        ]
+        assert any("evt=console.asset.missing" in line for line in warnings), warnings
+        assert any(missing in line for line in warnings), warnings
+
     def test_only_navigation_methods_fall_back_to_the_shell(self, client, console_dist):
         # A POST under an unknown path is an API call that missed, not a page
         # to render: it must keep its JSON 404.

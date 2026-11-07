@@ -50,6 +50,95 @@ _UPSTREAM_REVOKED_TOKENS = (
     "已被禁用",
 )
 
+#: 200 + ``{"error": ...}`` 的厂商（Ollama / Moonshot / DeepSeek 等）不会给
+#: HTTP 状态码，只能从错误体里认出"限流 / Key 无效 / 模型不存在"。
+_UPSTREAM_RATE_TOKENS = (
+    "rate limit",
+    "rate_limit",
+    "rate_limit_exceeded",
+    "too many requests",
+    "requests per minute",
+    "tokens per minute",
+    "并发",
+    "限流",
+)
+
+_UPSTREAM_INVALID_KEY_TOKENS = (
+    "invalid api key",
+    "incorrect api key",
+    "invalid_api_key",
+    "authentication_error",
+    "unauthorized",
+    "权限不足",
+)
+
+_UPSTREAM_MODEL_MISSING_TOKENS = (
+    "model not found",
+    "model_not_found",
+    "does not exist",
+    "unknown model",
+    "no such model",
+    "not_found_error",
+)
+
+
+# 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
+# 绝不直接展示给用户，也不写进会话历史。
+GENERATION_FAILURE_MESSAGE = (
+    "这次没有拿到回复，请稍后再试。若持续失败，请到「系统设置 → 模型管理」检查密钥与网络连接。"
+)
+
+#: 空回复的专属文案。与通用失败分开：用户需要知道"模型这次什么都没说"，
+#: 而不是"网络可能有问题"。
+EMPTY_RESPONSE_MESSAGE = "模型没有返回内容，请重试或换一个模型。"
+
+#: 流没有正常结束时保留已收到内容，并明确标注不完整。
+INCOMPLETE_STREAM_MESSAGE = "回复可能不完整（连接提前结束），请重试。"
+
+
+class ProviderStreamIncompleteError(RuntimeError):
+    """流式响应没有正常结束（缺 ``[DONE]``/``done``、半截帧、连接中断）。
+
+    已产出的 token 是真实内容，调用方应保留它们，但**不能**把这一轮当成
+    ``completed``：否则用户看到的是一段没有结尾的回答，却没有任何提示。
+    """
+
+    def __init__(self, label: str, detail: str = "连接提前结束"):
+        self.label = label
+        self.detail = detail
+        self.upstream_kind = "incomplete_stream"
+        super().__init__(f"{INCOMPLETE_STREAM_MESSAGE}（{label}：{detail}）")
+
+
+class ProviderTimeoutError(TimeoutError):
+    """在超时窗口内没有收到任何**有效内容**（心跳/keepalive 不算）。
+
+    ``requests``/``httpx`` 的读超时是"每次 read"的：上游持续发
+    ``: keepalive`` 时每次 read 都会成功，超时永远不会触发。这里改用
+    "最后一次有效内容距今多久"判定。
+    """
+
+    def __init__(self, label: str, timeout: float):
+        self.label = label
+        self.timeout = timeout
+        super().__init__(
+            f"{label}在 {timeout:g} 秒内没有返回任何有效内容，请检查网络或稍后重试。"
+        )
+
+
+def user_facing_failure(exc: BaseException) -> str:
+    """把 provider 异常翻成用户能行动的中文结论。
+
+    通用文案对空回复/断流是误导：前者不是网络问题，后者不是彻底失败。
+    """
+    from error_types import ProviderEmptyResponseError
+
+    if isinstance(exc, ProviderEmptyResponseError):
+        return EMPTY_RESPONSE_MESSAGE
+    if isinstance(exc, ProviderStreamIncompleteError):
+        return INCOMPLETE_STREAM_MESSAGE
+    return GENERATION_FAILURE_MESSAGE
+
 
 class ProviderHTTPError(RuntimeError):
     """上游 HTTP 失败：消息中性、可展示；机器信号单独保留给分类器。
@@ -134,6 +223,17 @@ def classify_upstream_error(
         return "model_not_found"
     if code == 429:
         return "rate_limited"
+    # 没有 HTTP 状态码的"假 200"：Ollama / Moonshot / DeepSeek 会把错误写进
+    # 200 响应体。只能按错误体关键词判类，否则额度耗尽会退化成通用失败。
+    if code in (None, 200):
+        if any(token in body for token in _UPSTREAM_RATE_TOKENS):
+            return "rate_limited"
+        if any(token in body for token in _UPSTREAM_REVOKED_TOKENS):
+            return "key_revoked"
+        if any(token in body for token in _UPSTREAM_INVALID_KEY_TOKENS):
+            return "invalid_key"
+        if any(token in body for token in _UPSTREAM_MODEL_MISSING_TOKENS):
+            return "model_not_found"
     return "upstream_error"
 
 
@@ -170,17 +270,401 @@ def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> N
         upstream_kind=kind,
     ) from exc
 
-# 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
-# 绝不直接展示给用户，也不写进会话历史。
-GENERATION_FAILURE_MESSAGE = (
-    "这次没有拿到回复，请稍后再试。若持续失败，请到「设置 → 模型」检查 API Key 与网络连接。"
-)
+
+def _is_retryable_failure(exc: BaseException) -> bool:
+    """这个失败重试一次有没有意义？
+
+    旧实现把 401/400/402 也重试 4 次：既放大计费，也把"密钥错了"拖成
+    "等了几秒还是不行"。额度耗尽的 429 同样不该重试——再打几次不会让
+    余额变多，只会让上游多记几次失败。
+    """
+    from error_types import ProviderEmptyResponseError
+
+    if isinstance(exc, ProviderEmptyResponseError):
+        return True
+    status = getattr(exc, "status_code", None)
+    kind = getattr(exc, "upstream_kind", None)
+    if isinstance(status, int):
+        if status == 429:
+            return kind != "quota_exhausted"
+        if 300 <= status < 500:
+            return False
+        if status >= 500:
+            return True
+        # 2xx 但响应体里是错误对象：按 kind 判断。
+    if isinstance(kind, str) and kind:
+        return kind == "rate_limited"
+    if isinstance(exc, (AttributeError, TypeError, IndexError, KeyError)):
+        # 解析代码的编程错误：重试 4 次不会让字段长出来，只会掩盖根因。
+        return False
+    if isinstance(exc, ProviderStreamIncompleteError):
+        return True
+    return True
+
+
+# ─── 响应解析共用工具 ───────────────────────────────────────
+#
+# OpenAI 的 ``message.content`` 在官方 SDK 类型里是 ``str | None``，但
+# OpenAI 兼容服务（以及部分新版 API）会返回 **content parts 列表**：
+# ``[{"type": "text", "text": "..."}]``。此前 ``return content or ""`` 直接
+# 把 list 当字符串返回，``chat`` 后续处理抛 ``AttributeError``，而
+# ``generate_with_retry`` 只判"非空"就当成功——同一份响应两条链路结论相反。
+# 这里把"取文本"统一成一处，所有 provider/流式/非流式共用。
+
+def _coerce_content_text(content: Any) -> str:
+    """把 ``str | None | list[part]`` 统一成纯文本，绝不返回非字符串。
+
+    * ``str`` 原样返回；
+    * ``None`` → ``""``；
+    * list → 只拼接 text part（``{"type": "text", "text": ...}`` /
+      ``{"text": ...}`` / SDK 对象 ``.text``），跳过 image/tool/thinking；
+    * 其他类型保守转成字符串（避免把整个 payload 当回复上屏的旧行为）。
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return str(content)
+
+
+def _extract_openai_message_text(message: Any) -> str:
+    """取 OpenAI ``message`` 的文本（``content`` 可能是 list）。"""
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        return _coerce_content_text(message.get("content"))
+    return _coerce_content_text(getattr(message, "content", None))
+
+
+def _extract_openai_payload_text(payload: Any) -> str:
+    """取 OpenAI 非流式 payload 的文本；空 ``choices``/缺 ``message`` → ``""``。"""
+    if not isinstance(payload, dict):
+        return ""
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    return _extract_openai_message_text(first.get("message"))
+
+
+def _embedded_error(payload: Any) -> Any:
+    """取出 200 响应体里夹带的 ``error`` 对象（没有则返回 ``None``）。"""
+    if isinstance(payload, dict):
+        return payload.get("error")
+    if payload is None:
+        return None
+    extra = getattr(payload, "model_extra", None)
+    if isinstance(extra, dict):
+        return extra.get("error")
+    return None
+
+
+def _raise_embedded_upstream_error(
+    label: str, error_payload: Any, *, status: Optional[int] = None
+) -> None:
+    """200 + ``{"error": ...}``：按错误体分类，**不把原始 JSON 上屏**。
+
+    Ollama / Moonshot / DeepSeek 都会用 200 包错误；不识别就会把
+    ``{"error": "..."}`` 直接当回复展示，或者（OpenAI SDK）在
+    ``choices[0]`` 上抛 ``AttributeError`` 后重试 4 次。
+    """
+    try:
+        error_text = json.dumps(error_payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        error_text = str(error_payload)
+    kind = classify_upstream_error(status=status, text=error_text)
+    logger.info(
+        "%s upstream body-level error http_status=%s kind=%s",
+        label,
+        status if status is not None else "-",
+        kind,
+    )
+    raise ProviderHTTPError(
+        f"{label}返回错误，详情已记录到服务端日志。",
+        status_code=status if isinstance(status, int) else None,
+        upstream_kind=kind,
+    )
+
+
+def _raise_invalid_response(label: str, exc: Optional[BaseException] = None) -> None:
+    """上游返回了无法解析的响应（HTML / 空 body / 非 JSON）。"""
+    logger.info(
+        "%s returned an unparseable response: %s",
+        label,
+        type(exc).__name__ if exc is not None else "-",
+    )
+    raise ProviderHTTPError(
+        f"{label}返回了无法解析的响应，请稍后重试。",
+        upstream_kind="upstream_error",
+    ) from exc
+
+
+def _require_nonempty_text(label: str, text: str, detail: str = "模型返回为空") -> str:
+    """``generate_with_retry`` 之外的直连路径统一判空。
+
+    ``chat`` / ``chat_stream`` 不经过 ``generate_with_retry``，此前空回复直接
+    返回 ``""`` 并被上层记成 ``completed``。空内容不是成功，这里显式失败。
+    """
+    from error_types import ProviderEmptyResponseError
+
+    if text is None or not str(text).strip():
+        raise ProviderEmptyResponseError(label, detail=detail)
+    return text
+
+
+def _usage_counts(usage: Any) -> tuple[int, int]:
+    """把 SDK/dict 两种 usage 统一成 ``(prompt_tokens, completion_tokens)``。"""
+    if usage is None:
+        return 0, 0
+    if isinstance(usage, dict):
+        return (
+            int(usage.get("prompt_tokens") or 0),
+            int(usage.get("completion_tokens") or 0),
+        )
+    return (
+        int(getattr(usage, "prompt_tokens", 0) or 0),
+        int(getattr(usage, "completion_tokens", 0) or 0),
+    )
+
+
+def _iter_sse_text(
+    lines,
+    *,
+    label: str,
+    idle_timeout: float,
+    on_usage=None,
+):
+    """把 OpenAI 兼容 SSE 原始行解析成文本 token。
+
+    与旧实现的区别（每一条都对应一个真实故障）：
+
+    * 原始行而不是 SDK 解析后的 chunk：只有这样才能看到 ``[DONE]``、
+      ``: keepalive`` 和半截帧；
+    * 缺 ``[DONE]``（且没有 ``finish_reason``）→
+      :class:`ProviderStreamIncompleteError`，不再把半截内容当完整回复；
+    * 中间坏帧 → 同上，不再 ``continue`` 静默跳过；
+    * ``: keepalive`` / ``event: ping`` 不产生 data，既不算内容也不重置
+      "最后一次有效内容"时间；
+    * 持续 keepalive 超过 ``idle_timeout`` → :class:`ProviderTimeoutError`；
+    * ``delta.content`` 为 list（content parts）→ 统一取 text part。
+    """
+    import time
+
+    idle = max(0.5, float(idle_timeout or 0.0))
+    last_valid = time.monotonic()
+    usage = None
+    saw_done = False
+    saw_finish = False
+    content_chars = 0
+    non_sse: list[str] = []
+
+    def _idle_check() -> None:
+        if time.monotonic() - last_valid > idle:
+            raise ProviderTimeoutError(label, idle)
+
+    try:
+        for raw in lines:
+            _idle_check()
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            text = text.strip()
+            if not text:
+                continue
+            # SSE 注释 / 事件名：都不是内容，不能重置空闲计时。
+            if text.startswith(":") or text.startswith("event:"):
+                continue
+            if not text.startswith("data:"):
+                non_sse.append(text)
+                continue
+            payload = text[5:].strip()
+            if payload == "[DONE]":
+                saw_done = True
+                break
+            if not payload:
+                continue
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ProviderStreamIncompleteError(
+                    label, "流中出现无法解析的数据帧"
+                ) from exc
+            if not isinstance(chunk, dict):
+                continue
+            error_payload = chunk.get("error")
+            if error_payload:
+                _raise_embedded_upstream_error(label, error_payload, status=200)
+            chunk_usage = chunk.get("usage")
+            if chunk_usage:
+                usage = chunk_usage
+            for choice in chunk.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                if choice.get("finish_reason"):
+                    saw_finish = True
+                delta = choice.get("delta") or {}
+                if not isinstance(delta, dict):
+                    continue
+                token = _coerce_content_text(delta.get("content"))
+                if token:
+                    content_chars += len(token)
+                    last_valid = time.monotonic()
+                    yield token
+    except (ProviderHTTPError, ProviderStreamIncompleteError, ProviderTimeoutError):
+        raise
+    except Exception as exc:
+        name = type(exc).__name__.lower()
+        if isinstance(exc, TimeoutError) or "timeout" in name:
+            raise ProviderTimeoutError(label, idle) from exc
+        # 连接被上游截断 / 解码失败：已产出的内容保留，但这一轮不能算完成。
+        raise ProviderStreamIncompleteError(
+            label, f"{type(exc).__name__}"
+        ) from exc
+    finally:
+        if usage is not None and on_usage is not None:
+            on_usage(usage)
+
+    # 非 SSE 响应体（HTML / 纯 JSON / 网关忽略 stream 参数）。
+    if non_sse:
+        blob = "\n".join(non_sse).strip()
+        start = blob.find("{")
+        parsed = None
+        if start >= 0:
+            try:
+                parsed = json.loads(blob[start:])
+            except json.JSONDecodeError:
+                parsed = None
+        if isinstance(parsed, dict):
+            error_payload = parsed.get("error")
+            if error_payload:
+                _raise_embedded_upstream_error(label, error_payload, status=200)
+            token = _extract_openai_payload_text(parsed)
+            if token:
+                content_chars += len(token)
+                yield token
+        else:
+            lowered = blob.lower()
+            if "<html" in lowered or "bad gateway" in lowered:
+                logger.info("%s returned HTML instead of SSE", label)
+            _raise_invalid_response(label)
+
+    if content_chars == 0:
+        from error_types import ProviderEmptyResponseError
+
+        raise ProviderEmptyResponseError(label, detail="流式响应没有产生任何文本")
+    if not saw_done and not saw_finish:
+        raise ProviderStreamIncompleteError(label, "流在没有结束标记的情况下关闭")
+
+
+def _iter_ndjson_text(
+    lines,
+    *,
+    label: str,
+    idle_timeout: float,
+    on_usage=None,
+):
+    """Ollama ``/api/chat`` 的 NDJSON 流解析。
+
+    与 SSE 版本同一条原则：``done: true`` 才代表正常结束；解析失败的帧
+    直接判"不完整"，不再 ``continue`` 后把半截内容当完整回复。
+    """
+    import time
+
+    idle = max(0.5, float(idle_timeout or 0.0))
+    last_valid = time.monotonic()
+    saw_done = False
+    content_chars = 0
+    usage: Optional[dict] = None
+    non_json: list[str] = []
+
+    def _idle_check() -> None:
+        if time.monotonic() - last_valid > idle:
+            raise ProviderTimeoutError(label, idle)
+
+    try:
+        for raw in lines:
+            _idle_check()
+            text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+            text = text.strip()
+            if not text:
+                continue
+            if text.startswith(":"):
+                continue
+            try:
+                chunk = json.loads(text)
+            except json.JSONDecodeError as exc:
+                if not text.startswith("{"):
+                    non_json.append(text)
+                    continue
+                raise ProviderStreamIncompleteError(
+                    label, "流中出现无法解析的数据帧"
+                ) from exc
+            if not isinstance(chunk, dict):
+                continue
+            error_payload = chunk.get("error")
+            if error_payload:
+                _raise_embedded_upstream_error(label, error_payload, status=200)
+            message = chunk.get("message")
+            token = _coerce_content_text(
+                message.get("content") if isinstance(message, dict) else None
+            )
+            if token:
+                content_chars += len(token)
+                last_valid = time.monotonic()
+                yield token
+            if chunk.get("done"):
+                saw_done = True
+                usage = {
+                    "prompt_tokens": chunk.get("prompt_eval_count") or 0,
+                    "completion_tokens": chunk.get("eval_count") or 0,
+                }
+                break
+    except (ProviderHTTPError, ProviderStreamIncompleteError, ProviderTimeoutError):
+        raise
+    except Exception as exc:
+        name = type(exc).__name__.lower()
+        if isinstance(exc, TimeoutError) or "timeout" in name:
+            raise ProviderTimeoutError(label, idle) from exc
+        raise ProviderStreamIncompleteError(
+            label, f"{type(exc).__name__}"
+        ) from exc
+    finally:
+        if usage is not None and on_usage is not None:
+            on_usage(usage)
+
+    if non_json:
+        blob = "\n".join(non_json).strip()
+        if "<html" in blob.lower() or "bad gateway" in blob.lower():
+            logger.info("%s returned HTML instead of NDJSON", label)
+        _raise_invalid_response(label)
+    if content_chars == 0:
+        from error_types import ProviderEmptyResponseError
+
+        raise ProviderEmptyResponseError(label, detail="流式响应没有产生任何文本")
+    if not saw_done:
+        raise ProviderStreamIncompleteError(label, "流在没有 done 标记的情况下关闭")
+
 
 # 未配置模型时的演示数据提示：明确告诉用户发生了什么、下一步怎么做，
 # 不再输出 provider 内部状态转储。
 MODEL_NOT_CONFIGURED_MESSAGE = (
     "[演示数据] 还没有配置模型，因此无法生成真实回答。"
-    "请到「设置 → 模型」填写 API Key（或配置 AI_PROVIDER_TYPE），然后重新发送这条消息。"
+    "请到「系统设置 → 模型管理」填写密钥并选择模型服务，然后重新发送这条消息。"
 )
 
 # Provider type enumeration
@@ -243,6 +727,10 @@ class BaseProvider:
         # 历史上只读 ``os.environ``/kwargs，导致"界面上填的 base_url"不生效。
         self.base_url = base_url or None
         self.timeout = timeout
+        # 这个超时值是谁定的：``registry``（模型配置中心）/ ``env``
+        # （AI_PROVIDER_TIMEOUT）/ ``default``（类默认值）。排障时"30 秒是哪来的"
+        # 和"30 秒"本身一样重要。
+        self.timeout_source = "default"
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self._capabilities = ProviderCapabilities()
@@ -250,6 +738,19 @@ class BaseProvider:
     @property
     def capabilities(self) -> ProviderCapabilities:
         return self._capabilities
+
+    def _note_usage(self, model: str, tokens_in: int, tokens_out: int) -> None:
+        """把 provider 返回的**真实** usage 上报给当前记账作用域。
+
+        拿不到 usage 的 provider 不调用这里：账本会回退到估算并保持
+        ``estimated=1``，绝不把估算伪装成真实 usage。
+        """
+        try:
+            from .usage_meter import report_usage
+
+            report_usage(str(model or self.model), tokens_in, tokens_out)
+        except Exception:  # noqa: BLE001 - 计量不能影响生成
+            logger.debug("usage report skipped", exc_info=True)
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response to prompt. To be implemented by subclasses."""
@@ -288,40 +789,22 @@ class BaseProvider:
                 of surfacing as a bare ``""``.
         """
         import time
-        from error_types import (
-            ProviderEmptyResponseError,
-            ProviderRateLimitError,
-            classify_error,
-        )
+        from error_types import ProviderEmptyResponseError
 
-        last_error = None
+        last_error: Optional[BaseException] = None
         last_empty_detail = ""
         for attempt in range(self.max_retries + 1):
             try:
                 response = self.generate(prompt, **kwargs)
             except Exception as e:
-                last_error = classify_error(e, self.name)
-
-                # Don't retry on certain errors
-                if isinstance(last_error, ProviderRateLimitError):
-                    if attempt < self.max_retries and last_error.retry_after:
-                        time.sleep(min(last_error.retry_after, 60))
-                        continue
-                    # If no retry_after or max retries reached, raise
+                last_error = e
+                if not _is_retryable_failure(e):
                     raise
-                elif last_error.error_code == "API_ERROR":
-                    # Retry on 5xx errors, not on 4xx
-                    if hasattr(last_error, 'status_code') and isinstance(last_error.status_code, int):
-                        if 400 <= last_error.status_code < 500:
-                            raise
-
                 if attempt < self.max_retries:
-                    delay = self.retry_base_delay * (2 ** attempt)
+                    delay = self._retry_delay(e, attempt)
                     time.sleep(delay)
                     continue
-                else:
-                    raise
-                continue
+                raise
 
             # The transport succeeded. Emptiness is a SEPARATE failure mode and is
             # checked OUTSIDE the try above, so it is never re-wrapped by
@@ -349,6 +832,14 @@ class BaseProvider:
             detail=last_empty_detail or "no response produced",
         )
 
+    def _retry_delay(self, exc: BaseException, attempt: int) -> float:
+        """指数退避；如果上游给了 ``Retry-After``，尊重但不小于基础退避。"""
+        delay = self.retry_base_delay * (2 ** attempt)
+        retry_after = getattr(exc, "retry_after", None)
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            delay = max(delay, min(float(retry_after), 60.0))
+        return delay
+
     def chat(self, messages, **kwargs) -> str:
         """Chat-style generation over a message list.
 
@@ -356,13 +847,16 @@ class BaseProvider:
         ``{"role": ..., "content": ...}`` dicts) into a single text prompt and
         delegates to ``generate``. Chat-native providers (e.g. Ollama) override
         this to use their ``/api/chat`` endpoint for higher multi-turn quality.
+
+        空回复在这里显式失败：``chat`` 不经过 ``generate_with_retry``，旧实现
+        会把 ``""`` 当成功返回，上层就记成 ``completed``。
         """
         prompt = "\n".join(
             f'{m.get("role", "user")}: {m.get("content", "")}'
             for m in messages
             if isinstance(m, dict)
         )
-        return self.generate(prompt, **kwargs)
+        return _require_nonempty_text(self.name, self.generate(prompt, **kwargs))
 
     def close(self) -> None:
         """Release provider-owned resources (HTTP clients, sessions, ...).
@@ -378,8 +872,13 @@ class BaseProvider:
         Default implementation degrades to non-streaming: it yields the full
         reply as a single token. Providers with native streaming (e.g. Ollama)
         override this to yield incremental tokens.
+
+        空回复不会产出一个空 token：``chat`` 会抛
+        :class:`ProviderEmptyResponseError`，调用方据此把这一轮判成失败。
         """
-        yield self.chat(messages, **kwargs)
+        text = self.chat(messages, **kwargs)
+        _require_nonempty_text(self.name, text)
+        yield text
 
     def get_capabilities(self) -> Dict[str, Any]:
         """Return provider capabilities metadata."""
@@ -482,6 +981,9 @@ class OpenAIProvider(BaseProvider):
                     # in place, so the declared 30s timeout was silently ignored.
                     timeout=self.timeout,
                     http_client=http_client,
+                    # 重试策略由 ``generate_with_retry`` 统一负责：SDK 自己再
+                    # 重试 2 次会让"到底打了几次上游"对不上账，也会放大计费。
+                    max_retries=0,
                 )
             return self._client
 
@@ -505,6 +1007,37 @@ class OpenAIProvider(BaseProvider):
                     "OpenAIProvider close failed: %s", exc
                 )
 
+    def _response_text(self, response: Any, label: str = "模型服务") -> str:
+        """统一解析非流式响应，返回纯文本；空回复返回 ``""`` 由调用方判失败。
+
+        覆盖：
+        * ``content`` 为 ``str`` / ``None`` / **content parts list**；
+        * 200 但响应体是 ``{"error": ...}``；
+        * SDK 在某些 content-type 下直接返回原始 ``str``（HTML/纯文本/JSON）；
+        * 空 ``choices`` / 缺 ``message``。
+        """
+        if isinstance(response, str):
+            try:
+                payload = json.loads(response)
+            except (json.JSONDecodeError, ValueError) as exc:
+                lowered = response.lower()
+                if "<html" in lowered or "bad gateway" in lowered:
+                    logger.info("%s returned HTML instead of JSON", label)
+                _raise_invalid_response(label, exc)
+            return self._response_text(payload, label)
+        if isinstance(response, (dict, list)):
+            error_payload = _embedded_error(response)
+            if error_payload:
+                _raise_embedded_upstream_error(label, error_payload, status=200)
+            return _extract_openai_payload_text(response)
+        error_payload = _embedded_error(response)
+        if error_payload:
+            _raise_embedded_upstream_error(label, error_payload, status=200)
+        choices = getattr(response, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            return ""
+        return _extract_openai_message_text(getattr(choices[0], "message", None))
+
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via OpenAI API (1.x SDK compatible)."""
         model = kwargs.get("model", self.model)
@@ -527,8 +1060,19 @@ class OpenAIProvider(BaseProvider):
                 create_params["response_format"] = response_format
 
             response = client.chat.completions.create(**create_params)
-            return response.choices[0].message.content or ""
+            text = self._response_text(response)
+            # 空回复不记用量：没有内容就没有可计费的产出，也不能让账本把
+            # 一次失败记成一次成功调用。
+            if text:
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    self._note_usage(model, *_usage_counts(usage))
+            return text
+        except ProviderHTTPError:
+            raise
         except Exception as exc:
+            if isinstance(exc, (json.JSONDecodeError, ValueError)):
+                _raise_invalid_response("模型服务", exc)
             self._guard_upstream_error(exc)
             # Re-raise to let generate_with_retry handle it
             raise
@@ -551,48 +1095,97 @@ class OpenAIProvider(BaseProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            return response.choices[0].message.content or ""
+            text = self._response_text(response)
+            _require_nonempty_text(self.name, text)
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                self._note_usage(model, *_usage_counts(usage))
+            return text
+        except ProviderHTTPError:
+            raise
         except Exception as exc:
+            if isinstance(exc, (json.JSONDecodeError, ValueError)):
+                _raise_invalid_response("模型服务", exc)
+            self._guard_upstream_error(exc)
+            raise
+
+    def _open_stream(self, *, params: dict):
+        """建立并进入原始 SSE 流；``stream_options`` 不被支持时（400）退回。
+
+        注意：``with_streaming_response.create`` 是惰性的，请求在
+        ``__enter__`` 时才发出，所以 400 只能在这一步捕获。
+        """
+        client = self._get_client()
+        create = client.chat.completions.with_streaming_response.create
+
+        def _enter(include_usage: bool):
+            stream_params = dict(params)
+            stream_params["stream"] = True
+            if include_usage:
+                stream_params["stream_options"] = {"include_usage": True}
+            cm = create(**stream_params)
+            return cm, cm.__enter__()
+
+        try:
+            return _enter(True)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if status == 400:
+                # 只有"不支持 stream_options"的 400 才值得退回；429/401 也
+                # 吞掉重试会把额度耗尽/Key 吊销的真实原因再掩盖一次。
+                logger.info("模型服务不支持 stream_options，退回普通流式")
+                try:
+                    return _enter(False)
+                except Exception as retry_exc:
+                    self._guard_upstream_error(retry_exc)
+                    raise
             self._guard_upstream_error(exc)
             raise
 
     def chat_stream(self, messages, **kwargs):
-        """按块流式返回 OpenAI 兼容响应（``stream=True``）。
+        """按原始 SSE 行流式返回 OpenAI 兼容响应。
 
-        没有流式能力的自建网关可能忽略该参数并一次返回全文，此时 SDK 仍会
-        给出一个完整的 chunk，循环逻辑不受影响。
+        为什么不用 ``for chunk in stream``：SDK 已经吞掉 ``[DONE]`` 与
+        ``: keepalive``，导致"流被干净截断"看起来像正常结束，且持续心跳会
+        让读超时永不触发。这里拿原始行自行解析：
+
+        * 缺 ``[DONE]``（且无 ``finish_reason``）→ 判不完整；
+        * ``: keepalive`` / ``event: ping`` 不重置空闲计时；
+        * ``delta.content`` 为 content parts list → 统一取文本。
         """
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
         self._guard_target()
-        client = self._get_client()
+        params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        response_cm = None
         try:
-            stream = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
+            try:
+                response_cm, response = self._open_stream(params=params)
+            except Exception as exc:
+                if isinstance(exc, ProviderHTTPError):
+                    raise
+                if isinstance(exc, (json.JSONDecodeError, ValueError)):
+                    _raise_invalid_response("模型服务", exc)
+                self._guard_upstream_error(exc)
+                raise
+            yield from _iter_sse_text(
+                response.iter_lines(),
+                label="模型服务",
+                idle_timeout=self.timeout,
+                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
             )
-        except Exception as exc:
-            # 429/401 在建立流阶段就失败：中性化并保留分类，绝不能吞掉重试，
-            # 否则"额度耗尽 / Key 吊销"会被兜底成笼统失败。
-            self._guard_upstream_error(exc)
-            raise
-        try:
-            for chunk in stream:
-                choices = getattr(chunk, "choices", None) or []
-                if not choices:
-                    continue
-                delta = getattr(choices[0], "delta", None)
-                content = getattr(delta, "content", None) if delta is not None else None
-                if content:
-                    yield content
-        except Exception as exc:
-            # 建流后中途报错（如流内返回 429）同样要中性化并带上分类。
-            self._guard_upstream_error(exc)
-            raise
+        finally:
+            if response_cm is not None:
+                try:
+                    response_cm.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001 - 关闭不能掩盖真实结论
+                    logger.debug("closing openai stream failed", exc_info=True)
 
 
 # Anthropic provider (using official anthropic SDK)
@@ -623,16 +1216,27 @@ class AnthropicProvider(BaseProvider):
         if client is not None:
             return client
         import anthropic
-        import httpx
+
+        # anthropic 1.x（本仓库 requirements 钉的 1.3.0）内部依赖 ``httpx2``，
+        # ``__init__`` 会对 ``http_client`` 做类型校验；继续传 ``httpx.Client``
+        # 会在建连前就 TypeError，表现为"0 个上游请求 + 3.5 秒后通用失败"。
+        # 不能硬编码任一模块：0.x 生态仍用 httpx，1.x 用 httpx2。跟随 SDK 自己
+        # 导入的那个模块最稳。
+        try:
+            from anthropic._base_client import httpx2 as _anthropic_http
+        except ImportError:  # pragma: no cover - 兼容 anthropic 0.x
+            import httpx as _anthropic_http
 
         with self._client_lock:
             if self._client is None:
                 options = {
                     "api_key": self.api_key,
                     # 与 OpenAI 兼容路径同一条策略：不跟随重定向。
-                    "http_client": httpx.Client(
+                    "http_client": _anthropic_http.Client(
                         follow_redirects=False, timeout=self.timeout
                     ),
+                    # 重试由 generate_with_retry 统一管理，避免 SDK 偷偷放大。
+                    "max_retries": 0,
                 }
                 if self.base_url:
                     options["base_url"] = self.base_url
@@ -651,20 +1255,63 @@ class AnthropicProvider(BaseProvider):
                     "AnthropicProvider close failed: %s", exc
                 )
 
+    def _response_text(self, response: Any) -> str:
+        """从 Anthropic ``content`` 中提取文本，跳过 thinking / tool_use。
+
+        ``content[0]`` 不一定是文本：Anthropic 可能先返回 ``thinking`` 或
+        ``tool_use`` block，旧实现 ``response.content[0].text`` 会抛
+        ``AttributeError``（被重试 4 次）；空 ``content`` 会 ``IndexError``；
+        ``text=None`` 会返回 ``None``。这里逐块筛选：
+        * 只取 ``type == "text"``（或没有 type 但有字符串 text）的块；
+        * ``thinking`` / ``tool_use`` / ``tool_result`` / ``image`` 跳过；
+        * ``text`` 不是字符串（``None``）时跳过。
+        """
+        error_payload = _embedded_error(response)
+        if error_payload:
+            _raise_embedded_upstream_error("Anthropic 服务", error_payload, status=200)
+        content = response.get("content") if isinstance(response, dict) else getattr(
+            response, "content", None
+        )
+        if not isinstance(content, (list, tuple)):
+            return ""
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                text = block.get("text")
+            else:
+                block_type = getattr(block, "type", None)
+                text = getattr(block, "text", None)
+            if block_type in ("thinking", "tool_use", "tool_result", "image"):
+                continue
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "".join(parts)
+
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Anthropic API."""
         model = kwargs.get("model", self.model)
         assert_safe_runtime_target(self.base_url, context="Anthropic 服务")
         try:
             client = self._get_client()
-            # v1.x SDK approach - simplified
             response = client.messages.create(
                 model=model,
                 max_tokens=kwargs.get("max_tokens", 1000),
                 # temperature removed for compatibility - use system prompt instead
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
+            text = self._response_text(response)
+            if text:
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    self._note_usage(
+                        model,
+                        getattr(usage, "input_tokens", 0),
+                        getattr(usage, "output_tokens", 0),
+                    )
+            return text
+        except ProviderHTTPError:
+            raise
         except Exception as exc:
             _neutralize_http_error(exc, "Anthropic 服务")
             # Re-raise to let generate_with_retry handle it
@@ -705,6 +1352,13 @@ class GoogleProvider(BaseProvider):
         try:
             client = genai.Client(api_key=self.api_key)
             response = client.models.generate_content(model=model, contents=prompt)
+            usage = getattr(response, "usage_metadata", None)
+            if usage is not None:
+                self._note_usage(
+                    model,
+                    getattr(usage, "prompt_token_count", 0),
+                    getattr(usage, "candidates_token_count", 0),
+                )
             return response.text
         except Exception:
             # Re-raise to let generate_with_retry handle it
@@ -755,22 +1409,28 @@ class OllamaProvider(BaseProvider):
                 proxies={"http": None, "https": None},
                 allow_redirects=False,
             )
-            if response.status_code == 200:
+            if response.status_code != 200:
+                _raise_upstream_http("Ollama 服务", response)
+            try:
                 result = response.json()
-                return result.get("response", str(result))
-            logger.info(
-                "ollama upstream HTTP failure status=%s model=%s body=%s",
-                response.status_code,
-                model,
-                str(response.text)[:200],
-            )
-            raise ProviderHTTPError(
-                _neutral_http_message("Ollama 服务", response.status_code),
-                status_code=response.status_code,
-                upstream_kind=classify_upstream_error(
-                    status=response.status_code, text=response.text
-                ),
-            )
+            except ValueError as exc:
+                _raise_invalid_response("Ollama 服务", exc)
+            if not isinstance(result, dict):
+                _raise_invalid_response("Ollama 服务")
+            # Ollama 也会用 200 包 ``{"error": ...}``；旧实现把整个 dict
+            # ``str(result)`` 当回复上屏。
+            if result.get("error"):
+                _raise_embedded_upstream_error(
+                    "Ollama 服务", result.get("error"), status=200
+                )
+            text = _coerce_content_text(result.get("response"))
+            if text:
+                self._note_usage(
+                    model,
+                    int(result.get("prompt_eval_count") or 0),
+                    int(result.get("eval_count") or 0),
+                )
+            return text
         except ProviderHTTPError:
             raise
         except Exception:
@@ -803,22 +1463,31 @@ class OllamaProvider(BaseProvider):
                 proxies={"http": None, "https": None},
                 allow_redirects=False,
             )
-            if response.status_code == 200:
+            if response.status_code != 200:
+                _raise_upstream_http("Ollama 服务", response)
+            try:
                 result = response.json()
-                return result.get("message", {}).get("content", str(result))
-            logger.info(
-                "ollama upstream HTTP failure status=%s model=%s body=%s",
-                response.status_code,
+            except ValueError as exc:
+                _raise_invalid_response("Ollama 服务", exc)
+            if not isinstance(result, dict):
+                _raise_invalid_response("Ollama 服务")
+            if result.get("error"):
+                _raise_embedded_upstream_error(
+                    "Ollama 服务", result.get("error"), status=200
+                )
+            message = result.get("message")
+            text = _coerce_content_text(
+                message.get("content") if isinstance(message, dict) else None
+            )
+            # 空回复必须显式失败：以前会返回 ""，上层记成 completed，
+            # 界面只剩一个「…」。
+            _require_nonempty_text(self.name, text)
+            self._note_usage(
                 model,
-                str(response.text)[:200],
+                int(result.get("prompt_eval_count") or 0),
+                int(result.get("eval_count") or 0),
             )
-            raise ProviderHTTPError(
-                _neutral_http_message("Ollama 服务", response.status_code),
-                status_code=response.status_code,
-                upstream_kind=classify_upstream_error(
-                    status=response.status_code, text=response.text
-                ),
-            )
+            return text
         except ProviderHTTPError:
             raise
         except Exception:
@@ -829,12 +1498,10 @@ class OllamaProvider(BaseProvider):
         """Stream tokens via Ollama's native ``/api/chat`` (NDJSON, stream=True).
 
         Each response line is a JSON object whose ``message.content`` is the
-        incremental token; the final frame has ``done: true``. Lines are parsed
-        defensively — malformed frames are skipped rather than aborting the
-        stream (an honest best-effort for a local NDJSON source).
+        incremental token; the final frame has ``done: true``. ``done`` is the
+        only proof of a normal end: a stream that stops early raises
+        :class:`ProviderStreamIncompleteError` instead of looking complete.
         """
-        import json as _json
-
         import requests
 
         model = kwargs.get("model", self.model)
@@ -855,32 +1522,13 @@ class OllamaProvider(BaseProvider):
         )
         try:
             if response.status_code != 200:
-                logger.info(
-                    "ollama upstream HTTP failure status=%s model=%s body=%s",
-                    response.status_code,
-                    model,
-                    str(response.text)[:200],
-                )
-                raise ProviderHTTPError(
-                    _neutral_http_message("Ollama 服务", response.status_code),
-                    status_code=response.status_code,
-                    upstream_kind=classify_upstream_error(
-                        status=response.status_code, text=response.text
-                    ),
-                )
-
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = _json.loads(line)
-                except _json.JSONDecodeError:
-                    continue
-                if chunk.get("done"):
-                    break
-                content = chunk.get("message", {}).get("content", "")
-                if content:
-                    yield content
+                _raise_upstream_http("Ollama 服务", response)
+            yield from _iter_ndjson_text(
+                response.iter_lines(chunk_size=1),
+                label="Ollama 服务",
+                idle_timeout=self.timeout,
+                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            )
         finally:
             # ``stream=True`` keeps the urllib3 connection checked out until the
             # response is closed. Breaking out early on the ``done`` frame (or a
@@ -931,12 +1579,92 @@ class MoonshotProvider(BaseProvider):
             )
             if response.status_code == 200:
                 result = response.json()
+                usage = result.get("usage") or {}
+                self._note_usage(
+                    model,
+                    usage.get("prompt_tokens", 0),
+                    usage.get("completion_tokens", 0),
+                )
                 return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
             else:
                 raise Exception(f"Moonshot error {response.status_code}: {response.text}")
         except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
+
+
+    # ─── 统一解析（覆盖上面旧的 generate：后定义者生效） ─────────
+    def _post(self, messages, *, stream: bool, **kwargs):
+        """一次真实请求：``(model, response)``；非 200 已转成中性异常。"""
+        import requests
+
+        model = kwargs.get("model", self.model)
+        base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
+            "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"
+        )
+        api_key = self.api_key or os.environ.get("MOONSHOT_API_KEY", "[REDACTED]")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key != "[REDACTED]" else {}
+        assert_safe_runtime_target(base_url, context="Moonshot 服务")
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                json={"model": model, "messages": messages, "stream": stream},
+                headers=headers,
+                timeout=self.timeout,
+                stream=stream,
+                proxies={"http": None, "https": None},
+                allow_redirects=False,
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Moonshot request failed: %s", type(exc).__name__)
+            raise ProviderHTTPError("Moonshot 服务不可达，请检查端点与网络。") from exc
+        if response.status_code != 200:
+            try:
+                _raise_upstream_http("Moonshot", response)
+            finally:
+                response.close()
+        return model, response
+
+    def _payload_text(self, result: Any) -> str:
+        if not isinstance(result, dict):
+            _raise_invalid_response("Moonshot")
+        if result.get("error"):
+            _raise_embedded_upstream_error(
+                "Moonshot", result.get("error"), status=200
+            )
+        return _extract_openai_payload_text(result)
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Generate response via Moonshot API."""
+        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+
+    def chat(self, messages, **kwargs) -> str:
+        """Moonshot 的 messages 接口（非流式）。"""
+        model, response = self._post(messages, stream=False, **kwargs)
+        try:
+            result = response.json()
+        except ValueError as exc:
+            _raise_invalid_response("Moonshot", exc)
+        finally:
+            response.close()
+        text = self._payload_text(result)
+        _require_nonempty_text(self.name, text)
+        usage = result.get("usage") or {}
+        self._note_usage(model, *_usage_counts(usage))
+        return text
+
+    def chat_stream(self, messages, **kwargs):
+        """真实 SSE 流式；缺 ``[DONE]``/坏帧/连接中断按"不完整"处理。"""
+        model, response = self._post(messages, stream=True, **kwargs)
+        try:
+            yield from _iter_sse_text(
+                response.iter_lines(chunk_size=1),
+                label="Moonshot 服务",
+                idle_timeout=self.timeout,
+                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            )
+        finally:
+            response.close()
 
 
 # DeepSeek provider
@@ -996,38 +1724,33 @@ class DeepSeekProvider(BaseProvider):
 
     def chat(self, messages, **kwargs) -> str:
         """DeepSeek 的 messages 接口（非流式）。"""
-        _model, response = self._post(messages, stream=False, **kwargs)
+        model, response = self._post(messages, stream=False, **kwargs)
         try:
             result = response.json()
+        except ValueError as exc:
+            _raise_invalid_response("DeepSeek", exc)
         finally:
             response.close()
-        return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
+        if not isinstance(result, dict):
+            _raise_invalid_response("DeepSeek")
+        if result.get("error"):
+            _raise_embedded_upstream_error("DeepSeek", result.get("error"), status=200)
+        text = _extract_openai_payload_text(result)
+        _require_nonempty_text(self.name, text)
+        usage = result.get("usage") or {}
+        self._note_usage(model, *_usage_counts(usage))
+        return text
 
     def chat_stream(self, messages, **kwargs):
-        """真实 SSE 流式（``stream=true``），逐 token 产出。"""
-        import json as _json
-
-        _model, response = self._post(messages, stream=True, **kwargs)
+        """真实 SSE 流式；缺 ``[DONE]``/坏帧/连接中断按"不完整"处理。"""
+        model, response = self._post(messages, stream=True, **kwargs)
         try:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                text = line.decode("utf-8", "ignore") if isinstance(line, bytes) else line
-                if not text.startswith("data:"):
-                    continue
-                payload = text[5:].strip()
-                if payload == "[DONE]":
-                    break
-                if not payload:
-                    continue
-                try:
-                    chunk = _json.loads(payload)
-                except _json.JSONDecodeError:
-                    continue
-                for choice in chunk.get("choices") or []:
-                    content = (choice.get("delta") or {}).get("content")
-                    if content:
-                        yield content
+            yield from _iter_sse_text(
+                response.iter_lines(chunk_size=1),
+                label="DeepSeek 服务",
+                idle_timeout=self.timeout,
+                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            )
         finally:
             response.close()
 
@@ -1374,6 +2097,8 @@ def get_provider() -> BaseProvider:
             )
 
     _provider_instance = ProviderFactory.create_provider(provider_type, **create_kwargs)
+    if "timeout" in create_kwargs:
+        _provider_instance.timeout_source = "env"
 
     # Provider info (no key material — not even a prefix: stdout/stderr commonly
     # end up in CI logs and support bundles).
@@ -1408,6 +2133,7 @@ def provider_from_config(cfg: Dict[str, Any]) -> BaseProvider:
     if timeout:
         kwargs["timeout"] = float(timeout)
     provider = ProviderFactory.create_provider(provider_type, **kwargs)
+    provider.timeout_source = "registry" if "timeout" in kwargs else "default"
     # 只作为**运行期归属标记**：供网关写"谁用了谁的 Key"的审计，不参与请求。
     provider.model_config_id = cfg.get("id") or ""
     provider.owner_principal = cfg.get("owner_principal") or ""
@@ -1419,6 +2145,7 @@ def resolve_provider(
     *,
     visible_to: Optional[Sequence[str]] = None,
     allow_unowned: bool = False,
+    allow_owners: Optional[Sequence[str]] = None,
     allow_env_fallback: bool = True,
 ) -> BaseProvider:
     """按模型配置中心解析 provider；未配置或找不到时回退到 ``.env``。
@@ -1429,12 +2156,19 @@ def resolve_provider(
     ``visible_to`` 是 Key 归属视角：给定后，指向他人 Key 的显式请求会抛出
     ``ModelConfigError(403, KEY_OWNER_DENIED)``，绝不静默回退到 ``.env``。
 
+    ``allow_owners`` 在可见之上再加知情授权：显式 ``model_id`` 指向未开启
+    ``allow_superior_key_use`` 的成员 Key 时抛出 ``ACCOUNT_KEY_CONSENT_REQUIRED``。
+    自动路由与显式选择因此共用同一套授权口径。
+
     ``allow_env_fallback=False``（成员账号）时，明明有其他模型却都不可见的情况下
     返回 409，而不是拿机器级 ``.env`` Key 顶上 —— 成员只能用自己的 Key。
     单账号老部署（``allow_env_fallback=True``）行为不变。
     """
     cfg = _registry_config(
-        model_id, visible_to=visible_to, allow_unowned=allow_unowned
+        model_id,
+        visible_to=visible_to,
+        allow_unowned=allow_unowned,
+        allow_owners=allow_owners,
     )
     if cfg is not None:
         return provider_from_config(cfg)
@@ -1468,6 +2202,7 @@ def _registry_config(
     *,
     visible_to: Optional[Sequence[str]] = None,
     allow_unowned: bool = False,
+    allow_owners: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """读取模型配置中心；任何存储异常都回退到 ``.env``（并记 warning）。
 
@@ -1480,7 +2215,10 @@ def _registry_config(
         from .model_config import ModelConfigError, get_model_config_store
 
         return get_model_config_store().resolve(
-            model_id, visible_to=visible_to, allow_unowned=allow_unowned
+            model_id,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
         )
     except ModelConfigError:
         raise

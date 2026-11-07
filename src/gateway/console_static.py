@@ -116,6 +116,28 @@ def _is_reserved(path: str) -> bool:
     return head in RESERVED_PREFIXES
 
 
+#: 静态资源的扩展名。这些路径缺失时必须返回真 404，绝不能拿 ``index.html``
+#: 顶上——浏览器会把 HTML 当 JS/CSS 解析失败，控制台白屏，而访问日志里仍是
+#: ``200 text/html``，排障时看不出任何异常（实测就是故障 6 的形态）。
+_ASSET_SUFFIXES = frozenset(
+    {
+        ".js", ".mjs", ".cjs", ".css", ".map", ".json",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".wasm", ".mp4", ".webm", ".txt", ".xml", ".webmanifest",
+    }
+)
+
+
+def _looks_like_asset(path: str) -> bool:
+    """True when a missing ``path`` is a static asset, not a client-side route."""
+    clean = (path or "").lower()
+    if clean.startswith("/assets/"):
+        return True
+    suffix = Path(clean).suffix
+    return suffix in _ASSET_SUFFIXES
+
+
 def is_installed(app: FastAPI) -> bool:
     """True when the console fallback is registered on ``app``."""
     handler = app.exception_handlers.get(StarletteHTTPException)
@@ -182,6 +204,26 @@ def mount_console(app: FastAPI, dist: Optional[Path] = None) -> Optional[str]:
         except StarletteHTTPException as inner:
             if inner.status_code != 404:
                 raise
+            # A missing static asset is NOT a client-side route. Returning the
+            # shell here is what turned "build output incomplete" into a白屏
+            # that looked like a healthy 200 in every access log.
+            if _looks_like_asset(path):
+                logger.warning(
+                    'evt=console.asset.missing path=%s method=%s action="缺少'
+                    '构建产物：在 apps/console/console 执行 npm run build 后'
+                    '重新部署（或检查 LIUHAO_CONSOLE_DIST）"',
+                    path,
+                    method,
+                )
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "detail": {
+                            "code": "CONSOLE_ASSET_NOT_FOUND",
+                            "message": f"静态资源不存在：{path}",
+                        }
+                    },
+                )
             # Client-side route (e.g. /approvals): hand over the shell and let
             # the router resolve it.
             return await static.get_response("index.html", request.scope)

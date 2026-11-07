@@ -11,6 +11,7 @@ Provides the unified entry point for all services with:
 import time
 import logging
 import os
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -49,23 +50,37 @@ from ..version import APP_VERSION  # noqa: E402
 # HTTP request metrics (families declared in ``src/observability/metrics.py``).
 # Historically these were never fed, so ``/v1/metrics/prometheus`` exported their
 # families with **zero per-request samples** -- a scrape looked instrumented while
-# carrying no request data. Importing them here lets ``logging_middleware`` feed
-# them with real traffic. Endpoint labels come from the matched route template
-# (see ``record_http_request``) so dynamic ids cannot grow metric cardinality.
-try:  # pragma: no cover - depends on the optional prometheus_client package
-    from ..observability.metrics import (
-        record_http_request as _RECORD_HTTP_REQUEST,
-    )
-except Exception:  # metrics unavailable here; the endpoint 503s anyway
-    _RECORD_HTTP_REQUEST = None
+# carrying no request data. ``logging_middleware`` still feeds them with real
+# traffic; endpoint labels come from the matched route template (see
+# ``record_http_request``) so dynamic ids cannot grow metric cardinality.
+#
+# 延迟导入：``import prometheus_client`` 会在导入期构造 PlatformCollector，
+# 其中的 ``platform.system()`` 在 Windows 上要拉起一次 ``cmd /c ver``，实测
+# 单独吃掉 0.5–1.1s（高负载下更久），而它只服务 /v1/metrics/prometheus。
+# 改为后台预热（见 ``_warm_chat_stack``）：就绪前不付这笔成本；预热完成前
+# 的极短窗口内请求不被计数，但请求处理本身完全不受影响。
+_RECORD_HTTP_REQUEST = None
+_get_metric_collector = None
+_metrics_import_attempted = False
 
-# Real metric collector that feeds the alert engine (OB / blocker #3). The
-# collector is independent of prometheus_client so the alert loop works even
-# when prometheus_client is absent.
-try:  # pragma: no cover - depends on the metrics module being importable
-    from ..observability.metrics import get_metric_collector as _get_metric_collector
-except Exception:  # metrics unavailable; middleware becomes a no-op
-    _get_metric_collector = None
+
+def _ensure_http_metrics() -> None:
+    """按需导入 prometheus 指标并缓存（幂等，失败不抛）。"""
+    global _RECORD_HTTP_REQUEST, _get_metric_collector, _metrics_import_attempted
+    if _metrics_import_attempted:
+        return
+    _metrics_import_attempted = True
+    try:  # pragma: no cover - depends on the optional prometheus_client package
+        from ..observability.metrics import record_http_request as _recorder
+    except Exception:  # metrics unavailable here; the endpoint 503s anyway
+        _recorder = None
+    _RECORD_HTTP_REQUEST = _recorder
+    try:  # pragma: no cover - depends on the metrics module being importable
+        from ..observability.metrics import get_metric_collector as _collector
+    except Exception:  # metrics unavailable; middleware becomes a no-op
+        _collector = None
+    _get_metric_collector = _collector
+
 
 logger = logging.getLogger(__name__)
 _startup_mark("main 顶层依赖导入完成（fastapi / security / prometheus metrics）")
@@ -139,6 +154,68 @@ def canonical_origin(origin: str) -> str:
     if ":" in host:  # IPv6 字面量在拼接时还原方括号
         host = f"[{host}]"
     return f"{scheme}://{host}:{port}"
+
+
+def resolve_listen_port() -> int | None:
+    """本次进程真正监听的端口（用于放行同端口回环 Origin）。
+
+    端口来源按优先级：启动器写入的 ``LIUHAO_LISTEN_PORT``（桌面壳
+    ``--port 8137`` 走这里，``PORT`` 并不存在）、单端口平台的 ``PORT``、
+    以及旧的 ``LIUHAO_API_PORT``。读不到合法值就返回 ``None``：宁可不放行
+    回环写请求，也不猜一个端口给所有来源开口。
+    """
+    for name in ("LIUHAO_LISTEN_PORT", "PORT", "LIUHAO_API_PORT"):
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            return port
+    return None
+
+
+_LOOPBACK_ORIGIN_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_loopback_address(value: str) -> bool:
+    raw = (value or "").strip().strip("[]").split("%", 1)[0]
+    if not raw:
+        return False
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(raw).is_loopback
+    except ValueError:
+        return raw.lower() == "localhost"
+
+
+def loopback_origin_allowed(
+    origin: str, listen_port: int | None, client_host: str
+) -> bool:
+    """回环写请求放行判定：来源、端口、对端三者同时成立。
+
+    * ``client_host`` 必须是本机回环地址（远端进程即使伪造 Origin 也不放行）；
+    * Origin 必须是 http + 回环主机名；
+    * Origin 端口必须等于本次实际监听端口 —— 不能因为主机是 127.0.0.1
+      就对所有端口永久开口。
+    """
+    if not listen_port or not _is_loopback_address(client_host):
+        return False
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit((origin or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    if (parsed.scheme or "").lower() != "http":
+        return False
+    if (parsed.hostname or "").lower() not in _LOOPBACK_ORIGIN_HOSTS:
+        return False
+    return port == listen_port
 
 
 def development_loopback_origins() -> list:
@@ -418,6 +495,141 @@ def unenforced_timeouts(runtime: Dict[str, Any]) -> list:
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
+class OverloadGuardMiddleware:
+    """满载快速失败闸（D-1）。
+
+    慢模型调用会把 anyio 的 40 个同步 token 占满，此时新来的同步请求只能无限
+    排队：客户端看到的是"卡住"，而不是"忙"。本中间件在请求进入业务线程池
+    **之前**计数，超过 ``max_in_flight`` 立刻返回 503 + 中文原因 + Retry-After，
+    让调用方（控制台/探针/客户端）在一秒内拿到确定答复，而不是陪跑几十分钟。
+
+    探针（``/v1/health``、``/v1/ready``、``/v1/metrics``、``/v1/metrics/prometheus``）
+    永不参与计数：它们要么是纯内存路径，要么在独立探针线程池里跑并自带超时，
+    满载时仍能如实回答"服务还活着"。
+    """
+
+    EXEMPT_PATHS = frozenset(
+        {"/v1/health", "/v1/ready", "/v1/metrics", "/v1/metrics/prometheus"}
+    )
+
+    def __init__(self, app, max_in_flight: int = 150):
+        self.app = app
+        self.max_in_flight = max(1, int(max_in_flight))
+        self._in_flight = 0
+        self._lock = threading.Lock()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") in self.EXEMPT_PATHS \
+                or scope.get("method") == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
+        with self._lock:
+            over = self._in_flight >= self.max_in_flight
+            if not over:
+                self._in_flight += 1
+        if over:
+            import json
+
+            body = json.dumps(
+                {
+                    "status": "busy",
+                    "status_label": "繁忙",
+                    "reason": "too_many_in_flight",
+                    "user_message": (
+                        "系统繁忙：当前在途请求已达上限，请求未被排队，"
+                        "请 1 秒后重试。服务本身仍在运行。"
+                    ),
+                    "max_in_flight": self.max_in_flight,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8"),
+                        (b"retry-after", b"1"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
+class LoopStallWatchdog:
+    """事件循环停滞看门狗（D-1 取证与告警）。
+
+    它不修复任何东西，只保证"僵死"不再无声：事件循环超过 ``threshold`` 秒
+    没有心跳，就写一条 ERROR，并在前 ``max_dumps`` 次附上全线程栈
+    （``faulthandler`` 从看门狗线程直接调用，不需要信号，也不会被卡住的
+    事件循环阻塞）。栈写进 stderr，也就是网关日志——下次长跑再僵死时，
+    日志里直接有"谁占着事件循环"。
+    """
+
+    def __init__(self, threshold: float = 15.0, max_dumps: int = 3):
+        self.threshold = threshold
+        self.max_dumps = max_dumps
+        self._beat = time.monotonic()
+        self._stop = threading.Event()
+        self._thread = None
+        self._task = None
+
+    async def _heartbeat(self) -> None:
+        import asyncio
+
+        while not self._stop.is_set():
+            self._beat = time.monotonic()
+            await asyncio.sleep(0.5)
+
+    def _watch(self) -> None:
+        dumps = 0
+        last_log = 0.0
+        while not self._stop.wait(1.0):
+            stalled = time.monotonic() - self._beat
+            if stalled < self.threshold:
+                continue
+            if dumps < self.max_dumps:
+                dumps += 1
+                try:
+                    import faulthandler
+                    import sys
+
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                except Exception:  # pragma: no cover - 诊断失败不能拖垮看门狗
+                    pass
+            now = time.monotonic()
+            if now - last_log >= self.threshold:
+                last_log = now
+                logger.error(
+                    "事件循环已停滞 %.1f 秒（阈值 %.0fs）：异步请求处理被"
+                    "同步调用占住，见随后线程栈。",
+                    stalled,
+                    self.threshold,
+                )
+
+    def start(self) -> None:
+        import asyncio
+
+        self._task = asyncio.get_running_loop().create_task(self._heartbeat())
+        self._thread = threading.Thread(
+            target=self._watch, name="liuhao-loop-watchdog", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._task is not None:
+            self._task.cancel()
+
+
 class HostGuardMiddleware:
     """Host 白名单 + 写请求 Origin 校验（纵深防御，纯 ASGI）。
 
@@ -431,7 +643,14 @@ class HostGuardMiddleware:
        已经发生（CSRF 的经典盲区）。
     """
 
-    def __init__(self, app, allowed_hosts, allowed_origins=(), allow_ip_literals=False):
+    def __init__(
+        self,
+        app,
+        allowed_hosts,
+        allowed_origins=(),
+        allow_ip_literals=False,
+        loopback_port=None,
+    ):
         self.app = app
         self.allowed_hosts = {str(h).lower() for h in allowed_hosts if h}
         # 只保留**完整** Origin；裸主机名/IP/``*`` 不会被当成来源白名单。
@@ -441,6 +660,8 @@ class HostGuardMiddleware:
             if value:
                 self.allowed_origins.add(value)
         self.allow_ip_literals = bool(allow_ip_literals)
+        # 本次实际监听端口：仅用于"本机回环 + 同端口"这一条放行依据。
+        self.loopback_port = loopback_port
 
     def _host_allowed(self, host: str) -> bool:
         if host in self.allowed_hosts:
@@ -455,10 +676,12 @@ class HostGuardMiddleware:
         except ValueError:
             return False
 
-    def _origin_allowed(self, origin: str) -> bool:
-        """只做完整来源精确匹配；主机名命中白名单**不足以**放行。"""
+    def _origin_allowed(self, origin: str, client_host: str = "") -> bool:
+        """完整来源精确匹配；本机回环同端口来源额外放行。"""
         value = canonical_origin(origin)
-        return bool(value) and value in self.allowed_origins
+        if value and value in self.allowed_origins:
+            return True
+        return loopback_origin_allowed(origin, self.loopback_port, client_host)
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -483,7 +706,9 @@ class HostGuardMiddleware:
 
         method = (scope.get("method") or "GET").upper()
         origin = headers.get("origin")
-        if method in _WRITE_METHODS and origin and not self._origin_allowed(origin):
+        if method in _WRITE_METHODS and origin and not self._origin_allowed(
+            origin, client[0]
+        ):
             logger.warning(
                 "SECURITY_REJECTED reason=cross_site_write method=%s path=%s "
                 "origin=%r client=%s",
@@ -522,14 +747,43 @@ api_router = APIRouter(prefix="/v1", tags=["api"])
 
 # ==================== Startup/Shutdown ====================
 
+
+def _enforce_startup_data_gate() -> None:
+    """启动门禁：数据目录由更高 schema 版本写入时拒绝启动。
+
+    为什么在 lifespan 的第一个动作：任何安全管理器、内核生命周期与后台
+    预热都还没开始，拒绝时进程直接退出，不会留下半套初始化。判断本身
+    兼容优先（标记缺失/损坏一律放行），见 ``src/upgrade/startup_guard.py``。
+    """
+    from ..logging_config import resolve_data_dir
+    from ..upgrade.startup_guard import StartupDataBlocked, check_startup_data
+
+    gate = check_startup_data(resolve_data_dir())
+    if gate.message:
+        print(gate.message, file=sys.stderr)
+        logger.warning(gate.message)
+    if not gate.ok:
+        raise StartupDataBlocked(gate)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle management for the gateway."""
+
+    # 先把"能不能读这份数据"定下来，再谈初始化。
+    _enforce_startup_data_gate()
 
     # Startup
     _startup_begin_run()
     logger.info("Starting LiuHao AI OS Gateway...")
     _startup_mark("lifespan 启动开始")
+    # 每次启动都是一份新的降级清单：上一次进程的失败不能污染 /v1/startup。
+    try:
+        from ..observability.boot_report import reset_degraded as _reset_degraded
+
+        _reset_degraded()
+    except Exception:  # noqa: BLE001
+        pass
 
     # Initialize security managers
     from ..security.api_keys import get_api_key_manager as _get_key_mgr
@@ -590,11 +844,22 @@ async def lifespan(app: FastAPI):
                 "Executor fence gate ARMED; process lease bound (boot survives)"
             )
     except Exception as _fence_exc:  # noqa: BLE001 - must be loud, must not crash boot
-        logger.error(
-            "EXECUTOR FENCE INSTALL FAILED -- autonomous actions will run "
-            "UN-FENCED (fail-open risk): %s",
-            _fence_exc, exc_info=True,
-        )
+        from ..common.atomic_write import describe_storage_failure, is_storage_failure
+
+        if is_storage_failure(_fence_exc):
+            logger.error(
+                "执行器围栏未能安装：%s 当前降级运行，自主动作将在无围栏模式下执行"
+                "（有风险）。请清理磁盘空间或解除数据目录只读后重启网关。",
+                describe_storage_failure(
+                    _fence_exc, os.environ.get("LIUHAO_DATA_DIR", ".")
+                ),
+            )
+        else:
+            logger.error(
+                "EXECUTOR FENCE INSTALL FAILED -- autonomous actions will run "
+                "UN-FENCED (fail-open risk): %s",
+                _fence_exc, exc_info=True,
+            )
         try:
             from ..kernels.execution.fence import record_default_fence_failure
 
@@ -701,6 +966,23 @@ async def lifespan(app: FastAPI):
         local_proof.start_broker()
         app.state.local_proof_broker = True
         logger.info("本机恢复证明通道已启动（%s）", local_proof.channel_name())
+        if not local_proof.trusted_launch():
+            logger.warning(
+                "开发模式：未设置 %s=1，首次注册不要求桌面端证明，"
+                "也不会校验 HTTP 对端是否与网关同用户。"
+                "请从桌面壳/启动器进入生产使用。",
+                local_proof.TRUSTED_LAUNCH_ENV,
+            )
+            # 只写日志不够：直接 `python -m src.gateway` 的人未必会去翻日志文件，
+            # 而这条放宽的正是“谁能抢先注册本机唯一根账号”，必须一眼看见。
+            print("!" * 62)
+            print(
+                f"!! 警告：开发模式（未设置 {local_proof.TRUSTED_LAUNCH_ENV}=1）。"
+            )
+            print("!! 首次注册不要求桌面端一次性证明，也不校验调用者与本机是否同一")
+            print("!! Windows 账户 —— 本机任何进程都可能抢先注册掉第一个账号。")
+            print("!! 正式使用请从鎏灏桌面窗口/启动器进入。")
+            print("!" * 62)
     except Exception as _proof_exc:  # noqa: BLE001
         app.state.local_proof_broker = False
         logger.error("本机恢复证明通道启动失败：%s", _proof_exc, exc_info=True)
@@ -731,9 +1013,19 @@ async def lifespan(app: FastAPI):
             ttl_refreshed=int(_legacy_memory.get("ttl_refreshed", 0) or 0),
         )
     except Exception as _legacy_exc:  # noqa: BLE001 - 迁移可重试，不能阻断服务启动
-        logger.error(
-            "legacy memory migration failed: %s", _legacy_exc, exc_info=True
-        )
+        from ..common.atomic_write import describe_storage_failure, is_storage_failure
+
+        if is_storage_failure(_legacy_exc):
+            logger.error(
+                "老记忆迁移未完成：%s 迁移会在下次启动时自动重试，不影响本次启动。",
+                describe_storage_failure(
+                    _legacy_exc, os.environ.get("LIUHAO_DATA_DIR", ".")
+                ),
+            )
+        else:
+            logger.error(
+                "legacy memory migration failed: %s", _legacy_exc, exc_info=True
+            )
         _startup_mark("老记忆迁移失败", error=str(_legacy_exc))
 
     # 注意：这里**不**再注册 /v1/health 与 /v1/ready。
@@ -855,38 +1147,55 @@ async def lifespan(app: FastAPI):
             "written by this background thread)."
         )
     else:
+        # ``start_background_verifier`` 是**惰性**解析 store 的：线程启动后才发现
+        # 库打不开，而旧代码已经打印了 "Audit checkpointer started"。实测（损坏
+        # 的 audit.db）日志里同时出现 "started" 与 "file is not a database"，
+        # 互相矛盾。所以先真打开一次审计库；打不开就不启动、也不打印 started。
+        _audit_store_opened = False
         try:
-            from ..reliability.checkpointer import (
-                estimate_verify_seconds,
-                start_background_verifier,
-            )
+            from ..kernels.audit import get_audit_store
 
-            _checkpointer = start_background_verifier()
-            app.state.audit_checkpointer = _checkpointer
-            # ``estimate_verify_seconds`` is a MODULE-LEVEL function, not a
-            # BackgroundVerifier method (see checkpointer.py:73; the class's own
-            # start() calls it the same way). Calling it off the instance raised
-            # AttributeError *after* start() had already launched the thread and
-            # mounted it on app.state -- so the handler below logged "FAILED TO
-            # START ... evidence_status stays 'unverified'" while the
-            # checkpointer was in fact running. A false failure claim does the
-            # same damage as a false success: it trains people to ignore this
-            # line. Any future edit must keep this a module-level call.
-            logger.info(
-                "Audit checkpointer started (segment=%s events, interval=%ss, "
-                "rolling every %s ticks, ~%ss/tick) against AUDIT_DB_PATH=%s",
-                _checkpointer.segment_events,
-                _checkpointer.incremental_interval_sec,
-                _checkpointer.rolling_every_n_ticks,
-                round(estimate_verify_seconds(_checkpointer.segment_events), 3),
-                _audit_db_path,
-            )
-        except Exception as _ckpt_exc:  # noqa: BLE001 - loud, never crash boot
+            get_audit_store()
+            _audit_store_opened = True
+        except Exception as _audit_exc:  # noqa: BLE001 - 降级必须响，但不能崩启动
             logger.error(
-                "AUDIT CHECKPOINTER FAILED TO START -- the audit chain will not "
-                "be checkpointed and evidence_status stays 'unverified': %s",
-                _ckpt_exc, exc_info=True,
+                "AUDIT CHECKPOINTER NOT STARTED -- 审计库打不开，本次运行不会写"
+                "检查点（原因见上面的 evt=db.open.failed）: %s",
+                _audit_exc,
             )
+        if _audit_store_opened:
+            try:
+                from ..reliability.checkpointer import (
+                    estimate_verify_seconds,
+                    start_background_verifier,
+                )
+
+                _checkpointer = start_background_verifier()
+                app.state.audit_checkpointer = _checkpointer
+                # ``estimate_verify_seconds`` is a MODULE-LEVEL function, not a
+                # BackgroundVerifier method (see checkpointer.py:73; the class's own
+                # start() calls it the same way). Calling it off the instance raised
+                # AttributeError *after* start() had already launched the thread and
+                # mounted it on app.state -- so the handler below logged "FAILED TO
+                # START ... evidence_status stays 'unverified'" while the
+                # checkpointer was in fact running. A false failure claim does the
+                # same damage as a false success: it trains people to ignore this
+                # line. Any future edit must keep this a module-level call.
+                logger.info(
+                    "Audit checkpointer started (segment=%s events, interval=%ss, "
+                    "rolling every %s ticks, ~%ss/tick) against AUDIT_DB_PATH=%s",
+                    _checkpointer.segment_events,
+                    _checkpointer.incremental_interval_sec,
+                    _checkpointer.rolling_every_n_ticks,
+                    round(estimate_verify_seconds(_checkpointer.segment_events), 3),
+                    _audit_db_path,
+                )
+            except Exception as _ckpt_exc:  # noqa: BLE001 - loud, never crash boot
+                logger.error(
+                    "AUDIT CHECKPOINTER FAILED TO START -- the audit chain will not "
+                    "be checkpointed and evidence_status stays 'unverified': %s",
+                    _ckpt_exc, exc_info=True,
+                )
     _startup_mark("审计 checkpointer 启动完成")
 
     # Register the production alert RULES into the store at boot. The rules are
@@ -898,11 +1207,21 @@ async def lifespan(app: FastAPI):
         install_production_rules()
         logger.info("Production alert rules registered (enabled=True; real metric emitters now wired)")
     except Exception as _rules_exc:  # noqa: BLE001 - loud, never crash boot
-        logger.error(
-            "INSTALL PRODUCTION ALERT RULES FAILED -- /v1/alerts/rules will be empty: %s",
-            _rules_exc,
-            exc_info=True,
-        )
+        from ..common.atomic_write import StorageWriteError
+
+        if isinstance(_rules_exc, StorageWriteError):
+            # 磁盘满/只读/无权限是**预期内的环境故障**：给中文可行动提示，
+            # 不打印英文堆栈；启动继续，对话等其它能力不受影响。
+            logger.error(
+                "生产告警规则未能保存，/v1/alerts/rules 将为空（不影响对话）：%s",
+                _rules_exc,
+            )
+        else:
+            logger.error(
+                "INSTALL PRODUCTION ALERT RULES FAILED -- /v1/alerts/rules will be empty: %s",
+                _rules_exc,
+                exc_info=True,
+            )
     _startup_mark("生产告警规则注册完成")
 
     # Plugin loader (Top-3 #2): register the built-in, loadable plugins so that
@@ -929,15 +1248,26 @@ async def lifespan(app: FastAPI):
     # is logged and never crashes the loop or boot. The stop Event is set in
     # the shutdown half of this lifespan.
     try:
-        from ..observability.metrics import get_metric_collector
-        from ..observability.alerts import get_alert_manager
-
         _metrics_stop = threading.Event()
         app.state.metrics_evaluator_stop = _metrics_stop
 
         def _metrics_evaluator() -> None:
-            collector = get_metric_collector()
-            manager = get_alert_manager()
+            # 导入放在线程体内：prometheus_client 约为 0.5–1.1s，不能占用
+            # 就绪前的 lifespan 时间；线程晚几百毫秒启动不影响 15s 评估节奏。
+            try:
+                from ..observability.metrics import get_metric_collector
+                from ..observability.alerts import get_alert_manager
+
+                collector = get_metric_collector()
+                manager = get_alert_manager()
+            except Exception as _eval_import_exc:  # noqa: BLE001
+                logger.error(
+                    "METRICS EVALUATOR LOOP FAILED TO START -- system-health "
+                    "rules will stay inactive: %s",
+                    _eval_import_exc,
+                    exc_info=True,
+                )
+                return
             while not _metrics_stop.is_set():
                 try:
                     snapshot = collector.collect_snapshot()
@@ -972,6 +1302,46 @@ async def lifespan(app: FastAPI):
     # 悄悄变成"第一次发消息才 500"。
     _startup_ready()
 
+    # ── 启动自检：一条结构化日志回答"能不能写 / 能不能开 / 能不能绑" ──
+    # 这是"只看日志排障"的入口行。字段与 /v1/startup.startup_check 完全一致：
+    # data_dir/data_writable/log_dir/log_writable/db/db_open/port/port_bindable/
+    # console_dist/console_index/provider/model/key_fp。
+    try:
+        from ..logging_config import resolve_data_dir, resolve_log_file
+        from ..observability import boot_report
+        from .console_static import resolve_console_dist
+
+        _data_dir = resolve_data_dir()
+        _log_dir = resolve_log_file("logs/liuhao.log").parent
+        try:
+            from ..ai.conversation_store import DEFAULT_DB_PATH as _conversation_db
+        except Exception:  # noqa: BLE001 - 自检不能因导入失败而中断
+            _conversation_db = str(_data_dir / "conversation_store.db")
+        boot_report.emit_startup_check(
+            data_dir=_data_dir,
+            log_dir=_log_dir,
+            db_paths={
+                "audit": (os.environ.get("AUDIT_DB_PATH") or "").strip() or "",
+                "conversation": (os.environ.get("CONVERSATION_DB_PATH") or "").strip()
+                or _conversation_db,
+                "model_registry": (
+                    os.environ.get("LIUHAO_MODEL_CONFIG_DB") or ""
+                ).strip()
+                or str(_data_dir / "model_registry.sqlite3"),
+            },
+            host=(
+                os.environ.get("LIUHAO_LISTEN_HOST")
+                or os.environ.get("HOST")
+                or "127.0.0.1"
+            ),
+            port=int((os.environ.get("PORT") or "8080").strip() or "8080"),
+            console_dist=resolve_console_dist(),
+        )
+        # 有降级组件时补 evt=startup.degraded（与 /v1/startup.degraded 同源）。
+        boot_report.emit_startup_degraded()
+    except Exception:  # noqa: BLE001 - 自检失败不能影响服务
+        logger.warning("启动自检日志写入失败（服务继续）", exc_info=True)
+
     def _warm_observability() -> None:
         from ..observability.tracing import get_tracer
 
@@ -1005,9 +1375,19 @@ async def lifespan(app: FastAPI):
 
         _impl()
 
+    def _warm_roster_employees() -> None:
+        from ..ai.roster_payload import prewarm_roster_payload
+
+        if not prewarm_roster_payload():
+            raise RuntimeError("roster prewarm failed")
+
     def _warm_chat_stack() -> None:
         _bg_started()
         _run_background_step("初始化追踪（OpenTelemetry SDK）", _warm_observability)
+        _run_background_step("初始化指标（prometheus_client / HTTP 采样）",
+                             _ensure_http_metrics)
+        # 首个 /v1/dashboard/roster 不再承担一次性导入/读盘成本。
+        _run_background_step("预热名册（员工存储 / 注册表 / 服务商）", _warm_roster_employees)
         _run_background_step("预热对话链（LLM/provider/会话存储）", _warm_chat)
         _bg_finished()
 
@@ -1018,12 +1398,51 @@ async def lifespan(app: FastAPI):
     app.state.chat_warmup_thread = _warm_thread
     _startup_mark("核心就绪（登录/对话/模型配置可用），对话链转入后台预热")
 
+    # 本地排程器：提醒 / 心跳 / 更新检查的唯一触发源。桌面与命令行启动链都
+    # 只拉起网关，过去没有任何进程 run() 它，导致"提醒到点不响且无报错"。
+    # 跨进程锁保证与 supervisor 的 liuhao-scheduler 不会双跑；失败只记日志。
+    try:
+        from ..tasks.scheduler_host import HostedLocalScheduler
+
+        hosted_scheduler = HostedLocalScheduler()
+        hosted_scheduler.start()
+        app.state.local_scheduler_host = hosted_scheduler
+        _startup_mark(f"本地排程器：{hosted_scheduler.reason}")
+    except Exception as _sched_exc:  # noqa: BLE001 - 托管失败不能阻断启动
+        logger.error(
+            "LOCAL SCHEDULER HOST FAILED TO START -- 提醒将不会被触发：%s",
+            _sched_exc,
+            exc_info=True,
+        )
+        app.state.local_scheduler_host = None
+
     _startup_report()
+
+    # 事件循环停滞看门狗：僵死时把"谁占着事件循环"写进日志（不修复，只取证）。
+    _loop_watchdog = LoopStallWatchdog()
+    try:
+        _loop_watchdog.start()
+        app.state.loop_watchdog = _loop_watchdog
+    except Exception:  # noqa: BLE001 - 看门狗失败不能阻断启动
+        logger.warning("loop stall watchdog failed to start", exc_info=True)
 
     yield  # App runs here
 
     # Shutdown
     logger.info("Shutting down LiuHao AI OS Gateway...")
+
+    try:
+        _loop_watchdog.stop()
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        pass
+
+    # 先停排程器：让它把在途任务交还给队列（retry_wait），别留下"running"。
+    try:
+        _hosted_scheduler = getattr(app.state, "local_scheduler_host", None)
+        if _hosted_scheduler is not None:
+            await _hosted_scheduler.stop()
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        logger.exception("LOCAL SCHEDULER STOP FAILED (shutdown continues)")
 
     # Stop the audit checkpointer (best-effort; never stalls shutdown long).
     try:
@@ -1259,15 +1678,21 @@ def get_app() -> FastAPI:
 
     # Host 白名单 + 写方法 Origin 校验（最外层安全闸，见类文档）。
     # 不论 CORS 是否启用都必须挂：两者保护的不是同一件事。
-    # 回环来源只在开发态**显式**加入（精确到端口）；生产只认配置里的域名。
+    # 生产：只额外放行"本机回环 + 本次实际监听端口"的写来源（安装版从
+    # http://127.0.0.1:<随机端口> 打开控制台，端口无法提前写死进白名单）。
+    # 开发：回环来源仍按显式端口列表注入，行为不变。
     guard_origins = list(cors["allow_origins"])
+    loopback_port = None
     if not production:
         guard_origins.extend(development_loopback_origins())
+    else:
+        loopback_port = resolve_listen_port()
     app.add_middleware(
         HostGuardMiddleware,
         allowed_hosts=runtime["trusted_hosts"],
         allowed_origins=guard_origins,
         allow_ip_literals=runtime["host_guard_allow_ip_literals"],
+        loopback_port=loopback_port,
     )
     logger.info(
         "Host allow-list (DNS-rebinding guard): %s",
@@ -1342,6 +1767,14 @@ def get_app() -> FastAPI:
             except Exception as exc:  # pragma: no cover - never fail a request
                 logger.warning(f"metric recording failed: {exc}")
         return response
+
+    # 满载快速失败闸：加在最后 = 最外层，慢请求还没进业务线程池就先被挡下并
+    # 返回 503；探针路径豁免（见类文档）。阈值可用 LIUHAO_MAX_INFLIGHT 覆盖。
+    try:
+        _max_in_flight = int((os.environ.get("LIUHAO_MAX_INFLIGHT") or "150").strip())
+    except ValueError:
+        _max_in_flight = 150
+    app.add_middleware(OverloadGuardMiddleware, max_in_flight=_max_in_flight)
 
     # ==================== Exception handlers ====================
 

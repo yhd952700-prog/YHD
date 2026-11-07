@@ -18,8 +18,18 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..common.atomic_write import describe_storage_failure
 from .observability import observe
 from .audit import audited
+
+
+class ConversationStoreError(RuntimeError):
+    """会话历史读写失败（磁盘满 / 只读 / 权限 / 被占用）的中文可行动错误。
+
+    不继承 ``sqlite3.Error``：调用方（对话入口）只需捕获这一个类型，就能把
+    "历史没保存"翻译成 503 中文提示，而不是把英文 ``sqlite3.OperationalError``
+    直接抛给用户。
+    """
 
 # 默认落在项目根目录，而不是写死某一台机器的绝对路径：保留"数据不入库内"
 # 的约定，同时保证在任何机器上 checkout 后都能直接运行（写死路径会在 CI 的
@@ -27,6 +37,15 @@ from .audit import audited
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
+
+# 断电级持久化：见 memory/store.py 的说明。会话追加同样低频，默认 FULL，
+# 保证已经返回成功的轮次在断电后仍可恢复；可用环境变量降级。
+_SYNC_LEVELS = {"OFF", "NORMAL", "FULL", "EXTRA"}
+_CONVERSATION_SYNCHRONOUS = (
+    os.environ.get("LIUHAO_CONVERSATION_SYNCHRONOUS") or "FULL"
+).strip().upper()
+if _CONVERSATION_SYNCHRONOUS not in _SYNC_LEVELS:
+    _CONVERSATION_SYNCHRONOUS = "FULL"
 DEFAULT_DB_PATH = os.environ.get(
     "CONVERSATION_DB_PATH",
     os.path.join(_PROJECT_ROOT, "conversation_store.db"),
@@ -52,25 +71,37 @@ class ConversationStore:
         return self._db_path
 
     def _init_db(self) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS conversation_turns (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                principal_id TEXT NOT NULL,
-                turn INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_conv_principal
-                ON conversation_turns(principal_id, turn, seq);
-            """
-        )
-        self._conn.commit()
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute(f"PRAGMA synchronous={_CONVERSATION_SYNCHRONOUS}")
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    principal_id TEXT NOT NULL,
+                    turn INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_conv_principal
+                    ON conversation_turns(principal_id, turn, seq);
+                """
+            )
+            self._conn.commit()
+        except (sqlite3.Error, OSError) as exc:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+            raise ConversationStoreError(
+                "无法打开对话历史库"
+                + describe_storage_failure(exc, self._db_path).removeprefix("无法写入")
+            ) from exc
 
     # ------------------------------------------------------------------ #
     # 写入 / 读取
@@ -80,12 +111,18 @@ class ConversationStore:
     def append(self, principal_id: str, turn: int, role: str, content: str) -> None:
         """追加一条对话消息（user 或 assistant）。"""
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO conversation_turns (principal_id, turn, role, content) "
-                "VALUES (?, ?, ?, ?)",
-                (principal_id, turn, role, content),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "INSERT INTO conversation_turns (principal_id, turn, role, content) "
+                    "VALUES (?, ?, ?, ?)",
+                    (principal_id, turn, role, content),
+                )
+                self._conn.commit()
+            except (sqlite3.Error, OSError) as exc:
+                raise ConversationStoreError(
+                    "本轮对话未能保存"
+                    + describe_storage_failure(exc, self._db_path).removeprefix("无法写入")
+                ) from exc
 
     @observe("conversation.load")
     def load(self, principal_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]:
@@ -152,10 +189,16 @@ class ConversationStore:
     def clear(self, principal_id: str) -> None:
         """清空该主体的对话历史（对应 ``reset`` 语义）。"""
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM conversation_turns WHERE principal_id = ?", (principal_id,)
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    "DELETE FROM conversation_turns WHERE principal_id = ?", (principal_id,)
+                )
+                self._conn.commit()
+            except (sqlite3.Error, OSError) as exc:
+                raise ConversationStoreError(
+                    "清空对话历史失败"
+                    + describe_storage_failure(exc, self._db_path).removeprefix("无法写入")
+                ) from exc
 
     def has_rows(self, principal_id: str) -> bool:
         """该主体是否有任何已落盘的对话消息（用于新旧键择优）。"""
@@ -241,8 +284,31 @@ _conversation_store: Optional[ConversationStore] = None
 
 @observe("conversation.get_conversation_store")
 def get_conversation_store() -> ConversationStore:
-    """获取或创建全局会话存储实例。"""
+    """获取或创建全局会话存储实例。
+
+    打开失败时先写 ``evt=db.open.failed subsystem=conversation_store``（带路径与
+    sqlite 原文）再抛出：否则日志里只有一句 ``file is not a database``，看不出
+    是哪个库坏了。
+    """
     global _conversation_store
     if _conversation_store is None:
-        _conversation_store = ConversationStore()
+        try:
+            store = ConversationStore()
+        except Exception as exc:
+            try:
+                from ..observability import boot_report
+
+                boot_report.record_db_open_failure(
+                    "conversation_store",
+                    DEFAULT_DB_PATH,
+                    exc,
+                    action=(
+                        "degraded: 多轮对话历史不可用；修复数据目录写权限、"
+                        "隔离/重建损坏库后重启"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - 日志失败不能掩盖原始异常
+                pass
+            raise
+        _conversation_store = store
     return _conversation_store

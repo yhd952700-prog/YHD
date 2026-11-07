@@ -17,6 +17,7 @@ from src.common.hash_chain import HASH_ALGORITHMS, DEFAULT_HASH_ALG
 from .durability import configure_audit_durability
 from .hashutil import canonical_json, event_payload
 from . import verification as _verification
+from . import chain_key as _chain_key
 from .fencing import (
     SqliteWriterLease,
     require_writer_lease,
@@ -36,10 +37,30 @@ import sqlite3
 import os
 import pathlib
 import threading
+from src._time import stable_now_epoch
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
+
+from src.common.redaction import redact_text
+
+
+def _redact_details(value: Any) -> Any:
+    """审计 ``details`` 落库前的脱敏（递归，只改字符串值）。
+
+    审计库是"证据"，但不能因为一次上游 401 的错误体里回显了 API Key，就把
+    明文永久固化进 SQLite。键保持不变，值走与日志同一套 ``redact_text``，
+    让"日志通道"和"审计通道"的判定一致（例如 ``?key=`` 两边都遮）。
+    """
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, dict):
+        return {key: _redact_details(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_details(item) for item in value]
+    return value
+
 
 logger = logging.getLogger("liuhao.kernel.audit")
 
@@ -126,8 +147,14 @@ def _synchronous_level() -> str:
 # Deletion is a PREFIX delete anchored by ``retention_state``: the surviving
 # chain still verifies from the retention floor onward (see verification.py).
 _DEFAULT_RETENTION_DAYS = 30
-_DEFAULT_RETENTION_MAX_ROWS = 500_000
-_DEFAULT_RETENTION_MAX_BYTES = 268_435_456  # 256 MB
+#: 行数/字节上限才是**绑定约束**（时间策略在单机桌面场景 30 天内几乎不触发）。
+#: 长跑实测：合成强负载下调用链每秒写 ~7 条审计事件（~1KB/行），折合
+#: 20.5MB/h、约 2 万行/h。256MB 的旧默认意味着文件要长到 12 小时才第一次
+#: 裁剪，对单机产品太大；100MB 在同样的极端速率下约 5 小时触顶并进入
+#: "裁剪 + 增量回收"的稳态（实测裁剪期斜率 +2.97MB/h）。真实桌面负载
+#: （每小时数百条事件）永远碰不到这个上限，时间策略仍然保留 30 天。
+_DEFAULT_RETENTION_MAX_ROWS = 100_000
+_DEFAULT_RETENTION_MAX_BYTES = 104_857_600  # 100 MB
 _DEFAULT_RETENTION_MIN_KEEP = 1_000
 _DEFAULT_RETENTION_INTERVAL_SEC = 60.0
 _DEFAULT_RETENTION_MAX_DELETE = 5_000
@@ -1081,6 +1108,9 @@ class AuditStore:
         details: Optional[Dict[str, Any]],
         correlation_id: Optional[str],
     ) -> AuditEvent:
+        # 先决定本次追加用哪种哈希：生产默认带密钥（HMAC-SHA256）。密钥文件
+        # 的首次生成要落盘，放在事务外做，避免在 BEGIN IMMEDIATE 里做文件 IO。
+        hash_alg = _chain_key.active_hash_alg()
         if correlation_id is None:
             # Full width: 8 hex chars (32 bits) collide within any large
             # deployment, and a collision silently conflates unrelated events
@@ -1146,8 +1176,9 @@ class AuditStore:
                     timestamp=timestamp,
                     correlation_id=correlation_id,
                     outcome=outcome,
-                    details=details or {},
+                    details=_redact_details(details or {}),
                     prev_event_hash=prev_hash,
+                    hash_alg=hash_alg,
                 )
 
                 event.event_hash = event.compute_hash()
@@ -1271,6 +1302,8 @@ class AuditStore:
 
     def _attempt_log_event_batch(self, events: List[AuditEvent]) -> "AuditBatchResult":
         conn = self._conn
+        # 同一批事件必须使用同一种算法；密钥首次生成在事务外完成。
+        batch_alg = _chain_key.active_hash_alg()
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -1325,6 +1358,7 @@ class AuditStore:
 
                     last_seq += 1
                     event.prev_event_hash = prev_hash
+                    event.hash_alg = batch_alg
                     event.event_hash = event.compute_hash()
                     event.link_hash = _verification.link_hash(
                         prev_link, event.event_hash, event.hash_alg)
@@ -1433,7 +1467,9 @@ class AuditStore:
         if cfg["max_rows"] and retained > cfg["max_rows"]:
             cut = max(cut, floor + (retained - cfg["max_rows"]))
         if cfg["days"]:
-            age_cutoff = time.time() - cfg["days"] * 86400
+            # 用防跳变时钟：系统时间被前跳（手动改时间/VM 恢复）时不能把
+            # 仍在保留期内的审计证据一次性当"过期"删掉。
+            age_cutoff = stable_now_epoch() - cfg["days"] * 86400
             row = conn.execute(
                 "SELECT MAX(seq) FROM audit_events WHERE timestamp < ?",
                 (age_cutoff,)).fetchone()
@@ -1841,7 +1877,9 @@ class AuditStore:
         return self._verify_integrity_on(self._conn)
 
     @staticmethod
-    def _verify_integrity_on(conn) -> Tuple[bool, int]:
+    def _verify_integrity_on(
+        conn, *, skip_crypto: bool = False
+    ) -> Tuple[bool, int]:
         """Verify the chain over an explicit connection. See verify_chain_integrity.
 
         Declared a ``staticmethod`` deliberately: it never touches instance
@@ -1957,61 +1995,65 @@ class AuditStore:
             # UNVERIFIED -- it is counted broken rather than silently being
             # read as the default algorithm.
             declared_alg = row_hash_alg
-            if not declared_alg:
-                logger.error(
-                    "audit event %s carries no hash_alg declaration; this row "
-                    "is UNVERIFIED and is counted as broken rather than "
-                    "assuming %s", event_id, DEFAULT_HASH_ALG,
-                )
-                broken += 1
-                continue
-            if declared_alg not in HASH_ALGORITHMS:
-                # An event whose algorithm this build cannot perform is not
-                # "probably fine" -- it is unverifiable, and unverifiable must
-                # never be read as verified (PHASE 3.6 / A5, fail-closed).
-                logger.error(
-                    "audit event %s declares hash algorithm %r, which this "
-                    "build cannot verify; counting it as broken rather than "
-                    "assuming a default algorithm", event_id, declared_alg,
-                )
-                broken += 1
-                continue
-            try:
-                details = json.loads(details_json) if details_json else {}
-                reconstructed = AuditEvent(
-                    event_id=event_id,
-                    event_type=AuditEventType(event_type),
-                    principal_id=principal_id,
-                    scope=AuditScope(scope),
-                    timestamp=timestamp,
-                    correlation_id=correlation_id,
-                    outcome=outcome,
-                    details=details,
-                    hash_alg=declared_alg,
-                )
-                if reconstructed.compute_hash() != event_hash:
+            if not skip_crypto:
+                if not declared_alg:
+                    logger.error(
+                        "audit event %s carries no hash_alg declaration; this row "
+                        "is UNVERIFIED and is counted as broken rather than "
+                        "assuming %s", event_id, DEFAULT_HASH_ALG,
+                    )
                     broken += 1
-            except (ValueError, KeyError):
-                # Corrupted enum value or malformed details JSON
-                broken += 1
-
-            # 5. Cumulative commitment (C2). A row written before C2 has no
-            # link_hash and is simply skipped -- but skipping breaks the
-            # running accumulation, so any row AFTER a gap is checked against
-            # a fresh start and will mismatch if the history was edited. The
-            # tail comparison below catches the case where only the newest
-            # link_hash values were stripped.
-            if stored_link is None:
-                running_link = None
-            else:
+                    continue
+                if declared_alg not in HASH_ALGORITHMS:
+                    # An event whose algorithm this build cannot perform is not
+                    # "probably fine" -- it is unverifiable, and unverifiable must
+                    # never be read as verified (PHASE 3.6 / A5, fail-closed).
+                    logger.error(
+                        "audit event %s declares hash algorithm %r, which this "
+                        "build cannot verify; counting it as broken rather than "
+                        "assuming a default algorithm", event_id, declared_alg,
+                    )
+                    broken += 1
+                    continue
                 try:
-                    expected_link = _verification.link_hash(
-                        running_link, event_hash, declared_alg)
-                except ValueError:
+                    details = json.loads(details_json) if details_json else {}
+                    reconstructed = AuditEvent(
+                        event_id=event_id,
+                        event_type=AuditEventType(event_type),
+                        principal_id=principal_id,
+                        scope=AuditScope(scope),
+                        timestamp=timestamp,
+                        correlation_id=correlation_id,
+                        outcome=outcome,
+                        details=details,
+                        hash_alg=declared_alg,
+                    )
+                    if reconstructed.compute_hash() != event_hash:
+                        broken += 1
+                except (ValueError, KeyError):
+                    # Corrupted enum value or malformed details JSON
                     broken += 1
-                    expected_link = None
-                if expected_link is not None and expected_link != stored_link:
-                    broken += 1
+
+                # 5. Cumulative commitment (C2). A row written before C2 has no
+                # link_hash and is simply skipped -- but skipping breaks the
+                # running accumulation, so any row AFTER a gap is checked against
+                # a fresh start and will mismatch if the history was edited. The
+                # tail comparison below catches the case where only the newest
+                # link_hash values were stripped.
+                if stored_link is None:
+                    running_link = None
+                else:
+                    try:
+                        expected_link = _verification.link_hash(
+                            running_link, event_hash, declared_alg)
+                    except ValueError:
+                        broken += 1
+                        expected_link = None
+                    if expected_link is not None and expected_link != stored_link:
+                        broken += 1
+                    running_link = stored_link
+            elif stored_link is not None:
+                # 结构模式：只推进链接指针，不做密码学校验。
                 running_link = stored_link
 
         # 4. Tail integrity: the anchor must match the last stored event
@@ -2144,8 +2186,11 @@ class AuditStore:
                 else _verification.ANCHOR_STORED)
 
         end_seq = tail_seq
+        truncated = False
         if max_events is not None and end_seq - start_seq + 1 > max_events:
             end_seq = start_seq + max_events - 1
+            truncated = True
+        pending = max(0, int(tail_seq) - int(end_seq))
 
         if end_seq < start_seq:
             rooted_floor = _verification.rooted_at_genesis(conn, tail_seq, floor)
@@ -2157,6 +2202,7 @@ class AuditStore:
                 failures=[], anchor_source=anchor_source,
                 retention_floor_seq=floor,
                 rooted_at_retention_floor=rooted_floor,
+                tail_seq=int(tail_seq), complete=True, pending_events=0,
             ).as_dict()
 
         segment = _verification.verify_segment(
@@ -2173,10 +2219,13 @@ class AuditStore:
         # verified". It must be read AFTER the checkpoint write and from a
         # FRESH connection: the verification connection is pinned to a
         # snapshot from before the write, so asking it would report the new
-        # checkpoint as missing. The bound stays `tail_seq`, so events
-        # appended by someone else in the meantime cannot turn a truthful
-        # True into a False.
-        rooted_floor = self._rooted_at(tail_seq, floor)
+        # checkpoint as missing.
+        #
+        # When ``max_events`` capped this pass, the honest right edge is
+        # ``end_seq`` (what we actually re-derived), NOT the table tail --
+        # claiming coverage to a tail this pass never looked at is the exact
+        # "incremental laundering" the C2 API exists to prevent.
+        rooted_floor = self._rooted_at(end_seq if truncated else tail_seq, floor)
         return _verification.IncrementalResult(
             segment_verified=segment.verified,
             rooted_at_genesis=(floor == 0 and rooted_floor),
@@ -2186,6 +2235,8 @@ class AuditStore:
             failures=segment.failures, anchor_source=anchor_source,
             retention_floor_seq=floor,
             rooted_at_retention_floor=rooted_floor,
+            tail_seq=int(tail_seq), complete=not truncated,
+            pending_events=pending,
         ).as_dict()
 
     # ------------------------------------------------------------------ #
@@ -2973,11 +3024,34 @@ def _record_lock_hold(duration: float, name: str) -> None:
 
 
 def get_audit_store() -> AuditStore:
-    """Get or create the global audit store instance."""
+    """Get or create the global audit store instance.
+
+    构造/打开失败时先写一条 ``evt=db.open.failed subsystem=audit``（带相对
+    数据目录的路径与 sqlite 原文），再原样抛出——调用方据此决定降级，而日志
+    不会丢失"是哪个库、为什么"。
+    """
     global _audit_store
     if _audit_store is None:
-        _audit_store = AuditStore()
-        _audit_store.initialize()  # 存在即 READY：构造完成即视为就绪
+        try:
+            store = AuditStore()
+            store.initialize()  # 存在即 READY：构造完成即视为就绪
+        except Exception as exc:
+            try:
+                from ...observability import boot_report
+
+                boot_report.record_db_open_failure(
+                    "audit",
+                    os.environ.get("AUDIT_DB_PATH") or "<AUDIT_DB_PATH 未配置>",
+                    exc,
+                    action=(
+                        "degraded: 审计链停止写入检查点；修复数据目录写权限、"
+                        "隔离/重建损坏库或配置 AUDIT_DB_PATH 后重启"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - 日志失败不能掩盖原始异常
+                pass
+            raise
+        _audit_store = store
     return _audit_store
 
 

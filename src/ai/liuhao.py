@@ -1,4 +1,4 @@
-"""鎏灏（LIUHAO X）主控 — 可对话的 AI OS 入口。
+"""鎏灏智能中枢 主控 — 可对话的 AI OS 入口。
 
 把「用户输入 → 权限检查 → 记忆召回 → 上下文构建 → 真实 LLM 生成 → 记忆持久化 →
 审计留痕」串成一条可对话的闭环。这是"用鎏灏"的最小、真实的入口。
@@ -18,9 +18,13 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import threading
+import time
+import urllib.parse
 import uuid
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from .employee import Agent
 from .agent_factory import (
@@ -34,7 +38,9 @@ from .agent_factory import (
 from .providers import (
     BaseProvider,
     GENERATION_FAILURE_MESSAGE,
+    ProviderStreamIncompleteError,
     resolve_provider,
+    user_facing_failure,
 )
 from .conversation_store import get_conversation_store
 from .tool_registry import ToolRegistry
@@ -52,7 +58,7 @@ from ..kernels.policy import (
 from .observability import TraceContext, observe, get_logger
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是「鎏灏」（LIUHAO X），一个由十源 DNA（ULTRON / VISION / ADA / EDITH / "
+    "你是「鎏灏智能中枢」（LiuHao AI OS），一个由十源 DNA（ULTRON / VISION / ADA / EDITH / "
     "FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）统一形成的 AI 操作系统人格。\n"
     "你运行在 LiuHao-AI-OS 之上，具备 14 个内核能力与 21-Phase 能力层。\n"
     "你诚实、可审计：不确定时明说，不伪造能力与数据；做不到的事直接说做不到。\n"
@@ -68,15 +74,158 @@ MAX_TOOL_ROUNDS = 3
 _log = logging.getLogger(__name__)
 
 
+def _provider_endpoint(provider: Any) -> tuple[str, Optional[int]]:
+    """从 provider 配置里取上游主机/端口（不发起任何请求）。"""
+    raw = str(getattr(provider, "base_url", None) or "").strip()
+    if not raw:
+        name = type(provider).__name__.lower()
+        if "ollama" in name:
+            raw = os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"
+        elif "openai" in name:
+            raw = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com"
+        elif "anthropic" in name:
+            raw = "https://api.anthropic.com"
+        elif "google" in name or "gemini" in name:
+            raw = "https://generativelanguage.googleapis.com"
+    if not raw:
+        return "-", None
+    parsed = urllib.parse.urlsplit(raw if "://" in raw else "//" + raw)
+    host = parsed.hostname or "-"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return host, port
+
+
 def _turn_failure_reason(exc: BaseException) -> Optional[str]:
     """取出 provider 在**脱敏前**算好的机器标签（``quota_exhausted`` 等）。
 
     异常消息已被中性化，用户看到的文案里没有 ``insufficient_quota``、
     ``revoked`` 这些词；只有这个标签能区分"去充值"和"稍后重试"。
-    非 HTTP 失败（网络、超时之外的未知错误）返回 ``None``。
+    网络不可达返回 ``unreachable``，超时返回 ``timeout``，其余未知错误返回 ``None``。
     """
     kind = getattr(exc, "upstream_kind", None)
-    return kind if isinstance(kind, str) and kind else None
+    if isinstance(kind, str) and kind:
+        return kind
+    # 空回复没有 upstream_kind（不是 HTTP 失败），但界面需要知道"模型什么都没说"，
+    # 而不是笼统的"网络异常"。
+    if getattr(exc, "error_code", None) == "EMPTY_RESPONSE":
+        return "empty_response"
+    # provider 用 ``raise ... from`` 保留了底层连接异常；不归类的话 reason 会是 null，
+    # 前端只能显示通用文案，无法区分"端点填错"和"模型不存在"。
+    cause = exc.__cause__
+    if cause is not None:
+        if isinstance(cause, TimeoutError) or type(cause).__name__ in {
+            "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectTimeoutError",
+        }:
+            return "timeout"
+        if isinstance(cause, OSError):
+            return "unreachable"
+    return None
+
+
+#: 预算（额度）拒绝与权限拒绝必须分开说、分开编码：前者是可自我修复的
+#: 「钱不够」，后者是「不允许」，把两者都写成「权限不足」会让用户去改错地方。
+BUDGET_DENIAL_REASON = "budget_exceeded"
+PERMISSION_DENIAL_REASON = "permission_denied"
+BUDGET_DENIAL_MESSAGE = "本次调用会超出你设定的预算，请调整额度或换更便宜的模型。"
+PERMISSION_DENIAL_MESSAGE = "权限不足：当前账号未被授权执行对话操作。"
+
+
+def _denial_reason(decision: Any) -> str:
+    """把 policy 的拒绝归因到预算或权限（按实际命中的规则 id 判断）。
+
+    只有 ``quota_enforcement`` 规则命中才算预算拒绝；其余（默认拒绝、
+    账号越权等）都按权限拒绝处理。绝不靠文案猜测。
+    """
+    rules = getattr(decision, "denied_rules", None) or []
+    rule_ids = {str(getattr(rule, "id", "") or "") for rule in rules}
+    return BUDGET_DENIAL_REASON if "quota_enforcement" in rule_ids else PERMISSION_DENIAL_REASON
+
+
+def _log_llm_call_failure(
+    logger: logging.Logger,
+    exc: BaseException,
+    provider: Any,
+    *,
+    correlation_id: str,
+    duration_ms: float,
+) -> None:
+    """``evt=llm.call.failed``：一条 ERROR 同时回答"谁、连哪、为什么、多久"。
+
+    以前只有一条 WARNING + traceback：``error.log`` 是空的，且 401 与网络不通
+    在用户侧文案完全相同。这里把上游状态、错误类别、errno、DNS 主机、Key 指纹、
+    超时值与来源、耗时、request_id 全部结构化，写进 ``error.log``。
+    """
+    try:
+        try:
+            from ..observability.boot_report import key_fingerprint
+        except Exception:  # noqa: BLE001 - 指纹失败不影响主日志
+            key_fingerprint = lambda _key: "none"  # noqa: E731
+
+        host, port = _provider_endpoint(provider)
+        text = f"{type(exc).__name__}: {exc}"
+        lowered = text.lower()
+        status = getattr(exc, "status_code", None)
+        error_class = type(exc).__name__
+        errno_value = getattr(exc, "errno", None)
+        dns_host = "-"
+        if (
+            "getaddrinfo failed" in lowered
+            or "nameresolutionerror" in lowered
+            or "failed to resolve" in lowered
+            or "name resolution" in lowered
+        ):
+            error_class = "DNSFailure"
+            errno_value = errno_value or 11001
+            dns_host = host
+        elif (
+            "winerror 10061" in lowered
+            or "connection refused" in lowered
+            or "积极拒绝" in text
+        ):
+            error_class = "ConnectionRefused"
+            errno_value = errno_value or 10061
+        elif (
+            isinstance(exc, TimeoutError)
+            or "timed out" in lowered
+            or "timeout" in type(exc).__name__.lower()
+        ):
+            error_class = "Timeout"
+            errno_value = errno_value or 10060
+        elif status is not None:
+            error_class = (
+                "AuthenticationError" if int(status) in (401, 403) else f"HTTP{status}"
+            )
+
+        provider_name = type(provider).__name__.replace("Provider", "").lower() or "unknown"
+        logger.error(
+            "evt=llm.call.failed provider=%s model=%s host=%s port=%s status=%s "
+            "error_class=%s errno=%s dns_host=%s key_fp=%s timeout_s=%s "
+            "timeout_source=%s duration_ms=%.0f attempt=%s request_id=%s",
+            provider_name,
+            getattr(provider, "model", "-") or "-",
+            host,
+            port if port is not None else "-",
+            status if status is not None else "-",
+            error_class,
+            errno_value if errno_value is not None else "-",
+            dns_host,
+            key_fingerprint(getattr(provider, "api_key", None)),
+            getattr(provider, "timeout", "-"),
+            getattr(provider, "timeout_source", "default"),
+            float(duration_ms),
+            getattr(exc, "attempt", 1),
+            correlation_id,
+            exc_info=True,
+        )
+    except Exception:  # noqa: BLE001 - 诊断日志失败不能改变"生成失败"这一结论
+        logger.warning(
+            "chat generation failed correlation=%s provider=%s: %s",
+            correlation_id,
+            type(provider).__name__,
+            exc,
+            exc_info=True,
+        )
+
 
 
 def _json_safe_output(value: Any) -> Any:
@@ -209,9 +358,14 @@ class LiuHaoAssistant:
         provider: Optional[BaseProvider] = None,
         capabilities: Optional[List[str]] = None,
         profile_principal: Optional[str] = None,
+        audit_principal: Optional[str] = None,
     ) -> None:
         self.name = name
         self.principal = name
+        # 审计归属主体：会话主体（name）可能是 gateway 拼出的会话级 id
+        # （如 `liuhao-alice-s1`），而审计页按账号主体读；显式传入账号主体，
+        # 使账本 actor（账号）与审计 principal_id（账号）能够一一对应。
+        self.audit_principal = audit_principal or name
         # 画像主体：默认与会话主体一致；传入时同一用户可跨会话共享画像
         # （会话历史仍按 self.principal 隔离，二者刻意解耦）。
         self.profile_principal = profile_principal or name
@@ -224,11 +378,16 @@ class LiuHaoAssistant:
         # 本轮被成本护栏评估出来的预估花费（无定价时为 None）——记账时复用同
         # 一个数，避免"放行时按 A 判、记账时按 B 收"的错位。
         self._turn_estimated_cost: Optional[float] = None
+        # 同一次评估里策略看到的可用额度（无 COST 配额时为 None）。
+        self._turn_quota_available: Optional[float] = None
         # provider 生命周期：新请求会替换 provider；旧实例必须在安全时机
         # 关闭（httpx/openai client 不关闭会随请求数累积句柄）。
         self._provider_lock = threading.Lock()
         self._active_turns = 0
         self._retired_providers: List[BaseProvider] = []
+        # 同一会话串行：两个标签页同时发消息时共享 turn / history，若并发进入
+        # chat/chat_stream 会导致轮次号重复、记忆键（turn:N）互相覆盖。
+        self._turn_lock = threading.Lock()
         # 本轮真实结果：gateway 依据它决定 done 帧状态与是否记用量。
         self.last_turn_status: Optional[str] = None
         self.last_turn_error: Optional[str] = None
@@ -279,6 +438,17 @@ class LiuHaoAssistant:
             self.tools.activate(tool.tool_id)
         # system prompt 追加工具描述（提示词约束 + JSON 解析的诚实协议）。
         self.system_prompt = self.system_prompt + build_tool_prompt(self._tool_list)
+
+    @contextmanager
+    def serialized_turn(self) -> Iterator[None]:
+        """把同一会话的整轮读写串行化（principal+session 维度）。
+
+        gateway 在 ``chat`` / ``chat_stream`` 的完整轮次（含落盘、记账、结束帧）
+        外层持有它：同一账号的两个标签页并发写同一会话时严格一轮一写，
+        不同账号/会话各自是独立 assistant 实例，互不阻塞。
+        """
+        with self._turn_lock:
+            yield
 
     def begin_turn(self) -> None:
         """标记一轮生成正在进行；期间被替换的 provider 延后关闭。"""
@@ -384,7 +554,7 @@ class LiuHaoAssistant:
         tokens_in = max(1, prompt_chars // CHARS_PER_TOKEN)
         tokens_out = _declared_max_output_tokens(self.provider)
         inputs = economy_inputs(
-            principal=self.principal,
+            principal=self.audit_principal,
             model=getattr(self.provider, "model", None),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
@@ -394,6 +564,7 @@ class LiuHaoAssistant:
         # model is unpriced there is no ``estimated_cost`` key, and we then
         # record nothing rather than inventing a 0.
         self._turn_estimated_cost = inputs.get("estimated_cost")
+        self._turn_quota_available = (inputs.get("resource") or {}).get("available")
         return inputs
 
     # ------------------------------------------------------------------ #
@@ -416,28 +587,43 @@ class LiuHaoAssistant:
             "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
         )
         if not decision.is_allowed:
+            denial_reason = _denial_reason(decision)
+            denial_message = (
+                BUDGET_DENIAL_MESSAGE
+                if denial_reason == BUDGET_DENIAL_REASON
+                else PERMISSION_DENIAL_MESSAGE
+            )
             self.last_turn_status = "denied"
-            self.last_turn_error = None
-            self.last_turn_reason = None
+            self.last_turn_error = denial_message
+            self.last_turn_reason = denial_reason
             log_event(
                 AuditEventType.ACCESS_DENIED,
-                principal_id=self.principal,
+                principal_id=self.audit_principal,
                 scope=AuditScope.L1,
                 outcome="deny",
-                details={"turn": self.turn, "action": "chat", "reason": str(getattr(decision, "reason", "denied"))},
+                details={
+                    "turn": self.turn,
+                    "action": "chat",
+                    "reason": denial_reason,
+                    "estimated_cost": self._turn_estimated_cost,
+                    "available": self._turn_quota_available,
+                },
                 correlation_id=correlation_id,
             )
             return {
-                "reply": "权限不足：当前主体未被授权执行对话操作。",
+                "reply": denial_message,
                 "status": "denied",
+                "reason": denial_reason,
                 "turn": self.turn,
                 "correlation_id": correlation_id,
+                "agent": self.principal,
             }
 
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)
 
         # 3. 生成（真实 LLM / mock）+ 工具调用 loop。
+        _gen_started = time.perf_counter()
         reason: Optional[str] = None
         try:
             reply = self._generate_with_tools(messages)
@@ -445,17 +631,18 @@ class LiuHaoAssistant:
             error_text: Optional[str] = None
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             # 原始异常只进日志/诊断；用户侧与状态字段只保留中性中文说明。
-            self._log.warning(
-                "chat generation failed turn=%s correlation=%s provider=%s: %s",
-                self.turn,
-                correlation_id,
-                type(self.provider).__name__,
+            _log_llm_call_failure(
+                self._log,
                 exc,
-                exc_info=True,
+                self.provider,
+                correlation_id=correlation_id,
+                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
             )
-            reply = GENERATION_FAILURE_MESSAGE
+            # 错误文案按失败类型分开：空回复不是网络问题，断流不是彻底失败。
+            failure_text = user_facing_failure(exc)
+            reply = failure_text
             status = "error"
-            error_text = GENERATION_FAILURE_MESSAGE
+            error_text = failure_text
             reason = _turn_failure_reason(exc)
 
         self.last_turn_status = status
@@ -492,18 +679,30 @@ class LiuHaoAssistant:
             "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
         )
         if not decision.is_allowed:
+            denial_reason = _denial_reason(decision)
+            denial_message = (
+                BUDGET_DENIAL_MESSAGE
+                if denial_reason == BUDGET_DENIAL_REASON
+                else PERMISSION_DENIAL_MESSAGE
+            )
             self.last_turn_status = "denied"
-            self.last_turn_error = None
-            self.last_turn_reason = None
+            self.last_turn_error = denial_message
+            self.last_turn_reason = denial_reason
             log_event(
                 AuditEventType.ACCESS_DENIED,
-                principal_id=self.principal,
+                principal_id=self.audit_principal,
                 scope=AuditScope.L1,
                 outcome="deny",
-                details={"turn": self.turn, "action": "chat", "reason": str(getattr(decision, "reason", "denied"))},
+                details={
+                    "turn": self.turn,
+                    "action": "chat",
+                    "reason": denial_reason,
+                    "estimated_cost": self._turn_estimated_cost,
+                    "available": self._turn_quota_available,
+                },
                 correlation_id=correlation_id,
             )
-            yield "权限不足：当前主体未被授权执行对话操作。"
+            yield denial_message
             return
 
         # 2. 构建 messages（system + 历史 + 当前）。
@@ -516,9 +715,11 @@ class LiuHaoAssistant:
         status = "completed"
         error_text: Optional[str] = None
         reason: Optional[str] = None
+        round_chunks: List[str] = []
+        _gen_started = time.perf_counter()
         try:
             for round_idx in range(MAX_TOOL_ROUNDS + 1):
-                round_chunks: List[str] = []
+                round_chunks = []
                 for token in self.provider.chat_stream(messages):
                     round_chunks.append(token)
                     yield token
@@ -551,20 +752,33 @@ class LiuHaoAssistant:
                         ),
                     }
                 )
+        except ProviderStreamIncompleteError as exc:
+            # 已收到的 token 是真内容，必须保留；但这一轮不能算 completed：
+            # 上游没有给出结束标记，用户看到的是一段没有结尾的回答。
+            status = "incomplete"
+            _log_llm_call_failure(
+                self._log,
+                exc,
+                self.provider,
+                correlation_id=correlation_id,
+                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
+            )
+            error_text = user_facing_failure(exc)
+            final_reply = "".join(round_chunks) if round_chunks else error_text
+            reason = "stream_incomplete"
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             status = "error"
             # 原始异常只写日志；用户侧与事件流都只看到中性中文说明。
-            self._log.warning(
-                "chat_stream generation failed turn=%s correlation=%s "
-                "provider=%s: %s",
-                self.turn,
-                correlation_id,
-                type(self.provider).__name__,
+            _log_llm_call_failure(
+                self._log,
                 exc,
-                exc_info=True,
+                self.provider,
+                correlation_id=correlation_id,
+                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
             )
-            error_text = GENERATION_FAILURE_MESSAGE
-            final_reply = GENERATION_FAILURE_MESSAGE
+            failure_text = user_facing_failure(exc)
+            error_text = failure_text
+            final_reply = failure_text
             reason = _turn_failure_reason(exc)
             yield final_reply
 
@@ -649,12 +863,23 @@ class LiuHaoAssistant:
         # 导致一次「生成失败」被读成「策略评估失败」，并在驾驶舱 breakdown 里
         # 形成虚假的 `policy_eval:error` 计数。生成失败与策略无关，如实记为
         # 状态变更即可。
+        key_owner = str(getattr(self.provider, "owner_principal", "") or self.audit_principal)
         log_event(
             AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.STATE_CHANGE,
-            principal_id=self.principal,
+            principal_id=self.audit_principal,
             scope=AuditScope.L1,
             outcome="allow" if status == "completed" else "error",
-            details={"turn": self.turn, "action": "chat", "chars_in": len(message), "chars_out": len(reply)},
+            details={
+                "turn": self.turn,
+                "action": "chat",
+                "chars_in": len(message),
+                "chars_out": len(reply),
+                # 与账本对齐：账本按 key_owner 记费、按 actor 记用量；
+                # 审计在同一 correlation_id 下注明 Key 归属与实际调用账号，
+                # 使"根借用子账号 Key"在审计页也能对上账本。
+                "key_owner_account_id": key_owner,
+                "effective_account_id": self.audit_principal,
+            },
             correlation_id=correlation_id,
         )
 
@@ -677,7 +902,7 @@ class LiuHaoAssistant:
             from ..kernels.resource import ResourceType, get_resource_manager
 
             manager = get_resource_manager()
-            owner = self.principal
+            owner = self.audit_principal
             own_quotas = [
                 q
                 for q in manager.get_all_quotas(owner)
@@ -689,7 +914,7 @@ class LiuHaoAssistant:
                 _log.warning(
                     "quota accounting: no COST quota to charge for principal=%r "
                     "(cost=%.6f); the spend was not recorded",
-                    self.principal,
+                    self.audit_principal,
                     cost,
                 )
         except Exception:  # pragma: no cover - defensive
