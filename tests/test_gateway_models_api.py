@@ -92,6 +92,39 @@ class TestCrudAndMasking:
         assert "enc:v1:" not in body
         assert json.loads(body)["default_id"] == created["id"]
 
+    def test_openai_protocol_with_deepseek_endpoint_reports_real_vendor(
+        self, client, admin_headers
+    ):
+        """provider=openai 只是协议适配器；base_url 指向 DeepSeek 时厂商是 DeepSeek。"""
+        created = client.post(
+            "/v1/models",
+            json=_payload(
+                name="deepseek",
+                provider="openai",
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com/v1",
+                api_key="sk-deepseek-abcdefghijklmnop",
+            ),
+            headers=admin_headers,
+        ).json()
+        assert created["provider"] == "openai", "已有配置的 provider 字段不得改动"
+        assert created["base_url"] == "https://api.deepseek.com/v1"
+        assert created["vendor"] == "deepseek"
+        assert created["provider_display_name"] == "DeepSeek"
+        assert created["display_status"].startswith("DeepSeek")
+
+        listed = client.get("/v1/models", headers=admin_headers).json()["models"][0]
+        assert listed["vendor"] == "deepseek"
+
+        # 路由行为不变：仍然按 provider=openai 构造 OpenAI 兼容适配器，端点不变。
+        from src.ai.providers import resolve_provider
+
+        provider = resolve_provider(created["id"])
+        assert type(provider).__name__ == "OpenAIProvider"
+        assert str(getattr(provider, "base_url", "")).startswith(
+            "https://api.deepseek.com"
+        )
+
     def test_database_holds_ciphertext(self, client, admin_headers):
         from src.ai.model_config import get_model_config_store
 

@@ -13,13 +13,17 @@ import pytest
 from src.ai import model_router as routing
 
 
-def _profile(model_id: str, provider: str, model: str) -> routing.ModelProfile:
+def _profile(
+    model_id: str, provider: str, model: str, base_url: str = ""
+) -> routing.ModelProfile:
     return routing.ModelProfile(
         model_id=model_id,
         provider=provider,
         model_name=model,
         tier=routing._tier_for(provider),
         capabilities=routing._capabilities_for_provider(provider),
+        base_url=base_url,
+        vendor=routing.vendor_for(provider, base_url),
     )
 
 
@@ -76,6 +80,25 @@ class TestCatalogFromStore:
 
     def test_empty_store_is_an_empty_catalog_not_an_error(self):
         assert routing.catalog_from_store(store=FakeStore([])) == {}
+
+    def test_vendor_comes_from_base_url_not_the_protocol_label(self):
+        """DeepSeek 以 OpenAI 兼容协议注册时，真实厂商是 DeepSeek。"""
+        profiles = routing.catalog_from_store(
+            store=FakeStore(
+                [
+                    {
+                        "id": "m-ds",
+                        "provider": "openai",
+                        "model": "deepseek-chat",
+                        "enabled": True,
+                        "base_url": "https://api.deepseek.com/v1",
+                    }
+                ]
+            )
+        )
+        profile = profiles["m-ds"]
+        assert profile.provider == "openai"  # 路由仍按协议适配器走，不改行为
+        assert profile.vendor == "deepseek"  # 日志/审计/界面用真实厂商
 
 
 class TestRouteFromStore:
@@ -178,3 +201,23 @@ class TestLiveProviderEntry:
     def test_profile_alias_chat_points_at_default_profile(self):
         assert routing._resolve_profile("chat").prefer_tier is routing.ModelTier.CLOUD
         assert routing._resolve_profile("summarization").max_cost_per_token == 0.001
+
+    def test_log_records_vendor_beside_the_protocol_provider(self, monkeypatch, caplog):
+        class FakeProvider:
+            base_url = "https://api.deepseek.com/v1"
+
+        monkeypatch.setattr(routing, "resolve_provider", lambda *a, **k: FakeProvider())
+        monkeypatch.setattr(
+            routing,
+            "catalog_from_store",
+            lambda store=None, **kwargs: {
+                "ds": _profile(
+                    "ds", "openai", "deepseek-chat", "https://api.deepseek.com/v1"
+                )
+            },
+        )
+        with caplog.at_level(logging.INFO, logger="liuhao.ai.model_router"):
+            routing.provider_for_task("chat")
+
+        assert "provider=openai" in caplog.text
+        assert "vendor=deepseek" in caplog.text

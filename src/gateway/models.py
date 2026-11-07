@@ -38,6 +38,7 @@ from ..ai.model_config import (
     ModelConfigError,
     SUPPORTED_PROVIDERS,
     get_model_config_store,
+    vendor_for,
 )
 from ..ai.providers import ProviderFactory, provider_from_config
 
@@ -291,7 +292,10 @@ def _with_pricing(record: Dict[str, Any]) -> Dict[str, Any]:
     stamped["pricing"] = pricing_status(model_id)
     # 界面直接展示这三项，不再原样显示 ``provider=ollama`` 这类机器值。
     stamped["display_name"] = model_display_name(stamped)
-    stamped["provider_display_name"] = provider_label(stamped.get("provider"))
+    # vendor 是真实厂商（provider 只是协议适配器）；旧字段 provider 仍保留。
+    stamped["provider_display_name"] = provider_label(
+        stamped.get("vendor") or stamped.get("provider")
+    )
     stamped["display_status"] = model_display_status(stamped)
     enabled = stamped.get("enabled")
     stamped["status_label"] = "可用" if enabled is None else ("已启用" if enabled else "未启用")
@@ -726,6 +730,7 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "detail": detail,
             "latency_ms": elapsed,
             "provider": cfg.get("provider"),
+            "vendor": vendor_for(cfg.get("provider"), cfg.get("base_url")),
             "model": cfg.get("model"),
         }
     elapsed = round((time.monotonic() - started) * 1000.0, 1)
@@ -737,6 +742,7 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "detail": _sanitize(str(reply)[:120], api_key),
         "latency_ms": elapsed,
         "provider": cfg.get("provider"),
+        "vendor": vendor_for(cfg.get("provider"), cfg.get("base_url")),
         "model": cfg.get("model"),
     }
 
@@ -751,6 +757,7 @@ def _audit_probe(cfg: Dict[str, Any], outcome: str, reason: str) -> None:
             outcome=outcome,
             reason=reason,
             provider=str(cfg.get("provider") or ""),
+            vendor=vendor_for(cfg.get("provider"), cfg.get("base_url")),
             model=str(cfg.get("model") or ""),
         )
     except Exception as exc:  # noqa: BLE001

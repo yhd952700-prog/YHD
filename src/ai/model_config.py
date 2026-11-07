@@ -38,6 +38,7 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+from urllib.parse import urlparse
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -73,6 +74,58 @@ _ENC_PREFIX = "enc:v1:"
 #: 绝不要把底层异常（InvalidTag / 解密失败 / 文件路径）直接透给用户。
 NEEDS_REENTRY_TEXT = "凭据需重新填写"
 NEEDS_REENTRY_CODE = "MODEL_KEY_NEEDS_REENTRY"
+
+#: 协议适配器 -> 真实厂商。``provider`` 表达的是"用哪套协议构造请求"，
+#: 不等于请求发往哪家厂商：``provider=openai`` + base_url 指向 DeepSeek 时，
+#: 实际厂商是 DeepSeek。此映射只供日志/审计/界面展示，不参与路由。
+_VENDOR_BY_PROVIDER = {
+    "deepseek": "deepseek",
+    "moonshot": "moonshot",
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "google": "google",
+    "gemini": "google",
+    "ollama": "ollama",
+    "azure": "azure",
+    "mock": "mock",
+}
+
+#: base_url 主机名 -> 厂商。只收确定性映射，未知主机原样返回主机名。
+_VENDOR_BY_HOST = {
+    "api.deepseek.com": "deepseek",
+    "deepseek.com": "deepseek",
+    "api.openai.com": "openai",
+    "openai.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "api.moonshot.cn": "moonshot",
+    "api.moonshot.ai": "moonshot",
+    "generativelanguage.googleapis.com": "google",
+}
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def vendor_for(provider: Any, base_url: Any = None) -> str:
+    """把 ``provider``（协议适配器名）换算成真实厂商。
+
+    ``provider=openai`` 只是"按 OpenAI 兼容协议发请求"，base_url 指向
+    ``api.deepseek.com`` 时请求实际发往 DeepSeek；日志里只写 ``provider=openai``
+    会让排障与审计误以为是 OpenAI。显式厂商类型（deepseek/anthropic/...）直接
+    返回自身；本地端点返回 ``local``；未知主机返回真实主机名，绝不冒用
+    ``openai``。本函数是纯展示用途，**不改变路由与鉴权行为**。
+    """
+    name = str(provider or "").strip().lower()
+    if name in _VENDOR_BY_PROVIDER:
+        return _VENDOR_BY_PROVIDER[name]
+    host = (urlparse(str(base_url or "")).hostname or "").lower()
+    if host in _VENDOR_BY_HOST:
+        return _VENDOR_BY_HOST[host]
+    if host in _LOCAL_HOSTS or host.startswith("127.") or host.endswith(".local"):
+        return "local"
+    if host:
+        return host
+    return "openai" if name in {"openai", "openai-compatible", "openai_compatible"} else (name or "unknown")
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ai_model_configs (
@@ -326,6 +379,8 @@ class ModelConfigStore:
             "provider": row["provider"],
             "model": row["model"],
             "base_url": row["base_url"],
+            # 真实厂商（由 provider 协议名 + base_url 推断），只供展示/日志。
+            "vendor": vendor_for(row["provider"], row["base_url"]),
             "owner_principal": _row_owner(row),
             "timeout": row["timeout"],
             "is_default": bool(row["is_default"]),

@@ -21,6 +21,8 @@ export interface ModelRecord {
   id: string
   name: string
   provider: string
+  /** 真实厂商（provider 只是协议适配器名），列表"服务商"列优先显示它。 */
+  vendor?: string | null
   model: string
   base_url: string | null
   timeout: number
@@ -28,6 +30,8 @@ export interface ModelRecord {
   enabled: boolean
   api_key_set: boolean
   api_key_masked: string | null
+  /** missing / ok / needs_reentry（密文在但当前密钥解不开）。 */
+  api_key_status?: 'missing' | 'ok' | 'needs_reentry'
   created_at: string
   updated_at: string
 }
@@ -89,6 +93,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek（云端）',
   azure: 'Azure OpenAI（云端）',
   ollama: '本地 Ollama',
+  local: '本地模型',
+  moonshot: '月之暗面 Kimi',
+  google: 'Google Gemini',
   mock: '内置演示（不调用真实模型）',
 }
 
@@ -591,7 +598,7 @@ export function ModelManager({ session }: { session: Session }) {
                     <td data-label="名称">
                       <span className="os-model-name">{item.name}</span>
                     </td>
-                    <td data-label="服务商">{providerLabel(item.provider)}</td>
+                    <td data-label="服务商">{providerLabel(item.vendor || item.provider)}</td>
                     <td data-label="模型" className="os-model-mono">
                       {item.model}
                     </td>

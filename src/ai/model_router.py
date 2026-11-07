@@ -39,6 +39,7 @@ from src.ai.providers import (
     get_provider,
     resolve_provider,
 )
+from src.ai.model_config import vendor_for
 from src.model_gateway import (
     ModelRegistry,
     ModelRouter,
@@ -77,6 +78,9 @@ class ModelProfile:
     capabilities: ProviderCapabilities
     cost_per_1k_tokens: float = 0.0
     typical_latency_ms: int = 1000
+    base_url: str = ""
+    #: 真实厂商（``provider`` 只是协议适配器名），仅用于日志展示。
+    vendor: str = ""
 
 
 def _caps(**kwargs: Any) -> ProviderCapabilities:
@@ -426,6 +430,8 @@ def catalog_from_store(
             model_name=model_name,
             tier=_tier_for(provider),
             capabilities=_capabilities_for_provider(provider),
+            base_url=str(record.get("base_url") or ""),
+            vendor=vendor_for(provider, record.get("base_url")),
         )
     return profiles
 
@@ -552,22 +558,26 @@ def provider_for_task(
         )
 
     selected = result.selected_model
-    logger.info(
-        "model routing decision: task=%s model_id=%s provider=%s model=%s "
-        "reason=%s fallbacks=%s",
-        task_type or "default",
-        selected.model_id,
-        selected.provider,
-        selected.model_name,
-        result.reason,
-        ",".join(result.fallback_models) or "-",
-    )
-    return resolve_provider(
+    provider = resolve_provider(
         selected.model_id,
         visible_to=visible_to,
         allow_unowned=allow_unowned,
         allow_env_fallback=allow_env_fallback,
     )
+    # provider 字段是协议适配器名（例如 openai 兼容协议），vendor 才是真实厂商；
+    # 两者都记，排障时不再把 DeepSeek 误读成 OpenAI。
+    logger.info(
+        "model routing decision: task=%s model_id=%s provider=%s vendor=%s model=%s "
+        "reason=%s fallbacks=%s",
+        task_type or "default",
+        selected.model_id,
+        selected.provider,
+        vendor_for(selected.provider, getattr(provider, "base_url", None)),
+        selected.model_name,
+        result.reason,
+        ",".join(result.fallback_models) or "-",
+    )
+    return provider
 
 
 def get_provider_for_task(task_type: Optional[str] = None, **overrides: Any) -> BaseProvider:

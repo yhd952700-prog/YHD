@@ -285,8 +285,11 @@ def model_display_name(model: Mapping[str, Any]) -> str:
 
 
 def model_display_status(model: Mapping[str, Any]) -> str:
-    """形如 ``本地 Ollama · 未启用`` —— 服务商 + 启用状态，一句话可读。"""
-    provider = provider_label(model.get("provider"))
+    """形如 ``本地 Ollama · 未启用`` —— 服务商 + 启用状态，一句话可读。
+
+    优先用 ``vendor``（真实厂商）；缺失时回退旧字段 ``provider``。
+    """
+    provider = provider_label(model.get("vendor") or model.get("provider"))
     enabled = model.get("enabled")
     if enabled is None:
         state = "可用"

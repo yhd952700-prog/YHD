@@ -19,6 +19,7 @@ from src.ai.model_config import (
     ModelConfigStore,
     get_model_config_store,
     mask_secret,
+    vendor_for,
 )
 from src.ai.providers import (
     AIProviderConfigError,
@@ -311,6 +312,43 @@ class TestUndecryptableCredential:
         created = _create(store, api_key="sk-abcdefghijklmnop")
         assert created["api_key_status"] == "ok"
         assert created["api_key_masked"] == "sk-a…mnop"
+
+class TestVendorLabel:
+    """``provider`` 是协议适配器名；``vendor`` 才是真实厂商（不改路由）。"""
+
+    @pytest.mark.parametrize(
+        ("provider", "base_url", "expected"),
+        [
+            ("openai", "https://api.deepseek.com/v1", "deepseek"),
+            ("openai", "https://api.openai.com/v1", "openai"),
+            ("openai", None, "openai"),
+            ("openai", "https://api.anthropic.com", "anthropic"),
+            ("openai", "https://generativelanguage.googleapis.com", "google"),
+            ("deepseek", "https://api.openai.com/v1", "deepseek"),
+            ("ollama", "http://localhost:11434", "ollama"),
+            ("openai", "http://127.0.0.1:8000/v1", "local"),
+            ("openai", "https://openrouter.ai/api/v1", "openrouter.ai"),
+        ],
+    )
+    def test_vendor_mapping(self, provider, base_url, expected):
+        assert vendor_for(provider, base_url) == expected
+
+    def test_public_payload_carries_provider_and_vendor(self, store):
+        created = store.create(
+            {
+                "name": "deepseek",
+                "provider": "openai",
+                "model": "deepseek-chat",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key": "sk-abcdefghijklmnop",
+            },
+            "admin",
+        )
+        assert created["provider"] == "openai"  # 已有配置/路由字段不变
+        assert created["vendor"] == "deepseek"
+        listed = store.list_models()
+        assert listed[0]["vendor"] == "deepseek"
+
 
 class TestKeyEnvAliases:
     def test_generic_key_wins_over_alias(self, monkeypatch):
