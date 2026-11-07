@@ -58,27 +58,32 @@ export interface ProbeResult {
  * 连通性失败原因 → 可执行的中文。
  *
  * 纯函数，便于单测：后端只给机器可读的 `reason`，界面必须回答"我该改什么"。
- * `upstream_error` 及未知原因一律回落到后端 `detail` —— 不替后端编造归因。
+ * 未知原因不猜归因；上游原文（英文报错）只留在服务端日志与诊断包里，
+ * 不铺到界面上。
  */
-export function mapProbeReason(reason: string, latencyMs: number, detail: string): string {
+export function mapProbeReason(reason: string, latencyMs: number, _detail: string): string {
   switch (reason) {
     case '':
       return `连接成功（${latencyMs} ms）`
     case 'invalid_key':
-      return 'API Key 无效或没有权限（401/403）'
+      return 'API Key 无效或没有权限。请检查 Key 是否填错、是否复制完整；建议重新生成后再试。'
+    case 'key_revoked':
+      return 'API Key 已被提供方停用或吊销。请到提供方控制台重新生成 Key，再填到这里。'
+    case 'quota_exhausted':
+      return '账户额度已用完。请到提供方控制台充值或提升额度后重试。'
     case 'model_not_found':
-      return '模型名不存在或该端点不支持这个模型（404）'
+      return '模型名不存在或该端点不支持这个模型。请核对模型名称后重试。'
     case 'unreachable':
-      return '端点不可达：检查端点地址、端口与网络（连接被拒绝或域名解析失败）'
+      return '端点不可达。请检查端点地址、端口与网络连接是否正常。'
     case 'timeout':
-      return '连接超时：端点响应太慢，或端点地址不可达'
+      return '连接超时。请检查网络，或稍后再试。'
     case 'rate_limited':
-      return '被上游限流（429），请稍后重试'
+      return '请求被上游限流（429）。请稍后重试。'
     case 'upstream_error':
-      return detail || '上游返回错误'
+      return '模型服务返回了错误，连接没有成功。请稍后重试；持续出现时可导出诊断包。'
     default:
       // `reason` 是机器码，不直接上屏；能给出的最确定的一句话就是"连接失败"。
-      return detail || '连接失败：请检查服务商、模型名与端点设置后重试'
+      return '连接失败：请检查服务商、模型名与端点设置后重试。'
   }
 }
 
@@ -170,10 +175,6 @@ export function ModelManager({ session }: { session: Session }) {
   const probeMessage = probeResult
     ? mapProbeReason(probeResult.reason, probeResult.latency_ms, probeResult.detail)
     : ''
-  const probeDetail =
-    probeResult && !probeResult.ok && probeResult.detail && probeResult.detail !== probeMessage
-      ? probeResult.detail
-      : ''
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -559,7 +560,6 @@ export function ModelManager({ session }: { session: Session }) {
             <strong>{probe.source}：</strong>
             {probeMessage}
           </span>
-          {probeDetail && <span className="os-model-probe-detail">服务端返回：{probeDetail}</span>}
         </div>
       )}
 

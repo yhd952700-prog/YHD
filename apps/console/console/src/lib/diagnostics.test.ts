@@ -1,0 +1,117 @@
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { exportDiagnosticsBundle } from './diagnostics'
+
+interface FakeResponseOptions {
+  ok?: boolean
+  status?: number
+  filename?: string
+  disposition?: string
+  body?: Blob
+  json?: unknown
+}
+
+function fakeResponse(options: FakeResponseOptions = {}): Response {
+  const headers = new Headers()
+  if (options.filename) headers.set('X-LiuHao-Diagnostics-Filename', options.filename)
+  if (options.disposition) headers.set('Content-Disposition', options.disposition)
+  return {
+    ok: options.ok ?? true,
+    status: options.status ?? 200,
+    headers,
+    blob: async () => options.body ?? new Blob(['PK']),
+    json: async () => options.json ?? {},
+    statusText: '',
+  } as unknown as Response
+}
+
+function stubPicker(impl: (...args: unknown[]) => Promise<unknown>) {
+  ;(window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker = vi.fn(impl)
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker
+})
+
+describe('一键诊断包导出', () => {
+  test('支持另存为时写入用户选择的位置，并回报文件名', async () => {
+    const write = vi.fn(async () => undefined)
+    const close = vi.fn(async () => undefined)
+    stubPicker(async () => ({
+      name: 'liuhao-diagnostics-20260101-120000.zip',
+      createWritable: async () => ({ write, close }),
+    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fakeResponse({ filename: 'liuhao-diagnostics-20260101-120000.zip' }),
+      ),
+    )
+
+    const saved = await exportDiagnosticsBundle()
+
+    expect(saved).toEqual({
+      filename: 'liuhao-diagnostics-20260101-120000.zip',
+      location: 'chosen',
+    })
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  test('不支持另存为时触发下载，并回报文件名', async () => {
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:diagnostics'),
+      revokeObjectURL: vi.fn(),
+    })
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => fakeResponse({ disposition: 'attachment; filename="diag.zip"' })),
+    )
+
+    const saved = await exportDiagnosticsBundle()
+
+    expect(saved).toEqual({ filename: 'diag.zip', location: 'download' })
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+
+  test('用户在系统对话框里取消 → 返回 null，不报错', async () => {
+    stubPicker(async () => {
+      throw new DOMException(' cancelled ', 'AbortError')
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse()))
+
+    await expect(exportDiagnosticsBundle()).resolves.toBeNull()
+  })
+
+  test('连不上服务时给出中文动作，不回显 Failed to fetch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    )
+
+    const error = (await exportDiagnosticsBundle().catch((err: unknown) => err)) as Error
+    expect(error.message).toContain('无法连接到鎏灏服务')
+    expect(error.message).toContain('请确认服务已经启动')
+    expect(error.message).not.toContain('Failed to fetch')
+  })
+
+  test('后端拒绝时不返回半截文件，文案来自统一错误解析', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fakeResponse({
+          ok: false,
+          status: 500,
+          json: { detail: '诊断包自检未通过，已停止导出。请重试；若仍失败，请改为手动收集日志。' },
+        }),
+      ),
+    )
+
+    const error = (await exportDiagnosticsBundle().catch((err: unknown) => err)) as Error
+    expect(error.message).toContain('诊断包自检未通过')
+  })
+})

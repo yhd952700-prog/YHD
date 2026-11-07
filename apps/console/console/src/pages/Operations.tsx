@@ -295,8 +295,11 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
                       />
                       <div className="os-row-main">
                         <div className="os-row-title">{componentLabel(name)}</div>
-                        {!healthy && detail?.error && (
-                          <div className="os-row-sub">{safeText(detail.error)}</div>
+                        {!healthy && (
+                          <div className="os-row-sub">
+                            {safeText(detail?.user_message) ||
+                              '这项检查没有通过，请重试；持续出现时可导出诊断包。'}
+                          </div>
                         )}
                       </div>
                       <span className="os-badge" data-tone={healthy ? 'ok' : 'danger'}>

@@ -141,9 +141,13 @@ def resolve_bind() -> tuple:
     try:
         port = int(raw_port)
     except ValueError:
-        raise SystemExit(f"PORT={raw_port!r} is not an integer")
+        raise SystemExit(
+            "端口设置不是数字，网关无法启动。请把 PORT 改成 1-65535 之间的数字后重试。"
+        )
     if not 1 <= port <= 65535:
-        raise SystemExit(f"PORT={port} is outside the valid range 1-65535")
+        raise SystemExit(
+            "端口设置超出可用范围（1-65535），网关无法启动。请把 PORT 改成该范围内的数字后重试。"
+        )
     return host, port
 
 
@@ -214,9 +218,21 @@ def _run(host: str, port: int) -> int:
     log_level = (os.environ.get("LOG_LEVEL") or "info").strip().lower()
     # 读成映射：uvicorn 的 YAML 路径分支用 open() 不带 encoding，中文
     # Windows 下会按 cp936 解码 UTF-8 文件并直接崩（见 logging_config）。
-    log_config = load_uvicorn_log_config(resolve_log_config_path(LOG_CONFIG))
-    # 只建「实际写日志的那个目录」：安装版是数据目录，不再碰程序目录。
-    resolve_log_dir(log_config).mkdir(parents=True, exist_ok=True)
+    try:
+        log_config = load_uvicorn_log_config(resolve_log_config_path(LOG_CONFIG))
+        # 只建「实际写日志的那个目录」：安装版是数据目录，不再碰程序目录。
+        resolve_log_dir(log_config).mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError) as exc:
+        # 数据目录不可写 / 磁盘满 / 安全软件拦截目录创建，都会在这里变成
+        # 一条英文 traceback。用户看不懂，也给不出下一步动作。
+        print(
+            "[FAIL] 无法准备日志目录：数据目录可能不可写、磁盘空间不足，"
+            "或安全软件拦截了写入。请确认数据目录可写、磁盘有余量后重试。",
+            file=sys.stderr,
+            flush=True,
+        )
+        logger.debug("准备日志目录失败", exc_info=True)
+        return 1
     _startup_profile.mark("入口 main() 开始（解析 server.timeouts）")
     timeout_options = resolve_timeout_options()
     _startup_profile.mark("入口配置解析完成")
@@ -248,8 +264,9 @@ def _run(host: str, port: int) -> int:
                 _print_bind_failure(host, port)
             else:
                 print(
-                    "[FAIL] 网关启动失败（端口可绑定，失败发生在核心启动阶段）。"
-                    "详细原因见日志。",
+                    "[FAIL] 网关启动失败：端口正常，问题出在核心启动阶段。"
+                    "常见原因是数据目录不可写、磁盘空间不足，或安全软件拦截了程序。"
+                    "请先确认数据目录可写、磁盘有余量，然后重试；详细原因见日志。",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -278,10 +295,13 @@ def _port_in_use(host: str, port: int) -> bool:
 
 
 def _print_bind_failure(host: str, port: int, exc: OSError | None = None) -> None:
-    """端口不可用时的可读提示（不把裸 errno 甩给用户）。"""
-    reason = f"（{exc}）" if exc else ""
+    """端口不可用时的可读提示（不把裸 errno / 英文异常甩给用户）。"""
+    if exc is not None:
+        # 原始异常只进调试日志，供技术支持定位；控制台文案保持中性，
+        # 不用 error 级别，避免它又被控制台 handler 原样打出来。
+        logger.debug("网关绑定 %s:%s 失败", host, port, exc_info=True)
     print(
-        f"[FAIL] 端口 {display_host(host)}:{port} 被其它程序占用，网关无法启动{reason}。",
+        f"[FAIL] 端口 {display_host(host)}:{port} 被其它程序占用，网关无法启动。",
         file=sys.stderr,
         flush=True,
     )

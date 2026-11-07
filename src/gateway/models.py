@@ -579,6 +579,7 @@ _PROBE_HINTS = {
     "model_not_found": "模型名不存在：请核对提供方支持的模型 ID",
     "unreachable": "端点不可达：请检查 base_url、端口与网络",
     "timeout": "连接超时：请检查网络或调大超时时间",
+    "upstream_error": "提供方返回服务端错误：请稍后重试；持续出现请联系提供方",
 }
 
 
@@ -593,11 +594,23 @@ def _classify_error(exc: BaseException) -> str:
     message = str(exc).lower()
     if "timeout" in name or "timed out" in message or "timeout" in message:
         return "timeout"
-    if name in {"connectionerror", "connecterror", "newconnectionerror"} or any(
+    # 各 SDK 的连接失败异常名并不统一：``openai`` 抛 ``APIConnectionError``
+    # （文案只有一句 ``Connection error.``），标准库与 httpx 则各自不同。
+    # 之前只认 ``ConnectionError``，真实"地址填错/端口没开/断网"会被归成
+    # ``upstream_error``，界面就说不出"端点不可达"这一步。
+    if name in {
+        "connectionerror",
+        "connecterror",
+        "newconnectionerror",
+        "apiconnectionerror",
+    } or any(
         token in message
         for token in ("connection refused", "failed to connect", "name or service not known",
                       "temporary failure in name resolution", "max retries exceeded",
-                      "unreachable", "no route to host")
+                      "unreachable", "no route to host", "connection error",
+                      "connection aborted", "connection reset", "getaddrinfo failed",
+                      "no connection could be made", "actively refused",
+                      "errno 11001", "errno 10061")
     ):
         return "unreachable"
     if any(token in message for token in _QUOTA_TOKENS):

@@ -18,6 +18,7 @@ import { humanDuration, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
 import { Card, Dot } from '../components/ui'
 import { ModelManager } from '../components/ModelManager'
+import { DiagnosticsExport } from '../components/DiagnosticsExport'
 import { getReducedMotion, setReducedMotion } from '../lib/reducedMotion'
 import {
   IconCheck,
@@ -265,6 +266,10 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
             )}
           </>
         )}
+      </Card>
+
+      <Card title="遇到问题" sub="导出排障信息 —— 先看清包含什么，再决定发给谁" span={12}>
+        <DiagnosticsExport />
       </Card>
 
       <Card title="系统通知" sub="与顶栏铃铛同一份数据" span={12}>

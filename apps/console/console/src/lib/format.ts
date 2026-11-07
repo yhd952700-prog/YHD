@@ -215,6 +215,7 @@ const COMPONENT_LABELS: Record<string, string> = {
   rate_limiter: '请求限流',
   audit_store: '审计存储',
   audit_checkpoint: '审计检查点',
+  audit_checkpointer: '审计检查点',
   executor: '任务执行器',
   executor_fence: '执行围栏',
   ai_provider: '模型服务',

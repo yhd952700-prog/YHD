@@ -1187,9 +1187,9 @@ def get_app() -> FastAPI:
             content={
                 "error": "internal_server_error",
                 "detail": (
-                    "服务端处理此请求时发生未预期错误。"
-                    f"请以 trace_id={trace_id} 检索服务端日志定位；"
-                    "排除成因后重试本请求。"
+                    "服务端处理这个请求时遇到意外问题，本次操作没有完成。"
+                    "请稍后重试；如果反复出现，请导出诊断包，"
+                    "并把下面的追踪编号一起提供给技术支持。"
                 ),
                 "trace_id": trace_id,
             },
@@ -1201,9 +1201,20 @@ def get_app() -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError):
+        # 原始 ValueError 往往是英文实现细节（``Invalid ...``、字段名、路径），
+        # 直接回显就是让用户读栈。技术细节只进服务端日志，客户端拿到中性中文。
+        logger.warning(
+            "请求参数校验失败 path=%s method=%s: %s",
+            request.url.path,
+            request.method,
+            exc,
+        )
         return JSONResponse(
             status_code=400,
-            content={"error": "validation_error", "detail": str(exc)},
+            content={
+                "error": "validation_error",
+                "detail": "提交的内容格式不正确，本次操作没有完成。请检查填写项后重试。",
+            },
         )
 
     # Policy Controlled (C-2/C-3). A deferred action is NOT forbidden -- it is
@@ -1301,6 +1312,12 @@ def get_app() -> FastAPI:
     from .observability import router as observability_router
     app.include_router(observability_router)
     _startup_mark("路由：health / observability 完成")
+
+    # 一键诊断包：版本/提交号/系统架构/安装方式/脱敏数据目录/健康与自检/日志尾部。
+    # 内容按白名单生成，不含任何密钥（见 src/gateway/diagnostic_bundle.py）。
+    from .diagnostic_bundle import router as diagnostics_router
+    app.include_router(diagnostics_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：diagnostics 完成")
 
     # Knowledge base: canonical /v1/knowledge (unified with the rest of the
     # gateway) plus a deprecated /knowledge alias for existing clients.

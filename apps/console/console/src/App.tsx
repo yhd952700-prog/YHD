@@ -26,6 +26,7 @@ import { Login } from './components/Login'
 import { Shell } from './components/Shell'
 import type { OsNotification } from './components/Shell'
 import type { AuthConfig } from './lib/auth'
+import { componentLabel } from './lib/format'
 import {
   UNAUTHENTICATED_EVENT,
   clearSession,
@@ -484,7 +485,17 @@ function App() {
         tone: 'danger',
         title: `依赖不健康（${unhealthy.length} 项）`,
         detail: unhealthy
-          .map(([name, detail]) => `${name}${detail?.error ? `：${detail.error}` : ''}`)
+          .map(([name, detail]) => {
+            // 检查项名是 snake_case（api_key_manager），原始 error 是英文异常文本；
+            // 两者都不能直接铺给用户。后端已给出 user_message（人话 + 下一步），
+            // 缺失时只报"哪一项没通过"，不猜技术原因。
+            const label = componentLabel(name)
+            const message =
+              typeof detail?.user_message === 'string' && detail.user_message.trim()
+                ? detail.user_message
+                : '这项检查没有通过，请到系统状态页查看'
+            return `${label}：${message}`
+          })
           .join('；'),
       })
     } else if (ready.error) {

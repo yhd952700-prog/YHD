@@ -250,14 +250,48 @@ export function currentToken(): string {
   return getSession()?.token ?? ''
 }
 
-/** 登录页需要的元信息。任何失败都降级为一份"未配置"的诚实描述。 */
-export async function loadAuthConfig(): Promise<AuthConfig | null> {
+/** 登录页读取元信息的结果。失败时必须带一句能行动的中文，不能静默 null。 */
+export interface AuthConfigResult {
+  config: AuthConfig | null
+  error: string | null
+}
+
+/**
+ * 读取登录页需要的元信息。
+ *
+ * 失败不再静默降级成 ``null``：那会让登录页永远停在"读取中…"，用户既不知道
+ * 后端没起来，也不知道该做什么。这里把统一错误文案带回给界面。
+ */
+export async function loadAuthConfig(): Promise<AuthConfigResult> {
+  let response: Response
   try {
-    const response = await fetch('/v1/auth/config', { cache: 'no-store' })
-    if (!response.ok) return null
-    return (await response.json()) as AuthConfig
+    response = await fetch('/v1/auth/config', { cache: 'no-store' })
   } catch {
-    return null
+    return {
+      config: null,
+      error: '无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后刷新本页重试。',
+    }
+  }
+  if (!response.ok) {
+    // 只起了静态站点时，``/v1/auth/config`` 会被静态服务器当成"文件不存在"
+    // 返回 404。此时说"内容已删除"会把人带偏，直接指向"服务没起来"。
+    if (response.status === 404) {
+      return {
+        config: null,
+        error:
+          '无法获取登录配置。请确认鎏灏服务已经启动；如果服务刚启动，请稍等几秒后刷新本页重试。',
+      }
+    }
+    const failure = await readError(response)
+    return { config: null, error: failure.message }
+  }
+  try {
+    return { config: (await response.json()) as AuthConfig, error: null }
+  } catch {
+    return {
+      config: null,
+      error: '服务没有返回正常的数据。请确认鎏灏服务已经启动并完成初始化，然后刷新本页重试。',
+    }
   }
 }
 

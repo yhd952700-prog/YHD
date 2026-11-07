@@ -15,6 +15,10 @@ from src.gateway.main import get_app
 from src.gateway.models import _classify_error
 
 
+class APIConnectionError(Exception):
+    """与 openai SDK 同名同文案：真实不可达时 SDK 只抛出这一句 ``Connection error.``。"""
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     """隔离身份库后启动真实 app（JWT 校验走真实 handler，不 stub）。"""
@@ -243,6 +247,11 @@ class TestConnectionProbe:
         [
             (TimeoutError("timed out"), "timeout"),
             (ConnectionError("connection refused"), "unreachable"),
+            # openai SDK 连接失败时只抛 ``Connection error.``（类名 APIConnectionError）；
+            # 不认它就会把"地址填错/端口没开/断网"说成"提供方服务返回错误"。
+            (APIConnectionError("Connection error."), "unreachable"),
+            (RuntimeError("[Errno 11001] getaddrinfo failed"), "unreachable"),
+            (RuntimeError("[WinError 10061] No connection could be made"), "unreachable"),
             (RuntimeError("Ollama error 404: model not found"), "model_not_found"),
             (RuntimeError("401 Unauthorized"), "invalid_key"),
             # 吊销/停用与“填错 Key”处理方式不同（换 Key vs 改 Key），必须分开。

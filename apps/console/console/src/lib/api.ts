@@ -64,6 +64,15 @@ export async function apiFetch<T>(
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new ApiError(408, `请求超时（>${API_TIMEOUT_MS / 1000}s），请稍后重试`)
     }
+    // 用户主动取消（离开页面）不是故障；其余 fetch 失败基本都是"连不上服务"：
+    // 后端没启动、端口不对、代理断了、本机断网。浏览器原文是 "Failed to fetch"，
+    // 对用户没有信息量，这里统一换成"发生了什么 + 怎么办"。
+    if (!(err instanceof DOMException && err.name === 'AbortError')) {
+      throw new ApiError(
+        0,
+        '无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后重试；如果刚启动，请等几秒再试。',
+      )
+    }
     throw err
   }
 
@@ -81,7 +90,20 @@ export async function apiFetch<T>(
     const parts = await readError(response)
     throw new ApiError(response.status, parts.message, parts.code)
   }
-  return (await response.json()) as T
+  if (response.status === 204) {
+    return undefined as T
+  }
+  try {
+    return (await response.json()) as T
+  } catch {
+    // 200 却不是 JSON：典型是只起了静态站点（后端没起来）或反向代理把
+    // 错误页当 200 返回。浏览器原文是 "Unexpected token '<'" 之类的解析错误，
+    // 用户读不懂；这里换成"服务没准备好"这一类可执行提示。
+    throw new ApiError(
+      response.status,
+      '服务没有返回正常的数据。请确认鎏灏服务已经启动并完成初始化，然后重试。',
+    )
+  }
 }
 
 export interface ApiState<T> {

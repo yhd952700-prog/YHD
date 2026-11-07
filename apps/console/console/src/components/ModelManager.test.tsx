@@ -15,26 +15,31 @@ describe('mapProbeReason', () => {
   })
 
   test.each([
-    ['invalid_key', 'API Key 无效或没有权限（401/403）'],
-    ['model_not_found', '模型名不存在或该端点不支持这个模型（404）'],
-    ['unreachable', '端点不可达：检查端点地址、端口与网络（连接被拒绝或域名解析失败）'],
-    ['timeout', '连接超时：端点响应太慢，或端点地址不可达'],
-    ['rate_limited', '被上游限流（429），请稍后重试'],
+    ['invalid_key', 'API Key 无效或没有权限。请检查 Key 是否填错、是否复制完整；建议重新生成后再试。'],
+    ['key_revoked', 'API Key 已被提供方停用或吊销。请到提供方控制台重新生成 Key，再填到这里。'],
+    ['quota_exhausted', '账户额度已用完。请到提供方控制台充值或提升额度后重试。'],
+    ['model_not_found', '模型名不存在或该端点不支持这个模型。请核对模型名称后重试。'],
+    ['unreachable', '端点不可达。请检查端点地址、端口与网络连接是否正常。'],
+    ['timeout', '连接超时。请检查网络，或稍后再试。'],
+    ['rate_limited', '请求被上游限流（429）。请稍后重试。'],
   ])('%s → 明确中文建议', (reason, expected) => {
     expect(mapProbeReason(reason, 10, '上游原文')).toBe(expected)
   })
 
-  test('upstream_error → 原样展示后端 detail', () => {
-    expect(mapProbeReason('upstream_error', 10, 'HTTP 500: upstream exploded')).toBe(
-      'HTTP 500: upstream exploded',
-    )
+  test('upstream_error → 中性中文，不展示上游英文原文', () => {
+    const message = mapProbeReason('upstream_error', 10, 'HTTP 500: upstream exploded')
+    expect(message).toBe('模型服务返回了错误，连接没有成功。请稍后重试；持续出现时可导出诊断包。')
+    expect(message).not.toContain('upstream exploded')
+    expect(message).not.toContain('HTTP 500')
   })
 
-  test('未知原因 → 优先展示后端 detail，缺失时给可执行的通用建议', () => {
-    expect(mapProbeReason('bad_gateway', 10, '网关返回 502')).toBe('网关返回 502')
+  test('未知原因 → 给可执行的通用建议，不回显机器码或上游原文', () => {
+    expect(mapProbeReason('bad_gateway', 10, '网关返回 502')).toBe(
+      '连接失败：请检查服务商、模型名与端点设置后重试。',
+    )
     // 回落到机器码会把 `bad_gateway` 这类内部枚举直接铺到界面上，必须禁止。
     expect(mapProbeReason('bad_gateway', 10, '')).toBe(
-      '连接失败：请检查服务商、模型名与端点设置后重试',
+      '连接失败：请检查服务商、模型名与端点设置后重试。',
     )
   })
 })

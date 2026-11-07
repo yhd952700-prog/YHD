@@ -99,14 +99,16 @@ export function Login({ mode, onSuccess }: LoginProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [config, setConfig] = useState<AuthConfig | null>(null)
+  const [configError, setConfigError] = useState('')
   const [stage, setStage] = useState<Stage>('login')
 
   useEffect(() => {
     let alive = true
-    void loadAuthConfig().then((value) => {
+    void loadAuthConfig().then((result) => {
       if (!alive) return
-      setConfig(value)
-      if (value && value.root_account_exists === false) setStage('bootstrap')
+      setConfig(result.config)
+      setConfigError(result.error ?? '')
+      if (result.config && result.config.root_account_exists === false) setStage('bootstrap')
     })
     return () => {
       alive = false
@@ -174,8 +176,8 @@ export function Login({ mode, onSuccess }: LoginProps) {
         <div className="os-login-status">
           <div className="os-login-status-row">
             <span>登录凭据</span>
-            <span data-tone={config ? (notConfigured ? 'warn' : 'ok') : 'muted'}>
-              {config ? (notConfigured ? '未配置（无法登录）' : '已配置') : '读取中…'}
+            <span data-tone={config ? (notConfigured ? 'warn' : 'ok') : configError ? 'warn' : 'muted'}>
+              {config ? (notConfigured ? '未配置（无法登录）' : '已配置') : configError ? '读取失败' : '读取中…'}
             </span>
           </div>
           <div className="os-login-status-row">
@@ -229,6 +231,13 @@ export function Login({ mode, onSuccess }: LoginProps) {
             </p>
           </div>
         </div>
+
+        {configError && (
+          <div className="os-alert" role="alert">
+            <IconAlert size={15} />
+            <span>{configError}</span>
+          </div>
+        )}
 
         {notConfigured && (
           <div className="os-note" role="status">
