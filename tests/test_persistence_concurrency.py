@@ -237,6 +237,49 @@ def test_goal_graph_corrupt_state_refuses_write(tmp_path):
         assert handle.read() == "{not valid json"
 
 
+def test_goal_graph_terminal_task_status_cannot_regress(tmp_path):
+    """已落盘的终态任务（COMPLETED/FAILED/SKIPPED）不能被旧快照回退。
+
+    多实例并发时，一个持 PENDING 旧快照的写入者若整份覆盖，会把别人已
+    完成的任务回退成 PENDING。终态单调合并必须拦住这条路，同时仍允许
+    PENDING → COMPLETED 的正常推进。
+    """
+    from src.ai.goal_task_graph import TaskStatus
+
+    path = os.path.join(str(tmp_path), "planner_state.json")
+
+    completed = TaskNode(id="task-1", description="first")
+    completed.status = TaskStatus.COMPLETED
+    _graph(tasks=[completed]).save_state(path)
+
+    stale = TaskNode(id="task-1", description="first")  # 默认 PENDING
+    _graph(tasks=[stale]).save_state(path)
+
+    with open(path, "r", encoding="utf-8") as handle:
+        document = json.load(handle)
+    assert len(document["tasks"]) == 1
+    assert document["tasks"][0]["status"] == "completed"
+
+
+def test_goal_graph_terminal_goal_status_cannot_regress(tmp_path):
+    from src.ai.goal_task_graph import GoalStatus
+
+    path = os.path.join(str(tmp_path), "planner_state.json")
+    g = GoalTaskGraph(enable_observability=False)
+    g.set_goal(GoalDefinition(id="goal_shared", description="共享目标"))
+    g.goal.status = GoalStatus.COMPLETED
+    g.save_state(path)
+
+    g2 = GoalTaskGraph(enable_observability=False)
+    g2.set_goal(GoalDefinition(id="goal_shared", description="共享目标"))
+    g2.goal.status = GoalStatus.EXECUTING
+    g2.save_state(path)
+
+    with open(path, "r", encoding="utf-8") as handle:
+        document = json.load(handle)
+    assert document["goals"]["status"] == "completed"
+
+
 # ---------------------------------------------------------------------------
 # 5. 崩溃：子进程写入中被强杀，目标文件不能是半截
 # ---------------------------------------------------------------------------

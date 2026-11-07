@@ -842,7 +842,11 @@ Example output format:
           另一个写入者新增、本实例还不知道的任务保留，同一 id 以内存为准
           （内存是这个图当前的目标态，完成/失败状态不会被磁盘旧值回退）；
         * 不同 goal id：这是另一个任务的图，整份替换。把上一个目标的任务
-          混进新目标会破坏依赖图，比"后写者覆盖"更糟。
+          混进新目标会破坏依赖图，比"后写者覆盖"更糟；
+        * **终态不可回退**：任务的 COMPLETED/FAILED/SKIPPED、目标的
+          COMPLETED/FAILED/PARTIAL 一旦落盘就不能被一个持旧快照的并发写入者
+          改回 PENDING/RUNNING。状态流转本身是单向的，单调合并既防止已完成
+          的任务被回退，又不阻塞"PENDING → COMPLETED"这类正常推进。
         """
         if not isinstance(disk, dict) or not disk:
             return memory
@@ -855,16 +859,47 @@ Example output format:
         ):
             return memory
 
+        terminal_task = {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.SKIPPED.value,
+        }
         tasks: Dict[str, Dict[str, Any]] = {}
         for item in disk.get("tasks") or []:
             if isinstance(item, dict) and item.get("id"):
                 tasks[item["id"]] = item
         for item in memory.get("tasks") or []:
-            if isinstance(item, dict) and item.get("id"):
-                tasks[item["id"]] = item
+            if not (isinstance(item, dict) and item.get("id")):
+                continue
+            existing = tasks.get(item["id"])
+            # 磁盘已是终态，而内存持有的是非终态旧快照：保留磁盘，不回退。
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") in terminal_task
+                and item.get("status") not in terminal_task
+            ):
+                continue
+            tasks[item["id"]] = item
+
+        terminal_goal = {
+            GoalStatus.COMPLETED.value,
+            GoalStatus.FAILED.value,
+            GoalStatus.PARTIAL.value,
+        }
+        if (
+            isinstance(disk_goal, dict)
+            and isinstance(memory_goal, dict)
+            and disk_goal.get("id") == memory_goal.get("id")
+            and disk_goal.get("status") in terminal_goal
+            and memory_goal.get("status") not in terminal_goal
+        ):
+            merged_goal = disk_goal
+        else:
+            merged_goal = memory_goal if memory_goal is not None else disk_goal
+
         return {
             "version": memory.get("version", 1),
-            "goals": memory_goal if memory_goal is not None else disk_goal,
+            "goals": merged_goal,
             "tasks": list(tasks.values()),
         }
 
