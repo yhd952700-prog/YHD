@@ -227,6 +227,8 @@ class Employee:
         default_capabilities: Optional[List[str]] = None,
         owner_account_id: str = "",
         employment_status: str = "active",
+        employee_id: str = "",
+        last_activity: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize an Employee.
@@ -242,8 +244,15 @@ class Employee:
             default_capabilities: 默认能力（已注册执行器的 capability id）
             owner_account_id: 归属账号（决定谁能看到/改/派活）
             employment_status: ``active``（在职）/ ``disabled``（停用）
+            employee_id: 稳定员工 id（改名不变，用于记忆归属等跨改名关联）
+            last_activity: 最后一次活动的可读快照
+                ``{"description", "outcome", "at"}``
         """
         self.name = name
+        # 稳定 id 与名字解耦：改名不会让历史记忆/关联断线。老数据没有这个字段，
+        # 由 ``stable_id()`` 退回名字（行为与以前一致）。
+        self.employee_id = employee_id or ""
+        self.last_activity: Dict[str, Any] = dict(last_activity or {})
         self.provider = provider or get_provider()
         self.agent_count = agent_count
         self.agent_types = agent_types or ["general"] * agent_count
@@ -319,6 +328,49 @@ class Employee:
     def is_active(self) -> bool:
         """在职员工才接受派活；停用只是"还在名册里，但不再接活"。"""
         return self.employment_status == self.ACTIVE
+
+    # ── 可读状态 / 最后一次活动 ──
+
+    #: ``current_status()`` 的取值：空闲 / 执行中 / 出错 / 已完成 / 已停用。
+    STATUS_IDLE = "idle"
+    STATUS_RUNNING = "running"
+    STATUS_ERROR = "error"
+    STATUS_COMPLETED = "completed"
+    STATUS_DISABLED = "disabled"
+
+    def stable_id(self) -> str:
+        """跨改名稳定的员工 id（老数据没有 id 时退回名字）。"""
+        return self.employee_id or self.name
+
+    def record_activity(
+        self, description: str, outcome: str, when: Optional[float] = None
+    ) -> None:
+        """记录"最后一次做了什么、什么时候、结果如何"（人可读，不含内部 id）。"""
+        self.last_activity = {
+            "description": str(description or "")[:500],
+            "outcome": str(outcome or ""),
+            "at": float(when if when is not None else time.time()),
+        }
+
+    def current_status(self) -> str:
+        """员工当前状态：停用 > 执行中 > 上一次结果（出错/已完成）> 空闲。
+
+        执行中来自 agent 的真实 BUSY/RUNNING 状态；否则用最后一次活动的结果，
+        避免"跑完了界面还说空闲"。没有活动记录时就是空闲。
+        """
+        if self.employment_status == self.DISABLED:
+            return self.STATUS_DISABLED
+        if any(
+            agent.status in (AgentStatus.BUSY, AgentStatus.RUNNING)
+            for agent in self.agents.values()
+        ):
+            return self.STATUS_RUNNING
+        outcome = str((self.last_activity or {}).get("outcome") or "").lower()
+        if outcome in ("failed", "error"):
+            return self.STATUS_ERROR
+        if outcome in ("completed", "cancelled"):
+            return self.STATUS_COMPLETED
+        return self.STATUS_IDLE
 
     def add_task(self, description: str, task_type: str = "general",
                  priority: int = 0, depends_on: Optional[List[str]] = None) -> str:

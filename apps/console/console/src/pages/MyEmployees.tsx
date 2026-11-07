@@ -30,6 +30,7 @@ import {
   employeeAssignable,
   employeeCapabilities,
   employeeDisplayName,
+  employeeLastActivity,
   employeeRole,
   employeeStatsText,
   employeeStatus,
@@ -143,14 +144,13 @@ export function MyEmployees({ query }: { query: string }) {
     const isRenaming = renaming === employee.name
     const isAssigning = assigning === employee.name
     const failed = Number(employee.stats?.total_tasks_failed ?? 0)
+    const lastActivity = employeeLastActivity(employee)
 
     return (
       <div className="os-row" key={employee.name}>
         <div className="os-emp-row" style={{ flex: 1 }}>
           <div className="os-emp-head">
-            <span className="os-emp-name" title={seed ? employee.name : undefined}>
-              {employeeDisplayName(employee)}
-            </span>
+            <span className="os-emp-name">{employeeDisplayName(employee)}</span>
             <span className="os-badge" data-tone={status.tone}>
               {status.label}
             </span>
@@ -173,16 +173,18 @@ export function MyEmployees({ query }: { query: string }) {
             {employeeStatsText(employee)} · {employee.agent_count} 位执行个体
             {failed > 0 ? ' · 有失败任务，可在「目标与任务」看原因' : ''}
           </div>
+          {lastActivity && (
+            <div className="os-emp-meta">最近一次：{lastActivity}</div>
+          )}
 
           {employee.agents.length > 0 && (
             <div className="os-emp-meta">
               个体状态：
               {employee.agents.map((agent, index) => {
-                const raw = String(agent.name || agent.id || '')
                 return (
                   <Fragment key={agent.id || `agent-${index}`}>
                     {index > 0 && ' / '}
-                    <span title={raw || undefined}>
+                    <span>
                       {`执行个体 ${index + 1}·${agentStatusLabel(agent)}`}
                     </span>
                   </Fragment>

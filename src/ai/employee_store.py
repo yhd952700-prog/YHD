@@ -30,6 +30,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 import weakref
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -384,6 +385,9 @@ class EmployeeStore:
             "default_capabilities": list(employee.default_capabilities),
             "owner_account_id": employee.owner_account_id,
             "employment_status": employee.employment_status,
+            # 稳定 id（改名不变）与"最后一次做了什么/什么时候"。
+            "employee_id": employee.employee_id,
+            "last_activity": dict(employee.last_activity or {}),
             "agents": [self._serialize_agent(a) for a in employee.agents.values()],
             "tasks": [self._serialize_task(t) for t in employee.tasks.values()],
             "task_queue": list(employee.task_queue),
@@ -415,6 +419,12 @@ class EmployeeStore:
             owner_account_id=data.get("owner_account_id", "") or "",
             employment_status=data.get("employment_status", Employee.ACTIVE)
             or Employee.ACTIVE,
+            employee_id=data.get("employee_id", "") or "",
+            last_activity=(
+                data.get("last_activity")
+                if isinstance(data.get("last_activity"), dict)
+                else None
+            ),
         )
 
         # Reconstruct agents (overwrite the freshly-built pool).
@@ -513,6 +523,8 @@ class EmployeeStore:
                 default_capabilities=default_capabilities,
                 owner_account_id=owner_account_id,
                 employment_status=employment_status,
+                # 稳定 id：改名后仍能把历史记忆/关联认回这位员工。
+                employee_id=uuid.uuid4().hex,
             )
             data = self._serialize_employee(emp)
             store.setdefault("employees", {})[name] = data

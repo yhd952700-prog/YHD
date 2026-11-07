@@ -162,10 +162,11 @@ describe('我的员工', () => {
     expect(text).not.toContain('executor-1')
     expect(text).not.toContain('liuhao-default')
 
-    const first = screen.getByTitle('liuhao-default·planner-0')
-    const second = screen.getByTitle('liuhao-default·executor-1')
-    expect(first.textContent).toBe('执行个体 1·空闲')
-    expect(second.textContent).toBe('执行个体 2·空闲')
+    expect(screen.getByText('执行个体 1·空闲').textContent).toBe('执行个体 1·空闲')
+    expect(screen.getByText('执行个体 2·空闲').textContent).toBe('执行个体 2·空闲')
+    // 内部标识连 title/aria 线索都不留：界面上完全不出现。
+    expect(document.querySelector('[title*="planner"]')).toBeNull()
+    expect(document.querySelector('[title*="liuhao-default"]')).toBeNull()
   })
 
   test('系统默认员工不显示内部标识，只显示人话称呼与系统默认徽标', async () => {
@@ -200,8 +201,48 @@ describe('我的员工', () => {
     expect(screen.getByText('系统默认')).toBeTruthy()
     const text = document.body.textContent ?? ''
     expect(text).not.toContain('liuhao-default')
-    // 原始标识只留在 title 里，作为排查线索。
-    expect(screen.getByText('默认管家').getAttribute('title')).toBe('liuhao-default')
+    // 内部标识不再作为 title 排查线索暴露在界面上。
+    expect(screen.getByText('默认管家').getAttribute('title')).toBeNull()
+    expect(document.querySelector('[title*="liuhao-default"]')).toBeNull()
+  })
+
+  test('展示后端给的状态与"最近一次做了什么、什么时候"', async () => {
+    stubFetch([
+      {
+        name: '小周',
+        display_name: '小周',
+        agent_count: 1,
+        role_description: '整理客户反馈',
+        default_capabilities: [],
+        employment_status: 'active',
+        read_only: false,
+        status: 'completed',
+        status_label: '已完成',
+        last_activity: {
+          description: '整理本周客户反馈',
+          outcome: 'completed',
+          outcome_label: '已完成',
+          at: '2026-11-08T10:00:00+00:00',
+        },
+        agents: [
+          { id: 'a1', agent_type: 'general', name: 'raw-agent-0', status: 'idle' },
+        ],
+        stats: {
+          name: '小周',
+          agent_count: 1,
+          total_tasks_submitted: 1,
+          total_tasks_completed: 1,
+          total_tasks_failed: 0,
+          task_queue_length: 0,
+        },
+      },
+    ])
+    render(<MyEmployees query="" />)
+    await waitFor(() => expect(screen.getByText('小周')).toBeTruthy())
+    expect(screen.getAllByText('已完成').length).toBeGreaterThan(0)
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('最近一次：已完成：整理本周客户反馈')
+    expect(text).not.toContain('raw-agent-0')
   })
 
   test('没有员工时给出创建引导，而不是空白页', async () => {

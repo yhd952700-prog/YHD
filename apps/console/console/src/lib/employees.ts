@@ -23,8 +23,23 @@ import type {
 import { ApiError, apiFetch } from './api'
 import { capabilityLabel } from './format'
 
-/** 后端 GET /v1/employees 的 employees[] 形状（字段见 contracts.ts）。 */
-export type MyEmployee = EmployeeSummary
+/** 后端 GET /v1/employees 的 employees[] 形状（字段见 contracts.ts）。
+ *
+ * 状态与"最后一次活动"由后端算好（`status` / `status_label` / `last_activity`），
+ * 前端只负责展示，不自己拼内部标识。老后端没有这些字段时按旧逻辑兜底。
+ */
+export type MyEmployee = EmployeeSummary & {
+  display_name?: string
+  employee_id?: string
+  status?: string
+  status_label?: string
+  last_activity?: {
+    description?: string
+    outcome?: string | null
+    outcome_label?: string
+    at?: string | null
+  } | null
+}
 
 /** seed 默认员工：网关依赖它，后端拒绝改/删（403）；界面据此不渲染动作。 */
 export const SEED_EMPLOYEE_NAME = 'liuhao-default'
@@ -44,6 +59,11 @@ export function employeesOf(payload: EmployeesPayload | null | undefined): MyEmp
     owner_account_id: item?.owner_account_id,
     employment_status: String(item?.employment_status ?? 'active'),
     read_only: Boolean(item?.read_only),
+    display_name: (item as MyEmployee)?.display_name,
+    employee_id: (item as MyEmployee)?.employee_id,
+    status: (item as MyEmployee)?.status,
+    status_label: (item as MyEmployee)?.status_label,
+    last_activity: (item as MyEmployee)?.last_activity ?? null,
     stats: item?.stats ?? {
       name: String(item?.name ?? ''),
       agent_count: Number(item?.agent_count ?? 0),
@@ -62,6 +82,12 @@ export function employeeStatus(employee: MyEmployee): {
   if (String(employee.employment_status).toLowerCase() === 'disabled') {
     return { label: '已停用', tone: 'muted' }
   }
+  // 后端给出真实状态（空闲/执行中/出错/已完成）时优先采用。
+  const status = String(employee.status ?? '').toLowerCase()
+  if (status === 'idle') return { label: '空闲', tone: 'ok' }
+  if (status === 'running') return { label: '执行中', tone: 'accent' }
+  if (status === 'error') return { label: '出错', tone: 'danger' }
+  if (status === 'completed') return { label: '已完成', tone: 'ok' }
   const agents = employee.agents ?? []
   if (agents.some((agent) => String(agent.status).toLowerCase() === 'running')) {
     return { label: '执行中', tone: 'accent' }
@@ -70,6 +96,22 @@ export function employeeStatus(employee: MyEmployee): {
   if (queue > 0) return { label: '有任务排队', tone: 'warn' }
   if (agents.length > 0) return { label: '空闲', tone: 'ok' }
   return { label: '未指派能力', tone: 'muted' }
+}
+
+/** "最后一次做了什么、什么时候"——只展示后端给的人话描述，不含内部标识。 */
+export function employeeLastActivity(employee: MyEmployee): string {
+  const activity = employee.last_activity
+  const description = String(activity?.description ?? '').trim()
+  if (!description) return ''
+  const label = String(activity?.outcome_label ?? '').trim()
+  const at = activity?.at ? new Date(String(activity.at)) : null
+  const when =
+    at && !Number.isNaN(at.getTime())
+      ? at.toLocaleString('zh-CN', { hour12: false })
+      : ''
+  const parts = [label, description].filter(Boolean)
+  const text = parts.join('：')
+  return when ? `${text}（${when}）` : text
 }
 
 export function employeeRole(employee: MyEmployee): string {
@@ -121,7 +163,9 @@ export const SEED_EMPLOYEE_LABEL = '默认管家'
  * 用户自己创建的员工保留原名，那是用户自己起的，换掉反而认不出。
  */
 export function employeeDisplayName(employee: MyEmployee): string {
-  return isSeedEmployee(employee) ? SEED_EMPLOYEE_LABEL : employee.name
+  if (isSeedEmployee(employee)) return SEED_EMPLOYEE_LABEL
+  const display = String(employee.display_name ?? '').trim()
+  return display || employee.name
 }
 
 export function readableError(error: unknown): string {

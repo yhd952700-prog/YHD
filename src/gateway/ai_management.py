@@ -194,6 +194,14 @@ class HireEmployeeRequest(BaseModel):
     )
 
 
+class BatchHireEmployeesRequest(BaseModel):
+    """批量雇佣：逐条创建，任一条失败不影响其它条目。"""
+    employees: List[HireEmployeeRequest] = Field(
+        ..., min_length=1, max_length=50,
+        description="员工创建条目列表（每条形如单条雇佣请求）",
+    )
+
+
 class AdoptEmployeeRequest(BaseModel):
     """根的"取用"：把子账号员工/技能复制到根自己的空间。"""
     name: str = Field(..., min_length=1, max_length=128, description="要取用的员工名")
@@ -569,6 +577,14 @@ class AIStateManager:
         # 并发目标：记录仍在执行的 goal id。只有最后一个结束的目标才能把
         # 员工 agent 标回 idle，否则一个目标收尾会把另一个目标的 agent 说成空闲。
         self._active_goals: Set[str] = set()
+        # 员工级在跑目标：employee stable id -> {goal_id}。
+        # 指名派活（pinned）是**独占**的：同一员工已有在跑目标时，第二次
+        # 派活直接 409 employee_busy —— 行为固定为"拒绝"，不会两个目标
+        # 同时写同一员工的状态与结果（那正是丢任务/串结果的来源）。
+        self._employee_active: Dict[str, Set[str]] = {}
+        # 注意：这里不能叫 ``_goal_employee``，否则会遮蔽同名方法。
+        self._goal_employee_map: Dict[str, str] = {}
+        self._employee_runs_lock = threading.Lock()
         # ``_ensure_runtime`` / ``_ensure_employee`` 是懒初始化；并发首次目标
         # 若同时穿过 ``is None`` 会各自建一份 runtime（两份 journal 句柄）。
         self._runtime_lock = threading.RLock()
@@ -723,6 +739,106 @@ class AIStateManager:
                     "AIStateManager: employee persist failed: %s", exc
                 )
                 raise
+
+    def _save_employee(self, employee: Optional["Employee"]) -> None:
+        """把**任意**员工（默认或按名）落盘；失败向上抛。
+
+        指名派活时被更新的不是 ``self._employee``（默认管家），而是被点名
+        的那位员工；以前这条路径只更新内存对象、从不落盘，重启后它的
+        KPI/状态全部归零。这里统一走 store 的跨进程安全写入。
+        """
+        if employee is None:
+            return
+        self._store().save(employee)
+
+    def _employee_for_agent(self, agent_id: Optional[str]) -> Optional["Employee"]:
+        """agent id → 所属员工（默认员工优先用内存实例，其余按名从 store 加载）。"""
+        if not agent_id:
+            return None
+        employee, agent = self._find_employee_with_agent(str(agent_id))
+        if agent is None:
+            return None
+        return employee
+
+    def _goal_employee(self, pinned_agent: Optional[str]) -> "Employee":
+        """本次目标实际归属/驱动的员工：有指名就用被点名的，否则默认管家。"""
+        target = self._employee_for_agent(pinned_agent)
+        return target if target is not None else self._ensure_employee()
+
+    def _claim_employee_goal(
+        self, employee_key: str, goal_id: str, *, exclusive: bool
+    ) -> None:
+        """登记"某员工正在跑某个目标"；独占模式下已有目标就拒绝。
+
+        行为固定为**拒绝**（不是排队）：同一员工同时只接受一个点名派活，
+        第二次请求拿到 409 ``employee_busy``，不会出现两个执行体同时改同一份
+        员工状态/结果。
+        """
+        with self._employee_runs_lock:
+            active = self._employee_active.setdefault(employee_key, set())
+            if exclusive and active:
+                raise GoalWorkError(
+                    409,
+                    "employee_busy",
+                    f"员工「{employee_key}」正在执行另一项任务，"
+                    "请等它完成后再派；本次没有排队，也没有执行。",
+                )
+            active.add(goal_id)
+            self._goal_employee_map[goal_id] = employee_key
+
+    def _release_employee_goal(self, goal_id: str) -> bool:
+        """释放目标占用的员工；返回该员工是否已无在跑目标。"""
+        with self._employee_runs_lock:
+            key = self._goal_employee_map.pop(goal_id, None)
+            if key is None:
+                return False
+            active = self._employee_active.get(key)
+            if active is not None:
+                active.discard(goal_id)
+                if not active:
+                    self._employee_active.pop(key, None)
+            return not active
+
+    def _employee_memory_note(
+        self, employee: Optional["Employee"], entry: Dict[str, Any]
+    ) -> None:
+        """把"员工完成/失败了一次目标"记进**员工所属账号**的记忆。
+
+        归属口径：``owner`` = 员工所属账号（不是发起人）。主账号可见子树全部，
+        子账号只能看到自己名下员工产生的记忆。记忆是旁路记录，失败不拖垮目标。
+        """
+        if employee is None or not isinstance(entry, dict):
+            return
+        try:
+            from .account_memory import employee_tag, record_entry_for_owner
+
+            state = str(entry.get("state") or "").lower()
+            tasks = [t for t in (entry.get("tasks") or []) if isinstance(t, dict)]
+            completed = sum(1 for task in tasks if task.get("success"))
+            failed = sum(
+                1
+                for task in tasks
+                if str(task.get("status") or "").lower() in ("failed", "interrupted")
+            )
+            description = str(entry.get("natural_language") or "").strip()[:300]
+            headline = "已完成" if state == "completed" else "执行未成功"
+            text = f"{headline}：{description}" if description else f"{headline}一次任务"
+            if tasks:
+                text += f"（任务 {len(tasks)} 项，成功 {completed}，失败 {failed}）"
+            record_entry_for_owner(
+                self._employee_owner(employee),
+                text,
+                source="employee",
+                tags=[
+                    "employee",
+                    employee_tag(employee.stable_id()),
+                    f"goal:{entry.get('goal_id')}",
+                    f"status:{state or 'unknown'}",
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 - 记忆写入失败不影响目标结果
+            logger.warning("AIStateManager: employee memory note failed: %s", exc)
+
 
     # ── Goal persistence (restart recovery) ──
 
@@ -1349,19 +1465,27 @@ class AIStateManager:
 
         # Bind to the real Employee (count submitted + mark agents BUSY) so the
         # "autonomous worker" actually drives the employee's agent pool.
-        employee = self._ensure_employee()
+        # 指名派活时驱动的是**被点名的那位员工**，不是默认管家 —— 否则它的
+        # 状态永远显示空闲、KPI 永远为 0（重启后更无迹可查）。
+        employee = self._goal_employee(pinned_agent)
+        # 同一员工的点名派活是独占的：第二个并发请求直接 409，不排队、不丢。
+        self._claim_employee_goal(
+            employee.stable_id(), goal_id, exclusive=bool(pinned_agent)
+        )
         employee.record_goal_submitted(goal_id)
         employee.mark_agents_busy()
+        employee.record_activity(natural_language, employee.STATUS_RUNNING)
         with self._goal_lock:
             self._active_goals.add(goal_id)
         try:
-            self._persist_employee()
+            self._save_employee(employee)
         except Exception:
             # 目标还没开始执行：把刚占用的 agent 状态释放掉，别留下假 BUSY。
+            self._release_employee_goal(goal_id)
             if self._unregister_active_goal(goal_id):
                 employee.mark_agents_idle()
                 try:
-                    self._persist_employee()
+                    self._save_employee(employee)
                 except Exception as _exc:  # noqa: BLE001 - already failing loudly
                     logger.error(
                         "AIStateManager: employee persist failed while rolling back goal %s: %s",
@@ -1398,10 +1522,11 @@ class AIStateManager:
                 # 释放 agent，并把真实失败原因返回给调用方。
                 with self._goal_lock:
                     self._goals.pop(goal_id, None)
+                self._release_employee_goal(goal_id)
                 if self._unregister_active_goal(goal_id):
                     employee.mark_agents_idle()
                     try:
-                        self._persist_employee()
+                        self._save_employee(employee)
                     except Exception as _exc:  # noqa: BLE001
                         logger.error(
                             "AIStateManager: employee persist failed while rolling back goal %s: %s",
@@ -1510,25 +1635,32 @@ class AIStateManager:
             else:
                 error = None
 
-            employee = self._ensure_employee()
+            # 更新的是本次真正被驱动的员工（指名 → 被点名者；否则默认管家）。
+            employee = self._goal_employee(pinned_agent)
             if result is not None:
                 final_state = (
                     result.state.value
                     if hasattr(result.state, "value")
                     else str(result.state)
                 )
-            # The employee pool is no longer engaged on THIS goal. If another
-            # concurrently running goal still holds the pool, its agents must
-            # stay BUSY -- going idle here would contradict real work in flight.
-            release_pool = self._unregister_active_goal(goal_id)
+            # 该员工是否还有别的在跑目标（默认池可以并发，指名派活是独占的）。
+            # 只有它名下已无在跑目标时才把 agent 标回 idle。
+            self._unregister_active_goal(goal_id)
+            employee_free = self._release_employee_goal(goal_id)
             accounting_done = True
-            if release_pool:
+            if employee_free:
                 employee.mark_agents_idle()
             if final_state is not None:
                 employee.record_goal_finished(goal_id, final_state)
+            employee.record_activity(
+                natural_language,
+                employee.STATUS_COMPLETED
+                if final_state == "completed"
+                else employee.STATUS_ERROR,
+            )
             employee_persist_error: Optional[str] = None
             try:
-                self._persist_employee()
+                self._save_employee(employee)
             except Exception as exc:
                 # 目标执行本身已经完成，不能因为 KPI 落盘失败丢掉目标结果；
                 # 但必须把失败如实带进结果，调用方能看到"员工进度没落盘"。
@@ -1564,6 +1696,8 @@ class AIStateManager:
                 prior_owner = (self._goals.get(goal_id) or {}).get("owner_account_id")
             # 员工与任务的关系必须出现在最终结果里：谁做了什么、耗时、成功与否。
             self._attach_employee_attribution(entry)
+            # 员工产生的记忆归其所属账号（旁路记录，失败不影响目标结果）。
+            self._employee_memory_note(employee, entry)
             self._stamp_owner(entry, prior_owner or owner_account_id)
             with self._goal_lock:
                 self._goals[goal_id] = entry
@@ -1585,13 +1719,14 @@ class AIStateManager:
         finally:
             if not accounting_done:
                 # 异常路径：线程记录与活跃目标都必须释放，否则永久泄漏。
-                release_pool = self._unregister_active_goal(goal_id)
+                self._unregister_active_goal(goal_id)
+                employee_free = self._release_employee_goal(goal_id)
                 try:
                     emp = employee or self._ensure_employee()
-                    if release_pool:
+                    if employee_free:
                         emp.mark_agents_idle()
                         try:
-                            self._persist_employee()
+                            self._save_employee(emp)
                         except Exception as exc:  # noqa: BLE001
                             logger.error(
                                 "AIStateManager: employee persist failed after abnormal goal exit %s: %s",
@@ -2827,6 +2962,41 @@ class AIStateManager:
             )
         return list(dict.fromkeys(capabilities))
 
+    #: 员工状态 → 界面文案（不暴露任何内部标识）。
+    _STATUS_LABELS = {
+        "idle": "空闲",
+        "running": "执行中",
+        "error": "出错",
+        "completed": "已完成",
+        "disabled": "已停用",
+    }
+
+    @classmethod
+    def _last_activity_view(cls, emp: "Employee") -> Optional[Dict[str, Any]]:
+        """把持久化的"最后一次活动"转成可直接上屏的字段（时间用 ISO 文本）。"""
+        record = getattr(emp, "last_activity", None)
+        if not isinstance(record, dict) or not record:
+            return None
+        description = str(record.get("description") or "").strip()
+        if not description:
+            return None
+        outcome = str(record.get("outcome") or "").strip().lower()
+        at_raw = record.get("at")
+        at_text: Optional[str] = None
+        try:
+            from datetime import datetime, timezone
+
+            if isinstance(at_raw, (int, float)):
+                at_text = datetime.fromtimestamp(float(at_raw), tz=timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError):
+            at_text = None
+        return {
+            "description": description,
+            "outcome": outcome or None,
+            "outcome_label": cls._STATUS_LABELS.get(outcome, ""),
+            "at": at_text,
+        }
+
     def _summarize_employee(
         self, emp: "Employee", viewer: Optional[GoalViewer] = None
     ) -> Dict[str, Any]:
@@ -2850,8 +3020,14 @@ class AIStateManager:
             and self._employee_visible(emp, viewer)
             and not self._employee_writable(emp, viewer)
         )
+        status = emp.current_status()
         return {
             "name": emp.name,
+            # 面向界面的称呼：系统默认员工不在界面上暴露内部标识。
+            "display_name": (
+                "默认管家" if emp.name == self._SEED_DEFAULT_NAME else emp.name
+            ),
+            "employee_id": emp.stable_id(),
             "agent_count": len(emp.agents),
             "agents": agents,
             "role_description": getattr(emp, "role_description", "") or "",
@@ -2859,6 +3035,10 @@ class AIStateManager:
             "owner_account_id": owner,
             "employment_status": getattr(emp, "employment_status", "active"),
             "read_only": read_only,
+            # 状态 + 最后一次做了什么/什么时候：界面直接展示，不用自己拼。
+            "status": status,
+            "status_label": self._STATUS_LABELS.get(status, ""),
+            "last_activity": self._last_activity_view(emp),
             "stats": {
                 "name": emp.name,
                 "agent_count": len(emp.agents),
@@ -2914,6 +3094,97 @@ class AIStateManager:
             "created": True,
             "already_existed": False,
             "employee": self._summarize_employee(emp),
+        }
+
+    def hire_employees(
+        self,
+        items: List[Dict[str, Any]],
+        owner_account_id: str = "",
+    ) -> Dict[str, Any]:
+        """批量雇佣：逐条创建并**如实返回每一条的结果**。
+
+        - 新员工 → ``created``；
+        - 已存在的同名员工 → ``existing``（绝不覆盖，也不让整批失败）；
+        - 校验失败（未知能力等）→ ``failed``，带明确错误码与说明。
+        任一条失败都不影响其它条目；全部结果都来自真实的 store 写入。
+        """
+        created: List[Dict[str, Any]] = []
+        existing: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            if get_trust_manager().is_revoked(name):
+                failed.append({
+                    "name": name,
+                    "code": "employee_revoked",
+                    "message": (
+                        f"「{name}」已被列入撤销名单，无法创建；"
+                        "请先在「信任」页恢复它的信任状态"
+                    ),
+                })
+                continue
+            try:
+                result = self.hire_employee(
+                    name,
+                    int(item.get("agent_count") or 3),
+                    list(item.get("agent_types") or []) or None,
+                    role_description=str(item.get("role_description") or ""),
+                    default_capabilities=list(item.get("default_capabilities") or []),
+                    owner_account_id=owner_account_id,
+                )
+            except GoalWorkError as exc:
+                failed.append({"name": name, "code": exc.code, "message": exc.detail})
+            except Exception as exc:  # noqa: BLE001 - 单条失败不拖垮整批
+                logger.warning("batch hire %r failed: %s", name, exc)
+                failed.append({
+                    "name": name,
+                    "code": "employee_create_failed",
+                    "message": "创建没有完成，请稍后重试。",
+                })
+            else:
+                (existing if result["already_existed"] else created).append(
+                    result["employee"]
+                )
+        self._agent_map_cache = None
+        self._refresh_agent_pool()
+        return {
+            "created": created,
+            "existing": existing,
+            "failed": failed,
+            "created_count": len(created),
+            "existing_count": len(existing),
+            "failed_count": len(failed),
+            "requested_count": len(items),
+        }
+
+    def employee_memories(
+        self, name: str, viewer: Optional[GoalViewer] = None
+    ) -> Dict[str, Any]:
+        """某位员工的记忆：归属账号 = 员工所属账号，可见性沿用员工可见性。
+
+        子账号只能看自己名下员工的记忆；主账号可看整棵子树（只读）。别人的
+        员工与不存在的员工都是同一个 404，不暴露存在与否。
+        """
+        emp = self._visible_employee(name, viewer)
+        if emp is None:
+            raise GoalWorkError(
+                404, "employee_not_found",
+                "员工不存在或不在当前可见范围（不会改用其他员工）",
+            )
+        from .account_memory import list_employee_entries
+
+        entries = list_employee_entries(self._employee_owner(emp), emp.stable_id())
+        return {
+            "employee": {
+                "name": emp.name,
+                "display_name": (
+                    "默认管家" if emp.name == self._SEED_DEFAULT_NAME else emp.name
+                ),
+                "employee_id": emp.stable_id(),
+            },
+            "owner_account_id": self._employee_owner(emp),
+            "memories": entries,
+            "count": len(entries),
         }
 
     def adopt_employee(
@@ -3060,6 +3331,10 @@ class AIStateManager:
         - seed 默认员工不允许改名/停用 → 403（网关依赖它）。
         """
         emp = self._require_writable_employee(name, viewer)
+        # 先校验/暂存字段修改，等改名完成后再落到**改名后的那份对象**上，
+        # 否则"改名 + 改职责/停用"同时提交时，rename 返回的新对象会把刚改的
+        # 字段覆盖回旧值（真实现象：改名成功但职责/状态没保存）。
+        next_status: Optional[str] = None
         if employment_status is not None:
             status = str(employment_status).strip().lower()
             if status not in (emp.ACTIVE, emp.DISABLED):
@@ -3072,11 +3347,13 @@ class AIStateManager:
                     403, "seed_protected",
                     f"拒绝停用 seed 默认员工 {name!r}（网关依赖它）",
                 )
-            emp.employment_status = status
-        if role_description is not None:
-            emp.role_description = role_description
-        if default_capabilities is not None:
-            emp.default_capabilities = self._validate_capabilities(default_capabilities)
+            next_status = status
+        next_role = role_description
+        next_caps = (
+            self._validate_capabilities(default_capabilities)
+            if default_capabilities is not None
+            else None
+        )
         renamed = False
         if new_name is not None and str(new_name).strip() != emp.name:
             candidate = str(new_name).strip()
@@ -3096,7 +3373,14 @@ class AIStateManager:
                                     f"员工不存在或不在当前可见范围：{name}")
             emp = renamed_emp
             renamed = True
-        else:
+
+        if next_status is not None:
+            emp.employment_status = next_status
+        if next_role is not None:
+            emp.role_description = next_role
+        if next_caps is not None:
+            emp.default_capabilities = next_caps
+        if renamed or next_status is not None or next_role is not None or next_caps is not None:
             self._store().save(emp)
         self._agent_map_cache = None
         self._refresh_agent_pool()
@@ -3669,6 +3953,27 @@ def hire_employee(
     return JSONResponse(status_code=201, content=result["employee"])
 
 
+@router.post("/employees/batch", status_code=201)
+def hire_employees_batch(
+    req: BatchHireEmployeesRequest,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """批量雇佣员工。
+
+    逐条创建并如实返回每一条的结果：``created`` / ``existing`` / ``failed``。
+    重名不会覆盖、也不会让整批失败；未知能力等校验失败会带明确原因。
+    """
+    viewer = _as_viewer(viewer)
+    mgr = AIStateManager()
+    items = [item.model_dump() for item in req.employees]
+    result = mgr.hire_employees(
+        items,
+        owner_account_id=viewer.principal if viewer is not None else "",
+    )
+    status_code = 201 if result["created_count"] else 200
+    return JSONResponse(status_code=status_code, content=result)
+
+
 @router.post("/employees/adopt", status_code=201)
 def adopt_employee(
     req: AdoptEmployeeRequest,
@@ -3777,6 +4082,25 @@ def get_employee(
             status_code=404,
             detail="没有找到这个员工，或它不属于当前账号。请刷新列表后重试。",
         ) from exc
+
+
+@router.get("/employees/{name}/memories")
+def list_employee_memories(
+    name: str,
+    viewer: Optional[GoalViewer] = Depends(_goal_viewer),
+) -> Dict[str, Any]:
+    """某位员工产生的记忆（归属该员工所属账号）。
+
+    - 子账号只能看自己名下员工的记忆；
+    - 主账号可看整棵子树员工的记忆（只读）；
+    - 别人的 / 不存在的员工统一 404，不暴露存在与否。
+    """
+    viewer = _as_viewer(viewer)
+    mgr = AIStateManager()
+    try:
+        return mgr.employee_memories(name, viewer)
+    except GoalWorkError as exc:
+        raise _http_from_goal_error(exc) from exc
 
 
 @router.post("/employees/{agent_id}/pause")

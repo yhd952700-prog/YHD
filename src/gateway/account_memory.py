@@ -169,6 +169,67 @@ def _query_entries(owners: Iterable[str], query: str) -> List[Dict[str, Any]]:
     return [_row_to_entry(row) for row in rows]
 
 
+# ─── 员工记忆：内部写入 + 按员工读取（归属仍是账号） ──────────────
+#
+# 员工产生的记忆必须落在**员工所属账号**名下：``owner`` 就是归属账号，
+# ``source='employee'`` 表明这条记忆由某个员工执行产生，``tags`` 里带
+# ``employee:<stable_id>`` 以便按员工筛选（用稳定 id，改名不断线）。
+# 读取时由员工接口先做可见性判断（主账号可见子树，子账号只见自己），
+# 因此这里只按 owner + tag 精确取，不再做一次权限判断。
+
+EMPLOYEE_SOURCE = "employee"
+
+
+def employee_tag(employee_stable_id: str) -> str:
+    return f"employee:{employee_stable_id}"
+
+
+def record_entry_for_owner(
+    owner: str,
+    text: str,
+    *,
+    source: str = "user",
+    tags: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """把一条记忆写入指定账号（内部调用：归属由调用方从可信路径解析）。"""
+    entry_id = str(uuid.uuid4())
+    created_at = _now_iso()
+    tag_list = [str(tag) for tag in (tags or [])]
+    with _connect() as connection:
+        connection.execute(
+            "INSERT INTO account_memory_entries "
+            "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                entry_id,
+                str(owner),
+                str(text),
+                str(source),
+                json.dumps(tag_list, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        connection.commit()
+    return {
+        "id": entry_id,
+        "account_id": str(owner),
+        "text": str(text),
+        "source": str(source),
+        "tags": tag_list,
+        "created_at": created_at,
+    }
+
+
+def list_employee_entries(owner: str, stable_id: str) -> List[Dict[str, Any]]:
+    """某位员工产生的记忆（只按 owner + 稳定 id 精确取）。"""
+    wanted = employee_tag(stable_id)
+    rows = _query_entries((str(owner),), "")
+    return [
+        entry
+        for entry in rows
+        if entry.get("source") == EMPLOYEE_SOURCE and wanted in (entry.get("tags") or [])
+    ]
+
+
 @router.get("/entries")
 def list_entries(
     scope: str = Query("self", description="self 或 subtree"),
