@@ -23,6 +23,7 @@ If someone "simplifies" the YAML back to a bare ``FileHandler``, or removes
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -48,7 +49,10 @@ def test_config_declares_bounded_rotation() -> None:
     )
     for name in ("app_file", "error_file"):
         handler = config["handlers"][name]
-        assert handler["class"] == "logging.handlers.RotatingFileHandler"
+        assert (
+            handler["class"]
+            == "src.logging_config.MultiProcessRotatingFileHandler"
+        ), "must be the multi-process-safe handler (see P1-7)"
         assert handler["maxBytes"] == MAX_BYTES
         assert handler["backupCount"] == BACKUP_COUNT
     assert config["root"]["handlers"] == ["console", "app_file", "error_file"]
@@ -84,13 +88,18 @@ def test_wired_config_really_rotates(tmp_path: Path) -> None:
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
     )
 
     current = tmp_path / "app_file.log"
     assert current.is_file(), "the INFO handler never wrote anything"
     assert current.stat().st_size <= 8 * 1024 + 1024
     assert (tmp_path / "app_file.log.1").is_file(), "rotation did not happen"
-    rotated = sorted(tmp_path.glob("app_file.log.*"))
+    rotated = sorted(
+        path
+        for path in tmp_path.glob("app_file.log.*")
+        if not path.name.endswith(".lock")  # 多进程轮转用的锁文件，不是备份
+    )
     assert len(rotated) <= BACKUP_COUNT
 
     # ``delay: true`` + level ERROR and no error record -> no empty error file.

@@ -185,10 +185,45 @@ _MAC_ALG_SEPARATOR = ":"
 DEFAULT_TRUST_SCORE_SENTINEL = "default"
 
 #: Default location for the SQLite backend when only the backend is chosen.
-#: Anchored to the repository root so it does not depend on the CWD.
-DEFAULT_SQLITE_PATH = (
-    Path(__file__).resolve().parents[3] / "data" / "human_identities.sqlite3"
-)
+#:
+#: Anchored to the **user data directory**, not the repository: an installed
+#: build runs from ``%LOCALAPPDATA%\\LiuHao\\app`` and its launcher points
+#: ``LIUHAO_DATA_DIR`` at ``%LOCALAPPDATA%\\LiuHao\\data``
+#: (see ``scripts/launch_installed.py``). Resolving against
+#: ``Path(__file__).parents[3]`` wrote the identity database into
+#: ``<repo>/data/human_identities.sqlite3``, which is the one place an installed
+#: build is not allowed to keep durable state (it gets deleted on uninstall and
+#: overwritten on upgrade).
+DATA_DIR_ENV = "LIUHAO_DATA_DIR"
+
+
+def default_data_dir() -> Path:
+    """Resolve the user data directory at **call time** (explicit env wins).
+
+    ``LIUHAO_DATA_DIR``（安装版启动器会设置）> ``%LOCALAPPDATA%\\LiuHao\\data``
+    > ``~/LiuHao/data``。求值发生在调用时，而不是 import 时：启动器是先设
+    环境变量再 import ``src`` 的，import-time 求值会读到旧值。
+    """
+    raw = (os.environ.get(DATA_DIR_ENV) or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return (base / "LiuHao" / "data").resolve()
+
+
+def default_sqlite_path() -> Path:
+    """Default SQLite identity database, matching the installed layout.
+
+    The launcher puts it at ``<data_dir>/config/human_identities.sqlite3``；
+    ``LIUHAO_HUMAN_IDENTITIES_DB`` still overrides this entirely.
+    """
+    return default_data_dir() / "config" / "human_identities.sqlite3"
+
+
+#: Kept for importers that read the constant; the store itself resolves at call
+#: time so an environment set after import (the launcher does this) still wins.
+DEFAULT_SQLITE_PATH = default_sqlite_path()
+
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS human_identities (
@@ -978,6 +1013,13 @@ class SqliteHumanIdentityStore:
     # ---- connection plumbing -------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
+        parent = os.path.dirname(os.path.abspath(self.location))
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError:
+                # sqlite 会给出真正的失败原因；这里不吞掉路径错误的可见性
+                pass
         connection = sqlite3.connect(self.location, timeout=10.0)
         connection.row_factory = sqlite3.Row
         return connection
@@ -1375,7 +1417,7 @@ def resolve_human_identity_store() -> JsonFileStore | SqliteHumanIdentityStore:
         backend = BACKEND_SQLITE if configured_db else BACKEND_FILE
 
     if backend == BACKEND_SQLITE:
-        return SqliteHumanIdentityStore(configured_db or str(DEFAULT_SQLITE_PATH))
+        return SqliteHumanIdentityStore(configured_db or str(default_sqlite_path()))
 
     if backend != BACKEND_FILE:
         logger.warning(

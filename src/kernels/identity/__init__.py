@@ -2049,8 +2049,17 @@ class IdentityManager:
             )
             return code, updated.updated_at
 
-    def consume_recovery_code(self, code: str) -> str:
-        """校验并消费根恢复码；返回根 principal。"""
+    def verify_recovery_code(self, code: str) -> str:
+        """校验根恢复码但**不消费**；返回根 principal。
+
+        调用方需要"先改密成功、再作废恢复码"（与激活流程同序）：改密失败时
+        恢复码必须仍然可用，否则用户既进不去、也无法重试。失败计数落在限次器，
+        不修改任何落盘状态。
+        """
+        return self._verified_recovery_root(code).principal
+
+    def _verified_recovery_root(self, code: str) -> _accounts.AccountNode:
+        """校验恢复码并返回根节点（不消费）；验证逻辑的唯一实现。"""
         key = "recover:root"
         _accounts.limiter.check(
             key, limit=_accounts.MAX_RECOVERY_ATTEMPTS,
@@ -2078,6 +2087,17 @@ class IdentityManager:
                 raise _accounts.AccountError(
                     401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
                 )
+            return root
+
+    def consume_recovery_code(self, code: str) -> str:
+        """校验并消费根恢复码；返回根 principal。
+
+        顺序契约：本方法只应在凭据已经改密成功后调用（见 ``gateway/accounts.py``
+        的恢复路由）。校验失败时不修改恢复码，用户仍可用同一恢复码重试。
+        """
+        key = "recover:root"
+        root = self._verified_recovery_root(code)
+        with self._lock:
             updated = root.with_changes(recovery_hash="", status=_accounts.ACCOUNT_STATUS_ACTIVE).bump(
                 "recovery"
             )

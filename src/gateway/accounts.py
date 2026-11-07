@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,10 +27,18 @@ from .account_context import (
     require_manage,
     require_visible,
 )
-from .auth import issue_token_for, rotate_credential
+from .auth import issue_token_for, resolve_secret_store, rotate_credential
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
+
+#: 首启初始化在**进程内**串行：两个并发的首次注册请求若各自先写凭据，
+#: 后写者会覆盖先写者的密码；内核的单根判定只能保证"只建一个根"，
+#: 保不住"根登录用的就是最后成功那次的密码"。
+_ROOT_INIT_LOCK = threading.Lock()
+
+#: 初始化停在半路（根已落盘、凭据没落盘）时的稳定错误码。
+CODE_INITIALIZATION_INCOMPLETE = "ACCOUNT_INITIALIZATION_INCOMPLETE"
 
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +139,37 @@ def _require_scope(context: AccountContext, scope: str, *, code: str) -> None:
         raise deny(404, code, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
 
 
+def _credential_record(principal: str) -> Optional[Dict[str, Any]]:
+    """该主体当前的凭据记录（只读快照）；没有或读不出来都返回 ``None``。"""
+    try:
+        return resolve_secret_store().credential_for(principal)
+    except Exception:  # noqa: BLE001 - 读失败按"没有凭据"处理（fail-closed）
+        return None
+
+
+def _write_credential(principal: str, password: str, *, message: str) -> None:
+    """写凭据，失败一律转成可重试的 500（绝不留下"半套初始化"）。"""
+    try:
+        ok = rotate_credential(principal, password)
+    except Exception:  # noqa: BLE001 - CredentialStoreError 等，本次未落盘
+        logger.exception("could not write credential for %r", principal)
+        ok = False
+    if not ok:
+        raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", message)
+
+
+def _restore_credential(principal: str, snapshot: Optional[Dict[str, Any]]) -> None:
+    """把凭据库恢复到提交前：没有就删除，有就原样写回。"""
+    store = resolve_secret_store()
+    try:
+        if snapshot is None:
+            store.remove_credential(principal)
+        else:
+            store.import_credentials({principal: snapshot})
+    except Exception:  # noqa: BLE001 - 回滚失败要显式记录，不能静默
+        logger.exception("could not roll back credential for %r", principal)
+
+
 # --------------------------------------------------------------------------- #
 # 静态路由（必须排在 ``/{principal}`` 之前）
 # --------------------------------------------------------------------------- #
@@ -146,17 +186,86 @@ def list_roles() -> Dict[str, Any]:
     }
 
 
+def _settle_existing_root(
+    manager, root: _accounts.AccountNode, payload: RegisterRootRequest
+) -> Dict[str, Any]:
+    """根已存在：要么"已完成"（409），要么"初始化停在半路"（可恢复）。"""
+    if _credential_record(root.principal) is not None:
+        # 已完成初始化。交给内核产生 409 并写审计，**绝不先碰凭据**。
+        _kernel_call(
+            manager.register_root_account,
+            payload.principal,
+            display_name=payload.display_name,
+        )
+        raise deny(
+            409,
+            _accounts.CODE_ROOT_REGISTRATION_CLOSED,
+            "系统已完成初始化，请使用已有账号登录",
+        )
+    if payload.principal != root.principal:
+        raise deny(
+            409,
+            CODE_INITIALIZATION_INCOMPLETE,
+            f"初始化尚未完成：首次注册使用的名称是 “{root.principal}”。"
+            "请用该名称重新提交以完成初始化（密码可以重新设置）。",
+            principal=root.principal,
+        )
+    # 恢复路径：上一轮凭据写入失败，根落盘但没有凭据 —— 任何人都登录不了，
+    # 所以这是"重新完成初始化"，而不是"已有账号被接管"。
+    prior = _credential_record(root.principal)
+    _write_credential(
+        root.principal,
+        payload.password,
+        message="账号初始化失败，可重新提交完成初始化",
+    )
+    try:
+        recovery_code, _stamp = _kernel_call(
+            manager.rotate_recovery_code, root.principal
+        )
+    except HTTPException:
+        # 恢复码没签出来就不要把凭据留下：回到"可重试"的半初始化状态。
+        _restore_credential(root.principal, prior)
+        raise
+    node = _kernel_call(manager.get_account, root.principal)
+    return {
+        "account": _public_member(node),
+        "recovery_code": recovery_code,
+        "resumed": True,
+        "notice": "初始化已补全；恢复码只显示这一次，请离线保存，它可用于重置密码。",
+    }
+
+
 @router.post("/register")
 def register_root(payload: RegisterRootRequest) -> Dict[str, Any]:
-    """首个注册者成为唯一根；已存在根时 409（并写审计）。"""
+    """首个注册者成为唯一根；已完成初始化时 409（并写审计）。
+
+    顺序契约（P0-1）：**先凭据、后身份**。凭据写失败时账号树一个字节都没写，
+    接口 500 之后同一个请求可以原样重试；反过来（先身份后凭据）一旦凭据写
+    失败，根已经落盘 → ``/v1/auth/config`` 认为已初始化、再注册 409、登录
+    401，用户既进不去也重开不了。
+    """
     manager = get_identity_manager()
-    node, recovery_code = _kernel_call(
-        manager.register_root_account,
-        payload.principal,
-        display_name=payload.display_name,
-    )
-    if not rotate_credential(payload.principal, payload.password):
-        raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号初始化失败")
+    with _ROOT_INIT_LOCK:
+        root = _kernel_call(manager.account_root)
+        if root is not None:
+            return _settle_existing_root(manager, root, payload)
+        prior = _credential_record(payload.principal)
+        _write_credential(
+            payload.principal,
+            payload.password,
+            message="账号初始化失败，可重新提交完成初始化",
+        )
+        try:
+            node, recovery_code = _kernel_call(
+                manager.register_root_account,
+                payload.principal,
+                display_name=payload.display_name,
+            )
+        except HTTPException:
+            # 内核在任何拒绝/失败前不落盘身份；把刚写的凭据回滚到提交前的
+            # 样子，保证"凭据与身份要么都成功，要么都不落盘"。
+            _restore_credential(payload.principal, prior)
+            raise
     return {
         "account": _public_member(node),
         "recovery_code": recovery_code,
@@ -182,11 +291,20 @@ def activate(payload: ActivateRequest) -> Dict[str, Any]:
 
 @router.post("/recovery/reset")
 def recovery_reset(payload: RecoveryResetRequest) -> Dict[str, Any]:
-    """用根恢复码重置密码；消费即作废，失败限次。"""
+    """用根恢复码重置密码；改密**成功之后**才消费恢复码。
+
+    顺序契约（P1-6）：先改密、后作废。反序（先消费再改密）在改密失败时会把
+    恢复码一起作废且不能重发，用户彻底锁死。这里与激活流程
+    （``verify_activation_code`` → 改密 → ``consume_activation_code``）同序。
+    """
     manager = get_identity_manager()
-    principal = _kernel_call(manager.consume_recovery_code, payload.recovery_code)
-    if not rotate_credential(principal, payload.password):
-        raise deny(500, "ACCOUNT_CREDENTIAL_WRITE_FAILED", "账号恢复失败")
+    principal = _kernel_call(manager.verify_recovery_code, payload.recovery_code)
+    _write_credential(
+        principal,
+        payload.password,
+        message="账号恢复失败，恢复码仍然有效，可重新提交",
+    )
+    _kernel_call(manager.consume_recovery_code, payload.recovery_code)
     token = issue_token_for(principal, client="web")
     return {
         "token": token["access_token"],

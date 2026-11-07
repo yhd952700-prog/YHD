@@ -808,15 +808,33 @@ def auth_config() -> Dict[str, Any]:
         humans = []
 
     root_exists = False
+    root_principal: Optional[str] = None
     try:
-        root_exists = get_identity_manager().account_root() is not None
+        root_node = get_identity_manager().account_root()
+        if root_node is not None:
+            root_exists = True
+            root_principal = root_node.principal
     except Exception as exc:  # noqa: BLE001 - 状态不明按"已初始化"处理，不放开注册
         logger.warning("could not read account root: %s", exc)
         root_exists = True
 
+    # P0-1：根已落盘但**没有凭据**是"初始化停在半路"，不是"已完成"。
+    # 旧实现只看到根存在就报 initialized，用户再注册 409、登录 401，永久锁死。
+    # 只有**确证**根缺少凭据时才标记为可恢复；读状态失败一律按已完成处理，
+    # 避免用异常把注册入口重新打开。
+    initialization_incomplete = (
+        root_principal is not None and root_principal not in credentials
+    )
+    registration_open = (not root_exists) or initialization_incomplete
+
     eligible = [h for h in humans if h.principal in credentials]
     secret_configured = bool(credentials)
-    if not secret_configured:
+    if initialization_incomplete:
+        message = (
+            f"初始化未完成：账号 “{root_principal}” 已创建，但还没有登录凭据。"
+            "请用该名称重新完成初始化（密码可以重新设置）。"
+        )
+    elif not secret_configured:
         message = (
             "尚未配置登录凭据：任何人都无法登录（fail-closed，OD-010）。"
             "用 scripts/register_human_identity.py --password 设置。"
@@ -846,9 +864,20 @@ def auth_config() -> Dict[str, Any]:
         # 扁平字段是驾驶舱 `AuthConfig` 契约（已上线），嵌套字段是文档 §2.5 契约；
         # 两个都返回，避免任一消费方读到 undefined 后自己猜。
         "root_account_exists": root_exists,
-        "registration_open": not root_exists,
+        "registration_open": registration_open,
         "root": {"exists": root_exists},
-        "registration": {"open": not root_exists},
+        "registration": {"open": registration_open},
+        # 初始化状态：pending（还没有账号）/ complete / incomplete（可恢复）。
+        # 前端用 ``recoverable`` 决定是展示"首次初始化"还是"补全初始化"。
+        "initialization": {
+            "state": (
+                "incomplete"
+                if initialization_incomplete
+                else ("complete" if root_exists else "pending")
+            ),
+            "recoverable": initialization_incomplete,
+            "principal": root_principal if initialization_incomplete else None,
+        },
         "recovery": {"available": root_exists},
         "migration": {"allowed": not root_exists},
         "client_modes": list(CLIENT_MODES),

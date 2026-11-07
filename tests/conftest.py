@@ -365,7 +365,7 @@ def _isolate_metric_collector(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_human_identity_store_env(monkeypatch):
+def _isolate_human_identity_store_env(monkeypatch, tmp_path):
     """不让开发者本机的身份库环境变量泄漏进测试。
 
     根因（2026-11-06 实测）：外层 shell 设了
@@ -389,8 +389,12 @@ def _isolate_human_identity_store_env(monkeypatch):
         "LIUHAO_HUMAN_IDENTITIES_DB",
         "LIUHAO_HUMAN_IDENTITIES_FILE",
         "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY",
+        "LIUHAO_LOG_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
+    # 默认数据目录（身份库/日志）指向用例的 tmp，避免默认路径落到开发者真实
+    # 的 %LOCALAPPDATA%\LiuHao\data 或仓库 data/。
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(identity_module, "_global_manager", None)
 
 

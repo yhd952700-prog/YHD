@@ -23,9 +23,19 @@
 # 轮转参数（用户可见的磁盘上限）：
 #   * 单文件上限 10 MiB
 #   * 保留 5 份历史（.1 ~ .5）
-#   * 不压缩：stdlib RotatingFileHandler 不支持 gzip；为压缩而自写 handler 会
-#     在日志线程里增加 CPU 与失败面。总量上限 = (5 + 1) × 10 MiB ≈ 60 MiB/文件
-#     通道；liuhao.log 与 error.log 两个通道合计 ≤ 120 MiB。
+#   * 不压缩：stdlib 不支持 gzip；为压缩而自写 handler 会在日志线程里增加
+#     CPU 与失败面。总量上限 = (5 + 1) × 10 MiB ≈ 60 MiB/文件通道；
+#     liuhao.log 与 error.log 两个通道合计 ≤ 120 MiB。
+#
+# 多进程安全（P1-7）：handler 是 ``MultiProcessRotatingFileHandler``。
+# stdlib RotatingFileHandler 一直持有文件句柄，Windows 上另一个进程持有时
+# 改名必然 ``PermissionError [WinError 32]`` → 该条记录被丢弃、文件越过上限。
+# 本实现每次 emit 才打开文件，并在 OS 文件锁内完成「看大小 → 轮转 → 追加」。
+#
+# 路径（P1-7/P1-10）：``filename`` 的**相对路径**由
+# ``src/logging_config.py::load_uvicorn_log_config`` 解析到用户数据目录
+# （``LIUHAO_LOG_DIR`` > ``LIUHAO_DATA_DIR`` > ``%LOCALAPPDATA%/LiuHao/data``），
+# 不再写仓库根 ``logs/``；安装版的生成副本仍写数据目录绝对路径并照常生效。
 #
 # 控制台只输出 WARNING 及以上：INFO 全量进文件（可轮转），避免桌面壳把子进程
 # stdout 追加到 desktop-gateway.log 时无限增长。
@@ -47,17 +57,17 @@ handlers:
     stream: ext://sys.stdout
 
   app_file:
-    class: logging.handlers.RotatingFileHandler
+    class: src.logging_config.MultiProcessRotatingFileHandler
     level: INFO
     formatter: text
-    filename: logs/liuhao.log
+    filename: logs/liuhao.log   # 相对路径 → 用户数据目录/logs（见文件头）
     maxBytes: 10485760          # 10 MiB
     backupCount: 5
     encoding: utf-8
     delay: true                 # 首次写入才打开，避免空文件
 
   error_file:
-    class: logging.handlers.RotatingFileHandler
+    class: src.logging_config.MultiProcessRotatingFileHandler
     level: ERROR
     formatter: text
     filename: logs/error.log
