@@ -1,6 +1,7 @@
 # 交付清单（实测版）
 
-> 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）。
+> 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）；
+> 2026-11-07 交付面审计后更新 §0 当前产物与体积口径。
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
@@ -23,20 +24,21 @@
 
 ## 0. 安装包
 
-**当前状态：无有效安装包（待最终包回填）。** `dist/installer/` 现在为空；
-上一版写的 `dist/installer/LiuHao-Setup-0.1.0.exe` 在该路径下**从未存在**。
-数值本身是真的，但取自一个临时构建，路径写错了——原记录已作废，见 0.1。
+**当前状态：`dist/installer/` 有 0.1.0 的四项正式产物；本次同源构建的最终包待验收后替换。**
+上一版“该路径从未存在 / 目录为空”的说法已过期，见 0.1 的历史溯源。
 
 | 项目 | 值 |
 |---|---|
-| 安装包路径 | 待最终包回填（当前无有效安装包） |
-| 大小 | 待最终包回填 |
-| SHA256 | 待最终包回填 |
-| 校验文件 | 待最终包回填 |
-| **这版安装包对应的源码提交** | **待最终包回填** |
-| 解包后体积 | 8,596 个文件 / 165.5 MB（84 个 dist 包）；来自历史 E2E 临时构建的 `manifest.json`，**仅作参考，不是交付物** |
-| 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir> -SkipFrontend -SkipSmoke` |
-| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，1,651 字节） |
+| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.0.exe`（上一版交付物） |
+| 大小 | 34,838,298 字节（约 33.2 MiB） |
+| SHA256 | `6b0179d8372bb8830f55b6cb9835fcacd9a54642f7d5ebb16db5946359ad9e88` |
+| 校验文件 | `dist/installer/SHA256SUMS.txt`、`dist/installer/DELIVERY.txt` |
+| 升级包 | `dist/installer/liuhao-0.1.0.zip` 2,529,546 字节，SHA256 `29fecdf0…6e12` |
+| **这版安装包对应的源码提交** | 0.1.0 交付包来源提交未绑定；**本次最终包转正后必须回填** |
+| 安装后体积 | 10,502 个文件 / 170,666,366 字节（约 162.8 MiB，0.1.0 交付包实测） |
+| 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`） |
+| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，4,567 字节，含 Key 申请与跳过说明） |
+| 第三方许可证 | `packaging/THIRD-PARTY-NOTICES.txt` + `packaging/licenses/`（随包复制到程序根目录） |
 
 ### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 
@@ -115,7 +117,7 @@
 | # | 项目 | 状态 | 证据 | 部分完成差哪一部分 |
 |---|---|---|---|---|
 | 1 | 四步用户文档 | 已完成 | [END-USER-GUIDE.md](END-USER-GUIDE.md)，commit `a97d5862` | — |
-| 2 | 安装包构建 | **已作废 / 待重出** | 上一版记录指向不存在的文件；当前 `dist/installer` 为空。构建脚本本身可用 | 见 0.1；待最终包回填路径/字节/SHA256 与对应源码提交 |
+| 2 | 安装包构建 | 部分完成（上一版产物存在，最终包待重出） | `dist/installer` 现有 0.1.0 四项产物（34,838,298 字节 exe、2,529,546 字节 zip、`SHA256SUMS.txt`、`DELIVERY.txt`）；构建脚本可用 | 待本次同源构建的最终包回填路径/字节/SHA256 与对应源码提交 |
 | 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | 历史日志 `dist/obsolete/installer-20261105-1506/install.log`（该目录已随旧包清理，不在仓库内）：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
 | 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
@@ -123,7 +125,7 @@
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
 | 8 | 打包延迟依赖修复 | 已完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`；修复随 `b789d244` 入库，安装版聊天不再报 `httpcore2` 缺包 | 已解除（E-1）；该目录另有未提交的升级元数据改动，与依赖修复无关 |
 | 9 | 真实厂商 Key 对话 | 未验证 | 网关流的可复现脚本 [verify_first_run_e2e.py](../scripts/verify_first_run_e2e.py)（commit `250456cd`，说明见 [first-run-e2e.md](first-run-e2e.md)）需要真实 Key；本流没有 Key，只用本地 OpenAI 兼容桩验证了真实 HTTP 请求路径 | 本流无真实厂商 Key 的原始输出（E-5）；网关流报称用 DeepSeek 跑过，只能算旁证 |
-| 10 | 静默卸载 | 未验证 | 本轮实测：`unins000.exe /VERYSILENT` 与 `/S` 都停在“是否保留数据”确认框，进程需强制结束 | 交互式卸载未测；自动化卸载会被确认框挂住（E-4） |
+| 10 | 静默卸载 | 已完成（E-4 已修） | `installer/liuhao.iss` 的 `CurUninstallStepChanged` 在 `UninstallSilent` 时直接退出、按安全默认保留数据；`/VERYSILENT` 实测可正常结束。交互式“删除数据”分支已单独实测（连续两次确认后按 `data-dir.txt` 删） | — |
 | 11 | 代码签名 | 未做 | 安装包未签名，Windows 显示「未知发布者」 | 需证书与签名流水线（E-8） |
 | 12 | 前端重建 | 未做 | 安装包内是构建时的 `console/dist`；前端仍在重写 | 前端稳定后必须重建安装包（E-7） |
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
@@ -155,7 +157,7 @@
 | 回归工作树放在 temp 下会让删除护栏失效 | E-10（已改用 temp 之外的干净工作树重跑） |
 | 回环网络测试在满负载下抖动 | E-11 |
 | 全量基线落后交付 HEAD 12 个提交 | E-12（已补跑改动测试，未再全量） |
-| 安装包记录曾指向不存在的文件，当前无有效安装包 | E-13（待最终包回填，并写死对应源码提交后重跑 E2E） |
+| 安装包记录曾指向不存在的文件；现在 `dist/installer` 有 0.1.0 四项产物，但最终包仍待转正 | E-13（最终包回填路径/字节/SHA256，并写死对应源码提交后重跑 E2E） |
 
 ## 5. 全量回归（独立报告）
 

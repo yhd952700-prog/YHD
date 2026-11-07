@@ -7,7 +7,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：12,732 文件 / 183,639,031 字节（约 175.1 MiB，未压缩） |
+| payload 组装（含离线 Python 运行时、托盘依赖 pywin32/tkinter/Tcl） | 🟢 已实跑：11,347 文件 / 165.5 MB（未压缩；最终构建以 `manifest.json` 为准） |
 | payload 冒烟（启动→首页→注册→登录→发消息） | 🟢 本轮实跑通过（payload 内，mock 提供商） |
 | Inno Setup 安装器脚本 | 🟢 已交付 `installer/liuhao.iss` |
 | **`.exe` 安装包** | 🟢 0.1.0 交付包：34,838,298 字节（约 33.2 MiB）<br>SHA256 `6b0179d8372bb8830f55b6cb9835fcacd9a54642f7d5ebb16db5946359ad9e88`<br>本次最终包以转正后的 `SHA256SUMS.txt` 为准 |
