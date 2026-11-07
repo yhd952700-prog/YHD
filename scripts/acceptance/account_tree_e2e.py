@@ -952,7 +952,7 @@ def backup_roundtrip(
             {"recovery_code": tokens.get("recovery") or "", "password": "recovered456"},
         )
         report.check(item, "恢复码一次性（重复使用被拒）", (status, body.get("code")),
-                     (401, "RECOVERY_CODE_INVALID"))
+                     (400, "ACCOUNT_RECOVERY_CODE_INVALID"))
 
         status, replay = request(
             "POST", second.base + "/v1/accounts/backup/import",

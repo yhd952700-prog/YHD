@@ -486,19 +486,19 @@ export async function setMemoryCustody(
  * 轮换恢复码（根专属，`POST /v1/accounts/recovery/rotate`）。
  *
  * 旧码在服务端立即失效，明文只在本次响应里出现一次 —— 界面必须一次性展示。
+ * 响应**没有** `expires_at`：恢复码没有 TTL，展示"有效期至"会骗用户。
  */
 export function rotateRecovery(): Promise<
-  AccountResult<{ recovery_code: string; expires_at: string; notice?: string }>
+  AccountResult<{ recovery_code: string; notice?: string }>
 > {
   return withStub(
     () =>
-      request<{ recovery_code: string; expires_at: string; notice?: string }>(
+      request<{ recovery_code: string; notice?: string }>(
         '/v1/accounts/recovery/rotate',
         { method: 'POST' },
       ),
     () => ({
       recovery_code: 'STUB-RECOVERY',
-      expires_at: '契约桩',
       notice: '契约桩：恢复码未由服务端生成。',
     }),
   )

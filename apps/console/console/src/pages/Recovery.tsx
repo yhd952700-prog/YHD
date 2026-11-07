@@ -21,7 +21,6 @@ export function Recovery({ caps, readOnly }: { caps: AccountCaps; readOnly: bool
   const [busy, setBusy] = useState(false)
   const [issued, setIssued] = useState<{
     code: string
-    expiresAt: string
     notice?: string
   } | null>(null)
   const [source, setSource] = useState<DataSource>('live')
@@ -47,7 +46,6 @@ export function Recovery({ caps, readOnly }: { caps: AccountCaps; readOnly: bool
       setSource(result.source)
       setIssued({
         code: result.data.recovery_code,
-        expiresAt: result.data.expires_at,
         notice: result.data.notice,
       })
       setNotice({ tone: 'ok', text: '已生成新的恢复码，旧码已失效' })
@@ -98,7 +96,7 @@ export function Recovery({ caps, readOnly }: { caps: AccountCaps; readOnly: bool
             <OneTimeSecret
               label="新的恢复码"
               value={issued.code}
-              notice={issued.notice ?? `有效期至：${issued.expiresAt}`}
+              notice={issued.notice ?? '恢复码没有有效期；使用一次后即失效。'}
               onDone={() => setIssued(null)}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -154,10 +152,11 @@ export function Recovery({ caps, readOnly }: { caps: AccountCaps; readOnly: bool
           <li>本机数据仍然保留，但无法用密码进入。</li>
           <li>其他仍能登录的账号不受影响，可继续处理日常事务。</li>
           <li>备份包只能在全新实例（本机还没有任何账号）首次启动时导入；本机已有账号时不可导入，也不会覆盖现有数据。</li>
-          <li>没有备份包时，只能联系为你提供本机部署的服务方。</li>
+          <li>老数据升级上来的账号可能从未有过恢复码；这种情况下登录页"忘记密码"里提供"在本机生成恢复码"，码只写入本机数据目录、不出现在网络响应里。</li>
+          <li>既没有恢复码、也无法访问本机数据目录时，只能进入"重建身份体系"或联系为你提供本机部署的服务方。</li>
         </ul>
         <p className="os-hint">
-          这里没有任何"自动找回"按钮：后端没有该能力，画一个按钮只会让它看起来能用。
+          这里不画"忘记密码自动找回"按钮：恢复码没有 TTL，本机生成路径也必须以"能读到本机数据目录"为前提。
         </p>
       </Card>
     </div>

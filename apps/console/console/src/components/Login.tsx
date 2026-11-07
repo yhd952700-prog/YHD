@@ -774,6 +774,30 @@ function RecoveryForm({
 }) {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
+  const [handoff, setHandoff] = useState<string | null>(null)
+  const [handoffBusy, setHandoffBusy] = useState(false)
+
+  /**
+   * 本机自救：没有任何恢复码的老账号，把新码写到本机数据目录。
+   * 码不会出现在响应里，必须在本机打开文件抄到上面 —— 这就是"能访问本机
+   * 数据目录"这一安全前提的具体形态，不依赖命令行。
+   */
+  const issueLocal = async () => {
+    if (handoffBusy) return
+    setHandoffBusy(true)
+    onError('')
+    try {
+      const result = await postJson<{ written: boolean; file: string }>(
+        '/v1/accounts/recovery/local',
+        {},
+      )
+      setHandoff(result.file)
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '本机生成失败')
+    } finally {
+      setHandoffBusy(false)
+    }
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -825,12 +849,27 @@ function RecoveryForm({
           required
         />
       </div>
+      {handoff && (
+        <div className="os-note" role="status">
+          恢复码已写入本机文件：{handoff}
+          <br />
+          请在这台电脑上打开该文件，把第一行填入上面的"恢复码"。码不会出现在界面或网络响应里。
+        </div>
+      )}
       <button type="submit" className="os-btn" disabled={busy}>
         {busy ? '正在重置…' : '重置并进入'}
       </button>
       <div className="os-login-links">
         <button type="button" className="os-link" onClick={onCancel}>
           返回登录
+        </button>
+        <button
+          type="button"
+          className="os-link"
+          onClick={() => void issueLocal()}
+          disabled={handoffBusy}
+        >
+          {handoffBusy ? '正在生成…' : '没有恢复码？在本机生成'}
         </button>
         <button type="button" className="os-link" onClick={onLost}>
           恢复码也丢失了

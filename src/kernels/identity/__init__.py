@@ -2026,8 +2026,13 @@ class IdentityManager:
 
     # ---- 根恢复 / 备份 ---------------------------------------------------
 
-    def rotate_recovery_code(self, principal: str) -> Tuple[str, str]:
-        """为根账号轮换一次性恢复码（只存哈希，明文只返回一次）。"""
+    def rotate_recovery_code(self, principal: str) -> str:
+        """为根账号生成/重发一次性恢复码（只存哈希，明文只返回一次）。
+
+        返回**只有码本身**，不再把 ``updated_at`` 当作 ``expires_at`` 一起返回：
+        恢复码没有 TTL（见 docs/account-hierarchy.md §9.11），把生成时刻做成
+        "有效期至"会让界面展示一条并不存在的事实。
+        """
         with self._lock:
             root = self.account_root()
             if root is None or root.principal != principal:
@@ -2046,8 +2051,32 @@ class IdentityManager:
                 actor=principal,
                 target=principal,
                 outcome="allowed",
+                details={"had_recovery_code": bool(node.recovery_hash)},
             )
-            return code, updated.updated_at
+            return code
+
+    def clear_recovery_code(self, principal: str, *, reason: str = "") -> bool:
+        """撤销一个**尚未交付**给用户的恢复码（只清哈希，不写"已使用"审计）。
+
+        用于"码生成成功、但没能交到用户手里"的失败路径（本机文件写入失败）：
+        不清掉哈希，账号就停在"服务端有码、用户没有码"的状态，而本机自救入口
+        又只对无码账号开放 —— 用户会被永久挡在门外。
+        """
+        with self._lock:
+            root = self.account_root()
+            if root is None or root.principal != principal:
+                return False
+            updated = root.with_changes(recovery_hash="")
+            self._accounts[principal] = updated
+            self._persist_account(updated)
+            self._account_audit(
+                action="account.recovery.discarded",
+                actor=principal,
+                target=principal,
+                outcome="allowed",
+                details={"reason": reason} if reason else None,
+            )
+            return True
 
     def verify_recovery_code(self, code: str) -> str:
         """校验根恢复码但**不消费**；返回根 principal。
@@ -2061,16 +2090,26 @@ class IdentityManager:
     def _verified_recovery_root(self, code: str) -> _accounts.AccountNode:
         """校验恢复码并返回根节点（不消费）；验证逻辑的唯一实现。"""
         key = "recover:root"
-        _accounts.limiter.check(
-            key, limit=_accounts.MAX_RECOVERY_ATTEMPTS,
-            window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
-        )
+        try:
+            _accounts.limiter.check(
+                key, limit=_accounts.MAX_RECOVERY_ATTEMPTS,
+                window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
+            )
+        except _accounts.AccountError as exc:
+            if exc.code != "ACCOUNT_RATE_LIMITED":
+                raise
+            # 文档 §4.3/§9.2：恢复码失败锁定是独立错误码，不复用通用限流码。
+            raise _accounts.AccountError(
+                429, _accounts.CODE_RECOVERY_LOCKED, "尝试次数过多，请稍后再试。"
+            ) from exc
         with self._lock:
             root = self.account_root()
             if root is None or not root.recovery_hash:
                 _accounts.limiter.register(key)
                 raise _accounts.AccountError(
-                    401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
+                    400,
+                    _accounts.CODE_RECOVERY_CODE_INVALID,
+                    "恢复码无效或已失效。",
                 )
             # 兼容旧版本：早期恢复码绑定本机完整性密钥；新码不再绑定。
             stored = root.recovery_hash
@@ -2082,10 +2121,12 @@ class IdentityManager:
                 _accounts.limiter.register(key)
                 self._audit_denial(
                     action="account.recovery.use", actor="anonymous",
-                    target=root.principal, code="RECOVERY_CODE_INVALID",
+                    target=root.principal, code=_accounts.CODE_RECOVERY_CODE_INVALID,
                 )
                 raise _accounts.AccountError(
-                    401, "RECOVERY_CODE_INVALID", "恢复信息无效或已过期"
+                    400,
+                    _accounts.CODE_RECOVERY_CODE_INVALID,
+                    "恢复码无效或已失效。",
                 )
             return root
 

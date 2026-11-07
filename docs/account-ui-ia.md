@@ -104,7 +104,7 @@
 
 | 接口 | 方法 | 请求 | 响应要点 | 状态 |
 |---|---|---|---|---|
-| `/v1/auth/config` | GET | — | `root_account_exists`、`registration_open` | 已实现（auth.py:713-732） |
+| `/v1/auth/config` | GET | — | `root_account_exists`、`registration_open`、`recovery{available,self_service}` | 已实现；`recovery.available` = 根存在**且**确有恢复码，老数据（`recovery_hash` 为空）为 false |
 | `/v1/auth/login` | POST | `principal, secret, client` | `access_token, principal, display_name, scope, permissions, expires_at, parent_account_id, path, depth` | 已实现（auth.py:454-465） |
 | `/v1/auth/me` | GET | — | 同上 + `still_human` | 已实现（auth.py:607-626） |
 | `/v1/accounts/roles` | GET | — | `roles[{id,permissions}]`、`scopes[]` | 已实现（accounts.py:122） |
@@ -126,7 +126,8 @@
 | `/v1/accounts/backup/import` | POST | `bundle, passphrase` | 导入结果；本机已有账号 → **409 `IMPORT_NOT_ALLOWED`** | **已实现**（运行时 409） |
 | `/v1/accounts/migrate` | POST | — | 迁移结果；仅根 | 已实现（accounts.py:392-396）；本轮无页面 |
 | `/v1/accounts/migrate/rollback` | POST | — | 回滚结果；仅根 | 已实现（accounts.py:399-405）；本轮无页面 |
-| `/v1/accounts/recovery/rotate` | POST | — | `recovery_code`、`expires_at` | 已实现（accounts.py:224） |
+| `/v1/accounts/recovery/rotate` | POST | — | `recovery_code`（**无 `expires_at`**：恢复码没有 TTL） | 已实现；老根账号补发入口，旧码立即作废 |
+| `/v1/accounts/recovery/local` | POST | — | `written`、`file`、`notice`、`security_note`；**响应不含恢复码** | 已实现；忘记密码且无恢复码时，把码写到本机 `<数据目录>/config/recovery_code.txt`；已有恢复码 → 403 `ACCOUNT_RECOVERY_UNAVAILABLE` |
 | `/v1/audit/events` | GET | `principal?` | 事件列表；非 L0 被强制为令牌主体（audit.py:270-280） | 已实现，但范围与规格 §3.6 冲突 |
 | `/v1/memory/entries` | GET | `scope=self|subtree, q` | 记忆条目 | **前端拟定，后端无端点** |
 | `/v1/memory/export` | POST | `scope, format` | 导出文件 | **前端拟定，后端无端点** |

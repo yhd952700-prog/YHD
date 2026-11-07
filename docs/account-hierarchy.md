@@ -438,7 +438,8 @@
 | `ACTOR_FROM_BODY_FORBIDDEN` | 400 | 请求参数不合法。 | 防冒用 |
 | `ACCOUNT_RECOVERY_CODE_INVALID` | 400 | 恢复码无效或已失效。 | 恢复 |
 | `ACCOUNT_RECOVERY_LOCKED` | 429 | 尝试次数过多，请稍后再试。 | 恢复码失败锁定 |
-| `ACCOUNT_RECOVERY_UNAVAILABLE` | 403 | 恢复凭据不可用，请按引导重建身份体系。 | 两者皆失 |
+| `ACCOUNT_RECOVERY_UNAVAILABLE` | 403 | 恢复凭据不可用，请按引导重建身份体系。 | 两者皆失；本机自救入口在已有恢复码时也用它（不得作废用户手上的码） |
+| `ACCOUNT_RECOVERY_WRITE_FAILED` | 500 | 恢复码未能写入本机数据目录，请重试。 | 本机自救入口写盘失败；服务端同时撤销刚生成的码 |
 | `ACCOUNT_MIGRATION_PACKAGE_INVALID` | 400 | 迁移包无效、损坏或不属于本系统。 | 认领 |
 | `ACCOUNT_MIGRATION_PASSPHRASE_REQUIRED` | 400 | 请输入备份口令。 | 认领 |
 | `ACCOUNT_MIGRATION_CONFLICT` | 409 | 本机已有身份数据，无法直接认领。 | 冲突 |
@@ -947,6 +948,20 @@ can_see_skill(A, S) :=
 
 **找回流程（S3）**：输入账号 + 恢复码（或上传恢复文件）→ 校验（恒定时间比较 + 5 次失败锁定 15 分钟）→ 设置新密码 → **吊销该账号全部会话** → 登录。审计 `RECOVERY_CODE_USED`。重置密码**不改变**成员树、权限、记忆、Key 归属。
 
+**S3b 没有恢复码时的本机自救（0.1.0 老数据升级 / 从未签发过恢复码）**
+
+判定：根存在但 `recovery_hash` 为空串。此时 `GET /v1/auth/config` 返回
+`recovery.available=false`、`recovery.self_service=true`，界面**不得**展示"用恢复码重置"的可用状态。
+
+| 情况 | 入口 | 规则 |
+|---|---|---|
+| 还能登录 | `POST /v1/accounts/recovery/rotate`（需根令牌） | 生成/重发一枚恢复码，旧码立即作废；响应只含 `recovery_code`，**不含 `expires_at`** |
+| 已经忘记密码 | `POST /v1/accounts/recovery/local`（无需令牌） | 码写入 `<数据目录>/config/recovery_code.txt`，**不出现在 HTTP 响应里**；用户在本机打开文件、把第一行填入 S3；重置成功后文件自动删除 |
+
+`/recovery/local` 的安全前提只有一条：**必须能访问本机数据目录**。这不是新增的信任边界——同一目录里的凭据库与身份库本来就可被该用户改写，能读它的人已经拥有根账号。码不进响应体，所以只有 HTTP 访问权（例如浏览器里的跨站请求）拿不到它。仅当根**确实没有恢复码**时开放（否则任何远程请求都能作废用户手上的有效码）；同一限次窗口内超过 5 次返回 429 `ACCOUNT_RECOVERY_LOCKED`；写盘失败返回 500 `ACCOUNT_RECOVERY_WRITE_FAILED`，并**撤销刚生成的码**，否则账号会停在"服务端有码、用户没有码"的死角。
+
+**恢复码没有 TTL**：它不按时间失效，只在被使用（或被重新生成）时失效。接口与界面都不得展示"有效期至/expires_at"。
+
 **非根账号的找回**：不签发恢复码/恢复文件。忘记密码只能由其管理范围内的管理者重置（主账号在「成员管理」、团队负责人在「我的成员」，`ACCOUNT_PASSWORD_RESET_BY_ADMIN`）。S3 对非根账号一律返回中性提示"无法自助找回，请联系系统管理员。"，**不说明任何层级关系**。
 
 **不可逆边界（必须原文展示）：**
@@ -954,7 +969,7 @@ can_see_skill(A, S) :=
 > 恢复码与恢复文件是找回凭据的唯一途径。
 > - 重置密码不会恢复已删除的成员或数据；
 > - 恢复码一经使用即失效，重新生成后旧码立即作废；
-> - 若恢复码与恢复文件**同时丢失**，只能进入"重建身份体系"：**数据保留，但身份关系需重新认领**，旧凭据永久失效。
+> - 若恢复码与恢复文件**同时丢失**，且无法访问本机数据目录（S3b），只能进入"重建身份体系"：**数据保留，但身份关系需重新认领**，旧凭据永久失效。
 
 **S5 重建身份体系（两者皆失）**：
 
@@ -1073,6 +1088,7 @@ can_see_skill(A, S) :=
 | D39 | **自助注册读他人数据** | 新账号构造会话/记忆/文件/审计/模型查询指向他人或根 | 404 `ACCOUNT_SUBTREE_DENIED` 或 403 `ACCOUNT_MEMORY_FOREIGN_DENIED` / `ACCOUNT_MODEL_FOREIGN_DENIED`；结果 0 条；响应不泄露目标存在 |
 | D40 | **停用/删除后仍访问** | 根停用该账号；账号用旧令牌请求；再用账号密码登录；根删除该账号 | 旧令牌下一次请求 403 `ACCOUNT_INACTIVE`；登录 403 `ACCOUNT_UNAVAILABLE`（中性文案）；删除仅叶子，非叶子 409 `ACCOUNT_DELETE_HAS_CHILDREN` |
 | D41 | **自助注册重名** | 用已存在（含保留名）的登录账号注册 | 409 `ACCOUNT_EXISTS`；文案"该登录账号不可用。"；不提示占用者；不覆盖原账号 |
+| D42 | **老根账号补发恢复码 / 本机自救** | 0.1.0 升级的老根（`recovery_hash` 为空）：登录后调 `/recovery/rotate`；未登录调 `/recovery/local`；已有恢复码时再调 `/recovery/local` | 前者 200 返回新码、立即可用、无 `expires_at`，二次使用 400 `ACCOUNT_RECOVERY_CODE_INVALID`；后者把码写入 `<数据目录>/config/recovery_code.txt` 且响应不含码，重置成功后文件删除；已有码时 403 `ACCOUNT_RECOVERY_UNAVAILABLE` 且旧码仍有效；`/v1/auth/config` 的 `recovery.available` 与实际 `recovery_hash` 一致 |
 
 ### 10.3 迁移旧库（D20 展开）
 

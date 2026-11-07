@@ -809,11 +809,13 @@ def auth_config() -> Dict[str, Any]:
 
     root_exists = False
     root_principal: Optional[str] = None
+    recovery_configured = False
     try:
         root_node = get_identity_manager().account_root()
         if root_node is not None:
             root_exists = True
             root_principal = root_node.principal
+            recovery_configured = bool(root_node.recovery_hash)
     except Exception as exc:  # noqa: BLE001 - 状态不明按"已初始化"处理，不放开注册
         logger.warning("could not read account root: %s", exc)
         root_exists = True
@@ -878,7 +880,13 @@ def auth_config() -> Dict[str, Any]:
             "recoverable": initialization_incomplete,
             "principal": root_principal if initialization_incomplete else None,
         },
-        "recovery": {"available": root_exists},
+        # 恢复码是否**真的**可用：只看"根存在"会在 0.1.0 升级上来的老数据
+        # （recovery_hash 为空串）上撒谎 —— 界面会展示"用恢复码重置"，用户却
+        # 永远拿到无效码。self_service 表示"没有恢复码、但可在本机自助补发"。
+        "recovery": {
+            "available": root_exists and recovery_configured,
+            "self_service": root_exists and not recovery_configured,
+        },
         "migration": {"allowed": not root_exists},
         "client_modes": list(CLIENT_MODES),
         "token": {"ttl_seconds": _ttl_seconds()},

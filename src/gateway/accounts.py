@@ -11,13 +11,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..kernels.identity import _accounts, get_identity_manager
+from ..common.atomic_write import atomic_write_text
+from ..kernels.identity import _accounts, _persistence, get_identity_manager
 from . import account_settings
 from .account_context import (
     AccountContext,
@@ -171,6 +174,44 @@ def _restore_credential(principal: str, snapshot: Optional[Dict[str, Any]]) -> N
 
 
 # --------------------------------------------------------------------------- #
+# 本机恢复码交接（忘记密码 + 手上没有恢复码）
+# --------------------------------------------------------------------------- #
+
+#: 交接文件写在数据目录的 ``config/`` 下，与安装版布局一致。
+LOCAL_RECOVERY_FILE_NAME = "recovery_code.txt"
+
+
+def _local_recovery_path() -> Path:
+    return _persistence.default_data_dir() / "config" / LOCAL_RECOVERY_FILE_NAME
+
+
+def _clear_local_recovery_file() -> None:
+    """删除上一次交接留下的码文件：新码一生成，上一次的码就作废了。"""
+    path = _local_recovery_path()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not remove stale local recovery file %s", path, exc_info=True)
+
+
+def _write_local_recovery_file(principal: str, code: str) -> Path:
+    """把恢复码写进本机数据目录；**绝不**返回给调用方。"""
+    path = _local_recovery_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        path,
+        f"{code}\n"
+        f"# LiuHao 本机恢复码 · 账号 {principal}\n"
+        "# 仅限本机使用；重置密码成功后本文件会被自动删除。\n",
+    )
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+# --------------------------------------------------------------------------- #
 # 静态路由（必须排在 ``/{principal}`` 之前）
 # --------------------------------------------------------------------------- #
 
@@ -219,13 +260,14 @@ def _settle_existing_root(
         message="账号初始化失败，可重新提交完成初始化",
     )
     try:
-        recovery_code, _stamp = _kernel_call(
+        recovery_code = _kernel_call(
             manager.rotate_recovery_code, root.principal
         )
     except HTTPException:
         # 恢复码没签出来就不要把凭据留下：回到"可重试"的半初始化状态。
         _restore_credential(root.principal, prior)
         raise
+    _clear_local_recovery_file()
     node = _kernel_call(manager.get_account, root.principal)
     return {
         "account": _public_member(node),
@@ -266,10 +308,11 @@ def register_root(payload: RegisterRootRequest) -> Dict[str, Any]:
             # 样子，保证"凭据与身份要么都成功，要么都不落盘"。
             _restore_credential(payload.principal, prior)
             raise
+    _clear_local_recovery_file()
     return {
         "account": _public_member(node),
         "recovery_code": recovery_code,
-        "notice": "恢复码只显示这一次，请离线保存；它可用于重置密码。",
+        "notice": "恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。",
     }
 
 
@@ -305,6 +348,8 @@ def recovery_reset(payload: RecoveryResetRequest) -> Dict[str, Any]:
         message="账号恢复失败，恢复码仍然有效，可重新提交",
     )
     _kernel_call(manager.consume_recovery_code, payload.recovery_code)
+    # 本机交接文件里的码已经被作废，删除它避免用户下次误用。
+    _clear_local_recovery_file()
     token = issue_token_for(principal, client="web")
     return {
         "token": token["access_token"],
@@ -436,13 +481,81 @@ def backup_import(payload: BackupImportRequest) -> Dict[str, Any]:
 def recovery_rotate(
     context: AccountContext = Depends(require_account_principal)
 ) -> Dict[str, Any]:
-    """轮换恢复码（仅根账号；旧码立即失效）。"""
+    """生成/重发恢复码（仅根账号；旧码立即失效）。
+
+    这是"老根账号（0.1.0 时代创建、``recovery_hash`` 为空串）"的正规补发
+    入口：只要还能登录，就能在这里拿到一枚**立刻可用**的新码。响应里没有
+    ``expires_at`` —— 恢复码没有 TTL，返回一个生成时刻会被界面读成"有效期至"，
+    让用户以为它会过期。
+    """
     manager = get_identity_manager()
-    code, stamp = _kernel_call(manager.rotate_recovery_code, context.principal)
+    code = _kernel_call(manager.rotate_recovery_code, context.principal)
+    _clear_local_recovery_file()
     return {
         "recovery_code": code,
-        "expires_at": stamp,
-        "notice": "恢复码只显示这一次，请离线保存。",
+        "notice": "恢复码只显示这一次，请离线保存；它没有有效期，但一经使用即失效。",
+    }
+
+
+@router.post("/recovery/local")
+def recovery_local_handoff() -> Dict[str, Any]:
+    """忘记密码且手上没有恢复码时的**本机**自助出口。
+
+    安全前提只有一条：调用方必须能读这台机器的数据目录。这不是新增的信任
+    边界 —— 同一个目录里的凭据库与身份库本来就可以被该用户改写，能读它的人
+    早已拥有根账号；因此"把码写到本机文件"没有多给出任何能力。反过来，码
+    **不进入响应体**，所以只有 HTTP 访问权（例如浏览器里的跨站请求）拿不到它。
+
+    只在根账号**确实没有恢复码**时开放：否则任何人都能作废用户手上有效的
+    恢复码（DoS）。重发生效的正规入口是登录后的 ``/recovery/rotate``。
+    """
+    manager = get_identity_manager()
+    limit_key = "recovery:local"
+    try:
+        _accounts.limiter.check(
+            limit_key,
+            limit=_accounts.MAX_RECOVERY_ATTEMPTS,
+            window=_accounts.RECOVERY_ATTEMPT_WINDOW_SECONDS,
+        )
+    except _accounts.AccountError as exc:
+        raise from_account_error(
+            _accounts.AccountError(
+                429, _accounts.CODE_RECOVERY_LOCKED, "尝试次数过多，请稍后再试。"
+            )
+        ) from exc
+
+    root = _kernel_call(manager.account_root)
+    if root is None:
+        raise deny(403, _accounts.CODE_RECOVERY_UNAVAILABLE, "本机还没有可恢复的账号")
+    if root.recovery_hash:
+        raise deny(
+            403,
+            _accounts.CODE_RECOVERY_UNAVAILABLE,
+            "已存在有效的恢复码；请使用已有的码，或登录后在“恢复码”页重新生成",
+        )
+
+    code = _kernel_call(manager.rotate_recovery_code, root.principal)
+    try:
+        path = _write_local_recovery_file(root.principal, code)
+    except Exception:  # noqa: BLE001 - 写盘失败必须回滚哈希，否则用户被永久锁死
+        logger.exception("could not write local recovery code file")
+        _kernel_call(
+            manager.clear_recovery_code, root.principal, reason="local_handoff_failed"
+        )
+        raise deny(
+            500,
+            "ACCOUNT_RECOVERY_WRITE_FAILED",
+            "恢复码未能写入本机数据目录，请重试",
+        )
+    _accounts.limiter.register(limit_key)
+    return {
+        "written": True,
+        "file": str(path),
+        "notice": (
+            "恢复码已写入这台机器的数据目录。请在本机打开该文件，"
+            "把第一行的码填入“重置密码”；重置成功后文件会自动删除。"
+        ),
+        "security_note": "该入口仅在本机能读取数据目录时有效；码不会出现在接口响应里。",
     }
 
 

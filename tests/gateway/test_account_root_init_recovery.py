@@ -192,5 +192,7 @@ def test_recovery_code_survives_failed_password_rotation(env, monkeypatch):
             "/v1/accounts/recovery/reset",
             json={"recovery_code": recovery_code, "password": "thirdpass789"},
         )
-        assert reused.status_code == 401, reused.text
-        assert reused.json()["code"] == "RECOVERY_CODE_INVALID"
+        # 文档 §4.3：恢复码无效是 400 + ACCOUNT_RECOVERY_CODE_INVALID（不再是
+        # 旧实现的 401 + RECOVERY_CODE_INVALID）。
+        assert reused.status_code == 400, reused.text
+        assert reused.json()["code"] == "ACCOUNT_RECOVERY_CODE_INVALID"
