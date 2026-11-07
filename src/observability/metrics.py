@@ -55,6 +55,62 @@ http_response_size_bytes = Histogram(
 )
 
 
+# ----------------------------------------------------------------------------
+# Bounded endpoint labels
+# ----------------------------------------------------------------------------
+# The 22-minute soak measured a metric-cardinality leak: labelling by the RAW
+# request path meant every new id created a new ``(method, endpoint)`` label
+# set -- 18 -> 23 combinations in 22 minutes, all of them dynamic-id paths
+# (``GET /v1/goals/<id>``, ``POST /v1/goals/<id>/tasks/<id>/retry``), each
+# costing 11 histogram bucket lines + 5 summary lines (~16 exposition lines) and
+# ~8.4 KB of text, with process handles rising in lockstep (869 -> 912).
+#
+# Endpoint labels are therefore resolved from the MATCHED ROUTE TEMPLATE
+# (e.g. ``/v1/goals/{goal_id}``), which has a fixed, bounded set of values
+# regardless of how many ids are requested. Requests that match no route are
+# folded into ONE sentinel, so probing arbitrary unknown paths cannot grow the
+# label space either.
+UNMATCHED_ENDPOINT_LABEL = "__unmatched__"
+
+
+def endpoint_template(scope: Any) -> str:
+    """Return a bounded ``endpoint`` label for the given ASGI scope.
+
+    Starlette/FastAPI record the matched route object in ``scope["route"]``
+    (``fastapi.routing.APIRoute.matches`` sets it for both full and partial
+    matches), and ``route.path`` is the template with placeholders, not the
+    concrete URL. Raw paths are never used for labels -- they embed unbounded
+    identifiers.
+
+    Unknown/unmatched paths converge on :data:`UNMATCHED_ENDPOINT_LABEL`.
+    """
+    try:
+        route = scope.get("route")
+        template = getattr(route, "path", None)
+    except Exception:  # pragma: no cover - a malformed scope must not raise
+        template = None
+    if isinstance(template, str) and template:
+        return template
+    return UNMATCHED_ENDPOINT_LABEL
+
+
+def record_http_request(method: str, scope: Any, status_code: int,
+                        duration_seconds: float) -> None:
+    """Feed the HTTP request metrics using the scope's route template.
+
+    This is the single production instrumentation entry point (the gateway
+    middleware calls it), so the bounded-label rule is exercised by the same
+    code path a test or reproducer would use.
+    """
+    endpoint = endpoint_template(scope)
+    http_requests_total.labels(
+        method=method, endpoint=endpoint, status=str(status_code)
+    ).inc()
+    http_request_duration_seconds.labels(
+        method=method, endpoint=endpoint
+    ).observe(duration_seconds)
+
+
 # ============================================================
 # AI Provider Metrics
 # ============================================================
