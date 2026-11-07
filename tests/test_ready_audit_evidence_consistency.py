@@ -37,15 +37,19 @@ They are now separate, and ``evidence_status`` has three honest values:
 ``verified``
     checkpoints cover the tail, rooted at genesis.
 ``unverified``
-    events exist but no checkpoint was ever written. This is the steady state of
-    every deployment, because nothing in production calls
-    ``verify_incremental``/``verify_rolling`` (``/v1/audit/verify`` runs the
-    read-only ``verify_integrity()`` and writes no checkpoint). An honest gap in
+    events exist but no checkpoint was ever written. An honest gap in
     evidence, not a proven break -- and gating on it would 503 every instance
     forever with no mechanism able to advance the coverage back.
 ``broken``
     checkpoints EXIST but no longer cover the history: a real integrity
     regression, so it does degrade the gate.
+
+Retention note: from 2026-11, ``/v1/audit/verify`` verifies INCREMENTALLY and
+writes a derived checkpoint, and a retention policy may delete the oldest
+prefix. ``rooted_at_genesis`` is then False by definition while
+``rooted_at_retention_floor`` carries the truthful claim about the retained
+suffix. Readiness must accept the latter rather than 503 every store as soon
+as retention first runs.
 
 These tests are deliberately driven through the kernel accessors
 (``monkeypatch``) rather than the global audit-store singleton, so the suite's

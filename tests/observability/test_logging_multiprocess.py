@@ -136,6 +136,48 @@ def test_log_dir_env_isolates_instances(monkeypatch, tmp_path):
     assert filename == (instance / "liuhao.log").resolve()
 
 
+def test_absolute_filename_is_rebased_into_isolated_data_dir(monkeypatch, tmp_path):
+    """安装包的绝对日志路径不得让隔离实例污染真实数据目录（回归断言）。
+
+    soak 证据里的缺陷：``filename`` 写死为真实数据目录绝对路径时，
+    ``resolve_log_file`` 直接原样返回，即使设置了 ``LIUHAO_DATA_DIR``。
+    """
+    real_data = tmp_path / "real-data"
+    config_path = tmp_path / "logging.yaml"
+    config_path.write_text(
+        "version: 1\n"
+        "disable_existing_loggers: false\n"
+        "handlers:\n"
+        "  app_file:\n"
+        "    class: src.logging_config.MultiProcessRotatingFileHandler\n"
+        f"    filename: {real_data / 'logs' / 'liuhao.log'}\n"
+        "    maxBytes: 10485760\n"
+        "    backupCount: 5\n"
+        "root:\n"
+        "  level: INFO\n"
+        "  handlers: [app_file]\n",
+        encoding="utf-8",
+    )
+    isolated = tmp_path / "isolated"
+    monkeypatch.setenv("LIUHAO_DATA_DIR", str(isolated))
+    monkeypatch.delenv("LIUHAO_LOG_DIR", raising=False)
+
+    filename = Path(
+        load_uvicorn_log_config(config_path)["handlers"]["app_file"]["filename"]
+    )
+    assert filename == (isolated / "logs" / "liuhao.log").resolve()
+    assert real_data not in filename.parents
+
+    # 显式 LIUHAO_LOG_DIR 优先级更高，同样必须压过配置里的绝对路径。
+    instance = tmp_path / "instance"
+    monkeypatch.setenv("LIUHAO_LOG_DIR", str(instance))
+    filename = Path(
+        load_uvicorn_log_config(config_path)["handlers"]["app_file"]["filename"]
+    )
+    assert filename == (instance / "liuhao.log").resolve()
+    assert real_data not in filename.parents
+
+
 def test_old_installed_config_is_upgraded_at_load_time(monkeypatch, tmp_path):
     """旧安装版数据目录里的 ``RotatingFileHandler`` 配置也必须被换掉。"""
     old = tmp_path / "logging.yaml"

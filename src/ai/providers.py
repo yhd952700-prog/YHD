@@ -377,14 +377,39 @@ class AnthropicProvider(BaseProvider):
             rate_limit_rpm=50,
             rate_limit_tpm=40000,
         )
+        # Reuse one SDK client per provider instance; constructing a fresh
+        # anthropic.Anthropic per request leaked its urllib3 pools' sockets in a
+        # long-running gateway (same class of defect as OpenAIProvider).
+        self._client = None
+        self._client_lock = threading.Lock()
+
+    def _get_client(self):
+        client = self._client
+        if client is not None:
+            return client
+        import anthropic
+        with self._client_lock:
+            if self._client is None:
+                self._client = anthropic.Anthropic(api_key=self.api_key)
+            return self._client
+
+    def close(self) -> None:
+        """Close the cached Anthropic SDK client (idempotent)."""
+        with self._client_lock:
+            client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 - closing must not raise
+                logging.getLogger(__name__).warning(
+                    "AnthropicProvider close failed: %s", exc
+                )
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Anthropic API."""
-        import anthropic
-
         model = kwargs.get("model", self.model)
         try:
-            client = anthropic.Anthropic(api_key=self.api_key)
+            client = self._get_client()
             # v1.x SDK approach - simplified
             response = client.messages.create(
                 model=model,
@@ -541,21 +566,32 @@ class OllamaProvider(BaseProvider):
             proxies={"http": None, "https": None},
             stream=True,
         )
-        if response.status_code != 200:
-            raise Exception(f"Ollama error {response.status_code}: {response.text}")
+        try:
+            if response.status_code != 200:
+                raise Exception(f"Ollama error {response.status_code}: {response.text}")
 
-        for line in response.iter_lines():
-            if not line:
-                continue
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if chunk.get("done"):
+                    break
+                content = chunk.get("message", {}).get("content", "")
+                if content:
+                    yield content
+        finally:
+            # ``stream=True`` keeps the urllib3 connection checked out until the
+            # response is closed. Breaking out early on the ``done`` frame (or a
+            # consumer abandoning the generator) used to leave that socket open
+            # until GC -- the +200 handles/hour long-run defect. Closing here
+            # returns the connection deterministically on every path.
             try:
-                chunk = _json.loads(line)
-            except _json.JSONDecodeError:
-                continue
-            if chunk.get("done"):
-                break
-            content = chunk.get("message", {}).get("content", "")
-            if content:
-                yield content
+                response.close()
+            except Exception:  # noqa: BLE001 - closing must never mask a stream error
+                pass
 
 
 # Moonshot provider

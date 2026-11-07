@@ -179,10 +179,17 @@ async def readiness_probe(request: Request) -> JSONResponse:
         cov = audit_verification_coverage()
         uncovered = cov.get("uncovered_events", 0) or 0
         rooted = cov.get("rooted_at_genesis", True)
+        floor = cov.get("retention_floor_seq", 0) or 0
+        # A retention policy deletes the oldest prefix ON PURPOSE. In that
+        # case rooted_at_genesis is False by definition, but the retained
+        # suffix being fully covered is the only claim the store can honestly
+        # make. Treating that as "broken" would 503 every store the moment
+        # retention first runs.
+        rooted_suffix = cov.get("rooted_at_retention_floor", rooted)
         # `checkpoint_count` is what separates "never verified" from "coverage
         # regressed". Both look identical in uncovered_events alone.
         checkpoints = cov.get("checkpoint_count")
-        incomplete = (uncovered > 0) or (not rooted)
+        incomplete = uncovered > 0 or (not rooted and not rooted_suffix)
 
         if not incomplete:
             evidence_status = "verified"
@@ -212,6 +219,8 @@ async def readiness_probe(request: Request) -> JSONResponse:
             "covered_through": cov.get("covered_through"),
             "newest_verified_at": cov.get("newest_verified_at"),
             "rooted_at_genesis": rooted,
+            "rooted_at_retention_floor": rooted_suffix,
+            "retention_floor_seq": floor,
         }
         if incomplete:
             # Kept verbatim in spirit: this line is for humans and is NOT

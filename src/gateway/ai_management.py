@@ -14,9 +14,11 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -577,8 +579,23 @@ class AIStateManager:
         # 否则旧实例会把旧工作区的目标写进新工作区（测试里切换环境变量时
         # 会真实发生这种串写）。
         self._goals_path = self._default_goals_path()
+        # Terminal goals move out of the hot file into archived shards. The
+        # active map is capped so both the write cost and the resident memory of
+        # the goal store stay flat however long the process runs (soak: 0.17 ->
+        # 4.96 MB in 2h, +2.42 MB/h, and every save rewrote the whole file).
+        self._archived_summaries: Dict[str, Dict[str, Any]] = {}
+        self._archived_summaries_loaded = False
         # Recover any goals persisted across a previous process restart.
         self._load_goals()
+        if len(self._goals) > self._goals_active_limit():
+            # Upgrade path: an instance that ran before archiving existed reloads
+            # a huge file. Compact it once so resident memory starts bounded.
+            try:
+                self._save_goals()
+            except Exception as exc:  # noqa: BLE001 - startup must still proceed
+                logger.warning(
+                    "AIStateManager: startup goal compaction skipped: %s", exc
+                )
 
     def _ensure_runtime(self):
         """懒初始化 AgentRuntime（延迟到首次使用，避免 import 时副作用）。
@@ -724,6 +741,244 @@ class AIStateManager:
         )
         return os.path.join(repo_root, ".liuhao_goals.json")
 
+    # ── Goal archive (bounded hot set + append-only shards) ──
+
+    _TERMINAL_GOAL_STATES = frozenset({
+        "completed", "completed_unattributed", "failed", "cancelled",
+        "interrupted", "stopped", "error",
+    })
+
+    def _goals_active_limit(self) -> int:
+        """Hot-set cap. Env override for operators/tests; never below 16."""
+        raw = os.environ.get("LIUHAO_GOALS_MAX_ACTIVE", "128")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 128
+        return max(16, value)
+
+    def _goals_archive_paths(self, day: Optional[str] = None) -> Tuple[str, str]:
+        day = day or time.strftime("%Y%m%d", time.localtime())
+        directory = os.path.dirname(os.path.abspath(self._goals_path))
+        stem = os.path.basename(self._goals_path)
+        full = os.path.join(directory, f"{stem}.archive-{day}.jsonl")
+        index = os.path.join(directory, f"{stem}.archive-index-{day}.jsonl")
+        return full, index
+
+    @staticmethod
+    def _archive_shard_files(base: str) -> List[str]:
+        """All archive shard files of the SAME FAMILY as ``base``.
+
+        ``base`` may be today's full-entry shard (``x.jsonl.archive-YYYYMMDD.jsonl``)
+        or today's index shard (``x.jsonl.archive-index-YYYYMMDD.jsonl``). The
+        family prefix must strip the date: otherwise a reader would only ever
+        see TODAY's shard and every older day would silently vanish from the
+        list/detail paths. Index and full families are kept apart because a
+        full-file prefix would otherwise also match ``*.archive-index-*``.
+        """
+        name = os.path.basename(base)
+        is_index = ".archive-index-" in name
+        if is_index:
+            prefix = name[:name.index(".archive-index-")] + ".archive-index-"
+        else:
+            prefix = name[:name.index(".archive-")] + ".archive-"
+        directory = os.path.dirname(os.path.abspath(base))
+        if not os.path.isdir(directory):
+            return []
+        found = []
+        for candidate in sorted(os.listdir(directory)):
+            if not candidate.startswith(prefix):
+                continue
+            if not (candidate.endswith(".jsonl")
+                    or candidate.endswith(".jsonl.gz")):
+                continue
+            if is_index and ".archive-index-" not in candidate:
+                continue
+            if not is_index and ".archive-index-" in candidate:
+                continue
+            found.append(os.path.join(directory, candidate))
+        return found
+
+    @staticmethod
+    def _write_archive_lines(path: str, lines: List[str]) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line)
+                fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def _append_goal_archive(
+        self, entries: List[Dict[str, Any]], summaries: List[Dict[str, Any]]
+    ) -> None:
+        """Append full entries + list summaries to today's shard, durability first."""
+        day = time.strftime("%Y%m%d", time.localtime())
+        full_path, index_path = self._goals_archive_paths(day)
+        full_lines = [
+            json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+            for entry in entries
+        ]
+        index_lines = [
+            json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+            for summary in summaries
+        ]
+        # Full entries first: if the process dies before the index lands, list()
+        # can rebuild the summary from the entry; the reverse would lose detail.
+        self._write_archive_lines(full_path, full_lines)
+        self._write_archive_lines(index_path, index_lines)
+        self._compress_stale_archive_shards()
+
+    def _archive_shard_limit_bytes(self) -> int:
+        raw = os.environ.get("LIUHAO_GOALS_ARCHIVE_SHARD_BYTES", "33554432")
+        try:
+            return max(1048576, int(raw))
+        except (TypeError, ValueError):
+            return 33554432
+
+    def _compress_stale_archive_shards(self) -> None:
+        """Gzip yesterday's shards (and oversized current shards).
+
+        Shards are append-only, so compression is safe: nothing reads a shard
+        for writing, and readers transparently open ``*.jsonl.gz``.
+        """
+        today = time.strftime("%Y%m%d", time.localtime())
+        limit = self._archive_shard_limit_bytes()
+        for base in self._goals_archive_paths():
+            for path in self._archive_shard_files(base):
+                if path.endswith(".gz"):
+                    continue
+                try:
+                    stale = f"-{today}." not in os.path.basename(path)
+                    oversized = os.path.getsize(path) >= limit
+                    if not (stale or oversized):
+                        continue
+                    target = path + ".gz"
+                    with open(path, "rb") as src, gzip.open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    os.unlink(path)
+                except Exception as exc:  # noqa: BLE001 - compression is best effort
+                    logger.warning(
+                        "AIStateManager: archive shard compression failed for %s: %s",
+                        path, exc,
+                    )
+
+    @staticmethod
+    def _read_archive_lines(path: str) -> Iterator[str]:
+        opener = gzip.open if path.endswith(".gz") else open
+        try:
+            with opener(path, "rt", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        yield line
+        except (OSError, UnicodeError) as exc:
+            logger.warning("AIStateManager: unreadable archive shard %s: %s", path, exc)
+
+    def _iter_archived_entries(self) -> Iterator[Dict[str, Any]]:
+        base = self._goals_archive_paths()[0]
+        for path in self._archive_shard_files(base):
+            for line in self._read_archive_lines(path):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict) and entry.get("goal_id"):
+                    yield entry
+
+    def _load_archived_summaries(self) -> Dict[str, Dict[str, Any]]:
+        """Load the small list-view index lazily; one scan per process."""
+        if self._archived_summaries_loaded:
+            return self._archived_summaries
+        base = self._goals_archive_paths()[1]
+        files = self._archive_shard_files(base)
+        if files:
+            for path in files:
+                for line in self._read_archive_lines(path):
+                    try:
+                        summary = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(summary, dict) and summary.get("goal_id"):
+                        self._archived_summaries.setdefault(
+                            str(summary["goal_id"]), summary
+                        )
+        else:
+            # Index shard missing (partial write / old data): rebuild it from
+            # the durable full-entry shards instead of losing archived goals
+            # from the list.
+            for entry in self._iter_archived_entries():
+                summary = self._goal_summary(entry)
+                self._archived_summaries.setdefault(str(entry["goal_id"]), summary)
+        self._archived_summaries_loaded = True
+        return self._archived_summaries
+
+    def _find_archived_goal(self, goal_id: str) -> Optional[Dict[str, Any]]:
+        """Full-detail lookup for a goal that has left the hot set."""
+        found = None
+        for entry in self._iter_archived_entries():
+            if str(entry.get("goal_id")) == goal_id:
+                found = entry  # keep the newest occurrence
+        return found
+
+    def _lookup_goal(self, goal_id: str) -> Optional[Dict[str, Any]]:
+        with self._goal_lock:
+            item = self._goals.get(goal_id)
+        if item is not None:
+            return item
+        return self._find_archived_goal(goal_id)
+
+    def _select_archive_candidates(self,
+                                   snapshot: Dict[str, Dict[str, Any]]) -> List[str]:
+        """Which terminal goals fall outside the hot-set budget (oldest first)."""
+        limit = self._goals_active_limit()
+        terminal: List[Tuple[str, Dict[str, Any]]] = []
+        for goal_id, entry in snapshot.items():
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("state") or "").lower() in self._TERMINAL_GOAL_STATES:
+                terminal.append((goal_id, entry))
+        non_terminal = len(snapshot) - len(terminal)
+        budget = max(limit - non_terminal, 0)
+        if len(terminal) <= budget:
+            return []
+
+        def _created(item: Dict[str, Any]) -> float:
+            value = item.get("created_at")
+            return float(value) if isinstance(value, (int, float)) else 0.0
+
+        terminal.sort(key=lambda pair: _created(pair[1]), reverse=True)
+        return [goal_id for goal_id, _ in terminal[budget:]]
+
+    def _goal_summary(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """List-view record for one goal (also persisted in the archive index)."""
+        self._attach_employee_attribution(item)
+        tasks = item.get("tasks", [])
+        completed = sum(
+            1 for t in tasks
+            if t.get("status") in ("completed", "completed_unattributed")
+        )
+        failed = sum(1 for t in tasks if t.get("status") == "failed")
+        return {
+            "goal_id": item["goal_id"],
+            "state": item["state"],
+            "natural_language": item.get("natural_language", ""),
+            "scope": item.get("scope", ""),
+            "created_at": item.get("created_at"),
+            "error": item.get("error"),
+            "replan_suggested": item.get("replan_suggested", False),
+            "task_count": len(tasks),
+            "completed_tasks": completed,
+            "failed_tasks": failed,
+            "project_id": item.get("project_id"),
+            "owner_account_id": owner_of_entry(item),
+            "assigned_employee": item.get("assigned_employee"),
+            "assigned_employees": item.get("assigned_employees", []),
+            "employees": item.get("employees", []),
+            "archived": True,
+        }
+
+
     def _save_goals(self) -> None:
         """Persist ``_goals`` to JSON so executed-goal history survives restart.
 
@@ -749,28 +1004,100 @@ class AIStateManager:
                     with _exclusive_file_lock(f"{path}.lock"):
                         with self._goal_lock:
                             snapshot = copy.deepcopy(self._goals)
+                        # Move finished goals out of the hot file before writing.
+                        # Archive first (fsync), then drop them from memory; if
+                        # the archive append fails we keep them in the hot set
+                        # rather than lose history.
+                        archive_ids = self._select_archive_candidates(snapshot)
+                        archived_entries: List[Dict[str, Any]] = []
+                        archived_summaries: List[Dict[str, Any]] = []
+                        for gid in archive_ids:
+                            entry = snapshot.get(gid)
+                            if not isinstance(entry, dict):
+                                continue
+                            try:
+                                archived_summaries.append(self._goal_summary(dict(entry)))
+                                archived_entries.append(entry)
+                            except Exception as summary_exc:  # noqa: BLE001
+                                logger.warning(
+                                    "AIStateManager: cannot summarize goal %s for archive: %s",
+                                    gid, summary_exc,
+                                )
+                        if archived_entries:
+                            try:
+                                self._append_goal_archive(
+                                    archived_entries, archived_summaries
+                                )
+                            except Exception as archive_exc:  # noqa: BLE001
+                                logger.warning(
+                                    "AIStateManager: goal archive append failed; "
+                                    "keeping goals in the hot set: %s", archive_exc,
+                                )
+                                archived_entries = []
+                                archived_summaries = []
+                            else:
+                                archived_ids = {
+                                    str(entry.get("goal_id")) for entry in archived_entries
+                                }
+                                with self._goal_lock:
+                                    for gid in archived_ids:
+                                        live = self._goals.get(gid)
+                                        if live is None:
+                                            continue
+                                        if str(live.get("state") or "").lower() in (
+                                                self._TERMINAL_GOAL_STATES):
+                                            self._goals.pop(gid, None)
+                                    snapshot = copy.deepcopy(self._goals)
+                                for gid in archived_ids:
+                                    self._goal_threads.pop(gid, None)
+                                if not self._archived_summaries_loaded:
+                                    self._load_archived_summaries()
+                                for summary in archived_summaries:
+                                    self._archived_summaries[
+                                        str(summary["goal_id"])] = summary
                         disk = self._read_goals_file(path)
+                        for gid in {
+                            str(entry.get("goal_id")) for entry in archived_entries
+                        }:
+                            disk.pop(gid, None)
                         merged = self._merge_goal_maps(disk, snapshot)
-                        serialized: Dict[str, Any] = {}
+                        # Serialize each entry exactly once. The old code ran
+                        # json.dumps per entry for validation and then json.dump
+                        # of the whole map with indent=2 -- two full
+                        # serializations, twice the bytes, on every save.
+                        parts: List[str] = []
                         for gid, entry in merged.items():
                             try:
-                                json.dumps(entry)
-                                serialized[gid] = entry
+                                payload = json.dumps(
+                                    entry, ensure_ascii=False, separators=(",", ":")
+                                )
                             except (TypeError, ValueError, OverflowError) as exc:
                                 # 序列化失败绝不能用一个字符串占位覆盖结构化数据：
                                 # 那会把磁盘上原本可用的目标永久毁掉。保留磁盘原值；
                                 # 磁盘没有这条记录时跳过（宁可不写，也不写假数据）。
                                 if gid in disk:
-                                    serialized[gid] = disk[gid]
+                                    try:
+                                        payload = json.dumps(
+                                            disk[gid], ensure_ascii=False,
+                                            separators=(",", ":"),
+                                        )
+                                    except (TypeError, ValueError, OverflowError):
+                                        payload = None
+                                else:
+                                    payload = None
                                 logger.warning(
                                     "AIStateManager: goal %s is not JSON-serialisable (%s); "
                                     "keeping the on-disk copy and skipping this entry",
                                     gid,
                                     exc,
                                 )
+                            if payload is not None:
+                                parts.append(
+                                    json.dumps(gid, ensure_ascii=False) + ":" + payload
+                                )
                         tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
                         with open(tmp_path, "w", encoding="utf-8") as fh:
-                            json.dump(serialized, fh, indent=2)
+                            fh.write("{" + ",".join(parts) + "}")
                             fh.flush()
                             os.fsync(fh.fileno())
                         os.replace(tmp_path, path)
@@ -1602,9 +1929,8 @@ class AIStateManager:
         * 进度回调只接受这一个任务的快照，按原 ``task_id`` 回写，
           其余任务在网关侧完全不被触碰 —— "重试一个不影响其他"。
         """
-        with self._goal_lock:
-            entry = self._goals.get(goal_id)
-            tasks = list(entry.get("tasks") or []) if entry else []
+        entry = self._lookup_goal(goal_id)
+        tasks = list(entry.get("tasks") or []) if entry else []
         if entry is None:
             raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
         if viewer is not None and not viewer.owns(entry):
@@ -1904,8 +2230,7 @@ class AIStateManager:
         self, goal_id: str, viewer: Optional[GoalViewer] = None
     ) -> Dict[str, Any]:
         """对已失败的 Goal 执行 replan。"""
-        with self._goal_lock:
-            prior_entry = self._goals.get(goal_id)
+        prior_entry = self._lookup_goal(goal_id)
         if prior_entry is None:
             if viewer is not None:
                 raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
@@ -1961,46 +2286,29 @@ class AIStateManager:
         """列出已执行 Goal 摘要；传 ``viewer`` 时只返回其可见范围。"""
         with self._goal_lock:
             items = list(self._goals.values())
-        summaries = []
-        for item in items:
-            if viewer is not None and not viewer.sees(item):
+        summaries = [
+            self._goal_summary(item)
+            for item in items
+            if viewer is None or viewer.sees(item)
+        ]
+        # 已完成并归档的目标仍然出现在列表里（读路径兼容）：用归档索引里的小
+        # 摘要合并，而不是把历史全量读回内存。
+        active_ids = {str(item.get("goal_id")) for item in items}
+        for goal_id, summary in self._load_archived_summaries().items():
+            if goal_id in active_ids:
                 continue
-            tasks = item.get("tasks", [])
-            # ARM1 decision (A): a COMPLETED_UNATTRIBUTED task DID complete -- only its
-            # agent attribution could not be established. Counting it as anything
-            # other than completed would hide real finished work.
-            completed = sum(
-                1 for t in tasks
-                if t.get("status") in ("completed", "completed_unattributed")
-            )
-            failed = sum(1 for t in tasks if t.get("status") == "failed")
-            # 员工归属：列表里就能看出"这单是哪个员工做的"。
-            self._attach_employee_attribution(item)
-            summaries.append({
-                "goal_id": item["goal_id"],
-                "state": item["state"],
-                "natural_language": item.get("natural_language", ""),
-                "scope": item.get("scope", ""),
-                "created_at": item.get("created_at"),
-                "error": item.get("error"),
-                "replan_suggested": item.get("replan_suggested", False),
-                "task_count": len(tasks),
-                "completed_tasks": completed,
-                "failed_tasks": failed,
-                "project_id": item.get("project_id"),
-                "owner_account_id": owner_of_entry(item),
-                "assigned_employee": item.get("assigned_employee"),
-                "assigned_employees": item.get("assigned_employees", []),
-                "employees": item.get("employees", []),
-            })
+            if viewer is not None and not viewer.sees(summary):
+                continue
+            merged = dict(summary)
+            merged.setdefault("archived", True)
+            summaries.append(merged)
         return summaries
 
     def get_goal(
         self, goal_id: str, viewer: Optional[GoalViewer] = None
     ) -> Dict[str, Any]:
         """获取 Goal 详情；传 ``viewer`` 时不可见与不存在返回同一 404。"""
-        with self._goal_lock:
-            item = self._goals.get(goal_id)
+        item = self._lookup_goal(goal_id)
         if item is None:
             if viewer is not None:
                 raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
@@ -2023,8 +2331,7 @@ class AIStateManager:
           同一响应），不暴露存在与否。
         - 无论哪种情况都审计这条人类喊停，使审计链如实记录主权动作。
         """
-        with self._goal_lock:
-            item = self._goals.get(goal_id)
+        item = self._lookup_goal(goal_id)
         if item is None:
             if viewer is not None:
                 raise GoalWorkError(404, "goal_not_found", f"目标不存在：{goal_id}")
@@ -2128,8 +2435,8 @@ class AIStateManager:
         """Record the human stop action in the audit chain (honest sovereignty)."""
         from src.kernels.audit import log_event, AuditEventType, AuditScope
 
-        with self._goal_lock:
-            owner = owner_of_entry(self._goals.get(goal_id))
+        item = self._lookup_goal(goal_id)
+        owner = owner_of_entry(item) if item else None
         log_event(
             AuditEventType.GOAL_CONTROL,
             principal_id="human-operator",

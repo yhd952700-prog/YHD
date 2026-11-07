@@ -98,6 +98,11 @@ ANCHOR_GENESIS = "genesis"
 ANCHOR_CHECKPOINT = "checkpoint"
 ANCHOR_STORED = "stored"
 ANCHOR_EXPLICIT = "explicit"
+# A retention policy deliberately deleted the oldest prefix, so seq 1 is gone.
+# Verification then starts from the retention floor (P+1) anchored on the
+# stored hash/link of event P. That is a POLICY anchor, not a genesis proof:
+# it proves the retained suffix, not the whole history.
+ANCHOR_RETENTION = "retention"
 
 
 @dataclass
@@ -163,6 +168,12 @@ class IncrementalResult:
     new_checkpoint_id: Optional[int]
     failures: List[str]
     anchor_source: str = ANCHOR_GENESIS
+    #: First seq retained by the audit retention policy (0 = nothing pruned).
+    retention_floor_seq: int = 0
+    #: True when the retained suffix is covered from the retention floor.
+    #: Separate from ``rooted_at_genesis`` because a pruned prefix was never
+    #: re-derived -- the two claims must not be conflated.
+    rooted_at_retention_floor: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -175,6 +186,8 @@ class IncrementalResult:
             "new_checkpoint_id": self.new_checkpoint_id,
             "failures": list(self.failures),
             "anchor_source": self.anchor_source,
+            "retention_floor_seq": self.retention_floor_seq,
+            "rooted_at_retention_floor": self.rooted_at_retention_floor,
         }
 
 
@@ -213,18 +226,27 @@ def tail_seq(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def coverage_frontier(conn: sqlite3.Connection, upto_seq: Optional[int] = None) -> int:
-    """Highest seq N such that 1..N is covered by an unbroken checkpoint chain.
+def coverage_frontier(conn: sqlite3.Connection, upto_seq: Optional[int] = None,
+                      floor_seq: int = 0) -> int:
+    """Highest seq N such that (floor_seq, N] is covered by an unbroken chain.
 
     Checkpoints are only allowed to extend the frontier; a checkpoint that
     starts beyond frontier+1 leaves a hole and everything after it is ignored.
+
+    ``floor_seq`` is the audit retention floor: seq 1..floor_seq were deleted
+    by policy, so coverage starts at ``floor_seq`` instead of 0. A checkpoint
+    that starts at or below the floor is not usable as evidence for the
+    retained suffix (part of its range no longer exists) and is skipped.
     """
+    floor = max(0, int(floor_seq or 0))
     rows = conn.execute(
         "SELECT start_seq, end_seq FROM verification_checkpoints "
         "ORDER BY start_seq ASC, end_seq ASC"
     ).fetchall()
-    frontier = 0
+    frontier = floor
     for start, end in rows:
+        if start <= floor:
+            continue
         if start > frontier + 1:
             break
         if end > frontier:
@@ -392,25 +414,33 @@ def all_checkpoints(conn: sqlite3.Connection) -> List[Tuple]:
 
 
 def rooted_at_genesis(conn: sqlite3.Connection,
-                      upto_seq: Optional[int] = None) -> bool:
-    """True only if checkpoints form an unbroken cover from seq 1 to the tail.
+                      upto_seq: Optional[int] = None,
+                      floor_seq: int = 0) -> bool:
+    """True only if checkpoints form an unbroken cover from the chain floor.
+
+    Without ``floor_seq`` this is seq 1 (genesis). With a retention floor it
+    asks the narrower, honest claim: "the RETAINED suffix is covered from the
+    retention floor through the tail". ``rooted_at_genesis`` is reported
+    separately and stays False once a prefix has been pruned by policy.
 
     Two ways this is False, and both matter:
 
-    * a gap or a non-genesis start (e.g. an imported checkpoint at 51..100) --
-      part of the history was never covered;
+    * a gap or a non-floor start (e.g. an imported checkpoint at 51..100) --
+      part of the retained history was never covered;
     * coverage that stops short of the tail -- the newest events were appended
       after the last checkpoint, so "rooted" would otherwise be claimed for
       data nobody re-derived.
 
     With `upto_seq` given, coverage is required through that seq instead.
     """
+    floor = max(0, int(floor_seq or 0))
     if upto_seq is None:
         upto_seq = tail_seq(conn)
-    if upto_seq <= 0:
-        # Nothing to cover: vacuously rooted, and there is no unverified data.
+    if upto_seq <= floor:
+        # Nothing retained beyond the floor: vacuously rooted, no unverified
+        # data.
         return True
-    return coverage_frontier(conn, upto_seq) >= upto_seq
+    return coverage_frontier(conn, upto_seq, floor) >= upto_seq
 
 
 def write_checkpoint(
@@ -459,12 +489,22 @@ def recompute_checkpoint(conn: sqlite3.Connection, checkpoint_id: int) -> bool:
     )
 
 
-def audit_checkpoints(conn: sqlite3.Connection) -> Tuple[bool, List[int]]:
-    """Re-derive every checkpoint. Returns (all_ok, ids_that_failed)."""
+def audit_checkpoints(conn: sqlite3.Connection,
+                      floor_seq: int = 0) -> Tuple[bool, List[int]]:
+    """Re-derive every checkpoint. Returns (all_ok, ids_that_failed).
+
+    Checkpoints starting at or below the retention floor are not failures --
+    part of their range was deleted by policy. (The pruner deletes them too,
+    but a store reopened after an external edit must not report a green
+    checkpoint it can no longer recompute.)
+    """
+    floor = max(0, int(floor_seq or 0))
     bad = []
     for row in conn.execute(
-        "SELECT id FROM verification_checkpoints ORDER BY id"
+        "SELECT id, start_seq FROM verification_checkpoints ORDER BY id"
     ).fetchall():
+        if int(row[1] or 0) <= floor:
+            continue
         if not recompute_checkpoint(conn, row[0]):
             bad.append(row[0])
     return (not bad), bad
@@ -472,19 +512,25 @@ def audit_checkpoints(conn: sqlite3.Connection) -> Tuple[bool, List[int]]:
 
 def stale_checkpoints(conn: sqlite3.Connection,
                       max_age_sec: Optional[float] = None,
-                      limit: Optional[int] = None) -> List[Tuple]:
+                      limit: Optional[int] = None,
+                      floor_seq: int = 0) -> List[Tuple]:
     """Checkpoint rows ordered oldest-verified first -- the rolling work queue.
 
     `max_age_sec` filters to rows not re-verified within that window, so an
     operator can ask for "everything I have not looked at in the last day"
     instead of "everything".
+
+    Checkpoints at or below the retention floor are excluded: their events
+    were deleted by policy, so they can never be re-derived and must not
+    occupy the rolling budget forever.
     """
+    floor = max(0, int(floor_seq or 0))
     sql = ("SELECT id, start_seq, end_seq, start_link_hash, end_link_hash, "
            "end_event_hash, event_count, verified_at, method "
-           "FROM verification_checkpoints")
-    params: List = []
+           "FROM verification_checkpoints WHERE start_seq > ?")
+    params: List = [floor]
     if max_age_sec is not None:
-        sql += " WHERE verified_at <= ?"
+        sql += " AND verified_at <= ?"
         params.append(time.time() - max_age_sec)
     sql += " ORDER BY verified_at ASC, id ASC"
     if limit is not None:
@@ -509,20 +555,26 @@ def refresh_checkpoint(conn: sqlite3.Connection, checkpoint_id: int,
     return cur.rowcount == 1
 
 
-def verification_coverage(conn: sqlite3.Connection) -> dict:
-    """How much of the chain is currently covered by a genesis-rooted cover.
+def verification_coverage(conn: sqlite3.Connection,
+                          floor_seq: int = 0) -> dict:
+    """How much of the chain is currently covered by a floor-rooted cover.
 
     Reported as numbers, not as a verdict: an operator decides what staleness
     is acceptable, the system only refuses to hide it.
+
+    With a retention floor, ``rooted_at_genesis`` is necessarily False (the
+    genesis prefix was deleted by policy); ``rooted_at_retention_floor``
+    reports the narrower claim about the retained suffix.
     """
+    floor = max(0, int(floor_seq or 0))
     tail = tail_seq(conn)
     rows = all_checkpoints(conn)
-    frontier = coverage_frontier(conn, tail)
+    frontier = coverage_frontier(conn, tail, floor)
     verified_at = [r[7] for r in rows]
     oldest = min(verified_at) if verified_at else None
     uncovered = []
-    covers = sorted((r[1], r[2]) for r in rows)
-    expected = 1
+    covers = sorted((r[1], r[2]) for r in rows if int(r[1] or 0) > floor)
+    expected = floor + 1
     for start, end in covers:
         if start > expected:
             uncovered.append((expected, start - 1))
@@ -531,6 +583,7 @@ def verification_coverage(conn: sqlite3.Connection) -> dict:
         uncovered.append((expected, tail))
     return {
         "tail_seq": tail,
+        "retention_floor_seq": floor,
         "covered_through": frontier,
         "uncovered_events": max(0, tail - frontier),
         "coverage_ratio": (frontier / tail) if tail else 1.0,
@@ -538,7 +591,8 @@ def verification_coverage(conn: sqlite3.Connection) -> dict:
         "uncovered_ranges": uncovered,
         "oldest_verified_at": oldest,
         "newest_verified_at": max(verified_at) if verified_at else None,
-        "rooted_at_genesis": frontier >= tail,
+        "rooted_at_genesis": floor == 0 and frontier >= tail,
+        "rooted_at_retention_floor": frontier >= tail,
     }
 
 

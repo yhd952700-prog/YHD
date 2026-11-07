@@ -101,13 +101,40 @@ def resolve_data_dir() -> Path:
 
 
 def resolve_log_file(filename: str) -> Path:
-    """把配置里的日志文件名钉到数据目录/实例目录，绝不落仓库根。"""
+    """把配置里的日志文件名钉到数据目录/实例目录，绝不落仓库根。
+
+    覆盖优先级：``LIUHAO_LOG_DIR``（显式实例目录）> ``LIUHAO_DATA_DIR``
+    （数据根）> 配置里的路径 > 平台默认数据目录。
+
+    关键点：**绝对路径也必须接受覆盖**。安装包里的 logging 配置常把
+    ``filename`` 写死成真实数据目录（``%LOCALAPPDATA%/LiuHao/data/logs/...``）
+    的绝对路径；隔离实例只设置了 LIUHAO_DATA_DIR 时，旧实现看到绝对路径就直接
+    返回，于是文件日志继续写进真实数据目录（soak 证据里就是这样污染的）。
+    覆盖生效时只保留 basename/相对子路径，目录由覆盖根决定。
+    """
     path = Path(filename).expanduser()
+    raw_log_dir = (os.environ.get(LOG_DIR_ENV) or "").strip()
+    data_override = (os.environ.get(DATA_DIR_ENV) or "").strip()
+
+    if raw_log_dir:
+        # LIUHAO_LOG_DIR IS the log directory: place the file directly there,
+        # even if the config shipped a "logs/..." prefix for the default root.
+        root = Path(raw_log_dir).expanduser().resolve()
+        return root / path.name
+    if data_override:
+        root = resolve_data_dir()
+        if not path.is_absolute():
+            return root / path
+        # Rebase an absolute filename while keeping its meaningful tail
+        # (``.../logs/liuhao.log`` -> ``<data>/logs/liuhao.log``) so installs
+        # that hard-code the real data dir cannot keep writing there under
+        # LIUHAO_DATA_DIR isolation.
+        parts = path.parts
+        if "logs" in parts:
+            return root.joinpath(*parts[parts.index("logs"):])
+        return root / path.name
     if path.is_absolute():
         return path
-    raw_log_dir = (os.environ.get(LOG_DIR_ENV) or "").strip()
-    if raw_log_dir:
-        return Path(raw_log_dir).expanduser().resolve() / path.name
     return resolve_data_dir() / path
 
 

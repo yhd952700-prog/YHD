@@ -461,30 +461,60 @@ def _run_verification() -> Dict[str, Any]:
     store = get_audit_store()
     started = time.time()
 
-    # 权威结论：内核自己的 verify_integrity()（链连接 + seq 连续/唯一 +
-    # 内容哈希重算 + 尾部锚点）。
-    ok, entries_checked = store.verify_integrity()
+    # 增量优先：checkpoint 已覆盖历史时，只重算“上次校验点之后的新事件”。
+    # 旧实现每次都对全链重算（46k 事件约 2.5s），随历史增长单调变慢，正是
+    # /v1/audit/verify p50 从 271ms 涨到 2532ms 的根因。
+    incremental = store.verify_incremental()
+    new_checkpoint_id = incremental.get("new_checkpoint_id")
+    from_seq = incremental.get("from_seq")
+    to_seq = incremental.get("to_seq")
+    anchor_source = incremental.get("anchor_source")
 
-    failures: List[str] = []
-    pinpoint_ran = False
-    if not ok:
-        # 只在失败时才逐条定位：链完好时不要再扫一遍全链。
-        try:
-            def _scan(conn):
-                tail = conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) FROM audit_events").fetchone()[0]
-                if not tail:
-                    return []
-                result = _verification.verify_segment(
-                    conn, 1, int(tail), None, require_link_hash=False)
-                return list(result.failures)
+    if incremental.get("segment_verified") and (
+        incremental.get("rooted_at_genesis")
+        or incremental.get("rooted_at_retention_floor")
+    ):
+        mode = "incremental"
+        ok = True
+        entries_checked = int(incremental.get("events_checked") or 0)
+        failures: List[str] = []
+        pinpoint_ran = False
+    else:
+        # 增量结果不能冒充“全链已验证”：没有 genesis 覆盖时退回权威全量校验。
+        mode = "full"
+        ok, entries_checked = store.verify_integrity()
+        failures = []
+        pinpoint_ran = False
+        if not ok:
+            # 增量失败时它已经逐条定位过，直接复用；全量失败才补扫一遍。
+            inc_failures = list(incremental.get("failures") or [])
+            if incremental.get("segment_verified") is False and inc_failures:
+                failures = inc_failures
+                pinpoint_ran = True
+            else:
+                try:
+                    def _scan(conn):
+                        tail = conn.execute(
+                            "SELECT COALESCE(MAX(seq), 0) FROM audit_events").fetchone()[0]
+                        if not tail:
+                            return []
+                        # Retention may have deleted the oldest prefix; scanning
+                        # from seq 1 would report phantom failures. Start at the
+                        # retained floor and anchor on its stored link hash.
+                        floor, _hash, floor_link = store._retention_state(conn)
+                        if floor and tail <= floor:
+                            return []
+                        result = _verification.verify_segment(
+                            conn, floor + 1, int(tail), floor_link,
+                            require_link_hash=False)
+                        return list(result.failures)
 
-            failures = store._read_only(_scan)
-            pinpoint_ran = True
-        except Exception as exc:  # noqa: BLE001
-            # 定位失败不能把 ok 翻成 true；如实记下"定位没跑成"。
-            logger.warning("audit failure pinpointing failed: %s", exc, exc_info=True)
-            failures = [f"pinpoint scan failed: {exc}"]
+                    failures = store._read_only(_scan)
+                    pinpoint_ran = True
+                except Exception as exc:  # noqa: BLE001
+                    # 定位失败不能把 ok 翻成 true；如实记下"定位没跑成"。
+                    logger.warning("audit failure pinpointing failed: %s", exc, exc_info=True)
+                    failures = [f"pinpoint scan failed: {exc}"]
 
     return {
         "ok": bool(ok),
@@ -496,9 +526,21 @@ def _run_verification() -> Dict[str, Any]:
             "pinpoint_ran": pinpoint_ran,
             "db_path": store._db_path,
             "duration_seconds": round(time.time() - started, 4),
-            # 明确声明本端点没有做任何修复动作 —— 能自愈的链不是证据。
-            "mutation_performed": False,
-            "read_only": True,
+            "verification_mode": mode,
+            "from_seq": from_seq,
+            "to_seq": to_seq,
+            "rooted_at_genesis": bool(incremental.get("rooted_at_genesis")),
+            "rooted_at_retention_floor": bool(
+                incremental.get("rooted_at_retention_floor")),
+            "retention_floor_seq": int(
+                incremental.get("retention_floor_seq") or 0),
+            "anchor_source": anchor_source,
+            "checkpoint_id": new_checkpoint_id,
+            # 链证据本身从不修复；增量路径只写“派生 checkpoint”，并且是在
+            # 该段校验通过之后写入，可随时由原始事件重算。
+            "mutation_performed": bool(new_checkpoint_id),
+            "mutation_scope": "derived_checkpoint" if new_checkpoint_id else None,
+            "read_only": not bool(new_checkpoint_id),
         },
     }
 

@@ -107,6 +107,72 @@ def _synchronous_level() -> str:
     return level if level in _VALID_SYNCHRONOUS else _DEFAULT_SYNCHRONOUS
 
 
+# --- retention: why an evidence store deletes anything at all ---------------
+# The audit DB grew by 21.5 MB/h during the 2-hour soak (1.77 -> 44.53 MB,
+# +2,000+ rows/h) with zero reclaim, and the full-chain re-verify got slower
+# every hour. Unbounded growth is itself availability risk: a full disk turns
+# every append into SQLITE_FULL, which the fail-closed gate turns into a denial
+# of every HIGH/CRITICAL action.
+#
+# The policy is deliberately conservative and configurable:
+#   * age wins: keep 30 days by default;
+#   * a row ceiling (500k) and a byte ceiling (256 MB) are SAFETY VALVES for a
+#     pathological producer, not the primary policy;
+#   * the newest ``MIN_KEEP`` events are never touched, so the live tail the
+#     gateway read paths depend on is always present;
+#   * a single pass deletes at most ``MAX_DELETE`` rows so pruning never turns
+#     one request into a multi-second stall.
+#
+# Deletion is a PREFIX delete anchored by ``retention_state``: the surviving
+# chain still verifies from the retention floor onward (see verification.py).
+_DEFAULT_RETENTION_DAYS = 30
+_DEFAULT_RETENTION_MAX_ROWS = 500_000
+_DEFAULT_RETENTION_MAX_BYTES = 268_435_456  # 256 MB
+_DEFAULT_RETENTION_MIN_KEEP = 1_000
+_DEFAULT_RETENTION_INTERVAL_SEC = 60.0
+_DEFAULT_RETENTION_MAX_DELETE = 5_000
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+def _retention_settings() -> Dict[str, Any]:
+    """Resolve the retention policy for this store (env-configurable).
+
+    All thresholds are read once per store; changing them takes effect on
+    restart, which keeps a running pruner's behaviour predictable.
+    """
+    enabled_raw = os.environ.get("LIUHAO_AUDIT_RETENTION_ENABLED", "1").strip()
+    enabled = enabled_raw.lower() not in ("0", "false", "no", "off")
+    return {
+        "enabled": enabled,
+        "days": _env_int("LIUHAO_AUDIT_RETENTION_DAYS", _DEFAULT_RETENTION_DAYS),
+        "max_rows": _env_int(
+            "LIUHAO_AUDIT_RETENTION_MAX_ROWS", _DEFAULT_RETENTION_MAX_ROWS),
+        "max_bytes": _env_int(
+            "LIUHAO_AUDIT_RETENTION_MAX_BYTES", _DEFAULT_RETENTION_MAX_BYTES),
+        "min_keep": max(
+            1, _env_int(
+                "LIUHAO_AUDIT_RETENTION_MIN_KEEP",
+                _DEFAULT_RETENTION_MIN_KEEP, minimum=1)),
+        "interval": float(_env_int(
+            "LIUHAO_AUDIT_RETENTION_INTERVAL_SEC",
+            int(_DEFAULT_RETENTION_INTERVAL_SEC), minimum=1)),
+        "max_delete": max(
+            1, _env_int(
+                "LIUHAO_AUDIT_RETENTION_MAX_DELETE",
+                _DEFAULT_RETENTION_MAX_DELETE, minimum=1)),
+    }
+
+
 # --- transient-fault recovery (see AuditStore._write_with_retry) ------------
 # SQLite primary result codes, per https://sqlite.org/rescode.html
 _SQLITE_BUSY = 5
@@ -225,6 +291,23 @@ _SCHEMA_STATEMENTS = (
         boot_gen INTEGER,
         released_at REAL
     )""",
+    # --- retention floor -----------------------------------------------------
+    # Audit retention deletes the OLDEST prefix by policy (age / row count /
+    # byte size). The hash chain alone cannot survive that: event P+1's
+    # prev_event_hash points at a row that no longer exists. This one row
+    # records the retained floor so verification can anchor at P+1 instead of
+    # pretending seq 1 still exists. It is derived/policy state, not evidence:
+    # the surviving rows are always fully recomputed from P+1.
+    """CREATE TABLE IF NOT EXISTS retention_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        pruned_through_seq INTEGER NOT NULL DEFAULT 0,
+        pruned_through_hash TEXT,
+        pruned_through_link_hash TEXT,
+        pruned_events INTEGER NOT NULL DEFAULT 0,
+        pruned_at REAL
+    )""",
+    "INSERT OR IGNORE INTO retention_state (id, pruned_through_seq, pruned_events) "
+    "VALUES (1, 0, 0)",
 )
 
 # --- U39 / ADR "audit single-writer lease" Option B -------------------------
@@ -432,6 +515,10 @@ class AuditStore:
         # lock object underneath a held lock would open a window in which a
         # second thread serialises against a different lock.
         self._lock = threading.RLock()
+        # Retention policy is resolved once per store; the pruner is throttled
+        # to at most one pass per ``interval`` seconds from the append path.
+        self._retention = _retention_settings()
+        self._retention_last_check = 0.0
         self._init_db()
 
     def _init_db(self) -> None:
@@ -471,6 +558,16 @@ class AuditStore:
                 # NOTE: PRAGMA journal_mode cannot be changed from inside a
                 # transaction, so it must stay above the BEGIN IMMEDIATE below.
                 self._conn.execute("PRAGMA journal_mode=WAL")
+                # Incremental auto-vacuum lets a retention DELETE hand pages
+                # back to the filesystem (PRAGMA incremental_vacuum) instead of
+                # leaving the file monotonically larger forever. On a FRESH
+                # database this must be set before the first table is created;
+                # on an existing database SQLite ignores it (no-op), and the
+                # pruner then simply reclaims rows without shrinking the file.
+                try:
+                    self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                except sqlite3.Error:
+                    pass
                 # Wired through the durability helper (it used to be dead
                 # code -- built and never called), so the level is
                 # validated and the applied value is observable.
@@ -861,6 +958,7 @@ class AuditStore:
             raise
         else:
             _end_audit_write(token, True)
+            self._maybe_prune()
             return event
 
     def _log_event_locked(
@@ -1070,6 +1168,7 @@ class AuditStore:
             raise
         else:
             _end_audit_write(token, True)
+            self._maybe_prune()
             return result
 
     def _log_event_batch_locked(self, events: List[AuditEvent]) -> "AuditBatchResult":
@@ -1198,6 +1297,159 @@ class AuditStore:
             raise
 
         return AuditBatchResult(appended=appended, duplicates=duplicates)
+
+    # ------------------------------------------------------------------ #
+    # Retention (bounded storage, still-verifiable retained chain)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _retention_state(conn) -> Tuple[int, Optional[str], Optional[str]]:
+        """The retained floor: (pruned_through_seq, hash, link_hash)."""
+        try:
+            row = conn.execute(
+                "SELECT pruned_through_seq, pruned_through_hash, "
+                "pruned_through_link_hash FROM retention_state WHERE id = 1"
+            ).fetchone()
+        except sqlite3.Error:
+            # A database created before retention existed: floor is genesis.
+            return 0, None, None
+        if row is None:
+            return 0, None, None
+        return int(row[0] or 0), row[1], row[2]
+
+    def _audit_disk_bytes(self) -> int:
+        """Bytes currently held by the audit DB family (db + wal + shm)."""
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                total += os.path.getsize(self._db_path + suffix)
+            except OSError:
+                pass
+        return total
+
+    def _retention_plan(self, conn) -> Tuple[int, int, int]:
+        """Compute one bounded prune pass: (cut_seq, floor_seq, tail_seq).
+
+        Read-only. ``cut_seq == floor_seq`` means nothing is due this pass.
+        The pass is bounded in TWO independent ways so an append is never
+        stalled by a multi-second DELETE:
+          * the newest ``min_keep`` events are untouchable;
+          * at most ``max_delete`` rows are removed per pass.
+        """
+        cfg = self._retention
+        floor, _hash, _link = self._retention_state(conn)
+        tail = _verification.tail_seq(conn)
+        if tail <= floor:
+            return floor, floor, tail
+        cut = floor
+        retained = int(conn.execute(
+            "SELECT COUNT(*) FROM audit_events").fetchone()[0])
+        if cfg["max_rows"] and retained > cfg["max_rows"]:
+            cut = max(cut, floor + (retained - cfg["max_rows"]))
+        if cfg["days"]:
+            age_cutoff = time.time() - cfg["days"] * 86400
+            row = conn.execute(
+                "SELECT MAX(seq) FROM audit_events WHERE timestamp < ?",
+                (age_cutoff,)).fetchone()
+            if row and row[0]:
+                cut = max(cut, int(row[0]))
+        if cfg["max_bytes"]:
+            # Free pages are ALREADY reclaimed space, so only live bytes count
+            # toward the ceiling -- otherwise every pass would keep deleting
+            # while the file itself no longer grows.
+            page = int(conn.execute("PRAGMA page_size").fetchone()[0] or 4096)
+            free_pages = int(
+                conn.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+            live = max(0, self._audit_disk_bytes() - free_pages * page)
+            if live > cfg["max_bytes"]:
+                avg = max(1, live // max(1, retained))
+                over = (live - cfg["max_bytes"] + avg - 1) // avg
+                cut = max(cut, floor + over)
+        keep_from = tail - cfg["min_keep"]
+        cut = min(cut, max(floor, keep_from))
+        cut = min(cut, floor + cfg["max_delete"])
+        return cut, floor, tail
+
+    def _maybe_prune(self) -> None:
+        """Throttled retention pass from the append path (never fails writes)."""
+        cfg = self._retention
+        if not cfg["enabled"]:
+            return
+        now = time.time()
+        if now - self._retention_last_check < cfg["interval"]:
+            return
+        self._retention_last_check = now
+        try:
+            cut, floor, _tail = self._read_only(self._retention_plan)
+        except Exception:  # noqa: BLE001 - retention must not break appends
+            logger.warning(
+                "audit retention planning failed on %s; evidence retained",
+                self._db_path, exc_info=True)
+            return
+        if cut <= floor:
+            return
+        try:
+            self._prune_once()
+        except Exception:  # noqa: BLE001 - already-logged evidence stays
+            logger.warning(
+                "audit retention prune failed on %s; evidence retained",
+                self._db_path, exc_info=True)
+
+    def _prune_once(self) -> None:
+        """Delete the oldest prefix (bounded) and record the retention floor.
+
+        Runs under the append lock in its OWN transaction so the floor row and
+        the DELETE can never disagree: a crash either leaves the prefix intact
+        or leaves both the prefix and its floor anchor removed.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cut, floor, _tail = self._retention_plan(self._conn)
+                    if cut <= floor:
+                        self._conn.commit()
+                        return
+                    anchor = self._conn.execute(
+                        "SELECT event_hash, link_hash FROM audit_events "
+                        "WHERE seq = ?", (cut,)).fetchone()
+                    if anchor is None:
+                        self._conn.rollback()
+                        return
+                    deleted = self._conn.execute(
+                        "DELETE FROM audit_events WHERE seq <= ?",
+                        (cut,)).rowcount
+                    # Checkpoints are DERIVED data. Once a prefix is gone they
+                    # can no longer be recomputed, so they must not masquerade
+                    # as still-verifiable coverage.
+                    self._conn.execute(
+                        "DELETE FROM verification_checkpoints "
+                        "WHERE start_seq <= ?", (cut,))
+                    self._conn.execute(
+                        """UPDATE retention_state SET
+                               pruned_through_seq = ?,
+                               pruned_through_hash = ?,
+                               pruned_through_link_hash = ?,
+                               pruned_events = pruned_events + ?,
+                               pruned_at = ?
+                           WHERE id = 1""",
+                        (cut, anchor[0], anchor[1], int(deleted or 0),
+                         time.time()))
+                    self._conn.commit()
+                except Exception:
+                    try:
+                        self._conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    raise
+            except Exception:
+                raise
+            # Hand freed pages back to the filesystem. No-op when the DB was
+            # created with auto_vacuum=NONE (legacy), in which case the file
+            # simply stops growing rather than shrinking.
+            try:
+                self._conn.execute("PRAGMA incremental_vacuum")
+            except sqlite3.Error:
+                pass
 
     def verify_integrity(self) -> Tuple[bool, int]:
         """Verify the integrity of the audit event hash chain.
@@ -1387,13 +1639,35 @@ class AuditStore:
                 "SELECT last_seq, last_hash, last_link_hash FROM chain_state "
                 "WHERE id = 1"
             ).fetchone()
+            try:
+                retention = conn.execute(
+                    "SELECT pruned_through_seq, pruned_through_hash, "
+                    "pruned_through_link_hash FROM retention_state WHERE id = 1"
+                ).fetchone()
+            except sqlite3.Error:
+                # Databases created before retention existed have no row.
+                retention = None
         finally:
             if began:
                 AuditStore._end_read_transaction(conn)
 
+        floor = int(retention[0] or 0) if retention else 0
+        floor_hash = retention[1] if retention else None
+        floor_link = retention[2] if retention else None
+
         if not rows:
             # Empty log: valid only if the anchor agrees that nothing was
-            # ever logged (or points at zero events).
+            # ever logged (or points at zero events). With a retention floor
+            # it must agree that everything UP TO THE FLOOR was pruned.
+            if floor > 0:
+                if state is None:
+                    return False, 0
+                anchor_link = state[2] if len(state) > 2 else None
+                return (
+                    int(state[0]) == floor
+                    and state[1] == floor_hash
+                    and anchor_link == floor_link
+                ), 0
             if state is not None and state[0] > 0:
                 return False, 0
             return True, 0
@@ -1401,7 +1675,9 @@ class AuditStore:
         total = len(rows)
         broken = 0
         dup_seq = 0
-        running_link: Optional[str] = None
+        # The retained suffix accumulates from the retention anchor, not from
+        # a fabricated None: event P+1's link_hash was computed over link(P).
+        running_link: Optional[str] = floor_link
 
         for i, row in enumerate(rows):
             (seq, event_id, event_type, principal_id, scope, timestamp,
@@ -1410,8 +1686,13 @@ class AuditStore:
 
             # 1. Chain linkage to the previous event
             if i == 0:
-                # First event must have no previous
-                if prev_event_hash is not None:
+                # The first retained event must link to the retention floor
+                # (prev=None only when nothing was pruned) and its seq must be
+                # exactly floor+1 -- otherwise a whole prefix was silently
+                # dropped without a floor record.
+                if seq != floor + 1:
+                    broken += 1
+                if prev_event_hash != floor_hash:
                     broken += 1
             else:
                 prev_row = rows[i - 1]
@@ -1606,18 +1887,27 @@ class AuditStore:
             "SELECT last_seq FROM chain_state WHERE id = 1").fetchone()
         tail_seq = row[0] if row else 0
 
+        floor, floor_hash, floor_link = self._retention_state(conn)
         ckpt = _verification.latest_checkpoint(conn)
+        # A checkpoint whose range sits at or below the retention floor cannot
+        # anchor the retained suffix: its events were deleted by policy.
+        if ckpt is not None and int(ckpt[2] or 0) <= floor:
+            ckpt = None
         if ckpt is None:
-            start_seq, start_link, anchor_id = 1, None, None
-            anchor_source = _verification.ANCHOR_GENESIS
+            start_seq, start_link, anchor_id = floor + 1, (
+                floor_link if floor > 0 else None), None
+            anchor_source = (
+                _verification.ANCHOR_RETENTION if floor > 0
+                else _verification.ANCHOR_GENESIS)
         else:
             anchor_id, start_seq, start_link = ckpt[0], ckpt[2] + 1, ckpt[4]
             # The anchor is only "proven" if the checkpoint it came from is
-            # itself reachable from seq 1. Otherwise it is a stored value and
-            # must be reported as such.
+            # itself reachable from the chain floor. Otherwise it is a stored
+            # value and must be reported as such.
             anchor_end = ckpt[2]
             rooted_anchor = (
-                _verification.coverage_frontier(conn, anchor_end) >= anchor_end)
+                _verification.coverage_frontier(
+                    conn, anchor_end, floor) >= anchor_end)
             anchor_source = (
                 _verification.ANCHOR_CHECKPOINT if rooted_anchor
                 else _verification.ANCHOR_STORED)
@@ -1627,13 +1917,15 @@ class AuditStore:
             end_seq = start_seq + max_events - 1
 
         if end_seq < start_seq:
+            rooted_floor = _verification.rooted_at_genesis(conn, tail_seq, floor)
             return _verification.IncrementalResult(
                 segment_verified=True,
-                rooted_at_genesis=_verification.rooted_at_genesis(conn,
-                                                                  tail_seq),
+                rooted_at_genesis=(floor == 0 and rooted_floor),
                 from_seq=start_seq, to_seq=end_seq, events_checked=0,
                 anchor_checkpoint_id=anchor_id, new_checkpoint_id=None,
                 failures=[], anchor_source=anchor_source,
+                retention_floor_seq=floor,
+                rooted_at_retention_floor=rooted_floor,
             ).as_dict()
 
         segment = _verification.verify_segment(
@@ -1646,20 +1938,23 @@ class AuditStore:
             new_id = self._write_checkpoint(
                 segment, method="incremental" if ckpt is not None else "full")
 
-        # Rooted means "covered from seq 1 through the tail we just verified".
-        # It must be read AFTER the checkpoint write and from a FRESH
-        # connection: the verification connection is pinned to a snapshot from
-        # before the write, so asking it would report the new checkpoint as
-        # missing. The bound stays `tail_seq`, so events appended by someone
-        # else in the meantime cannot turn a truthful True into a False.
-        rooted = self._rooted_at(tail_seq)
+        # Rooted means "covered from the chain floor through the tail we just
+        # verified". It must be read AFTER the checkpoint write and from a
+        # FRESH connection: the verification connection is pinned to a
+        # snapshot from before the write, so asking it would report the new
+        # checkpoint as missing. The bound stays `tail_seq`, so events
+        # appended by someone else in the meantime cannot turn a truthful
+        # True into a False.
+        rooted_floor = self._rooted_at(tail_seq, floor)
         return _verification.IncrementalResult(
             segment_verified=segment.verified,
-            rooted_at_genesis=rooted,
+            rooted_at_genesis=(floor == 0 and rooted_floor),
             from_seq=start_seq, to_seq=end_seq,
             events_checked=segment.event_count,
             anchor_checkpoint_id=anchor_id, new_checkpoint_id=new_id,
             failures=segment.failures, anchor_source=anchor_source,
+            retention_floor_seq=floor,
+            rooted_at_retention_floor=rooted_floor,
         ).as_dict()
 
     # ------------------------------------------------------------------ #
@@ -1696,7 +1991,9 @@ class AuditStore:
                 return self._verify_rolling_on(self._conn, budget_events,
                                                max_age_sec)
         try:
-            queue = _verification.stale_checkpoints(conn, max_age_sec)
+            floor, _floor_hash, _floor_link = self._retention_state(conn)
+            queue = _verification.stale_checkpoints(
+                conn, max_age_sec, floor_seq=floor)
         finally:
             conn.close()
 
@@ -1792,25 +2089,29 @@ class AuditStore:
         conn = self._open_snapshot()
         if conn is None:
             with self._lock:
-                return _verification.verification_coverage(self._conn)
+                floor = self._retention_state(self._conn)[0]
+                return _verification.verification_coverage(self._conn, floor)
         try:
-            return _verification.verification_coverage(conn)
+            floor = self._retention_state(conn)[0]
+            return _verification.verification_coverage(conn, floor)
         finally:
             conn.close()
 
-    def _rooted_at(self, upto_seq: int) -> bool:
+    def _rooted_at(self, upto_seq: int, floor_seq: int = 0) -> bool:
         """Coverage through `upto_seq`, read from a fresh snapshot.
 
         Fresh rather than the caller's pinned connection, because coverage is a
         statement about the derived state as it stands now -- including a
-        checkpoint the caller just committed.
+        checkpoint the caller just committed. ``floor_seq`` is the retention
+        floor; coverage is then required from floor+1, not from genesis.
         """
         conn = self._open_snapshot()
         if conn is None:
             with self._lock:
-                return _verification.rooted_at_genesis(self._conn, upto_seq)
+                return _verification.rooted_at_genesis(
+                    self._conn, upto_seq, floor_seq)
         try:
-            return _verification.rooted_at_genesis(conn, upto_seq)
+            return _verification.rooted_at_genesis(conn, upto_seq, floor_seq)
         finally:
             conn.close()
 
@@ -1849,9 +2150,11 @@ class AuditStore:
         conn = self._open_snapshot()
         if conn is None:
             with self._lock:
-                return _verification.audit_checkpoints(self._conn)
+                floor = self._retention_state(self._conn)[0]
+                return _verification.audit_checkpoints(self._conn, floor)
         try:
-            return _verification.audit_checkpoints(conn)
+            floor = self._retention_state(conn)[0]
+            return _verification.audit_checkpoints(conn, floor)
         finally:
             conn.close()
 
