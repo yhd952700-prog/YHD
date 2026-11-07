@@ -26,6 +26,9 @@
 param(
     [string]$Version = "",
     [string]$OutRoot = "",
+    # 指定构建用 Python。默认为仓库 .venv；发布应指向一个严格按
+    # requirements.txt 装好的独立 venv，避免随包版本与受审锁漂移。
+    [string]$PythonExe = "",
     [switch]$SkipFrontend,
     [switch]$SkipSmoke,
     [switch]$SkipInstaller,
@@ -47,6 +50,12 @@ function Write-Step([string]$Message) {
 }
 
 function Resolve-Python {
+    if ($PythonExe) {
+        if (-not (Test-Path $PythonExe)) {
+            throw "找不到指定的构建 Python：$PythonExe"
+        }
+        return (Resolve-Path $PythonExe).Path
+    }
     $venv = Join-Path $Root ".venv\Scripts\python.exe"
     if (Test-Path $venv) { return $venv }
     $cmd = Get-Command python.exe -ErrorAction SilentlyContinue
