@@ -525,12 +525,12 @@ begin
   if CurStep = ssPostInstall then
   begin
     { marker 必须 UTF-8（带 BOM）：安装路径可能含中文/非 ASCII 字符，用系统
-      ANSI 代码页写会在非中文系统上变成乱码，启动器就找不到数据目录。
-      SaveStringsToUTF8File 在 Append=False 时会写 BOM。 }
+      ANSI 代码页写会在非中文系统上变成乱码，启动器就找不到数据目录。 }
     Lines := TStringList.Create;
     try
       Lines.Add(ResolvedDataDir);
-      SaveStringsToUTF8File(ExpandConstant('{app}') + '\data-dir.txt', Lines, False);
+      { SaveStringsToUTF8File 固定写 UTF-8 BOM（无 Append 参数）。 }
+      SaveStringsToUTF8File(ExpandConstant('{app}') + '\data-dir.txt', Lines);
     finally
       Lines.Free;
     end;
@@ -544,7 +544,7 @@ begin
         Lines.Add('启动文件：' + DirForDisplay(ResolvedAppDir) + '\LiuHao.bat');
         Lines.Add('数据目录：' + DirForDisplay(ResolvedDataDir));
         Lines.Add('数据目录还记录在程序目录下的 data-dir.txt。');
-        SaveStringsToUTF8File(ExpandConstant('{app}') + '\安装位置说明.txt', Lines, False);
+        SaveStringsToUTF8File(ExpandConstant('{app}') + '\安装位置说明.txt', Lines);
       finally
         Lines.Free;
       end;
