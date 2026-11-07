@@ -43,6 +43,13 @@ _PROTECTED_BASENAME_PREFIXES = ("recovery_code", "recovery_handoff")
 _PROTECTED_BACKUP_NAMES = frozenset(
     {
         "auth_secrets.json",
+        # 真实的主密钥文件名。旧版排除集误写成 ``model_config_key.bin``，
+        # 导致 ``model_config.key`` 被原样打进备份。
+        "model_config.key",
+        # 身份库签名密钥与身份库本体：两者都能让持有者伪造/读取本机身份。
+        "integrity.key",
+        "human_identities.json",
+        # 兼容 0.1.x 曾用的错误文件名：新代码不会再生成，但旧安装里可能残留。
         "model_config_key.bin",
     }
 )
@@ -56,6 +63,19 @@ def is_protected_state_file(relpath: str) -> bool:
     if name.startswith(_PROTECTED_BASENAME_PREFIXES):
         return True
     return name in _PROTECTED_BACKUP_NAMES
+
+
+def _protected_files_in(directory: Path) -> List[str]:
+    """列出目录内所有“不得打包”的物理文件（相对路径，已排序）。"""
+    root = Path(directory)
+    found: List[str] = []
+    for item in root.rglob("*"):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(root).as_posix()
+        if is_protected_state_file(rel):
+            found.append(rel)
+    return sorted(found)
 
 
 @dataclass
@@ -108,6 +128,15 @@ def verify_backup(backup_dir: Path) -> None:
     so a damaged backup is refused with the current installation untouched.
     """
     backup_dir = Path(backup_dir)
+    # 校验即安全门禁：备份目录里只要出现受保护文件，就不允许把它当作可用的
+    # 备份（无论是回滚还是导出）。这是“打包后逐项断言”的另一半——创建端已经
+    # 拒绝写入，这里再对既有目录做一次物理复查。
+    leaked = _protected_files_in(backup_dir)
+    if leaked:
+        raise BackupCorrupt(
+            "备份包含受保护文件（凭据/身份库/模型主密钥），拒绝使用："
+            + ", ".join(leaked)
+        )
     code_zip = backup_dir / "code.zip"
     code_manifest_path = backup_dir / "code-backup.json"
     if not code_zip.is_file() or not code_manifest_path.is_file():
@@ -269,6 +298,13 @@ def backup_data(
     atomic_write_bytes(
         manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
     )
+    # 打包后逐项断言：清单过滤之外再扫一遍物理文件，防止未来新增复制路径
+    # 绕过 ``is_protected_state_file``。一旦命中就拒绝导出，绝不留下含密钥的包。
+    leaked = _protected_files_in(dest_dir)
+    if leaked:
+        raise SnapshotError(
+            "数据备份包内仍含受保护文件，拒绝导出：" + ", ".join(leaked)
+        )
     return DataBackup(
         backup_dir=dest_dir,
         manifest_path=manifest_path,
@@ -347,12 +383,7 @@ def export_data_snapshot(
 
         # 打包后断言：目标目录里不得存在任何受保护文件。清单过滤之外再查
         # 一次物理文件，防止未来新增复制路径绕过过滤。
-        leaked = sorted(
-            item.relative_to(dest).as_posix()
-            for item in dest.rglob("*")
-            if item.is_file()
-            and is_protected_state_file(item.relative_to(dest).as_posix())
-        )
+        leaked = _protected_files_in(dest)
         if leaked:
             raise SnapshotError("导出包内仍含受保护文件：" + ", ".join(leaked))
 

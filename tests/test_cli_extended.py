@@ -15,6 +15,7 @@ Covers all 10 CLI command extensions:
 
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ from src.cli.memory_commands import MemoryManager, MemoryType
 from src.cli.health_commands import HealthChecker, HealthStatus
 from src.cli.cost_commands import CostManager
 from src.cli.backup_commands import BackupManager, BackupType
+from src.backup.backup_manager import BackupSource
 from src.cli.plugin_commands import PluginManager, PluginStatus
 from src.cli.org_commands import OrgManager, OrgRole
 from src.cli.solution_commands import SolutionManager, SolutionStatus
@@ -363,6 +365,68 @@ class TestBackupCommands:
     def test_backup_not_found(self, manager):
         with pytest.raises(ValueError, match="Backup not found"):
             manager.get_backup_info("nonexistent")
+
+    def test_default_sources_point_at_real_layout(self, manager):
+        paths = manager._source_paths
+        data_dir = Path(manager._data_dir)
+        assert paths[BackupSource.CONFIG] == data_dir / "config"
+        assert paths[BackupSource.MEMORY_DATA] == data_dir / "memory_store.db"
+        assert paths[BackupSource.KNOWLEDGE_BASE] == (
+            data_dir / "data" / "knowledge_vectors.sqlite3"
+        )
+        assert paths[BackupSource.USER_DATA] == data_dir
+
+    def test_plaintext_backup_excludes_credentials_and_keys(self, manager):
+        """默认备份不得含任何凭据/密钥（明文归档没有任何外层保护）。"""
+        config = Path(manager._data_dir) / "config"
+        config.mkdir()
+        secrets = {
+            "app.env": "LIUHAO_JWT_SECRET=super-secret-jwt",
+            "auth_secrets.json": '{"root": "credential-hash"}',
+            "human_identities.json": '{"humans": ["root"]}',
+            "integrity.key": "identity-signing-key",
+            "model_config.key": "model-master-key",
+            "model_registry.sqlite3": "api-key-ciphertext",
+        }
+        for name, content in secrets.items():
+            (config / name).write_text(content, encoding="utf-8")
+
+        created = manager.create_backup()
+        assert created["encrypted"] is False
+        assert created["excluded_protected_files"] >= len(secrets)
+
+        archive = json.loads(
+            gzip.decompress(Path(created["file_path"]).read_bytes()).decode("utf-8")
+        )
+        payload = json.dumps(archive, ensure_ascii=False)
+        for name, content in secrets.items():
+            assert content not in payload, f"{name} leaked into plaintext backup"
+
+    def test_encrypted_backup_round_trip_and_wrong_password(self, manager):
+        config = Path(manager._data_dir) / "config"
+        config.mkdir()
+        (config / "model_config.key").write_text("model-master-key", encoding="utf-8")
+
+        created = manager.create_backup(encrypted=True, password="correct horse")
+        archive_path = Path(created["file_path"])
+        assert created["encrypted"] is True
+        assert archive_path.suffix == ".lhbak"
+        # 外层已加密：密文文件里不应出现明文密钥。
+        assert b"model-master-key" not in archive_path.read_bytes()
+
+        assert manager.verify_backup(created["backup_id"], password="wrong")["verified"] is False
+        assert manager.verify_backup(created["backup_id"], password="correct horse")["verified"] is True
+
+        Path(manager._data_dir, "notes.txt").write_text("clobbered", encoding="utf-8")
+        restored = manager.restore_backup(
+            created["backup_id"], password="correct horse"
+        )
+        assert restored["status"] == "restored"
+        assert Path(manager._data_dir, "notes.txt").read_text(encoding="utf-8") == "real payload"
+
+    def test_encrypt_without_password_is_refused(self, manager):
+        with pytest.raises(ValueError, match="--encrypt 需要口令"):
+            manager.create_backup(encrypted=True)
 
 
 # =====================================================================

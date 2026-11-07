@@ -462,12 +462,9 @@ def export_bundle(
     principals = [p for p in principals if p]
     include_public = wanted == "all"
 
-    credentials_all = _secret_store().load()
-    credentials = {
-        principal: record
-        for principal, record in credentials_all.items()
-        if principal in set(principals)
-    }
+    # 凭据记录（``auth_secrets.json`` 里的 PBKDF2 哈希）永不打包：文档承诺过，
+    # 实现也必须兑现。包里既没有可用口令，也没有可用于撞库的哈希。
+    credentials: Dict[str, Any] = {}
 
     model_store = _model_store()
     rows = model_store.export_encrypted_rows(owners=principals)

@@ -36,6 +36,11 @@ def _env(monkeypatch, tmp_path):
             "LIUHAO_WORKSPACE_ROOT": str(base / "workspace"),
             "LIUHAO_MODEL_CONFIG_DB": str(base / "model_config.sqlite3"),
             "LIUHAO_MODEL_CONFIG_KEY_FILE": str(base / "model_config_key.bin"),
+            # 0.1.0 记忆迁移会把内核记忆库并进账号记忆库；不隔离这两条路径，
+            # 测试会把仓库/本机的真实记忆迁移进来（extra legacy-pc-* 行）。
+            "MEMORY_DB_PATH": str(base / "kernel_memory.db"),
+            "PERSONAL_CONTEXT_DB_PATH": str(base / "personal_context.db"),
+            "LIUHAO_KNOWLEDGE_DB": str(base / "knowledge_vectors.sqlite3"),
         }
         for key, value in values.items():
             monkeypatch.setenv(key, value)

@@ -1140,6 +1140,39 @@ def _isolate_knowledge_vector_store(tmp_path, monkeypatch):
     knowledge_documents.reset_knowledge_service()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _reap_localappdata_test_copies():
+    """兜底清理测试期间新造在 ``%LOCALAPPDATA%\\LiuHao`` 下的数据目录副本。
+
+    这些 ``data.after-smoke-*`` / ``data.bak-*`` 目录是整目录复制出来的数据，
+    里面可能同时含凭据库、身份库与模型主密钥。测试不应该把这类明文留在
+    用户目录里。这里只在**本次会话新出现**的目录上动手（预先存在的残留交给
+    ``scripts/cleanup_localappdata_test_leftovers.py``，它要求人工确认），
+    并且逐目录登记为临时根，确保与删除护栏的判定一致。
+    """
+    import os
+    import shutil
+
+    base = os.environ.get("LOCALAPPDATA")
+    root = Path(base) / "LiuHao" if base else None
+    before: set = set()
+    if root is not None and root.is_dir():
+        before = {p.name for p in root.iterdir() if p.is_dir()}
+
+    yield
+
+    if root is None or not root.is_dir():
+        return
+    prefixes = ("data.after-smoke-", "data.bak-")
+    for candidate in root.iterdir():
+        if not candidate.is_dir() or candidate.name in before:
+            continue
+        if not candidate.name.startswith(prefixes):
+            continue
+        _register_scratch_root(candidate)
+        shutil.rmtree(candidate, ignore_errors=True)
+
+
 # ==================== Export ====================
 
 __all__ = [

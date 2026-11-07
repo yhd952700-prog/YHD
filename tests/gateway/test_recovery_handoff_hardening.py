@@ -247,19 +247,31 @@ def test_backup_and_export_exclude_recovery_and_credentials(env, tmp_path):
     (config / "recovery_handoff_legacy.json").write_text("{}", encoding="utf-8")
     (config / "auth_secrets.json").write_text('{"alice": "hash"}', encoding="utf-8")
     (config / "model_config_key.bin").write_bytes(b"secret-key-material")
+    # 真实文件名（旧排除集写错了名字，这三个才是实际会落盘的密钥/身份文件）。
+    (config / "model_config.key").write_bytes(b"real-model-master-key")
+    (config / "integrity.key").write_bytes(b"identity-signing-key")
+    (config / "human_identities.json").write_text('{"humans": []}', encoding="utf-8")
     (config / "notes.txt").write_text("normal user data", encoding="utf-8")
 
     backup = backup_data(tmp_path, data_dir, [], tmp_path / "backup")
     manifest = json.loads(backup.manifest_path.read_text(encoding="utf-8"))
     relpaths = [entry["relpath"] for entry in manifest["entries"]]
+    protected_names = {
+        "auth_secrets.json",
+        "model_config_key.bin",
+        "model_config.key",
+        "integrity.key",
+        "human_identities.json",
+    }
     assert "config/notes.txt" in relpaths
     for rel in relpaths:
         assert "recovery_code" not in rel
         assert "recovery_handoff" not in rel
-        assert Path(rel).name not in {"auth_secrets.json", "model_config_key.bin"}
-    assert manifest["excluded_protected"] >= 3
-    for leaked in ("recovery_code.txt", "recovery_handoff_legacy.json",
-                   "auth_secrets.json", "model_config_key.bin"):
+        assert Path(rel).name not in protected_names
+    assert manifest["excluded_protected"] >= 6
+    for leaked in ("recovery_code.txt", "recovery_handoff_legacy.json"):
+        assert not list((tmp_path / "backup").rglob(leaked))
+    for leaked in protected_names:
         assert not list((tmp_path / "backup").rglob(leaked))
 
     # 旧备份清单里还列着恢复码：导出层必须过滤，而不是原样复制。
@@ -308,6 +320,40 @@ def test_backup_and_export_exclude_recovery_and_credentials(env, tmp_path):
     assert not [item for item in exported_files if "recovery_code" in item]
     snapshot = json.loads(exported.manifest_path.read_text(encoding="utf-8"))
     assert snapshot["excluded_protected"] == 1
+
+
+def test_verify_backup_refuses_leaked_protected_files(env, tmp_path, monkeypatch):
+    """打包后断言：备份目录里出现密钥/身份文件即拒绝使用，而不是照常回滚。"""
+    from src.upgrade.backups import backup_data, verify_backup
+    from src.upgrade.errors import BackupCorrupt, SnapshotError
+
+    # 1) 已经落盘的备份若含保护文件，verify 必须拒绝。
+    leaked_backup = tmp_path / "leaked-backup"
+    (leaked_backup / "data" / "config").mkdir(parents=True)
+    (leaked_backup / "data" / "config" / "model_config.key").write_text(
+        "leaked", encoding="utf-8"
+    )
+    with pytest.raises(BackupCorrupt) as excinfo:
+        verify_backup(leaked_backup)
+    assert "model_config.key" in str(excinfo.value)
+
+    # 2) 创建端在写盘后复查物理文件；断言命中即拒绝导出。
+    data_dir = tmp_path / "data"
+    (data_dir / "config").mkdir(parents=True)
+    (data_dir / "config" / "notes.txt").write_text("ok", encoding="utf-8")
+    import src.upgrade.backups as backups
+
+    real = backups._protected_files_in
+
+    def fake_scan(directory):
+        found = real(directory)
+        # 模拟“清单过滤被绕过、文件已经写进包内”的失败场景。
+        return found or ["config/model_config.key"]
+
+    monkeypatch.setattr(backups, "_protected_files_in", fake_scan)
+    with pytest.raises(SnapshotError) as excinfo:
+        backup_data(tmp_path, data_dir, [], tmp_path / "backup")
+    assert "model_config.key" in str(excinfo.value)
 
 
 def test_non_loopback_is_rejected_and_remote_switch_defaults_off(env, monkeypatch):
