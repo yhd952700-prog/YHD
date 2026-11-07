@@ -111,7 +111,7 @@ DEFAULT_CATALOG: List[ModelProfile] = [
         0.003, 1800,
     ),
     ModelProfile(
-        "google:gemini", ProviderType.GOOGLE, "gemini-2", ModelTier.CLOUD,
+        "google:gemini", ProviderType.GOOGLE, "gemini-2.5-flash", ModelTier.CLOUD,
         _caps(supports_streaming=True, supports_structured_output=True,
               supports_vision=True, max_context_tokens=1000000,
               max_output_tokens=8192),

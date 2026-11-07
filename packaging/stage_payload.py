@@ -607,14 +607,15 @@ def _validate_runtime(app_dir: Path) -> None:
         )
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    # 自检覆盖三类真实入口：网关、桌面壳（tkinter）、托盘（pywin32）。
+    # 自检覆盖三类真实入口：网关、桌面壳（tkinter）、托盘（pywin32）；
+    # provider SDK 也逐个导入，避免"清单登记了、payload 里却没有"。
     # `tkinter.Tcl()` 会真正加载 Tcl 的 init 脚本，能验证 tcl 数据目录是否可用。
     code = (
         "import sys, tkinter, win32api, win32gui, win32con, pywintypes, "
         "uvicorn, uvicorn.main, uvicorn.protocols.http.auto, "
         "dotenv, aiosqlite, src.gateway.main, src.desktop.app, "
         "openai, httpx2, httpcore2, truststore, jiter, httpx, httpcore, "
-        "anthropic, docx, pypdf, sqlalchemy, taskiq; "
+        "anthropic, google.genai, docx, pypdf, sqlalchemy, taskiq; "
         "tkinter.Tcl().eval('info patchlevel'); "
         "print(sys.version.split()[0])"
     )

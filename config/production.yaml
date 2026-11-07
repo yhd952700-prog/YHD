@@ -124,7 +124,7 @@ providers:
 
   google:
     enabled: true
-    model: gemini-2.0-flash
+    model: gemini-2.5-flash
 
   moonshot:
     enabled: true

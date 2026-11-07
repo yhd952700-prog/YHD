@@ -45,7 +45,7 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "moonshot": "moonshot-v1-8k",
     "anthropic": "claude-3-5-sonnet-latest",
-    "google": "gemini-1.5-flash",
+    "google": "gemini-2.5-flash",
     "ollama": "qwen2.5:3b",
     "mock": "mock",
 }
