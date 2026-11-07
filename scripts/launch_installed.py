@@ -56,10 +56,43 @@ APP_ENV_FILE = "config/app.env"
 #: （fail-closed），所以必须落盘并在每次启动时注入。
 INTEGRITY_KEY_FILE = "config/integrity.key"
 
+#: 安装器写下的数据目录 marker（UTF-8 带 BOM）。优先于平台默认值：安装时
+#: 用户可能把数据目录选在任意位置（含中文/空格），只有这里能还原。
+DATA_DIR_MARKER = APP_ROOT / "data-dir.txt"
+
+
+def _marker_data_dir() -> Path | None:
+    """读取 ``data-dir.txt``；兼容 0.1.0 的 ANSI 写法。"""
+    if not DATA_DIR_MARKER.is_file():
+        return None
+    try:
+        text = DATA_DIR_MARKER.read_text(encoding="utf-8-sig").strip()
+    except UnicodeDecodeError:
+        text = DATA_DIR_MARKER.read_text(encoding="mbcs", errors="replace").strip()
+    except OSError:
+        return None
+    return Path(text).expanduser().resolve() if text else None
+
 
 def _data_dir() -> Path:
     raw = (os.environ.get(DATA_DIR_ENV) or "").strip()
-    return Path(raw).expanduser().resolve() if raw else DEFAULT_DATA_DIR.resolve()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    marker = _marker_data_dir()
+    if marker is not None:
+        return marker
+    return DEFAULT_DATA_DIR.resolve()
+
+
+def _app_version() -> str:
+    """从随包的 ``pyproject.toml`` 读版本（安装目录自带，升级器也用它）。"""
+    try:
+        import tomllib
+
+        with open(APP_ROOT / "pyproject.toml", "rb") as handle:
+            return str(tomllib.load(handle)["project"]["version"])
+    except Exception:
+        return "unknown"
 
 
 #: 启动器自己的日志。和网关日志（``logs/liuhao.log``）分开：这一份专门记录
@@ -126,6 +159,7 @@ def start_launcher_log(data_dir: Path) -> Path:
         f"\n===== {datetime.now().isoformat(timespec='seconds')} launch =====\n"
     )
     handle.write(f"  python: {sys.executable}\n")
+    handle.write(f"  version: {_app_version()}\n")
     handle.write(f"  argv:   {' '.join(sys.argv)}\n")
     handle.write(f"  data:   {data_dir}\n")
     handle.flush()
@@ -367,6 +401,10 @@ def _configure_paths(data_dir: Path) -> None:
     需要重定向，显式设置 ``LIUHAO_ALLOW_ENV_OVERRIDE=1`` 后原变量优先。
     """
     paths = {
+        # 数据目录本身：子进程（网关 / 升级器 / 向导）必须与启动器解析到同一处，
+        # 否则安装版升级会去 %LOCALAPPDATA% 找数据。以前由 LiuHao.bat 从
+        # data-dir.txt 导出；改为启动器读 marker 后在这里显式继承。
+        "LIUHAO_DATA_DIR": data_dir,
         # 员工、目标、项目、工作区文件、JWT 吊销库
         "LIUHAO_WORKSPACE_ROOT": data_dir / "workspace",
         # 人类身份登记表 + 登录凭据

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List
 
+from ..version import APP_VERSION
+
 
 @dataclass
 class ShellCommand:
@@ -251,7 +253,7 @@ class ShellSession:
         return {
             "system": "LiuHao AI OS",
             "description": "Enterprise-grade AI operating system",
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "architecture": "multi-agent",
             "components": [
                 "Agent Runtime",
@@ -274,7 +276,7 @@ class ShellSession:
 
     def _cmd_version(self, args: List[str]) -> Dict[str, Any]:
         """Version command handler."""
-        return {"product": "LiuHao AI OS", "version": "1.0.0"}
+        return {"product": "LiuHao AI OS", "version": APP_VERSION}
 
     def _cmd_agent(self, args: List[str]) -> Dict[str, Any]:
         """Agent subcommand handler (placeholder)."""

@@ -17,6 +17,7 @@ import os
 from ..security import get_api_key_manager, get_jwt_handler, get_rbac_manager, get_encryption_manager
 from ..gateway.rate_limiter import get_rate_limiter
 from ..gateway.contract import API_CONTRACT_VERSION
+from ..version import APP_VERSION
 from .display import decorate_health_check, provider_label, status_label
 
 
@@ -70,7 +71,7 @@ async def liveness_probe(request: Request) -> JSONResponse:
             "service": "liuhao-gateway",
             "timestamp": time.time(),
             "trace_id": trace_id,
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "api_contract": API_CONTRACT_VERSION,
             "ai_provider": _decorate_ai_provider(ai_provider),
             "status_label": status_label("ok"),
@@ -618,7 +619,7 @@ async def metrics_endpoint(request: Request) -> JSONResponse:
     by_status = key_stats.get("by_status") or {}
     metrics_data = {
         "service": "liuhao-gateway",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "timestamp": time.time(),
         "trace_id": trace_id,
         "uptime_seconds": round(time.time() - _PROCESS_START, 1),

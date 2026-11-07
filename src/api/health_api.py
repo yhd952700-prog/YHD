@@ -17,6 +17,8 @@ from typing import Any, Dict
 
 from fastapi import APIRouter
 
+from ..version import APP_VERSION
+
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -99,7 +101,7 @@ async def health_overview() -> Dict[str, Any]:
     return {
         "status": overall,
         "service": "liuhao-ai-os",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "timestamp": datetime.utcnow().isoformat(),
         "uptime_seconds": round(time.time() - _PROCESS_START, 2),
         "component_count": len(_components),

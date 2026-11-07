@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..version import APP_VERSION
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -303,7 +305,7 @@ async def get_system_stats() -> Dict[str, Any]:
         "feature_flags": len(_feature_flags),
         "audit_logs": len(_audit_logs),
         "system": {
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "environment": "production",
             "uptime_hours": 720.5,
         },

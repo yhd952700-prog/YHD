@@ -111,6 +111,8 @@ PAYLOAD_SCRIPTS: Tuple[str, ...] = (
     "scripts/liuhao_desktop.py",
     "scripts/ops/https_proxy.py",
     "scripts/gen_local_cert.py",
+    # 覆盖升级后按排除清单清理程序目录里的旧配置（安装器 [Run] 调用）。
+    "scripts/purge_installed_config.py",
 )
 
 #: import 图看不到、但运行期确实会用的发行包（延迟导入 / 子进程入口）。
@@ -334,8 +336,8 @@ set PYTHONDONTWRITEBYTECODE=1
 cd /d "%~dp0"
 rem The installer decides the data directory (default D:\\LiuHaoData, falling
 rem back to %LOCALAPPDATA%\\LiuHao\\data) and records it in data-dir.txt.
-rem Passing it as LIUHAO_DATA_DIR keeps launcher and upgrader on the same path.
-if not defined LIUHAO_DATA_DIR if exist "%~dp0data-dir.txt" for /f "usebackq delims=" %%D in ("%~dp0data-dir.txt") do set "LIUHAO_DATA_DIR=%%D"
+rem The launcher reads that file itself (UTF-8 aware), so cmd never has to
+rem decode a non-ASCII path. An explicit LIUHAO_DATA_DIR still wins.
 if not exist "runtime\\python.exe" (
     echo [FAIL] runtime\\python.exe is missing - the installation is incomplete.
     pause
@@ -806,7 +808,7 @@ def _project_version() -> str:
         with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
             return tomllib.load(handle)["project"]["version"]
     except Exception:
-        return "0.1.0"
+        return "0.1.1"
 
 
 def main(argv: List[str] | None = None) -> int:

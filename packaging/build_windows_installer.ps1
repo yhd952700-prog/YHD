@@ -6,7 +6,7 @@
 #
 # 用法（在仓库根执行）：
 #   powershell -ExecutionPolicy Bypass -File packaging\build_windows_installer.ps1
-#   powershell ... -Version 0.1.0 -SkipSmoke
+#   powershell ... -Version 0.1.1 -SkipSmoke
 #
 # 前置条件：
 #   * Node.js + npm（构建 apps/console/console）
@@ -69,7 +69,7 @@ function Resolve-Version {
     $match = Select-String -Path $pyproject -Pattern '^version\s*=\s*"([^"]+)"' |
         Select-Object -First 1
     if ($match) { return $match.Matches[0].Groups[1].Value }
-    return "0.1.0"
+    return "0.1.1"
 }
 
 $Python = Resolve-Python
@@ -228,7 +228,12 @@ if (Test-Path $iconSource) {
 # 生成编译用的副本：只替换版本号与 payload 绝对路径，其余原样。
 $iss = Join-Path $buildDir "liuhao.iss"
 $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $iss
-$content = $content.Replace('#define AppVersion "0.1.0"', '#define AppVersion "' + $Version + '"')
+# 用正则替换，而不是匹配固定版本字面量：.iss 的默认版本一旦升版，
+# 按旧字面量替换会静默不命中，编出旧版本号的包。
+$content = [regex]::Replace($content, '#define AppVersion "[^"]*"', '#define AppVersion "' + $Version + '"')
+if ($content -notmatch [regex]::Escape('#define AppVersion "' + $Version + '"')) {
+    throw "安装脚本版本号替换失败：liuhao.iss 里没有 #define AppVersion 声明。"
+}
 $content = $content.Replace('#define PayloadDir "..\dist\payload\app"', '#define PayloadDir "' + $PayloadApp + '"')
 # 编译副本在 dist\installer\build 下，相对的 OutputDir 会解析错位，改成绝对路径。
 $content = $content.Replace('OutputDir=..\dist\installer', 'OutputDir=' + $InstallerOut)

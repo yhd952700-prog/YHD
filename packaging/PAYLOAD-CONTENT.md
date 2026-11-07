@@ -23,7 +23,7 @@ D:\LiuHao\                    程序目录（升级时整体替换，不含用�
 ├─ assets\liuhao.ico
 ├─ LiuHao.bat                快捷方式目标
 ├─ START-HERE.txt
-└─ data-dir.txt               安装器写入的实际数据目录（ANSI）
+└─ data-dir.txt               安装器写入的实际数据目录（UTF-8 带 BOM）
 
 D:\LiuHaoData\                用户数据（卸载默认保留）
 │                             D 盘不可用 → %LOCALAPPDATA%\LiuHao\data

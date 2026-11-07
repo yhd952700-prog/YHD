@@ -15,11 +15,11 @@
 ;      才会按 marker 记录的实际数据目录删除（不再写死 C 盘那个路径）。
 ;
 ; 构建：packaging\build_windows_installer.ps1（会传 /DAppVersion=...）。
-; 直接编译：iscc /DAppVersion=0.1.0 installer\liuhao.iss
+; 直接编译：iscc /DAppVersion=0.1.1 installer\liuhao.iss
 ; ==========================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 
 #ifndef PayloadDir
@@ -80,6 +80,18 @@ Name: "launchnow"; Description: "安装完成后立即启动鎏灏"; GroupDescri
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\BEFORE-INSTALL.txt"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; 覆盖升级只复制新清单里的文件，**不会删除**旧版留下、新版已排除的文件。
+; 不在这里清掉就会出现「打包已经排除了，升级后程序目录里还留着」——
+; config/production.yaml 就是这么被带回来的。完整的逐项清理由
+; scripts/purge_installed_config.py 按同一份排除清单执行（见 [Run]），
+; 这里先把已知的静态配置项兜底删掉，即使脚本执行失败也不会残留。
+Type: files; Name: "{app}\config\production.yaml"
+Type: files; Name: "{app}\config\docker.env"
+Type: files; Name: "{app}\config\*.lock"
+Type: filesandordirs; Name: "{app}\config\production"
+Type: filesandordirs; Name: "{app}\config\external_anchor"
+
 [Dirs]
 ; 数据目录由安装器创建，但卸载器永不删除（删除只在 [Code] 里二次确认后按 marker 执行）。
 ; 目录由 [Code] 解析：默认 D:\LiuHaoData，D 盘不可用或老安装时按实际位置。
@@ -97,6 +109,10 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\LiuHao.bat"; WorkingDir: "{ap
 
 [Run]
 Filename: "{app}\LiuHao.bat"; WorkingDir: "{app}"; Description: "立即启动鎏灏（首次启动会进入向导）"; Flags: postinstall nowait skipifsilent shellexec; Tasks: launchnow
+; 覆盖升级清理：按 packaging/stage_payload.py 的同一份排除清单，删除程序目录
+; config/ 下“新版已不随包”的旧文件（production.yaml 等）。用 payload 自带运行时
+; 执行，静默等待完成；失败不阻断安装（最坏情况只是残留一个已排除文件）。
+Filename: "{app}\runtime\python.exe"; Parameters: """{app}\scripts\purge_installed_config.py"" --root ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "PurgeExcludedConfig"
 
 [UninstallDelete]
 ; 旧便携版在程序目录里留下的运行目录：安装版已在首次启动时搬走内容，
@@ -156,11 +172,67 @@ end;
 function ReadTextFile(const Path: String): String;
 var
   S: AnsiString;
+  I, N: Integer;
+  B: Byte;
+  CP: Cardinal;
 begin
   Result := '';
-  if FileExists(Path) then
-    if LoadStringFromFile(Path, S) then
-      Result := Trim(String(S));
+  if not FileExists(Path) then
+    Exit;
+  if not LoadStringFromFile(Path, S) then
+    Exit;
+
+  { 0.1.1 起 marker 写成 UTF-8（带 BOM）：必须按字节解码，否则在非中文
+    系统上用系统 ANSI 代码页读 UTF-8 会得到乱码路径。没有 BOM 的是旧版
+    (0.1.0) ANSI marker，保持原有的系统代码页解码。 }
+  if (Length(S) >= 3) and (Ord(S[1]) = $EF) and (Ord(S[2]) = $BB) and (Ord(S[3]) = $BF) then
+  begin
+    I := 4;
+    N := Length(S);
+    while I <= N do
+    begin
+      B := Ord(S[I]);
+      if B < $80 then
+      begin
+        Result := Result + Chr(B);
+        Inc(I);
+      end
+      else if (B and $E0) = $C0 then
+      begin
+        if I + 1 <= N then
+        begin
+          CP := ((B and $1F) shl 6) or (Ord(S[I + 1]) and $3F);
+          Result := Result + Chr(CP);
+        end;
+        Inc(I, 2);
+      end
+      else if (B and $F0) = $E0 then
+      begin
+        if I + 2 <= N then
+        begin
+          CP := ((B and $0F) shl 12) or
+                ((Ord(S[I + 1]) and $3F) shl 6) or
+                (Ord(S[I + 2]) and $3F);
+          Result := Result + Chr(CP);
+        end;
+        Inc(I, 3);
+      end
+      else if (B and $F8) = $F0 then
+      begin
+        { BMP 之外的字符（emoji 等）不会出现在合法安装路径里，替换掉。 }
+        Result := Result + '?';
+        Inc(I, 4);
+      end
+      else
+      begin
+        Result := Result + Chr(B);
+        Inc(I);
+      end;
+    end;
+    Result := Trim(Result);
+  end
+  else
+    Result := Trim(String(S));
 end;
 
 { 给定路径所在的盘当前是否可访问（老安装的数据目录可能在已被拔掉的 D 盘上）。 }
@@ -447,18 +519,36 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Lines: TStrings;
 begin
   if CurStep = ssPostInstall then
   begin
-    SaveStringToFile(ExpandConstant('{app}') + '\data-dir.txt', AnsiString(ResolvedDataDir), False);
+    { marker 必须 UTF-8（带 BOM）：安装路径可能含中文/非 ASCII 字符，用系统
+      ANSI 代码页写会在非中文系统上变成乱码，启动器就找不到数据目录。
+      SaveStringsToUTF8File 在 Append=False 时会写 BOM。 }
+    Lines := TStringList.Create;
+    try
+      Lines.Add(ResolvedDataDir);
+      SaveStringsToUTF8File(ExpandConstant('{app}') + '\data-dir.txt', Lines, False);
+    finally
+      Lines.Free;
+    end;
     { 静默安装时用户看不到向导页；回退原因与最终位置必须落盘可查。 }
     if ProgramFallback or DataFallback then
-      SaveStringToFile(ExpandConstant('{app}') + '\安装位置说明.txt',
-        '因为 D 盘不可用（不存在 / 不可写 / 是可移动盘），本次安装已自动回退到：' + #13#10 +
-        '程序目录：' + DirForDisplay(ResolvedAppDir) + #13#10 +
-        '启动文件：' + DirForDisplay(ResolvedAppDir) + '\LiuHao.bat' + #13#10 +
-        '数据目录：' + DirForDisplay(ResolvedDataDir) + #13#10 +
-        '数据目录还记录在程序目录下的 data-dir.txt。' + #13#10, False);
+    begin
+      Lines := TStringList.Create;
+      try
+        Lines.Add('因为 D 盘不可用（不存在 / 不可写 / 是可移动盘），本次安装已自动回退到：');
+        Lines.Add('程序目录：' + DirForDisplay(ResolvedAppDir));
+        Lines.Add('启动文件：' + DirForDisplay(ResolvedAppDir) + '\LiuHao.bat');
+        Lines.Add('数据目录：' + DirForDisplay(ResolvedDataDir));
+        Lines.Add('数据目录还记录在程序目录下的 data-dir.txt。');
+        SaveStringsToUTF8File(ExpandConstant('{app}') + '\安装位置说明.txt', Lines, False);
+      finally
+        Lines.Free;
+      end;
+    end;
   end;
 end;
 
