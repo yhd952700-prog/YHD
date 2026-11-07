@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+import src.ai.model_config as model_config_module
 from src.ai import providers
 from src.ai.model_config import (
+    NEEDS_REENTRY_CODE,
+    NEEDS_REENTRY_TEXT,
     ModelConfigError,
+    ModelConfigStore,
     get_model_config_store,
     mask_secret,
 )
@@ -190,6 +195,122 @@ class TestInvalidProviderTypeFailsLoudly:
         monkeypatch.setenv("AI_PROVIDER_TYPE", "ollama")
         assert ai_provider_status()["mode"] == "real"
 
+
+class TestUndecryptableCredential:
+    """密钥文件与密文不匹配时的用户可见面。
+
+    触发条件：密钥文件不是精确 32 字节（换了机器/恢复了旧数据/被替换），
+    或早先版本把首尾命中 ASCII 空白的 32 字节密钥 ``strip()`` 裁短后按口令
+    派生，导致读回密钥与生成时不一致。用户看到的必须是可操作文案，且配置
+    不能被静默清空。
+    """
+
+    @staticmethod
+    def _new_store(tmp_path, key_path):
+        return ModelConfigStore(
+            db_path=str(tmp_path / "registry.sqlite3"), key_path=str(key_path)
+        )
+
+    @staticmethod
+    def _pin_key_generation(monkeypatch, key: bytes) -> None:
+        """只固定 32 字节密钥生成；16 字节仍走真随机（uuid4 依赖 os.urandom）。"""
+        real = os.urandom
+        monkeypatch.setattr(
+            model_config_module.os,
+            "urandom",
+            lambda n: key if n == 32 else real(n),
+        )
+
+    def test_key_with_whitespace_edges_survives_restart(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv(model_config_module.MODEL_CONFIG_KEY_ENV, raising=False)
+        # 生成时密钥末尾恰为空格（随机密钥约 4-9% 概率命中），旧实现再次读取时
+        # strip() 裁成 31 字节 → 口令派生 → 与生成时的密钥不一致。
+        key = b"A" * 31 + b" "
+        self._pin_key_generation(monkeypatch, key)
+        key_path = tmp_path / "model_config.key"
+        first = self._new_store(tmp_path, key_path)
+        created = first.create(
+            {
+                "name": "whitespace-key",
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "sk-abcdefghijklmnop",
+            },
+            "admin",
+        )
+        assert created["api_key_status"] == "ok"
+        assert created["api_key_masked"] == "sk-a…mnop"
+        assert key_path.read_bytes() == key
+
+        reopened = self._new_store(tmp_path, key_path)
+        public = reopened.get_public(created["id"])
+        assert public["api_key_status"] == "ok"
+        assert public["api_key_masked"] == "sk-a…mnop"
+
+    def test_key_file_with_trailing_newline_still_decrypts(self, tmp_path, monkeypatch):
+        """文本方式保存的 32 字节密钥（多一个换行）保持兼容。"""
+        monkeypatch.delenv(model_config_module.MODEL_CONFIG_KEY_ENV, raising=False)
+        key_path = tmp_path / "model_config.key"
+        key_path.write_bytes(b"B" * 32 + b"\n")
+        store = self._new_store(tmp_path, key_path)
+        created = store.create(
+            {
+                "name": "newline-key",
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "sk-abcdefghijklmnop",
+            },
+            "admin",
+        )
+        assert created["api_key_masked"] == "sk-a…mnop"
+        reopened = self._new_store(tmp_path, key_path)
+        assert reopened.get_public(created["id"])["api_key_status"] == "ok"
+
+    def test_mismatched_key_is_neutral_and_does_not_clear_config(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv(model_config_module.MODEL_CONFIG_KEY_ENV, raising=False)
+        self._pin_key_generation(monkeypatch, b"K" * 32)
+        key_path = tmp_path / "model_config.key"
+        first = self._new_store(tmp_path, key_path)
+        created = first.create(
+            {
+                "name": "deepseek",
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "sk-abcdefghijklmnop",
+            },
+            "admin",
+        )
+        # 模拟换机器/恢复旧数据：密文还在，密钥文件变成另一份。
+        self._pin_key_generation(monkeypatch, b"Z" * 32)
+        key_path.write_bytes(b"Z" * 32)
+        reopened = self._new_store(tmp_path, key_path)
+
+        listed = reopened.list_models()
+        assert len(listed) == 1, "密钥不匹配不得清空用户模型配置"
+        item = listed[0]
+        assert item["id"] == created["id"]
+        assert item["api_key_set"] is True
+        assert item["api_key_status"] == "needs_reentry"
+        assert item["api_key_masked"] == NEEDS_REENTRY_TEXT
+        payload = json.dumps(listed, ensure_ascii=False)
+        for internal in ("InvalidTag", "Traceback", "（密文无法解密）", "解密失败"):
+            assert internal not in payload
+
+        with pytest.raises(ModelConfigError) as excinfo:
+            reopened.resolve(created["id"])
+        assert excinfo.value.code == NEEDS_REENTRY_CODE
+        assert excinfo.value.status_code == 409
+        assert "重新填写" in excinfo.value.detail
+
+    def test_healthy_store_keeps_normal_masked_value(self, store):
+        """正常流程（存在密钥文件、32 字节）保持原有脱敏形态。"""
+        created = _create(store, api_key="sk-abcdefghijklmnop")
+        assert created["api_key_status"] == "ok"
+        assert created["api_key_masked"] == "sk-a…mnop"
 
 class TestKeyEnvAliases:
     def test_generic_key_wins_over_alias(self, monkeypatch):

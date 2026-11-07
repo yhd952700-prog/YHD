@@ -69,6 +69,11 @@ PROVIDERS_WITHOUT_KEY = ("mock", "ollama")
 
 _ENC_PREFIX = "enc:v1:"
 
+#: 密文存在但当前密钥解不开时，对外展示的中性、可操作文案。
+#: 绝不要把底层异常（InvalidTag / 解密失败 / 文件路径）直接透给用户。
+NEEDS_REENTRY_TEXT = "凭据需重新填写"
+NEEDS_REENTRY_CODE = "MODEL_KEY_NEEDS_REENTRY"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ai_model_configs (
     id            TEXT PRIMARY KEY,
@@ -203,17 +208,41 @@ class ModelConfigStore:
             )
 
     def _encryption_key(self) -> bytes:
-        """解析/生成 32 字节密钥；无法获得密钥时抛 ``ModelConfigError``。"""
+        """解析/生成 32 字节密钥；无法获得密钥时抛 ``ModelConfigError``。
+
+        密钥文件规定是 32 个原始字节，必须**原样**使用：早先版本先
+        ``read_bytes().strip()`` 再判断长度，若密钥的首/尾字节恰好落在
+        ASCII 空白（0x09-0x0d/0x20 等，随机密钥约 4-9% 概率），读回时会被
+        裁短、退化成口令派生，得到一个与生成时不同的密钥 —— 已有的密文
+        全部解不开，界面就显示"密文无法解密"。这里精确 32 字节直接使用；
+        只有"32 字节 + 文本换行"才去掉换行；其余才按历史兼容当作口令。
+        """
         configured = os.environ.get(MODEL_CONFIG_KEY_ENV)
         if configured:
             return _derive_key(configured)
         path = Path(self._key_path)
         if path.exists():
-            raw = path.read_bytes().strip()
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                raise ModelConfigError(
+                    503,
+                    "无法读取模型密钥文件，已保存的凭据无法解密。"
+                    "请检查数据目录权限，或从备份恢复该密钥文件后重启。"
+                    f"（{path.name}）",
+                ) from exc
             if len(raw) == 32:
                 return raw
-            # 兼容"文件里存的是口令"的写法。
-            return _derive_key(raw.decode("utf-8", "ignore"))
+            trimmed = raw.rstrip(b"\r\n")
+            if len(trimmed) == 32:
+                # 文本方式保存的 32 字节密钥（多了一个行尾换行）。
+                logger.warning(
+                    "模型密钥文件带有行尾换行（%d 字节），按 32 字节密钥使用",
+                    len(raw),
+                )
+                return trimmed
+            # 兼容"文件里存的是口令"的历史写法。
+            return _derive_key(raw.strip().decode("utf-8", "ignore"))
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             key = os.urandom(32)
@@ -266,15 +295,26 @@ class ModelConfigStore:
         except Exception as exc:
             raise ModelConfigError(500, f"模型 {model_id} 的密钥密文损坏") from exc
         cipher = self._get_cipher()
-        return cipher.decrypt(
-            EncryptedData(
-                ciphertext=ciphertext,
-                nonce=nonce,
-                algorithm="AES-256-GCM",
-                key_id="model-config",
-                associated_data=f"ai-model:{model_id}".encode(),
-            )
-        ).decode("utf-8")
+        try:
+            return cipher.decrypt(
+                EncryptedData(
+                    ciphertext=ciphertext,
+                    nonce=nonce,
+                    algorithm="AES-256-GCM",
+                    key_id="model-config",
+                    associated_data=f"ai-model:{model_id}".encode(),
+                )
+            ).decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - InvalidTag/解码失败统一收敛
+            # 典型场景：换机器、恢复旧数据，或数据目录里的密钥文件被替换，
+            # 导致密文与完整性密钥不匹配。给用户下一步动作，不抛内部异常。
+            raise ModelConfigError(
+                409,
+                "该模型已保存的凭据无法在当前数据目录解密（常见于更换机器、"
+                "恢复旧数据后密钥不匹配）。请重新填写该模型的 API Key；"
+                "模型配置本身会保留，不会被清空。",
+                code=NEEDS_REENTRY_CODE,
+            ) from exc
 
     # ------------------------------------------------------------------ #
     # 读
@@ -291,18 +331,31 @@ class ModelConfigStore:
             "is_default": bool(row["is_default"]),
             "enabled": bool(row["enabled"]),
             "api_key_set": bool(row["api_key_enc"]),
+            # missing: 未填写；ok: 可解密；needs_reentry: 密文在但当前密钥解不开。
+            "api_key_status": "missing" if not row["api_key_enc"] else "ok",
             "api_key_masked": None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
 
     @staticmethod
-    def _masked_from_cipher(store: "ModelConfigStore", row: sqlite3.Row) -> Optional[str]:
+    def _masked_from_cipher(
+        store: "ModelConfigStore", row: sqlite3.Row
+    ) -> tuple[Optional[str], str]:
+        """返回 ``(脱敏串, api_key_status)``；解密失败绝不暴露内部错误。"""
+        if not row["api_key_enc"]:
+            return None, "missing"
         try:
             plain = store._decrypt_secret(row["id"], row["api_key_enc"])
-        except Exception:
-            return "（密文无法解密）"
-        return mask_secret(plain)
+        except Exception as exc:  # noqa: BLE001 - 用户可见面必须保持中性
+            logger.warning(
+                "model config %s credential cannot be decrypted (%s: %s)",
+                row["id"],
+                type(exc).__name__,
+                exc,
+            )
+            return NEEDS_REENTRY_TEXT, "needs_reentry"
+        return mask_secret(plain), "ok"
 
     def list_models(
         self,
@@ -326,7 +379,9 @@ class ModelConfigStore:
             if not _visible(_row_owner(row), visible_to, allow_unowned):
                 continue
             item = self._row_to_public(row)
-            item["api_key_masked"] = self._masked_from_cipher(self, row)
+            item["api_key_masked"], item["api_key_status"] = self._masked_from_cipher(
+                self, row
+            )
             out.append(item)
         return out
 
@@ -339,7 +394,7 @@ class ModelConfigStore:
         if row is None:
             raise ModelConfigError(404, f"模型配置不存在：{model_id}")
         item = self._row_to_public(row)
-        item["api_key_masked"] = self._masked_from_cipher(self, row)
+        item["api_key_masked"], item["api_key_status"] = self._masked_from_cipher(self, row)
         return item
 
     def default_id(
