@@ -657,12 +657,20 @@ class AIStateManager:
         return self._employee
 
     def _persist_employee(self) -> None:
-        """Best-effort persist of the current Employee (agent/task state)."""
+        """把当前 Employee（agent/task 状态）落盘；失败**向上抛**。
+
+        以前这里吞掉异常只打 warning：雇佣/暂停/目标计数明明没落盘，接口
+        却照样返回成功，重启后状态凭空消失。现在失败如实上报，调用方要么
+        让请求失败，要么把错误写进响应，不允许静默成功。
+        """
         if self._employee_store is not None and self._employee is not None:
             try:
                 self._employee_store.save(self._employee)
-            except Exception as exc:  # persistence must never break a request
-                logger.warning("AIStateManager: employee persist failed: %s", exc)
+            except Exception as exc:
+                logger.error(
+                    "AIStateManager: employee persist failed: %s", exc
+                )
+                raise
 
     # ── Goal persistence (restart recovery) ──
 
@@ -1049,12 +1057,18 @@ class AIStateManager:
             error = None
 
         # The employee pool is no longer engaged on this goal.
+        employee_persist_error: Optional[str] = None
         employee = self._ensure_employee()
         employee.mark_agents_idle()
         if result is not None:
             final_state = result.state.value if hasattr(result.state, "value") else str(result.state)
             employee.record_goal_finished(goal_id, final_state)
-        self._persist_employee()
+        try:
+            self._persist_employee()
+        except Exception as exc:
+            # 目标执行本身已经完成，不能因为 KPI 落盘失败丢掉目标结果；
+            # 但必须把失败如实带进结果，调用方能看到"员工进度没落盘"。
+            employee_persist_error = f"{type(exc).__name__}: {exc}"
 
         if result is None:
             entry = {
@@ -1080,6 +1094,8 @@ class AIStateManager:
             entry["assigned_agent"] = pinned_agent
         # 归属沿用提交时的值（后台路径由 ``running_entry`` 携带）；绝不因为
         # 执行线程拿不到请求上下文就把目标改挂到别的账号。
+        if employee_persist_error:
+            entry["employee_persist_error"] = employee_persist_error
         with self._goal_lock:
             prior_owner = (self._goals.get(goal_id) or {}).get("owner_account_id")
         # 员工与任务的关系必须出现在最终结果里：谁做了什么、耗时、成功与否。
@@ -1860,16 +1876,25 @@ class AIStateManager:
         # a cancellation. Counting every stop POST as a failed goal meant one
         # completed goal was booked BOTH as completed and as failed, inflating
         # the denominator of every success-rate figure derived from these KPIs.
+        cancel_persist_error: Optional[str] = None
         if final_state == "cancelled":
             try:
                 employee = self._ensure_employee()
                 employee.record_goal_finished(goal_id, "cancelled")
                 self._persist_employee()
-            except Exception:
-                pass
+            except Exception as exc:
+                # 取消本身已经生效；KPI 落盘失败必须让调用方看见，不能再静默吞掉。
+                cancel_persist_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "AIStateManager: employee persist failed after cancel %s: %s",
+                    goal_id, exc,
+                )
 
         with self._goal_lock:
-            return dict(self._goals.get(goal_id, item))
+            result = dict(self._goals.get(goal_id, item))
+        if cancel_persist_error:
+            result["employee_persist_error"] = cancel_persist_error
+        return result
 
     def _await_goal(self, goal_id: str, timeout: float = 30.0) -> None:
         """Block until the background goal leaves the 'running' state (or timeout)."""

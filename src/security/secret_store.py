@@ -29,10 +29,19 @@ import json
 import logging
 import os
 import secrets
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
+
+from src.common.atomic_write import atomic_write_bytes, exclusive_file_lock
 
 logger = logging.getLogger(__name__)
+
+
+#: 同进程内所有 LocalEncryptedSecretStore 实例共享的创建锁。首次初始化与
+#: 轮换都要"检查 → 生成 → 落盘"原子完成；实例锁挡不住多实例同时初始化。
+_MASTER_WRITE_LOCK = threading.Lock()
 
 
 class SecretBackendUnavailable(RuntimeError):
@@ -277,9 +286,20 @@ class LocalEncryptedSecretStore(SecretStore):
             raise SecretBackendUnavailable(
                 f"no master key material at {master_path}; refusing to auto-create"
             )
-        self._dek = secrets.token_bytes(32)
-        kek, kek_kind, salt = self._resolve_kek()
-        self._wrap_and_persist_master(kek, kek_kind, salt)
+        # 首次初始化必须串行：两个进程同时"看到没有 → 各自生成 DEK/KEK →
+        # 覆盖写"时，先落盘的那份会被后者替换，早期用它加密的密文从此解不开。
+        with _MASTER_WRITE_LOCK:
+            with exclusive_file_lock(
+                f"{master_path}.lock", description="密钥库主密钥"
+            ):
+                # 锁内重查：可能另一个进程/线程刚刚创建完成，必须采纳它，
+                # 而不是用本进程刚生成的密钥覆盖。
+                if os.path.exists(master_path):
+                    self._dek = self._unwrap_existing(master_path)
+                    return
+                self._dek = secrets.token_bytes(32)
+                kek, kek_kind, salt = self._resolve_kek()
+                self._wrap_and_persist_master(kek, kek_kind, salt)
 
     def _resolve_kek(self):
         """Return (KEK, kek_kind, salt)."""
@@ -296,7 +316,9 @@ class LocalEncryptedSecretStore(SecretStore):
                 kek = _derive_kek(kek.decode("utf-8", "replace"), secrets.token_bytes(16))
         else:
             kek = secrets.token_bytes(32)
-            Path(gen_path).write_bytes(kek)
+            # 生成型 KEK 只写一次：固定名临时文件 + 截断写会在并发初始化时
+            # 互相覆盖，甚至让 master.kek 包裹的 DEK 永远解不开。
+            atomic_write_bytes(gen_path, kek)
             _secure_chmod(gen_path)
         return kek, "generated", b""
 
@@ -311,7 +333,11 @@ class LocalEncryptedSecretStore(SecretStore):
             "wrapped_dek": base64.b64encode(nonce + wrapped).decode("ascii"),
         }
         master_path = self._master_path()
-        Path(master_path).write_text(json.dumps(payload), encoding="utf-8")
+        # 主密钥文件是解密整个密钥库的唯一入口：必须是完整替换，崩溃/并发
+        # 都不能留下半截 JSON，也不能被另一个写入者的旧内容覆盖。
+        atomic_write_bytes(
+            master_path, json.dumps(payload).encode("utf-8")
+        )
         _secure_chmod(master_path)
 
     def _unwrap_existing(self, master_path: str) -> bytes:
@@ -352,14 +378,14 @@ class LocalEncryptedSecretStore(SecretStore):
             nonce, value.encode("utf-8"), name.encode("utf-8")
         )
         path = self._secret_path(name)
-        Path(path).write_text(
+        atomic_write_bytes(
+            path,
             json.dumps(
                 {
                     "nonce": base64.b64encode(nonce).decode("ascii"),
                     "ct": base64.b64encode(ct).decode("ascii"),
                 }
-            ),
-            encoding="utf-8",
+            ).encode("utf-8"),
         )
         _secure_chmod(path)
 
@@ -428,15 +454,22 @@ class LocalEncryptedSecretStore(SecretStore):
         self._passphrase = new_passphrase
         self._key_file = new_key_file
         self._dek = secrets.token_bytes(32)
-        kek, kek_kind, salt = self._resolve_kek()
-        try:
-            self._wrap_and_persist_master(kek, kek_kind, salt)
-        except Exception:
-            # Roll the config back so the live store stays usable.
-            self._passphrase, self._key_file = old_passphrase, old_key_file
-            raise
-        for name, value in snapshot.items():
-            self.set(name, value)
+        # 轮换同样要串行：否则并发的首次初始化/轮换会各自写出不同的
+        # master.kek，后写者让先写者刚重新加密的密文全部解不开。
+        master_path = self._master_path()
+        with _MASTER_WRITE_LOCK:
+            with exclusive_file_lock(
+                f"{master_path}.lock", description="密钥库主密钥"
+            ):
+                kek, kek_kind, salt = self._resolve_kek()
+                try:
+                    self._wrap_and_persist_master(kek, kek_kind, salt)
+                except Exception:
+                    # Roll the config back so the live store stays usable.
+                    self._passphrase, self._key_file = old_passphrase, old_key_file
+                    raise
+                for name, value in snapshot.items():
+                    self.set(name, value)
 
 
 # --------------------------------------------------------------------------- #

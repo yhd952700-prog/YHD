@@ -57,10 +57,13 @@ from pathlib import Path
 import secrets as _secrets
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+
+from src.common.atomic_write import atomic_write_text, exclusive_file_lock
 
 from .policy import extract_bearer_token, require_bearer_payload
 
@@ -201,13 +204,33 @@ def describe_credential(record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+class CredentialStoreError(RuntimeError):
+    """凭据库写入事务失败。
+
+    调用方必须把这条异常当成"本次修改没有落盘"，不能像以前那样拿到
+    ``False`` 后继续宣称注册/恢复成功 —— 那正是"多账号注册后互相覆盖、
+    甚至把文件写坏"的来源。
+    """
+
+
+#: 同进程内所有 ``SecretStore`` 实例共享的写锁。实例级锁挡不住"每个脚本/请求
+#: new 一个 store"的真实路径；Windows ``msvcrt`` 的 region lock 又是进程级的，
+#: 同进程内二次加锁会直接失败，所以进程内必须先串行。
+_PROCESS_WRITE_LOCK = threading.Lock()
+
+
 class SecretStore:
     """Read/write access to the credential file.
 
     Deliberately **not** cached: rotating a credential takes effect on the
     next login, and a stale in-memory copy of password material is exactly the
     kind of state worth not having.
+
+    写入事务：进程锁 → OS 文件锁 → 锁内**重读磁盘** → 合并本次修改 → 唯一
+    临时文件 + fsync + 重试 replace。任何一步失败都抛
+    :class:`CredentialStoreError`，绝不把"没写进去"吞成 ``True``。
     """
+
 
     def __init__(self, path: str):
         self.path = str(path or "")
@@ -217,14 +240,24 @@ class SecretStore:
     def available(self) -> bool:
         return bool(self.path) and os.path.isfile(self.path)
 
-    def load(self) -> Dict[str, Dict[str, Any]]:
-        """Return ``{principal: record}``. Any problem yields ``{}`` (fail-closed)."""
+    def _read_entries(self, *, strict: bool) -> Dict[str, Dict[str, Any]]:
+        """读回 ``{principal: record}``。
+
+        ``strict=False``（登录读路径）遇到任何问题返回 ``{}``（fail-closed）；
+        ``strict=True``（写事务内）必须抛错 —— 把损坏文件当成空库再整份覆盖，
+        会让所有账号的凭据一起消失。
+        """
         if not self.available():
             return {}
         try:
             with open(self.path, "r", encoding="utf-8") as handle:
                 document = json.load(handle)
         except Exception as exc:  # noqa: BLE001 - config problem, not a crash
+            if strict:
+                raise CredentialStoreError(
+                    f"读取凭据库失败（{self.path}）：{type(exc).__name__}: {exc}；"
+                    "为避免用空快照覆盖已有凭据，本次写入已拒绝"
+                ) from exc
             logger.error(
                 "could not read %s (%r): %s -- NOBODY can log in",
                 AUTH_SECRETS_FILE_ENV, self.path, exc,
@@ -238,6 +271,11 @@ class SecretStore:
         elif isinstance(document, dict):
             entries = document
         else:
+            if strict:
+                raise CredentialStoreError(
+                    f"凭据库结构不合法（{self.path}）：期望 JSON 对象，"
+                    f"实际 {type(document).__name__}；本次写入已拒绝"
+                )
             logger.error(
                 "%s (%r) must be an object -- got %s",
                 AUTH_SECRETS_FILE_ENV, self.path, type(document).__name__,
@@ -250,56 +288,74 @@ class SecretStore:
             if isinstance(record, dict)
         }
 
+    def load(self) -> Dict[str, Dict[str, Any]]:
+        """Return ``{principal: record}``. Any problem yields ``{}`` (fail-closed)."""
+        return self._read_entries(strict=False)
+
     def credential_for(self, principal: str) -> Optional[Dict[str, Any]]:
         return self.load().get(principal)
 
     # ---- writing (used by scripts/register_human_identity.py) ----------
 
-    def _write(self, entries: Dict[str, Dict[str, Any]]) -> bool:
-        """Atomically replace the file; never leave a half-written store."""
-        if not self.path:
-            return False
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        """进程锁 → OS 文件锁；整个「读全量 → 改 → 覆盖写」都在锁内。"""
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(f"{self.path}.lock", description="凭据库"):
+                yield
+
+    def _write(self, entries: Dict[str, Dict[str, Any]]) -> None:
+        """原子替换文件；失败抛错，绝不留下半截凭据库。"""
+        document = {"version": 1, "credentials": entries}
+        text = json.dumps(
+            document, ensure_ascii=False, indent=2, sort_keys=True
+        ) + "\n"
         try:
-            path = Path(self.path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            document = {"version": 1, "credentials": entries}
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(document, handle, ensure_ascii=False, indent=2, sort_keys=True)
-                handle.write("\n")
-            os.replace(tmp, path)
-            return True
+            atomic_write_text(self.path, text)
         except Exception as exc:  # noqa: BLE001
             logger.error("could not write %r: %s", self.path, exc)
-            return False
+            raise CredentialStoreError(
+                f"凭据库写入失败（{self.path}）：{type(exc).__name__}: {exc}；"
+                "已重试仍无法原子替换，本次修改未落盘"
+            ) from exc
 
     def set_credential(
         self, principal: str, secret: str, *, iterations: int = PBKDF2_ITERATIONS
     ) -> bool:
         pid = str(principal or "").strip()
-        if not pid or not secret:
+        if not pid or not secret or not self.path:
             return False
-        entries = self.load()
-        entries[pid] = hash_credential(secret, iterations=iterations)
-        return self._write(entries)
+        # PBKDF2 很慢：在锁外算好，锁内只做短事务。
+        record = hash_credential(secret, iterations=iterations)
+        with self._write_transaction():
+            entries = self._read_entries(strict=True)
+            entries[pid] = record
+            self._write(entries)
+        return True
 
     def import_credentials(self, entries: Dict[str, Dict[str, Any]]) -> int:
         """备份恢复入口：合并（同 principal 覆盖）凭据记录，返回写入条数。"""
         incoming = {
             str(k): v for k, v in (entries or {}).items() if isinstance(v, dict)
         }
-        if not incoming:
+        if not incoming or not self.path:
             return 0
-        current = self.load()
-        current.update(incoming)
-        return len(incoming) if self._write(current) else 0
+        with self._write_transaction():
+            current = self._read_entries(strict=True)
+            current.update(incoming)
+            self._write(current)
+        return len(incoming)
 
     def remove_credential(self, principal: str) -> bool:
-        entries = self.load()
-        if principal not in entries:
+        if not self.path:
             return False
-        entries.pop(principal)
-        return self._write(entries)
+        with self._write_transaction():
+            entries = self._read_entries(strict=True)
+            if principal not in entries:
+                return False
+            entries.pop(principal)
+            self._write(entries)
+        return True
 
 
 def resolve_secret_store() -> SecretStore:

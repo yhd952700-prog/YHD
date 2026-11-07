@@ -12,7 +12,10 @@ import uuid
 import time
 import json
 import os
+import threading
 from collections import defaultdict, deque
+
+from src.common.atomic_write import atomic_write_text, exclusive_file_lock
 
 from .providers import BaseProvider, get_provider
 try:
@@ -36,6 +39,14 @@ from .observability import observe
 # Observable). Importing it here follows the existing src/ai -> src/kernels
 # dependency pattern (src/ai/agent_runtime.py, src/ai/liuhao.py already do so).
 from src.kernels._crosscutting import kernel_action
+
+
+class PlannerStateError(RuntimeError):
+    """任务图状态落盘失败（调用方不得把这次保存当成成功）。"""
+
+
+#: 同进程内多实例并发保存同一状态文件时的串行锁。
+_STATE_WRITE_LOCK = threading.Lock()
 
 
 class GoalStatus(Enum):
@@ -794,6 +805,66 @@ Example output format:
             "completed_at": task.completed_at,
         }
 
+    @staticmethod
+    def _read_persisted_state(path: str) -> Dict[str, Any]:
+        """写事务内重读磁盘状态。
+
+        读不到（不存在）返回空字典；读失败/损坏必须抛错 —— 用空快照覆盖
+        唯一副本会让整张任务图消失。
+        """
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception as exc:  # noqa: BLE001 - corrupt state must fail closed
+            raise PlannerStateError(
+                f"读取任务图状态失败（{path}）：{type(exc).__name__}: {exc}；"
+                "为避免覆盖唯一副本，本次写入已拒绝"
+            ) from exc
+        if not isinstance(data, dict):
+            raise PlannerStateError(
+                f"任务图状态结构不合法（{path}）：期望 JSON 对象，"
+                f"实际 {type(data).__name__}；本次写入已拒绝"
+            )
+        return data
+
+    @staticmethod
+    def _merge_state_documents(
+        disk: Dict[str, Any], memory: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """把本实例的目标态合并进磁盘现状。
+
+        * 同一个 goal id（或磁盘为空/无 goal）：按 task id 合并 —— 磁盘上
+          另一个写入者新增、本实例还不知道的任务保留，同一 id 以内存为准
+          （内存是这个图当前的目标态，完成/失败状态不会被磁盘旧值回退）；
+        * 不同 goal id：这是另一个任务的图，整份替换。把上一个目标的任务
+          混进新目标会破坏依赖图，比"后写者覆盖"更糟。
+        """
+        if not isinstance(disk, dict) or not disk:
+            return memory
+        disk_goal = disk.get("goals")
+        memory_goal = memory.get("goals")
+        if (
+            isinstance(disk_goal, dict)
+            and isinstance(memory_goal, dict)
+            and disk_goal.get("id") != memory_goal.get("id")
+        ):
+            return memory
+
+        tasks: Dict[str, Dict[str, Any]] = {}
+        for item in disk.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id"):
+                tasks[item["id"]] = item
+        for item in memory.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id"):
+                tasks[item["id"]] = item
+        return {
+            "version": memory.get("version", 1),
+            "goals": memory_goal if memory_goal is not None else disk_goal,
+            "tasks": list(tasks.values()),
+        }
+
     def save_state(self, path: Optional[str] = None) -> str:
         """Persist goals + tasks to a JSON file.
 
@@ -801,6 +872,10 @@ Example output format:
         third-party dependency is introduced. Call this after (or during)
         execution so a process restart can recover the graph via
         :meth:`load_state`.
+
+        写入事务：进程锁 → OS 文件锁 → 锁内重读磁盘并按 task id 做目标态合并
+        → 唯一临时文件 + fsync + 重试 replace。失败抛
+        :class:`PlannerStateError`，不会"返回路径但文件是半截/被覆盖"。
         """
         path = path or self._default_state_path()
         data = {
@@ -808,8 +883,20 @@ Example output format:
             "goals": self._serialize_goal(self.goal),
             "tasks": [self._serialize_task(t) for t in self.tasks.values()],
         }
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+        with _STATE_WRITE_LOCK:
+            with exclusive_file_lock(f"{path}.lock", description="任务图状态"):
+                merged = self._merge_state_documents(
+                    self._read_persisted_state(path), data
+                )
+                try:
+                    atomic_write_text(
+                        path, json.dumps(merged, ensure_ascii=False, indent=2)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise PlannerStateError(
+                        f"任务图状态写入失败（{path}）：{type(exc).__name__}: "
+                        f"{exc}；本次修改未落盘"
+                    ) from exc
         return path
 
     @classmethod
