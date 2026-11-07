@@ -205,7 +205,7 @@ def run_wizard(skip: bool = False) -> int:
             print("       runtime\\python.exe scripts\\register_human_identity.py "
                   "--principal <name> --password-stdin")
         print("  !! 若未配置模型，聊天功能不可用。")
-        print("     在控制台「模型管理」里添加，或重跑本向导。")
+        print("     在「系统设置 → 模型管理」里添加，或重跑本向导。")
         return 0
 
     # 已配置完整（有可登录身份 + 有启用模型）→ 不打扰，直接退出。
