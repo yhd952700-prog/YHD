@@ -48,8 +48,14 @@ import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from src._time import utc_now
+from src.common.atomic_write import atomic_write_text, exclusive_file_lock
 
 logger = logging.getLogger("liuhao.kernel.identity")
+
+#: JSON 身份库的写事务在**进程内所有 JsonFileStore 实例**之间串行。
+#: 每个调用方都会 new 一个 store；实例级锁挡不住同一份文件上的并发覆盖。
+#: 跨进程的排他由 ``exclusive_file_lock``（OS 文件锁）完成。
+_FILE_STORE_WRITE_LOCK = threading.Lock()
 
 #: Bounded retry budget for transient SQLite write failures.
 #:
@@ -749,72 +755,89 @@ class JsonFileStore:
         return {"humans": []}
 
     def _write_document(self, document: Dict[str, Any]) -> bool:
-        """Atomically replace the file -- never leave a half-written seed."""
+        """Atomically replace the file -- never leave a half-written seed.
+
+        Uses a per-write unique temp file + fsync + retrying ``os.replace``;
+        a shared ``<path>.tmp`` would let concurrent writers publish each
+        other's half-written documents.
+        """
         if not self.location:
             logger.debug("no %s configured -- registration is in-memory only",
                          HUMAN_IDENTITIES_FILE_ENV)
             return False
         try:
-            path = Path(self.location)
-            if path.parent and str(path.parent):
-                path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(document, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(tmp, path)
+            atomic_write_text(
+                self.location,
+                json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error("could not write %r: %s", self.location, exc)
             return False
 
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        """进程锁 → OS 文件锁，覆盖整个「读全量 → 改 → 整份覆盖」。
+
+        身份/账号树每个调用点都可能 new 一个 ``JsonFileStore``；只有把进程
+        内所有实例和跨进程的写入都串行化，后写者才不会覆盖先写者。
+        """
+        if not self.location:
+            yield
+            return
+        with _FILE_STORE_WRITE_LOCK:
+            with exclusive_file_lock(f"{self.location}.lock", description="身份库"):
+                yield
+
     def upsert(self, entry: Dict[str, Any]) -> bool:
         principal = str(entry.get(FIELD_PRINCIPAL) or "").strip()
         if not principal:
             return False
-        document = self._read_document()
-        humans = document.setdefault("humans", [])
-        stored = {
-            FIELD_PRINCIPAL: principal,
-            FIELD_DISPLAY_NAME: entry.get(FIELD_DISPLAY_NAME),
-            FIELD_PERMISSIONS: sorted(set(entry.get(FIELD_PERMISSIONS) or [])),
-            FIELD_SCOPE: entry.get(FIELD_SCOPE) or "L0",
-            FIELD_REGISTERED_AT: _stamp_registered_at(entry),
-            FIELD_SOURCE: entry.get(FIELD_SOURCE) or "",
-        }
-        trust = _coerce_trust_number(entry.get(FIELD_TRUST_SCORE))
-        if trust is not None:
-            stored[FIELD_TRUST_SCORE] = trust
-        key = integrity_key()
-        if key:
-            # Stamped with the key configured *now*. A row written before the
-            # key existed will be refused at load time until it is
-            # re-registered -- which is the honest outcome: an unauthenticated
-            # row cannot be retroactively authenticated.
-            stored[FIELD_INTEGRITY] = compute_row_tag(stored, key)
-        for index, existing in enumerate(humans):
-            if existing.get(FIELD_PRINCIPAL) == principal:
-                # Keep the original registration instant, same as SQLite.
-                stored[FIELD_REGISTERED_AT] = (
-                    existing.get(FIELD_REGISTERED_AT)
-                    or stored[FIELD_REGISTERED_AT]
-                )
-                humans[index] = stored
-                break
-        else:
-            humans.append(stored)
-        return self._write_document(document)
+        with self._write_transaction():
+            document = self._read_document()
+            humans = document.setdefault("humans", [])
+            stored = {
+                FIELD_PRINCIPAL: principal,
+                FIELD_DISPLAY_NAME: entry.get(FIELD_DISPLAY_NAME),
+                FIELD_PERMISSIONS: sorted(set(entry.get(FIELD_PERMISSIONS) or [])),
+                FIELD_SCOPE: entry.get(FIELD_SCOPE) or "L0",
+                FIELD_REGISTERED_AT: _stamp_registered_at(entry),
+                FIELD_SOURCE: entry.get(FIELD_SOURCE) or "",
+            }
+            trust = _coerce_trust_number(entry.get(FIELD_TRUST_SCORE))
+            if trust is not None:
+                stored[FIELD_TRUST_SCORE] = trust
+            key = integrity_key()
+            if key:
+                # Stamped with the key configured *now*. A row written before the
+                # key existed will be refused at load time until it is
+                # re-registered -- which is the honest outcome: an unauthenticated
+                # row cannot be retroactively authenticated.
+                stored[FIELD_INTEGRITY] = compute_row_tag(stored, key)
+            for index, existing in enumerate(humans):
+                if existing.get(FIELD_PRINCIPAL) == principal:
+                    # Keep the original registration instant, same as SQLite.
+                    stored[FIELD_REGISTERED_AT] = (
+                        existing.get(FIELD_REGISTERED_AT)
+                        or stored[FIELD_REGISTERED_AT]
+                    )
+                    humans[index] = stored
+                    break
+            else:
+                humans.append(stored)
+            return self._write_document(document)
 
     def remove(self, principal: str) -> bool:
         if not self.location:
             return False
-        document = self._read_document()
-        humans = document.get("humans") or []
-        kept = [h for h in humans if h.get(FIELD_PRINCIPAL) != principal]
-        if len(kept) == len(humans):
-            return False
-        document["humans"] = kept
-        return self._write_document(document)
+        with self._write_transaction():
+            document = self._read_document()
+            humans = document.get("humans") or []
+            kept = [h for h in humans if h.get(FIELD_PRINCIPAL) != principal]
+            if len(kept) == len(humans):
+                return False
+            document["humans"] = kept
+            return self._write_document(document)
 
     # ---- 账号树 -------------------------------------------------------
 
@@ -858,59 +881,63 @@ class JsonFileStore:
     def upsert_account(self, record: Dict[str, Any]) -> bool:
         if not self.location:
             return False
-        document = self._read_document()
-        accounts = document.get("accounts")
-        if not isinstance(accounts, dict):
-            accounts = {}
-        normalized = _normalize_account_record(record)
-        principal = normalized[FIELD_PRINCIPAL]
-        existing = accounts.get(principal)
-        if isinstance(existing, dict) and existing.get(FIELD_CREATED_AT):
-            normalized[FIELD_CREATED_AT] = existing[FIELD_CREATED_AT]
-        if isinstance(existing, dict):
-            normalized[FIELD_SOURCE] = existing.get(FIELD_SOURCE) or normalized[FIELD_SOURCE]
-        key = integrity_key()
-        if key:
-            normalized[FIELD_INTEGRITY] = compute_account_tag(normalized, key)
-        else:
-            normalized.pop(FIELD_INTEGRITY, None)
-        accounts[principal] = normalized
-        document["accounts"] = accounts
-        return self._write_document(document)
+        with self._write_transaction():
+            document = self._read_document()
+            accounts = document.get("accounts")
+            if not isinstance(accounts, dict):
+                accounts = {}
+            normalized = _normalize_account_record(record)
+            principal = normalized[FIELD_PRINCIPAL]
+            existing = accounts.get(principal)
+            if isinstance(existing, dict) and existing.get(FIELD_CREATED_AT):
+                normalized[FIELD_CREATED_AT] = existing[FIELD_CREATED_AT]
+            if isinstance(existing, dict):
+                normalized[FIELD_SOURCE] = existing.get(FIELD_SOURCE) or normalized[FIELD_SOURCE]
+            key = integrity_key()
+            if key:
+                normalized[FIELD_INTEGRITY] = compute_account_tag(normalized, key)
+            else:
+                normalized.pop(FIELD_INTEGRITY, None)
+            accounts[principal] = normalized
+            document["accounts"] = accounts
+            return self._write_document(document)
 
     def remove_account(self, principal: str) -> bool:
         if not self.location:
             return False
-        document = self._read_document()
-        accounts = document.get("accounts")
-        if not isinstance(accounts, dict) or principal not in accounts:
-            return False
-        accounts.pop(principal, None)
-        document["accounts"] = accounts
-        return self._write_document(document)
+        with self._write_transaction():
+            document = self._read_document()
+            accounts = document.get("accounts")
+            if not isinstance(accounts, dict) or principal not in accounts:
+                return False
+            accounts.pop(principal, None)
+            document["accounts"] = accounts
+            return self._write_document(document)
 
     def drop_accounts(self) -> bool:
         """回滚：移除账号树（身份行保持原样）。"""
         if not self.location:
             return False
-        document = self._read_document()
-        if "accounts" in document:
-            document.pop("accounts", None)
-            return self._write_document(document)
-        return False
+        with self._write_transaction():
+            document = self._read_document()
+            if "accounts" in document:
+                document.pop("accounts", None)
+                return self._write_document(document)
+            return False
 
     def record_import_receipt(self, bundle_id: str) -> bool:
         if not self.location or not bundle_id:
             return False
-        document = self._read_document()
-        receipts = document.get("import_receipts")
-        if not isinstance(receipts, dict):
-            receipts = {}
-        if bundle_id in receipts:
-            return False
-        receipts[bundle_id] = utc_now().isoformat()
-        document["import_receipts"] = receipts
-        return self._write_document(document)
+        with self._write_transaction():
+            document = self._read_document()
+            receipts = document.get("import_receipts")
+            if not isinstance(receipts, dict):
+                receipts = {}
+            if bundle_id in receipts:
+                return False
+            receipts[bundle_id] = utc_now().isoformat()
+            document["import_receipts"] = receipts
+            return self._write_document(document)
 
     def has_import_receipt(self, bundle_id: str) -> bool:
         if not self.location or not bundle_id:

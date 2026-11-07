@@ -20,9 +20,104 @@ The sequence implemented here is the standard one:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 import tempfile
+import time
 from pathlib import Path
+from typing import Iterator
+
+#: ``os.replace`` 在 Windows 上会因目标文件正被别的句柄打开而失败
+#: （WinError 5 / sharing violation）。这是**瞬态**冲突，短重试即可跨过；
+#: 重试耗尽后仍然抛出，绝不把"没写进去"伪装成成功。
+_REPLACE_ATTEMPTS = 8
+_REPLACE_RETRY_DELAY = 0.05
+_REPLACE_RETRY_CAP = 0.5
+
+#: 跨实例写锁的默认等待上限（秒）。超时抛 ``TimeoutError``，不静默续写。
+DEFAULT_LOCK_TIMEOUT_SECONDS = 15.0
+
+
+def _replace_with_retry(tmp: Path, target: Path) -> None:
+    """``os.replace`` with a bounded retry for transient Windows sharing errors."""
+    last: OSError | None = None
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, target)
+            return
+        except OSError as exc:
+            last = exc
+            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                break
+            time.sleep(min(_REPLACE_RETRY_DELAY * (attempt + 1), _REPLACE_RETRY_CAP))
+    if last is not None:
+        raise last
+
+
+@contextmanager
+def exclusive_file_lock(
+    lock_path: str | os.PathLike[str],
+    timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    *,
+    description: str = "文件",
+) -> Iterator[None]:
+    """跨进程排他锁（Windows ``msvcrt`` / POSIX ``fcntl``）。
+
+    ``threading.Lock`` 只覆盖同一进程内的线程；多个 worker / 多个网关进程
+    同时做「读全量 → 改 → 整份覆盖」时，后写者仍会覆盖先写者。这里用操作
+    系统级文件锁真正串行化写事务。锁文件本身可长期存在（内容无意义），
+    进程退出时由内核释放，不会留下僵尸锁。
+
+    Windows 的 ``msvcrt`` region lock 需要一个可锁的字节，空文件先写占位
+    字节；锁冲突不是错误，而是在 ``timeout`` 内轮询重试。
+    """
+    lock_path = os.fspath(lock_path)
+    directory = os.path.dirname(os.path.abspath(lock_path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    acquired = False
+    try:
+        handle.seek(0)
+        if handle.read(1) == b"":
+            handle.write(b"0")
+            handle.flush()
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:  # pragma: no cover - POSIX path
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"{description}写锁等待超时（{timeout:.0f}s）：{lock_path}"
+                    ) from exc
+                time.sleep(0.02)
+        yield
+    finally:
+        if acquired:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:  # pragma: no cover - POSIX path
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -55,7 +150,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        _replace_with_retry(tmp, target)
     except BaseException:
         try:
             tmp.unlink(missing_ok=True)
