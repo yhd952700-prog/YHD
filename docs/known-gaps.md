@@ -332,13 +332,71 @@ list/read 后仍落在正确账号空间。回归见
 | E-12 | 全量回归基线落后交付 HEAD：跑在 `cc3af30d`，报告时 HEAD 已到 `de1b0d87`（12 个提交） | 全量结果不覆盖期间的 desktop 启动门、升级 API、可观测性、reminder、console 错误读取器修复 | 已补跑这些提交改动的 15 个测试文件（123 passed / 80.85s），但未再跑第二次全量 |
 | E-13 | ~~`dist/installer` 为空、清单里的数值对应文件从未存在~~ **已更新**：`dist/installer` 现有 0.1.0 的四项正式产物（`LiuHao-Setup-0.1.0.exe` 34,838,298 字节、`liuhao-0.1.0.zip` 2,529,546 字节、`SHA256SUMS.txt`、`DELIVERY.txt`）。这些是**上一版**交付物，不是本次待转正的最终包 | 交付清单不再 404；但读者可能把 0.1.0 产物误当成本次构建结果 | 最终包（本次同源构建）验收通过并原子替换后，必须回填路径/字节/SHA256 + 对应源码提交，并重跑同一 E2E 绑定到该提交 |
 | E-14 | **手机端真机未验证**：服务侧 LAN `192.168.31.171:8000` 返回 200，但手机侧「打开 → 登录 → 发消息」从未跑过。登录阻塞（`LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 未设置时身份行全被拒）**已改**：`src/common/integrity_key.py` 在安装版启动器与源码启动器首次启动时自动生成并注入密钥，落盘数据目录 `config/integrity.key`（POSIX 0600 / Windows `icacls` 仅当前用户），覆盖全新安装、旧数据升级（无签名行补签）、密钥丢失（明确恢复提示，不静默）三条路径；回归 `tests/test_identity_key_bootstrap.py` | 手机侧仍无设备；「密钥不再阻塞」不等于「手机可登录」 | **部分关闭**：密钥自举已实现并有回归（18 passed，含向导/启动器）；**真机登录+发消息仍为未验证**。关闭条件不变：真机在同一 Wi-Fi 完成一次登录+发消息并留存日志/截图 |
-| E-15 | **交叉验证 `3fa88be0` 的 C3/C12 FAIL、31 failed**：账号/知识切片提交了测试与调用方，却把被调用实现（`src/ai/model_router.py` 的 `visible_to`、`src/gateway/ai_management.py` 的 `GoalViewer` 与结构化错误体）留在工作区 | 27 条失败 + 1 条采集错误同根因；同一 HEAD 上测试必红；该轮报告只能算**过程凭证，不是交付凭证** | **未关闭（归属账号/知识切片）**。关闭：两切片提交实现 → 干净 worktree 重跑 `verify_readiness.py --full`，C3/C12 转 PASS。证据 `docs/evidence/cross-verify-3fa88be0.md` |
-| E-16 | **最终冻结 HEAD 没有交付级全量凭证**：现有全量是 `bb6b654c` 基线（7458 passed）与 `3fa88be0` 过程凭证（C3/C12 FAIL），均不是最终 HEAD | `RELEASE READY=False`；不能据此对外宣布可交付 | **已完成**（2026-11-06）：冻结 hash `72fd9b17` 上 `--full` 得 `PASS=10 FAIL=0 BLOCKED=1(C11) NOT_VERIFIED=1(C9) ERROR=0`。裁决后 `RELEASE READY=False` 的理由**只剩 C9**（桌面分发形态无真实 CD，属形态差异）；C11 已裁决（[ADR-HC01](adr/ADR-HC01-baseline-binding.md)），机器 `check_hc01` 仍按冻结门设计打印 `BLOCKED`。证据 `docs/evidence/regression-baseline-coverage-2026-11-06.md` §8 |
+| E-15 | **交叉验证 `3fa88be0` 的 C3/C12 FAIL、31 failed**：账号/知识切片提交了测试与调用方，却把被调用实现（`src/ai/model_router.py` 的 `visible_to`、`src/gateway/ai_management.py` 的 `GoalViewer` 与结构化错误体）留在工作区 | 27 条失败 + 1 条采集错误同根因；同一 HEAD 上测试必红；该轮报告只能算**过程凭证，不是交付凭证** | **已关闭（2026-11-06）**。两切片实现已由 `24fca472` / `31e66269` 补齐，`72fd9b17` 上 `--full` 的 C3 与 C12 均为 **7639 collected / 0 failed / 0 errors / 61 skipped**；证据 `docs/evidence/regression-baseline-coverage-2026-11-06.md` |
+| E-16 | **最终冻结 HEAD 没有交付级全量凭证**：现有全量是 `bb6b654c` 基线（7458 passed）与 `3fa88be0` 过程凭证（C3/C12 FAIL），均不是最终 HEAD | `RELEASE READY=False`；不能据此对外宣布可交付 | **已完成**（2026-11-06）：冻结 hash `72fd9b17` 上 `--full` 得 `PASS=10 FAIL=0 BLOCKED=1(C11) NOT_VERIFIED=1(C9) ERROR=0`。裁决后 `RELEASE READY=False` 的理由**只剩 C9**（桌面分发形态无真实 CD，属形态差异）；C11 已裁决（[ADR-HC01](adr/ADR-HC01-baseline-binding.md)），机器 `check_hc01` 仍按冻结门设计打印 `BLOCKED`。证据 `docs/evidence/regression-baseline-coverage-2026-11-06.md` §8。**2026-11-07 本轮 26 个提交后 tip 已变为 `b4406497`**：上句凭证只对 `72fd9b17` 成立，新 hash 需重跑 `--full` 后才可再次称「交付级凭证」 |
 | E-17 | **打包白名单必须覆盖「方法体内延迟导入」的依赖**：`src/ai/providers.py` 在 `provider.chat()` 内部自建 `httpx.Client`，启动图与 openai 自带的 `httpx2` 都覆盖不到；同类的还有 anthropic / python-docx(+lxml) / pypdf / sqlalchemy(+greenlet) / taskiq。它们都是 `requirements.txt` 的运行期硬依赖，缺了不是优雅降级，而是真实使用时 `ModuleNotFoundError` | 安装包在干净机器上「对话 / 目标拆解 / 知识导入 / 任务代理」整条链路失败；冒烟测试用 MockProvider 发现不了（见 E-6） | **已修**（`3ec7d755`、`b5ee295c`）。**发现方式**：真 Key 对话直接报 `No module named 'httpx'`。**防法**：`_MEASURE_CODE`、`EXPLICIT_DISTS`、`_validate_runtime` **三处必须同步** —— 只加白名单不加测量/自检代码，构建期不会真的把包带进 payload。**实测数字**：构建期运行时自检 58→63 个发行包（httpx/httpcore），补齐全量后 63→72 个发行包；离线运行时实测 `sqlalchemy 2.0.52`、`anthropic 1.3.0` 等均可 import |
 | E-18 | **`src/upgrade/startup_probe.py` 把 `/openapi.json` 当健康兜底路径**（原实现：对 `health_paths` 中每条路径只发一次请求、单请求超时 1.0s、采纳首条 2xx 即退出，冷启动首请求常超过 1.0s，于是 `/v1/health` 超时后直接采纳 `/openapi.json`，把“路由已挂载”当“lifespan/数据库已就绪”） | 安装后自检的“服务正常”结论可能来自错误探针；`http_status=200` 成立但 `health_path` 暴露真相 | **已修（`22c2e867`）**。**改法**：① 优先路径改为**轮次重试**：一轮 = 所有优先路径各一次（默认 `/v1/health`、`/health`、`/healthz`），单请求超时保持 1.0s（不因冷启动砍小），轮间退避 0.25s；优先阶段同时受 `startup_timeout_seconds`（90s）与 `health_probe_budget_seconds`（90s）约束，约合 27 轮全超时，轮次与预算均写在 `StartupCheckConfig` 注释里；② 只有连续 2 轮**所有优先路径都明确返回 404/405**（`health_fallback_after_missing_rounds`）才允许尝试 `/openapi.json`，超时、连接失败、5xx 一律继续重试，绝不提前降级；③ 兜底成功时 `StartupReport.health_path_is_fallback=True`，并进入 `to_dict()`、`service_detail` 与自检日志（“route table only, lifespan not proven”），不再当作普通健康通过；④ 超时文案带上实际重试轮次。**测试**：`tests/test_upgrade_selfcheck.py` 23 passed（含新增“前两次超时、第三次 200 ⇒ 仍报 `/v1/health`”与“全部 404 ⇒ 兜底且 flagged”）；`tests/test_upgrade_api.py` 同跑 35 passed。**剩余**：仅在自检沙箱内验证，未在真实安装包冷启动路径上复测（安装器/打包由另一路负责，本轮未动 `installer/`、`packaging/`） |
 | E-19 | **未设置 `HUMAN_IDENTITIES_INTEGRITY_KEY` 时，身份页警告泄露内部细节**（关联 E-14）：`GET /v1/identity/principals` 的 `warnings` 原样返回环境变量名、注册表绝对路径、`fail-closed` / `HC-11` 代号与 `scripts/register_human_identity.py`；控制台 `plainNote` 见“整段英文”就把警告替换成与密钥无关的权限串说明，用户既看不到真相、又被说错 | 首启/密钥丢失时普通用户看到机器串或错误解释；真机登录前的第一印象受损 | **已修（`8c04bbcc`）**。警告改为中性中文：① 未启用完整性校验 → “已登记账号暂时不会被接纳，这不等于「没有账号」，启用完整性校验并重新登记后即可恢复”；② 被拒收行 → “有 N 个已登记账号未通过完整性校验，因此不在清单中：…”；③ 启动时登记被拒 → 只给结论，原始原因留在诊断日志（内核已 `logger.error`）。机器可读字段 `registry.integrity_key_env` 保留供诊断工具，界面不渲染。回归 `tests/gateway/test_account_wording.py::test_registry_warnings_are_plain_chinese_when_integrity_key_is_unset`（含中文用户名+空格路径、含堆栈的拒绝原因；纯中文、无机器串、无层级词）；真实 TestClient 复测（临时数据目录、未设密钥）warnings 已为中文。**剩余**：未在真实安装包上删除密钥后复测首启（安装器由另一路负责） |
 | E-20 | **中文/空格/非默认盘符路径矩阵：运行时链路已过，安装器落盘与卸载仍未验证**（本轮用「正式 payload 结构 + `scripts/launch_installed.py` + 独立数据目录 + 独立端口」模拟安装版；未运行安装器，遵守安装器由另一路负责的边界） | 用户把程序装到中文/空格路径、数据目录在中文用户名或 D:/E: 盘时可能起不来、写错位置或升级失败 | **部分完成（2026-11-07 实测）**。已实测 4 组并全部通过：① 中文用户名（`LOCALAPPDATA=C:\Users\张三\AppData\Local`，数据目录由默认规则推导）；② 中文+空格安装路径 + 中文数据目录；③ E: 盘 + 中文数据目录；④ D: 盘 + 中文数据目录。每组：首启 ready 4.782–5.297s；控制台 `GET /` 200；注册/登录 200；保存模型配置 200 且 `model_registry.sqlite3` 落在数据目录；`python -m src.upgrade check` 退出码 0 / `up_to_date`；停止后程序目录无 `data/`、无 `.pyc`，密钥/凭据/身份库/模型库/日志/升级状态全部在数据目录（19 个文件）。**未验证（不写成通过）**：a) 真实安装器在中文/空格路径落盘、快捷方式目标、写入开始菜单/卸载登记——复现条件：用 `dist\final-72fd9b17\installer` 以 `/DIR=<中文 空格路径>` 静默安装到临时目录后核对；b) 卸载后程序目录/数据目录残留（含“删除数据”选项）——同上安装后执行卸载并分别列出两目录；c) 浏览器自动打开的可视化确认（本轮以控制台 HTTP 200 代替，桌面交互未肉眼验证）。**已排除的假缺陷**：本轮模拟初次漏拷根级 `error_types.py` 导致启动失败；正式 payload `dist\final-72fd9b17\payload\app\error_types.py` 存在，补齐后四组全过，非产品缺陷 |
 | E-21 | **8GB / 16GB 低配内存没有对应硬件，未实测**（本机为 32GB / Xeon E5-2673 v3 12 核 24 线程） | 无法给出低配机器的真实冷启动与首次对话数字；只能外推，不能当验收结论 | **部分完成（2026-11-07 实测）**。本机 3 次冷启动（独立数据目录、独立端口、mock 模型）：ready 4.875–5.031s（`/v1/startup` 自报 4.205–4.302s）；ready 后控制台首字节 0.516–0.562s；首次对话 2.968–3.125s（服务端 `LiuHaoAssistant.chat` 日志 56ms，其余为首次懒加载）；整进程树 RSS 峰值 212.2–212.9MB，网关单进程 176.2–177.0MB。**外推（未验证）**：内存侧 213MB 远低于 8GB，不是瓶颈；瓶颈更可能在 CPU/磁盘冷读，24 线程数字不能外推到 2–4 核，故不给 8GB/16GB 的“预计秒数”当结论。**要补的观测项**：① 冷启动到 `/v1/startup` ready 的分阶段耗时（`stages`）；② 控制台首字节；③ 首次对话（区分懒加载与服务端耗时）；④ 网关 RSS/整树 RSS 峰值与系统可用内存最低点；⑤ 是否发生换页/磁盘 IO 抖动、单核 CPU 占用；⑥ 8GB 上 1 会话 + 控制台并发，16GB 上 3 会话并发。复现条件：在 8GB（2–4 核）与 16GB（4–8 核）机器上按本轮同一脚本（正式 payload + 独立数据目录 + 独立端口）各跑 3 次 |
+
+---
+
+## 2026-11-07 本轮缺口状态（与台账 §10 对齐）
+
+> 基线 `b4406497`（`origin/p36`）。下表只回答「关没关、证据在哪」，逐条修复说明见
+> [MASTER-TASK-LEDGER.md](MASTER-TASK-LEDGER.md#10-本轮修复登记2026-11-07) §10。
+> **代码层已修 ≠ 交付层已验证**：凡标「部分」的，必须按右列条件复验后才可改为关闭。
+
+### 发布回归红（`b4406497`，CI `42386438527`）——先修这些才能谈关闭
+
+两腿数字一致：`17 failed / 7705 passed / 40 skipped / 3 xfailed`；Guardrails、Guardrails Extended、Security Scan、Linting、Observability、P0 Gate 均被 CRITICAL-5 看门狗判红。本地同 venv 复跑 16 failed，**确认是真回归，不是 CI 环境问题**。
+
+| 编号 | 失败面 | 用例数 | 根因 | 修复方向（超出 docs-only 边界） |
+|---|---|---|---|---|
+| F-01 | 升级状态/备份/自检落点 | 9 | `6a2e361e` 的 `tests/conftest.py` autouse fixture 全局 `LIUHAO_DATA_DIR=tmp_path/data`，升级器优先读该变量 | fixture 放行升级用例，或升级测试显式传 `data_dir` |
+| F-02 | profile API | 3 | `b4d4052b` 让 `src/gateway/chat.py` 直取 `assistant.provider`，`FakeAssistant` 无此属性 | `getattr` 兜底或补齐 Fake |
+| F-03 | 会话列表全量顺序为空 | 1 | `e474b562` 会话键/迁移在用例间留下状态，单跑通过、全量失败 | 迁移幂等 + 用例隔离 + 补重启列用例 |
+| F-04 | 部署门禁变量判定 | 2 | `e474b562` 新增 `PERSONAL_CONTEXT_DB_PATH` 未登记 `SEED_GATES`/`ALLOWLIST`，另有 4 处引用行号漂移 | 登记变量并更新引用行 |
+| F-05 | 依赖诚实性 | 1 | `6a2e361e` 新增测试文件带 UTF-8 BOM（`EF BB BF`） | 去 BOM 重存 |
+
+
+### 本轮关闭（有可复现回归）
+
+| 缺口 | 状态 | 验证位置 |
+|---|---|---|
+| 员工库/身份库并发写互相覆盖 | **已修**（`c9a83cd5`） | `tests/ai/test_employee_store_concurrency.py` |
+| 凭据/API Key/主密钥/planner 状态并发写丢键 | **已修**（`4fa50ff9`） | `tests/test_persistence_concurrency.py` |
+| 设置/注册表/RBAC/审计水位/插件/可观测性并发写 | **已修**（`f206cc51`） | `tests/test_persistence_concurrency_secondary.py` |
+| 账号根初始化失败后锁死 | **已修**（`6a2e361e`）；⚠ 连带回归 F-01 | `tests/gateway/test_account_root_init_recovery.py` |
+| 老根无恢复码、无法本机自救 | **已修**（`49bf52bd`） | `tests/gateway/test_account_recovery_legacy_upgrade.py` |
+| 日志多进程轮转丢/重记录 | **已修**（`6a2e361e`、`fd396351`） | `tests/observability/test_logging_multiprocess.py`、`test_logging_rotation.py` |
+| 管家结论被并发终态覆盖（目标/任务终态回退） | **已修**（`b61bf26a`） | `tests/test_persistence_concurrency.py` |
+| 摘要把全角标点/句子截断 | **已修**（`f8f5d73b`） | `tests/ai/test_llm_support_summary_guards.py` |
+| 目标/聊天持久化与流式失败被静默吞掉 | **已修**（`301eded5`） | `tests/gateway/test_goal_truth_concurrency.py`、`test_chat_failure_truth.py` |
+| 聊天回显上游英文异常、演示模式无标识 | **已修**（`b4d4052b`、`1c802f17`）；⚠ 连带回归 F-02 | `tests/gateway/test_chat_failure_truth.py`、`test_failure_copy.py` |
+| 项目/知识库/产物跨账号越权 | **已修**（`913e9b5a`、`682ddb06`） | `tests/test_cross_account_isolation.py`、`tests/knowledge/test_documents_admin_api.py` |
+| 身份页警告泄露环境变量/绝对路径（E-19） | **已修**（`8c04bbcc`） | `tests/gateway/test_account_wording.py` |
+| 交付面文案含内部术语、许可证未随包 | **已修**（`f54c14b1`、`b4406497`） | `packaging/licenses/*`、`uiCopyGate.test.ts` |
+
+### 本轮部分完成 / 仍为已知
+
+| 缺口 | 状态 | 还差什么 |
+|---|---|---|
+| 老记忆迁移与会话列表重启为空 | **部分**：实现已入库（`e474b562`），**未新增自动化回归**，且回归红 F-03/F-04 | 补迁移幂等与会话重启用例，登记 `PERSONAL_CONTEXT_DB_PATH`，并在真实数据目录复验 |
+| 安装器 D2–D5、D 盘默认路径 | **部分**：代码已修（`9e537633`），现有 0.1.0 包构建于 11-06 17:29，早于该提交 | 用新提交重建安装包并按 E-20 的 a/b/c 三项复验 |
+| 长跑治理（审计增量校验/保留水位/目标归档） | **部分**：代码已修（`fd396351`）并有回归 | 在 `b4406497` 上重跑 2h soak，确认 p50/内存/DB 增长不再随时长上升 |
+| 首启自检探针（E-18） | **部分**：代码已修（`22c2e867`） | 在真实安装包冷启动路径复测，而非只在自检沙箱 |
+| 最终包凭证（E-13、E-16） | **部分**：E-16 凭证绑定 `72fd9b17`；本轮 26 个提交后冻结 hash 已变为 `b4406497` | 在新 hash 跑 `--full` 并把路径/字节/SHA256/源码提交回填 `DELIVERY-CHECKLIST.md` §0.2 |
+| E-5 真实厂商 Key / Anthropic 原生端点 | **仍开放** | 真实 Key 跑通首条消息与失败分类并留原始输出 |
+| E-8 安装包代码签名 | **仍开放** | 证书与签名流水线；失败拒绝安装并留审计 |
+| E-14 手机真机登录 | **仍开放**（仅密钥自举已关闭） | 真机同一 Wi-Fi 完成登录+发消息 |
+| E-20 安装器中文/空格/非默认盘符落盘与卸载 | **仍开放** | 真实安装器 `/DIR=<中文 空格路径>` 安装 + 卸载残留核对 |
+| E-21 8/16GB 低配 | **仍开放** | 低配硬件实测冷启动/首条消息/换页 |
+| F-1～F-6 真实故障面 | **仍开放** | 真睡眠、真断网、真 ENOSPC、真托盘、双窗口、真时钟 |
+| 席位/授权（seat）类 | **仍开放**：本仓库无席位计费/授权数/并发席位实现 | 明确席位模型、授权校验点与回归 |
+| 仅 Windows x64 | **仍开放**：无 macOS/Linux/arm64 产物 | 目标平台产物 + 干净机安装复验 |
+| 真实远端升级源（C9） | **仍开放**：只在本机安装树验证 | 真实 CD 源拉取/回滚并留存证据 |
 
 ---
 
