@@ -11,6 +11,7 @@ import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
 import { ALL_NAV, navFor, mobileNavKeysFor } from '../lib/nav'
+import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
 import type { NavItem } from '../lib/nav'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { identityBarRole } from '../lib/accountCaps'
@@ -76,8 +77,8 @@ export function Shell({
             </svg>
           </div>
           <div>
-            <div className="os-brand-name">LiuHao AI OS</div>
-            <div className="os-brand-sub">LIVE · 鎏灏智能中枢</div>
+            <div className="os-brand-name">{BRAND_NAME_EN}</div>
+            <div className="os-brand-sub">LIVE · {BRAND_NAME_ZH}</div>
           </div>
         </div>
 

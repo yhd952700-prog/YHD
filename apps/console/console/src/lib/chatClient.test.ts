@@ -1,5 +1,60 @@
-import { describe, expect, test } from 'vitest'
-import { friendlyChatError, makeSessionTitle } from './chatClient'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import {
+  chatFailureText,
+  friendlyChatError,
+  makeSessionTitle,
+  streamChat,
+} from './chatClient'
+import type { ChatEvent } from './chatClient'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('streamChat 结束帧', () => {
+  test('done{status:error, reason:quota_exhausted} 必须透出，不能当成成功', async () => {
+    const frames =
+      'data: {"type":"token","content":"这次没有拿到回复"}\n\n' +
+      'data: {"type":"done","status":"error","reason":"quota_exhausted","error":"这次没有拿到回复"}\n\n'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(frames, { status: 200 })))
+
+    const events: ChatEvent[] = []
+    for await (const evt of streamChat('你好', 's1')) events.push(evt)
+
+    expect(events[0]).toEqual({ type: 'token', content: '这次没有拿到回复' })
+    const done = events.find((evt) => evt.type === 'done')
+    expect(done).toBeTruthy()
+    if (done?.type === 'done') {
+      expect(done.status).toBe('error')
+      expect(done.reason).toBe('quota_exhausted')
+      expect(done.error).toBe('这次没有拿到回复')
+    }
+  })
+
+  test('成功结束帧同样透出 status=completed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('data: {"type":"done","status":"completed"}\n\n')),
+    )
+    const events: ChatEvent[] = []
+    for await (const evt of streamChat('你好', 's1')) events.push(evt)
+    expect(events[0]).toMatchObject({ type: 'done', status: 'completed' })
+  })
+})
+
+describe('chatFailureText', () => {
+  test('按后端 reason 给出可行动文案', () => {
+    expect(chatFailureText('quota_exhausted')).toContain('额度已用完')
+    expect(chatFailureText('key_revoked')).toContain('吊销')
+    expect(chatFailureText('rate_limited')).toContain('稍后重试')
+    expect(chatFailureText('unreachable')).toContain('网络')
+  })
+
+  test('没有分类时用后端中性说明兜底，再没有才给通用文案', () => {
+    expect(chatFailureText(undefined, '后端的中性说明')).toBe('后端的中性说明')
+    expect(chatFailureText('')).toBe('这一轮没有成功，请稍后重试。')
+  })
+})
 
 describe('friendlyChatError', () => {
   test('Ollama 404 翻译为"模型不存在"，原始 JSON 保留在详情', () => {

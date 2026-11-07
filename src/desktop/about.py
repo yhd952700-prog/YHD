@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from . import DATA_DIR, LOG_DIR, REPO_ROOT, diagnostics_dir
+from ..brand import BRAND_LOCKUP
 
-APP_NAME = "鎏灏 LIUHAO X"
+APP_NAME = BRAND_LOCKUP
 _PACKAGE_NAME = "liuhao-ai-os"
 
 

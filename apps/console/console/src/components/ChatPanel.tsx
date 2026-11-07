@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  chatFailureText,
   deleteSession,
   friendlyChatError,
   getLocalSessions,
@@ -278,6 +279,37 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               next[next.length - 1] = { ...last, content, tools }
               return next
             })
+          } else if (evt.type === 'done') {
+            // HTTP 200 + done{status:error} 也是一轮失败：必须渲染失败卡片，
+            // 不能把上游的失败文案当成普通回复。
+            if (evt.status && evt.status !== 'completed') {
+              setMessages((prev) => {
+                const next = [...prev]
+                const last = next[next.length - 1]
+                // 后端失败时会把中性失败文案当 token 发出来；按 done.error
+                // 精确剔除，避免它同时以“正常回复”的样子出现。
+                let content = last.content
+                const failure = (evt.error ?? '').trim()
+                if (failure) {
+                  const trimmed = content.trim()
+                  if (trimmed === failure) content = ''
+                  else if (trimmed.endsWith(failure)) {
+                    const cut = content.trimEnd()
+                    content = cut.slice(0, cut.length - failure.length).trimEnd()
+                  }
+                }
+                next[next.length - 1] = {
+                  ...last,
+                  content,
+                  streaming: false,
+                  error: {
+                    text: chatFailureText(evt.reason, evt.error),
+                    raw: evt.error ?? evt.status,
+                  },
+                }
+                return next
+              })
+            }
           }
         }
         setMessages((prev) => {

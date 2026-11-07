@@ -43,10 +43,22 @@ export interface ToolEvent {
   raw?: string;
 }
 
-/** 流式事件联合类型：逐 token 文本，或工具调用。 */
+/** 流结束事件：`status` 不是 `completed` 就表示这一轮失败/被拒绝。 */
+export interface DoneEvent {
+  type: 'done';
+  status: string;
+  /** 失败分类（后端另一支正在透传）：quota_exhausted / key_revoked / rate_limited / unreachable 等。 */
+  reason?: string;
+  /** 后端给的中性失败说明；技术细节只进日志。 */
+  error?: string;
+  turn?: number;
+}
+
+/** 流式事件联合类型：逐 token 文本、工具调用，或结束帧。 */
 export type ChatEvent =
   | { type: 'token'; content: string }
-  | ToolEvent;
+  | ToolEvent
+  | DoneEvent;
 
 /**
  * 流式发送一条消息，逐事件产出（token / tool）。
@@ -103,6 +115,15 @@ export async function* streamChat(
             args: (evt.args ?? {}) as Record<string, unknown>,
             output: evt.output as unknown,
             raw: evt.raw as string | undefined,
+          };
+        } else if (evt.type === 'done') {
+          // 结束帧必须透出：HTTP 200 不代表这一轮成功，失败分类都在 done 里。
+          yield {
+            type: 'done',
+            status: typeof evt.status === 'string' ? evt.status : 'completed',
+            reason: typeof evt.reason === 'string' ? evt.reason : undefined,
+            error: typeof evt.error === 'string' ? evt.error : undefined,
+            turn: typeof evt.turn === 'number' ? evt.turn : undefined,
           };
         }
       } catch {
@@ -274,6 +295,29 @@ export function makeSessionTitle(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   if (!clean) return '';
   return clean.length > 16 ? `${clean.slice(0, 16)}…` : clean;
+}
+
+/**
+ * 把结束帧里的失败分类翻译成可行动的卡片文案。
+ *
+ * 后端在 `done` 事件里给 `reason`；这里只按约定消费，不猜测、不改分类。
+ * `fallback` 是后端已给的中性说明（`done.error`），没有分类时用它兜底。
+ */
+export function chatFailureText(reason?: string, fallback?: string): string {
+  switch ((reason ?? '').trim().toLowerCase()) {
+    case 'quota_exhausted':
+      return '模型额度已用完。请到「设置 → 模型」充值，或换一个还有额度的 Key 后重试。';
+    case 'key_revoked':
+      return '这个 Key 已被吊销或停用。请到「设置 → 模型」重新生成并填入新的 Key。';
+    case 'rate_limited':
+      return '请求被上游限流了。请稍后重试，或稍等片刻再发一次。';
+    case 'unreachable':
+      return '连不上模型服务。请检查网络和「设置 → 模型」里的接口地址后重试。';
+    default: {
+      const text = (fallback ?? '').trim();
+      return text || '这一轮没有成功，请稍后重试。';
+    }
+  }
 }
 
 /**

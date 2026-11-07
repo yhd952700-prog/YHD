@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.brand import BRAND_LOCKUP  # noqa: E402
 from src.desktop import autostart, diagnostics, tray  # noqa: E402
 from src.desktop.about import collect_about  # noqa: E402
 from src.desktop.diagnostics import (  # noqa: E402
@@ -36,7 +37,7 @@ WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="Windows 系统层能�
 
 def test_about_reports_real_paths(tmp_path: Path) -> None:
     about = collect_about(tmp_path)
-    assert about["app"] == "鎏灏 LIUHAO X"
+    assert about["app"] == BRAND_LOCKUP
     assert about["data_dir"] == str(tmp_path / "data")
     assert about["log_dir"] == str(tmp_path / "logs")
     assert about["build_time_source"] in {"console_dist", "git_commit", "pyproject_mtime", "unknown"}
@@ -707,5 +708,5 @@ def test_cli_about_prints_json(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert main(["about"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert output["app"] == "鎏灏 LIUHAO X"
+    assert output["app"] == BRAND_LOCKUP
     assert "data_dir" in output

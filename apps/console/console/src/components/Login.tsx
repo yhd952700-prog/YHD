@@ -36,6 +36,7 @@ import {
   registerSelf,
   sessionFromToken,
 } from '../lib/auth'
+import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
 import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage } from '../lib/errorMessage'
 import {
   IconAlert,
@@ -170,8 +171,8 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             </svg>
           </div>
           <div>
-            <div className="os-login-aside-title">鎏灏智能中枢</div>
-            <div className="os-login-aside-en">LiuHao AI OS</div>
+            <div className="os-login-aside-title">{BRAND_NAME_ZH}</div>
+            <div className="os-login-aside-en">{BRAND_NAME_EN}</div>
           </div>
         </div>
 
@@ -222,7 +223,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             </svg>
           </div>
           <div>
-            <h1 className="os-login-title">LiuHao AI OS</h1>
+            <h1 className="os-login-title">{BRAND_NAME_EN}</h1>
             <p className="os-login-sub">
               {stage === 'bootstrap'
                 ? '首次使用 · 初始化本机'
@@ -790,28 +791,58 @@ function RecoveryForm({
 }) {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
-  const [handoff, setHandoff] = useState<string | null>(null)
+  const [issuedCode, setIssuedCode] = useState<string | null>(null)
+  const [issueFailed, setIssueFailed] = useState<string | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'done' | 'fail'>('idle')
   const [handoffBusy, setHandoffBusy] = useState(false)
 
   /**
-   * 本机自救：没有任何恢复码的老账号，把新码写到本机数据目录。
-   * 码不会出现在响应里，必须在本机打开文件抄到上面 —— 这就是"能访问本机
-   * 数据目录"这一安全前提的具体形态，不依赖命令行。
+   * 本机自救：没有任何恢复码的账号，由本机生成一个新码并在页面直接显示。
+   * 后端把码写进加密交接文件后立刻取回并删除，只在本响应里给出一次；
+   * 因此必须把 `recovery_code` 直接呈现给用户，不能让他去找一个已被删掉的文件。
    */
   const issueLocal = async () => {
     if (handoffBusy) return
     setHandoffBusy(true)
     onError('')
+    setCopyState('idle')
     try {
-      const result = await postJson<{ written: boolean; file: string }>(
-        '/v1/accounts/recovery/local',
-        {},
-      )
-      setHandoff(result.file)
+      const result = await postJson<{
+        written?: boolean
+        recovered?: boolean
+        file?: string
+        recovery_code?: string
+      }>('/v1/accounts/recovery/local', {})
+      const value = (result.recovery_code ?? '').trim()
+      if (!value) {
+        // 旧后端 / 降级路径可能不给码：不引导用户去开一个已经不存在的文件。
+        setIssuedCode(null)
+        setIssueFailed(
+          '无法在本机生成恢复码。请改用你保存过的备份恢复，或联系设备管理员协助重置密码。',
+        )
+        return
+      }
+      setIssueFailed(null)
+      setIssuedCode(value)
+      // 顺手填进上方的“恢复码”，用户抄下后可直接重置。
+      setCode(value)
     } catch (err) {
+      setIssuedCode(null)
+      setIssueFailed(null)
       onError(err instanceof Error ? err.message : '本机生成失败')
     } finally {
       setHandoffBusy(false)
+    }
+  }
+
+  const copyIssued = async () => {
+    if (!issuedCode) return
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(issuedCode)
+      setCopyState('done')
+    } catch {
+      setCopyState('fail')
     }
   }
 
@@ -865,11 +896,44 @@ function RecoveryForm({
           required
         />
       </div>
-      {handoff && (
-        <div className="os-note" role="status">
-          恢复码已写入本机文件：{handoff}
-          <br />
-          请在这台电脑上打开该文件，把第一行填入上面的"恢复码"。码不会出现在界面或网络响应里。
+      {issuedCode && (
+        <div className="os-note" role="status" data-testid="recovery-code">
+          <strong>新的恢复码只显示这一次</strong>，请立刻抄下来，或存进密码管理器。
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              margin: '8px 0',
+              flexWrap: 'wrap',
+            }}
+          >
+            <code
+              data-testid="recovery-code-value"
+              style={{
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                fontSize: 16,
+                letterSpacing: '0.04em',
+                padding: '4px 10px',
+                borderRadius: 6,
+                background: 'rgba(127, 127, 127, 0.14)',
+                userSelect: 'all',
+                wordBreak: 'break-all',
+              }}
+            >
+              {issuedCode}
+            </code>
+            <button type="button" className="os-link" onClick={() => void copyIssued()}>
+              {copyState === 'done' ? '已复制' : '复制'}
+            </button>
+          </div>
+          {copyState === 'fail' && <div>复制失败，请手动选中上面的码复制。</div>}
+          这个码只能在这台电脑上使用，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
+        </div>
+      )}
+      {issueFailed && (
+        <div className="os-note" role="alert" data-testid="recovery-unavailable">
+          {issueFailed}
         </div>
       )}
       <button type="submit" className="os-btn" disabled={busy}>

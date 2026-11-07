@@ -189,6 +189,58 @@ describe('登录页状态机', () => {
     expect(visible.has('my-keys')).toBe(true)
   })
 
+  test('本机生成恢复码：码直接显示在页面上，并自动填入输入框', async () => {
+    mockRoutes(config(), {
+      '/v1/accounts/recovery/local': () =>
+        json(200, {
+          written: true,
+          recovered: false,
+          file: 'recovery-handoff.bin',
+          recovery_code: 'HAND-OFF-2026',
+        }),
+    })
+
+    render(<Login mode="desktop" onSuccess={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
+    fireEvent.click(screen.getByRole('button', { name: '没有恢复码？在本机生成' }))
+
+    const panel = await screen.findByTestId('recovery-code')
+    expect(panel.textContent).toContain('HAND-OFF-2026')
+    expect(panel.textContent).toContain('只显示这一次')
+    expect(panel.textContent).toContain('抄下来')
+    expect(panel.textContent).toContain('只能在这台电脑上使用')
+    expect(panel.textContent).toContain('用一次就会失效')
+    expect(panel.textContent).toContain('重新生成')
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
+    // 码同时被填进“恢复码”，用户不必再手抄一遍才能继续。
+    expect((screen.getByLabelText('恢复码') as HTMLInputElement).value).toBe('HAND-OFF-2026')
+    // 不能再引导用户去打开一个后端已经删掉的文件。
+    expect(document.body.textContent).not.toContain('打开该文件')
+    expect(document.body.textContent).not.toContain('recovery-handoff.bin')
+    expectNoBannedText()
+  })
+
+  test('本机生成拿不到码时不指向文件，改为说明可用的替代路径', async () => {
+    mockRoutes(config(), {
+      '/v1/accounts/recovery/local': () =>
+        json(200, { written: true, recovered: false, file: 'recovery-handoff.bin' }),
+    })
+
+    render(<Login mode="desktop" onSuccess={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '忘记密码' }))
+    fireEvent.click(screen.getByRole('button', { name: '没有恢复码？在本机生成' }))
+
+    const alert = await screen.findByTestId('recovery-unavailable')
+    expect(alert.textContent).toContain('无法在本机生成恢复码')
+    expect(alert.textContent).toContain('备份')
+    expect(alert.textContent).toContain('联系设备管理员')
+    expect(screen.queryByTestId('recovery-code')).toBeNull()
+    expect(document.body.textContent).not.toContain('打开该文件')
+    expect(document.body.textContent).not.toContain('recovery-handoff.bin')
+    // 兜底文案按要求点名“设备管理员”，其余禁用词仍必须为 0。
+    expect(findBannedTerms(document.body.textContent ?? '').filter((term) => term !== '管理员')).toEqual([])
+  })
+
   test('自助创建被关闭时只给中性文案，不透出层级或实现细节', async () => {
     mockRoutes(config(), {
       '/v1/accounts/self-register': () =>
