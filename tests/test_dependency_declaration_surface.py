@@ -167,10 +167,10 @@ def test_workflow_parser_finds_install_and_pytest_per_job():
 def test_gate_reports_no_undeclared_dependency_in_src():
     """After the fix, every importable src/ import is declared.
 
-    The unimportable case is deliberately excluded: ``google.generativeai``
-    is a genuine broken code path in ``src/ai/providers.py`` owned by the AI
-    domain, and it is a *code* defect rather than a missing declaration -- it
-    cannot be made green by editing pyproject.toml.
+    The unimportable case is deliberately excluded: a lazily imported module
+    that cannot be imported *in this interpreter* is an environment /
+    provisioning question, not a missing declaration -- it cannot be made
+    green by editing pyproject.toml.
     """
     top, lazy_only, full = gate.collect_imports()
     declared = gate.declared_packages()

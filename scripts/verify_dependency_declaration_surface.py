@@ -337,12 +337,12 @@ IMPORT_ROOT_ALIASES: Dict[str, str] = {
     # 门禁在未安装它的环境里跑时 packages_distributions() 给不出映射，
     # 没有这条别名会把**正确的** python-docx 声明误判为未声明。
     "docx": "python-docx",
-    # google.generativeai is the legacy Gemini SDK; the import namespace is
-    # `google.generativeai` but the distribution is `google-generativeai`
-    # (distinct from `google-genai`, which provides the unrelated
-    # `google.genai` namespace). Without this alias the gate cannot tell the
-    # declared distribution from the undeclared import root.
-    "google": "google-generativeai",
+    # Gemini 走 google-genai 新 SDK：import 根名是 `google`（子模块
+    # `google.genai`），PyPI 分发名是 `google-genai`。旧的
+    # `google-generativeai` 已从依赖面移除（它把 protobuf 钉在 <6，与随包
+    # 实装的 protobuf 6.x 冲突）。没有这条别名时，未装包的门禁环境给不出
+    # mapping，会把**正确的**声明误判为未声明。
+    "google": "google-genai",
     # `import argon2` / `from argon2.profiles import ...` 由 argon2-cffi 提供
     # （import 根名与 PyPI 分发名不同）。未装包时 packages_distributions 给不出
     # 映射，没有这条别名会把**正确的** argon2-cffi 声明误判为未声明。
@@ -415,8 +415,9 @@ def check_a() -> List[str]:
             where = f"{len(files)} file(s): {', '.join(files[:3])}"
             # Availability is judged on the *submodule actually imported*.
             # A namespace package can be importable while the module the code
-            # names is absent -- that is the google.generativeai case, where
-            # `import google` succeeds yet the provider still cannot run.
+            # names is absent (``import google`` may succeed while
+            # ``google.genai`` is missing), so judging the root name alone
+            # would report a provider as available when it cannot run.
             submodules = sorted(full.get(root, {root}))
             broken = [m for m in submodules if not module_is_importable(m)]
 

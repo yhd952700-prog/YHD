@@ -118,6 +118,7 @@ EXPLICIT_DISTS: Tuple[str, ...] = (
     "httpx",             # src/ai/providers.py 自建 Client（openai 只带 httpx2）
     "httpcore",          # httpx 的底层传输实现
     "anthropic",         # Anthropic provider（providers.py 方法体内延迟导入）
+    "google-genai",      # Gemini provider（providers.py 方法体内延迟导入 google.genai）
     "python-docx",       # .docx 知识导入（模块名 docx）
     "lxml",              # python-docx 的 XML 后端
     "pypdf",             # .pdf 知识导入

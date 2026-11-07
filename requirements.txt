@@ -148,9 +148,6 @@ google-auth==2.57.1
     # via google-genai
 google-genai==2.22.0
     # via pydantic-ai-slim
-# 随包实装但此前漏登记的声明依赖（pyproject.toml 直接声明）。
-google-generativeai==0.8.6
-    # via liuhao-ai-os (pyproject.toml)
 googleapis-common-protos==1.75.3
     # via
     #   opentelemetry-exporter-otlp-proto-grpc

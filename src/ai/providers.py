@@ -452,21 +452,21 @@ class GoogleProvider(BaseProvider):
         )
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Generate response via Google Gemini API."""
+        """Generate response via Google Gemini API (``google-genai`` SDK)."""
         try:
-            import google.generativeai as genai
+            from google import genai
         except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
             raise RuntimeError(
-                "GoogleProvider requires the 'google-generativeai' package "
-                "(pip install '.[google]'); it is an opt-in dependency, not "
-                "part of the default install."
+                "GoogleProvider requires the 'google-genai' package "
+                "(pip install 'google-genai'); the legacy "
+                "'google-generativeai' SDK is not supported because it pins "
+                "protobuf<6, which conflicts with the shipped protobuf 6.x."
             ) from exc
 
         model = kwargs.get("model", self.model)
         try:
-            genai.configure(api_key=self.api_key)
-            model_obj = genai.GenerativeModel(model)
-            response = model_obj.generate_content(prompt)
+            client = genai.Client(api_key=self.api_key)
+            response = client.models.generate_content(model=model, contents=prompt)
             return response.text
         except Exception:
             # Re-raise to let generate_with_retry handle it

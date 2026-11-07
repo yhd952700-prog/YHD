@@ -87,7 +87,19 @@ COPY_ROOT_FILES: Tuple[str, ...] = ("capability-registry.yaml",)
 #: These are passed to the copy as *ignore* patterns rather than deleted after
 #: the fact: nothing is ever written that then has to be removed. That is
 #: cheaper, and it keeps the build free of the bulk-delete path entirely.
-CONFIG_EXCLUDES = ("production", "monitoring")
+#:
+#: ``auth_secrets.json`` / ``human_identities.json`` are the operator's real
+#: credential and identity stores (``scripts/register_human_identity.py``
+#: writes both). A public bundle must never carry them: one is a password
+#: database, the other names real people. The demo site still needs a login,
+#: so :func:`_write_demo_account` generates a **synthetic** account inside the
+#: bundle after the copy.
+CONFIG_EXCLUDES = (
+    "production",
+    "monitoring",
+    "auth_secrets.json",
+    "human_identities.json",
+)
 
 #: Built console output. Copied to a directory named ``console`` rather than
 #: ``dist`` because the publishing uploader **strips conventional build-output
@@ -161,7 +173,7 @@ if os.path.isfile(_SECRETS_FILE):
 # reads as "off":
 #     LIUHAO_KERNEL_POLICY_ENFORCE= ./serve.py
 os.environ.setdefault("LIUHAO_KERNEL_POLICY_ENFORCE", "CRITICAL")
-{{LLM_BLOCK}}{{JWT_BLOCK}}
+{{LLM_BLOCK}}{{JWT_BLOCK}}{{DEMO_BLOCK}}
 from src.gateway.__main__ import main  # noqa: E402
 
 if __name__ == "__main__":
@@ -227,6 +239,146 @@ def _render_jwt_block() -> str:
         "# unless LIUHAO_JWT_SECRET was set in the build environment; the value\n"
         "# stays inside this gitignored bundle, like the LLM key.\n"
         f"os.environ.setdefault({JWT_SECRET_ENV!r}, {secret!r})\n"
+    )
+
+
+#: Synthetic account written into a published bundle so the demo can be used.
+#: It exists only inside the generated bundle -- never in the repository, and
+#: never derived from an operator's real registry or credential store.
+DEMO_PRINCIPAL = "demo"
+DEMO_DISPLAY_NAME = "演示账号"
+DEMO_PASSWORD_ENV = "LIUHAO_DEMO_PASSWORD"
+DEMO_ACCOUNT_FILE = "DEMO-ACCOUNT.txt"
+
+#: Placeholder for the demo account block in ``serve.py`` (always consumed;
+#: empty for ``--portable`` builds, where the recipient runs the setup wizard).
+DEMO_PLACEHOLDER = "{{DEMO_BLOCK}}"
+
+
+def _write_demo_account(out_dir: Path) -> Dict[str, str]:
+    """Create the bundle's own demo account: placeholder identity + credential.
+
+    Why generate instead of copying: ``config/auth_secrets.json`` is a password
+    database and ``config/human_identities.json`` names real people. Copying
+    either into a bundle published at a public URL leaks them. But a bundle with
+    no identity is a login wall nobody can pass, so this writes a synthetic
+    account -- a fresh random password and a fresh integrity key that only this
+    bundle knows -- using the same stores the product itself uses.
+
+    Returns the facts needed to finish the launcher (``serve.py`` must know the
+    integrity key, otherwise every row is refused fail-closed) and to tell the
+    operator the login.
+    """
+    from src.gateway.auth import (
+        AUTH_SECRETS_FILE_ENV,
+        resolve_secret_store,
+        verify_credential,
+    )
+    from src.kernels.identity._persistence import (
+        FIELD_DISPLAY_NAME,
+        FIELD_PERMISSIONS,
+        FIELD_PRINCIPAL,
+        FIELD_REGISTERED_AT,
+        FIELD_SCOPE,
+        FIELD_SOURCE,
+        HUMAN_IDENTITIES_BACKEND_ENV,
+        HUMAN_IDENTITIES_DB_ENV,
+        HUMAN_IDENTITIES_FILE_ENV,
+        HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+        resolve_human_identity_store,
+    )
+
+    config_dir = out_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    identity_file = config_dir / "human_identities.json"
+    secrets_file = config_dir / "auth_secrets.json"
+    password = (os.environ.get(DEMO_PASSWORD_ENV) or "").strip() or secrets.token_urlsafe(12)
+    integrity_key = secrets.token_urlsafe(32)
+
+    # The build machine may carry operator env vars (this one did: a machine
+    # scope pointed at the dev repo's identity DB). Pin the stores explicitly
+    # and restore afterwards, so the demo account can never land in the repo.
+    keys = (
+        HUMAN_IDENTITIES_BACKEND_ENV,
+        HUMAN_IDENTITIES_DB_ENV,
+        HUMAN_IDENTITIES_FILE_ENV,
+        HUMAN_IDENTITIES_INTEGRITY_KEY_ENV,
+        AUTH_SECRETS_FILE_ENV,
+    )
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ[HUMAN_IDENTITIES_BACKEND_ENV] = "file"
+        os.environ.pop(HUMAN_IDENTITIES_DB_ENV, None)
+        os.environ[HUMAN_IDENTITIES_FILE_ENV] = str(identity_file)
+        os.environ[HUMAN_IDENTITIES_INTEGRITY_KEY_ENV] = integrity_key
+        os.environ[AUTH_SECRETS_FILE_ENV] = str(secrets_file)
+
+        store = resolve_human_identity_store()
+        if not store.upsert(
+            {
+                FIELD_PRINCIPAL: DEMO_PRINCIPAL,
+                FIELD_DISPLAY_NAME: DEMO_DISPLAY_NAME,
+                # Empty: a demo account must not be able to approve anything.
+                FIELD_PERMISSIONS: [],
+                FIELD_SCOPE: "L0",
+                FIELD_REGISTERED_AT: "",
+                FIELD_SOURCE: "build_cloud_bundle.py (demo account)",
+            }
+        ):
+            raise SystemExit(f"演示账号写入失败：{store.location}")
+
+        secret_store = resolve_secret_store()
+        if not secret_store.set_credential(DEMO_PRINCIPAL, password):
+            raise SystemExit(f"演示账号凭据写入失败：{secret_store.path}")
+        if not verify_credential(password, secret_store.credential_for(DEMO_PRINCIPAL)):
+            raise SystemExit("演示账号凭据写入后校验失败，拒绝产出无法登录的发布包。")
+
+        # Read it back through the kernel's own loader: a row whose integrity tag
+        # does not verify is silently refused, which would ship a login wall.
+        admitted = {
+            str(row.get(FIELD_PRINCIPAL))
+            for row in store.load_all()
+            if isinstance(row, dict)
+        }
+        if DEMO_PRINCIPAL not in admitted:
+            raise SystemExit(
+                "演示账号写入后未被内核接受（完整性标签校验失败），拒绝产出无法登录的发布包。"
+            )
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    (out_dir / DEMO_ACCOUNT_FILE).write_text(
+        "本发布包自带的演示账号（构建时随机生成，只存在于这个目录）\n"
+        f"登录名: {DEMO_PRINCIPAL}\n"
+        f"密码  : {password}\n"
+        "\n"
+        "该账号没有任何审批权限，只用于登录演示站。\n"
+        "要换成自己的账号：在本机运行 scripts/register_human_identity.py。\n",
+        encoding="utf-8",
+    )
+    return {
+        "principal": DEMO_PRINCIPAL,
+        "password": password,
+        "integrity_key": integrity_key,
+    }
+
+
+def _render_demo_block(demo: Dict[str, str] | None) -> str:
+    """Emit the demo account's integrity key into ``serve.py`` ('' if none)."""
+    if not demo:
+        return ""
+    return (
+        "\n# Demo account (generated by scripts/build_cloud_bundle.py, this\n"
+        "# bundle only). The registry is signed with this key; without it the\n"
+        "# kernel refuses every row fail-closed and the demo cannot be used.\n"
+        "# Real operator identities/credentials are never copied into a bundle.\n"
+        "os.environ.setdefault("
+        "'LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY', "
+        f"{demo['integrity_key']!r})\n"
     )
 
 
@@ -504,6 +656,19 @@ def build(out_dir: Path, portable: bool = False) -> int:
         details = f"（已剔除 {', '.join(exclusions)}）" if exclusions else ""
         print(f"      {name:8s} -> {count} 个文件{details}")
 
+    # Defence in depth: the ignore list is the fix, this is the alarm. A bundle
+    # published at a public URL must never contain a password database or a
+    # registry of real people, even if someone later edits the copy paths.
+    leaked = [
+        name
+        for name in ("auth_secrets.json", "human_identities.json")
+        if (out_dir / "config" / name).exists()
+    ]
+    if leaked:
+        raise SystemExit(
+            f"发布包 config/ 里出现真实凭据/身份文件：{leaked} —— 已中止构建。"
+        )
+
     for name in COPY_ROOT_FILES:
         source_file = REPO_ROOT / name
         if source_file.is_file():
@@ -517,13 +682,22 @@ def build(out_dir: Path, portable: bool = False) -> int:
     console_target = out_dir / CONSOLE_DIST_REL
     console_count = _copy_tree(CONSOLE_DIST_SRC, console_target)
     print(f"      dist     -> {console_count} 个文件  →  {CONSOLE_DIST_REL}/")
+    demo = None if portable else _write_demo_account(out_dir)
     launcher_source = _LAUNCHER.replace(LLM_PLACEHOLDER, _render_llm_block(portable=portable))
     launcher_source = launcher_source.replace(JWT_PLACEHOLDER, _render_jwt_block())
-    for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER):
+    launcher_source = launcher_source.replace(DEMO_PLACEHOLDER, _render_demo_block(demo))
+    for placeholder in (LLM_PLACEHOLDER, JWT_PLACEHOLDER, DEMO_PLACEHOLDER):
         if placeholder in launcher_source:  # 占位符必须被消费，否则产物是坏 Python
             raise AssertionError(f"launcher template still contains {placeholder}")
     (out_dir / LAUNCHER_NAME).write_text(launcher_source, encoding="utf-8")
     print(f"      入口脚本 -> {LAUNCHER_NAME}")
+    if demo:
+        print(
+            f"      演示账号 -> {demo['principal']} / {demo['password']} "
+            f"（写入 {DEMO_ACCOUNT_FILE}；无审批权限）"
+        )
+    else:
+        print("      演示账号 -> [portable] 不生成；收件人用首次运行向导建自己的账号")
 
     import re as _re
 

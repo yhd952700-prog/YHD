@@ -186,13 +186,12 @@ security = [
     "bcrypt>=4.1.0",
     "pyotp>=2.9.0",
 ]
-# src/ai/providers.py:323 `GoogleProvider.generate()` 惰性导入
-# `google.generativeai`（Gemini 旧版 SDK）。之前在任何声明面里都**零 google\***
-# 声明，而锁文件只带 google-genai（提供互不相关的 `google.genai` 命名空间），
-# 于是 GOOGLE_API_KEY 一设就触发 `ModuleNotFoundError` 的“假可用”。作为可选项
-# 声明，使依赖声明面诚实（任务①/UNVERIFIED google 盲区）。
+# src/ai/providers.py `GoogleProvider.generate()` 惰性导入 `google.genai`
+# （google-genai 新 SDK）。旧版 `google-generativeai` 已从依赖面移除：它把
+# `protobuf<6` 钉死，与随包实装的 protobuf 6.x（googleapis-common-protos 要求）
+# 直接冲突，安装期即 ResolutionImpossible。google-genai 自身不依赖 protobuf。
 google = [
-    "google-generativeai>=0.3.0",
+    "google-genai>=2.22.0",
 ]
 # 数据库迁移工具 alembic。**可选**，且不进运行期依赖：全仓唯一消费者是
 # scripts/verify_deploy_readiness.py（迁移入口探测），src/ 下**没有任何模块**
