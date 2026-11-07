@@ -49,7 +49,16 @@ MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_IMPORT_ATTEMPTS = 5
 
 _ATTEMPTS_DB_ENV = "LIUHAO_ACCOUNT_BACKUP_DB"
+#: 备份导出默认只允许本机来源；远程导出必须显式打开并写启动日志。
+REMOTE_EXPORT_ENV = "LIUHAO_ALLOW_REMOTE_BACKUP_EXPORT"
 _attempt_lock = threading.Lock()
+
+
+def remote_export_enabled() -> bool:
+    """远程备份导出开关（默认关闭）；只认显式的 1/true/yes。"""
+    return (os.environ.get(REMOTE_EXPORT_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 # --------------------------------------------------------------------------- #
