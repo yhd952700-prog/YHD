@@ -55,24 +55,24 @@
 
 | # | Kernel | 路径 | `__init__.py` 行 | 全包 `.py` 行 | Definition Lock 依据 | 职责 |
 |---|--------|------|------|------|---------------------|------|
-| 1 | **identity** | `src/kernels/identity/` | 2634 | 4854 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
+| 1 | **identity** | `src/kernels/identity/` | 2695 | 4984 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
 | 2 | **memory** | `src/kernels/memory/` | 676 | 1395 | §112 | 多层记忆存储、L0-L7 作用域过滤、CRUD、跨层压缩整合 |
 | 3 | **context** | `src/kernels/context/` | 264 | 264 | §112 | 12 类输入 → 压缩 → 模型就绪上下文 |
 | 4 | **capability** | `src/kernels/capability/` | 558 | 558 | §112 | 能力注册中心、版本、追溯链、作用域检查 |
 | 5 | **policy** | `src/kernels/policy/` | 1443 | 1443 | §112 | ABAC 策略引擎、优先级评估、人类主权覆盖 |
-| 6 | **execution** | `src/kernels/execution/` | 2041 | 3960 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
+| 6 | **execution** | `src/kernels/execution/` | 2063 | 3982 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
 | 7 | **resource** | `src/kernels/resource/` | 650 | 650 | §112 | CPU/Mem/Storage/Token/Time/$ 六种配额 |
 | 8 | **event** | `src/kernels/event/` | 427 | 427 | §112 | 统一事件总线、correlation ID、死信重试 |
 | 9 | **network** | `src/kernels/network/` | 855 | 855 | §112 | 协议适配（A2A/MCP/gRPC/HTTP/WS）、路由 |
 | 10 | **trust** | `src/kernels/trust/` | 765 | 765 | §112 | 信任评分、传播、衰减、撤销 |
 | 11 | **evaluation** | `src/kernels/evaluation/` | 752 | 752 | §112 | 结果评估、反馈、重规划触发、升级 |
 | 12 | **security** | `src/kernels/security/` | 814 | 1084 | **§112** | RBAC+ABAC、Vault Transit 加密、审计 |
-| 13 | **audit** | `src/kernels/audit/` | 2554 | 6978 | **§113** | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
+| 13 | **audit** | `src/kernels/audit/` | 2857 | 7335 | **§113** | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
 | 14 | **plugin** | `src/kernels/plugin/` | 599 | 599 | **§115** | 插件注册、热加载、版本兼容、作用域激活 |
 | — | *（非注册）* **retention** | `src/kernels/retention/` | *134* | *1194* | — | **HD-06 留存子系统**，非注册内核（见 §0.5） |
 
-**14 个注册内核合计：15,032 行（`__init__.py`）/ 24,584 行（全包 `.py`）。**
-连同非注册的 `retention/`：`src/kernels/` 全树 = 15,166 / 25,778 行。
+**14 个注册内核合计：15,418 行（`__init__.py`）/ 25,093 行（全包 `.py`）。**
+连同非注册的 `retention/`：`src/kernels/` 全树 = 15,552 / 26,287 行。
 
 > ⚠️ **v1.0 此处写的是「合计 6,391 行」，该数字有三个问题，且没有一个是对的**：
 > 1. **它与它自己上方的表格不符** —— 表内 14 个行数相加为 **6,581**，与 6,391 差 190。

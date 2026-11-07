@@ -1,7 +1,7 @@
 # 交付清单（实测版）
 
 > 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）；
-> 2026-11-07 交付面审计后更新 §0 当前产物与体积口径。
+> 2026-11-07 交付面审计后更新 §0 当前产物与体积口径；2026-11-07 收口补 §5.11 发布候选凭证（`b4406497`）。
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
@@ -34,7 +34,7 @@
 | SHA256 | `6b0179d8372bb8830f55b6cb9835fcacd9a54642f7d5ebb16db5946359ad9e88` |
 | 校验文件 | `dist/installer/SHA256SUMS.txt`、`dist/installer/DELIVERY.txt` |
 | 升级包 | `dist/installer/liuhao-0.1.0.zip` 2,529,546 字节，SHA256 `29fecdf0…6e12` |
-| **这版安装包对应的源码提交** | 0.1.0 交付包来源提交未绑定；**本次最终包转正后必须回填** |
+| **这版安装包对应的源码提交** | 0.1.0 交付包来源提交未绑定；**本次最终包转正后必须回填**。本轮发布候选为 `b4406497`，但其安装包尚未重建，**不能**声称 0.1.0 产物对应 `b4406497` |
 | 安装后体积 | 10,502 个文件 / 170,666,366 字节（约 162.8 MiB，0.1.0 交付包实测） |
 | 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`） |
 | 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，4,567 字节，含 Key 申请与跳过说明） |
@@ -130,7 +130,7 @@
 | 12 | 前端重建 | 未做 | 安装包内是构建时的 `console/dist`；前端仍在重写 | 前端稳定后必须重建安装包（E-7） |
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
-| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-16（E-9～E-16 为本轮追加） | — |
+| 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-21（E-9～E-21 为历次追加；2026-11-07 本轮关闭/仍开放清单另列） | — |
 | 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
 
 ## 3. 「部分完成」的确切差额（汇总）
@@ -432,6 +432,43 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 - **过程 hash 作废说明**：`ae7935a7`（C7 首跑红 0.059 > 0.055，已披露方差带内；C3/C12 PASS
   7620/0/0）与 `b76762a7`（C7 吞吐 1476.6 < 1503.5 且 recovery 0.073，与分发流构建并发；
   C3 PASS 7620/0/0）都**只作参考**，产品代码已不同，不作为交付凭证。
+
+### 5.11 本轮收口凭证（发布候选 `b4406497`，2026-11-07）
+
+> 与 §5.10 的关系：§5.10 是上一冻结 `72fd9b17` 的历史凭证，保持原文不回写；本节是本轮 26 个提交后的新候选。
+> 结论先行：**CI 红，`b4406497` 不可作为交付冻结候选**。
+
+| 项 | 结果 |
+|---|---|---|
+| 源码提交 | `b4406497`（`origin/p36`；`2738e16a..b4406497` 26 个提交，快进推送） |
+| CI run | `42386438527` — **failure** |
+| 两腿回归 | **17 failed / 7705 passed / 40 skipped / 3 xfailed**（3.11 与 3.12 数字一致） |
+| Guardrails / Step 21 | **未真跑**：上游 `test` 红，被 CRITICAL-5 看门狗显式判红（未静默跳过） |
+| 文档三条门禁 | 本地 PASS：`verify_doc_count_claims`（15,418 / 25,093 / 15,552 / 26,287）、`verify_doc_links`、`verify_docs_index_coverage`；CI 内因 Guardrails 被上游阻断未执行 |
+| Security Scan | **红**：被 CRITICAL-5 看门狗阻断（`security` 依赖 `test`） |
+| 安装包 | **未重建**：`dist/installer` 仍是 0.1.0（构建 11-06 17:29，早于 `9e537633`），不能作为本提交产物 |
+| `--full` | **未在 `b4406497` 重跑**；§5.10 的 `PASS=10` 只对 `72fd9b17` 成立 |
+| 2h soak | **未在修复后重跑**（known-gaps G-8） |
+
+**失败归因：真回归，不是环境问题。** 本地同一 venv 复跑同批文件 16 failed（`test_chat_history` 单跑通过、全量顺序失败），五组根因见
+[MASTER-TASK-LEDGER.md](MASTER-TASK-LEDGER.md#10-本轮修复登记2026-11-07) §10.2 与 [known-gaps.md](known-gaps.md)：
+
+- F-01（9 个）：`tests/conftest.py` autouse fixture 全局 `LIUHAO_DATA_DIR`，打挂升级状态/备份/自检落点；
+- F-02（3 个）：`src/gateway/chat.py` 直取 `assistant.provider`，测试 `FakeAssistant` 无该属性；
+- F-03（1 个）：全量顺序下会话列表为空（单跑通过，用例间状态污染）；
+- F-04（2 个）：新增 `PERSONAL_CONTEXT_DB_PATH` 未登记门禁变量，另有 4 处 `SEED_GATES` 引用行漂移；
+- F-05（1 个）：`6a2e361e` 新增测试文件带 UTF-8 BOM。
+
+**还差什么（按顺序，缺一不可）**：
+
+1. 修 F-01～F-05（涉及 `tests/`、`src/`，超出本轮 docs-only 边界）。
+2. 在新 hash 上两腿 + Guardrails（Step 21 真跑出 `PASS: contract matches runtime ...`）+ 文档三条 + Security Scan 全绿。
+3. 用该 hash 重建安装包，回填 §0 的路径/字节/SHA256/源码提交。
+4. 在该 hash 跑 `verify_readiness.py --full` 并重跑 2h soak。
+5. E-5 / E-8 / E-14 / E-20 / E-21 / F-1～F-6 继续保持未验证。
+
+**DELIVERY.txt 说明**：`dist/installer/DELIVERY.txt` 是构建产物，按本轮边界（不动 `dist/`）未改；
+它仍描述 0.1.0 内部构建，不可对外发布；重建安装包时须由打包流回填源码提交与本表凭证。
 
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
