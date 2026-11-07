@@ -150,7 +150,11 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **Next:** Optionally promote to a truly external signer (out-of-repo auditor) for HC-01; integrate the `--full` suite re-run into the standing CI record.
 
 ## HC-01 — Audit Master Chain
-- **Status:** **BLOCKED** (GO=BLOCKED) · **HUMAN DECISION PENDING** · **Decision Isolation active**
+- **Status:** **BLOCKED** (GO=BLOCKED) · **DECISION RECORDED** (ADR-HC01, 2026-11-06) · **Decision Isolation active**
+  — the five HC-01 decisions (baseline binding Path A / accept-with-disclosure / fixed-vs-parameterised split /
+  no v1→v9 / re-capture deferred) are recorded in `docs/adr/ADR-HC01-baseline-binding.md`. The machine gate
+  `check_hc01` stays `BLOCKED` **by design** (a machine may not self-clear a human-sovereignty gate); that is a
+  machine state, **not** evidence that the decision is outstanding.
 - **Evidence:**
   - Runtime mechanism is **COMPLIANT** (`probe_hc01` in `verify_p08b_chain_matrix.py` = **8/8 PASS**: per-line hash_alg declaration, canonicalization excluding event_hash/prev_event_hash, linkage, tamper-detectable, unknown-alg fail-closed, no-default-alg fail-closed).
   - But the **live evidence chain** was recorded (Phase 3.6) as a **real fork**: 137 duplicate `seq` clusters, 169 redundant rows. The binding authority is the **immutable** Phase-3.6 evidence under `D:\WorkBuddyFiles\LIUHAO-Phase3.6-Evidence\` — per governance §2, no evidence ⇒ cannot be marked VERIFIED.
@@ -158,7 +162,8 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 - **Last Verified:** 2026-09-29 (runtime scripts + read-only DB query + evidence custody docs).
 - **Blocker:** human-sovereignty decision (data ownership / irreversible raw-data disposition / retention policy). **This is NOT an engineering failure and does NOT block the rest of the project (Decision Isolation).**
 - **Owner:** governance-legal (`gov-impl`) — reserved for human decision; engineering continues on all other gates.
-- **Next:** Await human decision on HC-01 disposition; in the meantime keep it isolated and keep all other chains (HC-02..HC-08, HC-11) releasable.
+- **Next:** Decision recorded (ADR-HC01); do not re-open it by editing this line. Any change to HC-01's disposition
+  requires a **new ADR** superseding ADR-HC01. Keep it isolated and keep all other chains (HC-02..HC-08, HC-11) releasable.
 
 ## Release Readiness
 - **Status:** **NOT READY** — authoritative machine verdict from the last recorded run of `python scripts/verify_readiness.py` (2026-10-01): **PASS=9, FAIL=0, BLOCKED=1 (HC-01), NOT VERIFIED=2 (C3/C12)** (`release_ready=false`). The report file (`scripts/readiness_report.json`) is a gitignored run artifact — regenerate it, never trust a checked-in copy. Gated by: (1) **C11 BLOCKED** = HC-01 (human-sovereignty decision, frozen & isolated, not an engineering blocker); (2) **two BLOCKED observability metrics** — `liuhao_audit_write_failures_total` + audit-DB corruption/quarantine events — whose only valid producers live in the HC-01-frozen `src/kernels/audit/__init__.py` (no fake-green placeholder created, per the no-fake-evidence rule); (3) **C3 / C12 NOT VERIFIED** = the battery gates on an actual `--full` `pytest tests/` execution in CI (the clean-env 3307/24/0 evidence already lives in G2/G3; the battery's recorded-number path stays NOT VERIFIED until `--full` is wired into CI). Engineering-critical blockers: **none**. VERIFIED this cycle: **G6** (failure-mode + chaos + soak + restart-recovery + real DB-unavailable, all on temp DBs), **G7** (profile-keyed perf gate PASS on the captured profile + real 1M insert validated), and **G9** (alembic upgrade/rollback proven on a temp db + staging/test contract). Also VERIFIED: G1 (build), G2 (clean-env run), G3 (full test baseline), G4 (security), G5 (data integrity HC-02..08+HC-11), G8 (observability export, runtime-scraped), G10 (independent verification, structured report). The machine verdict is regenerated with `python scripts/verify_readiness.py` (use `--only` to run a subset).
@@ -166,7 +171,7 @@ The system has real, fail-closed security and data-integrity subsystems, a distr
 ---
 
 ## Critical Blockers
-- **HC-01 disposition** — HUMAN DECISION PENDING / GO=BLOCKED. Frozen & isolated; not an engineering blocker.
+- **HC-01 disposition** — DECISION RECORDED (ADR-HC01) / machine gate GO=BLOCKED by design. Frozen & isolated; not an engineering blocker.
 
 ## High Risks
 - **G8 gap — FOUND and FIXED 2026-09-29:** HTTP request metrics (`http_requests_total`, `http_request_duration_seconds`) were **declared but never incremented** — the endpoint exported their families while emitting zero per-request samples, so dashboards looked instrumented but carried no request data. Found by performing the first real runtime scrape, then fixed by wiring the families into `logging_middleware` (`src/gateway/main.py`). **Lesson recorded:** "the metric exists" was never evidence that it is fed — only a live scrape proved otherwise.

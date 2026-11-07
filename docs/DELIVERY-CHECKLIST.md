@@ -1,7 +1,8 @@
 # 交付清单（实测版）
 
 > 生成时间：2026-11-05（本机时间）；2026-11-06 更正安装包记录（见 0.1）；
-> 2026-11-07 交付面审计后更新 §0 当前产物与体积口径；2026-11-07 收口补 §5.11 发布候选凭证（`b4406497`）。
+> 2026-11-07 交付面审计后更新 §0 当前产物与体积口径；2026-11-07 收口补 §5.11 发布候选凭证（`b4406497`）；
+> 2026-11-08 补 §5.12 新 tip 凭证（`416f7109`）与 §7 新一轮冻结前置清单、§7.1 宣布 True 还差什么、§7.2 自定义 Base URL 的 SSRF 口径。
 > 判定口径：只有「本轮亲手跑出结果」才写「已完成」；只有代码/文档但没跑过
 > 真实链路的写「部分完成」或「未验证」；完全没做的写「未做」。
 > 未做与未验证项均已登记到 [known-gaps.md](known-gaps.md)，不在本清单里
@@ -17,28 +18,35 @@
 > 2. **C11 已裁决（ADR-HC01）**：5 项裁决由 owner 拍定并记录
 >    [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)。机器门 `check_hc01`
 >    仍按冻结的人类主权门设计打印 `BLOCKED`——这是机器口径，不是「裁决未做」；工程侧
->    不改判定，也不为了好看去调阈值。
+>    不改判定，也不为了好看去调阈值。2026-11-08 起 `check_hc01` 的**证据文案**与
+>    `CONDITION_META["C11"]` 已改为明写「裁决已记录 / 门按设计冻结」（状态仍是 `BLOCKED`，
+>    未改成 `PASS`）：措辞是关于世界的事实，状态是门的性质，两者分开。
 > 3. **`RELEASE READY = False` 的理由只剩 C9**：桌面分发形态没有真实 CD 环境可验，
 >    属**形态差异**，不是产品缺陷。安装树的真实升级/回滚（`c9b-*` 证据）已覆盖交付需求，
 >    但**不等于「真实 CD 已验过」**，本条不写成「已全部验证」。
+> 4. **`RELEASE READY=True` 当前结构上不可达**：机器要求 12 关全 `PASS`，而 C11 是冻结门、
+>    恒为 `BLOCKED`；C9 在本轮 worktree 里也只能 `NOT VERIFIED`（无 `.venv` 走兜底分支）。
+>    要变 True 必须先有新 ADR 改变 C11 的机器口径，详见 [§7.1](#71-宣布-release-readytrue-还差什么)。
 
 ## 0. 安装包
 
-**当前状态：`dist/installer/` 有 0.1.0 的四项正式产物；本次同源构建的最终包待验收后替换。**
+**当前状态（2026-11-08 实测）：`dist/installer/` 有 0.1.0 的四项正式产物（重新构建，覆盖了 11-06 的上一版），
+但**不是**本轮候选 `416f7109` 的产物，版本号也对不上 0.1.1。**
 上一版“该路径从未存在 / 目录为空”的说法已过期，见 0.1 的历史溯源。
 
-| 项目 | 值 |
+| 项目 | 值（2026-11-08 实测） |
 |---|---|
-| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.0.exe`（上一版交付物） |
-| 大小 | 34,838,298 字节（约 33.2 MiB） |
-| SHA256 | `6b0179d8372bb8830f55b6cb9835fcacd9a54642f7d5ebb16db5946359ad9e88` |
-| 校验文件 | `dist/installer/SHA256SUMS.txt`、`dist/installer/DELIVERY.txt` |
-| 升级包 | `dist/installer/liuhao-0.1.0.zip` 2,529,546 字节，SHA256 `29fecdf0…6e12` |
-| **这版安装包对应的源码提交** | 0.1.0 交付包来源提交未绑定；**本次最终包转正后必须回填**。本轮发布候选为 `b4406497`，但其安装包尚未重建，**不能**声称 0.1.0 产物对应 `b4406497` |
-| 安装后体积 | 10,502 个文件 / 170,666,366 字节（约 162.8 MiB，0.1.0 交付包实测） |
-| 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`） |
-| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，4,567 字节，含 Key 申请与跳过说明） |
+| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.0.exe` |
+| 大小 / 构建时间 | 34,731,647 字节（约 33.1 MiB）/ 2026-11-07 11:14 |
+| SHA256（`SHA256SUMS.txt` 与文件同源） | `01BE18BBE4C07923486FB27BA59C23C23F42A6E86F89C8967B1F86C0DEC64DA2` |
+| 校验文件 | `dist/installer/SHA256SUMS.txt`（90 字节，仅 exe 一条）、`dist/installer/DELIVERY.txt` |
+| 升级包 | `dist/installer/liuhao-0.1.0.zip` 2,638,893 字节，SHA256 `0A04AC6ADCC299323B4B92A9BC1040A682F5C1DC3601A5FEF94A8C81FFA48512` |
+| **这版安装包对应的源码提交** | `f74fa14e2c947385e8a3f61052393e733498726c`（`DELIVERY.txt` 首段自述，含 `3522eb30`、`f74fa14e`）——**早于** 0.1.1 版本号提交 `f7603a8e` 与四个 ISCC 修复（`d57fa52e`/`6b47829b`/`7c0a252a`/`416f7109`），因此**不能**作为本轮候选 `416f7109` 的产物 |
+| payload | 148.8 MB / 安装后 10,038 文件（`DELIVERY.txt` 自述） |
+| 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`）；本轮用发布 venv `D:\cache\venvs\liuhao-release-20261108` |
+| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，含 Key 申请与跳过说明） |
 | 第三方许可证 | 声明由 `packaging/third_party_notices.py` 在构建时按 payload 实装生成（模板 `packaging/third-party-notices.template.txt`），连同 `packaging/licenses/` 一起复制到程序根目录 |
+| **结论** | 0.1.0 包本身自洽（exe/zip/SHA256SUMS/DELIVERY 四件套齐、绑定 `f74fa14e`），但**不是 0.1.1、不是冻结 hash 的产物**；按 §7 P-2 重打后才能回填为交付物 |
 
 ### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 
@@ -470,6 +478,39 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 **DELIVERY.txt 说明**：`dist/installer/DELIVERY.txt` 是构建产物，按本轮边界（不动 `dist/`）未改；
 它仍描述 0.1.0 内部构建，不可对外发布；重建安装包时须由打包流回填源码提交与本表凭证。
 
+### 5.12 新 tip `416f7109` 的就绪凭证（2026-11-08）
+
+> 上一轮冻结凭证 `72fd9b17` 已作废。本节是新 tip 上的**实测**结果，命令、日志、JUnit 均可复核。
+> 明细与并发干扰记录：[evidence/verify-full-416f7109-2026-11-08.md](evidence/verify-full-416f7109-2026-11-08.md)。
+
+| 项 | 事实 |
+|---|---|
+| 判定对象 | `416f7109`（`origin/p36` tip；含 0.1.1 版本号 + 四个 ISCC 修复） |
+| worktree | `D:\copilot-worktrees\liuhao-delivery-416f7109`，跑前 `git status --porcelain` 为空 |
+| 解释器 | `.venv` Python 3.12.14（`pytest-timeout` 在位，无 `unrecognized arguments` 类 `ERROR`） |
+| 命令 | `python -u scripts/verify_readiness.py --only C1,C2,C4,C5,C6,C7,C8,C9,C10,C11`，再单独 `--only C7` |
+| 机器 verdict | `PASS=7  FAIL=0  BLOCKED=1  NOT_VERIFIED=2  ERROR=0` — **`RELEASE READY = False`** |
+
+| 关 | 状态 | 实测数字 / 证据 |
+|---|---|---|
+| C1 Build | **PASS** | `compileall` 干净；4 个入口模块 import OK |
+| C2 Clean-env runnable | **PASS** | 干净环境启动后 `GET /v1/health` = 200 |
+| C4 Security blocker | **PASS** | 无高置信度密钥；fail-closed 在位；CI 门禁 `bandit:high`、`semgrep:error` |
+| C5 Data integrity | **PASS** | hash-chain 签名/算法 **32/32 COMPLIANT**（HC-02..08 + HC-11） |
+| C6 Crash/recovery | **PASS** | 6 个可靠性/故障面文件全绿（仅临时库；live `audit_store.db` 未触碰） |
+| C7 Performance | **NOT VERIFIED** | 第 1 次：`aggregate_events_per_sec_including_startup` = **1057.0** < 1503.5（基线 2004.7，容差 25%）；按规则单独 `--only C7` 第 2 次：**1380.1** < 1503.5。两次都在 §2 所述并发负载下（8 个并发 pytest + 2 套 24h harness + 4 个 gateway）；`check_performance` 自身拒绝把这判成回归，故为 `NOT VERIFIED`，**不是 FAIL**。安静 runner（CI）才能给稳定判定 |
+| C8 Observability | **PASS** | `/v1/metrics/prometheus` = 200、10,035 字节、**48** 个真实指标族（下限 40）；`http_requests_total` PRESENT+FED；UBX005 全在 |
+| C9 Deploy/upgrade/rollback | **NOT VERIFIED** | worktree 内无 `.venv`，`verify_deploy_readiness.py` 无法执行，checker 只能落到 `Dockerfile + alembic` 兜底分支；`real CD absent=True`（如实） |
+| C10 Independent verification | **PASS** | 独立验证 harness 在位 |
+| C11 HC-01 | **BLOCKED** | 冻结人类主权门（状态不变）。**本轮已改证据文案**：明写「决定已记录在 ADR-HC01 / 门按设计冻结 / `BLOCKED` ≠ 裁决未做」，不再打印「HUMAN DECISION PENDING」 |
+| C3 Test suite | **本轮未完成（如实记录）** | 全量在本机被并发清理多次杀掉（JUnit 落成 0 字节，不可当凭证）；上一可比凭证是 `b4406497` 的 CI：**17 failed / 7705 passed / 40 skipped / 3 xfailed**，失败集合 = F-01～F-05 |
+| C12 No major failures | **与 C3 同源** | 同上；F-01～F-05 未修，因此**不可能转绿**——只能靠改 `tests/`/`src/`，本轮边界不允许 |
+
+**结论（必须照此表述）**：C11 的 `BLOCKED` 是**门的设计**，不是「裁决未做」；`RELEASE READY=False`
+的**机器原因**是 C9 与 C11 两条口径（C9 可达、C11 需新 ADR），而**交付原因**是 P-1～P-7 未完成、
+C3/C12 仍红。任何一处都不得写成「已全部验证」。
+
+
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
 > 逐个核实清单里引用的每个产物：文件是否存在、字节是否对得上。
@@ -523,4 +564,82 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §5.7 C9 修复 | `docs/evidence/c9b-restart-0.1.2.err.log` / `.out.log` | — | 存在，1,599 / 62 字节 | 一致 |
 | §5.7 / §7.3 | `docs/evidence/c11-readiness-only-2026-11-06.log` | `RELEASE READY = False` | 存在，549 字节 | 一致（`BLOCKED` + `not an engineering blocker`） |
 | §5.7 / §7.2 | `docs/evidence/c9-readiness-only-2026-11-06.log` | `RELEASE READY = False` | 存在，510 字节 | 一致（`NOT VERIFIED`，`real CD absent=True`） |
+
+---
+
+## 7. 新一轮冻结前置清单（2026-11-07 起算）
+
+> **作用**：在把某个 hash 定为「交付冻结 hash」之前，主干上必须先落地的项。每项写死
+> 「什么算完成」——可复核、可判真伪；「基本可用」「应该没问题」「本地跑过」都不算完成。
+> **当前候选 hash = `416f7109`**（本轮 `--full` 凭证见 §5.12）。下表未全部满足之前，
+> `416f7109` **只是候选，不是交付冻结 hash**。
+
+| # | 前置项 | 为什么必须 | 什么算完成（缺一条都不算） | 现状（2026-11-07 本机实测） |
+|---|---|---|---|---|
+| P-1 | **版本号 0.1.1 全链一致** | 版本号不一致会让升级器判成「同版本/旧版本」，覆盖安装行为不可预期；包名、后端自报版本、`DELIVERY.txt` 会互相矛盾 | ① `python -c "from src.version import APP_VERSION;print(APP_VERSION)"` = `0.1.1`；② `pyproject.toml`、`frontend/package.json`、`installer/liuhao.iss`（`#define AppVersion` 默认值）三处同为 `0.1.1`；③ `pytest tests/test_version_consistency.py -q` 在冻结 hash 上全绿；④ 构建出的文件名是 `LiuHao-Setup-0.1.1.exe`，`DELIVERY.txt` 首行版本号也是 0.1.1；⑤ 安装后 `GET /v1/health` 自报 `version=0.1.1` | ①②③ **已满足**（`src/version.py:8`、`pyproject.toml:3`、`installer/liuhao.iss:22`，`f7603a8e` 附 `tests/test_version_consistency.py`）；④⑤ **未满足**：`dist/installer` 仍是 `LiuHao-Setup-0.1.0.exe` |
+| P-2 | **安装包重打并绑定源码提交** | 现包对应 `f74fa14e`，早于版本号提交与 5 个 ISCC 修复；包内前端/启动器都不是冻结 hash 的代码 | ① 在冻结 hash 的 clean worktree 上 `packaging/build_windows_installer.ps1` 退出码 0，产出 `LiuHao-Setup-0.1.1.exe` + `liuhao-0.1.1.zip` + `SHA256SUMS.txt` + `DELIVERY.txt`；② `DELIVERY.txt` 写明「对应提交 `<冻结 hash>`」，且与 `git rev-parse HEAD` 逐字一致；③ `SHA256SUMS.txt` 与 `Get-FileHash` 实测一致；④ 包内 `runtime/app/src/version.py` = 0.1.1；⑤ 用该包实测安装一次（临时数据目录 + 显式 `/DIR`），首启 ready 且 `/v1/health` 自报 0.1.1；⑥ 路径/字节/SHA256/源码提交回填本文 §0 | **未完成**。`dist/installer` 现有 `LiuHao-Setup-0.1.0.exe` 34,731,647 字节 / `01BE18BB…64DA2`，`DELIVERY.txt` 写「对应提交 `f74fa14e`」——早于 `f7603a8e`。`d57fa52e`/`6b47829b`/`7c0a252a`/`416f7109` 四个提交正是修 ISCC 编译失败，说明重打正在进行且尚未产出 0.1.1 包 |
+| P-3 | **真 Key 对话验收** | 现有证据只有本地 OpenAI 兼容桩；「填真 Key 就能对话」是产品的第一性承诺，桩不能证明 | ① 用**真实厂商 Key**（DeepSeek 或 OpenAI）在安装版或干净启动实例上 `POST /v1/chat` 收到非空 assistant 回复，留存脱敏后的时间戳/耗时/回复摘要（不得含 Key 明文）；② 同一次验收里换一个**错误 Key** 复现 401，且文案是中性中文（无上游英文原文、无内部术语）；③ 原始输出入 `docs/evidence/`；④ `known-gaps.md` E-5 改为「已关闭 + 证据指针」 | **未完成**（E-5 仍开放；本轮无真实 Key） |
+| P-4 | **任意模型接入**（自定义 Base URL + 任意 model id） | 「任意模型」是用户明确要求；现状只覆盖预置清单，接不上别的厂商就等于不能用 | ① 通过 `POST /v1/models` 或控制台新增一条**非预置**配置（自定义 `base_url` + 任意 `model`），返回 2xx；② **不重启网关**，`GET /v1/models` 能列出且能完成一次对话（200 + 非空回复）；③ 至少两类各一条：OpenAI 兼容 1 条、非 OpenAI 兼容（Anthropic 或 Gemini）1 条；④ 非法/不可达 `base_url` 给出可读错误（不是 500 堆栈、不是静默成功）；⑤ 回归用例锁住「运行中新增 → 立即生效」 | **在跑**：`src/ai/model_config.py`、`src/ai/providers.py`、`src/gateway/models.py` 在工作区有未提交改动；无提交、无 E2E 证据 |
+| P-5 | **管家页可用化** | 「一句话吩咐 → 自行安排员工 → 汇总结果」是 B-01 的原始承诺；页面在但没跑通过真实链路，等于演示 | ① 真实网关下：输入一句话 → 创建 goal → 自动派工 → 轮询到终态 → 页面显示汇总；② 失败分支（上游 401/503/超时）显示中性中文原因与可重试入口；③ 留一条端到端证据（goal id + 事件序列 + HTTP/页面日志），绑定冻结 hash；④ 不依赖 `Butler.tsx` 里的演示数据 | **在跑**：`94003942`/`3510cab3` 已入库，`apps/console/console/src/pages/Butler.tsx` 仍在工作区改动；真实一句话 E2E 未跑 |
+| P-6 | **两腿回归 + 全部 CI 门禁在冻结 hash 上绿** | 单机全量绿不等于 CI 绿；Guardrails 的契约探针与 Security Scan 曾被上游红阻断，没真跑过 | ① `release-readiness.yml` 与 `build.yml` 在同一 hash 上全 success；② 两腿（3.11/3.12）数字一致；③ Guardrails 真跑出 `PASS: contract matches runtime …`（不是被 CRITICAL-5 看门狗判红）；④ Security Scan 绿且不是被上游阻断；⑤ 文档三条门禁（count claims / links / index coverage）绿 | **待做**：上一候选 `b4406497` 的 CI `42386438527` 为 failure（17 failed） |
+| P-7 | **`verify_readiness.py --full` 在冻结 hash 的 clean worktree 上重跑** | dirty 树或旧 hash 的结果不能当凭证；C3/C12 依赖同一次真实全量 | ① clean worktree（跑前 `git status` 干净）；② 逐关状态与数字入本文与证据文件；③ 日志与 JUnit XML 落盘可复核；④ C7 若判红，按既有规则单独 `--only C7` 跑一次并在证据里写清并发干扰 | **本轮进行中**（§5.12 为 `416f7109` 的凭证） |
+| P-8 | **前端 dist 与源码同源** | 包内 `console/dist` 与源码不一致会出现「后端新、界面旧」的静默失败，且 Service Worker 版本哈希会错 | ① 在冻结 hash 上重建 `console/dist`；② 包内 `index.html` 引用的 hash 与构建输出一致；③ 安装后登录页首屏可见登录按钮（1280×720 与 1366×768） | **部分**：`1f9e6b37`、`2a80657c` 已入库；未在新包上复验 |
+
+**冻结时的纯文档校验（每次冻结/文档提交都要贴原文）**
+
+```powershell
+git diff --name-only <上一冻结hash>..HEAD -- src/ apps/ contracts/ installer/ packaging/
+```
+
+输出必须为空 —— 证明该段提交只动文档/证据/就绪脚本口径，业务代码仍是上一冻结 hash。
+
+## 7.1 宣布 `RELEASE READY=True` 还差什么
+
+机器的 `release_ready` 要求 **12 关全 `PASS`**（无 `FAIL` / `NOT VERIFIED` / `BLOCKED` / `ERROR`）。
+按当前事实分成两类。
+
+**必须（机器口径，缺一项就永远是 False）**
+
+| 关 | 现状 | 变成 PASS 的条件 | 是否可达 |
+|---|---|---|---|
+| C9 Deployment/upgrade/rollback | `NOT VERIFIED` | ① 在 `.venv` 存在的 checkout 里跑（本轮 worktree 无 `.venv`，checker 只能走 `Dockerfile + alembic` 兜底分支，结构上必然 `NOT VERIFIED`）；② `scripts/verify_deploy_readiness.py` 退出码 0 且无 `FAIL` 行（docker CLI、compose v2、alembic 齐备）；③ 真实升级/回滚链在该环境复跑 | **可达**（属环境/形态，不是产品缺陷） |
+| C11 HC-01 | `BLOCKED` | 只有**新 ADR 改变 HC-01 的机器口径**才可能 | **当前不可达**：`check_hc01` 恒返回 `BLOCKED`（冻结人类主权门，ADR-HC01 §1.2/§4.3 禁止为变绿改口径） |
+
+> **结论（必须写清）**：在 ADR-HC01 仍然有效、`check_hc01` 仍按冻结门设计打印 `BLOCKED` 的前提下，
+> **`RELEASE READY=True` 在结构上不可达**。这不是缺陷、也不该靠改判定去消除；能改变它的只有
+> owner 的新 ADR（把 HC-01 从冻结门集合里移出，或给 C11 一个可机器判定的替代口径）。
+
+**必须（交付口径：机器 verdict 不变，但决定敢不敢对外发布）**
+
+1. P-1 版本号 0.1.1 全链一致（目前 ④⑤ 未满足）。
+2. P-2 安装包重打并绑定冻结 hash（目前包是 0.1.0 / `f74fa14e`）。
+3. P-3 真 Key 对话验收（含 401 中性文案）。
+4. P-4 任意模型接入（自定义 Base URL + 非预置 model id，运行中生效）。
+5. P-5 管家页可用化（真实一句话 E2E）。
+6. P-6 两腿回归 + 全部 CI 门禁在冻结 hash 上绿。
+7. P-7 `--full` 凭证绑定冻结 hash。
+
+**可以带缺口发布（必须登记 + 在交付说明里披露，不阻塞 True）**
+
+| 缺口 | 为什么可以带 | 登记位置 |
+|---|---|---|
+| Gemini 真实成功调用未验证 | 失败路径诚实（`400 API_KEY_INVALID` 真实到达），解析有假客户端回归；缺的是「有 Key 成功一次」 | `known-gaps.md` §2 |
+| 自定义 Base URL 的 SSRF 风险**结论待评估** | 已有保存/探测面防护（`src/gateway/models.py:807` 公网校验、`:712` 拒跨域重定向），缺的是书面评估结论（允许清单、DNS 重绑定、本机 Ollama 例外边界） | 本文 §7.2 |
+| 仅 Windows x64 | 交付形态就是 Windows 桌面安装树；无 macOS/Linux/arm64 产物 | `known-gaps.md` E-20 / 仅 Windows x64 行 |
+| 无真实 CD | 桌面分发形态差异；安装树真实升级/回滚已验，但**不等于**真实 CD 已验 | §5.10 C9、`known-gaps.md` 真实远端升级源行 |
+| 无真实远端升级源 | 升级源只有本机安装树；远端拉取/回滚无证据 | `known-gaps.md` 真实远端升级源行 |
+| 手机未验证 | 服务侧 LAN 200 已验证，手机侧无设备 | `known-gaps.md` E-14 |
+| 24h 浸泡进行中 | 长跑 harness 在跑，尚未收口；2h soak 已验 | `known-gaps.md` E-21 / G-8 |
+| 安装包未签名 | 只有「未知发布者」提示，不影响功能；签名属明确延后 | `known-gaps.md` E-8 |
+| 8/16GB 低配未实测 | 本机 32GB；已给实测数字并明确不外推 | `known-gaps.md` E-21 |
+
+## 7.2 自定义 Base URL 的 SSRF 风险（结论：**待评估**，不写成已通过）
+
+| 项 | 事实 |
+|---|---|
+| 已有的防护 | ① 新填地址必须 `http/https`，解析后任一地址落在私网/回环/链路本地/保留/多播段 → 400（`src/gateway/models.py:807-855`）；② 探测时拒绝跨域重定向（`src/gateway/models.py:712`）；③ 已保存配置放行私网，用于本机 Ollama（`allow_private=True`）。 |
+| 未回答的问题 | ① **DNS 重绑定**：保存时解析为公网、调用时解析为内网，是否会被拦截；② 「已保存即放行」的边界是否覆盖所有调用路径（聊天、目标拆解、embedding）；③ 允许清单/拒绝清单要不要写死到配置；④ 本机 Ollama 例外是否应限定为 `127.0.0.1`/`localhost` 字面量。 |
+| 为什么现在不给结论 | 给结论需要一次专门的威胁建模 + 调用路径枚举，本轮只做文档/证据，不动业务代码。**把「有防护」写成「风险已消除」不诚实。** |
+| 什么算完成 | 出一份书面结论（允许/拒绝清单 + 上述四个问题的逐条答案 + 落地位置），并在「任意模型接入」（P-4）验收里带上一条私网地址被拒、一条 DNS 重绑定被拒的实测。 |
+
 

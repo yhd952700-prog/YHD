@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | LOCKED（owner 裁决，2026-11-06） |
 | **Decision** | HC-01（human-sovereign）— 5 项裁决见 §2 |
-| **Machine gate** | `check_hc01` 仍打印 `BLOCKED`（冻结人类主权门，不改口径；人端已裁决） |
+| **Machine gate** | `check_hc01` 仍返回 `BLOCKED`（冻结人类主权门；状态不变，2026-11-08 仅修正证据文案为「决定已记录」，人端已裁决） |
 | **Date** | 2026-11-06 |
 | **Owner** | Human（LIUHAO owner） |
 | **Supersedes** | — |
@@ -58,6 +58,13 @@ HC-01 要回答的是「审计主链的历史基线与迁移源绑到哪个对�
   证据中 C11 的状态改为「**已裁决（ADR-HC01）**」，不再写「待人工裁决 / HUMAN DECISION PENDING」；
 * 因此 `RELEASE READY=False` 的理由**只剩 C9**（桌面分发形态无真实 CD，见
   `DELIVERY-CHECKLIST.md` §5.10），C11 不再计入「未决理由」。
+
+**2026-11-08 补充（措辞修正，不是口径变更）**：`check_hc01` 的**状态判定**一个字没动，
+仍是 `BLOCKED`；只把**证据文案**与 `CONDITION_META["C11"]` 里的
+「HUMAN DECISION PENDING」改成「决定已记录在 ADR-HC01 / 门按设计冻结，`BLOCKED` ≠ 裁决未做」。
+理由：状态是门的性质（机器不得自清人类主权门），文案是关于世界的事实（裁决确实已经拍定）；
+裁决落地后继续打印「待裁决」就是在说一句假话。**把 `BLOCKED` 改成 `PASS` 才是改口径，
+本 ADR 明确禁止**（§4.3），因此 `RELEASE READY` 仍为 `False`。
 
 ### 1.3 裁决前后的判定口径差异（引用本 ADR 时必须按此表述）
 

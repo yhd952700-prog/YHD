@@ -479,10 +479,11 @@ docs/
 | [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
 | [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
 
-### 4.17 `evidence/`（7）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+### 4.17 `evidence/`（8）与 `oss-radar/`（8）— 实测证据与开源技术雷达
 
 | 文件 | 说明 |
 |---|---|
+| [`evidence/verify-full-416f7109-2026-11-08.md`](evidence/verify-full-416f7109-2026-11-08.md) | 新 tip `416f7109` 全量就绪判定（C1–C12 + C10，含 C7 并发干扰记录） |
 | [`evidence/regression-baseline-coverage-2026-11-06.md`](evidence/regression-baseline-coverage-2026-11-06.md) | 全量回归基线覆盖（2026-11-06） |
 | [`evidence/c7-performance-baseline-2026-11-06.md`](evidence/c7-performance-baseline-2026-11-06.md) | C7 性能基线：从「无基线只能 SKIP」到可判定 |
 | [`evidence/c9-console-payload-2026-11-06.md`](evidence/c9-console-payload-2026-11-06.md) | C9 缺陷修复：升级载荷缺前端 `console/` |
