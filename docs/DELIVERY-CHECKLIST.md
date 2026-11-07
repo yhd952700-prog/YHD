@@ -38,7 +38,7 @@
 | 安装后体积 | 10,502 个文件 / 170,666,366 字节（约 162.8 MiB，0.1.0 交付包实测） |
 | 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`） |
 | 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，4,567 字节，含 Key 申请与跳过说明） |
-| 第三方许可证 | `packaging/THIRD-PARTY-NOTICES.txt` + `packaging/licenses/`（随包复制到程序根目录） |
+| 第三方许可证 | 声明由 `packaging/third_party_notices.py` 在构建时按 payload 实装生成（模板 `packaging/third-party-notices.template.txt`），连同 `packaging/licenses/` 一起复制到程序根目录 |
 
 ### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 

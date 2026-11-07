@@ -41,7 +41,7 @@ D:\LiuHaoData\                用户数据（卸载默认保留）
 | 内容 | 说明 |
 | --- | --- |
 | Python 3.12 运行时 | 构建机的完整 CPython 安装（标准库 + DLL），收件人无需装 Python |
-| 第三方依赖 | 按网关/桌面壳真实 import 图命中的 72 个发行包（清单见 `THIRD-PARTY-NOTICES.txt`；含 cryptography、pydantic、uvicorn、**pywin32** 等） |
+| 第三方依赖 | 按网关/桌面壳真实 import 图命中的发行包（数量以构建日志为准；清单见安装目录 `THIRD-PARTY-NOTICES.txt`，由 `packaging/third_party_notices.py` 按实装现场生成；含 cryptography、pydantic、uvicorn、**pywin32** 等） |
 | 桌面壳与托盘 | `src\desktop\**`、`scripts\liuhao_desktop.py`，以及 tkinter + `tcl/tk8.6` 数据目录（托盘与状态窗口依赖） |
 | 驾驶舱静态产物 | `npm run build` 输出，单端口由网关直接服务 |
 | 首次运行向导 | 建管理员、选 Provider、连通性自检 |

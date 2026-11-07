@@ -43,7 +43,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "dist" / "payload"
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
 ICON_PNG = REPO_ROOT / "apps" / "console" / "console" / "public" / "icon-192.png"
-NOTICES_FILE = REPO_ROOT / "packaging" / "THIRD-PARTY-NOTICES.txt"
 LICENSES_DIR = REPO_ROOT / "packaging" / "licenses"
 
 if str(REPO_ROOT) not in sys.path:
@@ -274,16 +273,41 @@ def _reset_out(out_dir: Path) -> None:
 def _copy_notices(app_dir: Path) -> int:
     """随包分发第三方许可证声明与运行时/前端许可证文本。
 
-    声明文件放进程序根目录；OpenSSL / libffi / SQLite / Tcl-Tk / MSVC 与
-    React 的许可证全文放在 ``licenses/``。Python 包自带的
-    ``*.dist-info/licenses/`` 已随运行时复制，无需重复。
+    声明文件由 :mod:`third_party_notices` 按 payload 里实际安装的
+    ``*.dist-info`` 现场生成（不再手工维护版本表，避免与实装漂移）；
+    OpenSSL / libffi / SQLite / Tcl-Tk / MSVC 与 React 的许可证全文放在
+    ``licenses/``。Python 包自带的 ``*.dist-info/licenses/`` 已随运行时复制。
     """
-    if not NOTICES_FILE.is_file():
-        raise SystemExit(f"缺少第三方许可证声明：{NOTICES_FILE}")
     if not LICENSES_DIR.is_dir():
         raise SystemExit(f"缺少许可证文本目录：{LICENSES_DIR}")
-    shutil.copy2(NOTICES_FILE, app_dir / "THIRD-PARTY-NOTICES.txt")
+    if str(Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import third_party_notices  # noqa: PLC0415  同目录脚本模块
+
+    target = third_party_notices.write(app_dir)
+    print(f"      THIRD-PARTY-NOTICES.txt 已按 {app_dir.name}/runtime 实装生成")
     return 1 + _copy_tree(LICENSES_DIR, app_dir / "licenses")
+
+
+#: 任何情况下都不允许进包的凭据/身份文件（相对程序根目录）。
+FORBIDDEN_PAYLOAD_FILES: Tuple[str, ...] = (
+    "config/auth_secrets.json",
+    "config/human_identities.json",
+    "config/app.env",
+    "configs/mcp/servers.json",
+    ".env",
+)
+
+
+def _assert_payload_hygiene(app_dir: Path) -> None:
+    """出包前硬拦截：凭据、身份登记表、本地 MCP 配置不得随包。"""
+    offenders = [rel for rel in FORBIDDEN_PAYLOAD_FILES if (app_dir / rel).exists()]
+    for pattern in ("config/*.pem", "config/*.key"):
+        offenders.extend(
+            path.relative_to(app_dir).as_posix() for path in app_dir.glob(pattern)
+        )
+    if offenders:
+        raise SystemExit("payload 内含禁止分发的凭据/身份文件：" + "、".join(offenders))
 
 
 def _write_start_bat(app_dir: Path) -> None:
@@ -710,6 +734,8 @@ def build(out_dir: Path, version: str) -> int:
     print(f"      入口     -> LiuHao.bat / START-HERE.txt"
           f"{' / assets/liuhao.ico' if icon_ok else ''}")
     print(f"      许可证   -> THIRD-PARTY-NOTICES.txt / licenses（{notices_count} 个文件）")
+    _assert_payload_hygiene(app_dir)
+    print("      凭据检查 -> 未发现 auth_secrets / human_identities / servers.json / .env")
 
     dev_hits = _audit_dev_paths(app_dir)
     blocking = [

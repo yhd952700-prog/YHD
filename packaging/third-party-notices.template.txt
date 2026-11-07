@@ -1,0 +1,98 @@
+鎏灏 LiuHao AI OS —— 第三方软件许可声明（THIRD-PARTY-NOTICES）
+================================================================
+
+本文件随安装包分发，用于列明本产品随包使用的第三方软件、其许可证
+类型与许可证文本所在位置。
+
+本文件由构建过程自动生成：包名、版本、许可证与文本位置取自本安装包内
+runtime/Lib/site-packages 下各包的 *.dist-info/METADATA 与随包文本，
+因此与实装内容一致；手工维护的只有本模板里的说明性文字。第 3 节运行时
+组件（OpenSSL、libffi、SQLite、Tcl/Tk、MSVC）的版本为人工核对 PE
+VersionInfo 后填写，不随包清单自动变化。
+
+## 1. 汇总
+
+- Python 第三方包：{{PACKAGE_COUNT}} 个（现算自本包 runtime/Lib/site-packages）。
+- 运行时组件：11 项（CPython、OpenSSL、libffi、SQLite、Tcl/Tk、MSVC、Tix 等）。
+- 前端 bundle 依赖：3 个（react 19.2.8、react-dom 19.2.8、scheduler 0.27.0，均 MIT）。
+- 限制性许可证筛查：0 个（未发现 AGPL/GPL/LGPL/SSPL/Elastic-2.0/BSL/OpenRAIL/CC-BY-NC
+  进入实际 payload；构建脚本会在检出时直接中止）。
+- 许可证文本随包情况：绝大多数 MIT/BSD/Apache 包的全文在
+  runtime/Lib/site-packages/*.dist-info/licenses/ 内；运行时二进制
+  （OpenSSL、libffi、SQLite、Tcl/Tk、MSVC）与前端 React 的文本在本目录
+  licenses/ 下。
+- 不在允许清单但属宽松许可：email-validator 为 Unlicense（非 copyleft）。
+
+## 2. Python 第三方包清单
+
+{{PACKAGE_TABLE}}
+
+> `许可证文本随包位置` 相对于安装目录 runtime/Lib/site-packages/。
+> 正式发布时不要删除这些 *.dist-info/licenses/ 目录。
+
+## 3. 运行时组件（runtime/ 下的二进制与数据）
+
+| # | 组件 | 版本 | 许可证 | 文本位置 | 来源链接 |
+|---|---|---|---|---|---|
+| 1 | CPython（python.exe / pythonw.exe / python312.dll / python3.dll） | 3.12.14 | PSF-2.0（PSF License v2，含历史条款） | runtime/LICENSE.txt | https://docs.python.org/3/license.html |
+| 2 | OpenSSL libcrypto-3-x64.dll | 3.5.8 | Apache-2.0 | licenses/Apache-2.0.txt | https://www.openssl.org/source/license.html |
+| 3 | OpenSSL libssl-3-x64.dll | 3.5.8 | Apache-2.0 | licenses/Apache-2.0.txt | https://www.openssl.org/source/license.html |
+| 4 | libffi libffi-8.dll | 未知（无版本资源，仅 ABI 8） | MIT | licenses/libffi-MIT.txt | https://github.com/libffi/libffi/blob/master/LICENSE |
+| 5 | SQLite sqlite3.dll | 3.53.1.0 | Public Domain | licenses/SQLite-Public-Domain.txt | https://www.sqlite.org/copyright.html |
+| 6 | Tcl tcl86t.dll | 8.6.12 | Tcl/Tk License（BSD 风格） | licenses/Tcl-Tk-license.terms、runtime/tcl/tk8.6/license.terms | https://www.tcl.tk/software/tcltk/license.html |
+| 7 | Tk tk86t.dll | 8.6.12 | Tcl/Tk License（BSD 风格） | runtime/tcl/tk8.6/license.terms | https://www.tcl.tk/software/tcltk/license.html |
+| 8 | MSVC 运行库 vcruntime140.dll | 14.44.35211.0 | Microsoft Visual Studio 2022 可分发代码条款 | licenses/Microsoft-VC-Runtime.txt | https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution |
+| 9 | MSVC 运行库 vcruntime140_1.dll | 14.44.35211.0 | 同上 | licenses/Microsoft-VC-Runtime.txt | https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution |
+| 10 | Tix tix84.dll | 8.4.3（目录名推断） | 未确认（Tix 为独立第三方 Tcl 扩展） | 未随包 | 未确认 |
+| 11 | Tcl 扩展 tcldde14.dll / tclreg13.dll | 未标注 | 随 Tcl 发行版，适用 Tcl/Tk License | licenses/Tcl-Tk-license.terms | https://www.tcl.tk/software/tcltk/license.html |
+
+## 4. 前端 bundle 依赖（console/）
+
+| # | 名称 | 版本 | 许可证 | 文本位置 | 来源链接 |
+|---|---|---|---|---|---|
+| 1 | react | 19.2.8 | MIT（Copyright (c) Meta Platforms, Inc. and affiliates.） | licenses/React-MIT.txt | https://github.com/facebook/react |
+| 2 | react-dom | 19.2.8 | MIT（同上） | licenses/React-MIT.txt | https://github.com/facebook/react |
+| 3 | scheduler | 0.27.0 | MIT（同上，React 传递依赖） | licenses/React-MIT.txt | https://github.com/facebook/react/tree/main/packages/scheduler |
+
+devDependencies（vite、vitest、typescript 等）不进入浏览器产物，不在本清单。
+console/ 内的图标与 CSS 为自有资源，未检出第三方字体或 @font-face。
+
+## 5. 特别说明与口径
+
+1. pywin32 许可证口径（已复核）：安装包内 pywin32-311.dist-info/METADATA
+   的 Classifier 写 “Python Software Foundation License”，但同一个包随附的
+   win32/license.txt 实际是 BSD-3-Clause 风格文本（Copyright (c) 1994-2008,
+   Mark Hammond; 含 “Neither name of Mark Hammond…” 条款）。两者口径不一致。
+   本清单按**随包文本**列示为 BSD-3-Clause，并把该文本复制到
+   licenses/pywin32-BSD-3-Clause.txt。若后续版本升级 pywin32 后元数据变更，
+   以新版本的随包文本为准。
+2. OpenSSL 3.5.8：先前只随包二进制、无许可证全文；现在
+   licenses/Apache-2.0.txt 随包，版权声明为
+   “Copyright 1998-2026 The OpenSSL Authors. All rights reserved.”
+3. libffi：libffi-8.dll 无版本资源，只有 ABI 8 可判；按上游 MIT 文本随包，
+   实际构建版本未标注。
+4. SQLite 3.53.1：按公版（Public Domain）声明随包。
+5. Tcl 8.6.12：Tcl 与 Tk 共用 Tcl/Tk License；license.terms 现在同时出现在
+   licenses/ 与 runtime/tcl/tk8.6/。
+6. Tix 8.4.3：Tix 为独立第三方 Tcl 扩展，上游许可证未确认，随包二进制为
+   Tk 数据目录的可选内容，产品运行时不加载。列在此处供取证。
+7. {{VERSION_NOTE}}
+8. ws 8.21.3 在控制台 package.json 中声明为运行时依赖，但源码与浏览器产物
+   均未检出引用，判断为“声明但未随包”，因此不列入前端清单。
+9. 本清单未覆盖 Windows 系统 DLL 与安装器工具（Inno Setup）本身的许可证。
+10. mcp / fastmcp-slim：pyproject.toml 里有声明、构建虚环境里也装了，但网关与
+    桌面壳的运行路径不 import `src/adapters/mcp/mcp_adapter.py`（该模块是全仓
+    唯一引用者，且没有任何调用方），因此它们不按“真实 import 图”进入 payload，
+    本清单也不列它们。若将来启用 MCP 适配器，需要同时把它加入随包依赖。
+
+## 6. 许可证文本索引
+
+- licenses/Apache-2.0.txt           Apache License 2.0 全文（OpenSSL 及清单内 Apache-2.0 包）
+- licenses/libffi-MIT.txt           libffi MIT
+- licenses/SQLite-Public-Domain.txt SQLite 公版声明
+- licenses/Tcl-Tk-license.terms     Tcl/Tk License
+- licenses/Microsoft-VC-Runtime.txt MSVC 可再发行组件声明
+- licenses/React-MIT.txt            React / ReactDOM / Scheduler MIT
+- licenses/pywin32-BSD-3-Clause.txt pywin32 随包 BSD-3-Clause 文本
+- runtime/LICENSE.txt                CPython PSF License v2
+- runtime/Lib/site-packages/*.dist-info/licenses/  各 Python 包自带全文
