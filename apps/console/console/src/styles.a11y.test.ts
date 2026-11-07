@@ -233,6 +233,18 @@ describe('窄屏与预算', () => {
     expect(ruleBody(osCss, '.os-onboard-steps')).toMatch(/font-size:\s*12\.5px/)
   })
 
+  test('1280×720 / 1366×768 首屏放得下账号、密码与登录按钮', () => {
+    const osCss = read('./os.css')
+    // 内容高于视口时必须从顶部排布，不能向上溢出到点不到的位置。
+    expect(ruleBody(osCss, '.os-login {')).toMatch(/place-items:\s*safe center/)
+
+    // 矮窗口收窄登录卡与字段间距，否则登录按钮会落到 720 视口之外。
+    const short = osCss.slice(osCss.indexOf('@media (max-height: 820px)'))
+    expect(short).not.toBe('')
+    expect(ruleBody(short, '.os-login-card')).toMatch(/padding:\s*20px 24px/)
+    expect(ruleBody(short, '.os-field')).toMatch(/margin-bottom:\s*10px/)
+  })
+
   test('同屏动画不超过 3 个，且新增焦点/断行规则不带动画', () => {
     const osCss = read('./os.css')
     // `animation: none` 是 reduced-motion 的关闭项，不算一个动画。
