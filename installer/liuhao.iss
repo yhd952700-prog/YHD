@@ -104,6 +104,8 @@ Name: "{code:GetDataDir}\logs"; Flags: uninsneveruninstall
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\LiuHao.bat"; WorkingDir: "{app}"; Comment: "启动鎏灏（首次运行会进入向导）"
 Name: "{group}\使用说明"; Filename: "{app}\START-HERE.txt"
+; 离线诊断入口：不启动网关也能出包，服务起不来时用户可直接双击。
+Name: "{group}\收集诊断信息（离线）"; Filename: "{app}\scripts\collect_diagnostics.bat"; WorkingDir: "{app}"; IconFilename: "{app}\assets\liuhao.ico"; Comment: "服务未启动也能采集脱敏诊断包到桌面"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\LiuHao.bat"; WorkingDir: "{app}"; Tasks: desktopicon
 

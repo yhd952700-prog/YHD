@@ -113,6 +113,8 @@ PAYLOAD_SCRIPTS: Tuple[str, ...] = (
     "scripts/gen_local_cert.py",
     # 覆盖升级后按排除清单清理程序目录里的旧配置（安装器 [Run] 调用）。
     "scripts/purge_installed_config.py",
+    # 服务未启动时也能出包的双击入口（离线诊断）。
+    "scripts/collect_diagnostics.bat",
 )
 
 #: import 图看不到、但运行期确实会用的发行包（延迟导入 / 子进程入口）。

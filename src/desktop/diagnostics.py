@@ -19,12 +19,14 @@ import os
 import platform
 import sqlite3
 import sys
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from ..brand import BRAND_LOCKUP
 from ..common.redaction import (
     REDACTION_VERSION,
     contains_secret,
@@ -38,10 +40,24 @@ from . import REPO_ROOT, diagnostics_dir
 from .about import collect_about
 from .probe import DEFAULT_PORTS, discover_service, http_json, port_is_free
 
-_MAX_LOG_FILES = 5
+_MAX_LOG_FILES = 8
 _MAX_LOG_LINES = 200
 _MAX_LOG_BYTES = 200_000
 _MAX_DEPENDENCIES = 500
+_MAX_INVENTORY_ENTRIES = 60
+_MAX_INVENTORY_FILES = 5000
+_MAX_PROCESSES = 15
+_MAX_READY_PORTS = 8
+_READY_TIMEOUT = 0.5
+#: 进程命令行里出现这些入口才算是本产品进程（避免把路径里带 liuhao 的无关进程也算进来）。
+_APP_PROCESS_MARKERS = (
+    "src.gateway",
+    "src.desktop",
+    "liuhao_desktop",
+    "launch_installed",
+    "start_liuhao",
+    "first_run_wizard",
+)
 
 #: zip 成员只允许这两种后缀，杜绝把二进制数据库塞进来。
 _ALLOWED_SUFFIXES = (".json", ".txt")
@@ -87,23 +103,268 @@ def _tail_log(path: Path) -> str:
 
 
 def _collect_logs(log_dir: Path) -> dict[str, str]:
+    """收集最近日志（含 ``liuhao.log.1`` 之类的轮转文件），并附截断说明。"""
     if not log_dir.is_dir():
         return {}
     logs: dict[str, str] = {}
+    index: list[dict[str, Any]] = []
     try:
-        files = sorted((p for p in log_dir.glob("*.log") if p.is_file()), key=lambda p: p.stat().st_mtime,
-                       reverse=True)
+        candidates = {
+            p
+            for pattern in ("*.log", "*.log.*")
+            for p in log_dir.glob(pattern)
+            if p.is_file() and not p.name.endswith(".lock")
+        }
+        files = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return logs
     for path in files[:_MAX_LOG_FILES]:
-        logs[f"logs/{path.name}.txt"] = _tail_log(path)
+        content = _tail_log(path)
+        try:
+            original = path.stat().st_size
+        except OSError:
+            original = None
+        retained = len(content.encode("utf-8"))
+        index.append(
+            {
+                "name": path.name,
+                "original_bytes": original,
+                "retained_bytes": retained,
+                "retained_lines": len(content.splitlines()),
+                "truncated": original is not None and original > retained,
+            }
+        )
+        logs[f"logs/{path.name}.txt"] = content
+    if index:
+        index.append(
+            {
+                "note": (
+                    f"最多保留 {_MAX_LOG_FILES} 份、每份尾部 {_MAX_LOG_LINES} 行且不超过 "
+                    f"{_MAX_LOG_BYTES} 字节；已脱敏。完整原文仍在本机日志目录。"
+                )
+            }
+        )
+    logs["logs/index.json"] = json.dumps(index, ensure_ascii=False, indent=2)
     return logs
 
 
-def _collect_ports(ports: list[int]) -> dict[str, Any]:
+def _listening_owners() -> dict[int, dict[str, Any]]:
+    """返回 ``{端口: {pid, process}}``；psutil 不可用或权限不足时为空。"""
+    try:
+        import psutil
+    except ImportError:
+        return {}
+    owners: dict[int, dict[str, Any]] = {}
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, OSError):
+        return owners
+    for conn in connections:
+        if getattr(conn, "status", None) != psutil.CONN_LISTEN or not conn.laddr:
+            continue
+        port = conn.laddr.port
+        if port in owners or not conn.pid:
+            continue
+        try:
+            name = psutil.Process(conn.pid).name()
+        except psutil.Error:
+            name = ""
+        owners[port] = {"pid": conn.pid, "process": name}
+    return owners
+
+
+def _collect_ports(ports: list[int], owners: dict[int, dict[str, Any]] | None = None) -> dict[str, Any]:
+    owners = owners or {}
     return {
         "checked": ports,
-        "entries": [{"port": port, "free": port_is_free(port)} for port in ports],
+        "entries": [
+            {
+                "port": port,
+                "free": port_is_free(port),
+                "listening": port in owners,
+                "owner": owners.get(port),
+            }
+            for port in ports
+        ],
+    }
+
+
+def _collect_ready_probe(ports: list[int]) -> dict[str, Any]:
+    """/v1/ready 与 /v1/health 的逐端口探测结果；服务未启动时也如实记录失败原因。"""
+    candidates: list[int] = []
+    for port in [*ports, *DEFAULT_PORTS, *range(8080, 8086)]:
+        if port not in candidates:
+            candidates.append(port)
+    probes: list[dict[str, Any]] = []
+    for port in candidates[:_MAX_READY_PORTS]:
+        for endpoint in ("/v1/ready", "/v1/health"):
+            url = f"http://127.0.0.1:{port}{endpoint}"
+            started = time.perf_counter()
+            info = http_json(url, timeout=_READY_TIMEOUT)
+            probes.append(
+                {
+                    "url": url,
+                    "reachable": info["ok"],
+                    "status": info["status"],
+                    "error": info["error"],
+                    "body": info["body"],
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+            )
+    return {
+        "timeout_seconds": _READY_TIMEOUT,
+        "note": (
+            "端口 free=true 且 ready 超时/拒绝，通常表示本机没有服务在监听；"
+            "端口被占用但 ready 失败，则可能是无关进程占位或服务卡在启动。"
+        ),
+        "probes": probes,
+    }
+
+
+def _collect_processes() -> dict[str, Any]:
+    """只保留与本产品相关的进程（名称或命令行命中），命令行原文会被统一脱敏。"""
+    try:
+        import psutil
+    except ImportError:
+        return {"available": False, "note": "psutil 不可用，跳过进程采集", "processes": []}
+    matched: list[dict[str, Any]] = []
+    try:
+        iterator = psutil.process_iter(["pid", "name", "create_time", "cmdline"])
+        for proc in iterator:
+            try:
+                info = proc.info
+                name = info.get("name") or ""
+                command = " ".join(info.get("cmdline") or [])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            haystack = f"{name} {command}".lower()
+            if not name.lower().startswith("liuhao") and not any(
+                marker in haystack for marker in _APP_PROCESS_MARKERS
+            ):
+                continue
+            created = info.get("create_time")
+            matched.append(
+                {
+                    "pid": info.get("pid"),
+                    "name": name,
+                    "started_at": (
+                        datetime.fromtimestamp(created).astimezone().isoformat(timespec="seconds")
+                        if created
+                        else None
+                    ),
+                    "command": command[:300],
+                }
+            )
+    except (psutil.Error, OSError):
+        return {"available": False, "note": "进程枚举失败", "processes": matched}
+    matched.sort(key=lambda item: item["pid"] or 0)
+    return {
+        "available": True,
+        "matched": len(matched),
+        "truncated": len(matched) > _MAX_PROCESSES,
+        "processes": matched[:_MAX_PROCESSES],
+    }
+
+
+def _dir_usage(path: Path) -> dict[str, Any]:
+    """只统计数量与字节数，不读取任何文件内容；条目超限时截断。"""
+    files = 0
+    total = 0
+    truncated = False
+    try:
+        for root, _dirs, names in os.walk(path):
+            for name in names:
+                if files >= _MAX_INVENTORY_FILES:
+                    truncated = True
+                    break
+                try:
+                    size = (Path(root) / name).stat().st_size
+                except OSError:
+                    size = 0
+                total += size
+                files += 1
+            if truncated:
+                break
+        readable = True
+    except OSError:
+        readable = False
+    return {"readable": readable, "files": files, "bytes": total, "truncated": truncated}
+
+
+def _collect_data_inventory(data_dir: Path) -> dict[str, Any]:
+    """数据目录顶层清单 + 每个顶层目录的占用大小（不读取文件内容）。"""
+    payload: dict[str, Any] = {
+        "root": mask_user_path(str(data_dir)),
+        "exists": data_dir.is_dir(),
+        "entries": [],
+    }
+    if not data_dir.is_dir():
+        return payload
+    try:
+        children = sorted(data_dir.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        payload["error"] = "数据目录无法枚举"
+        return payload
+    entries: list[dict[str, Any]] = []
+    for child in children[:_MAX_INVENTORY_ENTRIES]:
+        stat = None
+        try:
+            stat = child.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+        except OSError:
+            modified = None
+        if child.is_dir():
+            usage = _dir_usage(child)
+            entries.append(
+                {
+                    "name": child.name,
+                    "kind": "dir",
+                    "files": usage["files"],
+                    "bytes": usage["bytes"],
+                    "truncated": usage["truncated"],
+                    "modified_at": modified,
+                }
+            )
+        else:
+            entries.append(
+                {
+                    "name": child.name,
+                    "kind": "file",
+                    "bytes": stat.st_size if stat is not None else None,
+                    "modified_at": modified,
+                }
+            )
+    payload["entries"] = entries
+    payload["truncated"] = len(children) > _MAX_INVENTORY_ENTRIES
+    return payload
+
+
+def _collect_installation(
+    base: Path, data_dir: Path, log_dir: Path, version: str | None = None
+) -> dict[str, Any]:
+    """安装位置 / 版本 / 运行期 Python / 数据与日志目录是否存在；路径按统一规则遮用户。"""
+    try:
+        top_level = sum(1 for _ in base.iterdir())
+    except OSError:
+        top_level = None
+    return {
+        "version": version,
+        "app_root": mask_user_path(str(base)),
+        "app_root_exists": base.is_dir(),
+        "app_top_level_entries": top_level,
+        "runtime_python": mask_user_path(sys.executable),
+        "runtime_python_exists": Path(sys.executable).is_file(),
+        "data_dir": mask_user_path(str(data_dir)),
+        "data_dir_exists": data_dir.is_dir(),
+        "data_dir_writable": os.access(data_dir, os.W_OK) if data_dir.is_dir() else False,
+        "logs_dir": mask_user_path(str(log_dir)),
+        "logs_dir_exists": log_dir.is_dir(),
+        "launcher_log_present": (log_dir / "launcher.log").is_file(),
+        "key_files": {
+            "launcher_bat": (base / "LiuHao.bat").is_file(),
+            "data_dir_marker": (base / "data-dir.txt").is_file(),
+            "console_index": (base / "console" / "index.html").is_file(),
+        },
     }
 
 
@@ -213,20 +474,28 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-_README = """鎏灏 LIUHAO X · 一键诊断包
+_README = BRAND_LOCKUP + """ · 一键诊断包
 ===========================
 
-这是由 `python -m src.desktop diagnose` 生成的排查材料，仅包含：
+这是由 `python -m src.desktop diagnose` 生成的排查材料，**服务未启动时同样可用**，仅包含：
 
   manifest.json    每个成员的文件名、大小、sha256 与脱敏版本号
   about.json       版本 / 构建时间 / 数据目录 / 提交号
   environment.json 操作系统与 Python 版本 / 允许范围内的环境摘要
-  ports.json       常见端口（8080 / 5173 / 8443）占用情况
+  installation.json 安装根目录 / 运行期 Python / 数据与日志目录是否存在 / 启动器日志是否存在
+  data_inventory.json 数据目录顶层清单与每个目录的占用大小（不读取文件内容）
+  ports.json       常见端口（8080 / 5173 / 8443）占用情况与占用进程（PID / 进程名）
+  processes.json   与本产品相关的进程（PID / 名称 / 启动时间 / 脱敏后命令行）
+  ready_probe.json 对候选端口 /v1/ready 与 /v1/health 的逐项探测结果（含失败原因与耗时）
   providers.json   已配置模型的名称、provider 类型、模型名、地址（不含密钥）
   service.json     /v1/health 与 /v1/ready 的原始快照（不可达时如实记录）
   dependencies.json 已安装依赖的名称与版本
-  logs/*.txt       最近日志片段的**尾部**（已脱敏）
+  logs/*.txt       最近日志片段的**尾部**（已脱敏，含轮转文件）
+  logs/index.json  每份日志的原始大小 / 保留大小 / 是否截断
   firewall.json    防火墙 / 局域网可达性只读检测结果（如当时采集）
+
+日志上限：最多 8 份、每份只保留尾部 200 行且不超过 200KB，轮转文件
+（如 liuhao.log.1）一并采集；超出部分不会进入诊断包，完整原文仍留在本机。
 
 明确**不包含**（这是设计而非承诺）：
   * 任何数据库文件（.db / .sqlite / .sqlite3）及其 WAL/SHM
@@ -272,10 +541,17 @@ def create_bundle(
     about_payload["data_dir"] = environment["data_dir"]
     about_payload["log_dir"] = environment["log_dir"]
 
+    owners = _listening_owners()
     payloads: dict[str, Any] = {
         "about.json": about_payload,
         "environment.json": environment,
-        "ports.json": _collect_ports(checked_ports),
+        "installation.json": _collect_installation(
+            base, runtime_data_dir, logs, about_payload.get("version")
+        ),
+        "data_inventory.json": _collect_data_inventory(runtime_data_dir),
+        "ports.json": _collect_ports(checked_ports, owners),
+        "processes.json": _collect_processes(),
+        "ready_probe.json": _collect_ready_probe(checked_ports),
         "providers.json": {
             "registry": _read_providers(),
             "env_provider_hint": {
