@@ -173,6 +173,61 @@ def _retention_settings() -> Dict[str, Any]:
     }
 
 
+# --- storage reclamation: deleting rows must actually return disk -----------
+# The 22-minute soak measured retention deleting 12,115 rows while the database
+# file kept ALL of them as freelist pages: ``PRAGMA auto_vacuum`` was 0, so
+# ``PRAGMA incremental_vacuum`` was a no-op; the WAL was never truncated. The
+# file went 2.10 -> 9.26 MB in 22 minutes (+21.5 MB/h) and the default policy
+# thresholds (30 days / 500k rows / 256 MB) do not trigger in a short window,
+# so an installed desktop build grows forever.
+#
+# Policy:
+#   * a NEW database is opened with ``auto_vacuum=INCREMENTAL`` (which must be
+#     set BEFORE ``journal_mode=WAL`` -- see ``_init_db``);
+#   * after a prune, ``PRAGMA incremental_vacuum`` hands freed pages back and
+#     the WAL is truncated;
+#   * WAL checkpoint(TRUNCATE) also runs periodically (throttled with the
+#     retention interval) so an append-only workload cannot leave a large
+#     ``-wal`` behind;
+#   * an EXISTING (legacy, auto_vacuum=NONE) database cannot change mode online
+#     -- it needs ``VACUUM`` -- so the migration is deferred to the first
+#     maintenance tick (never inside the open path), bounded by a size guard,
+#     and retried with backoff if it fails.
+_DEFAULT_AUTO_VACUUM_MIGRATE = 1
+_DEFAULT_AUTO_VACUUM_RETRY_SEC = 3600
+_DEFAULT_AUTO_VACUUM_MAX_MIGRATE_BYTES = 1_073_741_824  # 1 GiB
+_DEFAULT_WAL_TRUNCATE_MIN_BYTES = 1_048_576  # 1 MB
+_AUTO_VACUUM_NONE = 0
+_AUTO_VACUUM_INCREMENTAL = 2
+
+
+def _storage_settings() -> Dict[str, Any]:
+    """Resolve storage-reclamation settings once per store (env-configurable).
+
+    ``migrate`` enables the one-time VACUUM migration for legacy databases;
+    ``max_migrate_bytes`` keeps an unexpectedly huge evidence store from
+    triggering a surprise multi-GB VACUUM (operators can raise it explicitly);
+    ``retry_sec`` is the backoff after a failed migration (e.g. disk full);
+    ``wal_truncate_min_bytes`` is the WAL size above which the periodic
+    checkpoint(TRUNCATE) is attempted.
+    """
+    migrate_raw = os.environ.get(
+        "LIUHAO_AUDIT_AUTO_VACUUM_MIGRATE", "1").strip()
+    migrate = migrate_raw.lower() not in ("0", "false", "no", "off")
+    return {
+        "migrate": migrate,
+        "retry_sec": float(_env_int(
+            "LIUHAO_AUDIT_AUTO_VACUUM_RETRY_SEC",
+            _DEFAULT_AUTO_VACUUM_RETRY_SEC, minimum=1)),
+        "max_migrate_bytes": _env_int(
+            "LIUHAO_AUDIT_AUTO_VACUUM_MAX_MIGRATE_BYTES",
+            _DEFAULT_AUTO_VACUUM_MAX_MIGRATE_BYTES, minimum=1),
+        "wal_truncate_min_bytes": _env_int(
+            "LIUHAO_AUDIT_WAL_TRUNCATE_MIN_BYTES",
+            _DEFAULT_WAL_TRUNCATE_MIN_BYTES, minimum=1),
+    }
+
+
 # --- transient-fault recovery (see AuditStore._write_with_retry) ------------
 # SQLite primary result codes, per https://sqlite.org/rescode.html
 _SQLITE_BUSY = 5
@@ -519,6 +574,14 @@ class AuditStore:
         # to at most one pass per ``interval`` seconds from the append path.
         self._retention = _retention_settings()
         self._retention_last_check = 0.0
+        # Storage-reclamation policy + one-time auto_vacuum migration state.
+        # ``_auto_vacuum_pending`` is (re)computed by ``_init_db`` from the
+        # database header: a legacy file created with auto_vacuum=NONE stays
+        # pending until a VACUUM migration succeeds.
+        self._storage = _storage_settings()
+        self._auto_vacuum_pending = False
+        self._auto_vacuum_next_attempt = 0.0
+        self._auto_vacuum_warned = False
         self._init_db()
 
     def _init_db(self) -> None:
@@ -555,19 +618,15 @@ class AuditStore:
                     self._db_path, timeout=_SQLITE_BUSY_TIMEOUT_SEC,
                     check_same_thread=False,
                 )
-                # NOTE: PRAGMA journal_mode cannot be changed from inside a
-                # transaction, so it must stay above the BEGIN IMMEDIATE below.
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                # Incremental auto-vacuum lets a retention DELETE hand pages
-                # back to the filesystem (PRAGMA incremental_vacuum) instead of
-                # leaving the file monotonically larger forever. On a FRESH
-                # database this must be set before the first table is created;
-                # on an existing database SQLite ignores it (no-op), and the
-                # pruner then simply reclaims rows without shrinking the file.
+                # ORDER MATTERS (measured): journal mode WAL materialises the
+                # DB header, freezing auto_vacuum at NONE. Set it first.
                 try:
                     self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
                 except sqlite3.Error:
                     pass
+                # NOTE: PRAGMA journal_mode cannot be changed from inside a
+                # transaction, so it must stay above the BEGIN IMMEDIATE below.
+                self._conn.execute("PRAGMA journal_mode=WAL")
                 # Wired through the durability helper (it used to be dead
                 # code -- built and never called), so the level is
                 # validated and the applied value is observable.
@@ -606,6 +665,34 @@ class AuditStore:
         # Q3.5 (fencing): the single-writer lease lives in the audit DB itself,
         # so the fence check and the append are atomic on the same connection.
         self._lease = SqliteWriterLease(self._conn)
+        self._detect_auto_vacuum()
+
+    def _detect_auto_vacuum(self) -> None:
+        """Record whether this database can actually reclaim freed pages.
+
+        A fresh database opened by the reordered pragmas above reports
+        ``auto_vacuum == 2`` (INCREMENTAL). A legacy file created with the old
+        "WAL first" order reports ``0`` and cannot be changed online: SQLite
+        requires a full ``VACUUM`` to rewrite the header. Such a store is
+        marked pending and migrated from the maintenance path, never here.
+        """
+        mode = self._read_auto_vacuum()
+        if mode == _AUTO_VACUUM_INCREMENTAL:
+            self._auto_vacuum_pending = False
+            return
+        self._auto_vacuum_pending = True
+        # The VACUUM itself is deferred until reclamation is actually needed
+        # (a prune or an existing freelist): rewriting a large legacy file on
+        # the open path would delay startup for nothing.
+        self._auto_vacuum_next_attempt = 0.0
+
+    def _read_auto_vacuum(self) -> int:
+        """Return the current ``PRAGMA auto_vacuum`` mode (0 if unreadable)."""
+        try:
+            row = self._conn.execute("PRAGMA auto_vacuum").fetchone()
+            return int(row[0]) if row else _AUTO_VACUUM_NONE
+        except sqlite3.Error:
+            return _AUTO_VACUUM_NONE
 
     def _apply_schema(self) -> None:
         """Create/migrate the schema inside the transaction opened by _init_db."""
@@ -1370,29 +1457,175 @@ class AuditStore:
         return cut, floor, tail
 
     def _maybe_prune(self) -> None:
-        """Throttled retention pass from the append path (never fails writes)."""
+        """Throttled retention + storage maintenance (never fails writes)."""
         cfg = self._retention
-        if not cfg["enabled"]:
-            return
         now = time.time()
         if now - self._retention_last_check < cfg["interval"]:
             return
         self._retention_last_check = now
+        if cfg["enabled"]:
+            try:
+                cut, floor, _tail = self._read_only(self._retention_plan)
+            except Exception:  # noqa: BLE001 - retention must not break appends
+                logger.warning(
+                    "audit retention planning failed on %s; evidence retained",
+                    self._db_path, exc_info=True)
+                cut = floor = 0
+            if cut > floor:
+                try:
+                    self._prune_once()
+                except Exception:  # noqa: BLE001 - already-logged evidence stays
+                    logger.warning(
+                        "audit retention prune failed on %s; evidence retained",
+                        self._db_path, exc_info=True)
+        # Storage maintenance runs even when retention is disabled: an
+        # append-only store still leaves a growing ``-wal`` and a legacy DB still
+        # needs its one-time auto_vacuum migration.
+        self._maybe_maintain_storage()
+
+    # -- storage reclamation helpers ----------------------------------------
+    def _wal_bytes(self) -> int:
+        """Current size of the ``-wal`` sidecar (0 when it does not exist)."""
         try:
-            cut, floor, _tail = self._read_only(self._retention_plan)
-        except Exception:  # noqa: BLE001 - retention must not break appends
-            logger.warning(
-                "audit retention planning failed on %s; evidence retained",
-                self._db_path, exc_info=True)
-            return
-        if cut <= floor:
-            return
+            return os.path.getsize(self._db_path + "-wal")
+        except OSError:
+            return 0
+
+    def _wal_truncate(self) -> None:
+        """Best-effort ``wal_checkpoint(TRUNCATE)`` that never blocks writers.
+
+        ``busy_timeout`` is temporarily zeroed so a concurrently held read
+        snapshot makes the checkpoint return "busy" immediately instead of
+        stalling the append path for the full 30s timeout. The previous value
+        is restored in ``finally``.
+        """
         try:
-            self._prune_once()
-        except Exception:  # noqa: BLE001 - already-logged evidence stays
+            previous = int(
+                self._conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        except (sqlite3.Error, TypeError, IndexError):
+            previous = None
+        try:
+            self._conn.execute("PRAGMA busy_timeout=0")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+        finally:
+            if previous is not None:
+                try:
+                    self._conn.execute(f"PRAGMA busy_timeout={previous}")
+                except sqlite3.Error:
+                    pass
+
+    def _migrate_auto_vacuum(self) -> bool:
+        """One-time legacy migration: ``auto_vacuum`` NONE -> INCREMENTAL.
+
+        SQLite cannot change auto_vacuum online on a non-empty database; it
+        requires setting the pragma and then a full ``VACUUM``. Timing: the
+        first maintenance tick after open (not the open path, not a request),
+        outside any transaction. Failure handling: this never raises into the
+        append path; it backs off ``retry_sec`` (e.g. disk full, DB busy) and
+        logs one warning instead of retrying every write.
+        """
+        if not self._auto_vacuum_pending:
+            return True
+        cfg = self._storage
+        if not cfg["migrate"]:
+            return False
+        now = time.time()
+        if now < self._auto_vacuum_next_attempt:
+            return False
+        # A VACUUM needs roughly the DB size in temporary space; do not
+        # surprise an operator with a multi-GB rewrite on an oversized store.
+        size = self._audit_disk_bytes()
+        if size > cfg["max_migrate_bytes"]:
+            self._auto_vacuum_next_attempt = now + cfg["retry_sec"]
+            if not self._auto_vacuum_warned:
+                logger.warning(
+                    "audit db %s is %d MB with auto_vacuum=NONE; automatic "
+                    "reclamation stays off until an operator runs VACUUM "
+                    "manually or raises LIUHAO_AUDIT_AUTO_VACUUM_MAX_MIGRATE_BYTES",
+                    self._db_path, size // (1024 * 1024))
+                self._auto_vacuum_warned = True
+            return False
+        with self._lock:
+            if self._conn.in_transaction:
+                # Cannot VACUUM inside an open transaction; retry next tick.
+                return False
+            try:
+                # Truncate the WAL first so VACUUM does not copy a large one.
+                self._wal_truncate()
+                self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                self._conn.execute("VACUUM")
+            except Exception:  # noqa: BLE001 - storage maintenance is best-effort
+                self._auto_vacuum_next_attempt = now + cfg["retry_sec"]
+                if not self._auto_vacuum_warned:
+                    logger.warning(
+                        "audit db %s auto_vacuum migration (VACUUM) failed; "
+                        "freed pages will not be returned until it succeeds "
+                        "(retrying in %ds)", self._db_path, int(cfg["retry_sec"]),
+                        exc_info=True)
+                    self._auto_vacuum_warned = True
+                return False
+            finally:
+                # VACUUM writes new pages through the WAL; truncate again so the
+                # migration itself leaves no residual -wal behind.
+                self._wal_truncate()
+        if self._read_auto_vacuum() == _AUTO_VACUUM_INCREMENTAL:
+            self._auto_vacuum_pending = False
+            logger.info(
+                "audit db %s migrated to incremental auto-vacuum", self._db_path)
+            return True
+        # VACUUM reported success but the header did not change: retry later
+        # rather than pretending this store can reclaim.
+        self._auto_vacuum_next_attempt = now + cfg["retry_sec"]
+        return False
+
+    def _reclaim_freed_pages(self) -> None:
+        """Hand freed pages back to the filesystem and truncate the WAL."""
+        with self._lock:
+            self._migrate_auto_vacuum()
+            try:
+                if not self._conn.in_transaction:
+                    # No-op if auto_vacuum is still NONE (legacy migration
+                    # failed): the file then stops growing instead of shrinking.
+                    # NB: without a page argument SQLite returns one row per
+                    # freed page and performs the work lazily while stepping,
+                    # so the result MUST be drained (a bare execute() would
+                    # reclaim exactly one page and leave the rest in the
+                    # freelist).
+                    self._conn.execute("PRAGMA incremental_vacuum").fetchall()
+            except sqlite3.Error:
+                pass
+            self._wal_truncate()
+
+    def _maybe_maintain_storage(self) -> None:
+        """Periodic bounded reclamation (throttled by the retention interval)."""
+        try:
+            with self._lock:
+                if self._conn.in_transaction:
+                    return
+                free_pages = int(
+                    self._conn.execute(
+                        "PRAGMA freelist_count").fetchone()[0] or 0)
+                # A legacy DB is only rewritten once there is something to
+                # reclaim; this keeps an oversized store from being VACUUMed on
+                # a plain append when nothing was ever deleted.
+                if self._auto_vacuum_pending and free_pages:
+                    self._migrate_auto_vacuum()
+                if free_pages:
+                    try:
+                        self._conn.execute(
+                            "PRAGMA incremental_vacuum").fetchall()
+                    except sqlite3.Error:
+                        pass
+                if free_pages or (
+                        self._wal_bytes() >=
+                        self._storage["wal_truncate_min_bytes"]):
+                    self._wal_truncate()
+        except Exception:  # noqa: BLE001 - maintenance must never fail appends
             logger.warning(
-                "audit retention prune failed on %s; evidence retained",
-                self._db_path, exc_info=True)
+                "audit storage maintenance failed on %s", self._db_path,
+                exc_info=True)
 
     def _prune_once(self) -> None:
         """Delete the oldest prefix (bounded) and record the retention floor.
@@ -1443,13 +1676,11 @@ class AuditStore:
                     raise
             except Exception:
                 raise
-            # Hand freed pages back to the filesystem. No-op when the DB was
-            # created with auto_vacuum=NONE (legacy), in which case the file
-            # simply stops growing rather than shrinking.
-            try:
-                self._conn.execute("PRAGMA incremental_vacuum")
-            except sqlite3.Error:
-                pass
+            # Hand freed pages back to the filesystem and truncate the WAL.
+            # On a legacy DB whose one-time VACUUM migration has not succeeded
+            # yet, incremental_vacuum is a no-op: the file then stops growing
+            # instead of shrinking (never silently claims reclaimed space).
+            self._reclaim_freed_pages()
 
     def verify_integrity(self) -> Tuple[bool, int]:
         """Verify the integrity of the audit event hash chain.
