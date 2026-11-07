@@ -105,6 +105,29 @@ class ConversationStore:
             rows = self._conn.execute(query, params).fetchall()
         return [{"role": role, "content": content} for role, content in rows]
 
+    def load_turns(self, principal_id: str) -> List[Dict[str, Any]]:
+        """按顺序返回带时间戳的完整消息（导出「人可读对话」用）。
+
+        ``load`` 只给 role/content，是为了直接喂给模型；导出需要让人看出
+        每句话是什么时候说的，所以单独给一个带 ``turn`` / ``created_at``
+        的读取口，不改动既有调用方契约。
+        """
+        query = (
+            "SELECT turn, role, content, created_at FROM conversation_turns "
+            "WHERE principal_id = ? ORDER BY seq ASC"
+        )
+        with self._lock:
+            rows = self._conn.execute(query, (principal_id,)).fetchall()
+        return [
+            {
+                "turn": int(turn),
+                "role": str(role),
+                "content": str(content),
+                "created_at": float(created_at or 0),
+            }
+            for turn, role, content, created_at in rows
+        ]
+
     def load_recent(self, principal_id: str, limit: int) -> List[Dict[str, str]]:
         """返回最近 ``limit`` 条历史消息（保持顺序）。"""
         query = (
