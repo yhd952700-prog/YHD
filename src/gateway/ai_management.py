@@ -253,6 +253,13 @@ class GoalWorkError(Exception):
         self.detail = detail
 
 
+class GoalPersistError(GoalWorkError):
+    """目标记录**未能写入磁盘**：调用方必须看到失败，绝不能当成成功。"""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(507, "goal_persist_failed", detail)
+
+
 def _http_from_goal_error(exc: GoalWorkError) -> HTTPException:
     """把 ``GoalWorkError`` 转成稳定的线路格式（code + message）。"""
     return HTTPException(
@@ -557,6 +564,12 @@ class AIStateManager:
         self._employee_pool_lock = threading.RLock()
         self._shared_capability_executor = None
         self._goal_lock = threading.Lock()
+        # 并发目标：记录仍在执行的 goal id。只有最后一个结束的目标才能把
+        # 员工 agent 标回 idle，否则一个目标收尾会把另一个目标的 agent 说成空闲。
+        self._active_goals: Set[str] = set()
+        # ``_ensure_runtime`` / ``_ensure_employee`` 是懒初始化；并发首次目标
+        # 若同时穿过 ``is None`` 会各自建一份 runtime（两份 journal 句柄）。
+        self._runtime_lock = threading.RLock()
         # Serialises whole-file goals writes inside this process; the OS file
         # lock inside ``_save_goals`` covers other processes/workers.
         self._persist_lock = threading.Lock()
@@ -568,7 +581,16 @@ class AIStateManager:
         self._load_goals()
 
     def _ensure_runtime(self):
-        """懒初始化 AgentRuntime（延迟到首次使用，避免 import 时副作用）。"""
+        """懒初始化 AgentRuntime（延迟到首次使用，避免 import 时副作用）。
+
+        加锁的原因：两个目标几乎同时到达时都会看到 ``_runtime is None``，
+        各自构造一份 runtime，于是同一进程里出现两份 journal 句柄、两套
+        agent pool。锁保证**只建一个**，后来者复用同一个实例。
+        """
+        with self._runtime_lock:
+            return self._ensure_runtime_locked()
+
+    def _ensure_runtime_locked(self):
         if self._runtime is None:
             try:
                 from src.ai.agent_runtime import AgentRuntime
@@ -647,6 +669,10 @@ class AIStateManager:
         从 EmployeeStore 加载已持久化的 Employee，使 agent/task 状态在进程重启后
         仍可恢复（此前全部为内存态，重启即丢）。
         """
+        with self._runtime_lock:
+            return self._ensure_employee_locked()
+
+    def _ensure_employee_locked(self):
         if self._employee is None:
             try:
                 from src.ai.employee_store import EmployeeStore
@@ -723,16 +749,25 @@ class AIStateManager:
                     with _exclusive_file_lock(f"{path}.lock"):
                         with self._goal_lock:
                             snapshot = copy.deepcopy(self._goals)
-                        merged = self._merge_goal_maps(
-                            self._read_goals_file(path), snapshot
-                        )
+                        disk = self._read_goals_file(path)
+                        merged = self._merge_goal_maps(disk, snapshot)
                         serialized: Dict[str, Any] = {}
                         for gid, entry in merged.items():
                             try:
                                 json.dumps(entry)
                                 serialized[gid] = entry
-                            except (TypeError, ValueError):
-                                serialized[gid] = {"__unserializable__": str(entry)}
+                            except (TypeError, ValueError, OverflowError) as exc:
+                                # 序列化失败绝不能用一个字符串占位覆盖结构化数据：
+                                # 那会把磁盘上原本可用的目标永久毁掉。保留磁盘原值；
+                                # 磁盘没有这条记录时跳过（宁可不写，也不写假数据）。
+                                if gid in disk:
+                                    serialized[gid] = disk[gid]
+                                logger.warning(
+                                    "AIStateManager: goal %s is not JSON-serialisable (%s); "
+                                    "keeping the on-disk copy and skipping this entry",
+                                    gid,
+                                    exc,
+                                )
                         tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
                         with open(tmp_path, "w", encoding="utf-8") as fh:
                             json.dump(serialized, fh, indent=2)
@@ -746,7 +781,7 @@ class AIStateManager:
                             for gid, entry in merged.items():
                                 if gid not in self._goals:
                                     self._goals[gid] = entry
-        except Exception as exc:  # persistence must never break a request
+        except Exception as exc:  # persistence must never be reported as success
             # error, not warning: a silent persistence failure is how goal
             # history quietly disappears across restarts.
             logger.error("AIStateManager: goals persist failed (%s): %s", path, exc)
@@ -755,6 +790,11 @@ class AIStateManager:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+            # 调用方必须看到失败：接口不能返回 200 running 让用户以为已保存。
+            raise GoalPersistError(
+                "目标记录无法写入本机磁盘（"
+                f"{type(exc).__name__}: {exc}）；本次状态尚未持久化"
+            ) from exc
 
     @staticmethod
     def _read_goals_file(path: str) -> Dict[str, Any]:
@@ -841,7 +881,11 @@ class AIStateManager:
                     self._stamp_owner(entry, owner)
                     changed += 1
         if changed:
-            self._save_goals()
+            try:
+                self._save_goals()
+            except GoalPersistError as exc:
+                # 启动期补归属失败不能拖垮整个进程；但必须留下明确日志。
+                logger.error("AIStateManager: backfill goals persist failed: %s", exc)
         return changed
 
     def _load_goals(self) -> None:
@@ -914,7 +958,10 @@ class AIStateManager:
                     self._stamp_owner(entry, owner_of_entry(entry))
                 changed += 1
         if changed:
-            self._save_goals()
+            try:
+                self._save_goals()
+            except GoalPersistError as exc:
+                logger.error("AIStateManager: reconcile persist failed: %s", exc)
             logger.warning(
                 "AIStateManager: reconciled %d interrupted goal(s)%s",
                 changed,
@@ -978,7 +1025,22 @@ class AIStateManager:
         employee = self._ensure_employee()
         employee.record_goal_submitted(goal_id)
         employee.mark_agents_busy()
-        self._persist_employee()
+        with self._goal_lock:
+            self._active_goals.add(goal_id)
+        try:
+            self._persist_employee()
+        except Exception:
+            # 目标还没开始执行：把刚占用的 agent 状态释放掉，别留下假 BUSY。
+            if self._unregister_active_goal(goal_id):
+                employee.mark_agents_idle()
+                try:
+                    self._persist_employee()
+                except Exception as _exc:  # noqa: BLE001 - already failing loudly
+                    logger.error(
+                        "AIStateManager: employee persist failed while rolling back goal %s: %s",
+                        goal_id, _exc,
+                    )
+            raise
 
         if background:
             running_entry = {
@@ -1002,23 +1064,46 @@ class AIStateManager:
             self._stamp_owner(running_entry, owner)
             with self._goal_lock:
                 self._goals[goal_id] = running_entry
-            self._save_goals()
+            try:
+                self._save_goals()
+            except GoalPersistError as exc:
+                # 记录没落盘就绝不能让调用方看到 200 running：回滚内存记录、
+                # 释放 agent，并把真实失败原因返回给调用方。
+                with self._goal_lock:
+                    self._goals.pop(goal_id, None)
+                if self._unregister_active_goal(goal_id):
+                    employee.mark_agents_idle()
+                    try:
+                        self._persist_employee()
+                    except Exception as _exc:  # noqa: BLE001
+                        logger.error(
+                            "AIStateManager: employee persist failed while rolling back goal %s: %s",
+                            goal_id, _exc,
+                        )
+                raise GoalPersistError(
+                    f"目标未能启动：{exc.detail}。目标没有开始执行，"
+                    "内存中的临时记录已回滚。"
+                ) from exc
             t = threading.Thread(
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
                       verification_criteria, True, project_id, pinned_agent, owner),
+                kwargs={"raise_on_persist": False},
                 name=f"goal-{goal_id}",
                 daemon=True,
             )
+            # 先登记线程再启动：否则线程可能先结束并 pop，随后登记又留下一
+            # 个永远不会被清理的线程记录。
+            with self._goal_lock:
+                self._goal_threads[goal_id] = t
             t.start()
-            self._goal_threads[goal_id] = t
             # Register the link immediately (goal id is known up-front).
             self._link_goal_to_project(project_id, goal_id)
             return running_entry
 
         entry = self._run_bound_goal(
             goal_id, natural_language, scope, plan_mode, verification_criteria, True,
-            project_id, pinned_agent, owner,
+            project_id, pinned_agent, owner, raise_on_persist=True,
         )
         # Register the link once the goal exists (sync path).
         self._link_goal_to_project(project_id, goal_id)
@@ -1037,6 +1122,18 @@ class AIStateManager:
             logger.warning("goal->project link failed (%s/%s): %s",
                            project_id, goal_id, exc)
 
+    def _unregister_active_goal(self, goal_id: str) -> bool:
+        """移除目标的活跃/线程登记；返回是否已无其它活跃目标。
+
+        线程记录必须在 ``finally`` 里清理：异常路径上不清理就会永久泄漏一条
+        ``_goal_threads``。agent 是否标 idle 也由这里判定——并发目标里只要还有
+        一个没结束，就不能把它的 agent 说成空闲。
+        """
+        with self._goal_lock:
+            self._goal_threads.pop(goal_id, None)
+            self._active_goals.discard(goal_id)
+            return not self._active_goals
+
     def _run_bound_goal(
         self,
         goal_id: str,
@@ -1050,82 +1147,134 @@ class AIStateManager:
         owner_account_id: str = "",
         only_task_name: Optional[str] = None,
         on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        raise_on_persist: bool = True,
     ) -> Dict[str, Any]:
-        """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。"""
-        try:
-            runtime = self._ensure_runtime()
-            result = runtime.run_goal(
-                goal_text=natural_language,
-                goal_id=goal_id,
-                scope=scope,
-                plan_mode=plan_mode,
-                verification_criteria=verification_criteria,
-                persist=persist,
-                on_task_progress=(
-                    on_progress
-                    if on_progress is not None
-                    else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
-                ),
-                pinned_agent=pinned_agent,
-                only_task_name=only_task_name,
-            )
-        except Exception as exc:
-            logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
-            result = None
-            error = str(exc)
-        else:
-            error = None
+        """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。
 
-        # The employee pool is no longer engaged on this goal.
-        employee_persist_error: Optional[str] = None
-        employee = self._ensure_employee()
-        employee.mark_agents_idle()
-        if result is not None:
-            final_state = result.state.value if hasattr(result.state, "value") else str(result.state)
-            employee.record_goal_finished(goal_id, final_state)
+        ``raise_on_persist``：同步路径为 True（落盘失败必须让接口返回明确
+        错误）；后台线程为 False（目标已真实执行完，结果写入内存并在 GET 里
+        标记 ``persisted=False`` / ``persist_error``，不能让线程异常静默丢失）。
+        """
+        accounting_done = False
+        final_state: Optional[str] = None
+        employee = None
         try:
-            self._persist_employee()
-        except Exception as exc:
-            # 目标执行本身已经完成，不能因为 KPI 落盘失败丢掉目标结果；
-            # 但必须把失败如实带进结果，调用方能看到"员工进度没落盘"。
-            employee_persist_error = f"{type(exc).__name__}: {exc}"
+            try:
+                runtime = self._ensure_runtime()
+                result = runtime.run_goal(
+                    goal_text=natural_language,
+                    goal_id=goal_id,
+                    scope=scope,
+                    plan_mode=plan_mode,
+                    verification_criteria=verification_criteria,
+                    persist=persist,
+                    on_task_progress=(
+                        on_progress
+                        if on_progress is not None
+                        else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
+                    ),
+                    pinned_agent=pinned_agent,
+                    only_task_name=only_task_name,
+                )
+            except Exception as exc:
+                logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
+                result = None
+                error = str(exc)
+            else:
+                error = None
 
-        if result is None:
-            entry = {
-                "goal_id": goal_id,
-                "state": "failed",
-                "error": error,
-                "natural_language": natural_language,
-                "scope": scope,
-                "correlation_id": "",
-                "replan_count": 0,
-                "replan_suggested": False,
-                "trace": [],
-                "tasks": [],
-                "artifacts": [],
-                "evaluation": None,
-                "created_at": time.time(),
-                "project_id": project_id,
-                "assigned_agent": pinned_agent,
-            }
-        else:
-            entry = self._result_to_dict(result, natural_language, scope)
-            entry["project_id"] = project_id
-            entry["assigned_agent"] = pinned_agent
-        # 归属沿用提交时的值（后台路径由 ``running_entry`` 携带）；绝不因为
-        # 执行线程拿不到请求上下文就把目标改挂到别的账号。
-        if employee_persist_error:
-            entry["employee_persist_error"] = employee_persist_error
-        with self._goal_lock:
-            prior_owner = (self._goals.get(goal_id) or {}).get("owner_account_id")
-        # 员工与任务的关系必须出现在最终结果里：谁做了什么、耗时、成功与否。
-        self._attach_employee_attribution(entry)
-        self._stamp_owner(entry, prior_owner or owner_account_id)
-        with self._goal_lock:
-            self._goals[goal_id] = entry
-        self._save_goals()
-        self._goal_threads.pop(goal_id, None)
-        return entry
+            employee = self._ensure_employee()
+            if result is not None:
+                final_state = (
+                    result.state.value
+                    if hasattr(result.state, "value")
+                    else str(result.state)
+                )
+            # The employee pool is no longer engaged on THIS goal. If another
+            # concurrently running goal still holds the pool, its agents must
+            # stay BUSY -- going idle here would contradict real work in flight.
+            release_pool = self._unregister_active_goal(goal_id)
+            accounting_done = True
+            if release_pool:
+                employee.mark_agents_idle()
+            if final_state is not None:
+                employee.record_goal_finished(goal_id, final_state)
+            employee_persist_error: Optional[str] = None
+            try:
+                self._persist_employee()
+            except Exception as exc:
+                # 目标执行本身已经完成，不能因为 KPI 落盘失败丢掉目标结果；
+                # 但必须把失败如实带进结果，调用方能看到"员工进度没落盘"。
+                employee_persist_error = f"{type(exc).__name__}: {exc}"
+
+            if result is None:
+                entry = {
+                    "goal_id": goal_id,
+                    "state": "failed",
+                    "error": error,
+                    "natural_language": natural_language,
+                    "scope": scope,
+                    "correlation_id": "",
+                    "replan_count": 0,
+                    "replan_suggested": False,
+                    "trace": [],
+                    "tasks": [],
+                    "artifacts": [],
+                    "evaluation": None,
+                    "created_at": time.time(),
+                    "project_id": project_id,
+                    "assigned_agent": pinned_agent,
+                }
+            else:
+                entry = self._result_to_dict(result, natural_language, scope)
+                entry["project_id"] = project_id
+                entry["assigned_agent"] = pinned_agent
+            # 归属沿用提交时的值（后台路径由 ``running_entry`` 携带）；绝不因为
+            # 执行线程拿不到请求上下文就把目标改挂到别的账号。
+            if employee_persist_error:
+                entry["employee_persist_error"] = employee_persist_error
+            with self._goal_lock:
+                prior_owner = (self._goals.get(goal_id) or {}).get("owner_account_id")
+            # 员工与任务的关系必须出现在最终结果里：谁做了什么、耗时、成功与否。
+            self._attach_employee_attribution(entry)
+            self._stamp_owner(entry, prior_owner or owner_account_id)
+            with self._goal_lock:
+                self._goals[goal_id] = entry
+            try:
+                self._save_goals()
+            except GoalPersistError as exc:
+                entry["persisted"] = False
+                entry["persist_error"] = exc.detail
+                logger.error(
+                    "AIStateManager: goal %s finished as %s but could not be persisted: %s",
+                    goal_id, entry.get("state"), exc,
+                )
+                if raise_on_persist:
+                    raise GoalPersistError(
+                        f"目标已执行结束（真实状态：{entry.get('state')}），"
+                        f"但{exc.detail}；重启后该目标记录会丢失。"
+                    ) from exc
+            return entry
+        finally:
+            if not accounting_done:
+                # 异常路径：线程记录与活跃目标都必须释放，否则永久泄漏。
+                release_pool = self._unregister_active_goal(goal_id)
+                try:
+                    emp = employee or self._ensure_employee()
+                    if release_pool:
+                        emp.mark_agents_idle()
+                        try:
+                            self._persist_employee()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.error(
+                                "AIStateManager: employee persist failed after abnormal goal exit %s: %s",
+                                goal_id, exc,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "AIStateManager: could not release employee pool for goal %s: %s",
+                        goal_id, exc,
+                    )
 
     # ── 运行中的逐任务进度 ──
 
@@ -1251,7 +1400,20 @@ class AIStateManager:
                 entry["tasks"] = current
                 self._touch(entry)
         if changed:
-            self._save_goals()
+            try:
+                self._save_goals()
+            except GoalPersistError as exc:
+                # 这只是执行中的进度镜像：落盘失败不能反过来打断正在执行的任务，
+                # 但必须记录到目标上，GET 时能看到"进度未落盘"。
+                logger.error(
+                    "AIStateManager: progress snapshot for goal %s was not persisted: %s",
+                    goal_id, exc,
+                )
+                with self._goal_lock:
+                    live = self._goals.get(goal_id)
+                    if isinstance(live, dict):
+                        live["persisted"] = False
+                        live["persist_error"] = exc.detail
 
     # ── 单独指派员工 / 单任务重试 ──
 
@@ -1488,7 +1650,13 @@ class AIStateManager:
             self._stamp_owner(running_entry, owner)
             self._touch(running_entry)
             self._goals[goal_id] = running_entry
-        self._save_goals()
+        try:
+            self._save_goals()
+        except GoalPersistError:
+            # 没落盘就不算开始：把内存恢复成重试前的真实状态，再让接口报错。
+            with self._goal_lock:
+                self._goals[goal_id] = entry
+            raise
 
         def _progress(snapshots: List[Dict[str, Any]]) -> None:
             for snapshot in snapshots:
@@ -1515,7 +1683,19 @@ class AIStateManager:
                     live["tasks"] = live_tasks
                     self._touch(live)
                 # 快照很小，但也不在锁内落盘。
-                self._save_goals()
+                try:
+                    self._save_goals()
+                except GoalPersistError as exc:
+                    # 进度回调里抛异常会打断正在执行的任务；只记录，不阻断。
+                    logger.error(
+                        "AIStateManager: retry progress for goal %s was not persisted: %s",
+                        goal_id, exc,
+                    )
+                    with self._goal_lock:
+                        live = self._goals.get(goal_id)
+                        if isinstance(live, dict):
+                            live["persisted"] = False
+                            live["persist_error"] = exc.detail
 
         result: Any = None
         error: Optional[str] = None
@@ -1626,7 +1806,12 @@ class AIStateManager:
             )
         with self._goal_lock:
             self._goals[goal_id] = final_entry
-        self._save_goals()
+        try:
+            self._save_goals()
+        except GoalPersistError as exc:
+            final_entry["persisted"] = False
+            final_entry["persist_error"] = exc.detail
+            raise
 
         self._audit_goal_action(
             goal_id=goal_id,
@@ -1762,7 +1947,12 @@ class AIStateManager:
         self._touch(entry)
         with self._goal_lock:
             self._goals[goal_id] = entry
-        self._save_goals()
+        try:
+            self._save_goals()
+        except GoalPersistError as exc:
+            entry["persisted"] = False
+            entry["persist_error"] = exc.detail
+            raise
         return entry
 
     def list_goals(
@@ -1890,7 +2080,15 @@ class AIStateManager:
                 self._touch(item)
                 self._goals[goal_id] = item
             final_state = (self._goals.get(goal_id) or {}).get("state")
-        self._save_goals()
+        try:
+            self._save_goals()
+        except GoalPersistError as exc:
+            with self._goal_lock:
+                live = self._goals.get(goal_id)
+                if isinstance(live, dict):
+                    live["persisted"] = False
+                    live["persist_error"] = exc.detail
+            raise
 
         # Keep the employee KPI honest about the cancellation -- and only about
         # a cancellation. Counting every stop POST as a failed goal meant one

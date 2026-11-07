@@ -288,6 +288,10 @@ class ExecutionContext:
     task_results: Dict[str, ActionResult] = field(default_factory=dict)
     verification_results: Dict[str, VerificationResult] = field(default_factory=dict)
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
+    # 本次执行的归属 id（= goal.id）。必须放在 ctx 里而不是引擎实例上：
+    # 两个目标并发跑时，实例字段会被后启动的目标覆盖，先启动的目标后续
+    # 事件就会写到别人的 execution_id 下（串号）。
+    execution_id: Optional[str] = None
 
 
 class GoalDecomposer:
@@ -1388,9 +1392,12 @@ class ExecutionEngine:
             # 才能对上上一次执行留下来的那串事件。
             resumed_count = 0
             if self.journal is not None:
+                # 归属只存在 ctx 上；实例字段仅作向后兼容的观测值，事件写入
+                # 一律用 ctx.execution_id，避免并发目标互相覆盖。
+                ctx.execution_id = goal.id
                 self._execution_id = goal.id
                 self.journal.record(
-                    self._execution_id,
+                    ctx.execution_id,
                     "execution_started",
                     goal=goal.natural_language,
                     plan_id=plan.id,
@@ -1435,9 +1442,9 @@ class ExecutionEngine:
             # the real final task set, not the one before the last task landed.
             self._notify_progress(on_task_progress, plan)
 
-            if self.journal is not None and self._execution_id is not None:
+            if self.journal is not None and ctx.execution_id is not None:
                 self.journal.record(
-                    self._execution_id,
+                    ctx.execution_id,
                     "execution_completed",
                     plan_id=plan.id,
                     status=plan.status.value,
@@ -1515,6 +1522,7 @@ class ExecutionEngine:
                     self._journal_event(
                         task,
                         "task_failed",
+                        ctx.execution_id,
                         task_id=task.id,
                         goal_id=task.goal_id,
                         error=task.error,
@@ -1586,11 +1594,13 @@ class ExecutionEngine:
         返回跳过的任务数，并在 ctx 里放一个标明来自 journal 的 ActionResult，
         使后续 Verifier 看到的形状与真实执行一致（不是空成功，是「已恢复」）。
         """
-        assert self.journal is not None and self._execution_id is not None
-        done = self.journal.completed_task_names(self._execution_id)
+        execution_id = ctx.execution_id or ctx.goal.id
+        assert self.journal is not None and execution_id
+        ctx.execution_id = execution_id
+        done = self.journal.completed_task_names(execution_id)
         if not done:
             return 0
-        artifacts = self.journal.completed_task_artifacts(self._execution_id)
+        artifacts = self.journal.completed_task_artifacts(execution_id)
 
         resumed = 0
         for task in ctx.plan.tasks:
@@ -1620,6 +1630,7 @@ class ExecutionEngine:
                 self._journal_event(
                     task,
                     "journal_claim_unverified",
+                    ctx.execution_id,
                     task_id=task.id,
                     goal_id=task.goal_id,
                     artifact_path=declared_path,
@@ -1653,20 +1664,30 @@ class ExecutionEngine:
         return resumed
 
     def _journal_event(
-        self, task: Task, event_type: str, **payload: Any
+        self, task: Task, event_type: str, execution_id: Optional[str] = None, **payload: Any
     ) -> None:
-        """写一条任务级事件 —— journal 未挂载时必须是彻底的 no-op。"""
-        if self.journal is None or self._execution_id is None:
+        """写一条任务级事件 —— journal 未挂载时必须是彻底的 no-op。
+
+        ``execution_id`` 必须由调用方从自己的 ``ExecutionContext`` 传进来；
+        绝不读实例字段，否则并发目标会把事件写到别人的执行记录下。
+        未显式传入时用 ``task.goal_id``（journal 的 execution id 就是 goal id）：
+        这是该任务天然且唯一的归属，仍然与"当前引擎正在跑哪个目标"无关。
+        """
+        if self.journal is None:
             return
-        self.journal.record(self._execution_id, event_type, task_name=task.name, **payload)
+        execution_id = execution_id or task.goal_id
+        if not execution_id:
+            return
+        self.journal.record(execution_id, event_type, task_name=task.name, **payload)
 
     def _record_cancel(self, ctx: ExecutionContext) -> None:
         """Write a goal-level CANCELLED marker to the journal (no-op if unjournaled)."""
-        if self.journal is None or self._execution_id is None:
+        execution_id = ctx.execution_id or ctx.goal.id
+        if self.journal is None or not execution_id:
             return
         try:
             self.journal.record(
-                self._execution_id,
+                execution_id,
                 "execution_cancelled",
                 status="cancelled",
                 completed=len(ctx.completed_tasks),
@@ -1850,7 +1871,7 @@ class ExecutionEngine:
 
         # 先记 task_started 再动手：崩溃时才能知道「当时正在跑哪个任务」，
         # 以及区分「从没开始」和「开始了但没完成」——后者可能需要人工看一眼副作用。
-        self._journal_event(task, "task_started", task_id=task.id, goal_id=task.goal_id)
+        self._journal_event(task, "task_started", ctx.execution_id, task_id=task.id, goal_id=task.goal_id)
 
         publish_event(
             type="task_started",
@@ -1916,6 +1937,7 @@ class ExecutionEngine:
                 self._journal_event(
                     task,
                     "task_completed",
+                    ctx.execution_id,
                     task_id=task.id,
                     goal_id=task.goal_id,
                     artifact_path=artifact_path_from_output(result.output),
@@ -1971,7 +1993,7 @@ class ExecutionEngine:
         task.completed_at = utc_now()
         ctx.failed_tasks.add(task.id)
         self._journal_event(
-            task, "task_failed", task_id=task.id, goal_id=task.goal_id, error=task.error
+            task, "task_failed", ctx.execution_id, task_id=task.id, goal_id=task.goal_id, error=task.error
         )
 
         publish_event(

@@ -13,6 +13,7 @@ Usage:
 import os
 import json
 import logging
+import threading
 import warnings
 from typing import Optional, Dict, Any, Sequence
 
@@ -201,6 +202,14 @@ class BaseProvider:
         )
         return self.generate(prompt, **kwargs)
 
+    def close(self) -> None:
+        """Release provider-owned resources (HTTP clients, sessions, ...).
+
+        Default is a no-op: stateless providers own nothing. Providers that
+        cache a client override this so a retired instance does not leak
+        file descriptors in a long-running gateway.
+        """
+
     def chat_stream(self, messages, **kwargs):
         """Stream chat tokens one at a time.
 
@@ -268,6 +277,10 @@ class OpenAIProvider(BaseProvider):
         # here silently ignored OPENAI_BASE_URL / OPENAI_PROXY from ``.env``.
         self.proxy = kwargs.get("proxy") or _provider_env("OPENAI_PROXY") or None
         self.base_url = kwargs.get("base_url") or _provider_env("OPENAI_BASE_URL") or None
+        # 复用同一个 SDK client：此前每次 ``_get_client()`` 都新建
+        # openai.OpenAI + httpx.Client 且从不关闭，长跑会话会不断累积句柄。
+        self._client = None
+        self._client_lock = threading.Lock()
         # Track if using newer SDK version
         self.sdk_version = "1.x"
         self._capabilities = ProviderCapabilities(
@@ -283,25 +296,42 @@ class OpenAIProvider(BaseProvider):
         )
 
     def _get_client(self):
-        """Get OpenAI client with proper configuration for 1.x SDK."""
-        import openai
-        import httpx
+        """Get (and reuse) the OpenAI client with proper configuration for 1.x SDK."""
+        client = self._client
+        if client is not None:
+            return client
+        with self._client_lock:
+            if self._client is None:
+                import openai
+                import httpx
 
-        # Build http client with proxy if needed
-        http_client = None
-        if self.proxy:
-            http_client = httpx.Client(proxy=self.proxy)
+                # Build http client with proxy if needed
+                http_client = None
+                if self.proxy:
+                    http_client = httpx.Client(proxy=self.proxy)
 
-        client = openai.OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            # Every other provider hands ``self.timeout`` to its transport; this
-            # one used to leave the SDK default (10 min) in place, so the declared
-            # 30s timeout was silently ignored. Honor it.
-            timeout=self.timeout,
-            http_client=http_client,
-        )
-        return client
+                self._client = openai.OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    # Every other provider hands ``self.timeout`` to its
+                    # transport; this one used to leave the SDK default (10 min)
+                    # in place, so the declared 30s timeout was silently ignored.
+                    timeout=self.timeout,
+                    http_client=http_client,
+                )
+            return self._client
+
+    def close(self) -> None:
+        """Close the cached OpenAI/httpx client (idempotent)."""
+        with self._client_lock:
+            client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 - closing must not raise
+                logging.getLogger(__name__).warning(
+                    "OpenAIProvider close failed: %s", exc
+                )
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via OpenAI API (1.x SDK compatible)."""

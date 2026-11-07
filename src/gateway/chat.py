@@ -10,7 +10,10 @@ provider 由环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_MODEL 控制（默认 ol
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
+import time
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -35,6 +38,8 @@ from .account_usage import record_usage
 from ..ai.model_config import ModelConfigError
 
 router = APIRouter(prefix="/v1", tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 
 # ─── 重量级依赖的惰性接缝 ────────────────────────────────────
@@ -99,7 +104,42 @@ _SESSION_KEY_SEP = "\x00"
 _sessions: Dict[str, LiuHaoAssistant] = {}
 # 复合键 -> 主体（供会话列表如实展示归属；历史隔离不依赖它）。
 _session_users: Dict[str, str] = {}
+# 会话容量上限：此前 _sessions 无上限，任何一次失败请求/大量 session_id
+# 都能让进程里无限累积 assistant 及其 provider 句柄。超限按 LRU 淘汰。
+_MAX_SESSIONS_DEFAULT = 128
+_session_last_used: Dict[str, float] = {}
 _sessions_lock = threading.Lock()
+
+
+def _max_sessions() -> int:
+    raw = (os.environ.get("LIUHAO_CHAT_MAX_SESSIONS") or "").strip()
+    try:
+        value = int(raw) if raw else _MAX_SESSIONS_DEFAULT
+    except ValueError:
+        value = _MAX_SESSIONS_DEFAULT
+    return max(1, value)
+
+
+def _close_provider(provider) -> None:
+    """Best-effort close of a single provider instance."""
+    closer = getattr(provider, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
+
+
+def _begin_turn(assistant: LiuHaoAssistant) -> None:
+    fn = getattr(assistant, "begin_turn", None)
+    if callable(fn):
+        fn()
+
+
+def _end_turn(assistant: LiuHaoAssistant) -> None:
+    fn = getattr(assistant, "end_turn", None)
+    if callable(fn):
+        fn()
 
 
 def _session_key(principal: Optional[str], session_id: str) -> str:
@@ -140,19 +180,46 @@ def get_assistant(
         f"liuhao-{principal}-{session_id}" if principal else f"liuhao-{session_id}"
     )
     profile_principal = f"user-{principal}" if principal else None
+    # 先解析 provider，再创建会话：provider 解析失败（如成员没有可用模型，
+    # 返回 409）时绝不留下一个空 assistant。此前是先插入 _sessions 再解析，
+    # 实测 member 连续 10 次 409 会留下 10 个空会话。
+    provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope)
     with _sessions_lock:
-        if key not in _sessions:
-            _sessions[key] = LiuHaoAssistant(
-                name=history_principal, profile_principal=profile_principal
-            )
+        assistant = _sessions.get(key)
+        if assistant is None:
+            try:
+                assistant = LiuHaoAssistant(
+                    name=history_principal,
+                    profile_principal=profile_principal,
+                    provider=provider,
+                )
+            except Exception:
+                _close_provider(provider)
+                raise
+            # 容量上限：先淘汰最久未使用的会话，再插入新会话。
+            while _sessions and len(_sessions) >= _max_sessions():
+                if _session_last_used:
+                    oldest = min(_session_last_used, key=_session_last_used.get)
+                else:
+                    oldest = next(iter(_sessions))
+                evicted = _sessions.pop(oldest, None)
+                _session_users.pop(oldest, None)
+                _session_last_used.pop(oldest, None)
+                if evicted is not None:
+                    closer = getattr(evicted, "close", None)
+                    if callable(closer):
+                        try:
+                            closer()
+                        except Exception:
+                            pass
             if principal:
                 _session_users[key] = principal
-        assistant = _sessions[key]
-        # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里路由，
-        # 未命中回落默认模型（与旧行为一致），决策写日志便于核对。
-        assistant.provider = provider_for_task(
-            "chat", model_id=model_id, key_scope=key_scope
-        )
+            _sessions[key] = assistant
+        else:
+            # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里
+            # 路由，未命中回落默认模型。替换时按活跃轮次安全关闭旧 provider。
+            assistant.set_provider(provider)
+        _session_last_used[key] = time.monotonic()
         return assistant
 
 
@@ -182,10 +249,17 @@ def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
     with _sessions_lock:
         assistant = _sessions.pop(key, None)
         _session_users.pop(key, None)
+        _session_last_used.pop(key, None)
     if assistant is None:
         return False
     # reset 会清空该 principal 的对话历史（conversation store），不影响其它会话。
     assistant.reset()
+    closer = getattr(assistant, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
     return True
 
 
@@ -248,11 +322,15 @@ def _record_chat_usage(
     tokens_in: int,
     tokens_out: int,
     correlation_id: str,
-) -> None:
-    """记一行用量：账单归 ``key_owner``，用量归真实 actor。失败不阻断对话。"""
+) -> bool:
+    """记一行用量：账单归 ``key_owner``，用量归真实 actor。
+
+    返回是否真的写入了账本。失败不阻断对话，但调用方必须感知到（流式结束帧
+    携带 ``usage_recorded``，readiness 里也有 ``usage_ledger`` 状态）。
+    """
     owner = str(getattr(assistant.provider, "owner_principal", "") or "") or principal
     model = str(getattr(assistant.provider, "model", "") or req.model_id or "")
-    record_usage(
+    recorded = record_usage(
         actor=principal,
         key_owner=owner,
         model=model,
@@ -261,6 +339,11 @@ def _record_chat_usage(
         session_id=req.session_id,
         correlation_id=correlation_id,
     )
+    if not recorded:
+        logger.error(
+            "chat usage was NOT recorded (session=%s actor=%s)", req.session_id, principal
+        )
+    return recorded
 
 
 def _estimate_tokens(text: str) -> int:
@@ -279,8 +362,12 @@ def chat(
         req.message, enabled=req.use_knowledge, principal=principal
     )
     with knowledge_prompt(assistant, knowledge):
-        result = assistant.chat(req.message)
-    if result.get("status") != "denied":
+        _begin_turn(assistant)
+        try:
+            result = assistant.chat(req.message)
+        finally:
+            _end_turn(assistant)
+    if result.get("status") == "completed":
         _record_chat_usage(
             assistant,
             principal,
@@ -319,31 +406,47 @@ def chat_stream(
     def event_stream():
         # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
         reply_chars = 0
-        with knowledge_prompt(assistant, knowledge):
-            for item in assistant.chat_stream(req.message):
-                if isinstance(item, dict):
-                    # 工具调用事件：结构化透传（type/name/args/output）。
-                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-                else:
-                    reply_chars += len(str(item))
-                    payload = {"type": "token", "content": item}
-                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        _begin_turn(assistant)
+        try:
+            with knowledge_prompt(assistant, knowledge):
+                for item in assistant.chat_stream(req.message):
+                    if isinstance(item, dict):
+                        # 工具调用事件：结构化透传（type/name/args/output）。
+                        yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                    else:
+                        reply_chars += len(str(item))
+                        payload = {"type": "token", "content": item}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            _end_turn(assistant)
         # 生成器耗尽时 chat_stream 已完成落盘 + 审计，先记用量再发结束帧。
-        _record_chat_usage(
-            assistant,
-            principal,
-            req,
-            tokens_in=_estimate_tokens(req.message),
-            tokens_out=max(1, reply_chars // 4),
-            correlation_id="",
-        )
-        # 发结束帧。
+        # 只有真实成功的轮次才记账：失败/拒绝不能产生"已用量"假账。
+        turn_status = str(getattr(assistant, "last_turn_status", "") or "completed")
+        turn_error = getattr(assistant, "last_turn_error", None)
+        correlation_id = str(getattr(assistant, "last_turn_correlation_id", "") or "")
+        usage_recorded = False
+        if turn_status == "completed":
+            usage_recorded = _record_chat_usage(
+                assistant,
+                principal,
+                req,
+                tokens_in=_estimate_tokens(req.message),
+                tokens_out=max(1, reply_chars // 4),
+                correlation_id=correlation_id,
+            )
+        # 发结束帧：status 让前端能区分成功/失败/拒绝，而不是把 200 + done
+        # 当成成功。
         done = {
             "type": "done",
+            "status": turn_status,
             "turn": assistant.turn,
             "session_id": req.session_id,
+            "correlation_id": correlation_id,
+            "usage_recorded": usage_recorded,
             "knowledge": public_metadata(knowledge),
         }
+        if turn_status != "completed":
+            done["error"] = str(turn_error or "生成失败")
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -35,6 +35,47 @@ CREATE TABLE IF NOT EXISTS account_usage_events (
 """
 _lock = threading.Lock()
 _initialised: Dict[str, bool] = {}
+# 记账写入健康度：调用方（chat / readiness）必须能感知"用量行没写成"，
+# 而不是只在日志里留下一条 warning 就让计费数据悄悄缺行。
+_health_lock = threading.Lock()
+_failures_total = 0
+_consecutive_failures = 0
+_last_error: Optional[str] = None
+_last_error_at: Optional[float] = None
+
+
+def _note_write_failure(exc: BaseException) -> None:
+    import time
+
+    global _failures_total, _consecutive_failures, _last_error, _last_error_at
+    with _health_lock:
+        _failures_total += 1
+        _consecutive_failures += 1
+        _last_error = f"{type(exc).__name__}: {exc}"
+        _last_error_at = time.time()
+
+
+def _note_write_success() -> None:
+    global _consecutive_failures
+    with _health_lock:
+        _consecutive_failures = 0
+
+
+def usage_health() -> Dict[str, Any]:
+    """返回账本写入健康度（readiness / 诊断消费）。
+
+    ``consecutive_failures`` 表示**当前仍在失败**；为 0 而
+    ``failures_total`` 非 0 只说明历史上出现过失败、现已恢复。
+    """
+    with _health_lock:
+        return {
+            "path": db_path(),
+            "failures_total": _failures_total,
+            "consecutive_failures": _consecutive_failures,
+            "last_error": _last_error,
+            "last_error_at": _last_error_at,
+        }
+
 
 
 def db_path() -> str:
@@ -76,6 +117,8 @@ def record_usage(
     actor_id = str(actor or "").strip()
     owner_id = str(key_owner or actor_id).strip()
     if not actor_id:
+        _note_write_failure(ValueError("usage row rejected: actor is empty"))
+        logger.error("account usage row rejected: actor is empty")
         return False
     try:
         from src._time import utc_now
@@ -98,9 +141,12 @@ def record_usage(
                     str(correlation_id or ""),
                 ),
             )
+        _note_write_success()
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("could not record account usage: %s", exc)
+        # 计费行缺失是数据完整性问题，不能降级成 warning 后被静默忽略。
+        _note_write_failure(exc)
+        logger.error("could not record account usage: %s", exc)
         return False
 
 

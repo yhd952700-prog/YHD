@@ -31,6 +31,7 @@ already finished are kept for inspection but are never resumed.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -52,7 +53,34 @@ logger = logging.getLogger("liuhao.knowledge.ingest_jobs")
 
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _MAX_RETAINED_JOBS = 200
+# 队列上限：`max_workers=2` 但原来 ``ThreadPoolExecutor`` 的待执行队列无界，
+# 每个上传（payload 最多 20MB）都被闭包捕获驻留内存，很容易把进程拖垮。
+# 达到上限时**明确拒绝**（提交方收到 IngestQueueFull / HTTP 429），而不是继续
+# 把任务塞进无界队列。
+_MAX_QUEUED_JOBS = 32
 _PARTIAL_POLICY = "all-or-nothing（取消后不写入任何分块，不会留下半成品）"
+
+
+def _max_queued_jobs() -> int:
+    raw = (os.environ.get("LIUHAO_INGEST_MAX_QUEUED") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else _MAX_QUEUED_JOBS
+    except ValueError:
+        return _MAX_QUEUED_JOBS
+
+
+class IngestQueueFull(RuntimeError):
+    """入队被拒绝：未结束的入库任务已达到上限。"""
+
+    code = "ingest_queue_full"
+
+    def __init__(self, pending: int, limit: int) -> None:
+        super().__init__(
+            f"知识库入库队列已满（当前未结束任务 {pending} 个，上限 {limit} 个）；"
+            "请等待已有任务完成或取消后重试。"
+        )
+        self.pending = pending
+        self.limit = limit
 
 
 def _now() -> str:
@@ -142,12 +170,14 @@ class IngestJobManager:
         self,
         service_factory: Optional[Callable[[], KnowledgeDocumentService]] = None,
         max_workers: int = 2,
+        max_queued: Optional[int] = None,
     ) -> None:
         self._service_factory = service_factory or get_knowledge_service
         self._lock = threading.RLock()
         self._jobs: Dict[str, _Job] = {}
         self._cancel_events: Dict[str, threading.Event] = {}
         self._done_events: Dict[str, threading.Event] = {}
+        self._max_queued = max(1, int(max_queued)) if max_queued else _max_queued_jobs()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="kb-ingest"
         )
@@ -214,6 +244,9 @@ class IngestJobManager:
         done_event = threading.Event()
         with self._lock:
             self._prune_locked()
+            pending = sum(1 for j in self._jobs.values() if j.status not in _TERMINAL)
+            if pending >= self._max_queued:
+                raise IngestQueueFull(pending, self._max_queued)
             self._jobs[job.job_id] = job
             self._cancel_events[job.job_id] = cancel_event
             self._done_events[job.job_id] = done_event

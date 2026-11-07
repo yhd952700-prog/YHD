@@ -73,7 +73,7 @@ from src.knowledge.extractors import (
     FileTooLarge,
     extract_document,
 )
-from src.knowledge.ingest_jobs import get_ingest_job_manager
+from src.knowledge.ingest_jobs import IngestQueueFull, get_ingest_job_manager
 
 core = APIRouter(tags=["knowledge"])
 
@@ -459,13 +459,24 @@ async def knowledge_submit_upload_job(
     except ExtractionError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc))
 
-    return get_ingest_job_manager().submit_file(
-        data,
-        filename,
-        doc_id=doc_id,
-        allow_low_quality=allow_low_quality,
-        owner_account_id=scope.write_owner,
-    )
+    try:
+        return get_ingest_job_manager().submit_file(
+            data,
+            filename,
+            doc_id=doc_id,
+            allow_low_quality=allow_low_quality,
+            owner_account_id=scope.write_owner,
+        )
+    except IngestQueueFull as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "pending": exc.pending,
+                "limit": exc.limit,
+            },
+        ) from exc
 
 
 @documents_admin.post("/ingest/jobs", status_code=202)
@@ -479,12 +490,23 @@ def knowledge_submit_ingest_job(
         raise HTTPException(
             status_code=503, detail=f"知识库未启用：{status.get('reason')}"
         )
-    return get_ingest_job_manager().submit(
-        payload.text,
-        doc_id=payload.doc_id,
-        metadata=payload.metadata,
-        owner_account_id=scope.write_owner,
-    )
+    try:
+        return get_ingest_job_manager().submit(
+            payload.text,
+            doc_id=payload.doc_id,
+            metadata=payload.metadata,
+            owner_account_id=scope.write_owner,
+        )
+    except IngestQueueFull as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "pending": exc.pending,
+                "limit": exc.limit,
+            },
+        ) from exc
 
 
 @documents_admin.get("/ingest/jobs/{job_id}")

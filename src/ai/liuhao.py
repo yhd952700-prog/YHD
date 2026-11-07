@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -164,6 +165,15 @@ class LiuHaoAssistant:
         # 本轮被成本护栏评估出来的预估花费（无定价时为 None）——记账时复用同
         # 一个数，避免"放行时按 A 判、记账时按 B 收"的错位。
         self._turn_estimated_cost: Optional[float] = None
+        # provider 生命周期：新请求会替换 provider；旧实例必须在安全时机
+        # 关闭（httpx/openai client 不关闭会随请求数累积句柄）。
+        self._provider_lock = threading.Lock()
+        self._active_turns = 0
+        self._retired_providers: List[BaseProvider] = []
+        # 本轮真实结果：gateway 依据它决定 done 帧状态与是否记用量。
+        self.last_turn_status: Optional[str] = None
+        self.last_turn_error: Optional[str] = None
+        self.last_turn_correlation_id: str = ""
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
         manager = get_identity_manager()
@@ -207,6 +217,63 @@ class LiuHaoAssistant:
             self.tools.activate(tool.tool_id)
         # system prompt 追加工具描述（提示词约束 + JSON 解析的诚实协议）。
         self.system_prompt = self.system_prompt + build_tool_prompt(self._tool_list)
+
+    def begin_turn(self) -> None:
+        """标记一轮生成正在进行；期间被替换的 provider 延后关闭。"""
+        with self._provider_lock:
+            self._active_turns += 1
+
+    def end_turn(self) -> None:
+        """一轮生成结束；若无其它轮次在跑，关闭已退休的 provider。"""
+        to_close: List[BaseProvider] = []
+        with self._provider_lock:
+            if self._active_turns > 0:
+                self._active_turns -= 1
+            if self._active_turns == 0 and self._retired_providers:
+                to_close = list(self._retired_providers)
+                self._retired_providers.clear()
+        for provider in to_close:
+            self._close_provider_quietly(provider)
+
+    def set_provider(self, provider: Optional[BaseProvider]) -> None:
+        """替换 provider（热加载），按是否存在进行中的轮次决定何时关闭旧实例。"""
+        if provider is None or provider is self.provider:
+            return
+        to_close: Optional[BaseProvider] = None
+        with self._provider_lock:
+            old = self.provider
+            self.provider = provider
+            if hasattr(self.agent, "provider"):
+                self.agent.provider = provider
+            if old is not None:
+                if self._active_turns > 0:
+                    self._retired_providers.append(old)
+                else:
+                    to_close = old
+        if to_close is not None:
+            self._close_provider_quietly(to_close)
+
+    def close(self) -> None:
+        """关闭当前及已退休的 provider（会话被删除/淘汰时调用）。"""
+        with self._provider_lock:
+            providers: List[BaseProvider] = []
+            seen: set = set()
+            for provider in [self.provider] + list(self._retired_providers):
+                if provider is not None and id(provider) not in seen:
+                    seen.add(id(provider))
+                    providers.append(provider)
+            self._retired_providers.clear()
+        for provider in providers:
+            self._close_provider_quietly(provider)
+
+    @staticmethod
+    def _close_provider_quietly(provider: BaseProvider) -> None:
+        closer = getattr(provider, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception as exc:  # noqa: BLE001 - closing must not raise
+                _log.warning("liuhao: provider close failed: %s", exc)
 
     @staticmethod
     def _ensure_chat_policy() -> None:
@@ -278,6 +345,7 @@ class LiuHaoAssistant:
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
+        self.last_turn_correlation_id = correlation_id
         # 把本轮回话 id 透传到能力层日志（供追踪"哪一轮触发了哪些 kernel action"）。
         TraceContext.set(correlation_id=correlation_id)
 
@@ -286,6 +354,8 @@ class LiuHaoAssistant:
             "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
         )
         if not decision.is_allowed:
+            self.last_turn_status = "denied"
+            self.last_turn_error = None
             log_event(
                 AuditEventType.ACCESS_DENIED,
                 principal_id=self.principal,
@@ -308,9 +378,14 @@ class LiuHaoAssistant:
         try:
             reply = self._generate_with_tools(messages)
             status = "completed"
+            error_text: Optional[str] = None
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             reply = f"[生成失败] {exc}"
             status = "error"
+            error_text = str(exc)
+
+        self.last_turn_status = status
+        self.last_turn_error = error_text
 
         # 4-5. 记忆 + 会话落盘 + 审计（chat / chat_stream 共用）。
         self._commit_turn(message, reply, correlation_id, status)
@@ -333,6 +408,7 @@ class LiuHaoAssistant:
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
+        self.last_turn_correlation_id = correlation_id
         TraceContext.set(correlation_id=correlation_id)
         self._log.debug("ENTER LiuHaoAssistant.chat_stream turn=%s", self.turn)
 
@@ -341,6 +417,8 @@ class LiuHaoAssistant:
             "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
         )
         if not decision.is_allowed:
+            self.last_turn_status = "denied"
+            self.last_turn_error = None
             log_event(
                 AuditEventType.ACCESS_DENIED,
                 principal_id=self.principal,
@@ -360,6 +438,7 @@ class LiuHaoAssistant:
         #    回复（不再检测工具，防 LLM 死循环）。
         final_reply = ""
         status = "completed"
+        error_text: Optional[str] = None
         try:
             for round_idx in range(MAX_TOOL_ROUNDS + 1):
                 round_chunks: List[str] = []
@@ -391,9 +470,12 @@ class LiuHaoAssistant:
                 )
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             status = "error"
+            error_text = str(exc)
             final_reply = f"[生成失败] {exc}"
             yield final_reply
 
+        self.last_turn_status = status
+        self.last_turn_error = error_text
         # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
         self._commit_turn(message, final_reply, correlation_id, status)
         self._log.info("EXIT chat_stream status=%s", status)

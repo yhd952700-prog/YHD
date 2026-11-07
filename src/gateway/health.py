@@ -435,6 +435,27 @@ async def readiness_probe(request: Request) -> JSONResponse:
     except Exception as e:  # pragma: no cover - defensive
         checks["ai_provider"] = {"status": "unhealthy", "error": str(e)}
 
+    # 用量账本写入健康度：账本写失败此前只留一条 warning，调用方不检查，
+    # 计费数据会悄悄缺行。当前仍在失败时必须让 readiness/诊断看得见。
+    try:
+        from .account_usage import usage_health
+
+        usage = usage_health()
+        ledger_ok = not usage.get("consecutive_failures")
+        checks["usage_ledger"] = {
+            "status": "healthy" if ledger_ok else "degraded",
+            **usage,
+        }
+        if not ledger_ok:
+            errors.append(
+                "Usage Ledger: "
+                f"{usage.get('consecutive_failures')} consecutive write failure(s); "
+                f"last error: {usage.get('last_error')}"
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        checks["usage_ledger"] = {"status": "unhealthy", "error": str(e)}
+        errors.append(f"Usage Ledger: {str(e)}")
+
     # C-2 arming self-check (security domain owns the DECISION, this is wiring).
     #
     # C-2 -- the blocking gate for HIGH/CRITICAL kernel actions -- is armed by a
