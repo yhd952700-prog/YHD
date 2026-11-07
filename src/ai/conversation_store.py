@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .observability import observe
 from .audit import audited
@@ -133,6 +133,65 @@ class ConversationStore:
                 "DELETE FROM conversation_turns WHERE principal_id = ?", (principal_id,)
             )
             self._conn.commit()
+
+    def has_rows(self, principal_id: str) -> bool:
+        """该主体是否有任何已落盘的对话消息（用于新旧键择优）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM conversation_turns WHERE principal_id = ? LIMIT 1",
+                (principal_id,),
+            ).fetchone()
+        return row is not None
+
+    def list_session_ids(
+        self,
+        principal: Optional[str],
+        known_principals: Sequence[str] = (),
+        allow_legacy: bool = False,
+    ) -> List[str]:
+        """从持久库解析出会话名（重启后仍有列表，不再依赖进程内存）。
+
+        键口径兼容两代：
+
+        * 新键 ``liuhao-{principal}-{session}``（当前版本）；
+        * 旧键 ``liuhao-{session}``（0.1.0；``session`` 往往自带 ``liuhao-``
+          前缀，故旧行形如 ``liuhao-liuhao-session-xxx``）。
+
+        ``allow_legacy`` 只对根主体/全局视图开放：旧键没有主体段，无法区分
+        归属；把它开放给普通成员会暴露别人的会话名。``known_principals`` 用于
+        排除"其实是别人新键"的行（例如 ``liuhao-alice-chat``）。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT principal_id FROM conversation_turns"
+            ).fetchall()
+        ids: set[str] = set()
+        others = [
+            f"{item}-" for item in known_principals
+            if item and item != principal
+        ]
+        for (raw,) in rows:
+            principal_id = str(raw or "")
+            if not principal_id.startswith("liuhao-"):
+                continue
+            rest = principal_id[len("liuhao-"):]
+            if not rest:
+                continue
+            if principal is None:
+                ids.add(rest)
+                continue
+            composite = f"{principal}-"
+            if rest.startswith(composite):
+                session_id = rest[len(composite):]
+                if session_id:
+                    ids.add(session_id)
+                continue
+            if not allow_legacy:
+                continue
+            if any(rest.startswith(prefix) for prefix in others):
+                continue
+            ids.add(rest)
+        return sorted(ids)
 
     # ------------------------------------------------------------------ #
     # 观测

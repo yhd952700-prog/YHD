@@ -592,6 +592,24 @@ async def lifespan(app: FastAPI):
             _store["location"] or "(unconfigured)",
         )
 
+    # 0.1.0 老记忆 -> 账号记忆：启动时先做一次幂等迁移（放在身份加载之后，
+    # 归属才能落到正确的根主体）。失败不阻断启动，下次访问记忆页会重试。
+    try:
+        from .account_memory import ensure_legacy_memory_migrated
+
+        _legacy_memory = ensure_legacy_memory_migrated()
+        _startup_mark(
+            "老记忆迁移完成",
+            ran=bool(_legacy_memory.get("ran")),
+            entries=int(_legacy_memory.get("entries", 0) or 0),
+            ttl_refreshed=int(_legacy_memory.get("ttl_refreshed", 0) or 0),
+        )
+    except Exception as _legacy_exc:  # noqa: BLE001 - 迁移可重试，不能阻断服务启动
+        logger.error(
+            "legacy memory migration failed: %s", _legacy_exc, exc_info=True
+        )
+        _startup_mark("老记忆迁移失败", error=str(_legacy_exc))
+
     # 注意：这里**不**再注册 /v1/health 与 /v1/ready。
     #
     # 历史上 lifespan 里注册过两个 trivial 版本

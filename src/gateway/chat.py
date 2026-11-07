@@ -157,6 +157,50 @@ def _bare_session_id(key: str) -> str:
     return key.split(_SESSION_KEY_SEP, 1)[1] if _SESSION_KEY_SEP in key else key
 
 
+def _root_principal() -> Optional[str]:
+    """当前账号树的根主体；没有账号树（纯人类身份）时返回 ``None``。"""
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        node = get_identity_manager().account_root()
+    except Exception:  # noqa: BLE001 - 身份未就绪时按"无根"处理，不阻断对话
+        return None
+    return str(node.principal) if node is not None else None
+
+
+def _legacy_history_allowed(principal: Optional[str]) -> bool:
+    """旧会话键 ``liuhao-{session}`` 没有主体段，只允许根/全局视图读取。
+
+    否则普通成员只要猜中别人的会话名，就能读到根/他人的 0.1.0 历史。
+    """
+    if principal is None:
+        return True
+    return _root_principal() == principal
+
+
+def _history_principal_candidates(
+    principal: Optional[str], session_id: str
+) -> List[str]:
+    """历史主体候选：新键优先，根主体再回落旧键（0.1.0 兼容）。"""
+    if not principal:
+        return [f"liuhao-{session_id}"]
+    primary = f"liuhao-{principal}-{session_id}"
+    if not _legacy_history_allowed(principal):
+        return [primary]
+    legacy = f"liuhao-{session_id}"
+    return [primary] if legacy == primary else [primary, legacy]
+
+
+def _resolve_history_principal(principal: Optional[str], session_id: str) -> str:
+    """择优：已有旧数据时继续沿用它，避免升级后"接着聊"丢上下文。"""
+    store = get_conversation_store()
+    candidates = _history_principal_candidates(principal, session_id)
+    for candidate in candidates:
+        if store.has_rows(candidate):
+            return candidate
+    return candidates[0]
+
+
 def get_assistant(
     session_id: str,
     principal: Optional[str] = None,
@@ -176,9 +220,7 @@ def get_assistant(
     立即换用新配置（不需要重启后端）。
     """
     key = _session_key(principal, session_id)
-    history_principal = (
-        f"liuhao-{principal}-{session_id}" if principal else f"liuhao-{session_id}"
-    )
+    history_principal = _resolve_history_principal(principal, session_id)
     profile_principal = f"user-{principal}" if principal else None
     # 先解析 provider，再创建会话：provider 解析失败（如成员没有可用模型，
     # 返回 409）时绝不留下一个空 assistant。此前是先插入 _sessions 再解析，
@@ -223,44 +265,68 @@ def get_assistant(
         return assistant
 
 
-def list_sessions(principal: Optional[str] = None) -> List[str]:
-    """返回活跃会话 ID 列表（有序）。
+def list_sessions(
+    principal: Optional[str] = None,
+    known_principals: Optional[List[str]] = None,
+    allow_legacy: Optional[bool] = None,
+) -> List[str]:
+    """返回会话 ID 列表（进程内 + 持久库并集，重启后不会变空）。
 
     ``principal`` 非空时只返回该主体的会话 —— HTTP 面必须传令牌主体，
     否则一个用户能看到别人的会话名。``None`` 仅用于进程内全局视图
     （如驾驶舱聚合统计）。
+
+    ``known_principals`` 用于排除"旧键其实是别人新键"的行；``allow_legacy``
+    默认只对根/全局视图开放旧键（旧键没有主体段，见 ``_legacy_history_allowed``）。
     """
+    try:
+        persisted = get_conversation_store().list_session_ids(
+            principal,
+            known_principals or [],
+            _legacy_history_allowed(principal) if allow_legacy is None else allow_legacy,
+        )
+    except Exception:  # noqa: BLE001 - 列表失败不能阻断接口；至少返回进程内会话
+        logger.warning("could not list persisted chat sessions", exc_info=True)
+        persisted = []
     with _sessions_lock:
-        keys = [
-            key
+        live = [
+            _bare_session_id(key)
             for key in _sessions
             if principal is None or _owner_of(key) == principal
         ]
-    return sorted(_bare_session_id(key) for key in keys)
+    return sorted(set(live) | set(persisted))
 
 
 def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
     """删除一个会话：清空其持久化历史并移除实例。返回是否成功。
 
     ``principal`` 非空时只能删自己的会话（复合键命中）；不传则按纯
-    ``session_id`` 命中（仅供进程内/测试直接调用）。
+    ``session_id`` 命中（仅供进程内/测试直接调用）。重启后实例已不在内存，
+    此时按同一套新旧键规则清空持久库，保证列表里的会话能删掉。
     """
     key = _session_key(principal, session_id)
     with _sessions_lock:
         assistant = _sessions.pop(key, None)
         _session_users.pop(key, None)
         _session_last_used.pop(key, None)
-    if assistant is None:
-        return False
-    # reset 会清空该 principal 的对话历史（conversation store），不影响其它会话。
-    assistant.reset()
-    closer = getattr(assistant, "close", None)
-    if callable(closer):
-        try:
-            closer()
-        except Exception:
-            pass
-    return True
+    if assistant is not None:
+        # reset 会清空该 principal 的对话历史（conversation store），不影响其它会话。
+        assistant.reset()
+        closer = getattr(assistant, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+        return True
+    # 没有活跃实例：从持久库清空（旧键只在根/全局视图下允许，避免越权删除）。
+    store = get_conversation_store()
+    cleared = False
+    for candidate in _history_principal_candidates(principal, session_id):
+        if store.has_rows(candidate):
+            store.clear(candidate)
+            cleared = True
+    return cleared
 
 
 class ChatRequest(BaseModel):
@@ -499,7 +565,11 @@ def chat_sessions(
     ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
     不再接受客户端声明。
     """
-    sessions = list_sessions(context.principal)
+    sessions = list_sessions(
+        context.principal,
+        known_principals=list(context.subtree),
+        allow_legacy=context.is_root,
+    )
     return {
         "sessions": sessions,
         "count": len(sessions),
@@ -512,15 +582,14 @@ def read_history(
 ) -> Dict[str, object]:
     """从持久化 store 读取某会话的历史（按主体+会话复合隔离）。
 
+    新旧键都兼容：优先当前键 ``liuhao-{principal}-{session}``，根主体在
+    新键无数据时回落到 0.1.0 的 ``liuhao-{session}``。
+
     ``profile_principal`` 单独给出该会话读写的画像主体：有主体时恒为
     ``user-{principal}``（跨会话共享）。
     """
-    if principal:
-        history_principal = f"liuhao-{principal}-{session_id}"
-        profile_principal = f"user-{principal}"
-    else:
-        history_principal = f"liuhao-{session_id}"
-        profile_principal = history_principal
+    history_principal = _resolve_history_principal(principal, session_id)
+    profile_principal = f"user-{principal}" if principal else history_principal
     history = get_conversation_store().load(history_principal)
     return {
         "session_id": session_id,

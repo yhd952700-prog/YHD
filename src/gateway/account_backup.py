@@ -179,6 +179,52 @@ _MEMORY_TABLES: Dict[str, Tuple[str, ...]] = {
 _CONVERSATION_TABLES: Dict[str, Tuple[str, ...]] = {
     "conversation_turns": ("seq", "principal_id", "turn", "role", "content", "created_at"),
 }
+#: 0.1.0 的内核记忆 / 画像库（跨机导入后老记忆必须仍然可读）。
+_KERNEL_MEMORY_TABLES: Dict[str, Tuple[str, ...]] = {
+    "memory_entries": (
+        "key_hash", "entry_id", "key", "value", "tier", "scope", "created_at",
+        "expires_at", "tags", "correlation_id", "access_count",
+        "last_accessed", "provenance",
+    ),
+}
+_PERSONAL_CONTEXT_TABLES: Dict[str, Tuple[str, ...]] = {
+    "profile_preferences": (
+        "principal_id", "key", "value_json", "confidence", "source", "updated_at",
+    ),
+    "profile_facts": ("principal_id", "key", "value_json", "source", "updated_at"),
+    "profile_lists": ("principal_id", "kind", "item"),
+    "profile_relationships": ("principal_id", "who", "relation"),
+    "profile_meta": ("principal_id", "key", "value_json"),
+}
+
+
+def _kernel_memory_db_path() -> str:
+    from ..kernels.memory.store import DEFAULT_DB_PATH
+
+    return os.environ.get("MEMORY_DB_PATH") or DEFAULT_DB_PATH
+
+
+def _personal_context_db_path() -> str:
+    from ..ai.personal_context import DEFAULT_DB_PATH
+
+    return os.environ.get("PERSONAL_CONTEXT_DB_PATH") or DEFAULT_DB_PATH
+
+
+def _kernel_row_owner(row: Dict[str, Any], allowed: Sequence[str]) -> Optional[str]:
+    """内核记忆行没有账号列：键里带账号就归该账号，否则归根（仅整树导出）。"""
+    key = str(row.get("key") or "")
+    for owner in allowed:
+        if owner and (f"liuhao-{owner}" in key or f"{owner}:" in key or f"user-{owner}" in key):
+            return owner
+    return None
+
+
+def _profile_row_owner(row: Dict[str, Any], allowed: Sequence[str]) -> Optional[str]:
+    raw = str(row.get("principal_id") or "")
+    stripped = raw[len("user-"):] if raw.startswith("user-") else raw
+    if stripped in allowed:
+        return stripped
+    return None
 
 
 def _snapshot_tables(
@@ -238,12 +284,22 @@ def _conversation_owner(principal_id: str, allowed: Sequence[str]) -> Optional[s
     return None
 
 
-def _collect_stores(principals: Sequence[str]) -> Dict[str, Any]:
-    """收集记忆库与会话库中**归属这些账号**的行（含来源清单）。"""
+def _collect_stores(
+    principals: Sequence[str], include_public: bool = False
+) -> Dict[str, Any]:
+    """收集记忆库与会话库中**归属这些账号**的行（含来源清单）。
+
+    先把 0.1.0 的 ``memory_store.db`` / ``personal_context.db`` 幂等映射进
+    账号记忆表，再按账号过滤快照；内核库本身也原样带进备份，保证"迁移后
+    统一"与"导入后仍可重读"两条路径都成立。
+    """
     from ..ai.conversation_store import get_conversation_store
+    from . import account_memory
     from .account_memory import db_path as memory_db_path
 
     allowed = set(principals)
+    # 迁移失败会让导出显式失败（而不是静默少带一段记忆）；源库保持原样，可重试。
+    migration = account_memory.ensure_legacy_memory_migrated()
     memory_rows = _snapshot_tables(memory_db_path(), _MEMORY_TABLES)
     entries = [
         row for row in memory_rows.get("account_memory_entries", [])
@@ -271,10 +327,30 @@ def _collect_stores(principals: Sequence[str]) -> Dict[str, Any]:
         }
     )
 
+    kernel_rows = _snapshot_tables(
+        _kernel_memory_db_path(), _KERNEL_MEMORY_TABLES
+    ).get("memory_entries", [])
+    if not include_public:
+        kernel_rows = [
+            row for row in kernel_rows
+            if _kernel_row_owner(row, principals)
+        ]
+    profile_rows = _snapshot_tables(
+        _personal_context_db_path(), _PERSONAL_CONTEXT_TABLES
+    )
+    profile_counts: Dict[str, int] = {}
+    for table, rows in profile_rows.items():
+        if not include_public:
+            rows = [row for row in rows if _profile_row_owner(row, principals)]
+            profile_rows[table] = rows
+        profile_counts[table] = len(rows)
+
     return {
         "payload": {
             "memory": {"entries": entries, "custody": custody},
             "conversations": {"turns": turns},
+            "kernel_memory": {"entries": kernel_rows},
+            "personal_context": profile_rows,
         },
         "manifest": {
             "account_memory": {
@@ -287,6 +363,15 @@ def _collect_stores(principals: Sequence[str]) -> Dict[str, Any]:
                 "db": "conversation_store.db",
                 "turns": len(turns),
                 "principals": conversation_owners,
+            },
+            "kernel_memory": {
+                "db": "memory_store.db",
+                "entries": len(kernel_rows),
+                "migrated": migration.get("entries", 0),
+            },
+            "personal_context": {
+                "db": "personal_context.db",
+                "tables": profile_counts,
             },
         },
     }
@@ -399,7 +484,7 @@ def export_bundle(
     files, total_bytes, skipped = _collect_files(
         principals=principals, include_public=include_public
     )
-    stores = _collect_stores(principals)
+    stores = _collect_stores(principals, include_public)
     store_bytes = len(
         json.dumps(stores["payload"], ensure_ascii=False).encode("utf-8")
     )
@@ -410,6 +495,8 @@ def export_bundle(
     total_bytes += store_bytes
     memory_manifest = stores["manifest"]["account_memory"]
     conversation_manifest = stores["manifest"]["conversation"]
+    kernel_manifest = stores["manifest"]["kernel_memory"]
+    profile_manifest = stores["manifest"]["personal_context"]
 
     members = sorted(
         str(item.get("principal") or "") for item in identity_part["accounts"]
@@ -430,6 +517,8 @@ def export_bundle(
             "stores": {
                 "account_memory": memory_manifest,
                 "conversation": conversation_manifest,
+                "kernel_memory": kernel_manifest,
+                "personal_context": profile_manifest,
             },
         },
         "identity": identity_part,
@@ -438,6 +527,8 @@ def export_bundle(
         "files": files,
         "memory": stores["payload"]["memory"],
         "conversations": stores["payload"]["conversations"],
+        "kernel_memory": stores["payload"]["kernel_memory"],
+        "personal_context": stores["payload"]["personal_context"],
     }
 
     # 审计写 actor 与成员清单；口令绝不出现在 details 里。
@@ -455,6 +546,8 @@ def export_bundle(
             "credentials": len(credentials),
             "memory": memory_manifest["entries"],
             "conversations": conversation_manifest["turns"],
+            "kernel_memory": kernel_manifest["entries"],
+            "personal_context": profile_manifest["tables"],
         },
     )
 
@@ -636,6 +729,137 @@ def _restore_conversations(conversations: Any) -> Dict[str, int]:
     return report
 
 
+def _restore_kernel_memory(kernel_memory: Any) -> Dict[str, int]:
+    """把 0.1.0 内核记忆行写回本机 ``memory_store.db``（按 ``key_hash`` 去重）。
+
+    导入完成后调用方会再跑一次 ``ensure_legacy_memory_migrated(force=True)``，
+    把这些行映射进账号记忆表 —— 这样"跨机导入后老记忆可见"不依赖导出端
+    是否已完成迁移。
+    """
+    report = {"imported": 0, "skipped": 0}
+    if not isinstance(kernel_memory, dict):
+        return report
+    rows = kernel_memory.get("entries") or []
+    if not isinstance(rows, list):
+        return report
+    path = _kernel_memory_db_path()
+    connection = sqlite3.connect(path, timeout=10)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memory_entries (
+                key_hash TEXT PRIMARY KEY, entry_id TEXT NOT NULL,
+                key TEXT NOT NULL, value TEXT NOT NULL,
+                tier TEXT NOT NULL, scope TEXT NOT NULL,
+                created_at TEXT NOT NULL, expires_at TEXT,
+                tags TEXT, correlation_id TEXT NOT NULL,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed TEXT, provenance TEXT
+            );
+            """
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                report["skipped"] += 1
+                continue
+            key_hash = str(row.get("key_hash") or "")
+            entry_id = str(row.get("entry_id") or "")
+            key = str(row.get("key") or "")
+            value = str(row.get("value") or "")
+            if not key_hash or not entry_id or not key or not value:
+                report["skipped"] += 1
+                continue
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO memory_entries "
+                "(key_hash, entry_id, key, value, tier, scope, created_at, "
+                " expires_at, tags, correlation_id, access_count, last_accessed,"
+                " provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    key_hash, entry_id, key, value,
+                    str(row.get("tier") or "PERSISTENT"),
+                    str(row.get("scope") or "L1"),
+                    str(row.get("created_at") or ""),
+                    row.get("expires_at"),
+                    row.get("tags"),
+                    str(row.get("correlation_id") or ""),
+                    int(row.get("access_count") or 0),
+                    row.get("last_accessed"),
+                    row.get("provenance"),
+                ),
+            )
+            if cursor.rowcount:
+                report["imported"] += 1
+            else:
+                report["skipped"] += 1
+        connection.commit()
+    finally:
+        connection.close()
+    return report
+
+
+def _restore_personal_context(personal_context: Any) -> Dict[str, int]:
+    """把画像库行写回本机 ``personal_context.db``（按各表主键去重，不覆盖现场）。"""
+    report = {"imported": 0, "skipped": 0}
+    if not isinstance(personal_context, dict):
+        return report
+    path = _personal_context_db_path()
+    connection = sqlite3.connect(path, timeout=10)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS profile_preferences (
+                principal_id TEXT NOT NULL, key TEXT NOT NULL,
+                value_json TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5,
+                source TEXT NOT NULL DEFAULT 'explicit', updated_at REAL NOT NULL,
+                PRIMARY KEY (principal_id, key)
+            );
+            CREATE TABLE IF NOT EXISTS profile_facts (
+                principal_id TEXT NOT NULL, key TEXT NOT NULL,
+                value_json TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'explicit',
+                updated_at REAL NOT NULL, PRIMARY KEY (principal_id, key)
+            );
+            CREATE TABLE IF NOT EXISTS profile_lists (
+                principal_id TEXT NOT NULL, kind TEXT NOT NULL, item TEXT NOT NULL,
+                PRIMARY KEY (principal_id, kind, item)
+            );
+            CREATE TABLE IF NOT EXISTS profile_relationships (
+                principal_id TEXT NOT NULL, who TEXT NOT NULL, relation TEXT NOT NULL,
+                PRIMARY KEY (principal_id, who)
+            );
+            CREATE TABLE IF NOT EXISTS profile_meta (
+                principal_id TEXT NOT NULL, key TEXT NOT NULL,
+                value_json TEXT NOT NULL, PRIMARY KEY (principal_id, key)
+            );
+            """
+        )
+        for table, columns in _PERSONAL_CONTEXT_TABLES.items():
+            rows = personal_context.get(table) or []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    report["skipped"] += 1
+                    continue
+                values = [row.get(column) for column in columns]
+                if not str(values[0] or ""):
+                    report["skipped"] += 1
+                    continue
+                placeholders = ",".join("?" for _ in columns)
+                cursor = connection.execute(
+                    f"INSERT OR IGNORE INTO {table} ({','.join(columns)}) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+                if cursor.rowcount:
+                    report["imported"] += 1
+                else:
+                    report["skipped"] += 1
+        connection.commit()
+    finally:
+        connection.close()
+    return report
+
+
 def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     """口令校验 → 防重放 → 限次 → 恢复 → 写回执与审计。"""
     manager = get_identity_manager()
@@ -706,6 +930,16 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
     # 记忆按主键去重、对话按（主体/轮次/角色/正文）去重，绝不覆盖现场数据。
     memory_report = _restore_memory(payload.get("memory"))
     conversation_report = _restore_conversations(payload.get("conversations"))
+    kernel_report = _restore_kernel_memory(payload.get("kernel_memory"))
+    profile_report = _restore_personal_context(payload.get("personal_context"))
+    # 把刚恢复的内核记忆立即映射进账号记忆表：记忆页/检索/导出不再 200+空。
+    migration_report: Dict[str, Any] = {}
+    try:
+        from . import account_memory
+
+        migration_report = account_memory.ensure_legacy_memory_migrated(force=True)
+    except Exception:  # noqa: BLE001 - 已在场账号数据不受影响，下次访问可重试
+        logger.warning("legacy memory migration after import failed", exc_info=True)
 
     manager.record_import_receipt(bundle_id)
     _clear_attempts(bundle_id)
@@ -732,6 +966,10 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
             "memory_skipped": memory_report["skipped"],
             "conversations": conversation_report["imported"],
             "conversations_skipped": conversation_report["skipped"],
+            "kernel_memory": kernel_report["imported"],
+            "kernel_memory_skipped": kernel_report["skipped"],
+            "personal_context": profile_report["imported"],
+            "memory_migrated": migration_report.get("entries", 0),
         },
     )
 
@@ -744,6 +982,9 @@ def import_bundle(*, bundle: Dict[str, Any], passphrase: str) -> Dict[str, Any]:
         "files": file_report,
         "memory": memory_report,
         "conversations": conversation_report,
+        "kernel_memory": kernel_report,
+        "personal_context": profile_report,
+        "memory_migrated": migration_report.get("entries", 0),
         "manifest": payload.get("manifest") or {},
         "token_policy": dict(_TOKEN_POLICY),
         "notice": (
