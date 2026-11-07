@@ -79,6 +79,16 @@ Write-Host "  仓库  $Root"
 Write-Host "  输出  $OutRoot"
 Write-Host "  Python $Python"
 
+# ---------------------------------------------------------------- 0. 环境闸
+# 构建机与开发机同机时，残留的 LIUHAO_* / AUDIT_DB_* 会让注册写进仓库、启动
+# 读数据目录，冒烟表现为莫名的 403。开跑前发现即中止，别靠人记得。
+Write-Step "前置环境检查（LIUHAO_* / AUDIT_DB_*）"
+$guardText = (& $Python (Join-Path $PSScriptRoot "env_guard.py") --repo $Root 2>&1 | Out-String)
+Write-Host $guardText.TrimEnd()
+if ($LASTEXITCODE -ne 0) {
+    throw "构建中止：环境里残留指向源码仓库/开发临时目录的配置变量（见上）。清除后重试。"
+}
+
 # ---------------------------------------------------------------- 1. 前端
 if ($SkipFrontend) {
     Write-Step "跳过前端构建（-SkipFrontend）"

@@ -35,14 +35,36 @@ SMOKE_PRINCIPAL = "smoke"
 SMOKE_PASSWORD = "Smoke-Only-Passw0rd!"
 
 #: 冒烟环境严禁把构建机的仓库配置带进来，否则测的就不是 payload 自己了。
-_CLEARED_ENV = (
-    "LIUHAO_HUMAN_IDENTITIES_FILE", "LIUHAO_AUTH_SECRETS_FILE",
-    "AUDIT_DB_PATH", "AUDIT_DB_BACKUP_PATH", "LIUHAO_WORKSPACE_ROOT",
-    "CONVERSATION_DB_PATH", "LIUHAO_CONSOLE_DIST", "LIUHAO_MODEL_CONFIG_DB",
-    "LIUHAO_MODEL_CONFIG_KEY_FILE", "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY",
-    "MEMORY_DB_PATH", "PERSONAL_CONTEXT_DB_PATH", "LIUHAO_KNOWLEDGE_DB",
-    "LIUHAO_ALERTS_STORE_PATH", "LIUHAO_JWT_REVOCATION_DB",
-)
+#: 不逐个枚举：任何 ``LIUHAO_*`` 与常见的直接路径变量一律先从子进程环境里剥掉，
+#: 再由冒烟显式设置它需要的少数几个（数据目录、完整性密钥）。逐个枚举曾经漏掉
+#: ``LIUHAO_HUMAN_IDENTITIES_DB``，导致"注册写进仓库、启动读数据目录"→ 登录 403。
+_ISOLATED_PREFIXES = ("LIUHAO_",)
+_ISOLATED_EXACT = frozenset({
+    "AUDIT_DB_PATH", "AUDIT_DB_BACKUP_PATH",
+    "CONVERSATION_DB_PATH", "MEMORY_DB_PATH", "PERSONAL_CONTEXT_DB_PATH",
+    "WORKSPACE_ROOT",
+})
+
+
+def _is_isolated(name: str) -> bool:
+    upper = name.upper()
+    return upper.startswith(_ISOLATED_PREFIXES) or upper in _ISOLATED_EXACT
+
+
+def _isolated_env(data_dir: Path) -> Dict[str, str]:
+    """构造子进程环境：剥掉所有可疑变量，只由冒烟显式注入需要的值。"""
+    env = {key: value for key, value in os.environ.items() if not _is_isolated(key)}
+    env.update({
+        "LIUHAO_DATA_DIR": str(data_dir),
+        "NO_PROXY": "localhost,127.0.0.1",
+        "no_proxy": "localhost,127.0.0.1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    return env
+
+
+def stripped_names() -> list:
+    return sorted(name for name in os.environ if _is_isolated(name))
 
 
 def _free_port() -> int:
@@ -106,16 +128,7 @@ def _kill_tree(process: subprocess.Popen) -> None:
 
 
 def _start(payload: Path, data_dir: Path, port: int, log_path: Path) -> subprocess.Popen:
-    env = dict(os.environ)
-    env.update({
-        "LIUHAO_DATA_DIR": str(data_dir),
-        "NO_PROXY": "localhost,127.0.0.1",
-        "no_proxy": "localhost,127.0.0.1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-    })
-    # 冒烟环境严禁把构建机的仓库配置带进来。
-    for key in _CLEARED_ENV:
-        env.pop(key, None)
+    env = _isolated_env(data_dir)
     log = open(log_path, "a", encoding="utf-8")
     return subprocess.Popen(
         [str(payload / "runtime" / "python.exe"),
@@ -127,13 +140,7 @@ def _start(payload: Path, data_dir: Path, port: int, log_path: Path) -> subproce
 
 
 def _register(payload: Path, data_dir: Path, log_path: Path) -> int:
-    env = dict(os.environ)
-    env.update({
-        "LIUHAO_DATA_DIR": str(data_dir),
-        "PYTHONDONTWRITEBYTECODE": "1",
-    })
-    for key in _CLEARED_ENV:
-        env.pop(key, None)
+    env = _isolated_env(data_dir)
     integrity_path = data_dir / "config" / "integrity.key"
     if not integrity_path.is_file():
         raise SystemExit(
@@ -159,6 +166,25 @@ def _register(payload: Path, data_dir: Path, log_path: Path) -> int:
         ).returncode
 
 
+def _registered_in_data_dir(data_dir: Path) -> bool:
+    """注册必须落在启动器会读的那份身份文件里，否则登录必然 403。"""
+    path = data_dir / "config" / "human_identities.json"
+    if not path.is_file():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    humans = document.get("humans") if isinstance(document, dict) else None
+    if not isinstance(humans, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("principal") or item.get("name") or "") == SMOKE_PRINCIPAL
+        for item in humans
+    )
+
+
 def _tail(path: Path, lines: int = 25) -> str:
     try:
         content = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -180,6 +206,8 @@ def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
     report["data_dir"] = str(data_dir)
     report["base_url"] = base
     report["log"] = str(log_path)
+    # 记录被剥离的继承变量，证明冒烟在干净子进程里跑（不再靠人工核对清单）。
+    report["stripped_env"] = stripped_names()
 
     try:
         # ---- 第一次启动：健康探针 + 驾驶舱首页 ----
@@ -202,6 +230,13 @@ def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
         code = _register(payload, data_dir, log_path)
         report["steps"]["register_identity"] = "PASS" if code == 0 else f"FAIL(exit {code})"
         if code != 0:
+            report["steps"]["register_log_tail"] = _tail(log_path)
+            return report, 1
+        # 注册与启动必须命中同一个库：注册脚本写进数据目录的身份文件，
+        # 启动器才读得到。写偏了（历史故障形态）登录必然 403，这里提前失败。
+        registered = _registered_in_data_dir(data_dir)
+        report["steps"]["identity_store_in_data_dir"] = "PASS" if registered else "FAIL"
+        if not registered:
             report["steps"]["register_log_tail"] = _tail(log_path)
             return report, 1
 
@@ -259,7 +294,8 @@ def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
         time.sleep(1.0)
 
         core = [report["steps"].get(k) for k in
-                ("health", "console_index", "register_identity", "restart_health", "login")]
+                ("health", "console_index", "register_identity",
+                 "identity_store_in_data_dir", "restart_health", "login")]
         return report, 0 if all(item == "PASS" for item in core) else 1
     finally:
         try:
