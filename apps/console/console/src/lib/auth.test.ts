@@ -28,8 +28,8 @@ describe('登录页读取配置', () => {
     const result = await loadAuthConfig()
 
     expect(result.config).toBeNull()
-    expect(result.error).toContain('无法连接到鎏灏服务')
-    expect(result.error).toContain('请确认服务已经启动')
+    expect(result.error).toContain('鎏灏的本地服务没有运行')
+    expect(result.error).toContain('启动窗口')
     expect(result.error).not.toContain('Failed to fetch')
   })
 
@@ -49,7 +49,7 @@ describe('登录页读取配置', () => {
 
     const result = await loadAuthConfig()
     expect(result.error).toContain('无法获取登录配置')
-    expect(result.error).toContain('请确认鎏灏服务已经启动')
+    expect(result.error).toContain('请确认启动窗口仍在运行')
     expect(result.error).not.toContain('Not Found')
   })
 

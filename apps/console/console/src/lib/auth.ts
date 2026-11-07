@@ -12,7 +12,7 @@
  * 身份内核的人类判定）。这里存的只是一个令牌字符串，前端不做任何权限决策。
  */
 
-import { readErrorMessage, readError } from './errorMessage'
+import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage, readError } from './errorMessage'
 
 export type ClientMode = 'desktop' | 'web' | 'mobile'
 
@@ -269,7 +269,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
   } catch {
     return {
       config: null,
-      error: '无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后刷新本页重试。',
+      error: LOCAL_SERVICE_OFFLINE_MANUAL,
     }
   }
   if (!response.ok) {
@@ -279,7 +279,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
       return {
         config: null,
         error:
-          '无法获取登录配置。请确认鎏灏服务已经启动；如果服务刚启动，请稍等几秒后刷新本页重试。',
+          '无法获取登录配置。请确认启动窗口仍在运行；如果服务刚启动，请稍等几秒后刷新本页重试。',
       }
     }
     const failure = await readError(response)
@@ -290,7 +290,7 @@ export async function loadAuthConfig(): Promise<AuthConfigResult> {
   } catch {
     return {
       config: null,
-      error: '服务没有返回正常的数据。请确认鎏灏服务已经启动并完成初始化，然后刷新本页重试。',
+      error: '服务没有返回正常的数据。请确认启动窗口仍在运行并完成初始化，然后刷新本页重试。',
     }
   }
 }
@@ -314,7 +314,7 @@ export async function login(
       body: JSON.stringify({ principal, secret, client: options.client }),
     })
   } catch {
-    throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
+    throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
     const message = await readErrorMessage(response)
@@ -374,7 +374,7 @@ export async function registerSelf(
       body: JSON.stringify({ principal, secret, client: options.client }),
     })
   } catch {
-    throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
+    throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
     throw new AuthError(response.status, await selfRegistrationMessage(response))

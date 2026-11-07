@@ -17,7 +17,7 @@ describe('friendlyChatError', () => {
 
   test('网络不可达', () => {
     expect(friendlyChatError(new TypeError('Failed to fetch')).text).toBe(
-      '无法连接到本地服务，请确认服务已启动',
+      '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口应保持打开）后重试；刚启动的话请等几秒。',
     )
   })
 

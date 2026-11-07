@@ -34,6 +34,7 @@ from typing import Any
 import yaml
 
 from .common.atomic_write import exclusive_file_lock
+from .common.redaction import redact_log_text
 
 #: Repo-root ``config/logging.yaml``. The installed build copies it into the
 #: user data directory and points ``LIUHAO_LOG_CONFIG`` at that copy.
@@ -140,17 +141,47 @@ def resolve_log_file(filename: str) -> Path:
 
 def _normalize_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
     handlers = config.get("handlers")
-    if not isinstance(handlers, dict):
-        return config
-    for handler in handlers.values():
-        if not isinstance(handler, dict):
-            continue
-        if handler.get("class") == _STDLIB_ROTATING_CLASS:
-            handler["class"] = f"{__name__}.MultiProcessRotatingFileHandler"
-        filename = handler.get("filename")
-        if isinstance(filename, str) and filename:
-            handler["filename"] = str(resolve_log_file(filename))
+    if isinstance(handlers, dict):
+        for handler in handlers.values():
+            if not isinstance(handler, dict):
+                continue
+            if handler.get("class") == _STDLIB_ROTATING_CLASS:
+                handler["class"] = f"{__name__}.MultiProcessRotatingFileHandler"
+            filename = handler.get("filename")
+            if isinstance(filename, str) and filename:
+                handler["filename"] = str(resolve_log_file(filename))
+    # 所有 formatter 套一层脱敏：日志允许保留技术细节（异常、堆栈、文件名），
+    # 但不允许带出内部政策编号与本机绝对路径。安装版留下的旧配置副本也走这里，
+    # 不需要用户手动升级配置。
+    formatters = config.get("formatters")
+    if isinstance(formatters, dict):
+        for formatter in formatters.values():
+            if isinstance(formatter, dict) and "()" not in formatter and "class" not in formatter:
+                formatter["()"] = f"{__name__}.RedactingFormatter"
     return config
+
+
+class RedactingFormatter(logging.Formatter):
+    """日志落盘前的脱敏：保留技术细节，去掉内部编号与本机绝对路径。
+
+    ``error.log`` 是排障入口，异常类型、堆栈行号、文件名都要保留；但
+    ``D:\\LiuHao-AI-OS\\.venv\\...`` 这类绝对路径和 ``OD-010`` 这类内部编号
+    属于"不该离开本机"的信息，统一折叠成占位符。
+    """
+
+    def __init__(
+        self,
+        format: str | None = None,  # noqa: A002 - dictConfig 的键名就是 ``format``
+        datefmt: str | None = None,
+        style: str = "%",
+        **kwargs: Any,
+    ) -> None:
+        # dictConfig 走自定义工厂时会把 ``format``/``datefmt`` 原样当 kwargs
+        # 传进来；``logging.Formatter`` 的参数名是 ``fmt``，这里做一次映射。
+        super().__init__(fmt=format, datefmt=datefmt, style=style, **kwargs)
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_log_text(super().format(record))
 
 
 class MultiProcessRotatingFileHandler(logging.Handler):

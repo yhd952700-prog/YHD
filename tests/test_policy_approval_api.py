@@ -91,7 +91,9 @@ class TestAuthenticationIsRequired:
             headers=_auth("ghost-user"),
         )
         assert resp.status_code == 400
-        assert "unknown principal" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "还没有登记" in detail
+        assert "sovereignty" not in detail.lower()
 
     def test_listing_requires_auth(self, client):
         assert client.get("/v1/policy/approvals").status_code == 401
@@ -142,7 +144,7 @@ class TestIssueApproval:
             headers=_auth(HUMAN_ID),
         )
         assert resp.status_code == 400
-        assert "unknown kernel action" in resp.json()["detail"]
+        assert "动作不存在" in resp.json()["detail"]
 
     def test_non_gated_action_is_400(self, client):
         resp = client.post(
@@ -151,7 +153,7 @@ class TestIssueApproval:
             headers=_auth(HUMAN_ID),
         )
         assert resp.status_code == 400
-        assert "enforcement-gated" in resp.json()["detail"]
+        assert "不需要审批" in resp.json()["detail"]
 
     def test_empty_action_list_is_422(self, client):
         resp = client.post(

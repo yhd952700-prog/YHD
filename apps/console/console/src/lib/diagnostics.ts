@@ -11,7 +11,7 @@
  */
 
 import { tokenHeaders } from './auth'
-import { readError } from './errorMessage'
+import { LOCAL_SERVICE_OFFLINE_MANUAL, readError } from './errorMessage'
 
 export interface DiagnosticsSaveResult {
   filename: string
@@ -61,7 +61,7 @@ export async function exportDiagnosticsBundle(): Promise<DiagnosticsSaveResult |
     })
   } catch {
     throw new Error(
-      '无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后重试。',
+      LOCAL_SERVICE_OFFLINE_MANUAL,
     )
   }
 

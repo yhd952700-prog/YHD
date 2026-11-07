@@ -98,6 +98,46 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
 
   return (
     <div className="os-grid">
+      {/* ---------- 首次使用提示 ----------
+          这两件事如果留在各自卡片底部，900px 视口下分别位于距顶 1200px / 1800px
+          附近，等同于不存在。提到网格最前面后，页面不滚动就能看到；按钮只是把
+          视线带到对应卡片，不改变任何配置。 */}
+      <div className="os-span-12">
+        <div className="os-attention" role="status" aria-label="首次使用提示">
+          <span className="os-attention-lead">第一次用</span>
+          <span className="os-attention-item" data-tone="ok">
+            <strong>模型可以最后再配</strong>
+            先跳过不影响浏览，之后回到「模型管理」补上 Key 即可。
+            <button
+              className="os-link"
+              onClick={() =>
+                document.getElementById('settings-models')?.scrollIntoView?.({
+                  behavior: 'smooth',
+                  block: 'start',
+                })
+              }
+            >
+              去配置模型
+            </button>
+          </span>
+          <span className="os-attention-item" data-tone="warn">
+            <strong>黑色命令窗口请保持打开</strong>
+            它是本地服务；关掉它，控制台会断开连接。
+            <button
+              className="os-link"
+              onClick={() =>
+                document.getElementById('settings-runtime')?.scrollIntoView?.({
+                  behavior: 'smooth',
+                  block: 'start',
+                })
+              }
+            >
+              查看运行说明
+            </button>
+          </span>
+        </div>
+      </div>
+
       <Card title="端形态" sub="同一份代码的三种呈现 —— 切换只影响布局，不影响权限" span={12}>
         <div className="os-choice">
           <button
@@ -140,14 +180,12 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
       </Card>
 
       <Card
+        id="settings-models"
         title="模型管理"
         sub="新增 / 编辑 / 删除模型配置；测试连通并保存后，下一条消息即生效。密钥只显示首尾几位，不显示完整值。"
         span={12}
       >
         <ModelManager session={session} />
-        <p className="os-hint">
-          现在不想配也可以：先跳过，界面照样能浏览；之后回到这里补上 Key 即可。
-        </p>
       </Card>
 
       <Card title="外观主题" sub="可跟随形态，也可手动指定" span={6}>
@@ -224,7 +262,12 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
         </div>
       </Card>
 
-      <Card title="安装到设备" sub="PWA —— 桌面端独立窗口 / 手机端主屏图标" span={6}>
+      <Card
+        id="settings-runtime"
+        title="安装到设备"
+        sub="PWA —— 桌面端独立窗口 / 手机端主屏图标"
+        span={6}
+      >
         {standalone ? (
           <div className="os-list">
             <div className="os-row">
@@ -269,9 +312,6 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
             )}
           </>
         )}
-        <p className="os-hint">
-          启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台会断开连接。
-        </p>
       </Card>
 
       <Card title="遇到问题" sub="导出排障信息 —— 先看清包含什么，再决定发给谁" span={12}>

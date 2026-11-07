@@ -10,6 +10,38 @@
 
 const HAS_CJK = /[\u4e00-\u9fff]/
 
+/**
+ * 连不上本机服务时的统一说法。
+ *
+ * 用户看到的必须是"哪台服务没运行、现在该做什么"，而不是"浏览器服务"这类指
+ * 向错误的措辞：这些卡片背后是板子上的本地网关，不是浏览器。
+ *
+ * "三个信号"缺一不可：**对象**（鎏灏的本地服务）、**动作**（打开鎏灏 / 保持启动
+ * 窗口）、**预期**（几秒后自动重连）。只写"数据不可用"会让用户以为数据坏了，
+ * 实际上只是进程没起来。
+ */
+export const LOCAL_SERVICE_OFFLINE =
+  '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口应保持打开）；稍等几秒会自动重连，也可以重启软件后再试。'
+
+/** 同上，但用于"需要用户自己再点一次"的表单/导出场景（没有自动重连）。 */
+export const LOCAL_SERVICE_OFFLINE_MANUAL =
+  '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口应保持打开）后重试；刚启动的话请等几秒。'
+
+/**
+ * 服务活着、但这一次请求没成功。
+ *
+ * 与 `LOCAL_SERVICE_OFFLINE` 分开，是因为两者该做的事不同：这一条只需要等
+ * （自动重连已经在跑），那一条需要用户去把软件打开。若都用同一句话，
+ * 用户会去重启一个本来就在运行的服务。
+ */
+export const LOCAL_SERVICE_UNSTABLE =
+  '鎏灏的本地服务在运行，但这次请求没有成功。稍等会自动重连；持续出现请重启软件后再试。'
+
+/** 文案是否属于"本机服务没运行"这一类（卡片标题据此区分"服务没开"与"数据异常"）。 */
+export function isLocalServiceOffline(message: string): boolean {
+  return message.includes('鎏灏的本地服务没有运行')
+}
+
 export function describeDetail(detail: unknown): string {
   if (detail === null || detail === undefined) return ''
   if (typeof detail === 'string') {
@@ -92,7 +124,7 @@ export function describeFailure(
 /** 响应里没有可读文案时的兜底：中性中文 + 下一步动作。 */
 function noDetailFallback(status: number): string {
   if (status === 0) {
-    return '无法连接到鎏灏服务。请确认服务已经启动、网络连接正常，然后重试。'
+    return LOCAL_SERVICE_OFFLINE_MANUAL
   }
   if (status === 403) {
     return '当前账号没有执行这个操作的权限。请换用有权限的账号，或联系安装者。'

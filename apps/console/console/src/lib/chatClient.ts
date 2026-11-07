@@ -10,6 +10,7 @@
  */
 
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth';
+import { LOCAL_SERVICE_OFFLINE_MANUAL } from './errorMessage';
 
 /** 组装带会话令牌的请求头。
  *
@@ -271,7 +272,7 @@ export function friendlyChatError(err: unknown): { text: string; raw: string } {
   const lower = raw.toLowerCase();
 
   if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
-    return { text: '无法连接到本地服务，请确认服务已启动', raw };
+    return { text: LOCAL_SERVICE_OFFLINE_MANUAL, raw };
   }
   if (raw.includes('401')) {
     return { text: '会话已失效，请重新登录', raw };

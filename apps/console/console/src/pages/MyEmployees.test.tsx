@@ -111,6 +111,99 @@ describe('我的员工', () => {
     expect(screen.getAllByText('空闲').length).toBeGreaterThan(0)
   })
 
+  test('执行个体行只展示序号与状态，原始标识只留在 title', async () => {
+    stubFetch([
+      {
+        name: '小周',
+        agent_count: 2,
+        role_description: '整理纪要',
+        default_capabilities: [],
+        employment_status: 'active',
+        read_only: false,
+        agents: [
+          {
+            id: 'agent-1',
+            agent_type: 'planner',
+            name: 'liuhao-default·planner-0',
+            status: 'idle',
+            current_task: null,
+            completed_tasks: 0,
+            failed_tasks: 0,
+            total_latency_ms: 0,
+          },
+          {
+            id: 'agent-2',
+            agent_type: 'executor',
+            name: 'liuhao-default·executor-1',
+            status: 'idle',
+            current_task: null,
+            completed_tasks: 0,
+            failed_tasks: 0,
+            total_latency_ms: 0,
+          },
+        ],
+        stats: {
+          name: '小周',
+          agent_count: 2,
+          total_tasks_submitted: 0,
+          total_tasks_completed: 0,
+          total_tasks_failed: 0,
+          task_queue_length: 0,
+        },
+      },
+    ])
+    render(<MyEmployees query="" />)
+    await waitFor(() => expect(screen.getByText('小周')).toBeTruthy())
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('执行个体 1')
+    expect(text).toContain('执行个体 2')
+    expect(text).not.toContain('planner-0')
+    expect(text).not.toContain('executor-1')
+    expect(text).not.toContain('liuhao-default')
+
+    const first = screen.getByTitle('liuhao-default·planner-0')
+    const second = screen.getByTitle('liuhao-default·executor-1')
+    expect(first.textContent).toBe('执行个体 1·空闲')
+    expect(second.textContent).toBe('执行个体 2·空闲')
+  })
+
+  test('系统默认员工不显示内部标识，只显示人话称呼与系统默认徽标', async () => {
+    stubFetch([
+      {
+        name: 'liuhao-default',
+        agent_count: 3,
+        role_description: '本机默认管家员工：拆解目标并调度本地能力',
+        default_capabilities: [],
+        employment_status: 'active',
+        read_only: false,
+        agents: [
+          {
+            id: 'a1',
+            agent_type: 'planner',
+            name: 'liuhao-default-planner-0',
+            status: 'idle',
+          },
+        ],
+        stats: {
+          name: 'liuhao-default',
+          agent_count: 3,
+          total_tasks_submitted: 0,
+          total_tasks_completed: 0,
+          total_tasks_failed: 0,
+          task_queue_length: 0,
+        },
+      },
+    ])
+    render(<MyEmployees query="" />)
+    await waitFor(() => expect(screen.getByText('默认管家')).toBeTruthy())
+    expect(screen.getByText('系统默认')).toBeTruthy()
+    const text = document.body.textContent ?? ''
+    expect(text).not.toContain('liuhao-default')
+    // 原始标识只留在 title 里，作为排查线索。
+    expect(screen.getByText('默认管家').getAttribute('title')).toBe('liuhao-default')
+  })
+
   test('没有员工时给出创建引导，而不是空白页', async () => {
     stubFetch([])
     render(<MyEmployees query="" />)

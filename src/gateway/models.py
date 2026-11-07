@@ -159,7 +159,8 @@ _PROVIDER_PRESETS: Dict[str, Dict[str, Optional[str]]] = {
     "google": {
         "label": "Google",
         "base_url": None,
-        "model": "gemini-1.5-flash",
+        # 1.5 系列已于 2025-09 下线；沿用旧默认会让 Gemini 选项填完 Key 也只会拿到 404。
+        "model": "gemini-2.5-flash",
     },
     "ollama": {
         "label": "Ollama（本地）",
@@ -833,8 +834,10 @@ def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError, ValueError) as exc:
+        logger.info("base_url host unresolvable host=%r: %s", host, exc)
         raise HTTPException(
-            status_code=400, detail=f"base_url 主机无法解析：{host}（{exc}）"
+            status_code=400,
+            detail=f"填写的服务地址里，主机名「{host}」解析不了。请检查拼写或网络后重试。",
         )
     for info in infos:
         try:

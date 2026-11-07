@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { readErrorMessage } from './errorMessage'
+import { LOCAL_SERVICE_OFFLINE_MANUAL, describeDetail, readErrorMessage } from './errorMessage'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
 
 export type DataSource = 'live' | 'stub'
@@ -141,15 +141,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(path, { ...init, headers })
   } catch {
-    throw new AccountApiError(0, null, '无法连接到服务，请检查服务是否在运行')
+    throw new AccountApiError(0, null, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
     let code: string | null = null
     let message = ''
     try {
-      const body = (await response.json()) as { code?: string; detail?: string; message?: string }
+      const body = (await response.json()) as {
+        code?: string
+        detail?: unknown
+        message?: unknown
+      }
       code = typeof body.code === 'string' ? body.code : null
-      message = body.detail || body.message || ''
+      // 与 api.ts 同一条规则：只保留含中文的可读说明，英文原文/机器串不上屏。
+      message = describeDetail(body.detail || body.message)
     } catch {
       message = await readErrorMessage(response)
     }

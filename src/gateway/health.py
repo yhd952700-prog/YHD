@@ -156,7 +156,7 @@ async def readiness_probe(request: Request) -> JSONResponse:
     #   availability     -- can the store be reached and read at all?
     #   evidence_status  -- has the chain actually been re-derived?
     #
-    # `evidence_status` has three honest values:
+    # `evidence_status` has four honest values:
     #   "verified"    -- checkpoints cover the tail, rooted at genesis.
     #   "unverified"  -- there are events but NO checkpoint has ever been
     #                    written. This is the steady state of every deployment
@@ -169,9 +169,19 @@ async def readiness_probe(request: Request) -> JSONResponse:
     #                    instance permanently un-ready and K8s would pull the
     #                    whole deployment out of rotation, with no mechanism in
     #                    place to ever advance the coverage back.
-    #   "broken"      -- checkpoints EXIST but no longer cover the history
-    #                    (a gap, a non-genesis start, or a regression). That is
-    #                    a real integrity failure, so it DOES degrade the gate.
+    #   "pending"     -- the only uncovered region is a CONTIGUOUS TAIL that
+    #                    begins exactly at covered_through + 1. Checkpoints land
+    #                    every few minutes (src/reliability/checkpointer.py,
+    #                    interval=300s), so events appended since the last tick
+    #                    are always uncovered. That is the normal "awaiting the
+    #                    next checkpoint" lag, NOT an integrity regression --
+    #                    and it must not 503 every freshly-logged-in instance
+    #                    for ten minutes.
+    #   "broken"      -- checkpoints EXIST but a HOLE is left in the middle of
+    #                    the history (several uncovered ranges, or one that
+    #                    starts before the frontier): a gap, a non-genesis start,
+    #                    or a regression. That is a real integrity failure, so
+    #                    it DOES degrade the gate.
     try:
         from ..kernels.audit import audit_stats, audit_verification_coverage
 
@@ -191,6 +201,28 @@ async def readiness_probe(request: Request) -> JSONResponse:
         checkpoints = cov.get("checkpoint_count")
         incomplete = uncovered > 0 or (not rooted and not rooted_suffix)
 
+        # Distinguish "waiting for the next checkpoint" from "the chain broke".
+        # `uncovered_ranges` is the shape of the gap, and the shape is what
+        # tells the two apart: a single range starting at covered_through + 1 is
+        # just the un-checkpointed tail. Anything else (multiple ranges, or a
+        # range that starts before the frontier) means history in the middle was
+        # never covered -- that is a real break.
+        ranges = cov.get("uncovered_ranges") or []
+        frontier = cov.get("covered_through")
+        tail_seq = cov.get("tail_seq")
+        tail_only = False
+        if len(ranges) == 1 and frontier is not None:
+            try:
+                tail_only = int(ranges[0][0]) == int(frontier) + 1
+                if tail_only and tail_seq is not None:
+                    # A checkpoint that RESUMES after a hole (e.g. an imported
+                    # segment) also leaves one range starting at frontier + 1,
+                    # but that range ends BEFORE the tail -- history in the
+                    # middle was never covered, so it is not tail lag.
+                    tail_only = int(ranges[0][1]) >= int(tail_seq)
+            except (TypeError, ValueError, IndexError):
+                tail_only = False
+
         if not incomplete:
             evidence_status = "verified"
         elif checkpoints is None:
@@ -198,8 +230,7 @@ async def readiness_probe(request: Request) -> JSONResponse:
             # cannot prove a regression, so do not invent one.
             evidence_status = "unverified"
         elif checkpoints > 0:
-            # It WAS covered and now is not -> integrity regression.
-            evidence_status = "broken"
+            evidence_status = "pending" if tail_only else "broken"
         else:
             # Never verified. Honest gap, not a proven break.
             evidence_status = "unverified"
@@ -222,7 +253,15 @@ async def readiness_probe(request: Request) -> JSONResponse:
             "rooted_at_retention_floor": rooted_suffix,
             "retention_floor_seq": floor,
         }
-        if incomplete:
+        if evidence_status == "pending":
+            # Non-gating: this is the normal tail lag between checkpoints, so it
+            # is phrased as a pending item -- NOT as "verification incomplete"
+            # (that wording is reserved for a real regression below).
+            errors.append(
+                f"Audit chain: {uncovered} events awaiting the next checkpoint "
+                "(normal tail lag)"
+            )
+        elif incomplete:
             # Kept verbatim in spirit: this line is for humans and is NOT
             # weakened. It now names which of the two cases it is.
             errors.append(

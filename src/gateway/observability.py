@@ -251,6 +251,6 @@ def observability_metrics() -> Dict[str, Any]:
         logger.warning("metric snapshot failed: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"metric collector unavailable: {exc}",
+            detail="指标采集暂时不可用，本次读取没有完成。请稍后重试。",
         )
     return {"metrics": snapshot}

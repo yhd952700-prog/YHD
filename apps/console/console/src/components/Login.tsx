@@ -36,7 +36,7 @@ import {
   registerSelf,
   sessionFromToken,
 } from '../lib/auth'
-import { readErrorMessage } from '../lib/errorMessage'
+import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage } from '../lib/errorMessage'
 import {
   IconAlert,
   IconDesktop,
@@ -85,7 +85,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       body: JSON.stringify(body),
     })
   } catch {
-    throw new AuthError(0, '无法连接到服务，请检查网络或服务是否在运行')
+    throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
   }
   if (!response.ok) {
     throw new AuthError(response.status, await readErrorMessage(response))

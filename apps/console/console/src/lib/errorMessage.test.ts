@@ -44,7 +44,7 @@ describe('后端错误文案可读化', () => {
 
   test('连不上服务（status 0）明确告诉用户先启动服务', () => {
     const failure = describeFailure(null, 0, '', null)
-    expect(failure.message).toContain('无法连接到鎏灏服务')
+    expect(failure.message).toContain('鎏灏的本地服务没有运行')
     expect(failure.message).toContain('重试')
   })
 

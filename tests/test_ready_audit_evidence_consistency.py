@@ -32,7 +32,7 @@ The root cause was one field being asked to answer two different questions:
 * ``availability``    -- can the store be reached and read at all?
 * ``evidence_status`` -- has the chain actually been re-derived?
 
-They are now separate, and ``evidence_status`` has three honest values:
+They are now separate, and ``evidence_status`` has four honest values:
 
 ``verified``
     checkpoints cover the tail, rooted at genesis.
@@ -40,9 +40,14 @@ They are now separate, and ``evidence_status`` has three honest values:
     events exist but no checkpoint was ever written. An honest gap in
     evidence, not a proven break -- and gating on it would 503 every instance
     forever with no mechanism able to advance the coverage back.
+``pending``
+    checkpoints exist and the only uncovered region is the contiguous tail
+    starting at ``covered_through + 1``. Checkpoints land every 300s, so this
+    is the normal lag between ticks and must not 503 -- see
+    ``TestTailLagIsNotARegression``.
 ``broken``
-    checkpoints EXIST but no longer cover the history: a real integrity
-    regression, so it does degrade the gate.
+    checkpoints EXIST but a hole is left in the middle of the history: a real
+    integrity regression, so it does degrade the gate.
 
 Retention note: from 2026-11, ``/v1/audit/verify`` verifies INCREMENTALLY and
 writes a derived checkpoint, and a retention policy may delete the oldest
@@ -100,9 +105,80 @@ VERIFIED = {
     "rooted_at_genesis": True,
 }
 
+#: The NORMAL tail lag: a checkpoint covers 1..100, 4 events were appended
+#: since the last tick, so the only uncovered range starts at 101. Checkpoints
+#: land every 300s (src/reliability/checkpointer.py), so this is the steady
+#: state between two ticks -- not an integrity regression.
+TAIL_LAG = {
+    "tail_seq": 104,
+    "coverage_ratio": 100 / 104,
+    "uncovered_events": 4,
+    "covered_through": 100,
+    "uncovered_ranges": [(101, 104)],
+    "checkpoint_count": 1,
+    "newest_verified_at": 1700000000.0,
+    "rooted_at_genesis": False,
+    "rooted_at_retention_floor": False,
+}
+
+#: A REAL hole: 41..60 was never covered, a later (imported/resumed) checkpoint
+#: covers 61..100. One range, starting at frontier + 1, but it ends before the
+#: tail -- history in the middle is missing, so this must stay ``broken``.
+MIDDLE_HOLE = {
+    "tail_seq": 100,
+    "coverage_ratio": 0.4,
+    "uncovered_events": 60,
+    "covered_through": 40,
+    "uncovered_ranges": [(41, 60)],
+    "checkpoint_count": 2,
+    "newest_verified_at": 1700000000.0,
+    "rooted_at_genesis": False,
+    "rooted_at_retention_floor": False,
+}
+
+#: Never checkpointed: the whole history is "uncovered", but no checkpoint has
+#: ever been written, so it is an honest evidence gap -- NOT ``pending`` (which
+#: requires a checkpoint to lag behind) and NOT ``broken`` (nothing regressed).
+NEVER_CHECKPOINTED = {
+    "tail_seq": 4,
+    "coverage_ratio": 0.0,
+    "uncovered_events": 4,
+    "covered_through": 0,
+    "uncovered_ranges": [(1, 4)],
+    "checkpoint_count": 0,
+    "newest_verified_at": None,
+    "rooted_at_genesis": False,
+    "rooted_at_retention_floor": False,
+}
+
 
 def _request():
     return Request({"type": "http", "headers": [], "method": "GET", "path": "/v1/ready"})
+
+
+@pytest.fixture(autouse=True)
+def _pin_checkpointer_ready(monkeypatch):
+    """Isolate this file from the (separate) checkpointer gate.
+
+    ``tests/conftest.py`` sets ``AUDIT_DB_PATH`` for store isolation, but no
+    verifier thread runs in a plain pytest process -- so health.py's "expected
+    but missing verifier" branch would degrade readiness for a reason unrelated
+    to audit EVIDENCE, and every status-code assertion here would read 503.
+    These tests are about evidence semantics only; pin a healthy running tick.
+    """
+    import src.reliability.checkpointer as cp_mod
+
+    monkeypatch.setattr(
+        cp_mod,
+        "get_checkpointer_status",
+        lambda: {
+            "available": True,
+            "last_status": "ok",
+            "status_counts": {"ok": 1},
+            "ticks": 1,
+            "last_error": None,
+        },
+    )
 
 
 async def _probe(monkeypatch, coverage, stats=None):
@@ -251,6 +327,80 @@ class TestReadinessSemantics:
             if detail.get("status") != "healthy"
         ]
         assert "audit_store" in non_healthy
+
+
+class TestTailLagIsNotARegression:
+    """Between checkpoints the tail is ALWAYS uncovered -- that must not 503.
+
+    Checkpoints land every 300s (src/reliability/checkpointer.py), so a
+    freshly-logged-in instance appends a few events and is, until the next tick,
+    legitimately "not yet re-derived". Under the old logic every such instance
+    was reported ``broken`` (HTTP 503) for up to ten minutes. ``pending``
+    separates "the next tick will cover this" from "history in the middle of the
+    chain was never covered".
+    """
+
+    async def test_tail_lag_is_pending_and_ready(self, monkeypatch):
+        resp, body = await _probe(monkeypatch, TAIL_LAG)
+        audit = body["checks"]["audit_store"]
+
+        assert audit["evidence_status"] == "pending"
+        assert audit["status"] == "healthy", (
+            "normal checkpoint lag must not degrade the gate"
+        )
+        assert resp.status_code == 200
+        assert body["status"] == "ready"
+
+        # The human-readable note exists, but it is NOT the regression wording.
+        assert any(
+            "awaiting the next checkpoint" in e and "normal tail lag" in e
+            for e in body.get("errors", [])
+        ), body.get("errors")
+        assert not any(
+            "Audit chain verification incomplete" in e
+            for e in body.get("errors", [])
+        ), "tail lag must not be reported as a coverage regression"
+        _assert_no_contradiction(body)
+
+    async def test_middle_hole_is_still_broken_and_503(self, monkeypatch):
+        """A hole that a later checkpoint did not cover is a real fault.
+
+        This is the guard against the fix becoming a whitewash: one uncovered
+        range starting at frontier + 1 is only normal when it reaches the tail.
+        Here it ends at 60 while the tail is 100.
+        """
+        resp, body = await _probe(monkeypatch, MIDDLE_HOLE)
+        audit = body["checks"]["audit_store"]
+
+        assert audit["evidence_status"] == "broken"
+        assert audit["status"] == "degraded"
+        assert resp.status_code == 503
+        assert body["status"] == "degraded"
+        assert any(
+            "Audit chain verification incomplete" in e
+            for e in body.get("errors", [])
+        ), body.get("errors")
+        _assert_no_contradiction(body)
+
+    async def test_never_checkpointed_is_unverified_and_ready(self, monkeypatch):
+        """No checkpoint has ever been written: an honest gap, not pending."""
+        resp, body = await _probe(monkeypatch, NEVER_CHECKPOINTED)
+        audit = body["checks"]["audit_store"]
+
+        assert audit["evidence_status"] == "unverified"
+        assert audit["status"] == "healthy"
+        assert resp.status_code == 200
+        assert body["status"] == "ready"
+
+    async def test_pending_never_enters_the_unhealthy_check_list(self, monkeypatch):
+        """``unhealthy_checks`` is what drives the 503 -- pending must stay out."""
+        _resp, body = await _probe(monkeypatch, TAIL_LAG)
+        non_healthy = [
+            name
+            for name, detail in body["checks"].items()
+            if detail.get("status") != "healthy"
+        ]
+        assert "audit_store" not in non_healthy
 
 
 class TestAuditOutageStillUnhealthy:

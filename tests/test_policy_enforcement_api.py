@@ -232,7 +232,11 @@ class TestEnforcementStatusIsHonestOverHttp:
             raise PolicyDeferredError("security.set_abac_rule", "default_deny")
 
         detail = client.get("/_test/round73/hint").json()["detail"]
-        assert "/v1/policy/approvals" in detail
+        assert "审批中心" in detail
+        assert "不会直接放行" in detail
+        # 端点路径与内部机制名不上屏（约束：内部术语只进日志）。
+        assert "/v1/policy" not in detail
+        assert "grant_window" not in detail
 
     def test_deferred_is_a_permission_error_so_legacy_guards_still_catch_it(self):
         # The 409 mapping must not cost the property the C-2 design relied on:

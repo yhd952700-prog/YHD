@@ -157,7 +157,7 @@ HEALTH_CHECK_LABELS: Dict[str, str] = {
     "human_identity_registry": "账号身份库",
     "executor_fence": "执行隔离",
     "ai_provider": "模型服务",
-    "kernel_policy_enforcement": "内核策略",
+    "kernel_policy_enforcement": "策略强制",
 }
 
 #: 就绪页子系统名 -> 人话名称。
@@ -217,7 +217,7 @@ CONFIG_FINDING_LABELS: Dict[str, str] = {
     "jwt_secret_placeholder": "登录签名密钥仍是公开占位值",
     "sqlite_in_production": "生产环境仍在使用本地单机数据库",
     "debug_logging_in_production": "生产环境开启了调试日志",
-    "policy_enforcement_off": "生产环境未开启内核策略强制",
+    "policy_enforcement_off": "生产环境未开启策略强制",
 }
 
 #: 从告警原始文案里抽取 ``指标 / 当前值 / 阈值 / 比较方向``。
@@ -438,3 +438,115 @@ def decorate_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
 
 def subsystem_user_message(name: str, status: str) -> str:
     return f"{subsystem_label(name)}{status_label(status)}"
+
+
+# --------------------------------------------------------------------------- #
+# 面向用户的错误文案：内部治理术语不上屏
+# --------------------------------------------------------------------------- #
+# 身份/策略拒绝的原始异常文本是给开发者看的（"token does not represent a human
+# identity"、"sovereignty grant ..."）。它们一旦经 ``detail=str(exc)`` 到达界面，
+# 用户既读不懂、也不知道下一步做什么。这里集中做一次边界翻译：
+# 原始英文只进日志，``detail`` 只出中性中文。
+#
+# 只处理"含内部术语/编号/脚本路径"的文案；其它文案原样返回，免得把本来可读的
+# 中文说明改坏。整段英文内部提示直接换成按状态码的兜底 —— 混合中英
+# （"unknown 账号 for 人工授权"）比整句中文更难读。
+
+GOVERNANCE_TERM_REPLACEMENTS: Tuple[Tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bhuman[\s-]+sovereignty\b"), "人工授权"),
+    (re.compile(r"(?i)\bsovereignty\b"), "人工授权"),
+    (re.compile(r"(?i)\bhuman[\s-]+identity\b"), "个人账号"),
+    (re.compile(r"(?i)\bgrant[\s_-]?window\b"), "授权窗口"),
+    (re.compile(r"(?i)\bkernel[\s_-]*actions?\b"), "系统动作"),
+    (re.compile(r"(?i)\bkernel\b"), "系统"),
+    (re.compile(r"(?i)\bprincipals?\b"), "账号"),
+    (re.compile(r"人类主权|主权"), "人工授权"),
+    (re.compile(r"内核策略|内核"), "系统策略"),
+    (re.compile(r"(?i)\bL0\b"), "最高权限"),
+    (re.compile(r"主体"), "账号"),
+)
+
+#: 内部政策 / 设计编号与脚本路径：出现在 ``detail`` 里一律不认。
+_POLICY_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:LHX-[A-Z]-|OD-|C-)\d+(?:\.\d+)*(?![A-Za-z0-9])", re.I
+)
+_SECTION_ID_RE = re.compile(r"§\s*\d+(?:\.\d+)*")
+_SCRIPT_PATH_RE = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/])?(?:[\w.-]+[\\/])*"
+    r"(?:scripts|src|apps|tests)[\\/][\w./\\-]+\.(?:py|ts|tsx|js|sh|ps1)"
+)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _neutral_fallback(status_code: int) -> str:
+    """没有可读中文时的按状态码兜底：说清"发生了什么 + 下一步"。"""
+    if status_code == 401:
+        return "登录状态已失效，本次操作没有完成。请重新登录后再试。"
+    if status_code == 403:
+        return (
+            "当前账号没有执行这个操作的权限，本次操作没有完成。"
+            "请换用有权限的账号，或联系管理员授权后再试。"
+        )
+    if status_code == 404:
+        return "要访问的内容不存在，可能已被删除或移动。请返回上一页后重试。"
+    if status_code == 409:
+        return "该操作与当前状态冲突，本次操作没有完成。请刷新后重试。"
+    if status_code in (502, 503, 504):
+        return "本地服务暂时不可用，本次操作没有完成。请稍后重试。"
+    return "请求没有通过校验，本次操作没有完成。请检查填写内容后重试。"
+
+
+def contains_internal_copy(text: Any) -> bool:
+    """文案里是否含内部治理术语、政策编号或脚本路径。"""
+    raw = str(text or "")
+    if not raw:
+        return False
+    if _POLICY_ID_RE.search(raw) or _SECTION_ID_RE.search(raw) or _SCRIPT_PATH_RE.search(raw):
+        return True
+    return any(pattern.search(raw) for pattern, _ in GOVERNANCE_TERM_REPLACEMENTS)
+
+
+def sanitize_user_copy(text: Any) -> str:
+    """把内部术语替换成人话；不改变句子里的业务含义。"""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    out = _SCRIPT_PATH_RE.sub("相关说明", raw)
+    out = _SECTION_ID_RE.sub("", out)
+    out = _POLICY_ID_RE.sub("", out)
+    for pattern, replacement in GOVERNANCE_TERM_REPLACEMENTS:
+        out = pattern.sub(replacement, out)
+    # 删掉编号后留下的空括号与多余空白。
+    out = re.sub(r"[（(]\s*[)）]", "", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\s+([，。；：])", r"\1", out)
+    return out.strip(" ，,;；")
+
+
+def _sanitize_string(text: str, status_code: int) -> str:
+    if not contains_internal_copy(text):
+        return text
+    if _CJK_RE.search(text):
+        cleaned = sanitize_user_copy(text)
+        # 纯英文内部提示替换后仍是"unknown 账号 ..."这种夹生话，用兜底更清楚。
+        return cleaned if _CJK_RE.search(cleaned) else _neutral_fallback(status_code)
+    return _neutral_fallback(status_code)
+
+
+def user_facing_detail(detail: Any, status_code: int = 400) -> Any:
+    """HTTP ``detail`` 的边界脱敏；结构与机器字段（如 ``code``）保持不变。"""
+    if isinstance(detail, str):
+        return _sanitize_string(detail, status_code)
+    if isinstance(detail, dict):
+        out = dict(detail)
+        for key in ("message", "detail"):
+            value = out.get(key)
+            if isinstance(value, str):
+                out[key] = _sanitize_string(value, status_code)
+        return out
+    if isinstance(detail, (list, tuple)):
+        return [
+            _sanitize_string(item, status_code) if isinstance(item, str) else item
+            for item in detail
+        ]
+    return detail

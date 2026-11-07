@@ -103,7 +103,8 @@ def test_hire_revoked_identity_refused(client):
         json={"name": "revoked-alice", "agent_count": 1, "agent_types": ["general"]},
     )
     assert r.status_code == 403, r.text
-    assert "revoked" in r.json()["detail"].lower(), r.json()
+    assert "撤销名单" in r.json()["detail"], r.json()
+    assert "sovereignty" not in r.json()["detail"].lower(), r.json()
 
 
 def test_hire_benign_identity_succeeds(client):

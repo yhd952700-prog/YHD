@@ -213,7 +213,11 @@ export interface HealthCheckEntry {
    * 而 `checks` 说"全好"—— 同一份 payload 自相矛盾。分字段后两者可以同时为真。
    */
   availability?: 'available' | 'unavailable'
-  evidence_status?: 'verified' | 'unverified' | 'broken' | 'unknown'
+  /**
+   * `pending` = 历史已被覆盖，只有两次检查点之间的新尾部待核对（正常尾差，
+   * 不影响就绪）。它与 `broken`（中间空洞/覆盖回退）必须分开说。
+   */
+  evidence_status?: 'verified' | 'unverified' | 'pending' | 'broken' | 'unknown'
   [key: string]: unknown
 }
 

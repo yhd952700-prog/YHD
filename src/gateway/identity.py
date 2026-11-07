@@ -46,11 +46,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .policy import require_human_principal
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/identity", tags=["identity"])
 
@@ -104,7 +107,11 @@ def _manager():
     try:
         manager = get_identity_manager()
     except Exception as exc:  # noqa: BLE001 - 读不到必须如实说出来
-        raise HTTPException(status_code=503, detail=f"identity kernel unavailable: {exc}")
+        logger.warning("identity manager unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="身份服务暂时不可用，本次读取没有完成。请稍后重试。",
+        ) from exc
 
     lifecycle = getattr(manager, "lifecycle", None)
     if lifecycle is not None and lifecycle is not KernelLifecycle.READY:
@@ -128,7 +135,11 @@ def _registry_report(manager) -> Tuple[Dict[str, Any], List[str]]:
     try:
         described = manager.describe_identity_namespaces()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"identity registry unreadable: {exc}")
+        logger.warning("identity registry unreadable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="身份列表暂时读不出来，本次读取没有完成。请稍后重试。",
+        ) from exc
 
     store = described.get("store") or {}
     integrity = described.get("registry_integrity") or {}
@@ -249,9 +260,11 @@ def _collect(**filters) -> List:
     try:
         return list(manager.list_identities())
     except Exception as exc:  # noqa: BLE001
+        logger.warning("identity registry could not be enumerated: %s", exc)
         raise HTTPException(
-            status_code=503, detail=f"identity registry could not be enumerated: {exc}"
-        )
+            status_code=503,
+            detail="身份列表暂时读不出来，本次读取没有完成。请稍后重试。",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -341,16 +354,17 @@ def get_principal(
         if identity is None:
             identity = manager.get_identity_by_principal(principal_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"identity lookup failed: {exc}")
+        logger.warning("identity lookup failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="身份查询没有完成，请稍后重试。",
+        ) from exc
 
     registry, warnings = _registry_report(manager)
     if identity is None:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"no identity with id or principal {principal_id!r}; "
-                "this is a real 'not found', not an empty permission set"
-            ),
+            detail="没有找到这个身份。请刷新列表后重试；如果刚创建，请等几秒再刷新。",
         )
 
     grants = _grant_view(identity)

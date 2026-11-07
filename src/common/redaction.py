@@ -108,6 +108,34 @@ _PATH_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)[A-Za-z]:[\\/][^\s\"'<>|]*LiuHao-AI-OS[^\s\"'<>|]*"), APP_PLACEHOLDER),
 )
 
+#: 任意本机绝对路径。``_PATH_PATTERNS`` 只认安装/脚本目录，日志里的 traceback
+#: 还会带出数据目录、虚拟环境等其它绝对路径；这里统一折叠成"<本地路径>/文件名"，
+#: 既去掉本机目录结构，又保留"是哪个文件出问题"这个技术线索。
+_ABS_PATH_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/])(?:[^\\/\s\"'<>|]+[\\/])*([^\\/\s\"'<>|]+)"),
+        r"<本地路径>\\\2",
+    ),
+    (
+        re.compile(
+            r"(?<![\w/])/(?:home|Users|root|var|opt|tmp|mnt|srv|usr|app|workspace)"
+            r"(?:/[^\s\"'<>|]+)*/([^/\s\"'<>|]+)"
+        ),
+        r"<本地路径>/\1",
+    ),
+)
+
+#: 内部政策 / 设计编号（OD-010、LHX-C-010、C-2、§10.8.3-1）。日志允许技术细节，
+#: 但不允许把内部编号带出去。
+_POLICY_ID_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"§\s*\d+(?:\.\d+)*"),
+    re.compile(
+        r"(?<![A-Za-z0-9])(?:LHX-[A-Z]-|OD-|C-)\d+(?:\.\d+)*(?![A-Za-z0-9])",
+        re.I,
+    ),
+)
+POLICY_ID_PLACEHOLDER = "内部编号"
+
 _HIERARCHY_KV = re.compile(
     r"(?i)\b(parent[_-]?id|root[_-]?id|depth|ancestors?|ancestor[_-]?ids?)\b"
     r"\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;\"'）)]+)"
@@ -169,6 +197,8 @@ def redact_text(text: str) -> str:
     for pattern, replacement in _PATH_PATTERNS:
         out = pattern.sub(replacement, out)
     out = mask_user_path(out)
+    for pattern in _POLICY_ID_PATTERNS:
+        out = pattern.sub(POLICY_ID_PLACEHOLDER, out)
     for pattern in _ENV_NAME_PATTERNS:
         out = pattern.sub(ENV_PLACEHOLDER, out)
     out = _HIERARCHY_KV.sub(rf"\1={HIERARCHY_PLACEHOLDER}", out)
@@ -179,6 +209,21 @@ def redact_text(text: str) -> str:
 def sanitize_text(text: str) -> str:
     """语义化别名：所有要进诊断包的文本都走这里。"""
     return redact_text(text)
+
+
+def redact_log_text(text: str) -> str:
+    """``error.log`` 落盘前的脱敏：比诊断包更严，任意本机绝对路径都折叠。
+
+    诊断包需要保留 ``C:\\Users\\<用户>\\...`` 这类可读路径用于排障；日志不需要，
+    只要保留"是哪个文件出的问题"。所以这里先把整个绝对路径折叠成
+    ``<本地路径>/文件名``，再走通用脱敏（密钥、环境变量、层级字段、政策编号）。
+    """
+    if not text:
+        return ""
+    out = str(text)
+    for pattern, replacement in _ABS_PATH_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return redact_text(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -274,10 +319,12 @@ def contains_secret(text: str) -> bool:
 
 
 __all__ = [
+    "POLICY_ID_PLACEHOLDER",
     "REDACTION_VERSION",
     "contains_secret",
     "leak_violations",
     "mask_user_path",
+    "redact_log_text",
     "redact_text",
     "sanitize_text",
 ]

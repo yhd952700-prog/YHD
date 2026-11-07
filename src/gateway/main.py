@@ -35,7 +35,6 @@ from fastapi import FastAPI, Request, APIRouter, Depends  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, PlainTextResponse  # noqa: E402
-from fastapi.exception_handlers import http_exception_handler  # noqa: E402
 from fastapi.encoders import jsonable_encoder  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
@@ -49,15 +48,14 @@ from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
 # Historically these were never fed, so ``/v1/metrics/prometheus`` exported their
 # families with **zero per-request samples** -- a scrape looked instrumented while
 # carrying no request data. Importing them here lets ``logging_middleware`` feed
-# them with real traffic.
+# them with real traffic. Endpoint labels come from the matched route template
+# (see ``record_http_request``) so dynamic ids cannot grow metric cardinality.
 try:  # pragma: no cover - depends on the optional prometheus_client package
     from ..observability.metrics import (
-        http_request_duration_seconds as _HTTP_REQUEST_DURATION,
-        http_requests_total as _HTTP_REQUESTS_TOTAL,
+        record_http_request as _RECORD_HTTP_REQUEST,
     )
 except Exception:  # metrics unavailable here; the endpoint 503s anyway
-    _HTTP_REQUEST_DURATION = None
-    _HTTP_REQUESTS_TOTAL = None
+    _RECORD_HTTP_REQUEST = None
 
 # Real metric collector that feeds the alert engine (OB / blocker #3). The
 # collector is independent of prometheus_client so the alert loop works even
@@ -1227,20 +1225,19 @@ def get_app() -> FastAPI:
         response.headers["X-Trace-ID"] = trace_id
 
         # Feed the HTTP request metrics so a scrape carries real per-request
-        # samples (see the guarded import above). Instrumentation must never
-        # break the request itself, hence the guard.
-        if _HTTP_REQUESTS_TOTAL is not None:
-            endpoint = request.url.path
+        # samples. The label is the MATCHED ROUTE TEMPLATE, never the raw path:
+        # a raw path embeds unbounded ids and every new id would permanently
+        # add a label set to every HTTP histogram (measured in the 22-minute
+        # soak). Instrumentation must never break the request itself, hence the
+        # guard.
+        if _RECORD_HTTP_REQUEST is not None:
             try:
-                _HTTP_REQUESTS_TOTAL.labels(
-                    method=request.method,
-                    endpoint=endpoint,
-                    status=str(response.status_code),
-                ).inc()
-                _HTTP_REQUEST_DURATION.labels(
-                    method=request.method,
-                    endpoint=endpoint,
-                ).observe(process_time)
+                _RECORD_HTTP_REQUEST(
+                    request.method,
+                    request.scope,
+                    response.status_code,
+                    process_time,
+                )
             except Exception as exc:  # pragma: no cover - never fail a request
                 logger.warning(f"http metrics instrumentation failed: {exc}")
 
@@ -1279,17 +1276,33 @@ def get_app() -> FastAPI:
     # 结构化错误**同时**摊到顶层（``code`` / ``message`` / ``detail``），非结构化
     # detail（普通字符串）完全沿用默认行为，不影响既有端点。
     from .account_context import structured_error_body
+    from .display import user_facing_detail
 
     @app.exception_handler(StarletteHTTPException)
     async def structured_http_error_handler(request: Request, exc: StarletteHTTPException):
-        body = structured_error_body(exc.detail)
+        # 边界翻译：内部治理术语 / 政策编号 / 脚本路径不上屏。原始英文只进日志，
+        # 面向用户的 detail 一律是"发生了什么 + 下一步"的中性中文。
+        detail = user_facing_detail(exc.detail, exc.status_code)
+        if detail != exc.detail:
+            logger.warning(
+                "http error copy sanitized status=%s path=%s original=%s",
+                exc.status_code,
+                request.url.path,
+                describe_exception(exc, limit=2000),
+            )
+        body = structured_error_body(detail)
         if body is not None:
             return JSONResponse(
                 status_code=exc.status_code,
                 content=body,
                 headers=getattr(exc, "headers", None),
             )
-        return await http_exception_handler(request, exc)
+        # 与 Starlette 默认处理器保持同一形状（``{"detail": ...}``），只换文案。
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": detail},
+            headers=getattr(exc, "headers", None),
+        )
 
     # 统一 422：FastAPI 默认处理器会把 ``input`` 原样回显（含口令/恢复码）。
     # 这里改成脱敏后的形状，敏感字段只保留 loc/msg/type。
@@ -1384,12 +1397,10 @@ def get_app() -> FastAPI:
             content={
                 "error": "policy_approval_required",
                 "detail": (
-                    "This action requires verified human sovereignty (OD-010). "
-                    "POST /v1/policy/approvals records the authorization (who, "
-                    "for which actions, until when). Recording it does not by "
-                    "itself unblock a retry: the gateway exposes no route that "
-                    "executes a kernel action, so execution must happen "
-                    "in-process inside grant_window(grant)."
+                    "该操作需要人工审批，本次操作没有完成。请到「审批中心」记录"
+                    "这次授权（谁、哪些动作、有效期到什么时候）；记录授权本身"
+                    "不会直接放行，实际执行仍需在授权范围内完成。重复调用不会"
+                    "改变结果。"
                 ),
                 "action": exc.action,
                 "verdict": exc.verdict,
@@ -1411,10 +1422,8 @@ def get_app() -> FastAPI:
                 # 或去找一个并不存在的放行端点。这里把"没有放行入口"也说
                 # 出来 —— 知道此路不通本身就是可行动的信息。
                 "detail": (
-                    f"内核策略引擎拒绝了该动作（action={exc.action}，"
-                    f"rule={exc.rule_id}）。判定由内核策略层作出，HTTP 面没有"
-                    "放行或改写入口，重试不会改变结果；请按响应中的 rule 定位"
-                    "该规则后再决定如何调整调用。"
+                    "该操作被系统策略拒绝，本次操作没有完成。重复尝试不会改变"
+                    "结果；如确需执行，请联系管理员调整授权后再试。"
                 ),
                 "action": exc.action,
                 "verdict": exc.verdict,

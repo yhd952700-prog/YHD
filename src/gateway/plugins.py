@@ -58,6 +58,9 @@ def activate_plugin(
     """Activate a registered plugin (real import + instantiate)."""
     registry = get_plugin_registry()
     if registry.get_plugin(plugin_id) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown plugin: {plugin_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"没有找到插件「{plugin_id}」。请刷新列表后重试。",
+        )
     info = registry.activate_plugin(plugin_id)
     return _serialize(info)

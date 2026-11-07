@@ -495,7 +495,7 @@ function App() {
         id: 'auth-config-error',
         tone: 'warn',
         title: '无法读取登录配置',
-        detail: '暂时连不上本地服务，请确认启动窗口仍在运行，然后刷新重试。',
+        detail: '鎏灏的本地服务没有运行。请打开鎏灏（启动窗口保持打开），然后刷新重试。',
       })
     }
 
@@ -521,6 +521,15 @@ function App() {
           })
           .join('；'),
       })
+    } else if (ready.httpStatus === 503) {
+      // 刚启动时各项自检尚未跑完，探针会用 503 表示"还没好"。这不是故障，
+      // 页面本来就会每 30 秒自动重试；这里只说清状态，不制造红色告警。
+      items.push({
+        id: 'ready-preparing',
+        tone: 'warn',
+        title: '服务正在准备',
+        detail: '刚启动时自检需要一点时间，界面会自动重试，无需操作。',
+      })
     } else if (ready.error) {
       items.push({
         id: 'ready-error',
@@ -536,8 +545,16 @@ function App() {
     // 这不是装饰：HC-01 的证据链不可信时，最需要人介入的时刻不能表现得最健康。
     const audit = checks.audit_store
     const evidence = audit?.evidence_status
-    if (evidence && evidence !== 'verified' && evidence !== 'unknown') {
-      const uncovered = typeof audit?.uncovered_events === 'number' ? audit.uncovered_events : null
+    const uncovered = typeof audit?.uncovered_events === 'number' ? audit.uncovered_events : null
+    if (evidence === 'pending') {
+      // 两次检查点之间的正常尾差：历史有覆盖、只有新事件还没核对。等下一轮即可。
+      items.push({
+        id: 'ready-audit-pending',
+        tone: 'warn',
+        title: '正在核对新事件',
+        detail: `有 ${uncovered ?? '?'} 条新事件等待下一轮自检核对（约 5 分钟内自动完成），不影响使用。`,
+      })
+    } else if (evidence && evidence !== 'verified' && evidence !== 'unknown') {
       items.push({
         id: 'ready-audit-evidence',
         tone: evidence === 'broken' ? 'danger' : 'warn',
@@ -610,6 +627,7 @@ function App() {
     authConfig.error,
     ready.data,
     ready.error,
+    ready.httpStatus,
     roster.data,
     roster.error,
     provider,

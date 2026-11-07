@@ -17,7 +17,7 @@
  * 的员工只渲染查看信息，不渲染编辑/删除/派活按钮——不给一个点下去才报错的按钮。
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useApi } from '../lib/api'
 import type { EmployeeCapabilitiesPayload, EmployeesPayload } from '../lib/contracts'
@@ -29,6 +29,7 @@ import {
   deleteEmployee,
   employeeAssignable,
   employeeCapabilities,
+  employeeDisplayName,
   employeeRole,
   employeeStatsText,
   employeeStatus,
@@ -147,7 +148,9 @@ export function MyEmployees({ query }: { query: string }) {
       <div className="os-row" key={employee.name}>
         <div className="os-emp-row" style={{ flex: 1 }}>
           <div className="os-emp-head">
-            <span className="os-emp-name">{employee.name}</span>
+            <span className="os-emp-name" title={seed ? employee.name : undefined}>
+              {employeeDisplayName(employee)}
+            </span>
             <span className="os-badge" data-tone={status.tone}>
               {status.label}
             </span>
@@ -174,9 +177,17 @@ export function MyEmployees({ query }: { query: string }) {
           {employee.agents.length > 0 && (
             <div className="os-emp-meta">
               个体状态：
-              {employee.agents
-                .map((agent) => `${agent.name || agent.id}·${agentStatusLabel(agent)}`)
-                .join(' / ')}
+              {employee.agents.map((agent, index) => {
+                const raw = String(agent.name || agent.id || '')
+                return (
+                  <Fragment key={agent.id || `agent-${index}`}>
+                    {index > 0 && ' / '}
+                    <span title={raw || undefined}>
+                      {`执行个体 ${index + 1}·${agentStatusLabel(agent)}`}
+                    </span>
+                  </Fragment>
+                )
+              })}
             </div>
           )}
 

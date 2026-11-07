@@ -31,9 +31,22 @@ createRoot(document.getElementById('root')!).render(
 // 极难排查的问题，得到的便利远不及代价。
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((error) => {
-      // 注册失败不影响应用本身；把真实原因留在控制台，不静默吞掉。
-      console.warn('Service Worker 注册失败：', error)
+    // 新版本接管后刷新一次：否则会出现"外壳已是新版、页面里跑的仍是旧 JS"的混合
+    // 状态，比缓存旧外壳更难排查。只在原本就受控时才刷新，避免首装时抖动。
+    const hadController = Boolean(navigator.serviceWorker.controller)
+    let reloading = false
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return
+      reloading = true
+      window.location.reload()
     })
+    // `updateViaCache: 'none'`：检查 sw.js 更新时不走 HTTP 缓存，避免"新版本已经
+    // 上线、浏览器还在拿旧 SW"这一步悄悄卡住缓存清理。
+    navigator.serviceWorker
+      .register('/sw.js', { updateViaCache: 'none' })
+      .catch((error) => {
+        // 注册失败不影响应用本身；把真实原因留在控制台，不静默吞掉。
+        console.warn('Service Worker 注册失败：', error)
+      })
   })
 }

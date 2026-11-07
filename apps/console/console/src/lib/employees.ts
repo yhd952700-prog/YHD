@@ -111,6 +111,19 @@ export function isSeedEmployee(employee: MyEmployee): boolean {
   return employee.name === SEED_EMPLOYEE_NAME
 }
 
+/** 系统默认员工对外的称呼：`liuhao-default` 是内部标识，不上屏。 */
+export const SEED_EMPLOYEE_LABEL = '默认管家'
+
+/**
+ * 员工在界面上显示的名字。
+ *
+ * 只有系统默认员工会被换成人话称呼 —— 它由服务端内置创建，名字是内部标识；
+ * 用户自己创建的员工保留原名，那是用户自己起的，换掉反而认不出。
+ */
+export function employeeDisplayName(employee: MyEmployee): string {
+  return isSeedEmployee(employee) ? SEED_EMPLOYEE_LABEL : employee.name
+}
+
 export function readableError(error: unknown): string {
   if (error instanceof ApiError) return error.message
   if (error instanceof Error) return error.message
@@ -234,5 +247,5 @@ export function agentStatusLabel(agent: AgentInfo): string {
   if (raw === 'paused') return '暂停'
   if (raw === 'error' || raw === 'failed') return '异常'
   if (raw === 'idle' || raw === 'ready' || raw === 'available') return '空闲'
-  return raw || '状态未知'
+  return '状态未知'
 }

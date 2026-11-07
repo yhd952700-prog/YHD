@@ -244,7 +244,9 @@ class TestPrincipalIsTokenOnly:
             headers=_auth("no-such-identity"),
         )
         assert resp.status_code == 400, resp.text
-        assert "unknown principal" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "还没有登记" in detail
+        assert "unknown principal" not in detail.lower()
 
     def test_service_identity_may_not_hold_sovereignty(self, service, client):
         # OD-010: a service account must never be able to approve its own
@@ -255,7 +257,9 @@ class TestPrincipalIsTokenOnly:
             headers=_auth(service.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "service" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "机器账号" in detail
+        assert "sovereignty" not in detail.lower()
 
     def test_reads_are_authenticated_too(self, client):
         for path in ("/v1/policy/approvals", "/v1/policy/enforcement"):
@@ -328,7 +332,7 @@ class TestGrantLifecycleOverHttp:
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "enforcement-gated" in resp.json()["detail"]
+        assert "不需要审批" in resp.json()["detail"]
 
     def test_an_unknown_action_cannot_be_granted(self, human, client):
         resp = client.post(
@@ -337,7 +341,7 @@ class TestGrantLifecycleOverHttp:
             headers=_auth(human.id),
         )
         assert resp.status_code == 400, resp.text
-        assert "unknown kernel action" in resp.json()["detail"]
+        assert "动作不存在" in resp.json()["detail"]
 
     def test_empty_action_list_is_rejected(self, human, client):
         resp = client.post(
@@ -447,10 +451,14 @@ class TestTheLoopIsHonestOverHttp:
             raise PolicyDeferredError(GATED_ACTION, "default_deny")
 
         detail = client.get("/_test/r76/hint").json()["detail"]
-        assert "/v1/policy/approvals" in detail, "must still point at the entry point"
-        assert "grant_window" in detail, (
-            "must name the in-process mechanism that actually unblocks it"
+        assert "审批中心" in detail, "must still point at the entry point"
+        assert "不会直接放行" in detail, (
+            "must say that recording the authorisation does not unblock a retry"
         )
+        # 内部编号与实现机制名不上屏。
+        assert "OD-010" not in detail
+        assert "grant_window" not in detail
+        assert "/v1/policy" not in detail
 
     def test_issuing_a_grant_arms_nothing(self, human, client):
         # A grant must not widen the gate: the posture snapshot is unchanged

@@ -85,6 +85,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
       auditEvidence: checks.audit_store?.evidence_status as
         | 'verified'
         | 'unverified'
+        | 'pending'
         | 'broken'
         | 'unknown'
         | undefined,
@@ -187,15 +188,29 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
             value={health ? `${(health.ratio * 100).toFixed(0)}%` : null}
             foot={
               health
-                ? health.auditEvidence && health.auditEvidence !== 'verified'
-                  ? `${health.healthy}/${health.total} 项依赖正常 · 证据链 ${
-                      health.auditEvidence === 'broken' ? '已断裂' : '未重新推导'
-                    }（${health.auditUncovered ?? '?'} 条事件未覆盖）`
-                  : `${health.healthy}/${health.total} 项依赖正常`
-                : '来自就绪探针'
+                ? health.auditEvidence === 'broken'
+                  ? `${health.healthy}/${health.total} 项依赖正常 · 证据链已断裂（${
+                      health.auditUncovered ?? '?'
+                    } 条事件未覆盖）`
+                  : health.auditEvidence === 'pending'
+                    ? `${health.healthy}/${health.total} 项依赖正常 · ${
+                        health.auditUncovered ?? '?'
+                      } 条新事件待核对（下一轮自检自动补齐）`
+                    : health.auditEvidence && health.auditEvidence !== 'verified'
+                      ? `${health.healthy}/${health.total} 项依赖正常 · 证据链未重新推导（${
+                          health.auditUncovered ?? '?'
+                        } 条事件未覆盖）`
+                      : `${health.healthy}/${health.total} 项依赖正常`
+                : ready.httpStatus === 503
+                  ? '服务正在准备，自检完成后自动更新'
+                  : '来自就绪探针'
             }
             error={ready.error}
-            tone={health && (health.ratio < 1 || (health.auditEvidence && health.auditEvidence !== 'verified')) ? 'warn' : undefined}
+            tone={
+              health && (health.ratio < 1 || health.auditEvidence === 'broken')
+                ? 'warn'
+                : undefined
+            }
           />
         </div>
       </div>

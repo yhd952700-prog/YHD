@@ -419,7 +419,10 @@ def get_event(
         raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
     if event is None:
-        raise HTTPException(status_code=404, detail=f"no audit event at seq={seq}")
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到这条审计事件，可能已被清理。请刷新审计链后重试。",
+        )
     fake = str(event.get("principal_id") or "")
     visible = (
         (context.is_root and fake in context.subtree)

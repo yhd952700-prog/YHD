@@ -3395,9 +3395,17 @@ def create_goal(
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
         # e.g. a non-existent project_id — honest 404, not a 503 crash.
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("goal execution rejected: %s", exc)
+        raise HTTPException(
+            status_code=404,
+            detail="要执行的目标不存在或已被删除。请刷新列表后重试。",
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Goal execution failed: {exc}")
+        logger.warning("goal execution failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="目标执行没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
+        ) from exc
 
 
 @router.get("/goals/{goal_id}")
@@ -3413,7 +3421,11 @@ def get_goal(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("get goal rejected goal_id=%r: %s", goal_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="要查看的目标不存在，或不属于当前账号。请刷新列表后重试。",
+        ) from exc
 
 
 @router.post("/goals/{goal_id}/replan")
@@ -3429,9 +3441,17 @@ def replan_goal(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("replan rejected: %s", exc)
+        raise HTTPException(
+            status_code=404,
+            detail="要重新规划的目标不存在或已被删除。请刷新列表后重试。",
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Replan failed: {exc}")
+        logger.warning("replan failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="重新规划没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
+        ) from exc
 
 
 @router.post("/goals/{goal_id}/stop")
@@ -3453,7 +3473,11 @@ def stop_goal(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("stop goal rejected goal_id=%r: %s", goal_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="要停止的目标不存在，或不属于当前账号。请刷新列表后重试。",
+        ) from exc
 
 
 @router.post("/goals/assign", status_code=201)
@@ -3492,10 +3516,16 @@ def assign_goal(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
+        logger.warning("assignment rejected: %s", exc)
         raise HTTPException(
-            status_code=503, detail=f"Assignment failed: {exc}"
+            status_code=404,
+            detail="要派发的目标或员工不存在。请刷新列表后重试。",
+        ) from exc
+    except Exception as exc:
+        logger.warning("assignment failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="任务派发没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
 
 
@@ -3531,8 +3561,10 @@ def retry_goal_task(
             detail={"code": exc.code, "message": exc.detail},
         ) from exc
     except Exception as exc:
+        logger.warning("task retry failed: %s", exc)
         raise HTTPException(
-            status_code=503, detail=f"Task retry failed: {exc}"
+            status_code=503,
+            detail="重试任务没有完成。请稍后重试；如果持续出现，请重启软件后再试。",
         ) from exc
 
 
@@ -3561,7 +3593,11 @@ def list_employees(
             "stats": default_stats,
         }
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Employee listing failed: {exc}")
+        logger.warning("employee listing failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="读取员工列表没有完成。请稍后重试。",
+        ) from exc
 
 
 @router.get("/employees/capabilities")
@@ -3595,9 +3631,15 @@ def hire_employee(
     # 默认注册表为空，``is_revoked`` 对任何主体返回 False，故正常路径不受影响
     # （fail-open-but-meaningful：撤销名单里没有的人照常可雇）。
     if get_trust_manager().is_revoked(req.name):
+        # 原始判定原因（信任注册表 / 撤销主体）只进日志，界面只说"发生了什么 +
+        # 下一步"。
+        logger.warning("hire refused: %r is revoked in the trust registry", req.name)
         raise HTTPException(
             status_code=403,
-            detail=f"identity {req.name!r} is revoked in the trust registry; hire refused (human-sovereignty: revoked principal cannot be (re)hired)",
+            detail=(
+                f"「{req.name}」已被列入撤销名单，无法创建或重新启用。"
+                "请先在「信任」页恢复它的信任状态，或换一个员工名再试。"
+            ),
         )
     try:
         result = mgr.hire_employee(
@@ -3611,11 +3653,18 @@ def hire_employee(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        logger.warning("hire employee rejected name=%r: %s", req.name, exc)
+        raise HTTPException(
+            status_code=400,
+            detail="员工信息没有通过校验，本次创建没有完成。请检查名称、数量和类型后重试。",
+        ) from exc
     if result["already_existed"]:
         raise HTTPException(
             status_code=409,
-            detail=f"employee {req.name!r} already exists",
+            detail=(
+                f"已经有一个叫「{req.name}」的员工了。请换一个名字，"
+                "或先在「我的员工」里查看现有员工。"
+            ),
         )
     return JSONResponse(status_code=201, content=result["employee"])
 
@@ -3642,7 +3691,11 @@ def adopt_employee(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        logger.warning("adopt employee rejected: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="取用没有完成。请检查员工名后重试；如果它不属于当前账号，请换一个。",
+        ) from exc
 
 
 @router.patch("/employees/{name}")
@@ -3670,7 +3723,11 @@ def update_employee(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        logger.warning("update employee rejected name=%r: %s", name, exc)
+        raise HTTPException(
+            status_code=400,
+            detail="员工信息没有通过校验，本次修改没有完成。请检查填写内容后重试。",
+        ) from exc
 
 
 @router.delete("/employees/{name}")
@@ -3688,9 +3745,19 @@ def remove_employee(
     try:
         removed = mgr.remove_employee(name, viewer)
     except ValueError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        logger.warning("remove employee rejected name=%r: %s", name, exc)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "这名员工不能移除。系统默认员工需要保留；"
+                "如果你只是想让它停用，请改用「停用」。"
+            ),
+        ) from exc
     if not removed:
-        raise HTTPException(status_code=404, detail=f"employee {name!r} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"没有找到员工「{name}」。请刷新列表后重试。",
+        )
     return {"removed": name, "ok": True}
 
 
@@ -3705,7 +3772,11 @@ def get_employee(
     try:
         return mgr.get_agent(agent_id, viewer)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("get employee rejected agent_id=%r: %s", agent_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到这个员工，或它不属于当前账号。请刷新列表后重试。",
+        ) from exc
 
 
 @router.post("/employees/{agent_id}/pause")
@@ -3719,7 +3790,11 @@ def pause_employee(
     try:
         return mgr.pause_agent(agent_id, viewer)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("pause employee rejected agent_id=%r: %s", agent_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="暂停没有完成：没有找到这个员工。请刷新列表后重试。",
+        ) from exc
 
 
 @router.post("/employees/{agent_id}/resume")
@@ -3733,7 +3808,11 @@ def resume_employee(
     try:
         return mgr.resume_agent(agent_id, viewer)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("resume employee rejected agent_id=%r: %s", agent_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="恢复没有完成：没有找到这个员工。请刷新列表后重试。",
+        ) from exc
 
 
 @router.get("/workflows")
@@ -3778,4 +3857,8 @@ def get_workflow(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        logger.warning("goal detail rejected goal_id=%r: %s", goal_id, exc)
+        raise HTTPException(
+            status_code=404,
+            detail="要查看的目标不存在。请刷新列表后重试。",
+        ) from exc

@@ -97,4 +97,28 @@ describe('第一公里提示', () => {
     expect(screen.getByText(/先跳过/)).toBeTruthy()
     expect(screen.getByText(/补上 Key/)).toBeTruthy()
   })
+
+  test('设置页首个可视区有「首次使用提示」，两个跳转按钮可点击', () => {
+    // jsdom 没有实现 scrollIntoView；桩掉它，顺带确认点击真的触发了定位。
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+
+    render(
+      <Settings
+        device={device}
+        session={session}
+        notifications={[]}
+        onLogout={() => {}}
+      />,
+    )
+
+    const notice = screen.getByRole('status', { name: '首次使用提示' })
+    expect(notice.textContent).toMatch(/先跳过|最后再配/)
+    expect(notice.textContent).toMatch(/补上 Key/)
+    expect(notice.textContent).toMatch(/黑色命令窗口/)
+    expect(notice.textContent).toMatch(/保持打开/)
+
+    fireEvent.click(screen.getByRole('button', { name: '去配置模型' }))
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
 })

@@ -28,8 +28,9 @@ C-4 把授权本身变成可审计凭据。本模块提供那个凭据的**真�
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -190,6 +191,59 @@ _WRITE_ROLES = frozenset({"admin", "administrator", "owner"})
 #: explicit claim, never a default.
 _WRITE_SCOPES = frozenset({"L0"})
 
+logger = logging.getLogger(__name__)
+
+#: ``issue_grant`` / ``revoke_grant`` 抛出的 ValueError 原文是给开发者看的
+#: （"unknown principal"、"enforcement-gated" 之类）。同一类错误在界面上必须
+#: 说成"发生了什么 + 下一步"；原始英文交给日志。
+_APPROVAL_REFUSALS: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (
+        ("unknown principal", "not registered"),
+        "这个账号还没有登记，无法签发授权。请先在账号设置里创建并启用这个人，"
+        "然后重新登录后再试。",
+    ),
+    (
+        ("not active", "inactive", "disabled"),
+        "这个账号当前不可用（已停用或未激活），无法签发授权。请先启用该账号后再试。",
+    ),
+    (
+        ("service", "machine", "not a human"),
+        "机器账号不能签发人工授权。请改用个人账号登录后再试。",
+    ),
+    (
+        ("unknown kernel action", "unknown action"),
+        "选中的动作不存在，无法签发授权。请刷新页面后从列表里重新选择。",
+    ),
+    (
+        ("enforcement-gated", "not eligible", "not gated"),
+        "选中的动作不需要审批（只有高风险动作才可授权）。请改选列表中的高风险动作。",
+    ),
+    (
+        ("at least one action", "actions must"),
+        "请至少选择一个需要授权的动作。",
+    ),
+    (
+        ("explicit target", "wildcard", "confirmation", "non-empty", "higher-sovereignty"),
+        "请填写这条授权对应的具体对象；如果要授权全部对象，必须勾选二次确认。",
+    ),
+    (
+        ("expired", "revoked"),
+        "这条授权已失效（已撤销或已过期），请重新签发一条。",
+    ),
+)
+
+
+def _approval_refusal(exc: BaseException, *, fallback: str) -> str:
+    """把审批相关的内部异常翻成中性中文；原文只进日志。"""
+    text = str(exc) or type(exc).__name__
+    lowered = text.lower()
+    for needles, message in _APPROVAL_REFUSALS:
+        if any(needle in lowered for needle in needles):
+            logger.info("approval refused: %s", text)
+            return message
+    logger.warning("approval request failed (%s): %s", type(exc).__name__, text)
+    return fallback
+
 #: Every scope the identity kernel can issue. Anything else in a token's
 #: metadata is unknown and therefore non-authorising (fail-closed).
 _KNOWN_SCOPES = frozenset({"L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"})
@@ -203,12 +257,19 @@ def _human_claims(payload) -> tuple[str, dict]:
     """Return ``(subject, metadata)`` for a human token or raise 401/403."""
     subject = getattr(payload, "sub", None)
     if not subject:
-        raise HTTPException(status_code=401, detail="token has no subject claim")
+        raise HTTPException(
+            status_code=401,
+            detail="登录凭据不完整，无法确认你的账号。请退出后重新登录再试。",
+        )
     metadata = getattr(payload, "metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
     if metadata.get("kind") != "human":
         raise HTTPException(
-            status_code=403, detail="token does not represent a human identity"
+            status_code=403,
+            detail=(
+                "当前登录的不是个人账号，不能执行这个操作。"
+                "请改用管理员为你创建的个人账号登录后重试。"
+            ),
         )
     return str(subject), metadata
 
@@ -250,7 +311,10 @@ def require_admin_principal(payload=Depends(require_bearer_payload)) -> str:
     if not _is_admin_claim(payload, metadata):
         raise HTTPException(
             status_code=403,
-            detail="该操作需要管理员权限（admin 角色或 L0 人类主权）",
+            detail=(
+                "该操作需要管理员权限，本次操作没有完成。"
+                "请用管理员账号执行，或让管理员授予权限后再试。"
+            ),
         )
     return subject
 
@@ -310,7 +374,13 @@ def create_approval(
             allow_wildcard=req.confirm_wildcard,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(
+            status_code=400,
+            detail=_approval_refusal(
+                exc,
+                fallback="这条授权请求没有通过校验，本次操作没有完成。请检查填写内容后重试。",
+            ),
+        ) from exc
     return {"approved": True, "grant": grant.to_dict()}
 
 
@@ -425,7 +495,10 @@ def get_approval(grant_id: str, _: str = Depends(require_human_principal)) -> Di
     """按 id 读取一条审批凭据（含已过期/已撤销）。"""
     grant = get_grant(grant_id)
     if grant is None:
-        raise HTTPException(status_code=404, detail=f"unknown grant: {grant_id}")
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到这条授权，可能已经撤销。请刷新审批列表后重试。",
+        )
     return grant.to_dict()
 
 
@@ -439,7 +512,10 @@ def revoke_approval(
     try:
         grant = revoke_grant(grant_id, revoked_by=principal, reason=reason)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(
+            status_code=404,
+            detail="这条授权不存在或已经撤销，本次操作没有完成。请刷新后重新查看。",
+        ) from exc
     return {"revoked": True, "grant": grant.to_dict()}
 
 

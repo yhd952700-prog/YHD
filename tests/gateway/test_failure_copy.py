@@ -4,6 +4,8 @@
 
 * 端口被占用 / PORT 填错（启动阶段，控制台输出）
 * 未预期异常（500）与参数校验（400）的响应文案
+* 身份 / 策略拒绝：内部治理术语、政策编号、脚本路径不上屏
+* error.log：技术细节保留，但政策编号与本机绝对路径必须脱敏
 
 数据目录不可写、磁盘满、杀毒拦截属于环境故障，无法在单测里稳定制造；
 它们的文案走同一套兜底（``display.py`` 的中性中文），由
@@ -12,21 +14,30 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.gateway.__main__ import _print_bind_failure, resolve_bind
-from src.gateway.display import ACCOUNT_HIERARCHY_WORDS, machine_fragments
+from src.gateway.display import (
+    ACCOUNT_HIERARCHY_WORDS,
+    machine_fragments,
+    user_facing_detail,
+)
+from src.logging_config import DEFAULT_LOG_CONFIG, RedactingFormatter, load_uvicorn_log_config
 
-#: 绝对路径 / 英文异常栈的特征。用户文案里出现任意一个都算不合格。
+#: 绝对路径 / 英文异常栈 / 内部治理术语的特征。用户文案里出现任意一个都算不合格。
 _FORBIDDEN = (
     re.compile(r"[A-Za-z]:\\"),
     re.compile(r"Traceback \(most recent call last\)"),
     re.compile(r"\b[A-Za-z]+Error\b"),
     re.compile(r"WinError|Errno \d+|ENOSPC|EACCES"),
     re.compile(r"address already in use", re.IGNORECASE),
+    re.compile(r"sovereignty|kernel|principal|grant_window", re.IGNORECASE),
+    re.compile(r"\b(?:OD|LHX|C)-\d+", re.IGNORECASE),
+    re.compile(r"\b(?:scripts|src)[\\/]", re.IGNORECASE),
 )
 
 
@@ -37,6 +48,13 @@ def _assert_user_friendly(text: str) -> None:
         assert word not in text, f"出现层级词：{word}"
     for pattern in _FORBIDDEN:
         assert not pattern.search(text), f"出现英文异常/绝对路径：{pattern.pattern} -> {text}"
+
+
+def _assert_no_internal_leak(text: str) -> None:
+    """身份拒绝允许出现「管理员」这类正常角色词，只禁止内部术语与实现细节。"""
+    assert text.strip(), "文案不能为空"
+    for pattern in _FORBIDDEN:
+        assert not pattern.search(text), f"出现内部术语/绝对路径：{pattern.pattern} -> {text}"
 
 
 class TestPortFailures:
@@ -133,3 +151,110 @@ class TestHttpFailureCopy:
         assert "internal_field_name" not in detail
         assert "格式" in detail
         assert "重试" in detail
+
+
+class TestIdentityRefusalCopy:
+    """身份/策略拒绝：原始英文只进日志，``detail`` 只出中性中文。"""
+
+    @pytest.mark.parametrize(
+        ("status", "raw"),
+        [
+            (403, "token does not represent a human identity"),
+            (
+                403,
+                "identity 'alice' is revoked in the trust registry; hire refused "
+                "(human-sovereignty: revoked principal cannot be (re)hired)",
+            ),
+            (400, "unknown principal for sovereignty grant: 'alice'"),
+            (400, "unknown kernel action(s): ['capability.retire']"),
+        ],
+    )
+    def test_english_internal_refusals_become_neutral_chinese(self, status, raw):
+        detail = user_facing_detail(raw, status)
+        _assert_no_internal_leak(detail)
+        assert re.search(r"[\u4e00-\u9fff]", detail)
+        # 说清"发生了什么 + 下一步"：每个兜底都至少给一个动作。
+        assert any(word in detail for word in ("重试", "联系管理员", "改用", "重新登录"))
+
+    def test_chinese_refusal_keeps_meaning_and_drops_internal_terms(self):
+        detail = user_facing_detail(
+            "该操作需要管理员权限（admin 角色或 L0 人类主权，见 OD-010）。"
+            "请让管理员授权后重试。",
+            403,
+        )
+        assert "管理员权限" in detail
+        assert "人类主权" not in detail
+        assert "OD-010" not in detail
+        assert "L0" not in detail
+        assert "重试" in detail
+
+    def test_script_path_is_not_shown(self):
+        detail = user_facing_detail(
+            "账号未登记，请运行 scripts/register_human_identity.py 后再试",
+            400,
+        )
+        assert "register_human_identity" not in detail
+        assert "相关说明" in detail
+
+    def test_already_readable_copy_is_left_untouched(self):
+        readable = "员工已停用，无法接受指派。请先启用员工后重试。"
+        assert user_facing_detail(readable, 409) == readable
+
+    def test_structured_detail_preserves_machine_code(self):
+        detail = user_facing_detail(
+            {"code": "human_required", "message": "token does not represent a human identity"},
+            403,
+        )
+        assert detail["code"] == "human_required"
+        assert "human identity" not in detail["message"]
+        assert re.search(r"[\u4e00-\u9fff]", detail["message"])
+
+
+class TestErrorLogRedaction:
+    """``error.log`` 保留技术细节，但去掉政策编号与本机绝对路径。"""
+
+    def _record(self, message: str, exc_info=None) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="liuhao.test",
+            level=logging.ERROR,
+            pathname=r"D:\LiuHao-AI-OS\src\gateway\main.py",
+            lineno=42,
+            msg=message,
+            args=(),
+            exc_info=exc_info,
+        )
+
+    def test_policy_ids_and_absolute_paths_are_redacted(self):
+        formatter = RedactingFormatter(format="%(levelname)s | %(message)s")
+        output = formatter.format(
+            self._record(
+                r"denied at D:\LiuHao-AI-OS\src\kernels\_sovereignty.py "
+                r"and D:\temp\run.ps1, policy OD-010 / LHX-C-010"
+            )
+        )
+        assert "OD-010" not in output
+        assert "LHX-C-010" not in output
+        assert "D:\\LiuHao-AI-OS" not in output
+        assert "D:\\temp" not in output
+        # 文件名还在，排障线索不丢。
+        assert "_sovereignty.py" in output
+        assert "run.ps1" in output
+
+    def test_traceback_paths_are_redacted_but_exception_stays(self):
+        formatter = RedactingFormatter(format="%(levelname)s | %(message)s")
+        try:
+            raise RuntimeError("db_writer exploded")
+        except RuntimeError:
+            import sys
+
+            output = formatter.format(
+                self._record("unhandled", exc_info=sys.exc_info())
+            )
+        assert "D:\\LiuHao-AI-OS" not in output
+        assert "RuntimeError" in output
+        assert "db_writer exploded" in output
+
+    def test_runtime_config_wraps_every_formatter(self):
+        config = load_uvicorn_log_config(DEFAULT_LOG_CONFIG)
+        for name, formatter in config["formatters"].items():
+            assert formatter.get("()") == "src.logging_config.RedactingFormatter", name

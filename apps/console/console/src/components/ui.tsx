@@ -11,6 +11,7 @@
  */
 
 import type { ReactNode } from 'react'
+import { isLocalServiceOffline } from '../lib/errorMessage'
 import type { Tone } from '../lib/format'
 import { toneVar } from '../lib/format'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -22,6 +23,7 @@ export function Card({
   action,
   span = 6,
   className,
+  id,
   children,
 }: {
   title: string
@@ -30,10 +32,12 @@ export function Card({
   span?: 3 | 4 | 5 | 6 | 7 | 8 | 12
   /** 额外状态类（如 sc-panel-active / sc-hud），只给当前焦点容器用。 */
   className?: string
+  /** 锚点 id，供页面内跳转定位（不参与样式）。 */
+  id?: string
   children: ReactNode
 }) {
   return (
-    <section className={`os-card os-span-${span}${className ? ` ${className}` : ''}`}>
+    <section id={id} className={`os-card os-span-${span}${className ? ` ${className}` : ''}`}>
       <div className="os-card-head">
         <div>
           <h2 className="os-card-title">{title}</h2>
@@ -64,10 +68,13 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 }
 
 export function Failure({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  // 标题必须说对对象：服务没起来却写"数据不可用"，用户会去怀疑数据本身，
+  // 而真正该做的是把鎏灏打开。文案里已经带了对象与动作，标题与它保持一致。
+  const offline = isLocalServiceOffline(message)
   return (
     <div className="os-empty" role="alert">
       <IconAlert size={17} />
-      <strong>数据不可用</strong>
+      <strong>{offline ? '本地服务未运行' : '数据不可用'}</strong>
       <span>{message}</span>
       {onRetry && (
         <button className="os-link" onClick={onRetry} style={{ marginTop: 4 }}>
