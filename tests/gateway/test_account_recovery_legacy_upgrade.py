@@ -58,6 +58,21 @@ def _reset_recovery_limits():
         _accounts.limiter.reset(key)
 
 
+def _proof_headers(kind: str = "handoff") -> dict:
+    """桌面端一次性证明的测试替身：直接向令牌库申请（等价于管道发放）。"""
+    from src.gateway import local_proof
+
+    if kind == "handoff":
+        return {
+            "X-LiuHao-Local-Proof": local_proof.issue_token(
+                scope=local_proof.SCOPE_HANDOFF
+            )
+        }
+    return {
+        "X-LiuHao-Reset-Proof": local_proof.issue_token(scope=local_proof.SCOPE_RESET)
+    }
+
+
 def _register(client: TestClient, principal: str = "alice", password: str = PASSWORD):
     return client.post(
         "/v1/accounts/register",
@@ -128,6 +143,7 @@ def test_legacy_root_can_reissue_recovery_code_after_login(env):
         # 生成后立刻可用（不需要重新登录、不需要等）。
         reset = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
@@ -136,6 +152,7 @@ def test_legacy_root_can_reissue_recovery_code_after_login(env):
         # 同码二次失效：文档错误码 + 状态码。
         reused = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": code, "password": "thirdpass789"},
         )
         assert reused.status_code == 400, reused.text
@@ -179,7 +196,9 @@ def test_local_recovery_handoff_for_forgotten_password(env):
     from src.gateway.main import get_app
 
     with TestClient(get_app()) as client:
-        response = client.post("/v1/accounts/recovery/local")
+        response = client.post(
+            "/v1/accounts/recovery/local", headers=_proof_headers()
+        )
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["written"] is True
@@ -196,6 +215,7 @@ def test_local_recovery_handoff_for_forgotten_password(env):
 
         reset = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
@@ -215,7 +235,9 @@ def test_local_handoff_refuses_when_a_recovery_code_exists(env):
         manager = get_identity_manager()
         before = manager.account_root().recovery_hash
 
-        refused = client.post("/v1/accounts/recovery/local")
+        refused = client.post(
+            "/v1/accounts/recovery/local", headers=_proof_headers()
+        )
         assert refused.status_code == 403, refused.text
         assert refused.json()["code"] == "ACCOUNT_RECOVERY_UNAVAILABLE"
         assert manager.account_root().recovery_hash == before
@@ -223,6 +245,7 @@ def test_local_handoff_refuses_when_a_recovery_code_exists(env):
         # 旧码没有被作废，仍然可用。
         reset = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
@@ -242,13 +265,17 @@ def test_local_handoff_write_failure_leaves_account_recoverable(env, monkeypatch
     monkeypatch.setattr(recovery_handoff, "atomic_write_bytes", broken)
 
     with TestClient(get_app()) as client:
-        failed = client.post("/v1/accounts/recovery/local")
+        failed = client.post(
+            "/v1/accounts/recovery/local", headers=_proof_headers()
+        )
         assert failed.status_code == 500, failed.text
         assert failed.json()["code"] == "ACCOUNT_RECOVERY_WRITE_FAILED"
         assert manager.account_root().recovery_hash == ""
 
         monkeypatch.setattr(recovery_handoff, "atomic_write_bytes", real_write)
-        retried = client.post("/v1/accounts/recovery/local")
+        retried = client.post(
+            "/v1/accounts/recovery/local", headers=_proof_headers()
+        )
         assert retried.status_code == 200, retried.text
         assert retried.json()["recovery_code"].startswith("RC-")
         assert not _local_recovery_file().exists()
@@ -265,6 +292,7 @@ def test_recovery_failure_codes_match_docs(env):
         for _ in range(5):
             failed = client.post(
                 "/v1/accounts/recovery/reset",
+                headers=_proof_headers("reset"),
                 json={"recovery_code": WRONG_CODE, "password": NEW_PASSWORD},
             )
             assert failed.status_code == 400, failed.text
@@ -272,6 +300,7 @@ def test_recovery_failure_codes_match_docs(env):
 
         locked = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": WRONG_CODE, "password": NEW_PASSWORD},
         )
         assert locked.status_code == 429, locked.text

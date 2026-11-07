@@ -49,6 +49,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.common.instance_lock import InstanceLockBusy, InstanceLock, instance_root  # noqa: E402
+from src.brand import BRAND_LOCKUP  # noqa: E402
 
 #: 唯一生效的日志配置。由 ``python -m src.gateway`` 子进程按 UTF-8 读取后
 #: 以映射交给 uvicorn：10 MiB × 5 份轮转，INFO 进 logs/liuhao.log，ERROR
@@ -153,11 +154,18 @@ def _describe_port_owner(port: int) -> str:
 
 
 def _log_launcher(message: str) -> None:
-    """把启动器侧的关键事件写进 ``<数据目录>/logs/launcher.log``。"""
+    """把启动器侧的关键事件写进 ``<数据目录>/logs/launcher.log``。
+
+    与安装版共用 :class:`RotatingTextWriter`：10 MiB × 3 份、脱敏、跨进程
+    文件锁。早期实现是直接 ``open(..., "a")``，长期运行只增不减。
+    """
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with (LOG_DIR / "launcher.log").open("a", encoding="utf-8") as handle:
-            handle.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
+        from src.logging_config import RotatingTextWriter
+
+        RotatingTextWriter(LOG_DIR / "launcher.log").write(
+            f"{datetime.now().isoformat(timespec='seconds')} {message}\n"
+        )
     except OSError:
         pass
 
@@ -201,11 +209,13 @@ def _require_available_port(host: str, requested: int, label: str, flag: str) ->
         return requested
     owner = _describe_port_owner(requested)
     detail = f"（占用者：{owner}）" if owner else ""
+    suggested = requested + 1
     raise PortUnavailable(
         f"{label}端口 {requested} 已被占用{detail}。\n"
         f"       为避免地址变化导致书签 / 旧标签 / PWA 失联，启动器不会自动换端口。\n"
-        f"       处理：结束占用该端口的进程后重试，或用 {flag} 指定其它端口"
-        f"（例如 {flag} {requested + 1}）。"
+        f"       处理一：结束占用该端口的进程后，重新双击桌面图标。\n"
+        f"       处理二：复制下面这条命令（含引号），改用 {suggested} 端口启动：\n"
+        f'         "{ROOT / "LiuHao.bat"}" {flag} {suggested}'
     )
 
 
@@ -594,7 +604,7 @@ def main() -> int:
     _point_at_console_stores()
 
     print("=" * 62)
-    print("鎏灏 LIUHAO X — 启动")
+    print(f"{BRAND_LOCKUP} — 启动")
     print("=" * 62)
 
     # 单实例前置检查：双击两次、托盘与命令行同时启动时，第二个入口在拉起
@@ -608,7 +618,7 @@ def main() -> int:
         url = (holder.get("url") or "").strip()
         if url and not args.no_browser:
             with contextlib.suppress(webbrowser.Error):
-                webbrowser.open(url)
+                webbrowser.open(_console_url_with_proof(url))
         return 0
 
     # 自用版默认单端口：网关既服务 API 又服务驾驶舱 dist，对外只暴露一个端口，
@@ -758,17 +768,39 @@ def main() -> int:
     print(f"  驾驶舱    {ui_base}")
     print(f"  API       {api_base}     文档 {api_base}/docs")
     print(f"  健康探针  {api_base}/v1/health")
+    print(f"  日志      {_gate_log_hint()}")
     if url_file is not None:
         print(f"  当前地址  {url_file}")
     _print_lan_urls(args.api_port, args.host, args.https_port if args.https else None)
-    print("  Ctrl+C 停止（子进程会被一起带走）")
+    print()
+    print("  本窗口只显示状态，不需要输入任何内容。")
+    print("  关闭此窗口会停止本地服务（驾驶舱将无法访问）；使用期间请保持打开，可最小化。")
+    print("  Ctrl+C 同样会停止服务（子进程会被一起带走）")
     print("=" * 62)
 
     if not args.no_browser:
         with contextlib.suppress(webbrowser.Error):
-            webbrowser.open(probe_ui_base)
+            webbrowser.open(_console_url_with_proof(probe_ui_base))
 
     return _serve_forever()
+
+
+def _console_url_with_proof(base: str) -> str:
+    """把本机恢复码交接的一次性令牌放进 URL fragment。
+
+    回环不等于“本人”：同机其他 Windows 账户也能访问 127.0.0.1。启动器与
+    桌面壳一样，通过网关的 DACL 命名管道申请令牌，避免“忘记密码 → 本机
+    生成恢复码”在共享电脑上被其他账户截走。
+    """
+    try:
+        from src.common.local_proof_ipc import console_fragment
+
+        separator = "&" if "#" in base else "#"
+        return f"{base}{separator}{console_fragment()}"
+    except Exception as exc:  # noqa: BLE001 - 证明不可用不应阻止打开控制台
+        print(f"[recovery] 本机恢复证明通道不可用（{exc}）；")
+        print("           控制台仍可打开，但“本机生成恢复码”会要求从桌面端重新进入。")
+        return base
 
 
 def _print_lan_urls(api_port: int, host: str, https_port: int | None = None) -> None:

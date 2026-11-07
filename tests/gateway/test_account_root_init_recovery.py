@@ -45,10 +45,32 @@ def env(tmp_path, monkeypatch):
     yield values
 
 
-def _register(client: TestClient, principal: str = "alice", password: str = PASSWORD):
+def _proof_headers(kind: str = "handoff") -> dict:
+    """桌面端一次性证明的测试替身：直接向令牌库申请（等价于管道发放）。"""
+    from src.gateway import local_proof
+
+    if kind == "handoff":
+        return {
+            "X-LiuHao-Local-Proof": local_proof.issue_token(
+                scope=local_proof.SCOPE_HANDOFF
+            )
+        }
+    return {
+        "X-LiuHao-Reset-Proof": local_proof.issue_token(scope=local_proof.SCOPE_RESET)
+    }
+
+
+def _register(
+    client: TestClient,
+    principal: str = "alice",
+    password: str = PASSWORD,
+    *,
+    headers: dict | None = None,
+):
     return client.post(
         "/v1/accounts/register",
         json={"principal": principal, "password": password},
+        headers=headers or {},
     )
 
 
@@ -122,19 +144,26 @@ def test_legacy_half_initialized_root_is_recoverable(env):
         assert config["registration_open"] is True
         assert config["initialization"]["state"] == "incomplete"
         assert config["initialization"]["recoverable"] is True
-        assert config["initialization"]["principal"] == "alice"
+        # 匿名接口绝不回显根账号名：同机其他账户不能靠它接管半初始化实例。
+        assert config["initialization"]["principal"] is None
+        assert "alice" not in config["message"]
         assert "初始化未完成" in config["message"]
 
-        # 用别的名字提交不会悄悄接管该账号；正文**不能**回显根账号名，
-        # 否则匿名者拿到名字就能借补全路径接管。
-        wrong = _register(client, principal="bobby")
+        # 只凭回环、没有桌面端一次性证明：连“试名字”的机会都不给。
+        anonymous = _register(client, principal="alice")
+        assert anonymous.status_code == 403, anonymous.text
+        assert anonymous.json()["code"] == "ACCOUNT_RECOVERY_PROOF_REQUIRED"
+        assert "alice" not in anonymous.text
+
+        # 有证明但名字不对：中性 409，不回显根账号名。
+        wrong = _register(client, principal="bobby", headers=_proof_headers())
         assert wrong.status_code == 409, wrong.text
         assert wrong.json()["code"] == "ACCOUNT_INITIALIZATION_INCOMPLETE"
         assert "principal" not in wrong.json()
         assert "alice" not in wrong.text
 
-        # 用同一个名称补全初始化：拿到新恢复码、可以登录。
-        resumed = _register(client)
+        # 用同一个名称 + 证明补全初始化：拿到新恢复码、可以登录。
+        resumed = _register(client, headers=_proof_headers())
         assert resumed.status_code == 200, resumed.text
         assert resumed.json()["resumed"] is True
         assert resumed.json()["recovery_code"]
@@ -168,6 +197,7 @@ def test_recovery_code_survives_failed_password_rotation(env, monkeypatch):
         monkeypatch.setattr(accounts_module, "rotate_credential", broken)
         failed = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": recovery_code, "password": NEW_PASSWORD},
         )
         assert failed.status_code == 500, failed.text
@@ -182,6 +212,7 @@ def test_recovery_code_survives_failed_password_rotation(env, monkeypatch):
         monkeypatch.setattr(accounts_module, "rotate_credential", real_rotate)
         recovered = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": recovery_code, "password": NEW_PASSWORD},
         )
         assert recovered.status_code == 200, recovered.text
@@ -192,6 +223,7 @@ def test_recovery_code_survives_failed_password_rotation(env, monkeypatch):
         assert manager.account_root().recovery_hash == ""
         reused = client.post(
             "/v1/accounts/recovery/reset",
+            headers=_proof_headers("reset"),
             json={"recovery_code": recovery_code, "password": "thirdpass789"},
         )
         # 文档 §4.3：恢复码无效是 400 + ACCOUNT_RECOVERY_CODE_INVALID（不再是

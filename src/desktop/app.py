@@ -58,10 +58,15 @@ def _configure_logging() -> None:
 
     挂在 ``src.desktop`` 包 logger 上，``app`` / ``service`` 等子模块都向它
     propagate —— 停止是优雅还是强杀，必须能在同一个文件里查到。
+
+    formatter 用 :class:`RedactingFormatter`：桌面壳的日志会带出
+    ``C:\\Users\\<用户>\\...`` 数据目录与环境变量名，落盘前统一折叠。
     """
     pkg_logger = logging.getLogger("src.desktop")
     if pkg_logger.handlers:
         return
+    from ..logging_config import RedactingFormatter
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(
         LOG_DIR / "desktop.log",
@@ -69,7 +74,9 @@ def _configure_logging() -> None:
         backupCount=5,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    handler.setFormatter(
+        RedactingFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
     pkg_logger.addHandler(handler)
     pkg_logger.setLevel(logging.INFO)
 
@@ -286,7 +293,7 @@ class DesktopApp:
             # 只在"能进门"之后才开始健康轮询，避免启动中把文案覆盖成"未探测"。
             threading.Thread(target=self._poll_health, name="liuhao-health", daemon=True).start()
             if self.open_browser:
-                webbrowser.open(self._console_url())
+                webbrowser.open(self._console_url_with_proof())
 
         if self._tray is None or self._closing:
             return
@@ -354,6 +361,24 @@ class DesktopApp:
     def _console_url(self) -> str:
         return (self.service.base_url or "http://127.0.0.1:8080").rstrip("/") + "/"
 
+    def _with_local_proof(self, url: str) -> str:
+        """把本机恢复码交接的一次性令牌放进 URL fragment（不进日志/历史）。"""
+        try:
+            from ..common.local_proof_ipc import console_fragment
+
+            separator = "&" if "#" in url else "#"
+            return f"{url}{separator}{console_fragment()}"
+        except Exception as exc:  # noqa: BLE001 - 打不开证明不应阻止打开控制台
+            logger.warning(
+                "本机恢复证明通道不可用；控制台仍可打开，但“忘记密码 → 本机生成恢复码”"
+                "会要求从桌面端重新进入：%s",
+                exc,
+            )
+            return url
+
+    def _console_url_with_proof(self) -> str:
+        return self._with_local_proof(self._console_url())
+
     def _tooltip_text(self) -> str:
         if self._boot_pending:
             return "鎏灏 · 正在启动…"
@@ -364,7 +389,7 @@ class DesktopApp:
         return "鎏灏 · 服务已停止"
 
     def _open_console(self) -> None:
-        webbrowser.open(self._console_url())
+        webbrowser.open(self._console_url_with_proof())
 
     def _handoff_to_running(self) -> None:
         """第二个桌面实例：唤起已运行的状态窗口，而不是再起一套网关。
@@ -380,7 +405,7 @@ class DesktopApp:
         url = self._published_console_url()
         if url:
             logger.info("已有鎏灏实例在运行，但未能唤起窗口：打开控制台 %s", url)
-            webbrowser.open(url)
+            webbrowser.open(self._with_local_proof(url))
             return
         logger.info("已有鎏灏实例在运行，但既找不到窗口也没有已发布地址")
         with contextlib.suppress(Exception):

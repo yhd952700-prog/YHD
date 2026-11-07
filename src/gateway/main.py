@@ -40,6 +40,8 @@ from fastapi.exceptions import RequestValidationError  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
+from ..brand import BRAND_LOCKUP  # noqa: E402
+from ..version import APP_VERSION  # noqa: E402
 # 注意：``..observability.tracing``（OpenTelemetry SDK，实测约 0.3s）**不在**
 # 顶层导入 —— 追踪只服务可观测性，不属于"登录/对话/模型配置"的就绪条件。
 # 它在 lifespan 末尾随后台预热一起初始化，失败会告警并出现在 /v1/startup。
@@ -342,7 +344,15 @@ def load_runtime_config() -> Dict[str, Any]:
             ),
             "allow_headers": list(
                 cors_cfg.get("allow_headers")
-                or ["Authorization", "Content-Type", "X-Request-Id", "X-Liuhao-Token"]
+                or [
+                    "Authorization",
+                    "Content-Type",
+                    "X-Request-Id",
+                    "X-Liuhao-Token",
+                    # 桌面端一次性证明（取恢复码 / 重置密码各一枚）
+                    "X-LiuHao-Local-Proof",
+                    "X-LiuHao-Reset-Proof",
+                ]
             ),
             "allow_credentials": bool(cors_cfg.get("allow_credentials", True)),
             "max_age": int(cors_cfg.get("max_age") or 600),
@@ -682,6 +692,32 @@ async def lifespan(app: FastAPI):
     except Exception as _handoff_exc:  # noqa: BLE001 - 启动面失败不阻断服务
         logger.error("恢复码交接启动处理失败：%s", _handoff_exc, exc_info=True)
 
+    # 本机恢复码交接的进程级证明：DACL 只授予当前用户的命名管道（POSIX
+    # 为 0600 Unix socket）。桌面端从这里申请一次性令牌，HTTP 接口只认令牌，
+    # 不再把“来自 127.0.0.1”当成“本人”。启动失败不阻断服务，但自愈日志要响。
+    try:
+        from . import local_proof
+
+        local_proof.start_broker()
+        app.state.local_proof_broker = True
+        logger.info("本机恢复证明通道已启动（%s）", local_proof.channel_name())
+    except Exception as _proof_exc:  # noqa: BLE001
+        app.state.local_proof_broker = False
+        logger.error("本机恢复证明通道启动失败：%s", _proof_exc, exc_info=True)
+
+    # 凭据包导出同样默认只接受本机来源；开关打开时启动日志必须写清楚。
+    try:
+        from .account_backup import REMOTE_EXPORT_ENV, remote_export_enabled
+
+        if remote_export_enabled():
+            logger.warning(
+                "已允许非本机备份导出（%s=1）：远程来源可以调用 "
+                "/v1/accounts/backup/export。",
+                REMOTE_EXPORT_ENV,
+            )
+    except Exception as _export_exc:  # noqa: BLE001 - 启动面失败不阻断服务
+        logger.error("备份导出开关自检失败：%s", _export_exc, exc_info=True)
+
     # 0.1.0 老记忆 -> 账号记忆：启动时先做一次幂等迁移（放在身份加载之后，
     # 归属才能落到正确的根主体）。失败不阻断启动，下次访问记忆页会重试。
     try:
@@ -1011,6 +1047,15 @@ async def lifespan(app: FastAPI):
             _metrics_thread.join(timeout=5.0)
     except Exception:  # noqa: BLE001 - shutdown must never raise
         pass
+
+    # 关闭本机证明通道；已发放但未消费的令牌随进程一起失效。
+    try:
+        from . import local_proof
+
+        local_proof.stop_all_brokers()
+        local_proof.reset_token_store()
+    except Exception:  # noqa: BLE001 - shutdown must never raise
+        pass
     _shutdown_report = shutdown_all()
     _shutdown_down = _shutdown_report.get("shutdown", [])
     _shutdown_errors = _shutdown_report.get("errors", [])
@@ -1116,9 +1161,9 @@ def get_app() -> FastAPI:
     from ..kernels._crosscutting import PolicyDeferredError, PolicyDeniedError
 
     app = FastAPI(
-        title="LiuHao AI OS Gateway",
-        version="1.0.0",
-        description="Unified API Gateway for LiuHao AI OS",
+        title=f"{BRAND_LOCKUP} Gateway",
+        version=APP_VERSION,
+        description=f"Unified API Gateway for {BRAND_LOCKUP}",
         lifespan=lifespan,
         # OpenAPI/docs are a broad reconnaissance surface (every route, every
         # schema, every query parameter). Development keeps them; production
@@ -1618,6 +1663,21 @@ def get_app() -> FastAPI:
     from .account_memory import router as memory_router
     app.include_router(memory_router)
     _startup_mark("路由：memory（账号记忆）完成")
+
+    # 数据可携带性：一键导出「我的全部数据」（人可读 ZIP）、会话 Markdown 导出，
+    # 以及记忆 / 知识库的回导。所有端点都按令牌主体过滤，根账号也不在这里
+    # 聚合成员数据；凭据、Key 与内部路径一律不出现（见 data_portability.py）。
+    from .data_portability import (
+        accounts_router as data_accounts_router,
+        chat_router as data_chat_router,
+        knowledge_router as data_knowledge_router,
+        memory_router as data_memory_router,
+    )
+    app.include_router(data_accounts_router)
+    app.include_router(data_chat_router, dependencies=[Depends(_require_human)])
+    app.include_router(data_knowledge_router, dependencies=[Depends(_require_human)])
+    app.include_router(data_memory_router, dependencies=[Depends(_require_human)])
+    _startup_mark("路由：data portability（导出/回导）完成")
 
     # Policy Controlled 审批端点（内核层真拦截的人工授权入口，C-4）。
     # 该 router 内部已对每个端点声明 require_human_principal，这里不重复挂。

@@ -34,8 +34,15 @@ import {
   loadAuthConfig,
   login,
   registerSelf,
+  savePendingRecovery,
   sessionFromToken,
 } from '../lib/auth'
+import { apiFetch } from '../lib/api'
+import {
+  clearLocalProof,
+  localProofHeader,
+  type LocalProofKind,
+} from '../lib/localProof'
 import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../brand'
 import { LOCAL_SERVICE_OFFLINE_MANUAL, readErrorMessage } from '../lib/errorMessage'
 import {
@@ -59,7 +66,6 @@ export interface LoginProps {
 type Stage =
   | 'login'
   | 'bootstrap'
-  | 'recovery-material'
   | 'register'
   | 'recovery'
   | 'migrate'
@@ -77,12 +83,36 @@ const CLIENT_LABEL: Record<ClientMode, string> = {
   mobile: '手机端',
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+/**
+ * 网关还没就绪时登录页的自动重试节奏。
+ *
+ * 双击启动后浏览器可能比网关先到（用户手动刷新、或打开的是旧标签页），
+ * 此时 ``/v1/auth/config`` 会连接失败。直接甩一句"服务没运行"会让人以为
+ * 安装坏了；这里先显示"正在准备，请稍候"并自动重试，约 1 分钟后再给结论。
+ */
+const CONFIG_RETRY_DELAY_MS = 2000
+const CONFIG_RETRY_LIMIT = 30
+
+/** 首次进入的页面：没有初始账号、或初始化停在半路，都直接进设置表单。 */
+function initialStage(config: AuthConfig): Stage {
+  if (config.root_account_exists === false) return 'bootstrap'
+  if (config.initialization?.recoverable) return 'bootstrap'
+  return 'login'
+}
+
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  proof?: LocalProofKind,
+): Promise<T> {
   let response: Response
   try {
     response = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(proof ? localProofHeader(proof) : {}),
+      },
       body: JSON.stringify(body),
     })
   } catch {
@@ -107,14 +137,33 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
 
   useEffect(() => {
     let alive = true
-    void loadAuthConfig().then((result) => {
-      if (!alive) return
-      setConfig(result.config)
-      setConfigError(result.error ?? '')
-      if (result.config && result.config.root_account_exists === false) setStage('bootstrap')
-    })
+    let timer: number | undefined
+    let attempts = 0
+
+    const load = () => {
+      void loadAuthConfig().then((result) => {
+        if (!alive) return
+        if (result.config) {
+          setConfig(result.config)
+          setConfigError('')
+          setStage((current) => (current === 'login' ? initialStage(result.config!) : current))
+          return
+        }
+        attempts += 1
+        if (attempts <= CONFIG_RETRY_LIMIT) {
+          // 服务还在启动/端口刚绑定：说清"正在准备"，并自动重试，不要求刷新。
+          setConfigError('正在准备，请稍候…（本地服务启动后会自动进入设置页）')
+          timer = window.setTimeout(load, CONFIG_RETRY_DELAY_MS)
+          return
+        }
+        setConfigError(result.error ?? '')
+      })
+    }
+
+    load()
     return () => {
       alive = false
+      if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [])
 
@@ -392,29 +441,26 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         {stage === 'bootstrap' && (
           <BootstrapForm
             busy={busy}
+            mode={mode}
+            initialPrincipal={config?.initialization?.principal ?? ''}
+            initializationIncomplete={config?.initialization?.state === 'incomplete'}
             onBusy={setBusy}
             onError={setError}
-            onRecovery={(recoveryCode, account) => {
-              setPrincipal(account)
-              setStage('recovery-material')
-              setError('')
-              ;(window as { __osRecovery?: string }).__osRecovery = recoveryCode
+            onSuccess={onSuccess}
+            onAlreadyInitialized={() => {
+              // 已存在账号（含"初始化停在半路但名称不匹配"）：重新拉一次配置，
+              // 再回到登录表单，避免把用户卡在一个必然 409 的表单上。
+              void loadAuthConfig().then((result) => {
+                if (!result.config) return
+                setConfig(result.config)
+                setConfigError('')
+                setStage('login')
+              })
             }}
             onCancel={() => {
               if (!noAccount) setStage('login')
             }}
             canCancel={!noAccount}
-          />
-        )}
-
-        {stage === 'recovery-material' && (
-          <RecoveryMaterial
-            code={(window as { __osRecovery?: string }).__osRecovery ?? ''}
-            account={principal}
-            onDone={() => {
-              ;(window as { __osRecovery?: string }).__osRecovery = ''
-              setStage('login')
-            }}
           />
         )}
 
@@ -507,30 +553,70 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
 // 分步表单
 // ---------------------------------------------------------------------------
 
+function passwordStrength(password: string): { label: string; hint: string } {
+  if (!password) return { label: '', hint: '至少 8 位，建议 12 位以上' }
+  if (password.length < 8) return { label: '太短', hint: `还需要 ${8 - password.length} 位` }
+  let score = 1
+  if (password.length >= 12) score += 1
+  if (/[A-Za-z]/.test(password) && /[0-9]/.test(password)) score += 1
+  if (/[^A-Za-z0-9]/.test(password)) score += 1
+  if (score >= 4) return { label: '强', hint: '长度与字符组合都不错' }
+  if (score >= 3) return { label: '中', hint: '再长一点或换一种字符会更稳' }
+  return { label: '弱', hint: '建议 12 位以上，并混合字母、数字或符号' }
+}
+
+const MODEL_PRESETS = {
+  deepseek: { label: 'DeepSeek', provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  openai: { label: 'OpenAI', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  custom: { label: '自定义（OpenAI 兼容）', provider: 'openai', baseUrl: '', model: '' },
+} as const
+
+type ModelPreset = keyof typeof MODEL_PRESETS
+
 function BootstrapForm({
   busy,
+  mode,
+  initialPrincipal,
+  initializationIncomplete,
   onBusy,
   onError,
-  onRecovery,
+  onSuccess,
+  onAlreadyInitialized,
   onCancel,
   canCancel,
 }: {
   busy: boolean
+  mode: ClientMode
+  initialPrincipal: string
+  initializationIncomplete: boolean
   onBusy: (value: boolean) => void
   onError: (message: string) => void
-  onRecovery: (code: string, account: string) => void
+  onSuccess: (session: Session) => void
+  onAlreadyInitialized: () => void
   onCancel: () => void
   canCancel: boolean
 }) {
-  const [principal, setPrincipal] = useState('')
+  const [principal, setPrincipal] = useState(initialPrincipal)
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
-  const [acknowledged, setAcknowledged] = useState(false)
+  const [showModel, setShowModel] = useState(false)
+  const [preset, setPreset] = useState<ModelPreset>('deepseek')
+  const [modelKey, setModelKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState<string>(MODEL_PRESETS.deepseek.baseUrl)
+  const [modelName, setModelName] = useState<string>(MODEL_PRESETS.deepseek.model)
+  const [conflict, setConflict] = useState(false)
+
+  const strength = passwordStrength(password)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (busy) return
+    const name = principal.trim()
+    if (!name) {
+      onError('请输入管理员账号（英文，如 liuhao）')
+      return
+    }
     if (password.length < 8) {
       onError('密码至少 8 位')
       return
@@ -541,29 +627,79 @@ function BootstrapForm({
     }
     onBusy(true)
     onError('')
+    setConflict(false)
     try {
       const result = await postJson<{
         account: { principal: string }
         recovery_code: string
         notice: string
       }>('/v1/accounts/register', {
-        principal: principal.trim(),
+        principal: name,
         password,
         display_name: displayName.trim() || undefined,
-      })
-      onRecovery(result.recovery_code, result.account.principal)
+      }, initializationIncomplete ? 'handoff' : undefined)
+
+      // 提交即登录：不让用户再回头抄地址或手动登录一次。
+      const session = await login(name, password, { remember: true, client: mode })
+
+      // 模型 Key 是可选项：失败只记一条提示，绝不把已经完成的初始化卡住。
+      let warning: string | null = null
+      const key = modelKey.trim()
+      if (showModel && key) {
+        const chosen = MODEL_PRESETS[preset]
+        const model = modelName.trim() || chosen.model
+        try {
+          await apiFetch('/v1/models', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: model,
+              provider: chosen.provider,
+              model,
+              base_url: (baseUrl.trim() || chosen.baseUrl).replace(/\/+$/, '') || null,
+              api_key: key,
+              is_default: true,
+              enabled: true,
+            }),
+          })
+        } catch (err) {
+          warning = `模型 Key 未能保存（${
+            err instanceof Error ? err.message : '未知错误'
+          }）。可以先进入系统，之后在「系统设置 → 模型管理」重新添加。`
+        }
+      }
+
+      // 恢复码只在注册响应里出现这一次；暂存到主界面横幅，既不打断进入，
+      // 也不会因为跳过中间页而丢失。
+      savePendingRecovery({ account: result.account.principal, code: result.recovery_code, warning })
+      onSuccess(session)
     } catch (err) {
+      if (err instanceof AuthError && err.status === 409) setConflict(true)
       onError(err instanceof Error ? err.message : '初始化失败')
     } finally {
       onBusy(false)
     }
   }
 
+  const applyPreset = (next: ModelPreset) => {
+    setPreset(next)
+    const chosen = MODEL_PRESETS[next]
+    setBaseUrl(chosen.baseUrl)
+    setModelName(chosen.model)
+  }
+
   return (
     <form onSubmit={submit}>
       <p className="os-login-sub" style={{ marginBottom: 14 }}>
-        这台机器还没有账号。创建的第一个账号拥有本机全部管理范围，请务必妥善保存随后显示的恢复材料。
+        {initializationIncomplete
+          ? '上次初始化停在设置密码之前。请用首次注册时填写的账号名补全初始化，密码可以重新设置。'
+          : '这台机器还没有账号。创建的第一个账号拥有本机全部管理范围，请务必妥善保存随后显示的恢复材料。'}
       </p>
+      {initializationIncomplete && (
+        <div className="os-note" role="status">
+          为了不在匿名接口里泄露根账号名，这里不再预填名称。请填写
+          <strong>首次注册时使用的名称</strong>（不是新名字），提交后会补全初始化并直接进入系统。
+        </div>
+      )}
       <div className="os-field">
         <label htmlFor="boot-principal">账号</label>
         <input
@@ -571,7 +707,11 @@ function BootstrapForm({
           className="os-input-plain"
           value={principal}
           onChange={(event) => setPrincipal(event.target.value)}
-          placeholder="字母或数字，登录时使用"
+          placeholder={
+            initializationIncomplete
+              ? '填写首次注册时使用的名称'
+              : '字母或数字，如 liuhao'
+          }
           required
           autoFocus
         />
@@ -592,11 +732,17 @@ function BootstrapForm({
           id="boot-password"
           className="os-input-plain"
           type="password"
+          autoComplete="new-password"
           value={password}
           onChange={(event) => setPassword(event.target.value)}
-          placeholder="至少 8 位，建议 10 位以上"
+          placeholder="至少 8 位，建议 12 位以上"
           required
         />
+        {password && (
+          <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }} data-testid="password-strength">
+            强度：{strength.label} · {strength.hint}
+          </span>
+        )}
       </div>
       <div className="os-field">
         <label htmlFor="boot-confirm">确认密码</label>
@@ -604,72 +750,83 @@ function BootstrapForm({
           id="boot-confirm"
           className="os-input-plain"
           type="password"
+          autoComplete="new-password"
           value={confirm}
           onChange={(event) => setConfirm(event.target.value)}
           required
         />
       </div>
+
       <label className="os-check">
         <input
           type="checkbox"
-          checked={acknowledged}
-          onChange={(event) => setAcknowledged(event.target.checked)}
+          checked={showModel}
+          onChange={(event) => setShowModel(event.target.checked)}
         />
-        <span>我知道这台机器只保留一个初始账号，创建后不再开放自助创建。</span>
+        <span>同时配置模型 Key（可选，可跳过，之后也能补）</span>
       </label>
-      <button type="submit" className="os-btn" disabled={busy || !acknowledged}>
-        {busy ? '正在创建…' : '创建并继续'}
+      {showModel && (
+        <div className="os-field">
+          <label htmlFor="boot-provider">服务商</label>
+          <select
+            id="boot-provider"
+            className="os-input-plain"
+            value={preset}
+            onChange={(event) => applyPreset(event.target.value as ModelPreset)}
+          >
+            {(Object.keys(MODEL_PRESETS) as ModelPreset[]).map((key) => (
+              <option key={key} value={key}>
+                {MODEL_PRESETS[key].label}
+              </option>
+            ))}
+          </select>
+          {preset === 'custom' && (
+            <>
+              <label htmlFor="boot-base-url">API base_url</label>
+              <input
+                id="boot-base-url"
+                className="os-input-plain"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder="https://api.example.com/v1"
+              />
+              <label htmlFor="boot-model">模型名</label>
+              <input
+                id="boot-model"
+                className="os-input-plain"
+                value={modelName}
+                onChange={(event) => setModelName(event.target.value)}
+                placeholder="例如 deepseek-chat"
+              />
+            </>
+          )}
+          <label htmlFor="boot-model-key">API Key（可留空跳过）</label>
+          <input
+            id="boot-model-key"
+            className="os-input-plain"
+            type="password"
+            autoComplete="off"
+            value={modelKey}
+            onChange={(event) => setModelKey(event.target.value)}
+            placeholder="粘贴 Key；留空则跳过模型配置"
+          />
+        </div>
+      )}
+
+      <button type="submit" className="os-btn" disabled={busy}>
+        {busy ? '正在创建并登录…' : '创建并进入系统'}
       </button>
+      {conflict && (
+        <button type="button" className="os-link" onClick={onAlreadyInitialized}>
+          这台机器已有账号，去登录
+        </button>
+      )}
       {canCancel && (
         <button type="button" className="os-link" onClick={onCancel}>
           返回登录
         </button>
       )}
     </form>
-  )
-}
-
-function RecoveryMaterial({
-  code,
-  account,
-  onDone,
-}: {
-  code: string
-  account: string
-  onDone: () => void
-}) {
-  const download = () => {
-    const payload = {
-      format: 'liuhao-recovery-material',
-      account,
-      recovery_code: code,
-      generated_at: new Date().toISOString(),
-      note: '此文件由本机界面生成，未加密。请保存到离线介质，不要放在同步盘。',
-    }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `liuhao-recovery-${account}.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div className="os-note" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-        <strong style={{ fontSize: 13 }}>恢复码（只显示这一次）</strong>
-        <code style={{ fontSize: 14, wordBreak: 'break-all' }}>{code || '（未返回恢复码）'}</code>
-        <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
-          忘记密码时用它重置。请离线保存，不要截图发到聊天工具。
-        </span>
-      </div>
-      <button type="button" className="os-btn" onClick={download}>
-        下载恢复材料
-      </button>
-      <button type="button" className="os-btn os-btn-ghost" onClick={onDone}>
-        我已妥善保存，去登录
-      </button>
-    </div>
   )
 }
 
@@ -812,7 +969,9 @@ function RecoveryForm({
         recovered?: boolean
         file?: string
         recovery_code?: string
-      }>('/v1/accounts/recovery/local', {})
+      }>('/v1/accounts/recovery/local', {}, 'handoff')
+      // 请求成功即说明交接令牌已被服务端消费；本页也移除，避免重放。
+      clearLocalProof('handoff')
       const value = (result.recovery_code ?? '').trim()
       if (!value) {
         // 旧后端 / 降级路径可能不给码：不引导用户去开一个已经不存在的文件。
@@ -856,10 +1015,15 @@ function RecoveryForm({
     onBusy(true)
     onError('')
     try {
-      const result = await postJson<{ token: string }>('/v1/accounts/recovery/reset', {
-        recovery_code: code.trim(),
-        password,
-      })
+      const result = await postJson<{ token: string }>(
+        '/v1/accounts/recovery/reset',
+        {
+          recovery_code: code.trim(),
+          password,
+        },
+        'reset',
+      )
+      clearLocalProof('reset')
       await onToken(result.token)
     } catch (err) {
       onError(err instanceof Error ? err.message : '重置失败')

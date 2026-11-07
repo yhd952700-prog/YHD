@@ -32,6 +32,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -54,6 +56,21 @@ def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def local_proof_headers(data_dir: str) -> Dict[str, str]:
+    """向网关的 DACL 通道申请一次性证明（取码 / 重置各一枚）。
+
+    回环只证明“同一台机器”，不证明“同一个 Windows 账户”；真实的桌面端
+    也是这样拿令牌的，所以验收必须走同一条通道，不能直接调内部函数。
+    """
+    from src.common.local_proof_ipc import request_token_bundle
+
+    bundle = request_token_bundle(data_dir=Path(data_dir))
+    return {
+        "X-LiuHao-Local-Proof": str(bundle["handoff_token"]),
+        "X-LiuHao-Reset-Proof": str(bundle["reset_token"]),
+    }
 
 
 def request(
@@ -796,6 +813,24 @@ def employee_adoption(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
     names = sorted(emp.get("name") for emp in body.get("employees") or [])
     report.check(item, "子账号员工列表无副本", (status, names), (200, ["member-writer"]))
 
+    # 根取用后的副本对子账号必须"与不存在逐字一致"：状态码 + 响应正文
+    # 完全相同，不能靠文案/字段差异泄漏"主账号复制过我的员工"。
+    adopted_agents = adopted.get("agents") or []
+    copy_agent_id = adopted_agents[0].get("id") if adopted_agents else ""
+    missing_agent_id = "no-such-agent-00000000"
+    status_copy, body_copy = request(
+        "GET", inst.base + f"/v1/employees/{copy_agent_id}", token=tokens["member"]
+    )
+    status_missing, body_missing = request(
+        "GET", inst.base + f"/v1/employees/{missing_agent_id}", token=tokens["member"]
+    )
+    report.check(item, "成员读根副本=读不存在(状态)", status_copy, status_missing, str(status_copy))
+    report.check(
+        item, "成员读根副本=读不存在(正文逐字)",
+        json.dumps(body_copy, ensure_ascii=False, sort_keys=True),
+        json.dumps(body_missing, ensure_ascii=False, sort_keys=True),
+    )
+
     # 子账号能看到的界面里不能出现主账号痕迹（员工/目标/审计）。
     # 只剔除"本人位置"自述字段（parent_account_id/path），其余都算泄漏。
     def visible_text(body: Any) -> str:
@@ -875,6 +910,12 @@ def backup_roundtrip(
     leaks = [needle for needle in needles if needle and needle in raw_export]
     report.check(item, "导出包不含恢复码/明文凭据", leaks, [], str(leaks[:2]))
     report.check(item, "导出包不含恢复码文件名", "recovery_code" in raw_export, False)
+    # 新口径：整包不带成员 Key 与模型主密钥，回执如实标注。
+    report.check(item, "导出回执：未含成员 Key/主密钥",
+                 (exported.get("member_keys_included"), exported.get("key_material_included")),
+                 (False, False))
+    report.check(item, "导出回执：明确提示未含成员 Key",
+                 "未包含成员 Key" in str(exported.get("notice")), True)
     report.check(item, "清单成员数=3", manifest.get("member_count"), 3)
     report.check(item, "清单含成员列表", sorted(manifest.get("members") or []), ["grand1", "member1", "root1"])
     report.check(item, "清单含文件数/字节数", ("files" in manifest and "bytes" in manifest), True, str({k: manifest.get(k) for k in ("files", "bytes")}))
@@ -1007,6 +1048,12 @@ def backup_roundtrip(
         )
         report.check(item, "跨机会话历史可读",
                      (status, (body.get("count") or 0) > 0), (200, True), str(body)[:120])
+        # D1：列表必须能发现导入的会话（只读历史但列表为空 = 界面找不到会话）。
+        status, body = request("GET", second.base + "/v1/chat/sessions", token=m_token)
+        names = sorted(body.get("sessions") or [])
+        report.check(item, "跨机会话可在列表发现",
+                     (status, "member-session" in names, "root-session" in names),
+                     (200, True, False), str(names))
         status, body = request("GET", second.base + "/v1/accounts/member1/usage", token=m_token)
         report.check(item, "成员跨机用量无调用者字段", (status, "by_actor" in body), (200, False))
 
@@ -1015,6 +1062,7 @@ def backup_roundtrip(
         status, reset = request(
             "POST", second.base + "/v1/accounts/recovery/reset",
             {"recovery_code": tokens.get("recovery") or "", "password": "recovered123"},
+            headers=local_proof_headers(second.data_dir),
         )
         new_token = reset.get("access_token") or reset.get("token") or ""
         report.check(item, "B 机用 A 机恢复码重置根密码", status, 200,
@@ -1037,6 +1085,7 @@ def backup_roundtrip(
         status, body = request(
             "POST", second.base + "/v1/accounts/recovery/reset",
             {"recovery_code": tokens.get("recovery") or "", "password": "recovered456"},
+            headers=local_proof_headers(second.data_dir),
         )
         report.check(item, "恢复码一次性（重复使用被拒）", (status, body.get("code")),
                      (400, "ACCOUNT_RECOVERY_CODE_INVALID"))
@@ -1713,10 +1762,17 @@ def display_fields(
                       for r in rules)),
                  (200, True, True))
     status, body = request("GET", base + "/v1/alerts", token=tokens["root"])
-    report.check(item, "告警列表：顶层一句人话",
-                 (status, bool(body.get("user_message")), body.get("status_label"),
-                  machine_free(body.get("user_message"))),
-                 (200, True, "正常", True))
+    # 真机上验收自身会把 CPU/延迟顶到阈值上方，"正在告警"是合同内的合法状态
+    # （display.py: firing -> 正在告警）；这里只校验"顶层是机器无关的人话"，
+    # 同时把 firing_count 带进证据，避免把真实告警当成文案缺陷。
+    label = body.get("status_label")
+    report.check(
+        item, "告警列表：顶层一句人话",
+        (status, bool(body.get("user_message")), label in ("正常", "正在告警"),
+         machine_free(body.get("user_message"))),
+        (200, True, True, True),
+        f"label={label} firing={body.get('firing_count')}",
+    )
 
     status, body = request("GET", base + "/v1/ready")
     checks = body.get("checks") or {}
@@ -1846,6 +1902,353 @@ def plaintext_scan(report: Report, dirs: List[str], export_files: List[str]) -> 
     report.check(item, "导出包/日志/库中 0 条明文", hits, [], json.dumps(hits[:5], ensure_ascii=False))
 
 
+def _walk_files(base: str) -> List[str]:
+    found: List[str] = []
+    for current, _dirs, files in os.walk(base):
+        for name in files:
+            found.append(os.path.join(current, name))
+    return found
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _find_named(base: str, name: str) -> List[str]:
+    return [path for path in _walk_files(base) if os.path.basename(path) == name]
+
+
+def _protected_name(rel: str) -> bool:
+    lowered = rel.replace("\\", "/").lower()
+    base = lowered.rsplit("/", 1)[-1]
+    return (
+        base.startswith("recovery_code")
+        or base.startswith("recovery_handoff")
+        or base in ("auth_secrets.json", "model_config_key.bin")
+    )
+
+
+def upgrade_snapshot_artifact(report: Report, inst: Instance) -> None:
+    """真实升级备份/导出产物：打包层过滤 + 备份后物理断言。
+
+    直接调用生产函数（不是单测桩）：``backup_data`` 遍历并跳过受保护文件，
+    ``export_data_snapshot`` 在复制层再过滤一次，最后对导出目录逐文件扫描。
+    另外解压 ``code.zip`` 断言代码包内没有数据目录里的受保护文件。
+    """
+    item = "备份导出排除"
+    canary = "RC-EXPORT-CANARY-0001"
+    env = dict(inst.env)
+    out_dir = os.path.join(inst.root, "artifact-check")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 1) 用一个"待取走"的加密交接文件让真实数据目录里确实存在恢复码文件。
+    writer = (
+        "from src.gateway import recovery_handoff as rh;"
+        f"print(rh.write_handoff('root1', '{canary}')['protection']);"
+        "print(rh.handoff_path())"
+    )
+    proc = subprocess.run(
+        [PY, "-c", writer], cwd=REPO, env=env, capture_output=True, text=True, timeout=120
+    )
+    lines = proc.stdout.strip().splitlines()
+    protection = lines[0] if lines else ""
+    handoff_path = lines[1] if len(lines) > 1 else ""
+    report.check(item, "备份前存在加密恢复码文件", bool(handoff_path) and os.path.isfile(handoff_path), True,
+                 f"rc={proc.returncode} out={proc.stdout.strip()} err={proc.stderr[-300:]}")
+    if os.path.isfile(handoff_path):
+        raw = _read(handoff_path)
+        report.check(item, "待备份的恢复码文件是密文", canary.encode() in raw, False,
+                     protection)
+        report.check(item, "待备份文件不含明文前缀 RC-", b"RC-" in raw, False)
+
+    # 2) 真实生产函数：数据备份 → 快照导出 → 代码包（可解压）。
+    script = r"""
+import json, sys
+from pathlib import Path
+from src.upgrade.backups import backup_code, backup_data, export_data_snapshot
+app_root, data_dir, out, repo = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+backup = backup_data(app_root, data_dir, [app_root / "auth_secrets.json"], out / "backup")
+snapshot = export_data_snapshot(backup.backup_dir, out / "snapshot")
+code = backup_code(repo, ("config",), out / "code")
+manifest = json.loads(backup.manifest_path.read_text(encoding="utf-8"))
+snapshot_manifest = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))
+print(json.dumps({
+    "backup_dir": str(backup.backup_dir),
+    "snapshot_dir": str(snapshot.destination),
+    "zip": str(code.zip_path),
+    "excluded": manifest.get("excluded_protected"),
+    "snapshot_excluded": snapshot_manifest.get("excluded_protected"),
+    "entries": [e.get("relpath") for e in manifest.get("entries", [])],
+    "snapshot_entries": [e.get("relpath") for e in snapshot_manifest.get("entries", [])],
+}, ensure_ascii=False))
+"""
+    proc = subprocess.run(
+        [PY, "-c", script, str(Path(inst.root)), inst.data_dir, out_dir, str(REPO)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=300,
+    )
+    report.check(item, "生产备份/导出函数执行成功", proc.returncode, 0, proc.stderr[-400:])
+    meta: Dict[str, Any] = {}
+    if proc.returncode == 0:
+        meta = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    # 3) 备份清单与备份目录：受保护文件被计数跳过，物理目录里也没有。
+    report.check(item, "备份清单记录了排除项", (meta.get("excluded") or 0) >= 2, True,
+                 str(meta.get("excluded")))
+    backup_dir = meta.get("backup_dir") or ""
+    leftovers = [path for path in _walk_files(backup_dir) if _protected_name(
+        os.path.relpath(path, backup_dir))]
+    report.check(item, "备份目录无恢复码/凭据文件", leftovers, [])
+    leaked_payloads = [
+        needle for needle in (canary, PASSWORDS[0], *MODEL_KEYS)
+        if any(needle.encode("utf-8") in _read(path) for path in _walk_files(backup_dir))
+    ]
+    report.check(item, "备份内容无恢复码/明文凭据", leaked_payloads, [])
+
+    # 4) 真实导出产物：清单过滤 + 打包后物理断言；目录等价于解压后的包。
+    report.check(item, "导出清单记录了排除项", (meta.get("snapshot_excluded") or 0) >= 1, True,
+                 str(meta.get("snapshot_excluded")))
+    snapshot_dir = meta.get("snapshot_dir") or ""
+    snapshot_leftovers = [path for path in _walk_files(snapshot_dir) if _protected_name(
+        os.path.relpath(path, snapshot_dir))]
+    report.check(item, "导出包无恢复码/凭据文件", snapshot_leftovers, [])
+    snapshot_payloads = [
+        needle for needle in (canary, PASSWORDS[0], *MODEL_KEYS)
+        if any(needle.encode("utf-8") in _read(path) for path in _walk_files(snapshot_dir))
+    ]
+    report.check(item, "导出包内容无恢复码/明文凭据", snapshot_payloads, [])
+
+    # 5) 解压断言：code.zip 的成员里不能出现数据目录的受保护文件。
+    zip_path = meta.get("zip") or ""
+    members: List[str] = []
+    if zip_path and os.path.isfile(zip_path):
+        with zipfile.ZipFile(zip_path) as archive:
+            members = archive.namelist()
+            packed = [name for name in members if _protected_name(name)]
+            code_mentions = canary.encode("utf-8") in b"".join(
+                archive.read(name) for name in members
+            )
+        report.check(item, "代码包无数据受保护文件", packed, [])
+        report.check(item, "代码包解压内容无恢复码值", code_mentions, False)
+    else:
+        report.check(item, "代码包可解压", bool(members), True, zip_path)
+
+    if handoff_path and os.path.isfile(handoff_path):
+        os.remove(handoff_path)
+
+
+def legacy_recovery_migration(report: Report) -> None:
+    """老用户旧明文文件：启动迁移为密文、旧文件消失、码仍可用。"""
+    item = "旧明文迁移"
+    legacy_code = ""
+    legacy = Instance("liuhao-acct-legacy-")
+    try:
+        status, registed = request(
+            "POST", legacy.base + "/v1/accounts/register",
+            {"principal": "legacy-root", "password": "legacypass123", "display_name": "老用户"},
+        )
+        legacy_code = registed.get("recovery_code") or ""
+        report.check(item, "老账号注册并拿到恢复码", (status, bool(legacy_code)), (200, True))
+
+        # 停机写入"旧版明文格式"文件，再重启触发启动迁移。
+        legacy.stop(cleanup=False)
+        path = os.path.join(legacy.data_dir, "config", "recovery_code.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(
+                f"{legacy_code}\n# LiuHao 本机恢复码 · 账号 legacy-root\n# 旧版明文格式\n"
+            )
+        legacy.start()
+
+        raw = _read(path)
+        report.check(item, "迁移后文件仍在", os.path.isfile(path), True)
+        report.check(item, "迁移后不含恢复码明文", legacy_code.encode() in raw, False,
+                     f"size={len(raw)}")
+        report.check(item, "旧明文标记已消失", "旧版明文格式".encode() in raw, False)
+        try:
+            document = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            document = {}
+        report.check(item, "迁移后文件是 DPAPI 密文",
+                     document.get("protection"), "dpapi-current-user", str(document)[:120])
+        acl = subprocess.run(["icacls", path], capture_output=True, text=True).stdout
+        bad_acl = [marker for marker in ("(I)", "Everyone", "BUILTIN\\Users") if marker in acl]
+        report.check(item, "迁移文件 ACL 仅当前用户", bad_acl, [], acl.strip()[:120])
+
+        # 回环 + 桌面端一次性证明才允许取码（同机其他账户没有证明）。
+        status, body = request(
+            "POST", legacy.base + "/v1/accounts/recovery/local",
+            headers=local_proof_headers(legacy.data_dir),
+        )
+        report.check(item, "本机取用旧码成功", (status, body.get("recovered"), body.get("recovery_code")),
+                     (200, True, legacy_code))
+        report.check(item, "取用后文件消失", os.path.exists(path), False)
+        status, body = request(
+            "POST", legacy.base + "/v1/accounts/recovery/local",
+            headers=local_proof_headers(legacy.data_dir),
+        )
+        report.check(item, "再取用失败", (status, body.get("code")),
+                     (403, "ACCOUNT_RECOVERY_UNAVAILABLE"))
+        status, body = request(
+            "POST", legacy.base + "/v1/accounts/recovery/reset",
+            {"recovery_code": legacy_code, "password": "legacynew123"},
+            headers=local_proof_headers(legacy.data_dir),
+        )
+        report.check(item, "旧码重置密码成功", status, 200)
+        status, body = request(
+            "POST", legacy.base + "/v1/auth/login",
+            {"principal": "legacy-root", "secret": "legacypass123"},
+        )
+        report.check(item, "迁移后旧密码不可登录", status, 401)
+        status, body = request(
+            "POST", legacy.base + "/v1/auth/login",
+            {"principal": "legacy-root", "secret": "legacynew123"},
+        )
+        report.check(item, "迁移后新密码可登录", status, 200)
+    finally:
+        legacy.stop()
+
+
+def remote_recovery_switch(report: Report) -> None:
+    """远程开关：默认关（见 recovery_handoff_chain），打开后行为变化且日志留痕。"""
+    item = "远程恢复开关"
+    switch = Instance("liuhao-acct-switch-", env_extra={"LIUHAO_ALLOW_REMOTE_RECOVERY": "1"})
+    try:
+        status, registed = request(
+            "POST", switch.base + "/v1/accounts/register",
+            {"principal": "switch-root", "password": "switchpass123", "display_name": "远程开关"},
+        )
+        code = registed.get("recovery_code") or ""
+        report.check(item, "开关实例注册根账号", status, 200, f"code_len={len(code)}")
+
+        forwarded = {"X-Forwarded-For": "203.0.113.9"}
+        status, body = request(
+            "POST", switch.base + "/v1/accounts/recovery/reset",
+            {"recovery_code": code, "password": "switchnew123"},
+            headers=forwarded,
+        )
+        report.check(item, "开关打开后非本机重置被接受", status, 200, str(body)[:120])
+        status, body = request(
+            "POST", switch.base + "/v1/auth/login",
+            {"principal": "switch-root", "secret": "switchnew123"},
+        )
+        report.check(item, "远程重置后的新密码可登录", status, 200)
+
+        status, body = request(
+            "POST", switch.base + "/v1/accounts/recovery/local", headers=forwarded
+        )
+        report.check(item, "开关打开后取码仍限本机", (status, body.get("code")),
+                     (403, "ACCOUNT_RECOVERY_LOCAL_ONLY"))
+
+        report.check(item, "启动日志记录已允许非本机恢复",
+                     "已允许非本机恢复" in switch.tail(), True, switch.tail()[-300:])
+    finally:
+        switch.stop()
+
+
+def recovery_handoff_chain(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
+    """主实例上的恢复码全链路（真实 HTTP）：拒绝非本机 → 用码重置 → 一次性。"""
+    item = "恢复码链路"
+    code0 = tokens.get("recovery") or ""
+    forwarded = {"X-Forwarded-For": "203.0.113.9"}
+
+    # 默认关闭远程：任何带非回环 XFF 的请求都必须被拒，且不能消费掉有效码。
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/local", headers=forwarded
+    )
+    report.check(item, "默认非本机取码被拒", (status, body.get("code")),
+                 (403, "ACCOUNT_RECOVERY_LOCAL_ONLY"))
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/reset",
+        {"recovery_code": code0, "password": "handoff-first-1"},
+        headers=forwarded,
+    )
+    report.check(item, "默认非本机重置被拒", (status, body.get("code")),
+                 (403, "ACCOUNT_RECOVERY_LOCAL_ONLY"))
+
+    # 首次本机重置：成功消费 code0，旧密码/旧令牌失效，重放被拒。
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/reset",
+        {"recovery_code": code0, "password": "handoff-first-1"},
+        headers=local_proof_headers(inst.data_dir),
+    )
+    report.check(item, "本机用码重置成功", status, 200, str(body)[:120])
+    status, body = request("GET", inst.base + "/v1/auth/me", token=tokens["root"])
+    report.check(item, "重置后旧令牌失效", status, 401)
+    status, body = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "root1", "secret": PASSWORDS[0]},
+    )
+    report.check(item, "重置后旧密码不可登录", status, 401)
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/reset",
+        {"recovery_code": code0, "password": "handoff-replay-1"},
+        headers=local_proof_headers(inst.data_dir),
+    )
+    report.check(item, "同一码不可重放", (status, body.get("code")),
+                 (400, "ACCOUNT_RECOVERY_CODE_INVALID"))
+
+    # 没有有效码时 /recovery/local 生成新码：走密文写入、取用即焚。
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/local",
+        headers=local_proof_headers(inst.data_dir),
+    )
+    raw = json.dumps(body, ensure_ascii=False)
+    report.check(item, "本机生成本机新码", (status, body.get("written"), body.get("recovered")),
+                 (200, True, False), str(body)[:120])
+    report.check(item, "生成走 DPAPI 密文路径", body.get("protection"), "dpapi-current-user")
+    report.check(item, "响应只给文件名", body.get("file"), "recovery_code.txt")
+    report.check(item, "响应不含绝对路径", ("/" in raw or "\\" in raw), False, raw[:160])
+    leftovers = _find_named(inst.data_dir, "recovery_code.txt")
+    report.check(item, "取用后交接文件消失", leftovers, [])
+    code1 = body.get("recovery_code") or ""
+    report.check(item, "返回新码可用", bool(code1), True, f"len={len(code1)}")
+
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/local",
+        headers=local_proof_headers(inst.data_dir),
+    )
+    report.check(item, "再取用失败", (status, body.get("code")),
+                 (403, "ACCOUNT_RECOVERY_UNAVAILABLE"))
+
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/reset",
+        {"recovery_code": code1, "password": "handoff-second-1"},
+        headers=local_proof_headers(inst.data_dir),
+    )
+    report.check(item, "新码重置密码成功", status, 200)
+    status, body = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "root1", "secret": "handoff-first-1"},
+    )
+    report.check(item, "第二次重置后前一密码失效", status, 401)
+    status, body = request(
+        "POST", inst.base + "/v1/auth/login",
+        {"principal": "root1", "secret": "handoff-second-1"},
+    )
+    report.check(item, "第二次重置后新密码可登录", status, 200)
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/reset",
+        {"recovery_code": code1, "password": "handoff-replay-2"},
+        headers=local_proof_headers(inst.data_dir),
+    )
+    report.check(item, "新码同样不可重放", (status, body.get("code")),
+                 (400, "ACCOUNT_RECOVERY_CODE_INVALID"))
+
+    # 回环但无桌面端证明：必须被拒（同机其他 Windows 账户正是这种情形）。
+    status, body = request("POST", inst.base + "/v1/accounts/recovery/local")
+    report.check(item, "回环但缺少一次性证明被拒", (status, body.get("code")),
+                 (403, "ACCOUNT_RECOVERY_PROOF_REQUIRED"))
+    # 同一枚交接令牌只能用一次（重放被拒）。
+    used = local_proof_headers(inst.data_dir)
+    request("POST", inst.base + "/v1/accounts/recovery/local", headers=used)
+    status, body = request(
+        "POST", inst.base + "/v1/accounts/recovery/local", headers=used
+    )
+    report.check(item, "交接令牌不可重放", (status, body.get("code")),
+                 (403, "ACCOUNT_RECOVERY_PROOF_REQUIRED"))
+
+
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
@@ -1863,6 +2266,7 @@ def main() -> int:
         memory_visibility(report, inst, tokens)
         employee_adoption(report, inst, tokens)
         backup = backup_roundtrip(report, inst, tokens)
+        upgrade_snapshot_artifact(report, inst)
         memory_adoption(report, inst, tokens)
         file_isolation(report, inst, tokens)
         session_isolation(report, inst, tokens, usage["model_id"])
@@ -1883,6 +2287,10 @@ def main() -> int:
 
         failure_paths(report, inst, tokens)
         deletion(report, inst, tokens)
+        # 恢复码链路最后跑：它会改掉根密码并使既有令牌失效。
+        legacy_recovery_migration(report)
+        remote_recovery_switch(report)
+        recovery_handoff_chain(report, inst, tokens)
         plaintext_scan(report, dirs, export_files)
     finally:
         inst.stop()

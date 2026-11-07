@@ -6,6 +6,11 @@ import './index.css'
 import './os.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { captureLocalProofFromHash } from './lib/localProof'
+
+// 桌面端通过 URL fragment 交接一次性证明（取恢复码 / 重置密码各一枚）。
+// 必须在首次渲染前收进 sessionStorage 并从地址栏抹掉。
+captureLocalProofFromHash()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

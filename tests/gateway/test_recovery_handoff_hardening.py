@@ -381,14 +381,30 @@ def test_legacy_plaintext_is_migrated_then_deleted(env):
         config = client.get("/v1/auth/config").json()
         assert config["recovery"]["rotate_recommended"] is True
 
-        handoff = client.post("/v1/accounts/recovery/local")
+        # 本机交接还需要桌面端一次性证明：回环只说明“同一台机器”。
+        from src.gateway import local_proof
+
+        bundle = local_proof.issue_bundle()
+        handoff = client.post(
+            "/v1/accounts/recovery/local",
+            headers={"X-LiuHao-Local-Proof": bundle["handoff_token"]},
+        )
         assert handoff.status_code == 200, handoff.text
         assert handoff.json()["recovered"] is True
         assert handoff.json()["recovery_code"] == code
         assert not path.exists()
 
+        # 同一枚交接令牌已消费，重放必须被拒。
+        replay = client.post(
+            "/v1/accounts/recovery/local",
+            headers={"X-LiuHao-Local-Proof": bundle["handoff_token"]},
+        )
+        assert replay.status_code == 403, replay.text
+        assert replay.json()["code"] == "ACCOUNT_RECOVERY_PROOF_REQUIRED"
+
         reset = client.post(
             "/v1/accounts/recovery/reset",
+            headers={"X-LiuHao-Reset-Proof": bundle["reset_token"]},
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text

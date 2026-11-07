@@ -43,6 +43,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..common.windows_acl import secure_delete_file, tighten_current_user_only
+
 logger = logging.getLogger("liuhao.ai.model_config")
 
 MODEL_CONFIG_DB_ENV = "LIUHAO_MODEL_CONFIG_DB"
@@ -313,6 +315,13 @@ class ModelConfigStore:
             return _derive_key(configured)
         path = Path(self._key_path)
         if path.exists():
+            # 老安装留下的密钥文件也要补收紧：Windows 的 0600 只是只读位，
+            # 真正生效的是显式 DACL。失败只告警，不阻断已有密文的读取。
+            if not tighten_current_user_only(path):
+                logger.warning(
+                    "模型密钥文件 ACL 未能收紧为仅当前用户：%s（建议手工修复）",
+                    path,
+                )
             try:
                 raw = path.read_bytes()
             except OSError as exc:
@@ -339,11 +348,22 @@ class ModelConfigStore:
             key = os.urandom(32)
             fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
+                # 先落盘再收紧：Windows 上 0o600 不改变 DACL，必须显式设置。
                 os.write(fd, key)
             finally:
                 os.close(fd)
+            if not tighten_current_user_only(path):
+                # 主密钥可解全部模型凭据，宁可不生成也不能留在他人可读的位置。
+                secure_delete_file(path)
+                raise ModelConfigError(
+                    503,
+                    "模型密钥文件无法收紧为仅当前用户可读，已拒绝生成。"
+                    "请检查数据目录权限后重试。",
+                )
             logger.info("model config encryption key generated at %s", path)
             return key
+        except ModelConfigError:
+            raise
         except Exception as exc:  # pragma: no cover - 文件系统故障
             raise ModelConfigError(
                 503,

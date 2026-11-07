@@ -419,6 +419,10 @@ def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> None:
         from ..kernels.audit import AuditEventType, AuditScope, log_event
 
         allowed = outcome == "login_success"
+        # 给事件一个明确的动作名：界面要回答"谁在什么时候登录了"，
+        # 只靠 access_allowed/access_denied 只能说"有人访问过"。
+        audit_details = dict(details)
+        audit_details.setdefault("action", "login")
         log_event(
             event_type=(
                 AuditEventType.ACCESS_ALLOWED if allowed else AuditEventType.ACCESS_DENIED
@@ -426,7 +430,7 @@ def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> None:
             principal_id=principal or "anonymous",
             scope=AuditScope.L0,
             outcome=outcome,
-            details=details,
+            details=audit_details,
         )
     except Exception as exc:  # noqa: BLE001 - defensive, and never fatal
         logger.warning("auth audit failed (%s): %s", outcome, exc)
@@ -845,9 +849,11 @@ def auth_config() -> Dict[str, Any]:
     eligible = [h for h in humans if h.principal in credentials]
     secret_configured = bool(credentials)
     if initialization_incomplete:
+        # 匿名可读的 /auth/config 不能回显根账号名：共享电脑上同机其他账户
+        # 可据此补全注册并接管。这里只给中性描述，名称由用户自己回忆。
         message = (
-            f"初始化未完成：账号 “{root_principal}” 已创建，但还没有设置登录密码。"
-            "请用该名称重新完成初始化（密码可以重新设置）。"
+            "初始化未完成：初始账号已创建，但还没有设置登录密码。"
+            "请使用首次注册时填写的名称重新完成初始化（密码可以重新设置）。"
         )
     elif not secret_configured:
         message = (
@@ -888,7 +894,8 @@ def auth_config() -> Dict[str, Any]:
                 else ("complete" if root_exists else "pending")
             ),
             "recoverable": initialization_incomplete,
-            "principal": root_principal if initialization_incomplete else None,
+            # 匿名响应永不回显根账号名（避免同机其他账户接管半初始化实例）。
+            "principal": None,
         },
         # 恢复码是否**真的**可用：只看"根存在"会在 0.1.0 升级上来的老数据
         # （recovery_hash 为空串）上撒谎 —— 界面会展示"用恢复码重置"，用户却

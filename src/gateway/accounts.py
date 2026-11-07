@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..kernels.identity import _accounts, get_identity_manager
-from . import account_settings, recovery_handoff
+from . import account_settings, local_proof, recovery_handoff
 from .account_context import (
     AccountContext,
     deny,
@@ -45,6 +45,12 @@ CODE_INITIALIZATION_LOCAL_ONLY = "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
 
 #: 恢复码交接/重置只接受本机来源时的稳定错误码。
 CODE_RECOVERY_LOCAL_ONLY = "ACCOUNT_RECOVERY_LOCAL_ONLY"
+
+#: 本机来源但缺少/重放了桌面端一次性证明时的稳定错误码。
+CODE_RECOVERY_PROOF_REQUIRED = "ACCOUNT_RECOVERY_PROOF_REQUIRED"
+
+#: 凭据包导出只接受本机来源时的稳定错误码。
+CODE_BACKUP_EXPORT_LOCAL_ONLY = "ACCOUNT_BACKUP_EXPORT_LOCAL_ONLY"
 
 
 # --------------------------------------------------------------------------- #
@@ -254,22 +260,78 @@ def _require_loopback(request: Request, *, message: str) -> None:
     raise deny(403, CODE_RECOVERY_LOCAL_ONLY, message)
 
 
-def _require_recovery_source(request: Request) -> None:
-    """恢复码重置默认只认回环来源；显式开关打开后才放行远程。"""
-    if request_is_local(request):
+_PROOF_MESSAGE = (
+    "本机恢复流程还需要桌面端的一次性证明：请从鎏灏桌面窗口点“打开控制台”"
+    "重新进入后再试（直接在浏览器里输入地址不算本机证明）。"
+)
+
+
+def _require_local_proof(request: Request) -> None:
+    """恢复码交接：回环之外，还必须持有桌面端通过 DACL 通道发放的一次性令牌。
+
+    回环只证明“同一台机器”，不证明“同一个账户”。令牌由网关的命名管道
+    发给当前 Windows 用户，HTTP 请求本身不再被当作身份证明。
+    """
+    raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
+    if raw and local_proof.redeem_token(raw, scope=local_proof.SCOPE_HANDOFF):
         return
-    if recovery_handoff.remote_recovery_enabled():
-        # 开关一开就放宽了“码只能在本机用”的边界，必须留下审计线索。
-        logger.warning(
-            "非本机来源通过了恢复码重置（%s=1）", recovery_handoff.REMOTE_RECOVERY_ENV
-        )
-        return
+    raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
+
+
+def _require_initialization_proof(request: Request) -> str:
+    """半初始化补全：必须是本机桌面端发放的一次性证明，而不只是回环。
+
+    回环只说明“同一台机器”，同机其他 Windows 账户也能连 127.0.0.1，并且
+    可能已经知道根账号名。令牌由网关的 DACL 命名管道只发给网关所属用户，
+    因此“知道名字”不再等于“能接管”。
+    """
+    raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
+    if raw and local_proof.claim_token(raw, scope=local_proof.SCOPE_HANDOFF):
+        return raw
     raise deny(
         403,
-        CODE_RECOVERY_LOCAL_ONLY,
-        "恢复码重置只能在本机完成：请在这台机器的控制台重试，"
-        "或由管理员显式开启远程恢复。",
+        CODE_RECOVERY_PROOF_REQUIRED,
+        "补全初始化需要桌面端的一次性证明：请从鎏灏桌面窗口点“打开控制台”"
+        "重新进入后再试（直接在浏览器里输入地址不算本机证明）。",
     )
+
+
+def _require_recovery_source(request: Request) -> str:
+    """重置来源判定，返回已占用的重置令牌（空串表示受控运维开关放行）。
+
+    默认：本机 + 一次性重置令牌。远程只在显式开关打开时放行（受控运维，
+    风险见 :func:`recovery_handoff.remote_recovery_enabled`）。
+    令牌在这里“占用”而不是立即消费：改密失败时可以释放重试，并发请求里
+    只有一个能占用成功（避免同一令牌并发重置两次都成功）。
+    """
+    local = request_is_local(request)
+    if not local:
+        if recovery_handoff.remote_recovery_enabled():
+            # 开关一开就放宽了“码只能在本机用”的边界，必须留下审计线索。
+            logger.warning(
+                "非本机来源通过了恢复码重置（%s=1）",
+                recovery_handoff.REMOTE_RECOVERY_ENV,
+            )
+            return ""
+        raise deny(
+            403,
+            CODE_RECOVERY_LOCAL_ONLY,
+            "恢复码重置只能在本机完成：请在这台机器的控制台重试，"
+            "或由管理员显式开启远程恢复。",
+        )
+
+    token = local_proof.request_token(request, local_proof.RESET_HEADER)
+    if token:
+        if local_proof.claim_token(token, scope=local_proof.SCOPE_RESET):
+            return token
+        raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
+    if recovery_handoff.remote_recovery_enabled():
+        logger.warning(
+            "本机来源但未携带一次性证明，按受控运维开关放行（%s=1）",
+            recovery_handoff.REMOTE_RECOVERY_ENV,
+        )
+        return ""
+    raise deny(403, CODE_RECOVERY_PROOF_REQUIRED, _PROOF_MESSAGE)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,7 +371,11 @@ def _settle_existing_root(
         )
     # 半初始化补全只允许本机：远程匿名者既不能猜名接管，也看不到任何提示。
     _require_local_for_initialization(request)
+    # 回环仍然不等于“本人”：同机其他账户也能连回环，并可能已经知道根账号名。
+    # 补全必须持有桌面端通过 DACL 命名管道发放的一次性证明。
+    proof = _require_initialization_proof(request)
     if payload.principal != root.principal:
+        local_proof.release_token(proof)
         # 正文**不回显**根账号名：否则匿名者拿到名字就能借补全路径接管。
         raise deny(
             409,
@@ -320,19 +386,24 @@ def _settle_existing_root(
     # 恢复路径：上一轮凭据写入失败，根落盘但没有凭据 —— 任何人都登录不了，
     # 所以这是"重新完成初始化"，而不是"已有账号被接管"。
     prior = _credential_record(root.principal)
-    _write_credential(
-        root.principal,
-        payload.password,
-        message="账号初始化失败，可重新提交完成初始化",
-    )
     try:
+        _write_credential(
+            root.principal,
+            payload.password,
+            message="账号初始化失败，可重新提交完成初始化",
+        )
         recovery_code = _kernel_call(
             manager.rotate_recovery_code, root.principal
         )
     except HTTPException:
         # 恢复码没签出来就不要把凭据留下：回到"可重试"的半初始化状态。
         _restore_credential(root.principal, prior)
+        local_proof.release_token(proof)
         raise
+    except Exception:
+        local_proof.release_token(proof)
+        raise
+    local_proof.consume_token(proof)
     _clear_local_recovery_file()
     node = _kernel_call(manager.get_account, root.principal)
     return {
@@ -411,18 +482,30 @@ def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str,
     恢复码一起作废且不能重发，用户彻底锁死。这里与激活流程
     （``verify_activation_code`` → 改密 → ``consume_activation_code``）同序。
 
-    来源契约：默认只接受本机回环请求；远程重置必须由管理员显式开启
-    ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭）。
+    来源契约：默认只接受本机回环请求，且必须携带桌面端通过 DACL 命名管道
+    发放的一次性重置令牌（防止同机其他账户只凭回环就重置）。远程重置必须
+    由管理员显式开启 ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭；开启后
+    任何能访问服务端口、且持有恢复码的来源都可重置根密码，风险自担）。
     """
-    _require_recovery_source(request)
+    proof = _require_recovery_source(request)
     manager = get_identity_manager()
-    principal = _kernel_call(manager.verify_recovery_code, payload.recovery_code)
-    _write_credential(
-        principal,
-        payload.password,
-        message="账号恢复失败，恢复码仍然有效，可重新提交",
-    )
-    _kernel_call(manager.consume_recovery_code, payload.recovery_code)
+    try:
+        principal = _kernel_call(manager.verify_recovery_code, payload.recovery_code)
+        _write_credential(
+            principal,
+            payload.password,
+            message="账号恢复失败，恢复码仍然有效，可重新提交",
+        )
+        _kernel_call(manager.consume_recovery_code, payload.recovery_code)
+    except Exception:
+        # 本次失败不消耗证明：用户改正密码/换正确恢复码后还能重试，
+        # 而并发请求里只有一个能占用成功，不会出现两次重置都成功。
+        if proof:
+            local_proof.release_token(proof)
+        raise
+    # 改密成功后才作废一次性证明：成功一次即失效。
+    if proof:
+        local_proof.consume_token(proof)
     # 本机交接文件里的码已经被作废，删除它避免用户下次误用。
     _clear_local_recovery_file()
     token = issue_token_for(principal, client="web")
@@ -528,12 +611,43 @@ def account_tree(context: AccountContext = Depends(require_account_principal)) -
 
 @router.post("/backup/export")
 def backup_export(
+    request: Request,
     payload: BackupExportRequest,
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, Any]:
-    """导出加密凭据包；``scope=all`` 仅根账号可用。"""
-    from .account_backup import export_bundle
+    """导出加密凭据包；``scope=all`` 仅根账号可用，且默认只接受本机来源。
 
+    凭据包能解开身份与全部成员数据，把入口暴露给网络等于把整棵树交出去；
+    远程导出必须显式设置 ``LIUHAO_ALLOW_REMOTE_BACKUP_EXPORT=1``。
+    """
+    from .account_backup import export_bundle, remote_export_enabled
+
+    local = request_is_local(request)
+    if not local and not remote_export_enabled():
+        _kernel_call(
+            get_identity_manager().record_event,
+            action="account.backup.export",
+            actor=context.principal,
+            target=context.principal,
+            outcome="denied",
+            details={
+                "scope": payload.scope,
+                "error_code": CODE_BACKUP_EXPORT_LOCAL_ONLY,
+                "remote_source": True,
+            },
+        )
+        raise deny(
+            403,
+            CODE_BACKUP_EXPORT_LOCAL_ONLY,
+            "备份导出只允许在本机操作：请在这台机器的控制台重试。",
+        )
+    if not local:
+        logger.warning(
+            "远程备份导出已被显式开启：来源=%s actor=%s scope=%s",
+            request.client.host if request.client else "?",
+            context.principal,
+            payload.scope,
+        )
     return _kernel_call(
         export_bundle,
         actor=context.principal,
@@ -541,6 +655,7 @@ def backup_export(
         passphrase=payload.passphrase,
         subtree=context.subtree,
         is_root=context.is_root,
+        remote_source=not local,
     )
 
 
@@ -593,6 +708,9 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
     恢复码（DoS）。重发有效码的正规入口是登录后的 ``/recovery/rotate``。
     """
     _require_loopback(request, message="恢复码只在本机交接：请在这台机器上重试。")
+    # 回环不等于“本人”：同机其他 Windows 账户也能连 127.0.0.1。必须再验
+    # 桌面端通过 DACL 命名管道发放的一次性令牌（与发起进程绑定）。
+    _require_local_proof(request)
     manager = get_identity_manager()
     limit_key = "recovery:local"
     try:
@@ -627,7 +745,10 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
                 "已从本机加密交接文件取出恢复码，原文件已删除。"
                 "请把它填入“重置密码”；它只显示这一次。"
             ),
-            "security_note": "该响应只在本机回环可用；码不写日志，文件取用后立即删除。",
+            "security_note": (
+                "该响应只在本机回环 + 桌面端一次性证明下可用；"
+                "码不写日志，文件取用后立即删除。"
+            ),
         }
 
     if root is None:
@@ -668,7 +789,7 @@ def recovery_local_handoff(request: Request) -> Dict[str, Any]:
         ),
         "security_note": (
             "码不以明文长期落盘：Windows 用 DPAPI 加密，其他平台用 ACL + 短 TTL；"
-            "响应只在本机回环可用。"
+            "响应只在本机回环 + 桌面端一次性证明下可用。"
         ),
     }
 
