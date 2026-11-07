@@ -154,20 +154,21 @@ def _registry_report(manager) -> Tuple[Dict[str, Any], List[str]]:
     warnings: List[str] = []
     if registry["configured"] and not registry["integrity_enforced"]:
         warnings.append(
-            f"human registry {registry['location']!r} is configured but "
-            f"{key_env} is unset: per fail-closed (HC-11 / U6) the store "
-            f"REFUSES every row, so no registered human is admitted. That is "
-            f"not the same answer as 'no human exists'."
+            "身份注册表已配置，但完整性校验尚未启用，里面已登记的账号暂时不会"
+            "被接纳。这不等于「没有账号」；启用完整性校验并重新登记后即可恢复。"
         )
     if rows_refused:
         warnings.append(
-            f"{len(rows_refused)} registry row(s) were refused at load and are "
-            f"therefore absent from this listing: {rows_refused}. Set "
-            f"{key_env} and re-register those humans "
-            f"(scripts/register_human_identity.py) to admit them."
+            f"有 {len(rows_refused)} 个已登记账号在加载时未通过完整性校验，"
+            f"因此没有出现在下面的清单中：{'、'.join(rows_refused)}。"
+            "启用完整性校验并重新登记后即可恢复。"
         )
-    for reason in described.get("registry_refusals") or []:
-        warnings.append(f"kernel refused a registration at boot: {reason}")
+    for _reason in described.get("registry_refusals") or []:
+        # 内核拒绝原因可能是英文实现细节或机器串；面向用户的提示只给结论，
+        # 原始原因留在诊断日志里（不能把变量名/堆栈铺到界面上）。
+        warnings.append(
+            "启动时有登记请求未被接受（细节已写入诊断日志，可联系维护人员查看）。"
+        )
 
     return registry, warnings
 
