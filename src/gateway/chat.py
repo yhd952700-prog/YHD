@@ -352,6 +352,9 @@ class ChatResponse(BaseModel):
     agent: str
     #: 始终存在：说明本次是否使用知识库、命中来源；未使用必有原因。
     knowledge: Dict[str, object]
+    #: 失败时的机器可读原因（quota_exhausted / key_revoked / ...），与 SSE
+    #: done 帧的 ``reason`` 同源；成功时为 null。
+    reason: Optional[str] = None
 
 
 def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
@@ -449,6 +452,11 @@ def chat(
         correlation_id=result["correlation_id"],
         agent=result["agent"],
         knowledge=public_metadata(knowledge),
+        reason=(
+            getattr(assistant, "last_turn_reason", None)
+            if result["status"] != "completed"
+            else None
+        ),
     )
 
 
@@ -518,6 +526,12 @@ def chat_stream(
 
                 turn_error = GENERATION_FAILURE_MESSAGE
             done["error"] = str(turn_error)
+            # 机器可读的失败原因（quota_exhausted / key_revoked / ...）：
+            # 文案是中性化的，前端没法从 error 里重新分类；不带它，"去充值"
+            # 就会被笼统的"请求失败"盖掉。
+            turn_reason = getattr(assistant, "last_turn_reason", None)
+            if isinstance(turn_reason, str) and turn_reason:
+                done["reason"] = turn_reason
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

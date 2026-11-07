@@ -80,6 +80,33 @@ describe('ChatPanel 结束帧', () => {
     // 失败文案已被 done.error 精确剔除，不再以普通回复的样子出现。
     expect(document.body.textContent).not.toContain(failure)
   })
+
+  test('done{status:error, reason:key_revoked} 渲染换 Key 卡片', async () => {
+    const failure = '这次没有拿到回复，请稍后再试。'
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/stream') {
+        return sse([
+          `data: {"type":"done","status":"error","reason":"key_revoked","error":"${failure}"}\n\n`,
+        ])
+      }
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    fireEvent.change(
+      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      { target: { value: '你好' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    const card = await screen.findByText(/吊销/)
+    expect(card.textContent).toContain('Key')
+    expect(document.body.textContent).not.toContain('请求失败')
+  })
 })
 
 describe('ChatPanel 会话发现', () => {

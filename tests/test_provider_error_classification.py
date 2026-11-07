@@ -199,3 +199,121 @@ def test_ollama_quota_body_is_classified_too(monkeypatch):
     assert exc_info.value.upstream_kind == "quota_exhausted"
     assert "insufficient" not in str(exc_info.value).lower()
     assert providers_mod  # 仅用于断言模块可导入
+
+
+class _FakeHttpResponse:
+    """DeepSeekProvider 用 requests，这里造一个同形状的响应。"""
+
+    def __init__(self, status_code: int, text: str, payload: dict | None = None):
+        self.status_code = status_code
+        self.text = text
+        self._payload = payload or {}
+        self.closed = False
+
+    def json(self):
+        return self._payload
+
+    def close(self):
+        self.closed = True
+
+
+def _serve_deepseek(monkeypatch, response: _FakeHttpResponse) -> list:
+    import requests
+
+    from src.ai import providers as providers_mod
+
+    calls: list = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    # 不联网做 DNS：DeepSeek 的运行时目标校验由 tests/test_providers.py 覆盖。
+    monkeypatch.setattr(
+        providers_mod, "assert_safe_runtime_target", lambda *a, **k: None
+    )
+    return calls
+
+
+def _deepseek():
+    from src.ai.providers import DeepSeekProvider
+
+    return DeepSeekProvider(
+        name="deepseek-e2e",
+        model="deepseek-chat",
+        api_key="sk-b15e-test-key",
+        base_url="https://api.deepseek.com/v1",
+        timeout=5.0,
+    )
+
+
+def test_deepseek_invalid_key_is_classified_and_neutral(monkeypatch):
+    """DeepSeek 401 → ``invalid_key``；上游英文与 Key 都不能进异常消息。"""
+    from src.ai.providers import ProviderHTTPError
+
+    _serve_deepseek(
+        monkeypatch,
+        _FakeHttpResponse(
+            401,
+            '{"error":{"message":"Authentication Fails (no such user)","type":"authentication_error"}}',
+        ),
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        _deepseek().chat([{"role": "user", "content": "ping"}])
+    err = exc_info.value
+    assert err.status_code == 401
+    assert err.upstream_kind == "invalid_key"
+    assert "Authentication" not in str(err)
+    assert "sk-b15e" not in str(err)
+
+
+def test_deepseek_insufficient_balance_is_quota_exhausted(monkeypatch):
+    """DeepSeek 402 + 余额不足 → ``quota_exhausted``（不是笼统失败）。"""
+    from src.ai.providers import ProviderHTTPError
+
+    calls = _serve_deepseek(
+        monkeypatch,
+        _FakeHttpResponse(402, '{"error":{"message":"Insufficient Balance"}}'),
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        _deepseek().chat([{"role": "user", "content": "ping"}])
+    err = exc_info.value
+    assert err.upstream_kind == "quota_exhausted"
+    assert "Insufficient" not in str(err)
+    assert calls and calls[0]["url"] == "https://api.deepseek.com/v1/chat/completions"
+    # 安全口径：不跟随重定向、不走环境代理。
+    assert calls[0]["allow_redirects"] is False
+    assert calls[0]["proxies"] == {"http": None, "https": None}
+
+
+def test_deepseek_chat_returns_message_content(monkeypatch):
+    """非流式路径正常返回 content（不把上游 JSON 原文兜底给用户）。"""
+    response = _FakeHttpResponse(
+        200,
+        "{}",
+        {
+            "choices": [{"message": {"content": "你好，我是 DeepSeek。"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 8},
+        },
+    )
+    _serve_deepseek(monkeypatch, response)
+    assert _deepseek().chat([{"role": "user", "content": "hi"}]) == "你好，我是 DeepSeek。"
+    assert response.closed is True
+
+
+def test_deepseek_chat_stream_yields_deltas(monkeypatch):
+    """流式路径按 SSE ``data:`` 行解析 delta，``[DONE]`` 结束。"""
+    response = _FakeHttpResponse(200, "")
+    response.iter_lines = lambda: iter(
+        [
+            b'data: {"choices":[{"delta":{"content":"\xe4\xbd\xa0"}}]}',
+            b"",
+            b'data: {"choices":[{"delta":{"content":"\xe5\xa5\xbd"}}]}',
+            b"data: [DONE]",
+        ]
+    )
+    _serve_deepseek(monkeypatch, response)
+    chunks = list(_deepseek().chat_stream([{"role": "user", "content": "hi"}]))
+    assert chunks == ["你", "好"]
+    assert response.closed is True

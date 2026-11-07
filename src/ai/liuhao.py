@@ -68,6 +68,17 @@ MAX_TOOL_ROUNDS = 3
 _log = logging.getLogger(__name__)
 
 
+def _turn_failure_reason(exc: BaseException) -> Optional[str]:
+    """取出 provider 在**脱敏前**算好的机器标签（``quota_exhausted`` 等）。
+
+    异常消息已被中性化，用户看到的文案里没有 ``insufficient_quota``、
+    ``revoked`` 这些词；只有这个标签能区分"去充值"和"稍后重试"。
+    非 HTTP 失败（网络、超时之外的未知错误）返回 ``None``。
+    """
+    kind = getattr(exc, "upstream_kind", None)
+    return kind if isinstance(kind, str) and kind else None
+
+
 def _json_safe_output(value: Any) -> Any:
     """Best-effort conversion to JSON-native data (dict/list/scalar)."""
     if value is None or isinstance(value, (bool, int, float, str, list, dict)):
@@ -221,6 +232,9 @@ class LiuHaoAssistant:
         # 本轮真实结果：gateway 依据它决定 done 帧状态与是否记用量。
         self.last_turn_status: Optional[str] = None
         self.last_turn_error: Optional[str] = None
+        #: 机器可读的失败原因（quota_exhausted / key_revoked / ...），供网关
+        #: 写进 done 帧，让界面给出"充值/换 Key"这类可行动文案。
+        self.last_turn_reason: Optional[str] = None
         self.last_turn_correlation_id: str = ""
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
@@ -404,6 +418,7 @@ class LiuHaoAssistant:
         if not decision.is_allowed:
             self.last_turn_status = "denied"
             self.last_turn_error = None
+            self.last_turn_reason = None
             log_event(
                 AuditEventType.ACCESS_DENIED,
                 principal_id=self.principal,
@@ -423,6 +438,7 @@ class LiuHaoAssistant:
         messages = self._build_messages(message)
 
         # 3. 生成（真实 LLM / mock）+ 工具调用 loop。
+        reason: Optional[str] = None
         try:
             reply = self._generate_with_tools(messages)
             status = "completed"
@@ -440,9 +456,11 @@ class LiuHaoAssistant:
             reply = GENERATION_FAILURE_MESSAGE
             status = "error"
             error_text = GENERATION_FAILURE_MESSAGE
+            reason = _turn_failure_reason(exc)
 
         self.last_turn_status = status
         self.last_turn_error = error_text
+        self.last_turn_reason = reason
 
         # 4-5. 记忆 + 会话落盘 + 审计（chat / chat_stream 共用）。
         self._commit_turn(message, reply, correlation_id, status)
@@ -476,6 +494,7 @@ class LiuHaoAssistant:
         if not decision.is_allowed:
             self.last_turn_status = "denied"
             self.last_turn_error = None
+            self.last_turn_reason = None
             log_event(
                 AuditEventType.ACCESS_DENIED,
                 principal_id=self.principal,
@@ -496,6 +515,7 @@ class LiuHaoAssistant:
         final_reply = ""
         status = "completed"
         error_text: Optional[str] = None
+        reason: Optional[str] = None
         try:
             for round_idx in range(MAX_TOOL_ROUNDS + 1):
                 round_chunks: List[str] = []
@@ -545,10 +565,12 @@ class LiuHaoAssistant:
             )
             error_text = GENERATION_FAILURE_MESSAGE
             final_reply = GENERATION_FAILURE_MESSAGE
+            reason = _turn_failure_reason(exc)
             yield final_reply
 
         self.last_turn_status = status
         self.last_turn_error = error_text
+        self.last_turn_reason = reason
         # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
         self._commit_turn(message, final_reply, correlation_id, status)
         self._log.info("EXIT chat_stream status=%s", status)

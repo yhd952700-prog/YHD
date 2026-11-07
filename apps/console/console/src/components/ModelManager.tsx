@@ -532,6 +532,11 @@ export function ModelManager({ session }: { session: Session }) {
                 任何 OpenAI 兼容服务都可以用「OpenAI 兼容（自定义端点）」接入，
                 模型名不做白名单校验。
               </p>
+              <p className="os-note">
+                Azure OpenAI 的原生端点（*.openai.azure.com）不在通用路径里：
+                <strong>需用兼容代理接入，或等后续适配器</strong>；
+                直接填原生端点会连不通，不用反复试。
+              </p>
             </div>
 
             <div className="os-field">

@@ -295,6 +295,136 @@ def test_d4_mock_provider_is_explicit_demo_not_internal_state():
     assistant.reset()
 
 
+def _serve_upstream(monkeypatch, *, status: int, payload: dict) -> None:
+    """让真实 OpenAIProvider 收到一个真实 HTTP 响应（不联网）。
+
+    与 ``tests/test_provider_error_classification.py`` 同一手法：走真实
+    ``openai`` SDK + ``httpx.MockTransport``，让 429/401 经 SDK 抛真实异常，
+    再经 provider → assistant → SSE done 帧，断言最终到界面的 ``reason``。
+    """
+    import httpx
+    import openai
+
+    from src.ai import providers as providers_mod
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=payload, request=request)
+
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    )
+
+    def _fake_get_client(self):
+        return openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url or "https://api.openai.com/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+
+    monkeypatch.setattr(providers_mod.OpenAIProvider, "_get_client", _fake_get_client)
+    # 目标校验由 tests/test_providers.py 覆盖；这里不依赖外网 DNS。
+    monkeypatch.setattr(
+        providers_mod, "assert_safe_runtime_target", lambda *a, **k: None
+    )
+
+
+def _real_openai_provider() -> OpenAIProvider:
+    return OpenAIProvider(
+        name="openai-e2e",
+        model="gpt-4o-mini",
+        api_key="sk-e2e-123456",
+        base_url="https://api.openai.com/v1",
+        timeout=5.0,
+    )
+
+
+def test_d5_stream_done_frame_carries_quota_exhausted_reason(monkeypatch, auth_headers):
+    """真实 429 配额耗尽 → SSE done 帧 ``reason=quota_exhausted``。
+
+    这是"单测绿、用户还是看不懂"的回归：分类已经在 provider 里做对，
+    但 done 帧只发 ``error`` 时，前端拿不到分类，只能显示笼统失败。
+    """
+    _serve_upstream(
+        monkeypatch,
+        status=429,
+        payload={
+            "error": {
+                "message": "You exceeded your current quota, please check your plan.",
+                "type": "insufficient_quota",
+                "code": "insufficient_quota",
+            }
+        },
+    )
+    assistant = _assistant(_real_openai_provider())
+    monkeypatch.setattr(chat_module, "get_assistant", lambda *a, **k: assistant)
+
+    client = TestClient(get_app())
+    with client.stream(
+        "POST",
+        "/v1/chat/stream",
+        json={"message": "hello", "session_id": "s-quota", "use_knowledge": False},
+        headers=auth_headers,
+    ) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    done = [f for f in _read_sse(body) if f.get("type") == "done"][-1]
+    assert done["status"] == "error"
+    assert done.get("reason") == "quota_exhausted", done
+    # 中性文案：上游英文与 Key 都不能出现在流里。
+    assert "insufficient" not in body.lower()
+    assert "sk-e2e" not in body
+
+
+def test_d5_non_stream_response_carries_key_revoked_reason(monkeypatch, auth_headers):
+    """真实 401 ``revoked`` → ``/v1/chat`` 响应 ``reason=key_revoked``。"""
+    _serve_upstream(
+        monkeypatch,
+        status=401,
+        payload={
+            "error": {
+                "message": "This API key has been revoked.",
+                "type": "invalid_request_error",
+                "code": "api_key_revoked",
+            }
+        },
+    )
+    assistant = _assistant(_real_openai_provider())
+    monkeypatch.setattr(chat_module, "get_assistant", lambda *a, **k: assistant)
+
+    client = TestClient(get_app())
+    resp = client.post(
+        "/v1/chat",
+        json={"message": "hello", "session_id": "s-revoked", "use_knowledge": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "error"
+    assert payload["reason"] == "key_revoked", payload
+    # 上游原文与 Key 不得回显（reason 标签本身是机器信号，允许出现）。
+    assert "This API key" not in resp.text
+    assert "invalid_request_error" not in resp.text
+    assert "sk-e2e" not in resp.text
+
+
+def test_d5_success_response_has_no_reason(monkeypatch, auth_headers):
+    """成功轮次 ``reason`` 必须为空，避免前端把正常回复渲染成失败卡片。"""
+    assistant = _assistant(_OkProvider())
+    monkeypatch.setattr(chat_module, "get_assistant", lambda *a, **k: assistant)
+
+    client = TestClient(get_app())
+    resp = client.post(
+        "/v1/chat",
+        json={"message": "hi", "session_id": "s-ok-reason", "use_knowledge": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "completed"
+    assert resp.json().get("reason") is None
+
+
 def test_p1_15_openai_client_is_reused_and_closed(monkeypatch):
     created: list = []
 

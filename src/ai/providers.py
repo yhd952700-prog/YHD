@@ -137,6 +137,22 @@ def classify_upstream_error(
     return "upstream_error"
 
 
+def _raise_upstream_http(label: str, response: Any) -> None:
+    """上游非 200 统一成中性异常，并保留脱敏前的机器分类。
+
+    直接把 ``response.text`` 拼进异常会把上游英文原文（含内部地址/账号信息）
+    带到用户侧；分类必须在丢弃原文之前完成。
+    """
+    status = getattr(response, "status_code", 0)
+    kind = classify_upstream_error(status=status, text=response.text)
+    logger.info("%s upstream HTTP failure status=%s kind=%s", label, status, kind)
+    raise ProviderHTTPError(
+        _neutral_http_message(label, status),
+        status_code=status,
+        upstream_kind=kind,
+    )
+
+
 def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> None:
     """把 SDK 的 HTTP 错误消息换成中性文案；非 HTTP 错误原样返回给调用方。
 
@@ -550,8 +566,9 @@ class OpenAIProvider(BaseProvider):
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
         self._guard_target()
+        client = self._get_client()
         try:
-            stream = self._get_client().chat.completions.create(
+            stream = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -559,16 +576,23 @@ class OpenAIProvider(BaseProvider):
                 stream=True,
             )
         except Exception as exc:
+            # 429/401 在建立流阶段就失败：中性化并保留分类，绝不能吞掉重试，
+            # 否则"额度耗尽 / Key 吊销"会被兜底成笼统失败。
             self._guard_upstream_error(exc)
             raise
-        for chunk in stream:
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            delta = getattr(choices[0], "delta", None)
-            content = getattr(delta, "content", None) if delta is not None else None
-            if content:
-                yield content
+        try:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    yield content
+        except Exception as exc:
+            # 建流后中途报错（如流内返回 429）同样要中性化并带上分类。
+            self._guard_upstream_error(exc)
+            raise
 
 
 # Anthropic provider (using official anthropic SDK)
@@ -933,8 +957,8 @@ class DeepSeekProvider(BaseProvider):
             rate_limit_tpm=40000,
         )
 
-    def generate(self, prompt: str, **kwargs) -> str:
-        """Generate response via DeepSeek API."""
+    def _post(self, messages, *, stream: bool, **kwargs):
+        """一次真实请求：``(model, response)``；非 200 已转成中性异常。"""
         import requests
 
         model = kwargs.get("model", self.model)
@@ -942,23 +966,70 @@ class DeepSeekProvider(BaseProvider):
             "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
         )
         api_key = self.api_key or os.environ.get("DEEPSEEK_API_KEY", "[REDACTED]")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key != "[REDACTED]" else {}
 
+        # 地址由用户填写：每次请求前复核一次，堵住保存后改 DNS 的绕过路径。
+        assert_safe_runtime_target(base_url, context="DeepSeek 服务")
         try:
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key != "[REDACTED]" else {}
             response = requests.post(
                 f"{base_url}/chat/completions",
-                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                json={"model": model, "messages": messages, "stream": stream},
                 headers=headers,
                 timeout=self.timeout,
+                stream=stream,
+                proxies={"http": None, "https": None},
+                allow_redirects=False,
             )
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
-            else:
-                raise Exception(f"DeepSeek error {response.status_code}: {response.text}")
-        except Exception:
-            # Re-raise to let generate_with_retry handle it
-            raise
+        except requests.exceptions.RequestException as exc:
+            logger.warning("DeepSeek request failed: %s", type(exc).__name__)
+            raise ProviderHTTPError("DeepSeek 服务不可达，请检查端点与网络。") from exc
+        if response.status_code != 200:
+            try:
+                _raise_upstream_http("DeepSeek", response)
+            finally:
+                response.close()
+        return model, response
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Generate response via DeepSeek API."""
+        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+
+    def chat(self, messages, **kwargs) -> str:
+        """DeepSeek 的 messages 接口（非流式）。"""
+        _model, response = self._post(messages, stream=False, **kwargs)
+        try:
+            result = response.json()
+        finally:
+            response.close()
+        return result.get("choices", [{}])[0].get("message", {}).get("content", str(result))
+
+    def chat_stream(self, messages, **kwargs):
+        """真实 SSE 流式（``stream=true``），逐 token 产出。"""
+        import json as _json
+
+        _model, response = self._post(messages, stream=True, **kwargs)
+        try:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8", "ignore") if isinstance(line, bytes) else line
+                if not text.startswith("data:"):
+                    continue
+                payload = text[5:].strip()
+                if payload == "[DONE]":
+                    break
+                if not payload:
+                    continue
+                try:
+                    chunk = _json.loads(payload)
+                except _json.JSONDecodeError:
+                    continue
+                for choice in chunk.get("choices") or []:
+                    content = (choice.get("delta") or {}).get("content")
+                    if content:
+                        yield content
+        finally:
+            response.close()
 
 
 # AutoGen integrator
