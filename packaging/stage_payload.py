@@ -189,6 +189,10 @@ import httpcore  # noqa: F401
 # ModuleNotFoundError（不是优雅降级）。放在这里让实测 import 图带上它们
 # 及各自的传递依赖（docx->lxml、sqlalchemy->greenlet 等）。
 import anthropic  # noqa: F401  # src/ai/providers.py 的 Anthropic provider
+# google.genai 的 __init__ 里会 ``import google.auth``；只把 google-genai 记进
+# EXPLICIT_DISTS 而不真实导入，google-auth / pyasn1-modules 等传递依赖不会被
+# 测量到，离线运行时自检会以 ModuleNotFoundError: google.auth 失败。
+import google.genai  # noqa: F401  # Gemini provider（方法体内延迟导入）
 import docx  # noqa: F401       # python-docx：.docx 知识导入
 import pypdf  # noqa: F401      # .pdf 知识导入
 import sqlalchemy  # noqa: F401  # 记忆/知识库 ORM
