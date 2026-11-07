@@ -19,6 +19,7 @@
     **补证（不改写上述历史结果）：**C7 已补采基线、C9 已补安装树验证，见 §7；`bb6b654c` 那一轮
     的判定文本仍是它当时的事实，不回填成 PASS。
   - BLOCKED（1）：C11 HC-01 待裁决（决策隔离，不是工程阻断）；5 项裁决与建议见 §7.3。
+    **后续（不改写本条历史）：**2026-11-06 已由 owner 裁决并记录 ADR-HC01，C11 状态见 §7.3。
 - **失败归因：无。** `FAIL=0`，C3/C12 均 `0 failed`，没有需要区分「假失败 / 真红」的条目。
 - 决策时 HEAD：`d2a62b0e`。基线之后已有 `e0163d59`、`d2a62b0e` 两个提交；
   此外工作区还有未提交的安全修复、管家链路、多账号体系改动。
@@ -174,9 +175,12 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 
 - 裁决组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
 - 裁决落点：**已记录** [ADR-HC01-baseline-binding.md](../adr/ADR-HC01-baseline-binding.md)（2026-11-06）。
-- **C11 判定未变**：`check_hc01` 仍恒派生 `BLOCKED`——这是**判定事实**
-  （HC-01 是冻结的人类主权门），不是工程阻塞；记录 ADR 不改变 `RELEASE READY`，
-  也没有为了让门禁变绿去改口径。保管断裂按「**保管链断裂、行为人未查明**」披露。
+- **裁决前 → 裁决后**：裁决前 C11 = `BLOCKED — HUMAN DECISION PENDING`，`RELEASE READY=False`
+  的理由是 C9 + C11；[ADR-HC01-baseline-binding.md](../adr/ADR-HC01-baseline-binding.md)
+  记录后 C11 = **已裁决（ADR-HC01）**，`RELEASE READY=False` 的理由**只剩 C9**
+  （桌面分发形态没有真实 CD 环境可验，属形态差异）。
+- **机器口径不变**：`check_hc01` 仍按冻结的人类主权门设计打印 `BLOCKED`，本文件不改写该机器
+  事实，也不为了变绿去改判定。保管断裂按「**保管链断裂、行为人未查明**」披露。
 - 证据：[hc01-pending-decisions-2026-11-06.md](hc01-pending-decisions-2026-11-06.md)；
   `docs/hc01-status.md` §4.1 已加裁决指针。
 
@@ -208,14 +212,14 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 | C8 | PASS | `/v1/metrics/prometheus`=200、10035 bytes、48 指标族（floor 40） |
 | C9 | NOT VERIFIED | Dockerfile + alembic 在；real CD absent=True |
 | C10 | PASS | 独立验证 harness 在 |
-| C11 | BLOCKED | HC-01 人工裁决（判定事实） |
+| C11 | **已裁决（ADR-HC01）** | 机器 `check_hc01` 仍打印 `BLOCKED`（冻结门设计，不改口径） |
 | C12 | PASS | 7639 / 0 / 0 |
 
-`PASS=10 FAIL=0 BLOCKED=1 NOT_VERIFIED=1 ERROR=0`；`RELEASE READY = False`（C9 + C11，均为判定事实）。
+`PASS=10 FAIL=0 BLOCKED=1 NOT_VERIFIED=1 ERROR=0`；`RELEASE READY = False`（**裁决后唯一理由 = C9**：桌面分发形态无真实 CD，属形态差异；机器 C11 仍打印 `BLOCKED`，但不计入未决理由）。
 
 ### 8.3 失败归因
 
-**无失败**（FAIL=0、ERROR=0），无需归因表。C9/C11 的说明见 §8.2 与 §7。
+**无失败**（FAIL=0、ERROR=0），无需归因表。C9 的说明见 §8.2 与 §7；C11 已裁决（ADR-HC01），机器门仍打印 `BLOCKED`（不改口径）。
 
 ### 8.4 C7 与并发干扰
 

@@ -5,7 +5,9 @@
 > 未改动快照、未改动 live 库**。
 >
 > 本文件的用途：把「要裁什么」摊平成 5 行，供 owner 直接裁决。
-> **C11 当前派生 `BLOCKED` 是判定事实（ADR 未记录），不是工程侧还在等什么。**
+> **状态（2026-11-06）：5 项已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](../adr/ADR-HC01-baseline-binding.md)；
+> C11 = 已裁决（ADR-HC01），机器 `check_hc01` 仍按冻结门设计打印 `BLOCKED`。**
+> 本文件保留裁决前的问题陈述，作为历史记录。
 
 ## 1. 五项裁决（裁什么 / 选项 / 后果 / 建议）
 
@@ -36,7 +38,7 @@
 | 记录 ADR | 把 5 项结论写成 ADR（建议 `docs/adr/ADR-HC01-baseline-binding.md`），含选项、后果、裁决人、时间 |
 | 迁移起始清单 | 若选 A，迁移开始时现场记录 live hash / 行数 / `schema_version` / `max(seq)`（参数化来源） |
 | 保管不变量 | 冻结基线一律只读 ACL + 记录 operator + 采集前后 hash（防第 2 项同类断裂再发生） |
-| C11 判定 | **在 ADR 记录前，C11 仍派生 `BLOCKED`；记录后由 `check_hc01` 按既有规则重跑**。本轮不改 `verify_readiness.py` 的判定 |
+| C11 判定 | **ADR 已记录（2026-11-06）：C11 = 已裁决（ADR-HC01）；`RELEASE READY=False` 的理由只剩 C9（桌面分发形态无真实 CD，属形态差异）。本轮不改 `check_hc01`，机器门仍打印 `BLOCKED`** |
 
 ## 4. 冻结包原始事实锚点（供裁决时对照）
 

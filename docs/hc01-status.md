@@ -57,8 +57,9 @@ persisted chain continuity not demonstrated
 - **保管断裂披露（随 ADR 一起看）**：冻结快照在取证之后被**未查明身份的进程**以读写打开
   （`-wal` / `-shm` mtime 晚于取证）；主文件字节 / `page_count` / freelist 未变、`-wal` 0 字节、
   `integrity_check=ok`。**内容完整不等于保管完好，行为人未查明。**
-- **C11 判定不随 ADR 改变**：`check_hc01` 仍恒返回 `BLOCKED`——这是判定事实
-  （HC-01 是冻结的人类主权门），不是工程阻塞，也没有为了变绿去改口径。
+- **C11 口径（裁决后）**：C11 = **已裁决（ADR-HC01）**；机器 `check_hc01` 仍恒返回 `BLOCKED`
+  （HC-01 是冻结的人类主权门，按冻结门设计打印，不是工程阻塞，也没有为了变绿去改口径）。
+  `RELEASE READY=False` 的理由只剩 **C9**（桌面分发形态无真实 CD，属形态差异）。
 
 ### 4.2 最终矩阵 exit 1 的原因不在 HC-01
 

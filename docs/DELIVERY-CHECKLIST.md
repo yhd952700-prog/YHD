@@ -13,10 +13,13 @@
 >    freelist 未变，`-wal` 0 字节，`integrity_check=ok`；**不可证的是行为人是谁**。
 >    本清单及所有引用该快照的文档一律写作「**保管链断裂、行为人未查明**」。
 >    裁决见 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)。
-> 2. **C11 = BLOCKED 是判定事实，不是工程阻塞**：`check_hc01` 把 HC-01 当作冻结的
->    人类主权门，工程侧不自行改判；记录 ADR **不会**让 C11 变绿，也不应为了好看去改。
-> 3. **`RELEASE READY = False`**：最终 hash 全量跑完之前一直是 False；本轮补证
->    （C7 基线、C9 安装树两轮、C9 前端缺陷修复、C11 裁决）都没有改变这个结论。
+> 2. **C11 已裁决（ADR-HC01）**：5 项裁决由 owner 拍定并记录
+>    [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)。机器门 `check_hc01`
+>    仍按冻结的人类主权门设计打印 `BLOCKED`——这是机器口径，不是「裁决未做」；工程侧
+>    不改判定，也不为了好看去调阈值。
+> 3. **`RELEASE READY = False` 的理由只剩 C9**：桌面分发形态没有真实 CD 环境可验，
+>    属**形态差异**，不是产品缺陷。安装树的真实升级/回滚（`c9b-*` 证据）已覆盖交付需求，
+>    但**不等于「真实 CD 已验过」**，本条不写成「已全部验证」。
 
 ## 0. 安装包
 
@@ -121,7 +124,7 @@
 | 13 | 能力地图 | 已完成 | [capability-map.md](capability-map.md)，commit `1ffe055a` | — |
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-16（E-9～E-16 为本轮追加） | — |
-| 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 仍为 False（未改口径、未把补证写成 PASS） |
+| 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
@@ -315,9 +318,10 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 
 - 裁决组合：**Path A + accept-with-disclosure + 固定/参数化拆分 + 不做 v1→v9 + 暂不授权重采。**
 - **已记录 ADR**：[ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)（含保管断裂事实与「行为人未查明」、
-  5 项裁决、后果与引用规则）。
-- **C11 仍派生 `BLOCKED`**：这是判定事实（`check_hc01` 恒把 HC-01 当冻结人类主权门），
-  **不是工程阻塞**；记录 ADR 不改变 `RELEASE READY`，本轮也没有为了让门禁变绿去改判定。
+  5 项裁决 + 逐项「可推翻条件」、裁决前后口径差异、后果与引用规则）。
+- **裁决后口径**：C11 = **已裁决（ADR-HC01）**；裁决前为 `BLOCKED — HUMAN DECISION PENDING`。
+  机器门 `check_hc01` 仍按冻结人类主权门设计打印 `BLOCKED`（不改口径），但
+  `RELEASE READY=False` 的理由已只剩 **C9**（见 §5.10）。
 - 证据：[hc01-pending-decisions-2026-11-06.md](evidence/hc01-pending-decisions-2026-11-06.md)、
   [hc01-status.md](hc01-status.md) §4.1 指针、
   [c11-readiness-only-2026-11-06.log](evidence/c11-readiness-only-2026-11-06.log)（549 字节：
@@ -400,18 +404,22 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | C8 Observability | PASS | `/v1/metrics/prometheus`=200、10035 bytes、**48 个真实指标族**（floor 40）；`http_requests_total` 有值；`executor_fence_*`、`coordinator_admission_contention_total` 在 |
 | C9 Deployment/upgrade | NOT VERIFIED | Dockerfile + alembic 在；**真实 CD 环境缺失**（诚实口径，不改判定） |
 | C10 Independent verification | PASS | 独立验证 harness 在 |
-| C11 HC-01 | BLOCKED | HC-01 `GO=BLOCKED — HUMAN DECISION PENDING`（判定事实，非工程阻塞；裁决已记 ADR） |
+| C11 HC-01 | **已裁决（ADR-HC01）** | owner 5 项裁决已记录；机器 `check_hc01` 仍打印 `BLOCKED`（冻结门设计，不改口径），不计入未决理由 |
 | C12 No unexplained failures | PASS | 7639 / 0 / 0，无未解释重大失败 |
 
 - **verdict**：`PASS=10 FAIL=0 BLOCKED=1 NOT_VERIFIED=1 ERROR=0`，`RELEASE READY = False`。
-  为 False 的两个原因是 C9（无真实 CD）与 C11（人工裁决），均为既有判定事实，不是缺陷。
+- **False 的唯一理由 = C9**：桌面分发形态没有真实 CD 环境可验，属**形态差异**，不是缺陷；
+  安装树真实升级/回滚（`c9b-build/upgrade/rollback/history/health/restart`）已覆盖交付需求，
+  但**不等于「真实 CD 已验过」**，不写成「已全部验证」。
+- **C11 口径差异**：裁决前 False 的第二个原因是 C11（人工裁决未定）；ADR-HC01 记录后
+  C11 = **已裁决（ADR-HC01）**，机器 `check_hc01` 仍打印 `BLOCKED`（冻结门设计，不改口径）。
 - **CI**：`72fd9b17` 两条 run 全绿 —— `42323536105`（Release Readiness Contract C1..C12、
   Independent Verification C10）与 `42323536110`（Build / Run Tests 3.11+3.12 /
   Architecture Gate / Security Scan / Guardrails / Console A11y / Smoke / Observability /
   P0 Gate，13 个 job 全部 success）。两腿一致 `7596 passed / 40 skipped / 3 xfailed`
   （=7639）。契约探针实跑 `PASS: contract matches runtime -- 118 paths (+1 documented
   schema-excluded), 0 ghosts, 0 missing, methods agree`。
-- **失败归因**：**无失败**（FAIL=0、ERROR=0）。C9/C11 见上。
+- **失败归因**：**无失败**（FAIL=0、ERROR=0）。C9 见上；C11 已裁决，见 §5.7。
 - **C7 并发说明**：本轮跑前 18:50 与跑中多次采样，CPU 负载 1%→9%，8080 端口**无监听**，
   无打包/安装进程；C7 首跑即 PASS，故**未触发**「单独 `--only C7` 重跑」规则。
 - **过程 hash 作废说明**：`ae7935a7`（C7 首跑红 0.059 > 0.055，已披露方差带内；C3/C12 PASS
@@ -436,8 +444,8 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §2 #9 | `scripts/verify_first_run_e2e.py` / `docs/first-run-e2e.md` | — | 存在，20,237 / 3,559 字节 | 一致 |
 | §2 #1 | `docs/END-USER-GUIDE.md` | — | 存在，9,107 字节 | 一致 |
 | §2 #13 | `docs/capability-map.md` | — | 存在，18,738 字节 | 一致 |
-| §2 #14 | `docs/hc01-status.md` | — | 存在，8,514 字节 | 一致（§4.1 已改为“已裁决 + ADR 指针”） |
-| §2 #15 | `docs/known-gaps.md` | — | 存在，27,684 字节 | 一致 |
+| §2 #14 | `docs/hc01-status.md` | — | 存在，8,662 字节 | 一致（§4.1 已改为「已裁决 + ADR 指针 + C11 裁决后口径」） |
+| §2 #15 | `docs/known-gaps.md` | — | 存在，36,817 字节 | 一致（E-16 已改为「已完成」，C11 已裁决） |
 | §5.3 | `docs/evidence/regression-cc3af30d.txt` | — | 存在，2,430 字节 | 一致（上一轮全量原始输出） |
 | §5.5 | `docs/evidence/delta-tests-de1b0d87.xml` | — | 存在，15,351 字节 | 一致 |
 | §5.6 | `D:\cache\temp\verify-full-e18169e6-INVALID.log` | — | 存在，3,498 字节（仓库外，仅追溯） | 一致 |
@@ -458,8 +466,8 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | §5.7 / §7.2 | `docs/evidence/c9-upgrade-2.json` / `c9-rollback-2.json` | — | 存在，301 / 230 字节 | 一致 |
 | §5.7 / §7.2 | `docs/evidence/c9-history.json` | — | 存在，42,617 字节 | 一致（完整升级 ledger） |
 | §5.7 / §7.2 | `docs/evidence/c9-restart-0.1.1.err.log` / `c9-restart-0.1.0.err.log` | — | 存在，1,243 / 1,244 字节 | 一致 |
-| §5.7 / §7.3 | `docs/evidence/hc01-pending-decisions-2026-11-06.md` | — | 存在，6,324 字节 | 一致（5 项裁决原件：裁什么 / 选项 / 后果 / 建议） |
-| §5.7 / §7.3 / §0 披露 | `docs/adr/ADR-HC01-baseline-binding.md` | — | 存在，6,877 字节 | 一致（5 项裁决 + 保管断裂/行为人未查明 + C11 口径） |
+| §5.7 / §7.3 | `docs/evidence/hc01-pending-decisions-2026-11-06.md` | — | 存在，6,594 字节 | 一致（裁决前问题陈述保留 + 顶部「已裁决」状态） |
+| §5.7 / §7.3 / §0 披露 | `docs/adr/ADR-HC01-baseline-binding.md` | — | 存在，10,116 字节 | 一致（5 项裁决含逐项推翻条件 + 裁决前后口径 + 保管断裂/行为人未查明） |
 | §5.7 C9 修复 | `docs/evidence/c9-console-payload-2026-11-06.md` | — | 存在，8,533 字节 | 一致（缺陷修复报告） |
 | §5.7 C9 修复 | `docs/evidence/c9b-console-contract-2026-11-06.json` | — | 存在，3,325 字节 | 一致（机读汇总） |
 | §5.7 C9 修复 | `docs/evidence/c9b-build-0.1.2.txt` | — | 存在，937 字节 | 一致（构建日志，含签章 11 文件 / 指纹） |
