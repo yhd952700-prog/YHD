@@ -29,18 +29,22 @@ import type { AuthConfig } from './lib/auth'
 import { componentLabel } from './lib/format'
 import {
   UNAUTHENTICATED_EVENT,
+  clearPendingRecovery,
   clearSession,
   decodeToken,
   getSession,
   logout as performLogout,
+  readPendingRecovery,
   refreshIdentity,
   saveSession,
   sessionLossNotice,
 } from './lib/auth'
-import type { Session } from './lib/auth'
+import type { PendingRecovery, Session } from './lib/auth'
 import { useDeviceMode } from './lib/mode'
 import { useApi } from './lib/api'
 import type { HealthPayload, RosterPayload } from './lib/contracts'
+import { deriveGoalNotices } from './lib/goalNotices'
+import type { GoalsResponse } from './lib/operator'
 import { deriveProviderStatus } from './lib/providerStatus'
 import { applyReducedMotion, getReducedMotion } from './lib/reducedMotion'
 import {
@@ -68,10 +72,12 @@ import { Knowledge } from './pages/Knowledge'
 import { DataCenter, SystemStatus } from './pages/Operations'
 import { Preflight } from './pages/Preflight'
 import { Settings } from './pages/Settings'
+import { About } from './pages/About'
 import { Workbench } from './pages/Workbench'
 import { Backup } from './pages/Backup'
 import { Members } from './pages/Members'
 import { Memory } from './pages/Memory'
+import { MyData } from './pages/MyData'
 import { MyEmployees } from './pages/MyEmployees'
 import { MyKeys } from './pages/MyKeys'
 import { PermissionMatrix } from './pages/PermissionMatrix'
@@ -82,6 +88,24 @@ import { buildProfile, deriveCaps } from './lib/accountCaps'
 import { countTreeMembers, loadAccounts, loadTree, useAccountData } from './lib/accounts'
 import type { AccountNode, AccountsPayload } from './lib/accounts'
 import { visibleNavKeys } from './lib/nav'
+
+/** 把恢复码导出成本地文件；内容与设置页原来提供的一致。 */
+function downloadRecovery(recovery: PendingRecovery): void {
+  const payload = {
+    format: 'liuhao-recovery-material',
+    account: recovery.account,
+    recovery_code: recovery.code,
+    generated_at: new Date().toISOString(),
+    note: '此文件由本机界面生成，未加密。请保存到离线介质，不要放在同步盘。',
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `liuhao-recovery-${recovery.account || 'account'}.json`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
 
 /** 未认证时的诚实初值 —— 绝不假装"安全运行"。 */
 const EMPTY_STATE: ApprovalUiState = {
@@ -120,6 +144,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
     sub: '真实配置预检结果 —— 只读，不含任何配置值',
   },
   settings: { title: '系统设置', sub: '端形态 / 主题 / 会话 / 通知' },
+  about: { title: '关于与隐私', sub: '版本 / 数据目录 / 加密边界 / 联网说明 / 许可证' },
   // ── 账号面（§9.8）──────────────────────────────────────────────────
   members: { title: '成员与权限管理', sub: '成员、状态与 Key 授权；写操作都由服务端记录审计' },
   matrix: { title: '权限矩阵', sub: '按成员调整可执行范围' },
@@ -128,6 +153,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   recovery: { title: '恢复码', sub: '忘记密码时重置；轮换后旧码立即失效' },
   'my-members': { title: '我的账号', sub: '你创建的账号及状态' },
   'my-keys': { title: '我的 Key', sub: 'Key 归属与用量' },
+  'my-data': { title: '我的数据', sub: '导出人可读 ZIP；记忆与知识库可回导' },
   memory: { title: '记忆', sub: '只读检索与导出' },
 }
 
@@ -168,6 +194,16 @@ function App() {
    * 这里记下原因，登录页据此给出「需要重新登录」的明确提示与入口。
    */
   const [loginNotice, setLoginNotice] = useState<'expired' | 'logged-out' | null>(null)
+
+  /**
+   * 图形化首启刚创建的恢复码。
+   *
+   * 设置页提交后直接进入主界面，所以恢复码不能停在中间页；它被暂存在本机，
+   * 在这里以横幅出现一次。用户下载或点"我已保存"后即清除。
+   */
+  const [pendingRecovery, setPendingRecovery] = useState<PendingRecovery | null>(() =>
+    readPendingRecovery(),
+  )
 
   /**
    * 只读查看：只禁用写操作，**不切换数据源**。
@@ -271,7 +307,7 @@ function App() {
   // 用真实接口复核"这个人还是不是人类"。令牌可能比主体的"人类性"活得久，
   // 因此令牌有效不等于还能用 —— 被停用时要当场退回登录页。
   useEffect(() => {
-    if (!session) return
+    if (!session?.token) return
     let alive = true
     void (async () => {
       const info = await refreshIdentity()
@@ -294,25 +330,35 @@ function App() {
         }
         return
       }
-      setSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              principal: info.principal || prev.principal,
-              displayName: info.display_name ?? prev.displayName,
-              scope: info.scope ?? prev.scope,
-              expiresAt: info.expires_at ?? prev.expiresAt,
-              parentAccountId: info.parent_account_id ?? prev.parentAccountId,
-              path: info.path ?? prev.path,
-              depth: Number.isFinite(Number(info.depth)) ? Number(info.depth) : prev.depth,
-            }
-          : prev,
-      )
+      setSession((prev) => {
+        if (!prev) return prev
+        const next = {
+          ...prev,
+          principal: info.principal || prev.principal,
+          displayName: info.display_name ?? prev.displayName,
+          scope: info.scope ?? prev.scope,
+          expiresAt: info.expires_at ?? prev.expiresAt,
+          parentAccountId: info.parent_account_id ?? prev.parentAccountId,
+          path: info.path ?? prev.path,
+          depth: Number.isFinite(Number(info.depth)) ? Number(info.depth) : prev.depth,
+        }
+        // 服务端复核结果通常与本地一致；返回同一个对象引用，避免 effect 依赖
+        // 因对象身份变化而再次触发，把自己变成 30rps 的 /v1/auth/me 轮询。
+        const unchanged =
+          next.principal === prev.principal &&
+          next.displayName === prev.displayName &&
+          next.scope === prev.scope &&
+          next.expiresAt === prev.expiresAt &&
+          next.parentAccountId === prev.parentAccountId &&
+          next.path === prev.path &&
+          next.depth === prev.depth
+        return unchanged ? prev : next
+      })
     })()
     return () => {
       alive = false
     }
-  }, [session])
+  }, [session?.token])
 
   /** 切换页面，并把当前页反映到 URL（`?p=`），让深链与刷新都停在原处。 */
   const navigate = useCallback((key: string) => {
@@ -453,6 +499,8 @@ function App() {
   // 503 必须接受：降级响应带着完整的检查项，那正是最该显示真话的时刻。
   const ready = useApi<HealthPayload>(authed ? '/v1/ready' : null, 30_000, [503])
   const roster = useApi<RosterPayload>(authed ? '/v1/dashboard/roster' : null, 60_000)
+  // 通知栏要展示最近 24 小时的目标终态；这里只读列表，不触发任何执行。
+  const goals = useApi<GoalsResponse>(authed ? '/v1/goals' : null, 30_000)
   const authConfig = useApi<AuthConfig>(authed ? '/v1/auth/config' : null, 0)
   // 模型状态的单一事实源：只读 /v1/health 的 ai_provider。
   // 名册仍负责"各项有没有密钥"，但**不再**提供"是不是真实模型"的判据 ——
@@ -589,7 +637,7 @@ function App() {
           title: '所有服务商都缺少密钥',
           detail: `${unconfigured
             .map((item) => item.label)
-            .join('；')} 都还没有配置密钥。下一步：到「模型」页填入任意一家的密钥。`,
+            .join('；')} 都还没有配置密钥。下一步：到「系统设置 → 模型管理」填入任意一家的密钥。`,
         })
       }
     } else if (roster.error) {
@@ -621,6 +669,9 @@ function App() {
       })
     }
 
+    // 4) 派活结果：只报最近 24 小时的终态，进行中的任务不是通知。
+    items.push(...deriveGoalNotices(goals.data?.goals))
+
     return items
   }, [
     authConfig.data,
@@ -631,6 +682,7 @@ function App() {
     roster.data,
     roster.error,
     provider,
+    goals.data,
   ])
 
   // ---------------------------------------------------------------------
@@ -672,12 +724,48 @@ function App() {
     >
       {viewAs && <ReadOnlyBanner principal={viewAs} onExit={() => setViewAs(null)} />}
 
+      {pendingRecovery && (
+        <div
+          className="os-note"
+          role="status"
+          style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}
+        >
+          <strong>账号已就绪。下面是恢复码（只显示这一次）</strong>
+          <code style={{ fontSize: 14, wordBreak: 'break-all' }}>{pendingRecovery.code}</code>
+          <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
+            忘记密码时用它重置。请保存到离线介质，不要截图发到聊天工具。
+          </span>
+          {pendingRecovery.warning && (
+            <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
+              {pendingRecovery.warning}
+            </span>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="os-btn" onClick={() => downloadRecovery(pendingRecovery)}>
+              下载恢复材料
+            </button>
+            <button
+              type="button"
+              className="os-btn os-btn-ghost"
+              onClick={() => {
+                clearPendingRecovery()
+                setPendingRecovery(null)
+              }}
+            >
+              我已保存
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="os-page-head">
         <h1 className="os-page-title">{meta.title}</h1>
         <p className="os-page-sub">{meta.sub}</p>
       </div>
 
-      {active === 'overview' && <Overview query={query} provider={provider} />}
+      {active === 'overview' && (
+        <Overview query={query} provider={provider} onNavigate={navigate} />
+      )}
       {active === 'butler' && (
         <Butler
           query={query}
@@ -717,6 +805,7 @@ function App() {
       {active === 'identity' && <Identity query={query} profile={profile} />}
       {active === 'memory' && <Memory profile={profile} caps={caps} readOnly={readOnly} />}
       {active === 'my-keys' && <MyKeys profile={profile} caps={caps} readOnly={readOnly} />}
+      {active === 'my-data' && <MyData profile={profile} readOnly={readOnly} />}
       {active === 'members' && (
         <Members
           profile={profile}
@@ -743,6 +832,7 @@ function App() {
       {active === 'recovery' && <Recovery caps={caps} readOnly={readOnly} />}
       {active === 'status' && <SystemStatus provider={provider} />}
       {active === 'preflight' && <Preflight />}
+      {active === 'about' && <About />}
       {active === 'settings' && (
         <Settings
           device={device}
