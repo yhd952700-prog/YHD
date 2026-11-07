@@ -11,6 +11,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 | # | Gap | Impact | Status |
 |---|-----|--------|--------|
 | 1 | Local `semgrep` CLI cannot start | Development tooling only | Open, accepted |
+| 2 | Gemini real success path unverified (no API key) | Gemini option is wired to `google-genai`; only a fake-key 400 proves the request reaches Google | Open, accepted |
 
 ---
 
@@ -39,6 +40,32 @@ or wait for a semgrep release whose `mcp` range includes 2.x.
 **Evidence.** `pip install -r requirements.txt` succeeds and the test suite
 passes with `mcp==2.1.1` installed; the failure only appears when semgrep is
 added to the same environment.
+
+---
+
+## 2. Gemini's real success path is unverified because no API key is available
+
+**What happens.** `GoogleProvider.generate()` now uses the `google-genai` SDK
+(`google.genai`), and the lock ships `google-genai==2.22.0` with
+`protobuf==6.33.6`. With a deliberately invalid key the call reaches Google
+and fails with `400 API_KEY_INVALID`, which proves the client wiring is real.
+A **successful** generation has not been observed: this machine has no valid
+`GOOGLE_API_KEY` / `GEMINI_API_KEY`.
+
+**Why we are not closing it now.** Verifying the success path needs a funded
+Google AI Studio key; we do not have one and will not fabricate a passing
+result. Response parsing (single part, multi-part, empty, upstream error,
+missing SDK) is covered by a fake `google.genai` client in
+`tests/test_provider_google_genai_parsing.py` — that tests our code, not
+Google's live endpoint.
+
+**Impact.** The Gemini option is wired and reports failures honestly, but
+"fill in a real key and get an answer" is unproven in this build.
+
+**How to close it if it matters later.** Run one real generation with a valid
+key (e.g. `GOOGLE_API_KEY=... python -c "..."` against
+`GoogleProvider.generate()`), record the response and evidence, then remove
+this entry.
 
 ---
 
