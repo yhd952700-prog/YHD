@@ -66,6 +66,9 @@ APP_TREE_ROOT_FILES = (
     "LiuHao.bat",
     "START-HERE.txt",
 )
+#: 许可证声明与文本（THIRD-PARTY-NOTICES.txt、licenses/）由安装包随包分发；
+#: 升级包的允许写入根（src/upgrade/manager.py::INSTALL_ROOTS）尚未包含它们，
+#: 故此处不列入 —— 升级只覆盖文件、不删除，安装目录里的许可证文本会保留。
 APP_TREE_ROOT_GLOBS = ("*.py",)
 APP_TREE_SKIP_SUFFIXES = {
     ".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm",

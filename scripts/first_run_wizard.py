@@ -201,15 +201,15 @@ def run_wizard(skip: bool = False) -> int:
         print()
         if not _has_loginable_human():
             print("  !! 当前没有可登录的人类身份，登录页将无法通过。")
-            print("     补建一个管理员身份：")
-            print("       python scripts/register_human_identity.py "
+            print("     补建一个管理员身份（在程序目录下执行）：")
+            print("       runtime\\python.exe scripts\\register_human_identity.py "
                   "--principal <name> --password-stdin")
         print("  !! 若未配置模型，聊天功能不可用。")
         print("     在控制台「模型管理」里添加，或重跑本向导。")
         return 0
 
     # 已配置完整（有可登录身份 + 有启用模型）→ 不打扰，直接退出。
-    # 这样双击 start-liuhao.bat 时向导只在真正需要时弹出来。
+    # 这样双击 LiuHao.bat 时向导只在真正需要时弹出来。
     if _has_loginable_human() and _has_enabled_model():
         print("[ok] 已检测到管理员身份和模型配置，跳过首次运行向导。")
         return 0
@@ -235,9 +235,10 @@ def run_wizard(skip: bool = False) -> int:
     # ---- 2. 模型 provider ----
     print()
     print("[2/2] 选择 AI provider（决定聊天用哪个模型）。")
-    print("  1) Ollama 本地（需先 `ollama pull <model>`）")
+    print("  1) Ollama 本地（需先安装 Ollama 并执行 ollama pull <model>）")
     print("  2) OpenAI 兼容云（base_url + API Key）")
-    print("  0) 跳过（聊天功能暂不可用，之后在控制台添加）")
+    print("  0) 跳过（没 Key 也能先装；之后在「系统设置 → 模型管理」添加）")
+    print("     DeepSeek Key 申请：https://platform.deepseek.com →「API Keys」")
     choice = _prompt("选择", default="0")
     if choice == "1":
         model = _prompt("模型名（如 qwen2.5:7b）", default="qwen2.5:7b")
@@ -261,11 +262,14 @@ def run_wizard(skip: bool = False) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
     else:
-        print("  [skip] 未配置模型；聊天功能暂不可用，之后可在控制台添加。")
+        print("  [skip] 未配置模型；安装与启动不受影响，"
+              "之后可在「系统设置 → 模型管理」添加。")
 
     print()
     print("=" * 62)
-    print("向导完成。现在可以双击 start-liuhao.bat 启动。")
+    print("向导完成。接着会自动启动服务，并尝试打开 http://127.0.0.1:8080 。")
+    print("如果浏览器没有自动打开，请手动访问 http://127.0.0.1:8080 。")
+    print("下一步：用刚创建的账号登录，聊天入口在左侧「工作台」→「直接对话」。")
     print("=" * 62)
     return 0
 

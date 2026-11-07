@@ -1,0 +1,17 @@
+SQLite — Public Domain
+
+The SQLite source code and the sqlite3.dll shipped in this installation are
+in the public domain. No license is required to use, copy, modify, or
+distribute them.
+
+Official statement: https://www.sqlite.org/copyright.html
+
+The author of SQLite, D. Richard Hipp, has dedicated the code to the public
+domain and disclaims any warranty:
+
+  The author disclaims copyright to this source code.  In place of a legal
+  notice, here is a blessing:
+
+     May you do good and not evil.
+     May you find forgiveness for yourself and forgive others.
+     May you share freely, never taking more than you give.

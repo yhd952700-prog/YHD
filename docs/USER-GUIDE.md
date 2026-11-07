@@ -2,7 +2,8 @@
 
 ## 一、首次启动
 
-双击桌面快捷方式（或 `%LOCALAPPDATA%\LiuHao\app\LiuHao.bat`）。
+双击桌面快捷方式（或程序目录下的 `LiuHao.bat`；默认 `D:\LiuHao\LiuHao.bat`，
+D 盘不可用时为 `%LOCALAPPDATA%\Programs\LiuHao\LiuHao.bat`）。
 
 1. 出现一个命令行窗口，显示「鎏灏首次运行向导」。
 2. **第 1/2 步：建管理员账号**（仅当机器上还没有可登录身份时出现）
@@ -15,7 +16,8 @@
      模型名（如 `gpt-4o-mini`）、API Key。API Key 用 AES-256-GCM 加密后写入
      `data\data\model_registry.sqlite3`，前端与日志只看到脱敏值。
    - `0` 跳过：先不配模型，之后在控制台「模型管理」里补。
-4. 向导完成后网关启动，浏览器自动打开 `http://127.0.0.1:8080`。
+4. 向导完成后网关继续启动，浏览器会尝试打开 `http://127.0.0.1:8080`；
+   没自动打开就手动访问，端口被占时以窗口打印的地址为准。
 
 > 已经配置过的机器再次启动会直接跳过向导，十几秒进入控制台。
 
@@ -34,7 +36,8 @@
 
 ## 三、数据在哪、怎么备份
 
-全部用户数据在 `%LOCALAPPDATA%\LiuHao\data`：
+全部用户数据默认在 `D:\LiuHaoData`（D 盘不可用时回退到
+`%LOCALAPPDATA%\LiuHao\data`；实际位置见程序目录 `data-dir.txt`）：
 
 | 文件/目录 | 内容 |
 | --- | --- |
@@ -69,7 +72,7 @@ API Key 无法解密。
    后，用安装目录里的运行时检查：
 
 ```powershell
-cd $env:LOCALAPPDATA\LiuHao\app
+cd D:\LiuHao
 runtime\python.exe -m src.upgrade check --app-root . --release-dir D:\releases
 # 也可以直接指向清单文件
 runtime\python.exe -m src.upgrade check --app-root . --manifest D:\releases\LIUHAO_RELEASE.json
@@ -87,19 +90,18 @@ runtime\python.exe -m src.upgrade check --app-root . --manifest D:\releases\LIUH
 当前安装包未做代码签名，属预期。点「更多信息 → 仍要运行」。只从可信来源获取安装包。
 
 **启动窗口一闪而过**
-以命令行方式运行 `%LOCALAPPDATA%\LiuHao\app\LiuHao.bat` 查看完整报错；常见原因是
-杀毒软件拦截了 `runtime\python.exe`，把安装目录加入白名单后重试。
+以命令行方式运行程序目录下的 `LiuHao.bat`（默认 `D:\LiuHao\LiuHao.bat`）查看完整报错；
+常见原因是杀毒软件拦截了 `runtime\python.exe`，把程序目录加入白名单后重试。
 
 **登录页进不去 / 忘记密码**
 用安装目录里的运行时重设：
 
 ```powershell
-cd $env:LOCALAPPDATA\LiuHao\app
-runtime\python.exe scripts\register_human_identity.py --principal <你的登录名> --password-stdin --file $env:LOCALAPPDATA\LiuHao\data\config\human_identities.json --secrets-file $env:LOCALAPPDATA\LiuHao\data\config\auth_secrets.json
+cd D:\LiuHao
+runtime\python.exe scripts\register_human_identity.py --principal <你的登录名> --password-stdin --file D:\LiuHaoData\config\human_identities.json --secrets-file D:\LiuHaoData\config\auth_secrets.json
 ```
 
-（运行前需设置 `LIUHAO_DATA_DIR=%LOCALAPPDATA%\LiuHao\data`；更简单的办法是
-在应用里用管理员账号处理。）
+（更简单的办法是在登录页用恢复码重置；见 [faq.md](faq.md) 第 5 节。）
 
 **回复是 `Mock response to: ...`（不是报错）**
 说明当前没有可用的真实模型，系统退回了演示模式。回控制台「模型管理」添加真实
@@ -110,7 +112,7 @@ runtime\python.exe scripts\register_human_identity.py --principal <你的登录�
 关闭占用 8080 的程序，或直接使用启动窗口打印的自动顺延端口。
 
 **占用空间**
-程序约 197.3 MB（未压缩，安装包约 41.7 MB）+ 数据目录（对话/审计随使用增长）。
+程序约 162.8 MiB（170,666,366 字节，安装包约 33.2 MiB / 34,838,298 字节，0.1.0 交付包实测）+ 数据目录（对话/审计随使用增长）。
 不含任何模型；Ollama 模型单独占约 2GB 以上。
 
 ## 七、本轮验证与仍未验证的部分
@@ -118,12 +120,13 @@ runtime\python.exe scripts\register_human_identity.py --principal <你的登录�
 - 安装后的开机自启（托盘）：**已验证**。注册表值指向安装目录内的
   `runtime\pythonw.exe` 与 `scripts\liuhao_desktop.py`，托盘窗口能创建；
   文件缺失时会拒绝写入并给出原因，不会写一个注定失败的登记项。
-- 本次构建的安装包（43,756,495 字节，SHA256 `D8FD0BC9…4461`）：**已实跑安装冒烟**
+- 0.1.0 交付包（34,838,298 字节，SHA256 `6B0179D8…9E88`）：**已实跑安装冒烟**
   ——静默安装到临时目录、启动服务、取得控制台首页、注册并登录、接入本机
   Ollama，`POST /v1/chat` 拿到真实回复，再静默卸载；未点击渲染后的前端表单
   （登录/发消息走的是同一套 HTTP API，前端视觉冻结后再补一次 UI 点击回归）。
 - 卸载器：静默卸载已验证——程序目录、桌面/开始菜单快捷方式、卸载注册表项移除，
-  `%LOCALAPPDATA%\LiuHao\data` 原样保留；交互式「是否删除数据」的“删除”分支未验证。
+  `data-dir.txt` 记录的数据目录原样保留；交互式「是否删除数据」的“删除”分支
+  已单独实测（连续两次确认后按实际数据目录删除）。
 - 真实模型回复（本机）：本轮冒烟用本机 Ollama `qwen2.5:3b` 实测——模型连通性探测通过
   （约 1.36 秒），`POST /v1/chat` 11.2 秒返回真实生成文本。
 - **填 Key 即用（安装版单进程）**：另起一份临时安装，只启动一次后端，通过控制台

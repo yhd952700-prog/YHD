@@ -14,15 +14,15 @@
 - 在 Windows 10/11 64 位电脑上本机安装；不需要管理员权限，不需要预装 Python。
 - 首次启动向导：创建管理员账号，选择本地 Ollama 或 OpenAI 兼容云模型。
 - 控制台：登录、工作台对话、模型管理与连接测试。
-- 数据默认保存在本机 `%LOCALAPPDATA%\LiuHao\data`；覆盖安装和卸载默认保留数据。
+- 程序默认装到 `D:\LiuHao`，数据默认保存在本机 `D:\LiuHaoData`（D 盘不可用时回退到 `%LOCALAPPDATA%\Programs\LiuHao` / `%LOCALAPPDATA%\LiuHao\data`）；覆盖安装和卸载默认保留数据；老版本用户覆盖安装保持原位置不变。
 
 不在这份清单里的能力，不要在本版发布页上写成“已支持”。
 
 ## 三步使用
 
 1. **安装**：双击 `LiuHao-Setup-<版本号>.exe`。Windows 提示“未知发布者 / SmartScreen 已阻止”时，点 **更多信息 → 仍要运行**。保留默认安装位置，完成后启动。
-2. **首次设置**：按向导创建管理员账号，选择模型。选 Ollama 就填本机模型名；选云端就填 `base_url`、模型名和 API Key。完成后浏览器打开 `http://127.0.0.1:8080`；如果端口被占，以启动窗口打印的地址为准。
-3. **发第一条消息**：用刚建的账号登录，在工作台输入一句话，收到回复即跑通。云端模型如果失败，先到 **模型管理 → 测试连接** 看错误码。
+2. **首次设置**：按向导创建管理员账号，再选模型。选 Ollama 就先从 <https://ollama.com> 安装并 `ollama pull` 一个模型；选云端就填 `base_url`、模型名和 API Key（DeepSeek 到 <https://platform.deepseek.com> 创建，填 `https://api.deepseek.com/v1` + `deepseek-chat`）。**没有 Key 也能装**：向导里选 `0) 跳过`，之后在 **系统设置 → 模型管理** 补上。完成后服务继续启动，浏览器会尝试打开 `http://127.0.0.1:8080`；没自动打开就手动访问，端口被占时以启动窗口打印的地址为准。
+3. **发第一条消息**：用刚建的账号登录，登录后落在「总览」，聊天入口在左侧 **工作台 → 直接对话**；输入一句话，收到回复即跑通。云端模型如果失败，先到 **模型管理 → 测试连接** 看错误码。
 
 ## 图片位置（三张占位）
 
@@ -69,8 +69,8 @@ Get-FileHash .\LiuHao-Setup-<版本号>.exe -Algorithm SHA256
 | --- | --- |
 | 操作系统 | Windows 10 / 11，64 位 |
 | 权限 | 普通用户即可，不需要管理员权限 |
-| 安装包体积 | 约 41.7 MiB（以最终发布文件为准） |
-| 安装后程序体积 | 约 197.3 MB |
+| 安装包体积 | 约 33.2 MiB（34,838,298 字节，0.1.0 交付包实测；以最终发布文件为准） |
+| 安装后程序体积 | 约 162.8 MiB（170,666,366 字节，10,502 个文件；同上） |
 | 磁盘 | 程序之外还要留出数据空间；Ollama 模型另需约 2 GB 起 |
 | 内存 | 建议 8 GB 及以上；16 GB 更稳（参考值，安装版未单独做低配实测，**待确认**） |
 | 网络 | 安装包可离线安装；本地 Ollama 可离线对话；云端模型需要联网 |
@@ -80,7 +80,7 @@ Get-FileHash .\LiuHao-Setup-<版本号>.exe -Algorithm SHA256
 ## 已知限制（发布时必须保留）
 
 1. **安装包未做代码签名。** 首次运行会出现 SmartScreen“未知发布者”，部分杀软可能误报。处理方式见安装说明。
-2. **安装包不含任何模型。** 首次使用需要自己安装 Ollama 并拉模型（约 2 GB 起），或填写云端 API Key。
+2. **安装包不含任何模型。** 首次使用需要自己安装 Ollama 并拉模型（约 2 GB 起），或填写云端 API Key；**不填 Key 也能安装和启动**，向导可先选 `0) 跳过`，之后在模型管理里补。
 3. **启动时有一个命令行窗口。** 关闭这个窗口就是停止服务；从托盘启动则可在托盘退出。
 4. **默认端口是 `8080`。** 被占用时程序会自动换端口，以启动窗口打印的地址为准。
 5. **多账号（主账号 / 子账号）体系本版本暂不包含。** 仓库里有设计文档，但当前安装版没有成员管理入口；是否在后续版本上线，**待确认**。
@@ -107,6 +107,6 @@ Get-FileHash .\LiuHao-Setup-<版本号>.exe -Algorithm SHA256
 - 产品名、安装路径、数据保留策略：`installer/liuhao.iss`
 - 安装步骤、SmartScreen、杀软、数据与卸载：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
 - 安装包与程序体积、不含模型、未签名：[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
-- 当前没有可发布的最终安装包：[known-gaps.md](known-gaps.md) E-13
+- 现有 0.1.0 正式产物在 `dist\installer`；本次最终包待转正后回填：[known-gaps.md](known-gaps.md) E-13
 - 多账号仅设计、管家 / 自动化 / 知识库 / 升级链状态：[account-hierarchy.md](account-hierarchy.md)、[known-gaps.md](known-gaps.md) D-2 / D-4 / D-7 / D-9、[self-upgrade.md](self-upgrade.md)
 - 系统定位：`Human-Sovereign Agent Operating System`：[ARCHITECTURE.md](ARCHITECTURE.md)

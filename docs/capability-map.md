@@ -106,7 +106,7 @@
 | 6.4 | 审批授权记录 | 🟡 半成品 | `src/gateway/policy.py:225/248/265` 端点，`main.py:1052` 挂载 | 可记录授权 | **没有执行端点**：`main.py:896-901` 明确“记录不等于放行，执行只能 in-process” |
 | 6.5 | 模型密钥加密存储 | 🟢 真接线 | `src/ai/model_config.py`（AES-256-GCM）；`src/gateway/models.py` 脱敏返回 | 是 | 真实加密落盘；`model_config.key` 与库必须成对备份 |
 | 6.6 | 限流 | 🟢 真接线 | `src/gateway/main.py:691-716` `RateLimitMiddleware` / `GlobalRateLimitMiddleware` | 是 | 进程内桶；覆盖仅部分写接口、无 TTL 回收（审查 0-16，未修） |
-| 6.7 | 数据目录隔离 / 升级不覆盖用户数据 | 🟢 真接线 | `scripts/launch_installed.py:181-232` 全部路径 `setdefault` 到 `%LOCALAPPDATA%\LiuHao\data` | 是（安装版入口） | 真实文件系统布局 |
+| 6.7 | 数据目录隔离 / 升级不覆盖用户数据 | 🟢 真接线 | `scripts/launch_installed.py:181-232` 优先读 `data-dir.txt`（安装器默认写 `D:\LiuHaoData`），未命中时回退 `%LOCALAPPDATA%\LiuHao\data` | 是（安装版入口） | 真实文件系统布局 |
 | 6.8 | PII 检测/脱敏 | 🔴 假实现 | `detect_pii` 仅被 `src/knowledge/rag_pipeline.py:23/82/114` 使用，而 `rag_pipeline` 无生产调用方 | 不可达 | 规则实现真实，未接入任何写入/检索路径 |
 | 6.9 | 保留/归档策略 | 🔴 假实现 | `src/kernels/retention/policy.py:45`、`archival.py:31-98` 多个 `NotImplementedError`；无生产调用方 | 不可达 | 未实现 |
 | 6.10 | 外部身份（IdP / KYC） | ⚫ 完全没有 | 无 | 不可达 | 无 |

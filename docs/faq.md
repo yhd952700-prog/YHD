@@ -37,8 +37,9 @@
 ### 1.5 还是不行
 
 - 看回复里的错误码，对照第 2 节。
-- 看日志：`%LOCALAPPDATA%\LiuHao\data\logs\liuhao.log`。
-- 看诊断记录：`%LOCALAPPDATA%\LiuHao\diagnostics`。
+- 看日志：数据目录下的 `logs\liuhao.log`（默认 `D:\LiuHaoData`，
+  回退时 `%LOCALAPPDATA%\LiuHao\data`；实际位置见程序目录 `data-dir.txt`）。
+- 看诊断记录：数据目录下的 `diagnostics`。
 - 发问题求助时，只发错误码和日志片段，**不要发完整 API Key**。
 
 ---
@@ -110,7 +111,7 @@
 如果你是用命令行升级器升级的：
 
 ```powershell
-cd "$env:LOCALAPPDATA\LiuHao\app"
+cd "D:\LiuHao"
 .\runtime\python.exe -m src.upgrade status --app-root .
 .\runtime\python.exe -m src.upgrade rollback --app-root .
 ```
@@ -131,24 +132,35 @@ cd "$env:LOCALAPPDATA\LiuHao\app"
 
 ## 5. 忘记密码怎么办
 
-### 5.1 当前版本的处理方式
+### 5.1 首选：用恢复码重置（登录页「忘记密码」）
 
-当前版本**没有**“忘记密码”按钮，也没有已上线的邮件/短信找回。
+1. 打开登录页，点「忘记密码」。
+2. 填账号名和恢复码（初始化时显示过一次的那串，形如 `RC-...`）。
+3. 设置新密码并登录。恢复码**一经使用即失效**；需要时在
+   **系统设置 → 恢复码** 重新生成（仅根账号，旧码立即作废）。
+   恢复码没有有效期，但只显示一次，请离线保存；它能随备份搬到别的电脑，按密钥对待。
 
-可以用安装目录里的命令行脚本，重设**同一个账号**的密码。做法如下，建议让懂电脑的人操作：
+**老版本升级上来的账号**可能还没有恢复码：登录页会提示「在本机生成恢复码」。
+点它之后，码不会显示在网页上，而是写进本机数据目录的 `recovery_code.txt`，
+打开该文件抄下来再重置。这个入口只在根账号**确实没有恢复码**时开放。
+
+### 5.2 备用：命令行重设（恢复码也不可用时）
+
+建议让懂电脑的人操作：
 
 1. 先退出鎏灏。
 2. 打开 PowerShell，执行：
 
 ```powershell
-$env:LIUHAO_DATA_DIR = "$env:LOCALAPPDATA\LiuHao\data"
+# 数据目录默认 D:\LiuHaoData；回退或改过位置时，按程序目录 data-dir.txt 的实际内容填
+$env:LIUHAO_DATA_DIR = "D:\LiuHaoData"
 $env:LIUHAO_NEW_PASSWORD = "你的新密码"
-cd "$env:LOCALAPPDATA\LiuHao\app"
+cd "D:\LiuHao"
 .\runtime\python.exe scripts\register_human_identity.py `
   --principal 你的登录名 `
   --permissions admin `
-  --file "$env:LOCALAPPDATA\LiuHao\data\config\human_identities.json" `
-  --secrets-file "$env:LOCALAPPDATA\LiuHao\data\config\auth_secrets.json"
+  --file "D:\LiuHaoData\config\human_identities.json" `
+  --secrets-file "D:\LiuHaoData\config\auth_secrets.json"
 ```
 
 3. 看到 `verified: an actual sign-in with this credential succeeded.`，说明新密码可用。
@@ -165,19 +177,24 @@ Remove-Item Env:LIUHAO_NEW_PASSWORD
 - 不知道登录名，先列出已有账号：
 
 ```powershell
-cd "$env:LOCALAPPDATA\LiuHao\app"
+cd "D:\LiuHao"
 .\runtime\python.exe scripts\register_human_identity.py --list `
-  --file "$env:LOCALAPPDATA\LiuHao\data\config\human_identities.json" `
-  --secrets-file "$env:LOCALAPPDATA\LiuHao\data\config\auth_secrets.json"
+  --file "D:\LiuHaoData\config\human_identities.json" `
+  --secrets-file "D:\LiuHaoData\config\auth_secrets.json"
 ```
 
 - 密码只保存为加盐哈希，不保存明文。
 
-### 5.2 当前版本没有恢复码入口
+### 5.3 恢复码的边界
 
-当前版本没有恢复码、恢复文件或在线找回入口。这些只是设计稿，未上线，**待确认**。不要按网上教程修改身份文件。
+- 恢复码只对**根账号**签发；成员账号由根账号在「成员」页处理。
+- 码只显示一次、只存哈希；任何界面与日志都不会再次显示明文。
+- 码没有有效期，但**一经使用即失效**；重新生成会让旧码立即作废。
+- 不要把恢复码发到群里或写进工单；它是账号的最高权限凭据。
+- 界面上的「在本机生成恢复码」只在根账号确实没有恢复码时开放，
+  写出的 `recovery_code.txt` 就在数据目录里，抄完建议删除该文件。
 
-### 5.3 如果账号文件和凭据文件都丢了
+### 5.4 如果账号文件和凭据文件都丢了
 
 当前版本没有自动重建入口。按这个顺序处理：
 
@@ -193,5 +210,5 @@ cd "$env:LOCALAPPDATA\LiuHao\app"
 - 安装、端口、杀软、数据目录、卸载保留数据：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
 - 模型配置、测试连接、错误码、Mock 回退：[END-USER-GUIDE.md](END-USER-GUIDE.md)、[USER-GUIDE.md](USER-GUIDE.md)、[capability-map.md](capability-map.md)、`src/ai/llm_support.py`
 - 升级与回滚、断电恢复、回滚会丢升级后数据：[self-upgrade.md](self-upgrade.md)、[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)
-- 忘记密码命令行重设、恢复码仅为设计：[USER-GUIDE.md](USER-GUIDE.md)、[account-hierarchy.md](account-hierarchy.md)、`scripts/register_human_identity.py`、`scripts/first_run_wizard.py`
+- 忘记密码与恢复码：[USER-GUIDE.md](USER-GUIDE.md)、[account-hierarchy.md](account-hierarchy.md)、`src/gateway/accounts.py`（恢复码/本机交接）、`scripts/register_human_identity.py`、`scripts/first_run_wizard.py`
 - 安装版完整更新链路、知识库嵌入真实 E2E 未验证：[known-gaps.md](known-gaps.md)

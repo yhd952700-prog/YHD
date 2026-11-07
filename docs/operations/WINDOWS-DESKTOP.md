@@ -201,7 +201,8 @@ stdin 管道协议**：
 （首次运行向导需要交互），托盘是状态窗口。
 
 启动器侧的日志提示指向它真正写的文件（`logs/liuhao.log`、`logs/error.log`，
-安装版在 `%LOCALAPPDATA%\LiuHao\data\logs`），诊断命令统一走
+安装版在数据目录下的 `logs`，默认 `D:\LiuHaoData\logs`，回退时为
+`%LOCALAPPDATA%\LiuHao\data\logs`，实际位置见程序目录 `data-dir.txt`），诊断命令统一走
 `scripts\liuhao_desktop.py diagnose --verify`——该入口会先把日志目录切到安装版
 布局，不会把用户指到空目录。
 
@@ -282,7 +283,8 @@ stdin 管道协议**：
 .venv\Scripts\python.exe -m src.desktop diagnose --verify
 ```
 
-默认输出到 `%LOCALAPPDATA%\LiuHao\diagnostics\liuhao-diagnostics-<时间戳>.zip`
+默认输出到数据目录下的 `diagnostics\liuhao-diagnostics-<时间戳>.zip`
+（默认 `D:\LiuHaoData`，回退时 `%LOCALAPPDATA%\LiuHao\data`，见程序目录 `data-dir.txt`）
 （可用 `LIUHAO_DIAGNOSTICS_DIR` 覆盖，或 `--out` 指定目录/文件）。
 
 **收录**：`manifest.json`（sha256）、`about.json`、`environment.json`（仅白名单环境
@@ -577,7 +579,7 @@ degraded 原因原样打印、timeout/exited 返回 None 且打印终点、日�
 |---|---|
 | 安装路径 | `D:\测试 路径\鎏灏`（同时含中文与空格） |
 | 静默安装 | exit 0；7,684 个文件 / 134,200,920 B；24.3–25.3 s |
-| 数据目录 | `%LOCALAPPDATA%\LiuHao\data`（程序目录内无 `data/`、`*.db`、`*.log`、`app.env`） |
+| 数据目录 | `D:\LiuHaoData`（回退 `%LOCALAPPDATA%\LiuHao\data`，以 `data-dir.txt` 为准；程序目录内无 `data/`、`*.db`、`*.log`、`app.env`） |
 | 首启启动门 | `state=ready`，网关就绪 3.58 s（应用自计 7,344.8 ms） |
 | 控制台首页 | `GET /` 200，1,628 B；浏览器在就绪后约 0.8 s 打开 |
 | 安装树 CLI | `up_to_date`（不是 `version_unknown`） |

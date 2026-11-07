@@ -76,10 +76,10 @@ python -m src.upgrade last-check --app-root .
 
 1. 显式 `--data-dir`（CLI）或 `UpgradeConfig(data_dir=...)`；
 2. 环境变量 `LIUHAO_DATA_DIR`；
-3. **安装树**（`<app-root>/runtime/python.exe` 存在）→ `%LOCALAPPDATA%\LiuHao\data`（与 `installer/liuhao.iss`、`scripts/launch_installed.py` 的规则一致）；
+3. **安装树**（`<app-root>/runtime/python.exe` 存在）→ 程序目录 `data-dir.txt` 记录的数据目录（安装器默认写 `D:\LiuHaoData`；回退 `%LOCALAPPDATA%\LiuHao\data`），与 `installer/liuhao.iss`、`scripts/launch_installed.py` 的规则一致；
 4. 开发/便携版 → `<app-root>/data`。
 
-`--app-root` 是**程序目录**（安装版为 `%LOCALAPPDATA%\LiuHao\app`）。不要把 `LIUHAO_WORKSPACE_ROOT` 当程序根：安装版启动器把它指向 `<data>/workspace`。周检查/HTTP API 的程序根默认取代码所在安装根，可用 `LIUHAO_APP_ROOT` 覆盖。
+`--app-root` 是**程序目录**（安装版默认 `D:\LiuHao`，回退时为 `%LOCALAPPDATA%\Programs\LiuHao`）。不要把 `LIUHAO_WORKSPACE_ROOT` 当程序根：安装版启动器把它指向 `<data>/workspace`。周检查/HTTP API 的程序根默认取代码所在安装根，可用 `LIUHAO_APP_ROOT` 覆盖。
 
 ### 1.3 受控自改代码
 

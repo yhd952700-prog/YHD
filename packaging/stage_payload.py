@@ -4,7 +4,7 @@
 产物结构（``--out`` 默认 ``dist/payload``）::
 
     dist/payload/
-      app/                     ← 安装到 %LOCALAPPDATA%\\LiuHao\\app 的全部内容
+      app/                     ← 安装到 D:\\LiuHao（回退 %LOCALAPPDATA%\\Programs\\LiuHao）的全部内容
         src/                   ← 网关 / 内核源码
         config/                ← 配置模板（已剔除任何凭据与密钥）
         console/               ← 驾驶舱构建产物（前端 build 输出）
@@ -43,6 +43,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "dist" / "payload"
 CONSOLE_DIST = REPO_ROOT / "apps" / "console" / "console" / "dist"
 ICON_PNG = REPO_ROOT / "apps" / "console" / "console" / "public" / "icon-192.png"
+NOTICES_FILE = REPO_ROOT / "packaging" / "THIRD-PARTY-NOTICES.txt"
+LICENSES_DIR = REPO_ROOT / "packaging" / "licenses"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -269,6 +271,21 @@ def _reset_out(out_dir: Path) -> None:
             entry.unlink()
 
 
+def _copy_notices(app_dir: Path) -> int:
+    """随包分发第三方许可证声明与运行时/前端许可证文本。
+
+    声明文件放进程序根目录；OpenSSL / libffi / SQLite / Tcl-Tk / MSVC 与
+    React 的许可证全文放在 ``licenses/``。Python 包自带的
+    ``*.dist-info/licenses/`` 已随运行时复制，无需重复。
+    """
+    if not NOTICES_FILE.is_file():
+        raise SystemExit(f"缺少第三方许可证声明：{NOTICES_FILE}")
+    if not LICENSES_DIR.is_dir():
+        raise SystemExit(f"缺少许可证文本目录：{LICENSES_DIR}")
+    shutil.copy2(NOTICES_FILE, app_dir / "THIRD-PARTY-NOTICES.txt")
+    return 1 + _copy_tree(LICENSES_DIR, app_dir / "licenses")
+
+
 def _write_start_bat(app_dir: Path) -> None:
     bat = """@echo off
 rem LiuHao AI OS - installed launcher. ASCII-only on purpose.
@@ -298,17 +315,38 @@ def _write_start_here(app_dir: Path, version: str) -> None:
     text = f"""鎏灏 LiuHao AI OS {version} —— 先看这里
 
 1. 双击本目录下的 LiuHao.bat（或桌面/开始菜单快捷方式）。
-2. 首次启动会在命令行窗口里进入向导：先建管理员账号，再选 AI Provider。
-   - 选 Ollama：需要先安装 Ollama 并 ollama pull 一个模型（约 2GB）。
-   - 选 OpenAI 兼容云：填 base_url、模型名、API Key（加密保存在数据目录）。
-3. 向导结束后浏览器会自动打开 http://127.0.0.1:8080 。
+   运行期间会有一个命令行窗口，请不要关闭它：关掉窗口就是停止服务。
+   重开请再双击桌面「鎏灏 LiuHao AI OS」快捷方式。
+
+2. 首次启动会在命令行窗口里进入向导：
+   先建管理员账号（默认 liuhao）和登录密码，请记下来；
+   再选 AI Provider，共三种：
+     a) Ollama 本地：先到 https://ollama.com 下载安装，再执行
+        ollama pull qwen2.5:7b（约 2GB），并保持 Ollama 在运行。
+     b) OpenAI 兼容云：填 base_url、模型名和 API Key。
+        没有 Key 也可以先装：DeepSeek 开放平台 https://platform.deepseek.com
+        注册后到「API Keys」页创建（形如 sk-...，按量计费）。
+        DeepSeek 填 base_url=https://api.deepseek.com/v1、模型名=deepseek-chat。
+     c) 0) 跳过：不配模型也能安装和启动；聊天会提示未配置模型，
+        之后到「系统设置 → 模型管理」补上即可。
+
+3. 向导结束后服务会继续启动，不需要关窗重开。浏览器会尝试打开
+   http://127.0.0.1:8080（端口被占用时自动顺延，以窗口打印的
+   「驾驶舱」地址为准）。若浏览器没有自动打开，把该地址手动复制到浏览器。
+
+4. 在登录页用第 2 步刚建的账号和密码登录。登录后落在「总览」，
+   聊天入口在左侧「工作台」→「直接对话」，在输入框里说第一句话即可。
 
 程序目录：默认 D:\\LiuHao（D 盘不可用时回退到 %LOCALAPPDATA%\\Programs\\LiuHao，
           当前用户目录，不需要管理员权限）。
 数据目录：默认 D:\\LiuHaoData（D 盘不可用时回退到 %LOCALAPPDATA%\\LiuHao\\data）。
           实际位置见程序目录下的 data-dir.txt；卸载默认保留。
+          已经装在 C 盘的老用户覆盖安装/升级时，保持原位置不变。
 本安装包不含任何模型权重，也不含任何密钥。
-程序未做代码签名，Windows 可能提示“未知发布者”，选择“仍要运行”即可。
+API Key 会用 AES-256-GCM 加密后保存在数据目录。
+程序未做代码签名，Windows 可能提示“未知发布者”，
+点「更多信息 → 仍要运行」即可继续。
+第三方软件许可证见本目录 THIRD-PARTY-NOTICES.txt 与 licenses 目录。
 """
     (app_dir / "START-HERE.txt").write_text(text, encoding="utf-8")
 
@@ -466,9 +504,14 @@ def _copy_runtime(app_dir: Path) -> int:
         f"""离线 Python 运行时
 ===================
 Python 版本：{sys.version.split()[0]}（Windows x64，随安装包分发）
-第三方依赖：按网关真实 import 图从构建虚拟环境复制，见 manifest.json。
+第三方依赖：按网关真实 import 图从构建虚拟环境复制，完整清单与版本见
+            安装目录上一级（程序根目录）的 THIRD-PARTY-NOTICES.txt。
 还包含：桌面壳所需的 tkinter / Tcl-Tk 数据、pywin32（系统托盘）。
-许可证：PSF License（见本目录 LICENSE.txt）、Tcl/Tk 各自许可证。
+许可证：CPython 为 PSF License（见本目录 LICENSE.txt）；
+        OpenSSL / libffi / SQLite / Tcl-Tk / MSVC 等运行时组件的许可证文本
+        见程序根目录 licenses\\ 目录（THIRD-PARTY-NOTICES.txt 有逐项索引）。
+        LICENSE.txt 中提到的 docs/license.tcltk 在本安装包中对应
+        licenses\\Tcl-Tk-license.terms 与 tcl\\tk8.6\\license.terms。
 本目录随安装包分发，收件人无需另行安装 Python。
 """,
         encoding="utf-8",
@@ -662,9 +705,11 @@ def build(out_dir: Path, version: str) -> int:
     print("[5/5] 写入入口脚本与清单")
     _write_start_bat(app_dir)
     _write_start_here(app_dir, version)
+    notices_count = _copy_notices(app_dir)
     icon_ok = _write_ico(ICON_PNG, app_dir / "assets" / "liuhao.ico")
     print(f"      入口     -> LiuHao.bat / START-HERE.txt"
           f"{' / assets/liuhao.ico' if icon_ok else ''}")
+    print(f"      许可证   -> THIRD-PARTY-NOTICES.txt / licenses（{notices_count} 个文件）")
 
     dev_hits = _audit_dev_paths(app_dir)
     blocking = [

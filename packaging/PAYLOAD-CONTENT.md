@@ -2,30 +2,37 @@
 
 > 清单由 `packaging/stage_payload.py` 生成；每次构建的实际结果以
 > `dist/payload/manifest.json` 为准（含发行包版本、文件数、体积）。
-> 本轮实测：**10,958 个文件 / 197.3 MB**（未压缩 payload）。
+> 本轮实测：**12,732 个文件 / 183,639,031 字节**（未压缩 payload）。
+> 安装后为 170,666,366 字节（0.1.0 交付包实测）；体积随版本变化。
 
 ## 目录布局
 
 ```
-%LOCALAPPDATA%\LiuHao\
-├─ app\                      程序目录（升级时整体替换，不含用户数据）
-│  ├─ runtime\               离线 CPython 3.12 运行时 + 85 个第三方发行包（含 tcl/tk 数据）
-│  ├─ src\                   网关 / 内核源码（含 src\desktop 托盘模块）
-│  ├─ config\                配置模板（已剔除凭据与私钥）
-│  ├─ console\               驾驶舱构建产物（Vite build 输出）
-│  ├─ scripts\               启动器 / 首次运行向导 / 身份注册 / 桌面托盘入口
-│  ├─ capability-registry.yaml
-│  ├─ error_types.py
-│  ├─ assets\liuhao.ico
-│  ├─ LiuHao.bat             快捷方式目标
-│  └─ START-HERE.txt
-└─ data\                     用户数据（卸载默认保留）
-   ├─ config\                human_identities.json / auth_secrets.json / app.env / integrity.key
-   ├─ data\                  model_registry.sqlite3 / model_config.key
-   ├─ workspace\             员工、目标、项目、工作区文件、JWT 吊销库
-   ├─ conversation_store.db
-   ├─ audit_store.db
-   └─ logs\
+D:\LiuHao\                    程序目录（升级时整体替换，不含用户数据）
+│                             D 盘不可用 → %LOCALAPPDATA%\Programs\LiuHao
+├─ runtime\                  离线 CPython 3.12 运行时 + 第三方发行包（含 tcl/tk 数据）
+├─ src\                      网关 / 内核源码（含 src\desktop 托盘模块）
+├─ config\                   配置模板（已剔除凭据与私钥）
+├─ console\                  驾驶舱构建产物（Vite build 输出）
+├─ scripts\                  启动器 / 首次运行向导 / 身份注册 / 桌面托盘入口
+├─ licenses\                 OpenSSL / libffi / SQLite / Tcl-Tk / MSVC / React / pywin32 许可证文本
+├─ capability-registry.yaml
+├─ error_types.py
+├─ THIRD-PARTY-NOTICES.txt   第三方软件清单与许可证索引
+├─ assets\liuhao.ico
+├─ LiuHao.bat                快捷方式目标
+├─ START-HERE.txt
+└─ data-dir.txt               安装器写入的实际数据目录（ANSI）
+
+D:\LiuHaoData\                用户数据（卸载默认保留）
+│                             D 盘不可用 → %LOCALAPPDATA%\LiuHao\data
+│                             实际位置以程序目录 data-dir.txt 为准
+├─ config\                    human_identities.json / auth_secrets.json / app.env / integrity.key
+├─ data\                      model_registry.sqlite3 / model_config.key
+├─ workspace\                 员工、目标、项目、工作区文件、JWT 吊销库
+├─ conversation_store.db
+├─ audit_store.db
+└─ logs\
 ```
 
 ## 包含 ✅
@@ -33,18 +40,19 @@
 | 内容 | 说明 |
 | --- | --- |
 | Python 3.12 运行时 | 构建机的完整 CPython 安装（标准库 + DLL），收件人无需装 Python |
-| 第三方依赖 | 按网关/桌面壳真实 import 图命中的 85 个发行包（含 cryptography、pydantic、uvicorn、numpy、**pywin32** 等） |
+| 第三方依赖 | 按网关/桌面壳真实 import 图命中的 72 个发行包（清单见 `THIRD-PARTY-NOTICES.txt`；含 cryptography、pydantic、uvicorn、**pywin32** 等） |
 | 桌面壳与托盘 | `src\desktop\**`、`scripts\liuhao_desktop.py`，以及 tkinter + `tcl/tk8.6` 数据目录（托盘与状态窗口依赖） |
 | 驾驶舱静态产物 | `npm run build` 输出，单端口由网关直接服务 |
 | 首次运行向导 | 建管理员、选 Provider、连通性自检 |
 | 身份 / 密钥生成逻辑 | 首次启动在**用户数据目录**生成 JWT 密钥与身份完整性密钥 |
 | 安装器 | 桌面/开始菜单快捷方式、版本升级、卸载保留数据选项 |
+| 第三方许可证 | `THIRD-PARTY-NOTICES.txt` + `licenses\`（OpenSSL、libffi、SQLite、Tcl/Tk、MSVC、React、pywin32） |
 
 ## 不包含 ❌
 
 | 内容 | 原因 / 替代方案 |
 | --- | --- |
-| **任何模型权重** | 体积与许可证。首次向导里二选一：本机 Ollama（自行 `ollama pull`，约 2GB）或 OpenAI 兼容云 API Key |
+| **任何模型权重** | 体积与许可证。首次向导三选一：本机 Ollama（自行 `ollama pull`，约 2GB）、OpenAI 兼容云 API Key、或 `0) 跳过`（之后在模型管理补） |
 | **任何密钥 / 凭据** | `config/auth_secrets.json`、`config/human_identities.json`、`external_anchor/anchor_key.pem`、`docker.env`、`*.pem`、`*.key` 在组装阶段被显式剔除；构建脚本还会做二次泄漏检查，命中即中止 |
 | **源码仓库的 `.env`** | 不进包；安装版在 `data/config/app.env` 首次生成 |
 | 开发/测试依赖 | pytest、ruff、mypy、semgrep 等不随包 |
