@@ -520,34 +520,27 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Lines: TStrings;
+  Marker: TArrayOfString;
+  Notes: TArrayOfString;
 begin
   if CurStep = ssPostInstall then
   begin
     { marker 必须 UTF-8（带 BOM）：安装路径可能含中文/非 ASCII 字符，用系统
-      ANSI 代码页写会在非中文系统上变成乱码，启动器就找不到数据目录。 }
-    Lines := TStringList.Create;
-    try
-      Lines.Add(ResolvedDataDir);
-      { SaveStringsToUTF8File 固定写 UTF-8 BOM（无 Append 参数）。 }
-      SaveStringsToUTF8File(ExpandConstant('{app}') + '\data-dir.txt', Lines);
-    finally
-      Lines.Free;
-    end;
+      ANSI 代码页写会在非中文系统上变成乱码，启动器就找不到数据目录。
+      SaveStringsToUTF8File 写 UTF-8 BOM（签名取 TArrayOfString）。 }
+    SetArrayLength(Marker, 1);
+    Marker[0] := ResolvedDataDir;
+    SaveStringsToUTF8File(ExpandConstant('{app}') + '\data-dir.txt', Marker, False);
     { 静默安装时用户看不到向导页；回退原因与最终位置必须落盘可查。 }
     if ProgramFallback or DataFallback then
     begin
-      Lines := TStringList.Create;
-      try
-        Lines.Add('因为 D 盘不可用（不存在 / 不可写 / 是可移动盘），本次安装已自动回退到：');
-        Lines.Add('程序目录：' + DirForDisplay(ResolvedAppDir));
-        Lines.Add('启动文件：' + DirForDisplay(ResolvedAppDir) + '\LiuHao.bat');
-        Lines.Add('数据目录：' + DirForDisplay(ResolvedDataDir));
-        Lines.Add('数据目录还记录在程序目录下的 data-dir.txt。');
-        SaveStringsToUTF8File(ExpandConstant('{app}') + '\安装位置说明.txt', Lines);
-      finally
-        Lines.Free;
-      end;
+      SetArrayLength(Notes, 5);
+      Notes[0] := '因为 D 盘不可用（不存在 / 不可写 / 是可移动盘），本次安装已自动回退到：';
+      Notes[1] := '程序目录：' + DirForDisplay(ResolvedAppDir);
+      Notes[2] := '启动文件：' + DirForDisplay(ResolvedAppDir) + '\LiuHao.bat';
+      Notes[3] := '数据目录：' + DirForDisplay(ResolvedDataDir);
+      Notes[4] := '数据目录还记录在程序目录下的 data-dir.txt。';
+      SaveStringsToUTF8File(ExpandConstant('{app}') + '\安装位置说明.txt', Notes, False);
     end;
   end;
 end;
