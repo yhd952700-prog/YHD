@@ -18,12 +18,17 @@ import json
 import logging
 import os
 import re
-import stat
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..common.atomic_write import atomic_write_bytes
+from ..common.windows_acl import (
+    acl_is_current_user_only,
+    current_user_sid,
+    tighten_current_user_only,
+)
 from ..kernels.identity import _accounts, _persistence
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,10 @@ _state: Dict[str, Any] = {
     "scratch": None,
     "last_wiped_bytes": 0,
 }
+
+#: 交接文件的读-取-删必须串行：读写之间留出窗口，并发两次请求都能读到
+#: 同一份明文码。用可重入锁是因为取用路径可能被同一线程的收尾逻辑重入。
+_handoff_lock = threading.RLock()
 
 
 # --------------------------------------------------------------------------- #
@@ -126,74 +135,15 @@ def _dpapi_unprotect(blob: bytes) -> bytes:
 # --------------------------------------------------------------------------- #
 
 def _current_user_sid():
-    import win32api
-    import win32security
-
-    token = win32security.OpenProcessToken(
-        win32api.GetCurrentProcess(), win32security.TOKEN_ALL_ACCESS
-    )
-    return win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    return current_user_sid()
 
 
 def _tighten_acl(path: Path) -> bool:
     """去掉继承，只给当前用户；返回“实际生效”而不是“调用没报错”。"""
-    if os.name != "nt":
-        try:
-            os.chmod(path, 0o600)
-            return (stat.S_IMODE(path.stat().st_mode) & 0o077) == 0
-        except OSError:
-            return False
-    try:
-        import ntsecuritycon
-        import win32security
-
-        sid = _current_user_sid()
-        dacl = win32security.ACL()
-        dacl.AddAccessAllowedAce(
-            win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
-        )
-        descriptor = win32security.SECURITY_DESCRIPTOR()
-        descriptor.SetSecurityDescriptorDacl(1, dacl, 0)
-        flags = win32security.DACL_SECURITY_INFORMATION
-        flags |= getattr(win32security, "PROTECTED_DACL_SECURITY_INFORMATION", 0x80000000)
-        win32security.SetFileSecurity(str(path), flags, descriptor)
-        return acl_is_current_user_only(path)
-    except Exception:  # noqa: BLE001 - ACL 失败必须按失败处理
-        logger.warning("收紧恢复码文件 ACL 失败：%s", path, exc_info=True)
-        return False
-
-
-def acl_is_current_user_only(path: Path) -> bool:
-    """实际 DACL 是否“只有当前用户、无继承、无其他主体”。"""
-    if os.name != "nt":
-        try:
-            return (stat.S_IMODE(path.stat().st_mode) & 0o077) == 0
-        except OSError:
-            return False
-    try:
-        import win32security
-
-        sid = _current_user_sid()
-        wanted = win32security.ConvertSidToStringSid(sid)
-        descriptor = win32security.GetFileSecurity(
-            str(path), win32security.DACL_SECURITY_INFORMATION
-        )
-        dacl = descriptor.GetSecurityDescriptorDacl()
-        if dacl is None:
-            return False
-        inherited_flag = getattr(win32security, "INHERITED_ACE", 0x10)
-        allowed_type = getattr(win32security, "ACCESS_ALLOWED_ACE_TYPE", 0)
-        for index in range(dacl.GetAceCount()):
-            (ace_type, ace_flags), _mask, ace_sid = dacl.GetAce(index)
-            if ace_type != allowed_type:
-                return False
-            if ace_flags & inherited_flag:
-                return False
-            if win32security.ConvertSidToStringSid(ace_sid) != wanted:
-                return False
+    if tighten_current_user_only(path):
         return True
-    except Exception:  # noqa: BLE001
-        return False
+    logger.warning("收紧恢复码文件 ACL 失败：%s", path)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -287,57 +237,66 @@ def write_handoff(
 
 
 def take_handoff() -> Optional[str]:
-    """解密一次并立即删除文件；文件不存在返回 ``None``。"""
-    path = handoff_path()
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        logger.warning("读取恢复码交接文件失败：%s", path, exc_info=True)
-        return None
+    """解密一次并立即删除文件；文件不存在返回 ``None``。
 
-    try:
+    加锁的原因：原先"读 → 解密 → 返回 → finally 删除"之间没有互斥，两个并发
+    请求都能在删除前读到同一份文件，各自返回同一明文码（虽然下游 reset 是
+    一次性的，码本身仍被多处分发）。持锁后第二个调用只能看到文件已删除。
+    """
+    with _handoff_lock:
+        path = handoff_path()
         try:
-            wrapper = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            logger.warning("恢复码交接文件格式不可识别，按失效处理并删除：%s", path)
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            logger.warning("读取恢复码交接文件失败：%s", path, exc_info=True)
             return None
 
-        protection = str(wrapper.get("protection") or "")
-        if protection == "dpapi-current-user":
+        try:
             try:
-                blob = base64.b64decode(str(wrapper.get("blob") or ""))
-            except (ValueError, TypeError):
-                logger.warning("恢复码交接密文损坏，按失效处理并删除：%s", path)
+                wrapper = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warning("恢复码交接文件格式不可识别，按失效处理并删除：%s", path)
                 return None
-            plain = bytearray(_dpapi_unprotect(blob))
-            _state["scratch"] = plain
-            try:
-                payload = json.loads(bytes(plain).decode("utf-8"))
-            finally:
-                _wipe(plain)
-        elif protection == "acl-fallback":
-            if _expired(wrapper.get("expires_at")):
-                logger.warning("恢复码交接文件已过期，删除：%s", path)
-                return None
-            payload = wrapper.get("payload") or {}
-        else:
-            logger.warning("恢复码交接文件保护方式未知，按失效处理并删除：%s", path)
-            return None
 
-        code = str(payload.get("code") or "").strip()
-        return code or None
-    except Exception:  # noqa: BLE001 - 解密失败一律按失效处理
-        logger.warning("恢复码交接文件解密失败，按失效处理并删除：%s", path, exc_info=True)
-        return None
-    finally:
-        _remove(path)
+            protection = str(wrapper.get("protection") or "")
+            if protection == "dpapi-current-user":
+                try:
+                    blob = base64.b64decode(str(wrapper.get("blob") or ""))
+                except (ValueError, TypeError):
+                    logger.warning("恢复码交接密文损坏，按失效处理并删除：%s", path)
+                    return None
+                plain = bytearray(_dpapi_unprotect(blob))
+                _state["scratch"] = plain
+                try:
+                    payload = json.loads(bytes(plain).decode("utf-8"))
+                finally:
+                    _wipe(plain)
+            elif protection == "acl-fallback":
+                if _expired(wrapper.get("expires_at")):
+                    logger.warning("恢复码交接文件已过期，删除：%s", path)
+                    return None
+                payload = wrapper.get("payload") or {}
+            else:
+                logger.warning("恢复码交接文件保护方式未知，按失效处理并删除：%s", path)
+                return None
+
+            code = str(payload.get("code") or "").strip()
+            return code or None
+        except Exception:  # noqa: BLE001 - 解密失败一律按失效处理
+            logger.warning("恢复码交接文件解密失败，按失效处理并删除：%s", path, exc_info=True)
+            return None
+        finally:
+            _remove(path)
 
 
 def clear_handoff() -> None:
     """作废当前交接文件（生成新码 / 重置成功后调用）。"""
-    _remove(handoff_path())
+    # 与 ``take_handoff`` 共用同一把锁：否则"作废"可以插在取用的读与删之间，
+    # 明文码仍会被返回。
+    with _handoff_lock:
+        _remove(handoff_path())
 
 
 def _parse_time(value: Any) -> Optional[datetime]:

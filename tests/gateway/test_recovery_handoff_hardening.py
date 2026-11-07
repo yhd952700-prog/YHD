@@ -191,6 +191,51 @@ def test_dpapi_unavailable_degrades_to_acl_plus_ttl(env, monkeypatch):
     assert not path.exists()
 
 
+def test_concurrent_take_handoff_yields_exactly_one_code(env, monkeypatch):
+    """并发取用只允许一次成功：锁包住"读→解密→删"，其余拿到 ``None``。
+
+    用 ``_expired`` 作为"已读到文件、尚未删除"的注入点：没有互斥时 6 个线程
+    都会在删除前读到同一份文件、各返回一次明文码；加锁后第二个调用只能看到
+    文件已被前一个删除。
+    """
+    import threading
+    import time
+
+    from src.gateway import recovery_handoff as rh
+
+    monkeypatch.setattr(rh, "dpapi_available", lambda: False)
+    manager = _make_legacy_root()
+    code = manager.rotate_recovery_code("alice")
+    rh.write_handoff("alice", code)
+
+    real_expired = rh._expired
+
+    def slow_expired(value):
+        time.sleep(0.02)
+        return real_expired(value)
+
+    monkeypatch.setattr(rh, "_expired", slow_expired)
+
+    results = []
+    barrier = threading.Barrier(6)
+
+    def worker():
+        barrier.wait(timeout=5)
+        results.append(rh.take_handoff())
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(results) == 6, results
+    successes = [item for item in results if item == code]
+    assert len(successes) == 1, results
+    assert [item for item in results if item is None] == [None] * 5, results
+    assert not rh.handoff_path().exists()
+
+
 def test_backup_and_export_exclude_recovery_and_credentials(env, tmp_path):
     """新备份与离线导出都不含恢复码、凭据与密钥文件。"""
     from src.upgrade.backups import backup_data, export_data_snapshot

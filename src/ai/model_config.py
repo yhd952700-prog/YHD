@@ -258,6 +258,9 @@ class ModelConfigStore:
                     conn.row_factory = sqlite3.Row
                     conn.execute("PRAGMA journal_mode=WAL")
                     conn.execute("PRAGMA synchronous=NORMAL")
+                    # 删除 Key 时把被释放的页就地覆写为零：否则 DELETE 只标记
+                    # 空闲，密文仍留在库文件/WAL 里，拿到密钥文件即可离线解开。
+                    conn.execute("PRAGMA secure_delete=ON")
                     conn.executescript(_SCHEMA)
                     self._migrate_schema(conn)
                     conn.commit()
@@ -823,6 +826,13 @@ class ModelConfigStore:
             except sqlite3.OperationalError as exc:
                 conn.rollback()
                 raise self._storage_error(exc) from exc
+            # 删除已提交后截断 WAL：否则旧的 -wal 帧里仍留着含密文的页副本
+            # （secure_delete 管不到已经写进 WAL 的历史帧）。截断失败不影响
+            # 删除结果，只记一条告警。
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                logger.warning("删除模型后截断 WAL 失败：%s", model_id, exc_info=True)
         self._audit("ai.model_config.delete", actor, model_id, {})
         return {"deleted": model_id, "default_id": promoted}
 
