@@ -11,17 +11,14 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..common.atomic_write import atomic_write_text
-from ..kernels.identity import _accounts, _persistence, get_identity_manager
-from . import account_settings
+from ..kernels.identity import _accounts, get_identity_manager
+from . import account_settings, recovery_handoff
 from .account_context import (
     AccountContext,
     deny,
@@ -45,6 +42,9 @@ CODE_INITIALIZATION_INCOMPLETE = "ACCOUNT_INITIALIZATION_INCOMPLETE"
 
 #: 首次初始化/补全只接受本机来源时的稳定错误码（中性文案，不透露实例状态）。
 CODE_INITIALIZATION_LOCAL_ONLY = "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
+
+#: 恢复码交接/重置只接受本机来源时的稳定错误码。
+CODE_RECOVERY_LOCAL_ONLY = "ACCOUNT_RECOVERY_LOCAL_ONLY"
 
 
 # --------------------------------------------------------------------------- #
@@ -236,38 +236,40 @@ def _require_local_for_initialization(request: Request) -> None:
 # 本机恢复码交接（忘记密码 + 手上没有恢复码）
 # --------------------------------------------------------------------------- #
 
-#: 交接文件写在数据目录的 ``config/`` 下，与安装版布局一致。
-LOCAL_RECOVERY_FILE_NAME = "recovery_code.txt"
-
-
-def _local_recovery_path() -> Path:
-    return _persistence.default_data_dir() / "config" / LOCAL_RECOVERY_FILE_NAME
+#: 交接文件写在数据目录的 ``config/`` 下，与安装版布局一致；内容由
+#: :mod:`src.gateway.recovery_handoff` 以 DPAPI（优先）或 ACL + 短 TTL 保护。
+LOCAL_RECOVERY_FILE_NAME = recovery_handoff.LOCAL_RECOVERY_FILE_NAME
 
 
 def _clear_local_recovery_file() -> None:
     """删除上一次交接留下的码文件：新码一生成，上一次的码就作废了。"""
-    path = _local_recovery_path()
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("could not remove stale local recovery file %s", path, exc_info=True)
+    recovery_handoff.clear_handoff()
+    recovery_handoff.clear_legacy_notice()
 
 
-def _write_local_recovery_file(principal: str, code: str) -> Path:
-    """把恢复码写进本机数据目录；**绝不**返回给调用方。"""
-    path = _local_recovery_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(
-        path,
-        f"{code}\n"
-        f"# LiuHao 本机恢复码 · 账号 {principal}\n"
-        "# 仅限本机使用；重置密码成功后本文件会被自动删除。\n",
+def _require_loopback(request: Request, *, message: str) -> None:
+    """本机交接只认回环来源；远程一律中性拒绝。"""
+    if request_is_local(request):
+        return
+    raise deny(403, CODE_RECOVERY_LOCAL_ONLY, message)
+
+
+def _require_recovery_source(request: Request) -> None:
+    """恢复码重置默认只认回环来源；显式开关打开后才放行远程。"""
+    if request_is_local(request):
+        return
+    if recovery_handoff.remote_recovery_enabled():
+        # 开关一开就放宽了“码只能在本机用”的边界，必须留下审计线索。
+        logger.warning(
+            "非本机来源通过了恢复码重置（%s=1）", recovery_handoff.REMOTE_RECOVERY_ENV
+        )
+        return
+    raise deny(
+        403,
+        CODE_RECOVERY_LOCAL_ONLY,
+        "恢复码重置只能在本机完成：请在这台机器的控制台重试，"
+        "或由管理员显式开启远程恢复。",
     )
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -402,13 +404,17 @@ def activate(payload: ActivateRequest) -> Dict[str, Any]:
 
 
 @router.post("/recovery/reset")
-def recovery_reset(payload: RecoveryResetRequest) -> Dict[str, Any]:
+def recovery_reset(payload: RecoveryResetRequest, request: Request) -> Dict[str, Any]:
     """用根恢复码重置密码；改密**成功之后**才消费恢复码。
 
     顺序契约（P1-6）：先改密、后作废。反序（先消费再改密）在改密失败时会把
     恢复码一起作废且不能重发，用户彻底锁死。这里与激活流程
     （``verify_activation_code`` → 改密 → ``consume_activation_code``）同序。
+
+    来源契约：默认只接受本机回环请求；远程重置必须由管理员显式开启
+    ``LIUHAO_ALLOW_REMOTE_RECOVERY``（默认关闭）。
     """
+    _require_recovery_source(request)
     manager = get_identity_manager()
     principal = _kernel_call(manager.verify_recovery_code, payload.recovery_code)
     _write_credential(
@@ -574,17 +580,19 @@ def recovery_rotate(
 
 
 @router.post("/recovery/local")
-def recovery_local_handoff() -> Dict[str, Any]:
+def recovery_local_handoff(request: Request) -> Dict[str, Any]:
     """忘记密码且手上没有恢复码时的**本机**自助出口。
 
-    安全前提只有一条：调用方必须能读这台机器的数据目录。这不是新增的信任
-    边界 —— 同一个目录里的凭据库与身份库本来就可以被该用户改写，能读它的人
-    早已拥有根账号；因此"把码写到本机文件"没有多给出任何能力。反过来，码
-    **不进入响应体**，所以只有 HTTP 访问权（例如浏览器里的跨站请求）拿不到它。
+    交接文件始终以“非明文”形态落盘：Windows 用 DPAPI（CurrentUser）加密，
+    其他平台或 DPAPI 失败时降级为 ACL 收紧 + 短 TTL；任何情况下都不长期留
+    明文。本请求把码解密**一次**、随响应交给本机用户，随后立即删除文件并
+    清零解密暂存（一次性取用即焚）。
 
-    只在根账号**确实没有恢复码**时开放：否则任何人都能作废用户手上有效的
-    恢复码（DoS）。重发生效的正规入口是登录后的 ``/recovery/rotate``。
+    只在两种情况下开放：①本机已有加密交接文件（旧明文迁移或上次未取走）；
+    ②根账号确实没有恢复码。后者之外不重发，避免任何人作废用户手上有效的
+    恢复码（DoS）。重发有效码的正规入口是登录后的 ``/recovery/rotate``。
     """
+    _require_loopback(request, message="恢复码只在本机交接：请在这台机器上重试。")
     manager = get_identity_manager()
     limit_key = "recovery:local"
     try:
@@ -600,7 +608,28 @@ def recovery_local_handoff() -> Dict[str, Any]:
             )
         ) from exc
 
+    # 旧版明文文件通常在启动时已迁移；这里兜底重试一次（幂等，失败不阻断）。
+    try:
+        recovery_handoff.migrate_legacy_plaintext(manager)
+    except Exception:  # noqa: BLE001
+        logger.warning("旧明文恢复码迁移重试失败", exc_info=True)
+
     root = _kernel_call(manager.account_root)
+    taken = recovery_handoff.take_handoff()
+    if taken and root is not None and recovery_handoff.code_matches_root(taken, root):
+        _accounts.limiter.register(limit_key)
+        return {
+            "written": False,
+            "recovered": True,
+            "file": LOCAL_RECOVERY_FILE_NAME,
+            "recovery_code": taken,
+            "notice": (
+                "已从本机加密交接文件取出恢复码，原文件已删除。"
+                "请把它填入“重置密码”；它只显示这一次。"
+            ),
+            "security_note": "该响应只在本机回环可用；码不写日志，文件取用后立即删除。",
+        }
+
     if root is None:
         raise deny(403, _accounts.CODE_RECOVERY_UNAVAILABLE, "本机还没有可恢复的账号")
     if root.recovery_hash:
@@ -612,9 +641,12 @@ def recovery_local_handoff() -> Dict[str, Any]:
 
     code = _kernel_call(manager.rotate_recovery_code, root.principal)
     try:
-        path = _write_local_recovery_file(root.principal, code)
-    except Exception:  # noqa: BLE001 - 写盘失败必须回滚哈希，否则用户被永久锁死
-        logger.exception("could not write local recovery code file")
+        handoff = recovery_handoff.write_handoff(root.principal, code)
+        taken = recovery_handoff.take_handoff()
+        if not taken:
+            raise OSError("交接文件写入后无法取回")
+    except Exception:  # noqa: BLE001 - 落盘失败必须回滚哈希，否则用户被永久锁死
+        logger.exception("could not write local recovery handoff file")
         _kernel_call(
             manager.clear_recovery_code, root.principal, reason="local_handoff_failed"
         )
@@ -626,12 +658,18 @@ def recovery_local_handoff() -> Dict[str, Any]:
     _accounts.limiter.register(limit_key)
     return {
         "written": True,
-        "file": str(path),
+        "recovered": False,
+        "file": LOCAL_RECOVERY_FILE_NAME,
+        "recovery_code": taken,
+        "protection": handoff.get("protection"),
         "notice": (
-            "恢复码已写入这台机器的数据目录。请在本机打开该文件，"
-            "把第一行的码填入“重置密码”；重置成功后文件会自动删除。"
+            "已生成新的恢复码并只显示这一次；本机加密交接文件已随取用删除。"
+            "请立即填入“重置密码”。"
         ),
-        "security_note": "该入口仅在本机能读取数据目录时有效；码不会出现在接口响应里。",
+        "security_note": (
+            "码不以明文长期落盘：Windows 用 DPAPI 加密，其他平台用 ACL + 短 TTL；"
+            "响应只在本机回环可用。"
+        ),
     }
 
 

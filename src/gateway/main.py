@@ -653,6 +653,26 @@ async def lifespan(app: FastAPI):
             _store["location"] or "(unconfigured)",
         )
 
+    # 恢复码安全收紧的启动面：
+    # * 旧版明文交接文件原地转成 DPAPI 密文（失败保留原文件等下轮重试）；
+    # * 复核交接文件的实际 ACL（Windows 上 chmod 不算数）；
+    # * 远程恢复开关打开时必须留下明确日志。
+    try:
+        from . import recovery_handoff
+
+        _handoff_migration = recovery_handoff.migrate_legacy_plaintext(_identity_manager)
+        _startup_mark("恢复码交接迁移完成", legacy=_handoff_migration)
+        for _handoff_problem in recovery_handoff.handoff_selfcheck():
+            logger.warning("恢复码交接自检未通过：%s", _handoff_problem)
+        if recovery_handoff.remote_recovery_enabled():
+            logger.warning(
+                "已允许非本机恢复（%s=1）：远程来源可以调用 "
+                "/v1/accounts/recovery/reset。",
+                recovery_handoff.REMOTE_RECOVERY_ENV,
+            )
+    except Exception as _handoff_exc:  # noqa: BLE001 - 启动面失败不阻断服务
+        logger.error("恢复码交接启动处理失败：%s", _handoff_exc, exc_info=True)
+
     # 0.1.0 老记忆 -> 账号记忆：启动时先做一次幂等迁移（放在身份加载之后，
     # 归属才能落到正确的根主体）。失败不阻断启动，下次访问记忆页会重试。
     try:

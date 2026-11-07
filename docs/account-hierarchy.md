@@ -439,7 +439,8 @@
 | `ACCOUNT_RECOVERY_CODE_INVALID` | 400 | 恢复码无效或已失效。 | 恢复 |
 | `ACCOUNT_RECOVERY_LOCKED` | 429 | 尝试次数过多，请稍后再试。 | 恢复码失败锁定 |
 | `ACCOUNT_RECOVERY_UNAVAILABLE` | 403 | 恢复凭据不可用，请按引导重建身份体系。 | 两者皆失；本机自救入口在已有恢复码时也用它（不得作废用户手上的码） |
-| `ACCOUNT_RECOVERY_WRITE_FAILED` | 500 | 恢复码未能写入本机数据目录，请重试。 | 本机自救入口写盘失败；服务端同时撤销刚生成的码 |
+| `ACCOUNT_RECOVERY_WRITE_FAILED` | 500 | 恢复码未能写入本机数据目录，请重试。 | 本机自救入口写盘/权限收紧失败；服务端同时撤销刚生成的码 |
+| `ACCOUNT_RECOVERY_LOCAL_ONLY` | 403 | 恢复码只在本机交接/重置。 | 非回环来源；远程重置需显式 `LIUHAO_ALLOW_REMOTE_RECOVERY=1` |
 | `ACCOUNT_MIGRATION_PACKAGE_INVALID` | 400 | 迁移包无效、损坏或不属于本系统。 | 认领 |
 | `ACCOUNT_MIGRATION_PASSPHRASE_REQUIRED` | 400 | 请输入备份口令。 | 认领 |
 | `ACCOUNT_MIGRATION_CONFLICT` | 409 | 本机已有身份数据，无法直接认领。 | 冲突 |
@@ -956,9 +957,23 @@ can_see_skill(A, S) :=
 | 情况 | 入口 | 规则 |
 |---|---|---|
 | 还能登录 | `POST /v1/accounts/recovery/rotate`（需根令牌） | 生成/重发一枚恢复码，旧码立即作废；响应只含 `recovery_code`，**不含 `expires_at`** |
-| 已经忘记密码 | `POST /v1/accounts/recovery/local`（无需令牌） | 码写入 `<数据目录>/config/recovery_code.txt`，**不出现在 HTTP 响应里**；用户在本机打开文件、把第一行填入 S3；重置成功后文件自动删除 |
+| 已经忘记密码 | `POST /v1/accounts/recovery/local`（无需令牌，**仅回环来源**） | 码以**非明文**形态写入 `<数据目录>/config/recovery_code.txt`（Windows 用 DPAPI 加密，其他平台/失败时用 ACL + 短 TTL）；本请求解密**一次**并在响应里交给本机用户，响应返回后交接文件立即删除、解密暂存清零；响应只给文件名，不回显绝对路径 |
 
-`/recovery/local` 的安全前提只有一条：**必须能访问本机数据目录**。这不是新增的信任边界——同一目录里的凭据库与身份库本来就可被该用户改写，能读它的人已经拥有根账号。码不进响应体，所以只有 HTTP 访问权（例如浏览器里的跨站请求）拿不到它。仅当根**确实没有恢复码**时开放（否则任何远程请求都能作废用户手上的有效码）；同一限次窗口内超过 5 次返回 429 `ACCOUNT_RECOVERY_LOCKED`；写盘失败返回 500 `ACCOUNT_RECOVERY_WRITE_FAILED`，并**撤销刚生成的码**，否则账号会停在"服务端有码、用户没有码"的死角。
+**落盘保护（硬约束）**：恢复码**永不以明文长期落盘**。
+
+- Windows 优先 DPAPI（`CryptProtectData`，CurrentUser 作用域）：进程重启后仍可解密，同机其他账户解不开；文件 DACL 显式去掉继承、只保留当前用户（`chmod` 在 Windows 上只是只读位，不算数），启动自检复核实际 ACL，不通过就告警。
+- DPAPI 不可用（非 Windows / 调用失败）时降级为“ACL 收紧 + 短 TTL（默认 10 分钟）”，并记录降级原因；到期或取用即删，不允许长期驻留。
+- 取用语义是**一次性**：`/recovery/local` 解密一次后立即删除文件，不缓存、不写第二份；响应里不回显任何绝对路径。
+
+`/recovery/local` 的安全前提仍是**必须能访问本机数据目录**（同一目录里的凭据库与身份库本来就可被该用户改写）；现在额外要求**回环来源**，对端回环时整条 `X-Forwarded-For` 也必须回环。仅当根**确实没有恢复码**、或本机已有未取走的加密交接文件时开放（否则任何请求都能作废用户手上的有效码）；同一限次窗口内超过 5 次返回 429 `ACCOUNT_RECOVERY_LOCKED`；写盘/权限收紧失败返回 500 `ACCOUNT_RECOVERY_WRITE_FAILED`，并**撤销刚生成的码**，否则账号会停在"服务端有码、用户没有码"的死角。
+
+`POST /v1/accounts/recovery/reset` 默认同样只接受回环来源；远程重置必须由管理员显式设置 `LIUHAO_ALLOW_REMOTE_RECOVERY=1`（默认关闭），打开时启动日志必须记录“已允许非本机恢复”。
+
+**旧明文交接文件（0.1.0 及更早）**：升级/启动时识别 `<数据目录>/config/recovery_code.txt` 的明文格式，**保留码的有效性、不追溯失效**，原地转成加密格式（同一路径覆盖，不保留双份）；转换成功后旧明文文件内容随之消失。若加密写盘或 ACL 收紧失败，则保留原文件并记录错误、下次启动重试（此时启动自检持续告警）。迁移完成后 `/v1/auth/config` 与登录响应给出 `recovery.rotate_recommended=true`，提示用户登录后重新生成恢复码。
+
+> **残余风险（必须如实告知）**：旧版本曾以明文保存恢复码，且同机其他用户可读；这段明文窗口期内恢复码**可能已被读取过**。转加密只能止损，不能证明未泄露。因此迁移后应尽快在登录状态下调用 `/recovery/rotate` 换新（旧码一次性失效）。
+>
+> 另需说明：`/recovery/local` 的“回环可达”对本机其他账户的进程同样成立。DPAPI 保护的是**磁盘副本**不被其他账户解开，不承诺阻止同机进程调用该接口；能在这台机器上运行进程并访问回环地址的主体，仍在信任边界之内。
 
 **恢复码没有 TTL**：它不按时间失效，只在被使用（或被重新生成）时失效。接口与界面都不得展示"有效期至/expires_at"。
 
@@ -987,8 +1002,9 @@ can_see_skill(A, S) :=
    > 备份包含他人个人数据，请妥善保管，禁止外传。
 2. 用户设置**备份口令**（建议 ≥ 12 位）；口令**不落盘、不写日志、不进审计**；界面提示"口令丢失将无法打开备份"。
 3. 包格式：`*.lhbak`；AES-256-GCM 加密；KDF 用 scrypt/PBKDF2；头部含版本、创建时间、manifest（成员清单、各域条目数、总体积、摘要）。
-4. 导出完成写 `BACKUP_EXPORTED`（actor、时间、`member_ids`、成员数、各域计数、总体积、结果）；**不含口令**。
-5. 下载完成后提示"这是完整备份，含全部成员个人数据，请离线保存"。
+4. **永不打包**：`config/recovery_code.txt`（含 DPAPI 密文副本）、凭据文件 `auth_secrets.json`、密钥文件 `model_config_key.bin`。升级备份与 `export-snapshot` 在复制层过滤，并在打包后断言目标目录不含这些文件；已生成的旧备份不追溯。
+5. 导出完成写 `BACKUP_EXPORTED`（actor、时间、`member_ids`、成员数、各域计数、总体积、结果）；**不含口令**。
+6. 下载完成后提示"这是完整备份，含全部成员个人数据，请离线保存"。
 
 **导入（S4）**
 

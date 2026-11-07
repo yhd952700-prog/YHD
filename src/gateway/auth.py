@@ -541,6 +541,9 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         "scope": scope,
         "permissions": permissions,
         "client": client_value,
+        # 旧版曾把恢复码以明文落盘：迁移后提示用户在登录状态下换新（旧码
+        # 若在明文窗口期被读取过，只有重新生成才能止损）。
+        "recovery_rotate_recommended": _recovery_rotate_recommended(),
         **_account_position(pid),
     }
 
@@ -784,6 +787,16 @@ def auth_logout(
     return {"logged_out": True, "revoked": revoked}
 
 
+def _recovery_rotate_recommended() -> bool:
+    """旧明文恢复码迁移后，是否应提示用户登录后重新生成。"""
+    try:
+        from .recovery_handoff import rotate_recommended
+
+        return rotate_recommended()
+    except Exception:  # noqa: BLE001 - 提示失败绝不影响登录/配置
+        return False
+
+
 @router.get("/auth/config", response_model=Dict[str, Any])
 def auth_config() -> Dict[str, Any]:
     """What the login page needs to describe the current auth state.
@@ -883,6 +896,8 @@ def auth_config() -> Dict[str, Any]:
         "recovery": {
             "available": root_exists and recovery_configured,
             "self_service": root_exists and not recovery_configured,
+            # 旧明文交接文件迁移过且用户还没换新：登录后应提示重新生成。
+            "rotate_recommended": _recovery_rotate_recommended(),
         },
         "migration": {"allowed": not root_exists},
         "client_modes": list(CLIENT_MODES),

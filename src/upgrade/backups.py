@@ -37,6 +37,26 @@ _CODE_BACKUP_SCHEMA = "liuhao.code-backup/1"
 _SNAPSHOT_EXPORT_SCHEMA = "liuhao.snapshot-export/1"
 _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 
+#: 恢复码交接文件、凭据文件与 DPAPI 密文副本**永不**进入备份或离线导出。
+#: 已生成的旧备份不追溯（其中的副本仍是旧行为），但新备份与导出必须为空。
+_PROTECTED_BASENAME_PREFIXES = ("recovery_code", "recovery_handoff")
+_PROTECTED_BACKUP_NAMES = frozenset(
+    {
+        "auth_secrets.json",
+        "model_config_key.bin",
+    }
+)
+
+
+def is_protected_state_file(relpath: str) -> bool:
+    """该相对路径是否属于“不得打包”的恢复码/凭据类文件。"""
+    name = str(relpath or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not name:
+        return False
+    if name.startswith(_PROTECTED_BASENAME_PREFIXES):
+        return True
+    return name in _PROTECTED_BACKUP_NAMES
+
 
 @dataclass
 class DataBackup:
@@ -183,12 +203,17 @@ def backup_data(
     # 备份”当成用户数据再备份一遍；后者的操作锁正被当前进程独占打开，读取会报
     # Permission denied，而它本身也不是用户数据。
     skipped = [dest_dir.resolve()] + [Path(item).resolve() for item in exclude_dirs]
+    excluded_protected = 0
 
     for source in iter_files([data_dir]):
         if _is_under(source, skipped):
             continue
         rel = source.relative_to(data_dir).as_posix()
         safe_relpath(rel)
+        if is_protected_state_file(rel):
+            # 恢复码 / 凭据 / DPAPI 密文副本：无论用户数据目录怎么布局都不打包。
+            excluded_protected += 1
+            continue
         sqlite = is_sqlite_file(source)
         target = data_out / rel
         size = _backup_one(source, target, sqlite=sqlite)
@@ -213,6 +238,9 @@ def backup_data(
         except ValueError as exc:
             raise RollbackError(f"附加状态文件不在应用目录内：{source}") from exc
         safe_relpath(rel)
+        if is_protected_state_file(rel):
+            excluded_protected += 1
+            continue
         sqlite = is_sqlite_file(source)
         target = extra_out / rel
         size = _backup_one(source, target, sqlite=sqlite)
@@ -234,6 +262,7 @@ def backup_data(
         "file_count": len(entries),
         "sqlite_count": sqlite_count,
         "total_bytes": total,
+        "excluded_protected": excluded_protected,
         "entries": entries,
     }
     manifest_path = dest_dir / "data-backup.json"
@@ -278,12 +307,18 @@ def export_data_snapshot(
     entries_out: List[dict] = []
     total = 0
     sqlite_count = 0
+    excluded_protected = 0
     try:
         for entry in manifest.get("entries", []):
             kind = str(entry.get("kind") or "")
             if kind not in ("data", "extra"):
                 raise SnapshotError(f"数据快照条目类型非法：{kind!r}")
             rel = safe_relpath(str(entry.get("relpath") or ""))
+            if is_protected_state_file(rel):
+                # 旧备份的清单里可能还列着恢复码/凭据：导出层必须过滤，
+                # 不能“清单里有就原样复制”。
+                excluded_protected += 1
+                continue
             source = backup_dir / kind / rel
             if not source.is_file():
                 raise SnapshotError(f"数据快照文件缺失：{source}")
@@ -310,6 +345,17 @@ def export_data_snapshot(
                 }
             )
 
+        # 打包后断言：目标目录里不得存在任何受保护文件。清单过滤之外再查
+        # 一次物理文件，防止未来新增复制路径绕过过滤。
+        leaked = sorted(
+            item.relative_to(dest).as_posix()
+            for item in dest.rglob("*")
+            if item.is_file()
+            and is_protected_state_file(item.relative_to(dest).as_posix())
+        )
+        if leaked:
+            raise SnapshotError("导出包内仍含受保护文件：" + ", ".join(leaked))
+
         meta = backup_meta or {}
         snapshot = {
             "schema": _SNAPSHOT_EXPORT_SCHEMA,
@@ -321,6 +367,7 @@ def export_data_snapshot(
             "file_count": len(entries_out),
             "sqlite_count": sqlite_count,
             "total_bytes": total,
+            "excluded_protected": excluded_protected,
             "entries": entries_out,
         }
         exported_manifest = dest / "snapshot.json"

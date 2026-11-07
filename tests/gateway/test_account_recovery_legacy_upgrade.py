@@ -108,7 +108,8 @@ def test_legacy_root_can_reissue_recovery_code_after_login(env):
     with TestClient(get_app()) as client:
         config = client.get("/v1/auth/config").json()
         # 事实一致：根存在，但确实没有恢复码 → available=false，可本机自救。
-        assert config["recovery"] == {"available": False, "self_service": True}, config
+        assert config["recovery"]["available"] is False, config
+        assert config["recovery"]["self_service"] is True, config
 
         token = _token(client, "alice", PASSWORD)
         rotated = client.post("/v1/accounts/recovery/rotate", headers=_bearer(token))
@@ -120,10 +121,9 @@ def test_legacy_root_can_reissue_recovery_code_after_login(env):
         assert manager.account_root().recovery_hash
 
         # 补发后 config 必须翻面。
-        assert client.get("/v1/auth/config").json()["recovery"] == {
-            "available": True,
-            "self_service": False,
-        }
+        after = client.get("/v1/auth/config").json()["recovery"]
+        assert after["available"] is True
+        assert after["self_service"] is False
 
         # 生成后立刻可用（不需要重新登录、不需要等）。
         reset = client.post(
@@ -174,7 +174,7 @@ def test_member_cannot_issue_root_recovery_code(env):
 
 
 def test_local_recovery_handoff_for_forgotten_password(env):
-    """忘记密码且没有恢复码：本机文件交接 → 重置成功 → 文件自动删除。"""
+    """忘记密码且没有恢复码：本机交接一次取出 → 重置成功 → 文件立即删除。"""
     manager = _make_legacy_root()
     from src.gateway.main import get_app
 
@@ -183,20 +183,23 @@ def test_local_recovery_handoff_for_forgotten_password(env):
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["written"] is True
-        assert "RC-" not in response.text, "恢复码绝不能出现在 HTTP 响应里"
+        # 只给文件名，不回显任何绝对路径。
+        assert body["file"] == "recovery_code.txt"
+        assert "/" not in body["file"] and "\\" not in body["file"]
 
-        path = Path(body["file"])
-        assert path == _local_recovery_file()
-        code = path.read_text(encoding="utf-8").splitlines()[0].strip()
+        code = body["recovery_code"]
         assert code.startswith("RC-")
         assert manager.account_root().recovery_hash
+
+        # 一次性取用即焚：响应返回时交接文件已经不在了。
+        assert not _local_recovery_file().exists()
 
         reset = client.post(
             "/v1/accounts/recovery/reset",
             json={"recovery_code": code, "password": NEW_PASSWORD},
         )
         assert reset.status_code == 200, reset.text
-        assert not path.exists(), "码被消费后本机文件必须自动删除"
+        assert not _local_recovery_file().exists(), "码被消费后本机文件必须自动删除"
         assert _login(client, "alice", NEW_PASSWORD).status_code == 200
 
 
@@ -228,15 +231,15 @@ def test_local_handoff_refuses_when_a_recovery_code_exists(env):
 def test_local_handoff_write_failure_leaves_account_recoverable(env, monkeypatch):
     """写盘失败必须撤掉刚生成的码，否则账号停在“有码但用户没有码”的死角。"""
     manager = _make_legacy_root()
-    from src.gateway import accounts as accounts_module
+    from src.gateway import recovery_handoff
     from src.gateway.main import get_app
 
-    real_write = accounts_module.atomic_write_text
+    real_write = recovery_handoff.atomic_write_bytes
 
     def broken(*_args, **_kwargs):
         raise OSError("模拟磁盘不可写")
 
-    monkeypatch.setattr(accounts_module, "atomic_write_text", broken)
+    monkeypatch.setattr(recovery_handoff, "atomic_write_bytes", broken)
 
     with TestClient(get_app()) as client:
         failed = client.post("/v1/accounts/recovery/local")
@@ -244,10 +247,11 @@ def test_local_handoff_write_failure_leaves_account_recoverable(env, monkeypatch
         assert failed.json()["code"] == "ACCOUNT_RECOVERY_WRITE_FAILED"
         assert manager.account_root().recovery_hash == ""
 
-        monkeypatch.setattr(accounts_module, "atomic_write_text", real_write)
+        monkeypatch.setattr(recovery_handoff, "atomic_write_bytes", real_write)
         retried = client.post("/v1/accounts/recovery/local")
         assert retried.status_code == 200, retried.text
-        assert Path(retried.json()["file"]).is_file()
+        assert retried.json()["recovery_code"].startswith("RC-")
+        assert not _local_recovery_file().exists()
 
 
 def test_recovery_failure_codes_match_docs(env):
