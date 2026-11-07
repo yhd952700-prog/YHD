@@ -8,6 +8,7 @@ import {
   getSessionId,
   getSessionMeta,
   getUserId,
+  listSessions,
   loadHistory,
   makeSessionTitle,
   newSessionId,
@@ -171,6 +172,50 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
       alive = false
     }
     // 只在挂载时恢复当前会话。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 换机/备份迁移后 localStorage 里没有会话清单，但后端已有历史会话：只用本地
+  // 清单会让「工作台」看不到导入前的对话。这里按后端列表补全，并给还没有标题
+  // 的会话回填首条用户消息作为标题（限 20 个，避免首屏 N+1 拖慢）。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      let remote: string[] = []
+      try {
+        remote = await listSessions()
+      } catch {
+        // 未登录/离线：保留本地清单，不阻断对话
+        return
+      }
+      if (!alive || remote.length === 0) return
+      setSessions((prev) => {
+        const next = [...prev, ...remote.filter((id) => !prev.includes(id))]
+        saveLocalSessions(next)
+        return next
+      })
+      await Promise.all(
+        remote.slice(0, 20).map(async (id) => {
+          try {
+            const data = await loadHistory(id, userId)
+            const title = titleFromHistory(data.history)
+            if (!title || !alive) return
+            setMeta((prev) => {
+              if (prev[id]?.title) return prev
+              const next = { ...prev, [id]: { title, updatedAt: prev[id]?.updatedAt ?? 0 } }
+              saveSessionMeta(next)
+              return next
+            })
+          } catch {
+            // 单个会话读失败不影响其余会话被发现
+          }
+        }),
+      )
+    })()
+    return () => {
+      alive = false
+    }
+    // 只在挂载时发现一次；后续清单由本地操作维护。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -385,7 +430,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                 <span className="chat-model-detail">
                   {provider.label}。{provider.detail}
                   <br />
-                  可以先跳过，不影响浏览；之后在「设置 → 模型」里补上 Key 即可。
+                  可以先跳过，不影响浏览；之后在「系统设置 → 模型管理」里补上 Key 即可。
                 </span>
                 <button className="chat-model-action" onClick={onConfigureModel}>
                   去配置模型
@@ -393,7 +438,16 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               </div>
             )}
 
-            <div className="chat-log" ref={listRef}>
+            {/* role="log" + aria-live：新回复追加时读屏会播报；aria-busy 在流式
+                生成期间为 true，让读屏等整段结束再念，避免逐字刷屏。 */}
+            <div
+              className="chat-log"
+              ref={listRef}
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions text"
+              aria-busy={sending || undefined}
+            >
               {messages.length === 0 ? (
                 <div className="chat-empty">
                   {provider.isReal
@@ -478,7 +532,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               className="sess-select"
               value={modelId}
               onChange={(e) => chooseModel(e.target.value)}
-              title="选择本次对话使用的模型（在「设置 → 模型」中添加/编辑）"
+              title="选择本次对话使用的模型（在「系统设置 → 模型管理」中添加/编辑）"
               aria-label="选择对话模型"
             >
               <option value="">

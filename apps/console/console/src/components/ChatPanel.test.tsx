@@ -81,3 +81,38 @@ describe('ChatPanel 结束帧', () => {
     expect(document.body.textContent).not.toContain(failure)
   })
 })
+
+describe('ChatPanel 会话发现', () => {
+  test('备份迁移后（本地无清单）按后端列表补全会话，并显示首条消息标题', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/sessions') {
+        return json({ sessions: ['session-imported'], count: 1, users: {} })
+      }
+      if (path.includes('session_id=session-imported')) {
+        return json({
+          session_id: 'session-imported',
+          count: 2,
+          history: [
+            { role: 'user', content: 'Q7紫罗兰-历史-8842：先给结论' },
+            { role: 'assistant', content: '结论：边界判断有误' },
+          ],
+        })
+      }
+      if (path.startsWith('/v1/chat/history')) {
+        return json({ session_id: '', count: 0, history: [] })
+      }
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+
+    await screen.findByRole('option', { name: /Q7紫罗兰-历史-8842/ })
+    // 清单已落到本地：下次刷新即使后端不可达也仍能看到这条会话。
+    expect(JSON.parse(localStorage.getItem('liuhao.sessions') || '[]')).toContain(
+      'session-imported',
+    )
+  })
+})
