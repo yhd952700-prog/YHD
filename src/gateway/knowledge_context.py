@@ -280,13 +280,54 @@ def _score_gate(hits: List[Dict[str, Any]]) -> tuple[bool, str, Dict[str, Any]]:
     return True, "inject", diagnostics
 
 
+def _scope_for_principal(principal: Optional[str]):
+    """把调用者账号映射成知识库读写范围；没有账号内核时退化为"只有自己"。"""
+    if not principal:
+        return None
+    from src.knowledge.documents import KnowledgeScope
+
+    try:
+        from src.kernels.identity import get_identity_manager
+
+        node = get_identity_manager().get_account(principal)
+    except Exception:
+        node = None
+    if node is None:
+        return KnowledgeScope(
+            principal=principal,
+            owners=(principal,),
+            include_unowned=True,
+            aggregate=False,
+            owns_legacy=True,
+        )
+    if node.is_root:
+        return KnowledgeScope(
+            principal=principal,
+            owners=None,
+            include_unowned=True,
+            aggregate=True,
+            owns_legacy=True,
+        )
+    return KnowledgeScope(
+        principal=principal,
+        owners=(principal,),
+        include_unowned=False,
+        aggregate=False,
+        owns_legacy=False,
+    )
+
+
 def build_knowledge_context(
-    query: str, enabled: Optional[bool] = None
+    query: str,
+    enabled: Optional[bool] = None,
+    principal: Optional[str] = None,
 ) -> Dict[str, Any]:
     """检索与 ``query`` 相关的知识片段，返回注入用的上下文与引用。
 
     ``enabled=False`` 时完全跳过（用户显式关闭）。``enabled=None`` 时自动：
     知识库可用才检索；空库/弃答由知识库侧的 ``retrieval`` 判定并原样透传。
+    ``principal`` 是经核验的令牌主体：成员只检索自己的文档，主账号可聚合读；
+    缺省（内部/评测调用）保持不限制，绝不据此绕过 HTTP 侧判定。
     任何失败都返回 ``used=False`` 并说明原因，不抛异常、不影响普通对话。
     """
     if enabled is False:
@@ -310,7 +351,12 @@ def build_knowledge_context(
         # 唯一例外：显式声明接受 0 分（zero-vector 测试 provider）时传 0.0，
         # 这是知识库文档里约定的测试逃生门。
         threshold = 0.0 if _min_score() <= 0.0 else None
-        result = service.search(query, top_k=_DEFAULT_TOP_K, threshold=threshold)
+        result = service.search(
+            query,
+            top_k=_DEFAULT_TOP_K,
+            threshold=threshold,
+            scope=_scope_for_principal(principal),
+        )
     except Exception as exc:  # 检索失败：静默降级，但记录真实原因
         logger.warning("knowledge_context: retrieval failed: %s", exc, exc_info=True)
         return _not_used("error", f"检索失败（{type(exc).__name__}）")

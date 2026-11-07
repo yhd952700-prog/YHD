@@ -3,7 +3,10 @@
 Canonical prefix is ``/v1/knowledge`` to match the rest of the gateway;
 ``/knowledge`` is kept as a deprecated alias so existing clients (and the
 single-port reserved-path list) keep working. Both are behind the human-principal
-gate, so ingest (POST) additionally requires an admin role / L0 scope.
+gate, and every handler resolves the caller's **account scope** from the verified
+token: members read/write only their own documents, the root account may read the
+whole subtree but never write into a member's space. Cross-account access is a
+neutral 404 (indistinguishable from "not found").
 
 Retrieval and ingest go through :class:`KnowledgeDocumentService`, which uses
 the process-level SQLite vector store and a **real** embedding provider. When no
@@ -59,7 +62,10 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from src.knowledge.documents import get_knowledge_service
+from src.knowledge.documents import (
+    KnowledgeScope,
+    get_knowledge_service,
+)
 from src.knowledge.embedding import EmbeddingUnavailableError
 from src.knowledge.extractors import (
     DEFAULT_LIMITS,
@@ -88,6 +94,60 @@ def _unavailable(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=f"知识库未启用：{exc}")
 
 
+def _not_found() -> HTTPException:
+    """越权/不存在同形：中性 404，绝不暴露"存在但不属于你"。"""
+    from src.gateway.account_context import deny
+    from src.kernels.identity import _accounts
+
+    return deny(
+        404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE
+    )
+
+
+def _scope_from_account_context(context: Any) -> KnowledgeScope:
+    """账号树位置 -> 知识库读写范围（主账号聚合只读、成员只读写自己）。"""
+    if context.standalone:
+        # 老部署/单机令牌：历史无归属文档仍归自己，但不额外扩大范围。
+        return KnowledgeScope(
+            principal=context.principal,
+            owners=(context.principal,),
+            include_unowned=True,
+            aggregate=False,
+            owns_legacy=True,
+        )
+    if context.is_member:
+        return KnowledgeScope(
+            principal=context.principal,
+            owners=(context.principal,),
+            include_unowned=False,
+            aggregate=False,
+            owns_legacy=False,
+        )
+    return KnowledgeScope(
+        principal=context.principal,
+        owners=None,
+        include_unowned=True,
+        aggregate=True,
+        owns_legacy=True,
+    )
+
+
+def _knowledge_scope(request: Request) -> KnowledgeScope:
+    """Per-request knowledge scope derived from the *verified* token only."""
+    from src.gateway.account_context import require_account_principal
+    from src.gateway.policy import (
+        STANDARD_TOKEN_HEADER,
+        TOKEN_HEADER,
+        require_bearer_payload,
+    )
+
+    payload = require_bearer_payload(
+        x_liuhao_token=request.headers.get(TOKEN_HEADER),
+        authorization=request.headers.get(STANDARD_TOKEN_HEADER),
+    )
+    return _scope_from_account_context(require_account_principal(payload=payload))
+
+
 @core.get("/status")
 def knowledge_status() -> Dict[str, Any]:
     """Always 200: lets the console show "未启用" instead of hiding the feature."""
@@ -95,10 +155,16 @@ def knowledge_status() -> Dict[str, Any]:
 
 
 @core.post("/documents")
-def knowledge_ingest(payload: IngestRequest) -> Dict[str, Any]:
+def knowledge_ingest(
+    payload: IngestRequest,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     try:
         return get_knowledge_service().ingest(
-            payload.text, doc_id=payload.doc_id, metadata=payload.metadata
+            payload.text,
+            doc_id=payload.doc_id,
+            metadata=payload.metadata,
+            owner_account_id=scope.write_owner,
         )
     except EmbeddingUnavailableError as exc:
         raise _unavailable(exc)
@@ -107,10 +173,16 @@ def knowledge_ingest(payload: IngestRequest) -> Dict[str, Any]:
 
 
 @core.post("/search")
-def knowledge_search(payload: SearchRequest) -> Dict[str, Any]:
+def knowledge_search(
+    payload: SearchRequest,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     try:
         return get_knowledge_service().search(
-            payload.query, top_k=payload.top_k, threshold=payload.threshold
+            payload.query,
+            top_k=payload.top_k,
+            threshold=payload.threshold,
+            scope=scope,
         )
     except EmbeddingUnavailableError as exc:
         raise _unavailable(exc)
@@ -119,7 +191,10 @@ def knowledge_search(payload: SearchRequest) -> Dict[str, Any]:
 
 
 @core.post("/query", deprecated=True)
-def knowledge_query(payload: SearchRequest) -> Dict[str, Any]:
+def knowledge_query(
+    payload: SearchRequest,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     """Retrieval-only RAG contract. Generation stays on ``/v1/chat``.
 
     The old handler answered with a mock-written ``answer``; returning that from
@@ -128,7 +203,10 @@ def knowledge_query(payload: SearchRequest) -> Dict[str, Any]:
     """
     try:
         result = get_knowledge_service().search(
-            payload.query, top_k=payload.top_k, threshold=payload.threshold
+            payload.query,
+            top_k=payload.top_k,
+            threshold=payload.threshold,
+            scope=scope,
         )
     except EmbeddingUnavailableError as exc:
         raise _unavailable(exc)
@@ -213,23 +291,29 @@ def _storage_error(exc: Exception) -> HTTPException:
 def knowledge_list_documents(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    scope: KnowledgeScope = Depends(_knowledge_scope),
 ) -> Dict[str, Any]:
     """Paged document ledger (chunk count, ingest time, source, content hash)."""
     try:
-        return get_knowledge_service().list_documents(limit=limit, offset=offset)
+        return get_knowledge_service().list_documents(
+            limit=limit, offset=offset, scope=scope
+        )
     except (OSError, sqlite3.Error) as exc:
         raise _storage_error(exc)
 
 
 @documents_admin.get("/documents/{document_id}/chunks")
-def knowledge_document_chunks(document_id: str) -> Dict[str, Any]:
+def knowledge_document_chunks(
+    document_id: str,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     """Every chunk of one document (ordered), not just the top-k search hits."""
     try:
-        result = get_knowledge_service().document_chunks(document_id)
+        result = get_knowledge_service().document_chunks(document_id, scope=scope)
     except (OSError, sqlite3.Error) as exc:
         raise _storage_error(exc)
     if result["count"] == 0:
-        raise HTTPException(status_code=404, detail=f"未找到文档：{document_id}")
+        raise _not_found()
     return result
 
 
@@ -237,14 +321,17 @@ def knowledge_document_chunks(document_id: str) -> Dict[str, Any]:
 def knowledge_delete_document(
     document_id: str,
     _admin: str = Depends(_require_knowledge_admin),
+    scope: KnowledgeScope = Depends(_knowledge_scope),
 ) -> Dict[str, Any]:
     """Delete a document: chunks, vectors, FTS rows and content hash at once."""
     try:
-        result = get_knowledge_service().delete_document(document_id)
+        result = get_knowledge_service().delete_document(
+            document_id, scope=scope
+        )
     except (OSError, sqlite3.Error) as exc:
         raise _storage_error(exc)
     if not result["deleted"]:
-        raise HTTPException(status_code=404, detail=f"未找到文档：{document_id}")
+        raise _not_found()
     return result
 
 
@@ -269,6 +356,7 @@ async def knowledge_upload_document(
     file: UploadFile = File(...),
     doc_id: Optional[str] = Form(default=None),
     allow_low_quality: bool = Form(default=False),
+    scope: KnowledgeScope = Depends(_knowledge_scope),
 ) -> Dict[str, Any]:
     """Multipart upload for PDF / DOCX / HTML / plain text (synchronous).
 
@@ -315,6 +403,7 @@ async def knowledge_upload_document(
             doc_id=doc_id or filename,
             metadata=metadata,
             pages=extracted.pages or None,
+            owner_account_id=scope.write_owner,
         )
     except EmbeddingUnavailableError as exc:
         raise _unavailable(exc)
@@ -337,6 +426,7 @@ async def knowledge_submit_upload_job(
     file: UploadFile = File(...),
     doc_id: Optional[str] = Form(default=None),
     allow_low_quality: bool = Form(default=False),
+    scope: KnowledgeScope = Depends(_knowledge_scope),
 ) -> Dict[str, Any]:
     """Queue a **file** ingest job and return immediately with a job id.
 
@@ -374,11 +464,15 @@ async def knowledge_submit_upload_job(
         filename,
         doc_id=doc_id,
         allow_low_quality=allow_low_quality,
+        owner_account_id=scope.write_owner,
     )
 
 
 @documents_admin.post("/ingest/jobs", status_code=202)
-def knowledge_submit_ingest_job(payload: IngestJobRequest) -> Dict[str, Any]:
+def knowledge_submit_ingest_job(
+    payload: IngestJobRequest,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     """Queue a raw-text ingest job; cancellation lands at chunk boundaries."""
     status = get_knowledge_service().status()
     if not status.get("enabled"):
@@ -386,24 +480,33 @@ def knowledge_submit_ingest_job(payload: IngestJobRequest) -> Dict[str, Any]:
             status_code=503, detail=f"知识库未启用：{status.get('reason')}"
         )
     return get_ingest_job_manager().submit(
-        payload.text, doc_id=payload.doc_id, metadata=payload.metadata
+        payload.text,
+        doc_id=payload.doc_id,
+        metadata=payload.metadata,
+        owner_account_id=scope.write_owner,
     )
 
 
 @documents_admin.get("/ingest/jobs/{job_id}")
-def knowledge_get_ingest_job(job_id: str) -> Dict[str, Any]:
-    job = get_ingest_job_manager().get(job_id)
+def knowledge_get_ingest_job(
+    job_id: str,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
+    job = get_ingest_job_manager().get(job_id, scope=scope)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"未找到任务：{job_id}")
+        raise _not_found()
     return job
 
 
 @documents_admin.post("/ingest/jobs/{job_id}/cancel")
-def knowledge_cancel_ingest_job(job_id: str) -> Dict[str, Any]:
+def knowledge_cancel_ingest_job(
+    job_id: str,
+    scope: KnowledgeScope = Depends(_knowledge_scope),
+) -> Dict[str, Any]:
     """Request cancellation; it lands at the next chunk boundary."""
-    job = get_ingest_job_manager().cancel(job_id)
+    job = get_ingest_job_manager().cancel(job_id, scope=scope)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"未找到任务：{job_id}")
+        raise _not_found()
     return job
 
 

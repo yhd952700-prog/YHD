@@ -161,6 +161,25 @@ def weighted_reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
+def _metadata_owner(metadata: Optional[Dict[str, Any]]) -> str:
+    """Chunk 归属账号；没有该字段的历史数据视为"无归属"（老部署公共库）。"""
+    return str((metadata or {}).get("owner_account_id") or "").strip()
+
+
+def _owner_visible(
+    metadata: Optional[Dict[str, Any]],
+    owners: Optional[Iterable[str]],
+    include_unowned: bool,
+) -> bool:
+    """``owners=None`` 表示不限制（主账号聚合读）；空归属单独开关。"""
+    owner = _metadata_owner(metadata)
+    if not owner:
+        return bool(include_unowned)
+    if owners is None:
+        return True
+    return owner in owners
+
+
 class VectorStore:
     """In-memory vector store prototype.
 
@@ -194,6 +213,9 @@ class VectorStore:
         query_embedding: List[float],
         top_k: int = 4,
         threshold: Optional[float] = None,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
     ) -> List[Tuple[str, float, Dict[str, Any]]]:
         """Search for the most similar documents to a query embedding.
 
@@ -220,6 +242,8 @@ class VectorStore:
         results: List[Tuple[str, float, Dict[str, Any]]] = []
 
         for doc_id, (stored_embedding, metadata) in snapshot:
+            if not _owner_visible(metadata, owners, include_unowned):
+                continue
             similarity = cosine_similarity(query_embedding, stored_embedding)
             if threshold is None or similarity >= threshold:
                 results.append((doc_id, similarity, metadata))
@@ -237,6 +261,9 @@ class VectorStore:
         rrf_k: int = 60,
         abstain: bool = True,
         config: Optional[AbstentionConfig] = None,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
     ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
         """Vector-only fallback for stores without an FTS index.
 
@@ -245,9 +272,18 @@ class VectorStore:
         ``runner_up_score`` / ``thresholds``); ``hits`` is empty whenever the
         status is ``no_relevant``.
         """
-        results = self.search(query_embedding, top_k=top_k, threshold=threshold)
+        results = self.search(
+            query_embedding,
+            top_k=top_k,
+            threshold=threshold,
+            owners=owners,
+            include_unowned=include_unowned,
+        )
         with self._lock:
-            empty_corpus = not self._store
+            empty_corpus = not any(
+                _owner_visible(meta, owners, include_unowned)
+                for _, (_, meta) in self._store.items()
+            )
         assessment = assess_confidence(
             {doc_id: score for doc_id, score, _ in results},
             0,
@@ -361,7 +397,12 @@ class VectorStore:
 
     # -- document administration (list / read all chunks / delete) ---------
     def list_documents(
-        self, limit: int = 50, offset: int = 0
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Document summaries aggregated from chunks (in-memory store)."""
         limit = max(1, int(limit))
@@ -374,6 +415,8 @@ class VectorStore:
         documents: Dict[str, Dict[str, Any]] = {}
         for chunk_id, (_, metadata) in snapshot:
             meta = metadata or {}
+            if not _owner_visible(meta, owners, include_unowned):
+                continue
             document_id = _document_id_of(chunk_id, meta)
             entry = documents.get(document_id)
             if entry is None:
@@ -409,6 +452,7 @@ class VectorStore:
                 "text": str(meta.get("text", "")),
                 "heading_path": list(meta.get("heading_path") or []),
                 "context_header": str(meta.get("context_header") or ""),
+                "owner_account_id": _metadata_owner(meta),
                 "page": meta.get("page"),
                 "pages": (
                     meta.get("pages")
@@ -723,7 +767,12 @@ class PersistentVectorStore(VectorStore):
             return removed
 
     def list_documents(
-        self, limit: int = 50, offset: int = 0
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Document summaries with ingest time and content hash from SQLite."""
         limit = max(1, int(limit))
@@ -746,6 +795,8 @@ class PersistentVectorStore(VectorStore):
                 meta = {}
             if not isinstance(meta, dict):
                 meta = {}
+            if not _owner_visible(meta, owners, include_unowned):
+                continue
             document_id = _document_id_of(row["doc_id"], meta)
             entry = documents.get(document_id)
             if entry is None:
@@ -862,6 +913,9 @@ class PersistentVectorStore(VectorStore):
         rrf_k: int = 60,
         abstain: bool = True,
         config: Optional[AbstentionConfig] = None,
+        *,
+        owners: Optional[Iterable[str]] = None,
+        include_unowned: bool = True,
     ) -> Tuple[List[Tuple[str, float, Dict[str, Any]]], Dict[str, Any]]:
         """Vector + BM25(FTS5) candidates fused with RRF, then gated.
 
@@ -886,12 +940,28 @@ class PersistentVectorStore(VectorStore):
         # first citation slot. 40 keeps such a lexical winner in both lists.
         candidate_k = max(40, top_k * 4)
         with self._lock:
-            empty_corpus = self.count() == 0
+            empty_corpus = not any(
+                _owner_visible(meta, owners, include_unowned)
+                for _, (_, meta) in self._store.items()
+            )
             vector_results = self.search(
-                query_embedding, top_k=candidate_k, threshold=threshold
+                query_embedding,
+                top_k=candidate_k,
+                threshold=threshold,
+                owners=owners,
+                include_unowned=include_unowned,
             )
             vector_ids = [doc_id for doc_id, _, _ in vector_results]
-            lexical = self._fts_search_scored(query_text, candidate_k)
+            lexical = [
+                (chunk_id, weight)
+                for chunk_id, weight in self._fts_search_scored(
+                    query_text, candidate_k
+                )
+                if chunk_id in self._store
+                and _owner_visible(
+                    self._store[chunk_id][1], owners, include_unowned
+                )
+            ]
             lexical_ids = [chunk_id for chunk_id, _ in lexical]
 
             similarities: Dict[str, float] = {}

@@ -41,8 +41,9 @@ from typing import Any, Callable, Dict, Optional
 from .documents import (
     IngestCancelled,
     KnowledgeDocumentService,
-    _safe_document_id,
+    KnowledgeScope,
     get_knowledge_service,
+    scoped_document_id,
 )
 from .extractors import ExtractionCancelled, ExtractionError, LowQualityText
 from .extractors import extract_document
@@ -62,6 +63,7 @@ def _now() -> str:
 class _Job:
     job_id: str
     document_id: str
+    owner_account_id: str = ""
     source: str = "text"
     file_name: Optional[str] = None
     file_type: Optional[str] = None
@@ -106,6 +108,7 @@ class _Job:
         return {
             "job_id": self.job_id,
             "document_id": self.document_id,
+            "owner_account_id": self.owner_account_id,
             "source": self.source,
             "file_name": self.file_name,
             "file_type": self.file_type,
@@ -155,9 +158,11 @@ class IngestJobManager:
         text: str,
         doc_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        owner_account_id: str = "",
     ) -> Dict[str, Any]:
         return self._submit(
-            "text", text, None, doc_id, metadata, False
+            "text", text, None, doc_id, metadata, False, owner_account_id
         )
 
     def submit_file(
@@ -167,6 +172,8 @@ class IngestJobManager:
         doc_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         allow_low_quality: bool = False,
+        *,
+        owner_account_id: str = "",
     ) -> Dict[str, Any]:
         """Queue an ingest job that starts from the **uploaded bytes**.
 
@@ -174,7 +181,13 @@ class IngestJobManager:
         and a 300-page PDF reports real page progress instead of blocking.
         """
         return self._submit(
-            "file", data, filename, doc_id, metadata, allow_low_quality
+            "file",
+            data,
+            filename,
+            doc_id,
+            metadata,
+            allow_low_quality,
+            owner_account_id,
         )
 
     def _submit(
@@ -185,10 +198,13 @@ class IngestJobManager:
         doc_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
         allow_low_quality: bool,
+        owner_account_id: str = "",
     ) -> Dict[str, Any]:
+        owner = str(owner_account_id or "").strip()
         job = _Job(
             job_id=uuid.uuid4().hex,
-            document_id=_safe_document_id(doc_id or filename),
+            document_id=scoped_document_id(owner, doc_id or filename),
+            owner_account_id=owner,
             source=source,
             file_name=filename,
             allow_low_quality=allow_low_quality,
@@ -209,21 +225,32 @@ class IngestJobManager:
             filename,
             dict(metadata or {}),
             allow_low_quality,
+            owner,
             cancel_event,
             done_event,
         )
         return job.snapshot()
 
-    def get(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get(
+        self, job_id: str, scope: Optional[KnowledgeScope] = None
+    ) -> Optional[Dict[str, Any]]:
         with self._lock:
             job = self._jobs.get(job_id)
-            return job.snapshot() if job is not None else None
+            if job is None:
+                return None
+            if scope is not None and not scope.covers(job.owner_account_id):
+                return None
+            return job.snapshot()
 
-    def cancel(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def cancel(
+        self, job_id: str, scope: Optional[KnowledgeScope] = None
+    ) -> Optional[Dict[str, Any]]:
         """Request cancellation; it lands at the next chunk boundary."""
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
+                return None
+            if scope is not None and not scope.may_write(job.owner_account_id):
                 return None
             if job.status in _TERMINAL:
                 return {
@@ -245,13 +272,18 @@ class IngestJobManager:
                 "reason": reason,
             }
 
-    def wait(self, job_id: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
+    def wait(
+        self,
+        job_id: str,
+        timeout: float = 30.0,
+        scope: Optional[KnowledgeScope] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Block until the job leaves the running state (tests / callers)."""
         with self._lock:
             done = self._done_events.get(job_id)
         if done is not None:
             done.wait(timeout)
-        return self.get(job_id)
+        return self.get(job_id, scope)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False)
@@ -264,6 +296,7 @@ class IngestJobManager:
         filename: Optional[str],
         metadata: Dict[str, Any],
         allow_low_quality: bool,
+        owner_account_id: str,
         cancel_event: threading.Event,
         done_event: threading.Event,
     ) -> None:
@@ -287,6 +320,7 @@ class IngestJobManager:
                 metadata=metadata,
                 on_progress=on_progress,
                 cancel_event=cancel_event,
+                owner_account_id=owner_account_id,
             )
         except IngestCancelled as exc:
             with self._lock:
@@ -346,6 +380,7 @@ class IngestJobManager:
         filename: Optional[str],
         metadata: Dict[str, Any],
         allow_low_quality: bool,
+        owner_account_id: str,
         cancel_event: threading.Event,
         done_event: threading.Event,
     ) -> None:
@@ -437,6 +472,7 @@ class IngestJobManager:
                 on_progress=on_progress,
                 on_page_progress=on_page_progress,
                 cancel_event=cancel_event,
+                owner_account_id=owner_account_id,
             )
         except IngestCancelled as exc:
             self._mark_cancelled(

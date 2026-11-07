@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstention import AbstentionConfig, resolve_abstention_config
@@ -49,6 +50,81 @@ def content_hash(text: str) -> str:
     """Whitespace-insensitive content hash (same text, different line endings)."""
     normalized = re.sub(r"\s+", " ", text or "").strip()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _owner_token(owner: str) -> str:
+    """账号名 -> 可安全进入 chunk/doc id 的短 token（稳定、无路径分隔符）。"""
+    token = _ID_SAFE.sub("-", str(owner or "").strip()).strip("-")[:64]
+    return token or "account"
+
+
+def scoped_document_id(owner: Optional[str], raw: Optional[str]) -> str:
+    """把文档 id 收进账号命名空间，避免两个账号同名文件互相覆盖。
+
+    幂等：已带自己前缀的 id 原样返回，重复调用不会层层叠加前缀。
+    """
+    base = _safe_document_id(raw)
+    owner = str(owner or "").strip()
+    if not owner:
+        return base
+    prefix = f"{_owner_token(owner)}--"
+    if base.startswith(prefix):
+        return base
+    return _safe_document_id(prefix + base)
+
+
+def scoped_content_hash(text: str, owner: Optional[str]) -> str:
+    """账号内去重哈希：不同账号的同文不会互相命中（也不泄露对方的 doc id）。"""
+    owner = str(owner or "").strip()
+    if not owner:
+        return content_hash(text)
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return hashlib.sha256(f"{owner}\x00{normalized}".encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class KnowledgeScope:
+    """一次知识库读写的账号范围。
+
+    - ``owners=None``：不限制（主账号聚合只读）；
+    - ``owners=(principal,)``：只读自己；
+    - ``include_unowned``：是否包含无归属的历史数据（单机老部署）；
+    - ``aggregate``：主账号聚合视角（可读整棵子树，但写仍只落自己）；
+    - ``owns_legacy``：能否管理无归属历史数据（仅主账号/老部署）。
+    """
+
+    principal: str
+    owners: Optional[Tuple[str, ...]] = None
+    include_unowned: bool = True
+    aggregate: bool = True
+    owns_legacy: bool = True
+
+    @classmethod
+    def all(cls) -> "KnowledgeScope":
+        return cls(principal="", owners=None, include_unowned=True, aggregate=True)
+
+    def covers(self, owner: Optional[str]) -> bool:
+        owner = str(owner or "").strip()
+        if not owner:
+            return self.include_unowned
+        return self.owners is None or owner in self.owners
+
+    def may_write(self, owner: Optional[str]) -> bool:
+        """写操作只作用于自己的文档；无归属老数据只允许主账号/老部署管理。"""
+        owner = str(owner or "").strip()
+        if not owner:
+            return self.owns_legacy
+        return owner == self.principal
+
+    def store_kwargs(self) -> Dict[str, Any]:
+        return {"owners": self.owners, "include_unowned": self.include_unowned}
+
+    @property
+    def write_owner(self) -> str:
+        """写入归属：单机老部署沿用无归属历史（id 不变），多账号写自己。"""
+        if self.owns_legacy and not self.aggregate:
+            return ""
+        return self.principal
 
 
 def _page_label(metadata: Dict[str, Any]) -> Optional[str]:
@@ -186,6 +262,7 @@ class KnowledgeDocumentService:
         on_progress: Optional[Callable[[int, int], None]] = None,
         on_page_progress: Optional[Callable[[int, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        owner_account_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Ingest already-extracted text (and, for PDFs, per-page text).
 
@@ -194,10 +271,14 @@ class KnowledgeDocumentService:
         ``manual-copy.pdf`` still hits the duplicate path. ``pages`` is the
         paged form ``[(1, page_text), ...]``: when present each chunk is tagged
         with its 1-based page number in metadata.
+
+        ``owner_account_id`` 是调用者账号：文档 id / 去重哈希 / chunk 元数据
+        全部收进该账号的命名空间，写入只落在自己范围。
         """
         embedder = self._embedding()
         store = self._store()
-        document_id = _safe_document_id(doc_id)
+        owner = str(owner_account_id or "").strip()
+        document_id = scoped_document_id(owner, doc_id)
         if pages:
             chunks = chunk_paged_document(list(pages))
         else:
@@ -240,6 +321,7 @@ class KnowledgeDocumentService:
                 vector,
                 {
                     **static_metadata,
+                    "owner_account_id": owner,
                     "document_id": document_id,
                     "chunk_index": index,
                     "text": chunk.text,
@@ -263,7 +345,10 @@ class KnowledgeDocumentService:
             for index, (chunk, vector) in enumerate(zip(chunks, vectors))
         ]
         outcome = store.upsert_document(
-            f"{document_id}#", items, content_hash(text), document_id
+            f"{document_id}#",
+            items,
+            scoped_content_hash(text, owner),
+            document_id,
         )
         if outcome.get("deduplicated"):
             matched = outcome.get("matched_document_id")
@@ -302,6 +387,7 @@ class KnowledgeDocumentService:
         threshold: Optional[float] = None,
         abstain: bool = True,
         abstention_config: Optional[AbstentionConfig] = None,
+        scope: Optional[KnowledgeScope] = None,
     ) -> Dict[str, Any]:
         """Retrieve chunks, with the relevance gate on by default.
 
@@ -329,13 +415,16 @@ class KnowledgeDocumentService:
             pinned=pinned,
         )
         query_vector = embedder.embed([query])[0]
+        store_filter = scope.store_kwargs() if scope is not None else {}
         if hasattr(store, "hybrid_search"):
             results, retrieval = store.hybrid_search(
                 query, query_vector, top_k=top_k, threshold=threshold,
-                abstain=abstain, config=gate,
+                abstain=abstain, config=gate, **store_filter,
             )
         else:  # pragma: no cover - third-party stores without the hybrid API
-            results = store.search(query_vector, top_k=top_k, threshold=threshold)
+            results = store.search(
+                query_vector, top_k=top_k, threshold=threshold, **store_filter
+            )
             retrieval = {
                 "mode": "vector",
                 "fts_available": False,
@@ -374,14 +463,22 @@ class KnowledgeDocumentService:
             "query": query,
             "top_k": top_k,
             "hits": hits,
-            "count": store.count(),
+            "count": len(hits),
             "retrieval": retrieval,
         }
 
     # -- document administration (no embedder needed) -----------------------
-    def list_documents(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+    def list_documents(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        scope: Optional[KnowledgeScope] = None,
+    ) -> Dict[str, Any]:
         store = self._store()
-        documents, total = store.list_documents(limit=limit, offset=offset)
+        store_filter = scope.store_kwargs() if scope is not None else {}
+        documents, total = store.list_documents(
+            limit=limit, offset=offset, **store_filter
+        )
         return {
             "documents": documents,
             "total": total,
@@ -389,15 +486,43 @@ class KnowledgeDocumentService:
             "offset": offset,
         }
 
-    def document_chunks(self, document_id: str) -> Dict[str, Any]:
+    def document_owner(self, document_id: str) -> Optional[str]:
+        """文档归属账号；``None`` 表示文档不存在，``""`` 表示无归属历史数据。"""
         chunks = self._store().get_document_chunks(document_id)
+        if not chunks:
+            return None
+        return str(chunks[0].get("owner_account_id") or "").strip()
+
+    def document_chunks(
+        self, document_id: str, scope: Optional[KnowledgeScope] = None
+    ) -> Dict[str, Any]:
+        chunks = self._store().get_document_chunks(document_id)
+        if scope is not None:
+            chunks = [
+                chunk
+                for chunk in chunks
+                if scope.covers(chunk.get("owner_account_id"))
+            ]
         return {
             "document_id": document_id,
             "chunks": chunks,
             "count": len(chunks),
         }
 
-    def delete_document(self, document_id: str) -> Dict[str, Any]:
+    def delete_document(
+        self, document_id: str, scope: Optional[KnowledgeScope] = None
+    ) -> Dict[str, Any]:
+        owner = self.document_owner(document_id)
+        if scope is not None and (
+            owner is None or not scope.covers(owner) or not scope.may_write(owner)
+        ):
+            # 不存在 / 不可见 / 不是自己的文档，对外一律同一种"没删到"。
+            return {
+                "document_id": document_id,
+                "deleted": False,
+                "chunks_removed": 0,
+                "not_found": True,
+            }
         outcome = self._store().delete_document(document_id)
         logger.info(
             "knowledge delete: document=%s deleted=%s chunks_removed=%s",

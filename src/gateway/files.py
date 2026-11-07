@@ -123,6 +123,29 @@ def _scope_block(account: str, mode: str) -> Dict[str, Any]:
     }
 
 
+def _logical_prefix(owner: str, mode: str) -> str:
+    """账号空间的**工作区相对前缀**：``accounts/<owner>``；根默认视角为空。"""
+    if mode == "all" or not owner:
+        return ""
+    return f"accounts/{owner}"
+
+
+def _strip_owner_prefix(path: str, owner: str, mode: str) -> str:
+    """接受 ``accounts/<owner>/...`` 形式的工作区相对路径。
+
+    列表返回的 ``rel_path`` 统一是工作区相对路径（带账号前缀），前端回填后
+    再拿来 list/read 时必须能原样用；这里剥掉自己的前缀，两种写法都稳定。
+    """
+    rel = _normalise_rel_path(path)
+    prefix = _logical_prefix(owner, mode)
+    if prefix:
+        if rel == prefix:
+            return ""
+        if rel.startswith(prefix + "/"):
+            return rel[len(prefix) + 1 :]
+    return rel
+
+
 @router.get("")
 def list_files(
     path: str = Query("", description="账号空间内的相对路径；空字符串=空间根"),
@@ -138,25 +161,24 @@ def list_files(
     """
     physical_root, owner, mode = _account_space(context, account)
     within_account = mode != "all"
-    if not path.strip():
+    rel = _strip_owner_prefix(path, owner, mode)
+    logical_dir = f"{_logical_prefix(owner, mode)}/{rel}".strip("/")
+    if not rel:
         abs_dir = physical_root
     else:
-        abs_dir = _resolve(path, physical_root, within_account=within_account)
+        abs_dir = _resolve(rel, physical_root, within_account=within_account)
     if not os.path.isdir(abs_dir):
         if not os.path.exists(physical_root):
             # 该账号还没有任何产物：空空间是事实，不是错误。
             return {
                 "root": physical_root,
-                "path": path,
+                "path": logical_dir,
                 "account": owner or None,
                 "count": 0,
                 "entries": [],
                 "scope": _scope_block(owner, mode),
             }
-        raise HTTPException(
-            status_code=404,
-            detail="不是目录（可能不存在，或是一个文件）：%r" % path,
-        )
+        raise _neutral_not_found()
 
     entries: List[Dict[str, Any]] = []
     try:
@@ -172,7 +194,9 @@ def list_files(
         entries.append(
             {
                 "name": name,
-                "rel_path": (path.strip("/") + "/" + name).strip("/"),
+                # 统一为「工作区相对路径」：带着 accounts/<owner> 前缀，
+                # 前端回填到 list/read 时不会再把视角切回公共根。
+                "rel_path": f"{logical_dir}/{name}".strip("/"),
                 "type": "dir" if os.path.isdir(child) else "file",
                 "size": None if os.path.isdir(child) else st.st_size,
                 "mtime": int(st.st_mtime),
@@ -180,7 +204,7 @@ def list_files(
         )
     return {
         "root": physical_root,
-        "path": path,
+        "path": logical_dir,
         "account": owner or None,
         "count": len(entries),
         "entries": entries,
@@ -201,16 +225,17 @@ def read_file(
     * 不是合法 UTF-8 → 415。
     """
     physical_root, owner, mode = _account_space(context, account)
-    rel = _normalise_rel_path(path)
+    rel = _strip_owner_prefix(path, owner, mode)
     if not rel:
         raise _neutral_not_found()
     abs_path = _resolve(rel, physical_root, within_account=(mode != "all"))
+    logical_path = f"{_logical_prefix(owner, mode)}/{rel}".strip("/")
     if not os.path.isfile(abs_path):
-        raise HTTPException(status_code=404, detail="不是文件：%r" % path)
+        raise _neutral_not_found()
     try:
         size = os.path.getsize(abs_path)
     except OSError:
-        raise HTTPException(status_code=404, detail="不是文件：%r" % path)
+        raise _neutral_not_found()
     if size > _MAX_READ_BYTES:
         raise HTTPException(
             status_code=413,
@@ -231,7 +256,7 @@ def read_file(
         )
     return {
         "root": physical_root,
-        "path": rel,
+        "path": logical_path,
         "account": owner or None,
         "size": size,
         "mtime": int(os.path.getmtime(abs_path)),

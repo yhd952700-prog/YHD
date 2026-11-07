@@ -2,7 +2,7 @@
 
 背景
 ----
-``ProjectStore._save()`` 吞掉持久化异常（**有意**：不打断请求，见源码注释）。
+``ProjectStore._mutate_and_persist()`` 吞掉持久化异常（**有意**：不打断请求，见源码注释）。
 但 ``create`` / ``delete`` 此前无论是否真正落盘都报成功 —— 一个"已创建"却没能落盘
 的项目，会在进程重启后**静默消失**，调用方无从得知。
 
@@ -35,6 +35,18 @@ from src.gateway.projects import (
 )
 
 
+class _Viewer:
+    """端点现在依赖已核验账号视角；直接调用时用最小真实契约替身。"""
+
+    principal = "test-human"
+
+    def sees(self, entry):
+        return True
+
+    def owns(self, entry):
+        return True
+
+
 @pytest.fixture(autouse=True)
 def _reset_project_singleton():
     """ProjectStore 是模块级单例，用例前后各复位一次，避免跨用例污染。"""
@@ -50,7 +62,7 @@ def test_create_reports_persisted_true_on_healthy_store(tmp_path, monkeypatch):
     monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(ws))
 
     body = create_project(
-        ProjectCreateRequest(name="ok", description="demo"), principal="test-human"
+        ProjectCreateRequest(name="ok", description="demo"), viewer=_Viewer()
     )
 
     # 诚实标注：这次落盘成功。
@@ -58,6 +70,8 @@ def test_create_reports_persisted_true_on_healthy_store(tmp_path, monkeypatch):
     # 向后兼容：原有字段与语义不变。
     assert body["name"] == "ok"
     assert "project_id" in body
+    # 账号归属由已核验令牌决定，而不是请求体。
+    assert body["owner_account_id"] == "test-human"
     # 确实落到了工作区内的 JSON（不是只改了内存）。
     assert (ws / "liuhao_projects.json").exists()
 
@@ -77,7 +91,7 @@ def test_create_survives_but_reports_persisted_false_when_disk_fails(
 
     # 可用性保留：调用不抛异常（等价于 HTTP 不 500）。
     body = create_project(
-        ProjectCreateRequest(name="doomed", description=""), principal="test-human"
+        ProjectCreateRequest(name="doomed", description=""), viewer=_Viewer()
     )
 
     # 诚实性：落盘未成功，绝不报成功。
@@ -92,9 +106,14 @@ def test_delete_reports_persisted_true_on_healthy_store(tmp_path, monkeypatch):
     monkeypatch.setenv("LIUHAO_WORKSPACE_ROOT", str(ws))
 
     created = create_project(
-        ProjectCreateRequest(name="x", description=""), principal="test-human"
+        ProjectCreateRequest(name="x", description=""), viewer=_Viewer()
     )
-    body = delete_project(created["project_id"], principal="test-human")
+    body = delete_project(created["project_id"], viewer=_Viewer())
 
     assert body["ok"] is True
     assert body["persisted"] is True
+    # 删除是真的从磁盘消失，不只是内存里的标记。
+    import json
+
+    with open(ws / "liuhao_projects.json", encoding="utf-8") as handle:
+        assert created["project_id"] not in json.load(handle)

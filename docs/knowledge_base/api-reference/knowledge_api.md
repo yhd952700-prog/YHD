@@ -138,6 +138,12 @@ Authorization: Bearer <human token, scope L0 或 admin>
 }
 ```
 
+> **多账号命名空间。** 在账号树部署下，`document_id` 会收进调用者账号的命名空间：
+> `<account>--<doc_id>`（例如 `alice--product_manual.pdf`）。这样两个账号上传同名
+> 文件不会互相覆盖，去重与删除也只在各自范围内成立；单机/老部署令牌没有账号树时
+> 保持原始 id。账号内可见性以令牌主体为准：成员只读写自己，主账号可聚合读子树，
+> 跨账号一律中性 404。
+
 ### 跨页段落规则（PDF）
 
 PDF 会按页提取，但**一段话不会被页边界切成两个 chunk**：
@@ -170,6 +176,8 @@ PDF 会按页提取，但**一段话不会被页边界切成两个 chunk**：
 内容哈希在 **提取后的文本** 上计算（空白归一化后 SHA-256），因此同一份 PDF
 改名为 `product_manual-copy.pdf` 再传不会重复入库：第二次返回
 `deduplicated: true` 与 `matched_document_id`（首次入库的 id），不会新增分块。
+哈希带账号命名空间，上述去重只在**同一账号内**成立，不会跨账号命中或泄露对方的
+`matched_document_id`。
 
 ### 失败文案（原文，前端可直接展示）
 

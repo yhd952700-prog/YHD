@@ -947,12 +947,23 @@ class AIStateManager:
         - ``background=True``：在后台线程跑，立即返回 ``state:"running"``，
           供自主工作者场景与取消演示使用（``POST /v1/goals/{id}/stop`` 可干净中止）。
         """
-        # Fail fast on a non-existent project before doing any execution work.
+        # Fail fast on a project that is not visible to the submitting account.
+        # 挂目标必须校验目标项目属于调用者可见范围：成员不能把自己的目标
+        # 挂到主账号（或同级账号）的项目上；越权与不存在同为中性文案。
         if project_id is not None:
             try:
-                from .projects import ProjectStore
-                if not ProjectStore().exists(project_id):
-                    raise ValueError(f"Project {project_id} not found")
+                from ..kernels.identity import _accounts
+                from .projects import ProjectStore, exists_for
+                # 空 owner 只出现在内部调用/单机老部署：没有可比的调用者身份，
+                # 保持旧语义（只校验存在），HTTP 入口始终带已核验的账号。
+                submitter = str(owner_account_id or "").strip()
+                visible = (
+                    exists_for(project_id, submitter)
+                    if submitter
+                    else ProjectStore().exists(project_id)
+                )
+                if not visible:
+                    raise ValueError(_accounts.NEUTRAL_NOT_FOUND_MESSAGE)
             except ValueError:
                 raise
             except Exception as exc:

@@ -275,7 +275,9 @@ def chat(
     # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
     assistant = _assistant_for(req, principal)
     # 先检索再生成：空库/不可用/检索失败都静默降级，元信息如实说明。
-    knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
+    knowledge = build_knowledge_context(
+        req.message, enabled=req.use_knowledge, principal=principal
+    )
     with knowledge_prompt(assistant, knowledge):
         result = assistant.chat(req.message)
     if result.get("status") != "denied":
@@ -310,7 +312,9 @@ def chat_stream(
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
     """
     assistant = _assistant_for(req, principal)
-    knowledge = build_knowledge_context(req.message, enabled=req.use_knowledge)
+    knowledge = build_knowledge_context(
+        req.message, enabled=req.use_knowledge, principal=principal
+    )
 
     def event_stream():
         # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
