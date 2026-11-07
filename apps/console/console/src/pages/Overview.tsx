@@ -227,7 +227,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           data={roster.data}
           isEmpty={(data) => data.layers.length === 0}
           emptyTitle="注册表不可用"
-          emptyHint="capability-registry.yaml 未能解析"
+          emptyHint="能力注册表未能解析"
           onRetry={roster.reload}
         >
           {(data) => (
@@ -323,7 +323,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
               <BrainMap
                 regions={data.kernels.map((kernel) => ({
                   id: kernel.id,
-                  label: kernel.name,
+                  label: neutralLayerLabel(kernel.name),
                   group: kernel.domain,
                 }))}
               />

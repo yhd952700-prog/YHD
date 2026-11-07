@@ -444,7 +444,7 @@ describe('鎏灏管家 · 审批与单任务重试', () => {
 
     expect(screen.getByText('有 1 个动作需要你确认')).toBeTruthy()
     fireEvent.click(
-      within(screen.getByRole('alert')).getByRole('button', { name: '查看已签发凭据' }),
+      within(screen.getByRole('alert')).getByRole('button', { name: '查看已批准的记录' }),
     )
     expect(onOpenApproval).toHaveBeenCalledTimes(1)
 
@@ -495,7 +495,7 @@ describe('鎏灏管家 · 单独指派', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent:agent-1' } })
+    fireEvent.change(screen.getByLabelText('派给谁'), { target: { value: 'agent:agent-1' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '把周报合并成一份' } })
     fireEvent.click(screen.getByRole('button', { name: /派给 小鎏 · 鎏灏执行体/ }))
 
@@ -506,8 +506,8 @@ describe('鎏灏管家 · 单独指派', () => {
       background: true,
     })
 
-    await waitFor(() => expect(screen.getAllByText('单独指派').length).toBeGreaterThan(0))
-    expect(screen.getByText(/你点名指派的，不是管家自动拆解/)).toBeTruthy()
+    await waitFor(() => expect(screen.getAllByText('只派给一个人').length).toBeGreaterThan(0))
+    expect(screen.getByText(/这件事只由这位员工做/)).toBeTruthy()
   })
 
   test('按员工指派发 employee_name（不送 agent_id）', async () => {
@@ -515,7 +515,7 @@ describe('鎏灏管家 · 单独指派', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'employee:小鎏' } })
+    fireEvent.change(screen.getByLabelText('派给谁'), { target: { value: 'employee:小鎏' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '把周报合并成一份' } })
     fireEvent.click(screen.getByRole('button', { name: /派给 小鎏（整位员工）/ }))
     await waitFor(() => expect(assignBodies.length).toBe(1))
@@ -537,7 +537,7 @@ describe('鎏灏管家 · 单独指派', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/当前名册：小鎏/)).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('员工'), { target: { value: 'agent:agent-1' } })
+    fireEvent.change(screen.getByLabelText('派给谁'), { target: { value: 'agent:agent-1' } })
     fireEvent.change(screen.getByLabelText('任务'), { target: { value: '整理日志' } })
 
     fireEvent.click(screen.getByRole('button', { name: /派给/ }))
@@ -559,14 +559,14 @@ describe('鎏灏管家 · 待我确认', () => {
     renderPage()
 
     await waitFor(() => expect(screen.getByText('publish')).toBeTruthy())
-    expect(screen.getByText('风险 HIGH')).toBeTruthy()
+    expect(screen.getByText('风险 高')).toBeTruthy()
     expect(screen.getByText(/被拦/)).toBeTruthy()
 
     const card = screen.getByText('publish').closest('article') as HTMLElement
-    const approve = within(card).getByRole('button', { name: '采用此请求体批准' })
+    const approve = within(card).getByRole('button', { name: '确认并允许' })
     // target=* 必须先显式确认覆盖所有目标。
     expect((approve as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(within(card).getByLabelText(/覆盖全部对象/))
+    fireEvent.click(within(card).getByLabelText(/这次批准对所有对象生效/))
     expect((approve as HTMLButtonElement).disabled).toBe(false)
 
     fireEvent.click(approve)
@@ -587,23 +587,23 @@ describe('鎏灏管家 · 待我确认', () => {
       target: '*',
       confirm_wildcard: true,
     })
-    await waitFor(() => expect(screen.getByText(/已签发授权（grant-1）/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/已批准。/)).toBeTruthy())
   })
 
-  test('403 如实说没有签发权限，而不是说队列为空', async () => {
+  test('403 如实说没有批准权限，而不是说队列为空', async () => {
     pendingForbidden = true
     renderPage()
 
-    await waitFor(() => expect(screen.getByText('你没有签发权限')).toBeTruthy())
-    expect(screen.getByText(/这不是「队列为空」/)).toBeTruthy()
-    expect(screen.queryByText('没有等待你确认的动作')).toBeNull()
+    await waitFor(() => expect(screen.getByText('当前账号不能在这里批准')).toBeTruthy())
+    expect(screen.getByText(/不代表「没有待确认动作」/)).toBeTruthy()
+    expect(screen.queryByText('现在没有等你确认的动作')).toBeNull()
   })
 
   test('没有签发范围的账号：整块不渲染，也不请求待审批端点', async () => {
     render(<Butler query="" onOpenApproval={vi.fn()} canApproveQueue={false} />)
 
     expect(screen.queryByText('待我确认')).toBeNull()
-    expect(screen.queryByText(/签发权限/)).toBeNull()
+    expect(screen.queryByText(/批准权限/)).toBeNull()
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).includes('/v1/policy/approvals/pending')),
     ).toBe(false)

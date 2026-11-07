@@ -534,6 +534,15 @@ async def lifespan(app: FastAPI):
 
     _startup_mark("密钥 / JWT / RBAC 初始化完成")
 
+    # 旧 .env 里的 AI_PROVIDER_* 配置迁移成一条可编辑模型记录（只做一次）。
+    # 迁移不覆盖任何已有数据；失败只记日志，绝不阻断启动。
+    try:
+        from ..ai.model_config import migrate_env_config_to_store
+
+        migrate_env_config_to_store()
+    except Exception:  # noqa: BLE001 - 迁移是增强能力，不是启动前置条件
+        logger.warning("legacy model config migration failed", exc_info=True)
+
     # UBX-005: install the production executor fence AND bind a process-wide
     # executor lease *before* any in-process kernel action runs (identity
     # seeding, kernel lifecycle init below). This is the boot wiring that makes

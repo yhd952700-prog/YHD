@@ -81,6 +81,25 @@ type GoalMode = 'butler' | 'assigned'
 
 const PENDING_POLL_MS = 30_000
 
+/** 空态示例：点一下填入输入框，用户再改成自己的事。 */
+const EXAMPLE_TASKS = [
+  '把这周的会议记录整理成周报，按项目归档，再给我一份 300 字摘要',
+  '检查本周新增的文档，列出缺少负责人的条目，并给出补齐建议',
+  '把最近三次失败的运行整理成一页复盘，写清原因和下一步',
+]
+
+/** 拦截风险等级 → 中文；原始英文只进 `title`。 */
+const RISK_LABELS: Record<string, string> = {
+  high: '高',
+  medium: '中',
+  low: '低',
+}
+
+function riskLabel(raw: string | null | undefined): string {
+  const key = (raw ?? '').trim().toLowerCase()
+  return RISK_LABELS[key] ?? '未知'
+}
+
 /** 后端 `duration_ms` 是真实时间戳差；没有就退回由时间戳推算的口径。 */
 function durationLabel(task: GoalTask, nowSeconds: number): string {
   const ms = Number(task.duration_ms)
@@ -153,18 +172,9 @@ function goalWorkMessage(error: unknown, fallback: string): string {
 
 function approveFailureMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) {
-    return '你没有签发权限：只有具备签发权限的账号能签发授权。这不是队列为空。'
+    return '你没有批准权限：只有具备批准权限的账号才能在这里批准。这不代表列表是空的。'
   }
   return errorText(error)
-}
-
-function grantIdOf(raw: Json): string {
-  const grant = raw.grant
-  if (grant && typeof grant === 'object' && !Array.isArray(grant)) {
-    const id = (grant as Record<string, unknown>).grant_id
-    if (typeof id === 'string') return id
-  }
-  return ''
 }
 
 function approvalBodyOf(item: PendingApprovalItem): Json {
@@ -468,7 +478,7 @@ export function Butler({
       setActiveMode('assigned')
       setActiveEmployee(label)
       setAssignInstruction('')
-      setAssignNotice(`已点名派给 ${label}（目标 ${id}）。这次不经过管家拆解，下面只显示这位员工的任务。`)
+      setAssignNotice(`已派给 ${label}。这件事只由这位员工做，下面只显示这位员工的任务。`)
       goals.reload()
       pendingApi.reload()
     } catch (error) {
@@ -552,7 +562,7 @@ export function Butler({
         // 后端这个调用是同步的：返回时这个任务已经跑完，其余任务不受影响。
         await retryGoalTask(activeId, task.id)
         setActiveRunning(true)
-        setReplanNotice('单任务重试已完成（同步执行）；下面刷新为该目标的最新任务清单。')
+        setReplanNotice('这个任务已重试完成；下面刷新为最新任务清单。')
         detailApi.reload()
         goals.reload()
         pendingApi.reload()
@@ -584,11 +594,10 @@ export function Butler({
       try {
         // 「采用队列返回的请求体」：只追加后端要求的通配二次确认，不改其它字段。
         const requestBody = wildcard ? { ...body, confirm_wildcard: true } : body
-        const raw = await approvePending(requestBody)
-        const grantId = grantIdOf(raw)
+        await approvePending(requestBody)
         setApproveNotices((current) => ({
           ...current,
-          [item.pending_id]: `已签发授权${grantId ? `（${grantId}）` : ''}。授权不会自动继续执行：回到失败任务点「重试此任务」，或「重新规划并重跑」。`,
+          [item.pending_id]: '已批准。批准后不会自动继续执行：回到失败任务点「重试此任务」，或「重新规划并重跑」。',
         }))
         setWildcardConfirmed((current) => ({ ...current, [item.pending_id]: false }))
         pendingApi.reload()
@@ -693,8 +702,8 @@ export function Butler({
       </div>
       {/* ── 一句话吩咐 ───────────────────────────────────────── */}
       <Card
-        title="一句话吩咐"
-        sub="直接说你要什么；管家负责拆解、派给员工，再把结果汇总回来"
+        title="让管家安排（可分给多位员工）"
+        sub="说清你要什么，管家拆解后分给合适的员工；不指定员工时，可以多人协作"
         span={12}
       >
         <form
@@ -720,6 +729,28 @@ export function Butler({
             {submitting ? '提交中…' : '交给管家'}
           </button>
         </form>
+
+        {!prompt && !submitting && (
+          <div style={{ marginTop: 10 }}>
+            <span className="os-hint">不知道第一句怎么写？点一条示例，再改成你的事：</span>
+            <div className="os-kb-actions">
+              {EXAMPLE_TASKS.map((task) => (
+                <button
+                  key={task}
+                  type="button"
+                  className="os-link"
+                  title="点一下填入上面的输入框，可以再修改"
+                  onClick={() => {
+                    setPrompt(task)
+                    document.getElementById('butler-prompt')?.focus()
+                  }}
+                >
+                  {task}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="os-butler-options">
           <div className="os-field">
@@ -768,7 +799,7 @@ export function Butler({
                   ? '员工名册加载中…'
                   : assignableEmployees.length === 0
                     ? '没有可接活的员工'
-                    : '不指定（管家自动拆解与分派）'}
+                    : '不指定（由管家分给合适的员工）'}
               </option>
               {assignableEmployees.map((employee) => (
                 <option key={employee.name} value={employee.name}>
@@ -796,23 +827,23 @@ export function Butler({
 
         <p className="os-hint" style={{ marginTop: 10 }}>
           提交后管家在后台执行，页面每 2 秒自动确认一次状态。
-          任务卡会随增量快照逐条出现；只有全部终结后才给总进度百分比，不用假进度充数。
+          任务会一项项出现；全部结束后才显示总进度，期间不编造百分比。
         </p>
       </Card>
 
-      {/* ── 单独指派（点名执行） ─────────────────────────────── */}
+      {/* ── 只派给一个人（点名执行） ─────────────────────────── */}
       <Card
-        title="单独指派（点名执行）"
-        sub="不走管家拆解：你选员工、写任务，直接派给这个人"
+        title="只派给一个人"
+        sub="不拆解、不换人：你选一位员工，这件事只由他做"
         span={activeId ? 5 : 12}
       >
-        <div className="os-butler-assign-flag" aria-label="指定执行，不经过自动拆解">
-          <span className="os-badge" data-tone="accent">指定执行</span>
-          <span>这条任务不会交给管家自动拆解，也不会换人执行。</span>
+        <div className="os-butler-assign-flag" aria-label="只派给一个人，不经过自动拆解">
+          <span className="os-badge" data-tone="accent">只派一人</span>
+          <span>这件事不会交给管家拆解，也不会换人执行。</span>
         </div>
 
         <div className="os-field">
-          <label htmlFor="butler-assign-employee">员工</label>
+          <label htmlFor="butler-assign-employee">派给谁</label>
           <select
             id="butler-assign-employee"
             className="os-input"
@@ -832,7 +863,7 @@ export function Butler({
                   : '选择员工'}
             </option>
             {assignOptions.employees.length > 0 && (
-              <optgroup label="按员工（整位）">
+              <optgroup label="派给整位员工">
                 {assignOptions.employees.map((option) => (
                   <option key={option.value} value={option.value} disabled={option.paused}>
                     {option.label}
@@ -842,7 +873,7 @@ export function Butler({
               </optgroup>
             )}
             {assignOptions.agents.length > 0 && (
-              <optgroup label="按执行个体（精确到个体）">
+              <optgroup label="派给某个执行个体（可选）">
                 {assignOptions.agents.map((option) => (
                   <option key={option.value} value={option.value} disabled={option.paused}>
                     {option.label}
@@ -917,8 +948,8 @@ export function Butler({
           title="管家汇总"
           sub={
             state
-              ? `${assignedGoal ? '单独指派' : '管家自动拆解'} · ${goalStateLabel(state)} · 目标 ${activeId}`
-              : `目标 ${activeId}`
+              ? `${assignedGoal ? '只派给一个人' : '管家安排'} · ${goalStateLabel(state)}`
+              : '正在读取这次执行'
           }
           span={7}
           className={live ? 'sc-panel-active sc-hud' : undefined}
@@ -969,13 +1000,13 @@ export function Butler({
                   </p>
                   {assignedGoal && (
                     <p className="os-hint">
-                      执行者：{assignedLabel}（这是你点名指派的，不是管家自动拆解）
+                      执行者：{assignedLabel}（这件事只由这位员工做）
                     </p>
                   )}
                 </div>
                 <div className="os-butler-run-badges">
                   <span className="os-badge" data-tone={assignedGoal ? 'accent' : 'muted'}>
-                    {assignedGoal ? '单独指派' : '管家自动拆解'}
+                    {assignedGoal ? '只派给一个人' : '管家安排'}
                   </span>
                   <span className="os-badge" data-tone={acceptanceTone(state)}>
                     {goalStateLabel(state)}
@@ -1004,17 +1035,15 @@ export function Butler({
                     <div className="os-note" role="status" style={{ marginTop: 10 }}>
                       <strong>管家正在拆解并安排员工</strong>
                       <p style={{ margin: '4px 0 0' }}>
-                        第一张任务卡到达后会逐条出现。执行期间会持续返回任务快照，
-                        不需要等整次执行结束；在此之前不伪造任何任务级进度。
+                        任务会一项项出现，不用等整次执行结束；在此之前不编造任何任务级进度。
                       </p>
                       <p className="os-hint" style={{ marginTop: 4 }}>
-                        如果你不想等了，可以「中止本次执行」；中止后下面会显示真实终态。
+                        不想等了可以点「中止本次执行」，页面会显示真实结果。
                       </p>
                     </div>
                   ) : (
                     <p className="os-hint" style={{ marginTop: 8 }}>
-                      任务卡按增量快照更新：某次快照可能只包含刚变化的任务，
-                      已出现的卡不会被清空，也不会因为字段暂缺而消失。
+                      任务会陆续更新；已经出现的卡不会消失，也不会因为个别字段暂时缺失被清空。
                     </p>
                   )}
                 </>
@@ -1057,8 +1086,8 @@ export function Butler({
                         <strong>有 {awaiting.length} 个动作需要你确认</strong>
                         <p style={{ margin: '4px 0 0' }}>
                           {canApproveQueue
-                            ? '这些任务是被策略拦截后失败的，不是普通报错。待审批入口在下方「待我确认」；批准后回到任务卡点「重试此任务」，授权才会生效。'
-                            : '这些任务被策略拦下，需要确认后才能重试。确认完成后再回到任务卡点「重试此任务」，无需其他操作。'}
+                            ? '这些任务被安全规则拦下了，需要你批准后才能继续。到下方「待我确认」批准，再回到任务卡点「重试此任务」。'
+                            : '这些任务被安全规则拦下，需要批准后才能继续。批准完再回到任务卡点「重试此任务」。'}
                         </p>
                         {canApproveQueue && (
                           <div className="os-kb-actions" style={{ marginTop: 8 }}>
@@ -1066,7 +1095,7 @@ export function Butler({
                               去「待我确认」
                             </button>
                             <button className="os-link" onClick={onOpenApproval}>
-                              查看已签发凭据
+                              查看已批准的记录
                             </button>
                           </div>
                         )}
@@ -1144,8 +1173,7 @@ export function Butler({
               {replanError && <p className="os-kb-error">重新规划失败：{replanError}</p>}
               {replanning && (
                 <p className="os-hint">
-                  重新规划是同步的：完成前不会返回中间进度，页面会一直显示
-                  「重新规划中… {replanElapsed ?? ''}」。
+                  重新规划要跑完才返回，期间页面会一直显示「重新规划中…」。
                 </p>
               )}
             </>
@@ -1157,7 +1185,7 @@ export function Butler({
       {canApproveQueue && (
       <Card
         title="待我确认"
-        sub="策略拦截后真实待签发的动作 · 采用队列给出的请求体批准"
+        sub="被安全规则拦下、需要你点头才能继续的动作"
         span={12}
         action={
           <button className="os-link" onClick={pendingApi.reload}>
@@ -1169,10 +1197,10 @@ export function Butler({
         {pendingApi.status === 403 ? (
           <div className="os-alert" role="alert">
             <div>
-              <strong>你没有签发权限</strong>
+              <strong>当前账号不能在这里批准</strong>
               <p style={{ margin: '4px 0 0' }}>
-                待审批队列只对具备签发权限的账号可见。
-                这不是「队列为空」，也不代表没有动作在等你 —— 只是当前账号看不到。
+                这个列表只对有批准权限的账号开放。它不代表「没有待确认动作」，
+                只是当前账号看不到。请换管理员账号登录后再来。
               </p>
               {pendingApi.error && <p className="os-hint">{pendingApi.error}</p>}
             </div>
@@ -1183,8 +1211,8 @@ export function Butler({
           <Loading rows={2} />
         ) : pendingItems.length === 0 ? (
           <Empty
-            title="没有等待你确认的动作"
-            hint="队列只显示最近被策略 defer 拦下的真实事件；普通失败不会出现在这里。"
+            title="现在没有等你确认的动作"
+            hint="被安全规则拦下、需要你批准的动作才会出现在这里；普通失败不会显示在这。"
           />
         ) : (
           <div className="os-butler-pending">
@@ -1200,16 +1228,30 @@ export function Butler({
                   data-tone={riskTone(item.risk_level)}
                 >
                   <header className="os-butler-pending-head">
-                    <span className="os-badge" data-tone={riskTone(item.risk_level)}>
-                      风险 {item.risk_level || '未知'}
+                    <span
+                      className="os-badge"
+                      data-tone={riskTone(item.risk_level)}
+                      title={item.risk_level ? `原始等级：${item.risk_level}` : undefined}
+                    >
+                      风险 {riskLabel(item.risk_level)}
                     </span>
                     <strong className="os-butler-pending-action">{item.action}</strong>
                     <span className="os-hint">{blockedAtText(item.blocked_at)}</span>
                   </header>
                   <p className="os-butler-pending-reason">{item.reason || item.summary || '暂未给出拦截原因'}</p>
-                  <p className="os-hint">
-                    规则 {item.policy_rule ?? '未记录'} · 关联 {item.correlation_id ?? '未记录'} ·
-                    拦截账号 {item.blocked_by ?? '未记录'}
+                  <p
+                    className="os-hint"
+                    title={
+                      [
+                        item.policy_rule ? `规则编号：${item.policy_rule}` : '',
+                        item.correlation_id ? `关联编号：${item.correlation_id}` : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || undefined
+                    }
+                  >
+                    这条动作触发了安全规则，需要你确认。
+                    {item.blocked_by ? `（拦截账号：${item.blocked_by}）` : ''}
                   </p>
                   {wildcard && (
                     <label className="os-butler-pending-confirm">
@@ -1223,7 +1265,7 @@ export function Butler({
                           }))
                         }
                       />
-                      我确认这条授权覆盖全部对象
+                      我确认：这次批准对所有对象生效
                     </label>
                   )}
                   <div className="os-kb-actions">
@@ -1232,12 +1274,12 @@ export function Butler({
                       onClick={() => void approve(item, body, wildcard)}
                       disabled={busy || (wildcard && !confirmed)}
                     >
-                      {busy ? '批准中…' : '采用此请求体批准'}
+                      {busy ? '批准中…' : '确认并允许'}
                     </button>
                     <span className="os-hint">
                       {wildcard
-                        ? '这次授权覆盖全部对象，需要你再次确认；确认后按原请求签发。'
-                        : '按队列给出的动作与目标签发，不改参数。'}
+                        ? '当前只能整类放行，不能只批一个文件或一个项目；需要你再次确认。'
+                        : '按列表里的动作批准，参数不改。'}
                     </span>
                   </div>
                   {approveErrors[item.pending_id] && (
@@ -1277,7 +1319,7 @@ export function Butler({
             ) : (
               <Empty
                 title="还没有任务清单"
-                hint="管家开始拆解后，任务卡会随着增量快照逐条出现；第一张卡到达前这里保持为空。"
+                hint="管家开始拆解后，任务会一项项出现；第一项到达前这里保持为空。"
               />
             )
           ) : tasks.length === 0 ? (
@@ -1351,9 +1393,9 @@ export function Butler({
                           className="os-btn os-btn-ghost"
                           onClick={() => void retryTask(task)}
                           disabled={busy}
-                          title="若审批队列已签发授权，可在这里重新执行这个任务"
+                          title="如果已经批准，可在这里重新执行这个任务"
                         >
-                          {busy ? '重试中…（同步执行）' : '授权后重试此任务'}
+                          {busy ? '重试中…' : '重试此任务'}
                         </button>
                       </div>
                     )}
@@ -1403,8 +1445,8 @@ export function Butler({
                 title={query.trim() ? `没有匹配「${query.trim()}」的目标` : '还没有执行过目标'}
                 hint={
                   query.trim()
-                    ? '搜索只匹配目标描述、id 与状态；清空搜索框可看到全部。'
-                    : '在上面输入一句话并交给管家，或点名派活；执行记录会出现在这里。'
+                    ? '搜索只匹配目标描述与状态；清空搜索框可看到全部。'
+                    : '在上面输入一句话并点「交给管家」，或点一条示例填入；也可以点名只派给一个人。执行记录会出现在这里。'
                 }
               />
             ) : (
@@ -1434,25 +1476,22 @@ export function Butler({
         </Guard>
       </Card>
 
-      {/* ── 能力边界（只写真缺的） ─────────────────────────────── */}
-      <Card
-        title="能力边界"
-        sub="这一版只列真正还缺的能力；已经能用的不再写「做不到」"
-        span={12}
-      >
-        <dl className="os-kv os-butler-gaps">
-          <dt>待审批授权的目标粒度</dt>
-          <dd>
-            队列的授权模板会覆盖全部对象（审计事件没有记录具体目标），所以无法只批准
-            「某一个路径 / 某一个项目」。页面要求你显式勾选「覆盖所有目标」，服务才会签发
-            通配授权；这是当前真实边界。
-          </dd>
-          <dt>产物内联预览</dt>
-          <dd>
-            文本文件可在汇总里点开，直接显示正文；二进制或超大文件
-            会被拒绝，页面如实显示拒绝原因，不会伪装成空内容。
-          </dd>
-        </dl>
+      {/* ── 能力边界（折叠成一行，不占首屏） ─────────────────── */}
+      <Card title="能力边界" span={12}>
+        <details className="os-butler-gaps">
+          <summary className="os-hint">
+            当前有一项限制：批准只能整类生效，不能只批一个文件或一个项目（点开查看）
+          </summary>
+          <div className="os-hint" style={{ marginTop: 8 }}>
+            <p style={{ margin: '0 0 6px' }}>
+              需要你批准的动作，目前只能对所有对象一起放行；页面会请你再次确认。
+              其余能力不受影响。
+            </p>
+            <p style={{ margin: 0 }}>
+              文本产物可以在汇总里点开看正文；二进制或超大文件会被明确拒绝并说明原因。
+            </p>
+          </div>
+        </details>
       </Card>
     </div>
   )

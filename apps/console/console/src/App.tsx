@@ -587,9 +587,9 @@ function App() {
           id: 'provider-all-unconfigured',
           tone: 'warn',
           title: '所有服务商都缺少密钥',
-          detail: unconfigured
-            .map((item) => `${item.label}（${item.required_env.join(' / ') || '无需密钥'}）`)
-            .join('；'),
+          detail: `${unconfigured
+            .map((item) => item.label)
+            .join('；')} 都还没有配置密钥。下一步：到「模型」页填入任意一家的密钥。`,
         })
       }
     } else if (roster.error) {

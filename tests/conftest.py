@@ -1094,6 +1094,9 @@ def _isolate_model_config_per_test(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         model_config_module.MODEL_CONFIG_KEY_FILE_ENV, str(base / "model_config.key")
     )
+    # 旧 .env 迁移是"首次启动"行为：测试默认关闭，避免仓库 .env 里的
+    # AI_PROVIDER_* 被搬进每个临时库、污染"空注册表"断言；迁移本身有独立用例。
+    monkeypatch.setenv(model_config_module.MODEL_CONFIG_MIGRATE_ENV, "0")
     model_config_module.reset_model_config_store()
     yield
     model_config_module.reset_model_config_store()

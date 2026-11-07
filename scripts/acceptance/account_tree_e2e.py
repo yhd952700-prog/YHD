@@ -57,14 +57,21 @@ def free_port() -> int:
 
 
 def request(
-    method: str, url: str, payload: Any = None, token: Optional[str] = None
+    method: str,
+    url: str,
+    payload: Any = None,
+    token: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, Any]:
     data = None
-    headers = {"Content-Type": "application/json"}
+    merged = {"Content-Type": "application/json"}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        merged["Authorization"] = f"Bearer {token}"
+    if headers:
+        merged.update(headers)
+    headers = merged
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -80,21 +87,34 @@ def request(
 
 
 class Instance:
-    def __init__(self, prefix: str) -> None:
-        self.root = tempfile.mkdtemp(prefix=prefix)
+    """一台隔离的"真机"：独立端口 + 临时目录内的独立数据目录。
+
+    数据目录必须显式落进临时根（``LIUHAO_DATA_DIR``），否则恢复码交接文件
+    与升级快照会落到仓库 ``data/`` 或 ``%LOCALAPPDATA%\\LiuHao`` —— 验收
+    不允许碰真实用户数据。``root=`` / ``start=False`` 支持"停机 → 写入旧版
+    明文 → 重新启动"的迁移场景。
+    """
+
+    def __init__(
+        self,
+        prefix: str,
+        *,
+        root: Optional[str] = None,
+        env_extra: Optional[Dict[str, str]] = None,
+        start: bool = True,
+    ) -> None:
+        self.root = root or tempfile.mkdtemp(prefix=prefix)
         # 每台"机器"独立的登录签名密钥：跨机令牌不应被另一实例接受。
         self.jwt_secret = f"isolated-jwt-secret-{secrets.token_hex(16)}"
         # 身份注册表完整性密钥同样是每机独立的（与真实安装一致），
         # 用它检验恢复码/凭据包是否真的能跨机使用。
         self.integrity_key = f"isolated-integrity-{secrets.token_hex(16)}"
-        self.port = free_port()
-        self.base = f"http://127.0.0.1:{self.port}"
-        env = os.environ.copy()
+        self.data_dir = os.path.join(self.root, "data")
+        self.env = os.environ.copy()
         for name in ("LIUHAO_HUMAN_IDENTITIES_DB", "LIUHAO_DATA_DIR"):
-            env.pop(name, None)
-        env.update(
+            self.env.pop(name, None)
+        self.env.update(
             {
-                "PORT": str(self.port),
                 "HOST": "127.0.0.1",
                 "APP_ENV": "development",
                 "LIUHAO_HUMAN_IDENTITIES_BACKEND": "file",
@@ -113,19 +133,39 @@ class Instance:
                 "LIUHAO_ACCOUNT_MEMORY_DB": os.path.join(self.root, "memory.sqlite3"),
                 "LIUHAO_ACCOUNT_BACKUP_DB": os.path.join(self.root, "backup.sqlite3"),
                 "LIUHAO_ACCOUNT_SETTINGS_FILE": os.path.join(self.root, "account_settings.json"),
+                # 恢复码交接/升级快照都按这个目录走：验收只动临时目录。
+                "LIUHAO_DATA_DIR": self.data_dir,
+                # 默认关；需要验证远程开关的实例用 env_extra 覆盖为 "1"。
+                "LIUHAO_ALLOW_REMOTE_RECOVERY": "0",
+                "LIUHAO_RECOVERY_HANDOFF_TTL_SECONDS": "600",
                 # 隔离单实例锁：否则第二/第三个实例会被第一实例的锁挡住。
                 "LIUHAO_INSTANCE_DIR": self.root,
             }
         )
-        os.makedirs(env["LIUHAO_WORKSPACE_ROOT"], exist_ok=True)
+        if env_extra:
+            self.env.update({str(k): str(v) for k, v in env_extra.items()})
+        os.makedirs(self.env["LIUHAO_WORKSPACE_ROOT"], exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)
         # 必须写文件而不是 PIPE：PIPE 没人读，日志填满 64KB 缓冲后子进程会
         # 阻塞在写日志上，表现为"请求永远不返回"。文件同时供明文扫描。
         self.log_path = os.path.join(self.root, "server.log")
-        self._log = open(self.log_path, "w", encoding="utf-8")
+        self.port = 0
+        self.base = ""
+        self.proc: Optional[subprocess.Popen] = None
+        self._log = None
+        if start:
+            self.start()
+
+    def start(self) -> None:
+        """启动（或重启）服务；每次重新选空闲端口，避免 TIME_WAIT 冲突。"""
+        self.port = free_port()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.env["PORT"] = str(self.port)
+        self._log = open(self.log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [PY, "-m", "src.gateway.__main__"],
             cwd=REPO,
-            env=env,
+            env=self.env,
             stdout=self._log,
             stderr=subprocess.STDOUT,
         )
@@ -149,23 +189,30 @@ class Instance:
         except Exception:
             return ""
 
-    def stop(self) -> None:
+    def stop(self, *, cleanup: bool = True) -> None:
         """杀进程树：venv 启动器会再拉起一个 uv python 子进程。"""
-        if self.proc.poll() is None:
+        if self.proc is not None and self.proc.poll() is None:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
                 capture_output=True,
             )
         try:
-            self.proc.wait(timeout=10)
+            if self.proc is not None:
+                self.proc.wait(timeout=10)
         except Exception:
-            self.proc.kill()
+            if self.proc is not None:
+                self.proc.kill()
         try:
-            self._log.close()
+            if self._log is not None:
+                self._log.close()
         except Exception:
             pass
+        self.proc = None
+        self._log = None
         # 跑完回收：隔离实例的临时目录不留在 %TEMP%。
-        shutil.rmtree(self.root, ignore_errors=True)
+        # ``cleanup=False`` 留给"停机写旧文件 → 重启"的迁移场景。
+        if cleanup:
+            shutil.rmtree(self.root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,6 +245,17 @@ class Report:
 def neutral(message: Any) -> bool:
     text = str(message or "")
     return not any(word in text for word in NEUTRAL_WORDS)
+
+
+def error_code(body: Any) -> Any:
+    """兼容两种错误封装：扁平 ``code`` 与 FastAPI ``detail={code,...}``。"""
+    if isinstance(body, dict):
+        if "code" in body:
+            return body.get("code")
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            return detail.get("code")
+    return None
 
 
 def tree_count(node: Any) -> int:
@@ -541,6 +599,29 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
     )
     report.check(item, "成员自己用同一 Key", status, 200)
 
+    # 反向：主账号自己的 Key，子账号不能用（越级借用只允许"上借下"）。
+    status, root_model = request(
+        "POST", inst.base + "/v1/models",
+        {"name": "root-key", "provider": "mock", "model": "mock-1",
+         "is_default": False, "owner_principal": "root1"},
+        token=tokens["root"],
+    )
+    root_model_id = root_model.get("id") or ""
+    report.check(item, "根创建自己的 mock 模型", status, 200, f"id={root_model_id}")
+    status, body = request(
+        "POST", inst.base + "/v1/chat",
+        {"message": "成员用根 Key", "session_id": "member-session-2",
+         "model_id": root_model_id, "use_knowledge": False},
+        token=tokens["member"],
+    )
+    report.check(
+        item, "成员不能用根 Key",
+        (status, error_code(body)), (403, "ACCOUNT_KEY_NOT_OWNED"), str(body)[:120],
+    )
+    status, body = request("GET", inst.base + "/v1/models", token=tokens["member"])
+    member_ids = [entry.get("id") for entry in body.get("models") or []]
+    report.check(item, "成员模型列表不含根 Key", root_model_id in member_ids, False, str(member_ids))
+
     status, root_view = request("GET", inst.base + "/v1/accounts/member1/usage", token=tokens["root"])
     actors = sorted(entry.get("actor") for entry in root_view.get("by_actor") or [])
     owners = sorted(entry.get("key_owner") for entry in root_view.get("by_key_owner") or [])
@@ -788,6 +869,12 @@ def backup_roundtrip(
     manifest = exported.get("manifest") or {}
     bundle = exported.get("bundle") or {}
     report.check(item, "根全量导出", status, 200, f"bundle_id={bundle.get('bundle_id')}")
+    # 真实导出产物（HTTP 响应原文）里不得出现恢复码、明文密码或明文 Key。
+    raw_export = json.dumps(exported, ensure_ascii=False)
+    needles = [str(tokens.get("recovery") or ""), *PASSWORDS, *MODEL_KEYS]
+    leaks = [needle for needle in needles if needle and needle in raw_export]
+    report.check(item, "导出包不含恢复码/明文凭据", leaks, [], str(leaks[:2]))
+    report.check(item, "导出包不含恢复码文件名", "recovery_code" in raw_export, False)
     report.check(item, "清单成员数=3", manifest.get("member_count"), 3)
     report.check(item, "清单含成员列表", sorted(manifest.get("members") or []), ["grand1", "member1", "root1"])
     report.check(item, "清单含文件数/字节数", ("files" in manifest and "bytes" in manifest), True, str({k: manifest.get(k) for k in ("files", "bytes")}))

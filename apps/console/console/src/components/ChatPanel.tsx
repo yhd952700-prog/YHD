@@ -3,6 +3,7 @@ import {
   deleteSession,
   friendlyChatError,
   getLocalSessions,
+  getSelectedModelId,
   getSessionId,
   getSessionMeta,
   getUserId,
@@ -11,14 +12,30 @@ import {
   newSessionId,
   saveLocalSessions,
   saveSessionMeta,
+  setSelectedModelId,
   setSessionId,
   setUserId,
   streamChat,
   titleFromHistory,
 } from '../lib/chatClient'
 import type { SessionMeta } from '../lib/chatClient'
+import { useApi } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
+
+/** 对话页只需要模型列表里可展示/可选的最小字段。 */
+interface ChatModel {
+  id: string
+  name: string
+  model: string
+  enabled: boolean
+  is_default: boolean
+}
+
+interface ChatModelsResponse {
+  models: ChatModel[]
+  default_id: string | null
+}
 
 interface ToolCall {
   name: string
@@ -64,6 +81,13 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
   const [sessionId, setSessionIdState] = useState(() => getSessionId())
   // 用户身份：声明后画像跨会话共享（未声明则后端按会话主体记画像）。
   const [userId, setUserIdState] = useState(() => getUserId())
+  // 对话模型选择：空串 = 跟随后端当前默认模型。模型列表来自模型管理页保存的数据，
+  // 因此"保存即出现在这里"，删除后也会自动回落，不需要重启后端。
+  const [modelId, setModelIdState] = useState(() => getSelectedModelId())
+  const models = useApi<ChatModelsResponse>('/v1/models', 15000)
+  const availableModels = (models.data?.models ?? []).filter((m) => m.enabled)
+  const defaultModel =
+    availableModels.find((m) => m.is_default) ?? availableModels[0] ?? null
   const [sessions, setSessions] = useState<string[]>(() => {
     const cur = getSessionId()
     const local = getLocalSessions()
@@ -91,6 +115,29 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
 
   const scrollToBottom = useCallback(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
+  }, [])
+
+  /** 切回本页时刷新模型列表：在设置里保存/删除后回来立刻可见。 */
+  const reloadModels = models.reload
+  useEffect(() => {
+    const onFocus = () => reloadModels()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [reloadModels])
+
+  /** 选中的模型被删除/禁用后自动回到"跟随默认模型"，避免继续发一个不存在的 id。 */
+  useEffect(() => {
+    if (!models.data) return
+    const enabled = (models.data.models ?? []).filter((m) => m.enabled)
+    if (modelId && !enabled.some((m) => m.id === modelId)) {
+      setModelIdState('')
+      setSelectedModelId('')
+    }
+  }, [models.data, modelId])
+
+  const chooseModel = useCallback((id: string) => {
+    setModelIdState(id)
+    setSelectedModelId(id)
   }, [])
 
   // 首次进入把当前会话的历史接回来：否则刷新后对话记录"看起来消失了"，
@@ -202,7 +249,12 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
       ])
       setTimeout(scrollToBottom, 0)
       try {
-        for await (const evt of streamChat(value, sessionId, userId || undefined)) {
+        for await (const evt of streamChat(
+          value,
+          sessionId,
+          userId || undefined,
+          modelId || undefined,
+        )) {
           if (evt.type === 'token') {
             setMessages((prev) => {
               const next = [...prev]
@@ -252,7 +304,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
         scrollToBottom()
       }
     },
-    [input, sending, sessionId, userId, scrollToBottom, recordMeta, meta],
+    [input, sending, sessionId, userId, modelId, scrollToBottom, recordMeta, meta],
   )
 
   /** 下拉框标签：首条消息 + 更新时间；没有标题时显示"未命名会话"（绝不显示 ID）。 */
@@ -388,6 +440,24 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
           </div>
 
           <div className="jarvis-sessions">
+            {/* 对话模型选择：列表来自模型管理页，保存后无需重启即可选到；
+                模型被删除/禁用时上面的 effect 会自动回落到默认模型。 */}
+            <select
+              className="sess-select"
+              value={modelId}
+              onChange={(e) => chooseModel(e.target.value)}
+              title="选择本次对话使用的模型（在「设置 → 模型」中添加/编辑）"
+              aria-label="选择对话模型"
+            >
+              <option value="">
+                默认模型{defaultModel ? `：${defaultModel.name}` : ''}
+              </option>
+              {availableModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} · {m.model}
+                </option>
+              ))}
+            </select>
             <select
               className="sess-select"
               value={sessionId}

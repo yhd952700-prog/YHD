@@ -57,10 +57,13 @@ export async function* streamChat(
   message: string,
   sessionId: string,
   userId?: string,
+  modelId?: string,
 ): AsyncGenerator<ChatEvent> {
   const body: Record<string, unknown> = { message, session_id: sessionId };
   // 声明用户身份 → 后端把画像主体绑定为 user-{id}，同一用户跨会话共享画像。
   if (userId) body.user_id = userId;
+  // 指定本次对话使用的模型配置；为空时后端按"当前默认模型"解析。
+  if (modelId) body.model_id = modelId;
   const res = await fetch('/v1/chat/stream', {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -140,6 +143,18 @@ export function setUserId(id: string): void {
   const v = (id || '').trim();
   if (v) localStorage.setItem('liuhao.user_id', v);
   else localStorage.removeItem('liuhao.user_id');
+}
+
+/** 当前选择的对话模型配置 id（空串 = 使用后端当前默认模型）。 */
+export function getSelectedModelId(): string {
+  return localStorage.getItem('liuhao.model_id') || '';
+}
+
+/** 持久化对话模型选择；传空串表示恢复"跟随默认模型"。 */
+export function setSelectedModelId(id: string): void {
+  const v = (id || '').trim();
+  if (v) localStorage.setItem('liuhao.model_id', v);
+  else localStorage.removeItem('liuhao.model_id');
 }
 
 /** 会话历史记录。 */

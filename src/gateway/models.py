@@ -193,7 +193,16 @@ def _local_ollama_urls() -> set:
 
 
 def _is_local_ollama(raw: Optional[str]) -> bool:
-    return _normalize_url(raw) in _local_ollama_urls()
+    """是否是本机 Ollama（含它的 OpenAI 兼容入口 ``/v1``）。
+
+    Ollama 同时提供原生 ``/api/*`` 与 OpenAI 兼容的 ``/v1/*``。两种入口指向
+    同一台本机服务，因此都被视为"本地 Ollama"这一个已知安全目标；这不是把
+    任意私网地址放行。
+    """
+    value = _normalize_url(raw)
+    if value in _local_ollama_urls():
+        return True
+    return value.endswith("/v1") and value[: -len("/v1")] in _local_ollama_urls()
 
 
 def _validate_base_url(
@@ -206,22 +215,15 @@ def _validate_base_url(
 
     * only ``http``/``https``;
     * freshly supplied public targets must resolve to public addresses;
-    * the one narrow exception is the local Ollama service: either the
-      provider is ``ollama``, or the value is byte-identical to the stored
-      value and that stored value *is* the local Ollama URL (the historical
-      allowance). An arbitrary private address is never accepted.
+    * the one narrow exception is the local Ollama service (including its
+      OpenAI-compatible ``/v1`` endpoint): users may wire an arbitrary
+      OpenAI-compatible model to their own machine without weakening SSRF
+      protection for any other private address.
     """
     value = (raw or "").strip()
     if not value:
         return ""
-    allow_private = _is_local_ollama(value) and (
-        str(provider or "").strip().lower() == "ollama"
-        or (
-            bool(stored_url)
-            and _normalize_url(value) == _normalize_url(stored_url)
-        )
-    )
-    return _assert_url_allowed(value, allow_private=allow_private)
+    return _assert_url_allowed(value, allow_private=_is_local_ollama(value))
 
 
 # --------------------------------------------------------------------------- #
@@ -441,17 +443,37 @@ def list_provider_presets() -> Dict[str, Any]:
     """
     from ..ai.model_config import PROVIDERS_WITHOUT_KEY
 
+    presets = [
+        {
+            "id": name,
+            "provider": name,
+            **preset,
+            "requires_api_key": name not in PROVIDERS_WITHOUT_KEY,
+            "api_key": None,
+        }
+        for name, preset in _PROVIDER_PRESETS.items()
+    ]
+    # "任意模型"的通用入口：走 OpenAI 兼容协议，端点与模型名都由用户决定。
+    # 它不是新的协议适配器，只是把 provider=openai + 自定义 base_url 这条路径
+    # 在界面上显式化；内置 6 家同样只是预设，保存后都是可编辑/可删除的记录。
+    presets.append(
+        {
+            "id": "openai_compatible",
+            "provider": "openai",
+            "label": "OpenAI 兼容（自定义端点）",
+            "base_url": None,
+            "model": "",
+            "requires_api_key": True,
+            "api_key": None,
+            "custom": True,
+        }
+    )
     return {
-        "presets": [
-            {
-                "provider": name,
-                **preset,
-                "requires_api_key": name not in PROVIDERS_WITHOUT_KEY,
-                "api_key": None,
-            }
-            for name, preset in _PROVIDER_PRESETS.items()
-        ],
-        "note": "预设仅用于填写端点与模型名；API Key 必须由用户自行输入。",
+        "presets": presets,
+        "note": (
+            "预设仅用于填写端点与模型名，不是白名单；保存后均可编辑或删除。"
+            "API Key 必须由用户自行输入。"
+        ),
     }
 
 
@@ -732,10 +754,17 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
         elapsed = round((time.monotonic() - started) * 1000.0, 1)
         reason = _classify_error(exc)
         raw_detail = _sanitize(f"{type(exc).__name__}: {exc}", api_key)
-        # 结论先行：界面回落到 ``detail`` 时也能直接读到“该改什么”，
-        # 而不是一条笼统的英文上游报错。
+        # 上游原文只留在服务端日志（排障/诊断包），响应里只给用户"下一步改什么"。
+        # 回显英文原文既看不懂，也容易把 key/内部地址带出去。
+        logger.info(
+            "model probe failed provider=%s model=%s reason=%s detail=%s",
+            cfg.get("provider"),
+            cfg.get("model"),
+            reason,
+            raw_detail,
+        )
         hint = _PROBE_HINTS.get(reason)
-        detail = f"{hint}。后端原文：{raw_detail}" if hint else raw_detail
+        detail = hint or "连接失败：请检查服务商、模型名与端点设置后重试。"
         _audit_probe(cfg, "failure", reason)
         return {
             "ok": False,

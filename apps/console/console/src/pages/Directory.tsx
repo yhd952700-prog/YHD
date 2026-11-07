@@ -16,7 +16,13 @@ import { useMemo, useState } from 'react'
 import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
-import { neutralLayerLabel } from '../lib/layerLabels'
+import {
+  capabilityStatusLabel,
+  capabilityStatusTone,
+  neutralLayerLabel,
+  phaseLabel,
+} from '../lib/layerLabels'
+import { goalStateLabel } from '../lib/butler'
 import { BrainMap, NetworkGraph } from '../components/charts'
 import {
   AgentActionButtons,
@@ -34,6 +40,16 @@ const STATUS_TONE: Record<string, string> = {
   stopped: 'danger',
   completed: 'ok',
   failed: 'danger',
+}
+
+/** 执行个体状态 → 中文；原始英文只进 `title`。 */
+const AGENT_STATUS_LABELS: Record<string, string> = {
+  idle: '空闲',
+  running: '执行中',
+  paused: '已暂停',
+  stopped: '已停止',
+  completed: '已完成',
+  failed: '失败',
 }
 
 export function Roster({ query }: { query: string }) {
@@ -142,8 +158,8 @@ export function Roster({ query }: { query: string }) {
         title="AI 员工名册"
         sub={
           roster.data
-            ? `共 ${roster.data.totals.employees} 项 · 来源 ${roster.data.source}`
-            : '来源 capability-registry.yaml'
+            ? `共 ${roster.data.totals.employees} 项 · 来源：能力注册表`
+            : '来源：能力注册表'
         }
         span={12}
         action={
@@ -178,7 +194,7 @@ export function Roster({ query }: { query: string }) {
             error={employees.error}
             data={employees.data}
             isEmpty={(data) => data.agents.length === 0}
-            emptyTitle="Agent pool 未初始化"
+            emptyTitle="还没有可用的执行个体"
             onRetry={employees.reload}
           >
             {(empData) => (<>
@@ -186,13 +202,13 @@ export function Roster({ query }: { query: string }) {
                 <div className="os-operator-grid">
                   <div>
                     <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
-                      雇佣 AI Employee → POST /v1/employees
+                      雇佣员工
                     </div>
                     <HireEmployeeForm onDone={employees.reload} />
                   </div>
                   <div>
                     <div className="os-row-sub" style={{ fontWeight: 600, marginBottom: 8 }}>
-                      创建 Goal → POST /v1/goals
+                      创建目标
                     </div>
                     <CreateGoalForm onDone={goals.reload} />
                   </div>
@@ -229,11 +245,13 @@ export function Roster({ query }: { query: string }) {
                           <div className="os-row-title">
                             {emp.name}{' '}
                             <span className="os-badge" data-tone="muted">
-                              {emp.agent_count} agents
+                              {emp.agent_count} 个执行个体
                             </span>
                           </div>
                           <div className="os-row-sub">
-                            {emp.agents.map((a) => a.status).join(' · ')}
+                            {emp.agents
+                              .map((a) => AGENT_STATUS_LABELS[a.status] ?? '状态未知')
+                              .join(' · ')}
                           </div>
                         </div>
                         <EmployeeActionButtons name={emp.name} onDone={employees.reload} />
@@ -255,12 +273,16 @@ export function Roster({ query }: { query: string }) {
                         {agent.agent_type} ·
                         完成 {agent.completed_tasks} ·
                         失败 {agent.failed_tasks} ·
-                        延迟 {agent.total_latency_ms.toFixed(0)}ms
+                        延迟 {agent.total_latency_ms.toFixed(0)} 毫秒
                         {agent.current_task ? ` · 当前: ${agent.current_task}` : ''}
                       </div>
                     </div>
-                        <span className="os-badge" data-tone={STATUS_TONE[agent.status] ?? 'muted'}>
-                          {agent.status}
+                        <span
+                          className="os-badge"
+                          data-tone={STATUS_TONE[agent.status] ?? 'muted'}
+                          title={`原始状态：${agent.status}`}
+                        >
+                          {AGENT_STATUS_LABELS[agent.status] ?? '状态未知'}
                         </span>
                         <AgentActionButtons agentId={agent.id} status={agent.status} onDone={employees.reload} />
                       </div>
@@ -284,7 +306,7 @@ export function Roster({ query }: { query: string }) {
                           </div>
                         </div>
                         <span className="os-badge" data-tone={STATUS_TONE[goal.state] ?? 'muted'}>
-                          {goal.state}
+                          {goalStateLabel(goal.state)}
                         </span>
                         <GoalActionButtons goalId={goal.goal_id} state={goal.state} onDone={goals.reload} />
                       </div>
@@ -307,22 +329,21 @@ export function Roster({ query }: { query: string }) {
             tab === 'kernels' ? (
               <div className="os-list">
                 {kernels.map((kernel) => (
-                  <div className="os-row" key={kernel.id}>
+                  <div className="os-row" key={kernel.id} title={`编号：${kernel.id}`}>
                     <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                     <div className="os-row-main">
-                      <div className="os-row-title">
-                        {neutralLayerLabel(kernel.name)}{' '}
-                        <span className="os-badge" data-tone="muted">
-                          {kernel.id}
-                        </span>
-                      </div>
+                      <div className="os-row-title">{neutralLayerLabel(kernel.name)}</div>
                       <div className="os-row-sub">
-                        {neutralLayerLabel(kernel.domain_label)} · kernel={kernel.kernel}
+                        {neutralLayerLabel(kernel.domain_label)}
                         {kernel.scope ? ` · ${kernel.scope}` : ''}
                       </div>
                     </div>
-                    <span className="os-badge" data-tone={kernel.status === 'implemented' ? 'ok' : 'muted'}>
-                      {kernel.status ?? '未知'}
+                    <span
+                      className="os-badge"
+                      data-tone={capabilityStatusTone(kernel.status)}
+                      title={kernel.status ? `原始状态：${kernel.status}` : undefined}
+                    >
+                      {capabilityStatusLabel(kernel.status)}
                     </span>
                   </div>
                 ))}
@@ -330,21 +351,26 @@ export function Roster({ query }: { query: string }) {
             ) : (
               <div className="os-list">
                 {layers.map((layer) => (
-                  <div className="os-row" key={layer.id}>
+                  <div
+                    className="os-row"
+                    key={layer.id}
+                    title={`编号：${layer.id}${layer.module ? ` · 模块：${layer.module}` : ''}`}
+                  >
                     <span className="os-dot" style={{ background: 'var(--os-accent-2)' }} />
                     <div className="os-row-main">
-                      <div className="os-row-title">
-                        {neutralLayerLabel(layer.name)}{' '}
-                        <span className="os-badge" data-tone="muted">
-                          {layer.id}
-                        </span>
-                      </div>
+                      <div className="os-row-title">{neutralLayerLabel(layer.name)}</div>
                       <div className="os-row-sub">
-                        {neutralLayerLabel(layer.band_label)} · {layer.phase ?? '—'} ·{' '}
-                        <code>{layer.module ?? '—'}</code>
+                        {neutralLayerLabel(layer.band_label)} · {phaseLabel(layer.phase)}
                       </div>
                     </div>
                     <span className="os-row-tail">{layer.tests} 用例</span>
+                    <span
+                      className="os-badge"
+                      data-tone={capabilityStatusTone(layer.status)}
+                      title={layer.status ? `原始状态：${layer.status}` : undefined}
+                    >
+                      {capabilityStatusLabel(layer.status)}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -375,10 +401,15 @@ export function Roster({ query }: { query: string }) {
                   />
                   <div className="os-row-main">
                     <div className="os-row-title">{item.label}</div>
-                    <div className="os-row-sub">
-                      {item.required_env.length > 0
-                        ? `需要：${item.required_env.join(' / ')}`
-                        : '无需密钥'}
+                    <div
+                      className="os-row-sub"
+                      title={
+                        item.required_env.length > 0
+                          ? `需要配置：${item.required_env.join(' / ')}`
+                          : undefined
+                      }
+                    >
+                      {item.required_env.length > 0 ? '需要配置密钥后可用' : '无需密钥'}
                     </div>
                   </div>
                   {item.active && (
@@ -444,7 +475,11 @@ export function BusinessCenter({ query }: { query: string }) {
                 </div>
                 <div className="os-list">
                   {rows.map((layer) => (
-                    <div className="os-row" key={layer.id}>
+                    <div
+                      className="os-row"
+                      key={layer.id}
+                      title={`编号：${layer.id}${layer.module ? ` · 模块：${layer.module}` : ''}`}
+                    >
                       <span
                         className="os-dot"
                         style={{ background: colorAt(data.bands.findIndex((b) => b.key === layer.band)) }}
@@ -452,16 +487,16 @@ export function BusinessCenter({ query }: { query: string }) {
                       <div className="os-row-main">
                         <div className="os-row-title">{neutralLayerLabel(layer.name)}</div>
                         <div className="os-row-sub">
-                          {neutralLayerLabel(layer.band_label)} · {layer.phase ?? '—'} ·{' '}
-                          <code>{layer.module ?? '—'}</code>
+                          {neutralLayerLabel(layer.band_label)} · {phaseLabel(layer.phase)}
                         </div>
                       </div>
                       <span className="os-row-tail">{layer.tests} 用例</span>
                       <span
                         className="os-badge"
-                        data-tone={layer.status === 'implemented' ? 'ok' : 'muted'}
+                        data-tone={capabilityStatusTone(layer.status)}
+                        title={layer.status ? `原始状态：${layer.status}` : undefined}
                       >
-                        {layer.status ?? '未知'}
+                        {capabilityStatusLabel(layer.status)}
                       </span>
                     </div>
                   ))}

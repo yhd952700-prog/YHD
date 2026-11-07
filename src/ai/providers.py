@@ -369,6 +369,49 @@ class OpenAIProvider(BaseProvider):
             # Re-raise to let generate_with_retry handle it
             raise
 
+    def chat(self, messages, **kwargs) -> str:
+        """原生 chat completions：保留多轮角色，不再折叠成单段 prompt。
+
+        ``provider=openai`` 同时承担"任意 OpenAI 兼容服务"（DeepSeek/Moonshot/
+        vLLM/LM Studio/Ollama ``/v1``/自建网关）。走原生 messages 后，多轮上下文、
+        系统提示与工具消息才不会被降级成一段纯文本。
+        """
+        model = kwargs.get("model", self.model)
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 1000)
+        response = self._get_client().chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content or ""
+
+    def chat_stream(self, messages, **kwargs):
+        """按块流式返回 OpenAI 兼容响应（``stream=True``）。
+
+        没有流式能力的自建网关可能忽略该参数并一次返回全文，此时 SDK 仍会
+        给出一个完整的 chunk，循环逻辑不受影响。
+        """
+        model = kwargs.get("model", self.model)
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 1000)
+        stream = self._get_client().chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if content:
+                yield content
+
 
 # Anthropic provider (using official anthropic SDK)
 class AnthropicProvider(BaseProvider):

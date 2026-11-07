@@ -1,7 +1,7 @@
 # 鎏灏 OS 控制台 · 全页巡检与多账号验收报告
 
-- 日期：2026-11-06
-- 环境：同一隔离实例（`127.0.0.1:8080`，独立身份文件、密钥文件与工作区，未污染本机正式数据）
+- 日期：2026-11-07（记忆页接真后重跑三层巡检）
+- 环境：同一隔离实例（本轮起在 `127.0.0.1:8091`，避开本机 `8080` 上正在运行的正式实例；独立身份文件、密钥文件与工作区，未污染本机正式数据）
 - 账号：根账号 `rootadmin`（depth 0）、子账号 `sub1`（depth 1）、孙账号 `sub2`（depth 2）
 - 视口：统一 1024×861，浏览器真实登录后逐页截图
 - 品牌、logo、slogan、主色与 `--os-*` 令牌未改动
@@ -10,12 +10,12 @@
 
 | 项 | 结果 |
 | --- | --- |
-| `npm test` | **23 个测试文件 / 222 个用例全部通过**，9.68s |
-| `npm run build` | **74 modules transformed**，345ms；`index.html 1.62 kB (gzip 0.87)`、`index.css 68.81 kB (gzip 13.15)`、`index.js 517.11 kB (gzip 149.39)` |
-| 截图 | 28 张：登录页 1 + 根 12 + 子 10 + 孙 5（均在 `docs/ui-audit-20261106/`） |
-| 越权实测 | 三个账号逐项点击全部可见导航，共 79 次；HTTP 4xx 只有 `/v1/ready` 的 503（探针设计内），**无 403 / 404** |
+| `npm test` | **24 个测试文件 / 234 个用例全部通过**，11.14s |
+| `npm run build` | **74 modules transformed**，334ms；`index.html 1.62 kB (gzip 0.87)`、`index.css 68.81 kB (gzip 13.15)`、`index.js 525.80 kB (gzip 151.47)` |
+| 截图 | 37 张：登录页 1 + 根 13 + 子 12 + 孙 11（`docs/ui-audit-20261106/` 共 37 张，覆盖旧子账号截图） |
+| 越权实测 | 根 / 子 / 孙三账号逐页点击 36 次（覆盖点名的 8 页，另含总览、身份、文件、Key 等）；**0 个 403 / 404**，0 个他人数据泄漏，0 个层级词，0 个桩徽标 |
 
-构建仍有一条既有提示：主 JS chunk > 500 kB（517 kB）。不影响构建与运行，本轮未做代码分割。
+构建仍有一条既有提示：主 JS chunk > 500 kB（525.80 kB）。不影响构建与运行，本轮未做代码分割。
 
 ## 二、登录页：登录 / 创建账户（平级、无邀请码）
 
@@ -53,7 +53,7 @@
 | 我的员工 | 根账号看到 `默认能力：planner`；子账号空态是空白 | `planner → 规划`；空态给"先创建第一个员工"的引导 |
 | 工作台 | 与管家功能按钮重叠 | 定位写清："你自己看任务、看文件、看产出、直接对话"；重复入口已删 |
 | 知识中心 | 卡片副标题露出 `GET /v1/knowledge/status`；`embedding provider` | 改为「来自后端的真实状态，每 30 秒自动刷新」；统一称「向量模型」 |
-| 记忆 | 无异常 | — |
+| 记忆 | 无异常 | 已接真实端点（见第十一节） |
 | 审计链 | 原始事件 `login_success` / `allowed` / `denied`；主体原始 id | 动作/结果/主体全部中文可读化 |
 | 身份与权限 | `kernel`、原始权限串；非根页的"管理权限的账号"暗示层级 | `系统组件`；未知英文权限归入「其他已授予范围」；非根文案改为「请联系设备负责人」 |
 | 应用 | `kernel_type`、`registered/failed`、插件异常英文、能力 `create_identity` 等 | 中文枚举；`create_identity → 创建身份` 等 |
@@ -107,11 +107,16 @@
 5. **文案可读化** `lib/format.test.ts`：`planner → 规划`、`create_identity → 创建身份`、未知英文权限归入「其他已授予范围」。
 6. **限流文案** `lib/errorMessage.test.ts`：429 不把 `rate limit exceeded` 铺给用户，但保留追踪 ID。
 
-## 八、运行时探测结果
+## 八、运行时探测结果（2026-11-07 重跑）
 
-- 三账号逐页 HTTP 4xx：只有 `/v1/ready` 的 503（就绪探针在降级时返回 503 是设计行为，前端通过 `acceptStatus` 正常展示）。
+- 三个账号逐页点击 36 次，页面标题全部正确渲染；`/v1/*` 响应 **0 个 4xx**，`/v1/ready` 之外 **0 个 5xx**。
+- 控制台 error 只有 `/v1/ready` 的 `503`（就绪探针在降级时返回 503 是设计行为，前端通过 `acceptStatus` 正常展示）；**没有任何 4xx 控制台报错**。
+- 子/孙账号页面扫描 `子账号/孙账号/上级/下级/层级/越级/主账号/根账号/被管理/受限/管理员/成员/邀请/加入/团队/组织`：**0 命中**。
+- 子/孙账号页面扫描他人的显示名与记忆正文（`Root Admin`、`root memory`、`sub1 memory`、`sub2 memory`）：**0 命中**。
+- 全站 `本地契约桩 · 待联调` 徽标：**0 个**。
+- 记忆页三层实测：根账号切到「整棵范围」看到 3 条（root/sub1/sub2）；`sub1` 只看到自己 1 条；`sub2` 只看到自己 1 条。
 - 导航点击扫描曾命中一处 `403` 字样，定位为审计链某条哈希 `…47403e…` 的子串，属于误报；页面没有真实的 403/404。
-- 子账号知识页此前出现 `请求过于频繁，请稍后再试（rate limit exceeded）`，已统一为中文；本轮巡检降低请求密度后未再出现。
+- 子账号知识页此前出现 `请求过于频繁，请稍后再试（rate limit exceeded）`，已统一为中文；本轮巡检未再出现。
 
 ## 九、员工页已全部接真（无剩余桩）
 
@@ -144,9 +149,42 @@
 
 （最末一次重放里 `live-c` 已存在，创建返回 `409`；`201` 由首次创建记录。）
 
-## 十、截图索引
+## 十一、记忆页已全部接真（无剩余桩）
+
+「记忆」不再有契约桩：`lib/accounts.ts` 的 `loadMemory` / `exportMemory` 直接调用
+真实端点，并新增 `loadMemoryCustody` / `setMemoryCustody`；`pages/Memory.tsx`
+移除 `StubBadge` 与 `source === 'stub'` 分支。
+
+端点（`src/gateway/account_memory.py`）：
+
+- `GET /v1/memory/entries?scope=self|subtree&q=`（列表与检索共用）
+- `POST /v1/memory/export`（`scope` + `format=json|md`）
+- `GET|POST /v1/memory/custody`（本人显式开启/关闭，变更写审计）
+
+界面按真实字段展示「时间 / 来源账号 / 来源 / 标签 / 内容」；根账号可切
+「整棵范围」，非根只发 `scope=self`；无数据给「还没有记忆 / 对话与任务产生的
+记忆会出现在这里」，无权限给「数据不可用 / 无权执行该操作」，均不含层级词。
+
+联调实测（隔离实例）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `GET /v1/memory/entries?scope=self`（根 / 子 / 孙） | `200`，各自 1 条 |
+| `GET /v1/memory/entries?scope=subtree`（根） | `200`，3 条（root / sub1 / sub2） |
+| `GET /v1/memory/entries?scope=subtree`（子） | `404`，`ACCOUNT_SUBTREE_DENIED`，文案「资源不存在或无权访问」 |
+| 子账号按 id 读根条目 | `404`，`ACCOUNT_MEMORY_FOREIGN_DENIED` |
+| `POST /v1/memory/export`（子，`self` / `subtree`） | `200` / `404` |
+| `POST /v1/memory/export`（根，`subtree`，`md`） | `200`，内容含 root / sub1 / sub2 |
+| `GET|POST /v1/memory/custody`（子） | `200`，`enabled` 从 `false → true → false`；根的开关不受影响 |
+| 检索 `q=friday`（子 `self` / 根 `subtree`） | 均 `200`，命中子账号自己的 1 条 |
+
+自动化断言：[Memory.test.tsx](file:///d:/LiuHao-AI-OS/apps/console/console/src/pages/Memory.test.tsx)
+7 个用例钉死「真实字段展示 / 非根只发 self / 中性空态 / 路由缺失不伪造 /
+整棵范围切换 / 代管开关真实 POST / 只读禁用」。
+
+## 十二、截图索引
 
 - 登录页：`login.png`
-- 根账号：`root/overview.png`、`butler.png`、`my-employees.png`、`workbench.png`、`knowledge.png`、`memory.png`、`audit.png`、`identity.png`、`status.png`、`settings.png`、`members.png`、`files.png`
-- 子账号：`sub1/` 同结构 10 张（含 `my-members.png`）
-- 孙账号：`sub2/overview.png`、`my-employees.png`、`workbench.png`、`my-keys.png`、`files.png`
+- 根账号 13 张：`root/overview.png`、`butler.png`、`my-employees.png`、`workbench.png`、`knowledge.png`、`memory.png`（整棵范围）、`audit.png`、`identity.png`、`status.png`、`settings.png`（模型配置）、`members.png`、`files.png`、`my-keys.png`
+- 子账号 12 张：`sub1/overview.png`、`butler.png`、`my-employees.png`、`my-members.png`、`memory.png`（仅自己）、`knowledge.png`、`workbench.png`、`audit.png`、`identity.png`、`files.png`、`my-keys.png`、`approval.png`
+- 孙账号 11 张：`sub2/overview.png`、`butler.png`、`my-employees.png`、`my-members.png`、`memory.png`（仅自己）、`knowledge.png`、`workbench.png`、`audit.png`、`identity.png`、`files.png`、`my-keys.png`

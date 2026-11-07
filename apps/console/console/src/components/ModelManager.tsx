@@ -44,6 +44,28 @@ export interface ModelsResponse {
   encryption: { algorithm: string; key_source: string }
 }
 
+/**
+ * 服务商预设（`GET /v1/models/presets`）。
+ *
+ * 只是"把端点与模型名填好"的快捷方式，不是白名单：保存后就是普通模型记录，
+ * 可以继续改端点/模型名，也可以删除。``openai_compatible`` 是通用入口，
+ * 端点与模型名完全由用户填写。
+ */
+export interface ProviderPreset {
+  id: string
+  provider: string
+  label: string
+  base_url: string | null
+  model: string
+  requires_api_key: boolean
+  custom?: boolean
+}
+
+export interface PresetsResponse {
+  presets: ProviderPreset[]
+  note?: string
+}
+
 /** `POST /v1/models/test` 与 `POST /v1/models/{id}/test` 的响应。 */
 export interface ProbeResult {
   ok: boolean
@@ -131,6 +153,20 @@ const EMPTY_FORM: FormState = {
   isDefault: false,
 }
 
+/**
+ * 套用预设只改"协议/端点/模型名"三项，不动名称、Key、超时与默认开关。
+ * 纯函数便于单测：预设不该覆盖用户已经填好的 Key。
+ */
+export function presetFormPatch(
+  preset: ProviderPreset,
+): Pick<FormState, 'provider' | 'baseUrl' | 'model'> {
+  return {
+    provider: preset.provider,
+    baseUrl: preset.base_url ?? '',
+    model: preset.model ?? '',
+  }
+}
+
 type ProbeState =
   | { state: 'idle' }
   | { state: 'testing'; source: string }
@@ -152,6 +188,7 @@ function formFromModel(item: ModelRecord): FormState {
 export function ModelManager({ session }: { session: Session }) {
   const canWrite = session.permissions.includes('admin') || session.scope === 'L0'
   const list = useApi<ModelsResponse>('/v1/models', 0)
+  const presets = useApi<PresetsResponse>('/v1/models/presets', 0)
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -185,6 +222,16 @@ export function ModelManager({ session }: { session: Session }) {
     setForm(EMPTY_FORM)
     setEditingId(null)
     setLastTest(null)
+  }
+
+  function applyPreset(preset: ProviderPreset) {
+    setForm((prev) => ({ ...prev, ...presetFormPatch(preset) }))
+    setNotice(
+      preset.custom
+        ? '已切到 OpenAI 兼容模式：请填写你自己的端点地址与模型名。'
+        : `已套用预设「${preset.label}」，端点与模型名仍可自由修改。`,
+    )
+    setError(null)
   }
 
   function beginEdit(item: ModelRecord) {
@@ -403,6 +450,33 @@ export function ModelManager({ session }: { session: Session }) {
               </div>
             </div>
 
+            <div className="os-field os-field-wide">
+              <label id="model-presets-label">服务商预设（只是快捷填充，可改可删）</label>
+              <div
+                className="os-model-actions"
+                role="group"
+                aria-labelledby="model-presets-label"
+              >
+                {(presets.data?.presets ?? []).map((preset) => (
+                  <button
+                    key={preset.id}
+                    className="os-btn os-btn-ghost"
+                    type="button"
+                    disabled={busy}
+                    title="套用后仍可修改端点与模型名"
+                    onClick={() => applyPreset(preset)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <p className="os-note">
+                内置服务商不再写死：套用预设只是替你填好协议、端点与模型名；
+                任何 OpenAI 兼容服务都可以用「OpenAI 兼容（自定义端点）」接入，
+                模型名不做白名单校验。
+              </p>
+            </div>
+
             <div className="os-field">
               <label htmlFor="model-form-provider">服务商（必填）</label>
               <div className="os-input">
@@ -436,6 +510,10 @@ export function ModelManager({ session }: { session: Session }) {
                   onChange={(event) => update('model', event.target.value)}
                 />
               </div>
+              <p className="os-note">
+                按服务商实际名称填写（如 deepseek-chat、qwen2.5:3b、gemini-2.0-flash），
+                不做白名单校验；服务商新增模型后无需改代码。
+              </p>
             </div>
 
             <div className="os-field os-field-wide">

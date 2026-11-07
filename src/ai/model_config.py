@@ -48,6 +48,8 @@ logger = logging.getLogger("liuhao.ai.model_config")
 MODEL_CONFIG_DB_ENV = "LIUHAO_MODEL_CONFIG_DB"
 MODEL_CONFIG_KEY_ENV = "LIUHAO_MODEL_CONFIG_KEY"
 MODEL_CONFIG_KEY_FILE_ENV = "LIUHAO_MODEL_CONFIG_KEY_FILE"
+#: 设为 0/off 时跳过"旧 .env 配置迁移"（测试用；生产保持默认开启）。
+MODEL_CONFIG_MIGRATE_ENV = "LIUHAO_MODEL_CONFIG_MIGRATE"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = _REPO_ROOT / "data" / "model_registry.sqlite3"
@@ -141,6 +143,13 @@ CREATE TABLE IF NOT EXISTS ai_model_configs (
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
+);
+
+-- 一次性迁移标记：记住"旧 .env 配置已处理过"。没有它的话，用户删掉迁移
+-- 出来的那条模型后，下次启动会再次自动加回来 —— 那就不可删了。
+CREATE TABLE IF NOT EXISTS ai_model_config_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -850,6 +859,160 @@ class ModelConfigStore:
     def encryption_posture(self) -> Dict[str, Any]:
         source = "env" if os.environ.get(MODEL_CONFIG_KEY_ENV) else "file"
         return {"algorithm": "AES-256-GCM", "key_source": source}
+
+
+# --------------------------------------------------------------------------- #
+# 旧 .env 配置 -> 可编辑模型记录（一次性、幂等、可删）
+# --------------------------------------------------------------------------- #
+_ENV_MIGRATION_MARKER = "env_config_migrated"
+
+#: 旧版通过 ``AI_PROVIDER_TYPE`` 选一套配置；这里只取那一套，不凭空造配置。
+_LEGACY_BASE_URL_ENVS: Dict[str, tuple] = {
+    "openai": ("OPENAI_BASE_URL",),
+    "anthropic": ("ANTHROPIC_BASE_URL",),
+    "google": ("GOOGLE_BASE_URL", "GEMINI_BASE_URL"),
+    "ollama": ("OLLAMA_BASE_URL", "OLLAMA_HOST"),
+    "moonshot": ("MOONSHOT_BASE_URL",),
+    "deepseek": ("DEEPSEEK_BASE_URL",),
+}
+
+_LEGACY_PROVIDER_LABELS = {
+    "openai": "OpenAI 兼容",
+    "anthropic": "Anthropic",
+    "google": "Google Gemini",
+    "ollama": "本地 Ollama",
+    "moonshot": "Moonshot",
+    "deepseek": "DeepSeek",
+}
+
+
+def _legacy_env(key: str, default: str = "") -> str:
+    """读旧配置：``os.environ`` 优先，其次 ``.env``（经 ConfigManager）。"""
+    value = os.environ.get(key)
+    if value:
+        return str(value).strip()
+    try:
+        from ..config_manager import get as _cfg_get
+
+        value = _cfg_get(key)
+        if value:
+            return str(value).strip()
+    except Exception:  # noqa: BLE001 - 配置源不可用按未配置处理
+        pass
+    return default
+
+
+def _migration_skipped() -> bool:
+    flag = (os.environ.get(MODEL_CONFIG_MIGRATE_ENV) or "").strip().lower()
+    return flag in {"0", "off", "false", "no"}
+
+
+def migrate_env_config_to_store(
+    store: Optional[ModelConfigStore] = None,
+) -> Optional[Dict[str, Any]]:
+    """把旧版 ``AI_PROVIDER_*`` 那一套配置搬进可编辑列表（只搬一次）。
+
+    设计约束（与"可改可删、兼容旧数据"直接相关）：
+
+    * **不覆盖用户数据**：库里已有任何模型时只写迁移标记，绝不改写/删除；
+    * **只迁移真实存在的一套配置**：``AI_PROVIDER_TYPE`` 缺失、为 ``mock``、
+      未知类型或没有模型名时什么都不加；注册表保持为空，``get_provider()``
+      继续按旧路径读 ``.env``（向后兼容）；
+    * **可删**：迁移成功后写 ``env_config_migrated`` 标记；用户删除这条记录后，
+      下次启动不会再自动加回来；
+    * **密钥同样加密**：走 ``ModelConfigStore.create``，与界面添加完全同一条路径；
+    * **失败不阻断启动**：任何存储异常都只记日志，网关照常启动。
+    """
+    if _migration_skipped():
+        return None
+    target = store or get_model_config_store()
+    try:
+        with target._lock:
+            conn = target._connect()
+            marker = conn.execute(
+                "SELECT value FROM ai_model_config_meta WHERE key = ?",
+                (_ENV_MIGRATION_MARKER,),
+            ).fetchone()
+            if marker is not None:
+                return None
+            existing = conn.execute(
+                "SELECT COUNT(*) AS n FROM ai_model_configs"
+            ).fetchone()["n"]
+            if existing:
+                _set_migration_marker(conn)
+                return {"migrated": False, "reason": "already_configured"}
+
+            provider = _legacy_env("AI_PROVIDER_TYPE").lower()
+            model = _legacy_env("AI_PROVIDER_MODEL")
+            if provider == "claude":
+                provider = "anthropic"
+            elif provider in {"gemini", "google-genai"}:
+                provider = "google"
+            if (
+                provider not in SUPPORTED_PROVIDERS
+                or provider == "mock"
+                or not model
+            ):
+                _set_migration_marker(conn)
+                return {"migrated": False, "reason": "no_legacy_config"}
+
+            api_key = _legacy_env("AI_PROVIDER_KEY")
+            if not api_key:
+                from .providers import PROVIDER_KEY_ALIASES
+
+                for alias in PROVIDER_KEY_ALIASES.get(provider, ()):
+                    api_key = _legacy_env(alias)
+                    if api_key:
+                        break
+
+            base_url = ""
+            for env_name in _LEGACY_BASE_URL_ENVS.get(provider, ()):
+                base_url = _legacy_env(env_name)
+                if base_url:
+                    break
+            if (
+                provider == "ollama"
+                and base_url
+                and not base_url.startswith(("http://", "https://"))
+            ):
+                base_url = f"http://{base_url}"
+
+            label = _LEGACY_PROVIDER_LABELS.get(provider, provider)
+            payload: Dict[str, Any] = {
+                "name": f"旧配置 · {label}",
+                "provider": provider,
+                "model": model,
+                "base_url": base_url or None,
+                "timeout": 30.0,
+                "enabled": True,
+                "is_default": True,
+            }
+            if api_key:
+                payload["api_key"] = api_key
+            created = target.create(payload, "env-migration", owner_principal="")
+            _set_migration_marker(conn)
+        logger.info(
+            "legacy AI_PROVIDER_* config migrated into editable model %s (%s/%s)",
+            created["id"],
+            provider,
+            model,
+        )
+        return {"migrated": True, "model": created}
+    except Exception as exc:  # noqa: BLE001 - 迁移失败绝不影响网关启动
+        logger.warning(
+            "legacy model config migration skipped (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        return {"migrated": False, "reason": "migration_failed"}
+
+
+def _set_migration_marker(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO ai_model_config_meta (key, value) VALUES (?, ?)",
+        (_ENV_MIGRATION_MARKER, "1"),
+    )
+    conn.commit()
 
 
 _store: Optional[ModelConfigStore] = None

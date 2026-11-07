@@ -19,6 +19,7 @@ from src.ai.model_config import (
     ModelConfigStore,
     get_model_config_store,
     mask_secret,
+    migrate_env_config_to_store,
     vendor_for,
 )
 from src.ai.providers import (
@@ -115,6 +116,19 @@ class TestPersistenceAndMasking:
         assert mask_secret(None) is None
         assert mask_secret("short") == "****"
         assert mask_secret("sk-abcdefghijklmnop") == "sk-a…mnop"
+
+    def test_arbitrary_model_name_is_accepted(self, store):
+        """模型名不做白名单校验：带厂商前缀/版本后缀/斜杠都应原样保存。"""
+        created = _create(
+            store,
+            name="custom",
+            provider="openai",
+            model="acme/private-model:v9-beta",
+            base_url="https://llm.example.com/v1",
+            api_key="sk-test-123456",
+        )
+        assert created["model"] == "acme/private-model:v9-beta"
+        assert store.resolve(created["id"])["model"] == "acme/private-model:v9-beta"
 
 
 class TestSecretsAtRest:
@@ -381,3 +395,88 @@ class TestKeyEnvAliases:
             assert providers.PROVIDER_KEY_ALIASES[name] == PROVIDER_KEY_ENVS[name], (
                 f"{name}: 后端读取的变量名必须与名册提示一致"
             )
+
+
+class TestLegacyEnvMigration:
+    """旧 ``.env`` 那一套配置 → 可编辑模型记录的一次性迁移。"""
+
+    def _enable(self, monkeypatch, provider="ollama", model="qwen2.5:3b", **env):
+        monkeypatch.setenv(model_config_module.MODEL_CONFIG_MIGRATE_ENV, "1")
+        monkeypatch.setenv("AI_PROVIDER_TYPE", provider)
+        monkeypatch.setenv("AI_PROVIDER_MODEL", model)
+        monkeypatch.delenv("AI_PROVIDER_KEY", raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+    def test_env_ollama_becomes_an_editable_default(self, store, monkeypatch):
+        self._enable(monkeypatch, OLLAMA_BASE_URL="http://127.0.0.1:11434")
+
+        result = migrate_env_config_to_store(store)
+
+        assert result and result["migrated"] is True
+        listed = store.list_models()
+        assert len(listed) == 1
+        item = listed[0]
+        assert item["provider"] == "ollama"
+        assert item["model"] == "qwen2.5:3b"
+        assert item["base_url"] == "http://127.0.0.1:11434"
+        assert item["is_default"] is True
+        # 迁移走的同一条创建路径 → 旧模型立即可被解析使用。
+        assert store.resolve()["model"] == "qwen2.5:3b"
+        # 第二次启动不重复添加。
+        assert migrate_env_config_to_store(store) is None
+        assert len(store.list_models()) == 1
+
+    def test_migrated_key_is_encrypted_and_usable(self, store, monkeypatch):
+        secret = "sk-legacy-do-not-leak-123456"
+        self._enable(
+            monkeypatch,
+            provider="openai",
+            model="deepseek-chat",
+            AI_PROVIDER_KEY=secret,
+            OPENAI_BASE_URL="https://api.deepseek.com/v1",
+        )
+
+        migrate_env_config_to_store(store)
+
+        item = store.list_models()[0]
+        assert item["api_key_set"] is True
+        assert secret not in json.dumps(item)
+        resolved = store.resolve(item["id"])
+        assert resolved["api_key"] == secret
+        raw = store._connect().execute(
+            "SELECT api_key_enc FROM ai_model_configs WHERE id = ?", (item["id"],)
+        ).fetchone()["api_key_enc"]
+        assert raw.startswith("enc:v1:")
+        assert secret not in raw
+
+    def test_existing_user_config_is_never_overwritten(self, store, monkeypatch):
+        mine = _create(store, name="mine", provider="mock", model="kept")
+        self._enable(monkeypatch)
+
+        result = migrate_env_config_to_store(store)
+
+        assert result and result["migrated"] is False
+        assert [m["name"] for m in store.list_models()] == ["mine"]
+        assert store.resolve(mine["id"])["model"] == "kept"
+
+    def test_deleted_migration_is_not_recreated_on_next_boot(self, store, monkeypatch):
+        self._enable(monkeypatch)
+        migrate_env_config_to_store(store)
+        created_id = store.list_models()[0]["id"]
+        store.delete(created_id, "admin")
+
+        assert migrate_env_config_to_store(store) is None
+        assert store.list_models() == []
+
+    def test_skip_switch_and_mock_config_migrate_nothing(self, store, monkeypatch):
+        self._enable(monkeypatch)
+        monkeypatch.setenv(model_config_module.MODEL_CONFIG_MIGRATE_ENV, "0")
+        assert migrate_env_config_to_store(store) is None
+        assert store.list_models() == []
+
+        monkeypatch.setenv(model_config_module.MODEL_CONFIG_MIGRATE_ENV, "1")
+        monkeypatch.setenv("AI_PROVIDER_TYPE", "mock")
+        result = migrate_env_config_to_store(store)
+        assert result and result["migrated"] is False
+        assert store.list_models() == []

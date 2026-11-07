@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { mapProbeReason } from './ModelManager'
+import { mapProbeReason, presetFormPatch } from './ModelManager'
 
 describe('mapProbeReason', () => {
   test('成功（reason 为空）→ 带上耗时的连接成功', () => {
@@ -41,5 +41,38 @@ describe('mapProbeReason', () => {
     expect(mapProbeReason('bad_gateway', 10, '')).toBe(
       '连接失败：请检查服务商、模型名与端点设置后重试。',
     )
+  })
+})
+
+describe('presetFormPatch', () => {
+  test('套用内置预设 → 只回填协议/端点/模型名', () => {
+    expect(
+      presetFormPatch({
+        id: 'deepseek',
+        provider: 'deepseek',
+        label: 'DeepSeek',
+        base_url: 'https://api.deepseek.com',
+        model: 'deepseek-chat',
+        requires_api_key: true,
+      }),
+    ).toEqual({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+    })
+  })
+
+  test('OpenAI 兼容自定义 → 端点与模型名留空，等用户填写', () => {
+    expect(
+      presetFormPatch({
+        id: 'openai_compatible',
+        provider: 'openai',
+        label: 'OpenAI 兼容（自定义端点）',
+        base_url: null,
+        model: '',
+        requires_api_key: true,
+        custom: true,
+      }),
+    ).toEqual({ provider: 'openai', baseUrl: '', model: '' })
   })
 })

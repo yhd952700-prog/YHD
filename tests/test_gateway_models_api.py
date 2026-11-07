@@ -183,6 +183,57 @@ class TestCrudAndMasking:
     def test_delete_unknown_is_404(self, client, admin_headers):
         assert client.delete("/v1/models/nope", headers=admin_headers).status_code == 404
 
+    def test_arbitrary_openai_compatible_model_is_accepted(self, client, admin_headers):
+        """任意 OpenAI 兼容模型：模型名不做白名单，端点由用户填写。"""
+        created = client.post(
+            "/v1/models",
+            json=_payload(
+                name="my-private-model",
+                provider="openai",
+                model="acme/private-model:v9-beta",
+                base_url="https://llm.example.com/v1",
+                api_key="sk-custom-abcdefghijklmnop",
+            ),
+            headers=admin_headers,
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["model"] == "acme/private-model:v9-beta"
+        assert body["base_url"] == "https://llm.example.com/v1"
+        assert body["provider"] == "openai"
+        assert body["is_default"] is True
+
+    def test_local_ollama_openai_compatible_endpoint_is_allowed(self, client, admin_headers):
+        """本机 Ollama 的 /v1 入口也是"本机 Ollama"，可用于 OpenAI 兼容接入。"""
+        created = client.post(
+            "/v1/models",
+            json=_payload(
+                name="ollama-openai-compat",
+                provider="openai",
+                model="qwen2.5:3b",
+                base_url="http://127.0.0.1:11434/v1",
+                api_key="ollama",
+            ),
+            headers=admin_headers,
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["base_url"] == "http://127.0.0.1:11434/v1"
+
+
+class TestPresets:
+    def test_presets_include_custom_openai_compatible_entry(self, client, reader_headers):
+        response = client.get("/v1/models/presets", headers=reader_headers)
+        assert response.status_code == 200, response.text
+        presets = {p["id"]: p for p in response.json()["presets"]}
+        assert "openai_compatible" in presets
+        custom = presets["openai_compatible"]
+        assert custom["provider"] == "openai"
+        assert custom["base_url"] is None
+        assert custom["model"] == ""
+        assert custom["api_key"] is None
+        # 内置服务商仍是"预设"，不是封闭枚举。
+        assert {"openai", "anthropic", "google", "ollama"} <= set(presets)
+
 
 class TestConnectionProbe:
     def test_mock_provider_probe_succeeds(self, client, admin_headers):
@@ -328,3 +379,26 @@ class TestConnectionProbe:
             )
         assert exc_info.value.status_code == 400
         assert "SSRF" in exc_info.value.detail
+
+    def test_probe_failure_never_echoes_upstream_english(self, monkeypatch):
+        """失败提示只给"下一步改什么"，上游英文原文与 Key 都不进响应。"""
+        from src.gateway import models as models_mod
+
+        def boom(cfg):
+            raise RuntimeError("HTTP 401 Unauthorized: invalid api key sk-leaky-123456")
+
+        monkeypatch.setattr(models_mod, "provider_from_config", boom)
+        result = models_mod._probe(
+            {
+                "provider": "openai",
+                "model": "no-such-model",
+                "base_url": "",
+                "timeout": 2,
+                "api_key": "sk-leaky-123456",
+            }
+        )
+        assert result["ok"] is False
+        assert result["reason"] == "invalid_key"
+        assert "HTTP 401" not in result["detail"]
+        assert "Unauthorized" not in result["detail"]
+        assert "sk-leaky-123456" not in json.dumps(result)
