@@ -397,6 +397,43 @@ class TestKeyEnvAliases:
             )
 
 
+class TestMaskedKeyWriteBack:
+    """编辑态回传掩码不得覆盖真实 Key。"""
+
+    def test_update_with_masked_key_keeps_the_real_one(self, store):
+        created = _create(
+            store,
+            name="masked",
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-real-secret-123456",
+        )
+        masked = store.get_public(created["id"])["api_key_masked"]
+        assert masked and masked != "sk-real-secret-123456"
+
+        store.update(created["id"], {"api_key": masked, "name": "masked-renamed"}, "admin")
+        assert store.resolve(created["id"])["api_key"] == "sk-real-secret-123456"
+
+        store.update(created["id"], {"api_key": "****"}, "admin")
+        assert store.resolve(created["id"])["api_key"] == "sk-real-secret-123456"
+
+        store.update(created["id"], {"api_key": "sk-brand-new-987654"}, "admin")
+        assert store.resolve(created["id"])["api_key"] == "sk-brand-new-987654"
+
+    def test_create_with_masked_key_is_treated_as_absent(self, store):
+        created = _create(
+            store,
+            name="masked-create",
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-a…mnop",
+        )
+        assert created["api_key_set"] is False
+        assert store.resolve(created["id"])["api_key"] is None
+
+
 class TestLegacyEnvMigration:
     """旧 ``.env`` 那一套配置 → 可编辑模型记录的一次性迁移。"""
 

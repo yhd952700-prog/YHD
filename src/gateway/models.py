@@ -38,6 +38,7 @@ from ..ai.model_config import (
     ModelConfigError,
     SUPPORTED_PROVIDERS,
     get_model_config_store,
+    is_masked_placeholder,
     vendor_for,
 )
 from ..ai.providers import ProviderFactory, provider_from_config
@@ -902,6 +903,9 @@ def _test_cfg(payload: TestPayload, scope=None) -> Dict[str, Any]:
     if provider not in ProviderFactory._providers:
         raise HTTPException(status_code=400, detail=f"不支持的 provider 类型：{provider}")
     api_key = payload.api_key
+    # 编辑态回传的掩码不是新 Key：测试时回落到已保存的真实 Key。
+    if api_key and is_masked_placeholder(api_key):
+        api_key = None
     if not api_key and stored:
         api_key = stored.get("api_key")
     # 调用方现填的地址按公网收紧；但若它**恰好等于**已保存配置里的地址，

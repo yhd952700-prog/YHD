@@ -181,6 +181,32 @@ def mask_secret(secret: Optional[str]) -> Optional[str]:
     return f"{secret[:4]}…{secret[-4:]}"
 
 
+def is_masked_placeholder(value: Any) -> bool:
+    """是否是"回显用的掩码/占位"，而不是用户新输入的 Key。
+
+    前端编辑时可能把 ``api_key_masked`` 原样回传；若把 ``****`` 或
+    ``sk-a…mnop`` 当成新 Key 加密，就会覆盖真实凭据。写库前必须过滤。
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if text in {NEEDS_REENTRY_TEXT, "****", "******", "••••", "••••••"}:
+        return True
+    if "…" in text or "*" in text or "•" in text:
+        return True
+    return text.lower() in {
+        "redacted",
+        "[redacted]",
+        "unchanged",
+        "<unchanged>",
+        "keep",
+        "keep-existing",
+        "existing",
+    }
+
+
 def _derive_key(passphrase: str) -> bytes:
     return hashlib.sha256(passphrase.encode("utf-8")).digest()
 
@@ -664,7 +690,7 @@ class ModelConfigStore:
             ).fetchone()
             is_default = 1 if (payload.get("is_default") or not has_default) else 0
             encrypted = None
-            if payload.get("api_key"):
+            if payload.get("api_key") and not is_masked_placeholder(payload["api_key"]):
                 encrypted = self._encrypt_secret(model_id, str(payload["api_key"]))
             if is_default:
                 conn.execute("UPDATE ai_model_configs SET is_default = 0")
@@ -734,7 +760,8 @@ class ModelConfigStore:
                 float(merged["timeout"]),
                 now,
             ]
-            if payload.get("api_key"):
+            # 只有"用户真的输入了新值"才更新；掩码/占位值一律视为未修改。
+            if payload.get("api_key") and not is_masked_placeholder(payload["api_key"]):
                 params.append(self._encrypt_secret(model_id, str(payload["api_key"])))
                 sets.append("api_key_enc = ?")
             if "owner_principal" in payload and payload["owner_principal"] is not None:

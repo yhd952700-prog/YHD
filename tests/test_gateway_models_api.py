@@ -191,7 +191,7 @@ class TestCrudAndMasking:
                 name="my-private-model",
                 provider="openai",
                 model="acme/private-model:v9-beta",
-                base_url="https://llm.example.com/v1",
+                base_url="https://api.openai.com/v1",
                 api_key="sk-custom-abcdefghijklmnop",
             ),
             headers=admin_headers,
@@ -199,9 +199,38 @@ class TestCrudAndMasking:
         assert created.status_code == 200, created.text
         body = created.json()
         assert body["model"] == "acme/private-model:v9-beta"
-        assert body["base_url"] == "https://llm.example.com/v1"
+        assert body["base_url"] == "https://api.openai.com/v1"
         assert body["provider"] == "openai"
         assert body["is_default"] is True
+
+    def test_put_with_masked_key_keeps_the_real_one(self, client, admin_headers):
+        """编辑表单回传 ``api_key_masked`` 不能覆盖已保存的真实 Key。"""
+        from src.ai.model_config import get_model_config_store
+
+        created = client.post(
+            "/v1/models",
+            json=_payload(
+                name="masked-api",
+                provider="openai",
+                model="gpt-4o-mini",
+                base_url="https://api.openai.com/v1",
+                api_key="sk-real-secret-123456",
+            ),
+            headers=admin_headers,
+        ).json()
+        masked = created["api_key_masked"]
+        assert masked and masked != "sk-real-secret-123456"
+
+        updated = client.put(
+            f"/v1/models/{created['id']}",
+            json={"api_key": masked, "name": "masked-api-renamed"},
+            headers=admin_headers,
+        )
+        assert updated.status_code == 200, updated.text
+        assert (
+            get_model_config_store().resolve(created["id"])["api_key"]
+            == "sk-real-secret-123456"
+        )
 
     def test_local_ollama_openai_compatible_endpoint_is_allowed(self, client, admin_headers):
         """本机 Ollama 的 /v1 入口也是"本机 Ollama"，可用于 OpenAI 兼容接入。"""
@@ -384,10 +413,15 @@ class TestConnectionProbe:
         """失败提示只给"下一步改什么"，上游英文原文与 Key 都不进响应。"""
         from src.gateway import models as models_mod
 
-        def boom(cfg):
-            raise RuntimeError("HTTP 401 Unauthorized: invalid api key sk-leaky-123456")
+        class BoomProvider:
+            def generate(self, *args, **kwargs):
+                raise RuntimeError(
+                    "HTTP 401 Unauthorized: invalid api key sk-leaky-123456"
+                )
 
-        monkeypatch.setattr(models_mod, "provider_from_config", boom)
+        monkeypatch.setattr(
+            models_mod, "provider_from_config", lambda cfg: BoomProvider()
+        )
         result = models_mod._probe(
             {
                 "provider": "openai",

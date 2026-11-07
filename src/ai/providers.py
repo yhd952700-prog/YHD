@@ -17,9 +17,44 @@ import threading
 import warnings
 from typing import Optional, Dict, Any, Sequence
 
+from .net_guard import assert_safe_runtime_target
 from .observability import observe
 
 logger = logging.getLogger("liuhao.ai.providers")
+
+
+class ProviderHTTPError(RuntimeError):
+    """上游 HTTP 失败：消息中性、可展示；状态码单独保留给分类器。
+
+    上游响应体可能包含内部地址、账号信息或英文堆栈，只写服务端日志，
+    绝不拼进异常消息（异常消息会进入诊断与部分用户可见路径）。
+    """
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _neutral_http_message(label: str, status: Optional[int]) -> str:
+    if status is not None and 300 <= status < 400:
+        return f"{label}返回重定向，已按安全策略拒绝跟随。"
+    if status is not None:
+        return f"{label}返回 HTTP {status}，详情已记录到服务端日志。"
+    return f"{label}请求失败，详情已记录到服务端日志。"
+
+
+def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> None:
+    """把 SDK 的 HTTP 错误消息换成中性文案；非 HTTP 错误原样返回给调用方。
+
+    上游响应体可能包含内网地址/账号/英文堆栈，只按截断后写日志，不进异常消息。
+    """
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        return
+    logger.info("%s upstream HTTP failure status=%s", label, status)
+    raise ProviderHTTPError(
+        _neutral_http_message(label, status), status_code=status
+    ) from exc
 
 # 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
 # 绝不直接展示给用户，也不写进会话历史。
@@ -315,10 +350,15 @@ class OpenAIProvider(BaseProvider):
                 import openai
                 import httpx
 
-                # Build http client with proxy if needed
-                http_client = None
-                if self.proxy:
-                    http_client = httpx.Client(proxy=self.proxy)
+                # 关闭自动重定向：openai SDK 默认 follow_redirects=True，会把
+                # "保存时是公网、运行时 302 到 169.254.169.254" 变成真实出站请求。
+                # 这里让 3xx 以状态码形式返回，再由 _guard_upstream_error 转为
+                # 中性拒绝文案。
+                http_client = httpx.Client(
+                    follow_redirects=False,
+                    timeout=self.timeout,
+                    proxy=self.proxy or None,
+                )
 
                 self._client = openai.OpenAI(
                     api_key=self.api_key,
@@ -330,6 +370,14 @@ class OpenAIProvider(BaseProvider):
                     http_client=http_client,
                 )
             return self._client
+
+    def _guard_target(self) -> None:
+        """每次真实请求前重新校验目标（防 DNS rebinding/私网端点）。"""
+        assert_safe_runtime_target(self.base_url, context="模型服务")
+
+    def _guard_upstream_error(self, exc: BaseException) -> None:
+        """把 SDK 的 HTTP 错误转成中性消息；非 HTTP 错误交给调用方原样抛出。"""
+        _neutralize_http_error(exc, "模型服务")
 
     def close(self) -> None:
         """Close the cached OpenAI/httpx client (idempotent)."""
@@ -351,6 +399,7 @@ class OpenAIProvider(BaseProvider):
         # Support new OpenAI SDK response_format for structured output
         response_format = kwargs.get("response_format")
 
+        self._guard_target()
         try:
             client = self._get_client()
             create_params = {
@@ -365,7 +414,8 @@ class OpenAIProvider(BaseProvider):
 
             response = client.chat.completions.create(**create_params)
             return response.choices[0].message.content or ""
-        except Exception:
+        except Exception as exc:
+            self._guard_upstream_error(exc)
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -379,13 +429,18 @@ class OpenAIProvider(BaseProvider):
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
-        response = self._get_client().chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content or ""
+        self._guard_target()
+        try:
+            response = self._get_client().chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            self._guard_upstream_error(exc)
+            raise
 
     def chat_stream(self, messages, **kwargs):
         """按块流式返回 OpenAI 兼容响应（``stream=True``）。
@@ -396,13 +451,18 @@ class OpenAIProvider(BaseProvider):
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
-        stream = self._get_client().chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
+        self._guard_target()
+        try:
+            stream = self._get_client().chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+        except Exception as exc:
+            self._guard_upstream_error(exc)
+            raise
         for chunk in stream:
             choices = getattr(chunk, "choices", None) or []
             if not choices:
@@ -441,9 +501,20 @@ class AnthropicProvider(BaseProvider):
         if client is not None:
             return client
         import anthropic
+        import httpx
+
         with self._client_lock:
             if self._client is None:
-                self._client = anthropic.Anthropic(api_key=self.api_key)
+                options = {
+                    "api_key": self.api_key,
+                    # 与 OpenAI 兼容路径同一条策略：不跟随重定向。
+                    "http_client": httpx.Client(
+                        follow_redirects=False, timeout=self.timeout
+                    ),
+                }
+                if self.base_url:
+                    options["base_url"] = self.base_url
+                self._client = anthropic.Anthropic(**options)
             return self._client
 
     def close(self) -> None:
@@ -461,6 +532,7 @@ class AnthropicProvider(BaseProvider):
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response via Anthropic API."""
         model = kwargs.get("model", self.model)
+        assert_safe_runtime_target(self.base_url, context="Anthropic 服务")
         try:
             client = self._get_client()
             # v1.x SDK approach - simplified
@@ -471,7 +543,8 @@ class AnthropicProvider(BaseProvider):
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text
-        except Exception:
+        except Exception as exc:
+            _neutralize_http_error(exc, "Anthropic 服务")
             # Re-raise to let generate_with_retry handle it
             raise
 
@@ -542,6 +615,7 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
+        assert_safe_runtime_target(base_url, context="Ollama 服务")
 
         try:
             # Bypass any HTTP(S) proxy for the (usually localhost) Ollama
@@ -555,12 +629,23 @@ class OllamaProvider(BaseProvider):
                 json={"model": model, "prompt": prompt, "stream": False},
                 timeout=self.timeout,
                 proxies={"http": None, "https": None},
+                allow_redirects=False,
             )
             if response.status_code == 200:
                 result = response.json()
                 return result.get("response", str(result))
-            else:
-                raise Exception(f"Ollama error {response.status_code}: {response.text}")
+            logger.info(
+                "ollama upstream HTTP failure status=%s model=%s body=%s",
+                response.status_code,
+                model,
+                str(response.text)[:200],
+            )
+            raise ProviderHTTPError(
+                _neutral_http_message("Ollama 服务", response.status_code),
+                status_code=response.status_code,
+            )
+        except ProviderHTTPError:
+            raise
         except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
@@ -579,6 +664,7 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
+        assert_safe_runtime_target(base_url, context="Ollama 服务")
 
         try:
             response = requests.post(
@@ -586,11 +672,23 @@ class OllamaProvider(BaseProvider):
                 json={"model": model, "messages": messages, "stream": False},
                 timeout=self.timeout,
                 proxies={"http": None, "https": None},
+                allow_redirects=False,
             )
             if response.status_code == 200:
                 result = response.json()
                 return result.get("message", {}).get("content", str(result))
-            raise Exception(f"Ollama error {response.status_code}: {response.text}")
+            logger.info(
+                "ollama upstream HTTP failure status=%s model=%s body=%s",
+                response.status_code,
+                model,
+                str(response.text)[:200],
+            )
+            raise ProviderHTTPError(
+                _neutral_http_message("Ollama 服务", response.status_code),
+                status_code=response.status_code,
+            )
+        except ProviderHTTPError:
+            raise
         except Exception:
             # Re-raise to let generate_with_retry handle it
             raise
@@ -611,6 +709,7 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
+        assert_safe_runtime_target(base_url, context="Ollama 服务")
 
         response = requests.post(
             f"{base_url}/api/chat",
@@ -618,10 +717,20 @@ class OllamaProvider(BaseProvider):
             timeout=self.timeout,
             proxies={"http": None, "https": None},
             stream=True,
+            allow_redirects=False,
         )
         try:
             if response.status_code != 200:
-                raise Exception(f"Ollama error {response.status_code}: {response.text}")
+                logger.info(
+                    "ollama upstream HTTP failure status=%s model=%s body=%s",
+                    response.status_code,
+                    model,
+                    str(response.text)[:200],
+                )
+                raise ProviderHTTPError(
+                    _neutral_http_message("Ollama 服务", response.status_code),
+                    status_code=response.status_code,
+                )
 
             for line in response.iter_lines():
                 if not line:

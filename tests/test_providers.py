@@ -199,6 +199,118 @@ def test_openai_client_honors_configured_timeout(monkeypatch):
     assert captured.get("timeout") == 123.0
 
 
+def test_openai_client_disables_redirects(monkeypatch):
+    """运行时必须关闭自动重定向，302 不能把请求带去内网。"""
+    _isolate(monkeypatch)
+    import httpx
+    import openai
+
+    from src.ai.providers import OpenAIProvider
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeClient)
+    p = OpenAIProvider(
+        name="t",
+        model="m",
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        timeout=5,
+    )
+    p._get_client()
+    http_client = captured.get("http_client")
+    assert isinstance(http_client, httpx.Client)
+    assert http_client.follow_redirects is False
+
+
+def test_openai_redirect_maps_to_neutral_error(monkeypatch):
+    """3xx 一律拒绝；用户可见消息不含内网地址/上游原文。"""
+    _isolate(monkeypatch)
+    from types import SimpleNamespace
+
+    from src.ai.providers import OpenAIProvider, ProviderHTTPError
+
+    class _Redirect(Exception):
+        status_code = 302
+
+    class _Completions:
+        def create(self, **kwargs):
+            raise _Redirect("302 -> http://169.254.169.254/latest/meta-data/")
+
+    p = OpenAIProvider(name="t", model="m", api_key="sk-test", timeout=5)
+    p._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions())
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        p.chat([{"role": "user", "content": "hi"}])
+    assert exc_info.value.status_code == 302
+    assert "重定向" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+
+def test_ollama_redirect_is_not_followed(monkeypatch):
+    """Ollama 路径同样不跟随重定向，且错误消息中性。"""
+    _isolate(monkeypatch)
+    import requests
+
+    from src.ai.providers import OllamaProvider, ProviderHTTPError
+
+    captured = {}
+
+    class _Response:
+        status_code = 302
+        text = "Found: http://169.254.169.254/latest/meta-data/"
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    p = OllamaProvider(
+        name="o", model="qwen2.5:3b", base_url="http://127.0.0.1:11434", timeout=5
+    )
+    with pytest.raises(ProviderHTTPError) as exc_info:
+        p.generate("hi")
+    assert captured["allow_redirects"] is False
+    assert "重定向" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+
+def test_runtime_guard_rejects_private_and_rebinding(monkeypatch):
+    """每次请求前重新解析：解析结果变私网即拒绝；公网解析仍放行。"""
+    from src.ai import net_guard
+
+    public = [(2, 1, 6, "", ("93.184.216.34", 443))]
+    private = [(2, 1, 6, "", ("169.254.169.254", 443))]
+    answers = [public, private]
+    calls = {"n": 0}
+
+    def _fake_getaddrinfo(*args, **kwargs):
+        answer = answers[min(calls["n"], len(answers) - 1)]
+        calls["n"] += 1
+        return answer
+
+    monkeypatch.setattr(net_guard.socket, "getaddrinfo", _fake_getaddrinfo)
+    net_guard.assert_safe_runtime_target("https://rebind.example.com/v1")
+    with pytest.raises(net_guard.RuntimeTargetRejected) as exc_info:
+        net_guard.assert_safe_runtime_target("https://rebind.example.com/v1")
+    assert "内网" in str(exc_info.value)
+    assert "169.254" not in str(exc_info.value)
+
+    monkeypatch.setattr(
+        net_guard.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("10.0.0.7", 80))],
+    )
+    with pytest.raises(net_guard.RuntimeTargetRejected):
+        net_guard.assert_safe_runtime_target("http://internal.example.com")
+
+
 def test_provider_timeout_env_applied(monkeypatch):
     """``AI_PROVIDER_TIMEOUT`` 可选覆盖默认超时（慢上游需要更久）。"""
     _isolate(
