@@ -133,6 +133,38 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 """
 
+# A cold first import: the first two health requests take longer than the
+# per-request timeout (1.0s), the third answers immediately.  The probe must
+# keep retrying the real endpoint and report /v1/health, not /openapi.json.
+SLOW_THEN_HEALTHY_SERVICE = """
+import threading
+import time
+
+from fastapi import FastAPI
+
+app = FastAPI()
+_lock = threading.Lock()
+_calls = [0]
+
+
+@app.get("/v1/health")
+def health():
+    with _lock:
+        _calls[0] += 1
+        attempt = _calls[0]
+    if attempt <= 2:
+        time.sleep(1.5)
+    return {"ok": True}
+"""
+
+# No health endpoint at all: FastAPI still serves /openapi.json, which is the
+# only evidence left.  It must be accepted *and* flagged as a fallback.
+FALLBACK_ONLY_SERVICE = """
+from fastapi import FastAPI
+
+app = FastAPI()
+"""
+
 
 def _write_service(root: Path, body: str) -> None:
     gateway = root / "src" / "gateway"
@@ -208,16 +240,20 @@ def test_real_startup_passes_health_check_and_exits_cleanly(tmp_path: Path) -> N
     app_root = _make_app(tmp_path / "app")
     data_dir = app_root / "data"
     expected = capture_table_inventory([data_dir])
+    config = SelfCheckConfig()
 
-    report = run_self_check(app_root, [data_dir], expected_tables=expected)
+    report = run_self_check(
+        app_root, [data_dir], expected_tables=expected, config=config
+    )
 
     assert report.ok, report.to_dict()
     assert report.service_checked and report.service_ok
     startup = report.startup
     assert startup is not None
     assert startup.ok
-    assert startup.health_path == "/health"
+    assert startup.health_path in config.startup.health_paths
     assert startup.http_status == 200
+    assert startup.health_path_is_fallback is False
     assert startup.port > 0
     assert startup.exit_code == 0
     assert startup.shutdown_ok
@@ -226,6 +262,40 @@ def test_real_startup_passes_health_check_and_exits_cleanly(tmp_path: Path) -> N
     assert report.databases_checked == 1
     assert report.tables_checked == 1
     assert report.issues == []
+
+
+def test_slow_first_health_requests_still_report_the_primary_path(
+    tmp_path: Path,
+) -> None:
+    """Two timed-out cold requests must not push the probe to /openapi.json."""
+    app_root = _make_app(tmp_path / "app", service=SLOW_THEN_HEALTHY_SERVICE)
+
+    report = run_self_check(app_root, [app_root / "data"])
+
+    startup = report.startup
+    assert startup is not None
+    assert report.ok, report.to_dict()
+    assert startup.health_path == "/v1/health"
+    assert startup.http_status == 200
+    assert startup.health_path_is_fallback is False
+
+
+def test_fallback_is_only_used_when_primary_paths_are_absent_and_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """A 404 on every preferred path is explicit absence: fallback is honest."""
+    app_root = _make_app(tmp_path / "app", service=FALLBACK_ONLY_SERVICE)
+
+    report = run_self_check(app_root, [app_root / "data"])
+
+    startup = report.startup
+    assert startup is not None
+    assert report.ok, report.to_dict()
+    assert startup.health_path == "/openapi.json"
+    assert startup.http_status == 200
+    assert startup.health_path_is_fallback is True
+    assert "兜底路径" in report.service_detail
+    assert "fallback" in startup.log_tail
 
 
 def test_startup_never_touches_the_live_data_directory(tmp_path: Path) -> None:

@@ -109,7 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--health-path",
         action="append",
         default=[],
-        help="健康检查路径（可重复；默认依次尝试 /v1/health、/health、/healthz、/openapi.json）",
+        help=(
+            "健康检查路径（可重复；默认依次重试 /v1/health、/health、/healthz；"
+            "仅当这些路径明确 404 时才以 /openapi.json 兜底并标记为 fallback）"
+        ),
     )
     p_selfcheck.add_argument(
         "--startup-port",

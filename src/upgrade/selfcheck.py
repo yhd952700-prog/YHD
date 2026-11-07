@@ -99,9 +99,14 @@ def run_self_check(
         )
         report.startup = startup
         report.service_ok = startup.ok
+        fallback_note = (
+            "；兜底路径只证明路由已挂载，未证明 lifespan/数据库就绪"
+            if startup.health_path_is_fallback
+            else ""
+        )
         report.service_detail = startup.reason or (
             f"服务已真实启动并通过健康检查（{startup.health_path}，"
-            f"{startup.startup_seconds:.1f} 秒）"
+            f"{startup.startup_seconds:.1f} 秒）{fallback_note}"
         )
         if not startup.ok:
             report.ok = False

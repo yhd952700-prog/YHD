@@ -140,15 +140,35 @@ class StartupCheckConfig:
 
     host: str = "127.0.0.1"
     port: Optional[int] = None
+    # Order matters: every path except ``fallback_health_path`` is a
+    # *preferred* health endpoint, retried round after round.  The fallback is
+    # never used merely because startup is slow -- see
+    # ``health_fallback_after_missing_rounds``.
     health_paths: Tuple[str, ...] = (
         "/v1/health",
         "/health",
         "/healthz",
         "/openapi.json",
     )
+    fallback_health_path: str = "/openapi.json"
     startup_timeout_seconds: float = 90.0
     shutdown_timeout_seconds: float = 15.0
+    # A single request must not be cut below a cold-start import: the first
+    # ``/v1/health`` on a slow machine routinely takes (well) over one second.
+    # The retry budget, not a tiny timeout, is what keeps the probe honest.
     health_timeout_seconds: float = 1.0
+    # Preferred-health retry policy, all in one place:
+    #   * one round = every preferred path once (3 shipped paths -> <=3.0s);
+    #   * the preferred phase lasts at most this many seconds (further capped
+    #     by ``startup_timeout_seconds``), i.e. roughly
+    #     90 / (3 x 1.0 + 0.25) ~= 27 rounds of full timeouts;
+    #   * the fallback (``/openapi.json``) is tried only after
+    #     ``health_fallback_after_missing_rounds`` consecutive rounds in which
+    #     *all* preferred paths explicitly answered 404/405.  A timeout,
+    #     connection failure or 5xx means "not ready yet", never "missing".
+    health_probe_budget_seconds: float = 90.0
+    health_probe_interval_seconds: float = 0.25
+    health_fallback_after_missing_rounds: int = 2
     mirror_paths: Tuple[str, ...] = (
         "src",
         "config",
@@ -169,6 +189,11 @@ class StartupReport:
     health_path: str = ""
     http_status: int = 0
     health_body: Dict[str, object] = field(default_factory=dict)
+    # True only when the preferred health endpoints were explicitly absent and
+    # the probe had to accept ``/openapi.json`` instead.  The service is
+    # reachable, but a mounted route table does not prove the lifespan or the
+    # databases finished starting -- callers must show this, not hide it.
+    health_path_is_fallback: bool = False
     startup_seconds: float = 0.0
     exit_code: Optional[int] = None
     shutdown_ok: bool = False
@@ -186,6 +211,7 @@ class StartupReport:
             "reason": self.reason,
             "port": self.port,
             "health_path": self.health_path,
+            "health_path_is_fallback": self.health_path_is_fallback,
             "http_status": self.http_status,
             "health_body": dict(self.health_body),
             "startup_seconds": round(self.startup_seconds, 3),
@@ -383,6 +409,7 @@ def classify_failure(
     port: int,
     timed_out: bool,
     exit_code: Optional[int],
+    probe_rounds: int = 0,
 ) -> Tuple[str, str]:
     """Map the log tail onto one readable failure class."""
     lowered = log_tail.lower()
@@ -436,8 +463,9 @@ def classify_failure(
         return LIFESPAN_FAILED, f"lifespan 启动异常{detail}"
 
     if timed_out:
+        retried = f"（健康检查已重试 {probe_rounds} 轮）" if probe_rounds else ""
         detail = f"（最后日志：{error_line}）" if error_line else ""
-        return TIMEOUT, f"启动超时：未在限定时间内就绪{detail}"
+        return TIMEOUT, f"启动超时：未在限定时间内就绪{retried}{detail}"
 
     detail = f"：{error_line}" if error_line else ""
     return STARTUP_FAILED, f"服务启动失败（退出码 {exit_code}）{detail}"
@@ -459,10 +487,23 @@ def _parse_json_object(raw: bytes) -> Dict[str, object]:
 
 def _probe_health(
     host: str, port: int, paths: Tuple[str, ...], timeout: float
-) -> Tuple[str, int, Dict[str, object]]:
+) -> Tuple[str, int, Dict[str, object], bool]:
+    """Try every path once.
+
+    Returns ``(path, status, body, all_missing)``.  ``path`` is non-empty only
+    for a 2xx answer.  ``all_missing`` is True only when *every* path answered
+    404/405, i.e. the endpoints are explicitly absent; a timeout, a connection
+    failure or a 5xx all mean "the service is not ready yet", and must not be
+    mistaken for absence (that is how ``/openapi.json`` used to be accepted
+    while the app was still starting).
+    """
+    if not paths:
+        return "", 0, {}, False
+    missing = 0
     for path in paths:
         url = f"http://{host}:{port}{path}"
         raw = b""
+        status = 0
         try:
             with _HEALTH_OPENER.open(url, timeout=timeout) as response:
                 status = int(getattr(response, "status", 0) or 0)
@@ -483,14 +524,13 @@ def _probe_health(
                 raw = b""
             finally:
                 exc.close()
-            if 200 <= status < 400:
-                return path, status, _parse_json_object(raw)
-            continue
         except (urllib.error.URLError, OSError, ValueError):
             continue
         if 200 <= status < 400:
-            return path, status, _parse_json_object(raw)
-    return "", 0, {}
+            return path, status, _parse_json_object(raw), False
+        if status in (404, 405):
+            missing += 1
+    return "", 0, {}, missing == len(paths)
 
 
 def run_startup_check(
@@ -546,22 +586,73 @@ def run_startup_check(
             )
 
             deadline = time.monotonic() + max(1.0, float(config.startup_timeout_seconds))
+            allowed_paths = tuple(config.health_paths)
+            fallback_path = (
+                config.fallback_health_path
+                if config.fallback_health_path in allowed_paths
+                else ""
+            )
+            preferred_paths = tuple(
+                path for path in allowed_paths if path != fallback_path
+            )
+            if not preferred_paths:
+                # A caller that configured only the fallback still wants a
+                # probe; there is nothing left to fall back *to*.
+                preferred_paths, fallback_path = allowed_paths, ""
+
+            # Preferred-health phase: retry round after round.  The phase is
+            # capped by both the startup budget and the probe budget, so the
+            # rounds are bounded no matter how fast a single round fails.
+            probe_deadline = min(
+                deadline,
+                time.monotonic() + max(1.0, float(config.health_probe_budget_seconds)),
+            )
+            request_timeout = max(0.2, float(config.health_timeout_seconds))
+            probe_interval = max(0.05, float(config.health_probe_interval_seconds))
             health_path = ""
             http_status = 0
             health_body: Dict[str, object] = {}
+            health_path_is_fallback = False
             timed_out = False
-            while time.monotonic() < deadline:
+            probe_rounds = 0
+            missing_rounds = 0
+            fallback_attempted = False
+            while time.monotonic() < probe_deadline:
                 if process.poll() is not None:
                     break
-                health_path, http_status, health_body = _probe_health(
-                    config.host,
-                    port,
-                    tuple(config.health_paths),
-                    max(0.2, float(config.health_timeout_seconds)),
+                probe_rounds += 1
+                path, status, body, all_missing = _probe_health(
+                    config.host, port, preferred_paths, request_timeout
                 )
-                if health_path:
+                if path:
+                    health_path, http_status, health_body = path, status, body
                     break
-                time.sleep(0.1)
+                if all_missing:
+                    missing_rounds += 1
+                    # Only an explicitly absent endpoint may trigger the
+                    # fallback.  A timeout or 5xx keeps retrying the real
+                    # health paths until the budget runs out.
+                    if (
+                        not fallback_attempted
+                        and fallback_path
+                        and missing_rounds
+                        >= max(1, int(config.health_fallback_after_missing_rounds))
+                    ):
+                        fallback_attempted = True
+                        path, status, body, _ = _probe_health(
+                            config.host, port, (fallback_path,), request_timeout
+                        )
+                        if path:
+                            health_path = path
+                            http_status = status
+                            health_body = body
+                            health_path_is_fallback = True
+                            break
+                else:
+                    missing_rounds = 0
+                remaining = probe_deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(probe_interval, remaining))
             else:
                 timed_out = True
 
@@ -578,7 +669,11 @@ def run_startup_check(
             if exit_code is None and not timed_out:
                 timed_out = True
             kind, reason = classify_failure(
-                log_tail, port=port, timed_out=timed_out, exit_code=exit_code
+                log_tail,
+                port=port,
+                timed_out=timed_out,
+                exit_code=exit_code,
+                probe_rounds=probe_rounds,
             )
             return StartupReport(
                 ok=False,
@@ -602,6 +697,20 @@ def run_startup_check(
                 exit_code = process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+        if health_path_is_fallback:
+            # Append only after the child has exited: it still owns the same
+            # file through its stdout handle, and writing earlier would let a
+            # later uvicorn line overwrite the marker.
+            try:
+                with log_file.open("a", encoding="utf-8") as marker:
+                    marker.write(
+                        "selfcheck: preferred health paths "
+                        f"{'/'.join(preferred_paths)} were explicitly absent; "
+                        f"accepted fallback {health_path} (route table only, "
+                        "lifespan not proven)\n"
+                    )
+            except OSError:
+                pass
         log_tail = redact_and_cap_log(capture.read())
         if shutdown_ok:
             return StartupReport(
@@ -610,6 +719,7 @@ def run_startup_check(
                 health_path=health_path,
                 http_status=http_status,
                 health_body=health_body,
+                health_path_is_fallback=health_path_is_fallback,
                 startup_seconds=time.monotonic() - started,
                 exit_code=exit_code,
                 shutdown_ok=True,
@@ -627,6 +737,7 @@ def run_startup_check(
             health_path=health_path,
             http_status=http_status,
             health_body=health_body,
+            health_path_is_fallback=health_path_is_fallback,
             startup_seconds=time.monotonic() - started,
             exit_code=exit_code,
             shutdown_ok=False,
