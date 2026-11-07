@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..common.atomic_write import atomic_write_text
@@ -42,6 +42,9 @@ _ROOT_INIT_LOCK = threading.Lock()
 
 #: 初始化停在半路（根已落盘、凭据没落盘）时的稳定错误码。
 CODE_INITIALIZATION_INCOMPLETE = "ACCOUNT_INITIALIZATION_INCOMPLETE"
+
+#: 首次初始化/补全只接受本机来源时的稳定错误码（中性文案，不透露实例状态）。
+CODE_INITIALIZATION_LOCAL_ONLY = "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +177,62 @@ def _restore_credential(principal: str, snapshot: Optional[Dict[str, Any]]) -> N
 
 
 # --------------------------------------------------------------------------- #
+# 首次初始化的来源门禁
+# --------------------------------------------------------------------------- #
+
+#: ``testclient`` 是 Starlette TestClient 在进程内伪造的来源名，真实 socket
+#: 不可能产生它；只用于让同进程测试表现为"本机请求"。
+_LOOPBACK_CLIENT_NAMES = frozenset({"localhost", "testclient"})
+
+
+def _is_loopback_client(host: str) -> bool:
+    """来源地址是否回环（含 IPv6 方括号形式）。"""
+    value = (host or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("[") and "]" in value:
+        value = value[1:value.find("]")]
+    if value in _LOOPBACK_CLIENT_NAMES:
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def request_is_local(request: Request) -> bool:
+    """请求是否来自本机。
+
+    只认回环对端。``X-Forwarded-For`` 只有在对端**本来就是回环**（本机反代）
+    时才参与判定，且整条转发链都必须是回环 —— 远程直连者无法伪造出回环对端，
+    所以不会被冒充成本机。
+    """
+    client = getattr(request, "client", None)
+    peer = str(getattr(client, "host", "") or "") if client else ""
+    if not _is_loopback_client(peer):
+        return False
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    for hop in forwarded.split(","):
+        hop = hop.strip()
+        if hop and not _is_loopback_client(hop):
+            return False
+    return True
+
+
+def _require_local_for_initialization(request: Request) -> None:
+    """首次初始化/补全只允许本机来源；远程一律中性拒绝。"""
+    if request_is_local(request):
+        return
+    raise deny(
+        403,
+        CODE_INITIALIZATION_LOCAL_ONLY,
+        "该操作只能在本机完成：请在这台机器上打开控制台或使用本机命令行重试。",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 本机恢复码交接（忘记密码 + 手上没有恢复码）
 # --------------------------------------------------------------------------- #
 
@@ -228,7 +287,10 @@ def list_roles() -> Dict[str, Any]:
 
 
 def _settle_existing_root(
-    manager, root: _accounts.AccountNode, payload: RegisterRootRequest
+    manager,
+    root: _accounts.AccountNode,
+    payload: RegisterRootRequest,
+    request: Request,
 ) -> Dict[str, Any]:
     """根已存在：要么"已完成"（409），要么"初始化停在半路"（可恢复）。"""
     if _credential_record(root.principal) is not None:
@@ -243,13 +305,15 @@ def _settle_existing_root(
             _accounts.CODE_ROOT_REGISTRATION_CLOSED,
             "系统已完成初始化，请使用已有账号登录",
         )
+    # 半初始化补全只允许本机：远程匿名者既不能猜名接管，也看不到任何提示。
+    _require_local_for_initialization(request)
     if payload.principal != root.principal:
+        # 正文**不回显**根账号名：否则匿名者拿到名字就能借补全路径接管。
         raise deny(
             409,
             CODE_INITIALIZATION_INCOMPLETE,
-            f"初始化尚未完成：首次注册使用的名称是 “{root.principal}”。"
-            "请用该名称重新提交以完成初始化（密码可以重新设置）。",
-            principal=root.principal,
+            "初始化尚未完成。请使用首次注册时的名称在本机重新提交以完成初始化"
+            "（密码可以重新设置）。",
         )
     # 恢复路径：上一轮凭据写入失败，根落盘但没有凭据 —— 任何人都登录不了，
     # 所以这是"重新完成初始化"，而不是"已有账号被接管"。
@@ -278,19 +342,24 @@ def _settle_existing_root(
 
 
 @router.post("/register")
-def register_root(payload: RegisterRootRequest) -> Dict[str, Any]:
+def register_root(payload: RegisterRootRequest, request: Request) -> Dict[str, Any]:
     """首个注册者成为唯一根；已完成初始化时 409（并写审计）。
 
     顺序契约（P0-1）：**先凭据、后身份**。凭据写失败时账号树一个字节都没写，
     接口 500 之后同一个请求可以原样重试；反过来（先身份后凭据）一旦凭据写
     失败，根已经落盘 → ``/v1/auth/config`` 认为已初始化、再注册 409、登录
     401，用户既进不去也重开不了。
+
+    来源契约：**未初始化**（无根 / 根有但无凭据）时只接受本机来源，否则
+    任何能连上网关的人都能抢注成根。已完成初始化的 409 保持中性文案，不向
+    远程透露根账号名。
     """
     manager = get_identity_manager()
     with _ROOT_INIT_LOCK:
         root = _kernel_call(manager.account_root)
         if root is not None:
-            return _settle_existing_root(manager, root, payload)
+            return _settle_existing_root(manager, root, payload, request)
+        _require_local_for_initialization(request)
         prior = _credential_record(payload.principal)
         _write_credential(
             payload.principal,
@@ -470,10 +539,17 @@ def backup_export(
 
 
 @router.post("/backup/import")
-def backup_import(payload: BackupImportRequest) -> Dict[str, Any]:
-    """在本机没有账号树时认领凭据包（口令校验 + 防重放 + 限次 + 审计）。"""
+def backup_import(payload: BackupImportRequest, request: Request) -> Dict[str, Any]:
+    """在本机没有账号树时认领凭据包（口令校验 + 防重放 + 限次 + 审计）。
+
+    导入等同于"建立账号树"，因此与首次注册同一来源契约：未初始化状态只接受
+    本机来源，远程请求给中性拒绝。
+    """
     from .account_backup import import_bundle
 
+    root = _kernel_call(get_identity_manager().account_root)
+    if root is None or _credential_record(root.principal) is None:
+        _require_local_for_initialization(request)
     return _kernel_call(import_bundle, bundle=payload.bundle, passphrase=payload.passphrase)
 
 

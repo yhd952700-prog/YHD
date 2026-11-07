@@ -36,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, PlainTextResponse  # noqa: E402
 from fastapi.exception_handlers import http_exception_handler  # noqa: E402
+from fastapi.encoders import jsonable_encoder  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 
 from ..security import get_jwt_handler, get_rbac_manager  # noqa: E402
@@ -109,6 +111,63 @@ def _origin_hostname(origin: str) -> str:
     if parsed.scheme not in ("http", "https"):
         return ""
     return (parsed.hostname or "").lower()
+
+
+def canonical_origin(origin: str) -> str:
+    """把 Origin 规范成 ``scheme://host:port``（缺省端口显式化）；非法返回空串。
+
+    Origin 校验必须按**完整来源**精确比对：协议、主机、端口任一不同都算
+    跨站。只比主机名会让 ``http://127.0.0.1:9999``、``https://127.0.0.1``
+    这类"同主机"来源绕过写方法守卫，等于没有校验。
+    """
+    from urllib.parse import urlsplit
+
+    raw = (origin or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        return ""
+    if scheme not in ("http", "https") or not host:
+        return ""
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    if ":" in host:  # IPv6 字面量在拼接时还原方括号
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port}"
+
+
+def development_loopback_origins() -> list:
+    """开发态**显式**列出的回环 Origin（精确到端口；生产环境不注入）。
+
+    精确匹配意味着端口必须逐个列出：``http://127.0.0.1:9999`` 不在名单里，
+    写请求就是 403。默认端口（80/443）同样要显式写进名单才会放行。
+    """
+    http_ports: list = []
+    for candidate in (
+        (os.environ.get("PORT") or "").strip(),
+        (os.environ.get("LIUHAO_API_PORT") or "").strip(),
+        "8080",
+        "3000",
+        "5173",
+    ):
+        if candidate and candidate not in http_ports:
+            http_ports.append(candidate)
+    tls_ports: list = []
+    for candidate in ((os.environ.get("LIUHAO_TLS_PORT") or "").strip(), "8443"):
+        if candidate and candidate not in tls_ports:
+            tls_ports.append(candidate)
+
+    origins: list = []
+    for scheme, ports in (("http", http_ports), ("https", tls_ports)):
+        for port in ports:
+            for host in ("127.0.0.1", "localhost", "[::1]"):
+                origins.append(f"{scheme}://{host}:{port}")
+    return origins
 
 
 def _lan_ipv4_addresses() -> list:
@@ -357,17 +416,22 @@ class HostGuardMiddleware:
     1) **Host**：只放行白名单里的主机名（去端口、大小写不敏感、支持 IPv6）。
        陌生 Host 返回 400。这是 DNS rebinding 的第一道闸：恶意域名解析到
        127.0.0.1 后，浏览器发来的请求就是 ``Host: evil.example.com``。
-    2) **Origin**：写方法若带 ``Origin`` 且不在白名单，直接 403 并写安全
-       日志。不能只靠 CORS —— CORS 只限制"浏览器能不能读到响应"，一个被
-       放行的简单请求其副作用在服务端已经发生（CSRF 的经典盲区）。
+    2) **Origin**：写方法若带 ``Origin`` 且与白名单**完整来源**（scheme +
+       host + port）不完全一致，直接 403 并写安全日志。**不按主机名回落**：
+       IP 字面量或同主机不同端口/协议都不是同源。不能只靠 CORS —— CORS 只
+       限制"浏览器能不能读到响应"，一个被放行的简单请求其副作用在服务端
+       已经发生（CSRF 的经典盲区）。
     """
 
     def __init__(self, app, allowed_hosts, allowed_origins=(), allow_ip_literals=False):
         self.app = app
         self.allowed_hosts = {str(h).lower() for h in allowed_hosts if h}
-        self.allowed_origins = {
-            str(o).strip().lower().rstrip("/") for o in allowed_origins if o
-        }
+        # 只保留**完整** Origin；裸主机名/IP/``*`` 不会被当成来源白名单。
+        self.allowed_origins = set()
+        for item in allowed_origins or ():
+            value = canonical_origin(str(item))
+            if value:
+                self.allowed_origins.add(value)
         self.allow_ip_literals = bool(allow_ip_literals)
 
     def _host_allowed(self, host: str) -> bool:
@@ -384,10 +448,9 @@ class HostGuardMiddleware:
             return False
 
     def _origin_allowed(self, origin: str) -> bool:
-        value = (origin or "").strip().lower().rstrip("/")
-        if value and value in self.allowed_origins:
-            return True
-        return self._host_allowed(_origin_hostname(value))
+        """只做完整来源精确匹配；主机名命中白名单**不足以**放行。"""
+        value = canonical_origin(origin)
+        return bool(value) and value in self.allowed_origins
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -963,6 +1026,51 @@ def describe_exception(exc: BaseException, limit: int = 300) -> str:
     return f"{type(exc).__name__}: {text}"
 
 
+#: 422 响应里绝不回显原值的字段（口令、恢复码、口令短语、令牌、凭据包）。
+_SENSITIVE_VALIDATION_FIELDS = frozenset({
+    "password",
+    "secret",
+    "recovery_code",
+    "passphrase",
+    "code",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "authorization",
+    "credential",
+    "bundle",
+})
+
+
+def public_validation_errors(errors) -> list:
+    """把 Pydantic 校验错误脱敏后再回给客户端。
+
+    Pydantic 默认把 ``input`` 原样带出：短口令会以
+    ``{"loc": ["body","password"], "input": "S3cret"}`` 直接回显。敏感字段
+    （口令 / 恢复码 / 口令短语 / 令牌 / 凭据包）以及整个请求体一律不返回
+    ``input``/``ctx``；其余字段保持默认形状，便于前端定位。
+    """
+    cleaned = []
+    for err in errors or ():
+        loc = list(err.get("loc") or ())
+        names = [str(part).lower() for part in loc]
+        item = {"loc": loc, "msg": err.get("msg"), "type": err.get("type")}
+        exposes_secret = (
+            not names
+            # ``loc == ["body"]`` 时 input 是整个请求体，可能同时含口令。
+            or (names[0] in ("body", "json") and len(names) <= 1)
+            or any(part in _SENSITIVE_VALIDATION_FIELDS for part in names)
+        )
+        if not exposes_secret:
+            if "input" in err:
+                item["input"] = err["input"]
+            if "ctx" in err:
+                item["ctx"] = err["ctx"]
+        cleaned.append(item)
+    return cleaned
+
+
 def get_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -1079,10 +1187,14 @@ def get_app() -> FastAPI:
 
     # Host 白名单 + 写方法 Origin 校验（最外层安全闸，见类文档）。
     # 不论 CORS 是否启用都必须挂：两者保护的不是同一件事。
+    # 回环来源只在开发态**显式**加入（精确到端口）；生产只认配置里的域名。
+    guard_origins = list(cors["allow_origins"])
+    if not production:
+        guard_origins.extend(development_loopback_origins())
     app.add_middleware(
         HostGuardMiddleware,
         allowed_hosts=runtime["trusted_hosts"],
-        allowed_origins=cors["allow_origins"],
+        allowed_origins=guard_origins,
         allow_ip_literals=runtime["host_guard_allow_ip_literals"],
     )
     logger.info(
@@ -1178,6 +1290,19 @@ def get_app() -> FastAPI:
                 headers=getattr(exc, "headers", None),
             )
         return await http_exception_handler(request, exc)
+
+    # 统一 422：FastAPI 默认处理器会把 ``input`` 原样回显（含口令/恢复码）。
+    # 这里改成脱敏后的形状，敏感字段只保留 loc/msg/type。
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        return JSONResponse(
+            status_code=422,
+            content=jsonable_encoder(
+                {"detail": public_validation_errors(exc.errors())}
+            ),
+        )
 
     # 兜底 500 的文案必须是**可行动**的：说清哪里坏了 + 怎么查 + 怎么办。
     # 此前这里是 "An unexpected error occurred" —— 与 "Internal Server Error"

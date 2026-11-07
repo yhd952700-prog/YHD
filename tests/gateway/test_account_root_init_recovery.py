@@ -125,11 +125,13 @@ def test_legacy_half_initialized_root_is_recoverable(env):
         assert config["initialization"]["principal"] == "alice"
         assert "初始化未完成" in config["message"]
 
-        # 用别的名字提交不会悄悄接管该账号，而是明确告诉该用哪个名称。
+        # 用别的名字提交不会悄悄接管该账号；正文**不能**回显根账号名，
+        # 否则匿名者拿到名字就能借补全路径接管。
         wrong = _register(client, principal="bobby")
         assert wrong.status_code == 409, wrong.text
         assert wrong.json()["code"] == "ACCOUNT_INITIALIZATION_INCOMPLETE"
-        assert wrong.json()["principal"] == "alice"
+        assert "principal" not in wrong.json()
+        assert "alice" not in wrong.text
 
         # 用同一个名称补全初始化：拿到新恢复码、可以登录。
         resumed = _register(client)
@@ -196,3 +198,94 @@ def test_recovery_code_survives_failed_password_rotation(env, monkeypatch):
         # 旧实现的 401 + RECOVERY_CODE_INVALID）。
         assert reused.status_code == 400, reused.text
         assert reused.json()["code"] == "ACCOUNT_RECOVERY_CODE_INVALID"
+
+
+# ==================== 首次初始化只接受本机来源 ====================
+
+REMOTE_CLIENT = ("203.0.113.9", 50000)
+
+
+def test_remote_cannot_claim_uninitialized_instance(env):
+    """未初始化实例：远程注册必须中性拒绝，且不写任何身份/凭据。"""
+    from src.gateway.main import get_app
+    from src.kernels.identity import get_identity_manager
+
+    with TestClient(get_app(), client=REMOTE_CLIENT) as client:
+        refused = _register(client)
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["code"] == "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
+        assert "alice" not in refused.text
+
+        # 抢注没有发生：账号树为空，身份库/凭据库文件一个都没创建。
+        assert get_identity_manager().account_root() is None
+        assert not Path(env["LIUHAO_HUMAN_IDENTITIES_FILE"]).exists()
+        assert not Path(env["LIUHAO_AUTH_SECRETS_FILE"]).exists()
+
+
+def test_remote_cannot_complete_half_initialized_root_or_learn_name(env):
+    """半初始化：远程既不能补全，也看不到根账号名。"""
+    from src.gateway.main import get_app
+    from src.kernels.identity import get_identity_manager
+
+    manager = get_identity_manager()
+    manager.register_root_account("alice", display_name="Alice")
+
+    with TestClient(get_app(), client=REMOTE_CLIENT) as client:
+        for name in ("alice", "bobby"):
+            refused = _register(client, principal=name)
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["code"] == "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
+            assert "alice" not in refused.text
+        # 远程没有补全：根仍然登录不了。
+        assert _login(client, "alice", PASSWORD).status_code == 401
+
+
+def test_remote_cannot_import_account_tree_into_uninitialized_instance(env):
+    """导入凭据包等同于建树：未初始化时远程同样被中性拒绝。"""
+    from src.gateway.main import get_app
+    from src.kernels.identity import get_identity_manager
+
+    with TestClient(get_app(), client=REMOTE_CLIENT) as client:
+        refused = client.post(
+            "/v1/accounts/backup/import",
+            json={"bundle": {}, "passphrase": "passphrase123"},
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["code"] == "ACCOUNT_INITIALIZATION_LOCAL_ONLY"
+        assert get_identity_manager().account_root() is None
+
+
+# ==================== 422 不回显口令/恢复码原文 ====================
+
+
+def test_validation_error_does_not_echo_password(env):
+    """短口令触发 422 时，响应里绝不能出现口令原文。"""
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as client:
+        refused = client.post(
+            "/v1/accounts/register",
+            json={"principal": "alice", "password": "S3cret"},
+        )
+        assert refused.status_code == 422, refused.text
+        assert "S3cret" not in refused.text
+        for error in refused.json()["detail"]:
+            assert "input" not in error
+            assert "ctx" not in error
+
+
+def test_validation_error_does_not_echo_recovery_code(env):
+    """恢复码超长触发 422 时，响应里绝不能出现恢复码原文。"""
+    from src.gateway.main import get_app
+
+    secret = "RECOVERY-SECRET-" * 8
+    with TestClient(get_app()) as client:
+        refused = client.post(
+            "/v1/accounts/recovery/reset",
+            json={"recovery_code": secret, "password": PASSWORD},
+        )
+        assert refused.status_code == 422, refused.text
+        assert "RECOVERY-SECRET" not in refused.text
+        for error in refused.json()["detail"]:
+            assert "input" not in error
+            assert "ctx" not in error

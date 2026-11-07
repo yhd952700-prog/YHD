@@ -148,6 +148,63 @@ def test_same_origin_write_is_not_blocked(client):
     assert resp.status_code != 403
 
 
+def test_ip_origin_with_other_port_is_403(client):
+    """同主机但端口不同不是同源：不能因为主机是 127.0.0.1 就放行。"""
+    resp = client.post(
+        "/v1/auth/login",
+        json={"username": "x", "password": "y"},
+        headers={"Origin": "http://127.0.0.1:9999"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"] == "origin_not_allowed"
+
+
+def test_ip_origin_with_https_scheme_is_403(client):
+    """同主机/同端口但协议不同也不是同源。"""
+    for origin in ("https://127.0.0.1", "https://127.0.0.1:8080"):
+        resp = client.post(
+            "/v1/auth/login",
+            json={"username": "x", "password": "y"},
+            headers={"Origin": origin},
+        )
+        assert resp.status_code == 403, (origin, resp.text)
+
+
+def test_configured_domain_origin_is_exact_match(monkeypatch, tmp_path):
+    """配置的域名按完整来源放行；换端口或换协议必须 403。"""
+    monkeypatch.setenv("LIUHAO_CORS_ALLOW_ORIGINS", "https://console.example.com")
+    monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_BACKEND", "file")
+    monkeypatch.setenv(
+        "LIUHAO_HUMAN_IDENTITIES_FILE", str(tmp_path / "humans.json")
+    )
+    monkeypatch.setenv(
+        "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", "origin-exact-test-key"
+    )
+    import src.kernels.identity as identity_module
+
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+    from src.gateway.main import get_app
+
+    with TestClient(get_app()) as test_client:
+        exact = test_client.post(
+            "/v1/auth/login",
+            json={"username": "x", "password": "y"},
+            headers={"Origin": "https://console.example.com"},
+        )
+        assert exact.status_code != 403, exact.text
+
+        for origin in (
+            "https://console.example.com:8443",
+            "http://console.example.com",
+        ):
+            resp = test_client.post(
+                "/v1/auth/login",
+                json={"username": "x", "password": "y"},
+                headers={"Origin": origin},
+            )
+            assert resp.status_code == 403, (origin, resp.text)
+
+
 def test_read_with_unknown_origin_is_not_blocked(client):
     resp = client.get("/v1/health", headers={"Origin": "http://evil.example.com"})
     assert resp.status_code == 200
