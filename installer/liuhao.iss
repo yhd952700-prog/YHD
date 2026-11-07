@@ -112,7 +112,7 @@ Filename: "{app}\LiuHao.bat"; WorkingDir: "{app}"; Description: "立即启动鎏
 ; 覆盖升级清理：按 packaging/stage_payload.py 的同一份排除清单，删除程序目录
 ; config/ 下“新版已不随包”的旧文件（production.yaml 等）。用 payload 自带运行时
 ; 执行，静默等待完成；失败不阻断安装（最坏情况只是残留一个已排除文件）。
-Filename: "{app}\runtime\python.exe"; Parameters: """{app}\scripts\purge_installed_config.py"" --root ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "PurgeExcludedConfig"
+Filename: "{app}\runtime\python.exe"; Parameters: """{app}\scripts\purge_installed_config.py"" --root ""{app}"""; Flags: runhidden waituntilterminated
 
 [UninstallDelete]
 ; 旧便携版在程序目录里留下的运行目录：安装版已在首次启动时搬走内容，
