@@ -68,6 +68,7 @@ CONFIG_EXCLUDES: Tuple[str, ...] = (
     "docker.env",
     "*.pem",
     "*.key",
+    "*.lock",           # 运行时锁文件（如 auth_secrets.json.lock），不进包
 )
 
 #: 允许"当前 checkout 里没有可匹配对象"的防御性条目：它们保护的是运行时
@@ -75,7 +76,7 @@ CONFIG_EXCLUDES: Tuple[str, ...] = (
 #: 匹配 ``config/`` 里的真实文件/目录，否则视为失效（见
 #: ``tests/test_stage_payload_config_excludes.py``）。
 CONFIG_EXCLUDES_DEFENSIVE = frozenset(
-    {"auth_secrets.json", "human_identities.json", "*.pem", "*.key"}
+    {"auth_secrets.json", "human_identities.json", "*.pem", "*.key", "*.lock"}
 )
 
 #: 仓库根需要随包的文件（roster 从包根读取；内核顶层模块被 src 直接 import）。
