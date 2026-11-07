@@ -211,6 +211,17 @@ def render_table(items: Iterable[Distribution]) -> str:
     return "\n".join(lines)
 
 
+def _normalize(name: str) -> str:
+    """PEP 503 名称归一：大小写不敏感，``-``/``_``/``.`` 等价。
+
+    METADATA 里的 ``Name`` 与 requirements.txt 的写法并不总是一致
+    （``pydantic_core`` vs ``pydantic-core``、``docstring_parser`` vs
+    ``docstring-parser``）。不归一会把已锁定的包误报成“未在 requirements.txt
+    单列”，清单看起来就像又漂了一遍。
+    """
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
 def _requirements_pins() -> Dict[str, str]:
     pins: Dict[str, str] = {}
     if not REQUIREMENTS_FILE.is_file():
@@ -222,7 +233,7 @@ def _requirements_pins() -> Dict[str, str]:
         name, version = line.split("==", 1)
         # ``pywin32==311 ; sys_platform == 'win32'`` —— 环境标记不属于版本号。
         version = version.split(";", 1)[0].strip()
-        pins[name.strip().lower()] = version
+        pins[_normalize(name)] = version
     return pins
 
 
@@ -230,11 +241,12 @@ def render_version_note(items: List[Distribution]) -> str:
     """第 5 节第 7 条：requirements.txt 与随包实装版本的差异（现算）。"""
     pins = _requirements_pins()
     mismatches = [
-        f"{dist.name}（锁 {pins[dist.name.lower()]} / 实装 {dist.version}）"
+        f"{dist.name}（锁 {pins[_normalize(dist.name)]} / 实装 {dist.version}）"
         for dist in items
-        if dist.name.lower() in pins and pins[dist.name.lower()] != dist.version
+        if _normalize(dist.name) in pins
+        and pins[_normalize(dist.name)] != dist.version
     ]
-    unpinned = [dist.name for dist in items if dist.name.lower() not in pins]
+    unpinned = [dist.name for dist in items if _normalize(dist.name) not in pins]
     if not mismatches:
         note = "requirements.txt 与随包实装版本一致。"
     else:
