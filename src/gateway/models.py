@@ -41,6 +41,7 @@ from ..ai.model_config import (
     is_masked_placeholder,
     vendor_for,
 )
+from ..ai.model_discovery import fetch_model_list
 from ..ai.providers import ProviderFactory, provider_from_config
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,16 @@ class TestPayload(BaseModel):
     )
 
 
+class DiscoverPayload(BaseModel):
+    provider: str = Field(..., description="provider 类型")
+    base_url: Optional[str] = Field(None, max_length=512)
+    api_key: Optional[str] = Field(None, max_length=512)
+    timeout: float = Field(10.0, ge=1.0, le=60.0)
+    model_id: Optional[str] = Field(
+        None, description="已保存配置的 id：复用它保存的端点与密钥（表单可只留空 Key）"
+    )
+
+
 def _store():
     return get_model_config_store()
 
@@ -216,21 +227,25 @@ def _validate_base_url(
 
     * only ``http``/``https``;
     * freshly supplied public targets must resolve to public addresses;
-    * the one narrow exception is the **Ollama provider** pointed at the local
-      Ollama service (including its OpenAI-compatible ``/v1`` endpoint): users
-      may wire a model to their own machine without weakening SSRF protection
-      for any other private address.
+    * **loopback is always allowed, for every provider, on any port**:
+      ``127.0.0.0/8`` / ``::1`` / ``localhost`` is where local model servers
+      live (LM Studio 1234, vLLM 8000, llama.cpp 8080, Ollama 11434) and it
+      cannot reach the internal network;
+    * the remaining private ranges (RFC1918, link-local incl.
+      ``169.254.169.254``, reserved/multicast/unspecified) stay rejected.
 
-    私网放行必须同时满足 ``provider == "ollama"``：``OLLAMA_BASE_URL`` 是给
+    私网放行只额外给 ``provider == "ollama"``：``OLLAMA_BASE_URL`` 是给
     Ollama 服务本身的配置，不能让 ``provider=openai/deepseek`` 借它把
-    ``base_url`` 指向内网（那等于给所有 provider 开了私网白名单）。
+    ``base_url`` 指向局域网（那等于给所有 provider 开了私网白名单）。
     """
     value = (raw or "").strip()
     if not value:
         return ""
     is_ollama = (provider or "").strip().lower() == "ollama"
     return _assert_url_allowed(
-        value, allow_private=is_ollama and _is_local_ollama(value)
+        value,
+        allow_private=is_ollama and _is_local_ollama(value),
+        allow_loopback=True,
     )
 
 
@@ -627,6 +642,12 @@ def _classify_error(exc: BaseException) -> str:
     """
     name = type(exc).__name__.lower()
     message = str(exc).lower()
+    # 上游 HTTP 错误在 provider 层已脱敏成中性文案，原文里的
+    # "insufficient_quota"/"revoked" 不复存在；分类必须用脱敏前记录的机器信号，
+    # 否则"额度耗尽"会退化成 rate_limited、"Key 被吊销"会退化成 invalid_key。
+    kind = getattr(exc, "upstream_kind", None)
+    if isinstance(kind, str) and kind in _PROBE_HINTS:
+        return kind
     if "timeout" in name or "timed out" in message or "timeout" in message:
         return "timeout"
     # 各 SDK 的连接失败异常名并不统一：``openai`` 抛 ``APIConnectionError``
@@ -845,17 +866,23 @@ _PRIVATE_IP_FLAGS = (
 )
 
 
-def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
+def _assert_url_allowed(
+    raw: str, *, allow_private: bool, allow_loopback: bool = False
+) -> str:
     """校验待探测的 ``base_url``，堵住管理员 SSRF 面。
 
     * 只接受 ``http`` / ``https``：``file://`` / ``gopher://`` 等一律 400；
     * 调用方**现填**的地址必须是公网可达主机 —— 解析后任一地址落在私网/
-      回环/链路本地/保留段即 400（否则管理员端点可被用来探测内网与元数据
+      链路本地/保留段即 400（否则管理员端点可被用来探测内网与元数据
       服务，例如 ``169.254.169.254``）。
 
+    ``allow_loopback=True`` 时跳过回环判定（``127.0.0.0/8``、``::1``、
+    ``localhost``，端口不限）：本地模型服务都在回环上，且回环到不了内网。
+    链路本地/元数据地址不受此开关影响，永远拒绝。
+
     ``allow_private=True`` 只用于**已保存配置**里的地址，或与已保存配置逐字
-    相同的地址：它们由管理员事先落盘批准（本机 Ollama ``127.0.0.1`` 就是
-    正常用法），不是本次请求凭空构造的探测目标。
+    相同的地址：它们由管理员事先落盘批准（``OLLAMA_BASE_URL`` 指向的局域网
+    Ollama 就是正常用法），不是本次请求凭空构造的探测目标。
     """
     value = (raw or "").strip()
     if not value:
@@ -885,6 +912,8 @@ def _assert_url_allowed(raw: str, *, allow_private: bool) -> str:
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
             raise HTTPException(status_code=400, detail=f"base_url 主机解析结果异常：{host}")
+        if allow_loopback and address.is_loopback:
+            continue
         if any(getattr(address, flag) for flag in _PRIVATE_IP_FLAGS):
             raise HTTPException(
                 status_code=400,
@@ -973,3 +1002,47 @@ def test_saved_model(
     )
     cfg["timeout"] = min(float(cfg.get("timeout") or 30.0), 20.0)
     return _probe(cfg)
+
+
+@router.post("/models/discover")
+def discover_models(
+    payload: DiscoverPayload, manager=Depends(require_model_manager)
+) -> Dict[str, Any]:
+    """用当前端点与 Key 拉一次上游模型列表，让用户点选而不是手打模型名。
+
+    Key 与已保存配置的复用规则同「测试连接」：表单留空时回落到已保存的
+    真实密钥（回传的掩码不算新值）。失败不阻断流程，响应里 ``manual=True``
+    表示"仍可直接手填模型名"。
+    """
+    provider = (payload.provider or "").strip().lower()
+    if provider not in ProviderFactory._providers:
+        raise HTTPException(status_code=400, detail=f"不支持的 provider 类型：{provider}")
+
+    stored: Dict[str, Any] = {}
+    if payload.model_id:
+        scope = key_scope_for(principal=_principal(manager))
+        stored = _run_guarded(
+            _store().resolve,
+            payload.model_id,
+            visible_to=scope.visible_to,
+            allow_unowned=scope.allow_unowned,
+        ) or {}
+        if not stored:
+            raise HTTPException(
+                status_code=404, detail=f"模型配置不存在或已禁用：{payload.model_id}"
+            )
+
+    api_key = payload.api_key
+    if api_key and is_masked_placeholder(api_key):
+        api_key = None
+    if not api_key:
+        api_key = stored.get("api_key") or ""
+
+    stored_url = stored.get("base_url")
+    caller_url = _validate_base_url(
+        (payload.base_url or "").strip(), provider=provider, stored_url=stored_url
+    )
+    base_url = caller_url or _validate_base_url(
+        stored_url or "", provider=provider, stored_url=stored_url
+    )
+    return fetch_model_list(provider, base_url or None, api_key, timeout=payload.timeout)

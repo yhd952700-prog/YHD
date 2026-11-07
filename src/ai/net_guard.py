@@ -7,8 +7,11 @@
 * 保存时解析到公网 IP，运行时 DNS 变成私网地址（DNS rebinding）。
 
 因此这里提供一个**每次请求前**都可调用的校验，并配合关闭 SDK 的自动重定向：
-任何私网/回环/链路本地/保留地址都拒绝，唯一例外是本机 Ollama（含 ``/v1``
-兼容入口）。异常消息保持中性中文，不携带上游响应体或解析到的内网 IP。
+RFC1918 私网、链路本地（含 ``169.254.169.254``）、保留/组播/未指定地址一律
+拒绝；**回环地址一律放行**（LM Studio 1234、vLLM 8000、llama.cpp 8080、
+Ollama 11434 都跑在回环上，端口不设限）。``OLLAMA_BASE_URL`` 指向的远端
+Ollama 只对 Ollama provider 生效，不作为其他 provider 的例外。
+异常消息保持中性中文，不携带上游响应体或解析到的内网 IP。
 """
 from __future__ import annotations
 
@@ -59,7 +62,10 @@ def is_local_ollama(raw: Optional[str]) -> bool:
 
 
 def assert_safe_runtime_target(
-    base_url: Optional[str], *, context: str = "模型服务"
+    base_url: Optional[str],
+    *,
+    context: str = "模型服务",
+    allow_private_service: bool = False,
 ) -> None:
     """每次真实请求前校验 ``base_url``；不安全时抛 ``RuntimeTargetRejected``。
 
@@ -67,7 +73,13 @@ def assert_safe_runtime_target(
 
     * 是 ``http``/``https``；
     * 不带 URL 内嵌凭据（避免把 Key 拼进 URL 被日志带走）；
-    * 每次重新解析 DNS，任一结果落在私网/回环/链路本地/保留段即拒绝。
+    * 每次重新解析 DNS，任一结果落在私网/链路本地/保留段即拒绝；
+    * 回环地址（``127.0.0.0/8``、``::1``、``localhost``）一律放行，端口不限
+      —— 本地模型服务（LM Studio / vLLM / llama.cpp / Ollama）都住在这里。
+
+    ``allow_private_service=True`` 只给 Ollama provider 用：它允许
+    ``OLLAMA_BASE_URL`` 指向的**这台机器运营者自己配置的** Ollama 服务
+    （可能是局域网里的另一台机器）。其他 provider 不得借它打开私网。
     """
     value = (base_url or "").strip()
     if not value:
@@ -84,7 +96,7 @@ def assert_safe_runtime_target(
     host = parsed.hostname
     if not host:
         raise RuntimeTargetRejected(f"{context}地址缺少合法主机名，已拒绝请求。")
-    if is_local_ollama(value):
+    if allow_private_service and is_local_ollama(value):
         return
     try:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -100,6 +112,9 @@ def assert_safe_runtime_target(
             raise RuntimeTargetRejected(
                 f"{context}地址解析结果异常，已停止请求。"
             ) from None
+        if address.is_loopback:
+            # 回环永远放行：它到不了内网，也不经过任何代理。
+            continue
         if any(getattr(address, flag) for flag in _PRIVATE_IP_FLAGS):
             raise RuntimeTargetRejected(
                 f"{context}地址指向内网/本机，已按安全策略拒绝。"

@@ -254,27 +254,31 @@ class TestCrudAndMasking:
             == "sk-real-secret-123456"
         )
 
-    def test_openai_provider_cannot_reach_local_ollama(self, client, admin_headers):
-        """P2-6 的取舍：私网放行只给 provider=ollama。
+    def test_openai_provider_can_use_loopback_model_server(self, client, admin_headers):
+        """回环例外对每个 provider 生效：LM Studio/vLLM 走 OpenAI 兼容协议。
 
-        即便目标是 ``127.0.0.1:11434``，``provider=openai`` 也按公网规则拒绝；
-        本机 Ollama 仍可用，但要走 ``provider=ollama``（见
-        ``test_local_ollama_target_is_still_allowed``），避免
-        ``OLLAMA_BASE_URL`` 之类的配置把私网白名单扩散到所有 provider。
+        ``127.0.0.0/8`` / ``::1`` / ``localhost`` 到不了内网，端口不限，
+        所以不能再按"provider 必须是 ollama"来挡。
         """
-        created = client.post(
-            "/v1/models",
-            json=_payload(
-                name="ollama-openai-compat",
-                provider="openai",
-                model="qwen2.5:3b",
-                base_url="http://127.0.0.1:11434/v1",
-                api_key="ollama",
-            ),
-            headers=admin_headers,
-        )
-        assert created.status_code == 400, created.text
-        assert "SSRF" in created.json()["detail"]
+        for name, base_url in (
+            ("lmstudio", "http://127.0.0.1:1234/v1"),
+            ("vllm", "http://[::1]:8080/v1"),
+            ("localai", "http://localhost:8080/v1"),
+        ):
+            created = client.post(
+                "/v1/models",
+                json=_payload(
+                    name=f"loopback-{name}",
+                    provider="openai",
+                    model="qwen2.5:3b",
+                    base_url=base_url,
+                    api_key="sk-local",
+                ),
+                headers=admin_headers,
+            )
+            # 保存不做连通性探测，因此只可能是校验失败；这里必须 200。
+            assert created.status_code == 200, created.text
+            assert created.json()["base_url"] == base_url
 
 
 class TestPresets:
@@ -301,8 +305,8 @@ class TestConnectionProbe:
         ).json()
         assert result["ok"] is True
 
-    def test_loopback_base_url_is_rejected(self, client, admin_headers):
-        """SSRF 防护：调用方现填的回环/私网地址在探测前就被 400 拒绝。"""
+    def test_loopback_base_url_passes_the_policy_gate(self, client, admin_headers):
+        """回环地址不再按 SSRF 拒绝：探测如实返回"连不上"，而不是 400。"""
         result = client.post(
             "/v1/models/test",
             json={
@@ -313,8 +317,9 @@ class TestConnectionProbe:
             },
             headers=admin_headers,
         )
-        assert result.status_code == 400, result.text
-        assert "SSRF" in result.json()["detail"]
+        assert result.status_code == 200, result.text
+        assert result.json()["ok"] is False
+        assert result.json()["reason"] in ("unreachable", "timeout")
 
     def test_non_http_scheme_is_rejected(self, client, admin_headers):
         result = client.post(
@@ -456,7 +461,7 @@ class TestConnectionProbe:
         assert cfg["base_url"] == "http://127.0.0.1:11434"
 
     def test_private_url_not_matching_saved_config_is_still_rejected(self, monkeypatch):
-        """同一已保存配置，但地址被改成另一个内网端口 -> 仍是 SSRF，拒绝。"""
+        """同一已保存配置，但地址被改成另一台内网机器 -> 仍是 SSRF，拒绝。"""
         from fastapi import HTTPException
 
         from src.gateway import models as models_mod
@@ -481,7 +486,7 @@ class TestConnectionProbe:
                     provider="ollama",
                     model="qwen2.5:3b",
                     model_id="local-ollama",
-                    base_url="http://127.0.0.1:6379",
+                    base_url="http://10.0.0.5:11434",
                     timeout=2,
                 )
             )
@@ -515,3 +520,280 @@ class TestConnectionProbe:
         assert "HTTP 401" not in result["detail"]
         assert "Unauthorized" not in result["detail"]
         assert "sk-leaky-123456" not in json.dumps(result)
+
+
+class TestBaseUrlTargetPolicy:
+    """回环全放行（端口不限）；RFC1918/链路本地/元数据仍拒绝。"""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://127.0.0.1:1234/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:8080/v1",
+            "http://[::1]:8080/v1",
+        ],
+    )
+    def test_loopback_allowed_for_any_provider(self, base_url):
+        from src.gateway.models import _validate_base_url
+
+        for provider in ("openai", "deepseek", "anthropic", "google", "ollama"):
+            assert _validate_base_url(base_url, provider=provider) == base_url
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://192.168.1.10:1234/v1",
+            "http://10.0.0.5:11434/v1",
+            "http://172.16.3.4:8000/v1",
+            "http://169.254.169.254/latest",
+            "http://0.0.0.0:1234/v1",
+        ],
+    )
+    def test_private_and_metadata_targets_still_rejected(self, base_url):
+        from fastapi import HTTPException
+
+        from src.gateway.models import _validate_base_url
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_base_url(base_url, provider="openai")
+        assert exc_info.value.status_code == 400
+
+    def test_ollama_env_still_only_scoped_to_ollama(self, monkeypatch):
+        """``OLLAMA_BASE_URL`` 指向的局域网地址只对 ollama 生效。"""
+        from fastapi import HTTPException
+
+        from src.gateway.models import _validate_base_url
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://10.0.0.5:11434")
+        assert (
+            _validate_base_url("http://10.0.0.5:11434", provider="ollama")
+            == "http://10.0.0.5:11434"
+        )
+        for provider in ("openai", "deepseek", "anthropic"):
+            with pytest.raises(HTTPException):
+                _validate_base_url("http://10.0.0.5:11434", provider=provider)
+
+
+class _FakeUpstreamResponse:
+    def __init__(self, status_code: int, payload=None, text: str = ""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text or json.dumps(payload or {})
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+class TestModelDiscovery:
+    """「填 Key 后直接拉可用模型列表」：成功可点选，失败仍可手填。"""
+
+    def _patch_upstream(self, monkeypatch, response):
+        import src.ai.model_discovery as discovery
+
+        captured: dict = {}
+
+        def _fake_get(url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return response
+
+        monkeypatch.setattr(discovery.requests, "get", _fake_get)
+        # 目标校验由 TestBaseUrlTargetPolicy 单独覆盖；这里避免测试依赖外网 DNS。
+        monkeypatch.setattr(discovery, "assert_safe_runtime_target", lambda *a, **k: None)
+        return captured
+
+    def test_openai_compatible_lists_models(self, client, admin_headers, monkeypatch):
+        captured = self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(
+                200, {"object": "list", "data": [{"id": "qwen2.5:3b"}, {"id": "llama3.1:8b"}]}
+            ),
+        )
+        response = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "sk-local-123456",
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ok"] is True
+        assert body["models"] == ["qwen2.5:3b", "llama3.1:8b"]
+        assert captured["url"] == "http://127.0.0.1:1234/v1/models"
+        assert captured["allow_redirects"] is False
+        assert captured["headers"]["Authorization"] == "Bearer sk-local-123456"
+
+    def test_ollama_uses_api_tags(self, client, admin_headers, monkeypatch):
+        captured = self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(200, {"models": [{"name": "qwen2.5:3b"}, {"name": "llava:7b"}]}),
+        )
+        response = client.post(
+            "/v1/models/discover",
+            json={"provider": "ollama", "base_url": "http://127.0.0.1:11434"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["models"] == ["qwen2.5:3b", "llava:7b"]
+        assert captured["url"] == "http://127.0.0.1:11434/api/tags"
+
+    def test_anthropic_preset_url_is_not_doubled(self, client, admin_headers, monkeypatch):
+        """Anthropic 预设端点自带 ``/v1``：不能拼成 ``/v1/v1/models``。"""
+        captured = self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(
+                200, {"data": [{"id": "claude-3-5-sonnet-latest", "type": "model"}]}
+            ),
+        )
+        body = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com/v1",
+                "api_key": "sk-ant-123456",
+            },
+            headers=admin_headers,
+        ).json()
+        assert body["ok"] is True, body
+        assert body["models"] == ["claude-3-5-sonnet-latest"]
+        assert captured["url"] == "https://api.anthropic.com/v1/models"
+        assert captured["headers"]["x-api-key"] == "sk-ant-123456"
+        assert "anthropic-version" in captured["headers"]
+
+    def test_gemini_strips_models_prefix(self, client, admin_headers, monkeypatch):
+        self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(
+                200,
+                {
+                    "models": [
+                        {"name": "models/gemini-2.0-flash", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                    ]
+                },
+            ),
+        )
+        response = client.post(
+            "/v1/models/discover",
+            json={"provider": "google", "api_key": "gm-key-123456"},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["models"] == ["gemini-2.0-flash"]
+
+    def test_invalid_key_is_actionable_and_still_manual(self, client, admin_headers, monkeypatch):
+        self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(
+                401, {"error": {"message": "Incorrect API key provided", "code": "invalid_api_key"}}
+            ),
+        )
+        body = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "sk-bad-123456",
+            },
+            headers=admin_headers,
+        ).json()
+        assert body["ok"] is False
+        assert body["reason"] == "invalid_key"
+        assert body["manual"] is True
+        assert "手填" in body["detail"]
+        assert "Incorrect API key" not in body["detail"]
+
+    def test_unsupported_listing_endpoint_still_allows_manual(self, client, admin_headers, monkeypatch):
+        self._patch_upstream(monkeypatch, _FakeUpstreamResponse(404, {"error": "not found"}))
+        body = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "sk-local-123456",
+            },
+            headers=admin_headers,
+        ).json()
+        assert body["ok"] is False
+        assert body["reason"] == "unsupported"
+        assert body["manual"] is True
+        assert "手填" in body["detail"]
+
+    def test_redirect_is_not_followed(self, client, admin_headers, monkeypatch):
+        captured = self._patch_upstream(
+            monkeypatch,
+            _FakeUpstreamResponse(302, {"error": "moved"}, text="Found"),
+        )
+        body = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "sk-local-123456",
+            },
+            headers=admin_headers,
+        ).json()
+        assert body["ok"] is False
+        assert body["reason"] == "redirect"
+        assert captured["allow_redirects"] is False
+
+    def test_unreachable_endpoint_is_reported(self, client, admin_headers, monkeypatch):
+        import requests as requests_mod
+
+        import src.ai.model_discovery as discovery
+
+        def _boom(url, **kwargs):
+            raise requests_mod.exceptions.ConnectionError("refused")
+
+        monkeypatch.setattr(discovery.requests, "get", _boom)
+        body = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "sk-local-123456",
+            },
+            headers=admin_headers,
+        ).json()
+        assert body["ok"] is False
+        assert body["reason"] == "unreachable"
+        assert "手填" in body["detail"]
+
+    def test_private_target_is_rejected_before_request(self, client, admin_headers, monkeypatch):
+        import src.ai.model_discovery as discovery
+
+        called = {"n": 0}
+
+        def _fake_get(url, **kwargs):
+            called["n"] += 1
+            return _FakeUpstreamResponse(200, {"data": [{"id": "x"}]})
+
+        monkeypatch.setattr(discovery.requests, "get", _fake_get)
+        response = client.post(
+            "/v1/models/discover",
+            json={
+                "provider": "openai",
+                "base_url": "http://10.0.0.5:11434/v1",
+                "api_key": "sk-local-123456",
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == 400, response.text
+        assert called["n"] == 0
+
+    def test_requires_write_permission(self, client, reader_headers):
+        response = client.post(
+            "/v1/models/discover",
+            json={"provider": "openai", "base_url": "http://127.0.0.1:1234/v1"},
+            headers=reader_headers,
+        )
+        assert response.status_code == 403, response.text
+
+

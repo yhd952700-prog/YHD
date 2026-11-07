@@ -23,16 +23,57 @@ from .observability import observe
 logger = logging.getLogger("liuhao.ai.providers")
 
 
+#: 机器信号：判定"额度耗尽"要看上游错误码/关键词，而给用户看的文案必须是中性
+#: 中文。两者必须分开算——先按原文分类，再丢弃原文，只把标签带出去。
+_UPSTREAM_QUOTA_TOKENS = (
+    "insufficient_quota",
+    "insufficient balance",
+    "insufficient_balance",
+    "quota exceeded",
+    "exceeded your current quota",
+    "billing_hard_limit",
+    "out of credits",
+    "credit balance",
+    "余额不足",
+    "配额",
+)
+
+_UPSTREAM_REVOKED_TOKENS = (
+    "revoked",
+    "deactivated",
+    "suspended",
+    "api key disabled",
+    "key disabled",
+    "key expired",
+    "已吊销",
+    "已停用",
+    "已被禁用",
+)
+
+
 class ProviderHTTPError(RuntimeError):
-    """上游 HTTP 失败：消息中性、可展示；状态码单独保留给分类器。
+    """上游 HTTP 失败：消息中性、可展示；机器信号单独保留给分类器。
 
     上游响应体可能包含内部地址、账号信息或英文堆栈，只写服务端日志，
     绝不拼进异常消息（异常消息会进入诊断与部分用户可见路径）。
+
+    ``upstream_kind`` 是**脱敏之前**按状态码 + 上游错误码/关键词算好的分类
+    （``quota_exhausted`` / ``key_revoked`` / ``invalid_key`` / ``rate_limited``
+    / ``model_not_found`` / ``upstream_error``）。消费方必须优先读它：
+    中性文案里已经没有 ``insufficient_quota``、``revoked`` 这些词，
+    只看文案会把"去充值"错报成"请稍后重试"。
     """
 
-    def __init__(self, message: str, *, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        upstream_kind: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.upstream_kind = upstream_kind
 
 
 def _neutral_http_message(label: str, status: Optional[int]) -> str:
@@ -43,17 +84,74 @@ def _neutral_http_message(label: str, status: Optional[int]) -> str:
     return f"{label}请求失败，详情已记录到服务端日志。"
 
 
+def _upstream_error_text(exc: BaseException) -> str:
+    """取上游错误原文，**只用于分类**，绝不进入异常消息或日志正文。"""
+    parts: list[str] = []
+    body = getattr(exc, "body", None)
+    if isinstance(body, (dict, list, str)):
+        parts.append(str(body))
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        parts.append(text)
+    message = getattr(exc, "message", None)
+    if isinstance(message, str):
+        parts.append(message)
+    parts.append(str(exc))
+    return " ".join(parts).lower()
+
+
+def classify_upstream_error(
+    exc: Optional[BaseException] = None,
+    *,
+    status: Optional[int] = None,
+    text: Optional[str] = None,
+) -> str:
+    """在脱敏前给上游 HTTP 失败打机器可读标签。
+
+    ``quota_exhausted`` 与 ``rate_limited`` 在多数厂商都返回 429，
+    ``key_revoked`` 与 ``invalid_key`` 都返回 401/403 —— 只能读原文区分。
+    """
+    code = status
+    if not isinstance(code, int) and exc is not None:
+        raw = getattr(exc, "status_code", None)
+        if not isinstance(raw, int):
+            raw = getattr(exc, "status", None)
+        code = raw if isinstance(raw, int) else None
+    body = (text or "")
+    if exc is not None:
+        body = f"{body} {_upstream_error_text(exc)}"
+    body = body.lower()
+    if any(token in body for token in _UPSTREAM_QUOTA_TOKENS):
+        return "quota_exhausted"
+    if code == 402:
+        return "quota_exhausted"
+    if code in (401, 403):
+        if any(token in body for token in _UPSTREAM_REVOKED_TOKENS):
+            return "key_revoked"
+        return "invalid_key"
+    if code == 404:
+        return "model_not_found"
+    if code == 429:
+        return "rate_limited"
+    return "upstream_error"
+
+
 def _neutralize_http_error(exc: BaseException, label: str = "模型服务") -> None:
     """把 SDK 的 HTTP 错误消息换成中性文案；非 HTTP 错误原样返回给调用方。
 
-    上游响应体可能包含内网地址/账号/英文堆栈，只按截断后写日志，不进异常消息。
+    分类在脱敏之前完成：上游原文可能含密钥/内网地址，所以只保留
+    ``upstream_kind`` 与状态码，其余丢弃（不进异常消息、不进日志正文）。
     """
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
         return
-    logger.info("%s upstream HTTP failure status=%s", label, status)
+    kind = classify_upstream_error(exc, status=status)
+    logger.info("%s upstream HTTP failure status=%s kind=%s", label, status, kind)
     raise ProviderHTTPError(
-        _neutral_http_message(label, status), status_code=status
+        _neutral_http_message(label, status),
+        status_code=status,
+        upstream_kind=kind,
     ) from exc
 
 # 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
@@ -615,7 +713,9 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
-        assert_safe_runtime_target(base_url, context="Ollama 服务")
+        assert_safe_runtime_target(
+            base_url, context="Ollama 服务", allow_private_service=True
+        )
 
         try:
             # Bypass any HTTP(S) proxy for the (usually localhost) Ollama
@@ -643,6 +743,9 @@ class OllamaProvider(BaseProvider):
             raise ProviderHTTPError(
                 _neutral_http_message("Ollama 服务", response.status_code),
                 status_code=response.status_code,
+                upstream_kind=classify_upstream_error(
+                    status=response.status_code, text=response.text
+                ),
             )
         except ProviderHTTPError:
             raise
@@ -664,7 +767,9 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
-        assert_safe_runtime_target(base_url, context="Ollama 服务")
+        assert_safe_runtime_target(
+            base_url, context="Ollama 服务", allow_private_service=True
+        )
 
         try:
             response = requests.post(
@@ -686,6 +791,9 @@ class OllamaProvider(BaseProvider):
             raise ProviderHTTPError(
                 _neutral_http_message("Ollama 服务", response.status_code),
                 status_code=response.status_code,
+                upstream_kind=classify_upstream_error(
+                    status=response.status_code, text=response.text
+                ),
             )
         except ProviderHTTPError:
             raise
@@ -709,7 +817,9 @@ class OllamaProvider(BaseProvider):
         base_url = kwargs.get("base_url") or self.base_url or os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
         )
-        assert_safe_runtime_target(base_url, context="Ollama 服务")
+        assert_safe_runtime_target(
+            base_url, context="Ollama 服务", allow_private_service=True
+        )
 
         response = requests.post(
             f"{base_url}/api/chat",
@@ -730,6 +840,9 @@ class OllamaProvider(BaseProvider):
                 raise ProviderHTTPError(
                     _neutral_http_message("Ollama 服务", response.status_code),
                     status_code=response.status_code,
+                    upstream_kind=classify_upstream_error(
+                        status=response.status_code, text=response.text
+                    ),
                 )
 
             for line in response.iter_lines():

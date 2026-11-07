@@ -44,6 +44,17 @@ export interface ModelsResponse {
   encryption: { algorithm: string; key_source: string }
 }
 
+/** `POST /v1/models/discover`：拉上游模型列表，失败也给可行动提示。 */
+export interface DiscoverResult {
+  ok: boolean
+  reason: string
+  detail: string
+  models: string[]
+  endpoint?: string
+  /** 恒为 true：列表拉不到时仍允许手填模型名。 */
+  manual?: boolean
+}
+
 /**
  * 服务商预设（`GET /v1/models/presets`）。
  *
@@ -204,6 +215,11 @@ export function ModelManager({ session }: { session: Session }) {
     message: string
     signature: string
   } | null>(null)
+  // 「拉取可用模型」的结果：成功给可点选的模型名，失败给可行动提示。
+  const [modelList, setModelList] = useState<
+    { ok: true; models: string[] } | { ok: false; detail: string } | null
+  >(null)
+  const [discovering, setDiscovering] = useState(false)
 
   const providers = list.data?.supported_providers ?? []
   const busy = saving || rowBusy !== null
@@ -222,10 +238,12 @@ export function ModelManager({ session }: { session: Session }) {
     setForm(EMPTY_FORM)
     setEditingId(null)
     setLastTest(null)
+    setModelList(null)
   }
 
   function applyPreset(preset: ProviderPreset) {
     setForm((prev) => ({ ...prev, ...presetFormPatch(preset) }))
+    setModelList(null)
     setNotice(
       preset.custom
         ? '已切到 OpenAI 兼容模式：请填写你自己的端点地址与模型名。'
@@ -241,6 +259,7 @@ export function ModelManager({ session }: { session: Session }) {
     setNotice(null)
     setProbe({ state: 'idle' })
     setLastTest(null)
+    setModelList(null)
   }
 
   function fail(err: unknown, fallback: string) {
@@ -296,6 +315,44 @@ export function ModelManager({ session }: { session: Session }) {
       fail(err, editingId ? '更新失败' : '添加失败')
     } finally {
       setSaving(false)
+    }
+  }
+
+  /** 用当前端点 + Key 拉一次上游模型列表，点一下就填进「模型名」。 */
+  async function discoverModels() {
+    if (!canWrite || busy || discovering) return
+    if (!form.provider) {
+      setError('请先选择服务商，再拉取可用模型')
+      return
+    }
+    setDiscovering(true)
+    setError(null)
+    setNotice(null)
+    setModelList(null)
+    try {
+      const payload: Record<string, unknown> = {
+        provider: form.provider,
+        base_url: form.baseUrl.trim() || null,
+        timeout: Number(form.timeout) || 10,
+      }
+      if (form.apiKey) payload.api_key = form.apiKey
+      // 编辑态带 model_id：Key 留空时后端用已保存的真实 Key。
+      if (editingId) payload.model_id = editingId
+      const result = await apiFetch<DiscoverResult>('/v1/models/discover', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      if (result.ok) {
+        setModelList({ ok: true, models: result.models })
+        setNotice(`已拉取到 ${result.models.length} 个模型，点一下即可填入模型名。`)
+      } else {
+        // 失败也是"可以继续"的状态：提示里已说明可以手填模型名。
+        setModelList({ ok: false, detail: result.detail })
+      }
+    } catch (err) {
+      fail(err, '拉取模型列表失败，可以直接手填模型名')
+    } finally {
+      setDiscovering(false)
     }
   }
 
@@ -514,6 +571,39 @@ export function ModelManager({ session }: { session: Session }) {
                 按服务商实际名称填写（如 deepseek-chat、qwen2.5:3b、gemini-2.0-flash），
                 不做白名单校验；服务商新增模型后无需改代码。
               </p>
+              <div className="os-model-form-foot">
+                <button
+                  className="os-btn os-btn-ghost"
+                  type="button"
+                  disabled={busy || discovering}
+                  onClick={() => void discoverModels()}
+                >
+                  {discovering ? '拉取中…' : '拉取可用模型'}
+                </button>
+                <span className="os-note">
+                  用当前端点与 Key 调一次上游模型列表（Ollama 走 /api/tags），点模型名即可填入。
+                </span>
+              </div>
+              {modelList?.ok && (
+                <div className="os-model-form-foot" role="list" aria-label="可用模型">
+                  {modelList.models.map((modelName) => (
+                    <button
+                      key={modelName}
+                      className="os-btn os-btn-ghost"
+                      type="button"
+                      role="listitem"
+                      onClick={() => update('model', modelName)}
+                    >
+                      {modelName}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {modelList && !modelList.ok && (
+                <p className="os-note" role="status">
+                  {modelList.detail}
+                </p>
+              )}
             </div>
 
             <div className="os-field os-field-wide">
