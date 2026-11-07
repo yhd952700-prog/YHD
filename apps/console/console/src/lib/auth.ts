@@ -462,6 +462,17 @@ export async function logout(): Promise<void> {
   }
 }
 
+/**
+ * 身份复核没拿到结果时，要不要当成"会话已失效"。
+ *
+ * `refreshIdentity()` 对三种情况都返回 null：本地本来就没有令牌、服务端 401
+ * 后令牌被清掉、网络或服务暂时不可达（令牌还在）。只有**令牌确实消失**才说明
+ * 会话已失效；网络抖动不该把用户踢回登录页，更不该谎称"登录已过期"。
+ */
+export function sessionLossNotice(tokenStillPresent: boolean): 'expired' | null {
+  return tokenStillPresent ? null : 'expired'
+}
+
 /** 用当前令牌向 `/v1/auth/me` 复核身份是否仍有效（可捕获"已被停用"）。 */
 export async function refreshIdentity(): Promise<{
   still_human: boolean

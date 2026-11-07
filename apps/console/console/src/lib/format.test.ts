@@ -21,6 +21,7 @@ import {
   outcomeLabel,
   outcomeTone,
   permissionLabel,
+  permissionTitle,
   relativeTime,
   safeArray,
   safeText,
@@ -185,11 +186,27 @@ describe('实现层标识 → 人话', () => {
     expect(permissionLabel('account:manage_children')).toBe('创建与维护账号')
   })
 
+  test('真实权限串都有中文名，不再原样上屏', () => {
+    expect(permissionLabel('account:audit_read')).toBe('查看审计记录')
+    expect(permissionLabel('account:usage_read')).toBe('查看用量')
+    expect(permissionLabel('model:manage')).toBe('配置模型')
+    expect(permissionLabel('model:use')).toBe('使用模型')
+    expect(permissionLabel('account:key_borrow')).toBe('借用成员密钥')
+    // 授权表的「对应资源」列只拿到冒号后的一段。
+    expect(permissionLabel('manage_children')).toBe('创建与维护账号')
+  })
+
   test('未知英文标识不原样铺给用户', () => {
     // 子账号界面曾直接显示 `account:grant`、`grant_permission` 这类后端串。
     expect(capabilityLabel('some_new_thing')).toBe('其他能力')
-    expect(permissionLabel('unknown:scope')).toBe('其他已授予范围')
+    expect(permissionLabel('unknown:scope')).toBe('未命名权限')
     expect(capabilityLabel(undefined)).toBe('')
     expect(permissionLabel(null)).toBe('')
+  })
+
+  test('permissionTitle 只保留原始机器串，供 title 提示', () => {
+    expect(permissionTitle('account:audit_read')).toBe('account:audit_read')
+    expect(permissionTitle(null)).toBeUndefined()
+    expect(permissionTitle('')).toBeUndefined()
   })
 })

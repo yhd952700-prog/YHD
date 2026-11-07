@@ -279,14 +279,37 @@ export function capabilityLabel(name: unknown): string {
   return /[\u4e00-\u9fa5]/.test(text) ? text : '其他能力'
 }
 
-/** 权限串 → 人话。未知英文权限不原样铺给用户，归入「其他已授予范围」。 */
+/** 权限串 → 人话。未知英文权限不原样铺给用户，归入「未命名权限」，原串只进 title。 */
 const PERMISSION_LABELS: Record<string, string> = {
-  'account:manage_children': '创建与维护账号',
-  'account:grant': '签发放行',
+  // 服务端真实权限串（见 src/kernels/identity/_accounts.py 的 SCOPE_* 常量）。
   'account:read': '查看账号',
+  'account:manage_children': '创建与维护账号',
+  'account:grant': '调整成员权限',
+  'account:audit_read': '查看审计记录',
+  'account:usage_read': '查看用量',
+  'account:key_borrow': '借用成员密钥',
   'account:write': '修改账号',
+  'model:manage': '配置模型',
+  'model:use': '使用模型',
+  'knowledge:read': '读取知识库',
+  'knowledge:write': '写入知识库',
   'memory:read': '读取记忆',
   'memory:write': '写入记忆',
+  // 授权表的「对应动作 / 对应资源」是按冒号拆出来的裸串，这里补齐，避免派生列掉回
+  // 「未命名权限」。
+  account: '账号',
+  model: '模型',
+  knowledge: '知识库',
+  memory: '记忆',
+  manage_children: '创建与维护账号',
+  audit_read: '审计记录',
+  usage_read: '用量',
+  key_borrow: '成员密钥借用',
+  grant: '调整成员权限',
+  read: '读取',
+  write: '写入',
+  manage: '配置',
+  use: '使用',
 }
 
 export function permissionLabel(value: unknown): string {
@@ -295,8 +318,14 @@ export function permissionLabel(value: unknown): string {
   const known = PERMISSION_LABELS[text]
   if (known) return known
   // 带冒号的原始权限串与纯英文标识都属于实现层写法，不直接展示。
-  if (text.includes(':') || /^[A-Za-z_]+$/.test(text)) return '其他已授予范围'
+  if (text.includes(':') || /^[A-Za-z_]+$/.test(text)) return '未命名权限'
   return text
+}
+
+/** title 提示用：保留原始机器串，空值不给 title。 */
+export function permissionTitle(value: unknown): string | undefined {
+  const text = safeText(value).trim()
+  return text || undefined
 }
 
 export function outcomeTone(outcome: string): Tone {

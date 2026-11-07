@@ -33,6 +33,7 @@ import {
   safeText,
 } from '../lib/format'
 import { providerRowSubtitle } from '../lib/honesty'
+import { neutralLayerLabel } from '../lib/layerLabels'
 import {
   partitionProviders,
   providerSummary,
@@ -220,9 +221,9 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                 hubLabel="鎏灏 OS"
                 nodes={data.layers.map((layer) => ({
                   id: layer.id,
-                  label: layer.name,
+                  label: neutralLayerLabel(layer.name),
                   group: layer.band,
-                  groupLabel: friendlyBand(layer.band_label),
+                  groupLabel: neutralLayerLabel(layer.band_label),
                 }))}
               />
               <div className="os-legend">
@@ -232,7 +233,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                     tone="accent"
                     label={
                       <>
-                        {friendlyBand(band.label)}{' '}
+                        {neutralLayerLabel(band.label)}{' '}
                         <span className="os-legend-value">
                           {data.layers.filter((layer) => layer.band === band.key).length}
                         </span>
@@ -318,7 +319,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                     tone="accent"
                     label={
                       <>
-                        {domain.label}{' '}
+                        {neutralLayerLabel(domain.label)}{' '}
                         <span className="os-legend-value">
                           {data.kernels.filter((kernel) => kernel.domain === domain.key).length}
                         </span>
@@ -579,18 +580,6 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
 function chartColor(index: number): string {
   const palette = ['#4d8dff', '#9b6bff', '#2ee6a8', '#ffb74d', '#ff5d6c', '#41c7e0']
   return palette[index % palette.length]
-}
-
-/**
- * 能力阶段名 → 用户能读懂的写法。
- *
- * 「组织与任务」是后端注册表里的阶段名，但"组织"在账号界面里会被读成层级归属。
- * 只改展示层，不动后端数据与品牌文案。
- */
-function friendlyBand(label: string | undefined): string {
-  if (!label) return '未分组'
-  if (label === '组织与任务') return '协作与任务'
-  return label
 }
 
 function Kpi({

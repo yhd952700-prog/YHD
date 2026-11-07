@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react'
 import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contracts'
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
+import { neutralLayerLabel } from '../lib/layerLabels'
 import { BrainMap, NetworkGraph } from '../components/charts'
 import {
   AgentActionButtons,
@@ -77,7 +78,7 @@ export function Roster({ query }: { query: string }) {
                 height={260}
                 nodes={data.layers.map((layer) => ({
                   id: layer.id,
-                  label: layer.name,
+                  label: neutralLayerLabel(layer.name),
                   group: layer.band,
                 }))}
               />
@@ -85,7 +86,7 @@ export function Roster({ query }: { query: string }) {
                 {data.bands.map((band, index) => (
                   <span className="os-legend-item" key={band.key}>
                     <span className="os-dot" style={{ background: colorAt(index) }} />
-                    {band.label}{' '}
+                    {neutralLayerLabel(band.label)}{' '}
                     <span className="os-legend-value">
                       {data.layers.filter((layer) => layer.band === band.key).length}
                     </span>
@@ -112,7 +113,7 @@ export function Roster({ query }: { query: string }) {
                 height={260}
                 regions={data.kernels.map((kernel) => ({
                   id: kernel.id,
-                  label: kernel.name,
+                  label: neutralLayerLabel(kernel.name),
                   group: kernel.domain,
                 }))}
               />
@@ -123,7 +124,7 @@ export function Roster({ query }: { query: string }) {
                     tone="accent"
                     label={
                       <>
-                        {domain.label}{' '}
+                        {neutralLayerLabel(domain.label)}{' '}
                         <span className="os-legend-value">
                           {data.kernels.filter((k) => k.domain === domain.key).length}
                         </span>
@@ -310,13 +311,13 @@ export function Roster({ query }: { query: string }) {
                     <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                     <div className="os-row-main">
                       <div className="os-row-title">
-                        {kernel.name}{' '}
+                        {neutralLayerLabel(kernel.name)}{' '}
                         <span className="os-badge" data-tone="muted">
                           {kernel.id}
                         </span>
                       </div>
                       <div className="os-row-sub">
-                        {kernel.domain_label} · kernel={kernel.kernel}
+                        {neutralLayerLabel(kernel.domain_label)} · kernel={kernel.kernel}
                         {kernel.scope ? ` · ${kernel.scope}` : ''}
                       </div>
                     </div>
@@ -333,13 +334,13 @@ export function Roster({ query }: { query: string }) {
                     <span className="os-dot" style={{ background: 'var(--os-accent-2)' }} />
                     <div className="os-row-main">
                       <div className="os-row-title">
-                        {layer.name}{' '}
+                        {neutralLayerLabel(layer.name)}{' '}
                         <span className="os-badge" data-tone="muted">
                           {layer.id}
                         </span>
                       </div>
                       <div className="os-row-sub">
-                        {layer.band_label} · {layer.phase ?? '—'} ·{' '}
+                        {neutralLayerLabel(layer.band_label)} · {layer.phase ?? '—'} ·{' '}
                         <code>{layer.module ?? '—'}</code>
                       </div>
                     </div>
@@ -434,7 +435,7 @@ export function BusinessCenter({ query }: { query: string }) {
                   {data.bands.map((band, index) => (
                     <span className="os-legend-item" key={band.key}>
                       <span className="os-dot" style={{ background: colorAt(index) }} />
-                      {band.label}{' '}
+                      {neutralLayerLabel(band.label)}{' '}
                       <span className="os-legend-value">
                         {data.layers.filter((layer) => layer.band === band.key).length}
                       </span>
@@ -449,9 +450,9 @@ export function BusinessCenter({ query }: { query: string }) {
                         style={{ background: colorAt(data.bands.findIndex((b) => b.key === layer.band)) }}
                       />
                       <div className="os-row-main">
-                        <div className="os-row-title">{layer.name}</div>
+                        <div className="os-row-title">{neutralLayerLabel(layer.name)}</div>
                         <div className="os-row-sub">
-                          {layer.band_label} · {layer.phase ?? '—'} ·{' '}
+                          {neutralLayerLabel(layer.band_label)} · {layer.phase ?? '—'} ·{' '}
                           <code>{layer.module ?? '—'}</code>
                         </div>
                       </div>

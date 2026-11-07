@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { loadAuthConfig } from './auth'
+import { loadAuthConfig, sessionLossNotice } from './auth'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -85,5 +85,15 @@ describe('登录页读取配置', () => {
     const result = await loadAuthConfig()
     expect(result.error).toBeNull()
     expect(result.config?.login_eligible_humans).toBe(1)
+  })
+})
+
+describe('会话失效时回登录页要说明原因', () => {
+  test('本地令牌已被清掉（401）→ 提示"登录已过期"', () => {
+    expect(sessionLossNotice(false)).toBe('expired')
+  })
+
+  test('令牌还在（网络/服务暂时不可达）→ 不登出、不提示', () => {
+    expect(sessionLossNotice(true)).toBeNull()
   })
 })

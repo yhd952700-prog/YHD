@@ -28,6 +28,7 @@ import {
 } from '../lib/accounts'
 import { Card, Empty, Guard } from '../components/ui'
 import { OneTimeSecret, StubBadge } from '../components/AccountChrome'
+import { permissionLabel, permissionTitle } from '../lib/format'
 
 type Variant = 'root' | 'member'
 
@@ -412,7 +413,16 @@ function MemberRow({
       <td>{active ? '使用中' : member.status}</td>
       {isRoot && <td>{keyAuthorizationLabel(member, true)}</td>}
       <td>
-        <span className="os-hint">{member.permissions.join(' · ') || '（未授予范围）'}</span>
+        <span className="os-hint">
+          {member.permissions.length === 0
+            ? '（未授予范围）'
+            : member.permissions.map((value, index) => (
+                <span key={`${value}-${index}`} title={permissionTitle(value)}>
+                  {index > 0 ? ' · ' : ''}
+                  {permissionLabel(value)}
+                </span>
+              ))}
+        </span>
       </td>
       <td>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

@@ -10,6 +10,7 @@ import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { grantPermissions, loadAccounts, loadRoles, useAccountData } from '../lib/accounts'
 import { Card, Guard } from '../components/ui'
 import { StubBadge } from '../components/AccountChrome'
+import { permissionLabel, permissionTitle } from '../lib/format'
 
 export function PermissionMatrix({
   profile,
@@ -44,7 +45,10 @@ export function PermissionMatrix({
     setNotice(null)
     try {
       await grantPermissions(principal, enabled ? [scope] : [], enabled ? [] : [scope])
-      setNotice({ tone: 'ok', text: `${principal} · ${scope} 已${enabled ? '授予' : '撤销'}` })
+      setNotice({
+        tone: 'ok',
+        text: `${principal} · ${permissionLabel(scope)} 已${enabled ? '授予' : '撤销'}`,
+      })
       accounts.reload()
     } catch (error) {
       setNotice({
@@ -96,7 +100,9 @@ export function PermissionMatrix({
                     <th>成员</th>
                     <th>状态</th>
                     {data.scopes.map((scope) => (
-                      <th key={scope}>{scope}</th>
+                      <th key={scope} title={permissionTitle(scope)}>
+                        {permissionLabel(scope)}
+                      </th>
                     ))}
                   </tr>
                 </thead>
@@ -114,7 +120,7 @@ export function PermissionMatrix({
                             <td key={scope}>
                               <input
                                 type="checkbox"
-                                aria-label={`${member.principal} · ${scope}`}
+                                aria-label={`${member.principal} · ${permissionLabel(scope)}`}
                                 checked={enabled}
                                 disabled={readOnly || busy || self}
                                 title={self ? '自己的范围不可在这里修改' : undefined}

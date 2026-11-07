@@ -35,6 +35,7 @@ import {
   logout as performLogout,
   refreshIdentity,
   saveSession,
+  sessionLossNotice,
 } from './lib/auth'
 import type { Session } from './lib/auth'
 import { useDeviceMode } from './lib/mode'
@@ -276,7 +277,13 @@ function App() {
       const info = await refreshIdentity()
       if (!alive) return
       if (!info) {
-        if (!getSession()) setSession(null)
+        // 令牌已被服务端判无效（401 时 clearSession）——必须明说"需要重新登录"，
+        // 不能静默跳回登录页。网络抖动时令牌还在，不登出、不提示。
+        const notice = sessionLossNotice(Boolean(getSession()))
+        if (notice) {
+          setLoginNotice(notice)
+          setSession(null)
+        }
         return
       }
       if (!info.still_human) {

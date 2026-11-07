@@ -34,7 +34,7 @@ import {
   type PrincipalsResponse,
 } from '../lib/operator'
 import type { AccountProfile } from '../lib/accountCaps'
-import { permissionLabel, principalLabel, safeText } from '../lib/format'
+import { permissionLabel, permissionTitle, principalLabel, safeText } from '../lib/format'
 import { Card, Empty, Guard } from '../components/ui'
 
 /** 状态 -> 徽标色调。active 是正常态，suspended / deactivated 是危险态。 */
@@ -425,16 +425,20 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
                       {shownGrants.map((grant, index) => (
                         <tr key={`${grant.principal_id}-${grant.permission}-${index}`}>
                           <td>{grant.principal}</td>
-                          <td>{grant.permission}</td>
-                          <td>
-                            {grant.derived_action ?? '—'}
+                          <td title={permissionTitle(grant.permission)}>
+                            {permissionLabel(grant.permission)}
+                          </td>
+                          <td title={permissionTitle(grant.derived_action)}>
+                            {grant.derived_action ? permissionLabel(grant.derived_action) : '—'}
                             {grant.derived ? '（派生）' : ''}
                           </td>
-                          <td>
-                            {grant.derived_resource ?? '—'}
+                          <td title={permissionTitle(grant.derived_resource)}>
+                            {grant.derived_resource ? permissionLabel(grant.derived_resource) : '—'}
                             {grant.derived ? '（派生）' : ''}
                           </td>
-                          <td>{grant.scope}</td>
+                          <td title={permissionTitle(grant.scope)}>
+                            {SCOPE_LABELS[grant.scope] ?? '未知'}
+                          </td>
                           <td>{grant.identity_active ? '是' : '否'}</td>
                         </tr>
                       ))}
@@ -534,16 +538,20 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
                   <tbody>
                     {detail.grants.map((grant, index) => (
                       <tr key={`${grant.permission}-${index}`}>
-                        <td>{grant.permission}</td>
-                        <td>
-                          {grant.derived_action ?? '—'}
+                        <td title={permissionTitle(grant.permission)}>
+                          {permissionLabel(grant.permission)}
+                        </td>
+                        <td title={permissionTitle(grant.derived_action)}>
+                          {grant.derived_action ? permissionLabel(grant.derived_action) : '—'}
                           {grant.derived ? '（派生）' : ''}
                         </td>
-                        <td>
-                          {grant.derived_resource ?? '—'}
+                        <td title={permissionTitle(grant.derived_resource)}>
+                          {grant.derived_resource ? permissionLabel(grant.derived_resource) : '—'}
                           {grant.derived ? '（派生）' : ''}
                         </td>
-                        <td>{grant.scope}</td>
+                        <td title={permissionTitle(grant.scope)}>
+                          {SCOPE_LABELS[grant.scope] ?? '未知'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

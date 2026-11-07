@@ -9,6 +9,7 @@ import type { AccountCaps } from '../lib/accountCaps'
 import { loadRoles, useAccountData } from '../lib/accounts'
 import { Card, Guard } from '../components/ui'
 import { StubBadge } from '../components/AccountChrome'
+import { permissionLabel, permissionTitle } from '../lib/format'
 
 export function RoleTemplates({ caps }: { caps: AccountCaps }) {
   const roles = useAccountData(() => loadRoles())
@@ -52,7 +53,16 @@ export function RoleTemplates({ caps }: { caps: AccountCaps }) {
                     <tr key={role.id}>
                       <td>{role.id}</td>
                       <td>
-                        <span className="os-hint">{role.permissions.join(' · ')}</span>
+                        <span className="os-hint">
+                          {role.permissions.length === 0
+                            ? '（未授予范围）'
+                            : role.permissions.map((value, index) => (
+                                <span key={`${value}-${index}`} title={permissionTitle(value)}>
+                                  {index > 0 ? ' · ' : ''}
+                                  {permissionLabel(value)}
+                                </span>
+                              ))}
+                        </span>
                       </td>
                       <td>
                         <span className="os-hint">待开放（暂不支持模板编辑）</span>
