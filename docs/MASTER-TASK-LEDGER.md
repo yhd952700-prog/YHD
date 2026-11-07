@@ -5,8 +5,8 @@
 > [交付清单](DELIVERY-CHECKLIST.md)、[战略优先级矩阵](strategy-priority-matrix.md)）与本表冲突时，
 > **以本表及可复核的实测证据为准**，并应回改对应文档。
 >
-> 快照：2026-11-06 15:10；本表创建时 HEAD = `b618f8ab679802f5f94628e32bcb9ececa6c8717`（分支 `p36`），
-> 当前 HEAD = `5a11baa0`（`p36` 与 `origin/p36` 同点）。
+> 快照：2026-11-06 18:50；本表创建时 HEAD = `b618f8ab679802f5f94628e32bcb9ececa6c8717`（分支 `p36`），
+> **当前冻结 HEAD = `72fd9b17`**（`origin/p36` tip；交付级全量凭证见 E-16）。
 > 交叉验证基线是 `3fa88be0`，其报告 [cross-verify-3fa88be0.md](evidence/cross-verify-3fa88be0.md)
 > 明确写死：**过程凭证，不是交付凭证**。
 
@@ -104,9 +104,9 @@
 | E-02 | 产品能**受控自改代码**并热更新 | upgrade / 安全 | **明确延后** | D-1：需签名、审批票据、沙箱、原子替换与回滚四件套；理由与验收标准见 known-gaps D-1 |
 | E-03 | 安全边界：默认仅本机可达、Host/Origin 守卫、fail-closed、无明文 Key、自动化三闸 | 安全 | **已完成** | `c56ea742` 本机默认 + Host/Origin 守卫；`secret-scan-2026-11-06.json` 0 命中；`deployment gate vars` exit=0 |
 | E-04 | 11 个门禁变量按「安全优先」默写 | 配置/门禁 | **已完成** | T-15：`verify_deployment_gate_vars.py` 实跑 `RESULT: PASS`、exit=0；`TestSafeValueLock` **7 passed**；未调低任何阈值 |
-| E-05 | 推送 origin、修 CI 到全绿 | 交付/CI | **待做** | 远端 `p36` 最近一次 CI（`gh run view 42283620800`，提交 `673b1f9a`）仍在 `Run Tests (3.11)` 与 `Run Tests (3.12)` 的 `Run Unit Tests` 失败；快照时无 CI 流进程。缺：把 `662ad816` 推送后重跑 CI 两个 job 并全绿 |
-| E-06 | 文档说的事和程序做的事必须一致（OpenAPI 以运行时路由为准） | 网关契约 | **已完成** | `fd0d006f`：运行时 **89 paths / 0 ghost / 0 missing**；校验脚本已作为 CI 必过步骤 |
-| E-07 | 延后项不得消失，必须登记 | 文档 | **已完成** | `docs/known-gaps.md` D-1～D-10、E-1～E-16、F-1～F-6、R-1～R-6 + 本台账 |
+| E-05 | 推送 origin、修 CI 到全绿 | 交付/CI | **已完成** | 冻结 hash `72fd9b17` 的两条 CI run 全绿：`42323536105`（Release Readiness Contract C1..C12 + Independent Verification C10）与 `42323536110`（Build / Run Tests 3.11+3.12 / Architecture Gate / Security Scan / Guardrails / Console A11y / Smoke / Observability / P0 Gate 共 13 个 job，全部 success）；两腿一致 `7596 passed / 40 skipped / 3 xfailed`（=7639，与本机全量 collected 相同） |
+| E-06 | 文档说的事和程序做的事必须一致（OpenAPI 以运行时路由为准） | 网关契约 | **已完成** | `fd0d006f`：运行时 **89 paths / 0 ghost / 0 missing**；冻结 hash 上 CI 实跑 `PASS: contract matches runtime -- 118 paths (+1 documented schema-excluded), 0 ghosts, 0 missing, methods agree` |
+| E-07 | 延后项不得消失，必须登记 | 文档 | **已完成** | `docs/known-gaps.md` D-1～D-10、E-1～E-18、F-1～F-6、R-1～R-6 + 本台账 |
 | E-08 | 不足的地方自行判断完善，不推回给用户决定 | 全部工程流 | **已完成**（工作方式） | 延后项改为「登记 + 验收标准」，不向用户抛选择题；见 known-gaps 各条 |
 | E-09 | 能并行的任务就并行 | 编排 | **待做** | 本轮同仓多流并行、CI 多 job；缺工具层自动分片，靠人分流；快照时无编排流进程 |
 | E-10 | 界面科幻、未来风；品牌条款不许改 | 前端 | **待做**（未验证） | `docs/ui-scifi-direction.md` + `os.css` `--sc-*` 令牌 + P1 视觉 `cc3af30d`；`apps/console/**` 已随 `1e1855dc` 提交；UI 审计流 11:52 的 37 张三账号截图报告未入库，整站走查与品牌自动校验未做 |
@@ -114,7 +114,10 @@
 | E-12 | 备份/恢复/导出一键化 | 运维/设置 | **待做** | `dcf025c3` 让 CLI 操作真实归档；`scripts/ops/backup.py:11` 自述无生产调用方；无设置页与恢复流程（D-9） |
 | E-13 | 产物索引 + 目标→文件回溯 | 执行/文件 | **待做**（未验证） | `c14ab20c` 索引 CLI、`82f95450` 接入执行链（`31e66269` 补齐执行接线）；快照时无 artifacts 流进程；缺权限过滤、控制台入口、回放界面（D-10） |
 | E-14 | HC-01 基线裁决（可证/不可证分离） | 证据/裁决 | **已完成**（裁决） | `docs/adr/ADR-HC01-baseline-binding.md`；C11 仍派生 `BLOCKED`，这是**判定事实**，不是工程阻塞 |
-| E-15 | 最终冻结 HEAD 上的交付级全量回归 | 交付 | **待做** | 交叉验证 `3fa88be0` 只是过程凭证；最终 HEAD 冻结后必须重跑并且 `RELEASE READY=True` 才可交付 |
+| E-15 | 交叉验证 `3fa88be0` 的 C3/C12 FAIL（29 条）逐条归因并修掉 | 账号/知识/执行 | **已完成** | 根因：实现留在工作区、测试先提交。收口提交 `24fca472`（`model_router.visible_to`、`GoalViewer`、结构化错误体）、`31e66269`（执行/规划运行时接线）、`1e1855dc`（控制台请求字段）、`662ad816`（部署门 refs / 审计断言 / fault 补丁）、`d9797c2a`（测试加载器 `sys.modules`）。复核：`5a11baa0` 7620/0/0、`ae7935a7` 7620/0/0、`72fd9b17` 7639/0/0 |
+| E-16 | 最终冻结 HEAD 的交付级全量凭证 | 交付 | **已完成** | 冻结 hash `72fd9b17`（`origin/p36` tip），干净 worktree `D:\copilot-worktrees\liuhao-delivery-72fd9b17`，`.venv` py3.12.14，`--full` 于 2026-11-06 18:41:23 完成：`PASS=10 FAIL=0 BLOCKED=1(C11) NOT_VERIFIED=1(C9) ERROR=0`，C3/C12 = 7639 collected / 0 failed / 0 errors / 61 skipped，C7 首跑 PASS（未重跑）。`RELEASE READY=False`：C9 无真实 CD、C11 人工裁决未定（两者均为判定事实）。证据：`docs/evidence/regression-baseline-coverage-2026-11-06.md` §8、`D:\cache\temp\verify-full-72fd9b17.log` |
+| E-17 | 打包白名单必须覆盖方法体内延迟导入的依赖 | 打包 | **已完成** | `3ec7d755`、`b5ee295c`；`_MEASURE_CODE` / `EXPLICIT_DISTS` / `_validate_runtime` 三处同步；运行期自检 58→63→72 个发行包；`httpx`/`sqlalchemy`/`anthropic` 离线可 import |
+| E-18 | `src/upgrade/startup_probe.py` 把 `/openapi.json` 当健康兜底 | upgrade | **待做**（已登记，不修） | 每路径只探一次、超时 1.0s、采纳首条 2xx 不回头；冷启动首连慢时会误采纳 static JSON，服务其实健康。**关闭条件**见 `docs/known-gaps.md` E-18（优先路径多轮重试 + `health_path_is_fallback` 标注 + 断言改为 `ok + http_status==200 + health_path ∈ 配置集合` + 冷启动慢响应用例） |
 
 ---
 
@@ -122,14 +125,15 @@
 
 | 状态 | 条数 | 占比 | 分布 |
 |---|---|---|---|
-| 已完成 | **14** | 22.2% | A-05/06/13/14/15；D-01/02/09；E-03/04/06/07/08/14 |
-| 在跑 | **0** | 0% | 15:05 复查无任何流进程在跑（打包预检 `_precheck` 最后写入 13:07，CI 流最后提交 `5a11baa0`） |
-| 待做 | **39** | 61.9% | A-01/02/03/04/07/09/10/11/12；B-01～05；C-01～14；D-03/07/08；E-01/05/09/10/11/12/13/15 |
-| 明确延后 | **10** | 15.9% | A-08/16；B-06/07/08；D-04/05/06/10；E-02 |
-| **合计** | **63** | 100% | 5 个主题块 |
+| 已完成 | **18** | 27.3% | A-05/06/13/14/15；D-01/02/09；E-03/04/05/06/07/08/14/15/16/17 |
+| 在跑 | **0** | 0% | 18:50 复查无任何流进程在跑（仅 11/6 00:47 起的僵尸 pytest 1052/18116，CPU 不增长）；`dist/installer/` 仍 0 个文件 |
+| 待做 | **38** | 57.6% | A-01/02/03/04/07/09/10/11/12；B-01～05；C-01～14；D-03/07/08；E-01/09/10/11/12/13/18 |
+| 明确延后 | **10** | 15.2% | A-08/16；B-06/07/08；D-04/05/06/10；E-02 |
+| **合计** | **66** | 100% | 5 个主题块 |
 
-> 说明：**「待做」39 条里，账号域 14 条是「代码/测试在、真实链路未证」**，不是空的；
-> **「已完成」14 条不含安装包、不含最终交付凭证。**
+> 说明：**「待做」38 条里，账号域 14 条是「代码/测试在、真实链路未证」**，不是空的；
+> **「已完成」18 条仍不含安装包**：最终安装包（A-01/A-07）由分发流产出，凭证（E-16）已出。
+> 已登记不修的新项是 E-18（`startup_probe` 健康兜底），关闭条件写在 `known-gaps.md`。
 
 ---
 
@@ -171,12 +175,12 @@
 | 3 | **真实厂商 Key 未端到端验证** | 现只有本地 OpenAI 兼容桩；`invalid_key/key_revoked/quota_exhausted` 分类没在真实云 Key 上复现 | 用真实 DeepSeek（或等价）Key 跑 `scripts/verify_first_run_e2e.py`，保存原始输出 | A-04 |
 | 4 | **安装包内的前端可能过期** | 前端仍在改；不重建 `console/dist` 就会出现「后端新、界面旧」的静默失败 | 前端冻结后重建 dist，跑升级前门禁（缺 `index.html`/签章不符即拒绝） | A-10、E-10 |
 | 5 | **手机/换机登录仍未真机验证**（密钥自动注入已实现） | 身份完整性密钥不再阻塞：启动器首次启动自动生成并安全落盘到数据目录（全新安装/旧数据升级/密钥丢失三路径），但手机侧「打开→登录→发消息」仍无设备实测 | 真机在同一 Wi-Fi 完成一次登录+发消息，留存日志/截图 | A-12、E-14 |
-| 6 | **账号切片未提交实现，交叉验证 C3/C12 仍 FAIL** | `model_router.visible_to`、`ai_management.GoalViewer` 与结构化错误体留在工作区；测试已提交 ⇒ 同一 HEAD 上测试必红 | 账号/知识切片提交实现 → 干净 worktree 重跑 `--full`，C3/C12 转 PASS | E-15、I-10 |
-| 7 | **最终冻结 HEAD 没有交付级全量凭证** | 现有全量是 `bb6b654c` 基线（7458 passed）和 `3fa88be0` 过程凭证（C3/C12 FAIL），都不是最终 HEAD | 四路停止提交 → 冻结 hash → `verify_readiness.py --full` → `RELEASE READY=True`（C9/C11 的既有判定事实照实写） | E-05、E-15 |
+| 6 | ~~账号切片未提交实现，交叉验证 C3/C12 仍 FAIL~~ → **已关闭（2026-11-06 18:41）** | 根因是「实现留在工作区、测试先提交」，不是产品缺陷。`24fca472` / `31e66269` / `1e1855dc` / `662ad816` / `d9797c2a` 逐类补齐后，`72fd9b17 --full` 的 C3 与 C12 均为 **7639 collected / 0 failed / 0 errors / 61 skipped** | 无剩余动作 | E-15 |
+| 7 | ~~最终冻结 HEAD 没有交付级全量凭证~~ → **已关闭（凭证已出，但交付门口仍有两条判定事实）** | 冻结 hash `72fd9b17` 上 `--full`：`PASS=10 FAIL=0 BLOCKED=1(C11) NOT_VERIFIED=1(C9) ERROR=0`，`RELEASE READY=False`。**False 的两个原因不是缺陷**：C9 无真实 CD 环境可验、C11 是 HC-01 人工裁决（`ADR-HC01-baseline-binding.md` 已记录裁决，C11 仍按判定事实派生 BLOCKED）。安装包仍缺（A-01/A-07，分发流） | 分发流交付最终安装包 + SHA256（A-07）；C9/C11 保持既有判定事实，不为变绿改口径 | E-16、E-05 |
 | 8 | **安装包未签名**（非安装阻塞，但会被 Windows 拦一次） | 无证书 ⇒「未知发布者」；部分杀软可能误报 | 代码签名 + 校验失败拒绝安装并留审计 | A-08（明确延后） |
 | 9 | **卸载与静默部署未验证** | `/VERYSILENT` 卡在「保留数据」确认框，批量部署会挂住 | 自动化卸载跑通；交互式卸载也实测一次 | A-09（待做） |
 
-**结论：第 1～7 项是「普通用户下载安装使用」的真实阻塞；第 8～9 项不阻塞首次使用，但属于交付完整性。**
+**结论：第 1～5 项是「普通用户下载安装使用」的真实阻塞（第 6、7 项已关闭）；第 8～9 项不阻塞首次使用，但属于交付完整性。**
 
 ---
 

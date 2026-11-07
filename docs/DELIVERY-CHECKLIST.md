@@ -380,6 +380,44 @@ JUnit：[delta-tests-de1b0d87.xml](evidence/delta-tests-de1b0d87.xml)。
 | 真回归 | 无新增真回归；本轮另修的 4 条（`launch_installed.py` 宿主校验分支 + 3 个单测）已复核 66 passed / 1 skipped |
 | 结论 | **不能当交付凭证**；`RELEASE READY=False` 不变。账号/知识切片提交实现后，必须在最终冻结 HEAD 上重跑（E-15、E-16） |
 
+### 5.10 交付级全量凭证（冻结 hash `72fd9b17`，2026-11-06 18:41）——**这是最终凭证**
+
+> 冻结 hash = `72fd9b178492b909396848a3214fabbce048151c`（`origin/p36` tip）。
+> 干净 worktree `D:\copilot-worktrees\liuhao-delivery-72fd9b17`（跑前 `git status` clean，
+> `git log -1` = 该 hash），解释器 `D:\LiuHao-AI-OS\.venv` py3.12.14，
+> 命令 `scripts/verify_readiness.py --full`，日志 `D:\cache\temp\verify-full-72fd9b17.log`，
+> JSON `scripts/readiness_report.json`（`generated_at=2026-11-06T10:41:23Z`）。
+
+| 关 | 状态 | 关键数字 |
+|---|---|---|
+| C1 Build | PASS | compileall clean；4 个入口模块 import OK |
+| C2 Clean-env | PASS | 干净环境启动 + `GET /v1/health`=200 |
+| C3 Stable tests | PASS | **7639 collected / 0 failed / 0 errors / 61 skipped** |
+| C4 Security | PASS | 无高置信密钥；fail-closed 在；CI gates `bandit:high`、`semgrep:error` |
+| C5 Data integrity | PASS | hash-chain sig/alg **32/32 COMPLIANT**（HC-02..08 + HC-11） |
+| C6 Crash/recovery | PASS | 可靠性/故障套件 6 文件（仅临时 DB，live `audit_store.db` 未动） |
+| C7 Performance | PASS | `bench --quick --gate` 本机 profile PASS（**首跑即绿，未重跑**） |
+| C8 Observability | PASS | `/v1/metrics/prometheus`=200、10035 bytes、**48 个真实指标族**（floor 40）；`http_requests_total` 有值；`executor_fence_*`、`coordinator_admission_contention_total` 在 |
+| C9 Deployment/upgrade | NOT VERIFIED | Dockerfile + alembic 在；**真实 CD 环境缺失**（诚实口径，不改判定） |
+| C10 Independent verification | PASS | 独立验证 harness 在 |
+| C11 HC-01 | BLOCKED | HC-01 `GO=BLOCKED — HUMAN DECISION PENDING`（判定事实，非工程阻塞；裁决已记 ADR） |
+| C12 No unexplained failures | PASS | 7639 / 0 / 0，无未解释重大失败 |
+
+- **verdict**：`PASS=10 FAIL=0 BLOCKED=1 NOT_VERIFIED=1 ERROR=0`，`RELEASE READY = False`。
+  为 False 的两个原因是 C9（无真实 CD）与 C11（人工裁决），均为既有判定事实，不是缺陷。
+- **CI**：`72fd9b17` 两条 run 全绿 —— `42323536105`（Release Readiness Contract C1..C12、
+  Independent Verification C10）与 `42323536110`（Build / Run Tests 3.11+3.12 /
+  Architecture Gate / Security Scan / Guardrails / Console A11y / Smoke / Observability /
+  P0 Gate，13 个 job 全部 success）。两腿一致 `7596 passed / 40 skipped / 3 xfailed`
+  （=7639）。契约探针实跑 `PASS: contract matches runtime -- 118 paths (+1 documented
+  schema-excluded), 0 ghosts, 0 missing, methods agree`。
+- **失败归因**：**无失败**（FAIL=0、ERROR=0）。C9/C11 见上。
+- **C7 并发说明**：本轮跑前 18:50 与跑中多次采样，CPU 负载 1%→9%，8080 端口**无监听**，
+  无打包/安装进程；C7 首跑即 PASS，故**未触发**「单独 `--only C7` 重跑」规则。
+- **过程 hash 作废说明**：`ae7935a7`（C7 首跑红 0.059 > 0.055，已披露方差带内；C3/C12 PASS
+  7620/0/0）与 `b76762a7`（C7 吞吐 1476.6 < 1503.5 且 recovery 0.073，与分发流构建并发；
+  C3 PASS 7620/0/0）都**只作参考**，产品代码已不同，不作为交付凭证。
+
 ## 6. 产物核对（2026-11-06 全篇扫描）
 
 > 逐个核实清单里引用的每个产物：文件是否存在、字节是否对得上。

@@ -180,3 +180,90 @@ tasks/reminders、automation、intel、selfmod、cli、gateway。
 - 证据：[hc01-pending-decisions-2026-11-06.md](hc01-pending-decisions-2026-11-06.md)；
   `docs/hc01-status.md` §4.1 已加裁决指针。
 
+## 8. 交付级全量凭证（冻结 hash `72fd9b17`）
+
+### 8.1 绑定信息
+
+| 项目 | 值 |
+|---|---|
+| 冻结 hash | `72fd9b178492b909396848a3214fabbce048151c`（`origin/p36` tip） |
+| worktree | `D:\copilot-worktrees\liuhao-delivery-72fd9b17`（不在 temp 根；跑前 `git status` clean） |
+| 基线写死 | `git log -1` = `72fd9b17`，`2026-11-06 17:33 +08:00` 起跑 |
+| 解释器 | `D:\LiuHao-AI-OS\.venv\Scripts\python.exe`，py3.12.14 |
+| 命令 | `scripts/verify_readiness.py --full` |
+| 日志 | `D:\cache\temp\verify-full-72fd9b17.log` |
+| JSON | `<worktree>\scripts\readiness_report.json`，`generated_at=2026-11-06T10:41:23Z` |
+
+### 8.2 C1–C12 逐关（2026-11-06 18:41:23 完成）
+
+| 关 | 状态 | 数字 |
+|---|---|---|
+| C1 | PASS | compileall clean；4 入口模块 import OK |
+| C2 | PASS | clean-env boot + `/v1/health`=200 |
+| C3 | PASS | 7639 collected / 0 failed / 0 errors / 61 skipped |
+| C4 | PASS | 无高置信密钥；fail-closed 在；门禁 `bandit:high`、`semgrep:error` |
+| C5 | PASS | hash-chain sig/alg 32/32 COMPLIANT（HC-02..08 + HC-11） |
+| C6 | PASS | 6 个可靠性/故障套件；仅临时 DB |
+| C7 | PASS | `bench --quick --gate` 本机 profile PASS，**首跑即绿** |
+| C8 | PASS | `/v1/metrics/prometheus`=200、10035 bytes、48 指标族（floor 40） |
+| C9 | NOT VERIFIED | Dockerfile + alembic 在；real CD absent=True |
+| C10 | PASS | 独立验证 harness 在 |
+| C11 | BLOCKED | HC-01 人工裁决（判定事实） |
+| C12 | PASS | 7639 / 0 / 0 |
+
+`PASS=10 FAIL=0 BLOCKED=1 NOT_VERIFIED=1 ERROR=0`；`RELEASE READY = False`（C9 + C11，均为判定事实）。
+
+### 8.3 失败归因
+
+**无失败**（FAIL=0、ERROR=0），无需归因表。C9/C11 的说明见 §8.2 与 §7。
+
+### 8.4 C7 与并发干扰
+
+- 跑前与跑中采样：CPU `1% → 9%`；`8080` 端口**无监听**（`Get-NetTCPConnection -LocalPort 8080`
+  返回空）；无 `iscc/packaging/installer` 进程，仅 11/6 00:47 起的僵尸 `pytest`（CPU 不增长）。
+- 结论：**本轮无资源争抢**，C7 首跑 PASS，**未触发**「单独重跑 `--only C7`」规则。
+
+### 8.5 过程 hash（只作参考，不作凭证）
+
+| hash | 结果 | 为什么不能当凭证 |
+|---|---|---|
+| `ae7935a7` | C3/C12 PASS 7620/0/0；C7 **红** `recovery_seconds 0.059 > 0.055` | 产品代码已被 4 个提交改变；0.059 落在 §7.1 已披露的 76.4% 方差带内 |
+| `b76762a7` | C3 PASS 7620/0/0；C7 **红**（吞吐 `1476.6 < 1503.5`、`recovery 0.073`） | 与分发流打包/安装冒烟并发；且已被 3 个运行时修复提交取代 |
+
+> C7 阈值未动：owner 2026-11-06 裁决「本机安静窗口可判定、非 CI 阻断、不许为让门禁好看调阈值」
+> 照旧生效。`ae7935a7` 那轮曾有一版"给 recovery 加 +40ms 绝对噪声地板"的改动，**已完整回退**；
+> 只保留产品侧修复（SQLite 扩展错误码 `1546` 掩到主码 `10` 后判定重试）。
+
+### 8.6 `ae7935a7..b76762a7` 四个提交的逐文件核对
+
+判据：是否改动 `src/`、`apps/`、`contracts/`、`installer/`、`packaging/`（运行时代码）。
+实测 `git diff --name-only ae7935a7..b76762a7 -- src/ apps/ contracts/ installer/ packaging/` = **空**。
+
+| 提交 | 触及文件 | 性质 | 判断 |
+|---|---|---|---|
+| `80879f26` | `.gitignore` | 忽略规则 | 非运行时；补 `logs/*.log.*`，把轮转日志移出未跟踪面 |
+| `c9b5a4ab` | `scripts/verify_open_domain_contract.py` | **门禁探针** | 非产品运行时；仅构建探针时显式扣留 3 个能力，断言未改。**影响**：门禁语义从"真实无执行器实例"变为"显式扣留"，属验证面调整 |
+| `20749820` | `docs/spec/KERNEL-CANON.md` | 文档 | 非运行时；计数复算 |
+| `b76762a7` | `tests/kernels/audit/test_external_anchor.py` | 测试 | 非运行时；原"把签名首字符换成 A"等于没伪造（真实签名首字符本就是 A），改为保证首字符与原签名不同，消除随机翻红 |
+
+结论：**四个提交均无运行时产品代码改动**。`b76762a7` 仍被作废，原因是其后 `72fd9b17` 的
+三个提交**改了运行时**（升级状态落数据目录、密钥读取字节精度、vendor 展示）。
+
+### 8.7 新登记待改进项（不修，只登记）
+
+`docs/known-gaps.md` **E-18**：`src/upgrade/startup_probe.py` 把 `/openapi.json` 当健康兜底
+（每路径单次探测、`1.0s` 超时、采纳首条 2xx 后不回头）⇒ 冷启动首连慢时会误采纳静态 JSON。
+**关闭条件**：优先路径多轮重试 + 兜底时标 `health_path_is_fallback=True` +
+`tests/test_upgrade_selfcheck.py:219` 断言改为 `ok + http_status==200 + health_path ∈ 配置集合` +
+补"前两次超时、第三次 200 ⇒ 仍报 `/v1/health`"的用例。台账对应 E-18（待做）。
+
+### 8.8 CI（同一冻结 hash）
+
+- `42323536105`：Release Readiness Contract (C1..C12) + Independent Verification (C10) → success
+- `42323536110`：Build / Run Tests (3.11) / Run Tests (3.12) / Architecture Gate (Semgrep) /
+  Security Scan / Guardrails ×2 / Console A11y / Integration / Smoke / Observability / P0 Gate
+  → 13 个 job 全部 success
+- 两腿一致：`7596 passed / 40 skipped / 3 xfailed`（合计 7639，与本机 collected 相同）
+- 契约探针：`PASS: contract matches runtime -- 118 paths (+1 documented schema-excluded),
+  0 ghosts, 0 missing, methods agree.`
+
