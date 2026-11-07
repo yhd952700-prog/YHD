@@ -211,7 +211,7 @@ export function Knowledge({
           if (result.deduplicated) {
             setNotice(
               `「${file.name}」的内容与已有文档「${
-                result.matched_document_id ?? '（未知 id）'
+                result.matched_document_id ?? '（未记录文档标识）'
               }」完全相同，服务端未重复写入（本次新增 0 个分块）。`,
             )
           } else {
@@ -353,7 +353,7 @@ export function Knowledge({
         if (result.deduplicated) {
           setNotice(
             `内容与已有文档「${
-              result.matched_document_id ?? '（未知 id）'
+              result.matched_document_id ?? '（未记录文档标识）'
             }」完全相同，服务端未重复写入（本次新增 0 个分块）。`,
           )
         } else {
@@ -461,7 +461,7 @@ export function Knowledge({
       if (job.result?.deduplicated) {
         setNotice(
           `内容与已有文档「${
-            job.result.matched_document_id ?? '（未知 id）'
+            job.result.matched_document_id ?? '（未记录文档标识）'
           }」完全相同，服务端未重复写入（本次新增 0 个分块）。`,
         )
       } else {
@@ -639,7 +639,7 @@ export function Knowledge({
 
   return (
     <div className="os-grid">
-      <Card title="知识库状态" sub="来自后端的真实状态，每 30 秒自动刷新" span={4}>
+      <Card title="知识库状态" sub="真实状态，每 30 秒自动刷新" span={4}>
         <Guard
           loading={status.loading}
           error={status.error}
@@ -800,7 +800,7 @@ export function Knowledge({
             </div>
           </div>
           <div className="os-field">
-            <label htmlFor="kb-docid">doc_id（可选；同名会整体替换旧分块）</label>
+            <label htmlFor="kb-docid">文档标识（可选；同名会整体替换旧分块）</label>
             <div className="os-input">
               <input
                 id="kb-docid"
@@ -1295,7 +1295,7 @@ export function Knowledge({
                 )}
                 {missingNames && (
                   <p className="os-hint">
-                    文档名来自当前页列表；不在本页的文档显示 document_id。翻页后再检索可看到更多名字。
+                    文档名来自当前页列表；不在本页的文档显示文档标识。翻页后再检索可看到更多名字。
                   </p>
                 )}
               </div>
@@ -1317,21 +1317,21 @@ export function Knowledge({
             请用「后台入库」。
           </li>
           <li>
-            <strong>文档元数据</strong>：列表接口只返回 document_id、来源、分块数与入库时间，
+            <strong>文档元数据</strong>：列表接口只返回文档标识、来源、分块数与入库时间，
             没有字节 / 字符数，也没有单文档详情接口 —— 所以这里不显示文件大小。
           </li>
           <li>
             <strong>异步任务记录</strong>：任务账本保存在服务端进程内存里，服务重启后历史任务的
-            进度与结果无法再查；已经成功入库的文档本身在 SQLite 中，不受影响。
+            进度与结果无法再查；已经成功入库的文档本身保存在本地数据库中，不受影响。
           </li>
           <li>
             <strong>删除权限与粒度</strong>：删除需要更高的权限；
-            只能整篇删除，没有批量删除或单分块删除，也没有改名 / 编辑接口（同一 doc_id
+            只能整篇删除，没有批量删除或单分块删除，也没有改名 / 编辑接口（同一文档
             重新导入会整体替换）。
           </li>
           <li>
-            <strong>检索局限</strong>：CJK 单字查询通常不命中（索引是二元组），不做同义词扩展；
-            RRF 融合分不是相似度百分比。
+            <strong>检索局限</strong>：单个汉字查询通常不命中（索引按两字组合建立），不做同义词扩展；
+            融合分不是相似度百分比。
           </li>
         </ul>
       </Card>

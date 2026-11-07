@@ -114,7 +114,7 @@ export function DataCenter({ query }: { query: string }) {
                   tone="muted"
                   label={
                     <>
-                      内核噪声（未计入）{' '}
+                      背景噪声（未计入）{' '}
                       <span className="os-legend-value">
                         {formatCompact(points.reduce((sum, point) => sum + point.noise, 0))}
                       </span>
@@ -127,7 +127,7 @@ export function DataCenter({ query }: { query: string }) {
         </Guard>
       </Card>
 
-      <Card title="事件构成" sub="真实 event_type × outcome 分布" span={4}>
+      <Card title="事件构成" sub="真实事件类型与结果分布" span={4}>
         <Guard
           loading={analytics.loading}
           error={analytics.error}
@@ -346,7 +346,7 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
         </Guard>
       </Card>
 
-      <Card title="拦截配置" sub="Policy 内核动作拦截（需人类令牌）" span={6}>
+      <Card title="拦截配置" sub="动作拦截开关与范围（只读）" span={6}>
         <Guard
           loading={enforcement.loading}
           error={enforcement.error}
@@ -394,9 +394,9 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
                   {data.secret_store.configured ? '已配置' : '未配置'}
                 </span>
               </dd>
-              <dt>已登记人类</dt>
+              <dt>已登记账号</dt>
               <dd>{data.registered_humans}</dd>
-              <dt>可登录主体</dt>
+              <dt>可登录账号</dt>
               <dd>{data.login_eligible_humans}</dd>
               <dt>会话有效期</dt>
               <dd>{humanDuration(data.token.ttl_seconds)}</dd>
@@ -430,7 +430,7 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
               </dd>
               <dt>版本</dt>
               <dd>{data.version ?? '—'}</dd>
-              <dt>内核 / 能力层</dt>
+              <dt>能力模块 / 能力层</dt>
               <dd>
                 {data.totals.kernels} / {data.totals.layers}
               </dd>

@@ -137,13 +137,13 @@ function goalWorkMessage(error: unknown, fallback: string): string {
     case 'employee_unavailable':
       return '这位员工当前没有可用的执行个体（暂停中），不能接受指派。请先到员工页恢复，再重新派活。'
     case 'assign_target_required':
-      return '必须且只能指定一个执行主体：员工，或某个执行个体。请重新选择。'
+      return '必须且只能指定一个执行者：员工，或某个执行个体。请重新选择。'
     case 'task_not_retryable':
       return '这个任务当前不是失败态，没有可重试的内容。只有失败任务能单独重试。'
     case 'goal_running':
       return '这个目标还在运行。等它结束后，再回来单独重试失败的任务。'
     case 'task_not_found':
-      return '后端已经找不到这个任务（可能已被清理）。刷新目标后按最新任务卡操作。'
+      return '已经找不到这个任务（可能已被清理）。刷新目标后按最新任务卡操作。'
     case 'goal_not_found':
       return '这个目标已经不存在（可能已被清理）。'
     default:
@@ -153,7 +153,7 @@ function goalWorkMessage(error: unknown, fallback: string): string {
 
 function approveFailureMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) {
-    return '你没有签发权限：只有具备签发范围的主体能签发授权。这不是队列为空。'
+    return '你没有签发权限：只有具备签发权限的账号能签发授权。这不是队列为空。'
   }
   return errorText(error)
 }
@@ -389,7 +389,7 @@ export function Butler({
       if (promptEmployee) setPromptEmployee('')
       const id = goalIdOf(raw)
       if (!id) {
-        setSubmitError('后端返回了目标但没有 goal_id：无法追踪这次执行，请检查网关版本。')
+        setSubmitError('目标已提交，但没有返回可追踪的编号：这次执行无法在页面上跟进，请稍后刷新目标列表查看。')
         return
       }
       setActiveId(id)
@@ -446,7 +446,7 @@ export function Butler({
       )
       const id = goalIdOf(raw)
       if (!id) {
-        setAssignError('后端返回了指派结果但没有 goal_id：无法追踪这次执行。')
+        setAssignError('指派已提交，但没有返回可追踪的编号：这次执行无法在页面上跟进。')
         return
       }
       let label = employeeTarget
@@ -504,7 +504,7 @@ export function Butler({
     try {
       await stopGoal(activeId)
       setStopNotice(
-        '已发送中止请求。下面显示的是后端真实终态；已经结束的目标不会被改写。',
+        '已发送中止请求。下面显示的是真实终态；已经结束的目标不会被改写。',
       )
       setActiveRunning(true)
       detailApi.reload()
@@ -525,7 +525,7 @@ export function Butler({
     setReplanNotice(null)
     try {
       await replanGoal(activeId)
-      setReplanNotice('管家已重新规划并重跑；下面显示后端返回的最新结果。')
+      setReplanNotice('管家已重新规划并重跑；下面显示最新的结果。')
       setActiveRunning(true)
       detailApi.reload()
       goals.reload()
@@ -795,7 +795,7 @@ export function Butler({
         )}
 
         <p className="os-hint" style={{ marginTop: 10 }}>
-          提交后管家在后台执行，页面每 2 秒向 GET /v1/goals/&#123;goal_id&#125; 确认一次状态。
+          提交后管家在后台执行，页面每 2 秒自动确认一次状态。
           任务卡会随增量快照逐条出现；只有全部终结后才给总进度百分比，不用假进度充数。
         </p>
       </Card>
@@ -869,7 +869,7 @@ export function Butler({
 
         {selectedAssignOption && (
           <p className="os-hint" style={{ marginTop: 6 }}>
-            执行主体：{selectedAssignOption.label}
+            执行者：{selectedAssignOption.label}
             {' · '}
             范围 {scope}
             {' · '}
@@ -969,7 +969,7 @@ export function Butler({
                   </p>
                   {assignedGoal && (
                     <p className="os-hint">
-                      执行主体：{assignedLabel}（这是你点名指派的，不是管家自动拆解）
+                      执行者：{assignedLabel}（这是你点名指派的，不是管家自动拆解）
                     </p>
                   )}
                 </div>
@@ -1004,11 +1004,11 @@ export function Butler({
                     <div className="os-note" role="status" style={{ marginTop: 10 }}>
                       <strong>管家正在拆解并安排员工</strong>
                       <p style={{ margin: '4px 0 0' }}>
-                        第一张任务卡到达后会逐条出现。后端现在会在执行期间返回增量任务快照，
+                        第一张任务卡到达后会逐条出现。执行期间会持续返回任务快照，
                         不需要等整次执行结束；在此之前不伪造任何任务级进度。
                       </p>
                       <p className="os-hint" style={{ marginTop: 4 }}>
-                        如果你不想等了，可以「中止本次执行」；中止后下面会显示后端真实终态。
+                        如果你不想等了，可以「中止本次执行」；中止后下面会显示真实终态。
                       </p>
                     </div>
                   ) : (
@@ -1081,7 +1081,7 @@ export function Butler({
                         {failed.map((task) => (
                           <li key={task.id}>
                             <span>{task.name || '（未命名任务）'}</span>
-                            <span className="os-kb-error">{task.error ?? '后端未给出原因'}</span>
+                            <span className="os-kb-error">{task.error ?? '未给出原因'}</span>
                           </li>
                         ))}
                       </ul>
@@ -1144,7 +1144,7 @@ export function Butler({
               {replanError && <p className="os-kb-error">重新规划失败：{replanError}</p>}
               {replanning && (
                 <p className="os-hint">
-                  后端这个重规划调用是同步的：完成前不会返回中间进度，页面会一直显示
+                  重新规划是同步的：完成前不会返回中间进度，页面会一直显示
                   「重新规划中… {replanElapsed ?? ''}」。
                 </p>
               )}
@@ -1171,7 +1171,7 @@ export function Butler({
             <div>
               <strong>你没有签发权限</strong>
               <p style={{ margin: '4px 0 0' }}>
-                待审批队列只对具备签发范围的主体可见。
+                待审批队列只对具备签发权限的账号可见。
                 这不是「队列为空」，也不代表没有动作在等你 —— 只是当前账号看不到。
               </p>
               {pendingApi.error && <p className="os-hint">{pendingApi.error}</p>}
@@ -1206,10 +1206,10 @@ export function Butler({
                     <strong className="os-butler-pending-action">{item.action}</strong>
                     <span className="os-hint">{blockedAtText(item.blocked_at)}</span>
                   </header>
-                  <p className="os-butler-pending-reason">{item.reason || item.summary || '后端未给出拦截原因'}</p>
+                  <p className="os-butler-pending-reason">{item.reason || item.summary || '暂未给出拦截原因'}</p>
                   <p className="os-hint">
                     规则 {item.policy_rule ?? '未记录'} · 关联 {item.correlation_id ?? '未记录'} ·
-                    拦截主体 {item.blocked_by ?? '未记录'}
+                    拦截账号 {item.blocked_by ?? '未记录'}
                   </p>
                   {wildcard && (
                     <label className="os-butler-pending-confirm">
@@ -1223,7 +1223,7 @@ export function Butler({
                           }))
                         }
                       />
-                      我确认这条授权覆盖所有目标（target = *）
+                      我确认这条授权覆盖全部对象
                     </label>
                   )}
                   <div className="os-kb-actions">
@@ -1236,7 +1236,7 @@ export function Butler({
                     </button>
                     <span className="os-hint">
                       {wildcard
-                        ? '后端要求通配授权显式二次确认；请求体仅追加 confirm_wildcard。'
+                        ? '这次授权覆盖全部对象，需要你再次确认；确认后按原请求签发。'
                         : '按队列给出的动作与目标签发，不改参数。'}
                     </span>
                   </div>
@@ -1285,7 +1285,7 @@ export function Butler({
               title={live ? '管家正在拆解，第一张任务卡还没到' : '本次没有分解出任务'}
               hint={
                 live
-                  ? '运行期间后端会返回增量快照；已收到的任务卡会保留，不会因为某次快照不完整而被清空。'
+                  ? '运行期间会持续返回任务快照；已收到的任务卡会保留，不会因为某次快照不完整而被清空。'
                   : '目标已结束但没有任何任务：可能需要换一种更具体的说法，或检查员工是否可用。'
               }
             />
@@ -1324,7 +1324,7 @@ export function Butler({
                           ? task.assigned_employee
                           : task.assigned_agent
                             ? agentOwners.get(task.assigned_agent) ?? task.assigned_agent
-                            : '后端未记录'}
+                            : '未记录'}
                       </strong>
                       {task.capability_id ? ` · 能力 ${capabilityLabel(task.capability_id)}` : ''}
                     </p>
@@ -1367,7 +1367,7 @@ export function Butler({
                         className="os-btn os-btn-ghost"
                         onClick={() => void retryTask(task)}
                         disabled={busy}
-                        title="只重跑这一个任务；其余任务的结果不变。后端这个调用是同步的，完成才返回。"
+                        title="只重跑这一个任务；其余任务的结果不变。重试是同步的，完成才返回。"
                       >
                         {busy ? '重试中…（同步执行）' : '重试此任务'}
                       </button>
@@ -1443,14 +1443,14 @@ export function Butler({
         <dl className="os-kv os-butler-gaps">
           <dt>待审批授权的目标粒度</dt>
           <dd>
-            队列的授权模板使用 target=*（审计事件没有记录具体目标），所以无法只批准
-            「某一个路径 / 某一个项目」。页面要求你显式勾选「覆盖所有目标」，后端才签发
+            队列的授权模板会覆盖全部对象（审计事件没有记录具体目标），所以无法只批准
+            「某一个路径 / 某一个项目」。页面要求你显式勾选「覆盖所有目标」，服务才会签发
             通配授权；这是当前真实边界。
           </dd>
           <dt>产物内联预览</dt>
           <dd>
-            文本文件可在汇总里点开，走 GET /v1/files/content 显示正文；二进制或超大文件
-            会被后端拒绝，页面如实显示拒绝原因，不会伪装成空内容。
+            文本文件可在汇总里点开，直接显示正文；二进制或超大文件
+            会被拒绝，页面如实显示拒绝原因，不会伪装成空内容。
           </dd>
         </dl>
       </Card>

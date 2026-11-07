@@ -36,7 +36,8 @@ export interface ToolEvent {
   type: 'tool';
   name: string;
   args: Record<string, unknown>;
-  output: string;
+  /** 后端已改为结构化 JSON（dict/list/scalar）；旧记录仍是字符串。 */
+  output: unknown;
   /** 工具调用 JSON 原文，前端据此从流式内容里精确剥离。 */
   raw?: string;
 }
@@ -96,7 +97,7 @@ export async function* streamChat(
             type: 'tool',
             name: evt.name as string,
             args: (evt.args ?? {}) as Record<string, unknown>,
-            output: (evt.output ?? '') as string,
+            output: evt.output as unknown,
             raw: evt.raw as string | undefined,
           };
         }
@@ -270,7 +271,7 @@ export function friendlyChatError(err: unknown): { text: string; raw: string } {
   const lower = raw.toLowerCase();
 
   if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
-    return { text: '无法连接到后端服务，请确认服务已启动', raw };
+    return { text: '无法连接到本地服务，请确认服务已启动', raw };
   }
   if (raw.includes('401')) {
     return { text: '会话已失效，请重新登录', raw };

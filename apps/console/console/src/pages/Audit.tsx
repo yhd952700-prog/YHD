@@ -125,7 +125,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         <>
       <Card
         title="审计链完整性"
-        sub="只读校验 —— 后端只 SELECT，从不修复"
+        sub="只读校验 —— 只检查，从不修改"
         span={4}
         action={
           <button className="os-btn" onClick={() => void runVerify()} disabled={verifying}>
@@ -148,7 +148,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
                 <span className="os-kv-value">{data.total_events}</span>
               </div>
               <div className="os-kv-row">
-                <span className="os-kv-key">尾部 seq</span>
+                <span className="os-kv-key">最新序号</span>
                 <span className="os-kv-value">{data.tail_seq}</span>
               </div>
               <div className="os-kv-row">
@@ -193,7 +193,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
 
       <Card
         title="动作分布"
-        sub="按内核动作名统计（真实计数）"
+        sub="按动作名称统计（真实计数）"
         span={4}
       >
         <Guard
@@ -220,7 +220,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         </Guard>
       </Card>
 
-      <Card title="结果分布" sub="真实 outcome 计数" span={4}>
+      <Card title="结果分布" sub="真实结果计数" span={4}>
         <Guard
           loading={summary.loading}
           error={summary.error}
@@ -273,7 +273,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         {shown.length === 0 && !filterError ? (
           <Empty
             title={correlation ? '该关联 ID 下没有事件' : '审计库为空'}
-            hint="审计事件由内核在动作发生时写入；没有任何动作就没有事件。"
+            hint="审计事件在动作发生时写入；没有任何动作就没有事件。"
           />
         ) : (
           <>
@@ -281,9 +281,9 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
               <table className="os-table">
                 <thead>
                   <tr>
-                    <th>seq</th>
+                    <th>序号</th>
                     <th>时间</th>
-                    <th>主体</th>
+                    <th>账号</th>
                     <th>类型 / 动作</th>
                     <th>结果</th>
                     <th>关联 ID</th>

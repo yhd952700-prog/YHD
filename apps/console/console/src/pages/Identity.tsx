@@ -50,11 +50,11 @@ function RegistryReport({ registry }: { registry: IdentityRegistry }) {
   const refused = registry.rows_refused ?? []
   return (
     <div className="os-kv-col">
-      <span className="os-kv-key">注册表诚实度</span>
+      <span className="os-kv-key">身份登记完整性</span>
       <ul className="os-list">
         <li>
-          <span>后端</span>
-          <span className="os-legend-value">{registry.backend ?? '—'}</span>
+          <span>存储方式</span>
+          <span className="os-legend-value">{registry.backend ? '本地存储' : '—'}</span>
         </li>
         <li>
           <span>完整性强制</span>
@@ -71,7 +71,7 @@ function RegistryReport({ registry }: { registry: IdentityRegistry }) {
       </ul>
       {refused.length > 0 && (
         <div className="os-alert">
-          注册表在加载时拒收了 {refused.length} 行，因此未出现在清单中：{refused.map((item) => principalLabel(item)).join('、')}。
+          有 {refused.length} 行账号在加载时被拒收，因此没有出现在清单中：{refused.map((item) => principalLabel(item)).join('、')}。
           请配置完整性密钥后重新注册这些账号。
         </div>
       )}
@@ -248,7 +248,7 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
       {/* ─── 身份总览 ─── */}
       <Card
         title="身份总览 / Identity Summary"
-        sub="真实身份计数 + 注册表诚实度（只读）"
+        sub="真实身份计数与登记完整性（只读）"
         span={12}
       >
         <Guard
@@ -256,15 +256,15 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           error={summary.error}
           data={summary.data}
           isEmpty={(data) => data.total_principals === 0}
-          emptyTitle="没有任何已登记主体"
-          emptyHint="身份内核里当前一个主体都没有；这不是读取失败，而是真实为空。"
+          emptyTitle="还没有登记任何账号"
+          emptyHint="当前一个账号都没有；这不是读取失败，而是真实为空。"
           onRetry={summary.reload}
         >
           {(data) => (
             <>
               <div className="os-kv">
                 <div className="os-kv-row">
-                  <span className="os-kv-key">主体总数</span>
+                  <span className="os-kv-key">账号总数</span>
                   <span className="os-kv-value">{data.total_principals}</span>
                 </div>
                 <div className="os-kv-row">
@@ -316,10 +316,10 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
         </Guard>
       </Card>
 
-      {/* ─── 主体清单 ─── */}
+      {/* ─── 账号清单 ─── */}
       <Card
-        title="主体清单 / Principals"
-        sub="身份内核真实主体（只读）"
+        title="账号清单"
+        sub="已登记的真实账号（只读）"
         span={12}
       >
         <Guard
@@ -327,15 +327,15 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           error={principals.error}
           data={principals.data}
           isEmpty={(data) => data.principals.length === 0}
-          emptyTitle="没有任何已登记主体"
-          emptyHint="身份内核当前没有登记任何主体。读取失败会显示在上方，不会退化成这个空态。"
+          emptyTitle="还没有登记任何账号"
+          emptyHint="当前没有登记任何账号。读取失败会显示在上方，不会变成这个空态。"
           onRetry={principals.reload}
         >
           {(data) => (
             <>
               <Warnings warnings={data.warnings} />
               {shownPrincipals.length === 0 ? (
-                <Empty title="没有匹配的主体" hint="当前搜索条件没有命中任何主体。" />
+                <Empty title="没有匹配的账号" hint="当前搜索条件没有命中任何账号。" />
               ) : (
                 <div className="os-table-wrap">
                   <table className="os-table">
@@ -395,7 +395,7 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           data={permissions.data}
           isEmpty={(data) => data.grants.length === 0}
           emptyTitle="没有任何授权"
-          emptyHint="没有任何主体被授予任何权限；这不是读取失败，而是真实为空。"
+          emptyHint="没有任何账号被授予任何权限；这不是读取失败，而是真实为空。"
           onRetry={permissions.reload}
         >
           {(data) => (
@@ -413,10 +413,10 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
                   <table className="os-table">
                     <thead>
                       <tr>
-                        <th>主体</th>
-                        <th>权限原串</th>
-                        <th>派生动作</th>
-                        <th>派生资源</th>
+                        <th>账号</th>
+                        <th>权限</th>
+                        <th>对应动作</th>
+                        <th>对应资源</th>
                         <th>作用域上限</th>
                         <th>身份有效</th>
                       </tr>
@@ -450,18 +450,18 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
         </Guard>
       </Card>
 
-      {/* ─── 单个主体查询（手动触发，演示 404 诚实态） ─── */}
+      {/* ─── 单个账号查询（手动触发，演示 404 诚实态） ─── */}
       <Card
-        title="主体详情查询"
-        sub="按名称或标识查询单个主体；查不到时如实提示「主体不存在或已被清除」"
+        title="账号详情查询"
+        sub="按名称或标识查询单个账号；查不到时如实提示"
         span={12}
       >
         <div className="os-form">
           <label className="os-field">
-            <span className="os-field-label">主体名称或标识</span>
+            <span className="os-field-label">账号名称或标识</span>
             <input
               className="os-input"
-              placeholder="输入主体名称或标识"
+              placeholder="输入账号名称或标识"
               value={lookupId}
               onChange={(event) => setLookupId(event.target.value)}
               onKeyDown={(event) => {
@@ -478,34 +478,38 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           </button>
         </div>
 
-        {detailError && <p className="os-error">主体不存在或已被清除：{detailError}</p>}
+        {detailError && <p className="os-error">该账号不存在或已被清除。</p>}
         {detailLoading && <p>读取中…</p>}
         {detail && (
           <>
             <Warnings warnings={detail.warnings} />
             <div className="os-kv">
               <div className="os-kv-row">
-                <span className="os-kv-key">id</span>
+                <span className="os-kv-key">标识</span>
                 <span className="os-kv-value">{detail.principal.id}</span>
               </div>
               <div className="os-kv-row">
-                <span className="os-kv-key">principal</span>
+                <span className="os-kv-key">账号</span>
                 <span className="os-kv-value">{detail.principal.principal}</span>
               </div>
               <div className="os-kv-row">
                 <span className="os-kv-key">类型</span>
                 <span className="os-kv-value">
-                  {detail.principal.kind}
+                  {KIND_LABELS[detail.principal.kind] ?? '未知类型'}
                   {detail.principal.kind_marked ? '' : '（推断）'}
                 </span>
               </div>
               <div className="os-kv-row">
                 <span className="os-kv-key">状态</span>
-                <span className="os-kv-value">{detail.principal.status}</span>
+                <span className="os-kv-value">
+                  {STATUS_LABELS[detail.principal.status] ?? '未知'}
+                </span>
               </div>
               <div className="os-kv-row">
                 <span className="os-kv-key">作用域上限</span>
-                <span className="os-kv-value">{detail.principal.scope}</span>
+                <span className="os-kv-value">
+                  {SCOPE_LABELS[detail.principal.scope] ?? '未知'}
+                </span>
               </div>
               <div className="os-kv-row">
                 <span className="os-kv-key">权限数</span>
@@ -521,9 +525,9 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
                 <table className="os-table">
                   <thead>
                     <tr>
-                      <th>权限原串</th>
-                      <th>派生动作</th>
-                      <th>派生资源</th>
+                      <th>权限</th>
+                      <th>对应动作</th>
+                      <th>对应资源</th>
                       <th>作用域上限</th>
                     </tr>
                   </thead>

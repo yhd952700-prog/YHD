@@ -1,41 +1,37 @@
 /**
  * 后端错误文案的**可读化**（微细节：错误必须能被看懂、能被照着做）。
  *
- * 两个真实缺陷驱动这个模块：
- * 1. 非字符串 `detail`：gateway 的 kernels.py 端点 404/409 返回的是对象
- *    （`{error: "unknown_kernel", name: "x" }`）。旧逻辑 `JSON.stringify` 之后
- *    界面上就是一坨 `{"error":"unknown_kernel","name":"x"}` —— 看得懂但读不快，
- *    键名是英文、顺序随机。这里压成 `error：unknown_kernel；name：x`。
- * 2. `trace_id` 被丢掉：500 响应带着 trace_id（服务端日志里检索完整堆栈的
- *    唯一钥匙），旧逻辑只取 `detail`，于是这条排障链在界面上断掉。
+ * 交付面纪律：**英文原文、变量名、`key=value` 机器串一律不上屏**。
+ * 服务端可能返回 `{"error":"unknown_kernel","name":"x"}` 这类只有机器字段的
+ * 对象，或 `Not Found` 这种英文短语；直接铺给用户既读不懂也无从行动。
+ * 这里只保留**含中文的可读句子**，其余交给 `describeFailure` 按状态码给
+ * 中性中文兜底；排障所需的 `trace_id` 仍然单独保留。
  */
+
+const HAS_CJK = /[\u4e00-\u9fff]/
 
 export function describeDetail(detail: unknown): string {
   if (detail === null || detail === undefined) return ''
-  if (typeof detail === 'string') return detail
-  if (typeof detail === 'number' || typeof detail === 'boolean') return String(detail)
+  if (typeof detail === 'string') {
+    // 英文短语 / 机器串不进入界面文案。
+    return HAS_CJK.test(detail) ? detail : ''
+  }
+  if (typeof detail === 'number' || typeof detail === 'boolean') return ''
   if (Array.isArray(detail)) {
     return detail.map(describeDetail).filter(Boolean).join('；')
   }
   if (typeof detail === 'object') {
     const record = detail as Record<string, unknown>
     // GoalWorkError 的线路格式是 `{ code, message }`：`message` 已经是给人看的
-    // 中文说明（例如「员工 X 已停用，无法接受指派」）。优先整句展示它，只把
-    // 其它有信息量的字段附在后面；`code` 由调用方单独取用，不塞进人话里。
+    // 中文说明（例如「员工 X 已停用，无法接受指派」）。只取它，不再把英文键名
+    // 拼进人话；`code` 由调用方单独取用，不塞进文案。
     const message = record.message
-    if (typeof message === 'string' && message.trim()) {
-      const extras = Object.entries(record)
-        .filter(([key]) => key !== 'message' && key !== 'code')
-        .filter(([, value]) => value !== null && value !== undefined && value !== '')
-        .map(([key, value]) => `${key}：${describeDetail(value)}`)
-      return extras.length > 0 ? `${message}；${extras.join('；')}` : message
+    if (typeof message === 'string' && message.trim() && HAS_CJK.test(message)) {
+      return message.trim()
     }
-    return Object.entries(record)
-      .filter(([, value]) => value !== null && value !== undefined && value !== '')
-      .map(([key, value]) => `${key}：${describeDetail(value)}`)
-      .join('；')
+    return ''
   }
-  return String(detail)
+  return ''
 }
 
 export interface FailureText {
@@ -105,7 +101,7 @@ function noDetailFallback(status: number): string {
     return '要访问的内容不存在，可能已被删除或移动。请返回上一页后重试。'
   }
   if (status === 502 || status === 503 || status === 504) {
-    return '服务暂时不可用，可能是后端没启动或正在重启。请稍后重试；持续出现时可导出诊断包。'
+    return '服务暂时不可用，可能是本地服务没启动或正在重启。请稍后重试；持续出现时可导出诊断包。'
   }
   if (status >= 500) {
     return '服务内部出错了，本次操作没有完成。请稍后重试；持续出现时可导出诊断包。'

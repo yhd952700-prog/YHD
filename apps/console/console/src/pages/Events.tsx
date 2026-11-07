@@ -51,7 +51,7 @@ export function Events({ query }: { query: string }) {
     <div className="os-grid">
       <Card
         title="真实系统事件流"
-        sub="内核总线实况 —— 来自事件内核的 get_event_history，每 15 秒刷新"
+        sub="实时事件流 —— 每 15 秒刷新"
         span={12}
         action={
           <button className="os-btn" onClick={() => listing.reload()}>
@@ -64,7 +64,7 @@ export function Events({ query }: { query: string }) {
           error={listing.error}
           data={listing.data}
           isEmpty={(data) => data.count === 0}
-          emptyTitle="内核总线暂无事件"
+          emptyTitle="暂无事件"
           emptyHint="总线里还没有任何事件流过；让系统跑一次真实动作（例如一次执行、一次登录、一次插件激活），再回到这里就能看到了。"
           onRetry={listing.reload}
         >
@@ -114,12 +114,12 @@ export function Events({ query }: { query: string }) {
       {listing.data && listing.data.count === 0 && (
         <Card title="说明" sub="这个视图能证明什么" span={12}>
           <ul className="os-list">
-            <li>每一条都来自事件内核总线里真实发生过的事件，由后端 get_event_history 实时读取，无缓存、无模拟。</li>
+            <li>每一条都来自系统里真实发生过的事件，实时读取，无缓存、无模拟。</li>
             <li>只读：没有任何写入口，也不会伪造任何"心跳"事件来让界面显得热闹。</li>
-            <li>真空就是真空 —— 内核总线没有事件时如实显示"暂无事件"，不假装系统正在活动。</li>
+            <li>真空就是真空 —— 没有事件时如实显示"暂无事件"，不假装系统正在活动。</li>
           </ul>
           <Empty
-            title="内核总线暂无事件"
+            title="暂无事件"
             hint="让系统执行一次真实动作后回来即可看到。"
           />
         </Card>

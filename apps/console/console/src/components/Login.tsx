@@ -50,6 +50,8 @@ import {
 export interface LoginProps {
   /** 当前端的形态，登录时随请求上报（令牌里会记下来源端）。 */
   mode: ClientMode
+  /** 为什么回到登录页：过期或被登出都要明说，不静默跳转。 */
+  notice?: 'expired' | 'logged-out' | null
   onSuccess: (session: Session) => void
 }
 
@@ -91,7 +93,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await response.json()) as T
 }
 
-export function Login({ mode, onSuccess }: LoginProps) {
+export function Login({ mode, notice = null, onSuccess }: LoginProps) {
   const [principal, setPrincipal] = useState('')
   const [secret, setSecret] = useState('')
   const [remember, setRemember] = useState(true)
@@ -181,7 +183,7 @@ export function Login({ mode, onSuccess }: LoginProps) {
             </span>
           </div>
           <div className="os-login-status-row">
-            <span>可登录人类</span>
+            <span>可登录账号</span>
             <span>{config ? config.login_eligible_humans : '—'}</span>
           </div>
           <div className="os-login-status-row">
@@ -198,9 +200,12 @@ export function Login({ mode, onSuccess }: LoginProps) {
 
         {notConfigured && (
           <p className="os-login-aside-note">
-            未配置凭据时登录会 fail-closed。先运行下方命令登记人类身份，再回到这里登录。
+            还没有设置登录凭据，此时任何人都无法登录。请按页面提示完成首次设置，再回到这里登录。
           </p>
         )}
+        <p className="os-login-aside-note">
+          启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台就会断开连接。
+        </p>
       </aside>
 
       <div className="os-login-card">
@@ -239,13 +244,24 @@ export function Login({ mode, onSuccess }: LoginProps) {
           </div>
         )}
 
+        {notice && (
+          <div className="os-alert" role="alert" data-testid="login-notice">
+            <IconAlert size={15} />
+            <span>
+              {notice === 'expired'
+                ? '登录已过期，需要重新登录。请在下方重新输入账号与密码。'
+                : '你已退出登录，需要重新登录。请在下方重新输入账号与密码。'}
+            </span>
+          </div>
+        )}
+
         {notConfigured && (
           <div className="os-note" role="status">
             <IconAlert size={15} />
             <span>
-              {config?.message || '尚未配置登录凭据，任何人都无法登录（fail-closed）。'}
+              {config?.message || '还没有设置登录凭据，此时任何人都无法登录。'}
               <br />
-              <code>python scripts/register_human_identity.py（按提示输入账号名与密码）</code>
+              请按页面提示完成首次设置：创建初始账号后即可登录。
             </span>
           </div>
         )}
@@ -256,7 +272,7 @@ export function Login({ mode, onSuccess }: LoginProps) {
             <span>
               {config?.message}
               <br />
-              为要登录的主体设置凭据后即可登录。
+              为账号设置密码后即可登录。
             </span>
           </div>
         )}
@@ -476,7 +492,7 @@ export function Login({ mode, onSuccess }: LoginProps) {
           {config && (
             <>
               <br />
-              已登记人类：{config.registered_humans} · 可登录：{config.login_eligible_humans} ·
+              已登记账号：{config.registered_humans} · 可登录：{config.login_eligible_humans} ·
               会话有效期：{Math.round(config.token.ttl_seconds / 3600)} 小时
             </>
           )}

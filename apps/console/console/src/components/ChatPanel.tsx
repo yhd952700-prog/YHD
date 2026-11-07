@@ -23,7 +23,19 @@ import type { ActiveProviderStatus } from '../lib/providerStatus'
 interface ToolCall {
   name: string
   args: Record<string, unknown>
-  output: string
+  /** 后端已改为结构化 JSON（dict/list/scalar）；旧记录仍是字符串。 */
+  output: unknown
+}
+
+/** 工具结果转可渲染文本：结构化输出按 JSON 展示，旧字符串原样保留。 */
+function toolOutputText(output: unknown): string {
+  if (typeof output === 'string') return output
+  if (output === undefined || output === null) return ''
+  try {
+    return JSON.stringify(output, null, 2)
+  } catch {
+    return String(output)
+  }
 }
 
 interface Message {
@@ -288,6 +300,8 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                 <span className="chat-model-badge">模拟回复</span>
                 <span className="chat-model-detail">
                   {provider.label}。{provider.detail}
+                  <br />
+                  可以先跳过，不影响浏览；之后在「设置 → 模型」里补上 Key 即可。
                 </span>
                 <button className="chat-model-action" onClick={onConfigureModel}>
                   去配置模型
@@ -315,10 +329,9 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                       {m.error && (
                         <div className="chat-error">
                           <div className="chat-error-text">{m.error.text}</div>
-                          <details className="chat-error-raw">
-                            <summary>详情</summary>
-                            <pre>{m.error.raw}</pre>
-                          </details>
+                          <div className="chat-error-text">
+                            如果一直失败，请确认启动窗口仍在运行，然后重试。
+                          </div>
                         </div>
                       )}
                       {m.tools && m.tools.length > 0 && (
@@ -328,7 +341,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                               <summary className="tool-summary">
                                 调用工具 <code>{t.name}</code>
                               </summary>
-                              <pre className="tool-output">{t.output}</pre>
+                              <pre className="tool-output">{toolOutputText(t.output)}</pre>
                             </details>
                           ))}
                         </div>
@@ -404,7 +417,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                   if (e.key === 'Enter') setUserId((e.target as HTMLInputElement).value)
                 }}
                 placeholder="未声明（按会话记画像）"
-                title="声明用户 ID 后，画像跨会话共享（主体 user-{id}）"
+                title="声明用户 ID 后，画像跨会话共享（账号 user-{id}）"
               />
             </span>
           </div>

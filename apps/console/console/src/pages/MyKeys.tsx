@@ -244,8 +244,8 @@ export function MyKeys({
         </Guard>
         {!caps.canAllKeys && (
           <Empty
-            title="Key 增删改待联调"
-            hint="后端尚未提供创建 / 轮换 / 吊销端点；这里不做假按钮。"
+            title="Key 新增与修改暂未开放"
+            hint="暂不支持创建 / 轮换 / 吊销；这里不做假按钮。"
           />
         )}
       </Card>

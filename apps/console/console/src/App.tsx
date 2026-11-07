@@ -95,7 +95,7 @@ const EMPTY_STATE: ApprovalUiState = {
 
 /** 页面标题。与 `lib/nav.ts` 的导航项一一对应，key 是唯一的关联方式。 */
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  overview: { title: '总览', sub: '真实运行态 —— 每一项都可追溯到后端数据源' },
+  overview: { title: '总览', sub: '真实运行状态 —— 每一项都能追溯到来源' },
   butler: { title: '鎏灏管家', sub: '你下目标，它拆解分派，给结论' },
   employees: { title: '能力注册表', sub: '14 个能力模块与 14 个执行层；只读' },
   'my-employees': { title: '我的员工', sub: '创建、调整、停用，或直接把一件事派给它' },
@@ -103,14 +103,14 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   knowledge: { title: '知识中心', sub: '服务端文档账本 —— 上传 / 分块预览 / 检索测试' },
   workbench: { title: '工作台', sub: '你自己看任务、看文件、看产出，也可以直接对话' },
   data: { title: '数据中心', sub: '审计存储的真实内容（已排除系统内部记录）' },
-  approval: { title: '审批中心', sub: '内核层拦截的人工授权 —— 需人类令牌' },
+  approval: { title: '审批中心', sub: '动作拦截与人工授权' },
   audit: { title: '审计链', sub: '真实审计事件与哈希链校验（只读）' },
   files: { title: '工作区文件', sub: 'AI 员工写出的真实产物（只读浏览 / 读取）' },
   goals: { title: '目标与任务', sub: 'AI 员工真实执行过的目标与任务分解（只读）' },
   projects: { title: '项目', sub: '把 AI 员工的目标分类到真实项目之下' },
   apps: { title: '应用', sub: '真实插件与应用 —— 由你激活' },
-  events: { title: '事件流', sub: '真实系统事件流 —— 内核总线实况' },
-  trust: { title: '信任', sub: '信任内核真实状态（只读）—— 撤销标记 / 信任分 / 自信任链' },
+  events: { title: '事件流', sub: '真实系统事件流 —— 实时记录每一次动作' },
+  trust: { title: '信任', sub: '真实信任状态（只读）—— 撤销标记 / 信任分 / 自信任链' },
   network: { title: '网络', sub: '网络总线真实状态（只读）—— 统计 / 消息历史' },
   identity: { title: '身份与权限', sub: '真实身份与权限清单（只读，可观测）' },
   status: { title: '系统状态', sub: '依赖探针与安全组件实况' },
@@ -160,6 +160,13 @@ function App() {
   const [session, setSession] = useState<Session | null>(() => getSession())
   const [active, setActive] = useState<string>(() => readInitialPage())
   const [query, setQuery] = useState('')
+  /**
+   * 为什么回到了登录页。
+   *
+   * 会话过期与被登出都会切回登录页，但"静默跳回"会让人以为页面坏了。
+   * 这里记下原因，登录页据此给出「需要重新登录」的明确提示与入口。
+   */
+  const [loginNotice, setLoginNotice] = useState<'expired' | 'logged-out' | null>(null)
 
   /**
    * 只读查看：只禁用写操作，**不切换数据源**。
@@ -274,7 +281,10 @@ function App() {
       }
       if (!info.still_human) {
         await performLogout()
-        if (alive) setSession(null)
+        if (alive) {
+          setLoginNotice('expired')
+          setSession(null)
+        }
         return
       }
       setSession((prev) =>
@@ -323,6 +333,7 @@ function App() {
 
   const doLogout = useCallback(async () => {
     await performLogout()
+    setLoginNotice('logged-out')
     setSession(null)
     setViewAs(null)
     setQuery('')
@@ -362,7 +373,12 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const onExpired = () => setSession(null)
+    const onExpired = () => {
+      // 令牌失效（过期 / 改密 / 被吊销 / 未带令牌）统一由请求层广播；
+      // 记住"这是被登出"，登录页才能说清楚为什么回来了。
+      setLoginNotice((prev) => prev ?? 'expired')
+      setSession(null)
+    }
     window.addEventListener(UNAUTHENTICATED_EVENT, onExpired)
     return () => window.removeEventListener(UNAUTHENTICATED_EVENT, onExpired)
   }, [])
@@ -449,7 +465,7 @@ function App() {
   const notifications = useMemo<OsNotification[]>(() => {
     const items: OsNotification[] = []
 
-    // 1) 登录通道是否可用（fail-closed 时没人能进来，这是最重要的一条）
+    // 1) 登录通道是否可用（没有凭据时没人能进来，这是最重要的一条）
     const config = authConfig.data
     if (config) {
       if (!config.secret_store.configured) {
@@ -457,14 +473,14 @@ function App() {
           id: 'auth-no-secret',
           tone: 'danger',
           title: '尚未配置登录凭据',
-          detail: '当前任何人都无法登录（fail-closed）。用 register_human_identity.py 设置凭据。',
+          detail: '当前没有任何账号可以登录。请先在登录页按提示完成初始化，再回到这里。',
         })
       } else if (config.login_eligible_humans === 0) {
         items.push({
           id: 'auth-no-eligible',
           tone: 'warn',
-          title: '没有可登录的人类主体',
-          detail: '凭据存储已就绪，但没有任何 ACTIVE 的人类身份设置了密码。',
+          title: '还没有可登录的账号',
+          detail: '登录凭据已就绪，但还没有账号设置密码。请在登录页完成首次设置。',
         })
       }
     } else if (authConfig.error) {
@@ -472,7 +488,7 @@ function App() {
         id: 'auth-config-error',
         tone: 'warn',
         title: '无法读取登录配置',
-        detail: authConfig.error,
+        detail: '暂时连不上本地服务，请确认启动窗口仍在运行，然后刷新重试。',
       })
     }
 
@@ -503,7 +519,7 @@ function App() {
         id: 'ready-error',
         tone: 'warn',
         title: '就绪探针不可用',
-        detail: ready.error,
+        detail: '暂时读不到各项依赖的状态，请确认启动窗口仍在运行，然后刷新重试。',
       })
     }
 
@@ -597,7 +613,16 @@ function App() {
   // ---------------------------------------------------------------------
 
   if (!session || !profile) {
-    return <Login mode={device.mode} onSuccess={setSession} />
+    return (
+      <Login
+        mode={device.mode}
+        notice={loginNotice}
+        onSuccess={(next) => {
+          setLoginNotice(null)
+          setSession(next)
+        }}
+      />
+    )
   }
 
   const meta =

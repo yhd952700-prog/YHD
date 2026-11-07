@@ -102,7 +102,7 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
     label: raw || '未知',
     tone: 'muted',
     raw,
-    note: raw ? `后端返回了未登记的任务状态「${raw}」` : '后端没有给出任务状态',
+    note: raw ? `出现了未登记的任务状态「${raw}」` : '未给出任务状态',
   }
 }
 

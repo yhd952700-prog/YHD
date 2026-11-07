@@ -199,10 +199,10 @@ export function Goals({ query }: { query: string }) {
     <div className="os-grid">
       <Card title="说明" sub="这个视图能证明什么" span={12}>
         <ul className="os-list">
-          <li>这里只读：每一项都来自后端真实的执行历史（`/v1/goals`），无缓存、无模拟。</li>
-          <li>点列表里的某一行，会按 `goal_id` 拉取它的任务分解，右侧（下方）展示每个任务的真实状态、能力与代理。</li>
+          <li>这里只读：每一项都来自真实的执行历史，无缓存、无模拟。</li>
+          <li>点列表里的某一行，会拉取它的任务分解，右侧（下方）展示每个任务的真实状态、能力与执行者。</li>
           <li>任务为空就是没有分解出任务，如实显示，不编造。</li>
-          <li>目标不存在（已被清除）或被 401 拦截时，会显示后端给的真实原因，而不是假装没数据。</li>
+          <li>目标不存在（已被清除）或被 401 拦截时，会显示真实原因，而不是假装没数据。</li>
         </ul>
       </Card>
 
@@ -300,7 +300,7 @@ export function Goals({ query }: { query: string }) {
             data={detail}
             isEmpty={(data) => data.tasks.length === 0}
             emptyTitle="此目标没有分解出任务"
-            emptyHint="后端没有为这个目标记录任何子任务。"
+            emptyHint="这个目标还没有记录任何子任务。"
           >
             {(data) => (
               <>

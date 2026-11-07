@@ -153,7 +153,7 @@ export function Backup({
         <div className="os-kv-col" style={{ marginTop: 10 }}>
           <span className="os-kv-key">为什么不能导入</span>
           <span>
-            导入会整树改写身份与数据，因此后端只允许在没有账号的新实例上执行一次；已有账号时会直接拒绝。
+            导入会整树改写身份与数据，因此只允许在没有账号的新实例上执行一次；已有账号时会直接拒绝。
           </span>
         </div>
       </Card>

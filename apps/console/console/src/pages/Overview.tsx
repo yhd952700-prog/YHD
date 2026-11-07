@@ -162,7 +162,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
             value={roster.data ? String(roster.data.totals.employees) : null}
             foot={
               roster.data
-                ? `${roster.data.totals.kernels} 内核 + ${roster.data.totals.layers} 能力层`
+                ? `${roster.data.totals.kernels} 个能力模块 + ${roster.data.totals.layers} 个能力层`
                 : '来自能力注册表'
             }
             error={roster.error}
@@ -170,7 +170,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           <Kpi
             label="运行中任务"
             value={summary.data?.sessions ? String(summary.data.sessions.count ?? 0) : null}
-            foot="网关进程内活跃会话"
+            foot="当前活跃会话"
             error={summary.error}
           />
           <Kpi

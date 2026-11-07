@@ -117,7 +117,7 @@ export function Apps({ query }: { query: string }) {
         {shown.length === 0 && !apps.loading && !apps.error ? (
           <Empty
             title={need ? '没有匹配的应用' : '暂无应用'}
-            hint="系统启动时若未注册任何内置插件，这里就是空的；可在后端 register_builtin_plugins 后刷新。"
+            hint="系统启动时若没有登记任何内置应用，这里就是空的；登记完成后再刷新即可。"
           />
         ) : (
           <Guard

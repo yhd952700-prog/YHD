@@ -55,7 +55,7 @@ export function RoleTemplates({ caps }: { caps: AccountCaps }) {
                         <span className="os-hint">{role.permissions.join(' · ')}</span>
                       </td>
                       <td>
-                        <span className="os-hint">待联调（后端未提供模板编辑）</span>
+                        <span className="os-hint">待开放（暂不支持模板编辑）</span>
                       </td>
                     </tr>
                   ))}

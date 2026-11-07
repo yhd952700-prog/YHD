@@ -85,6 +85,25 @@ function tokenFor(sub: string): string {
 }
 
 describe('登录页状态机', () => {
+  test('会话过期：明确提示需要重新登录，并指出入口就在下方', async () => {
+    render(<Login mode="desktop" notice="expired" onSuccess={vi.fn()} />)
+    const alert = await screen.findByTestId('login-notice')
+    expect(alert.textContent).toContain('登录已过期')
+    expect(alert.textContent).toContain('需要重新登录')
+    expect(alert.textContent).toContain('下方')
+    // 入口就是同一页的表单，不需要用户自己找。
+    expect(await screen.findByLabelText('账号')).toBeTruthy()
+    expectNoBannedText()
+  })
+
+  test('主动登出：同样说明需要重新登录，不静默跳回', async () => {
+    render(<Login mode="desktop" notice="logged-out" onSuccess={vi.fn()} />)
+    const alert = await screen.findByTestId('login-notice')
+    expect(alert.textContent).toContain('已退出登录')
+    expect(alert.textContent).toContain('需要重新登录')
+    expectNoBannedText()
+  })
+
   test('默认展示登录表单，并提供"登录 / 创建账户"两个平级入口', async () => {
     render(<Login mode="desktop" onSuccess={vi.fn()} />)
     expect(await screen.findByRole('tab', { name: '登录' })).toBeTruthy()

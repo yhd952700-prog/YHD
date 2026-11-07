@@ -30,6 +30,32 @@ function formatTimestamp(ts: string | null): string {
   }
 }
 
+/** 信任统计的字段名 → 人话；不在表里的字段统一归入「其他统计」，不露英文键名。 */
+const STAT_LABELS: Record<string, string> = {
+  total_entities: '已登记实体',
+  total_chain_links: '信任链条数',
+  total_events: '记录事件数',
+  revoked_entities: '已撤销实体',
+  by_trust_level: '按信任等级分布',
+}
+
+function statLabel(name: string): string {
+  return STAT_LABELS[name] ?? '其他统计'
+}
+
+/** 统计值 → 可读文本：嵌套分布展开成「L0 3 · L1 2」，不打印 JSON。 */
+function statValue(value: unknown): string {
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) return '—'
+    return entries
+      .map(([key, inner]) => `${key} ${typeof inner === 'number' ? inner : '—'}`)
+      .join(' · ')
+  }
+  return '—'
+}
+
 export function Trust({ query }: { query: string }) {
   const [entityId, setEntityId] = useState('')
   const [submitted, setSubmitted] = useState<string | null>(null)
@@ -61,13 +87,13 @@ export function Trust({ query }: { query: string }) {
 
   return (
     <div className="os-grid">
-      <Card title="信任状态查询" sub="信任内核真实状态（只读）—— 输入实体 id 查询" span={12}>
+      <Card title="信任状态查询" sub="真实信任状态（只读）—— 输入实体标识查询" span={12}>
         <div className="os-form">
           <label className="os-field">
-            <span className="os-field-label">实体 id</span>
+            <span className="os-field-label">实体标识</span>
             <input
               className="os-input"
-              placeholder="实体 id（例如 agent / 员工名）"
+              placeholder="实体标识（例如员工名）"
               value={entityId}
               onChange={(e) => setEntityId(e.target.value)}
               onKeyDown={(e) => {
@@ -82,19 +108,19 @@ export function Trust({ query }: { query: string }) {
         {resolvedId && <p className="os-hint">当前查询：{resolvedId}</p>}
       </Card>
 
-      <Card title="实体概览" sub="真实撤销标记与回显的实体 id" span={12}>
+      <Card title="实体概览" sub="真实撤销标记与查询的实体标识" span={12}>
         <Guard
           loading={loading}
           error={error}
           data={data}
           isEmpty={(d) => d.entity_id !== resolvedId}
           emptyTitle="尚未查询"
-          emptyHint="在上方输入一个实体 id 并点击「查询」，即可看到它在信任内核里的真实状态。"
+          emptyHint="在上方输入一个实体标识并点击「查询」，即可看到它在系统里的真实信任状态。"
         >
           {(d) => (
             <div className="os-kv">
               <div className="os-kv-row">
-                <span className="os-kv-key">实体 id</span>
+                <span className="os-kv-key">实体标识</span>
                 <span className="os-kv-value">{d.entity_id}</span>
               </div>
               <div className="os-kv-row">
@@ -123,17 +149,17 @@ export function Trust({ query }: { query: string }) {
           data={data}
           isEmpty={(d) => d.entity_id !== resolvedId}
           emptyTitle="尚未查询"
-          emptyHint="在上方输入一个实体 id 并点击「查询」。"
+          emptyHint="在上方输入一个实体标识并点击「查询」。"
         >
           {(d) =>
             Object.keys(d.scores).length === 0 ? (
-              <Empty title="该实体暂无信任分" hint="信任内核没有为它登记任何作用域分数。" />
+              <Empty title="该实体暂无信任分" hint="系统没有为它登记任何层级的信任分。" />
             ) : (
               <div className="os-table-wrap">
                 <table className="os-table">
                   <thead>
                     <tr>
-                      <th>作用域</th>
+                      <th>信任层级</th>
                       <th>等级</th>
                       <th>分数</th>
                       <th>有效期至</th>
@@ -158,56 +184,65 @@ export function Trust({ query }: { query: string }) {
         </Guard>
       </Card>
 
-      <Card title="自信任链探针" sub="source == target == 实体 id 的真实链结果" span={12}>
+      <Card title="自信任链探针" sub="以自身为起点与终点的真实链结果" span={12}>
         <Guard
           loading={loading}
           error={error}
           data={data}
           isEmpty={(d) => d.entity_id !== resolvedId}
           emptyTitle="尚未查询"
-          emptyHint="在上方输入一个实体 id 并点击「查询」。"
+          emptyHint="在上方输入一个实体标识并点击「查询」。"
         >
           {(d) =>
             d.chain_summary ? (
               <div className="os-kv">
                 <div className="os-kv-row">
-                  <span className="os-kv-key">source</span>
+                  <span className="os-kv-key">来源</span>
                   <span className="os-kv-value">{d.chain_summary.source}</span>
                 </div>
                 <div className="os-kv-row">
-                  <span className="os-kv-key">target</span>
+                  <span className="os-kv-key">目标</span>
                   <span className="os-kv-value">{d.chain_summary.target}</span>
                 </div>
                 <div className="os-kv-row">
-                  <span className="os-kv-key">composite_score</span>
+                  <span className="os-kv-key">综合得分</span>
                   <span className="os-kv-value">{d.chain_summary.composite_score}</span>
                 </div>
                 <div className="os-kv-row">
-                  <span className="os-kv-key">valid</span>
+                  <span className="os-kv-key">是否有效</span>
                   <span className="os-kv-value">{d.chain_summary.valid ? '是' : '否'}</span>
                 </div>
                 <div className="os-kv-row">
-                  <span className="os-kv-key">computed_at</span>
+                  <span className="os-kv-key">计算时间</span>
                   <span className="os-kv-value">{formatTimestamp(d.chain_summary.computed_at)}</span>
                 </div>
               </div>
             ) : (
-              <Empty title="无链可查" hint="信任内核没有该实体的任何链。" />
+              <Empty title="无链可查" hint="系统没有该实体的任何信任链。" />
             )
           }
         </Guard>
       </Card>
 
-      <Card title="管理器统计" sub="manager.stats() 的真实统计" span={12}>
+      <Card title="运行统计" sub="真实的信任状态统计" span={12}>
         <Guard
           loading={loading}
           error={error}
           data={data}
           isEmpty={(d) => d.entity_id !== resolvedId}
           emptyTitle="尚未查询"
-          emptyHint="在上方输入一个实体 id 并点击「查询」。"
+          emptyHint="在上方输入一个实体标识并点击「查询」。"
         >
-          {(d) => <pre className="os-pre">{JSON.stringify(d.stats, null, 2)}</pre>}
+          {(d) => (
+            <div className="os-kv">
+              {Object.entries(d.stats ?? {}).map(([key, value]) => (
+                <div className="os-kv-row" key={key}>
+                  <span className="os-kv-key">{statLabel(key)}</span>
+                  <span className="os-kv-value">{statValue(value)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </Guard>
       </Card>
     </div>

@@ -47,4 +47,28 @@ describe('后端错误文案可读化', () => {
     expect(failure.message).toContain('无法连接到鎏灏服务')
     expect(failure.message).toContain('重试')
   })
+
+  test.each([
+    'FileNotFoundError: [Errno 2] No such file or directory',
+    'ECONNREFUSED 127.0.0.1:8787',
+    'Internal Server Error',
+    'unknown_kernel',
+  ])('英文异常与机器串不上屏：%s', (detail) => {
+    const failure = describeFailure({ detail }, 400, '', null)
+    // 400 没有专用兜底，走中性中文；正文里不允许出现英文异常原文。
+    expect(failure.message).not.toContain(detail)
+    expect(failure.message).toMatch(/[\u4e00-\u9fff]/)
+  })
+
+  test('对象形式的 detail 只取中文说明，不拼英文键名', () => {
+    const failure = describeFailure(
+      { detail: { code: 'agent_unavailable', message: '员工已停用，无法接受指派' } },
+      409,
+      '',
+      null,
+    )
+    expect(failure.message).toBe('员工已停用，无法接受指派')
+    expect(failure.code).toBe('agent_unavailable')
+    expect(failure.message).not.toContain('agent_unavailable')
+  })
 })

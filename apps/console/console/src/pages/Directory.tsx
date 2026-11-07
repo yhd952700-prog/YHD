@@ -97,7 +97,7 @@ export function Roster({ query }: { query: string }) {
         </Guard>
       </Card>
 
-      <Card title="大脑地图" sub="14 内核按职责域分布" span={3}>
+      <Card title="大脑地图" sub="14 个能力模块按职责域分布" span={3}>
         <Guard
           loading={roster.loading}
           error={roster.error}
@@ -152,7 +152,7 @@ export function Roster({ query }: { query: string }) {
               data-tone={tab === 'kernels' ? 'accent' : 'muted'}
               onClick={() => setTab('kernels')}
             >
-              内核 {roster.data?.totals.kernels ?? 0}
+              能力模块 {roster.data?.totals.kernels ?? 0}
             </button>
             <button
               className="os-badge"

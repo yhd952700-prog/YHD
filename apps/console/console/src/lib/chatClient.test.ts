@@ -17,7 +17,7 @@ describe('friendlyChatError', () => {
 
   test('网络不可达', () => {
     expect(friendlyChatError(new TypeError('Failed to fetch')).text).toBe(
-      '无法连接到后端服务，请确认服务已启动',
+      '无法连接到本地服务，请确认服务已启动',
     )
   })
 

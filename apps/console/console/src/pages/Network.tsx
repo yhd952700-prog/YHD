@@ -42,7 +42,7 @@ export function Network({ query: _query }: { query: string }) {
 
   return (
     <div className="os-grid">
-      <Card title="网络总线状态" sub="网络内核真实状态（只读）—— 总线统计与消息历史" span={12}>
+      <Card title="网络总线状态" sub="网络总线真实状态（只读）—— 统计与消息历史" span={12}>
         <div className="os-form">
           <button className="os-btn os-btn-primary" onClick={load} disabled={loading}>
             {loading ? '刷新中…' : '刷新'}
@@ -75,7 +75,7 @@ export function Network({ query: _query }: { query: string }) {
         >
           {(d) =>
             d.history.length === 0 ? (
-              <Empty title="总线暂无消息" hint="网络内核进程启动后还没有任何消息经过总线。" />
+              <Empty title="总线暂无消息" hint="网络服务启动后还没有任何消息经过总线。" />
             ) : (
               <div className="os-table-wrap">
                 <table className="os-table">

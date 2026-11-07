@@ -186,7 +186,7 @@ export function MyEmployees({ query }: { query: string }) {
             </div>
           ) : seed ? (
             <div className="os-emp-meta">
-              系统默认员工：网关依赖它执行内部任务，不能改名、停用或删除。
+              系统默认员工：服务依赖它执行内部任务，不能改名、停用或删除。
             </div>
           ) : (
             <>
@@ -416,13 +416,13 @@ export function MyEmployees({ query }: { query: string }) {
           </div>
 
           <div className="os-field" style={{ marginTop: 10 }}>
-            <span>默认能力（可多选，只能选后端已注册的能力）</span>
+            <span>默认能力（可多选，只能选已登记的能力）</span>
             {catalogApi.error ? (
               <p className="os-kb-error">能力清单不可用：{catalogApi.error}</p>
             ) : catalogApi.loading ? (
               <p className="os-hint">正在读取可用能力…</p>
             ) : catalog.length === 0 ? (
-              <p className="os-hint">后端没有返回可用能力；可以先创建员工，之后再补。</p>
+              <p className="os-hint">暂时没有可用能力；可以先创建员工，之后再补。</p>
             ) : (
               <div className="os-emp-actions" style={{ marginTop: 6 }}>
                 {catalog.map((item) => (

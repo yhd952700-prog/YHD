@@ -380,7 +380,7 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
       background: true,
     })
 
-    await waitFor(() => expect(screen.getByText(/执行主体：小鎏/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/执行者：小鎏/)).toBeTruthy())
     expect(screen.getByText('员工汇总（按真实任务归属统计）')).toBeTruthy()
     expect(screen.getByText(/小鎏 · 做了 2 项 · 成功 2 · 失败 0 · 合计耗时 9\.0 秒/)).toBeTruthy()
   })
@@ -526,7 +526,7 @@ describe('鎏灏管家 · 单独指派', () => {
     })
     expect(assignBodies[0].agent_id).toBeUndefined()
 
-    await waitFor(() => expect(screen.getByText(/执行主体：小鎏/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/执行者：小鎏/)).toBeTruthy())
   })
 
   test('agent_not_found 与 agent_unavailable 给出不同下一步', async () => {
@@ -566,7 +566,7 @@ describe('鎏灏管家 · 待我确认', () => {
     const approve = within(card).getByRole('button', { name: '采用此请求体批准' })
     // target=* 必须先显式确认覆盖所有目标。
     expect((approve as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(within(card).getByLabelText(/覆盖所有目标/))
+    fireEvent.click(within(card).getByLabelText(/覆盖全部对象/))
     expect((approve as HTMLButtonElement).disabled).toBe(false)
 
     fireEvent.click(approve)

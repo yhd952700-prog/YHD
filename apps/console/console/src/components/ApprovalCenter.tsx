@@ -61,7 +61,7 @@ function TokenRow({ state, actions }: { state: ApprovalUiState; actions: Approva
           type="password"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="粘贴审批令牌（Bearer JWT）"
+          placeholder="粘贴审批令牌"
           autoComplete="off"
         />
         <button
@@ -85,17 +85,13 @@ function TokenRow({ state, actions }: { state: ApprovalUiState; actions: Approva
       <div className="approval-token-hint">
         {state.token ? (
           state.authed ? (
-            <>
-              已认证 —— 主体取自令牌的 <code>sub</code>，请求体无法指定。
-            </>
+            <>已认证 —— 身份来自你粘贴的令牌，页面上无法改成别人。</>
           ) : (
-            <>已保存令牌，但后端未接受（见下方错误）。</>
+            <>已保存令牌，但服务端没有接受（见下方提示）。</>
           )
         ) : (
           <>
-            未认证。用{' '}
-            <code>python scripts/issue_console_token.py --principal &lt;id&gt;</code>{' '}
-            签发后粘贴。令牌只存 sessionStorage，关标签页即丢弃。
+            未认证。请先获取审批令牌，再粘贴到这里；令牌只保存在本标签页，关闭即丢弃。
           </>
         )}
       </div>
@@ -109,7 +105,7 @@ function Posture({ snap }: { snap: EnforcementSnapshot }) {
   return (
     <div className="approval-posture">
       <div className="approval-posture-head">
-        <span className="approval-label">内核层拦截态势</span>
+        <span className="approval-label">动作拦截态势</span>
         <span className={`health-pill ${snap.config_error ? 'bad' : snap.enabled ? 'warn' : 'ok'}`}>
           {state}
         </span>
@@ -117,23 +113,25 @@ function Posture({ snap }: { snap: EnforcementSnapshot }) {
       <ul className="health-list">
         <li>
           <span className="health-dot" />
-          <span className="health-name">开关</span>
-          <span className="health-val">{snap.env_var}</span>
+          <span className="health-name">拦截开关</span>
+          <span className="health-val">{snap.enabled ? '已开启' : '未开启'}</span>
         </li>
         <li>
           <span className="health-dot" />
-          <span className="health-name">选择</span>
-          <span className="health-val">{snap.spec || '(空 = 不开启)'}</span>
+          <span className="health-name">生效方式</span>
+          <span className="health-val">
+            {snap.enabled ? '按清单拦截' : '只记录，不拦截'}
+          </span>
         </li>
         <li>
           <span className="health-dot" />
-          <span className="health-name">武装动作</span>
+          <span className="health-name">已拦截动作</span>
           <span className="health-val">{snap.count} 个</span>
         </li>
       </ul>
       {snap.config_error && (
         <div className="approval-error">
-          配置错误：{snap.config_error}（HIGH/CRITICAL 动作将被拒绝）
+          拦截配置有误，高风险动作会被拒绝。请检查配置后重试。
         </div>
       )}
       {snap.count > 0 && (
@@ -165,7 +163,7 @@ function GrantList({
   onRevoke: (grantId: string) => void
 }) {
   if (grants.length === 0) {
-    return <div className="profile-empty">当前没有有效凭据（后端真实返回为空）</div>
+    return <div className="profile-empty">当前没有有效凭据</div>
   }
   return (
     <ul className="approval-grants">
@@ -231,7 +229,7 @@ export function ApprovalCenter({
         <Posture snap={state.snap} />
       ) : (
         <div className="profile-empty">
-          未认证时无法读取拦截态势 —— 该快照会暴露**未受管**的动作集合，后端刻意要求令牌。
+          未认证时看不到拦截态势 —— 这是服务端的保护措施，不是读取失败。
         </div>
       )}
 
@@ -239,14 +237,9 @@ export function ApprovalCenter({
         <>
           {state.machineIdentity && (
             <div className="approval-warn">
-              当前令牌的主体 <b>{state.machineIdentity}</b> 是内置机器身份，
-              自 Policy C-7 起<b>无法持有主权</b>：内核判据已改为正向白名单
-              （须 <code>metadata.kind == "human"</code>），所以「记录授权」会被
-              内核以 400 拒绝，而不是被记录到机器名下（OD-010）。
+              当前使用的是内置服务账号 <b>{state.machineIdentity}</b>，它不能签发人工授权。
               <br />
-              需要改为已登记的人类主体：
-              <code>scripts/register_human_identity.py --principal &lt;name&gt;</code>，
-              再用 <code>scripts/issue_console_token.py</code> 重新签发。
+              请改用你自己的账号登录，再回来记录授权。
             </div>
           )}
 
@@ -274,8 +267,8 @@ export function ApprovalCenter({
                 setTarget(e.target.value)
                 setWildcardConfirmed(false)
               }}
-              placeholder="授权目标（target，必填）"
-              title="该凭据只对这一个 target 生效；要授权全部 target 需填 * 并二次确认"
+              placeholder="授权对象（必填）"
+              title="该授权只对这一个对象生效；要覆盖全部对象需填写 * 并二次确认"
             />
             <input
               className="profile-input"
@@ -299,7 +292,7 @@ export function ApprovalCenter({
                   checked={wildcardConfirmed}
                   onChange={(e) => setWildcardConfirmed(e.target.checked)}
                 />
-                确认对<b>全部 target</b>授权（通配 “*”，高危，需二次确认）
+                确认对<b>全部对象</b>授权（通配 “*”，风险较高，需二次确认）
               </label>
             )}
             <button
@@ -308,21 +301,20 @@ export function ApprovalCenter({
                 actions.onIssue(selected, trimmedTarget, reason, ttl, isWildcard && wildcardConfirmed)
               }
               disabled={state.busy || !canIssue}
-              title="记录授权（不是「放行」——执行仍需在 grant_window(grant, target=…) 内进行）"
+              title="记录一次授权；记录本身不会放行执行"
             >
               记录授权
             </button>
           </div>
 
           <div className="approval-note">
-            凭据是**审计化授权记录**，不是通行证。后端刻意不提供「用凭据在 HTTP 上执行内核动作」
-            的入口（设计决策 §10.8.3-1），所以签发后重试同一请求仍会得到 409 ——
-            执行须由能力层在同进程内于 <code>grant_window(grant, target=…)</code> 中完成。
+            凭据是一条可审计的授权记录，不是通行证。签发后再重试同一请求仍可能被拒绝；
+            真正执行要由执行方在授权有效期内完成。
           </div>
         </>
       )}
 
-      {state.error && <div className="approval-error">错误：{state.error}</div>}
+      {state.error && <div className="approval-error">读取失败：{state.error}</div>}
       {state.busy && <div className="approval-busy">读取中…</div>}
     </div>
   )

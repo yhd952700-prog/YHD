@@ -14,7 +14,7 @@ import type { ReactElement } from 'react'
 import type { DeviceMode, DeviceModeState, Theme } from '../lib/mode'
 import { DEVICE_MODES, MODE_HINTS, MODE_LABELS } from '../lib/mode'
 import type { Session } from '../lib/auth'
-import { humanDuration, toneVar, useNow } from '../lib/format'
+import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
 import { Card, Dot } from '../components/ui'
 import { ModelManager } from '../components/ModelManager'
@@ -145,6 +145,9 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
         span={12}
       >
         <ModelManager session={session} />
+        <p className="os-hint">
+          现在不想配也可以：先跳过，界面照样能浏览；之后回到这里补上 Key 即可。
+        </p>
       </Card>
 
       <Card title="外观主题" sub="可跟随形态，也可手动指定" span={6}>
@@ -193,12 +196,12 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
 
       <Card title="当前会话" sub="令牌由服务端签发与校验，前端只保存不决策" span={6}>
         <dl className="os-kv">
-          <dt>主体</dt>
+          <dt>账号</dt>
           <dd>{session.principal || '—'}</dd>
           <dt>显示名</dt>
           <dd>{session.displayName || '—'}</dd>
           <dt>身份范围</dt>
-          <dd>{session.scope ? `${session.scope} · 人类主权` : '—'}</dd>
+          <dd>{session.scope ? '全部权限' : '—'}</dd>
           <dt>登录来源端</dt>
           <dd>{MODE_LABELS[session.client] ?? session.client}</dd>
           <dt>会话剩余</dt>
@@ -210,8 +213,8 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
           <dt>凭据权限</dt>
           <dd>
             {session.permissions.length > 0
-              ? session.permissions.join(' / ')
-              : '（无附加 scope）'}
+              ? session.permissions.map(permissionLabel).join(' / ')
+              : '（无额外权限）'}
           </dd>
         </dl>
         <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
@@ -266,6 +269,9 @@ export function Settings({ device, session, notifications, onLogout }: SettingsP
             )}
           </>
         )}
+        <p className="os-hint">
+          启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台会断开连接。
+        </p>
       </Card>
 
       <Card title="遇到问题" sub="导出排障信息 —— 先看清包含什么，再决定发给谁" span={12}>

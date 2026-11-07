@@ -129,7 +129,7 @@ export function Files({ query }: { query: string }) {
     <div className="os-grid">
       <Card
         title={selected ? `文件内容 · ${selected}` : `目录浏览 · ${currentPath || '工作区根'}`}
-        sub="只读面 —— 写仍由 AI 员工的 file_write 工具经执行围栏完成"
+        sub="只读面 —— 写入由 AI 员工自己完成，这里只负责浏览"
         span={selected ? 8 : 12}
         action={
           selected ? (
@@ -224,7 +224,7 @@ export function Files({ query }: { query: string }) {
       </Card>
 
       {selected && content && !contentError && (
-        <Card title="内容预览" sub="UTF-8 文本；二进制或超大文件由后端拒绝并说明原因" span={4}>
+        <Card title="内容预览" sub="UTF-8 文本；二进制或超大文件会被拒绝并说明原因" span={4}>
           <pre className="os-code-block">{content.content}</pre>
         </Card>
       )}
@@ -232,13 +232,13 @@ export function Files({ query }: { query: string }) {
       {!selected && (
         <Card title="说明" sub="这个视图能证明什么" span={12}>
           <ul className="os-list">
-            <li>列出的每一项都来自工作区真实文件系统，由后端实时 enum，无缓存、无模拟。</li>
+            <li>列出的每一项都来自工作区真实文件系统，实时读取，无缓存、无模拟。</li>
             <li>点目录进入、点文件读取；右侧预览区只在真实读回文本后出现。</li>
             <li>
-              越界路径（如 <code>../</code> 逃逸）会被后端拒绝；文件不存在、体积过大、或内容不是
+              越界路径（如 <code>../</code> 逃逸）会被拒绝；文件不存在、体积过大、或内容不是
               文本时，同样会如实说明原因，不会伪装成空内容。
             </li>
-            <li>整个面只读：没有任何写入口，写仍由 AI 员工的 file_write 工具经执行围栏完成。</li>
+            <li>整个面只读：没有任何写入口；写入由 AI 员工自己完成。</li>
           </ul>
           {listing.data && listing.data.count === 0 && (
             <Empty

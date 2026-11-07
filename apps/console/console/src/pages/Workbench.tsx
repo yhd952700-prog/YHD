@@ -28,10 +28,21 @@ export function Workbench({
       <div className="os-span-12">
         <div className="os-position" role="note">
           <span>
-            <strong>工作台</strong>：你自己看任务、看文件、看产出，也可以直接对话。
+            <strong>工作台</strong>：你自己看任务、看文件、看产出，也可以直接在下方输入框对话。
             想让管家替你拆解目标，去「鎏灏管家」。
           </span>
           <span className="os-position-links">
+            <button
+              className="os-btn os-btn-primary"
+              style={{ width: 'auto' }}
+              onClick={() => {
+                const wrap = document.querySelector('.jarvis-input-wrap')
+                wrap?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                wrap?.querySelector('textarea')?.focus()
+              }}
+            >
+              开始对话
+            </button>
             <button className="os-link" onClick={() => onNavigate('goals')}>
               看任务
             </button>
@@ -47,7 +58,7 @@ export function Workbench({
 
       <Card
         title="直接对话"
-        sub="真实流式对话；工具调用原样展示，不做摘要或美化"
+        sub="在下面输入框里提问，回车发送；工具调用原样展示，不做摘要或美化"
         span={12}
         className="sc-panel-active sc-hud"
       >

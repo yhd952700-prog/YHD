@@ -42,13 +42,7 @@ function FindingRow({ finding }: { finding: PreflightFinding }) {
         style={{ background: `var(--os-${severityTone(finding.severity)})` }}
       />
       <div className="os-row-main">
-        <div className="os-row-title">
-          {/* code 是机器可读判据，key 是被检查的变量 —— 两个都显示，
-              因为运维拿到其中任何一个都要能对照后端日志。 */}
-          <code>{finding.code}</code>
-          <span className="os-row-tail"> · {finding.key}</span>
-        </div>
-        <div className="os-row-sub">{finding.message}</div>
+        <div className="os-row-title">{finding.message}</div>
       </div>
       <span className="os-badge" data-tone={severityTone(finding.severity)}>
         {finding.severity === 'warning' ? '警告' : '严重'}
@@ -141,7 +135,7 @@ export function Preflight() {
           data={data}
           isEmpty={(payload) => payload.findings.length === 0}
           emptyTitle="没有任何配置发现"
-          emptyHint="既无 critical 也无 warning 项。"
+          emptyHint="既无严重项，也无提醒项。"
           onRetry={preflight.reload}
         >
           {(payload) => (
@@ -155,13 +149,13 @@ export function Preflight() {
                 ))}
               </div>
               <div className="os-legend" style={{ marginTop: 10 }}>
-                <Dot tone="danger" label={<>严重 critical · {payload.critical_count}</>} />
-                <Dot tone="warn" label={<>警告 warning · {payload.warning_count}</>} />
+                <Dot tone="danger" label={<>严重项 · {payload.critical_count}</>} />
+                <Dot tone="warn" label={<>提醒项 · {payload.warning_count}</>} />
               </div>
-              {/* 一句话说清 ok 的判据，避免读者把 warning 也当成阻塞。 */}
+              {/* 一句话说清判定规则，避免读者把提醒项也当成阻塞。 */}
               <p className="os-note" style={{ marginTop: 8 }}>
                 <span>
-                  ok = 没有 critical 项（warning 不影响 ok）。
+                  判定通过 = 没有严重项（提醒项不影响判定）。
                 </span>
               </p>
             </>
@@ -185,7 +179,7 @@ export function Preflight() {
             <div className="os-row-main">
               <div className="os-row-title">不显示配置值</div>
               <div className="os-row-sub">
-                后端只下发键名与代码；密钥内容永远不会出现在这个响应里。
+                只显示键名与代码；密钥内容永远不会出现在这个响应里。
               </div>
             </div>
           </div>
@@ -194,16 +188,16 @@ export function Preflight() {
             <div className="os-row-main">
               <div className="os-row-title">不推断运行姿态</div>
               <div className="os-row-sub">
-                APP_ENV 为空只代表未声明，不代表非生产；真实姿态由 posture 裁决。
+                环境变量为空只代表没有声明，不代表不是生产环境；真实运行姿态由服务端判定。
               </div>
             </div>
           </div>
           <div className="os-row">
             <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
             <div className="os-row-main">
-              <div className="os-row-title">需要人类令牌</div>
+              <div className="os-row-title">需要登录后查看</div>
               <div className="os-row-sub">
-                端点受 require_human_principal 保护，无令牌返回 401。
+                这一页只有登录后才能读取；未登录时会提示先登录。
               </div>
             </div>
           </div>

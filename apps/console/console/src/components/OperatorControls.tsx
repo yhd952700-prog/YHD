@@ -185,12 +185,12 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
         </div>
       </div>
       <div className="os-field">
-        <label>范围</label>
+        <label>权限范围</label>
         <div className="os-input">
           <select value={scope} onChange={(e) => setScope(e.target.value)}>
             {['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7'].map((s) => (
               <option key={s} value={s}>
-                {s}
+                {s} 级
               </option>
             ))}
           </select>
@@ -200,8 +200,8 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
         <label>计划模式</label>
         <div className="os-input">
           <select value={planMode} onChange={(e) => setPlanMode(e.target.value)}>
-            <option value="auto">auto</option>
-            <option value="manual">manual</option>
+            <option value="auto">自动</option>
+            <option value="manual">手动</option>
           </select>
         </div>
       </div>
@@ -237,7 +237,7 @@ export function CreateGoalForm({ onDone }: { onDone: () => void }) {
         </div>
       </div>
       <button className="os-btn" disabled={busy} onClick={() => void submit()}>
-        {busy ? '创建中…' : '创建 Goal'}
+        {busy ? '创建中…' : '创建目标'}
       </button>
       {ok && !error && <span className="os-row-sub" style={{ color: 'var(--os-ok)' }}>已创建</span>}
       {error && <span className="os-row-sub" style={{ color: 'var(--os-danger)' }}>{error}</span>}
