@@ -15,7 +15,11 @@ import os
 import threading
 from collections import defaultdict, deque
 
-from src.common.atomic_write import atomic_write_text, exclusive_file_lock
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 
 from .providers import BaseProvider, get_provider
 try:
@@ -815,8 +819,7 @@ Example output format:
         if not os.path.exists(path):
             return {}
         try:
-            with open(path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = json.loads(read_text_with_retry(path))
         except Exception as exc:  # noqa: BLE001 - corrupt state must fail closed
             raise PlannerStateError(
                 f"读取任务图状态失败（{path}）：{type(exc).__name__}: {exc}；"
@@ -913,8 +916,7 @@ Example output format:
         resolved = path or cls._default_state_path()
         if not os.path.exists(resolved):
             raise FileNotFoundError(f"planner state not found: {resolved}")
-        with open(resolved, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = json.loads(read_text_with_retry(resolved))
 
         graph = cls(**init_kwargs)
         goal_data = data.get("goals")

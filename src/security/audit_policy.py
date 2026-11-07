@@ -34,6 +34,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
 from src.common.hash_chain import HASH_ALGORITHMS as _CHAIN_HASH_ALGORITHMS
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 from src.security.persistence_health import (
     ALERTING_STATES,
     PersistenceHealth,
@@ -42,6 +47,9 @@ from src.security.persistence_health import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: HWM 文件是单调计数器：多实例并发保存时必须串行 + 取最大值。
+_HWM_WRITE_LOCK = threading.Lock()
 
 
 class AuditEventType(str, Enum):
@@ -227,8 +235,7 @@ class AuditKernel:
         if not self._hwm_path:
             return 0
         try:
-            with open(self._hwm_path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = json.loads(read_text_with_retry(self._hwm_path))
             if isinstance(data, dict):
                 val = data.get("entries_ever_written")
                 if isinstance(val, int) and val >= 0:
@@ -253,22 +260,28 @@ class AuditKernel:
         if not self._hwm_path:
             return
         with self._lock:
-            try:
-                payload = {"entries_ever_written": self._entries_ever_written}
-                tmp = f"{self._hwm_path}.tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh)
+            with _HWM_WRITE_LOCK:
                 try:
-                    os.chmod(tmp, 0o600)
-                except OSError:
-                    pass
-                os.replace(tmp, self._hwm_path)
-                try:
-                    os.chmod(self._hwm_path, 0o600)
-                except OSError:
-                    pass
-            except Exception as exc:  # noqa: BLE001 - fail-open on any HWM error
-                logger.warning("Failed to save HWM file %s: %s", self._hwm_path, exc)
+                    with exclusive_file_lock(
+                        f"{self._hwm_path}.lock", description="审计 HWM"
+                    ):
+                        # 单调合并：另一个进程可能已经写到更高计数，绝不能写小。
+                        value = max(
+                            self._entries_ever_written, self._load_hwm()
+                        )
+                        atomic_write_text(
+                            self._hwm_path,
+                            json.dumps({"entries_ever_written": value}),
+                        )
+                        try:
+                            os.chmod(self._hwm_path, 0o600)
+                        except OSError:
+                            pass
+                        self._entries_ever_written = value
+                except Exception as exc:  # noqa: BLE001 - fail-open (telemetry)
+                    logger.warning(
+                        "Failed to save HWM file %s: %s", self._hwm_path, exc
+                    )
 
     @property
     def dropped_count(self) -> int:

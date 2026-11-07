@@ -30,7 +30,11 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from src.common.atomic_write import atomic_write_bytes, exclusive_file_lock
+from src.common.atomic_write import (
+    atomic_write_bytes,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,8 +271,7 @@ class APIKeyManager:
         if not self._storage_path or not os.path.exists(self._storage_path):
             return {}
         try:
-            with open(self._storage_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = json.loads(read_text_with_retry(self._storage_path))
         except Exception as exc:  # noqa: BLE001 - corrupt registry must fail closed
             raise APIKeyStoreError(
                 f"API key 注册表读取失败（{self._storage_path}）："
@@ -356,8 +359,7 @@ class APIKeyManager:
         if not self._storage_path or not os.path.exists(self._storage_path):
             return
         try:
-            with open(self._storage_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = json.loads(read_text_with_retry(self._storage_path))
         except (OSError, json.JSONDecodeError):
             return
         for item in payload.get("keys", []):

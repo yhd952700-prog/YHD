@@ -37,6 +37,36 @@ _REPLACE_RETRY_CAP = 0.5
 #: 跨实例写锁的默认等待上限（秒）。超时抛 ``TimeoutError``，不静默续写。
 DEFAULT_LOCK_TIMEOUT_SECONDS = 15.0
 
+#: 读取时的短重试：Windows 上另一个进程正在 ``os.replace`` 时，打开目标
+#: 文件可能瞬时返回共享冲突（Errno 13）。只重试，不改变"读不到就报错"。
+_READ_ATTEMPTS = 8
+_READ_RETRY_DELAY = 0.02
+
+
+def read_text_with_retry(
+    path: str | os.PathLike[str], encoding: str = "utf-8"
+) -> str:
+    """读取整个文件，跨过 replace 造成的瞬时共享冲突。
+
+    ``FileNotFoundError`` 原样抛出（调用方用它判断"还没有文件"）；其它
+    ``OSError`` 短暂重试后仍失败则抛出，绝不返回半截内容。
+    """
+    last: OSError | None = None
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            with open(path, "r", encoding=encoding) as handle:
+                return handle.read()
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            last = exc
+            if attempt + 1 >= _READ_ATTEMPTS:
+                break
+            time.sleep(min(_READ_RETRY_DELAY * (attempt + 1), 0.2))
+    assert last is not None
+    raise last
+
+
 
 def _replace_with_retry(tmp: Path, target: Path) -> None:
     """``os.replace`` with a bounded retry for transient Windows sharing errors."""
@@ -78,10 +108,16 @@ def exclusive_file_lock(
     handle = open(lock_path, "a+b")
     acquired = False
     try:
-        handle.seek(0)
-        if handle.read(1) == b"":
-            handle.write(b"0")
-            handle.flush()
+        # Windows 的 region lock 也阻止**读**被锁的字节：不能在持锁期间用
+        # ``read(1)`` 判断文件是否为空（另一个进程持锁时这里会直接抛
+        # PermissionError）。用 fstat 看大小，必要时抢占写入一个占位字节；
+        # 抢不到说明别的进程已持锁，直接进入等锁循环即可。
+        try:
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"0")
+                handle.flush()
+        except OSError:
+            pass
         deadline = time.monotonic() + timeout
         while True:
             try:

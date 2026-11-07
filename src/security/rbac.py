@@ -11,11 +11,21 @@ Provides:
 
 import json
 import secrets
+import threading
 import time
 from typing import Optional, Dict, Any, Set, List
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
+
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
+
+#: 同进程内多个 RBAC manager 实例（以及多 worker 进程）的写入串行锁。
+_PROCESS_WRITE_LOCK = threading.Lock()
 
 
 class PermissionAction(Enum):
@@ -315,7 +325,7 @@ class RBACManager:
         store = Path(self.store_path)
         if store.exists():
             try:
-                data = json.loads(store.read_text(encoding="utf-8"))
+                data = json.loads(read_text_with_retry(self.store_path))
                 for role_data in data.get("roles", []):
                     role = Role.from_dict(role_data, self)
                     role._rbac_manager = self
@@ -325,15 +335,37 @@ class RBACManager:
 
         self._loaded = True
 
-    def _save(self) -> None:
-        """Persist RBAC data to storage"""
-        data = {
-            "version": 1,
-            "saved_at": time.time(),
-            "roles": [role.to_dict() for role in self._roles.values()],
-        }
-        Path(self.store_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(self.store_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    def _save(self, deleted_ids: Set[str] = frozenset()) -> None:
+        """Persist RBAC data to storage.
+
+        读-改-写事务：进程锁 → OS 文件锁 → 锁内重读磁盘 → 按 role id 合并
+        （同 id 以内存为准，磁盘上其它进程刚创建的角色保留）→ 原子替换。
+        ``deleted_ids`` 显式排除已删除角色，避免被磁盘旧快照复活。
+        """
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(
+                f"{self.store_path}.lock", description="RBAC 存储"
+            ):
+                roles: Dict[str, Any] = {}
+                store = Path(self.store_path)
+                if store.exists():
+                    disk = json.loads(read_text_with_retry(store))
+                    if isinstance(disk, dict):
+                        for item in disk.get("roles", []):
+                            if isinstance(item, dict) and item.get("id"):
+                                roles[item["id"]] = item
+                for role_id in deleted_ids:
+                    roles.pop(role_id, None)
+                for role in self._roles.values():
+                    roles[role.id] = role.to_dict()
+                data = {
+                    "version": 1,
+                    "saved_at": time.time(),
+                    "roles": list(roles.values()),
+                }
+                atomic_write_text(
+                    str(self.store_path), json.dumps(data, indent=2)
+                )
 
     # ==================== Role Management ====================
 
@@ -427,7 +459,7 @@ class RBACManager:
                 r.child_ids.remove(role_id)
 
         del self._roles[role_id]
-        self._save()
+        self._save(deleted_ids={role_id})
         return True
 
     # ==================== Permission Management ====================

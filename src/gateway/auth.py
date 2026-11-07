@@ -63,7 +63,11 @@ from typing import Any, Dict, Iterator, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from src.common.atomic_write import atomic_write_text, exclusive_file_lock
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 
 from .policy import extract_bearer_token, require_bearer_payload
 
@@ -250,8 +254,7 @@ class SecretStore:
         if not self.available():
             return {}
         try:
-            with open(self.path, "r", encoding="utf-8") as handle:
-                document = json.load(handle)
+            document = json.loads(read_text_with_retry(self.path))
         except Exception as exc:  # noqa: BLE001 - config problem, not a crash
             if strict:
                 raise CredentialStoreError(

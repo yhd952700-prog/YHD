@@ -10,12 +10,20 @@ Provides:
 
 from pathlib import Path
 import json
+import threading
 import time
-from src.common.atomic_write import atomic_write_text
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from typing import Dict, List, Optional, Any
 
 from .models import Span, Metric
+
+#: 同进程内多个 store 实例（以及多 worker 进程）的写入串行锁。
+_PROCESS_WRITE_LOCK = threading.Lock()
 
 
 class ObservabilityStore:
@@ -42,8 +50,7 @@ class ObservabilityStore:
         """Load existing data from storage."""
         if self.storage_path.exists():
             try:
-                with open(self.storage_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = json.loads(read_text_with_retry(self.storage_path))
                 self._spans = {
                     k: Span.from_dict(v) for k, v in data.get("spans", {}).items()
                 }
@@ -71,8 +78,13 @@ class ObservabilityStore:
             self._metrics = {}
             self._hash_chain = None
 
-    def _build_hash_chain(self) -> None:
-        """Build or rebuild the hash chain from current spans."""
+    def _build_hash_chain(self, *, persist: bool = True) -> None:
+        """Build or rebuild the hash chain from current spans.
+
+        ``persist=False`` is used from :meth:`_save` (which is already inside
+        the write transaction) so rebuilding does not recurse into another
+        save/lock acquisition.
+        """
         # P0-8c: refuse to (re)build a chain without a declared algorithm.
         # Defaulting to sha256 is exactly what the containment forbids;
         # the operator must stamp legacy data via the migration script.
@@ -94,25 +106,55 @@ class ObservabilityStore:
             prev_hash = span_hash
 
         self._hash_chain = chain
-        self._save()
+        if persist:
+            self._save()
 
     def _save(self) -> None:
-        """Persist data to storage with hash chain."""
-        # Ensure hash chain is built
-        if self._hash_alg and self._hash_chain is None:
-            self._build_hash_chain()
+        """Persist data to storage with hash chain.
 
-        data = {
-            "version": 1,
-            "saved_at": time.time(),
-            "hash_alg": self._hash_alg,
-            "hash_chain": self._hash_chain,
-            "spans": {k: v.to_dict() for k, v in self._spans.items()},
-            "metrics": {k: v.to_dict() for k, v in self._metrics.items()},
-        }
-        # Temp file + fsync + os.replace: the old full rewrite truncated the
-        # store first, so a crash mid-write lost every previously recorded span.
-        atomic_write_text(self.storage_path, json.dumps(data, indent=2))
+        读-改-写事务：进程锁 → OS 文件锁 → 锁内重读磁盘 → 按 span/metric id
+        合并（同 id 以内存为准，磁盘上其它进程刚写入的数据保留）→ 原子替换。
+        合并后重建哈希链，避免"新 spans + 旧链"的错位。
+        """
+        path = str(self.storage_path)
+        with _PROCESS_WRITE_LOCK:
+            with exclusive_file_lock(f"{path}.lock", description="可观测性存储"):
+                self._merge_disk_state()
+                # Ensure hash chain is built
+                if self._hash_alg:
+                    self._build_hash_chain(persist=False)
+                else:
+                    # 没有声明算法就不伪造链：保持"未验证"语义。
+                    self._hash_chain = None
+
+                data = {
+                    "version": 1,
+                    "saved_at": time.time(),
+                    "hash_alg": self._hash_alg,
+                    "hash_chain": self._hash_chain,
+                    "spans": {k: v.to_dict() for k, v in self._spans.items()},
+                    "metrics": {k: v.to_dict() for k, v in self._metrics.items()},
+                }
+                # Temp file + fsync + os.replace: the old full rewrite truncated
+                # the store first, so a crash mid-write lost every previously
+                # recorded span.
+                atomic_write_text(path, json.dumps(data, indent=2))
+
+    def _merge_disk_state(self) -> None:
+        """锁内重读磁盘；磁盘独有 span/metric 并回内存，同 id 以内存为准。"""
+        if not self.storage_path.exists():
+            return
+        data = json.loads(read_text_with_retry(self.storage_path))
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"可观测性存储结构不合法（{self.storage_path}）：期望 JSON 对象"
+            )
+        for key, value in (data.get("spans") or {}).items():
+            if key not in self._spans:
+                self._spans[key] = Span.from_dict(value)
+        for key, value in (data.get("metrics") or {}).items():
+            if key not in self._metrics:
+                self._metrics[key] = Metric.from_dict(value)
 
     # ==================== Span Operations ====================
 

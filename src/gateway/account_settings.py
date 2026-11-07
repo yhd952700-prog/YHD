@@ -13,9 +13,14 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 from typing import Any, Dict
+
+from src.common.atomic_write import (
+    atomic_write_text,
+    exclusive_file_lock,
+    read_text_with_retry,
+)
 
 #: 产品默认值：自助注册默认开启（主账号可随时关闭）。
 DEFAULT_ALLOW_SELF_REGISTRATION = True
@@ -42,8 +47,7 @@ def _settings_path() -> str:
 def load_settings() -> Dict[str, Any]:
     """读策略文件；文件不存在/损坏时返回空字典（调用方走默认值）。"""
     try:
-        with open(_settings_path(), "r", encoding="utf-8") as handle:
-            raw = json.load(handle)
+        raw = json.loads(read_text_with_retry(_settings_path()))
     except (OSError, ValueError):
         return {}
     return raw if isinstance(raw, dict) else {}
@@ -57,19 +61,11 @@ def set_allow_self_registration(allow: bool) -> Dict[str, Any]:
     """持久化开关，返回写入后的完整策略。"""
     path = _settings_path()
     with _lock:
-        settings = load_settings()
-        settings[_KEY] = bool(allow)
-        parent = os.path.dirname(os.path.abspath(path)) or "."
-        os.makedirs(parent, exist_ok=True)
-        handle, temp = tempfile.mkstemp(dir=parent, prefix=".account-settings-", suffix=".json")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(settings, stream, ensure_ascii=False, indent=2, sort_keys=True)
-            os.replace(temp, path)
-        except Exception:
-            try:
-                os.unlink(temp)
-            except OSError:
-                pass
-            raise
+        with exclusive_file_lock(f"{path}.lock", description="账号策略"):
+            settings = load_settings()
+            settings[_KEY] = bool(allow)
+            atomic_write_text(
+                path,
+                json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True),
+            )
     return settings
