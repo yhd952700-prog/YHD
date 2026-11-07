@@ -1,8 +1,9 @@
 """Tests for the one-click launcher (scripts/start_liuhao.py).
 
 These exercise the small, pure helpers that make the launcher usable on a
-fresh machine: port auto-selection, LAN address discovery, and the argument
-defaults (single-port mode by default, no more --single-port flag).
+fresh machine: port conflict handling (fail fast, never shift), LAN address
+discovery, and the argument defaults (single-port mode by default, no more
+--single-port flag).
 
 The launcher itself spawns uvicorn/vite as child processes, which is far too
 heavy for a unit test; the subprocess wiring is exercised by the real end-to-end
@@ -37,20 +38,24 @@ def test_port_in_use_detects_a_bound_socket():
         server.close()
 
 
-def test_ensure_free_port_returns_requested_when_free():
+def test_require_available_port_returns_requested_when_free():
     # 0 is never "in use" (bind(0) succeeds).
-    assert sl._ensure_free_port("127.0.0.1", 0, "test") == 0
+    assert sl._require_available_port("127.0.0.1", 0, "test", "--api-port") == 0
 
 
-def test_ensure_free_port_falls_forward_when_occupied():
+def test_require_available_port_fails_instead_of_shifting():
+    """端口被占时必须明确报错，不能自动 +1 换地址（书签/PWA origin 会失联）。"""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     port = server.getsockname()[1]
     try:
-        chosen = sl._ensure_free_port("127.0.0.1", port, "test")
-        assert chosen > port
-        assert chosen <= port + sl.PORT_SCAN_LIMIT
+        with pytest.raises(sl.PortUnavailable) as excinfo:
+            sl._require_available_port("127.0.0.1", port, "test", "--api-port")
+        message = str(excinfo.value)
+        assert str(port) in message
+        assert "--api-port" in message
+        assert "不会自动换端口" in message
     finally:
         server.close()
 
@@ -229,7 +234,9 @@ def test_display_host_derives_from_effective_binding_config():
 
 def _run_main_for_url(monkeypatch, tmp_path, argv: list[str], spawned: list[dict]):
     """把 main() 的子进程/等待/常驻全部替换成替身，只留控制台打印可观察。"""
-    monkeypatch.setattr(sl, "_ensure_free_port", lambda host, requested, label: requested)
+    monkeypatch.setattr(
+        sl, "_require_available_port", lambda host, requested, label, flag: requested
+    )
     monkeypatch.setattr(sl, "LOG_DIR", tmp_path / "logs")
 
     def fake_spawn(cmd, cwd, label, env=None):

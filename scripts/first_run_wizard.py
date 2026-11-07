@@ -61,18 +61,51 @@ def _point_at_local_stores() -> None:
         os.environ[HUMAN_IDENTITIES_FILE_ENV] = str(DEFAULT_IDENTITY_FILE)
 
 
+class WizardAborted(RuntimeError):
+    """向导需要人输入，但当前终端不可交互（或输入流已关闭）。"""
+
+
+def stdin_is_interactive() -> bool:
+    """当前进程能不能真的等人敲键盘（pythonw/隐藏窗口/管道都不行）。"""
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def needs_setup() -> bool:
+    """True 表示首启向导还有必须由人完成的事（账号或模型）。"""
+    return not (_has_loginable_human() and _has_enabled_model())
+
+
 def _has_loginable_human() -> bool:
-    """True 当且仅当至少有一个被内核承认的人类身份。"""
+    """True 当且仅当至少有一个**真的能登录**的人类身份。
+
+    "登记表里有记录"不等于"能登录"：登录还要在凭据库里查到这个 principal。
+    现场踩过的坑是登记表里有 smoke 行、凭据库里却没有对应密码，向导据此
+    跳过建号，用户最后拿到一个永远登不进去的登录页。
+    """
     _point_at_local_stores()
     try:
         manager = IdentityManager()
     except Exception:  # noqa: BLE001 - 探测失败就当没有
         return False
     identities = manager.list_identities() if hasattr(manager, "list_identities") else []
-    for identity in identities:
-        if is_human_identity(identity):
-            return True
-    return False
+    principals = {
+        str(getattr(item, "principal", "") or "").strip()
+        for item in identities
+        if is_human_identity(item)
+    }
+    principals.discard("")
+    if not principals:
+        return False
+    try:
+        from src.gateway.auth import resolve_secret_store
+
+        credentials = resolve_secret_store().load()
+    except Exception:  # noqa: BLE001 - 凭据库读不了时不把配置误判成"没人"
+        return True
+    return any(principal in credentials for principal in principals)
 
 
 def _has_enabled_model() -> bool:
@@ -179,8 +212,13 @@ def configure_openai_compatible(
 
 
 def _prompt(label: str, default: Optional[str] = None) -> str:
+    if not stdin_is_interactive():
+        raise WizardAborted("首启向导需要可交互的终端才能输入。")
     suffix = f" [{default}]" if default else ""
-    value = input(f"{label}{suffix}: ").strip()
+    try:
+        value = input(f"{label}{suffix}: ").strip()
+    except EOFError as exc:  # 窗口被关掉 / stdin 被重定向
+        raise WizardAborted("输入流已关闭（命令行窗口被关掉或没有控制台）。") from exc
     return value or (default or "")
 
 
@@ -214,6 +252,37 @@ def run_wizard(skip: bool = False) -> int:
         print("[ok] 已检测到管理员身份和模型配置，跳过首次运行向导。")
         return 0
 
+    # 到这里必须有真人输入：无控制台就直接给出可执行的下一步，而不是抛
+    # EOFError 后留一个一闪而过的黑框。
+    if not stdin_is_interactive():
+        print()
+        print("[FAIL] 首次运行需要在命令行窗口里完成向导，但当前没有可交互的终端。")
+        print("       请从开始菜单/桌面快捷方式启动（会打开命令行窗口）后重试。")
+        return 2
+
+    try:
+        return _run_interactive_setup()
+    except WizardAborted as exc:
+        print()
+        print(f"[FAIL] {exc}")
+        print("       请从开始菜单/桌面快捷方式启动（会打开命令行窗口）后重试。")
+        return 2
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("[FAIL] 向导被中断，首启未完成；请重新双击启动。")
+        return 2
+
+
+def _prompt_secret(label: str) -> str:
+    if not stdin_is_interactive():
+        raise WizardAborted("首启向导需要可交互的终端才能输入密码。")
+    try:
+        return getpass.getpass(label)
+    except EOFError as exc:
+        raise WizardAborted("输入流已关闭（命令行窗口被关掉或没有控制台）。") from exc
+
+
+def _run_interactive_setup() -> int:
     # ---- 1. 人类身份 ----
     if _has_loginable_human():
         print()
@@ -224,7 +293,7 @@ def run_wizard(skip: bool = False) -> int:
         principal = _prompt("管理员账号（英文，如 liuhao）", default="liuhao")
         display = _prompt("显示名（中文可）", default=principal)
         print("  登录密码（输入时不显示）：")
-        password = getpass.getpass("  密码: ")
+        password = _prompt_secret("  密码: ")
         if not password:
             print("  密码不能为空，跳过身份创建。", file=sys.stderr)
         else:
@@ -251,7 +320,7 @@ def run_wizard(skip: bool = False) -> int:
     elif choice == "2":
         base_url = _prompt("API base_url（以 /v1 结尾，如 https://api.deepseek.com/v1）")
         model = _prompt("模型名（如 deepseek-chat；OpenAI 填 gpt-4o-mini）")
-        api_key = getpass.getpass("  API Key: ")
+        api_key = _prompt_secret("  API Key: ")
         if not base_url or not model or not api_key:
             print("  base_url / 模型名 / API Key 缺一不可，跳过。", file=sys.stderr)
         else:
@@ -267,8 +336,8 @@ def run_wizard(skip: bool = False) -> int:
 
     print()
     print("=" * 62)
-    print("向导完成。接着会自动启动服务，并尝试打开 http://127.0.0.1:8080 。")
-    print("如果浏览器没有自动打开，请手动访问 http://127.0.0.1:8080 。")
+    print("向导完成。接着会自动启动服务；服务真正就绪后才会打印可访问地址")
+    print("并尝试打开浏览器。请以窗口里给出的地址为准（不要沿用旧书签）。")
     print("下一步：用刚创建的账号登录，聊天入口在左侧「工作台」→「直接对话」。")
     print("=" * 62)
     return 0

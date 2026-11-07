@@ -36,6 +36,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +55,11 @@ from src.common.instance_lock import InstanceLockBusy, InstanceLock, instance_ro
 #: 另进 logs/error.log（见配置文件头注释）。
 LOG_CONFIG = ROOT / "config" / "logging.yaml"
 LOG_DIR = ROOT / "logs"
+
+#: 网关子进程的工作目录。开发态就是仓库根；安装版由 ``launch_installed``
+#: 指向**数据目录**（程序目录只读），但 ``ROOT`` 必须继续指向程序目录：
+#: ``-m src.gateway`` 的模块导入和 ``runtime/python.exe`` 都靠它。
+GATEWAY_CWD = ROOT
 
 #: 单端口模式下由网关服务的前端构建产物。
 #: 权威实现在 src/gateway/console_static.py；这里重复声明只是为了让启动器
@@ -79,9 +85,6 @@ DEFAULT_UI_PORT = 5173
 STARTUP_TIMEOUT_S = 120.0
 POLL_INTERVAL_S = 0.5
 
-#: 自动换端口时往上最多扫多少个端口。
-PORT_SCAN_LIMIT = 100
-
 _children: list[subprocess.Popen] = []
 
 
@@ -98,23 +101,111 @@ def _port_in_use(host: str, port: int) -> bool:
     return False
 
 
-def _ensure_free_port(host: str, requested: int, label: str) -> int:
-    """Return ``requested`` if free, else the next free port above it.
+class PortUnavailable(RuntimeError):
+    """配置端口被别的进程占用；不自动换端口，避免地址漂移。"""
 
-    双击启动最常见的坑是"上次的进程没退干净、8080 被占着"，用户看到 uvicorn
-    报一句 ``address already in use`` 就懵了。这里在拉起前就把端口让出来，
-    并打印换到了哪个端口，避免用户再去查进程。
+
+def _describe_port_owner(port: int) -> str:
+    """尽力查出谁在占用 ``port``（Windows：netstat -ano + tasklist）。
+
+    查不到就返回空串——诊断信息是锦上添花，绝不能因为查不到就吞掉报错。
     """
+    try:
+        listing = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    needle = f":{port}"
+    pids: list[str] = []
+    for line in (listing.stdout or "").splitlines():
+        parts = line.split()
+        # Proto  Local Address  Foreign Address  State  PID
+        if len(parts) != 5 or parts[0].upper() != "TCP":
+            continue
+        if parts[1].endswith(needle) and parts[3].upper() in {"LISTENING", "LISTEN"}:
+            if parts[4] not in pids:
+                pids.append(parts[4])
+    named: list[str] = []
+    for pid in pids:
+        name = ""
+        try:
+            detail = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            cells = (detail.stdout or "").strip().strip('"').split('","')
+            if cells and cells[0]:
+                name = cells[0]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        named.append(f"PID {pid}{f' {name}' if name else ''}")
+    return "、".join(named)
+
+
+def _log_launcher(message: str) -> None:
+    """把启动器侧的关键事件写进 ``<数据目录>/logs/launcher.log``。"""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / "launcher.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
+    except OSError:
+        pass
+
+
+def _write_current_url(port: int, url: str) -> Path | None:
+    """把本次实际地址写到 ``<数据目录>/config/current_url.txt``。
+
+    只在安装版（``LIUHAO_DATA_DIR`` 已设置）落盘：开发态不往仓库里写文件。
+    用户/支持人员据此确认"这一版到底在哪个地址上"，不必去翻窗口输出。
+    """
+    raw = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+    if not raw:
+        return None
+    target = Path(raw) / "config" / "current_url.txt"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"url={url}\n"
+            f"port={port}\n"
+            f"pid={os.getpid()}\n"
+            f"started_at={datetime.now().isoformat(timespec='seconds')}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _log_launcher(f"[warn] 无法写入 {target}: {exc}")
+        return None
+    return target
+
+
+def _require_available_port(host: str, requested: int, label: str, flag: str) -> int:
+    """要求配置端口可用；被占用时明确报错，**绝不悄悄换端口**。
+
+    原先的实现会自己 +1 往后找，结果每次启动地址都可能不同：书签、旧标签页、
+    已安装的 PWA 全部指向一个已经不存在的 origin（现场：8124 实例退出后，
+    用户手里留着一个连不上的旧地址）。端口冲突属于需要人知道的事，因此
+    这里 fail-fast，并把占用者一起报出来。
+    """
+    if requested == 0:
+        return requested  # 0 = 交给系统挑（测试/显式要求）
     if not _port_in_use(host, requested):
         return requested
-    for candidate in range(requested + 1, requested + 1 + PORT_SCAN_LIMIT):
-        if not _port_in_use(host, candidate):
-            print(
-                f"  [warn] {label} 端口 {requested} 被占用，已自动改用 {candidate}"
-            )
-            return candidate
-    raise SystemExit(
-        f"找不到可用端口：在 {requested}..{requested + PORT_SCAN_LIMIT} 之间都被占用"
+    owner = _describe_port_owner(requested)
+    detail = f"（占用者：{owner}）" if owner else ""
+    raise PortUnavailable(
+        f"{label}端口 {requested} 已被占用{detail}。\n"
+        f"       为避免地址变化导致书签 / 旧标签 / PWA 失联，启动器不会自动换端口。\n"
+        f"       处理：结束占用该端口的进程后重试，或用 {flag} 指定其它端口"
+        f"（例如 {flag} {requested + 1}）。"
     )
 
 
@@ -524,15 +615,26 @@ def main() -> int:
     # 对"双击就用"的场景最友好。vite 开发模式（--vite）需要 Node + 热更新。
     single_port = not args.backend_only and not args.vite
 
-    # 启动前先把端口让出来。绑定 0.0.0.0 时端口占用检查用 127.0.0.1 探测即可。
+    # 启动前先确认配置端口可用。绑定 0.0.0.0 时端口占用检查用 127.0.0.1 探测即可。
     # 顺序很重要：先确认「没有第二个鎏灏在跑」，再看端口，否则会出现
-    # "已自动改用 18081" + "已经在运行" 两句自相矛盾的提示。
+    # "端口被占" + "已经在运行" 两句自相矛盾的提示。
     probe_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
-    args.api_port = _ensure_free_port(probe_host, args.api_port, "网关")
-    if args.vite:
-        args.ui_port = _ensure_free_port(probe_host, args.ui_port, "驾驶舱(vite)")
-    if args.https:
-        args.https_port = _ensure_free_port(probe_host, args.https_port, "HTTPS 代理")
+    try:
+        args.api_port = _require_available_port(
+            probe_host, args.api_port, "网关", "--api-port"
+        )
+        if args.vite:
+            args.ui_port = _require_available_port(
+                probe_host, args.ui_port, "驾驶舱(vite)", "--ui-port"
+            )
+        if args.https:
+            args.https_port = _require_available_port(
+                probe_host, args.https_port, "HTTPS 代理", "--https-port"
+            )
+    except PortUnavailable as exc:
+        print(f"[FAIL] {exc}", flush=True)
+        _log_launcher(f"[FAIL] {exc}")
+        return 2
 
     # 只有显式绑定非回环地址才算"对外"；默认 127.0.0.1 不告警。
     _warn_if_exposed(args.host, args.api_port)
@@ -565,7 +667,7 @@ def main() -> int:
     gateway_env["PYTHONPATH"] = python_path
     gateway = _spawn(
         [_venv_python(), "-u", "-m", "src.gateway"],
-        ROOT,
+        GATEWAY_CWD,
         "gateway",
         env=gateway_env,
     )
@@ -647,12 +749,17 @@ def main() -> int:
     if args.https:
         _start_https_proxy(args, single_port)
 
+    url_file = _write_current_url(args.api_port, ui_base)
+    _log_launcher(f"[ok] 就绪 {ui_base}（api_port={args.api_port}）")
+
     print()
     print("=" * 62)
     print("鎏灏已就绪")
     print(f"  驾驶舱    {ui_base}")
     print(f"  API       {api_base}     文档 {api_base}/docs")
     print(f"  健康探针  {api_base}/v1/health")
+    if url_file is not None:
+        print(f"  当前地址  {url_file}")
     _print_lan_urls(args.api_port, args.host, args.https_port if args.https else None)
     print("  Ctrl+C 停止（子进程会被一起带走）")
     print("=" * 62)

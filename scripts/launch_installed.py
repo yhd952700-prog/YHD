@@ -29,7 +29,10 @@ import os
 import secrets
 import shutil
 import sys
+import traceback
+from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_ROOT))
@@ -57,6 +60,84 @@ INTEGRITY_KEY_FILE = "config/integrity.key"
 def _data_dir() -> Path:
     raw = (os.environ.get(DATA_DIR_ENV) or "").strip()
     return Path(raw).expanduser().resolve() if raw else DEFAULT_DATA_DIR.resolve()
+
+
+#: 启动器自己的日志。和网关日志（``logs/liuhao.log``）分开：这一份专门记录
+#: "首启向导有没有跑完、卡在哪、为什么退出"，即使网关一次都没起来也要有。
+LAUNCHER_LOG_NAME = "logs/launcher.log"
+
+#: 启动器日志的绝对路径（``prepare_environment`` 成功后才有值）。
+LAUNCHER_LOG: Path | None = None
+
+#: 允许运维显式覆盖数据目录路径的开关（默认关闭）。
+#:
+#: 为什么默认关闭：安装版把身份登记表/凭据/审计库全部钉在数据目录，但
+#: ``setdefault`` 会让**机器级**环境变量悄悄改写这些位置——实测一台机器上
+#: 残留的 ``LIUHAO_HUMAN_IDENTITIES_DB`` 能把已安装产品指回开发仓库，
+#: 结果向导以为"已有账号"、用户却一个都登不进去。必须显式 opt-in 才让
+#: 外部变量覆盖，否则一律回到数据目录并打印被忽略的值。
+ALLOW_ENV_OVERRIDE = "LIUHAO_ALLOW_ENV_OVERRIDE"
+
+
+class _Tee:
+    """把 stdout/stderr 同时写进启动器日志（行缓冲、逐行 flush）。
+
+    ``isatty`` 透传真实终端，首启向导据此判断"有没有人能在窗口里输入"。
+    """
+
+    def __init__(self, stream: TextIO, log_file: TextIO) -> None:
+        self._stream = stream
+        self._log = log_file
+
+    def write(self, data: str) -> int:
+        self._stream.write(data)
+        self._log.write(data)
+        self._log.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        finally:
+            self._log.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._stream, "isatty", lambda: False)())
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._stream, "encoding", "utf-8")
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+
+def start_launcher_log(data_dir: Path) -> Path:
+    """把本进程的 stdout/stderr 落盘到 ``<data>/logs/launcher.log``。
+
+    在任何向导/网关代码之前调用：这样"向导没跑完""端口被占""子进程秒退"
+    都会留下可查的文本，而不是用户双击后只有一闪而过的黑框。
+    """
+    global LAUNCHER_LOG
+    log_path = data_dir / LAUNCHER_LOG_NAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = log_path.open("a", encoding="utf-8", buffering=1)
+    handle.write(
+        f"\n===== {datetime.now().isoformat(timespec='seconds')} launch =====\n"
+    )
+    handle.write(f"  python: {sys.executable}\n")
+    handle.write(f"  argv:   {' '.join(sys.argv)}\n")
+    handle.write(f"  data:   {data_dir}\n")
+    handle.flush()
+    if sys.stdout is None:  # pythonw / 无控制台的快捷方式
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+    sys.stdout = _Tee(sys.stdout, handle)
+    sys.stderr = _Tee(sys.stderr, handle)
+    LAUNCHER_LOG = log_path
+    return log_path
+
 
 
 def _ensure_layout(data_dir: Path) -> None:
@@ -228,10 +309,62 @@ def _ensure_integrity_key(path: Path) -> str:
     return ensure_integrity_key(data_dir=path.parent.parent)
 
 
+def _env_override_allowed() -> bool:
+    return (os.environ.get(ALLOW_ENV_OVERRIDE) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _same_path(left: str, right: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(
+            os.path.realpath(right)
+        )
+    except OSError:
+        return False
+
+
+def _pin_path(key: str, value: Path) -> None:
+    """把 ``key`` 钉到数据目录；外部变量只有显式 opt-in 才能覆盖。"""
+    target = str(value)
+    current = (os.environ.get(key) or "").strip()
+    if current and not _env_override_allowed():
+        if not _same_path(current, target):
+            print(
+                f"[config] 忽略外部设置的 {key}={current}"
+                f"（安装版固定使用数据目录），改用 {target}；"
+                f"确需覆盖请设置 {ALLOW_ENV_OVERRIDE}=1。",
+                file=sys.stderr,
+            )
+        os.environ[key] = target
+        return
+    if not current:
+        os.environ[key] = target
+
+
+def _drop_path_env(key: str) -> None:
+    """清掉外部继承的路径变量（安装版不接受外部重定向，除非显式 opt-in）。"""
+    current = (os.environ.get(key) or "").strip()
+    if not current or _env_override_allowed():
+        return
+    print(
+        f"[config] 忽略外部设置的 {key}={current}"
+        f"（安装版固定使用数据目录）；"
+        f"确需覆盖请设置 {ALLOW_ENV_OVERRIDE}=1。",
+        file=sys.stderr,
+    )
+    os.environ.pop(key, None)
+
+
 def _configure_paths(data_dir: Path) -> None:
     """把内核与网关的持久化位置全部指向数据目录。
 
-    全部用 ``setdefault``：运维/测试显式导出的变量永远优先。
+    默认**强制**落在数据目录：机器级/用户级残留的 ``LIUHAO_*`` 变量不得把
+    已安装产品指回开发仓库（见 :data:`ALLOW_ENV_OVERRIDE`）。运维/测试若确实
+    需要重定向，显式设置 ``LIUHAO_ALLOW_ENV_OVERRIDE=1`` 后原变量优先。
     """
     paths = {
         # 员工、目标、项目、工作区文件、JWT 吊销库
@@ -254,11 +387,27 @@ def _configure_paths(data_dir: Path) -> None:
         "LIUHAO_ALERTS_STORE_PATH": data_dir / "data" / "observability" / "alerts.json",
     }
     for key, value in paths.items():
-        os.environ.setdefault(key, str(value))
+        _pin_path(key, value)
     # 网关单端口模式需要显式指向驾驶舱产物，否则会去找仓库里的
     # apps/console/console/dist。
     if CONSOLE_DIST.is_dir():
         os.environ.setdefault("LIUHAO_CONSOLE_DIST", str(CONSOLE_DIST))
+
+
+def _ensure_identity_registry(data_dir: Path) -> None:
+    """首启先放一张空登记表。
+
+    内核在登记表**不存在**时会往 stderr 打一句 "no human identity can
+    approve"，首次运行的人看到会以为安装坏了。空表语义完全相同（没有可登录
+    账号），但不会误导；向导随后会走"创建管理员账号"。
+    """
+    target = data_dir / "config" / "human_identities.json"
+    if target.exists():
+        return
+    try:
+        target.write_text('{\n  "humans": []\n}\n', encoding="utf-8")
+    except OSError as exc:
+        print(f"[warn] 无法初始化身份登记表 {target}: {exc}", file=sys.stderr)
 
 
 def _ensure_logging_config(data_dir: Path) -> Path:
@@ -318,6 +467,10 @@ def prepare_environment() -> tuple[Path, Path]:
     except OSError as exc:
         print(f"[warn] 旧数据迁移未完成（不会阻断启动）：{exc}", file=sys.stderr)
 
+    # 目录一建好就把 stdout/stderr 落盘：后面向导怎么死、端口怎么冲突，
+    # 用户都能在 <数据目录>/logs/launcher.log 里看到。
+    start_launcher_log(data_dir)
+
     try:
         app_env = data_dir / APP_ENV_FILE
         _ensure_app_env(app_env)
@@ -331,11 +484,21 @@ def prepare_environment() -> tuple[Path, Path]:
             f"或用环境变量 {DATA_DIR_ENV} 指向另一个可写目录。"
         ) from exc
 
-    os.environ.setdefault("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", integrity_key)
+    inherited_key = (os.environ.get("LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY") or "").strip()
+    if inherited_key and inherited_key != integrity_key and not _env_override_allowed():
+        print(
+            "[config] 忽略外部设置的 LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"
+            f"（与数据目录 {data_dir / INTEGRITY_KEY_FILE} 内的密钥不一致），"
+            f"改用数据目录密钥；确需覆盖请设置 {ALLOW_ENV_OVERRIDE}=1。",
+            file=sys.stderr,
+        )
+    if not inherited_key or not _env_override_allowed():
+        os.environ["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity_key
     os.environ.setdefault("APP_ENV", "staging")
     os.environ.setdefault("LOG_LEVEL", "info")
 
     _configure_paths(data_dir)
+    _ensure_identity_registry(data_dir)
     try:
         logging_config = _ensure_logging_config(data_dir)
     except OSError as exc:
@@ -343,15 +506,19 @@ def prepare_environment() -> tuple[Path, Path]:
             f"无法写入运行日志配置：{data_dir / 'config' / 'logging.yaml'}（{exc}）"
         ) from exc
 
-    # 身份内核在 ``sqlite`` 后端且未显式给 DB 路径时，默认写到程序目录的
-    # ``data/human_identities.sqlite3``（源码里以仓库根为锚点）。安装版必须
-    # 把它落到用户数据目录；只在用户显式选了 sqlite 后端时才补，避免因为
-    # “设置 DB 路径”反而把 JSON 后端切成 sqlite（见内核的解析顺序）。
-    if (os.environ.get("LIUHAO_HUMAN_IDENTITIES_BACKEND") or "").strip().lower() == "sqlite":
-        os.environ.setdefault(
+    backend = (os.environ.get("LIUHAO_HUMAN_IDENTITIES_BACKEND") or "").strip().lower()
+    if backend == "sqlite":
+        # 该后端下 DB 路径优先于 JSON 登记表：必须钉住，否则机器上残留的
+        # LIUHAO_HUMAN_IDENTITIES_DB 会让向导去读开发仓库里的身份库。
+        _pin_path(
             "LIUHAO_HUMAN_IDENTITIES_DB",
-            str(data_dir / "config" / "human_identities.sqlite3"),
+            data_dir / "config" / "human_identities.sqlite3",
         )
+    else:
+        # 未显式选后端时，内核只要看到 DB 路径就会切到 sqlite（"配置了数据库
+        # 路径 = 明确意图"）。安装版默认是 JSON 登记表，因此继承来的 DB 路径
+        # 必须清掉——既防止误切后端，也防止指向程序目录/开发仓库。
+        _drop_path_env("LIUHAO_HUMAN_IDENTITIES_DB")
 
     # uvicorn 子进程以程序目录为 cwd 启动时，`-m src.gateway.main` 需要能
     # 找到 src；显式补 PYTHONPATH，避免依赖调用方的环境。
@@ -370,8 +537,6 @@ def prepare_environment() -> tuple[Path, Path]:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    skip_wizard = "--skip-wizard" in args
-    forwarded = [a for a in args if a != "--skip-wizard"]
 
     try:
         data_dir, logging_config = prepare_environment()
@@ -379,6 +544,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         print("        已停止启动，未写入任何运行数据。", file=sys.stderr)
         return 3
+
+    # 任何未捕获异常都必须：①打印给人看 ②落进 launcher.log ③返回非零。
+    # 这条兜底存在的理由就是现场那次"双击之后什么都没有"。
+    try:
+        return _run(data_dir, logging_config, args)
+    except KeyboardInterrupt:
+        print()
+        print("[warn] 已取消启动（Ctrl+C）。", file=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001 - 启动器必须兜住一切
+        traceback.print_exc()
+        print(f"[FAIL] 启动失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"        完整日志：{LAUNCHER_LOG}", file=sys.stderr)
+        return 1
+
+
+def _run(data_dir: Path, logging_config: Path, args: list[str]) -> int:
+    skip_wizard = "--skip-wizard" in args
+    forwarded = [a for a in args if a != "--skip-wizard"]
 
     print("=" * 62)
     print("鎏灏 LiuHao AI OS — 安装版")
@@ -390,18 +574,52 @@ def main(argv: list[str] | None = None) -> int:
     if not skip_wizard:
         import scripts.first_run_wizard as wizard
 
+        # 首启必须在**能输入**的窗口里完成。无控制台时（pythonw、计划任务、
+        # 隐藏窗口）不要抛 EOFError，也不要假装启动成功：直接说清楚从哪启动。
+        if wizard.needs_setup() and not wizard.stdin_is_interactive():
+            print("[FAIL] 首次运行需要在命令行窗口里完成向导，但当前没有可交互的终端。")
+            print("       请从开始菜单/桌面快捷方式启动（会打开命令行窗口），")
+            print("       或在「命令提示符」里执行：")
+            print(f'       "{APP_ROOT / "LiuHao.bat"}"')
+            print(f"       日志：{LAUNCHER_LOG}")
+            return 2
+
         if wizard.run_wizard() != 0:
-            print("[FAIL] 首次运行向导未通过，已停止启动。", file=sys.stderr)
+            print(
+                "[FAIL] 首次运行向导未通过，已停止启动（不会打开控制台）。",
+                file=sys.stderr,
+            )
+            print(f"       原因见窗口输出与日志：{LAUNCHER_LOG}", file=sys.stderr)
             return 1
+
+        # 向导"跑完"不等于"能登录"：没有可用账号就不放行，否则用户拿到的是
+        # 一个能打开但永远登不进去的页面。
+        if not wizard._has_loginable_human():
+            print(
+                "[FAIL] 向导结束后仍没有可登录的账号，已停止启动。",
+                file=sys.stderr,
+            )
+            print(
+                "       请重跑向导，或在程序目录下执行：",
+                file=sys.stderr,
+            )
+            print(
+                "       runtime\\python.exe scripts\\register_human_identity.py "
+                "--principal <name> --password-stdin",
+                file=sys.stderr,
+            )
+            print(f"       日志：{LAUNCHER_LOG}", file=sys.stderr)
+            return 3
 
     import scripts.start_liuhao as launcher
 
-    # 让启动器把工作目录/日志/子进程 cwd 全部指向数据目录：网关代码里凡是
-    # 写死的相对路径（如 data/observability/alerts.json、logs/）都会落到
-    # 用户数据目录，而不是安装目录。
-    launcher.ROOT = data_dir
+    # 只把「日志 / 子进程 cwd」指向数据目录。``launcher.ROOT`` 必须保持程序目录：
+    # ``-m src.gateway`` 的模块导入、``runtime/python.exe``、``console/`` 都靠它。
+    # （此前把 ROOT 改成数据目录，子进程 cwd/PYTHONPATH 跟着变成数据目录，
+    #  网关一启动就 ``No module named src`` —— 这是安装版"永远起不来"的隐藏根因。）
     launcher.LOG_CONFIG = logging_config
     launcher.LOG_DIR = data_dir / "logs"
+    launcher.GATEWAY_CWD = data_dir
 
     sys.argv = [str(APP_ROOT / "scripts" / "start_liuhao.py"), *forwarded]
     return launcher.main()
