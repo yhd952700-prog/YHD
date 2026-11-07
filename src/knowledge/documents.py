@@ -116,6 +116,20 @@ class KnowledgeScope:
             return self.owns_legacy
         return owner == self.principal
 
+    def may_delete(self, owner: Optional[str]) -> bool:
+        """删除归属：自己 + 主账号子树；无归属历史只允许主账号/老部署。
+
+        与 ``may_write`` 的区别只在主账号：主账号不能**写入**成员的范围，但
+        可以清理自己子树内的文档（管理语义），因此 ``aggregate`` 视角下允许
+        删除覆盖范围内（``covers``）的文档。成员仍然是"只能删自己的"。
+        """
+        owner = str(owner or "").strip()
+        if not owner:
+            return self.owns_legacy
+        if owner == self.principal:
+            return True
+        return bool(self.aggregate and self.covers(owner))
+
     def store_kwargs(self) -> Dict[str, Any]:
         return {"owners": self.owners, "include_unowned": self.include_unowned}
 
@@ -514,9 +528,9 @@ class KnowledgeDocumentService:
     ) -> Dict[str, Any]:
         owner = self.document_owner(document_id)
         if scope is not None and (
-            owner is None or not scope.covers(owner) or not scope.may_write(owner)
+            owner is None or not scope.covers(owner) or not scope.may_delete(owner)
         ):
-            # 不存在 / 不可见 / 不是自己的文档，对外一律同一种"没删到"。
+            # 不存在 / 不可见 / 无权删，对外一律同一种"没删到"（路由映射为中性 404）。
             return {
                 "document_id": document_id,
                 "deleted": False,

@@ -238,13 +238,37 @@ class TestAdminHttpAuth:
             == 401
         )
 
-    def test_delete_requires_admin_claim_but_reads_do_not(self, client):
+    def test_delete_is_scope_checked_not_admin_gated(self, client):
+        """删除不再要求管理员声明：按归属判定，越权与不存在同形中性 404。
+
+        旧实现先过 ``require_admin_principal``，成员删自己的文档也会收到带
+        "管理员权限/L0"层级词的 403；本用例锁定新契约：普通令牌能删自己的
+        文档，删别人的/不存在的都是中性 404。
+        """
         headers = _headers(scope="L1")
         assert client.get("/v1/knowledge/documents", headers=headers).status_code == 200
-        deleted = client.delete(
+
+        missing = client.delete(
             "/v1/knowledge/documents/whatever", headers=headers
         )
-        assert deleted.status_code == 403, deleted.text
+        assert missing.status_code == 404, missing.text
+        detail = missing.json().get("detail")
+        message = detail.get("message") if isinstance(detail, dict) else detail
+        assert message == "资源不存在或无权访问", missing.text
+        for word in ("管理员", "L0", "权限不足", "admin"):
+            assert word not in missing.text
+
+        ingested = client.post(
+            "/v1/knowledge/documents",
+            json={"text": _LONG_BODY, "doc_id": "member-own-doc"},
+            headers=headers,
+        )
+        assert ingested.status_code == 200, ingested.text
+        removed = client.delete(
+            "/v1/knowledge/documents/member-own-doc", headers=headers
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["deleted"] is True
 
 
 class TestAdminHttpFlow:

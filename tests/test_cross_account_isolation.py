@@ -39,13 +39,18 @@ _PROVIDER_ENVS = (
 )
 
 
-def _headers(subject: str) -> Dict[str, str]:
+def _headers(subject: str, scope: str = "L0") -> Dict[str, str]:
     from src.security import get_jwt_handler
 
     token, _payload = get_jwt_handler().create_token(
-        subject=subject, metadata={"kind": "human", "scope": "L0"}
+        subject=subject, metadata={"kind": "human", "scope": scope}
     )
     return {"Authorization": f"Bearer {token}"}
+
+
+#: 真实成员令牌：没有 L0/admin 声明，用来验证"删自己是业务权限，不是管理员权限"。
+def _member_headers(subject: str) -> Dict[str, str]:
+    return _headers(subject, scope="L2")
 
 
 def _make_tree(root: str = "boss", members=("alice", "bob")) -> None:
@@ -310,6 +315,81 @@ class TestKnowledgeAccountIsolation:
         assert client.get(
             f"/v1/knowledge/ingest/jobs/{job_id}", headers=boss
         ).status_code == 200
+
+    def test_delete_is_scope_checked_not_admin_gated(self, client):
+        """删除按归属判定，而不是先撞管理员门禁。
+
+        真实成员令牌（scope L2，无 admin/L0 声明）：
+        * 删别人的文档 = 中性 404，且与"删不存在"响应体逐字相同；
+        * 删自己的文档 = 200（"删自己的东西"是业务权限，不该要管理员身份）；
+        * 响应体里不得出现"管理员 / L0 / 权限不足"这类层级词；
+        * 主账号可删子树内文档，同样不带层级词。
+        """
+        boss = _headers("boss")
+        alice = _member_headers("alice")
+        bob = _member_headers("bob")
+
+        alice_doc = client.post(
+            "/v1/knowledge/documents",
+            json={"text": "ALICE-DELETE-MARKER 只属于 alice。", "doc_id": "secret"},
+            headers=alice,
+        ).json()["document_id"]
+        assert alice_doc == "alice--secret"
+
+        # 越权删除与不存在逐字同形，且不含层级词
+        denied = client.delete(
+            f"/v1/knowledge/documents/{alice_doc}", headers=bob
+        )
+        missing = client.delete(
+            "/v1/knowledge/documents/no-such-doc", headers=bob
+        )
+        _assert_neutral_404(denied, missing)
+        for word in ("管理员", "L0", "权限不足", "admin"):
+            assert word not in denied.text
+            assert word not in missing.text
+
+        # 越权请求没有真的删掉别人的文档
+        assert client.get(
+            f"/v1/knowledge/documents/{alice_doc}/chunks", headers=alice
+        ).status_code == 200
+
+        # 成员删自己：200，删完不可见（中性 404）
+        bob_doc = client.post(
+            "/v1/knowledge/documents",
+            json={"text": "BOB-DELETE-MARKER 自己的文档。", "doc_id": "own"},
+            headers=bob,
+        ).json()["document_id"]
+        removed = client.delete(
+            f"/v1/knowledge/documents/{bob_doc}", headers=bob
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["deleted"] is True
+        forbidden = ("管理员", "L0", "权限不足", "admin")
+        assert all(word not in removed.text for word in forbidden)
+        assert client.get(
+            f"/v1/knowledge/documents/{bob_doc}/chunks", headers=bob
+        ).status_code == 404
+
+        # 主账号可删子树内成员文档，响应与删除普通文档一致、无层级词
+        root_removed = client.delete(
+            f"/v1/knowledge/documents/{alice_doc}", headers=boss
+        )
+        assert root_removed.status_code == 200, root_removed.text
+        assert root_removed.json()["deleted"] is True
+        assert all(word not in root_removed.text for word in forbidden)
+
+    def test_root_delete_missing_document_is_neutral_404(self, client):
+        """主账号删不存在文档：中性 404，与成员看到的完全同形。"""
+        boss = _headers("boss")
+        bob = _member_headers("bob")
+        root_missing = client.delete(
+            "/v1/knowledge/documents/no-such-doc", headers=boss
+        )
+        member_missing = client.delete(
+            "/v1/knowledge/documents/no-such-doc", headers=bob
+        )
+        _assert_neutral_404(root_missing, member_missing)
+        assert "管理员" not in root_missing.text
 
 
 # ─── 3. 产物文件 / 产物索引 ─────────────────────────────────

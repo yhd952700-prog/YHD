@@ -261,28 +261,6 @@ _READ_CHUNK_BYTES = 1024 * 1024
 documents_admin = APIRouter(tags=["knowledge"])
 
 
-def _require_knowledge_admin(request: Request) -> None:
-    """Admin gate for destructive writes.
-
-    Imported lazily: importing ``src.gateway`` at module load would pull in
-    ``gateway.main``, which imports this module -- a circular import. The token
-    is still parsed by the single gateway implementation, so there is no second
-    auth path.
-    """
-    from src.gateway.policy import (
-        STANDARD_TOKEN_HEADER,
-        TOKEN_HEADER,
-        require_admin_principal,
-        require_bearer_payload,
-    )
-
-    payload = require_bearer_payload(
-        x_liuhao_token=request.headers.get(TOKEN_HEADER),
-        authorization=request.headers.get(STANDARD_TOKEN_HEADER),
-    )
-    require_admin_principal(payload=payload)
-
-
 def _storage_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=f"向量库不可用：{exc}")
 
@@ -320,10 +298,16 @@ def knowledge_document_chunks(
 @documents_admin.delete("/documents/{document_id}")
 def knowledge_delete_document(
     document_id: str,
-    _admin: str = Depends(_require_knowledge_admin),
     scope: KnowledgeScope = Depends(_knowledge_scope),
 ) -> Dict[str, Any]:
-    """Delete a document: chunks, vectors, FTS rows and content hash at once."""
+    """Delete a document: chunks, vectors, FTS rows and content hash at once.
+
+    Authorisation is the account scope, not an admin claim: a member may delete
+    only their own document, the root account may delete documents in its
+    subtree, and anything outside that range is a neutral 404 -- byte-identical
+    to "this document does not exist", so the endpoint cannot be used to probe
+    another account's library.
+    """
     try:
         result = get_knowledge_service().delete_document(
             document_id, scope=scope
