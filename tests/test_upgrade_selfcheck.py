@@ -481,7 +481,7 @@ def test_application_records_a_passed_startup_self_check(tmp_path: Path) -> None
         check = manager.check()
         assert check.release is not None
         download = manager.download(check.release)
-        stale_log = app_root / "upgrade-state" / "last-selfcheck.log"
+        stale_log = app_root / "data" / "upgrade-state" / "last-selfcheck.log"
         stale_log.write_text("stale failure log", encoding="utf-8")
         result = manager.apply(download.path, check.release)
 
@@ -498,7 +498,7 @@ def test_application_records_a_passed_startup_self_check(tmp_path: Path) -> None
         assert passed[0]["detail"]["startup"]["ok"] is True
         assert _rows(app_root / "data" / "app.db") == ["keep"]
         # A stale failure log must not survive a successful check.
-        assert not (app_root / "upgrade-state" / "last-selfcheck.log").exists()
+        assert not (app_root / "data" / "upgrade-state" / "last-selfcheck.log").exists()
     finally:
         manager.close()
 
@@ -541,7 +541,7 @@ def test_migration_failure_rolls_back_and_keeps_a_redacted_log(tmp_path: Path) -
             for item in history
         )
 
-        log_path = app_root / "upgrade-state" / "last-selfcheck.log"
+        log_path = app_root / "data" / "upgrade-state" / "last-selfcheck.log"
         assert log_path.is_file()
         persisted = log_path.read_text(encoding="utf-8")
         assert "failure_kind: migration_failed" in persisted

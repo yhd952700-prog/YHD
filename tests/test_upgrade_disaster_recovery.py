@@ -121,7 +121,7 @@ def _snapshot(app_root: Path) -> tuple[bytes, list[str], bytes]:
 
 
 def _ledger_rows(app_root: Path) -> list[tuple]:
-    conn = sqlite3.connect(app_root / "upgrade-state" / "upgrade-ledger.db")
+    conn = sqlite3.connect(app_root / "data" / "upgrade-state" / "upgrade-ledger.db")
     try:
         return conn.execute(
             "SELECT kind, status, backup_id, from_version, reason "
@@ -187,7 +187,7 @@ def test_kill_during_file_replacement_is_recovered_on_restart(tmp_path: Path) ->
     # The interrupted process must leave a decidable status and a ledger row,
     # not an empty directory or "unknown".
     status = json.loads(
-        (app_root / "upgrade-state" / "status.json").read_text(encoding="utf-8")
+        (app_root / "data" / "upgrade-state" / "status.json").read_text(encoding="utf-8")
     )
     assert status["phase"] == "applying"
     assert status["backup_id"]
@@ -230,7 +230,7 @@ def test_disk_space_preflight_aborts_before_any_file_is_touched(
     release_dir = tmp_path / "releases"
     _release(release_dir, version="0.2.0")
     before = _snapshot(app_root)
-    backups_before = list((app_root / "upgrade-backups").glob("*/backup.json"))
+    backups_before = list((app_root / "data" / "upgrade-backups").glob("*/backup.json"))
 
     fake_usage = types.SimpleNamespace(
         total=2 * 1024 * 1024, used=2 * 1024 * 1024 - 1024 * 1024, free=1024 * 1024
@@ -251,7 +251,7 @@ def test_disk_space_preflight_aborts_before_any_file_is_touched(
         assert "尚未修改任何文件" in message
         assert "当前版本 0.1.0 仍完整" in message
         assert _snapshot(app_root) == before
-        assert list((app_root / "upgrade-backups").glob("*/backup.json")) == backups_before
+        assert list((app_root / "data" / "upgrade-backups").glob("*/backup.json")) == backups_before
         state = manager.status()
         assert state["phase"] == "failed"
         assert "磁盘空间不足" in state["message"]
@@ -289,7 +289,7 @@ def test_enospc_during_staging_write_leaves_no_half_version(
         assert "磁盘空间不足" in message
         assert "尚未修改任何文件" in message
         assert _snapshot(app_root) == before
-        assert not list((app_root / "upgrade-backups").glob("*/backup.json"))
+        assert not list((app_root / "data" / "upgrade-backups").glob("*/backup.json"))
         assert manager.status()["phase"] == "failed"
     finally:
         manager.close()
@@ -311,7 +311,7 @@ def test_corrupt_backup_is_refused_and_current_version_stays_intact(
         download = manager.download(check.release)
         result = manager.apply(download.path, check.release)
         assert read_current_version(app_root)[0] == "0.2.0"
-        backup_dir = app_root / "upgrade-backups" / result.backup_id
+        backup_dir = app_root / "data" / "upgrade-backups" / result.backup_id
         before = _snapshot(app_root)
 
         # Corrupt the old-version package after the SHA256 was recorded.
@@ -353,7 +353,7 @@ def test_corrupt_data_snapshot_is_also_refused_before_restore(
         check = manager.check()
         download = manager.download(check.release)
         result = manager.apply(download.path, check.release)
-        backup_dir = app_root / "upgrade-backups" / result.backup_id
+        backup_dir = app_root / "data" / "upgrade-backups" / result.backup_id
         before = _snapshot(app_root)
         with open(backup_dir / "data" / "app.db", "ab") as handle:
             handle.write(b"tampered")
@@ -382,7 +382,7 @@ def test_missing_old_package_tells_user_to_redownload_and_does_not_block(
         check = manager.check()
         download = manager.download(check.release)
         result = manager.apply(download.path, check.release)
-        backup_dir = app_root / "upgrade-backups" / result.backup_id
+        backup_dir = app_root / "data" / "upgrade-backups" / result.backup_id
         # The old version's package inside the backup is gone (cleaned disk,
         # antivirus quarantine, interrupted copy...).
         (backup_dir / "code.zip").unlink()

@@ -117,7 +117,7 @@ def test_apply_backs_up_code_and_data_then_rolls_back(tmp_path: Path) -> None:
             "ok": True
         }
 
-        backup_dir = app_root / "upgrade-backups" / result.backup_id
+        backup_dir = app_root / "data" / "upgrade-backups" / result.backup_id
         assert (backup_dir / "code.zip").is_file()
         assert (backup_dir / "data" / "app.db").is_file()
         assert (backup_dir / "backup.json").is_file()
@@ -209,7 +209,7 @@ def test_corrupt_data_aborts_before_any_mutation(tmp_path: Path) -> None:
         assert read_current_version(app_root)[0] == "0.1.0"
         assert not any(
             (path / "backup.json").is_file()
-            for path in (app_root / "upgrade-backups").glob("*")
+            for path in (app_root / "data" / "upgrade-backups").glob("*")
         )
         assert manager.status()["phase"] == "failed"
         assert any(
@@ -264,7 +264,7 @@ def test_package_without_version_is_rejected(tmp_path: Path) -> None:
         assert read_current_version(app_root)[0] == "0.1.0"
         assert not any(
             (path / "backup.json").is_file()
-            for path in (app_root / "upgrade-backups").glob("*")
+            for path in (app_root / "data" / "upgrade-backups").glob("*")
         )
     finally:
         manager.close()

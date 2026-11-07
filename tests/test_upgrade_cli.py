@@ -178,7 +178,7 @@ def test_same_version_reinstall_requires_the_flag(tmp_path: Path) -> None:
     assert read_current_version(app_root)[0] == "0.1.0"
     assert (app_root / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
     assert _rows(app_root / "data" / "app.db") == ["keep"]
-    assert list((app_root / "upgrade-backups").glob("*/backup.json"))
+    assert list((app_root / "data" / "upgrade-backups").glob("*/backup.json"))
 
 
 def test_same_version_check_explains_the_override(tmp_path: Path) -> None:
@@ -220,7 +220,7 @@ def test_downgrade_runs_only_with_the_flag(tmp_path: Path) -> None:
     assert _run("upgrade", "--app-root", app_root, "--release-dir", release_dir) == 0
     assert read_current_version(app_root)[0] == "0.2.0"
     assert (app_root / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 3\n"
-    assert not list((app_root / "upgrade-backups").glob("*/backup.json"))
+    assert not list((app_root / "data" / "upgrade-backups").glob("*/backup.json"))
 
     assert (
         _run(
@@ -327,6 +327,81 @@ def test_cli_manager_uses_installer_rules(
         manager.close()
 
 
+def _program_files(root: Path, data_dir: Path) -> set[str]:
+    """程序目录里除数据目录以外的文件（运行期残留就是这些）。"""
+    files: set[str] = set()
+    data_resolved = data_dir.resolve()
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            path.resolve().relative_to(data_resolved)
+        except ValueError:
+            files.add(path.relative_to(root).as_posix())
+    return files
+
+
+def test_cli_check_leaves_no_new_files_in_the_program_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI ``check`` 的运行期状态必须落在数据目录，程序目录新增文件数为 0。
+
+    旧实现把 ``upgrade-state``（last-check.json / status.json /
+    upgrade-ledger.db）写进程序目录，卸载后残留。
+    """
+    monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
+    monkeypatch.delenv("LIUHAO_UPGRADE_STATE_DIR", raising=False)
+    app_root = _setup_app(tmp_path / "app", "0.1.0")
+    release_dir = tmp_path / "releases"
+    _release(release_dir, "0.1.0")
+    data_dir = app_root / "data"
+    before = _program_files(app_root, data_dir)
+
+    assert (
+        _run(
+            "check",
+            "--app-root",
+            app_root,
+            "--release-dir",
+            release_dir,
+            "--json",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    after = _program_files(app_root, data_dir)
+
+    assert after == before, f"程序目录出现新增运行期文件：{sorted(after - before)}"
+    assert not (app_root / "upgrade-state").exists()
+    assert (data_dir / "upgrade-state" / "last-check.json").is_file()
+    assert (data_dir / "upgrade-state" / "upgrade-ledger.db").is_file()
+
+
+def test_legacy_state_dir_in_program_directory_is_migrated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧版本已在程序目录写下的 ``upgrade-state`` 要能读、能迁移、不报错。"""
+    monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
+    monkeypatch.delenv("LIUHAO_UPGRADE_STATE_DIR", raising=False)
+    app_root = _setup_app(tmp_path / "app", "0.1.0")
+    data_dir = app_root / "data"
+    legacy = app_root / "upgrade-state"
+    legacy.mkdir()
+    (legacy / "last-check.json").write_text(
+        json.dumps({"status": "up_to_date", "message": "legacy", "checked_at": "2026-01-01"}),
+        encoding="utf-8",
+    )
+
+    manager = UpgradeManager(UpgradeConfig(app_root=app_root, data_dir=data_dir))
+    try:
+        state = manager.last_check()
+        assert state["status"] == "up_to_date"
+        assert not legacy.exists()
+        assert (data_dir / "upgrade-state" / "last-check.json").is_file()
+    finally:
+        manager.close()
+
+
 def test_cli_apply_preflights_the_installed_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -351,7 +426,7 @@ def test_cli_apply_preflights_the_installed_database(
     assert str(real_data / "app.db") in stderr
     assert "数据校验未通过" in stderr
     assert (app_root / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
-    assert not list((app_root / "upgrade-backups").glob("*/backup.json"))
+    assert not list((app_root / "data" / "upgrade-backups").glob("*/backup.json"))
     assert not (app_root / "data").exists()
 
 

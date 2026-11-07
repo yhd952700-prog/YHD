@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -119,6 +120,8 @@ INSTALL_ROOTS = (
 _DEFAULT_INSTALL_ROOTS = INSTALL_ROOTS
 _IN_FLIGHT_PHASES = ("backing_up", "applying", "self_checking", "rolling_back")
 
+logger = logging.getLogger(__name__)
+
 #: 安装树标志。``installer/liuhao.iss`` 把解释器装进 ``<app>/runtime``，
 #: 源码仓库与便携版没有这个目录。
 _INSTALL_MARKER = Path("runtime") / "python.exe"
@@ -153,6 +156,27 @@ def resolve_data_dir(
     return default_data_dir(app_root)
 
 
+#: 运行期状态目录名。历史版本写在程序目录，卸载器不认这些运行期文件，
+#: 会残留在 ``<app>/upgrade-state``；现在统一落数据目录。
+STATE_DIRNAME = "upgrade-state"
+#: 代码/数据备份目录名，同上。
+BACKUP_DIRNAME = "upgrade-backups"
+
+
+def default_state_dir(
+    app_root: str | Path, data_dir: str | Path | None = None
+) -> Path:
+    """升级状态目录：``<data>/upgrade-state``（不在程序目录内）。"""
+    return resolve_data_dir(app_root, data_dir) / STATE_DIRNAME
+
+
+def default_backup_root(
+    app_root: str | Path, data_dir: str | Path | None = None
+) -> Path:
+    """升级备份目录：``<data>/upgrade-backups``（不在程序目录内）。"""
+    return resolve_data_dir(app_root, data_dir) / BACKUP_DIRNAME
+
+
 @dataclass
 class UpgradeConfig:
     app_root: str | Path
@@ -175,12 +199,12 @@ class UpgradeConfig:
         self.backup_root = (
             Path(self.backup_root).resolve()
             if self.backup_root
-            else self.app_root / "upgrade-backups"
+            else default_backup_root(self.app_root, self.data_dir)
         )
         self.state_dir = (
             Path(self.state_dir).resolve()
             if self.state_dir
-            else self.app_root / "upgrade-state"
+            else default_state_dir(self.app_root, self.data_dir)
         )
         self.install_roots = tuple(str(item) for item in self.install_roots)
         protected = list(str(item) for item in self.protected_paths)
@@ -198,6 +222,7 @@ class UpgradeConfig:
 class UpgradeManager:
     def __init__(self, config: UpgradeConfig) -> None:
         self.config = config
+        self._migrate_legacy_dirs()
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
         self.config.backup_root.mkdir(parents=True, exist_ok=True)
         self.ledger = UpgradeLedger(self.config.state_dir / "upgrade-ledger.db")
@@ -209,6 +234,39 @@ class UpgradeManager:
         # an unfinished `apply/in_progress` ledger row. Recover immediately:
         # never let the user restart into an undecidable "unknown" state.
         self._recover_interrupted_upgrade()
+
+    def _migrate_legacy_dirs(self) -> None:
+        """把旧版本写在程序目录的 ``upgrade-state``/``upgrade-backups`` 搬到数据目录。
+
+        卸载器只认识安装清单里的文件，运行期写进程序目录的状态和备份会残留；
+        这里一次性迁移。迁移失败（权限、被占用）只告警，绝不让升级入口起不来：
+        旧目录原地保留即可，新目录会重新记录。
+        """
+        legacy_pairs = (
+            (self.config.app_root / STATE_DIRNAME, self.config.state_dir),
+            (self.config.app_root / BACKUP_DIRNAME, self.config.backup_root),
+        )
+        for legacy, target in legacy_pairs:
+            try:
+                if not legacy.is_dir() or legacy == target or target.exists():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                legacy.rename(target)
+                logger.info("upgrade: migrated legacy dir %s -> %s", legacy, target)
+            except OSError as exc:
+                logger.warning(
+                    "upgrade: legacy dir %s kept in place, ignored (%s)",
+                    legacy, exc,
+                )
+                try:
+                    if not target.exists():
+                        shutil.copytree(legacy, target, dirs_exist_ok=True)
+                        logger.info("upgrade: copied legacy dir %s -> %s", legacy, target)
+                        shutil.rmtree(legacy, ignore_errors=True)
+                except OSError as copy_exc:
+                    logger.warning(
+                        "upgrade: cannot migrate legacy dir %s (%s)", legacy, copy_exc,
+                    )
 
     # ------------------------------------------------------------------
     # 互斥：同一安装根只允许一个升级/回滚在跑
@@ -1259,6 +1317,7 @@ class UpgradeManager:
             self.config.data_dir,
             extra_paths,
             backup_dir,
+            exclude_dirs=(self.config.state_dir,),
         )
         meta = {
             "schema": _BACKUP_SCHEMA,

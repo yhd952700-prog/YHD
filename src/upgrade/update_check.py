@@ -33,7 +33,11 @@ from src.common.atomic_write import atomic_write_text
 from src.tasks.local_scheduler import ACTIVE_STATUSES, LocalScheduler
 from src.tasks.reminder_notify import build_default_notifier
 
-from .manager import UpgradeConfig, UpgradeManager
+from .manager import (
+    UpgradeConfig,
+    UpgradeManager,
+    default_state_dir as upgrade_state_dir,
+)
 from .sources import build_source
 
 UPDATE_CHECK_JOB = "liuhao.upgrade.weekly-check"
@@ -79,7 +83,8 @@ def default_state_dir(app_root: Path | None = None) -> Path:
     raw = os.environ.get("LIUHAO_UPGRADE_STATE_DIR")
     if raw:
         return Path(raw).resolve()
-    return (app_root or default_app_root()) / "upgrade-state"
+    # 与 CLI/管理器共用口径：状态落数据目录，程序目录只读。
+    return upgrade_state_dir(app_root or default_app_root())
 
 
 def source_configured() -> bool:
@@ -145,8 +150,10 @@ def _write_error_state(
         "notify_results": [],
         "next_check_at": next_check_at,
     }
+    target = state_dir or default_state_dir()
+    target.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
-        (state_dir or default_state_dir()) / "last-check.json",
+        target / "last-check.json",
         json.dumps(state, ensure_ascii=False, indent=2),
     )
     return state

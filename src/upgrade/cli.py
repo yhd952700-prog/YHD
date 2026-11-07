@@ -43,8 +43,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "开发/便携版 <app-root>/data；LIUHAO_DATA_DIR 可覆盖）"
         ),
     )
-    common.add_argument("--backup-root", default=None, help="备份目录（默认 <app-root>/upgrade-backups）")
-    common.add_argument("--state-dir", default=None, help="状态目录（默认 <app-root>/upgrade-state）")
+    common.add_argument(
+        "--backup-root",
+        default=None,
+        help="备份目录（默认 <数据目录>/upgrade-backups，不写程序目录）",
+    )
+    common.add_argument(
+        "--state-dir",
+        default=None,
+        help="状态目录（默认 <数据目录>/upgrade-state，不写程序目录）",
+    )
     common.add_argument(
         "--extra-state",
         action="append",

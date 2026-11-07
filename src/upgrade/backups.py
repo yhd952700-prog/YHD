@@ -152,11 +152,23 @@ def _backup_one(source: Path, target: Path, *, sqlite: bool) -> int:
     return target.stat().st_size
 
 
+def _is_under(path: Path, roots: Sequence[Path]) -> bool:
+    resolved = path.resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def backup_data(
     app_root: Path,
     data_dir: Path,
     extra_files: Sequence[Path],
     dest_dir: Path,
+    exclude_dirs: Sequence[Path] = (),
 ) -> DataBackup:
     """Back up ``data_dir`` and extra state files into ``dest_dir``."""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -166,7 +178,15 @@ def backup_data(
     total = 0
     sqlite_count = 0
 
+    # 升级备份目录与运行期状态目录默认都落在数据目录内（``<data>/upgrade-backups``、
+    # ``<data>/upgrade-state``）。遍历数据目录时必须跳过它们：前者会把“正在写入的
+    # 备份”当成用户数据再备份一遍；后者的操作锁正被当前进程独占打开，读取会报
+    # Permission denied，而它本身也不是用户数据。
+    skipped = [dest_dir.resolve()] + [Path(item).resolve() for item in exclude_dirs]
+
     for source in iter_files([data_dir]):
+        if _is_under(source, skipped):
+            continue
         rel = source.relative_to(data_dir).as_posix()
         safe_relpath(rel)
         sqlite = is_sqlite_file(source)
