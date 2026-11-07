@@ -304,6 +304,49 @@ def compose_execution_summary(
     return summary[:2500]
 
 
+def _shorten_text(text: Any, limit: int = 220) -> str:
+    """Cut an excerpt at a **sentence/clause boundary**, never mid-word.
+
+    A raw ``text[:220]`` used to leave half a word behind (``…功能与授``) and
+    the next part was then glued on with a space, producing
+    ``…功能与授 整理三条要点：``. Prefer the last sentence terminator, then the
+    last clause punctuation, then a whitespace boundary; only when the text has
+    no boundary at all do we hard-cut (character slicing never splits a CJK
+    character).
+    """
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    head = cleaned[:limit]
+    cut = max(head.rfind(ch) for ch in "。！？；!?;\n")
+    if cut > 0:
+        return head[:cut + 1].strip()
+    cut = max(head.rfind(ch) for ch in "，,、：: ")
+    if cut > 0:
+        return head[:cut].rstrip("，,、：: ") + "…"
+    return head.rstrip()
+
+
+def _join_summary_parts(parts: Sequence[str]) -> str:
+    """Join fallback parts without double spaces or an orphaned separator.
+
+    Once a part ends with Chinese sentence punctuation the next sentence
+    follows directly (no extra space); otherwise a single space is used.
+    """
+    out = ""
+    for raw in parts:
+        part = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not part:
+            continue
+        if not out:
+            out = part
+        elif out[-1] in "。！？；.!?;":
+            out += part
+        else:
+            out += " " + part
+    return out.strip()
+
+
 def _deterministic_summary(
     goal_text: str,
     completed: Sequence[Dict[str, Any]],
@@ -320,13 +363,13 @@ def _deterministic_summary(
             text = _output_text(record.get("result"))
             if not text:
                 continue
-            parts.append(f"{str(record.get('name') or '任务')}：{text[:220]}")
+            parts.append(f"{str(record.get('name') or '任务')}：{_shorten_text(text)}")
             shown += 1
             if shown >= 3:
                 break
     if failed:
         names = "、".join(str(r.get("name") or "未命名任务") for r in failed[:5])
-        first_error = str(failed[0].get("error") or "未知错误")[:200]
+        first_error = _shorten_text(failed[0].get("error") or "未知错误", limit=200)
         parts.append(
             f"仍有 {len(failed)} 项任务失败：{names}。首个错误：{first_error}。"
             "下一步可以修复失败原因后对失败任务单独重试。"
@@ -340,7 +383,7 @@ def _deterministic_summary(
         parts.append(f"来源{stamp}：" + "；".join(citations))
     if not parts:
         return "本次没有产生可汇总的执行结果；请补充更明确的目标后重试。"
-    return " ".join(parts)
+    return _join_summary_parts(parts)
 
 
 def _collect_source_dicts(
@@ -386,12 +429,30 @@ def _collect_citations(
     return lines, fetched_at
 
 
-_URL_PATTERN = re.compile(r"https?://[^\s，。；：、）)】\]\"'<>]+")
+#: Characters that end a link. Both half-width **and** full-width brackets/
+#: punctuation must terminate the match: a Chinese prose summary commonly writes
+#: ``https://example.com（抓取时间 2026-11-07T…）``, and if ``（`` were allowed
+#: inside the URL the match would become ``https://example.com（抓取时间`` — a
+#: string that is not in the whitelist, so the whole verified summary was
+#: discarded ("unverified link" / "dropped all real citations").
+_URL_TERMINATORS = (
+    "\"'<>"
+    "()（）[]［］【】{}｛｝"
+    "，。；：、！？"
+    "“”‘’「」『』《》〈〉"
+    "…—"
+)
+_URL_PATTERN = re.compile(r"https?://[^\s" + re.escape(_URL_TERMINATORS) + r"]+")
+
+#: Trailing punctuation stripped from a match. Full-width variants are included
+#: so ``https://example.com，`` compares equal to the whitelisted link while a
+#: different host/path is still rejected.
+_URL_TRAILING = ".,;:!?…" + "，。；：、！？" + "）)】]」』”’\"'"
 
 
 def _urls_in(text: str) -> set[str]:
     """Links that literally appear in a text (trailing punctuation stripped)."""
-    return {match.rstrip(".,;:!?") for match in _URL_PATTERN.findall(text or "")}
+    return {match.rstrip(_URL_TRAILING) for match in _URL_PATTERN.findall(text or "")}
 
 
 __all__ = [
