@@ -19,7 +19,10 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import logging
+import os
 import queue
 import threading
 import tkinter as tk
@@ -29,11 +32,13 @@ from tkinter import messagebox
 from typing import Any
 
 from . import CONSOLE_DIST, DATA_DIR, LOG_DIR
+from .about import APP_NAME
 from .probe import http_json
 from .service import GRACEFUL_TIMEOUT, GatewayService
 from .startup import STARTUP_TIMEOUT, unavailable_gate, wait_until_ready
 from .tray import (
     ACTION_OPEN_CONSOLE,
+    ACTION_OPEN_LOGS,
     ACTION_QUIT,
     ACTION_SHOW_STATUS,
     ACTION_STOP_SERVICE,
@@ -42,6 +47,7 @@ from .tray import (
     STATE_RUNNING,
     STATE_STOPPED,
     SystemTray,
+    request_show,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +72,51 @@ def _configure_logging() -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     pkg_logger.addHandler(handler)
     pkg_logger.setLevel(logging.INFO)
+
+
+#: 单实例互斥量的句柄。必须活到进程退出：句柄一关，命名互斥量就被内核回收，
+#: 第二个实例会误以为自己是首实例。强杀进程时句柄随进程销毁，同样自动释放，
+#: 因此不会出现"上次崩溃留下的锁让程序再也起不来"。
+_SINGLE_INSTANCE_HANDLE: Any = None
+
+_ERROR_ALREADY_EXISTS = 183
+
+
+def single_instance_name(data_dir: Any) -> str:
+    """按数据目录派生命名互斥量：同一份数据只允许一个桌面壳。
+
+    用数据目录而不是程序目录做键：测试/多实例并存时各自独立数据目录，互不
+    抢占；同一份用户数据则严格单实例，避免两个壳同时启动/停止同一个网关。
+    """
+    digest = hashlib.sha1(str(data_dir).lower().encode("utf-8")).hexdigest()[:12]
+    return f"Local\\LiuHaoDesktopShell_{digest}"
+
+
+def acquire_single_instance(data_dir: Any) -> tuple[Any, bool]:
+    """获取单实例互斥量，返回 ``(句柄, 是否已有实例在运行)``。
+
+    非 Windows 返回 ``(None, False)``（不阻断）。获取失败按"没有互斥量"继续：
+    网关自身的实例锁仍是第二道防线，不能因为拿不到互斥量就把程序拒之门外。
+    """
+    global _SINGLE_INSTANCE_HANDLE
+    if os.name != "nt":
+        return None, False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        handle = kernel32.CreateMutexW(None, False, single_instance_name(data_dir))
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "CreateMutexW 失败")
+        already = ctypes.get_last_error() == _ERROR_ALREADY_EXISTS
+        _SINGLE_INSTANCE_HANDLE = handle
+        return handle, already
+    except Exception as exc:  # noqa: BLE001 - 降级为"无互斥量"，不阻断启动
+        logger.warning("单实例互斥量不可用（%s），退回由网关实例锁兜底", exc)
+        return None, False
 
 
 def _describe_stop(result: dict[str, Any]) -> str:
@@ -125,8 +176,15 @@ class DesktopApp:
     # ------------------------------------------------------------------ #
     def run(self) -> int:
         _configure_logging()
+        # 单实例判定必须在创建窗口/托盘/网关之前：否则第二次双击会多出一个
+        # 状态窗口和第二个托盘图标，而且网关锁会让它显示"启动失败"——用户
+        # 看到的是失败，真实结论却是"已经在运行"。
+        _, already_running = acquire_single_instance(DATA_DIR)
+        if already_running:
+            self._handoff_to_running()
+            return 0
         self._root = tk.Tk()
-        self._root.title("鎏灏 LIUHAO X")
+        self._root.title(APP_NAME)
         self._root.geometry("500x360+120+120")
         self._root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
         self._build_ui()
@@ -134,6 +192,7 @@ class DesktopApp:
         self._tray = SystemTray(
             lambda action: self.events.put(("action", action)),
             tooltip=self._tooltip_text(),
+            instance_key=str(DATA_DIR),
         )
         if not self._tray.start():
             logger.warning("系统托盘未启动：%s", self._tray.error)
@@ -247,7 +306,7 @@ class DesktopApp:
         frame = tk.Frame(self._root, padx=16, pady=12)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(frame, text="鎏灏 LIUHAO X", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tk.Label(frame, text=APP_NAME, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         for key, label in (
             ("service", "网关："),
             ("startup", "启动："),
@@ -306,6 +365,54 @@ class DesktopApp:
 
     def _open_console(self) -> None:
         webbrowser.open(self._console_url())
+
+    def _handoff_to_running(self) -> None:
+        """第二个桌面实例：唤起已运行的状态窗口，而不是再起一套网关。
+
+        三个层次的降级，全部失败也不会静默退出：
+        1. 请已运行的托盘窗口显示状态窗口（等价于点菜单「查看状态」）；
+        2. 找不到窗口（例如上一实例正处在启动竞态里）→ 打开它已发布的控制台地址；
+        3. 两者都没有 → 弹一句人话，告诉用户去通知区找图标。
+        """
+        if request_show(str(DATA_DIR)):
+            logger.info("已有鎏灏桌面实例在运行：已唤起其状态窗口，本进程直接退出")
+            return
+        url = self._published_console_url()
+        if url:
+            logger.info("已有鎏灏实例在运行，但未能唤起窗口：打开控制台 %s", url)
+            webbrowser.open(url)
+            return
+        logger.info("已有鎏灏实例在运行，但既找不到窗口也没有已发布地址")
+        with contextlib.suppress(Exception):
+            messagebox.showinfo(
+                "鎏灏已在运行",
+                "鎏灏已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。",
+            )
+
+    def _published_console_url(self) -> str:
+        """读取已运行实例发布在数据目录里的控制台地址（没有就返回空串）。"""
+        try:
+            payload = json.loads((DATA_DIR / "run" / "instance.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        url = str(payload.get("url") or "").strip()
+        return url.rstrip("/") + "/" if url else ""
+
+    def _open_logs(self) -> None:
+        """打开日志目录（排障入口）：路径不存在就先建出来，打不开则给出路径。"""
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(LOG_DIR))  # noqa: S606 - Windows 打开资源管理器
+            else:
+                webbrowser.open(LOG_DIR.as_uri())
+        except OSError as exc:
+            logger.warning("打开日志目录失败：%s", exc)
+            with contextlib.suppress(Exception):
+                messagebox.showinfo(
+                    "无法自动打开日志目录",
+                    f"日志目录：{LOG_DIR}\n请手动复制上面的路径打开。",
+                )
 
     def _hide_to_tray(self) -> None:
         if self._root is None:
@@ -470,6 +577,8 @@ class DesktopApp:
         elif action == ACTION_STOP_SERVICE:
             self._stop_service()
             self._show_window()
+        elif action == ACTION_OPEN_LOGS:
+            self._open_logs()
         elif action == ACTION_QUIT:
             self._quit()
 

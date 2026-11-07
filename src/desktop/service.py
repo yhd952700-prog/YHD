@@ -117,12 +117,17 @@ def stop_process(
     timeout: float = GRACEFUL_TIMEOUT,
     log_path: Path | None = None,
     log_offset: int = 0,
+    extra_logs: list[tuple[Path, int]] | None = None,
 ) -> dict[str, Any]:
     """按 stdin 停止协议停止子进程，返回可展示、可记录的判定结果。
 
     ``forced=True`` 只在超过 ``timeout`` 后 kill 时出现；``graceful=True``
     要求进程自己退出、日志里出现 uvicorn 的 ``Application shutdown complete``，
     且**没有**在途任务被取消。任一不满足时，调用方必须如实展示对应原因。
+
+    ``extra_logs`` 用于补充「关闭记录实际落盘位置」：网关的应用日志按
+    ``config/logging.yaml`` 写进数据目录的 ``liuhao.log``，控制台抓取文件只承接
+    WARNING 及以上。只看抓取文件会把一次真实优雅退出误报成"未确认"。
     """
     result: dict[str, Any] = {
         "stopped": False,
@@ -164,6 +169,8 @@ def stop_process(
     result["exit_code"] = proc.returncode
     result["stopped"] = proc.returncode is not None
     new_log = _read_log_since(log_path, log_offset)
+    for extra_path, extra_offset in extra_logs or []:
+        new_log += "\n" + _read_log_since(extra_path, extra_offset)
     result["shutdown_confirmed"] = SHUTDOWN_LOG_MARKER in new_log
     result["inflight_cancelled"] = SHUTDOWN_CANCEL_MARKER in new_log.lower()
     result["graceful"] = (
@@ -359,11 +366,19 @@ class GatewayService:
         with self._lock:
             proc = self._proc
             self._proc = None
+        # 关闭记录写在应用日志里（config/logging.yaml 指向数据目录），抓取文件
+        # 只承接 WARNING 及以上；两处都要看，否则会把优雅退出误判成"未确认"。
+        app_log = LOG_DIR / "liuhao.log"
+        try:
+            app_log_offset = app_log.stat().st_size
+        except OSError:
+            app_log_offset = 0
         result = stop_process(
             proc,
             timeout=timeout,
             log_path=self._log_path,
             log_offset=self._log_offset,
+            extra_logs=[(app_log, app_log_offset)],
         )
         if result["forced"]:
             logger.warning(

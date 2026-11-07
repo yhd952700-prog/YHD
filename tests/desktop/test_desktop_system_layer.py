@@ -376,6 +376,31 @@ def test_stop_process_is_graceful_when_shutdown_is_confirmed(tmp_path: Path) -> 
     assert proc.killed is False
 
 
+def test_stop_process_confirms_shutdown_recorded_in_application_log(tmp_path: Path) -> None:
+    """关闭记录写在应用日志里时，不能因为抓取文件里没有就误报"未确认"。"""
+    capture = tmp_path / "desktop-gateway.log"
+    capture.write_text("", encoding="utf-8")
+    app_log = tmp_path / "liuhao.log"
+    app_log.write_text("2026-01-01 | INFO | uvicorn.error | Shutting down\n", encoding="utf-8")
+    offset = app_log.stat().st_size
+
+    def mark_shutdown() -> None:
+        with app_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"2026-01-01 | INFO | uvicorn.error | {SHUTDOWN_LOG_MARKER}.\n")
+
+    proc = _FakeProc(on_shutdown=mark_shutdown)
+    result = stop_process(
+        proc,
+        timeout=1.0,
+        log_path=capture,
+        log_offset=0,
+        extra_logs=[(app_log, offset)],
+    )
+
+    assert result["shutdown_confirmed"] is True
+    assert result["graceful"] is True
+
+
 def test_stop_process_flags_inflight_tasks_cancelled_by_timeout(tmp_path: Path) -> None:
     log = tmp_path / "gateway.log"
     log.write_text("INFO:     Started server process\n", encoding="utf-8")
@@ -564,6 +589,106 @@ def test_tray_swallows_callback_errors() -> None:
         assert widget.icon_added is False
     finally:
         widget.stop()
+
+
+def test_tray_class_name_is_stable_and_scoped() -> None:
+    """第二个实例要靠类名找到托盘窗口：同类同键必须稳定，不同键必须不同。"""
+    first = tray.tray_class_name(r"D:\data\a")
+    assert first == tray.tray_class_name(r"D:\DATA\A")
+    assert first != tray.tray_class_name(r"D:\data\b")
+    assert first.startswith("LiuHaoTray_")
+
+
+def test_single_instance_name_is_stable_and_data_dir_scoped() -> None:
+    from src.desktop import app as app_module
+
+    name = app_module.single_instance_name(r"D:\data\a")
+    assert name == app_module.single_instance_name(r"D:\DATA\A")
+    assert name != app_module.single_instance_name(r"D:\data\b")
+    assert name.startswith("Local\\LiuHaoDesktopShell_")
+
+
+@WINDOWS_ONLY
+def test_second_instance_is_detected_by_named_mutex(tmp_path: Path) -> None:
+    from src.desktop import app as app_module
+
+    _, already = app_module.acquire_single_instance(tmp_path / "one")
+    assert already is False
+    _, already_again = app_module.acquire_single_instance(tmp_path / "one")
+    assert already_again is True
+    _, other = app_module.acquire_single_instance(tmp_path / "two")
+    assert other is False
+
+
+@WINDOWS_ONLY
+def test_request_show_focuses_running_tray_window(tmp_path: Path) -> None:
+    """跨线程走真实的 FindWindow + 注册消息：已有实例必须能被叫醒。"""
+    received: list[str] = []
+    widget = tray.SystemTray(received.append, instance_key=str(tmp_path / "data"))
+    if not widget.start():
+        widget.stop()
+        pytest.skip(f"托盘不可用：{widget.error}")
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not tray.find_tray_window(str(tmp_path / "data")):
+            time.sleep(0.05)
+        assert tray.find_tray_window(str(tmp_path / "data")) == widget.hwnd
+        assert tray.request_show(str(tmp_path / "data"), timeout=2.0) is True
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not received:
+            time.sleep(0.05)
+        assert received == [tray.ACTION_SHOW_STATUS]
+        # 没有对应实例时不能假装送达，否则第二个实例会静默退出。
+        assert tray.request_show(str(tmp_path / "other"), timeout=0.2) is False
+    finally:
+        widget.stop()
+
+
+@WINDOWS_ONLY
+def test_handoff_opens_published_console_when_window_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.desktop import app as app_module
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "instance.json").write_text(
+        json.dumps({"url": "http://127.0.0.1:18099"}), encoding="utf-8"
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "request_show", lambda *_a, **_k: False)
+    monkeypatch.setattr(app_module.webbrowser, "open", opened.append)
+
+    app_module.DesktopApp(hidden=True)._handoff_to_running()
+    assert opened == ["http://127.0.0.1:18099/"]
+
+
+def test_open_logs_action_dispatches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """托盘菜单「打开日志目录」必须真的打开目录，而不是静默无反应。"""
+    from src.desktop import app as app_module
+
+    started: list[str] = []
+    monkeypatch.setattr(app_module, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(app_module.os, "startfile", started.append, raising=False)
+    monkeypatch.setattr(app_module.webbrowser, "open", started.append)
+
+    app_module.DesktopApp()._handle_action(tray.ACTION_OPEN_LOGS)
+    assert (tmp_path / "logs").is_dir()
+    assert started and str(tmp_path / "logs") in started[0]
+
+
+def test_open_console_action_uses_service_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """托盘菜单「打开控制台」必须打开网关实际发布的地址，而不是固定猜端口。"""
+    from src.desktop import app as app_module
+
+    opened: list[str] = []
+    monkeypatch.setattr(app_module.webbrowser, "open", opened.append)
+    desktop = app_module.DesktopApp(port=18123)
+    desktop.service.port = 18123
+
+    desktop._handle_action(tray.ACTION_OPEN_CONSOLE)
+    assert opened == ["http://127.0.0.1:18123/"]
 
 
 @WINDOWS_ONLY

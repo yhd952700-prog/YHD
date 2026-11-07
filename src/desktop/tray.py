@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import os
 import struct
@@ -35,6 +36,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..brand import BRAND_LOCKUP
+
 #: 菜单动作（对外稳定名称）。
 ACTION_OPEN_CONSOLE = "open_console"
 ACTION_SHOW_STATUS = "show_status"
@@ -44,12 +47,22 @@ ACTION_QUIT = "quit"
 #: 托盘左键单击 / 双击的附加动作。
 ACTION_TOGGLE_STATUS = "toggle_status"
 
-#: 菜单项顺序即产品要求：打开控制台 / 查看状态 / 停止服务 / 退出。
+#: 「打开日志目录」：排障时不必让用户自己去找数据目录。
+ACTION_OPEN_LOGS = "open_logs"
+
+#: 第二个桌面实例唤起已有窗口用的注册消息（跨进程，按类名找隐藏窗口）。
+SHOW_MESSAGE_NAME = "LiuHao.ShowStatusWindow"
+
+#: 托盘窗口类名前缀；完整类名由 :func:`tray_class_name` 按实例键派生。
+TRAY_CLASS_PREFIX = "LiuHaoTray"
+
+#: 菜单项顺序即产品要求：打开控制台 / 查看状态 / 打开日志目录 / 停止服务 / 退出。
 #: 「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止网关并移除托盘 ——
 #: 标签里写清楚，避免用户把"停止"当成"退出"。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
     (1001, ACTION_OPEN_CONSOLE, "打开控制台"),
     (1002, ACTION_SHOW_STATUS, "查看状态"),
+    (1005, ACTION_OPEN_LOGS, "打开日志目录"),
     (1003, ACTION_STOP_SERVICE, "停止服务（仅停网关，托盘保留）"),
     (1004, ACTION_QUIT, "退出（停止网关并关闭托盘）"),
 )
@@ -71,6 +84,55 @@ _ICON_SIZE = 16
 def available() -> bool:
     """当前平台是否支持系统托盘（需要 Windows + pywin32）。"""
     return os.name == "nt"
+
+
+def tray_class_name(instance_key: str) -> str:
+    """按实例键派生**稳定**的托盘窗口类名。
+
+    第二个桌面实例要靠它 ``FindWindow`` 找到已运行的那个托盘窗口。随机类名
+    （旧实现）只能保证"不冲突"，做不到"找得到"，于是第二次双击只能报失败。
+    ``instance_key`` 取数据目录：同一份数据 = 同一个实例，不同数据目录互不干扰。
+    """
+    digest = hashlib.sha1(str(instance_key).lower().encode("utf-8")).hexdigest()[:12]
+    return f"{TRAY_CLASS_PREFIX}_{digest}"
+
+
+def find_tray_window(instance_key: str) -> int:
+    """查找已运行的托盘隐藏窗口；找不到返回 0。"""
+    if not available():
+        return 0
+    try:
+        _, _, win32gui = _load_win32()
+        return int(win32gui.FindWindow(tray_class_name(instance_key), None) or 0)
+    except Exception:  # noqa: BLE001 - 只在 Windows 且 pywin32 可用时有意义
+        return 0
+
+
+def request_show(instance_key: str, timeout: float = 5.0) -> bool:
+    """请求已运行的托盘实例显示状态窗口；返回是否送达。
+
+    ``timeout`` 用于覆盖启动竞态：两个实例几乎同时起来时，赢家可能还没来得及
+    创建窗口，输家短暂等待后再放弃（放弃前由调用方退回"打开控制台"）。
+    """
+    if not available():
+        return False
+    try:
+        _, _, win32gui = _load_win32()
+        message = win32gui.RegisterWindowMessage(SHOW_MESSAGE_NAME)
+    except Exception:  # noqa: BLE001
+        return False
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        hwnd = find_tray_window(instance_key)
+        if hwnd:
+            try:
+                win32gui.PostMessage(hwnd, message, 0, 0)
+                return True
+            except Exception:  # noqa: BLE001 - 窗口刚好退出
+                return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
 
 
 def _load_win32() -> tuple[Any, Any, Any]:
@@ -124,9 +186,17 @@ def write_state_icon(path: Path, rgb: tuple[int, int, int], size: int = _ICON_SI
 class SystemTray:
     """一个只在 Windows 上真正工作的托盘图标。"""
 
-    def __init__(self, on_action: Callable[[str], None], *, tooltip: str = "鎏灏 LIUHAO X") -> None:
+    def __init__(
+        self,
+        on_action: Callable[[str], None],
+        *,
+        tooltip: str = BRAND_LOCKUP,
+        instance_key: str | None = None,
+    ) -> None:
         self._on_action = on_action
         self._tooltip = tooltip[:_TIP_MAX]
+        #: 稳定的实例键：第二个桌面实例据此找到本窗口并请求显示状态窗口。
+        self._instance_key = instance_key or ""
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._running = False
@@ -134,6 +204,7 @@ class SystemTray:
         self._nid: tuple[Any, ...] | None = None
         self._w32: tuple[Any, Any, Any] | None = None
         self._message_id = 0
+        self._show_message_id = 0
         self._class_name = ""
         self._icon_added = False
         self._error: str | None = None
@@ -283,7 +354,12 @@ class SystemTray:
             win32api, win32con, win32gui = _load_win32()
             self._w32 = (win32api, win32con, win32gui)
             self._message_id = win32con.WM_USER + 20
-            self._class_name = f"LiuHaoTray_{uuid.uuid4().hex[:10]}"
+            self._show_message_id = win32gui.RegisterWindowMessage(SHOW_MESSAGE_NAME)
+            self._class_name = (
+                tray_class_name(self._instance_key)
+                if self._instance_key
+                else f"LiuHaoTray_{uuid.uuid4().hex[:10]}"
+            )
 
             wc = win32gui.WNDCLASS()
             wc.hInstance = win32api.GetModuleHandle(None)
@@ -360,6 +436,9 @@ class SystemTray:
                 self._dispatch(ACTION_OPEN_CONSOLE)
             elif lparam == win32con.WM_RBUTTONUP:
                 self._show_menu()
+        elif self._show_message_id and msg == self._show_message_id:
+            # 第二个桌面实例发来的「显示状态窗口」请求（等价于点菜单「查看状态」）。
+            self._dispatch(ACTION_SHOW_STATUS)
         elif msg == win32con.WM_COMMAND:
             self.handle_command(int(wparam) & 0xFFFF)
         elif msg == win32con.WM_CLOSE:
@@ -406,16 +485,21 @@ class SystemTray:
 
 __all__ = [
     "ACTION_OPEN_CONSOLE",
+    "ACTION_OPEN_LOGS",
     "ACTION_QUIT",
     "ACTION_SHOW_STATUS",
     "ACTION_STOP_SERVICE",
     "ACTION_TOGGLE_STATUS",
     "MENU_ITEMS",
+    "SHOW_MESSAGE_NAME",
     "STATE_COLORS",
     "STATE_ERROR",
     "STATE_RUNNING",
     "STATE_STOPPED",
     "SystemTray",
     "available",
+    "find_tray_window",
+    "request_show",
+    "tray_class_name",
     "write_state_icon",
 ]
