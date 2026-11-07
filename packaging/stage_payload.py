@@ -58,15 +58,24 @@ from src.upgrade.console_contract import (  # noqa: E402
 SOURCE_DIRS: Tuple[str, ...] = ("src",)
 
 #: ``config/`` 里绝不进包的东西：凭据、身份登记表、私钥、容器环境变量。
+#: 条目按**完整文件名**或 ``*.ext`` 匹配（见 ``_copy_config``）。
 CONFIG_EXCLUDES: Tuple[str, ...] = (
-    "production",
-    "monitoring",
-    "external_anchor",
+    "production",       # 目录：生产部署脚本/验收清单
+    "production.yaml",  # 文件：此前误写成 "production"，只挡住了同名目录
+    "external_anchor",  # 目录：外部锚点记录与私钥
     "auth_secrets.json",
     "human_identities.json",
     "docker.env",
     "*.pem",
     "*.key",
+)
+
+#: 允许"当前 checkout 里没有可匹配对象"的防御性条目：它们保护的是运行时
+#: 生成或开发机本地的文件，不能因为目录里暂时没有就删掉。其余条目必须能
+#: 匹配 ``config/`` 里的真实文件/目录，否则视为失效（见
+#: ``tests/test_stage_payload_config_excludes.py``）。
+CONFIG_EXCLUDES_DEFENSIVE = frozenset(
+    {"auth_secrets.json", "human_identities.json", "*.pem", "*.key"}
 )
 
 #: 仓库根需要随包的文件（roster 从包根读取；内核顶层模块被 src 直接 import）。
