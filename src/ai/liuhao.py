@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
 import threading
 import uuid
@@ -29,7 +31,11 @@ from .agent_factory import (
     AgentPolicy,
     economy_inputs,
 )
-from .providers import BaseProvider, resolve_provider
+from .providers import (
+    BaseProvider,
+    GENERATION_FAILURE_MESSAGE,
+    resolve_provider,
+)
 from .conversation_store import get_conversation_store
 from .tool_registry import ToolRegistry
 from .tools import make_tools, build_tool_prompt, parse_tool_call
@@ -60,6 +66,48 @@ MAX_HISTORY_MESSAGES = 20
 MAX_TOOL_ROUNDS = 3
 
 _log = logging.getLogger(__name__)
+
+
+def _json_safe_output(value: Any) -> Any:
+    """Best-effort conversion to JSON-native data (dict/list/scalar)."""
+    if value is None or isinstance(value, (bool, int, float, str, list, dict)):
+        return value
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def coerce_tool_output(value: Any) -> Any:
+    """Normalise tool output to structured JSON, not a Python ``repr`` string.
+
+    New executions return ``dict``/``list``/scalar directly. For backward
+    compatibility with old records (and any legacy caller) a string that is a
+    Python repr such as ``"{'a': 1, 'b': None}"`` is parsed back into structure
+    when it is safe; ordinary text is returned unchanged.
+    """
+    value = _json_safe_output(value)
+    if isinstance(value, str) and value.lstrip()[:1] in "[{":
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                return value
+        if isinstance(parsed, (dict, list)):
+            return _json_safe_output(parsed)
+    return value
+
+
+def _tool_output_text(value: Any) -> str:
+    """Serialise a structured tool result for the model context (never repr)."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _safe_text_len(value: Any) -> int:
@@ -380,9 +428,18 @@ class LiuHaoAssistant:
             status = "completed"
             error_text: Optional[str] = None
         except Exception as exc:  # 真实失败，诚实返回，不伪造
-            reply = f"[生成失败] {exc}"
+            # 原始异常只进日志/诊断；用户侧与状态字段只保留中性中文说明。
+            self._log.warning(
+                "chat generation failed turn=%s correlation=%s provider=%s: %s",
+                self.turn,
+                correlation_id,
+                type(self.provider).__name__,
+                exc,
+                exc_info=True,
+            )
+            reply = GENERATION_FAILURE_MESSAGE
             status = "error"
-            error_text = str(exc)
+            error_text = GENERATION_FAILURE_MESSAGE
 
         self.last_turn_status = status
         self.last_turn_error = error_text
@@ -466,12 +523,28 @@ class LiuHaoAssistant:
                 }
                 messages.append({"role": "assistant", "content": round_reply})
                 messages.append(
-                    {"role": "user", "content": f"[工具 {tool_name} 结果]\n{tool_output}"}
+                    {
+                        "role": "user",
+                        "content": (
+                            f"[工具 {tool_name} 结果]\n"
+                            f"{_tool_output_text(tool_output)}"
+                        ),
+                    }
                 )
         except Exception as exc:  # 真实失败，诚实返回，不伪造
             status = "error"
-            error_text = str(exc)
-            final_reply = f"[生成失败] {exc}"
+            # 原始异常只写日志；用户侧与事件流都只看到中性中文说明。
+            self._log.warning(
+                "chat_stream generation failed turn=%s correlation=%s "
+                "provider=%s: %s",
+                self.turn,
+                correlation_id,
+                type(self.provider).__name__,
+                exc,
+                exc_info=True,
+            )
+            error_text = GENERATION_FAILURE_MESSAGE
+            final_reply = GENERATION_FAILURE_MESSAGE
             yield final_reply
 
         self.last_turn_status = status
@@ -500,19 +573,29 @@ class LiuHaoAssistant:
             # 把工具调用与结果加入上下文，继续生成最终回复。
             messages.append({"role": "assistant", "content": reply})
             messages.append(
-                {"role": "user", "content": f"[工具 {tool_name} 结果]\n{tool_output}"}
+                {
+                    "role": "user",
+                    "content": (
+                        f"[工具 {tool_name} 结果]\n"
+                        f"{_tool_output_text(tool_output)}"
+                    ),
+                }
             )
         return reply
 
-    def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
-        """按工具名查找并执行，返回序列化结果（含失败信息，不抛异常）。"""
+    def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
+        """按工具名查找并执行，返回结构化结果（含失败信息，不抛异常）。
+
+        ``output`` 直接返回 dict/list/scalar，让 SSE 与下游可以按 JSON 解析；
+        绝不把 ``str(result.output)`` 的 Python repr 抛给调用方。
+        """
         for tool in self._tool_list:
             if tool.name == tool_name:
                 result = self.tools.execute(tool.tool_id, args)
                 if result.success:
-                    return str(result.output)
-                return f"工具执行失败: {result.error}"
-        return f"未知工具: {tool_name}"
+                    return coerce_tool_output(result.output)
+                return {"success": False, "error": str(result.error)}
+        return {"success": False, "error": f"未知工具: {tool_name}"}
 
     def _commit_turn(
         self, message: str, reply: str, correlation_id: str, status: str
@@ -525,15 +608,17 @@ class LiuHaoAssistant:
         """
         if status == "completed":
             self._account_turn_spend()
-        self.history.append({"role": "user", "content": message})
-        self.history.append({"role": "assistant", "content": reply})
-        self._conv_store.append(self.principal, self.turn, "user", message)
-        self._conv_store.append(self.principal, self.turn, "assistant", reply)
-        self.memory.store(
-            f"turn:{self.principal}:{self.turn}",
-            {"user": message, "assistant": reply},
-            tags={"conversation", "assistant:liuhao"},
-        )
+            # 失败轮次不进入历史、不写会话存储、不写记忆：否则用户会在下一轮
+            # 上下文里反复看到失败文案，而"这次没拿到回复"并不属于对话内容。
+            self.history.append({"role": "user", "content": message})
+            self.history.append({"role": "assistant", "content": reply})
+            self._conv_store.append(self.principal, self.turn, "user", message)
+            self._conv_store.append(self.principal, self.turn, "assistant", reply)
+            self.memory.store(
+                f"turn:{self.principal}:{self.turn}",
+                {"user": message, "assistant": reply},
+                tags={"conversation", "assistant:liuhao"},
+            )
         # 事件类型按结果如实选择：
         # - completed → ACCESS_ALLOWED（授权通过且本轮成功）
         # - 否则（生成失败等）→ STATE_CHANGE + outcome="error"

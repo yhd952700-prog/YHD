@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.ai import liuhao as lh_module
 from src.ai.conversation_store import ConversationStore
 from src.ai.providers import BaseProvider, MockProvider
-from src.ai.liuhao import LiuHaoAssistant
+from src.ai.liuhao import LiuHaoAssistant, coerce_tool_output
 from src.ai.tools import build_tool_prompt, make_tools, parse_tool_call
 
 
@@ -101,33 +103,51 @@ def test_execute_search_memory_finds_stored():
     a = make_assistant(name="tool-mem")
     a.chat("hello world")
     out = a._execute_tool("search_memory", {"query": "hello"})
-    assert "hello" in out
+    assert isinstance(out, (dict, list)), "工具结果必须是结构化 JSON，不是 repr 字符串"
+    assert "hello" in json.dumps(out, ensure_ascii=False)
 
 
 def test_execute_unknown_tool():
     a = make_assistant()
-    assert "未知工具" in a._execute_tool("no_such_tool", {})
+    out = a._execute_tool("no_such_tool", {})
+    assert isinstance(out, dict)
+    assert "未知工具" in out["error"]
 
 
 def test_execute_system_status():
     a = make_assistant(name="tool-status")
     out = a._execute_tool("system_status", {})
-    assert "MockProvider" in out  # stats 含 provider 类名
+    assert isinstance(out, dict)
+    assert "MockProvider" in json.dumps(out, ensure_ascii=False)  # stats 含 provider 类名
 
 
 def test_execute_python_compute_real():
     """驾驶舱助手的计算工具必须真执行（返回真实计算结果，非模拟）。"""
     a = make_assistant(name="tool-compute")
     out = a._execute_tool("python_compute", {"code": "result = sum(i * i for i in range(1, 11))"})
-    assert "385" in out
-    assert "executed" in out
+    rendered = json.dumps(out, ensure_ascii=False)
+    assert "385" in rendered
+    assert "executed" in rendered
 
 
 def test_execute_python_compute_rejects_unsafe():
     """计算工具必须诚实拒绝不安全代码，而不是静默成功。"""
     a = make_assistant(name="tool-compute-bad")
     out = a._execute_tool("python_compute", {"code": "import os"})
-    assert '"success": false' in out.lower() or "rejected" in out.lower()
+    rendered = json.dumps(out, ensure_ascii=False).lower()
+    assert '"success": false' in rendered or "rejected" in rendered
+
+
+def test_coerce_tool_output_reads_legacy_repr_records():
+    """D5 向后兼容：旧记录里的 Python repr 字符串要能还原成结构。"""
+    assert coerce_tool_output("{'a': 1, 'b': None}") == {"a": 1, "b": None}
+    assert coerce_tool_output("[1, 2, None]") == [1, 2, None]
+    assert coerce_tool_output('{"a": 1}') == {"a": 1}
+    # 普通文本原样保留，不被误解析。
+    assert coerce_tool_output("hello") == "hello"
+    assert coerce_tool_output("{not valid}") == "{not valid}"
+    # 已经是结构化数据时不做任何改变。
+    assert coerce_tool_output({"a": 1}) == {"a": 1}
 
 
 # ---------------------------------------------------------------------- #
@@ -205,7 +225,9 @@ def test_chat_stream_yields_tool_event():
     assert tool_events[0]["type"] == "tool"
     assert tool_events[0]["name"] == "system_status"
     assert tool_events[0]["raw"] == '{"tool": "system_status", "args": {}}'
-    assert isinstance(tool_events[0]["output"], str) and tool_events[0]["output"]
+    output = tool_events[0]["output"]
+    assert isinstance(output, dict), "tool 事件的 output 必须是结构化 JSON"
+    json.dumps(output)  # 必须可 JSON 序列化，前端无需解析 repr
     # 最终回复 token 存在（工具 JSON 原文也会诚实流出，前端用 raw 剥离）
     assert "系统状态已查询" in "".join(text_tokens)
     # 收尾落盘：turn 递增、历史写入两条（user + assistant）

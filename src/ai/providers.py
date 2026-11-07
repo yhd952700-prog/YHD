@@ -21,6 +21,19 @@ from .observability import observe
 
 logger = logging.getLogger("liuhao.ai.providers")
 
+# 用户可见的中性失败文案：原始异常（URL、堆栈、英文错误）只进日志与诊断，
+# 绝不直接展示给用户，也不写进会话历史。
+GENERATION_FAILURE_MESSAGE = (
+    "这次没有拿到回复，请稍后再试。若持续失败，请到「设置 → 模型」检查 API Key 与网络连接。"
+)
+
+# 未配置模型时的演示数据提示：明确告诉用户发生了什么、下一步怎么做，
+# 不再输出 provider 内部状态转储。
+MODEL_NOT_CONFIGURED_MESSAGE = (
+    "[演示数据] 还没有配置模型，因此无法生成真实回答。"
+    "请到「设置 → 模型」填写 API Key（或配置 AI_PROVIDER_TYPE），然后重新发送这条消息。"
+)
+
 # Provider type enumeration
 
 
@@ -252,17 +265,14 @@ class MockProvider(BaseProvider):
         )
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Return a mock response based on prompt content."""
-        # Simple mock response generation
-        if "hello" in prompt.lower() or "hi" in prompt.lower():
-            return "Hello! I'm LiuHao AI, how can I assist you today?"
-        elif "status" in prompt.lower():
-            return f"LiuHao AI OS status: {self.get_capabilities()}"
-        elif "help" in prompt.lower():
-            return "I can help you with: coding, analysis, creative writing, and more. " \
-                   "Ask me about AI providers, frameworks, or project status."
-        else:
-            return f"Mock response to: {prompt[:80]}..."
+        """Return an explicit demo notice, never an internal state dump.
+
+        A ``MockProvider`` means no real model is configured. Echoing prompt
+        content or dumping capabilities looks like a broken answer and leaks
+        internal state, so the user-visible text states the situation and the
+        next action, and is explicitly labelled as demo data.
+        """
+        return MODEL_NOT_CONFIGURED_MESSAGE
 
 
 # OpenAI provider (1.x SDK compatible, using official openai library)

@@ -446,7 +446,12 @@ def chat_stream(
             "knowledge": public_metadata(knowledge),
         }
         if turn_status != "completed":
-            done["error"] = str(turn_error or "生成失败")
+            if not turn_error:
+                # 技术细节只进日志；事件流里也必须是中性中文说明。
+                from ..ai.providers import GENERATION_FAILURE_MESSAGE
+
+                turn_error = GENERATION_FAILURE_MESSAGE
+            done["error"] = str(turn_error)
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
