@@ -310,7 +310,7 @@ describe('知识中心 · 向量化三态', () => {
       model: 'nomic-embed-text',
       vectors: 0,
       reason: '向量库不可用：OperationalError',
-      message: '知识库未启用：向量库不可用：OperationalError',
+      message: '向量库不可用：OperationalError',
     }
     renderPage()
     await screen.findByText('向量模型已就绪，但向量库不可用')

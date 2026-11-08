@@ -424,7 +424,7 @@ def import_knowledge(
     if not status.get("enabled"):
         raise HTTPException(
             status_code=503,
-            detail=f"知识库未启用：{status.get('reason') or '缺少真实向量化模型'}",
+            detail=f"{status.get('reason') or '知识库不可用'}",
         )
     scope = _knowledge_scope(context)
     imported = 0
@@ -722,7 +722,7 @@ def build_export_archive(
         f"- 员工：{len(employees)} 个（employees.md / employees.json，只含你自己的）",
         f"- 知识库：{len(knowledge)} 篇"
         + ("（knowledge/*.md 供阅读；knowledge.json 可回导）"
-           if knowledge_status == "ok" else "（知识库未启用，本次未包含）"),
+           if knowledge_status == "ok" else "（知识库不可用，本次未包含）"),
         "- 用量：usage.csv / usage.json（按 Key 归属汇总）",
         f"- 工作区产物：{file_manifest['files']} 个（files/ 目录，只含归属你的文件）",
         "- 每个文件是什么：见 INDEX.md（索引页）。",

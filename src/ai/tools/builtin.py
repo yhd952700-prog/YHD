@@ -314,7 +314,7 @@ class KnowledgeSearchTool(BaseTool):
         payload = knowledge_search(query, top_k=top_k, threshold=threshold)
         if not payload["available"]:
             raise KnowledgeSearchUnavailable(
-                f"知识库未启用：{payload['reason']}"
+                f"{payload['reason'] or '知识库不可用'}"
             )
         return {
             "query": payload["query"],

@@ -368,9 +368,9 @@ def build_knowledge_context(
         return _not_used("unavailable", "知识库暂时不可用，本次没有参考它。")
 
     if not status.get("enabled"):
-        reason = str(status.get("reason") or "尚未配置向量模型")
+        reason = str(status.get("reason") or "知识库不可用")
         logger.info("knowledge_context: not enabled: %s", reason)
-        return _not_used("unavailable", "知识库未启用，本次没有参考它。")
+        return _not_used("unavailable", "知识库不可用，本次没有参考它。")
 
     try:
         # 相关度阈值归知识库侧（有评测数据支撑），网关不再混入自己的门槛。

@@ -795,8 +795,9 @@ def _network_disclosure() -> Dict[str, Any]:
         "embedding": {
             "cloud_by_default": False,
             "note": (
-                "知识库向量化默认只在本机 Ollama 上运行；只有显式选择云端 embedding "
-                "服务时，文档分片才会发到该服务商。"
+                "知识库向量化默认只在本机 Ollama 上运行；只有部署时显式设置 "
+                "LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址，文档分片才会发到该服务商；"
+                "界面不提供该选择。"
             ),
         },
         "telemetry": False,

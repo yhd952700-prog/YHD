@@ -176,6 +176,22 @@ class TestServiceFailClosed:
         assert "未启用" in status["message"]
         assert status["provider"] is None
 
+    def test_vector_store_failure_is_not_reported_as_unconfigured(self, dev_mock_env):
+        import sqlite3
+
+        class BrokenStore:
+            def count(self) -> int:
+                raise sqlite3.OperationalError("disk I/O error")
+
+        status = KnowledgeDocumentService(vector_store=BrokenStore()).status()
+        assert status["enabled"] is False
+        assert status["provider"] is not None
+        assert str(status["reason"]).startswith("向量库不可用")
+        # 第三态不能折叠成「未启用」；message 只是 reason 的派生，不参与判定。
+        assert "未启用" not in status["message"]
+        assert status["message"] == status["reason"]
+        assert status["vectors"] == 0
+
     def test_ingest_raises_when_disabled(self, clean_env):
         clean_env.setenv("LIUHAO_ENV", "production")
         with pytest.raises(embedding_module.EmbeddingUnavailableError):

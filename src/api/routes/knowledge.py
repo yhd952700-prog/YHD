@@ -474,8 +474,9 @@ async def knowledge_submit_upload_job(
 
     status = get_knowledge_service().status()
     if not status.get("enabled"):
+        # reason 已自带「知识库未启用」或「向量库不可用」前缀，原样透传。
         raise HTTPException(
-            status_code=503, detail=f"知识库未启用：{status.get('reason')}"
+            status_code=503, detail=f"{status.get('reason') or '知识库不可用'}"
         )
 
     try:
@@ -511,8 +512,9 @@ def knowledge_submit_ingest_job(
     """Queue a raw-text ingest job; cancellation lands at chunk boundaries."""
     status = get_knowledge_service().status()
     if not status.get("enabled"):
+        # reason 已自带「知识库未启用」或「向量库不可用」前缀，原样透传。
         raise HTTPException(
-            status_code=503, detail=f"知识库未启用：{status.get('reason')}"
+            status_code=503, detail=f"{status.get('reason') or '知识库不可用'}"
         )
     try:
         return get_ingest_job_manager().submit(

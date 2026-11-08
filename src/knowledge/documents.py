@@ -300,10 +300,11 @@ class KnowledgeDocumentService:
 
         if reason is None:
             message = "知识库已启用"
-        elif reason.startswith("知识库未启用"):
+        elif reason.startswith("知识库未启用") or reason.startswith("向量库不可用"):
+            # 未配置与向量库故障是两种状态：后者不能折叠成「未启用」。
             message = reason
         else:
-            message = f"知识库未启用：{reason}"
+            message = f"知识库不可用：{reason}"
 
         return {
             "enabled": reason is None,

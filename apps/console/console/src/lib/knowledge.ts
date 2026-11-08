@@ -519,7 +519,7 @@ export function classifyUploadFailure(
     return {
       kind: 'unavailable',
       title: '服务端不可用',
-      message: `${detail || '知识库暂时不可用'}。这与文件格式无关，请先确认知识库 / 嵌入服务商（embedding provider）的状态。`,
+      message: `${detail || '知识库暂时不可用'}。这与文件格式无关。请以知识中心「知识库状态」卡为准：向量模型没配好按卡里的命令处理；显示「向量模型已就绪，但向量库不可用」时点「重新检测」，持续失败请查看服务端日志。`,
     }
   }
   if (status >= 500) {

@@ -173,7 +173,7 @@ describe('系统设置 · 知识库向量化卡', () => {
       model: 'nomic-embed-text',
       vectors: 0,
       reason: '向量库不可用：OperationalError',
-      message: '知识库未启用：向量库不可用：OperationalError',
+      message: '向量库不可用：OperationalError',
     }
     renderSettings()
 
