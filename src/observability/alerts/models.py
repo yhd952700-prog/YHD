@@ -323,9 +323,13 @@ class AlertManager:
 
                     emit_alert(alert, dispatch=not already_firing)
                 except Exception as _emit_exc:  # noqa: BLE001 - never mask alert
+                    from src.common.atomic_write import is_storage_failure
+
+                    # 磁盘满/只读是环境故障：中文提示一句即可，别每 15s 打一次英文堆栈。
                     logger.error(
-                        "emit_alert failed for %s (%s): %s",
-                        alert.id, alert.metric_name, _emit_exc, exc_info=True,
+                        "告警未能保存 %s (%s)：%s",
+                        alert.id, alert.metric_name, _emit_exc,
+                        exc_info=not is_storage_failure(_emit_exc),
                     )
 
                 if not already_firing:

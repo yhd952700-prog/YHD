@@ -110,6 +110,110 @@ def test_two_processes_share_one_file_without_losing_records(tmp_path):
         )
 
 
+def test_three_processes_with_background_task_keep_every_record(tmp_path):
+    """网关 + 桌面壳 + 后台任务同时写一个文件：不丢、不重、不留半行。
+
+    这是用户现场的真实组合：网关进程写 ``liuhao.log``，桌面壳与后台任务
+    也会写同一个数据目录下的日志。断言与双进程用例一致，但并发度更高。
+    """
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    log_path = logs / "liuhao.log"
+    max_bytes = 32_768
+    backups = 12
+    per_process = 1_000
+
+    config_file = _write_runtime_config(tmp_path, log_path, max_bytes, backups)
+    writers = [_spawn_writer(config_file, tag, per_process) for tag in ("1", "2", "3")]
+    stderrs = [proc.communicate(timeout=240)[1] for proc in writers]
+    for proc, stderr in zip(writers, stderrs, strict=True):
+        assert proc.returncode == 0, stderr
+        assert "Logging error" not in stderr, stderr
+        assert "PermissionError" not in stderr, stderr
+
+    rotated = sorted(
+        path
+        for path in logs.glob("app_file.log*")
+        if not path.name.endswith(".lock")
+    )
+    messages = []
+    half_lines = 0
+    for path in rotated:
+        text = path.read_text(encoding="utf-8")
+        if text and not text.endswith("\n"):
+            half_lines += 1
+        for line in text.splitlines():
+            assert " | " in line, f"half-written record: {line!r}"
+            marker = line.rfind("P")
+            if marker >= 0:
+                messages.append(line[marker:].strip())
+    assert half_lines == 0, "rotated file ends with a partial record"
+
+    expected = {
+        f"P{tag} {index:06d}" for tag in ("1", "2", "3") for index in range(per_process)
+    }
+    assert len(messages) == 3 * per_process, (
+        f"expected {3 * per_process} records, got {len(messages)}"
+    )
+    assert set(messages) == expected, "records were lost or duplicated across rotation"
+    for path in rotated:
+        assert path.stat().st_size <= max_bytes, f"{path.name} exceeded maxBytes"
+
+
+def test_error_channel_rotates_without_mixing_info(tmp_path):
+    """``error.log`` 单独轮转：多进程并发时 ERROR 不丢，也不能混进 INFO。
+
+    ``error.log`` 是用户排障的"第一站"，但它和 ``liuhao.log`` 是两个独立的
+    handler；只测 INFO 通道不能证明 ERROR 通道的上限与级别过滤也成立。
+    """
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    log_path = logs / "liuhao.log"
+    max_bytes = 16_384
+    backups = 12
+    per_process = 800
+    config_file = _write_runtime_config(tmp_path, log_path, max_bytes, backups)
+
+    script = WRITER_SCRIPT.replace(
+        'log.info("P%s %06d", sys.argv[2], index)',
+        'log.info("I%s %06d", sys.argv[2], index)\n'
+        '    log.error("E%s %06d", sys.argv[2], index)',
+    )
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(config_file), tag, str(per_process)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        for tag in ("1", "2")
+    ]
+    for proc in procs:
+        _, stderr = proc.communicate(timeout=240)
+        assert proc.returncode == 0, stderr
+        assert "Logging error" not in stderr, stderr
+
+    rotated = sorted(logs.glob("error_file.log*"))
+    rotated = [path for path in rotated if not path.name.endswith(".lock")]
+    assert len(rotated) >= 2, f"error.log never rotated: {rotated}"
+    messages = []
+    for path in rotated:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            assert "| ERROR" in line, f"non-ERROR record leaked into error.log: {line!r}"
+            for tag in ("1", "2"):
+                marker = line.rfind(f"E{tag} ")
+                if marker >= 0:
+                    messages.append(line[marker:].strip())
+    expected = {f"E1 {index:06d}" for index in range(per_process)} | {
+        f"E2 {index:06d}" for index in range(per_process)
+    }
+    assert len(messages) == 2 * per_process, f"error records lost: {len(messages)}"
+    assert set(messages) == expected, "error records lost or duplicated across rotation"
+    for path in rotated:
+        assert path.stat().st_size <= max_bytes, f"{path.name} exceeded maxBytes"
+
+
 def test_data_dir_relative_filenames_never_resolve_to_repo(monkeypatch, tmp_path):
     monkeypatch.setenv("LIUHAO_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LIUHAO_LOG_DIR", raising=False)

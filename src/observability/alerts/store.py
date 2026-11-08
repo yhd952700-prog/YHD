@@ -12,10 +12,10 @@ from pathlib import Path
 import json
 import logging
 import os
-import tempfile
 import threading
 import time
 from typing import Dict, List, Optional, Any
+from src.common.atomic_write import atomic_write_text
 from src.common.hash_chain import compute_hash, verify_declared_hash, DEFAULT_HASH_ALG
 from .models import Alert, AlertRule, AlertThreshold, AlertSeverity, AlertState, AlertType
 from .sinks import dispatch_alert
@@ -151,22 +151,10 @@ class AlertStore:
         payload = json.dumps(data, indent=2, ensure_ascii=False)
         # Serialise + atomic replace. See _SAVE_LOCK: interleaved writers used to
         # leave a truncated/empty file, which _load then silently reset.
+        # 统一走 atomic_write_text：只读卷上先快速失败（不阻塞），磁盘满/无权限
+        # 也统一翻译成中文可行动提示。
         with _SAVE_LOCK:
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(self.storage_path.parent),
-                prefix=self.storage_path.name + ".",
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(payload)
-                os.replace(tmp_name, self.storage_path)
-            except BaseException:
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
-                raise
+            atomic_write_text(str(self.storage_path), payload)
 
     # ==================== Alert Operations ====================
 

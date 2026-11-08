@@ -131,3 +131,125 @@ def test_every_gateway_entry_point_loads_the_config() -> None:
     )[0]
     assert '"-m", "uvicorn"' not in child_block
     assert "--log-config" not in child_block
+
+
+def test_launcher_log_is_bounded_and_redacted(tmp_path: Path) -> None:
+    """launcher.log 长期无上限：stdout 镜像必须轮转、且不能带出本机身份。
+
+    真实缺陷：安装版启动器把 stdout/stderr 直接 ``open(..., "a")`` 写进
+    ``launcher.log``，每次启动都会打印 argv、数据目录和子进程输出；既没有
+    上限，也不走网关日志的脱敏。
+    """
+    from src.logging_config import RotatingTextWriter
+
+    log_path = tmp_path / "launcher.log"
+    writer = RotatingTextWriter(log_path, maxBytes=4096, backupCount=3)
+    for index in range(300):
+        writer.write(
+            f"LINE {index:04d} | data=C:\\Users\\ZhangSan\\AppData\\Local\\LiuHao\\data "
+            f"LIUHAO_DATA_DIR=x api_key=sk-abcdefghijklmnop | END\n"
+        )
+    writer.flush()
+
+    files = sorted(
+        path
+        for path in tmp_path.glob("launcher.log*")
+        if not path.name.endswith(".lock")
+    )
+    assert (tmp_path / "launcher.log").is_file()
+    assert len(files) <= 1 + 3, f"backupCount=3 must keep at most 4 files: {files}"
+
+    seen: list[str] = []
+    for path in files:
+        assert path.stat().st_size <= 4096, f"{path.name} exceeded maxBytes"
+        text = path.read_text(encoding="utf-8")
+        assert "ZhangSan" not in text, f"{path.name} leaked a user path"
+        assert "LIUHAO_" not in text, f"{path.name} leaked an env var name"
+        assert "sk-abcdefghijklmnop" not in text, f"{path.name} leaked a key"
+        for line in text.splitlines():
+            # 轮转只发生在行首：每条记录都完整，不会被拆到两个文件里。
+            assert line.startswith("LINE "), line
+            assert line.endswith("| END"), line
+            seen.append(line[:9])
+
+    # backupCount=3 只保留最后 4 份文件，更早的记录按设计被丢弃（不是"丢失"）；
+    # 保留区间必须是连续后缀，且没有重复/空洞。
+    indices = sorted(int(line.split()[1]) for line in seen)
+    assert indices[-1] == 299, "the newest record was lost"
+    assert indices == list(range(indices[0], 300)), (
+        f"retained records are not a contiguous suffix: {len(indices)} records, "
+        f"first={indices[0]}"
+    )
+    assert len(indices) == len(set(indices)), "records duplicated across rotation"
+
+
+def test_launcher_writer_never_splits_a_line_at_rotation(tmp_path: Path) -> None:
+    """行未写完时不得轮转：半行日志比超限更糟（排障会误读）。"""
+    from src.logging_config import RotatingTextWriter
+
+    log_path = tmp_path / "launcher.log"
+    writer = RotatingTextWriter(log_path, maxBytes=512, backupCount=2, redact=False)
+    for index in range(40):
+        writer.write(f"FILL {index:04d} " + "x" * 40 + "\n")
+    # 当前文件已接近上限：分两段写同一行，第二段不能触发轮转。
+    writer.write("HALF-A")
+    writer.write("HALF-B\n")
+
+    combined = "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(
+            tmp_path.glob("launcher.log*"), key=lambda item: item.name
+        )
+        if not path.name.endswith(".lock")
+    )
+    assert "HALF-AHALF-B" in combined, "a record was split across rotation"
+
+
+def test_stale_backups_beyond_backup_count_are_removed(tmp_path: Path) -> None:
+    """配置收窄后，旧版本留下的高序号备份必须被清掉，否则占用没有上限。"""
+    from src.logging_config import RotatingTextWriter
+
+    log_path = tmp_path / "liuhao.log"
+    log_path.write_text("x" * 200 + "\n", encoding="utf-8")
+    for index in range(1, 9):
+        (tmp_path / f"liuhao.log.{index}").write_text(
+            f"backup {index}\n" * 400, encoding="utf-8"
+        )
+    writer = RotatingTextWriter(log_path, maxBytes=64, backupCount=2, redact=False)
+    writer.write("trigger rotation\n")
+
+    kept = sorted(
+        path.name
+        for path in tmp_path.glob("liuhao.log*")
+        if not path.name.endswith(".lock")
+    )
+    assert kept == ["liuhao.log", "liuhao.log.1", "liuhao.log.2"], kept
+
+
+def test_desktop_shell_log_redacts_local_identity(tmp_path: Path, monkeypatch) -> None:
+    """托盘壳的 desktop.log 也必须脱敏（它同样会打印数据目录）。"""
+    import logging
+
+    from src.desktop import app as desktop_app
+
+    monkeypatch.setattr(desktop_app, "LOG_DIR", tmp_path)
+    pkg_logger = logging.getLogger("src.desktop")
+    had_handlers = list(pkg_logger.handlers)
+    pkg_logger.handlers.clear()
+    try:
+        desktop_app._configure_logging()
+        pkg_logger.info(
+            "gateway log at C:\\Users\\ZhangSan\\AppData\\Local\\LiuHao\\data "
+            "LIUHAO_DATA_DIR=x"
+        )
+        for handler in pkg_logger.handlers:
+            handler.flush()
+        text = (tmp_path / "desktop.log").read_text(encoding="utf-8")
+    finally:
+        for handler in pkg_logger.handlers:
+            handler.close()
+        pkg_logger.handlers[:] = had_handlers
+
+    assert "ZhangSan" not in text
+    assert "LIUHAO_" not in text
+    assert "gateway log at" in text

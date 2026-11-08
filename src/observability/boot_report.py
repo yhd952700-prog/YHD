@@ -26,6 +26,7 @@ import errno as _errno
 import hashlib
 import logging
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -80,6 +81,53 @@ def key_fingerprint(api_key: Optional[str]) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
 
+#: 本机绝对路径（``C:\...`` / ``D:/...``）；前面紧贴字母时不算（排除 ``http://``）。
+_DRIVE_PATH_RE = re.compile(r"(?<![\w/])[A-Za-z]:[\\/][^\s\"'，,；;）)\]]*")
+
+
+def fold_local_paths(text: str, tail: int = 2) -> str:
+    """把任意文本里的本机绝对路径折成 ``<本地路径>/尾段``。
+
+    用于"异常原文"这类无法预先知道形状的字符串：保留最后 ``tail`` 段
+    （通常是 ``logs/liuhao.log`` 这种能对上自己文件的线索），丢掉盘符与用户名目录。
+    """
+    def _replacement(match: "re.Match[str]") -> str:
+        return display_path(match.group(0), tail=tail)
+
+    return _DRIVE_PATH_RE.sub(_replacement, text)
+
+
+def path_kind(path: Any) -> str:
+    """目标路径的类型：``directory`` / ``file`` / ``missing`` / ``other`` / ``inaccessible``。
+
+    故障 1（数据目录被同名普通文件挡住）里 ``winerror=183`` 只说明"已存在"，
+    真正要告诉用户的是"它存在，但不是文件夹"——所以类型必须显式落盘。
+    """
+    try:
+        candidate = Path(str(path)).expanduser()
+        if candidate.is_dir():
+            return "directory"
+        if candidate.is_file():
+            return "file"
+        if candidate.exists():
+            return "other"
+        return "missing"
+    except OSError:
+        return "inaccessible"
+
+
+def exc_text(exc: Optional[BaseException], target: Any = None, tail: int = 2) -> str:
+    """异常原文（类型 + 消息），路径已折叠，可直接写进日志/诊断包。"""
+    if exc is None:
+        return "-"
+    text = f"{type(exc).__name__}: {exc}"
+    if target not in (None, ""):
+        raw = str(target)
+        if raw:
+            text = text.replace(raw, display_path(raw, tail=tail))
+    return fold_local_paths(text.replace('"', "'"), tail=tail)
+
+
 def free_bytes(path: Any) -> Optional[int]:
     """``path`` 所在卷的剩余字节；取不到返回 None（不让自检变成失败源）。"""
     try:
@@ -103,12 +151,15 @@ def _errno_fields(exc: Optional[BaseException]) -> Tuple[Optional[int], Optional
             int(errno_v) if isinstance(errno_v, int) else None)
 
 
-def _bounded(fn, seconds: float = 2.0):
+def _bounded(fn, seconds: float = 2.0, step: Optional[Dict[str, Any]] = None):
     """在守护线程里执行一次探测，超时就放弃。
 
     只看权限位不够：某些安全软件/文件系统过滤驱动会让"被拒绝的创建"在
     ``open`` 里挂住几十秒。启动自检本身绝不能拖住启动——否则最需要被记录的
     那一条 ``startup.check`` 永远写不出来（故障 2B 实测就是这样）。
+
+    但"超时"不能变成一句没有信息量的 ``probe did not finish``：``step`` 由探测
+    函数逐阶段更新，超时时把**最后一步**和**最后拿到的异常**一起带出去。
     """
     box: Dict[str, Any] = {}
 
@@ -122,30 +173,67 @@ def _bounded(fn, seconds: float = 2.0):
     worker.start()
     worker.join(seconds)
     if worker.is_alive():
-        raise TimeoutError(f"probe did not finish within {seconds}s")
+        last = (step or {}).get("at") or "unknown"
+        last_error = (step or {}).get("error")
+        detail = f"probe did not finish within {seconds}s (last step: {last}"
+        if last_error:
+            detail += f"; last error: {last_error}"
+        raise TimeoutError(detail + ")")
     if "error" in box:
         raise box["error"]
     return box["value"]
 
 
 def probe_writable(directory: Any) -> Tuple[bool, Optional[BaseException]]:
-    """真的写一个临时文件再删掉——``os.access`` 在 Windows ACL 下并不可信。"""
+    """真的写一个临时文件再删掉——``os.access`` 在 Windows ACL 下并不可信。
+
+    失败时异常对象上会带上 ``liuhao_probe_step`` / ``liuhao_probe_error``，
+    调用方据此把"卡在哪一步"和"真实异常"一起写进日志与 installation.json。
+    """
+    step: Dict[str, Any] = {"at": "start"}
     try:
-        _bounded(lambda: _write_probe(directory))
+        _bounded(lambda: _write_probe(directory, step), step=step)
         return True, None
     except BaseException as exc:  # noqa: BLE001 - 任何失败都如实上报，且不能抛
+        for name, value in (
+            ("liuhao_probe_step", step.get("at")),
+            ("liuhao_probe_error", step.get("error")),
+        ):
+            try:
+                setattr(exc, name, value)
+            except Exception:  # noqa: BLE001 - 某些异常对象不允许设置属性
+                pass
         return False, exc
 
 
-def _write_probe(directory: Any) -> bool:
+def _write_probe(directory: Any, step: Optional[Dict[str, Any]] = None) -> bool:
+    def mark(stage: str) -> None:
+        if step is not None:
+            step["at"] = stage
+
+    mark("resolve_path")
     root = Path(str(directory)).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
-    handle, name = tempfile.mkstemp(prefix=".liuhao-startup-probe-", dir=str(root))
+    mark("create_directory")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if step is not None:
+            step["error"] = exc_text(exc, root, tail=1)
+        raise
+    mark("create_temp_file")
+    try:
+        handle, name = tempfile.mkstemp(prefix=".liuhao-startup-probe-", dir=str(root))
+    except OSError as exc:
+        if step is not None:
+            step["error"] = exc_text(exc, root, tail=1)
+        raise
+    mark("write_byte")
     try:
         os.write(handle, b"ok")
     finally:
         os.close(handle)
         try:
+            mark("remove_temp_file")
             os.remove(name)
         except OSError:
             pass
@@ -381,8 +469,10 @@ def emit_startup_check(
 
     payload: Dict[str, Any] = {
         "data_dir": display_path(data_dir, tail=2),
+        "data_dir_kind": path_kind(data_dir),
         "data_writable": data_ok,
         "log_dir": display_path(log_dir, tail=2),
+        "log_dir_kind": path_kind(log_dir),
         "log_writable": log_ok,
         "db": ", ".join(db_rows),
         "db_open": db_open,
@@ -398,13 +488,15 @@ def emit_startup_check(
         "provider_source": info["source"],
     }
     logger.info(
-        "evt=startup.check data_dir=%s data_writable=%s log_dir=%s "
-        "log_writable=%s db=[%s] db_open=%s host=%s port=%s port_bindable=%s "
-        "port_state=%s console_dist=%s console_index=%s provider=%s model=%s "
-        "key_fp=%s provider_source=%s",
+        "evt=startup.check data_dir=%s data_dir_kind=%s data_writable=%s "
+        "log_dir=%s log_dir_kind=%s log_writable=%s db=[%s] db_open=%s host=%s "
+        "port=%s port_bindable=%s port_state=%s console_dist=%s console_index=%s "
+        "provider=%s model=%s key_fp=%s provider_source=%s",
         payload["data_dir"],
+        payload["data_dir_kind"],
         _flag(data_ok),
         payload["log_dir"],
+        payload["log_dir_kind"],
         _flag(log_ok),
         payload["db"],
         _flag(db_open),
@@ -428,18 +520,24 @@ def emit_startup_check(
         if ok:
             continue
         winerror, errno_v = _errno_fields(exc)
+        kind = path_kind(raw_path)
+        stage = getattr(exc, "liuhao_probe_step", None) or "-"
+        last_error = getattr(exc, "liuhao_probe_error", None) or ""
         action = (
             "授予写权限 / 更换到可写目录 / 关闭安全软件拦截 / 清理磁盘后重启"
         )
         add_degraded(label, display_path(raw_path), str(exc or "unwritable"), action)
         logger.error(
-            'evt=boot.%s.unwritable path=%s winerror=%s errno=%s free_bytes=%s '
-            'action="%s"',
+            'evt=boot.%s.unwritable path=%s path_kind=%s winerror=%s errno=%s '
+            'free_bytes=%s step=%s exc="%s" action="%s"',
             label,
             display_path(raw_path),
+            kind,
             winerror if winerror is not None else "-",
             errno_v if errno_v is not None else "-",
             free_bytes(raw_path),
+            stage,
+            exc_text(exc, raw_path).replace('"', "'"),
             action,
         )
         try:
@@ -448,9 +546,13 @@ def emit_startup_check(
             bootstrap_log.write_event(
                 f"boot.{label}.unwritable",
                 path=str(raw_path),
+                path_kind=kind,
                 winerror=winerror,
                 errno=errno_v,
                 free_bytes=free_bytes(raw_path),
+                step=stage,
+                exc=exc_text(exc, raw_path),
+                last_error=last_error or None,
                 action=action,
             )
         except Exception:  # noqa: BLE001 - 引导日志失败不能影响主流程
@@ -474,9 +576,12 @@ __all__ = [
     "display_path",
     "emit_startup_check",
     "emit_startup_degraded",
+    "exc_text",
+    "fold_local_paths",
     "free_bytes",
     "key_fingerprint",
     "last_startup_check",
+    "path_kind",
     "port_bindable",
     "probe_db",
     "probe_writable",

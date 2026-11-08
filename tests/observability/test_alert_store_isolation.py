@@ -45,6 +45,43 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def quiet_metric_source(monkeypatch):
+    """把指标采集源换成受控快照，隔离**宿主负载**对告警的影响。
+
+    背景：lifespan 的 ``metrics-evaluator`` 线程启动后会立刻跑一轮真实的
+    ``collect_snapshot()``，其中 ``cpu_usage_percent`` 来自 ``psutil``。CI/本机
+    繁忙时它真的会超过 80%，于是 ``cpu_usage_high`` 在 ``before`` 请求之前就
+    落进 store，``count == 0`` 随即失败——这条断言此前实际依赖"跑测试的机器
+    当时空闲"。
+
+    这里只替换**读数**（固定为全部低于阈值的 0.0），评估线程、规则、store、
+    ``/v1/alerts`` 读面仍走产品真实路径；因此该用例既不再受负载影响，也没有
+    被 mock 掉被测的"读面与写面同源"逻辑。
+
+    补丁打在 ``MetricCollector.collect_snapshot`` 上而不是单例对象上：conftest
+    的 ``_isolate_metric_collector`` 会把 ``_metric_collector`` 戳回 ``None``，
+    线程随后可能新建一个实例；改类方法才能保证拿到的永远是受控读数。
+    """
+    from src.observability import metrics as metrics_module
+
+    controlled = {
+        "memory_usage_percent": 0.0,
+        "cpu_usage_percent": 0.0,
+        "error_rate_percent": 0.0,
+        "latency_p99_ms": 0.0,
+        "service_heartbeat_interval": 0.0,
+        "audit_log_lag_seconds": 0.0,
+        "audit_write_failing": 0.0,
+    }
+    monkeypatch.setattr(
+        metrics_module.MetricCollector,
+        "collect_snapshot",
+        lambda self: dict(controlled),
+    )
+    return controlled
+
+
 def test_redirection_is_honoured():
     """本用例的告警 store 必须落在自己的 ``tmp_path``，且初始为空。
 
@@ -61,11 +98,14 @@ def test_redirection_is_honoured():
     assert store.list_alerts() == [], "a fresh isolated store must start empty"
 
 
-def test_honest_empty_assertion_has_teeth():
+def test_honest_empty_assertion_has_teeth(quiet_metric_source):
     """关键护栏：``/v1/alerts`` 的 ``count`` 必须随真实告警变化。
 
     修复前：无论写入多少条，``count`` 恒为 0 → 诚实空态断言是假通过。
     修复后：写入一条 → ``count == 1``，该断言重新具备失败能力。
+
+    ``quiet_metric_source`` 把指标读数钉在阈值以下，避免宿主 CPU 繁忙时
+    ``cpu_usage_high`` 抢先落库导致 ``before.count == 0`` 失败。
     """
     app = get_app()
     with TestClient(app) as client:
