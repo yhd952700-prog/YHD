@@ -8,26 +8,47 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/v1/knowledge/bases` | 列出知识库 |
-| `POST` | `/v1/knowledge/bases` | 创建知识库 |
-| `GET` | `/v1/knowledge/bases/{id}` | 获取知识库详情 |
-| `PUT` | `/v1/knowledge/bases/{id}` | 更新知识库 |
-| `DELETE` | `/v1/knowledge/bases/{id}` | 删除知识库 |
-| `POST` | `/v1/knowledge/bases/{id}/documents` | 上传文档 |
-| `GET` | `/v1/knowledge/bases/{id}/documents` | 列出文档 |
-| `DELETE` | `/v1/knowledge/bases/{id}/documents/{doc_id}` | 删除文档 |
-| `POST` | `/v1/knowledge/search` | 知识检索 |
-| `POST` | `/v1/knowledge/rag` | RAG 查询 |
-| `POST` | `/v1/knowledge/bases/{id}/import-url` | 从 URL 导入 |
-| `POST` | `/v1/knowledge/bases/{id}/reindex` | 重建索引 |
+| `GET` | `/v1/knowledge/status` | 知识库状态（永远 200，见下方契约） |
+| `POST` | `/v1/knowledge/documents` | 直接写入文本并切分/向量化 |
+| `POST` | `/v1/knowledge/search` | 向量检索（返回真实片段） |
+| `POST` | `/v1/knowledge/query` | 已弃用；等价于检索，不再生成 answer |
+| `GET` | `/v1/knowledge/documents` | 列出当前账号可见的文档 |
+| `GET` | `/v1/knowledge/documents/{document_id}/chunks` | 查看某文档的分片 |
+| `DELETE` | `/v1/knowledge/documents/{document_id}` | 删除文档及其向量 |
 | `POST` | `/v1/knowledge/documents/upload` | 上传文件（同步，小文件） |
 | `POST` | `/v1/knowledge/documents/upload/jobs` | 上传文件（异步，大文件，按页进度/可取消） |
+| `POST` | `/v1/knowledge/ingest/jobs` | 文本入队（异步，可取消） |
 | `GET` | `/v1/knowledge/ingest/jobs/{job_id}` | 查询异步入库任务进度 |
 | `POST` | `/v1/knowledge/ingest/jobs/{job_id}/cancel` | 取消异步入库（全回滚） |
 
 ---
 
-## 创建知识库
+## 状态契约（`GET /v1/knowledge/status`）
+
+该端点**永远返回 200**（即使知识库不可用），由界面自行判定是否可用。响应固定六个字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `enabled` | boolean | 唯一判定依据 |
+| `provider` | string \| null | 实际生效的 embedding provider 名 |
+| `model` | string \| null | 实际生效的向量模型名 |
+| `vectors` | number | 向量条数；第三态下为回退值 0 |
+| `reason` | string \| null | 不可用原因；可用时为 null |
+| `message` | string | 派生文案，不参与判定 |
+
+不变量：`enabled === (reason is None)`。
+
+三种真实组合：
+
+1. `enabled=true, reason=null`：知识库已启用；
+2. `enabled=false, provider/model=null`：向量模型没配好 —— 按 `reason` 再分「未配置」「本机 Ollama 未运行」「缺少 embedding 模型」；
+3. `enabled=false, provider/model 有值`：向量模型已就绪，但向量库不可用（`reason` 以「向量库不可用」开头）。此时 `vectors=0` 只是回退值，**不能**理解为「知识库为空 / 0 条向量」。
+
+---
+
+## 创建知识库（规划，未实现）
+
+> 当前没有多知识库概念；该端点为设计稿，调用会 404。
 
 ### 请求
 
@@ -545,9 +566,11 @@ BM25 加权融合之后）：有答案召回@5 `0.8966`、@10 `0.8966`、MRR `0.
 
 ---
 
-## RAG 查询
+## RAG 查询（规划，未实现）
 
-使用检索增强生成回答问题。
+> 当前没有 `/v1/knowledge/rag`；检索请用 `/v1/knowledge/search`，生成走 `/v1/chat`。
+
+（原设计：使用检索增强生成回答问题。）
 
 ### 请求
 
@@ -593,7 +616,9 @@ Content-Type: application/json
 
 ---
 
-## 从 URL 导入
+## 从 URL 导入（规划，未实现）
+
+> 当前没有该端点；上传请走 `/v1/knowledge/documents/upload` 或 `…/upload/jobs`。
 
 从网页 URL 导入内容到知识库。
 
@@ -636,12 +661,11 @@ Content-Type: application/json
 | 400 | `INVALID_REQUEST` | 请求参数无效 |
 | 401 | `UNAUTHORIZED` | 未认证 |
 | 403 | `FORBIDDEN` | 无权限 |
-| 404 | `KNOWLEDGE_BASE_NOT_FOUND` | 知识库不存在 |
-| 409 | `DUPLICATE_NAME` | 知识库名称重复 |
 | 413 | `FILE_TOO_LARGE` | 文件过大 |
 | 415 | `UNSUPPORTED_FORMAT` | 不支持的文件格式 |
 | 429 | `RATE_LIMITED` | 触发速率限制 |
 | 500 | `INTERNAL_ERROR` | 服务器内部错误 |
+| 503 | `KNOWLEDGE_UNAVAILABLE` | 知识库不可用；`detail` 为真实原因：未配置 →「知识库未启用：…」；向量库故障 →「向量库不可用：…」。绝不伪装成功 |
 
 ---
 

@@ -158,7 +158,8 @@ CACHE_TTL=3600
 # ===== 模型配置 =====
 OLLAMA_BASE_URL=http://ollama.example.com:11434
 DEFAULT_MODEL=qwen2.5:7b
-EMBEDDING_MODEL=nomic-embed-text
+LIUHAO_EMBEDDING_PROVIDER=ollama
+LIUHAO_EMBEDDING_MODEL=nomic-embed-text
 MODEL_TIMEOUT=120
 
 # ===== 安全配置 =====

@@ -28,7 +28,7 @@
 |---|---|---|---|---|---|
 | 1.1 | 文本对话输入/输出 | 🟢 真接线 | `src/gateway/chat.py:152` → `src/ai/liuhao.py:200` `assistant.chat()`；`src/gateway/main.py:969` 挂载 | 是（登录后） | 真实 Provider，见 4.1；**未配置模型时回落 `MockProvider`**（`src/ai/providers.py:926`），回复正文自带 `Mock response to:`，不伪装真实回答 |
 | 1.2 | 文件读取/列目录 | 🟢 真接线 | `src/gateway/files.py:1011-1012` 挂载；工具侧 `src/ai/tools/kernel_tools.py:332/352` | 是（只读） | 真实 `Path.read_text` / `iterdir`，路径经 `resolve_in_workspace` 收敛 |
-| 1.3 | 知识库检索（作为“读资料”的感知） | 🟡 半成品 | `src/gateway/chat.py:159/185` → `src/gateway/knowledge_context.py:104` → `src/knowledge/documents.py`；`src/api/routes/knowledge.py:47-83` | **条件可达**：需 embedding provider（`src/knowledge/embedding.py:345-395`），默认 `auto` 只在 `OPENAI_API_KEY` 或 `OLLAMA_BASE_URL` 存在时启用；否则 `status.enabled=False` 并静默降级 | 真实向量库 + 真实 embedding；空库/失败时如实标注“本次未使用知识库” |
+| 1.3 | 知识库检索（作为“读资料”的感知） | 🟡 半成品 | `src/gateway/chat.py:159/185` → `src/gateway/knowledge_context.py:104` → `src/knowledge/documents.py`；`src/api/routes/knowledge.py:47-83` | **条件可达**：需 embedding provider（`src/knowledge/embedding.py:345-395`），默认 `auto` 只探测本机 Ollama（`OLLAMA_BASE_URL` / `LIUHAO_OLLAMA_BASE_URL`）；`OPENAI_API_KEY` 不会自动启用云端向量化，云端需部署时显式设置 `LIUHAO_EMBEDDING_PROVIDER`；否则 `status.enabled=False` 并静默降级 | 真实向量库 + 真实 embedding；空库/失败时如实标注“本次未使用知识库” |
 | 1.4 | 图像理解 | 🔴 假实现 | 无生产调用方 | 不可达 | `src/ai/perception.py:170` 明确 `modality understanding not implemented`；`supports_vision` 仅标志位 |
 | 1.5 | 语音/音频/视频理解 | ⚫ 完全没有 | 无 | 不可达 | `plugins/audio`、`plugins/video` 未加载（运行时只扫 `src/plugins`） |
 | 1.6 | 屏幕/桌面环境感知 | 🔴 假实现 | 调用点存在但被闸门拦住，见 3.6 | 默认不可达 | `src/automation/backends/` 只有 `fake.py`（文件头写明不接触真实屏幕/键鼠） |

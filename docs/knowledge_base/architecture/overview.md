@@ -179,7 +179,7 @@ LiuHao AI OS 的核心是 14 个内核，每个内核负责一组核心能力。
 | ORM | SQLAlchemy | Python 最成熟的 ORM |
 | 缓存 | Redis | 高性能内存缓存 |
 | 消息队列 | 内置 + Redis Stream | 轻量部署可选内置 |
-| 向量存储 | 内置向量库 + pgvector | 支持 SQLite 和 PG 两种后端 |
+| 向量存储 | 内置向量库（SQLite 向量表） | 当前实现为 SQLite 内向量表；pgvector 未接线，属规划项 |
 | 任务调度 | APScheduler | 定时任务和周期性任务 |
 
 ### AI/ML 技术栈

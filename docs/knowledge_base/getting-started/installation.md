@@ -19,7 +19,7 @@
 
 ### 软件依赖
 
-- **Ollama**（可选，本地 LLM 推理；也可用 OpenAI 兼容云端模型，未配置时可跳过）
+- **Ollama**（本地 LLM 推理可选；但知识库向量化默认依赖本机 Ollama，不装会显示「向量模型未就绪」；要走云端需部署时设置 `LIUHAO_EMBEDDING_PROVIDER`）
 - **SQLite**（默认数据库，Python 内置）
 - **PostgreSQL 15+**（可选，生产环境推荐）
 - **Redis**（可选，缓存和消息队列）
@@ -40,7 +40,7 @@ git clone https://github.com/your-org/LiuHao-AI-OS.git
 cd LiuHao-AI-OS
 ```
 
-2. **安装 Ollama（可选）**
+2. **安装 Ollama（知识库需要；只跑云端模型时可跳过）**
 
 下载并安装 [Ollama](https://ollama.com/)，然后拉取默认模型：
 
@@ -155,7 +155,8 @@ cp .env.example .env
 | `DATABASE_URL` | `sqlite:///./liuhao_ai_os.db` | 数据库连接 URL |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务地址 |
 | `DEFAULT_MODEL` | `qwen2.5:3b` | 默认使用的 LLM 模型 |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | 嵌入模型名称 |
+| `LIUHAO_EMBEDDING_MODEL` | `nomic-embed-text` | 向量模型名称（代码只读这个变量；配置文件回退为 `long_term.embedding_model`） |
+| `LIUHAO_EMBEDDING_PROVIDER` | `auto` | `auto` 只探测本机 Ollama；生产建议显式写 `ollama`，云端需设为 `openai` / `openai_compatible` 并配凭据/地址 |
 | `MEMORY_BACKEND` | `sqlite` | 记忆存储后端 |
 | `GATEWAY_HOST` | `127.0.0.1` | 网关监听地址 |
 | `GATEWAY_PORT` | `8080` | 网关监听端口 |

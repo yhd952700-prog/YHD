@@ -66,7 +66,7 @@
 
 ### Q: 可以使用自己的向量数据库吗？
 
-**A**: 可以。LiuHao AI OS 的记忆系统支持可插拔后端，目前内置 SQLite 和 PostgreSQL 支持，可以通过插件扩展支持其他向量数据库（如 Milvus、Qdrant、Weaviate 等）。
+**A**: 目前知识库使用内置 SQLite 向量表，不需要额外安装向量数据库。Milvus、Qdrant、Weaviate 等外部向量库尚未接线，仅在多用户服务器版评估。
 
 ### Q: AI 员工的记忆存在哪里？
 

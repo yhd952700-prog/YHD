@@ -231,6 +231,8 @@ CREATE TABLE events_2026_11 PARTITION OF events
 
 ## pgvector 向量检索调优
 
+> 适用性说明：当前产品（含知识库与记忆）默认使用内置 SQLite 向量表，pgvector 尚未接线。以下调优仅适用于自行接入 PostgreSQL + pgvector 的部署。
+
 语义记忆检索依赖 pgvector：
 
 ```sql
@@ -370,7 +372,7 @@ pgvector:
 
 ### Q5: pgvector 和独立向量库（Qdrant/Milvus）怎么选？
 
-向量量 < 1000 万、已有 PG 运维体系 → pgvector（少一个组件）。> 1000 万、需要复杂过滤/分片/GPU 索引 → 专用向量库。LiuHao AI OS 默认 pgvector，提供接口抽象可切换。
+向量量 < 1000 万、已有 PG 运维体系 → pgvector（少一个组件）。> 1000 万、需要复杂过滤/分片/GPU 索引 → 专用向量库。LiuHao AI OS 当前默认使用内置 SQLite 向量表；pgvector 尚未接线，仅作后续选型参考。
 
 ---
 
