@@ -19,10 +19,12 @@ import ast
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -40,6 +42,7 @@ from .providers import (
     GENERATION_FAILURE_MESSAGE,
     ProviderStreamIncompleteError,
     resolve_provider,
+    technical_detail_for,
     user_facing_failure,
 )
 from .conversation_store import get_conversation_store
@@ -72,6 +75,93 @@ MAX_HISTORY_MESSAGES = 20
 MAX_TOOL_ROUNDS = 3
 
 _log = logging.getLogger(__name__)
+
+#: 工具集按**画像主体**缓存：``make_tools`` 与每个工具的 §40 生命周期
+#: （register/validate/approve/activate）每步都写一条审计，10 个工具 ≈ 40 条
+#: 同步 SQLite 写入，实测占一次冷会话构造的绝大部分时间。工具表一旦构造完成
+#: 只读执行（``ToolRegistry.execute`` 不改状态），因此同一主体共享一份是安全的。
+_TOOL_CACHE_LOCK = threading.Lock()
+_TOOL_BUILD_LOCKS: Dict[str, threading.Lock] = {}
+#: 容量上限：按画像主体缓存，条数必须与账号数同阶而不能随请求数增长。
+#: 超限按 LRU 淘汰（被淘汰的条目只影响下一次冷构造，不影响已持有它的会话）。
+_TOOL_CACHE_MAX_DEFAULT = 64
+_TOOL_CACHE: "OrderedDict[str, tuple[List[Any], str, ToolRegistry]]" = OrderedDict()
+
+
+def _tool_cache_max() -> int:
+    raw = (os.environ.get("LIUHAO_TOOL_CACHE_MAX") or "").strip()
+    try:
+        value = int(raw) if raw else _TOOL_CACHE_MAX_DEFAULT
+    except ValueError:
+        value = _TOOL_CACHE_MAX_DEFAULT
+    return max(1, value)
+
+#: 当前正在执行工具调用的 assistant。工具表共享后，``system_status`` 不能再把
+#: 某一个 assistant 的 ``stats`` 绑死在闭包里；执行时按线程解析当前会话。
+_TURN_CONTEXT = threading.local()
+
+
+def current_turn_stats() -> Dict[str, Any]:
+    """返回**当前线程正在执行工具的那个 assistant** 的 stats。
+
+    非对话路径（例如直接调用工具）没有上下文时返回占位值，绝不抛异常：
+    状态查询失败不能反过来打断工具本身。
+    """
+    assistant = getattr(_TURN_CONTEXT, "assistant", None)
+    stats = getattr(assistant, "stats", None)
+    if callable(stats):
+        try:
+            return stats()
+        except Exception:  # noqa: BLE001 - 见 docstring
+            pass
+    return {
+        "provider": "unknown",
+        "model": "unknown",
+        "turn": 0,
+        "history_messages": 0,
+    }
+
+
+def _shared_tools(profile_principal: str) -> "tuple[List[Any], str, ToolRegistry]":
+    """构建/复用某个画像主体的工具集（每个主体只注册一次）。
+
+    全局锁只护缓存字典；真正的构建在按主体的 build lock 下完成，因此不同主体
+    可以并发构建，同一主体只有第一个线程重放注册审计，其余线程等待后直接命中。
+    """
+    with _TOOL_CACHE_LOCK:
+        entry = _TOOL_CACHE.get(profile_principal)
+        if entry is not None:
+            _TOOL_CACHE.move_to_end(profile_principal)
+            return entry
+        build_lock = _TOOL_BUILD_LOCKS.setdefault(profile_principal, threading.Lock())
+    with build_lock:
+        try:
+            with _TOOL_CACHE_LOCK:
+                entry = _TOOL_CACHE.get(profile_principal)
+                if entry is not None:
+                    _TOOL_CACHE.move_to_end(profile_principal)
+            if entry is None:
+                tools = make_tools(profile_principal, status_fn=current_turn_stats)
+                registry = ToolRegistry()
+                for tool in tools:
+                    registry.register(tool)
+                    registry.validate(tool.tool_id)
+                    registry.approve(tool.tool_id)
+                    registry.activate(tool.tool_id)
+                entry = (tools, build_tool_prompt(tools), registry)
+                with _TOOL_CACHE_LOCK:
+                    # 已持有旧条目的会话继续用它自己的引用，不受淘汰影响；
+                    # 淘汰只让"下一次冷构造"重新注册一次。
+                    while len(_TOOL_CACHE) >= _tool_cache_max():
+                        _TOOL_CACHE.popitem(last=False)
+                    _TOOL_CACHE[profile_principal] = entry
+            return entry
+        finally:
+            # 只在仍是当前这把锁时移除：等待者已持有引用，醒来后会命中缓存，
+            # 因此不会出现同一主体并发构建两份。
+            with _TOOL_CACHE_LOCK:
+                if _TOOL_BUILD_LOCKS.get(profile_principal) is build_lock:
+                    _TOOL_BUILD_LOCKS.pop(profile_principal, None)
 
 
 def _provider_endpoint(provider: Any) -> tuple[str, Optional[int]]:
@@ -109,15 +199,17 @@ def _turn_failure_reason(exc: BaseException) -> Optional[str]:
     # 而不是笼统的"网络异常"。
     if getattr(exc, "error_code", None) == "EMPTY_RESPONSE":
         return "empty_response"
-    # provider 用 ``raise ... from`` 保留了底层连接异常；不归类的话 reason 会是 null，
-    # 前端只能显示通用文案，无法区分"端点填错"和"模型不存在"。
-    cause = exc.__cause__
-    if cause is not None:
-        if isinstance(cause, TimeoutError) or type(cause).__name__ in {
+    # provider 用 ``raise ... from`` 保留了底层连接异常；Ollama 直连路径则原样抛出
+    # requests 异常。不归类的话 reason 会是 null，前端只能显示通用文案，无法区分
+    # "端点填错"和"模型不存在"。
+    for err in (exc, exc.__cause__):
+        if err is None:
+            continue
+        if isinstance(err, TimeoutError) or type(err).__name__ in {
             "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectTimeoutError",
         }:
             return "timeout"
-        if isinstance(cause, OSError):
+        if isinstance(err, OSError):
             return "unreachable"
     return None
 
@@ -139,6 +231,53 @@ def _denial_reason(decision: Any) -> str:
     rules = getattr(decision, "denied_rules", None) or []
     rule_ids = {str(getattr(rule, "id", "") or "") for rule in rules}
     return BUDGET_DENIAL_REASON if "quota_enforcement" in rule_ids else PERMISSION_DENIAL_REASON
+
+
+_UPSTREAM_CODE_RE = re.compile(r"""['"]code['"]\s*:\s*['"]([^'"]{1,80})['"]""")
+_UPSTREAM_TYPE_RE = re.compile(r"""['"]type['"]\s*:\s*['"]([^'"]{1,80})['"]""")
+
+
+def _upstream_token(value: Any) -> str:
+    """上游 ``code`` / ``type`` 是单个标识符：去掉空白、引号与超长尾巴。"""
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    return text.split()[0][:64].replace('"', "").replace("'", "")
+
+
+def _upstream_error_fields(exc: BaseException) -> tuple[str, str]:
+    """上游返回的 ``code`` / ``type``，原样记进事件，让日志自己判断错误类型。
+
+    额度耗尽（``insufficient_quota``）和模型不存在（``model_not_found``）以前只能
+    靠 ``status=402/404`` 猜；把上游 code/type 原样落盘后，以后新出现的错误码
+    也能在日志里被认出来，不需要改代码。
+
+    取值的优先级：``ProviderHTTPError`` 在脱敏前保存的 ``upstream_code`` /
+    ``upstream_type`` → OpenAI SDK 已解析的 ``body`` → 异常原文里的
+    ``'code': '...'``。provider 会把错误体换成中性文案，所以第一条是主路径。
+    """
+    code = getattr(exc, "upstream_code", None)
+    error_type = getattr(exc, "upstream_type", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, (dict, str, bytes)) and not (code and error_type):
+        try:
+            if isinstance(body, (str, bytes)):
+                body = json.loads(body)
+            if isinstance(body, dict):
+                inner = body.get("error")
+                source = inner if isinstance(inner, dict) else body
+                code = code or source.get("code")
+                error_type = error_type or source.get("type")
+        except (ValueError, TypeError):
+            pass
+    text = f"{exc}"
+    if not code:
+        match = _UPSTREAM_CODE_RE.search(text)
+        code = match.group(1) if match else None
+    if not error_type:
+        match = _UPSTREAM_TYPE_RE.search(text)
+        error_type = match.group(1) if match else None
+    return _upstream_token(code), _upstream_token(error_type)
 
 
 def _log_llm_call_failure(
@@ -167,6 +306,7 @@ def _log_llm_call_failure(
         status = getattr(exc, "status_code", None)
         error_class = type(exc).__name__
         errno_value = getattr(exc, "errno", None)
+        upstream_code, upstream_type = _upstream_error_fields(exc)
         dns_host = "-"
         if (
             "getaddrinfo failed" in lowered
@@ -199,7 +339,8 @@ def _log_llm_call_failure(
         provider_name = type(provider).__name__.replace("Provider", "").lower() or "unknown"
         logger.error(
             "evt=llm.call.failed provider=%s model=%s host=%s port=%s status=%s "
-            "error_class=%s errno=%s dns_host=%s key_fp=%s timeout_s=%s "
+            "error_class=%s errno=%s dns_host=%s upstream_code=%s upstream_type=%s "
+            "upstream_kind=%s key_fp=%s timeout_s=%s "
             "timeout_source=%s duration_ms=%.0f attempt=%s request_id=%s",
             provider_name,
             getattr(provider, "model", "-") or "-",
@@ -209,6 +350,9 @@ def _log_llm_call_failure(
             error_class,
             errno_value if errno_value is not None else "-",
             dns_host,
+            upstream_code,
+            upstream_type,
+            getattr(exc, "upstream_kind", None) or "-",
             key_fingerprint(getattr(provider, "api_key", None)),
             getattr(provider, "timeout", "-"),
             getattr(provider, "timeout_source", "default"),
@@ -394,6 +538,9 @@ class LiuHaoAssistant:
         #: 机器可读的失败原因（quota_exhausted / key_revoked / ...），供网关
         #: 写进 done 帧，让界面给出"充值/换 Key"这类可行动文案。
         self.last_turn_reason: Optional[str] = None
+        #: 失败轮的「技术详情」：只含上游 message（已脱敏、≤120 字），
+        #: 供界面折叠展示；主文案必须是可行动的中文。
+        self.last_turn_technical_detail: Optional[str] = None
         self.last_turn_correlation_id: str = ""
 
         # 1. Identity — 复用 identity kernel（复用已有主体，或新建带信任分）。
@@ -429,15 +576,11 @@ class LiuHaoAssistant:
         self.turn = self._conv_store.get_last_turn(self.principal)
 
         # 6. 工具注册 — 复用 ToolRegistry（§40 生命周期），暴露真实内核能力。
-        self.tools = ToolRegistry()
-        self._tool_list = make_tools(self.profile_principal, status_fn=self.stats)
-        for tool in self._tool_list:
-            self.tools.register(tool)
-            self.tools.validate(tool.tool_id)
-            self.tools.approve(tool.tool_id)
-            self.tools.activate(tool.tool_id)
+        #    工具集按画像主体全局缓存：注册一次、所有冷会话复用，避免每个新会话
+        #    重放 40+ 条注册审计（这是冷启动的主要成本）。
+        self._tool_list, tool_prompt, self.tools = _shared_tools(self.profile_principal)
         # system prompt 追加工具描述（提示词约束 + JSON 解析的诚实协议）。
-        self.system_prompt = self.system_prompt + build_tool_prompt(self._tool_list)
+        self.system_prompt = self.system_prompt + tool_prompt
 
     @contextmanager
     def serialized_turn(self) -> Iterator[None]:
@@ -570,54 +713,102 @@ class LiuHaoAssistant:
     # ------------------------------------------------------------------ #
     # 主入口
     # ------------------------------------------------------------------ #
-    @observe("LiuHaoAssistant.chat")
-    def chat(self, message: str) -> Dict[str, Any]:
-        """处理一条用户消息，返回结构化结果（回复 + 状态 + 审计）。
+    def _new_turn(self) -> str:
+        """开一轮：轮次 +1、生成 correlation id、绑定 trace。
 
-        链路：授权 → 生成 → 记忆 → 审计。任一步的失败都诚实登记。
+        网关的建流前闸门（``preflight_chat``）与 ``chat`` / ``chat_stream``
+        必须共用它：轮次号与 correlation id 只能由一处产生，否则同一轮会出现
+        两个编号、审计与响应也对不上。
         """
         self.turn += 1
         correlation_id = uuid.uuid4().hex[:16]
         self.last_turn_correlation_id = correlation_id
         # 把本轮回话 id 透传到能力层日志（供追踪"哪一轮触发了哪些 kernel action"）。
         TraceContext.set(correlation_id=correlation_id)
+        return correlation_id
 
-        # 1. 授权（policy kernel，default-deny）。
+    def _authorize_chat(self, message: str, *, phase: str) -> Optional[Dict[str, Any]]:
+        """跑一次对话授权；拒绝时写审计并返回可直接外发的拒绝结果。
+
+        ``phase`` 是拒绝发生的**位置**，用于把两类拒绝分清楚：
+
+        * ``pre_stream``   —— 建流之前被拒（网关物理返回 402/403，没有 SSE）；
+        * ``during_stream``—— SSE 已建立后的兜底复查被拒（只能走 ``done`` 帧）；
+        * ``stream_direct``—— 直接消费 ``chat_stream`` 生成器（CLI/测试）时被拒；
+        * ``non_stream``   —— ``POST /v1/chat`` 的拒绝。
+
+        放行返回 ``None``；拒绝返回与 ``chat()`` 同构的结果（含 ``reply`` /
+        ``reason`` / ``correlation_id``），由调用方决定走 HTTP 还是事件流。
+        """
         decision = self.policy.authorize(
             "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
         )
-        if not decision.is_allowed:
-            denial_reason = _denial_reason(decision)
-            denial_message = (
-                BUDGET_DENIAL_MESSAGE
-                if denial_reason == BUDGET_DENIAL_REASON
-                else PERMISSION_DENIAL_MESSAGE
-            )
-            self.last_turn_status = "denied"
-            self.last_turn_error = denial_message
-            self.last_turn_reason = denial_reason
-            log_event(
-                AuditEventType.ACCESS_DENIED,
-                principal_id=self.audit_principal,
-                scope=AuditScope.L1,
-                outcome="deny",
-                details={
-                    "turn": self.turn,
-                    "action": "chat",
-                    "reason": denial_reason,
-                    "estimated_cost": self._turn_estimated_cost,
-                    "available": self._turn_quota_available,
-                },
-                correlation_id=correlation_id,
-            )
-            return {
-                "reply": denial_message,
-                "status": "denied",
-                "reason": denial_reason,
+        if decision.is_allowed:
+            return None
+        denial_reason = _denial_reason(decision)
+        denial_message = (
+            BUDGET_DENIAL_MESSAGE
+            if denial_reason == BUDGET_DENIAL_REASON
+            else PERMISSION_DENIAL_MESSAGE
+        )
+        correlation_id = self.last_turn_correlation_id
+        self.last_turn_status = "denied"
+        self.last_turn_error = denial_message
+        self.last_turn_reason = denial_reason
+        self.last_turn_technical_detail = None
+        log_event(
+            AuditEventType.ACCESS_DENIED,
+            principal_id=self.audit_principal,
+            scope=AuditScope.L1,
+            outcome="deny",
+            details={
                 "turn": self.turn,
-                "correlation_id": correlation_id,
-                "agent": self.principal,
-            }
+                "action": "chat",
+                "reason": denial_reason,
+                # 拒绝发生在建流前还是流中：审计与日志用同一个标签，便于
+                # 排查"用户说没建流，日志却是 done 帧"这类口径错位。
+                "phase": phase,
+                "estimated_cost": self._turn_estimated_cost,
+                "available": self._turn_quota_available,
+            },
+            correlation_id=correlation_id,
+        )
+        self._log.info(
+            "chat turn denied phase=%s reason=%s correlation=%s",
+            phase, denial_reason, correlation_id,
+        )
+        return {
+            "reply": denial_message,
+            "status": "denied",
+            "reason": denial_reason,
+            "turn": self.turn,
+            "correlation_id": correlation_id,
+            "agent": self.principal,
+        }
+
+    def preflight_chat(self, message: str) -> Optional[Dict[str, Any]]:
+        """建流前的授权闸门（网关在返回 ``StreamingResponse`` 之前调用）。
+
+        返回 ``None`` 表示已放行，且本轮 turn/correlation 已经就绪 —— 后续
+        必须用 ``chat_stream(..., turn_prepared=True)``，不能再开一轮。
+        返回 dict 表示已拒绝（已写 ACCESS_DENIED 审计），网关据此物理返回
+        402/403，**不建立事件流**。
+        """
+        self._new_turn()
+        return self._authorize_chat(message, phase="pre_stream")
+
+    @observe("LiuHaoAssistant.chat")
+    def chat(self, message: str) -> Dict[str, Any]:
+        """处理一条用户消息，返回结构化结果（回复 + 状态 + 审计）。
+
+        链路：授权 → 生成 → 记忆 → 审计。任一步的失败都诚实登记。
+        """
+        correlation_id = self._new_turn()
+
+        # 1. 授权（policy kernel，default-deny）。
+        denial = self._authorize_chat(message, phase="non_stream")
+        if denial is not None:
+            return denial
 
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)
@@ -625,6 +816,7 @@ class LiuHaoAssistant:
         # 3. 生成（真实 LLM / mock）+ 工具调用 loop。
         _gen_started = time.perf_counter()
         reason: Optional[str] = None
+        technical_detail: Optional[str] = None
         try:
             reply = self._generate_with_tools(messages)
             status = "completed"
@@ -638,16 +830,21 @@ class LiuHaoAssistant:
                 correlation_id=correlation_id,
                 duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
             )
-            # 错误文案按失败类型分开：空回复不是网络问题，断流不是彻底失败。
-            failure_text = user_facing_failure(exc)
+            # 错误文案按失败类型分开：空回复不是网络问题，断流不是彻底失败，
+            # 超时更不该让用户去查 API Key。
+            failure_text = user_facing_failure(
+                exc, model=getattr(self.provider, "model", None)
+            )
             reply = failure_text
             status = "error"
             error_text = failure_text
             reason = _turn_failure_reason(exc)
+            technical_detail = technical_detail_for(exc)
 
         self.last_turn_status = status
         self.last_turn_error = error_text
         self.last_turn_reason = reason
+        self.last_turn_technical_detail = technical_detail
 
         # 4-5. 记忆 + 会话落盘 + 审计（chat / chat_stream 共用）。
         self._commit_turn(message, reply, correlation_id, status)
@@ -660,50 +857,33 @@ class LiuHaoAssistant:
             "agent": self.principal,
         }
 
-    def chat_stream(self, message: str):
+    def chat_stream(self, message: str, *, turn_prepared: bool = False):
         """流式处理一条消息：逐 token yield，收尾时落盘记忆 + 审计。
 
         与 ``chat`` 走同一条授权链路（policy → 生成 → 记忆 → 审计），生成阶段
         改为逐 token 产出。生成器既 yield ``str``（逐 token），也 yield ``dict``
         （工具调用事件，``{"type": "tool", "name": ..., "args": ..., "output": ...}``），
         供 SSE / 前端渲染工具卡片。生成器是惰性的：SSE / CLI 消费时才真正执行。
+
+        ``turn_prepared=True``：网关已经在建流前跑过 ``preflight_chat``（轮次与
+        correlation id 已就绪）。这里仍会**再授权一次**，但只作为兜底 —— 等会话
+        锁期间额度可能被别的会话花光。兜底被拒时只能走 ``done`` 帧（SSE 已建立）。
         """
-        self.turn += 1
-        correlation_id = uuid.uuid4().hex[:16]
-        self.last_turn_correlation_id = correlation_id
-        TraceContext.set(correlation_id=correlation_id)
+        if not turn_prepared:
+            # 没有前置闸门（CLI / 测试直接消费生成器）：沿用原有的流中判定。
+            self._new_turn()
         self._log.debug("ENTER LiuHaoAssistant.chat_stream turn=%s", self.turn)
 
-        # 1. 授权（policy kernel，default-deny）。
-        decision = self.policy.authorize(
-            "chat", risk_level="LOW", **self._quota_authorize_kwargs(message)
+        # 1. 授权（policy kernel，default-deny）。兜底路径与前置闸门同源。
+        denial = self._authorize_chat(
+            message, phase="during_stream" if turn_prepared else "stream_direct"
         )
-        if not decision.is_allowed:
-            denial_reason = _denial_reason(decision)
-            denial_message = (
-                BUDGET_DENIAL_MESSAGE
-                if denial_reason == BUDGET_DENIAL_REASON
-                else PERMISSION_DENIAL_MESSAGE
-            )
-            self.last_turn_status = "denied"
-            self.last_turn_error = denial_message
-            self.last_turn_reason = denial_reason
-            log_event(
-                AuditEventType.ACCESS_DENIED,
-                principal_id=self.audit_principal,
-                scope=AuditScope.L1,
-                outcome="deny",
-                details={
-                    "turn": self.turn,
-                    "action": "chat",
-                    "reason": denial_reason,
-                    "estimated_cost": self._turn_estimated_cost,
-                    "available": self._turn_quota_available,
-                },
-                correlation_id=correlation_id,
-            )
-            yield denial_message
+        if denial is not None:
+            yield denial["reply"]
             return
+
+        # 本轮 turn / correlation 可能由 preflight_chat 提前开好。
+        correlation_id = self.last_turn_correlation_id
 
         # 2. 构建 messages（system + 历史 + 当前）。
         messages = self._build_messages(message)
@@ -715,12 +895,24 @@ class LiuHaoAssistant:
         status = "completed"
         error_text: Optional[str] = None
         reason: Optional[str] = None
+        technical_detail: Optional[str] = None
         round_chunks: List[str] = []
         _gen_started = time.perf_counter()
         try:
             for round_idx in range(MAX_TOOL_ROUNDS + 1):
                 round_chunks = []
-                for token in self.provider.chat_stream(messages):
+                stream_call = getattr(self.provider, "stream_with_retry", None)
+                stream = (
+                    stream_call(messages)
+                    if callable(stream_call)
+                    else self.provider.chat_stream(messages)
+                )
+                for token in stream:
+                    if isinstance(token, dict):
+                        # provider 的可见反馈（例如"正在重试"）：直接透传给
+                        # 前端，不计入回复正文。
+                        yield token
+                        continue
                     round_chunks.append(token)
                     yield token
                 round_reply = "".join(round_chunks)
@@ -763,7 +955,9 @@ class LiuHaoAssistant:
                 correlation_id=correlation_id,
                 duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
             )
-            error_text = user_facing_failure(exc)
+            error_text = user_facing_failure(
+                exc, model=getattr(self.provider, "model", None)
+            )
             final_reply = "".join(round_chunks) if round_chunks else error_text
             reason = "stream_incomplete"
         except Exception as exc:  # 真实失败，诚实返回，不伪造
@@ -776,15 +970,19 @@ class LiuHaoAssistant:
                 correlation_id=correlation_id,
                 duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
             )
-            failure_text = user_facing_failure(exc)
+            failure_text = user_facing_failure(
+                exc, model=getattr(self.provider, "model", None)
+            )
             error_text = failure_text
             final_reply = failure_text
             reason = _turn_failure_reason(exc)
+            technical_detail = technical_detail_for(exc)
             yield final_reply
 
         self.last_turn_status = status
         self.last_turn_error = error_text
         self.last_turn_reason = reason
+        self.last_turn_technical_detail = technical_detail
         # 4-5. 记忆 + 会话落盘 + 审计（共用 _commit_turn）。
         self._commit_turn(message, final_reply, correlation_id, status)
         self._log.info("EXIT chat_stream status=%s", status)
@@ -800,7 +998,12 @@ class LiuHaoAssistant:
         纯文本回复（或达到 ``MAX_TOOL_ROUNDS`` 上限防死循环）。
         """
         for _ in range(MAX_TOOL_ROUNDS):
-            reply = self.provider.chat(messages)
+            chat_call = getattr(self.provider, "chat_with_retry", None)
+            reply = (
+                chat_call(messages)
+                if callable(chat_call)
+                else self.provider.chat(messages)
+            )
             tool_call = parse_tool_call(reply)
             if tool_call is None:
                 return reply
@@ -827,7 +1030,15 @@ class LiuHaoAssistant:
         """
         for tool in self._tool_list:
             if tool.name == tool_name:
-                result = self.tools.execute(tool.tool_id, args)
+                # 工具表是跨会话共享的：``system_status`` 需要看到"当前这一轮"
+                # 的 turn/history，因此把 assistant 放进线程本地，执行完即还原
+                # （保留外层上下文，避免嵌套调用时被清空）。
+                previous = getattr(_TURN_CONTEXT, "assistant", None)
+                _TURN_CONTEXT.assistant = self
+                try:
+                    result = self.tools.execute(tool.tool_id, args)
+                finally:
+                    _TURN_CONTEXT.assistant = previous
                 if result.success:
                     return coerce_tool_output(result.output)
                 return {"success": False, "error": str(result.error)}
@@ -848,8 +1059,11 @@ class LiuHaoAssistant:
             # 上下文里反复看到失败文案，而"这次没拿到回复"并不属于对话内容。
             self.history.append({"role": "user", "content": message})
             self.history.append({"role": "assistant", "content": reply})
-            self._conv_store.append(self.principal, self.turn, "user", message)
-            self._conv_store.append(self.principal, self.turn, "assistant", reply)
+            # user/assistant 两行一次事务写入 + 一条审计：此前两次 append 各自
+            # commit 并各写一条审计，把一轮里的固定落盘成本翻倍且没有额外语义。
+            self._conv_store.append_turn(
+                self.principal, self.turn, message, reply
+            )
             self.memory.store(
                 f"turn:{self.principal}:{self.turn}",
                 {"user": message, "assistant": reply},

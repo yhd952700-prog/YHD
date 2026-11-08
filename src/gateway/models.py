@@ -929,19 +929,18 @@ def _probe(cfg: Dict[str, Any]) -> Dict[str, Any]:
         )
         hint = _PROBE_HINTS.get(reason)
         detail = hint or "连接失败：请检查服务商、模型名与接口地址设置后重试。"
-        # 模型名写错时必须把服务端原话带出来（已脱敏、≤200 字符）：
-        # 只说"模型名不存在"用户无法区分是拼错、没开通还是已下线。
+        # 上游原文只进可展开的「技术详情」（只 message、已脱敏、≤120 字）；
+        # 主文案必须是可行动的中文，不能把英文错误码与响应体当正文。
         server_text = sanitize_upstream_detail(
             getattr(exc, "upstream_detail", "") or ""
         )
-        if server_text:
-            detail = f"{detail}；服务端返回：{server_text}"
         _audit_probe(cfg, "failure", reason)
         return {
             "ok": False,
             "reason": reason,
             "hint": hint or "",
             "detail": detail,
+            "technical_detail": server_text,
             "latency_ms": elapsed,
             "provider": cfg.get("provider"),
             "vendor": vendor_for(cfg.get("provider"), cfg.get("base_url")),

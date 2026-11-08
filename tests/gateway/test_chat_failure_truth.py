@@ -282,7 +282,7 @@ def test_d4_mock_provider_is_explicit_demo_not_internal_state():
     assert text == MODEL_NOT_CONFIGURED_MESSAGE
     assert "还没有配置模型" in text
     assert "演示数据" in text
-    assert "设置 → 模型" in text and "Key" in text
+    assert "系统设置 → 模型管理" in text and "密钥" in text
     assert "LiuHao AI OS status" not in text
     assert "supports_streaming" not in text
 
@@ -403,10 +403,67 @@ def test_d5_non_stream_response_carries_key_revoked_reason(monkeypatch, auth_hea
     payload = resp.json()
     assert payload["status"] == "error"
     assert payload["reason"] == "key_revoked", payload
-    # 上游原文与 Key 不得回显（reason 标签本身是机器信号，允许出现）。
-    assert "This API key" not in resp.text
-    assert "invalid_request_error" not in resp.text
-    assert "sk-e2e" not in resp.text
+    # 主文案区：只能有可行动的中文，不得出现上游英文/type/Key。
+    reply = payload["reply"]
+    assert "API Key 无效或已失效" in reply
+    assert "This API key" not in reply
+    assert "invalid_request_error" not in reply
+    assert "sk-e2e" not in reply
+    # 上游 message 只允许放在可展开的「技术详情」：只 message，脱敏 + 截断。
+    detail = payload["technical_detail"]
+    assert isinstance(detail, str) and detail
+    assert "This API key has been revoked." in detail
+    assert len(detail) <= 120
+    assert "invalid_request_error" not in detail
+    # 全文除脱敏占位 sk-*** 外，不得出现 Key / 认证头痕迹。
+    redacted = resp.text.replace("sk-***", "")
+    assert "sk-" not in redacted
+    assert "Bearer" not in redacted
+    assert "api_key" not in redacted
+
+
+def test_d5_stream_technical_detail_only_in_done_frame(monkeypatch, auth_headers):
+    """流式 401：上游原文只进 done.technical_detail，不进 token 正文。"""
+    _serve_upstream(
+        monkeypatch,
+        status=401,
+        payload={
+            "error": {
+                "message": "This API key has been revoked.",
+                "type": "invalid_request_error",
+                "code": "api_key_revoked",
+            }
+        },
+    )
+    assistant = _assistant(_real_openai_provider())
+    monkeypatch.setattr(chat_module, "get_assistant", lambda *a, **k: assistant)
+
+    client = TestClient(get_app())
+    with client.stream(
+        "POST",
+        "/v1/chat/stream",
+        json={
+            "message": "hello",
+            "session_id": "s-revoked-stream",
+            "use_knowledge": False,
+        },
+        headers=auth_headers,
+    ) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    frames = _read_sse(body)
+    tokens = "".join(
+        f.get("content", "") for f in frames if f.get("type") == "token"
+    )
+    done = [f for f in frames if f.get("type") == "done"][-1]
+    assert done["status"] == "error"
+    assert done["reason"] == "key_revoked"
+    assert "API Key 无效或已失效" in done["error"]
+    assert "This API key" not in tokens
+    assert "invalid_request_error" not in done["error"]
+    assert "This API key has been revoked." in done["technical_detail"]
+    assert len(done["technical_detail"]) <= 120
 
 
 def test_d5_success_response_has_no_reason(monkeypatch, auth_headers):

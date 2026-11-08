@@ -485,6 +485,9 @@ class ChatResponse(BaseModel):
     #: 失败时的机器可读原因（quota_exhausted / key_revoked / ...），与 SSE
     #: done 帧的 ``reason`` 同源；成功时为 null。
     reason: Optional[str] = None
+    #: 失败时上游返回的原文（只含 message，已脱敏、≤120 字）。前端只能在
+    #: 可展开的「技术详情」里展示，不得拼进主文案。
+    technical_detail: Optional[str] = None
 
 
 def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
@@ -894,6 +897,11 @@ def chat(
                 if result["status"] != "completed"
                 else None
             ),
+            technical_detail=(
+                getattr(assistant, "last_turn_technical_detail", None)
+                if result["status"] != "completed"
+                else None
+            ),
         )
     except BaseException:
         # 异常（含客户端取消）不保留占位：重试必须能真实执行。
@@ -1105,6 +1113,10 @@ def chat_stream(
             turn_reason = getattr(assistant, "last_turn_reason", None)
             if isinstance(turn_reason, str) and turn_reason:
                 done["reason"] = turn_reason
+            # 上游原文只进可展开的「技术详情」（已脱敏、≤120 字）。
+            turn_detail = getattr(assistant, "last_turn_technical_detail", None)
+            if isinstance(turn_detail, str) and turn_detail:
+                done["technical_detail"] = turn_detail
         if turn_status == "completed":
             # 只有成功轮次才把完整内容缓存给重发请求复用。
             outcome["payload"] = {

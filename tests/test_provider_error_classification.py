@@ -107,7 +107,18 @@ def test_key_revoked_reaches_the_gateway(monkeypatch):
     assert result["ok"] is False
     assert result["reason"] == "key_revoked"
     assert "吊销" in result["detail"]
+    # 主文案不得出现上游英文/type；原文只允许进「技术详情」。
     assert "revoked" not in result["detail"].lower()
+    assert "invalid_request_error" not in result["detail"]
+    detail = result["technical_detail"]
+    assert "This API key has been revoked." in detail
+    assert len(detail) <= 120
+    assert "invalid_request_error" not in detail
+    # 全文除脱敏占位 sk-*** 外，不得出现 Key / 认证头痕迹。
+    redacted = str(result).replace("sk-***", "")
+    assert "sk-" not in redacted
+    assert "Bearer" not in redacted
+    assert "api_key" not in redacted
 
 
 def test_plain_rate_limit_is_still_rate_limited(monkeypatch):
