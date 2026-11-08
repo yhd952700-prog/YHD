@@ -99,9 +99,21 @@ def build_reminder_tool(
         )
         act = str(raw_action).strip().lower()
         act = _ALIASES.get(act, act)
-        reminder_text = str(
-            text or kwargs.get("content") or kwargs.get("message") or ""
+        # 模型常把「时间」与「内容」拆成两个字段（time + instruction/when）。
+        # 两者按原文拼接，既不丢原文，也不替用户补默认时间（缺时间由解析器反问）。
+        when = str(
+            kwargs.get("time") or kwargs.get("when") or kwargs.get("at") or ""
         ).strip()
+        body = str(
+            text
+            or kwargs.get("content")
+            or kwargs.get("reminder_text")
+            or kwargs.get("instruction")
+            or kwargs.get("message")
+            or kwargs.get("title")
+            or ""
+        ).strip()
+        reminder_text = f"{when} {body}".strip() if when else body
         target_id = str(
             reminder_id or kwargs.get("id") or kwargs.get("reminder") or ""
         ).strip()
@@ -109,11 +121,17 @@ def build_reminder_tool(
         try:
             svc = service or get_reminder_service()
             if act == "create":
-                if not reminder_text:
+                if not body:
+                    # 只有时间没有内容同样是无效输入：不能替用户编一件"要提醒的事"。
                     return _dumps(
                         {
                             "status": "error",
-                            "error": "请提供 text，例如「每天十点提醒我喝水」。",
+                            "error": (
+                                "时间已收到，但缺少提醒内容：请用 text 传完整提醒，"
+                                "例如「每天十点提醒我喝水」。"
+                            )
+                            if when
+                            else "请提供 text，例如「每天十点提醒我喝水」。"
                         }
                     )
                 result = svc.create(user_id=principal, text=reminder_text)
@@ -226,7 +244,8 @@ def build_reminder_tool(
         version="1.0.0",
         description=(
             "创建/查看/取消/修改定时提醒。用户说「X点提醒我Y」「每天/每周…提醒我」"
-            "时调用。时间含糊（如「下周那个会」「晚点」）会返回 "
+            "时调用。create 必须用 text 传完整的自然语言提醒（时间+内容都要有），"
+            "例如「每天十点提醒我喝水」；时间含糊（如「下周那个会」「晚点」）会返回 "
             "needs_clarification，必须把 question 原样问用户，不要猜时间。"
             "提醒响过之后用 action=done 标记完成，或 action=snooze 稍后再提醒；"
             "错过的提醒用 action=missed 查明细；勿扰时段/错过阈值用 action=settings 查看或修改。"

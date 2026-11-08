@@ -155,6 +155,69 @@ class ProviderStreamIncompleteError(RuntimeError):
         super().__init__(f"{INCOMPLETE_STREAM_MESSAGE}（{label}：{detail}）")
 
 
+class TurnCancelled(Exception):
+    """本轮生成被主动取消（目前唯一来源：客户端已断开）。
+
+    与真实失败严格区分：它不记 ``llm.call.failed``、不触发重试、不产出错误
+    文案，由调用方按「用户中断」收口。
+    """
+
+    def __init__(self, reason: str = "client_disconnected"):
+        self.reason = reason
+        super().__init__("本轮生成已被取消")
+
+
+class TurnCancelToken:
+    """跨线程取消令牌：网关线程置位，生成线程在检查点退出。
+
+    ``cancel()`` 会顺带执行已登记的关闭回调（provider 的流式 ``response``），
+    让阻塞在 ``iter_lines()`` 上的生成线程**立即**抛错退出，而不是干等一次
+    读取超时。回调失败一律吞掉：取消本身不能被关闭异常掩盖。
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._closers: list = []
+        self.mode = ""
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def cancel(self, mode: str = "disconnect") -> None:
+        with self._lock:
+            if self._event.is_set():
+                return
+            self.mode = mode
+            self._event.set()
+            closers = list(self._closers)
+            self._closers.clear()
+        for closer in closers:
+            try:
+                closer()
+            except Exception:  # noqa: BLE001 - 关闭失败不能掩盖取消
+                logger.debug("cancelling provider stream failed", exc_info=True)
+
+    def bind_closer(self, closer) -> None:
+        """登记"取消时关闭上游流"的回调；已取消则立即执行。"""
+        run_now = False
+        with self._lock:
+            if self._event.is_set():
+                run_now = True
+            else:
+                self._closers.append(closer)
+        if run_now:
+            try:
+                closer()
+            except Exception:  # noqa: BLE001
+                logger.debug("closing already-cancelled stream failed", exc_info=True)
+
+    def raise_if_cancelled(self) -> None:
+        if self._event.is_set():
+            raise TurnCancelled(self.mode or "client_disconnected")
+
+
 class ProviderTimeoutError(TimeoutError):
     """在超时窗口内没有收到任何**有效内容**（心跳/keepalive 不算）。
 
@@ -711,6 +774,14 @@ def _iter_raw_lines(response):
         return response.iter_lines()
 
 
+def _iter_with_cancel(iterable, cancel_token: Optional[TurnCancelToken]):
+    """在两个 chunk 之间检查取消令牌；阻塞中的读取由关闭回调打断。"""
+    for item in iterable:
+        if cancel_token is not None:
+            cancel_token.raise_if_cancelled()
+        yield item
+
+
 def _iter_sse_text(
     lines,
     *,
@@ -1191,6 +1262,8 @@ class BaseProvider:
         空回复不会产出一个空 token：``chat`` 会抛
         :class:`ProviderEmptyResponseError`，调用方据此把这一轮判成失败。
         """
+        # 取消令牌只对流式实现有意义；非流式降级直接丢掉，避免透传给下层。
+        kwargs.pop("cancel_token", None)
         text = self.chat(messages, **kwargs)
         _require_nonempty_text(self.name, text)
         yield text
@@ -1218,17 +1291,27 @@ class BaseProvider:
         重试前先 yield 一个 ``{"type": "notice"}`` 事件：界面据此显示
         "正在重试"，而不是让用户对着一块空白等第二次冷启动。已经产出过
         token 的轮次绝不重试——重放会让用户看到两段重复回答。
+
+        ``cancel_token`` 置位后不再重试：客户端已经走了，第二次生成既没有
+        收件人，又会继续占着会话锁。
         """
         import time
 
+        cancel_token = kwargs.pop("cancel_token", None)
         for attempt in range(2):
             produced = False
             try:
-                for token in self.chat_stream(messages, **kwargs):
+                for token in self.chat_stream(
+                    messages, cancel_token=cancel_token, **kwargs
+                ):
+                    if cancel_token is not None:
+                        cancel_token.raise_if_cancelled()
                     produced = True
                     yield token
                 return
             except Exception as exc:
+                if cancel_token is not None and cancel_token.cancelled:
+                    raise TurnCancelled(cancel_token.mode or "client_disconnected")
                 if produced or attempt >= 1 or not _is_timeout_or_connection(exc):
                     raise
                 yield {
@@ -1422,13 +1505,18 @@ class FailoverProvider(BaseProvider):
     def chat_stream(self, messages, **kwargs):
         attempts: list[dict[str, str]] = []
         produced = False
+        cancel_token = kwargs.get("cancel_token")
         for index, provider in enumerate(self._providers):
             try:
                 for token in provider.chat_stream(messages, **kwargs):
+                    if cancel_token is not None:
+                        cancel_token.raise_if_cancelled()
                     produced = True
                     yield token
                 return
             except Exception as exc:  # noqa: BLE001
+                if cancel_token is not None and cancel_token.cancelled:
+                    raise TurnCancelled(cancel_token.mode or "client_disconnected")
                 if produced:
                     # 已经吐过字：这一段是真实内容，抛给上层按"断流/不完整"处理。
                     raise
@@ -1676,6 +1764,7 @@ class OpenAIProvider(BaseProvider):
         model = kwargs.get("model", self.model)
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
+        cancel_token = kwargs.get("cancel_token")
         self._guard_target()
         params = {
             "model": model,
@@ -1694,12 +1783,17 @@ class OpenAIProvider(BaseProvider):
                     _raise_invalid_response("模型服务", exc)
                 self._guard_upstream_error(exc)
                 raise
-            yield from _iter_sse_text(
-                response.iter_lines(),
-                label="模型服务",
-                idle_timeout=self.timeout,
-                first_token_timeout=self.first_token_timeout,
-                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            if cancel_token is not None and hasattr(response, "close"):
+                cancel_token.bind_closer(response.close)
+            yield from _iter_with_cancel(
+                _iter_sse_text(
+                    response.iter_lines(),
+                    label="模型服务",
+                    idle_timeout=self.timeout,
+                    first_token_timeout=self.first_token_timeout,
+                    on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+                ),
+                cancel_token,
             )
         finally:
             if response_cm is not None:
@@ -2049,6 +2143,7 @@ class OllamaProvider(BaseProvider):
             base_url, context="Ollama 服务", allow_private_service=True
         )
 
+        cancel_token = kwargs.get("cancel_token")
         response = requests.post(
             f"{base_url}/api/chat",
             json={"model": model, "messages": messages, "stream": True},
@@ -2060,12 +2155,17 @@ class OllamaProvider(BaseProvider):
         try:
             if response.status_code != 200:
                 _raise_upstream_http("Ollama 服务", response)
-            yield from _iter_ndjson_text(
-                _iter_raw_lines(response),
-                label="Ollama 服务",
-                idle_timeout=self.timeout,
-                first_token_timeout=self.first_token_timeout,
-                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            if cancel_token is not None:
+                cancel_token.bind_closer(response.close)
+            yield from _iter_with_cancel(
+                _iter_ndjson_text(
+                    _iter_raw_lines(response),
+                    label="Ollama 服务",
+                    idle_timeout=self.timeout,
+                    first_token_timeout=self.first_token_timeout,
+                    on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+                ),
+                cancel_token,
             )
         finally:
             # ``stream=True`` keeps the urllib3 connection checked out until the
@@ -2164,14 +2264,20 @@ class MoonshotProvider(BaseProvider):
 
     def chat_stream(self, messages, **kwargs):
         """真实 SSE 流式；缺 ``[DONE]``/坏帧/连接中断按"不完整"处理。"""
+        cancel_token = kwargs.get("cancel_token")
         model, response = self._post(messages, stream=True, **kwargs)
         try:
-            yield from _iter_sse_text(
-                _iter_raw_lines(response),
-                label="Moonshot 服务",
-                idle_timeout=self.timeout,
-                first_token_timeout=self.first_token_timeout,
-                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            if cancel_token is not None:
+                cancel_token.bind_closer(response.close)
+            yield from _iter_with_cancel(
+                _iter_sse_text(
+                    _iter_raw_lines(response),
+                    label="Moonshot 服务",
+                    idle_timeout=self.timeout,
+                    first_token_timeout=self.first_token_timeout,
+                    on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+                ),
+                cancel_token,
             )
         finally:
             response.close()
@@ -2256,14 +2362,20 @@ class DeepSeekProvider(BaseProvider):
 
     def chat_stream(self, messages, **kwargs):
         """真实 SSE 流式；缺 ``[DONE]``/坏帧/连接中断按"不完整"处理。"""
+        cancel_token = kwargs.get("cancel_token")
         model, response = self._post(messages, stream=True, **kwargs)
         try:
-            yield from _iter_sse_text(
-                _iter_raw_lines(response),
-                label="DeepSeek 服务",
-                idle_timeout=self.timeout,
-                first_token_timeout=self.first_token_timeout,
-                on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+            if cancel_token is not None:
+                cancel_token.bind_closer(response.close)
+            yield from _iter_with_cancel(
+                _iter_sse_text(
+                    _iter_raw_lines(response),
+                    label="DeepSeek 服务",
+                    idle_timeout=self.timeout,
+                    first_token_timeout=self.first_token_timeout,
+                    on_usage=lambda u: self._note_usage(model, *_usage_counts(u)),
+                ),
+                cancel_token,
             )
         finally:
             response.close()

@@ -9,7 +9,9 @@ provider 由环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_MODEL 控制（默认 ol
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -73,6 +75,115 @@ def _storage_http_error(exc: BaseException) -> Optional[HTTPException]:
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 logger = logging.getLogger(__name__)
+
+
+# ─── 流式生成与客户端断开的桥接 ──────────────────────────────
+#
+# ``StreamingResponse`` 在 uvicorn（ASGI spec 2.3）下会在收到 ``http.disconnect``
+# 时取消消费任务。问题在于：同步生成器默认经 ``iterate_in_threadpool`` 消费，
+# anyio 的取消会**等待**线程返回；而线程往往正阻塞在 provider 的读取上，于是
+# 「客户端已走、会话锁还被占着」。这里改成生产者线程 + 队列：消费端被取消时
+# 只置位 ``TurnCancelToken``，生产端继续把同步生成器跑到收口（写 interrupted
+# 审计、释放 ``serialized_turn`` 锁），不会被丢在半路。
+
+
+class _StreamStepError:
+    """生产线程里的异常，原样转交给异步消费端。"""
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+_STREAM_END = object()
+
+
+def _next_stream_item(iterator):
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _STREAM_END
+
+
+def _accepts_kwarg(fn, name: str) -> bool:
+    """``fn`` 是否接受关键字 ``name``（兼容测试里的简化替身）。"""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+async def _stream_with_cancel(iterator, cancel_token):
+    """把同步生成器搬进异步流；消费端取消时置位令牌并让生产端继续收口。"""
+    loop = asyncio.get_running_loop()
+    queue: "asyncio.Queue[object]" = asyncio.Queue()
+
+    def deliver(value: object) -> None:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, value)
+        except RuntimeError:
+            # 事件循环已关闭：请求已经结束，继续把生成器跑完以释放会话锁。
+            pass
+
+    def pump() -> None:
+        try:
+            for item in iterator:
+                deliver(item)
+        except BaseException as exc:  # noqa: BLE001 - 由消费端决定如何收口
+            deliver(_StreamStepError(exc))
+        finally:
+            deliver(_STREAM_END)
+
+    threading.Thread(target=pump, name="liuhao-sse-pump", daemon=True).start()
+    completed = False
+    try:
+        while True:
+            item = await queue.get()
+            if item is _STREAM_END:
+                completed = True
+                return
+            if isinstance(item, _StreamStepError):
+                raise item.exc
+            yield item
+    finally:
+        if not completed:
+            # 客户端断开 / 消费端异常：生成线程在下一个检查点按 interrupted 收口。
+            cancel_token.cancel()
+
+
+def _done_payload(
+    req: ChatRequest,
+    assistant,
+    knowledge,
+    *,
+    status: str,
+    reason: Optional[str] = None,
+    error: Optional[str] = None,
+    usage_recorded: bool = False,
+) -> Dict[str, object]:
+    """构造结束帧：状态、原因与中性中文文案都在同一处，前端只认这一帧。"""
+    done: Dict[str, object] = {
+        "type": "done",
+        "status": status,
+        "turn": getattr(assistant, "turn", 0),
+        "session_id": req.session_id,
+        "correlation_id": str(
+            getattr(assistant, "last_turn_correlation_id", "") or ""
+        ),
+        "usage_recorded": usage_recorded,
+        "knowledge": public_metadata(knowledge),
+    }
+    if error:
+        done["error"] = str(error)
+    if reason:
+        done["reason"] = str(reason)
+    return done
 
 
 # ─── 重量级依赖的惰性接缝 ────────────────────────────────────
@@ -971,6 +1082,11 @@ def chat_stream(
     # 首个请求的最终结果；只有 completed 才会被缓存供重发复用。
     outcome: Dict[str, object] = {"payload": None}
 
+    # 客户端断开时由消费端置位：生成线程据此停止消费、按「用户中断」收口。
+    from ..ai.providers import TurnCancelToken
+
+    cancel_token = TurnCancelToken()
+
     def event_stream():
         # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
         reply_chars = 0
@@ -978,6 +1094,8 @@ def chat_stream(
         finished = False
         usage_recorded = False
         storage_error: Optional[Exception] = None
+        # 生成器本身没兜住、冒到网关层的异常：也必须补 done 帧，不能静默截断。
+        unexpected_error: Optional[Exception] = None
         _begin_turn(assistant)
         meter = UsageMeter()
         try:
@@ -985,11 +1103,14 @@ def chat_stream(
                 # 建流前已开轮（turn_prepared）时不能再开一轮；生成器内部仍
                 # 会再授权一次，作为"等锁期间额度被用光"的兜底 —— 那次拒绝
                 # 只能走 done 帧（SSE 已建立，HTTP 状态改不了）。
-                stream = (
-                    assistant.chat_stream(req.message, turn_prepared=True)
-                    if turn_prepared
-                    else assistant.chat_stream(req.message)
-                )
+                stream_kwargs: Dict[str, object] = {}
+                if turn_prepared and _accepts_kwarg(
+                    assistant.chat_stream, "turn_prepared"
+                ):
+                    stream_kwargs["turn_prepared"] = True
+                if _accepts_kwarg(assistant.chat_stream, "cancel_token"):
+                    stream_kwargs["cancel_token"] = cancel_token
+                stream = assistant.chat_stream(req.message, **stream_kwargs)
                 while True:
                     # Starlette 每次 next() 可能在不同 context 执行，因此逐次
                     # 把 meter 挂到当前 context，provider 的 usage 才不会丢。
@@ -1016,7 +1137,10 @@ def chat_stream(
             if is_storage_failure(exc):
                 storage_error = exc
             else:
-                raise
+                # G+：真实异常必须在流里补 done（带中文文案与机器原因），
+                # 否则用户只看到半截内容，永远不知道这不是完整回答。
+                unexpected_error = exc
+                logger.exception("chat stream failed unexpectedly")
 
         finally:
             _end_turn(assistant)
@@ -1049,9 +1173,13 @@ def chat_stream(
                     correlation_id=correlation_id,
                     estimated=estimated,
                 )
-            elif not finished and (usage["reported"] or reply_chars):
-                # 断流不是"失败轮次"，但已发出的 token 是真实成本：能拿到
-                # provider usage 就记真实值，否则按已发字符估算并明确标记。
+            elif (
+                not finished
+                and storage_error is not None
+                and (usage["reported"] or reply_chars)
+            ):
+                # 回复已生成、只是历史没保存：token 是真实成本，照实记账。
+                # 真正的生成异常不记账（失败轮次不得产生"已用量"假账）。
                 if usage["reported"]:
                     tokens_in = int(usage["tokens_in"])
                     tokens_out = int(usage["tokens_out"])
@@ -1069,6 +1197,9 @@ def chat_stream(
                     correlation_id=correlation_id,
                     estimated=estimated,
                 )
+        if cancel_token.cancelled:
+            # 客户端已断开：没有人接收，补帧会失败；审计已按 interrupted 落好。
+            return
         if storage_error is not None:
             message = (
                 str(storage_error)
@@ -1081,6 +1212,28 @@ def chat_stream(
                 "message": message,
             }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            # G+：错误帧之后仍必须补 done，否则前端只看到"流结束了"却没有结论。
+            yield f"data: {json.dumps(_done_payload(req, assistant, knowledge, status='error', reason='storage_unavailable', error=message, usage_recorded=usage_recorded), ensure_ascii=False)}\n\n"
+            return
+        if unexpected_error is not None:
+            from ..ai.providers import technical_detail_for, user_facing_failure
+
+            model = getattr(getattr(assistant, "provider", None), "model", None)
+            failure_text = user_facing_failure(unexpected_error, model=model)
+            reason = getattr(unexpected_error, "upstream_kind", None)
+            done = _done_payload(
+                req,
+                assistant,
+                knowledge,
+                status="error",
+                reason=reason if isinstance(reason, str) and reason else None,
+                error=failure_text,
+                usage_recorded=usage_recorded,
+            )
+            detail = technical_detail_for(unexpected_error)
+            if detail:
+                done["technical_detail"] = detail
+            yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
             return
         if not finished:
             return
@@ -1134,7 +1287,12 @@ def chat_stream(
         # 并发写同一 session 时轮次号/历史互相覆盖。客户端断开时 yield from
         # 会把 close 透传给内层生成器，finally 中的记账仍会执行。
         try:
-            with assistant.serialized_turn():
+            turn_guard = (
+                assistant.serialized_turn(cancel_token=cancel_token)
+                if _accepts_kwarg(assistant.serialized_turn, "cancel_token")
+                else assistant.serialized_turn()
+            )
+            with turn_guard:
                 yield from event_stream()
         finally:
             payload = outcome.get("payload")
@@ -1143,7 +1301,10 @@ def chat_stream(
             else:
                 _dedup_fail(dedup_entry)
 
-    return StreamingResponse(serialized_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_with_cancel(serialized_stream(), cancel_token),
+        media_type="text/event-stream",
+    )
 
 
 def _session_owned_by_other(principal: str, session_id: str) -> bool:

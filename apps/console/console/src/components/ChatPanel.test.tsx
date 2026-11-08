@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ChatPanel } from './ChatPanel'
 import { UNKNOWN_PROVIDER } from '../lib/providerStatus'
 
@@ -297,5 +297,114 @@ describe('ChatPanel 会话发现', () => {
     expect(JSON.parse(localStorage.getItem('liuhao.sessions') || '[]')).toContain(
       'session-imported',
     )
+  })
+})
+
+describe('ChatPanel 工具卡与状态行', () => {
+  function fillAndSend(text: string) {
+    fireEvent.change(
+      screen.getByPlaceholderText('未配置真实模型：当前发送将得到模拟回复'),
+      { target: { value: text } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+  }
+
+  test('工具失败：摘要用人话、默认收起，原始 JSON 仍保留在折叠区', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/stream') {
+        return sse([
+          'data: {"type":"tool","name":"manage_reminders","args":{"action":"create"},"output":{"status":"error","error":"时间已收到，但缺少提醒内容"}}\n\n',
+          'data: {"type":"done","status":"completed"}\n\n',
+        ])
+      }
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+    fillAndSend('帮我设个提醒')
+
+    const summary = await screen.findByText(/失败：时间已收到，但缺少提醒内容/)
+    expect(summary.textContent).toContain('调用工具')
+    const card = summary.closest('details') as HTMLDetailsElement | null
+    expect(card).toBeTruthy()
+    // 失败/需澄清的工具卡默认收起。
+    expect(card!.open).toBe(false)
+    expect(card!.hasAttribute('open')).toBe(false)
+    // D：原始 JSON 不删，展开仍能看到。
+    const pre = card!.querySelector('pre')
+    expect(pre?.textContent).toContain('"status": "error"')
+    expect(pre?.textContent).toContain('时间已收到，但缺少提醒内容')
+  })
+
+  test('notice 只更新状态行：不进正文、不算 token，token 到达后立即清除', async () => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+    })
+    const encoder = new TextEncoder()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/stream') {
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+    fillAndSend('你好')
+
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"notice","message":"正在重试…"}\n\n'))
+    })
+    const note = await screen.findByText('正在重试…')
+    expect(note.className).toContain('chat-status-note')
+    expect(note.getAttribute('role')).toBe('status')
+
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"token","content":"好"}\n\n'))
+    })
+    // token 一到，状态行立刻让位给正文。
+    await waitFor(() => expect(screen.queryByText('正在重试…')).toBeNull())
+    let bubbles = Array.from(document.querySelectorAll('.chat-bubble'))
+    expect(bubbles[bubbles.length - 1].textContent).toBe('好')
+
+    await act(async () => {
+      controller!.enqueue(encoder.encode('data: {"type":"done","status":"completed"}\n\n'))
+      controller!.close()
+    })
+    await waitFor(() => expect(screen.queryByText('生成中…')).toBeNull())
+    bubbles = Array.from(document.querySelectorAll('.chat-bubble'))
+    // notice 从未成为正文的一部分：最终正文仍只是模型产出的「好」。
+    expect(bubbles[bubbles.length - 1].textContent).toBe('好')
+  })
+
+  test('流没有 done 就断开：渲染「连接中断」错误卡，且不留下空气泡', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/v1/models') return json({ models: [], default_id: null })
+      if (path === '/v1/chat/stream') return sse([])
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatPanel provider={UNKNOWN_PROVIDER} onConfigureModel={vi.fn()} />)
+    fillAndSend('你好')
+
+    await screen.findByText('连接中断，请重试。')
+    const bubbles = Array.from(document.querySelectorAll('.chat-bubble'))
+    const last = bubbles[bubbles.length - 1]
+    // 正文为空时只能有错误卡，不能落「…」空气泡。
+    expect(last.textContent).not.toContain('…')
+    expect(last.querySelector('.chat-error')).toBeTruthy()
   })
 })

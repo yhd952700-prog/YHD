@@ -59,14 +59,54 @@ function toolOutputText(output: unknown): string {
   }
 }
 
+/** 工具结果是否失败/需澄清：失败时摘要用人话，原始 JSON 仍收在折叠区里。 */
+function toolOutcome(output: unknown): { failed: boolean; message: string } {
+  let parsed: unknown = output
+  if (typeof output === 'string' && /^\s*[{[]/.test(output)) {
+    try {
+      parsed = JSON.parse(output)
+    } catch {
+      return { failed: false, message: '' }
+    }
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const record = parsed as Record<string, unknown>
+    const status = String(record.status ?? '').toLowerCase()
+    const question = typeof record.question === 'string' ? record.question.trim() : ''
+    if (status === 'needs_clarification' || question) {
+      return { failed: true, message: question || '需要补充信息' }
+    }
+    const failed =
+      status === 'error' ||
+      status === 'failed' ||
+      status === 'failure' ||
+      record.success === false
+    if (failed) {
+      const reason =
+        (typeof record.error === 'string' && record.error) ||
+        (typeof record.detail === 'string' && record.detail) ||
+        (typeof record.message === 'string' && record.message) ||
+        ''
+      return { failed: true, message: reason || '工具没有返回可用结果' }
+    }
+  }
+  return { failed: false, message: '' }
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  /** 流式期间的状态行（后端 notice / 20 秒慢提示）：不进入正文、不计 token。 */
+  notice?: string
   tools?: ToolCall[]
   /** 失败时的人话 + 原始错误（原始文本默认折叠）。 */
   error?: { text: string; raw: string; action?: 'budget' }
 }
+
+/** 首字迟迟不来时的非阻断提示（只更新状态行，不打断输入）。 */
+const SLOW_RESPONSE_NOTICE_MS = 20_000
+const SLOW_RESPONSE_NOTICE = '模型响应较慢，仍在等待…'
 
 /** 快捷指令 chips（点击填入输入框）。 */
 const QUICK = ['市场分析', '销售机会', '客户策略', 'SEO优化', '数据分析']
@@ -450,6 +490,22 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
         { role: 'assistant', content: '', streaming: true, tools: [] },
       ])
       setTimeout(scrollToBottom, 0)
+      // 20 秒还没有首个 token 时给一条非阻断提示：只更新状态行，输入框照常可用。
+      let slowTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (!last || !last.streaming || last.content || last.notice) return prev
+          next[next.length - 1] = { ...last, notice: SLOW_RESPONSE_NOTICE }
+          return next
+        })
+      }, SLOW_RESPONSE_NOTICE_MS)
+      const clearSlowTimer = () => {
+        if (slowTimer) {
+          clearTimeout(slowTimer)
+          slowTimer = null
+        }
+      }
       try {
         for await (const evt of streamChat(
           value,
@@ -458,13 +514,32 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
           modelId || undefined,
         )) {
           if (evt.type === 'token') {
+            clearSlowTimer()
             setMessages((prev) => {
               const next = [...prev]
               const last = next[next.length - 1]
-              next[next.length - 1] = { ...last, content: last.content + evt.content }
+              next[next.length - 1] = {
+                ...last,
+                content: last.content + evt.content,
+                notice: undefined,
+              }
               return next
             })
             scrollToBottom()
+          } else if (evt.type === 'notice') {
+            // 后端「正在重试」等提示只更新状态行：不追加正文、不改变 streaming、
+            // 也不计入 token。
+            clearSlowTimer()
+            if (evt.message) {
+              setMessages((prev) => {
+                const next = [...prev]
+                next[next.length - 1] = { ...next[next.length - 1], notice: evt.message }
+                return next
+              })
+            }
+          } else if (evt.type === 'error') {
+            // 错误帧之后后端必补 done；最终由 done 渲染错误卡，这里只清慢提示。
+            clearSlowTimer()
           } else if (evt.type === 'tool') {
             setMessages((prev) => {
               const next = [...prev]
@@ -503,6 +578,7 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                   ...last,
                   content,
                   streaming: false,
+                  notice: undefined,
                   error: {
                     text: chatFailureText(evt.reason, evt.error),
                     raw: evt.error ?? evt.status,
@@ -514,26 +590,30 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
             }
           }
         }
+        clearSlowTimer()
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
-          next[next.length - 1] = { ...last, streaming: false }
+          next[next.length - 1] = { ...last, streaming: false, notice: undefined }
           return next
         })
         recordMeta(sessionId, { updatedAt: Date.now() / 1000 })
       } catch (err) {
         // 原始错误（可能是整段后端 JSON）只进"详情"，正文给可行动的中文。
+        clearSlowTimer()
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
           next[next.length - 1] = {
             ...last,
             streaming: false,
+            notice: undefined,
             error: friendlyChatError(err),
           }
           return next
         })
       } finally {
+        clearSlowTimer()
         setSending(false)
         scrollToBottom()
       }
@@ -713,14 +793,37 @@ export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanel
                       )}
                       {m.tools && m.tools.length > 0 && (
                         <div className="tool-calls">
-                          {m.tools.map((t, j) => (
-                            <details key={j} className="tool-card" open>
-                              <summary className="tool-summary">
-                                调用工具 <code>{t.name}</code>
-                              </summary>
-                              <pre className="tool-output">{toolOutputText(t.output)}</pre>
-                            </details>
-                          ))}
+                          {m.tools.map((t, j) => {
+                            // 失败/需澄清时摘要用人话并默认收起；原始 JSON 不删，
+                            // 展开仍能看到（D：只收进折叠区，不做信息裁剪）。
+                            const outcome = toolOutcome(t.output)
+                            return (
+                              <details
+                                key={j}
+                                className="tool-card"
+                                open={!outcome.failed}
+                              >
+                                <summary className="tool-summary">
+                                  {outcome.failed ? (
+                                    <>
+                                      调用工具 <code>{t.name}</code> 失败：
+                                      {outcome.message}
+                                    </>
+                                  ) : (
+                                    <>
+                                      调用工具 <code>{t.name}</code>
+                                    </>
+                                  )}
+                                </summary>
+                                <pre className="tool-output">{toolOutputText(t.output)}</pre>
+                              </details>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {m.streaming && m.notice && (
+                        <div className="chat-status-note" role="status">
+                          {m.notice}
                         </div>
                       )}
                       {/* 只在真实流式期间出现；结束即移除，静态卡片不加扫描线。 */}

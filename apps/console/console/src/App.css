@@ -1806,6 +1806,14 @@ html, body, #root {
   color: #ffb3ba;
 }
 
+.chat-status-note {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  opacity: 0.9;
+}
+
 .chat-error-raw summary {
   margin-top: 4px;
   color: var(--text-dim);

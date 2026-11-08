@@ -60,11 +60,30 @@ export interface DoneEvent {
   turn?: number;
 }
 
-/** 流式事件联合类型：逐 token 文本、工具调用，或结束帧。 */
+/** 流式事件联合类型：逐 token 文本、工具调用、可见提示，或结束帧。 */
 export type ChatEvent =
   | { type: 'token'; content: string }
+  | { type: 'notice'; code?: string; message: string }
+  | { type: 'error'; code?: string; message: string }
   | ToolEvent
   | DoneEvent;
+
+/** 拿响应头的上限：超过这个时间还没有任何响应，判定为"等待模型响应超时"。 */
+export const FIRST_BYTE_TIMEOUT_MS = 45_000;
+
+/** 已建立流之后，连续这么久没有任何事件，判定为卡死并中止。 */
+export const STREAM_IDLE_TIMEOUT_MS = 200_000;
+
+/** 客户端侧的流错误：走 ``chatFailureText`` 的统一文案出口。 */
+export class ChatStreamError extends Error {
+  readonly code: 'stream_timeout' | 'stream_interrupted';
+
+  constructor(code: 'stream_timeout' | 'stream_interrupted', message: string) {
+    super(message);
+    this.name = 'ChatStreamError';
+    this.code = code;
+  }
+}
 
 /**
  * 流式发送一条消息，逐事件产出（token / tool）。
@@ -82,11 +101,42 @@ export async function* streamChat(
   if (userId) body.user_id = userId;
   // 指定本次对话使用的模型配置；为空时后端按"当前默认模型"解析。
   if (modelId) body.model_id = modelId;
-  const res = await fetch('/v1/chat/stream', {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  const arm = (ms: number) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, ms);
+  };
+  const disarm = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  let res: Response;
+  try {
+    // 45s 只等"响应头"：模型冷启动/排队时后端可能很久才发首帧，
+    // 超过这个时间就没必要继续让用户干等。
+    arm(FIRST_BYTE_TIMEOUT_MS);
+    res = await fetch('/v1/chat/stream', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (timedOut) {
+      throw new ChatStreamError('stream_timeout', chatFailureText('stream_timeout'));
+    }
+    throw err;
+  } finally {
+    disarm();
+  }
 
   if (!res.ok || !res.body) {
     handleUnauthorized(res.status);
@@ -126,45 +176,87 @@ export async function* streamChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let sawDone = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
+  try {
+    while (true) {
+      // 200s 空闲看门狗：流已经建立后，连续这么久没有任何事件就判定卡死。
+      // 后端重试时会推 notice（"正在重试"），它同样会重置这个窗口。
+      arm(STREAM_IDLE_TIMEOUT_MS);
+      let chunk: ReadableStreamReadResult<Uint8Array>;
       try {
-        const evt = JSON.parse(payload);
-        if (evt.type === 'token' && evt.content) {
-          yield { type: 'token', content: evt.content as string };
-        } else if (evt.type === 'tool') {
-          yield {
-            type: 'tool',
-            name: evt.name as string,
-            args: (evt.args ?? {}) as Record<string, unknown>,
-            output: evt.output as unknown,
-            raw: evt.raw as string | undefined,
-          };
-        } else if (evt.type === 'done') {
-          // 结束帧必须透出：HTTP 200 不代表这一轮成功，失败分类都在 done 里。
-          yield {
-            type: 'done',
-            status: typeof evt.status === 'string' ? evt.status : 'completed',
-            reason: typeof evt.reason === 'string' ? evt.reason : undefined,
-            error: typeof evt.error === 'string' ? evt.error : undefined,
-            turn: typeof evt.turn === 'number' ? evt.turn : undefined,
-          };
+        chunk = await reader.read();
+      } catch (err) {
+        if (timedOut) {
+          throw new ChatStreamError('stream_timeout', chatFailureText('stream_timeout'));
         }
-      } catch {
-        // 忽略无法解析的帧（诚实：不因单个坏帧中断流）
+        if (err instanceof ChatStreamError) throw err;
+        throw new ChatStreamError('stream_interrupted', chatFailureText('stream_interrupted'));
+      }
+      disarm();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.type === 'token' && evt.content) {
+            yield { type: 'token', content: evt.content as string };
+          } else if (evt.type === 'notice') {
+            // 后端可见提示（例如"生成较慢，正在重试"）：只更新状态行，
+            // 不追加正文、不改变这一轮的 token。
+            yield {
+              type: 'notice',
+              code: typeof evt.code === 'string' ? evt.code : undefined,
+              message: typeof evt.message === 'string' ? evt.message : '',
+            };
+          } else if (evt.type === 'error') {
+            yield {
+              type: 'error',
+              code: typeof evt.code === 'string' ? evt.code : undefined,
+              message: typeof evt.message === 'string' ? evt.message : '',
+            };
+          } else if (evt.type === 'tool') {
+            yield {
+              type: 'tool',
+              name: evt.name as string,
+              args: (evt.args ?? {}) as Record<string, unknown>,
+              output: evt.output as unknown,
+              raw: evt.raw as string | undefined,
+            };
+          } else if (evt.type === 'done') {
+            sawDone = true;
+            // 结束帧必须透出：HTTP 200 不代表这一轮成功，失败分类都在 done 里。
+            yield {
+              type: 'done',
+              status: typeof evt.status === 'string' ? evt.status : 'completed',
+              reason: typeof evt.reason === 'string' ? evt.reason : undefined,
+              error: typeof evt.error === 'string' ? evt.error : undefined,
+              turn: typeof evt.turn === 'number' ? evt.turn : undefined,
+            };
+          }
+        } catch {
+          // 忽略无法解析的帧（诚实：不因单个坏帧中断流）
+        }
       }
     }
+  } finally {
+    disarm();
+  }
+
+  // 服务端没给 done 就断开：已收到的 token 可能是半截答案，必须明确告知，
+  // 不能让前端把它当成完整回答（后端也承诺所有异常路径补 done）。
+  if (!sawDone) {
+    throw new ChatStreamError(
+      timedOut ? 'stream_timeout' : 'stream_interrupted',
+      chatFailureText(timedOut ? 'stream_timeout' : 'stream_interrupted'),
+    );
   }
 }
 
@@ -430,6 +522,10 @@ export function makeSessionTitle(text: string): string {
  */
 export function chatFailureText(reason?: string, fallback?: string): string {
   switch ((reason ?? '').trim().toLowerCase()) {
+    case 'stream_timeout':
+      return '等待模型响应超时，请重试。';
+    case 'stream_interrupted':
+      return '连接中断，请重试。';
     case 'quota_exhausted':
       return '模型额度已用完。请到「系统设置 → 模型管理」充值，或换一个还有额度的 Key 后重试。';
     case 'key_revoked':
@@ -473,6 +569,12 @@ export function friendlyChatError(err: unknown): {
   const code = typeof (err as { code?: unknown })?.code === 'string'
     ? ((err as { code: string }).code)
     : null;
+
+  // 客户端本地判定的流错误（45s 无响应头 / 200s 无事件 / 无 done 断开）：
+  // 文案同样只从 chatFailureText 出，不在界面层另造句子。
+  if (code === 'stream_timeout' || code === 'stream_interrupted') {
+    return { text: chatFailureText(code), raw };
+  }
 
   if (code === 'budget_exceeded' || status === 402 || raw.includes('402')) {
     return {

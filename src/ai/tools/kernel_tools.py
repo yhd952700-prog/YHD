@@ -392,6 +392,25 @@ def make_tools(
     return tools
 
 
+def _tool_params_hint(tool: Tool) -> str:
+    """只列参数名与必填标记：小模型需要"该传哪些字段"，不需要完整 JSON Schema。
+
+    类型、枚举、默认值都留在 ``schema`` 里给校验/审计用；提示词里塞长 schema
+    会把小模型带偏（实测它会照抄字段说明而不是真的调用工具）。
+    """
+    schema = getattr(tool, "schema", None)
+    if not isinstance(schema, dict):
+        return ""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return ""
+    required = set(schema.get("required") or [])
+    names = [
+        f"{name}*" if name in required else str(name) for name in properties
+    ]
+    return "；参数：" + " / ".join(names)
+
+
 @observe("tools.build_tool_prompt")
 def build_tool_prompt(tools: List[Tool]) -> str:
     """生成注入 system prompt 的工具描述段。"""
@@ -404,7 +423,7 @@ def build_tool_prompt(tools: List[Tool]) -> str:
         "可用的工具：",
     ]
     for t in tools:
-        lines.append(f"- {t.name}: {t.description}")
+        lines.append(f"- {t.name}: {t.description}{_tool_params_hint(t)}")
     lines.append("如果不需要查询，直接正常回答即可。")
     return "\n".join(lines)
 

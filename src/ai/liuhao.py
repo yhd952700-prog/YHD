@@ -41,6 +41,8 @@ from .providers import (
     BaseProvider,
     GENERATION_FAILURE_MESSAGE,
     ProviderStreamIncompleteError,
+    TurnCancelToken,
+    TurnCancelled,
     resolve_provider,
     technical_detail_for,
     user_facing_failure,
@@ -414,6 +416,39 @@ def _tool_output_text(value: Any) -> str:
         return str(value)
 
 
+def _tool_feedback_text(tool_name: str, value: Any) -> str:
+    """把工具结果回喂模型时，失败/需澄清必须是"人话指令"，不是 JSON 原文。
+
+    直接把 ``{"status":"error","error":"请提供 text…"}`` 回喂给模型，模型会
+    原样复述这段 JSON（用户看到的是一堆机器字段）。这里把失败原因与下一步
+    动作翻成一句可执行的中文，并明确禁止复述 JSON；成功结果仍按原结构回喂。
+    """
+    payload = value
+    if isinstance(value, str) and value.lstrip()[:1] in "{[":
+        try:
+            payload = json.loads(value)
+        except ValueError:
+            payload = None
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "")
+        question = str(payload.get("question") or "").strip()
+        if status == "needs_clarification" or question:
+            return (
+                f"[工具 {tool_name} 需要确认]\n{question or '缺少必要信息。'}\n"
+                "请把上面的问题原样问用户，不要自己猜，也不要复述 JSON。"
+            )
+        error = payload.get("error") or payload.get("detail") or payload.get("message")
+        # 只有明确失败才把 message 当错误原因：成功结果里 message 是给用户看的
+        # 结论（例如「已设置提醒…」），不能误判成失败。
+        if status in {"error", "failed", "failure"} or payload.get("success") is False:
+            reason = str(error or "工具没有返回可用结果").strip()
+            return (
+                f"[工具 {tool_name} 执行失败]\n原因：{reason}\n"
+                "请用一句中文告诉用户失败原因和下一步怎么做，不要复述 JSON 原文。"
+            )
+    return _tool_output_text(value)
+
+
 def _safe_text_len(value: Any) -> int:
     """Length of ``value`` as prompt text, **never raising**.
 
@@ -583,15 +618,29 @@ class LiuHaoAssistant:
         self.system_prompt = self.system_prompt + tool_prompt
 
     @contextmanager
-    def serialized_turn(self) -> Iterator[None]:
+    def serialized_turn(
+        self, cancel_token: Optional["TurnCancelToken"] = None
+    ) -> Iterator[None]:
         """把同一会话的整轮读写串行化（principal+session 维度）。
 
         gateway 在 ``chat`` / ``chat_stream`` 的完整轮次（含落盘、记账、结束帧）
         外层持有它：同一账号的两个标签页并发写同一会话时严格一轮一写，
         不同账号/会话各自是独立 assistant 实例，互不阻塞。
+
+        传入 ``cancel_token`` 时改为**可取消的获取**：客户端已经离开的请求
+        不应该在锁上继续排队（那等于让已断开的连接占着一个等待位）。
         """
-        with self._turn_lock:
+        if cancel_token is None:
+            with self._turn_lock:
+                yield
+            return
+        while not self._turn_lock.acquire(timeout=0.25):
+            if cancel_token.cancelled:
+                raise TurnCancelled(cancel_token.mode or "client_disconnected")
+        try:
             yield
+        finally:
+            self._turn_lock.release()
 
     def begin_turn(self) -> None:
         """标记一轮生成正在进行；期间被替换的 provider 延后关闭。"""
@@ -857,7 +906,13 @@ class LiuHaoAssistant:
             "agent": self.principal,
         }
 
-    def chat_stream(self, message: str, *, turn_prepared: bool = False):
+    def chat_stream(
+        self,
+        message: str,
+        *,
+        turn_prepared: bool = False,
+        cancel_token: Optional[TurnCancelToken] = None,
+    ):
         """流式处理一条消息：逐 token yield，收尾时落盘记忆 + 审计。
 
         与 ``chat`` 走同一条授权链路（policy → 生成 → 记忆 → 审计），生成阶段
@@ -868,7 +923,15 @@ class LiuHaoAssistant:
         ``turn_prepared=True``：网关已经在建流前跑过 ``preflight_chat``（轮次与
         correlation id 已就绪）。这里仍会**再授权一次**，但只作为兜底 —— 等会话
         锁期间额度可能被别的会话花光。兜底被拒时只能走 ``done`` 帧（SSE 已建立）。
+
+        ``cancel_token``：客户端断开时由网关置位。生成器在每个 token / 每个工具轮
+        之间检查它，命中后按「用户中断」收口（不记失败、不写记忆、不记成功），
+        让``serialized_turn`` 的锁尽快归还给下一条请求。
         """
+
+        def _cancelled() -> bool:
+            return cancel_token is not None and cancel_token.cancelled
+
         if not turn_prepared:
             # 没有前置闸门（CLI / 测试直接消费生成器）：沿用原有的流中判定。
             self._new_turn()
@@ -900,21 +963,43 @@ class LiuHaoAssistant:
         _gen_started = time.perf_counter()
         try:
             for round_idx in range(MAX_TOOL_ROUNDS + 1):
+                if _cancelled():
+                    status = "interrupted"
+                    reason = "client_disconnected"
+                    break
                 round_chunks = []
                 stream_call = getattr(self.provider, "stream_with_retry", None)
-                stream = (
-                    stream_call(messages)
-                    if callable(stream_call)
-                    else self.provider.chat_stream(messages)
-                )
-                for token in stream:
-                    if isinstance(token, dict):
+                if callable(stream_call):
+                    stream = (
+                        stream_call(messages, cancel_token=cancel_token)
+                        if cancel_token is not None
+                        else stream_call(messages)
+                    )
+                else:
+                    stream = self.provider.chat_stream(messages)
+                for item in stream:
+                    if _cancelled():
+                        # 客户端已离开：不再消费 token，也不把半截内容当完整回答。
+                        status = "interrupted"
+                        reason = "client_disconnected"
+                        final_reply = "".join(round_chunks)
+                        break
+                    if isinstance(item, dict):
                         # provider 的可见反馈（例如"正在重试"）：直接透传给
                         # 前端，不计入回复正文。
-                        yield token
+                        yield item
                         continue
-                    round_chunks.append(token)
-                    yield token
+                    round_chunks.append(item)
+                    yield item
+                if _cancelled():
+                    # provider 可能因取消而"正常返回"（关闭上游流后迭代结束）。
+                    # 这同样属于客户端断开，不能把已收到的半截内容判成 completed。
+                    status = "interrupted"
+                    reason = "client_disconnected"
+                    final_reply = "".join(round_chunks)
+                    break
+                if status == "interrupted":
+                    break
                 round_reply = "".join(round_chunks)
                 final_reply = round_reply
 
@@ -924,6 +1009,11 @@ class LiuHaoAssistant:
                 tool_call = parse_tool_call(round_reply)
                 if tool_call is None:
                     break  # 纯文本回复，结束。
+                if _cancelled():
+                    # 不再发起有副作用的新工具调用（已跑完的保持原样）。
+                    status = "interrupted"
+                    reason = "client_disconnected"
+                    break
                 tool_name, args = tool_call
                 tool_output = self._execute_tool(tool_name, args)
                 yield {
@@ -940,44 +1030,60 @@ class LiuHaoAssistant:
                         "role": "user",
                         "content": (
                             f"[工具 {tool_name} 结果]\n"
-                            f"{_tool_output_text(tool_output)}"
+                            f"{_tool_feedback_text(tool_name, tool_output)}"
                         ),
                     }
                 )
         except ProviderStreamIncompleteError as exc:
-            # 已收到的 token 是真内容，必须保留；但这一轮不能算 completed：
-            # 上游没有给出结束标记，用户看到的是一段没有结尾的回答。
-            status = "incomplete"
-            _log_llm_call_failure(
-                self._log,
-                exc,
-                self.provider,
-                correlation_id=correlation_id,
-                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
-            )
-            error_text = user_facing_failure(
-                exc, model=getattr(self.provider, "model", None)
-            )
-            final_reply = "".join(round_chunks) if round_chunks else error_text
-            reason = "stream_incomplete"
+            if _cancelled():
+                # 取消导致的"断流"不是上游故障：不写失败日志、不给错误文案。
+                status = "interrupted"
+                reason = "client_disconnected"
+                final_reply = "".join(round_chunks)
+                error_text = None
+                technical_detail = None
+            else:
+                # 已收到的 token 是真内容，必须保留；但这一轮不能算 completed：
+                # 上游没有给出结束标记，用户看到的是一段没有结尾的回答。
+                status = "incomplete"
+                _log_llm_call_failure(
+                    self._log,
+                    exc,
+                    self.provider,
+                    correlation_id=correlation_id,
+                    duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
+                )
+                error_text = user_facing_failure(
+                    exc, model=getattr(self.provider, "model", None)
+                )
+                final_reply = "".join(round_chunks) if round_chunks else error_text
+                reason = "stream_incomplete"
         except Exception as exc:  # 真实失败，诚实返回，不伪造
-            status = "error"
-            # 原始异常只写日志；用户侧与事件流都只看到中性中文说明。
-            _log_llm_call_failure(
-                self._log,
-                exc,
-                self.provider,
-                correlation_id=correlation_id,
-                duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
-            )
-            failure_text = user_facing_failure(
-                exc, model=getattr(self.provider, "model", None)
-            )
-            error_text = failure_text
-            final_reply = failure_text
-            reason = _turn_failure_reason(exc)
-            technical_detail = technical_detail_for(exc)
-            yield final_reply
+            if _cancelled():
+                # 关闭上游流通常会让阻塞的读取抛异常；这属于主动取消，不是失败。
+                status = "interrupted"
+                reason = "client_disconnected"
+                final_reply = "".join(round_chunks)
+                error_text = None
+                technical_detail = None
+            else:
+                status = "error"
+                # 原始异常只写日志；用户侧与事件流都只看到中性中文说明。
+                _log_llm_call_failure(
+                    self._log,
+                    exc,
+                    self.provider,
+                    correlation_id=correlation_id,
+                    duration_ms=(time.perf_counter() - _gen_started) * 1000.0,
+                )
+                failure_text = user_facing_failure(
+                    exc, model=getattr(self.provider, "model", None)
+                )
+                error_text = failure_text
+                final_reply = failure_text
+                reason = _turn_failure_reason(exc)
+                technical_detail = technical_detail_for(exc)
+                yield final_reply
 
         self.last_turn_status = status
         self.last_turn_error = error_text
@@ -1016,7 +1122,7 @@ class LiuHaoAssistant:
                     "role": "user",
                     "content": (
                         f"[工具 {tool_name} 结果]\n"
-                        f"{_tool_output_text(tool_output)}"
+                        f"{_tool_feedback_text(tool_name, tool_output)}"
                     ),
                 }
             )
@@ -1053,6 +1159,8 @@ class LiuHaoAssistant:
         成本护栏只在配额被人为设紧时才有意义（见
         ``docs/QUOTA-ACCOUNTING-DESIGN.md``）。
         """
+        # ``interrupted``（客户端断开）既不是成功也不是失败：不记账、不写历史、
+        # 不写记忆，只留一条审计说明"这一轮是用户中断的"。
         if status == "completed":
             self._account_turn_spend()
             # 失败轮次不进入历史、不写会话存储、不写记忆：否则用户会在下一轮
@@ -1071,29 +1179,42 @@ class LiuHaoAssistant:
             )
         # 事件类型按结果如实选择：
         # - completed → ACCESS_ALLOWED（授权通过且本轮成功）
+        # - interrupted → STATE_CHANGE + outcome="interrupted"（用户中断，不是失败）
         # - 否则（生成失败等）→ STATE_CHANGE + outcome="error"
         #
         # 修复（2026-09-11）：此前非 completed 分支错误地记为 POLICY_EVAL，
         # 导致一次「生成失败」被读成「策略评估失败」，并在驾驶舱 breakdown 里
         # 形成虚假的 `policy_eval:error` 计数。生成失败与策略无关，如实记为
         # 状态变更即可。
+        if status == "completed":
+            event_type = AuditEventType.ACCESS_ALLOWED
+            outcome = "allow"
+        elif status == "interrupted":
+            event_type = AuditEventType.STATE_CHANGE
+            outcome = "interrupted"
+        else:
+            event_type = AuditEventType.STATE_CHANGE
+            outcome = "error"
         key_owner = str(getattr(self.provider, "owner_principal", "") or self.audit_principal)
+        details = {
+            "turn": self.turn,
+            "action": "chat",
+            "chars_in": len(message),
+            "chars_out": len(reply),
+            # 与账本对齐：账本按 key_owner 记费、按 actor 记用量；
+            # 审计在同一 correlation_id 下注明 Key 归属与实际调用账号，
+            # 使"根借用子账号 Key"在审计页也能对上账本。
+            "key_owner_account_id": key_owner,
+            "effective_account_id": self.audit_principal,
+        }
+        if status == "interrupted":
+            details["reason"] = "client_disconnected"
         log_event(
-            AuditEventType.ACCESS_ALLOWED if status == "completed" else AuditEventType.STATE_CHANGE,
+            event_type,
             principal_id=self.audit_principal,
             scope=AuditScope.L1,
-            outcome="allow" if status == "completed" else "error",
-            details={
-                "turn": self.turn,
-                "action": "chat",
-                "chars_in": len(message),
-                "chars_out": len(reply),
-                # 与账本对齐：账本按 key_owner 记费、按 actor 记用量；
-                # 审计在同一 correlation_id 下注明 Key 归属与实际调用账号，
-                # 使"根借用子账号 Key"在审计页也能对上账本。
-                "key_owner_account_id": key_owner,
-                "effective_account_id": self.audit_principal,
-            },
+            outcome=outcome,
+            details=details,
             correlation_id=correlation_id,
         )
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import {
+  ChatStreamError,
   chatFailureText,
   friendlyChatError,
   makeSessionTitle,
@@ -203,5 +204,58 @@ describe('makeSessionTitle', () => {
 
   test('空消息不产生标题（界面回退到"未命名会话"）', () => {
     expect(makeSessionTitle('   ')).toBe('')
+  })
+})
+
+describe('streamChat notice 与中断兜底', () => {
+  test('notice 帧原样透出：状态行可见，且不混进正文 token', async () => {
+    const frames =
+      'data: {"type":"notice","code":"retrying","message":"正在重试…"}\n\n' +
+      'data: {"type":"token","content":"好"}\n\n' +
+      'data: {"type":"done","status":"completed"}\n\n'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(frames, { status: 200 })))
+
+    const events: ChatEvent[] = []
+    for await (const evt of streamChat('你好', 's1')) events.push(evt)
+
+    expect(events[0]).toEqual({
+      type: 'notice',
+      code: 'retrying',
+      message: '正在重试…',
+    })
+    // notice 只更新状态行：正文里只应有模型真正产出的那一个字。
+    expect(events.filter((evt) => evt.type === 'token')).toEqual([
+      { type: 'token', content: '好' },
+    ])
+  })
+
+  test('流结束但没有 done 帧：抛 stream_interrupted，不能当成成功', async () => {
+    // 后端异常没补 done（或被中间层掐断）：只有半截 token 就 EOF。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('data: {"type":"token","content":"半截"}\n\n', { status: 200 }),
+      ),
+    )
+
+    let caught: unknown
+    try {
+      for await (const _evt of streamChat('你好', 's1')) {
+        // 收到半截 token 是允许的；错的是把它当完整回答。
+      }
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(ChatStreamError)
+    expect((caught as ChatStreamError).code).toBe('stream_interrupted')
+    // 文案仍然只从 chatFailureText 出。
+    expect(friendlyChatError(caught).text).toBe('连接中断，请重试。')
+  })
+
+  test('chatFailureText 覆盖客户端新增的两个中断分类，且不改 402 既有文案', () => {
+    expect(chatFailureText('stream_timeout')).toBe('等待模型响应超时，请重试。')
+    expect(chatFailureText('stream_interrupted')).toBe('连接中断，请重试。')
+    expect(chatFailureText('budget_exceeded')).toContain('超出当前额度')
   })
 })

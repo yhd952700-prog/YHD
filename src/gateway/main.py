@@ -1761,6 +1761,23 @@ def public_validation_errors(errors) -> list:
     return cleaned
 
 
+class _SseAwareGZip(GZipMiddleware):
+    """只对 ``/v1/chat/stream`` 跳过压缩，其余接口保持既有压缩行为。
+
+    ``GZipMiddleware`` 会把 ``http.response.start`` 延迟到首个 body chunk。
+    SSE 在首个 token 之前没有 chunk，浏览器因此迟迟拿不到响应头，前端 45 秒
+    "等响应头"看门狗会把正常冷启动误判成超时。这里按**精确路径**豁免，
+    不做"凡 SSE 都豁免"：静态资源的 ``max-age=31536000`` 缓存头仍由后续
+    中间件照常处理。
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/v1/chat/stream":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def get_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -1873,8 +1890,8 @@ def get_app() -> FastAPI:
             "console deployments will not work"
         )
 
-    # GZip compression
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    # GZip compression（仅 /v1/chat/stream 豁免：见 _SseAwareGZip 文档）
+    app.add_middleware(_SseAwareGZip, minimum_size=1000)
 
     # Host 白名单 + 写方法 Origin 校验（最外层安全闸，见类文档）。
     # 不论 CORS 是否启用都必须挂：两者保护的不是同一件事。
