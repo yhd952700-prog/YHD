@@ -13,6 +13,7 @@
  */
 
 import type { GoalSummary } from './operator'
+import { goalSummaryVerdict } from './goalVerdict'
 
 /** 与 `components/Shell` 的 `OsNotification.tone` 保持一致。 */
 export type GoalNoticeTone = 'ok' | 'warn' | 'danger' | 'accent' | 'muted'
@@ -40,6 +41,7 @@ export function goalNotice(goal: GoalSummary): GoalNotice | null {
   const text = shorten(goal.natural_language)
   const base = { id: `goal-${goal.goal_id}-${state}` }
   const failed = Number(goal.failed_tasks || 0)
+  const verdict = goalSummaryVerdict(goal)
   if (state === 'completed') {
     // 整体 completed 但有子任务失败：不能说"已完成"糊弄过去。
     if (failed > 0) {
@@ -50,11 +52,20 @@ export function goalNotice(goal: GoalSummary): GoalNotice | null {
         detail: `「${text}」里有 ${failed} 项没有成功。可在「目标与任务」查看原因并重试。`,
       }
     }
+    if (verdict.kind === 'empty') {
+      // completed 但没有写出任何文件：不能给绿色的「已完成」。
+      return {
+        ...base,
+        tone: 'warn',
+        title: '任务跑完了，但没有产出文件',
+        detail: `「${text}」已完成，但没有写出任何文件，也没有可交付内容。需要交付物时请补充产物要求后重试。`,
+      }
+    }
     return {
       ...base,
       tone: 'ok',
-      title: '任务已完成',
-      detail: `「${text}」已完成。可在「目标与任务」查看结果。`,
+      title: '任务已完成并产出',
+      detail: `「${text}」已完成，产物已写入工作区，可在「目标与任务」查看。`,
     }
   }
   if (state === 'failed' || state === 'interrupted') {

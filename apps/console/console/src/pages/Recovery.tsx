@@ -86,7 +86,10 @@ export function Recovery({ caps, readOnly }: { caps: AccountCaps; readOnly: bool
         action={<StubBadge source={source} />}
       >
         {notice && (
-          <div className={notice.tone === 'ok' ? 'os-note' : 'os-alert'} role="status">
+          <div
+            className={notice.tone === 'ok' ? 'os-note' : 'os-alert'}
+            role={notice.tone === 'ok' ? 'status' : 'alert'}
+          >
             {notice.text}
           </div>
         )}

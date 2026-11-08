@@ -28,7 +28,7 @@ import {
   type FileListResponse,
 } from '../lib/operator'
 import { Card, Empty, Guard } from '../components/ui'
-import { safeText } from '../lib/format'
+import { numberText, safeText } from '../lib/format'
 
 /** 路径面包屑：把 `a/b/c` 拆成 [{label, path}]，根单独成一项。 */
 function breadcrumbs(path: string): { label: string; path: string }[] {
@@ -51,11 +51,11 @@ function formatMtime(mtime: number): string {
   }
 }
 
-function formatSize(size: number | null): string {
-  if (size === null) return '—'
+function formatSize(size: number | null | undefined): string {
+  if (typeof size !== 'number' || !Number.isFinite(size)) return '—'
   if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
+  if (size < 1024 * 1024) return `${numberText(size / 1024, 1)} KB`
+  return `${numberText(size / 1024 / 1024, 1)} MB`
 }
 
 export function Files({ query }: { query: string }) {

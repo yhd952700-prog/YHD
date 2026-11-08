@@ -21,6 +21,11 @@ import type {
   EmployeesPayload,
 } from './contracts'
 import { ApiError, apiFetch } from './api'
+import {
+  BUDGET_DENIAL_MESSAGE,
+  BUDGET_DENIAL_NEXT_STEP,
+  PERMISSION_DENIAL_MESSAGE,
+} from './errorMessage'
 import { capabilityLabel } from './format'
 
 /** 后端 GET /v1/employees 的 employees[] 形状（字段见 contracts.ts）。
@@ -169,7 +174,14 @@ export function employeeDisplayName(employee: MyEmployee): string {
 }
 
 export function readableError(error: unknown): string {
-  if (error instanceof ApiError) return error.message
+  if (error instanceof ApiError) {
+    // 员工执行也会触发模型调用：402 是额度不够，不是没权限。
+    if (error.code === 'budget_exceeded' || error.status === 402) {
+      return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`
+    }
+    if (error.code === 'permission_denied') return PERMISSION_DENIAL_MESSAGE
+    return error.message
+  }
   if (error instanceof Error) return error.message
   return '操作失败，请稍后重试'
 }

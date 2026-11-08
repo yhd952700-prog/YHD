@@ -30,9 +30,12 @@ const NOW = 1_000_000 + 60
 
 describe('派活结果通知', () => {
   test('完成 / 失败 / 停止都有中性中文文案，失败带下一步', () => {
-    const done = goalNotice(goal({ state: 'completed' }))
+    const done = goalNotice(
+      goal({ state: 'completed', artifacts: ['reports/weekly.md'] }),
+    )
     expect(done?.tone).toBe('ok')
     expect(done?.detail).toContain('已完成')
+    expect(done?.title).toContain('产出')
 
     const failed = goalNotice(
       goal({ state: 'failed', failed_tasks: 2, error: 'RuntimeError: boom' }),
@@ -46,6 +49,13 @@ describe('派活结果通知', () => {
     const stopped = goalNotice(goal({ state: 'cancelled' }))
     expect(stopped?.tone).toBe('muted')
     expect(stopped?.detail).toContain('已停止')
+  })
+
+  test('完成但没有写出文件时不能报绿色成功', () => {
+    const empty = goalNotice(goal({ state: 'completed', artifacts: [] }))
+    expect(empty?.tone).toBe('warn')
+    expect(empty?.title).toContain('没有产出')
+    expect(empty?.detail).toContain('没有写出任何文件')
   })
 
   test('running 不产生通知（避免轮询期间反复弹）', () => {

@@ -62,7 +62,11 @@ export function Workbench({
         span={12}
         className="sc-panel-active sc-hud"
       >
-        <ChatPanel provider={provider} onConfigureModel={onConfigureModel} />
+        <ChatPanel
+          provider={provider}
+          onConfigureModel={onConfigureModel}
+          onOpenUsage={() => onNavigate('my-keys')}
+        />
       </Card>
     </div>
   )

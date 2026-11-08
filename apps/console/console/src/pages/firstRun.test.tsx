@@ -37,9 +37,7 @@ const session: Session = {
   permissions: ['account:read'],
   expiresAt: 0,
   client: 'desktop',
-  parentAccountId: null,
-  path: 'liuhao',
-  depth: 0,
+  isRoot: true,
 }
 
 const device: DeviceModeState = {

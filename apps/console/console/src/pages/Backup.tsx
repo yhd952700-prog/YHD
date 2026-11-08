@@ -12,7 +12,14 @@
 import { useState } from 'react'
 import type { AccountCaps, AccountProfile } from '../lib/accountCaps'
 import { exportBackup } from '../lib/accounts'
+import { numberText } from '../lib/format'
 import { Card } from '../components/ui'
+
+/** 导出回执里的固定披露：审计链密钥永不出机，换机后只能做结构检查。 */
+export const AUDIT_KEY_DISCLOSURE =
+  '审计记录与审计链校验密钥都不随包：新机的审计从头记录；若你把原机审计库单独带到新机，' +
+  '新机没有对应密钥，审计链只能做结构检查、无法用密钥证明内容未被改写。' +
+  '想保留可验证性，请在原机导出审计记录归档，并保留原机数据目录里的 audit_chain.key。'
 
 export function Backup({
   profile,
@@ -62,9 +69,10 @@ export function Backup({
       const manifest = result.data.manifest
       setNotice({
         tone: 'ok',
-        text: manifest
-          ? `导出完成：${manifest.member_count} 个账号 / ${manifest.files} 个文件 / ${_bytes(manifest.bytes)}，请把文件保存到离线介质`
-          : '导出完成，请把文件保存到离线介质',
+        text:
+          (manifest
+            ? `导出完成：${manifest.member_count} 个账号 / ${manifest.files} 个文件 / ${_bytes(manifest.bytes)}，请把文件保存到离线介质。`
+            : '导出完成，请把文件保存到离线介质。') + AUDIT_KEY_DISCLOSURE,
       })
     } catch (error) {
       setNotice({
@@ -80,11 +88,14 @@ export function Backup({
     <div className="os-grid">
       <Card
         title="导出备份"
-        sub="整棵树 = 成员身份、设置、Key 密文与全部成员数据；口令只用于本次加密。"
+        sub="整棵树 = 成员身份、设置、Key 密文与全部成员数据；成员 Key 随包可用，包内无明文。"
         span={6}
       >
         {notice && (
-          <div className={notice.tone === 'ok' ? 'os-note' : 'os-alert'} role="status">
+          <div
+            className={notice.tone === 'ok' ? 'os-note' : 'os-alert'}
+            role={notice.tone === 'ok' ? 'status' : 'alert'}
+          >
             {notice.text}
           </div>
         )}
@@ -117,7 +128,8 @@ export function Backup({
           <strong style={{ fontSize: 13 }}>这次导出会包含</strong>
           <span style={{ fontSize: 12, lineHeight: 1.7 }}>
             · {scope === 'all' ? `整棵树共 ${profile.memberCount + 1} 个账号` : '仅你本人的账号'}
-            <br />· 全部会话、记忆、文件、任务与 Key 密文
+            <br />· 全部会话、记忆、文件、任务与 Key（口令保险箱密文）
+            <br />· 换机后成员 Key 用同一口令解封即可使用；包内没有明文 API Key
             <br />· 文件数与体积：以导出包内真实统计为准（完成后再列出）
           </span>
         </div>
@@ -161,8 +173,9 @@ export function Backup({
   )
 }
 
-function _bytes(value: number): string {
+function _bytes(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${(value / 1024 / 1024).toFixed(1)} MB`
+  if (value < 1024 * 1024) return `${numberText(value / 1024, 1)} KB`
+  return `${numberText(value / 1024 / 1024, 1)} MB`
 }

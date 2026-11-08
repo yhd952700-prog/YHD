@@ -21,6 +21,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useApi } from '../lib/api'
 import {
+  exportAuditArchive,
   fetchAuditEvents,
   verifyAuditChain,
   type AuditEvent,
@@ -86,6 +87,44 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
     }
   }, [])
 
+  // 导出归档：密钥不出机，但记录本身要能带走。归档里带导出时刻的校验结果，
+  // 换机后即使没有密钥也还能查阅、与原机的校验结论比对。
+  const [exporting, setExporting] = useState(false)
+  const [exportNotice, setExportNotice] = useState<string | null>(null)
+
+  const runExport = useCallback(async () => {
+    setExporting(true)
+    setExportNotice(null)
+    try {
+      const archive = await exportAuditArchive()
+      const blob = new Blob([JSON.stringify(archive, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `liuhao-audit-archive-${Date.now()}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      const mode = archive.integrity?.degraded
+        ? '只能结构检查'
+        : archive.integrity?.partial
+          ? '部分可证明'
+          : archive.integrity?.ok
+            ? '完好'
+            : '发现异常'
+      setExportNotice(
+        `已导出 ${archive.count} 条记录（导出时校验：${mode}）${
+          archive.truncated ? '；记录较多，请用导出回执里的续传序号继续导出' : ''
+        }。归档不含校验密钥，离开原机后无法重新做密钥校验。`,
+      )
+    } catch (err) {
+      setExportNotice(err instanceof Error ? err.message : '导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }, [])
+
   // 关联目标：点一下就按 correlation_id 过滤，用来回答"这件事的审计在哪"。
   const [correlation, setCorrelation] = useState<string | null>(null)
   const [filtered, setFiltered] = useState<AuditEvent[] | null>(null)
@@ -111,7 +150,15 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
     const source = correlation ? (filtered ?? []) : (events.data?.events ?? [])
     if (!need) return source
     return source.filter((event) =>
-      [event.event_type, event.principal_id, event.action, event.outcome, event.correlation_id]
+      [
+        event.display_title,
+        event.target,
+        event.event_type,
+        event.principal_id,
+        event.action,
+        event.outcome,
+        event.correlation_id,
+      ]
         .filter((value): value is string => typeof value === 'string')
         .some((value) => value.toLowerCase().includes(need)),
     )
@@ -124,13 +171,18 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
       {profile.isRoot && (
         <>
       <Card
-        title="审计链完整性"
+        title="记录完整性"
         sub="只读校验 —— 只检查，从不修改"
         span={4}
         action={
-          <button className="os-btn" onClick={() => void runVerify()} disabled={verifying}>
-            {verifying ? '校验中…' : '校验哈希链'}
-          </button>
+          <>
+            <button className="os-btn" onClick={() => void runVerify()} disabled={verifying}>
+              {verifying ? '检查中…' : '检查记录完整性'}
+            </button>
+            <button className="os-btn" onClick={() => void runExport()} disabled={exporting}>
+              {exporting ? '导出中…' : '导出归档'}
+            </button>
+          </>
         }
       >
         <Guard
@@ -138,45 +190,108 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
           error={summary.error}
           data={summary.data}
           isEmpty={(data) => data.total_events === 0}
-          emptyTitle="审计库为空"
+          emptyTitle="还没有操作记录"
           onRetry={summary.reload}
         >
           {(data) => (
             <div className="os-kv">
               <div className="os-kv-row">
-                <span className="os-kv-key">事件总数</span>
+                <span className="os-kv-key">记录总数</span>
                 <span className="os-kv-value">{data.total_events}</span>
               </div>
               <div className="os-kv-row">
-                <span className="os-kv-key">最新序号</span>
+                <span className="os-kv-key">最新编号</span>
                 <span className="os-kv-value">{data.tail_seq}</span>
               </div>
               <div className="os-kv-row">
-                <span className="os-kv-key">关联 ID 数</span>
+                <span className="os-kv-key">可追踪批次</span>
                 <span className="os-kv-value">{data.distinct_correlation_ids}</span>
               </div>
+              {data.retention?.enabled && (
+                <div className="os-kv-row">
+                  <span className="os-kv-key">保留期</span>
+                  <span className="os-kv-value">{data.retention.days} 天</span>
+                </div>
+              )}
             </div>
           )}
         </Guard>
+        {summary.data?.retention?.enabled && (
+          <p className="os-hint">
+            超过保留期（{summary.data.retention.days} 天）的记录会被自动删除，
+            不是永久留存；极端写入下还会按上限（
+            {summary.data.retention.max_rows.toLocaleString()} 行 /{' '}
+            {Math.round(summary.data.retention.max_bytes / 1048576)} MB）
+            提前裁剪。如需长期留档请定期导出。
+          </p>
+        )}
+        {summary.data?.chain_key?.degraded && (
+          <p className="os-note" role="status">
+            {summary.data.chain_key.message || '完整性无法用校验密钥证明'}
+          </p>
+        )}
+        {summary.data?.chain_key?.partial && !summary.data.chain_key.degraded && (
+          <p className="os-hint">
+            {summary.data.chain_key.partial_message ||
+              '部分可证明：旧记录只能做结构检查'}
+          </p>
+        )}
+        {exportNotice && (
+          <p className="os-note" role="status">
+            {exportNotice}
+          </p>
+        )}
 
-        {/* 校验结果 —— ok=false 必须看起来就是坏了 */}
+        {/* 校验结果 —— ok=false 必须看起来就是坏了；缺密钥 / 混合链是另外两种状态 */}
         {verifyError && <p className="os-error">校验请求失败：{verifyError}</p>}
         {verify && (
           <div className="os-kv">
             <div className="os-kv-row">
-              <span className="os-kv-key">链状态</span>
+              <span className="os-kv-key">记录状态</span>
               <span className="os-kv-value">
-                <span className={`os-dot os-tone-${verify.ok ? 'ok' : 'danger'}`} />
-                {verify.ok ? '完好' : '已被修改 / 截断 / 分叉'}
+                <span
+                  className={`os-dot os-tone-${
+                    verify.degraded || verify.partial
+                      ? 'warn'
+                      : verify.ok
+                        ? 'ok'
+                        : 'danger'
+                  }`}
+                />
+                {verify.degraded
+                  ? verify.details.degraded_reason === 'chain_key_downgraded'
+                    ? '无法用密钥证明（库内无带密钥记录）'
+                    : '只能结构检查（缺少校验密钥）'
+                  : verify.partial
+                    ? '部分可证明（旧记录只能结构检查）'
+                    : verify.ok
+                      ? '完好'
+                      : '已被修改 / 截断 / 分叉'}
               </span>
             </div>
             <div className="os-kv-row">
-              <span className="os-kv-key">已校验条目</span>
+              <span className="os-kv-key">已检查条数</span>
               <span className="os-kv-value">{verify.entries_checked}</span>
             </div>
+            {verify.degraded && (
+              <p className="os-note" role="status">
+                {verify.message || '缺少校验密钥，完整性只能做结构检查'}
+                （{verify.details.degraded_reason === 'chain_key_downgraded'
+                  ? `无密钥校验${verify.details.structural_ok ? '一致' : '不一致'}，但这不能证明链没有被整体重算`
+                  : `结构${verify.details.structural_ok ? '一致' : '不一致'}`}；
+                密钥状态：{verify.details.chain_key_status || 'missing'}）。
+              </p>
+            )}
+            {verify.partial && !verify.degraded && (
+              <p className="os-note" role="status">
+                {verify.message ||
+                  '部分可证明：升级前的旧记录只能做结构检查，升级后的记录可用密钥证明'}
+                （这不是“完好”，也不是“损坏”：旧前缀无法用密钥证明未被重写）。
+              </p>
+            )}
             {verify.first_failure && (
               <div className="os-kv-row">
-                <span className="os-kv-key">首个失败</span>
+                <span className="os-kv-key">第一处异常</span>
                 <span className="os-kv-value">{verify.first_failure}</span>
               </div>
             )}
@@ -192,8 +307,8 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
       </Card>
 
       <Card
-        title="动作分布"
-        sub="按动作名称统计（真实计数）"
+        title="操作类型分布"
+        sub="按操作类型统计（真实计数）"
         span={4}
       >
         <Guard
@@ -201,7 +316,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
           error={summary.error}
           data={summary.data}
           isEmpty={(data) => Object.keys(data.by_action).length === 0}
-          emptyTitle="尚无已记录动作"
+          emptyTitle="还没有操作记录"
           onRetry={summary.reload}
         >
           {(data) => (
@@ -220,13 +335,13 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         </Guard>
       </Card>
 
-      <Card title="结果分布" sub="真实结果计数" span={4}>
+      <Card title="结果分布" sub="操作结果计数" span={4}>
         <Guard
           loading={summary.loading}
           error={summary.error}
           data={summary.data}
           isEmpty={(data) => Object.keys(data.by_outcome).length === 0}
-          emptyTitle="尚无已记录结果"
+          emptyTitle="还没有操作结果"
           onRetry={summary.reload}
         >
           {(data) => (
@@ -248,8 +363,8 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
       )}
 
       <Card
-        title={correlation ? `关联事件 · ${correlation}` : '审计事件'}
-        sub="点击关联 ID 可只看这一条链路"
+        title={correlation ? '同一批操作' : '操作记录'}
+        sub="每条都说明：谁、什么时候、做了什么、对谁、结果如何"
         span={12}
         action={
           correlation ? (
@@ -258,7 +373,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
             </button>
           ) : profile.isRoot ? (
             <select
-              aria-label="审计范围"
+              aria-label="查看范围"
               value={scope}
               onChange={(event) => setScope(event.target.value as 'all' | 'self')}
             >
@@ -272,8 +387,8 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
         {correlation && filtered === null && !filterError && <p>读取中…</p>}
         {shown.length === 0 && !filterError ? (
           <Empty
-            title={correlation ? '该关联 ID 下没有事件' : '审计库为空'}
-            hint="审计事件在动作发生时写入；没有任何动作就没有事件。"
+            title={correlation ? '这一批没有其它操作' : '还没有操作记录'}
+            hint="有人登录、改设置、建员工或派活时，这里会自动出现一条记录。"
           />
         ) : (
           <>
@@ -281,12 +396,12 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
               <table className="os-table">
                 <thead>
                   <tr>
-                    <th>序号</th>
+                    <th>编号</th>
                     <th>时间</th>
                     <th>账号</th>
-                    <th>类型 / 动作</th>
+                    <th>做了什么</th>
                     <th>结果</th>
-                    <th>关联 ID</th>
+                    <th>同一批</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -296,12 +411,19 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
                       <td>{formatTime(event.timestamp)}</td>
                       <td>{principalLabel(event.principal_id) || '—'}</td>
                       <td>
-                        {eventLabel(event.event_type)}
-                        {event.action ? ` · ${actionLabel(event.action)}` : ''}
+                        {/* 后端已拼好一句人话（动作 + 对象 + 结果）；旧后端退回中文标签。 */}
+                        {event.display_title ||
+                          [
+                            event.action ? actionLabel(event.action) : eventLabel(event.event_type),
+                            event.target,
+                          ]
+                            .filter(Boolean)
+                            .join('：') ||
+                          '系统操作'}
                       </td>
                       <td>
                         <span className={`os-dot os-tone-${outcomeTone(event.outcome)}`} />
-                        {outcomeLabel(event.outcome)}
+                        {event.status_label || outcomeLabel(event.outcome)}
                       </td>
                       <td>
                         {event.correlation_id ? (
@@ -309,7 +431,7 @@ export function Audit({ query, profile }: { query: string; profile: AccountProfi
                             className="os-link"
                             onClick={() => void openCorrelation(event.correlation_id)}
                           >
-                            {event.correlation_id}
+                            查看同批操作
                           </button>
                         ) : (
                           '—'

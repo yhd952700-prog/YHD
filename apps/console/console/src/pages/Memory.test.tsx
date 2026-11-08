@@ -28,9 +28,7 @@ function session(overrides: Partial<Session>): Session {
     permissions: [],
     expiresAt: 0,
     client: 'web',
-    parentAccountId: 'parent-a',
-    path: 'root/parent-a/leaf-a',
-    depth: 2,
+    isRoot: false,
     ...overrides,
   }
 }
@@ -40,9 +38,7 @@ const ROOT_SESSION = session({
   principal: 'root',
   displayName: '根',
   scope: 'L0',
-  parentAccountId: null,
-  path: 'root',
-  depth: 0,
+  isRoot: true,
   permissions: ['account:grant', 'account:manage_children'],
 })
 
