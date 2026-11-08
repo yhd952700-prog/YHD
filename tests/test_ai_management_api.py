@@ -522,10 +522,10 @@ class TestRetryRecomputesWholeGoal:
 
         entry = mgr.retry_task(goal_id, "t2", principal="human:test")
 
-        # t3 仍然失败 -> goal 必须仍是 failed，evaluation 不能是 SUCCESS
+        # t3 仍然失败 -> goal 必须仍是 failed，evaluation 不能是 success
         assert entry["state"] == "failed"
-        assert entry["evaluation"]["outcome"] != "EvaluationOutcome.SUCCESS"
-        assert entry["evaluation"]["outcome"] == "EvaluationOutcome.PARTIAL"
+        assert entry["evaluation"]["outcome"] != "success"
+        assert entry["evaluation"]["outcome"] == "partial"
         # 结论必须覆盖整个 goal：成功与仍失败都要出现
         summary = entry["evaluation"]["summary"]
         assert "已发送" in summary

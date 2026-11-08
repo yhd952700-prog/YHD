@@ -745,7 +745,9 @@ class AgentRuntime:
         if evaluation is None or getattr(ctx, "plan", None) is None:
             return
         resolver = getattr(self, "agent_employee_resolver", None)
+        requires_artifact = goal_requires_artifact(goal.natural_language)
         records: List[Dict[str, Any]] = []
+        artifact_paths: List[str] = []
         for task in ctx.plan.tasks:
             result = ctx.task_results.get(task.id)
             agent_id = getattr(task, "assigned_agent", None)
@@ -756,7 +758,12 @@ class AgentRuntime:
                 # 沿用拆解器给"它原本想派的人"写的理由（会张冠李戴）。
                 reason = "用户点名指派"
             output = result.output if result is not None else None
-            produced, artifacts = task_output_facts(output)
+            produced, artifacts = task_output_facts(
+                output, require_artifact=requires_artifact
+            )
+            for path in artifacts:
+                if path not in artifact_paths:
+                    artifact_paths.append(path)
             # 把"是否真有产出"钉在任务上，网关序列化时照原样上屏，
             # 避免 100% 进度 + 没有产物 的自相矛盾。
             task.produced = produced
@@ -799,6 +806,14 @@ class AgentRuntime:
             evaluation.metadata = dict(evaluation.metadata or {})
             evaluation.metadata["failed_task_count"] = len(ctx.failed_tasks)
             evaluation.metadata["completed_task_count"] = completed_count
+        elif requires_artifact and ctx.completed_tasks and not artifact_paths:
+            # 目标要文件、任务都"跑完了"却没有任何真实路径：这是未交付，
+            # 不是成功。state 仍是 completed（执行生命周期结束），但判定
+            # 必须降为 PARTIAL，让展示层能拆出「已完成但无产出」。
+            evaluation.outcome = EvaluationOutcome.PARTIAL
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["artifact_required"] = True
+            evaluation.metadata["artifact_missing"] = True
 
     def _needs_replan(
         self, ctx: ExecutionContext, evaluation: Optional[EvaluationResult]

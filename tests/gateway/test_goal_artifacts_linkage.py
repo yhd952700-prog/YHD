@@ -29,7 +29,11 @@ import tempfile
 
 import pytest
 
-from src.gateway.ai_management import AIStateManager, get_goal as get_goal_endpoint
+from src.gateway.ai_management import (
+    AIStateManager,
+    _outcome_label,
+    get_goal as get_goal_endpoint,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -105,3 +109,12 @@ def test_goal_that_writes_no_file_has_empty_artifacts():
     # The GET API agrees.
     served = get_goal_endpoint(entry["goal_id"])
     assert served.get("artifacts", []) == [], served
+
+
+def test_outcome_is_serialized_as_enum_value():
+    """串到前端的 outcome 必须是 ``partial``，不是 ``EvaluationOutcome.PARTIAL``。"""
+    assert _outcome_label("success") == "success"
+    assert _outcome_label("partial") == "partial"
+    assert _outcome_label("failed") == "failed"
+    # 未知/历史值原样返回，不能抛错打断整个目标序列化。
+    assert _outcome_label("legacy_value") == "legacy_value"

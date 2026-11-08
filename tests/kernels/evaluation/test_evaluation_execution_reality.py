@@ -50,14 +50,37 @@ def test_failed_execution_is_not_evaluated_success():
     assert result.evaluation.outcome is EvaluationOutcome.FAILED
 
 
-def test_completed_execution_with_no_criteria_is_success():
-    """Control: a goal whose task genuinely completes (no criteria) stays SUCCESS."""
+def test_completed_execution_without_artifact_is_not_success():
+    """产物目标跑完但没有产物路径，不能判成功。
+
+    原断言 ``test_completed_execution_with_no_criteria_is_success`` 把
+    「执行结束」当成了「交付成功」，固化了本次修复的缺陷；这里改成断言
+    「不是成功」。没有 file_write 能力时会在计划期直接 FAILED，有执行器但
+    没写出文件时降为 PARTIAL —— 两者都不得是 SUCCESS。
+    """
     def ok_executor(capability_id, inputs):
         return {"success": True, "status": "executed"}
 
     rt = AgentRuntime(scope="L1", capability_executor=ok_executor)
     result = rt.run_goal(
-        "write file plan.txt with hello", goal_id="GE2", persist=False
+        "把计划写入 plan.txt 文件", goal_id="GE2", persist=False
+    )
+    assert result.evaluation is not None
+    assert result.evaluation.outcome is not EvaluationOutcome.SUCCESS
+    assert result.evaluation.outcome in (
+        EvaluationOutcome.PARTIAL,
+        EvaluationOutcome.FAILED,
+    )
+
+
+def test_prose_goal_without_artifact_request_is_still_success():
+    """反向保护：不是所有目标都要文件，纯文案目标不能被一刀切降级。"""
+    def ok_executor(capability_id, inputs):
+        return {"success": True, "status": "executed"}
+
+    rt = AgentRuntime(scope="L1", capability_executor=ok_executor)
+    result = rt.run_goal(
+        "总结一下今天的工作重点", goal_id="GE3", persist=False
     )
     assert result.evaluation is not None
     assert result.evaluation.outcome is EvaluationOutcome.SUCCESS

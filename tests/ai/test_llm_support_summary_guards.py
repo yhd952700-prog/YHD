@@ -16,6 +16,7 @@ from src.ai.llm_support import (
     _shorten_text,
     _urls_in,
     compose_execution_summary,
+    goal_requires_artifact,
 )
 
 REAL_URL = "https://example.com/ai-projects-2026"
@@ -165,3 +166,84 @@ def test_deterministic_summary_does_not_produce_half_word_gluing():
     assert "授 整理" not in summary
     assert not summary.rstrip().endswith("授")
     assert summary.strip()
+
+
+# ── 产物目标识别：只认「动作 + 文件/文档」，不认裸「文件」 ──────────
+
+
+def test_goal_requires_artifact_matches_file_requests():
+    for text in (
+        "产出一份不超过 400 字的会议纪要文件",
+        "把结论整理成文档",
+        "导出报告文件",
+        "写出 PDF 文档",
+        "保存周报到周报文件",
+        "把结果写入 result.txt 文件",
+    ):
+        assert goal_requires_artifact(text) is True, text
+
+
+def test_goal_requires_artifact_does_not_match_bare_file():
+    for text in (
+        "读取这个文件并总结",
+        "分析这个文件里的错误",
+        "把这个文件发我",
+        "查一下这个文档讲了什么",
+    ):
+        assert goal_requires_artifact(text) is False, text
+
+
+def test_artifact_goal_without_paths_is_reported_unfinished():
+    """文本不是交付物：目标要文件却没有真实路径时必须说未完成。"""
+    records = [
+        {
+            "name": "生成纪要文件",
+            "capability": "execution_pipeline",
+            "status": "completed",
+            "result": {"result": "会议纪要正文：讨论了 A、B、C。"},
+        }
+    ]
+    summary = compose_execution_summary(
+        "产出一份不超过 400 字的会议纪要文件", records
+    )
+
+    assert summary.startswith("未完成：本次没有产生任何产物文件")
+    assert "已完成 1 项任务但无产出" in summary
+    assert "均已产出" not in summary
+
+
+def test_artifact_goal_with_real_path_still_counts_as_delivered():
+    records = [
+        {
+            "name": "生成纪要文件",
+            "capability": "file_write",
+            "status": "completed",
+            "result": {
+                "success": True,
+                "rel_path": "reports/minutes.md",
+                "bytes": 320,
+            },
+        }
+    ]
+    summary = compose_execution_summary(
+        "产出一份不超过 400 字的会议纪要文件", records
+    )
+
+    assert "未完成" not in summary
+    assert "reports/minutes.md" in summary
+
+
+def test_prose_goal_still_counts_text_output():
+    """反向保护：不要求文件的目标，非空文本仍然算产出。"""
+    records = [
+        {
+            "name": "总结重点",
+            "capability": "execution_pipeline",
+            "status": "completed",
+            "result": {"result": "三条重点：一是 A；二是 B；三是 C。"},
+        }
+    ]
+    summary = compose_execution_summary("总结一下今天的工作重点", records)
+
+    assert "已完成 1 项任务（均已产出）" in summary
+    assert "未完成" not in summary

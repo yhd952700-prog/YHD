@@ -307,18 +307,27 @@ _NO_OUTPUT_MARKERS = (
 )
 
 
-def task_output_facts(result: Any) -> tuple:
+def task_output_facts(result: Any, *, require_artifact: bool = False) -> tuple:
     """What a task **really** produced: ``(produced, artifact_paths)``.
 
     ``produced`` is False for an empty result and for an explicit failure
     receipt -- a task that admits "没有写入任何文件" must not be reported as a
     success just because its status says completed.
+
+    ``require_artifact`` raises the bar for goals that explicitly asked for a
+    file: non-empty prose is a message, not a deliverable, so only a real path
+    counts. Without this, "写了一份纪要" without ever touching the disk read as
+    produced while ``artifacts`` stayed empty -- the same false success in a new
+    shape.
     """
     if isinstance(result, dict) and result.get("success") is False:
         return False, []
     paths = _artifact_paths(result)
     if paths:
         return True, paths
+    if require_artifact:
+        # 目标要文件：没有真实路径就不算产出，文本不能替代交付物。
+        return False, []
     text = _output_text(result).strip()
     if not text:
         return False, []
@@ -327,16 +336,19 @@ def task_output_facts(result: Any) -> tuple:
     return True, []
 
 
-#: 目标要求"落到文件"的说法；命中但没有任何产物时必须说未完成。
-_ARTIFACT_REQUEST_MARKERS = (
-    "写入文件", "写到", "写进", "保存到", "存到", "落盘", "生成文件",
-    "写成文件", "导出文件", "存成", "输出到文件", "文件里", "报告文件",
+#: 目标要求"落到文件"的句式：动作词 + 近距离的产物名词。
+#: 只匹配「产出/生成/整理成/写出/导出/保存/写入 + 文件/文档」，
+#: 刻意不匹配裸「文件」——「读取这个文件」不是要产物。
+_ARTIFACT_REQUEST_PATTERN = re.compile(
+    r"(?:产出|生成|整理成|写出|导出|保存|写入|输出)"
+    r"[^。；;，,\n]{0,20}"
+    r"(?:文件|文档)"
 )
 
 
 def goal_requires_artifact(goal_text: str) -> bool:
     text = str(goal_text or "")
-    return any(marker in text for marker in _ARTIFACT_REQUEST_MARKERS)
+    return bool(_ARTIFACT_REQUEST_PATTERN.search(text))
 
 
 #: 兼容别名：有调用方/并行改动仍在用私有名。公开名与私有名指向同一个
@@ -366,8 +378,15 @@ def compose_execution_summary(
     ]
     failed = [r for r in records if str(r.get("status") or "") == "failed"]
     skipped = [r for r in records if str(r.get("status") or "") == "skipped"]
-    produced = [r for r in completed if task_output_facts(r.get("result"))[0]]
-    empty_completed = [r for r in completed if not task_output_facts(r.get("result"))[0]]
+    requires_artifact = goal_requires_artifact(goal_text)
+    produced = [
+        r for r in completed
+        if task_output_facts(r.get("result"), require_artifact=requires_artifact)[0]
+    ]
+    empty_completed = [
+        r for r in completed
+        if not task_output_facts(r.get("result"), require_artifact=requires_artifact)[0]
+    ]
 
     deterministic = _deterministic_summary(goal_text, completed, failed, skipped)
     trusted = _trusted_compute_values(completed)
@@ -395,7 +414,9 @@ def compose_execution_summary(
                 _strip_conflicting_claims(_output_text(record.get("result")), trusted),
                 real_urls,
             )
-            did_produce, paths = task_output_facts(record.get("result"))
+            did_produce, paths = task_output_facts(
+                record.get("result"), require_artifact=requires_artifact
+            )
             if not did_produce:
                 lines.append(f"{label}执行结束但没有产出：没有产物、没有可交付内容")
                 continue
@@ -886,9 +907,16 @@ def _deterministic_summary(
     """
     parts: List[str] = []
     trusted = _trusted_compute_values(completed)
-    produced = [r for r in completed if task_output_facts(r.get("result"))[0]]
+    requires_artifact = goal_requires_artifact(goal_text)
+    produced = [
+        r for r in completed
+        if task_output_facts(r.get("result"), require_artifact=requires_artifact)[0]
+    ]
     empty_completed = [
-        r for r in completed if not task_output_facts(r.get("result"))[0]
+        r for r in completed
+        if not task_output_facts(
+            r.get("result"), require_artifact=requires_artifact
+        )[0]
     ]
     real_sources, _fetched_at = _collect_source_dicts(completed)
     real_urls = {str(item["url"]) for item in real_sources}

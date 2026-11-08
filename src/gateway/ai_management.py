@@ -66,11 +66,16 @@ def _butler_model_planning_enabled() -> bool:
 
 
 def _outcome_label(value: str) -> str:
-    """Serialize an outcome the same way the pre-existing serializer did."""
+    """Serialize an outcome as its stable wire value (``"success"``/``"partial"``).
+
+    ``str(EvaluationOutcome.PARTIAL)`` yields ``"EvaluationOutcome.PARTIAL"`` on
+    Python 3.11+, so the UI never matched ``"partial"`` and could not tell a
+    partial delivery apart from success. The enum value is the contract.
+    """
     try:
         from src.kernels.evaluation import EvaluationOutcome
 
-        return str(EvaluationOutcome(value))
+        return EvaluationOutcome(value).value
     except Exception:  # noqa: BLE001 - keep a usable string either way
         return value
 
@@ -3742,7 +3747,13 @@ class AIStateManager:
         if result.evaluation:
             ev = result.evaluation
             evaluation = {
-                "outcome": str(ev.outcome) if hasattr(ev, 'outcome') else None,
+                # 枚举成员用 .value 上屏：str(enum) 会变成
+                # "EvaluationOutcome.PARTIAL"，前端认不出来。
+                "outcome": (
+                    ev.outcome.value
+                    if hasattr(ev.outcome, "value")
+                    else (str(ev.outcome) if getattr(ev, "outcome", None) else None)
+                ),
                 "replan_required": getattr(ev, 'replan_required', False),
                 "replan_triggered": getattr(ev, 'replan_triggered', False),
                 "summary": getattr(ev, 'summary', ''),
