@@ -16,8 +16,9 @@ import ast
 import importlib
 import importlib.util
 import pkgutil
+import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Set, Tuple
 
 import src
 
@@ -113,3 +114,58 @@ def test_cross_module_imported_symbols_exist():
             f"{file}: from {module_name} import {symbol} —— 符号不存在"
         )
     assert not failures, "以下跨模块导入指向了不存在的符号：\n" + "\n".join(failures)
+
+
+_REPO_ROOT = _SRC_ROOT.parent
+
+
+def _payload_root_py_modules() -> Set[str]:
+    """``stage_payload.ROOT_FILES`` 里声明的根级 ``.py`` 模块名。"""
+    spec = importlib.util.spec_from_file_location(
+        "stage_payload_root_files_guard", _REPO_ROOT / "packaging" / "stage_payload.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return {name[:-3] for name in module.ROOT_FILES if name.endswith(".py")}
+
+
+def _root_modules_imported_by_src() -> Set[str]:
+    """仓库根 ``.py`` 中被 ``src/`` 以顶层模块名 import 的模块名。
+
+    只看模块体：根模块缺失会先炸在模块体这一层；函数体内的延迟导入要等到
+    那次请求才炸，但那时根模块早已被 import 过，不影响安装完整性判断。
+    """
+    root_modules = {path.stem for path in _REPO_ROOT.glob("*.py")}
+    imported: Set[str] = set()
+    for path in _SRC_ROOT.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in tree.body:
+            names: List[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module.split(".")[0]]
+            imported.update(name for name in names if name in root_modules)
+    return imported
+
+
+def test_root_level_modules_are_declared_in_payload_root_files():
+    """根级模块必须与 ``stage_payload.ROOT_FILES`` 完全一致。
+
+    payload 只按白名单复制仓库根文件；``src/knowledge/embedding.py`` 里的
+    ``from error_types import ProviderError`` 在仓库里能跑，是因为仓库根恰好
+    在 ``sys.path`` 上。装到用户机器后没有这个便宜，漏一个就是「装完第一次
+    启动就崩」——而现有用例只扫 ``src`` 内部，看不到这一类。
+    """
+    declared = _payload_root_py_modules()
+    actual = _root_modules_imported_by_src()
+    assert actual == declared, (
+        "仓库根被 src 以顶层模块名 import 的模块与 ROOT_FILES 不一致：\n"
+        f"  实际 import：{sorted(actual)}\n"
+        f"  ROOT_FILES 声明：{sorted(declared)}\n"
+        "漏声明会让安装包缺根模块；多声明则是清单过期。两边都要改齐。"
+    )
