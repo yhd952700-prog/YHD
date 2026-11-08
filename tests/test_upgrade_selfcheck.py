@@ -19,6 +19,8 @@ import pytest
 
 from src.upgrade import ApplyError, LocalDirectorySource, UpgradeConfig, UpgradeManager
 from src.upgrade.dataguard import capture_table_inventory
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION
+from src.upgrade.filemanifest import build_file_manifest_for_zip
 from src.upgrade.selfcheck import SelfCheckConfig, run_self_check
 from src.upgrade.startup_probe import (
     _rewrite_app_root_paths,
@@ -215,6 +217,8 @@ def _release(
         "artifact": artifact,
         "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
         "size": zip_path.stat().st_size,
+        "files": build_file_manifest_for_zip(zip_path),
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     (release_dir / "LIUHAO_RELEASE.json").write_text(
         json.dumps({"schema": "liuhao.release-manifest/1", "releases": [release]}),

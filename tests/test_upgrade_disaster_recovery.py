@@ -40,6 +40,8 @@ from src.upgrade import (
     UpgradeManager,
     read_current_version,
 )
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION
+from src.upgrade.filemanifest import build_file_manifest_for_zip
 
 
 def _setup_app(root: Path, version: str = "0.1.0") -> Path:
@@ -90,6 +92,8 @@ def _release(
         "artifact": artifact,
         "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
         "size": zip_path.stat().st_size,
+        "files": build_file_manifest_for_zip(zip_path),
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     manifest = {"schema": "liuhao.release-manifest/1", "releases": [release]}
     (release_dir / "release-manifest.json").write_text(
@@ -99,8 +103,14 @@ def _release(
 
 
 def _manager(app_root: Path, release_dir: Path) -> UpgradeManager:
+    # 显式指定数据目录：conftest 会把 LIUHAO_DATA_DIR 指到 pytest 的 tmp，
+    # 若跟随环境变量，备份与状态会落在用例断言之外的目录。
     return UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+        UpgradeConfig(
+            app_root=app_root,
+            data_dir=app_root / "data",
+            source=LocalDirectorySource(release_dir),
+        )
     )
 
 
@@ -145,7 +155,11 @@ from src.upgrade import LocalDirectorySource, UpgradeConfig, UpgradeManager
 app_root = Path(sys.argv[1])
 release_dir = Path(sys.argv[2])
 manager = UpgradeManager(
-    UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+    UpgradeConfig(
+        app_root=app_root,
+        data_dir=app_root / "data",
+        source=LocalDirectorySource(release_dir),
+    )
 )
 check = manager.check()
 assert check.release is not None, check.message

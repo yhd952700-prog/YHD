@@ -38,6 +38,7 @@ from src.common.instance_lock import (
 
 from .archive import (
     extract_zip_members,
+    is_protected,
     read_package_version,
     safe_relpath,
     validate_release_zip,
@@ -52,6 +53,13 @@ from .backups import (
 )
 from .console_contract import FrontendContractError, verify_package
 from .dataguard import capture_table_inventory, verify_data_paths
+from .dataversion import (
+    DATA_SCHEMA_VERSION,
+    ensure_data_readable,
+    read_data_schema,
+    stamp_data_schema,
+    target_data_schema,
+)
 from .downloader import _sha256_file, download_release, verify_signature
 from .errors import (
     ApplyError,
@@ -67,6 +75,7 @@ from .errors import (
     UpgradeError,
     VersionReadError,
 )
+from .filemanifest import verify_file_manifest
 from .ledger import UpgradeLedger
 from .selfcheck import SelfCheckConfig, run_self_check
 from .models import (
@@ -120,26 +129,90 @@ INSTALL_ROOTS = (
 _DEFAULT_INSTALL_ROOTS = INSTALL_ROOTS
 _IN_FLIGHT_PHASES = ("backing_up", "applying", "self_checking", "rolling_back")
 
+#: 安装后必须保留的程序目录运行期文件：由启动器/安装器生成，不属于任何发布包。
+_STALE_PRESERVE = (
+    "config/app.env",
+    "config/integrity.key",
+    "config/auth_secrets.json",
+    "config/human_identities.json",
+)
+#: 清理旧文件时不碰的后缀：密钥/锁文件，以及无需清理的字节码缓存。
+_STALE_SKIP_SUFFIX = (".pyc", ".pyo", ".lock", ".pem", ".key", ".crt")
+#: 完全由构建产物决定的安装根：旧文件必须清干净（旧哈希前端资源会让自检回滚）。
+_STRICT_PRUNE_ROOTS = ("console",)
+
 logger = logging.getLogger(__name__)
 
 #: 安装树标志。``installer/liuhao.iss`` 把解释器装进 ``<app>/runtime``，
 #: 源码仓库与便携版没有这个目录。
 _INSTALL_MARKER = Path("runtime") / "python.exe"
 
+#: 安装器写在程序目录的数据目录标记。安装时用户可能把数据选在任意位置
+#: （含中文/空格），只有它能把真实位置还原回来。
+_DATA_DIR_MARKER = Path("data-dir.txt")
+
+
+def _marker_data_dir(app_root: Path) -> Path | None:
+    """读安装器写的 ``data-dir.txt``。
+
+    编码规则与 ``scripts/launch_installed.py::_marker_data_dir`` 一致：新版
+    UTF-8 **带 BOM**（BOM 是"这是 UTF-8"的确证，避免把中文路径按系统 ANSI
+    解码成另一个目录）；旧版无 BOM 的系统 ANSI（先 UTF-8，失败再 ``mbcs``）。
+    解出替换字符说明文件损坏，返回 ``None`` 交给安全默认值。
+    """
+    marker = app_root / _DATA_DIR_MARKER
+    try:
+        raw = marker.read_bytes()
+    except OSError:
+        return None
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = raw.decode("mbcs")
+            except (UnicodeDecodeError, LookupError):
+                return None
+    text = text.strip().strip('"').strip()
+    if not text or "\ufffd" in text:
+        return None
+    return Path(text).expanduser().resolve()
+
 
 def default_data_dir(app_root: str | Path) -> Path:
     """按安装器的真实规则解析用户数据目录。
 
-    安装树（``<app>/runtime/python.exe`` 存在）的数据固定落在
-    ``%LOCALAPPDATA%\\LiuHao\\data`` —— 与 ``installer/liuhao.iss`` 和
-    ``scripts/launch_installed.py`` 一致，不随程序目录升级移动；开发/便携
-    版没有安装器，运行数据仍在 ``<app-root>/data``。
+    安装树（``<app>/runtime/python.exe`` 存在）**优先读安装器写下的
+    ``data-dir.txt``**——手工或计划任务直接跑 CLI 时没有启动器注入
+    ``LIUHAO_DATA_DIR``，只有这里读 marker 才能和真实安装位置一致；读不到
+    才回退 ``%LOCALAPPDATA%\\LiuHao\\data``。开发/便携版没有安装器，运行数据
+    仍在 ``<app-root>/data``。
+
+    每次解析都用 INFO 日志写明来源（marker / 安装默认 / 便携目录），排障时
+    不用再猜 CLI 把数据写到哪去了。
     """
     root = Path(app_root).resolve()
     if (root / _INSTALL_MARKER).is_file():
+        marker = _marker_data_dir(root)
+        if marker is not None:
+            logger.info("数据目录来源：程序目录 data-dir.txt -> %s", marker)
+            return marker
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-        return (base / "LiuHao" / "data").resolve()
-    return root / "data"
+        installed_default = (base / "LiuHao" / "data").resolve()
+        logger.info(
+            "数据目录来源：安装树默认 %%LOCALAPPDATA%%\\LiuHao\\data -> %s",
+            installed_default,
+        )
+        return installed_default
+    portable = root / "data"
+    logger.info("数据目录来源：便携版程序目录 -> %s", portable)
+    return portable
 
 
 def resolve_data_dir(
@@ -152,15 +225,125 @@ def resolve_data_dir(
     """
     raw = data_dir if data_dir else os.environ.get("LIUHAO_DATA_DIR")
     if raw:
-        return Path(raw).expanduser().resolve()
+        resolved = Path(raw).expanduser().resolve()
+        logger.info(
+            "数据目录来源：%s -> %s",
+            "显式参数" if data_dir else "环境变量 LIUHAO_DATA_DIR",
+            resolved,
+        )
+        return resolved
     return default_data_dir(app_root)
 
 
 #: 运行期状态目录名。历史版本写在程序目录，卸载器不认这些运行期文件，
 #: 会残留在 ``<app>/upgrade-state``；现在统一落数据目录。
 STATE_DIRNAME = "upgrade-state"
-#: 代码/数据备份目录名，同上。
+#: 升级备份目录名。便携/开发形态沿用 ``<data>/upgrade-backups``；安装版的新
+#: 默认位置见 ``default_backup_root``（数据目录之外）。
 BACKUP_DIRNAME = "upgrade-backups"
+#: 安装版备份默认落点：另一块固定盘上的 ``<X>:\LiuHaoBackups``。
+BACKUP_ROOT_DIRNAME = "LiuHaoBackups"
+#: 没有第二块盘时的退路：数据目录同级的 ``<data 名>-backups``。
+BACKUP_SIBLING_SUFFIX = "-backups"
+#: 旧备份迁移记录（写在状态目录，供设置页提示"旧备份已搬到新位置"）。
+BACKUP_MIGRATION_RECORD = "backup-migration.json"
+
+
+def _volume_anchor(path: str | Path) -> str:
+    """返回路径所在盘符（``d:``）；非 Windows 或相对路径返回空串。"""
+    return os.path.splitdrive(str(path))[0].lower()
+
+
+def same_volume(first: str | Path, second: str | Path) -> bool:
+    """两个路径是否在同一块盘上（UNC 共享路径按共享名比较）。"""
+    return _volume_anchor(first) == _volume_anchor(second)
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _probe_writable_dir(path: Path) -> bool:
+    """真写探针：建目录 + 写一个文件 + 删掉。
+
+    ``os.access`` 在 Windows 上对 ACL/组策略/漫游重定向不可靠；只有真写才能
+    在选备份位置时就排除掉"以后备份写不进去"的盘。
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".liuhao-write-probe"
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _fixed_drive_roots() -> List[Path]:
+    """本机固定磁盘根（``GetDriveTypeW == DRIVE_FIXED``），不含可移动/网络盘。"""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+
+        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+    except (AttributeError, OSError):
+        return []
+    roots: List[Path] = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        try:
+            if get_drive_type(root) != 3:  # DRIVE_FIXED
+                continue
+        except OSError:
+            continue
+        candidate = Path(root)
+        if candidate.is_dir():
+            roots.append(candidate)
+    return roots
+
+
+def _pick_external_backup_root(data_dir: Path) -> tuple[Path, str]:
+    """在数据目录之外挑一个可写的备份落点，返回 ``(路径, 来源说明)``。"""
+    data_anchor = _volume_anchor(data_dir)
+    drive_choices: list[tuple[int, str, Path, str]] = []
+    for drive in _fixed_drive_roots():
+        if _volume_anchor(drive) == data_anchor:
+            continue
+        target = drive / BACKUP_ROOT_DIRNAME
+        if not _probe_writable_dir(target):
+            continue
+        try:
+            free = shutil.disk_usage(str(target)).free
+        except OSError:
+            free = 0
+        drive_choices.append((free, str(target).lower(), target, f"另一块固定盘 {target.drive}"))
+    if drive_choices:
+        # 剩余空间最大的那块，避免备份把某块盘先写满；同分时按路径排序保证可复现。
+        drive_choices.sort(key=lambda item: (-item[0], item[1]))
+        return drive_choices[0][2], drive_choices[0][3]
+
+    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    user_dir = local / "LiuHao" / "backups"
+    if _probe_writable_dir(user_dir):
+        label = (
+            "用户目录（与数据同一块盘）"
+            if same_volume(user_dir, data_dir)
+            else "用户目录（与数据不同盘）"
+        )
+        return user_dir, label
+
+    sibling = data_dir.parent / f"{data_dir.name}{BACKUP_SIBLING_SUFFIX}"
+    if _probe_writable_dir(sibling):
+        return sibling, "数据目录同级（与数据同一块盘）"
+
+    # 所有外部位置都写不了：退回数据目录内。至少让升级能完成备份，界面会
+    # 如实显示"同盘"风险，而不是等到第一次升级时才失败。
+    return data_dir / BACKUP_DIRNAME, "数据目录内（外部位置均不可写）"
 
 
 def default_state_dir(
@@ -173,8 +356,27 @@ def default_state_dir(
 def default_backup_root(
     app_root: str | Path, data_dir: str | Path | None = None
 ) -> Path:
-    """升级备份目录：``<data>/upgrade-backups``（不在程序目录内）。"""
-    return resolve_data_dir(app_root, data_dir) / BACKUP_DIRNAME
+    """升级备份目录：默认放在数据目录**之外**。
+
+    出货的安装版（数据目录由安装器指向程序目录之外）按下面顺序选址：
+
+    1. 另一块固定本地盘 ``<X>:\\LiuHaoBackups``——一块盘坏了不会同时丢数据
+       和备份，这是首选；
+    2. 用户目录 ``%LOCALAPPDATA%\\LiuHao\\backups``——没有第二块盘时的退路，
+       界面必须如实说明是否与数据同盘；
+    3. 数据目录同级 ``<data 名>-backups``——用户目录也写不了时的最后退路。
+
+    便携/开发形态（数据目录在程序目录内）保持 ``<data>/upgrade-backups``：
+    该形态的语义是整目录自包含，且开发和测试不得往用户目录或其他盘写数据。
+    """
+    data = resolve_data_dir(app_root, data_dir)
+    if _is_within(data, Path(app_root)):
+        fallback = data / BACKUP_DIRNAME
+        logger.info("升级备份目录来源：便携/开发形态 <data>/%s -> %s", BACKUP_DIRNAME, fallback)
+        return fallback
+    chosen, reason = _pick_external_backup_root(data)
+    logger.info("升级备份目录来源：%s -> %s", reason, chosen)
+    return chosen
 
 
 @dataclass
@@ -191,6 +393,8 @@ class UpgradeConfig:
     max_artifact_bytes: int = 2 * 1024 * 1024 * 1024
     max_uncompressed_bytes: int = 2 * 1024 * 1024 * 1024
     allow_same_or_downgrade: bool = False
+    #: 数据已被更高 schema 版本写过时，是否允许继续安装更低版本。
+    allow_data_downgrade: bool = False
     self_check: SelfCheckConfig = field(default_factory=SelfCheckConfig)
 
     def __post_init__(self) -> None:
@@ -225,6 +429,10 @@ class UpgradeManager:
         self._migrate_legacy_dirs()
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
         self.config.backup_root.mkdir(parents=True, exist_ok=True)
+        # 旧默认位置 ``<data>/upgrade-backups`` 里已经有的备份必须搬出数据目录：
+        # 数据目录一删，备份跟着没，正是这次要修的问题。放在 mkdir 之后，迁移
+        # 记录才能写进状态目录。
+        self._migrate_legacy_backups()
         self.ledger = UpgradeLedger(self.config.state_dir / "upgrade-ledger.db")
         self.status_path = self.config.state_dir / "status.json"
         self.check_state_path = self.config.state_dir / "last-check.json"
@@ -267,6 +475,112 @@ class UpgradeManager:
                     logger.warning(
                         "upgrade: cannot migrate legacy dir %s (%s)", legacy, copy_exc,
                     )
+
+    def _migrate_legacy_backups(self) -> None:
+        """把旧默认位置 ``<data>/upgrade-backups`` 里的备份搬到新位置。
+
+        选择**自动搬走**而不是"保留提示"或"双写一段时间"：
+
+        * 留着旧副本，等于保留"数据目录一删，备份一起没"的原缺陷；
+        * 双写要同时维护两处、回滚时还可能挑到旧目录里那份，出错面更大；
+        * 搬走之后只有一个位置可指向，数据丢了时的"打开备份目录"不会指错。
+
+        每份完整备份先复制到 ``.<id>.migrating`` 再改名，中断后重跑会跳过
+        已迁移项；任一步失败只告警并保留原样，绝不让升级入口起不来。
+        """
+        legacy = self.config.data_dir / BACKUP_DIRNAME
+        target_root = self.config.backup_root
+        if legacy == target_root or not legacy.is_dir():
+            return
+        try:
+            children = sorted(child for child in legacy.iterdir() if child.is_dir())
+        except OSError as exc:
+            logger.warning("upgrade: 旧备份目录 %s 无法读取，保持原样（%s）", legacy, exc)
+            return
+
+        moved = 0
+        skipped = 0
+        for child in children:
+            target = target_root / child.name
+            if not (child / "backup.json").is_file():
+                # 不完整/未知目录：既不删也不搬，避免把半截状态带到新位置。
+                logger.warning("upgrade: 旧备份目录 %s 缺少 backup.json，保持原样", child)
+                continue
+            if (target / "backup.json").is_file():
+                # 已经迁移过一次；旧副本内容已在新位置，可以安全删除。
+                shutil.rmtree(child, ignore_errors=True)
+                skipped += 1
+                continue
+            staging = target_root / f".{child.name}.migrating"
+            try:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+                shutil.copytree(child, staging)
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                staging.rename(target)
+                shutil.rmtree(child, ignore_errors=True)
+                moved += 1
+            except OSError as exc:
+                logger.warning("upgrade: 迁移旧备份 %s 失败，本次保留原样（%s）", child, exc)
+                shutil.rmtree(staging, ignore_errors=True)
+
+        try:
+            legacy.rmdir()  # 只在已清空时成功；还有残留就保持目录
+        except OSError:
+            pass
+        if moved or skipped:
+            self._record_backup_migration(legacy, target_root, moved, skipped)
+        logger.info(
+            "upgrade: 旧备份迁移：%s 份搬到 %s，%s 份已存在，源目录 %s",
+            moved, target_root, skipped, "已清空" if not legacy.exists() else "仍有残留",
+        )
+
+    def _record_backup_migration(
+        self, old_root: Path, new_root: Path, moved: int, skipped: int
+    ) -> None:
+        """写迁移记录，供设置页告诉用户"旧备份已经搬到哪"。"""
+        record = {
+            "schema": "liuhao.backup-migration/1",
+            "from": str(old_root),
+            "to": str(new_root),
+            "moved": moved,
+            "skipped": skipped,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            atomic_write_text(
+                self.config.state_dir / BACKUP_MIGRATION_RECORD,
+                json.dumps(record, ensure_ascii=False, indent=2),
+            )
+        except OSError as exc:
+            logger.warning("upgrade: 迁移记录写入失败（%s）", exc)
+
+    def backup_migration(self) -> Optional[Dict[str, Any]]:
+        """读旧备份迁移记录；没有迁移过返回 ``None``。"""
+        try:
+            data = json.loads(
+                (self.config.state_dir / BACKUP_MIGRATION_RECORD).read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def backup_summary(self) -> Dict[str, Any]:
+        """备份位置 + 是否与数据同盘 + 最近一次备份（设置页三行信息的唯一来源）。"""
+        backups = self.list_backups(limit=500)
+        latest = backups[0] if backups else {}
+        return {
+            "root": str(self.config.backup_root),
+            "data_dir": str(self.config.data_dir),
+            "same_volume": same_volume(self.config.data_dir, self.config.backup_root),
+            "data_drive": _volume_anchor(self.config.data_dir).upper(),
+            "backup_drive": _volume_anchor(self.config.backup_root).upper(),
+            "backup_count": len(backups),
+            "last_backup_at": latest.get("created_at"),
+            "last_backup_id": latest.get("backup_id"),
+            "migration": self.backup_migration(),
+        }
 
     # ------------------------------------------------------------------
     # 互斥：同一安装根只允许一个升级/回滚在跑
@@ -320,6 +634,28 @@ class UpgradeManager:
             return json.loads(self.status_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return {"phase": "unknown", "message": "状态文件无法读取", "updated_at": ""}
+
+    def data_schema_status(self) -> Dict[str, Any]:
+        """数据 schema 版本与当前代码的兼容性（只读，不修改任何文件）。"""
+        state = read_data_schema(self.config.data_dir)
+        version = state.version if state else None
+        compatible = version is None or version <= DATA_SCHEMA_VERSION
+        return {
+            "data_dir": str(self.config.data_dir),
+            "supported_version": DATA_SCHEMA_VERSION,
+            "version": version,
+            "written_by": state.written_by if state else "",
+            "updated_at": state.updated_at if state else "",
+            "compatible": compatible,
+            "action": (
+                ""
+                if compatible
+                else (
+                    "数据由更高版本写入：当前代码没有该 schema 的读写规则，"
+                    "继续使用可能丢数据。请升级到更高版本，或先备份后重建数据。"
+                )
+            ),
+        }
 
     def _recover_interrupted_upgrade(self) -> None:
         """Resolve a previous process that died mid-upgrade.
@@ -964,6 +1300,25 @@ class UpgradeManager:
             self._fail_before_mutation(release, str(exc), from_version=current_version)
             raise ApplyError(str(exc)) from exc
 
+        # Data schema guard. Opening newer data with older code does not fail
+        # loudly: the old code simply ignores new tables/columns (a 0.1.0 build
+        # on 0.1.1 data shows an empty session list). Refuse before touching
+        # anything unless the user explicitly confirms the downgrade.
+        try:
+            target_schema = target_data_schema(
+                release.data_schema_version,
+                release_version=release.version,
+                current_version=current_version,
+            )
+            data_schema_before = ensure_data_readable(
+                self.config.data_dir,
+                target_schema=target_schema,
+                allow_downgrade=self.config.allow_data_downgrade,
+            )
+        except UpgradeError as exc:
+            self._fail_before_mutation(release, str(exc), from_version=current_version)
+            raise PreflightError(str(exc)) from exc
+
         preflight = verify_data_paths(self._data_guard_paths())
         if not preflight.ok:
             details = "; ".join(
@@ -1018,10 +1373,26 @@ class UpgradeManager:
                 "note": "安装根没有 console/（开发/便携布局），前后端契约门禁不适用",
             }
 
+        # File-level gate: the whole-archive SHA256 only proves "these bytes
+        # are the published bytes". It cannot prove the package contains every
+        # file (a build that forgot src/gateway/chat.py still hashes
+        # consistently). Compare against the per-file manifest and refuse on
+        # any difference, before any backup or staging.
+        file_manifest: Dict[str, Any] = {}
+        try:
+            with zipfile.ZipFile(artifact, "r") as manifest_archive:
+                file_manifest = verify_file_manifest(
+                    manifest_archive, release.files, source=f"升级包 {release.version}"
+                )
+        except (UpgradeError, zipfile.BadZipFile) as exc:
+            self._fail_before_mutation(release, str(exc), from_version=current_version)
+            raise PreflightError(str(exc)) from exc
+
         staging: Optional[Path] = None
         backup_id = ""
         mutation_started = False
         marker: Optional[Dict[str, Any]] = None
+        pruned: Dict[str, Any] = {}
         try:
             with zipfile.ZipFile(artifact, "r") as archive:
                 members = validate_release_zip(
@@ -1090,6 +1461,12 @@ class UpgradeManager:
             with zipfile.ZipFile(artifact, "r") as archive:
                 extract_zip_members(archive, members, self.config.app_root)
 
+            # Overlay extraction never deletes anything: files dropped from the
+            # new release (and old hashed console assets) would stay behind and
+            # be served alongside the new code. Remove what the new manifest
+            # does not declare, then verify the tree again.
+            pruned = self._prune_stale_files([rel for rel, _ in members])
+
             post_version, _ = self.current_version()
             if Version(post_version) != Version(release.version):
                 raise ApplyError(
@@ -1136,6 +1513,21 @@ class UpgradeManager:
             # Do not leave a stale failure log that contradicts this success.
             (self.config.state_dir / "last-selfcheck.log").unlink(missing_ok=True)
 
+            # Mark the data directory with the schema this release writes. The
+            # marker is monotonic: a confirmed downgrade never lowers it, so a
+            # later downgrade attempt still sees the highest version written.
+            try:
+                data_schema_after = stamp_data_schema(
+                    self.config.data_dir,
+                    app_version=release.version,
+                    schema_version=max(
+                        target_schema,
+                        data_schema_before.version if data_schema_before else 0,
+                    ),
+                )
+            except OSError as exc:
+                raise ApplyError(f"写入数据 schema 标记失败：{exc}") from exc
+
             record = self.ledger.update(
                 marker["id"],
                 status="completed",
@@ -1149,6 +1541,16 @@ class UpgradeManager:
                     "preflight": preflight.to_dict(),
                     "key_tables": key_tables,
                     "frontend_contract": console_gate,
+                    "file_manifest": file_manifest,
+                    "pruned_files": pruned,
+                    "data_schema": {
+                        "supported": DATA_SCHEMA_VERSION,
+                        "target": target_schema,
+                        "before": (
+                            data_schema_before.to_dict() if data_schema_before else None
+                        ),
+                        "after": data_schema_after.to_dict(),
+                    },
                     "selfcheck": self_check.to_dict(),
                 },
             ) or marker
@@ -1198,6 +1600,8 @@ class UpgradeManager:
                 "signature_verified": signature_verified,
                 "signature_note": signature_note,
                 "frontend_contract": console_gate,
+                "file_manifest": file_manifest,
+                "pruned_files": pruned,
             }
             if marker is not None:
                 record = self.ledger.update(
@@ -1252,6 +1656,78 @@ class UpgradeManager:
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+
+    def _prune_stale_files(self, keep: Sequence[str]) -> Dict[str, Any]:
+        """删除安装根里新版清单之外的文件（覆盖安装遗留物）。
+
+        覆盖面刻意收窄：只处理 ``install_roots``，且除 ``console/`` 外只删除
+        父目录已被新包覆盖的文件——避免把安装根里未知的额外内容整体误删。
+        ``console/`` 是纯构建产物，旧哈希资源必须清掉，否则前端指纹校验
+        会把刚装好的版本判成"前端与后端不是同一次构建"并回滚。
+        """
+        keep_set = {str(item).replace("\\", "/") for item in keep}
+        package_dirs: set[str] = {""}
+        for rel in keep_set:
+            parts = rel.split("/")
+            for index in range(1, len(parts)):
+                package_dirs.add("/".join(parts[:index]))
+
+        deleted: List[str] = []
+        failed: List[str] = []
+        for root_name in self.config.install_roots:
+            root_rel = str(root_name).replace("\\", "/").strip("/")
+            target = self.config.app_root / root_name
+            if target.is_file():
+                if root_rel not in keep_set and self._stale_candidate(root_rel):
+                    self._delete_stale(target, root_rel, deleted, failed)
+                continue
+            if not target.is_dir():
+                continue
+            strict = root_rel in _STRICT_PRUNE_ROOTS
+            for path in target.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(self.config.app_root).as_posix()
+                if rel in keep_set:
+                    continue
+                if not strict and not self._parent_covered(rel, package_dirs):
+                    continue
+                if not self._stale_candidate(rel):
+                    continue
+                self._delete_stale(path, rel, deleted, failed)
+        if deleted:
+            logger.info("升级后清理了 %d 个陈旧文件：%s", len(deleted), ", ".join(deleted[:10]))
+        return {"deleted": deleted, "failed": failed}
+
+    @staticmethod
+    def _parent_covered(rel: str, package_dirs: set[str]) -> bool:
+        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        return parent in package_dirs
+
+    def _stale_candidate(self, rel: str) -> bool:
+        if is_protected(rel, self.config.protected_paths):
+            return False
+        if rel in _STALE_PRESERVE:
+            return False
+        name = rel.rsplit("/", 1)[-1]
+        if name.startswith("unins") or name.startswith("."):
+            return False
+        if "__pycache__" in rel.split("/"):
+            return False
+        if name.lower().endswith(_STALE_SKIP_SUFFIX):
+            return False
+        return True
+
+    @staticmethod
+    def _delete_stale(
+        path: Path, rel: str, deleted: List[str], failed: List[str]
+    ) -> None:
+        try:
+            path.unlink()
+            deleted.append(rel)
+        except OSError as exc:
+            failed.append(f"{rel}: {exc}")
+            logger.warning("升级后清理陈旧文件失败：%s（%s）", rel, exc)
 
     def _fail_before_mutation(
         self,

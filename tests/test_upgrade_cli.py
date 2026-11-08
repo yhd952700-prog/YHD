@@ -27,6 +27,8 @@ import pytest
 
 from src.upgrade import cli
 from src.upgrade.cli import _build_parser, _manager, main
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION
+from src.upgrade.filemanifest import build_file_manifest_for_zip
 from src.upgrade.manager import (
     UpgradeConfig,
     UpgradeManager,
@@ -92,6 +94,8 @@ def _release(release_dir: Path, version: str = "0.2.0", *, value: str = "VALUE =
         "artifact": artifact,
         "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
         "size": zip_path.stat().st_size,
+        "files": build_file_manifest_for_zip(zip_path),
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     (release_dir / "release-manifest.json").write_text(
         json.dumps({"schema": "liuhao.release-manifest/1", "releases": [release]}),
@@ -142,7 +146,12 @@ def test_upgrade_help_lists_the_flag_and_renders_paths(
 # ---------------------------------------------------------------------------
 # --allow-same-or-downgrade must actually take effect
 # ---------------------------------------------------------------------------
-def test_same_version_reinstall_requires_the_flag(tmp_path: Path) -> None:
+def test_same_version_reinstall_requires_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # conftest 会把 LIUHAO_DATA_DIR 指到 pytest tmp；这里断言的是
+    # “备份落在 app-root/data”，必须让 CLI 走默认解析而不是环境变量。
+    monkeypatch.delenv("LIUHAO_DATA_DIR", raising=False)
     app_root = _setup_app(tmp_path / "app", "0.1.0", value="VALUE = 1\n")
     release_dir = tmp_path / "releases"
     _release(release_dir, "0.1.0", value="VALUE = 2\n")

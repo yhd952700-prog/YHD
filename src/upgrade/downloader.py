@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import http.client
 import os
 import shutil
 import tempfile
@@ -108,6 +109,12 @@ def _download_http(url: str, target: Path, timeout: float, max_bytes: int) -> in
         raise ManifestError(f"下载发布包返回 HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ManifestError(f"下载发布包失败：网络不可用（{exc}）") from exc
+    except http.client.HTTPException as exc:
+        # 连接在读完 Content-Length 之前被对端关掉（IncompleteRead 等）。
+        # 这不是"清单写错了"，必须说清楚是下载中断，用户才会去重试。
+        raise ManifestError(
+            f"下载中断：连接提前断开，只收到 {written} 字节；未做任何安装。"
+        ) from exc
     return written
 
 
@@ -189,8 +196,15 @@ def download_release(
         os.replace(part, target)
 
         if release.size is not None and written != release.size:
+            if written < release.size:
+                # 只收到一部分：绝大多数是网络中途断开。旧版本一个字节都没动。
+                raise ChecksumMismatch(
+                    f"下载未完成：清单 {release.size} 字节，实际只收到 {written} 字节"
+                    "（连接中断）。程序未做任何改动，请重试。"
+                )
             raise ChecksumMismatch(
                 f"发布包大小不符：清单 {release.size} 字节，实际 {written} 字节"
+                "（包被追加了内容或清单与包不匹配）"
             )
         digest = _sha256_file(target)
         if digest != release.sha256:

@@ -71,3 +71,7 @@ class SelfCheckError(UpgradeError):
 
 class SnapshotError(UpgradeError):
     """A pre-upgrade data snapshot could not be resolved or exported."""
+
+
+class DataSchemaError(UpgradeError):
+    """The data directory was written by a newer schema than this code supports."""

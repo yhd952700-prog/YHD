@@ -17,6 +17,8 @@ from src.upgrade import (
     UpgradeConfig,
     UpgradeManager,
 )
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION
+from src.upgrade.filemanifest import build_file_manifest_for_zip
 
 
 def _make_app(root: Path, *, version: str = "0.1.0") -> Path:
@@ -62,6 +64,8 @@ def _release(release_dir: Path, *, version: str = "0.2.0") -> dict:
         "artifact": artifact,
         "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
         "size": zip_path.stat().st_size,
+        "files": build_file_manifest_for_zip(zip_path),
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     (release_dir / "LIUHAO_RELEASE.json").write_text(
         json.dumps({"schema": "liuhao.release-manifest/1", "releases": [release]}),
@@ -79,8 +83,14 @@ def _rows(db: Path) -> list[str]:
 
 
 def _manager(app_root: Path, release_dir: Path) -> UpgradeManager:
+    # 显式指定数据目录：conftest 的 LIUHAO_DATA_DIR 指向 pytest tmp，
+    # 跟随它会让备份/状态落在断言路径之外。
     return UpgradeManager(
-        UpgradeConfig(app_root=app_root, source=LocalDirectorySource(release_dir))
+        UpgradeConfig(
+            app_root=app_root,
+            data_dir=app_root / "data",
+            source=LocalDirectorySource(release_dir),
+        )
     )
 
 

@@ -46,7 +46,11 @@ def _build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--backup-root",
         default=None,
-        help="备份目录（默认 <数据目录>/upgrade-backups，不写程序目录）",
+        help=(
+            "备份目录（默认放在数据目录之外：优先另一块固定盘 <X>:\\LiuHaoBackups，"
+            "其次 %%LOCALAPPDATA%%\\LiuHao\\backups；便携/开发形态为 "
+            "<数据目录>/upgrade-backups）"
+        ),
     )
     common.add_argument(
         "--state-dir",
@@ -89,6 +93,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="允许安装相同或更低版本（用于重新下载旧版本安装包后恢复）",
     )
+    p_upgrade.add_argument(
+        "--allow-data-downgrade",
+        action="store_true",
+        help=(
+            "数据已由更高 schema 版本写入时仍继续安装旧版本。"
+            "默认拒绝，避免旧代码静默读取新数据；使用前请先备份数据目录。"
+        ),
+    )
     sub.add_parser("status", parents=[common], help="查看当前升级状态")
     p_history = sub.add_parser("history", parents=[common], help="查看升级记录")
     p_history.add_argument("--limit", type=int, default=20)
@@ -122,6 +134,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_selfcheck.add_argument("--no-service", action="store_true", help="只检查数据库，不启动服务")
     sub.add_parser("last-check", parents=[common], help="查看上次检查更新的时间与结果")
+    sub.add_parser(
+        "data-version", parents=[common], help="查看数据 schema 版本与当前代码是否兼容"
+    )
     return parser
 
 
@@ -152,6 +167,9 @@ def _manager(args: argparse.Namespace) -> UpgradeManager:
         public_key=_load_public_key(getattr(args, "public_key", None)),
         allow_same_or_downgrade=bool(
             getattr(args, "allow_same_or_downgrade", False)
+        ),
+        allow_data_downgrade=bool(
+            getattr(args, "allow_data_downgrade", False)
         ),
     )
     return UpgradeManager(config)
@@ -230,6 +248,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 state = {"status": "never", "message": "尚未执行过检查更新"}
             _emit(args, state)
             return 0
+
+        if args.command == "data-version":
+            manager = _manager(args)
+            payload = manager.data_schema_status()
+            _emit(args, payload)
+            return 0 if payload["compatible"] else 3
 
         if args.command == "rollback":
             manager = _manager(args)

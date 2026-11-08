@@ -21,12 +21,14 @@ from typing import Any, Dict, List, Optional
 
 from packaging.version import InvalidVersion, Version
 
-from .errors import ManifestError
+from .errors import ManifestError, PackageValidationError
+from .filemanifest import normalize_entries
 from .models import ReleaseInfo
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _MANIFEST_SCHEMA = "liuhao.release-manifest/1"
-_MAX_MANIFEST_BYTES = 1024 * 1024
+#: 文件级清单要给每个文件记一行路径/哈希/大小，完整安装树约 100KB 量级。
+_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _USER_AGENT = "LiuHao-AI-OS-Updater/1.0"
 
 
@@ -64,6 +66,24 @@ def _validate_release(raw: Any, index: int) -> ReleaseInfo:
     if signature is not None and not isinstance(signature, str):
         raise ManifestError(f"发布清单第 {index} 项 signature 必须是字符串")
 
+    files = raw.get("files")
+    parsed_files = None
+    if files is not None:
+        try:
+            parsed_files = tuple(
+                normalize_entries(files, context=f"发布清单第 {index} 项 files")
+            )
+        except PackageValidationError as exc:
+            raise ManifestError(str(exc)) from exc
+
+    data_schema_version = raw.get("data_schema_version")
+    if data_schema_version is not None and (
+        not isinstance(data_schema_version, int)
+        or isinstance(data_schema_version, bool)
+        or data_schema_version < 1
+    ):
+        raise ManifestError(f"发布清单第 {index} 项 data_schema_version 无效")
+
     return ReleaseInfo(
         version=version.strip(),
         artifact=artifact.strip(),
@@ -77,6 +97,8 @@ def _validate_release(raw: Any, index: int) -> ReleaseInfo:
         ),
         notes=str(raw.get("notes") or ""),
         released_at=raw.get("released_at"),
+        files=parsed_files,
+        data_schema_version=data_schema_version,
     )
 
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from .filemanifest import FileEntry, manifest_digest
 
 
 class CheckStatus(str, Enum):
@@ -65,6 +67,10 @@ class ReleaseInfo:
     signature_algorithm: Optional[str] = None
     notes: str = ""
     released_at: Optional[str] = None
+    #: 包内每个文件的路径 / SHA256 / 大小；apply 前逐项校验。
+    files: Optional[Tuple[FileEntry, ...]] = None
+    #: 该版本写入的数据 schema 版本；缺失＝旧清单，按保守规则推断。
+    data_schema_version: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -76,6 +82,11 @@ class ReleaseInfo:
             "signature_algorithm": self.signature_algorithm,
             "notes": self.notes,
             "released_at": self.released_at,
+            "files_count": len(self.files) if self.files else 0,
+            "file_manifest_sha256": (
+                manifest_digest(self.files) if self.files else None
+            ),
+            "data_schema_version": self.data_schema_version,
         }
 
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,8 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from src.upgrade import (
     ChecksumMismatch,
     LocalDirectorySource,
+    ManifestError,
+    ReleaseInfo,
     SignatureError,
     download_release,
     select_latest,
@@ -168,3 +172,55 @@ def test_artifact_path_escaping_release_dir_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(Exception) as exc:
         LocalDirectorySource(directory).resolve_artifact(release)
     assert "目录之外" in str(exc.value)
+
+
+class _HttpArtifactSource:
+    """把下载地址指到本地 HTTP 服务，复现"连接中途断开"。"""
+
+    description = "本机测试服务"
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+
+    def resolve_artifact(self, release: ReleaseInfo) -> str:
+        return f"{self.base_url}/{release.artifact}"
+
+
+def test_interrupted_http_download_says_incomplete_and_installs_nothing(
+    tmp_path: Path,
+) -> None:
+    payload = b"PK\x03\x04" + b"x" * 4096
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload[: len(payload) // 3])
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *_args) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        release = ReleaseInfo(
+            version="0.2.0",
+            artifact="liuhao-0.2.0.zip",
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size=len(payload),
+        )
+        target = tmp_path / "download"
+        source = _HttpArtifactSource(f"http://127.0.0.1:{server.server_address[1]}")
+        with pytest.raises((ChecksumMismatch, ManifestError)) as exc:
+            download_release(source, release, target_dir=target, timeout=5)
+    finally:
+        server.shutdown()
+
+    message = str(exc.value)
+    assert "下载未完成" in message or "下载中断" in message, message
+    # 半截文件不能留在目录里，更不能被当成发布包。
+    assert list(target.iterdir()) == []

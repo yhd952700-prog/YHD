@@ -88,13 +88,15 @@ def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
     """Allow only a human administrator (L0/L7 sovereignty or admin role)."""
     subject = getattr(payload, "sub", None)
     if not subject:
-        raise HTTPException(status_code=401, detail="token has no subject claim")
+        raise HTTPException(
+            status_code=401, detail="登录状态已失效，请重新登录后再试。"
+        )
     metadata = getattr(payload, "metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
     if metadata.get("kind") != "human":
         raise HTTPException(
             status_code=403,
-            detail="升级操作仅允许人类管理员，服务/机器人主体无权操作",
+            detail="升级操作需要用管理员账号完成，服务账号无权操作。",
         )
     scope = str(metadata.get("scope") or "")
     claims = {
@@ -108,9 +110,7 @@ def require_upgrade_admin(payload=Depends(_bearer_payload)) -> str:
         return str(subject)
     raise HTTPException(
         status_code=403,
-        detail=(
-            "该操作需要管理员权限：人类主权 L0/L7，或 admin/administrator/owner 角色"
-        ),
+        detail="该操作需要管理员权限。请换用管理员账号后再试。",
     )
 
 
@@ -169,6 +169,8 @@ def _classify_error(text: str) -> str:
         return "version_mismatch"
     if "签名" in value:
         return "signature_invalid"
+    if "下载中断" in value or "下载未完成" in value or "网络不可用" in value:
+        return "download_failed"
     if "校验" in value or "SHA256" in value:
         return "checksum_mismatch"
     return "unknown"
@@ -249,6 +251,10 @@ def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
     if not source_configured:
         message = SOURCE_NOT_CONFIGURED
 
+    # 设置页三行信息的唯一来源：备份在哪、与数据是否同盘、上次备份何时。
+    # 直接读真实目录，不在这里做任何推断，避免界面显示一个"看起来安全"的假位置。
+    backup = manager.backup_summary()
+
     return {
         "ok": True,
         "source_configured": source_configured,
@@ -263,6 +269,7 @@ def _status_payload(manager: UpgradeManager) -> Dict[str, Any]:
         "last_operation": last_operation,
         "last_apply": last_apply,
         "last_rollback": last_rollback,
+        "backup": backup,
         "error": error,
         "updated_at": state_file.get("updated_at", ""),
     }

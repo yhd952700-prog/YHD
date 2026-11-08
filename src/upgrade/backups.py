@@ -49,6 +49,9 @@ _PROTECTED_BACKUP_NAMES = frozenset(
         # 身份库签名密钥与身份库本体：两者都能让持有者伪造/读取本机身份。
         "integrity.key",
         "human_identities.json",
+        # 审计链 HMAC 密钥：不外传。恢复出带密钥的审计库但缺这把钥匙时，
+        # 校验会明确降级为“仅结构检查”，而不是静默全绿/全红。
+        "audit_chain.key",
         # 兼容 0.1.x 曾用的错误文件名：新代码不会再生成，但旧安装里可能残留。
         "model_config_key.bin",
     }
@@ -227,10 +230,11 @@ def backup_data(
     total = 0
     sqlite_count = 0
 
-    # 升级备份目录与运行期状态目录默认都落在数据目录内（``<data>/upgrade-backups``、
-    # ``<data>/upgrade-state``）。遍历数据目录时必须跳过它们：前者会把“正在写入的
-    # 备份”当成用户数据再备份一遍；后者的操作锁正被当前进程独占打开，读取会报
-    # Permission denied，而它本身也不是用户数据。
+    # 运行期状态目录默认落在数据目录内（``<data>/upgrade-state``）；升级备份
+    # 在安装版默认落在数据目录**之外**，但便携/开发形态仍是
+    # ``<data>/upgrade-backups``。两种形态遍历数据目录时都必须跳过它们：备份
+    # 目录会把“正在写入的备份”当成用户数据再备份一遍；状态目录的操作锁正被
+    # 当前进程独占打开，读取会报 Permission denied，而它本身也不是用户数据。
     skipped = [dest_dir.resolve()] + [Path(item).resolve() for item in exclude_dirs]
     excluded_protected = 0
 

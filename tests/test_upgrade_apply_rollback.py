@@ -22,6 +22,8 @@ from src.upgrade import (
     UpgradeManager,
     read_current_version,
 )
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION
+from src.upgrade.filemanifest import build_file_manifest_for_zip
 
 
 def _setup_app(root: Path, version: str = "0.1.0") -> Path:
@@ -75,6 +77,8 @@ def _release(
         "artifact": artifact,
         "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
         "size": zip_path.stat().st_size,
+        "files": build_file_manifest_for_zip(zip_path),
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     manifest = {"schema": "liuhao.release-manifest/1", "releases": [release]}
     (release_dir / "release-manifest.json").write_text(
