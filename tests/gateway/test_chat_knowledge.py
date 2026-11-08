@@ -7,6 +7,7 @@ system prompt，而不是只出现在响应元信息里。
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,12 +43,16 @@ def client(monkeypatch, tmp_path):
     # assistant，替换掉 LLM 替身也看不到它。
     chat_module._sessions.clear()
     chat_module._session_users.clear()
+    # 重复提交去重也是进程级缓存：同一主体 + 同一句话在窗口内会直接重放上一
+    # 个测试的响应，测的就不是本测试安装的知识库结果了。
+    chat_module._dedup_entries.clear()
     from src.gateway.main import get_app
 
     with TestClient(get_app()) as test_client:
         yield test_client
     chat_module._sessions.clear()
     chat_module._session_users.clear()
+    chat_module._dedup_entries.clear()
     reset_knowledge_service()
     reset_vector_store()
 
@@ -88,6 +93,11 @@ class _PromptCapturingAssistant:
         yield "o"
         yield "k"
 
+    @contextmanager
+    def serialized_turn(self):
+        """替身没有并发写风险，占位即可（真实实现是会话级互斥锁）。"""
+        yield
+
 
 @pytest.fixture
 def fake_llm(monkeypatch):
@@ -102,6 +112,23 @@ def fake_llm(monkeypatch):
 
     monkeypatch.setattr(chat_mod, "LiuHaoAssistant", Factory)
     return instances
+
+
+#: 弃答契约：``used=False`` 时也注入一段“没有资料”的指令，让模型直接说没找到，
+#: 而不是用自身记忆补答案。片段正文与来源仍然一个字都不注入。
+_ABSTAIN_INSTRUCTION_MARKERS = (
+    "[知识库检索结果]",
+    "本次没有检索到与该问题相关的资料",
+    "[知识库检索结果结束]",
+)
+
+
+def _assert_abstain_instruction_only(prompt: str, *fragments: str) -> None:
+    """提示词里只有“没有资料”的指令，没有任何被检索到的片段。"""
+    for marker in _ABSTAIN_INSTRUCTION_MARKERS:
+        assert marker in prompt
+    for fragment in fragments:
+        assert fragment not in prompt
 
 
 def _ingest(client, text: str, doc_id: str):
@@ -129,9 +156,9 @@ def test_empty_knowledge_degrades_and_reports_it(client, fake_llm):
     # “库里没有文档”与“库里没有答案”必须说清楚，不能混用同一句文案。
     assert "知识库为空" in knowledge["message"]
     assert "未找到相关内容" not in knowledge["message"]
-    # 普通对话没有被破坏。
+    # 普通对话没有被破坏；空库仍要给模型“没有资料”的指令，但不注入任何片段。
     assert body["reply"] == "ok"
-    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+    _assert_abstain_instruction_only(fake_llm[0].seen_prompts[0])
 
 
 def test_retrieval_is_injected_and_cited(client, fake_llm):
@@ -299,12 +326,15 @@ def test_legacy_no_relevant_shapes_still_skip_injection(
     assert "未找到相关内容" in knowledge["message"]
     assert "知识库为空" not in knowledge["message"]
     assert knowledge["sources"] == []
-    assert knowledge["context_tokens"] == 0
+    # 弃答也有指令（“没有资料”），但没有任何一条检索片段被注入。
+    assert knowledge["context_tokens"] > 0
     assert knowledge["diagnostics"]["candidates"] == 10
     assert knowledge["diagnostics"]["gate"] == "gateway"
     # 对话照常进行，且垃圾片段一个字都没进提示词。
     assert response.json()["reply"] == "ok"
-    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+    _assert_abstain_instruction_only(
+        fake_llm[0].seen_prompts[0], "与问题无关的第"
+    )
 
 
 def test_low_top_score_is_not_injected(client, fake_llm, monkeypatch):
@@ -329,7 +359,9 @@ def test_low_top_score_is_not_injected(client, fake_llm, monkeypatch):
     assert diagnostics["top_score"] == pytest.approx(0.1)
     assert diagnostics["min_score"] == pytest.approx(0.5)
     assert response.json()["reply"] == "ok"
-    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+    _assert_abstain_instruction_only(
+        fake_llm[0].seen_prompts[0], "与问题无关的第"
+    )
 
 
 def test_flat_candidates_are_ambiguous_and_not_injected(
@@ -355,7 +387,9 @@ def test_flat_candidates_are_ambiguous_and_not_injected(
     assert diagnostics["runner_up_score"] == pytest.approx(0.895)
     assert diagnostics["min_margin"] == pytest.approx(0.02)
     assert response.json()["reply"] == "ok"
-    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+    _assert_abstain_instruction_only(
+        fake_llm[0].seen_prompts[0], "与问题无关的第"
+    )
 
 
 def test_gate_pass_injects_and_reports_diagnostics(client, fake_llm, monkeypatch):
@@ -485,7 +519,8 @@ def test_contract_abstention_reasons_pass_through(
     assert forbidden not in knowledge["message"]
     assert knowledge["sources"] == []
     assert knowledge["hits"] == 0
-    assert knowledge["context_tokens"] == 0
+    # 弃答指令会进提示词，但没有任何片段被当成引用注入。
+    assert knowledge["context_tokens"] > 0
     diagnostics = knowledge["diagnostics"]
     assert diagnostics["gate"] == "knowledge"
     assert diagnostics["retrieval_status"] == "no_relevant"
@@ -495,7 +530,7 @@ def test_contract_abstention_reasons_pass_through(
     assert diagnostics["thresholds"]["min_top_score"] == pytest.approx(0.08)
     # 对话照常，且没有任何片段进入提示词。
     assert response.json()["reply"] == "ok"
-    assert fake_llm[0].seen_prompts == ["BASE-SYSTEM-PROMPT"]
+    _assert_abstain_instruction_only(fake_llm[0].seen_prompts[0])
 
 
 def test_authoritative_status_beats_legacy_flags(client, fake_llm, monkeypatch):

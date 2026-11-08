@@ -25,6 +25,7 @@
 import { ApiError, apiFetch } from './api'
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth'
 import { describeFailure } from './errorMessage'
+import { numberText } from './format'
 
 /** 服务端 `IngestRequest.text` 的 `max_length`。 */
 export const MAX_INGEST_CHARS = 200_000
@@ -437,7 +438,7 @@ export function classifyUploadFailure(
     return {
       kind: 'unavailable',
       title: '服务端不可用',
-      message: `${detail || '知识库暂时不可用'}。这与文件格式无关，请先确认知识库 / embedding provider 的状态。`,
+      message: `${detail || '知识库暂时不可用'}。这与文件格式无关，请先确认知识库 / 嵌入服务商（embedding provider）的状态。`,
     }
   }
   if (status >= 500) {
@@ -574,9 +575,10 @@ export interface IngestJobResult {
 }
 
 export interface IngestQuality {
-  garbled_chars: number
-  total_chars: number
-  garbled_ratio: number
+  /** 服务端没给这个数值时是 `null`，不是 0 —— 「没有数据」与「零个乱码」含义不同。 */
+  garbled_chars: number | null
+  total_chars: number | null
+  garbled_ratio: number | null
   low_quality: boolean
 }
 
@@ -597,7 +599,8 @@ export interface IngestJob {
   extractedPages: number
   embeddedPages: number
   processedPages: number
-  progressPercent: number
+  /** 服务端没上报进度时是 `null`（未知），不是 0（真的没开始）。 */
+  progressPercent: number | null
   quality: IngestQuality | null
   errorCode: string | null
   cancelRequested: boolean
@@ -643,20 +646,24 @@ export function jobPhaseLabel(phase: string): string {
 function asQuality(raw: unknown): IngestQuality | null {
   if (!raw || typeof raw !== 'object') return null
   const row = raw as Record<string, unknown>
-  const garbledChars = Number(row.garbled_chars)
-  const totalChars = Number(row.total_chars)
-  const ratio = Number(row.garbled_ratio)
+  /** 只接受真实数值；缺失 / null / 字符串一律保留为「没有数据」。 */
+  const num = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null
   return {
-    garbled_chars: Number.isFinite(garbledChars) ? garbledChars : 0,
-    total_chars: Number.isFinite(totalChars) ? totalChars : 0,
-    garbled_ratio: Number.isFinite(ratio) ? ratio : 0,
+    garbled_chars: num(row.garbled_chars),
+    total_chars: num(row.total_chars),
+    garbled_ratio: num(row.garbled_ratio),
     low_quality: row.low_quality === true,
   }
 }
 
 export function toIngestJob(raw: unknown): IngestJob {
   const row = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-  const percent = Number(row.progress_percent)
+  const rawPercent = row.progress_percent
+  const percent =
+    typeof rawPercent === 'number' && Number.isFinite(rawPercent)
+      ? Math.min(100, Math.max(0, rawPercent))
+      : null
   return {
     jobId: String(row.job_id ?? ''),
     documentId: String(row.document_id ?? ''),
@@ -671,7 +678,7 @@ export function toIngestJob(raw: unknown): IngestJob {
     extractedPages: asCount(row.extracted_pages),
     embeddedPages: asCount(row.embedded_pages),
     processedPages: asCount(row.processed_pages),
-    progressPercent: Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0,
+    progressPercent: percent,
     quality: asQuality(row.quality),
     errorCode: asText(row.error_code),
     cancelRequested: row.cancel_requested === true,
@@ -765,8 +772,8 @@ export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes)) return '—'
   if (bytes <= 0) return '0 B'
   if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes < 1024 * 1024) return `${numberText(bytes / 1024, 1)} KB`
+  return `${numberText(bytes / 1024 / 1024, 1)} MB`
 }
 
 /** 入库前的本地校验：返回中文原因，`null` 表示可以发送。 */

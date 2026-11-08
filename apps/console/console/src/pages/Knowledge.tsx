@@ -79,6 +79,15 @@ function friendlyReason(reason: string | undefined | null): string {
   return text
 }
 
+/**
+ * 成功态的分块数：服务端结果优先，其次真实处理数。
+ * 两者都拿不到时如实说「未返回」—— 不能把缺失显示成「已写入 0 个分块」。
+ */
+function committedChunksText(job: IngestJob): string {
+  const chunks = job.result?.chunks ?? (job.processedChunks > 0 ? job.processedChunks : null)
+  return chunks === null ? '服务端未返回分块数' : `已写入 ${chunks} 个分块`
+}
+
 type UploadProgress = { loaded: number; total: number }
 type ActionError = { title: string; message: string }
 
@@ -501,11 +510,7 @@ export function Knowledge({
           }」完全相同，服务端未重复写入（本次新增 0 个分块）。`,
         )
       } else {
-        setNotice(
-          `后台入库完成：${job.documentId} · ${
-            job.processedChunks || job.result?.chunks || 0
-          } 个分块。文档列表已刷新。`,
-        )
+        setNotice(`后台入库完成：${job.documentId} · ${committedChunksText(job)}。文档列表已刷新。`)
         setPageIndex(0)
       }
       setJobError(null)
@@ -956,9 +961,7 @@ export function Knowledge({
                   <p className="os-hint">
                     {job.result?.deduplicated
                       ? `内容重复，未写入新分块（匹配到 ${job.result.matched_document_id ?? '已有文档'}）。`
-                      : `已写入 ${job.result?.chunks ?? job.processedChunks} 个分块；当前向量总数 ${
-                          job.result?.vectors ?? '—'
-                        }。`}
+                      : `${committedChunksText(job)}；当前向量总数 ${job.result?.vectors ?? '—'}。`}
                   </p>
                 )}
                 {job.status === 'cancelled' && (

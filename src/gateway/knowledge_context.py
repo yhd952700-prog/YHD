@@ -141,6 +141,28 @@ def _not_used(
     }
 
 
+#: 弃答时也要给模型的指令：没有资料就明说，不许用自身记忆补数字/结论。
+#: 这不是“注入片段”（used 仍为 False），而是把“知识库里没有”变成可执行的回答约束。
+_NO_KNOWLEDGE_INSTRUCTION = (
+    "\n\n[知识库检索结果]\n"
+    "本次没有检索到与该问题相关的资料。\n"
+    "如果用户的问题需要依据知识库/文档内容回答，请直接说明“知识库中没有找到相关内容”，"
+    "不要猜测，也不要用模型自身记忆补全数字、步骤或结论；"
+    "如果只是普通闲聊，可以正常回答，但不要声称内容来自知识库。\n"
+    "[知识库检索结果结束]"
+)
+
+
+def _abstained(
+    reason: str, human_reason: str, diagnostics: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """``used=False`` 的弃答结果，但带上“没有资料”的模型指令。"""
+    result = _not_used(reason, human_reason, diagnostics)
+    result["context"] = _NO_KNOWLEDGE_INSTRUCTION
+    result["context_tokens"] = max(1, len(_NO_KNOWLEDGE_INSTRUCTION) // _CHARS_PER_TOKEN)
+    return result
+
+
 #: 旧实现的“无相关内容”表达（兼容用）。权威字段存在时不会走到这里。
 _NEGATIVE_FLAGS = ("no_relevant", "no_relevant_content", "no_answer", "not_relevant")
 _NEGATIVE_STATUS = frozenset(
@@ -281,7 +303,12 @@ def _score_gate(hits: List[Dict[str, Any]]) -> tuple[bool, str, Dict[str, Any]]:
 
 
 def _scope_for_principal(principal: Optional[str]):
-    """把调用者账号映射成知识库读写范围；没有账号内核时退化为"只有自己"。"""
+    """把调用者账号映射成知识库检索范围；没有账号内核时退化为"只有自己"。
+
+    知识库是账号自有资产：主账号与成员一样只检索自己的文档（外加单机老
+    部署的无归属历史），不聚合子账号资料。这样成员资料不会被混进主账号的
+    回答，也让"检索不串"与删除边界同口径。
+    """
     if not principal:
         return None
     from src.knowledge.documents import KnowledgeScope
@@ -297,22 +324,20 @@ def _scope_for_principal(principal: Optional[str]):
             principal=principal,
             owners=(principal,),
             include_unowned=True,
-            aggregate=False,
             owns_legacy=True,
+            unowned_writes=True,
         )
     if node.is_root:
         return KnowledgeScope(
             principal=principal,
-            owners=None,
+            owners=(principal,),
             include_unowned=True,
-            aggregate=True,
             owns_legacy=True,
         )
     return KnowledgeScope(
         principal=principal,
         owners=(principal,),
         include_unowned=False,
-        aggregate=False,
         owns_legacy=False,
     )
 
@@ -326,9 +351,9 @@ def build_knowledge_context(
 
     ``enabled=False`` 时完全跳过（用户显式关闭）。``enabled=None`` 时自动：
     知识库可用才检索；空库/弃答由知识库侧的 ``retrieval`` 判定并原样透传。
-    ``principal`` 是经核验的令牌主体：成员只检索自己的文档，主账号可聚合读；
-    缺省（内部/评测调用）保持不限制，绝不据此绕过 HTTP 侧判定。
-    任何失败都返回 ``used=False`` 并说明原因，不抛异常、不影响普通对话。
+    ``principal`` 是经核验的令牌主体：每个账号只检索自己的文档（主账号也
+    不聚合子账号资料）；缺省（内部/评测调用）保持不限制，绝不据此绕过 HTTP
+    侧判定。任何失败都返回 ``used=False`` 并说明原因，不抛异常、不影响普通对话。
     """
     if enabled is False:
         return _not_used("disabled_by_user", "用户已关闭本次检索")
@@ -340,11 +365,12 @@ def build_knowledge_context(
         status = service.status()
     except Exception as exc:  # 知识库模块不可用：静默降级
         logger.warning("knowledge_context: status unavailable: %s", exc, exc_info=True)
-        return _not_used("unavailable", f"知识库不可用（{type(exc).__name__}）")
+        return _not_used("unavailable", "知识库暂时不可用，本次没有参考它。")
 
     if not status.get("enabled"):
-        reason = str(status.get("reason") or "未配置 embedding provider")
-        return _not_used("unavailable", f"知识库未启用（{reason}）")
+        reason = str(status.get("reason") or "尚未配置向量模型")
+        logger.info("knowledge_context: not enabled: %s", reason)
+        return _not_used("unavailable", "知识库未启用，本次没有参考它。")
 
     try:
         # 相关度阈值归知识库侧（有评测数据支撑），网关不再混入自己的门槛。
@@ -359,7 +385,7 @@ def build_knowledge_context(
         )
     except Exception as exc:  # 检索失败：静默降级，但记录真实原因
         logger.warning("knowledge_context: retrieval failed: %s", exc, exc_info=True)
-        return _not_used("error", f"检索失败（{type(exc).__name__}）")
+        return _not_used("error", "检索暂时失败，本次没有参考知识库。")
 
     retrieval = _retrieval_info(result)
     raw_hits = result.get("hits")
@@ -384,7 +410,7 @@ def build_knowledge_context(
                 verdict["runner_up_score"],
                 len(hits),
             )
-            return _not_used(reason, _ABSTAIN_MESSAGES[reason], diagnostics)
+            return _abstained(reason, _ABSTAIN_MESSAGES[reason], diagnostics)
 
         # status=ok：不再用网关的 0.25 门槛二次否决（两套分数尺度不同）。
         # 网关只在数据不可用时兜底。
@@ -413,7 +439,7 @@ def build_knowledge_context(
                 "candidates=%d",
                 len(hits),
             )
-            return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
+            return _abstained("no_relevant", "未找到相关内容", candidate_diagnostics)
 
         if not hits:
             # 非空库里检索不到任何片段，同样是“未找到相关内容”，不是“库为空”。
@@ -421,7 +447,7 @@ def build_knowledge_context(
                 "knowledge injection skipped: gate=gateway legacy=no_relevant "
                 "candidates=0"
             )
-            return _not_used("no_relevant", "未找到相关内容", candidate_diagnostics)
+            return _abstained("no_relevant", "未找到相关内容", candidate_diagnostics)
 
         injectable, decision, score_diagnostics = _score_gate(hits)
         score_diagnostics["gate"] = "gateway"
@@ -448,7 +474,7 @@ def build_knowledge_context(
                 score_diagnostics["min_margin"],
                 len(hits),
             )
-            return _not_used(decision, human_reason, score_diagnostics)
+            return _abstained(decision, human_reason, score_diagnostics)
 
         # 通过保险后，再丢弃低于门槛的候选，绝不拿低分片段凑数。
         min_score = score_diagnostics["min_score"]
@@ -461,7 +487,7 @@ def build_knowledge_context(
             if score >= min_score:
                 qualified.append(hit)
         if not qualified:
-            return _not_used(
+            return _abstained(
                 "low_score",
                 f"未找到足够相关的内容（最高分 "
                 f"{score_diagnostics['top_score']} 低于门槛 {min_score}）",
@@ -495,12 +521,16 @@ def build_knowledge_context(
             break
 
     if not blocks:
-        return _not_used("no_relevant", "未找到相关内容", score_diagnostics)
+        return _abstained("no_relevant", "未找到相关内容", score_diagnostics)
 
     context = (
         "\n\n[知识库上下文]\n"
-        "以下是与用户问题相关的资料片段。回答时若使用了某条资料，"
-        "请用来源编号标注（例如 [1]）。不要编造未出现在片段中的事实。\n\n"
+        "以下是与用户问题相关的资料片段。\n"
+        "规则：\n"
+        "1. 只能依据这些片段回答，不要使用片段之外的记忆、常识或推测补全；\n"
+        "2. 使用了某条资料时，用来源编号标注（例如 [1]）；\n"
+        "3. 如果片段中没有能回答问题的信息，直接回答“知识库中没有找到相关内容”，"
+        "不要猜测，也不要编造数字、步骤或结论。\n\n"
         + "\n\n".join(blocks)
         + "\n[知识库上下文结束]"
     )
@@ -549,7 +579,9 @@ def knowledge_prompt(assistant: Any, knowledge: Dict[str, Any]):
     ``LiuHaoAssistant`` 的 system prompt 是实例属性；本模块只能在网关侧拼接，
     因此调用前后恢复原值，避免污染后续轮次。测试替身没有该属性时直接透传。
     """
-    if not knowledge.get("used"):
+    # ``used=False`` 但有 context 的情况是“弃答指令”：知识库没找到时要让模型
+    # 明确说没找到，而不是用自己的记忆编一个答案。
+    if not knowledge.get("used") and not knowledge.get("context"):
         yield
         return
     original = getattr(assistant, "system_prompt", None)
