@@ -1,4 +1,4 @@
-# 创建/更新一个严格按 requirements.txt 安装的独立发布 venv。
+﻿# 创建/更新一个严格按 requirements.txt 安装的独立发布 venv。
 #
 # 目的：随包依赖必须等于受审锁。仓库里的 .venv 同时被开发/测试使用，版本
 # 常与锁漂移（例如 protobuf 5.x vs 6.x），不能直接拿它组装 payload。

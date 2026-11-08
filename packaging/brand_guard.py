@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: 仓库内参与品牌门禁的文本（历史文档/证据不参与，避免把真实历史改成假历史）。
 REPO_SURFACES = (
+    "LICENSE",
     "installer/liuhao.iss",
     "installer/assets/BEFORE-INSTALL.txt",
     "packaging/third-party-notices.template.txt",
@@ -219,6 +220,7 @@ def scan(
         text = _read(path)
         violations += _check_forbidden(rel, text)
         if rel in (
+            "LICENSE",
             "installer/liuhao.iss",
             "installer/assets/BEFORE-INSTALL.txt",
             "packaging/third-party-notices.template.txt",

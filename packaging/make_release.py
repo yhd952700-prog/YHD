@@ -2,7 +2,7 @@
 
 产物（同一目录，默认 ``dist\\release``）：
 
-    liuhao-<version>.zip      安装树 ZIP（根目录即安装根，不多包一层）
+    liuhao-<version>-upgrade.zip  升级包（安装树 ZIP；不能单独运行）
     LIUHAO_RELEASE.json       发布清单（schema = liuhao.release-manifest/1）
     dev-path-report.txt       开发目录路径扫描结果（排障用，不参与升级）
 
@@ -11,6 +11,9 @@
     ``oss-registry.yaml`` 与根目录包内清单 ``LIUHAO_RELEASE.json``；
   * 禁止 ``data/``、``.git/``、``.venv/``、``.env``、``secrets/``、``*.pem``/``*.key``/``*.crt``；
   * ``sha256`` 对**整包字节**计算，``size`` 为字节数；
+  * 清单内嵌 ``files`` 文件级清单（相对路径 + SHA256 + 字节数）与
+    ``data_schema_version``：整包哈希证明不了包内文件齐全，安装端按文件级
+    清单逐项校验后才允许落盘；
   * 包内版本（包根 LIUHAO_RELEASE.json + pyproject.toml）必须与清单 ``version`` 完全相等；
   * 有签名私钥才写 ``signature`` / ``signature_algorithm``，没有就**不写**空值或假签名；
   * 自己产生清单、自己回读校验；任何不一致直接失败，不产出坏清单。
@@ -74,9 +77,25 @@ APP_TREE_SKIP_SUFFIXES = {
     ".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm",
 }
 APP_TREE_SKIP_PREFIXES = ("unins", "upgrade-backups", "upgrade-state", ".liuhao")
+#: docs 下不随包分发的子目录：``docs/legal`` 只有 AI 起草、待法务确认的草稿，
+#: 留在仓库供审阅，不能装进用户手里的升级包（否则等于对外发布了未定稿条款）。
+APP_TREE_SKIP_DOC_DIRS = ("legal",)
+
+#: 缺少这些文件时不允许产出升级包：整包哈希再一致，装上去也是新旧代码混跑。
+REQUIRED_RELEASE_FILES = (
+    "src/gateway/main.py",
+    "src/gateway/chat.py",
+    "src/upgrade/manager.py",
+)
 
 # 与 src/upgrade/manager.py 的默认 install_roots / protected_paths 保持一致。
 from src.upgrade.manager import INSTALL_ROOTS  # noqa: E402
+from src.upgrade.dataversion import DATA_SCHEMA_VERSION  # noqa: E402
+from src.upgrade.errors import PackageValidationError  # noqa: E402
+from src.upgrade.filemanifest import (  # noqa: E402
+    build_file_manifest_for_zip,
+    verify_file_manifest,
+)
 from src.upgrade.console_contract import (  # noqa: E402
     CONTRACT_RELPATH,
     FrontendContractError,
@@ -201,6 +220,8 @@ def _collect_files(root: Path, *, app_tree: bool = False) -> List[Tuple[str, Pat
             if candidate.suffix.lower() in APP_TREE_SKIP_SUFFIXES:
                 continue
             if parts[0].startswith(APP_TREE_SKIP_PREFIXES):
+                continue
+            if len(parts) > 1 and parts[0] == "docs" and parts[1] in APP_TREE_SKIP_DOC_DIRS:
                 continue
             if candidate.relative_to(root).as_posix() == MANIFEST_NAME:
                 continue
@@ -390,11 +411,23 @@ def _verify_manifest_file(manifest_path: Path, zip_path: Path, version: str) -> 
         raise BuildError(f"发布清单最新版本 {latest.version!r} 不是本次版本 {version!r}")
     if latest.artifact != zip_path.name:
         raise BuildError(f"发布清单 artifact {latest.artifact!r} 与产物文件名 {zip_path.name!r} 不一致")
+    if not latest.files:
+        raise BuildError("发布清单缺少 files 文件级清单，安装端会拒绝该包")
+    if latest.data_schema_version != DATA_SCHEMA_VERSION:
+        raise BuildError(
+            f"发布清单 data_schema_version {latest.data_schema_version!r} "
+            f"与当前代码 {DATA_SCHEMA_VERSION} 不一致"
+        )
     sha, size = _verify_package(zip_path, version)
     if latest.sha256 != sha:
         raise BuildError("发布清单 sha256 与回读 ZIP 计算值不一致")
     if latest.size != size:
         raise BuildError(f"发布清单 size {latest.size} 与回读 ZIP 字节数 {size} 不一致")
+    with zipfile.ZipFile(zip_path) as zf:
+        try:
+            verify_file_manifest(zf, latest.files, source="发布包")
+        except PackageValidationError as exc:
+            raise BuildError(str(exc)) from exc
 
 
 def _run_cli_check(root: Path, out_dir: Path) -> Tuple[int, str]:
@@ -463,7 +496,7 @@ def build(args: argparse.Namespace) -> int:
             )
 
     released_at = args.released_at or _now_iso()
-    zip_name = f"liuhao-{version}.zip"
+    zip_name = f"liuhao-{version}-upgrade.zip"
     zip_path = out_dir / zip_name
     manifest_path = out_dir / MANIFEST_NAME
 
@@ -472,6 +505,32 @@ def build(args: argparse.Namespace) -> int:
     _log(f"  输出    {out_dir}")
 
     entries = _collect_files(root, app_tree=app_tree)
+    if app_tree:
+        # 安装树不需要 docs/，但升级包必须带：用户排障、支持工单、发版说明
+        # 都靠它。docs/ 取自仓库（与安装树同一次构建的源码），开发路径命中
+        # 只报告不阻断（见下方 runtime_hits 的口径）。
+        docs_root = REPO_ROOT / "docs"
+        if docs_root.is_dir():
+            existing = {rel for rel, _path in entries}
+            added = 0
+            for path in sorted(docs_root.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if path.suffix.lower() in APP_TREE_SKIP_SUFFIXES:
+                    continue
+                rel_parts = path.relative_to(docs_root).parts
+                if any(part in SKIP_DIR_NAMES for part in rel_parts):
+                    continue
+                if rel_parts[0] in APP_TREE_SKIP_DOC_DIRS:
+                    continue
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                if rel in existing:
+                    continue
+                entries.append((rel, path))
+                existing.add(rel)
+                added += 1
+            entries.sort(key=lambda item: item[0])
+            _log(f"  文档    docs/ 随包 {added} 个文件（升级包排障用）")
     if app_tree and not any(rel == "console/index.html" for rel, _path in entries):
         raise BuildError(
             "安装树缺少驾驶舱构建产物 console/index.html："
@@ -480,6 +539,15 @@ def build(args: argparse.Namespace) -> int:
         )
     total_bytes = sum(path.stat().st_size for _rel, path in entries)
     _log(f"  输入    {len(entries)} 个文件 / {total_bytes / 1024 / 1024:.1f} MB（未压缩）")
+
+    present = {rel for rel, _path in entries}
+    missing_required = [rel for rel in REQUIRED_RELEASE_FILES if rel not in present]
+    if missing_required:
+        raise BuildError(
+            "打包输入缺少关键文件："
+            + ", ".join(missing_required)
+            + "。整包哈希无法证明包内文件齐全，装上去会新旧代码混跑，拒绝产出。"
+        )
 
     hits = _scan_dev_paths(entries)
     runtime_hits = [item for item in hits if not item[0].startswith("docs/")]
@@ -543,6 +611,9 @@ def build(args: argparse.Namespace) -> int:
     _log(f"  产物    {zip_name}  {size} 字节（{size / 1024 / 1024:.1f} MB）")
     _log(f"  SHA256  {sha256}")
 
+    file_entries = build_file_manifest_for_zip(zip_path)
+    _log(f"  清单    {len(file_entries)} 个文件（逐文件 SHA256 已写入发布清单）")
+
     signature: str | None = None
     key_path = args.signing_key or os.environ.get("LIUHAO_UPGRADE_SIGNING_KEY") or ""
     if key_path:
@@ -563,10 +634,12 @@ def build(args: argparse.Namespace) -> int:
         "sha256": sha256,
         "size": size,
         "notes": args.notes or (
-            f"鎏灏 LiuHao AI OS {version}：源码与文档整包；不含模型权重、不含任何密钥。"
+            f"LiuHao AI OS · 鎏灏智能中枢 {version}：源码与文档整包；不含模型权重、不含任何密钥。"
             "安装器未做代码签名，Windows 首次运行需选择“仍要运行”。"
         ),
         "released_at": released_at,
+        "files": file_entries,
+        "data_schema_version": DATA_SCHEMA_VERSION,
     }
     if signature:
         release["signature"] = signature

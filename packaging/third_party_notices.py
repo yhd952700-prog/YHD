@@ -61,6 +61,37 @@ CLASSIFIER_ALIASES = {
 #: 包内许可证文本可能的名字（大小写不敏感比较）。
 LICENSE_NAME_PATTERN = re.compile(r"^(licen[cs]e|copying|notice)", re.IGNORECASE)
 
+#: 嵌入层（二进制/子包）里的弱 copyleft 组件：顶层 dist 清单看不到，
+#: 但 notices 必须单独列示。构建门禁会校验这些条目仍在。
+EMBEDDED_LGPL_COMPONENTS: Tuple[str, ...] = ("adodbapi", "iconv")
+
+#: 必须随包的许可证全文（相对 licenses/）。缺失或内容过短即构建失败。
+REQUIRED_LICENSE_FILES: Tuple[str, ...] = (
+    "Apache-2.0.txt",
+    "libffi-MIT.txt",
+    "SQLite-Public-Domain.txt",
+    "Tcl-Tk-license.terms",
+    "Microsoft-VC-Runtime.txt",
+    "React-MIT.txt",
+    "pywin32-BSD-3-Clause.txt",
+    "expat-MIT.txt",
+    "zlib-License.txt",
+    "libmpdec-BSD-2-Clause.txt",
+    "Unicode-License.txt",
+    "Tix-License.txt",
+    "LGPL-2.1.txt",
+    "adodbapi-LGPL-2.1.txt",
+    "libiconv-NOTICE.txt",
+    "LGPL-SOURCE-OFFER.txt",
+)
+REQUIRED_LICENSE_MIN_BYTES = 500
+
+#: notices 正文必须出现的嵌入组件/义务标记。
+EMBEDDED_MARKERS: Tuple[str, ...] = (
+    "adodbapi", "iconv", "LGPL-2.1", "静态链接",
+    "libiconv-NOTICE.txt", "LGPL-SOURCE-OFFER.txt",
+)
+
 
 class Distribution:
     __slots__ = ("name", "version", "license", "license_files", "home", "dist_info")
@@ -274,22 +305,64 @@ def _restrictive_hits(items: List[Distribution]) -> List[str]:
     return hits
 
 
+def _runtime_component_count(template: str) -> int:
+    """第 3 节表格的行数 —— 与模板同源，避免手写计数再次漂移。"""
+    section = template.split("## 3.", 1)[1].split("## 4.", 1)[0]
+    return sum(1 for line in section.splitlines() if re.match(r"^\|\s*\d+\s*\|", line))
+
+
+def render_restrictive_statement(items: List[Distribution]) -> str:
+    """如实描述：顶层 0 个；嵌入层 N 个 LGPL。"""
+    hits = _restrictive_hits(items)
+    if hits:
+        raise SystemExit("检测到限制性许可证，构建中止：" + "、".join(hits))
+    names = "、".join(EMBEDDED_LGPL_COMPONENTS)
+    return (
+        "顶层（Python 发行包）0 个；嵌入层（runtime/ 与 licenses/ 覆盖的二进制/子包）"
+        f"{len(EMBEDDED_LGPL_COMPONENTS)} 个 LGPL-2.1（{names}）。二者均已附 "
+        "LGPL-2.1 全文，并给出源码与可重链接方案（见第 3.1 节）；构建脚本在顶层"
+        "检出 AGPL/GPL/LGPL/SSPL/Elastic-2.0/BSL/OpenRAIL/CC-BY-NC 时直接中止。"
+    )
+
+
+def _validate(text: str, app_dir: Path, items: List[Distribution]) -> None:
+    """生成后的自检：清单 ↔ 实装 ↔ 许可证文本必须三方一致。"""
+    problems: List[str] = []
+    if "{{" in text or "}}" in text:
+        problems.append("模板仍有未替换的占位符")
+    for name in REQUIRED_LICENSE_FILES:
+        path = app_dir / "licenses" / name
+        if not path.is_file():
+            problems.append(f"缺少许可证文本：licenses/{name}")
+        elif path.stat().st_size < REQUIRED_LICENSE_MIN_BYTES:
+            problems.append(
+                f"许可证文本过短（{path.stat().st_size} 字节）：licenses/{name}"
+            )
+    for dist in items:
+        if not dist.license_files:
+            problems.append(f"发行包无随包许可证文本：{dist.name} {dist.version}")
+    for marker in EMBEDDED_MARKERS:
+        if marker not in text:
+            problems.append(f"声明中缺少嵌入组件标记：{marker}")
+    if problems:
+        raise SystemExit("第三方许可声明校验失败：\n  - " + "\n  - ".join(problems))
+
+
 def render(app_dir: Path) -> str:
     template = TEMPLATE_FILE.read_text(encoding="utf-8")
     site_packages = app_dir / "runtime" / "Lib" / "site-packages"
     items = collect(site_packages)
     if not items:
         raise SystemExit(f"{site_packages} 下没有找到任何 *.dist-info")
-    restrictive = _restrictive_hits(items)
-    if restrictive:
-        raise SystemExit(
-            "检测到限制性许可证，构建中止：" + "、".join(restrictive)
-        )
-    return (
+    text = (
         template.replace("{{PACKAGE_COUNT}}", str(len(items)))
         .replace("{{PACKAGE_TABLE}}", render_table(items))
         .replace("{{VERSION_NOTE}}", render_version_note(items))
+        .replace("{{RUNTIME_COMPONENT_COUNT}}", str(_runtime_component_count(template)))
+        .replace("{{RESTRICTIVE_STATEMENT}}", render_restrictive_statement(items))
     )
+    _validate(text, app_dir, items)
+    return text
 
 
 def write(app_dir: Path, out: Optional[Path] = None) -> Path:

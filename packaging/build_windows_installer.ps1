@@ -1,4 +1,4 @@
-﻿# 鎏灏 LiuHao AI OS —— Windows 安装包一键构建
+﻿# LiuHao AI OS · 鎏灏智能中枢 —— Windows 安装包一键构建
 #
 # 一条命令完成：前端构建 → 后端 payload 组装（含离线 Python 运行时）
 #              → 冒烟验证 → 升级发布包 ZIP+清单 → Inno Setup 编译
@@ -74,7 +74,7 @@ function Resolve-Version {
 
 $Python = Resolve-Python
 $Version = Resolve-Version
-Write-Host "鎏灏 LiuHao AI OS 安装包构建  version=$Version"
+Write-Host "LiuHao AI OS · 鎏灏智能中枢 安装包构建  version=$Version"
 Write-Host "  仓库  $Root"
 Write-Host "  输出  $OutRoot"
 Write-Host "  Python $Python"
@@ -184,11 +184,11 @@ if ($SkipRelease) {
     Write-Step "生成升级发布包与清单（规范：docs/self-upgrade.md §2.2）"
     $releaseTreeNote = "安装树整包（含根级模块与 config/，不含 runtime/ 与数据目录）"
     if (-not $SkipSmoke -and $smokeCode -eq 0) {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建 payload 冒烟通过。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建 payload 冒烟通过。"
     } elseif ($SkipSmoke) {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建跳过冒烟（未验证运行）。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建跳过冒烟（未验证运行）。"
     } else {
-        $releaseNotes = "鎏灏 LiuHao AI OS $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建冒烟未通过，产物未验证。"
+        $releaseNotes = "LiuHao AI OS · 鎏灏智能中枢 $Version：$releaseTreeNote；不含模型权重、不含任何密钥。安装器未做代码签名。本次构建冒烟未通过，产物未验证。"
     }
     $releaseArgs = @((Join-Path $Root "packaging\make_release.py"), "--app-root", $PayloadApp, "--out", $releaseDir, "--notes", $releaseNotes)
     if ($StrictReleaseDevPaths) { $releaseArgs += "--strict-dev-paths" }
@@ -214,6 +214,22 @@ if ($SkipInstaller) {
 }
 
 Write-Step "准备并编译安装器"
+
+# 实测 payload 内最深一条相对路径（文件或目录）。安装器在复制文件**之前**用它
+# 预检 MAX_PATH：目标目录 + 这条相对路径 > 259 时 Windows 会中途拒绝创建，
+# 必须提前给出中文可行动提示，而不是装到一半失败。清理 __pycache__ 之后才算，
+# 否则会按开发残留的长度误判。
+$maxRel = 1
+$payloadPrefix = $PayloadApp.TrimEnd('\') + '\'
+Get-ChildItem $PayloadApp -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.FullName.StartsWith($payloadPrefix)) {
+        $rel = $_.FullName.Substring($payloadPrefix.Length)
+        if ($rel.Length -gt $maxRel) { $maxRel = $rel.Length }
+    }
+}
+Write-Host "  payload 最深相对路径  $maxRel 字符"
+if ($maxRel -le 0) { throw "无法计算 payload 最深相对路径（$PayloadApp 为空？）" }
+
 $buildDir = Join-Path $InstallerOut "build"
 if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
@@ -235,13 +251,25 @@ if ($content -notmatch [regex]::Escape('#define AppVersion "' + $Version + '"'))
     throw "安装脚本版本号替换失败：liuhao.iss 里没有 #define AppVersion 声明。"
 }
 $content = $content.Replace('#define PayloadDir "..\dist\payload\app"', '#define PayloadDir "' + $PayloadApp + '"')
+# 注入本次 payload 的实测深度；连同默认值一起替换，避免手工编译和构建产物用两套数。
+$content = $content.Replace('#define MaxPayloadPathLen "160"', '#define MaxPayloadPathLen "' + $maxRel + '"')
+if ($content -notmatch [regex]::Escape('#define MaxPayloadPathLen "' + $maxRel + '"')) {
+    throw "安装脚本 MAX_PATH 预检参数注入失败：liuhao.iss 里没有 #define MaxPayloadPathLen 声明。"
+}
 # 编译副本在 dist\installer\build 下，相对的 OutputDir 会解析错位，改成绝对路径。
-$content = $content.Replace('OutputDir=..\dist\installer', 'OutputDir=' + $InstallerOut)
+# liuhao.iss 的 OutputDir 走 #define SetupOutputDir（默认 ..\dist\installer），
+# 既保证这里注入绝对路径，也允许沙箱验证用 /DSetupOutputDir=<临时目录> 编译，
+# 不会在 dist\installer 里留下任何验证产物。
+$content = $content.Replace('#define SetupOutputDir "..\dist\installer"', '#define SetupOutputDir "' + $InstallerOut + '"')
+if ($content -notmatch [regex]::Escape('#define SetupOutputDir "' + $InstallerOut + '"')) {
+    throw "安装脚本输出目录注入失败：liuhao.iss 里没有 #define SetupOutputDir 声明。"
+}
 # Inno Setup 6 是 Unicode 版；显式写 UTF-8 BOM，保证中文界面文案不乱码。
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($iss, $content, $utf8Bom)
 $before = Join-Path $buildDir "assets\BEFORE-INSTALL.txt"
 [System.IO.File]::WriteAllText($before, (Get-Content -Raw -Encoding UTF8 -LiteralPath $before), $utf8Bom)
+
 Write-Step "品牌字面硬门禁（编译前）"
 & $Python (Join-Path $Root "packaging\brand_guard.py") --payload $PayloadApp --iss $iss
 if ($LASTEXITCODE -ne 0) {

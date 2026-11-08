@@ -63,6 +63,41 @@ SECRET_SCAN_SKIP_PREFIXES = ("runtime/",)
 #: 写进仓库本身。设置 ``LIUHAO_KEY_NEEDLE`` 后额外按字面匹配。
 NEEDLE_ENV = "LIUHAO_KEY_NEEDLE"
 
+#: 开发/部署侧的配置模板：安装版一律不用。上一版交付把它们随包带了出去，
+#: 用户照着 ``development.yaml`` 改配置只会改错文件。出现即构建失败。
+#: **必须与 ``stage_payload.CONFIG_EXCLUDES`` 保持一致。**
+FORBIDDEN_CONFIG_NAMES = {
+    "development.yaml",
+    "testing.yaml",
+    "crontab",
+    "supervisor.conf",
+    "nginx.conf",
+    "prometheus.yml",
+    "grafana-dashboard.json",
+    "alert-rules.yaml",
+}
+
+#: 第三方发行包里只服务于上游测试的路径（上一版交付被审计出 344 个）。
+THIRD_PARTY_TEST_DIRS = {"test", "tests", "testing"}
+THIRD_PARTY_TEST_FILE_NAMES = {"conftest.py", "tox.ini", "pytest.ini", "setup.cfg"}
+
+#: 安装版必须随包的文件（0.1.1 交付口径，缺一即失败）。
+#: 许可证文本按 ``packaging/licenses/`` 实际文件逐个核对，见 ``check``。
+REQUIRED_INSTALL_FILES = (
+    "scripts/first_run_gui.py",            # 图形化首启（默认入口）
+    "scripts/purge_installed_config.py",   # 覆盖升级后清理旧配置
+    "scripts/purge_pruned_payload.py",     # 覆盖升级后清理已剪枝旧文件
+    "scripts/collect_diagnostics.bat",     # 离线诊断入口
+    "THIRD-PARTY-NOTICES.txt",             # 第三方许可证索引
+)
+
+#: 剪枝清单与运行期守卫（``stage_payload._prune_payload`` 产出）。
+PRUNE_MANIFEST_NAME = "prune-manifest.json"
+PRUNE_GUARD_FILES = (
+    "runtime/Lib/site-packages/_liuhao_prune_guard.py",
+    "runtime/Lib/site-packages/liuhao_prune_guard.pth",
+)
+
 
 def _relative(path: Path, root: Path) -> str:
     try:
@@ -111,6 +146,63 @@ def check(app_root: Path) -> List[Tuple[str, str]]:
             continue
         if _scan_secret(entry, needle):
             problems.append(("疑似明文密钥", rel))
+
+    # ---- 以下三类是「上一版交付被审计出来的真实缺陷」，不是可选建议 ----
+
+    # 1) 开发/部署配置模板混进 config/
+    config_dir = app_root / "config"
+    if config_dir.is_dir():
+        for entry in config_dir.iterdir():
+            if entry.is_file() and entry.name in FORBIDDEN_CONFIG_NAMES:
+                problems.append(("禁忌配置模板", _relative(entry, app_root)))
+
+    # 2) 第三方发行包的上游测试文件/目录（只查 site-packages，标准库已按目录跳过）
+    site_packages = app_root / "runtime" / "Lib" / "site-packages"
+    if site_packages.is_dir():
+        for entry in site_packages.rglob("*"):
+            if entry.is_dir():
+                if entry.name.lower() in THIRD_PARTY_TEST_DIRS:
+                    problems.append(("第三方测试目录", _relative(entry, app_root)))
+            elif entry.is_file():
+                name = entry.name.lower()
+                if (
+                    name in THIRD_PARTY_TEST_FILE_NAMES
+                    or entry.match("test_*.py")
+                    or entry.match("*_test.py")
+                ):
+                    problems.append(("第三方测试文件", _relative(entry, app_root)))
+
+    # 3) 必须随包的入口与许可证文本
+    for rel in REQUIRED_INSTALL_FILES:
+        if not (app_root / rel).is_file():
+            problems.append(("缺少交付内容", rel))
+
+    # 4) 剪枝清单与实际树必须自洽：清单说删掉的文件不许再出现，守卫必须随包。
+    #    老版本安装树没有清单，只在其存在时校验，避免把历史安装判成脏。
+    manifest_path = app_root / PRUNE_MANIFEST_NAME
+    if manifest_path.is_file():
+        import json
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(("剪枝清单损坏", f"{PRUNE_MANIFEST_NAME}: {exc}"))
+            manifest = {}
+        if isinstance(manifest, dict) and manifest.get("enabled"):
+            for rel in manifest.get("paths") or []:
+                if (app_root / str(rel)).exists():
+                    problems.append(("剪枝清单里的文件仍在树中", str(rel)))
+            for rel in PRUNE_GUARD_FILES:
+                if not (app_root / rel).is_file():
+                    problems.append(("缺少剪枝守卫", rel))
+            if not (manifest.get("modules") or {}):
+                problems.append(("剪枝清单为空", PRUNE_MANIFEST_NAME))
+
+    licenses_src = Path(__file__).resolve().parents[1] / "licenses"
+    if licenses_src.is_dir():
+        for source in sorted(licenses_src.iterdir()):
+            if source.is_file() and not (app_root / "licenses" / source.name).is_file():
+                problems.append(("缺少许可证文本", f"licenses/{source.name}"))
     return problems
 
 
@@ -134,8 +226,25 @@ def main(argv: List[str] | None = None) -> int:
         print(f"    !! [{category}] {rel}", file=sys.stderr)
     if len(problems) > 40:
         print(f"    …… 其余 {len(problems) - 40} 条同类，已省略", file=sys.stderr)
+    categories = {category for category, _rel in problems}
     print("  构建中止：清理后再打包（这些路径只应存在于运行期，不属于交付树）。",
           file=sys.stderr)
+    print("  按类别修复：", file=sys.stderr)
+    if "禁忌配置模板" in categories:
+        print("    · 禁忌配置模板 → 在 packaging/stage_payload.py 的 CONFIG_EXCLUDES 里"
+              "补上对应文件名，再重跑 stage_payload（本门禁与它必须一致）。", file=sys.stderr)
+    if {"第三方测试目录", "第三方测试文件"} & categories:
+        print("    · 第三方测试文件 → 检查 packaging/stage_payload.py 的 _copy_distributions"
+              " 是否走了 RECORD 分支；_is_test_artifact 过滤被绕过时先修它，不要手删 payload。",
+              file=sys.stderr)
+    if {"缺少交付内容", "缺少许可证文本"} & categories:
+        print("    · 缺少交付内容/许可证 → 核对 stage_payload.PAYLOAD_SCRIPTS 与"
+              " packaging/licenses/，补齐后重跑 python packaging/stage_payload.py。",
+              file=sys.stderr)
+    if {"剪枝清单里的文件仍在树中", "缺少剪枝守卫", "剪枝清单为空"} & categories:
+        print("    · 剪枝不一致 → 用 python packaging/stage_payload.py 重新组装"
+              "（默认开启剪枝），不要在 payload 上手工补删；若要回滚，加 --no-prune。",
+              file=sys.stderr)
     return 1
 
 

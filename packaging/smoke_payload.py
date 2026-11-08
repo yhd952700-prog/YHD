@@ -185,6 +185,77 @@ def _registered_in_data_dir(data_dir: Path) -> bool:
     )
 
 
+_LOCAL_PROOF_CODE = r"""
+import json
+
+from src.common.local_proof_ipc import request_token_bundle
+from src.gateway import local_proof
+
+local_proof.start_broker()
+ready = local_proof.wait_for_broker(timeout=10.0)
+acl_ok = local_proof.pipe_acl_is_current_user_only() if ready else False
+used = replay = False
+bundle_keys = []
+try:
+    bundle = request_token_bundle(timeout=10.0)
+    bundle_keys = sorted(bundle)
+    used = local_proof.redeem_token(
+        bundle["handoff_token"], scope=local_proof.SCOPE_HANDOFF
+    )
+    replay = local_proof.redeem_token(
+        bundle["handoff_token"], scope=local_proof.SCOPE_HANDOFF
+    )
+finally:
+    local_proof.stop_all_brokers()
+print("LOCAL_PROOF_JSON " + json.dumps({
+    "ready": ready,
+    "acl": acl_ok,
+    "bundle_keys": bundle_keys,
+    "used": used,
+    "replay": replay,
+}))
+"""
+
+
+def _local_proof_check(payload: Path, data_dir: Path) -> Dict[str, Any]:
+    """在安装包的运行时里真实启动命名管道并走完令牌生命周期。
+
+    只验证 ``import`` 会漏掉 pywin32 运行时缺失、DACL 设置失败、管道线程
+    起不来、令牌不可用这类问题；这里用安装包自己的 python.exe 起一个隔离
+    进程，输出 ready/acl/used/replay 四项硬证据。
+    """
+    env = _isolated_env(data_dir)
+    try:
+        completed = subprocess.run(
+            [
+                str(payload / "runtime" / "python.exe"),
+                "-c",
+                _LOCAL_PROOF_CODE,
+            ],
+            cwd=str(payload),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"error": str(exc)}
+    payload_line = ""
+    for line in (completed.stdout or "").splitlines():
+        if line.startswith("LOCAL_PROOF_JSON "):
+            payload_line = line[len("LOCAL_PROOF_JSON "):]
+    if not payload_line:
+        return {
+            "error": f"exit={completed.returncode}",
+            "stdout": (completed.stdout or "")[-500:],
+            "stderr": (completed.stderr or "")[-500:],
+        }
+    try:
+        return json.loads(payload_line)
+    except json.JSONDecodeError as exc:
+        return {"error": f"bad json: {exc}", "raw": payload_line[-500:]}
+
+
 def _tail(path: Path, lines: int = 25) -> str:
     try:
         content = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -225,6 +296,34 @@ def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
 
         _kill_tree(child)
         time.sleep(2.0)
+
+        # ---- 本机证明通道：真实起管道、读 DACL、取令牌、取用即焚 ----
+        proof = _local_proof_check(payload, data_dir)
+        report["steps"]["local_proof_pipe"] = (
+            "PASS" if proof.get("ready") is True else f"FAIL({proof.get('error') or proof})"
+        )
+        report["steps"]["local_proof_dacl"] = (
+            "PASS" if proof.get("acl") is True else f"FAIL({proof.get('error') or proof})"
+        )
+        report["steps"]["local_proof_token"] = (
+            "PASS"
+            if proof.get("used") is True
+            and proof.get("bundle_keys") == ["expires_in", "handoff_token", "reset_token"]
+            else f"FAIL({proof.get('error') or proof})"
+        )
+        report["steps"]["local_proof_single_use"] = (
+            "PASS" if proof.get("used") is True and proof.get("replay") is False
+            else f"FAIL({proof.get('error') or proof})"
+        )
+        proof_core = (
+            report["steps"]["local_proof_pipe"],
+            report["steps"]["local_proof_dacl"],
+            report["steps"]["local_proof_token"],
+            report["steps"]["local_proof_single_use"],
+        )
+        if any(item != "PASS" for item in proof_core):
+            report["steps"]["local_proof_detail"] = proof
+            return report, 1
 
         # ---- 注册人类身份（与向导等价的最小路径） ----
         code = _register(payload, data_dir, log_path)
@@ -294,7 +393,10 @@ def smoke(payload: Path) -> Tuple[Dict[str, Any], int]:
         time.sleep(1.0)
 
         core = [report["steps"].get(k) for k in
-                ("health", "console_index", "register_identity",
+                ("health", "console_index",
+                 "local_proof_pipe", "local_proof_dacl",
+                 "local_proof_token", "local_proof_single_use",
+                 "register_identity",
                  "identity_store_in_data_dir", "restart_health", "login")]
         return report, 0 if all(item == "PASS" for item in core) else 1
     finally:
