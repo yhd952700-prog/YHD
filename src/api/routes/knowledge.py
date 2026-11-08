@@ -4,9 +4,10 @@ Canonical prefix is ``/v1/knowledge`` to match the rest of the gateway;
 ``/knowledge`` is kept as a deprecated alias so existing clients (and the
 single-port reserved-path list) keep working. Both are behind the human-principal
 gate, and every handler resolves the caller's **account scope** from the verified
-token: members read/write only their own documents, the root account may read the
-whole subtree but never write into a member's space. Cross-account access is a
-neutral 404 (indistinguishable from "not found").
+token: every account reads/writes/deletes only its own documents. The root
+account is **not** an exception (knowledge is a per-account asset); it only
+keeps access to unowned legacy documents from pre-account installations.
+Cross-account access is a neutral 404 (indistinguishable from "not found").
 
 Retrieval and ingest go through :class:`KnowledgeDocumentService`, which uses
 the process-level SQLite vector store and a **real** embedding provider. When no
@@ -47,6 +48,8 @@ A text layer that is mostly replacement/block glyphs is refused with
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sqlite3
 from typing import Any, Dict, Optional
 
@@ -77,6 +80,27 @@ from src.knowledge.ingest_jobs import IngestQueueFull, get_ingest_job_manager
 
 core = APIRouter(tags=["knowledge"])
 
+logger = logging.getLogger(__name__)
+
+
+def _audit_document_deleted(scope: KnowledgeScope, document_id: str, chunks: int) -> None:
+    """删除文档写入哈希链；审计故障不改变"已经删掉"的事实。"""
+    try:
+        from src.kernels.identity import get_identity_manager
+
+        get_identity_manager().record_event(
+            action="knowledge.document.deleted",
+            actor=scope.principal or "",
+            target=document_id,
+            outcome="allowed",
+            details={
+                "document_id": document_id,
+                "chunks_removed": int(chunks),
+            },
+        )
+    except Exception:  # noqa: BLE001 - 审计不可用不能反向让删除失败
+        logger.exception("could not audit knowledge delete for %s", document_id)
+
 
 class IngestRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=200_000)
@@ -91,7 +115,10 @@ class SearchRequest(BaseModel):
 
 
 def _unavailable(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=503, detail=f"知识库未启用：{exc}")
+    message = str(exc)
+    if not message.startswith("知识库未启用"):
+        message = f"知识库未启用：{message}"
+    return HTTPException(status_code=503, detail=message)
 
 
 def _not_found() -> HTTPException:
@@ -105,29 +132,33 @@ def _not_found() -> HTTPException:
 
 
 def _scope_from_account_context(context: Any) -> KnowledgeScope:
-    """账号树位置 -> 知识库读写范围（主账号聚合只读、成员只读写自己）。"""
+    """账号树位置 -> 知识库读写范围（每个账号只看/只删自己的）。
+
+    知识库是账号自有资产：主账号与成员都**不聚合**子账号文档，避免
+    "主账号检索时把成员资料混进回答、删除时误伤成员数据"（E2E 中已复现
+    主账号聚合检索导致回答引用错文档）。主账号额外保留对无归属历史文档
+    的可见/可管理能力，兼容账号体系上线前的单机数据。
+    """
     if context.standalone:
-        # 老部署/单机令牌：历史无归属文档仍归自己，但不额外扩大范围。
+        # 老部署/单机令牌：历史无归属文档仍归自己，新写入沿用无归属 id。
         return KnowledgeScope(
             principal=context.principal,
             owners=(context.principal,),
             include_unowned=True,
-            aggregate=False,
             owns_legacy=True,
+            unowned_writes=True,
         )
     if context.is_member:
         return KnowledgeScope(
             principal=context.principal,
             owners=(context.principal,),
             include_unowned=False,
-            aggregate=False,
             owns_legacy=False,
         )
     return KnowledgeScope(
         principal=context.principal,
-        owners=None,
+        owners=(context.principal,),
         include_unowned=True,
-        aggregate=True,
         owns_legacy=True,
     )
 
@@ -316,6 +347,9 @@ def knowledge_delete_document(
         raise _storage_error(exc)
     if not result["deleted"]:
         raise _not_found()
+    _audit_document_deleted(
+        scope, document_id, int(result.get("chunks_removed") or 0)
+    )
     return result
 
 
@@ -366,8 +400,13 @@ async def knowledge_upload_document(
 
     try:
         data = await _read_upload_limited(file, _MAX_UPLOAD_BYTES)
-        extracted = extract_document(
-            data, filename, allow_low_quality=allow_low_quality
+        # 提取与嵌入都是同步 CPU/IO 阻塞操作；放到工作线程，避免大文件上传
+        # 期间把事件循环堵死（健康检查、对话等请求会一起排队）。
+        extracted = await asyncio.to_thread(
+            extract_document,
+            data,
+            filename,
+            allow_low_quality=allow_low_quality,
         )
     except ExtractionError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc))
@@ -382,7 +421,8 @@ async def knowledge_upload_document(
         metadata["title"] = extracted.title
 
     try:
-        result = get_knowledge_service().ingest(
+        result = await asyncio.to_thread(
+            get_knowledge_service().ingest,
             extracted.text,
             doc_id=doc_id or filename,
             metadata=metadata,

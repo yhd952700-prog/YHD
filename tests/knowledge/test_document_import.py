@@ -185,8 +185,13 @@ class TestDocxExtraction:
 
         chunks = chunk_document_structured(document.text)
         paths = [chunk.heading_path for chunk in chunks]
-        assert ("安装指南",) in paths
+        # 一级标题下只有一句短导语时不单独成块：它和标题几乎同义，单独成块会在
+        # 检索里抢在真正答案片段前面（引用指向"摘要"而非答案）。导语并入首个
+        # 子小节，原文不丢。
+        assert ("安装指南",) not in paths
         assert ("安装指南", "配置") in paths
+        assert chunks[0].heading_path == ("安装指南", "配置")
+        assert "pip install" in chunks[0].text
 
     def test_corrupt_docx_reports_an_explicit_error(self):
         with pytest.raises(CorruptedDocument) as raised:

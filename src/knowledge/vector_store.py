@@ -868,15 +868,56 @@ class PersistentVectorStore(VectorStore):
                     del self._content_hashes[value]
             return {"deleted": True, "chunks_removed": removed}
 
+    def _lexical_rare_token_match(self, chunk_id: str, query_text: str) -> bool:
+        """Whether the best lexical chunk contains a *rare* query token.
+
+        "Rare" means the token exists in at most two indexed chunks. This is the
+        signal a common-word match cannot fake: ``知识库`` appears everywhere,
+        while ``申根``/``签证`` pin exactly one document. Used only to rescue the
+        relevance gate, never to re-rank.
+        """
+        if not self._fts_available or not chunk_id:
+            return False
+        stored = self._store.get(chunk_id)
+        if stored is None:
+            return False
+        query = set(query_tokens(query_text))
+        if not query:
+            return False
+        chunk_tokens = set(_tokens_for_metadata(stored[1]).split())
+        for token in [item for item in query if item in chunk_tokens][:12]:
+            expression = f'"{token.replace(chr(34), chr(34) * 2)}"'
+            try:
+                rows = self._conn.execute(
+                    "SELECT 1 FROM knowledge_fts WHERE tokens MATCH ? LIMIT 3",
+                    (expression,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue
+            if len(rows) < 3:
+                return True
+        return False
+
     def _fts_search_scored(
-        self, query_text: str, limit: int
+        self,
+        query_text: str,
+        limit: int,
+        visible: Optional[Callable[[str], bool]] = None,
     ) -> List[Tuple[str, float]]:
         """BM25-ordered ``(chunk_id, weight)`` pairs (empty when no FTS).
 
+        ``visible`` filters candidates **before** normalization and truncation.
+        Scoped readers must not be truncated by other accounts' documents: with
+        the SQL ``LIMIT`` applied to the global index, 40 better-matching chunks
+        from another account could hide the caller's own exact hit entirely.
+        When a filter is present the scan window therefore covers the whole
+        corpus (BM25 rows are unique chunk ids, so the corpus size is a hard
+        upper bound), then the visible list is ranked and cut to ``limit``.
+
         SQLite's ``bm25()`` is negative (more negative = better), so weights are
-        normalized by the best score: 1.0 for the top hit, a fraction for weaker
-        matches. If ``bm25()`` ever returns non-negative values, fall back to
-        flat 1.0 weights (plain RRF behaviour) instead of dividing by ~0.
+        normalized by the best visible score: 1.0 for the top hit, a fraction
+        for weaker matches. If ``bm25()`` ever returns non-negative values, fall
+        back to flat 1.0 weights (plain RRF behaviour) instead of dividing by ~0.
         """
         if not self._fts_available:
             return []
@@ -884,6 +925,7 @@ class PersistentVectorStore(VectorStore):
         if not tokens:
             return []
         expression = " OR ".join(f'"{token}"' for token in tokens)
+        scan = max(limit, len(self._store)) if visible is not None else limit
         try:
             rows = self._conn.execute(
                 """
@@ -892,11 +934,14 @@ class PersistentVectorStore(VectorStore):
                 ORDER BY bm25(knowledge_fts)
                 LIMIT ?
                 """,
-                (expression, limit),
+                (expression, scan),
             ).fetchall()
         except sqlite3.OperationalError as exc:
             logger.warning("FTS query failed, falling back to vector-only: %s", exc)
             return []
+        if visible is not None:
+            rows = [row for row in rows if visible(row["chunk_id"])]
+        rows = rows[:limit]
         if not rows:
             return []
         best = min(float(row["score"]) for row in rows)
@@ -952,17 +997,20 @@ class PersistentVectorStore(VectorStore):
                 include_unowned=include_unowned,
             )
             vector_ids = [doc_id for doc_id, _, _ in vector_results]
-            lexical = [
-                (chunk_id, weight)
-                for chunk_id, weight in self._fts_search_scored(
-                    query_text, candidate_k
+
+            def _visible(chunk_id: str) -> bool:
+                stored = self._store.get(chunk_id)
+                return stored is not None and _owner_visible(
+                    stored[1], owners, include_unowned
                 )
-                if chunk_id in self._store
-                and _owner_visible(
-                    self._store[chunk_id][1], owners, include_unowned
-                )
-            ]
+
+            lexical = self._fts_search_scored(
+                query_text, candidate_k, visible=_visible
+            )
             lexical_ids = [chunk_id for chunk_id, _ in lexical]
+            lexical_rare = bool(lexical) and self._lexical_rare_token_match(
+                lexical[0][0], query_text
+            )
 
             similarities: Dict[str, float] = {}
             for chunk_id in set(vector_ids) | set(lexical_ids):
@@ -977,6 +1025,7 @@ class PersistentVectorStore(VectorStore):
                 config=config,
                 empty_corpus=empty_corpus,
                 zero_score_allowed=threshold is not None and threshold <= 0.0,
+                lexical_rare_match=lexical_rare,
             )
 
             if lexical_ids:

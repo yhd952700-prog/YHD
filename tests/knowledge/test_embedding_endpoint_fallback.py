@@ -86,13 +86,20 @@ class TestOllamaEndpointFallback:
         assert info.value.status_code == 500
         assert calls == ["http://127.0.0.1:11434/api/embed"]
 
-    def test_unconfigured_ollama_message_stays_about_configuration(self, monkeypatch):
+    def test_unreachable_local_ollama_reports_how_to_enable(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.delenv("LIUHAO_OLLAMA_BASE_URL", raising=False)
         monkeypatch.setenv("LIUHAO_EMBEDDING_PROVIDER", "ollama")
+        # 纯安装会自动探测 config 声明的本机 Ollama；这里显式模拟"没启动"，
+        # 让提示保持可复现，而不是依赖跑测试的机器上 Ollama 是否在运行。
+        monkeypatch.setattr(
+            embedding_module, "_installed_ollama_models", lambda base_url: None
+        )
         with pytest.raises(embedding_module.EmbeddingUnavailableError) as info:
             embedding_module.build_embedding_provider()
-        assert "OLLAMA_BASE_URL is not set" in str(info.value)
+        message = str(info.value)
+        assert "知识库未启用" in message
+        assert "未运行" in message
 
 
 class TestOllamaShapeFallbackStillWorks:

@@ -32,11 +32,121 @@ import json
 import os
 import urllib.error
 import urllib.request
-from typing import List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from error_types import ProviderError
 
 from .chunker import chunk_text
+
+#: Local install defaults. A user who only installed the product (no env vars)
+#: should still get a working knowledge base when the bundled Ollama runtime is
+#: up, instead of an empty index that says "未启用".
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
+OLLAMA_PROBE_TIMEOUT_ENV = "LIUHAO_EMBEDDING_PROBE_TIMEOUT_SECONDS"
+DEFAULT_PROBE_TIMEOUT = 2.0
+
+_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+
+
+def _read_yaml(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return document if isinstance(document, dict) else {}
+    except Exception:  # noqa: BLE001 - config must never break embedding selection
+        return {}
+
+
+def _merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def local_ollama_settings() -> Tuple[str, str]:
+    """``(base_url, embedding_model)`` declared by ``config/*.yaml``.
+
+    The gateway already routes chat to the Ollama declared there; reading the
+    same declaration for embeddings is what makes a plain installation usable
+    without the user exporting variables. Environment variables still win.
+    """
+    environment = (
+        os.environ.get("APP_ENV") or os.environ.get("LIUHAO_ENV") or "development"
+    ).strip().lower()
+    document = _merge(
+        _read_yaml(_CONFIG_DIR / "default.yaml"),
+        _read_yaml(_CONFIG_DIR / f"{environment}.yaml"),
+    )
+    providers = document.get("providers") if isinstance(document.get("providers"), dict) else {}
+    ollama = providers.get("ollama") if isinstance(providers.get("ollama"), dict) else {}
+    base_url = str(ollama.get("base_url") or DEFAULT_OLLAMA_BASE_URL).strip()
+    memory = document.get("memory") if isinstance(document.get("memory"), dict) else {}
+    long_term = memory.get("long_term") if isinstance(memory.get("long_term"), dict) else {}
+    model = str(long_term.get("embedding_model") or DEFAULT_OLLAMA_EMBEDDING_MODEL).strip()
+    return base_url, model
+
+
+def _probe_timeout() -> float:
+    raw = (os.environ.get(OLLAMA_PROBE_TIMEOUT_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_PROBE_TIMEOUT
+    except ValueError:
+        value = DEFAULT_PROBE_TIMEOUT
+    return max(0.2, min(value, 10.0))
+
+
+def _installed_ollama_models(base_url: str) -> Optional[List[str]]:
+    """Installed model names, or ``None`` when the daemon is unreachable."""
+    request = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=_probe_timeout()) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - "not running" is the normal first-run state
+        return None
+    models = payload.get("models") if isinstance(payload, dict) else None
+    return [
+        str(item.get("name") or "").strip()
+        for item in models or []
+        if isinstance(item, dict) and item.get("name")
+    ]
+
+
+def _model_available(installed: Sequence[str], requested: str) -> bool:
+    """Match ``nomic-embed-text`` against ``nomic-embed-text:latest`` (and back)."""
+    want = requested.strip().lower()
+    want_base = want.split(":", 1)[0]
+    for name in installed:
+        candidate = name.strip().lower()
+        if candidate == want:
+            return True
+        if candidate.split(":", 1)[0] == want_base and candidate.endswith(":latest"):
+            return True
+    return False
+
+
+def _production() -> bool:
+    """Whether this deployment is production (single canonical resolver)."""
+    try:
+        from ..security.posture import is_production
+
+        return is_production()
+    except Exception:  # noqa: BLE001 - never let posture break provider selection
+        raw = (
+            os.environ.get("LIUHAO_ENV")
+            or os.environ.get("ENVIRONMENT")
+            or os.environ.get("APP_ENV")
+            or ""
+        ).strip().lower()
+        return raw in {"production", "prod"}
 
 
 class EmbeddingPipeline:
@@ -360,8 +470,10 @@ def build_embedding_provider() -> object:
     """Build the real embedder from env, or raise ``EmbeddingUnavailableError``.
 
     ``LIUHAO_EMBEDDING_PROVIDER`` selects explicitly (``openai`` / ``ollama`` /
-    ``mock``); ``auto`` (the default) picks OpenAI-compatible when a key is
-    present, else Ollama when its base URL is configured, else stays disabled.
+    ``mock``). ``auto`` (the default) **never** goes to the cloud: it only uses
+    a local Ollama, so merely having ``OPENAI_API_KEY`` in the environment can
+    no longer ship knowledge-base text to ``api.openai.com``. Cloud embedding
+    requires an explicit ``openai`` / ``openai_compatible`` choice.
     """
     choice = (os.environ.get(EMBEDDING_PROVIDER_ENV) or "auto").strip().lower()
     model = (os.environ.get(EMBEDDING_MODEL_ENV) or "").strip()
@@ -374,11 +486,6 @@ def build_embedding_provider() -> object:
             )
         return MockEmbedder()
 
-    api_key = (
-        os.environ.get("LIUHAO_EMBEDDING_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or ""
-    ).strip()
     openai_base = (
         os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     ).strip()
@@ -386,18 +493,49 @@ def build_embedding_provider() -> object:
         os.environ.get("OLLAMA_BASE_URL") or os.environ.get("LIUHAO_OLLAMA_BASE_URL") or ""
     ).strip()
 
-    if choice in {"openai", "openai_compatible", "auto"} and api_key:
+    # 云端只在**显式选择**时启用。``auto`` 不再因为环境里恰好有
+    # ``OPENAI_API_KEY`` 就把知识库分片原文发到 api.openai.com —— 这是全产品
+    # 最隐蔽的一条外发路径，默认必须留在本机。
+    if choice in {"openai", "openai_compatible"}:
+        api_key = (
+            os.environ.get("LIUHAO_EMBEDDING_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or ""
+        ).strip()
+        if not api_key:
+            raise EmbeddingUnavailableError(
+                "LIUHAO_EMBEDDING_PROVIDER=openai but neither "
+                "LIUHAO_EMBEDDING_API_KEY nor OPENAI_API_KEY is set"
+            )
         return OpenAICompatibleEmbedder(
             model=model or "text-embedding-3-small", base_url=openai_base, api_key=api_key
-        )
-    if choice in {"openai", "openai_compatible"}:
-        raise EmbeddingUnavailableError(
-            "LIUHAO_EMBEDDING_PROVIDER=openai but neither "
-            "LIUHAO_EMBEDDING_API_KEY nor OPENAI_API_KEY is set"
         )
 
     if choice in {"ollama", "auto"} and ollama_base:
         return OllamaEmbedder(model=model or "nomic-embed-text", base_url=ollama_base)
+
+    # 纯安装、没有导出任何变量的场景：用 config/*.yaml 里已经声明的本机
+    # Ollama（聊天也用它），先探测再启用。生产环境保持 fail-closed：部署方
+    # 必须显式声明 provider，而不是继承开发机的默认值。
+    if choice in {"ollama", "auto"} and not _production():
+        config_base, config_model = local_ollama_settings()
+        model_name = model or config_model
+        installed = _installed_ollama_models(config_base)
+        if installed is None:
+            raise EmbeddingUnavailableError(
+                "知识库未启用：没有可用的 embedding provider。本机 Ollama "
+                f"（{config_base}）未运行，无法自动启用；请启动 Ollama，或设置 "
+                "LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址"
+            )
+        if not _model_available(installed, model_name):
+            available = "、".join(installed) if installed else "无"
+            raise EmbeddingUnavailableError(
+                f"知识库未启用：本机 Ollama 缺少 embedding 模型 '{model_name}'"
+                f"（已安装：{available}）。请执行 `ollama pull {model_name}`，"
+                "或设置 LIUHAO_EMBEDDING_MODEL"
+            )
+        return OllamaEmbedder(model=model_name, base_url=config_base)
+
     if choice == "ollama":
         raise EmbeddingUnavailableError(
             "LIUHAO_EMBEDDING_PROVIDER=ollama but OLLAMA_BASE_URL is not set"

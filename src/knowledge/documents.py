@@ -86,22 +86,25 @@ def scoped_content_hash(text: str, owner: Optional[str]) -> str:
 class KnowledgeScope:
     """一次知识库读写的账号范围。
 
-    - ``owners=None``：不限制（主账号聚合只读）；
-    - ``owners=(principal,)``：只读自己；
+    - ``owners=None``：不限制（内部/评测用；HTTP 面不会这样传）；
+    - ``owners=(principal,)``：只读自己（主账号与成员一致）；
     - ``include_unowned``：是否包含无归属的历史数据（单机老部署）；
-    - ``aggregate``：主账号聚合视角（可读整棵子树，但写仍只落自己）；
-    - ``owns_legacy``：能否管理无归属历史数据（仅主账号/老部署）。
+    - ``owns_legacy``：能否管理无归属历史数据（仅主账号/老部署）；
+    - ``unowned_writes``：新写入是否沿用无归属 id（仅单机老部署；
+      账号树里的主账号仍写自己的前缀）。
     """
 
     principal: str
     owners: Optional[Tuple[str, ...]] = None
     include_unowned: bool = True
-    aggregate: bool = True
     owns_legacy: bool = True
+    unowned_writes: bool = False
 
     @classmethod
     def all(cls) -> "KnowledgeScope":
-        return cls(principal="", owners=None, include_unowned=True, aggregate=True)
+        return cls(
+            principal="", owners=None, include_unowned=True, unowned_writes=True
+        )
 
     def covers(self, owner: Optional[str]) -> bool:
         owner = str(owner or "").strip()
@@ -117,26 +120,24 @@ class KnowledgeScope:
         return owner == self.principal
 
     def may_delete(self, owner: Optional[str]) -> bool:
-        """删除归属：自己 + 主账号子树；无归属历史只允许主账号/老部署。
+        """删除归属：只删自己的；无归属历史只允许主账号/老部署。
 
-        与 ``may_write`` 的区别只在主账号：主账号不能**写入**成员的范围，但
-        可以清理自己子树内的文档（管理语义），因此 ``aggregate`` 视角下允许
-        删除覆盖范围内（``covers``）的文档。成员仍然是"只能删自己的"。
+        知识库是**账号自有资产**（``docs/account-hierarchy.md`` 的日常能力表），
+        主账号也没有聚合读/删成员知识库的权限；删除与 ``may_write`` 同口径，
+        这样"删除只影响自己的"对主账号与成员一致成立。
         """
         owner = str(owner or "").strip()
         if not owner:
             return self.owns_legacy
-        if owner == self.principal:
-            return True
-        return bool(self.aggregate and self.covers(owner))
+        return owner == self.principal
 
     def store_kwargs(self) -> Dict[str, Any]:
         return {"owners": self.owners, "include_unowned": self.include_unowned}
 
     @property
     def write_owner(self) -> str:
-        """写入归属：单机老部署沿用无归属历史（id 不变），多账号写自己。"""
-        if self.owns_legacy and not self.aggregate:
+        """写入归属：单机老部署沿用无归属历史（id 不变），账号树写自己。"""
+        if self.unowned_writes:
             return ""
         return self.principal
 
@@ -163,6 +164,47 @@ def _hit_text(metadata: Dict[str, Any]) -> str:
     if not prefix:
         return body
     return f"[{prefix}]\n{body}" if body else f"[{prefix}]"
+
+
+#: 脱敏本身失败时对外返回的固定屏蔽文案：宁可看不到内容，也不漏原文。
+REDACTED_CONTENT = "[内容已屏蔽：脱敏失败，未输出原文]"
+
+#: 这些元数据字段会原样出现在检索结果 / 分块 / 文档列表里，必须脱敏；
+#: ``document_id`` / ``chunk_index`` / ``score`` 等标识字段保留，否则引用会错位。
+_REDACT_METADATA_KEYS = ("text", "source", "filename", "title", "context_header")
+
+
+def redact_for_output(text: Any) -> str:
+    """知识库对外展示的最后一层脱敏（密钥 / 路径 / 邮箱 / PII）。
+
+    写入与检索仍用原文（否则关键词与语义都会失真），只在返回给客户端 /
+    提示词 / 界面之前脱敏。任何异常都 fail-closed：不返回原文。
+    """
+    if not text:
+        return ""
+    try:
+        from src.common.redaction import redact_log_text
+        from .pii import redact_text as redact_pii
+
+        return redact_log_text(redact_pii(str(text)))
+    except Exception as exc:  # noqa: BLE001 - 脱敏失败必须屏蔽，不能退回原文
+        logger.error("knowledge redaction failed; refusing raw text: %s", exc)
+        return REDACTED_CONTENT
+
+
+def _redact_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy metadata with the human-visible string fields redacted."""
+    safe = dict(metadata or {})
+    for key in _REDACT_METADATA_KEYS:
+        value = safe.get(key)
+        if isinstance(value, str) and value:
+            safe[key] = redact_for_output(value)
+    heading_path = safe.get("heading_path")
+    if isinstance(heading_path, (list, tuple)):
+        safe["heading_path"] = [
+            redact_for_output(item) for item in heading_path if isinstance(item, str)
+        ]
+    return safe
 
 
 def _embed_pages(
@@ -256,13 +298,20 @@ class KnowledgeDocumentService:
             logger.error("knowledge status: vector store unavailable (%s)", exc)
             reason = reason or f"向量库不可用：{type(exc).__name__}"
 
+        if reason is None:
+            message = "知识库已启用"
+        elif reason.startswith("知识库未启用"):
+            message = reason
+        else:
+            message = f"知识库未启用：{reason}"
+
         return {
             "enabled": reason is None,
             "provider": provider,
             "model": model,
             "vectors": vectors,
             "reason": reason,
-            "message": "知识库已启用" if reason is None else f"知识库未启用：{reason}",
+            "message": message,
         }
 
     # -- write -------------------------------------------------------------
@@ -454,8 +503,10 @@ class KnowledgeDocumentService:
             {
                 "doc_id": doc_id,
                 "score": round(score, 6),
-                "text": _hit_text(meta or {}),
-                "metadata": meta or {},
+                "text": redact_for_output(_hit_text(meta or {})),
+                # 展示/引用用的元数据同样脱敏；document_id / chunk_index 保留，
+                # 否则前端与引用编号会指向错误片段。
+                "metadata": _redact_metadata(meta or {}),
                 # Explicit provenance fields so a client never has to dig into
                 # metadata to show "来自第 N 页" / "第 2-3 页".
                 "page": (meta or {}).get("page"),
@@ -493,6 +544,11 @@ class KnowledgeDocumentService:
         documents, total = store.list_documents(
             limit=limit, offset=offset, **store_filter
         )
+        for document in documents:
+            for key in ("source", "title"):
+                value = document.get(key)
+                if isinstance(value, str) and value:
+                    document[key] = redact_for_output(value)
         return {
             "documents": documents,
             "total": total,
@@ -517,6 +573,19 @@ class KnowledgeDocumentService:
                 for chunk in chunks
                 if scope.covers(chunk.get("owner_account_id"))
             ]
+        chunks = [
+            {
+                **chunk,
+                "text": redact_for_output(chunk.get("text")),
+                "context_header": redact_for_output(chunk.get("context_header")),
+                "heading_path": [
+                    redact_for_output(item)
+                    for item in (chunk.get("heading_path") or [])
+                    if isinstance(item, str)
+                ],
+            }
+            for chunk in chunks
+        ]
         return {
             "document_id": document_id,
             "chunks": chunks,

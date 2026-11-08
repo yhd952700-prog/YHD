@@ -84,6 +84,42 @@ class TestHybridSearch:
         assert info["lexical_candidates"] >= 1
         store.close()
 
+    def test_scoped_fts_is_not_truncated_by_other_accounts(self, tmp_path):
+        """成员自己的精确命中文档不能被别人的 40 条更高 BM25 候选挤掉。"""
+        store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
+        for index in range(60):
+            store.insert(
+                f"bob--noise#{index}",
+                [1.0, 0.0],
+                {
+                    "text": "NEEDLE 噪声文档 重复内容",
+                    "document_id": "bob--noise",
+                    "owner_account_id": "bob",
+                },
+            )
+        store.insert(
+            "alice--target#0",
+            [1.0, 0.0],
+            {
+                "text": "NEEDLE 只有这一份是 alice 的答案",
+                "document_id": "alice--target",
+                "owner_account_id": "alice",
+            },
+        )
+        results, info = store.hybrid_search(
+            "NEEDLE",
+            [1.0, 0.0],
+            top_k=5,
+            threshold=0.0,
+            owners={"alice"},
+            include_unowned=False,
+        )
+        ids = [doc_id for doc_id, _, _ in results]
+        assert "alice--target#0" in ids
+        assert info["lexical_candidates"] >= 1
+        assert all(doc_id.startswith("alice--") for doc_id in ids)
+        store.close()
+
     def test_part_number_query_ranks_keyword_chunk_first(self, tmp_path):
         store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))
         store.insert("a#0", [1.0, 0.0], {"text": "手册目录", "document_id": "a"})

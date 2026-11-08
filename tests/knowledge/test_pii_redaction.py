@@ -63,6 +63,65 @@ class TestNameDetectionIsConservative:
         assert "role" in redacted
 
 
+class _ConstantEmbedder:
+    name = "constant"
+    model = "constant"
+
+    def embed(self, texts):
+        return [[1.0, 0.0] for _ in texts]
+
+
+class TestKnowledgeOutputIsRedacted:
+    """检索结果 / 分块 / 文档列表是最后的展示面，密钥、路径、邮箱必须脱敏。"""
+
+    def _service(self, tmp_path):
+        from src.knowledge.documents import KnowledgeDocumentService
+        from src.knowledge.vector_store import PersistentVectorStore
+
+        return KnowledgeDocumentService(
+            vector_store=PersistentVectorStore(str(tmp_path / "vectors.sqlite3")),
+            embedder=_ConstantEmbedder(),
+        )
+
+    def test_search_chunks_and_list_redact_secrets_paths_and_emails(self, tmp_path):
+        service = self._service(tmp_path)
+        body = (
+            "# 配置说明\n\n"
+            "API Key: sk-live-ABCDEFGHIJKLMNOP\n"
+            "配置文件 C:\\Users\\alice\\secret\\conf.ini\n"
+            "联系邮箱 fred@example.com，手机 13812345678。\n"
+        )
+        service.ingest(
+            body,
+            doc_id="leaky",
+            metadata={
+                "filename": "C:\\Users\\alice\\secret\\manual.md",
+                "title": "内部手册",
+            },
+        )
+
+        hits = service.search("配置", top_k=5)["hits"]
+        assert hits, "正常内容必须仍能被检索到"
+        text = hits[0]["text"]
+        assert "sk-live-ABCDEFGHIJKLMNOP" not in text
+        assert "alice@example.com" not in text
+        assert "fred@example.com" not in text
+        assert "13812345678" not in text
+        assert "C:\\Users\\alice" not in text
+        # 文件名保留，引用仍能指向正确文件
+        assert "conf.ini" in text
+        assert "manual.md" in str(hits[0]["metadata"])
+
+        chunks = service.document_chunks("leaky")["chunks"]
+        assert chunks and all("sk-live" not in c["text"] for c in chunks)
+        assert all("fred@example.com" not in c["text"] for c in chunks)
+
+        listed = service.list_documents()["documents"]
+        assert listed
+        assert "C:\\Users\\alice" not in str(listed[0]["source"])
+        assert "manual.md" in str(listed[0]["source"])
+
+
 class TestRedactionFailureIsFailClosed:
     def test_filter_content_never_returns_raw_text_when_redaction_raises(
         self, monkeypatch

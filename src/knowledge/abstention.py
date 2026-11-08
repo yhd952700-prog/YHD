@@ -321,6 +321,7 @@ def assess_confidence(
     distribution_size: int = 5,
     empty_corpus: bool = False,
     zero_score_allowed: bool = False,
+    lexical_rare_match: bool = False,
 ) -> Dict[str, Any]:
     """Score a candidate set and return the finalized verdict fields.
 
@@ -329,6 +330,12 @@ def assess_confidence(
     separates ``empty_corpus`` from ``below_threshold`` when no candidate
     exists. ``zero_score_allowed`` marks a caller that explicitly accepted
     zero scores (``threshold <= 0``), so all-zero candidates are not re-gated.
+    ``lexical_rare_match`` says the best BM25 chunk contains a *rare* query
+    token (document frequency <= 2). A rare exact keyword is stronger evidence
+    than the tuned ``top_score >= floor * (1 + gap)`` margin: the margin missed
+    a genuine answer when an unrelated document edged the cosine top by 0.002
+    (0.6807 < 0.6825). Common words never set this flag, so the near-tie
+    "知识库" false-answer case stays abstained.
     The verdict carries the thresholds and the observed distribution so a
     caller can explain *why* it abstained.
     """
@@ -377,11 +384,20 @@ def assess_confidence(
     relative = gap >= config.min_top_gap
     strong_match = top_score >= config.strong_match_similarity
     lexical = lexical_candidates > 0
+    # A lexical hit may rescue a low absolute vector score (exact part numbers,
+    # ticket ids), but it must be a *clear* keyword win, not a common word:
+    # with a near-tie top two, "知识库" matching several chunks made an
+    # unanswerable question look confident (0.6632 vs 0.6547, gap 0.0085).
+    # The margin is relative to the provider's own floor, because score units
+    # are not comparable across embedders: hashing clears 0.08 by 0.019 while
+    # nomic clears 0.65 by 0.013, and only the latter is the ambiguous case.
+    floor_margin = config.min_top_similarity * (1.0 + config.min_top_gap)
+    lexical_rescue = lexical and (top_score >= floor_margin or lexical_rare_match)
     degenerate_vectors = all(score == 0.0 for _, score in ordered)
     if degenerate_vectors:
         confident = zero_score_allowed or lexical
     else:
-        confident = absolute and (relative or strong_match or lexical)
+        confident = absolute and (relative or strong_match or lexical_rescue)
 
     if confident:
         reason = None
@@ -411,6 +427,7 @@ def assess_confidence(
             "relative": relative,
             "strong_match": strong_match,
             "lexical": lexical,
+            "lexical_rare": lexical_rare_match,
         },
     }
 

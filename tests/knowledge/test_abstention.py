@@ -139,6 +139,48 @@ class TestVerdictFields:
         assert no_relevant["reason"] == REASON_BELOW_THRESHOLD
 
 
+class TestLexicalRescue:
+    """A keyword hit may rescue a low score, but never a near-tie."""
+
+    def test_common_word_near_tie_is_ambiguous_not_confident(self):
+        config = AbstentionConfig(
+            min_top_similarity=0.65, min_top_gap=0.05, strong_match_similarity=0.85
+        )
+        # 实测：真实 40KB 文档里问“知识库的备份保留多少天”，top 0.6632 /
+        # runner-up 0.6547，只因“知识库”这个词命中词法列表就判 ok，模型随后编造天数。
+        verdict = assess_confidence(
+            {"kb-032#0": 0.6632, "kb-033#0": 0.6547},
+            3,
+            config=config,
+        )
+        assert verdict["status"] == NO_RELEVANT
+        assert verdict["reason"] == REASON_AMBIGUOUS
+
+    def test_clear_keyword_win_still_rescues_a_low_absolute_score(self):
+        config = AbstentionConfig(
+            min_top_similarity=0.65, min_top_gap=0.05, strong_match_similarity=0.85
+        )
+        verdict = assess_confidence(
+            {"ticket#0": 0.70, "other#0": 0.40},
+            1,
+            config=config,
+        )
+        assert verdict["status"] == STATUS_OK
+
+    def test_margin_is_relative_to_the_provider_floor(self):
+        # hashing 的 0.08 门槛下，0.0991 只高出 0.019 也算清晰命中（评测集
+        # 最低的可答命中分），不能被借用 nomic 的绝对间距误杀。
+        config = AbstentionConfig(
+            min_top_similarity=0.08, min_top_gap=0.05, strong_match_similarity=0.85
+        )
+        verdict = assess_confidence(
+            {"faq#0": 0.0991, "faq#1": 0.05},
+            1,
+            config=config,
+        )
+        assert verdict["status"] == STATUS_OK
+
+
 class TestHybridSearchContract:
     def _store(self, tmp_path) -> PersistentVectorStore:
         store = PersistentVectorStore(str(tmp_path / "vectors.sqlite3"))

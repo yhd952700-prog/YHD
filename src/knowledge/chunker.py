@@ -330,11 +330,54 @@ def chunk_document_structured(
         buffer_len = projected
 
     flush_buffer()
-    return chunks
+    return _merge_short_parent_bodies(chunks, chunk_size)
 
 
 _SENTENCE_END = frozenset("。！？.!?…")
 _CLOSING_MARKS = "\"'”’）)】]」』》"
+
+#: 短于该长度的“父级正文”（标题下的一句导语）不单独成块：它与标题高度重合，
+#: 检索时会把真正的答案片段挤到第 2/3 位，引用就指向了没有答案的摘要块。
+#: 仅当它后面紧跟更深的子小节时才并入子块，同级/表格/代码不受影响。
+_MIN_STANDALONE_BODY = 40
+
+
+def _is_non_prose(text: str) -> bool:
+    """表格与代码块即使很短也不能并块（完整性优先）。"""
+    stripped = text.lstrip()
+    return stripped.startswith("|") or stripped.startswith("```") or stripped.startswith("~~~")
+
+
+def _merge_short_parent_bodies(
+    chunks: List[TextChunk], chunk_size: int
+) -> List[TextChunk]:
+    """把标题下过短的导语并入紧随其后的子小节，并重排 chunk index。"""
+    merged: List[TextChunk] = []
+    for chunk in chunks:
+        if (
+            merged
+            and len(merged[-1].text) < _MIN_STANDALONE_BODY
+            and not _is_non_prose(merged[-1].text)
+            and not _is_non_prose(chunk.text)
+            and len(chunk.heading_path) > len(merged[-1].heading_path)
+            and chunk.heading_path[: len(merged[-1].heading_path)]
+            == merged[-1].heading_path
+            and len(merged[-1].text) + 2 + len(chunk.text) <= chunk_size
+        ):
+            previous = merged.pop()
+            merged.append(
+                TextChunk(
+                    f"{previous.text}\n\n{chunk.text}",
+                    chunk.heading_path,
+                    0,
+                )
+            )
+            continue
+        merged.append(chunk)
+    return [
+        TextChunk(chunk.text, chunk.heading_path, index, page=chunk.page, pages=chunk.pages)
+        for index, chunk in enumerate(merged)
+    ]
 
 
 def _ends_with_sentence(text: str) -> bool:

@@ -10,7 +10,7 @@ from typing import List
 import pytest
 from fastapi.testclient import TestClient
 
-from src.knowledge.documents import KnowledgeDocumentService
+from src.knowledge.documents import KnowledgeDocumentService, KnowledgeScope
 from src.knowledge.ingest_jobs import IngestJobManager, reset_ingest_job_manager
 
 _PROVIDER_ENVS = (
@@ -180,6 +180,81 @@ class TestDocumentDeletion:
 
     def test_deleting_a_missing_document_reports_not_deleted(self):
         assert _service().delete_document("missing")["deleted"] is False
+
+
+class TestAccountScopeDeletion:
+    """知识库按账号隔离：主账号也只看/只删自己的文档。"""
+
+    @staticmethod
+    def _service_with_two_accounts() -> KnowledgeDocumentService:
+        service = _service()
+        service.ingest("根部账号的私有文档。", doc_id="root-doc", owner_account_id="root")
+        service.ingest(
+            "成员账号的私有文档。", doc_id="member-doc", owner_account_id="member"
+        )
+        return service
+
+    @staticmethod
+    def _root_scope() -> KnowledgeScope:
+        return KnowledgeScope(
+            principal="root",
+            owners=("root",),
+            include_unowned=True,
+            owns_legacy=True,
+        )
+
+    @staticmethod
+    def _member_scope() -> KnowledgeScope:
+        return KnowledgeScope(
+            principal="member",
+            owners=("member",),
+            include_unowned=False,
+            owns_legacy=False,
+        )
+
+    def test_root_sees_only_own_document_and_cannot_delete_member_document(self):
+        service = self._service_with_two_accounts()
+        listed = service.list_documents(scope=self._root_scope())
+        assert {doc["document_id"] for doc in listed["documents"]} == {"root--root-doc"}
+
+        denied = service.delete_document("member--member-doc", scope=self._root_scope())
+        assert denied["deleted"] is False
+        assert service.document_chunks("member--member-doc")["count"] >= 1
+
+    def test_member_cannot_see_or_delete_root_document(self):
+        service = self._service_with_two_accounts()
+        listed = service.list_documents(scope=self._member_scope())
+        assert {doc["document_id"] for doc in listed["documents"]} == {
+            "member--member-doc"
+        }
+
+        denied = service.delete_document("root--root-doc", scope=self._member_scope())
+        assert denied["deleted"] is False
+        assert service.document_chunks("root--root-doc")["count"] >= 1
+
+    def test_each_account_can_delete_its_own_document(self):
+        service = self._service_with_two_accounts()
+        assert service.delete_document(
+            "root--root-doc", scope=self._root_scope()
+        )["deleted"] is True
+        assert service.delete_document(
+            "member--member-doc", scope=self._member_scope()
+        )["deleted"] is True
+        assert service.list_documents(scope=self._root_scope())["total"] == 0
+
+    def test_account_tree_writes_are_owned_even_for_the_root(self):
+        assert self._root_scope().write_owner == "root"
+        assert self._member_scope().write_owner == "member"
+
+    def test_standalone_scope_keeps_legacy_unowned_ids(self):
+        scope = KnowledgeScope(
+            principal="solo",
+            owners=("solo",),
+            include_unowned=True,
+            owns_legacy=True,
+            unowned_writes=True,
+        )
+        assert scope.write_owner == ""
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ Tests for MemoryManager with Mem0 integration
 """
 import pytest
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -246,6 +247,36 @@ class TestMemoryItem:
         assert item.importance == 0.7
         assert item.tags == ["restored"]
         assert item.access_count == 5
+
+
+class TestMem0IsNotImportedOnTheDefaultPath:
+    """钉住"用 ``use_mem0=False`` 的人不该为 mem0 付导入成本"。
+
+    mem0 → qdrant_client/openai 这条链在冷进程里曾要 6 秒以上，而目标执行与
+    员工默认路径都传 ``use_mem0=False``：付了钱却不用那个后端。断言必须放在
+    **全新子进程**里——本进程其它用例可能已经导入过 mem0，同进程断言会假绿。
+    """
+
+    def test_importing_memory_and_goal_graph_does_not_pull_mem0(self):
+        code = (
+            "import sys\n"
+            "import src.knowledge.memory as memory\n"
+            "memory.create_memory_manager(user_id='probe', use_mem0=False)\n"
+            "import src.ai.goal_task_graph  # noqa: F401\n"
+            "import src.ai.langgraph_workflow  # noqa: F401\n"
+            "for name in ('mem0', 'qdrant_client', 'openai'):\n"
+            "    assert name not in sys.modules, f'{name} was imported'\n"
+            "print('ok')\n"
+        )
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 if __name__ == "__main__":

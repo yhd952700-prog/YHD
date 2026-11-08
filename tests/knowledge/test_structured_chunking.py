@@ -81,6 +81,24 @@ class TestHeadingPath:
         c_chunk = [c for c in chunks if "c 内容" in c.text][0]
         assert c_chunk.heading_path == ("A", "C"), "同级标题必须弹栈而不是层层嵌套"
 
+    def test_short_parent_intro_merges_into_child_not_standalone(self):
+        """标题下的一句短导语若单独成块，会以"标题摘要"抢走答案片段的引用。"""
+        text = "\n".join(
+            [
+                "# 库存与再订货点",
+                "库存水位的基础说明。",
+                "",
+                "## 计算公式",
+                "再订货点 = 平均日需求 × 平均交期 + 安全库存。",
+            ]
+        )
+        chunks = _chunks(text, size=200)
+        paths = [chunk.heading_path for chunk in chunks]
+        assert ("库存与再订货点",) not in paths
+        assert chunks[0].heading_path == ("库存与再订货点", "计算公式")
+        assert "库存水位的基础说明。" in chunks[0].text
+        assert "再订货点" in chunks[0].text
+
 
 class TestStructurePreservation:
     def test_paragraph_boundaries_are_kept(self):

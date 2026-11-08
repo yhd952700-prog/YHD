@@ -79,8 +79,17 @@ class TestEmbeddingProviderSelection:
         with pytest.raises(embedding_module.EmbeddingUnavailableError):
             embedding_module.build_embedding_provider()
 
-    def test_auto_prefers_openai_when_key_is_present(self, clean_env):
+    def test_auto_never_goes_cloud_even_when_openai_key_exists(self, clean_env):
+        # 环境里恰好有 OPENAI_API_KEY 不再等于"允许把知识库文本发到 OpenAI"。
+        clean_env.setenv("LIUHAO_ENV", "production")
         clean_env.setenv("OPENAI_API_KEY", "sk-test")
+        with pytest.raises(embedding_module.EmbeddingUnavailableError):
+            embedding_module.build_embedding_provider()
+
+    def test_explicit_openai_still_uses_a_cloud_key(self, clean_env):
+        clean_env.setenv("LIUHAO_ENV", "production")
+        clean_env.setenv("OPENAI_API_KEY", "sk-test")
+        clean_env.setenv("LIUHAO_EMBEDDING_PROVIDER", "openai")
         provider = embedding_module.build_embedding_provider()
         assert provider.name == "openai"
         assert provider.model == "text-embedding-3-small"
@@ -90,6 +99,36 @@ class TestEmbeddingProviderSelection:
         provider = embedding_module.build_embedding_provider()
         assert provider.name == "ollama"
         assert provider.model == "nomic-embed-text"
+
+    def test_auto_falls_back_to_config_ollama_on_a_plain_install(self, clean_env, monkeypatch):
+        # 纯安装：没有任何 embedding 环境变量，但 config/default.yaml 声明了本机
+        # Ollama，且模型已安装时，知识库应自动可用，而不是显示“未启用”。
+        monkeypatch.setattr(
+            embedding_module,
+            "_installed_ollama_models",
+            lambda base_url: ["nomic-embed-text:latest", "qwen2.5:3b"],
+        )
+        provider = embedding_module.build_embedding_provider()
+        assert provider.name == "ollama"
+        assert provider.model == "nomic-embed-text"
+        assert "localhost:11434" in provider.base_url
+
+    def test_missing_embedding_model_names_the_pull_command(self, clean_env, monkeypatch):
+        monkeypatch.setattr(
+            embedding_module, "_installed_ollama_models", lambda base_url: ["qwen2.5:3b"]
+        )
+        with pytest.raises(embedding_module.EmbeddingUnavailableError) as info:
+            embedding_module.build_embedding_provider()
+        assert "ollama pull nomic-embed-text" in str(info.value)
+
+    def test_ollama_not_running_is_a_readable_reason(self, clean_env, monkeypatch):
+        monkeypatch.setattr(
+            embedding_module, "_installed_ollama_models", lambda base_url: None
+        )
+        with pytest.raises(embedding_module.EmbeddingUnavailableError) as info:
+            embedding_module.build_embedding_provider()
+        assert "未运行" in str(info.value)
+        assert "未启用" in str(info.value)
 
     def test_openai_compatible_payload_is_index_sorted(self, monkeypatch, clean_env):
         captured = {}
