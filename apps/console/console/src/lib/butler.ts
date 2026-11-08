@@ -461,3 +461,50 @@ export function buildGoalSummary(detail: GoalDetail): string {
 export function sortGoalSummaries<T extends { created_at: number | null }>(list: T[]): T[] {
   return [...list].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
 }
+
+/** 计划拆解来源。缺失/未知一律归为 `unknown`，绝不默认成 `model`。 */
+export type DecompositionSource = 'model' | 'model_retry' | 'keyword' | 'unknown'
+
+export interface DecompositionNotice {
+  tone: 'warn' | 'muted'
+  text: string
+}
+
+export function decompositionSourceOf(
+  detail: Pick<GoalDetail, 'decomposition_source'> | null | undefined,
+): DecompositionSource {
+  const value = (detail?.decomposition_source ?? '').trim().toLowerCase()
+  if (value === 'model' || value === 'model_retry' || value === 'keyword') return value
+  return 'unknown'
+}
+
+/**
+ * 任务区的拆解来源提示。`keyword` 必须明确告诉用户"不是 AI 拆的"，
+ * 否则用户会以为看到的多步计划来自模型；老记录缺失字段时只说"未知"。
+ */
+export function decompositionNotice(
+  detail: Pick<GoalDetail, 'decomposition_source'> | null | undefined,
+  taskCount: number,
+): DecompositionNotice | null {
+  const source = decompositionSourceOf(detail)
+  const count = Math.max(0, Math.trunc(taskCount))
+  if (source === 'keyword') {
+    return {
+      tone: 'warn',
+      text: `这次没有用 AI 拆解，已按关键词规则拆成 ${count} 步；结果可能不够细，可以重试。`,
+    }
+  }
+  if (source === 'model_retry') {
+    return {
+      tone: 'warn',
+      text: 'AI 第一次拆解不完整，已自动修正一次。',
+    }
+  }
+  if (source === 'unknown') {
+    return {
+      tone: 'muted',
+      text: '拆解来源：未知（这条目标早于来源记录，无法确认是否由 AI 拆解）。',
+    }
+  }
+  return null
+}

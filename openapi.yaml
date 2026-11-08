@@ -5188,7 +5188,24 @@ paths:
       - files
   /v1/goals:
     get:
-      description: 列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。
+      description: '列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。
+
+
+        结果里的 ``goals[]`` 在带 ``decomposition_source`` 时表示本次计划由谁拆解：
+
+
+        * ``model`` —— 模型一次拆解成功；
+
+        * ``model_retry`` —— 模型第一次拆解没过契约，补一段任务文本后重试成功；
+
+        * ``keyword`` —— 模型不可用/两次都失败，已退成关键词规则拆解；
+
+        * ``unknown`` —— 早于该字段的历史记录，来源无法判定。
+
+
+        该字段**可能缺失**（老数据），读侧必须按 ``unknown`` 展示，不得默认成
+
+        ``model`` —— 否则会把关键词拆解伪装成 AI 拆解。'
       operationId: list_goals_v1_goals_get
       parameters:
       - in: header
@@ -5334,7 +5351,14 @@ paths:
       - ai-management
   /v1/goals/{goal_id}:
     get:
-      description: 获取 Goal 执行详情（不可见与不存在返回同一个 404）。
+      description: '获取 Goal 执行详情（不可见与不存在返回同一个 404）。
+
+
+        详情里的 ``decomposition_source`` 说明本次计划由谁拆解：``model`` /
+
+        ``model_retry`` / ``keyword`` / ``unknown``。字段缺失（老记录）时按
+
+        ``unknown`` 展示，不得默认成 ``model``。'
       operationId: get_goal_v1_goals__goal_id__get
       parameters:
       - in: path

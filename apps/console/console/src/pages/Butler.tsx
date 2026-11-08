@@ -27,12 +27,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
 import type { EmployeesPayload } from '../lib/contracts'
-import { capabilityLabel, numberText, relativeTime, safeText, useNow } from '../lib/format'
+import { capabilityLabel, numberText, relativeTime, safeText, taskDescriptionLabel, taskNameLabel, useNow } from '../lib/format'
 import {
   approvalTasks,
   buildGoalSummary,
   BUTLER_DETAIL_POLL_MS,
   BUTLER_LIST_POLL_MS,
+  decompositionNotice,
   failedTasks,
   formatElapsed,
   formatTaskDuration,
@@ -288,6 +289,14 @@ export function Butler({
     [taskCache, activeId],
   )
   const stats = useMemo(() => taskStats(tasks), [tasks])
+  // 拆解来源必须显式上屏：keyword = 不是 AI 拆的，老记录 = 未知。
+  const decompositionHint = useMemo(() => {
+    if (!detail) return null
+    const notice = decompositionNotice(detail, tasks.length || (detail.tasks?.length ?? 0))
+    // 运行中的快照还没有拆解来源；此时显示"未知"会把新目标说成老记录。
+    if (live && notice?.tone === 'muted') return null
+    return notice
+  }, [detail, tasks.length, live])
   const awaiting = useMemo(() => approvalTasks(tasks), [tasks])
   const failed = useMemo(() => failedTasks(tasks), [tasks])
   const artifacts = useMemo(
@@ -1119,7 +1128,7 @@ export function Butler({
                       <ul>
                         {failed.map((task) => (
                           <li key={task.id}>
-                            <span>{task.name || '（未命名任务）'}</span>
+                            <span>{taskNameLabel(task.name)}</span>
                             <span className="os-kb-error">{task.error ?? '未给出原因'}</span>
                           </li>
                         ))}
@@ -1411,7 +1420,16 @@ export function Butler({
               }
             />
           ) : (
-            <div className="os-butler-tasks">
+            <>
+              {decompositionHint && (
+                <p
+                  className={decompositionHint.tone === 'warn' ? 'os-note' : 'os-hint'}
+                  role={decompositionHint.tone === 'warn' ? 'status' : undefined}
+                >
+                  {decompositionHint.text}
+                </p>
+              )}
+              <div className="os-butler-tasks">
               {tasks.map((task) => {
                 const info = taskPhaseInfo(task)
                 const retryable =
@@ -1432,7 +1450,7 @@ export function Butler({
                         {info.label}
                       </span>
                       <strong className="os-butler-task-name">
-                        {task.name || '（未命名任务）'}
+                        {taskNameLabel(task.name)}
                       </strong>
                       <span className="os-butler-task-time" title={`原始状态：${info.raw || '缺失'}`}>
                         {durationLabel(task, now / 1000)}
@@ -1467,7 +1485,9 @@ export function Butler({
                           : ''}
                       </p>
                     )}
-                    {task.description && <p className="os-hint">{task.description}</p>}
+                    {task.description && (
+                      <p className="os-hint">{taskDescriptionLabel(task.description)}</p>
+                    )}
                     {task.result && (
                       <details className="os-butler-task-result">
                         <summary>查看任务结果</summary>
@@ -1515,7 +1535,8 @@ export function Butler({
                   </article>
                 )
               })}
-            </div>
+              </div>
+            </>
           )}
         </Card>
       )}

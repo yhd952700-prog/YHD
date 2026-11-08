@@ -47,6 +47,19 @@ export function humanDuration(seconds: number): string {
 }
 
 /**
+ * 数值 → 展示文本。任何输入都不抛。
+ *
+ * 这是展示层**唯一**该直接调用 `toFixed` 的地方：后端可能不发某个数值字段
+ * （`undefined`），或在降级响应里给 `null`。直接 `value.toFixed()` 会抛
+ * `TypeError: Cannot read properties of undefined (reading "toFixed")`，
+ * 后果是整页白屏。非有限值统一显示「—」；真实的 `0` 仍然显示 `0`。
+ */
+export function numberText(value: unknown, digits = 0): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  return value.toFixed(digits)
+}
+
+/**
  * 走动的当前时刻（毫秒）。
  *
  * 为什么需要它：在渲染期间直接调 `Date.now()` 是不纯的 —— 同一个 props 会渲染出
@@ -165,8 +178,13 @@ const ACTION_SEGMENTS: Record<string, string> = {
   activated: '激活',
   activated_by: '激活',
   created: '新增',
+  create: '新增',
   deleted: '删除',
   updated: '修改',
+  changed: '变更',
+  set_default: '设为默认',
+  manage: '管理',
+  owner: '归属',
   state_change: '状态变更',
   access: '访问',
   login: '登录',
@@ -183,7 +201,22 @@ const ACTION_SEGMENTS: Record<string, string> = {
   human: '人工',
   sovereignty: '确认',
   model: '模型',
+  ai: '模型',
   key: '密钥',
+  employee: '员工',
+  knowledge: '知识库',
+  document: '文档',
+  backup: '备份',
+  export: '导出',
+  import: '导入',
+  assigned: '派活',
+  assign_task: '派活',
+  hired: '新增',
+  removed: '移除',
+  adopted: '取用',
+  permission: '权限',
+  granted: '授权',
+  revoked: '撤销',
 }
 
 export function actionLabel(action: unknown): string {
@@ -191,7 +224,10 @@ export function actionLabel(action: unknown): string {
   if (!text) return ''
   const direct = EVENT_LABELS[text]
   if (direct) return direct
-  if (!text.includes('.')) return text
+  // 无命名空间的动作名（如 assign_task）也逐段翻译，绝不把 snake_case 露出。
+  if (!text.includes('.')) {
+    return ACTION_SEGMENTS[text] ?? '系统操作'
+  }
   const pieces = text
     .split('.')
     .map((part) => ACTION_SEGMENTS[part] ?? '')
@@ -277,6 +313,47 @@ export function capabilityLabel(name: unknown): string {
   const known = CAPABILITY_LABELS[text]
   if (known) return known
   return /[\u4e00-\u9fa5]/.test(text) ? text : '其他能力'
+}
+
+/**
+ * 关键词拆解器产出的任务名是内部英文（Plan / Search / WriteFile…）。
+ * 这些名字可以直接出现在用户界面上，必须翻成人话；未知英文不再原样展示。
+ */
+const TASK_NAME_LABELS: Record<string, string> = {
+  Search: '检索资料',
+  Plan: '整理成稿',
+  'Memory Store': '记入记忆',
+  Compute: '执行计算',
+  WriteFile: '写入文件',
+  Execute: '执行目标',
+  WriteChecksum: '写入校验文件',
+}
+
+const TASK_DESCRIPTION_LABELS: Record<string, string> = {
+  'Search for information': '检索完成任务所需的信息',
+  'Organize upstream findings into the final deliverable': '把上游结果整理成最终交付',
+  'Store in memory': '保存到记忆',
+  'Run a local computation': '执行本地计算',
+  'Write a file inside the workspace': '在工作区写入文件',
+  'Execute goal': '执行目标',
+  'Write an integrity sidecar (sha256) for the produced file':
+    '为产出文件生成完整性校验',
+}
+
+/** 任务名 → 人话。中文自定义名原样保留；未知英文归入「未命名任务」。 */
+export function taskNameLabel(name: unknown): string {
+  const text = safeText(name).trim()
+  if (!text) return '未命名任务'
+  const known = TASK_NAME_LABELS[text]
+  if (known) return known
+  return /[\u4e00-\u9fa5]/.test(text) ? text : '未命名任务'
+}
+
+/** 任务描述 → 人话。只翻译已知的内部英文描述，其余原样返回。 */
+export function taskDescriptionLabel(description: unknown): string {
+  const text = safeText(description).trim()
+  if (!text) return ''
+  return TASK_DESCRIPTION_LABELS[text] ?? text
 }
 
 /** 权限串 → 人话。未知英文权限不原样铺给用户，归入「未命名权限」，原串只进 title。 */

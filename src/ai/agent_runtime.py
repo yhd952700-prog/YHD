@@ -240,6 +240,9 @@ class AgentRunResult:
     #: 派活前的能力边界提示（例如"需要写文件但 file_write 不可用"）。这些
     #: 提示在执行开始前就产生并上报，不能等跑完再解释。
     preflight_notices: List[str] = field(default_factory=list)
+    #: 本次任务计划是谁拆的：model / model_retry / keyword。
+    #: None 表示这次运行没有经过拆解器（例如单任务重试），不能假装是模型拆的。
+    decomposition_source: Optional[str] = None
 
 
 class AgentRuntime:
@@ -389,6 +392,7 @@ class AgentRuntime:
                 except Exception:  # noqa: BLE001 - 通知失败不能拖垮目标
                     pass
         state = AgentRunState.CREATED
+        decomposition_source: Optional[str] = None
         try:
             state = AgentRunState.PLANNING
             goal = Goal(
@@ -440,6 +444,11 @@ class AgentRuntime:
                 only_task_names=only_task_names,
                 pinned_tasks=pinned_tasks,
             )
+            decomposition_source = goal.metadata.get("decomposition_source")
+            if decomposition_source is None and not self.enable_model_planning:
+                # 未启用模型拆解时，计划只可能来自关键词拆解器；这不是"未知"，
+                # 也不能让 UI 误以为历史数据。
+                decomposition_source = "keyword"
 
             state = AgentRunState.VERIFYING
             evaluation = self._evaluate(
@@ -472,6 +481,7 @@ class AgentRuntime:
                 persist_errors=persist_errors,
                 replan_suggested=replan_suggested,
                 preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
             )
         except GoalCancelled as exc:
             # Cooperative cancellation: the goal was aborted by a stop request.
@@ -492,6 +502,7 @@ class AgentRuntime:
                 trace=observer.trace,
                 error=f"goal {goal_id} cancelled: {exc}",
                 preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
             )
         except Exception as exc:  # graceful failure, never crash the caller
             return AgentRunResult(
@@ -505,6 +516,7 @@ class AgentRuntime:
                 trace=observer.trace,
                 error=str(exc),
                 preflight_notices=preflight_notices,
+                decomposition_source=decomposition_source,
             )
         finally:
             observer.unsubscribe()

@@ -29,7 +29,9 @@ import {
   type GoalSummary,
   type GoalTask,
 } from '../lib/operator'
-import { capabilityLabel } from '../lib/format'
+import { capabilityLabel, numberText, taskNameLabel } from '../lib/format'
+import { goalSummaryVerdict, goalVerdict } from '../lib/goalVerdict'
+import { GoalStatus } from '../components/GoalStatus'
 import { Card, Empty, Guard } from '../components/ui'
 
 /** 任务状态 → 人话（成 / 败 / 进行中）。 */
@@ -50,7 +52,7 @@ function formatDuration(ms: number | null | undefined): string {
   const value = Number(ms)
   if (!Number.isFinite(value) || value < 0) return '—'
   if (value < 1000) return `${Math.round(value)} 毫秒`
-  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  if (value < 60_000) return `${numberText(value / 1000, 1)} 秒`
   return `${Math.floor(value / 60_000)} 分 ${Math.round((value % 60_000) / 1000)} 秒`
 }
 
@@ -61,15 +63,6 @@ function goalEmployees(goal: GoalSummary | GoalDetail): string {
     return goal.assigned_employees.join('、')
   }
   return '—'
-}
-
-/** goal 状态 → 圆点色调后缀（与 Audit/Files 共用 `os-tone-*` 约定）。 */
-function stateTone(state: string): string {
-  const value = (state || '').toLowerCase()
-  if (value === 'completed') return 'ok'
-  if (value === 'failed' || value === 'cancelled') return 'danger'
-  if (value === 'running') return 'warning'
-  return 'muted'
 }
 
 /** task 状态 → 圆点色调后缀。 */
@@ -188,7 +181,8 @@ export function Goals({ query }: { query: string }) {
     const list = goals.data?.goals ?? []
     if (!need) return list
     return list.filter((goal) =>
-      [goal.natural_language, goal.state, goal.scope, goal.assigned_employee ?? '',
+      [goal.natural_language, goal.state, goalSummaryVerdict(goal).label, goal.scope,
+        goal.assigned_employee ?? '',
         ...(goal.assigned_employees ?? [])]
         .filter((value): value is string => typeof value === 'string')
         .some((value) => value.toLowerCase().includes(need)),
@@ -247,42 +241,45 @@ export function Goals({ query }: { query: string }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {shown.map((goal: GoalSummary) => (
-                      <tr
-                        key={goal.goal_id}
-                        className="os-clickable"
-                        onClick={() => void openGoal(goal.goal_id)}
-                      >
-                        <td>
-                          {/* 行点击是鼠标便利；键盘用户需要一个真正的按钮，
-                              否则目标列表在纯键盘下完全打不开详情。 */}
-                          <button
-                            className="os-link os-goal-open"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void openGoal(goal.goal_id)
-                            }}
-                          >
-                            <Truncated text={goal.natural_language} />
-                          </button>
-                        </td>
-                        <td>
-                          <span className={`os-dot os-tone-${stateTone(goal.state)}`} />
-                          {goal.state || '—'}
-                        </td>
-                        <td>
-                          <Truncated text={goalEmployees(goal)} max={160} />
-                        </td>
-                        <td>
-                          {goal.completed_tasks}/{goal.task_count}
-                          {goal.failed_tasks > 0 && (
-                            <span className="os-error"> · {goal.failed_tasks} 失败</span>
-                          )}
-                        </td>
-                        <td>{goal.scope || '—'}</td>
-                        <td>{formatUnix(goal.created_at)}</td>
-                      </tr>
-                    ))}
+                    {shown.map((goal: GoalSummary) => {
+                      return (
+                        <tr
+                          key={goal.goal_id}
+                          className="os-clickable"
+                          onClick={() => void openGoal(goal.goal_id)}
+                        >
+                          <td>
+                            {/* 行点击是鼠标便利；键盘用户需要一个真正的按钮，
+                                否则目标列表在纯键盘下完全打不开详情。 */}
+                            <button
+                              className="os-link os-goal-open"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void openGoal(goal.goal_id)
+                              }}
+                            >
+                              <Truncated text={goal.natural_language} />
+                            </button>
+                          </td>
+                          <td>
+                            {/* 三种终态必须一眼分得开：有产出=绿、无产出=黄、未完成=红。
+                                不能把"completed 但没写文件"也涂成绿色。 */}
+                            <GoalStatus goal={goal} />
+                          </td>
+                          <td>
+                            <Truncated text={goalEmployees(goal)} max={160} />
+                          </td>
+                          <td>
+                            {goal.completed_tasks}/{goal.task_count}
+                            {goal.failed_tasks > 0 && (
+                              <span className="os-error"> · {goal.failed_tasks} 失败</span>
+                            )}
+                          </td>
+                          <td>{goal.scope || '—'}</td>
+                          <td>{formatUnix(goal.created_at)}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -302,7 +299,11 @@ export function Goals({ query }: { query: string }) {
           sub="点击目标后手动拉取，不轮询"
           span={4}
         >
-          {detailError && <p className="os-error">{detailError}</p>}
+          {detailError && (
+            <p className="os-error" role="alert">
+              {detailError}
+            </p>
+          )}
           {detailLoading && !detailError && <p>读取中…</p>}
           <Guard
             loading={detailLoading}
@@ -312,14 +313,35 @@ export function Goals({ query }: { query: string }) {
             emptyTitle="此目标没有分解出任务"
             emptyHint="这个目标还没有记录任何子任务。"
           >
-            {(data) => (
+            {(data) => {
+              const verdict = goalVerdict({
+                state: data.state,
+                artifacts: data.artifacts,
+                failed_tasks: data.tasks.filter(
+                  (task) => task.success === false || task.status === 'failed',
+                ).length,
+              })
+              return (
               <>
                 <div className="os-kv">
                   <div className="os-kv-row">
                     <span className="os-kv-key">状态</span>
                     <span className="os-kv-value">
-                      <span className={`os-dot os-tone-${stateTone(data.state)}`} />
-                      {data.state || '—'}
+                      <GoalStatus
+                        goal={{
+                          state: data.state,
+                          artifacts: data.artifacts,
+                          failed_tasks: data.tasks.filter(
+                            (task) => task.success === false || task.status === 'failed',
+                          ).length,
+                        }}
+                      />
+                    </span>
+                  </div>
+                  <div className="os-kv-row">
+                    <span className="os-kv-key">下一步</span>
+                    <span className={verdict.retryable ? 'os-error' : 'os-hint'}>
+                      {verdict.hint}
                     </span>
                   </div>
                   <div className="os-kv-row">
@@ -425,7 +447,11 @@ export function Goals({ query }: { query: string }) {
                       <span className="os-kv-key">产物内容 · {openArtifact}</span>
                       <span className="os-kv-value">
                         {artifactLoading && <span className="os-hint">读取中…</span>}
-                        {artifactError && <span className="os-error">{artifactError}</span>}
+                        {artifactError && (
+                          <span className="os-error" role="alert">
+                            {artifactError}
+                          </span>
+                        )}
                         {artifactContent !== null && !artifactLoading && (
                           <pre className="os-pre">{artifactContent}</pre>
                         )}
@@ -450,7 +476,7 @@ export function Goals({ query }: { query: string }) {
                       {data.tasks.map((task: GoalTask) => (
                         <tr key={task.id}>
                           <td>
-                            <Truncated text={task.name} max={200} />
+                            <Truncated text={taskNameLabel(task.name)} max={200} />
                           </td>
                           <td>
                             <span className={`os-dot os-tone-${taskStatusTone(task.status)}`} />
@@ -476,7 +502,8 @@ export function Goals({ query }: { query: string }) {
                   </table>
                 </div>
               </>
-            )}
+              )
+            }}
           </Guard>
         </Card>
       )}

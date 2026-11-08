@@ -472,6 +472,64 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
     expect(screen.getAllByText(/得分 0/).length).toBeGreaterThan(0)
     expect(screen.queryByText('成功')).toBeNull()
   })
+  test('关键词拆解必须在页面上明说「不是 AI 拆的」', async () => {
+    detailPlan = [{ ...FINAL_DETAIL, decomposition_source: 'keyword' }]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/这次没有用 AI 拆解，已按关键词规则拆成 2 步/),
+      ).toBeTruthy(),
+    )
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0)
+  })
+
+  test('模型修正过一次时提示「已自动修正一次」', async () => {
+    detailPlan = [{ ...FINAL_DETAIL, decomposition_source: 'model_retry' }]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() =>
+      expect(screen.getByText('AI 第一次拆解不完整，已自动修正一次。')).toBeTruthy(),
+    )
+  })
+
+  test('老记录没有 decomposition_source 时显示未知，不假装是模型拆的', async () => {
+    detailPlan = [{ ...FINAL_DETAIL }]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() =>
+      expect(screen.getByText(/拆解来源：未知（这条目标早于来源记录/)).toBeTruthy(),
+    )
+    expect(screen.queryByText(/这次没有用 AI 拆解/)).toBeNull()
+    expect(screen.queryByText(/AI 第一次拆解不完整/)).toBeNull()
+  })
+
+  test('内部英文任务名 Plan 不直接显示给用户', async () => {
+    detailPlan = [
+      {
+        ...FINAL_DETAIL,
+        tasks: [
+          {
+            ...FINAL_DETAIL.tasks[0],
+            name: 'Plan',
+            description: 'Organize upstream findings into the final deliverable',
+          },
+        ],
+      },
+    ]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() => expect(screen.getByText('整理成稿')).toBeTruthy())
+    expect(screen.getByText('把上游结果整理成最终交付')).toBeTruthy()
+    expect(screen.queryByText('Plan')).toBeNull()
+    expect(
+      screen.queryByText('Organize upstream findings into the final deliverable'),
+    ).toBeNull()
+  })
 })
 
 describe('鎏灏管家 · 审批与单任务重试', () => {

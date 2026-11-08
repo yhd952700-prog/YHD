@@ -16,6 +16,7 @@ silent "0 tasks".
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
@@ -58,6 +59,31 @@ CAPABILITY_INPUT_CONTRACT: Dict[str, tuple] = {
 
 MAX_TASKS = 8
 
+#: 日志里出现的密钥形态。拒绝路径要把模型 raw 留痕，但绝不能把 Key 写进
+#: 日志——诊断价值不能换来一次凭据泄露。
+_SECRET_PATTERN = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{4,}|Bearer\s+[A-Za-z0-9._\-]+)",
+    re.IGNORECASE,
+)
+
+
+def _redact_raw(raw: Any, limit_bytes: int = 4096) -> str:
+    """把模型原始产出压成单行日志片段：先脱敏，再按 UTF-8 截断到 ≤4KB。"""
+    text = str(raw or "")
+    text = _SECRET_PATTERN.sub("[REDACTED]", text)
+    encoded = text.encode("utf-8")
+    if len(encoded) > limit_bytes:
+        text = encoded[:limit_bytes].decode("utf-8", errors="ignore") + "…[truncated]"
+    return " ".join(text.split())
+
+
+class _PlanAttemptError(ValueError):
+    """一次模型拆解尝试的失败，携带原始产出供拒绝日志留痕。"""
+
+    def __init__(self, message: str, raw: str = "") -> None:
+        super().__init__(message)
+        self.raw = raw
+
 
 class LLMTaskDecomposer:
     """Wrap a deterministic decomposer with a model-first planning attempt.
@@ -89,6 +115,7 @@ class LLMTaskDecomposer:
         # the gateway's single-task retry matches on. Bounded to avoid growth.
         self._cache: Dict[tuple, List[Dict[str, Any]]] = {}
         self._cache_order: List[tuple] = []
+        self._cache_source: Dict[tuple, str] = {}
         self._only_task_name: Optional[str] = None
 
     # -- proxies -------------------------------------------------------------
@@ -123,6 +150,9 @@ class LLMTaskDecomposer:
 
         cached = self._cache.get(key)
         if cached is not None:
+            source = self._cache_source.get(key)
+            if source:
+                goal.metadata["decomposition_source"] = source
             return self._apply_forced_assignment(
                 goal, self._materialize(goal, cached)
             )
@@ -144,22 +174,63 @@ class LLMTaskDecomposer:
         fallback = self._inner.decompose(goal)
         allowed = self._allowed_capabilities()
         if self._deterministic_plan_is_executable(fallback, allowed):
+            goal.metadata["decomposition_source"] = "keyword"
             return self._apply_forced_assignment(goal, fallback)
 
         try:
             tasks = self._plan_with_model(goal, allowed)
-            if not tasks:
-                raise ValueError("模型没有给出任何可执行子任务")
+        except _PlanAttemptError as exc:
+            # 模型确实回答了，但计划没过契约。这不是"模型不可用"，而是"计划
+            # 需要修一次"：把校验错误原文回喂，只允许修 inputs，不重排任务。
+            logger.warning(
+                "evt=decompose.rejected attempt=1 goal=%s error=%s raw=%s",
+                getattr(goal, "id", ""),
+                exc,
+                _redact_raw(exc.raw),
+            )
+            try:
+                tasks = self._plan_with_model(
+                    goal,
+                    allowed,
+                    retry_error=str(exc),
+                    retry_plan=exc.raw,
+                )
+            except Exception as retry_exc:  # noqa: BLE001 - fallback is the contract
+                logger.warning(
+                    "evt=decompose.rejected attempt=2 goal=%s error=%s raw=%s",
+                    getattr(goal, "id", ""),
+                    retry_exc,
+                    _redact_raw(getattr(retry_exc, "raw", "")),
+                )
+                logger.warning(
+                    "LLM decomposition unavailable (%s: %s); falling back to keyword planner",
+                    type(retry_exc).__name__,
+                    retry_exc,
+                )
+                goal.metadata["decomposition_source"] = "keyword"
+                return self._apply_forced_assignment(goal, fallback)
+            logger.info(
+                "evt=decompose.retry_succeeded attempt=2 goal=%s",
+                getattr(goal, "id", ""),
+            )
+            goal.metadata["decomposition_source"] = "model_retry"
         except Exception as exc:  # noqa: BLE001 - fallback is the contract
+            # Timeout / no model / transport error: retrying costs another full
+            # prose budget, so degrade immediately.
             logger.warning(
                 "LLM decomposition unavailable (%s: %s); falling back to keyword planner",
                 type(exc).__name__,
                 exc,
             )
+            goal.metadata["decomposition_source"] = "keyword"
             return self._apply_forced_assignment(goal, fallback)
+        else:
+            goal.metadata["decomposition_source"] = "model"
 
         snapshot = [self._snapshot(task) for task in tasks]
-        self._store_cache(key, snapshot)
+        self._store_cache(
+            key, snapshot, goal.metadata.get("decomposition_source") or "model"
+        )
         return self._apply_forced_assignment(
             goal, self._materialize(goal, snapshot)
         )
@@ -195,19 +266,36 @@ class LLMTaskDecomposer:
                 return False
         return any(str(task.capability_id) not in PROSE_CAPABILITIES for task in tasks)
 
-    def _plan_with_model(self, goal: Goal, allowed: Optional[Set[str]] = None) -> List[Task]:
+    def _plan_with_model(
+        self,
+        goal: Goal,
+        allowed: Optional[Set[str]] = None,
+        retry_error: Optional[str] = None,
+        retry_plan: Optional[str] = None,
+    ) -> List[Task]:
         allowed = allowed or self._allowed_capabilities()
-        prompt = self._build_prompt(goal, allowed)
+        prompt = self._build_prompt(
+            goal,
+            allowed,
+            retry_error=retry_error,
+            retry_plan=retry_plan,
+        )
         raw = generate_with_timeout(
             self._generator,
             prompt,
             timeout=self._timeout if self._timeout is not None else model_timeout_seconds(),
         )
-        payload = parse_json_payload(raw)
-        specs = self._normalize_specs(payload)
-        # Agent assignment happens in ``_materialize`` (the single place every
-        # path materializes tasks from), so it is not repeated here.
-        return self._build_tasks(goal, specs, allowed)
+        try:
+            payload = parse_json_payload(raw)
+            specs = self._normalize_specs(payload)
+            # Agent assignment happens in ``_materialize`` (the single place every
+            # path materializes tasks from), so it is not repeated here.
+            tasks = self._build_tasks(goal, specs, allowed)
+            if not tasks:
+                raise ValueError("模型没有给出任何可执行子任务")
+            return tasks
+        except Exception as exc:  # noqa: BLE001 - carry raw for the rejection log
+            raise _PlanAttemptError(str(exc), raw=raw) from exc
 
     def _allowed_capabilities(self) -> Set[str]:
         if self._capability_provider is None:
@@ -221,7 +309,13 @@ class LLMTaskDecomposer:
         # the capabilities this local tool set is shipped with.
         return available or set(KNOWN_CAPABILITIES)
 
-    def _build_prompt(self, goal: Goal, allowed: Set[str]) -> str:
+    def _build_prompt(
+        self,
+        goal: Goal,
+        allowed: Set[str],
+        retry_error: Optional[str] = None,
+        retry_plan: Optional[str] = None,
+    ) -> str:
         capabilities = "、".join(sorted(allowed))
         contract_lines = []
         for cap in sorted(allowed):
@@ -280,7 +374,20 @@ class LLMTaskDecomposer:
             "（例如「查 Python 新特性」）时不要生成计算任务。\n"
             "9. file_write 的 inputs.content 必须是要落盘的完整正文（例如完整 HTML），"
             "不能只写「某某的代码」这类占位说明；path 用相对路径。\n\n"
-            f"用户目标：{goal.natural_language}"
+            + (
+                "上一次输出的计划被校验拒绝，错误原文："
+                f"{retry_error}\n"
+                + (
+                    f"上一次计划（只允许改 inputs）：{_redact_raw(retry_plan, 8192)}\n"
+                    if retry_plan
+                    else ""
+                )
+                + "请只修 inputs，不要改任务结构（不要增删任务，也不要改 name / "
+                "capability / depends_on）；仍然只输出同一个 JSON 数组，不要解释。\n\n"
+                if retry_error
+                else ""
+            )
+            + f"用户目标：{goal.natural_language}"
         )
 
     def _normalize_specs(self, payload: Any) -> List[Dict[str, Any]]:
@@ -300,7 +407,8 @@ class LLMTaskDecomposer:
             capability = str(
                 item.get("capability") or item.get("capability_id") or ""
             ).strip()
-            description = str(item.get("description") or name).strip()
+            description_text = str(item.get("description") or "").strip()
+            description = description_text or name
             inputs = item.get("inputs") or {}
             depends_on = item.get("depends_on", item.get("dependencies", []))
             if not name or not capability:
@@ -315,6 +423,7 @@ class LLMTaskDecomposer:
                 {
                     "name": name,
                     "description": description,
+                    "description_from_model": bool(description_text),
                     "capability": capability,
                     "inputs": dict(inputs),
                     "depends_on": list(depends_on),
@@ -468,7 +577,32 @@ class LLMTaskDecomposer:
             required = CAPABILITY_INPUT_CONTRACT.get(capability) or ()
             inputs = dict(spec.get("inputs") or {})
             if required and not any(inputs.get(key) for key in required):
-                raise ValueError(f"任务 {spec['name']} 缺少能力 {capability} 的必需输入")
+                if capability in PROSE_CAPABILITIES:
+                    # 纯文本能力只需要"同一任务文本"：补 description / name
+                    # 不是编造新内容，而是把模型已写出的任务正文接到执行器真正
+                    # 读取的字段上。补了什么必须留痕，事后可查。
+                    source = (
+                        "description"
+                        if spec.get("description_from_model")
+                        else "name"
+                    )
+                    text = (
+                        str(spec.get("description") or "").strip()
+                        or str(spec.get("name") or "").strip()
+                    )
+                    inputs["instruction"] = text
+                    logger.warning(
+                        "evt=decompose.input_backfilled field=instruction "
+                        "source=%s task=%s",
+                        source,
+                        spec["name"],
+                    )
+                else:
+                    # file_write 的 path/content 补出来就是编造产物，宁可拒绝
+                    # 也不能替模型虚构一个文件名或正文。
+                    raise ValueError(
+                        f"任务 {spec['name']} 缺少能力 {capability} 的必需输入"
+                    )
 
             name = self._unique_name(str(spec["name"]), used_names)
             used_names.add(name)
@@ -541,13 +675,20 @@ class LLMTaskDecomposer:
             suffix += 1
         return candidate
 
-    def _store_cache(self, key: tuple, snapshot: List[Dict[str, Any]]) -> None:
+    def _store_cache(
+        self,
+        key: tuple,
+        snapshot: List[Dict[str, Any]],
+        source: str = "model",
+    ) -> None:
         if key not in self._cache:
             self._cache_order.append(key)
         self._cache[key] = snapshot
+        self._cache_source[key] = source
         while len(self._cache_order) > 64:
             oldest = self._cache_order.pop(0)
             self._cache.pop(oldest, None)
+            self._cache_source.pop(oldest, None)
 
     @staticmethod
     def _snapshot(task: Task) -> Dict[str, Any]:

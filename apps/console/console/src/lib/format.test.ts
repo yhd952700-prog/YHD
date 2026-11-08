@@ -18,6 +18,7 @@ import {
   capabilityLabel,
   eventLabel,
   humanDuration,
+  numberText,
   outcomeLabel,
   outcomeTone,
   permissionLabel,
@@ -25,6 +26,8 @@ import {
   relativeTime,
   safeArray,
   safeText,
+  taskDescriptionLabel,
+  taskNameLabel,
 } from './format'
 
 /** 后端字段缺失 / 类型不符时的真实取值范围。 */
@@ -96,6 +99,29 @@ describe('humanDuration 是总函数', () => {
     expect(humanDuration(90)).toBe('1 分 30 秒')
     expect(humanDuration(3700)).toBe('1 小时 1 分')
     expect(humanDuration(90_000)).toBe('1 天 1 小时')
+  })
+})
+
+describe('numberText 是数值展示的总函数', () => {
+  test('缺失 / 非数值一律显示「—」，绝不抛 TypeError', () => {
+    for (const value of HOSTILE) {
+      if (typeof value === 'number' && Number.isFinite(value)) continue
+      expect(() => numberText(value)).not.toThrow()
+      expect(numberText(value)).toBe('—')
+    }
+    expect(numberText(undefined)).toBe('—')
+    expect(numberText(null)).toBe('—')
+    expect(numberText(NaN)).toBe('—')
+  })
+
+  test('真实的 0 仍然显示 0（缺失 ≠ 零）', () => {
+    expect(numberText(0)).toBe('0')
+    expect(numberText(0, 1)).toBe('0.0')
+  })
+
+  test('位数按调用方要求保留', () => {
+    expect(numberText(12.3456, 4)).toBe('12.3456')
+    expect(numberText(12.6, 0)).toBe('13')
   })
 })
 
@@ -208,5 +234,30 @@ describe('实现层标识 → 人话', () => {
     expect(permissionTitle('account:audit_read')).toBe('account:audit_read')
     expect(permissionTitle(null)).toBeUndefined()
     expect(permissionTitle('')).toBeUndefined()
+  })
+})
+
+describe('内部英文任务名不直接给用户看', () => {
+  test('关键词拆解器的任务名翻成人话', () => {
+    expect(taskNameLabel('Plan')).toBe('整理成稿')
+    expect(taskNameLabel('Search')).toBe('检索资料')
+    expect(taskNameLabel('WriteFile')).toBe('写入文件')
+  })
+
+  test('中文自定义任务名原样保留', () => {
+    expect(taskNameLabel('整理本周会议纪要')).toBe('整理本周会议纪要')
+  })
+
+  test('未知英文名不原样铺给用户', () => {
+    expect(taskNameLabel('SomeInternalStep')).toBe('未命名任务')
+    expect(taskNameLabel(undefined)).toBe('未命名任务')
+  })
+
+  test('已知内部英文描述翻译，中文描述原样返回', () => {
+    expect(
+      taskDescriptionLabel('Organize upstream findings into the final deliverable'),
+    ).toBe('把上游结果整理成最终交付')
+    expect(taskDescriptionLabel('读取本周会议记录')).toBe('读取本周会议记录')
+    expect(taskDescriptionLabel(null)).toBe('')
   })
 })

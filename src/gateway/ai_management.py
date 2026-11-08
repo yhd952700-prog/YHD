@@ -2618,6 +2618,10 @@ class AIStateManager:
         # goal actually re-ran.
         # Keep the project association across a replan (honest continuity).
         entry["project_id"] = prior_entry.get("project_id")
+        # A refused replan returns the prior result untouched; do not let that
+        # erase how the original plan was decomposed.
+        if entry.get("decomposition_source") is None:
+            entry["decomposition_source"] = prior_entry.get("decomposition_source")
         # Replan 不改变归属：无论执行线程能不能拿到请求上下文，owner 都是
         # 原目标的主人。
         self._stamp_owner(entry, owner_of_entry(prior_entry))
@@ -3810,6 +3814,9 @@ class AIStateManager:
             "artifacts": artifacts,
             # 派活前就说过的话（能力边界），与结论分开保存，便于 UI 前置展示。
             "notices": list(getattr(result, "preflight_notices", []) or []),
+            # 本次计划是谁拆的：model / model_retry / keyword。
+            # 老记录没有这个字段，读侧必须按 unknown 处理，不能默认成 model。
+            "decomposition_source": getattr(result, "decomposition_source", None),
             "evaluation": evaluation,
             "created_at": time.time(),
         }
@@ -3940,7 +3947,18 @@ class AIStateManager:
 
 @router.get("/goals")
 def list_goals(viewer: Optional[GoalViewer] = Depends(_goal_viewer)) -> Dict[str, Any]:
-    """列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。"""
+    """列出**当前账号可见**的 Goal 及其状态（别人的目标连计数都不进入）。
+
+    结果里的 ``goals[]`` 在带 ``decomposition_source`` 时表示本次计划由谁拆解：
+
+    * ``model`` —— 模型一次拆解成功；
+    * ``model_retry`` —— 模型第一次拆解没过契约，补一段任务文本后重试成功；
+    * ``keyword`` —— 模型不可用/两次都失败，已退成关键词规则拆解；
+    * ``unknown`` —— 早于该字段的历史记录，来源无法判定。
+
+    该字段**可能缺失**（老数据），读侧必须按 ``unknown`` 展示，不得默认成
+    ``model`` —— 否则会把关键词拆解伪装成 AI 拆解。
+    """
     viewer = _as_viewer(viewer)
     mgr = AIStateManager()
     goals = mgr.list_goals(viewer)
@@ -4006,7 +4024,12 @@ def get_goal(
     goal_id: str,
     viewer: Optional[GoalViewer] = Depends(_goal_viewer),
 ) -> Dict[str, Any]:
-    """获取 Goal 执行详情（不可见与不存在返回同一个 404）。"""
+    """获取 Goal 执行详情（不可见与不存在返回同一个 404）。
+
+    详情里的 ``decomposition_source`` 说明本次计划由谁拆解：``model`` /
+    ``model_retry`` / ``keyword`` / ``unknown``。字段缺失（老记录）时按
+    ``unknown`` 展示，不得默认成 ``model``。
+    """
     viewer = _as_viewer(viewer)
     mgr = AIStateManager()
     try:

@@ -12,6 +12,7 @@ would close it. No "should be fine" entries — if it is unverified, it says so.
 |---|-----|--------|--------|
 | 1 | Local `semgrep` CLI cannot start | Development tooling only | Open, accepted |
 | 2 | Gemini real success path unverified (no API key) | Gemini option is wired to `google-genai`; only a fake-key 400 proves the request reaches Google | Open, accepted |
+| 3 | `file_write` 的占位内容会被当成真实产物 | 模型可以把任务名/描述原样写进文件，`artifacts` 非空即被算作可交付 | **发布后处理**（本轮只登记，不改代码） |
 
 ---
 
@@ -66,6 +67,28 @@ Google's live endpoint.
 key (e.g. `GOOGLE_API_KEY=... python -c "..."` against
 `GoogleProvider.generate()`), record the response and evidence, then remove
 this entry.
+
+---
+
+## 3. `file_write` 的占位内容会被当成真实产物（发布后处理）
+
+**What happens.** `LLMTaskDecomposer` 目前只校验 `file_write` 的 `inputs` 里
+`path` / `content` 非空，不校验 `content` 是否真的是一份可交付正文。模型可以把
+任务名或描述原样塞进文件（例如 `content="整理好的会议纪要"`），执行器照样落盘，
+`artifacts` 非空，目标就被算成"有产出"。
+
+**Why it matters.** 这与本轮修复的「没有产物文件就不算完成」是同一类问题的
+两端：一端是 **没有产物却报成功**（已修：`artifacts=[]` 时降级为 `partial`）；
+另一端是 **有文件但内容不是交付物**（本项）。两端都不能用"绿"骗人。
+
+**Status.** **发布后处理**。本轮只登记，不改代码：收紧内容校验需要先定义
+"什么算正文"（最小字节数 / 与 name、description 不同 / 可解析格式），否则容易
+把合法的短文件误杀。改之前必须先补这条验收标准与回归用例。
+
+**How to close it if it matters later.** 在执行前或执行后校验 `file_write` 的
+`inputs.content`：不能与任务名/描述相同、不能是明显的占位说明；不满足则不计入
+`artifacts`，并按"无产出"处理。验收用例至少覆盖：占位内容 → 不算交付；真实
+正文 → 算交付；短但合法的文件（如 `hello.txt`）不被误杀。
 
 ---
 
@@ -367,6 +390,7 @@ list/read 后仍落在正确账号空间。回归见
 | E-20 | **中文/空格/非默认盘符路径矩阵：运行时链路已过，安装器落盘与卸载仍未验证**（本轮用「正式 payload 结构 + `scripts/launch_installed.py` + 独立数据目录 + 独立端口」模拟安装版；未运行安装器，遵守安装器由另一路负责的边界） | 用户把程序装到中文/空格路径、数据目录在中文用户名或 D:/E: 盘时可能起不来、写错位置或升级失败 | **部分完成（2026-11-07 实测）**。已实测 4 组并全部通过：① 中文用户名（`LOCALAPPDATA=C:\Users\张三\AppData\Local`，数据目录由默认规则推导）；② 中文+空格安装路径 + 中文数据目录；③ E: 盘 + 中文数据目录；④ D: 盘 + 中文数据目录。每组：首启 ready 4.782–5.297s；控制台 `GET /` 200；注册/登录 200；保存模型配置 200 且 `model_registry.sqlite3` 落在数据目录；`python -m src.upgrade check` 退出码 0 / `up_to_date`；停止后程序目录无 `data/`、无 `.pyc`，密钥/凭据/身份库/模型库/日志/升级状态全部在数据目录（19 个文件）。**未验证（不写成通过）**：a) 真实安装器在中文/空格路径落盘、快捷方式目标、写入开始菜单/卸载登记——复现条件：用 `dist\final-72fd9b17\installer` 以 `/DIR=<中文 空格路径>` 静默安装到临时目录后核对；b) 卸载后程序目录/数据目录残留（含“删除数据”选项）——同上安装后执行卸载并分别列出两目录；c) 浏览器自动打开的可视化确认（本轮以控制台 HTTP 200 代替，桌面交互未肉眼验证）。**已排除的假缺陷**：本轮模拟初次漏拷根级 `error_types.py` 导致启动失败；正式 payload `dist\final-72fd9b17\payload\app\error_types.py` 存在，补齐后四组全过，非产品缺陷 |
 | E-21 | **8GB / 16GB 低配内存没有对应硬件，未实测**（本机为 32GB / Xeon E5-2673 v3 12 核 24 线程） | 无法给出低配机器的真实冷启动与首次对话数字；只能外推，不能当验收结论 | **部分完成（2026-11-07 实测）**。本机 3 次冷启动（独立数据目录、独立端口、mock 模型）：ready 4.875–5.031s（`/v1/startup` 自报 4.205–4.302s）；ready 后控制台首字节 0.516–0.562s；首次对话 2.968–3.125s（服务端 `LiuHaoAssistant.chat` 日志 56ms，其余为首次懒加载）；整进程树 RSS 峰值 212.2–212.9MB，网关单进程 176.2–177.0MB。**外推（未验证）**：内存侧 213MB 远低于 8GB，不是瓶颈；瓶颈更可能在 CPU/磁盘冷读，24 线程数字不能外推到 2–4 核，故不给 8GB/16GB 的“预计秒数”当结论。**要补的观测项**：① 冷启动到 `/v1/startup` ready 的分阶段耗时（`stages`）；② 控制台首字节；③ 首次对话（区分懒加载与服务端耗时）；④ 网关 RSS/整树 RSS 峰值与系统可用内存最低点；⑤ 是否发生换页/磁盘 IO 抖动、单核 CPU 占用；⑥ 8GB 上 1 会话 + 控制台并发，16GB 上 3 会话并发。复现条件：在 8GB（2–4 核）与 16GB（4–8 核）机器上按本轮同一脚本（正式 payload + 独立数据目录 + 独立端口）各跑 3 次 |
 | E-22 | **安装版系统层体验（托盘 / 开机自启 / 后台驻留 / 单实例）在 0.1.1 新启动器上首次实测**（用正式 payload 结构 + 桌面壳 `scripts/liuhao_desktop.py` + 独立数据目录 + 独立端口模拟安装版；遵守「不动业务逻辑、不动前端视觉」的边界） | 第二次双击会起第二个网关并报端口冲突；托盘右键没有日志入口；托盘退出被误报成「未优雅收尾」——三项都会让普通用户以为程序坏了 | **已修 3 个缺陷（`3d3af233`）**：① 桌面壳此前没有自身单实例，第二次启动会再建一个托盘窗口、再让网关锁失败；改为按数据目录派生命名互斥量（`Local\LiuHaoDesktopShell_<sha1>`，`ERROR_ALREADY_EXISTS`），第二实例经 `RegisterWindowMessage("LiuHao.ShowStatusWindow")` 唤起已有窗口，找不到窗口则打开 `run/instance.json` 公布的 url，实测 0.91–1.22s 内以退出码 0 结束，托盘数 / 监听数均保持 1；② 托盘窗口类名原为随机 uuid、跨进程找不到，改为稳定派生 `LiuHaoTray_<sha1(数据目录)>`，并补右键「打开日志目录」（1005，实测新增 1 个资源管理器窗口）；③ `stop_process` 只读 `desktop-gateway.log`（WARNING+），而 uvicorn 的 `Application shutdown complete` 写在数据目录 `logs/liuhao.log`，导致托盘退出被误报「未确认优雅收尾」；改为同时读应用日志，实测 `graceful=True / shutdown_确认=True / 0.67s`。**其余实测**：关窗后窗口隐藏、网关继续服务（`/v1/startup` 200、python 子进程 1、托盘 1）；托盘退出后端口释放、WAL 清空、重启后账号/会话仍在；只强杀托盘时网关因 `LIUHAO_PARENT_PID` 自行退出，再次启动正常（无残留锁）；自启注册项写入 `HKCU\...\Run`（命令指向 `runtime\pythonw.exe scripts\liuhao_desktop.py --autostart`），在 `cwd=C:\Windows\System32` + 仅系统环境变量下等效启动成功，关闭后注册项删除。回归 `tests/desktop/test_desktop_system_layer.py` 新增 6 条（互斥量/类名稳定性、真实托盘窗口唤起、交接兜底、日志菜单、停止确认来源）。**未验证（不写成通过）**：a) 真实重启机器（只做了等效注册项启动）；b) 真实安装器快捷方式（`{app}\LiuHao.bat`）在已有实例运行时的完整路径——工具终端没有交互 stdin，控制台启动器在首次向导处被 `[FAIL] 首次运行需要在命令行窗口里完成向导` 阻断，未走到 `start_liuhao` 的「已在运行」分支；c) 通知区图标的人工可视化确认（程序侧已验证窗口/菜单消息/唤起可达，F-4 仍保持未验证）；d) `LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY` 与实际密钥不一致时的英文原始提示（`REFUSING registry row ... Remedy: set that variable ...`，含环境变量名与绝对路径）与 `LiuHao.bat` 无论何种结局都打印 `LiuHao stopped. Press any key to close.`——两者分属身份内核与 packaging 生成物，超出本任务边界，只登记不改。**普通用户会不会被卡住**：不会。单实例、关窗驻留、托盘退出、自启、强杀恢复五条主路径都能走完；剩余风险只在「双击快捷方式时是否停在向导」这一未验证路径，以及关控制台窗口时那句英文提示的观感 |
+| E-23 | **0.1.0 的 `/v1/health` 把版本号报成 `1.0.0`**（实测：0.1.0 安装实例自报 `1.0.0`，与 `LIUHAO_RELEASE.json`/`pyproject.toml` 的 `0.1.0` 不符）。原因是旧版 health 处理器读错了版本来源，属于 **0.1.0 自身缺陷**，不是升级链引入的回归 | 对运行中的 0.1.0 做版本探测/故障诊断会拿到错误版本，可能误判「装错了版本」或让升级前置判断失真；升级到 0.1.1 后该值正确 | **已修（0.1.1）**：health 改为报告真实运行版本，回归随升级/健康检查测试覆盖。**0.1.0 不回补**：已发布的 0.1.0 二进制不可改，回补需要重发旧版本号，收益为零且会让版本语义更乱；用户升级到 0.1.1 即消失。后续如需支持「识别 0.1.0 旧实例」，只能按已知缺陷解释，不得据此判定升级失败 |
 
 ---
 

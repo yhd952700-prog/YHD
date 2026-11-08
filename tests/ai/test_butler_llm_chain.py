@@ -11,6 +11,7 @@ Covers the defects that were verified against HEAD d2a62b0e:
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 
@@ -80,7 +81,16 @@ class TestLLMDecomposition:
         [
             "抱歉，我无法拆解这个目标。",            # non-JSON
             json.dumps([{"name": "x", "capability": "magic_capability", "inputs": {}}]),
-            json.dumps([{"name": "x", "capability": "network_bus", "inputs": {}}]),
+            # file_write 的 path/content 不能由拆解器代填（补出来就是编造产物）。
+            json.dumps(
+                [
+                    {
+                        "name": "x",
+                        "capability": "file_write",
+                        "inputs": {"path": "x.txt"},
+                    }
+                ]
+            ),
         ],
     )
     def test_invalid_model_output_falls_back_without_empty_plan(self, bad_reply):
@@ -89,12 +99,168 @@ class TestLLMDecomposition:
             generator=lambda prompt, reply=bad_reply: reply,
             capability_provider=lambda: {"network_bus", "execution_pipeline"},
         )
-        tasks = decomposer.decompose(_goal())
+        goal = _goal()
+        tasks = decomposer.decompose(goal)
 
         # The deterministic Chinese keyword path still plans research + organize,
         # so the user never sees a silent "0 tasks" failure.
         assert {t.capability_id for t in tasks} == {"network_bus", "execution_pipeline"}
         assert len(tasks) >= 2
+        assert goal.metadata["decomposition_source"] == "keyword"
+
+    def test_missing_prose_input_is_backfilled_without_losing_the_plan(self, caplog):
+        """A 3-step model plan with one empty ``execution_pipeline`` input must
+        survive: the missing field is the same task text, not invented content."""
+        plan = json.dumps(
+            [
+                {
+                    "name": "调研今日项目",
+                    "description": "找出今天值得关注的 AI 开源项目",
+                    "capability": "network_bus",
+                    "inputs": {"query": "今天值得关注的 AI 开源项目"},
+                    "depends_on": [],
+                },
+                {
+                    "name": "整理成三条要点",
+                    "description": "把调研结果整理成三条要点",
+                    "capability": "execution_pipeline",
+                    "inputs": {},
+                    "depends_on": ["调研今日项目"],
+                },
+                {
+                    "name": "写出交付文件",
+                    "description": "把三条要点写成一份可直接使用的文件",
+                    "capability": "execution_pipeline",
+                    "inputs": {"instruction": "写成直接可用的文件"},
+                    "depends_on": ["整理成三条要点"],
+                },
+            ],
+            ensure_ascii=False,
+        )
+        decomposer = LLMTaskDecomposer(
+            GoalDecomposer(),
+            generator=lambda prompt: plan,
+            capability_provider=lambda: {"network_bus", "execution_pipeline"},
+        )
+        goal = _goal(goal_id="goal-backfill")
+
+        with caplog.at_level(logging.WARNING, logger="liuhao.ai.llm_decomposer"):
+            tasks = decomposer.decompose(goal)
+
+        assert len(tasks) == 3, "one missing input must not discard the whole plan"
+        assert tasks[1].inputs["instruction"] == "把调研结果整理成三条要点"
+        assert goal.metadata["decomposition_source"] == "model"
+        assert "evt=decompose.input_backfilled" in caplog.text
+        assert "field=instruction" in caplog.text
+        assert "source=description" in caplog.text
+        assert "task=整理成三条要点" in caplog.text
+
+    def test_backfill_falls_back_to_task_name_when_description_is_absent(self, caplog):
+        plan = json.dumps(
+            [
+                {
+                    "name": "整理三条要点",
+                    "capability": "execution_pipeline",
+                    "inputs": {},
+                    "depends_on": [],
+                }
+            ],
+            ensure_ascii=False,
+        )
+        decomposer = LLMTaskDecomposer(
+            GoalDecomposer(),
+            generator=lambda prompt: plan,
+            capability_provider=lambda: {"network_bus", "execution_pipeline"},
+        )
+        with caplog.at_level(logging.WARNING, logger="liuhao.ai.llm_decomposer"):
+            tasks = decomposer.decompose(_goal(goal_id="goal-backfill-name"))
+
+        assert tasks[0].inputs["instruction"] == "整理三条要点"
+        assert "source=name" in caplog.text
+
+    def test_contract_failure_is_retried_once_with_error_feedback(self):
+        calls: list[str] = []
+
+        def _generator(prompt: str) -> str:
+            calls.append(prompt)
+            if len(calls) == 1:
+                return json.dumps(
+                    [
+                        {
+                            "name": "写报告",
+                            "description": "写出周报正文",
+                            "capability": "file_write",
+                            "inputs": {},
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                [
+                    {
+                        "name": "写报告",
+                        "description": "写出周报正文",
+                        "capability": "file_write",
+                        "inputs": {"path": "weekly.md", "content": "本周完成 A、B。"},
+                    }
+                ],
+                ensure_ascii=False,
+            )
+
+        decomposer = LLMTaskDecomposer(
+            GoalDecomposer(),
+            generator=_generator,
+            capability_provider=lambda: {"file_write"},
+        )
+        goal = _goal(goal_id="goal-retry")
+
+        tasks = decomposer.decompose(goal)
+
+        assert len(calls) == 2, "a contract failure gets exactly one retry"
+        assert "缺少能力 file_write 的必需输入" in calls[1]
+        assert "上一次计划（只允许改 inputs）" in calls[1]
+        assert "写报告" in calls[1]
+        assert "只修 inputs" in calls[1]
+        assert "不要改任务结构" in calls[1]
+        assert tasks[0].inputs["content"] == "本周完成 A、B。"
+        assert goal.metadata["decomposition_source"] == "model_retry"
+
+    def test_rejected_raw_is_logged_truncated_and_redacted(self, caplog):
+        secret = "Bearer sk-supersecret123456"
+        raw = json.dumps(
+            [
+                {
+                    "name": "写报告",
+                    "capability": "file_write",
+                    "inputs": {},
+                    "note": secret,
+                }
+            ],
+            ensure_ascii=False,
+        )
+        decomposer = LLMTaskDecomposer(
+            GoalDecomposer(),
+            generator=lambda prompt: raw,
+            capability_provider=lambda: {"file_write"},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="liuhao.ai.llm_decomposer"):
+            decomposer.decompose(_goal(goal_id="goal-raw-log"))
+
+        text = caplog.text
+        assert "evt=decompose.rejected" in text
+        assert "缺少能力 file_write 的必需输入" in text
+        assert "写报告" in text, "the raw snippet must be recoverable from the log"
+        assert "[REDACTED]" in text
+        assert "sk-supersecret" not in text
+        assert "Bearer" not in text
+
+    def test_rejected_raw_is_truncated_to_at_most_4kb(self):
+        from src.ai.llm_decomposer import _redact_raw
+
+        redacted = _redact_raw("好" * 4000)
+        assert len(redacted.encode("utf-8")) <= 4096 + len("…[truncated]".encode("utf-8"))
+        assert redacted.endswith("…[truncated]")
 
     def test_model_unavailable_or_timeout_falls_back(self):
         def _boom(prompt: str) -> str:
@@ -312,6 +478,22 @@ class TestSummaryAndTools:
         )
         assert synthesis.success, synthesis.error
         assert synthesis.output["result"].strip()
+
+    def test_runtime_reports_model_decomposition_source(self):
+        runtime = AgentRuntime(
+            scope="L1",
+            capability_executor=self._executor,
+            enable_model_planning=True,
+            model_generator=lambda prompt: (
+                _model_plan() if "任务拆解器" in prompt else "汇总：项目 A、B、C。"
+            ),
+        )
+        result = runtime.run_goal(TARGET_GOAL, persist=False)
+
+        assert result.decomposition_source == "model", (
+            "the gateway must be able to tell the user whether the model or the "
+            "keyword planner produced this plan"
+        )
 
     def test_missing_capability_rejection_is_readable(self):
         from src.ai.planner_contract import ExecutableAwareDecomposer, PlannerContractError

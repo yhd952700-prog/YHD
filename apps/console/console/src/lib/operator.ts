@@ -496,6 +496,11 @@ export interface GoalDetail {
   employees?: EmployeeRollup[]
   /** 真实工作区产物（相对路径）。空数组 = 该目标没有向工作区写入任何文件。 */
   artifacts: string[]
+  /**
+   * 本次计划由谁拆解：`model` / `model_retry` / `keyword`。
+   * 早于该字段的历史记录会缺失；读侧必须显示「未知」，不能默认成 `model`。
+   */
+  decomposition_source?: string | null
   evaluation: {
     outcome: string | null
     summary: string

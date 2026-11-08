@@ -9,6 +9,8 @@ import { describe, expect, test } from 'vitest'
 import {
   approvalTasks,
   buildGoalSummary,
+  decompositionNotice,
+  decompositionSourceOf,
   failedTasks,
   formatElapsed,
   formatTaskDuration,
@@ -319,5 +321,35 @@ describe('进度与汇总', () => {
       { created_at: 3 },
     ])
     expect(sorted.map((g) => g.created_at)).toEqual([3, 1, null])
+  })
+})
+
+describe('拆解来源不能静默', () => {
+  test('keyword 明确说明不是 AI 拆的，并带上步数', () => {
+    expect(decompositionNotice({ decomposition_source: 'keyword' }, 1)).toEqual({
+      tone: 'warn',
+      text: '这次没有用 AI 拆解，已按关键词规则拆成 1 步；结果可能不够细，可以重试。',
+    })
+  })
+
+  test('model_retry 说明第一次不完整但已修正', () => {
+    expect(decompositionNotice({ decomposition_source: 'model_retry' }, 3)?.text).toBe(
+      'AI 第一次拆解不完整，已自动修正一次。',
+    )
+  })
+
+  test('model 不打扰用户', () => {
+    expect(decompositionNotice({ decomposition_source: 'model' }, 3)).toBeNull()
+  })
+
+  test('缺失字段按 unknown 处理，绝不默认成 model', () => {
+    expect(decompositionSourceOf({})).toBe('unknown')
+    expect(decompositionSourceOf({ decomposition_source: null })).toBe('unknown')
+    expect(decompositionSourceOf({ decomposition_source: 'mystery' })).toBe('unknown')
+    expect(decompositionNotice({}, 2)?.text).toContain('拆解来源：未知')
+  })
+
+  test('大小写与空格不会把 model 误判成未知', () => {
+    expect(decompositionSourceOf({ decomposition_source: ' MODEL ' })).toBe('model')
   })
 })

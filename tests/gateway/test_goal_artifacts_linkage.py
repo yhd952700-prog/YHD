@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,41 @@ def test_goal_that_writes_file_records_artifact_and_surfaces_via_api():
         f"GET /v1/goals/{entry['goal_id']} did not return the artifact; "
         f"got {served_artifacts}"
     )
+
+
+def _result(**overrides):
+    base = dict(
+        goal_id="goal-source",
+        correlation_id="corr-source",
+        state="completed",
+        context=None,
+        evaluation=None,
+        trace=None,
+        memory_keys=[],
+        persist_errors=[],
+        replan_count=0,
+        replan_suggested=False,
+        error=None,
+        preflight_notices=[],
+        decomposition_source=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_result_entry_carries_decomposition_source():
+    entry = AIStateManager._result_to_dict(
+        _result(decomposition_source="model_retry"), "整理周报", "L1"
+    )
+    assert entry["decomposition_source"] == "model_retry"
+
+
+def test_result_entry_without_source_stays_none_never_model():
+    """A retry/blocked run that never planned must not be recorded as model."""
+    result = _result()
+    del result.decomposition_source
+    entry = AIStateManager._result_to_dict(result, "整理周报", "L1")
+    assert entry["decomposition_source"] is None
 
 
 def test_goal_that_writes_no_file_has_empty_artifacts():
