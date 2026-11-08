@@ -24,21 +24,22 @@
 
 ## 0. 安装包
 
-**当前状态：`dist/installer/` 有 0.1.0 的四项正式产物；本次同源构建的最终包待验收后替换。**
-上一版“该路径从未存在 / 目录为空”的说法已过期，见 0.1 的历史溯源。
+**当前状态（2026-11-08 实测）：`dist/installer/` 顶层 0 个 exe、0 个 zip。**
+顶层只剩 `README-DELIVERY.txt` 与 `_archive\`；`_archive\20261107-mixed-0.1.0-and-0.1.1\`
+里的 0.1.0 / 0.1.1 已按 `README-DELIVERY.txt` 判定为不合格成品，只作追溯，不得分发。
+**本轮全部修复都还没进包。** 出包是下文 §0.3 的两个独立节点，不是「再打一次」这么简单。
 
 | 项目 | 值 |
 |---|---|
-| 安装包路径 | `dist/installer/LiuHao-Setup-0.1.0.exe`（上一版交付物） |
-| 大小 | 34,838,298 字节（约 33.2 MiB） |
-| SHA256 | `6b0179d8372bb8830f55b6cb9835fcacd9a54642f7d5ebb16db5946359ad9e88` |
-| 校验文件 | `dist/installer/SHA256SUMS.txt`、`dist/installer/DELIVERY.txt` |
-| 升级包 | `dist/installer/liuhao-0.1.0.zip` 2,529,546 字节，SHA256 `29fecdf0…6e12` |
-| **这版安装包对应的源码提交** | 0.1.0 交付包来源提交未绑定；**本次最终包转正后必须回填** |
-| 安装后体积 | 10,502 个文件 / 170,666,366 字节（约 162.8 MiB，0.1.0 交付包实测） |
-| 构建命令 | `packaging/build_windows_installer.ps1 -OutRoot <dir>`（不带 `-SkipFrontend`） |
-| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（存在，4,567 字节，含 Key 申请与跳过说明） |
-| 第三方许可证 | 声明由 `packaging/third_party_notices.py` 在构建时按 payload 实装生成（模板 `packaging/third-party-notices.template.txt`），连同 `packaging/licenses/` 一起复制到程序根目录 |
+| 安装包路径 | 无（顶层 0 个 exe，等待重建） |
+| 大小 / SHA256 | 无（尚未构建，不复用历史数值） |
+| 校验文件 | 无（构建时由 `package-frozen.ps1` 生成 `SHA256SUMS.txt` / `DELIVERY.txt`） |
+| 历史归档（只追溯） | `dist/installer/_archive/20261107-mixed-0.1.0-and-0.1.1/`：0.1.0 exe 34,731,647 字节、0.1.1 exe 34,830,483 字节，**均不得对外分发** |
+| **这版安装包对应的源码提交** | 无；出包时由 `DELIVERY.txt` 写死 HEAD，并回填本表 |
+| 安装后体积 | 仅 0.1.0 历史实测 10,502 个文件 / 170,666,366 字节（162.8 MiB），新包必须重测 |
+| 构建命令 | `scripts/release/package-frozen.ps1`（唯一允许写 `dist/installer` 的入口） |
+| 安装前必读 | `installer/assets/BEFORE-INSTALL.txt`（含 Key 申请与跳过说明） |
+| 第三方许可证 | 由 `packaging/third_party_notices.py` 在构建时按 payload 实装生成，连同 `packaging/licenses/` 复制到程序根目录 |
 
 ### 0.1 历史记录更正与 E2E 产物溯源（2026-11-06）
 
@@ -77,6 +78,113 @@
 （43,756,495 字节 / `D8FD0BC9FAC18092521284B93537520E2F7DBA8A45D4B9B6A2092D1C8A440461`，
 构建于 2026-11-05 15:06:38）的 payload 三个文件均对不上任何提交
 （`start_liuhao.py` / `manager.py` / `startup.py`，见同目录 `WHY-OBSOLETE.txt`），已作废。
+
+### 0.2 安装冒烟验收清单（内部基线包专用，2026-11-08）
+
+> **本包定性：安装冒烟包，不是候选发布版，不得对外。**
+> 包内说明与 `DELIVERY.txt` 必须原样写上这句实话：
+> 「本包验的是安装器 / 桌面 / 首启 / 回环写入链路。**已知问题：系统资源紧张时可能出现
+> 请求全部挂起、登录转圈，需要重启。正式修复未入包。**」
+> 宁可这段话难看，也不能让验收人以为装完就没有这个问题。
+
+逐条照着做；每条都写「算过 / 算不过 / 留什么证据」。装到 **D 盘**，不要装 C 盘。
+
+| # | 项目 | 怎么做 | 算过 | 算不过 | 证据 |
+|---|---|---|---|---|---|
+| S-01 | 安装位置 | 双击安装包，保持默认目录 `D:\LiuHao`，数据目录 `D:\LiuHaoData` | 程序与数据都在 D 盘；`D:\LiuHao\data-dir.txt` 指向 `D:\LiuHaoData` | 落到 `C:\Users\...` 或 `Program Files`；`data-dir.txt` 缺失/指向别处 | 两个目录的 `Get-ChildItem` 输出 + `data-dir.txt` 截图 |
+| S-02 | 图标正确 | 看桌面与开始菜单快捷方式 | 显示鎏灏图标（`{app}\assets\liuhao.ico`），双击能启动；快捷方式目标为 `runtime\pythonw.exe` + `scripts\liuhao_desktop.py app --open-browser` | 空白/白纸/齿轮/默认 exe 图标；目标指向测试或走查目录；双击报找不到文件 | 快捷方式属性截图（目标+图标）+ 桌面截图 |
+| S-03 | 首启向导 | 首次启动，逐字填完五步：数据目录 → 管理员账号 → 模型（含端口）→ 确认 → 自检 | 图形窗口（不是黑命令行），五步都能「下一步/上一步」；端口被占时出现「换一个端口」；自检结果如实显示 | 只弹黑窗口；卡在某一步；端口被占只报错无二选一；向导写不出数据目录 | 每步截图 + 向导日志路径 |
+| S-04 | 浏览器自动打开 | 向导完成后不要手动点任何东西 | 默认浏览器自动打开 `http://127.0.0.1:<端口>`，登录页可见 | 没自动打开；打开的是空白页/旧缓存页；端口与向导填写不一致 | 浏览器地址栏截图 + 启动日志中的监听端口行 |
+| S-05 | 能登录进去 | 用向导里建的账号登录 | 登录后落在「总览」，左侧导航可见；刷新后仍保持登录 | 一直转圈（见 S-11）、401、白屏、登录后又跳回登录页 | 登录请求的 Network 状态码 + 页面截图 |
+| S-06 | 真实 DeepSeek Key，不重启即用 | 保持后端运行，进 **系统设置 → 模型管理**，填 `https://api.deepseek.com/v1`、`deepseek-chat`、真实 Key，保存后直接去对话 | 不重启后端，60 秒内收到真实回复；日志显示调用了真实 provider（不是 mock） | 必须重启才生效；仍走 mock；401/404/503 且换 Key 后依旧 | 回复截图 + 日志中的 provider 行 + Key 脱敏后的配置截图 |
+| S-07 | 回环写入正常 | 在同一浏览器里做三次写操作：登录、发一条消息、建一个目标 | 全部成功；服务端日志 `SECURITY_REJECTED` 计数为 0（尤其无 `cross_site_write`） | 任一写入 403 `cross_site_write`；只有读能过、写全挂 | 三次请求的状态码 + 日志检索输出：`Select-String SECURITY_REJECTED` |
+| S-08 | Key 不落明文 | 在 `D:\LiuHaoData` 下检索真实 Key 前缀 | 只命中脱敏形式（`sk-***`），无完整 Key | 任一处出现完整 Key | 检索命令与命中行（命中即打码） |
+| S-09 | 关窗驻留 / 退出 | 关掉状态窗口，再发一条消息；然后从托盘「退出」 | 关窗后服务继续可用；托盘退出后进程消失、端口释放 | 关窗即断服；退出后仍有 `pythonw.exe` 占端口 | 进程列表与端口监听输出 |
+| S-10 | 卸载干净 | 先用交互式卸载（默认保留数据），再用 `/VERYSILENT` 跑一次静默卸载 | 交互式卸载完成；静默卸载不挂住、退出码 0；程序目录只剩 `licenses\` / `THIRD-PARTY-NOTICES.txt` / `sbom-cyclonedx.json`（条款要求保留）；数据目录按默认保留；无残留进程、无自启动项、无快捷方式 | 静默卸载卡在「是否保留数据」；残留 `pythonw.exe`；自启动项仍在；快捷方式指向已删文件 | 卸载日志 + 卸载后目录树 + `Get-Process` / 注册表 Run 键输出 |
+| S-11 | 已知问题：登录转圈（观测项，不是通过项） | 见下方取证流程；**撞上就记命中，不许重试到过为止** | 没撞上：全程无 60 秒以上转圈，记「本次未复现」 | 撞上：按取证流程留证，记「已知问题命中」，本条不判通过 | 见下方五样证据 |
+
+**S-11 登录转圈取证流程（撞上时立刻做，先取证再决定是否重启）：**
+
+1. 记下时刻、当前操作（登录 / 发消息）、页面是否一直转圈。
+2. 浏览器开发者工具 → Network：`/v1/auth/login` 或 `/v1/chat` 是否长期 `pending`，记已等待秒数；Console 有无报错。
+3. CPU 采样：`Get-Process pythonw | Select-Object Id,CPU` 间隔 5 秒连采两次；增量 <0.1 秒即记「CPU 接近 0」。
+4. 探活：`Invoke-WebRequest http://127.0.0.1:<端口>/v1/health -TimeoutSec 5`；超时或非 200 记 `hung`。再试 `/v1/ready`。注意 `/v1/health` 是纯内存路径，即使它返回 200、业务请求仍挂起，也照样记命中。
+5. 不重启，观察是否在 6 分钟内自愈；≥6 分钟仍不可用记「未自愈」。
+6. 留证：`D:\LiuHaoData\logs` 原样复制、进程 PID、截图、上述命令输出。**这些就是这条已知问题的现场，不要清掉。**
+
+### 0.3 两次出包节点（2026-11-08 起）
+
+| 节点 | 什么时候能开打 | 包里有什么 | 明确缺什么 | 对外口径 |
+|---|---|---|---|---|
+| **A. 安装冒烟包**（内部） | 流式线 `a81d1ecb` 交回并逐文件对账无遗漏、其文件已提交；工作树达到「打包前置必须清零项已清零」 | 安装器 / 桌面 / 首启向导 / 回环写入链路；流式兜底修复 | **满载僵死的第二条根因修复**（限流中间件在事件循环上同步查 JWT 撤销库的 SQLite）；`health.py` / `test_gateway_health_wiring.py` / `soak-report` 三项；`tests/consistency/` 三连跑凭证；30 分钟满载窗口结论 | **只做安装冒烟，不是候选发布版**；包内必须带 §0.2 顶部那句已知问题说明 |
+| **B. 终版** | 三条修复入库（`Thread.start` 非阻塞、限流中间件移出事件循环、探针/线程池相关）+ **30 分钟满载窗口达标** + `tests/consistency/` 连跑 3 次全过 + preflight 达标（15 PASS / 2 SKIP / 0 FAIL） | 全部修复；同源前端；`SHA256SUMS.txt` / `DELIVERY.txt` 绑定源码提交 | 无（未达标则不出终版） | 唯一可对外候选 |
+
+> **红线：30 分钟满载窗口不达标，就只出安装冒烟包，不出终版。**
+> 「满载僵死已修复」这句话在 2026-11-08 已作废：软测第三次跑到 21.8 分钟又僵死、
+> 6 分 41 秒不自愈；8 小时数据不存在（`rss8h5` 已于 19:46 被终止，实际只有 22 分钟）。
+> 真因两条：① `Thread.start` 无限等；② 限流中间件在事件循环上同步查 JWT 撤销库 SQLite。
+
+### 0.3.1 打包前置预演结果（2026-11-08，临时 worktree，只读）
+
+预演环境：`git worktree add --detach D:\cache\temp\liuhao-packrehearsal-aa881ca0 aa881ca0`，
+解释器复用 `D:\LiuHao-AI-OS\.venv\Scripts\python.exe`。**未构建前端、未组 payload、未出包。**
+
+`preflight.py`（17 项，84.3s）：**PASS 12 / SKIP 3 / FAIL 2**。
+
+| 结论 | 项目 |
+|---|---|
+| PASS | 工作树干净；`import src.gateway.main`；测试收集 8,582 条；OpenAPI 140 paths 对账；应用实例化卫生；全量导入 2 passed；PowerShell 5.1 解析 3 个脚本；品牌门禁；SBOM/许可证登记；SBOM 无绝对路径；日志泄漏（新工作树无目标）；`dist\installer` 无候选 |
+| SKIP | 安装副本同源（未提供 `--install-dir`）；无障碍验收（未启 `--a11y`）；payload SBOM（`sbom_audit.py` 随构建产出） |
+| FAIL ① | **HEAD 没有上游分支**——这是 detached worktree 的假象；真实仓库实测 `origin/p36` 领先 **69 个提交**，出包前必须 push |
+| FAIL ② | **缺 `apps/console/console/dist/index.html`**——干净工作树没有构建产物，属预期；出包前必须先构建前端 |
+
+`freeze_checks.py` 子项（`package-frozen.ps1` 的硬门禁）：
+
+| 子项 | 结果 | 处置 |
+|---|---|---|
+| `deps` | **FAIL：`requests`、`urllib3` 没有被 import 图带上** | **必须清零。** 真因：`packaging/stage_payload.py` 的 `_MEASURE_CODE` 没有 `import requests`，而 `src/ai/model_discovery.py` 顶层 `import requests`、`src/ai/providers.py` 多处延迟导入。修法：在 `_MEASURE_CODE` 里加一行 `import requests  # noqa: F401`（会顺带量到 `urllib3`），否则 `package-frozen.ps1` 第 3 步直接拒绝出包 |
+| `env` | PASS | 本机 `LIUHAO_*` 无污染 |
+| `frontend-source` | PASS（本机无基线，首次冻结会写入） | 出包时确认基线对应的就是冻结提交 |
+| `runbook` | PASS（`dist` 副本尚不存在） | 出包后复跑 |
+| `log-leak` | PASS（新工作树无日志目标） | 安装后用 `--data-dir` 对真实数据目录复扫 |
+
+**分类结论（用户点名的两条已知红）：**
+
+- **29 项未提交改动 → 必须清零。**（19:58 复核已增至 **36 项**，且流式线 / 知识库线 / 软测线仍在写。）`package-frozen.ps1` §1.1 要求工作树干净，冻结包必须能由一个提交完整重建；这批改动只能先按归属线提交，不能带进包里。
+- **领先远端 69 个提交 → 必须清零。** 出包前 push；否则 `dist\installer` 的产物无法从远端提交复现，`DELIVERY.txt` 绑定的提交也无法被他人取到。
+
+**除此之外只发现上面 `deps` 一条真实代码级门禁坑**；其余 FAIL 都是「工作树还没构建、还没 push」的预期状态。
+
+### 0.4 远端与 git 元数据（已知项，2026-11-08 实测）
+
+| 项目 | 实测 |
+|---|---|
+| 当前分支 / 上游 | `p36` → `origin/p36` |
+| 领先 / 落后 | 领先 **70** 个提交；落后 **4** 个提交（远端新提交尚未合并） |
+| 安装包是否依赖 git 元数据 | **不依赖**（结论见下） |
+| 安装包是否依赖远端可达性 | **不依赖**（结论见下） |
+
+- **交付标识以本机提交号 + 安装包 SHA256 为准。** `DELIVERY.txt` 里的 `source_commit`
+  由构建机在打包时写成静态文本（`package-frozen.ps1` 第 378 行 `git rev-parse HEAD`），
+  安装后的程序不读 git。
+- **不配置伪远端，也不改 preflight 让上游检查变绿。** push 之前 `preflight` 的
+  「上游分支 / 领先提交」检查会保持 FAIL，这是真实状态，按已知项登记，不按缺陷掩盖。
+- 领先数在流式批 `54213465` 提交后为 70（预演时为 69）；落后 4 意味着 push 前需要先合并
+  远端新提交，不能直接强推。
+
+**安装包不依赖 git / 远端的依据（逐项核过）：**
+
+1. payload 不含 `.git`：`packaging/stage_payload.py` 只复制 `src/`、`config/`、
+   `console/`（构建产物）、`scripts/`（`PAYLOAD_SCRIPTS` 白名单）、`runtime/` 与
+   `pyproject.toml` / `requirements.txt` / `oss-registry.yaml`。
+2. 运行期版本来自 `pyproject.toml` 与 `console-contract` 签章 JSON
+   （`src/upgrade/console_contract.py`），不调用 `git`。
+3. 构建期 `git` 只出现在 `scripts/release/preflight.py`、
+   `scripts/release/package-frozen.ps1`、`scripts/independent_verification.py`；
+   这三个脚本**不随包安装**，只在构建机上跑。
+4. 升级检查只在显式配置 `--manifest-url` 时发 HTTP 请求，默认关闭（与
+   `BEFORE-INSTALL.txt` 第 4 条一致）；`src/upgrade/manager.py` 只是把 `.git`
+   列入安装排除名单，不读取它的内容。
 
 ## 1. 三步使用说明（最终用户只需要这三步）
 
@@ -119,7 +227,7 @@
 | # | 项目 | 状态 | 证据 | 部分完成差哪一部分 |
 |---|---|---|---|---|
 | 1 | 四步用户文档 | 已完成 | [END-USER-GUIDE.md](END-USER-GUIDE.md)，commit `a97d5862` | — |
-| 2 | 安装包构建 | 部分完成（上一版产物存在，最终包待重出） | `dist/installer` 现有 0.1.0 四项产物（34,838,298 字节 exe、2,529,546 字节 zip、`SHA256SUMS.txt`、`DELIVERY.txt`）；构建脚本可用 | 待本次同源构建的最终包回填路径/字节/SHA256 与对应源码提交 |
+| 2 | 安装包构建 | 未完成（顶层无产物，等待按 §0.3 节点重建） | 2026-11-08 实测：`dist/installer` 顶层 0 个 exe、0 个 zip；历史产物已移入 `_archive\` 且判定不合格 | 待安装冒烟包 / 终版分别回填路径、字节、SHA256 与对应源码提交 |
 | 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | 历史日志 `dist/obsolete/installer-20261105-1506/install.log`（该目录已随旧包清理，不在仓库内）：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
 | 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |

@@ -202,24 +202,50 @@
 
 ---
 
-## 10. 未提交区（前端线，待收口统一提交）
+## 10. 收尾进度与未提交区（2026-11-08 实测）
 
-> 工作树多支共用。以下改动**只在工作区**，原因是同一文件里混有其他线未提交的 hunk，整文件提交会卷走别人的活。收口时逐条核对，不要漏。
-> 已提交的部分：`329f8426`（`errorMessage.ts` + `errorMessage.test.ts`，仅本线 hunk）。
+### 10.1 已入库：`apps/console` 72 项（六批）
 
-| # | 文件 | 一句话说明 | 状态 |
-|---|---|---|---|
-| 1 | `apps/console/console/src/lib/contracts.ts` | `EnforcementPayload` 改为后端真实字段 `enforced_actions` / `spec` / `count` / `exempt_actions` / `config_error`；**同文件夹带别的线 `RegistryKernel → RegistryModule` 改名**，不可整文件提交 | 前端线，待收口统一提交 |
-| 2 | `apps/console/console/src/pages/Operations.tsx` | 拦截配置卡片「生效等级」→「生效动作」，改读 `data.enforced_actions`（后端语义是动作，不是风险等级） | 前端线，待收口统一提交 |
-| 3 | `apps/console/console/src/pages/Projects.tsx` | 有目标项目的强制删除依赖 `ApiError.code === 'project_has_goals'`；产品逻辑本身未改，但文件内有其他线的大段未提交改动（约 289 行），不可整文件提交 | 前端线，待收口统一提交 |
-| 4 | `apps/console/console/src/pages/Butler.tsx` | 仅把 `goalWorkMessage` 改为导出以便对照测试；文件内有其他线的大段未提交改动（约 186 行），不可整文件提交 | 前端线，待收口统一提交 |
-| 5 | `apps/console/console/src/pages/Projects.test.tsx`（新增） | 409 `project_has_goals` → 出现确认框 → 确认后带 `force=true` 删除成功；取消则不发强制请求 | 前端线，待收口统一提交 |
-| 6 | `apps/console/console/src/pages/Butler.guidance.test.ts`（新增） | 10 个错误码 → 用户下一步动作的对照断言，防止指引分支再次全不触发 | 前端线，待收口统一提交 |
-| 7 | `apps/console/console/src/pages/Operations.enforcement.test.ts`（新增） | 断言 Operations 读 `enforced_actions`、不读 `enforced_tiers`；契约层同为 `enforced_actions` | 前端线，待收口统一提交 |
-| 8 | `apps/console/console/src/os.css` | 登录页首屏可达性：矮窗口让装饰先让位（≤620px 高隐藏客户端清单、≤520px 高隐藏账号统计），只追加本线 hunk；**同文件另有其他线大量未提交样式，不可整文件提交** | 前端线，待收口统一提交 |
-| 9 | `apps/console/console/src/loginViewport.test.ts`（新增） | 登录页 CSS 契约：`place-items: safe center`、矮窗卡片收进视口 + 主操作吸底、装饰让位且不缩字号、移动端适配仍在 | 前端线，待收口统一提交 |
-| 10 | `apps/console/console/src/pages/Settings.upgrade.test.tsx`（新增） | 系统设置确有「软件更新」卡片（`Settings.tsx` 导入 `UpgradePanel`、`title="软件更新"`、挂载 `<UpgradePanel />`），并断言三种检查结果文案：`检查更新` / `当前已是最新版本。` / `这次没有检查成功，请稍后重试。` | 前端线，待收口统一提交 |
+| 批次 | 提交 | 内容 | 文件数 | 本批验证 |
+|---|---|---|---|---|
+| 1 | `4559a23b` | 升级面板 + upgrade 封装 + api/contracts | 7 | 18 passed |
+| 2 | `b44336bf` | 知识库 + `Settings.tsx`（整文件：升级入口 + 只读向量卡） | 6（+688/−60） | 21 passed |
+| 3 | `ccb7df3b` | 账号鉴权 UI（会话能力/切换/成员/身份/目录） | 13（+348/−94） | 26 passed |
+| 4 | `9afd9ea9` | 诊断导出、图表、概览口径 | 13（+402/−44） | 35 passed |
+| 5 | `4842e2cf` | 项目/备份/恢复/首启/其余页面 | 15 | 20 passed |
+| 6 | `aa881ca0` | 构建配置 + 跨模块门禁测试 | 18 | 90 passed |
 
-**核实结论（系统设置 · 软件更新）**：**有**。`Settings.tsx` 第 22 行导入 `UpgradePanel`、第 194 行为 `title="软件更新"`、第 198 行挂载 `<UpgradePanel />`。此前「12 张卡片里没有」的说法不成立，已由 `Settings.upgrade.test.tsx` 固化为自动断言；后续若有人删掉卡片或改坏状态文案，测试会直接失败。
+收工全量（六批全部落地后）：`npx tsc -b` **0**；`npx vitest run` **49 文件 / 505 条全过**；
+`npm run lint` **0 error / 39 warning**（`[toFixed] OK`）；`pytest tests/test_import_integrity.py` **2 passed**。
 
-**已验证（工作区全量）**：`npx tsc -b` 通过；`npx vitest run` **41 files / 393 tests passed**。收口时把这 10 项一并提交后，建议再跑一次全量确认。
+### 10.2 未提交：29 项（19:52 实测，流式线仍在写）
+
+| 归属 | 项数 | 文件 |
+|---|---|---|
+| 流式线 `a81d1ecb` | 24 | 生产：`App.css`、`ChatPanel.tsx`、`chatClient.ts`、`src/ai/liuhao.py`、`src/ai/providers.py`、`src/ai/tools/kernel_tools.py`、`src/gateway/chat.py`、`src/tasks/reminder_tool.py`；既有测试 8 个（`test_execution_loop_e2e`、`test_conversation_store`、`test_economy`、`test_liuhao_assistant`、`test_liuhao_tools`、`test_local_tool_execution`、`test_model_config`、`test_providers`）；新增测试 8 个（`test_stream_cancel_audit`、`test_tool_error_feedback_humanized`、`test_tool_prompt_contract`、`test_sse_bypasses_gzip`、`test_stream_disconnect_releases_lock`、`test_stream_done_frame_on_error`、`test_reminder_fire_chain`、`test_reminder_tool_contract`） |
+| 软测线 | 4 | `src/gateway/health.py`、`src/gateway/main.py`、`tests/test_gateway_health_wiring.py`、`docs/operations/soak-report-2026-11-08.md` |
+| 一致性 | 1 | `tests/consistency/`（内含 `test_crash_consistency.py`、`_crash_child.py`） |
+
+**为什么从 22 变 29**：19:39–19:51 之间流式线又写了 `App.css`、`main.py` 和 5 个新测试；
+19:51 仍有文件落盘，说明**尚未停写**。停写回执到达前不提交、不对账、不打包。
+
+**19:58 复核（数字继续在动，只作快照）**：流式线又改了 `ChatPanel.test.tsx` / `chatClient.test.ts`；
+知识库线落下 `src/ai/tools/builtin.py`、`src/api/routes/knowledge.py`、`src/knowledge/documents.py`；
+软测线落下 `src/gateway/rate_limiter.py`（新根因）、`src/gateway/ai_management.py`。
+除本表 3 份文档外，未提交项已到 **36**。**以停写回执为准，不以这张表为准。**
+
+### 10.3 两个交付节点（详见 [DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §0.3）
+
+| 节点 | 门槛 | 明确缺什么 |
+|---|---|---|
+| **A. 安装冒烟包**（内部，不对外） | 流式线停写并逐文件对账、其文件已提交；打包前置「必须清零项」清零 | 满载僵死第二条根因（限流中间件在事件循环上同步查 JWT 撤销库 SQLite）修复；`health.py` / `test_gateway_health_wiring.py` / `soak-report`；`tests/consistency/` 凭证；30 分钟满载窗口结论 |
+| **B. 终版** | 三条修复入库 + **30 分钟满载窗口达标** + `tests/consistency/` 连跑 3 次全过 + preflight 达标（15 PASS / 2 SKIP / 0 FAIL） | 无；不达标则只出冒烟包，不出终版（红线） |
+
+**口径作废**：「满载僵死已修复」不成立。软测第三次 21.8 分钟又僵死、6 分 41 秒不自愈；
+8 小时数据不存在（`rss8h5` 19:46 被终止，实际只有 22 分钟）。终版门槛里**旧成绩单不算数**，
+新根因修完必须重跑 30 分钟窗口。
+
+### 10.4 `tests/consistency/` 判定条件（记死）
+
+**宿主 CPU 连续 2 分钟 <15% 才开跑；连跑 3 次全过才算过；1 次红按真问题查，
+不许写成「环境抖动」后放过。** 未满足前不提交。
