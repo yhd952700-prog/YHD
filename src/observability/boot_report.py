@@ -30,8 +30,8 @@ import re
 import shutil
 import socket
 import sqlite3
-import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -140,13 +140,20 @@ def free_bytes(path: Any) -> Optional[int]:
 
 
 def _errno_fields(exc: Optional[BaseException]) -> Tuple[Optional[int], Optional[int]]:
-    """从 ``OSError`` 家族取出 ``(winerror, errno)``。"""
+    """从 ``OSError`` 家族取出 ``(winerror, errno)``。
+
+    Windows 的 ``open()`` 在 ACL 拒绝时只带 ``errno=13``，不带 ``winerror``；
+    此时按系统自带映射补成 ``ERROR_ACCESS_DENIED(5)``，让日志和安装器都拿到
+    可检索的 Win32 错误码（Python ``errmap.h``：EACCES ↔ 5）。
+    """
     if exc is None:
         return None, None
     winerror = getattr(exc, "winerror", None)
     errno_v = getattr(exc, "errno", None)
     if errno_v is None and not isinstance(exc, OSError):
         errno_v = None
+    if winerror is None and errno_v == 13 and os.name == "nt":
+        winerror = 5
     return (int(winerror) if isinstance(winerror, int) else None,
             int(errno_v) if isinstance(errno_v, int) else None)
 
@@ -173,24 +180,95 @@ def _bounded(fn, seconds: float = 2.0, step: Optional[Dict[str, Any]] = None):
     worker.start()
     worker.join(seconds)
     if worker.is_alive():
+        # 线程可能恰在 join 返回后、这里判断前结束并留下真实异常：有异常就报异常，
+        # 不再退回"超时"这种更弱的信息。
+        late_exc = (step or {}).get("exception")
+        if late_exc is not None:
+            raise late_exc
         last = (step or {}).get("at") or "unknown"
         last_error = (step or {}).get("error")
         detail = f"probe did not finish within {seconds}s (last step: {last}"
         if last_error:
             detail += f"; last error: {last_error}"
-        raise TimeoutError(detail + ")")
+        timeout = TimeoutError(detail + ")")
+        # 真实异常往往在超时之后才返回（ACL 拒绝会被系统过滤驱动拖慢）：把工作线程
+        # 交给调用方，等它真正结束后补一条带真实异常的后续事件，而不是永远吞掉。
+        try:
+            setattr(timeout, "liuhao_probe_thread", worker)
+        except Exception:  # noqa: BLE001 - 属性设置失败不影响超时语义
+            pass
+        raise timeout
     if "error" in box:
         raise box["error"]
     return box["value"]
 
 
-def probe_writable(directory: Any) -> Tuple[bool, Optional[BaseException]]:
+def _report_late_probe(
+    directory: Any,
+    worker: threading.Thread,
+    step: Dict[str, Any],
+    started: float,
+    label: str = "write_probe",
+) -> None:
+    """探测已超时、但工作线程终会返回：把**真实异常**补记成一条独立事件。
+
+    启动不能为一次写探测等上几秒，但"超时"不等于"没有原因"。等线程真正结束
+    后写 ``evt=boot.<label>.probe_late``，包含异常类型、``winerror``、``errno``、
+    停在的步骤与总耗时；日志里既保留了超时那一刻的最后一步，也不丢真实原因。
+    """
+    def _wait() -> None:
+        worker.join()
+        exc = step.get("exception")
+        if exc is None:
+            return  # 超时后其实成功了，没有可报的失败
+        winerror, errno_v = _errno_fields(exc)
+        elapsed = time.monotonic() - started
+        event = f"boot.{label}.probe_late"
+        fields = dict(
+            path=display_path(directory, tail=2),
+            path_kind=path_kind(directory),
+            step=step.get("at") or "-",
+            winerror=winerror,
+            errno=errno_v,
+            elapsed_s=f"{elapsed:.1f}",
+            exc=exc_text(exc, directory),
+            note="写探测超过启动预算后返回，以上为真实原因",
+        )
+        logger.warning(
+            'evt=%s path=%s path_kind=%s step=%s winerror=%s '
+            'errno=%s elapsed_s=%.1f exc="%s" note="%s"',
+            event,
+            fields["path"],
+            fields["path_kind"],
+            fields["step"],
+            winerror if winerror is not None else "-",
+            errno_v if errno_v is not None else "-",
+            elapsed,
+            fields["exc"].replace('"', "'"),
+            fields["note"],
+        )
+        try:
+            from .. import bootstrap_log
+
+            bootstrap_log.write_event(event, **fields)
+        except Exception:  # noqa: BLE001 - 引导日志失败不影响主流程
+            pass
+
+    watcher = threading.Thread(target=_wait, name="boot-probe-late", daemon=True)
+    watcher.start()
+
+
+def probe_writable(
+    directory: Any, label: str = "write_probe"
+) -> Tuple[bool, Optional[BaseException]]:
     """真的写一个临时文件再删掉——``os.access`` 在 Windows ACL 下并不可信。
 
     失败时异常对象上会带上 ``liuhao_probe_step`` / ``liuhao_probe_error``，
     调用方据此把"卡在哪一步"和"真实异常"一起写进日志与 installation.json。
+    超时后工作线程若继续跑完并抛错，会由 :func:`_report_late_probe` 补记。
     """
     step: Dict[str, Any] = {"at": "start"}
+    started = time.monotonic()
     try:
         _bounded(lambda: _write_probe(directory, step), step=step)
         return True, None
@@ -203,6 +281,9 @@ def probe_writable(directory: Any) -> Tuple[bool, Optional[BaseException]]:
                 setattr(exc, name, value)
             except Exception:  # noqa: BLE001 - 某些异常对象不允许设置属性
                 pass
+        worker = getattr(exc, "liuhao_probe_thread", None)
+        if isinstance(worker, threading.Thread) and worker.is_alive():
+            _report_late_probe(directory, worker, step, started, label)
         return False, exc
 
 
@@ -211,27 +292,38 @@ def _write_probe(directory: Any, step: Optional[Dict[str, Any]] = None) -> bool:
         if step is not None:
             step["at"] = stage
 
+    def note(exc: BaseException) -> None:
+        if step is None:
+            return
+        step["exception"] = exc
+        step["error"] = exc_text(exc, root, tail=1)
+
     mark("resolve_path")
     root = Path(str(directory)).expanduser()
     mark("create_directory")
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        if step is not None:
-            step["error"] = exc_text(exc, root, tail=1)
+        note(exc)
         raise
     mark("create_temp_file")
+    name = str(root / f".liuhao-startup-probe-{os.getpid()}-{time.time_ns()}.tmp")
     try:
-        handle, name = tempfile.mkstemp(prefix=".liuhao-startup-probe-", dir=str(root))
+        # 不用 tempfile.mkstemp：在 Windows ACL 拒绝写的目录里它可能卡住数十秒
+        # （系统过滤驱动），而 open("xb") 同一路径会**立刻**抛 PermissionError。
+        # 启动探测必须要么给出真实异常，要么在 2 秒内明确超时，不能悬着。
+        handle = open(name, "xb")
     except OSError as exc:
-        if step is not None:
-            step["error"] = exc_text(exc, root, tail=1)
+        note(exc)
         raise
     mark("write_byte")
     try:
-        os.write(handle, b"ok")
+        handle.write(b"ok")
+    except OSError as exc:
+        note(exc)
+        raise
     finally:
-        os.close(handle)
+        handle.close()
         try:
             mark("remove_temp_file")
             os.remove(name)
@@ -442,8 +534,8 @@ def emit_startup_check(
     字段固定为：``data_dir/data_writable/log_dir/log_writable/db/db_open/
     port/port_bindable/console_dist/console_index/provider/model/key_fp``。
     """
-    data_ok, data_exc = probe_writable(data_dir)
-    log_ok, log_exc = probe_writable(log_dir)
+    data_ok, data_exc = probe_writable(data_dir, "data_dir")
+    log_ok, log_exc = probe_writable(log_dir, "log_dir")
 
     db_rows: List[str] = []
     db_open = True
