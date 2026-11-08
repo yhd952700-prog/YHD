@@ -1,6 +1,6 @@
 # 安装指南
 
-本指南将帮助你在不同环境下安装和配置 LiuHao AI OS（鎏灏 X）。
+本指南将帮助你在不同环境下安装和配置 LiuHao AI OS（鎏灏智能中枢）。
 
 ---
 
@@ -19,7 +19,7 @@
 
 ### 软件依赖
 
-- **Ollama**（本地 LLM 推理，必需）
+- **Ollama**（可选，本地 LLM 推理；也可用 OpenAI 兼容云端模型，未配置时可跳过）
 - **SQLite**（默认数据库，Python 内置）
 - **PostgreSQL 15+**（可选，生产环境推荐）
 - **Redis**（可选，缓存和消息队列）
@@ -40,7 +40,7 @@ git clone https://github.com/your-org/LiuHao-AI-OS.git
 cd LiuHao-AI-OS
 ```
 
-2. **安装 Ollama**
+2. **安装 Ollama（可选）**
 
 下载并安装 [Ollama](https://ollama.com/)，然后拉取默认模型：
 
@@ -66,6 +66,9 @@ ollama pull nomic-embed-text
   健康探针  http://127.0.0.1:8080/v1/health
 ```
 
+> 这是**源码模式**：控制台在 5173。Windows 安装版控制台与 API 同为 `8080`，见
+> [Windows 安装指南](../../INSTALL-WINDOWS.md)。
+
 ### 方式二：pip 安装
 
 ```bash
@@ -78,8 +81,8 @@ source .venv/bin/activate  # Linux/macOS
 # 安装 LiuHao AI OS
 pip install liuhao-ai-os
 
-# 初始化配置
-liuhao init
+# 初始化配置（本仓库没有 `init` 子命令，首次设置走向导）
+python scripts/first_run_wizard.py --skip
 ```
 
 > **注意**：pip 包发布以官方 PyPI 为准。开发阶段推荐从源码安装。
@@ -178,13 +181,14 @@ cp .env.example .env
 curl http://127.0.0.1:8080/v1/health
 ```
 
-预期响应：
+预期响应（关键字段）：
 
 ```json
 {
-  "status": "healthy",
-  "version": "3.0.0",
-  "timestamp": "2026-10-07T12:00:00Z"
+  "status": "ok",
+  "service": "liuhao-gateway",
+  "version": "0.1.1",
+  "timestamp": 1762500000.0
 }
 ```
 
@@ -214,7 +218,8 @@ curl http://127.0.0.1:8080/v1/ready
 
 ### 4. 访问驾驶舱
 
-打开浏览器访问 `http://127.0.0.1:5173`，进入 LiuHao AI OS 驾驶舱控制台。
+打开浏览器访问 `http://127.0.0.1:8080`，进入 LiuHao AI OS 控制台。
+（源码模式控制台是 `http://127.0.0.1:5173`；Windows 安装版统一为 `8080`。）
 
 ### 5. 运行冒烟测试
 
@@ -222,7 +227,7 @@ curl http://127.0.0.1:8080/v1/ready
 python scripts/smoke_mvp.py
 ```
 
-预期输出：`9/9 tests passed`
+预期输出：全部检查通过（脚本会打印实际的 `SMOKE x/y passed`，以数字为准）。
 
 ---
 

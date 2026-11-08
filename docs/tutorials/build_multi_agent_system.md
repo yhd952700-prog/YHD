@@ -1,6 +1,6 @@
-# 构建多智能体系统
+# 构建多 AI 员工系统
 
-本教程将带你构建一个多智能体协作系统，让多个专业智能体协同工作完成复杂任务。
+本教程将带你构建一个多 AI 员工协作系统，让多个专业 AI 员工协同工作完成复杂任务。
 
 ---
 
@@ -20,7 +20,7 @@
 
 - LiuHao AI OS 服务运行中
 - Python SDK 已安装
-- 对单个智能体的使用有基本了解
+- 对单个 AI 员工的使用有基本了解
 
 ---
 
@@ -32,7 +32,7 @@
 
 ```
         ┌──────────────┐
-        │   项目经理    │ ← 主智能体，协调全局
+        │   项目经理    │ ← 主 AI 员工，协调全局
         └──────┬───────┘
        ┌───────┼───────┐
        ▼       ▼       ▼
@@ -56,7 +56,7 @@
 
 ---
 
-## 第二步：创建各个智能体
+## 第二步：创建各个 AI 员工
 
 ### 2.1 创建团队脚本
 
@@ -74,7 +74,7 @@ team = {}
 
 
 def create_agent(name, role, description, system_prompt, tools=None):
-    """辅助函数：创建智能体"""
+    """辅助函数：创建 AI 员工"""
     agent = client.agents.create(
         name=name,
         role=role,
@@ -481,7 +481,7 @@ python content_creation_team.py "大语言模型的应用前景" article "技术
 def committee_review(question: str, agent_ids: list, 
                      decision_mode: str = "majority"):
     """
-    委员会评审：多个智能体共同决策
+    委员会评审：多个 AI 员工共同决策
     """
     results = []
     
@@ -533,7 +533,7 @@ bb = Blackboard(
     initial_state={"industry": "SaaS", "current_retention": "60%"}
 )
 
-# 添加知识源（智能体）
+# 添加知识源（AI 员工）
 bb.add_knowledge_source(
     agent_id=team["researcher"],
     name="数据分析专家",
@@ -593,7 +593,7 @@ print(f"最终方案：{result.final_solution}")
 
 ## 下一步
 
-- [构建你的第一个智能体](build_your_first_agent.md) - 智能体基础
-- [构建研究机器人](build_a_research_bot.md) - 研究员智能体
+- [构建你的第一个 AI 员工](build_your_first_agent.md) - AI 员工基础
+- [构建研究机器人](build_a_research_bot.md) - 研究员 AI 员工
 - [部署到生产环境](deploy_to_production.md) - 生产部署
-- [多智能体核心概念](../knowledge_base/core-concepts/multi_agent.md) - 理论详解
+- [多 AI 员工核心概念](../knowledge_base/core-concepts/multi_agent.md) - 理论详解

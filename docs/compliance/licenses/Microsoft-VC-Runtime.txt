@@ -1,0 +1,19 @@
+Microsoft Visual C++ 可再发行组件（vcruntime140.dll / vcruntime140_1.dll）
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+These files are Microsoft Visual C++ Redistributable components
+(Microsoft Visual Studio 2022, version 14.44.35211.0). They are distributed
+under the Microsoft Visual Studio 2022 license terms / Distributable Code
+terms and are not covered by this product's own license.
+
+License terms:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+https://visualstudio.microsoft.com/license-terms/
+
+Redistribution of these DLLs alongside an application is permitted by the
+Microsoft Visual Studio license terms, provided the application is built with
+a licensed copy of Visual Studio and the DLLs are not modified. No separate
+source code or license text is supplied by Microsoft for these binaries.
+
+本安装包只按微软可再发行条款随程序分发上述两个 DLL，未修改它们。

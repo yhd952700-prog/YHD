@@ -1,0 +1,107 @@
+{
+  "errors": [
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "loginInitial": {
+    "name": "请输入账号",
+    "tag": "input"
+  },
+  "loginText": "鎏灏智能中枢\nLIUHAO AI OS\n登录凭据\n已配置\n可登录账号\n1\n当前形态\n桌面端\n会话有效期\n12 小时\n\n启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台就会断开连接。\n\n登录\n创建账户\n账号\n密码\n记住我（在已安装的桌面端 / 手机端保持登录）\n登录\n忘记密码\n桌面端\n网页版\n手机端\n同意以同一账号在桌面端、网页版与手机端登录 —— 三端共用同一会话， 权限判断始终在服务端完成。\n已登记账号：1 · 可登录：1 · 会话有效期：12 小时",
+  "afterLogin": {
+    "title": "总览",
+    "body": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n无\n无障碍审计\n我的工作空间\n搜索当前页面\n/\n11/07 12:"
+  },
+  "noSkipLink": true,
+  "navWorkbench": {
+    "found": true,
+    "steps": 8,
+    "info": {
+      "name": "工作台",
+      "tag": "button"
+    }
+  },
+  "toTextarea": {
+    "found": true,
+    "steps": 29,
+    "info": {
+      "name": "请输入您的业务指令...",
+      "tag": "textarea"
+    }
+  },
+  "thinking": {
+    "busy": [],
+    "status": []
+  },
+  "chatWaitMs": 12000,
+  "chat": {
+    "rows": [
+      "chat-row user | 我你好，请用一句话介绍你能做什么。",
+      "chat-row assistant | J我可以执行各种计算、处理信息、管理提醒和设置偏好，同时提供准确的信息和帮助。"
+    ],
+    "live": [],
+    "focus": "BODY",
+    "listRole": null
+  },
+  "navEmployees": {
+    "found": true,
+    "steps": 14,
+    "info": {
+      "name": "我的员工",
+      "tag": "button"
+    }
+  },
+  "toName": {
+    "found": true,
+    "steps": 30,
+    "info": {
+      "name": "例如：小周",
+      "tag": "input"
+    }
+  },
+  "toCreate": {
+    "found": true,
+    "steps": 6,
+    "info": {
+      "name": "创建员工",
+      "tag": "button"
+    }
+  },
+  "toAssign": {
+    "found": false,
+    "steps": 40,
+    "info": {
+      "name": "on",
+      "tag": "input"
+    }
+  },
+  "assign": {
+    "live": [
+      {
+        "role": "status",
+        "live": "polite",
+        "text": "已创建员工「键盘员工」"
+      }
+    ],
+    "body": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n无\n无障碍审计\n我的工作空间\n搜索当前页面\n/\n11/07 12:28\n我的员工\n\n创建、调整、停用，或直接把一件事派给它\n\n我的员工：在这里创建、调整、停用，或把一件具体的事直接派给它。 让管家替你拆解目标，去「鎏灏管家」。\n创建员工\n\n名字必填；职责与默认能力可稍后再补\n\n名字（必填）\n职责\n默认能力（可多选，只能选已登记的能力）\n本地计算\n写本地文件\n联网调研\n综合整理\n创建员工\n已创建员工「键盘员工」\n员工名册\n\n名字、职责、默认能力与当前状态\n\n默认管家\n空闲\n系统默认\n职责：未填写职责 · 默认能力：未指定\n提交 0 项 · 完成 0 · 失败 0 · 3 位执行个体\n个体状态：执行个体 1·空闲 / 执行个体 2·空闲 / 执行个体 3·空闲\n系统默认员工：服务依赖它执行内部任务，不能改名、停用或删除。\n键盘员工\n空闲\n职责：未填写职责 · 默认能力：未指定\n提交 0 项 · 完成 0 · 失败 0 · 3 位执行个体\n个体状态：执行个体 "
+  },
+  "navSettings": {
+    "found": true,
+    "steps": 37,
+    "info": {
+      "name": "系统设置",
+      "tag": "button"
+    }
+  },
+  "toLogout": {
+    "found": true,
+    "steps": 1,
+    "info": {
+      "name": "aria:退出登录",
+      "tag": "button"
+    }
+  },
+  "afterLogout": {
+    "h1": "LiuHao AI OS",
+    "body": "鎏灏智能中枢\nLIUHAO AI OS\n登录凭据\n已配置\n可登录账号\n1\n当前形态\n桌面端\n会话有效期\n12 小时\n\n启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台就会断开连接。\n\n你已退出登录，需要重新登录。请在下方重新输入账号与密码。\n登录\n创建账户\n账号\n密码\n记住我（在已安装的桌面端 / 手机端保持登录）\n登录\n忘记密码\n桌面端\n网页版\n手机端\n同意以同一账号在桌面端、网页"
+  }
+}

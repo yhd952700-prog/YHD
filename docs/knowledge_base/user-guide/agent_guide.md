@@ -1,28 +1,23 @@
-# 智能体用户指南
+# AI 员工使用指南
 
-本指南详细介绍如何创建、配置、运行和管理 LiuHao AI OS 中的智能体。
+本指南详细介绍如何创建、配置、运行和管理 LiuHao AI OS 中的 AI 员工。
 
 ---
 
-## 创建智能体
+## 创建 AI 员工
 
 ### 通过 API 创建
 
-使用 REST API 创建智能体是最灵活的方式：
+使用 REST API 创建 AI 员工是最灵活的方式：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/agents \
+curl -X POST http://127.0.0.1:8080/v1/employees \
   -H "Content-Type: application/json" \
   -d '{
     "name": "数据分析助手",
-    "role": "analyst",
-    "description": "专业的数据分析师，擅长数据可视化和洞察提取",
-    "config": {
-      "model": "qwen2.5:7b",
-      "temperature": 0.3,
-      "max_tokens": 4096,
-      "system_prompt": "你是一名专业的数据分析师..."
-    }
+    "agent_count": 3,
+    "role_description": "专业的数据分析师，擅长数据可视化和洞察提取",
+    "default_capabilities": []
   }'
 ```
 
@@ -44,36 +39,36 @@ agent = client.agents.create(
     }
 )
 
-print(f"智能体创建成功: {agent.id}")
+print(f"AI 员工创建成功: {agent.id}")
 ```
 
 ### 通过 CLI 创建
 
 ```bash
-# 交互式创建
-liuhao agent create
+# 会直接改动数据，执行前先备份
+# 创建 AI 员工（--name 与 --role 必填，本仓库没有交互式向导）
+python -m src.cli agent create --name "我的助手" --role general --description "个人助理"
 
-# 带参数创建
-liuhao agent create --name "我的助手" --role general --description "个人助理"
+# 其余角色：manager / researcher / analyst / critic / creator / executor / qa / planner / general
+python -m src.cli agent create --name "研究助手" --role researcher --config '{"temperature": 0.3}'
 ```
 
-### 通过驾驶舱创建
+### 通过控制台创建
 
-1. 打开驾驶舱 `http://127.0.0.1:5173`
-2. 进入「智能体管理」
-3. 点击「新建智能体」
-4. 填写表单，选择角色和配置
-5. 点击「创建」
+1. 打开控制台 `http://127.0.0.1:8080`（源码模式为 `http://127.0.0.1:5173`）
+2. 进入「我的员工」
+3. 在「创建员工」卡片填写名字（必填）、职责与默认能力
+4. 点击「创建员工」
 
 ---
 
-## 配置智能体
+## 配置 AI 员工
 
 ### 基础配置
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `name` | string | 必填 | 智能体名称，1-100 字符 |
+| `name` | string | 必填 | AI 员工名称，1-100 字符 |
 | `role` | string | 必填 | 角色类型，见角色列表 |
 | `description` | string | "" | 描述，最多 500 字符 |
 | `model` | string | "qwen2.5:3b" | 使用的 LLM 模型 |
@@ -82,7 +77,7 @@ liuhao agent create --name "我的助手" --role general --description "个人�
 
 ### 系统提示词配置
 
-系统提示词定义了智能体的基础行为和身份：
+系统提示词定义了 AI 员工的基础行为和身份：
 
 ```python
 agent_config = {
@@ -101,7 +96,7 @@ agent_config = {
 
 ### 工具配置
 
-配置智能体可以使用的工具：
+配置 AI 员工可以使用的工具：
 
 ```python
 agent_config = {
@@ -167,7 +162,7 @@ agent_config = {
 ### 更新配置
 
 ```python
-# 更新智能体配置
+# 更新 AI 员工配置
 client.agents.update(
     agent_id="agent-abc123",
     config={
@@ -179,7 +174,7 @@ client.agents.update(
 
 ---
 
-## 运行智能体
+## 运行 AI 员工
 
 ### 执行单次任务
 
@@ -230,7 +225,7 @@ result = asyncio.run(run_task())
 ### 流式输出
 
 ```python
-# 流式获取智能体回复
+# 流式获取 AI 员工回复
 stream = client.agents.stream(
     agent_id="agent-abc123",
     task="写一个关于人工智能的故事"
@@ -247,7 +242,7 @@ for chunk in stream:
 
 ### 对话模式
 
-智能体也支持多轮对话：
+AI 员工也支持多轮对话：
 
 ```python
 # 开始对话会话
@@ -269,31 +264,24 @@ for msg in history:
 
 ---
 
-## 监控智能体
+## 监控 AI 员工
 
-### 查看运行状态
+### 查看员工详情
 
 ```bash
-# 获取智能体状态
-curl http://127.0.0.1:8080/v1/agents/agent-abc123/status
+# 获取员工详情
+curl http://127.0.0.1:8080/v1/employees/agent-abc123
 ```
 
 响应示例：
 
 ```json
 {
-  "id": "agent-abc123",
-  "status": "running",
-  "current_task": "分析销售数据",
-  "task_progress": 65,
-  "uptime_seconds": 3600,
-  "tasks_completed": 42,
-  "tasks_failed": 2,
-  "memory_usage": {
-    "working": 15,
-    "episodic": 1024,
-    "semantic": 5000
-  }
+  "name": "数据分析助手",
+  "agent_count": 3,
+  "role_description": "专业的数据分析师",
+  "default_capabilities": [],
+  "employment_status": "active"
 }
 ```
 
@@ -312,7 +300,7 @@ print(f"成本: ${metrics.total_cost:.4f}")
 ### 查看日志
 
 ```python
-# 获取智能体运行日志
+# 获取 AI 员工运行日志
 logs = client.agents.get_logs(
     agent_id="agent-abc123",
     level="INFO",       # DEBUG, INFO, WARNING, ERROR
@@ -346,9 +334,9 @@ ws.onmessage = (event) => {
 
 ---
 
-## 智能体模板
+## AI 员工模板
 
-LiuHao AI OS 提供了多种预配置的智能体模板，可以快速创建常用类型的智能体。
+LiuHao AI OS 提供了多种预配置的 AI 员工模板，可以快速创建常用类型的 AI 员工。
 
 ### 使用模板
 
@@ -402,9 +390,9 @@ template = client.agents.create_template(
 
 ---
 
-## 智能体管理
+## 员工管理
 
-### 列出智能体
+### 列出 AI 员工
 
 ```python
 # 分页列出
@@ -415,7 +403,7 @@ agents = client.agents.list(
     role="analyst"
 )
 
-print(f"共 {agents.total} 个智能体")
+print(f"共 {agents.total} 个 AI 员工")
 for agent in agents.items:
     print(f"- {agent.name} ({agent.role}) [{agent.status}]")
 ```
@@ -423,7 +411,7 @@ for agent in agents.items:
 ### 暂停和恢复
 
 ```python
-# 暂停智能体
+# 暂停 AI 员工
 client.agents.pause(agent_id="agent-abc123")
 
 # 恢复运行
@@ -440,23 +428,23 @@ client.agents.stop(agent_id="agent-abc123")
 client.agents.stop(agent_id="agent-abc123", force=True)
 ```
 
-### 删除智能体
+### 删除 AI 员工
 
 ```python
-# 删除智能体（同时删除其记忆）
+# 删除 AI 员工（同时删除其记忆）
 client.agents.delete(agent_id="agent-abc123")
 
 # 删除但保留记忆
 client.agents.delete(agent_id="agent-abc123", keep_memory=True)
 ```
 
-### 克隆智能体
+### 克隆 AI 员工
 
 ```python
-# 复制一个智能体（包含配置，不包含记忆）
+# 复制一个 AI 员工（包含配置，不包含记忆）
 new_agent = client.agents.clone(
     agent_id="agent-abc123",
-    name="新的智能体副本"
+    name="新的 AI 员工副本"
 )
 ```
 
@@ -466,8 +454,8 @@ new_agent = client.agents.clone(
 
 ### 1. 明确的角色定义
 
-- 每个智能体应该有清晰的职责边界
-- 避免"万能"智能体，专注才能高效
+- 每个 AI 员工应该有清晰的职责边界
+- 避免"万能"AI 员工，专注才能高效
 - 使用系统提示词明确角色和约束
 
 ### 2. 合理的工具配置
@@ -486,7 +474,7 @@ new_agent = client.agents.clone(
 
 - 选择合适的模型，小模型能完成的不用大模型
 - 合理设置 max_tokens，避免浪费
-- 复杂任务用多智能体协作，而非单个大智能体
+- 复杂任务用多 AI 员工协作，而非单个大 AI 员工
 
 ### 5. 错误处理
 
@@ -498,14 +486,14 @@ new_agent = client.agents.clone(
 
 - 遵循最小权限原则
 - 敏感操作需要人类审批
-- 定期审计智能体行为
+- 定期审计 AI 员工行为
 - 保护用户隐私数据
 
 ---
 
 ## 下一步
 
-- [智能体核心概念](../core-concepts/agents.md) - 深入理解智能体原理
-- [记忆用户指南](memory_guide.md) - 管理智能体的记忆
-- [插件用户指南](plugins_guide.md) - 通过插件扩展智能体能力
-- [多智能体系统教程](../../tutorials/build_multi_agent_system.md) - 构建智能体团队
+- [AI 员工核心概念](../core-concepts/agents.md) - 深入理解 AI 员工原理
+- [记忆用户指南](memory_guide.md) - 管理 AI 员工的记忆
+- [插件用户指南](plugins_guide.md) - 通过插件扩展 AI 员工能力
+- [多 AI 员工系统教程](../../tutorials/build_multi_agent_system.md) - 构建 AI 员工团队

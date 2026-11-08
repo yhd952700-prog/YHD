@@ -442,5 +442,5 @@ if result.errors:
 ## 下一步
 
 - [流水线用户指南](../knowledge_base/user-guide/pipeline_guide.md) - 更详细的流水线使用指南
-- [构建多智能体系统](build_multi_agent_system.md) - 智能体与流水线结合
+- [构建多 AI 员工系统](build_multi_agent_system.md) - AI 员工与流水线结合
 - [部署到生产环境](deploy_to_production.md) - 生产环境部署

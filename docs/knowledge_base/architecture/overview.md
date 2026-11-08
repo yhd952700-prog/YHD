@@ -1,6 +1,6 @@
 # 架构总览
 
-LiuHao AI OS（鎏灏 X）是一个人类主权自主智能体操作系统（Human-Sovereign Agent Operating System）。本文档从高层次介绍系统架构、设计原则和技术选型。
+LiuHao AI OS（鎏灏智能中枢）是一个人类主权自主智能体操作系统（Human-Sovereign Agent Operating System）。本文档从高层次介绍系统架构、设计原则和技术选型。
 
 ---
 

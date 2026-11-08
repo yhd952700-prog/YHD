@@ -1,4 +1,4 @@
-# LIUHAO X v3.0 — PM PRD (Product Requirements Document)
+# LiuHao AI OS · 鎏灏智能中枢 — PM PRD（v3.0）
 
 > **Version**: v3.0
 > **Date**: 2026-09-05
@@ -9,7 +9,7 @@
 
 ## 1. Product Vision
 
-**LIUHAO X / 鎏灏 X** = Human-Sovereign Agent Operating System
+**LiuHao AI OS · 鎏灏智能中枢**（旧称 LIUHAO X / 鎏灏 X） = Human-Sovereign Agent Operating System
 
 **Core**: Open-Ended Capability + Bounded Autonomous Authority
 

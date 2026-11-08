@@ -10,9 +10,9 @@
 
 流水线是一系列数据处理步骤的有序组合，数据从源头进入，经过一系列变换和验证，最终输出到目标位置。
 
-### 流水线 vs 智能体
+### 流水线 vs AI 员工
 
-| 维度 | 流水线 | 智能体 |
+| 维度 | 流水线 | AI 员工 |
 |------|--------|--------|
 | 处理对象 | 结构化数据流 | 开放式任务 |
 | 执行方式 | 预定义步骤，顺序/并行 | 动态决策，自主推理 |
@@ -115,14 +115,8 @@ result = pipeline.run()
 ### 使用 CLI
 
 ```bash
-# 从配置文件运行流水线
-liuhao pipeline run pipeline.yaml
-
-# 查看运行状态
-liuhao pipeline status <run_id>
-
-# 列出流水线
-liuhao pipeline list
+# 本仓库没有 `pipeline` 子命令，也没有 src/pipeline 模块；
+# 流水线编排请在控制台「目标与任务」里建，或直接调用 SDK（见上一节）
 ```
 
 ---
@@ -511,4 +505,4 @@ for trace in result.data_traces:
 
 - [构建数据流水线教程](../../tutorials/build_a_data_pipeline.md) - 完整实战教程
 - [API 参考](../api-reference/tasks_api.md) - 流水线任务 API
-- [智能体用户指南](agent_guide.md) - 智能体如何调用流水线
+- [AI 员工使用指南](agent_guide.md) - AI 员工如何调用流水线

@@ -1,6 +1,6 @@
 # 插件用户指南
 
-插件是扩展 LiuHao AI OS 功能的重要方式。本指南介绍如何安装、配置和使用插件，以及如何在智能体和流水线中利用插件能力。
+插件是扩展 LiuHao AI OS 功能的重要方式。本指南介绍如何安装、配置和使用插件，以及如何在 AI 员工和流水线中利用插件能力。
 
 ---
 
@@ -10,7 +10,7 @@
 
 插件是一种可热加载的功能模块，可以扩展 LiuHao AI OS 的能力，包括：
 
-- 新增工具（Tools）：为智能体提供新的操作能力
+- 新增工具（Tools）：为 AI 员工提供新的操作能力
 - 新增数据源（Sources）：为流水线提供新的数据接入方式
 - 新增输出槽（Sinks）：为流水线提供新的数据输出方式
 - 新增内核扩展（Kernel Extensions）：扩展系统内核能力
@@ -34,7 +34,7 @@
 
 | 类型 | 说明 | 示例 |
 |------|------|------|
-| `tool` | 智能体工具插件 | 天气查询、代码执行、邮件发送 |
+| `tool` | AI 员工工具插件 | 天气查询、代码执行、邮件发送 |
 | `source` | 数据源插件 | Slack 消息、Notion 页面、Google Drive |
 | `sink` | 输出槽插件 | 飞书通知、Jira 工单、Webhook |
 | `integration` | 集成插件 | GitHub、Jira、Salesforce 全功能集成 |
@@ -50,17 +50,17 @@
 LiuHao AI OS 内置插件市场，可以浏览和安装官方及社区插件。
 
 ```bash
+# 会直接改动数据，执行前先备份
 # 搜索插件
-liuhao plugin search "slack"
+python -m src.cli plugin search "slack"
 
 # 安装插件
-liuhao plugin install liuhao-slack-plugin
+python -m src.cli plugin install liuhao-slack-plugin
 
-# 安装指定版本
-liuhao plugin install liuhao-slack-plugin==1.2.0
+# 安装指定版本（用 --version，不支持 pip 风格的 ==）
+python -m src.cli plugin install liuhao-slack-plugin --version 1.2.0
 
-# 从本地文件安装
-liuhao plugin install ./my-plugin.zip
+# 从本地文件安装：本仓库的 plugin install 只认插件标识，不认本地 zip
 ```
 
 ### 方式二：通过 Python pip 安装
@@ -86,10 +86,10 @@ pip install liuhao-plugin-slack
 
 ```bash
 # 列出已安装的插件
-liuhao plugin list
+python -m src.cli plugin list
 
 # 查看插件详情
-liuhao plugin info liuhao-slack-plugin
+python -m src.cli plugin info liuhao-slack-plugin
 ```
 
 输出示例：
@@ -162,27 +162,28 @@ LIUHAO_PLUGIN_GITHUB_ORG=your-org
 ### 启用/禁用插件
 
 ```bash
+# 会直接改动数据，执行前先备份
 # 启用插件
-liuhao plugin enable slack
+python -m src.cli plugin enable slack
 
 # 禁用插件
-liuhao plugin disable slack
+python -m src.cli plugin disable slack
 
-# 卸载插件
-liuhao plugin uninstall liuhao-slack-plugin
+# 卸载插件（会直接改动数据，执行前先备份）
+python -m src.cli plugin uninstall liuhao-slack-plugin
 ```
 
 ---
 
-## 在智能体中使用插件
+## 在 AI 员工中使用插件
 
 ### 工具插件
 
-工具插件为智能体提供新的可调用工具。
+工具插件为 AI 员工提供新的可调用工具。
 
 #### 启用工具
 
-创建智能体时指定可用的工具：
+创建 AI 员工时指定可用的工具：
 
 ```python
 from liuhao import LiuHaoClient
@@ -217,7 +218,7 @@ for tool in tools:
 
 #### 工具调用示例
 
-智能体会根据任务自主决定调用哪些工具：
+AI 员工会根据任务自主决定调用哪些工具：
 
 ```python
 result = client.agents.execute(
@@ -226,7 +227,7 @@ result = client.agents.execute(
 )
 ```
 
-智能体可能的执行过程：
+AI 员工可能的执行过程：
 1. 调用 `weather.get_current` 获取北京天气
 2. 调用 `slack.send_message` 发送到 Slack
 
@@ -405,11 +406,10 @@ config_schema:
 **排查步骤**：
 
 ```bash
-# 查看插件详细状态
-liuhao plugin status <plugin-name>
+# 查看插件详细状态（本仓库没有 plugin status 子命令，info 即详情）
+python -m src.cli plugin info <plugin-name>
 
-# 查看加载日志
-liuhao plugin logs <plugin-name>
+# 加载日志：<数据目录>\logs\liuhao.log 里搜插件名（本仓库没有 plugin logs 子命令）
 
 # 检查依赖
 pip check
@@ -423,7 +423,7 @@ pip check
 
 ### 问题：工具调用失败
 
-**症状**：智能体调用工具时报错
+**症状**：AI 员工调用工具时报错
 
 **排查步骤**：
 
@@ -433,8 +433,8 @@ pip check
 4. 测试工具是否能单独运行
 
 ```bash
-# 手动测试工具
-liuhao tool call weather.get_current --param city=Beijing
+# 本仓库没有 tool call 子命令：在控制台「工作台 → 直接对话」里触发工具，
+# 或看 <数据目录>\logs\liuhao.log 里的工具调用记录
 ```
 
 ### 问题：插件版本冲突
@@ -444,14 +444,15 @@ liuhao tool call weather.get_current --param city=Beijing
 **解决方案**：
 
 ```bash
+# 会直接改动数据，执行前先备份
 # 查看插件依赖
-liuhao plugin deps
+python -m src.cli plugin info <plugin-name>
 
-# 更新插件
-liuhao plugin update <plugin-name>
+# 更新插件（子命令是 upgrade，不是 update）
+python -m src.cli plugin upgrade <plugin-name>
 
-# 回退版本
-liuhao plugin install <plugin-name>==<old-version>
+# 回退版本（会直接改动数据，执行前先备份）
+python -m src.cli plugin install <plugin-name> --version <old-version>
 ```
 
 ### 问题：插件安全警告
@@ -480,5 +481,5 @@ liuhao plugin install <plugin-name>==<old-version>
 ## 下一步
 
 - [SDK 指南](sdk_guide.md) - 使用 SDK 开发插件
-- [智能体用户指南](agent_guide.md) - 智能体中使用插件工具
+- [AI 员工使用指南](agent_guide.md) - AI 员工中使用插件工具
 - [流水线用户指南](pipeline_guide.md) - 流水线中使用插件数据源

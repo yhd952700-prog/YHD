@@ -52,7 +52,7 @@ git clone -b wip/liuhao-x-evolve https://github.com/yhd952700-prog/YHD.git
 
 - 本地起服务：`python scripts/start_liuhao.py`（Windows 可直接 `start-liuhao.bat`）。
   注意：必须先 `export LIUHAO_JWT_SECRET=...`（本仓 `.env` 不进 `os.environ`，详见 PITFALLS 本地起服务坑）。
-- 云包：`python scripts/build_cloud_bundle.py` 生成 `deploy/cloud/`，再 `python deploy/cloud/serve.py`。
+- 云包：`python scripts/build_cloud_bundle.py` 生成 `deploy/cloud/`；`serve.py` 在生成物里，仓库本身不含。
 - 验收基线：`config/production/acceptance_checklist.md`；本仓根 `ACCEPTANCE.md`。
 
 ## 4. 留给 lead 的注意事项（非阻塞）

@@ -110,7 +110,7 @@
 | `/v1/accounts/roles` | GET | — | `roles[{id,permissions}]`、`scopes[]` | 已实现（accounts.py:122） |
 | `/v1/accounts/register` | POST | `principal, password, display_name?` | `account`、`recovery_code`、`notice` | 已实现（accounts.py:134） |
 | `/v1/accounts/activate` | POST | `principal, code, password` | `token`、`account` | 已实现（accounts.py:152）；**本轮起登录页不再提供入口**，仅管理页生成激活码 |
-| `/v1/accounts/self-register` | POST | `principal, secret, client`（**只有用户名 + 密码**） | `token`（兼容 `access_token`）；层级/权限由服务端决定 | **前端拟定契约，后端实现中**；关闭时返回 403/409 + `*_CLOSED`，界面给中性文案 |
+| `/v1/accounts/self-register` | POST | `principal, password, client`（**只有用户名 + 密码**） | `token`（兼容 `access_token`）；层级/权限由服务端决定 | 已实现；关闭时返回 403/409 + `*_CLOSED`，界面给中性文案 |
 | `/v1/accounts/recovery/reset` | POST | `recovery_code, password` | `token`、`account` | 已实现（accounts.py:164） |
 | `/v1/accounts` | GET | — | `members[]`、`count`；成员含 `principal/permissions/status/created_at`（根视图另含 `allow_superior_key_use/key_auth_source`） | 已实现（accounts.py:175） |
 | `/v1/accounts/tree` | GET | — | `tree` 嵌套；仅根 | 已实现（accounts.py:188） |
@@ -251,7 +251,7 @@
 | 备份导入（已有账号） | 409 `IMPORT_NOT_ALLOWED` | 无（显示服务端中文原因） | — |
 | 恢复码轮换 | 200 | 无 | — |
 | 未带令牌 | 401 `{detail: "missing bearer token"}` | **是**：`neutralDenial` 未覆盖 401，会透出英文协议细节 | 401 统一"登录状态已失效，请重新登录"，并清会话回登录页 |
-| 错误密码 | 401 `凭据无效` | 无 | — |
+| 错误密码 | 401 `账号或密码不正确` | 无 | — |
 | 改密后旧令牌 | 401 `CREDENTIAL_STALE` | **是**（同上） | 同上；浏览器复测已回到登录页 |
 | 迁移端点 | 200（本轮无页面） | 无 | — |
 | 备份模块未启用（旧 501 分支） | 本轮不存在：模块已落地，不再返回 501 | — | 501 分支仍由单测钉住（不落桩、显示真实原因） |

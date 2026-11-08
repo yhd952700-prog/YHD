@@ -145,6 +145,30 @@ psql -h localhost -U username -d database_name
 3. 确认 API Key 没有过期或被撤销
 4. 如果是本地开发且未启用认证，确认 `AUTH_ENABLED=false`
 
+### 问题：对话返回 402 Payment Required
+
+**症状**：调用 `POST /v1/chat` 返回 402，响应体 `code=budget_exceeded`，提示「本次调用会超出你设定的预算，请调整额度或换更便宜的模型」。
+
+**说明**：402 是**预算/额度不够**，与权限无关；响应体与响应头都带 `correlation_id`，可在审计里对上同一条 `ACCESS_DENIED`（`reason=budget_exceeded`）。
+
+**解决方案**：
+
+1. 到「我的 Key → 用量」提高额度
+2. 或到「系统设置 → 模型管理」换一个已定价、更便宜模型
+3. 未定价模型只统计用量、不参与预算拦截：不会按 0 元放行，也不会因缺价格被拒绝
+
+### 问题：对话返回 403 Forbidden（`permission_denied`）
+
+**症状**：调用 `POST /v1/chat` 返回 403，响应体 `code=permission_denied`。
+
+**解决方案**：
+
+1. 换用有该操作权限的账号（根账号或被授权的成员）
+2. 让上级账号授权后重新登录再试
+3. 用响应里的 `correlation_id` 在审计页筛 `ACCESS_DENIED`，核对 `reason=permission_denied`
+
+> 流式 `POST /v1/chat/stream` 的预算/权限判定在 **建立 SSE 之前**完成：拒绝时同样物理返回 402/403，响应**不是** `text/event-stream`、没有任何分块输出，模型也不会被调用。只有建流之后才发生的兜底拒绝（例如等会话锁期间额度被别的会话用光）才以 200 + `done` 帧的 `status=denied` + `reason` 表达。日志/审计里的 `phase=pre_stream` 与 `phase=during_stream` 可区分这两种。
+
 ### 问题：CORS 错误
 
 **症状**：前端调用 API 时报 CORS 错误。
@@ -162,7 +186,7 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 
 ## 性能问题
 
-### 问题：智能体回复很慢
+### 问题：AI 员工回复很慢
 
 **症状**：发送消息后等待很久才有回复。
 
@@ -190,8 +214,9 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 5. **检查内存泄漏**：确认是否有未释放的资源
 
 ```bash
-# 手动触发记忆清理
-liuhao memory cleanup --older-than 30d --min-importance 0.3
+# 会直接改动数据，执行前先备份
+# 手动触发记忆清理：本仓库没有 memory cleanup / --older-than，只能按类型清理
+python -m src.cli memory clear --type short_term --force
 ```
 
 ### 问题：搜索速度慢
@@ -209,9 +234,9 @@ liuhao memory cleanup --older-than 30d --min-importance 0.3
 
 ## 记忆问题
 
-### 问题：智能体记不住事情
+### 问题：AI 员工记不住事情
 
-**症状**：之前告诉智能体的信息，下次对话就忘了。
+**症状**：之前告诉 AI 员工的信息，下次对话就忘了。
 
 **可能原因**：
 
@@ -240,7 +265,7 @@ results = client.memory.search(
 
 ### 问题：记忆内容有错误
 
-**症状**：智能体记住了错误的信息。
+**症状**：AI 员工记住了错误的信息。
 
 **解决方案**：
 
@@ -276,11 +301,12 @@ client.memory.store(
 4. **归档历史数据**：将不常用的记忆归档
 
 ```bash
-# 清理 90 天前的低重要性记忆
-liuhao memory cleanup --older-than 90d --min-importance 0.3
+# 会直接改动数据，执行前先备份
+# 清理记忆：本仓库没有 memory cleanup / --older-than，只能按类型清理
+python -m src.cli memory clear --type episodic --force
 
-# 压缩 30 天前的情景记忆
-liuhao memory compress --type episodic --older-than 30d
+# 压缩情景记忆：本仓库没有 memory compress；先导出，离线整理后再导入
+python -m src.cli memory export --type episodic --output memories-episodic.json
 ```
 
 ---
@@ -345,23 +371,23 @@ task = client.agents.execute_async(agent_id, task)
 
 ---
 
-## 智能体错误
+## AI 员工错误
 
-### 问题：智能体无法调用工具
+### 问题：AI 员工无法调用工具
 
-**症状**：智能体应该调用工具但没有调用，或工具调用失败。
+**症状**：AI 员工应该调用工具但没有调用，或工具调用失败。
 
 **可能原因**：
 
 1. 工具没有正确配置
-2. 智能体没有权限使用该工具
+2. AI 员工没有权限使用该工具
 3. 工具参数不正确
 4. 工具执行出错
 
 **排查步骤**：
 
 ```python
-# 1. 检查智能体可用工具
+# 1. 检查 AI 员工可用工具
 tools = client.agents.get_tools(agent_id)
 print([t.name for t in tools])
 
@@ -369,19 +395,19 @@ print([t.name for t in tools])
 result = client.tools.call("tool_name", {"param": "value"})
 print(result)
 
-# 3. 查看智能体执行日志
+# 3. 查看 AI 员工执行日志
 logs = client.agents.get_logs(agent_id, level="DEBUG")
 ```
 
-### 问题：智能体陷入死循环
+### 问题：AI 员工陷入死循环
 
-**症状**：智能体反复调用同一个工具，无法推进任务。
+**症状**：AI 员工反复调用同一个工具，无法推进任务。
 
 **解决方案**：
 
-1. **设置最大步数**：限制智能体的最大执行步数
+1. **设置最大步数**：限制 AI 员工的最大执行步数
 2. **优化系统提示词**：明确任务目标和约束
-3. **增加反思步骤**：让智能体定期反思是否在正确推进
+3. **增加反思步骤**：让 AI 员工定期反思是否在正确推进
 4. **人工干预**：暂停任务，人工介入调整
 
 ```python
@@ -393,9 +419,9 @@ result = client.agents.execute(
 )
 ```
 
-### 问题：智能体输出质量差
+### 问题：AI 员工输出质量差
 
-**症状**：智能体的回复质量不高，或不符合预期。
+**症状**：AI 员工的回复质量不高，或不符合预期。
 
 **优化建议**：
 

@@ -102,7 +102,7 @@ docs/
 ├── adr/                (3)     架构决策记录
 ├── architecture/       (8)     架构
 ├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
-├── best-practices/     (5)     编码/Agent/记忆/多智能体/测试最佳实践
+├── best-practices/     (5)     编码/Agent/记忆/多 AI 员工/测试最佳实践
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
 ├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
 ├── decisions/          (1)     悬而未决决策登记
@@ -118,7 +118,7 @@ docs/
 ├── security/           (1)     安全威胁模型
 ├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
-├── tutorials/          (7)     从零构建 Agent / 多智能体 / 代码审查 / 数据流水线教程
+├── tutorials/          (7)     从零构建 Agent / 多 AI 员工 / 代码审查 / 数据流水线教程
 ├── ui-audit-20261106/  (1)     控制台全页巡检与多账号验收报告
 └── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
@@ -191,7 +191,7 @@ docs/
 | [`strategy-30-directions.md`](strategy-30-directions.md) | 30 个方向 × 五大中心的战略架构研究 |
 | [`strategy-priority-matrix.md`](strategy-priority-matrix.md) | 30 个方向 × 落地优先级矩阵（可排期） |
 | [`DELIVERY-CHECKLIST.md`](DELIVERY-CHECKLIST.md) | 交付清单（实测版） |
-| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | 鎏灏 LiuHao AI OS 使用指南 |
+| [`END-USER-GUIDE.md`](END-USER-GUIDE.md) | LiuHao AI OS · 鎏灏智能中枢 使用指南 |
 | [`USER-GUIDE.md`](USER-GUIDE.md) | 使用指南（Windows 安装版） |
 | [`INSTALL-WINDOWS.md`](INSTALL-WINDOWS.md) | Windows 安装与卸载 |
 | [`mobile-access.md`](mobile-access.md) | 手机端访问与实测记录 |
@@ -380,7 +380,7 @@ docs/
 | [`best-practices/agent-design-patterns.md`](best-practices/agent-design-patterns.md) | Agent 设计模式 |
 | [`best-practices/error-handling-patterns.md`](best-practices/error-handling-patterns.md) | 错误处理模式 |
 | [`best-practices/memory-management-best-practices.md`](best-practices/memory-management-best-practices.md) | 记忆管理最佳实践 |
-| [`best-practices/multi-agent-coordination.md`](best-practices/multi-agent-coordination.md) | 多智能体协作 |
+| [`best-practices/multi-agent-coordination.md`](best-practices/multi-agent-coordination.md) | 多 AI 员工协作 |
 | [`best-practices/testing-strategies.md`](best-practices/testing-strategies.md) | 测试策略 |
 
 ### 4.14 `tutorials/`（7）— 从零构建教程
@@ -392,7 +392,7 @@ docs/
 | [`tutorials/build_a_code_reviewer.md`](tutorials/build_a_code_reviewer.md) | 构建代码审查 Agent |
 | [`tutorials/build_a_data_pipeline.md`](tutorials/build_a_data_pipeline.md) | 构建数据流水线 |
 | [`tutorials/build_a_research_bot.md`](tutorials/build_a_research_bot.md) | 构建研究机器人 |
-| [`tutorials/build_multi_agent_system.md`](tutorials/build_multi_agent_system.md) | 构建多智能体系统 |
+| [`tutorials/build_multi_agent_system.md`](tutorials/build_multi_agent_system.md) | 构建多 AI 员工系统 |
 | [`tutorials/deploy_to_production.md`](tutorials/deploy_to_production.md) | 部署到生产 |
 
 ### 4.15 `roadmap/`（1）— 长期路线图
@@ -417,7 +417,7 @@ docs/
 | [`knowledge_base/getting-started/quickstart.md`](knowledge_base/getting-started/quickstart.md) | 快速上手 |
 | [`knowledge_base/core-concepts/agents.md`](knowledge_base/core-concepts/agents.md) | Agent 概念 |
 | [`knowledge_base/core-concepts/memory.md`](knowledge_base/core-concepts/memory.md) | 记忆概念 |
-| [`knowledge_base/core-concepts/multi_agent.md`](knowledge_base/core-concepts/multi_agent.md) | 多智能体概念 |
+| [`knowledge_base/core-concepts/multi_agent.md`](knowledge_base/core-concepts/multi_agent.md) | 多 AI 员工概念 |
 | [`knowledge_base/core-concepts/planning.md`](knowledge_base/core-concepts/planning.md) | 规划概念 |
 | [`knowledge_base/architecture/overview.md`](knowledge_base/architecture/overview.md) | 架构总览 |
 | [`knowledge_base/architecture/kernels.md`](knowledge_base/architecture/kernels.md) | 内核说明（与 KERNEL-CANON 冲突时以 KERNEL-CANON 为准） |
@@ -489,7 +489,7 @@ docs/
 | [`evidence/cross-verify-3fa88be0.md`](evidence/cross-verify-3fa88be0.md) | 交叉验证过程凭证 @`3fa88be0`（含 31 条失败归因） |
 | [`evidence/fault-surfaces-2026-11-06.md`](evidence/fault-surfaces-2026-11-06.md) | 故障面实测：单实例/休眠断网/时间跳变/存储/并发 |
 | [`evidence/hc01-pending-decisions-2026-11-06.md`](evidence/hc01-pending-decisions-2026-11-06.md) | HC-01 待裁决 5 项（附建议答案） |
-| [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：智能体与编排 |
+| [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：AI 员工与编排 |
 | [`oss-radar/memory-retrieval.md`](oss-radar/memory-retrieval.md) | 开源技术雷达 · 第 2 路：记忆与检索 |
 | [`oss-radar/security-compliance.md`](oss-radar/security-compliance.md) | 开源技术雷达 · 第 3 路：安全、合规与隔离 |
 | [`oss-radar/data-network.md`](oss-radar/data-network.md) | 开源技术雷达 · 第 4 路：数据、存储与网络 |

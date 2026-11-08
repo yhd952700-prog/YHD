@@ -323,7 +323,7 @@ scrape_configs:
 | 延迟 | `http_duration_p99` | > 2s |
 | 数据库连接 | `db_connections_active` | > 80% 池大小 |
 | 内存使用 | `memory_usage_bytes` | > 85% |
-| 智能体数量 | `agents_active` | > 上限的 80% |
+| AI 员工数量 | `agents_active` | > 上限的 80% |
 | 任务积压 | `tasks_pending` | > 100 |
 
 ### 4.3 日志管理
@@ -389,8 +389,8 @@ echo "备份完成: $DATE"
 # 恢复数据库
 gunzip -c db_20261001_020000.sql.gz | psql -U liuhao liuhao_restore
 
-# 验证数据完整性
-python scripts/verify_backup.py --backup db_20261001_020000.sql.gz
+# 验证数据完整性（本仓库未提供 verify_backup.py，用 gunzip 校验压缩包）
+gunzip -t db_20261001_020000.sql.gz
 ```
 
 ---
@@ -445,7 +445,7 @@ python scripts/verify_backup.py --backup db_20261001_020000.sql.gz
 
 - [ ] 健康检查端点正常
 - [ ] 所有 API 端点可访问
-- [ ] 智能体可以正常创建和执行
+- [ ] AI 员工可以正常创建和执行
 - [ ] 记忆系统正常工作
 - [ ] 插件加载正常
 - [ ] 驾驶舱前端可访问
@@ -496,10 +496,10 @@ systemctl status liuhao
 journalctl -u liuhao -f
 
 # 查看版本
-liuhao version
+python -m src.desktop about
 
 # 健康检查
-liuhao health check
+python -m src.cli health check
 ```
 
 ### 故障排查流程
@@ -532,7 +532,7 @@ pg_restore -d liuhao backup_before_upgrade.sql.gz
 systemctl start liuhao
 
 # 5. 验证服务
-liuhao health check
+python -m src.cli health check
 ```
 
 ---

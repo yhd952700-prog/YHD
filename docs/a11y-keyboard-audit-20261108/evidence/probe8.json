@@ -1,0 +1,113 @@
+{
+  "ariaCurrent": [
+    {
+      "v": "page",
+      "t": "总览"
+    },
+    {
+      "v": "page",
+      "t": "总览"
+    }
+  ],
+  "headings": [
+    "H1:总览",
+    "H2:能力层分布",
+    "H2:最近运行",
+    "H2:AI 能力全景",
+    "H2:审计事件趋势",
+    "H2:事件类型分布",
+    "H2:模型服务商连通状态"
+  ],
+  "landmarks": [
+    "ASIDE aria-label=主导航",
+    "NAV aria-label=-",
+    "NAV aria-label=设置",
+    "HEADER aria-label=-",
+    "MAIN aria-label=-",
+    "NAV aria-label=底部导航"
+  ],
+  "unnamed": {
+    "overview": [],
+    "butler": [],
+    "my-employees": [],
+    "memory": [],
+    "projects": [],
+    "knowledge": [],
+    "audit": [],
+    "data": [],
+    "settings": []
+  },
+  "placeholder": {
+    "ph": "搜索任务 / 员工 / 数据…",
+    "color": "rgb(138, 154, 192)",
+    "inputColor": "rgb(232, 238, 252)",
+    "bg": "rgba(0, 0, 0, 0)",
+    "size": "14px"
+  },
+  "assignSteps": {
+    "found": true,
+    "steps": 43
+  },
+  "focusAfterOpen": {
+    "name": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的",
+    "tag": "body"
+  },
+  "toAssignInput": {
+    "found": true,
+    "steps": 1
+  },
+  "toAssignBtn": {
+    "found": true,
+    "steps": 1
+  },
+  "assignDone": {
+    "notices": [
+      {
+        "role": "status",
+        "live": "polite",
+        "text": "已派给「键盘员工」（目标 c9c21ab2）；到「目标与任务」看执行结果、员工归属与耗时。"
+      }
+    ],
+    "focus": "BODY/",
+    "bodyTail": "7 12:31\n我的员工\n\n创建、调整、停用，或直接把一件事派给它\n\n我的员工：在这里创建、调整、停用，或把一件具体的事直接派给它。 让管家替你拆解目标，去「鎏灏管家」。\n创建员工\n\n名字必填；职责与默认能力可稍后再补\n\n名字（必填）\n职责\n默认能力（可多选，只能选已登记的能力）\n本地计算\n写本地文件\n联网调研\n综合整理\n创建员工\n已派给「键盘员工」（目标 c9c21ab2）；到「目标与任务」看执行结果、员工归属与耗时。\n员工名册\n\n名字、职责、默认能力与当前状态\n\n默认管家\n空闲\n系统默认\n职责：未填写职责 · 默认能力：未指定\n提交 0 项 · 完成 0 · 失败 0 · 目标 0/1 完成 · 3 位执行个体\n个体状态：执行个体 1·执行中 / 执行个体 2·执行中 / 执行个体 3·执行中\n系统默认员工：服务依赖它执行内部任务，不能改名、停用或删除。\n键盘员工\n空闲\n职责：未填写职责 · 默认能力：未指定\n提交 0 项 · 完成 0 · 失败 0 · 3 位执行个体\n个体状态：执行个体 1·空闲 / 执行个体 2·空闲 / 执行个体 3·空闲\n改名\n停用\n删除\n单独指派一个任务"
+  },
+  "mobileOverview": {
+    "hScroll": false,
+    "smallTargetCount": 4,
+    "smallTargets": [
+      {
+        "t": "INPUT",
+        "w": 222,
+        "h": 23
+      },
+      {
+        "t": "切换主题",
+        "w": 34,
+        "h": 34
+      },
+      {
+        "t": "系统通知，1 条",
+        "w": 34,
+        "h": 34
+      },
+      {
+        "t": "刷新",
+        "w": 23,
+        "h": 21
+      }
+    ],
+    "fonts": [
+      "10.5px",
+      "11.5px",
+      "11px",
+      "12.5px",
+      "12px",
+      "13.5px",
+      "13px",
+      "14px",
+      "15px",
+      "17px",
+      "21px"
+    ]
+  }
+}

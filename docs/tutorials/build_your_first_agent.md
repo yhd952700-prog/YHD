@@ -1,6 +1,6 @@
-# 构建你的第一个智能体
+# 构建你的第一个 AI 员工
 
-本教程将手把手带你创建、配置并运行你的第一个 LiuHao AI OS 智能体。
+本教程将手把手带你创建、配置并运行你的第一个 LiuHao AI OS AI 员工。
 
 ---
 
@@ -15,9 +15,9 @@
 
 ---
 
-## 第一步：创建智能体
+## 第一步：创建 AI 员工
 
-我们来创建一个"个人助理"智能体。
+我们来创建一个"个人助理"AI 员工。
 
 ### 1.1 编写创建脚本
 
@@ -25,7 +25,7 @@
 
 ```python
 """
-创建你的第一个智能体
+创建你的第一个 AI 员工
 """
 from liuhao import LiuHaoClient
 
@@ -35,7 +35,7 @@ client = LiuHaoClient(
     # api_key="your-api-key"  # 如果启用了认证
 )
 
-# 2. 定义智能体配置
+# 2. 定义 AI 员工配置
 agent_config = {
     "model": "qwen2.5:3b",
     "temperature": 0.7,
@@ -66,7 +66,7 @@ agent_config = {
     }
 }
 
-# 3. 创建智能体
+# 3. 创建 AI 员工
 agent = client.agents.create(
     name="小灏",
     role="general",
@@ -74,13 +74,13 @@ agent = client.agents.create(
     config=agent_config
 )
 
-print(f"✅ 智能体创建成功！")
+print(f"✅ AI 员工创建成功！")
 print(f"   ID: {agent.id}")
 print(f"   名称: {agent.name}")
 print(f"   角色: {agent.role}")
 print(f"   状态: {agent.status}")
 
-# 保存智能体 ID 供后续使用
+# 保存 AI 员工 ID 供后续使用
 with open("agent_id.txt", "w") as f:
     f.write(agent.id)
 ```
@@ -94,7 +94,7 @@ python create_my_agent.py
 你应该看到类似这样的输出：
 
 ```
-✅ 智能体创建成功！
+✅ AI 员工创建成功！
    ID: agent-abc123def456
    名称: 小灏
    角色: general
@@ -103,19 +103,19 @@ python create_my_agent.py
 
 ### 1.3 验证
 
-让我们确认智能体真的创建成功了：
+让我们确认 AI 员工真的创建成功了：
 
 ```bash
-curl http://127.0.0.1:8080/v1/agents/agent-abc123def456
+curl http://127.0.0.1:8080/v1/employees/agent-abc123def456
 ```
 
-或者在驾驶舱中查看：打开 `http://127.0.0.1:5173`，进入「智能体管理」。
+或者在控制台中查看：打开 `http://127.0.0.1:8080`，进入「我的员工」。
 
 ---
 
-## 第二步：和智能体对话
+## 第二步：和 AI 员工对话
 
-现在智能体已经创建好了，让我们和它说说话。
+现在 AI 员工已经创建好了，让我们和它说说话。
 
 ### 2.1 第一次对话
 
@@ -123,13 +123,13 @@ curl http://127.0.0.1:8080/v1/agents/agent-abc123def456
 
 ```python
 """
-和智能体对话
+和 AI 员工对话
 """
 from liuhao import LiuHaoClient
 
 client = LiuHaoClient(base_url="http://127.0.0.1:8080")
 
-# 读取之前保存的智能体 ID
+# 读取之前保存的 AI 员工 ID
 with open("agent_id.txt", "r") as f:
     agent_id = f.read().strip()
 
@@ -184,9 +184,9 @@ python chat_with_agent.py
 
 ---
 
-## 第三步：给智能体添加记忆
+## 第三步：给 AI 员工添加记忆
 
-真正强大的智能体需要有记忆能力。让我们教智能体记住一些关于你的事情。
+真正强大的 AI 员工需要有记忆能力。让我们教 AI 员工记住一些关于你的事情。
 
 ### 3.1 存储个人偏好
 
@@ -194,7 +194,7 @@ python chat_with_agent.py
 
 ```python
 """
-教智能体记住你的偏好
+教 AI 员工记住你的偏好
 """
 from liuhao import LiuHaoClient
 
@@ -235,7 +235,7 @@ memories = [
     }
 ]
 
-print("正在教智能体记住你的偏好...\n")
+print("正在教 AI 员工记住你的偏好...\n")
 
 for mem in memories:
     result = client.memory.store(
@@ -245,7 +245,7 @@ for mem in memories:
     print(f"✅ 已记住: {mem['content'][:40]}...")
 
 print(f"\n共存储了 {len(memories)} 条记忆")
-print("\n现在试试问智能体一些关于你的问题吧！")
+print("\n现在试试问 AI 员工一些关于你的问题吧！")
 ```
 
 ### 3.2 验证记忆
@@ -273,7 +273,7 @@ python teach_agent.py
 
 ## 第四步：理解各部分作用
 
-让我们回顾一下，刚才创建的智能体由哪些部分组成：
+让我们回顾一下，刚才创建的 AI 员工由哪些部分组成：
 
 ### 4.1 身份（Identity）
 
@@ -283,9 +283,9 @@ python teach_agent.py
 
 ### 4.2 配置（Config）
 
-- **模型**：qwen2.5:3b — 智能体使用的 LLM
+- **模型**：qwen2.5:3b — AI 员工使用的 LLM
 - **温度**：0.7 — 控制回复的随机性
-- **系统提示词**：定义智能体的性格和能力边界
+- **系统提示词**：定义 AI 员工的性格和能力边界
 
 ### 4.3 工具（Tools）
 
@@ -301,13 +301,13 @@ python teach_agent.py
 
 ---
 
-## 第五步：自定义你的智能体
+## 第五步：自定义你的 AI 员工
 
 现在你已经掌握了基础，让我们来做一些自定义。
 
 ### 5.1 修改角色和性格
 
-让我们把智能体改成一个"编程助手"：
+让我们把 AI 员工改成一个"编程助手"：
 
 ```python
 agent = client.agents.create(
@@ -338,17 +338,18 @@ agent = client.agents.create(
 
 ### 5.2 添加更多工具
 
-你可以通过插件为智能体添加更多工具：
+你可以通过插件为 AI 员工添加更多工具：
 
 ```bash
+# 会直接改动数据，执行前先备份
 # 安装天气插件
-liuhao plugin install liuhao-weather-plugin
+python -m src.cli plugin install liuhao-weather-plugin
 
 # 安装网页搜索插件
-liuhao plugin install liuhao-web-search-plugin
+python -m src.cli plugin install liuhao-web-search-plugin
 ```
 
-然后在智能体配置中启用：
+然后在 AI 员工配置中启用：
 
 ```python
 config = {
@@ -382,9 +383,9 @@ config = {
 
 ### 6.1 写好系统提示词
 
-好的系统提示词是智能体质量的关键：
+好的系统提示词是 AI 员工质量的关键：
 
-1. **明确角色**：告诉智能体它是谁
+1. **明确角色**：告诉 AI 员工它是谁
 2. **设定边界**：说明它能做什么、不能做什么
 3. **定义风格**：描述回复的语气和格式
 4. **给出示例**：如果有特定的输出格式，给出示例
@@ -392,7 +393,7 @@ config = {
 ### 6.2 合理使用工具
 
 - 只启用真正需要的工具（最小权限原则）
-- 工具太多会让智能体困惑，降低效率
+- 工具太多会让 AI 员工困惑，降低效率
 - 危险操作（文件写入、命令执行）需要审批
 
 ### 6.3 记忆管理
@@ -406,25 +407,25 @@ config = {
 
 ## 常见问题
 
-### Q: 智能体回复太慢怎么办？
+### Q: AI 员工回复太慢怎么办？
 
 A: 试试更小的模型（如 qwen2.5:1.5b），或者降低 max_tokens。
 
-### Q: 智能体记不住东西怎么办？
+### Q: AI 员工记不住东西怎么办？
 
 A: 确保 memory.enabled = true，重要内容设置高 importance，也可以手动存储到语义记忆。
 
-### Q: 智能体调用工具出错怎么办？
+### Q: AI 员工调用工具出错怎么办？
 
-A: 检查工具是否正确配置，权限是否足够，参数是否正确。查看智能体日志获取详细错误信息。
+A: 检查工具是否正确配置，权限是否足够，参数是否正确。查看 AI 员工日志获取详细错误信息。
 
 ---
 
 ## 下一步
 
-恭喜你完成了第一个智能体的构建！接下来可以：
+恭喜你完成了第一个 AI 员工的构建！接下来可以：
 
-- [构建研究机器人](build_a_research_bot.md) - 构建一个专业的研究智能体
-- [构建代码审查员](build_a_code_reviewer.md) - 让智能体帮你审查代码
-- [构建多智能体系统](build_multi_agent_system.md) - 创建一个智能体团队
-- [智能体用户指南](../knowledge_base/user-guide/agent_guide.md) - 更详细的智能体使用指南
+- [构建研究机器人](build_a_research_bot.md) - 构建一个专业的研究 AI 员工
+- [构建代码审查员](build_a_code_reviewer.md) - 让 AI 员工帮你审查代码
+- [构建多 AI 员工系统](build_multi_agent_system.md) - 创建一个 AI 员工团队
+- [AI 员工使用指南](../knowledge_base/user-guide/agent_guide.md) - 更详细的 AI 员工使用指南

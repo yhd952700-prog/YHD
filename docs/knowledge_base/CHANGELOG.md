@@ -130,8 +130,9 @@
 #### 1. 备份数据
 
 ```bash
-# 备份数据库
-liuhao backup create --output backup-2.x.tar.gz
+# 会直接改动数据，执行前先备份
+# 备份数据库（备份包位置由工具决定，不支持 --output 指定文件名）
+python -m src.cli backup create
 
 # 备份配置
 cp -r config/ config.backup/
@@ -150,8 +151,7 @@ pip install -r requirements.txt --upgrade
 # Alembic 迁移
 alembic upgrade head
 
-# 或使用 CLI
-liuhao db migrate
+# 或使用 CLI：本仓库没有 `db migrate` 子命令，数据库迁移一律走 alembic
 ```
 
 #### 4. 更新配置
@@ -167,15 +167,16 @@ liuhao db migrate
 #### 5. 迁移记忆数据
 
 ```bash
-# 记忆系统迁移
-liuhao memory migrate --from v2 --to v3
+# 记忆系统迁移：本仓库没有 `memory migrate` 子命令；
+# 2.x → 3.x 迁移后可用下面这条确认条数
+python -m src.cli memory stats
 ```
 
 #### 6. 验证升级
 
 ```bash
 # 运行健康检查
-liuhao health check
+python -m src.cli health check
 
 # 运行冒烟测试
 python scripts/smoke_mvp.py

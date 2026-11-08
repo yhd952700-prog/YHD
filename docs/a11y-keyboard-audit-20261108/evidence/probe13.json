@@ -1,0 +1,18 @@
+{
+  "navButtons": 29,
+  "searchFocus": {
+    "tag": "INPUT",
+    "ph": "搜索任务 / 员工 / 数据…",
+    "aria": null,
+    "cls": ""
+  },
+  "searchTabSteps": 30,
+  "searchFound": true,
+  "searchOutline": "none 3px rgb(232, 238, 252)",
+  "composer": {
+    "textarea": null,
+    "send": null,
+    "log": null,
+    "messages": []
+  }
+}

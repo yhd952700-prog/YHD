@@ -1,0 +1,86 @@
+{
+  "fields": [
+    {
+      "tag": "input",
+      "id": "boot-principal",
+      "type": null,
+      "ph": "字母或数字，如 liuhao",
+      "text": "",
+      "checked": false
+    },
+    {
+      "tag": "input",
+      "id": "boot-name",
+      "type": null,
+      "ph": "界面上显示的名字",
+      "text": "",
+      "checked": false
+    },
+    {
+      "tag": "input",
+      "id": "boot-password",
+      "type": "password",
+      "ph": "至少 8 位，建议 12 位以上",
+      "text": "",
+      "checked": false
+    },
+    {
+      "tag": "input",
+      "id": "boot-confirm",
+      "type": "password",
+      "ph": null,
+      "text": "",
+      "checked": false
+    },
+    {
+      "tag": "input",
+      "id": "",
+      "type": "checkbox",
+      "ph": null,
+      "text": "",
+      "checked": false
+    },
+    {
+      "tag": "button",
+      "id": "",
+      "type": "submit",
+      "ph": null,
+      "text": "创建并进入系统"
+    }
+  ],
+  "tabOrder": [
+    "boot-name",
+    "boot-password",
+    "boot-confirm",
+    "INPUT",
+    "创建并进入系统",
+    "鎏灏智能中枢\nLIUHAO AI OS\n登录凭据\n未配置（无",
+    "boot-principal",
+    "boot-name",
+    "boot-password",
+    "boot-confirm",
+    "INPUT",
+    "创建并进入系统"
+  ],
+  "toSubmit": [
+    {
+      "tag": "INPUT",
+      "text": "",
+      "id": ""
+    },
+    {
+      "tag": "BUTTON",
+      "text": "创建并进入系统",
+      "id": ""
+    }
+  ],
+  "afterSubmit": {
+    "text": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n首\n首次运行\n我的工作空间\n搜索当前页面\n/\n11/07 12:40\n总览\n\n真实运行状态 —— 每一项都能追溯到来源\n\n需要我\n0\n项依赖异常\n0\n条失败/拒绝（近 30 条事件）\n真实\n模型状态\n当前无异常 · 下一步：可在事件流查看明细。\nAI 员工总数\n2\n14 个能力模块 + 14 个能力层\n运行中任务\n90\n当前活跃会话\n审计事件\n5.2k\n真实审计存储累计\n系统健康度\n100%\n12/12 项依赖正常 · 4 条新事件待核对（下一轮自检自动补齐）\n能力层分布\n\n能力模块按阶段分组；悬停查看名称\n\n鎏灏 OS\n运行闭环\n4\n协作与任务\n3\n外部协作\n3\n验证与改进\n4\n最近运行\n\n最近的真实运行记录（已隐藏系统内部名称）\n\n刷新\n访问放行\nboo",
+    "h1": "总览"
+  },
+  "loginPage": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n首\n首次运行\n我的工作空间\n搜索当前页面\n/\n11/07 12:40\n总览\n\n真实运行状态 —— 每一项都能追溯到来源\n\n需要我\n0\n项依赖异常\n0\n条失败/拒绝（近 30 条事件）\n真",
+  "loginResult": {
+    "title": "总览",
+    "text": "LiuHao AI OS\nLIVE · 鎏灏智能中枢\n业务\n总览\n鎏灏管家\n我的员工\n能力注册表\n业务中心\n知识中心\n记忆\n工作台\n目标与任务\n项目\n应用\n数据中心\n事件流\n治理\n审批中心\n审计链\n信任\n网络\n身份与权限\n工作区文件\n系统状态\n生产预检\n成员与权限管理\n权限矩阵\n角色模板\n备份与迁移\n恢复码\n全部 Key\n系统设置\n首\n首次运行\n我的工作空间\n搜索当前页面\n/\n11/07 12:4"
+  }
+}

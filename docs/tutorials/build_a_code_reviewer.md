@@ -1,6 +1,6 @@
 # 构建代码审查员
 
-本教程将带你构建一个专业的代码审查智能体，能够自动审查代码质量、发现问题并给出改进建议。
+本教程将带你构建一个专业的代码审查 AI 员工，能够自动审查代码质量、发现问题并给出改进建议。
 
 ---
 
@@ -35,13 +35,13 @@
 - 安全漏洞识别能力
 - 结构化反馈能力
 
-### 1.2 创建智能体
+### 1.2 创建 AI 员工
 
 创建 `code_reviewer_agent.py`：
 
 ```python
 """
-代码审查员智能体
+代码审查员 AI 员工
 """
 from liuhao import LiuHaoClient
 
@@ -620,6 +620,6 @@ jobs:
 
 ## 下一步
 
-- [构建你的第一个智能体](build_your_first_agent.md) - 入门教程
-- [构建多智能体系统](build_multi_agent_system.md) - 构建审查团队
+- [构建你的第一个 AI 员工](build_your_first_agent.md) - 入门教程
+- [构建多 AI 员工系统](build_multi_agent_system.md) - 构建审查团队
 - [部署到生产环境](deploy_to_production.md) - 生产部署指南

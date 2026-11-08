@@ -1,0 +1,30 @@
+{
+  "slash": {
+    "tag": "BODY",
+    "cls": "",
+    "placeholder": null
+  },
+  "searchResults": {
+    "text": false,
+    "items": [],
+    "active": "BODY"
+  },
+  "searchKeys": {
+    "afterDown": {
+      "tag": "BODY",
+      "text": "LiuHao AI OSLIVE · 鎏灏智能中枢业务总览鎏"
+    },
+    "afterEscape": {
+      "tag": "BODY",
+      "text": "LiuHao AI OSLIVE · 鎏灏智能中枢业务总览鎏"
+    }
+  },
+  "composerFocusAfterSend": {
+    "tag": "BODY",
+    "aria": null
+  },
+  "busyAfter": {
+    "busy": 0,
+    "live": 0
+  }
+}

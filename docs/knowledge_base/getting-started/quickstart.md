@@ -1,250 +1,84 @@
 # 快速上手指南
 
-本指南将带你在 10 分钟内创建第一个 LiuHao AI OS 智能体并运行第一个任务。
+> 目标：10 分钟走通「登录 → 配置模型 → 创建 AI 员工 → 发第一条消息」。
+> 本文按 Windows 安装版的真实界面与路由编写；源码模式的端口差异见文末。
+
+## 前提
+
+- 已按 [安装指南](installation.md) 安装并启动，控制台默认 `http://127.0.0.1:8080`。
+- 已有管理员账号（首次启动向导创建）。
+- 模型可选：Ollama 本地推理，或 OpenAI 兼容 / DeepSeek / Kimi / Anthropic / Gemini 云端。
+  不配置模型也能登录浏览；发消息时会明确报错，不会伪造回复。
 
 ---
 
-## Hello World 示例
+## 第 1 步：登录
 
-### 前提条件
+1. 双击桌面快捷方式，等待窗口打印“鎏灏已就绪”和驾驶舱地址。
+2. 用启动器自动打开的页面登录；没有自动打开就手动访问 `http://127.0.0.1:8080`。
+3. 首次使用会要求创建管理员账号；登录名用英文，密码至少 8 位。
 
-- 已完成 [安装指南](installation.md) 中的安装步骤
-- LiuHao AI OS 服务正在运行（端口 8080）
-- 已安装并运行 Ollama
+## 第 2 步：配置模型（仅根账号可见）
 
-### 第一个 API 调用
+1. 左下角进入 **系统设置** → **模型管理**。
+2. 选择 Provider，填写 `base_url`、模型名、API Key；点 **测试连接**。
+3. 看到“连接成功（xxx ms）”后，点 **设为默认**。
+4. 下一条消息立即使用新模型，无需重启。
 
-使用 curl 测试基础 API：
+> 只用 Ollama 时，先执行 `ollama pull <模型名>`；没有模型也能跳过，但聊天会报错。
 
-```bash
-# 健康检查
-curl http://127.0.0.1:8080/v1/health
+## 第 3 步：创建第一个 AI 员工
 
-# 列出可用模型
-curl http://127.0.0.1:8080/v1/providers/models
-```
+1. 左侧进入 **我的员工**。
+2. 在 **创建员工** 卡片里填名字（必填）、职责描述和默认能力。
+3. 点 **创建员工**；成功后员工会出现在名册里。
 
-### 使用 Python SDK 发送对话
+## 第 4 步：发第一条消息
 
-```python
-from liuhao import LiuHaoClient
+- 桌面端：左侧 **工作台** → **直接对话** → 输入消息并回车。
+- 手机端：底部 **管家** → **＋新会话** → 输入消息并回车。
 
-# 初始化客户端
-client = LiuHaoClient(base_url="http://127.0.0.1:8080")
+回复来自第 2 步配置的 Provider；出现 `[生成失败]` 时按 [常见问题](../faq/faq.md) 排查。
 
-# 发送消息
-response = client.chat.send("你好，请介绍一下你自己")
-print(response.content)
-```
+## 第 5 步：派一件真实任务
 
-### 使用 CLI
-
-```bash
-# 进入交互式 shell
-liuhao shell
-
-# 或者直接发送消息
-liuhao chat "你好，LiuHao!"
-```
+1. 在 **我的员工** 里选择一位员工，展开 **单独指派一个任务**。
+2. 输入任务内容，点 **派给它**。
+3. 到 **目标与任务** 查看执行结果、员工归属与耗时（该页为只读观测面）。
 
 ---
 
-## 核心概念速览
+## 常用入口
 
-在深入之前，先了解几个核心概念：
+| 想做什么 | 打开哪里 |
+|---|---|
+| 看总览数据 | 总览 |
+| 和 AI 对话 | 工作台 / 鎏灏管家 |
+| 管理 AI 员工 | 我的员工 |
+| 看任务执行结果 | 目标与任务 |
+| 配置模型 | 系统设置 → 模型管理 |
+| 导出诊断包 | 系统设置 → 遇到问题 → 一键诊断包 → 导出诊断包 |
 
-### 智能体（Agent）
+## 用 API 接入
 
-智能体是 LiuHao AI OS 中的基本执行单元。每个智能体：
-- 有独立的身份和角色
-- 拥有自己的记忆空间
-- 可以使用工具和能力
-- 能够执行任务并产生结果
+完整 OpenAPI 文档：`http://127.0.0.1:8080/docs`。
 
-### 记忆（Memory）
+当前真实路由（以 `/docs` 的 OpenAPI 为准）：
 
-LiuHao AI OS 采用分层记忆体系：
+| 用途 | 方法 | 路径 |
+|---|---|---|
+| 健康检查 | GET | `/v1/health` |
+| 模型列表 | GET | `/v1/models` |
+| Provider 列表 | GET | `/v1/models/providers` |
+| 员工列表 / 创建员工 | GET / POST | `/v1/employees` |
+| 员工详情 | GET | `/v1/employees/{employee_id}` |
+| 目标列表 / 创建目标 | GET / POST | `/v1/goals` |
+| 指名派活 | POST | `/v1/goals/assign` |
 
-| 记忆类型 | 层级 | 作用 | 生命周期 |
-|---------|------|------|---------|
-| 工作记忆 | 短期 | 当前任务的活跃上下文 | 分钟级 |
-| 情景记忆 | 中期 | 经历过的事件和对话 | 小时~天 |
-| 语义记忆 | 长期 | 知识、事实、概念 | 持久 |
-| 元记忆 | 元层 | 关于记忆的记忆 | 持久 |
+> 旧文档中的 `/v1/agents`、`/v1/tasks`、`/v1/providers/models` 已失效，请不要再使用。
 
-### 任务（Task）
+## 源码模式端口
 
-任务是智能体需要完成的具体工作。任务可以：
-- 由用户直接分配
-- 由规划引擎分解生成
-- 包含子任务形成任务树
-- 有状态追踪（待办/进行中/已完成/失败）
-
----
-
-## 创建你的第一个智能体
-
-### 方式一：通过 API 创建
-
-```bash
-curl -X POST http://127.0.0.1:8080/v1/agents \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "我的助手",
-    "role": "general",
-    "description": "一个通用型个人助理智能体",
-    "config": {
-      "model": "qwen2.5:3b",
-      "temperature": 0.7
-    }
-  }'
-```
-
-响应示例：
-
-```json
-{
-  "id": "agent-abc123",
-  "name": "我的助手",
-  "role": "general",
-  "status": "idle",
-  "description": "一个通用型个人助理智能体",
-  "created_at": "2026-10-07T12:00:00Z"
-}
-```
-
-### 方式二：通过 Python SDK 创建
-
-```python
-from liuhao import LiuHaoClient
-
-client = LiuHaoClient(base_url="http://127.0.0.1:8080")
-
-# 创建智能体
-agent = client.agents.create(
-    name="研究助手",
-    role="researcher",
-    description="专门负责资料收集和研究分析"
-)
-
-print(f"智能体已创建: {agent.id}")
-```
-
-### 方式三：通过驾驶舱创建
-
-1. 打开 `http://127.0.0.1:5173`
-2. 进入「智能体管理」页面
-3. 点击「新建智能体」
-4. 填写表单并提交
-
----
-
-## 运行你的第一个任务
-
-### 给智能体分配任务
-
-```bash
-curl -X POST http://127.0.0.1:8080/v1/agents/agent-abc123/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task": "帮我总结一下人工智能的发展历史，用中文回答，控制在300字以内"
-  }'
-```
-
-### 查询任务状态
-
-```bash
-curl http://127.0.0.1:8080/v1/tasks/task-xyz789
-```
-
-任务状态说明：
-
-| 状态 | 说明 |
-|------|------|
-| `pending` | 等待执行 |
-| `running` | 正在执行 |
-| `completed` | 已完成 |
-| `failed` | 执行失败 |
-| `paused` | 已暂停 |
-
-### 使用 SDK 异步执行
-
-```python
-import asyncio
-from liuhao import LiuHaoClient
-
-async def main():
-    client = LiuHaoClient(base_url="http://127.0.0.1:8080")
-    
-    # 执行任务并等待结果
-    result = await client.agents.execute(
-        agent_id="agent-abc123",
-        task="写一首关于秋天的五言绝句"
-    )
-    
-    print(f"任务状态: {result.status}")
-    print(f"结果:\n{result.output}")
-
-asyncio.run(main())
-```
-
----
-
-## 构建你的第一个流水线
-
-流水线（Pipeline）用于处理数据流，支持从数据源读取、转换、验证到输出的完整流程。
-
-### 示例：构建一个简单的文本处理流水线
-
-```python
-from liuhao.pipelines import PipelineBuilder
-
-# 构建流水线
-pipeline = (
-    PipelineBuilder()
-    .source("file", path="input.txt")          # 数据源：读取文件
-    .transform("split", by="paragraph")        # 转换：按段落分割
-    .transform("summarize", ratio=0.3)         # 转换：摘要提取
-    .validate("length", min=10, max=500)       # 验证：长度检查
-    .sink("file", path="output_summary.txt")   # 输出：写入文件
-    .build()
-)
-
-# 运行流水线
-result = pipeline.run()
-print(f"处理了 {result.processed_count} 条数据")
-```
-
-### 流水线核心组件
-
-| 组件 | 作用 | 示例 |
-|------|------|------|
-| Source | 数据源，从各种来源读取数据 | file, database, api, mqtt |
-| Transform | 转换器，处理和转换数据 | filter, map, aggregate, summarize |
-| Validate | 验证器，检查数据质量 | schema, length, format, custom |
-| Sink | 输出槽，写入目标位置 | file, database, api, stdout |
-| Aggregator | 聚合器，合并多路数据 | union, join, merge |
-
----
-
-## 下一步
-
-恭喜你完成了 LiuHao AI OS 的快速上手！接下来可以：
-
-### 深入学习
-
-- [智能体核心概念](../core-concepts/agents.md) - 深入理解智能体的工作原理
-- [记忆系统详解](../core-concepts/memory.md) - 了解分层记忆体系
-- [多智能体协作](../core-concepts/multi_agent.md) - 探索多智能体系统
-
-### 动手实践
-
-- [构建你的第一个智能体](../../tutorials/build_your_first_agent.md) - 完整教程
-- [构建研究机器人](../../tutorials/build_a_research_bot.md) - 实战项目
-- [构建数据流水线](../../tutorials/build_a_data_pipeline.md) - 数据处理教程
-
-### 参考资源
-
-- [API 参考](../api-reference/agents_api.md) - 完整的 API 文档
-- [SDK 指南](../user-guide/sdk_guide.md) - 各语言 SDK 使用指南
-- [常见问题](../faq/faq.md) - 常见问题解答
+- 控制台：`http://127.0.0.1:5173`
+- API：`http://127.0.0.1:8080`（控制台的 `/v1` 代理到这里）
+- Windows 安装版：控制台与 API 同为 `8080`

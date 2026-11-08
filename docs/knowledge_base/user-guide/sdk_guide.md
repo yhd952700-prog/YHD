@@ -20,7 +20,7 @@ LiuHao AI OS 提供多种编程语言的 SDK，方便开发者在不同环境中
 
 | 功能 | Python | JS/TS | Go | Java |
 |------|--------|-------|----|------|
-| 智能体管理 | ✓ | ✓ | ✓ | ✓ |
+| AI 员工管理 | ✓ | ✓ | ✓ | ✓ |
 | 对话交互 | ✓ | ✓ | ✓ | ✓ |
 | 记忆管理 | ✓ | ✓ | ✓ | Partial |
 | 任务管理 | ✓ | ✓ | ✓ | ✓ |
@@ -70,10 +70,10 @@ response = client.chat.send(
 )
 ```
 
-### 智能体操作
+### AI 员工操作
 
 ```python
-# 创建智能体
+# 创建 AI 员工
 agent = client.agents.create(
     name="研究助手",
     role="researcher",
@@ -178,17 +178,17 @@ for await (const chunk of stream) {
 }
 ```
 
-### 智能体操作
+### AI 员工操作
 
 ```javascript
-// 创建智能体
+// 创建 AI 员工
 const agent = await client.agents.create({
   name: '代码助手',
   role: 'creator',
   description: '专业的编程助手'
 });
 
-console.log(`智能体 ID: ${agent.id}`);
+console.log(`AI 员工 ID: ${agent.id}`);
 
 // 执行任务
 const result = await client.agents.execute(agent.id, {
@@ -282,14 +282,14 @@ func main() {
 }
 ```
 
-### 智能体操作
+### AI 员工操作
 
 ```go
 func main() {
     client, _ := liuhao.NewClientFromEnv()
     ctx := context.Background()
 
-    // 创建智能体
+    // 创建 AI 员工
     agent, err := client.Agents.Create(ctx, &liuhao.CreateAgentRequest{
         Name:        "数据分析助手",
         Role:        "analyst",
@@ -356,7 +356,7 @@ func main() {
 | 同步对话 | ✓ | ✓ | ✓ |
 | 流式对话 | ✓ | ✓ | ✓ |
 | 会话管理 | ✓ | ✓ | ✓ |
-| **智能体管理** | ✓ | ✓ | ✓ |
+| **AI 员工管理** | ✓ | ✓ | ✓ |
 | 创建/删除/更新 | ✓ | ✓ | ✓ |
 | 执行任务（同步） | ✓ | ✓ | ✓ |
 | 执行任务（流式） | ✓ | ✓ | ✓ |
@@ -412,7 +412,7 @@ client = LiuHaoClient.from_env()
 try:
     result = client.agents.execute("agent-id", "任务")
 except errors.AgentNotFoundError:
-    print("智能体不存在")
+    print("AI 员工不存在")
 except errors.RateLimitError:
     print("触发速率限制，请稍后重试")
 except errors.APIError as e:
@@ -479,5 +479,5 @@ client = LiuHaoClient(
 ## 下一步
 
 - [API 参考](../api-reference/agents_api.md) - 完整的 API 文档
-- [智能体用户指南](agent_guide.md) - 智能体操作详解
+- [AI 员工使用指南](agent_guide.md) - AI 员工操作详解
 - [插件开发](#) - 使用 SDK 开发插件

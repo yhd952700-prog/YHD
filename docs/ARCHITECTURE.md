@@ -1,4 +1,4 @@
-# LIUHAO X v3.0 — 架构总纲
+# LiuHao AI OS · 鎏灏智能中枢 — 架构总纲（v3.0）
 
 > **定位**：本项目架构的**导航入口（门户）**。所有架构决策、设计原则、系统边界在此定义；**宪法层单一入口为 [`spec/UNIFIED-BLUEPRINT.md`](spec/UNIFIED-BLUEPRINT.md)**。
 > **版本**：v3.0 · 建立日期：2026-09-06
@@ -19,7 +19,7 @@
 
 ## 系统定位
 
-**LIUHAO X / 鎏灏 X** = Human-Sovereign Agent Operating System
+**LiuHao AI OS · 鎏灏智能中枢**（旧称 LIUHAO X / 鎏灏 X） = Human-Sovereign Agent Operating System
 
 十源能力体系（ULTRON / VISION / ADA / EDITH / FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）
 提取为现实可工程化能力 → 去重 → 统一 → 一个系统。

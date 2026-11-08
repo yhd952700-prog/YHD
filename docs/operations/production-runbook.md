@@ -66,8 +66,8 @@ docker compose -f docker-compose.prod.yml up -d
 ### 2.3 本机（开发/自托管）
 
 ```bash
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port          # 单端口
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port --https  # 叠加本地 TLS
+.venv/Scripts/python.exe scripts/start_liuhao.py                     # 单端口（默认，网关同时托管驾驶舱）
+.venv/Scripts/python.exe scripts/start_liuhao.py --https             # 叠加本地 TLS
 ```
 
 ---

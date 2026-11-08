@@ -400,7 +400,7 @@ LiuHao AI OS 各组件独立版本化，但 Helm Chart 锁定一组**经过联�
 
 ### Q4: secrets 轮换需要重新部署吗？
 
-用 ExternalSecrets + 自动重载：秘钥在 Vault 轮换后，External Secrets Operator 更新 K8s Secret，配合 reloader 注解触发滚动重启。应用侧也应支持热加载（见[密钥管理](../24-security/secrets-management.md)）。
+用 ExternalSecrets + 自动重载：密钥在 Vault 轮换后，External Secrets Operator 更新 K8s Secret，配合 reloader 注解触发滚动重启。应用侧也应支持热加载（见[密钥管理](../24-security/secrets-management.md)）。
 
 ### Q5: 如何防止"周五部署"事故？
 

@@ -1,0 +1,170 @@
+{
+  "generated_at": "2026-11-07 16:07:00",
+  "target_root": "D:\\LiuHao",
+  "verdict": "安装副本为旧版本，本轮修复未进包",
+  "install_diff": [
+    {
+      "path": "src/desktop/dpi.py",
+      "label": "DPI 适配模块 dpi.py",
+      "present": false
+    },
+    {
+      "path": "scripts/first_run_gui.py",
+      "label": "图形化首启向导 first_run_gui.py",
+      "present": false
+    },
+    {
+      "path": "src/desktop/app.py",
+      "label": "app.py 调用 fit_window 自适应尺寸",
+      "present": false
+    },
+    {
+      "path": "src/desktop/app.py",
+      "label": "app.py 解除旧 minsize 下限",
+      "present": false
+    },
+    {
+      "path": "src/desktop/app.py",
+      "label": "app.py 处理分辨率变化",
+      "present": false
+    }
+  ],
+  "screen": [
+    1920,
+    1080
+  ],
+  "passed": 0,
+  "total": 10,
+  "cases": [
+    {
+      "case": "wizard-100",
+      "passed": false,
+      "checks": [
+        {
+          "name": "wizard-100 子进程产出结果",
+          "ok": false,
+          "detail": "pts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 742, in run_case\n    return _wizard_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 456, in _wizard_case\n    window = _open_wizard(env)\n             ^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 437, in _open_wizard\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "wizard-125",
+      "passed": false,
+      "checks": [
+        {
+          "name": "wizard-125 子进程产出结果",
+          "ok": false,
+          "detail": "pts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 742, in run_case\n    return _wizard_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 456, in _wizard_case\n    window = _open_wizard(env)\n             ^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 437, in _open_wizard\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "wizard-150",
+      "passed": false,
+      "checks": [
+        {
+          "name": "wizard-150 子进程产出结果",
+          "ok": false,
+          "detail": "pts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 742, in run_case\n    return _wizard_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 456, in _wizard_case\n    window = _open_wizard(env)\n             ^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 437, in _open_wizard\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "wizard-175",
+      "passed": false,
+      "checks": [
+        {
+          "name": "wizard-175 子进程产出结果",
+          "ok": false,
+          "detail": "pts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 742, in run_case\n    return _wizard_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 456, in _wizard_case\n    window = _open_wizard(env)\n             ^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 437, in _open_wizard\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "wizard-200",
+      "passed": false,
+      "checks": [
+        {
+          "name": "wizard-200 子进程产出结果",
+          "ok": false,
+          "detail": "pts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 742, in run_case\n    return _wizard_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 456, in _wizard_case\n    window = _open_wizard(env)\n             ^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 437, in _open_wizard\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "dual-move-125to150",
+      "passed": false,
+      "checks": [
+        {
+          "name": "dual-move-125to150 子进程产出结果",
+          "ok": false,
+          "detail": "Traceback (most recent call last):\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1012, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 744, in run_case\n    return _wizard_move_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 503, in _wizard_move_case\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "dual-move-150to125",
+      "passed": false,
+      "checks": [
+        {
+          "name": "dual-move-150to125 子进程产出结果",
+          "ok": false,
+          "detail": "Traceback (most recent call last):\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1012, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 744, in run_case\n    return _wizard_move_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 503, in _wizard_move_case\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "resolution-sequence",
+      "passed": false,
+      "checks": [
+        {
+          "name": "resolution-sequence 子进程产出结果",
+          "ok": false,
+          "detail": "Traceback (most recent call last):\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1012, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 746, in run_case\n    return _wizard_resolution_case(case)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 579, in _wizard_resolution_case\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "status-175",
+      "passed": false,
+      "checks": [
+        {
+          "name": "status-175 子进程产出结果",
+          "ok": false,
+          "detail": "-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1012, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 748, in run_case\n    return _status_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 676, in _status_case\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    },
+    {
+      "case": "status-200-1280x720",
+      "passed": false,
+      "checks": [
+        {
+          "name": "status-200-1280x720 子进程产出结果",
+          "ok": false,
+          "detail": "-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1012, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 1004, in main\n    result = run_case(args.case)\n             ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 748, in run_case\n    return _status_case(case, spec)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 676, in _status_case\n    _install(env)\n  File \"D:\\LiuHao-AI-OS\\scripts\\acceptance\\dpi_scaling_acceptance.py\", line 146, in _install\n    from src.desktop import dpi as dpi_support\nImportError: cannot import name 'dpi' from 'src.desktop' (D:\\LiuHao\\src\\desktop\\__init__.py)\n"
+        }
+      ],
+      "metrics": {},
+      "screenshots": []
+    }
+  ]
+}

@@ -276,21 +276,19 @@ permissions:                    # 插件权限声明（安装时管理员审批�
 ### 安装与生命周期
 
 ```bash
-# 本地开发模式（热重载）
-liuhao plugin install ./plugins/wecom-integration --dev
+# 会直接改动数据，执行前先备份
+# 安装（plugin install 只认插件标识 + --version，不支持本地目录 / --dev）
+python -m src.cli plugin install wecom-integration
 
-# 生产安装
-liuhao plugin install registry.example.com/plugins/wecom-integration-1.0.0.tar.gz
+# 生产安装指定版本
+python -m src.cli plugin install wecom-integration --version 1.0.0
 
-# 配置（secret 值写入密钥管理，不落盘）
-liuhao plugin config wecom-integration \
-  --set corp_id=ww123456 \
-  --set-secret callback_token \
-  --set-secret encoding_aes_key
+# 配置：本仓库没有 plugin config 子命令；secret 不落盘由控制台「系统设置」里的 Key 管理承担
+# （插件自身的 corp_id 等写在插件配置文件中）
 
 # 启停与状态
-liuhao plugin enable wecom-integration
-liuhao plugin status wecom-integration --events-tail 20
+python -m src.cli plugin enable wecom-integration
+python -m src.cli plugin info wecom-integration
 ```
 
 ---
@@ -360,7 +358,7 @@ integration_framework:
 
 ### Q3: 如何调试"事件没进来"？
 
-排查顺序：① `liuhao plugin status` 看接收计数；② 集成内核审计流查 `raw` 是否落库（验证签名没过的话这里没有）；③ 去重存储里事件 ID 是否已存在（重复事件会被静默跳过——查 `integration_events_total{result="duplicate"}`）。
+排查顺序：① `python -m src.cli plugin info <plugin-name>` 看安装/启用状态；② 集成内核审计流查 `raw` 是否落库（验证签名没过的话这里没有）；③ 去重存储里事件 ID 是否已存在（重复事件会被静默跳过——查 `integration_events_total{result="duplicate"}`）。
 
 ### Q4: 出站动作执行了一半外部系统超时，到底成没成？
 

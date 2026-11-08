@@ -8,16 +8,16 @@
 
 ### 入门级
 
-#### [构建你的第一个智能体](build_your_first_agent.md)
+#### [构建你的第一个 AI 员工](build_your_first_agent.md)
 
 - **难度**：⭐ 入门
 - **时长**：约 30 分钟
 - **学习目标**：
-  - 了解智能体的基本组成
-  - 创建并配置一个智能体
-  - 和智能体进行对话
-  - 给智能体添加记忆
-  - 自定义智能体的行为
+  - 了解 AI 员工的基本组成
+  - 创建并配置一个 AI 员工
+  - 和 AI 员工进行对话
+  - 给 AI 员工添加记忆
+  - 自定义 AI 员工的行为
 
 **适合人群**：第一次使用 LiuHao AI OS 的新用户。
 
@@ -30,7 +30,7 @@
 - **难度**：⭐⭐ 进阶
 - **时长**：约 45 分钟
 - **学习目标**：
-  - 设计研究型智能体
+  - 设计研究型 AI 员工
   - 配置搜索和信息收集工具
   - 构建研究工作流
   - 生成结构化研究报告
@@ -43,7 +43,7 @@
 - **难度**：⭐⭐ 进阶
 - **时长**：约 45 分钟
 - **学习目标**：
-  - 设计代码审查智能体
+  - 设计代码审查 AI 员工
   - 审查单个文件
   - 审查整个目录
   - Git diff 审查
@@ -68,13 +68,13 @@
 
 ### 高级
 
-#### [构建多智能体系统](build_multi_agent_system.md)
+#### [构建多 AI 员工系统](build_multi_agent_system.md)
 
 - **难度**：⭐⭐⭐ 高级
 - **时长**：约 60 分钟
 - **学习目标**：
-  - 设计多智能体团队
-  - 创建不同角色的智能体
+  - 设计多 AI 员工团队
+  - 创建不同角色的 AI 员工
   - 实现主从协作模式
   - 实现委员会决策模式
   - 团队管理最佳实践
@@ -104,24 +104,24 @@
 
 适合第一次接触 LiuHao AI OS 的用户。
 
-1. [构建你的第一个智能体](build_your_first_agent.md) - 入门基础
-2. [构建研究机器人](build_a_research_bot.md) - 深入理解智能体能力
+1. [构建你的第一个 AI 员工](build_your_first_agent.md) - 入门基础
+2. [构建研究机器人](build_a_research_bot.md) - 深入理解 AI 员工能力
 3. [构建数据流水线](build_a_data_pipeline.md) - 学习数据处理能力
 
 ### 路径二：开发者路径
 
 适合软件开发者。
 
-1. [构建你的第一个智能体](build_your_first_agent.md) - 快速上手
+1. [构建你的第一个 AI 员工](build_your_first_agent.md) - 快速上手
 2. [构建代码审查员](build_a_code_reviewer.md) - 代码相关应用
-3. [构建多智能体系统](build_multi_agent_system.md) - 复杂系统构建
+3. [构建多 AI 员工系统](build_multi_agent_system.md) - 复杂系统构建
 4. [部署到生产环境](deploy_to_production.md) - 生产部署
 
 ### 路径三：数据工程师路径
 
 适合数据相关从业者。
 
-1. [构建你的第一个智能体](build_your_first_agent.md) - 基础了解
+1. [构建你的第一个 AI 员工](build_your_first_agent.md) - 基础了解
 2. [构建数据流水线](build_a_data_pipeline.md) - 数据处理核心
 3. [构建研究机器人](build_a_research_bot.md) - 研究分析能力
 4. [部署到生产环境](deploy_to_production.md) - 生产化部署

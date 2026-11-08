@@ -1,11 +1,11 @@
 # 快速开始指南
 
-## 10分钟上手 LIUHAO X
+## 10分钟上手 LiuHao AI OS · 鎏灏智能中枢
 
 ### 前置条件
 
 - Python 3.11+
-- LIUHAO X 已安装
+- LiuHao AI OS · 鎏灏智能中枢 已安装
 - D:\\LiuHao-AI-OS 目录权限
 
 ### 安装步骤
@@ -221,7 +221,7 @@ LiuHao-AI-OS/
 
 ### 升级指南
 
-- **从 v0.x 升级**: 运行 `python scripts/migrate.py` 自动迁移数据库 schema
+- **从 v0.x 升级**: 数据库 schema 迁移走 Alembic：`alembic upgrade head`（迁移脚本在 `alembic/versions/`；本仓库没有 `scripts/migrate.py`）
 - **插件版本升级**: 在 marketplace 使用 `store.add_version(plugin_id, new_version)`
 - **配置变更**: 修改 `config.yaml` 并重启服务
 

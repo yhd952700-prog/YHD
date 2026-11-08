@@ -355,7 +355,7 @@ CI 流水线示例（GitHub Actions 片段）：
 1. **Chart 版本与应用版本分开**：`version` 动模板递增，`appVersion` 动应用递增；两者不强制同步。
 2. **所有资源加标准 labels**（`app.kubernetes.io/*`），否则 NetworkPolicy、监控选择器都会很难写。
 3. **ConfigMap 变更触发重启**：`checksum/config` 注解（上文模板示例）。
-4. **秘钥不入 Chart**：values 里永不放真实秘钥，生产用 ExternalSecrets 引用 Vault/AWS SM。
+4. **密钥不入 Chart**：values 里永不放真实密钥，生产用 ExternalSecrets 引用 Vault/AWS SM。
 5. **`--atomic` 升级**：失败自动回滚，避免半升级的残破 release。
 6. **helm-diff 插件评审**：`helm diff upgrade` 在 CI 评论中展示变更，人工确认后 apply。
 7. **不用 `latest` tag**，镜像 tag 默认取 `appVersion`。

@@ -102,8 +102,8 @@ any proxy). It also serves the console (vite dev, or single-port from a built
 .venv/Scripts/python.exe scripts/start_liuhao.py
 # backend only
 .venv/Scripts/python.exe scripts/start_liuhao.py --backend-only
-# single port (gateway serves the built cockpit dist/)
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port
+# single port (default: gateway serves the built cockpit dist/)
+.venv/Scripts/python.exe scripts/start_liuhao.py
 ```
 
 A convenience `make run` / `make run-backend` target is provided in the
@@ -180,7 +180,7 @@ Serve the built cockpit from the **same port** as the API (single-port mode,
 recommended for non-Docker local runs and for container deploys):
 
 ```bash
-.venv/Scripts/python.exe scripts/start_liuhao.py --single-port
+.venv/Scripts/python.exe scripts/start_liuhao.py
 # requires apps/console/console/dist/index.html to exist (build above)
 ```
 

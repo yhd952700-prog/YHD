@@ -1,0 +1,65 @@
+{
+  "loginLightHits": [
+    {
+      "text": "已配置",
+      "color": "rgb(15, 157, 118)",
+      "bg": "rgb(244, 247, 253)",
+      "size": "12.5px",
+      "cls": ""
+    },
+    {
+      "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制台就会断开连接。",
+      "color": "rgb(196, 124, 20)",
+      "bg": "rgb(244, 247, 253)",
+      "size": "12px",
+      "cls": "os-login-aside-note"
+    }
+  ],
+  "theme": "light",
+  "light": {
+    "overview": [],
+    "butler": [],
+    "my-employees": [],
+    "audit": [],
+    "data": [],
+    "settings": []
+  },
+  "darkData": [
+    {
+      "text": "LIVE · 鎏灏智能中枢",
+      "size": "10.5px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-brand-sub"
+    },
+    {
+      "text": "业务",
+      "size": "10.5px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-nav-label"
+    },
+    {
+      "text": "治理",
+      "size": "10.5px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-nav-label"
+    },
+    {
+      "text": "我的工作空间",
+      "size": "10.5px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-user-role"
+    },
+    {
+      "text": "/",
+      "size": "10.5px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-search-kbd"
+    },
+    {
+      "text": "近 30 天，按天，未做平滑或补齐",
+      "size": "11px",
+      "color": "rgb(89, 100, 126)",
+      "cls": "os-card-sub"
+    }
+  ]
+}

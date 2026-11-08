@@ -1,5 +1,9 @@
 # 健康 API 参考
 
+> 状态：字段说明以 `http://127.0.0.1:8080/docs` 与实际响应为准。
+> 当前 `/v1/health` 返回 `status: "ok"`、`version: "0.1.1"`；`/v1/health` 与 `/v1/ready`
+> 为运维探针，默认不出现在 OpenAPI 文档中。
+
 本 API 提供系统健康检查和就绪检查接口，用于监控和运维。
 
 ---
@@ -30,10 +34,10 @@ GET /v1/health
 
 ```json
 {
-  "status": "healthy",
-  "version": "3.0.0",
-  "timestamp": "2026-10-07T12:00:00Z",
-  "uptime_seconds": 86400
+  "status": "ok",
+  "version": "0.1.1",
+  "timestamp": 1762500000.0,
+  "api_contract": "v1"
 }
 ```
 
@@ -41,9 +45,9 @@ GET /v1/health
 
 | 状态 | HTTP 状态码 | 说明 |
 |------|------------|------|
-| `healthy` | 200 | 系统运行正常 |
-| `degraded` | 200 | 系统可运行但部分功能降级 |
-| `unhealthy` | 503 | 系统不健康，无法正常服务 |
+| `ok` | 200 | 系统运行正常 |
+| `degraded` | 200 | 系统可运行但部分功能降级（规划态） |
+| `unhealthy` | 503 | 系统不健康，无法正常服务（规划态） |
 
 ---
 
@@ -62,7 +66,7 @@ GET /v1/ready
 ```json
 {
   "ready": true,
-  "version": "3.0.0",
+  "version": "0.1.1",
   "checks": {
     "database": "ok",
     "model_gateway": "ok",
@@ -80,7 +84,7 @@ GET /v1/ready
 ```json
 {
   "ready": false,
-  "version": "3.0.0",
+  "version": "0.1.1",
   "checks": {
     "database": "ok",
     "model_gateway": "degraded",
@@ -120,8 +124,8 @@ GET /v1/health/details
 
 ```json
 {
-  "status": "healthy",
-  "version": "3.0.0",
+  "status": "ok",
+  "version": "0.1.1",
   "build": {
     "commit": "abc123def",
     "date": "2026-10-01T10:00:00Z",
@@ -167,7 +171,7 @@ GET /v1/health/components
 
 ```json
 {
-  "status": "healthy",
+  "status": "ok",
   "components": {
     "kernels": {
       "identity": {"status": "ok", "latency_ms": 2},

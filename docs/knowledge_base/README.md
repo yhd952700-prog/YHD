@@ -1,6 +1,6 @@
 # 知识库
 
-欢迎来到 LiuHao AI OS（鎏灏 X）知识库。这里包含了完整的产品文档、使用指南和参考资料。
+欢迎来到 LiuHao AI OS（鎏灏智能中枢）知识库。这里包含了完整的产品文档、使用指南和参考资料。
 
 ---
 
@@ -11,8 +11,8 @@
 | 序号 | 文档 | 说明 | 阅读时间 |
 |------|------|------|---------|
 | 1 | [安装指南](getting-started/installation.md) | 安装和配置 LiuHao AI OS | 10 分钟 |
-| 2 | [快速上手指南](getting-started/quickstart.md) | 创建你的第一个智能体 | 15 分钟 |
-| 3 | [智能体核心概念](core-concepts/agents.md) | 理解智能体的工作原理 | 20 分钟 |
+| 2 | [快速上手指南](getting-started/quickstart.md) | 创建你的第一个 AI 员工 | 15 分钟 |
+| 3 | [AI 员工核心概念](core-concepts/agents.md) | 理解 AI 员工的工作原理 | 20 分钟 |
 
 ---
 
@@ -23,22 +23,22 @@
 新用户从这里开始。
 
 - [安装指南](getting-started/installation.md) - 系统要求、安装方式、配置和排错
-- [快速上手指南](getting-started/quickstart.md) - Hello World、基础概念、第一个智能体
+- [快速上手指南](getting-started/quickstart.md) - Hello World、基础概念、第一个 AI 员工
 
 ### 💡 核心概念
 
 深入理解 LiuHao AI OS 的核心设计。
 
-- [智能体](core-concepts/agents.md) - 什么是智能体、类型、生命周期、能力
+- [AI 员工](core-concepts/agents.md) - 什么是 AI 员工、类型、生命周期、能力
 - [记忆系统](core-concepts/memory.md) - 四层记忆模型、工作原理、检索方式
 - [规划引擎](core-concepts/planning.md) - 目标分解、多策略规划、计划优化
-- [多智能体协作](core-concepts/multi_agent.md) - 协作模式、通信机制、冲突解决
+- [多 AI 员工协作](core-concepts/multi_agent.md) - 协作模式、通信机制、冲突解决
 
 ### 📖 用户指南
 
 详细的功能使用指南。
 
-- [智能体用户指南](user-guide/agent_guide.md) - 创建、配置、运行、监控智能体
+- [AI 员工使用指南](user-guide/agent_guide.md) - 创建、配置、运行、监控 AI 员工
 - [记忆用户指南](user-guide/memory_guide.md) - 工作记忆、语义记忆、搜索技巧
 - [流水线用户指南](user-guide/pipeline_guide.md) - 构建数据处理流水线
 - [插件用户指南](user-guide/plugins_guide.md) - 安装、配置和使用插件
@@ -56,7 +56,7 @@
 
 完整的 API 接口文档。
 
-- [智能体 API](api-reference/agents_api.md) - 智能体管理和操作
+- [AI 员工 API](api-reference/agents_api.md) - 员工管理与操作（旧路由已停用，见页内说明）
 - [记忆 API](api-reference/memory_api.md) - 记忆存储和检索
 - [知识 API](api-reference/knowledge_api.md) - 知识库和 RAG
 - [任务 API](api-reference/tasks_api.md) - 任务管理和监控
@@ -78,11 +78,11 @@
 
 | 教程 | 难度 | 时长 | 说明 |
 |------|------|------|------|
-| [构建你的第一个智能体](../tutorials/build_your_first_agent.md) | ⭐ | 30 分钟 | 入门级，创建并运行第一个智能体 |
-| [构建研究机器人](../tutorials/build_a_research_bot.md) | ⭐⭐ | 45 分钟 | 构建专业的研究分析智能体 |
-| [构建代码审查员](../tutorials/build_a_code_reviewer.md) | ⭐⭐ | 45 分钟 | 构建代码质量审查智能体 |
+| [构建你的第一个 AI 员工](../tutorials/build_your_first_agent.md) | ⭐ | 30 分钟 | 入门级，创建并运行第一个 AI 员工 |
+| [构建研究机器人](../tutorials/build_a_research_bot.md) | ⭐⭐ | 45 分钟 | 构建专业的研究分析 AI 员工 |
+| [构建代码审查员](../tutorials/build_a_code_reviewer.md) | ⭐⭐ | 45 分钟 | 构建代码质量审查 AI 员工 |
 | [构建数据流水线](../tutorials/build_a_data_pipeline.md) | ⭐⭐ | 40 分钟 | 构建 AI 增强的数据处理流水线 |
-| [构建多智能体系统](../tutorials/build_multi_agent_system.md) | ⭐⭐⭐ | 60 分钟 | 构建一个智能体团队 |
+| [构建多 AI 员工系统](../tutorials/build_multi_agent_system.md) | ⭐⭐⭐ | 60 分钟 | 构建一个 AI 员工团队 |
 | [部署到生产环境](../tutorials/deploy_to_production.md) | ⭐⭐⭐ | 60 分钟 | 生产环境部署和运维 |
 
 ---

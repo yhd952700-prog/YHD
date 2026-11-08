@@ -1,0 +1,182 @@
+{
+  "loginTabBefore": {
+    "selected": "true",
+    "tabindex": [
+      "null:登录",
+      "null:创建账户"
+    ],
+    "controls": [
+      null,
+      null
+    ],
+    "panel": 0
+  },
+  "loginTabAfterArrow": {
+    "active": "登录",
+    "registerVisible": false,
+    "stageText": "has-tab"
+  },
+  "theme": {
+    "theme": "light",
+    "mode": "desktop",
+    "bg": "rgb(244, 247, 253)"
+  },
+  "light": {
+    "overview": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ],
+    "butler": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ],
+    "my-employees": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ],
+    "audit": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ],
+    "data": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ],
+    "settings": [
+      {
+        "text": "已配置",
+        "cls": "",
+        "color": "rgb(15, 157, 118)",
+        "bg": "rgb(244,247,253)",
+        "size": 12.5,
+        "ratio": 3.21
+      },
+      {
+        "text": "启动后弹出的黑色命令窗口是本地服务，请保持打开；关掉它，控制",
+        "cls": "os-login-aside-note",
+        "color": "rgb(196, 124, 20)",
+        "bg": "rgb(244,247,253)",
+        "size": 12,
+        "ratio": 3.14
+      },
+      {
+        "text": "登录",
+        "cls": "os-btn",
+        "color": "rgb(255, 255, 255)",
+        "bg": "rgb(255,255,255)",
+        "size": 14,
+        "ratio": 1
+      }
+    ]
+  }
+}

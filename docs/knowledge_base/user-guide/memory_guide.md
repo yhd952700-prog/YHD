@@ -6,11 +6,11 @@
 
 ## 工作记忆使用
 
-工作记忆是智能体当前活跃的短期记忆，容量有限但访问速度极快。
+工作记忆是 AI 员工当前活跃的短期记忆，容量有限但访问速度极快。
 
 ### 理解工作记忆
 
-工作记忆就像智能体的"思考桌面"——当前正在处理的信息都在这里。它的特点：
+工作记忆就像 AI 员工的"思考桌面"——当前正在处理的信息都在这里。它的特点：
 
 - **容量小**：默认 20 项（7±2 原则的工程实现）
 - **速度快**：内存访问，微秒级响应
@@ -90,7 +90,7 @@ client.memory.working.clear(agent_id="agent-abc123")
 
 ## 语义记忆使用
 
-语义记忆是智能体的长期知识库，存储概念、事实和知识。
+语义记忆是 AI 员工的长期知识库，存储概念、事实和知识。
 
 ### 添加语义记忆
 
@@ -169,7 +169,7 @@ client.memory.import_url(
 
 ## 情景记忆使用
 
-情景记忆记录智能体的经历和交互历史。
+情景记忆记录 AI 员工的经历和交互历史。
 
 ### 情景记忆的结构
 
@@ -183,9 +183,9 @@ Episode（一次会话/任务）
 ├── type: "conversation"  # conversation / task / exploration
 └── events: [
     Event 1: 用户提问
-    Event 2: 智能体思考
+    Event 2: AI 员工思考
     Event 3: 工具调用
-    Event 4: 智能体回复
+    Event 4: AI 员工回复
     ...
 ]
 ```
@@ -512,5 +512,5 @@ client.memory.set_retention_policy(
 ## 下一步
 
 - [记忆系统核心概念](../core-concepts/memory.md) - 深入理解记忆原理
-- [智能体用户指南](agent_guide.md) - 智能体与记忆的配合使用
+- [AI 员工使用指南](agent_guide.md) - AI 员工与记忆的配合使用
 - [API 参考](../api-reference/memory_api.md) - 完整的记忆 API 文档
