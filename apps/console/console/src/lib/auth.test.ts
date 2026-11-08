@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test, vi } from 'vitest'
-import { loadAuthConfig, sessionLossNotice } from './auth'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { loadAuthConfig, saveSession, sessionLossNotice } from './auth'
+import type { Session } from './auth'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -95,5 +96,76 @@ describe('会话失效时回登录页要说明原因', () => {
 
   test('令牌还在（网络/服务暂时不可达）→ 不登出、不提示', () => {
     expect(sessionLossNotice(true)).toBeNull()
+  })
+})
+
+// ── 换账号：本地缓存不能把上一个账号的数据带给下一个 ──────────────────────
+
+function memoryStorage(): Storage {
+  const data = new Map<string, string>()
+  return {
+    get length() {
+      return data.size
+    },
+    clear: () => data.clear(),
+    getItem: (key: string) => data.get(key) ?? null,
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      data.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      data.set(key, String(value))
+    },
+  }
+}
+
+function sessionFor(principal: string): Session {
+  return {
+    token: `token-${principal}`,
+    principal,
+    displayName: null,
+    scope: null,
+    permissions: [],
+    expiresAt: 0,
+    client: 'web',
+    isRoot: principal === 'root1',
+  }
+}
+
+describe('同浏览器换账号：不串上一账号的本地缓存', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
+  })
+
+  test('登主账号后留下的会话清单/身份/模型，在登子账号时被清掉', () => {
+    saveSession(sessionFor('root1'), false)
+    // 主账号使用过程中，工作台会把这些"属于 root1"的本地键写满。
+    localStorage.setItem('liuhao.sessions', JSON.stringify(['root-session']))
+    localStorage.setItem('liuhao.session_meta', JSON.stringify({ 'root-session': { title: '主账号会话', updatedAt: 1 } }))
+    localStorage.setItem('liuhao.session_id', 'root-session')
+    localStorage.setItem('liuhao.user_id', 'root1')
+    localStorage.setItem('liuhao.model_id', 'root-model')
+
+    saveSession(sessionFor('member1'), false)
+
+    for (const key of [
+      'liuhao.sessions',
+      'liuhao.session_meta',
+      'liuhao.session_id',
+      'liuhao.user_id',
+      'liuhao.model_id',
+    ]) {
+      expect(localStorage.getItem(key), key).toBeNull()
+    }
+    expect(localStorage.getItem('liuhao.last_principal')).toBe('member1')
+  })
+
+  test('同一账号重新登录（令牌刷新）不清自己的本地缓存', () => {
+    saveSession(sessionFor('root1'), false)
+    localStorage.setItem('liuhao.sessions', JSON.stringify(['root-session']))
+
+    saveSession(sessionFor('root1'), false)
+
+    expect(JSON.parse(localStorage.getItem('liuhao.sessions') || '[]')).toEqual(['root-session'])
   })
 })

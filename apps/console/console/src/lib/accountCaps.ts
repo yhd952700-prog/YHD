@@ -1,7 +1,7 @@
 /**
  * 账号能力裁剪 —— 只决定"渲染哪些入口"，不做任何授权判定。
  *
- * 输入只有会话位置（`/auth/me` 的 parent/path/depth）与账号条目权限
+ * 输入只有会话的 `isRoot` 与账号条目权限
  * （`/v1/accounts` 中自己的那条）。两者都来自服务端；前端不猜测、不缓存特权。
  */
 
@@ -57,9 +57,6 @@ export interface AccountProfile {
   scope: string | null
   identityPermissions: string[]
   accountPermissions: string[]
-  parentAccountId: string | null
-  path: string
-  depth: number
   isRoot: boolean
   members: AccountMember[]
   /** 可管理的成员数（根 = 子树人数；成员 = 可见人数 - 自己）。 */
@@ -77,7 +74,7 @@ export function buildProfile(
   /** 根账号的整棵子树人数（来自 `/v1/accounts/tree`）；列表接口只返回直接成员。 */
   subtreeMemberCount?: number,
 ): AccountProfile {
-  const isRoot = session.parentAccountId === null && session.depth === 0
+  const isRoot = session.isRoot
   const self = payload?.members.find((member) => member.principal === session.principal)
   const members = payload?.members ?? []
   const directCount = members.filter((member) => member.principal !== session.principal).length
@@ -90,9 +87,6 @@ export function buildProfile(
     // `/v1/accounts` 只返回直接成员，不含调用者自己；此时权限要回落到登录令牌
     // 里的主体权限，否则成员会丢掉 `account:manage_children`，"我的成员"入口消失。
     accountPermissions: self?.permissions ?? session.permissions,
-    parentAccountId: session.parentAccountId,
-    path: session.path,
-    depth: session.depth,
     isRoot,
     members,
     memberCount,

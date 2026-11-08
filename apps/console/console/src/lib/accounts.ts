@@ -54,6 +54,17 @@ export interface UsageEntry {
   total_tokens: number
 }
 
+export interface UsageModelEntry {
+  model: string
+  tokens_in: number
+  tokens_out: number
+  total_tokens: number
+  /** 未定价模型为 `null`（不是 0 元）。 */
+  cost: number | null
+  pricing_status: 'priced' | 'unknown'
+  message: string
+}
+
 export interface UsagePayload {
   principal: string
   scope?: 'subtree' | 'self'
@@ -65,6 +76,14 @@ export interface UsagePayload {
   by_key_owner: Array<UsageEntry & { key_owner: string }>
   /** 仅根可见；成员响应里连这个键都不出现。 */
   by_actor?: Array<UsageEntry & { actor: string }>
+  /** 已定价模型的成本合计（未定价模型不计入）。 */
+  cost?: number
+  /** false 表示有未定价模型，`cost` 不是全部。 */
+  cost_complete?: boolean
+  unknown_models?: string[]
+  cost_message?: string
+  budget_note?: string
+  by_model?: UsageModelEntry[]
 }
 
 export interface BackupManifest {
@@ -417,6 +436,12 @@ export function loadUsage(principal: string): Promise<AccountResult<UsagePayload
       tokens_in: 1200,
       tokens_out: 2200,
       total_tokens: 3400,
+      cost: 0.008,
+      cost_complete: true,
+      unknown_models: [],
+      cost_message: '',
+      budget_note: '未定价模型只统计用量、不参与预算拦截：成本未知，既不会被当成 0 元放行，也不会因为缺少价格而被拒绝。',
+      by_model: [],
       by_key_owner: [
         { key_owner: principal, calls: 12, tokens_in: 1200, tokens_out: 2200, total_tokens: 3400 },
       ],
@@ -507,6 +532,85 @@ export function rotateRecovery(): Promise<
       notice: '契约桩：恢复码未由服务端生成。',
     }),
   )
+}
+
+export interface DataImportResult {
+  ok: boolean
+  submitted: number
+  imported: number
+  deduplicated?: number
+  skipped: number
+  errors?: string[]
+}
+
+/**
+ * 一键导出「我的全部数据」：后端返回真正生成的 ZIP（人可读 Markdown/CSV/JSON）。
+ *
+ * 不能用 `request`：它假定 JSON 响应，而这里要拿二进制。错误分支仍沿用
+ * 同一套中性文案与 401 回登录页规则，避免多一条不一致的失败体验。
+ */
+export async function exportAllData(): Promise<{ blob: Blob; filename: string }> {
+  const headers = tokenHeaders()
+  headers.set('Content-Type', 'application/json')
+  let response: Response
+  try {
+    response = await fetch('/v1/accounts/export/all', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ include_files: true }),
+    })
+  } catch {
+    throw new AccountApiError(0, null, LOCAL_SERVICE_OFFLINE_MANUAL)
+  }
+  if (!response.ok) {
+    let code: string | null = null
+    let message = ''
+    try {
+      const body = (await response.json()) as { code?: string; detail?: unknown }
+      code = typeof body.code === 'string' ? body.code : null
+      message = describeDetail(body.detail)
+    } catch {
+      message = await readErrorMessage(response)
+    }
+    if (response.status === 401) {
+      clearSession()
+      try {
+        window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT))
+      } catch {
+        // 非浏览器环境：忽略。
+      }
+      throw new AccountApiError(401, code, '登录状态已失效，请重新登录')
+    }
+    throw new AccountApiError(response.status, code, message || `导出失败（${response.status}）`)
+  }
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const match = /filename="?([^";]+)"?/i.exec(disposition)
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] || 'liuhao-my-data.zip',
+  }
+}
+
+/** 回导记忆：输入是 `memories.json` 的 `entries` 数组。 */
+export async function importMemories(
+  entries: unknown[],
+): Promise<AccountResult<DataImportResult>> {
+  const data = await request<DataImportResult>('/v1/memory/import', {
+    method: 'POST',
+    body: JSON.stringify({ entries }),
+  })
+  return { data, source: 'live' }
+}
+
+/** 回导知识库：输入是 `knowledge.json` 的 `documents` 数组。 */
+export async function importKnowledge(
+  documents: unknown[],
+): Promise<AccountResult<DataImportResult>> {
+  const data = await request<DataImportResult>('/v1/knowledge/import', {
+    method: 'POST',
+    body: JSON.stringify({ documents }),
+  })
+  return { data, source: 'live' }
 }
 
 /** 账号面统一的异步读取：失败原样暴露，不吞成空数据。

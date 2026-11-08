@@ -23,7 +23,7 @@ export function StubBadge({ source }: { source: DataSource }) {
         border: '1px solid color-mix(in srgb, var(--os-warn) 55%, transparent)',
         color: 'var(--os-warn)',
         background: 'color-mix(in srgb, var(--os-warn) 12%, transparent)',
-        fontSize: 11,
+        fontSize: 12,
         fontWeight: 600,
       }}
     >
@@ -67,7 +67,7 @@ export function ReadOnlyBanner({
           <IconLock size={15} />
           只读查看 <strong>{principal}</strong> · 写操作已禁用
         </span>
-        <span style={{ fontSize: 11, color: 'var(--os-text-dim)' }}>
+        <span style={{ fontSize: 12, color: 'var(--os-text-dim)' }}>
           视角端点尚未上线；当前页面仍显示你自己的数据，不会假装已切换到对方。
         </span>
       </span>

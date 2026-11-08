@@ -30,9 +30,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     permissions: [],
     expiresAt: 0,
     client: 'web',
-    parentAccountId: null,
-    path: '',
-    depth: 0,
+    isRoot: true,
     ...overrides,
   }
 }
@@ -55,9 +53,7 @@ describe('三层位置 → 能力裁剪', () => {
     const profile = buildProfile(
       makeSession({
         principal: 'member-a',
-        parentAccountId: 'root',
-        path: '/root/member-a',
-        depth: 1,
+        isRoot: false,
         permissions: [SCOPE_MANAGE_CHILDREN],
       }),
       { members: [{ principal: 'deep-a', permissions: [], status: 'active' }], count: 1 },
@@ -87,9 +83,7 @@ describe('三层位置 → 能力裁剪', () => {
   test('depth=1 → 成员：能管成员但看不到矩阵 / 备份 / 系统入口', () => {
     const session = makeSession({
       principal: 'member-b',
-      parentAccountId: 'root',
-      path: 'root/member-b',
-      depth: 1,
+      isRoot: false,
     })
     const caps = deriveCaps(buildProfile(session, PAYLOAD, 'live', null))
     expect(caps.isRoot).toBe(false)
@@ -108,9 +102,7 @@ describe('三层位置 → 能力裁剪', () => {
   test('depth>=2 → 更深层默认没有"我的成员"，除非服务端另行授予', () => {
     const session = makeSession({
       principal: 'deep',
-      parentAccountId: 'member-a',
-      path: 'root/member-a/deep',
-      depth: 2,
+      isRoot: false,
     })
     const payload: AccountsPayload = {
       members: [{ principal: 'deep', permissions: ['account:read'], status: 'active' }],
@@ -124,7 +116,7 @@ describe('三层位置 → 能力裁剪', () => {
   })
 
   test('数据未回来时不误判为根（isRoot 来自会话位置）', () => {
-    const member = makeSession({ principal: 'member-a', parentAccountId: 'root', depth: 1 })
+    const member = makeSession({ principal: 'member-a', isRoot: false })
     const caps = deriveCaps(buildProfile(member, null, 'live', null))
     expect(caps.isRoot).toBe(false)
     expect(caps.canMembers).toBe(false)
@@ -137,9 +129,7 @@ describe('导航裁剪：不渲染而不是置灰', () => {
     buildProfile(
       makeSession({
         principal: 'member-b',
-        parentAccountId: 'root',
-        path: 'root/member-b',
-        depth: 1,
+        isRoot: false,
       }),
       PAYLOAD,
       'live',
@@ -220,7 +210,7 @@ describe('导航裁剪：不渲染而不是置灰', () => {
 describe('身份条与 Key 归属文案', () => {
   test('根与非根身份条文案完全一致，且不含任何层级词', () => {
     const rootProfile = buildProfile(makeSession(), PAYLOAD, 'live', null)
-    const member = makeSession({ principal: 'member-a', parentAccountId: 'root', depth: 1 })
+    const member = makeSession({ principal: 'member-a', isRoot: false })
     const memberProfile = buildProfile(member, PAYLOAD, 'live', null)
 
     expect(identityBarRole(rootProfile)).toBe('我的工作空间')
@@ -230,7 +220,7 @@ describe('身份条与 Key 归属文案', () => {
   })
 
   test('非根永远只看到"Key 归属：我的账号"，看不到授权来源', () => {
-    const member = makeSession({ principal: 'member-a', parentAccountId: 'root', depth: 1 })
+    const member = makeSession({ principal: 'member-a', isRoot: false })
     const profile = buildProfile(member, PAYLOAD, 'live', null)
     for (const row of profile.members) {
       expect(keyAuthorizationLabel(row, false)).toBe('Key 归属：我的账号')

@@ -41,13 +41,13 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 function mockRoutes(
   value: ReturnType<typeof config>,
-  routes: Record<string, () => Response> = {},
+  routes: Record<string, (init?: RequestInit) => Response> = {},
 ) {
-  fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
     if (path === '/v1/auth/config') return json(200, value)
     const handler = routes[path]
-    if (handler) return handler()
+    if (handler) return handler(init)
     return json(404, { detail: 'Not Found' })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -150,8 +150,12 @@ describe('登录页状态机', () => {
   test('创建成功后直接进入系统，且以成员身份裁剪导航入口', async () => {
     const token = tokenFor('newcomer')
     const onSuccess = vi.fn()
+    let registerBody: Record<string, unknown> = {}
     mockRoutes(config(), {
-      '/v1/accounts/self-register': () => json(200, { token }),
+      '/v1/accounts/self-register': (init) => {
+        registerBody = JSON.parse(String(init?.body ?? '{}'))
+        return json(200, { token })
+      },
       '/v1/auth/me': () =>
         json(200, {
           principal: 'newcomer',
@@ -159,9 +163,7 @@ describe('登录页状态机', () => {
           scope: 'L3',
           permissions: ['account:read'],
           expires_at: Math.floor(Date.now() / 1000) + 3600,
-          parent_account_id: 'root',
-          path: '/root/newcomer',
-          depth: 1,
+          is_root: false,
         }),
     })
 
@@ -172,10 +174,16 @@ describe('登录页状态机', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建并进入' }))
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1))
+    // 字段名必须与后端 `SelfRegisterRequest` 一致：`password`，不是 `secret`。
+    expect(registerBody).toMatchObject({
+      principal: 'newcomer',
+      password: 'password123',
+      client: 'web',
+    })
+    expect(registerBody).not.toHaveProperty('secret')
     const session = onSuccess.mock.calls[0][0] as Session
     expect(session.principal).toBe('newcomer')
-    expect(session.parentAccountId).toBe('root')
-    expect(session.depth).toBe(1)
+    expect(session.isRoot).toBe(false)
 
     const caps = deriveCaps(
       buildProfile(session, { members: [], count: 0 }, 'live', null),

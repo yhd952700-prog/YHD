@@ -70,7 +70,7 @@ function RegistryReport({ registry }: { registry: IdentityRegistry }) {
         </li>
       </ul>
       {refused.length > 0 && (
-        <div className="os-alert">
+        <div className="os-alert" role="alert">
           有 {refused.length} 行账号在加载时被拒收，因此没有出现在清单中：{refused.map((item) => principalLabel(item)).join('、')}。
           请配置完整性密钥后重新注册这些账号。
         </div>
@@ -99,7 +99,7 @@ function Warnings({ warnings }: { warnings: string[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {readable.filter(Boolean).map((warning, index) => (
-        <div className="os-alert" key={index}>
+        <div className="os-alert" key={index} role="alert">
           {warning}
         </div>
       ))}
@@ -110,7 +110,7 @@ function Warnings({ warnings }: { warnings: string[] }) {
 const KIND_LABELS: Record<string, string> = {
   human: '真人账号',
   service: '系统服务',
-  agent: '智能体',
+  agent: '员工',
   kernel: '系统组件',
   plugin: '插件',
 }
@@ -482,7 +482,11 @@ export function Identity({ query, profile }: { query: string; profile: AccountPr
           </button>
         </div>
 
-        {detailError && <p className="os-error">该账号不存在或已被清除。</p>}
+        {detailError && (
+          <p className="os-error" role="alert">
+            该账号不存在或已被清除。
+          </p>
+        )}
         {detailLoading && <p>读取中…</p>}
         {detail && (
           <>

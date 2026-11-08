@@ -1,8 +1,8 @@
 /**
- * 目录类页面：我AI员工 / 业务中心。
+ * 目录类页面：我的员工 / 业务中心。
  *
  * 两者都是**同一份能力注册表**的不同切面：
- *   - 我AI员工  → 14 内核 + 14 能力层 + provider 服务面（全量）
+ *   - 我的员工  → 14 内核 + 14 能力层 + provider 服务面（全量）
  *   - 业务中心  → 14 能力层（= 系统实际具备的业务能力），按阶段带分组
  *
  * 知识中心已迁到 `pages/Knowledge.tsx`：旧实现只把 OpenAPI 的 /knowledge/*
@@ -17,12 +17,14 @@ import type { RosterPayload, EmployeesPayload, GoalsPayload } from '../lib/contr
 import { useApi } from '../lib/api'
 import { colorAt } from '../lib/chartUtils'
 import {
+  capabilityModuleLabel,
   capabilityStatusLabel,
   capabilityStatusTone,
   neutralLayerLabel,
   phaseLabel,
 } from '../lib/layerLabels'
 import { goalStateLabel } from '../lib/butler'
+import { numberText } from '../lib/format'
 import { BrainMap, NetworkGraph } from '../components/charts'
 import {
   AgentActionButtons,
@@ -169,21 +171,21 @@ export function Roster({ query }: { query: string }) {
               data-tone={tab === 'kernels' ? 'accent' : 'muted'}
               onClick={() => setTab('kernels')}
             >
-              能力模块 {roster.data?.totals.kernels ?? 0}
+              能力模块 {numberText(roster.data?.totals.kernels)}
             </button>
             <button
               className="os-badge"
               data-tone={tab === 'layers' ? 'accent' : 'muted'}
               onClick={() => setTab('layers')}
             >
-              能力层 {roster.data?.totals.layers ?? 0}
+              能力层 {numberText(roster.data?.totals.layers)}
             </button>
             <button
               className="os-badge"
               data-tone={tab === 'runtime' ? 'accent' : 'muted'}
               onClick={() => setTab('runtime')}
             >
-              运行时 {employees.data?.count ?? 0}
+              运行时 {numberText(employees.data?.count)}
             </button>
           </div>
         }
@@ -273,7 +275,7 @@ export function Roster({ query }: { query: string }) {
                         {agent.agent_type} ·
                         完成 {agent.completed_tasks} ·
                         失败 {agent.failed_tasks} ·
-                        延迟 {agent.total_latency_ms.toFixed(0)} 毫秒
+                        延迟 {numberText(agent.total_latency_ms)} 毫秒
                         {agent.current_task ? ` · 当前: ${agent.current_task}` : ''}
                       </div>
                     </div>
@@ -332,7 +334,9 @@ export function Roster({ query }: { query: string }) {
                   <div className="os-row" key={kernel.id} title={`编号：${kernel.id}`}>
                     <span className="os-dot" style={{ background: 'var(--os-accent)' }} />
                     <div className="os-row-main">
-                      <div className="os-row-title">{neutralLayerLabel(kernel.name)}</div>
+                      <div className="os-row-title">
+                        {capabilityModuleLabel(kernel.kernel, kernel.name)}
+                      </div>
                       <div className="os-row-sub">
                         {neutralLayerLabel(kernel.domain_label)}
                         {kernel.scope ? ` · ${kernel.scope}` : ''}

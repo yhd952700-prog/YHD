@@ -28,10 +28,9 @@ export interface Session {
   /** epoch 秒 */
   expiresAt: number
   client: ClientMode
-  /** 账号在树中的位置。仅用于前端裁剪入口，不构成授权依据。 */
-  parentAccountId: string | null
-  path: string
-  depth: number
+  /** 是否账号树根。仅用于前端裁剪入口，不构成授权依据。
+   *  不下发 parent/path/depth：子账号不应知道自己被谁创建、在第几层。 */
+  isRoot: boolean
 }
 
 /** `GET /v1/auth/config` 的响应：登录页据此解释当前状态。 */
@@ -49,6 +48,16 @@ export interface AuthConfig {
   root_account_exists?: boolean
   /** 自助创建初始账号是否开放（存在初始账号后恒为 false）。 */
   registration_open?: boolean
+  /**
+   * 初始化状态：pending（还没有账号）/ complete / incomplete（可恢复）。
+   * ``recoverable`` 表示"初始账号已落盘但凭据没写成"——重新提交同一名称即可
+   * 补全，不需要另开路径。图形化首启据此决定是否继续显示设置表单。
+   */
+  initialization?: {
+    state: 'pending' | 'complete' | 'incomplete'
+    recoverable: boolean
+    principal: string | null
+  }
 }
 
 /** 登录/接口失败。`status` 直接来自后端，用于区分 401 与 429。 */
@@ -64,6 +73,29 @@ const LOCAL_KEY = 'liuhao.session'
 const TAB_KEY = 'liuhao.session.tab'
 /** 旧版审批面板单独存的令牌键；读到它时认领过来，避免升级即登出。 */
 const LEGACY_TOKEN_KEY = 'liuhao.approval_token'
+
+/**
+ * 上一位置（账号）的本地缓存键。
+ *
+ * 这些键写的是**某个账号的数据**（会话清单、画像身份、模型选择），但历史上
+ * 都用了全局键名。同一浏览器换了账号时，如果不清掉，新账号一进工作台就会
+ * 从 localStorage 先渲染出上一个账号的会话列表（后端接口其实已经按账号过滤，
+ * 界面却还残留着别人的东西）。因此"记住上一位是谁"是换号清缓存的前提。
+ */
+const LAST_PRINCIPAL_KEY = 'liuhao.last_principal'
+const ACCOUNT_SCOPED_KEYS = [
+  'liuhao.sessions',
+  'liuhao.session_meta',
+  'liuhao.session_id',
+  'liuhao.user_id',
+  'liuhao.model_id',
+] as const
+
+/** 换账号时清掉上一位账号留在本机的会话/身份/模型缓存。 */
+function clearAccountScopedState(): void {
+  const store = localStorageSafe()
+  for (const key of ACCOUNT_SCOPED_KEYS) safeSet(store, key, null)
+}
 
 /** 会话失效时广播，App 据此回到登录页。 */
 export const UNAUTHENTICATED_EVENT = 'liuhao:unauthenticated'
@@ -144,10 +176,7 @@ function parseSession(raw: string | null): Session | null {
       client: CLIENT_MODES.includes(parsed.client as ClientMode)
         ? (parsed.client as ClientMode)
         : 'web',
-      parentAccountId:
-        typeof parsed.parentAccountId === 'string' ? parsed.parentAccountId : null,
-      path: typeof parsed.path === 'string' ? parsed.path : '',
-      depth: Number.isFinite(Number(parsed.depth)) ? Number(parsed.depth) : 0,
+      isRoot: parsed.isRoot === true,
     }
   } catch {
     return null
@@ -188,9 +217,7 @@ export function getSession(): Session | null {
         permissions: [],
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
-        parentAccountId: null,
-        path: '',
-        depth: 0,
+        isRoot: false,
       }
       saveSession(adopted, false)
       safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
@@ -203,6 +230,15 @@ export function getSession(): Session | null {
 
 /** 写入会话。`remember` 决定落在 localStorage 还是 sessionStorage。 */
 export function saveSession(session: Session, remember: boolean): void {
+  const local = localStorageSafe()
+  const principal = String(session.principal || '')
+  const previous = safeGet(local, LAST_PRINCIPAL_KEY) || ''
+  if (principal && previous && principal !== previous) {
+    // 同一浏览器里换了账号：先把上一位账号的会话清单/画像身份/模型选择清掉，
+    // 再写入新会话。否则新账号的界面会先显示上一个账号的本地列表。
+    clearAccountScopedState()
+  }
+  if (principal) safeSet(local, LAST_PRINCIPAL_KEY, principal)
   const payload = JSON.stringify(session)
   if (remember) {
     safeSet(localStorageSafe(), LOCAL_KEY, payload)
@@ -218,6 +254,55 @@ export function clearSession(): void {
   safeSet(localStorageSafe(), LOCAL_KEY, null)
   safeSet(sessionStorageSafe(), TAB_KEY, null)
   safeSet(sessionStorageSafe(), LEGACY_TOKEN_KEY, null)
+}
+
+/** 首启完成后待展示的恢复材料。 */
+export interface PendingRecovery {
+  account: string
+  code: string
+  /** 可选模型 Key 保存失败时的说明（不阻断进入系统）。 */
+  warning: string | null
+}
+
+const RECOVERY_KEY = 'liuhao.setup.recovery'
+
+/**
+ * 图形化首启成功后把恢复码暂存在本机，供主界面一次性展示。
+ *
+ * 为什么不在设置页里拦一道"请抄下恢复码"：那会把"提交后直接进入主界面"
+ * 断成两步。恢复码只在注册响应里出现一次，丢掉就没了，所以必须暂存到
+ * 用户真正看到为止（主界面横幅，可下载 / 可关闭）。
+ */
+export function savePendingRecovery(value: PendingRecovery): void {
+  try {
+    localStorageSafe()?.setItem(RECOVERY_KEY, JSON.stringify(value))
+  } catch {
+    // 存储不可用只影响恢复码展示，不影响已经完成的初始化。
+  }
+}
+
+export function readPendingRecovery(): PendingRecovery | null {
+  try {
+    const raw = localStorageSafe()?.getItem(RECOVERY_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PendingRecovery>
+    if (!parsed || typeof parsed.code !== 'string' || !parsed.code) return null
+    return {
+      account: String(parsed.account ?? ''),
+      code: parsed.code,
+      warning: typeof parsed.warning === 'string' ? parsed.warning : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function clearPendingRecovery(): void {
+  try {
+    localStorageSafe()?.removeItem(RECOVERY_KEY)
+  } catch {
+    // 清不掉也只是多显示一次，不影响功能。
+  }
 }
 
 /** 承载令牌的头名。
@@ -332,9 +417,7 @@ export async function login(
     permissions: string[]
     expires_at: number
     client: string
-    parent_account_id?: string | null
-    path?: string
-    depth?: number
+    is_root?: boolean
   }
   const session: Session = {
     token: body.access_token,
@@ -346,9 +429,7 @@ export async function login(
     client: CLIENT_MODES.includes(body.client as ClientMode)
       ? (body.client as ClientMode)
       : options.client,
-    parentAccountId: body.parent_account_id ?? null,
-    path: body.path ?? '',
-    depth: Number.isFinite(Number(body.depth)) ? Number(body.depth) : 0,
+    isRoot: body.is_root === true,
   }
   saveSession(session, options.remember)
   return session
@@ -357,13 +438,15 @@ export async function login(
 /**
  * 登录页「创建账户」：只用用户名 + 密码自助创建，不发送邀请码或任何归属字段。
  *
- * 契约（后端实现中，前端先按此写）：`POST /v1/accounts/self-register`，
- * 请求 `{principal, secret, client}`，成功返回与激活接口相同的 `token`
- * （兼容 `access_token`）。层级与权限完全由服务端决定，前端不补字段。
+ * 契约：`POST /v1/accounts/self-register`，请求 `{principal, password, client}`，
+ * 成功返回与激活接口相同的 `token`（兼容 `access_token`）。字段名与后端
+ * `SelfRegisterRequest` 及其余账号接口（注册 / 激活 / 改密）保持一致，都是
+ * `password`；`secret` 只属于登录接口（它可承载密码或恢复码）。
+ * 层级与权限完全由服务端决定，前端不补字段。
  */
 export async function registerSelf(
   principal: string,
-  secret: string,
+  password: string,
   options: LoginOptions,
 ): Promise<Session> {
   let response: Response
@@ -371,7 +454,7 @@ export async function registerSelf(
     response = await fetch('/v1/accounts/self-register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ principal, secret, client: options.client }),
+      body: JSON.stringify({ principal, password, client: options.client }),
     })
   } catch {
     throw new AuthError(0, LOCAL_SERVICE_OFFLINE_MANUAL)
@@ -425,9 +508,7 @@ export async function sessionFromToken(
     scope?: string | null
     permissions?: string[]
     expires_at?: number | null
-    parent_account_id?: string | null
-    path?: string
-    depth?: number
+    is_root?: boolean
   }
   const session: Session = {
     token,
@@ -437,9 +518,7 @@ export async function sessionFromToken(
     permissions: Array.isArray(body.permissions) ? body.permissions : [],
     expiresAt: Number(body.expires_at ?? decoded.expiresAt) || decoded.expiresAt,
     client: options.client,
-    parentAccountId: body.parent_account_id ?? null,
-    path: body.path ?? '',
-    depth: Number.isFinite(Number(body.depth)) ? Number(body.depth) : 0,
+    isRoot: body.is_root === true,
   }
   saveSession(session, options.remember)
   return session
@@ -480,9 +559,7 @@ export async function refreshIdentity(): Promise<{
   display_name: string | null
   scope: string | null
   expires_at: number | null
-  parent_account_id?: string | null
-  path?: string
-  depth?: number
+  is_root?: boolean
 } | null> {
   const token = currentToken()
   if (!token) return null

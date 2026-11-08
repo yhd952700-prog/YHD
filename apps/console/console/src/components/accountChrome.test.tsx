@@ -34,9 +34,7 @@ const ROOT = buildProfile(
     permissions: [],
     expiresAt: 0,
     client: 'web',
-    parentAccountId: null,
-    path: '',
-    depth: 0,
+    isRoot: true,
   } satisfies Session,
   PAYLOAD,
   'live',
@@ -52,9 +50,7 @@ const MEMBER = buildProfile(
     permissions: [],
     expiresAt: 0,
     client: 'web',
-    parentAccountId: 'root',
-    path: 'root/member-b',
-    depth: 1,
+    isRoot: false,
   } satisfies Session,
   PAYLOAD,
   'live',
@@ -64,6 +60,7 @@ const MEMBER = buildProfile(
 function renderShell(profile: typeof ROOT) {
   return render(
     <Shell
+      pageTitle="账号面测试"
       mode="desktop"
       theme="dark"
       session={{
@@ -74,9 +71,7 @@ function renderShell(profile: typeof ROOT) {
         permissions: profile.identityPermissions,
         expiresAt: 0,
         client: 'web',
-        parentAccountId: profile.parentAccountId,
-        path: profile.path,
-        depth: profile.depth,
+        isRoot: profile.isRoot,
       }}
       profile={profile}
       caps={deriveCaps(profile)}

@@ -1210,6 +1210,11 @@ function MigrateForm({
       <p className="os-login-sub" style={{ marginBottom: 14 }}>
         备份包只能在全新实例（本机还没有任何账号）首次启动时导入；导入不会覆盖已有账号，本机已有账号时不可导入。
       </p>
+      <p className="os-note" role="note" style={{ marginBottom: 14 }}>
+        审计记录与完整性校验密钥都不随包：新机的审计从头记录。若你把原机审计库单独带到新机，
+        因为没有对应密钥，审计链只能做结构检查、无法用密钥证明内容未被改写；
+        想保留可验证性，请在原机导出审计记录归档，并保留原机数据目录里的 audit_chain.key。
+      </p>
       <div className="os-field">
         <label htmlFor="mig-file">备份包</label>
         <input
