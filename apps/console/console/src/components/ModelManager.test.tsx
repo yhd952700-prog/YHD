@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { mapProbeReason, presetFormPatch } from './ModelManager'
+import { canBecomeDefault, mapProbeReason, presetFormPatch } from './ModelManager'
 
 describe('mapProbeReason', () => {
   test('成功（reason 为空）→ 带上耗时的连接成功', () => {
@@ -18,8 +18,8 @@ describe('mapProbeReason', () => {
     ['invalid_key', 'API Key 无效或没有权限。请检查 Key 是否填错、是否复制完整；建议重新生成后再试。'],
     ['key_revoked', 'API Key 已被提供方停用或吊销。请到提供方控制台重新生成 Key，再填到这里。'],
     ['quota_exhausted', '账户额度已用完。请到提供方控制台充值或提升额度后重试。'],
-    ['model_not_found', '模型名不存在或该端点不支持这个模型。请核对模型名称后重试。'],
-    ['unreachable', '端点不可达。请检查端点地址、端口与网络连接是否正常。'],
+    ['model_not_found', '模型名不存在，或该接口地址不支持这个模型。请核对模型名称后重试。'],
+    ['unreachable', '接口地址不可达。请检查地址、端口与网络连接是否正常。'],
     ['timeout', '连接超时。请检查网络，或稍后再试。'],
     ['rate_limited', '请求被上游限流（429）。请稍后重试。'],
   ])('%s → 明确中文建议', (reason, expected) => {
@@ -35,12 +35,24 @@ describe('mapProbeReason', () => {
 
   test('未知原因 → 给可执行的通用建议，不回显机器码或上游原文', () => {
     expect(mapProbeReason('bad_gateway', 10, '网关返回 502')).toBe(
-      '连接失败：请检查服务商、模型名与端点设置后重试。',
+      '连接失败：请检查服务商、模型名与接口地址设置后重试。',
     )
     // 回落到机器码会把 `bad_gateway` 这类内部枚举直接铺到界面上，必须禁止。
     expect(mapProbeReason('bad_gateway', 10, '')).toBe(
-      '连接失败：请检查服务商、模型名与端点设置后重试。',
+      '连接失败：请检查服务商、模型名与接口地址设置后重试。',
     )
+  })
+})
+
+describe('canBecomeDefault', () => {
+  test('未测试通过（或新建）的模型不允许设为默认', () => {
+    expect(canBecomeDefault(undefined)).toBe(false)
+    expect(canBecomeDefault({ verified: false })).toBe(false)
+    expect(canBecomeDefault({})).toBe(false)
+  })
+
+  test('「测试连接」通过的已保存模型才允许', () => {
+    expect(canBecomeDefault({ verified: true })).toBe(true)
   })
 })
 

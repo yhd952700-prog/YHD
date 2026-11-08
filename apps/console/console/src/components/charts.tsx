@@ -260,7 +260,7 @@ export function DonutChart({
           y={size / 2 + 15}
           textAnchor="middle"
           fill="var(--os-text-faint)"
-          fontSize="10.5"
+          fontSize="12"
         >
           {centerLabel ?? '合计'}
         </text>
@@ -359,7 +359,7 @@ export function NetworkGraph({ nodes, hubLabel = '鎏灏 OS', height = 232 }: Ne
         y={cy + 30}
         textAnchor="middle"
         fill="var(--os-text-dim)"
-        fontSize="11"
+        fontSize="12"
       >
         {hubLabel}
       </text>

@@ -66,14 +66,14 @@ export function deriveProviderStatus(input: {
       : '正在读取模型服务状态…'
   } else if (mode === 'invalid') {
     label = '模型服务配置无效'
-    detail = provider.error || '当前服务商类型不受支持，请到「模型」页修正后重新测试连通。'
+    detail = provider.error || '当前服务商类型不受支持，请到「系统设置 → 模型管理」修正后重新测试连通。'
   } else if (isReal) {
     label = '真实模型'
     detail = `当前使用服务商：${provider.type ?? '—'}`
   } else if (isMock) {
     label = '尚未接入真实模型'
     detail =
-      '当前回复为演示内容，不会调用真实模型。到「模型」页填写密钥并测试连通后，下一条消息即可使用真实模型。'
+      '当前回复为演示内容，不会调用真实模型。到「系统设置 → 模型管理」填写密钥并测试连通后，下一条消息即可使用真实模型。'
   } else if (posture.simulated) {
     label = '模拟执行'
     detail = posture.verdict

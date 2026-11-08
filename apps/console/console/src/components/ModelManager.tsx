@@ -10,7 +10,7 @@
  *    连通性测试把 `reason` 映射成可执行的中文建议。
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Session } from '../lib/auth'
 import { apiFetch, useApi } from '../lib/api'
@@ -245,7 +245,18 @@ function formFromModel(item: ModelRecord): FormState {
   }
 }
 
-export function ModelManager({ session }: { session: Session }) {
+export interface ModelManagerProps {
+  session: Session
+  /**
+   * 深链 `?p=settings&model=<id|名称|模型名>` 带来的目标模型。
+   *
+   * 旧构建只认 `?p=`，会忽略这个参数并停在设置页；那种情况由桌面端提示
+   * 「请点编辑」，本组件不假装已经展开。
+   */
+  focusModelId?: string | null
+}
+
+export function ModelManager({ session, focusModelId }: ModelManagerProps) {
   const canWrite = session.permissions.includes('admin') || session.scope === 'L0'
   const list = useApi<ModelsResponse>('/v1/models', 0)
   const presets = useApi<PresetsResponse>('/v1/models/presets', 0)
@@ -269,6 +280,59 @@ export function ModelManager({ session }: { session: Session }) {
     { ok: true; models: string[] } | { ok: false; detail: string } | null
   >(null)
   const [discovering, setDiscovering] = useState(false)
+  const keyInputRef = useRef<HTMLInputElement | null>(null)
+  /** 深链已处理过的值：同一次打开只展开一次，之后用户手动切换不被打断。 */
+  const handledFocusRef = useRef<string | null>(null)
+  /** 等编辑表单提交到 DOM 后再聚焦，避免在 render 阶段操作节点。 */
+  const pendingFocusRef = useRef<string | null>(null)
+
+  const models = list.data?.models ?? []
+
+  /**
+   * 深链落地：把 `?p=settings&model=<目标>` 变成"展开这一条 + 光标在 Key 上"。
+   *
+   * 匹配顺序是 id → 名称 → 模型名。桌面端手里只有本地注册表的名称/模型名，
+   * 不一定知道前端记录的 uuid；三种都认才不会出现"参数传了但没反应"。
+   * 找不到时给出可执行提示，不静默停在列表页。
+   */
+  useEffect(() => {
+    const wanted = (focusModelId ?? '').trim()
+    if (!wanted || !canWrite) return
+    if (handledFocusRef.current === wanted) return
+    if (models.length === 0) return
+    handledFocusRef.current = wanted
+    const match =
+      models.find((item) => item.id === wanted) ||
+      models.find((item) => item.name === wanted) ||
+      models.find((item) => item.model === wanted)
+    if (!match) {
+      setNotice(`没有找到「${wanted}」这条模型配置，请在下方列表里点「编辑」后填写 Key。`)
+      return
+    }
+    setForm(formFromModel(match))
+    setEditingId(match.id)
+    setError(null)
+    setProbe({ state: 'idle' })
+    setLastTest(null)
+    setModelList(null)
+    setNotice(`已定位到「${match.name}」，请填写 API Key 后保存。`)
+    pendingFocusRef.current = match.id
+  }, [focusModelId, canWrite, models])
+
+  /** 编辑态生效后再滚动与聚焦 —— 此时 `#model-form-key` 才真的在页面里。 */
+  useEffect(() => {
+    if (!pendingFocusRef.current || editingId !== pendingFocusRef.current) return
+    pendingFocusRef.current = null
+    document.getElementById('settings-models')?.scrollIntoView?.({
+      behavior: 'smooth',
+      block: 'start',
+    })
+    // 等一帧：滚动可能改变焦点，聚焦放在它之后。
+    window.setTimeout(() => {
+      keyInputRef.current?.focus()
+      keyInputRef.current?.select()
+    }, 0)
+  }, [editingId])
 
   const providers = list.data?.supported_providers ?? []
   const busy = saving || rowBusy !== null
@@ -707,6 +771,7 @@ export function ModelManager({ session }: { session: Session }) {
               <div className="os-input">
                 <input
                   id="model-form-key"
+                  ref={keyInputRef}
                   type="password"
                   autoComplete="new-password"
                   maxLength={512}

@@ -26,6 +26,7 @@ import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
 import {
   eventLabel,
+  numberText,
   outcomeLabel,
   outcomeTone,
   principalLabel,
@@ -33,7 +34,7 @@ import {
   safeText,
 } from '../lib/format'
 import { providerRowSubtitle } from '../lib/honesty'
-import { neutralLayerLabel } from '../lib/layerLabels'
+import { capabilityModuleLabel, neutralLayerLabel } from '../lib/layerLabels'
 import {
   partitionProviders,
   providerSummary,
@@ -47,7 +48,15 @@ import { Card, Dot, Guard } from '../components/ui'
 const REFRESH_LIVE = 15_000
 const REFRESH_SLOW = 60_000
 
-export function Overview({ query, provider }: { query: string; provider: ActiveProviderStatus }) {
+export function Overview({
+  query,
+  provider,
+  onNavigate,
+}: {
+  query: string
+  provider: ActiveProviderStatus
+  onNavigate: (key: string) => void
+}) {
   const summary = useApi<DashboardSummary>('/v1/dashboard/summary', REFRESH_LIVE)
   const activity = useApi<ActivityPayload>('/v1/dashboard/activity?limit=30', REFRESH_LIVE)
   const roster = useApi<RosterPayload>('/v1/dashboard/roster', REFRESH_SLOW)
@@ -150,12 +159,65 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
               <span className="os-attention-clear">
                 当前无异常
                 {attention.recent === 0
-                  ? ' · 下一步：到工作台发起一条任务，或到「模型」页确认服务连通。'
+                  ? ' · 下一步：到工作台发起一条任务，或到「系统设置 → 模型管理」确认服务连通。'
                   : ' · 下一步：可在事件流查看明细。'}
               </span>
             )}
         </div>
       </div>
+      {/* ---------- 第一次用：首屏直接给"下一步点哪里" ----------
+          只在确实缺东西时出现（没有真实模型 / 还没有员工），不打扰日常使用。 */}
+      {(() => {
+        const employees = roster.data?.totals.employees ?? null
+        const firstRun = !provider.isReal || employees === 0
+        if (!firstRun) return null
+        return (
+          <div className="os-span-12">
+            <div className="os-attention" role="status" aria-label="第一次使用">
+              <span className="os-attention-lead">第一次用</span>
+              <span className="os-attention-item">
+                ①{' '}
+                {provider.isReal ? (
+                  '模型已就绪'
+                ) : (
+                  <button type="button" className="os-link" onClick={() => onNavigate('settings')}>
+                    配置模型
+                  </button>
+                )}
+              </span>
+              <span className="os-attention-item">
+                ②{' '}
+                {employees === 0 ? (
+                  <button
+                    type="button"
+                    className="os-link"
+                    onClick={() => onNavigate('my-employees')}
+                  >
+                    创建第一位员工
+                  </button>
+                ) : employees === null ? (
+                  '检查员工名册'
+                ) : (
+                  '员工已就绪'
+                )}
+              </span>
+              <span className="os-attention-item">
+                ③{' '}
+                <button type="button" className="os-link" onClick={() => onNavigate('knowledge')}>
+                  导入第一份知识
+                </button>
+              </span>
+              <span className="os-attention-item">
+                也可以直接去
+                <button type="button" className="os-link" onClick={() => onNavigate('butler')}>
+                  「鎏灏管家」
+                </button>
+                说一句话派活
+              </span>
+            </div>
+          </div>
+        )
+      })()}
       {/* ---------- KPI ---------- */}
       <div className="os-span-12">
         <div className="os-kpis">
@@ -171,21 +233,25 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           />
           <Kpi
             label="运行中任务"
-            value={summary.data?.sessions ? String(summary.data.sessions.count ?? 0) : null}
+            value={summary.data?.sessions ? numberText(summary.data.sessions.count) : null}
             foot="当前活跃会话"
             error={summary.error}
           />
           <Kpi
             label="审计事件"
             value={
-              summary.data?.audit ? formatCompact(summary.data.audit.total_events ?? 0) : null
+              summary.data?.audit ? formatCompact(summary.data.audit.total_events) : null
             }
             foot="真实审计存储累计"
             error={summary.error}
           />
           <Kpi
             label="系统健康度"
-            value={health ? `${(health.ratio * 100).toFixed(0)}%` : null}
+            value={
+              health && Number.isFinite(health.ratio)
+                ? `${numberText(health.ratio * 100)}%`
+                : null
+            }
             foot={
               health
                 ? health.auditEvidence === 'broken'
@@ -323,7 +389,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
               <BrainMap
                 regions={data.kernels.map((kernel) => ({
                   id: kernel.id,
-                  label: neutralLayerLabel(kernel.name),
+                  label: capabilityModuleLabel(kernel.kernel, kernel.name),
                   group: kernel.domain,
                 }))}
               />
@@ -389,7 +455,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
                   ))}
                   {data.timeseries.truncated && (
                     <span className="os-badge" data-tone="warn">
-                      样本已截断（{formatCompact(data.timeseries.sampled_events ?? 0)} 条）
+                      样本已截断（{formatCompact(data.timeseries.sampled_events)} 条）
                     </span>
                   )}
                 </div>
@@ -409,7 +475,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           emptyTitle="暂无审计事件"
           emptyHint={
             analytics.data?.breakdown.available
-              ? `排除系统内部记录 ${formatCompact(analytics.data.breakdown.excluded_noise_events ?? 0)} 条后没有剩余事件`
+              ? `排除系统内部记录 ${formatCompact(analytics.data.breakdown.excluded_noise_events)} 条后没有剩余事件`
               : analytics.data?.breakdown.error
           }
           onRetry={analytics.reload}
@@ -460,7 +526,7 @@ export function Overview({ query, provider }: { query: string; provider: ActiveP
           data={roster.data?.providers ?? null}
           isEmpty={(data) => data.items.length === 0}
           emptyTitle="没有登记的模型服务商"
-          emptyHint="到「模型」页添加服务商并测试连通后，这里会显示连通状态。"
+          emptyHint="到「系统设置 → 模型管理」添加服务商并测试连通后，这里会显示连通状态。"
           onRetry={roster.reload}
         >
           {(data) => {

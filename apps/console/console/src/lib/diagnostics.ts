@@ -17,6 +17,11 @@ export interface DiagnosticsSaveResult {
   filename: string
   /** ``chosen`` = 用户刚选的位置；``download`` = 浏览器下载目录。 */
   location: 'chosen' | 'download'
+  /**
+   * 因仍含明文凭据被剔除的包内成员（例如 ``logs/gateway.log.txt``）。
+   * 非空时界面必须提示"有 N 个文件未包含"，清单见包内 REDACTED-MEMBERS.txt。
+   */
+  omitted: string[]
 }
 
 interface WritableLike {
@@ -50,6 +55,22 @@ function filenameFrom(response: Response): string {
 }
 
 /**
+ * 降级导出的剔除清单。服务端只放 ASCII JSON，解析失败按"未剔除"处理——
+ * 提示少一句，总比因为一个响应头把整个导出判失败强。
+ */
+function omittedFrom(response: Response): string[] {
+  const raw = response.headers.get('X-LiuHao-Diagnostics-Omitted-Members')
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((item) => String(item))
+  } catch {
+    return []
+  }
+}
+
+/**
  * 导出诊断包。用户主动取消另存为时返回 ``null``（不是失败）。
  */
 export async function exportDiagnosticsBundle(): Promise<DiagnosticsSaveResult | null> {
@@ -72,6 +93,7 @@ export async function exportDiagnosticsBundle(): Promise<DiagnosticsSaveResult |
 
   const blob = await response.blob()
   const filename = filenameFrom(response)
+  const omitted = omittedFrom(response)
 
   const saveAs = picker()
   if (saveAs) {
@@ -83,7 +105,7 @@ export async function exportDiagnosticsBundle(): Promise<DiagnosticsSaveResult |
       const writable = await handle.createWritable()
       await writable.write(blob)
       await writable.close()
-      return { filename: handle.name || filename, location: 'chosen' }
+      return { filename: handle.name || filename, location: 'chosen', omitted }
     } catch (err) {
       // 用户在系统对话框里点了取消：不生成文件，也不报错。
       if (err instanceof DOMException && err.name === 'AbortError') return null
@@ -103,5 +125,5 @@ export async function exportDiagnosticsBundle(): Promise<DiagnosticsSaveResult |
     // jsdom / 老浏览器可能没有 revokeObjectURL；清理失败不影响"已开始下载"。
     if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url)
   }, 0)
-  return { filename, location: 'download' }
+  return { filename, location: 'download', omitted }
 }

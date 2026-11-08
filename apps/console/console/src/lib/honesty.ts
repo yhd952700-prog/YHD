@@ -101,7 +101,7 @@ export function providerPosture(input: {
     isMock,
     simulated,
     isReal,
-    verdict: '当前模型运行模式无法判定，请到「模型」页确认服务商与连通状态。',
+    verdict: '当前模型运行模式无法判定，请到「系统设置 → 模型管理」确认服务商与连通状态。',
     tone: 'warn',
     badge: '无法判定',
   }

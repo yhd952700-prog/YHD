@@ -5,6 +5,8 @@
  * 每个引用它的页面都要从"组件文件"导入一个函数，Fast Refresh 随之失效。
  */
 
+import { numberText } from './format'
+
 export const CHART_COLORS = [
   '#4d8dff',
   '#9b6bff',
@@ -42,12 +44,12 @@ export function colorAt(index: number): string {
  *      **不能显示 0** —— 那等于宣称「后端报告了 0」，而真相是「后端没发这个字段」。
  *   2. 真实的 0 必须仍然显示 0。缺失与零是两件事，混起来就是一个静默的谎。
  */
-export function formatCompact(value: number): string {
+export function formatCompact(value: unknown): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
   const abs = Math.abs(value)
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (abs >= 10_000) return `${(value / 1000).toFixed(0)}k`
-  if (abs >= 1000) return `${(value / 1000).toFixed(1)}k`
-  if (!Number.isInteger(value)) return value.toFixed(1)
+  if (abs >= 1_000_000) return `${numberText(value / 1_000_000, 1)}M`
+  if (abs >= 10_000) return `${numberText(value / 1000, 0)}k`
+  if (abs >= 1000) return `${numberText(value / 1000, 1)}k`
+  if (!Number.isInteger(value)) return numberText(value, 1)
   return String(value)
 }

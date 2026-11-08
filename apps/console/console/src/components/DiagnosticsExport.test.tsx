@@ -23,6 +23,7 @@ describe('一键诊断包入口', () => {
     mockedExport.mockResolvedValue({
       filename: 'liuhao-diagnostics-20260101-120000.zip',
       location: 'download',
+      omitted: [],
     })
 
     render(<DiagnosticsExport />)
@@ -34,6 +35,45 @@ describe('一键诊断包入口', () => {
       )
     })
     expect(screen.getByRole('status').textContent).toContain('下载位置')
+  })
+
+  test('降级导出时说明少了哪一类文件，而不是只给一个数字', async () => {
+    mockedExport.mockResolvedValue({
+      filename: 'liuhao-diagnostics-20260101-120000.zip',
+      location: 'download',
+      omitted: ['logs/gateway.log.txt', 'summary.json'],
+    })
+
+    render(<DiagnosticsExport />)
+    fireEvent.click(screen.getByRole('button', { name: '导出诊断包' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain(
+        '有 1 个日志文件和 1 个诊断文件因含密钥未包含',
+      )
+    })
+    const text = screen.getByRole('status').textContent ?? ''
+    expect(text).toContain('REDACTED-MEMBERS.txt')
+    // 不能退化成光秃秃的数量提示。
+    expect(text).not.toContain('有 2 个文件因含密钥未包含')
+  })
+
+  test('只有日志被剔除时不出现"0 个诊断文件"', async () => {
+    mockedExport.mockResolvedValue({
+      filename: 'liuhao-diagnostics-20260101-120000.zip',
+      location: 'download',
+      omitted: ['logs/gateway.log.txt'],
+    })
+
+    render(<DiagnosticsExport />)
+    fireEvent.click(screen.getByRole('button', { name: '导出诊断包' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain(
+        '有 1 个日志文件因含密钥未包含',
+      )
+    })
+    expect(screen.getByRole('status').textContent).not.toContain('0 个诊断文件')
   })
 
   test('用户取消时说明"没有生成文件"，不冒充失败', async () => {
