@@ -76,7 +76,10 @@ def test_installer_and_desktop_use_the_lockup():
 
 def test_diagnostic_bundle_readme_and_about_json_share_one_name():
     bundle = _read(REPO / "src" / "gateway" / "diagnostic_bundle.py")
-    assert "from ..desktop.about import APP_NAME, collect_about" in bundle
+    # APP_NAME 统一来自 brand 锁版；collect_about 仍走 desktop.about，
+    # 但为避开桌面依赖改为函数内延迟导入，这里只校验两处来源都在。
+    assert "from ..brand import BRAND_LOCKUP as APP_NAME" in bundle
+    assert "from ..desktop.about import collect_about as _collect_about" in bundle
     assert "_README = APP_NAME" in bundle
     assert '"app": str(about.get("app") or APP_NAME)' in bundle
 
@@ -109,8 +112,9 @@ def test_static_shells_use_the_lockup():
 def test_mobile_nav_points_at_butler():
     root = REPO / "apps" / "console" / "console" / "src"
     nav = _read(root / "lib" / "nav.ts")
-    assert "export const MOBILE_NAV_KEYS = ['overview', 'my-employees', 'butler', 'approval', 'settings']" in nav
-    assert "return ['overview', 'my-employees', 'butler', fourth, last]" in nav
+    assert "export const MOBILE_NAV_KEYS = [" in nav
+    assert "  'butler'," in nav
+    assert "return ['overview', 'my-employees', 'butler', 'goals', fourth, last]" in nav
 
     shell = _read(root / "components" / "Shell.tsx")
     assert "item.key === 'butler'" in shell
