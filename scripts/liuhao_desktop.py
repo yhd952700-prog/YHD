@@ -105,6 +105,54 @@ def _prepare_installed_layout() -> bool:
     return True
 
 
+def _gui_first_run_if_needed() -> tuple[int, bool]:
+    """手动启动（桌面 / 开始菜单）时先完成首启，再进托盘壳。
+
+    为什么必须在这里做
+    ------------------
+    托盘壳直接拉起网关，**不会**经过 ``launch_installed._run`` 里的首启向导。
+    新装机器上如果跳过这一步，网关照样能起来，但数据目录里没有任何可登录
+    账号——用户看到的就是「页面打开了、怎么都登不进去」。
+
+    只在手动启动时调用：``--autostart`` / ``--hidden`` 是无人值守场景，
+    不能在这里弹窗口。向导里若改了数据目录，调用方会重新执行一次
+    :func:`_prepare_installed_layout` 把模块常量绑到新目录。
+    """
+    try:
+        import scripts.first_run_gui as gui
+    except Exception as exc:  # noqa: BLE001 - 缺 tkinter/脚本时必须给出可读原因
+        _report_failure(
+            f"[FAIL] 无法加载首次设置向导：{type(exc).__name__}: {exc}。"
+            "请重新安装；或在命令提示符里运行 LiuHao.bat --console 查看详细原因。"
+        )
+        return 3, False
+
+    try:
+        if not gui.needs_setup():
+            return 0, False
+        data_dir = gui.chosen_data_dir()
+        if data_dir is not None:
+            gui.clear_current_url(data_dir)
+        print(
+            "[first-run] 首次启动：正在打开设置向导（管理员账号 → 选择模型 → 完成）…",
+            flush=True,
+        )
+        code = gui.run_wizard(port=None, tray_planned=True)
+        if code != 0:
+            _report_failure(f"[FAIL] 首次设置未完成（退出码 {code}），未启动桌面壳。")
+            return code, False
+        if gui.needs_setup():
+            _report_failure(
+                "[FAIL] 设置结束后仍没有可登录的管理员账号，未启动桌面壳。"
+                "请重跑向导，或用 LiuHao.bat --console 查看原因。"
+            )
+            return 3, False
+    except Exception as exc:  # noqa: BLE001 - 向导异常不能静默吞掉
+        _report_failure(f"[FAIL] 首次设置失败：{type(exc).__name__}: {exc}")
+        return 3, False
+    return 0, True
+
+
 def _resolve_autostart_targets() -> tuple[Path, Path]:
     """解析自启要用的解释器与入口；任一缺失就抛 RuntimeError（不写注册表）。
 
@@ -161,8 +209,25 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     command = args[0] if args else "app"
 
-    if _installed_layout() and not _prepare_installed_layout():
-        return 2
+    # 手动启动（桌面 / 开始菜单）必须先完成首启，否则网关起来了也登不进去；
+    # 自启是无人值守场景，不能弹窗口，也不能因为缺账号就静默失败。
+    interactive = (
+        command in ("", "app")
+        and "--autostart" not in args
+        and "--hidden" not in args
+    )
+
+    if _installed_layout():
+        if not _prepare_installed_layout():
+            return 2
+        if interactive:
+            code, ran_setup = _gui_first_run_if_needed()
+            if code != 0:
+                return code
+            if ran_setup:
+                # 向导里可能换了数据目录：重新绑定，否则托盘壳会把网关指回旧目录。
+                if not _prepare_installed_layout():
+                    return 2
 
     checking_autostart = (
         command == "autostart" and len(args) >= 2 and args[1] == "enable"

@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 """鎏灏智能中枢一键启动器。
 
-一条命令把「网关 + 驾驶舱」拉起来，并等健康探针真正通过后再交还控制权。
+一条命令把「网关 + 控制台」拉起来，并等健康探针真正通过后再交还控制权。
 
     python scripts\\start_liuhao.py          # 单端口（默认）
     python scripts\\start_liuhao.py --backend-only
     python scripts\\start_liuhao.py --no-browser
     python scripts\\start_liuhao.py --vite   # vite 热更新开发模式
     python scripts\\start_liuhao.py --https  # 单端口 + 本地 HTTPS
+    python scripts\\start_liuhao.py --diagnose  # 只生成诊断包 zip（服务不必在运行）
 
 设计约束：
   * 不依赖 Docker（本机 Docker daemon 常常没起），走原生进程。
@@ -38,6 +39,7 @@ import urllib.request
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 CONSOLE_DIR = ROOT / "apps" / "console" / "console"
@@ -49,6 +51,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.common.instance_lock import InstanceLockBusy, InstanceLock, instance_root  # noqa: E402
+from src.common.leak_scan import OMITTED_MEMBERS_NAME  # noqa: E402
 from src.brand import BRAND_LOCKUP  # noqa: E402
 
 #: 唯一生效的日志配置。由 ``python -m src.gateway`` 子进程按 UTF-8 读取后
@@ -107,50 +110,14 @@ class PortUnavailable(RuntimeError):
 
 
 def _describe_port_owner(port: int) -> str:
-    """尽力查出谁在占用 ``port``（Windows：netstat -ano + tasklist）。
+    """尽力查出谁在占用 ``port``（与托盘壳共用同一实现，含进程路径）。
 
-    查不到就返回空串——诊断信息是锦上添花，绝不能因为查不到就吞掉报错。
+    查不到时返回「查不到（可能需要管理员权限…）」，让用户分清「查不到」与
+    「没人占用」；诊断信息是锦上添花，绝不能因为查不到就吞掉报错。
     """
-    try:
-        listing = subprocess.run(
-            ["netstat", "-ano", "-p", "TCP"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    needle = f":{port}"
-    pids: list[str] = []
-    for line in (listing.stdout or "").splitlines():
-        parts = line.split()
-        # Proto  Local Address  Foreign Address  State  PID
-        if len(parts) != 5 or parts[0].upper() != "TCP":
-            continue
-        if parts[1].endswith(needle) and parts[3].upper() in {"LISTENING", "LISTEN"}:
-            if parts[4] not in pids:
-                pids.append(parts[4])
-    named: list[str] = []
-    for pid in pids:
-        name = ""
-        try:
-            detail = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-            )
-            cells = (detail.stdout or "").strip().strip('"').split('","')
-            if cells and cells[0]:
-                name = cells[0]
-        except (OSError, subprocess.SubprocessError):
-            pass
-        named.append(f"PID {pid}{f' {name}' if name else ''}")
-    return "、".join(named)
+    from src.desktop.probe import describe_port_owner
+
+    return describe_port_owner(port)
 
 
 def _log_launcher(message: str) -> None:
@@ -219,6 +186,117 @@ def _require_available_port(host: str, requested: int, label: str, flag: str) ->
     )
 
 
+def _ask_port_choice(
+    host: str, port: int, label: str, reason: str
+) -> tuple[str, int | None]:
+    """有图形桌面时弹窗二选一：关掉占用程序再试 / 换一个端口继续。
+
+    返回 ``("retry", None)``、``("use", new_port)`` 或 ``("cancel", None)``。
+    打不开窗口（无桌面 / Tk 缺失）时抛异常，由调用方退回命令行提示。
+    """
+    import tkinter as tk
+    from tkinter import messagebox, simpledialog
+
+    root = tk.Tk()
+    root.title(f"鎏灏：{label}端口被占用")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    choice = {"action": "cancel", "port": None}
+    owner = _describe_port_owner(port)
+    detail = f"（占用者：{owner}）" if owner else ""
+
+    tk.Label(
+        root,
+        text=(
+            f"{label}端口 {port} 已被占用{detail}。\n"
+            "请选择：关掉占用程序后再试，或换一个空闲端口继续启动。"
+        ),
+        justify="left",
+        anchor="w",
+        font=("Microsoft YaHei UI", 10),
+        wraplength=460,
+    ).pack(fill="x", padx=16, pady=(16, 12))
+
+    row = tk.Frame(root)
+    row.pack(fill="x", padx=16, pady=(0, 16))
+
+    def retry() -> None:
+        choice["action"] = "retry"
+        root.destroy()
+
+    def use_other() -> None:
+        suggestion = port + 1 if port < 65535 else 8080
+        while True:
+            value = simpledialog.askinteger(
+                "换一个端口继续",
+                "请输入新的服务端口（1–65535）：\n换端口后地址会变，请以新地址为准。",
+                initialvalue=suggestion,
+                parent=root,
+                minvalue=1,
+                maxvalue=65535,
+            )
+            if value is None:
+                return  # 回到二选一窗口
+            if not _port_in_use(host, value):
+                choice["action"] = "use"
+                choice["port"] = int(value)
+                root.destroy()
+                return
+            other_owner = _describe_port_owner(value)
+            messagebox.showwarning(
+                "端口仍被占用",
+                f"端口 {value} 也被占用"
+                + (f"（占用者：{other_owner}）" if other_owner else "")
+                + "，请换一个空闲端口。",
+                parent=root,
+            )
+
+    # 只给两个选项；关闭窗口（标题栏 X）等同「稍后再处理」，不另设第三个按钮。
+    tk.Button(row, text="关掉占用程序再试", width=18, command=retry).pack(side="left")
+    tk.Button(row, text="换一个端口继续", width=18, command=use_other).pack(
+        side="left", padx=(10, 0)
+    )
+
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    x = max((root.winfo_screenwidth() - width) // 2, 0)
+    y = max((root.winfo_screenheight() - height) // 3, 0)
+    root.geometry(f"+{x}+{y}")
+    root.mainloop()
+    return choice["action"], choice["port"]
+
+
+def _resolve_port_or_explain(
+    host: str, requested: int, label: str, flag: str
+) -> int | None:
+    """确认端口可用；被占时优先弹窗二选一，无桌面则打印明确中文并返回 None。
+
+    不自动顺延：换端口地址就变，书签 / 旧标签 / PWA 会指向连不上的地方。
+    """
+    port = requested
+    while True:
+        try:
+            return _require_available_port(host, port, label, flag)
+        except PortUnavailable as exc:
+            try:
+                action, new_port = _ask_port_choice(host, port, label, str(exc))
+            except Exception:  # noqa: BLE001 - 无桌面会话，退回命令行提示
+                print(f"[FAIL] {exc}", flush=True)
+                _log_launcher(f"[FAIL] {exc}")
+                return None
+            if action == "retry":
+                continue  # 用户说已经关掉了，重新检查同一端口
+            if action == "use" and new_port:
+                print(f"[port] 用户选择改用端口 {new_port}。", flush=True)
+                _log_launcher(f"[port] 端口 {port} 被占用，用户改用 {new_port}")
+                port = new_port
+                continue
+            print(f"[FAIL] {exc}", flush=True)
+            _log_launcher(f"[FAIL] {exc}")
+            return None
+
+
 def _lan_addresses() -> list[str]:
     """返回本机所有非回环的 IPv4 地址，供控制台打印局域网访问 URL。
 
@@ -258,12 +336,12 @@ def _venv_python() -> str:
 def _node() -> str:
     found = shutil.which("node")
     if not found:
-        raise SystemExit("未找到 node —— 驾驶舱需要 Node.js，请先安装或加进 PATH。")
+        raise SystemExit("未找到 node —— 控制台需要 Node.js，请先安装或加进 PATH。")
     return found
 
 
 def _console_dist() -> Path | None:
-    """已构建的驾驶舱产物目录；没有就返回 None。"""
+    """已构建的控制台产物目录；没有就返回 None。"""
     raw = (os.environ.get(CONSOLE_DIST_ENV) or "").strip()
     candidate = Path(raw).expanduser() if raw else DEFAULT_CONSOLE_DIST
     if not (candidate / "index.html").is_file():
@@ -415,6 +493,9 @@ def _wait_gateway_ready(
         diagnose_hint=_gate_diagnose_hint(),
         is_alive=lambda: proc.poll() is None,
         on_progress=on_progress,
+        # 双击场景要尽快看见登录框：就绪探测从 250/500ms 收紧到 100/200ms。
+        min_interval=0.10,
+        max_interval=0.20,
     )
     if result.get("console_ok"):
         if result.get("state") == "degraded":
@@ -426,9 +507,46 @@ def _wait_gateway_ready(
     return None
 
 
+def _headless() -> bool:
+    """没有控制台（安装版 pythonw 启动）时为真。
+
+    此时子进程必须加 ``CREATE_NO_WINDOW`` 并把输出写进 launcher.log：
+    从 pythonw 拉起 console 子系统的 ``python.exe`` 会额外分配一个黑色窗口，
+    而且子进程的任何 traceback 都会直接画到屏幕上。
+    """
+    return (os.environ.get("LIUHAO_HEADLESS") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+_CHILD_LOG_HANDLE = None
+
+
+def _child_output():
+    """无控制台模式下，子进程 stdout/stderr 的统一落点（launcher.log）。"""
+    global _CHILD_LOG_HANDLE
+    if _CHILD_LOG_HANDLE is None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _CHILD_LOG_HANDLE = open(  # noqa: SIM115 - 进程生命周期内复用同一个句柄
+            LOG_DIR / "launcher.log", "a", encoding="utf-8", buffering=1
+        )
+    return _CHILD_LOG_HANDLE
+
+
 def _spawn(cmd: list[str], cwd: Path, label: str, env: dict | None = None) -> subprocess.Popen:
     print(f"  [$] ({cwd.name}) {' '.join(cmd)}")
-    popen = subprocess.Popen(cmd, cwd=str(cwd), env=env)
+    extra: dict = {}
+    if _headless():
+        extra["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        extra["stdin"] = subprocess.DEVNULL
+        handle = _child_output()
+        if handle is not None:
+            extra["stdout"] = handle
+            extra["stderr"] = subprocess.STDOUT
+    popen = subprocess.Popen(cmd, cwd=str(cwd), env=env, **extra)
     _children.append(popen)
     print(f"       {label} pid={popen.pid}")
     return popen
@@ -556,8 +674,186 @@ def _probe_running_instance() -> tuple[str, dict] | None:
     return InstanceLockBusy(holder).describe(), holder
 
 
+def _tray_instance_key() -> str:
+    """托盘窗口类名用的实例键，必须与 ``src.desktop.app`` 的 ``DATA_DIR`` 一致。
+
+    安装版两者都是 ``LIUHAO_DATA_DIR``；源码直跑时桌面壳的 ``DATA_DIR`` 是
+    ``<仓库>/data``（见 ``src/desktop/__init__.py``），而实例锁在仓库根，两者
+    不能混用，否则找不到已驻留的托盘窗口。
+    """
+    override = (os.environ.get("LIUHAO_DATA_DIR") or "").strip()
+    base = Path(override).expanduser().resolve() if override else ROOT / "data"
+    return str(base)
+
+
+def _instance_url_healthy(url: str) -> bool:
+    """探测持有者公布的地址是否真能服务，用于区分「在跑」与「卡死」。"""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    host = parts.hostname or "127.0.0.1"
+    if host in ("0.0.0.0", "::", "::0"):
+        host = "127.0.0.1"
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    target = urlunsplit((parts.scheme or "http", netloc, "/v1/health", "", ""))
+    try:
+        from src.desktop.probe import http_json
+
+        info = http_json(target, timeout=2.0)
+        body = info.get("body")
+        # 2xx 不等于"我们的服务活着"：端口上可能是别的程序。
+        return (
+            bool(info.get("ok"))
+            and isinstance(body, dict)
+            and body.get("service") == "liuhao-gateway"
+        )
+    except Exception:  # noqa: BLE001 - 探测失败即视为暂时无响应
+        return False
+
+
+def _show_instance_notice(text: str, *, warning: bool) -> None:
+    """无控制台（快捷方式 pythonw）时用系统弹窗交付"一句人话"。
+
+    有控制台时只打印：终端里跑测试/运维不该被模态框挡住。
+    """
+    if not _headless():
+        return
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        if warning:
+            messagebox.showwarning("鎏灏已在运行（服务无响应）", text, parent=root)
+        else:
+            messagebox.showinfo("鎏灏已在运行", text, parent=root)
+        root.destroy()
+    except Exception:  # noqa: BLE001 - 弹窗失败时至少日志里已经有一句人话
+        pass
+
+
+def _handoff_to_running_instance(holder: dict, *, no_browser: bool) -> int:
+    """第二次双击：唤起已运行窗口 + 给一句人话，绝不起第二份服务。
+
+    三种前置状态各自有明确说法（也正是验收要求的三态）：
+      * 托盘已驻留 → ``request_show`` 让已有状态窗口到前台；
+      * 服务在跑（无托盘）→ 打开它公布的控制台地址；
+      * 服务卡死（锁在、``/v1/health`` 不通）→ 明确说"暂时没有响应"，并给出
+        进程号与后续动作，而不是静默退出。
+
+    这里不打印 ``InstanceLockBusy.describe()``：那句是"网关拒绝启动"的措辞
+    （结尾"本次启动已退出"），与本分支"已为你切换/打开"直接矛盾。
+    """
+    url = str(holder.get("url") or "").strip().rstrip("/")
+    pid = holder.get("pid")
+    detail = "，".join(
+        part for part in (f"pid={pid}" if pid else "", url) if part
+    )
+    print(f"[instance] 鎏灏已经在运行（{detail}）。" if detail else "[instance] 鎏灏已经在运行。", flush=True)
+    try:
+        from src.desktop.tray import request_show
+
+        shown = request_show(_tray_instance_key(), timeout=0.0)
+    except Exception:  # noqa: BLE001 - 没有 pywin32 时退回控制台/提示
+        shown = False
+    healthy = bool(url) and _instance_url_healthy(url)
+
+    if shown:
+        if healthy:
+            summary = "鎏灏已经在运行，已为你切换到正在运行的状态窗口。"
+        else:
+            summary = (
+                "鎏灏已经在运行，但服务暂时没有响应。\n\n"
+                f"进程 pid={pid}。已为你切换到状态窗口，可在其中查看状态或重新启动服务；"
+                "本次没有启动第二个服务。"
+            )
+    elif healthy:
+        if no_browser:
+            # --no-browser（运维/自测）下不能声称"已打开控制台"。
+            summary = f"鎏灏已经在运行，控制台地址：{url}/"
+        else:
+            summary = f"鎏灏已经在运行，已为你打开控制台：{url}/"
+            with contextlib.suppress(webbrowser.Error):
+                webbrowser.open(_console_url_with_proof(url))
+    elif url:
+        summary = (
+            "鎏灏已经在运行，但服务暂时没有响应。\n\n"
+            f"进程 pid={pid}，地址 {url}。请打开任务栏通知区的鎏灏图标查看状态，"
+            "或结束该进程后重试；本次没有启动第二个服务。"
+        )
+    else:
+        summary = "鎏灏已经在运行。请使用任务栏通知区（托盘）的图标打开窗口或控制台。"
+    print(f"[instance] {summary}")
+    if _headless():
+        # pythonw 下 print 进 launcher.log：把判断依据一并留档，便于远程排障。
+        _log_launcher(
+            f"[instance] 双开拦截：唤起窗口={shown} 服务可访问={healthy} "
+            f"pid={pid or '-'} url={url or '-'}"
+        )
+    _show_instance_notice(summary, warning=not healthy)
+    return 0
+
+
+def _env_api_port() -> int:
+    """默认端口：向导里选过（``LIUHAO_API_PORT``）就用那个，否则 8080。"""
+    try:
+        return int((os.environ.get("LIUHAO_API_PORT") or "").strip() or DEFAULT_API_PORT)
+    except ValueError:
+        return DEFAULT_API_PORT
+
+
+def _run_diagnose() -> int:
+    """一键诊断：网关没起来也能跑，只做离线采集，不依赖 HTTP。
+
+    复用 ``src.desktop.diagnostics.create_bundle``：版本号、数据目录、端口、
+    日志尾部一直都在包里；本版额外加入 ``startup_check.json``（端口可绑 /
+    目录可写 / 各库打开状态 / 静态资源）、``bootstrap.log.txt``（数据与日志
+    目录都不可写时的唯一证据）与 ``recent_events.txt``（最近 20 条 evt=）。
+    """
+    from src.desktop.diagnostics import create_bundle
+
+    print("=" * 62)
+    print(f"{BRAND_LOCKUP} — 一键诊断（不需要服务在运行）")
+    print("=" * 62)
+    try:
+        omitted: list[dict[str, Any]] = []
+        bundle = create_bundle(
+            probe_network=False, ports=[_env_api_port()], omitted_out=omitted
+        )
+    except Exception as exc:  # noqa: BLE001 - 诊断失败也要给出可读原因
+        print(f"[FAIL] 诊断包生成失败：{type(exc).__name__}: {exc}")
+        return 1
+
+    print(f"[OK] 诊断包已生成：{bundle}")
+    if omitted:
+        print(
+            f"[WARN] 有 {len(omitted)} 个文件因含密钥未包含，清单见包内 "
+            f"{OMITTED_MEMBERS_NAME}：" + "、".join(str(item["name"]) for item in omitted)
+        )
+    try:
+        import zipfile
+
+        with zipfile.ZipFile(bundle) as archive:
+            names = archive.namelist()
+            try:
+                first_line = (
+                    archive.read("SUMMARY.txt").decode("utf-8", "replace").splitlines()[0].strip()
+                )
+            except (KeyError, IndexError):
+                first_line = ""
+        if first_line:
+            print(f"[结论] {first_line}")
+        print(f"     包含 {len(names)} 个文件：{'、'.join(names)}")
+    except Exception:  # noqa: BLE001 - 列不出清单不影响"包已生成"这一结论
+        pass
+    print("     先读包内的 SUMMARY.txt（第一行结论 + 3-5 条依据），再按需看 README.txt。")
+    print("     请把这个 zip 发给技术支持：包内不含密钥，路径中的用户名已隐去。")
+    return 0
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 驾驶舱")
+    parser = argparse.ArgumentParser(description="启动鎏灏：FastAPI 网关 + 控制台")
     parser.add_argument(
         "--host",
         default=DEFAULT_API_HOST,
@@ -566,13 +862,13 @@ def main() -> int:
             "需要手机/其它电脑访问时显式传 0.0.0.0 或指定网卡地址"
         ),
     )
-    parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT)
+    parser.add_argument("--api-port", type=int, default=_env_api_port())
     parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT)
-    parser.add_argument("--backend-only", action="store_true", help="只起网关，不起驾驶舱")
+    parser.add_argument("--backend-only", action="store_true", help="只起网关，不起控制台")
     parser.add_argument(
         "--vite",
         action="store_true",
-        help="开发模式：用 vite 起驾驶舱（热更新），默认是单端口直接服务 dist。",
+        help="开发模式：用 vite 起控制台（热更新），默认是单端口直接服务 dist。",
     )
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument(
@@ -581,10 +877,19 @@ def main() -> int:
         help="叠加本地 HTTPS 反向代理（默认端口 8443），供手机端 PWA 安装。需自签证书。",
     )
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS 代理监听端口（默认 8443）")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "只生成诊断包（zip）并打印路径，不启动任何服务。"
+            "网关没起来时同样可用：离线检查数据/日志目录、端口、各库、"
+            "驾驶舱静态资源，并收集 bootstrap.log 与最近 20 条 evt= 事件"
+        ),
+    )
     args = parser.parse_args()
 
     if args.backend_only and args.vite:
-        parser.error("--backend-only 与 --vite 互斥（前者不含驾驶舱）")
+        parser.error("--backend-only 与 --vite 互斥（前者不含控制台）")
 
     from src.logging_config import ensure_utf8_streams
 
@@ -597,6 +902,10 @@ def main() -> int:
 
     # .env 里的 SECRET_KEY / APP_ENV 必须先可见，否则 preflight 与部署姿态都不成立。
     _load_dotenv()
+    # 一键诊断：必须在拉起任何子进程、做任何身份自举之前返回；它不依赖 HTTP，
+    # 也不写入业务数据（只做一次有界可写探测），因此"网关根本没起来"时也能跑。
+    if args.diagnose:
+        return _run_diagnose()
     # 没有密钥时身份行会被内核全部拒绝（= 无人可登录）。首次启动必须先自举。
     if not _ensure_identity_integrity_key():
         return 1
@@ -613,15 +922,10 @@ def main() -> int:
     # 只负责把提示做早、做可读；即使探测与启动之间有竞态，网关也会兜住。
     busy = _probe_running_instance()
     if busy is not None:
-        message, holder = busy
-        print(f"[instance] {message}")
-        url = (holder.get("url") or "").strip()
-        if url and not args.no_browser:
-            with contextlib.suppress(webbrowser.Error):
-                webbrowser.open(_console_url_with_proof(url))
-        return 0
+        _message, holder = busy
+        return _handoff_to_running_instance(holder, no_browser=args.no_browser)
 
-    # 自用版默认单端口：网关既服务 API 又服务驾驶舱 dist，对外只暴露一个端口，
+    # 自用版默认单端口：网关既服务 API 又服务控制台 dist，对外只暴露一个端口，
     # 对"双击就用"的场景最友好。vite 开发模式（--vite）需要 Node + 热更新。
     single_port = not args.backend_only and not args.vite
 
@@ -629,22 +933,25 @@ def main() -> int:
     # 顺序很重要：先确认「没有第二个鎏灏在跑」，再看端口，否则会出现
     # "端口被占" + "已经在运行" 两句自相矛盾的提示。
     probe_host = args.host if args.host not in ("0.0.0.0", "::") else "127.0.0.1"
-    try:
-        args.api_port = _require_available_port(
-            probe_host, args.api_port, "网关", "--api-port"
-        )
-        if args.vite:
-            args.ui_port = _require_available_port(
-                probe_host, args.ui_port, "驾驶舱(vite)", "--ui-port"
-            )
-        if args.https:
-            args.https_port = _require_available_port(
-                probe_host, args.https_port, "HTTPS 代理", "--https-port"
-            )
-    except PortUnavailable as exc:
-        print(f"[FAIL] {exc}", flush=True)
-        _log_launcher(f"[FAIL] {exc}")
+    api_port = _resolve_port_or_explain(probe_host, args.api_port, "网关", "--api-port")
+    if api_port is None:
         return 2
+    args.api_port = api_port
+    os.environ["LIUHAO_API_PORT"] = str(api_port)
+    if args.vite:
+        ui_port = _resolve_port_or_explain(
+            probe_host, args.ui_port, "控制台(vite)", "--ui-port"
+        )
+        if ui_port is None:
+            return 2
+        args.ui_port = ui_port
+    if args.https:
+        https_port = _resolve_port_or_explain(
+            probe_host, args.https_port, "HTTPS 代理", "--https-port"
+        )
+        if https_port is None:
+            return 2
+        args.https_port = https_port
 
     # 只有显式绑定非回环地址才算"对外"；默认 127.0.0.1 不告警。
     _warn_if_exposed(args.host, args.api_port)
@@ -669,6 +976,9 @@ def main() -> int:
     gateway_env["PORT"] = str(args.api_port)
     # 直接关掉启动器窗口（不按 Ctrl+C）时，网关不能变成占着端口的孤儿进程。
     gateway_env["LIUHAO_PARENT_PID"] = str(os.getpid())
+    # 启动器打开控制台时会带上桌面端一次性证明；把网关标记为可信本机入口，
+    # 首次注册/取码/重置才会强制“回环 + 证明 + 同 Windows 用户”。
+    gateway_env["LIUHAO_TRUSTED_LAUNCH"] = "1"
     if LOG_CONFIG.is_file():
         gateway_env["LIUHAO_LOG_CONFIG"] = str(LOG_CONFIG)
     python_path = os.pathsep.join(
@@ -705,31 +1015,31 @@ def main() -> int:
         print()
         print(f"网关已就绪：  {api_base}")
         print(f"API 文档：    {api_base}/docs")
-        print("（--backend-only：驾驶舱未启动）")
+        print("（--backend-only：控制台未启动）")
         _print_lan_urls(args.api_port, args.host)
         return _serve_forever()
 
     if single_port:
         dist = _console_dist()
         if dist is None:
-            print("  [FAIL] 单端口模式需要驾驶舱构建产物")
+            print("  [FAIL] 单端口模式需要控制台构建产物")
             print(f"         未找到 {os.environ.get(CONSOLE_DIST_ENV) or DEFAULT_CONSOLE_DIST}/index.html")
             print("         请先在 apps/console/console 下执行 npm run build")
             print("         或用 --vite 启动开发模式（需 Node.js）")
             _shutdown_all()
             return 1
-        print("[2/2] 驾驶舱由网关直接服务（单端口）")
+        print("[2/2] 控制台由网关直接服务（单端口）")
         print(f"      源: {dist}")
         if not _wait_http_ok(
             probe_api_base + "/",
             STARTUP_TIMEOUT_S,
-            "驾驶舱（同端口）",
+            "控制台（同端口）",
             hint=f"日志：{_gate_log_hint()}",
         ):
             _shutdown_all()
             return 1
     else:
-        print("[2/2] 驾驶舱（vite 开发模式）")
+        print("[2/2] 控制台（vite 开发模式）")
         vite_entry = CONSOLE_DIR / "node_modules" / "vite" / "bin" / "vite.js"
         if not vite_entry.exists():
             print(f"  [FAIL] 没找到 {vite_entry}")
@@ -750,11 +1060,11 @@ def main() -> int:
             "console",
         )
         if not _wait_http_ok(
-            probe_ui_base + "/", STARTUP_TIMEOUT_S, "驾驶舱", hint=f"日志：{_gate_log_hint()}"
+            probe_ui_base + "/", STARTUP_TIMEOUT_S, "控制台", hint=f"日志：{_gate_log_hint()}"
         ):
             _shutdown_all()
             return 1
-        _wait_http_ok(f"{probe_ui_base}/v1/health", 15.0, "驾驶舱→网关代理")
+        _wait_http_ok(f"{probe_ui_base}/v1/health", 15.0, "控制台→网关代理")
 
     if args.https:
         _start_https_proxy(args, single_port)
@@ -765,7 +1075,7 @@ def main() -> int:
     print()
     print("=" * 62)
     print("鎏灏已就绪")
-    print(f"  驾驶舱    {ui_base}")
+    print(f"  控制台    {ui_base}")
     print(f"  API       {api_base}     文档 {api_base}/docs")
     print(f"  健康探针  {api_base}/v1/health")
     print(f"  日志      {_gate_log_hint()}")
@@ -774,7 +1084,7 @@ def main() -> int:
     _print_lan_urls(args.api_port, args.host, args.https_port if args.https else None)
     print()
     print("  本窗口只显示状态，不需要输入任何内容。")
-    print("  关闭此窗口会停止本地服务（驾驶舱将无法访问）；使用期间请保持打开，可最小化。")
+    print("  关闭此窗口会停止本地服务（控制台将无法访问）；使用期间请保持打开，可最小化。")
     print("  Ctrl+C 同样会停止服务（子进程会被一起带走）")
     print("=" * 62)
 

@@ -60,6 +60,60 @@ def test_require_available_port_fails_instead_of_shifting():
         server.close()
 
 
+def test_port_conflict_without_desktop_prints_chinese_and_stops(capsys, monkeypatch):
+    """无桌面会话时保留命令行提示：说清端口/占用者/处理办法，然后返回 None。"""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        monkeypatch.setattr(
+            sl,
+            "_ask_port_choice",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no display")),
+        )
+        assert sl._resolve_port_or_explain("127.0.0.1", port, "网关", "--api-port") is None
+        output = capsys.readouterr().out
+        assert f"端口 {port} 已被占用" in output
+        assert "--api-port" in output
+    finally:
+        server.close()
+
+
+def test_port_conflict_can_choose_a_new_port_and_continue(monkeypatch):
+    """图形窗口选「换一个端口继续」后直接返回新端口，不让用户重开一次。"""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    busy = server.getsockname()[1]
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    free = probe.getsockname()[1]
+    probe.close()
+    try:
+        monkeypatch.setattr(
+            sl, "_ask_port_choice", lambda *args, **kwargs: ("use", free)
+        )
+        assert sl._resolve_port_or_explain("127.0.0.1", busy, "网关", "--api-port") == free
+    finally:
+        server.close()
+
+
+def test_port_conflict_cancel_stops_launch(monkeypatch):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    try:
+        monkeypatch.setattr(
+            sl, "_ask_port_choice", lambda *args, **kwargs: ("cancel", None)
+        )
+        assert sl._resolve_port_or_explain("127.0.0.1", port, "网关", "--api-port") is None
+    finally:
+        server.close()
+
+
 def test_lan_addresses_excludes_loopback():
     addrs = sl._lan_addresses()
     for ip in addrs:

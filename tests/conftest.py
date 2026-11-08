@@ -242,13 +242,22 @@ def _isolate_memory_store_per_test(tmp_path_factory, monkeypatch):
     这是测试基础设施修复：不改生产默认落盘路径、不削弱 learned-directive 阻断
     语义、不改任何测试断言——只是让每个测试真正拥有一个自己的记忆库。
     """
+    import src.ai.personal_context as personal_context_module
     import src.kernels.memory as memory_module
 
     mem_dir = tmp_path_factory.mktemp("lh_memory_test")
     monkeypatch.setenv("MEMORY_DB_PATH", str(mem_dir / "memory_store.db"))
+    # 老画像库默认指向仓库根 ``personal_context.db``；不隔离的话，账号记忆首次连接
+    # 触发的 0.1.0 迁移会把它读进临时库，用例会看到开发者现场数据（如
+    # ``verification_model: 真实模型``），造成与代码无关的偶发失败。
+    monkeypatch.setenv(
+        "PERSONAL_CONTEXT_DB_PATH", str(mem_dir / "personal_context.db")
+    )
     monkeypatch.setattr(memory_module, "_global_kernel", None)
+    monkeypatch.setattr(personal_context_module, "_personal_context", None)
     yield
     monkeypatch.setattr(memory_module, "_global_kernel", None)
+    monkeypatch.setattr(personal_context_module, "_personal_context", None)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -441,6 +450,7 @@ def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
     （CRIT-1C 依旧对 HIGH/CRITICAL 动作做真实审计写入）、不改任何测试断言。
     """
     import src.kernels.audit as audit_module
+    import src.kernels.audit.chain_key as chain_key_module
     import src.kernels.execution.fence as fence_module
 
     # The database gets its OWN directory from tmp_path_factory -- deliberately
@@ -458,9 +468,13 @@ def _isolate_audit_store_per_test(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("AUDIT_DB_PATH", str(audit_dir / "audit_store.db"))
     monkeypatch.setattr(audit_module, "_audit_store", None)
     monkeypatch.setattr(fence_module, "_DEFAULT_FENCE", None)
+    # 链密钥是进程级缓存：AUDIT_DB_PATH 每个用例都换目录，缓存必须一起清，
+    # 否则上一个用例生成的密钥会被带到下一个用例（路径已变，状态却仍“可用”）。
+    chain_key_module.reset_cache()
     yield
     monkeypatch.setattr(audit_module, "_audit_store", None)
     monkeypatch.setattr(fence_module, "_DEFAULT_FENCE", None)
+    chain_key_module.reset_cache()
 
 
 @pytest.fixture(autouse=True)
