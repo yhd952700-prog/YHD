@@ -8,7 +8,7 @@
 ## 0. 三十秒版本
 
 1. 这是一个 **Human-Sovereign Agent Operating System**，不是聊天机器人，不是十个 AI 角色扮演。
-2. 代码主体在 `src/`，其中 `src/kernels/` 有 **14 个 kernel，6,391 行**——这是系统的地基。
+2. 代码主体在 `src/`，其中 `src/kernels/` 有 **14 个 kernel，16,044 行（`__init__.py`）/ 26,068 行（全包 `.py`）**——这是系统的地基。完整计数口径见 [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) §1。
 3. **这 14 个 kernel 目前零单元测试。** 你的首要任务不是加功能，是补测试。
 4. **不要相信 `implementation-status.UNRELIABLE.yaml` 里的绿色标记**，它是错的（见 §3）。
 5. 完成定义见 §5。没过 DoD 的功能，状态只能写 `PARTIALLY_IMPLEMENTED`。

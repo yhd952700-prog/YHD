@@ -33,7 +33,7 @@
 ```
 HUMAN
   └→ L-CORE（§19-21，人类主接口）
-       └→ LIUHAO KERNEL（14 个，6,391 行）
+       └→ LIUHAO KERNEL（14 个，16,044 行）
             ├→ INTELLIGENCE  (Perception/Reasoning/Memory/Context/Analysis/WorldModel)
             ├→ AGENCY        (Runtime/Planning/Execution/Spawning/Scheduling/Orchestration)
             └→ SOVEREIGNTY   (Identity/Permission/Policy/Security/Trust/Governance)
@@ -44,26 +44,29 @@ HUMAN
 
 ---
 
-## 14 个 Kernel（权威清单）
+## 14 个 Kernel（概要清单）
+
+> 行数列为 `__init__.py` 行数（2026-11-08 实测，随代码变动请以 KERNEL-CANON §1 为准）；全包 `.py` 合计 26,068 行。
+> **唯一权威计数口径与双列完整清单见 [`spec/KERNEL-CANON.md`](spec/KERNEL-CANON.md) §1。**
 
 | # | Kernel | 行数 | Definition Lock | 职责 |
 |---|--------|------|-----------------|------|
-| 1 | **identity** | 356 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
-| 2 | **memory** | 308 | §112 | 多层记忆存储、L0-L7 作用域过滤、CRUD |
-| 3 | **context** | 179 | §112 | 12 类输入 → 压缩 → 模型就绪上下文 |
-| 4 | **capability** | 485 | §112 | 能力注册中心、版本、追溯链、作用域检查 |
-| 5 | **policy** | 502 | §112 | ABAC 策略引擎、优先级评估、人类主权覆盖 |
-| 6 | **execution** | 696 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
-| 7 | **resource** | 482 | §112 | CPU/Mem/Storage/Token/Time/$ 六种配额 |
-| 8 | **event** | 341 | §112 | 统一事件总线、correlation ID、死信重试 |
-| 9 | **network** | 498 | §112 | 协议适配（A2A/MCP/gRPC/HTTP/WS）、路由 |
-| 10 | **trust** | 629 | §112 | 信任评分、传播、衰减、撤销 |
-| 11 | **evaluation** | 595 | §112 | 结果评估、反馈、重规划触发、升级 |
-| 12 | **security** | 450 | §112 | RBAC+ABAC、Vault Transit 加密、审计 |
-| 13 | **audit** | 423 | §113 | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
-| 14 | **plugin** | 447 | §115 | 插件注册、热加载、版本兼容、作用域激活 |
+| 1 | **identity** | 2704 | §112 | Agent 身份、权限、L0-L7 作用域过滤 |
+| 2 | **memory** | 682 | §112 | 多层记忆存储、L0-L7 作用域过滤、CRUD |
+| 3 | **context** | 264 | §112 | 12 类输入 → 压缩 → 模型就绪上下文 |
+| 4 | **capability** | 567 | §112 | 能力注册中心、版本、追溯链、作用域检查 |
+| 5 | **policy** | 1443 | §112 | ABAC 策略引擎、优先级评估、人类主权覆盖 |
+| 6 | **execution** | 2113 | §112 | Goal→Task→Plan→Action→Verify 全链路 |
+| 7 | **resource** | 650 | §112 | CPU/Mem/Storage/Token/Time/$ 六种配额 |
+| 8 | **event** | 450 | §112 | 统一事件总线、correlation ID、死信重试 |
+| 9 | **network** | 855 | §112 | 协议适配（A2A/MCP/gRPC/HTTP/WS）、路由 |
+| 10 | **trust** | 765 | §112 | 信任评分、传播、衰减、撤销 |
+| 11 | **evaluation** | 752 | §112 | 结果评估、反馈、重规划触发、升级 |
+| 12 | **security** | 815 | §112 | RBAC+ABAC、Vault Transit 加密、审计 |
+| 13 | **audit** | 3385 | §113 | 审计链（hash-chain，设计为防篡改；运行时完整性当前 UNVERIFIED：链存在分叉，待 F1–F6 修复+独立验证）、关联查询 |
+| 14 | **plugin** | 599 | §115 | 插件注册、热加载、版本兼容、作用域激活 |
 
-**合计 6,391 行。**
+**合计 16,044 行（`__init__.py`）。**
 
 ---
 
@@ -71,7 +74,7 @@ HUMAN
 
 | WS | 名称 | 状态 | 覆盖 |
 |----|------|------|------|
-| A | Foundation & Kernel | COMPLETE | 14 kernels, 6,391 行 |
+| A | Foundation & Kernel | COMPLETE | 14 kernels, 16,044 行（`__init__.py`） |
 | B | Data & Storage | COMPLETE | PostgreSQL 15, alembic 31 表 |
 | C | Product & UI | IN PROGRESS | PM PRD, UIUX, Console |
 | D | Intelligence & Reasoning | COMPLETE | RAG, Memory, Knowledge（21 Phase 已全 IMPLEMENTED） |
