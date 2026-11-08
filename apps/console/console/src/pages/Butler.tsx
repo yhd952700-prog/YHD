@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, useApi } from '../lib/api'
 import type { EmployeesPayload } from '../lib/contracts'
-import { capabilityLabel, relativeTime, safeText, useNow } from '../lib/format'
+import { capabilityLabel, numberText, relativeTime, safeText, useNow } from '../lib/format'
 import {
   approvalTasks,
   buildGoalSummary,
@@ -44,6 +44,7 @@ import {
   parseTaskTime,
   riskTone,
   sortGoalSummaries,
+  splitLinks,
   taskDurationSeconds,
   taskPhaseInfo,
   taskStats,
@@ -67,7 +68,20 @@ import type {
   PendingApprovalsResponse,
   ProjectsResponse,
 } from '../lib/operator'
-import { Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import {
+  BUDGET_DENIAL_MESSAGE,
+  BUDGET_DENIAL_NEXT_STEP,
+  isBudgetDenialMessage,
+  PERMISSION_DENIAL_MESSAGE,
+} from '../lib/errorMessage'
+import { goalWorkMessage } from '../lib/goalWork'
+import { SEED_EMPLOYEE_LABEL, SEED_EMPLOYEE_NAME } from '../lib/employees'
+
+/** 系统默认员工用对外称呼，内部标识不上屏。 */
+function displayName(name: string): string {
+  return name === SEED_EMPLOYEE_NAME ? SEED_EMPLOYEE_LABEL : name
+}
 
 type ArtifactPreview = {
   path: string
@@ -105,7 +119,7 @@ function durationLabel(task: GoalTask, nowSeconds: number): string {
   const ms = Number(task.duration_ms)
   if (task.duration_ms !== undefined && task.duration_ms !== null && Number.isFinite(ms) && ms >= 0) {
     if (ms < 1000) return `${Math.round(ms)} 毫秒`
-    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`
+    if (ms < 60_000) return `${numberText(ms / 1000, 1)} 秒`
     const minutes = Math.floor(ms / 60_000)
     const seconds = Math.round((ms % 60_000) / 1000)
     return `${minutes} 分 ${seconds} 秒`
@@ -118,7 +132,7 @@ function totalDurationLabel(ms: number | null | undefined): string {
   const value = Number(ms)
   if (!Number.isFinite(value) || value <= 0) return '—'
   if (value < 1000) return `${Math.round(value)} 毫秒`
-  if (value < 60_000) return `${(value / 1000).toFixed(1)} 秒`
+  if (value < 60_000) return `${numberText(value / 1000, 1)} 秒`
   return `${Math.floor(value / 60_000)} 分 ${Math.round((value % 60_000) / 1000)} 秒`
 }
 
@@ -128,46 +142,25 @@ function goalIdOf(raw: Json): string {
 }
 
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : '未知错误'
+  if (error instanceof ApiError) {
+    // 管家派活 / 重新规划都会触发模型调用：402 说预算并给出口，403 才说权限。
+    if (error.code === 'budget_exceeded' || error.status === 402) {
+      return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`
+    }
+    if (error.code === 'permission_denied') return PERMISSION_DENIAL_MESSAGE
+    return error.message || '操作没有完成，请稍后重试。'
+  }
+  if (error instanceof Error && error.message) {
+    // 英文异常不上屏；已经是中文的说明原样保留。
+    return /[\u4e00-\u9fff]/.test(error.message)
+      ? error.message
+      : '操作没有完成，请稍后重试。'
+  }
+  return '操作没有完成，请稍后重试。'
 }
 
 function acceptanceTone(state: string): 'ok' | 'warn' | 'danger' | 'accent' | 'muted' {
   return goalStateTone(state)
-}
-
-/**
- * 把后端稳定错误码翻译成**下一步该做什么**。
- *
- * 关键差别（不能笼统报「提交失败」）：
- *   * `agent_not_found` → 这个人不存在，重新选；
- *   * `agent_unavailable` → 这个人被暂停，先去恢复；
- *   * `task_not_retryable` → 不是失败态，没东西可重试；
- *   * `goal_running` → 目标还在跑，等结束再单任务重试。
- */
-function goalWorkMessage(error: unknown, fallback: string): string {
-  const code = error instanceof ApiError ? error.code : null
-  switch (code) {
-    case 'agent_not_found':
-    case 'employee_not_found':
-      return '指定的员工不存在，或不在当前可见的名册里。不会换成其他员工执行，请重新选择。'
-    case 'employee_disabled':
-      return '这位员工已停用，不能接受指派。请先到员工页启用它，再重新派活。'
-    case 'agent_unavailable':
-    case 'employee_unavailable':
-      return '这位员工当前没有可用的执行个体（暂停中），不能接受指派。请先到员工页恢复，再重新派活。'
-    case 'assign_target_required':
-      return '必须且只能指定一个执行者：员工，或某个执行个体。请重新选择。'
-    case 'task_not_retryable':
-      return '这个任务当前不是失败态，没有可重试的内容。只有失败任务能单独重试。'
-    case 'goal_running':
-      return '这个目标还在运行。等它结束后，再回来单独重试失败的任务。'
-    case 'task_not_found':
-      return '已经找不到这个任务（可能已被清理）。刷新目标后按最新任务卡操作。'
-    case 'goal_not_found':
-      return '这个目标已经不存在（可能已被清理）。'
-    default:
-      return `${fallback}：${errorText(error)}`
-  }
 }
 
 function approveFailureMessage(error: unknown): string {
@@ -196,10 +189,15 @@ export function Butler({
   query,
   onOpenApproval,
   canApproveQueue,
+  onOpenUsage,
+  onConfigureModel,
 }: {
   query: string
   onOpenApproval: () => void
   canApproveQueue: boolean
+  /** 402 预算拒绝的可点出口：用量页 / 模型管理。 */
+  onOpenUsage?: () => void
+  onConfigureModel?: () => void
 }) {
   // ── 一句话输入 ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState('')
@@ -325,7 +323,7 @@ export function Butler({
     const map = new Map<string, string>()
     for (const employee of employees.data?.employees ?? []) {
       for (const agent of employee.agents ?? []) {
-        map.set(agent.id, `${employee.name}（${agent.name || agent.id}）`)
+        map.set(agent.id, `${displayName(employee.name)}（${agent.name || agent.id}）`)
       }
     }
     return map
@@ -459,13 +457,13 @@ export function Butler({
         setAssignError('指派已提交，但没有返回可追踪的编号：这次执行无法在页面上跟进。')
         return
       }
-      let label = employeeTarget
+      let label = employeeTarget ? displayName(employeeTarget) : ''
       if (!label && agentId) {
         const roster = employees.data?.employees ?? []
         for (const employee of roster) {
           const agent = (employee.agents ?? []).find((item) => item.id === agentId)
           if (agent) {
-            label = `${employee.name} · ${agent.name || agent.id}`
+            label = `${displayName(employee.name)} · ${agent.name || agent.id}`
             break
           }
         }
@@ -663,13 +661,13 @@ export function Butler({
       const disabled = String(employee.employment_status).toLowerCase() === 'disabled'
       employeeOptions.push({
         value: `employee:${employee.name}`,
-        label: `${employee.name}（整位员工）`,
+        label: `${displayName(employee.name)}（整位员工）`,
         paused: disabled || !(employee.agents ?? []).some((agent) => agent.status !== 'paused'),
       })
       for (const agent of employee.agents ?? []) {
         agentOptions.push({
           value: `agent:${agent.id}`,
-          label: `${employee.name} · ${agent.name || agent.id}`,
+          label: `${displayName(employee.name)} · ${agent.name || agent.id}`,
           paused: disabled || agent.status === 'paused',
         })
       }
@@ -680,7 +678,7 @@ export function Butler({
     [...assignOptions.employees, ...assignOptions.agents].find(
       (option) => option.value === assignTarget,
     ) ?? null
-  const employeeNames = (employees.data?.employees ?? []).map((item) => item.name)
+  const employeeNames = (employees.data?.employees ?? []).map((item) => displayName(item.name))
   const projectOptions = projects.data?.projects ?? []
   const replanElapsed = replanStartedAt
     ? formatElapsed(Math.max(0, (now - replanStartedAt) / 1000))
@@ -704,7 +702,7 @@ export function Butler({
       <Card
         title="让管家安排（可分给多位员工）"
         sub="说清你要什么，管家拆解后分给合适的员工；不指定员工时，可以多人协作"
-        span={12}
+        span={activeId ? 7 : 6}
       >
         <form
           className="os-butler-command"
@@ -752,9 +750,13 @@ export function Butler({
           </div>
         )}
 
-        <div className="os-butler-options">
+        <details className="os-butler-advanced" style={{ marginTop: 8 }}>
+          <summary className="os-hint">
+            高级选项：执行范围、归属项目、指定员工（不填也能派活）
+          </summary>
+          <div className="os-butler-options">
           <div className="os-field">
-            <label htmlFor="butler-scope">范围</label>
+            <label htmlFor="butler-scope">执行范围</label>
             <select
               id="butler-scope"
               className="os-input"
@@ -803,25 +805,32 @@ export function Butler({
               </option>
               {assignableEmployees.map((employee) => (
                 <option key={employee.name} value={employee.name}>
-                  {employee.name}
+                  {displayName(employee.name)}
                 </option>
               ))}
             </select>
           </div>
           <p className="os-hint os-butler-options-hint">
             {promptEmployee
-              ? `整个目标会钉给「${promptEmployee}」执行，不再由管家改派；它的子任务都归这位员工。`
+              ? `整个目标只交给「${displayName(promptEmployee)}」做，不再由管家改派；它的子任务都归这位员工。`
               : projects.error
                 ? `项目列表不可用（${projects.error}）；本次按独立目标提交。`
                 : projectOptions.length === 0
                   ? '还没有项目；本次按独立目标提交。'
                   : '挂到项目后，项目页会同步看到这条目标。'}
           </p>
-        </div>
+          </div>
+        </details>
 
         {submitError && (
           <div className="os-alert" role="alert" style={{ marginTop: 10 }}>
             <span>{submitError}</span>
+            {isBudgetDenialMessage(submitError) && onOpenUsage && onConfigureModel && (
+              <BudgetDenialActions
+                onOpenUsage={onOpenUsage}
+                onConfigureModel={onConfigureModel}
+              />
+            )}
           </div>
         )}
 
@@ -835,7 +844,7 @@ export function Butler({
       <Card
         title="只派给一个人"
         sub="不拆解、不换人：你选一位员工，这件事只由他做"
-        span={activeId ? 5 : 12}
+        span={activeId ? 5 : 6}
       >
         <div className="os-butler-assign-flag" aria-label="只派给一个人，不经过自动拆解">
           <span className="os-badge" data-tone="accent">只派一人</span>
@@ -927,6 +936,12 @@ export function Butler({
         {assignError && (
           <p className="os-kb-error" role="alert" style={{ marginTop: 8 }}>
             {assignError}
+            {isBudgetDenialMessage(assignError) && onOpenUsage && onConfigureModel && (
+              <BudgetDenialActions
+                onOpenUsage={onOpenUsage}
+                onConfigureModel={onConfigureModel}
+              />
+            )}
           </p>
         )}
         {assignNotice && (
@@ -1064,7 +1079,9 @@ export function Butler({
                     {stats.failed} · 待确认 {stats.awaiting}
                     {stats.skipped > 0 ? ` · 跳过 ${stats.skipped}` : ''}
                   </p>
-                  <p className="os-butler-summary">{buildGoalSummary(detail)}</p>
+                  <p className="os-butler-summary">
+                    <LinkifiedText text={buildGoalSummary(detail)} />
+                  </p>
 
                   {detail.employees && detail.employees.length > 0 && (
                     <div className="os-note" role="status" style={{ marginTop: 10 }}>
@@ -1072,7 +1089,7 @@ export function Butler({
                       <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                         {detail.employees.map((row) => (
                           <li key={row.employee ?? 'unattributed'}>
-                            {row.employee ?? '未归属'} · 做了 {row.tasks} 项 · 成功 {row.completed} · 失败{' '}
+                            {displayName(row.employee ?? '') || '未归属'} · 做了 {row.tasks} 项 · 成功 {row.completed} · 失败{' '}
                             {row.failed} · 合计耗时 {totalDurationLabel(row.total_duration_ms)}
                           </li>
                         ))}
@@ -1170,7 +1187,17 @@ export function Butler({
                   {replanNotice}
                 </p>
               )}
-              {replanError && <p className="os-kb-error">重新规划失败：{replanError}</p>}
+              {replanError && (
+                <p className="os-kb-error">
+                  重新规划失败：{replanError}
+                  {isBudgetDenialMessage(replanError) && onOpenUsage && onConfigureModel && (
+                    <BudgetDenialActions
+                      onOpenUsage={onOpenUsage}
+                      onConfigureModel={onConfigureModel}
+                    />
+                  )}
+                </p>
+              )}
               {replanning && (
                 <p className="os-hint">
                   重新规划要跑完才返回，期间页面会一直显示「重新规划中…」。
@@ -1180,6 +1207,60 @@ export function Butler({
           )}
         </Card>
       )}
+
+      {/* ── 历史 ─────────────────────────────────────────────── */}
+      <Card
+        title="历史执行"
+        sub="最近的目标 · 点一条查看它的任务分解与汇总"
+        span={12}
+        action={
+          <button className="os-link" onClick={goals.reload}>
+            刷新
+          </button>
+        }
+      >
+        <Guard
+          loading={goals.loading}
+          error={goals.error}
+          data={goals.data}
+          onRetry={goals.reload}
+        >
+          {() =>
+            filteredHistory.length === 0 ? (
+              <Empty
+                title={query.trim() ? `没有匹配「${query.trim()}」的目标` : '还没有执行过目标'}
+                hint={
+                  query.trim()
+                    ? '搜索只匹配目标描述与状态；清空搜索框可看到全部。'
+                    : '在上面输入一句话并点「交给管家」，或点一条示例填入；也可以点名只派给一个人。执行记录会出现在这里。'
+                }
+              />
+            ) : (
+              <div className="os-butler-history">
+                {filteredHistory.map((item) => (
+                  <button
+                    key={item.goal_id}
+                    className="os-butler-history-row"
+                    data-active={item.goal_id === activeId ? 'true' : 'false'}
+                    onClick={() => openFromHistory(item)}
+                  >
+                    <span className="os-badge" data-tone={goalStateTone(item.state)}>
+                      {goalStateLabel(item.state)}
+                    </span>
+                    <span className="os-butler-history-text">{item.natural_language}</span>
+                    <span className="os-hint os-butler-history-meta">
+                      {relativeTime(item.created_at ?? 0)} · 完成 {item.completed_tasks}/
+                      {item.task_count}
+                      {item.failed_tasks > 0 ? ` · 失败 ${item.failed_tasks}` : ''}
+                      {item.assigned_employee ? ` · ${displayName(item.assigned_employee)}` : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )
+          }
+        </Guard>
+      </Card>
 
       {/* ── 待我确认（真实待审批队列；无签发范围时整块不渲染） ── */}
       {canApproveQueue && (
@@ -1363,7 +1444,7 @@ export function Butler({
                       指派给{' '}
                       <strong>
                         {task.assigned_employee
-                          ? task.assigned_employee
+                          ? displayName(task.assigned_employee)
                           : task.assigned_agent
                             ? agentOwners.get(task.assigned_agent) ?? task.assigned_agent
                             : '未记录'}
@@ -1375,7 +1456,9 @@ export function Butler({
                     {task.result && (
                       <details className="os-butler-task-result">
                         <summary>查看任务结果</summary>
-                        <pre className="os-pre">{task.result}</pre>
+                        <pre className="os-pre">
+                          <LinkifiedText text={task.result} />
+                        </pre>
                       </details>
                     )}
                     {task.error && (
@@ -1422,60 +1505,6 @@ export function Butler({
         </Card>
       )}
 
-      {/* ── 历史 ─────────────────────────────────────────────── */}
-      <Card
-        title="历史执行"
-        sub="最近的目标 · 点一条查看它的任务分解与汇总"
-        span={12}
-        action={
-          <button className="os-link" onClick={goals.reload}>
-            刷新
-          </button>
-        }
-      >
-        <Guard
-          loading={goals.loading}
-          error={goals.error}
-          data={goals.data}
-          onRetry={goals.reload}
-        >
-          {() =>
-            filteredHistory.length === 0 ? (
-              <Empty
-                title={query.trim() ? `没有匹配「${query.trim()}」的目标` : '还没有执行过目标'}
-                hint={
-                  query.trim()
-                    ? '搜索只匹配目标描述与状态；清空搜索框可看到全部。'
-                    : '在上面输入一句话并点「交给管家」，或点一条示例填入；也可以点名只派给一个人。执行记录会出现在这里。'
-                }
-              />
-            ) : (
-              <div className="os-butler-history">
-                {filteredHistory.map((item) => (
-                  <button
-                    key={item.goal_id}
-                    className="os-butler-history-row"
-                    data-active={item.goal_id === activeId ? 'true' : 'false'}
-                    onClick={() => openFromHistory(item)}
-                  >
-                    <span className="os-badge" data-tone={goalStateTone(item.state)}>
-                      {goalStateLabel(item.state)}
-                    </span>
-                    <span className="os-butler-history-text">{item.natural_language}</span>
-                    <span className="os-hint os-butler-history-meta">
-                      {relativeTime(item.created_at ?? 0)} · 完成 {item.completed_tasks}/
-                      {item.task_count}
-                      {item.failed_tasks > 0 ? ` · 失败 ${item.failed_tasks}` : ''}
-                      {item.assigned_employee ? ` · ${item.assigned_employee}` : ''}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )
-          }
-        </Guard>
-      </Card>
-
       {/* ── 能力边界（折叠成一行，不占首屏） ─────────────────── */}
       <Card title="能力边界" span={12}>
         <details className="os-butler-gaps">
@@ -1494,6 +1523,32 @@ export function Butler({
         </details>
       </Card>
     </div>
+  )
+}
+
+/**
+ * 结果里的真实来源必须可点击。只把 http(s) 文本变成 <a>，其余原样输出，
+ * 不解析 markdown、不注入 HTML，避免把模型输出当成可执行内容。
+ */
+function LinkifiedText({ text }: { text: string }) {
+  const segments = splitLinks(text)
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.href ? (
+          <a
+            key={`${index}-${segment.href}`}
+            href={segment.href}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            {segment.value}
+          </a>
+        ) : (
+          <span key={`${index}-text`}>{segment.value}</span>
+        ),
+      )}
+    </>
   )
 }
 

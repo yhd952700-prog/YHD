@@ -36,9 +36,16 @@ from src.kernels.execution import (
 from src.kernels.evaluation import (
     EvaluationOutcome,
     EvaluationResult,
+    FeedbackType,
     get_evaluator,
 )
-from .llm_support import compose_execution_summary, default_generate
+from .llm_support import (
+    compose_execution_summary,
+    default_generate,
+    failure_summary,
+    goal_requires_artifact,
+    task_output_facts,
+)
 from src.kernels.memory import (
     MemoryKernel,
     MemoryScope,
@@ -187,6 +194,34 @@ class AgentObserver:
             pass
 
 
+def _record_employee(
+    task: Any,
+    resolver: Optional[Callable[[str], Optional[str]]],
+    pinned_agent: Optional[str],
+) -> Optional[str]:
+    """Who really did this task, as recordable evidence.
+
+    On a pinned (user-named) run the decomposer may already have stamped the
+    task with *someone else's* name; the pinned agent resolved against the live
+    roster is the only truthful source. No resolver => no name, never a guess.
+    """
+    if pinned_agent:
+        if not callable(resolver):
+            return None
+        try:
+            return resolver(str(pinned_agent)) or None
+        except Exception:  # noqa: BLE001 - unresolvable claim => no name
+            return None
+    employee = getattr(task, "assigned_employee", None)
+    agent_id = getattr(task, "assigned_agent", None)
+    if not employee and agent_id and callable(resolver):
+        try:
+            employee = resolver(str(agent_id))
+        except Exception:  # noqa: BLE001 - unresolvable claim => no name
+            employee = None
+    return employee
+
+
 @dataclass
 class AgentRunResult:
     """Outcome of one ``run_goal`` (or ``replan``/``recover``) call."""
@@ -202,6 +237,9 @@ class AgentRunResult:
     replan_count: int = 0
     replan_suggested: bool = False
     error: Optional[str] = None
+    #: 派活前的能力边界提示（例如"需要写文件但 file_write 不可用"）。这些
+    #: 提示在执行开始前就产生并上报，不能等跑完再解释。
+    preflight_notices: List[str] = field(default_factory=list)
 
 
 class AgentRuntime:
@@ -240,6 +278,9 @@ class AgentRuntime:
                 if callable(executable_capabilities)
                 else lambda: executable_capabilities
             )
+        # Kept for the *preflight* check: before a goal runs we can already tell
+        # the user "this needs file_write / network_bus, and it is not available".
+        self._capability_provider: Optional[Callable[[], Any]] = provider
 
         # Model-first decomposition (opt-in). It sits INSIDE the executable-aware
         # wrapper below, so a model plan is still validated against the real
@@ -251,14 +292,16 @@ class AgentRuntime:
             if model_generator is not None
             else (default_generate if enable_model_planning else None)
         )
+        self._llm_decomposer = None
         if enable_model_planning:
             from .llm_decomposer import LLMTaskDecomposer
 
-            self.engine.decomposer = LLMTaskDecomposer(
+            self._llm_decomposer = LLMTaskDecomposer(
                 self.engine.decomposer,
                 generator=self._model_generator,
                 capability_provider=provider,
             )
+            self.engine.decomposer = self._llm_decomposer
 
         # Planner ↔ executor contract (2026-10-04). Opt-in: a set of capability
         # ids, or a zero-arg callable returning them. When supplied, the plan is
@@ -274,6 +317,9 @@ class AgentRuntime:
         self.evaluator = evaluator or get_evaluator()
         self.memory = memory or get_memory_kernel()
         self.max_replans = max_replans
+        #: agent id → 员工名。网关注入后，汇总才能写清"谁做了什么"；未注入时
+        #: 汇总只用 agent id（不编造员工名）。
+        self.agent_employee_resolver: Optional[Callable[[str], Optional[str]]] = None
         # Remember the goal text for each goal_id so ``replan``/``recover`` can
         # actually re-run the *same* goal (deterministic task names -> the
         # engine's journal resumes completed tasks). Guarded by no lock: a
@@ -311,6 +357,7 @@ class AgentRuntime:
         only_task_name: Optional[str] = None,
         only_task_names: Optional[Sequence[str]] = None,
         pinned_tasks: Optional[Sequence[Dict[str, Any]]] = None,
+        on_notice: Optional[Callable[[str], None]] = None,
     ) -> AgentRunResult:
         """Run one goal end-to-end: plan → execute → evaluate → (persist).
 
@@ -332,6 +379,15 @@ class AgentRuntime:
 
         observer = AgentObserver(correlation_id)
         observer.subscribe()
+        # 能力边界前置：在拆解/执行之前就把"做不到的事"说清楚。跑完再解释
+        # 会被用户当成事后找借口，而且会让人误以为已经做了。
+        preflight_notices = self._preflight_capability_notices(goal_text)
+        if callable(on_notice):
+            for notice in preflight_notices:
+                try:
+                    on_notice(notice)
+                except Exception:  # noqa: BLE001 - 通知失败不能拖垮目标
+                    pass
         state = AgentRunState.CREATED
         try:
             state = AgentRunState.PLANNING
@@ -351,16 +407,25 @@ class AgentRuntime:
                 # The run is blocked by a learned directive. Return a
                 # FAILED result honestly — the memory changed the outcome.
                 state = AgentRunState.FAILED
+                blocked_error = f"blocked by learned directive: {blocked_reason}"
                 return AgentRunResult(
                     goal_id=goal_id,
                     correlation_id=correlation_id,
                     state=state,
                     context=None,
-                    evaluation=None,
+                    evaluation=self._failed_evaluation(
+                        goal_id,
+                        correlation_id,
+                        "未完成：本次执行被已记住的规则阻止。"
+                        "本次没有生成任何文件，也没有任何可交付的产物路径。"
+                        "请调整目标或修改该规则后重试。",
+                        blocked_error,
+                    ),
                     trace=observer.trace,
                     memory_keys=[],
                     persist_errors=[],
-                    error=f"blocked by learned directive: {blocked_reason}",
+                    error=blocked_error,
+                    preflight_notices=preflight_notices,
                 )
 
             state = AgentRunState.EXECUTING
@@ -377,7 +442,13 @@ class AgentRuntime:
             )
 
             state = AgentRunState.VERIFYING
-            evaluation = self._evaluate(goal, ctx, correlation_id)
+            evaluation = self._evaluate(
+                goal,
+                ctx,
+                correlation_id,
+                pinned_agent=pinned_agent,
+                preflight_notices=preflight_notices,
+            )
             memory_keys, persist_errors = (
                 self._persist(goal, ctx, evaluation, correlation_id)
                 if persist
@@ -400,6 +471,7 @@ class AgentRuntime:
                 memory_keys=memory_keys,
                 persist_errors=persist_errors,
                 replan_suggested=replan_suggested,
+                preflight_notices=preflight_notices,
             )
         except GoalCancelled as exc:
             # Cooperative cancellation: the goal was aborted by a stop request.
@@ -409,9 +481,17 @@ class AgentRuntime:
                 correlation_id=correlation_id,
                 state=AgentRunState.CANCELLED,
                 context=None,
-                evaluation=None,
+                evaluation=self._failed_evaluation(
+                    goal_id,
+                    correlation_id,
+                    "已取消：本次执行被用户中止。"
+                    "本次没有生成任何文件，也没有任何可交付的产物路径。"
+                    "需要结果时请重新派活。",
+                    f"goal {goal_id} cancelled: {exc}",
+                ),
                 trace=observer.trace,
                 error=f"goal {goal_id} cancelled: {exc}",
+                preflight_notices=preflight_notices,
             )
         except Exception as exc:  # graceful failure, never crash the caller
             return AgentRunResult(
@@ -419,13 +499,91 @@ class AgentRuntime:
                 correlation_id=correlation_id,
                 state=AgentRunState.FAILED,
                 context=None,
-                evaluation=None,
+                evaluation=self._failed_evaluation(
+                    goal_id, correlation_id, failure_summary(exc), str(exc)
+                ),
                 trace=observer.trace,
                 error=str(exc),
+                preflight_notices=preflight_notices,
             )
         finally:
             observer.unsubscribe()
             self._stop_events.pop(goal_id, None)
+
+    def set_employee_provider(
+        self, provider: Optional[Callable[[], Sequence[Dict[str, Any]]]]
+    ) -> None:
+        """注入真实员工花名册（拆解时由管家挑人；模型规划关闭时无效果）。"""
+        decomposer = getattr(self, "_llm_decomposer", None)
+        if decomposer is None:
+            return
+        decomposer.set_employee_provider(provider)
+
+    #: 目标里表示"要联网"的说法（粗判，用于执行前的边界提示，不阻断执行）。
+    _NET_INTENT_MARKERS = (
+        "联网", "上网", "在线", "实时", "最新", "今天的", "搜索", "检索",
+        "查一下", "查查", "调研", "热榜", "热搜",
+    )
+
+    def _preflight_capability_notices(self, goal_text: str) -> List[str]:
+        """Say what this goal cannot do **before** anything runs.
+
+        Only evidence is used: the goal text plus the *registered* capability
+        ids. No notice is produced when the registry is unknown, so this never
+        invents a limitation either.
+        """
+        provider = getattr(self, "_capability_provider", None)
+        if not callable(provider):
+            return []
+        try:
+            available = {str(item) for item in (provider() or [])}
+        except Exception:  # noqa: BLE001 - unknown registry => no claim
+            return []
+        if not available:
+            return []
+        text = str(goal_text or "")
+        notices: List[str] = []
+        if goal_requires_artifact(text) and "file_write" not in available:
+            notices.append(
+                "派活前提示：目标要求产出文件，但当前没有可用的 file_write 能力；"
+                "本次不会向工作区写入任何文件，也不会有可交付的产物路径。"
+            )
+        if (
+            any(marker in text for marker in self._NET_INTENT_MARKERS)
+            and "network_bus" not in available
+        ):
+            notices.append(
+                "派活前提示：目标需要联网检索，但当前没有可用的 network_bus 能力；"
+                "本次拿不到真实来源，结论不会附任何链接。"
+            )
+        return notices
+
+    def _failed_evaluation(
+        self,
+        goal_id: str,
+        correlation_id: str,
+        summary: str,
+        error: str,
+    ) -> EvaluationResult:
+        """Build an honest terminal evaluation for runs that died early.
+
+        Without this, a model outage left ``evaluation=None``: the page said
+        "未完成" with no reason and no evidence-only summary. The summary is
+        generated upstream from the error class and never names a file.
+        """
+        return EvaluationResult(
+            evaluation_id=str(uuid.uuid4()),
+            goal_id=goal_id,
+            task_id=None,
+            outcome=EvaluationOutcome.FAILED,
+            overall_score=0.0,
+            criteria_results=[],
+            feedback=str(error or ""),
+            feedback_type=FeedbackType.CRITICAL,
+            summary=summary,
+            correlation_id=correlation_id,
+            metadata={"terminal": "failed", "reason": "model_or_runtime_failure"},
+        )
 
     def request_stop(self, goal_id: str) -> bool:
         """Signal a running goal to abort (cooperative cancellation).
@@ -527,7 +685,12 @@ class AgentRuntime:
     # Internal wiring
     # ------------------------------------------------------------------ #
     def _evaluate(
-        self, goal: Goal, ctx: ExecutionContext, correlation_id: str
+        self,
+        goal: Goal,
+        ctx: ExecutionContext,
+        correlation_id: str,
+        pinned_agent: Optional[str] = None,
+        preflight_notices: Optional[Sequence[str]] = None,
     ) -> Optional[EvaluationResult]:
         intended: Dict[str, Any] = {
             "id": goal.id,
@@ -553,7 +716,13 @@ class AgentRuntime:
             )
         except Exception:
             return None
-        self._attach_summary(goal, ctx, evaluation)
+        self._attach_summary(
+            goal,
+            ctx,
+            evaluation,
+            pinned_agent=pinned_agent,
+            preflight_notices=preflight_notices,
+        )
         return evaluation
 
     def _attach_summary(
@@ -561,6 +730,8 @@ class AgentRuntime:
         goal: Goal,
         ctx: ExecutionContext,
         evaluation: Optional[EvaluationResult],
+        pinned_agent: Optional[str] = None,
+        preflight_notices: Optional[Sequence[str]] = None,
     ) -> None:
         """Synthesize the user-facing conclusion from REAL task outputs.
 
@@ -573,25 +744,53 @@ class AgentRuntime:
         """
         if evaluation is None or getattr(ctx, "plan", None) is None:
             return
+        resolver = getattr(self, "agent_employee_resolver", None)
         records: List[Dict[str, Any]] = []
         for task in ctx.plan.tasks:
             result = ctx.task_results.get(task.id)
+            agent_id = getattr(task, "assigned_agent", None)
+            employee = _record_employee(task, resolver, pinned_agent)
+            reason = getattr(task, "assignment_reason", None)
+            if pinned_agent:
+                # 用户点名指派：理由是可核对的事实，不需要模型编；也不能
+                # 沿用拆解器给"它原本想派的人"写的理由（会张冠李戴）。
+                reason = "用户点名指派"
+            output = result.output if result is not None else None
+            produced, artifacts = task_output_facts(output)
+            # 把"是否真有产出"钉在任务上，网关序列化时照原样上屏，
+            # 避免 100% 进度 + 没有产物 的自相矛盾。
+            task.produced = produced
+            task.artifacts = list(artifacts)
             records.append(
                 {
                     "name": task.name,
                     "capability": task.capability_id,
                     "status": getattr(task.status, "value", str(task.status)),
-                    "result": result.output if result is not None else None,
+                    "result": output,
                     "error": task.error,
+                    "assigned_agent": agent_id,
+                    "assigned_employee": employee,
+                    "assignment_reason": reason,
+                    "produced": produced,
+                    "artifacts": list(artifacts),
                 }
             )
         try:
-            evaluation.summary = compose_execution_summary(
+            summary = compose_execution_summary(
                 goal.natural_language, records, self._model_generator
             )
+            notices = [str(n) for n in (preflight_notices or []) if str(n).strip()]
+            if notices:
+                # 边界提示永远排在最前面：它是"派活时"就说过的话，
+                # 不能埋在结论后面变成事后解释。
+                summary = "\n".join(notices) + ("\n\n" + summary if summary else "")
+            evaluation.summary = summary
         except Exception:
             # Summary generation must never take down a completed goal.
             evaluation.summary = ""
+        if preflight_notices:
+            evaluation.metadata = dict(evaluation.metadata or {})
+            evaluation.metadata["preflight_notices"] = list(preflight_notices)
         if ctx.failed_tasks:
             completed_count = len(ctx.completed_tasks)
             evaluation.outcome = (

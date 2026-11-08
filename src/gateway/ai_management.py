@@ -32,12 +32,17 @@ else:  # pragma: no cover - platform split
     import fcntl
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any gateway<->ai cycle
-    from .employee import Agent, Employee
-    from .employee_store import EmployeeStore
+    # 员工模型已搬到 src/ai（曾经在 src/gateway），类型块里的旧路径是
+    # "改了名字/搬了位置但导入没跟着改"的隐患，已对齐真实模块。
+    from ..ai.employee import Agent, Employee
+    from ..ai.employee_store import EmployeeStore
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from ..ai.usage_meter import PLANNING_LABEL, meter_scope, snapshot
+from .account_usage import record_usage
 
 # Used to turn a produced file's absolute path into a workspace-relative,
 # honest artifact reference (never inventing a path that isn't real).
@@ -458,6 +463,29 @@ def _as_viewer(value: Any) -> Optional[GoalViewer]:
     落默认、不做可见性过滤"的老行为处理；HTTP 请求永远拿到真实 ``GoalViewer``。
     """
     return value if isinstance(value, GoalViewer) else None
+
+
+def _audit_employee_action(
+    action: str,
+    viewer: Optional[GoalViewer],
+    target: str,
+    *,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """员工增删改写入哈希链审计；审计故障不改变业务已生效的事实。"""
+    actor = viewer.principal if viewer is not None else ""
+    try:
+        from src.kernels.identity import get_identity_manager
+
+        get_identity_manager().record_event(
+            action=action,
+            actor=actor,
+            target=target,
+            outcome="allowed",
+            details=details or None,
+        )
+    except Exception:  # noqa: BLE001 - 审计不可用不能反向让操作失败
+        logger.exception("could not audit %s for employee %r", action, target)
 
 
 # ─── 跨进程写入锁 ──────────────────────────────────────────────
@@ -1088,6 +1116,12 @@ class AIStateManager:
             "failed_tasks": failed,
             "project_id": item.get("project_id"),
             "owner_account_id": owner_of_entry(item),
+            # 归档索引也保留产物路径：项目视图在目标归档后仍要能回答
+            # "产出在哪里"，而不是让历史产出一归档就消失。
+            "artifacts": [
+                path for path in (item.get("artifacts") or [])
+                if isinstance(path, str) and path.strip()
+            ],
             "assigned_employee": item.get("assigned_employee"),
             "assigned_employees": item.get("assigned_employees", []),
             "employees": item.get("employees", []),
@@ -1235,8 +1269,8 @@ class AIStateManager:
                     pass
             # 调用方必须看到失败：接口不能返回 200 running 让用户以为已保存。
             raise GoalPersistError(
-                "目标记录无法写入本机磁盘（"
-                f"{type(exc).__name__}: {exc}）；本次状态尚未持久化"
+                "目标记录无法写入本机磁盘，本次状态尚未持久化。"
+                "请检查磁盘空间后重试。"
             ) from exc
 
     @staticmethod
@@ -1506,6 +1540,8 @@ class AIStateManager:
                 "trace": [],
                 "tasks": [],
                 "artifacts": [],
+                # 派活前的能力边界提示：执行没结束就已经能被 GET 读到。
+                "notices": [],
                 "evaluation": None,
                 "created_at": time.time(),
                 "project_id": project_id,
@@ -1540,7 +1576,7 @@ class AIStateManager:
                 target=self._run_bound_goal,
                 args=(goal_id, natural_language, scope, plan_mode,
                       verification_criteria, True, project_id, pinned_agent, owner),
-                kwargs={"raise_on_persist": False},
+                kwargs={"raise_on_persist": False, "notify_outcome": True},
                 name=f"goal-{goal_id}",
                 daemon=True,
             )
@@ -1600,6 +1636,7 @@ class AIStateManager:
         only_task_name: Optional[str] = None,
         on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         raise_on_persist: bool = True,
+        notify_outcome: bool = False,
     ) -> Dict[str, Any]:
         """后台/同步执行单个 Goal 并维护 Employee 绑定状态（BUSY/IDLE + 计数）。
 
@@ -1610,30 +1647,37 @@ class AIStateManager:
         accounting_done = False
         final_state: Optional[str] = None
         employee = None
+        meter = None
         try:
             try:
                 runtime = self._ensure_runtime()
-                result = runtime.run_goal(
-                    goal_text=natural_language,
-                    goal_id=goal_id,
-                    scope=scope,
-                    plan_mode=plan_mode,
-                    verification_criteria=verification_criteria,
-                    persist=persist,
-                    on_task_progress=(
-                        on_progress
-                        if on_progress is not None
-                        else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
-                    ),
-                    pinned_agent=pinned_agent,
-                    only_task_name=only_task_name,
-                )
+                # 一次 Goal = 一个用量作用域：拆解、逐任务模型调用都汇总到这里，
+                # 退出后按任务 label 拆分入账（总额 = 各分项之和）。
+                with meter_scope() as active_meter:
+                    meter = active_meter
+                    result = runtime.run_goal(
+                        goal_text=natural_language,
+                        goal_id=goal_id,
+                        scope=scope,
+                        plan_mode=plan_mode,
+                        verification_criteria=verification_criteria,
+                        persist=persist,
+                        on_task_progress=(
+                            on_progress
+                            if on_progress is not None
+                            else (lambda tasks: self._record_task_snapshot(goal_id, tasks))
+                        ),
+                        pinned_agent=pinned_agent,
+                        only_task_name=only_task_name,
+                        on_notice=self._goal_notice_recorder(goal_id),
+                    )
             except Exception as exc:
                 logger.error("_run_bound_goal failed: %s", exc, exc_info=True)
                 result = None
-                error = str(exc)
+                error = "执行没有完成，请稍后重试。"
             else:
                 error = None
+            usage = snapshot(meter)
 
             # 更新的是本次真正被驱动的员工（指名 → 被点名者；否则默认管家）。
             employee = self._goal_employee(pinned_agent)
@@ -1679,6 +1723,7 @@ class AIStateManager:
                     "trace": [],
                     "tasks": [],
                     "artifacts": [],
+                    "notices": [],
                     "evaluation": None,
                     "created_at": time.time(),
                     "project_id": project_id,
@@ -1699,6 +1744,13 @@ class AIStateManager:
             # 员工产生的记忆归其所属账号（旁路记录，失败不影响目标结果）。
             self._employee_memory_note(employee, entry)
             self._stamp_owner(entry, prior_owner or owner_account_id)
+            self._attach_goal_usage(
+                entry,
+                usage=usage,
+                goal_owner=owner_account_id,
+                key_owner=str(getattr(employee, "owner_account_id", "") or owner_account_id),
+                goal_id=goal_id,
+            )
             with self._goal_lock:
                 self._goals[goal_id] = entry
             try:
@@ -1715,6 +1767,17 @@ class AIStateManager:
                         f"目标已执行结束（真实状态：{entry.get('state')}），"
                         f"但{exc.detail}；重启后该目标记录会丢失。"
                     ) from exc
+            # 后台派活：任务结束必须让用户知道（托盘气泡 + 出站队列），
+            # 页面关着也能收到；同步调用时用户就在界面前，不重复打扰。
+            if notify_outcome:
+                try:
+                    from ..tasks.goal_notify import notify_goal_outcome
+
+                    notify_goal_outcome(entry)
+                except Exception:  # noqa: BLE001 - 通知失败不影响任务结果
+                    logger.exception(
+                        "AIStateManager: goal %s notify failed", goal_id
+                    )
             return entry
         finally:
             if not accounting_done:
@@ -1805,14 +1868,162 @@ class AIStateManager:
         for bucket in rollup.values():
             bucket["total_duration_ms"] = round(bucket["total_duration_ms"], 3)
         entry["employees"] = list(rollup.values())
+        # 上屏的人名不止汇总：任务名/描述/指派理由都是模型写的，同样可能
+        # 把活儿记到没参与的人头上。白名单只用"本次真的干了活的人"
+        # （任务解析出的 assigned_employee），没有归属数据时不猜测。
+        participants = {
+            str(task.get("assigned_employee"))
+            for task in tasks or []
+            if isinstance(task, dict) and task.get("assigned_employee")
+        }
+        if participants:
+            from src.ai.llm_support import scrub_unverified_staff_mentions
+
+            for task in tasks or []:
+                if not isinstance(task, dict):
+                    continue
+                for field in ("name", "description", "assignment_reason"):
+                    value = task.get(field)
+                    if value:
+                        task[field] = scrub_unverified_staff_mentions(
+                            value, participants
+                        )
+            evaluation = entry.get("evaluation")
+            if isinstance(evaluation, dict) and evaluation.get("summary"):
+                evaluation["summary"] = scrub_unverified_staff_mentions(
+                    evaluation.get("summary"), participants
+                )
         # goal 级：指名派活优先用钉住的员工；否则用任务里真实出现的员工集合。
         pinned = entry.get("assigned_agent")
         if pinned:
             entry["assigned_employee"] = agent_map.get(str(pinned))
+            # 用户点名指派：理由是可核对的事实，不让界面/汇总空着；任务层
+            # 也不能保留拆解器给"别人"写的理由。
+            entry.setdefault("assignment_reason", "用户点名指派给该员工")
+            for task in entry.get("tasks") or []:
+                if isinstance(task, dict):
+                    task["assignment_reason"] = "用户点名指派"
         if not entry.get("assigned_employee"):
             names = [b["employee"] for b in rollup.values() if b["employee"]]
             entry["assigned_employees"] = sorted(set(names))
         return entry
+
+    def _attach_goal_usage(
+        self,
+        entry: Dict[str, Any],
+        *,
+        usage: Dict[str, Any],
+        goal_owner: str,
+        key_owner: str,
+        goal_id: str,
+    ) -> Dict[str, Any]:
+        """把一次 Goal 的真实 token 用量按任务拆分并写入账号账本。
+
+        数据来源只有一个：provider 在响应里返回的 usage（经 ``usage_meter``
+        汇总）。没有真实 usage 就如实写 0 / ``source=none``，绝不估算成"真实"。
+
+        记账口径：
+        * ``actor`` = 发起派活的账号（谁在用）；
+        * ``key_owner`` = 执行员工所属账号（额度记在谁的 Key 上）；
+        * 每个任务一行、规划一行，行数之和 == Goal 总额。
+        """
+        if not isinstance(entry, dict):
+            return entry
+        snapshot_usage = usage or {}
+        by_label = snapshot_usage.get("by_label") or {}
+        tasks = entry.get("tasks")
+        task_usage: Dict[str, Dict[str, Any]] = {}
+        if isinstance(tasks, list):
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+                bucket = by_label.get(f"task:{task_id}")
+                if bucket:
+                    item = {
+                        "tokens_in": int(bucket.get("tokens_in") or 0),
+                        "tokens_out": int(bucket.get("tokens_out") or 0),
+                        "total_tokens": int(bucket.get("tokens_in") or 0)
+                        + int(bucket.get("tokens_out") or 0),
+                        "calls": int(bucket.get("calls") or 0),
+                        "model": str(bucket.get("model") or ""),
+                        "estimated": False,
+                    }
+                    task["usage"] = item
+                    task_usage[str(task_id)] = item
+        planning = by_label.get(PLANNING_LABEL)
+        total_in = int(snapshot_usage.get("tokens_in") or 0)
+        total_out = int(snapshot_usage.get("tokens_out") or 0)
+        parts_in = sum(v["tokens_in"] for v in task_usage.values()) + int(
+            (planning or {}).get("tokens_in") or 0
+        )
+        parts_out = sum(v["tokens_out"] for v in task_usage.values()) + int(
+            (planning or {}).get("tokens_out") or 0
+        )
+        entry["usage"] = {
+            "tokens_in": total_in,
+            "tokens_out": total_out,
+            "total_tokens": total_in + total_out,
+            "calls": int(snapshot_usage.get("calls") or 0),
+            "source": "provider" if snapshot_usage.get("reported") else "none",
+            "estimated": False,
+            "planning": (
+                {
+                    "tokens_in": int(planning.get("tokens_in") or 0),
+                    "tokens_out": int(planning.get("tokens_out") or 0),
+                    "calls": int(planning.get("calls") or 0),
+                    "model": str(planning.get("model") or ""),
+                }
+                if planning
+                else None
+            ),
+            "by_task": task_usage,
+            "parts_tokens_in": parts_in,
+            "parts_tokens_out": parts_out,
+            "parts_match": parts_in == total_in and parts_out == total_out,
+        }
+        if not snapshot_usage.get("reported"):
+            return entry
+        actor = goal_owner or owner_of_entry(entry)
+        billed_to = key_owner or actor
+        correlation = str(entry.get("correlation_id") or "") or f"goal:{goal_id}"
+        rows = []
+        if planning:
+            rows.append((PLANNING_LABEL, planning))
+        for task_id in task_usage:
+            rows.append((f"task:{task_id}", by_label.get(f"task:{task_id}") or {}))
+        for label, bucket in rows:
+            record_usage(
+                actor=actor,
+                key_owner=billed_to,
+                model=str(bucket.get("model") or ""),
+                tokens_in=int(bucket.get("tokens_in") or 0),
+                tokens_out=int(bucket.get("tokens_out") or 0),
+                session_id=f"goal:{goal_id}",
+                correlation_id=f"{correlation}:{label}",
+                estimated=False,
+            )
+        return entry
+
+    def _goal_notice_recorder(self, goal_id: str) -> Callable[[str], None]:
+        """把"派活前提示"写进仍在运行的目标记录（GET 立即可见）。"""
+
+        def _record(message: str) -> None:
+            text = str(message or "").strip()
+            if not text:
+                return
+            with self._goal_lock:
+                entry = self._goals.get(goal_id)
+                if entry is None or entry.get("state") != "running":
+                    return
+                notices = list(entry.get("notices") or [])
+                if text not in notices:
+                    notices.append(text)
+                    entry["notices"] = notices
+
+        return _record
 
     def _record_task_snapshot(self, goal_id: str, tasks: List[Dict[str, Any]]) -> None:
         """把执行内核的**当前**任务快照增量落进 ``_goals[goal_id]["tasks"]``。
@@ -1904,7 +2115,7 @@ class AIStateManager:
             raise GoalWorkError(
                 400,
                 "assign_target_required",
-                "必须且只能指定一个执行主体：employee_name（员工名）或 agent_id",
+                "必须且只能指定一个执行人：员工名（employee_name）或执行个体（agent_id）",
             )
 
         if employee_name:
@@ -1957,6 +2168,7 @@ class AIStateManager:
             goal_id=str(entry.get("goal_id") or ""),
             action="assign_task",
             principal=principal,
+            target=employee.name,
             details={
                 "agent_id": agent.id,
                 "employee_name": employee.name,
@@ -2174,7 +2386,7 @@ class AIStateManager:
                 on_task_progress=_progress,
             )
         except Exception as exc:  # noqa: BLE001 - 真实原因要回给调用方
-            error = str(exc)
+            error = "重试没有完成，请稍后重试。"
             logger.error("retry_task failed (%s/%s): %s", goal_id, task_id, exc)
 
         # 合并：只替换重试范围内的任务，其余任务取**旧**值。
@@ -2582,7 +2794,7 @@ class AIStateManager:
                 "action": "stop",
                 "was_running": bool(was_running),
                 "owner_account_id": owner,
-                "reason": "human operator abort",
+                "reason": "操作人主动中止",
             },
             correlation_id=goal_id,
         )
@@ -2593,6 +2805,7 @@ class AIStateManager:
         action: str,
         principal: str = "",
         details: Optional[Dict[str, Any]] = None,
+        target: str = "",
     ) -> None:
         """Record "who did what to which goal" -- assignment and single-task retry.
 
@@ -2603,6 +2816,8 @@ class AIStateManager:
         from src.kernels.audit import log_event, AuditEventType, AuditScope
 
         payload: Dict[str, Any] = {"goal_id": goal_id, "action": action}
+        if target:
+            payload["target"] = target
         payload.update(details or {})
         try:
             log_event(
@@ -2790,6 +3005,21 @@ class AIStateManager:
             self._ensure_employee()  # 顺便把 store 建好
         return self._employee_store
 
+    def _readonly_store(self) -> "EmployeeStore":
+        """只读路径用：只建 store 句柄，**不**触发默认员工的构造。
+
+        ``_store()`` 在空句柄上会调用 ``_ensure_employee()``，进而构造
+        ``Employee(enable_observability=True)`` → 按需导入
+        ``knowledge.memory``（mem0/openai/qdrant，实测 7–8 秒）。名册归属
+        映射只需要读 JSON，不该为了拿一个 store 句柄付这笔成本。
+        """
+        if self._employee_store is not None:
+            return self._employee_store
+        from src.ai.employee_store import EmployeeStore
+
+        self._employee_store = EmployeeStore()
+        return self._employee_store
+
     # ── 员工实体的归属 / 可见性 / 解析 ──
 
     def _employee_owner(self, emp: "Employee") -> str:
@@ -2861,13 +3091,18 @@ class AIStateManager:
         if self._agent_map_cache is not None:
             return self._agent_map_cache
         mapping: Dict[str, str] = {}
-        store = self._store()
-        for ename in store.list_employees():
-            emp = store.load(ename)
-            if emp is None:
+        store = self._readonly_store()
+        # 只读摘要即可：``store.load()`` 会重建 Employee，默认开启可观测性时
+        # 会按需导入 knowledge.memory（mem0 → openai → qdrant_client），实测
+        # 让首个 ``GET /v1/goals`` 付 7 秒。归属映射只需要 agent id 与员工名。
+        for row in store.list_summaries():
+            name = str(row.get("name") or row.get("id") or "")
+            if not name:
                 continue
-            for agent_id in emp.agents:
-                mapping[agent_id] = emp.name
+            for agent in row.get("agents") or []:
+                agent_id = agent.get("id")
+                if agent_id:
+                    mapping[str(agent_id)] = name
         self._agent_map_cache = mapping
         return mapping
 
@@ -2894,6 +3129,7 @@ class AIStateManager:
             pool_owner = default_account_id()
             auto_ids: List[str] = []
             all_ids: List[str] = []
+            roster: List[Dict[str, Any]] = []
             for ename in store.list_employees():
                 emp = store.load(ename)
                 if emp is None or not emp.is_active():
@@ -2901,6 +3137,18 @@ class AIStateManager:
                 all_ids.extend(emp.agents.keys())
                 if self._employee_owner(emp) == pool_owner:
                     auto_ids.extend(emp.agents.keys())
+                    # 拆解器据此挑人：只暴露真实名字 / 专长 / agent id，
+                    # 模型不可能编出不存在的员工。
+                    roster.append(
+                        {
+                            "name": emp.name,
+                            "role": str(getattr(emp, "role_description", "") or ""),
+                            "capabilities": list(
+                                getattr(emp, "default_capabilities", []) or []
+                            ),
+                            "agent_ids": list(emp.agents.keys()),
+                        }
+                    )
             if not all_ids:
                 return
             executors = {
@@ -2912,6 +3160,12 @@ class AIStateManager:
             try:
                 runtime.engine.decomposer.agent_ids = auto_ids or all_ids
                 runtime.engine.executor.set_agent_resolver(executors.get)
+                # 管家自己挑人的花名册 + 汇总用的 agent→员工名解析。
+                set_provider = getattr(runtime, "set_employee_provider", None)
+                if callable(set_provider):
+                    set_provider(lambda: list(roster))
+                if hasattr(runtime, "agent_employee_resolver"):
+                    runtime.agent_employee_resolver = self._employee_name_for_agent
             except Exception as exc:  # noqa: BLE001 - 非真实运行时（测试替身）时跳过
                 logger.debug("AIStateManager: agent pool refresh skipped: %s", exc)
             self._agent_map_cache = None
@@ -3280,10 +3534,9 @@ class AIStateManager:
         """
         store = self._store()
         result: List[Dict[str, Any]] = []
-        for ename in store.list_employees():
-            emp = store.load(ename)
-            if emp is None:
-                continue
+        # 一次读库、批量重建：逐个 load() 会把整份员工 JSON 重读 N 遍，
+        # 1000 名员工时列表本身就要几分钟。
+        for emp in store.load_many():
             if not self._employee_visible(emp, viewer):
                 continue
             result.append(self._summarize_employee(emp, viewer))
@@ -3442,6 +3695,8 @@ class AIStateManager:
         # the ``if`` made that read raise UnboundLocalError in background goal
         # threads (observed in verify_employee_goal_binding.py /
         # verify_http_full_closure.py logs) -- a crash the gates never counted.
+        from ..kernels.execution import task_result_text
+
         plan_tasks = None
         if result.context:
             ctx = result.context
@@ -3463,13 +3718,20 @@ class AIStateManager:
                         "status": t.status.value if hasattr(t.status, 'value') else str(t.status),
                         "capability_id": t.capability_id,
                         "assigned_agent": t.assigned_agent,
+                        # 为什么派给这个人：拆解时按能力匹配得出，随结果上屏。
+                        "assignment_reason": getattr(t, "assignment_reason", None),
+                        # 终态不能只看 status：completed 也可能没有任何产出。
+                        "produced": bool(getattr(t, "produced", False)),
+                        "artifacts": list(getattr(t, "artifacts", []) or []),
                         # 崩溃重启后单任务重试要靠这份快照按原计划重建任务；
                         # 重启后拆解器可能给出不同任务名，不能只存名字。
                         "inputs": AIStateManager._json_safe_inputs(t.inputs),
                         "dependencies": list(t.dependencies or []),
                         "max_retries": t.max_retries,
                         "timeout_seconds": t.timeout_seconds,
-                        "result": str(t.result)[:500] if t.result else None,
+                        # 不能 str(dict)：页面上会出现 {'key': 'value'} 原始结构。
+                        # 统一走内核的可读渲染（含来源链接与抓取时间）。
+                        "result": task_result_text(t.result)[:1200] if t.result else None,
                         "error": t.error,
                         "started_at": str(t.started_at) if t.started_at else None,
                         "completed_at": str(t.completed_at) if t.completed_at else None,
@@ -3485,6 +3747,21 @@ class AIStateManager:
                 "replan_triggered": getattr(ev, 'replan_triggered', False),
                 "summary": getattr(ev, 'summary', ''),
             }
+        else:
+            state_text = (
+                result.state.value if hasattr(result.state, 'value') else str(result.state)
+            )
+            if state_text in ("failed", "cancelled"):
+                # 老记录/更早的失败路径可能没有 evaluation。这里补的仍然只有
+                # 证据：一句"未完成 + 原因类型 + 没有产物路径"，不编结果。
+                from ..ai.llm_support import failure_summary
+
+                evaluation = {
+                    "outcome": _outcome_label("failed"),
+                    "replan_required": True,
+                    "replan_triggered": False,
+                    "summary": failure_summary(result.error),
+                }
 
         # Collect REAL produced artifacts: workspace files a file_write task
         # actually wrote. We only record a path when the task completed AND its
@@ -3508,6 +3785,8 @@ class AIStateManager:
             "trace": trace_entries,
             "tasks": tasks,
             "artifacts": artifacts,
+            # 派活前就说过的话（能力边界），与结论分开保存，便于 UI 前置展示。
+            "notices": list(getattr(result, "preflight_notices", []) or []),
             "evaluation": evaluation,
             "created_at": time.time(),
         }
@@ -3549,6 +3828,10 @@ class AIStateManager:
                 continue
             res = t.result
             if not isinstance(res, dict):
+                continue
+            # 写失败的回执里也可能带着 path（例如权限不足），那不是一个
+            # 真实产物；只有明确成功才算数。
+            if res.get("success") is False:
                 continue
             written = res.get("path")
             if not isinstance(written, str) or not written:
@@ -3678,11 +3961,14 @@ def create_goal(
     except GoalWorkError as exc:
         raise _http_from_goal_error(exc) from exc
     except ValueError as exc:
-        # e.g. a non-existent project_id — honest 404, not a 503 crash.
+        # 例如 project_id 不在调用者的可见范围：与"资源不存在"必须逐字同形，
+        # 否则越权请求会拿到一条能区分"存在但无权"的文案。
+        from ..kernels.identity import _accounts as _acc
+        from .account_context import deny
+
         logger.warning("goal execution rejected: %s", exc)
-        raise HTTPException(
-            status_code=404,
-            detail="要执行的目标不存在或已被删除。请刷新列表后重试。",
+        raise deny(
+            404, _acc.CODE_SUBTREE_DENIED, _acc.NEUTRAL_NOT_FOUND_MESSAGE
         ) from exc
     except Exception as exc:
         logger.warning("goal execution failed: %s", exc)
@@ -3950,6 +4236,15 @@ def hire_employee(
                 "或先在「我的员工」里查看现有员工。"
             ),
         )
+    _audit_employee_action(
+        "employee.hired",
+        viewer,
+        req.name,
+        details={
+            "employee_id": result["employee"].get("id") or result["employee"].get("name"),
+            "agent_count": req.agent_count,
+        },
+    )
     return JSONResponse(status_code=201, content=result["employee"])
 
 
@@ -3970,6 +4265,18 @@ def hire_employees_batch(
         items,
         owner_account_id=viewer.principal if viewer is not None else "",
     )
+    for employee in result["created"]:
+        name = str(employee.get("name") or "")
+        if name:
+            _audit_employee_action(
+                "employee.hired",
+                viewer,
+                name,
+                details={
+                    "employee_id": employee.get("id") or name,
+                    "batch": True,
+                },
+            )
     status_code = 201 if result["created_count"] else 200
     return JSONResponse(status_code=status_code, content=result)
 
@@ -4017,7 +4324,7 @@ def update_employee(
     viewer = _as_viewer(viewer)
     mgr = AIStateManager()
     try:
-        return mgr.update_employee(
+        result = mgr.update_employee(
             name,
             viewer,
             new_name=req.name,
@@ -4033,6 +4340,19 @@ def update_employee(
             status_code=400,
             detail="员工信息没有通过校验，本次修改没有完成。请检查填写内容后重试。",
         ) from exc
+    employee = result.get("employee") or {}
+    final_name = str(employee.get("name") or req.name or name)
+    _audit_employee_action(
+        "employee.updated",
+        viewer,
+        final_name,
+        details={
+            "previous_name": name,
+            "renamed": bool(result.get("renamed")),
+            "employment_status": employee.get("employment_status"),
+        },
+    )
+    return result
 
 
 @router.delete("/employees/{name}")
@@ -4063,6 +4383,7 @@ def remove_employee(
             status_code=404,
             detail=f"没有找到员工「{name}」。请刷新列表后重试。",
         )
+    _audit_employee_action("employee.removed", viewer, name)
     return {"removed": name, "ok": True}
 
 

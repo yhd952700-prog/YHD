@@ -19,6 +19,7 @@
  */
 
 import type { GoalDetail, GoalTask } from './operator'
+import { numberText } from './format'
 
 /** 目标详情轮询间隔（运行中）。 */
 export const BUTLER_DETAIL_POLL_MS = 2_000
@@ -26,6 +27,45 @@ export const BUTLER_DETAIL_POLL_MS = 2_000
 export const BUTLER_LIST_POLL_MS = 15_000
 
 export type ButlerTone = 'ok' | 'warn' | 'danger' | 'accent' | 'muted'
+
+export interface TextSegment {
+  value: string
+  href?: string
+}
+
+/**
+ * 结论里出现的真实来源必须能点开，不能只让用户看一串死文本。
+ * 同时识别模型常见的 markdown 形式 `[标题](url)`：只显示标题，
+ * 不把 `[标题](` 和 `)` 这些语法符号残留在页面上。
+ */
+const LINK_PATTERN =
+  /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s，。；、）」』"'<>]+/g
+
+/**
+ * 把一段文本拆成「普通文本 / 链接」片段，供页面渲染 <a>。
+ * 句末的英文标点（,.;:!?）不属于 URL，留在后面的普通文本里。
+ */
+export function splitLinks(text: string): TextSegment[] {
+  if (!text) return []
+  const segments: TextSegment[] = []
+  let cursor = 0
+  for (const match of text.matchAll(LINK_PATTERN)) {
+    const index = match.index ?? 0
+    if (match[2]) {
+      if (index > cursor) segments.push({ value: text.slice(cursor, index) })
+      segments.push({ value: match[1], href: match[2] })
+      cursor = index + match[0].length
+      continue
+    }
+    const value = match[0].replace(/[.,;:!?]+$/, '')
+    if (!value) continue
+    if (index > cursor) segments.push({ value: text.slice(cursor, index) })
+    segments.push({ value, href: value })
+    cursor = index + value.length
+  }
+  if (cursor < text.length) segments.push({ value: text.slice(cursor) })
+  return segments
+}
 
 export type TaskPhase =
   | 'queued'
@@ -197,7 +237,7 @@ export function taskDurationSeconds(task: GoalTask, nowSeconds = Date.now() / 10
 export function formatTaskDuration(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return '—'
   if (seconds < 1) return `${Math.max(1, Math.round(seconds * 1000))} 毫秒`
-  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`
+  if (seconds < 60) return `${seconds < 10 ? numberText(seconds, 1) : Math.round(seconds)} 秒`
   const minutes = Math.floor(seconds / 60)
   const rest = Math.round(seconds % 60)
   if (minutes < 60) return `${minutes} 分 ${rest} 秒`

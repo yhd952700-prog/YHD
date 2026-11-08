@@ -188,6 +188,12 @@ export interface AuditEvent {
   details: Record<string, unknown> | null
   /** 内核动作名（details.action 的顶层投影，便于按动作筛选） */
   action: string | null
+  /** "对什么做的"（details.target 的顶层投影） */
+  target?: string | null
+  /** 后端拼好的一句人话标题（谁 · 做了什么 · 对谁 · 结果） */
+  display_title?: string
+  /** 结果的中文标签 */
+  status_label?: string
   event_hash: string
   prev_event_hash: string | null
   hash_alg: string | null
@@ -212,9 +218,38 @@ export interface AuditEventsResponse {
   }
 }
 
+export interface AuditRetention {
+  enabled: boolean
+  /** 按时间保留的天数：超过就会被裁剪 */
+  days: number
+  max_rows: number
+  max_bytes: number
+  min_keep: number
+  interval: number
+  max_delete: number
+}
+
+export interface AuditChainKey {
+  status: 'available' | 'missing' | 'unreadable' | string
+  mode?: 'on' | 'off' | string
+  /** 库里有带密钥（HMAC）事件的条数 */
+  keyed_events: number
+  /** true = 缺密钥，只能做结构检查 */
+  degraded: boolean
+  /** true = 旧库升级后的混合链（部分可证明） */
+  partial?: boolean
+  message?: string | null
+  partial_message?: string | null
+}
+
 export interface AuditVerifyResult {
   /** 链完好为 true；被篡改 / 被截断 / 被分叉为 false */
   ok: boolean
+  /** 第三种状态：缺校验密钥，只能结构检查（既不是完好，也不是被篡改） */
+  degraded?: boolean
+  /** 第四种状态：旧库升级后的混合链，尾巴可证明、前缀只能结构检查 */
+  partial?: boolean
+  message?: string | null
   entries_checked: number
   first_failure: string | null
   details: {
@@ -226,6 +261,17 @@ export interface AuditVerifyResult {
     read_only: boolean
     db_path?: string
     duration_seconds?: number
+    verification_mode?: 'full' | 'incremental' | 'structural_only' | string
+    degraded?: boolean
+    degraded_reason?: string | null
+    chain_key_status?: string
+    keyed_events?: number
+    structural_ok?: boolean
+    /** 降级为无密钥校验时，这份无密钥链自身的校验结果（不能替代密钥证明） */
+    unkeyed_integrity_ok?: boolean
+    message?: string | null
+    chain_key?: AuditChainKey
+    retention?: AuditRetention
   }
 }
 
@@ -236,6 +282,8 @@ export interface AuditSummary {
   by_action: Record<string, number>
   distinct_correlation_ids: number
   generated_at: number
+  retention?: AuditRetention
+  chain_key?: AuditChainKey
 }
 
 export interface AuditEventsQuery {
@@ -272,13 +320,47 @@ export function fetchAuditEventBySeq(seq: number): Promise<{ event: AuditEvent; 
   )
 }
 
-/** 跑**真实**的链校验。后端只 SELECT，从不修复；ok=false 就是被改过。 */
-export function verifyAuditChain(): Promise<AuditVerifyResult> {
-  return apiFetch<AuditVerifyResult>('/v1/audit/verify')
+/**
+ * 跑**真实**的链校验。后端只 SELECT，从不修复；ok=false 就是被改过。
+ *
+ * 手动检查默认 ``full=true``：增量校验只看"上次校验点之后"，无法发现更早的
+ * 历史行被改。慢一点，但用户点这个按钮要的是可信结论。
+ */
+export function verifyAuditChain(full = true): Promise<AuditVerifyResult> {
+  return apiFetch<AuditVerifyResult>(`/v1/audit/verify?full=${full ? 'true' : 'false'}`)
 }
 
 export function fetchAuditSummary(): Promise<AuditSummary> {
   return apiFetch<AuditSummary>('/v1/audit/summary')
+}
+
+export interface AuditArchive {
+  schema: number
+  exported_at: number
+  since_seq: number
+  limit: number
+  count: number
+  truncated: boolean
+  next_since_seq: number
+  events: AuditEvent[]
+  integrity: AuditVerifyResult
+  retention?: AuditRetention
+  notice: string
+}
+
+/**
+ * 导出审计记录归档（仅根账号）。归档是给人留存/比对的副本，**不含校验密钥**；
+ * 换机后没有密钥时只能查阅，不能替代原机上的带密钥校验。
+ */
+export function exportAuditArchive(
+  sinceSeq = 0,
+  limit = 20000,
+): Promise<AuditArchive> {
+  const params = new URLSearchParams({
+    since_seq: String(sinceSeq),
+    limit: String(limit),
+  })
+  return apiFetch<AuditArchive>(`/v1/audit/export?${params.toString()}`)
 }
 
 // ─── 工作区文件（只读可观测面） ──────────────────────────────
@@ -344,6 +426,8 @@ export interface GoalSummary {
   task_count: number
   completed_tasks: number
   failed_tasks: number
+  /** 后端 list_goals 已返回真实产物路径；空数组 = 这次没有写出文件。 */
+  artifacts?: string[]
   /** 员工归属：列表里就能看出"这单是谁做的"（后端 list_goals 已返回）。 */
   assigned_employee?: string | null
   assigned_employees?: string[]
@@ -450,14 +534,29 @@ export interface ProjectGoalRef {
   failed_tasks: number
 }
 
+/** 项目里真实写出的产物：路径 + 归属账号（后端 `_outputs_for_goals`）。 */
+export interface ProjectOutput {
+  path: string
+  owner: string
+  goal_id: string | null
+}
+
 export interface ProjectSummary {
   project_id: string
   name: string
   description: string
   created_at: number | null
+  updated_at?: number | null
+  archived_at: number | null
   creator: string | null
+  owner_account_id?: string
   goal_ids: string[]
   goal_count: number
+  /** 项目自身更新时间 ∪ 其下目标创建/更新时间的最晚值。 */
+  last_activity_at: number | null
+  output_count: number
+  outputs: ProjectOutput[]
+  outputs_truncated: boolean
 }
 
 export interface ProjectDetail extends ProjectSummary {
@@ -467,6 +566,8 @@ export interface ProjectDetail extends ProjectSummary {
 export interface ProjectsResponse {
   projects: ProjectSummary[]
   count: number
+  /** 主账号切视角时回显被查看的账号；未切换为 null。 */
+  view_account: string | null
 }
 
 export interface CreateProjectBody {
@@ -474,9 +575,19 @@ export interface CreateProjectBody {
   description?: string
 }
 
+export interface ListProjectsQuery {
+  includeArchived?: boolean
+  /** 仅主账号有效；成员传他人视角会被后端中性 404。 */
+  viewAccount?: string | null
+}
+
 /** 列表：每 30 秒轮询一次（项目会随目标归类而变化）。 */
-export function listProjects(): Promise<ProjectsResponse> {
-  return apiFetch<ProjectsResponse>('/v1/projects')
+export function listProjects(query: ListProjectsQuery = {}): Promise<ProjectsResponse> {
+  const params = new URLSearchParams()
+  if (query.includeArchived) params.set('include_archived', 'true')
+  if (query.viewAccount) params.set('view_account', query.viewAccount)
+  const qs = params.toString()
+  return apiFetch<ProjectsResponse>(`/v1/projects${qs ? `?${qs}` : ''}`)
 }
 
 /** 详情：手动触发（点开某个项目才取），不轮询。 */
@@ -491,9 +602,40 @@ export function createProject(body: CreateProjectBody): Promise<ProjectSummary> 
   })
 }
 
-export function deleteProject(projectId: string): Promise<{ removed: string; ok: boolean }> {
-  return apiFetch<{ removed: string; ok: boolean }>(
-    `/v1/projects/${encodeURIComponent(projectId)}`,
+/** 归档：仅从默认列表隐藏，数据与产出都保留；可恢复。 */
+export function archiveProject(projectId: string): Promise<{
+  project_id: string
+  archived_at: number | null
+  ok: boolean
+}> {
+  return apiFetch(`/v1/projects/${encodeURIComponent(projectId)}/archive`, {
+    method: 'POST',
+  })
+}
+
+/** 恢复归档项目。 */
+export function restoreProject(projectId: string): Promise<{
+  project_id: string
+  archived_at: null
+  ok: boolean
+}> {
+  return apiFetch(`/v1/projects/${encodeURIComponent(projectId)}/restore`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * 删除项目。有目标关联时后端先返回 409 `project_has_goals`（带影响面），
+ * 调用方把 message 展示给用户，用户确认后再以 `force=true` 重发 —— 删除
+ * 只解除归属，绝不删除目标本身。
+ */
+export function deleteProject(
+  projectId: string,
+  force = false,
+): Promise<{ removed: string; ok: boolean; goal_count?: number }> {
+  const qs = force ? '?force=true' : ''
+  return apiFetch<{ removed: string; ok: boolean; goal_count?: number }>(
+    `/v1/projects/${encodeURIComponent(projectId)}${qs}`,
     { method: 'DELETE' },
   )
 }
