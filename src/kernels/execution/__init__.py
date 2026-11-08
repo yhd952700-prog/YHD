@@ -55,6 +55,53 @@ def _json_safe_inputs(value: Any) -> Dict[str, Any]:
         return {str(k): str(v) for k, v in value.items()}
 
 
+def task_result_text(value: Any) -> Optional[str]:
+    """把工具返回的结构化结果渲染成给人读的文本，而不是 Python repr。
+
+    直接 ``str(dict)`` 会把 ``{'success': True, 'result': '...'}`` 原样贴到
+    管家页面上，用户看到的是数据结构而不是答案（验收第 5 项明确禁止）。
+    这里优先取业务字段，并把检索来源与抓取时间排成可点击的
+    ``- 标题: URL`` 行，保证真实链接和时间戳不会淹没在 repr 里。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        text = ""
+        for key in ("result", "summary", "text", "message", "output"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                text = candidate.strip()
+                break
+        if not text:
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(value)
+        lines = [text]
+        sources = value.get("sources")
+        if isinstance(sources, list):
+            for source in sources[:8]:
+                if not isinstance(source, dict):
+                    continue
+                url = source.get("url")
+                if not isinstance(url, str) or not url.strip():
+                    continue
+                title = source.get("title") or source.get("site") or "来源"
+                lines.append(f"- {title}: {url}")
+        fetched = value.get("fetched_at")
+        if isinstance(fetched, str) and fetched.strip():
+            lines.append(f"抓取时间：{fetched.strip()}")
+        return "\n".join(lines)
+    if isinstance(value, (list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
 # Seam for real capability execution. The Execution Kernel must not depend on
 # the ai layer (strict layering: spec -> kernels -> ai -> gateway/console), so
 # the actual executor is injected at assembly time by an upper layer.
@@ -374,9 +421,12 @@ class GoalDecomposer:
         r"(?P<b>[-+]?\d+(?:\.\d+)?)",
         re.IGNORECASE,
     )
+    # 中文关键词不能用 \b 包住：Python 的 \b 只在 \w 与非 \w 之间成立，
+    # 而中文字符本身就是 \w，"同时计算…" 里 "时/计" 之间没有边界，会导致
+    # 整句中文夹带的算式被漏掉（多任务场景就踩过：算出了空结果）。
     _COMPUTE_REQUEST = re.compile(
-        r"\b(?:calculat\w*|comput\w*|evaluat\w+|sum|total|difference|product|"
-        r"arithmetic|math\b|multiply|subtract|divide|averag\w+|"
+        r"(?:\b(?:calculat\w*|comput\w*|evaluat\w+|sum|total|difference|product|"
+        r"arithmetic|math\b|multiply|subtract|divide|averag\w+)\b|"
         r"计算|求和|差|积|商|算|数学)",
         re.IGNORECASE,
     )
@@ -1798,7 +1848,7 @@ class ExecutionEngine:
                 "dependencies": list(t.dependencies or []),
                 "max_retries": t.max_retries,
                 "timeout_seconds": t.timeout_seconds,
-                "result": str(t.result)[:500] if t.result else None,
+                "result": task_result_text(t.result)[:500] if t.result else None,
                 "error": t.error,
                 "started_at": str(t.started_at) if t.started_at else None,
                 "completed_at": str(t.completed_at) if t.completed_at else None,

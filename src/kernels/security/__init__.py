@@ -19,6 +19,7 @@ wired here. See KERNEL-PRODUCT-CAPABILITY.md §10.
 from __future__ import annotations
 from src.kernels._base import KernelLifecycle, KernelStateError, is_servable
 
+import importlib.util
 import logging
 import threading
 from datetime import datetime
@@ -53,11 +54,11 @@ _log = logging.getLogger(__name__)
 # 真实的 Vault 实现不在本内核，而在 `src/security/vault_client.py`
 # （hvac + AppRole 认证）与 `src/integrations/vault/`（hvac + 单例 + secret_manager）。
 # 本内核只如实报告**客户端库是否可用**；内核层不得反向依赖那两层。
-try:
-    import hvac as _hvac  # noqa: F401
-    VAULT_AVAILABLE = True
-except ImportError:
-    VAULT_AVAILABLE = False
+#
+# 用 find_spec 而不是 `import hvac`：hvac 会连带导入 requests 等约 2.0s 的
+# 依赖树（实测），而这里只需要"装没装"这个布尔值。find_spec 不执行模块体，
+# 语义与 `import hvac` 成功/失败完全一致（测试也按 find_spec 断言）。
+VAULT_AVAILABLE = importlib.util.find_spec("hvac") is not None
 
 
 # ---------------------------------------------------------------------------

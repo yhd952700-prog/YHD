@@ -32,6 +32,17 @@ _PROJECT_ROOT = os.path.dirname(
 )
 DEFAULT_DB_PATH = os.path.join(_PROJECT_ROOT, "memory_store.db")
 
+# 断电级持久化：WAL+synchronous=NORMAL 只能扛"进程被杀"（已提交事务在 OS
+# 页缓存里），扛不住"直接断电/蓝屏"（最后若干已确认事务可能随页缓存丢失）。
+# 记忆写入是低频操作，默认 FULL 换取"已返回成功的写入一定还在"；确实要
+# 用吞吐换风险时可用环境变量降为 NORMAL/OFF。
+_SYNC_LEVELS = {"OFF", "NORMAL", "FULL", "EXTRA"}
+_MEMORY_SYNCHRONOUS = (
+    os.environ.get("LIUHAO_MEMORY_SYNCHRONOUS") or "FULL"
+).strip().upper()
+if _MEMORY_SYNCHRONOUS not in _SYNC_LEVELS:
+    _MEMORY_SYNCHRONOUS = "FULL"
+
 
 class MemoryStoreError(RuntimeError):
     """记忆落盘失败：带可读原因，调用方必须据此失败（fail-closed）。
@@ -80,7 +91,7 @@ class MemoryStore:
     def _init_db(self) -> None:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(f"PRAGMA synchronous={_MEMORY_SYNCHRONOUS}")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS memory_entries (

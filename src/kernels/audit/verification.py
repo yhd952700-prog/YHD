@@ -174,6 +174,20 @@ class IncrementalResult:
     #: Separate from ``rooted_at_genesis`` because a pruned prefix was never
     #: re-derived -- the two claims must not be conflated.
     rooted_at_retention_floor: bool = False
+    #: Last seq written at the time of this pass (the honest right edge).
+    tail_seq: int = 0
+    #: False when ``max_events`` capped this pass: ``to_seq`` is a verified
+    #: PREFIX, and ``pending_events`` remain to be checked by later passes.
+    #: Callers must not report "checked to the tail" unless this is True.
+    complete: bool = True
+    #: Events between ``to_seq`` and ``tail_seq`` still awaiting a pass.
+    pending_events: int = 0
+    #: True when the retained suffix is covered from the floor **through
+    #: ``to_seq``** (the range this pass actually re-derived). Distinct from
+    #: ``rooted_at_genesis``, which is about the TABLE TAIL: a capped pass
+    #: must not claim the whole chain is rooted, but the gateway still needs
+    #: to know "the prefix I just checked is anchored to the floor".
+    rooted_through_verified: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -188,6 +202,10 @@ class IncrementalResult:
             "anchor_source": self.anchor_source,
             "retention_floor_seq": self.retention_floor_seq,
             "rooted_at_retention_floor": self.rooted_at_retention_floor,
+            "tail_seq": self.tail_seq,
+            "complete": self.complete,
+            "pending_events": self.pending_events,
+            "rooted_through_verified": self.rooted_through_verified,
         }
 
 

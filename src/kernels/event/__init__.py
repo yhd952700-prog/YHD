@@ -147,9 +147,22 @@ class EventBus:
         self._subscriptions: Dict[str, List[Subscription]] = defaultdict(list)
         self._event_history: List[Event] = []
         self._max_history = 10000
+        # 长跑实测 RSS +24.5MB/h：`_event_history` 有上限，但它旁边的
+        # `_correlation_index` 没有——每条事件都按 correlation_id 再挂一份强引用，
+        # 历史被裁掉后旧 Event（含 payload）仍被索引钉住，等于"只增不删"。
+        # 这里让索引跟随历史窗口回收，并给死信一个上限（PAUSED 状态下每次发布
+        # 都会记一条死信，不设限同样会单调上涨）。
+        self._max_dead_letters = 1000
         self._dead_letters: List[DeadLetterEntry] = []
         self._lock = threading.RLock()
         self._correlation_index: Dict[str, List[Event]] = defaultdict(list)
+
+    def _append_dead_letter(self, entry: DeadLetterEntry) -> None:
+        """记录死信并保持有界（调用方已持有 ``self._lock``）。"""
+        self._dead_letters.append(entry)
+        overflow = len(self._dead_letters) - self._max_dead_letters
+        if overflow > 0:
+            del self._dead_letters[:overflow]
 
     @kernel_action("event.publish")
     def publish(self, event: Event) -> str:
@@ -163,7 +176,7 @@ class EventBus:
         """
         with self._lock:
             if not is_servable(self):
-                self._dead_letters.append(
+                self._append_dead_letter(
                     DeadLetterEntry(
                         event,
                         KernelNotServableError(
@@ -179,7 +192,17 @@ class EventBus:
             # Store in history
             self._event_history.append(event)
             if len(self._event_history) > self._max_history:
+                evicted = self._event_history[: len(self._event_history) - self._max_history]
                 self._event_history = self._event_history[-self._max_history:]
+                # 同步从相关性索引里摘掉被淘汰的事件；否则索引会永远钉住旧
+                # Event（payload 全在内存里），RSS 只增不降（长跑 +24.5MB/h）。
+                for old in evicted:
+                    bucket = self._correlation_index.get(old.correlation_id)
+                    if not bucket:
+                        continue
+                    bucket[:] = [kept for kept in bucket if kept is not old]
+                    if not bucket:
+                        self._correlation_index.pop(old.correlation_id, None)
 
             # Index by correlation ID
             self._correlation_index[event.correlation_id].append(event)
@@ -209,7 +232,7 @@ class EventBus:
                     except Exception as e:
                         # Dead letter handling
                         dl = DeadLetterEntry(event, e, sub.id)
-                        self._dead_letters.append(dl)
+                        self._append_dead_letter(dl)
 
             return event.correlation_id
 

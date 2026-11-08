@@ -232,7 +232,10 @@ class TestChatGate:
         a = self._assistant("quota-gate-broke")
         result = a.chat("hello")
         assert result["status"] == "denied"
-        assert "权限不足" in result["reply"]
+        # 预算不足与权限不足是两类问题：这里必须说"预算"，不能误导成"权限"。
+        assert result["reason"] == "budget_exceeded"
+        assert "预算" in result["reply"]
+        assert "权限" not in result["reply"]
 
     def test_chat_is_not_refused_when_the_cost_is_unknown(self, monkeypatch):
         """An unpriced model must not be blocked on a guess."""

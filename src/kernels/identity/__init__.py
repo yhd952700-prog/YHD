@@ -1143,11 +1143,15 @@ class IdentityManager:
         target: str,
         outcome: str,
         details: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None,
     ) -> None:
         """账号树事件写入**哈希链审计**（不是内存日志）。
 
         ``log_event`` 失败时必须显式报错到日志，但不能反向让业务操作失败：
         审计不可用是运维问题，安全判定已在调用前完成。
+
+        ``correlation_id`` 让失败的 HTTP 调用与审计条目一一对应（例如 403
+        ``key.use`` 拒绝事件）；无关联时为 ``None``。
         """
         payload: Dict[str, Any] = {
             "action": action,
@@ -1156,6 +1160,8 @@ class IdentityManager:
         }
         if details:
             payload.update(details)
+        if correlation_id:
+            payload["correlation_id"] = correlation_id
         try:
             from src.kernels.audit import AuditEventType, AuditScope, log_event
 
@@ -1182,6 +1188,7 @@ class IdentityManager:
                 scope=AuditScope(scope_name),
                 outcome=outcome,
                 details=payload,
+                correlation_id=correlation_id,
             )
         except Exception:  # noqa: BLE001
             logger.exception("account audit event lost (action=%s)", action)
@@ -1205,6 +1212,7 @@ class IdentityManager:
         target: str,
         outcome: str = "allowed",
         details: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None,
     ) -> None:
         """网关层账号/Key 事件的公共入口（写入同一哈希链，不另起审计流）。"""
         self._account_audit(
@@ -1213,6 +1221,7 @@ class IdentityManager:
             target=target,
             outcome=outcome,
             details=details,
+            correlation_id=correlation_id,
         )
 
     # ---- 启动 / 迁移 ---------------------------------------------------

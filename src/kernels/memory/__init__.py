@@ -18,7 +18,8 @@ from src.kernels._base import KernelLifecycle, KernelStateError
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from src._time import utc_now
+# 时间回拨不能让已过期的记忆"复活"：TTL 判断走防跳变时钟。
+from src._time import stable_utc_now as utc_now
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 import uuid
@@ -609,6 +610,9 @@ class MemoryKernel:
 
 # Global memory kernel instance
 _global_kernel: Optional[MemoryKernel] = None
+#: 冷会话构造并发化后可能多线程同时首次取内核；不加锁会各自开一个 sqlite
+#: 内核实例（多份连接、互相覆盖初始化）。
+_global_kernel_lock = threading.Lock()
 
 
 def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
@@ -619,8 +623,10 @@ def get_memory_kernel(db_path: Optional[str] = None) -> MemoryKernel:
     """
     global _global_kernel
     if _global_kernel is None:
-        _global_kernel = MemoryKernel(db_path=db_path)
-        _global_kernel.initialize()  # 存在即 READY：构造完成即视为就绪
+        with _global_kernel_lock:
+            if _global_kernel is None:
+                _global_kernel = MemoryKernel(db_path=db_path)
+                _global_kernel.initialize()  # 存在即 READY：构造完成即视为就绪
     return _global_kernel
 
 

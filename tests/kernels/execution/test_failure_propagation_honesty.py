@@ -82,6 +82,28 @@ def test_explicit_failure_dict_is_reported_as_failure_with_root_cause():
     assert "sandbox refused the write" in _task_reasons(res)
 
 
+def test_injected_python_zero_division_fails_honestly():
+    """Soak incident 2026-11-07 14:10:58: ``goal 55b0b679 / task ce59f916``.
+
+    The soak harness injects ``python: result = 1/0`` every 30th goal to
+    exercise the real failure path. The ZeroDivisionError is raised by the
+    GOAL'S OWN CODE in the sandbox, not by runtime arithmetic. Regression lock:
+    it must fail the goal with the root cause preserved, must not crash the
+    runtime, and must not be retried into a false success. (Four alerts per
+    action id are the 1 initial + 3 retry attempts of that same action.)
+    """
+    from src.ai.tools_local import python_compute
+
+    res = AgentRuntime(
+        scope="L1", capability_executor=lambda cap, inputs: python_compute(**inputs)
+    ).run_goal("python: result = 1/0", goal_id="fp-zd-soak", persist=False)
+
+    assert res.state == AgentRunState.FAILED
+    assert "ZeroDivisionError: division by zero" in _task_reasons(res)
+    assert res.evaluation is not None
+    assert res.evaluation.outcome.value == "failed"
+
+
 def test_no_artifact_claim_is_not_reported_as_verified_success():
     """CONTROL (was ``..._is_not_rejected_by_the_verifier_TODAY``): an unproven
     success claim is NOT graded as a verified pass.

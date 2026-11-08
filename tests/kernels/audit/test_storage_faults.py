@@ -235,10 +235,16 @@ def test_real_file_corruption_detected_clearly(tmp_path):
     store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     store._conn.close()
 
-    # Flip a byte in the middle of the file (a data page, not the 100-byte
-    # header) so the schema still opens but the data is malformed.
+    # Flip a byte in the LAST data page (not the 100-byte file header) so the
+    # schema still opens but a page the verifier must read is malformed.
+    #
+    # Why not "middle of the file": with auto_vacuum the middle can land on a
+    # FREE page whose contents SQLite is allowed to ignore, so the corruption
+    # would pass health-check by design. The last page always belongs to a
+    # populated table (200 events were just written), which keeps this test
+    # asserting the real behaviour instead of a page-layout accident.
     size = os.path.getsize(db)
-    off = max(4096, size // 2)
+    off = max(4096, size - 4096)
     with open(db, "r+b") as f:
         f.seek(off)
         original = f.read(1)

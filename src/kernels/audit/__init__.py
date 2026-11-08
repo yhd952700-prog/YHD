@@ -146,13 +146,16 @@ def _synchronous_level() -> str:
 #
 # Deletion is a PREFIX delete anchored by ``retention_state``: the surviving
 # chain still verifies from the retention floor onward (see verification.py).
-_DEFAULT_RETENTION_DAYS = 30
+#: 默认按时间保留 90 天：覆盖“用户投诉 → 我们开始排查”的常见时间窗。
+#: 注意：10 万行 / 100MB 是极强写入下的**应急上限**，触发时会早于 90 天裁剪；
+#: 真实桌面负载（每小时数百条）不会碰到，界面会如实展示当前生效策略。
+_DEFAULT_RETENTION_DAYS = 90
 #: 行数/字节上限才是**绑定约束**（时间策略在单机桌面场景 30 天内几乎不触发）。
 #: 长跑实测：合成强负载下调用链每秒写 ~7 条审计事件（~1KB/行），折合
 #: 20.5MB/h、约 2 万行/h。256MB 的旧默认意味着文件要长到 12 小时才第一次
 #: 裁剪，对单机产品太大；100MB 在同样的极端速率下约 5 小时触顶并进入
 #: "裁剪 + 增量回收"的稳态（实测裁剪期斜率 +2.97MB/h）。真实桌面负载
-#: （每小时数百条事件）永远碰不到这个上限，时间策略仍然保留 30 天。
+#: （每小时数百条事件）永远碰不到这个上限，时间策略默认保留 90 天。
 _DEFAULT_RETENTION_MAX_ROWS = 100_000
 _DEFAULT_RETENTION_MAX_BYTES = 104_857_600  # 100 MB
 _DEFAULT_RETENTION_MIN_KEEP = 1_000
@@ -388,6 +391,17 @@ _SCHEMA_STATEMENTS = (
         pruned_events INTEGER NOT NULL DEFAULT 0,
         pruned_at REAL
     )""",
+    # --- key epoch -----------------------------------------------------------
+    # The seq at which this database first started using a keyed chain. Without
+    # it, an attacker who downgraded the WHOLE chain to sha256 and then waited
+    # for one legitimate keyed append would look exactly like a legacy DB being
+    # migrated (unkeyed prefix + keyed tail) and verify green. With it, every
+    # event at or after this seq MUST be keyed; anything else is a downgrade.
+    # Absence of a row means "no key epoch was ever recorded".
+    """CREATE TABLE IF NOT EXISTS chain_key_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled_from_seq INTEGER NOT NULL
+    )""",
     "INSERT OR IGNORE INTO retention_state (id, pruned_through_seq, pruned_events) "
     "VALUES (1, 0, 0)",
 )
@@ -609,6 +623,10 @@ class AuditStore:
         self._auto_vacuum_pending = False
         self._auto_vacuum_next_attempt = 0.0
         self._auto_vacuum_warned = False
+        # 惰性判断：库里是否已有 HMAC 事件。它决定“密钥文件不见了”时能不能
+        # 生成新钥匙——有带密钥历史时绝不能生成，否则新钥匙签出的事件旧库
+        # 永远验不过，且会把“缺密钥”伪装成“可用”。
+        self._keyed_history: Optional[bool] = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -1099,6 +1117,22 @@ class AuditStore:
             record_audit_failure()
             raise
 
+    def _append_hash_alg(self) -> str:
+        """本次追加应使用的哈希算法（并在首次调用时判定能否生成密钥）。"""
+        if self._keyed_history is None:
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM audit_events WHERE hash_alg = ? LIMIT 1",
+                    (_chain_key.HMAC_ALG,),
+                ).fetchone()
+                self._keyed_history = row is not None
+            except sqlite3.Error:
+                self._keyed_history = False
+        alg = _chain_key.active_hash_alg(create=not self._keyed_history)
+        if alg == _chain_key.HMAC_ALG:
+            self._keyed_history = True
+        return alg
+
     def _attempt_log_event(
         self,
         event_type: AuditEventType,
@@ -1110,7 +1144,7 @@ class AuditStore:
     ) -> AuditEvent:
         # 先决定本次追加用哪种哈希：生产默认带密钥（HMAC-SHA256）。密钥文件
         # 的首次生成要落盘，放在事务外做，避免在 BEGIN IMMEDIATE 里做文件 IO。
-        hash_alg = _chain_key.active_hash_alg()
+        hash_alg = self._append_hash_alg()
         if correlation_id is None:
             # Full width: 8 hex chars (32 bits) collide within any large
             # deployment, and a collision silently conflates unrelated events
@@ -1210,6 +1244,15 @@ class AuditStore:
                         event.link_hash,
                     ),
                 )
+                if event.hash_alg == _chain_key.HMAC_ALG:
+                    # 记录密钥链起点（只在第一条带密钥事件时落一次）。没有
+                    # 这条标记，攻击者把整链降级成 sha256 后再等一条正常带
+                    # 密钥追加，就会把降级洗成“旧库迁移”并重新变绿。
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO chain_key_state "
+                        "(id, enabled_from_seq) VALUES (1, ?)",
+                        (seq,),
+                    )
                 self._conn.execute(
                     """INSERT INTO chain_state (id, last_seq, last_hash,
                         last_link_hash) VALUES (1, ?, ?, ?)
@@ -1303,7 +1346,7 @@ class AuditStore:
     def _attempt_log_event_batch(self, events: List[AuditEvent]) -> "AuditBatchResult":
         conn = self._conn
         # 同一批事件必须使用同一种算法；密钥首次生成在事务外完成。
-        batch_alg = _chain_key.active_hash_alg()
+        batch_alg = self._append_hash_alg()
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -1342,6 +1385,11 @@ class AuditStore:
                 appended: List[AuditEvent] = []
                 duplicates: List[str] = []
                 seen: set = set()
+                # 密钥链起点标记整批只写一次。逐事件 INSERT OR IGNORE 会让每
+                # 条带密钥事件都多一次 B-tree 查找，10 万条实测多付 ~30% 耗时。
+                epoch_marked = conn.execute(
+                    "SELECT 1 FROM chain_key_state WHERE id = 1"
+                ).fetchone() is not None
 
                 for event in events:
                     if not event.event_id:
@@ -1358,7 +1406,11 @@ class AuditStore:
 
                     last_seq += 1
                     event.prev_event_hash = prev_hash
-                    event.hash_alg = batch_alg
+                    # 只给“没指定算法”的事件套用本批算法；调用方显式写入的
+                    # 算法保持原样（未知算法仍会在 compute_hash 处报错并整批
+                    # 回滚——批量追加必须是全有或全无）。
+                    if event.hash_alg in (None, DEFAULT_HASH_ALG):
+                        event.hash_alg = batch_alg
                     event.event_hash = event.compute_hash()
                     event.link_hash = _verification.link_hash(
                         prev_link, event.event_hash, event.hash_alg)
@@ -1386,6 +1438,15 @@ class AuditStore:
                             event.link_hash,
                         ),
                     )
+                    if event.hash_alg == _chain_key.HMAC_ALG and not epoch_marked:
+                        # 同单条路径：记录密钥链起点，防止“整链降级后再等
+                        # 一条正常追加”把降级洗成旧库迁移。
+                        conn.execute(
+                            "INSERT OR IGNORE INTO chain_key_state "
+                            "(id, enabled_from_seq) VALUES (1, ?)",
+                            (last_seq,),
+                        )
+                        epoch_marked = True
                     prev_hash = event.event_hash
                     prev_link = event.link_hash
                     appended.append(event)
@@ -1767,6 +1828,155 @@ class AuditStore:
             raise
         finally:
             conn.close()
+
+    def chain_key_profile(self) -> Dict[str, Any]:
+        """当前密钥状态 + 是否存在带密钥事件（不含密钥本身）。
+
+        这是“恢复后到底能不能校验”的唯一判据：库里有 HMAC 事件、本机却
+        没有对应密钥 -> ``degraded=True``，只能做结构检查。
+        """
+        key_status = _chain_key.status()
+        key_mode = _chain_key.key_mode()
+        keyed = 0
+        total = 0
+        max_seq = 0
+        first_keyed_seq = 0
+        last_unkeyed_seq = 0
+        key_epoch: Optional[int] = None
+        unkeyed_after_epoch = 0
+        conn = self._open_snapshot()
+        try:
+            handle = conn if conn is not None else self._conn
+            row = handle.execute(
+                "SELECT COUNT(*), "
+                "COALESCE(SUM(CASE WHEN hash_alg = ? THEN 1 ELSE 0 END), 0), "
+                "COALESCE(MIN(CASE WHEN hash_alg = ? THEN seq END), 0), "
+                "COALESCE(MAX(CASE WHEN hash_alg <> ? THEN seq END), 0), "
+                "COALESCE(MAX(seq), 0) "
+                "FROM audit_events",
+                (_chain_key.HMAC_ALG, _chain_key.HMAC_ALG, _chain_key.HMAC_ALG),
+            ).fetchone()
+            if row:
+                total, keyed = int(row[0]), int(row[1])
+                first_keyed_seq = int(row[2] or 0)
+                last_unkeyed_seq = int(row[3] or 0)
+                max_seq = int(row[4] or 0)
+            epoch_row = handle.execute(
+                "SELECT enabled_from_seq FROM chain_key_state WHERE id = 1"
+            ).fetchone()
+            if epoch_row:
+                key_epoch = int(epoch_row[0])
+                unkeyed_after_epoch = int(handle.execute(
+                    "SELECT COUNT(*) FROM audit_events "
+                    "WHERE seq >= ? AND hash_alg <> ?",
+                    (key_epoch, _chain_key.HMAC_ALG),
+                ).fetchone()[0] or 0)
+        except sqlite3.Error:
+            keyed = 0
+            total = 0
+        finally:
+            if conn is not None:
+                conn.close()
+
+        # ``hash_alg`` 不在签名负载里（见 hashutil.event_payload），所以拿到库
+        # 写权限的人可以把整条链（或密钥链之后的部分）翻成 ``sha256`` 再重算，
+        # 无密钥校验依然全绿。两种情况都必须暴露成“无法用密钥证明”，而不是
+        # 绿灯：``keyed == 0`` 是整链降级/旧库；密钥链之后出现无密钥行是局部
+        # 降级（后者也可能是运维显式关掉密钥模式，因此同样按“降级”而非“篡改”
+        # 报告，颜色是琥珀而不是红）。
+        unkeyed_after_keyed = (
+            keyed > 0 and last_unkeyed_seq > first_keyed_seq
+        )
+        # 起点标记是“降级后再等一条正常追加就洗白”的补丁：标记之后必须全是
+        # 带密钥行，否则就是降级（哪怕现在有新的带密钥尾巴把 keyed>0 凑出来）。
+        epoch_breached = key_epoch is not None and (
+            unkeyed_after_epoch > 0
+            or (keyed == 0 and max_seq >= key_epoch)
+        )
+        missing_epoch = keyed > 0 and key_epoch is None
+        reason = None
+        message = None
+        if keyed and key_status in ("missing", "unreadable"):
+            reason = "chain_key_missing" if key_status == "missing" else "chain_key_unreadable"
+            message = "缺少校验密钥，完整性只能做结构检查"
+        elif epoch_breached:
+            reason = "chain_key_downgraded"
+            message = (
+                "密钥链起点之后出现了无密钥记录，完整性无法用密钥证明"
+                "（可能被降级重算）"
+            )
+        elif missing_epoch:
+            reason = "chain_key_downgraded"
+            message = (
+                "带密钥记录缺少起点标记，完整性无法用密钥证明"
+                "（标记可能被删除）"
+            )
+        elif unkeyed_after_keyed:
+            reason = "chain_key_downgraded"
+            message = (
+                "密钥链之后出现了无密钥记录，完整性无法用密钥证明"
+                "（可能被降级重算）"
+            )
+        elif total and not keyed and key_mode == "on":
+            # 密钥模式开着，库里却一条 HMAC 事件都没有：可能是旧库、被整链降级，
+            # 也可能是本机密钥根本不可用（写入时建不出来）。三种都不能给绿灯。
+            if key_status == "available":
+                reason = "chain_key_downgraded"
+                message = (
+                    "库中没有带密钥的记录，完整性无法用密钥证明"
+                    "（可能是旧库或被降级）"
+                )
+            else:
+                reason = (
+                    "chain_key_missing" if key_status == "missing"
+                    else "chain_key_unreadable"
+                )
+                message = "缺少校验密钥，完整性只能做结构检查"
+
+        # 第三种（非降级）状态：旧版本写入的无密钥前缀 + 升级后的带密钥尾巴。
+        # 这正是所有 0.1.0 老用户升级后的真实形态：尾巴能用密钥证明，前缀只能
+        # 做结构检查（拿到写权限的人可以重算前缀并顺手改掉边界 link_hash，密钥
+        # 保护不到它）。既不能说“完好”，也不能说“损坏”。
+        partial = reason is None and keyed > 0 and keyed < total
+        partial_message = None
+        if partial:
+            partial_message = (
+                f"部分可证明：前 {total - keyed} 条是升级前写入的无密钥记录，"
+                f"只能做结构检查；从第 {first_keyed_seq} 条起可用密钥证明未被改写"
+            )
+
+        return {
+            "status": key_status,
+            "mode": key_mode,
+            "keyed_events": keyed,
+            "total_events": total,
+            "key_epoch_seq": key_epoch,
+            "degraded": reason is not None,
+            "degraded_reason": reason,
+            "message": message,
+            "partial": partial,
+            "partial_message": partial_message,
+        }
+
+    def verify_structure_only(self) -> Tuple[bool, int]:
+        """只查结构（序号、prev 链接、尾锚点），不重算密码学哈希。
+
+        仅在密钥缺失时使用：明确告诉调用方“这不是完整校验”。
+        """
+        conn = self._open_snapshot()
+        if conn is None:
+            with self._lock:
+                return self._verify_integrity_on(self._conn, skip_crypto=True)
+        try:
+            return self._verify_integrity_on(conn, skip_crypto=True)
+        finally:
+            conn.close()
+
+    def retention_policy(self) -> Dict[str, Any]:
+        """当前生效的保留策略（供界面/文档如实展示，不猜默认值）。"""
+        cfg = dict(self._retention)
+        cfg["interval"] = int(cfg.get("interval") or 0)
+        return cfg
 
     def duplicate_seq_count(self) -> int:
         """Count rows that share a ``seq`` with another row (RCA-1 fork metric).
@@ -2221,22 +2431,30 @@ class AuditStore:
         # snapshot from before the write, so asking it would report the new
         # checkpoint as missing.
         #
-        # When ``max_events`` capped this pass, the honest right edge is
-        # ``end_seq`` (what we actually re-derived), NOT the table tail --
-        # claiming coverage to a tail this pass never looked at is the exact
-        # "incremental laundering" the C2 API exists to prevent.
-        rooted_floor = self._rooted_at(end_seq if truncated else tail_seq, floor)
+        # Two distinct claims, deliberately not merged (D-4):
+        #   rooted_at_genesis / rooted_at_retention_floor -- the whole TABLE
+        #     TAIL is covered. A capped pass must report False here, otherwise
+        #     "verified through 45 of 70" would masquerade as "chain verified".
+        #   rooted_through_verified -- the range this pass actually re-derived
+        #     is anchored to the floor. This is what lets a capped pass be
+        #     USED (and continued next call) instead of falling back to a
+        #     full 20k-row rescan on every request.
+        rooted_floor_full = self._rooted_at(tail_seq, floor)
+        rooted_verified = rooted_floor_full
+        if truncated and not rooted_verified:
+            rooted_verified = self._rooted_at(end_seq, floor)
         return _verification.IncrementalResult(
             segment_verified=segment.verified,
-            rooted_at_genesis=(floor == 0 and rooted_floor),
+            rooted_at_genesis=(floor == 0 and rooted_floor_full),
             from_seq=start_seq, to_seq=end_seq,
             events_checked=segment.event_count,
             anchor_checkpoint_id=anchor_id, new_checkpoint_id=new_id,
             failures=segment.failures, anchor_source=anchor_source,
             retention_floor_seq=floor,
-            rooted_at_retention_floor=rooted_floor,
+            rooted_at_retention_floor=rooted_floor_full,
             tail_seq=int(tail_seq), complete=not truncated,
             pending_events=pending,
+            rooted_through_verified=bool(rooted_verified),
         ).as_dict()
 
     # ------------------------------------------------------------------ #
@@ -2816,6 +3034,9 @@ class AuditStore:
 
 # Global audit store instance
 _audit_store: Optional[AuditStore] = None
+#: 冷会话构造并发化后，多个线程可能同时首次写审计。不加锁会各自构造
+#: 一个 AuditStore 并打开同一个 sqlite 库，既浪费连接也可能撞锁。
+_audit_store_lock = threading.Lock()
 
 # CRIT-1C (PHASE 3.6 / D17): audit write failures must not be silently swallowed.
 # Central failure counter -- incremented whenever an audit write to the
@@ -3032,26 +3253,28 @@ def get_audit_store() -> AuditStore:
     """
     global _audit_store
     if _audit_store is None:
-        try:
-            store = AuditStore()
-            store.initialize()  # 存在即 READY：构造完成即视为就绪
-        except Exception as exc:
-            try:
-                from ...observability import boot_report
+        with _audit_store_lock:
+            if _audit_store is None:
+                try:
+                    store = AuditStore()
+                    store.initialize()  # 存在即 READY：构造完成即视为就绪
+                except Exception as exc:
+                    try:
+                        from ...observability import boot_report
 
-                boot_report.record_db_open_failure(
-                    "audit",
-                    os.environ.get("AUDIT_DB_PATH") or "<AUDIT_DB_PATH 未配置>",
-                    exc,
-                    action=(
-                        "degraded: 审计链停止写入检查点；修复数据目录写权限、"
-                        "隔离/重建损坏库或配置 AUDIT_DB_PATH 后重启"
-                    ),
-                )
-            except Exception:  # noqa: BLE001 - 日志失败不能掩盖原始异常
-                pass
-            raise
-        _audit_store = store
+                        boot_report.record_db_open_failure(
+                            "audit",
+                            os.environ.get("AUDIT_DB_PATH") or "<AUDIT_DB_PATH 未配置>",
+                            exc,
+                            action=(
+                                "degraded: 审计链停止写入检查点；修复数据目录写权限、"
+                                "隔离/重建损坏库或配置 AUDIT_DB_PATH 后重启"
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 - 日志失败不能掩盖原始异常
+                        pass
+                    raise
+                _audit_store = store
     return _audit_store
 
 
