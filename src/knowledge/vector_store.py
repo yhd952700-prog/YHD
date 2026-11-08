@@ -57,7 +57,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .abstention import (
     NO_RELEVANT,

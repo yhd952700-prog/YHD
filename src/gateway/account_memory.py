@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -635,6 +635,34 @@ def _refresh_expired(connection: sqlite3.Connection, ttl_days: int) -> int:
     return refreshed
 
 
+def _owner_for_memory(
+    key: str, old_tags: List[str], known: List[str], root: str
+) -> str:
+    """从内核记忆的 key/tags 里认出它属于哪个账号；认不出才算根的。
+
+    内核库没有 owner 列，但写入方把账号编码进了 ``agent:liuhao-<principal>-<session>``
+    标签与 ``turn:liuhao-<principal>-...`` key。过去一律记到根，会让成员会话
+    在导入/首次迁移后出现在根账号的记忆页；这里按已知账号逐个对前缀。
+    """
+    ordered = sorted((item for item in known if item), key=len, reverse=True)
+    for tag in old_tags:
+        if not tag.startswith("agent:"):
+            continue
+        agent = tag[len("agent:"):]
+        if not agent.startswith("liuhao-"):
+            continue
+        rest = agent[len("liuhao-"):]
+        for principal in ordered:
+            if rest == principal or rest.startswith(principal + "-"):
+                return principal
+    if key.startswith("turn:liuhao-"):
+        rest = key[len("turn:liuhao-"):]
+        for principal in ordered:
+            if rest.startswith(principal + "-"):
+                return principal
+    return root
+
+
 #: 只留在内核检索库、不搬进"记忆页"的机器标签。
 #: ``conversation`` 是会话轮次；其余是 agent_runtime / 规划器写入的遥测。
 _NON_MEMORY_KERNEL_TAGS = frozenset(
@@ -644,9 +672,17 @@ _NON_MEMORY_KERNEL_TAGS = frozenset(
 
 
 def _copy_kernel_entries(
-    source: sqlite3.Connection, target: sqlite3.Connection, owner: str
+    source: sqlite3.Connection,
+    target: sqlite3.Connection,
+    owner: str,
+    known: Optional[List[str]] = None,
 ) -> Tuple[int, int]:
-    """把 ``memory_entries`` 逐行写进 ``account_memory_entries``（主键沿用）。"""
+    """把 ``memory_entries`` 逐行写进 ``account_memory_entries``（主键沿用）。
+
+    会话轮次（``conversation`` 标签）只留在内核库供检索，不搬进记忆页：
+    它们已经是会话历史，搬过去既重复，也会把成员会话显示成别人的"记忆"。
+    """
+    known = known if known is not None else []
     rows = source.execute(
         "SELECT entry_id, key, value, tier, scope, created_at, expires_at, tags "
         "FROM memory_entries"
@@ -674,6 +710,7 @@ def _copy_kernel_entries(
         if _NON_MEMORY_KERNEL_TAGS & set(old_tags):
             skipped += 1
             continue
+        entry_owner = _owner_for_memory(str(row[1] or ""), old_tags, known, owner)
         tags = _legacy_tags(
             origin="memory_store",
             tier=str(row[3] or ""),
@@ -687,7 +724,7 @@ def _copy_kernel_entries(
         cursor = target.execute(
             "INSERT OR IGNORE INTO account_memory_entries "
             "(id, owner, text, source, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (entry_id, owner, text, "legacy:memory_store", tags, created_at),
+            (entry_id, entry_owner, text, "legacy:memory_store", tags, created_at),
         )
         if cursor.rowcount:
             imported += 1
@@ -782,19 +819,19 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
     with _migration_lock:
         path = db_path()
         if not force:
-            if path in _migration_done_paths:
-                return {"ran": False, "already": True}
+            # 不再用"进程内已迁移过"提前返回：内核库可能在首次访问之后才
+            # 写入（会话收尾、目标跑完），提前返回会让这些记忆永久不可见。
             if time.monotonic() < _migration_backoff.get(path, 0.0):
                 return {"ran": False, "backoff": True}
 
         kernel_path, profile_path = _legacy_paths()
         if not _legacy_sources_configured():
-            _migration_done_paths.add(path)
+            # 不缓存"现在还没有旧库"：会话/目标写入会晚于首次访问才建库，
+            # 一旦缓存就永远看不到这些记忆（换机拷贝目录后尤其明显）。
             return {"ran": False, "reason": "legacy_store_not_configured"}
         has_kernel = os.path.exists(kernel_path)
         has_profile = os.path.exists(profile_path)
         if not has_kernel and not has_profile:
-            _migration_done_paths.add(path)
             return {"ran": False, "reason": "no_legacy_store"}
 
         marker = _raw_connect()
@@ -807,12 +844,32 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
         finally:
             marker.close()
         if row is not None and not force:
-            _migration_done_paths.add(path)
             try:
                 details = json.loads(row[1] or "{}")
             except Exception:  # noqa: BLE001
                 details = {}
-            return {"ran": False, "already": True, "details": details}
+            # 一次性标记会让"迁移之后才写进内核库"的记忆永远看不见
+            # （会话收尾、目标跑完都晚于首次访问）。按内核行数判断是否真有新料。
+            kernel_rows = None
+            if has_kernel:
+                try:
+                    probe = sqlite3.connect(kernel_path, timeout=10)
+                    try:
+                        if _has_table(probe, "memory_entries"):
+                            kernel_rows = int(
+                                probe.execute(
+                                    "SELECT COUNT(*) FROM memory_entries"
+                                ).fetchone()[0]
+                            )
+                    finally:
+                        probe.close()
+                except sqlite3.Error:
+                    kernel_rows = None
+            if kernel_rows is not None and kernel_rows <= int(
+                details.get("kernel_entries", -1)
+            ):
+                _migration_done_paths.add(path)
+                return {"ran": False, "already": True, "details": details}
 
         report: Dict[str, Any] = {
             "ran": True,
@@ -837,9 +894,16 @@ def ensure_legacy_memory_migrated(*, force: bool = False) -> Dict[str, Any]:
                             source, _legacy_ttl_days()
                         )
                         source.commit()
-                        imported, skipped = _copy_kernel_entries(source, target, root)
+                        imported, skipped = _copy_kernel_entries(
+                            source, target, root, _known_principals()
+                        )
                         report["entries"] += imported
                         report["skipped"] += skipped
+                        report["kernel_entries"] = int(
+                            source.execute(
+                                "SELECT COUNT(*) FROM memory_entries"
+                            ).fetchone()[0]
+                        )
                 finally:
                     source.close()
             if has_profile:
