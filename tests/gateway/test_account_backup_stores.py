@@ -57,6 +57,51 @@ def _env(monkeypatch, tmp_path):
     return apply
 
 
+def test_legacy_migration_skips_runtime_telemetry(_env):
+    """换机后首次访问会做 0.1.0 迁移：运行遥测不能变成根账号的"记忆"。
+
+    目标分解 / 任务执行 / 目标回执的 key 里只有 goal/task id，没有账号归属；
+    一旦搬进账号记忆就会全部挂到根，根的记忆页会凭空多出成员的失败回执。
+    """
+    _env("telemetry")
+    from src.gateway import account_memory
+
+    source = sqlite3.connect(":memory:")
+    source.execute(
+        "CREATE TABLE memory_entries (entry_id TEXT, key TEXT, value TEXT, "
+        "tier TEXT, scope TEXT, created_at TEXT, expires_at TEXT, tags TEXT)"
+    )
+    rows = [
+        ("user-1", "preference:answer_style", '"先给结论"', "semantic", "user",
+         "2026-11-07T10:00:00+00:00", None, '["preference"]'),
+        ("run-1", "episodic:run:goal-1", '{"goal_id": "goal-1"}', "episodic", "global",
+         "2026-11-07T10:00:01+00:00", None,
+         '["episodic", "agent_run", "failed"]'),
+        ("learn-1", "semantic:learning:goal-1", '{"lesson": "x"}', "semantic", "global",
+         "2026-11-07T10:00:02+00:00", None, '["semantic", "learning"]'),
+        ("task-1", "task:task-1:failed", '{"task_id": "task-1"}', "episodic", "global",
+         "2026-11-07T10:00:03+00:00", None, '["task", "failed"]'),
+        ("conv-1", "conversation:1", '{"role": "user"}', "episodic", "global",
+         "2026-11-07T10:00:04+00:00", None, '["conversation"]'),
+    ]
+    source.executemany("INSERT INTO memory_entries VALUES (?,?,?,?,?,?,?,?)", rows)
+
+    target = account_memory._raw_connect()  # noqa: SLF001
+    imported, skipped = account_memory._copy_kernel_entries(  # noqa: SLF001
+        source, target, "root1"
+    )
+    target.commit()
+    texts = [
+        row[0]
+        for row in target.execute(
+            "SELECT text FROM account_memory_entries ORDER BY created_at"
+        ).fetchall()
+    ]
+    assert imported == 1
+    assert skipped == 4
+    assert texts == ["先给结论"]
+
+
 def test_backup_carries_memory_and_conversations_across_instances(_env):
     from src.gateway.account_backup import export_bundle, import_bundle
 

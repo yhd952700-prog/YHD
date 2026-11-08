@@ -25,6 +25,8 @@ import json
 import os
 import shutil
 import tempfile
+import time
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -117,6 +119,30 @@ _PASSWORD_ENV = "LIUHAO_BACKUP_PASSWORD"
 #: JWT/服务密钥，``model_registry.sqlite3`` 是 API Key 的密文派生数据。
 _CLI_EXTRA_PROTECTED = frozenset({"app.env", "model_registry.sqlite3"})
 
+#: 备份源在**真实数据目录**里的落点。恢复时必须按这个布局铺回去，不能按
+#: 源枚举名（``memory_data`` / ``user_data``）建目录，否则新机上多出一层
+#: ``memory_data`` 目录，程序根本读不到库，等于"恢复了但登不进去"。
+_LAYOUT_RELATIVE = {
+    _FileBackupSource.CONFIG: "config",
+    _FileBackupSource.MEMORY_DATA: "memory_store.db",
+    _FileBackupSource.KNOWLEDGE_BASE: "data/knowledge_vectors.sqlite3",
+    _FileBackupSource.USER_DATA: ".",
+}
+
+#: 出现任一即认为目标目录"不是干净的数据目录"，拒绝在其上做恢复。
+#: 半覆盖的恢复比恢复失败更糟：用户会以为换机成功，实际数据是拼出来的。
+_PRISTINE_BLOCKERS = (
+    "config",
+    "data",
+    "workspace",
+    "logs",
+    "diagnostics",
+    "memory_store.db",
+    "conversation_store.db",
+    "audit_store.db",
+    "account_memory.sqlite3",
+)
+
 
 def _is_unsafe_for_plaintext(relpath: str) -> bool:
     """明文备份绝不允许打包的凭据/密钥文件。"""
@@ -162,25 +188,55 @@ def _seal_archive(raw: bytes, *, password: str, header: Dict[str, Any]) -> bytes
 
 
 def _open_archive(path: Path, *, password: str) -> bytes:
-    """解开加密归档；口令错误/被篡改一律抛 ``ValueError``（不泄露细节）。"""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
-    if document.get("format") != _ENCRYPTED_FORMAT:
-        raise ValueError("不是受支持的加密备份格式")
+    """解开加密归档；口令错误/被篡改/被截断一律抛中文 ``ValueError``。
+
+    ``.lhbak`` 的头部是明文 JSON、正文才是密文。文件被截断时可能在
+    ``json.loads`` 就失败，也可能 base64 解码失败、或 AES-GCM 校验失败；
+    三种情况都要给出可读原因，而不是把 ``JSONDecodeError`` 或
+    ``InvalidTag`` 直接甩给用户。
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        document = json.loads(text)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "备份包已损坏或未完整复制（加密头部无法解析），无法恢复；"
+            "现有数据未被改动。请回源机重新导出。"
+        ) from exc
+    if not isinstance(document, dict) or document.get("format") != _ENCRYPTED_FORMAT:
+        raise ValueError("不是受支持的加密备份格式（不是本程序导出的 .lhbak 文件）")
     try:
         payload = base64.b64decode(document["payload"])
         salt = base64.b64decode(document["kdf"]["salt"])
         nonce = base64.b64decode(document["nonce"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("加密备份头部损坏") from exc
+        raise ValueError(
+            "备份包已损坏或未完整复制（加密数据缺失），无法恢复；"
+            "现有数据未被改动。请回源机重新导出。"
+        ) from exc
     key = _derive_key(password, salt)
     try:
         raw = AESGCM(key).decrypt(nonce, payload, None)
     except InvalidTag as exc:
-        raise ValueError("口令错误或备份包被篡改") from exc
+        raise ValueError(
+            "口令错误，或备份包已损坏/被篡改，无法解密；现有数据未被改动。"
+        ) from exc
     expected = str(document.get("payload_sha256") or "")
     if expected and hashlib.sha256(raw).hexdigest() != expected:
-        raise ValueError("备份包已损坏（内容哈希不符）")
+        raise ValueError(
+            "备份包内容已损坏（哈希不符），无法恢复；现有数据未被改动。"
+        )
     return raw
+
+
+def _missing_parents(path: Path) -> List[Path]:
+    """返回 ``path`` 及其尚未存在的祖先，最深的在前（用于回滚时逐层删）。"""
+    missing: List[Path] = []
+    current = path
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    return missing
 
 
 class _SanitisingBackupManager(_FileBackupManager):
@@ -356,8 +412,10 @@ class BackupManager:
             if not password:
                 raise ValueError(
                     "--encrypt 需要口令：请传 --password 或设置 "
-                    f"{_PASSWORD_ENV}（拒绝退化为明文归档）"
+                    f"{_PASSWORD_ENV}（拒绝退化为明文归档）。"
+                    "口令一旦丢失，备份内容无法恢复，只能回源机重新导出。"
                 )
+        started = time.perf_counter()
         manager = self._get_manager()
         if isinstance(manager, _SanitisingBackupManager):
             manager._include_protected = bool(encrypted)
@@ -368,10 +426,13 @@ class BackupManager:
             description=description,
             compress=True,
         )
+        export_seconds = time.perf_counter() - started
         sealed = False
+        encrypt_started = time.perf_counter()
         if encrypted:
             meta = self._seal_archive_on_disk(meta, password or "")
             sealed = True
+        encrypt_seconds = time.perf_counter() - encrypt_started if encrypted else 0.0
         excluded = getattr(manager, "_excluded_protected_total", 0)
         return {
             "backup_id": meta.backup_id,
@@ -389,6 +450,17 @@ class BackupManager:
             "excluded_protected_files": excluded,
             "description": meta.description,
             "file_path": meta.file_path,
+            # 实测耗时：让用户对"导出多久、加密多久"有预期，而不是猜。
+            "export_seconds": round(export_seconds, 3),
+            "encrypt_seconds": round(encrypt_seconds, 3),
+            "total_seconds": round(export_seconds + encrypt_seconds, 3),
+            "password_policy": (
+                "口令不写入备份包，也不写日志；口令丢失后无法恢复内容，"
+                "只能回源机重新导出（没有后门或万能口令）。"
+                if encrypted
+                else "未加密归档：任何人都能打开，不要放凭据/密钥；"
+                     "它不用于换机迁移。"
+            ),
         }
 
     def _seal_archive_on_disk(self, meta: BackupMetadata, password: str) -> BackupMetadata:
@@ -475,52 +547,302 @@ class BackupManager:
         target: Optional[str] = None,
         password: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Restore from a backup archive (really writes the files)."""
+        """Restore a backup into a clean data directory (or back in place).
+
+        换机恢复的三条硬约束：
+
+        1. **先解密、再写盘**：口令错误、缺口令、包被截断都在写入前失败，
+           目标目录保持原样；
+        2. **按真实布局落盘**：``config/``、``memory_store.db``、
+           ``data/knowledge_vectors.sqlite3``、工作区不能套一层源枚举目录；
+        3. **先写暂存、后提交**：提交阶段失败会回滚本次新写入的文件，
+           不留半恢复的数据目录。
+        """
+        started = time.perf_counter()
         manager = self._get_manager()
         meta = manager.get_backup(backup_id)
         if meta is None:
+            fallback = self._archive_file_for(backup_id)
+            if fallback is not None:
+                raise ValueError(
+                    "备份包已损坏或未完整复制（无法读取头部），无法恢复；"
+                    "现有数据未被改动。请回源机重新导出。"
+                )
             raise ValueError(f"Backup not found: {backup_id}")
-        restore_sources = (
-            [_FileBackupSource(s) for s in sources] if sources else None
-        )
-        original_path = meta.file_path
-        temp_dir: Optional[str] = None
+        archive = Path(meta.file_path) if meta.file_path else None
+        if archive is None or not archive.exists():
+            raise ValueError(f"备份文件不存在：{meta.file_path or backup_id}")
+
+        payload = self._read_archive_payload(meta, archive, password)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError(
+                "备份包内容已损坏（缺少数据段），无法恢复；现有数据未被改动。"
+            )
+
+        selected = list(sources) if sources else [s.value for s in meta.sources]
+        plan, skipped = self._plan_restore(data, selected, target)
+        if not plan:
+            raise ValueError(
+                "备份包内没有可恢复的文件（源为空或被安全策略排除），"
+                "请确认导出时是否用了加密归档。"
+            )
+
+        target_root: Optional[Path] = None
+        if target:
+            target_root = Path(target)
+            if target_root.exists() and not target_root.is_dir():
+                raise ValueError(f"恢复目标不是目录：{target_root}")
+            self._require_pristine_target(target_root)
+        else:
+            target_root = None
+
+        stage_root = Path(tempfile.mkdtemp(prefix="liuhao-restore-stage-"))
+        created_files: List[Path] = []
+        created_dirs: List[Path] = []
+        existed: set[str] = set()
+        try:
+            staged = self._stage_restore(plan, stage_root)
+            created_files, created_dirs, existed = self._commit_restore(staged)
+        except ValueError:
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 - 统一成可读失败，并回滚
+            self._rollback_restore(created_files, created_dirs, existed)
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise ValueError(
+                f"恢复过程中写入失败（{exc}）；本次新写入的文件已回滚，"
+                "目标目录不会留下半恢复数据。"
+            ) from exc
+        shutil.rmtree(stage_root, ignore_errors=True)
+
+        total_bytes = sum(size for _, _, size in plan)
+        return {
+            "backup_id": backup_id,
+            "status": "restored",
+            "restored_sources": [s.value for s in meta.sources if s.value in selected],
+            "target": str(target_root) if target_root is not None else "original_location",
+            "files_restored": len(plan),
+            "bytes_restored": total_bytes,
+            "skipped_sources": skipped,
+            "encrypted": meta.encrypted,
+            "restored_at": datetime.utcnow().isoformat(),
+            "restore_seconds": round(time.perf_counter() - started, 3),
+        }
+
+    # ------------------------------------------------------------------
+    # 恢复辅助
+    # ------------------------------------------------------------------
+
+    def _archive_file_for(self, backup_id: str) -> Optional[Path]:
+        """按 id 在备份目录里找归档（头部损坏时也能给出可读错误）。"""
+        for suffix in (".tar.gz", ".tar", _ENCRYPTED_SUFFIX):
+            candidate = self._backup_dir / f"{backup_id}{suffix}"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _read_archive_payload(
+        self,
+        meta: BackupMetadata,
+        archive: Path,
+        password: Optional[str],
+    ) -> Dict[str, Any]:
         if meta.encrypted:
             password = (password or os.environ.get(_PASSWORD_ENV) or "").strip()
             if not password:
                 raise ValueError(
-                    "该备份已加密：请传 --password 或设置 " + _PASSWORD_ENV
+                    "该备份已加密：请用 --password 提供口令（或设置 "
+                    f"{_PASSWORD_ENV}）。口令丢失后无法恢复，只能回源机重新导出；"
+                    "程序没有后门或万能口令。"
                 )
-            if not original_path:
-                raise ValueError(f"Backup not found: {backup_id}")
-            raw = _open_archive(Path(original_path), password=password)
-            temp_dir = tempfile.mkdtemp(prefix="liuhao-restore-")
-            tmp_path = Path(temp_dir) / f"{backup_id}.tar.gz"
-            tmp_path.write_bytes(raw)
-            meta.file_path = str(tmp_path)
+            compressed = _open_archive(archive, password=password)
+        else:
+            try:
+                compressed = archive.read_bytes()
+            except OSError as exc:
+                raise ValueError(f"备份文件读取失败：{archive}（{exc}）") from exc
         try:
-            result = manager.restore_backup(
-                backup_id,
-                sources=restore_sources,
-                target_dir=Path(target) if target else None,
+            raw = gzip.decompress(compressed)
+        except (OSError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
+            raise ValueError(
+                "备份包已损坏或未完整复制（压缩段无法解开），无法恢复；"
+                "现有数据未被改动。"
+            ) from exc
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "备份包内容已损坏或被截断，无法恢复；现有数据未被改动。"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("备份包内容格式无效，无法恢复；现有数据未被改动。")
+        return payload
+
+    @staticmethod
+    def _require_pristine_target(target_root: Path) -> None:
+        """换机恢复只接干净目录；已有产品数据一律拒绝，避免半覆盖。"""
+        if not target_root.exists():
+            return
+        blockers = [
+            name for name in _PRISTINE_BLOCKERS if (target_root / name).exists()
+        ]
+        if blockers:
+            raise ValueError(
+                "目标目录不是干净的数据目录（已含 "
+                + "、".join(blockers)
+                + "），拒绝恢复，避免覆盖成一份拼接数据。"
+                "请指向一个空目录；若确要原地恢复，请去掉 --target。"
             )
-        finally:
-            if meta.encrypted:
-                meta.file_path = original_path
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-        if not result.success:
-            raise ValueError(f"Restore failed: {result.error_message}")
-        return {
-            "backup_id": backup_id,
-            "status": "restored",
-            "restored_sources": [s.value for s in result.restored_sources],
-            "target": target or "original_location",
-            "files_restored": result.total_files_restored,
-            "bytes_restored": result.total_bytes_restored,
-            "encrypted": meta.encrypted,
-            "restored_at": datetime.utcnow().isoformat(),
-        }
+
+    def _plan_restore(
+        self,
+        data: Dict[str, Any],
+        selected: List[str],
+        target: Optional[str],
+    ) -> tuple[List[tuple[Path, Dict[str, Any], int]], List[str]]:
+        """把归档条目映射成 (暂存相对路径, 条目, 字节数) 的写入计划。
+
+        ``target`` 为空时按本机已配置的源路径原地恢复；有 ``target`` 时按
+        真实数据布局铺到新目录（``config/``、``memory_store.db`` 等）。
+        """
+        plan: List[tuple[Path, Dict[str, Any], int]] = []
+        seen: Dict[str, bool] = {}
+        skipped: List[str] = []
+        base = Path(target) if target else None
+
+        for source_value in selected:
+            source_data = data.get(source_value)
+            if not isinstance(source_data, dict) or not source_data.get("exists"):
+                skipped.append(source_value)
+                continue
+            try:
+                source = _FileBackupSource(source_value)
+            except ValueError:
+                source = None
+            layout = _LAYOUT_RELATIVE.get(source) if source is not None else None
+
+            if source_data.get("type") == "file":
+                entry = source_data
+                size = int(entry.get("size_bytes") or 0)
+                if base is not None:
+                    rel = layout or Path(str(entry.get("path") or source_value)).name
+                    final = base / rel
+                else:
+                    final = (
+                        self._source_paths.get(source)
+                        if source is not None
+                        else None
+                    ) or Path(str(entry.get("path") or source_value))
+                self._append_plan(plan, seen, final, entry, size)
+                continue
+
+            if source_data.get("type") == "directory":
+                files = source_data.get("files") or {}
+                if base is not None:
+                    root = base if layout in (None, ".") else base / str(layout)
+                    if layout is None:
+                        root = base / Path(str(source_data.get("path") or source_value)).name
+                else:
+                    root = (
+                        self._source_paths.get(source)
+                        if source is not None
+                        else None
+                    ) or Path(str(source_data.get("path") or source_value))
+                for rel_path, entry in files.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    self._append_plan(
+                        plan,
+                        seen,
+                        Path(root) / str(rel_path),
+                        entry,
+                        int(entry.get("size_bytes") or 0),
+                    )
+                continue
+
+            skipped.append(source_value)
+
+        return plan, skipped
+
+    @staticmethod
+    def _append_plan(
+        plan: List[tuple[Path, Dict[str, Any], int]],
+        seen: Dict[str, bool],
+        final: Path,
+        entry: Dict[str, Any],
+        size: int,
+    ) -> None:
+        # CONFIG 与 USER_DATA 天然重叠（整目录里也含 config），同一落点只写一次。
+        key = os.path.normcase(os.path.abspath(str(final)))
+        if key in seen:
+            return
+        seen[key] = True
+        plan.append((final, entry, size))
+
+    def _stage_restore(
+        self,
+        plan: List[tuple[Path, Dict[str, Any], int]],
+        stage_root: Path,
+    ) -> List[tuple[Path, Path]]:
+        """先把所有文件写到暂存区；任何解码失败都在提交前暴露。"""
+        staged: List[tuple[Path, Path]] = []
+        for index, (final, entry, _size) in enumerate(plan):
+            stage_path = stage_root / f"{index:05d}" / final.name
+            stage_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _FileBackupManager._write_restored_file(
+                    stage_path, entry, bool(entry.get("sqlite"))
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"备份包内文件损坏（{final.name}）：{exc}；现有数据未被改动。"
+                ) from exc
+            staged.append((stage_path, final))
+        return staged
+
+    @staticmethod
+    def _commit_restore(
+        staged: List[tuple[Path, Path]],
+    ) -> tuple[List[Path], List[Path], set[str]]:
+        """把暂存文件搬到最终位置，记录新建文件/目录用于失败回滚。"""
+        created_files: List[Path] = []
+        created_dirs: List[Path] = []
+        existed: set[str] = set()
+        for stage_path, final in staged:
+            created_dirs.extend(
+                path
+                for path in _missing_parents(final.parent)
+                if path not in created_dirs
+            )
+            final.parent.mkdir(parents=True, exist_ok=True)
+            key = os.path.normcase(os.path.abspath(str(final)))
+            if final.exists():
+                existed.add(key)
+            else:
+                created_files.append(final)
+            shutil.copy2(stage_path, final)
+        return created_files, created_dirs, existed
+
+    @staticmethod
+    def _rollback_restore(
+        created_files: List[Path],
+        created_dirs: List[Path],
+        existed: set[str],
+    ) -> None:
+        for path in reversed(created_files):
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key in existed:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for path in reversed(created_dirs):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     def verify_backup(self, backup_id: str, password: Optional[str] = None) -> Dict[str, Any]:
         """Verify the archive checksum, size and readability."""
@@ -657,12 +979,18 @@ def register_backup_commands(
     p_create.add_argument(
         "--encrypt",
         action="store_true",
-        help="Encrypt the archive (requires a password; secrets are then included)",
+        help=(
+            "加密归档（必须给口令；加密包才包含身份库/主密钥等受保护文件）。"
+            "口令丢失后内容无法恢复，只能回源机重新导出。"
+        ),
     )
     p_create.add_argument(
         "--password",
         default=None,
-        help=f"Encryption password (or set {_PASSWORD_ENV}); only with --encrypt",
+        help=(
+            f"加密口令（或设置 {_PASSWORD_ENV}）；仅配合 --encrypt。"
+            "口令不写进备份包/日志，丢失后没有后门。"
+        ),
     )
 
     # backup list
@@ -685,11 +1013,17 @@ def register_backup_commands(
         dest="sources",
         help="Specific source to restore (repeatable)",
     )
-    p_restore.add_argument("--target", help="Restore target path")
+    p_restore.add_argument(
+        "--target",
+        help="换机恢复目标目录（必须是空目录；按真实数据布局铺开，可删掉参数原地恢复）",
+    )
     p_restore.add_argument(
         "--password",
         default=None,
-        help=f"Password for an encrypted archive (or set {_PASSWORD_ENV})",
+        help=(
+            f"加密归档口令（或设置 {_PASSWORD_ENV}）。"
+            "口令丢失则无法恢复（程序没有万能口令），只能回源机重新导出。"
+        ),
     )
 
     # backup verify

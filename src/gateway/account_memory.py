@@ -635,6 +635,14 @@ def _refresh_expired(connection: sqlite3.Connection, ttl_days: int) -> int:
     return refreshed
 
 
+#: 只留在内核检索库、不搬进"记忆页"的机器标签。
+#: ``conversation`` 是会话轮次；其余是 agent_runtime / 规划器写入的遥测。
+_NON_MEMORY_KERNEL_TAGS = frozenset(
+    {"conversation", "agent_run", "episodic", "semantic", "learning",
+     "goal", "decomposition", "task"}
+)
+
+
 def _copy_kernel_entries(
     source: sqlite3.Connection, target: sqlite3.Connection, owner: str
 ) -> Tuple[int, int]:
@@ -659,6 +667,13 @@ def _copy_kernel_entries(
                 old_tags = [str(item) for item in decoded]
         except Exception:  # noqa: BLE001
             old_tags = []
+        # 内核库里的机器记录不是"用户的记忆"：会话轮次、目标分解、任务执行、
+        # 目标运行/学习回执都属于运行时遥测。它们没有账号归属（key 里只有
+        # goal/task id），硬搬进来会全部挂到根账号，换机后根的记忆页会突然
+        # 多出成员目标的失败回执——既污染计数，也泄露归属。
+        if _NON_MEMORY_KERNEL_TAGS & set(old_tags):
+            skipped += 1
+            continue
         tags = _legacy_tags(
             origin="memory_store",
             tier=str(row[3] or ""),

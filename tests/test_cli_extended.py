@@ -428,6 +428,122 @@ class TestBackupCommands:
         with pytest.raises(ValueError, match="--encrypt 需要口令"):
             manager.create_backup(encrypted=True)
 
+    def _seed_real_layout(self, manager):
+        """造一份和真实数据目录同形的源数据，供换机恢复断言。"""
+        data_dir = Path(manager._data_dir)
+        config = data_dir / "config"
+        config.mkdir(exist_ok=True)
+        (config / "integrity.key").write_text("identity-signing-key", encoding="utf-8")
+        (config / "human_identities.json").write_text(
+            '{"humans": ["root1", "member1"]}', encoding="utf-8"
+        )
+        (config / "auth_secrets.json").write_text('{"root1": "hash"}', encoding="utf-8")
+        knowledge = data_dir / "data"
+        knowledge.mkdir(exist_ok=True)
+        (knowledge / "model_config.key").write_text("model-master-key", encoding="utf-8")
+        (knowledge / "knowledge_vectors.sqlite3").write_bytes(b"knowledge-bytes")
+        (data_dir / "memory_store.db").write_bytes(b"memory-db-bytes")
+        workspace = data_dir / "workspace"
+        workspace.mkdir(exist_ok=True)
+        (workspace / "liuhao_employees.json").write_text(
+            '{"employees": [{"id": "emp-1", "owner_account_id": "member1"}]}',
+            encoding="utf-8",
+        )
+        return data_dir
+
+    def test_restore_to_clean_target_uses_real_layout(self, manager, tmp_path):
+        """换机恢复必须铺成真实布局，而不是 ``user_data/memory_data`` 套壳。"""
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="换机口令")
+
+        target = tmp_path / "new-machine"
+        target.mkdir()
+        result = manager.restore_backup(
+            created["backup_id"], target=str(target), password="换机口令"
+        )
+
+        assert result["status"] == "restored"
+        assert result["target"] == str(target)
+        assert result["restore_seconds"] >= 0
+        assert (target / "config" / "integrity.key").read_text(encoding="utf-8") == (
+            "identity-signing-key"
+        )
+        assert (target / "config" / "human_identities.json").is_file()
+        assert (target / "config" / "auth_secrets.json").is_file()
+        assert (target / "data" / "model_config.key").read_text(encoding="utf-8") == (
+            "model-master-key"
+        )
+        assert (target / "data" / "knowledge_vectors.sqlite3").read_bytes() == (
+            b"knowledge-bytes"
+        )
+        assert (target / "memory_store.db").read_bytes() == b"memory-db-bytes"
+        assert (target / "workspace" / "liuhao_employees.json").is_file()
+        # 旧实现会把它们塞进 memory_data/ 与 user_data/，程序读不到。
+        assert not (target / "memory_data").exists()
+        assert not (target / "user_data").exists()
+
+    def test_restore_refuses_non_pristine_target(self, manager, tmp_path):
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="pw")
+        target = tmp_path / "already-used"
+        (target / "config").mkdir(parents=True)
+        with pytest.raises(ValueError, match="不是干净的数据目录"):
+            manager.restore_backup(
+                created["backup_id"], target=str(target), password="pw"
+            )
+        # 现场数据没有被碰。
+        assert list((target / "config").iterdir()) == []
+
+    def test_wrong_password_leaves_target_untouched(self, manager, tmp_path, monkeypatch):
+        monkeypatch.delenv("LIUHAO_BACKUP_PASSWORD", raising=False)
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="right-password")
+        target = tmp_path / "wrong-password-target"
+        with pytest.raises(ValueError, match="口令错误"):
+            manager.restore_backup(
+                created["backup_id"], target=str(target), password="wrong-password"
+            )
+        assert not target.exists()
+
+    def test_missing_password_is_readable(self, manager, tmp_path, monkeypatch):
+        monkeypatch.delenv("LIUHAO_BACKUP_PASSWORD", raising=False)
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="right-password")
+        target = tmp_path / "no-password-target"
+        with pytest.raises(ValueError, match="请用 --password 提供口令"):
+            manager.restore_backup(created["backup_id"], target=str(target))
+        assert not target.exists()
+
+    def test_truncated_archive_is_readable_and_leaves_target_untouched(
+        self, manager, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("LIUHAO_BACKUP_PASSWORD", raising=False)
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="pw")
+        archive = Path(created["file_path"])
+        archive.write_bytes(archive.read_bytes()[:200])
+        target = tmp_path / "truncated-target"
+        with pytest.raises(ValueError, match="损坏或未完整复制"):
+            manager.restore_backup(created["backup_id"], target=str(target), password="pw")
+        assert not target.exists()
+
+        # 换个进程视角（重新扫描备份目录）也要给出同一条可读错误。
+        fresh = BackupManager(
+            backup_dir=str(tmp_path / "backups"),
+            data_dir=str(Path(manager._data_dir)),
+        )
+        with pytest.raises(ValueError, match="损坏或未完整复制"):
+            fresh.restore_backup(created["backup_id"], target=str(target), password="pw")
+        assert not target.exists()
+
+    def test_create_reports_timing_and_password_policy(self, manager):
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="pw")
+        assert created["export_seconds"] >= 0
+        assert created["encrypt_seconds"] >= 0
+        assert created["total_seconds"] >= created["encrypt_seconds"]
+        assert "无法恢复" in created["password_policy"]
+
 
 # =====================================================================
 # Plugin CLI Tests
