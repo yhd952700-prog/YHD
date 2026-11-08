@@ -82,12 +82,16 @@ function json(status: number, body: unknown): Response {
 }
 
 let fetchMock: ReturnType<typeof vi.fn>
+/** 每个用例可替换的状态响应；默认是「已启用」。 */
+let statusPayload: unknown
 
 beforeEach(() => {
+  statusPayload = STATUS
+  window.history.replaceState(null, '', '/')
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
-    if (url.startsWith('/v1/knowledge/status')) return json(200, STATUS)
+    if (url.startsWith('/v1/knowledge/status')) return json(200, statusPayload)
     if (url.startsWith('/v1/knowledge/documents?') && method === 'GET') return json(200, PAGE)
     if (url === '/v1/knowledge/ingest/jobs' && method === 'POST') return json(202, RUNNING_JOB)
     if (url.endsWith('/cancel') && method === 'POST') return json(200, CANCELLED_JOB)
@@ -221,5 +225,142 @@ describe('知识中心 · 异步入库取消', () => {
         ),
       ).toHaveLength(2),
     )
+  })
+})
+
+/**
+ * 向量化状态三态回归（P0）。
+ *
+ * 判定只认 `enabled`；`provider/model` 有值是「向量模型已建成」的证据，不是
+ * 「已启用」的证据；`message` 是派生串，不参与判定。第三种形态（向量库失败）
+ * 绝不能写成「尚未配置」——否则用户会去配模型，而真正坏的是向量库。
+ */
+describe('知识中心 · 向量化三态', () => {
+  const MISSING_MODEL =
+    "知识库未启用：本机 Ollama 缺少 embedding 模型 'nomic-embed-text'（已安装：llama3:latest）。" +
+    '请执行 `ollama pull nomic-embed-text`，或设置 LIUHAO_EMBEDDING_MODEL'
+
+  test('启用态：整行「不可用原因」不渲染', async () => {
+    renderPage()
+    await screen.findByText('已启用')
+    expect(screen.queryByText('不可用原因')).toBeNull()
+    expect(screen.queryByText(/尚未配置向量模型/)).toBeNull()
+    expect(screen.queryByText(/还没有配置向量模型/)).toBeNull()
+  })
+
+  test('反向护栏：enabled=true 即使 reason 有值，原因行也必须消失', async () => {
+    statusPayload = { ...STATUS, reason: '向量库不可用：should not render' }
+    renderPage()
+    await screen.findByText('已启用')
+    expect(screen.queryByText('不可用原因')).toBeNull()
+    expect(screen.queryByText(/向量库不可用/)).toBeNull()
+  })
+
+  test('未配置：说「还没有配置向量模型」并给出启动 Ollama / ollama pull', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: null,
+      model: null,
+      vectors: 0,
+      reason:
+        '知识库未启用：没有可用的 embedding provider（设置 LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址，或在开发模式显式允许 mock）',
+      message: '知识库未启用：没有可用的 embedding provider',
+    }
+    renderPage()
+    await screen.findByText('还没有配置向量模型')
+    expect(screen.getByText(/先启动 Ollama/)).toBeTruthy()
+    expect(screen.getByText('ollama pull nomic-embed-text')).toBeTruthy()
+    expect(screen.queryByText(/向量模型已就绪/)).toBeNull()
+  })
+
+  test('Ollama 未运行：单独说清，不混成「未配置」', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: null,
+      model: null,
+      vectors: 0,
+      reason:
+        '知识库未启用：没有可用的 embedding provider。本机 Ollama （http://localhost:11434）未运行，无法自动启用；请启动 Ollama，或设置 LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址',
+      message: '知识库未启用：本机 Ollama 未运行',
+    }
+    renderPage()
+    await screen.findByText('本机 Ollama 未运行')
+    expect(screen.getByText(/先启动 Ollama/)).toBeTruthy()
+    expect(screen.queryByText(/还没有配置向量模型/)).toBeNull()
+  })
+
+  test('缺模型：命令里必须带具体模型名', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: null,
+      model: null,
+      vectors: 0,
+      reason: MISSING_MODEL,
+      message: '知识库未启用：本机 Ollama 缺少向量模型',
+    }
+    renderPage()
+    await screen.findByText('本机 Ollama 缺少向量模型')
+    expect(screen.getByText('ollama pull nomic-embed-text')).toBeTruthy()
+  })
+
+  test('向量库失败：显示「向量模型已就绪，但向量库不可用」，不得出现「尚未配置」', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      vectors: 0,
+      reason: '向量库不可用：OperationalError',
+      message: '知识库未启用：向量库不可用：OperationalError',
+    }
+    renderPage()
+    await screen.findByText('向量模型已就绪，但向量库不可用')
+    expect(screen.queryByText(/尚未配置/)).toBeNull()
+    expect(screen.queryByText(/还没有配置向量模型/)).toBeNull()
+    // vectors=0 是回退值，不能渲染成「空库 / 0 条向量」。
+    expect(screen.queryByText('向量总数')).toBeNull()
+    expect(screen.getByRole('button', { name: '重新检测' })).toBeTruthy()
+  })
+
+  test('「重新检测」真的重新请求状态并更新界面', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: null,
+      model: null,
+      vectors: 0,
+      reason: MISSING_MODEL,
+      message: '知识库未启用',
+    }
+    renderPage()
+    await screen.findByText('本机 Ollama 缺少向量模型')
+
+    const statusCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/v1/knowledge/status'))
+        .length
+    expect(statusCalls()).toBe(1)
+
+    statusPayload = STATUS
+    fireEvent.click(screen.getByRole('button', { name: '重新检测' }))
+
+    await waitFor(() => expect(statusCalls()).toBe(2))
+    await waitFor(() => expect(screen.queryByText('不可用原因')).toBeNull())
+    expect(screen.getByText('已启用')).toBeTruthy()
+  })
+
+  test('「去系统设置」带上 settings-embedding 的落点参数', async () => {
+    statusPayload = {
+      enabled: false,
+      provider: null,
+      model: null,
+      vectors: 0,
+      reason: MISSING_MODEL,
+      message: '知识库未启用',
+    }
+    const open = vi.fn()
+    render(<Knowledge query="" onOpenSettings={open} />)
+    await screen.findByText('本机 Ollama 缺少向量模型')
+    fireEvent.click(screen.getByRole('button', { name: '去系统设置查看向量化' }))
+
+    expect(open).toHaveBeenCalled()
+    expect(new URLSearchParams(window.location.search).get('focus')).toBe('embedding')
   })
 })

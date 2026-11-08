@@ -54,6 +54,87 @@ export interface KnowledgeStatus {
   message: string
 }
 
+/**
+ * 知识库状态只有三种真实形态，必须分开表达：
+ *
+ * 1. `enabled=true`：正常启用（`reason` 为 null；即便后端给了值也不展示原因行）；
+ * 2. `enabled=false` 且 `provider/model` 都为 null：向量模型没配好 ——
+ *    未配置 / 本机 Ollama 未运行 / 缺少模型，三者按 `reason` 再说清；
+ * 3. `enabled=false` 但 `provider/model` 有值：向量模型已建成，失败在向量库。
+ *
+ * **判定只认 `enabled`，不用 `provider/model` 反推「已启用」**；`message` 是
+ * 服务端派生的展示串，不参与判定。第三种形态里 `vectors` 只是 0 回退值，
+ * 不代表空库 —— 调用方不能把它渲染成「0 条向量」。
+ */
+export type KnowledgeStatusKind =
+  | 'enabled'
+  | 'not-configured'
+  | 'ollama-down'
+  | 'ollama-missing-model'
+  | 'vector-store'
+
+export interface KnowledgeStatusView {
+  kind: KnowledgeStatusKind
+  enabled: boolean
+  /** 启用态为 null：调用方据此把整个「不可用原因」行不渲染。 */
+  title: string | null
+  detail: string | null
+  /** 可直接复制执行的命令（缺模型时的 `ollama pull <模型名>`）。 */
+  command: string | null
+}
+
+export function knowledgeStatusView(status: KnowledgeStatus): KnowledgeStatusView {
+  if (status.enabled) {
+    return { kind: 'enabled', enabled: true, title: null, detail: null, command: null }
+  }
+
+  const reason = String(status.reason ?? '')
+  // 向量模型建成了但向量库打不开：provider/model 有值，或 reason 已明说向量库不可用。
+  if (status.provider !== null || status.model !== null || /向量库不可用/.test(reason)) {
+    return {
+      kind: 'vector-store',
+      enabled: false,
+      title: '向量模型已就绪，但向量库不可用',
+      detail: '向量模型已经加载，但向量库打不开 —— 导入与检索都会失败。先点「重新检测」；仍然失败请查看服务端日志。',
+      command: null,
+    }
+  }
+
+  const pullMatch = /ollama pull[ `]+([^\s`'"，,（(]+)/i.exec(reason)
+  const quotedModel = /缺少 embedding 模型\s*['"]([^'"]+)['"]/i.exec(reason)
+  const modelName = pullMatch?.[1] ?? quotedModel?.[1] ?? null
+  if (modelName || /缺少 embedding 模型|ollama pull/i.test(reason)) {
+    return {
+      kind: 'ollama-missing-model',
+      enabled: false,
+      title: '本机 Ollama 缺少向量模型',
+      detail: modelName
+        ? '在终端执行下面这行拉取模型，完成后点「重新检测」：'
+        : '在终端拉取缺失的向量模型（模型名见服务端原因），完成后点「重新检测」：',
+      command: modelName ? `ollama pull ${modelName}` : null,
+    }
+  }
+
+  if (/未运行|unreachable|无法自动启用/i.test(reason)) {
+    return {
+      kind: 'ollama-down',
+      enabled: false,
+      title: '本机 Ollama 未运行',
+      detail: '向量化依赖本机 Ollama。先启动 Ollama，再点「重新检测」。',
+      command: null,
+    }
+  }
+
+  return {
+    kind: 'not-configured',
+    enabled: false,
+    title: '还没有配置向量模型',
+    detail:
+      '本机默认使用 Ollama：先启动 Ollama；还没拉取向量模型时执行下面的命令（模型名以部署配置为准）。云端向量化需要在部署时设置 LIUHAO_EMBEDDING_PROVIDER 与对应凭据/地址。',
+    command: 'ollama pull nomic-embed-text',
+  }
+}
+
 export interface KnowledgeIngestResult {
   document_id: string
   chunks: number

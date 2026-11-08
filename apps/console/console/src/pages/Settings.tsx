@@ -17,8 +17,10 @@ import type { Session } from '../lib/auth'
 import { apiFetch, useApi } from '../lib/api'
 import { humanDuration, permissionLabel, toneVar, useNow } from '../lib/format'
 import type { OsNotification } from '../components/Shell'
-import { Card, Dot } from '../components/ui'
-import { ModelManager } from '../components/ModelManager'
+import { Card, Dot, Guard } from '../components/ui'
+import { ModelManager, providerLabel } from '../components/ModelManager'
+import { knowledgeStatusView } from '../lib/knowledge'
+import type { KnowledgeStatus } from '../lib/knowledge'
 import { DiagnosticsExport } from '../components/DiagnosticsExport'
 import { LogRetentionPanel } from '../components/LogRetentionPanel'
 import { UpgradePanel } from '../components/UpgradePanel'
@@ -51,6 +53,88 @@ const MODE_ICON: Record<DeviceMode, (props: { size?: number }) => ReactElement> 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>
   userChoice?: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
+
+/**
+ * 知识页「去系统设置」带来的落点：`?focus=embedding`。
+ *
+ * 只负责定位，不改变任何配置 —— 向量化由部署环境决定，这里是只读视图。
+ */
+function readEmbeddingFocus(): boolean {
+  try {
+    return (new URLSearchParams(window.location.search).get('focus') ?? '') === 'embedding'
+  } catch {
+    return false
+  }
+}
+
+/** 只读向量化状态卡：数据只来自 `GET /v1/knowledge/status`。 */
+function EmbeddingStatus({ canManage }: { canManage: boolean }) {
+  const status = useApi<KnowledgeStatus>('/v1/knowledge/status', 0)
+
+  return (
+    <>
+      <Guard
+        loading={status.loading}
+        error={status.error}
+        data={status.data}
+        onRetry={status.reload}
+      >
+        {(data) => {
+          const view = knowledgeStatusView(data)
+          return (
+            <>
+              <dl className="os-kv">
+                <dt>可用性</dt>
+                <dd>
+                  <span className="os-badge" data-tone={data.enabled ? 'ok' : 'danger'}>
+                    {data.enabled ? '已启用' : '未启用'}
+                  </span>
+                </dd>
+                <dt>向量模型</dt>
+                <dd>
+                  {data.provider ? providerLabel(data.provider) : '—'}
+                  {data.model ? ` · ${data.model}` : ''}
+                </dd>
+                {/* 未启用时 vectors 可能是 0 回退值：不渲染成「0 条向量」。 */}
+                {data.enabled && (
+                  <>
+                    <dt>向量总数</dt>
+                    <dd>{data.vectors}</dd>
+                  </>
+                )}
+                {!data.enabled && view.title && (
+                  <>
+                    <dt>不可用原因</dt>
+                    <dd className="os-model-error">
+                      <strong>{view.title}</strong>
+                      <br />
+                      {view.detail}
+                      {view.command && (
+                        <>
+                          <br />
+                          <code>{view.command}</code>
+                        </>
+                      )}
+                    </dd>
+                  </>
+                )}
+              </dl>
+              <div className="os-kb-actions" style={{ marginTop: 12 }}>
+                <button className="os-btn os-btn-ghost" onClick={status.reload}>
+                  重新检测
+                </button>
+              </div>
+            </>
+          )
+        }}
+      </Guard>
+      <p className="os-hint" style={{ marginTop: 12 }}>
+        这张卡只读：向量化默认只走本机 Ollama；云端向量化需要在部署时设置环境变量，界面不提供选择。
+      </p>
+      {!canManage && <p className="os-hint">该设置由主账号统一管理，当前账号只能查看。</p>}
+    </>
+  )
 }
 
 /** `GET/PUT /v1/network/research`：联网检索的开关状态与告知文案。 */
@@ -113,6 +197,27 @@ export function Settings({
     if (choice?.outcome === 'accepted') setStandalone(true)
     setInstallEvent(null)
   }, [installEvent])
+
+  // 知识页「去系统设置查看向量化」的落点：滚动 + 聚焦 + 高亮真卡片。
+  // 落点写进 URL（`?focus=embedding`）而不是只做页内跳转，刷新后仍能复查同一张卡。
+  // 高亮状态在首帧就定下来（惰性初始化），不在 effect 里 setState 再触发一轮渲染。
+  const [embeddingHighlighted] = useState(readEmbeddingFocus)
+  useEffect(() => {
+    if (!readEmbeddingFocus()) return
+    const target = document.getElementById('settings-embedding')
+    if (!target) return
+    target.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    // Card 是 section，默认不可聚焦；这里临时给它一个程序化焦点位置。
+    target.tabIndex = -1
+    target.focus?.()
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('focus')
+      window.history.replaceState(null, '', url.toString())
+    } catch {
+      // 受限环境忽略。
+    }
+  }, [])
 
   // 联网检索：默认关闭。开启前必须把「检索词会发到哪几个站点」说清楚。
   const research = useApi<ResearchState>('/v1/network/research', 0)
@@ -240,6 +345,16 @@ export function Settings({
       </Card>
 
       <Card
+        id="settings-embedding"
+        title="知识库向量化"
+        sub="只读：向量模型与向量库状态都来自服务端，这里不提供修改"
+        span={12}
+        className={embeddingHighlighted ? 'sc-panel-active' : undefined}
+      >
+        <EmbeddingStatus canManage={canManageSettings} />
+      </Card>
+
+      <Card
         id="settings-privacy"
         title="隐私与联网"
         sub="这里决定「什么内容可以离开本机」。默认状态：除了你自己配置的模型，没有任何外发。"
@@ -248,8 +363,9 @@ export function Settings({
         <div className="os-note" role="note" style={{ marginBottom: 12 }}>
           <span>
             <strong>知识库向量化：</strong>
-            默认只在本机 Ollama 上运行；只有你显式选择云端向量化服务，文档分片才会发到那家厂商。
-            环境里存在 <code>OPENAI_API_KEY</code> 不再自动改走云端。
+            向量化默认只走本机 Ollama，文档分片不离开本机。云端向量化目前不提供界面配置：
+            要走云端需要在部署时设置 <code>LIUHAO_EMBEDDING_PROVIDER</code> 与对应凭据/地址。
+            环境里存在 <code>OPENAI_API_KEY</code> 不会自动改走云端。
           </span>
         </div>
 

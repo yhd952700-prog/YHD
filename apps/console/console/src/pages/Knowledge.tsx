@@ -36,6 +36,7 @@ import {
   isTerminalJobStatus,
   jobPhaseLabel,
   jobStatusLabel,
+  knowledgeStatusView,
   MAX_INGEST_CHARS,
   normalizeDocPage,
   paginateChunks,
@@ -61,23 +62,10 @@ import type {
   KnowledgeStatus,
 } from '../lib/knowledge'
 import { formatBytes } from '../lib/knowledge'
-import { numberText, relativeTime, safeText } from '../lib/format'
+import { numberText, relativeTime } from '../lib/format'
 import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
 import { isBudgetDenialMessage } from '../lib/errorMessage'
 import { providerLabel } from '../components/ModelManager'
-
-/**
- * 后端会透传实现层原因（`没有可用的 embedding provider`、环境变量名、`mock` 等）。
- * 这些是工程语言，用户只需要知道「缺什么、去哪里配」。
- */
-function friendlyReason(reason: string | undefined | null): string {
-  const text = safeText(reason).trim()
-  if (!text) return '尚未配置向量模型，因此暂时无法导入或检索。'
-  if (/provider|embedding|mock|LIUHAO_|env|api[_ ]?key/i.test(text)) {
-    return '尚未配置向量模型，因此暂时无法导入或检索。到「系统设置」选择向量模型并填写密钥后再试。'
-  }
-  return text
-}
 
 /**
  * 成功态的分块数：服务端结果优先，其次真实处理数。
@@ -111,6 +99,21 @@ export function Knowledge({
 }) {
   const status = useApi<KnowledgeStatus>('/v1/knowledge/status', 30_000)
   const disabled = status.data ? !status.data.enabled : false
+
+  /**
+   * 「去系统设置」不能在设置页里落空：把目标卡片写进 URL，设置页据此滚动、
+   * 聚焦并高亮 `settings-embedding`。受限环境（file:// 等）只做页面跳转。
+   */
+  const openEmbeddingSettings = useCallback(() => {
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.set('focus', 'embedding')
+      window.history.replaceState(null, '', url.toString())
+    } catch {
+      // 受限环境：只做内存内导航。
+    }
+    onOpenSettings()
+  }, [onOpenSettings])
 
   // ── 文档账本（服务端分页） ────────────────────────────────────
   const [pageIndex, setPageIndex] = useState(0)
@@ -691,44 +694,69 @@ export function Knowledge({
           data={status.data}
           onRetry={status.reload}
         >
-          {(data) => (
-            <>
-              <dl className="os-kv">
-                <dt>可用性</dt>
-                <dd>
-                  <span className="os-badge" data-tone={data.enabled ? 'ok' : 'danger'}>
-                    {data.enabled ? '已启用' : '未启用'}
-                  </span>
-                </dd>
-                <dt>文档数</dt>
-                <dd>{normalizedPage ? normalizedPage.total : '—'}</dd>
-                <dt>向量总数</dt>
-                <dd>{data.vectors}</dd>
-                <dt>向量模型</dt>
-                <dd>
-                  {data.provider ? providerLabel(data.provider) : '—'}
-                  {data.model ? ` · ${data.model}` : ''}
-                </dd>
-                <dt>不可用原因</dt>
-                <dd className="os-model-error">{friendlyReason(data.reason)}</dd>
-              </dl>
-              {!data.enabled && (
-                <div className="os-alert" style={{ marginTop: 12 }}>
-                  <span>
-                    {friendlyReason(data.reason)}
-                    <br />
-                    未启用时不会有任何检索结果 —— 这里不会用模拟向量凑数。
-                    <button className="os-link" onClick={onOpenSettings}>
-                      去系统设置配置模型
-                    </button>
-                  </span>
-                </div>
-              )}
-              <p className="os-hint">
-                向量总数包含所有客户端与 AI 员工写入的分块；文档数来自服务端文档账本。
-              </p>
-            </>
-          )}
+          {(data) => {
+            const view = knowledgeStatusView(data)
+            return (
+              <>
+                <dl className="os-kv">
+                  <dt>可用性</dt>
+                  <dd>
+                    <span className="os-badge" data-tone={data.enabled ? 'ok' : 'danger'}>
+                      {data.enabled ? '已启用' : '未启用'}
+                    </span>
+                  </dd>
+                  <dt>文档数</dt>
+                  <dd>{normalizedPage ? normalizedPage.total : '—'}</dd>
+                  {/* 未启用时 vectors 可能是 0 回退值：不作为「空库 / 0 条向量」展示。 */}
+                  {data.enabled && (
+                    <>
+                      <dt>向量总数</dt>
+                      <dd>{data.vectors}</dd>
+                    </>
+                  )}
+                  <dt>向量模型</dt>
+                  <dd>
+                    {data.provider ? providerLabel(data.provider) : '—'}
+                    {data.model ? ` · ${data.model}` : ''}
+                  </dd>
+                  {/* 启用态整行不渲染（不是显示「—」）：reason 为 null 不是一种状态。 */}
+                  {!data.enabled && view.title && (
+                    <>
+                      <dt>不可用原因</dt>
+                      <dd className="os-model-error">
+                        <strong>{view.title}</strong>
+                        <br />
+                        {view.detail}
+                        {view.command && (
+                          <>
+                            <br />
+                            <code>{view.command}</code>
+                          </>
+                        )}
+                      </dd>
+                    </>
+                  )}
+                </dl>
+                {!data.enabled && (
+                  <div className="os-alert" role="status" style={{ marginTop: 12 }}>
+                    <span>未启用时不会有任何检索结果 —— 这里不会用模拟向量凑数。</span>
+                    <div className="os-kb-actions" style={{ marginTop: 8 }}>
+                      <button className="os-link" onClick={status.reload}>
+                        重新检测
+                      </button>
+                      <button className="os-link" onClick={openEmbeddingSettings}>
+                        去系统设置查看向量化
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <p className="os-hint">
+                  向量总数包含所有客户端与 AI 员工写入的分块；文档数来自服务端文档账本。
+                  {!data.enabled && '不可用时向量库无法统计条数，因此这里不显示「0 条向量」。'}
+                </p>
+              </>
+            )
+          }}
         </Guard>
       </Card>
 
@@ -751,7 +779,7 @@ export function Knowledge({
       >
         {disabled && (
           <div className="os-alert">
-            <span>知识库未启用，导入与检索都会失败。先到「系统设置」配置向量模型。</span>
+            <span>知识库未启用，导入与检索都会失败。原因与下一步写在上方「知识库状态」卡里。</span>
           </div>
         )}
 
@@ -1282,7 +1310,10 @@ export function Knowledge({
 
       <Card title="检索测试" sub="输入一句话，看命中哪些片段、分数多少" span={12}>
         {disabled ? (
-          <Empty title="知识库未启用，无法检索" hint="先到「系统设置」配置向量模型，再回到这里测试。" />
+          <Empty
+            title="知识库未启用，无法检索"
+            hint="原因与下一步写在上方「知识库状态」卡里；处理后点「重新检测」，再回到这里测试。"
+          />
         ) : (
           <>
             <div className="os-kb-search">
@@ -1344,7 +1375,7 @@ export function Knowledge({
                 {searchResult.hits.length === 0 ? (
                   <Empty
                     title="没有命中任何片段"
-                    hint="可能原因：库里还没有相关文档；查询与正文用词差异过大；或本身没有配置真实向量模型。"
+                    hint="可能原因：库里还没有相关文档；查询与正文用词差异过大；或相关度低于门槛，服务端判定为不相关。"
                   />
                 ) : (
                   <div className="os-kb-chunks">
