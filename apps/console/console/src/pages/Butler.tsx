@@ -38,7 +38,6 @@ import {
   formatTaskDuration,
   goalElapsedSeconds,
   goalStateLabel,
-  goalStateTone,
   isGoalActive,
   mergeTaskSnapshots,
   parseTaskTime,
@@ -69,6 +68,7 @@ import type {
   ProjectsResponse,
 } from '../lib/operator'
 import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import { GoalStatus } from '../components/GoalStatus'
 import {
   BUDGET_DENIAL_MESSAGE,
   BUDGET_DENIAL_NEXT_STEP,
@@ -157,10 +157,6 @@ function errorText(error: unknown): string {
       : '操作没有完成，请稍后重试。'
   }
   return '操作没有完成，请稍后重试。'
-}
-
-function acceptanceTone(state: string): 'ok' | 'warn' | 'danger' | 'accent' | 'muted' {
-  return goalStateTone(state)
 }
 
 function approveFailureMessage(error: unknown): string {
@@ -1023,9 +1019,15 @@ export function Butler({
                   <span className="os-badge" data-tone={assignedGoal ? 'accent' : 'muted'}>
                     {assignedGoal ? '只派给一个人' : '管家安排'}
                   </span>
-                  <span className="os-badge" data-tone={acceptanceTone(state)}>
-                    {goalStateLabel(state)}
-                  </span>
+                  <GoalStatus
+                    goal={{
+                      state,
+                      artifacts: detail?.artifacts ?? activeSummary?.artifacts ?? [],
+                      completed_tasks: stats.succeeded,
+                      failed_tasks: stats.failed,
+                    }}
+                    showHint
+                  />
                 </div>
               </div>
 
@@ -1064,19 +1066,10 @@ export function Butler({
                 </>
               ) : (
                 <>
-                  <div
-                    className="os-butler-progress"
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={stats.percent}
-                    aria-valuetext={`已结束 ${stats.finished} / ${stats.total} 项`}
-                  >
-                    <span style={{ width: `${stats.percent}%` }} />
-                  </div>
                   <p className="os-hint" style={{ marginTop: 6 }}>
-                    已结束 {stats.finished} / {stats.total} 项 · 成功 {stats.succeeded} · 失败{' '}
-                    {stats.failed} · 待确认 {stats.awaiting}
+                    已结束 {stats.finished} / {stats.total} 项 · 可交付 {stats.delivered} 项
+                    {stats.failed > 0 ? ` · 失败 ${stats.failed}` : ''}
+                    {stats.awaiting > 0 ? ` · 待确认 ${stats.awaiting}` : ''}
                     {stats.skipped > 0 ? ` · 跳过 ${stats.skipped}` : ''}
                   </p>
                   <p className="os-butler-summary">
@@ -1089,7 +1082,7 @@ export function Butler({
                       <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                         {detail.employees.map((row) => (
                           <li key={row.employee ?? 'unattributed'}>
-                            {displayName(row.employee ?? '') || '未归属'} · 做了 {row.tasks} 项 · 成功 {row.completed} · 失败{' '}
+                            {displayName(row.employee ?? '') || '未归属'} · 做了 {row.tasks} 项 · 完成 {row.completed} · 失败{' '}
                             {row.failed} · 合计耗时 {totalDurationLabel(row.total_duration_ms)}
                           </li>
                         ))}
@@ -1244,9 +1237,14 @@ export function Butler({
                     data-active={item.goal_id === activeId ? 'true' : 'false'}
                     onClick={() => openFromHistory(item)}
                   >
-                    <span className="os-badge" data-tone={goalStateTone(item.state)}>
-                      {goalStateLabel(item.state)}
-                    </span>
+                    <GoalStatus
+                      goal={{
+                        state: item.state,
+                        artifacts: item.artifacts,
+                        completed_tasks: item.completed_tasks,
+                        failed_tasks: item.failed_tasks,
+                      }}
+                    />
                     <span className="os-butler-history-text">{item.natural_language}</span>
                     <span className="os-hint os-butler-history-meta">
                       {relativeTime(item.created_at ?? 0)} · 完成 {item.completed_tasks}/
@@ -1387,7 +1385,7 @@ export function Butler({
             detail
               ? live
                 ? `执行中 · 已出现 ${stats.total} 项 · 已结束 ${stats.finished} 项`
-                : `总进度 ${stats.percent}% · 已结束 ${stats.finished} / ${stats.total} 项`
+                : `已结束 ${stats.finished} / ${stats.total} 项 · 可交付 ${stats.delivered} 项`
               : '等待管家的任务清单'
           }
           span={12}

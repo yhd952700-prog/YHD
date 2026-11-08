@@ -456,6 +456,8 @@ export interface GoalTask {
   duration_ms?: number | null
   /** 后端判据：completed / completed_unattributed → true。 */
   success?: boolean
+  /** 该任务真的写出的文件路径（工作区相对路径）；没有产物时为空数组。 */
+  artifacts?: string[]
   result: string | null
   error: string | null
   started_at: string | null

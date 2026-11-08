@@ -21,6 +21,7 @@ import {
   parseTaskTime,
   riskTone,
   sortGoalSummaries,
+  splitLinks,
   taskDurationSeconds,
   taskPhaseInfo,
   taskStats,
@@ -60,7 +61,7 @@ describe('任务状态映射', () => {
     expect(taskPhaseInfo(task({ status: 'pending' })).label).toBe('排队')
     expect(taskPhaseInfo(task({ status: 'ready' })).label).toBe('排队')
     expect(taskPhaseInfo(task({ status: 'running' })).label).toBe('进行中')
-    expect(taskPhaseInfo(task({ status: 'completed' })).label).toBe('成功')
+    expect(taskPhaseInfo(task({ status: 'completed' })).label).toBe('已完成')
     expect(taskPhaseInfo(task({ status: 'failed' })).label).toBe('失败')
     expect(taskPhaseInfo(task({ status: 'skipped' })).label).toBe('已跳过')
     // 进程被杀后重启的收敛状态：不是 running，也不是普通失败
@@ -198,6 +199,16 @@ describe('进度与汇总', () => {
     expect(stats.failed).toBe(1)
   })
 
+  test('完成不等于可交付：只有真实产物路径才算交付', () => {
+    const stats = taskStats([
+      task({ id: 'a', status: 'completed' }),
+      task({ id: 'b', status: 'completed', artifacts: ['reports/minutes.md'] }),
+      task({ id: 'c', status: 'failed' }),
+    ])
+    expect(stats.succeeded).toBe(2)
+    expect(stats.delivered).toBe(1)
+  })
+
   test('总耗时取最早开始与最晚结束', () => {
     expect(goalElapsedSeconds([])).toBeNull()
     expect(
@@ -231,7 +242,7 @@ describe('进度与汇总', () => {
     }
     const text = buildGoalSummary(detail)
     expect(text).toContain('共 2 项任务')
-    expect(text).toContain('成功 1')
+    expect(text).toContain('完成 1（可交付 0）')
     expect(text).toContain('失败 1')
     expect(text).toContain('1 个文件')
     expect(text).toContain('评估：未达到验收条件')
@@ -249,7 +260,7 @@ describe('进度与汇总', () => {
   })
 
   test('目标状态中文化与活跃判定', () => {
-    expect(goalStateLabel('completed')).toBe('成功')
+    expect(goalStateLabel('completed')).toBe('已结束')
     expect(goalStateLabel('cancelled')).toBe('已中止')
     expect(goalStateLabel('interrupted')).toBe('已中断（进程重启）')
     expect(goalStateTone('failed')).toBe('danger')
@@ -258,6 +269,40 @@ describe('进度与汇总', () => {
     expect(isGoalActive('interrupted')).toBe(false)
     expect(isGoalActive('completed')).toBe(false)
     expect(isGoalActive('tomato')).toBe(false)
+  })
+
+  test('结果里的真实来源被拆成可点击片段', () => {
+    const segments = splitLinks(
+      '推荐：https://github.com/ollama/ollama，抓取时间 2026-11-08 10:00',
+    )
+    expect(segments).toEqual([
+      { value: '推荐：' },
+      { value: 'https://github.com/ollama/ollama', href: 'https://github.com/ollama/ollama' },
+      { value: '，抓取时间 2026-11-08 10:00' },
+    ])
+  })
+
+  test('markdown 链接只显示标题，不把语法符号留在页面上', () => {
+    const segments = splitLinks('来源：[Animanabu](https://github.com/x/Animanabu)。')
+    expect(segments).toEqual([
+      { value: '来源：' },
+      { value: 'Animanabu', href: 'https://github.com/x/Animanabu' },
+      { value: '。' },
+    ])
+  })
+
+  test('链接末尾的英文句号不吞进 href', () => {
+    const segments = splitLinks('see https://example.com/a.')
+    expect(segments).toEqual([
+      { value: 'see ' },
+      { value: 'https://example.com/a', href: 'https://example.com/a' },
+      { value: '.' },
+    ])
+  })
+
+  test('没有链接时保持原文，不丢字符', () => {
+    expect(splitLinks('只是普通文本')).toEqual([{ value: '只是普通文本' }])
+    expect(splitLinks('')).toEqual([])
   })
 
   test('历史倒序且缺失时间不冒充最新', () => {

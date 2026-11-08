@@ -108,6 +108,7 @@ const FINAL_DETAIL: GoalDetail = {
       capability_id: 'doc',
       assigned_agent: 'agent-1',
       result: 'reports/weekly.md',
+      artifacts: ['reports/weekly.md'],
       error: null,
       started_at: '1780000004',
       completed_at: '1780000009.5',
@@ -382,7 +383,9 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
 
     await waitFor(() => expect(screen.getByText(/执行者：小鎏/)).toBeTruthy())
     expect(screen.getByText('员工汇总（按真实任务归属统计）')).toBeTruthy()
-    expect(screen.getByText(/小鎏 · 做了 2 项 · 成功 2 · 失败 0 · 合计耗时 9\.0 秒/)).toBeTruthy()
+    expect(
+      screen.getByText(/小鎏 · 做了 2 项 · 完成 2 · 失败 0 · 合计耗时 9\.0 秒/),
+    ).toBeTruthy()
   })
 
   test('增量快照只给变化字段时，已有任务卡保留旧字段与已出现任务', async () => {
@@ -410,7 +413,7 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
     await waitFor(() => screen.getByText('汇总会议记录'))
 
     const card = screen.getByText('汇总会议记录').closest('article') as HTMLElement
-    expect(within(card).getByText('成功')).toBeTruthy()
+    expect(within(card).getByText('已完成')).toBeTruthy()
     expect(within(card).getByText('小鎏（鎏灏执行体）')).toBeTruthy()
     expect(within(card).getByText('3.5 秒')).toBeTruthy()
 
@@ -419,6 +422,32 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'reports/weekly.md' }))
     await waitFor(() => expect(screen.getByText(/已整理 5 个项目。/, { exact: false })).toBeTruthy())
+  })
+
+  test('执行结束但没有产物：页头走三态，不出现「成功」也不渲染 100%', async () => {
+    detailPlan = [
+      {
+        ...FINAL_DETAIL,
+        artifacts: [],
+        evaluation: {
+          outcome: 'partial',
+          summary: '任务跑完了，但没有写出任何文件。',
+          replan_required: false,
+          replan_triggered: false,
+        },
+        tasks: FINAL_DETAIL.tasks.map((task) => ({ ...task, artifacts: [] })),
+      },
+    ]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() => expect(screen.getByText('已完成但无产出')).toBeTruthy())
+    await waitFor(() =>
+      expect(screen.getAllByText(/已结束 2 \/ 2 项 · 可交付 0 项/).length).toBeGreaterThan(0),
+    )
+    // 硬约束：任何「成功」都不能来自 state；completed 只表示执行结束。
+    expect(screen.queryByText('成功')).toBeNull()
+    expect(screen.queryByText(/100%/)).toBeNull()
   })
 })
 

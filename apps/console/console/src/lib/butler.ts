@@ -104,7 +104,8 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
   const raw = (task?.status ?? '').toString()
   const value = raw.toLowerCase()
   if (value === 'completed' || value === 'completed_unattributed') {
-    return { phase: 'succeeded', label: '成功', tone: 'ok', raw }
+    // 「执行结束」不是「成功」；是否真的交付由 goalVerdict 按 artifacts 判定。
+    return { phase: 'succeeded', label: '已完成', tone: 'ok', raw }
   }
   if (value === 'failed') {
     if (looksLikeApproval(task.error)) {
@@ -267,6 +268,8 @@ export interface TaskStats {
   unknown: number
   /** 已终结（成功 / 失败 / 待确认 / 跳过）的任务数。 */
   finished: number
+  /** 真正写出文件的已完成任务数（只有真实产物路径才算交付）。 */
+  delivered: number
   /** 已终结占比 0..100；没有任务时为 0（页面必须显示「进度未知」而不是 0%）。 */
   percent: number
 }
@@ -282,6 +285,7 @@ export function taskStats(tasks: GoalTask[]): TaskStats {
     skipped: 0,
     unknown: 0,
     finished: 0,
+    delivered: 0,
     percent: 0,
   }
   for (const task of tasks) {
@@ -298,6 +302,9 @@ export function taskStats(tasks: GoalTask[]): TaskStats {
         break
       case 'succeeded':
         stats.succeeded += 1
+        if (Array.isArray(task.artifacts) && task.artifacts.length > 0) {
+          stats.delivered += 1
+        }
         break
       case 'failed':
         stats.failed += 1
@@ -337,9 +344,10 @@ export function goalStateLabel(state: string): string {
     case 'verifying':
       return '汇总校验中'
     case 'completed':
-      return '成功'
+      // 生命周期终态，不是「成功」；成功与否由 goalVerdict 判定。
+      return '已结束'
     case 'partial':
-      return '部分成功'
+      return '部分完成'
     case 'failed':
       return '失败'
     case 'interrupted':
@@ -422,7 +430,8 @@ export function buildGoalSummary(detail: GoalDetail): string {
     parts.push('本次没有分解出任务。')
   } else {
     const tail: string[] = []
-    if (stats.succeeded > 0) tail.push(`成功 ${stats.succeeded}`)
+    // 「完成」只数执行结束；「可交付」只数真的写出了文件的任务，两者分开报。
+    if (stats.succeeded > 0) tail.push(`完成 ${stats.succeeded}（可交付 ${stats.delivered}）`)
     if (stats.failed > 0) tail.push(`失败 ${stats.failed}`)
     if (stats.awaiting > 0) tail.push(`待确认 ${stats.awaiting}`)
     if (stats.skipped > 0) tail.push(`跳过 ${stats.skipped}`)
