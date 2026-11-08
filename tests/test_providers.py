@@ -196,6 +196,10 @@ def test_openai_client_honors_configured_timeout(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", _FakeClient)
     p = OpenAIProvider(name="t", model="m", api_key="sk-test", timeout=123.0)
     p._get_client()
+    # 用户显式配置的超时是硬约束：传输层读超时必须正好是 123 秒，
+    # 不能被任何默认值盖过（那样用户设的超时就成了空话）。
+    assert p.timeout == 123.0
+    assert p.first_token_timeout == 123.0
     assert captured.get("timeout") == 123.0
 
 
@@ -406,7 +410,8 @@ def test_provider_timeout_env_invalid_keeps_default(monkeypatch, caplog):
     reset_provider()
     try:
         p = get_provider()
-        assert p.timeout == 30.0
+        # 类默认值已从 30 秒提高到 120 秒：30 秒会把本地模型冷启动误判成超时。
+        assert p.timeout == 120.0
         assert "AI_PROVIDER_TIMEOUT" in caplog.text
     finally:
         reset_provider()

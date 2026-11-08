@@ -24,6 +24,76 @@ def test_append_load_roundtrip(tmp_path):
     assert s.get_last_turn("alice") == 1
 
 
+def test_get_conversation_store_is_singleton_under_concurrent_first_use(
+    tmp_path, monkeypatch
+):
+    """冷会话构造已并发化：首次取全局存储必须只构造一次。
+
+    不加锁时多个线程会各自打开同一个 sqlite 库，实测直接撞
+    ``database is locked`` 并留下多份连接。
+    """
+    import threading
+    import time
+
+    import src.ai.conversation_store as store_module
+
+    constructed = []
+    real_cls = store_module.ConversationStore
+
+    class SlowStore(real_cls):
+        def __init__(self, *args, **kwargs):
+            time.sleep(0.02)  # 放大竞争窗口
+            constructed.append(self)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(store_module, "ConversationStore", SlowStore)
+    monkeypatch.setattr(store_module, "DEFAULT_DB_PATH", str(tmp_path / "singleton.db"))
+    monkeypatch.setattr(store_module, "_conversation_store", None)
+
+    results = []
+    barrier = threading.Barrier(16)
+
+    def fetch() -> None:
+        barrier.wait(timeout=10)
+        results.append(store_module.get_conversation_store())
+
+    threads = [threading.Thread(target=fetch) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 16
+    assert len(constructed) == 1, "并发首次调用只能构造一个全局存储"
+    assert len({id(item) for item in results}) == 1
+
+
+def test_append_turn_writes_both_rows_with_single_audit(tmp_path, monkeypatch):
+    """一轮问答一次事务写入两行，且只产生一条 append 审计。"""
+    import src.kernels.audit as audit_kernel
+
+    actions = []
+    real_log_event = audit_kernel.log_event
+
+    def counting_log_event(*args, **kwargs):
+        details = kwargs.get("details") or {}
+        if details.get("action") == "p5.conversation.append":
+            actions.append(details)
+        return real_log_event(*args, **kwargs)
+
+    monkeypatch.setattr(audit_kernel, "log_event", counting_log_event)
+
+    s = make_store(tmp_path)
+    s.append_turn("alice", 3, "问", "答")
+
+    assert s.load("alice") == [
+        {"role": "user", "content": "问"},
+        {"role": "assistant", "content": "答"},
+    ]
+    assert s.get_last_turn("alice") == 3
+    assert len(actions) == 1, "一轮问答只应有一条 append 审计"
+
+
 def test_cross_instance_restore(tmp_path):
     """同一 db 路径的第二个实例（模拟进程重启）应读到第一个实例的内容。"""
     db = tmp_path / "conv.db"

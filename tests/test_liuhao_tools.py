@@ -67,6 +67,83 @@ def test_tools_registered_active():
         assert a.tools.status(t.tool_id).value == "active"
 
 
+def test_tool_registration_is_shared_once_per_profile(monkeypatch):
+    """同一画像主体只注册一次工具：第二个冷会话直接复用已激活的注册表。
+
+    注册/审批/激活每一步都写审计；若每个冷会话都重放，冷启动成本会随会话数
+    线性增长（实测 10 个工具 × 4 步 ≈ 40 条同步写入）。
+    """
+    lh_module._TOOL_CACHE.clear()
+    builds = []
+    real_make_tools = lh_module.make_tools
+
+    def counting_make_tools(principal, status_fn=None):
+        builds.append(principal)
+        return real_make_tools(principal, status_fn=status_fn)
+
+    monkeypatch.setattr(lh_module, "make_tools", counting_make_tools)
+    try:
+        first = LiuHaoAssistant(
+            name="session-a",
+            profile_principal="user-shared",
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+        second = LiuHaoAssistant(
+            name="session-b",
+            profile_principal="user-shared",
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+
+        assert builds == ["user-shared"], "同一主体不应重复构建工具集"
+        assert first.tools is second.tools, "注册表应被复用"
+        assert first._tool_list is second._tool_list
+        assert all(
+            first.tools.status(tool.tool_id).value == "active"
+            for tool in first._tool_list
+        )
+    finally:
+        lh_module._TOOL_CACHE.clear()
+
+
+def test_tool_cache_is_bounded_and_evicts_lru(monkeypatch):
+    """工具缓存有上限；超限按 LRU 淘汰，淘汰后下一次冷构造重建一次。"""
+    lh_module._TOOL_CACHE.clear()
+    monkeypatch.setenv("LIUHAO_TOOL_CACHE_MAX", "2")
+    builds = []
+    real_make_tools = lh_module.make_tools
+
+    def counting_make_tools(principal, status_fn=None):
+        builds.append(principal)
+        return real_make_tools(principal, status_fn=status_fn)
+
+    monkeypatch.setattr(lh_module, "make_tools", counting_make_tools)
+
+    def build(principal: str) -> LiuHaoAssistant:
+        return LiuHaoAssistant(
+            name=f"session-{principal}",
+            profile_principal=principal,
+            provider=MockProvider(name="test", model="mock-model"),
+        )
+
+    try:
+        build("user-a")
+        build("user-b")
+        # 触碰 user-a：user-b 成为最久未使用，应被淘汰。
+        lh_module._shared_tools("user-a")
+        build("user-c")
+
+        assert len(lh_module._TOOL_CACHE) == 2, "工具缓存不得超过配置上限"
+        assert "user-b" not in lh_module._TOOL_CACHE
+        assert builds.count("user-b") == 1
+
+        # 被淘汰的主体再次使用时会重建一次（只影响冷构造，不影响已有会话）。
+        build("user-b")
+        assert builds.count("user-b") == 2
+        assert len(lh_module._TOOL_CACHE) == 2
+    finally:
+        lh_module._TOOL_CACHE.clear()
+
+
 def test_build_tool_prompt_lists_tools():
     tools = make_tools("alice", status_fn=lambda: {"turn": 0})
     prompt = build_tool_prompt(tools)

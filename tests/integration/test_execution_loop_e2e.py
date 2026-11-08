@@ -155,8 +155,10 @@ def test_goal_routes_to_python_compute_and_capability_really_computes():
     assert entry["state"] == "completed", entry
     compute = compute_tasks[0]
     assert compute.get("status") == "completed", compute
+    # 上屏的是给人读的答案本身，不是 {'result': '4', ...} 这种原始结构。
     result_text = str(compute.get("result"))
-    assert re.search(r"['\"]result['\"]\s*:\s*['\"]4['\"]", result_text), result_text
+    assert result_text.strip() == "4", result_text
+    assert "{'" not in result_text, result_text
 
     # Real capability proof, no LLM: python_compute with explicit code.
     from src.ai.tools_local import python_compute

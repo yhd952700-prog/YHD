@@ -68,19 +68,23 @@ class TestPersistenceAndMasking:
 
     def test_explicit_default_is_exclusive(self, store):
         first = _create(store, name="first")
-        second = _create(store, name="second", is_default=True)
+        second = _create(store, name="second")
+        # 未测通的模型不允许直接设为默认（新建时也不允许）；测通后才放行。
+        store.mark_verified(second["id"], True)
+        store.set_default(second["id"], "admin")
         assert store.default_id() == second["id"]
         assert store.get_public(first["id"])["is_default"] is False
 
     def test_set_default_switches_immediately(self, store):
         first = _create(store, name="first")
         second = _create(store, name="second")
+        store.mark_verified(second["id"], True)
         store.set_default(second["id"], "admin")
         assert store.resolve()["id"] == second["id"]
         assert store.get_public(first["id"])["is_default"] is False
 
     def test_delete_default_promotes_the_oldest_remaining(self, store):
-        first = _create(store, name="first", is_default=True)
+        first = _create(store, name="first")
         second = _create(store, name="second")
         result = store.delete(first["id"], "admin")
         assert result["default_id"] == second["id"]
@@ -174,7 +178,9 @@ class TestProviderHotReload:
         first = resolve_provider()
         assert first.model == "model-one"
 
-        _create(store, name="two", provider="mock", model="model-two", is_default=True)
+        second_model = _create(store, name="two", provider="mock", model="model-two")
+        store.mark_verified(second_model["id"], True)
+        store.set_default(second_model["id"], "admin")
         second = resolve_provider()
         assert second.model == "model-two"
         assert second is not first, "each resolution must build from current config"
