@@ -449,6 +449,29 @@ describe('鎏灏管家 · 一句话与运行中快照', () => {
     expect(screen.queryByText('成功')).toBeNull()
     expect(screen.queryByText(/100%/)).toBeNull()
   })
+
+  test('未验证任务在卡片上明说未验证与得分，不显示「成功」', async () => {
+    detailPlan = [
+      {
+        ...FINAL_DETAIL,
+        tasks: FINAL_DETAIL.tasks.map((task) => ({
+          ...task,
+          verification: 'unverified',
+          score: 0,
+        })),
+      },
+    ]
+    renderPage()
+    await submitCommand('把这周的会议记录整理成周报')
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/未验证（没有独立证据证明结果正确）/).length,
+      ).toBe(2),
+    )
+    expect(screen.getAllByText(/得分 0/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('成功')).toBeNull()
+  })
 })
 
 describe('鎏灏管家 · 审批与单任务重试', () => {

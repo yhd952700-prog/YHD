@@ -3714,8 +3714,10 @@ class AIStateManager:
             # plan and fall back to the old attribute if a future shape has one.
             plan_tasks = getattr(getattr(ctx, "plan", None), "tasks", None)
             ctx_tasks = plan_tasks if plan_tasks is not None else getattr(ctx, "tasks", None)
+            verification_results = getattr(ctx, "verification_results", None) or {}
             if ctx_tasks:
                 for t in ctx_tasks:
+                    verified = verification_results.get(t.id)
                     tasks.append({
                         "id": t.id,
                         "name": t.name,
@@ -3728,6 +3730,16 @@ class AIStateManager:
                         # 终态不能只看 status：completed 也可能没有任何产出。
                         "produced": bool(getattr(t, "produced", False)),
                         "artifacts": list(getattr(t, "artifacts", []) or []),
+                        # 验证结论必须上屏：unverified 之前只藏在 trace 里，
+                        # 用户看到的「已完成」无法分辨真假。
+                        "verification": (
+                            verified.result.value
+                            if verified is not None and hasattr(verified.result, "value")
+                            else None
+                        ),
+                        "score": (
+                            float(verified.score) if verified is not None else None
+                        ),
                         # 崩溃重启后单任务重试要靠这份快照按原计划重建任务；
                         # 重启后拆解器可能给出不同任务名，不能只存名字。
                         "inputs": AIStateManager._json_safe_inputs(t.inputs),

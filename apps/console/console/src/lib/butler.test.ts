@@ -199,6 +199,13 @@ describe('进度与汇总', () => {
     expect(stats.failed).toBe(1)
   })
 
+  test('无验证标准的已完成任务显示「已完成（未验证）」，不冒充成功', () => {
+    const info = taskPhaseInfo(task({ status: 'completed', verification: 'unverified' }))
+    expect(info.label).toBe('已完成（未验证）')
+    expect(info.tone).toBe('warn')
+    expect(info.phase).toBe('succeeded')
+  })
+
   test('完成不等于可交付：只有真实产物路径才算交付', () => {
     const stats = taskStats([
       task({ id: 'a', status: 'completed' }),

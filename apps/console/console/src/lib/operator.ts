@@ -458,6 +458,10 @@ export interface GoalTask {
   success?: boolean
   /** 该任务真的写出的文件路径（工作区相对路径）；没有产物时为空数组。 */
   artifacts?: string[]
+  /** 验证结论：success / partial / failed / unverified / …；没有验证时为 null。 */
+  verification?: string | null
+  /** 验证得分 0.0–1.0；unverified 固定为 0.0。 */
+  score?: number | null
   result: string | null
   error: string | null
   started_at: string | null

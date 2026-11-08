@@ -111,6 +111,26 @@ def test_goal_that_writes_no_file_has_empty_artifacts():
     assert served.get("artifacts", []) == [], served
 
 
+def test_task_payload_carries_verification_and_score():
+    """验证结论必须上屏：不能只藏在 trace 里，否则「已完成」分不出真假。"""
+    entry = _mgr().create_and_execute_goal(
+        "write a file named verify.txt containing 'ok'",
+        background=False,
+    )
+    tasks = entry.get("tasks") or []
+    assert tasks, entry
+
+    for task in tasks:
+        assert "verification" in task, task
+        assert "score" in task, task
+
+    verified = [task for task in tasks if task["verification"]]
+    assert verified, "内核应给每个执行过的任务写入验证结论"
+    for task in verified:
+        assert isinstance(task["score"], float), task
+        assert task["verification"] in ("success", "partial", "failed", "unverified")
+
+
 def test_outcome_is_serialized_as_enum_value():
     """串到前端的 outcome 必须是 ``partial``，不是 ``EvaluationOutcome.PARTIAL``。"""
     assert _outcome_label("success") == "success"

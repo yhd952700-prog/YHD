@@ -1450,6 +1450,23 @@ export function Butler({
                       {task.capability_id ? ` · 能力 ${capabilityLabel(task.capability_id)}` : ''}
                     </p>
                     {info.note && <p className="os-hint">{info.note}</p>}
+                    {task.verification && (
+                      <p className="os-hint">
+                        验证：
+                        {task.verification === 'unverified'
+                          ? '未验证（没有独立证据证明结果正确）'
+                          : task.verification === 'success'
+                            ? '已通过'
+                            : task.verification === 'partial'
+                              ? '部分通过'
+                              : task.verification === 'failed'
+                                ? '未通过'
+                                : task.verification}
+                        {typeof task.score === 'number'
+                          ? ` · 得分 ${numberText(task.score, 2)}`
+                          : ''}
+                      </p>
+                    )}
                     {task.description && <p className="os-hint">{task.description}</p>}
                     {task.result && (
                       <details className="os-butler-task-result">

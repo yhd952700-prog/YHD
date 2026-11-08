@@ -105,6 +105,16 @@ export function taskPhaseInfo(task: GoalTask): TaskPhaseInfo {
   const value = raw.toLowerCase()
   if (value === 'completed' || value === 'completed_unattributed') {
     // 「执行结束」不是「成功」；是否真的交付由 goalVerdict 按 artifacts 判定。
+    // 无验证标准的任务带 unverified 上屏，避免把「跑完了」读成「已验证」。
+    if (task.verification === 'unverified') {
+      return {
+        phase: 'succeeded',
+        label: '已完成（未验证）',
+        tone: 'warn',
+        raw,
+        note: '任务跑完了，但没有独立证据证明结果正确',
+      }
+    }
     return { phase: 'succeeded', label: '已完成', tone: 'ok', raw }
   }
   if (value === 'failed') {

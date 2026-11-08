@@ -123,7 +123,9 @@ class LLMTaskDecomposer:
 
         cached = self._cache.get(key)
         if cached is not None:
-            return self._materialize(goal, cached)
+            return self._apply_forced_assignment(
+                goal, self._materialize(goal, cached)
+            )
 
         # A single-task retry cannot tolerate a *fresh* plan with different task
         # names (the gateway retries by name). If this process has no cache for
@@ -142,7 +144,7 @@ class LLMTaskDecomposer:
         fallback = self._inner.decompose(goal)
         allowed = self._allowed_capabilities()
         if self._deterministic_plan_is_executable(fallback, allowed):
-            return fallback
+            return self._apply_forced_assignment(goal, fallback)
 
         try:
             tasks = self._plan_with_model(goal, allowed)
@@ -154,11 +156,13 @@ class LLMTaskDecomposer:
                 type(exc).__name__,
                 exc,
             )
-            return fallback
+            return self._apply_forced_assignment(goal, fallback)
 
         snapshot = [self._snapshot(task) for task in tasks]
         self._store_cache(key, snapshot)
-        return self._materialize(goal, snapshot)
+        return self._apply_forced_assignment(
+            goal, self._materialize(goal, snapshot)
+        )
 
     @staticmethod
     def _deterministic_plan_is_executable(
@@ -407,6 +411,44 @@ class LLMTaskDecomposer:
                 f"未限定专长，作为可执行人力承接「{capability}」任务",
             )
         return None
+
+    @staticmethod
+    def _single_named_employee(
+        goal_text: str, roster: Sequence[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """目标原文只点名一个花名册员工时返回他，否则返回 None。
+
+        「让小王整理这三份材料」是最自然的说法，逐任务让模型挑人会把同一件
+        事拆给五个人。只在恰好一个名字出现时生效；出现两个名字说明用户没有
+        说"全交给他"，不强派。
+        """
+        text = str(goal_text or "")
+        named = [
+            employee
+            for employee in roster
+            if employee["name"] and employee["name"] in text
+        ]
+        return named[0] if len(named) == 1 else None
+
+    def _apply_forced_assignment(
+        self, goal: Goal, tasks: Sequence[Task]
+    ) -> List[Task]:
+        """用户点名一个员工时，把所有能力兼容的任务都派给他。"""
+        forced = self._single_named_employee(
+            getattr(goal, "natural_language", ""), self._employee_roster()
+        )
+        if forced is None:
+            return list(tasks)
+        for task in tasks:
+            capabilities = forced["capabilities"]
+            if capabilities and task.capability_id not in capabilities:
+                # 能力不兼容时不越过能力门，仍交给能执行它的人。
+                continue
+            task.assigned_agent = forced["agent_ids"][0]
+            task.agent_claimed = True
+            task.assigned_employee = forced["name"]
+            task.assignment_reason = "用户点名指派"
+        return list(tasks)
 
     def _build_tasks(
         self,
