@@ -245,3 +245,86 @@ def test_production_cors_has_no_localhost_dev_origins(monkeypatch, tmp_path):
 def test_development_docs_are_still_available(client):
     assert client.get("/docs").status_code == 200
     assert client.get("/openapi.json").status_code == 200
+
+
+# ==================== 生产：本机回环 + 实际端口放行 ====================
+
+
+def _production_loopback_app(monkeypatch, tmp_path):
+    """production + 本次监听端口 8137（模拟安装版随机端口）。"""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("LIUHAO_CORS_ALLOW_ORIGINS", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.setenv("LIUHAO_LISTEN_PORT", "8137")
+    monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_BACKEND", "file")
+    monkeypatch.setenv("LIUHAO_HUMAN_IDENTITIES_FILE", str(tmp_path / "humans.json"))
+    monkeypatch.setenv(
+        "LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY", "production-loopback-origin-key"
+    )
+    import src.kernels.identity as identity_module
+
+    monkeypatch.setattr(identity_module, "_global_manager", None)
+    from src.gateway.main import get_app
+
+    return get_app()
+
+
+def test_production_loopback_same_port_write_is_allowed(monkeypatch, tmp_path):
+    """安装版的真实路径：浏览器从 http://127.0.0.1:8137 发写请求必须放行。
+
+    修复前的症状是登录/注册全部 403（``reason=cross_site_write``），因为
+    Origin 白名单只有写死的开发端口。这里用真实 production 应用 + 真实
+    TestClient 对端地址走一遍。
+    """
+    app = _production_loopback_app(monkeypatch, tmp_path)
+    with TestClient(
+        app,
+        base_url="http://127.0.0.1:8137",
+        client=("127.0.0.1", 50000),
+    ) as test_client:
+        for origin in (
+            "http://127.0.0.1:8137",
+            "http://localhost:8137",
+            "http://[::1]:8137",
+        ):
+            response = test_client.post(
+                "/v1/auth/login",
+                json={"username": "x", "password": "y"},
+                headers={"Origin": origin},
+            )
+            assert response.status_code != 403, (origin, response.text)
+
+        # 非回环来源继续拒绝，行为不变。
+        evil = test_client.post(
+            "/v1/auth/login",
+            json={"username": "x", "password": "y"},
+            headers={"Origin": "http://evil.example"},
+        )
+        assert evil.status_code == 403
+        assert evil.json()["error"] == "origin_not_allowed"
+
+        # 回环但端口不是本次实际监听端口：仍然 403。
+        wrong_port = test_client.post(
+            "/v1/auth/login",
+            json={"username": "x", "password": "y"},
+            headers={"Origin": "http://127.0.0.1:9999"},
+        )
+        assert wrong_port.status_code == 403
+        assert wrong_port.json()["error"] == "origin_not_allowed"
+
+
+def test_production_loopback_origin_from_remote_peer_is_403(monkeypatch, tmp_path):
+    """Origin 写着回环、但 TCP 对端不是本机：不能放行（防伪造来源）。"""
+    app = _production_loopback_app(monkeypatch, tmp_path)
+    with TestClient(
+        app,
+        base_url="http://127.0.0.1:8137",
+        client=("10.0.0.5", 50000),
+    ) as test_client:
+        response = test_client.post(
+            "/v1/auth/login",
+            json={"username": "x", "password": "y"},
+            headers={"Origin": "http://127.0.0.1:8137"},
+        )
+        assert response.status_code == 403
+        assert response.json()["error"] == "origin_not_allowed"

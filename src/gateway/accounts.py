@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..common.atomic_write import StorageWriteError
 from ..kernels.identity import _accounts, get_identity_manager
 from . import account_settings, local_proof, recovery_handoff
 from .account_context import (
@@ -48,6 +49,9 @@ CODE_RECOVERY_LOCAL_ONLY = "ACCOUNT_RECOVERY_LOCAL_ONLY"
 
 #: 本机来源但缺少/重放了桌面端一次性证明时的稳定错误码。
 CODE_RECOVERY_PROOF_REQUIRED = "ACCOUNT_RECOVERY_PROOF_REQUIRED"
+
+#: 可信启动模式下，HTTP 对端进程与网关不属于同一个 Windows 用户。
+CODE_LOCAL_USER_MISMATCH = "ACCOUNT_LOCAL_USER_MISMATCH"
 
 #: 凭据包导出只接受本机来源时的稳定错误码。
 CODE_BACKUP_EXPORT_LOCAL_ONLY = "ACCOUNT_BACKUP_EXPORT_LOCAL_ONLY"
@@ -266,12 +270,68 @@ _PROOF_MESSAGE = (
 )
 
 
+def _require_same_user(request: Request) -> None:
+    """可信启动模式下，HTTP 调用进程必须与网关属于同一个 Windows 用户。
+
+    回环 + 令牌仍然不够：如果令牌通过浏览器历史/崩溃转储泄露，同机另一个
+    Windows 账户拿着它就能发 HTTP。这里用 TCP 表反查对端 PID，再比对进程
+    令牌里的用户 SID，把“同一台机器”收紧成“同一个 Windows 账户”。
+
+    开发模式（未设置 ``LIUHAO_TRUSTED_LAUNCH``）不阻断，只告警；非 Windows
+    无法解析 TCP 对端身份，返回 ``None``，同样按运行模式处理。
+    """
+    if not local_proof.trusted_launch():
+        return
+    verdict = local_proof.peer_is_same_user(request)
+    if verdict is True:
+        return
+    client = getattr(request, "client", None)
+    logger.warning(
+        "本机请求与网关不属于同一 Windows 用户：verdict=%s client=%s",
+        verdict,
+        getattr(client, "host", "?"),
+    )
+    raise deny(
+        403,
+        CODE_LOCAL_USER_MISMATCH,
+        "该操作只允许启动鎏灏的那个 Windows 账户完成，请回到桌面窗口重试。",
+    )
+
+
+def _require_bootstrap_source(request: Request) -> str:
+    """首次注册的来源门禁，返回已占用的交接令牌（空串表示开发模式放行）。
+
+    可信启动（桌面壳/启动器）下，首次注册等同于“认领这台机器上的唯一根”，
+    必须同时满足：回环 + 与网关同一 Windows 用户 + 桌面端一次性证明。
+    直接 ``python -m src.gateway`` 的开发用法不设置 ``LIUHAO_TRUSTED_LAUNCH``，
+    只打印醒目告警并放行，避免把本地开发锁死。
+    """
+    _require_local_for_initialization(request)
+    _require_same_user(request)
+    raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
+    if raw and local_proof.claim_token(raw, scope=local_proof.SCOPE_HANDOFF):
+        return raw
+    if not local_proof.trusted_launch():
+        logger.warning(
+            "开发模式：首次注册未校验桌面端证明（设置 %s=1 可强制启用）",
+            local_proof.TRUSTED_LAUNCH_ENV,
+        )
+        return ""
+    raise deny(
+        403,
+        CODE_RECOVERY_PROOF_REQUIRED,
+        "首次注册需要从鎏灏桌面窗口点“打开控制台”进入后再试"
+        "（直接在浏览器里输入地址不算本机可信入口）。",
+    )
+
+
 def _require_local_proof(request: Request) -> None:
     """恢复码交接：回环之外，还必须持有桌面端通过 DACL 通道发放的一次性令牌。
 
     回环只证明“同一台机器”，不证明“同一个账户”。令牌由网关的命名管道
     发给当前 Windows 用户，HTTP 请求本身不再被当作身份证明。
     """
+    _require_same_user(request)
     raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
     if raw and local_proof.redeem_token(raw, scope=local_proof.SCOPE_HANDOFF):
         return
@@ -285,6 +345,7 @@ def _require_initialization_proof(request: Request) -> str:
     可能已经知道根账号名。令牌由网关的 DACL 命名管道只发给网关所属用户，
     因此“知道名字”不再等于“能接管”。
     """
+    _require_same_user(request)
     raw = local_proof.request_token(request, local_proof.HANDOFF_HEADER)
     if raw and local_proof.claim_token(raw, scope=local_proof.SCOPE_HANDOFF):
         return raw
@@ -320,6 +381,8 @@ def _require_recovery_source(request: Request) -> str:
             "或由管理员显式开启远程恢复。",
         )
 
+    # 可信启动下，本机也要是“同一个 Windows 用户”，否则拿泄露的令牌也没用。
+    _require_same_user(request)
     token = local_proof.request_token(request, local_proof.RESET_HEADER)
     if token:
         if local_proof.claim_token(token, scope=local_proof.SCOPE_RESET):
@@ -432,14 +495,15 @@ def register_root(payload: RegisterRootRequest, request: Request) -> Dict[str, A
         root = _kernel_call(manager.account_root)
         if root is not None:
             return _settle_existing_root(manager, root, payload, request)
-        _require_local_for_initialization(request)
+        # 首次注册 = 认领这台机器上的唯一根：可信启动下必须带桌面端证明。
+        proof = _require_bootstrap_source(request)
         prior = _credential_record(payload.principal)
-        _write_credential(
-            payload.principal,
-            payload.password,
-            message="账号初始化失败，可重新提交完成初始化",
-        )
         try:
+            _write_credential(
+                payload.principal,
+                payload.password,
+                message="账号初始化失败，可重新提交完成初始化",
+            )
             node, recovery_code = _kernel_call(
                 manager.register_root_account,
                 payload.principal,
@@ -449,7 +513,15 @@ def register_root(payload: RegisterRootRequest, request: Request) -> Dict[str, A
             # 内核在任何拒绝/失败前不落盘身份；把刚写的凭据回滚到提交前的
             # 样子，保证"凭据与身份要么都成功，要么都不落盘"。
             _restore_credential(payload.principal, prior)
+            if proof:
+                local_proof.release_token(proof)
             raise
+        except Exception:
+            if proof:
+                local_proof.release_token(proof)
+            raise
+        if proof:
+            local_proof.consume_token(proof)
     _clear_local_recovery_file()
     return {
         "account": _public_member(node),
@@ -563,7 +635,12 @@ def set_self_registration(
     """开关自助注册（仅主账号；持久化，默认开启）。"""
     if not context.is_root or context.standalone:
         raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
-    settings = account_settings.set_allow_self_registration(payload.allow)
+    try:
+        settings = account_settings.set_allow_self_registration(payload.allow)
+    except StorageWriteError as exc:
+        # 磁盘满/只读/被占用：策略没有落盘。必须如实告诉用户"没保存"，
+        # 而不是 500 或假装成功。
+        raise deny(503, "ACCOUNT_SETTINGS_WRITE_FAILED", str(exc)) from exc
     try:
         get_identity_manager().record_event(
             action="account.self_registration.toggle",
@@ -949,6 +1026,69 @@ def account_usage(
     return usage_summary(
         principal, include_callers=False, owners=(context.principal,)
     )
+
+
+@router.get("/{principal}/usage/events")
+def account_usage_events(
+    principal: str,
+    correlation_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    key_owner: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, Any]:
+    """逐笔用量明细：按 ``correlation_id`` / 时间 / actor / key_owner 过滤并分页。
+
+    权限与 ``/{principal}/usage`` 完全一致：根可看目标子树（可按 actor 与
+    key_owner 过滤），成员只能看到 ``actor=本人`` 的行。
+    """
+    require_visible(context, principal)
+    from .account_usage import usage_events
+
+    manager = get_identity_manager()
+    if context.is_root:
+        owners = tuple(manager.subtree_principals(principal)) or (principal,)
+        try:
+            return usage_events(
+                principal,
+                include_callers=True,
+                owners=owners,
+                actor=actor,
+                key_owner=key_owner,
+                correlation_id=correlation_id,
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError:
+            raise deny(
+                400,
+                "USAGE_TIME_INVALID",
+                "时间格式无效，请使用 ISO 8601（例如 2026-11-08T00:00:00Z）",
+            ) from None
+    try:
+        return usage_events(
+            principal,
+            include_callers=False,
+            owners=(context.principal,),
+            actor=actor,
+            key_owner=key_owner,
+            correlation_id=correlation_id,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError:
+        raise deny(
+            400,
+            "USAGE_TIME_INVALID",
+            "时间格式无效，请使用 ISO 8601（例如 2026-11-08T00:00:00Z）",
+        ) from None
 
 
 # --------------------------------------------------------------------------- #

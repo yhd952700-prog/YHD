@@ -467,7 +467,7 @@ def list_pending_approvals(
             "correlation_id": event.get("correlation_id"),
             "blocked_at": event.get("timestamp"),
             "blocked_by": event.get("principal_id"),
-            "reason": "动作被策略挂起（defer），需要人工授权后才能继续执行",
+            "reason": "动作被策略暂缓，需要你确认后才能继续执行",
             "summary": f"{action}（风险 {risk}）正在等待你确认",
             "approve": {
                 "method": "POST",

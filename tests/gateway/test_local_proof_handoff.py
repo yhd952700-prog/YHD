@@ -13,7 +13,11 @@
 from __future__ import annotations
 
 import os
+import socket
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -264,6 +268,74 @@ def test_reset_token_claim_allows_retry_but_only_one_concurrent_winner(env, monk
     assert results.count(False) == 7, results
 
 
+def test_trusted_launch_first_registration_requires_proof(env, monkeypatch, caplog):
+    """可信启动：首次注册必须带桌面端证明；开发模式只告警、不阻断。"""
+    from src.gateway import local_proof
+    from src.gateway.main import get_app
+
+    # TestClient 没有真实 TCP 对端，无法反查 PID；这里模拟“同用户”这一层通过，
+    # 单独验证证明门禁。真实对端身份由下面的 mismatch 测试覆盖。
+    monkeypatch.setattr(local_proof, "peer_is_same_user", lambda request: True)
+    monkeypatch.setenv(local_proof.TRUSTED_LAUNCH_ENV, "1")
+
+    with TestClient(get_app()) as client:
+        refused = client.post(
+            "/v1/accounts/register",
+            json={"principal": "alice", "password": PASSWORD},
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["code"] == "ACCOUNT_RECOVERY_PROOF_REQUIRED"
+
+        created = client.post(
+            "/v1/accounts/register",
+            json={"principal": "alice", "password": PASSWORD},
+            headers=_handoff(),
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["account"]["principal"] == "alice"
+
+
+def test_trusted_launch_rejects_other_windows_user_even_with_token(env, monkeypatch):
+    """同机另一个 Windows 账户：即使拿到令牌明文，HTTP 也因对端 SID 不符被拒。"""
+    from src.gateway import local_proof
+    from src.gateway.main import get_app
+
+    monkeypatch.setattr(local_proof, "peer_is_same_user", lambda request: False)
+    monkeypatch.setenv(local_proof.TRUSTED_LAUNCH_ENV, "1")
+
+    with TestClient(get_app()) as client:
+        refused = client.post(
+            "/v1/accounts/register",
+            json={"principal": "alice", "password": PASSWORD},
+            headers=_handoff(),
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["code"] == "ACCOUNT_LOCAL_USER_MISMATCH"
+
+        local = client.post(
+            "/v1/accounts/recovery/local", headers=_handoff()
+        )
+        assert local.status_code == 403, local.text
+        assert local.json()["code"] == "ACCOUNT_LOCAL_USER_MISMATCH"
+
+
+def test_dev_mode_first_registration_warns_but_allows(env, monkeypatch, caplog):
+    """``python -m src.gateway`` 开发用法：无证明也放行，但必须留下告警。"""
+    import logging
+
+    from src.gateway.main import get_app
+
+    monkeypatch.delenv("LIUHAO_TRUSTED_LAUNCH", raising=False)
+    with caplog.at_level(logging.WARNING, logger="src.gateway.accounts"):
+        with TestClient(get_app()) as client:
+            created = client.post(
+                "/v1/accounts/register",
+                json={"principal": "alice", "password": PASSWORD},
+            )
+            assert created.status_code == 200, created.text
+    assert any("首次注册未校验桌面端证明" in record.message for record in caplog.records)
+
+
 def test_half_initialized_completion_needs_proof_and_never_echoes_name(env):
     """半初始化补全：知道名字也不能接管，必须持有桌面端证明。"""
     from src.gateway.main import get_app
@@ -331,6 +403,50 @@ def test_named_pipe_acl_is_current_user_only(env):
             assert entry["type"] == 0, entry  # ACCESS_ALLOWED
             assert entry["flags"] & 0x10 == 0, entry  # 不得有继承 ACE
             assert entry["sid"] not in {"S-1-1-0", "S-1-5-32-545"}, entry
+
+
+@WINDOWS_ONLY
+def test_peer_pid_resolves_client_process_not_the_server(tmp_path):
+    """TCP 表必须按客户端侧匹配，否则只会查到网关自己（SID 恒等）。
+
+    回归的是真实 bug：``remote_addr:remote_port`` 在服务端那一行正好是客户端
+    地址，但持有者是网关进程；按它匹配会让“另一 Windows 用户”的请求永远通过。
+    """
+    from src.gateway import local_proof
+
+    pid_file = tmp_path / "client.pid"
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    child = None
+    try:
+        code = (
+            "import os,socket,time;"
+            f"s=socket.create_connection(('127.0.0.1',{port}));"
+            f"open(r'{pid_file}','w').write(str(os.getpid()));"
+            "time.sleep(10)"
+        )
+        child = subprocess.Popen([sys.executable, "-c", code])
+        conn, addr = server.accept()
+        try:
+            deadline = time.monotonic() + 10.0
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            client_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            resolved = local_proof._windows_peer_pid(addr[0], addr[1])
+            assert resolved == client_pid, (
+                f"解析到 {resolved}，客户端实际是 {client_pid}"
+                "（按服务端 remote 匹配会返回网关自己）"
+            )
+            assert resolved != os.getpid()
+        finally:
+            conn.close()
+    finally:
+        server.close()
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
 
 
 @WINDOWS_ONLY

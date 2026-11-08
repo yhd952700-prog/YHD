@@ -45,6 +45,36 @@ DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = (
 )
 
 
+#: 生成类路径单独成桶。控制面（``/v1/models``、``/v1/accounts`` 等）与聊天
+#: 共用同一个 principal 桶时，根账号连调 8 次模型管理接口就把聊天额度从 99
+#: 挤到 91 —— 管理操作会直接吃掉对话配额，这里按"路径族"拆开。
+CHAT_PATH_PREFIXES: Tuple[str, ...] = ("/v1/chat", "/v1/goals", "/v1/ai")
+
+
+def path_family(path: str) -> str:
+    """把请求归到 ``chat`` / ``control`` 两个额度族。"""
+    for prefix in CHAT_PATH_PREFIXES:
+        base = prefix.rstrip("/")
+        if path == base or path.startswith(base + "/"):
+            return "chat"
+    return "control"
+
+
+def looks_like_jwt(token: str) -> bool:
+    """JWT 一定是 ``eyJ`` 开头的三段式。
+
+    热路径上先看形态再决定要不要查 API Key 表：已登录用户的请求必然查不到
+    API Key，却每次都要付一次 SHA256 + 全表线性扫描。
+    """
+    return token.startswith("eyJ") and token.count(".") == 2
+
+
+def limit_code(info: Dict[str, any]) -> str:
+    """429 的机器可读分类：按 principal 还是按 IP 命中。"""
+    key_id = str(info.get("key_id") or "")
+    return "RATE_LIMITED_IP" if key_id.startswith("ip:") else "RATE_LIMITED_PRINCIPAL"
+
+
 def _parse_trusted_proxies(values: Iterable[str]) -> Tuple:
     networks = []
     for raw in values or ():
@@ -215,42 +245,56 @@ class RateLimiter:
         with self._lock:
             return len(self._buckets)
 
-    def _get_key_id(self, request: Request, trusted_proxies: Iterable[str] = ()) -> str:
-        """Extract key identifier from request (API key or IP).
+    def _identity(
+        self, request: Request, trusted_proxies: Iterable[str] = ()
+    ) -> Tuple[str, Optional[any]]:
+        """解析请求身份，返回 (基底 key, API Key 对象或 None)。
 
-        The key is read from the private header first: on the managed host a
-        front gateway rewrites ``Authorization``, so a key carried there would
-        be replaced and every caller would silently share one bucket (see
-        ``policy.TOKEN_HEADER``).
+        每个请求只解析一次：旧实现先在 ``_get_key_id`` 里查一次 API Key，
+        再在 ``check_rate_limit`` 里为了拿 scopes 又查一次，Bearer 请求
+        等于付两遍 O(n) 扫描。
         """
         from .policy import TOKEN_HEADER
 
         # Try to get from headers/api key first
         auth_header = request.headers.get(TOKEN_HEADER) or request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            from ..security.api_keys import validate_api_key
-            key_obj = validate_api_key(auth_header[7:])
-            if key_obj and key_obj.id:
-                return f"key:{key_obj.id}"
+            token = auth_header[7:]
+            # 形态判断：JWT 不可能是 API Key，没必要查表。
+            if not looks_like_jwt(token):
+                from ..security.api_keys import validate_api_key
+
+                key_obj = validate_api_key(token)
+                if key_obj and key_obj.id:
+                    return f"key:{key_obj.id}", key_obj
             # Authenticated humans share one bucket by IP otherwise -- one
             # noisy session would throttle every other user behind it. Key
             # JWT callers by their principal.
             try:
-                from ..security.jwt_handler import get_jwt_handler
+                from ..security.jwt_handler import TokenType, get_jwt_handler
 
+                # 必须传枚举：``validate_token`` 用 ``payload.token_type !=
+                # expected_type`` 比较，传字符串永远不相等，随后拼错误信息时
+                # ``expected_type.value`` 直接抛 AttributeError —— 被下面的
+                # ``except`` 吞掉，于是所有登录用户静默退回"按 IP 一个桶"。
                 payload = get_jwt_handler().validate_token(
-                    auth_header[7:], expected_type="access"
+                    token, expected_type=TokenType.ACCESS
                 )
                 subject = getattr(payload, "sub", None)
                 if subject:
-                    return f"sub:{subject}"
+                    return f"sub:{subject}", None
             except Exception:  # noqa: BLE001 - invalid token => fall back to IP
                 pass
 
         # Fall back to IP address (XFF trusted only behind a configured proxy)
         client_host = request.client.host if request.client else "unknown"
         forwarded = request.headers.get("x-forwarded-for")
-        return f"ip:{resolve_client_ip(client_host, forwarded, trusted_proxies)}"
+        return f"ip:{resolve_client_ip(client_host, forwarded, trusted_proxies)}", None
+
+    def _get_key_id(self, request: Request, trusted_proxies: Iterable[str] = ()) -> str:
+        """Extract key identifier from request (API key or IP + path family)."""
+        base, _key_obj = self._identity(request, trusted_proxies)
+        return f"{base}|{path_family(request.url.path)}"
 
     def _get_bucket(self, key_id: str, scopes: list) -> TokenBucket:
         """Get or create a token bucket for the given key and scopes."""
@@ -279,21 +323,9 @@ class RateLimiter:
         Returns:
             (allowed, info_dict)
         """
-        key_id = self._get_key_id(request, trusted_proxies)
-
-        # Get API key scopes if available
-        from ..security.api_keys import validate_api_key
-        from .policy import TOKEN_HEADER
-
-        auth_header = request.headers.get(TOKEN_HEADER) or request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            key_obj = validate_api_key(auth_header[7:])
-            if key_obj:
-                bucket = self._get_bucket(key_id, key_obj.scopes or [])
-            else:
-                bucket = self._get_bucket(key_id, [])
-        else:
-            bucket = self._get_bucket(key_id, [])
+        base, key_obj = self._identity(request, trusted_proxies)
+        key_id = f"{base}|{path_family(request.url.path)}"
+        bucket = self._get_bucket(key_id, key_obj.scopes if key_obj else [])
 
         # Try to consume 1 token
         allowed, info = bucket.try_consume(1)
@@ -403,7 +435,10 @@ class RateLimitMiddleware:
 
         if not allowed:
             response = JSONResponse(
-                {"detail": "请求过于频繁，请稍后再试（rate limit exceeded）"},
+                {
+                    "detail": "请求过于频繁，请稍后再试（rate limit exceeded）",
+                    "code": limit_code(info),
+                },
                 status_code=429,
                 headers=headers,
             )
@@ -468,7 +503,10 @@ class GlobalRateLimitMiddleware:
         allowed, info = self._limiter.check_rate_limit(request, self.trusted_proxies)
         if not allowed:
             await JSONResponse(
-                {"detail": "请求过于频繁，请稍后再试（global rate limit exceeded）"},
+                {
+                    "detail": "请求过于频繁，请稍后再试（global rate limit exceeded）",
+                    "code": limit_code(info),
+                },
                 status_code=429,
                 headers=_rate_limit_headers(allowed, info),
             )(scope, receive, send)

@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 from ..common.local_proof_ipc import (
     HANDOFF_HEADER,
     RESET_HEADER,
+    TRUSTED_LAUNCH_ENV,
     channel_name,
 )
 from ..common.windows_acl import (
@@ -50,6 +51,137 @@ SCOPE_ANY = "any"
 
 _MAX_MESSAGE = 16 * 1024
 _STOP_REQUEST = b"__stop-local-proof-broker__\n"
+
+
+def trusted_launch() -> bool:
+    """网关是否由桌面壳/启动器以“可信本机入口”方式拉起。
+
+    未设置时按开发模式处理：只打印告警，不阻断 ``python -m src.gateway``。
+    """
+    return (os.environ.get(TRUSTED_LAUNCH_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# HTTP 对端身份（Windows）：令牌之外再确认“调用者与网关是同一个 Windows 用户”
+# --------------------------------------------------------------------------- #
+
+_TCP_TABLE_OWNER_PID_ALL = 5
+_TCP_STATE_ESTABLISHED = 5
+
+
+def _windows_peer_pid(host: str, port: int) -> Optional[int]:
+    """用 GetExtendedTcpTable 找到对端 ``host:port`` 在本机的持有进程。
+
+    必须匹配**客户端一侧**的行（``local_addr:local_port``）。服务端接受连接后
+    自己那一行的 ``remote_addr:remote_port`` 正是客户端地址，但持有者是网关
+    进程本身——按 remote 匹配只会查到自己，SID 恒等，校验形同虚设。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class _Row4(ctypes.Structure):
+        _fields_ = [
+            ("state", wintypes.DWORD),
+            ("local_addr", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_addr", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("pid", wintypes.DWORD),
+        ]
+
+    class _Row6(ctypes.Structure):
+        _fields_ = [
+            ("local_addr", ctypes.c_ubyte * 16),
+            ("local_scope", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_addr", ctypes.c_ubyte * 16),
+            ("remote_scope", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("state", wintypes.DWORD),
+            ("pid", wintypes.DWORD),
+        ]
+
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    row_type = _Row6 if family == socket.AF_INET6 else _Row4
+    iphlpapi = ctypes.windll.iphlpapi
+    size = wintypes.DWORD(0)
+    iphlpapi.GetExtendedTcpTable(
+        None, ctypes.byref(size), False, family, _TCP_TABLE_OWNER_PID_ALL, 0
+    )
+    if size.value <= 0:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    result = iphlpapi.GetExtendedTcpTable(
+        buffer, ctypes.byref(size), False, family, _TCP_TABLE_OWNER_PID_ALL, 0
+    )
+    if result != 0:
+        return None
+    count = wintypes.DWORD.from_buffer(buffer).value
+    offset = ctypes.sizeof(wintypes.DWORD)
+    rows = (row_type * count).from_buffer(buffer, offset)
+    for row in rows:
+        if int(row.state) != _TCP_STATE_ESTABLISHED:
+            continue
+        if family == socket.AF_INET:
+            local = socket.inet_ntoa(struct.pack("<L", int(row.local_addr)))
+        else:
+            local = socket.inet_ntop(socket.AF_INET6, bytes(row.local_addr))
+        local_port = socket.ntohs(int(row.local_port) & 0xFFFF)
+        if local == host and local_port == port:
+            return int(row.pid)
+    return None
+
+
+def _process_sid(pid: int) -> str:
+    import win32api
+    import win32con
+    import win32security
+
+    handle = win32api.OpenProcess(
+        win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    try:
+        token = win32security.OpenProcessToken(handle, win32security.TOKEN_QUERY)
+        try:
+            sid, _attributes = win32security.GetTokenInformation(
+                token, win32security.TokenUser
+            )
+        finally:
+            token.Close()
+    finally:
+        win32api.CloseHandle(handle)
+    return win32security.ConvertSidToStringSid(sid)
+
+
+def peer_is_same_user(request: Any) -> Optional[bool]:
+    """HTTP 对端进程是否与网关属于同一个 Windows 用户。
+
+    返回 ``True`` / ``False``；无法判定（非 Windows、TestClient 的伪造对端、
+    连接已断开查不到 PID）返回 ``None``，由调用方按运行模式决定是否放行。
+    """
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip().lower()
+    try:
+        port = int(getattr(client, "port", 0) or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if not host or port <= 0 or host in {"testclient", "localhost"}:
+        return None
+    if os.name != "nt":
+        return None
+    try:
+        pid = _windows_peer_pid(host, port)
+        if pid is None:
+            return None
+        return _process_sid(pid) == current_user_sid_string()
+    except Exception:  # noqa: BLE001 - 查不到身份时返回 None，由调用方决定
+        logger.debug("无法解析 HTTP 对端进程身份", exc_info=True)
+        return None
 
 
 @dataclass
@@ -355,6 +487,13 @@ class _Broker:
                     handle,
                     (json.dumps(bundle, ensure_ascii=False) + "\n").encode("utf-8"),
                 )
+                # DisconnectNamedPipe 会丢弃尚未被对端读走的数据。不等这一步，
+                # 客户端会间歇性收到 ERROR_PIPE_NOT_CONNECTED(233)——
+                # 表现为“本机证明通道通信失败”，约 1/5 概率，冒烟会假红。
+                try:
+                    win32file.FlushFileBuffers(handle)
+                except Exception:  # noqa: BLE001 - 对端提前断开时忽略
+                    pass
             except Exception:  # noqa: BLE001
                 logger.debug("本机证明通道单次请求失败", exc_info=True)
             finally:

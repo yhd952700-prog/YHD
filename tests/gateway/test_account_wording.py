@@ -134,6 +134,67 @@ def test_account_user_text_has_no_hierarchy_words(_isolate):
         _assert_neutral(response.json())
 
 
+_POSITION_FIELDS = ("parent_account_id", "path", "depth")
+
+
+def test_auth_responses_do_not_expose_account_position(_isolate):
+    """登录 / 自述 / 激活都只回答"是不是根"，不下发被谁创建、在第几层。
+
+    子账号拿到令牌后能调和所有接口；只要任何一个身份响应里带上
+    ``parent_account_id`` / ``path`` / ``depth``，它就能还原出自己被谁
+    创建、在树的哪一层。这里逐条钉住三个响应形状。
+    """
+
+    app = get_app()
+    with TestClient(app) as client:
+        root_register = client.post(
+            "/v1/accounts/register",
+            json={"principal": "root1", "password": "rootpass123"},
+        )
+        assert root_register.status_code == 200, root_register.text
+
+        login = client.post(
+            "/v1/auth/login", json={"principal": "root1", "secret": "rootpass123"}
+        )
+        assert login.status_code == 200, login.text
+        root = _bearer(login.json()["access_token"])
+
+        created = client.post(
+            "/v1/accounts", json={"principal": "child1"}, headers=root
+        )
+        assert created.status_code == 200, created.text
+        activation_code = created.json()["activation_code"]
+
+        activated = client.post(
+            "/v1/accounts/activate",
+            json={"principal": "child1", "code": activation_code, "password": "childpass123"},
+        )
+        assert activated.status_code == 200, activated.text
+        child_login = client.post(
+            "/v1/auth/login", json={"principal": "child1", "secret": "childpass123"}
+        )
+        assert child_login.status_code == 200, child_login.text
+        child = _bearer(child_login.json()["access_token"])
+
+        root_body = login.json()
+        child_body = child_login.json()
+        assert root_body["is_root"] is True
+        assert child_body["is_root"] is False
+        for body in (root_body, child_body):
+            for field in _POSITION_FIELDS:
+                assert field not in body, (field, body)
+
+        me = client.get("/v1/auth/me", headers=child)
+        assert me.status_code == 200, me.text
+        assert me.json()["is_root"] is False
+        for field in _POSITION_FIELDS:
+            assert field not in me.json(), (field, me.text)
+
+        # 激活响应只回 token + 账号摘要，同样不得带位置。
+        for field in _POSITION_FIELDS:
+            assert field not in activated.json(), (field, activated.text)
+
+
 def test_registry_warnings_are_plain_chinese_when_integrity_key_is_unset() -> None:
     """首启未配置完整性密钥时，身份页拿到的警告必须是给人看的话。
 

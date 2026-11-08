@@ -168,14 +168,24 @@ def list_persisted_event_history(
 
     非 ``L0`` 调用者的 ``principal`` 被强制为令牌主体；显式查询别人 → 403。
     """
-    from .audit import _read_events, _unreadable_detail
+    from .audit import (
+        _account_scope,
+        _read_events,
+        _unreadable_detail,
+        redact_foreign_targets,
+    )
 
     subject, sovereign = _caller(payload)
+    try:
+        context, tree_sovereign = _account_scope(payload)
+    except HTTPException:
+        # 老部署/非账号主体：沿用 L0 口径，不做额外投影。
+        context, tree_sovereign = None, sovereign
     if not sovereign:
         if principal and principal != subject:
             raise HTTPException(
                 status_code=403,
-                detail="跨主体审计查询需要 L0 人类主权",
+                detail="查看其他账号的审计事件需要管理员权限",
             )
         principal = subject
 
@@ -194,6 +204,8 @@ def list_persisted_event_history(
         logger.warning("persisted event history query failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
+    if context is not None:
+        events = redact_foreign_targets(events, context, tree_sovereign)
     decorated = [decorate_event(dict(event)) for event in events]
     return {
         "events": decorated,

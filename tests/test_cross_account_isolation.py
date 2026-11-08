@@ -4,9 +4,12 @@
 
 1. 成员不能列出 / 读取 / 删除主账号的项目，也不能把自己的目标挂到主账号
    项目上；越权与不存在**同为中性 404**（响应体逐字一致）。
-2. 主账号可聚合读整棵子树（项目、知识库、文件），但写只落自己范围。
-3. 成员知识库只读自己：列表、分块、搜索、上传/入库都按账号隔离；跨账号
-   分块/删除/任务查询一律中性 404；搜索 ``count`` 是命中数而不是全库向量数。
+2. 主账号可聚合读整棵子树（项目、文件），但写只落自己范围；**知识库是账号
+   自有资产**，主账号也不聚合成员文档（`docs/account-hierarchy.md` 日常能力表），
+   因此知识库面的跨账号读写对主账号同样中性 404。
+3. 所有账号（含主账号）的知识库只读自己：列表、分块、检索（vector + FTS）、
+   上传/入库都按账号隔离；跨账号分块/删除/任务查询一律中性 404；搜索 ``count``
+   是命中数而不是全库向量数。
 4. 产物文件下载按 ``accounts/<owner>/`` 分区；列表回填的 ``rel_path`` 是
    工作区相对路径（带账号前缀），前端原样回填后 list/read 仍然稳定。
 5. 产物索引没有跨账号的 HTTP 列出/下载入口（只有本机 CLI/报表读全库）。
@@ -214,8 +217,14 @@ class TestKnowledgeAccountIsolation:
         assert hits["count"] == 0
         assert hits["hits"] == []
 
-        # 主账号聚合读正常
-        assert client.get(f"/v1/knowledge/documents/{doc_id}/chunks", headers=boss).status_code == 200
+        # FTS 词面通路也必须按账号过滤：全局索引里有该词，但成员可见候选为 0，
+        # 证明不是"先取全局 top-k 再丢弃"（那样别人的文档会挤掉自己的命中）。
+        assert hits["retrieval"]["lexical_candidates"] == 0
+
+        # 主账号读自己的文档正常（但不聚合成员知识库，见另一个用例）
+        assert client.get(
+            f"/v1/knowledge/documents/{doc_id}/chunks", headers=boss
+        ).status_code == 200
 
     def test_writes_land_only_in_own_namespace(self, client):
         alice = _headers("alice")
@@ -259,10 +268,21 @@ class TestKnowledgeAccountIsolation:
             "ALICE-MARKER" not in hit["text"] for hit in bob_hits["hits"]
         )
 
-        # 主账号聚合读：两份都能看到
+        # 知识库是自有资产：主账号也看不到成员文档（与成员看到的同形）
         boss_list = client.get("/v1/knowledge/documents", headers=boss).json()
-        assert alice_ing["document_id"] in {d["document_id"] for d in boss_list["documents"]}
-        assert bob_ing["document_id"] in {d["document_id"] for d in boss_list["documents"]}
+        assert boss_list["total"] == 0
+        assert alice_ing["document_id"] not in {
+            d["document_id"] for d in boss_list["documents"]
+        }
+        assert bob_ing["document_id"] not in {
+            d["document_id"] for d in boss_list["documents"]
+        }
+        _assert_neutral_404(
+            client.get(
+                f"/v1/knowledge/documents/{alice_ing['document_id']}/chunks",
+                headers=boss,
+            )
+        )
 
         # 成员不能删别人的文档（中性 404），自己的可以
         _assert_neutral_404(
@@ -370,13 +390,16 @@ class TestKnowledgeAccountIsolation:
             f"/v1/knowledge/documents/{bob_doc}/chunks", headers=bob
         ).status_code == 404
 
-        # 主账号可删子树内成员文档，响应与删除普通文档一致、无层级词
-        root_removed = client.delete(
+        # 知识库是自有资产：主账号删成员文档同样是中性 404，不带层级词，
+        # 且真正没有被删掉（与成员越权删除逐字同形）。
+        root_denied = client.delete(
             f"/v1/knowledge/documents/{alice_doc}", headers=boss
         )
-        assert root_removed.status_code == 200, root_removed.text
-        assert root_removed.json()["deleted"] is True
-        assert all(word not in root_removed.text for word in forbidden)
+        _assert_neutral_404(root_denied, missing)
+        assert all(word not in root_denied.text for word in forbidden)
+        assert client.get(
+            f"/v1/knowledge/documents/{alice_doc}/chunks", headers=alice
+        ).status_code == 200
 
     def test_root_delete_missing_document_is_neutral_404(self, client):
         """主账号删不存在文档：中性 404，与成员看到的完全同形。"""
@@ -488,14 +511,18 @@ class TestArtifactAccountIsolation:
 # ─── 4. 项目库并发写入（跨进程） ──────────────────────────────
 
 
-def _spawn_project_writer(repo_root: str, workspace: str, count: int) -> subprocess.Popen:
+def _spawn_project_writer(
+    repo_root: str, workspace: str, count: int, tag: str
+) -> subprocess.Popen:
+    # 同一账号下项目名必须唯一（锁内判定），所以两个进程用各自的前缀，
+    # 这样本条用例验证的是"跨进程不丢写"，而不是同名冲突。
     script = (
         "import sys\n"
         f"sys.path.insert(0, {repo_root!r})\n"
         "from src.gateway.projects import ProjectStore\n"
         "store = ProjectStore()\n"
         f"for i in range({count}):\n"
-        "    store.create(f'项目-{i}', '', creator='proc', owner_account_id='proc')\n"
+        f"    store.create(f'项目-{tag}-{{i}}', '', creator='proc', owner_account_id='proc')\n"
     )
     env = dict(os.environ)
     env["LIUHAO_WORKSPACE_ROOT"] = workspace
@@ -514,8 +541,8 @@ def test_concurrent_multiprocess_project_creation_does_not_lose_records(tmp_path
     os.makedirs(workspace, exist_ok=True)
     per_process = 40
 
-    first = _spawn_project_writer(repo_root, workspace, per_process)
-    second = _spawn_project_writer(repo_root, workspace, per_process)
+    first = _spawn_project_writer(repo_root, workspace, per_process, "a")
+    second = _spawn_project_writer(repo_root, workspace, per_process, "b")
     for proc in (first, second):
         stdout, stderr = proc.communicate(timeout=120)
         assert proc.returncode == 0, stderr.decode("utf-8", errors="replace")

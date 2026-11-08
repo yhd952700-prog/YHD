@@ -25,6 +25,11 @@ DEFAULT_UPLOAD_PREFIXES: Tuple[str, ...] = (
     "/v1/knowledge",
     "/v1/backup",
 )
+#: 备份包的导入路径不在 ``/v1/backup`` 下，且包本身允许到 ``MAX_BUNDLE_BYTES``
+#: （256 MiB，见 ``src/kernels/identity/_backup.py``），因此单独给一档上限。
+DEFAULT_BACKUP_PREFIXES: Tuple[str, ...] = (
+    "/v1/accounts/backup",
+)
 
 
 class BodyLimitMiddleware:
@@ -39,20 +44,30 @@ class BodyLimitMiddleware:
         max_body_bytes: int = 0,
         max_upload_bytes: int = 0,
         upload_prefixes: Iterable[str] = DEFAULT_UPLOAD_PREFIXES,
+        max_backup_bytes: int = 0,
+        backup_prefixes: Iterable[str] = DEFAULT_BACKUP_PREFIXES,
     ):
         self.app = app
         self.max_body_bytes = max(0, int(max_body_bytes or 0))
         self.max_upload_bytes = max(0, int(max_upload_bytes or 0))
         self.upload_prefixes = tuple(upload_prefixes or DEFAULT_UPLOAD_PREFIXES)
+        self.max_backup_bytes = max(0, int(max_backup_bytes or 0))
+        self.backup_prefixes = tuple(backup_prefixes or DEFAULT_BACKUP_PREFIXES)
+
+    @staticmethod
+    def _matches(path: str, prefixes: Iterable[str]) -> bool:
+        return any(
+            path == p or path.startswith(p.rstrip("/") + "/")
+            for p in prefixes
+        )
 
     def _limit_for(self, scope) -> int:
         path = scope.get("path", "")
         headers = Headers(scope=scope)
         multipart = "multipart/form-data" in headers.get("content-type", "").lower()
-        if multipart or any(
-            path == p or path.startswith(p.rstrip("/") + "/")
-            for p in self.upload_prefixes
-        ):
+        if self._matches(path, self.backup_prefixes):
+            return self.max_backup_bytes or self.max_upload_bytes or self.max_body_bytes
+        if multipart or self._matches(path, self.upload_prefixes):
             return self.max_upload_bytes or self.max_body_bytes
         return self.max_body_bytes
 

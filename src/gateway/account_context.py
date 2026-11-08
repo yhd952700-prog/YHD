@@ -16,6 +16,7 @@ Why this module exists
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -27,6 +28,8 @@ from .policy import require_bearer_payload, _human_claims
 
 #: 中性文案常量（响应里只允许出现这些，不拼层级信息）。
 NEUTRAL_DENIED = _accounts.NEUTRAL_FORBIDDEN_MESSAGE
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,24 @@ def require_visible(context: AccountContext, target: str) -> None:
         raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
 
 
+def _audit_manage_denied(context: AccountContext, target: str, code: str) -> None:
+    """越级/越界写尝试必须留痕：安全团队要能回答"谁试过动谁"。
+
+    审计失败不能把响应从 404 变成 500 —— 判定已经在调用前完成。
+    """
+    try:
+        get_identity_manager().record_event(
+            action="account.manage.denied",
+            actor=context.principal,
+            target=target,
+            outcome="denied",
+            details={"error_code": code},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("manage denial audit failed for %s -> %s", context.principal, target,
+                       exc_info=True)
+
+
 def require_manage(context: AccountContext, target: str) -> None:
     """写类操作的树判定。
 
@@ -159,8 +180,10 @@ def require_manage(context: AccountContext, target: str) -> None:
     * 在子树内但非直接下级 → 403 ``ACCOUNT_LEAPFROG_DENIED``。
     """
     if not context.can_read(target):
+        _audit_manage_denied(context, target, _accounts.CODE_SUBTREE_DENIED)
         raise deny(404, _accounts.CODE_SUBTREE_DENIED, _accounts.NEUTRAL_NOT_FOUND_MESSAGE)
     if not context.can_manage(target):
+        _audit_manage_denied(context, target, _accounts.CODE_LEAPFROG_DENIED)
         raise deny(403, _accounts.CODE_LEAPFROG_DENIED, NEUTRAL_DENIED)
 
 
@@ -242,13 +265,20 @@ def audit_key_use(
     outcome: str = "allowed",
     source: str = "",
     extra: Optional[dict] = None,
+    correlation_id: Optional[str] = None,
 ) -> None:
-    """Key 使用/冒用事件写哈希链：actor 恒为当前账号，另记 ``key_owner``。"""
+    """Key 使用/冒用事件写哈希链：actor 恒为当前账号，另记 ``key_owner``。
+
+    ``correlation_id`` 与触发它的 HTTP 请求绑定：403 拒绝时调用方把该 id
+    回给客户端，审计页就能按同一个 id 找到这条拒绝记录。
+    """
     try:
         details = {
             "key_owner": owner or "",
             "authorization_source": source or "self",
         }
+        if correlation_id:
+            details["correlation_id"] = correlation_id
         if extra:
             details.update(extra)
         get_identity_manager().record_event(
@@ -257,6 +287,7 @@ def audit_key_use(
             target=owner or scope.principal,
             outcome=outcome,
             details=details,
+            correlation_id=correlation_id,
         )
     except Exception:  # noqa: BLE001 - 审计失败不得阻断已通过的判定
         pass

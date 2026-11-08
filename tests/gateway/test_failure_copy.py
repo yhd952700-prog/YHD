@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -208,6 +209,79 @@ class TestIdentityRefusalCopy:
         assert detail["code"] == "human_required"
         assert "human identity" not in detail["message"]
         assert re.search(r"[\u4e00-\u9fff]", detail["message"])
+
+
+class TestServerSurfaceCopy:
+    """服务端**直接下发**给界面的文案：内部术语与英文异常不能回潮。
+
+    ``user_facing_detail`` 只兜住异常出口；``detail=`` / ``"message"`` /
+    ``"reason"`` / 降级 payload 里的字符串是另一条通路，必须逐处收口。
+    """
+
+    _SRC = Path(__file__).resolve().parents[2] / "src"
+
+    def _read(self, rel: str) -> str:
+        return (self._SRC / rel).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        ("rel", "banned", "expected"),
+        [
+            # 权限拒绝：不再出现「人类主权 / L0」这类内部层级。
+            (
+                "gateway/models.py",
+                "L0 人类主权）可以修改模型配置",
+                "只有管理员可以修改模型配置",
+            ),
+            ("upgrade/api.py", "token has no subject claim", "登录状态已失效"),
+            ("upgrade/api.py", "服务/机器人主体", "管理员账号"),
+            # 运维面：内核/实例属于实现词，换成「模块」。
+            ("gateway/kernels.py", "内核已登记", "该模块已登记但尚未启用"),
+            # 对话回复：主体 -> 账号。
+            ("ai/liuhao.py", "当前主体未被授权", "当前账号未被授权"),
+            # 审计校验：英文异常不再拼进 failures。
+            ("gateway/audit.py", "pinpoint scan failed", "定位失败位置时没有运行成功"),
+            ("gateway/health.py", "arming self-check failed", "安全策略自检暂时无法运行"),
+            # 批量建员工 / 取消目标：英文异常类名与英文原因不上屏。
+            ("gateway/ai_management.py", "human operator abort", "操作人主动中止"),
+            # 知识库：不再把异常类名拼进对话提示。
+            (
+                "gateway/knowledge_context.py",
+                "知识库不可用（",
+                "知识库暂时不可用",
+            ),
+            (
+                "gateway/data_portability.py",
+                "知识库未启用：{exc}",
+                "知识库暂时不可用",
+            ),
+            # 审批：defer 是内部状态名。
+            ("gateway/policy.py", "（defer）", "动作被策略暂缓"),
+        ],
+    )
+    def test_internal_jargon_is_replaced_with_neutral_chinese(
+        self, rel: str, banned: str, expected: str
+    ) -> None:
+        source = self._read(rel)
+        assert banned not in source, f"{rel} 仍把内部术语下发到界面：{banned}"
+        assert expected in source, f"{rel} 缺少中性中文文案：{expected}"
+
+    def test_degraded_dashboard_payload_does_not_echo_exceptions(self) -> None:
+        """总览把 ``timeseries.error`` / ``breakdown.error`` 当空态提示直接渲染。"""
+        source = self._read("gateway/dashboard.py")
+        assert '"error": str(exc)' not in source
+        assert "暂时读不到" in source
+
+    def test_model_guidance_points_to_a_real_page(self) -> None:
+        from src.ai.providers import (
+            GENERATION_FAILURE_MESSAGE,
+            MODEL_NOT_CONFIGURED_MESSAGE,
+        )
+
+        for text in (GENERATION_FAILURE_MESSAGE, MODEL_NOT_CONFIGURED_MESSAGE):
+            assert "系统设置 → 模型管理" in text
+            # 环境变量名与不存在的「设置 → 模型」页都不该出现在用户面前。
+            assert "AI_PROVIDER_TYPE" not in text
+            assert "「设置 → 模型」" not in text
 
 
 class TestErrorLogRedaction:

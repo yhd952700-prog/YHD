@@ -336,6 +336,18 @@ class SecretStore:
             self._write(entries)
         return True
 
+    def export_credentials(self, principals: Optional[list] = None) -> Dict[str, Dict[str, Any]]:
+        """备份导出：按主体过滤后的凭据记录（PBKDF2 哈希，不含明文口令）。
+
+        迁移认领后必须能"用原密码登录"（N17）；口令哈希只会进入口令加密的
+        凭据包，不写盘、不落日志、不进审计。``principals=None`` 表示全量。
+        """
+        entries = self._read_entries(strict=False)
+        if principals is None:
+            return dict(entries)
+        allowed = {str(item) for item in principals if str(item)}
+        return {key: value for key, value in entries.items() if key in allowed}
+
     def import_credentials(self, entries: Dict[str, Dict[str, Any]]) -> int:
         """备份恢复入口：合并（同 principal 覆盖）凭据记录，返回写入条数。"""
         incoming = {
@@ -423,6 +435,9 @@ def _audit(outcome: str, principal: str, details: Dict[str, Any]) -> None:
         # 只靠 access_allowed/access_denied 只能说"有人访问过"。
         audit_details = dict(details)
         audit_details.setdefault("action", "login")
+        # 登录的“对象”就是本人：补上 target，四个字段（谁/何时/对什么/结果）
+        # 字面齐全，不必让读者从 principal_id 反推。
+        audit_details.setdefault("target", principal or "anonymous")
         log_event(
             event_type=(
                 AuditEventType.ACCESS_ALLOWED if allowed else AuditEventType.ACCESS_DENIED
@@ -548,7 +563,7 @@ def authenticate(principal: str, secret: str, *, client: str = "web") -> Dict[st
         # 旧版曾把恢复码以明文落盘：迁移后提示用户在登录状态下换新（旧码
         # 若在明文窗口期被读取过，只有重新生成才能止损）。
         "recovery_rotate_recommended": _recovery_rotate_recommended(),
-        **_account_position(pid),
+        **_account_is_root(pid),
     }
 
 
@@ -642,32 +657,21 @@ def _account_epoch(principal: str) -> int:
         return 0
 
 
-def _account_position(principal: str) -> Dict[str, Any]:
-    """本人在账号树中的位置（``parent_account_id`` / ``path`` / ``depth``）。
+def _account_is_root(principal: str) -> Dict[str, Any]:
+    """本人是否为账号树根。
 
-    只返回**本人**的位置：前端做能力裁剪需要它，但它不构成"看别人"的通道。
-    没有账号节点的老部署按独立根处理（与 ``account_context`` 的兼容路径一致）。
+    只回答"是不是根"这一个布尔值：前端做入口裁剪够用，但不返回
+    ``parent_account_id`` / ``path`` / ``depth`` —— 子账号不应从任何接口
+    得知自己是被谁创建的、自己在第几层。
     """
-    fallback = {
-        "parent_account_id": None,
-        "path": f"/{principal}" if principal else "",
-        "depth": 0,
-    }
     try:
-        from ..kernels.identity import _accounts, get_identity_manager
+        from ..kernels.identity import get_identity_manager
 
-        manager = get_identity_manager()
-        node = manager.get_account(principal)
-        if node is None:
-            return fallback
-        return {
-            "parent_account_id": node.parent_id,
-            "path": _accounts.account_path(manager.account_nodes(), principal)
-            or fallback["path"],
-            "depth": int(node.depth),
-        }
+        node = get_identity_manager().get_account(principal)
     except Exception:  # noqa: BLE001 - 位置信息不得阻断登录/自述
-        return fallback
+        return {"is_root": True}
+    # 没有账号节点的老部署 / 单机令牌按独立根处理（与 account_context 一致）。
+    return {"is_root": bool(node is None or node.is_root)}
 
 
 def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
@@ -693,7 +697,7 @@ def issue_token_for(principal: str, client: str = "web") -> Dict[str, Any]:
         "scope": scope,
         "permissions": permissions,
         "client": client,
-        **_account_position(principal),
+        **_account_is_root(principal),
     }
 
 
@@ -748,7 +752,7 @@ def auth_me(payload=Depends(require_bearer_payload)) -> Dict[str, Any]:
         "still_human": identity is not None,
         "expires_at": getattr(payload, "exp", None),
         "client": (getattr(payload, "metadata", None) or {}).get("client"),
-        **_account_position(principal),
+        **_account_is_root(principal),
     }
 
 

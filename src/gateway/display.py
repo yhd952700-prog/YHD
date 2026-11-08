@@ -61,6 +61,7 @@ STATUS_LABELS: Dict[str, str] = {
     "ready": "已就绪",
     "success": "成功",
     "allowed": "已允许",
+    "allow": "已允许",
     "degraded": "部分可用",
     "unhealthy": "异常",
     "unavailable": "不可用",
@@ -83,6 +84,10 @@ STATUS_LABELS: Dict[str, str] = {
     "broken": "校验未通过",
     "empty": "暂无数据",
     "unknown": "未知",
+    "login_success": "登录成功",
+    "login_denied": "登录失败",
+    "granted": "已授权",
+    "revoked": "已撤销",
 }
 
 #: 严重级别 -> 中文级别。
@@ -113,6 +118,11 @@ EVENT_DOMAIN_LABELS: Dict[str, str] = {
     "system": "系统",
     "security": "安全",
     "backup": "备份",
+    "employee": "员工",
+    "knowledge": "知识库",
+    "document": "文档",
+    "key": "密钥",
+    "ai": "模型",
 }
 
 #: 事件动作结尾（动词）-> 人话。
@@ -143,6 +153,24 @@ ACTION_TAIL_LABELS: Dict[str, str] = {
     "completed": "完成",
     "failed": "失败",
     "toggle": "开关变更",
+    "hired": "新增",
+    "removed": "移除",
+    "adopted": "取用",
+    "assign_task": "派活",
+    "changed": "变更",
+    "grant": "授权",
+    "granted": "授权",
+    "revoke": "撤销",
+    "revoked": "撤销",
+    "issued": "发放",
+    "used": "使用",
+    "rotated": "重置",
+    "discarded": "作废",
+    "imported": "导入",
+    "exported": "导出",
+    "set_default": "设为默认",
+    "manage": "管理",
+    "owner": "归属",
 }
 
 #: 健康检查项 -> 人话名称。
@@ -303,7 +331,15 @@ def _humanize_action(action: str) -> str:
     if not parts:
         return "系统事件"
     domain = EVENT_DOMAIN_LABELS.get(parts[0].lower())
-    tail = ACTION_TAIL_LABELS.get(parts[-1].lower())
+    # 从后往前找第一个认识的动作词：``account.manage.denied`` 的结尾
+    # ``denied`` 只是结果，真正的动作是 ``manage``；只看最后一段会退化成
+    # 无信息量的「账号 · 操作」。
+    tail = next(
+        (label for label in (
+            ACTION_TAIL_LABELS.get(part.lower()) for part in reversed(parts)
+        ) if label),
+        None,
+    )
     if domain and tail:
         return f"{domain} · {tail}"
     if domain:
@@ -313,15 +349,33 @@ def _humanize_action(action: str) -> str:
     return parts[-1].replace("_", " ")
 
 
+#: 无动作名的内核事件类型 -> 人话（登录等事件只有 event_type）。
+EVENT_TYPE_TITLES: Dict[str, str] = {
+    "access_allowed": "访问放行",
+    "access_denied": "访问拒绝",
+    "role_grant": "角色授予",
+    "role_revoke": "角色撤销",
+    "state_change": "状态变更",
+    "policy_eval": "策略评估",
+}
+
+
 def event_display_title(event: Mapping[str, Any]) -> str:
-    """事件/任务标题：``账号 · 自助注册（成功）`` 这种一句人话。"""
-    action = str(
-        event.get("action")
-        or event.get("type")
-        or event.get("event_type")
-        or ""
-    ).strip()
-    title = _humanize_action(action)
+    """事件/任务标题：``登录：张三（登录成功）`` 这种一句人话。
+
+    ``target`` 是"对什么做的"，必须和动作、结果一起出现在同一句里，
+    否则普通人只知道"发生了一次更新"，不知道改的是谁/哪个对象。
+    """
+    action = str(event.get("action") or "").strip()
+    event_type = str(event.get("type") or event.get("event_type") or "").strip()
+    title = (
+        _humanize_action(action)
+        if action
+        else EVENT_TYPE_TITLES.get(event_type, _humanize_action(event_type))
+    )
+    target = str(event.get("target") or "").strip()
+    if target:
+        title = f"{title}：{target}"
     outcome = str(event.get("outcome") or "").strip()
     return f"{title}（{status_label(outcome)}）" if outcome else title
 

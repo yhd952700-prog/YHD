@@ -274,6 +274,35 @@ class TestGatewayGuards:
             resp = client.post("/v1/echo", content=_gen())
         assert resp.status_code == 413
 
+    def test_backup_import_uses_its_own_large_limit(self):
+        app = FastAPI()
+
+        @app.post("/v1/accounts/backup/import")
+        def backup_import():
+            return {"ok": True}
+
+        @app.post("/v1/echo")
+        def echo():
+            return {"ok": True}
+
+        app.add_middleware(
+            BodyLimitMiddleware,
+            max_body_bytes=16,
+            max_upload_bytes=32,
+            max_backup_bytes=64,
+        )
+        with TestClient(app) as client:
+            # 备份包路径用独立上限：32 MiB 级包不会被 10 MiB 普通上限挡住。
+            assert client.post(
+                "/v1/accounts/backup/import", content=b"x" * 48
+            ).status_code == 200
+            # 但仍受备份上限约束，不会变成无限。
+            assert client.post(
+                "/v1/accounts/backup/import", content=b"x" * 96
+            ).status_code == 413
+            # 普通路径不受备份上限影响。
+            assert client.post("/v1/echo", content=b"x" * 32).status_code == 413
+
     def test_bucket_map_is_bounded(self):
         limiter = RateLimiter(max_buckets=2, idle_ttl_seconds=1)
         for index in range(5):
