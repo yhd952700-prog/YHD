@@ -30,7 +30,9 @@ because it is trusted: a reader concludes the project has no governance charter.
 WHAT IT CHECKS
 --------------
 1. **Coverage** -- every non-archived markdown file under `docs/` must be named in
-   `docs/README.md` (by path or by filename). Anything unlisted is reported.
+   `docs/README.md` by PATH. A bare filename is accepted only while exactly one
+   live doc has that name; once a second `report.md` exists anywhere in the tree,
+   the bare mention no longer covers either file. Anything unlisted is reported.
 2. **No phantom entries** -- every path the index claims must exist. A link that
    resolves to nothing is a promise the index cannot keep. (`verify_doc_links.py`
    checks inline links; this checks the index's own inventory tables, which are
@@ -57,6 +59,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections import Counter
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(REPO_ROOT, "docs")
@@ -76,6 +79,70 @@ EXCLUDED_PREFIXES = (
 
 def _norm(rel: str) -> str:
     return rel.replace("\\", "/")
+
+
+def _doc_relative(rel: str) -> str:
+    """Repo-relative `docs/x.md` -> the `x.md` form the index normally uses."""
+    return rel[len("docs/"):] if rel.startswith("docs/") else rel
+
+
+def _index_path_tokens(index: str) -> tuple:
+    """Every markdown path token the index names, normalized.
+
+    Returns `(tokens, link_tokens)`. Coverage is exact token membership, never a
+    substring test: the old `name in index` check let any file named `report.md`
+    ride on a single `report.md` entry elsewhere. `link_tokens` keeps the subset
+    that came from a markdown link target, because `](x.md)` is a location claim
+    for `docs/x.md` (the root file), while a bare name in prose is only a name --
+    `ADR.md` in "每包四篇" describes a file kind shared by seven packages and
+    cannot prove any one of them is indexed.
+    """
+    raw = set()
+    link_raw = set()
+    for m in re.finditer(r"\]\(([^)\s]+)\)", index):
+        target = m.group(1)
+        if target.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        target = target.split("#", 1)[0]
+        raw.add(target)
+        link_raw.add(target)
+    for m in re.finditer(r"[A-Za-z0-9_./+-]+\.md", index):
+        raw.add(m.group(0))
+
+    tokens = set()
+    link_tokens = set()
+    for source, dest in ((raw, tokens), (link_raw, link_tokens)):
+        for t in source:
+            t = _norm(t).lstrip("./")
+            if "://" in t or t.startswith("//"):
+                continue
+            dest.add(t)
+    return tokens, link_tokens
+
+
+def _is_covered(rel: str, tokens: set, link_tokens: set, basename_counts: dict) -> bool:
+    """Path-aware coverage (brace-glob rows are checked separately).
+
+    Accepted forms:
+      * repo-relative path (`docs/autonomous/GOVERNANCE.md`),
+      * docs-relative path with at least one directory (`autonomous/GOVERNANCE.md`),
+      * a bare filename ONLY if exactly one live doc has it -- otherwise the
+        mention is ambiguous and covers nothing (write the path instead),
+      * for a doc at the docs ROOT, a bare markdown link target (`](quickstart.md)`)
+        -- a link resolves relative to docs/, so it names `docs/quickstart.md`
+        and cannot be stolen by a same-named file in a subdirectory.
+    """
+    if rel in tokens:
+        return True
+    rel_doc = _doc_relative(rel)
+    base = os.path.basename(rel)
+    if "/" in rel_doc:
+        if rel_doc in tokens:
+            return True
+        return base in tokens and basename_counts.get(base, 0) == 1
+    if base in link_tokens:
+        return True
+    return base in tokens and basename_counts.get(base, 0) == 1
 
 
 def _covered_by_brace_glob(index: str, rel: str) -> bool:
@@ -147,17 +214,18 @@ def main() -> int:
     live = _live_docs()
     # The index cannot be required to name itself.
     targets = [p for p in live if p != "docs/README.md"]
+    # How many live docs share each basename. A bare filename in the index is
+    # allowed to cover a doc only when this is 1 -- otherwise "report.md" would
+    # again mean "whichever report.md I feel like", which is the bug this gate
+    # just stopped having.
+    basename_counts = Counter(os.path.basename(p) for p in live)
+    tokens, link_tokens = _index_path_tokens(index)
+    bare_tokens = sorted(t for t in tokens if "/" not in t)
 
     uncovered = []
     covered_by_glob = []
     for rel in targets:
-        name = os.path.basename(rel)
-        # Named either by full repo-relative path, by bare filename, or inside a
-        # brace-expansion glob such as `kernel-spec/{audit,capability,...}.md`.
-        # The glob form IS a real, complete index entry -- counting it as a miss
-        # would be a false positive, and a coverage gate that cries wolf on a
-        # correctly-indexed file is a gate people disable.
-        if rel in index or name in index:
+        if _is_covered(rel, tokens, link_tokens, basename_counts):
             continue
         if _covered_by_brace_glob(index, rel):
             covered_by_glob.append(rel)
@@ -226,20 +294,28 @@ def main() -> int:
     covered = total - len(uncovered)
     pct = (covered / total * 100) if total else 0.0
 
+    ambiguous_bare = [t for t in bare_tokens if basename_counts.get(t, 0) > 1]
     print(f"live docs (excl. archive/ + spec/incoming/): {total}")
     print(f"named in docs/README.md:                    {covered}  ({pct:.1f}%)")
     print(f"  of which via brace-glob rows:              {len(covered_by_glob)}")
+    print(f"  bare-filename entries in the index:        {len(bare_tokens)}  "
+          f"(ambiguous: {len(ambiguous_bare)})")
     print(f"NOT named:                                   {len(uncovered)}")
 
     if uncovered:
-        from collections import Counter
-
         print("\nuncovered by directory:")
         for d, n in sorted(Counter(os.path.dirname(p) for p in uncovered).items(), key=lambda kv: -kv[1]):
             print(f"  {n:3d}  {d}/")
         print("\n  the full list:")
         for p in uncovered:
-            print(f"    {p}")
+            base = os.path.basename(p)
+            if basename_counts.get(base, 0) > 1:
+                print(
+                    f"    {p}  (bare `{base}` is ambiguous: {basename_counts[base]} live "
+                    "docs share it -- name the full path)"
+                )
+            else:
+                print(f"    {p}")
         failures.append(
             f"{len(uncovered)} of {total} live docs are not named in docs/README.md."
         )

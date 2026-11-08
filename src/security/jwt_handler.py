@@ -63,6 +63,16 @@ def _record_revocation_check_failure() -> None:
         pass
 
 
+class IdentityStoreUnavailable(Exception):
+    """撤销库/身份库读不出来 —— **基础设施故障，不是令牌无效**。
+
+    故意**不继承** ``jwt.InvalidTokenError``（与它平级）：两者若同族，上游任何
+    一个 ``except jwt.InvalidTokenError`` 都会把"读不出"重新说成"令牌无效"，
+    前端于是让用户改密码 —— 而真正的问题在本机数据库。调用方必须显式区分：
+    令牌无效 -> 401；读不出 -> 503（并明确告诉用户"这次不是你密码的问题"）。
+    """
+
+
 class TokenType(Enum):
     """Token type enumeration"""
     ACCESS = "access"
@@ -205,6 +215,14 @@ class RevocationStore:
             _default_revocation_path()
         )
         self._lock = threading.Lock()
+        #: 每条工作线程一条**长期只读连接**（``threading.local``）。复用连接
+        #: 句柄能省掉每次请求的 open/close，但**绝不复用查询结果**：``contains``
+        #: 每次都重新 SELECT，别的连接刚提交的吊销立即可见 —— 吊销生效延迟 = 0。
+        #: **不得**给这里加 TTL / 缓存 / 快照，那会让已吊销的令牌继续通过。
+        self._read_local = threading.local()
+        #: 线程 ident -> 连接，供超时路径从**另一个线程** ``interrupt()``。
+        self._read_registry: Dict[int, sqlite3.Connection] = {}
+        self._registry_lock = threading.Lock()
         directory = os.path.dirname(os.path.abspath(self.path))
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -213,6 +231,82 @@ class RevocationStore:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5.0)
+
+    # ------------------------------------------------------------------
+    # per-thread 长期只读连接（④）
+    # ------------------------------------------------------------------
+    def _read_conn(self) -> sqlite3.Connection:
+        """返回**本线程**的只读连接；没有就建一条并登记。
+
+        ``check_same_thread=False`` 只为了允许超时路径从另一个线程
+        ``interrupt()/close()``；正常读写仍由创建它的线程独占使用。
+        """
+        conn = getattr(self._read_local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False)
+        self._read_local.conn = conn
+        with self._registry_lock:
+            self._read_registry[threading.get_ident()] = conn
+        return conn
+
+    def _drop_read_conn(self) -> None:
+        """丢弃本线程的只读连接（出错或已被别的线程掐断时）。"""
+        conn = getattr(self._read_local, "conn", None)
+        self._read_local.conn = None
+        if conn is None:
+            return
+        with self._registry_lock:
+            self._read_registry.pop(threading.get_ident(), None)
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - 已被关闭/被中断
+            pass
+
+    def interrupt_and_close(self, thread_ident: Optional[int]) -> bool:
+        """从**另一个线程**掐断某条 lane 上正在执行的语句（④ 超时处置）。
+
+        ``interrupt()`` 是 SQLite 官方支持的跨线程调用；``close()`` 只是尽力
+        而为，关不掉（未完成语句/已关闭）就忽略，交给那条 lane 自己在下一次
+        异常时 ``_drop_read_conn``。返回是否拿到了连接句柄 —— 拿不到说明卡在
+        ``connect()`` 阶段（那里还没有 conn 对象），只能弃置该 lane。
+        """
+        if thread_ident is None:
+            return False
+        with self._registry_lock:
+            conn = self._read_registry.pop(int(thread_ident), None)
+        if conn is None:
+            return False
+        try:
+            conn.interrupt()
+        except Exception:  # pragma: no cover - 尽力而为
+            pass
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - 关不掉就交给 lane 自己
+            pass
+        return True
+
+    def probe(self, timeout: float = 1.0) -> bool:
+        """降级自愈探针：用一条**临时**连接在 ``timeout`` 内读一行。
+
+        只用于"撤销库恢复了吗"的判定，不参与请求路径。``SELECT 1 ... LIMIT 1``
+        会真的去读表，因此能反映文件/表锁是否已经松开。
+        """
+        try:
+            conn = sqlite3.connect(self.path, timeout=timeout)
+        except Exception:  # pragma: no cover - 连不上就是没恢复
+            return False
+        try:
+            conn.execute("SELECT 1 FROM revoked_tokens LIMIT 1").fetchone()
+            return True
+        except Exception:
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pragma: no cover
+                pass
 
     def add(
         self,
@@ -238,12 +332,20 @@ class RevocationStore:
     def contains(self, jti: str, kind: str = "access") -> bool:
         if not jti:
             return False
-        with self._connect() as conn:
+        try:
+            conn = self._read_conn()
             row = conn.execute(
                 "SELECT 1 FROM revoked_tokens WHERE jti = ? AND kind = ? "
                 "AND expires_at > ?",
                 (str(jti), kind, stable_now_epoch()),
             ).fetchone()
+        except sqlite3.Error as exc:
+            # 读不出来 ≠ 没吊销：fail-closed，并把"基础设施故障"如实上报，
+            # 由上层映射成 503（不是 401）。
+            self._drop_read_conn()
+            raise IdentityStoreUnavailable(
+                f"revocation store read failed: {type(exc).__name__}"
+            ) from exc
         return row is not None
 
     def purge(self) -> int:
@@ -603,6 +705,11 @@ class JWTHandler:
                 raise jwt.InvalidTokenError("Token has been revoked")
         except jwt.InvalidTokenError:
             raise  # Re-raise revocation check result
+        except IdentityStoreUnavailable:
+            # 基础设施故障必须原样上抛，让上层回 503；绝不能在这里改口说
+            # "令牌无效"（那会引导用户去改密码，而问题在本机数据库）。
+            _record_revocation_check_failure()
+            raise
         except Exception as exc:
             logger.error(
                 "token revocation check failed; rejecting token (fail-closed): %s",
@@ -610,7 +717,7 @@ class JWTHandler:
                 exc_info=True,
             )
             _record_revocation_check_failure()
-            raise jwt.InvalidTokenError(
+            raise IdentityStoreUnavailable(
                 "Token revocation status unavailable"
             ) from exc
 

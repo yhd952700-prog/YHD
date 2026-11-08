@@ -71,15 +71,33 @@ def warm_probe_pool(count: int = 4) -> int:
     事件循环里建线程。预热之后，探针路径上不再有任何运行期线程创建：
     ``/v1/health`` 是最后一道可用性保障，不能把它的第一条请求赌在 Thread.start 上。
 
-    返回成功预建的线程数；失败只记日志，不阻断启动。
+    返回**实际**预建的线程数；失败只记日志，不阻断启动。
+
+    注意（2026-11-08 19:08 实测）：不能只连续 submit 一组空任务。空闲的 worker
+    会被 ``_adjust_thread_count`` 的 ``_idle_semaphore`` 复用，线程数根本涨不到 N
+    —— `rss8h4` 启动时这里只建出了 **2** 条（py-spy 里只剩 `liuhao-probe_0/1`），
+    随后第三个并发探针又在事件循环里现场建线程，19:08 整站再次僵死 4 分多钟。
+    这里改成"N 个任务同时卡在栅栏上"，逼迫执行器真的建出 N 条线程，再一起放行。
     """
     try:
         workers = max(1, int(count))
-        list(_PROBE_POOL.map(lambda _: None, range(workers)))
-        return workers
+        workers = min(workers, int(getattr(_PROBE_POOL, "_max_workers", workers)))
+        gate = threading.Barrier(workers)
+        futures = [_PROBE_POOL.submit(_warm_barrier, gate) for _ in range(workers)]
+        for future in futures:
+            future.result(timeout=5.0)
+        return len(getattr(_PROBE_POOL, "_threads", ())) or workers
     except Exception:  # pragma: no cover - 预热失败不影响服务
         logger.warning("探针线程池预热失败（不影响启动）", exc_info=True)
         return 0
+
+
+def _warm_barrier(gate: threading.Barrier) -> None:
+    """预热载体：等 N 条线程都到齐再一起放行。"""
+    try:
+        gate.wait(5.0)
+    except threading.BrokenBarrierError:  # pragma: no cover - 线程被系统拒绝
+        pass
 
 
 def _busy_response(kind: str, trace_id: str, detail: str = "") -> JSONResponse:
@@ -793,6 +811,14 @@ def _metrics_payload_sync(trace_id: str) -> Dict[str, Any]:
             },
         },
     }
+    # 身份校验降级的可观测口径（④）：两个进程内计数，重启归零。
+    # 这里只读内存、不进请求路径，不会把 /v1/metrics 变成新的僵死入口。
+    try:
+        from .rate_limiter import identity_check_metrics
+
+        metrics_data["components"]["identity_check"] = identity_check_metrics()
+    except Exception:  # pragma: no cover - 指标缺失不能让端点失败
+        pass
 
     return metrics_data
 

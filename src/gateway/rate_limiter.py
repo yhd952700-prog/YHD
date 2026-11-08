@@ -8,9 +8,16 @@ Token Bucket algorithm implementation with:
 - Graceful degradation when Redis unavailable
 """
 
+import asyncio
 import ipaddress
-import time
+import logging
+import os
+import queue
 import threading
+import time
+import uuid
+from _thread import start_new_thread as _start_new_thread
+from concurrent.futures import Future
 from typing import Dict, Iterable, Optional, Tuple
 
 from fastapi import Request, Response
@@ -43,6 +50,110 @@ DEFAULT_PROTECTED_PATHS: Tuple[str, ...] = (
     "/v1/dashboard",
     "/v1/roster",
 )
+
+#: 探针端点：**只豁免限流与身份解析，不豁免认证**。
+#:
+#: 动手前核对的现状（2026-11-08）：``/v1/health``、``/v1/ready``、``/v1/metrics``
+#: 由 ``health.py`` 直接挂载、无 FastAPI 依赖；``/v1/metrics/prometheus`` 同样
+#: 无依赖。四个都是**公开探针**，本次改动不新增、也不移除任何认证要求。
+#:
+#: 必须**精确匹配**：``/v1/health/extra``、``/v1/metrics/..`` 之类不会被豁免，
+#: 否则别的路径可以借探针入口绕过限流。
+PROBE_EXEMPT_PATHS: Tuple[str, ...] = (
+    "/v1/health",
+    "/v1/ready",
+    "/v1/metrics",
+    "/v1/metrics/prometheus",
+)
+
+#: 身份校验 lane 池（D-1 ④）
+#: ---------------------------------------------------------------------------
+#: ``_identity`` 会读 API Key 表与 JWT 撤销库（``sqlite3.connect``），属于
+#: **阻塞 I/O**，绝不能跑在事件循环线程上；但线程池的 ``submit`` 在满载时
+#: 又会卡在 ``Thread.start``（``_started.wait()`` 无超时）。现在改成 4 条
+#: **专职 lane**：
+#:
+#: * 用 ``_thread.start_new_thread`` 非阻塞启动（不等 ``_started``），
+#:   ``daemon=True`` 不拖住进程退出；
+#: * 因为没有走 ``Thread.start``，``Thread.is_alive()`` 恒 False、``join()``
+#:   会抛错 —— 就绪只能由线程自己第一行 ``ready_flags[i].set()``。**全仓库
+#:   禁止对这几条 lane 调 ``is_alive()/join()``**，也不复用依赖 ``Thread``
+#:   语义的封装（``ThreadPoolExecutor.submit`` 之类）。
+#: * 每条 lane 一个 1 格收件箱：4 条都在忙时**立即拒绝**，不排队。
+_IDENTITY_LANE_COUNT = 4
+
+#: 弃置上限：超时但线程还没退出的 lane 最多 4 条 → 总线程 ≤ 4 + 4。
+_IDENTITY_MAX_ABANDONED = 4
+
+#: 连续超时达到该值即降级：新请求不再排队，直接 503。
+_IDENTITY_DEGRADE_THRESHOLD = 3
+
+#: 降级后的自愈探针：每 30 秒做一次 ``SELECT 1``（1 秒超时），成功即恢复。
+_IDENTITY_PROBE_INTERVAL_SECONDS = 30.0
+_IDENTITY_PROBE_TIMEOUT_SECONDS = 1.0
+
+#: 每条 lane 的就绪标记。**只认 Event**：``_thread.start_new_thread`` 下
+#: ``Thread.is_alive()`` 不可信。
+_READY_FLAGS = [threading.Event() for _ in range(_IDENTITY_LANE_COUNT)]
+
+#: 请求级身份解析预算（默认 2 秒），运维可用环境变量覆盖。
+_DEFAULT_IDENTITY_TIMEOUT_SECONDS = 2.0
+
+
+def identity_timeout_seconds() -> float:
+    """读取请求级身份解析超时；非法值退回默认 2 秒。"""
+    raw = os.environ.get("LIUHAO_IDENTITY_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_IDENTITY_TIMEOUT_SECONDS
+
+
+class IdentityCheckTimeout(RuntimeError):
+    """身份解析超过请求级预算：lane 被弃置，并已尝试 ``interrupt()``。"""
+
+
+class IdentityPoolFull(RuntimeError):
+    """4 条 lane 都在忙：立即拒绝，不排队。"""
+
+
+class IdentityCheckDegraded(RuntimeError):
+    """连续超时已进入降级：新请求直接 503，等探针自愈。"""
+
+
+class IdentityThreadStartFailed(RuntimeError):
+    """本机创建不了身份校验线程（``can't start new thread``）。"""
+
+
+class _IdentityLane:
+    """一条专职身份解析 lane。"""
+
+    __slots__ = ("slot", "thread_ident", "inbox", "abandoned")
+
+    def __init__(self, slot: int):
+        self.slot = slot
+        self.thread_ident: Optional[int] = None
+        self.inbox: "queue.Queue" = queue.Queue(maxsize=1)
+        self.abandoned = threading.Event()
+
+
+_lane_state_lock = threading.Lock()
+_idle_lanes: "queue.Queue[_IdentityLane]" = queue.Queue()
+_active_lanes: Dict[int, _IdentityLane] = {}
+_abandoned_running = 0
+_thread_start_failed = False
+_consecutive_identity_timeouts = 0
+_identity_degraded = False
+_probe_thread_started = False
+_identity_check_degraded_total = 0
+_identity_check_rejected_total = 0
+
+#: 同一请求里 Global 与业务限流各解析一次身份：用 scope 缓存把 DB 读降为一次。
+_IDENTITY_SCOPE_KEY = "liuhao.identity"
 
 
 #: 生成类路径单独成桶。控制面（``/v1/models``、``/v1/accounts`` 等）与聊天
@@ -271,7 +382,11 @@ class RateLimiter:
             # noisy session would throttle every other user behind it. Key
             # JWT callers by their principal.
             try:
-                from ..security.jwt_handler import TokenType, get_jwt_handler
+                from ..security.jwt_handler import (
+                    IdentityStoreUnavailable,
+                    TokenType,
+                    get_jwt_handler,
+                )
 
                 # 必须传枚举：``validate_token`` 用 ``payload.token_type !=
                 # expected_type`` 比较，传字符串永远不相等，随后拼错误信息时
@@ -283,6 +398,11 @@ class RateLimiter:
                 subject = getattr(payload, "sub", None)
                 if subject:
                     return f"sub:{subject}", None
+            except IdentityStoreUnavailable:
+                # 撤销库读不出来是**基础设施故障**：原样上抛给中间件 -> 503。
+                # 绝不能在这里静默退回 IP 桶 —— 那会把"校验没做成"当成
+                # "没有身份"，并把故障伪装成正常放行。
+                raise
             except Exception:  # noqa: BLE001 - invalid token => fall back to IP
                 pass
 
@@ -315,15 +435,23 @@ class RateLimiter:
             return self._buckets[key_id]
 
     def check_rate_limit(
-        self, request: Request, trusted_proxies: Iterable[str] = ()
+        self,
+        request: Request,
+        trusted_proxies: Iterable[str] = (),
+        identity: Optional[Tuple[str, Optional[any]]] = None,
     ) -> Tuple[bool, Dict[str, any]]:
         """
         Check rate limit for the request.
 
+        ``identity``：由 :func:`resolve_identity_off_loop` 在**线程池**里预先解析好的
+        ``(基底 key, API Key 对象或 None)``。传入它时本函数只做内存里的桶操作，
+        不会在事件循环线程上碰撤销库/API Key 表。不传则退回旧行为（同步解析），
+        供非 ASGI 调用方使用。
+
         Returns:
             (allowed, info_dict)
         """
-        base, key_obj = self._identity(request, trusted_proxies)
+        base, key_obj = identity if identity is not None else self._identity(request, trusted_proxies)
         key_id = f"{base}|{path_family(request.url.path)}"
         bucket = self._get_bucket(key_id, key_obj.scopes if key_obj else [])
 
@@ -398,6 +526,388 @@ def _rate_limit_headers(allowed: bool, info: Dict[str, any]) -> Dict[str, str]:
     return headers
 
 
+logger = logging.getLogger(__name__)
+
+
+def _identity_lane_worker(lane: _IdentityLane, ready_flag: threading.Event) -> None:
+    """lane 的主循环。
+
+    **第一行**打就绪标记：这几条线程不经过 ``Thread.start``，``Thread`` 的
+    ``_started`` 永远不会被置位，所以就绪只能由线程自己说。
+    """
+    lane.thread_ident = threading.get_ident()
+    ready_flag.set()
+    while True:
+        job = lane.inbox.get()
+        if job is None:  # pragma: no cover - 进程退出时的收尾
+            return
+        fn, args, future = job
+        if future.set_running_or_notify_cancel():
+            try:
+                future.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001 - 原样交给等待方
+                try:
+                    future.set_exception(exc)
+                except Exception:  # pragma: no cover - 等待方已取消
+                    pass
+        if lane.abandoned.is_set():
+            _identity_lane_exit(lane)
+            return
+        _idle_lanes.put(lane)
+
+
+def _identity_lane_exit(lane: _IdentityLane) -> None:
+    """弃置 lane 自己退出时调用：交回弃置额度，必要时补一条新 lane。"""
+    global _abandoned_running
+    with _lane_state_lock:
+        _abandoned_running = max(0, _abandoned_running - 1)
+        slot_taken = lane.slot in _active_lanes
+        failed = _thread_start_failed
+    if not slot_taken and not failed:
+        _start_identity_lane(lane.slot)
+
+
+def _start_daemon_thread(thread: threading.Thread) -> bool:
+    """非阻塞启动一条 daemon 线程（``not_started`` 时不阻塞、不等 ``_started``）。
+
+    ``Thread._bootstrap_inner`` 第一段会 ``del _limbo[self]``；正常 ``start()``
+    会先把自己放进 ``_limbo``。我们绕过 ``start()``，所以必须替它登记 ——
+    否则线程会在删 ``_limbo`` 时 KeyError 直接死掉（实测 3.12：lane 全灭）。
+    """
+    limbo = getattr(threading, "_limbo", None)
+    limbo_lock = getattr(threading, "_active_limbo_lock", None)
+    if limbo is None or limbo_lock is None:  # pragma: no cover - 解释器变更
+        return False
+    with limbo_lock:
+        limbo[thread] = thread
+    try:
+        _start_new_thread(thread._bootstrap, ())
+        return True
+    except Exception:  # pragma: no cover - 例如 can't start new thread
+        with limbo_lock:
+            limbo.pop(thread, None)
+        return False
+
+
+def _start_identity_lane(slot: int) -> Optional[_IdentityLane]:
+    """**非阻塞**启动一条 lane；失败置 ``_thread_start_failed``。
+
+    不用 ``threading.Thread.start()``：它末尾的 ``_started.wait()`` 没有超时，
+    满载时会把调用方（这里是导入线程或事件循环）无限等住 —— 正是 D-1。
+    """
+    global _thread_start_failed
+    lane = _IdentityLane(slot)
+    thread = threading.Thread(
+        target=_identity_lane_worker,
+        args=(lane, _READY_FLAGS[slot]),
+        name=f"liuhao-identity-{slot}",
+        daemon=True,
+    )
+    if not _start_daemon_thread(thread):
+        with _lane_state_lock:
+            _thread_start_failed = True
+        logger.error(
+            "evt=identity.lane.start_failed reason=thread_start_failed slot=%d",
+            slot,
+        )
+        return None
+    with _lane_state_lock:
+        _active_lanes[slot] = lane
+    _idle_lanes.put(lane)
+    return lane
+
+
+def _start_identity_lanes() -> None:
+    """导入期自预热：**在模块导入时**把 4 条 lane 全部起好。
+
+    为什么不放进 lifespan：``main.py`` 那 8 行已被裁决永久废弃；而且只要任何
+    入口 ``import`` 了本模块，lane 就必然存在 —— 接线不会因为漏调某个启动
+    函数而静默丢失。
+    """
+    for slot in range(_IDENTITY_LANE_COUNT):
+        if _thread_start_failed:
+            break
+        _start_identity_lane(slot)
+
+
+def identity_pool_ready() -> bool:
+    """lane 是否已就绪。**只认 Event**（``is_alive()`` 在这里恒为 False）。"""
+    if _thread_start_failed:
+        return False
+    return all(flag.is_set() for flag in _READY_FLAGS)
+
+
+def _submit_identity_job(fn, *args):
+    """把一次身份解析交给一条空闲 lane；没有空闲 lane 就立即失败。"""
+    if _thread_start_failed:
+        raise IdentityThreadStartFailed("identity lanes could not start on this host")
+    if _identity_degraded:
+        raise IdentityCheckDegraded("identity check degraded")
+    try:
+        lane = _idle_lanes.get_nowait()
+    except queue.Empty:
+        raise IdentityPoolFull("all identity lanes are busy")
+    future: Future = Future()
+    try:
+        lane.inbox.put_nowait((fn, args, future))
+    except queue.Full:  # pragma: no cover - 空闲 lane 的收件箱不该满
+        _idle_lanes.put(lane)
+        raise IdentityPoolFull("identity lane inbox is full")
+    return lane, future
+
+
+def _silence_abandoned_future(future: Future) -> None:
+    """超时弃置后取走异常，避免 "exception was never retrieved" 噪声。"""
+    try:
+        future.exception()
+    except Exception:  # pragma: no cover
+        pass
+
+
+def _interrupt_identity_store(thread_ident: Optional[int]) -> bool:
+    """从事件循环线程掐断那条 lane 上正在执行的 SQLite 语句。"""
+    if thread_ident is None:
+        return False
+    try:
+        from ..security import get_jwt_handler
+
+        store = getattr(get_jwt_handler(), "_revocations", None)
+        if store is None:
+            return False
+        return bool(store.interrupt_and_close(thread_ident))
+    except Exception:  # pragma: no cover - 掐断是尽力而为
+        return False
+
+
+def _abandon_identity_lane(lane: _IdentityLane) -> None:
+    """超时处置：掐断 + 弃置 + 在额度内补一条替代 lane（总线程封顶 4+4）。"""
+    global _abandoned_running
+    if lane.abandoned.is_set():
+        return
+    lane.abandoned.set()
+    with _lane_state_lock:
+        if _active_lanes.get(lane.slot) is lane:
+            del _active_lanes[lane.slot]
+        _abandoned_running += 1
+        replace = _abandoned_running <= _IDENTITY_MAX_ABANDONED
+    # 先 interrupt 再补替代：``connect()`` 阶段挂起时还没有 conn 对象，
+    # interrupt 拿不到，只能弃置 —— 线程上限（4 + 4）保证不会无限增长。
+    interrupted = _interrupt_identity_store(lane.thread_ident)
+    logger.warning(
+        "evt=identity.lane.abandoned slot=%d interrupted=%s abandoned_running=%d",
+        lane.slot,
+        interrupted,
+        _abandoned_running,
+    )
+    if replace:
+        _start_identity_lane(lane.slot)
+
+
+def _record_identity_timeout() -> None:
+    """记一次超时；连续达到阈值就降级并启动自愈探针。"""
+    global _consecutive_identity_timeouts, _identity_degraded
+    global _identity_check_degraded_total
+    degraded_now = False
+    with _lane_state_lock:
+        _consecutive_identity_timeouts += 1
+        count = _consecutive_identity_timeouts
+        if count >= _IDENTITY_DEGRADE_THRESHOLD and not _identity_degraded:
+            _identity_degraded = True
+            _identity_check_degraded_total += 1
+            degraded_now = True
+        active = len(_active_lanes)
+        abandoned = _abandoned_running
+    if degraded_now:
+        logger.error(
+            "evt=identity.check.degraded consecutive_timeouts=%d threshold=%d "
+            "lanes_active=%d lanes_abandoned=%d",
+            count,
+            _IDENTITY_DEGRADE_THRESHOLD,
+            active,
+            abandoned,
+        )
+        _ensure_identity_probe_thread()
+
+
+def _record_identity_success() -> None:
+    global _consecutive_identity_timeouts
+    with _lane_state_lock:
+        _consecutive_identity_timeouts = 0
+
+
+def _probe_identity_store() -> bool:
+    """自愈探针：临时连接、1 秒超时、真读一行。"""
+    try:
+        from ..security import get_jwt_handler
+
+        store = getattr(get_jwt_handler(), "_revocations", None)
+        if store is None:
+            return False
+        return bool(store.probe(_IDENTITY_PROBE_TIMEOUT_SECONDS))
+    except Exception:  # pragma: no cover - 探针自身出错按未恢复处理
+        return False
+
+
+def _restore_identity_lanes() -> None:
+    """恢复后把缺的 lane 补齐（仍受 4+4 上限约束）。"""
+    with _lane_state_lock:
+        missing = [
+            slot for slot in range(_IDENTITY_LANE_COUNT) if slot not in _active_lanes
+        ]
+        failed = _thread_start_failed
+    for slot in missing:
+        with _lane_state_lock:
+            if failed or _abandoned_running + len(_active_lanes) >= (
+                _IDENTITY_LANE_COUNT + _IDENTITY_MAX_ABANDONED
+            ):
+                return
+        _start_identity_lane(slot)
+
+
+def _identity_probe_loop() -> None:
+    """每 30 秒探一次撤销库；成功即 ``evt=identity.check.recovered``。"""
+    global _identity_degraded, _consecutive_identity_timeouts, _probe_thread_started
+    try:
+        while _identity_degraded:
+            time.sleep(_IDENTITY_PROBE_INTERVAL_SECONDS)
+            if not _identity_degraded:
+                return
+            if _probe_identity_store():
+                with _lane_state_lock:
+                    _identity_degraded = False
+                    _consecutive_identity_timeouts = 0
+                logger.info(
+                    "evt=identity.check.recovered probe=select1 lanes_active=%d",
+                    len(_active_lanes),
+                )
+                _restore_identity_lanes()
+                return
+            logger.warning("evt=identity.check.probe_failed probe=select1")
+    finally:
+        with _lane_state_lock:
+            _probe_thread_started = False
+
+
+def _ensure_identity_probe_thread() -> None:
+    global _probe_thread_started
+    with _lane_state_lock:
+        if _probe_thread_started:
+            return
+        _probe_thread_started = True
+    thread = threading.Thread(
+        target=_identity_probe_loop,
+        name="liuhao-identity-probe",
+        daemon=True,
+    )
+    if not _start_daemon_thread(thread):
+        with _lane_state_lock:
+            _probe_thread_started = False
+        logger.warning("evt=identity.probe.start_failed")
+
+
+def identity_check_metrics() -> Dict[str, any]:
+    """供 ``/v1/metrics`` 与运维用：两个计数 + 当前状态（重启归零）。"""
+    with _lane_state_lock:
+        return {
+            "identity_check_degraded_total": _identity_check_degraded_total,
+            "identity_check_rejected_total": _identity_check_rejected_total,
+            "degraded": _identity_degraded,
+            "ready": identity_pool_ready(),
+            "consecutive_timeouts": _consecutive_identity_timeouts,
+            "lanes_active": len(_active_lanes),
+            "lanes_abandoned": _abandoned_running,
+        }
+
+
+def identity_unavailable_payload(reason: str = "unavailable") -> Dict[str, any]:
+    """503 的**结构化**响应体（四字段 + 可追踪 id）。"""
+    correlation_id = uuid.uuid4().hex[:16]
+    if reason == "thread_start_failed":
+        code = "IDENTITY_THREAD_START_FAILED"
+        message = "本机无法创建身份校验线程，请重启鎏灏；这次不是你密码的问题"
+    else:
+        code = "IDENTITY_UNAVAILABLE"
+        message = "本机身份校验暂时不可用，请 30 秒后重试；这次不是你密码的问题"
+    return {
+        "code": code,
+        "message": message,
+        "correlation_id": correlation_id,
+        "retry_after": 30,
+    }
+
+
+def _count_identity_rejection() -> None:
+    global _identity_check_rejected_total
+    with _lane_state_lock:
+        _identity_check_rejected_total += 1
+
+
+def identity_unavailable_response(reason: str = "unavailable") -> JSONResponse:
+    """中间件直接构造的 503（不走 ``HTTPException(detail=...)``）。"""
+    payload = identity_unavailable_payload(reason)
+    _count_identity_rejection()
+    return JSONResponse(
+        status_code=503,
+        content=payload,
+        headers={"Retry-After": "30", "X-Correlation-ID": payload["correlation_id"]},
+    )
+
+
+def identity_unavailable_exception(reason: str = "unavailable"):
+    """依赖函数里唯一能"返回"响应的方式：抛带结构化 detail 的 503。
+
+    ``policy.require_bearer_payload`` 是 FastAPI 依赖，不能直接返回
+    ``JSONResponse``；四个字段放在 ``detail`` 里，前端
+    ``describeDetail(record.detail)`` 仍原样取到 ``message``。
+    """
+    from fastapi import HTTPException
+
+    payload = identity_unavailable_payload(reason)
+    _count_identity_rejection()
+    return HTTPException(
+        status_code=503,
+        detail=payload,
+        headers={"Retry-After": "30", "X-Correlation-ID": payload["correlation_id"]},
+    )
+
+
+async def resolve_identity_off_loop(
+    limiter: RateLimiter,
+    request: Request,
+    trusted_proxies: Iterable[str] = (),
+) -> Tuple[str, Optional[any]]:
+    """在 lane 上解析请求身份，**绝不在事件循环线程上**读撤销库。
+
+    D-1 现场（2026-11-08 19:44，py-spy）：事件循环停在
+    ``RevocationStore._connect`` → ``JWTHandler.validate_token`` → ``_identity``
+    → ``RateLimitMiddleware.__call__``，5 秒 CPU 只涨 0.02 秒。
+
+    请求级预算（默认 2 秒）用 ``asyncio.wait_for`` 包住；超时先
+    ``interrupt()/close()`` 掐断那条 lane 的 SQLite 语句，再弃置并补替代
+    lane —— 槽位不会被永久占死。连续超时达到阈值则降级（新请求直接 503）。
+    """
+    scope = request.scope
+    cached = scope.get(_IDENTITY_SCOPE_KEY)
+    if cached is not None:
+        return cached
+    lane, future = _submit_identity_job(limiter._identity, request, trusted_proxies)
+    timeout = identity_timeout_seconds()
+    try:
+        identity = await asyncio.wait_for(asyncio.wrap_future(future), timeout)
+    except asyncio.TimeoutError:
+        future.add_done_callback(_silence_abandoned_future)
+        _abandon_identity_lane(lane)
+        _record_identity_timeout()
+        raise IdentityCheckTimeout(f"identity check exceeded {timeout}s")
+    _record_identity_success()
+    scope[_IDENTITY_SCOPE_KEY] = identity
+    return identity
+
+
+#: 导入期自预热：接线只要 import 本模块就必然生效，不会静默丢失。
+_start_identity_lanes()
+
+
 class RateLimitMiddleware:
     """Pure-ASGI adapter that applies the existing ``RateLimiter``.
 
@@ -409,6 +919,10 @@ class RateLimitMiddleware:
     Applied to prefixes from ``server.rate_limit.paths`` **merged with**
     ``DEFAULT_PROTECTED_PATHS``: config may add paths but cannot shrink the
     protected set, so an old config file cannot silently unmeter the gateway.
+
+    探针端点（:data:`PROBE_EXEMPT_PATHS`）即使被配置写进 ``paths`` 也一律跳过：
+    它们只豁免限流与身份解析，**认证要求不变**（四个端点本来就是公开探针）。
+    精确匹配，配置无法借 ``/v1/health/...`` 之类的前缀把别的路径放进来。
     """
 
     def __init__(
@@ -425,12 +939,38 @@ class RateLimitMiddleware:
         return any(path == p or path.startswith(p.rstrip("/") + "/") for p in self.paths)
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or not self._matches(scope.get("path", "")):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path in PROBE_EXEMPT_PATHS or not self._matches(path):
             await self.app(scope, receive, send)
             return
 
         request = Request(scope, receive=receive)
-        allowed, info = check_rate_limit(request, self.trusted_proxies)
+        limiter = get_rate_limiter()
+        # 身份解析在专职 lane 上做：撤销库/API Key 表都是阻塞 I/O（D-1）。
+        # 超时/池满/降级/撤销库读不出 -> 503（不是 401，也不是沉默放行）。
+        try:
+            identity = await resolve_identity_off_loop(
+                limiter, request, self.trusted_proxies
+            )
+        except IdentityThreadStartFailed:
+            await identity_unavailable_response("thread_start_failed")(
+                scope, receive, send
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - 身份基础设施故障统一 503
+            logger.warning(
+                "evt=identity.check.rejected reason=%s path=%s",
+                type(exc).__name__,
+                path,
+            )
+            await identity_unavailable_response("unavailable")(scope, receive, send)
+            return
+        allowed, info = limiter.check_rate_limit(
+            request, self.trusted_proxies, identity=identity
+        )
         headers = _rate_limit_headers(allowed, info)
 
         if not allowed:
@@ -462,12 +1002,12 @@ class GlobalRateLimitMiddleware:
 
     ``server.limits.rate_limit_per_minute`` used to be dead config. This
     adapter implements it as a per-IP (or per-key) budget over every ``/v1``
-    route, on top of the per-business limits above. Health/readiness probes
-    and the authenticated metrics scrape are excluded so monitoring is never
-    throttled by product traffic.
-    """
+    route, on top of the per-business limits above.
 
-    _EXEMPT_PREFIXES = ("/v1/health", "/v1/ready", "/v1/metrics/prometheus")
+    探针端点（:data:`PROBE_EXEMPT_PATHS`）**精确匹配**豁免，不按前缀：旧实现用
+    ``startswith("/v1/metrics/prometheus")``，``/v1/metrics/prometheus-x`` 这类
+    路径也会被顺手放过。这里只跳过限流与身份解析，认证要求不变。
+    """
 
     def __init__(
         self,
@@ -489,10 +1029,7 @@ class GlobalRateLimitMiddleware:
     def _applies(self, path: str) -> bool:
         if self.limit <= 0 or not path.startswith("/v1"):
             return False
-        return not any(
-            path == p or path.startswith(p.rstrip("/") + "/")
-            for p in self._EXEMPT_PREFIXES
-        )
+        return path not in PROBE_EXEMPT_PATHS
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or not self._applies(scope.get("path", "")):
@@ -500,7 +1037,28 @@ class GlobalRateLimitMiddleware:
             return
 
         request = Request(scope, receive=receive)
-        allowed, info = self._limiter.check_rate_limit(request, self.trusted_proxies)
+        # 与业务限流共用 scope 里的身份缓存：一次请求最多读一遍撤销库。
+        # 外部限流先于业务限流执行，这里也必须把身份故障如实回 503。
+        try:
+            identity = await resolve_identity_off_loop(
+                self._limiter, request, self.trusted_proxies
+            )
+        except IdentityThreadStartFailed:
+            await identity_unavailable_response("thread_start_failed")(
+                scope, receive, send
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - 身份基础设施故障统一 503
+            logger.warning(
+                "evt=identity.check.rejected reason=%s path=%s",
+                type(exc).__name__,
+                scope.get("path", ""),
+            )
+            await identity_unavailable_response("unavailable")(scope, receive, send)
+            return
+        allowed, info = self._limiter.check_rate_limit(
+            request, self.trusted_proxies, identity=identity
+        )
         if not allowed:
             await JSONResponse(
                 {

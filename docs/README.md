@@ -159,7 +159,7 @@ docs/
 
 ## 4. 全量清单（270 篇，逐一列出）
 
-### 4.1 根级（4）
+### 4.1 根级（5）
 
 | 文件 | 说明 |
 |---|---|
@@ -167,6 +167,7 @@ docs/
 | [`CODEX-CONTRACT.md`](CODEX-CONTRACT.md) | **AI 编码代理执行契约**：25 条硬规则 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
+| [`faq.md`](faq.md) | 常见问题（面向用户，Windows 安装版 0.1.1 实测行为） |
 
 ### 4.2 根级设计与决策（48）
 

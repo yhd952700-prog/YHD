@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..kernels._enforcement import describe as describe_enforcement
+from .rate_limiter import identity_unavailable_exception
 from ..kernels._sovereignty import (
     DEFAULT_GRANT_TTL_SECONDS,
     MAX_GRANT_TTL_SECONDS,
@@ -114,8 +115,13 @@ def require_bearer_payload(
         )
     try:
         from ..security import get_jwt_handler
+        from ..security.jwt_handler import IdentityStoreUnavailable
 
         payload = get_jwt_handler().validate_access_token(token)
+    except IdentityStoreUnavailable:
+        # 撤销库读不出来是**本机基础设施故障**，不是令牌无效：回 503，
+        # 文案明确"这次不是你密码的问题"。与下面的 401 是两套话、两个码。
+        raise identity_unavailable_exception("unavailable")
     except Exception:  # noqa: BLE001 - 具体原因不外泄（可能含解析细节）
         raise HTTPException(
             status_code=401,

@@ -134,6 +134,7 @@ from .api_keys import (
     get_api_key_manager,
 )
 from .jwt_handler import (
+    IdentityStoreUnavailable,
     JWTHandler,
     TokenType,
     get_jwt_handler,
@@ -253,6 +254,7 @@ __all__ = [
     "KeyStatus",
     "get_api_key_manager",
     # JWT (legacy; TokenType here is the JWT one)
+    "IdentityStoreUnavailable",
     "JWTHandler",
     "TokenType",
     "get_jwt_handler",
