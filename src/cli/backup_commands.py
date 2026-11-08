@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import time
 import zlib
@@ -118,6 +119,11 @@ _PASSWORD_ENV = "LIUHAO_BACKUP_PASSWORD"
 #: ``is_protected_state_file`` 之外的 CLI 专属禁打包项：``app.env`` 里有
 #: JWT/服务密钥，``model_registry.sqlite3`` 是 API Key 的密文派生数据。
 _CLI_EXTRA_PROTECTED = frozenset({"app.env", "model_registry.sqlite3"})
+
+#: 迁移不带的"原机运行痕迹"：日志与诊断包含旧机器的绝对路径/用户名，新机
+#: 也会自动重建；锁文件带过来还可能挡住启动。数据本身不收这些。
+_RUNTIME_EXCLUDED_PREFIXES = ("logs/", "diagnostics/")
+_RUNTIME_EXCLUDED_SUFFIXES = (".log", ".lock", ".tmp", ".temp")
 
 #: 备份源在**真实数据目录**里的落点。恢复时必须按这个布局铺回去，不能按
 #: 源枚举名（``memory_data`` / ``user_data``）建目录，否则新机上多出一层
@@ -248,9 +254,39 @@ class _SanitisingBackupManager(_FileBackupManager):
 
     _include_protected: bool = False
     _excluded_protected_total: int = 0
+    _runtime_excluded_total: int = 0
+    _workspace_file_count: int = 0
+    _workspace_bytes: int = 0
+
+    @staticmethod
+    def _is_runtime_artifact(rel: str) -> bool:
+        """日志/诊断/锁与临时文件属于原机运行痕迹，不随迁移包走。"""
+        value = str(rel or "").replace("\\", "/").lstrip("./")
+        if value.startswith(_RUNTIME_EXCLUDED_PREFIXES):
+            return True
+        return value.lower().endswith(_RUNTIME_EXCLUDED_SUFFIXES)
 
     def _collect_source_data(self, source, source_path):
         data = super()._collect_source_data(source, source_path)
+        if data.get("type") == "directory":
+            original = data.get("files") or {}
+            kept = {
+                rel: info
+                for rel, info in original.items()
+                if not self._is_runtime_artifact(rel)
+            }
+            runtime_excluded = len(original) - len(kept)
+            self._runtime_excluded_total += runtime_excluded
+            for rel, info in kept.items():
+                if str(rel).startswith("workspace/"):
+                    self._workspace_file_count += 1
+                    self._workspace_bytes += int(info.get("size_bytes") or 0)
+            data["files"] = kept
+            data["file_count"] = len(kept)
+            data["size_bytes"] = sum(
+                int(info.get("size_bytes") or 0) for info in kept.values()
+            )
+            data["excluded_runtime"] = runtime_excluded
         if self._include_protected or not data.get("exists"):
             return data
         if data.get("type") == "file":
@@ -420,6 +456,9 @@ class BackupManager:
         if isinstance(manager, _SanitisingBackupManager):
             manager._include_protected = bool(encrypted)
             manager._excluded_protected_total = 0
+            manager._runtime_excluded_total = 0
+            manager._workspace_file_count = 0
+            manager._workspace_bytes = 0
         meta = manager.create_backup(
             backup_type=_FileBackupType(backup_type),
             sources=self._resolve_sources(sources),
@@ -434,6 +473,9 @@ class BackupManager:
             sealed = True
         encrypt_seconds = time.perf_counter() - encrypt_started if encrypted else 0.0
         excluded = getattr(manager, "_excluded_protected_total", 0)
+        runtime_excluded = getattr(manager, "_runtime_excluded_total", 0)
+        workspace_files = getattr(manager, "_workspace_file_count", 0)
+        workspace_bytes = getattr(manager, "_workspace_bytes", 0)
         return {
             "backup_id": meta.backup_id,
             "type": meta.backup_type.value,
@@ -448,6 +490,20 @@ class BackupManager:
             "compressed": meta.compressed,
             "sealed": sealed,
             "excluded_protected_files": excluded,
+            # 迁移包不带日志/诊断（原机路径与用户名）；如实记账，别让用户以为
+            # "整个目录都带走了"。
+            "excluded_runtime_files": runtime_excluded,
+            # 附件（用户上传的文件、生成的图表/文档）是随包走的：这里给出
+            # 实测数量和字节，界面导出有 64MB/单文件上限，CLI 没有。
+            "attachments": {
+                "included": True,
+                "files": workspace_files,
+                "bytes": workspace_bytes,
+                "note": (
+                    "工作区里用户上传/生成的文件随包原样带走；"
+                    "日志与诊断包不带（新机会重新生成）。"
+                ),
+            },
             "description": meta.description,
             "file_path": meta.file_path,
             # 实测耗时：让用户对"导出多久、加密多久"有预期，而不是猜。
@@ -580,6 +636,13 @@ class BackupManager:
                 "备份包内容已损坏（缺少数据段），无法恢复；现有数据未被改动。"
             )
 
+        # 包内源机根目录（USER_DATA 的绝对路径）；暂存阶段用它把执行日志/迁移
+        # 标记 JSON 里写死的源机路径改到新数据目录。
+        user_data = data.get("user_data")
+        source_data_root = (
+            str(user_data.get("path") or "") if isinstance(user_data, dict) else ""
+        )
+
         selected = list(sources) if sources else [s.value for s in meta.sources]
         plan, skipped = self._plan_restore(data, selected, target)
         if not plan:
@@ -601,8 +664,17 @@ class BackupManager:
         created_files: List[Path] = []
         created_dirs: List[Path] = []
         existed: set[str] = set()
+        path_rewrites = 0
+        source_path_rewrites = 0
         try:
             staged = self._stage_restore(plan, stage_root)
+            if target_root is not None:
+                # 工件索引里存的是源机的绝对路径，必须在提交前改成新目录，
+                # 否则新机上"文件都在"却会被判成缺失/打不开。
+                path_rewrites = self._rewrite_staged_artifact_paths(staged, target_root)
+                source_path_rewrites = self._rewrite_staged_source_paths(
+                    staged, target_root, source_data_root
+                )
             created_files, created_dirs, existed = self._commit_restore(staged)
         except ValueError:
             shutil.rmtree(stage_root, ignore_errors=True)
@@ -628,6 +700,10 @@ class BackupManager:
             "encrypted": meta.encrypted,
             "restored_at": datetime.utcnow().isoformat(),
             "restore_seconds": round(time.perf_counter() - started, 3),
+            # 工件索引里的绝对路径被改写到新数据目录的行数；0 表示没有该索引。
+            "path_rewrites": path_rewrites,
+            # 执行日志/迁移标记 JSON 文本里被改写的源机路径条数。
+            "source_path_rewrites": source_path_rewrites,
         }
 
     # ------------------------------------------------------------------
@@ -681,7 +757,7 @@ class BackupManager:
 
     @staticmethod
     def _require_pristine_target(target_root: Path) -> None:
-        """换机恢复只接干净目录；已有产品数据一律拒绝，避免半覆盖。"""
+        """换机恢复只接空目录：任何已有内容都拒绝，绝不拼接/覆盖。"""
         if not target_root.exists():
             return
         blockers = [
@@ -689,10 +765,21 @@ class BackupManager:
         ]
         if blockers:
             raise ValueError(
-                "目标目录不是干净的数据目录（已含 "
+                "目标目录里已经有一整套数据（已含 "
                 + "、".join(blockers)
                 + "），拒绝恢复，避免覆盖成一份拼接数据。"
-                "请指向一个空目录；若确要原地恢复，请去掉 --target。"
+                "请换一个空目录；若确要原地恢复，请去掉 --target。"
+            )
+        try:
+            entries = sorted(path.name for path in target_root.iterdir())
+        except OSError as exc:
+            raise ValueError(f"目标目录无法读取：{target_root}（{exc}）") from exc
+        if entries:
+            shown = "、".join(entries[:5])
+            more = "" if len(entries) <= 5 else f" 等 {len(entries)} 项"
+            raise ValueError(
+                f"目标目录不是空目录（已有 {shown}{more}）。这个目录不干净，"
+                "请换一个空目录再恢复；程序不会把新数据和旧文件合并。"
             )
 
     def _plan_restore(
@@ -779,6 +866,79 @@ class BackupManager:
             return
         seen[key] = True
         plan.append((final, entry, size))
+
+    @staticmethod
+    def _rewrite_staged_artifact_paths(
+        staged: List[tuple[Path, Path]], target_root: Path
+    ) -> int:
+        """把暂存工件索引里的源机绝对路径改到新数据目录。
+
+        工件索引有两列绝对路径（``workspace`` 与 ``abs_path``）；新机不修的话，
+        文件明明随包带过来了，验证/打开时仍会去源机的 ``D:\\LiuHaoData`` 找。
+        用 ``path_key``（工作区相对路径）重算是最低风险的做法，工件 id 不变。
+        """
+        workspace = (target_root / "workspace").resolve()
+        wanted = os.path.normcase(
+            os.path.abspath(str(target_root / "workspace" / "liuhao_artifacts.db"))
+        )
+        db_path: Optional[Path] = None
+        for stage_path, final in staged:
+            if os.path.normcase(os.path.abspath(str(final))) == wanted:
+                db_path = stage_path
+                break
+        if db_path is None:
+            return 0
+        try:
+            from ..artifacts.index import rewrite_workspace_paths
+
+            return rewrite_workspace_paths(
+                root=str(workspace), db_path=str(db_path)
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise ValueError(
+                f"恢复后的工件索引无法修正路径（{exc}）；"
+                "目标目录尚未写入，请换一个空目录重试。"
+            ) from exc
+
+    @staticmethod
+    def _rewrite_staged_source_paths(
+        staged: List[tuple[Path, Path]], target_root: Path, source_root: str
+    ) -> int:
+        """改写执行日志/迁移标记 JSON 里写死的源机绝对路径。
+
+        这两个库把路径放进 JSON 文本（``journal_events.payload``、
+        ``account_memory_migrations.details``），不能按列重算；按前缀替换到
+        新数据目录，避免新机上报错信息/恢复提示仍指向旧盘。
+        """
+        if not source_root:
+            return 0
+        old = os.path.abspath(source_root)
+        new = os.path.abspath(str(target_root))
+        specs = {
+            os.path.normcase(
+                os.path.abspath(str(target_root / "workspace" / "liuhao_execution.journal"))
+            ): ("journal_events", "payload"),
+            os.path.normcase(
+                os.path.abspath(str(target_root / "workspace" / "account_memory.sqlite3"))
+            ): ("account_memory_migrations", "details"),
+        }
+        from ..backup.path_rewrite import rewrite_sqlite_json_column
+
+        changed = 0
+        for stage_path, final in staged:
+            spec = specs.get(os.path.normcase(os.path.abspath(str(final))))
+            if spec is None:
+                continue
+            try:
+                changed += rewrite_sqlite_json_column(
+                    str(stage_path), spec[0], spec[1], old, new
+                )
+            except (OSError, sqlite3.Error) as exc:
+                raise ValueError(
+                    f"恢复后的路径字段无法修正（{exc}）；"
+                    "目标目录尚未写入，请换一个空目录重试。"
+                ) from exc
+        return changed
 
     def _stage_restore(
         self,

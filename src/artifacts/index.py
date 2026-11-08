@@ -60,7 +60,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from src._time import utc_now
-from src.ai.workspace import WorkspaceViolation, resolve_in_workspace
+from src.ai.workspace import WorkspaceViolation, resolve_in_workspace, workspace_root
 
 __all__ = [
     "ArtifactIndex",
@@ -68,6 +68,7 @@ __all__ = [
     "ArtifactVerification",
     "WorkspaceViolation",
     "default_index_path",
+    "rewrite_workspace_paths",
 ]
 
 _SCHEMA = """
@@ -116,6 +117,47 @@ def default_index_path() -> str:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     return os.path.join(repo_root, ".liuhao_artifacts.db")
+
+
+def rewrite_workspace_paths(
+    root: Optional[str] = None, db_path: Optional[str] = None
+) -> int:
+    """把索引里的源机绝对路径改到当前工作区根，返回改写行数。
+
+    换机/换盘恢复后，索引库里的 ``workspace`` 与 ``abs_path`` 仍是源机的
+    绝对路径，``verify()`` 会把明明随包带过来的文件报成 ``missing``。
+    ``path_key`` 是工作区相对路径，用它重算新绝对路径即可，``artifact_id``
+    作为历史事件标识保持不变。
+    """
+    base = os.path.abspath(root or workspace_root())
+    db = os.path.abspath(db_path or default_index_path())
+    if not os.path.isfile(db):
+        return 0
+    rewritten = 0
+    connection = sqlite3.connect(db, timeout=10)
+    try:
+        rows = connection.execute(
+            "SELECT artifact_id, path_key FROM artifact_writes"
+        ).fetchall()
+        for artifact_id, path_key in rows:
+            absolute = os.path.normpath(os.path.join(base, str(path_key)))
+            connection.execute(
+                "UPDATE artifact_writes SET workspace = ?, abs_path = ? "
+                "WHERE artifact_id = ?",
+                (base, absolute, artifact_id),
+            )
+            rewritten += 1
+        connection.commit()
+        # 索引库是 WAL 模式；只提交不 checkpoint 的话，更新还留在 -wal 里。
+        # CLI 恢复随后只拷主库文件（不拷 -wal），新机打开时看到的仍是旧路径。
+        # 这里显式 checkpoint，保证改动已经落进主库。
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+    finally:
+        connection.close()
+    return rewritten
 
 
 @dataclass(frozen=True)

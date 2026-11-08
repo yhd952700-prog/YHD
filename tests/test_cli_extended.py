@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -487,12 +488,75 @@ class TestBackupCommands:
         created = manager.create_backup(encrypted=True, password="pw")
         target = tmp_path / "already-used"
         (target / "config").mkdir(parents=True)
-        with pytest.raises(ValueError, match="不是干净的数据目录"):
+        with pytest.raises(ValueError, match="已经有一整套数据"):
             manager.restore_backup(
                 created["backup_id"], target=str(target), password="pw"
             )
         # 现场数据没有被碰。
         assert list((target / "config").iterdir()) == []
+
+    def test_restore_refuses_scattered_files(self, manager, tmp_path):
+        """目录里只有零散文件也算"不干净"，不做模糊合并。"""
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="pw")
+        target = tmp_path / "scattered"
+        target.mkdir()
+        (target / "notes.txt").write_text("我的笔记", encoding="utf-8")
+        with pytest.raises(ValueError, match="目录不干净"):
+            manager.restore_backup(
+                created["backup_id"], target=str(target), password="pw"
+            )
+        assert [p.name for p in target.iterdir()] == ["notes.txt"]
+        assert (target / "notes.txt").read_text(encoding="utf-8") == "我的笔记"
+
+    def test_restore_allows_existing_empty_dir(self, manager, tmp_path):
+        self._seed_real_layout(manager)
+        created = manager.create_backup(encrypted=True, password="pw")
+        target = tmp_path / "empty-but-exists"
+        target.mkdir()
+        result = manager.restore_backup(
+            created["backup_id"], target=str(target), password="pw"
+        )
+        assert result["status"] == "restored"
+        assert (target / "workspace" / "liuhao_employees.json").is_file()
+
+    def test_restore_rewrites_artifact_index_paths(self, manager, tmp_path):
+        """工件索引的绝对路径必须改到新数据目录，否则新机"文件都在但打不开"。"""
+        data_dir = self._seed_real_layout(manager)
+        workspace = data_dir / "workspace"
+        (workspace / "reports").mkdir()
+        (workspace / "reports" / "chart.png").write_bytes(b"png-bytes")
+        db = workspace / "liuhao_artifacts.db"
+        with sqlite3.connect(db) as connection:
+            connection.execute(
+                "CREATE TABLE artifact_writes ("
+                " artifact_id TEXT PRIMARY KEY, workspace TEXT NOT NULL,"
+                " path_key TEXT NOT NULL, abs_path TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO artifact_writes VALUES (?, ?, ?, ?)",
+                (
+                    "art-1",
+                    str(workspace.resolve()),
+                    "reports/chart.png",
+                    str((workspace / "reports" / "chart.png").resolve()),
+                ),
+            )
+        created = manager.create_backup(encrypted=True, password="pw")
+        target = tmp_path / "other-machine"
+        target.mkdir()
+        result = manager.restore_backup(
+            created["backup_id"], target=str(target), password="pw"
+        )
+        assert result["path_rewrites"] == 1
+        with sqlite3.connect(target / "workspace" / "liuhao_artifacts.db") as connection:
+            workspace_value, abs_value = connection.execute(
+                "SELECT workspace, abs_path FROM artifact_writes"
+            ).fetchone()
+        assert Path(workspace_value) == (target / "workspace").resolve()
+        assert Path(abs_value) == (
+            target / "workspace" / "reports" / "chart.png"
+        ).resolve()
 
     def test_wrong_password_leaves_target_untouched(self, manager, tmp_path, monkeypatch):
         monkeypatch.delenv("LIUHAO_BACKUP_PASSWORD", raising=False)
@@ -543,6 +607,35 @@ class TestBackupCommands:
         assert created["encrypt_seconds"] >= 0
         assert created["total_seconds"] >= created["encrypt_seconds"]
         assert "无法恢复" in created["password_policy"]
+
+    def test_create_excludes_logs_and_reports_attachments(self, manager):
+        """日志/诊断不带；工作区附件随包并在回执里报数。"""
+        from src.cli.backup_commands import _open_archive
+
+        data_dir = self._seed_real_layout(manager)
+        (data_dir / "logs").mkdir()
+        (data_dir / "logs" / "liuhao.log").write_text(
+            "old path D:\\LiuHaoData\\workspace", encoding="utf-8"
+        )
+        (data_dir / "diagnostics").mkdir()
+        (data_dir / "diagnostics" / "diag.zip").write_bytes(b"PK")
+        uploads = data_dir / "workspace" / "uploads"
+        uploads.mkdir()
+        (uploads / "manual.pdf").write_bytes(b"%PDF-1.4 attachment")
+        created = manager.create_backup(encrypted=True, password="pw")
+
+        assert created["excluded_runtime_files"] >= 2
+        assert created["attachments"]["included"] is True
+        assert created["attachments"]["files"] >= 1
+        assert created["attachments"]["bytes"] >= 20
+
+        payload = json.loads(
+            gzip.decompress(_open_archive(Path(created["file_path"]), password="pw"))
+        )
+        raw = json.dumps(payload, ensure_ascii=False)
+        assert "liuhao.log" not in raw
+        assert "diagnostics/diag.zip" not in raw
+        assert "uploads/manual.pdf" in raw
 
 
 # =====================================================================
