@@ -4,6 +4,7 @@
     python -m src.desktop app --hidden         # 只驻留托盘（自启时使用）
     python -m src.desktop about [--json]       # 关于页数据源
     python -m src.desktop autostart status|enable|disable
+    python -m src.desktop stop [--root DIR] [--timeout 10]   # 停托盘+网关（幂等）
     python -m src.desktop diagnose [--out DIR] [--verify]
     python -m src.desktop firewall [--port 8080]
     python -m src.desktop status [--base-url URL]
@@ -20,6 +21,7 @@ import time
 from typing import Any
 
 from . import REPO_ROOT
+from ..brand import BRAND_LOCKUP
 from .probe import discover_service, http_json
 
 
@@ -29,7 +31,16 @@ def _add_app_args(parser: argparse.ArgumentParser) -> None:
         default="127.0.0.1",
         help="网关绑定地址（默认 127.0.0.1，只本机可达；手机访问需显式传 0.0.0.0）",
     )
-    parser.add_argument("--port", type=int, default=None, help="网关端口（默认 8080，占用时自动顺延）")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "网关端口（默认 8080，可用环境变量 LIUHAO_API_PORT 覆盖）。"
+            "被占用时默认拒绝启动并说明原因；只有自动恢复模式才会换端口并记警告。"
+            "0 表示系统随机分配，桌面壳不支持（地址必须稳定），会直接报错"
+        ),
+    )
     parser.add_argument("--open-browser", action="store_true", help="启动后打开浏览器（自启场景不要加）")
     parser.add_argument("--hidden", action="store_true", help="启动后只驻留托盘，不显示窗口")
     parser.add_argument("--autostart", action="store_true", help="自启模式：等价于 --hidden 且不打开浏览器")
@@ -56,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto.add_argument("action", choices=("status", "enable", "disable"))
     p_auto.add_argument("--open-browser", action="store_true", help="自启时也自动打开浏览器（默认不打开）")
     p_auto.add_argument("--value-name", default=None, help="登记值名（测试或自定义用，默认 LiuHaoAIOS）")
+
+    p_stop = sub.add_parser("stop", help="停止安装目录下的托盘与网关进程（幂等）")
+    p_stop.add_argument("--root", default=None, help="安装目录（默认当前源码/安装根）")
+    p_stop.add_argument("--timeout", type=float, default=10.0, help="等待优雅退出的秒数，超时强杀")
 
     p_diag = sub.add_parser("diagnose", help="生成脱敏诊断包 zip")
     p_diag.add_argument("--out", default=None, help="输出目录或 zip 路径（默认 %%LOCALAPPDATA%%\\LiuHao\\diagnostics）")
@@ -167,7 +182,7 @@ def _cmd_tray_demo(args: argparse.Namespace) -> int:
         if action == "quit":
             finished.set()
 
-    tray = SystemTray(on_action, tooltip="鎏灏 LIUHAO X（托盘手工验证）")
+    tray = SystemTray(on_action, tooltip=f"{BRAND_LOCKUP}（托盘手工验证）")
     if not tray.start():
         print(f"托盘启动失败：{tray.error}", file=sys.stderr)
         return 1
@@ -200,6 +215,14 @@ def _cmd_tray_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stop(args: argparse.Namespace) -> int:
+    from .stop import stop_installed
+
+    result = stop_installed(args.root, timeout=args.timeout)
+    _emit(result)
+    return 0 if result.get("stopped") else 1
+
+
 def _cmd_app(args: argparse.Namespace) -> int:
     from .app import DesktopApp
 
@@ -226,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_about(args)
     if command == "autostart":
         return _cmd_autostart(args)
+    if command == "stop":
+        return _cmd_stop(args)
     if command == "diagnose":
         return _cmd_diagnose(args)
     if command == "firewall":

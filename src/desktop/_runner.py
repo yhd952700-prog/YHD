@@ -92,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     # 被允许，否则启动成功但每个请求都会因 Host 校验被 400。
     os.environ["LIUHAO_LISTEN_HOST"] = args.host
     os.environ["HOST"] = args.host
+    # 端口同样要告诉应用层：安装版从 http://127.0.0.1:<随机端口> 打开控制台，
+    # 生产环境的写请求 Origin 放行必须按"本次实际监听端口"判定。
+    os.environ["LIUHAO_LISTEN_PORT"] = str(args.port)
 
     ensure_utf8_streams()
 

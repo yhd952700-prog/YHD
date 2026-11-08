@@ -53,18 +53,37 @@ ACTION_OPEN_LOGS = "open_logs"
 #: 第二个桌面实例唤起已有窗口用的注册消息（跨进程，按类名找隐藏窗口）。
 SHOW_MESSAGE_NAME = "LiuHao.ShowStatusWindow"
 
+#: Explorer 重启后由 Shell 向所有顶层窗口广播的消息名。
+#: 图标属于 Explorer 的通知区，外壳重启会把它一起清掉；不处理这条消息，
+#: 用户看到的就是"程序还在、图标没了"，只能去任务管理器找进程。
+TASKBAR_CREATED_NAME = "TaskbarCreated"
+
+#: 图标没加成功时的重试定时器（在托盘线程的隐藏窗口上）。
+_ADD_TIMER_ID = 1
+_RETRY_INITIAL_MS = 1000
+_RETRY_MAX_MS = 30000
+
 #: 托盘窗口类名前缀；完整类名由 :func:`tray_class_name` 按实例键派生。
 TRAY_CLASS_PREFIX = "LiuHaoTray"
+
+#: 菜单文案的唯一定义处。状态窗口的按钮直接复用这些常量：同一个功能在托盘
+#: 与界面里必须写同一句话，改一处两边同时生效，不会再出现"停服务"和"停止
+#: 服务（仅停网关）"两种说法。
+LABEL_OPEN_CONSOLE = "打开控制台"
+LABEL_SHOW_STATUS = "查看状态"
+LABEL_OPEN_LOGS = "打开日志目录"
+LABEL_STOP_SERVICE = "停止服务（仅停网关，托盘保留）"
+LABEL_QUIT = "退出（停止网关并关闭托盘）"
 
 #: 菜单项顺序即产品要求：打开控制台 / 查看状态 / 打开日志目录 / 停止服务 / 退出。
 #: 「停止服务」只停网关（托盘与窗口仍在）；「退出」才会停止网关并移除托盘 ——
 #: 标签里写清楚，避免用户把"停止"当成"退出"。
 MENU_ITEMS: tuple[tuple[int, str, str], ...] = (
-    (1001, ACTION_OPEN_CONSOLE, "打开控制台"),
-    (1002, ACTION_SHOW_STATUS, "查看状态"),
-    (1005, ACTION_OPEN_LOGS, "打开日志目录"),
-    (1003, ACTION_STOP_SERVICE, "停止服务（仅停网关，托盘保留）"),
-    (1004, ACTION_QUIT, "退出（停止网关并关闭托盘）"),
+    (1001, ACTION_OPEN_CONSOLE, LABEL_OPEN_CONSOLE),
+    (1002, ACTION_SHOW_STATUS, LABEL_SHOW_STATUS),
+    (1005, ACTION_OPEN_LOGS, LABEL_OPEN_LOGS),
+    (1003, ACTION_STOP_SERVICE, LABEL_STOP_SERVICE),
+    (1004, ACTION_QUIT, LABEL_QUIT),
 )
 
 #: 图标状态：运行中（绿）/ 有错误（红）/ 已停止（灰）。
@@ -78,7 +97,10 @@ STATE_COLORS: dict[str, tuple[int, int, int]] = {
 }
 
 _TIP_MAX = 127
-_ICON_SIZE = 16
+#: 托盘图标要覆盖的尺寸：100/125/150/200% 分别对应 16/20/24/32，再补
+#: 任务管理器、Alt+Tab 等场景会用到的大图。Windows 从 ICO 里挑最合适的一档，
+#: 缺档时只能拿 16×16 放大，显示发虚。
+_ICON_SIZES: tuple[int, ...] = (16, 20, 24, 32, 48, 64, 256)
 
 
 def available() -> bool:
@@ -135,6 +157,50 @@ def request_show(instance_key: str, timeout: float = 5.0) -> bool:
         time.sleep(0.1)
 
 
+def broadcast_taskbar_created(timeout_ms: int = 5000) -> bool:
+    """模拟 Explorer 重启：向所有顶层窗口广播 ``TaskbarCreated``。
+
+    真实 Explorer 重启时发的就是这条消息，所以验收自动化可以走同一条路径，
+    不必真的杀掉桌面外壳。返回是否送达（``SendMessageTimeout`` 的返回值）；
+    非 Windows 或无桌面会话时返回 False。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+        user32.RegisterWindowMessageW.restype = wintypes.UINT
+        user32.SendMessageTimeoutW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        user32.SendMessageTimeoutW.restype = ctypes.c_size_t
+        message = user32.RegisterWindowMessageW(TASKBAR_CREATED_NAME)
+        if not message:
+            return False
+        result = ctypes.c_size_t(0)
+        sent = user32.SendMessageTimeoutW(
+            wintypes.HWND(0xFFFF),  # HWND_BROADCAST
+            message,
+            0,
+            0,
+            0x0002,  # SMTO_ABORTIFHUNG
+            int(timeout_ms),
+            ctypes.byref(result),
+        )
+        return bool(sent)
+    except Exception:  # noqa: BLE001 - 验收工具不能因为广播失败抛异常
+        return False
+
+
 def _load_win32() -> tuple[Any, Any, Any]:
     if not available():
         raise RuntimeError("系统托盘仅支持 Windows（需要 pywin32）")
@@ -155,13 +221,25 @@ def state_icon_path(state: str) -> Path:
     return base / f"liuhao-{state}.ico"
 
 
-def write_state_icon(path: Path, rgb: tuple[int, int, int], size: int = _ICON_SIZE) -> Path:
-    """手写一个 32bpp 圆点 ICO（绿=运行中 / 红=有错误 / 灰=已停止）。
+def _small_icon_size() -> int:
+    """通知区小图标的实际像素尺寸（``SM_CXSMICON``：100%/150%/200% → 16/24/32）。
 
-    为什么不用 Pillow / 图片资源：托盘只依赖 pywin32，仓库不引入新依赖，也不
-    想把二进制图标塞进仓库。ICO 是公开格式，这里按规范拼 ICONDIR + 32bpp
-    DIB，Windows 的 ``LoadImage`` 可直接读取（含 alpha 通道，圆外透明）。
+    进程已声明 Per-Monitor DPI 感知，这里拿到的是当前显示器的真实尺寸，正好
+    对应多尺寸 ICO 里的一档。拿不到时返回 0，由调用方退回 ``LR_DEFAULTSIZE``。
     """
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        value = int(ctypes.windll.user32.GetSystemMetrics(49))  # SM_CXSMICON
+        return value if value > 0 else 0
+    except Exception:  # noqa: BLE001 - 只影响图标清晰度，不能阻断托盘
+        return 0
+
+
+def _icon_image(size: int, rgb: tuple[int, int, int]) -> bytes:
+    """单个尺寸的 32bpp DIB（BITMAPINFOHEADER + XOR 位图 + AND 掩码）。"""
     pixels = bytearray()
     for y in range(size - 1, -1, -1):  # ICO 的 XOR 位图自下而上
         for x in range(size):
@@ -170,16 +248,41 @@ def write_state_icon(path: Path, rgb: tuple[int, int, int], size: int = _ICON_SI
             inside = dx * dx + dy * dy <= (size * 0.44) ** 2
             alpha = 255 if inside else 0
             pixels += bytes((rgb[2], rgb[1], rgb[0], alpha))
-    mask = b"\x00" * (4 * size)  # 1bpp AND 掩码，全 0；透明由 alpha 决定
+    # 1bpp AND 掩码：每行按 4 字节对齐（48/64/256 下不能直接用 4*size）。
+    mask_row = ((size + 31) // 32) * 4
+    mask = b"\x00" * (mask_row * size)
     bitmap_header = struct.pack(
         "<IiiHHIIiiII",
         40, size, size * 2, 1, 32, 0, len(pixels) + len(mask), 0, 0, 0, 0,
     )
-    directory = struct.pack("<HHH", 0, 1, 1)
-    entry = struct.pack(
-        "<BBBBHHII", size, size, 0, 0, 1, 32, 40 + len(pixels) + len(mask), 22
-    )
-    path.write_bytes(directory + entry + bitmap_header + bytes(pixels) + mask)
+    return bitmap_header + bytes(pixels) + mask
+
+
+def write_state_icon(
+    path: Path,
+    rgb: tuple[int, int, int],
+    sizes: tuple[int, ...] = _ICON_SIZES,
+) -> Path:
+    """手写一个 32bpp 圆点 ICO（绿=运行中 / 红=有错误 / 灰=已停止）。
+
+    为什么不用 Pillow / 图片资源：托盘只依赖 pywin32，仓库不引入新依赖，也不
+    想把二进制图标塞进仓库。ICO 是公开格式，这里按规范拼 ICONDIR + 多尺寸
+    32bpp DIB，Windows 的 ``LoadImage`` 可直接读取（含 alpha 通道，圆外透明）。
+    多尺寸是必须的：只有 16×16 时，150%/200% 缩放会被系统放大成模糊色块。
+    """
+    images = [(size, _icon_image(size, rgb)) for size in sizes]
+    offset = 6 + 16 * len(images)
+    directory = struct.pack("<HHH", 0, 1, len(images))
+    entries = bytearray()
+    body = bytearray()
+    for size, image in images:
+        dimension = 0 if size >= 256 else size  # ICO 用 0 表示 256
+        entries += struct.pack(
+            "<BBBBHHII", dimension, dimension, 0, 0, 1, 32, len(image), offset
+        )
+        offset += len(image)
+        body += image
+    path.write_bytes(directory + bytes(entries) + bytes(body))
     return path
 
 
@@ -205,8 +308,13 @@ class SystemTray:
         self._w32: tuple[Any, Any, Any] | None = None
         self._message_id = 0
         self._show_message_id = 0
+        self._taskbar_created_id = 0
         self._class_name = ""
         self._icon_added = False
+        self._icon_adds = 0
+        self._taskbar_recoveries = 0
+        self._retry_delay_ms = _RETRY_INITIAL_MS
+        self._ready_deadline = 0.0
         self._error: str | None = None
         self.last_notify_error: str | None = None
         self._state = ""
@@ -223,6 +331,7 @@ class SystemTray:
             return True
         self._running = True
         self._ready.clear()
+        self._ready_deadline = time.monotonic() + max(0.0, timeout)
         self._thread = threading.Thread(target=self._run, name="liuhao-tray", daemon=True)
         self._thread.start()
         self._ready.wait(timeout)
@@ -246,6 +355,35 @@ class SystemTray:
     @property
     def icon_added(self) -> bool:
         return self._icon_added
+
+    @property
+    def icon_adds(self) -> int:
+        """``NIM_ADD`` 成功次数（首次注册 + Explorer 重启后的重建）。"""
+        return self._icon_adds
+
+    @property
+    def taskbar_recoveries(self) -> int:
+        """收到 ``TaskbarCreated`` 广播的次数（验收脚本据此判断是否走了恢复分支）。"""
+        return self._taskbar_recoveries
+
+    @property
+    def menu_items(self) -> tuple[tuple[int, str, str], ...]:
+        """右键菜单内容（重建后仍读这一份，验收断言项数用）。"""
+        return MENU_ITEMS
+
+    def icon_present(self) -> bool:
+        """Shell 是否仍持有本图标：``NIM_MODIFY`` 成功即说明通知区里有它。
+
+        验收脚本用它判断"广播后图标真的回来了"，而不是只看内部布尔标志。
+        """
+        if self._w32 is None or self._nid is None or not self._icon_added:
+            return False
+        _, _, win32gui = self._w32
+        try:
+            result = win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, self._nid)
+        except Exception:  # noqa: BLE001
+            return False
+        return result is None or bool(result)
 
     @property
     def hwnd(self) -> int:
@@ -329,9 +467,19 @@ class SystemTray:
         hicon = 0
         try:
             path = write_state_icon(state_icon_path(state), STATE_COLORS[state])
+            # 明确要通知区的小图标尺寸（SM_CXSMICON，随 DPI 是 16/24/32…），
+            # 让 Windows 从多尺寸 ICO 里挑**正好匹配**的那一档；用
+            # LR_DEFAULTSIZE 会固定拿 SM_CXICON（32）再由外壳缩到 16/24，
+            # 150% 下就还是糊的。
+            size = _small_icon_size()
             hicon = win32gui.LoadImage(
-                0, str(path), win32con.IMAGE_ICON, 0, 0,
-                win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE,
+                0,
+                str(path),
+                win32con.IMAGE_ICON,
+                size,
+                size,
+                win32con.LR_LOADFROMFILE
+                | (0 if size else win32con.LR_DEFAULTSIZE),
             )
         except Exception:  # noqa: BLE001 - 退回系统内置图标
             hicon = 0
@@ -347,6 +495,83 @@ class SystemTray:
         return hicon
 
     # ------------------------------------------------------------------ #
+    # 图标注册与重建（托盘线程）
+    # ------------------------------------------------------------------ #
+    def _add_icon(self) -> bool:
+        """把当前 ``_nid`` 注册进通知区；成功返回 True。
+
+        先 ``NIM_DELETE`` 再 ``NIM_ADD``：Explorer 重启后旧注册已随外壳消失，
+        DELETE 会失败（无害）；而手工广播 / 外壳仍在时，DELETE 保证不会因为
+        重复 ADD 出现第二个图标。提示文字与图标句柄都在 ``_nid`` 里，ADD
+        成功后若有状态色再 ``NIM_MODIFY`` 一次覆盖回去。
+        """
+        if self._w32 is None or self._nid is None:
+            return False
+        _, _, win32gui = self._w32
+        with contextlib.suppress(Exception):
+            win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, self._nid)
+        try:
+            result = win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, self._nid)
+        except Exception as exc:  # noqa: BLE001 - 重试由定时器接管
+            self._error = f"Shell_NotifyIcon(NIM_ADD) 异常：{type(exc).__name__}: {exc}"
+            self._icon_added = False
+            return False
+        # pywin32 成功时返回 None（实测），失败返回 False/0。
+        self._icon_added = result is None or bool(result)
+        if self._icon_added:
+            self._icon_adds += 1
+            self._retry_delay_ms = _RETRY_INITIAL_MS
+            if self._state:
+                self.set_state(self._state)
+        return self._icon_added
+
+    def _schedule_icon_retry(self) -> None:
+        """用隐藏窗口的定时器安排下一次注册尝试（退避到 30s 封顶）。
+
+        之所以不用单独线程：``Shell_NotifyIcon`` 与图标句柄都属于本线程的
+        窗口，定时器回调也在同一线程，不会出现跨线程句柄失效。
+        """
+        if not self._running or self._hwnd == 0 or self._w32 is None:
+            self._ready.set()
+            return
+        _, _, win32gui = self._w32
+        try:
+            win32gui.SetTimer(self._hwnd, _ADD_TIMER_ID, self._retry_delay_ms, None)
+        except Exception:  # noqa: BLE001 - 定时器都起不来就别让 start() 干等
+            self._ready.set()
+            return
+        self._retry_delay_ms = min(self._retry_delay_ms * 2, _RETRY_MAX_MS)
+
+    def _retry_icon(self) -> None:
+        """定时器回调：任务栏还没准备好就继续退避重试，直到成功。"""
+        if not self._running:
+            return
+        if self._add_icon():
+            self._error = None
+            self._ready.set()
+            return
+        if time.monotonic() >= self._ready_deadline:
+            # 首次启动已经等够了：如实告诉调用方"图标没加上"，但重试不停止 ——
+            # 开机自启时任务栏可能比本进程晚十几秒才可用。
+            self._ready.set()
+        self._schedule_icon_retry()
+
+    def _on_taskbar_created(self) -> None:
+        """收到 ``TaskbarCreated``：Explorer 重启后把图标重新注册回去。
+
+        窗口、菜单（每次右键现建）与消息循环都还在，只有通知区图标是新外壳
+        里的空白，所以这里只需重建图标 / 提示文字 / 状态色。
+        """
+        if not self._running or self._nid is None:
+            return
+        self._taskbar_recoveries += 1
+        if self._add_icon():
+            self._error = None
+            return
+        self._error = "Explorer 重启后 NIM_ADD 失败（任务栏可能尚未就绪，正在重试）"
+        self._schedule_icon_retry()
+
+    # ------------------------------------------------------------------ #
     # 消息循环（托盘线程）
     # ------------------------------------------------------------------ #
     def _run(self) -> None:
@@ -355,6 +580,9 @@ class SystemTray:
             self._w32 = (win32api, win32con, win32gui)
             self._message_id = win32con.WM_USER + 20
             self._show_message_id = win32gui.RegisterWindowMessage(SHOW_MESSAGE_NAME)
+            # 必须是 RegisterWindowMessage：TaskbarCreated 是系统广播的注册消息，
+            # 数值随会话变化，写死常量会永远收不到。
+            self._taskbar_created_id = win32gui.RegisterWindowMessage(TASKBAR_CREATED_NAME)
             self._class_name = (
                 tray_class_name(self._instance_key)
                 if self._instance_key
@@ -383,15 +611,18 @@ class SystemTray:
                 hicon,
                 self._tooltip,
             )
-            result = win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, self._nid)
-            # pywin32 成功时返回 None（实测），失败返回 False/0。
-            self._icon_added = result is None or bool(result)
-            if not self._icon_added:
-                self._error = "Shell_NotifyIcon(NIM_ADD) 失败（可能没有可用的任务栏通知区）"
-            self._ready.set()
+            if self._add_icon():
+                self._ready.set()
+            else:
+                # 开机自启时本进程常比任务栏先起来：一次失败不代表永远没有
+                # 图标，交给定时器退避重试；start() 到点会如实返回当前状态。
+                self._error = "Shell_NotifyIcon(NIM_ADD) 失败（任务栏可能尚未就绪，正在重试）"
+                self._schedule_icon_retry()
 
             while self._running:
                 win32gui.PumpWaitingMessages()
+                if not self._ready.is_set() and time.monotonic() >= self._ready_deadline:
+                    self._ready.set()
                 time.sleep(0.03)
         except Exception as exc:  # noqa: BLE001 - 托盘失败不能拖垮主服务
             self._error = f"{type(exc).__name__}: {exc}"
@@ -408,6 +639,11 @@ class SystemTray:
             if self._nid is not None:
                 win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, self._nid)
         except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._hwnd:
+                win32gui.KillTimer(self._hwnd, _ADD_TIMER_ID)
+        except Exception:  # noqa: BLE001 - 窗口销毁时系统会一并清掉定时器
             pass
         try:
             if self._hwnd:
@@ -439,6 +675,11 @@ class SystemTray:
         elif self._show_message_id and msg == self._show_message_id:
             # 第二个桌面实例发来的「显示状态窗口」请求（等价于点菜单「查看状态」）。
             self._dispatch(ACTION_SHOW_STATUS)
+        elif self._taskbar_created_id and msg == self._taskbar_created_id:
+            # Explorer 重启（或手工广播）：通知区已被清空，必须重新注册图标。
+            self._on_taskbar_created()
+        elif msg == win32con.WM_TIMER and int(wparam) == _ADD_TIMER_ID:
+            self._retry_icon()
         elif msg == win32con.WM_COMMAND:
             self.handle_command(int(wparam) & 0xFFFF)
         elif msg == win32con.WM_CLOSE:
@@ -490,6 +731,11 @@ __all__ = [
     "ACTION_SHOW_STATUS",
     "ACTION_STOP_SERVICE",
     "ACTION_TOGGLE_STATUS",
+    "LABEL_OPEN_CONSOLE",
+    "LABEL_OPEN_LOGS",
+    "LABEL_QUIT",
+    "LABEL_SHOW_STATUS",
+    "LABEL_STOP_SERVICE",
     "MENU_ITEMS",
     "SHOW_MESSAGE_NAME",
     "STATE_COLORS",
@@ -497,7 +743,9 @@ __all__ = [
     "STATE_RUNNING",
     "STATE_STOPPED",
     "SystemTray",
+    "TASKBAR_CREATED_NAME",
     "available",
+    "broadcast_taskbar_created",
     "find_tray_window",
     "request_show",
     "tray_class_name",

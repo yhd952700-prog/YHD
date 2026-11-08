@@ -20,11 +20,16 @@
 3. 先跑首次运行向导（已配置则秒退），再由 ``scripts/start_liuhao.py`` 拉起
    网关 + 驾驶舱并打开浏览器。
 
-除 ``--skip-wizard`` 外的参数全部原样转交给 ``start_liuhao.py``
+除 ``--skip-wizard`` / ``--console`` 外的参数全部原样转交给 ``start_liuhao.py``
 （例如 ``--no-browser``、``--backend-only``、``--https``）。
+
+首启默认走**图形化向导**（``scripts/first_run_gui.py``，tkinter）：不读 stdin，
+双击 / 计划任务 / ``pythonw`` 都能完成；``--console`` 保留原命令行向导作为
+无桌面会话时的回退。
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import shutil
@@ -37,10 +42,16 @@ from typing import TextIO
 APP_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP_ROOT))
 
-# 程序目录视为只读：本进程启动后再导入的模块（start_liuhao / src.desktop /
-# logging_config 等）一律不落 __pycache__。环境变量只对子进程生效，当前解释器
-# 的字节码开关必须在导入前就地关掉——否则首启后程序目录会多出若干 .pyc。
 sys.dont_write_bytecode = True
+
+#: 运行期启动门禁：数据由更高 schema 写入时拒绝启动（实现见
+#: ``src/upgrade/startup_guard.py``）。托盘壳与一键启动都经过
+#: ``prepare_environment``，因此在这里接一次即可覆盖两条真实启动路径。
+from src.upgrade.startup_guard import (  # noqa: E402
+    ALLOW_ENV as DATA_DOWNGRADE_ENV,
+    StartupDataBlocked,
+    check_startup_data,
+)
 
 #: 用户数据根。测试/排障可用 ``LIUHAO_DATA_DIR`` 指到临时目录。
 DATA_DIR_ENV = "LIUHAO_DATA_DIR"
@@ -62,16 +73,43 @@ DATA_DIR_MARKER = APP_ROOT / "data-dir.txt"
 
 
 def _marker_data_dir() -> Path | None:
-    """读取 ``data-dir.txt``；兼容 0.1.0 的 ANSI 写法。"""
-    if not DATA_DIR_MARKER.is_file():
-        return None
+    """读取安装器写下的 ``data-dir.txt``，返回数据目录。
+
+    编码规则（与 installer\\liuhao.iss 的写入端一一对应）：
+
+    * 新版（0.1.1 起）：UTF-8 **带 BOM**。BOM 是"这是 UTF-8"的确证，避免把
+      UTF-8 中文路径误按系统 ANSI（GBK/cp1252）解码成另一个目录。
+    * 兼容旧版（0.1.0 及更早）：无 BOM 的系统 ANSI（中文系统即 GBK）。先用
+      UTF-8 尝试；失败再按 ``mbcs`` 解码，与旧写入端一致。
+    * 路径可能含中文、空格、``&``/``#``/``()`` 与 emoji：Python 的文件 API
+      全程 Unicode，不做任何转义或再编码；只去掉行尾 CRLF 与首尾空白。
+
+    解码后若仍出现替换字符（U+FFFD），说明文件已损坏、或写入端用了本机
+    不支持的代码页——此时**不用**这个坏路径（指向错误目录比回落默认值更
+    危险），返回 ``None`` 交给安全默认值。
+    """
     try:
-        text = DATA_DIR_MARKER.read_text(encoding="utf-8-sig").strip()
-    except UnicodeDecodeError:
-        text = DATA_DIR_MARKER.read_text(encoding="mbcs", errors="replace").strip()
+        raw = DATA_DIR_MARKER.read_bytes()
     except OSError:
         return None
-    return Path(text).expanduser().resolve() if text else None
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = raw.decode("mbcs")
+            except (UnicodeDecodeError, LookupError):
+                return None
+    text = text.strip().strip('"').strip()
+    if not text or "\ufffd" in text:
+        return None
+    return Path(text).expanduser().resolve()
 
 
 def _data_dir() -> Path:
@@ -101,6 +139,13 @@ LAUNCHER_LOG_NAME = "logs/launcher.log"
 
 #: 启动器日志的绝对路径（``prepare_environment`` 成功后才有值）。
 LAUNCHER_LOG: Path | None = None
+
+#: 第一次接管 stdout/stderr 之前的原始流。首启向导换数据目录后会再次调用
+#: :func:`prepare_environment`，必须从原始流重新包一层，否则会变成
+#: Tee(Tee(console))，日志与窗口里的每行都重复两遍。
+_RAW_STDOUT: TextIO | None = None
+_RAW_STDERR: TextIO | None = None
+_LOG_HANDLE: TextIO | None = None
 
 #: 允许运维显式覆盖数据目录路径的开关（默认关闭）。
 #:
@@ -150,11 +195,38 @@ def start_launcher_log(data_dir: Path) -> Path:
 
     在任何向导/网关代码之前调用：这样"向导没跑完""端口被占""子进程秒退"
     都会留下可查的文本，而不是用户双击后只有一闪而过的黑框。
+
+    可重复调用（首启向导可能先选另一个数据目录）：每次都从**原始**流重新
+    包一层，并换到新目录的日志文件，不会叠出双份输出。
     """
-    global LAUNCHER_LOG
+    global LAUNCHER_LOG, _RAW_STDOUT, _RAW_STDERR, _LOG_HANDLE
+    if _RAW_STDOUT is None:
+        _RAW_STDOUT = sys.stdout
+    if _RAW_STDERR is None:
+        _RAW_STDERR = sys.stderr
+    if sys.stdout is None:  # pythonw / 无控制台的快捷方式
+        _RAW_STDOUT = open(os.devnull, "w", encoding="utf-8")
+        # 子进程（网关 / node）据此加 CREATE_NO_WINDOW 并把输出写进日志，
+        # 否则从 pythonw 拉起 console 子系统的 python.exe 会再弹一个黑窗。
+        os.environ["LIUHAO_HEADLESS"] = "1"
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+    raw_out = _RAW_STDOUT if _RAW_STDOUT is not None else sys.stdout
+    raw_err = _RAW_STDERR if _RAW_STDERR is not None else raw_out
+
     log_path = data_dir / LAUNCHER_LOG_NAME
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = log_path.open("a", encoding="utf-8", buffering=1)
+    # 有界 + 脱敏：launcher.log 会原样承接 argv、数据目录、子进程输出，
+    # 无上限时一次长期驻留就能把磁盘写满，重定向发包还会带出本机用户名路径。
+    from src.logging_config import RotatingTextWriter
+
+    handle = RotatingTextWriter(log_path)
+    if _LOG_HANDLE is not None:
+        try:
+            _LOG_HANDLE.close()
+        except OSError:
+            pass
+    _LOG_HANDLE = handle
     handle.write(
         f"\n===== {datetime.now().isoformat(timespec='seconds')} launch =====\n"
     )
@@ -163,12 +235,8 @@ def start_launcher_log(data_dir: Path) -> Path:
     handle.write(f"  argv:   {' '.join(sys.argv)}\n")
     handle.write(f"  data:   {data_dir}\n")
     handle.flush()
-    if sys.stdout is None:  # pythonw / 无控制台的快捷方式
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
-    if sys.stderr is None:
-        sys.stderr = sys.stdout
-    sys.stdout = _Tee(sys.stdout, handle)
-    sys.stderr = _Tee(sys.stderr, handle)
+    sys.stdout = _Tee(raw_out, handle)
+    sys.stderr = _Tee(raw_err, handle)
     LAUNCHER_LOG = log_path
     return log_path
 
@@ -318,18 +386,74 @@ def _ensure_app_env(path: Path) -> None:
 
     没有稳定的 JWT 密钥时，每个进程签发/校验自己的临时密钥：重启即全员
     登出，多 worker 时还会互不认账。生成一次并写进数据目录即可。
+
+    ``APP_ENV`` 必须是 ``production``：安装版不是开发环境，用 ``staging`` 会
+    在启动输出里打印「Debug API surface ENABLED」这类调试行，还会多开调试
+    接口。旧版本已经写成 ``staging`` 的 app.env 在这里就地升级（其余行不动）。
+
+    文件里有 JWT 签名密钥与 Flask ``SECRET_KEY``，写入/升级后立即收紧为
+    “仅当前用户”：只靠父目录继承时，profile 目录上任何被授予读权限的主体
+    都能拿到签名密钥。
     """
     if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        upgraded = text.replace("APP_ENV=staging", "APP_ENV=production")
+        if upgraded != text:
+            with contextlib.suppress(OSError):
+                path.write_text(upgraded, encoding="utf-8")
+        _tighten_private_file(path)
         return
     body = (
         "# 由 LiuHao 安装版首次启动生成；升级不会覆盖本文件。\n"
         "# 修改后重启应用生效。\n"
-        "APP_ENV=staging\n"
+        "APP_ENV=production\n"
         "LOG_LEVEL=info\n"
         f"LIUHAO_JWT_SECRET={secrets.token_urlsafe(48)}\n"
         f"SECRET_KEY={secrets.token_urlsafe(32)}\n"
     )
     path.write_text(body, encoding="utf-8")
+    _tighten_private_file(path)
+
+
+#: 安装版必须私有的文件（相对数据目录）。启动器写完/迁移完这些文件后立刻
+#: 收紧 ACL；它们含 JWT 签名密钥、账号口令校验材料与模型 Key 的主密钥。
+_PRIVATE_FILES = (
+    APP_ENV_FILE,
+    Path("config") / "auth_secrets.json",
+    Path("data") / "model_config.key",
+)
+
+
+def _tighten_private_file(path: Path) -> bool:
+    """把单个文件收紧为“仅当前用户”，并用读回的 DACL 复核。
+
+    复核失败只告警、不阻断启动：这里不是凭据是否可用的判定点（模型 Key 的
+    读写路径自身 fail-closed），而是把“本来应该私有”的文件纠正回来。告警
+    必须带上路径，方便用户在权限异常时定位。
+    """
+    if not path.is_file():
+        return True
+    from src.common.windows_acl import acl_is_current_user_only, tighten_current_user_only
+
+    tightened = tighten_current_user_only(path)
+    verified = acl_is_current_user_only(path)
+    if not tightened or not verified:
+        print(
+            f"[warn] 无法把 {path} 的 ACL 收紧为仅当前用户（读回复核失败）；"
+            "该文件含敏感凭据，请检查父目录权限或以当前用户身份重新启动。",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _tighten_private_files(data_dir: Path) -> None:
+    """启动器落盘/迁移后统一收紧私有文件的 ACL（幂等）。"""
+    for relative in _PRIVATE_FILES:
+        _tighten_private_file(data_dir / relative)
 
 
 def _ensure_integrity_key(path: Path) -> str:
@@ -393,17 +517,15 @@ def _drop_path_env(key: str) -> None:
     os.environ.pop(key, None)
 
 
-def _configure_paths(data_dir: Path) -> None:
-    """把内核与网关的持久化位置全部指向数据目录。
+def data_path_env(data_dir: Path) -> dict[str, Path]:
+    """数据目录 → 各持久化位置的环境变量（启动器与首启向导共用一份）。
 
-    默认**强制**落在数据目录：机器级/用户级残留的 ``LIUHAO_*`` 变量不得把
-    已安装产品指回开发仓库（见 :data:`ALLOW_ENV_OVERRIDE`）。运维/测试若确实
-    需要重定向，显式设置 ``LIUHAO_ALLOW_ENV_OVERRIDE=1`` 后原变量优先。
+    首启向导会在拉起网关**之前**写账号与模型，必须和启动器落到同一个目录，
+    否则用户刚建的账号在网关里看不到。映射只在这里维护，避免两边漂移。
     """
-    paths = {
+    return {
         # 数据目录本身：子进程（网关 / 升级器 / 向导）必须与启动器解析到同一处，
-        # 否则安装版升级会去 %LOCALAPPDATA% 找数据。以前由 LiuHao.bat 从
-        # data-dir.txt 导出；改为启动器读 marker 后在这里显式继承。
+        # 否则安装版升级会去 %LOCALAPPDATA% 找数据。
         "LIUHAO_DATA_DIR": data_dir,
         # 员工、目标、项目、工作区文件、JWT 吊销库
         "LIUHAO_WORKSPACE_ROOT": data_dir / "workspace",
@@ -424,7 +546,16 @@ def _configure_paths(data_dir: Path) -> None:
         "LIUHAO_KNOWLEDGE_DB": data_dir / "data" / "knowledge_vectors.sqlite3",
         "LIUHAO_ALERTS_STORE_PATH": data_dir / "data" / "observability" / "alerts.json",
     }
-    for key, value in paths.items():
+
+
+def _configure_paths(data_dir: Path) -> None:
+    """把内核与网关的持久化位置全部指向数据目录。
+
+    默认**强制**落在数据目录：机器级/用户级残留的 ``LIUHAO_*`` 变量不得把
+    已安装产品指回开发仓库（见 :data:`ALLOW_ENV_OVERRIDE`）。运维/测试若确实
+    需要重定向，显式设置 ``LIUHAO_ALLOW_ENV_OVERRIDE=1`` 后原变量优先。
+    """
+    for key, value in data_path_env(data_dir).items():
         _pin_path(key, value)
     # 网关单端口模式需要显式指向驾驶舱产物，否则会去找仓库里的
     # apps/console/console/dist。
@@ -460,11 +591,14 @@ def _ensure_logging_config(data_dir: Path) -> Path:
     if target.is_file() or not template.is_file():
         return target
     text = template.read_text(encoding="utf-8")
-    log_root = str(data_dir / "logs").replace("\\", "/")
+    # YAML 里绝对路径必须加引号：路径可能含空格、`#`（"a #1" 会被当成注释）、
+    # `:` 等 YAML 元字符。这里统一转正斜杠（Windows API 同样接受），
+    # 再包一层双引号，生成的是合法 YAML 标量而不是裸字符串。
+    log_root = str(data_dir / "logs").replace("\\", "/").replace('"', '\\"')
     text = text.replace(
-        "filename: logs/liuhao.log", f"filename: {log_root}/liuhao.log"
+        "filename: logs/liuhao.log", f'filename: "{log_root}/liuhao.log"'
     ).replace(
-        "filename: logs/error.log", f"filename: {log_root}/error.log"
+        "filename: logs/error.log", f'filename: "{log_root}/error.log"'
     )
     target.write_text(text, encoding="utf-8")
     return target
@@ -472,6 +606,45 @@ def _ensure_logging_config(data_dir: Path) -> Path:
 
 class DataDirectoryUnavailable(RuntimeError):
     """数据目录不可写（只读、磁盘满、被占用）——fail-closed，不降级运行。"""
+
+
+#: 数据目录里最深的运行期相对路径（``data/observability/alerts.jsonl`` 等）。
+#: 数据目录不参与安装复制，但首次启动就会写到这些位置，同样受 Windows 260
+#: 字符上限约束；安装器与启动器都用同一组常量判定（实测 255 字符的数据目录
+#: 在 mkdir config 时就报 WinError 206）。
+DATA_REL_MAX = 30
+MAX_PATH_LIMIT = 259
+
+#: Win32 设备名：`CON`/`NUL` 这类目录 CreateDir 报英文错误或"假成功"，
+#: 之后建子目录才失败，必须提前用中文拒绝。
+_RESERVED_DEVICE_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
+def _path_name_issue(path: Path) -> str | None:
+    """返回路径里第一处 Windows 不可用的目录名说明；全部合法时返回 None。
+
+    只检查**目录段**（不检查文件名）：用户能把数据目录选成任意位置，
+    保留设备名与以点/空格结尾的名字在 Win32 层有别名语义，安装器记下的
+    路径可能和文件实际落点不一致。
+    """
+    for part in path.parts[1:]:  # parts[0] 是盘符根（如 D:\）
+        if not part or part in ("\\", "/"):
+            continue
+        if part.endswith(".") or part.endswith(" "):
+            return (
+                f"「{part}」以点或空格结尾，Windows 会自动去掉结尾字符，"
+                "文件实际落在另一个名字下，记录的路径会对不上。"
+            )
+        stem = part.split(".", 1)[0].upper()
+        if stem in _RESERVED_DEVICE_NAMES:
+            return (
+                f"「{part}」是 Windows 保留设备名（{stem}），不能用作目录名。"
+            )
+    return None
 
 
 def prepare_environment() -> tuple[Path, Path]:
@@ -486,6 +659,33 @@ def prepare_environment() -> tuple[Path, Path]:
 
     data_dir = _data_dir()
 
+    # 路径本身不可用（保留设备名 / 尾点尾空格 / 超长）：必须在任何写入之前
+    # 用中文拒绝。这类名字在 Win32 层要么报英文错误、要么"假成功"后建子目录
+    # 才失败，裸 traceback 对用户没有可行动信息。
+    name_issue = _path_name_issue(data_dir)
+    if name_issue:
+        raise DataDirectoryUnavailable(
+            f"数据目录不可用：{data_dir}。" + name_issue
+            + f"请改用普通目录名，或用环境变量 {DATA_DIR_ENV} 指向另一个目录。"
+        )
+    if len(str(data_dir)) + 1 + DATA_REL_MAX > MAX_PATH_LIMIT:
+        raise DataDirectoryUnavailable(
+            f"数据目录路径过长：{data_dir}（共 {len(str(data_dir))} 个字符，"
+            f"内部最深文件还要再占用 {DATA_REL_MAX} 个字符）。"
+            "Windows 单条路径上限为 "
+            f"{MAX_PATH_LIMIT + 1} 个字符，首次启动就无法写入。"
+            f"请改用更短的目录（例如 D:\\LiuHaoData），或用环境变量 {DATA_DIR_ENV} 指定。"
+        )
+
+    # 启动门禁：数据目录由更高 schema 写入时拒绝启动。必须跑在任何写入
+    # （目录、app.env、密钥、日志）之前——拒绝时要保证"什么都没改"。
+    data_gate = check_startup_data(data_dir, app_root=APP_ROOT)
+    if not data_gate.ok:
+        # 拒绝说明由 main() 统一打印（避免同一段文字出现两遍）。
+        raise StartupDataBlocked(data_gate)
+    if data_gate.message:
+        print(data_gate.message, file=sys.stderr)
+
     # 首次启动要在这里写目录、密钥、日志配置。数据目录只读/磁盘满/被别的
     # 进程独占时，裸 OSError 会把用户甩到一段 traceback 上；这里统一转成
     # 可读原因并**拒绝继续启动**（fail-closed）——半套配置启动只会更糟。
@@ -498,6 +698,20 @@ def prepare_environment() -> tuple[Path, Path]:
             f"或用环境变量 {DATA_DIR_ENV} 指向另一个可写目录。"
         ) from exc
 
+    # 目录"存在"不等于"可写"：父目录被 ACL 拒绝、设了只读或磁盘满时，
+    # mkdir(exist_ok=True) 会成功，真正写 app.env/密钥时才炸。这里先在数据
+    # 目录本身写一个探针文件，把失败提前成一条中文可行动提示（fail-closed）。
+    probe = data_dir / ".liuhao-write-probe.tmp"
+    try:
+        probe.write_text("probe", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise DataDirectoryUnavailable(
+            f"数据目录不可写：{data_dir}（{type(exc).__name__}: {exc}）。"
+            "请确认磁盘没有写满、目录没有被设为只读、也没有被其它进程独占；"
+            f"或用环境变量 {DATA_DIR_ENV} 指向另一个可写目录。"
+        ) from exc
+
     # 旧便携版数据搬运是**尽力而为**：某个旧文件正被其它程序打开时，跳过它、
     # 继续启动（数据还在原处，下次再搬）。这不属于"数据目录不可写"。
     try:
@@ -507,7 +721,18 @@ def prepare_environment() -> tuple[Path, Path]:
 
     # 目录一建好就把 stdout/stderr 落盘：后面向导怎么死、端口怎么冲突，
     # 用户都能在 <数据目录>/logs/launcher.log 里看到。
-    start_launcher_log(data_dir)
+    #
+    # 日志写不进去（logs 目录只读/被独占/磁盘满）不是致命错误：下面写
+    # app.env / 完整性密钥时同样会失败，并统一转成中文可行动提示；先在这里
+    # 只给一行警告，避免用户先看到一段 PermissionError 栈。
+    try:
+        start_launcher_log(data_dir)
+    except OSError as exc:
+        print(
+            f"[warn] 无法写入启动日志 {data_dir / LAUNCHER_LOG_NAME}"
+            f"（{type(exc).__name__}: {exc}），继续尝试启动……",
+            file=sys.stderr,
+        )
 
     try:
         app_env = data_dir / APP_ENV_FILE
@@ -532,11 +757,14 @@ def prepare_environment() -> tuple[Path, Path]:
         )
     if not inherited_key or not _env_override_allowed():
         os.environ["LIUHAO_HUMAN_IDENTITIES_INTEGRITY_KEY"] = integrity_key
-    os.environ.setdefault("APP_ENV", "staging")
+    os.environ.setdefault("APP_ENV", "production")
     os.environ.setdefault("LOG_LEVEL", "info")
 
     _configure_paths(data_dir)
     _ensure_identity_registry(data_dir)
+    # 迁移/首次启动可能已经生成了 app.env、auth_secrets.json 与模型主密钥；
+    # 这里统一再收紧一次（幂等），确保启动子进程前权限已经落到当前用户。
+    _tighten_private_files(data_dir)
     try:
         logging_config = _ensure_logging_config(data_dir)
     except OSError as exc:
@@ -573,15 +801,79 @@ def prepare_environment() -> tuple[Path, Path]:
     return data_dir, logging_config
 
 
+def _append_log(path: Path, text: str) -> None:
+    """把文本追加进日志；日志自身不可写时静默跳过（不能再掩盖原始错误）。
+
+    ``launcher.log`` 由 :class:`RotatingTextWriter` 承接时已自带轮转与脱敏；
+    兜底的 ``bootstrap.log`` 用更小的上限（1 MiB × 2），避免反复失败累积。
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from src.logging_config import RotatingTextWriter
+
+        RotatingTextWriter(path, maxBytes=1024 * 1024, backupCount=2).write(text)
+    except Exception:  # noqa: BLE001 - 兜底日志失败时保持原始异常可见
+        pass
+
+
+def _fallback_log_path() -> Path:
+    """兜底日志路径：正常时是数据目录的 launcher.log，取不到就退到 bootstrap.log。"""
+    if LAUNCHER_LOG is not None:
+        return LAUNCHER_LOG
+    try:
+        return _data_dir() / LAUNCHER_LOG_NAME
+    except Exception:  # noqa: BLE001 - 连数据目录都解析不了时只能写程序目录
+        return APP_ROOT / "bootstrap.log"
+
+
+def report_launch_failure(exc: BaseException) -> int:
+    """把「安装不完整 / 启动失败」翻译成中文与下一步可执行动作。
+
+    用户看到的必须是一条能复制执行的命令，而不是十几行英文堆栈；堆栈只进
+    launcher.log 与 bootstrap.log，供支持人员定位。
+    """
+    log_path = _fallback_log_path()
+    bootstrap = APP_ROOT / "bootstrap.log"
+    message = (
+        "[FAIL] 安装文件不完整，请重新安装或修复安装。\n"
+        f"       原因：{type(exc).__name__}: {exc}\n"
+        "       修复：重新运行安装包，选择「修复安装」；或重新安装到同一位置"
+        "（账号与数据会保留，不会被覆盖）。\n"
+        f'       命令："{APP_ROOT / "LiuHao.bat"}"\n'
+        f"       日志：{log_path}\n"
+    )
+    print(message, file=sys.stderr)
+    detail = message + "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    )
+    _append_log(log_path, detail)
+    if bootstrap != log_path:
+        _append_log(bootstrap, detail)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
 
+    # 显式降级开关：转成环境变量，网关/排程等子进程自动继承。
+    if "--allow-data-downgrade" in args:
+        os.environ[DATA_DOWNGRADE_ENV] = "1"
+
     try:
         data_dir, logging_config = prepare_environment()
+    except StartupDataBlocked as exc:
+        # 直接打印完整中文说明（已含备份路径与放行/升级命令），不套"安装不完整"。
+        print(exc.message, file=sys.stderr)
+        print("       已停止启动，未写入任何运行数据。", file=sys.stderr)
+        return 4
     except DataDirectoryUnavailable as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         print("        已停止启动，未写入任何运行数据。", file=sys.stderr)
         return 3
+    except Exception as exc:  # noqa: BLE001 - 缺 src/runtime 等安装不完整场景
+        # 兜底必须覆盖 prepare_environment：缺模块最早就在这里抛，早于此处的
+        # try 只会把英文堆栈原样甩给用户。
+        return report_launch_failure(exc)
 
     # 任何未捕获异常都必须：①打印给人看 ②落进 launcher.log ③返回非零。
     # 这条兜底存在的理由就是现场那次"双击之后什么都没有"。
@@ -592,33 +884,68 @@ def main(argv: list[str] | None = None) -> int:
         print("[warn] 已取消启动（Ctrl+C）。", file=sys.stderr)
         return 130
     except Exception as exc:  # noqa: BLE001 - 启动器必须兜住一切
-        traceback.print_exc()
-        print(f"[FAIL] 启动失败：{type(exc).__name__}: {exc}", file=sys.stderr)
-        print(f"        完整日志：{LAUNCHER_LOG}", file=sys.stderr)
-        return 1
+        return report_launch_failure(exc)
+
+
+def _arg_api_port(args: list[str]) -> int:
+    """从转交参数里取 ``--api-port``，让首启预检用真实端口而不是硬编码 8080。"""
+    for index, item in enumerate(args):
+        if item == "--api-port" and index + 1 < len(args):
+            try:
+                return int(args[index + 1])
+            except ValueError:
+                break
+        if item.startswith("--api-port="):
+            try:
+                return int(item.split("=", 1)[1])
+            except ValueError:
+                break
+    try:
+        return int((os.environ.get("LIUHAO_API_PORT") or "").strip() or 8080)
+    except ValueError:
+        return 8080
+
+
+def _forwarded_with_port(args: list[str], port: int) -> list[str]:
+    """把 ``--api-port`` 换成用户刚选的新端口（其余参数原样保留）。"""
+    cleaned: list[str] = []
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--api-port":
+            index += 2  # 跳过旧的 --api-port 值
+            continue
+        if item.startswith("--api-port="):
+            index += 1
+            continue
+        cleaned.append(item)
+        index += 1
+    return [*cleaned, "--api-port", str(port)]
 
 
 def _run(data_dir: Path, logging_config: Path, args: list[str]) -> int:
+    # 图形化首启是默认路径：命令行窗口不再要求输入账号/密码。``--console``
+    # 保留原命令行向导，供无桌面会话（计划任务、远程 shell）的排障场景。
+    console_wizard = "--console" in args
     skip_wizard = "--skip-wizard" in args
-    forwarded = [a for a in args if a != "--skip-wizard"]
+    forwarded = [
+        a
+        for a in args
+        if a not in ("--skip-wizard", "--console", "--allow-data-downgrade")
+    ]
 
-    print("=" * 62)
-    print("鎏灏 LiuHao AI OS — 安装版")
-    print(f"  程序目录  {APP_ROOT}")
-    print(f"  数据目录  {data_dir}")
-    print("=" * 62)
+    print("正在启动…（无需在此窗口输入任何内容，浏览器会自动打开）")
 
-    # 首次启动（或身份/模型缺失时）进入向导；已配置则自动跳过。
-    if not skip_wizard:
+    if console_wizard and not skip_wizard:
         import scripts.first_run_wizard as wizard
 
-        # 首启必须在**能输入**的窗口里完成。无控制台时（pythonw、计划任务、
-        # 隐藏窗口）不要抛 EOFError，也不要假装启动成功：直接说清楚从哪启动。
+        # 命令行向导必须在**能输入**的窗口里完成。无控制台时（pythonw、
+        # 计划任务、隐藏窗口）不要抛 EOFError，也不要假装启动成功。
         if wizard.needs_setup() and not wizard.stdin_is_interactive():
             print("[FAIL] 首次运行需要在命令行窗口里完成向导，但当前没有可交互的终端。")
             print("       请从开始菜单/桌面快捷方式启动（会打开命令行窗口），")
             print("       或在「命令提示符」里执行：")
-            print(f'       "{APP_ROOT / "LiuHao.bat"}"')
+            print(f'       "{APP_ROOT / "LiuHao.bat"}" --console')
             print(f"       日志：{LAUNCHER_LOG}")
             return 2
 
@@ -648,6 +975,50 @@ def _run(data_dir: Path, logging_config: Path, args: list[str]) -> int:
             )
             print(f"       日志：{LAUNCHER_LOG}", file=sys.stderr)
             return 3
+    else:
+        import scripts.first_run_gui as gui
+
+        if skip_wizard:
+            print("[skip] 已按 --skip-wizard 跳过首启检查。")
+        elif gui.needs_setup():
+            # 首启未完成前不暴露任何控制台地址：先删旧地址文件，再开窗口。
+            gui.clear_current_url(data_dir)
+            print("首次运行：正在打开图形化设置向导（设置账号 → 选择模型 → 完成）…")
+            code = gui.run_wizard(port=_arg_api_port(forwarded))
+            if code != 0:
+                print(
+                    "[FAIL] 首次设置未完成，已停止启动（不会打开控制台）。",
+                    file=sys.stderr,
+                )
+                print(f"       日志：{gui.focus_log_path(data_dir)}", file=sys.stderr)
+                return code
+
+            # 用户在向导里可能换了数据目录：重新按新目录准备环境与日志，
+            # 否则网关会去旧目录找刚创建的账号。
+            chosen = gui.chosen_data_dir()
+            if chosen is not None and not _same_path(str(chosen), str(data_dir)):
+                data_dir, logging_config = prepare_environment()
+
+            # 双保险：只有真的存在可登录管理员才放行网关。
+            if gui.needs_setup():
+                print(
+                    "[FAIL] 设置结束后仍没有可登录的管理员账号，已停止启动。",
+                    file=sys.stderr,
+                )
+                print(f"       日志：{gui.focus_log_path(data_dir)}", file=sys.stderr)
+                return 3
+            print(f"已初始化：数据目录 {data_dir}")
+            print("浏览器会在服务就绪后自动打开。")
+        else:
+            print("已初始化：浏览器会自动打开登录页。")
+
+        # 端口冲突的处理统一由 start_liuhao 负责：有桌面就弹「关掉占用程序再试 /
+        # 换一个端口继续」，没有桌面就打印明确中文。这里只把向导里选过的端口
+        # 透传过去（绝不自动顺延）。
+        chosen_port = gui.chosen_api_port()
+        if chosen_port is not None:
+            forwarded = _forwarded_with_port(forwarded, chosen_port)
+        print(f"日志：{LAUNCHER_LOG}")
 
     import scripts.start_liuhao as launcher
 

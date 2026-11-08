@@ -185,7 +185,10 @@ def unavailable_gate(
     """网关根本没起来（``start()`` 返回 False）时的统一结果。"""
     hint = _log_hint(log_dir, log_hint)
     diag = diagnose_hint or DIAGNOSE_HINT
-    detail = f"{reason or '网关未启动'}。日志：{hint}；诊断包：{diag}"
+    # 调用方给的原因可能自带句号（端口类提示都带），拼接前去掉，避免窗口里
+    # 出现"指定。。日志："这种双标点。
+    reason_text = (reason or "网关未启动").rstrip("。.；;，, ")
+    detail = f"{reason_text}。日志：{hint}；诊断包：{diag}"
     return {
         "state": "failed",
         "elapsed": 0.0,
@@ -215,10 +218,17 @@ def wait_until_ready(
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    min_interval: float = MIN_INTERVAL,
+    max_interval: float = MAX_INTERVAL,
 ) -> dict[str, Any]:
-    """轮询 ``/v1/startup`` 直到 ready / degraded / 超时 / 进程退出。"""
+    """轮询 ``/v1/startup`` 直到 ready / degraded / 超时 / 进程退出。
+
+    ``min_interval`` / ``max_interval`` 供"双击后要尽快看见登录框"的启动器把
+    就绪探测从 250/500ms 收紧到 100/200ms；默认值保持不变，桌面壳与既有调用
+    方的行为不受影响。
+    """
     started_at = clock()
-    interval = MIN_INTERVAL
+    interval = max(0.01, min_interval)
     polls = 0
     snapshot: dict[str, Any] = {
         "reachable": False,
@@ -274,7 +284,7 @@ def wait_until_ready(
                 diagnose_hint=diagnose_hint,
             )
         sleep(interval)
-        interval = min(MAX_INTERVAL, interval * 2)
+        interval = min(max(0.01, max_interval), interval * 2)
 
 
 __all__ = [
