@@ -34,7 +34,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FutureTimeout,
@@ -42,15 +41,28 @@ from concurrent.futures import (
 )
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import audit as _audit
+from ..common.atomic_write import atomic_write_text, read_text_with_retry
 
 logger = logging.getLogger("liuhao.ai.web_research")
 
 ENABLE_ENV = "LIUHAO_WEB_RESEARCH"
 PROVIDERS_ENV = "LIUHAO_WEB_RESEARCH_PROVIDERS"
 TIMEOUT_ENV = "LIUHAO_WEB_RESEARCH_TIMEOUT_SECONDS"
+#: 界面开关的落盘位置（与 ``LIUHAO_WEB_RESEARCH`` 环境变量相互独立：
+#: 环境变量显式设置了值就以它为准，没设置才读这里的用户选择）。
+SETTINGS_FILE_ENV = "LIUHAO_PRIVACY_SETTINGS_FILE"
+_DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "privacy_settings.json"
+
+#: 每个提供者对外连接的域名 —— 开启前要如实告诉用户"词会发到哪三个站点"。
+PROVIDER_HOSTS: Dict[str, str] = {
+    "hackernews": "hn.algolia.com",
+    "github": "api.github.com",
+    "arxiv": "export.arxiv.org",
+}
 
 DEFAULT_PROVIDERS = ("hackernews", "github", "arxiv")
 DEFAULT_TIMEOUT_SECONDS = 8.0
@@ -136,16 +148,71 @@ class ResearchReport:
 
 
 # --------------------------------------------------------------------- config
+def _settings_path() -> Path:
+    raw = (os.environ.get(SETTINGS_FILE_ENV) or "").strip()
+    return Path(raw) if raw else _DEFAULT_SETTINGS_PATH
+
+
+def _read_settings() -> Dict[str, Any]:
+    """读取本地偏好文件。缺失/损坏一律当作"没有开过"——绝不猜成开启。"""
+    try:
+        payload = json.loads(read_text_with_retry(_settings_path()))
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def stored_research_enabled() -> bool:
+    """用户在界面上保存的选择。只有明确的 ``true`` 才算开启。"""
+    return _read_settings().get("web_research_enabled") is True
+
+
+def set_research_enabled(value: bool) -> bool:
+    """持久化界面上的开关；返回写入后的真实值。"""
+    path = _settings_path()
+    payload = _read_settings()
+    payload["web_research_enabled"] = bool(value)
+    payload["updated_at"] = _now_iso()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+    return bool(value)
+
+
 def enabled() -> bool:
-    """Whether live retrieval is on. Default ON; any explicit off value wins."""
+    """Whether live retrieval is on.
+
+    **默认关闭**。优先级：显式环境变量 > 界面保存的选择 > 关闭。
+    环境变量是运维/测试的强制开关；普通用户只在设置页里切换。
+    """
     raw = (os.environ.get(ENABLE_ENV) or "").strip().lower()
-    if not raw:
-        return True
     if raw in _FALSY:
         return False
     if raw in _TRUTHY:
         return True
-    return True
+    return stored_research_enabled()
+
+
+#: 四处文案（BEFORE-INSTALL / 首启向导 / 关于页 / 设置页）必须逐字包含这句。
+#: 它同时回答"发什么"和"不发什么"，不留给读者"是不是整段对话都发出去了"的歧义。
+DISCLOSURE_CORE = (
+    "只发送提炼后的关键词；不发送你的对话内容、对话历史、个人画像、"
+    "账号信息或 API Key。"
+)
+
+
+def disclosure_text(providers: Optional[Sequence[str]] = None) -> str:
+    """开启前给用户看的一句人话：检索词会发到哪些站点、不会发什么。"""
+    names = list(providers) if providers is not None else provider_names()
+    hosts = [PROVIDER_HOSTS.get(name, name) for name in names if name]
+    unique = list(dict.fromkeys(hosts))
+    if not unique:
+        return "开启后不会向任何站点发送检索词。"
+    return (
+        "开启后只会把检索词发到 "
+        + "、".join(unique)
+        + " 这几个公开站点（无需登录）。"
+        + DISCLOSURE_CORE
+    )
 
 
 def timeout_seconds() -> float:
@@ -170,12 +237,55 @@ def is_time_sensitive(query: str) -> bool:
     return any(word in lowered for word in _TIME_SENSITIVE)
 
 
+#: 出网前必须抹掉的个人信息形状。检索目标都是公开英文索引，这些字符没有检索
+#: 价值，却会把邮箱/电话/密钥/链接原样带到第三方日志里。
+_PII_PATTERNS: Sequence[tuple[re.Pattern[str], str]] = (
+    (re.compile(r"https?://\S+", re.IGNORECASE), " "),
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), " "),
+    (re.compile(r"\b(?:sk|pk|ak|ghp|gho|xox[baprs])[-_][A-Za-z0-9_-]{10,}\b", re.IGNORECASE), " "),
+    (re.compile(r"\+?\d[\d\s\-]{7,}\d"), " "),
+    (re.compile(r"\b\d{11,}\b"), " "),
+    # PII 被替换后残留的"我的邮箱 / 电话"这类标签也没有检索价值，一并去掉。
+    (re.compile(r"(我的|本人)?\s*(电子邮箱|邮箱|手机号码|手机号|电话|身份证号|住址)\s*(是|为|[:：])?", re.IGNORECASE), " "),
+    (re.compile(r"[\u0000-\u001f\u007f]"), " "),
+)
+
+#: 非词表命中的保守上限：完整原句不该出现在任何第三方请求里。
+MAX_PHRASE_CHARS = 48
+
+
+def scrub_personal_data(text: str) -> str:
+    """只去掉个人信息/URL/控制字符，不截断、不改写其余内容。
+
+    调用方（例如 ``llm_research``）会先按标点切分句子；如果先切分，
+    ``alice@example.com`` 会被拆成 ``alice@example`` + ``com``，之后
+    :func:`sanitize_phrase` 的邮箱正则就匹配不到残片了。凡是需要在
+    "分词/切句"之前做清洗的路径，都必须先用这个函数。
+    """
+    value = str(text or "")
+    for pattern, replacement in _PII_PATTERNS:
+        value = pattern.sub(replacement, value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def sanitize_phrase(text: str, limit: int = MAX_PHRASE_CHARS) -> str:
+    """保守清洗：去掉邮箱/电话/密钥/URL/控制字符，再截断。"""
+    value = scrub_personal_data(text)
+    value = value[:limit].strip()
+    return value.strip(" \t,，。;；:：、-—")
+
+
 def build_search_phrase(query: str) -> str:
     """Turn a Chinese question into a useful English keyword phrase.
 
     Deterministic on purpose: the retrieval path must not depend on the model.
+
+    只会发送**提炼后的关键词**：词表命中时用映射出的英文词；词表未命中时也
+    绝不整句原样出网，而是先 :func:`sanitize_phrase`（去个人信息 + 截断）。
     """
-    text = (query or "").strip()
+    # 先清洗再提取：否则 URL / 邮箱 / 密钥里的裸词会被当成"关键词"留在短语里，
+    # 最后一步再清洗已经无济于事（链接本身已经被拆成多个单词）。
+    text = sanitize_phrase(query, limit=240)
     if not text:
         return ""
     remaining = text
@@ -193,8 +303,12 @@ def build_search_phrase(query: str) -> str:
     for token in hints + ascii_words:
         if token.lower() not in {p.lower() for p in parts}:
             parts.append(token)
-    phrase = " ".join(parts).strip()
-    return phrase or text
+    phrase = sanitize_phrase(" ".join(parts))
+    if phrase:
+        return phrase
+    # 词表与 ASCII 词都没有：退到"已清洗 + 已截断"的文本（问句里的"帮我查一下"
+    # 这类填充词也已被词表移除），绝不上送完整问题原句。
+    return sanitize_phrase(remaining)
 
 
 def _now_iso() -> str:
@@ -232,6 +346,10 @@ def _safe_error(exc: BaseException) -> str:
     requirement is that the query is recorded *once* as a query, never smuggled
     into an exception string.
     """
+    # 延迟导入：``xml.etree`` 在冷进程里是几百毫秒的磁盘导入，而它只服务
+    # 一次 arXiv 解析。网关启动时不该为联网检索付这笔钱。
+    import xml.etree.ElementTree as ET
+
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTP {exc.code}"
     if isinstance(exc, (TimeoutError, socket.timeout, FutureTimeout)):
@@ -320,6 +438,8 @@ _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
 def _arxiv(phrase: str, limit: int, timeout: float, since_days: Optional[int]) -> List[SourceItem]:
+    import xml.etree.ElementTree as ET
+
     if not phrase:
         return []
     params = {
@@ -329,7 +449,8 @@ def _arxiv(phrase: str, limit: int, timeout: float, since_days: Optional[int]) -
         "sortBy": "submittedDate",
         "sortOrder": "descending",
     }
-    url = "http://export.arxiv.org/api/query?" + urllib.parse.urlencode(params)
+    # 明文 HTTP 会让检索词在链路上可被中间人看到；arXiv 的 API 支持 HTTPS。
+    url = "https://export.arxiv.org/api/query?" + urllib.parse.urlencode(params)
     body = http_get(url, timeout)
     root = ET.fromstring(body)
     results: List[SourceItem] = []
@@ -551,14 +672,22 @@ def format_source_dicts(
 __all__ = [
     "DEFAULT_PROVIDERS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DISCLOSURE_CORE",
     "ENABLE_ENV",
+    "MAX_PHRASE_CHARS",
     "PROVIDERS",
     "PROVIDERS_ENV",
+    "PROVIDER_HOSTS",
     "ResearchReport",
+    "SETTINGS_FILE_ENV",
     "SourceItem",
     "TIMEOUT_ENV",
     "build_search_phrase",
+    "disclosure_text",
     "enabled",
+    "sanitize_phrase",
+    "set_research_enabled",
+    "stored_research_enabled",
     "format_source_dicts",
     "format_sources",
     "http_get",

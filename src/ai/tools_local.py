@@ -130,10 +130,24 @@ def python_compute(**inputs: Any) -> Dict[str, Any]:
             "stage": str(res.status),
         }
 
+    # 跑完但什么都没产出 = 没有答案。不能把「空字符串」当成功上报，否则
+    # 管家会把一个未完成的计算任务显示成已完成（验收第 3/4 项的反例）。
+    answer = (res.output or "").strip() or (res.stdout or "").strip()
+    if not answer:
+        return {
+            "success": False,
+            "status": "failed",
+            "error": (
+                "代码执行完成但没有产出答案：请把结果赋给 result 变量，"
+                "或使用 print(...) 输出。空输出不会被当成成功。"
+            ),
+            "stage": "empty_result",
+        }
+
     return {
         "success": True,
         "status": "executed",
-        "result": res.output,
+        "result": answer,
         "stdout": res.stdout,
     }
 
@@ -211,40 +225,90 @@ def _live_research_answer(query: str, report: "web_research.ResearchReport") -> 
     }
 
 
+#: A search task must not re-settle arithmetic that belongs to a dedicated
+#: ``python_compute`` task. Observed live: the whole goal ("查项目，同时计算
+#: 128 + 64") was passed as the query, and the research model volunteered
+#: "128 + 64 的结果是204" on one run and "...192" on the next. The retrieval
+#: sources contained no arithmetic at all, so the number was pure free-form.
+_ARITH_CLAUSE_RE = re.compile(r"\d\s*[+\-*/×÷]\s*\d")
+_COMPUTE_CLAUSE_RE = re.compile(
+    r"(?:^|[\s，。；;,])(?:请|帮我|请帮我|同时|并|顺便|另外)?"
+    r"(?:计算|算一下|算算|算出)(?!机)"
+)
+_NUM_TASKS_CLAUSE_RE = re.compile(
+    r"^(?:这|两|三|几|多|\d+)\s*件事.*(?:完成|做完)"
+    r"|^(?:都|全部|一并|同时)?(?:要|需要|得)?(?:完成|做完|处理)(?:这[两三四几]件事)?$"
+)
+
+
+def _search_intent(text: str) -> str:
+    """Keep only the clauses that describe *what to research*.
+
+    Compute directives ("同时计算 128 + 64 的结果") and meta instructions
+    ("两件事都要完成") are dropped so the research model is never asked to
+    answer an arithmetic question it cannot ground in retrieved sources.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    kept: List[str] = []
+    for clause in re.split(r"[，。；;,.!?！？\n]+", raw):
+        part = clause.strip()
+        if not part:
+            continue
+        if _ARITH_CLAUSE_RE.search(part):
+            continue
+        if _COMPUTE_CLAUSE_RE.search(part):
+            continue
+        if _NUM_TASKS_CLAUSE_RE.search(part):
+            continue
+        kept.append(part)
+    return "，".join(kept).strip() or raw
+
+
 def llm_research(**inputs: Any) -> Dict[str, Any]:
     """Research a question, preferring LIVE retrieval over model memory.
 
-    Live retrieval (``LIUHAO_WEB_RESEARCH``, default ON) is read-only and uses
-    key-free public endpoints. When it is disabled, blocked, empty or times out,
-    this falls back to the original model-knowledge path and keeps its honest
-    "未接入实时联网检索" label — a retrieval problem is never a task failure.
+    Live retrieval is read-only and uses key-free public endpoints. It is
+    **off by default**: the user must turn it on in Settings, where the exact
+    destination sites are disclosed. When it is disabled, blocked, empty or
+    times out, this falls back to the original model-knowledge path and keeps
+    its honest "未接入实时联网检索" label — a retrieval problem is never a
+    task failure.
     """
-    query = (
+    raw_query = (
         inputs.get("query")
         or inputs.get("goal")
         or inputs.get("instruction")
         or ""
     )
-    if not isinstance(query, str) or not query.strip():
+    if not isinstance(raw_query, str) or not raw_query.strip():
         return {
             "success": False,
             "status": "rejected",
             "error": "network_bus needs a `query` (the concrete question to research).",
         }
+    # The kernel forwards the whole goal sentence as `query`; strip the
+    # compute/meta clauses so this task only researches (see _search_intent).
+    query = _search_intent(raw_query)
 
     retrieval_error = ""
     if web_research.enabled():
-        report = web_research.search(query)
+        # 先抹掉邮箱/电话/密钥/URL 再切句：反过来会把 alice@example.com 拆成
+        # "alice@example" + "com"，残片逃过邮箱正则后仍会被当成关键词发出去。
+        search_query = _search_intent(web_research.scrub_personal_data(raw_query))
+        report = web_research.search(search_query)
         if report.ok:
             return _live_research_answer(query, report)
         retrieval_error = report.error or "检索没有返回任何来源"
 
     label = "（说明：本次由默认模型基于已有知识生成，未接入实时联网检索。）"
     if retrieval_error:
+        # 用户看到的是"检索没成功，但问题照常回答"，不是一串 HTTP 错误。
+        # 具体哪个站点、什么错误仍保留在 ``retrieval_error`` 字段与审计里。
         label = (
-            "（说明：实时联网检索本次未取得结果"
-            f"（{retrieval_error}）；以下由默认模型基于已有知识生成，"
-            "请勿当作今天的实时结果。）"
+            "（说明：这次联网检索没成功（目标站点暂时连不上或没有返回结果），"
+            "但你的问题照常回答——下面是基于已有知识的回答，不是今天的实时结果。）"
         )
     prompt = (
         "你是「鎏灏管家」里的调研执行体。请围绕下面的问题，给出尽可能具体、"
@@ -367,9 +431,12 @@ def llm_synthesis(**inputs: Any) -> Dict[str, Any]:
     if upstream_blocks:
         prompt += "\n上游任务的真实结果：\n" + "\n\n".join(upstream_blocks) + "\n"
     prompt += (
-        "\n如果上游结果不足以完成任务，请明确说明缺什么，不要编造。"
-        "如果上游给出了来源（站点/链接/抓取时间），最终结论必须保留至少 3 条来源，"
-        "并且不得新增或改写任何链接、日期、项目名。"
+        "\n只有当任务依赖外部事实、而现有信息确实不足以判断时，才说明缺什么，不要编造。"
+        "写作、文案、方案、结构设计这类任务可以直接基于用户目标完成，"
+        "不要求来源，也不得把「缺少来源」当成拒绝产出的理由。"
+        "如果上游确实给出了来源（站点/链接/抓取时间），且结论引用了这些事实，"
+        "就必须原样保留至少 3 条来源，不得新增或改写任何链接、日期、项目名；"
+        "没有来源时不要编造，也不要为了凑来源去引用无关链接。"
     )
 
     try:

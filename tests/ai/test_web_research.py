@@ -224,15 +224,49 @@ class TestLiveSearch:
 
 # ------------------------------------------------------------------- switches
 class TestConfiguration:
-    def test_default_is_on_and_explicit_off_wins(self, monkeypatch):
+    def test_default_is_off(self, monkeypatch, tmp_path):
         monkeypatch.delenv(wr.ENABLE_ENV, raising=False)
+        monkeypatch.setenv(wr.SETTINGS_FILE_ENV, str(tmp_path / "privacy.json"))
+        assert wr.enabled() is False
+
+    def test_ui_choice_is_persisted_and_respected(self, monkeypatch, tmp_path):
+        monkeypatch.delenv(wr.ENABLE_ENV, raising=False)
+        monkeypatch.setenv(wr.SETTINGS_FILE_ENV, str(tmp_path / "privacy.json"))
+        assert wr.enabled() is False
+        wr.set_research_enabled(True)
         assert wr.enabled() is True
+        wr.set_research_enabled(False)
+        assert wr.enabled() is False
+
+    def test_explicit_env_wins_over_ui_choice(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(wr.SETTINGS_FILE_ENV, str(tmp_path / "privacy.json"))
+        wr.set_research_enabled(True)
         for value in ("0", "false", "off", "no", "disabled"):
             monkeypatch.setenv(wr.ENABLE_ENV, value)
             assert wr.enabled() is False
-        for value in ("1", "true", "on", "yes"):
-            monkeypatch.setenv(wr.ENABLE_ENV, value)
-            assert wr.enabled() is True
+        monkeypatch.setenv(wr.ENABLE_ENV, "1")
+        wr.set_research_enabled(False)
+        assert wr.enabled() is True
+
+    def test_disclosure_names_the_three_sites(self, monkeypatch):
+        monkeypatch.delenv(wr.PROVIDERS_ENV, raising=False)
+        text = wr.disclosure_text()
+        for host in ("hn.algolia.com", "api.github.com", "export.arxiv.org"):
+            assert host in text
+
+    def test_arxiv_endpoint_is_https(self, monkeypatch):
+        captured = {}
+
+        def fake_get(url, timeout, headers=None):
+            captured["url"] = url
+            return (
+                '<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+            )
+
+        monkeypatch.setattr(wr, "http_get", fake_get)
+        wr._arxiv("AI", 5, 3.0, None)
+        assert captured["url"].startswith("https://export.arxiv.org/")
+
 
     def test_provider_list_and_timeout_are_configurable(self, monkeypatch):
         monkeypatch.setenv(wr.PROVIDERS_ENV, "github")
@@ -253,6 +287,35 @@ class TestConfiguration:
             assert report.sources[0].title == "自定义源"
         finally:
             wr.PROVIDERS.pop("custom", None)
+
+
+class TestPhraseSanitisation:
+    def test_keywords_are_extracted_when_hints_hit(self):
+        assert wr.build_search_phrase("帮我查一下 React 19 的新特性") == "React 19"
+
+    def test_unmatched_chinese_is_never_sent_verbatim(self):
+        query = (
+            "请帮我查一下量子计算在表面码纠错方面有哪些值得关注的工程化技术路线"
+            "以及相关的实现推荐和已知局限，还有低温控制与测量环节的实践进展"
+        )
+        phrase = wr.build_search_phrase(query)
+        assert phrase != query
+        assert len(phrase) <= wr.MAX_PHRASE_CHARS
+        assert "帮我查一下" not in phrase
+
+    def test_pii_is_stripped_before_egress(self):
+        query = "我的邮箱是 alice@example.com 电话 13800138000 请帮我查一下最新论文"
+        phrase = wr.build_search_phrase(query)
+        assert "alice@example.com" not in phrase
+        assert "13800138000" not in phrase
+        assert "邮箱" not in phrase
+        assert "电话" not in phrase
+
+    def test_urls_and_keys_are_stripped(self):
+        query = "看看 https://secret.example/path 和 sk-abcdefghijklmnop 这个，最新 AI"
+        phrase = wr.build_search_phrase(query)
+        assert "secret.example" not in phrase
+        assert "sk-abcdefghijklmnop" not in phrase
 
 
 # ----------------------------------------------------------------- tool layer
@@ -291,9 +354,45 @@ class TestResearchTool:
 
         assert output["success"] is True, "retrieval failure must not fail the task"
         assert output["basis"] == "model_knowledge"
-        assert "未取得结果" in output["result"]
-        assert "HTTP 403" in output["result"]
+        assert "联网检索没成功" in output["result"]
+        assert "你的问题照常回答" in output["result"]
+        # 技术细节只留在 retrieval_error / 审计里，不糊到用户脸上。
+        assert "HTTP 403" not in output["result"]
+        assert output["retrieval_error"] == "github: HTTP 403"
         assert "基于已有知识的回答。" in output["result"]
+
+    def test_pii_is_scrubbed_before_clause_splitting(self, monkeypatch):
+        """邮箱/电话/密钥/URL 必须在按标点切句之前就抹掉，不能留残片出网。"""
+        monkeypatch.setenv(wr.ENABLE_ENV, "1")
+        captured = {}
+
+        def _capture(query, **kwargs):
+            captured["query"] = query
+            return _report(ok=False, error="offline")
+
+        monkeypatch.setattr(wr, "search", _capture)
+        monkeypatch.setattr(tools_local, "_model_call", lambda prompt: "回答")
+
+        tools_local.llm_research(
+            query=(
+                "今天有什么值得关注的 AI 开源项目？我的邮箱 alice@example.com，"
+                "手机号 13800138000，鉴权串 sk-live-ABCD1234567890SECRET，"
+                "参考链接 https://internal.example.com/private?token=abc123"
+            )
+        )
+
+        search_input = captured["query"]
+        phrase = wr.build_search_phrase(search_input)
+        for secret in (
+            "alice",
+            "example.com",
+            "13800138000",
+            "sk-live-ABCD1234567890SECRET",
+            "internal.example.com",
+        ):
+            assert secret not in search_input, f"{secret} 残片仍进入检索输入"
+            assert secret not in phrase, f"{secret} 残片仍进入检索词"
+        assert phrase == "open source project AI"
 
     def test_disabled_switch_matches_previous_behaviour(self, monkeypatch):
         monkeypatch.setenv(wr.ENABLE_ENV, "0")
