@@ -723,6 +723,18 @@ import uvicorn.main  # noqa: F401
 import uvicorn.protocols.http.auto  # noqa: F401
 import dotenv  # noqa: F401
 import aiosqlite  # noqa: F401
+# 下面五个同样只在业务路径/子进程里出现，启动图带不上：
+#   requests         —— src/ai/model_discovery.py 模块顶层导入，但该模块不在启动链上；
+#                       漏掉时 offline 运行时首调模型发现即 ModuleNotFoundError，
+#                       其传递依赖 urllib3 / certifi / idna / charset_normalizer 也一并缺失。
+#   fastmcp / mcp    —— src/adapters/mcp/mcp_adapter.py（模块体导入，适配器按需加载）。
+#   prometheus_client—— src/observability/metrics.py（指标注册）。
+#   psutil           —— src/selfmod/sandbox.py（沙箱子进程守卫）。
+import requests  # noqa: F401
+import fastmcp  # noqa: F401
+import mcp  # noqa: F401
+import prometheus_client  # noqa: F401
+import psutil  # noqa: F401
 
 stdlib = set(sys.stdlib_module_names)
 pseudo = set(%(pseudo)r)
