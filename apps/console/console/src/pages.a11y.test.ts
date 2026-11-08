@@ -98,3 +98,56 @@ describe('目标与任务', () => {
     expect(GOALS).not.toContain('os-icon-btn')
   })
 })
+
+describe('账号 / 运维 / 首屏后续七页', () => {
+  test('我的账号与成员管理：失败按 alert 播报，成功才是 status', () => {
+    const source = read('./pages/Members.tsx')
+    expect(source).toContain("role={notice.tone === 'ok' ? 'status' : 'alert'}")
+    expect(source).not.toContain('className="os-alert" role="status"')
+  })
+
+  test('身份与权限：错误块与查询失败都带 role="alert"', () => {
+    const source = read('./pages/Identity.tsx')
+    expect(source).toContain('<div className="os-alert" role="alert">')
+    expect(source).toContain('<div className="os-alert" key={index} role="alert">')
+    expect(source).toMatch(/className="os-error" role="alert"/)
+  })
+
+  test('备份与迁移：失败按 alert 播报', () => {
+    const source = read('./pages/Backup.tsx')
+    expect(source).toContain("role={notice.tone === 'ok' ? 'status' : 'alert'}")
+  })
+
+  test('恢复码：失败按 alert 播报', () => {
+    const source = read('./pages/Recovery.tsx')
+    expect(source).toContain("role={notice.tone === 'ok' ? 'status' : 'alert'}")
+  })
+
+  test('七页没有纯图标无名称按钮', () => {
+    for (const page of [
+      './pages/Identity.tsx',
+      './pages/Members.tsx',
+      './pages/Backup.tsx',
+      './pages/Recovery.tsx',
+      './pages/About.tsx',
+      './pages/Workbench.tsx',
+      './pages/Operations.tsx',
+    ]) {
+      expect(read(page)).not.toContain('os-icon-btn')
+    }
+  })
+
+  test('关于与隐私：许可证是可选中的真实文本，不是图片', () => {
+    const source = read('./pages/About.tsx')
+    expect(source).toContain('<pre style={licensePreStyle}>')
+    expect(source).toContain('product_license.text')
+    expect(source).toContain('notices_text')
+  })
+
+  test('数据中心与工作台的错误仍走 role="alert" / 状态区', () => {
+    const operations = read('./pages/Operations.tsx')
+    expect(operations).toContain('role="alert"')
+    const workbench = read('./pages/Workbench.tsx')
+    expect(workbench).not.toContain('os-icon-btn')
+  })
+})

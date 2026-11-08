@@ -39,9 +39,17 @@ export const BANNED_UI_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /组织与任务/, why: '阶段名里的"组织"会被读成层级归属' },
   { pattern: /embedding/i, why: '向量模型的英文术语' },
   { pattern: /人类主权|admin 角色/, why: '内部角色术语' },
-  { pattern: /\.db\b/i, why: '数据库文件名' },
   { pattern: /ACCOUNT_/, why: '内部错误码' },
   { pattern: /CREDENTIAL_/, why: '内部错误码' },
+  // ── 允许用户必须知道的文件名，禁止真实机密与绝对路径 ─────────────────
+  // `model_config.key` / `model_registry.sqlite3` / `data-dir.txt` 这类
+  // 「用户备份时必须一起带走」的文件名是**有意上屏**的，不是内部字段泄露。
+  // 仍然禁止：真实密钥值、JWT 密钥、含用户名的绝对磁盘路径。
+  { pattern: /[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\\\s]+/i, why: '含用户名的绝对磁盘路径' },
+  { pattern: /\/(?:home|Users)\/[^/\s]+/, why: '含用户名的绝对磁盘路径' },
+  { pattern: /\bsk-[A-Za-z0-9_-]{16,}/, why: '真实密钥值' },
+  { pattern: /\bAIza[0-9A-Za-z_-]{20,}/, why: '真实密钥值' },
+  { pattern: /\bJWT_SECRET\b|\bSECRET_KEY\b/, why: 'JWT 密钥' },
   // ── 交付面审计追加：策略代号 / 脚本路径 / 层级词 / 机器串 ────────────
   { pattern: /fail-closed|fail-open/i, why: '策略实现术语' },
   { pattern: /\bPolicy\s*[A-Z]?-?\d+/i, why: '策略代号' },
@@ -56,7 +64,8 @@ export const BANNED_UI_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /\boutcome\b/i, why: '内部字段名（应写"结果"）' },
   { pattern: /\bJWT\b|\bBearer\b/i, why: '认证协议术语' },
   { pattern: /\bscope\b/i, why: '内部权限字段（应写"权限范围"）' },
-  { pattern: /\b[a-z][a-z0-9]*_[a-z0-9_]+\b/, why: '机器字段名（snake_case）' },
+  { pattern: /\btenant\b/i, why: '内部账号字段（应写"账号/组织"）' },
+  { pattern: /\btoken\b/i, why: '认证字段 token（应写"登录凭证"）' },
   {
     pattern: /[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^\s，。；、]+/,
     why: '键值形式的机器串',
@@ -67,6 +76,32 @@ export const BANNED_UI_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
     why: '英文异常原文',
   },
   { pattern: /\bError:|\bError\b/i, why: '英文异常原文' },
+]
+
+/** 显式标注：写了这句话的文案允许出现技术标识（给技术支持看）。 */
+export const TECH_SUPPORT_MARKER = '这是给技术支持看的技术信息'
+
+/**
+ * 「机器标识漏到用户文案」的三类形态。单独成表，是因为它们允许被
+ * `TECH_SUPPORT_MARKER` 显式豁免 —— 其余黑话没有任何豁免通道。
+ */
+export const MACHINE_ID_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
+  // 机器字段名仍禁止；但带扩展名的文件名（model_config.key）放行 ——
+  // 负向前瞻让 `model_config` 后面紧跟 `.key` 时不命中。
+  {
+    pattern: /\b[a-z][a-z0-9]*_[a-z0-9_]+\b(?!\.[a-z0-9]+)/,
+    why: '机器字段名（snake_case）',
+  },
+  // 小写开头、至少一段驼峰：nextSinceSeq / modelConfig。
+  {
+    pattern: /\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b/,
+    why: '技术标识（camelCase）',
+  },
+  // 用户不需要在界面上读到的数据 / 日志文件名。
+  {
+    pattern: /\b[A-Za-z0-9_-]+\.(?:json|db|log)\b/,
+    why: '数据/日志文件名',
+  },
 ]
 
 const VISIBLE_ATTR =
@@ -122,6 +157,11 @@ export function findBannedCopy(source: string): Array<{ text: string; why: strin
     for (const rule of BANNED_UI_PATTERNS) {
       if (rule.pattern.test(text)) hits.push({ text, why: rule.why })
     }
+    // 唯一豁免：文案自己写明了「这是给技术支持看的技术信息」。
+    if (text.includes(TECH_SUPPORT_MARKER)) continue
+    for (const rule of MACHINE_ID_PATTERNS) {
+      if (rule.pattern.test(text)) hits.push({ text, why: rule.why })
+    }
   }
   return hits
 }
@@ -158,12 +198,64 @@ describe('用户可见文案门禁', () => {
     ['<p title="后端没启动" />', '工程术语（应写"本地服务"）'],
     ['<p title="粘贴 Bearer 令牌" />', '认证协议术语'],
     ['<p title="子账号 scope 为空" />', '内部权限字段（应写"权限范围"）'],
+    ['<p title="当前 tenant 不可见" />', '内部账号字段（应写"账号/组织"）'],
+    ['<p title="token 已过期" />', '认证字段 token（应写"登录凭证"）'],
     ['<p title="account_id 缺失" />', '机器字段名（snake_case）'],
     ['<p title="请求失败 target=*" />', '键值形式的机器串'],
     ['<p title="ENOENT: no such file" />', '英文异常原文'],
     ['<p title="Error: something broke" />', '英文异常原文'],
   ])('新规则命中：%s', (source, why) => {
     expect(findBannedCopy(source).some((hit) => hit.why === why)).toBe(true)
+  })
+
+  test('允许用户必须知道的文件名（正例）', () => {
+    // 这些文件名是备份说明的一部分：用户不带它们，已存的 Key 就解不开。
+    const source =
+      '<p title="备份必须同时带 data\\model_config.key 与 data\\model_registry.sqlite3，以及 data-dir.txt" />'
+    expect(findBannedCopy(source)).toEqual([])
+  })
+
+  test('反证：next_since_seq 漏进用户文案必须报红', () => {
+    const hits = findBannedCopy('<p>；记录较多，请用 next_since_seq 继续导出</p>')
+    expect(hits.some((hit) => hit.why === '机器字段名（snake_case）')).toBe(true)
+  })
+
+  test('反证：camelCase 技术名与数据/日志文件名必须报红', () => {
+    expect(
+      findBannedCopy('<p>请检查 nextSinceSeq 字段</p>').some(
+        (hit) => hit.why === '技术标识（camelCase）',
+      ),
+    ).toBe(true)
+    for (const file of ['data.json', 'ledger.db', 'server.log']) {
+      expect(
+        findBannedCopy(`<p>删除 ${file} 后重试</p>`).some(
+          (hit) => hit.why === '数据/日志文件名',
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test('显式标注为技术支持信息时放行', () => {
+    const annotated = `<p>请把 data.json 发给支持人员（${TECH_SUPPORT_MARKER}）</p>`
+    expect(findBannedCopy(annotated)).toEqual([])
+  })
+
+  test('真实密钥与含用户名的绝对路径仍然拦截（反例）', () => {
+    expect(
+      findBannedCopy('<p title="密钥是 sk-abcdefghijklmnop123456" />').some(
+        (hit) => hit.why === '真实密钥值',
+      ),
+    ).toBe(true)
+    expect(
+      findBannedCopy(
+        '<p title="配置文件在 C:\\Users\\Administrator\\liuhao\\model_config.key" />',
+      ).some((hit) => hit.why === '含用户名的绝对磁盘路径'),
+    ).toBe(true)
+    expect(
+      findBannedCopy('<p title="JWT_SECRET=abcdefghijklmnop" />').some(
+        (hit) => hit.why === 'JWT 密钥',
+      ),
+    ).toBe(true)
   })
 
   test('跨行 JSX 文案与表达式里的字符串同样在扫描范围内', () => {

@@ -1,4 +1,4 @@
-/* 鎏灏 AI OS 驾驶舱 —— Service Worker
+/* LiuHao AI OS · 鎏灏智能中枢 驾驶舱 —— Service Worker
  *
  * 职责边界（刻意收得很窄）
  * ----------------------

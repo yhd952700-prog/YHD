@@ -7,7 +7,13 @@
  */
 
 import { describe, expect, test } from 'vitest'
-import { neutralLayerLabel } from './layerLabels'
+import {
+  capabilityModuleLabel,
+  capabilityStatusLabel,
+  capabilityStatusTone,
+  neutralLayerLabel,
+  phaseLabel,
+} from './layerLabels'
 
 describe('neutralLayerLabel', () => {
   test.each([
@@ -62,5 +68,43 @@ describe('neutralLayerLabel', () => {
     for (const input of inputs) {
       expect(neutralLayerLabel(input)).not.toContain('内核')
     }
+  })
+
+  test('注册表英文模块名按稳定键翻成中文，不把英文原名上屏', () => {
+    expect(capabilityModuleLabel('identity', 'Identity Kernel — Agent identity')).toBe('身份与权限')
+    expect(capabilityModuleLabel('memory', 'Memory Kernel — Long-term memory')).toBe('记忆存储')
+    expect(capabilityModuleLabel('security', 'Security Kernel')).toBe('安全控制')
+    expect(capabilityModuleLabel('audit', 'Audit Kernel — Append-only trail')).toBe('审计留痕')
+    expect(capabilityModuleLabel('plugin', 'Plugin Kernel — Extension loading')).toBe('插件扩展')
+    expect(capabilityModuleLabel('workflow', 'Workflow Kernel')).toBe('能力模块')
+    expect(capabilityModuleLabel('', 'Workflow Kernel')).toBe('能力模块')
+    expect(capabilityModuleLabel('unknown', '增长引擎')).toBe('增长引擎')
+  })
+})
+
+describe('能力状态与阶段', () => {
+  test.each([
+    ['IMPLEMENTED', '已具备'],
+    ['implemented', '已具备'],
+    ['PARTIAL', '部分具备'],
+    ['PARTIALLY_IMPLEMENTED', '部分具备'],
+    ['NOT_IMPLEMENTED', '未提供'],
+    ['', '状态未知'],
+    [undefined, '状态未知'],
+  ])('状态 %s → %s', (status, expected) => {
+    expect(capabilityStatusLabel(status)).toBe(expected)
+  })
+
+  test('徽章色调与状态口径一致', () => {
+    expect(capabilityStatusTone('IMPLEMENTED')).toBe('ok')
+    expect(capabilityStatusTone('PARTIAL')).toBe('warn')
+    expect(capabilityStatusTone('NOT_IMPLEMENTED')).toBe('muted')
+  })
+
+  test('Phase 9 显示为「第 9 阶段」，不把英文阶段名上屏', () => {
+    expect(phaseLabel('Phase 9')).toBe('第 9 阶段')
+    expect(phaseLabel('第 9 阶段')).toBe('第 9 阶段')
+    expect(phaseLabel('')).toBe('—')
+    expect(phaseLabel(undefined)).toBe('—')
   })
 })

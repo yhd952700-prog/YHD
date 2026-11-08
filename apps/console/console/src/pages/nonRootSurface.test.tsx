@@ -43,9 +43,7 @@ const SESSION: Session = {
   permissions: [],
   expiresAt: 0,
   client: 'web',
-  parentAccountId: 'root',
-  path: 'root/member-b',
-  depth: 1,
+  isRoot: false,
 }
 
 const PROFILE = buildProfile(SESSION, PAYLOAD, 'live', null)
@@ -114,7 +112,9 @@ describe('成员视角：账号面页面', () => {
 
   test('审计页不出现全站摘要卡', () => {
     render(<Audit query="" profile={PROFILE} />)
-    expect(document.body.textContent).toContain('审计事件')
+    // 页面对外统一叫「操作记录」（不再用「审计事件」这种内部说法），
+    // 但成员视角仍不能出现全站摘要（「审计链完整性」只给管理员）。
+    expect(document.body.textContent).toContain('操作记录')
     expect(document.body.textContent).not.toContain('审计链完整性')
     expectNoBannedText()
   })
@@ -148,9 +148,7 @@ describe('备份导入的真实边界', () => {
     principal: 'root',
     displayName: '根账号',
     scope: 'L0',
-    parentAccountId: null,
-    path: 'root',
-    depth: 0,
+    isRoot: true,
     permissions: ['account:grant', 'account:manage_children'],
   }
   const ROOT_CAPS = deriveCaps(buildProfile(ROOT_SESSION, PAYLOAD, 'live', null))

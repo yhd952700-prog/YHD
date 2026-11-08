@@ -50,6 +50,16 @@ export default defineConfig({
   plugins: [react(), serviceWorkerVersion()],
   server: {
     port: 5173,
+    fs: {
+      // 只允许控制台自己的源码/依赖，以及品牌单一来源 src/brand.json。
+      // 以前放开到仓库根（../../..），dev server 会把 /@fs/ 指向仓库里的
+      // config/app.env（JWT 签名密钥）、config/auth_secrets.json、data/*.sqlite3
+      // 一并吐出来；这里按“目录 + 单文件”精确授权。
+      allow: [
+        fileURLToPath(new URL('.', import.meta.url)),
+        fileURLToPath(new URL('../../../src/brand.json', import.meta.url)),
+      ],
+    },
     proxy: {
       // 把对话 API 代理到 FastAPI 网关，前端无需关心跨域。
       '/v1': {

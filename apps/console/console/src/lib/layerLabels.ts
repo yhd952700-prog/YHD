@@ -12,11 +12,10 @@
  */
 
 /**
- * 注册表里的英文模块名 → 中文说法。
+ * 能力模块中文名。
  *
- * `capability-registry.yaml` 的 `name` 是 `Identity Kernel — Agent identity +
- * permissions` 这类英文串，原样渲染就会把 `Kernel` 摆到界面上。按稳定的
- * `kernel` 键兜底翻译，比解析整句英文可靠。
+ * 注册表的 `name` 是英文串，直接渲染会把英文摆到界面上。
+ * 这里优先用稳定的 `kernel` 键查中文名，查不到再退回标签清洗。
  */
 const KERNEL_LABELS: Record<string, string> = {
   context: '上下文整理',
@@ -65,14 +64,6 @@ export function neutralLayerLabel(label: string | undefined): string {
   const known = NEUTRAL_LABELS[raw]
   if (known) return known
 
-  // 注册表原文：`Identity Kernel — Agent identity + permissions`。
-  // 按首个单词查中文名；查不到也绝不把 `Kernel` 留在界面上。
-  const english = raw.match(/^([A-Za-z]+)\s+Kernel\b/)
-  if (english) {
-    return KERNEL_LABELS[english[1].toLowerCase()] ?? '能力模块'
-  }
-  if (/kernel/i.test(raw)) return '能力模块'
-
   if (raw.includes('内核')) {
     const replaced = raw.replace(/内核/g, '能力').trim()
     // 「内核」单独成词时替换结果没有信息量，归入兜底分组。
@@ -84,10 +75,25 @@ export function neutralLayerLabel(label: string | undefined): string {
 }
 
 /**
+ * 能力模块中文名。
+ *
+ * 优先用注册表的稳定键（`identity` / `memory` …）查中文；键未知时清洗 `name`。
+ * 清洗后仍是英文的，归为「能力模块」，绝不让英文原名直接上屏。
+ */
+export function capabilityModuleLabel(key: string | undefined, name?: string): string {
+  const normalized = (key ?? '').trim().toLowerCase()
+  const known = KERNEL_LABELS[normalized]
+  if (known) return known
+
+  const cleaned = neutralLayerLabel(name)
+  if (/^[A-Za-z]/.test(cleaned)) return '能力模块'
+  return cleaned
+}
+
+/**
  * 注册表状态 → 界面上可读的中文。
  *
- * 原始值（`IMPLEMENTED` / `PARTIAL` / `NOT_IMPLEMENTED`）只允许出现在
- * `title` 里，不直接上屏。未知状态如实写「状态未知」，不猜成已具备。
+ * 原始状态值（已实现 / 部分实现 / 未实现）只允许出现在 `title` 里，不直接上屏。
  */
 export function capabilityStatusLabel(status: string | null | undefined): string {
   const key = (status ?? '').trim().toLowerCase()
