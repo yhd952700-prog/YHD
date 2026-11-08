@@ -109,13 +109,21 @@ export async function apiFetchWithStatus<T>(
     headers.set('Content-Type', 'application/json')
   }
 
-  const signal = init?.signal ?? AbortSignal.timeout(API_TIMEOUT_MS)
+  const callerSignal = init?.signal
+  const signal = callerSignal ?? AbortSignal.timeout(API_TIMEOUT_MS)
   let response: Response
   try {
     response = await fetch(path, { ...init, headers, cache: 'no-store', signal })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new ApiError(408, `请求超时（>${API_TIMEOUT_MS / 1000}s），请稍后重试`)
+      // 调用方自带 signal 时不知道它设了多久（升级/回滚会放宽到数十分钟），
+      // 不能谎报默认的 15 秒；这类长操作超时后服务端可能仍在执行。
+      throw new ApiError(
+        408,
+        callerSignal
+          ? '请求超时。这次操作可能仍在进行中，请刷新后查看最新状态，不要重复提交。'
+          : `请求超时（>${API_TIMEOUT_MS / 1000}s），请稍后重试`,
+      )
     }
     // 用户主动取消（离开页面）不是故障；其余 fetch 失败基本都是"连不上服务"：
     // 后端没启动、端口不对、代理断了、本机断网。浏览器原文是 "Failed to fetch"，

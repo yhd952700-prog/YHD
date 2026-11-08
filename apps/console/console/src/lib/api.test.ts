@@ -57,6 +57,24 @@ describe('apiFetch 的网络失败文案', () => {
     expect(error.message).toContain('请求超时')
   })
 
+  test('长任务自带超时时不谎报默认 15 秒，并提醒先查状态', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.reject(new DOMException('The operation timed out.', 'TimeoutError')),
+      ),
+    )
+
+    const error = (await apiFetch('/v1/upgrade/apply', {
+      method: 'POST',
+      signal: AbortSignal.timeout(60_000),
+    }).catch((err: unknown) => err)) as ApiError
+
+    expect(error.status).toBe(408)
+    expect(error.message).not.toContain('15s')
+    expect(error.message).toContain('刷新')
+  })
+
   test('调用方主动取消（AbortError）保持原样，不伪装成故障', async () => {
     const abort = new DOMException('aborted', 'AbortError')
     vi.stubGlobal(

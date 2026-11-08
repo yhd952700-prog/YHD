@@ -70,7 +70,7 @@ export interface ActivityPayload {
   limit?: number
 }
 
-export interface RegistryKernel {
+export interface RegistryModule {
   id: string
   legacy_id?: string | null
   name: string
@@ -148,7 +148,7 @@ export interface RosterPayload {
     /** real persisted employees only -- see real_employees */
     employees: number
   }
-  kernels: RegistryKernel[]
+  kernels: RegistryModule[]
   layers: RegistryLayer[]
   domains: { key: string; label: string }[]
   bands: { key: string; label: string }[]
@@ -249,11 +249,22 @@ export interface ReadyPayload {
   timestamp?: number
 }
 
+/**
+ * 内核层拦截配置快照（`GET /v1/policy/enforcement`）。
+ *
+ * 字段名以**后端实际返回**为准（`src/kernels/_enforcement.py::describe`）：
+ * `enforced_actions` 是**被拦截的动作名**（如 `tool.execute`），不是风险等级；
+ * 风险等级在审批侧另有概念（`RiskTier`）。此前前端读 `enforced_tiers`，
+ * 后端从未返回该字段，于是"生效等级"恒为空。
+ */
 export interface EnforcementPayload {
   enabled?: boolean
   env_var?: string
-  intercepting?: boolean
-  enforced_tiers?: string[]
+  spec?: string
+  enforced_actions?: string[]
+  count?: number
+  exempt_actions?: string[]
+  config_error?: string | null
   [key: string]: unknown
 }
 
