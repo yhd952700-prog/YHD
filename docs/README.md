@@ -3,8 +3,8 @@
 > **本文件是`docs/` 树的地图**：它回答两个问题 —— **按什么顺序读**，以及
 > **每篇文档是"现状"还是"目标态/历史"**。
 >
-> **覆盖状态（2026-11-06 实测）**：活跃文档 **230** 篇（不含 `archive/` 与
-> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 230 篇**。该数字由
+> **覆盖状态（2026-11-08 实测）**：活跃文档 **269** 篇（不含 `archive/` 与
+> `spec/incoming/`，也不含本索引自身），本索引**逐一列全 269 篇**。该数字由
 > [`scripts/verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py)
 > 在 CI 中机械校验：漏列、虚列、目录结构块与真实目录不一致，都会让CI 变红。
 >
@@ -89,7 +89,7 @@
 
 ---
 
-## 2. 目录结构（21 个目录，实测）
+## 2. 目录结构（30 个目录，实测）
 
 ```text
 docs/
@@ -99,29 +99,41 @@ docs/
 ├── ARCHITECTURE.md              ← 架构导航门户
 ├── GLOSSARY.md / SIDENAV.md     ← 术语表 / 站点导航
 ├── *-DESIGN.md 等其余根级文档（设计/指南/清单，详见 §4.2）
+├── a11y-keyboard-audit-20261108/ (1)  键盘可达性审计报告 + 证据截图
+├── a11y-login-fix-20261108/     (—)    登录页无障碍修复前后截图
+├── a11y-sr-hc-keyboard-20261108/ (1)   读屏 / 高对比 / 键盘验收报告 + 截图
+├── acceptance/                  (—)    验收脚本的原始证据 JSON
 ├── adr/                (3)     架构决策记录
 ├── architecture/       (8)     架构
+├── audit-30min-real-work-20261108/ (—) 30 分钟办公走查证据截图
+├── audit-first-journey-20261108/ (—)   首次使用走查证据（截图 + 网关日志）
 ├── autonomous/         (24)    治理章程 · ADR · 风险/盲点登记册 · 部署契约 · 基准
 ├── best-practices/     (5)     编码/Agent/记忆/多 AI 员工/测试最佳实践
 ├── blueprint-upgrades/ (29)    UBX 蓝图自动升级机制（6 个包 + 模板）
 ├── ci/                 (2)     CI 门禁豁免登记册 · 执行记录
+├── compliance/         (—)     SBOM · 第三方许可证原文 · 通告
 ├── decisions/          (1)     悬而未决决策登记
-├── evidence/           (7)     实测证据快照（可复现的基线/差量记录）
+├── dpi-evidence/       (—)     高 DPI 缩放验收证据（报告 JSON + 截图）
+├── evidence/           (8)     实测证据快照（可复现的基线/差量记录）
 ├── governance/         (1)     控制声明裁决登记册（control-claim）
 ├── kernel-spec/        (15)    14 内核规范（现状 + 诚实状态头）
 ├── knowledge_base/     (45)    知识库：概念 · API · 部署 · 性能 · 安全 · 集成 · FAQ
 ├── l10k/               (1)     L10K 基准设计
-├── operations/         (6)     运维与上线
+├── legal/              (1)     法务草稿（EULA，待法务确认，不随产品发布）
+├── operations/         (8)     运维与上线 · 两轮 soak 报告
 ├── oss-radar/          (8)     开源技术雷达（按路分工的选型与风险记录）
 ├── product/            (7)     产品需求 · UI/UX · 产品就绪门禁
 ├── roadmap/            (1)     百万行路线图
-├── security/           (1)     安全威胁模型
+├── security/           (2)     安全威胁模型 · 依赖漏洞报告
 ├── spec/               (12)    权威规格 / 宪法蓝图 / DoD 审计 / 迁移矩阵
 │   └── incoming/       (6)     ⚠️ 已被取代的合并草案（由 MERGE-LEDGER.md 登记）
 ├── tutorials/          (7)     从零构建 Agent / 多 AI 员工 / 代码审查 / 数据流水线教程
 ├── ui-audit-20261106/  (1)     控制台全页巡检与多账号验收报告
 └── archive/            (7)     ⚠️ 历史归档，**保持原貌**，路径为整理前原路径
 ```
+
+> 括号里是该目录的 markdown 篇数；`(—)` 表示该目录只有截图 / JSON 证据，没有
+> 独立 markdown（报告本体在根级，见 §4.19）。
 
 ---
 
@@ -145,7 +157,7 @@ docs/
 
 ---
 
-## 4. 全量清单（230 篇，逐一列出）
+## 4. 全量清单（269 篇，逐一列出）
 
 ### 4.1 根级（4）
 
@@ -156,7 +168,7 @@ docs/
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架构导航门户 · 读者顺序表 |
 | [`quickstart.md`](quickstart.md) | 快速上手 |
 
-### 4.2 根级设计与决策（42）
+### 4.2 根级设计与决策（48）
 
 | 文件 | 说明 |
 |---|---|
@@ -202,6 +214,12 @@ docs/
 | [`release-announcement.md`](release-announcement.md) | 发布文案草稿（官网/网盘分享说明） |
 | [`ui-scifi-direction.md`](ui-scifi-direction.md) | 控制台科幻未来风视觉规范（Y1.0） |
 | [`ui-reference-terse.md`](ui-reference-terse.md) | 竞品 UI 参考规格：Terse |
+| [`BRAND-CANON.md`](BRAND-CANON.md) | 品牌口径唯一来源（主名只认 `LiuHao AI OS · 鎏灏智能中枢`；改名只改 `src/brand.json`） |
+| [`RELEASE-PAGE-CONTENT.md`](RELEASE-PAGE-CONTENT.md) | 发布页 / 下载页文案源（数值字段由出包脚本写入，不手抄） |
+| [`DIAGNOSTIC-BUNDLE-READING.md`](DIAGNOSTIC-BUNDLE-READING.md) | 诊断 zip 读包指南：30 秒说出结论（面向技术支持与用户） |
+| [`TROUBLESHOOTING-USER-20261108.md`](TROUBLESHOOTING-USER-20261108.md) | 用户故障处置手册 v0.1.1（按撞上概率排序；推演项已标注） |
+| [`SBOM-LICENSE-COMPLIANCE-REPORT.md`](SBOM-LICENSE-COMPLIANCE-REPORT.md) | SBOM 与许可证合规报告（0.1.1，附 `compliance/` 原始证据） |
+| [`WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md`](WINDOWS-COMPAT-DPI-AUDIT-2026-11-08.md) | Windows 兼容性与高 DPI 只读审计（证据见 `dpi-evidence/`） |
 
 ### 4.3 `adr/`（3）— 架构决策记录
 
@@ -324,7 +342,7 @@ docs/
 | [`spec/REPO-LINE-CONVERGE.md`](spec/REPO-LINE-CONVERGE.md) | 仓库线索收敛计划 |
 | [`spec/incoming/`](spec/incoming/) | ⚠️ **已被取代的合并草案**（6 篇，由同目录 `MERGE-LEDGER.md` 登记合并过程） |
 
-### 4.9 `operations/`（6）· `product/`（7）· `l10k/`（1）· `security/`（1）· `decisions/`（1）
+### 4.9 `operations/`（8）· `product/`（7）· `l10k/`（1）· `security/`（2）· `decisions/`（1）
 
 | 文件 | 说明 |
 |---|---|
@@ -334,6 +352,8 @@ docs/
 | [`operations/health-check-spec.md`](operations/health-check-spec.md) | 健康检查规范 |
 | [`operations/scenario-chatbot.md`](operations/scenario-chatbot.md) | 场景案例 |
 | [`operations/WINDOWS-DESKTOP.md`](operations/WINDOWS-DESKTOP.md) | Windows 桌面集成：托盘 / 自启 / 防火墙指引 / 诊断包 / 关于页数据源 |
+| [`operations/soak-report-2026-11-07.md`](operations/soak-report-2026-11-07.md) | 长稳与并发 2 小时 soak 报告（2026-11-07，隔离实例实测） |
+| [`operations/soak-report-2026-11-08.md`](operations/soak-report-2026-11-08.md) | 长稳与恢复能力复测（2026-11-08，承接前一日；修复与证据见 §12） |
 | [`product/PRODUCT-READINESS.md`](product/PRODUCT-READINESS.md) | 🔴 **产品门禁 P1–P10**（有代码 ≠ 可用） |
 | [`product/KERNEL-PRODUCT-CAPABILITY.md`](product/KERNEL-PRODUCT-CAPABILITY.md) | 14 内核逐个产品成熟度 |
 | [`product/PM-PRD-v3.0.md`](product/PM-PRD-v3.0.md) | 产品需求 v3.0 |
@@ -343,6 +363,7 @@ docs/
 | [`product/console-clickthrough-spec.md`](product/console-clickthrough-spec.md) | 控制台点击贯通规格（7 字段可追溯，EAP 01 的判据单一真相） |
 | [`l10k/test-design.md`](l10k/test-design.md) | L10K 基准设计（基线数据在根 `l10k-baseline.yaml`） |
 | [`security/shell-adapter-threat-model.md`](security/shell-adapter-threat-model.md) | Shell 适配器威胁模型 |
+| [`security/dependency-vulnerability-report-2026-11-08.md`](security/dependency-vulnerability-report-2026-11-08.md) | 依赖漏洞扫描与升级建议（pip-audit + npm audit，只读） |
 | [`decisions/OPEN-DECISIONS.md`](decisions/OPEN-DECISIONS.md) | 悬而未决决策登记 |
 
 ### 4.10 `ci/`（2）— CI 门禁豁免登记 · 执行记录
@@ -478,7 +499,7 @@ docs/
 | [`knowledge_base/faq/faq.md`](knowledge_base/faq/faq.md) | FAQ |
 | [`knowledge_base/CHANGELOG.md`](knowledge_base/CHANGELOG.md) | 知识库变更记录 |
 
-### 4.17 `evidence/`（7）与 `oss-radar/`（8）— 实测证据与开源技术雷达
+### 4.17 `evidence/`（8）与 `oss-radar/`（8）— 实测证据与开源技术雷达
 
 | 文件 | 说明 |
 |---|---|
@@ -489,6 +510,7 @@ docs/
 | [`evidence/cross-verify-3fa88be0.md`](evidence/cross-verify-3fa88be0.md) | 交叉验证过程凭证 @`3fa88be0`（含 31 条失败归因） |
 | [`evidence/fault-surfaces-2026-11-06.md`](evidence/fault-surfaces-2026-11-06.md) | 故障面实测：单实例/休眠断网/时间跳变/存储/并发 |
 | [`evidence/hc01-pending-decisions-2026-11-06.md`](evidence/hc01-pending-decisions-2026-11-06.md) | HC-01 待裁决 5 项（附建议答案） |
+| [`evidence/log-only-troubleshooting-drill.md`](evidence/log-only-troubleshooting-drill.md) | 只看日志能否排障：6 个真实故障演练（3 个可定位 / 2 个勉强 / 1 个看不出） |
 | [`oss-radar/agent-orchestration.md`](oss-radar/agent-orchestration.md) | 开源技术雷达 · 第 1 路：AI 员工与编排 |
 | [`oss-radar/memory-retrieval.md`](oss-radar/memory-retrieval.md) | 开源技术雷达 · 第 2 路：记忆与检索 |
 | [`oss-radar/security-compliance.md`](oss-radar/security-compliance.md) | 开源技术雷达 · 第 3 路：安全、合规与隔离 |
@@ -504,6 +526,54 @@ docs/
 |---|---|
 | [`ui-audit-20261106/report.md`](ui-audit-20261106/report.md) | 控制台全页巡检与多账号验收报告（2026-11-06） |
 
+### 4.19 2026-11-08 一次性审计与走查（26）— ⚠️ 全部是历史快照
+
+> ⚠️ **本批是 2026-11-08 同一天、对某个工作树快照的只读审计/走查记录，不是现状。**
+> 它们保留「当时看到了什么」，用于追溯缺陷与交接；引用前必须回到代码复核。
+> 其中多篇自述「工作区有并行未提交改动」，正文行号只对当时的快照成立。
+
+| 文件 | 说明 |
+|---|---|
+| [`audit-account-matrix-20261108.md`](audit-account-matrix-20261108.md) | 多账号体系八项硬要求：真实 HTTP 正反例实测 |
+| [`audit-api-contract-20261108.md`](audit-api-contract-20261108.md) | OpenAPI 契约 × 前端请求对账（只读快照） |
+| [`audit-copywriting-20261108.md`](audit-copywriting-20261108.md) | 中文文案与术语一致性审计（以 `brand.json` / BRAND-CANON 为基准） |
+| [`audit-data-egress-20261108.md`](audit-data-egress-20261108.md) | 数据出站审计：静态 + 隔离实例 + 日志代理 + 连接采样 |
+| [`audit-data-layout-20261108.md`](audit-data-layout-20261108.md) | 安装版数据目录只读审计（SQLite 只读打开） |
+| [`audit-docs-vs-ui-20261108.md`](audit-docs-vs-ui-20261108.md) | 文档 vs 控制台 UI 对账（14 项已收口，保留原文对照） |
+| [`audit-error-copy-20261108.md`](audit-error-copy-20261108.md) | 错误码 / 提示语 / 响应体全表核对 |
+| [`audit-first-journey-20261108.md`](audit-first-journey-20261108.md) | 首次使用走查（证据见 `audit-first-journey-20261108/`） |
+| [`audit-first-run-disclosure-20261108.md`](audit-first-run-disclosure-20261108.md) | 首次使用信息披露审计（含 0.1.0 交付物核对） |
+| [`audit-install-fallback-20261108.md`](audit-install-fallback-20261108.md) | 安装器 D 盘回退路径审计（临时目录探针，未编译安装包） |
+| [`audit-local-attack-surface-20261108.md`](audit-local-attack-surface-20261108.md) | 本机攻击面：监听面与浏览器侧安全属性 |
+| [`audit-log-leakage-20261108.md`](audit-log-leakage-20261108.md) | 日志与诊断包敏感信息泄漏审计 |
+| [`audit-package-content-20261108.md`](audit-package-content-20261108.md) | 安装包 / 升级包内容核对（静默安装到审计目录） |
+| [`audit-perf-baseline-20261108.md`](audit-perf-baseline-20261108.md) | 性能基线实测（已安装 0.1.0；冷启动中位 20.9s） |
+| [`audit-provider-drift-20261108.md`](audit-provider-drift-20261108.md) | 模型厂商接口漂移韧性审计（假成功 / 静默截断 / 假失败） |
+| [`audit-size-startup-20261108.md`](audit-size-startup-20261108.md) | 安装体积与启动耗时归因 |
+| [`audit-user-journey-20261108.md`](audit-user-journey-20261108.md) | 陌生人真实旅程审计（静默安装 → 对话 → 派活 → 重启） |
+| [`audit-windows-compat-20261108.md`](audit-windows-compat-20261108.md) | Windows 兼容性只读审计（换机安装/打开可行性） |
+| [`audit-30min-real-work-20261108.md`](audit-30min-real-work-20261108.md) | 30 分钟真实办公走查（证据见同名目录 `shots/`） |
+| [`build-freeze-readiness-20261108.md`](build-freeze-readiness-20261108.md) | 冻结前条件现况（未写 `dist\`、未构建、未打包） |
+| [`handoff-account-line-33-failures-20261108.md`](handoff-account-line-33-failures-20261108.md) | 交接单：`tests/gateway` 33 个失败给账号线 |
+| [`handoff-installer-data-loss-marker-20261108.md`](handoff-installer-data-loss-marker-20261108.md) | 交接单：区分「首次安装」与「数据目录被删」给安装器线 |
+| [`log-drill-20261108-rerun.md`](log-drill-20261108-rerun.md) | 「8 类故障只看日志」重演（补丁后重跑，真实造故障） |
+| [`openapi-7-paths-registration-20261108.md`](openapi-7-paths-registration-20261108.md) | `openapi.yaml` 增量补登清单（7 条运行时路径，只增不重排） |
+| [`packaging-slimming-spec-20261108.md`](packaging-slimming-spec-20261108.md) | 打包瘦身规格：零风险排除清单（交给打包线落地） |
+| [`requirements-reconciliation-20261108.md`](requirements-reconciliation-20261108.md) | 用户要求逐条对账（已做到 / 部分 / 未做到 + 证据版本） |
+
+### 4.20 `a11y-*` 无障碍审计（2）— 报告 + 截图证据
+
+| 文件 | 说明 |
+|---|---|
+| [`a11y-keyboard-audit-20261108/report.md`](a11y-keyboard-audit-20261108/report.md) | 键盘可达性审计报告（证据见同目录 `evidence/` `shots/`） |
+| [`a11y-sr-hc-keyboard-20261108/report.md`](a11y-sr-hc-keyboard-20261108/report.md) | 读屏 / 高对比 / 键盘验收报告（14 张验收截图） |
+
+### 4.21 `legal/`（1）— ⚠️ 法务草稿，不随产品发布
+
+| 文件 | 说明 |
+|---|---|
+| [`legal/EULA-DRAFT-pending-review.md`](legal/EULA-DRAFT-pending-review.md) | EULA 草稿（**AI 起草，未经法务确认，不得对外发布**；登记于 DELIVERY-CHECKLIST） |
+
 ---
 
 ## 5. 门禁：本文档的可核验性
@@ -513,7 +583,7 @@ docs/
 
 | 门禁 | 保证什么 | 抓过的真实缺陷 |
 |---|---|---|
-| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 230 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
+| [`verify_docs_index_coverage.py`](../scripts/verify_docs_index_coverage.py) | 本索引**逐一列全** 269 篇活跃文档；不虚列；目录结构块与真实目录一致 | 旧版只覆盖 **43/121（35.5%）**，且完全遗漏 `autonomous/`（含治理章程）与 `blueprint-upgrades/` |
 | [`verify_doc_links.py`](../scripts/verify_doc_links.py) | 活跃文档面的**每条相对链接都可达** | `ARCHITECTURE.md` 的"读者应该先读"入口是死链 |
 | [`verify_doc_count_claims.py`](../scripts/verify_doc_count_claims.py) | KERNEL-CANON 的**每个计数可从 HEAD 复算**，且合计与表格自洽 | KERNEL-CANON v1.0：14/14 行数全错，且合计与自身表格差 190 行 |
 | [`verify_openapi_contract.py`](../scripts/verify_openapi_contract.py) | 公布的 API 契约 **等于运行时真实契约** | `openapi.yaml` 声明 6 条全不存在，漏掉全部 58 条真实路径 |

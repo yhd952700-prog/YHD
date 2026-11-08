@@ -32,6 +32,10 @@ existing file or directory. Absolute `http(s)://`, `mailto:`, `file://`, and pur
 fragment (`#anchor`) links are out of scope: the first two are not ours to
 validate, and `file://` links are only meaningful on the machine that wrote them.
 
+Quoted syntax is not a claim: a link written inside an inline code span
+(`` `[标题](url)` ``) or a fenced code block is example text, not a markdown
+link (CommonMark renders it literally), so it is skipped rather than reported.
+
 HONESTY BOUNDARY
 ----------------
 PASS means "no relative link in the scanned surface dangles". It does NOT mean the
@@ -86,6 +90,17 @@ EXCLUDED_SUBSTRINGS = (
 )
 
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+CODE_SPAN_RE = re.compile(r"(`+)[^`]*?\1")
+FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def _blank_code_spans(line: str) -> str:
+    """把 inline code span 替换成等长空格，保留列位置。
+
+    ``[标题](url)`` 写在反引号里是**语法示例**，CommonMark 渲染为字面文本，
+    不是链接。直接对它报 FAIL 只会训练人忽略门禁输出。
+    """
+    return CODE_SPAN_RE.sub(lambda m: " " * len(m.group(0)), line)
 
 
 def _is_excluded(rel: str) -> bool:
@@ -99,8 +114,21 @@ def _scan_file(abs_path: str, rel: str, broken: list) -> int:
     with open(abs_path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     checked = 0
+    in_fence = False
+    fence_char = ""
     for lineno, line in enumerate(text.split("\n"), 1):
-        for m in LINK_RE.finditer(line):
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence, fence_char = True, marker[0]
+                continue
+            if marker[0] == fence_char:
+                in_fence = False
+                continue
+        if in_fence:
+            continue
+        for m in LINK_RE.finditer(_blank_code_spans(line)):
             target = m.group(1)
             if target.startswith(("http://", "https://", "#", "mailto:", "file://")):
                 continue
