@@ -97,11 +97,7 @@ def post_kernels_pause(
             detail={
                 "error": "no_instance_present",
                 "name": name,
-                "reason": (
-                    "内核已登记但当前没有实例（惰性单例尚未被使用）。"
-                    "先经其 get_*() 构造实例，或 POST /v1/kernels/init "
-                    "后再试。"
-                ),
+                "reason": "该模块已登记但尚未启用。请先在运维页完成初始化后再试。",
             },
         )
     try:
@@ -154,10 +150,7 @@ def post_kernels_resume(
             detail={
                 "error": "no_instance_present",
                 "name": name,
-                "reason": (
-                    "内核已登记但当前没有实例（惰性单例尚未被使用）。"
-                    "无法 resume 一个不存在的实例。"
-                ),
+                "reason": "该模块已登记但尚未启用，无法恢复。请先在运维页完成初始化后再试。",
             },
         )
     try:

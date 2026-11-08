@@ -56,12 +56,20 @@ def _fake_result(goal_id: str):
 
 
 class _FakeEmployee:
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_ERROR = "error"
+
     def __init__(self) -> None:
         self.name = "fake-employee"
+        self.owner_account_id = ""
         self.agents = []
         self.idle_calls = 0
         self.busy_calls = 0
         self.finished: list = []
+
+    def stable_id(self) -> str:
+        return self.name
 
     def record_goal_submitted(self, goal_id: str) -> None:
         pass
@@ -74,6 +82,9 @@ class _FakeEmployee:
 
     def record_goal_finished(self, goal_id: str, state: str) -> None:
         self.finished.append((goal_id, state))
+
+    def record_activity(self, *_args, **_kwargs) -> None:
+        pass
 
 
 class _GatedRuntime:
@@ -105,7 +116,7 @@ def test_p0_2_goal_persist_failure_is_visible(manager, tmp_path, monkeypatch):
     fake_employee = _FakeEmployee()
     monkeypatch.setattr(manager, "_ensure_employee", lambda: fake_employee)
     monkeypatch.setattr(manager, "_ensure_runtime", lambda: None)
-    monkeypatch.setattr(manager, "_persist_employee", lambda: None)
+    monkeypatch.setattr(manager, "_save_employee", lambda *a, **k: None)
 
     with pytest.raises(GoalPersistError) as raised:
         manager.create_and_execute_goal("search the archive", background=True)
@@ -174,7 +185,7 @@ def test_p1_14_parallel_goals_do_not_share_idle_state(manager, monkeypatch):
     monkeypatch.setattr(manager, "_ensure_runtime", lambda: gate)
     monkeypatch.setattr(manager, "_save_goals", lambda: None)
     monkeypatch.setattr(manager, "_agent_employee_map", lambda: {})
-    monkeypatch.setattr(manager, "_persist_employee", lambda: None)
+    monkeypatch.setattr(manager, "_save_employee", lambda *a, **k: None)
 
     entry_c = manager.create_and_execute_goal("search the archive", background=True)
     entry_d = manager.create_and_execute_goal("plan the rollout", background=True)
@@ -221,7 +232,7 @@ def test_p1_14_abnormal_exit_releases_thread_and_pool(manager, monkeypatch):
     monkeypatch.setattr(manager, "_ensure_employee", lambda: fake_employee)
     monkeypatch.setattr(manager, "_ensure_runtime", lambda: BrokenRuntime())
     monkeypatch.setattr(manager, "_agent_employee_map", lambda: {})
-    monkeypatch.setattr(manager, "_persist_employee", lambda: None)
+    monkeypatch.setattr(manager, "_save_employee", lambda *a, **k: None)
     monkeypatch.setattr(manager, "_save_goals", lambda: None)
 
     # 这条异常是测试故意制造的；吞掉预期内的线程异常，避免污染 pytest 警告。

@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
+import logging
 import os
 import re
 import uuid
@@ -33,6 +35,11 @@ from pydantic import BaseModel, Field
 
 from ..kernels.identity import _accounts, get_identity_manager
 from .account_context import AccountContext, deny, require_account_principal
+
+logger = logging.getLogger(__name__)
+
+#: 网关启动时自带的种子员工：属于基础设施，不属于"我的数据"。
+_SEED_EMPLOYEE_NAME = "liuhao-default"
 
 accounts_router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 chat_router = APIRouter(prefix="/v1/chat", tags=["chat"])
@@ -194,7 +201,84 @@ def collect_employees(context: AccountContext) -> List[Dict[str, Any]]:
     return [
         row for row in rows
         if str(row.get("owner_account_id") or context.principal) == context.principal
+        # ``liuhao-default`` 是网关自带的种子员工，不是用户数据；放进个人
+        # 归档只会让用户以为"我雇了一个默认员工"。
+        and str(row.get("name") or "") != _SEED_EMPLOYEE_NAME
     ]
+
+
+def collect_goals(context: AccountContext) -> List[Dict[str, Any]]:
+    """只导出**本人**的目标（根账号在这里也只带自己的，不聚合成员）。"""
+    try:
+        from .ai_management import AIStateManager, GoalViewer
+
+        viewer = GoalViewer(
+            principal=context.principal,
+            subtree=(context.principal,),
+            is_root=False,
+            standalone=context.standalone,
+        )
+        rows = AIStateManager().list_goals(viewer)
+    except Exception:  # noqa: BLE001 - 目标库损坏不应让整包导出失败
+        return []
+    return [
+        row for row in rows
+        if str(row.get("owner_account_id") or context.principal) == context.principal
+    ]
+
+
+def _employees_markdown(employees: List[Dict[str, Any]]) -> str:
+    lines = [
+        "# 我的员工",
+        "",
+        f"- 导出时间（UTC）：{_now_iso()}",
+        f"- 员工数：{len(employees)}",
+        "",
+    ]
+    if not employees:
+        lines.append("（当前账号名下没有员工）")
+    for row in employees:
+        lines += [
+            f"## {row.get('display_name') or row.get('name') or '未命名员工'}",
+            "",
+            f"- 标识：{row.get('name') or ''}",
+            f"- 角色：{row.get('role_description') or '（未填写）'}",
+            f"- 状态：{row.get('status_label') or row.get('status') or ''}",
+            f"- 代理数：{row.get('agent_count') or 0}",
+            f"- 累计任务：{((row.get('stats') or {}).get('total_tasks_completed') or 0)} 完成 / "
+            f"{((row.get('stats') or {}).get('total_tasks_failed') or 0)} 失败",
+            f"- 能力：{'、'.join(str(c) for c in (row.get('default_capabilities') or [])) or '（未设置）'}",
+            "",
+        ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _goals_markdown(goals: List[Dict[str, Any]]) -> str:
+    lines = [
+        "# 我的目标",
+        "",
+        f"- 导出时间（UTC）：{_now_iso()}",
+        f"- 目标数：{len(goals)}",
+        "",
+    ]
+    if not goals:
+        lines.append("（当前账号名下没有目标）")
+    for row in goals:
+        lines += [
+            f"## {str(row.get('natural_language') or '').strip() or row.get('goal_id') or '未命名目标'}",
+            "",
+            f"- 目标 id：{row.get('goal_id') or ''}",
+            f"- 状态：{row.get('state') or ''}",
+            f"- 创建时间：{row.get('created_at') or ''}",
+            f"- 任务：{row.get('task_count') or 0} 个，"
+            f"完成 {row.get('completed_tasks') or 0}，失败 {row.get('failed_tasks') or 0}",
+        ]
+        if row.get("error"):
+            lines.append(f"- 失败原因：{row['error']}")
+        if row.get("assigned_employee"):
+            lines.append(f"- 负责员工：{row['assigned_employee']}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def collect_usage(principal: str) -> Dict[str, Any]:
@@ -475,6 +559,7 @@ def collect_workspace_files(context: AccountContext) -> Tuple[List[Dict[str, Any
     index = AIStateManager().artifact_owner_index()
     entries: List[Dict[str, Any]] = []
     skipped: List[str] = []
+    protected: List[str] = []
     total = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
@@ -484,6 +569,10 @@ def collect_workspace_files(context: AccountContext) -> Tuple[List[Dict[str, Any
         for name in filenames:
             absolute = os.path.join(dirpath, name)
             rel = str(os.path.relpath(absolute, root)).replace("\\", "/").strip("/")
+            if _looks_like_credential(name):
+                # 人可读导出不含任何凭据：哪怕文件落在用户产物目录里也跳过。
+                protected.append(rel)
+                continue
             owners = set(index.get(rel, set()))
             # 公共文件和他人的产物一律不带走（一键导出的是"我的数据"）。
             if context.principal not in owners:
@@ -507,7 +596,27 @@ def collect_workspace_files(context: AccountContext) -> Tuple[List[Dict[str, Any
                 continue
             entries.append({"path": rel, "size": len(raw), "content": raw})
             total += len(raw)
-    return entries, {"files": len(entries), "bytes": total, "skipped": skipped}
+    return entries, {
+        "files": len(entries),
+        "bytes": total,
+        "skipped": skipped,
+        "skipped_credentials": protected,
+    }
+
+
+_CREDENTIAL_NAME_HINTS = (
+    ".env", "auth_secrets", "recovery_code", "recovery_handoff",
+    "model_config_key", "id_rsa", "id_ed25519", ".pem", ".pfx", ".p12",
+    ".key", ".kdbx",
+)
+
+
+def _looks_like_credential(name: str) -> bool:
+    """按文件名识别凭据：人可读导出绝不带 Key、口令或恢复码。"""
+    lowered = str(name or "").lower()
+    if lowered.startswith(".env") or lowered.endswith(".env"):
+        return True
+    return any(hint in lowered for hint in _CREDENTIAL_NAME_HINTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -528,6 +637,7 @@ def build_export_archive(
     principal = context.principal
     conversations, conversation_manifest = collect_conversations(context)
     memories = collect_memories(principal)
+    goals = collect_goals(context)
     employees = collect_employees(context)
     usage = collect_usage(principal)
     knowledge: List[Dict[str, Any]] = []
@@ -547,27 +657,44 @@ def build_export_archive(
         "privacy": {
             "other_accounts_data": False,
             "credentials_or_keys": False,
+            "recovery_codes": False,
             "absolute_paths": False,
             "login_tokens": False,
+            "sqlite_files": False,
         },
         "contents": {
             "conversations": conversation_manifest,
             "memories": len(memories),
+            "goals": len(goals),
             "employees": len(employees),
             "knowledge": len(knowledge),
             "knowledge_status": knowledge_status,
             "usage_calls": usage.get("calls", 0),
             "files": file_manifest,
         },
-        "not_included": [
-            "别人的会话、记忆、员工或知识库",
-            "模型 Key、登录令牌、恢复码与任何凭据",
-            "本机安装路径与内部数据库文件",
-        ],
+        # 明确双向边界：只有记忆与知识库能导回；其余是人可读归档。
         "import_supported": {
             "memories": {"endpoint": "POST /v1/memory/import", "format": "json"},
             "knowledge": {"endpoint": "POST /v1/knowledge/import", "format": "json"},
         },
+        "read_only_archive": [
+            "conversations",
+            "goals",
+            "employees",
+            "usage",
+            "settings",
+            "files",
+        ],
+        "migration_hint": (
+            "想完整搬到另一台机器（会话、目标、员工、模型 Key）请用命令行加密备份："
+            "python -m src.cli backup create --encrypt --password \"你的口令\"；"
+            "这个 ZIP 只用于阅读与回导记忆/知识库。"
+        ),
+        "not_included": [
+            "别人的会话、记忆、目标、员工或知识库",
+            "模型 Key、登录令牌、恢复码与任何凭据",
+            "本机安装路径与内部数据库文件",
+        ],
     }
 
     readme = "\n".join([
@@ -575,35 +702,98 @@ def build_export_archive(
         "",
         f"- 账号：{principal}",
         f"- 导出时间（UTC）：{manifest['exported_at']}",
+        "- 本目录是人可读归档：直接双击 Markdown 就能看，不需要任何程序。",
+        "",
+        "> **想完整搬到另一台机器？请用命令行加密备份，而不是这个 ZIP。**",
+        ">",
+        "> 这个 ZIP 只用于阅读与回导记忆/知识库；会话、目标、员工清单、模型 Key",
+        "> 不会随它迁移。完整换机请执行：",
+        ">",
+        "> `python -m src.cli backup create --encrypt --password \"你的口令\"`",
+        ">",
+        "> 然后把生成的加密备份文件拷到新机器导入（图形界面：系统设置 → 备份与迁移）。",
         "",
         "## 包含什么",
         "",
-        f"- 会话：{conversation_manifest['sessions']} 个，共 {conversation_manifest['messages']} 条消息（Markdown 全文，带时间）",
-        f"- 记忆：{len(memories)} 条（memories.json / memories.md）",
-        f"- 员工：{len(employees)} 个（employees.json，只含你自己的）",
-        f"- 知识库：{len(knowledge)} 篇（knowledge.json 可回导；knowledge/*.md 供阅读）",
-        f"- 用量：usage.csv（按 Key 归属汇总）",
+        f"- 会话：{conversation_manifest['sessions']} 个，共 {conversation_manifest['messages']} 条消息"
+        "（conversations/*.md，每段对话带时间）",
+        f"- 记忆：{len(memories)} 条（memories.md / memories.json）",
+        f"- 目标：{len(goals)} 个（goals.md / goals.json）",
+        f"- 员工：{len(employees)} 个（employees.md / employees.json，只含你自己的）",
+        f"- 知识库：{len(knowledge)} 篇"
+        + ("（knowledge/*.md 供阅读；knowledge.json 可回导）"
+           if knowledge_status == "ok" else "（知识库未启用，本次未包含）"),
+        "- 用量：usage.csv / usage.json（按 Key 归属汇总）",
         f"- 工作区产物：{file_manifest['files']} 个（files/ 目录，只含归属你的文件）",
+        "- 每个文件是什么：见 INDEX.md（索引页）。",
         "",
         "## 不包含什么",
         "",
-        "- 其他成员的会话、记忆、员工、知识库与文件；",
-        "- 任何模型 Key、登录令牌、恢复码或凭据；",
-        "- 内部数据库、安装路径与系统配置密文。",
+        "- 其他成员的会话、记忆、目标、员工、知识库与文件；",
+        "- 任何模型 Key、登录令牌、恢复码或凭据（连疑似凭据的产物文件也会被跳过）；",
+        "- 内部数据库（.sqlite/.db）与安装路径。",
         "",
-        "## 怎么导回来",
+        "## 能不能导回来：只有两项可以",
         "",
-        "记忆：把 memories.json 提交到 `POST /v1/memory/import`；",
-        "知识库：把 knowledge.json 提交到 `POST /v1/knowledge/import`（需要已配置真实向量化模型）。",
+        "| 数据 | 能否导回 | 怎么做 |",
+        "| ---- | -------- | ------ |",
+        "| 记忆 | 可以 | 把 memories.json 提交到 `POST /v1/memory/import` |",
+        "| 知识库 | 可以 | 把 knowledge.json 提交到 `POST /v1/knowledge/import`（需已配置向量化模型） |",
+        "| 会话 | 只读归档 | 给人读的 Markdown；完整换机请用命令行加密备份（见页首） |",
+        "| 目标 | 只读归档 | 同上：命令行 `backup create --encrypt` |",
+        "| 员工清单 | 只读归档 | 同上（在新机上重新雇佣即可，不必手工搬） |",
+        "| 工作区文件 | 只读归档 | 需要时自己拷回工作区 |",
+        "",
         "重复导入不会产生副本：记忆按（正文/来源/时间）去重，知识库按内容哈希去重。",
         "",
-        "会话是给人读的 Markdown；跨机恢复完整会话请使用「备份与迁移」的加密凭据包。",
-        "",
     ])
+
+    index_lines = [
+        "# 索引",
+        "",
+        "本页说明目录里每一份文件是什么。Markdown 供人阅读，JSON 供程序或以后导入使用。",
+        "",
+        "| 文件 | 是什么 |",
+        "| ---- | ------ |",
+        "| README.md | 这份导出的说明：包含什么、不包含什么、哪些能导回 |",
+        "| INDEX.md | 本页：文件清单与用途 |",
+        "| manifest.json | 机器可读清单：条数、隐私边界、回导支持范围 |",
+        f"| memories.md | 我的记忆，人可读（{len(memories)} 条） |",
+        f"| memories.json | 我的记忆，可回导（{len(memories)} 条） |",
+        f"| goals.md | 我的目标（{len(goals)} 个） |",
+        f"| goals.json | 我的目标，机器可读（{len(goals)} 个） |",
+        f"| employees.md | 我的员工清单（{len(employees)} 个） |",
+        f"| employees.json | 员工实体明细（{len(employees)} 个），只读归档 |",
+        "| usage.csv | 用量汇总（Excel 可直接打开） |",
+        "| usage.json | 用量汇总，机器可读 |",
+        "| settings.json | 账号侧真实保存的设置（界面偏好存在浏览器里） |",
+    ]
+    if conversations:
+        index_lines.append(
+            f"| conversations/index.json | 会话清单（{conversation_manifest['sessions']} 个） |"
+        )
+        for number, item in enumerate(conversations, start=1):
+            name = _safe_name(item["session_id"], f"session-{number}")
+            index_lines.append(
+                f"| conversations/{number:03d}-{name}.md | 会话「{item['session_id']}」完整对话 |"
+            )
+    if knowledge:
+        index_lines.append(f"| knowledge.json | 知识库文档全文，可回导（{len(knowledge)} 篇） |")
+        for number, doc in enumerate(knowledge, start=1):
+            name = _safe_name(doc.get("title") or doc.get("document_id"), f"document-{number}")
+            index_lines.append(
+                f"| knowledge/{number:03d}-{name}.md | 知识库文档「{doc.get('title') or name}」 |"
+            )
+    if file_manifest["files"]:
+        index_lines.append(
+            f"| files/ | 你名下的工作区产物（{file_manifest['files']} 个，按原相对路径存放） |"
+        )
+    index_lines.append("")
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("README.md", readme.encode("utf-8"))
+        archive.writestr("INDEX.md", "\n".join(index_lines).encode("utf-8"))
         archive.writestr("manifest.json", _json_bytes(manifest))
         for index, item in enumerate(conversations, start=1):
             name = _safe_name(item["session_id"], f"session-{index}")
@@ -620,7 +810,13 @@ def build_export_archive(
             _json_bytes({"format": "liuhao.memory.export.v1", "principal": principal, "entries": memories}),
         )
         archive.writestr("memories.md", _memory_markdown(principal, memories).encode("utf-8"))
+        archive.writestr(
+            "goals.json",
+            _json_bytes({"format": "liuhao.goals.export.v1", "principal": principal, "goals": goals}),
+        )
+        archive.writestr("goals.md", _goals_markdown(goals).encode("utf-8"))
         archive.writestr("employees.json", _json_bytes({"employees": employees}))
+        archive.writestr("employees.md", _employees_markdown(employees).encode("utf-8"))
         archive.writestr(
             "knowledge.json",
             _json_bytes({"format": "liuhao.knowledge.export.v1", "principal": principal, "documents": knowledge}),
@@ -645,9 +841,11 @@ def build_export_archive(
             "format": "zip",
             "conversations": conversation_manifest["messages"],
             "memories": len(memories),
+            "goals": len(goals),
             "employees": len(employees),
             "knowledge": len(knowledge),
             "files": file_manifest["files"],
+            "skipped_credentials": len(file_manifest.get("skipped_credentials") or []),
             "include_files": bool(include_files),
         },
     )
@@ -655,11 +853,11 @@ def build_export_archive(
 
 
 def _filename(principal: str) -> str:
-    # HTTP 头必须是 latin-1 可编码：中文账号名放进文件名会把响应直接打挂，
-    # 这里只保留 ASCII；ZIP 内部的条目名仍可正常使用中文。
-    ascii_name = re.sub(r"[^0-9A-Za-z._-]+", "-", str(principal or "")).strip("-") or "account"
+    # 路径不含账号名：HTTP 头必须是 latin-1 可编码，且导出文件名会被用户
+    # 保存在磁盘上——用时间戳 + 去标识短哈希即可区分，不写用户名。
+    digest = hashlib.sha256(str(principal or "").encode("utf-8")).hexdigest()[:6]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"liuhao-my-data-{ascii_name[:48]}-{stamp}.zip"
+    return f"liuhao-my-data-{stamp}-{digest}.zip"
 
 
 # --------------------------------------------------------------------------- #
@@ -779,6 +977,7 @@ __all__ = [
     "collect_employees",
     "collect_memories",
     "collect_account_settings",
+    "collect_goals",
     "collect_usage",
     "collect_workspace_files",
     "export_knowledge",

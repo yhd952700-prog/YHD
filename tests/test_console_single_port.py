@@ -40,6 +40,7 @@ import struct
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.gateway import console_static
@@ -226,6 +227,76 @@ class TestConsoleIsServed:
         assert api_call.headers["content-type"].startswith("application/json")
 
 
+class TestStaticCacheControl:
+    """静态资源缓存策略：带指纹的长缓存、入口 HTML 不缓存。
+
+    "升级后界面没变"与"每次启动重新下载整包 JS"是同一对矛盾的两端：入口
+    HTML 引用的哈希文件名必须每次重新拿，而哈希资源本身不可变。这组断言
+    钉住这两端，避免以后有人为了"快"把 ``index.html`` 也套上 long cache。
+    """
+
+    @pytest.fixture
+    def cache_client(self, tmp_path):
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<!doctype html><html><body>console</body></html>", encoding="utf-8"
+        )
+        (dist / "assets" / "index-AbCd1234.js").write_text(
+            "console.log(1)", encoding="utf-8"
+        )
+        (dist / "assets" / "logo.svg").write_text("<svg/>", encoding="utf-8")
+        (dist / "sw.js").write_text(
+            "self.addEventListener('install', () => {})", encoding="utf-8"
+        )
+        app = FastAPI()
+        console_static.mount_console(app, dist)
+        with TestClient(app) as client:
+            yield client
+
+    def test_hashed_assets_are_immutable_and_long_lived(self, cache_client):
+        response = cache_client.get("/assets/index-AbCd1234.js")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+
+    def test_the_entry_html_is_never_stored(self, cache_client):
+        for path in ("/", "/approvals"):
+            response = cache_client.get(path)
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store", path
+
+    def test_the_service_worker_is_revalidated(self, cache_client):
+        # 强缓存 sw.js 会让浏览器继续用旧 SW 回放旧外壳。
+        response = cache_client.get("/sw.js")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache, must-revalidate"
+
+    def test_unhashed_assets_are_not_given_immutable(self, cache_client):
+        response = cache_client.get("/assets/logo.svg")
+        assert response.status_code == 200
+        assert "immutable" not in response.headers["cache-control"]
+
+    def test_cache_control_classification_is_not_vacuous(self):
+        # 直接钉分类函数：正则/比较写错时上面的 HTTP 断言会一起"通过"。
+        assert console_static.cache_control_for("") == "no-store"
+        assert console_static.cache_control_for("/") == "no-store"
+        assert console_static.cache_control_for("/index.html") == "no-store"
+        assert console_static.cache_control_for("/sw.js") == (
+            "no-cache, must-revalidate"
+        )
+        assert console_static.cache_control_for("/assets/logo.svg") == (
+            "no-cache, must-revalidate"
+        )
+        assert console_static.cache_control_for("/assets/index-AbCd1234.js") == (
+            "public, max-age=31536000, immutable"
+        )
+        assert console_static.cache_control_for("/favicon.svg") == (
+            "no-cache, must-revalidate"
+        )
+
+
 class TestTheFallbackCannotShadowLaterRoutes:
     """The regression that forced the 404-handler design.
 
@@ -319,6 +390,16 @@ def pwa_bundle(tmp_path, monkeypatch) -> Path:
     bundle.mkdir()
     shutil.copytree(CONSOLE_APP / "public", bundle, dirs_exist_ok=True)
     shutil.copy2(CONSOLE_APP / "index.html", bundle / "index.html")
+    # Service Worker 构建产物不在 `public/` 里：vite 插件读取 `sw.template.js`
+    # 并生成 `dist/sw.js`（见 vite.config.ts）。这里沿用同一条规则，否则
+    # `/sw.js` 的 MIME 断言会因为文件根本不存在而失败。
+    (bundle / "sw.js").write_text(
+        (CONSOLE_APP / "sw.template.js")
+        .read_text(encoding="utf-8")
+        .replace("__BUILD_VERSION__", "test")
+        .replace("__PRECACHE_ASSETS__", "[]"),
+        encoding="utf-8",
+    )
     monkeypatch.setenv(CONSOLE_DIST_ENV, str(bundle))
     return bundle
 

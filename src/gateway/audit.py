@@ -51,6 +51,20 @@ from .policy import require_bearer_payload, require_human_principal
 
 router = APIRouter(prefix="/v1/audit", tags=["audit"])
 
+#: 单次 /verify 重算的事件上限（D-4）。
+#:
+#: 旧实现的增量校验从"最后一个 checkpoint"一路重算到表尾；checkpoint 由后台
+#: 每 300s 写一次，因此一次请求要重算的**增量区间**会随事件产生速率增长——
+#: 实测 5,063 行 p95 74–142ms、13,053 行 ~390ms，看起来像"随行数劣化"，实际
+#: 是"随两次 checkpoint 之间的事件数劣化"。这里给单次请求一个硬上限：超过就
+#: 只校验**已校验过的前缀**、把 checkpoint 写在该前缀末尾，响应如实标注
+#: ``verification_complete=false`` 与 ``pending_events``，下一次请求从那里继续。
+#: 单次工作被钉死在 ~600 行：实测 ~30µs/行（哈希 + JSON 解析），满载时按 3×
+#: 放大 ~55ms，加固定开销仍在 100ms 量级；2000 行在满载下实测 197–296ms，会
+#: 越过目标，所以取 600 而不是 2000。
+#: 需要"从头重算"时显式 ``full=true``（人工检查完整性走这条，不看预算）。
+_VERIFY_BATCH_EVENTS = 600
+
 logger = logging.getLogger(__name__)
 
 # 单次返回上限：驾驶舱/审计员都需要翻页，不能把百万行的链拖进内存。
@@ -193,9 +207,10 @@ def _unreadable_detail(exc: BaseException) -> str:
     tests/conftest.py），所以文案直接点名它 —— 这正是界面错误文案该给的
     修复指引，而不是让人猜。
     """
+    logger.warning("audit store unreadable: %s", exc)
     return (
-        f"审计库不可读：{exc}。请检查 AUDIT_DB_PATH 指向的 SQLite 文件是否"
-        "存在、且对服务进程可读；若文件被移动/截断，链校验会一并失败。"
+        "审计记录暂时读不到。请确认数据目录完整且对服务可读；"
+        "若文件被移动或损坏，链校验也会一并失败。"
     )
 
 
@@ -214,6 +229,7 @@ def _row_to_event(row) -> Dict[str, Any]:
     # handed to an HTTP caller is redacted.
     safe_details = _redact(details) if isinstance(details, dict) else details
     action = details.get("action") if isinstance(details, dict) else None
+    target = details.get("target") if isinstance(details, dict) else None
     return {
         "seq": seq,
         "event_id": event_id,
@@ -226,11 +242,55 @@ def _row_to_event(row) -> Dict[str, Any]:
         "details": safe_details,
         # 内核动作名（execution.execute 等）在 details 里，提到顶层方便人读/筛选
         "action": action,
+        # "对什么做的"同样提到顶层：界面一句话要说清 谁 + 做了什么 + 对谁。
+        "target": target,
         "event_hash": event_hash,
         "prev_event_hash": prev_event_hash,
         "hash_alg": hash_alg,
         "link_hash": link_hash,
     }
+
+
+def redact_foreign_targets(
+    events: List[Dict[str, Any]], context: AccountContext, sovereign: bool
+) -> List[Dict[str, Any]]:
+    """非根调用者：抹掉自己子树之外**账号**的 ``target``（防枚举）。
+
+    越级写尝试会留痕（``account.manage.denied``），但这条事件属于发起者本人，
+    不能借审计把上级账号名回显给他。原始行不动，只改 HTTP 投影。
+
+    只有"账号名"才涉及子树可见性。员工名、文档 id、模型 id 是对象而不是账号，
+    必须原样保留 —— 否则根账号自己也看不到"对哪个员工/哪份文档做的"。
+    """
+    if sovereign:
+        return events
+    try:
+        from ..kernels.identity import get_identity_manager
+
+        account_names = set(get_identity_manager().account_nodes())
+    except Exception:  # noqa: BLE001 - 读不到账号表时宁可少抹，不误伤对象名
+        logger.warning("could not load account nodes for target redaction", exc_info=True)
+        account_names = set()
+    projected: List[Dict[str, Any]] = []
+    for raw in events:
+        event = dict(raw)
+        target = event.get("target")
+        if (
+            isinstance(target, str)
+            and target
+            and target in account_names
+            and target != context.principal
+            and not context.can_read(target)
+        ):
+            event["target"] = None
+            details = event.get("details")
+            if isinstance(details, dict):
+                details = dict(details)
+                if details.get("target") == target:
+                    details.pop("target", None)
+                event["details"] = details
+        projected.append(event)
+    return projected
 
 
 def _read_events(
@@ -368,6 +428,7 @@ def list_events(
             status_code=503,
             detail=_unreadable_detail(exc),
         )
+    events = redact_foreign_targets(events, context, sovereign)
     for event in events:
         event["is_self"] = str(event.get("principal_id") or "") == context.principal
         # 界面直接展示；旧字段（action/outcome/...）保持不变。
@@ -431,6 +492,7 @@ def get_event(
     )
     if not visible:
         raise _neutral_not_found()
+    event = redact_foreign_targets([event], context, sovereign)[0]
     event["is_self"] = fake == context.principal
 
     duplicate = False
@@ -456,18 +518,225 @@ def get_event(
     }
 
 
-def _run_verification() -> Dict[str, Any]:
-    """跑**真实**的链校验。这里不实现哈希，只调用内核。"""
+@router.get("/export")
+def export_events(
+    since_seq: int = Query(0, ge=0, description="只导出 seq 大于该值的事件（翻页用）"),
+    limit: int = Query(
+        5000, ge=1, le=20000, description="单次导出条数上限（超出用 next_since_seq 续导）"),
+    payload=Depends(require_bearer_payload),
+) -> Dict[str, Any]:
+    """导出审计记录归档（只读，仅根账号 / 独立主权令牌）。
+
+    归档是**给人留存与比对**的副本，不是密钥证明：包含事件原文、导出时刻的
+    校验结果与尾锚点，但**不含校验密钥**（密钥永不出机）。换机后没有密钥时，
+    这份归档只能用于查阅/比对，不能替代原机上的带密钥校验。
+    """
+    context, sovereign = _account_scope(payload)
+    if not (sovereign or context.is_root):
+        raise deny(403, _accounts.CODE_CORE_CAPABILITY_DENIED, NEUTRAL_DENIED)
+    read_principals, mode = _scope_filter(context, sovereign, None)
+
+    def _run(conn):
+        if read_principals is None:
+            sql = (
+                f"SELECT {_EVENT_COLUMNS} FROM audit_events "
+                "WHERE seq > ? ORDER BY seq ASC LIMIT ?"
+            )
+            params: List[Any] = [max(0, int(since_seq)), limit]
+        else:
+            if not read_principals:
+                return []
+            placeholders = ",".join(["?"] * len(read_principals))
+            sql = (
+                f"SELECT {_EVENT_COLUMNS} FROM audit_events "
+                f"WHERE seq > ? AND principal_id IN ({placeholders}) "
+                "ORDER BY seq ASC LIMIT ?"
+            )
+            params = [max(0, int(since_seq))] + list(read_principals) + [limit]
+        return [_row_to_event(r) for r in conn.execute(sql, params).fetchall()]
+
+    try:
+        events = _store()._read_only(_run)
+    except Exception as exc:  # noqa: BLE001 - 读失败必须如实说出来
+        logger.warning("audit export query failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
+    events = redact_foreign_targets(events, context, sovereign)
+    for event in events:
+        event["is_self"] = str(event.get("principal_id") or "") == context.principal
+        event["display_title"] = event_display_title(event)
+        event["status_label"] = status_label(event.get("outcome"))
+
+    integrity = _run_verification(full=False)
+    return {
+        "schema": 1,
+        "exported_at": int(time.time()),
+        "read_scope": {
+            "mode": mode,
+            "principals": read_principals if read_principals is not None else "all",
+            "root_view": context.is_root and mode == "subtree",
+        },
+        "since_seq": int(since_seq),
+        "limit": int(limit),
+        "count": len(events),
+        "truncated": len(events) >= limit,
+        "next_since_seq": int(events[-1]["seq"]) if events else int(since_seq),
+        "events": events,
+        "integrity": integrity,
+        "retention": _store().retention_policy(),
+        "notice": (
+            "这是审计记录归档：包含事件原文与导出时刻的校验结果，不含校验密钥。"
+            "归档只能证明导出时刻的状态；离开原机后无法用密钥重新校验，"
+            "请与原机上的「检查记录完整性」结果一并留存。"
+        ),
+    }
+
+
+def _run_verification(*, full: bool = False) -> Dict[str, Any]:
+    """跑**真实**的链校验。这里不实现哈希，只调用内核。
+
+    ``full=True`` 从头重算整条链：checkpoint 只证明"上次校验点到今天"
+    没被动过，**不能**发现 checkpoint 之前的历史行被改。用户手动点
+    "检查记录完整性"时必须走全量，否则一次历史篡改会被增量校验洗白。
+    """
     from ..kernels.audit import get_audit_store
     from ..kernels.audit import verification as _verification
 
     store = get_audit_store()
     started = time.time()
 
+    # 密钥缺失是**第三种状态**：不是“链完好”，也不是“链被改”。库里存在
+    # HMAC 事件、本机却没有对应密钥（典型场景：从别的机器恢复备份）时只能
+    # 做结构检查，必须原样告诉用户，不能静默给红或给绿。
+    profile = store.chain_key_profile()
+    # 旧库升级后的混合链：前缀无密钥、尾巴带密钥。校验能跑完，但“完好”这个词
+    # 只适用于整条链都能用密钥证明的情况，所以单独暴露 ``partial``，由界面
+    # 显示“部分可证明”（琥珀色），而不是绿灯。
+    partial = bool(profile.get("partial"))
+    partial_message = (
+        str(profile.get("partial_message") or "") if partial else None
+    )
+    if profile.get("degraded"):
+        reason = profile.get("degraded_reason")
+        if reason == "chain_key_downgraded":
+            # 密钥在手、库里却没有（或只剩部分）带密钥记录：按 sha256 重算仍
+            # 可能通过，但那只能证明“这份无密钥链自洽”，不能证明“没人把链
+            # 降级后整链重算”。所以仍给 degraded（不是绿），并把无密钥校验的
+            # 结果如实放在 structural_ok 里，由界面说明它证明不了什么。
+            unkeyed_ok, entries_checked = store.verify_integrity()
+            message = str(
+                profile.get("message")
+                or "库中没有带密钥的记录，完整性无法用密钥证明"
+            )
+            return {
+                "ok": False,
+                "degraded": True,
+                "entries_checked": int(entries_checked),
+                "first_failure": None,
+                "message": message,
+                "details": {
+                    "failures": [],
+                    "failure_count": 0,
+                    "pinpoint_ran": False,
+                    "db_path": store._db_path,
+                    "duration_seconds": round(time.time() - started, 4),
+                    "verification_mode": "unkeyed_degraded",
+                    "degraded": True,
+                    "degraded_reason": reason,
+                    "chain_key_status": profile.get("status"),
+                    "keyed_events": int(profile.get("keyed_events") or 0),
+                    "structural_ok": bool(unkeyed_ok),
+                    "unkeyed_integrity_ok": bool(unkeyed_ok),
+                    "message": message,
+                    "retention": store.retention_policy(),
+                    "mutation_performed": False,
+                    "read_only": True,
+                },
+            }
+
+        structural_ok, entries_checked = store.verify_structure_only()
+        message = str(profile.get("message") or "缺少校验密钥，完整性只能做结构检查")
+        return {
+            "ok": False,
+            "degraded": True,
+            "entries_checked": int(entries_checked),
+            "first_failure": None,
+            "message": message,
+            "details": {
+                "failures": [],
+                "failure_count": 0,
+                "pinpoint_ran": False,
+                "db_path": store._db_path,
+                "duration_seconds": round(time.time() - started, 4),
+                "verification_mode": "structural_only",
+                "degraded": True,
+                "degraded_reason": (
+                    "chain_key_unreadable"
+                    if profile.get("status") == "unreadable"
+                    else "chain_key_missing"
+                ),
+                "chain_key_status": profile.get("status"),
+                "keyed_events": int(profile.get("keyed_events") or 0),
+                "structural_ok": bool(structural_ok),
+                "message": message,
+                "retention": store.retention_policy(),
+                "mutation_performed": False,
+                "read_only": True,
+            },
+        }
+
+    if full:
+        ok, entries_checked = store.verify_integrity()
+        failures: List[str] = []
+        if not ok:
+            try:
+                def _scan(conn):
+                    tail = conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) FROM audit_events").fetchone()[0]
+                    if not tail:
+                        return []
+                    floor, _hash, floor_link = store._retention_state(conn)
+                    if floor and tail <= floor:
+                        return []
+                    result = _verification.verify_segment(
+                        conn, floor + 1, int(tail), floor_link,
+                        require_link_hash=False)
+                    return list(result.failures)
+
+                failures = store._read_only(_scan)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("audit failure pinpointing failed: %s", exc, exc_info=True)
+                failures = ["定位失败位置时没有运行成功，请稍后重试。"]
+        return {
+            "ok": bool(ok),
+            "partial": partial,
+            "message": partial_message,
+            "entries_checked": entries_checked,
+            "first_failure": failures[0] if failures else None,
+            "details": {
+                "failures": failures,
+                "failure_count": len(failures),
+                "pinpoint_ran": bool(failures),
+                "db_path": store._db_path,
+                "duration_seconds": round(time.time() - started, 4),
+                "verification_mode": "keyed_partial" if partial else "full",
+                "partial": partial,
+                "message": partial_message,
+                "chain_key": {
+                    "status": profile.get("status"),
+                    "keyed_events": int(profile.get("keyed_events") or 0),
+                    "degraded": False,
+                    "partial": partial,
+                },
+                "retention": store.retention_policy(),
+                "mutation_performed": False,
+                "read_only": True,
+            },
+        }
+
     # 增量优先：checkpoint 已覆盖历史时，只重算“上次校验点之后的新事件”。
     # 旧实现每次都对全链重算（46k 事件约 2.5s），随历史增长单调变慢，正是
     # /v1/audit/verify p50 从 271ms 涨到 2532ms 的根因。
-    incremental = store.verify_incremental()
+    incremental = store.verify_incremental(max_events=_VERIFY_BATCH_EVENTS)
     new_checkpoint_id = incremental.get("new_checkpoint_id")
     from_seq = incremental.get("from_seq")
     to_seq = incremental.get("to_seq")
@@ -476,8 +745,12 @@ def _run_verification() -> Dict[str, Any]:
     if incremental.get("segment_verified") and (
         incremental.get("rooted_at_genesis")
         or incremental.get("rooted_at_retention_floor")
+        # 预算截断的那一段只要锚到了 floor，就可以"用了并继续"，不能因为
+        # "还没查到表尾"就退回 20k 行全量重算（那正是 D-4 的劣化路径）。
+        or incremental.get("rooted_through_verified")
     ):
-        mode = "incremental"
+        complete = bool(incremental.get("complete", True))
+        mode = "incremental" if complete else "incremental_batch"
         ok = True
         entries_checked = int(incremental.get("events_checked") or 0)
         failures: List[str] = []
@@ -517,10 +790,12 @@ def _run_verification() -> Dict[str, Any]:
                 except Exception as exc:  # noqa: BLE001
                     # 定位失败不能把 ok 翻成 true；如实记下"定位没跑成"。
                     logger.warning("audit failure pinpointing failed: %s", exc, exc_info=True)
-                    failures = [f"pinpoint scan failed: {exc}"]
+                    failures = ["定位失败位置时没有运行成功，请稍后重试。"]
 
     return {
         "ok": bool(ok),
+        "partial": partial,
+        "message": partial_message,
         "entries_checked": entries_checked,
         "first_failure": failures[0] if failures else None,
         "details": {
@@ -529,7 +804,16 @@ def _run_verification() -> Dict[str, Any]:
             "pinpoint_ran": pinpoint_ran,
             "db_path": store._db_path,
             "duration_seconds": round(time.time() - started, 4),
-            "verification_mode": mode,
+            "verification_mode": "keyed_partial" if partial else mode,
+            "partial": partial,
+            "message": partial_message,
+            "chain_key": {
+                "status": profile.get("status"),
+                "keyed_events": int(profile.get("keyed_events") or 0),
+                "degraded": False,
+                "partial": partial,
+            },
+            "retention": store.retention_policy(),
             "from_seq": from_seq,
             "to_seq": to_seq,
             "rooted_at_genesis": bool(incremental.get("rooted_at_genesis")),
@@ -539,6 +823,12 @@ def _run_verification() -> Dict[str, Any]:
                 incremental.get("retention_floor_seq") or 0),
             "anchor_source": anchor_source,
             "checkpoint_id": new_checkpoint_id,
+            # 预算截断必须如实暴露：ok 表示"已验证到 to_seq 这一段无篡改"，
+            # 不等于"已校验到表尾"。剩余事件交给下一次 /verify 继续（每次
+            # 都从上一段 checkpoint 之后接着算，无需从头再来）。
+            "verification_complete": bool(incremental.get("complete", True)),
+            "tail_seq": int(incremental.get("tail_seq") or 0),
+            "pending_events": int(incremental.get("pending_events") or 0),
             # 链证据本身从不修复；增量路径只写“派生 checkpoint”，并且是在
             # 该段校验通过之后写入，可随时由原始事件重算。
             "mutation_performed": bool(new_checkpoint_id),
@@ -550,6 +840,10 @@ def _run_verification() -> Dict[str, Any]:
 
 @router.get("/verify")
 def verify_chain(
+    full: bool = Query(
+        False,
+        description="true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验",
+    ),
     _principal: str = Depends(require_human_principal),
 ) -> Dict[str, Any]:
     """校验哈希链完整性（只读，不修复）。
@@ -558,7 +852,7 @@ def verify_chain(
     重算过的哈希正是 tamper-evidence 的反面。
     """
     try:
-        return _run_verification()
+        return _run_verification(full=full)
     except Exception as exc:  # noqa: BLE001
         # 库损坏/不可读：诚实报错。绝不返回 ok=true。
         logger.error("audit chain verification failed: %s", exc, exc_info=True)
@@ -570,7 +864,7 @@ def verify_chain(
                 "failures": [],
                 "failure_count": 0,
                 "pinpoint_ran": False,
-                "error": f"verification could not run: {exc}",
+                "error": "审计链校验暂时无法运行，请稍后重试。",
                 "mutation_performed": False,
                 "read_only": True,
             },
@@ -581,10 +875,14 @@ def verify_chain(
 # 是每次都想知道的即时结论。它与 GET 走完全相同的只读实现，不写任何东西。
 @router.post("/verify")
 def verify_chain_post(
+    full: bool = Query(
+        False,
+        description="true = 从头重算全链（慢，但能发现历史篡改）；false = 增量校验",
+    ),
     _principal: str = Depends(require_human_principal),
 ) -> Dict[str, Any]:
     """与 ``GET /v1/audit/verify`` 完全相同的只读校验。"""
-    return verify_chain(_principal=_principal)
+    return verify_chain(full=full, _principal=_principal)
 
 
 @router.get("/summary")
@@ -648,4 +946,8 @@ def summary(
         raise HTTPException(status_code=503, detail=_unreadable_detail(exc))
 
     data["generated_at"] = time.time()
+    # 保留策略与链密钥状态：界面要如实展示“超期会删”“当前是否只能结构检查”，
+    # 不在这里返回密钥本身（只有状态与计数）。
+    data["retention"] = _store().retention_policy()
+    data["chain_key"] = _store().chain_key_profile()
     return data

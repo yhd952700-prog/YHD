@@ -195,6 +195,16 @@ class TestCrudAndMasking:
         second = client.post(
             "/v1/models", json=_payload(name="second"), headers=admin_headers
         ).json()
+        # 未测试通过的模型不允许设为默认：后端必须拒绝并给中文提示。
+        refused = client.post(
+            f"/v1/models/{second['id']}/default", headers=admin_headers
+        )
+        assert refused.status_code == 409
+        assert "测试连接" in refused.json()["detail"]
+        # 「测试连接」通过后落库 verified，才允许设为默认。
+        probe = client.post(f"/v1/models/{second['id']}/test", headers=admin_headers)
+        assert probe.status_code == 200, probe.text
+        assert probe.json()["ok"] is True, probe.text
         assert client.post(
             f"/v1/models/{second['id']}/default", headers=admin_headers
         ).json()["is_default"] is True
@@ -304,6 +314,49 @@ class TestConnectionProbe:
             headers=admin_headers,
         ).json()
         assert result["ok"] is True
+
+    def test_key_with_surrounding_spaces_is_trimmed_before_probe(self, client, admin_headers):
+        """带首尾空格的 Key 不能再让请求"坏在请求头"上：测试连接前统一 strip。"""
+        result = client.post(
+            "/v1/models/test",
+            json={
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "   sk-probe-with-spaces   ",
+                "timeout": 5,
+            },
+            headers=admin_headers,
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["ok"] is True
+
+    def test_key_with_interior_newline_is_refused_with_chinese_hint(self, client, admin_headers):
+        result = client.post(
+            "/v1/models/test",
+            json={
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "sk-abc\ndef",
+                "timeout": 5,
+            },
+            headers=admin_headers,
+        )
+        assert result.status_code == 400, result.text
+        assert "重新复制" in result.json()["detail"]
+
+    def test_overlong_key_is_refused(self, client, admin_headers):
+        result = client.post(
+            "/v1/models/test",
+            json={
+                "provider": "mock",
+                "model": "mock-model",
+                "api_key": "sk-" + "a" * 5000,
+                "timeout": 5,
+            },
+            headers=admin_headers,
+        )
+        assert result.status_code == 400, result.text
+        assert "过长" in result.json()["detail"]
 
     def test_loopback_base_url_passes_the_policy_gate(self, client, admin_headers):
         """回环地址不再按 SSRF 拒绝：探测如实返回"连不上"，而不是 400。"""

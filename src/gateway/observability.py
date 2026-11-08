@@ -33,6 +33,7 @@ from ..observability.production import (
     validate_production_config,
 )
 from ..observability.alerts.store import AlertStore
+from .health import ProbeTimeout, _run_probe
 from .display import (
     decorate_alert,
     decorate_finding,
@@ -104,11 +105,25 @@ async def prometheus_metrics(request: Request) -> Response:
         )
 
     try:
-        body, content_type = prometheus_response()
+        # 导出（序列化全部 registry）是 CPU 工作，且可能被下游采集器拖住；
+        # 放进探针线程池并给硬超时。业务慢调用再久，这里也只会快速返回 503，
+        # 不会把事件循环占住（D-2：一次 95 秒的模型调用曾让本端点连续超时）。
+        body, content_type = await _run_probe(prometheus_response)
+    except ProbeTimeout:
+        logger.warning("Prometheus 导出超时，快速返回 503")
+        return JSONResponse(
+            content={
+                "error": "prometheus_timeout",
+                "detail": "指标导出超时：系统正在处理较慢的请求，导出已快速返回，服务本身仍在运行。",
+                "user_message": "指标暂时取不到：系统繁忙，请 1 秒后重试；服务本身仍在运行。",
+            },
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "1"},
+        )
     except ProductionError as exc:
         logger.warning("Prometheus 导出不可用: %s", exc)
         return JSONResponse(
-            content={"error": "prometheus_unavailable", "detail": str(exc)},
+            content={"error": "prometheus_unavailable", "detail": "指标导出暂时不可用，请稍后重试。"},
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
@@ -123,6 +138,10 @@ async def prometheus_metrics(request: Request) -> Response:
 async def subsystem_readiness() -> JSONResponse:
     """14 内核逐条就绪检查（需人类主体鉴权）。
 
+    ``check_subsystems()`` 会**导入并实例化 14 个内核**（首次可达数秒），所以
+    这条路径绝不能在事件循环线程上跑。这里保留 ``async def`` 壳，把真正的同步
+    工作交给独立探针池并设硬超时；忙不过来就 503 + 中文原因（D-1/D-2）。
+
     这个读面会列出每个内核的可用状态与失败原因，等于把内部结构摊给调用方；
     未鉴权时它曾对公网开放。现在与 ``/v1/audit/*`` 同级：任何已登录人类可读，
     未带令牌一律 401。``/v1/ready``（部署探针用的浅检查）保持原样不受影响。
@@ -131,28 +150,42 @@ async def subsystem_readiness() -> JSONResponse:
     ``degraded`` = 可实例化但统计取不到（不阻断，避免误报全场 503）；
     ``unavailable`` = 导入或实例化失败 → HTTP 503。
     """
-    report = check_subsystems()
-    body = report.to_dict()
-    # 只增字段：中文名、中文状态、一句人话与诊断细节。
-    for subsystem in body.get("subsystems") or []:
-        name = str(subsystem.get("name") or "")
-        subsystem["display_name"] = subsystem_label(name)
-        subsystem["status_label"] = status_label(subsystem.get("status"))
-        subsystem["user_message"] = subsystem_user_message(name, str(subsystem.get("status") or ""))
-        subsystem.setdefault("technical_detail", technical_detail(
-            {key: value for key, value in subsystem.items()
-             if key not in ("user_message", "technical_detail", "status_label", "display_name")}
-        ))
-    body["status_label"] = status_label(body.get("status"))
-    body["user_message"] = (
-        "全部子系统运行正常" if report.ready
-        else f"有 {sum(1 for s in report.subsystems if s.status != 'healthy')} 个子系统需要关注"
-    )
+    def _payload():
+        report = check_subsystems()
+        body = report.to_dict()
+        # 只增字段：中文名、中文状态、一句人话与诊断细节。
+        for subsystem in body.get("subsystems") or []:
+            name = str(subsystem.get("name") or "")
+            subsystem["display_name"] = subsystem_label(name)
+            subsystem["status_label"] = status_label(subsystem.get("status"))
+            subsystem["user_message"] = subsystem_user_message(name, str(subsystem.get("status") or ""))
+            subsystem.setdefault("technical_detail", technical_detail(
+                {key: value for key, value in subsystem.items()
+                 if key not in ("user_message", "technical_detail", "status_label", "display_name")}
+            ))
+        body["status_label"] = status_label(body.get("status"))
+        body["user_message"] = (
+            "全部子系统运行正常" if report.ready
+            else f"有 {sum(1 for s in report.subsystems if s.status != 'healthy')} 个子系统需要关注"
+        )
+        return body, report.ready
+
+    try:
+        body, ready = await _run_probe(_payload, timeout=10.0)
+    except ProbeTimeout as exc:
+        logger.warning("子系统就绪检查超时：%s", exc)
+        return JSONResponse(
+            content={
+                "status": "busy",
+                "reason": "probe_timeout",
+                "user_message": "就绪检查处理较慢，请稍后重试。",
+            },
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "1"},
+        )
     return JSONResponse(
         content=body,
-        status_code=(
-            status.HTTP_200_OK if report.ready else status.HTTP_503_SERVICE_UNAVAILABLE
-        ),
+        status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
@@ -162,15 +195,31 @@ async def production_preflight() -> JSONResponse:
 
     报告**只含键名、代码与严重级别，不含任何配置值**。
     """
-    report = validate_production_config()
-    body = report.to_dict()
-    body["findings"] = [decorate_finding(dict(f)) for f in body.get("findings") or []]
-    body["status_label"] = "通过" if report.ok else "存在阻断项"
-    body["user_message"] = (
-        "配置预检通过，没有阻断项"
-        if report.ok
-        else f"配置预检发现 {report.critical_count} 条阻断项、{report.warning_count} 条提醒，请到诊断页处理"
-    )
+    def _payload():
+        report = validate_production_config()
+        body = report.to_dict()
+        body["findings"] = [decorate_finding(dict(f)) for f in body.get("findings") or []]
+        body["status_label"] = "通过" if report.ok else "存在阻断项"
+        body["user_message"] = (
+            "配置预检通过，没有阻断项"
+            if report.ok
+            else f"配置预检发现 {report.critical_count} 条阻断项、{report.warning_count} 条提醒，请到诊断页处理"
+        )
+        return body
+
+    try:
+        body = await _run_probe(_payload, timeout=8.0)
+    except ProbeTimeout as exc:
+        logger.warning("生产配置预检超时：%s", exc)
+        return JSONResponse(
+            content={
+                "status": "busy",
+                "reason": "probe_timeout",
+                "user_message": "配置预检处理较慢，请稍后重试。",
+            },
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "1"},
+        )
     return JSONResponse(content=body, status_code=status.HTTP_200_OK)
 
 

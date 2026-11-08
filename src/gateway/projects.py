@@ -34,8 +34,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 from ..common.atomic_write import (
     atomic_write_text,
@@ -52,6 +52,15 @@ router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
 
 # ── 项目存储（JSON，工作区根约束，fail-closed） ─────────────────
+
+
+class ProjectNameConflict(Exception):
+    """同一账号下已存在同名项目（按去空白、大小写不敏感比较）。"""
+
+
+def _name_key(name: Any) -> str:
+    return str(name or "").strip().casefold()
+
 
 class ProjectStore:
     """项目元数据存储单例（与 AIStateManager._goals 同源、同约束）。
@@ -173,20 +182,36 @@ class ProjectStore:
         """
         pid = str(uuid.uuid4())[:8]
         owner = str(owner_account_id or creator or "").strip()
+        created = time.time()
         project = {
             "project_id": pid,
             "name": name,
             "description": description or "",
-            "created_at": time.time(),
+            "created_at": created,
+            "updated_at": created,
+            "archived_at": None,
             "goal_ids": [],
             "creator": creator,
             "owner_account_id": owner,
         }
 
-        def mutate(state: Dict[str, Any]) -> None:
+        def mutate(state: Dict[str, Any]) -> str:
+            # 同名判定必须在锁内、基于磁盘最新状态做：两个并发进程同时建
+            # 同名项目时，只有先落盘的那个成功，后写者拿到冲突而不是静默重复。
+            wanted = _name_key(name)
+            for existing in state.values():
+                if not isinstance(existing, dict):
+                    continue
+                if project_owner(existing) != owner:
+                    continue
+                if _name_key(existing.get("name")) == wanted:
+                    return "conflict"
             state[pid] = project
+            return "created"
 
-        _outcome, persisted = self._mutate_and_persist(mutate)
+        outcome, persisted = self._mutate_and_persist(mutate)
+        if outcome == "conflict":
+            raise ProjectNameConflict(name)
         # 落盘结果只标注在响应副本上，不进内存态（避免 list/get 带出陈旧值）。
         result = dict(project)
         result["persisted"] = persisted
@@ -215,6 +240,7 @@ class ProjectStore:
             goal_ids = project.setdefault("goal_ids", [])
             if goal_id not in goal_ids:
                 goal_ids.append(goal_id)
+                project["updated_at"] = time.time()
             return True
 
         ok, _persisted = self._mutate_and_persist(mutate)
@@ -228,10 +254,39 @@ class ProjectStore:
             goal_ids = project.setdefault("goal_ids", [])
             if goal_id in goal_ids:
                 goal_ids.remove(goal_id)
+                project["updated_at"] = time.time()
             return True
 
         ok, _persisted = self._mutate_and_persist(mutate)
         return bool(ok)
+
+    def archive(self, project_id: str) -> Tuple[bool, bool]:
+        """归档项目（仅隐藏于默认列表，不删任何数据）。返回 (存在, 落盘成功)。"""
+
+        def mutate(state: Dict[str, Any]) -> bool:
+            project = state.get(project_id)
+            if project is None:
+                return False
+            now = time.time()
+            project["archived_at"] = now
+            project["updated_at"] = now
+            return True
+
+        return self._mutate_and_persist(mutate)
+
+    def restore(self, project_id: str) -> Tuple[bool, bool]:
+        """恢复归档项目（清空 ``archived_at``）。返回 (存在, 落盘成功)。"""
+
+        def mutate(state: Dict[str, Any]) -> bool:
+            project = state.get(project_id)
+            if project is None:
+                return False
+            now = time.time()
+            project["archived_at"] = None
+            project["updated_at"] = now
+            return True
+
+        return self._mutate_and_persist(mutate)
 
     def delete(self, project_id: str) -> Tuple[bool, bool]:
         """删除项目。返回 (existed, persisted)：项目是否存在、落盘是否成功。"""
@@ -315,7 +370,13 @@ def exists_for(project_id: str, account: str) -> bool:
 def _goals_for_project(
     project_id: str, viewer: Any = None
 ) -> List[Dict[str, Any]]:
-    """返回挂在某项目下的真实目标摘要，直接读 AIStateManager 的已执行目标。"""
+    """返回挂在某项目下的真实目标条目（热集合 + 已归档分片）。
+
+    项目的 ``goal_ids`` 是"曾经挂上来过"的事实；但目标进入终态后会被移出内存
+    热集合、写入归档分片（``AIStateManager`` 的 bounded hot set）。只读 ``_goals``
+    会让"项目里的产出"在目标归档后凭空消失 —— 这里把归档索引一并合并，保证
+    项目视图始终反映真实历史。
+    """
     try:
         from .ai_management import AIStateManager
 
@@ -323,8 +384,34 @@ def _goals_for_project(
     except Exception as exc:
         logger.warning("projects: cannot read goals for %s: %s", project_id, exc)
         return []
+    items: List[Dict[str, Any]] = []
     with mgr._goal_lock:
-        items = [v for v in mgr._goals.values() if v.get("project_id") == project_id]
+        for entry in mgr._goals.values():
+            if isinstance(entry, dict) and entry.get("project_id") == project_id:
+                items.append(dict(entry))
+    active_ids = {item.get("goal_id") for item in items}
+    try:
+        archived = mgr._load_archived_summaries()
+    except Exception as exc:  # 归档索引读不动时如实退化，不丢热集合
+        logger.warning("projects: archived goals unavailable: %s", exc)
+        archived = {}
+    for goal_id, summary in archived.items():
+        if goal_id in active_ids or not isinstance(summary, dict):
+            continue
+        if summary.get("project_id") != project_id:
+            continue
+        entry = dict(summary)
+        if "artifacts" not in entry:
+            # 老归档索引没有产物字段：按需回查完整条目（只有老数据才会走到）。
+            try:
+                full = mgr._find_archived_goal(goal_id) or {}
+            except Exception:
+                full = {}
+            entry["artifacts"] = full.get("artifacts") or []
+            entry["artifact_owners"] = full.get("artifact_owners") or {}
+            entry["updated_at"] = full.get("updated_at")
+        items.append(entry)
+
     if viewer is not None:
         # 项目详情里的目标摘要同样按账号可见性过滤：分享一个项目容器，
         # 不等于把别人挂在里面的目标内容一起公开。
@@ -348,19 +435,94 @@ def _goals_for_project(
             "state": item["state"],
             "natural_language": item.get("natural_language", ""),
             "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
             "task_count": len(tasks),
             "completed_tasks": completed,
             "failed_tasks": failed,
+            "owner_account_id": project_owner(item),
+            "artifacts": [
+                path for path in (item.get("artifacts") or [])
+                if isinstance(path, str) and path.strip()
+            ],
+            "artifact_owners": (
+                item.get("artifact_owners")
+                if isinstance(item.get("artifact_owners"), dict) else {}
+            ),
         })
     return summaries
 
 
+def _outputs_for_goals(goals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把项目下目标真实写出的产物路径摊平成 ``{path, owner, goal_id}`` 列表。"""
+    outputs: List[Dict[str, Any]] = []
+    seen: set = set()
+    for goal in goals:
+        owners = goal.get("artifact_owners")
+        if not isinstance(owners, dict):
+            owners = {}
+        for raw in goal.get("artifacts") or []:
+            if not isinstance(raw, str):
+                continue
+            path = raw.replace("\\", "/").strip().strip("/")
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            outputs.append({
+                "path": path,
+                "owner": str(owners.get(path) or project_owner(goal)).strip()
+                or project_owner(goal),
+                "goal_id": goal.get("goal_id"),
+            })
+    return outputs
+
+
+def _last_activity_at(project: Dict[str, Any], goals: List[Dict[str, Any]]) -> Optional[float]:
+    """项目最近一次活动：项目自身更新时间 ∪ 其下目标的创建/更新时间。"""
+    stamps: List[float] = []
+    for raw in (project.get("updated_at"), project.get("created_at")):
+        try:
+            if raw is not None:
+                stamps.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    for goal in goals:
+        for raw in (goal.get("updated_at"), goal.get("created_at")):
+            try:
+                if raw is not None:
+                    stamps.append(float(raw))
+            except (TypeError, ValueError):
+                continue
+    return max(stamps) if stamps else None
+
+
 # ── 请求/响应模型 ──────────────────────────────────────────────
 
+MAX_PROJECT_NAME = 200
+MAX_PROJECT_DESCRIPTION = 2000
+
+
 class ProjectCreateRequest(BaseModel):
-    """创建项目的请求体。"""
-    name: str = Field(..., min_length=1, max_length=200, description="项目名称")
-    description: str = Field("", max_length=2000, description="项目描述")
+    """创建项目的请求体（中文校验文案，超长与空名都不会变成 500）。"""
+    name: str = Field(..., description="项目名称")
+    description: str = Field("", description="项目描述")
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            raise ValueError("项目名称不能为空")
+        if len(cleaned) > MAX_PROJECT_NAME:
+            raise ValueError(f"项目名称最多 {MAX_PROJECT_NAME} 个字")
+        return cleaned
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, value: str) -> str:
+        cleaned = str(value or "")
+        if len(cleaned) > MAX_PROJECT_DESCRIPTION:
+            raise ValueError(f"项目描述最多 {MAX_PROJECT_DESCRIPTION} 个字")
+        return cleaned
 
 
 # ── REST 端点 ─────────────────────────────────────────────────
@@ -372,12 +534,19 @@ def create_project(
 ) -> Dict[str, Any]:
     """人类主权创建一个项目（容器），归属固定为令牌主体。"""
     store = ProjectStore()
-    project = store.create(
-        req.name,
-        req.description,
-        creator=viewer.principal,
-        owner_account_id=viewer.principal,
-    )
+    try:
+        project = store.create(
+            req.name,
+            req.description,
+            creator=viewer.principal,
+            owner_account_id=viewer.principal,
+        )
+    except ProjectNameConflict:
+        raise deny(
+            409,
+            "project_name_taken",
+            "同一账号下已有同名项目。请换一个名称，或先归档/删除旧项目。",
+        )
     logger.info(
         "Project created by %s: %s (%s)",
         viewer.principal,
@@ -387,21 +556,65 @@ def create_project(
     return project
 
 
+#: 列表里最多预览多少条产出路径（完整列表在项目详情里）。
+OUTPUT_PREVIEW_LIMIT = 20
+
+
+def _enrich_summary(
+    project: Dict[str, Any], viewer: Any, preview: bool
+) -> Dict[str, Any]:
+    """给项目补上"可用性三件套"：关联目标数、最近活动、产出在哪里。"""
+    enriched = dict(project)
+    goals = _goals_for_project(enriched["project_id"], viewer)
+    outputs = _outputs_for_goals(goals)
+    enriched["goal_count"] = len(goals)
+    enriched["last_activity_at"] = _last_activity_at(enriched, goals)
+    enriched["output_count"] = len(outputs)
+    if preview:
+        enriched["outputs"] = outputs[:OUTPUT_PREVIEW_LIMIT]
+        enriched["outputs_truncated"] = len(outputs) > OUTPUT_PREVIEW_LIMIT
+    else:
+        enriched["outputs"] = outputs
+        enriched["outputs_truncated"] = False
+    return enriched
+
+
 @router.get("")
 def list_projects(
+    include_archived: bool = Query(False, description="是否包含已归档项目"),
+    view_account: Optional[str] = Query(
+        None, description="主账号可按某个成员账号的视角过滤（成员只能看自己）"
+    ),
     viewer: Any = Depends(_projects_viewer),
 ) -> Dict[str, Any]:
     """列出**当前账号可见**的项目：主账号看整棵子树，成员只看自己。"""
     store = ProjectStore()
+    target = (view_account or "").strip() or None
+    if target is not None:
+        # 视角切换只允许在可见范围内发生；越权与"账号不存在"同为中性 404。
+        allowed = target == viewer.principal or (
+            viewer.is_root and target in viewer.subtree
+        )
+        if not allowed:
+            raise _not_found()
+
     visible = [
         p for p in store.list_projects() if viewer.sees(_visibility_entry(p))
     ]
-    enriched = []
-    for p in visible:
-        p = dict(p)
-        p["goal_count"] = len(p.get("goal_ids", []))
-        enriched.append(p)
-    return {"projects": enriched, "count": len(enriched)}
+    if target is not None:
+        visible = [p for p in visible if project_owner(p) == target]
+    if not include_archived:
+        visible = [p for p in visible if not p.get("archived_at")]
+
+    enriched = [_enrich_summary(p, viewer, preview=True) for p in visible]
+    # 最近有活动的排前面；没有活动时间的排最后（不发明顺序）。
+    enriched.sort(
+        key=lambda p: p.get("last_activity_at") or p.get("created_at") or 0,
+        reverse=True,
+    )
+    for item in enriched:
+        item["view_account"] = target
+    return {"projects": enriched, "count": len(enriched), "view_account": target}
 
 
 @router.get("/{project_id}")
@@ -409,34 +622,92 @@ def get_project(
     project_id: str,
     viewer: Any = Depends(_projects_viewer),
 ) -> Dict[str, Any]:
-    """获取项目详情，并附带其下的真实目标摘要（越权与不存在同为中性 404）。"""
+    """获取项目详情，并附带其下的真实目标与产出（越权与不存在同为中性 404）。"""
     store = ProjectStore()
     project = store.get(project_id)
     if project is None or not viewer.sees(_visibility_entry(project)):
         raise _not_found()
-    project = dict(project)
-    goals = _goals_for_project(project_id, viewer)
-    project["goals"] = goals
-    project["goal_count"] = len(goals)
+    project = _enrich_summary(project, viewer, preview=False)
+    project["goals"] = _goals_for_project(project_id, viewer)
+    project["goal_count"] = len(project["goals"])
     return project
+
+
+@router.post("/{project_id}/archive")
+def archive_project(
+    project_id: str,
+    viewer: Any = Depends(_projects_viewer),
+) -> Dict[str, Any]:
+    """归档项目：只是从默认列表隐藏，不删目标、不删产出；可随时恢复。"""
+    store = ProjectStore()
+    project = store.get(project_id)
+    if project is None or not viewer.owns(_visibility_entry(project)):
+        raise _not_found()
+    existed, persisted = store.archive(project_id)
+    if not existed:
+        raise _not_found()
+    updated = store.get(project_id) or {}
+    return {
+        "project_id": project_id,
+        "archived_at": updated.get("archived_at"),
+        "ok": True,
+        "persisted": persisted,
+    }
+
+
+@router.post("/{project_id}/restore")
+def restore_project(
+    project_id: str,
+    viewer: Any = Depends(_projects_viewer),
+) -> Dict[str, Any]:
+    """恢复归档项目（写操作同样只作用于自己的项目）。"""
+    store = ProjectStore()
+    project = store.get(project_id)
+    if project is None or not viewer.owns(_visibility_entry(project)):
+        raise _not_found()
+    existed, persisted = store.restore(project_id)
+    if not existed:
+        raise _not_found()
+    return {"project_id": project_id, "archived_at": None, "ok": True, "persisted": persisted}
 
 
 @router.delete("/{project_id}")
 def delete_project(
     project_id: str,
+    force: bool = Query(False, description="目标仍关联时仍强制删除（需先看过影响面）"),
     viewer: Any = Depends(_projects_viewer),
 ) -> Dict[str, Any]:
     """删除一个项目，并一致地清理其下目标的 project_id 归属。
 
     写操作只作用于**自己的**项目（主账号也不例外，避免误删子树项目）；
-    越权与不存在同为中性 404。删除前不必清空目标（避免"删不掉"的尴尬），
-    但删除时会把每个关联目标上的 project_id 清回 None，保证目标不被悬空引用。
+    越权与不存在同为中性 404。
+
+    有目标关联时**先拒绝**（409，附影响面），只有调用方明确 ``force=true``
+    才继续：删除会解除目标与项目的归属，但绝不删除目标本身。这样"删除"
+    不会悄无声息地把一个装满历史项目的容器清空。
     """
     store = ProjectStore()
     project = store.get(project_id)
     if project is None or not viewer.owns(_visibility_entry(project)):
         raise _not_found()
-    goal_ids = project.get("goal_ids", [])
+    goal_ids = list(project.get("goal_ids", []) or [])
+    linked = _goals_for_project(project_id, viewer)
+    if linked and not force:
+        sample = [
+            str(goal.get("natural_language") or "")[:120]
+            for goal in linked[:5]
+        ]
+        raise deny(
+            409,
+            "project_has_goals",
+            (
+                f"该项目下还有 {len(linked)} 个目标。删除项目只会解除归属，"
+                "目标本身与其产出不会被删除；删除后这些目标将不再属于任何项目。"
+                "可先归档保留记录，或确认影响面后强制删除。"
+            ),
+            goal_count=len(linked),
+            goals=sample,
+        )
     if goal_ids:
         try:
             from .ai_management import AIStateManager
@@ -454,4 +725,9 @@ def delete_project(
             logger.warning("delete_project: goal cleanup failed: %s", exc)
     _, persisted = store.delete(project_id)
     logger.info("Project deleted by %s: %s", viewer.principal, project_id)
-    return {"removed": project_id, "ok": True, "persisted": persisted}
+    return {
+        "removed": project_id,
+        "ok": True,
+        "persisted": persisted,
+        "goal_count": len(linked),
+    }

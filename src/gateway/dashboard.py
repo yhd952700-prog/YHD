@@ -59,7 +59,8 @@ def _provider_info() -> Dict[str, Any]:
         info["model"] = getattr(provider, "model", None)
         info["name"] = getattr(provider, "name", None)
     except Exception as exc:  # provider 不可用时不编造，记录真实原因
-        info["error"] = str(exc)
+        logger.warning("dashboard provider status failed: %s", exc, exc_info=True)
+        info["error"] = "模型服务状态暂时读不到，请稍后重试。"
     return info
 
 
@@ -137,7 +138,13 @@ def dashboard_summary() -> Dict[str, Any]:
             "detail": _session_details(sessions),
         }
     except Exception as exc:
-        summary["sessions"] = {"count": 0, "ids": [], "detail": [], "error": str(exc)}
+        logger.warning("dashboard sessions failed: %s", exc, exc_info=True)
+        summary["sessions"] = {
+            "count": 0,
+            "ids": [],
+            "detail": [],
+            "error": "活跃会话暂时读不到，请稍后重试。",
+        }
 
     # 审计（真实：审计存储统计）— CRIT-1C：审计不可用必须如实暴露，不得伪装成 "0 条事件"
     try:
@@ -148,7 +155,7 @@ def dashboard_summary() -> Dict[str, Any]:
         logger.warning("dashboard_summary audit_stats failed: %s", exc, exc_info=True)
         summary["audit"] = {
             "available": False,
-            "error": str(exc),
+            "error": "审计记录暂时读不到，请稍后重试。",
             "failures": audit_failure_count(),
         }
 
@@ -206,7 +213,11 @@ def event_timeseries(days: int = 14) -> Dict[str, Any]:
         events = audit_query(start_time=start, limit=_QUERY_EVENTS_MAX_ROWS)
     except Exception as exc:
         logger.warning("event_timeseries query failed: %s", exc, exc_info=True)
-        return {"available": False, "error": str(exc), "days": []}
+        return {
+            "available": False,
+            "error": "这段时间的审计趋势暂时读不到，请稍后重试。",
+            "days": [],
+        }
 
     # 预置全部日期：没有事件的日子显示 0 而不是从轴上消失（那会歪曲趋势）。
     buckets: Dict[str, Dict[str, Any]] = {}
@@ -261,7 +272,11 @@ def event_breakdown() -> Dict[str, Any]:
         stats = audit_stats()
     except Exception as exc:
         logger.warning("event_breakdown failed: %s", exc, exc_info=True)
-        return {"available": False, "error": str(exc), "items": []}
+        return {
+            "available": False,
+            "error": "事件分布暂时读不到，请稍后重试。",
+            "items": [],
+        }
 
     items: List[Dict[str, Any]] = []
     excluded = 0
