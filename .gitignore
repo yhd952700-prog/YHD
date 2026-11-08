@@ -159,6 +159,25 @@ ui-evidence/
 upgrade-state/
 upgrade-backups/
 
+# ===== 本机验收/运行时证据（不是交付物）=====
+# 下面五类都是「本机跑一遍才有、换台机器就重来」的证据或运行态：
+# .acceptance/ —— 验收脚本在仓库根留的 sqlite 库与探针（--workdir 默认值）；
+# logs/        —— 网关/启动器/桌面的运行日志与日志锁（内容随每次启动变化）；
+# reports/     —— 诊断与修复演练的截图/JSON（尺寸随分辨率变，属本机证据）；
+# .probe_tmp/  —— 临时探针输出（baseline_pytest.txt 之类）；
+# *.journal*   —— SQLite 回滚日志；*.lock —— 单实例/日志锁文件。
+# 判据：删除它们不影响任何源码、构建或安装包内容，重新跑对应命令即可再生。
+.acceptance/
+/logs/
+/reports/
+.probe_tmp/
+*.journal*
+*.lock
+# 例外：uv 的依赖锁是受跟踪的输入（可复现构建要用），不能一并忽略。
+!uv.lock
+# 仓库根的临时补丁/脚本（.tmp_ 前缀为本机一次性产物）。
+/.tmp_*
+
 # ===== 本地模型权重（运行资产，非受跟踪输入）=====
 # 用 Ollama 做真实联调时会把 gguf 拉到仓库根（例如 qwen2.5:3b，约 1.8 GB）。
 # 它不是源码也不是测试基线，提交它只会把仓库撑爆；权重应由 `ollama pull`
