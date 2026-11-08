@@ -19,6 +19,8 @@ on:
       - 'scripts/lint_audit_claims.py'
       - 'scripts/lint_control_claims.py'
       - 'scripts/control_claim_baseline.txt'
+      - 'scripts/check_docs_commands.py'
+      - 'installer/assets/BEFORE-INSTALL.txt'
       - 'apps/**/*.md'
       - 'libs/**/*.md'
       - 'oss-ecosystem/**/*.md'
@@ -44,6 +46,8 @@ on:
       - 'scripts/lint_audit_claims.py'
       - 'scripts/lint_control_claims.py'
       - 'scripts/control_claim_baseline.txt'
+      - 'scripts/check_docs_commands.py'
+      - 'installer/assets/BEFORE-INSTALL.txt'
 
 jobs:
   lint-audit-claims:
@@ -81,3 +85,18 @@ jobs:
         # (FALSIFIED / NOT VERIFIED / PASS), never two-state. Known scope limit:
         # it scans Markdown only -- code docstrings (src/, apps/) are OUT of
         # surface, so a PASS here is NOT "no false guarantee exists in code".
+      - name: Check docs command blocks against real scripts / argparse options
+        run: python scripts/check_docs_commands.py
+        # Static only (never executes a documented command, no registry writes,
+        # no resident processes). Scans README / every docs/**/*.md /
+        # BEFORE-INSTALL.txt; 43 audit/archive/evidence files are exempt via an
+        # explicit whitelist with per-file reasons (EXEMPT_DOCS in the script).
+        # Fails (exit 1) if a command block references a script that is not in
+        # the repo, a subcommand / --flag that argparse does not define, a
+        # missing required=True option, a lookalike real key (sk-…) not marked
+        # as a placeholder, or an unquoted path containing a space / CJK
+        # characters. Data-mutating commands (backup create, memory clear,
+        # plugin install/enable/disable/uninstall/upgrade, agent create …)
+        # without a "会直接改动数据，执行前先备份" note are printed as [WARN]
+        # (yellow, non-blocking). Rationale: users copy-paste these blocks verbatim;
+        # a stale flag or a rename turns a copy-paste into a support ticket.

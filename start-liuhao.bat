@@ -44,9 +44,20 @@ if errorlevel 1 (
 
 rem 3) Forward all arguments (e.g. --https, --backend-only) to the launcher.
 "%PY%" scripts\start_liuhao.py %*
+set "LH_CODE=%ERRORLEVEL%"
+if not "%LH_CODE%"=="0" goto :lh_failed
+rem Exit code 0 also covers "another instance is already running" (a second
+rem double-click). Closing straight away is intended: do not leave a window
+rem hanging behind a "press any key" prompt after a no-op start.
+exit /b 0
 
-rem 4) Keep the window open so the user can read startup output / errors.
+:lh_failed
+rem Keep the window open only on real failures so the reason stays readable.
 echo.
-echo LiuHao stopped. Press any key to close.
+echo [FAIL] LiuHao failed to start (exit code %LH_CODE%).
+echo        See the output above / logs for details.
+echo.
+echo Press any key to close this window.
 pause >nul
 endlocal
+exit /b %LH_CODE%

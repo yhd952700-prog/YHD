@@ -1,14 +1,13 @@
-# LIUHAO X / 鎏灏 X
+# LiuHao AI OS · 鎏灏智能中枢
 
 > **Human-Sovereign Agent Operating System（人类主权自主智能体 OS）。**
 > 由十源 DNA（ULTRON / VISION / ADA / EDITH / FRIDAY / JARVIS / JOCaSTA / KAREN / ENOCH / ZOON）
 > 统一形成。形态是**系统集成**，不是统一人格。
 >
-> **命名口径（唯一权威）**：主品牌 **LIUHAO X / 鎏灏 X**，品类
-> **Human-Sovereign Agent Operating System** —— 见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-> §系统定位 与 [`docs/product/PM-PRD-v3.0.md`](docs/product/PM-PRD-v3.0.md)。
-> 仓库历史文稿中出现的 “LiuHao AI OS / 鎏灏 AI OS / 鎏灏智能中枢” 等是旧称或驾驶舱应用名，
-> **不作为主品牌引用**。
+> **命名口径**：主品牌 **LiuHao AI OS · 鎏灏智能中枢**，品类
+> **Human-Sovereign Agent Operating System**。唯一字面来源是
+> [`src/brand.json`](src/brand.json)；代码与文档不得另写一套主名。
+> 历史名称 **LIUHAO X / 鎏灏 X** 已收敛为旧称，不再作为主品牌引用。
 
 ## 当前状态（诚实头 — 状态快照，不是发布就绪声明）
 
@@ -47,7 +46,8 @@
 ## 5 分钟跑起来（Windows 原生，不需要 Docker）
 
 **最简单的办法**：双击仓库根目录的 `start-liuhao.bat`。它会起服务并自动打开浏览器；
-关掉窗口（或在窗口里按 `Ctrl+C`）即停止。
+关掉窗口（或在窗口里按 `Ctrl+C`）即停止。这是**源码仓库的命令行启动方式**；
+安装版的桌面快捷方式走托盘常驻形态：关窗只是隐藏到托盘，退出用托盘菜单（见 `docs/END-USER-GUIDE.md`）。
 
 命令行等价：
 
@@ -88,8 +88,8 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
 
 - Python 3.11+（仓库自带 `.venv`；依赖见 `requirements.txt`）
 - Node.js（驾驶舱已装好 `node_modules`）
-- **Ollama**（本机 LLM）。默认已装 `qwen2.5:3b` / `qwen2.5:7b` / `nomic-embed-text`。
-  缺模型时：`ollama pull qwen2.5:3b`
+- **Ollama**（本机 LLM，可选）。开发机可能已拉取 `qwen2.5:3b` / `qwen2.5:7b` / `nomic-embed-text`；
+  安装包本身不包含任何模型权重，需要时自行 `ollama pull qwen2.5:3b`。
 - 数据库：**默认 SQLite**（`sqlite:///./liuhao_ai_os.db`），不需要 Postgres。
   Postgres / Redis 仅在 `docker-compose.infra.yml` 里作为可选基础设施。
 

@@ -1,8 +1,10 @@
 [project]
 name = "liuhao-ai-os"
 version = "0.1.1"
-description = "LiuHao AI OS (镭灏) - Y1 Implementation"
+description = "LiuHao AI OS · 鎏灏智能中枢 - Y1 Implementation"
 readme = "README.md"
+# 专有软件（非开源）：条款见仓库根 LICENSE，与 SBOM 里的 license 名称 Proprietary 一致。
+license = { text = "Proprietary" }
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.0.0",
@@ -102,7 +104,7 @@ dependencies = [
     # pyjwt（import jwt）：src/security/jwt_handler.py —— 令牌签发/校验面。
     #   此前只靠 mcp → pyjwt 传递带入：一个安全边界依赖上游 SDK 的传递链，
     #   是这 4 个里最不该靠运气的一个。
-    "pyjwt>=2.8.0",
+    "pyjwt>=2.15.0",
     # langchain-core：src/ai/langgraph_workflow.py（messages / runnables）。
     #   已声明了 langchain / langchain-openai / langchain-community，但
     #   langchain-core 是本仓**直接 import** 的那个包。

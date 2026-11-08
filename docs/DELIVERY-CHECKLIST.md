@@ -61,7 +61,8 @@
 | 能否从提交复现 | **不能。** payload 的 `scripts/launch_installed.py`（blob `a90272cf…`）不属于任何提交；`scripts/start_liuhao.py`（`e4df9332…`）直到 `797dbd16`（15:14）才入库，晚于构建时间 13:43 |
 
 **结论：该 E2E 结果对应的产物已不可复现。** 证据 JSON 里的行为结论
-（建号 8.7s、健康 8.4s、首条消息 2.4s、重启 8.8s 后历史仍在、端口 18130→18131 顺延）
+（建号 8.7s、健康 8.4s、首条消息 2.4s、重启 8.8s 后历史仍在、端口 18130→18131 顺延；
+最后一项是旧版行为，2026-11-08 已改为明确报错、不自动顺延）
 可以保留，但它验证的是 **2026-11-05 13:43 的一份未提交工作区快照**，不是任何
 可追溯的提交或最终安装包。交付时不能引用它作为“最终包已验证”的证据；最终包
 必须重跑同一 E2E，并把结果绑定到「这版安装包对应的源码提交」。
@@ -90,9 +91,10 @@
    模型名（如 `deepseek-chat`）、API Key（DeepSeek 到 <https://platform.deepseek.com>
    创建）。没有 Key 就选 `0`，之后在 **系统设置 → 模型管理** 补上。
    向导完成后服务继续启动，浏览器会尝试打开 `http://127.0.0.1:8080`；
-   没自动打开就手动访问，端口被占用会自动顺延，以命令行窗口打印的地址为准。
+   没自动打开就手动访问。端口默认 `8080`：**首启向导里可以换端口；日常启动如果端口被占，
+   会告诉你占用原因并给出处理办法**（关掉占用程序再试，或改端口后重新启动）。
 3. **发第一条消息**：用刚建的账号登录，登录后落在「总览」，点左侧
-   **工作台 → 直接对话**，输入一句话发送。运行期间不要关闭命令行窗口。
+   **工作台 → 直接对话**，输入一句话发送。运行期间关掉状态窗口只是隐藏到托盘、网关继续运行；要结束程序用托盘菜单“退出”。
 
 每一步失败时怎么办（端口被占、防火墙、Key 无效、模型名不对、服务没起来）
 逐条写在 [END-USER-GUIDE.md](END-USER-GUIDE.md)，本文不重复。
@@ -121,7 +123,7 @@
 | 3 | 真实安装（静默） | 部分完成（历史实测，产物不可复现） | 历史日志 `dist/obsolete/installer-20261105-1506/install.log`（该目录已随旧包清理，不在仓库内）：`Original Setup EXE` = `D:\LiuHao-AI-OS\dist\installer\LiuHao-Setup-0.1.0.exe`，12:59:46–13:00:22（约 34.7 秒），`-- File entry --` 8,478 条 | 该安装器已不存在、日志无字节/SHA；旧记录的“25.3 秒 / 8,599 个文件”无法复核，已删 |
 | 4 | 安装版首启 E2E | 部分完成（结论保留；**产物不可复现**，本地桩、复用向导函数、未逐字键入） | [e2e-installed-2026-11-06.json](evidence/e2e-installed-2026-11-06.json)（1,553 字节）：建号+填 Key 8.7s、健康 8.4s、首条消息 2.4s 收到 `E2E-REPLY-OK from stub-model`、重启 8.8s 后历史仍在、总 33.2s。对应安装器为 `D:\cache\temp\liuhao-e2e\build\installer\LiuHao-Setup-0.1.0.exe`（34,199,800 / `314839ED…`），payload 含未提交文件 | 差额：没有在命令行窗口里逐条键入向导答案，也未复验「自动打开浏览器」（E-9）；且安装器无法从任何提交复现（E-13），不能作为「最终包已验证」 |
 | 5 | 浏览器 UI 走查 | 已完成 | 登录 `e2e` → 左侧工作台 → 发「你好」，回复含 `E2E-REPLY-OK from stub-model`；3/3 判据 PASS | — |
-| 6 | 端口占用自动顺延 | 已完成 | 同一份 E2E 日志：`[warn] 网关 端口 18130 被占用，已自动改用 18131` | — |
+| 6 | 端口占用明确报错（不自动顺延） | 已改定 | 2026-11-08 决定：不自动换端口，避免地址漂移；旧 E2E 日志里的 `18130→18131 自动顺延` 行为已作废 | — |
 | 7 | 失败分支实测 | 部分完成 | [failure-modes-2026-11-06.json](evidence/failure-modes-2026-11-06.json)：错误 Key → `[生成失败] 401 Incorrect API key`；模型名错 → `404 model does not exist`；上游停掉 → `503`；服务没起 → `WinError 10061` 连接被拒 | 本机非 Ollama 端点走「测试连接」会被 SSRF 防护拒绝（聊天却可用），所以 **`invalid_key` 这类测试连接分类没能在这台机器上用桩复现**；该分类只有真实云 Key 场景与单测覆盖（见 E-3、E-5） |
 | 8 | 打包延迟依赖修复 | 已完成 | payload 内已含 `openai/httpx2/httpcore2/truststore/jiter`；修复随 `b789d244` 入库，安装版聊天不再报 `httpcore2` 缺包 | 已解除（E-1）；该目录另有未提交的升级元数据改动，与依赖修复无关 |
 | 9 | 真实厂商 Key 对话 | 未验证 | 网关流的可复现脚本 [verify_first_run_e2e.py](../scripts/verify_first_run_e2e.py)（commit `250456cd`，说明见 [first-run-e2e.md](first-run-e2e.md)）需要真实 Key；本流没有 Key，只用本地 OpenAI 兼容桩验证了真实 HTTP 请求路径 | 本流无真实厂商 Key 的原始输出（E-5）；网关流报称用 DeepSeek 跑过，只能算旁证 |
@@ -132,6 +134,8 @@
 | 14 | HC-01 证据分级 | 已完成 | [hc01-status.md](hc01-status.md)，commit `408caee2`（后续 `ff408f15` 只改遥测标注） | — |
 | 15 | 缺口登记 | 已完成 | [known-gaps.md](known-gaps.md) 的 E-1～E-16（E-9～E-16 为本轮追加） | — |
 | 16 | 全量回归 | **基线已完成；最终 HEAD 未通过**（基线 `bb6b654c`，详见 5.1；交叉验证 `3fa88be0` 见 5.9；**两者都不是最终 HEAD 的交付凭证**）；C7/C9/C11 三格补证见 5.7 | `7458 tests, 0 failed, 0 errors, 58 skipped`；C1/C2/C3/C4/C5/C6/C8/C10/C12 PASS；C7/C9 NOT VERIFIED；C11 BLOCKED；`PASS=9 FAIL=0 BLOCKED=1 NOT_VERIFIED=2 ERROR=0`，`RELEASE READY=False`；日志 `verify-full-bb6b654c.log`（2,303 字节，exit 0）。补证：C7 已有本机基线并可判定（`--only C7` PASS，方差 80%～1594% 已如实登记）；C9「原口径 NOT_VERIFIED + 安装树分发形态已独立验证」两条并列，且**升级载荷缺前端的缺陷已修复**（新包 685 成员 / `console/` 12，旧包被拒且零改动，见 5.7）；C11 5 项裁决已由 owner 裁决并记录 [ADR-HC01-baseline-binding.md](adr/ADR-HC01-baseline-binding.md)，`check_hc01` 仍派生 `BLOCKED`（判定事实，非工程阻塞）。**交叉验证 `3fa88be0`**：`PASS=7 FAIL=2 BLOCKED=1 NOT_VERIFIED=2`，C3/C12 因账号切片未提交实现而 FAIL（E-15） | 差额：基线 `bb6b654c` 之后 HEAD 已推进；`3fa88be0` 只是过程凭证。最终 hash 冻结后需再跑一轮全量作为交付凭证。`RELEASE READY` 为 False，裁决后理由只剩 C9（桌面分发形态无真实 CD，属形态差异） |
+| 17 | 多账号 8 项硬要求验收（脚本化，含 2 条附加边界） | 已完成 | `scripts/acceptance/account_matrix_acceptance.py` 实跑：8 项全 🟢 + B1/B2 全 🟢，**109 项检查 0 失败、退出码 0**（8 项主体 98 + B1 6 + B2 5）；固定端口 19008、独立数据目录 `D:\_audit\account-matrix-2`；含 `src/` 近期写入的防误跑保护（命中即拒绝、退出码 2，`--force` 显式跳过）；证据 `D:\_audit\account-matrix-2\report.json`、`ui\*.png`；发布前必跑项见 `dist/release-gate/RELEASE-RUNBOOK.md` §5.6 | 本次运行期间另一条线仍在写 `src/`（5 个 `.py`），属强制模式；正式发版前需在「`src/` 连续 2 分钟无写入」时去掉 `--force` 再跑一次，两次结果一致才算最终凭证 |
+| 18 | 产品许可证条款（专有） | **待确认（发布前必须由人/律师定稿）** | 仓库根 `LICENSE` 现为短版声明（940 字节：著作权归属 + 保留一切权利 + 禁止未经书面许可再分发/转售/反向工程 + 第三方组件见 `licenses\` 与 `LGPL-SOURCE-OFFER.txt`）；完整 40 行草稿原样存于 [docs/legal/EULA-DRAFT-pending-review.md](legal/EULA-DRAFT-pending-review.md)，文件开头标注「AI 起草，未经法务确认，不得作为正式条款对外发布」 | 适用法律、违约终止、责任限制额度三类条款**故意未写进正式 LICENSE**，须由人/律师定稿后才能对外发布；在此之前产品界面只写「许可证与合规材料」并提供查看入口，不得声称许可协议已生效 |
 
 ## 3. 「部分完成」的确切差额（汇总）
 
