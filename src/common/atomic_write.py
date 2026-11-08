@@ -43,6 +43,129 @@ _READ_ATTEMPTS = 8
 _READ_RETRY_DELAY = 0.02
 
 
+class StorageWriteError(OSError):
+    """数据目录不可写（磁盘满 / 只读 / 权限 / 被占用）的中文可行动错误。
+
+    继承 ``OSError`` 以兼容既有的 ``except OSError`` 分支；``str(exc)`` 本身
+    就是给人看的中文说明，不含英文堆栈。
+    """
+
+
+#: ``GetVolumeInformationW`` 的 FILE_READ_ONLY_VOLUME 标志位。
+_FILE_READ_ONLY_VOLUME = 0x00080000
+
+
+def volume_is_read_only(directory: str | os.PathLike[str]) -> bool:
+    """判断 ``directory`` 所在卷是否为只读卷（写保护）。
+
+    为什么要提前判断：在 Windows 的写保护卷上，为**新建**文件调用
+    ``CreateFileW`` 可能长时间阻塞（实测 diskpart 只读 VHD 上 ``mkstemp``
+    超 20s 不返回），而不是立刻报错。先做一次廉价查询，把"卡死"变成
+    "明确的中文错误"。
+    """
+    try:
+        absolute = os.path.abspath(os.fspath(directory))
+    except (TypeError, ValueError):
+        return False
+    if os.name != "nt":  # pragma: no cover - POSIX path
+        try:
+            statvfs = os.statvfs(absolute)
+            return bool(statvfs.f_flag & getattr(os, "ST_RDONLY", 1))
+        except OSError:
+            return False
+    try:
+        import ctypes
+
+        drive = os.path.splitdrive(absolute)[0]
+        if not drive:
+            return False
+        root = drive + "\\"
+        flags = ctypes.c_ulong(0)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(root),
+            None,
+            0,
+            None,
+            None,
+            ctypes.byref(flags),
+            None,
+            0,
+        )
+        return bool(ok) and bool(flags.value & _FILE_READ_ONLY_VOLUME)
+    except Exception:  # noqa: BLE001 - 探测失败时按可写处理，交给真正写入报错
+        return False
+
+
+def describe_storage_failure(
+    exc: BaseException, target: str | os.PathLike[str]
+) -> str:
+    """把底层 ``OSError`` 翻译成一句中文可行动提示（含目标路径）。"""
+    path = os.fspath(target)
+    errno_value = getattr(exc, "errno", None)
+    winerror = getattr(exc, "winerror", None)
+    disk_full = errno_value in (28, 112) or winerror in (39, 112)
+    read_only = winerror == 19 or errno_value == 30  # ERROR_WRITE_PROTECT / EROFS
+    if disk_full:
+        reason = "磁盘已满"
+        action = "请清理该磁盘的可用空间（建议至少保留 100MB）后重试"
+    elif read_only:
+        reason = "所在磁盘为只读"
+        action = "请解除磁盘写保护，或把数据目录改到可写磁盘后重试"
+    elif isinstance(exc, PermissionError) or winerror == 5 or errno_value == 13:
+        reason = "目录不可写（权限不足或被其他程序占用）"
+        action = "请检查目录权限，并关闭正在占用该目录的程序后重试"
+    else:
+        # 底层只给 "unable to open database file"/"disk I/O error" 这类模糊
+        # 信息时，把最常见原因直接写出来，保证用户知道下一步做什么。
+        reason = "写入失败（常见原因：磁盘已满、数据目录只读或文件被占用）"
+        action = "请先检查磁盘可用空间与目录权限，并关闭占用该目录的程序后重试"
+    return (
+        f"无法写入「{path}」：{reason}。{action}。"
+        f"已成功写入的历史数据不受影响（原始错误：{exc}）。"
+    )
+
+
+_STORAGE_HINTS = (
+    "disk is full",
+    "database or disk is full",
+    "disk i/o error",
+    "unable to open database file",
+    "readonly database",
+    "read-only database",
+    "attempt to write a readonly database",
+    "no space left",
+    "write protected",
+    "database is locked",
+)
+
+
+def is_storage_failure(exc: BaseException) -> bool:
+    """是否属于磁盘满/只读/被占用这类"存储环境故障"。
+
+    用于启动期降级日志：这类错误给中文可行动提示即可，不应打印英文堆栈。
+    """
+    if isinstance(exc, StorageWriteError):
+        return True
+    errno_value = getattr(exc, "errno", None)
+    winerror = getattr(exc, "winerror", None)
+    if errno_value in (28, 30, 112) or winerror in (5, 19, 39, 112):
+        return True
+    text = str(exc).lower()
+    return any(hint in text for hint in _STORAGE_HINTS)
+
+
+def ensure_writable_directory(
+    directory: str | os.PathLike[str], *, purpose: str = "数据目录"
+) -> None:
+    """只读卷上立即失败，避免后续临时文件创建阻塞。"""
+    if volume_is_read_only(directory):
+        raise StorageWriteError(
+            f"无法写入{purpose}「{os.fspath(directory)}」：所在磁盘为只读。"
+            "请解除磁盘写保护，或把数据目录改到可写磁盘后重试。"
+            "已成功写入的历史数据不受影响。"
+        )
+
+
 def read_text_with_retry(
     path: str | os.PathLike[str], encoding: str = "utf-8"
 ) -> str:
@@ -103,9 +226,12 @@ def exclusive_file_lock(
     """
     lock_path = os.fspath(lock_path)
     directory = os.path.dirname(os.path.abspath(lock_path))
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    handle = open(lock_path, "a+b")
+    try:
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        raise StorageWriteError(describe_storage_failure(exc, lock_path)) from exc
     acquired = False
     try:
         # Windows 的 region lock 也阻止**读**被锁的字节：不能在持锁期间用
@@ -172,14 +298,51 @@ def _fsync_directory(directory: Path) -> None:
         os.close(fd)
 
 
-def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
-    """Replace ``path`` with ``data`` atomically."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+def _cleanup_orphan_temps(target: Path) -> None:
+    """清理上一次崩溃留下的 ``<name>.<random>.tmp`` 孤儿。
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
-    )
+    强杀（SIGKILL / TerminateProcess）不会执行 ``except`` 里的 unlink，于是
+    临时文件会残留。它不影响主文件读取（主文件永远只有旧版或新版），但会
+    累积；在下一次成功写入后顺手清掉。Windows 上仍被其他进程打开的临时
+    文件删不掉（PermissionError），天然不会误删活跃写入；POSIX 上 unlink
+    对打开中的文件也成功，因此只清理超过 5 分钟的旧孤儿。
+    """
+    try:
+        candidates = list(target.parent.glob(target.name + ".*.tmp"))
+    except OSError:
+        return
+    min_age = 0.0 if os.name == "nt" else 300.0
+    now = time.time()
+    for candidate in candidates:
+        try:
+            if min_age and now - candidate.stat().st_mtime < min_age:
+                continue
+            candidate.unlink()
+        except OSError:
+            continue
+
+
+def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
+    """Replace ``path`` with ``data`` atomically.
+
+    存储层故障（磁盘满 / 只读盘 / 无权限 / 被占用）统一转成
+    :class:`StorageWriteError`，``str(exc)`` 即中文可行动提示；主文件保持
+    上一版完整内容，不会出现半写文件。
+    """
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StorageWriteError(describe_storage_failure(exc, target.parent)) from exc
+    # 只读卷上 mkstemp 可能长时间阻塞，必须先快速失败。
+    ensure_writable_directory(target.parent)
+
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
+        )
+    except OSError as exc:
+        raise StorageWriteError(describe_storage_failure(exc, target)) from exc
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -187,13 +350,16 @@ def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         _replace_with_retry(tmp, target)
-    except BaseException:
+    except BaseException as exc:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        if isinstance(exc, OSError) and not isinstance(exc, StorageWriteError):
+            raise StorageWriteError(describe_storage_failure(exc, target)) from exc
         raise
     _fsync_directory(target.parent)
+    _cleanup_orphan_temps(target)
 
 
 def atomic_write_text(path: str | os.PathLike[str], text: str, encoding: str = "utf-8") -> None:

@@ -79,6 +79,12 @@ def _tighten_permissions(path: Path) -> None:
                 check=False,
                 capture_output=True,
                 text=True,
+                # icacls 的输出跟随系统语言（中文系统是 GBK）。不钉编码时
+                # Python 会按默认编码解码，在 UTF-8 模式下读 GBK 字节会在
+                # 后台读取线程里抛 UnicodeDecodeError（栈直接进 launcher.log）。
+                # 这里只关心退出码，输出本身不用，替换字符即可。
+                encoding="utf-8",
+                errors="replace",
             )
         except OSError as exc:  # noqa: BLE001 - 权限收紧是加固，不是启动前提
             logger.warning("收紧密钥文件权限失败（%s）", type(exc).__name__)

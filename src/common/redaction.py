@@ -17,7 +17,8 @@
 * 层级字段（``parent_id`` / ``root_id`` / ``depth`` / ``ancestor``）；
 * 密钥与令牌（PEM、``sk-``、``AIza``、``gsk_``、``ghp_``、``xox?-``、``AKIA``、
   JWT、``Authorization: Basic/Bearer``、URL userinfo、``key=value`` 形式的
-  口令 / 恢复码 / 通行短语）。
+  口令 / 恢复码 / 通行短语）；
+* 邮箱地址（``name@example.com``）。
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ import re
 from typing import List, Tuple
 
 #: 占位符变更或规则扩展时递增；诊断包的 manifest 会记录它。
-REDACTION_VERSION = "2"
+REDACTION_VERSION = "4"
 
 REDACTED = "***REDACTED***"
 USER_PLACEHOLDER = "<用户>"
@@ -34,6 +35,7 @@ ENV_PLACEHOLDER = "<环境变量>"
 PATH_PLACEHOLDER = "<程序文件>"
 APP_PLACEHOLDER = "<程序目录>"
 HIERARCHY_PLACEHOLDER = "<层级字段>"
+EMAIL_PLACEHOLDER = "<邮箱>"
 
 # --------------------------------------------------------------------------- #
 # 1) 路径中的用户名
@@ -46,6 +48,12 @@ _USER_PATH_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
         rf"\1{USER_PLACEHOLDER}",
     ),
     (re.compile(r"(/(?:home|Users)/)(?!<用户>)[^/\s\"'<>|]+"), rf"\1{USER_PLACEHOLDER}"),
+    # 临时目录会把用户名再拼一次（``pytest-of-Administrator``）。上面的 Users
+    # 规则只掩码到 ``Temp`` 为止，这里补掉 ``*-of-<user>`` 这一段。
+    (
+        re.compile(r"(?i)([\\/](?:pytest|tmp|temp)[-_]of[-_])[^\\/\r\n\"'<>|]+"),
+        rf"\1{USER_PLACEHOLDER}",
+    ),
     (re.compile(r"(?i)(^|[\s\"'(=/])root(?=/|\s|$)"), rf"\1{USER_PLACEHOLDER}"),
 )
 
@@ -77,7 +85,7 @@ def mask_user_path(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 _ENV_NAME_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    # 必须带下划线后缀：裸 ``LIUHAO`` 是产品名（"鎏灏 LIUHAO X"），不是变量名。
+    # 必须带下划线后缀：裸 ``LIUHAO`` 是产品名（"LiuHao AI OS · 鎏灏智能中枢"），不是变量名。
     re.compile(r"\bLIUHAO_[A-Z0-9_]+\b"),
     re.compile(r"\bAPP_ENV\b"),
     re.compile(r"\bAI_[A-Z0-9_]+\b"),
@@ -153,17 +161,48 @@ _PRIVATE_KEY_BLOCK = re.compile(
 )
 
 _KV_SECRET = re.compile(
-    r"(?i)((?:api[_-]?key|access[_-]?key|secret[_-]?key|integrity[_-]?key|"
+    # ``key`` 必须单独列出：``?key=`` / ``&key=`` / ``"key":`` 这类查询参数与
+    # JSON 字段在真实日志里非常常见，之前不在名单内，凭据会原样落盘。
+    # ``(?<![A-Za-z0-9_])`` 防止误伤 ``monkey=``、``hotkey=``，也保证
+    # ``key_fp=`` 这类非密字段不被吃掉。
+    r"(?i)((?<![A-Za-z0-9_])(?:api[_-]?key|access[_-]?key|secret[_-]?key|"
+    r"(?:aws[_-]?)?secret[_-]?access[_-]?key|azure[_-]?key|subscription[_-]?key|"
+    r"integrity[_-]?key|"
     r"signing[_-]?key|private[_-]?key|client[_-]?secret|refresh[_-]?token|"
     r"access[_-]?token|session[_-]?token|id[_-]?token|recovery[_-]?code|"
     r"passphrase|pass[_-]?phrase|token|password|passwd|pwd|cookie|authorization|"
-    r"credential|secret)\s*[\"']?\s*[=:]\s*)"
+    r"credential|secret|key)\s*[\"']?\s*[=:]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s,;\"'）)]+)"
+)
+
+#: ``Cookie`` / ``Set-Cookie`` 是整行多段 ``name=value; name=value``，通用
+#: kv 规则只能吃掉第一段，后面的会话凭据仍会明文落盘。整行替换最稳妥。
+_COOKIE_HEADER = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\r\n]+)")
+
+#: URL 查询参数里的凭据（``?key=`` / ``&sig=`` / ``&code=`` ...）。放在
+#: ``_KV_SECRET`` 之前：先按参数名精确截断，避免 kv 规则把后续参数一起吞掉。
+_QUERY_CRED = re.compile(
+    r"(?i)([?&](?:key|api[_-]?key|sig|signature|auth|code|ticket|access|token)"
+    r"\s*=\s*)([^\s&#]+)"
 )
 
 _SECRET_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (_PRIVATE_KEY_BLOCK, "***PRIVATE-KEY-REDACTED***"),
+    (_COOKIE_HEADER, rf"\1{REDACTED}"),
     (re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,})"), "sk-***REDACTED***"),
+    # Stripe：``sk_live_`` / ``sk_test_`` / ``rk_live_``（连字符规则覆盖不到）
+    (re.compile(r"\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,})"), "sk_***REDACTED***"),
+    (re.compile(r"\b(hf_[A-Za-z0-9]{20,})"), "hf_***REDACTED***"),
+    (re.compile(r"\b(r8_[A-Za-z0-9]{20,})"), "r8_***REDACTED***"),
+    (re.compile(r"\b(dapi[0-9a-f]{16,})"), "dapi***REDACTED***"),
+    (re.compile(r"\b(ya29\.[A-Za-z0-9._-]{10,})"), "ya29.***REDACTED***"),
+    (re.compile(r"\b(xapp-[A-Za-z0-9-]{10,})"), "xapp-***REDACTED***"),
+    (re.compile(r"\b(npm_[A-Za-z0-9]{20,})"), "npm_***REDACTED***"),
+    (re.compile(r"\b(pypi-[A-Za-z0-9._-]{20,})"), "pypi-***REDACTED***"),
+    (re.compile(r"\b(github_pat_[A-Za-z0-9_]{20,})"), "github_pat_***REDACTED***"),
+    (re.compile(r"\b(glpat-[A-Za-z0-9._-]{16,})"), "glpat-***REDACTED***"),
+    (re.compile(r"\b(ATATT[A-Za-z0-9._-]{10,})"), "ATATT***REDACTED***"),
+    (re.compile(r"\b(whsec_[A-Za-z0-9]{16,})"), "whsec_***REDACTED***"),
     (re.compile(r"\b(AIza[0-9A-Za-z_\-]{20,})"), "AIza***REDACTED***"),
     (re.compile(r"\b(gsk_[A-Za-z0-9]{16,})"), "gsk_***REDACTED***"),
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,})"), "gh***REDACTED***"),
@@ -182,9 +221,14 @@ _SECRET_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
         "***JWT-REDACTED***",
     ),
     (re.compile(r"(\b[a-z][a-z0-9+.-]*://[^:/\s@]+:)([^@/\s]+)(@)", re.I), rf"\1{REDACTED}\3"),
+    (_QUERY_CRED, rf"\1{REDACTED}"),
     (_KV_SECRET, rf"\1{REDACTED}"),
     (re.compile(r"(?i)\b(AI_PROVIDER_KEY\s*=\s*)([^\s\"']+)"), rf"\1{REDACTED}"),
 )
+
+#: 邮箱地址本身也是可识别信息；放在密钥规则之后，避免先吃掉 URL userinfo
+#: （``https://user:pw@host`` 会先被 userinfo 规则处理成 ``***REDACTED***@host``）。
+_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def redact_text(text: str) -> str:
@@ -194,6 +238,7 @@ def redact_text(text: str) -> str:
     out = str(text)
     for pattern, replacement in _SECRET_PATTERNS:
         out = pattern.sub(replacement, out)
+    out = _EMAIL_PATTERN.sub(EMAIL_PLACEHOLDER, out)
     for pattern, replacement in _PATH_PATTERNS:
         out = pattern.sub(replacement, out)
     out = mask_user_path(out)
@@ -242,6 +287,12 @@ _LEAK_FEATURES: Tuple[Tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"(?i)[A-Za-z]:[\\/]+Documents and Settings[\\/]+(?!<用户>)[^\\/\r\n\"'<>|]+"),
     ),
     ("用户名路径", re.compile(r"/(?:home|Users)/(?!<用户>)[^/\s\"'<>|]+")),
+    (
+        "用户名路径",
+        re.compile(
+            r"(?i)[\\/](?:pytest|tmp|temp)[-_]of[-_](?!<用户>)[^\\/\s\"'<>|]+"
+        ),
+    ),
     # 环境变量名
     ("环境变量名", re.compile(r"\bLIUHAO_[A-Z0-9_]+\b")),
     ("环境变量名", re.compile(r"\bAPP_ENV\b")),
@@ -269,6 +320,20 @@ _LEAK_FEATURES: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     # 密钥与令牌（各家独立模式，避免与脱敏共用同一条正则）
     ("密钥或令牌", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("密钥或令牌", re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}")),
+    # 下面这批前缀与 ``_SECRET_PATTERNS`` 一一对应，但正则各写一遍：
+    # 自检必须独立于脱敏，否则"漏一类"会被同一份规则原样漏过去。
+    ("密钥或令牌", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}")),
+    ("密钥或令牌", re.compile(r"\bhf_[A-Za-z0-9]{20,}")),
+    ("密钥或令牌", re.compile(r"\br8_[A-Za-z0-9]{20,}")),
+    ("密钥或令牌", re.compile(r"\bdapi[0-9a-f]{16,}")),
+    ("密钥或令牌", re.compile(r"\bya29\.[A-Za-z0-9._-]{10,}")),
+    ("密钥或令牌", re.compile(r"\bxapp-[A-Za-z0-9-]{10,}")),
+    ("密钥或令牌", re.compile(r"\bnpm_[A-Za-z0-9]{20,}")),
+    ("密钥或令牌", re.compile(r"\bpypi-[A-Za-z0-9._-]{20,}")),
+    ("密钥或令牌", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}")),
+    ("密钥或令牌", re.compile(r"\bglpat-[A-Za-z0-9._-]{16,}")),
+    ("密钥或令牌", re.compile(r"\bATATT[A-Za-z0-9._-]{10,}")),
+    ("密钥或令牌", re.compile(r"\bwhsec_[A-Za-z0-9]{16,}")),
     ("密钥或令牌", re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}")),
     ("密钥或令牌", re.compile(r"\bgsk_[A-Za-z0-9]{16,}")),
     ("密钥或令牌", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}")),
@@ -289,15 +354,36 @@ _LEAK_FEATURES: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     (
         "密钥或令牌",
         re.compile(
-            r"(?i)\b(?:api[_-]?key|access[_-]?key|secret[_-]?key|integrity[_-]?key|"
+            r"(?i)(?<![A-Za-z0-9_])(?:api[_-]?key|access[_-]?key|secret[_-]?key|"
+            r"(?:aws[_-]?)?secret[_-]?access[_-]?key|azure[_-]?key|subscription[_-]?key|"
+            r"integrity[_-]?key|"
             r"signing[_-]?key|private[_-]?key|token|password|passwd|pwd|"
-            r"client[_-]?secret|refresh[_-]?token|session[_-]?token|cookie)\s*"
-            r"[\"']?\s*[=:]\s*(?![\*<])\S{4,}"
+            r"client[_-]?secret|refresh[_-]?token|session[_-]?token|cookie|key)\s*"
+            r"[\"']?\s*[=:]\s*(?![\*<])(?!\S*REDACTED)\S{4,}"
         ),
+    ),
+    # URL 查询参数里的凭据（``?key=`` / ``&sig=`` ...）。脱敏后值是
+    # ``***REDACTED***``，负向断言保证自检不会把占位符当泄漏。
+    (
+        "密钥或令牌",
+        re.compile(
+            r"(?i)[?&](?:key|api[_-]?key|sig|signature|auth|code|ticket|access|token)"
+            r"\s*=\s*(?![\*<])[^\s&#]{3,}"
+        ),
+    ),
+    # Cookie / Set-Cookie 整行多段。
+    (
+        "密钥或令牌",
+        re.compile(r"(?i)\b(?:set-)?cookie\s*:\s*(?!\s*\*)\S"),
     ),
     (
         "密钥或令牌",
         re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^:/\s@]+:(?![\*<])[^@/\s]+@"),
+    ),
+    # 邮箱（独立正则，不复用上面的脱敏规则）
+    (
+        "邮箱地址",
+        re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     ),
 )
 
@@ -319,6 +405,7 @@ def contains_secret(text: str) -> bool:
 
 
 __all__ = [
+    "EMAIL_PLACEHOLDER",
     "POLICY_ID_PLACEHOLDER",
     "REDACTION_VERSION",
     "contains_secret",

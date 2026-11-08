@@ -88,4 +88,19 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-__all__ = ["CLOCK_JUMP_THRESHOLD_SECONDS", "stable_now_epoch", "utc_now"]
+def stable_utc_now() -> datetime:
+    """``utc_now()`` 的防跳变版本：忽略大幅墙钟改动，按单调时钟推进。
+
+    用于"时间回拨不能让已过期的东西复活、前跳不能误删证据"这类安全敏感
+    判断（记忆 TTL、审计保留期）。库里的 ``created_at`` / ``expires_at``
+    仍是普通 naive UTC 时间戳，格式不变。
+    """
+    return datetime.fromtimestamp(stable_now_epoch(), timezone.utc).replace(tzinfo=None)
+
+
+__all__ = [
+    "CLOCK_JUMP_THRESHOLD_SECONDS",
+    "stable_now_epoch",
+    "stable_utc_now",
+    "utc_now",
+]

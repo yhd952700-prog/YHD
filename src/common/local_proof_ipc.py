@@ -35,6 +35,11 @@ RESET_HEADER = "X-LiuHao-Reset-Proof"
 HANDOFF_FRAGMENT_KEY = "liuhao-local-proof"
 RESET_FRAGMENT_KEY = "liuhao-reset-proof"
 
+#: 由桌面壳/启动器注入：表示这个网关进程是“可信本机入口”，首次注册、取码、
+#: 重置都必须同时满足“回环 + 桌面端证明 + HTTP 对端与网关同用户”。
+#: 直接用 ``python -m src.gateway`` 开发启动时不设置，只放宽为告警。
+TRUSTED_LAUNCH_ENV = "LIUHAO_TRUSTED_LAUNCH"
+
 _PIPE_PREFIX = "liuhao-local-proof"
 _SOCKET_NAME = "local_proof.sock"
 _REQUEST = b"issue-local-proof\n"
