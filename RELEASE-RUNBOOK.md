@@ -322,6 +322,12 @@ python dist\release-gate\verify_installed_compliance.py --app $app --json-out "$
 4. **启动可写性探测不再卡数十秒**：在 ACL 拒绝写入的目录里，`tempfile.mkstemp` 会被系统
    过滤驱动挂住数十秒；改为 `open(path, "xb")` 后 0.001 秒即报错。用户侧表现为
    「启动很慢、转很久才报错」，本版起恢复为立即报错。
+5. **修复满载/系统资源紧张时会话卡死**（界面一直转圈、无报错）。根因是进程内线程创建
+   通道被堵死，而非业务锁。现已改为启动时预热线程池、运行期不再新建线程
+   （`src/gateway/main.py::install_nonblocking_worker_start` / `warm_default_executor`、
+   `src/gateway/health.py::warm_probe_pool`）。
+   > 本条以 8 小时软测结论为准（2026-11-09 02:34 结束）；若之后仍有改动，需再提一次，
+   > 结论出来前不得当成「最终修复」对外表述。
 
 
 卸载保留的已知差异：**0.1.0 旧版本**的安装清单没有这组标记，卸载仍会删掉它自己装过的文件；

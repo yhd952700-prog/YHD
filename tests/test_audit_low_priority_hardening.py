@@ -178,7 +178,11 @@ class TestDurableEventHistory:
         monkeypatch.setattr(audit_module, "_read_events", broken)
         response = client.get("/v1/events/history", headers=reader_headers)
         assert response.status_code == 503
-        assert "audit db is locked" in response.json()["detail"]
+        # 503 的理由必须可行动，但**不能把内部异常原文上屏**（"audit db is locked"
+        # 是给我们看的日志，不是给用户看的文案）。
+        detail = response.json()["detail"]
+        assert "审计记录暂时读不到" in detail
+        assert "audit db is locked" not in detail
 
     def test_live_buffer_is_labelled_non_durable(self, client, reader_headers):
         body = client.get("/v1/events", headers=reader_headers).json()

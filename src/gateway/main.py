@@ -697,6 +697,47 @@ def install_nonblocking_worker_start() -> bool:
     return True
 
 
+async def warm_default_executor(count: int | None = None) -> int:
+    """把事件循环**默认线程池**的线程在启动时就全部建好。
+
+    为什么：``asyncio.to_thread`` / ``loop.run_in_executor(None, ...)`` 的线程也是
+    "第一次 submit 才创建"，而创建发生在**事件循环线程**上，走的仍是
+    ``threading.Thread.start()`` → ``self._started.wait()``。这与 §12.8 里 anyio
+    的卡点是**同一个机制**：本仓库在异步端点里用 ``asyncio.to_thread`` 做文档
+    解析（``src/api/routes/knowledge.py``），满载时同样可能把循环卡在建线程上。
+
+    ``ThreadPoolExecutor`` 的线程数**不会超过** ``max_workers``：只要启动时（CPU
+    空闲）把全部线程建满，运行期这条路径就再也不会新建线程。返回预建线程数；
+    失败只记日志，不阻断启动。
+
+    注意：不能只连续 submit 一组空任务 —— 空闲的 worker 会被复用
+    （``_adjust_thread_count`` 的 ``_idle_semaphore``），线程数不会涨到 N。
+    这里让 N 个任务都在栅栏上同时阻塞，迫使执行器真的建出 N 条线程，再一起放行。
+    """
+    try:
+        import asyncio
+        import threading
+
+        loop = asyncio.get_running_loop()
+        workers = max(1, int(count or min(32, (os.cpu_count() or 1) + 4)))
+        gate = threading.Barrier(workers)
+
+        def _hold() -> None:
+            try:
+                gate.wait(5.0)
+            except threading.BrokenBarrierError:  # pragma: no cover - 线程被系统拒绝
+                pass
+
+        await asyncio.gather(
+            *[loop.run_in_executor(None, _hold) for _ in range(workers)]
+        )
+        executor = getattr(loop, "_default_executor", None)
+        return len(executor._threads) if executor is not None else workers
+    except Exception:  # pragma: no cover - 预热失败不影响服务
+        logger.warning("默认线程池预热失败（不影响启动）", exc_info=True)
+        return 0
+
+
 class HostGuardMiddleware:
     """Host 白名单 + 写请求 Origin 校验（纵深防御，纯 ASGI）。
 
@@ -855,6 +896,9 @@ async def lifespan(app: FastAPI):
         warm_probe_pool()
     except Exception:  # pragma: no cover - 预热失败不影响服务
         logger.warning("探针线程池预热调用失败（忽略）", exc_info=True)
+    # 默认线程池同理：asyncio.to_thread（知识库文档解析）的线程若在满载时
+    # 现场创建，会走同一个卡点。启动时建满，运行期就不再新建。
+    await warm_default_executor()
     _startup_mark("lifespan 启动开始")
     # 每次启动都是一份新的降级清单：上一次进程的失败不能污染 /v1/startup。
     try:
