@@ -309,13 +309,22 @@ _global_registry: Optional[CapabilityRegistry] = None
 
 
 def get_capability_registry() -> CapabilityRegistry:
-    """Get or create the global capability registry."""
+    """Get or create the global capability registry.
+
+    初始化失败时**不能**把半成品注册表留在全局：``register`` 带审计
+    （``@kernel_action``），磁盘满 / 审计库不可写时会 fail-closed 抛出。若这时
+    已经把空/半满的注册表挂到 ``_global_registry``，之后每个调用都会拿着它
+    查出 "Capability not found"，连磁盘恢复后也要重启进程才能用（实测：磁盘
+    满时启动网关，恢复空间后目标执行仍报 ``kernel.execution_pipeline`` 不存在）。
+    因此只有完整注册成功才发布到全局，失败原样抛出、下次调用重新尝试。
+    """
     global _global_registry
     if _global_registry is None:
-        _global_registry = CapabilityRegistry()
+        registry = CapabilityRegistry()
         # Register built-in kernel capabilities
-        _register_builtin_capabilities(_global_registry)
-        _global_registry.initialize()  # 存在即 READY：构造完成即视为就绪
+        _register_builtin_capabilities(registry)
+        registry.initialize()  # 存在即 READY：构造完成即视为就绪
+        _global_registry = registry
     return _global_registry
 
 

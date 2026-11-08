@@ -193,8 +193,8 @@ def main() -> int:
         print(f"[instance] {busy.describe()}", file=sys.stderr, flush=True)
         return 3
     except InstanceGuardUnavailable as exc:
-        _record_boot_instance_failure(exc)
-        print(f"[instance] {exc}", file=sys.stderr, flush=True)
+        detail = _record_boot_instance_failure(exc)
+        print(f"[instance] {detail or exc}", file=sys.stderr, flush=True)
         return 3
     try:
         from datetime import datetime
@@ -212,11 +212,14 @@ def main() -> int:
         guard.release()
 
 
-def _record_boot_instance_failure(exc: BaseException) -> None:
+def _record_boot_instance_failure(exc: BaseException) -> str:
     """数据目录不可写导致「抢单实例锁」失败时的最后证据。
 
     这条路径发生在日志系统初始化**之前**：实测把数据目录设为只读时，用户只看到
     一行 stderr，``logs/`` 根本不存在。所以这里必须自己写 ``bootstrap.log``。
+
+    返回一句人话（同时打进 stderr 与 bootstrap.log）：``winerror=183``（"已存在"）
+    最常见的成因是数据目录路径被同名**普通文件**挡住，光给错误码用户无从下手。
     """
     target = (
         (os.environ.get("LIUHAO_INSTANCE_DIR") or "").strip()
@@ -226,6 +229,21 @@ def _record_boot_instance_failure(exc: BaseException) -> None:
     cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
     winerror = getattr(cause, "winerror", None)
     errno_v = getattr(cause, "errno", None)
+    try:
+        from ..observability.boot_report import display_path, exc_text, path_kind
+
+        kind = path_kind(target)
+        shown = display_path(target, tail=2)
+        if kind in ("file", "other"):
+            detail = f"数据目录路径存在但不是文件夹：{shown}（请改名或移走它）"
+        elif kind == "missing":
+            detail = f"数据目录无法创建：{shown}（父级可能不是文件夹或没有写权限）"
+        else:
+            detail = exc_text(cause, target)
+    except Exception:  # noqa: BLE001 - 诊断文本生成失败也不能掩盖原始错误
+        kind = "unknown"
+        shown = target
+        detail = f"{type(cause).__name__}: {cause}"
     try:
         import shutil
 
@@ -240,17 +258,21 @@ def _record_boot_instance_failure(exc: BaseException) -> None:
 
         written = bootstrap_log.write_event(
             "boot.instance_lock.failed",
-            path=target,
+            path=shown,
+            path_kind=kind,
+            detail=detail,
+            exc=exc_text(cause, target),
             winerror=winerror,
             errno=errno_v,
             free_bytes=free,
-            action="授予数据目录写权限 / 更换 LIUHAO_DATA_DIR 或 LIUHAO_INSTANCE_DIR "
-            "/ 清理磁盘 / 关闭安全软件拦截后重试",
+            action="先按 detail 处理路径；再授予数据目录写权限 / 更换数据目录"
+            " / 清理磁盘 / 关闭安全软件拦截后重试",
         )
     except Exception:  # noqa: BLE001
         written = ""
     if written:
         print("[boot] 启动诊断已记录到本机引导日志。", file=sys.stderr, flush=True)
+    return detail
 
 
 def _record_boot_logdir_failure(exc: BaseException, log_config: dict | None) -> None:
@@ -301,7 +323,7 @@ def _record_boot_startup_failure() -> None:
     try:
         from ..observability.boot_report import free_bytes, probe_writable
 
-        writable, exc = probe_writable(data_dir)
+        writable, exc = probe_writable(data_dir, "data_dir")
         winerror = getattr(exc, "winerror", None) if exc else None
         errno_v = getattr(exc, "errno", None) if exc else None
         remaining = free_bytes(data_dir)
@@ -331,6 +353,11 @@ def _record_boot_startup_failure() -> None:
 
 
 def _run(host: str, port: int) -> int:
+    # 磁盘满时控制台 stdout 也可能写不进去（桌面壳会把子进程 stdout 落到数据
+    # 目录）。logging 默认会把 handler 自身的写入失败打成整段英文
+    # "--- Logging error ---" traceback；用户看到的应该是日志文件 handler
+    # 打印的那句中文提示（见 src/logging_config.py），而不是 Python 堆栈。
+    logging.raiseExceptions = False
     # 让应用层（Host 白名单）知道真实的绑定地址：显式对外时把该地址加入
     # 允许的 Host，否则启动器"能启动、但每个请求都被 Host 校验 400"。
     os.environ["LIUHAO_LISTEN_HOST"] = host

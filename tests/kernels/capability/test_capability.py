@@ -263,6 +263,36 @@ class TestGlobalRegistry:
         assert e.id == "custom1"
         assert get_capability_registry().lookup("custom1", "core") is not None
 
+    def test_failed_initialisation_does_not_poison_global_registry(self, monkeypatch):
+        """注册内置能力失败时不能留下半成品注册表。
+
+        磁盘满 / 审计库不可写会让 ``register`` 的审计 fail-closed 抛出；若此时
+        把空注册表挂到全局，之后所有能力都变成 "Capability not found"，恢复
+        空间后也必须重启进程才能恢复。失败必须原样抛出且全局仍为空，下一次
+        调用重新完整注册。
+        """
+        import src.kernels.capability as cap_mod
+
+        monkeypatch.setattr(cap_mod, "_global_registry", None)
+        calls = {"n": 0}
+        real = cap_mod._register_builtin_capabilities
+
+        def flaky(registry):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated audit write failure (disk full)")
+            return real(registry)
+
+        monkeypatch.setattr(cap_mod, "_register_builtin_capabilities", flaky)
+
+        with pytest.raises(RuntimeError):
+            get_capability_registry()
+        assert cap_mod._global_registry is None
+
+        registry = get_capability_registry()
+        assert registry.lookup("execution_pipeline", "kernel") is not None
+        assert calls["n"] == 2
+
     def test_defect_builtin_lookup_default_namespace(self):
         # Required by spec: convenience lookup should find builtins.
         e = lookup_capability("capability_registry")

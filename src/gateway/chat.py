@@ -9,14 +9,16 @@ provider 由环境变量 AI_PROVIDER_TYPE / AI_PROVIDER_MODEL 控制（默认 ol
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
+import uuid
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -35,7 +37,38 @@ from .account_context import (
 )
 from ..kernels.identity import _accounts
 from .account_usage import record_usage
+from ..ai.conversation_store import ConversationStoreError
 from ..ai.model_config import ModelConfigError
+from ..ai.usage_meter import UsageMeter, meter_scope, snapshot, use_meter
+from ..common.atomic_write import (
+    StorageWriteError,
+    describe_storage_failure,
+    is_storage_failure,
+)
+from ..kernels.memory.store import MemoryStoreError
+
+#: 落盘失败（磁盘满 / 只读盘 / 无权限 / 被占用）。这些错误必须变成
+#: 中文可行动提示：对话正文可以生成成功，但历史没保存不能静默。
+_STORAGE_ERRORS = (ConversationStoreError, MemoryStoreError, StorageWriteError)
+
+
+def _storage_http_error(exc: BaseException) -> Optional[HTTPException]:
+    """把存储类异常统一映射成 503 中文可行动提示。
+
+    知识检索/个人上下文/工具装配等底层 SQLite 在磁盘满时会抛裸
+    ``sqlite3.OperationalError``，类型不在 ``_STORAGE_ERRORS`` 里；若不拦截，
+    用户只会看到英文 500。这里只按"存储故障"特征识别，其它异常照常抛出。
+    """
+    if not is_storage_failure(exc):
+        return None
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "storage_unavailable",
+            "message": describe_storage_failure(exc, "数据目录"),
+        },
+    )
+
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -84,14 +117,32 @@ def get_conversation_store():
 def warmup() -> None:
     """后台预热对话链的重依赖（不阻塞就绪；失败由调用方如实上报）。
 
-    只做导入，不创建实例、不读模型配置 —— 因此不会产生额外副作用，也不会
-    因为"用户还没配模型"而失败。如果这里失败，第一次真实对话也会以同样的
-    方式失败，而且错误会在启动日志与 ``/v1/startup`` 的 background.errors 里
+    只做导入与历史搜索索引构建，不创建会话实例、不读模型配置 —— 不会因为
+    "用户还没配模型"而失败。如果这里失败，第一次真实对话也会以同样的方式
+    失败，而且错误会在启动日志与 ``/v1/startup`` 的 background.errors 里
     出现，不会被拖到用户按下发送键才暴露。
     """
     from ..ai.conversation_store import get_conversation_store as _store  # noqa: F401
     from ..ai.liuhao import LiuHaoAssistant as _assistant  # noqa: F401
     from ..ai.model_router import provider_for_task as _router  # noqa: F401
+
+    # 历史全文搜索索引：存量库（换机恢复 / 老数据）第一次启动时在后台建，
+    # 建完之前搜索接口会如实返回进度，不阻塞首屏。可用
+    # LIUHAO_SEARCH_INDEX_WARMUP=0 关闭（压测需要干净 CPU 时用）。
+    if (os.environ.get("LIUHAO_SEARCH_INDEX_WARMUP") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "off",
+        "no",
+    ):
+        try:
+            from ..ai.conversation_store import (
+                get_conversation_store as _get_store,
+            )
+
+            _get_store().build_search_index()
+        except Exception:  # noqa: BLE001 - 预热失败不影响对话/搜索降级
+            logger.warning("history search index warmup failed", exc_info=True)
 
 
 # 进程内会话表：**principal 与 session_id 的复合键** -> 鎏灏实例。
@@ -109,6 +160,9 @@ _session_users: Dict[str, str] = {}
 _MAX_SESSIONS_DEFAULT = 128
 _session_last_used: Dict[str, float] = {}
 _sessions_lock = threading.Lock()
+# 冷会话构造锁按会话粒度：``LiuHaoAssistant(...)``（历史加载 + 工具生命周期）
+# 在全局锁**外**执行，不同会话可并发冷启动；同一会话仍严格只构造一次。
+_session_build_locks: Dict[str, threading.Lock] = {}
 
 
 def _max_sessions() -> int:
@@ -226,43 +280,88 @@ def get_assistant(
     # 返回 409）时绝不留下一个空 assistant。此前是先插入 _sessions 再解析，
     # 实测 member 连续 10 次 409 会留下 10 个空会话。
     provider = provider_for_task("chat", model_id=model_id, key_scope=key_scope)
+
+    # 快路径：命中缓存只更新 LRU，不进入构造锁。
     with _sessions_lock:
         assistant = _sessions.get(key)
-        if assistant is None:
-            try:
-                assistant = LiuHaoAssistant(
-                    name=history_principal,
-                    profile_principal=profile_principal,
-                    provider=provider,
-                )
-            except Exception:
-                _close_provider(provider)
-                raise
-            # 容量上限：先淘汰最久未使用的会话，再插入新会话。
-            while _sessions and len(_sessions) >= _max_sessions():
-                if _session_last_used:
-                    oldest = min(_session_last_used, key=_session_last_used.get)
-                else:
-                    oldest = next(iter(_sessions))
-                evicted = _sessions.pop(oldest, None)
-                _session_users.pop(oldest, None)
-                _session_last_used.pop(oldest, None)
-                if evicted is not None:
-                    closer = getattr(evicted, "close", None)
-                    if callable(closer):
-                        try:
-                            closer()
-                        except Exception:
-                            pass
-            if principal:
-                _session_users[key] = principal
-            _sessions[key] = assistant
-        else:
-            # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里
-            # 路由，未命中回落默认模型。替换时按活跃轮次安全关闭旧 provider。
-            assistant.set_provider(provider)
-        _session_last_used[key] = time.monotonic()
+        if assistant is not None:
+            _session_last_used[key] = time.monotonic()
+    if assistant is not None:
+        # 热加载：显式 model_id 优先；否则按「对话」任务类型在模型管理里
+        # 路由，未命中回落默认模型。替换时按活跃轮次安全关闭旧 provider。
+        assistant.set_provider(provider)
         return assistant
+
+    # 全局锁只用于「查缓存 + 登记按会话的构造锁」；真正的构造在锁外进行。
+    with _sessions_lock:
+        assistant = _sessions.get(key)
+        if assistant is not None:
+            _session_last_used[key] = time.monotonic()
+            build_lock = None
+        else:
+            build_lock = _session_build_locks.setdefault(key, threading.Lock())
+    if assistant is not None:
+        assistant.set_provider(provider)
+        return assistant
+    assert build_lock is not None
+
+    built_here = False
+    try:
+        with build_lock:
+            with _sessions_lock:
+                assistant = _sessions.get(key)
+            if assistant is None:
+                try:
+                    built = LiuHaoAssistant(
+                        name=history_principal,
+                        profile_principal=profile_principal,
+                        audit_principal=principal,
+                        provider=provider,
+                    )
+                except Exception:
+                    _close_provider(provider)
+                    raise
+                with _sessions_lock:
+                    # 构造期间可能有别的线程已经写入；丢弃自己这份，保证同一
+                    # 会话只有一个实例（provider 交给胜者复用，不关闭泄漏句柄）。
+                    assistant = _sessions.get(key)
+                    if assistant is None:
+                        # 容量上限：先淘汰最久未使用的会话，再插入新会话。
+                        while _sessions and len(_sessions) >= _max_sessions():
+                            if _session_last_used:
+                                oldest = min(_session_last_used, key=_session_last_used.get)
+                            else:
+                                oldest = next(iter(_sessions))
+                            evicted = _sessions.pop(oldest, None)
+                            _session_users.pop(oldest, None)
+                            _session_last_used.pop(oldest, None)
+                            if evicted is not None:
+                                closer = getattr(evicted, "close", None)
+                                if callable(closer):
+                                    try:
+                                        closer()
+                                    except Exception:
+                                        pass
+                        if principal:
+                            _session_users[key] = principal
+                        _sessions[key] = built
+                        assistant = built
+                        built_here = True
+                    _session_last_used[key] = time.monotonic()
+            else:
+                _session_last_used[key] = time.monotonic()
+    finally:
+        # 只在仍是当前这把锁时移除：正在等待的线程已持有引用，醒来后会命中
+        # 缓存，因此不会出现同一会话并发构造两份。
+        with _sessions_lock:
+            if _session_build_locks.get(key) is build_lock:
+                _session_build_locks.pop(key, None)
+
+    if not built_here:
+        # 等待期间别人已构造完成（或极端重试竞争下自己这份被丢弃）：复用现有
+        # 实例，并把本次解析到的 provider 交给它。
+        assistant.set_provider(provider)
+    return assistant
 
 
 def list_sessions(
@@ -295,6 +394,31 @@ def list_sessions(
             if principal is None or _owner_of(key) == principal
         ]
     return sorted(set(live) | set(persisted))
+
+
+def list_sessions_page(
+    principal: Optional[str] = None,
+    known_principals: Optional[List[str]] = None,
+    allow_legacy: Optional[bool] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> Dict[str, object]:
+    """会话列表分页（进程内 + 持久库并集，``limit=None`` 保持旧的全量语义）。
+
+    排序保持和 ``list_sessions`` 完全一致（字母序），这样"加载更多"翻页
+    不会出现跳条/重条，刷新后首屏位置也稳定。
+    """
+    ids = list_sessions(principal, known_principals, allow_legacy)
+    total = len(ids)
+    start = max(0, int(offset or 0))
+    page = ids[start:] if limit is None else ids[start:start + max(0, int(limit))]
+    return {
+        "sessions": page,
+        "total": total,
+        "has_more": start + len(page) < total,
+        "limit": limit,
+        "offset": start,
+    }
 
 
 def delete_session(session_id: str, principal: Optional[str] = None) -> bool:
@@ -342,6 +466,12 @@ class ChatRequest(BaseModel):
             "false=本次关闭，true=本次启用。"
         ),
     )
+    # 客户端幂等键：用户连点两次/网络抖动重发时带上同一个值，
+    # 服务端只执行一次并返回同一份回复。也可用 ``Idempotency-Key`` 头。
+    client_request_id: Optional[str] = Field(
+        None, max_length=128,
+        description="客户端请求 id（同一请求重发时保持不变，用于去重）",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -365,17 +495,33 @@ def _assistant_for(req: "ChatRequest", principal: str) -> LiuHaoAssistant:
             req.session_id, principal, req.model_id, key_scope=scope
         )
     except ModelConfigError as exc:
+        # 请求级 correlation id：写进 key.use 审计并回给客户端，失败的 HTTP
+        # 调用与审计条目因此可以一一对上（而不是只能按时间猜）。
+        correlation_id = uuid.uuid4().hex[:16]
         audit_key_use(
             scope,
             None,
             outcome="denied",
             source="explicit",
             extra={"model_config_id": req.model_id, "error_code": exc.code},
+            correlation_id=correlation_id,
         )
         detail: object = (
-            {"code": exc.code, "message": exc.detail} if exc.code else exc.detail
+            {"code": exc.code, "message": exc.detail, "correlation_id": correlation_id}
+            if exc.code
+            else exc.detail
         )
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+            headers={"X-LiuHao-Correlation-Id": correlation_id},
+        )
+    except _STORAGE_ERRORS as exc:
+        # 会话历史库都打不开（磁盘满/只读/被占用）：明确 503，而不是英文 500。
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "storage_unavailable", "message": str(exc)},
+        ) from exc
     owner = str(getattr(assistant.provider, "owner_principal", "") or "")
     if owner and owner != principal and scope.can_use(owner):
         # 主账号使用成员 Key：actor 仍是主账号，另记 key_owner 与授权来源。
@@ -391,6 +537,7 @@ def _record_chat_usage(
     tokens_in: int,
     tokens_out: int,
     correlation_id: str,
+    estimated: bool = False,
 ) -> bool:
     """记一行用量：账单归 ``key_owner``，用量归真实 actor。
 
@@ -407,6 +554,7 @@ def _record_chat_usage(
         tokens_out=tokens_out,
         session_id=req.session_id,
         correlation_id=correlation_id,
+        estimated=estimated,
     )
     if not recorded:
         logger.error(
@@ -420,49 +568,349 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(str(text or "")) // 4)
 
 
+# ─── 重复提交去重（幂等）──────────────────────────────────────
+#
+# 缺陷背景：用户连点两次发送，或网络抖动导致同一请求重发时，后端会真的
+# 调用两次模型、写两条历史、记两笔用量。这里在**进入生成之前**做去重：
+#
+# * 显式幂等键（请求体 ``client_request_id`` 或 ``Idempotency-Key`` 头）：
+#   同一主体 + 同一键只执行一次，TTL 内重发直接拿到同一份回复；
+# * 无显式键：按「主体 + 会话 + 模型 + 知识开关 + 消息正文」指纹在短时间窗
+#   （默认 8 秒，``LIUHAO_CHAT_DEDUP_WINDOW_SECONDS`` 可调）内去重；
+# * 并发重发：后来者等待首个请求完成并复用结果，**不会**各自调用模型；
+# * 失败不缓存：只有 ``completed`` 的结果会被复用，失败后重试仍会真实执行。
+#
+# 状态是进程内内存（单机桌面产品只有一个后端进程），有容量上限与过期清理。
+
+_DEDUP_WAIT_SECONDS = 300.0
+_DEDUP_MAX_ENTRIES = 512
+_DEDUP_WINDOW_DEFAULT = 8.0
+_DEDUP_IDEMPOTENCY_TTL_DEFAULT = 3600.0
+_DEDUP_SEP = "\x00"
+
+_dedup_lock = threading.Lock()
+_dedup_entries: Dict[str, "_DedupEntry"] = {}
+
+
+class _DedupEntry:
+    """一次「在途/已完成」请求的状态；``event`` 让并发重发等到结果。"""
+
+    __slots__ = ("key", "ttl", "state", "payload", "event", "created_at", "finished_at")
+
+    def __init__(self, key: str, ttl: float) -> None:
+        self.key = key
+        self.ttl = ttl
+        self.state = "inflight"
+        self.payload: Optional[Dict[str, object]] = None
+        self.event = threading.Event()
+        self.created_at = time.monotonic()
+        self.finished_at = 0.0
+
+
+def _dedup_window() -> float:
+    raw = (os.environ.get("LIUHAO_CHAT_DEDUP_WINDOW_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else _DEDUP_WINDOW_DEFAULT
+    except ValueError:
+        value = _DEDUP_WINDOW_DEFAULT
+    return max(0.0, min(value, 300.0))
+
+
+def _dedup_idempotency_ttl() -> float:
+    raw = (os.environ.get("LIUHAO_CHAT_IDEMPOTENCY_TTL_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else _DEDUP_IDEMPOTENCY_TTL_DEFAULT
+    except ValueError:
+        value = _DEDUP_IDEMPOTENCY_TTL_DEFAULT
+    return max(1.0, min(value, 86400.0))
+
+
+def _dedup_token(
+    principal: str, req: "ChatRequest", header_key: object
+) -> "tuple[Optional[str], float]":
+    """计算去重键与有效期；返回 ``(None, 0)`` 表示本次不做去重。
+
+    ``header_key`` 只在**真的是字符串**时才算显式键：FastAPI 的
+    ``Header(...)`` 在直接函数调用（测试/内部调用）里会把参数默认值原样传进来，
+    此时它是一个描述对象而不是 None；若把它 str 成键，所有请求会共用同一个
+    idempotency key 并互相串结果。
+    """
+    header_value = header_key if isinstance(header_key, str) else ""
+    explicit = header_value.strip() or str(req.client_request_id or "").strip()
+    if explicit:
+        # 显式键按主体隔离，避免两个账号用同一个 id 互相串结果。
+        return f"idem{_DEDUP_SEP}{principal}{_DEDUP_SEP}{explicit}", _dedup_idempotency_ttl()
+    window = _dedup_window()
+    if window <= 0:
+        return None, 0.0
+    flag = (
+        "true" if req.use_knowledge is True
+        else "false" if req.use_knowledge is False
+        else "auto"
+    )
+    raw = _DEDUP_SEP.join(
+        [principal, str(req.session_id or ""), str(req.model_id or ""), flag, req.message]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"fp{_DEDUP_SEP}{digest}", window
+
+
+def _prune_dedup(now: float) -> None:
+    for key, entry in list(_dedup_entries.items()):
+        if entry.state == "inflight":
+            # 在途请求由等待方/超时逻辑处理，不能在这里删掉别人的占位。
+            continue
+        if now - entry.finished_at > entry.ttl:
+            _dedup_entries.pop(key, None)
+
+
+def _enforce_dedup_capacity() -> None:
+    """容量上限：优先淘汰已完成最久的；全是在途时淘汰最早的占位。
+
+    在途占位不能无限累积（客户端拿到 StreamingResponse 却永不消费时，生成器
+    不会启动也不会收口）。超过上限时按下限淘汰，保证内存有界；去重本身是
+    尽力而为，宁可少去重也不能拖垮进程。
+    """
+    if len(_dedup_entries) < _DEDUP_MAX_ENTRIES:
+        return
+    finished = sorted(
+        (entry.finished_at, key)
+        for key, entry in _dedup_entries.items()
+        if entry.state != "inflight"
+    )
+    drain = max(1, len(_dedup_entries) - _DEDUP_MAX_ENTRIES + 1)
+    for _, key in finished[:drain]:
+        _dedup_entries.pop(key, None)
+    if len(_dedup_entries) >= _DEDUP_MAX_ENTRIES:
+        inflight = sorted(
+            (entry.created_at, key)
+            for key, entry in _dedup_entries.items()
+            if entry.state == "inflight"
+        )
+        for _, key in inflight[:max(1, len(_dedup_entries) - _DEDUP_MAX_ENTRIES + 1)]:
+            _dedup_entries.pop(key, None)
+
+
+def _dedup_claim(
+    key: Optional[str], ttl: float
+) -> "tuple[Optional[_DedupEntry], Optional[Dict[str, object]]]":
+    """占位或取回已有结果。
+
+    返回 ``(entry, cached)``：``cached`` 非空 = 直接复用它；``entry`` 非空 =
+    本请求是执行者，必须调用 ``_dedup_complete`` / ``_dedup_fail`` 收口。
+    """
+    if not key:
+        return None, None
+    deadline = time.monotonic() + _DEDUP_WAIT_SECONDS
+    while True:
+        with _dedup_lock:
+            now = time.monotonic()
+            _prune_dedup(now)
+            entry = _dedup_entries.get(key)
+            if entry is None:
+                entry = _DedupEntry(key, ttl)
+                _dedup_entries[key] = entry
+                _enforce_dedup_capacity()
+                return entry, None
+            if entry.state == "completed":
+                return entry, dict(entry.payload or {})
+            if entry.state == "failed":
+                # 首个请求失败了：本次请求成为新的执行者（真实重试）。
+                _dedup_entries.pop(key, None)
+                continue
+            waiter = entry.event
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "chat dedup wait timed out after %.0fs; running without dedupe",
+                _DEDUP_WAIT_SECONDS,
+            )
+            return None, None
+        waiter.wait(timeout=remaining)
+
+
+def _dedup_complete(entry: Optional[_DedupEntry], payload: Dict[str, object]) -> None:
+    if entry is None:
+        return
+    with _dedup_lock:
+        entry.payload = dict(payload)
+        entry.state = "completed"
+        entry.finished_at = time.monotonic()
+        entry.event.set()
+
+
+def _dedup_fail(entry: Optional[_DedupEntry]) -> None:
+    """失败释放占位：后来的重试可以真实执行，且失败结果永不缓存。"""
+    if entry is None:
+        return
+    with _dedup_lock:
+        if _dedup_entries.get(entry.key) is entry:
+            _dedup_entries.pop(entry.key, None)
+        entry.state = "failed"
+        entry.event.set()
+
+
+def _cached_chat_response(cached: Dict[str, object]) -> ChatResponse:
+    return ChatResponse(
+        reply=str(cached.get("reply") or ""),
+        status=str(cached.get("status") or "completed"),
+        turn=int(cached.get("turn") or 0),
+        correlation_id=str(cached.get("correlation_id") or ""),
+        agent=str(cached.get("agent") or ""),
+        knowledge=dict(cached.get("knowledge") or {}),
+    )
+
+
+def _replay_cached_stream(req: "ChatRequest", cached: Dict[str, object]):
+    """把去重命中的结果重放成一份合法的 SSE 事件流（不再次调用模型）。"""
+    reply = str(cached.get("reply") or "")
+
+    def replay():
+        if reply:
+            yield f"data: {json.dumps({'type': 'token', 'content': reply}, ensure_ascii=False)}\n\n"
+        done = {
+            "type": "done",
+            "status": str(cached.get("status") or "completed"),
+            "turn": int(cached.get("turn") or 0),
+            "session_id": req.session_id,
+            "correlation_id": str(cached.get("correlation_id") or ""),
+            "usage_recorded": bool(cached.get("usage_recorded")),
+            "knowledge": dict(cached.get("knowledge") or {}),
+            "deduplicated": True,
+        }
+        yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+    return replay()
+
+
+def _denial_http_error(result: Dict[str, object]) -> HTTPException:
+    """把对话拒绝结果转成 402/403（流式建流前与非流式共用同一口径）。
+
+    402 = 预算/额度不足（`budget_exceeded`），403 = 没有被授权
+    （`permission_denied`）。两者都带同一个 `correlation_id`，可直接对上
+    审计里的 `ACCESS_DENIED`；响应头也回同一个值，便于用户贴给管理员。
+    """
+    denial_reason = str(result.get("reason") or "permission_denied")
+    status_code = 402 if denial_reason == "budget_exceeded" else 403
+    correlation_id = str(result.get("correlation_id") or "")
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": denial_reason,
+            "message": str(result.get("reply") or ""),
+            "correlation_id": correlation_id,
+        },
+        headers={"X-LiuHao-Correlation-Id": correlation_id},
+    )
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(
-    req: ChatRequest, principal: str = Depends(require_human_principal)
+    req: ChatRequest,
+    principal: str = Depends(require_human_principal),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ) -> ChatResponse:
-    # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
-    assistant = _assistant_for(req, principal)
-    # 先检索再生成：空库/不可用/检索失败都静默降级，元信息如实说明。
-    knowledge = build_knowledge_context(
-        req.message, enabled=req.use_knowledge, principal=principal
-    )
-    with knowledge_prompt(assistant, knowledge):
-        _begin_turn(assistant)
-        try:
-            result = assistant.chat(req.message)
-        finally:
-            _end_turn(assistant)
-    if result.get("status") == "completed":
-        _record_chat_usage(
-            assistant,
-            principal,
-            req,
-            tokens_in=_estimate_tokens(req.message),
-            tokens_out=_estimate_tokens(result.get("reply")),
-            correlation_id=str(result.get("correlation_id") or ""),
+    # 去重必须在任何生成/计费之前：连点两次或网络重发只执行一次。
+    dedup_key, dedup_ttl = _dedup_token(principal, req, idempotency_key)
+    dedup_entry, cached = _dedup_claim(dedup_key, dedup_ttl)
+    if cached is not None:
+        logger.info(
+            "chat request deduplicated (session=%s principal=%s)",
+            req.session_id, principal,
         )
-    return ChatResponse(
-        reply=result["reply"],
-        status=result["status"],
-        turn=result["turn"],
-        correlation_id=result["correlation_id"],
-        agent=result["agent"],
-        knowledge=public_metadata(knowledge),
-        reason=(
-            getattr(assistant, "last_turn_reason", None)
-            if result["status"] != "completed"
-            else None
-        ),
-    )
+        return _cached_chat_response(cached)
+    try:
+        # 主体只来自令牌；请求体里的 user_id（即使传了）一律不采信。
+        try:
+            assistant = _assistant_for(req, principal)
+            # 先检索再生成：空库/不可用/检索失败都静默降级，元信息如实说明。
+            knowledge = build_knowledge_context(
+                req.message, enabled=req.use_knowledge, principal=principal
+            )
+        except Exception as exc:
+            mapped = _storage_http_error(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+        # 同一会话串行：两个标签页并发写同一 session 时不能同时改 turn/history。
+        with assistant.serialized_turn():
+            with knowledge_prompt(assistant, knowledge):
+                _begin_turn(assistant)
+                try:
+                    # 一轮 = 一个 meter：provider 每次真实调用都会累加进来（含工具多轮）。
+                    with meter_scope() as meter:
+                        try:
+                            result = assistant.chat(req.message)
+                        except _STORAGE_ERRORS as exc:
+                            # 正文可能已生成，但会话/记忆没落盘：如实 503，不静默丢历史。
+                            raise HTTPException(
+                                status_code=503,
+                                detail={
+                                    "code": "storage_unavailable",
+                                    "message": str(exc),
+                                },
+                            ) from exc
+                        except Exception as exc:
+                            # 知识库/个人上下文等底层 SQLite 直接抛磁盘满错误时，
+                            # 同样给中文 503，而不是英文 500。
+                            mapped = _storage_http_error(exc)
+                            if mapped is not None:
+                                raise mapped from exc
+                            raise
+
+                    usage = snapshot(meter)
+                finally:
+                    _end_turn(assistant)
+            if result.get("status") == "completed":
+                if usage["reported"]:
+                    tokens_in = int(usage["tokens_in"])
+                    tokens_out = int(usage["tokens_out"])
+                    estimated = False
+                else:
+                    tokens_in = _estimate_tokens(req.message)
+                    tokens_out = _estimate_tokens(result.get("reply"))
+                    estimated = True
+                _record_chat_usage(
+                    assistant,
+                    principal,
+                    req,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    correlation_id=str(result.get("correlation_id") or ""),
+                    estimated=estimated,
+                )
+        if result.get("status") == "denied":
+            raise _denial_http_error(result)
+        response = ChatResponse(
+            reply=result["reply"],
+            status=result["status"],
+            turn=result["turn"],
+            correlation_id=result["correlation_id"],
+            agent=str(result.get("agent") or assistant.name),
+            knowledge=public_metadata(knowledge),
+            reason=(
+                getattr(assistant, "last_turn_reason", None)
+                if result["status"] != "completed"
+                else None
+            ),
+        )
+    except BaseException:
+        # 异常（含客户端取消）不保留占位：重试必须能真实执行。
+        _dedup_fail(dedup_entry)
+        raise
+    if response.status == "completed":
+        _dedup_complete(dedup_entry, response.model_dump())
+    else:
+        _dedup_fail(dedup_entry)
+    return response
 
 
 @router.post("/chat/stream")
 def chat_stream(
-    req: ChatRequest, principal: str = Depends(require_human_principal)
+    req: ChatRequest,
+    principal: str = Depends(require_human_principal),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ) -> StreamingResponse:
     """流式对话（Server-Sent Events）。
 
@@ -471,43 +919,168 @@ def chat_stream(
     - ``{"type": "token", "content": "..."}``  逐 token
     - ``{"type": "tool", "name": ..., "args": ..., "output": ...}``  工具调用
     - ``{"type": "done", "turn": N, ...}``      结束帧（落盘/审计已完成）
+
+    **预算/权限判定在建流之前完成**：拒绝时直接物理返回 ``402 budget_exceeded``
+    / ``403 permission_denied``（JSON + ``X-LiuHao-Correlation-Id``），不会
+    建立 ``text/event-stream``。只有建流之后才发生的兜底拒绝（等会话锁期间
+    额度被别的会话用光）才用 ``done`` 帧的 ``status=denied`` + ``reason``
+    表达 —— 那时 HTTP 状态已发出，改不了。
+
+    重复提交（连点/重发）同样走幂等：后来者不会第二次调用模型，而是等首个
+    流结束后重放同一份内容（结束帧带 ``deduplicated: true``）。
     """
-    assistant = _assistant_for(req, principal)
-    knowledge = build_knowledge_context(
-        req.message, enabled=req.use_knowledge, principal=principal
-    )
+    dedup_key, dedup_ttl = _dedup_token(principal, req, idempotency_key)
+    dedup_entry, cached = _dedup_claim(dedup_key, dedup_ttl)
+    if cached is not None:
+        return StreamingResponse(
+            _replay_cached_stream(req, cached), media_type="text/event-stream"
+        )
+    turn_prepared = False
+    try:
+        assistant = _assistant_for(req, principal)
+        # 授权闸门必须在 build_knowledge_context / StreamingResponse 之前：
+        # 被拒绝的请求不该先做检索，更不该先拿到 200 + SSE 再被告知拒绝。
+        preflight = getattr(assistant, "preflight_chat", None)
+        if callable(preflight):
+            denial = preflight(req.message)
+            if denial is not None:
+                raise _denial_http_error(denial)
+            # 本轮 turn/correlation 已由 preflight 开好，生成器不能再开一轮。
+            turn_prepared = True
+        knowledge = build_knowledge_context(
+            req.message, enabled=req.use_knowledge, principal=principal
+        )
+    except Exception as exc:
+        _dedup_fail(dedup_entry)
+        mapped = _storage_http_error(exc)
+        if mapped is not None:
+            raise mapped from exc
+        raise
+    except BaseException:
+        _dedup_fail(dedup_entry)
+        raise
+
+    # 首个请求的最终结果；只有 completed 才会被缓存供重发复用。
+    outcome: Dict[str, object] = {"payload": None}
 
     def event_stream():
         # 提示词注入必须覆盖整个惰性生成周期；生成器关闭时 finally 恢复原值。
         reply_chars = 0
+        reply_text = ""
+        finished = False
+        usage_recorded = False
+        storage_error: Optional[Exception] = None
         _begin_turn(assistant)
+        meter = UsageMeter()
         try:
             with knowledge_prompt(assistant, knowledge):
-                for item in assistant.chat_stream(req.message):
+                # 建流前已开轮（turn_prepared）时不能再开一轮；生成器内部仍
+                # 会再授权一次，作为"等锁期间额度被用光"的兜底 —— 那次拒绝
+                # 只能走 done 帧（SSE 已建立，HTTP 状态改不了）。
+                stream = (
+                    assistant.chat_stream(req.message, turn_prepared=True)
+                    if turn_prepared
+                    else assistant.chat_stream(req.message)
+                )
+                while True:
+                    # Starlette 每次 next() 可能在不同 context 执行，因此逐次
+                    # 把 meter 挂到当前 context，provider 的 usage 才不会丢。
+                    try:
+                        with use_meter(meter):
+                            item = next(stream)
+                    except StopIteration:
+                        break
                     if isinstance(item, dict):
                         # 工具调用事件：结构化透传（type/name/args/output）。
                         yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
                     else:
                         reply_chars += len(str(item))
+                        reply_text += str(item)
                         payload = {"type": "token", "content": item}
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            finished = True
+        except _STORAGE_ERRORS as exc:
+            # 落盘失败发生在最后一个 token 之后：若不发错误帧，客户端只会看到
+            # 流被截断（静默失败）。这里明确告知"回复已生成但历史没保存"。
+            storage_error = exc
+        except Exception as exc:
+            # 底层 SQLite 裸抛磁盘满/只读错误：同样走 SSE 错误帧，不静默截断。
+            if is_storage_failure(exc):
+                storage_error = exc
+            else:
+                raise
+
         finally:
             _end_turn(assistant)
+            # 记账必须放在 finally：客户端断开时生成器被关闭，走不到 finally
+            # 之后的代码，但 provider 已经真实消耗了 token（且可能已上报 usage）。
+            usage = snapshot(meter)
+            turn_status = (
+                str(getattr(assistant, "last_turn_status", "") or "completed")
+                if finished
+                else "interrupted"
+            )
+            correlation_id = str(
+                getattr(assistant, "last_turn_correlation_id", "") or ""
+            )
+            if turn_status == "completed":
+                if usage["reported"]:
+                    tokens_in = int(usage["tokens_in"])
+                    tokens_out = int(usage["tokens_out"])
+                    estimated = False
+                else:
+                    tokens_in = _estimate_tokens(req.message)
+                    tokens_out = max(1, reply_chars // 4)
+                    estimated = True
+                usage_recorded = _record_chat_usage(
+                    assistant,
+                    principal,
+                    req,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    correlation_id=correlation_id,
+                    estimated=estimated,
+                )
+            elif not finished and (usage["reported"] or reply_chars):
+                # 断流不是"失败轮次"，但已发出的 token 是真实成本：能拿到
+                # provider usage 就记真实值，否则按已发字符估算并明确标记。
+                if usage["reported"]:
+                    tokens_in = int(usage["tokens_in"])
+                    tokens_out = int(usage["tokens_out"])
+                    estimated = False
+                else:
+                    tokens_in = _estimate_tokens(req.message)
+                    tokens_out = max(1, reply_chars // 4)
+                    estimated = True
+                usage_recorded = _record_chat_usage(
+                    assistant,
+                    principal,
+                    req,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    correlation_id=correlation_id,
+                    estimated=estimated,
+                )
+        if storage_error is not None:
+            message = (
+                str(storage_error)
+                if isinstance(storage_error, _STORAGE_ERRORS)
+                else describe_storage_failure(storage_error, "数据目录")
+            )
+            payload = {
+                "type": "error",
+                "code": "storage_unavailable",
+                "message": message,
+            }
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            return
+        if not finished:
+            return
         # 生成器耗尽时 chat_stream 已完成落盘 + 审计，先记用量再发结束帧。
         # 只有真实成功的轮次才记账：失败/拒绝不能产生"已用量"假账。
         turn_status = str(getattr(assistant, "last_turn_status", "") or "completed")
         turn_error = getattr(assistant, "last_turn_error", None)
         correlation_id = str(getattr(assistant, "last_turn_correlation_id", "") or "")
-        usage_recorded = False
-        if turn_status == "completed":
-            usage_recorded = _record_chat_usage(
-                assistant,
-                principal,
-                req,
-                tokens_in=_estimate_tokens(req.message),
-                tokens_out=max(1, reply_chars // 4),
-                correlation_id=correlation_id,
-            )
         # 发结束帧：status 让前端能区分成功/失败/拒绝，而不是把 200 + done
         # 当成成功。
         done = {
@@ -532,9 +1105,33 @@ def chat_stream(
             turn_reason = getattr(assistant, "last_turn_reason", None)
             if isinstance(turn_reason, str) and turn_reason:
                 done["reason"] = turn_reason
+        if turn_status == "completed":
+            # 只有成功轮次才把完整内容缓存给重发请求复用。
+            outcome["payload"] = {
+                "reply": reply_text,
+                "status": turn_status,
+                "turn": assistant.turn,
+                "correlation_id": correlation_id,
+                "usage_recorded": usage_recorded,
+                "knowledge": public_metadata(knowledge),
+            }
         yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    def serialized_stream():
+        # 与 /v1/chat 一致：整轮（含 done 帧与记账）占用会话锁，避免两个标签页
+        # 并发写同一 session 时轮次号/历史互相覆盖。客户端断开时 yield from
+        # 会把 close 透传给内层生成器，finally 中的记账仍会执行。
+        try:
+            with assistant.serialized_turn():
+                yield from event_stream()
+        finally:
+            payload = outcome.get("payload")
+            if isinstance(payload, dict):
+                _dedup_complete(dedup_entry, payload)
+            else:
+                _dedup_fail(dedup_entry)
+
+    return StreamingResponse(serialized_stream(), media_type="text/event-stream")
 
 
 def _session_owned_by_other(principal: str, session_id: str) -> bool:
@@ -572,43 +1169,69 @@ def chat_stats(
 
 @router.get("/chat/sessions")
 def chat_sessions(
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1000,
+        description="本页会话数；省略=全量（旧客户端兼容）。前端默认 50。",
+    ),
+    offset: int = Query(0, ge=0, description="跳过多少条（按稳定字母序）"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
     """列出**当前主体**的活跃会话（不会暴露别人的会话名）。
 
     ``users`` 给出 会话→主体 归属，值恒为令牌主体 —— 归属是派生事实，
-    不再接受客户端声明。
+    不再接受客户端声明。``total`` / ``has_more`` 让前端决定是否"加载更多"。
     """
-    sessions = list_sessions(
+    page = list_sessions_page(
         context.principal,
         known_principals=list(context.subtree),
         allow_legacy=context.is_root,
+        limit=limit,
+        offset=offset,
     )
+    sessions = page["sessions"]
     return {
         "sessions": sessions,
         "count": len(sessions),
+        "total": page["total"],
+        "has_more": page["has_more"],
+        "limit": limit,
+        "offset": page["offset"],
         "users": {s: context.principal for s in sessions},
     }
 
 
 def read_history(
-    session_id: str = "default", principal: Optional[str] = None
+    session_id: str = "default",
+    principal: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> Dict[str, object]:
     """从持久化 store 读取某会话的历史（按主体+会话复合隔离）。
 
     新旧键都兼容：优先当前键 ``liuhao-{principal}-{session}``，根主体在
     新键无数据时回落到 0.1.0 的 ``liuhao-{session}``。
 
+    ``offset`` 从**最近一条**往前数：``limit=200&offset=0`` 是最新 200 条，
+    "加载更早"传 ``offset=已加载条数``。省略 ``limit`` 时保持旧的全量语义。
+
     ``profile_principal`` 单独给出该会话读写的画像主体：有主体时恒为
     ``user-{principal}``（跨会话共享）。
     """
     history_principal = _resolve_history_principal(principal, session_id)
     profile_principal = f"user-{principal}" if principal else history_principal
-    history = get_conversation_store().load(history_principal)
+    page = get_conversation_store().load_page(
+        history_principal, limit=limit, offset=offset
+    )
     return {
         "session_id": session_id,
-        "history": history,
-        "count": len(history),
+        "history": page["history"],
+        "count": len(page["history"]),
+        "total": page["total"],
+        "has_more": page["has_more"],
+        "limit": limit,
+        "offset": page["offset"],
         "user_id": principal,
         "profile_principal": profile_principal,
     }
@@ -617,6 +1240,11 @@ def read_history(
 @router.get("/chat/history")
 def chat_history(
     session_id: str = "default",
+    limit: Optional[int] = Query(
+        None, ge=1, le=2000,
+        description="本页消息数（从最近一条往前）；省略=全量（旧客户端兼容）",
+    ),
+    offset: int = Query(0, ge=0, description="从最近一条往前跳过多少条消息"),
     context: AccountContext = Depends(require_account_principal),
 ) -> Dict[str, object]:
     """返回某会话的历史消息（从持久化 store 读，跨后端重启有效）。
@@ -625,7 +1253,29 @@ def chat_history(
     """
     if _session_owned_by_other(context.principal, session_id):
         raise _neutral_not_found()
-    return read_history(session_id, context.principal)
+    return read_history(session_id, context.principal, limit=limit, offset=offset)
+
+
+@router.get("/sessions/search")
+def search_sessions(
+    q: str = Query(..., min_length=1, max_length=200, description="搜索词（中文子串可直接搜）"),
+    limit: int = Query(20, ge=1, le=200, description="本页结果数"),
+    offset: int = Query(0, ge=0, description="跳过多少条结果"),
+    context: AccountContext = Depends(require_account_principal),
+) -> Dict[str, object]:
+    """在当前账号的会话历史里全文搜索。
+
+    * 中文按 2 字及以上子串命中（CJK bigram 索引）；
+    * 索引建立中会返回 ``ready=false`` 与进度 ``indexed/index_total``，
+      结果可能不完整；
+    * FTS5 不可用或单字查询时降级为逐行扫描，``degraded=true`` 且
+      ``notice`` 会明确写「搜索变慢」——绝不静默变慢。
+    """
+    result = get_conversation_store().search(
+        context.principal, q, limit=limit, offset=offset
+    )
+    result["query"] = q
+    return result
 
 
 @router.delete("/chat/sessions/{session_id}")
