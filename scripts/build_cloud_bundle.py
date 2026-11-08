@@ -561,7 +561,7 @@ PORTABLE_SCRIPTS: Tuple[str, ...] = (
 PORTABLE_ROOT_FILES: Tuple[str, ...] = ("start-liuhao.bat",)
 
 _PORTABLE_START_BAT = '''@echo off
-rem 鎏灏 AI OS 自用版 — 双击启动。先跑首次运行向导，再起网关。
+rem LiuHao AI OS · 鎏灏智能中枢 自用版 — 双击启动。先跑首次运行向导，再起网关。
 setlocal
 cd /d "%~dp0"
 set "PY="
@@ -585,10 +585,20 @@ if not exist ".venv\\Scripts\\python.exe" (
 "%PY%" scripts\\first_run_wizard.py
 if errorlevel 1 ( echo [FAIL] 向导未通过 ^& pause ^& exit /b 1 )
 "%PY%" scripts\\start_liuhao.py %*
+set "LH_CODE=%ERRORLEVEL%"
+if not "%LH_CODE%"=="0" goto :lh_failed
+rem Exit code 0 also covers "already running" (a second double-click).
+rem Do not pause here, otherwise a no-op start leaves a window hanging.
+exit /b 0
+:lh_failed
 echo.
-echo LiuHao stopped. Press any key to close.
+echo [FAIL] 鎏灏未能正常启动（退出码 %LH_CODE%）。
+echo        原因见上方输出与日志。
+echo.
+echo 按任意键关闭此窗口。
 pause >nul
 endlocal
+exit /b %LH_CODE%
 '''
 
 

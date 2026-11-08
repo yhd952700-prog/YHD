@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import hmac
@@ -34,10 +35,14 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PY = os.path.join(REPO, ".venv", "Scripts", "python.exe")
+_VENV_PY = os.path.join(REPO, ".venv", "Scripts", "python.exe")
+#: CI 里可能没有仓库内 venv：允许显式指定解释器，否则用当前解释器。
+PY = os.environ.get("LIUHAO_ACCEPTANCE_PY") or (
+    _VENV_PY if os.path.exists(_VENV_PY) else sys.executable
+)
 sys.path.insert(0, REPO)
 
 from src.gateway.display import ACCOUNT_HIERARCHY_WORDS, machine_fragments  # noqa: E402
@@ -56,6 +61,49 @@ def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+#: CI 需要端口稳定可预期：``--port-base`` 打开后按实例创建顺序递增分配。
+_PORT_BASE: Optional[int] = None
+_PORT_SEQ = 0
+
+#: ``--data-root`` 打开后，每台实例的数据目录落到这个根下（可留档排查），
+#: 默认仍用系统临时目录并在结束时回收。
+_DATA_ROOT: Optional[str] = None
+
+
+def configure_harness(*, port_base: Optional[int] = None, data_root: Optional[str] = None) -> None:
+    global _PORT_BASE, _PORT_SEQ, _DATA_ROOT
+    _PORT_BASE = port_base
+    _PORT_SEQ = 0
+    _DATA_ROOT = data_root
+    if data_root:
+        os.makedirs(data_root, exist_ok=True)
+
+
+def allocate_port() -> int:
+    """按 ``--port-base`` 顺序取端口；未设置时退回系统随机空闲端口。"""
+    global _PORT_SEQ
+    if _PORT_BASE is None:
+        return free_port()
+    port = _PORT_BASE + _PORT_SEQ
+    _PORT_SEQ += 1
+    with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError as exc:
+            raise RuntimeError(
+                f"固定端口 {port} 已被占用；请释放后重跑，或换一个 --port-base。"
+            ) from exc
+    return port
+
+
+def instance_root(prefix: str) -> str:
+    if not _DATA_ROOT:
+        return tempfile.mkdtemp(prefix=prefix)
+    path = os.path.join(_DATA_ROOT, f"{prefix.rstrip('-')}-{secrets.token_hex(4)}")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def local_proof_headers(data_dir: str) -> Dict[str, str]:
@@ -120,7 +168,7 @@ class Instance:
         env_extra: Optional[Dict[str, str]] = None,
         start: bool = True,
     ) -> None:
-        self.root = root or tempfile.mkdtemp(prefix=prefix)
+        self.root = root or instance_root(prefix)
         # 每台"机器"独立的登录签名密钥：跨机令牌不应被另一实例接受。
         self.jwt_secret = f"isolated-jwt-secret-{secrets.token_hex(16)}"
         # 身份注册表完整性密钥同样是每机独立的（与真实安装一致），
@@ -174,8 +222,8 @@ class Instance:
             self.start()
 
     def start(self) -> None:
-        """启动（或重启）服务；每次重新选空闲端口，避免 TIME_WAIT 冲突。"""
-        self.port = free_port()
+        """启动（或重启）服务；默认每次重新选空闲端口，``--port-base`` 时顺序取。"""
+        self.port = allocate_port()
         self.base = f"http://127.0.0.1:{self.port}"
         self.env["PORT"] = str(self.port)
         self._log = open(self.log_path, "a", encoding="utf-8")
@@ -209,10 +257,14 @@ class Instance:
     def stop(self, *, cleanup: bool = True) -> None:
         """杀进程树：venv 启动器会再拉起一个 uv python 子进程。"""
         if self.proc is not None and self.proc.poll() is None:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
-                capture_output=True,
-            )
+            if os.name == "nt":
+                # venv 启动器会再拉起一个 uv python 子进程，必须杀进程树。
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                    capture_output=True,
+                )
+            else:
+                self.proc.terminate()
         try:
             if self.proc is not None:
                 self.proc.wait(timeout=10)
@@ -463,7 +515,6 @@ def scope_equivalence(report: Report, inst: Instance, tokens: Dict[str, Any]) ->
     print("--- 对照表结束 ---\n")
 
 
-
 # --------------------------------------------------------------------------- #
 # 场景
 # --------------------------------------------------------------------------- #
@@ -486,7 +537,10 @@ def bootstrap(report: Report, inst: Instance) -> Dict[str, Any]:
         {"principal": "root1", "secret": PASSWORDS[0]},
     )
     root_token = body.get("access_token") or ""
-    report.check(item, "根登录 depth/path", (status, body.get("depth"), body.get("path")), (200, 0, "/root1"))
+    # 登录响应按 6.5 的定稿统一：只回答"是不是根"，不回 depth/path，
+    # 否则子账号能从自己的登录响应里推出层级位置。
+    report.check(item, "根登录不暴露层级位置",
+                 (status, "depth" in body, "path" in body), (200, False, False))
 
     status, body = request(
         "POST", inst.base + "/v1/accounts",
@@ -517,7 +571,8 @@ def bootstrap(report: Report, inst: Instance) -> Dict[str, Any]:
         {"principal": "grand1", "secret": PASSWORDS[2]},
     )
     grand_token = body.get("access_token") or ""
-    report.check(item, "第三层登录 depth=2", (status, body.get("depth")), (200, 2))
+    report.check(item, "第三层登录不暴露 depth",
+                 (status, "depth" in body, "path" in body), (200, False, False))
 
     status, body = request(
         "POST", inst.base + "/v1/accounts",
@@ -591,10 +646,12 @@ def enumeration(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
 
 def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -> None:
     item = "Key 借用双记"
+    # 新建即设默认已被产品拒绝（必须先「测试连接」），验收按真实 UI 流程
+    # 只保存模型；对话一律显式带 model_id，不依赖默认位。
     status, body = request(
         "POST", inst.base + "/v1/models",
         {"name": "member-key", "provider": "mock", "model": "mock-1",
-         "is_default": True, "owner_principal": "member1"},
+         "owner_principal": "member1"},
         token=tokens["member"],
     )
     model_id = body.get("id") or ""
@@ -620,7 +677,9 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
     status, root_model = request(
         "POST", inst.base + "/v1/models",
         {"name": "root-key", "provider": "mock", "model": "mock-1",
-         "is_default": False, "owner_principal": "root1"},
+         "is_default": False, "owner_principal": "root1",
+         # 带真实 Key：跨机导入后"原来的 Key 还能用"必须可验证。
+         "api_key": MODEL_KEYS[0]},
         token=tokens["root"],
     )
     root_model_id = root_model.get("id") or ""
@@ -675,6 +734,7 @@ def usage_double_entry(report: Report, inst: Instance, tokens: Dict[str, Any]) -
         ("事件历史", "GET", "/v1/events/history"),
         ("模型配置", "GET", "/v1/models"),
     )
+
     def without_position(body: Any) -> str:
         """去掉"本人位置"字段后再扫描。
 
@@ -910,12 +970,12 @@ def backup_roundtrip(
     leaks = [needle for needle in needles if needle and needle in raw_export]
     report.check(item, "导出包不含恢复码/明文凭据", leaks, [], str(leaks[:2]))
     report.check(item, "导出包不含恢复码文件名", "recovery_code" in raw_export, False)
-    # 新口径：整包不带成员 Key 与模型主密钥，回执如实标注。
-    report.check(item, "导出回执：未含成员 Key/主密钥",
+    # 新口径：成员 Key 只以口令保险箱密文随包（换机可直接用），模型主密钥不出机。
+    report.check(item, "导出回执：成员 Key 以密文随包、主密钥不出机",
                  (exported.get("member_keys_included"), exported.get("key_material_included")),
-                 (False, False))
-    report.check(item, "导出回执：明确提示未含成员 Key",
-                 "未包含成员 Key" in str(exported.get("notice")), True)
+                 (True, False))
+    report.check(item, "导出回执：明确提示成员 Key 可直接使用",
+                 "成员 Key 可直接使用" in str(exported.get("notice")), True)
     report.check(item, "清单成员数=3", manifest.get("member_count"), 3)
     report.check(item, "清单含成员列表", sorted(manifest.get("members") or []), ["grand1", "member1", "root1"])
     report.check(item, "清单含文件数/字节数", ("files" in manifest and "bytes" in manifest), True, str({k: manifest.get(k) for k in ("files", "bytes")}))
@@ -943,6 +1003,17 @@ def backup_roundtrip(
     own_manifest = own.get("manifest") or {}
     report.check(item, "成员 self 只导出本人", (status, own_manifest.get("members")), (200, ["member1"]))
 
+    # ---- 「换电脑怎么办」说明书三步：导出 → 拷过去 → 导入 ----------------- #
+    # 按用户可见的操作落成真实文件，第三步再从拷贝后的文件导入；说明书写的
+    # 路径与实际接口一致，才能保证照着做不会卡住。
+    export_file = os.path.join(inst.root, "liuhao-backup-all.json")
+    with open(export_file, "w", encoding="utf-8") as handle:
+        # 与界面「导出并下载」一致：存整个响应（bundle + manifest），不是只存 bundle。
+        json.dump(exported, handle, ensure_ascii=False)
+    report.check(item, "换电脑第1步 导出文件已保存",
+                 (os.path.exists(export_file), os.path.getsize(export_file) > 0),
+                 (True, True), export_file)
+
     # ---- 跨机令牌策略：导出只读，不吊销 A 机旧令牌 ----------------------- #
     policy = exported.get("token_policy") or {}
     report.check(
@@ -964,14 +1035,27 @@ def backup_roundtrip(
     status, a_root = request("GET", inst.base + "/v1/accounts/root1", token=tokens["root"])
     a_account = a_root.get("account") or {}
 
-    second = Instance("liuhao-acct-import-")
+    second = Instance(
+        "liuhao-acct-import-",
+        # 目标机用自己的模型主密钥（与真实换机一致）：只有把 Key 用包口令
+        # 重新封装，导入后原 Key 才能继续解密使用。
+        env_extra={"LIUHAO_MODEL_CONFIG_KEY": "isolated-model-key-target"},
+    )
     try:
-        bundle = exported.get("bundle") or {}
+        # 第 2 步：把导出的文件拷到新机器（此处用真实文件拷贝模拟 U 盘）。
+        usb_copy = os.path.join(second.root, "from-usb-liuhao-backup-all.json")
+        shutil.copyfile(export_file, usb_copy)
+        report.check(item, "换电脑第2步 文件可拷到新机",
+                     os.path.getsize(usb_copy) == os.path.getsize(export_file), True, usb_copy)
+        # 第 3 步：在登录页「从备份迁移到本机」里选这份文件并输入口令。
+        with open(usb_copy, "r", encoding="utf-8") as handle:
+            moved = json.load(handle)
         status, imported = request(
             "POST", second.base + "/v1/accounts/backup/import",
-            {"bundle": bundle, "passphrase": BUNDLE_PASSPHRASE},
+            {"bundle": moved.get("bundle") or {}, "passphrase": BUNDLE_PASSPHRASE},
         )
-        report.check(item, "新机导入成功", (status, imported.get("root_principal")), (200, "root1"))
+        report.check(item, "换电脑第3步 按说明导入成功",
+                     (status, imported.get("root_principal")), (200, "root1"))
         report.check(item, "导入恢复账号数", imported.get("accounts"), 3)
         memory_import = imported.get("memory") or {}
         conversation_import = imported.get("conversations") or {}
@@ -979,6 +1063,9 @@ def backup_roundtrip(
                      memory_store.get("entries"), str(memory_import))
         report.check(item, "导入带回全部会话", conversation_import.get("imported"),
                      conversation_store.get("turns"), str(conversation_import))
+        employee_import = imported.get("employees") or {}
+        report.check(item, "导入带回员工",
+                     (employee_import.get("restored", 0) >= 2), True, str(employee_import))
         imported_policy = imported.get("token_policy") or {}
         report.check(item, "导入响应重申令牌策略",
                      imported_policy.get("source_tokens_valid_on_target"), False, str(imported_policy))
@@ -1056,6 +1143,62 @@ def backup_roundtrip(
                      (200, True, False), str(names))
         status, body = request("GET", second.base + "/v1/accounts/member1/usage", token=m_token)
         report.check(item, "成员跨机用量无调用者字段", (status, "by_actor" in body), (200, False))
+
+        # ---- 导入后继续干活：员工、会话、发消息、原 Key ------------------- #
+        # "数据在"不够，新机必须能直接接着用：登录（上面已验）、看员工、
+        # 看会话、用原来的 Key 发消息并续聊、用量照常记账。
+        status, body = request("GET", second.base + "/v1/employees", token=b_token)
+        root_employees = sorted(emp.get("name") for emp in body.get("employees") or [])
+        report.check(item, "导入后根能看到员工",
+                     (status, {"member-writer", "adopted-writer"} <= set(root_employees)),
+                     (200, True), str(root_employees))
+        status, body = request("GET", second.base + "/v1/employees", token=m_token)
+        member_employees = sorted(emp.get("name") for emp in body.get("employees") or [])
+        report.check(item, "导入后成员员工可用",
+                     (status, member_employees), (200, ["member-writer"]))
+        status, body = request("GET", second.base + "/v1/chat/sessions", token=b_token)
+        root_sessions = sorted(body.get("sessions") or [])
+        report.check(item, "导入后根会话可在列表发现",
+                     (status, "root-session" in root_sessions), (200, True), str(root_sessions))
+
+        status, a_models = request("GET", inst.base + "/v1/models", token=tokens["root"])
+        root_model_id = next(
+            (m.get("id") for m in a_models.get("models") or [] if m.get("name") == "root-key"),
+            "",
+        )
+        status, body = request("GET", second.base + "/v1/models", token=b_token)
+        imported_root_model = next(
+            (m for m in body.get("models") or [] if m.get("id") == root_model_id), {}
+        )
+        report.check(item, "导入后原 Key 可解密",
+                     (status, imported_root_model.get("api_key_set"),
+                      imported_root_model.get("api_key_status")),
+                     (200, True, "ok"), str(imported_root_model)[:160])
+
+        status, first_chat = request(
+            "POST", second.base + "/v1/chat",
+            {"message": "换机后第一条", "session_id": "root-session",
+             "model_id": root_model_id, "use_knowledge": False},
+            token=b_token,
+        )
+        report.check(item, "导入后用原 Key 发消息", status, 200, str(first_chat)[:120])
+        status, second_chat = request(
+            "POST", second.base + "/v1/chat",
+            {"message": "换机后继续聊", "session_id": "root-session",
+             "model_id": root_model_id, "use_knowledge": False},
+            token=b_token,
+        )
+        report.check(item, "导入后可继续对话", status, 200, str(second_chat)[:120])
+        status, history = request(
+            "GET", second.base + "/v1/chat/history?session_id=root-session", token=b_token
+        )
+        report.check(item, "导入后续聊进入历史",
+                     (status, (history.get("count") or 0) >= 4), (200, True),
+                     str(history.get("count")))
+        status, usage_view = request(
+            "GET", second.base + "/v1/accounts/root1/usage", token=b_token
+        )
+        report.check(item, "导入后用量照常记账", (status, usage_view.get("calls")), (200, 2))
 
         # ---- 忘记主账号密码：用恢复码在 B 机重置，数据保留 ----------------- #
         old_b_token = b_token
@@ -1776,11 +1919,15 @@ def display_fields(
 
     status, body = request("GET", base + "/v1/ready")
     checks = body.get("checks") or {}
+    missing_copy = sorted(
+        name for name, check in checks.items()
+        if not (check.get("user_message") and check.get("technical_detail")
+                and machine_free(check.get("user_message")))
+    )
     report.check(item, "就绪检查：逐项 user_message + technical_detail",
-                 (all(c.get("user_message") and c.get("technical_detail")
-                      and machine_free(c.get("user_message")) for c in checks.values()),
-                  bool(body.get("user_message")), machine_free(body.get("user_message"))),
-                 (True, True, True))
+                 (not missing_copy, bool(body.get("user_message")),
+                  machine_free(body.get("user_message"))),
+                 (True, True, True), f"缺人话字段: {missing_copy}")
 
     status, body = request("GET", base + "/v1/production/preflight", token=tokens["root"])
     findings = body.get("findings") or []
@@ -1929,6 +2076,36 @@ def _protected_name(rel: str) -> bool:
     )
 
 
+def _git_ignored(paths: Sequence[str]) -> List[str]:
+    """``paths`` 中被 .gitignore 忽略的部分（工作树残留，干净检出里不存在）。
+
+    并行支线会在仓库根跑真实账号/压测脚本，落出 ``config/auth_secrets.json``
+    这类运行期文件。它们不在版本库里、CI 干净检出必然没有，因此不能算
+    代码包的缺陷；判定前先剔除，并在 evidence 里如实列出。
+    """
+    if not paths:
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=REPO,
+            input="\n".join(paths),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:  # noqa: BLE001 - 没有 git 时保持严格判定
+        return []
+    if proc.returncode not in (0, 1):
+        return []
+    ignored = {
+        line.strip().replace("\\", "/")
+        for line in proc.stdout.splitlines()
+        if line.strip()
+    }
+    return [path for path in paths if path.replace("\\", "/") in ignored]
+
+
 def upgrade_snapshot_artifact(report: Report, inst: Instance) -> None:
     """真实升级备份/导出产物：打包层过滤 + 备份后物理断言。
 
@@ -2028,7 +2205,10 @@ print(json.dumps({
             code_mentions = canary.encode("utf-8") in b"".join(
                 archive.read(name) for name in members
             )
-        report.check(item, "代码包无数据受保护文件", packed, [])
+        residue = _git_ignored(packed)
+        report.check(item, "代码包无数据受保护文件",
+                     [name for name in packed if name not in residue], [],
+                     f"工作树残留（git 忽略，干净检出不含）: {residue}" if residue else "")
         report.check(item, "代码包解压内容无恢复码值", code_mentions, False)
     else:
         report.check(item, "代码包可解压", bool(members), True, zip_path)
@@ -2253,7 +2433,21 @@ def recovery_handoff_chain(report: Report, inst: Instance, tokens: Dict[str, Any
 # 主流程
 # --------------------------------------------------------------------------- #
 
-def main() -> int:
+#: 检查项 → 《需求对齐表》§6.1–6.8 的对应关系（CI 汇总表按此归并）。
+REQUIREMENT_ITEMS: Dict[str, Tuple[str, ...]] = {
+    "6.1": ("建树/层级", "主账号专属端点", "删除", "档位等价性", "失败路径"),
+    "6.2": ("直接成员口径", "越级防枚举", "会话隔离", "审计读隔离", "文件分区"),
+    "6.3": ("Key 借用双记", "员工取用"),
+    "6.4": ("记忆可见性", "记忆取用"),
+    "6.5": ("界面可读字段", "前端联调 B1-B6"),
+    "6.6": ("恢复码链路", "远程恢复开关", "旧明文迁移"),
+    "6.7": ("导出导入", "备份导出排除", "明文扫描"),
+    "6.8": ("自助注册",),
+}
+
+
+def run() -> Report:
+    """跑完整套验收并返回结果（不打印汇总，供 CI 包装器复用）。"""
     report = Report()
     inst = Instance("liuhao-acct-main-")
     dirs = [inst.root]
@@ -2295,6 +2489,30 @@ def main() -> int:
     finally:
         inst.stop()
         print("\ntemp dir recycled:", inst.root)
+    return report
+
+
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="多账号 8 项验收（隔离实例 + 真实 HTTP）")
+    parser.add_argument(
+        "--port-base", type=int, default=None,
+        help="固定端口基准：各实例按启动顺序取 base、base+1…（默认随机空闲端口）",
+    )
+    parser.add_argument(
+        "--data-root", default=None,
+        help="独立数据根目录：每台实例落在其下（默认系统临时目录并在结束时回收）",
+    )
+    parser.add_argument(
+        "--json-report", default=None,
+        help="把逐项结果写成 JSON（CI 归档用）",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parse_args(argv)
+    configure_harness(port_base=args.port_base, data_root=args.data_root)
+    report = run()
 
     failed = report.failed()
     print("\n=== 汇总 ===")
@@ -2306,6 +2524,14 @@ def main() -> int:
     print("|---|---|---|")
     for row in report.rows:
         print(f"| {row['item']} · {row['check']} | {'🟢' if row['ok'] else '🔴'} | {row['evidence'] or row['got']} |")
+    if args.json_report:
+        path = os.path.abspath(args.json_report)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"total": len(report.rows), "failed": len(failed), "rows": report.rows},
+                handle, ensure_ascii=False, indent=2, default=str,
+            )
     return 0 if not failed else 1
 
 

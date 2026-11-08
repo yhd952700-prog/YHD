@@ -57,7 +57,8 @@ def free_port() -> int:
 
 
 def request(
-    method: str, url: str, payload: Any = None, token: str = ""
+    method: str, url: str, payload: Any = None, token: str = "",
+    timeout: float = 120.0,
 ) -> Tuple[int, Any]:
     data = None
     headers = {"Accept": "application/json"}
@@ -68,7 +69,7 @@ def request(
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
             return response.status, json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:

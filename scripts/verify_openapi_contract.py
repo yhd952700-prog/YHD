@@ -14,8 +14,7 @@ describe an API that **does not exist**:
   * the running gateway (FastAPI, `src.gateway.main.get_app()`) exposes 58
   * **overlap was ZERO**: 6/6 declared paths were ghosts, 58/58 real paths
     were undeclared
-  * it advertised `https://api.liuhao-ai-os.com/v1` as the production server --
-    a host the project does not operate
+  * it advertised a production host that the project does not operate
 
 A reader (human or integrator or agent) trusting that file would have concluded
 the gateway exposes a different API than it does. That is the worst class of doc
@@ -55,6 +54,9 @@ if REPO_ROOT not in sys.path:
 
 CONTRACT_PATH = os.path.join(REPO_ROOT, "openapi.yaml")
 
+from src.brand import BRAND_LOCKUP  # noqa: E402
+from src.version import APP_VERSION  # noqa: E402
+
 # Fields we intentionally do NOT diff, because they are maintainer-authored
 # prose rather than machine-derived contract facts. Drift on `info.description`
 # must never be able to break CI, otherwise nobody will re-generate.
@@ -73,15 +75,15 @@ SCHEMA_EXCLUDED_BUT_DOCUMENTED = {
 }
 
 
-def _load_runtime_spec():
+def _load_runtime_spec_and_sources():
     # Use the shared helper instead of a bare ``get_app().openapi()``: it wraps
     # the app in a ``TestClient`` context manager (so the lifespan starts and
     # stops) and redirects ``AUDIT_DB_PATH`` to a throwaway db, so building the
     # spec never writes to -- or leaks -- the repository's frozen audit
     # evidence. See scripts/_gateway_app.py.
-    from _gateway_app import gateway_openapi_spec
+    from _gateway_app import gateway_openapi_spec_and_sources
 
-    return gateway_openapi_spec()
+    return gateway_openapi_spec_and_sources()
 
 
 def _probe_whitelisted(path: str) -> int:
@@ -133,6 +135,20 @@ def _operations(paths):
     return ops
 
 
+def _route_origin(path, route_sources):
+    """Look up the module:line that registered ``path`` (tolerant of a stray slash).
+
+    A MISSING path must name its source file: otherwise the fix is a repo-wide
+    grep and the same drift recurs. ``gateway_openapi_spec_and_sources()``
+    derives this map from the mounted route table, so it is real provenance,
+    not a guess.
+    """
+    for candidate in (path, path + "/", path.rstrip("/")):
+        if candidate in route_sources:
+            return route_sources[candidate]
+    return []
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -144,7 +160,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        runtime = _load_runtime_spec()
+        runtime, route_sources = _load_runtime_spec_and_sources()
     except Exception as exc:  # fail loud: a silent skip would make this a fake gate
         print(f"FAIL: could not build the gateway app: {type(exc).__name__}: {exc}")
         print("      This gate cannot verify anything without the real app object.")
@@ -162,8 +178,8 @@ def main(argv=None) -> int:
         out = {
             "openapi": runtime.get("openapi", "3.1.0"),
             "info": {
-                "title": "LiuHao AI OS Gateway API",
-                "version": ((committed.get("info") or {}).get("version") or "1.0.0"),
+                "title": f"{BRAND_LOCKUP} Gateway API",
+                "version": APP_VERSION,
                 "description": (
                     "GENERATED SNAPSHOT of the REAL runtime contract, exported from\n"
                     "`src.gateway.main.get_app().openapi()` by "
@@ -172,8 +188,8 @@ def main(argv=None) -> int:
                     "declared 6 paths (`/v1/health`, `/v1/metrics`, `/v1/ready`,\n"
                     "`/v1/auth/token`, `/v1/api/providers`, `/v1/rbac/roles`) -- NOT ONE of\n"
                     "which exists in the running gateway (0/6 overlap), while omitting all 58\n"
-                    "real paths. It also advertised a production host\n"
-                    "`https://api.liuhao-ai-os.com` that the project does not operate.\n\n"
+                    "real paths. It also advertised a production host that the project\n"
+                    "does not operate.\n\n"
                     "HONESTY RULES FOR THIS FILE:\n"
                     "* It is a SNAPSHOT, not the source of truth. The source of truth is the\n"
                     "  code: `GET /openapi.json` on a running gateway (the console reads that,\n"
@@ -276,7 +292,10 @@ def main(argv=None) -> int:
         ok = False
         print(f"FAIL: {len(absent)} runtime path(s) MISSING FROM THE CONTRACT:")
         for p in absent:
-            print(f"  + {p}")
+            origin = _route_origin(p, route_sources)
+            where = ", ".join(origin) if origin else "来源模块未知（不在 app.routes 中可追溯）"
+            print(f"  + {p}   <- {where}")
+        print("  上面的 <- 就是新增该路由的源文件与行号；把对应条目补进契约，不要为过闸而删路由。")
     if method_drift:
         ok = False
         print(f"FAIL: {len(method_drift)} path(s) disagree on HTTP method:")

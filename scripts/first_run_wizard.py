@@ -25,12 +25,13 @@ import getpass
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.ai.model_config import get_model_config_store  # noqa: E402
+from src.logging_config import resolve_data_dir  # noqa: E402
 from src.kernels.identity import (  # noqa: E402
     HUMAN_IDENTITIES_FILE_ENV,
     IdentityManager,
@@ -76,6 +77,16 @@ def stdin_is_interactive() -> bool:
 def needs_setup() -> bool:
     """True 表示首启向导还有必须由人完成的事（账号或模型）。"""
     return not (_has_loginable_human() and _has_enabled_model())
+
+
+def needs_account_setup() -> bool:
+    """True 表示还没有可登录的人类身份，首次初始化必须由人完成。
+
+    图形化首启只关心这一件事：模型 Key 是可选项（可跳过），不能因为它把
+    用户拉回命令行。账号判定本身仍复用 ``_has_loginable_human``，与 CLI
+    向导和启动器完全一致。
+    """
+    return not _has_loginable_human()
 
 
 def _has_loginable_human() -> bool:
@@ -171,38 +182,49 @@ def register_admin(principal: str, display_name: Optional[str], password: str) -
 # ---------------------------------------------------------------------------
 
 
-def configure_ollama(model_name: str, base_url: str = OLLAMA_DEFAULT_BASE_URL) -> Dict[str, Any]:
-    """登记一个 Ollama 模型（本地，无密钥）。"""
+def _save_model(payload: dict[str, Any]) -> dict[str, Any]:
+    """保存模型配置；同名时更新而不是报错（首启向导可能被重新提交）。
+
+    不带 ``is_default``：新建模型必须先用「测试连接」验过，才允许占用默认位
+    （见 ``model_config.create`` 的 409）；向导完成页会做这次真实测试，
+    通过后再设为默认。
+    """
     store = get_model_config_store()
-    return store.create(
+    name = str(payload["name"])
+    existing = next(
+        (item for item in store.list_models() if item.get("name") == name), None
+    )
+    if existing:
+        return store.update(existing["id"], payload, actor="first-run-wizard")
+    return store.create(payload, actor="first-run-wizard")
+
+
+def configure_ollama(model_name: str, base_url: str = OLLAMA_DEFAULT_BASE_URL) -> dict[str, Any]:
+    """登记一个 Ollama 模型（本地，无密钥）。"""
+    return _save_model(
         {
             "name": f"ollama:{model_name}",
             "provider": "ollama",
             "model": model_name,
             "base_url": base_url,
-            "is_default": True,
             "enabled": True,
-        },
-        actor="first-run-wizard",
+        }
     )
 
 
 def configure_openai_compatible(
     base_url: str, model_name: str, api_key: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """登记一个 OpenAI 兼容模型，API Key 经 AES-256-GCM 加密后落盘。"""
-    store = get_model_config_store()
-    return store.create(
+    return _save_model(
         {
             "name": model_name,
             "provider": "openai",
             "model": model_name,
             "base_url": base_url,
             "api_key": api_key,
-            "is_default": True,
             "enabled": True,
-        },
-        actor="first-run-wizard",
+        }
     )
 
 
@@ -283,6 +305,26 @@ def _prompt_secret(label: str) -> str:
 
 
 def _run_interactive_setup() -> int:
+    print()
+    print("=" * 62)
+    print("数据与联网说明")
+    print(f"  数据目录：{resolve_data_dir()}")
+    print("  账号、对话、知识库、记忆、审计都写在这里。")
+    print("  只有 API Key 用 AES-256-GCM 加密；对话、知识库、审计是本地明文 SQLite。")
+    print(
+        "  备份=退出后复制整个目录（含 data\\model_config.key 与 "
+        "data\\model_registry.sqlite3）。"
+    )
+    print("  卸载默认保留数据，连续两次确认才会删除。")
+    print("  默认不联网；只有你配置云端模型后，对话内容与检索到的知识片段才会发到")
+    print("  你填写的 base_url。本机 Ollama 的模型推理只连 127.0.0.1，不出网。")
+    print("  「联网检索」默认关闭；只有你在「设置 → 隐私与联网」显式开启后，才会把")
+    print("  提炼后的检索关键词（最多 48 字）发到 hn.algolia.com、api.github.com、")
+    print("  export.arxiv.org 三个公开接口。")
+    print("  只发送提炼后的关键词；不发送你的对话内容、对话历史、个人画像、账号信息或 API Key。")
+    print("  关闭后立即生效，无需重启。不做统计上报，也不自动检查更新。")
+    print("=" * 62)
+
     # ---- 1. 人类身份 ----
     if _has_loginable_human():
         print()
@@ -303,9 +345,9 @@ def _run_interactive_setup() -> int:
 
     # ---- 2. 模型 provider ----
     print()
-    print("[2/2] 选择 AI provider（决定聊天用哪个模型）。")
+    print("[2/2] 选择模型服务商（决定聊天用哪个模型）。")
     print("  1) Ollama 本地（需先安装 Ollama 并执行 ollama pull <model>）")
-    print("  2) OpenAI 兼容云（base_url + API Key）")
+    print("  2) OpenAI 兼容云（接口地址 + API Key）")
     print("  0) 跳过（没 Key 也能先装；之后在「系统设置 → 模型管理」添加）")
     print("     DeepSeek Key 申请：https://platform.deepseek.com →「API Keys」")
     choice = _prompt("选择", default="0")
@@ -318,16 +360,21 @@ def _run_interactive_setup() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
     elif choice == "2":
-        base_url = _prompt("API base_url（以 /v1 结尾，如 https://api.deepseek.com/v1）")
+        base_url = _prompt("接口地址 base_url（以 /v1 结尾，如 https://api.deepseek.com/v1）")
         model = _prompt("模型名（如 deepseek-chat；OpenAI 填 gpt-4o-mini）")
         api_key = _prompt_secret("  API Key: ")
         if not base_url or not model or not api_key:
-            print("  base_url / 模型名 / API Key 缺一不可，跳过。", file=sys.stderr)
+            print("  接口地址 / 模型名 / API Key 缺一不可，跳过。", file=sys.stderr)
         else:
             try:
                 result = configure_openai_compatible(base_url, model, api_key)
                 print(f"  [ok] 已登记模型 {result['id']}（{result['model']}），"
                       "API Key 已加密存储。")
+                print("       Key 保存在数据目录的 data\\model_registry.sqlite3；"
+                      "解密密钥 data\\model_config.key 在同目录，仅当前 Windows 用户可读。")
+                print("       删除：系统设置 → 模型管理 → 删除该模型（Key 会一起删除）。")
+                print("       联网：对话内容会直接发送到你填写的 base_url，"
+                      "不经过鎏灏服务器。")
             except Exception as exc:  # noqa: BLE001
                 print(f"  [FAIL] 登记模型失败: {exc}", file=sys.stderr)
     else:

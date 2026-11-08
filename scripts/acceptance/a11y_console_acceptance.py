@@ -405,16 +405,81 @@ def _wait_announcement(page: Any, expected: str, timeout: int = 5000) -> str:
     return last
 
 
-def _login(page: Any, base: str) -> None:
-    page.goto(base, wait_until="domcontentloaded")
-    page.wait_for_selector("#os-secret", state="visible", timeout=30000)
-    page.fill("#os-principal", "root")
-    page.fill("#os-secret", "acceptance-pass")
-    page.locator('button[type="submit"]').first.click()
-    page.wait_for_selector(".os-app", state="visible", timeout=30000)
-    # 等侧栏真正渲染（profile 到位）再断言焦点，避免把慢一拍的账号加载算成失败。
-    page.wait_for_selector(".os-nav-item", state="visible", timeout=30000)
-    page.wait_for_timeout(400)
+#: 登录页/首屏/侧栏的等待预算。dev server 冷启动 + Vite 依赖预构建会慢一拍，
+#: 30s 在低配机器上不够，于是把「慢」误报成「坏了」。
+LOGIN_TIMEOUT = 60_000
+NAV_TIMEOUT = 60_000
+
+#: 桌面侧栏与手机底栏是两套 DOM（<1024px 只渲染底栏）。等哪一个都得算成功，
+#: 否则窄视口 / 高 DPI 下永远等不到 .os-nav-item。
+NAV_SELECTOR = ".os-nav-item, .os-bottom-item"
+
+
+def _login_diagnostics(page: Any) -> str:
+    """登录卡住时把现场带出来：是编译错误、登录被拒，还是首屏没渲染完。"""
+    parts: list[str] = []
+    try:
+        parts.append(f"url={page.url}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        overlay = page.locator("vite-error-overlay")
+        if overlay.count():
+            parts.append("Vite 编译错误：" + (overlay.first.inner_text() or "")[:200])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        alerts = page.locator('[role="alert"]')
+        texts = [
+            (alerts.nth(index).inner_text() or "").strip()
+            for index in range(min(alerts.count(), 3))
+        ]
+        texts = [text for text in texts if text]
+        if texts:
+            parts.append("页面错误提示：" + " | ".join(texts)[:200])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        parts.append(f".os-app={page.locator('.os-app').count()}")
+        parts.append(f"侧栏项={page.locator('.os-nav-item').count()}")
+        parts.append(f"底栏项={page.locator('.os-bottom-item').count()}")
+    except Exception:  # noqa: BLE001
+        pass
+    return "；".join(parts) if parts else "页面无可用状态"
+
+
+def _login(page: Any, base: str, attempts: int = 2, require_nav: bool = True) -> None:
+    """登录并等首屏导航出现。
+
+    修过的三处脆弱点：
+    1. 只等 `.os-nav-item`：<1024px 时侧栏 display:none，底栏才是真实入口；
+    2. 30s 预算：dev server 冷启动会超过它；
+    3. 失败只抛 TimeoutError，看不出是编译错误还是登录被拒 —— 现在带现场信息。
+    """
+    last: Exception | None = None
+    for attempt in range(attempts):
+        page.goto(base, wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector("#os-secret", state="visible", timeout=LOGIN_TIMEOUT)
+            # 有的构建默认停在注册页签；显式切回登录页签再填。
+            tab = page.locator("#os-login-tab-login")
+            if tab.count() and tab.first.get_attribute("aria-selected") != "true":
+                tab.first.click()
+                page.wait_for_selector("#os-secret", state="visible", timeout=10_000)
+            page.fill("#os-principal", "root")
+            page.fill("#os-secret", "acceptance-pass")
+            page.locator('button[type="submit"]').first.click()
+            page.wait_for_selector(".os-app", state="visible", timeout=LOGIN_TIMEOUT)
+            if require_nav:
+                page.wait_for_selector(NAV_SELECTOR, state="visible", timeout=NAV_TIMEOUT)
+            page.wait_for_timeout(400)
+            return
+        except Exception as error:  # noqa: BLE001 - 重试一次，仍失败时带现场信息抛出
+            last = error
+            if attempt + 1 < attempts:
+                page.wait_for_timeout(1200)
+                continue
+    raise RuntimeError(f"登录后等不到首屏导航（{NAV_SELECTOR}）：{_login_diagnostics(page)}") from last
 
 
 def _nav_item(page: Any, label: str) -> Any:
@@ -609,6 +674,292 @@ def run_forced_colors(browser: Any, base: str, results: Results) -> None:
     context.close()
 
 
+#: 焦点掉到 body 的位置（目标选择器 + 第几次 Tab），用于报告"卡在哪"。
+_DROP_TRACE: list[str] = []
+
+
+def _tab_until(
+    page: Any, selector: str, text: str = "", limit: int = 160, check_before: bool = True
+) -> tuple[int, int]:
+    """只按 Tab 走到目标，返回 (第几次 Tab 命中, 途中焦点停在 body 的次数)。
+
+    0 表示在 limit 次内走不到 —— 那就是"焦点卡住"的位置，调用方把当前 activeElement 报出来。
+    掉 body 只统计"按键前焦点已经停在 body"的真实丢失：DOM 重渲染瞬时的 body 不算，
+    那会让报告充满噪声。
+    """
+    drops = 0
+    prev: list[str] = []
+    for step in range(1, limit + 1):
+        if check_before:
+            state = page.evaluate(
+                """() => {
+                    const el = document.activeElement;
+                    if (!el || el === document.body || el === document.documentElement) {
+                        return { body: true, tag: '', text: '' };
+                    }
+                    const text = (el.getAttribute('aria-label') || el.innerText || el.textContent || '')
+                        .replace(/\\s+/g, ' ').trim().slice(0, 24);
+                    return { body: false, tag: el.tagName, text: text };
+                }"""
+            )
+            if state["body"]:
+                drops += 1
+                trail = " → ".join(prev[-2:]) or "起点"
+                _DROP_TRACE.append(
+                    f"去找 {selector}{('/' + text) if text else ''} 前（第 {step} 次 Tab），"
+                    f"此前焦点：{trail}"
+                )
+            else:
+                prev.append(f"{state['tag']}:{state['text']}")
+        page.keyboard.press("Tab")
+        state = page.evaluate(
+            """([sel, needle]) => {
+                const el = document.activeElement;
+                if (!el || el === document.body || el === document.documentElement) return 'body';
+                if (!el.matches(sel) && !el.closest(sel)) return 'miss';
+                if (needle) {
+                    const label = (el.getAttribute('aria-label') || el.innerText || el.textContent || '')
+                        .replace(/\\s+/g, ' ').trim();
+                    return label.includes(needle) ? 'hit' : 'miss';
+                }
+                return 'hit';
+            }""",
+            [selector, text],
+        )
+        if state == "hit":
+            return step, drops
+    return 0, drops
+
+
+def _focus_hint(page: Any) -> str:
+    active = _active(page)
+    return f"focus=<{active.get('tag')}#{active.get('id')}> {active.get('label') or active.get('text')!r}"
+
+
+def run_keyboard_journey(browser: Any, base: str, results: Results) -> None:
+    """纯键盘走完：登录 → 建员工 → 派活。全程只按 Tab / Enter / Esc。"""
+    backend = MockBackend()
+    context = browser.new_context(viewport={"width": 1280, "height": 720})
+    _mount_mocks(context, backend)
+    page = context.new_page()
+    page.goto(base, wait_until="domcontentloaded")
+    page.wait_for_selector("#os-secret", state="visible", timeout=LOGIN_TIMEOUT)
+
+    drops = 0
+    action_drops = 0
+    action_trace: list[str] = []
+    stuck: list[str] = []
+    _DROP_TRACE.clear()
+
+    def check_action_focus(label: str) -> None:
+        nonlocal action_drops
+        if _active(page).get("tag") == "BODY":
+            action_drops += 1
+            action_trace.append(label)
+
+    steps, hit_drops = _tab_until(page, "#os-principal", check_before=False)
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达账号输入框", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("账号输入框")
+        context.close()
+        return
+
+    page.keyboard.type("root")
+    steps, hit_drops = _tab_until(page, "#os-secret")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达密码输入框", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("密码输入框")
+        context.close()
+        return
+
+    page.keyboard.type("acceptance-pass")
+    steps, hit_drops = _tab_until(page, 'button[type="submit"]')
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达登录按钮", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("登录按钮")
+        context.close()
+        return
+
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".os-app", state="visible", timeout=LOGIN_TIMEOUT)
+    page.wait_for_selector(NAV_SELECTOR, state="visible", timeout=NAV_TIMEOUT)
+    page.wait_for_timeout(450)
+    results.check(
+        "键盘旅程：Enter 提交后进入控制台，焦点不落 body",
+        _active(page).get("tag") != "BODY",
+        _focus_hint(page),
+    )
+
+    steps, hit_drops = _tab_until(page, ".os-nav-item", "我的员工")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达「我的员工」入口", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("我的员工入口")
+        context.close()
+        return
+
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(450)
+    title = (page.locator(".os-page-title").first.inner_text() or "").strip()
+    results.check("键盘旅程：Enter 切页进入「我的员工」", "我的员工" in title, f"页面标题={title!r}")
+    check_action_focus("Enter 切页后")
+
+    steps, hit_drops = _tab_until(page, "#emp-name")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达员工名字输入框", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("员工名字输入框")
+        context.close()
+        return
+
+    page.keyboard.type("键盘员工")
+    steps, hit_drops = _tab_until(page, "button", "创建员工")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达「创建员工」按钮", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("创建员工按钮")
+        context.close()
+        return
+
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(700)
+    created = page.locator("text=已创建员工").first
+    results.check(
+        "键盘旅程：Enter 建员工成功",
+        created.count() > 0 and _active(page).get("tag") != "BODY",
+        _focus_hint(page),
+    )
+
+    steps, hit_drops = _tab_until(page, "button", "单独指派一个任务")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达「单独指派一个任务」", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("单独指派一个任务")
+        context.close()
+        return
+
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(300)
+    check_action_focus("Enter 展开指派后")
+    target = 'input[aria-label="派给「键盘员工」的任务"]'
+    steps, hit_drops = _tab_until(page, target)
+    drops += hit_drops
+    results.check("键盘旅程：Enter 展开指派后 Tab 进入任务输入框", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("任务输入框")
+        context.close()
+        return
+
+    page.keyboard.type(ASSIGN_INSTRUCTION)
+    steps, hit_drops = _tab_until(page, "button", "派给它")
+    drops += hit_drops
+    results.check("键盘旅程：Tab 可达「派给它」按钮", steps > 0, f"{steps} 次 Tab；{_focus_hint(page)}")
+    if steps == 0:
+        stuck.append("派给它按钮")
+        context.close()
+        return
+
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(700)
+    receipt = page.locator("text=已派给").first
+    receipt_text = (receipt.inner_text() or "").strip() if receipt.count() else ""
+    results.check(
+        "键盘旅程：Enter 派活成功，回执含「目标与任务」",
+        "已派给" in receipt_text and "目标与任务" in receipt_text,
+        f"回执={receipt_text[:80]!r}",
+    )
+    results.check(
+        "键盘旅程：每个关键动作后焦点都不落 body",
+        action_drops == 0,
+        "全部通过" if action_drops == 0 else "落 body：" + "、".join(action_trace),
+    )
+    if drops:
+        print("[INFO] Tab 扫掠中焦点曾短暂落到 body（随后仍能继续 Tab，不阻断）：" + "；".join(_DROP_TRACE[:4]))
+    results.check(
+        "键盘旅程：没有卡住的步骤",
+        not stuck,
+        "全部通过" if not stuck else "卡在：" + "、".join(stuck),
+    )
+    page.screenshot(path=str(REPO / "docs" / "a11y-sr-hc-keyboard-20261108" / "acceptance-keyboard.png"))
+    context.close()
+
+
+def run_zoom_200(browser: Any, base: str, results: Results) -> None:
+    """Windows 缩放 200%、窗口 1366×768：等效 CSS 视口 683×384、DPR=2。
+
+    断言的是"看得见、点得到"：元素完整落在视口内，且中心点命中测试仍是它自己
+    （没被浮层盖住 / 没被裁掉），不是只断言 DOM 里存在。
+    """
+    width, height = 683, 384
+    backend = MockBackend()
+    context = browser.new_context(
+        viewport={"width": width, "height": height},
+        device_scale_factor=2,
+    )
+    _mount_mocks(context, backend)
+    page = context.new_page()
+    page.goto(base, wait_until="domcontentloaded")
+    page.wait_for_selector("#os-secret", state="visible", timeout=LOGIN_TIMEOUT)
+
+    def visible_and_hittable(selector: str, scroll: bool = False) -> tuple[bool, str]:
+        locator = page.locator(selector).first
+        if locator.count() == 0:
+            return False, "元素不存在"
+        if scroll:
+            # 页面纵向滚动是正常操作；要排除的是"滚到底也点不到"的裁切/遮挡。
+            locator.scroll_into_view_if_needed()
+        box = locator.bounding_box()
+        if box is None:
+            return False, "元素没有布局盒（不可见）"
+        inside = (
+            box["x"] >= -0.5
+            and box["y"] >= -0.5
+            and box["x"] + box["width"] <= width + 0.5
+            and box["y"] + box["height"] <= height + 0.5
+        )
+        hit = locator.evaluate(
+            """(el) => {
+                const r = el.getBoundingClientRect();
+                const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return !!top && (top === el || el.contains(top));
+            }"""
+        )
+        detail = (
+            f"box=({box['x']:.0f},{box['y']:.0f},{box['width']:.0f}x{box['height']:.0f})"
+            f" 视口内={inside} 命中={hit}"
+        )
+        return inside and hit, detail
+
+    ok, detail = visible_and_hittable('button[type="submit"]')
+    results.check("200% 缩放：登录按钮完整可见且可点（未被裁掉）", ok, detail)
+
+    _login(page, base, require_nav=False)
+    # 683px 已是手机形态，入口在底栏；顺便验证新补的「目标」入口没被挤掉。
+    goals_ok, goals_detail = visible_and_hittable('.os-bottom-item[data-key="goals"]')
+    results.check("200% 缩放：底栏「目标」入口完整可见且可点", goals_ok, goals_detail)
+
+    nav = page.locator('.os-bottom-item[data-key="my-employees"]')
+    if nav.count():
+        nav.first.click()
+    page.wait_for_timeout(450)
+    ok, detail = visible_and_hittable("#emp-name", scroll=True)
+    results.check("200% 缩放：员工名字输入框完整可见且可点", ok, detail)
+    ok, detail = visible_and_hittable("button:has-text('创建员工')", scroll=True)
+    results.check("200% 缩放：「创建员工」按钮完整可见且可点", ok, detail)
+    overflow = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    results.check("200% 缩放：页面没有横向溢出（不靠左右拖动才能操作）", overflow <= 2, f"溢出={overflow}px")
+
+    page.screenshot(
+        path=str(REPO / "docs" / "a11y-sr-hc-keyboard-20261108" / "acceptance-zoom-200.png")
+    )
+    context.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="控制台可访问性真浏览器验收")
     parser.add_argument("--url", default=os.environ.get("LIUHAO_CONSOLE_URL", ""))
@@ -653,8 +1004,21 @@ def main(argv: list[str] | None = None) -> int:
                 print("[SKIP] 环境不具备：Edge / Chromium 都起不来")
                 return 2
             try:
-                run_main_flow(browser, base, results)
-                run_forced_colors(browser, base, results)
+                runners = (
+                    ("主流程", run_main_flow),
+                    ("强制色", run_forced_colors),
+                    ("键盘旅程", run_keyboard_journey),
+                    ("200% 缩放", run_zoom_200),
+                )
+                for name, runner in runners:
+                    started = time.time()
+                    try:
+                        runner(browser, base, results)
+                    except Exception as error:  # noqa: BLE001 - 一条旅程坏掉不该吞掉其余检查
+                        if not results.items:
+                            raise
+                        results.check(f"{name} 执行中断", False, str(error)[:300])
+                    print(f"[TIME] {name}：{time.time() - started:.1f}s")
             except Exception as error:  # noqa: BLE001
                 if not results.items:
                     # 一条检查都没跑起来（页面打不开 / 登录页不出现）→ 环境问题，不是通过。
