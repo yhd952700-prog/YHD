@@ -14,16 +14,18 @@ import {
   newSessionId,
   saveLocalSessions,
   saveSessionMeta,
+  searchSessions,
   setSelectedModelId,
   setSessionId,
   setUserId,
   streamChat,
   titleFromHistory,
 } from '../lib/chatClient'
-import type { SessionMeta } from '../lib/chatClient'
+import type { SessionMeta, SessionSearchResult } from '../lib/chatClient'
 import { useApi } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
+import { BudgetDenialActions } from './ui'
 
 /** 对话页只需要模型列表里可展示/可选的最小字段。 */
 interface ChatModel {
@@ -63,22 +65,34 @@ interface Message {
   streaming?: boolean
   tools?: ToolCall[]
   /** 失败时的人话 + 原始错误（原始文本默认折叠）。 */
-  error?: { text: string; raw: string }
+  error?: { text: string; raw: string; action?: 'budget' }
 }
 
 /** 快捷指令 chips（点击填入输入框）。 */
 const QUICK = ['市场分析', '销售机会', '客户策略', 'SEO优化', '数据分析']
+
+/** 与后端 ChatRequest.message 的 max_length=8000 保持一致。 */
+const MAX_MESSAGE_CHARS = 8000
+/** 接近上限时才显示字数，避免日常输入被计数器打扰。 */
+const NEAR_LIMIT_CHARS = 6000
+/** 会话列表每页条数：1000 个会话也不一次拉全（首屏只取 50）。 */
+const SESSION_PAGE_SIZE = 50
+/** 单会话历史每页消息数（"加载更早的消息"每次再取 200）。 */
+const HISTORY_PAGE_SIZE = 200
 
 interface ChatPanelProps {
   /** 模型状态唯一来源（/v1/health → lib/providerStatus）。 */
   provider: ActiveProviderStatus
   /** "去配置模型"：跳到模型管理。 */
   onConfigureModel: () => void
+  /** "去用量页调额度"：402 预算拒绝时的可点出口。 */
+  onOpenUsage?: () => void
 }
 
-export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
+export function ChatPanel({ provider, onConfigureModel, onOpenUsage }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
+  const [inputError, setInputError] = useState('')
   const [sending, setSending] = useState(false)
   const [sessionId, setSessionIdState] = useState(() => getSessionId())
   // 用户身份：声明后画像跨会话共享（未声明则后端按会话主体记画像）。
@@ -97,8 +111,23 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
   })
   // 会话标题：首条用户消息前 16 字 + 更新时间。绝不再展示截断的 session ID。
   const [meta, setMeta] = useState<Record<string, SessionMeta>>(() => getSessionMeta())
+  // 分页状态：会话列表只取一页（"加载更多"续取），历史只取最近一页（"加载更早"续取）。
+  const [sessionsTotal, setSessionsTotal] = useState(0)
+  const [sessionsHasMore, setSessionsHasMore] = useState(false)
+  const [remoteOffset, setRemoteOffset] = useState(0)
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false)
+  const [historyHasOlder, setHistoryHasOlder] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  // 历史搜索（FTS5 索引；索引建立中/降级为扫描时界面必须如实提示）
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResult, setSearchResult] = useState<SessionSearchResult | null>(null)
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const searchRetryRef = useRef(0)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const inputChars = input.length
+  const inputTooLong = inputChars > MAX_MESSAGE_CHARS
 
   /** 合并写一条会话元数据（标题只在为空时写入，更新时间每次都刷）。 */
   const recordMeta = useCallback((id: string, patch: Partial<SessionMeta>) => {
@@ -144,18 +173,21 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
 
   // 首次进入把当前会话的历史接回来：否则刷新后对话记录"看起来消失了"，
   // 下拉框也只能显示"未命名会话"。只取一次，且不覆盖用户已开始输入的内容。
+  // 只取最近一页（默认 200 条），500 轮的长会话也不整段拉；更早的用按钮续取。
   useEffect(() => {
     let alive = true
     void (async () => {
       try {
-        const data = await loadHistory(sessionId, userId)
+        const data = await loadHistory(sessionId, userId, { limit: HISTORY_PAGE_SIZE })
         if (!alive) return
         const historyMessages = data.history.map((h) => ({
           role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: h.content,
         }))
         setMessages((prev) => (prev.length === 0 ? historyMessages : prev))
-        const title = titleFromHistory(data.history)
+        setHistoryHasOlder(Boolean(data.has_more))
+        // 只有整段历史都在这一页时，首条用户消息才是真正的"首条"，才可作标题。
+        const title = data.has_more ? '' : titleFromHistory(data.history)
         if (title) {
           setMeta((prev) => {
             if (prev[sessionId]?.title) return prev
@@ -164,6 +196,8 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
             return next
           })
         }
+        // 落在最新一页的底部：刷新后位置合理。
+        setTimeout(scrollToBottom, 0)
       } catch {
         // 首次加载失败不阻塞输入；发送时仍会给出明确错误。
       }
@@ -175,20 +209,58 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /** 续取更早的消息（offset 从最近一条往前数 = 当前已渲染条数）。 */
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlder || sending) return
+    const node = listRef.current
+    const prevHeight = node?.scrollHeight ?? 0
+    const prevTop = node?.scrollTop ?? 0
+    setLoadingOlder(true)
+    try {
+      const data = await loadHistory(sessionId, userId, {
+        limit: HISTORY_PAGE_SIZE,
+        offset: messages.length,
+      })
+      setMessages((prev) => [
+        ...data.history.map((h) => ({
+          role: h.role === 'user' ? ('user' as const) : ('assistant' as const),
+          content: h.content,
+        })),
+        ...prev,
+      ])
+      setHistoryHasOlder(Boolean(data.has_more))
+      // 保持视口停在原来读到的那一句，而不是跳到顶部。
+      requestAnimationFrame(() => {
+        const box = listRef.current
+        if (box) box.scrollTop = box.scrollHeight - prevHeight + prevTop
+      })
+    } catch {
+      // 加载更早失败：保留现状，用户可再点一次。
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [loadingOlder, sending, sessionId, userId, messages.length])
+
   // 换机/备份迁移后 localStorage 里没有会话清单，但后端已有历史会话：只用本地
   // 清单会让「工作台」看不到导入前的对话。这里按后端列表补全，并给还没有标题
   // 的会话回填首条用户消息作为标题（限 20 个，避免首屏 N+1 拖慢）。
   useEffect(() => {
     let alive = true
     void (async () => {
-      let remote: string[] = []
+      let page: Awaited<ReturnType<typeof listSessions>>
       try {
-        remote = await listSessions()
+        // 只取第一页：1000 个会话时首屏也不拉全量。
+        page = await listSessions(SESSION_PAGE_SIZE, 0)
       } catch {
         // 未登录/离线：保留本地清单，不阻断对话
         return
       }
-      if (!alive || remote.length === 0) return
+      if (!alive) return
+      const remote = page.sessions
+      setSessionsTotal(page.total)
+      setSessionsHasMore(page.has_more)
+      setRemoteOffset(remote.length)
+      if (remote.length === 0) return
       setSessions((prev) => {
         const next = [...prev, ...remote.filter((id) => !prev.includes(id))]
         saveLocalSessions(next)
@@ -225,21 +297,25 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
       setSessionIdState(id)
       setSessionId(id)
       setMessages([])
+      setHistoryHasOlder(false)
       try {
-        const data = await loadHistory(id, userId)
+        const data = await loadHistory(id, userId, { limit: HISTORY_PAGE_SIZE })
         setMessages(
           data.history.map((h) => ({
             role: h.role === 'user' ? 'user' : ('assistant' as const),
             content: h.content,
           })),
         )
-        const title = titleFromHistory(data.history)
+        setHistoryHasOlder(Boolean(data.has_more))
+        // 顶替到最新一页底部（与刷新后的落点一致）。
+        setTimeout(scrollToBottom, 0)
+        const title = data.has_more ? '' : titleFromHistory(data.history)
         if (title) recordMeta(id, { title })
       } catch {
         setMessages([])
       }
     },
-    [sessionId, sending, userId, recordMeta],
+    [sessionId, sending, userId, recordMeta, scrollToBottom],
   )
 
   const newSession = useCallback(() => {
@@ -247,6 +323,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
     setSessionIdState(id)
     setSessionId(id)
     setMessages([])
+    setHistoryHasOlder(false)
     setSessions((prev) => {
       const next = [id, ...prev.filter((s) => s !== id)]
       saveLocalSessions(next)
@@ -278,11 +355,90 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
     [sessionId, newSession],
   )
 
+  /** 续取下一页会话（首屏只加载 50 条）。 */
+  const loadMoreSessions = useCallback(async () => {
+    if (loadingMoreSessions || !sessionsHasMore) return
+    setLoadingMoreSessions(true)
+    try {
+      const page = await listSessions(SESSION_PAGE_SIZE, remoteOffset)
+      setSessionsTotal(page.total)
+      setSessionsHasMore(page.has_more)
+      setRemoteOffset((prev) => prev + page.sessions.length)
+      setSessions((prev) => {
+        const next = [...prev, ...page.sessions.filter((id) => !prev.includes(id))]
+        saveLocalSessions(next)
+        return next
+      })
+    } catch {
+      // 失败保留现状，按钮可再点
+    } finally {
+      setLoadingMoreSessions(false)
+    }
+  }, [loadingMoreSessions, sessionsHasMore, remoteOffset])
+
+  /** 执行一次历史搜索（结果里带 ready/degraded，界面据此如实提示）。 */
+  const runSearch = useCallback(async (query: string) => {
+    const value = query.trim()
+    if (!value) {
+      setSearchResult(null)
+      setSearchError('')
+      setSearchBusy(false)
+      return
+    }
+    setSearchBusy(true)
+    setSearchError('')
+    try {
+      setSearchResult(await searchSessions(value, 20, 0))
+    } catch {
+      setSearchError('搜索失败，请稍后重试。')
+    } finally {
+      setSearchBusy(false)
+    }
+  }, [])
+
+  // 输入 300ms 防抖后再查，避免每个按键都打一次接口。
+  useEffect(() => {
+    const value = searchQuery.trim()
+    searchRetryRef.current = 0
+    if (!value) {
+      setSearchResult(null)
+      setSearchError('')
+      setSearchBusy(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void runSearch(value)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery, runSearch])
+
+  // 索引还在建立（ready=false）时每 2 秒自动重试一次，最多 15 次（约 30 秒）；
+  // 之后保留"索引建立中 x%"的提示，让用户知道结果为何不全，而不是空列表。
+  useEffect(() => {
+    if (!searchResult || searchResult.ready || !searchQuery.trim()) return
+    if (searchRetryRef.current >= 15) return
+    const timer = window.setTimeout(() => {
+      searchRetryRef.current += 1
+      void runSearch(searchQuery.trim())
+    }, 2000)
+    return () => window.clearTimeout(timer)
+  }, [searchResult, searchQuery, runSearch])
+
+
   const send = useCallback(
     async (text: string) => {
       const value = (text ?? input).trim()
       if (!value || sending) return
+      if (value.length > MAX_MESSAGE_CHARS) {
+        setInputError(
+          `消息过长：当前 ${value.length} 字，单条上限 ${MAX_MESSAGE_CHARS} 字。请精简或分段发送。`,
+        )
+        return
+      }
+      setInputError('')
       setInput('')
+      // 焦点留在输入框：连续对话可以直接说下一句，不必再从侧栏 Tab 回来。
+      inputRef.current?.focus()
       setSending(true)
       recordMeta(sessionId, {
         title: meta[sessionId]?.title || makeSessionTitle(value),
@@ -350,6 +506,7 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                   error: {
                     text: chatFailureText(evt.reason, evt.error),
                     raw: evt.error ?? evt.status,
+                    action: evt.reason === 'budget_exceeded' ? 'budget' : undefined,
                   },
                 }
                 return next
@@ -405,23 +562,80 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               <div className="holo-aura" />
               <div className="holo-ring r1" />
               <div className="holo-ring r2" />
-              <div className="holo-human">您</div>
+              <div className="holo-human">你</div>
             </div>
           </div>
 
           <div className="jarvis-intro">
-            <div className="jarvis-name">JARVIS</div>
-            <div className="jarvis-sub">Your AI Business Partner</div>
+            <div className="jarvis-name">鎏灏管家</div>
+            <div className="jarvis-sub">你的 AI 业务伙伴</div>
           </div>
         </div>
 
         <div className="jarvis-right">
           <div className="jarvis-greeting">
-            <span className="greet-main">老板，我已准备就绪！</span>
-            <span className="greet-sub">今天我可以为您分析什么？</span>
+            <span className="greet-main">你好，我已准备就绪。</span>
+            <span className="greet-sub">今天想让我分析什么？</span>
           </div>
 
           <div className="jarvis-chat">
+            {/* 历史搜索：结果来自 /v1/sessions/search（FTS5 索引）。
+                索引建立中/降级扫描时必须把 notice 原样展示给用户。 */}
+            {searchQuery.trim() && (
+              <div className="chat-search-panel" role="status" aria-live="polite">
+                {searchError ? (
+                  <div className="chat-search-note">{searchError}</div>
+                ) : searchBusy && !searchResult ? (
+                  <div className="chat-search-note">搜索中…</div>
+                ) : searchResult ? (
+                  <>
+                    <div className="chat-search-head">
+                      {searchResult.ready
+                        ? `找到 ${searchResult.total} 条匹配消息`
+                        : `索引建立中（${searchResult.index_total ? Math.floor((searchResult.indexed * 100) / searchResult.index_total) : 0}%），结果可能不完整`}
+                      {searchResult.degraded && (
+                        <span className="chat-search-tag">搜索变慢</span>
+                      )}
+                      <button
+                        className="sess-btn"
+                        onClick={() => setSearchQuery('')}
+                        title="关闭搜索结果"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                    {searchResult.notice && (
+                      <div className="chat-search-note">{searchResult.notice}</div>
+                    )}
+                    {searchResult.results.length === 0 ? (
+                      <div className="chat-search-note">
+                        {searchBusy ? '搜索中…' : '没有匹配的消息'}
+                      </div>
+                    ) : (
+                      <div className="chat-search-list">
+                        {searchResult.results.map((hit) => (
+                          <button
+                            key={`${hit.session_id}-${hit.turn}-${hit.role}`}
+                            className="chat-search-hit"
+                            onClick={() => {
+                              void switchSession(hit.session_id)
+                              setSearchQuery('')
+                            }}
+                            title="跳到该会话"
+                          >
+                            <span className="chat-search-title">
+                              {sessionLabel(hit.session_id)}
+                              <span className="chat-search-turn">第 {hit.turn} 轮</span>
+                            </span>
+                            <span className="chat-search-snippet">{hit.snippet}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
             {/* 模型状态：未配置真实模型时必须在输入框上方明示，而不是让用户
                 以为对面是一个真实模型。判据来自 /v1/health（单一事实源）。 */}
             {showModelWarning && (
@@ -448,10 +662,22 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               aria-relevant="additions text"
               aria-busy={sending || undefined}
             >
+              {historyHasOlder && (
+                <div className="chat-older-row">
+                  <button
+                    className="sess-btn"
+                    onClick={() => void loadOlderMessages()}
+                    disabled={loadingOlder || sending}
+                    title="从持久化历史里继续往前取（不一次拉 500 轮）"
+                  >
+                    {loadingOlder ? '加载中…' : '加载更早的消息'}
+                  </button>
+                </div>
+              )}
               {messages.length === 0 ? (
                 <div className="chat-empty">
                   {provider.isReal
-                    ? '请下达业务指令，Jarvis 将为您实时分析。'
+                    ? '请下达业务指令，鎏灏管家会实时分析。'
                     : '当前未配置真实模型：这里的回复是模拟生成的，不应作为业务结论。'}
                 </div>
               ) : (
@@ -461,12 +687,25 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                     className={`chat-row ${m.role}`}
                     data-streaming={m.streaming ? 'true' : undefined}
                   >
-                    <div className="chat-avatar">{m.role === 'user' ? '我' : 'J'}</div>
+                    <div className="chat-avatar">{m.role === 'user' ? '我' : '灏'}</div>
                     <div className="chat-bubble">
-                      {m.content || (m.streaming ? <span className="cursor" /> : '…')}
+                      {/* 建流前被拒（402/403）时正文为空：此时只显示下面的错误卡，
+                          不能再落一个「…」空气泡，否则用户以为助手回了半个空回复。 */}
+                      {m.content ||
+                        (m.streaming ? (
+                          <span className="cursor" />
+                        ) : m.error ? null : (
+                          '…'
+                        ))}
                       {m.error && (
                         <div className="chat-error">
                           <div className="chat-error-text">{m.error.text}</div>
+                          {m.error.action === 'budget' && onOpenUsage && (
+                            <BudgetDenialActions
+                              onOpenUsage={onOpenUsage}
+                              onConfigureModel={onConfigureModel}
+                            />
+                          )}
                           <div className="chat-error-text">
                             如果一直失败，请确认启动窗口仍在运行，然后重试。
                           </div>
@@ -496,7 +735,11 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                aria-label="业务指令输入框"
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  if (inputError) setInputError('')
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -505,16 +748,30 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
                 }}
                 placeholder={
                   provider.isReal
-                    ? '请输入您的业务指令...'
+                    ? '请输入你的业务指令…'
                     : '未配置真实模型：当前发送将得到模拟回复'
                 }
                 rows={1}
-                disabled={sending}
+                /* 用 readOnly 而不是 disabled：disabled 会把焦点从输入框拿走，
+                   键盘用户发完一句就得从侧栏重走几十次 Tab 才能继续输入。 */
+                readOnly={sending}
               />
-              <button className="jarvis-send" onClick={() => send(input)} disabled={sending || !input.trim()}>
+              <button
+                className="jarvis-send"
+                onClick={() => send(input)}
+                disabled={sending || !input.trim() || inputTooLong}
+              >
                 {sending ? '生成中…' : '发送'}
               </button>
             </div>
+            {(inputError || inputTooLong || inputChars > NEAR_LIMIT_CHARS) && (
+              <div className="jarvis-input-hint" role={inputError || inputTooLong ? 'alert' : undefined}>
+                {inputError ||
+                  (inputTooLong
+                    ? `消息过长：当前 ${inputChars} 字，单条上限 ${MAX_MESSAGE_CHARS} 字，请精简或分段发送。`
+                    : `${inputChars} / ${MAX_MESSAGE_CHARS} 字`)}
+              </div>
+            )}
 
             <div className="jarvis-chips">
               {QUICK.map((q) => (
@@ -562,6 +819,29 @@ export function ChatPanel({ provider, onConfigureModel }: ChatPanelProps) {
             <button className="sess-btn danger" onClick={() => removeSession(sessionId)} title="删除会话">
               删除
             </button>
+            {/* 会话列表分页：1000 个会话也只先取 50 条，滚到底/点按钮继续加载。 */}
+            {sessionsHasMore && (
+              <button
+                className="sess-btn"
+                onClick={() => void loadMoreSessions()}
+                disabled={loadingMoreSessions}
+                title={`后端共 ${sessionsTotal} 个会话，已加载 ${sessions.length} 个`}
+              >
+                {loadingMoreSessions
+                  ? '加载中…'
+                  : `加载更多会话（${sessions.length}/${sessionsTotal}）`}
+              </button>
+            )}
+            <span className="sess-search">
+              <input
+                className="sess-search-input"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索历史消息…"
+                aria-label="搜索历史消息"
+                title="在当前账号的会话历史里搜索（中文可直接搜关键词）"
+              />
+            </span>
             <span className="sess-user">
               <span className="sess-user-label">身份</span>
               <input

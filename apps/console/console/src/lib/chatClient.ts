@@ -10,7 +10,13 @@
  */
 
 import { clearSession, tokenHeaders, UNAUTHENTICATED_EVENT } from './auth';
-import { LOCAL_SERVICE_OFFLINE_MANUAL } from './errorMessage';
+import { ApiError } from './api';
+import {
+  BUDGET_DENIAL_MESSAGE,
+  BUDGET_DENIAL_NEXT_STEP,
+  LOCAL_SERVICE_OFFLINE_MANUAL,
+  PERMISSION_DENIAL_MESSAGE,
+} from './errorMessage';
 
 /** 组装带会话令牌的请求头。
  *
@@ -85,7 +91,36 @@ export async function* streamChat(
   if (!res.ok || !res.body) {
     handleUnauthorized(res.status);
     const text = await res.text().catch(() => '');
-    throw new Error(`请求失败（${res.status}）：${text}`);
+    // 保留后端稳定错误码：402 budget_exceeded / 403 permission_denied 要能
+    // 走到不同的中文文案和"下一步"入口，而不是被压成一句通用错误。
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    const record = (body && typeof body === 'object' ? body : {}) as {
+      code?: unknown;
+      message?: unknown;
+      detail?: unknown;
+    };
+    const detail =
+      record.detail && typeof record.detail === 'object' && !Array.isArray(record.detail)
+        ? (record.detail as { code?: unknown; message?: unknown })
+        : {};
+    const code =
+      typeof record.code === 'string'
+        ? record.code
+        : typeof detail.code === 'string'
+          ? detail.code
+          : null;
+    const message =
+      typeof record.message === 'string'
+        ? record.message
+        : typeof detail.message === 'string'
+          ? detail.message
+          : '';
+    throw new ApiError(res.status, message || `请求失败（${res.status}）`, code);
   }
 
   const reader = res.body.getReader();
@@ -188,19 +223,33 @@ export interface SessionHistory {
   session_id: string;
   history: HistoryEntry[];
   count: number;
+  /** 该会话消息总数（分页后 count 只是本页条数）。 */
+  total?: number;
+  /** 更早还有消息（"加载更早的消息"用 offset=已有条数 继续取）。 */
+  has_more?: boolean;
+  limit?: number | null;
+  offset?: number;
   user_id?: string | null;
   profile_principal?: string;
 }
 
-/** 加载某会话的历史消息（后端从持久化 store 读，跨后端重启有效）。 */
+/** 加载某会话的历史消息（后端从持久化 store 读，跨后端重启有效）。
+ *
+ * 省略 `opts` 时保持旧的全量语义；聊天页默认取最近 200 条，
+ * "加载更早"传 `offset=当前已渲染消息数`（offset 从最近一条往前数）。
+ */
 export async function loadHistory(
   sessionId: string,
   userId?: string,
+  opts?: { limit?: number; offset?: number },
 ): Promise<SessionHistory> {
-  const q = `session_id=${encodeURIComponent(sessionId)}${
-    userId ? `&user_id=${encodeURIComponent(userId)}` : ''
-  }`;
-  const res = await fetch(`/v1/chat/history?${q}`, { headers: authHeaders() });
+  const parts = [`session_id=${encodeURIComponent(sessionId)}`];
+  if (userId) parts.push(`user_id=${encodeURIComponent(userId)}`);
+  if (opts?.limit != null) parts.push(`limit=${opts.limit}`);
+  if (opts?.offset != null) parts.push(`offset=${opts.offset}`);
+  const res = await fetch(`/v1/chat/history?${parts.join('&')}`, {
+    headers: authHeaders(),
+  });
   if (!res.ok) {
     handleUnauthorized(res.status);
     throw new Error(`加载历史失败（${res.status}）`);
@@ -208,15 +257,91 @@ export async function loadHistory(
   return (await res.json()) as SessionHistory;
 }
 
-/** 列出后端活跃会话。 */
-export async function listSessions(): Promise<string[]> {
-  const res = await fetch('/v1/chat/sessions', { headers: authHeaders() });
+/** 会话列表一页。 */
+export interface SessionPage {
+  sessions: string[];
+  total: number;
+  has_more: boolean;
+  limit: number | null;
+  offset: number;
+}
+
+/** 列出后端活跃会话（分页；省略参数 = 全量，兼容旧调用）。 */
+export async function listSessions(
+  limit?: number,
+  offset = 0,
+): Promise<SessionPage> {
+  const parts: string[] = [];
+  if (limit != null) parts.push(`limit=${limit}`);
+  if (offset > 0) parts.push(`offset=${offset}`);
+  const query = parts.length ? `?${parts.join('&')}` : '';
+  const res = await fetch(`/v1/chat/sessions${query}`, { headers: authHeaders() });
   if (!res.ok) {
     handleUnauthorized(res.status);
     throw new Error(`获取会话列表失败（${res.status}）`);
   }
-  const data = (await res.json()) as { sessions?: string[] };
-  return data.sessions ?? [];
+  const data = (await res.json()) as {
+    sessions?: string[];
+    total?: number;
+    has_more?: boolean;
+    limit?: number | null;
+    offset?: number;
+  };
+  const sessions = data.sessions ?? [];
+  return {
+    sessions,
+    total: data.total ?? sessions.length,
+    has_more: data.has_more ?? false,
+    limit: data.limit ?? null,
+    offset: data.offset ?? 0,
+  };
+}
+
+/** 一条搜索命中（一条消息）。 */
+export interface SessionSearchHit {
+  session_id: string;
+  turn: number;
+  role: string;
+  snippet: string;
+  created_at: number;
+}
+
+/** 历史搜索响应（含降级/建索引进度，界面必须如实展示 notice）。 */
+export interface SessionSearchResult {
+  query?: string;
+  results: SessionSearchHit[];
+  count: number;
+  total: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+  mode: string;
+  degraded: boolean;
+  ready: boolean;
+  indexed: number;
+  index_total: number;
+  notice: string;
+}
+
+/** 在当前账号的会话历史里全文搜索（中文 2 字及以上子串可直接搜）。 */
+export async function searchSessions(
+  query: string,
+  limit = 20,
+  offset = 0,
+): Promise<SessionSearchResult> {
+  const parts = [
+    `q=${encodeURIComponent(query)}`,
+    `limit=${limit}`,
+    `offset=${offset}`,
+  ];
+  const res = await fetch(`/v1/sessions/search?${parts.join('&')}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(`搜索失败（${res.status}）`);
+  }
+  return (await res.json()) as SessionSearchResult;
 }
 
 /** 删除一个会话（后端清空历史 + 移除实例）。 */
@@ -306,13 +431,21 @@ export function makeSessionTitle(text: string): string {
 export function chatFailureText(reason?: string, fallback?: string): string {
   switch ((reason ?? '').trim().toLowerCase()) {
     case 'quota_exhausted':
-      return '模型额度已用完。请到「设置 → 模型」充值，或换一个还有额度的 Key 后重试。';
+      return '模型额度已用完。请到「系统设置 → 模型管理」充值，或换一个还有额度的 Key 后重试。';
     case 'key_revoked':
-      return '这个 Key 已被吊销或停用。请到「设置 → 模型」重新生成并填入新的 Key。';
+      return '这个 Key 已被吊销或停用。请到「系统设置 → 模型管理」重新生成并填入新的 Key。';
     case 'rate_limited':
       return '请求被上游限流了。请稍后重试，或稍等片刻再发一次。';
-    case 'unreachable':
-      return '连不上模型服务。请检查网络和「设置 → 模型」里的接口地址后重试。';
+    case 'budget_exceeded':
+      return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`;
+    case 'permission_denied':
+      return PERMISSION_DENIAL_MESSAGE;
+    case 'unreachable': {
+      // 后端已经给出带模型名的完整说明时优先用它：固定文案不知道用户配的是
+      // 哪个模型，卡片上就少了"该检查哪个模型"的关键信息。
+      const text = (fallback ?? '').trim();
+      return text || '连不上模型服务。请检查网络和「系统设置 → 模型管理」里的接口地址后重试。';
+    }
     default: {
       const text = (fallback ?? '').trim();
       return text || '这一轮没有成功，请稍后重试。';
@@ -326,20 +459,67 @@ export function chatFailureText(reason?: string, fallback?: string): string {
  * 典型原始错误：`请求失败（404）：{"detail":"Ollama error 404: {...}"}` ——
  * 直接展示等于让用户读后端内部 JSON，既看不懂也不知道该做什么。
  */
-export function friendlyChatError(err: unknown): { text: string; raw: string } {
+export function friendlyChatError(err: unknown): {
+  text: string;
+  raw: string;
+  /** 402 时告诉界面要渲染"去调额度 / 换更便宜模型"的可点入口。 */
+  action?: 'budget';
+} {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
+  const status = typeof (err as { status?: unknown })?.status === 'number'
+    ? ((err as { status: number }).status)
+    : null;
+  const code = typeof (err as { code?: unknown })?.code === 'string'
+    ? ((err as { code: string }).code)
+    : null;
 
+  if (code === 'budget_exceeded' || status === 402 || raw.includes('402')) {
+    return {
+      text: `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`,
+      raw,
+      action: 'budget',
+    };
+  }
+  if (code === 'permission_denied') {
+    return { text: PERMISSION_DENIAL_MESSAGE, raw };
+  }
+  // 403 的另一种：请求里用了别人的模型 Key。后端原话是「无权使用该模型配置」，
+  // 这里补一句「往哪里去」，但不给预算按钮（不是钱的问题）。
+  if (code === 'ACCOUNT_KEY_NOT_OWNED') {
+    return {
+      text: '无权使用该模型配置：这个 Key 不在你的账号下。请到「我的 Key」添加你自己的模型，或换用有权限的模型后重试。',
+      raw,
+    };
+  }
+  // 成员没有自己的模型 Key 时后端返回 409（状态码正确），但这里要说人话：
+  // 直接指路「我的 Key」，不把英文 code 甩给用户。
+  if (code === 'ACCOUNT_KEY_NOT_CONFIGURED') {
+    return {
+      text: '你还没有自己的模型 Key。请到「我的 Key」添加后重试。',
+      raw,
+    };
+  }
   if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
     return { text: LOCAL_SERVICE_OFFLINE_MANUAL, raw };
   }
-  if (raw.includes('401')) {
+  if (raw.includes('422')) {
+    // 后端校验失败会把整段 input 回显在 detail 里；这里只留可读摘要，
+    // 避免 5 万字原文同时进入 React state 和"详情"折叠区。
+    return {
+      text: '消息过长或格式不合法：单条消息最多 8000 字，请精简或分段发送',
+      raw: raw.length > 600 ? `${raw.slice(0, 600)}…` : raw,
+    };
+  }
+  // 物理 429/401 的 `ApiError.message` 只带后端给的中文说明，不含状态码；
+  // 只看 raw 里的 "429" 会让限流落进「对话失败」的通用兜底，和 402/403 混淆。
+  if (status === 401 || raw.includes('401')) {
     return { text: '会话已失效，请重新登录', raw };
   }
-  if (raw.includes('403')) {
+  if (status === 403 || raw.includes('403')) {
     return { text: '当前账号没有对话权限', raw };
   }
-  if (raw.includes('429')) {
+  if (status === 429 || raw.includes('429')) {
     return { text: '请求过于频繁，请稍后重试', raw };
   }
   if (raw.includes('408') || lower.includes('timeout') || lower.includes('超时')) {
