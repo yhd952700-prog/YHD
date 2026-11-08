@@ -17,7 +17,7 @@ import type {
 import type { AuthConfig } from '../lib/auth'
 import { useApi } from '../lib/api'
 import { formatCompact } from '../lib/chartUtils'
-import { componentLabel, eventLabel, humanDuration, outcomeLabel, outcomeTone, safeText } from '../lib/format'
+import { componentLabel, eventLabel, humanDuration, numberText, outcomeLabel, outcomeTone, safeText } from '../lib/format'
 import type { ActiveProviderStatus } from '../lib/providerStatus'
 import { DonutChart, LineChart } from '../components/charts'
 import { providerLabel } from '../components/ModelManager'
@@ -146,7 +146,7 @@ export function DataCenter({ query }: { query: string }) {
                     label: eventLabel(item.type),
                     value: item.count,
                   }))}
-                  centerValue={formatCompact(data.breakdown.total_events ?? 0)}
+                  centerValue={formatCompact(data.breakdown.total_events)}
                   centerLabel="总事件"
                 />
                 <div className="os-legend">
@@ -163,7 +163,7 @@ export function DataCenter({ query }: { query: string }) {
                 </div>
                 <div className="os-note" style={{ marginTop: 12 }}>
                   <span>
-                    已排除后台状态变更 <strong>{formatCompact(data.breakdown.excluded_noise_events ?? 0)}</strong> 条
+                    已排除后台状态变更 <strong>{formatCompact(data.breakdown.excluded_noise_events)}</strong> 条
                     （后台状态变更类事件，占比通常 &gt;99%，对业务无意义）。
                   </span>
                 </div>
@@ -310,7 +310,11 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
                 })}
               </div>
               {data.status === 'degraded' && (
-                <div className="os-alert" style={{ marginTop: 12, marginBottom: 0 }}>
+                <div
+                  className="os-alert"
+                  role="alert"
+                  style={{ marginTop: 12, marginBottom: 0 }}
+                >
                   <span>
                     服务处于降级状态，就绪探针返回 503。上面标红的就是原因。
                   </span>
@@ -332,15 +336,17 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
           {(data) => (
             <dl className="os-kv">
               <dt>运行时长</dt>
-              <dd>{humanDuration(data.uptime_seconds ?? 0)}</dd>
+              <dd>
+                {data.uptime_seconds == null ? '—' : humanDuration(data.uptime_seconds)}
+              </dd>
               <dt>API 密钥总数</dt>
-              <dd>{data.components?.api_key_manager?.total_keys ?? 0}</dd>
+              <dd>{numberText(data.components?.api_key_manager?.total_keys)}</dd>
               <dt>已过期密钥</dt>
-              <dd>{data.components?.api_key_manager?.expired_count ?? 0}</dd>
+              <dd>{numberText(data.components?.api_key_manager?.expired_count)}</dd>
               <dt>RBAC 角色数</dt>
-              <dd>{data.components?.rbac_manager?.total_roles ?? 0}</dd>
+              <dd>{numberText(data.components?.rbac_manager?.total_roles)}</dd>
               <dt>限流桶</dt>
-              <dd>{data.components?.rate_limiter?.active_buckets ?? 0}</dd>
+              <dd>{numberText(data.components?.rate_limiter?.active_buckets)}</dd>
             </dl>
           )}
         </Guard>
@@ -367,10 +373,10 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
               <dd>
                 <code>{data.env_var ?? '—'}</code>
               </dd>
-              <dt>生效等级</dt>
+              <dt>生效动作</dt>
               <dd>
-                {Array.isArray(data.enforced_tiers) && data.enforced_tiers.length > 0
-                  ? (data.enforced_tiers as string[]).join(' / ')
+                {Array.isArray(data.enforced_actions) && data.enforced_actions.length > 0
+                  ? data.enforced_actions.join(' / ')
                   : '—'}
               </dd>
             </dl>
@@ -390,21 +396,21 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
             <dl className="os-kv">
               <dt>凭据存储</dt>
               <dd>
-                <span className="os-badge" data-tone={data.secret_store.configured ? 'ok' : 'warn'}>
-                  {data.secret_store.configured ? '已配置' : '未配置'}
+                <span className="os-badge" data-tone={data.secret_store?.configured ? 'ok' : 'warn'}>
+                  {data.secret_store?.configured ? '已配置' : '未配置'}
                 </span>
               </dd>
               <dt>已登记账号</dt>
-              <dd>{data.registered_humans}</dd>
+              <dd>{numberText(data.registered_humans)}</dd>
               <dt>可登录账号</dt>
-              <dd>{data.login_eligible_humans}</dd>
+              <dd>{numberText(data.login_eligible_humans)}</dd>
               <dt>会话有效期</dt>
-              <dd>{humanDuration(data.token.ttl_seconds)}</dd>
+              <dd>{data.token ? humanDuration(data.token.ttl_seconds) : '—'}</dd>
               <dt>第三方登录</dt>
               <dd>
-                {Object.entries(data.oauth).every(([, enabled]) => !enabled)
+                {Object.entries(data.oauth ?? {}).every(([, enabled]) => !enabled)
                   ? '未接入（仅账号密码）'
-                  : Object.entries(data.oauth)
+                  : Object.entries(data.oauth ?? {})
                       .filter(([, enabled]) => enabled)
                       .map(([name]) => name)
                       .join(' / ')}
@@ -432,14 +438,14 @@ export function SystemStatus({ provider }: { provider: ActiveProviderStatus }) {
               <dd>{data.version ?? '—'}</dd>
               <dt>能力模块 / 能力层</dt>
               <dd>
-                {data.totals.kernels} / {data.totals.layers}
+                {numberText(data.totals?.kernels)} / {numberText(data.totals?.layers)}
               </dd>
               <dt>声明总数</dt>
               <dd>
                 {data.declared_totals?.capabilities ?? '—'} / {data.declared_totals?.layers ?? '—'}
               </dd>
               <dt>注册表条目</dt>
-              <dd>{formatCompact(data.totals.registry_entries)}</dd>
+              <dd>{formatCompact(data.totals?.registry_entries)}</dd>
               <dt>当前模型服务</dt>
               <dd>
                 {provider.provider?.type ? providerLabel(provider.provider.type) : '—'}
@@ -531,14 +537,20 @@ function SystemAlerts() {
                 <span className="os-kv-key">正在触发</span>
                 <span className="os-kv-value">
                   <span
-                    className={`os-dot os-tone-${data.firing_count > 0 ? 'danger' : 'ok'}`}
+                    className={`os-dot os-tone-${
+                      numberText(data.firing_count) === '—'
+                        ? 'muted'
+                        : data.firing_count > 0
+                          ? 'danger'
+                          : 'ok'
+                    }`}
                   />
-                  {data.firing_count}
+                  {numberText(data.firing_count)}
                 </span>
               </div>
               <div className="os-kv-row">
                 <span className="os-kv-key">历史告警总数</span>
-                <span className="os-kv-value">{data.count}</span>
+                <span className="os-kv-value">{numberText(data.count)}</span>
               </div>
             </div>
 

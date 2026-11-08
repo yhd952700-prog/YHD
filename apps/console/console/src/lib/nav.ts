@@ -90,8 +90,8 @@ export const PRIMARY_NAV: NavItem[] = [
 export const GOVERNANCE_NAV: NavItem[] = [
   // 审批面要能签发凭据才成立；没有签发范围的账号连入口都不出现（不是点了 403）。
   { key: 'approval', label: '审批中心', icon: IconShield, requires: 'grant' },
-  // 审计链：后端 `/v1/audit/*` 一直有真实数据，此前没有任何页面渲染它。
-  { key: 'audit', label: '审计链', icon: IconLock },
+  // 操作记录：后端 `/v1/audit/*` 一直有真实数据，此前没有任何页面渲染它。
+  { key: 'audit', label: '操作记录', icon: IconLock },
   // 信任内核只读面：后端 `/v1/trust/{entity_id}` 返回真实信任状态，此前没有任何页面渲染它。
   { key: 'trust', label: '信任', icon: IconTrust },
   // 网络内核只读面：后端 `/v1/network/messages` 返回总线真实状态（stats + 消息历史），此前没有任何页面渲染它。
@@ -100,6 +100,9 @@ export const GOVERNANCE_NAV: NavItem[] = [
   { key: 'identity', label: '身份与权限', icon: IconShield },
   // 工作区文件：AI 员工经 file_write 写出的产物，此前没有任何页面让人浏览/读取。
   { key: 'files', label: '工作区文件', icon: IconFiles },
+  // 数据可携带性：每个人都能把自己的会话/记忆/员工/知识库/用量带走，
+  // 也能把记忆与知识库导回来。不属于根专属的加密备份，故不设 requires。
+  { key: 'my-data', label: '我的数据', icon: IconData, hint: '一键导出人可读 ZIP；记忆/知识库可回导' },
   { key: 'status', label: '系统状态', icon: IconActivity, requires: 'root' },
   // 生产预检：`/v1/production/preflight` 此前真实可用但界面上无入口，
   // 一份算好的"能不能上生产"从未递到人眼前。只读，不含任何配置值。
@@ -117,6 +120,13 @@ export const GOVERNANCE_NAV: NavItem[] = [
 ]
 
 export const FOOTER_NAV: NavItem[] = [
+  // 关于与隐私：所有人可见。首次披露不能只藏在安装前的 txt 里。
+  {
+    key: 'about',
+    label: '关于与隐私',
+    icon: IconShield,
+    hint: '版本、数据目录、许可证与联网说明',
+  },
   { key: 'settings', label: '系统设置', icon: IconSettings, requires: 'root' },
 ]
 
@@ -156,19 +166,31 @@ export function visibleNavKeys(caps: AccountCaps): Set<string> {
 }
 
 /**
- * 手机端底部导航：五项，含"我的"。
+ * 手机端底部导航：六项，含"目标与任务"与"我的"。
  *
- * `workbench`（管家 / 对话）必须在这里 —— 此前手机端四项里没有它，
+ * `butler`（管家 / 对话）必须在这里 —— 此前手机端四项里没有它，
  * 于是"进入对话"在手机上没有任何一键入口，只能靠深层 URL 或外链。
- * 五项是 390×844 下不换行的上限（每项一列，每项 ≥44px 热区）。
  *
- * 第 5 项按身份切换：设置入口只对根出现；其他人用"我的 Key"作为账户面入口。
+ * `goals`（目标与任务）也必须在这里：窄屏下派活的结果只落在目标列表里，
+ * 没有入口时用户能看到"已派活"的回执，却永远打不开结果页。
+ *
+ * 六项在 360px 宽下仍是一行（os.css 在 ≤420px 收紧字号与内边距），
+ * 不换行、不横向溢出；每项仍是原生 <button>，可 Tab 聚焦。
+ *
+ * 第 6 项按身份切换：设置入口只对根出现；其他人用"我的 Key"作为账户面入口。
  */
-export const MOBILE_NAV_KEYS = ['overview', 'my-employees', 'workbench', 'approval', 'settings']
+export const MOBILE_NAV_KEYS = [
+  'overview',
+  'my-employees',
+  'butler',
+  'goals',
+  'approval',
+  'settings',
+]
 
 export function mobileNavKeysFor(caps: AccountCaps): string[] {
   const last = caps.canSettings ? 'settings' : 'my-keys'
   // 没有签发范围时底栏不留「审批中心」的死入口，换成同样可读的「工作区文件」。
   const fourth = visibleNavKeys(caps).has('approval') ? 'approval' : 'files'
-  return ['overview', 'my-employees', 'workbench', fourth, last]
+  return ['overview', 'my-employees', 'butler', 'goals', fourth, last]
 }

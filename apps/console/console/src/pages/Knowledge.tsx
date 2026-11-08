@@ -8,7 +8,7 @@
  *   3. 文本入库：同步 `POST /documents` 或异步 `POST /ingest/jobs`（进度 + 取消）；
  *   4. 文档列表：`GET /documents?limit&offset`（服务端分页账本，不再是本机记录）；
  *   5. 分块预览：`GET /documents/{id}/chunks`（完整切分，带序号与标题路径，分页渲染）；
- *   6. 删除：`DELETE /documents/{id}`（管理员权限，二次确认，chunks + 向量一起删）。
+ *   6. 删除：`DELETE /documents/{id}`（仅自己的文档，二次确认；越权与不存在同为中性提示，chunks + 向量一起删）。
  *
  * 三条不肯妥协的表达：
  *   * 上传失败按类型分话术，不一律「上传失败」；
@@ -61,8 +61,9 @@ import type {
   KnowledgeStatus,
 } from '../lib/knowledge'
 import { formatBytes } from '../lib/knowledge'
-import { relativeTime, safeText } from '../lib/format'
-import { Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import { numberText, relativeTime, safeText } from '../lib/format'
+import { BudgetDenialActions, Card, Empty, Failure, Guard, Loading } from '../components/ui'
+import { isBudgetDenialMessage } from '../lib/errorMessage'
 import { providerLabel } from '../components/ModelManager'
 
 /**
@@ -92,9 +93,12 @@ function jobTone(status: string): 'ok' | 'warn' | 'danger' | 'accent' | 'muted' 
 export function Knowledge({
   query,
   onOpenSettings,
+  onOpenUsage,
 }: {
   query: string
   onOpenSettings: () => void
+  /** 402 预算拒绝时去用量页调额度；换模型走 onOpenSettings。 */
+  onOpenUsage?: () => void
 }) {
   const status = useApi<KnowledgeStatus>('/v1/knowledge/status', 30_000)
   const disabled = status.data ? !status.data.enabled : false
@@ -162,12 +166,41 @@ export function Knowledge({
   const [chunkLoading, setChunkLoading] = useState(false)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const chunkRef = useRef<AbortController | null>(null)
+  /** 预览是右侧抽屉：打开时焦点进入「关闭」，关闭时回到触发它的按钮。 */
+  const previewCloseRef = useRef<HTMLButtonElement | null>(null)
+  const previewTriggerRef = useRef<HTMLElement | null>(null)
 
   // ── 删除（二次确认） ─────────────────────────────────────────
   const [pendingDelete, setPendingDelete] = useState<KnowledgeDocSummary | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const deleteRef = useRef<AbortController | null>(null)
+  /** 行内确认框没有原生模态行为：手动把焦点送进去 / 带回原处。 */
+  const deleteCancelRef = useRef<HTMLButtonElement | null>(null)
+  const deleteTriggerRef = useRef<HTMLElement | null>(null)
+
+  const closeDelete = useCallback(() => {
+    setPendingDelete(null)
+    setDeleteError(null)
+    deleteTriggerRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    if (!pendingDelete) return
+    deleteCancelRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeDelete()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [pendingDelete, closeDelete])
+
+  useEffect(() => {
+    if (selected) previewCloseRef.current?.focus()
+  }, [selected])
 
   // ── 检索测试 ─────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState('')
@@ -377,7 +410,10 @@ export function Knowledge({
         } else {
           setActionError({
             title: '入库失败',
-            message: err instanceof Error ? err.message : '未知错误',
+            message:
+              err instanceof Error && /[\u4e00-\u9fff]/.test(err.message)
+                ? err.message
+                : '入库没有完成，请稍后重试；持续失败可看日志。',
           })
         }
       } finally {
@@ -513,6 +549,9 @@ export function Knowledge({
 
   // ── 分块预览（读接口，不是检索拼凑） ─────────────────────────
   const openDoc = useCallback((doc: KnowledgeDocSummary) => {
+    const active = document.activeElement
+    previewTriggerRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null
     setSelected(doc)
     setChunks(null)
     setChunkPage(0)
@@ -571,15 +610,16 @@ export function Knowledge({
           setSearchNotice('已删除的文档从检索结果中移除；请重新检索核对。')
         }
         setPendingDelete(null)
+        deleteTriggerRef.current = null
+        // 触发行已被删除，焦点不能回到已卸载的按钮；落到文档卡片的「刷新」上。
+        window.setTimeout(() => document.getElementById('kb-refresh')?.focus(), 0)
         status.reload()
         documents.reload()
       } catch (err) {
         if (err instanceof ApiError && err.status === 403) {
-          setDeleteError(
-            '该操作需要更高的权限。当前账号没有该权限，无法删除。',
-          )
+          setDeleteError('操作未完成：资源不存在或无权访问。')
         } else if (err instanceof ApiError && err.status === 404) {
-          setDeleteError(`${err.message}（可能已被其他人删除）`)
+          setDeleteError(err.message || '资源不存在或无权访问。')
           documents.reload()
         } else {
           setDeleteError(err instanceof Error ? err.message : '删除失败')
@@ -761,6 +801,12 @@ export function Knowledge({
               <strong>{actionError.title}：</strong>
               {actionError.message}
             </span>
+            {isBudgetDenialMessage(actionError.message) && onOpenUsage && (
+              <BudgetDenialActions
+                onOpenUsage={onOpenUsage}
+                onConfigureModel={onOpenSettings}
+              />
+            )}
           </div>
         )}
         {lowQualityFile && (
@@ -861,9 +907,13 @@ export function Knowledge({
               {job && !isTerminalJobStatus(job.status) && (
                 <span className="os-kb-score">
                   {job.totalPages > 0
-                    ? `解析 ${job.extractedPages}/${job.totalPages} 页 · 嵌入 ${job.embeddedPages}/${job.totalPages} 页 · ${job.progressPercent}%`
+                    ? `解析 ${job.extractedPages}/${job.totalPages} 页 · 嵌入 ${job.embeddedPages}/${job.totalPages} 页${
+                        job.progressPercent === null ? ' · 进度未知' : ` · ${job.progressPercent}%`
+                      }`
                     : job.totalChunks
-                      ? `${job.processedChunks} / ${job.totalChunks} 分块 · ${job.progressPercent}%`
+                      ? `${job.processedChunks} / ${job.totalChunks} 分块${
+                          job.progressPercent === null ? ' · 进度未知' : ` · ${job.progressPercent}%`
+                        }`
                       : '等待服务端解析…'}
                 </span>
               )}
@@ -882,7 +932,7 @@ export function Knowledge({
                   文档 id：{job.documentId || '—'} · 阶段：{jobPhaseLabel(job.phase)}
                   {job.startedAt ? ` · 开始于 ${job.startedAt}` : ''}
                 </p>
-                {!isTerminalJobStatus(job.status) && (
+                {!isTerminalJobStatus(job.status) && job.progressPercent !== null && (
                   <div
                     className="os-kb-progress"
                     role="progressbar"
@@ -919,8 +969,11 @@ export function Knowledge({
                 {job.error && <p className="os-kb-error">失败原因：{job.error}</p>}
                 {job.quality?.low_quality && (
                   <p className="os-hint">
-                    提取质量：乱码 {job.quality.garbled_chars} 字符（
-                    {(job.quality.garbled_ratio * 100).toFixed(1)}%）。
+                    提取质量：乱码 {numberText(job.quality.garbled_chars)} 字符（
+                    {job.quality.garbled_ratio === null
+                      ? '—'
+                      : numberText(job.quality.garbled_ratio * 100, 1)}
+                    %）。
                     {job.errorCode === 'low_quality_extraction'
                       ? '服务端未入库；确认要用这份文本可点下面的“确认继续入库”。'
                       : '已按你的确认入库，检索时可能命中乱码段落。'}
@@ -964,6 +1017,7 @@ export function Knowledge({
         span={selected ? 7 : 12}
         action={
           <button
+            id="kb-refresh"
             className="os-link"
             onClick={() => {
               documents.reload()
@@ -983,23 +1037,30 @@ export function Knowledge({
           {(page) => (
             <>
               {pendingDelete && (
-                <div className="os-alert" role="alertdialog" aria-label="删除确认">
+                <div
+                  className="os-alert"
+                  role="alertdialog"
+                  aria-label="删除确认"
+                  aria-describedby="kb-delete-desc"
+                >
                   <div>
                     <strong>确认删除「{docDisplayName(pendingDelete)}」？</strong>
-                    <p style={{ margin: '4px 0 0' }}>
+                    <p id="kb-delete-desc" style={{ margin: '4px 0 0' }}>
                       会连同分块与向量一起删除，不可恢复。删除后文档列表、检索与分块预览都将查不到该文档。
                     </p>
-                    {deleteError && <p className="os-kb-error">{deleteError}</p>}
+                    {deleteError && (
+                      <p className="os-kb-error" role="alert">
+                        {deleteError}
+                      </p>
+                    )}
                     <div className="os-kb-actions" style={{ marginTop: 8 }}>
                       <button className="os-btn" onClick={confirmDelete} disabled={deleting}>
                         {deleting ? '删除中…' : '确认删除'}
                       </button>
                       <button
+                        ref={deleteCancelRef}
                         className="os-btn os-btn-ghost"
-                        onClick={() => {
-                          setPendingDelete(null)
-                          setDeleteError(null)
-                        }}
+                        onClick={closeDelete}
                         disabled={deleting}
                       >
                         取消
@@ -1086,6 +1147,7 @@ export function Knowledge({
                                   onClick={(event) => {
                                     event.stopPropagation()
                                     setDeleteError(null)
+                                    deleteTriggerRef.current = event.currentTarget
                                     setPendingDelete(doc)
                                   }}
                                 >
@@ -1140,7 +1202,15 @@ export function Knowledge({
           span={5}
           className="sc-panel-active sc-hud"
           action={
-            <button className="os-link" onClick={() => setSelected(null)}>
+            <button
+              ref={previewCloseRef}
+              className="os-link"
+              onClick={() => {
+                setSelected(null)
+                setChunks(null)
+                previewTriggerRef.current?.focus()
+              }}
+            >
               关闭
             </button>
           }
@@ -1285,7 +1355,7 @@ export function Knowledge({
                             {nameMap.get(hitDocumentId(hit)) ?? hitDocumentId(hit)}
                           </span>
                           <span className="os-kb-score">
-                            {hit.score.toFixed(4)} · 分块 #{hitChunkIndex(hit)}
+                            {numberText(hit.score, 4)} · 分块 #{hitChunkIndex(hit)}
                           </span>
                         </header>
                         <pre className="os-pre">{hit.text}</pre>
@@ -1325,7 +1395,8 @@ export function Knowledge({
             进度与结果无法再查；已经成功入库的文档本身保存在本地数据库中，不受影响。
           </li>
           <li>
-            <strong>删除权限与粒度</strong>：删除需要更高的权限；
+            <strong>删除权限与粒度</strong>：只能删除自己的文档；别人的文档与不存在的文档
+            返回同一条中性提示，界面不透露资源归属；
             只能整篇删除，没有批量删除或单分块删除，也没有改名 / 编辑接口（同一文档
             重新导入会整体替换）。
           </li>

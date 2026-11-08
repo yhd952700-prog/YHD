@@ -18,7 +18,7 @@
  * 副本，都会立刻制造出"控制台说已登录、面板说未认证"的分裂。
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { ApprovalCenter } from './components/ApprovalCenter'
 import type { ApprovalActions, ApprovalUiState } from './components/ApprovalCenter'
@@ -214,9 +214,8 @@ function App() {
   const [viewAs, setViewAs] = useState<string | null>(null)
   const readOnly = viewAs !== null
 
-  // 账号位置来自 `/auth/me` 的 parent/path/depth；这里只用于裁剪入口。
-  const rootPosition =
-    session !== null && session.parentAccountId === null && session.depth === 0
+  // 是否账号树根只来自 `/auth/me` 的 is_root；不保留 parent/path/depth。
+  const rootPosition = session !== null && session.isRoot
   const accounts = useAccountData<AccountsPayload>(
     () =>
       session
@@ -338,9 +337,7 @@ function App() {
           displayName: info.display_name ?? prev.displayName,
           scope: info.scope ?? prev.scope,
           expiresAt: info.expires_at ?? prev.expiresAt,
-          parentAccountId: info.parent_account_id ?? prev.parentAccountId,
-          path: info.path ?? prev.path,
-          depth: Number.isFinite(Number(info.depth)) ? Number(info.depth) : prev.depth,
+          isRoot: typeof info.is_root === 'boolean' ? info.is_root : prev.isRoot,
         }
         // 服务端复核结果通常与本地一致；返回同一个对象引用，避免 effect 依赖
         // 因对象身份变化而再次触发，把自己变成 30rps 的 /v1/auth/me 轮询。
@@ -349,9 +346,7 @@ function App() {
           next.displayName === prev.displayName &&
           next.scope === prev.scope &&
           next.expiresAt === prev.expiresAt &&
-          next.parentAccountId === prev.parentAccountId &&
-          next.path === prev.path &&
-          next.depth === prev.depth
+          next.isRoot === prev.isRoot
         return unchanged ? prev : next
       })
     })()
@@ -416,9 +411,7 @@ function App() {
         permissions: [],
         expiresAt: decoded.expiresAt,
         client: decoded.client ?? 'web',
-        parentAccountId: null,
-        path: '',
-        depth: 0,
+        isRoot: false,
       },
       false,
     )
@@ -689,6 +682,27 @@ function App() {
   // 渲染
   // ---------------------------------------------------------------------
 
+  // 登录成功从登录页切到壳层时，焦点原本会落到 body；交到主内容上，
+  // 键盘用户从"跳过导航"继续，读屏也会立刻读出当前页标题。
+  const focusMainAfterLogin = useRef(false)
+  useEffect(() => {
+    if (!session || !focusMainAfterLogin.current) return
+    let tries = 0
+    let timer = 0
+    const tick = () => {
+      const main = document.getElementById('os-main')
+      if (main) {
+        focusMainAfterLogin.current = false
+        main.focus()
+        return
+      }
+      if (tries++ < 20) timer = window.setTimeout(tick, 50)
+    }
+    timer = window.setTimeout(tick, 0)
+    return () => window.clearTimeout(timer)
+    // profile 到位后壳层才会渲染出 main；账号信息比会话慢时也要能补上焦点。
+  }, [session, profile])
+
   if (!session || !profile) {
     return (
       <Login
@@ -696,6 +710,7 @@ function App() {
         notice={loginNotice}
         onSuccess={(next) => {
           setLoginNotice(null)
+          focusMainAfterLogin.current = true
           setSession(next)
         }}
       />
@@ -715,6 +730,7 @@ function App() {
       profile={profile}
       caps={caps}
       active={active}
+      pageTitle={meta.title}
       onNavigate={navigate}
       onToggleTheme={() => device.setTheme(device.theme === 'dark' ? 'light' : 'dark')}
       onLogout={() => void doLogout()}
@@ -771,13 +787,25 @@ function App() {
           query={query}
           onOpenApproval={() => navigate('approval')}
           canApproveQueue={caps.canApproveQueue}
+          onOpenUsage={() => navigate('my-keys')}
+          onConfigureModel={() => navigate('settings')}
         />
       )}
       {active === 'employees' && <Roster query={query} />}
-      {active === 'my-employees' && <MyEmployees query={query} />}
+      {active === 'my-employees' && (
+        <MyEmployees
+          query={query}
+          onOpenUsage={() => navigate('my-keys')}
+          onConfigureModel={() => navigate('settings')}
+        />
+      )}
       {active === 'business' && <BusinessCenter query={query} />}
       {active === 'knowledge' && (
-        <Knowledge query={query} onOpenSettings={() => navigate('settings')} />
+        <Knowledge
+          query={query}
+          onOpenSettings={() => navigate('settings')}
+          onOpenUsage={() => navigate('my-keys')}
+        />
       )}
       {active === 'workbench' && (
         <Workbench

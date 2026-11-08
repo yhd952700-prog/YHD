@@ -254,7 +254,17 @@ export function Goals({ query }: { query: string }) {
                         onClick={() => void openGoal(goal.goal_id)}
                       >
                         <td>
-                          <Truncated text={goal.natural_language} />
+                          {/* 行点击是鼠标便利；键盘用户需要一个真正的按钮，
+                              否则目标列表在纯键盘下完全打不开详情。 */}
+                          <button
+                            className="os-link os-goal-open"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void openGoal(goal.goal_id)
+                            }}
+                          >
+                            <Truncated text={goal.natural_language} />
+                          </button>
                         </td>
                         <td>
                           <span className={`os-dot os-tone-${stateTone(goal.state)}`} />

@@ -224,8 +224,8 @@ describe('窄屏与预算', () => {
 
   test('1024 宽下图表刻度、图例与页面定位句达到可读字号', () => {
     const osCss = read('./os.css')
-    // 身份层（旧值 9.5px）在 1024 宽下几乎不可读；正文色 + 11.5px 是下限。
-    expect(ruleBody(osCss, '.os-chart-axis')).toMatch(/font-size:\s*11\.5px/)
+    // 身份层（旧值 9.5px）在 1024 宽下几乎不可读；正文色 + 12px 是可读下限。
+    expect(ruleBody(osCss, '.os-chart-axis')).toMatch(/font-size:\s*12px/)
     expect(ruleBody(osCss, '.os-chart-axis')).toMatch(/var\(--os-text-dim\)/)
     expect(ruleBody(osCss, '.os-legend-item')).toMatch(/font-size:\s*12\.5px/)
     expect(ruleBody(osCss, '.os-legend-item')).toMatch(/var\(--os-text\)/)
@@ -255,5 +255,201 @@ describe('窄屏与预算', () => {
     const focusSection = osCss.slice(osCss.indexOf('键盘焦点（a11y）'))
     expect(focusSection).not.toMatch(/animation:/)
     expect(focusSection).not.toMatch(/@keyframes/)
+  })
+})
+
+describe('读屏（屏幕阅读器）契约', () => {
+  const shell = readFromRoot('src/components/Shell.tsx')
+  const app = readFromRoot('src/App.tsx')
+  const employees = readFromRoot('src/pages/MyEmployees.tsx')
+  const login = readFromRoot('src/components/Login.tsx')
+
+  test('切页必须播报「已进入「页面名」」，且不抢走导航焦点', () => {
+    // 常驻礼貌播报区：文字变化时读屏才会朗读。
+    expect(shell).toMatch(/role="status" aria-live="polite" aria-atomic="true"/)
+    expect(shell).toMatch(/已进入「\$\{pageTitle\}」/)
+    // 页面名由 App 传入，而不是读 DOM 猜。
+    expect(app).toMatch(/pageTitle=\{meta\.title\}/)
+    // 切页不移动焦点（焦点留在导航项），只播报。
+    expect(shell).not.toMatch(/os-main'\)\?\.focus\(\)/)
+  })
+
+  test('登录成功进入壳层后焦点落在主内容，不再掉到 body', () => {
+    expect(app).toMatch(/focusMainAfterLogin/)
+    expect(app).toMatch(/main\.focus\(\)/)
+  })
+
+  test('建员工成功/失败都有朗读出口：状态提示可聚焦、错误与输入框关联', () => {
+    // 提交按钮 disabled 期间会把焦点丢给 body，成功后交给结果提示。
+    expect(employees).toMatch(/createNoticeRef/)
+    expect(employees).toMatch(/focusNoticeAfterCreate/)
+    expect(employees).toMatch(/role="status" aria-live="polite" tabIndex=\{-1\} ref=\{createNoticeRef\}/)
+    // 必填错误：role=alert + 输入框 aria-invalid / aria-describedby 指向同一个提示。
+    expect(employees).toMatch(/id=\{nameError \? 'emp-create-error' : undefined\}/)
+    expect(employees).toMatch(/aria-invalid=\{nameError \? true : undefined\}/)
+    expect(employees).toMatch(/aria-describedby=\{nameError \? 'emp-create-error' : undefined\}/)
+  })
+
+  test('登录失败：错误是 alert，且焦点回到密码框（已实测按钮 disabled 会丢焦点）', () => {
+    expect(login).toMatch(/className="os-alert" role="alert"/)
+    expect(login).toMatch(/document\.getElementById\('os-secret'\)\?\.focus\(\)/)
+  })
+
+  test('关键路径的控件都有可读名字：不许出现「按钮 未命名」', () => {
+    // 图标按钮必须带 aria-label / title；导航项用可见文字。
+    expect(shell).toMatch(/aria-label=\{`通知，\$\{items\.length\} 条`\}/)
+    expect(shell).toMatch(/aria-label="退出登录"/)
+    // 全站图标一律 aria-hidden，避免读屏读出乱码路径。
+    expect(login).toMatch(/aria-hidden="true"/)
+  })
+})
+
+describe('Windows 高对比度（forced-colors）契约', () => {
+  const osCss = read('./os.css')
+  const hc = osCss.slice(osCss.indexOf('@media (forced-colors: active)'))
+
+  test('适配块存在，且不改动正常主题', () => {
+    expect(hc).not.toBe('')
+    // @media 包裹：只在系统高对比度下生效。
+    expect(osCss.indexOf('@media (forced-colors: active)')).toBeGreaterThan(
+      osCss.indexOf('prefers-reduced-motion'),
+    )
+  })
+
+  test('按钮/输入/卡片改用系统色重建边界，而不是只剩文字', () => {
+    expect(hc).toMatch(/\.os-btn[\s\S]{0,400}border:\s*1px solid ButtonText/)
+    expect(hc).toMatch(/background:\s*ButtonFace/)
+    expect(hc).toMatch(/\.os-input[\s\S]{0,600}border:\s*1px solid CanvasText/)
+    expect(hc).toMatch(/\.os-card[\s\S]{0,600}border:\s*1px solid CanvasText/)
+  })
+
+  test('当前页/当前页签仍有可辨状态：2px Highlight 描边 + 加粗', () => {
+    expect(ruleBody(hc, ".os-nav-item[aria-current='page'],")).toMatch(
+      /border:\s*2px solid Highlight/,
+    )
+    expect(ruleBody(hc, ".os-nav-item[aria-current='page'],")).toMatch(/font-weight:\s*700/)
+    // 回归防线：Highlight 实底 + HighlightText 白字在 Edge 下会把中文画成白块。
+    expect(hc).not.toMatch(/color:\s*HighlightText/)
+  })
+
+  test('状态点与徽章不再靠彩色实底：空心环 + 系统色边框', () => {
+    expect(ruleBody(hc, '.os-dot')).toMatch(/background:\s*Canvas !important/)
+    expect(ruleBody(hc, '.os-dot')).toMatch(/border:\s*1px solid CanvasText/)
+    expect(hc).toMatch(/\.os-badge\[data-tone\][\s\S]{0,120}border:\s*1px solid CanvasText/)
+  })
+
+  test('禁用按钮不靠 55% 透明度消失，焦点环使用系统高亮色', () => {
+    expect(ruleBody(hc, '.os-btn:disabled')).toMatch(/opacity:\s*1/)
+    expect(ruleBody(hc, '.os-btn:disabled')).toMatch(/dashed GrayText/)
+    expect(ruleBody(hc, '.os-input:focus-within,')).toMatch(/outline:\s*3px solid Highlight/)
+  })
+})
+
+describe('手机端触控目标（360px 复查）', () => {
+  test('可点元素在手机端 ≥44×44：图标按钮、链接、按钮、输入与下拉', () => {
+    const osCss = read('./os.css')
+    // 只查新增的手机端修正段，避免命中同文件里更早的同名选择器。
+    const mobileFix = osCss.slice(osCss.indexOf('手机端触控与窄屏修正（360px 复查）'))
+
+    const icon = ruleBody(mobileFix, "[data-mode='mobile'] .os-icon-btn")
+    expect(icon).toMatch(/width:\s*44px/)
+    expect(icon).toMatch(/height:\s*44px/)
+
+    for (const selector of [
+      "[data-mode='mobile'] .os-link",
+      "[data-mode='mobile'] .os-btn",
+      "[data-mode='mobile'] .os-input button",
+      "[data-mode='mobile'] .sess-btn",
+      "[data-mode='mobile'] .jarvis-send",
+      "[data-mode='mobile'] .jarvis-chips .chip",
+      "[data-mode='mobile'] .chat-model-action",
+    ]) {
+      expect(ruleBody(mobileFix, selector), selector).toMatch(/min-height:\s*44px/)
+    }
+
+    const input = ruleBody(mobileFix, "[data-mode='mobile'] .os-input input,")
+    expect(input).toMatch(/min-height:\s*44px/)
+
+    // 输入框本身（不是只套在外层）也要 ≥16px：否则 iOS Safari 聚焦时自动放大整页。
+    const inputShell = ruleBody(mobileFix, "[data-mode='mobile'] .os-input {")
+    expect(inputShell).toMatch(/font-size:\s*16px/)
+
+    // 顶栏搜索：外层 label 负责 44px 高，点空白处也能聚焦。
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .os-search")).toMatch(/min-height:\s*44px/)
+
+    // 首次初始化 / 账号面的无壳输入框（.os-input-plain）同样要 44px + 16px。
+    const plainInput = ruleBody(mobileFix, "[data-mode='mobile'] .os-input-plain")
+    expect(plainInput).toMatch(/min-height:\s*44px/)
+    expect(plainInput).toMatch(/font-size:\s*16px/)
+
+    const approval = ruleBody(mobileFix, "[data-mode='mobile'] .profile-input,")
+    expect(approval).toMatch(/min-height:\s*44px/)
+
+    // 登录页两个切换页签与「忘记密码」。
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .os-check,")).toMatch(/min-height:\s*44px/)
+  })
+
+  test('窄屏下表单、会话栏与副标题不再被压成竖排窄柱', () => {
+    const osCss = read('./os.css')
+    const mobileFix = osCss.slice(osCss.indexOf('手机端触控与窄屏修正（360px 复查）'))
+
+    // 创建员工 / 模型表单在手机上单列排布，字段不再被 3 列网格压到 4px。
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .os-operator-form")).toMatch(
+      /flex-direction:\s*column/,
+    )
+    expect(
+      readFromRoot('src/pages/MyEmployees.tsx'),
+      '行内 gridTemplateColumns 会压过手机端单列规则，必须移除',
+    ).not.toMatch(/style=\{\{\s*gridTemplateColumns/)
+
+    // 会话栏允许换行，身份输入独占一行，不再把「新会话 / 删除」挤出卡片。
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .jarvis-sessions")).toMatch(
+      /flex-wrap:\s*wrap/,
+    )
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .sess-user")).toMatch(/flex:\s*1 1 100%/)
+
+    // 副标题独占一行。
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .os-page-sub")).toMatch(
+      /flex-basis:\s*100%/,
+    )
+  })
+
+  test('窄屏对话区：装饰全息头像隐藏，输入框至少两行高', () => {
+    const osCss = read('./os.css')
+    const mobileFix = osCss.slice(osCss.indexOf('手机端触控与窄屏修正（360px 复查）'))
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .jarvis-left")).toMatch(/display:\s*none/)
+    expect(ruleBody(mobileFix, "[data-mode='mobile'] .jarvis-input-wrap textarea")).toMatch(
+      /min-height:\s*60px/,
+    )
+  })
+
+  test('软键盘弹起时收缩布局视口，底栏与输入框不被键盘盖住', () => {
+    const html = readFromRoot('index.html')
+    expect(html).toMatch(/interactive-widget=resizes-content/)
+    expect(html).toMatch(/viewport-fit=cover/)
+  })
+})
+
+describe('手机端六项底栏（目标与任务入口）', () => {
+  const osCss = read('./os.css')
+
+  test('六项共用一行时允许等比压缩，不会被长标签撑宽', () => {
+    expect(ruleBody(osCss, "[data-mode='mobile'] .os-bottom-nav")).toMatch(
+      /grid-auto-columns:\s*minmax\(0,\s*1fr\)/,
+    )
+    expect(ruleBody(osCss, '.os-bottom-item')).toMatch(/min-width:\s*0/)
+  })
+
+  test('360px 窄屏收紧字号与内边距，不换行、不横向溢出', () => {
+    const narrow = osCss.slice(osCss.indexOf('@media (max-width: 420px)'))
+    expect(narrow).not.toBe('')
+    expect(ruleBody(narrow, '.os-bottom-item')).toMatch(/font-size:\s*11px/)
+    expect(ruleBody(narrow, '.os-bottom-item')).toMatch(/padding:\s*6px 1px/)
+  })
+
+  test('底栏入口仍是原生 button（可 Tab 聚焦），且当前页有 aria-current', () => {
+    const shell = read('./components/Shell.tsx')
+    expect(shell).toMatch(/className="os-bottom-item"/)
+    expect(shell).toMatch(/aria-current=\{active === item\.key \? 'page' : undefined\}/)
   })
 })

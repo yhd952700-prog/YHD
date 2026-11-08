@@ -187,6 +187,9 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
       } catch (err) {
         setError(err instanceof AuthError ? err.message : '登录失败')
         setSecret('')
+        // 密码清空后提交按钮立刻变 disabled，浏览器会把它上面的焦点丢给 body，
+        // 键盘用户得重新 Tab 一整圈。这里把焦点交回密码框（错误已由 role="alert" 播报）。
+        document.getElementById('os-secret')?.focus()
       } finally {
         setBusy(false)
       }
@@ -328,11 +331,33 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         )}
 
         {!noAccount && (stage === 'login' || stage === 'register') && (
-          <div className="os-login-tabs" role="tablist" aria-label="登录或创建账户">
+          <div
+            className="os-login-tabs"
+            role="tablist"
+            aria-label="登录或创建账户"
+            onKeyDown={(event) => {
+              // 方向键在页签间切换（roving tabindex 的标准交互）。
+              if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+              event.preventDefault()
+              const next: Stage = stage === 'login' ? 'register' : 'login'
+              setStage(next)
+              setError('')
+              // 等新面板挂载完再落焦：面板内表单的 autoFocus 会抢焦点，
+              // 用宏任务排在它后面，保证焦点仍在被选中的页签上。
+              window.setTimeout(() => {
+                document
+                  .getElementById(next === 'login' ? 'os-login-tab-login' : 'os-login-tab-register')
+                  ?.focus()
+              }, 0)
+            }}
+          >
             <button
               type="button"
               role="tab"
+              id="os-login-tab-login"
               aria-selected={stage === 'login'}
+              aria-controls="os-login-panel"
+              tabIndex={stage === 'login' ? 0 : -1}
               data-active={stage === 'login' ? 'true' : 'false'}
               onClick={() => {
                 setStage('login')
@@ -344,7 +369,10 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
             <button
               type="button"
               role="tab"
+              id="os-login-tab-register"
               aria-selected={stage === 'register'}
+              aria-controls="os-login-panel"
+              tabIndex={stage === 'register' ? 0 : -1}
               data-active={stage === 'register' ? 'true' : 'false'}
               onClick={() => {
                 setStage('register')
@@ -364,6 +392,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         )}
 
         {stage === 'login' && (
+          <div role="tabpanel" id="os-login-panel" aria-labelledby="os-login-tab-login">
           <form onSubmit={submitLogin}>
             <div className="os-field">
               <label htmlFor="os-principal">账号</label>
@@ -436,6 +465,7 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
               )}
             </div>
           </form>
+          </div>
         )}
 
         {stage === 'bootstrap' && (
@@ -465,15 +495,17 @@ export function Login({ mode, notice = null, onSuccess }: LoginProps) {
         )}
 
         {stage === 'register' && (
-          <SelfRegisterForm
-            busy={busy}
-            remember={remember}
-            mode={mode}
-            onBusy={setBusy}
-            onError={setError}
-            onCancel={() => setStage('login')}
-            onSuccess={onSuccess}
-          />
+          <div role="tabpanel" id="os-login-panel" aria-labelledby="os-login-tab-register">
+            <SelfRegisterForm
+              busy={busy}
+              remember={remember}
+              mode={mode}
+              onBusy={setBusy}
+              onError={setError}
+              onCancel={() => setStage('login')}
+              onSuccess={onSuccess}
+            />
+          </div>
         )}
 
         {stage === 'recovery' && (
@@ -637,7 +669,11 @@ function BootstrapForm({
         principal: name,
         password,
         display_name: displayName.trim() || undefined,
-      }, initializationIncomplete ? 'handoff' : undefined)
+      }, 'handoff')
+
+      // 后端已单次消费这枚交接令牌；本地也不再保留，避免它继续躺在
+      // sessionStorage 里被后续请求重复带走。
+      clearLocalProof('handoff')
 
       // 提交即登录：不让用户再回头抄地址或手动登录一次。
       const session = await login(name, password, { remember: true, client: mode })
@@ -696,8 +732,12 @@ function BootstrapForm({
       </p>
       {initializationIncomplete && (
         <div className="os-note" role="status">
-          为了不在匿名接口里泄露根账号名，这里不再预填名称。请填写
-          <strong>首次注册时使用的名称</strong>（不是新名字），提交后会补全初始化并直接进入系统。
+          {/* 必须包一层 <span>：.os-note 是 flex，裸文本与 <strong> 会各自成为
+              flex item，被排成两列，读起来像乱码。 */}
+          <span>
+            为了不在匿名接口里泄露根账号名，这里不再预填名称。请填写
+            <strong>首次注册时使用的名称</strong>（不是新名字），提交后会补全初始化并直接进入系统。
+          </span>
         </div>
       )}
       <div className="os-field">
@@ -848,7 +888,7 @@ function SelfRegisterForm({
   onSuccess: (session: Session) => void
 }) {
   const [principal, setPrincipal] = useState('')
-  const [secret, setSecret] = useState('')
+  const [password, setPassword] = useState('')
   const [reveal, setReveal] = useState(false)
 
   const submit = async (event: FormEvent) => {
@@ -858,14 +898,14 @@ function SelfRegisterForm({
       onError('请输入用户名')
       return
     }
-    if (secret.length < 8) {
+    if (password.length < 8) {
       onError('密码至少 8 位')
       return
     }
     onBusy(true)
     onError('')
     try {
-      const session = await registerSelf(principal.trim(), secret, { remember, client: mode })
+      const session = await registerSelf(principal.trim(), password, { remember, client: mode })
       onSuccess(session)
     } catch (err) {
       onError(err instanceof AuthError ? err.message : '创建失败，请稍后再试')
@@ -902,8 +942,8 @@ function SelfRegisterForm({
             name="password"
             type={reveal ? 'text' : 'password'}
             autoComplete="new-password"
-            value={secret}
-            onChange={(event) => setSecret(event.target.value)}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
             placeholder="至少 8 位，建议 10 位以上"
             required
           />
@@ -1062,7 +1102,9 @@ function RecoveryForm({
       </div>
       {issuedCode && (
         <div className="os-note" role="status" data-testid="recovery-code">
-          <strong>新的恢复码只显示这一次</strong>，请立刻抄下来，或存进密码管理器。
+          <span>
+            <strong>新的恢复码只显示这一次</strong>，请立刻抄下来，或存进密码管理器。
+          </span>
           <div
             style={{
               display: 'flex',
@@ -1092,12 +1134,14 @@ function RecoveryForm({
             </button>
           </div>
           {copyState === 'fail' && <div>复制失败，请手动选中上面的码复制。</div>}
-          这个码只能在这台电脑上使用，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
+          <span>
+            这个码只能在这台电脑上使用，用一次就会失效；登录后建议到「恢复码」页重新生成一个新的。
+          </span>
         </div>
       )}
       {issueFailed && (
         <div className="os-note" role="alert" data-testid="recovery-unavailable">
-          {issueFailed}
+          <span>{issueFailed}</span>
         </div>
       )}
       <button type="submit" className="os-btn" disabled={busy}>

@@ -17,7 +17,7 @@
  * 的员工只渲染查看信息，不渲染编辑/删除/派活按钮——不给一个点下去才报错的按钮。
  */
 
-import { Fragment, useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useApi } from '../lib/api'
 import type { EmployeeCapabilitiesPayload, EmployeesPayload } from '../lib/contracts'
@@ -40,7 +40,8 @@ import {
   updateEmployee,
 } from '../lib/employees'
 import type { MyEmployee } from '../lib/employees'
-import { Card, Empty, Guard } from '../components/ui'
+import { BudgetDenialActions, Card, Empty, Guard } from '../components/ui'
+import { isBudgetDenialMessage } from '../lib/errorMessage'
 
 function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
   id: string
@@ -56,7 +57,16 @@ function capabilityOptions(payload: EmployeeCapabilitiesPayload | null): Array<{
   }))
 }
 
-export function MyEmployees({ query }: { query: string }) {
+export function MyEmployees({
+  query,
+  onOpenUsage,
+  onConfigureModel,
+}: {
+  query: string
+  /** 402 预算拒绝的可点出口：用量页 / 模型管理。 */
+  onOpenUsage?: () => void
+  onConfigureModel?: () => void
+}) {
   const list = useApi<EmployeesPayload>('/v1/employees', 0)
   const catalogApi = useApi<EmployeeCapabilitiesPayload>('/v1/employees/capabilities', 0)
   const employees = employeesOf(list.data)
@@ -68,6 +78,7 @@ export function MyEmployees({ query }: { query: string }) {
 
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draft, setDraft] = useState({ name: '', role: '', capabilities: [] as string[] })
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -75,6 +86,34 @@ export function MyEmployees({ query }: { query: string }) {
   const [assigning, setAssigning] = useState<string | null>(null)
   const [assignValue, setAssignValue] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+
+  // 派活时焦点接力：展开后进输入框，提交/取消后回"单独指派一个任务"。
+  // 不用 autoFocus，是因为同一个员工行会被重渲染，只有当前名字的引用有效。
+  const assignInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const assignTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const previousAssigning = useRef<string | null>(null)
+  // 创建成功后提交按钮会因 disabled 把焦点丢给 body；把焦点交给结果提示。
+  const createNoticeRef = useRef<HTMLDivElement | null>(null)
+  const focusNoticeAfterCreate = useRef(false)
+  useEffect(() => {
+    if (!focusNoticeAfterCreate.current) return
+    if (error) {
+      focusNoticeAfterCreate.current = false
+      return
+    }
+    if (!notice) return
+    focusNoticeAfterCreate.current = false
+    createNoticeRef.current?.focus()
+  }, [error, notice])
+  useEffect(() => {
+    const previous = previousAssigning.current
+    previousAssigning.current = assigning
+    if (assigning) {
+      assignInputRefs.current[assigning]?.focus()
+      return
+    }
+    if (previous) assignTriggerRefs.current[previous]?.focus()
+  }, [assigning])
 
   const need = query.trim().toLowerCase()
   const filtered = need
@@ -120,9 +159,14 @@ export function MyEmployees({ query }: { query: string }) {
     event.preventDefault()
     const name = draft.name.trim()
     if (!name) {
+      setNameError('请先填写员工名字')
       setError('请先填写员工名字')
+      // 错误同时由 role="alert" 播报；焦点回到出错的输入框，键盘用户不用再找。
+      document.getElementById('emp-name')?.focus()
       return
     }
+    setNameError(null)
+    focusNoticeAfterCreate.current = true
     void runAction(
       'create',
       () =>
@@ -315,6 +359,9 @@ export function MyEmployees({ query }: { query: string }) {
                 <div className="os-emp-actions">
                   <div className="os-input">
                     <input
+                      ref={(element) => {
+                        assignInputRefs.current[employee.name] = element
+                      }}
                       aria-label={`派给「${employee.name}」的任务`}
                       placeholder="例如：把昨天的会议纪要整理成一页"
                       value={assignValue}
@@ -360,6 +407,9 @@ export function MyEmployees({ query }: { query: string }) {
                 <div className="os-emp-actions">
                   {assignable ? (
                     <button
+                      ref={(element) => {
+                        assignTriggerRefs.current[employee.name] = element
+                      }}
                       className="os-btn os-btn-ghost"
                       style={{ width: 'auto' }}
                       disabled={busy !== null}
@@ -399,8 +449,10 @@ export function MyEmployees({ query }: { query: string }) {
       </div>
 
       <Card title="创建员工" sub="名字必填；职责与默认能力可稍后再补" span={12}>
-        <form className="os-operator-form" onSubmit={submitCreate}>
-          <div className="os-emp-create" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr)' }}>
+        <form className="os-operator-form" onSubmit={submitCreate} noValidate>
+          {/* 关掉浏览器原生校验气泡：它不会被稳定朗读、失焦即消失。
+              必填校验走 submitCreate 的 role="alert" + aria-invalid 路径。 */}
+          <div className="os-emp-create">
             <div className="os-field">
               <label htmlFor="emp-name">名字（必填）</label>
               <div className="os-input">
@@ -410,7 +462,12 @@ export function MyEmployees({ query }: { query: string }) {
                   maxLength={128}
                   placeholder="例如：小周"
                   value={draft.name}
-                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                  aria-invalid={nameError ? true : undefined}
+                  aria-describedby={nameError ? 'emp-create-error' : undefined}
+                  onChange={(event) => {
+                    setDraft({ ...draft, name: event.target.value })
+                    if (nameError) setNameError(null)
+                  }}
                 />
               </div>
             </div>
@@ -462,14 +519,20 @@ export function MyEmployees({ query }: { query: string }) {
 
       {error && (
         <div className="os-span-12">
-          <div className="os-alert" role="alert">
+          <div className="os-alert" role="alert" id={nameError ? 'emp-create-error' : undefined}>
             <span>{error}</span>
+            {isBudgetDenialMessage(error) && onOpenUsage && onConfigureModel && (
+              <BudgetDenialActions
+                onOpenUsage={onOpenUsage}
+                onConfigureModel={onConfigureModel}
+              />
+            )}
           </div>
         </div>
       )}
       {notice && !error && (
         <div className="os-span-12">
-          <div className="os-note" role="status" aria-live="polite">
+          <div className="os-note" role="status" aria-live="polite" tabIndex={-1} ref={createNoticeRef}>
             <span>{notice}</span>
           </div>
         </div>

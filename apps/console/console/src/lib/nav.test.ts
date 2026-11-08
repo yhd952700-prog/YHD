@@ -2,17 +2,19 @@
  * 手机端底栏契约。
  *
  * 曾经的缺陷：`MOBILE_NAV_KEYS` 只有四项（overview / employees / approval /
- * settings），对话页（workbench）在手机上没有任何一键入口。这条断言把「五项且
- * 含管家」钉死，避免以后再被"精简"掉。
+ * settings），管家页（butler）在手机上没有任何一键入口。后来目标与任务页
+ * 也缺入口，导致窄屏只能看到派活回执、打不开结果列表。这两条都钉死。
  */
 
 import { describe, expect, test } from 'vitest'
 import { ALL_NAV, MOBILE_NAV_KEYS } from './nav'
 
 describe('手机端底部导航', () => {
-  test('恰好五项，且包含对话入口 workbench', () => {
-    expect(MOBILE_NAV_KEYS).toHaveLength(5)
-    expect(MOBILE_NAV_KEYS).toContain('workbench')
+  test('恰好六项，含管家与目标与任务入口', () => {
+    expect(MOBILE_NAV_KEYS).toHaveLength(6)
+    expect(MOBILE_NAV_KEYS).toContain('butler')
+    expect(MOBILE_NAV_KEYS).toContain('goals')
+    expect(MOBILE_NAV_KEYS).not.toContain('workbench')
   })
 
   test('每个 key 都能在 ALL_NAV 里找到（否则底栏会渲染出空洞）', () => {

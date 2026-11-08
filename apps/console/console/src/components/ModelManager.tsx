@@ -28,6 +28,9 @@ export interface ModelRecord {
   timeout: number
   is_default: boolean
   enabled: boolean
+  /** 是否通过过「测试连接」：未通过的模型不允许设为默认。 */
+  verified?: boolean
+  last_verified_at?: string | null
   api_key_set: boolean
   api_key_masked: string | null
   /** missing / ok / needs_reentry（密文在但当前密钥解不开）。 */
@@ -105,9 +108,9 @@ export function mapProbeReason(reason: string, latencyMs: number, _detail: strin
     case 'quota_exhausted':
       return '账户额度已用完。请到提供方控制台充值或提升额度后重试。'
     case 'model_not_found':
-      return '模型名不存在或该端点不支持这个模型。请核对模型名称后重试。'
+      return '模型名不存在，或该接口地址不支持这个模型。请核对模型名称后重试。'
     case 'unreachable':
-      return '端点不可达。请检查端点地址、端口与网络连接是否正常。'
+      return '接口地址不可达。请检查地址、端口与网络连接是否正常。'
     case 'timeout':
       return '连接超时。请检查网络，或稍后再试。'
     case 'rate_limited':
@@ -116,7 +119,7 @@ export function mapProbeReason(reason: string, latencyMs: number, _detail: strin
       return '模型服务返回了错误，连接没有成功。请稍后重试；持续出现时可导出诊断包。'
     default:
       // `reason` 是机器码，不直接上屏；能给出的最确定的一句话就是"连接失败"。
-      return '连接失败：请检查服务商、模型名与端点设置后重试。'
+      return '连接失败：请检查服务商、模型名与接口地址设置后重试。'
   }
 }
 
@@ -132,14 +135,50 @@ const PROVIDER_LABELS: Record<string, string> = {
   azure: 'Azure OpenAI（云端）',
   ollama: '本地 Ollama',
   local: '本地模型',
-  moonshot: '月之暗面 Kimi',
-  google: 'Google Gemini',
+  moonshot: '月之暗面 Kimi（云端）',
+  kimi: '月之暗面 Kimi（云端）',
+  google: 'Google Gemini（云端）',
+  gemini: 'Google Gemini（云端）',
   mock: '内置演示（不调用真实模型）',
+}
+
+/**
+ * 云端厂商 → 用户能认出的公司名。凡是会出网的提供者都必须在这里，
+ * 否则界面就无法回答「我的对话到底发给了谁」。
+ */
+const CLOUD_VENDORS: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  claude: 'Anthropic',
+  deepseek: 'DeepSeek',
+  azure: 'Microsoft Azure OpenAI',
+  moonshot: '月之暗面（Kimi）',
+  kimi: '月之暗面（Kimi）',
+  google: 'Google',
+  gemini: 'Google',
 }
 
 export function providerLabel(type: string): string {
   const key = String(type ?? '').toLowerCase()
   return PROVIDER_LABELS[key] ?? (type || '未指定')
+}
+
+export function isCloudProvider(type: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CLOUD_VENDORS, String(type ?? '').toLowerCase())
+}
+
+/** 云端提供者的公司名；本地/演示返回空串。 */
+export function cloudVendor(type: string): string {
+  return CLOUD_VENDORS[String(type ?? '').toLowerCase()] ?? ''
+}
+
+/** 从端点里取主机名；解析失败时返回空串（不猜）。 */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return ''
+  }
 }
 
 interface FormState {
@@ -176,6 +215,16 @@ export function presetFormPatch(
     baseUrl: preset.base_url ?? '',
     model: preset.model ?? '',
   }
+}
+
+/**
+ * 只有已保存且「测试连接」通过的模型才允许成为默认。
+ *
+ * 与后端的 409 校验同一条规则：聊天会优先调用默认模型，没测过就设为默认，
+ * 等于把用户往一个可能不可用的模型上引。新建（`undefined`）一律不允许。
+ */
+export function canBecomeDefault(model: { verified?: boolean } | undefined): boolean {
+  return model?.verified === true
 }
 
 type ProbeState =
@@ -223,11 +272,20 @@ export function ModelManager({ session }: { session: Session }) {
 
   const providers = list.data?.supported_providers ?? []
   const busy = saving || rowBusy !== null
+  // 「设为默认」只对**已保存且测试通过**的模型开放：新建的模型还没测过，
+  // 后端会 409，所以这里也不给它勾选的机会（勾了也只能失败）。
+  const editingRecord = editingId
+    ? (list.data?.models ?? []).find((item) => item.id === editingId)
+    : undefined
+  const canMarkDefault = canBecomeDefault(editingRecord)
 
   const probeResult = probe.state === 'done' ? probe.result : null
   const probeMessage = probeResult
     ? mapProbeReason(probeResult.reason, probeResult.latency_ms, probeResult.detail)
     : ''
+  // 云端才需要"对话会发给谁"的说明；本地提供者不显示，避免噪音。
+  const cloudName = cloudVendor(form.provider)
+  const cloudHost = form.baseUrl.trim() ? hostOf(form.baseUrl.trim()) : ''
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -290,8 +348,10 @@ export function ModelManager({ session }: { session: Session }) {
         base_url: form.baseUrl.trim() || null,
         timeout: Number(form.timeout),
         enabled: form.enabled,
-        is_default: form.isDefault,
       }
+      // 只有已保存且测试通过的模型才允许提交 "设为默认"：后端对未验证/新建
+      // 模型一律 409，前端不再发送一个必然失败的字段。
+      if (canMarkDefault) payload.is_default = form.isDefault
       // 编辑时留空 = 不修改；新增时留空 = 不设置密钥。两种情况都不发送该字段。
       if (form.apiKey) payload.api_key = form.apiKey
 
@@ -412,6 +472,9 @@ export function ModelManager({ session }: { session: Session }) {
         message: mapProbeReason(result.reason, result.latency_ms, result.detail),
         signature: `${item.provider}|${item.model}|${item.base_url ?? ''}`,
       })
+      // 测试结果会落库（verified）：不刷新列表的话"设为默认"按钮与
+      // 「未测试」徽标会停留在旧状态，看起来像测了没用。
+      list.reload()
     } catch (err) {
       setProbe({ state: 'idle' })
       fail(err, '测试连接失败')
@@ -480,10 +543,10 @@ export function ModelManager({ session }: { session: Session }) {
                 <strong>测试连通</strong>：失败会当场显示可读原因，不会先报"已保存"。
               </li>
               <li>
-                <strong>保存并设为默认</strong>：勾选"设为默认模型"再保存。
+                <strong>保存配置</strong>：保存后点行尾的「测试连接」，结果会记到该模型上。
               </li>
               <li>
-                <strong>下一条消息立即生效</strong>，无需重启。
+                <strong>设为默认</strong>：测试通过后才能设为默认；下一条消息立即优先使用它，失败会按顺序回落。
               </li>
             </ol>
           </div>
@@ -553,10 +616,23 @@ export function ModelManager({ session }: { session: Session }) {
                   {providers.map((provider) => (
                     <option key={provider} value={provider}>
                       {providerLabel(provider)}
+                      {isCloudProvider(provider)
+                        ? ` · 你的对话会发给${cloudVendor(provider)}`
+                        : ''}
                     </option>
                   ))}
                 </select>
               </div>
+              {cloudName && (
+                <p className="os-note" role="note">
+                  你选择的是<strong>云端模型</strong>：你发送的对话（问题与上下文）
+                  会发给
+                  <strong>{cloudHost || cloudName}</strong>
+                  {cloudHost
+                    ? '（你自己填写的端点地址）。'
+                    : ' 的服务器，不是本机。'}
+                </p>
+              )}
             </div>
 
             <div className="os-field">
@@ -590,13 +666,15 @@ export function ModelManager({ session }: { session: Session }) {
                 </span>
               </div>
               {modelList?.ok && (
-                <div className="os-model-form-foot" role="list" aria-label="可用模型">
+                // 这些是"点一下填入"的按钮，不是列表项：用 role="group" 包住，
+                // 保留每个 button 的按钮语义（若改成列表项角色，读屏只念"列表项"，
+                // 不再提示可点击，键盘用户不知道能按）。
+                <div className="os-model-form-foot" role="group" aria-label="可用模型">
                   {modelList.models.map((modelName) => (
                     <button
                       key={modelName}
                       className="os-btn os-btn-ghost"
                       type="button"
-                      role="listitem"
                       onClick={() => update('model', modelName)}
                     >
                       {modelName}
@@ -673,11 +751,17 @@ export function ModelManager({ session }: { session: Session }) {
                 <input
                   id="model-form-default"
                   type="checkbox"
+                  disabled={!canMarkDefault || busy}
                   checked={form.isDefault}
                   onChange={(event) => update('isDefault', event.target.checked)}
                 />
                 设为默认模型
               </label>
+              <p className="os-note" role="note">
+                {canMarkDefault
+                  ? '聊天会优先使用这个模型；它失败时按顺序尝试其他已启用的模型。'
+                  : '只有「测试连接」通过的模型才能设为默认：新模型请先保存，点「测试连接」通过后再回来勾选。'}
+              </p>
             </div>
 
             <div className="os-model-form-foot">
@@ -787,6 +871,11 @@ export function ModelManager({ session }: { session: Session }) {
                             默认
                           </span>
                         )}
+                        {!item.verified && (
+                          <span className="os-badge" data-tone="muted" title="保存后点「测试连接」通过，才能设为默认">
+                            未测试
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td data-label="密钥">
@@ -816,7 +905,8 @@ export function ModelManager({ session }: { session: Session }) {
                           <button
                             className="os-btn os-btn-ghost"
                             type="button"
-                            disabled={busy || item.is_default || !item.enabled}
+                            disabled={busy || item.is_default || !item.enabled || !canBecomeDefault(item)}
+                            title={canBecomeDefault(item) ? undefined : '先点「测试连接」通过，才能设为默认'}
                             aria-label={`把模型「${item.name}」设为默认`}
                             onClick={() => void setDefault(item)}
                           >

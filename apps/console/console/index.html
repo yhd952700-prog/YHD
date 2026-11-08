@@ -2,8 +2,13 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <!-- viewport-fit=cover：手机端需要 env(safe-area-inset-*) 才能避开刘海与手势条 -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover：手机端需要 env(safe-area-inset-*) 才能避开刘海与手势条。
+         interactive-widget=resizes-content：软键盘弹起时收缩布局视口（而不是把
+         输入框压在键盘下方），底栏随之抬到键盘上方。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
 
     <title>LiuHao AI OS · 鎏灏智能中枢</title>
     <meta

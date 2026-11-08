@@ -20,8 +20,16 @@ import {
   useAccountData,
 } from '../lib/accounts'
 import type { AccountNode } from '../lib/accounts'
+import { numberText } from '../lib/format'
 import { Card, Empty, Guard } from '../components/ui'
 import { StubBadge } from '../components/AccountChrome'
+
+/** 成本统一按"元"展示；极小金额保留 6 位，避免显示成 ¥0.00 被误读为免费。 */
+function formatCost(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '未计入成本'
+  if (value === 0) return '¥0.00'
+  return value < 0.01 ? `¥${numberText(value, 6)}` : `¥${numberText(value, 2)}`
+}
 
 export function MyKeys({
   profile,
@@ -95,7 +103,12 @@ export function MyKeys({
         action={<StubBadge source={usingStub} />}
       >
         {notice && (
-          <div className={notice.tone === 'ok' ? 'os-note' : 'os-alert'} role="status">
+          <div
+            className={notice.tone === 'ok' ? 'os-note' : 'os-alert'}
+            // 成功只是状态更新，失败必须打断式播报；此前一律 role="status"，
+            // 读屏在错误发生时不会主动读出（polite 可能被后续内容盖掉）。
+            role={notice.tone === 'ok' ? 'status' : 'alert'}
+          >
             {notice.text}
           </div>
         )}
@@ -190,7 +203,7 @@ export function MyKeys({
 
       <Card
         title={`用量 · ${selected}`}
-        sub="调用次数与 token 消耗（真实计数，按 Key 归属拆开）"
+        sub="调用次数与用量（真实计数，按 Key 归属拆开）"
         span={12}
         action={<StubBadge source={usage.source} />}
       >
@@ -209,17 +222,36 @@ export function MyKeys({
                 <span className="os-kv-value">{data.calls}</span>
               </div>
               <div className="os-kv-row">
-                <span className="os-kv-key">Token（输入 / 输出）</span>
+                <span className="os-kv-key">用量（输入 / 输出）</span>
                 <span className="os-kv-value">
                   {data.tokens_in} / {data.tokens_out} · 合计 {data.total_tokens}
                 </span>
               </div>
+              <div className="os-kv-row">
+                <span className="os-kv-key">成本（估算）</span>
+                <span className="os-kv-value">
+                  {data.cost_complete
+                    ? formatCost(data.cost)
+                    : data.cost
+                      ? `已计入 ${formatCost(data.cost)}，其余未计入`
+                      : '未计入成本'}
+                </span>
+              </div>
+              {!data.cost_complete && (
+                <p className="os-hint" role="status">
+                  {data.cost_message || '该模型暂无价格数据，未计入成本'}
+                  {data.unknown_models && data.unknown_models.length > 0
+                    ? `（${data.unknown_models.join('、')}）`
+                    : ''}
+                </p>
+              )}
+              {data.budget_note && <p className="os-hint">{data.budget_note}</p>}
               {caps.canAllKeys &&
                 data.by_key_owner.map((entry) => (
                   <div className="os-kv-row" key={entry.key_owner}>
                     <span className="os-kv-key">Key 归属 · {entry.key_owner}</span>
                     <span className="os-kv-value">
-                      {entry.calls} 次 · {entry.total_tokens} tokens
+                      {entry.calls} 次 · 用量 {entry.total_tokens}
                     </span>
                   </div>
                 ))}
@@ -233,7 +265,7 @@ export function MyKeys({
                     <div className="os-kv-row" key={entry.actor}>
                       <span className="os-kv-key">调用者 · {entry.actor}</span>
                       <span className="os-kv-value">
-                        {entry.calls} 次 · {entry.total_tokens} tokens
+                        {entry.calls} 次 · 用量 {entry.total_tokens}
                       </span>
                     </div>
                   ))}

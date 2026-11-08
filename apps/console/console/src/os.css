@@ -1,5 +1,5 @@
 /* ==========================================================================
-   鎏灏 AI OS —— 驾驶舱设计系统（桌面端 / 网页版 / 手机端）
+   LiuHao AI OS · 鎏灏智能中枢 —— 驾驶舱设计系统（桌面端 / 网页版 / 手机端）
    ==========================================================================
 
    约定
@@ -37,6 +37,10 @@
   --os-accent-2: #9b6bff;
   --os-ok: #2ee6a8;
   --os-warn: #ffb74d;
+  /* 状态色**文字**专用墨色：深色主题下与状态色同值（本就 ≥10:1），
+     浅色主题下换成更深的墨色，避免 3.2:1 的对比不足。 */
+  --os-ok-ink: #2ee6a8;
+  --os-warn-ink: #ffb74d;
   --os-danger: #ff5d6c;
   --os-danger-ink: #ff5d6c;   /* 危险色文字放在 10% 危险色底上的墨色，需 ≥4.5:1 */
   --os-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
@@ -48,6 +52,8 @@
   --sc-bg-deep: #03060e;
   --sc-hairline: rgba(120, 190, 255, 0.14);
   --sc-cyan: #35e0ff;
+  /* 青色**文字**专用：深底上 #35e0ff 已远超 AA，与状态环同值。 */
+  --sc-cyan-ink: #35e0ff;
   --sc-gold: #ffc93c;
   --sc-accent-ink: #06121f;
   --sc-font-ui: system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
@@ -107,6 +113,9 @@
   --sc-bg-deep: #e9effa;
   --sc-hairline: rgba(47, 111, 228, 0.1);
   --sc-cyan: #0096b8;
+  /* 浅底文字墨色：实测 #0096b8 在白底只有 3.4:1，不达 AA；
+     #00708a 对 --os-panel-2 (5.3:1) / 白底 (5.7:1) 均达标。图形/边框仍用 --sc-cyan。 */
+  --sc-cyan-ink: #00708a;
   --sc-gold: #a8730a;
   --sc-accent-ink: #ffffff;
   /* 浅底文字专用墨色（实底填充色不变）。 */
@@ -165,6 +174,44 @@ select {
   background: var(--os-bg);
   background-image: var(--os-bg-grad);
   background-attachment: fixed;
+}
+
+/* 跳过导航：默认移出视口，任一链接获得焦点时整组滑入。
+   第一次 Tab 即可到达，不必先走完侧栏全部导航项。 */
+.os-skip-links {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  z-index: 80;
+  display: flex;
+  gap: 8px;
+  transform: translateY(-200%);
+}
+
+.os-skip-links:focus-within {
+  transform: none;
+}
+
+.os-skip-link {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--os-accent);
+  color: var(--os-on-accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--os-shadow);
+}
+
+.os-skip-link:focus-visible {
+  outline: 2px solid var(--os-focus);
+  outline-offset: 2px;
+}
+
+/* 跳到主内容后焦点落在 main 上，给出可见落点。 */
+main#os-main:focus-visible {
+  outline: 2px solid var(--os-focus);
+  outline-offset: -2px;
 }
 
 /* 深色大画布铺一层 32px 静态网格 + 地平线光（规范 4.1）。
@@ -266,7 +313,7 @@ select {
 }
 
 .os-brand-sub {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
   letter-spacing: 0.4px;
 }
@@ -280,7 +327,7 @@ select {
 
 .os-nav-label {
   padding: 14px 10px 6px;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 1.1px;
   text-transform: uppercase;
   color: var(--os-text-faint);
@@ -332,7 +379,7 @@ select {
 }
 
 .os-nav-badge {
-  font-size: 10.5px;
+  font-size: 12px;
   padding: 1px 7px;
   border-radius: 999px;
   background: var(--os-accent);
@@ -384,7 +431,7 @@ select {
 }
 
 .os-user-role {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -462,7 +509,7 @@ select {
 }
 
 .os-search-kbd {
-  font-size: 10.5px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 5px;
   border: 1px solid var(--os-border);
@@ -568,7 +615,7 @@ select {
 
 .os-card-sub {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -581,8 +628,17 @@ select {
   border: 0;
   background: transparent;
   color: var(--os-accent-text);
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 2px 0;
+}
+
+/* 目标名称是表格里的链接按钮：整行仍可点，但键盘用户靠它打开详情。
+   max-width + 左对齐避免长目标名把表格撑出横向滚动。 */
+.os-goal-open {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
 }
 
 .os-link:hover {
@@ -670,7 +726,7 @@ select {
 }
 
 .os-kpi-label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-dim);
 }
 
@@ -688,7 +744,7 @@ select {
 
 .os-kpi-foot {
   margin-top: 5px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -696,7 +752,7 @@ select {
   font-weight: 600;
 }
 
-.os-delta[data-tone='up'] { color: var(--os-ok); }
+.os-delta[data-tone='up'] { color: var(--os-ok-ink); }
 .os-delta[data-tone='down'] { color: var(--os-danger); }
 .os-delta[data-tone='flat'] { color: var(--os-text-faint); }
 
@@ -737,7 +793,7 @@ select {
 }
 
 .os-row-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -745,7 +801,7 @@ select {
 }
 
 .os-row-tail {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-dim);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -779,7 +835,7 @@ select {
   gap: 5px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 560;
   border: 1px solid var(--os-border);
   background: var(--os-panel-2);
@@ -882,7 +938,7 @@ select {
   margin: 0;
   color: var(--os-text-dim);
   font-family: var(--os-font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -916,7 +972,7 @@ select {
 
 .os-chart-axis {
   fill: var(--os-text-dim);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .os-legend {
@@ -1021,7 +1077,8 @@ select {
   z-index: 30;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: 1fr;
+  /* minmax(0, 1fr)：六项共用一行时允许等比压缩，避免某一项被长标签撑宽。 */
+  grid-auto-columns: minmax(0, 1fr);
   min-height: 56px;
   padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
   background: color-mix(in srgb, var(--os-panel) 92%, transparent);
@@ -1037,13 +1094,25 @@ select {
   gap: 3px;
   /* 触摸目标 ≥44px（规范 7.2）：视觉尺寸不变，靠 min-height 撑开热区。 */
   min-height: 48px;
+  min-width: 0;
   padding: 6px 2px;
   border: 0;
   border-radius: 10px;
   background: transparent;
   color: var(--os-text-faint);
-  font-size: 10.5px;
+  font-size: 12px;
   white-space: nowrap;
+}
+
+/* 六项底栏在窄屏（360px 档）收紧字号与内边距：一列只剩约 58px，
+   12px 的「我的员工」会顶到边界。11px + 1px 内边距保证不换行、不横向溢出，
+   640×360 与桌面端不受影响。 */
+@media (max-width: 420px) {
+  .os-bottom-item {
+    gap: 2px;
+    padding: 6px 1px;
+    font-size: 11px;
+  }
 }
 
 .os-bottom-item[aria-current='page'] {
@@ -1053,11 +1122,11 @@ select {
 
 /* 管家（对话）是底栏唯一的主入口：图标更大，标签后带一个 3px 主色点。
    其余四项保持同等宽度，避免"重点项"把五项挤成两行。 */
-.os-bottom-item[data-key='workbench'] {
+.os-bottom-item[data-key='butler'] {
   color: var(--os-text-dim);
 }
 
-.os-bottom-item[data-key='workbench'] span::after {
+.os-bottom-item[data-key='butler'] span::after {
   content: '';
   display: inline-block;
   width: 3px;
@@ -1145,7 +1214,7 @@ select {
 
 .os-login-aside-en {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 620;
   letter-spacing: 1.1px;
   text-transform: uppercase;
@@ -1174,11 +1243,11 @@ select {
 }
 
 .os-login-status-row > span[data-tone='ok'] {
-  color: var(--os-ok);
+  color: var(--os-ok-ink);
 }
 
 .os-login-status-row > span[data-tone='warn'] {
-  color: var(--os-warn);
+  color: var(--os-warn-ink);
 }
 
 .os-login-status-row > span[data-tone='muted'] {
@@ -1189,7 +1258,7 @@ select {
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
-  color: var(--os-warn);
+  color: var(--os-warn-ink);
 }
 
 /* 地平线光：唯一装饰，静态，不参与动画。 */
@@ -1251,7 +1320,7 @@ select {
 }
 
 .os-field label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-dim);
 }
 
@@ -1358,6 +1427,23 @@ select {
   flex-wrap: wrap;
   gap: 6px 16px;
   margin-top: 10px;
+}
+
+/* 首屏可达性（前端线）：矮窗口只做「装饰让位 + 纵向留白收紧」，不缩小字号。
+   1280×720 / 1366×768 及其 125% / 150% 缩放后的等效视口（1024×576、853×480
+   等）都必须不滚动就能看到并点到「登录 / 创建账户」入口与主操作按钮。
+   客户端清单是装饰，账号统计是附加信息，空间不够时先让位给表单本身。 */
+@media (max-height: 620px) {
+  /* 提高一级特异性：基础样式在本节之后才声明 `display: grid`。 */
+  .os-login .os-login-clients {
+    display: none;
+  }
+}
+
+@media (max-height: 520px) {
+  .os-login .os-login-foot {
+    display: none;
+  }
 }
 
 .os-btn {
@@ -1481,7 +1567,7 @@ select {
   gap: 9px;
   padding: 10px 12px;
   border-radius: 10px;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   border: 1px solid var(--os-border);
   background: var(--os-panel-2);
@@ -1492,7 +1578,7 @@ select {
   margin-top: 18px;
   padding-top: 16px;
   border-top: 1px solid var(--os-border-soft);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
   line-height: 1.6;
 }
@@ -1513,7 +1599,7 @@ select {
   border-radius: 10px;
   border: 1px solid var(--os-border-soft);
   background: var(--os-panel-2);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--os-text-dim);
   text-align: center;
 }
@@ -1614,6 +1700,75 @@ select {
   }
 }
 
+/* 极矮视口（≤ 620px 高：125% / 150% / 200% 缩放，或带浏览器工具栏的 720p 窗口）：
+   卡片内部滚动、主操作按钮吸底。任何缩放下「登录 / 创建账户」都不会被挤出视口外，
+   也不再把焦点目标推出屏幕。1280×720 及以上不触发，首屏保持无滚动。 */
+@media (max-height: 620px) {
+  .os-login-card {
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* 品牌区压缩成单行：保留页面级 h1（读屏仍能读到标题），去掉图标与副标题。 */
+  .os-login-brand {
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .os-login-mark,
+  .os-login-brand .os-login-sub {
+    display: none;
+  }
+
+  .os-login-title {
+    font-size: 16px;
+    letter-spacing: 0.5px;
+  }
+
+  /* 主操作吸底：无论缩放多少都不会被挤出视口。
+     同色实心带把滚到按钮背后的文字遮住，避免叠字。 */
+  .os-login-card form > button[type='submit'] {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    box-shadow: 0 -14px 0 0 var(--os-panel), 0 -22px 16px 0 var(--os-panel);
+  }
+
+  /* 禁用态默认是半透明，吸底时会透出下层文字 —— 这里换成不透明的弱化配色。 */
+  .os-login-card form > button[type='submit']:disabled {
+    opacity: 1;
+    background: var(--os-panel-hover);
+    border-color: var(--os-border);
+    color: var(--os-text-dim);
+  }
+}
+
+@media (max-height: 480px) {
+  .os-login {
+    padding: 8px;
+  }
+
+  .os-login-card {
+    padding: 12px 16px;
+  }
+
+  /* 给吸底按钮预留高度，滚到底时最后一个字段不会被永久压住。 */
+  .os-login-card form {
+    padding-bottom: 52px;
+  }
+
+  .os-field {
+    margin-bottom: 6px;
+  }
+
+  .os-check {
+    margin-bottom: 8px;
+  }
+}
+
 /* ==========================================================================
    设置页
    ========================================================================== */
@@ -1644,13 +1799,17 @@ select {
 }
 
 .os-choice-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12.5px;
   font-weight: 600;
 }
 
 .os-choice-desc {
+  display: block;
   margin-top: 3px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -1749,7 +1908,7 @@ select {
 }
 
 .os-model-table th {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 560;
   color: var(--os-text-faint);
   white-space: nowrap;
@@ -1801,7 +1960,7 @@ select {
 }
 
 .os-model-probe-detail {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
   overflow-wrap: anywhere;
 }
@@ -1834,7 +1993,7 @@ select {
 [data-mode='mobile'] .os-model-table td::before {
   content: attr(data-label);
   color: var(--os-text-faint);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* ==========================================================================
@@ -1894,7 +2053,7 @@ select {
 
 .os-hint {
   margin: 8px 0 0;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--os-text-faint);
   /* 文档 id / 文件名可能很长且无空格，窄屏必须允许断行。 */
@@ -1924,7 +2083,7 @@ select {
 .os-table th {
   padding: 7px 10px;
   text-align: left;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 560;
   letter-spacing: 0.5px;
   text-transform: uppercase;
@@ -1989,7 +2148,7 @@ select {
 }
 
 .os-kb-drop span {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -2003,12 +2162,12 @@ select {
   border-radius: 10px;
   background: var(--os-panel-2);
   border: 1px solid var(--os-border-soft);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
 .os-kb-stage span[data-on='true'] {
-  color: var(--sc-cyan);
+  color: var(--sc-cyan-ink);
   font-weight: 600;
 }
 
@@ -2056,7 +2215,7 @@ select {
   display: block;
   margin-top: 2px;
   font-family: var(--sc-font-mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
   overflow-wrap: anywhere;
 }
@@ -2064,7 +2223,7 @@ select {
 .os-kb-error {
   display: block;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-danger-ink);
   overflow-wrap: anywhere;
 }
@@ -2091,7 +2250,7 @@ select {
 
 .os-kb-score {
   font-family: var(--sc-font-mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -2152,7 +2311,7 @@ select {
 
 [data-mode='mobile'] .os-kb-docs-table td::before {
   content: attr(data-label);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -2207,7 +2366,7 @@ select {
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 12px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--os-text-faint);
 }
 
@@ -2440,7 +2599,7 @@ select {
 }
 
 .os-butler-task-time {
-  font-size: 11.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--os-text-faint);
 }
@@ -2690,7 +2849,7 @@ select {
 }
 
 .sc-status[data-state='waiting'] {
-  color: var(--os-warn);
+  color: var(--os-warn-ink);
 }
 
 .sc-status[data-state='failed'] {
@@ -2939,7 +3098,7 @@ select {
 .os-emp-create {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
 }
 
 @media (max-width: 1180px) {
@@ -2948,5 +3107,297 @@ select {
   }
 }
 
+/* ==========================================================================
+   手机端触控与窄屏修正（360px 复查）
+   ==========================================================================
+   目标：窄屏下可点元素 ≥44×44，表单/会话栏不再把字段压成竖排窄柱。
+   全部限定在 [data-mode='mobile']，桌面布局保持原样。 */
+
+[data-mode='mobile'] .os-page-head {
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* 副标题独占一行：否则 360px 下与标题抢横向空间，右侧被挤到贴边。 */
+[data-mode='mobile'] .os-page-sub {
+  flex-basis: 100%;
+}
+
+[data-mode='mobile'] .os-search {
+  min-height: 44px;
+}
+
+[data-mode='mobile'] .os-icon-btn {
+  width: 44px;
+  height: 44px;
+}
+
+[data-mode='mobile'] .os-link {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px 0;
+  text-align: left;
+}
+
+[data-mode='mobile'] .os-btn {
+  min-height: 44px;
+}
+
+[data-mode='mobile'] .os-input {
+  min-height: 52px;
+  padding: 4px 12px;
+  /* iOS Safari 在 <input> 字号小于 16px 时会自动放大整页并卡住不动。
+     输入框本身也带 .os-input 类（不是只套在外层），这里一并定成 16px。 */
+  font-size: 16px;
+}
+
+[data-mode='mobile'] .os-input input,
+[data-mode='mobile'] .os-input select,
+[data-mode='mobile'] .os-input textarea {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+[data-mode='mobile'] .os-input button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px;
+}
+
+/* 原生下拉默认铺一层浅灰 ButtonFace，和深色输入框拼接成"补丁"；改为透明。 */
+[data-mode='mobile'] .os-input select {
+  background: transparent;
+  color: inherit;
+}
+
+[data-mode='mobile'] .os-check,
+[data-mode='mobile'] .os-login-tabs button {
+  min-height: 44px;
+}
+
+[data-mode='mobile'] .profile-input,
+[data-mode='mobile'] .profile-select,
+[data-mode='mobile'] .profile-btn {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+/* 首次初始化 / 账号面用的是 .os-input-plain（不带外层 .os-input 壳）：
+   窄屏下同样要 44px 与 16px，否则又退回 39px、iOS 聚焦时还会放大整页。 */
+[data-mode='mobile'] .os-input-plain {
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 16px;
+}
+
+/* 中文在 flex 行里的最小宽度只有 1 个字，窄屏会被压成竖排窄柱；
+   改为纵向排列，让每句自然占满整行。 */
+[data-mode='mobile'] .os-attention {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+[data-mode='mobile'] .os-attention-item {
+  display: block;
+  width: 100%;
+}
+
+/* 标签与正文原本紧挨着（"模型可以最后再配先跳过…"），补一个词间距。 */
+[data-mode='mobile'] .os-attention-item strong {
+  margin-right: 6px;
+}
+
+/* 创建员工 / 模型表单原本是 3 列；手机上改单列，避免字段被压到 4px。 */
+[data-mode='mobile'] .os-operator-form {
+  display: flex;
+  flex-direction: column;
+  /* 网格时代的 align-items:end 在纵向 flex 里会变成"整列右对齐"。 */
+  align-items: stretch;
+}
+
+[data-mode='mobile'] .os-operator-form > .os-btn {
+  align-self: flex-start;
+}
+
+[data-mode='mobile'] .os-emp-create {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 会话栏：原来 nowrap 会把"新会话 / 删除 / 身份"挤出卡片。 */
+[data-mode='mobile'] .jarvis-sessions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+[data-mode='mobile'] .jarvis-sessions .sess-select {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+[data-mode='mobile'] .sess-btn {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+[data-mode='mobile'] .sess-user {
+  flex: 1 1 100%;
+}
+
+[data-mode='mobile'] .sess-user-input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+/* 装饰全息头像要占掉半屏，手机上隐藏，把首屏留给对话与输入框。 */
+[data-mode='mobile'] .jarvis-left {
+  display: none;
+}
+
+[data-mode='mobile'] .jarvis-panel {
+  padding: 14px;
+}
+
+[data-mode='mobile'] .jarvis-input-wrap textarea {
+  min-height: 60px;
+  font-size: 16px;
+}
+
+[data-mode='mobile'] .jarvis-send {
+  min-width: 64px;
+  min-height: 44px;
+  font-size: 14px;
+}
+
+[data-mode='mobile'] .jarvis-chips .chip {
+  min-height: 44px;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+[data-mode='mobile'] .chat-model-action {
+  min-height: 44px;
+}
 
 
+
+
+
+/* ==========================================================================
+   Windows 高对比度（forced-colors）
+   ==========================================================================
+   系统开启高对比度后，浏览器会清掉渐变、半透明底色、box-shadow 与自绘
+   状态色，只保留系统色。不显式适配时会出现：
+     - 主按钮只剩浅色文字、看不出是可点的按钮；
+     - 侧栏/底栏"当前页"只有一层半透明底色，整块指示消失；
+     - 状态点、彩色徽章、靠阴影撑起的卡片边界全部消失。
+   这里一律改用系统色（Canvas / CanvasText / ButtonFace / ButtonText /
+   Highlight / HighlightText / LinkText / GrayText）重建边界与状态。 */
+@media (forced-colors: active) {
+  .os-btn,
+  .os-btn-ghost,
+  .os-btn-primary,
+  .os-icon-btn,
+  .os-select,
+  .os-login-tabs button,
+  .os-login-clients button,
+  .os-logout,
+  .os-attention-clear {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .os-btn-ghost {
+    background: Canvas;
+  }
+
+  .os-btn:disabled {
+    border: 1px dashed GrayText;
+    color: GrayText;
+    /* 原有 0.55 透明度会把「不能用」变成「看不见」，强制色下不再降透明。 */
+    opacity: 1;
+  }
+
+  /* 文字按钮不能退化成一串普通文字。 */
+  .os-link {
+    color: LinkText;
+    text-decoration: underline;
+  }
+
+  /* 当前页 / 当前页签：半透明底与 inset 高光都会消失，改用系统高亮描边。
+     不用 Highlight 实底 + HighlightText 白字：该组合在 Edge 强制色下会把
+     中文渲染成白块（实测），用「Canvas 底 + 2px Highlight 边框 + 加粗」更稳。 */
+  .os-nav-item[aria-current='page'],
+  .os-bottom-item[aria-current='page'],
+  .os-login-tabs button[data-active='true'] {
+    background: Canvas;
+    color: CanvasText;
+    border: 2px solid Highlight;
+    font-weight: 700;
+  }
+
+  .os-nav-item[aria-current='page'] .os-nav-icon,
+  .os-bottom-item[aria-current='page'] .os-bottom-icon {
+    color: CanvasText;
+  }
+
+  .os-nav-badge {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  /* 状态点：inline 的彩色底会被强制清掉，这里改成空心圆环。 */
+  .os-dot {
+    background: Canvas !important;
+    border: 1px solid CanvasText;
+  }
+
+  .os-badge,
+  .os-badge[data-tone] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  /* 靠阴影/渐变撑起来的容器统一补系统色边框。 */
+  .os-card,
+  .os-user,
+  .os-search,
+  .os-input,
+  .os-alert,
+  .os-note,
+  .os-login-card,
+  .os-login-tabs,
+  .os-butler-progress {
+    border: 1px solid CanvasText;
+  }
+
+  .os-login-status {
+    border: 1px solid CanvasText;
+    /* 该框平时没有横向内边距（本来无边框）；补上边框后数值会贴住边框。 */
+    padding-inline: 12px;
+  }
+
+  .os-skip-link {
+    border: 2px solid Highlight;
+    background: Canvas;
+    color: CanvasText;
+    text-decoration: underline;
+  }
+
+  /* 焦点环：作者色在强制色下不可控，统一用系统高亮色。 */
+  :where(a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])):focus-visible,
+  .os-input:focus-within,
+  .os-search:focus-within {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}

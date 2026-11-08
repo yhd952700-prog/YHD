@@ -6,7 +6,7 @@
  * 快捷键提示选择文案 —— 一旦在 JS 里做布局判断，三端就会开始各自漂移。
  */
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DeviceMode, Theme } from '../lib/mode'
 import type { Session } from '../lib/auth'
@@ -31,6 +31,8 @@ export interface ShellProps {
   profile: AccountProfile
   caps: AccountCaps
   active: string
+  /** 当前页的人类可读名称：用于切页时给读屏播报，而不是只换 DOM。 */
+  pageTitle?: string
   onNavigate: (key: string) => void
   onToggleTheme: () => void
   onLogout: () => void
@@ -47,6 +49,7 @@ export function Shell({
   profile,
   caps,
   active,
+  pageTitle,
   onNavigate,
   onToggleTheme,
   onLogout,
@@ -60,9 +63,51 @@ export function Shell({
   const navigation = navFor(caps)
   const mobileKeys = mobileNavKeysFor(caps)
   const roleLabel = identityBarRole(profile)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  // 页内切换没有真实导航，读屏用户不会自动知道内容换了。这里用礼貌播报
+  // 说明"已进入哪一页"，同时保留焦点在原导航项上（不抢焦点）。
+  const [routeAnnouncement, setRouteAnnouncement] = useState('')
+  useEffect(() => {
+    if (!pageTitle) return
+    setRouteAnnouncement(`已进入「${pageTitle}」`)
+  }, [pageTitle])
+
+  // 顶栏标注了 "/" 快捷键，就必须真的能用；在输入框/下拉内不劫持，保持正常输入。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.defaultPrevented) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return
+      }
+      event.preventDefault()
+      searchRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   return (
-    <div className="os-app">
+    <>
+      {/* 跳过导航：第一次 Tab 就能直达主内容或顶部搜索，不必先走完侧栏 29 项。 */}
+      <div className="os-skip-links">
+        <a className="os-skip-link" href="#os-main">
+          跳到主内容
+        </a>
+        <a className="os-skip-link" href="#os-search">
+          跳到搜索
+        </a>
+      </div>
+
+      {/* 切换页面时播报落点；空元素常驻，文字变化才会触发读屏。 */}
+      <p className="os-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {routeAnnouncement}
+      </p>
+
+      <div className="os-app">
       <aside className="os-sidebar" aria-label="主导航">
         <div className="os-brand">
           <div className="os-brand-mark">
@@ -136,8 +181,11 @@ export function Shell({
             <IconSearch size={16} />
             <span className="os-visually-hidden">搜索当前页面</span>
             <input
+              id="os-search"
+              ref={searchRef}
               type="search"
               placeholder="搜索任务 / 员工 / 数据…"
+              aria-keyshortcuts="/"
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
             />
@@ -158,7 +206,9 @@ export function Shell({
           </div>
         </header>
 
-        <main className="os-content">{children}</main>
+        <main className="os-content" id="os-main" tabIndex={-1}>
+          {children}
+        </main>
       </div>
 
       <nav className="os-bottom-nav" aria-label="底部导航">
@@ -166,13 +216,16 @@ export function Shell({
           const item = ALL_NAV.find((candidate) => candidate.key === key)
           if (!item) return null
           const Icon = item.icon
-          // 底栏用短标签："我的"替代设置入口，"管家"替代"工作台"（对话入口）。
+          // 底栏用短标签："我的"替代设置入口，"管家"就是鎏灏管家（butler），
+          // "目标"是「目标与任务」——六项在 360px 下只有约 58px 一列。
           const label =
             item.key === 'settings' || item.key === 'my-keys'
               ? '我的'
-              : item.key === 'workbench'
+              : item.key === 'butler'
                 ? '管家'
-                : item.label.replace('我AI', '')
+                : item.key === 'goals'
+                  ? '目标'
+                  : item.label.replace('我AI', '')
           return (
             <button
               key={item.key}
@@ -181,13 +234,14 @@ export function Shell({
               aria-current={active === item.key ? 'page' : undefined}
               onClick={() => onNavigate(item.key)}
             >
-              <Icon size={item.key === 'workbench' ? 22 : 19} />
+              <Icon size={item.key === 'butler' ? 22 : 19} />
               <span>{label}</span>
             </button>
           )
         })}
       </nav>
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -238,16 +292,45 @@ function Clock() {
 
 function Notifications({ items }: { items: OsNotification[] }) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const urgent = items.filter((item) => item.tone === 'danger' || item.tone === 'warn').length
+
+  /** 关闭并把焦点还给触发按钮：键盘用户不会掉到 body。 */
+  const close = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  // 打开后焦点进入弹层；Esc 关闭并归还焦点。弹层本身可聚焦，
+  // 这样"暂无通知"（内部没有可聚焦项）时焦点也有落点。
+  useEffect(() => {
+    if (!open) return
+    const panel = panelRef.current
+    const firstFocusable = panel?.querySelector<HTMLElement>(
+      'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    )
+    ;(firstFocusable ?? panel)?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      close()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, close])
 
   return (
     <div style={{ position: 'relative' }}>
       <button
+        ref={triggerRef}
         className="os-icon-btn"
-        onClick={() => setOpen((value) => !value)}
-        title="系统通知"
-        aria-label={`系统通知，${items.length} 条`}
+        onClick={() => (open ? close() : setOpen(true))}
+        title="通知"
+        aria-label={`通知，${items.length} 条`}
         aria-expanded={open}
+        aria-controls="os-notifications-panel"
+        aria-haspopup="dialog"
       >
         <IconBell size={16} />
         {urgent > 0 && <span className="os-icon-btn-dot" />}
@@ -255,6 +338,11 @@ function Notifications({ items }: { items: OsNotification[] }) {
 
       {open && (
         <div
+          ref={panelRef}
+          id="os-notifications-panel"
+          role="dialog"
+          aria-label="通知"
+          tabIndex={-1}
           className="os-card"
           style={{
             position: 'absolute',
@@ -267,7 +355,7 @@ function Notifications({ items }: { items: OsNotification[] }) {
           }}
         >
           <div className="os-card-head">
-            <h3 className="os-card-title">系统通知</h3>
+            <h3 className="os-card-title">通知</h3>
             <span className="os-badge" data-tone="muted">
               {items.length}
             </span>
