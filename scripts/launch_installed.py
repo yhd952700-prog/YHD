@@ -983,7 +983,10 @@ def _run(data_dir: Path, logging_config: Path, args: list[str]) -> int:
         elif gui.needs_setup():
             # 首启未完成前不暴露任何控制台地址：先删旧地址文件，再开窗口。
             gui.clear_current_url(data_dir)
-            print("首次运行：正在打开图形化设置向导（设置账号 → 选择模型 → 完成）…")
+            print(
+                "首次运行：正在打开图形化设置向导"
+                "（数据目录 → 管理员账号 → 选择模型 → 完成前请确认 → 自检结果，共五页）…"
+            )
             code = gui.run_wizard(port=_arg_api_port(forwarded))
             if code != 0:
                 print(

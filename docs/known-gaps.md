@@ -584,3 +584,19 @@ F-3 需要一块可写满的独立卷；F-4 需要在有桌面会话的机器上
 不单独开批。验收标准：构造一次 `ENOSPC`，503 body 含 `code` / `message` /
 `correlation_id` / `retry_after` 四字段，且 `correlation_id` 能在日志中检索到同值。
 
+---
+
+## 安装版不生成 `config\current_url.txt`（2026-11-08，**状态：已知未修；产品侧待定**）
+
+`config\current_url.txt` **只有源码启动器 `scripts/start_liuhao.py` 会写**；
+安装版链路（`src/desktop`）不写这个文件。此前多份面向安装用户的文档让用户去找它，
+照做会找不到。
+
+**已做的处置（2026-11-08）。** 文档改为以**状态窗口底部「控制台：」一行**为准：
+[DELIVERY-CHECKLIST.md](DELIVERY-CHECKLIST.md) §1 与 `packaging/stage_payload.py`
+生成的 `START-HERE.txt` 均已改；本轮**不改 `src/desktop`**。
+
+**什么算关掉它。** 二选一：① 产品侧决定补写入 —— 安装版启动后把实际控制台地址写进
+数据目录 `config\current_url.txt` 并在「进入控制台」时刷新；或 ② 明确废弃该文件，
+所有安装面文档不再引用。在此之前，安装用户一律以状态窗口底部的「控制台：」为准。
+
