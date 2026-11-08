@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -112,6 +113,47 @@ PROVIDER_LABELS: Dict[str, str] = {
 # 注册表解析结果缓存：(mtime, payload)。文件小但每轮轮询都读没必要。
 _cache: Optional[Tuple[float, Dict[str, Any]]] = None
 
+#: ``EmployeeStore`` 类型对象在首次使用时解析并缓存。
+#: 首次 ``from .employee_store import EmployeeStore`` 会连带导入 provider /
+#: observability 等依赖；放在请求路径里就是首屏那 5–12 秒。这里改为
+#: 「模块级懒加载 + 启动后台预热」：结果缓存、失败也缓存，绝不每请求重试。
+_employee_store_class: Any = None
+_employee_store_failed = False
+_employee_store_lock = threading.Lock()
+
+
+def _employee_store() -> Any:
+    """返回 ``EmployeeStore`` 类；首次调用时导入并缓存，失败后不再重试。"""
+    global _employee_store_class, _employee_store_failed
+    if _employee_store_class is not None:
+        return _employee_store_class
+    with _employee_store_lock:
+        if _employee_store_class is not None:
+            return _employee_store_class
+        if _employee_store_failed:
+            raise ImportError("employee_store unavailable")
+        try:
+            from .employee_store import EmployeeStore
+        except Exception:
+            _employee_store_failed = True
+            raise
+        _employee_store_class = EmployeeStore
+        return _employee_store_class
+
+
+def prewarm_employee_store() -> bool:
+    """后台预热 ``EmployeeStore`` 的导入；返回是否成功，失败不抛。
+
+    由网关 lifespan 的后台线程调用，目的是让首个 ``/v1/dashboard/roster``
+    请求不再承担一次性导入成本。失败只记录（与其它后台预热步骤一致）。
+    """
+    try:
+        _employee_store()
+    except Exception as exc:  # pragma: no cover - 依赖缺失时的降级
+        logger.warning("employee_store prewarm failed: %s", exc)
+        return False
+    return True
+
 
 def _phase_number(raw: Any) -> Optional[int]:
     """``"Phase 9"`` → ``9``；解析不出来时返回 None（不猜）。"""
@@ -127,7 +169,13 @@ def load_registry() -> Dict[str, Any]:
     try:
         mtime = REGISTRY_PATH.stat().st_mtime
     except OSError as exc:
-        return {"available": False, "error": f"registry not found: {exc}", "kernels": [], "layers": []}
+        logger.warning("capability registry not found: %s", exc)
+        return {
+            "available": False,
+            "error": "能力清单暂时读不到，请稍后重试。",
+            "kernels": [],
+            "layers": [],
+        }
 
     if _cache is not None and _cache[0] == mtime:
         return _cache[1]
@@ -141,7 +189,7 @@ def load_registry() -> Dict[str, Any]:
         logger.warning("capability registry parse failed: %s", exc, exc_info=True)
         return {
             "available": False,
-            "error": f"registry parse failed: {exc}",
+            "error": "能力清单解析失败，请检查配置文件后重试。",
             "kernels": [],
             "layers": [],
         }
@@ -261,7 +309,8 @@ def provider_status() -> Dict[str, Any]:
         active["name"] = getattr(instance, "name", None)
         active["type"] = active_type
     except Exception as exc:
-        active["error"] = str(exc)
+        logger.warning("active provider status failed: %s", exc, exc_info=True)
+        active["error"] = "服务商状态暂时读不到，请稍后重试。"
 
     items: List[Dict[str, Any]] = []
     for provider_type in registered:
@@ -303,6 +352,23 @@ def provider_status() -> Dict[str, Any]:
     }
 
 
+def prewarm_roster_payload() -> bool:
+    """后台预热整条名册路径：员工存储 / 注册表 YAML / 服务商实例。
+
+    首个 ``/v1/dashboard/roster`` 除了 ``EmployeeStore`` 之外，还会首次导入
+    ``yaml``、构造 provider 单例并读取模型配置（实测首次约 200ms）。这些
+    都是一次性成本，挪到 lifespan 的后台线程即可；失败只记录，不影响服务。
+    """
+    ok = prewarm_employee_store()
+    for step in (load_registry, provider_status):
+        try:
+            step()
+        except Exception as exc:  # pragma: no cover - 依赖缺失时的降级
+            logger.warning("roster prewarm step %s failed: %s", step.__name__, exc)
+            ok = False
+    return ok
+
+
 def _build_real_employees() -> List[Dict[str, Any]]:
     """从 ``EmployeeStore`` 重建真实持久化员工列表。
 
@@ -318,57 +384,18 @@ def _build_real_employees() -> List[Dict[str, Any]]:
     一律返回 ``[]``（并打 warning）—— **持久化失败绝不能让名册端点崩溃**。
     """
     try:
-        from .employee_store import EmployeeStore
-    except Exception as exc:  # pragma: no cover - import guard
-        logger.warning("employee_store import failed, real_employees=[]: %s", exc)
+        store = _employee_store()()
+    except Exception as exc:  # pragma: no cover - import/init guard
+        logger.warning("employee_store unavailable, real_employees=[]: %s", exc)
         return []
 
     try:
-        store = EmployeeStore()
+        # 只读摘要：直接读 JSON，不构造 Employee/Agent —— 后者会在
+        # ``enable_observability=True`` 时导入 knowledge.memory（mem0 链）。
+        return store.list_summaries()
     except Exception as exc:
-        logger.warning("EmployeeStore init failed, real_employees=[]: %s", exc)
+        logger.warning("list_summaries failed, real_employees=[]: %s", exc)
         return []
-
-    try:
-        names = store.list_employees()
-    except Exception as exc:
-        logger.warning("list_employees failed, real_employees=[]: %s", exc)
-        return []
-
-    employees: List[Dict[str, Any]] = []
-    for name in names:
-        try:
-            emp = store.load(name)
-        except Exception as exc:
-            logger.warning("load(%r) failed, skipping: %s", name, exc)
-            continue
-        if emp is None:
-            continue
-        agents = [
-            {
-                "id": agent.id,
-                "agent_type": agent.agent_type,
-                "status": agent.status.value,
-            }
-            for agent in emp.agents.values()
-        ]
-        employees.append(
-            {
-                # `id` is the traceable identity of the employee in the real
-                # store. The store keys employees by name, so the persisted
-                # identifier IS the name — expose it under both keys so a
-                # consumer can trace the row back to the store without having
-                # to know that the key happens to be the display name.
-                "id": emp.name,
-                "name": emp.name,
-                "agent_count": emp.agent_count,
-                "agents": agents,
-                "total_tasks_submitted": emp.total_tasks_submitted,
-                "total_tasks_completed": emp.total_tasks_completed,
-                "total_tasks_failed": emp.total_tasks_failed,
-            }
-        )
-    return employees
 
 
 def build_roster_payload() -> Dict[str, Any]:
@@ -394,7 +421,7 @@ def build_roster_payload() -> Dict[str, Any]:
             "configured_count": 0,
             "active": {},
             "items": [],
-            "error": str(exc),
+            "error": "服务商清单暂时读不到，请稍后重试。",
         }
 
     kernels = registry.get("kernels") or []

@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
+from collections import OrderedDict
 import time
 import uuid
 
@@ -91,9 +92,15 @@ class Blackboard:
         board.subscribe("market_size", handler)
     """
 
-    def __init__(self, name: str = "blackboard"):
+    def __init__(self, name: str = "blackboard", max_entries: int = 2000):
         self.name = name
-        self._entries: Dict[str, BlackboardEntry] = {}
+        # 长跑实测 RSS 每小时 +24.5MB，归因到这类"只增不删"的进程内协作缓存：
+        # 多智能体每跑一次目标/任务就往黑板写条目，`_entries` 与四个索引
+        # 都没有上限，条目内容（content/references）全留在内存里。黑板是
+        # **协作工作区**，不是审计账本——旧条目被淘汰不影响审计链（审计在
+        # SQLite 里）。这里给一个按 FIFO 的硬上限，默认 2000 条。
+        self._max_entries = max(1, int(max_entries))
+        self._entries: "OrderedDict[str, BlackboardEntry]" = OrderedDict()
         self._topic_index: Dict[str, List[str]] = {}    # topic -> [entry_ids]
         self._author_index: Dict[str, List[str]] = {}   # author -> [entry_ids]
         self._tag_index: Dict[str, List[str]] = {}      # tag -> [entry_ids]
@@ -134,9 +141,37 @@ class Blackboard:
 
         self._entries[entry_id] = entry
         self._index_entry(entry)
+        while len(self._entries) > self._max_entries:
+            self._evict_oldest()
         self._notify_subscribers(entry)
 
         return entry
+
+    def _evict_oldest(self) -> None:
+        """淘汰最早写入的一条，并同步清理四个索引（保持有界内存）。"""
+        entry_id, entry = self._entries.popitem(last=False)
+        for index, key in (
+            (self._topic_index, entry.topic),
+            (self._author_index, entry.author),
+            (self._type_index, entry.entry_type),
+        ):
+            ids = index.get(key)
+            if ids:
+                try:
+                    ids.remove(entry_id)
+                except ValueError:
+                    pass
+                if not ids:
+                    index.pop(key, None)
+        for tag in entry.tags:
+            ids = self._tag_index.get(tag)
+            if ids:
+                try:
+                    ids.remove(entry_id)
+                except ValueError:
+                    pass
+                if not ids:
+                    self._tag_index.pop(tag, None)
 
     def update(
         self,

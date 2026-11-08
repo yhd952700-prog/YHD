@@ -70,11 +70,20 @@ async def _run(
 
     local: Optional[LocalScheduler] = None
     local_task: Optional[asyncio.Task] = None
+    scheduler_guard: Optional[object] = None
     if with_local_scheduler:
-        local = build_local_scheduler(
-            audit_sink=lambda action, outcome, details: audit(action, outcome, details)
-        )
-        local_task = asyncio.create_task(local.run())
+        # supervisor 下 worker 是 numprocs=2；两个进程同时 run() 同一个库会在
+        # 启动时互相强制回收租约，导致同一提醒重复触发。抢不到锁就只做 worker。
+        from src.tasks.scheduler_host import claim_local_scheduler_owner
+
+        scheduler_guard = claim_local_scheduler_owner()
+        if scheduler_guard is not None:
+            local = build_local_scheduler(
+                audit_sink=lambda action, outcome, details: audit(action, outcome, details)
+            )
+            local_task = asyncio.create_task(local.run())
+        else:
+            with_local_scheduler = False
 
     audit(
         "worker.start",
@@ -137,6 +146,11 @@ async def _run(
                 },
             )
             local.close()
+        if scheduler_guard is not None:
+            try:
+                scheduler_guard.release()
+            except Exception:  # noqa: BLE001 - 收尾阶段不让锁拖垮退出
+                logger.exception("local scheduler lock release failed")
         try:
             await broker.shutdown()
         except Exception:  # noqa: BLE001

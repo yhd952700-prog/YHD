@@ -95,10 +95,10 @@ class TestEmptyResponseIsAFailure:
         with pytest.raises(ProviderEmptyResponseError) as exc:
             p.generate_with_retry("hello")
         msg = str(exc.value)
-        assert msg.count("returned an empty response") == 1, (
+        assert msg.count("模型没有返回内容，请重试或换一个模型") == 1, (
             f"error message is re-wrapped and unreadable: {msg}"
         )
-        assert "No model output" in msg, "must state the consequence plainly"
+        assert "提供方：" in msg, "must name the provider for diagnosis"
 
     def test_empty_response_is_retried_before_failing(self):
         """A transient empty completion should be retried, not failed at once."""

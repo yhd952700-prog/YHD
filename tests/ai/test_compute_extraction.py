@@ -52,6 +52,9 @@ from src.kernels.execution import GoalDecomposer
     # sum returns a confidently WRONG number, which is worse than refusing.
     ("average of 4 and 8", {"expression": "((4+8)/2)"}),
     ("计算 2*3 的值", {"expression": "2*3"}),
+    # 中文关键词出现在句中：\b 对 CJK 不成立，曾漏掉整个算式（多任务场景）。
+    ("同时计算 128 + 64 的结果", {"expression": "128+64"}),
+    ("帮我查点资料，并计算 128 + 64 的结果", {"expression": "128+64"}),
     ("python: result=sum(range(10))", {"code": "result=sum(range(10))"}),
     ("code: result=6*7", {"code": "result=6*7"}),
 ])

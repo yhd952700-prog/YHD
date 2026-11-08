@@ -500,7 +500,12 @@ Example output format:
 
         try:
             # Execute via agent executor -- now inside the audited wrapper.
-            result = agent_executor(task.assigned_agent or "default", task.description)
+            # 任务内部的模型调用（prose/network_bus 等）按 task_id 打标签，
+            # 这样派活账本可以"总额 = 各任务分项之和"，并落到对应员工/账号。
+            from src.ai.usage_meter import label_scope
+
+            with label_scope(f"task:{task_id}"):
+                result = agent_executor(task.assigned_agent or "default", task.description)
 
             task.result = result
             task.status = TaskStatus.COMPLETED
@@ -580,6 +585,7 @@ Example output format:
             Execution results
         """
         import concurrent.futures
+        import contextvars
 
         tasks = self.get_tasks_for_goal(goal_id)
         if not tasks:
@@ -632,7 +638,12 @@ Example output format:
                 future_to_task = {}
                 for task in ready[:max_parallel]:
                     remaining.remove(task.id)
-                    future = executor.submit(self.execute_task, task.id, agent_executor)
+                    # 线程池不继承 ContextVar；复制当前上下文，让任务内 provider
+                    # 上报的真实 usage 回到本次 Goal 的记账作用域。
+                    ctx = contextvars.copy_context()
+                    future = executor.submit(
+                        ctx.run, self.execute_task, task.id, agent_executor
+                    )
                     future_to_task[future] = task.id
 
                 # Collect results

@@ -34,9 +34,11 @@ from typing import Any, Dict, List, Optional
 
 from src.ai.providers import (
     BaseProvider,
+    FailoverProvider,
     ProviderFactory,
     ProviderType,
     get_provider,
+    provider_from_config,
     resolve_provider,
 )
 from src.ai.model_config import vendor_for
@@ -498,6 +500,118 @@ def _routing_disabled() -> bool:
     return raw.strip().lower() in {"0", "off", "false", "no", "disabled"}
 
 
+#: 走「默认模型优先 + 顺序回落」的聊天类任务。聊天是用户唯一直接感知的
+#: 调用：它的模型顺序必须与界面上「设为默认」的语义一致。
+_CHAT_TASK_TYPES = {"", "default", "chat", "text_generation"}
+
+
+def _is_chat_task(task_type: Optional[str]) -> bool:
+    return (task_type or "").strip().lower().replace("-", "_") in _CHAT_TASK_TYPES
+
+
+def _chat_chain_labels(record: Dict[str, Any]) -> str:
+    name = str(record.get("name") or "").strip()
+    model = str(record.get("model") or "").strip()
+    if name and model and name != model:
+        return f"{name}（{model}）"
+    return name or model or "未知模型"
+
+
+def _chat_chain_records(
+    store: Any,
+    *,
+    visible_to: Optional[List[str]],
+    allow_unowned: bool,
+    allow_owners: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    """聊天候选：启用且可见/已授权的模型，**默认模型排第一**。
+
+    ``list_models`` 自带 ``ORDER BY is_default DESC``；这里再显式稳定排序一次，
+    让"默认优先"不依赖存储层 SQL，避免以后改排序时聊天顺序被悄悄改掉。
+    """
+    records = store.list_models(visible_to=visible_to, allow_unowned=allow_unowned)
+    allowed = set(allow_owners) if allow_owners is not None else None
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        if not record.get("enabled", True):
+            continue
+        if not (record.get("id") and record.get("provider") and record.get("model")):
+            continue
+        owner = str(record.get("owner_principal") or "")
+        if allowed is not None and owner and owner not in allowed:
+            logger.info(
+                "chat chain: skipping model %s owned by %s (not authorized)",
+                record.get("id"),
+                owner,
+            )
+            continue
+        out.append(record)
+    out.sort(key=lambda item: 0 if item.get("is_default") else 1)
+    return out
+
+
+def _chat_provider_chain(
+    *,
+    visible_to: Optional[List[str]] = None,
+    allow_unowned: bool = False,
+    allow_owners: Optional[List[str]] = None,
+) -> Optional[BaseProvider]:
+    """聊天用的 provider 链；没有已保存模型时返回 ``None``（沿用旧回退）。
+
+    失败顺序语义：默认模型失败 → 第二个 → ……；只有全部失败才抛出携带完整
+    清单的 :class:`ProviderChainError`。默认模型**没有使用权限**时直接抛错，
+    绝不静默换用其他模型 —— 否则「设为默认」在界面上就是个装饰。
+    """
+    try:
+        from src.ai.model_config import ModelConfigError, get_model_config_store
+
+        store = get_model_config_store()
+        records = _chat_chain_records(
+            store,
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
+    except Exception as exc:  # noqa: BLE001 - 存储故障沿用旧回退路径
+        logger.warning(
+            "chat chain: model config store unavailable (%s)", type(exc).__name__
+        )
+        return None
+
+    if not records:
+        return None
+
+    providers: List[BaseProvider] = []
+    labels: List[str] = []
+    for index, record in enumerate(records):
+        try:
+            cfg = store.resolve(
+                record["id"],
+                visible_to=visible_to,
+                allow_unowned=allow_unowned,
+                allow_owners=allow_owners,
+            )
+        except ModelConfigError:
+            if index == 0:
+                raise
+            logger.warning(
+                "chat chain: skipping model %s (not resolvable for this caller)",
+                record.get("id"),
+            )
+            continue
+        if not cfg:
+            continue
+        providers.append(provider_from_config(cfg))
+        labels.append(_chat_chain_labels(record))
+
+    if not providers:
+        return None
+    if len(providers) == 1:
+        return providers[0]
+    logger.info("chat model chain: %s", " -> ".join(labels))
+    return FailoverProvider(providers, labels=labels)
+
+
 def provider_for_task(
     task_type: Optional[str] = None,
     *,
@@ -527,6 +641,7 @@ def provider_for_task(
             model_id,
             visible_to=visible_to,
             allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
             allow_env_fallback=allow_env_fallback,
         )
 
@@ -535,8 +650,21 @@ def provider_for_task(
         return resolve_provider(
             visible_to=visible_to,
             allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
             allow_env_fallback=allow_env_fallback,
         )
+
+    # 聊天必须与界面上「设为默认」一致：默认模型先跑，失败按顺序依次回落。
+    # 以前这里走 ``prefer_tier=CLOUD``，会把用户设为默认的本地 Ollama 排到
+    # 云端模型之后（且失败后不回落），"设为默认"因此成了装饰。
+    if _is_chat_task(task_type):
+        chained = _chat_provider_chain(
+            visible_to=visible_to,
+            allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
+        )
+        if chained is not None:
+            return chained
 
     try:
         result = route_task_from_store(
@@ -554,6 +682,7 @@ def provider_for_task(
         return resolve_provider(
             visible_to=visible_to,
             allow_unowned=allow_unowned,
+            allow_owners=allow_owners,
             allow_env_fallback=allow_env_fallback,
         )
 
@@ -562,6 +691,7 @@ def provider_for_task(
         selected.model_id,
         visible_to=visible_to,
         allow_unowned=allow_unowned,
+        allow_owners=allow_owners,
         allow_env_fallback=allow_env_fallback,
     )
     # provider 字段是协议适配器名（例如 openai 兼容协议），vendor 才是真实厂商；

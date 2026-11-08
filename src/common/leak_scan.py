@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -199,14 +200,79 @@ def format_hits(hits: dict[str, int]) -> str:
 #: 降级导出时写进包内的剔除清单文件名（网关与桌面共用同一名字）。
 OMITTED_MEMBERS_NAME = "REDACTED-MEMBERS.txt"
 
+#: 包内的规则命中分布：只写「哪条规则在哪个文件上命中几次」，不含任何命中内容。
+#: 支持人员据此判断是用户数据的问题，还是我们的扫描规则误判。
+SCAN_RULE_HIT_NAME = "scan_rule_hit.json"
+
+#: 内部审计事件名：诊断包因扫描规则命中而**整体**拒绝导出。
+BLOCKED_EVENT = "diagnostic.bundle.blocked"
+
+#: 审计事件写内部日志（liuhao.log / error.log），不返回给用户、不进诊断包。
+audit_log = logging.getLogger("liuhao.audit")
+
 #: 包内日志成员的重命名表：避免把 "error" 这类词直接摆到用户面前，
 #: 让人误以为软件坏了。本机源文件名不变（仍是 ``error.log``），只改压缩包里的成员名。
 LOG_MEMBER_ALIASES = {"error.log": "issue.log"}
+
+#: README 里的改名映射：用户手上叫 ``error.log``，包里叫 ``issue.log.txt``，
+#: 支持人员点名要文件时两边必须对得上。
+LOG_MEMBER_ALIAS_NOTE = (
+    "logs/issue.log.txt 就是数据目录下 error.log 的尾部"
+    "（包内改名，避免“error”字样）。"
+)
 
 
 def log_member_name(name: str) -> str:
     """返回压缩包内使用的日志基名（``error.log`` → ``issue.log``）。"""
     return LOG_MEMBER_ALIASES.get(name.lower(), name)
+
+
+def log_bundle_blocked(source: str, omitted, *, hits=None) -> None:
+    """写一条**内部**审计事件：只记成员名、规则名与条数，不记任何命中内容。
+
+    ``source`` 是导出路径（``gateway`` / ``desktop``）；``hits`` 用于「说明文件
+    自己命中」这类 ``omitted`` 为空但已知规则的兜底分支。
+    """
+    items = list(omitted)
+    merged: dict[str, int] = dict(hits or {})
+    for item in items:
+        for label, count in dict(item.get("hits") or {}).items():
+            merged[label] = merged.get(label, 0) + int(count)
+    audit_log.error(
+        "evt=%s source=%s files=%s rules=%s",
+        BLOCKED_EVENT,
+        source,
+        ",".join(str(item["name"]) for item in items) or "-",
+        format_hits(merged) or "-",
+    )
+
+
+def scan_rule_hit_report(omitted) -> dict:
+    """``scan_rule_hit.json`` 的内容：规则 × 文件 × 次数，不含任何命中内容。"""
+    items = list(omitted)
+    return {
+        "schema": 1,
+        "note": "只记录哪条规则在哪个文件上命中几次，不含任何命中内容。",
+        "total_omitted": len(items),
+        "hits": [
+            {
+                "file": str(item["name"]),
+                "rules": dict(item.get("hits") or {}),
+                "total": int(item.get("total") or 0),
+            }
+            for item in items
+        ],
+    }
+
+
+def completeness_line(included: int, omitted: int) -> str:
+    """README 里那句「本次包含 N 个文件，未包含 M 个」——N+M 就是计划收集总数。"""
+    if omitted:
+        return (
+            f"本次包含 {included} 个文件，未包含 {omitted} 个"
+            "（仍含明文凭据，已在导出前剔除；原始文件仍留在你的电脑上）。"
+        )
+    return f"本次包含 {included} 个文件，未包含 0 个（计划收集的文件全部包含）。"
 
 
 def omitted_note(omitted, *, log_prefix: str = "logs/") -> str:
@@ -278,15 +344,22 @@ def omitted_readme(
 
 __all__ = [
     "BENIGN_VALUES",
+    "BLOCKED_EVENT",
     "LOG_MEMBER_ALIASES",
+    "LOG_MEMBER_ALIAS_NOTE",
     "OMITTED_MEMBERS_NAME",
     "RULES",
     "Rule",
+    "SCAN_RULE_HIT_NAME",
+    "audit_log",
+    "completeness_line",
     "format_hits",
+    "log_bundle_blocked",
     "log_member_name",
     "omitted_members_text",
     "omitted_note",
     "omitted_readme",
+    "scan_rule_hit_report",
     "scan_text",
     "total_hits",
 ]

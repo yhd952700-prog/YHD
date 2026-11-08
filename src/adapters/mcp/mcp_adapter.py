@@ -43,6 +43,8 @@ from mcp.types import (
     Tool,
 )
 
+from ...brand import BRAND_LOCKUP
+
 logger = logging.getLogger(__name__)
 
 # 接线状态：适配层就绪但未接入对话主链路（见模块 docstring）。
@@ -586,7 +588,7 @@ def build_mcp_server(
 
     tools = {t.capability: t for t in make_tools(principal, status_fn)}
     tools = {k: v for k, v in tools.items() if not k.startswith("automation.")}
-    server = FastMCP(name=name, instructions="鎏灏 AI OS 内置工具（只读，风险 LOW）")
+    server = FastMCP(name=name, instructions=f"{BRAND_LOCKUP} 内置工具（只读，风险 LOW）")
 
     if "memory.search" in tools:
         tool = tools["memory.search"]

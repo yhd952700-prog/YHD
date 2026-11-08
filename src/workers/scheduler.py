@@ -58,11 +58,20 @@ async def _run(poll_interval: float, *, with_local_scheduler: bool = True) -> in
 
     local: Optional[LocalScheduler] = None
     local_task: Optional[asyncio.Task] = None
+    scheduler_guard: Optional[object] = None
     if with_local_scheduler:
-        local = build_local_scheduler(
-            audit_sink=lambda action, outcome, details: audit(action, outcome, details)
-        )
-        local_task = asyncio.create_task(local.run())
+        # 与 worker/网关共用一把锁：任何部署形态下同一队列只有一个运行者，
+        # 避免启动时互相回收租约造成重复通知。
+        from src.tasks.scheduler_host import claim_local_scheduler_owner
+
+        scheduler_guard = claim_local_scheduler_owner()
+        if scheduler_guard is not None:
+            local = build_local_scheduler(
+                audit_sink=lambda action, outcome, details: audit(action, outcome, details)
+            )
+            local_task = asyncio.create_task(local.run())
+        else:
+            with_local_scheduler = False
 
     audit(
         "scheduler.start",
@@ -132,6 +141,11 @@ async def _run(poll_interval: float, *, with_local_scheduler: bool = True) -> in
                 },
             )
             local.close()
+        if scheduler_guard is not None:
+            try:
+                scheduler_guard.release()
+            except Exception:  # noqa: BLE001
+                logger.exception("local scheduler lock release failed")
         try:
             await scheduler.shutdown()
         except Exception:  # noqa: BLE001

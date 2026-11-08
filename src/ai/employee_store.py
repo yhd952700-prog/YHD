@@ -32,9 +32,13 @@ import threading
 import time
 import uuid
 import weakref
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
-from src.common.atomic_write import atomic_write_bytes, exclusive_file_lock
+from src.common.atomic_write import (
+    StorageWriteError,
+    atomic_write_bytes,
+    exclusive_file_lock,
+)
 
 from .employee import Agent, AgentStatus, Employee, Task, TaskStatus
 from .providers import BaseProvider, get_provider
@@ -187,8 +191,11 @@ class EmployeeStore:
             atomic_write_bytes(self.path, payload)
         except Exception as exc:
             logger.error("EmployeeStore: persist failed (%s): %s", self.path, exc)
+            # 存储层的 StorageWriteError 本身已是中文可行动提示，直接透传，
+            # 不再前缀英文类名。
+            detail = str(exc) if isinstance(exc, StorageWriteError) else f"{type(exc).__name__}: {exc}"
             raise EmployeeStoreError(
-                f"员工库写入失败（{self.path}）：{type(exc).__name__}: {exc}；"
+                f"员工库写入失败（{self.path}）：{detail}；"
                 "已重试仍无法原子替换，本次修改未落盘"
             ) from exc
 
@@ -561,9 +568,121 @@ class EmployeeStore:
             return None
         return self._deserialize_employee(data)
 
+    def load_many(self, names: Optional[Sequence[str]] = None) -> List[Employee]:
+        """一次读库、批量重建员工（名册/列表专用）。
+
+        ``load()`` 每调一次都会重读整份 JSON 并解析，遍历 N 名员工就是
+        O(N²) 的读放大量。这里只读一次库，再按需重建，供管理面带全量
+        员工字段的列表接口使用。
+        """
+        store = self._load_store()
+        employees = store.get("employees") or {}
+        keys = list(employees.keys()) if names is None else [str(n) for n in names]
+        result: List[Employee] = []
+        for name in keys:
+            data = employees.get(name)
+            if not isinstance(data, dict):
+                continue
+            try:
+                result.append(self._deserialize_employee(data))
+            except Exception as exc:  # noqa: BLE001 - 单条损坏不拖垮整份名册
+                logger.warning("could not load employee %s: %s", name, exc)
+        return result
+
     def list_employees(self) -> List[str]:
         """Names of all employees present in the store."""
         return list(self._load_store().get("employees", {}).keys())
+
+    def list_summaries(self) -> List[Dict[str, Any]]:
+        """只读摘要（名册专用）：直接读 JSON，不构造 Employee/Agent。
+
+        ``load()`` 会重建完整员工对象，而 ``Employee(enable_observability=True)``
+        会按需导入 ``knowledge.memory``（mem0 → openai → qdrant_client，实测
+        首次导入 6–12s）。名册只需要名称 / agent 列表 / 计数器，因此这里走
+        纯 JSON 读取，字段口径与 ``_serialize_employee`` 保持一致，但绝不把
+        重型导入带进首屏请求路径。
+
+        读文件失败或结构损坏时沿用 ``_load_store`` 的既有降级：返回空列表。
+        """
+        store = self._load_store()
+        rows: List[Dict[str, Any]] = []
+        for key, data in (store.get("employees") or {}).items():
+            if not isinstance(data, dict):
+                continue
+            name = str(data.get("name") or key)
+            agents = [
+                {
+                    "id": agent.get("id"),
+                    "agent_type": agent.get("agent_type"),
+                    "status": agent.get("status"),
+                }
+                for agent in (data.get("agents") or [])
+                if isinstance(agent, dict)
+            ]
+            rows.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "agent_count": int(data.get("agent_count", len(agents)) or 0),
+                    "agents": agents,
+                    "total_tasks_submitted": int(data.get("total_tasks_submitted") or 0),
+                    "total_tasks_completed": int(data.get("total_tasks_completed") or 0),
+                    "total_tasks_failed": int(data.get("total_tasks_failed") or 0),
+                }
+            )
+        return rows
+
+    # ------------------------------------------------------------------ #
+    # 备份导出 / 导入（整实体：agent 池、任务、计数器、归属）
+    # ------------------------------------------------------------------ #
+    def export_employees(
+        self, owners: Optional[Sequence[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """按归属导出员工序列化数据；``owners=None`` 表示整库。"""
+        store = self._load_store()
+        allowed = set(owners) if owners is not None else None
+        exported: List[Dict[str, Any]] = []
+        for _, data in sorted((store.get("employees") or {}).items()):
+            if not isinstance(data, dict):
+                continue
+            owner = str(data.get("owner_account_id") or "")
+            if allowed is not None and owner and owner not in allowed:
+                continue
+            exported.append(dict(data))
+        return exported
+
+    def import_employees(self, payloads: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+        """合并导入：同名员工已存在则跳过，绝不覆盖现场数据。
+
+        整个导入在**一个写事务**里完成：只读一次库、只写一次盘（一次
+        fsync），而不是每位员工都 ``load()`` + ``save()`` 一遍。1000 名员工
+        的包从 O(n²) 的整库读写降到 O(n)。
+        """
+        restored = 0
+        skipped = 0
+        with self._write_transaction():
+            store = self._load_store(strict=True)
+            employees = store.setdefault("employees", {})
+            for data in payloads or []:
+                if not isinstance(data, dict) or not data.get("name"):
+                    skipped += 1
+                    continue
+                name = str(data["name"])
+                if name in employees:
+                    skipped += 1
+                    continue
+                try:
+                    employee = self._deserialize_employee(dict(data))
+                    employees[name] = self._serialize_employee(employee)
+                    restored += 1
+                except Exception as exc:  # noqa: BLE001 - 单个员工失败不阻断整体导入
+                    logger.warning(
+                        "could not restore employee %s: %s", data.get("name"), exc
+                    )
+                    skipped += 1
+            if restored:
+                self._write_store(store)
+        return {"restored": restored, "skipped": skipped}
 
     def rename(self, old_name: str, new_name: str) -> Optional[Employee]:
         """改名，但**保留 agent id 不变**（历史任务的归属仍能解析）。

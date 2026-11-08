@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default=os.environ.get("AI_PROVIDER_TYPE", "ollama"),
-        help="provider 类型（ollama / mock / openai / deepseek / moonshot ...）",
+        help="服务商类型（ollama / mock / openai / deepseek / moonshot …）",
     )
     parser.add_argument(
         "--model",
@@ -64,7 +64,7 @@ def repl(assistant: LiuHaoAssistant) -> int:
     print("=" * 60)
     print("  LiuHao AI OS · 鎏灏智能中枢 — AI 操作系统")
     st = assistant.stats()
-    print(f"  provider={st['provider']}  model={st['model']}")
+    print(f"  服务商={st['provider']}  模型={st['model']}")
     print("  输入消息开始对话；/stats 状态 /reset 清史 /quit 退出")
     print("=" * 60)
 
@@ -101,7 +101,7 @@ def main() -> int:
     try:
         provider = build_provider(args.provider, args.model)
     except Exception as exc:
-        print(f"provider 初始化失败（{args.provider}/{args.model}）：{exc}")
+        print(f"服务商初始化失败（{args.provider}/{args.model}）：{exc}")
         print("提示：本机 ollama 需先 `ollama serve` 并拉取模型；或用 --provider mock 兜底。")
         return 1
 

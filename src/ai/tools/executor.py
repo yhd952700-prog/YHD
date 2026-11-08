@@ -10,6 +10,7 @@ and managing execution.
 """
 from __future__ import annotations
 
+import contextvars
 import time
 import threading
 from dataclasses import dataclass, field
@@ -351,8 +352,11 @@ class ToolExecutor:
         exception_container: List[Optional[Exception]] = [None]
 
         def run_tool():
+            # 工具内部可能调用模型（prose/network_bus 等）。线程默认不继承
+            # ContextVar，这里复制一次，让工具消耗的 token 记回当前账本作用域。
+            ctx = contextvars.copy_context()
             try:
-                result_container[0] = tool.execute(**params)
+                result_container[0] = ctx.run(tool.execute, **params)
             except Exception as e:
                 exception_container[0] = e
 

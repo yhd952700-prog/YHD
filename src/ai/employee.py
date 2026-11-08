@@ -12,20 +12,71 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .providers import BaseProvider, get_provider
-try:
-    from ..observability.metrics import track_agent_task, track_coordination
-except Exception:  # pragma: no cover - metrics backend optional at import time
-    # When prometheus_client is not installed the employee module must still
-    # import and run (e.g. under the system python used by standalone
-    # verifiers); metrics simply degrade to no-ops. Mirrors the guard already
-    # present in src/ai/goal_task_graph.py.
-    def track_agent_task(*_args, **_kwargs):
-        return None
 
-    def track_coordination(*_args, **_kwargs):
+# 重依赖一律按需导入 —— 本模块会被 ``EmployeeStore`` 拉进名册读取路径，而名册
+# 只需要 JSON 摘要。实测把 ``knowledge.memory``（mem0 → openai → qdrant_client）
+# 与本模块的 observability 依赖放在顶层，会让首个 ``/v1/dashboard/roster``
+# 请求付 6–12 秒的一次性导入成本。指标/追踪/长期记忆都只服务"真正执行任务"，
+# 放到首次使用时再加载，语义不变，失败仍降级为无操作。
+_metrics_module: Any = None
+_tracing_module: Any = None
+
+
+def _metrics():
+    """首次调用时导入指标模块；不可用则永久降级为 None。"""
+    global _metrics_module
+    if _metrics_module is None:
+        try:
+            from ..observability import metrics as _impl
+        except Exception:  # pragma: no cover - prometheus_client 可选
+            _impl = None
+        _metrics_module = _impl or False
+    return _metrics_module or None
+
+
+def track_agent_task(*args, **kwargs):
+    module = _metrics()
+    if module is None:
         return None
-from ..observability.tracing import create_span, end_span, AISpanAttributes
-from ..knowledge.memory import create_memory_manager, MemoryTier
+    return module.track_agent_task(*args, **kwargs)
+
+
+def track_coordination(*args, **kwargs):
+    module = _metrics()
+    if module is None:
+        return None
+    return module.track_coordination(*args, **kwargs)
+
+
+def _tracing():
+    """首次调用时导入追踪模块；不可用则永久降级为 None。"""
+    global _tracing_module
+    if _tracing_module is None:
+        try:
+            from ..observability import tracing as _impl
+        except Exception:  # pragma: no cover - OpenTelemetry 可选
+            _impl = None
+        _tracing_module = _impl or False
+    return _tracing_module or None
+
+
+def create_span(name: str, **kwargs):
+    module = _tracing()
+    if module is None:
+        return None
+    return module.create_span(name, **kwargs)
+
+
+def end_span(span_context, error=None):
+    module = _tracing()
+    if module is None or span_context is None:
+        return None
+    return module.end_span(span_context, error=error)
+
+
+def _span_attributes():
+    module = _tracing()
+    return module.AISpanAttributes if module is not None else None
 
 
 class AgentStatus(Enum):
@@ -74,13 +125,16 @@ class Agent:
         self.current_task = task
         start_time = time.time()
 
-        # Use tracing if available
+        # Use tracing if available（属性键同样按需取，避免顶层拉入 OTel SDK）
+        span_attrs = _span_attributes()
         span = create_span(
             f"agent.execute.{self.agent_type}",
             attributes={
-                AISpanAttributes.AGENT_TYPE: self.agent_type,
-                AISpanAttributes.AGENT_TASK: task[:100],
+                span_attrs.AGENT_TYPE: self.agent_type,
+                span_attrs.AGENT_TASK: task[:100],
             }
+            if span_attrs is not None
+            else {"agent_type": self.agent_type, "agent_task": task[:100]},
         )
 
         try:
@@ -297,8 +351,11 @@ class Employee:
         self.total_goals_failed = 0
         self.goals: List[str] = []
 
-        # Observability
+        # Observability（长期记忆只在启用可观测性的员工上按需加载：
+        # mem0/openai/qdrant_client 的首次导入成本不应落在名册读取路径上）
         if self.enable_observability:
+            from ..knowledge.memory import create_memory_manager
+
             self._memory = create_memory_manager(user_id=f"employee_{name}", use_mem0=False)
         else:
             self._memory = None
@@ -540,6 +597,8 @@ class Employee:
 
                     # Persist to memory
                     if self.enable_observability and self._memory:
+                        from ..knowledge.memory import MemoryTier
+
                         self._memory.remember(
                             content=f"Task {task_id}: {task.description}",
                             tier=MemoryTier.EPISODIC,

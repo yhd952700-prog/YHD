@@ -140,9 +140,12 @@ CREATE TABLE IF NOT EXISTS ai_model_configs (
     base_url      TEXT,
     api_key_enc   TEXT,
     owner_principal TEXT NOT NULL DEFAULT '',
-    timeout       REAL NOT NULL DEFAULT 30.0,
+    timeout       REAL NOT NULL DEFAULT 120.0,
     is_default    INTEGER NOT NULL DEFAULT 0,
     enabled       INTEGER NOT NULL DEFAULT 1,
+    -- 「测试连接」通过的时间；NULL = 没测过或最近一次测试失败。
+    -- 只有非 NULL 的模型才允许被用户显式「设为默认」。
+    last_verified_at TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -213,12 +216,60 @@ def _derive_key(passphrase: str) -> bytes:
     return hashlib.sha256(passphrase.encode("utf-8")).digest()
 
 
+#: API Key 长度上限。真实 Key 远短于此；上限只用来把"整段粘贴错内容"挡在
+#: 入库/拼头之前，而不是当作安全边界。
+MAX_API_KEY_LENGTH = 4096
+
+
+class ApiKeyFormatError(ValueError):
+    """Key 文本形态不合法（夹空格/换行/超长）；消息可直接展示给用户。"""
+
+
+def normalize_api_key(raw: Any) -> Optional[str]:
+    """统一 Key 的文本形态：去首尾空白，并拒绝夹带空白/换行的 Key。
+
+    为什么必须在写库、拼 ``Authorization``、测试连接**三处同源**处理：
+    带首尾空格的 Key 会让 ``requests`` 直接抛
+    ``Illegal header value b'Bearer   sk-...'``，请求根本没发出去，
+    用户却以为"Key 填错了"。
+
+    ``str.strip()`` 覆盖全角空格（U+3000）、制表符与 ``\\r\\n``；中间残留的
+    空白/控制字符无法安全猜测，直接拒绝并给出可行动提示，避免把坏 Key
+    拼进请求头。
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if len(text) > MAX_API_KEY_LENGTH:
+        raise ApiKeyFormatError(
+            f"API Key 过长（{len(text)} 字符，上限 {MAX_API_KEY_LENGTH}），"
+            "看起来粘贴了多余内容，请只复制 Key 本身。"
+        )
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise ApiKeyFormatError(
+            "API Key 中间出现了空格、换行或不可见字符：请重新复制 Key，"
+            "不要把换行和空格带进来。"
+        )
+    return text
+
+
 def _row_owner(row: sqlite3.Row) -> str:
     """安全读取归属列：旧库/测试手工表可能还没有这一列。"""
     try:
         return str(row["owner_principal"] or "")
     except (IndexError, KeyError):
         return ""
+
+
+def _row_verified(row: sqlite3.Row) -> Optional[str]:
+    """最近一次「测试连接」通过的时间；NULL/缺列都表示"没测通"。"""
+    try:
+        value = row["last_verified_at"]
+    except (IndexError, KeyError):
+        return None
+    return str(value) if value else None
 
 
 def _visible(owner: str, visible_to: Optional[Sequence[str]], allow_unowned: bool) -> bool:
@@ -229,6 +280,27 @@ def _visible(owner: str, visible_to: Optional[Sequence[str]], allow_unowned: boo
         # 空归属 = 账号体系上线前创建，归根账号所有；只有根视角可见。
         return allow_unowned
     return owner in visible_to
+
+
+def _usable(
+    owner: str,
+    visible_to: Optional[Sequence[str]],
+    allow_unowned: bool,
+    allow_owners: Optional[Sequence[str]],
+) -> bool:
+    """Key **可用性**：在可见的基础上，再要求知情授权（``allow_superior_key_use``）。
+
+    ``allow_owners`` 是 ``KeyScope.allow_owners`` 的原样传入：根账号包含自己、
+    空归属与"已开启共享"的子树成员；成员只有自己。``None`` 表示不追加收窄
+    （进程内部 / 旧调用方）。
+    """
+    if not _visible(owner, visible_to, allow_unowned):
+        return False
+    if allow_owners is None:
+        return True
+    if not owner:
+        return bool(allow_unowned)
+    return owner in allow_owners
 
 
 class ModelConfigStore:
@@ -299,6 +371,33 @@ class ModelConfigStore:
                 "ALTER TABLE ai_model_configs "
                 "ADD COLUMN owner_principal TEXT NOT NULL DEFAULT ''"
             )
+        # 老库补"是否测通"：默认 NULL（没测过），于是升级后既有的默认模型
+        # 不会被误当作"已验证"，用户点一次「测试连接」即可解锁。
+        if "last_verified_at" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_model_configs ADD COLUMN last_verified_at TEXT"
+            )
+        # 30 秒是旧版本的默认生成读超时，会把本地模型冷启动（实测约 36 秒）
+        # 判成超时。只迁移**恰好等于旧默认值**的行，且只做一次：用户之后
+        # 显式改回 30 秒（或任何更短的值）不会再被覆盖。
+        #
+        # 改值与写迁移标记必须原子：中途失败（磁盘满/只读）时若改值已提交而
+        # 标记没写，下次启动会再改一次；反过来标记先落而改值失败，则旧库永远
+        # 停在 30 秒。放进同一个事务，失败即整体回滚，下次还能重试。
+        migrated = conn.execute(
+            "SELECT value FROM ai_model_config_meta WHERE key = ?",
+            ("timeout_floor_120",),
+        ).fetchone()
+        if migrated is None:
+            with conn:
+                conn.execute(
+                    "UPDATE ai_model_configs SET timeout = 120.0 WHERE timeout = 30.0"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO ai_model_config_meta (key, value) "
+                    "VALUES (?, ?)",
+                    ("timeout_floor_120", "1"),
+                )
 
     def _encryption_key(self) -> bytes:
         """解析/生成 32 字节密钥；无法获得密钥时抛 ``ModelConfigError``。
@@ -443,6 +542,9 @@ class ModelConfigStore:
             "timeout": row["timeout"],
             "is_default": bool(row["is_default"]),
             "enabled": bool(row["enabled"]),
+            #: 是否通过过「测试连接」：只有 True 才允许显式设为默认。
+            "verified": bool(_row_verified(row)),
+            "last_verified_at": _row_verified(row),
             "api_key_set": bool(row["api_key_enc"]),
             # missing: 未填写；ok: 可解密；needs_reentry: 密文在但当前密钥解不开。
             "api_key_status": "missing" if not row["api_key_enc"] else "ok",
@@ -541,6 +643,7 @@ class ModelConfigStore:
         *,
         visible_to: Optional[Sequence[str]] = None,
         allow_unowned: bool = False,
+        allow_owners: Optional[Sequence[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """解析出可直接构造 provider 的配置（含**解密后**密钥，仅供进程内使用）。
 
@@ -549,6 +652,9 @@ class ModelConfigStore:
         * ``model_id`` 可传配置 id 或名称；找不到返回 ``None``。
         * 给定 ``visible_to`` 且命中**他人 Key** 时一律 403 ``KEY_OWNER_DENIED``。
           绝不静默改用它 Key —— 静默替换就是 Key 冒用。
+        * 给定 ``allow_owners`` 时，命中可见但**未开启共享授权**的 Key 返回
+          403 ``ACCOUNT_KEY_CONSENT_REQUIRED``：显式 ``model_id`` 与自动路由
+          必须用同一套授权口径（此前显式选择绕过了 ``allow_superior_key_use``）。
         禁用（``enabled=0``）的模型不参与解析。
         """
         with self._lock:
@@ -566,7 +672,13 @@ class ModelConfigStore:
                     "ORDER BY is_default DESC, updated_at DESC"
                 ).fetchall()
                 row = next(
-                    (r for r in rows if _visible(_row_owner(r), visible_to, allow_unowned)),
+                    (
+                        r
+                        for r in rows
+                        if _usable(
+                            _row_owner(r), visible_to, allow_unowned, allow_owners
+                        )
+                    ),
                     None,
                 )
         if row is None:
@@ -575,6 +687,12 @@ class ModelConfigStore:
         if not _visible(owner, visible_to, allow_unowned):
             raise ModelConfigError(
                 403, "无权使用该模型配置", code="ACCOUNT_KEY_NOT_OWNED"
+            )
+        if not _usable(owner, visible_to, allow_unowned, allow_owners):
+            raise ModelConfigError(
+                403,
+                "该模型配置未开启共享授权，无法使用",
+                code="ACCOUNT_KEY_CONSENT_REQUIRED",
             )
         return {
             "id": row["id"],
@@ -622,6 +740,15 @@ class ModelConfigStore:
                 if not isinstance(row, dict) or not row.get("id"):
                     continue
                 values = [row.get(key) for key in self._BACKUP_COLUMNS]
+                # 旧机的主密钥不在包里，密文在新机必然解不开。留下密文会让
+                # 员工页/目标页任何一次"取默认模型"直接 500；这里降级为
+                # "配置保留、Key 待重填"，既保住配置也不阻断其它功能。
+                encrypted_key = row.get("api_key_enc")
+                if encrypted_key:
+                    try:
+                        self._decrypt_secret(str(row.get("id")), encrypted_key)
+                    except Exception:  # noqa: BLE001 - 解不开＝不是本机密钥
+                        values[self._BACKUP_COLUMNS.index("api_key_enc")] = None
                 try:
                     connection.execute(
                         "INSERT OR REPLACE INTO ai_model_configs ("
@@ -642,6 +769,54 @@ class ModelConfigStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not export model key material: %s", exc)
             return None
+
+    def export_plaintext_secrets(
+        self, rows: List[Dict[str, Any]]
+    ) -> Dict[str, str]:
+        """把待导出行的 Key 在本机解密，交给备份包用口令重新封装。
+
+        主密钥不出机：备份包里存的是「口令派生 KEK 包裹的密文」，不是明文
+        Key；目标机导入时用同一口令解封，再用**本机**主密钥重新加密，从而
+        做到"原来的 Key 还能用"。
+        """
+        secrets: Dict[str, str] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("id") or "")
+            stored = row.get("api_key_enc")
+            if not model_id or not stored:
+                continue
+            try:
+                plain = self._decrypt_secret(model_id, stored)
+            except Exception as exc:  # noqa: BLE001 - 单行失败不阻断整包
+                logger.warning("model config %s credential not portable: %s", model_id, exc)
+                continue
+            if plain:
+                secrets[model_id] = plain
+        return secrets
+
+    def import_plaintext_secrets(self, secrets: Any) -> int:
+        """用本机主密钥重新加密导入的 Key；返回成功更新条数。"""
+        if not isinstance(secrets, dict) or not secrets:
+            return 0
+        written = 0
+        with self._lock:
+            connection = self._connect()
+            for model_id, secret in secrets.items():
+                if not model_id or not isinstance(secret, str) or not secret:
+                    continue
+                try:
+                    cipher = self._encrypt_secret(str(model_id), secret)
+                    cursor = connection.execute(
+                        "UPDATE ai_model_configs SET api_key_enc = ? WHERE id = ?",
+                        (cipher, str(model_id)),
+                    )
+                    written += int(cursor.rowcount or 0)
+                except Exception as exc:  # noqa: BLE001 - 单行失败不阻断整包
+                    logger.warning("could not re-encrypt model row %s: %s", model_id, exc)
+            connection.commit()
+        return written
 
     def import_key_material(self, raw: bytes) -> bool:
         """写回模型主密钥；环境变量已显式配置时不覆盖。"""
@@ -685,13 +860,21 @@ class ModelConfigStore:
         base_url = payload.get("base_url")
         if base_url and not str(base_url).startswith(("http://", "https://")):
             raise ModelConfigError(400, "base_url 必须以 http:// 或 https:// 开头")
-        timeout = payload.get("timeout", 30.0)
+        timeout = payload.get("timeout", 120.0)
         try:
             timeout = float(timeout)
         except (TypeError, ValueError) as exc:
             raise ModelConfigError(400, "timeout 必须是数字（秒）") from exc
         if not 1 <= timeout <= 600:
             raise ModelConfigError(400, "timeout 必须在 1–600 秒之间")
+        # Key 形态在此统一收口：写库、拼 Authorization、测试连接都从这里过，
+        # 避免"入库时带空格 → 请求头非法 → 用户以为 Key 填错"。
+        raw_key = payload.get("api_key")
+        if raw_key is not None and not is_masked_placeholder(raw_key):
+            try:
+                normalize_api_key(raw_key)
+            except ApiKeyFormatError as exc:
+                raise ModelConfigError(400, str(exc)) from exc
 
     def create(
         self,
@@ -706,15 +889,24 @@ class ModelConfigStore:
         model_id = _uuid.uuid4().hex[:12]
         now = _now_iso()
         owner = str(owner_principal or payload.get("owner_principal") or "")
+        if payload.get("is_default"):
+            # 新建模型还没经过「测试连接」，不能直接占默认位；否则界面上写着
+            # "默认"，实际一调用就失败。先保存、测通，再设为默认。
+            raise ModelConfigError(
+                409,
+                "新建的模型还没有测试通过，不能直接设为默认："
+                "请先保存，点「测试连接」通过后再设为默认。",
+            )
         with self._lock:
             conn = self._connect()
             has_default = conn.execute(
                 "SELECT 1 FROM ai_model_configs WHERE is_default = 1 AND enabled = 1 LIMIT 1"
             ).fetchone()
-            is_default = 1 if (payload.get("is_default") or not has_default) else 0
+            is_default = 0 if has_default else 1
             encrypted = None
-            if payload.get("api_key") and not is_masked_placeholder(payload["api_key"]):
-                encrypted = self._encrypt_secret(model_id, str(payload["api_key"]))
+            raw_key = normalize_api_key(payload.get("api_key"))
+            if raw_key and not is_masked_placeholder(raw_key):
+                encrypted = self._encrypt_secret(model_id, raw_key)
             if is_default:
                 conn.execute("UPDATE ai_model_configs SET is_default = 0")
             try:
@@ -731,7 +923,7 @@ class ModelConfigStore:
                         payload.get("base_url") or None,
                         encrypted,
                         owner,
-                        float(payload.get("timeout", 30.0)),
+                        float(payload.get("timeout", 120.0)),
                         is_default,
                         1 if payload.get("enabled", True) else 0,
                         now,
@@ -767,6 +959,28 @@ class ModelConfigStore:
             now = _now_iso()
             wants_default = payload.get("is_default")
             enabled = payload.get("enabled")
+            raw_key = None
+            if payload.get("api_key") and not is_masked_placeholder(payload["api_key"]):
+                raw_key = normalize_api_key(payload["api_key"])
+            # 改了密钥/协议/模型名/地址，之前的"测通"就不再代表这套配置能用了。
+            material_change = bool(
+                raw_key
+                or merged["provider"].strip().lower() != current["provider"]
+                or merged["model"].strip() != current["model"]
+                or (merged["base_url"] or None) != (current["base_url"] or None)
+            )
+            if wants_default and material_change:
+                raise ModelConfigError(
+                    409,
+                    "这次修改了密钥、模型名或地址，需要重新点「测试连接」通过后"
+                    "才能设为默认。",
+                )
+            if wants_default and not current.get("verified"):
+                raise ModelConfigError(
+                    409,
+                    "该模型还没有测试通过，不能设为默认："
+                    "请先点「测试连接」，通过后再设为默认。",
+                )
             sets = [
                 "name = ?",
                 "provider = ?",
@@ -783,9 +997,11 @@ class ModelConfigStore:
                 float(merged["timeout"]),
                 now,
             ]
+            if material_change:
+                sets.append("last_verified_at = NULL")
             # 只有"用户真的输入了新值"才更新；掩码/占位值一律视为未修改。
-            if payload.get("api_key") and not is_masked_placeholder(payload["api_key"]):
-                params.append(self._encrypt_secret(model_id, str(payload["api_key"])))
+            if raw_key:
+                params.append(self._encrypt_secret(model_id, raw_key))
                 sets.append("api_key_enc = ?")
             if "owner_principal" in payload and payload["owner_principal"] is not None:
                 params.append(str(payload["owner_principal"]))
@@ -867,6 +1083,14 @@ class ModelConfigStore:
         current = self.get_public(model_id)
         if not current["enabled"]:
             raise ModelConfigError(409, "禁用的模型不能设为默认")
+        if not current.get("last_verified_at"):
+            # 「设为默认」必须与实际调用一致：没测通的模型一旦成为默认，
+            # 界面写着"默认"，聊天却立刻失败，用户会以为系统坏了。
+            raise ModelConfigError(
+                409,
+                "该模型还没有测试通过，不能设为默认："
+                "请先点「测试连接」，通过后再设为默认。",
+            )
         with self._lock:
             conn = self._connect()
             if visible_to is None:
@@ -896,6 +1120,30 @@ class ModelConfigStore:
         self._audit("ai.model_config.set_default", actor, model_id, {})
         return self.get_public(model_id)
 
+    def mark_verified(
+        self, model_id: str, ok: bool, *, actor: str = "model-probe"
+    ) -> None:
+        """记录一次「测试连接」结果。
+
+        成功写入时间戳，失败**清空**：之前通过不代表现在还能用（Key 可能刚
+        被吊销）。只有带时间戳的模型才允许被设为默认。
+        """
+        self.get_public(model_id)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE ai_model_configs SET last_verified_at = ? WHERE id = ?",
+                    (_now_iso() if ok else None, model_id),
+                )
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                raise self._storage_error(exc) from exc
+        self._audit(
+            "ai.model_config.probe", actor, model_id, {"ok": bool(ok)}
+        )
+
     def _audit(self, action: str, actor: str, model_id: str, payload: Dict[str, Any]) -> None:
         """审计只记录元数据；**绝不**带 api_key / 密文。"""
         try:
@@ -905,6 +1153,8 @@ class ModelConfigStore:
                 action,
                 module="src.ai.model_config",
                 actor=actor or "capability",
+                # target 是"对什么做的"：审计列表要能直接显示模型 id。
+                target=model_id,
                 model_config_id=model_id,
                 name=str(payload.get("name") or ""),
                 provider=str(payload.get("provider") or ""),
@@ -1040,9 +1290,11 @@ def migrate_env_config_to_store(
                 "provider": provider,
                 "model": model,
                 "base_url": base_url or None,
-                "timeout": 30.0,
+                "timeout": 120.0,
                 "enabled": True,
-                "is_default": True,
+                # 不显式传 is_default：新建的模型还没测试通过，不能直接占默认位。
+                # 这里库里必为空（上面的 existing 检查），create 会让它成为首个
+                # 默认模型，迁移结果与以前一致。
             }
             if api_key:
                 payload["api_key"] = api_key
