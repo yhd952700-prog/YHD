@@ -110,9 +110,12 @@ describe('ChatPanel 结束帧', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
-    const text = await screen.findByText(/超出你设定的预算/)
+    const text = await screen.findByText(/超出当前额度/)
     expect(text.textContent).toContain('更便宜的模型')
-    fireEvent.click(screen.getByRole('button', { name: '去用量页调整额度' }))
+    // 只读用量页做不到调整额度：卡片上不能出现这类承诺。
+    expect(text.textContent).not.toContain('去用量页调整额度')
+    expect(text.textContent).not.toContain('请到「我的 Key → 用量」调整额度')
+    fireEvent.click(screen.getByRole('button', { name: '查看用量' }))
     fireEvent.click(screen.getByRole('button', { name: '换更便宜的模型' }))
     expect(onOpenUsage).toHaveBeenCalledTimes(1)
     expect(onConfigureModel).toHaveBeenCalledTimes(1)
@@ -153,9 +156,12 @@ describe('ChatPanel 结束帧', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
-    const text = await screen.findByText(/超出你设定的预算/)
+    const text = await screen.findByText(/超出当前额度/)
     expect(text.textContent).toContain('更便宜的模型')
-    fireEvent.click(screen.getByRole('button', { name: '去用量页调整额度' }))
+    // 只读用量页做不到调整额度：卡片上不能出现这类承诺。
+    expect(text.textContent).not.toContain('去用量页调整额度')
+    expect(text.textContent).not.toContain('请到「我的 Key → 用量」调整额度')
+    fireEvent.click(screen.getByRole('button', { name: '查看用量' }))
     fireEvent.click(screen.getByRole('button', { name: '换更便宜的模型' }))
     expect(onOpenUsage).toHaveBeenCalledTimes(1)
     expect(onConfigureModel).toHaveBeenCalledTimes(1)
@@ -195,8 +201,8 @@ describe('ChatPanel 结束帧', () => {
 
     await screen.findByText(/权限不足/)
     expect(document.body.textContent).toContain('当前账号没有被授权执行这个操作')
-    // 403 ≠ 402：既没有「去调整额度」，也没有「换更便宜的模型」。
-    expect(screen.queryByRole('button', { name: '去用量页调整额度' })).toBeNull()
+    // 403 ≠ 402：既没有「查看用量」，也没有「换更便宜的模型」。
+    expect(screen.queryByRole('button', { name: '查看用量' })).toBeNull()
     expect(screen.queryByRole('button', { name: '换更便宜的模型' })).toBeNull()
     expect(onOpenUsage).not.toHaveBeenCalled()
   })
@@ -227,7 +233,7 @@ describe('ChatPanel 结束帧', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
     await screen.findByText('请求过于频繁，请稍后重试')
-    expect(screen.queryByRole('button', { name: '去用量页调整额度' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '查看用量' })).toBeNull()
     expect(screen.queryByRole('button', { name: '换更便宜的模型' })).toBeNull()
   })
 

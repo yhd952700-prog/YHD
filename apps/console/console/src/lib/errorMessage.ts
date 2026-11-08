@@ -37,6 +37,25 @@ export const LOCAL_SERVICE_OFFLINE_MANUAL =
 export const LOCAL_SERVICE_UNSTABLE =
   '鎏灏的本地服务在运行，但这次请求没有成功。稍等会自动重连；持续出现请重启软件后再试。'
 
+/**
+ * 402 `budget_exceeded`：钱/额度不够，≠ 没权限。
+ *
+ * 两类拒绝必须分开说，否则用户会去申请一个本来就有的权限，却始终不明白
+ * 为什么调用还是失败。下一步动作单独成句，界面上同时渲染成可点入口。
+ */
+export const BUDGET_DENIAL_MESSAGE =
+  '本次调用会超出当前额度，已暂停。额度由管理员在启动配置中设定，改完需要重启鎏灏才生效。你可以换一个更便宜的模型后重试，或联系管理员调整额度。'
+export const BUDGET_DENIAL_NEXT_STEP =
+  '去「我的 Key → 用量」查看已经用了多少'
+/** 403 `permission_denied`：真的没有这项权限。 */
+export const PERMISSION_DENIAL_MESSAGE = '权限不足：当前账号没有被授权执行这个操作。'
+
+/** 文案是否属于 402 预算拒绝（页面据此额外渲染可点的下一步入口）。 */
+export function isBudgetDenialMessage(message: string | null | undefined): boolean {
+  const text = (message ?? '').trim()
+  return text.includes(BUDGET_DENIAL_MESSAGE) || text.includes('budget_exceeded')
+}
+
 /** 文案是否属于"本机服务没运行"这一类（卡片标题据此区分"服务没开"与"数据异常"）。 */
 export function isLocalServiceOffline(message: string): boolean {
   return message.includes('鎏灏的本地服务没有运行')
@@ -285,6 +304,9 @@ function pickErrorCode(record: {
 function noDetailFallback(status: number): string {
   if (status === 0) {
     return LOCAL_SERVICE_OFFLINE_MANUAL
+  }
+  if (status === 402) {
+    return `${BUDGET_DENIAL_MESSAGE}${BUDGET_DENIAL_NEXT_STEP}`
   }
   if (status === 403) {
     return '当前账号没有执行这个操作的权限。请换用有权限的账号，或联系安装者。'

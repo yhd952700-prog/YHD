@@ -128,6 +128,30 @@ export function Guard<T>({
   return <>{children(data)}</>
 }
 
+/**
+ * 402 预算拒绝的可执行出口：只给一句话不够，必须能点。
+ *
+ * 路由入口由调用方注入，组件本身不依赖导航实现，页面与聊天面板可以共用。
+ */
+export function BudgetDenialActions({
+  onOpenUsage,
+  onConfigureModel,
+}: {
+  onOpenUsage: () => void
+  onConfigureModel: () => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
+      <button type="button" className="os-link" onClick={onOpenUsage}>
+        查看用量
+      </button>
+      <button type="button" className="os-link" onClick={onConfigureModel}>
+        换更便宜的模型
+      </button>
+    </div>
+  )
+}
+
 /** 带颜色的状态点 + 文案。 */
 export function Dot({ tone, label }: { tone: Tone; label: ReactNode }) {
   return (

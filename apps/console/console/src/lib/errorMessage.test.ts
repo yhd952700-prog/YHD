@@ -42,6 +42,16 @@ describe('后端错误文案可读化', () => {
     expect(failure.message).toContain('诊断包')
   })
 
+  test('402 没有可读文案时说明额度来源与查看用量出口，绝不直出 Payment Required', () => {
+    const failure = describeFailure(null, 402, 'Payment Required', null)
+    expect(failure.message).toContain('超出当前额度')
+    expect(failure.message).toContain('额度由管理员在启动配置中设定')
+    expect(failure.message).toContain('我的 Key')
+    expect(failure.message).toContain('重启鎏灏')
+    expect(failure.message).not.toContain('权限')
+    expect(failure.message).not.toContain('Payment Required')
+  })
+
   test('连不上服务（status 0）明确告诉用户先启动服务', () => {
     const failure = describeFailure(null, 0, '', null)
     expect(failure.message).toContain('鎏灏的本地服务没有运行')

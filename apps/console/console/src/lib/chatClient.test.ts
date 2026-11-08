@@ -93,11 +93,15 @@ describe('chatFailureText', () => {
 })
 
 describe('friendlyChatError 402/403 口径', () => {
-  test('402 budget_exceeded 说预算并给出可点的下一步，不误报权限', () => {
+  test('402 budget_exceeded 说清额度来源与查看用量入口，不误报权限', () => {
     const err = friendlyChatError(new ApiError(402, '', 'budget_exceeded'))
-    expect(err.text).toContain('超出你设定的预算')
+    expect(err.text).toContain('超出当前额度')
+    expect(err.text).toContain('额度由管理员在启动配置中设定')
+    expect(err.text).toContain('重启鎏灏')
     expect(err.text).toContain('我的 Key')
-    expect(err.text).toContain('模型管理')
+    expect(err.text).toContain('更便宜的模型')
+    // 页面只做只读用量，不能承诺「去那里调整额度」。
+    expect(err.text).not.toContain('请到「我的 Key → 用量」调整额度')
     expect(err.text).not.toContain('权限')
     expect(err.action).toBe('budget')
   })
@@ -141,11 +145,13 @@ describe('friendlyChatError 402/403 口径', () => {
     expect(err.text).not.toContain('ACCOUNT_KEY_NOT_CONFIGURED')
   })
 
-  test('聊天失败文案同步带上调额度/换模型的出口', () => {
+  test('聊天失败文案说明额度来源，并给查看用量/换模型的出口', () => {
     const text = chatFailureText('budget_exceeded')
-    expect(text).toContain('预算')
+    expect(text).toContain('超出当前额度')
+    expect(text).toContain('额度由管理员在启动配置中设定')
     expect(text).toContain('我的 Key')
     expect(text).toContain('更便宜的模型')
+    expect(text).not.toContain('请到「我的 Key → 用量」调整额度')
   })
 })
 

@@ -274,6 +274,9 @@ export function MyKeys({
             </div>
           )}
         </Guard>
+        <p className="os-hint">
+          额度由启动配置决定，调整后需要重启鎏灏才会生效；本页只显示已用量。
+        </p>
         {!caps.canAllKeys && (
           <Empty
             title="Key 新增与修改暂未开放"
